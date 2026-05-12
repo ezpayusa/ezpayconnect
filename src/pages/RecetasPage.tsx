@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { useSearchParams } from 'react-router-dom'
+import { useSearchParams } from 'react-router'
 import { usePacientes } from '@/hooks/usePacientes'
 import { useRecetas, useMedicamentos } from '@/hooks/useRecetas'
 import { Button } from '@/components/ui/button'
@@ -43,14 +43,22 @@ export default function RecetasPage() {
     setItems(items.filter((_, i) => i !== idx))
   }
 
+  const [formError, setFormError] = useState('')
+
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
     if (items.length === 0) return
     setSaving(true)
-    await createReceta(
+    setFormError('')
+    const { error } = await createReceta(
       { paciente_id: parseInt(form.paciente_id), instrucciones_generales: form.instrucciones_generales },
       items as RecetaItem[]
     )
+    if (error) {
+      setFormError(typeof error === 'string' ? error : 'Error al generar receta. Verifica que seleccionaste un paciente y agregaste medicamentos.')
+      setSaving(false)
+      return
+    }
     setForm({ paciente_id: '', instrucciones_generales: '' })
     setItems([])
     setShowForm(false)
@@ -179,8 +187,11 @@ export default function RecetasPage() {
               />
             </div>
 
+            {formError && (
+              <p className="text-sm text-red-500 bg-red-50 p-2 rounded">{formError}</p>
+            )}
             <div className="flex justify-end gap-3">
-              <Button type="button" variant="outline" onClick={() => setShowForm(false)}>Cancelar</Button>
+              <Button type="button" variant="outline" onClick={() => { setShowForm(false); setFormError('') }}>Cancelar</Button>
               <Button type="submit" className="bg-[#1E5C8E] hover:bg-[#3A8ABF]" disabled={saving || items.length === 0}>
                 {saving && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
                 Generar Receta

@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { useSearchParams } from 'react-router-dom'
+import { useSearchParams } from 'react-router'
 import { usePacientes } from '@/hooks/usePacientes'
 import { useCitas } from '@/hooks/useCitas'
 import { Button } from '@/components/ui/button'
@@ -25,6 +25,7 @@ export default function CitasPage() {
   const [form, setForm] = useState({
     paciente_id: '', fecha: '', hora_inicio: '', hora_fin: '', motivo: '', notas: ''
   })
+  const [formError, setFormError] = useState('')
 
   const year = currentDate.getFullYear()
   const month = currentDate.getMonth()
@@ -40,7 +41,8 @@ export default function CitasPage() {
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
     setSaving(true)
-    await createCita({
+    setFormError('')
+    const { error } = await createCita({
       paciente_id: parseInt(form.paciente_id),
       fecha: form.fecha,
       hora_inicio: form.hora_inicio,
@@ -49,6 +51,11 @@ export default function CitasPage() {
       notas: form.notas,
       estado: 'agendada'
     })
+    if (error) {
+      setFormError(typeof error === 'string' ? error : 'Error al crear cita. Verifica que seleccionaste un paciente.')
+      setSaving(false)
+      return
+    }
     setForm({ paciente_id: '', fecha: '', hora_inicio: '', hora_fin: '', motivo: '', notas: '' })
     setShowForm(false)
     setSaving(false)
@@ -182,8 +189,11 @@ export default function CitasPage() {
             </div>
             <div className="space-y-2"><Label>Motivo</Label><Input value={form.motivo} onChange={e => setForm({...form, motivo: e.target.value})} placeholder="Consulta general" /></div>
             <div className="space-y-2"><Label>Notas</Label><textarea className="w-full border rounded-md p-2 min-h-[60px]" value={form.notas} onChange={e => setForm({...form, notas: e.target.value})} /></div>
+            {formError && (
+              <p className="text-sm text-red-500 bg-red-50 p-2 rounded">{formError}</p>
+            )}
             <div className="flex justify-end gap-3">
-              <Button type="button" variant="outline" onClick={() => setShowForm(false)}>Cancelar</Button>
+              <Button type="button" variant="outline" onClick={() => { setShowForm(false); setFormError('') }}>Cancelar</Button>
               <Button type="submit" className="bg-[#1E5C8E] hover:bg-[#3A8ABF]" disabled={saving}>
                 {saving && <Loader2 className="mr-2 h-4 w-4 animate-spin" />} Guardar Cita
               </Button>

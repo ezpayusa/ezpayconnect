@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { useNavigate, useSearchParams } from 'react-router-dom'
+import { useNavigate, useSearchParams } from 'react-router'
 import { usePacientes } from '@/hooks/usePacientes'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -29,14 +29,27 @@ export default function PacientesPage() {
     (p.telefono || '').includes(search)
   )
 
+  const [formError, setFormError] = useState('')
+
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
     setSaving(true)
+    setFormError('')
     if (editing) {
-      await updatePaciente(editing, form)
+      const { error } = await updatePaciente(editing, form)
+      if (error) {
+        setFormError(typeof error === 'string' ? error : 'Error al actualizar paciente')
+        setSaving(false)
+        return
+      }
       setEditing(null)
     } else {
-      await createPaciente(form)
+      const { error } = await createPaciente(form)
+      if (error) {
+        setFormError(typeof error === 'string' ? error : 'Error al guardar paciente. Verifica que completaste nombre y apellido.')
+        setSaving(false)
+        return
+      }
     }
     setForm({ nombre: '', apellido: '', fecha_nacimiento: '', genero: '', telefono: '', email: '', direccion: '', emergencia_nombre: '', emergencia_telefono: '', alergias: '', notas: '' })
     setShowForm(false)
@@ -143,8 +156,11 @@ export default function PacientesPage() {
               <div className="space-y-2 col-span-2"><Label>Alergias</Label><Input value={form.alergias} onChange={e => setForm({...form, alergias: e.target.value})} /></div>
               <div className="space-y-2 col-span-2"><Label>Notas</Label><textarea className="w-full border rounded-md p-2 min-h-[80px]" value={form.notas} onChange={e => setForm({...form, notas: e.target.value})} /></div>
             </div>
+            {formError && (
+              <p className="text-sm text-red-500 bg-red-50 p-2 rounded">{formError}</p>
+            )}
             <div className="flex justify-end gap-3">
-              <Button type="button" variant="outline" onClick={() => setShowForm(false)}>Cancelar</Button>
+              <Button type="button" variant="outline" onClick={() => { setShowForm(false); setFormError('') }}>Cancelar</Button>
               <Button type="submit" className="bg-[#1E5C8E] hover:bg-[#3A8ABF]" disabled={saving}>
                 {saving && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
                 {editing ? 'Actualizar' : 'Guardar'}

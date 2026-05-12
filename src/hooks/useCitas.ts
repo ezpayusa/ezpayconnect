@@ -20,14 +20,31 @@ export function useCitas() {
 
   const createCita = async (cita: Partial<Cita>) => {
     const { data: { user } } = await supabase.auth.getUser()
-    if (!user) return { error: 'No autenticado' }
+    if (!user) return { error: 'Debes iniciar sesion para crear citas' }
+    
+    if (!cita.paciente_id || !cita.fecha || !cita.hora_inicio) {
+      return { error: 'Paciente, fecha y hora son requeridos' }
+    }
+    
     const { data, error } = await supabase.from('citas').insert({
-      ...cita,
+      paciente_id: cita.paciente_id,
+      fecha: cita.fecha,
+      hora_inicio: cita.hora_inicio,
+      hora_fin: cita.hora_fin || null,
+      motivo: cita.motivo || null,
+      notas: cita.notas || null,
+      estado: cita.estado || 'agendada',
       medico_id: user.id,
       created_by: user.id
     }).select().single()
-    if (!error && data) setCitas(prev => [...prev, data])
-    return { data, error }
+    
+    if (error) {
+      console.error('Error creating cita:', error)
+      return { data: null, error: `Error: ${error.message} (${error.code})` }
+    }
+    
+    setCitas(prev => [...prev, data])
+    return { data, error: null }
   }
 
   const updateCita = async (id: number, updates: Partial<Cita>) => {

@@ -23,13 +23,35 @@ export function usePacientes() {
 
   const createPaciente = async (paciente: Partial<Paciente>) => {
     const { data: { user } } = await supabase.auth.getUser()
-    if (!user) return { error: 'No autenticado' }
+    if (!user) return { error: 'Debes iniciar sesion para crear pacientes' }
+    
+    if (!paciente.nombre || !paciente.apellido) {
+      return { error: 'Nombre y apellido son requeridos' }
+    }
+    
     const { data, error } = await supabase.from('pacientes').insert({
-      ...paciente,
-      medico_id: user.id
+      nombre: paciente.nombre,
+      apellido: paciente.apellido,
+      fecha_nacimiento: paciente.fecha_nacimiento || null,
+      genero: paciente.genero || null,
+      telefono: paciente.telefono || null,
+      email: paciente.email || null,
+      direccion: paciente.direccion || null,
+      emergencia_nombre: paciente.emergencia_nombre || null,
+      emergencia_telefono: paciente.emergencia_telefono || null,
+      alergias: paciente.alergias || null,
+      notas: paciente.notas || null,
+      medico_id: user.id,
+      activo: true
     }).select().single()
-    if (!error) setPacientes(prev => [data, ...prev])
-    return { data, error }
+    
+    if (error) {
+      console.error('Error creating paciente:', error)
+      return { data: null, error: `Error: ${error.message} (${error.code})` }
+    }
+    
+    setPacientes(prev => [data, ...prev])
+    return { data, error: null }
   }
 
   const updatePaciente = async (id: number, updates: Partial<Paciente>) => {

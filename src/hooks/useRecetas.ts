@@ -24,16 +24,36 @@ export function useRecetas() {
 
   const createReceta = async (receta: Partial<Receta>, items: Partial<RecetaItem>[]) => {
     const { data: { user } } = await supabase.auth.getUser()
-    if (!user) return { error: 'No autenticado' }
+    if (!user) return { error: 'Debes iniciar sesion para crear recetas' }
+    
+    if (!receta.paciente_id) return { error: 'Debes seleccionar un paciente' }
+    
     const { data: recetaData, error } = await supabase.from('recetas').insert({
-      ...receta,
+      paciente_id: receta.paciente_id,
+      instrucciones_generales: receta.instrucciones_generales || null,
       medico_id: user.id
     }).select().single()
-    if (error || !recetaData) return { data: recetaData, error }
+    
+    if (error || !recetaData) {
+      console.error('Error creating receta:', error)
+      return { data: null, error: `Error: ${error?.message || 'Error desconocido'}` }
+    }
 
     if (items.length > 0) {
-      const itemsConReceta = items.map(i => ({ ...i, receta_id: recetaData.id }))
-      await supabase.from('receta_items').insert(itemsConReceta)
+      const itemsConReceta = items.map(i => ({ 
+        receta_id: recetaData.id,
+        medicamento_id: i.medicamento_id || null,
+        nombre_medicamento: i.nombre_medicamento,
+        dosis: i.dosis,
+        frecuencia: i.frecuencia,
+        duracion: i.duracion || null,
+        instrucciones: i.instrucciones || null,
+        cantidad: i.cantidad || 1
+      }))
+      const { error: itemsError } = await supabase.from('receta_items').insert(itemsConReceta)
+      if (itemsError) {
+        console.error('Error inserting receta items:', itemsError)
+      }
     }
     setRecetas(prev => [recetaData, ...prev])
     return { data: recetaData, error: null }

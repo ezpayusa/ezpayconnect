@@ -43,13 +43,18 @@ export function useAuth() {
 
   const register = useCallback(async (email: string, password: string, nombre_completo: string) => {
     const { data, error } = await supabase.auth.signUp({ email, password })
-    if (!error && data.user) {
-      await supabase.from('perfiles').insert({
+    if (error) return { data, error }
+    if (data.user) {
+      const { error: perfilError } = await supabase.from('perfiles').insert({
         id: data.user.id,
         email,
         nombre_completo,
         rol: 'medico'
       })
+      if (perfilError) {
+        console.error('Error creando perfil:', perfilError)
+        return { data, error: { message: `Cuenta creada pero error al crear perfil: ${perfilError.message}` } }
+      }
     }
     return { data, error }
   }, [])
