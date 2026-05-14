@@ -18,15 +18,15 @@ import EnviarRecetaEmail from '@/components/recetas/EnviarRecetaEmail'
 export default function RecetasPage() {
   const [searchParams] = useSearchParams()
   const { pacientes } = usePacientes()
-<<<<<<< HEAD
+
   const { recetas, loading, createReceta, getRecetaCompleta, updateReceta } = useRecetas()
   const { medicamentos, fetchMedicamentos } = useMedicamentos()
   const { perfil } = useAuth()
 
-=======
+
   const { recetas, loading, createReceta } = useRecetas()
   const { medicamentos, loading: loadingMeds, error: errorMeds, fetchMedicamentos } = useMedicamentos()
->>>>>>> 862858ed1c4d941ec38676ee7dd313baf2f6000d
+
   const [showForm, setShowForm] = useState(searchParams.get('nuevo') === 'true')
   const [showDetail, setShowDetail] = useState(false)
   const [selectedReceta, setSelectedReceta] = useState<{
