@@ -35,7 +35,7 @@ export function useCitas() {
       notas: cita.notas || null,
       estado: cita.estado || 'agendada',
       medico_id: user.id,
-     }).select().single()
+    }).select().single()
     
     if (error) {
       console.error('Error creating cita:', error)
