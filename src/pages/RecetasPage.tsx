@@ -15,7 +15,7 @@ export default function RecetasPage() {
   const [searchParams] = useSearchParams()
   const { pacientes } = usePacientes()
   const { recetas, loading, createReceta } = useRecetas()
-  const { medicamentos, fetchMedicamentos } = useMedicamentos()
+  const { medicamentos, loading: loadingMeds, error: errorMeds, fetchMedicamentos } = useMedicamentos()
   const [showForm, setShowForm] = useState(searchParams.get('nuevo') === 'true')
   const [saving, setSaving] = useState(false)
   const [searchMed, setSearchMed] = useState('')
@@ -134,7 +134,16 @@ export default function RecetasPage() {
                     className="pl-10"
                   />
                 </div>
-                {medicamentos.length > 0 && (
+                     {errorMeds && (
+                  <p className="text-xs text-red-500 bg-red-50 p-2 rounded">{errorMeds}</p>
+                )}
+                {loadingMeds && (
+                  <div className="text-center py-2 text-[#8a9aaa] text-sm"><Loader2 className="h-4 w-4 animate-spin inline mr-1" /> Buscando...</div>
+                )}
+                {!loadingMeds && searchMed.trim().length > 0 && medicamentos.length === 0 && (
+                  <p className="text-sm text-[#8a9aaa] text-center py-2">No se encontraron medicamentos</p>
+                )}
+                {!loadingMeds && medicamentos.length > 0 && (
                   <div className="max-h-40 overflow-y-auto divide-y border rounded-lg">
                     {medicamentos.map(med => (
                       <div key={med.id} className="flex items-center justify-between p-3 hover:bg-gray-50">
