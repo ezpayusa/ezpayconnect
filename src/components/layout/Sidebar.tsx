@@ -1,5 +1,6 @@
 import { useNavigate, useLocation } from 'react-router-dom'
 import { useAuth } from '@/hooks/useAuth'
+import { useNotificaciones } from '@/hooks/useNotificaciones'
 import {
   LayoutDashboard,
   Users,
@@ -10,6 +11,7 @@ import {
   LogOut,
   Stethoscope,
   DollarSign,
+  Bell,
 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 
@@ -18,7 +20,7 @@ const navItems = [
   { label: 'Pacientes', icon: Users, path: '/pacientes' },
   { label: 'Citas', icon: CalendarDays, path: '/citas' },
   { label: 'Recetas', icon: FileText, path: '/recetas' },
-   { label: 'Facturas', icon: DollarSign, path: '/facturas' },
+  { label: 'Facturas', icon: DollarSign, path: '/facturas' },
   { label: 'Farmacias', icon: Pill, path: '/farmacias' },
   { label: 'Configuracion', icon: Settings, path: '/configuracion' },
 ]
@@ -27,6 +29,7 @@ export function Sidebar() {
   const navigate = useNavigate()
   const location = useLocation()
   const { logout, perfil } = useAuth()
+  const { noLeidas } = useNotificaciones()
 
   return (
     <aside className="w-64 bg-[#1a2a3a] text-white flex flex-col h-screen sticky top-0">
@@ -38,6 +41,24 @@ export function Sidebar() {
             <p className="text-xs text-[#8a9aaa]">Software Medico</p>
           </div>
         </div>
+      </div>
+
+      {/* Campanita de notificaciones */}
+      <div className="px-4 pt-4">
+        <button
+          onClick={() => navigate('/notificaciones')}
+          className="w-full flex items-center justify-between px-4 py-3 rounded-lg text-sm transition-all text-[#8a9aaa] hover:bg-white/5 hover:text-white"
+        >
+          <div className="flex items-center gap-3">
+            <Bell className="h-5 w-5" />
+            Notificaciones
+          </div>
+          {noLeidas > 0 && (
+            <span className="bg-red-500 text-white text-xs font-bold px-2 py-0.5 rounded-full">
+              {noLeidas > 9 ? '9+' : noLeidas}
+            </span>
+          )}
+        </button>
       </div>
 
       <nav className="flex-1 p-4 space-y-1">
