@@ -26,28 +26,20 @@ export function useRecetas() {
   const createReceta = async (receta: Partial<Receta>, items: Partial<RecetaItem>[]) => {
     const { data: { user } } = await supabase.auth.getUser()
     if (!user) return { error: 'Debes iniciar sesion para crear recetas' }
-<<<<<<< HEAD
 
-    if (!receta.paciente_id) return { error: 'Debes seleccionar un paciente' }
-
-=======
     if (!receta.paciente_id) return { error: 'Debes seleccionar un paciente' }
     for (const item of items) {
       if (!item.dosis || !item.frecuencia) {
         return { error: 'Todos los medicamentos deben tener dosis y frecuencia' }
       }
     }
->>>>>>> 862858ed1c4d941ec38676ee7dd313baf2f6000d
     const { data: recetaData, error } = await supabase.from('recetas').insert({
       paciente_id: receta.paciente_id,
       instrucciones_generales: receta.instrucciones_generales || null,
       medico_id: user.id,
       estado: 'activa'
     }).select().single()
-<<<<<<< HEAD
 
-=======
->>>>>>> 862858ed1c4d941ec38676ee7dd313baf2f6000d
     if (error || !recetaData) {
       return { data: null, error: `Error al crear receta: ${error?.message || 'Error desconocido'}` }
     }
@@ -77,7 +69,7 @@ export function useRecetas() {
     return { data: recetaConNombre, error: null }
   }
 
-  // ✅ NUEVO: Obtener receta completa con items y paciente
+  // ✅ Obtener receta completa con items y paciente
   const getRecetaCompleta = async (id: number) => {
     const { data: receta, error: recetaError } = await supabase
       .from('recetas')
@@ -106,7 +98,7 @@ export function useRecetas() {
     }
   }
 
-  // ✅ NUEVO: Cambiar estado de receta
+  // ✅ Cambiar estado de receta
   const updateReceta = async (id: number, updates: Partial<Receta>) => {
     const { data, error } = await supabase.from('recetas').update(updates).eq('id', id).select().single()
     if (!error && data) {
