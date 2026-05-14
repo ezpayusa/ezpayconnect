@@ -5,13 +5,15 @@ import { usePacientes } from '@/hooks/usePacientes'
 import { useCitas } from '@/hooks/useCitas'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
-import { Users, CalendarDays, FileText, Pill, Activity, TrendingUp } from 'lucide-react'
+import { Users, CalendarDays, FileText, Pill, Activity, TrendingUp, Filter, ArrowRight } from 'lucide-react'
 
 export default function DashboardPage() {
   const navigate = useNavigate()
   const { perfil } = useAuth()
   const { pacientes } = usePacientes()
   const { citas } = useCitas()
+
+  const [periodo, setPeriodo] = useState('semana')
 
   const [stats, setStats] = useState({
     pacientes: 0,
@@ -43,13 +45,35 @@ export default function DashboardPage() {
     .sort((a, b) => new Date(a.fecha + 'T' + a.hora_inicio).getTime() - new Date(b.fecha + 'T' + b.hora_inicio).getTime())
     .slice(0, 5)
 
-  // ═══════════════════════════════════════════════════════════
-  // DATOS PARA GRÁFICOS
-  // ═══════════════════════════════════════════════════════════
+  // FILTROS DE PERÍODO
+  const getRangoFechas = (p: string) => {
+    const hoy = new Date()
+    const inicio = new Date(hoy)
+    const fin = new Date(hoy)
 
-  // 1. Citas por día de la semana
-  const hoy = new Date()
+    switch (p) {
+      case 'hoy':
+        return { inicio: hoy.toISOString().split('T')[0], fin: hoy.toISOString().split('T')[0] }
+      case 'semana':
+        inicio.setDate(hoy.getDate() - hoy.getDay())
+        return { inicio: inicio.toISOString().split('T')[0], fin: fin.toISOString().split('T')[0] }
+      case 'mes':
+        inicio.setDate(1)
+        return { inicio: inicio.toISOString().split('T')[0], fin: fin.toISOString().split('T')[0] }
+      case 'año':
+        inicio.setMonth(0, 1)
+        return { inicio: inicio.toISOString().split('T')[0], fin: fin.toISOString().split('T')[0] }
+      default:
+        return { inicio: inicio.toISOString().split('T')[0], fin: fin.toISOString().split('T')[0] }
+    }
+  }
+
+  const rango = getRangoFechas(periodo)
+  const citasFiltradas = (citas || []).filter(c => c?.fecha >= rango.inicio && c?.fecha <= rango.fin)
+
+  // DATOS PARA GRÁFICOS (adaptados al período)
   const diasSemana = ['Dom', 'Lun', 'Mar', 'Mie', 'Jue', 'Vie', 'Sab']
+  const hoy = new Date()
   const inicioSemana = new Date(hoy)
   inicioSemana.setDate(hoy.getDate() - hoy.getDay())
 
@@ -63,14 +87,14 @@ export default function DashboardPage() {
 
   const maxCitas = Math.max(...citasPorDiaData.map(d => d.citas), 1)
 
-  // 2. Estado de citas
+  // 2. Estado de citas (filtrado por período)
   const estadosPosibles = ['agendada', 'confirmada', 'en_curso', 'completada', 'cancelada', 'no_show']
   const coloresEstado = ['#3A8ABF', '#1E5C8E', '#5BA8D1', '#22c55e', '#ef4444', '#f59e0b']
   const nombresEstado = ['Agendada', 'Confirmada', 'En curso', 'Completada', 'Cancelada', 'No asistió']
 
   const estadoCitasData = estadosPosibles.map((estado, i) => ({
     name: nombresEstado[i],
-    value: (citas || []).filter(c => c?.estado === estado).length,
+    value: citasFiltradas.filter(c => c?.estado === estado).length,
     color: coloresEstado[i]
   })).filter(e => e.value > 0)
 
@@ -82,13 +106,32 @@ export default function DashboardPage() {
 
   const totalEstados = estadoCitasFinal.reduce((sum, e) => sum + e.value, 0)
 
-  // 3. Ingresos por semana
-  const ingresosData = [
-    { semana: 'Sem 1', ingresos: 2500 },
-    { semana: 'Sem 2', ingresos: 3200 },
-    { semana: 'Sem 3', ingresos: 2800 },
-    { semana: 'Sem 4', ingresos: 4100 },
-  ]
+  // 3. Ingresos por período (datos simulados según período)
+  const ingresosPorPeriodo: Record<string, { label: string; ingresos: number }[]> = {
+    hoy: [{ label: 'Hoy', ingresos: 850 }],
+    semana: [
+      { label: 'Sem 1', ingresos: 2500 },
+      { label: 'Sem 2', ingresos: 3200 },
+      { label: 'Sem 3', ingresos: 2800 },
+      { label: 'Sem 4', ingresos: 4100 },
+    ],
+    mes: [
+      { label: 'Sem 1', ingresos: 2500 },
+      { label: 'Sem 2', ingresos: 3200 },
+      { label: 'Sem 3', ingresos: 2800 },
+      { label: 'Sem 4', ingresos: 4100 },
+    ],
+    año: [
+      { label: 'Ene', ingresos: 8200 },
+      { label: 'Feb', ingresos: 9500 },
+      { label: 'Mar', ingresos: 7800 },
+      { label: 'Abr', ingresos: 11200 },
+      { label: 'May', ingresos: 12450 },
+      { label: 'Jun', ingresos: 0 },
+    ]
+  }
+
+  const ingresosData = ingresosPorPeriodo[periodo] || ingresosPorPeriodo.semana
   const maxIngresos = Math.max(...ingresosData.map(d => d.ingresos), 1)
 
   // 4. Pacientes
@@ -103,7 +146,7 @@ export default function DashboardPage() {
 
   // 5. Top pacientes
   const topPacientesData = useMemo(() => {
-    const pacienteCitasCount = new Map()
+    const pacienteCitasCount = new Map<number, number>()
     ;(citas || []).forEach(c => {
       if (c?.paciente_id) {
         pacienteCitasCount.set(c.paciente_id, (pacienteCitasCount.get(c.paciente_id) || 0) + 1)
@@ -142,7 +185,14 @@ export default function DashboardPage() {
     { diagnostico: 'Infección respiratoria', cantidad: 3 },
   ]
 
-  const formatQ = (value) => `Q${(value || 0).toLocaleString()}`
+  const formatQ = (value: number) => `Q${(value || 0).toLocaleString()}`
+
+  const periodos = [
+    { value: 'hoy', label: 'Hoy' },
+    { value: 'semana', label: 'Esta semana' },
+    { value: 'mes', label: 'Este mes' },
+    { value: 'año', label: 'Este año' },
+  ]
 
   return (
     <div className="p-8 space-y-8">
@@ -256,17 +306,44 @@ export default function DashboardPage() {
         </Card>
       </div>
 
-      {/* ═══════════════════════════════════════════════════════════ */}
-      {/* SECCIÓN DE REPORTES Y GRÁFICOS - CSS PURO */}
-      {/* ═══════════════════════════════════════════════════════════ */}
+      {/* SECCIÓN DE REPORTES Y GRÁFICOS - CON FILTROS */}
       <div className="pt-4">
-        <div className="flex items-center gap-3 mb-6">
-          <div className="h-px flex-1 bg-gradient-to-r from-[#1E5C8E] to-transparent" />
-          <h2 className="text-xl font-bold text-[#1a2a3a] flex items-center gap-2">
-            <TrendingUp className="h-5 w-5 text-[#1E5C8E]" />
-            Reportes y Estadísticas
-          </h2>
-          <div className="h-px flex-1 bg-gradient-to-l from-[#1E5C8E] to-transparent" />
+        <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4 mb-6">
+          <div className="flex items-center gap-3 flex-1">
+            <div className="h-px flex-1 bg-gradient-to-r from-[#1E5C8E] to-transparent" />
+            <h2 className="text-xl font-bold text-[#1a2a3a] flex items-center gap-2">
+              <TrendingUp className="h-5 w-5 text-[#1E5C8E]" />
+              Reportes y Estadísticas
+            </h2>
+            <div className="h-px flex-1 bg-gradient-to-l from-[#1E5C8E] to-transparent" />
+          </div>
+
+          <div className="flex items-center gap-2">
+            <Filter className="h-4 w-4 text-[#8a9aaa]" />
+            <div className="flex bg-[#e8f0f8] rounded-lg p-1">
+              {periodos.map(p => (
+                <button
+                  key={p.value}
+                  onClick={() => setPeriodo(p.value)}
+                  className={`px-3 py-1.5 rounded-md text-sm font-medium transition-all ${
+                    periodo === p.value
+                      ? 'bg-[#1E5C8E] text-white shadow-sm'
+                      : 'text-[#8a9aaa] hover:text-[#1a2a3a]'
+                  }`}
+                >
+                  {p.label}
+                </button>
+              ))}
+            </div>
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => navigate('/reportes')}
+              className="border-[#1E5C8E] text-[#1E5C8E] hover:bg-[#e8f0f8]"
+            >
+              Ver más <ArrowRight className="h-4 w-4 ml-1" />
+            </Button>
+          </div>
         </div>
 
         {/* Fila 1: Citas por día + Estado de citas */}
@@ -276,7 +353,7 @@ export default function DashboardPage() {
             <CardHeader className="pb-2">
               <CardTitle className="text-lg flex items-center gap-2">
                 <CalendarDays className="h-5 w-5 text-[#1E5C8E]" />
-                Citas esta semana
+                Citas {periodo === 'hoy' ? 'de hoy' : `esta ${periodo}`}
               </CardTitle>
             </CardHeader>
             <CardContent>
@@ -338,7 +415,7 @@ export default function DashboardPage() {
           <CardHeader className="pb-2">
             <CardTitle className="text-lg flex items-center gap-2">
               <TrendingUp className="h-5 w-5 text-[#22c55e]" />
-              Ingresos por semana (Q)
+              Ingresos {periodo === 'hoy' ? 'de hoy' : `por ${periodo}`} (Q)
             </CardTitle>
           </CardHeader>
           <CardContent>
@@ -350,7 +427,7 @@ export default function DashboardPage() {
                     className="w-full bg-gradient-to-t from-[#22c55e] to-[#4ade80] rounded-t-md transition-all duration-500"
                     style={{ height: `${(d.ingresos / maxIngresos) * 160}px` }}
                   />
-                  <span className="text-xs text-[#8a9aaa] mt-2">{d.semana}</span>
+                  <span className="text-xs text-[#8a9aaa] mt-2">{d.label}</span>
                 </div>
               ))}
             </div>
