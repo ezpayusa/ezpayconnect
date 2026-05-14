@@ -25,15 +25,16 @@ export function useRecetas() {
   const createReceta = async (receta: Partial<Receta>, items: Partial<RecetaItem>[]) => {
     const { data: { user } } = await supabase.auth.getUser()
     if (!user) return { error: 'Debes iniciar sesion para crear recetas' }
-    
+
     if (!receta.paciente_id) return { error: 'Debes seleccionar un paciente' }
-    
+
     const { data: recetaData, error } = await supabase.from('recetas').insert({
       paciente_id: receta.paciente_id,
       instrucciones_generales: receta.instrucciones_generales || null,
-      medico_id: user.id
+      medico_id: user.id,
+      estado: 'activa'
     }).select().single()
-    
+
     if (error || !recetaData) {
       console.error('Error creating receta:', error)
       return { data: null, error: `Error: ${error?.message || 'Error desconocido'}` }
@@ -59,7 +60,45 @@ export function useRecetas() {
     return { data: recetaData, error: null }
   }
 
-  return { recetas, loading, fetchRecetas, createReceta }
+  // ✅ NUEVO: Obtener receta completa con items y paciente
+  const getRecetaCompleta = async (id: number) => {
+    const { data: receta, error: recetaError } = await supabase
+      .from('recetas')
+      .select(`*, pacientes(*)`)
+      .eq('id', id)
+      .single()
+
+    if (recetaError || !receta) {
+      console.error('Error fetching receta:', recetaError)
+      return { receta: null, items: [], paciente: null }
+    }
+
+    const { data: items, error: itemsError } = await supabase
+      .from('receta_items')
+      .select('*')
+      .eq('receta_id', id)
+
+    if (itemsError) {
+      console.error('Error fetching receta items:', itemsError)
+    }
+
+    return { 
+      receta, 
+      items: items || [],
+      paciente: receta.pacientes || null
+    }
+  }
+
+  // ✅ NUEVO: Cambiar estado de receta
+  const updateReceta = async (id: number, updates: Partial<Receta>) => {
+    const { data, error } = await supabase.from('recetas').update(updates).eq('id', id).select().single()
+    if (!error && data) {
+      setRecetas(prev => prev.map(r => r.id === id ? { ...r, ...data } : r))
+    }
+    return { data, error }
+  }
+
+  return { recetas, loading, fetchRecetas, createReceta, getRecetaCompleta, updateReceta }
 }
 
 export function useMedicamentos() {

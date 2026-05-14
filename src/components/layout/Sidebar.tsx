@@ -8,7 +8,8 @@ import {
   Pill,
   Settings,
   LogOut,
-  Stethoscope
+  Stethoscope,
+  DollarSign,
 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 
@@ -17,6 +18,7 @@ const navItems = [
   { label: 'Pacientes', icon: Users, path: '/pacientes' },
   { label: 'Citas', icon: CalendarDays, path: '/citas' },
   { label: 'Recetas', icon: FileText, path: '/recetas' },
+   { label: 'Facturas', icon: DollarSign, path: '/facturas' },
   { label: 'Farmacias', icon: Pill, path: '/farmacias' },
   { label: 'Configuracion', icon: Settings, path: '/configuracion' },
 ]

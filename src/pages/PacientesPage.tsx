@@ -112,7 +112,7 @@ export default function PacientesPage() {
               </TableHeader>
               <TableBody>
                 {filtered.map((p) => (
-                  <TableRow key={p.id} className="cursor-pointer hover:bg-[#e8f0f8]" onClick={() => navigate(`/pacientes/${p.id}`)}>
+                  <TableRow key={p.id} className="cursor-pointer hover:bg-[#e8f0f8]" onClick={() => navigate(`/pacientes/${p.id}/detalle`)}>
                     <TableCell className="font-medium">{p.nombre} {p.apellido}</TableCell>
                     <TableCell>{p.telefono || '-'}</TableCell>
                     <TableCell>{p.email || '-'}</TableCell>

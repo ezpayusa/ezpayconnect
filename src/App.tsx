@@ -1,3 +1,4 @@
+import PacienteDetallePage from '@/pages/PacienteDetallePage'
 import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom'
 import { useAuth } from '@/hooks/useAuth'
 import { Sidebar } from '@/components/layout/Sidebar'
@@ -8,7 +9,7 @@ import CitasPage from '@/pages/CitasPage'
 import RecetasPage from '@/pages/RecetasPage'
 import FarmaciasPage from '@/pages/FarmaciasPage'
 import ConfiguracionPage from '@/pages/ConfiguracionPage'
-
+import FacturasPage from '@/pages/FacturasPage'
 function PrivateLayout({ children }: { children: React.ReactNode }) {
   const { user, loading } = useAuth()
 
@@ -42,9 +43,11 @@ function App() {
         <Route path="/" element={<Navigate to="/dashboard" replace />} />
         <Route path="/dashboard" element={<PrivateLayout><DashboardPage /></PrivateLayout>} />
         <Route path="/pacientes" element={<PrivateLayout><PacientesPage /></PrivateLayout>} />
+        <Route path="/pacientes/:id/detalle" element={<PrivateLayout><PacienteDetallePage /></PrivateLayout>} />
         <Route path="/pacientes/:id" element={<PrivateLayout><PacientesPage /></PrivateLayout>} />
         <Route path="/citas" element={<PrivateLayout><CitasPage /></PrivateLayout>} />
         <Route path="/recetas" element={<PrivateLayout><RecetasPage /></PrivateLayout>} />
+        <Route path="/facturas" element={<PrivateLayout><FacturasPage /></PrivateLayout>} />
         <Route path="/farmacias" element={<PrivateLayout><FarmaciasPage /></PrivateLayout>} />
         <Route path="/configuracion" element={<PrivateLayout><ConfiguracionPage /></PrivateLayout>} />
       </Routes>
