@@ -18,15 +18,10 @@ import EnviarRecetaEmail from '@/components/recetas/EnviarRecetaEmail'
 export default function RecetasPage() {
   const [searchParams] = useSearchParams()
   const { pacientes } = usePacientes()
-<<<<<<< HEAD
   const { recetas, loading, createReceta, getRecetaCompleta, updateReceta } = useRecetas()
-  const { medicamentos, fetchMedicamentos } = useMedicamentos()
+  const { medicamentos, loading: loadingMeds, error: errorMeds, fetchMedicamentos } = useMedicamentos()
   const { perfil } = useAuth()
 
-=======
-  const { recetas, loading, createReceta } = useRecetas()
-  const { medicamentos, loading: loadingMeds, error: errorMeds, fetchMedicamentos } = useMedicamentos()
->>>>>>> 862858ed1c4d941ec38676ee7dd313baf2f6000d
   const [showForm, setShowForm] = useState(searchParams.get('nuevo') === 'true')
   const [showDetail, setShowDetail] = useState(false)
   const [selectedReceta, setSelectedReceta] = useState<{
@@ -36,9 +31,7 @@ export default function RecetasPage() {
   const [searchMed, setSearchMed] = useState('')
   const [printingId, setPrintingId] = useState<number | null>(null)
 
-  // ═══════════════════════════════════════════════════════════
-  // NUEVO: Estado para modal de enviar email
-  // ═══════════════════════════════════════════════════════════
+  // Estado para modal de enviar email
   const [showEmailModal, setShowEmailModal] = useState(false)
   const [emailRecetaData, setEmailRecetaData] = useState<{
     receta: any, items: any[], paciente: any
@@ -97,7 +90,7 @@ export default function RecetasPage() {
     }
   }
 
-  // ✅ Descargar PDF
+  // Descargar PDF
   const handleDownload = async (recetaId: number) => {
     setPrintingId(recetaId)
     try {
@@ -120,7 +113,7 @@ export default function RecetasPage() {
     setPrintingId(null)
   }
 
-  // ✅ Imprimir PDF
+  // Imprimir PDF
   const handlePrint = async (recetaId: number) => {
     setPrintingId(recetaId)
     try {
@@ -143,9 +136,7 @@ export default function RecetasPage() {
     setPrintingId(null)
   }
 
-  // ═══════════════════════════════════════════════════════════
-  // NUEVO: Enviar receta por email
-  // ═══════════════════════════════════════════════════════════
+  // Enviar receta por email
   const handleEnviarEmail = async (recetaId: number) => {
     const data = await getRecetaCompleta(recetaId)
     if (data.receta) {
@@ -232,9 +223,6 @@ export default function RecetasPage() {
                     >
                       <Eye className="h-4 w-4 text-[#1E5C8E]" />
                     </Button>
-                    {/* ═══════════════════════════════════════════════════════════ */}
-                    {/* NUEVO: Botón enviar por email */}
-                    {/* ═══════════════════════════════════════════════════════════ */}
                     <Button 
                       variant="ghost" 
                       size="sm" 
@@ -304,7 +292,7 @@ export default function RecetasPage() {
                     className="pl-10"
                   />
                 </div>
-                     {errorMeds && (
+                {errorMeds && (
                   <p className="text-xs text-red-500 bg-red-50 p-2 rounded">{errorMeds}</p>
                 )}
                 {loadingMeds && (
@@ -458,9 +446,6 @@ export default function RecetasPage() {
                 <Button variant="outline" onClick={() => setShowDetail(false)}>
                   <X className="h-4 w-4 mr-2" /> Cerrar
                 </Button>
-                {/* ═══════════════════════════════════════════════════════════ */}
-                {/* NUEVO: Botón enviar por email en detalle */}
-                {/* ═══════════════════════════════════════════════════════════ */}
                 <Button 
                   variant="outline"
                   className="border-[#3A8ABF] text-[#3A8ABF] hover:bg-[#e8f0f8]"
@@ -522,9 +507,7 @@ export default function RecetasPage() {
         </DialogContent>
       </Dialog>
 
-      {/* ═══════════════════════════════════════════════════════════ */}
-      {/* NUEVO: Modal de enviar receta por email */}
-      {/* ═══════════════════════════════════════════════════════════ */}
+      {/* Modal de enviar receta por email */}
       <EnviarRecetaEmail
         open={showEmailModal}
         onOpenChange={setShowEmailModal}

@@ -26,7 +26,6 @@ export function useRecetas() {
   const createReceta = async (receta: Partial<Receta>, items: Partial<RecetaItem>[]) => {
     const { data: { user } } = await supabase.auth.getUser()
     if (!user) return { error: 'Debes iniciar sesion para crear recetas' }
-
     if (!receta.paciente_id) return { error: 'Debes seleccionar un paciente' }
     for (const item of items) {
       if (!item.dosis || !item.frecuencia) {
@@ -39,7 +38,6 @@ export function useRecetas() {
       medico_id: user.id,
       estado: 'activa'
     }).select().single()
-
     if (error || !recetaData) {
       return { data: null, error: `Error al crear receta: ${error?.message || 'Error desconocido'}` }
     }
