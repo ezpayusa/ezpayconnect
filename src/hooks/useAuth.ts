@@ -41,7 +41,7 @@ export function useAuth() {
     return { data, error }
   }, [])
 
-  const register = useCallback(async (email: string, password: string, nombre_completo: string) => {
+  const register = useCallback(async (email: string, password: string, nombre_completo: string, rol: string = 'medico') => {
     const { data, error } = await supabase.auth.signUp({ email, password })
     if (error) return { data, error }
     if (data.user) {
@@ -49,7 +49,7 @@ export function useAuth() {
         id: data.user.id,
         email,
         nombre_completo,
-        rol: 'medico'
+        rol: rol || 'medico'
       })
       if (perfilError) {
         console.error('Error creando perfil:', perfilError)
@@ -65,5 +65,14 @@ export function useAuth() {
     setPerfil(null)
   }, [])
 
-  return { user, perfil, loading, login, register, logout }
+  // Función para verificar si tiene permiso
+  const hasRole = useCallback((roles: string[]) => {
+    return roles.includes(perfil?.rol || '')
+  }, [perfil])
+
+  const isAdmin = useCallback(() => perfil?.rol === 'admin', [perfil])
+  const isMedico = useCallback(() => perfil?.rol === 'medico', [perfil])
+  const isAsistente = useCallback(() => perfil?.rol === 'asistente', [perfil])
+
+  return { user, perfil, loading, login, register, logout, hasRole, isAdmin, isMedico, isAsistente }
 }

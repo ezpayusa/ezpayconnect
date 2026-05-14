@@ -12,24 +12,42 @@ import {
   Stethoscope,
   DollarSign,
   Bell,
+  Shield,
+  BarChart3,
 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
-
-const navItems = [
-  { label: 'Dashboard', icon: LayoutDashboard, path: '/dashboard' },
-  { label: 'Pacientes', icon: Users, path: '/pacientes' },
-  { label: 'Citas', icon: CalendarDays, path: '/citas' },
-  { label: 'Recetas', icon: FileText, path: '/recetas' },
-  { label: 'Facturas', icon: DollarSign, path: '/facturas' },
-  { label: 'Farmacias', icon: Pill, path: '/farmacias' },
-  { label: 'Configuracion', icon: Settings, path: '/configuracion' },
-]
 
 export function Sidebar() {
   const navigate = useNavigate()
   const location = useLocation()
-  const { logout, perfil } = useAuth()
+  const { logout, perfil, isAdmin, isMedico, isAsistente } = useAuth()
   const { noLeidas } = useNotificaciones()
+
+  // Definir items de navegación según rol
+  const getNavItems = () => {
+    const baseItems = [
+      { label: 'Dashboard', icon: LayoutDashboard, path: '/dashboard', roles: ['admin', 'medico', 'asistente'] },
+      { label: 'Pacientes', icon: Users, path: '/pacientes', roles: ['admin', 'medico', 'asistente'] },
+      { label: 'Citas', icon: CalendarDays, path: '/citas', roles: ['admin', 'medico', 'asistente'] },
+    ]
+
+    const medicoItems = [
+      { label: 'Recetas', icon: FileText, path: '/recetas', roles: ['admin', 'medico'] },
+      { label: 'Facturas', icon: DollarSign, path: '/facturas', roles: ['admin', 'medico'] },
+    ]
+
+    const adminItems = [
+      { label: 'Farmacias', icon: Pill, path: '/farmacias', roles: ['admin', 'medico'] },
+      { label: 'Reportes', icon: BarChart3, path: '/reportes', roles: ['admin', 'medico'] },
+      { label: 'Configuracion', icon: Settings, path: '/configuracion', roles: ['admin'] },
+    ]
+
+    const allItems = [...baseItems, ...medicoItems, ...adminItems]
+
+    return allItems.filter(item => item.roles.includes(perfil?.rol || ''))
+  }
+
+  const navItems = getNavItems()
 
   return (
     <aside className="w-64 bg-[#1a2a3a] text-white flex flex-col h-screen sticky top-0">
@@ -43,8 +61,18 @@ export function Sidebar() {
         </div>
       </div>
 
-      {/* Campanita de notificaciones */}
+      {/* Badge de rol */}
       <div className="px-4 pt-4">
+        <div className="flex items-center gap-2 px-4 py-2 rounded-lg bg-white/5">
+          <Shield className="h-4 w-4 text-[#5BA8D1]" />
+          <span className="text-xs font-medium text-[#B8D0E0] uppercase">
+            {perfil?.rol || 'Usuario'}
+          </span>
+        </div>
+      </div>
+
+      {/* Campanita de notificaciones */}
+      <div className="px-4 pt-2">
         <button
           onClick={() => navigate('/notificaciones')}
           className="w-full flex items-center justify-between px-4 py-3 rounded-lg text-sm transition-all text-[#8a9aaa] hover:bg-white/5 hover:text-white"
