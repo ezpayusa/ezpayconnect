@@ -1,5 +1,6 @@
+import PaisesPage from '@/pages/admin-ezpay/PaisesPage';
 import NotificacionesPage from '@/pages/NotificacionesPage'
-import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom'
+import { BrowserRouter, Routes, Route, Navigate, useNavigate } from 'react-router-dom'
 import { useAuth } from '@/hooks/useAuth'
 import { Sidebar } from '@/components/layout/Sidebar'
 import LoginPage from '@/pages/LoginPage'
@@ -12,6 +13,12 @@ import FarmaciasPage from '@/pages/FarmaciasPage'
 import ConfiguracionPage from '@/pages/ConfiguracionPage'
 import FacturasPage from '@/pages/FacturasPage'
 import ReportesPage from '@/pages/reportes/ReportesPage'
+
+// === IMPORTS ADMIN EZPAY ===
+import { useEffect } from 'react'
+import { AdminLayout } from '@/components/admin-ezpay/layout/AdminLayout'
+import AdminEzPayPage from '@/pages/admin-ezpay/AdminEzPayPage'
+import { useAdminAuth } from '@/hooks/admin/useAdminAuth'
 
 function PrivateLayout({ children }: { children: React.ReactNode }) {
   const { user, loading } = useAuth()
@@ -38,6 +45,24 @@ function PrivateLayout({ children }: { children: React.ReactNode }) {
   )
 }
 
+// === COMPONENTE PROTECCIÓN RUTAS ADMIN ===
+function AdminRoute({ children }: { children: React.ReactNode }) {
+  const { isAdmin, loading } = useAdminAuth()
+  const navigate = useNavigate()
+
+  useEffect(() => {
+    if (!loading && !isAdmin) {
+      navigate('/dashboard')
+    }
+  }, [loading, isAdmin, navigate])
+
+  if (loading) {
+    return <div className="flex items-center justify-center h-screen">Cargando...</div>
+  }
+
+  return isAdmin ? <>{children}</> : null
+}
+
 function App() {
   return (
     <BrowserRouter>
@@ -55,6 +80,27 @@ function App() {
         <Route path="/farmacias" element={<PrivateLayout><FarmaciasPage /></PrivateLayout>} />
         <Route path="/configuracion" element={<PrivateLayout><ConfiguracionPage /></PrivateLayout>} />
         <Route path="/reportes" element={<PrivateLayout><ReportesPage /></PrivateLayout>} />
+
+        {/* === RUTAS ADMIN EZPAY === */}
+        <Route
+          path="/admin-ezpay"
+          element={
+            <AdminRoute>
+              <AdminLayout />
+            </AdminRoute>
+          }
+        >
+          <Route index element={<AdminEzPayPage />} />
+          <Route path="paises" element={<PaisesPage />} />
+          <Route path="planes-medico" element={<div className="p-8 text-center text-gray-500">Planes Médico - Próximo Día 4</div>} />
+          <Route path="planes-clinica" element={<div className="p-8 text-center text-gray-500">Planes Clínica - Próximo Día 5</div>} />
+          <Route path="planes-lab" element={<div className="p-8 text-center text-gray-500">Planes Lab - Próximo Día 6</div>} />
+          <Route path="planes-visitador" element={<div className="p-8 text-center text-gray-500">Planes Visitador - Próximo Día 7</div>} />
+          <Route path="excepciones" element={<div className="p-8 text-center text-gray-500">Excepciones - Próximo Día 8</div>} />
+          <Route path="finanzas" element={<div className="p-8 text-center text-gray-500">Finanzas - Próximo Día 9</div>} />
+          <Route path="reportes" element={<div className="p-8 text-center text-gray-500">Reportes - Próximo Día 10</div>} />
+          <Route path="roles" element={<div className="p-8 text-center text-gray-500">Roles - Próximo Día 11</div>} />
+        </Route>
       </Routes>
     </BrowserRouter>
   )
