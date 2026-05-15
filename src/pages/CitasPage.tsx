@@ -2,6 +2,7 @@ import { useState } from 'react'
 import { useSearchParams } from 'react-router'
 import { usePacientes } from '@/hooks/usePacientes'
 import { useCitas } from '@/hooks/useCitas'
+import BotonWhatsAppCita from '@/components/BotonWhatsAppCita'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
@@ -145,6 +146,13 @@ export default function CitasPage() {
                             <p className="font-medium text-sm">{paciente?.nombre} {paciente?.apellido}</p>
                             <p className="text-xs text-[#1E5C8E] font-medium">{cita.hora_inicio} {cita.hora_fin ? `- ${cita.hora_fin}` : ''}</p>
                             <p className="text-xs text-[#8a9aaa]">{cita.motivo || 'Consulta general'}</p>
+                          </div>
+                          <div className="flex gap-2">
+                            <BotonWhatsAppCita 
+                              paciente={paciente} 
+                              cita={cita}
+                              tipo="recordatorio"
+                            />
                           </div>
                         </div>
                         <Select value={cita.estado} onValueChange={(v) => cambiarEstado(cita.id, v)}>
