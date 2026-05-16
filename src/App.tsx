@@ -20,6 +20,12 @@ import { AdminLayout } from '@/components/admin-ezpay/layout/AdminLayout'
 import AdminEzPayPage from '@/pages/admin-ezpay/AdminEzPayPage'
 import { useAdminAuth } from '@/hooks/admin/useAdminAuth'
 
+// === IMPORTS PLANES MÉDICO (DÍA 4) ===
+import PlanesPage from '@/pages/planes/PlanesPage'
+import PlanesConfigPage from '@/pages/planes/PlanesConfigPage'
+import PlanesAsignacionesPage from '@/pages/planes/PlanesAsignacionesPage'
+import PlanesExcepcionesPage from '@/pages/planes/PlanesExcepcionesPage'
+
 function PrivateLayout({ children }: { children: React.ReactNode }) {
   const { user, loading } = useAuth()
 
@@ -81,6 +87,12 @@ function App() {
         <Route path="/configuracion" element={<PrivateLayout><ConfiguracionPage /></PrivateLayout>} />
         <Route path="/reportes" element={<PrivateLayout><ReportesPage /></PrivateLayout>} />
 
+        {/* === RUTAS PLANES MÉDICO (DÍA 4) === */}
+        <Route path="/planes" element={<PlanesPage />} />
+        <Route path="/admin/planes/configuracion" element={<AdminRoute><PlanesConfigPage /></AdminRoute>} />
+        <Route path="/admin/planes/asignaciones" element={<AdminRoute><PlanesAsignacionesPage /></AdminRoute>} />
+        <Route path="/admin/planes/excepciones" element={<AdminRoute><PlanesExcepcionesPage /></AdminRoute>} />
+
         {/* === RUTAS ADMIN EZPAY === */}
         <Route
           path="/admin-ezpay"
@@ -92,11 +104,11 @@ function App() {
         >
           <Route index element={<AdminEzPayPage />} />
           <Route path="paises" element={<PaisesPage />} />
-          <Route path="planes-medico" element={<div className="p-8 text-center text-gray-500">Planes Médico - Próximo Día 4</div>} />
+          <Route path="planes-medico" element={<Navigate to="/admin/planes/configuracion" replace />} />
           <Route path="planes-clinica" element={<div className="p-8 text-center text-gray-500">Planes Clínica - Próximo Día 5</div>} />
           <Route path="planes-lab" element={<div className="p-8 text-center text-gray-500">Planes Lab - Próximo Día 6</div>} />
           <Route path="planes-visitador" element={<div className="p-8 text-center text-gray-500">Planes Visitador - Próximo Día 7</div>} />
-          <Route path="excepciones" element={<div className="p-8 text-center text-gray-500">Excepciones - Próximo Día 8</div>} />
+          <Route path="excepciones" element={<Navigate to="/admin/planes/excepciones" replace />} />
           <Route path="finanzas" element={<div className="p-8 text-center text-gray-500">Finanzas - Próximo Día 9</div>} />
           <Route path="reportes" element={<div className="p-8 text-center text-gray-500">Reportes - Próximo Día 10</div>} />
           <Route path="roles" element={<div className="p-8 text-center text-gray-500">Roles - Próximo Día 11</div>} />
