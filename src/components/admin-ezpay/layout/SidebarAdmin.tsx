@@ -10,6 +10,7 @@ import {
   AlertCircle, 
   DollarSign, 
   FileText, 
+  BarChart3,
   Shield, 
   ChevronLeft 
 } from 'lucide-react';
@@ -25,7 +26,8 @@ const menuItems = [
   { path: '/admin-ezpay/planes-visitador', icon: Truck, label: 'Planes Visitador' },
   { path: '/admin-ezpay/excepciones', icon: AlertCircle, label: 'Excepciones' },
   { path: '/admin-ezpay/finanzas', icon: DollarSign, label: 'Finanzas' },
-  { path: '/admin-ezpay/reportes', icon: FileText, label: 'Reportes' },
+  { path: '/admin-ezpay/reportes', icon: BarChart3, label: 'Reportes EZPay' },
+  { path: '/reportes', icon: FileText, label: 'Reportes Médico' },
   { path: '/admin-ezpay/roles', icon: Shield, label: 'Roles' },
 ];
 
