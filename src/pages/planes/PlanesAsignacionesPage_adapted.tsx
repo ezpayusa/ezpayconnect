@@ -10,27 +10,32 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@
 import { Label } from '@/components/ui/label';
 import { usePlanes } from '@/hooks/usePlanes';
 import { useAuth } from '@/hooks/useAuth';
-import type { PlanAsignacion, EstadoPlan } from '@/types/planes';
+import type { PlanAsignacion } from '@/types/planes';
 import { formatearPrecio, getEstadoConfig, diasRestantes } from '@/lib/planes-utils';
 import { ArrowLeft, Search, RefreshCw, Ban, RotateCcw, Eye, Download } from 'lucide-react';
+
+// Tipo local para estados - CORRECCIÓN del error "EstadoPlan is not defined"
+type EstadoPlanLocal = 'activo' | 'inactivo' | 'pendiente' | 'suspendido' | 'cancelado';
 
 export default function PlanesAsignacionesPage() {
   const navigate = useNavigate();
   const { user } = useAuth();
   const { asignaciones, planesConfig, loading, cancelarAsignacion, renovarAsignacion, recargar } = usePlanes();
   const [search, setSearch] = useState('');
-  const [filtroEstado, setFiltroEstado] = useState<EstadoPlan | 'todos'>('todos');
-  const [asignacionSel, setAsignacionSel] = useState<PlanAsignacion | null>(null);
+  const [filtroEstado, setFiltroEstado] = useState<<EstadoPlanLocal | 'todos'>('todos');
+  const [asignacionSel, setAsignacionSel] = useState<<PlanAsignacion | null>(null);
   const [dialogoDetalle, setDialogoDetalle] = useState(false);
   const [dialogoCancelar, setDialogoCancelar] = useState(false);
   const [motivoCancelacion, setMotivoCancelacion] = useState('');
 
+  // Verificación de admin
   if (user?.rol !== 'super_admin' && user?.rol !== 'admin') {
     return (
       <div className="flex items-center justify-center min-h-[60vh]">
         <Card className="max-w-md">
           <CardContent className="pt-6 text-center">
             <h2 className="text-xl font-bold mb-2">Acceso restringido</h2>
+            <p className="text-sm text-muted-foreground mb-4">Necesitas rol de administrador para ver esta página.</p>
             <Button onClick={() => navigate('/dashboard')}>Volver al dashboard</Button>
           </CardContent>
         </Card>
@@ -39,7 +44,10 @@ export default function PlanesAsignacionesPage() {
   }
 
   const asignacionesFiltradas = asignaciones.filter(a => {
-    const matchSearch = !search || a.medico?.nombre?.toLowerCase().includes(search.toLowerCase());
+    const matchSearch = !search || 
+      a.medico?.nombre?.toLowerCase().includes(search.toLowerCase()) ||
+      a.medico?.email?.toLowerCase().includes(search.toLowerCase()) ||
+      a.plan_configuracion?.plan_base?.nombre?.toLowerCase().includes(search.toLowerCase());
     const matchEstado = filtroEstado === 'todos' || a.estado === filtroEstado;
     return matchSearch && matchEstado;
   });
@@ -63,6 +71,14 @@ export default function PlanesAsignacionesPage() {
     }
   };
 
+  if (loading) {
+    return (
+      <div className="flex items-center justify-center min-h-[60vh]">
+        <RefreshCw className="h-8 w-8 animate-spin text-cyan-500" />
+      </div>
+    );
+  }
+
   return (
     <div className="container mx-auto px-4 py-6 max-w-7xl">
       <div className="flex items-center justify-between mb-6">
@@ -82,15 +98,24 @@ export default function PlanesAsignacionesPage() {
       </div>
 
       <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-6">
-        <Card><CardContent className="pt-4">
-          <p className="text-sm text-muted-foreground">Total</p><p className="text-2xl font-bold">{stats.total}</p>
-        </CardContent></Card>
-        <Card><CardContent className="pt-4">
-          <p className="text-sm text-muted-foreground">Activas</p><p className="text-2xl font-bold text-green-600">{stats.activos}</p>
-        </CardContent></Card>
-        <Card><CardContent className="pt-4">
-          <p className="text-sm text-muted-foreground">Por vencer</p><p className="text-2xl font-bold text-red-600">{stats.porVencer}</p>
-        </CardContent></Card>
+        <Card>
+          <CardContent className="pt-4">
+            <p className="text-sm text-muted-foreground">Total</p>
+            <p className="text-2xl font-bold">{stats.total}</p>
+          </CardContent>
+        </Card>
+        <Card>
+          <CardContent className="pt-4">
+            <p className="text-sm text-muted-foreground">Activas</p>
+            <p className="text-2xl font-bold text-green-600">{stats.activos}</p>
+          </CardContent>
+        </Card>
+        <Card>
+          <CardContent className="pt-4">
+            <p className="text-sm text-muted-foreground">Por vencer</p>
+            <p className="text-2xl font-bold text-red-600">{stats.porVencer}</p>
+          </CardContent>
+        </Card>
       </div>
 
       <Card className="mb-6">
@@ -100,18 +125,20 @@ export default function PlanesAsignacionesPage() {
               <Label className="text-xs mb-2 block">Buscar</Label>
               <div className="relative">
                 <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
-                <Input placeholder="Médico..." value={search} onChange={(e) => setSearch(e.target.value)} className="pl-9" />
+                <Input placeholder="Médico, email o plan..." value={search} onChange={(e) => setSearch(e.target.value)} className="pl-9" />
               </div>
             </div>
             <div className="w-[160px]">
               <Label className="text-xs mb-2 block">Estado</Label>
-              <Select value={filtroEstado} onValueChange={(v) => setFiltroEstado(v as any)}>
+              <Select value={filtroEstado} onValueChange={(v) => setFiltroEstado(v as EstadoPlanLocal | 'todos')}>
                 <SelectTrigger><SelectValue /></SelectTrigger>
                 <SelectContent>
                   <SelectItem value="todos">Todos</SelectItem>
                   <SelectItem value="activo">Activo</SelectItem>
                   <SelectItem value="pendiente">Pendiente</SelectItem>
+                  <SelectItem value="suspendido">Suspendido</SelectItem>
                   <SelectItem value="cancelado">Cancelado</SelectItem>
+                  <SelectItem value="inactivo">Inactivo</SelectItem>
                 </SelectContent>
               </Select>
             </div>
@@ -125,7 +152,7 @@ export default function PlanesAsignacionesPage() {
             <Table>
               <TableHeader>
                 <TableRow>
-                  <TableHead>Médico</TableHead>
+                  <TableHead>Médico / Usuario</TableHead>
                   <TableHead>Plan</TableHead>
                   <TableHead>Precio</TableHead>
                   <TableHead>Estado</TableHead>
@@ -137,14 +164,15 @@ export default function PlanesAsignacionesPage() {
                 {asignacionesFiltradas.map((a) => (
                   <TableRow key={a.id}>
                     <TableCell>
-                      <p className="font-medium">{a.medico?.nombre || 'N/A'}</p>
-                      <p className="text-xs text-muted-foreground">{a.medico?.email}</p>
+                      <p className="font-medium">{a.medico?.nombre || a.usuario?.nombre || 'N/A'}</p>
+                      <p className="text-xs text-muted-foreground">{a.medico?.email || a.usuario?.email}</p>
                     </TableCell>
                     <TableCell>
-                      <Badge variant="outline">{a.plan_configuracion?.plan_base?.nombre}</Badge>
+                      <Badge variant="outline">{a.plan_configuracion?.plan_base?.nombre || a.plan_nombre || 'N/A'}</Badge>
                     </TableCell>
                     <TableCell>
-                      <p className="font-medium">{formatearPrecio(a.precio_aplicado, a.moneda)}</p>
+                      <p className="font-medium">{formatearPrecio(a.precio_aplicado || a.precio_final || 0, a.moneda)}</p>
+                      <p className="text-xs text-muted-foreground capitalize">{a.tipo_ciclo || a.ciclo_facturacion}</p>
                     </TableCell>
                     <TableCell>
                       <Badge className={getEstadoConfig(a.estado).bg + ' ' + getEstadoConfig(a.estado).color}>
@@ -179,9 +207,11 @@ export default function PlanesAsignacionesPage() {
                   </TableRow>
                 ))}
                 {asignacionesFiltradas.length === 0 && (
-                  <TableRow><TableCell colSpan={6} className="text-center py-8 text-muted-foreground">
-                    No se encontraron suscripciones
-                  </TableCell></TableRow>
+                  <TableRow>
+                    <TableCell colSpan={6} className="text-center py-8 text-muted-foreground">
+                      No se encontraron suscripciones
+                    </TableCell>
+                  </TableRow>
                 )}
               </TableBody>
             </Table>
@@ -189,34 +219,60 @@ export default function PlanesAsignacionesPage() {
         </CardContent>
       </Card>
 
+      {/* Dialogo Detalle */}
       <Dialog open={dialogoDetalle} onOpenChange={setDialogoDetalle}>
         <DialogContent className="max-w-lg">
           <DialogHeader><DialogTitle>Detalle de suscripción</DialogTitle></DialogHeader>
           {asignacionSel && (
             <div className="space-y-4">
               <div className="grid grid-cols-2 gap-4">
-                <div><Label className="text-xs text-muted-foreground">Médico</Label>
-                  <p className="font-medium">{asignacionSel.medico?.nombre}</p></div>
-                <div><Label className="text-xs text-muted-foreground">Plan</Label>
-                  <p className="font-medium">{asignacionSel.plan_configuracion?.plan_base?.nombre}</p></div>
+                <div>
+                  <Label className="text-xs text-muted-foreground">Médico / Usuario</Label>
+                  <p className="font-medium">{asignacionSel.medico?.nombre || asignacionSel.usuario?.nombre || 'N/A'}</p>
+                </div>
+                <div>
+                  <Label className="text-xs text-muted-foreground">Plan</Label>
+                  <p className="font-medium">{asignacionSel.plan_configuracion?.plan_base?.nombre || asignacionSel.plan_nombre}</p>
+                </div>
               </div>
               <div className="grid grid-cols-2 gap-4">
-                <div><Label className="text-xs text-muted-foreground">Precio</Label>
-                  <p className="font-medium">{formatearPrecio(asignacionSel.precio_aplicado, asignacionSel.moneda)}</p></div>
-                <div><Label className="text-xs text-muted-foreground">Ciclo</Label>
-                  <p className="font-medium capitalize">{asignacionSel.tipo_ciclo}</p></div>
+                <div>
+                  <Label className="text-xs text-muted-foreground">Precio</Label>
+                  <p className="font-medium">{formatearPrecio(asignacionSel.precio_aplicado || asignacionSel.precio_final || 0, asignacionSel.moneda)}</p>
+                </div>
+                <div>
+                  <Label className="text-xs text-muted-foreground">Ciclo</Label>
+                  <p className="font-medium capitalize">{asignacionSel.tipo_ciclo || asignacionSel.ciclo_facturacion}</p>
+                </div>
               </div>
               <div className="grid grid-cols-2 gap-4">
-                <div><Label className="text-xs text-muted-foreground">Inicio</Label>
-                  <p className="font-medium">{new Date(asignacionSel.fecha_inicio).toLocaleDateString('es-GT')}</p></div>
-                <div><Label className="text-xs text-muted-foreground">Vencimiento</Label>
-                  <p className="font-medium">{asignacionSel.fecha_fin ? new Date(asignacionSel.fecha_fin).toLocaleDateString('es-GT') : 'Sin vencimiento'}</p></div>
+                <div>
+                  <Label className="text-xs text-muted-foreground">Inicio</Label>
+                  <p className="font-medium">{new Date(asignacionSel.fecha_inicio).toLocaleDateString('es-GT')}</p>
+                </div>
+                <div>
+                  <Label className="text-xs text-muted-foreground">Vencimiento</Label>
+                  <p className="font-medium">{asignacionSel.fecha_fin ? new Date(asignacionSel.fecha_fin).toLocaleDateString('es-GT') : 'Sin vencimiento'}</p>
+                </div>
+              </div>
+              <div className="grid grid-cols-2 gap-4">
+                <div>
+                  <Label className="text-xs text-muted-foreground">Estado</Label>
+                  <Badge className={getEstadoConfig(asignacionSel.estado).bg + ' ' + getEstadoConfig(asignacionSel.estado).color}>
+                    {getEstadoConfig(asignacionSel.estado).label}
+                  </Badge>
+                </div>
+                <div>
+                  <Label className="text-xs text-muted-foreground">Renovación</Label>
+                  <p className="font-medium">{asignacionSel.auto_renovar || asignacionSel.renovacion_automatica ? 'Automática' : 'Manual'}</p>
+                </div>
               </div>
             </div>
           )}
         </DialogContent>
       </Dialog>
 
+      {/* Dialogo Cancelar */}
       <Dialog open={dialogoCancelar} onOpenChange={setDialogoCancelar}>
         <DialogContent>
           <DialogHeader>

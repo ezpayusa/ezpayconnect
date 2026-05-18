@@ -1,6 +1,4 @@
-// ═══════════════════════════════════════════════════════════════
-// EZPAYCONNECT - HOOK usePlanes (CORREGIDO - sin << )
-// ═══════════════════════════════════════════════════════════════
+// EZPAYCONNECT - HOOK usePlanes (COMPLETO - Dia 4)
 
 import { useState, useEffect, useCallback } from 'react';
 import { supabase } from '@/lib/supabase';
@@ -17,6 +15,8 @@ import type {
   CrearPlanExcepcionDTO,
   FiltrosPlanes,
   EstadoPlan,
+  CicloFacturacion,
+  MetodoPago,
 } from '@/types/planes';
 
 interface UsePlanesReturn {
@@ -38,6 +38,14 @@ interface UsePlanesReturn {
   eliminarPlanConfig: (id: string) => Promise<boolean>;
 
   crearAsignacion: (data: CrearPlanAsignacionDTO) => Promise<PlanAsignacion | null>;
+  crearAsignacionCheckout: (datos: {
+    planId: string;
+    configuracionId: string;
+    ciclo: CicloFacturacion;
+    metodoPago: MetodoPago;
+    precioFinal: number;
+    moneda: string;
+  }) => Promise<PlanAsignacion | null>;
   actualizarAsignacion: (id: string, data: Partial<CrearPlanAsignacionDTO>) => Promise<boolean>;
   cancelarAsignacion: (id: string, motivo: string) => Promise<boolean>;
   renovarAsignacion: (id: string) => Promise<boolean>;
@@ -97,8 +105,8 @@ export function usePlanes(filtros?: FiltrosPlanes): UsePlanesReturn {
 
       try {
         let queryAsig = supabase
-          .from('planes_asignaciones')
-          .select('*, plan_configuracion:plan_config_id(*, plan_base:plan_base_id(*)), medico:medico_id(id, nombre, email, especialidad)')
+         .from('planes_asignaciones')
+.select('*, plan_configuracion:plan_config_id(*, plan_base:plan_base_id(*))')
           .order('created_at', { ascending: false });
         if (filtros?.estado) queryAsig = queryAsig.eq('estado', filtros.estado);
         const { data: asigData } = await queryAsig;
@@ -137,10 +145,9 @@ export function usePlanes(filtros?: FiltrosPlanes): UsePlanesReturn {
       const { data: result, error } = await supabase.from('planes_base').insert(data).select().single();
       if (error) throw error;
       setPlanesBase(prev => [...prev, result]);
-      console.log('Plan creado:', result.nombre);
       return result;
     } catch (err: any) {
-      console.error('Error:', err.message);
+      setError(err.message);
       return null;
     }
   };
@@ -152,7 +159,7 @@ export function usePlanes(filtros?: FiltrosPlanes): UsePlanesReturn {
       setPlanesBase(prev => prev.map(p => p.id === id ? { ...p, ...data } : p));
       return true;
     } catch (err: any) {
-      console.error('Error:', err.message);
+      setError(err.message);
       return false;
     }
   };
@@ -164,7 +171,7 @@ export function usePlanes(filtros?: FiltrosPlanes): UsePlanesReturn {
       setPlanesBase(prev => prev.filter(p => p.id !== id));
       return true;
     } catch (err: any) {
-      console.error('Error:', err.message);
+      setError(err.message);
       return false;
     }
   };
@@ -180,7 +187,7 @@ export function usePlanes(filtros?: FiltrosPlanes): UsePlanesReturn {
       setPlanesConfig(prev => [...prev, result]);
       return result;
     } catch (err: any) {
-      console.error('Error:', err.message);
+      setError(err.message);
       return null;
     }
   };
@@ -192,7 +199,7 @@ export function usePlanes(filtros?: FiltrosPlanes): UsePlanesReturn {
       setPlanesConfig(prev => prev.map(p => p.id === id ? { ...p, ...data } : p));
       return true;
     } catch (err: any) {
-      console.error('Error:', err.message);
+      setError(err.message);
       return false;
     }
   };
@@ -204,7 +211,7 @@ export function usePlanes(filtros?: FiltrosPlanes): UsePlanesReturn {
       setPlanesConfig(prev => prev.filter(p => p.id !== id));
       return true;
     } catch (err: any) {
-      console.error('Error:', err.message);
+      setError(err.message);
       return false;
     }
   };
@@ -220,17 +227,80 @@ export function usePlanes(filtros?: FiltrosPlanes): UsePlanesReturn {
       setAsignaciones(prev => [result, ...prev]);
 
       await supabase.from('planes_historial').insert({
-        entidad_id: data.medico_id,
+        entidad_id: data.medico_id || data.usuario_id,
         tipo_entidad: 'medico',
         plan_config_id: data.plan_config_id,
         accion: 'activacion',
-        detalle: { precio_nuevo: data.precio_aplicado, moneda: data.moneda, motivo: 'Nueva suscripción' },
+        detalle: { precio_nuevo: data.precio_aplicado, moneda: data.moneda, motivo: 'Nueva suscripcion' },
         usuario_admin_id: (await supabase.auth.getUser()).data.user?.id,
       });
 
       return result;
     } catch (err: any) {
-      console.error('Error:', err.message);
+      setError(err.message);
+      return null;
+    }
+  };
+
+  const crearAsignacionCheckout = async (datos: {
+    planId: string;
+    configuracionId: string;
+    ciclo: CicloFacturacion;
+    metodoPago: MetodoPago;
+    precioFinal: number;
+    moneda: string;
+  }): Promise<PlanAsignacion | null> => {
+    try {
+      const { data: { user } } = await supabase.auth.getUser();
+      if (!user) throw new Error('Usuario no autenticado');
+
+      const fechaInicio = new Date().toISOString();
+      const fechaFin = datos.ciclo === 'mensual'
+        ? new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString()
+        : new Date(Date.now() + 365 * 24 * 60 * 60 * 1000).toISOString();
+
+      const { data: result, error: insertError } = await supabase
+        .from('planes_asignaciones')
+        .insert({
+          usuario_id: user.id,
+          plan_id: datos.planId,
+          configuracion_id: datos.configuracionId,
+          plan_config_id: datos.configuracionId,
+          estado: 'activo',
+          ciclo_facturacion: datos.ciclo,
+          tipo_ciclo: datos.ciclo,
+          metodo_pago: datos.metodoPago,
+          precio_final: datos.precioFinal,
+          precio_aplicado: datos.precioFinal,
+          moneda: datos.moneda,
+          fecha_inicio: fechaInicio,
+          fecha_fin: fechaFin,
+          renovacion_automatica: true,
+          auto_renovar: true,
+        })
+        .select('*, plan_configuracion:plan_config_id(*, plan_base:plan_base_id(*))')
+        .single();
+
+      if (insertError) throw insertError;
+
+      await supabase.from('planes_historial').insert({
+        entidad_id: user.id,
+        tipo_entidad: 'usuario',
+        plan_config_id: datos.configuracionId,
+        accion: 'asignacion_creada',
+        detalle: {
+          precio_nuevo: datos.precioFinal,
+          moneda: datos.moneda,
+          motivo: `Checkout: ${datos.ciclo}, metodo: ${datos.metodoPago}`,
+        },
+        usuario_admin_id: user.id,
+        fecha_accion: fechaInicio,
+      });
+
+      setAsignaciones(prev => [result, ...prev]);
+      return result;
+    } catch (err: any) {
+      setError(err.message);
       return null;
     }
   };
@@ -242,7 +312,7 @@ export function usePlanes(filtros?: FiltrosPlanes): UsePlanesReturn {
       setAsignaciones(prev => prev.map(a => a.id === id ? { ...a, ...data } : a));
       return true;
     } catch (err: any) {
-      console.error('Error:', err.message);
+      setError(err.message);
       return false;
     }
   };
@@ -250,7 +320,7 @@ export function usePlanes(filtros?: FiltrosPlanes): UsePlanesReturn {
   const cancelarAsignacion = async (id: string, motivo: string): Promise<boolean> => {
     try {
       const asignacion = asignaciones.find(a => a.id === id);
-      if (!asignacion) throw new Error('Asignación no encontrada');
+      if (!asignacion) throw new Error('Asignacion no encontrada');
 
       const { error } = await supabase
         .from('planes_asignaciones')
@@ -259,7 +329,7 @@ export function usePlanes(filtros?: FiltrosPlanes): UsePlanesReturn {
       if (error) throw error;
 
       await supabase.from('planes_historial').insert({
-        entidad_id: asignacion.medico_id,
+        entidad_id: asignacion.medico_id || asignacion.usuario_id,
         tipo_entidad: 'medico',
         plan_config_id: asignacion.plan_config_id,
         accion: 'cancelacion',
@@ -270,7 +340,7 @@ export function usePlanes(filtros?: FiltrosPlanes): UsePlanesReturn {
       setAsignaciones(prev => prev.map(a => a.id === id ? { ...a, estado: 'cancelado' as EstadoPlan } : a));
       return true;
     } catch (err: any) {
-      console.error('Error:', err.message);
+      setError(err.message);
       return false;
     }
   };
@@ -278,7 +348,7 @@ export function usePlanes(filtros?: FiltrosPlanes): UsePlanesReturn {
   const renovarAsignacion = async (id: string): Promise<boolean> => {
     try {
       const asignacion = asignaciones.find(a => a.id === id);
-      if (!asignacion) throw new Error('Asignación no encontrada');
+      if (!asignacion) throw new Error('Asignacion no encontrada');
 
       const nuevaFechaFin = asignacion.tipo_ciclo === 'anual'
         ? new Date(new Date(asignacion.fecha_fin || new Date()).setFullYear(new Date().getFullYear() + 1)).toISOString()
@@ -291,18 +361,18 @@ export function usePlanes(filtros?: FiltrosPlanes): UsePlanesReturn {
       if (error) throw error;
 
       await supabase.from('planes_historial').insert({
-        entidad_id: asignacion.medico_id,
+        entidad_id: asignacion.medico_id || asignacion.usuario_id,
         tipo_entidad: 'medico',
         plan_config_id: asignacion.plan_config_id,
         accion: 'renovacion',
-        detalle: { precio_nuevo: asignacion.precio_aplicado, moneda: asignacion.moneda, motivo: 'Renovación automática' },
+        detalle: { precio_nuevo: asignacion.precio_aplicado, moneda: asignacion.moneda, motivo: 'Renovacion automatica' },
         usuario_admin_id: (await supabase.auth.getUser()).data.user?.id,
       });
 
       setAsignaciones(prev => prev.map(a => a.id === id ? { ...a, fecha_fin: nuevaFechaFin, estado: 'activo' } : a));
       return true;
     } catch (err: any) {
-      console.error('Error:', err.message);
+      setError(err.message);
       return false;
     }
   };
@@ -318,7 +388,7 @@ export function usePlanes(filtros?: FiltrosPlanes): UsePlanesReturn {
       setExcepciones(prev => [result, ...prev]);
       return result;
     } catch (err: any) {
-      console.error('Error:', err.message);
+      setError(err.message);
       return null;
     }
   };
@@ -330,7 +400,7 @@ export function usePlanes(filtros?: FiltrosPlanes): UsePlanesReturn {
       setExcepciones(prev => prev.map(e => e.id === id ? { ...e, ...data } : e));
       return true;
     } catch (err: any) {
-      console.error('Error:', err.message);
+      setError(err.message);
       return false;
     }
   };
@@ -342,7 +412,7 @@ export function usePlanes(filtros?: FiltrosPlanes): UsePlanesReturn {
       setExcepciones(prev => prev.map(e => e.id === id ? { ...e, activo: false } : e));
       return true;
     } catch (err: any) {
-      console.error('Error:', err.message);
+      setError(err.message);
       return false;
     }
   };
@@ -365,8 +435,8 @@ export function usePlanes(filtros?: FiltrosPlanes): UsePlanesReturn {
     let tipo = 'precio_base';
 
     const ahora = new Date().toISOString();
-    const excs = excepciones.filter(e => 
-      e.plan_config_id === configId && 
+    const excs = excepciones.filter(e =>
+      e.plan_config_id === configId &&
       e.activo &&
       e.fecha_inicio <= ahora &&
       (!e.fecha_fin || e.fecha_fin >= ahora) &&
@@ -413,7 +483,7 @@ export function usePlanes(filtros?: FiltrosPlanes): UsePlanesReturn {
     loading, error,
     crearPlanBase, actualizarPlanBase, eliminarPlanBase,
     crearPlanConfig, actualizarPlanConfig, eliminarPlanConfig,
-    crearAsignacion, actualizarAsignacion, cancelarAsignacion, renovarAsignacion,
+    crearAsignacion, crearAsignacionCheckout, actualizarAsignacion, cancelarAsignacion, renovarAsignacion,
     crearExcepcion, actualizarExcepcion, desactivarExcepcion,
     getPlanesPorPais, getPlanRecomendado, calcularPrecioConDescuento, getEstadisticas,
     recargar: cargarDatos,

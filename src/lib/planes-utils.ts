@@ -1,8 +1,7 @@
 // ═══════════════════════════════════════════════════════════════
-// EZPAYCONNECT - UTILIDADES DE PLANES (CORREGIDO PARA VITE)
+// EZPAYCONNECT - UTILIDADES DE PLANES
 // ═══════════════════════════════════════════════════════════════
 
-// Usamos import type para que Vite no intente importar en runtime
 import type { PlanConfiguracion, PlanFeature } from '@/types/planes';
 
 // Tipo local para evitar problemas de importación con Vite
@@ -12,8 +11,8 @@ export function generarFeaturesPlan(config: PlanConfiguracion): PlanFeature[] {
   return [
     { label: 'Precio base', included: true, value: config.plan_base?.precio_base, icon: 'DollarSign' },
     { label: 'Precio local', included: true, value: config.precio_local, icon: 'DollarSign' },
-    { label: 'Comisión', included: config.comision_aplicada > 0, value: `${config.comision_aplicada}%`, icon: 'Percent' },
-    { label: 'Descuento', included: config.descuento_porcentaje > 0, value: `${config.descuento_porcentaje}%`, icon: 'Tag' },
+    { label: 'Comisión', included: (config.comision_aplicada || 0) > 0, value: `${config.comision_aplicada || 0}%`, icon: 'Percent' },
+    { label: 'Descuento', included: (config.descuento_porcentaje || 0) > 0, value: `${config.descuento_porcentaje || 0}%`, icon: 'Tag' },
   ];
 }
 

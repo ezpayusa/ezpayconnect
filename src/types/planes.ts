@@ -1,76 +1,98 @@
-// ═══════════════════════════════════════════════════════════════
-// EZPAYCONNECT - TIPOS DE PLANES MÉDICO
-// ═══════════════════════════════════════════════════════════════
+// src/types/planes.ts
+// Tipos para el módulo de Planes Médicos y Clínicas
 
-export type PaisCodigo = 'GT' | 'SV' | 'HN';
-
-export type TipoPlan = 'basico' | 'profesional' | 'enterprise';
-
+export type TipoPlan = 'medico' | 'clinica';
 export type EstadoPlan = 'activo' | 'inactivo' | 'pendiente' | 'suspendido' | 'cancelado';
+export type CicloFacturacion = 'mensual' | 'anual';
+export type MetodoPago = 'tarjeta' | 'transferencia' | 'movil';
 
-export type TipoCiclo = 'mensual' | 'anual';
-
-export type TipoSoporte = 'email' | 'chat' | 'telefono' | 'dedicado';
-
-export type TipoExcepcion = 'descuento_porcentaje' | 'descuento_fijo' | 'precio_custom' | 'trial_extendido';
-
-export type TipoCambioPlan = 'upgrade' | 'downgrade' | 'renovacion' | 'cancelacion' | 'activacion';
-
-// ── Plan Base ─────────────────────────────────────────────────
 export interface PlanBase {
   id: string;
   nombre: string;
-  codigo: TipoPlan;
   descripcion: string;
-  icono: string;
-  color: string;
-  orden: number;
+  tipo: TipoPlan;
+  precio_base: number; // Siempre en USD
+  caracteristicas: string[];
+  limite_pacientes?: number;
+  limite_medicos?: number;
+  limite_sucursales?: number;
+  soporte_prioritario: boolean;
+  personalizacion_logo: boolean;
+  reportes_avanzados: boolean;
+  api_acceso: boolean;
+  popular?: boolean;
   activo: boolean;
+  orden: number;
   created_at?: string;
   updated_at?: string;
 }
 
-// ── Configuración por País ────────────────────────────────────
 export interface PlanConfiguracion {
   id: string;
   plan_id: string;
-  pais_codigo: PaisCodigo;
-  precio_mensual: number;
-  precio_anual: number;
-  moneda: string; // GTQ, USD
-  max_medicos: number;
-  max_pacientes: number;
-  max_citas_mes: number;
-  incluye_recetas: boolean;
-  incluye_facturacion: boolean;
-  incluye_farmacias: boolean;
-  incluye_reportes_avanzados: boolean;
-  incluye_whatsapp: boolean;
-  incluye_api: boolean;
-  soporte_tipo: TipoSoporte;
+  pais_id: string;
+  pais_codigo?: string;
+  moneda_local: string;
+  precio_local: number;
+  precio_anual?: number;
+  impuesto_incluido: boolean;
+  precio_impuestos?: number;
+  ajuste_por_pais?: number;
+  comision_aplicada?: number;
+  descuento_porcentaje?: number;
+  activo: boolean;
   created_at?: string;
   updated_at?: string;
-  // Relaciones
+  // Joins
   plan_base?: PlanBase;
+  pais?: {
+    id: string;
+    nombre: string;
+    codigo: string;
+    moneda: string;
+  };
 }
 
-// ── Asignación a Médico ───────────────────────────────────────
+export interface PlanExcepcion {
+  id: string;
+  plan_config_id?: string;
+  plan_id?: string;
+  pais_codigo?: string;
+  tipo_usuario?: string;
+  entidad_id?: string;
+  descuento_porcentaje?: number;
+  precio_especial?: number;
+  fecha_inicio?: string;
+  fecha_fin?: string;
+  motivo?: string;
+  activo: boolean;
+  created_at?: string;
+  // Joins
+  plan_configuracion?: PlanConfiguracion;
+}
+
 export interface PlanAsignacion {
   id: string;
-  medico_id: string;
-  plan_config_id: string;
-  fecha_inicio: string;
-  fecha_fin: string | null;
-  tipo_ciclo: TipoCiclo;
-  precio_aplicado: number;
-  moneda: string;
+  usuario_id?: string;
+  medico_id?: string;
+  plan_id?: string;
+  plan_config_id?: string;
+  configuracion_id?: string;
   estado: EstadoPlan;
-  metodo_pago: string | null;
-  referencia_pago: string | null;
-  auto_renovar: boolean;
-  created_at?: string;
-  updated_at?: string;
-  // Relaciones
+  ciclo_facturacion?: CicloFacturacion;
+  tipo_ciclo?: CicloFacturacion;
+  metodo_pago?: MetodoPago;
+  precio_final?: number;
+  precio_aplicado?: number;
+  moneda: string;
+  fecha_inicio: string;
+  fecha_fin?: string;
+  fecha_cancelacion?: string;
+  motivo_cancelacion?: string;
+  renovacion_automatica?: boolean;
+  auto_renovar?: boolean;
+  // Joins
+  plan_nombre?: string;
   plan_configuracion?: PlanConfiguracion;
   medico?: {
     id: string;
@@ -78,123 +100,125 @@ export interface PlanAsignacion {
     email: string;
     especialidad?: string;
   };
-}
-
-// ── Excepción / Promoción ─────────────────────────────────────
-export interface PlanExcepcion {
-  id: string;
-  medico_id: string | null; // null = promoción global
-  plan_config_id: string;
-  tipo: TipoExcepcion;
-  valor: number;
-  fecha_inicio: string;
-  fecha_fin: string | null;
-  motivo: string;
-  creado_por: string;
-  activo: boolean;
+  usuario?: {
+    id: string;
+    nombre: string;
+    email: string;
+  };
   created_at?: string;
   updated_at?: string;
-  // Relaciones
-  plan_configuracion?: PlanConfiguracion;
-  medico?: {
-    id: string;
-    nombre: string;
-    email: string;
-  };
-  creador?: {
-    id: string;
-    nombre: string;
-  };
 }
 
-// ── Historial de Cambios ──────────────────────────────────────
 export interface PlanHistorial {
   id: string;
-  medico_id: string;
-  plan_anterior_id: string | null;
-  plan_nuevo_id: string | null;
-  tipo_cambio: TipoCambioPlan;
-  precio_anterior: number | null;
-  precio_nuevo: number | null;
-  moneda: string;
-  motivo: string;
-  realizado_por: string;
+  asignacion_id?: string;
+  entidad_id?: string;
+  tipo_entidad?: string;
+  plan_config_id?: string;
+  accion: string;
+  detalle?: any;
+  detalles?: string;
+  fecha_accion?: string;
+  usuario_admin_id?: string;
   created_at?: string;
-  // Relaciones
-  plan_anterior?: PlanConfiguracion;
-  plan_nuevo?: PlanConfiguracion;
-  medico?: {
-    id: string;
-    nombre: string;
-    email: string;
-  };
-  ejecutor?: {
-    id: string;
-    nombre: string;
-  };
 }
 
-// ── DTOs para creación/actualización ──────────────────────────
-export interface CrearPlanBaseDTO {
+export interface PlanPaisInfo {
+  codigo: string;
   nombre: string;
-  codigo: TipoPlan;
-  descripcion: string;
-  icono: string;
-  color: string;
-  orden: number;
-}
-
-export interface CrearPlanConfigDTO {
-  plan_id: string;
-  pais_codigo: PaisCodigo;
-  precio_mensual: number;
-  precio_anual: number;
   moneda: string;
-  max_medicos: number;
-  max_pacientes: number;
-  max_citas_mes: number;
-  incluye_recetas: boolean;
-  incluye_facturacion: boolean;
-  incluye_farmacias: boolean;
-  incluye_reportes_avanzados: boolean;
-  incluye_whatsapp: boolean;
-  incluye_api: boolean;
-  soporte_tipo: TipoSoporte;
+  simbolo: string;
 }
 
-export interface CrearPlanAsignacionDTO {
-  medico_id: string;
-  plan_config_id: string;
-  fecha_inicio: string;
-  fecha_fin?: string;
-  tipo_ciclo: TipoCiclo;
-  precio_aplicado: number;
-  moneda: string;
-  auto_renovar: boolean;
-}
-
-export interface CrearPlanExcepcionDTO {
-  medico_id: string | null;
-  plan_config_id: string;
-  tipo: TipoExcepcion;
-  valor: number;
-  fecha_inicio: string;
-  fecha_fin?: string;
-  motivo: string;
-}
-
-// ── Filtros ───────────────────────────────────────────────────
-export interface FiltrosPlanes {
-  pais?: PaisCodigo;
-  estado?: EstadoPlan;
-  tipo?: TipoPlan;
-  search?: string;
-}
-
-// ── Feature list para UI ─────────────────────────────────────
 export interface PlanFeature {
   label: string;
   included: boolean;
-  value?: string | number;
+  value?: any;
   icon?: string;
+}
+
+export interface Pais {
+  id: string;
+  nombre: string;
+  codigo: string;
+  moneda: string;
+  simbolo?: string;
+  activo?: boolean;
+}
+
+// DTOs para crear/actualizar
+export interface CrearPlanBaseDTO {
+  nombre: string;
+  descripcion: string;
+  tipo: TipoPlan;
+  precio_base: number;
+  caracteristicas?: string[];
+  limite_pacientes?: number;
+  limite_medicos?: number;
+  limite_sucursales?: number;
+  soporte_prioritario?: boolean;
+  personalizacion_logo?: boolean;
+  reportes_avanzados?: boolean;
+  api_acceso?: boolean;
+  popular?: boolean;
+  orden?: number;
+}
+
+export interface CrearPlanConfigDTO {
+  plan_base_id: string;
+  pais_id: string;
+  moneda_local: string;
+  precio_local: number;
+  precio_anual?: number;
+  impuesto_incluido?: boolean;
+  precio_impuestos?: number;
+  comision_aplicada?: number;
+  descuento_porcentaje?: number;
+}
+
+export interface CrearPlanAsignacionDTO {
+  medico_id?: string;
+  usuario_id?: string;
+  plan_config_id: string;
+  plan_id?: string;
+  configuracion_id?: string;
+  precio_aplicado?: number;
+  precio_final?: number;
+  moneda: string;
+  tipo_ciclo?: CicloFacturacion;
+  ciclo_facturacion?: CicloFacturacion;
+  metodo_pago?: MetodoPago;
+  fecha_inicio?: string;
+  fecha_fin?: string;
+  auto_renovar?: boolean;
+  renovacion_automatica?: boolean;
+}
+
+export interface CrearPlanExcepcionDTO {
+  plan_config_id?: string;
+  plan_id?: string;
+  pais_codigo?: string;
+  entidad_id?: string;
+  tipo_usuario?: string;
+  descuento_porcentaje?: number;
+  precio_especial?: number;
+  fecha_inicio?: string;
+  fecha_fin?: string;
+  motivo?: string;
+}
+
+export interface FiltrosPlanes {
+  tipo?: TipoPlan;
+  estado?: EstadoPlan;
+  pais_id?: string;
+  busqueda?: string;
+}
+
+// Helpers para joins
+export interface PlanConConfiguracion extends PlanBase {
+  configuraciones?: PlanConfiguracion[];
+}
+
+export interface ConfiguracionConPlan extends PlanConfiguracion {
+  plan?: PlanBase;
 }
