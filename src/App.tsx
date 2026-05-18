@@ -41,6 +41,12 @@ import PlanesVisitadorConfigPage from '@/pages/planes/PlanesVisitadorConfigPage'
 // === IMPORTS PLANES TODOS (DÍA 8) ===
 import PlanesTodosPage from '@/pages/planes/PlanesTodosPage'
 
+// === IMPORTS PLANES FALTANTES (DÍA 11.5) ===
+import PlanesFarmaceuticoConfigPage from '@/pages/planes/PlanesFarmaceuticoConfigPage'
+import PlanesFarmaciaConfigPage from '@/pages/planes/PlanesFarmaciaConfigPage'
+import PlanesPublicidadConfigPage from '@/pages/planes/PlanesPublicidadConfigPage'
+import PlanesEmpresasAfinesConfigPage from '@/pages/planes/PlanesEmpresasAfinesConfigPage'
+
 // === IMPORTS FINANZAS (DÍA 9) ===
 import FinanzasPage from '@/pages/admin-ezpay/FinanzasPage'
 
@@ -132,6 +138,12 @@ function App() {
         {/* === RUTA PLANES TODOS (DÍA 8) === */}
         <Route path="/planes-todos" element={<PlanesTodosPage />} />
 
+        {/* === RUTAS PLANES FALTANTES (DÍA 11.5) === */}
+        <Route path="/admin/planes/farmaceutico" element={<AdminRoute><PlanesFarmaceuticoConfigPage /></AdminRoute>} />
+        <Route path="/admin/planes/farmacia" element={<AdminRoute><PlanesFarmaciaConfigPage /></AdminRoute>} />
+        <Route path="/admin/planes/publicidad" element={<AdminRoute><PlanesPublicidadConfigPage /></AdminRoute>} />
+        <Route path="/admin/planes/empresas-afines" element={<AdminRoute><PlanesEmpresasAfinesConfigPage /></AdminRoute>} />
+
         {/* === RUTAS ADMIN EZPAY === */}
         <Route
           path="/admin-ezpay"
@@ -148,10 +160,14 @@ function App() {
           <Route path="planes-clinica" element={<Navigate to="/admin/planes/clinica" replace />} />
           <Route path="planes-lab" element={<Navigate to="/admin/planes/lab" replace />} />
           <Route path="planes-visitador" element={<Navigate to="/admin/planes/visitador" replace />} />
+          <Route path="planes-farmaceutico" element={<Navigate to="/admin/planes/farmaceutico" replace />} />
+          <Route path="planes-farmacia" element={<Navigate to="/admin/planes/farmacia" replace />} />
+          <Route path="planes-publicidad" element={<Navigate to="/admin/planes/publicidad" replace />} />
+          <Route path="planes-empresas-afines" element={<Navigate to="/admin/planes/empresas-afines" replace />} />
           <Route path="excepciones" element={<Navigate to="/admin/planes/excepciones" replace />} />
           <Route path="finanzas" element={<FinanzasPage />} />
           <Route path="reportes" element={<ReportesEzPayPageV2 />} />
-          <Route path="/admin-ezpay/roles" element={<RolesPage />} />
+          <Route path="roles" element={<RolesPage />} />
         </Route>
       </Routes>
     </BrowserRouter>

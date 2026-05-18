@@ -1,98 +1,120 @@
-import { NavLink, useLocation } from 'react-router-dom';
+import { useNavigate, useLocation } from 'react-router-dom';
+import { useAdminAuth } from '@/hooks/admin/useAdminAuth';
 import { 
   LayoutDashboard, 
   Globe, 
-  CreditCard,
+  Layers, 
   Stethoscope, 
   Building2, 
   FlaskConical, 
-  Truck, 
-  AlertCircle, 
-  DollarSign, 
-  FileText, 
+  Car,
+  Pill,
+  Store,
+  Megaphone,
+  Handshake,
+  AlertCircle,
+  DollarSign,
   BarChart3,
-  Shield, 
-  ChevronLeft 
+  FileText,
+  Shield,
+  ChevronLeft,
+  LogOut
 } from 'lucide-react';
-import { useAdminAuth } from '@/hooks/admin/useAdminAuth';
-
-const menuItems = [
-  { path: '/admin-ezpay', icon: LayoutDashboard, label: 'Dashboard' },
-  { path: '/admin-ezpay/paises', icon: Globe, label: 'Países' },
-  { path: '/admin-ezpay/planes-todos', icon: CreditCard, label: 'Todos los Planes' },
-  { path: '/admin-ezpay/planes-medico', icon: Stethoscope, label: 'Planes Médico' },
-  { path: '/admin-ezpay/planes-clinica', icon: Building2, label: 'Planes Clínica' },
-  { path: '/admin-ezpay/planes-lab', icon: FlaskConical, label: 'Planes Lab/Farmacia' },
-  { path: '/admin-ezpay/planes-visitador', icon: Truck, label: 'Planes Visitador' },
-  { path: '/admin-ezpay/excepciones', icon: AlertCircle, label: 'Excepciones' },
-  { path: '/admin-ezpay/finanzas', icon: DollarSign, label: 'Finanzas' },
-  { path: '/admin-ezpay/reportes', icon: BarChart3, label: 'Reportes EZPay' },
-  { path: '/reportes', icon: FileText, label: 'Reportes Médico' },
-  { path: '/admin-ezpay/roles', icon: Shield, label: 'Roles' },
-];
+import { Button } from '@/components/ui/button';
+import { supabase } from '@/lib/supabase';
 
 export function SidebarAdmin() {
+  const navigate = useNavigate();
   const location = useLocation();
   const { adminUser } = useAdminAuth();
 
+  const menuItems = [
+    { path: '/admin-ezpay', icon: LayoutDashboard, label: 'Dashboard' },
+    { path: '/admin-ezpay/paises', icon: Globe, label: 'Países' },
+    { path: '/admin-ezpay/planes-todos', icon: Layers, label: 'Todos los Planes' },
+    { path: '/admin-ezpay/planes-medico', icon: Stethoscope, label: 'Planes Médico' },
+    { path: '/admin-ezpay/planes-clinica', icon: Building2, label: 'Planes Clínica' },
+    { path: '/admin-ezpay/planes-lab', icon: FlaskConical, label: 'Planes Lab/Farmacia' },
+    { path: '/admin-ezpay/planes-visitador', icon: Car, label: 'Planes Visitador' },
+    { path: '/admin-ezpay/planes-farmaceutico', icon: Pill, label: 'Planes Farmacéutico' },
+    { path: '/admin-ezpay/planes-farmacia', icon: Store, label: 'Planes Farmacia' },
+    { path: '/admin-ezpay/planes-publicidad', icon: Megaphone, label: 'Planes Publicidad' },
+    { path: '/admin-ezpay/planes-empresas-afines', icon: Handshake, label: 'Empresas Afines' },
+    { path: '/admin-ezpay/excepciones', icon: AlertCircle, label: 'Excepciones' },
+    { path: '/admin-ezpay/finanzas', icon: DollarSign, label: 'Finanzas' },
+    { path: '/admin-ezpay/reportes', icon: BarChart3, label: 'Reportes EZPay' },
+    { path: '/admin-ezpay/reportes-medico', icon: FileText, label: 'Reportes Médico' },
+    { path: '/admin-ezpay/roles', icon: Shield, label: 'Roles' },
+  ];
+
+  const isActive = (path: string) => {
+    if (path === '/admin-ezpay') {
+      return location.pathname === '/admin-ezpay';
+    }
+    return location.pathname.startsWith(path);
+  };
+
   return (
-    <aside className="fixed left-0 top-0 h-full w-64 bg-[#87CEEB] shadow-xl flex flex-col z-50">
-      <div className="p-6 border-b border-white/20">
+    <aside className="w-64 bg-[#1E5C8E] text-white flex flex-col h-screen fixed left-0 top-0 z-40">
+      <div className="p-6 border-b border-white/10">
         <div className="flex items-center gap-3">
-          <div className="w-10 h-10 bg-white rounded-lg flex items-center justify-center">
-            <span className="text-[#87CEEB] font-bold text-xl">E</span>
+          <div className="w-10 h-10 bg-white/10 rounded-lg flex items-center justify-center">
+            <span className="text-xl font-bold">E</span>
           </div>
           <div>
-            <h1 className="text-white font-bold text-lg leading-tight">EZPayConnect</h1>
-            <p className="text-white/70 text-xs">Panel Maestro</p>
+            <h1 className="font-bold text-lg leading-tight">EZPayConnect</h1>
+            <p className="text-xs text-white/60">Panel Maestro</p>
           </div>
         </div>
       </div>
 
-      <nav className="flex-1 py-4 px-3 space-y-1 overflow-y-auto">
+      <nav className="flex-1 overflow-y-auto py-4 px-3 space-y-1">
         {menuItems.map((item) => {
-          const isActive = location.pathname === item.path || 
-                          (item.path !== '/admin-ezpay' && location.pathname.startsWith(item.path));
           const Icon = item.icon;
-
+          const active = isActive(item.path);
           return (
-            <NavLink
+            <button
               key={item.path}
-              to={item.path}
-              className={({ isActive: active }) =>
-                `flex items-center gap-3 px-4 py-3 rounded-xl transition-all duration-200 ${
-                  active || isActive
-                    ? 'bg-white text-[#1E5C8E] shadow-md font-semibold'
-                    : 'text-white/80 hover:bg-white/10 hover:text-white'
-                }`
-              }
+              onClick={() => navigate(item.path)}
+              className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-medium transition-all ${
+                active
+                  ? 'bg-white text-[#1E5C8E] shadow-sm'
+                  : 'text-white/80 hover:bg-white/10 hover:text-white'
+              }`}
             >
-              <Icon size={20} />
-              <span className="text-sm">{item.label}</span>
-            </NavLink>
+              <Icon className="w-5 h-5" />
+              <span>{item.label}</span>
+            </button>
           );
         })}
       </nav>
 
-      <div className="p-4 border-t border-white/20">
-        <div className="flex items-center gap-3 px-4 py-2">
-          <div className="w-8 h-8 bg-white/20 rounded-full flex items-center justify-center">
-            <span className="text-white text-xs font-bold">
-              {adminUser?.nombre?.charAt(0).toUpperCase() || 'A'}
-            </span>
+      <div className="p-4 border-t border-white/10 space-y-3">
+        {adminUser && (
+          <div className="px-3 py-2 bg-white/10 rounded-lg">
+            <p className="text-sm font-medium">{adminUser.nombre}</p>
+            <p className="text-xs text-white/60 capitalize">{adminUser.rol.replace('_', ' ')}</p>
           </div>
-          <div className="flex-1 min-w-0">
-            <p className="text-white text-sm font-medium truncate">{adminUser?.nombre || 'Admin'}</p>
-            <p className="text-white/60 text-xs truncate capitalize">{adminUser?.rol?.replace('_', ' ') || 'Super Admin'}</p>
-          </div>
-        </div>
-        <NavLink 
-          to="/dashboard" 
-          className="flex items-center gap-2 px-4 py-2 mt-2 text-white/60 hover:text-white text-sm transition-colors"
+        )}
+        <Button
+          variant="ghost"
+          className="w-full justify-start text-white/80 hover:text-white hover:bg-white/10"
+          onClick={() => navigate('/dashboard')}
         >
-          <ChevronLeft size={16} />
-          Volver a App
-        </NavLink>
+          <ChevronLeft className="w-4 h-4 mr-2" />
+          Volver al Dashboard
+        </Button>
+        <Button
+          variant="ghost"
+          className="w-full justify-start text-white/80 hover:text-white hover:bg-white/10"
+          onClick={async () => {
+            await supabase.auth.signOut();
+            navigate('/login');
+          }}
+        >
+          <LogOut className="w-4 h-4 mr-2" />
+          Cerrar Sesión
+        </Button>
       </div>
     </aside>
   );
