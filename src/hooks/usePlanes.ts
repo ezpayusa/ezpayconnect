@@ -83,7 +83,7 @@ export function usePlanes(filtros?: FiltrosPlanes): UsePlanesReturn {
     try {
       let queryBase = supabase.from('planes_base').select('*').eq('activo', true);
       if (filtros?.tipo) queryBase = queryBase.eq('tipo', filtros.tipo);
-      else queryBase = queryBase.eq('tipo', 'medico');
+// Si no hay filtro de tipo, carga todos (medico + clinica + lab + visitador)
       const { data: baseData, error: baseError } = await queryBase;
       if (baseError) throw baseError;
       setPlanesBase(baseData || []);

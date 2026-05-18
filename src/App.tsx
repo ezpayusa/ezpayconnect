@@ -26,6 +26,10 @@ import PlanesConfigPage from '@/pages/planes/PlanesConfigPage'
 import PlanesAsignacionesPage from '@/pages/planes/PlanesAsignacionesPage'
 import PlanesExcepcionesPage from '@/pages/planes/PlanesExcepcionesPage'
 
+// === IMPORTS PLANES CLÍNICA (DÍA 5) ===
+import PlanesClinicaPage from '@/pages/planes/PlanesClinicaPage'
+import PlanesClinicaConfigPage from '@/pages/planes/PlanesClinicaConfigPage'
+
 function PrivateLayout({ children }: { children: React.ReactNode }) {
   const { user, loading } = useAuth()
 
@@ -93,6 +97,10 @@ function App() {
         <Route path="/admin/planes/asignaciones" element={<AdminRoute><PlanesAsignacionesPage /></AdminRoute>} />
         <Route path="/admin/planes/excepciones" element={<AdminRoute><PlanesExcepcionesPage /></AdminRoute>} />
 
+        {/* === RUTAS PLANES CLÍNICA (DÍA 5) === */}
+        <Route path="/planes-clinica" element={<PlanesClinicaPage />} />
+        <Route path="/admin/planes/clinica" element={<AdminRoute><PlanesClinicaConfigPage /></AdminRoute>} />
+
         {/* === RUTAS ADMIN EZPAY === */}
         <Route
           path="/admin-ezpay"
@@ -105,7 +113,7 @@ function App() {
           <Route index element={<AdminEzPayPage />} />
           <Route path="paises" element={<PaisesPage />} />
           <Route path="planes-medico" element={<Navigate to="/admin/planes/configuracion" replace />} />
-          <Route path="planes-clinica" element={<div className="p-8 text-center text-gray-500">Planes Clínica - Próximo Día 5</div>} />
+          <Route path="planes-clinica" element={<Navigate to="/admin/planes/clinica" replace />} />
           <Route path="planes-lab" element={<div className="p-8 text-center text-gray-500">Planes Lab - Próximo Día 6</div>} />
           <Route path="planes-visitador" element={<div className="p-8 text-center text-gray-500">Planes Visitador - Próximo Día 7</div>} />
           <Route path="excepciones" element={<Navigate to="/admin/planes/excepciones" replace />} />
