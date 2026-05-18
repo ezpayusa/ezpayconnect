@@ -38,6 +38,9 @@ import PlanesLabConfigPage from '@/pages/planes/PlanesLabConfigPage'
 import PlanesVisitadorPage from '@/pages/planes/PlanesVisitadorPage'
 import PlanesVisitadorConfigPage from '@/pages/planes/PlanesVisitadorConfigPage'
 
+// === IMPORTS PLANES TODOS (DÍA 8) ===
+import PlanesTodosPage from '@/pages/planes/PlanesTodosPage'
+
 function PrivateLayout({ children }: { children: React.ReactNode }) {
   const { user, loading } = useAuth()
 
@@ -117,6 +120,9 @@ function App() {
         <Route path="/planes-visitador" element={<PlanesVisitadorPage />} />
         <Route path="/admin/planes/visitador" element={<AdminRoute><PlanesVisitadorConfigPage /></AdminRoute>} />
 
+        {/* === RUTA PLANES TODOS (DÍA 8) === */}
+        <Route path="/planes-todos" element={<PlanesTodosPage />} />
+
         {/* === RUTAS ADMIN EZPAY === */}
         <Route
           path="/admin-ezpay"
@@ -128,6 +134,7 @@ function App() {
         >
           <Route index element={<AdminEzPayPage />} />
           <Route path="paises" element={<PaisesPage />} />
+          <Route path="planes-todos" element={<Navigate to="/planes-todos" replace />} />
           <Route path="planes-medico" element={<Navigate to="/admin/planes/configuracion" replace />} />
           <Route path="planes-clinica" element={<Navigate to="/admin/planes/clinica" replace />} />
           <Route path="planes-lab" element={<Navigate to="/admin/planes/lab" replace />} />

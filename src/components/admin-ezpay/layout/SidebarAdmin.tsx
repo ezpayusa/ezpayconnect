@@ -2,6 +2,7 @@ import { NavLink, useLocation } from 'react-router-dom';
 import { 
   LayoutDashboard, 
   Globe, 
+  CreditCard,
   Stethoscope, 
   Building2, 
   FlaskConical, 
@@ -17,6 +18,7 @@ import { useAdminAuth } from '@/hooks/admin/useAdminAuth';
 const menuItems = [
   { path: '/admin-ezpay', icon: LayoutDashboard, label: 'Dashboard' },
   { path: '/admin-ezpay/paises', icon: Globe, label: 'Países' },
+  { path: '/admin-ezpay/planes-todos', icon: CreditCard, label: 'Todos los Planes' },
   { path: '/admin-ezpay/planes-medico', icon: Stethoscope, label: 'Planes Médico' },
   { path: '/admin-ezpay/planes-clinica', icon: Building2, label: 'Planes Clínica' },
   { path: '/admin-ezpay/planes-lab', icon: FlaskConical, label: 'Planes Lab/Farmacia' },
