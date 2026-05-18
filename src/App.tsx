@@ -47,6 +47,9 @@ import FinanzasPage from '@/pages/admin-ezpay/FinanzasPage'
 // === IMPORTS REPORTES EZPAY (DÍA 10) ===
 import ReportesEzPayPageV2 from '@/pages/admin-ezpay/ReportesEzPayPageV2'
 
+// === IMPORTS ROLES (DÍA 11) ===
+import RolesPage from '@/pages/admin-ezpay/RolesPage'
+
 function PrivateLayout({ children }: { children: React.ReactNode }) {
   const { user, loading } = useAuth()
 
@@ -148,7 +151,7 @@ function App() {
           <Route path="excepciones" element={<Navigate to="/admin/planes/excepciones" replace />} />
           <Route path="finanzas" element={<FinanzasPage />} />
           <Route path="reportes" element={<ReportesEzPayPageV2 />} />
-          <Route path="roles" element={<div className="p-8 text-center text-gray-500">Roles - Próximo Día 11</div>} />
+          <Route path="/admin-ezpay/roles" element={<RolesPage />} />
         </Route>
       </Routes>
     </BrowserRouter>
