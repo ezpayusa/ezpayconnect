@@ -1,338 +1,503 @@
-import { useState } from 'react'
+// src/pages/PacienteDetallePage.tsx
+// Dia 17: Paciente Detalle Avanzado - Usa supabase.functions.invoke (evita CORS)
+// EzPayConnect
+
+import { useState, useEffect } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
-import { usePacientes } from '@/hooks/usePacientes'
-import { useCitas } from '@/hooks/useCitas'
-import { useHistorialMedico } from '@/hooks/useHistorialMedico'
-import { useRecetas } from '@/hooks/useRecetas'
-import { Button } from '@/components/ui/button'
-import { Input } from '@/components/ui/input'
-import { Label } from '@/components/ui/label'
-import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
-import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
-import { Badge } from '@/components/ui/badge'
-import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog'
-import { Textarea } from '@/components/ui/textarea'
-import { Calendar, Stethoscope, FileText, User, ArrowLeft, Plus, Mail, Phone, MapPin, Clock } from 'lucide-react'
-import TimelineHistorial from '@/components/TimelineHistorial'
+import { supabase } from '@/lib/supabase'
+import { useAuth } from '@/hooks/useAuth'
+import {
+  ArrowLeft,
+  User,
+  Calendar,
+  FileText,
+  History,
+  Stethoscope,
+  AlertCircle,
+  Loader2,
+  QrCode,
+  Download,
+  Bell,
+  X
+} from 'lucide-react'
+
+interface Paciente {
+  id: string
+  nombre: string
+  apellido: string
+  telefono: string
+  email?: string
+  fecha_nacimiento?: string
+  created_at: string
+}
+
+interface HistorialEvento {
+  id: string
+  tipo_evento: string
+  titulo: string
+  descripcion: string
+  fecha_evento: string
+  metadata?: any
+}
+
+interface RecetaAvanzada {
+  id: string
+  codigo_qr: string
+  firma_digital: string
+  estado_dispensacion: string
+  created_at: string
+}
+
+interface Cita {
+  id: string
+  fecha: string
+  hora: string
+  estado: string
+  motivo?: string
+}
 
 export default function PacienteDetallePage() {
-  const { id } = useParams()
+  const { id } = useParams<{ id: string }>()
   const navigate = useNavigate()
-  const { pacientes, loading } = usePacientes()
-  const { citas } = useCitas()
-  const { historial, loading: loadingHistorial, createHistorial } = useHistorialMedico(Number(id))
-  const { recetas } = useRecetas()
+  const { user } = useAuth()
+  const [activeTab, setActiveTab] = useState<'info' | 'historial' | 'recetas' | 'citas'>('info')
+  const [paciente, setPaciente] = useState<Paciente | null>(null)
+  const [historial, setHistorial] = useState<HistorialEvento[]>([])
+  const [recetas, setRecetas] = useState<RecetaAvanzada[]>([])
+  const [citas, setCitas] = useState<Cita[]>([])
+  const [loading, setLoading] = useState(true)
+  const [error, setError] = useState('')
 
-  const [activeTab, setActiveTab] = useState('info')
-  const [showNuevaConsulta, setShowNuevaConsulta] = useState(false)
-  const [nuevaConsulta, setNuevaConsulta] = useState({
-    fecha: new Date().toISOString().split('T')[0],
-    motivo_consulta: '',
-    diagnostico: '',
-    tratamiento: '',
-    notas_medicas: '',
-    examenes_solicitados: ''
-  })
+  const [showRecetaModal, setShowRecetaModal] = useState(false)
+  const [recetaData, setRecetaData] = useState<any>(null)
+  const [generandoReceta, setGenerandoReceta] = useState(false)
 
-  const paciente = pacientes.find(p => p.id === Number(id))
-  const citasPaciente = citas?.filter(c => c.paciente_id === Number(id)) || []
-  const recetasPaciente = recetas?.filter(r => r.paciente_id === Number(id)) || []
+  useEffect(() => {
+    if (id) {
+      cargarPaciente()
+      cargarHistorial()
+      cargarRecetas()
+      cargarCitas()
+    }
+  }, [id])
 
-  if (loading) {
-    return (
-      <div className="min-h-screen flex items-center justify-center">
-        <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-[#1E5C8E]" />
-      </div>
-    )
+  const cargarPaciente = async () => {
+    setLoading(true)
+    const { data, error } = await supabase
+      .from('pacientes')
+      .select('*')
+      .eq('id', id)
+      .single()
+
+    if (error) {
+      setError('Error cargando paciente')
+      console.error(error)
+    } else {
+      setPaciente(data)
+    }
+    setLoading(false)
   }
 
-  if (!paciente) {
-    return (
-      <div className="p-8">
-        <Button variant="ghost" onClick={() => navigate('/pacientes')}>
-          <ArrowLeft className="h-4 w-4 mr-2" /> Volver
-        </Button>
-        <p className="mt-4 text-[#8a9aaa]">Paciente no encontrado</p>
-      </div>
-    )
+  const cargarHistorial = async () => {
+    const { data } = await supabase
+      .from('historial_medico')
+      .select('*')
+      .eq('paciente_id', id)
+      .order('fecha_evento', { ascending: false })
+    setHistorial(data || [])
   }
 
-  const handleGuardarConsulta = async () => {
-    const { error } = await createHistorial(nuevaConsulta)
-    if (!error) {
-      setShowNuevaConsulta(false)
-      setNuevaConsulta({
-        fecha: new Date().toISOString().split('T')[0],
-        motivo_consulta: '',
-        diagnostico: '',
-        tratamiento: '',
-        notas_medicas: '',
-        examenes_solicitados: ''
+  const cargarRecetas = async () => {
+    const { data } = await supabase
+      .from('recetas_avanzadas')
+      .select('*')
+      .eq('paciente_id', id)
+      .order('created_at', { ascending: false })
+    setRecetas(data || [])
+  }
+
+  const cargarCitas = async () => {
+    const { data } = await supabase
+      .from('citas')
+      .select('*')
+      .eq('paciente_id', id)
+      .order('fecha', { ascending: false })
+    setCitas(data || [])
+  }
+
+  const generarRecetaAvanzada = async () => {
+    if (!paciente || !user) return
+    setGenerandoReceta(true)
+
+    try {
+      // Obtener receta base
+      const { data: recetaBase } = await supabase
+        .from('recetas')
+        .select('*')
+        .eq('paciente_id', id)
+        .order('created_at', { ascending: false })
+        .limit(1)
+        .single()
+
+      // Usar supabase.functions.invoke en lugar de fetch (evita CORS)
+      const { data: result, error: fnError } = await supabase.functions.invoke('generar-pdf-receta', {
+        body: {
+          receta_id: recetaBase?.id || 'nueva',
+          paciente_id: id,
+          medico_id: user.id,
+          medicamentos: recetaBase?.medicamentos || ['Paracetamol 500mg'],
+          diagnostico: recetaBase?.diagnostico || 'Consulta general',
+          indicaciones: recetaBase?.indicaciones || 'Tomar cada 8 horas'
+        }
       })
+
+      if (fnError) throw fnError
+
+      if (result?.success) {
+        setRecetaData(result.data)
+        setShowRecetaModal(true)
+        cargarRecetas()
+        alert('Receta avanzada generada con QR')
+      } else {
+        alert('Error: ' + (result?.error || 'Error desconocido'))
+      }
+    } catch (err: any) {
+      console.error('Error generando receta:', err)
+      alert('Error: ' + (err.message || 'Error de conexion'))
+    } finally {
+      setGenerandoReceta(false)
     }
   }
 
+  const enviarRecordatorio = async (citaId: string) => {
+    try {
+      const { data: result, error: fnError } = await supabase.functions.invoke('enviar-recordatorio', {
+        body: {
+          cita_id: citaId,
+          tipo_recordatorio: 'whatsapp'
+        }
+      })
+
+      if (fnError) throw fnError
+
+      if (result?.success) {
+        alert(`Recordatorio programado para: ${new Date(result.data.fecha_programada).toLocaleString('es-ES')}`)
+      } else {
+        alert('Error: ' + (result?.error || 'Error desconocido'))
+      }
+    } catch (err: any) {
+      console.error('Error enviando recordatorio:', err)
+      alert('Error: ' + (err.message || 'Error de conexion'))
+    }
+  }
+
+  const descargarHTML = () => {
+    if (!recetaData?.html) return
+    const blob = new Blob([recetaData.html], { type: 'text/html' })
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement('a')
+    a.href = url
+    a.download = `receta_${recetaData.codigo_qr}.html`
+    document.body.appendChild(a)
+    a.click()
+    URL.revokeObjectURL(url)
+    document.body.removeChild(a)
+  }
+
+  const getIconoEvento = (tipo: string) => {
+    switch (tipo) {
+      case 'cita': return <Calendar size={18} className="text-[#1E5C8E]" />
+      case 'receta': return <FileText size={18} className="text-green-600" />
+      case 'diagnostico': return <Stethoscope size={18} className="text-yellow-600" />
+      default: return <History size={18} className="text-gray-400" />
+    }
+  }
+
+  if (loading) return (
+    <div className="min-h-screen bg-gray-50 flex items-center justify-center">
+      <Loader2 className="h-8 w-8 animate-spin text-[#1E5C8E]" />
+    </div>
+  )
+
+  if (error || !paciente) return (
+    <div className="min-h-screen bg-gray-50 flex items-center justify-center text-red-500">
+      <AlertCircle size={48} className="mr-2" /> {error || 'Paciente no encontrado'}
+    </div>
+  )
+
   return (
-    <div className="p-8 space-y-6">
+    <div className="min-h-screen bg-gray-50 p-8">
       {/* Header */}
-      <div className="flex items-center justify-between">
+      <div className="flex items-center gap-4 mb-8">
+        <button 
+          onClick={() => navigate('/pacientes')}
+          className="p-2 bg-white rounded-lg hover:bg-gray-100 transition-colors shadow-sm"
+        >
+          <ArrowLeft size={24} className="text-[#1E5C8E]" />
+        </button>
         <div>
-          <Button variant="ghost" onClick={() => navigate('/pacientes')} className="mb-2">
-            <ArrowLeft className="h-4 w-4 mr-2" /> Volver a Pacientes
-          </Button>
           <h1 className="text-3xl font-bold text-[#1a2a3a] flex items-center gap-3">
-            <User className="h-8 w-8 text-[#1E5C8E]" />
+            <User size={32} className="text-[#1E5C8E]" />
             {paciente.nombre} {paciente.apellido}
           </h1>
-          <p className="text-[#8a9aaa] mt-1">Ficha médica completa</p>
+          <p className="text-gray-500">{paciente.telefono} {paciente.email && `| ${paciente.email}`}</p>
         </div>
-        <div className="flex gap-2">
-          <Button onClick={() => setShowNuevaConsulta(true)} className="bg-[#1E5C8E] hover:bg-[#3A8ABF]">
-            <Plus className="h-4 w-4 mr-2" /> Nueva Consulta
-          </Button>
-        </div>
-      </div>
-
-      {/* Info rápida */}
-      <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-        <Card className="border-l-4 border-l-[#1E5C8E]">
-          <CardContent className="p-4">
-            <div className="flex items-center gap-3">
-              <Phone className="h-5 w-5 text-[#1E5C8E]" />
-              <div>
-                <p className="text-xs text-[#8a9aaa]">Teléfono</p>
-                <p className="font-medium">{paciente.telefono || 'No registrado'}</p>
-              </div>
-            </div>
-          </CardContent>
-        </Card>
-        <Card className="border-l-4 border-l-[#3A8ABF]">
-          <CardContent className="p-4">
-            <div className="flex items-center gap-3">
-              <Mail className="h-5 w-5 text-[#3A8ABF]" />
-              <div>
-                <p className="text-xs text-[#8a9aaa]">Email</p>
-                <p className="font-medium">{paciente.email || 'No registrado'}</p>
-              </div>
-            </div>
-          </CardContent>
-        </Card>
-        <Card className="border-l-4 border-l-[#5BA8D1]">
-          <CardContent className="p-4">
-            <div className="flex items-center gap-3">
-              <MapPin className="h-5 w-5 text-[#5BA8D1]" />
-              <div>
-                <p className="text-xs text-[#8a9aaa]">Dirección</p>
-                <p className="font-medium">{paciente.direccion || 'No registrada'}</p>
-              </div>
-            </div>
-          </CardContent>
-        </Card>
       </div>
 
       {/* Tabs */}
-      <Tabs value={activeTab} onValueChange={setActiveTab}>
-        <TabsList className="bg-[#e8f0f8] p-1">
-          <TabsTrigger value="info" className="flex items-center gap-2">
-            <User className="h-4 w-4" /> Información
-          </TabsTrigger>
-          <TabsTrigger value="historial" className="flex items-center gap-2">
-            <Stethoscope className="h-4 w-4" /> Historial Médico
-          </TabsTrigger>
-          <TabsTrigger value="citas" className="flex items-center gap-2">
-            <Calendar className="h-4 w-4" /> Citas
-          </TabsTrigger>
-          <TabsTrigger value="recetas" className="flex items-center gap-2">
-            <FileText className="h-4 w-4" /> Recetas
-          </TabsTrigger>
-        </TabsList>
+      <div className="flex gap-2 mb-6 overflow-x-auto bg-white p-2 rounded-lg shadow-sm">
+        {[
+          { key: 'info', label: 'Informacion', icon: User },
+          { key: 'historial', label: 'Historial Medico', icon: History },
+          { key: 'recetas', label: 'Recetas Avanzadas', icon: FileText },
+          { key: 'citas', label: 'Citas', icon: Calendar },
+        ].map(tab => (
+          <button
+            key={tab.key}
+            onClick={() => setActiveTab(tab.key as any)}
+            className={`px-5 py-3 rounded-lg font-semibold flex items-center gap-2 whitespace-nowrap transition-all ${
+              activeTab === tab.key
+                ? 'bg-[#1E5C8E] text-white'
+                : 'bg-transparent text-gray-600 hover:bg-gray-100'
+            }`}
+          >
+            <tab.icon size={18} />
+            {tab.label}
+          </button>
+        ))}
+      </div>
 
-        {/* Tab: Información */}
-        <TabsContent value="info" className="space-y-4">
-          <Card>
-            <CardHeader>
-              <CardTitle className="text-lg">Datos Personales</CardTitle>
-            </CardHeader>
-            <CardContent className="grid grid-cols-1 md:grid-cols-2 gap-4">
-              <div>
-                <Label className="text-xs text-[#8a9aaa]">Nombre Completo</Label>
-                <p className="font-medium">{paciente.nombre} {paciente.apellido}</p>
+      {/* === TAB: INFORMACION === */}
+      {activeTab === 'info' && (
+        <div className="bg-white rounded-xl shadow-sm p-6">
+          <h2 className="text-xl font-semibold text-[#1a2a3a] mb-6">Datos del Paciente</h2>
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+            <div className="bg-gray-50 p-4 rounded-lg">
+              <label className="text-sm text-gray-500">Nombre completo</label>
+              <p className="text-lg font-medium text-[#1a2a3a]">{paciente.nombre} {paciente.apellido}</p>
+            </div>
+            <div className="bg-gray-50 p-4 rounded-lg">
+              <label className="text-sm text-gray-500">Telefono</label>
+              <p className="text-lg font-medium text-[#1a2a3a]">{paciente.telefono}</p>
+            </div>
+            {paciente.email && (
+              <div className="bg-gray-50 p-4 rounded-lg">
+                <label className="text-sm text-gray-500">Email</label>
+                <p className="text-lg font-medium text-[#1a2a3a]">{paciente.email}</p>
               </div>
-              <div>
-                <Label className="text-xs text-[#8a9aaa]">Fecha de Nacimiento</Label>
-                <p className="font-medium">{paciente.fecha_nacimiento || 'No registrada'}</p>
+            )}
+            {paciente.fecha_nacimiento && (
+              <div className="bg-gray-50 p-4 rounded-lg">
+                <label className="text-sm text-gray-500">Fecha de nacimiento</label>
+                <p className="text-lg font-medium text-[#1a2a3a]">{paciente.fecha_nacimiento}</p>
               </div>
-              <div>
-                <Label className="text-xs text-[#8a9aaa]">Género</Label>
-                <p className="font-medium">{paciente.genero || 'No registrado'}</p>
-              </div>
-              <div>
-                <Label className="text-xs text-[#8a9aaa]">Tipo de Sangre</Label>
-                <p className="font-medium">{paciente.tipo_sangre || 'No registrado'}</p>
-              </div>
-              <div className="md:col-span-2">
-                <Label className="text-xs text-[#8a9aaa]">Alergias</Label>
-                <p className="font-medium">{paciente.alergias || 'Ninguna registrada'}</p>
-              </div>
-              <div className="md:col-span-2">
-                <Label className="text-xs text-[#8a9aaa]">Notas</Label>
-                <p className="font-medium">{paciente.notas || 'Sin notas'}</p>
-              </div>
-            </CardContent>
-          </Card>
-        </TabsContent>
-
-        {/* Tab: Historial Médico - NUEVO TIMELINE */}
-        <TabsContent value="historial" className="space-y-4">
-          <TimelineHistorial pacienteId={Number(id)} />
-        </TabsContent>
-
-        {/* Tab: Citas */}
-        <TabsContent value="citas" className="space-y-4">
-          {citasPaciente.length === 0 ? (
-            <Card className="bg-[#f8fafc]">
-              <CardContent className="p-8 text-center">
-                <Calendar className="h-12 w-12 mx-auto mb-4 text-[#8a9aaa]" />
-                <p className="text-[#8a9aaa]">No hay citas registradas</p>
-              </CardContent>
-            </Card>
-          ) : (
-            <div className="space-y-3">
-              {citasPaciente.map(cita => (
-                <Card key={cita.id} className="hover:shadow-md transition-shadow">
-                  <CardContent className="p-4">
-                    <div className="flex items-center justify-between">
-                      <div>
-                        <div className="flex items-center gap-2 mb-1">
-                          <Calendar className="h-4 w-4 text-[#1E5C8E]" />
-                          <span className="font-medium">{cita.fecha}</span>
-                          <span className="text-[#8a9aaa]">{cita.hora_inicio}</span>
-                        </div>
-                        <p className="text-sm text-[#8a9aaa]">{cita.motivo || 'Consulta general'}</p>
-                      </div>
-                      <Badge variant="outline" className={
-                        cita.estado === 'completada' ? 'bg-green-100 text-green-700' :
-                        cita.estado === 'cancelada' ? 'bg-red-100 text-red-700' :
-                        'bg-blue-100 text-blue-700'
-                      }>
-                        {cita.estado}
-                      </Badge>
-                    </div>
-                  </CardContent>
-                </Card>
-              ))}
-            </div>
-          )}
-        </TabsContent>
-
-        {/* Tab: Recetas */}
-        <TabsContent value="recetas" className="space-y-4">
-          {recetasPaciente.length === 0 ? (
-            <Card className="bg-[#f8fafc]">
-              <CardContent className="p-8 text-center">
-                <FileText className="h-12 w-12 mx-auto mb-4 text-[#8a9aaa]" />
-                <p className="text-[#8a9aaa]">No hay recetas registradas</p>
-              </CardContent>
-            </Card>
-          ) : (
-            <div className="space-y-3">
-              {recetasPaciente.map(receta => (
-                <Card key={receta.id} className="hover:shadow-md transition-shadow">
-                  <CardContent className="p-4">
-                    <div className="flex items-center justify-between">
-                      <div>
-                        <div className="flex items-center gap-2 mb-1">
-                          <FileText className="h-4 w-4 text-[#1E5C8E]" />
-                          <span className="font-medium">Receta #{receta.id}</span>
-                        </div>
-                        <p className="text-sm text-[#8a9aaa]">{receta.instrucciones_generales || 'Sin instrucciones'}</p>
-                      </div>
-                      <Badge variant="outline" className={
-                        receta.estado === 'activa' ? 'bg-green-100 text-green-700' :
-                        'bg-gray-100 text-gray-700'
-                      }>
-                        {receta.estado}
-                      </Badge>
-                    </div>
-                  </CardContent>
-                </Card>
-              ))}
-            </div>
-          )}
-        </TabsContent>
-      </Tabs>
-
-      {/* Dialog: Nueva Consulta */}
-      <Dialog open={showNuevaConsulta} onOpenChange={setShowNuevaConsulta}>
-        <DialogContent className="max-w-lg">
-          <DialogHeader>
-            <DialogTitle className="flex items-center gap-2">
-              <Stethoscope className="h-5 w-5 text-[#1E5C8E]" />
-              Nueva Consulta Médica
-            </DialogTitle>
-          </DialogHeader>
-          <div className="space-y-4">
-            <div className="space-y-2">
-              <Label>Fecha</Label>
-              <Input
-                type="date"
-                value={nuevaConsulta.fecha}
-                onChange={e => setNuevaConsulta(prev => ({ ...prev, fecha: e.target.value }))}
-              />
-            </div>
-            <div className="space-y-2">
-              <Label>Motivo de Consulta</Label>
-              <Input
-                value={nuevaConsulta.motivo_consulta}
-                onChange={e => setNuevaConsulta(prev => ({ ...prev, motivo_consulta: e.target.value }))}
-                placeholder="Ej: Dolor de cabeza, fiebre..."
-              />
-            </div>
-            <div className="space-y-2">
-              <Label>Diagnóstico</Label>
-              <Input
-                value={nuevaConsulta.diagnostico}
-                onChange={e => setNuevaConsulta(prev => ({ ...prev, diagnostico: e.target.value }))}
-                placeholder="Diagnóstico médico"
-              />
-            </div>
-            <div className="space-y-2">
-              <Label>Tratamiento</Label>
-              <Textarea
-                value={nuevaConsulta.tratamiento}
-                onChange={e => setNuevaConsulta(prev => ({ ...prev, tratamiento: e.target.value }))}
-                placeholder="Medicamentos, terapias, recomendaciones..."
-                rows={3}
-              />
-            </div>
-            <div className="space-y-2">
-              <Label>Exámenes Solicitados</Label>
-              <Input
-                value={nuevaConsulta.examenes_solicitados}
-                onChange={e => setNuevaConsulta(prev => ({ ...prev, examenes_solicitados: e.target.value }))}
-                placeholder="Ej: Sangre, orina, rayos X..."
-              />
-            </div>
-            <div className="space-y-2">
-              <Label>Notas Médicas</Label>
-              <Textarea
-                value={nuevaConsulta.notas_medicas}
-                onChange={e => setNuevaConsulta(prev => ({ ...prev, notas_medicas: e.target.value }))}
-                placeholder="Observaciones adicionales..."
-                rows={2}
-              />
-            </div>
-            <div className="flex justify-end gap-3">
-              <Button variant="outline" onClick={() => setShowNuevaConsulta(false)}>
-                Cancelar
-              </Button>
-              <Button onClick={handleGuardarConsulta} className="bg-[#1E5C8E] hover:bg-[#3A8ABF]">
-                Guardar Consulta
-              </Button>
+            )}
+            <div className="bg-gray-50 p-4 rounded-lg">
+              <label className="text-sm text-gray-500">Registrado desde</label>
+              <p className="text-lg font-medium text-[#1a2a3a]">{new Date(paciente.created_at).toLocaleDateString('es-ES')}</p>
             </div>
           </div>
-        </DialogContent>
-      </Dialog>
+        </div>
+      )}
+
+      {/* === TAB: HISTORIAL MEDICO === */}
+      {activeTab === 'historial' && (
+        <div className="bg-white rounded-xl shadow-sm overflow-hidden">
+          <div className="p-6 border-b border-gray-100">
+            <h2 className="text-xl font-semibold text-[#1a2a3a] flex items-center gap-2">
+              <History size={22} className="text-[#1E5C8E]" />
+              Historial Medico
+            </h2>
+          </div>
+          <div className="p-6">
+            {historial.length === 0 ? (
+              <div className="text-center text-gray-400 py-12">No hay eventos en el historial</div>
+            ) : (
+              <div className="space-y-4">
+                {historial.map(evento => (
+                  <div key={evento.id} className="flex gap-4 bg-gray-50 p-4 rounded-lg border-l-4 border-[#1E5C8E]">
+                    <div className="mt-1">{getIconoEvento(evento.tipo_evento)}</div>
+                    <div className="flex-1">
+                      <div className="flex items-center justify-between mb-1">
+                        <h3 className="font-semibold text-[#1a2a3a]">{evento.titulo}</h3>
+                        <span className="text-sm text-gray-400">{new Date(evento.fecha_evento).toLocaleDateString('es-ES')}</span>
+                      </div>
+                      <p className="text-gray-600 text-sm">{evento.descripcion}</p>
+                      {evento.metadata?.estado && (
+                        <div className="mt-2">
+                          <span className={`px-2 py-1 rounded text-xs font-medium ${
+                            evento.metadata.estado === 'atendida' ? 'bg-green-100 text-green-700' :
+                            evento.metadata.estado === 'cancelada' ? 'bg-red-100 text-red-700' :
+                            'bg-yellow-100 text-yellow-700'
+                          }`}>
+                            {evento.metadata.estado}
+                          </span>
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* === TAB: RECETAS AVANZADAS === */}
+      {activeTab === 'recetas' && (
+        <div>
+          <div className="flex justify-between items-center mb-6">
+            <h2 className="text-xl font-semibold text-[#1a2a3a] flex items-center gap-2">
+              <FileText size={22} className="text-[#1E5C8E]" />
+              Recetas Avanzadas
+            </h2>
+            <button
+              onClick={generarRecetaAvanzada}
+              disabled={generandoReceta}
+              className="px-4 py-2 bg-[#1E5C8E] hover:bg-[#3A8ABF] text-white rounded-lg font-semibold flex items-center gap-2 transition-colors disabled:opacity-50"
+            >
+              <QrCode size={18} />
+              {generandoReceta ? 'Generando...' : 'Generar Receta con QR'}
+            </button>
+          </div>
+
+          {recetas.length === 0 ? (
+            <div className="bg-white rounded-xl shadow-sm p-12 text-center text-gray-400">
+              No hay recetas avanzadas generadas
+            </div>
+          ) : (
+            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+              {recetas.map(receta => (
+                <div key={receta.id} className="bg-white rounded-xl shadow-sm p-6">
+                  <div className="flex items-center justify-between mb-4">
+                    <QrCode size={28} className="text-[#1E5C8E]" />
+                    <span className={`px-2 py-1 rounded text-xs font-medium ${
+                      receta.estado_dispensacion === 'dispensada' ? 'bg-green-100 text-green-700' :
+                      receta.estado_dispensacion === 'pendiente' ? 'bg-yellow-100 text-yellow-700' :
+                      'bg-red-100 text-red-700'
+                    }`}>
+                      {receta.estado_dispensacion}
+                    </span>
+                  </div>
+                  <div className="bg-gray-50 p-3 rounded-lg mb-4">
+                    <p className="text-xs text-gray-500 mb-1">Codigo QR</p>
+                    <p className="font-mono text-[#1E5C8E] text-sm">{receta.codigo_qr}</p>
+                  </div>
+                  <p className="text-xs text-gray-500 mb-1">Firma Digital</p>
+                  <p className="text-sm text-gray-600 truncate">{receta.firma_digital}</p>
+                  <p className="text-xs text-gray-400 mt-4">{new Date(receta.created_at).toLocaleDateString('es-ES')}</p>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* === TAB: CITAS === */}
+      {activeTab === 'citas' && (
+        <div className="bg-white rounded-xl shadow-sm overflow-hidden">
+          <div className="p-6 border-b border-gray-100">
+            <h2 className="text-xl font-semibold text-[#1a2a3a] flex items-center gap-2">
+              <Calendar size={22} className="text-[#1E5C8E]" />
+              Citas Programadas
+            </h2>
+          </div>
+          <div className="overflow-x-auto">
+            <table className="w-full">
+              <thead>
+                <tr className="bg-gray-50 text-gray-500 text-sm">
+                  <th className="px-6 py-4 text-left">Fecha</th>
+                  <th className="px-6 py-4 text-left">Hora</th>
+                  <th className="px-6 py-4 text-center">Estado</th>
+                  <th className="px-6 py-4 text-left">Motivo</th>
+                  <th className="px-6 py-4 text-center">Accion</th>
+                </tr>
+              </thead>
+              <tbody>
+                {citas.length === 0 ? (
+                  <tr>
+                    <td colSpan={5} className="px-6 py-12 text-center text-gray-400">No hay citas programadas</td>
+                  </tr>
+                ) : (
+                  citas.map(cita => (
+                    <tr key={cita.id} className="border-t border-gray-100 hover:bg-gray-50 transition-colors">
+                      <td className="px-6 py-4">{cita.fecha}</td>
+                      <td className="px-6 py-4">{cita.hora}</td>
+                      <td className="px-6 py-4 text-center">
+                        <span className={`px-2 py-1 rounded text-xs font-medium ${
+                          cita.estado === 'atendida' ? 'bg-green-100 text-green-700' :
+                          cita.estado === 'cancelada' ? 'bg-red-100 text-red-700' :
+                          'bg-yellow-100 text-yellow-700'
+                        }`}>
+                          {cita.estado}
+                        </span>
+                      </td>
+                      <td className="px-6 py-4 text-gray-500">{cita.motivo || '-'}</td>
+                      <td className="px-6 py-4 text-center">
+                        <button
+                          onClick={() => enviarRecordatorio(cita.id)}
+                          className="p-2 bg-gray-100 hover:bg-gray-200 rounded-lg transition-colors"
+                          title="Enviar recordatorio"
+                        >
+                          <Bell size={16} className="text-[#1E5C8E]" />
+                        </button>
+                      </td>
+                    </tr>
+                  ))
+                )}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
+
+      {/* === MODAL: RECETA CON QR === */}
+      {showRecetaModal && recetaData && (
+        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
+          <div className="bg-white rounded-xl max-w-2xl w-full max-h-[90vh] overflow-y-auto shadow-xl">
+            <div className="p-6 border-b border-gray-100 flex items-center justify-between">
+              <h2 className="text-xl font-semibold text-[#1a2a3a] flex items-center gap-2">
+                <QrCode size={22} className="text-[#1E5C8E]" />
+                Receta Generada
+              </h2>
+              <button onClick={() => setShowRecetaModal(false)} className="p-2 hover:bg-gray-100 rounded-lg transition-colors">
+                <X size={20} className="text-gray-400" />
+              </button>
+            </div>
+
+            <div className="p-6 space-y-6">
+              <div className="bg-gray-50 p-4 rounded-lg text-center">
+                <p className="text-sm text-gray-500 mb-2">Codigo QR de Verificacion</p>
+                <div className="inline-block bg-white p-4 rounded-lg shadow-sm">
+                  <QrCode size={120} className="text-[#1E5C8E]" />
+                </div>
+                <p className="font-mono text-[#1E5C8E] mt-2">{recetaData.codigo_qr}</p>
+              </div>
+
+              <div className="bg-gray-50 p-4 rounded-lg">
+                <p className="text-sm text-gray-500 mb-1">Firma Digital</p>
+                <p className="text-sm text-gray-700">{recetaData.firma_digital}</p>
+              </div>
+
+              <div className="flex gap-3">
+                <button
+                  onClick={descargarHTML}
+                  className="flex-1 px-4 py-3 bg-[#1E5C8E] hover:bg-[#3A8ABF] text-white rounded-lg font-semibold flex items-center justify-center gap-2 transition-colors"
+                >
+                  <Download size={18} />
+                  Descargar Receta (HTML)
+                </button>
+                <button
+                  onClick={() => setShowRecetaModal(false)}
+                  className="px-4 py-3 bg-gray-100 hover:bg-gray-200 rounded-lg font-semibold transition-colors"
+                >
+                  Cerrar
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   )
 }
