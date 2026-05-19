@@ -1,424 +1,584 @@
-import { useState, useEffect } from 'react';
-import { useNavigate } from 'react-router-dom';
-import { Button } from '@/components/ui/button';
-import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
-import { Badge } from '@/components/ui/badge';
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
-import { useAdminAuth } from '@/hooks/admin/useAdminAuth';
-import { supabase } from '@/lib/supabase';
+// src/pages/admin-ezpay/ReportesPage.tsx
+// Dia 16: Pagina de Reportes Avanzados — Version robusta
+// EzPayConnect — Admin Dashboard
+
+import { useState, useEffect } from 'react'
+import { supabase } from '@/lib/supabase'
+import { useAdminAuth } from '@/hooks/admin/useAdminAuth'
 import { 
-  ArrowLeft, 
-  RefreshCw, 
   BarChart3, 
-  PieChart, 
-  TrendingUp, 
-  Globe,
-  Calendar,
-  DollarSign
-} from 'lucide-react';
+  Download, 
+  Calendar, 
+  Users, 
+  Stethoscope, 
+  FileText, 
+  ChevronDown,
+  Filter,
+  RefreshCw,
+  TrendingUp,
+  AlertCircle
+} from 'lucide-react'
 
-interface ReportePais {
-  pais: string;
-  codigo: string;
-  transacciones: number;
-  ingresos: number;
-  moneda: string;
+const EDGE_FUNCTION_URL = 'https://fqnsmvkxsuujahhmpzuk.supabase.co/functions/v1'
+
+interface ResumenMensual {
+  mes: string
+  total_citas: number
+  citas_atendidas: number
+  citas_canceladas: number
+  citas_pendientes: number
+  pacientes_nuevos: number
+  recetas_emitidas: number
 }
 
-interface ReportePlan {
-  plan: string;
-  tipo: string;
-  ventas: number;
-  ingresos: number;
+interface KPIs {
+  total_pacientes: number
+  total_medicos: number
+  citas_hoy: number
+  recetas_total: number
 }
 
-interface ReporteMensual {
-  mes: string;
-  anio: number;
-  total: number;
-  transacciones: number;
+interface DetalleItem {
+  id: string
+  [key: string]: any
 }
 
 export default function ReportesPage() {
-  const navigate = useNavigate();
-  const { isAdmin, loading: adminLoading } = useAdminAuth();
-  const [reportePaises, setReportePaises] = useState<ReportePais[]>([]);
-  const [reportePlanes, setReportePlanes] = useState<ReportePlan[]>([]);
-  const [reporteMensual, setReporteMensual] = useState<ReporteMensual[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [periodo, setPeriodo] = useState('ultimos_30');
+  const { perfil, isAdmin, loading: authLoading } = useAdminAuth()
+  const [activeTab, setActiveTab] = useState<'resumen' | 'detalle'>('resumen')
+  const [tipoReporte, setTipoReporte] = useState('citas')
+  const [fechaDesde, setFechaDesde] = useState('')
+  const [fechaHasta, setFechaHasta] = useState('')
+  const [estado, setEstado] = useState('')
+  const [loading, setLoading] = useState(false)
+  const [error, setError] = useState('')
 
-  const cargarDatos = async () => {
-    setLoading(true);
-
-    // Calcular fecha de inicio según periodo
-    let fechaInicio = new Date();
-    switch (periodo) {
-      case 'ultimos_7': fechaInicio.setDate(fechaInicio.getDate() - 7); break;
-      case 'ultimos_30': fechaInicio.setDate(fechaInicio.getDate() - 30); break;
-      case 'ultimos_90': fechaInicio.setDate(fechaInicio.getDate() - 90); break;
-      case 'este_anio': fechaInicio = new Date(new Date().getFullYear(), 0, 1); break;
-      default: fechaInicio.setDate(fechaInicio.getDate() - 30);
-    }
-
-    // Reporte por país
-    const { data: paisesData } = await supabase
-      .from('transacciones')
-      .select(`
-        pais_id,
-        monto,
-        estado,
-        configuracion_pais!inner(nombre, codigo, moneda)
-      `)
-      .eq('estado', 'completado')
-      .gte('fecha_pago', fechaInicio.toISOString());
-
-    const paisesMap: Record<string, ReportePais> = {};
-    (paisesData || []).forEach((t: any) => {
-      const key = t.configuracion_pais.nombre;
-      if (!paisesMap[key]) {
-        paisesMap[key] = {
-          pais: t.configuracion_pais.nombre,
-          codigo: t.configuracion_pais.codigo,
-          transacciones: 0,
-          ingresos: 0,
-          moneda: t.configuracion_pais.moneda,
-        };
-      }
-      paisesMap[key].transacciones += 1;
-      paisesMap[key].ingresos += t.monto;
-    });
-    setReportePaises(Object.values(paisesMap));
-
-    // Reporte por plan
-    const { data: planesData } = await supabase
-      .from('transacciones')
-      .select(`
-        plan_id,
-        monto,
-        estado,
-        planes_base!inner(nombre, tipo)
-      `)
-      .eq('estado', 'completado')
-      .gte('fecha_pago', fechaInicio.toISOString());
-
-    const planesMap: Record<string, ReportePlan> = {};
-    (planesData || []).forEach((t: any) => {
-      const key = t.planes_base.nombre;
-      if (!planesMap[key]) {
-        planesMap[key] = {
-          plan: t.planes_base.nombre,
-          tipo: t.planes_base.tipo,
-          ventas: 0,
-          ingresos: 0,
-        };
-      }
-      planesMap[key].ventas += 1;
-      planesMap[key].ingresos += t.monto;
-    });
-    setReportePlanes(Object.values(planesMap));
-
-    // Reporte mensual (últimos 6 meses)
-    const { data: mensualData } = await supabase
-      .from('transacciones')
-      .select('monto, fecha_pago, estado')
-      .eq('estado', 'completado')
-      .gte('fecha_pago', new Date(new Date().getFullYear(), new Date().getMonth() - 5, 1).toISOString());
-
-    const mensualMap: Record<string, ReporteMensual> = {};
-    (mensualData || []).forEach((t: any) => {
-      const fecha = new Date(t.fecha_pago);
-      const key = `${fecha.getFullYear()}-${String(fecha.getMonth() + 1).padStart(2, '0')}`;
-      const mesNombre = fecha.toLocaleDateString('es-ES', { month: 'short', year: 'numeric' });
-
-      if (!mensualMap[key]) {
-        mensualMap[key] = {
-          mes: mesNombre,
-          anio: fecha.getFullYear(),
-          total: 0,
-          transacciones: 0,
-        };
-      }
-      mensualMap[key].total += t.monto;
-      mensualMap[key].transacciones += 1;
-    });
-    setReporteMensual(Object.values(mensualMap).sort((a, b) => a.anio - b.anio || a.mes.localeCompare(b.mes)));
-
-    setLoading(false);
-  };
+  const [resumenData, setResumenData] = useState<ResumenMensual[]>([])
+  const [kpis, setKpis] = useState<KPIs | null>(null)
+  const [detalleData, setDetalleData] = useState<DetalleItem[]>([])
+  const [pagination, setPagination] = useState({ total: 0, limit: 50, offset: 0, has_more: false })
 
   useEffect(() => {
-    if (!adminLoading && !isAdmin) {
-      navigate('/dashboard');
-      return;
+    if (activeTab === 'resumen' && !authLoading) {
+      cargarResumen()
     }
-    cargarDatos();
-  }, [adminLoading, isAdmin, navigate, periodo]);
+  }, [activeTab, authLoading])
 
-  const getTipoColor = (tipo: string) => {
-    switch (tipo) {
-      case 'medico': return 'bg-blue-100 text-blue-700';
-      case 'clinica': return 'bg-indigo-100 text-indigo-700';
-      case 'lab': return 'bg-green-100 text-green-700';
-      case 'visitador': return 'bg-orange-100 text-orange-700';
-      default: return 'bg-gray-100 text-gray-700';
+  const cargarResumen = async () => {
+    setLoading(true)
+    setError('')
+    try {
+      const { data: sessionData } = await supabase.auth.getSession()
+      const token = sessionData.session?.access_token
+
+      if (!token) {
+        setError('No hay sesion activa. Por favor inicia sesion nuevamente.')
+        setLoading(false)
+        return
+      }
+
+      const response = await fetch(`${EDGE_FUNCTION_URL}/reportes-resumen?mes=current`, {
+        headers: {
+          'Authorization': `Bearer ${token}`,
+          'Content-Type': 'application/json'
+        }
+      })
+
+      if (!response.ok) {
+        const errorText = await response.text()
+        throw new Error(`Error ${response.status}: ${errorText}`)
+      }
+
+      const result = await response.json()
+      if (result.success) {
+        setResumenData(result.data.resumen_mensual || [])
+        setKpis(result.data.kpis)
+      } else {
+        setError(result.error || 'Error al cargar resumen')
+      }
+    } catch (err: any) {
+      console.error('Error cargando resumen:', err)
+      setError(err.message)
+    } finally {
+      setLoading(false)
     }
-  };
+  }
 
-  const getBandera = (codigo: string) => {
-    const banderas: Record<string, string> = { GT: '🇬🇹', SV: '🇸🇻', HN: '🇭🇳', CR: '🇨🇷', PA: '🇵🇦', NI: '🇳🇮', MX: '🇲🇽' };
-    return banderas[codigo] || '🌎';
-  };
+  const cargarDetalle = async (offset = 0) => {
+    setLoading(true)
+    setError('')
+    try {
+      const { data: sessionData } = await supabase.auth.getSession()
+      const token = sessionData.session?.access_token
 
-  if (adminLoading) return <div className="flex justify-center p-8">Verificando permisos...</div>;
-  if (!isAdmin) return null;
+      if (!token) {
+        setError('No hay sesion activa.')
+        setLoading(false)
+        return
+      }
+
+      let url = `${EDGE_FUNCTION_URL}/reportes-detalle?tipo=${tipoReporte}&limit=50&offset=${offset}`
+      if (fechaDesde) url += `&fecha_desde=${fechaDesde}`
+      if (fechaHasta) url += `&fecha_hasta=${fechaHasta}`
+      if (estado) url += `&estado=${estado}`
+
+      const response = await fetch(url, {
+        headers: {
+          'Authorization': `Bearer ${token}`,
+          'Content-Type': 'application/json'
+        }
+      })
+
+      if (!response.ok) {
+        const errorText = await response.text()
+        throw new Error(`Error ${response.status}: ${errorText}`)
+      }
+
+      const result = await response.json()
+      if (result.success) {
+        setDetalleData(result.data || [])
+        setPagination(result.pagination)
+      } else {
+        setError(result.error || 'Error al cargar detalle')
+      }
+    } catch (err: any) {
+      console.error('Error cargando detalle:', err)
+      setError(err.message)
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  const exportarCSV = async () => {
+    setLoading(true)
+    try {
+      const { data: sessionData } = await supabase.auth.getSession()
+      const token = sessionData.session?.access_token
+
+      if (!token) {
+        alert('❌ No hay sesion activa')
+        setLoading(false)
+        return
+      }
+
+      const response = await fetch(`${EDGE_FUNCTION_URL}/exportar-csv`, {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${token}`,
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({
+          tipo: activeTab === 'resumen' ? 'resumen' : tipoReporte,
+          nombre_archivo: `ezpayconnect_${activeTab === 'resumen' ? 'resumen' : tipoReporte}_${new Date().toISOString().split('T')[0]}.csv`
+        })
+      })
+
+      if (!response.ok) {
+        const errorData = await response.json().catch(() => ({ error: 'Error desconocido' }))
+        throw new Error(errorData.error || 'Error al exportar')
+      }
+
+      const blob = await response.blob()
+      const url = window.URL.createObjectURL(blob)
+      const a = document.createElement('a')
+      a.href = url
+      a.download = `ezpayconnect_${activeTab === 'resumen' ? 'resumen' : tipoReporte}_${new Date().toISOString().split('T')[0]}.csv`
+      document.body.appendChild(a)
+      a.click()
+      window.URL.revokeObjectURL(url)
+      document.body.removeChild(a)
+
+      alert('✅ CSV descargado exitosamente')
+    } catch (err: any) {
+      alert('❌ Error al exportar: ' + err.message)
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  const formatearMes = (mes: string) => {
+    try {
+      const fecha = new Date(mes)
+      return fecha.toLocaleDateString('es-ES', { month: 'long', year: 'numeric' })
+    } catch {
+      return mes
+    }
+  }
+
+  // Mostrar loading mientras auth carga
+  if (authLoading) {
+    return (
+      <div className="min-h-screen bg-[#0a0e1a] flex items-center justify-center">
+        <div className="text-white text-lg">Verificando permisos...</div>
+      </div>
+    )
+  }
+
+  // Si no es admin, mostrar mensaje
+  if (!isAdmin) {
+    return (
+      <div className="min-h-screen bg-[#0a0e1a] flex items-center justify-center">
+        <div className="bg-red-900/30 border border-red-500/50 rounded-lg p-8 text-center">
+          <AlertCircle className="text-red-400 mx-auto mb-4" size={48} />
+          <h2 className="text-xl font-bold text-red-300 mb-2">Acceso denegado</h2>
+          <p className="text-gray-400">No tienes permisos de administrador para ver esta pagina.</p>
+        </div>
+      </div>
+    )
+  }
 
   return (
-    <div className="container mx-auto px-4 py-6 max-w-7xl">
-      <div className="flex items-center justify-between mb-6">
-        <div className="flex items-center gap-4">
-          <Button variant="ghost" size="icon" onClick={() => navigate('/admin-ezpay')}>
-            <ArrowLeft className="h-5 w-5" />
-          </Button>
-          <div>
-            <h1 className="text-2xl font-bold">Reportes</h1>
-            <p className="text-sm text-muted-foreground">Analytics y métricas de EZPayConnect</p>
-          </div>
-        </div>
-        <div className="flex gap-2">
-          <Select value={periodo} onValueChange={setPeriodo}>
-            <SelectTrigger className="w-40">
-              <SelectValue />
-            </SelectTrigger>
-            <SelectContent>
-              <SelectItem value="ultimos_7">Últimos 7 días</SelectItem>
-              <SelectItem value="ultimos_30">Últimos 30 días</SelectItem>
-              <SelectItem value="ultimos_90">Últimos 90 días</SelectItem>
-              <SelectItem value="este_anio">Este año</SelectItem>
-            </SelectContent>
-          </Select>
-          <Button variant="outline" onClick={cargarDatos}><RefreshCw className="h-4 w-4 mr-2" /> Recargar</Button>
-        </div>
+    <div className="min-h-screen bg-[#0a0e1a] text-white p-6">
+      {/* Header */}
+      <div className="mb-8">
+        <h1 className="text-3xl font-bold text-[#00f2ff] mb-2 flex items-center gap-3">
+          <BarChart3 size={32} />
+          Reportes Avanzados
+        </h1>
+        <p className="text-gray-400">Analisis y exportacion de datos del sistema</p>
       </div>
 
-      {/* Stats rápidas */}
-      <div className="grid grid-cols-1 md:grid-cols-4 gap-4 mb-6">
-        <Card>
-          <CardContent className="pt-4">
-            <div className="flex items-center gap-2 mb-2">
-              <DollarSign className="h-5 w-5 text-green-600" />
-              <p className="text-sm text-muted-foreground">Ingresos Totales</p>
-            </div>
-            <p className="text-2xl font-bold">
-              ${reportePaises.reduce((sum, p) => sum + p.ingresos, 0).toFixed(2)}
-            </p>
-          </CardContent>
-        </Card>
-        <Card>
-          <CardContent className="pt-4">
-            <div className="flex items-center gap-2 mb-2">
-              <BarChart3 className="h-5 w-5 text-blue-600" />
-              <p className="text-sm text-muted-foreground">Total Ventas</p>
-            </div>
-            <p className="text-2xl font-bold">
-              {reportePaises.reduce((sum, p) => sum + p.transacciones, 0)}
-            </p>
-          </CardContent>
-        </Card>
-        <Card>
-          <CardContent className="pt-4">
-            <div className="flex items-center gap-2 mb-2">
-              <Globe className="h-5 w-5 text-purple-600" />
-              <p className="text-sm text-muted-foreground">Países Activos</p>
-            </div>
-            <p className="text-2xl font-bold">{reportePaises.length}</p>
-          </CardContent>
-        </Card>
-        <Card>
-          <CardContent className="pt-4">
-            <div className="flex items-center gap-2 mb-2">
-              <PieChart className="h-5 w-5 text-orange-600" />
-              <p className="text-sm text-muted-foreground">Planes Vendidos</p>
-            </div>
-            <p className="text-2xl font-bold">{reportePlanes.length}</p>
-          </CardContent>
-        </Card>
+      {/* Tabs */}
+      <div className="flex gap-4 mb-6">
+        <button
+          onClick={() => setActiveTab('resumen')}
+          className={`px-6 py-3 rounded-lg font-semibold flex items-center gap-2 transition-all ${
+            activeTab === 'resumen'
+              ? 'bg-[#00f2ff] text-black'
+              : 'bg-[#1a1f2e] text-gray-300 hover:bg-[#252b3d]'
+          }`}
+        >
+          <TrendingUp size={20} />
+          Resumen Mensual
+        </button>
+        <button
+          onClick={() => setActiveTab('detalle')}
+          className={`px-6 py-3 rounded-lg font-semibold flex items-center gap-2 transition-all ${
+            activeTab === 'detalle'
+              ? 'bg-[#00f2ff] text-black'
+              : 'bg-[#1a1f2e] text-gray-300 hover:bg-[#252b3d]'
+          }`}
+        >
+          <Filter size={20} />
+          Detalle Filtrable
+        </button>
       </div>
 
-      {/* Gráfico de barras — Ingresos por país */}
-      <Card className="mb-6">
-        <CardHeader>
-          <CardTitle className="text-lg flex items-center gap-2">
-            <Globe className="h-5 w-5" />
-            Ingresos por País
-          </CardTitle>
-        </CardHeader>
-        <CardContent>
-          {reportePaises.length === 0 ? (
-            <div className="text-center py-8 text-muted-foreground">No hay datos para el periodo seleccionado</div>
-          ) : (
-            <div className="space-y-4">
-              {reportePaises.map((pais) => {
-                const maxIngresos = Math.max(...reportePaises.map(p => p.ingresos));
-                const porcentaje = (pais.ingresos / maxIngresos) * 100;
-                return (
-                  <div key={pais.pais} className="space-y-1">
-                    <div className="flex justify-between items-center">
-                      <div className="flex items-center gap-2">
-                        <span className="text-lg">{getBandera(pais.codigo)}</span>
-                        <span className="font-medium">{pais.pais}</span>
-                        <Badge variant="outline" className="text-xs">{pais.moneda}</Badge>
-                      </div>
-                      <div className="text-right">
-                        <span className="font-bold">{pais.ingresos.toFixed(2)}</span>
-                        <span className="text-sm text-muted-foreground ml-1">({pais.transacciones} ventas)</span>
-                      </div>
-                    </div>
-                    <div className="w-full bg-gray-100 rounded-full h-3">
-                      <div 
-                        className="bg-[#1E5C8E] h-3 rounded-full transition-all duration-500"
-                        style={{ width: `${porcentaje}%` }}
-                      />
-                    </div>
-                  </div>
-                );
-              })}
-            </div>
-          )}
-        </CardContent>
-      </Card>
+      {/* Error */}
+      {error && (
+        <div className="bg-red-900/30 border border-red-500/50 rounded-lg p-4 mb-6 flex items-center gap-3">
+          <AlertCircle className="text-red-400" size={20} />
+          <span className="text-red-300">{error}</span>
+          <button 
+            onClick={() => setError('')}
+            className="ml-auto text-sm text-red-400 hover:text-red-300 underline"
+          >
+            Cerrar
+          </button>
+        </div>
+      )}
 
-      {/* Gráfico de barras — Ventas por plan */}
-      <Card className="mb-6">
-        <CardHeader>
-          <CardTitle className="text-lg flex items-center gap-2">
-            <PieChart className="h-5 w-5" />
-            Ventas por Plan
-          </CardTitle>
-        </CardHeader>
-        <CardContent>
-          {reportePlanes.length === 0 ? (
-            <div className="text-center py-8 text-muted-foreground">No hay datos para el periodo seleccionado</div>
-          ) : (
-            <div className="space-y-4">
-              {reportePlanes.map((plan) => {
-                const maxVentas = Math.max(...reportePlanes.map(p => p.ventas));
-                const porcentaje = (plan.ventas / maxVentas) * 100;
-                return (
-                  <div key={plan.plan} className="space-y-1">
-                    <div className="flex justify-between items-center">
-                      <div className="flex items-center gap-2">
-                        <Badge className={getTipoColor(plan.tipo)}>{plan.tipo}</Badge>
-                        <span className="font-medium">{plan.plan}</span>
-                      </div>
-                      <div className="text-right">
-                        <span className="font-bold">{plan.ventas} ventas</span>
-                        <span className="text-sm text-muted-foreground ml-1">(${plan.ingresos.toFixed(2)})</span>
-                      </div>
-                    </div>
-                    <div className="w-full bg-gray-100 rounded-full h-3">
-                      <div 
-                        className="bg-green-500 h-3 rounded-full transition-all duration-500"
-                        style={{ width: `${porcentaje}%` }}
-                      />
-                    </div>
-                  </div>
-                );
-              })}
+      {/* === RESUMEN MENSUAL === */}
+      {activeTab === 'resumen' && (
+        <>
+          {/* KPIs Cards */}
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4 mb-8">
+            <div className="bg-[#1a1f2e] border border-[#00f2ff]/20 rounded-xl p-6">
+              <div className="flex items-center justify-between mb-4">
+                <Users className="text-[#00f2ff]" size={28} />
+                <span className="text-xs text-gray-400 bg-[#0a0e1a] px-2 py-1 rounded">Total</span>
+              </div>
+              <div className="text-3xl font-bold text-white">{kpis?.total_pacientes ?? '—'}</div>
+              <div className="text-sm text-gray-400 mt-1">Pacientes registrados</div>
             </div>
-          )}
-        </CardContent>
-      </Card>
 
-      {/* Gráfico de línea — Ingresos mensuales */}
-      <Card className="mb-6">
-        <CardHeader>
-          <CardTitle className="text-lg flex items-center gap-2">
-            <TrendingUp className="h-5 w-5" />
-            Tendencia Mensual
-          </CardTitle>
-        </CardHeader>
-        <CardContent>
-          {reporteMensual.length === 0 ? (
-            <div className="text-center py-8 text-muted-foreground">No hay datos mensuales</div>
-          ) : (
-            <div className="space-y-4">
-              {reporteMensual.map((mes) => {
-                const maxTotal = Math.max(...reporteMensual.map(m => m.total));
-                const porcentaje = (mes.total / maxTotal) * 100;
-                return (
-                  <div key={mes.mes} className="space-y-1">
-                    <div className="flex justify-between items-center">
-                      <span className="font-medium">{mes.mes}</span>
-                      <div className="text-right">
-                        <span className="font-bold">${mes.total.toFixed(2)}</span>
-                        <span className="text-sm text-muted-foreground ml-1">({mes.transacciones} trans.)</span>
-                      </div>
-                    </div>
-                    <div className="w-full bg-gray-100 rounded-full h-3">
-                      <div 
-                        className="bg-amber-500 h-3 rounded-full transition-all duration-500"
-                        style={{ width: `${porcentaje}%` }}
-                      />
-                    </div>
-                  </div>
-                );
-              })}
+            <div className="bg-[#1a1f2e] border border-[#00f2ff]/20 rounded-xl p-6">
+              <div className="flex items-center justify-between mb-4">
+                <Stethoscope className="text-[#00f2ff]" size={28} />
+                <span className="text-xs text-gray-400 bg-[#0a0e1a] px-2 py-1 rounded">Total</span>
+              </div>
+              <div className="text-3xl font-bold text-white">{kpis?.total_medicos ?? '—'}</div>
+              <div className="text-sm text-gray-400 mt-1">Medicos activos</div>
             </div>
-          )}
-        </CardContent>
-      </Card>
 
-      {/* Tabla resumen */}
-      <Card>
-        <CardHeader>
-          <CardTitle className="text-lg flex items-center gap-2">
-            <Calendar className="h-5 w-5" />
-            Resumen Detallado por País
-          </CardTitle>
-        </CardHeader>
-        <CardContent>
-          <div className="overflow-x-auto">
-            <table className="w-full text-sm">
-              <thead>
-                <tr className="border-b">
-                  <th className="text-left py-3 px-4">País</th>
-                  <th className="text-center py-3 px-4">Transacciones</th>
-                  <th className="text-right py-3 px-4">Ingresos</th>
-                  <th className="text-right py-3 px-4">Promedio</th>
-                </tr>
-              </thead>
-              <tbody>
-                {reportePaises.map((pais) => (
-                  <tr key={pais.pais} className="border-b hover:bg-gray-50">
-                    <td className="py-3 px-4">
-                      <div className="flex items-center gap-2">
-                        <span className="text-lg">{getBandera(pais.codigo)}</span>
-                        <span className="font-medium">{pais.pais}</span>
-                      </div>
-                    </td>
-                    <td className="py-3 px-4 text-center">{pais.transacciones}</td>
-                    <td className="py-3 px-4 text-right font-semibold">
-                      {pais.moneda === 'GTQ' ? 'Q' : pais.moneda === 'HNL' ? 'L' : pais.moneda === 'CRC' ? '₡' : '$'}
-                      {pais.ingresos.toFixed(2)}
-                    </td>
-                    <td className="py-3 px-4 text-right text-muted-foreground">
-                      {pais.transacciones > 0 ? (pais.ingresos / pais.transacciones).toFixed(2) : '0.00'}
-                    </td>
-                  </tr>
-                ))}
-                {reportePaises.length === 0 && (
-                  <tr>
-                    <td colSpan={4} className="text-center py-8 text-muted-foreground">
-                      No hay datos para el periodo seleccionado
-                    </td>
-                  </tr>
-                )}
-              </tbody>
-            </table>
+            <div className="bg-[#1a1f2e] border border-[#00f2ff]/20 rounded-xl p-6">
+              <div className="flex items-center justify-between mb-4">
+                <Calendar className="text-[#00f2ff]" size={28} />
+                <span className="text-xs text-gray-400 bg-[#0a0e1a] px-2 py-1 rounded">Hoy</span>
+              </div>
+              <div className="text-3xl font-bold text-white">{kpis?.citas_hoy ?? '—'}</div>
+              <div className="text-sm text-gray-400 mt-1">Citas programadas</div>
+            </div>
+
+            <div className="bg-[#1a1f2e] border border-[#00f2ff]/20 rounded-xl p-6">
+              <div className="flex items-center justify-between mb-4">
+                <FileText className="text-[#00f2ff]" size={28} />
+                <span className="text-xs text-gray-400 bg-[#0a0e1a] px-2 py-1 rounded">Total</span>
+              </div>
+              <div className="text-3xl font-bold text-white">{kpis?.recetas_total ?? '—'}</div>
+              <div className="text-sm text-gray-400 mt-1">Recetas emitidas</div>
+            </div>
           </div>
-        </CardContent>
-      </Card>
+
+          {/* Tabla Resumen */}
+          <div className="bg-[#1a1f2e] border border-[#00f2ff]/20 rounded-xl overflow-hidden">
+            <div className="p-6 border-b border-[#00f2ff]/10 flex items-center justify-between">
+              <h2 className="text-xl font-semibold text-[#00f2ff] flex items-center gap-2">
+                <BarChart3 size={22} />
+                Historial Mensual
+              </h2>
+              <div className="flex gap-2">
+                <button
+                  onClick={cargarResumen}
+                  disabled={loading}
+                  className="px-4 py-2 bg-[#252b3d] hover:bg-[#30384d] rounded-lg text-sm flex items-center gap-2 transition-colors disabled:opacity-50"
+                >
+                  <RefreshCw size={16} className={loading ? 'animate-spin' : ''} />
+                  Actualizar
+                </button>
+                <button
+                  onClick={exportarCSV}
+                  disabled={loading}
+                  className="px-4 py-2 bg-[#00f2ff] hover:bg-[#00d9e6] text-black rounded-lg text-sm font-semibold flex items-center gap-2 transition-colors disabled:opacity-50"
+                >
+                  <Download size={16} />
+                  Exportar CSV
+                </button>
+              </div>
+            </div>
+
+            <div className="overflow-x-auto">
+              <table className="w-full">
+                <thead>
+                  <tr className="bg-[#0f1320] text-gray-400 text-sm">
+                    <th className="px-6 py-4 text-left font-medium">Mes</th>
+                    <th className="px-6 py-4 text-center font-medium">Total Citas</th>
+                    <th className="px-6 py-4 text-center font-medium text-green-400">Atendidas</th>
+                    <th className="px-6 py-4 text-center font-medium text-red-400">Canceladas</th>
+                    <th className="px-6 py-4 text-center font-medium text-yellow-400">Pendientes</th>
+                    <th className="px-6 py-4 text-center font-medium">Pacientes Nuevos</th>
+                    <th className="px-6 py-4 text-center font-medium">Recetas</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {resumenData.length === 0 ? (
+                    <tr>
+                      <td colSpan={7} className="px-6 py-12 text-center text-gray-500">
+                        {loading ? 'Cargando datos...' : error ? 'Error al cargar' : 'No hay datos disponibles'}
+                      </td>
+                    </tr>
+                  ) : (
+                    resumenData.map((row, idx) => (
+                      <tr key={idx} className="border-t border-[#00f2ff]/5 hover:bg-[#0f1320]/50 transition-colors">
+                        <td className="px-6 py-4 font-medium text-white">{formatearMes(row.mes)}</td>
+                        <td className="px-6 py-4 text-center font-bold text-[#00f2ff]">{row.total_citas}</td>
+                        <td className="px-6 py-4 text-center text-green-400">{row.citas_atendidas}</td>
+                        <td className="px-6 py-4 text-center text-red-400">{row.citas_canceladas}</td>
+                        <td className="px-6 py-4 text-center text-yellow-400">{row.citas_pendientes}</td>
+                        <td className="px-6 py-4 text-center">{row.pacientes_nuevos}</td>
+                        <td className="px-6 py-4 text-center">{row.recetas_emitidas}</td>
+                      </tr>
+                    ))
+                  )}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </>
+      )}
+
+      {/* === DETALLE FILTRABLE === */}
+      {activeTab === 'detalle' && (
+        <>
+          {/* Filtros */}
+          <div className="bg-[#1a1f2e] border border-[#00f2ff]/20 rounded-xl p-6 mb-6">
+            <div className="flex items-center gap-2 mb-4 text-[#00f2ff]">
+              <Filter size={20} />
+              <h3 className="font-semibold">Filtros de busqueda</h3>
+            </div>
+
+            <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
+              <div>
+                <label className="block text-sm text-gray-400 mb-2">Tipo de reporte</label>
+                <div className="relative">
+                  <select
+                    value={tipoReporte}
+                    onChange={(e) => setTipoReporte(e.target.value)}
+                    className="w-full bg-[#0a0e1a] border border-[#00f2ff]/30 rounded-lg px-4 py-3 text-white appearance-none focus:outline-none focus:border-[#00f2ff]"
+                  >
+                    <option value="citas">Citas</option>
+                    <option value="pacientes">Pacientes</option>
+                    <option value="recetas">Recetas</option>
+                  </select>
+                  <ChevronDown className="absolute right-3 top-1/2 -translate-y-1/2 text-gray-400 pointer-events-none" size={18} />
+                </div>
+              </div>
+
+              <div>
+                <label className="block text-sm text-gray-400 mb-2">Fecha desde</label>
+                <input
+                  type="date"
+                  value={fechaDesde}
+                  onChange={(e) => setFechaDesde(e.target.value)}
+                  className="w-full bg-[#0a0e1a] border border-[#00f2ff]/30 rounded-lg px-4 py-3 text-white focus:outline-none focus:border-[#00f2ff]"
+                />
+              </div>
+
+              <div>
+                <label className="block text-sm text-gray-400 mb-2">Fecha hasta</label>
+                <input
+                  type="date"
+                  value={fechaHasta}
+                  onChange={(e) => setFechaHasta(e.target.value)}
+                  className="w-full bg-[#0a0e1a] border border-[#00f2ff]/30 rounded-lg px-4 py-3 text-white focus:outline-none focus:border-[#00f2ff]"
+                />
+              </div>
+
+              {tipoReporte === 'citas' && (
+                <div>
+                  <label className="block text-sm text-gray-400 mb-2">Estado</label>
+                  <div className="relative">
+                    <select
+                      value={estado}
+                      onChange={(e) => setEstado(e.target.value)}
+                      className="w-full bg-[#0a0e1a] border border-[#00f2ff]/30 rounded-lg px-4 py-3 text-white appearance-none focus:outline-none focus:border-[#00f2ff]"
+                    >
+                      <option value="">Todos</option>
+                      <option value="pendiente">Pendiente</option>
+                      <option value="atendida">Atendida</option>
+                      <option value="cancelada">Cancelada</option>
+                    </select>
+                    <ChevronDown className="absolute right-3 top-1/2 -translate-y-1/2 text-gray-400 pointer-events-none" size={18} />
+                  </div>
+                </div>
+              )}
+            </div>
+
+            <div className="flex gap-3 mt-6">
+              <button
+                onClick={() => cargarDetalle(0)}
+                disabled={loading}
+                className="px-6 py-3 bg-[#00f2ff] hover:bg-[#00d9e6] text-black rounded-lg font-semibold flex items-center gap-2 transition-colors disabled:opacity-50"
+              >
+                <Filter size={18} />
+                {loading ? 'Cargando...' : 'Aplicar filtros'}
+              </button>
+              <button
+                onClick={exportarCSV}
+                disabled={loading || detalleData.length === 0}
+                className="px-6 py-3 bg-[#252b3d] hover:bg-[#30384d] rounded-lg font-semibold flex items-center gap-2 transition-colors disabled:opacity-50"
+              >
+                <Download size={18} />
+                Exportar CSV
+              </button>
+            </div>
+          </div>
+
+          {/* Tabla Detalle */}
+          <div className="bg-[#1a1f2e] border border-[#00f2ff]/20 rounded-xl overflow-hidden">
+            <div className="p-4 border-b border-[#00f2ff]/10 text-sm text-gray-400 flex justify-between">
+              <span>Mostrando {detalleData.length} de {pagination.total} registros</span>
+              {pagination.has_more && (
+                <button
+                  onClick={() => cargarDetalle(pagination.offset + pagination.limit)}
+                  className="text-[#00f2ff] hover:underline"
+                >
+                  Cargar mas...
+                </button>
+              )}
+            </div>
+
+            <div className="overflow-x-auto">
+              <table className="w-full">
+                <thead>
+                  <tr className="bg-[#0f1320] text-gray-400 text-sm">
+                    {tipoReporte === 'citas' && (
+                      <>
+                        <th className="px-6 py-4 text-left">Fecha</th>
+                        <th className="px-6 py-4 text-left">Paciente</th>
+                        <th className="px-6 py-4 text-left">Medico</th>
+                        <th className="px-6 py-4 text-center">Estado</th>
+                        <th className="px-6 py-4 text-left">Motivo</th>
+                      </>
+                    )}
+                    {tipoReporte === 'pacientes' && (
+                      <>
+                        <th className="px-6 py-4 text-left">Nombre</th>
+                        <th className="px-6 py-4 text-left">Telefono</th>
+                        <th className="px-6 py-4 text-center">Total Citas</th>
+                        <th className="px-6 py-4 text-center">Ultima Cita</th>
+                        <th className="px-6 py-4 text-center">Recetas</th>
+                      </>
+                    )}
+                    {tipoReporte === 'recetas' && (
+                      <>
+                        <th className="px-6 py-4 text-left">Fecha</th>
+                        <th className="px-6 py-4 text-left">Paciente</th>
+                        <th className="px-6 py-4 text-left">Medico</th>
+                        <th className="px-6 py-4 text-left">Diagnostico</th>
+                        <th className="px-6 py-4 text-center">Estado</th>
+                      </>
+                    )}
+                  </tr>
+                </thead>
+                <tbody>
+                  {detalleData.length === 0 ? (
+                    <tr>
+                      <td colSpan={5} className="px-6 py-12 text-center text-gray-500">
+                        {loading ? 'Cargando...' : 'Aplica filtros para ver resultados'}
+                      </td>
+                    </tr>
+                  ) : (
+                    detalleData.map((row, idx) => (
+                      <tr key={idx} className="border-t border-[#00f2ff]/5 hover:bg-[#0f1320]/50 transition-colors">
+                        {tipoReporte === 'citas' && (
+                          <>
+                            <td className="px-6 py-4">{row.fecha} {row.hora}</td>
+                            <td className="px-6 py-4">{row.paciente?.nombre || 'N/A'}</td>
+                            <td className="px-6 py-4">{row.medico?.nombre || 'N/A'}</td>
+                            <td className="px-6 py-4 text-center">
+                              <span className={`px-2 py-1 rounded text-xs font-medium ${
+                                row.estado === 'atendida' ? 'bg-green-500/20 text-green-400' :
+                                row.estado === 'cancelada' ? 'bg-red-500/20 text-red-400' :
+                                'bg-yellow-500/20 text-yellow-400'
+                              }`}>
+                                {row.estado}
+                              </span>
+                            </td>
+                            <td className="px-6 py-4 text-gray-400">{row.motivo || '-'}</td>
+                          </>
+                        )}
+                        {tipoReporte === 'pacientes' && (
+                          <>
+                            <td className="px-6 py-4 font-medium">{row.paciente_nombre}</td>
+                            <td className="px-6 py-4">{row.telefono || 'N/A'}</td>
+                            <td className="px-6 py-4 text-center">{row.total_citas}</td>
+                            <td className="px-6 py-4 text-center">{row.ultima_cita || 'Nunca'}</td>
+                            <td className="px-6 py-4 text-center">{row.total_recetas}</td>
+                          </>
+                        )}
+                        {tipoReporte === 'recetas' && (
+                          <>
+                            <td className="px-6 py-4">{row.created_at?.split('T')[0]}</td>
+                            <td className="px-6 py-4">{row.paciente?.nombre || 'N/A'}</td>
+                            <td className="px-6 py-4">{row.medico?.nombre || 'N/A'}</td>
+                            <td className="px-6 py-4 text-gray-400">{row.diagnostico || '-'}</td>
+                            <td className="px-6 py-4 text-center">
+                              <span className="px-2 py-1 rounded text-xs font-medium bg-blue-500/20 text-blue-400">
+                                {row.estado || 'activa'}
+                              </span>
+                            </td>
+                          </>
+                        )}
+                      </tr>
+                    ))
+                  )}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </>
+      )}
     </div>
-  );
+  )
 }

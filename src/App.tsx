@@ -13,7 +13,7 @@ import RecetasPage from '@/pages/RecetasPage'
 import FarmaciasPage from '@/pages/FarmaciasPage'
 import ConfiguracionPage from '@/pages/ConfiguracionPage'
 import FacturasPage from '@/pages/FacturasPage'
-import ReportesPage from '@/pages/reportes/ReportesPage'
+import ReportesPage from '@/pages/admin-ezpay/ReportesPage'
 
 // === IMPORTS ADMIN EZPAY ===
 import { useEffect } from 'react'
@@ -50,9 +50,6 @@ import PlanesEmpresasAfinesConfigPage from '@/pages/planes/PlanesEmpresasAfinesC
 
 // === IMPORTS FINANZAS (DÍA 9) ===
 import FinanzasPage from '@/pages/admin-ezpay/FinanzasPage'
-
-// === IMPORTS REPORTES EZPAY (DÍA 10) ===
-import ReportesEzPayPageV2 from '@/pages/admin-ezpay/ReportesEzPayPageV2'
 
 // === IMPORTS ROLES (DÍA 11) ===
 import RolesPage from '@/pages/admin-ezpay/RolesPage'
@@ -175,7 +172,7 @@ function App() {
           <Route path="planes-empresas-afines" element={<Navigate to="/admin/planes/empresas-afines" replace />} />
           <Route path="excepciones" element={<Navigate to="/admin/planes/excepciones" replace />} />
           <Route path="finanzas" element={<FinanzasPage />} />
-          <Route path="reportes" element={<ReportesEzPayPageV2 />} />
+          <Route path="reportes" element={<ReportesPage />} />
           <Route path="roles" element={<RolesPage />} />
           <Route path="auditoria" element={<AuditoriaPage />} />
         </Route>
