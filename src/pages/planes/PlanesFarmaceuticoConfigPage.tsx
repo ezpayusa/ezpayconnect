@@ -11,16 +11,19 @@ import { Label } from '@/components/ui/label';
 import { usePlanes } from '@/hooks/usePlanes';
 import { useAdminAuth } from '@/hooks/admin/useAdminAuth';
 import { formatearPrecio, getBanderaPais } from '@/lib/planes-utils';
-import { ArrowLeft, Plus, Search, RefreshCw, Edit, Trash2, Pill } from 'lucide-react';
+import { ArrowLeft, Plus, Search, RefreshCw, Edit, Trash2, Pill, Save, X, AlertTriangle } from 'lucide-react';
 
 export default function PlanesFarmaceuticoConfigPage() {
   const navigate = useNavigate();
   const { isAdmin, loading: adminLoading } = useAdminAuth();
-  const { planesBase, planesConfig, paises, loading, crearPlanBase, crearPlanConfig, actualizarPlanConfig, eliminarPlanConfig, recargar } = usePlanes();
+  const { planesBase, planesConfig, paises, loading, crearPlanBase, crearPlanConfig, actualizarPlanBase, eliminarPlanBase, recargar } = usePlanes();
   const [search, setSearch] = useState('');
   const [dialogoCrear, setDialogoCrear] = useState(false);
+  const [dialogoEditar, setDialogoEditar] = useState<any>(null);
+  const [dialogoEliminar, setDialogoEliminar] = useState<string | null>(null);
   const [dialogoConfig, setDialogoConfig] = useState(false);
   const [planSeleccionado, setPlanSeleccionado] = useState<any>(null);
+
   const [nuevoPlan, setNuevoPlan] = useState({
     nombre: '',
     descripcion: '',
@@ -72,10 +75,29 @@ export default function PlanesFarmaceuticoConfigPage() {
       tipo: 'farmaceutico',
       activo: true,
     });
-    // Forzar recarga de datos para mostrar el nuevo plan
     recargar();
     setDialogoCrear(false);
     setNuevoPlan({ nombre: '', descripcion: '', precio_base: 0, moneda: 'USD', periodicidad: 'mensual' });
+  };
+
+  const handleEditarPlan = async () => {
+    if (!dialogoEditar) return;
+    await actualizarPlanBase(dialogoEditar.id, {
+      nombre: dialogoEditar.nombre,
+      descripcion: dialogoEditar.descripcion,
+      precio_base: dialogoEditar.precio_base,
+      periodicidad: dialogoEditar.periodicidad,
+      activo: dialogoEditar.activo,
+    });
+    recargar();
+    setDialogoEditar(null);
+  };
+
+  const handleEliminarPlan = async () => {
+    if (!dialogoEliminar) return;
+    await eliminarPlanBase(dialogoEliminar);
+    recargar();
+    setDialogoEliminar(null);
   };
 
   const handleCrearConfig = async () => {
@@ -83,7 +105,6 @@ export default function PlanesFarmaceuticoConfigPage() {
       ...nuevaConfig,
       moneda_local: paises.find(p => p.id === nuevaConfig.pais_id)?.moneda || 'USD',
     });
-    // Forzar recarga de datos para mostrar la nueva configuracion
     recargar();
     setDialogoConfig(false);
     setNuevaConfig({ plan_base_id: '', pais_id: '', precio_local: 0, precio_anual: 0, comision_aplicada: 0, descuento_porcentaje: 0 });
@@ -183,13 +204,13 @@ export default function PlanesFarmaceuticoConfigPage() {
                       </Badge>
                     </TableCell>
                     <TableCell className="text-right">
-                      <Button variant="ghost" size="icon" onClick={() => { setPlanSeleccionado(plan); setDialogoConfig(true); }}>
+                      <Button variant="ghost" size="icon" onClick={() => { setPlanSeleccionado(plan); setDialogoConfig(true); }} title="Agregar configuracion por pais">
                         <Plus className="h-4 w-4" />
                       </Button>
-                      <Button variant="ghost" size="icon">
+                      <Button variant="ghost" size="icon" onClick={() => setDialogoEditar(plan)} title="Editar plan">
                         <Edit className="h-4 w-4" />
                       </Button>
-                      <Button variant="ghost" size="icon" className="text-red-500" onClick={() => eliminarPlanConfig(plan.id)}>
+                      <Button variant="ghost" size="icon" className="text-red-500" onClick={() => setDialogoEliminar(plan.id)} title="Eliminar plan">
                         <Trash2 className="h-4 w-4" />
                       </Button>
                     </TableCell>
@@ -260,6 +281,7 @@ export default function PlanesFarmaceuticoConfigPage() {
         </CardContent>
       </Card>
 
+      {/* Modal Crear Plan */}
       <Dialog open={dialogoCrear} onOpenChange={setDialogoCrear}>
         <DialogContent className="max-w-md">
           <DialogHeader>
@@ -303,6 +325,78 @@ export default function PlanesFarmaceuticoConfigPage() {
         </DialogContent>
       </Dialog>
 
+      {/* Modal Editar Plan */}
+      <Dialog open={!!dialogoEditar} onOpenChange={() => setDialogoEditar(null)}>
+        <DialogContent className="max-w-md">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2">
+              <Edit className="h-5 w-5 text-[#0d9488]" />
+              Editar Plan Farmaceutico
+            </DialogTitle>
+          </DialogHeader>
+          {dialogoEditar && (
+            <div className="space-y-4">
+              <div>
+                <Label>Nombre</Label>
+                <Input value={dialogoEditar.nombre} onChange={(e) => setDialogoEditar({...dialogoEditar, nombre: e.target.value})} />
+              </div>
+              <div>
+                <Label>Descripcion</Label>
+                <Input value={dialogoEditar.descripcion || ''} onChange={(e) => setDialogoEditar({...dialogoEditar, descripcion: e.target.value})} />
+              </div>
+              <div className="grid grid-cols-2 gap-4">
+                <div>
+                  <Label>Precio Base (USD)</Label>
+                  <Input type="number" value={dialogoEditar.precio_base} onChange={(e) => setDialogoEditar({...dialogoEditar, precio_base: parseFloat(e.target.value)})} />
+                </div>
+                <div>
+                  <Label>Periodicidad</Label>
+                  <Select value={dialogoEditar.periodicidad} onValueChange={(v) => setDialogoEditar({...dialogoEditar, periodicidad: v})}>
+                    <SelectTrigger><SelectValue /></SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="mensual">Mensual</SelectItem>
+                      <SelectItem value="anual">Anual</SelectItem>
+                    </SelectContent>
+                  </Select>
+                </div>
+              </div>
+              <div className="flex items-center gap-2">
+                <input type="checkbox" checked={dialogoEditar.activo} onChange={(e) => setDialogoEditar({...dialogoEditar, activo: e.target.checked})} className="h-4 w-4" />
+                <Label>Plan activo</Label>
+              </div>
+              <div className="flex justify-end gap-2">
+                <Button variant="outline" onClick={() => setDialogoEditar(null)}>Cancelar</Button>
+                <Button onClick={handleEditarPlan} className="bg-[#0d9488] hover:bg-[#0d9488]/90">
+                  <Save className="h-4 w-4 mr-2" /> Guardar Cambios
+                </Button>
+              </div>
+            </div>
+          )}
+        </DialogContent>
+      </Dialog>
+
+      {/* Modal Eliminar Plan */}
+      <Dialog open={!!dialogoEliminar} onOpenChange={() => setDialogoEliminar(null)}>
+        <DialogContent className="max-w-sm">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2 text-red-600">
+              <AlertTriangle className="h-5 w-5" />
+              Eliminar Plan
+            </DialogTitle>
+          </DialogHeader>
+          <div className="text-center py-4">
+            <p className="text-muted-foreground mb-4">Esta accion eliminara el plan base y todas sus configuraciones por pais. No se puede deshacer.</p>
+            <div className="flex justify-center gap-2">
+              <Button variant="outline" onClick={() => setDialogoEliminar(null)}>Cancelar</Button>
+              <Button variant="destructive" onClick={handleEliminarPlan}>
+                <Trash2 className="h-4 w-4 mr-2" /> Eliminar
+              </Button>
+            </div>
+          </div>
+        </DialogContent>
+      </Dialog>
+
+      {/* Modal Configuracion por Pais */}
       <Dialog open={dialogoConfig} onOpenChange={setDialogoConfig}>
         <DialogContent className="max-w-md">
           <DialogHeader>

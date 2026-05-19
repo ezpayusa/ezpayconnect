@@ -1,3 +1,4 @@
+import { Users } from 'lucide-react';
 import { useNavigate, useLocation } from 'react-router-dom';
 import { useAdminAuth } from '@/hooks/admin/useAdminAuth';
 import { 
@@ -29,6 +30,7 @@ export function SidebarAdmin() {
   const { adminUser } = useAdminAuth();
 
   const menuItems = [
+    { path: '/admin-ezpay/usuarios', icon: Users, label: 'Usuarios' },
     { path: '/admin-ezpay', icon: LayoutDashboard, label: 'Dashboard' },
     { path: '/admin-ezpay/paises', icon: Globe, label: 'Países' },
     { path: '/admin-ezpay/planes-todos', icon: Layers, label: 'Todos los Planes' },
