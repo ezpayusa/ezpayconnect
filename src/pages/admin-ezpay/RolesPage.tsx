@@ -1,6 +1,7 @@
 import { useState, useEffect } from "react";
 import { useRoles, type NuevoEmpleado } from "@/hooks/useRoles";
 import { useAuth } from "@/hooks/useAuth";
+import { useAuditoria } from "@/hooks/useAuditoria";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -35,6 +36,7 @@ import { Plus, UserPlus, Shield, Users, ToggleLeft, ToggleRight } from "lucide-r
 
 export default function RolesPage() {
   const { user } = useAuth();
+  const { registrarLog } = useAuditoria();
   const {
     roles,
     empleados,
@@ -70,7 +72,20 @@ export default function RolesPage() {
     }
 
     try {
-      await crearEmpleado(nuevoEmpleado, user?.id);
+      const result = await crearEmpleado(nuevoEmpleado, user?.id);
+
+      // REGISTRAR EN AUDITORÍA
+      const rolNombre = roles.find(r => r.id === nuevoEmpleado.rol_id)?.nombre || "desconocido";
+      await registrarLog({
+        accion: "crear_empleado",
+        entidad: "empleado",
+        detalle: { 
+          email: nuevoEmpleado.email, 
+          rol: rolNombre, 
+          nombre: nuevoEmpleado.nombre_completo || nuevoEmpleado.nombre || "Sin nombre" 
+        },
+      });
+
       setIsOpen(false);
       setNuevoEmpleado({
         email: "",
@@ -87,7 +102,21 @@ export default function RolesPage() {
 
   const handleToggleActivo = async (id: string, activo: boolean) => {
     try {
+      const empleado = empleados.find(e => e.id === id);
       await toggleEmpleadoActivo(id, activo);
+
+      // REGISTRAR EN AUDITORÍA
+      await registrarLog({
+        accion: activo ? "activar" : "desactivar",
+        entidad: "empleado",
+        entidad_id: id,
+        detalle: { 
+          email: empleado?.email || "desconocido", 
+          estado_anterior: !activo, 
+          estado_nuevo: activo 
+        },
+      });
+
       alert(activo ? "✅ Empleado activado" : "✅ Empleado desactivado");
     } catch (error: any) {
       alert("❌ Error: " + error.message);
@@ -96,7 +125,24 @@ export default function RolesPage() {
 
   const handleActualizarRol = async (userId: string, nuevoRolId: string) => {
     try {
+      const empleado = empleados.find(e => e.id === userId);
+      const rolAnterior = empleado?.rol || "desconocido";
+      const rolNuevo = roles.find(r => r.id === nuevoRolId)?.nombre || "desconocido";
+
       await actualizarRolEmpleado(userId, nuevoRolId);
+
+      // REGISTRAR EN AUDITORÍA
+      await registrarLog({
+        accion: "cambiar_rol",
+        entidad: "empleado",
+        entidad_id: userId,
+        detalle: { 
+          email: empleado?.email || "desconocido", 
+          rol_anterior: rolAnterior, 
+          rol_nuevo: rolNuevo 
+        },
+      });
+
       alert("✅ Rol actualizado");
     } catch (error: any) {
       alert("❌ Error: " + error.message);

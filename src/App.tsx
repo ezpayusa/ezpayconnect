@@ -60,6 +60,9 @@ import RolesPage from '@/pages/admin-ezpay/RolesPage'
 // === IMPORTS USUARIOS (DÍA 12) ===
 import UsuariosAdminPage from '@/pages/admin-ezpay/UsuariosAdminPage'
 
+// === IMPORTS AUDITORÍA (DÍA 14) ===
+import AuditoriaPage from '@/pages/admin-ezpay/AuditoriaPage'
+
 function PrivateLayout({ children }: { children: React.ReactNode }) {
   const { user, loading } = useAuth()
 
@@ -174,6 +177,7 @@ function App() {
           <Route path="finanzas" element={<FinanzasPage />} />
           <Route path="reportes" element={<ReportesEzPayPageV2 />} />
           <Route path="roles" element={<RolesPage />} />
+          <Route path="auditoria" element={<AuditoriaPage />} />
         </Route>
       </Routes>
     </BrowserRouter>

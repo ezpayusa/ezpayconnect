@@ -20,7 +20,8 @@ import {
   FileText,
   Shield,
   ChevronLeft,
-  LogOut
+  LogOut,
+  Activity
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { supabase } from '@/lib/supabase';
@@ -49,6 +50,7 @@ export function SidebarAdmin() {
     { path: '/admin-ezpay/reportes', icon: BarChart3, label: 'Reportes EZPay' },
     { path: '/admin-ezpay/reportes-medico', icon: FileText, label: 'Reportes Médico' },
     { path: '/admin-ezpay/roles', icon: Shield, label: 'Roles' },
+    { path: '/admin-ezpay/auditoria', icon: Activity, label: 'Auditoría' },
   ];
 
   const isActive = (path: string) => {
