@@ -17,11 +17,42 @@ export function generarFeaturesPlan(config: PlanConfiguracion): PlanFeature[] {
 }
 
 export function formatearPrecio(precio: number, moneda: string): string {
-  const formato = new Intl.NumberFormat(
-    moneda === 'GTQ' ? 'es-GT' : moneda === 'USD' ? 'en-US' : 'es-SV',
-    { style: 'currency', currency: moneda, minimumFractionDigits: 2 }
-  );
-  return formato.format(precio);
+  // Mapeo de monedas comunes que pueden venir mal escritas
+  const monedaMap: Record<string, string> = {
+    'COLON': 'GTQ',
+    'COLONES': 'GTQ',
+    'QUETZAL': 'GTQ',
+    'QUETZALES': 'GTQ',
+    'DOLLAR': 'USD',
+    'DOLAR': 'USD',
+    'DOLARES': 'USD',
+    'DOLLARS': 'USD',
+    'LEMPIRA': 'HNL',
+    'LEMPIRAS': 'HNL',
+    'COLON_SV': 'SVC',
+    'CORDOBA': 'NIO',
+    'CORDOBAS': 'NIO',
+    'BALBOA': 'PAB',
+    'BALBOAS': 'PAB',
+  };
+
+  // Normalizar la moneda
+  const monedaNormalizada = monedaMap[moneda?.toUpperCase()] || moneda?.toUpperCase() || 'USD';
+
+  // Lista de monedas válidas para Intl.NumberFormat
+  const monedasValidas = ['GTQ', 'USD', 'HNL', 'SVC', 'NIO', 'PAB', 'EUR', 'MXN'];
+  const monedaFinal = monedasValidas.includes(monedaNormalizada) ? monedaNormalizada : 'USD';
+
+  try {
+    const formato = new Intl.NumberFormat(
+      monedaFinal === 'GTQ' ? 'es-GT' : monedaFinal === 'USD' ? 'en-US' : 'es-SV',
+      { style: 'currency', currency: monedaFinal, minimumFractionDigits: 2 }
+    );
+    return formato.format(precio);
+  } catch (error) {
+    // Fallback si Intl falla por cualquier razón
+    return `$${precio.toFixed(2)} ${moneda}`;
+  }
 }
 
 export function getColorPlan(tipo: string): string {
@@ -33,6 +64,10 @@ export function getColorPlan(tipo: string): string {
     clinica: '#f59e0b',
     lab: '#ef4444',
     visitador: '#10b981',
+    farmaceutico: '#0d9488',
+    farmacia: '#e11d48',
+    publicidad: '#d97706',
+    empresas_afines: '#4f46e5',
   };
   return colores[tipo] || '#64748b';
 }

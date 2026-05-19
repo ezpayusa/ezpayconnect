@@ -51,7 +51,7 @@ export default function PlanesPublicidadConfigPage() {
         <Card className="max-w-md">
           <CardContent className="pt-6 text-center">
             <h2 className="text-xl font-bold mb-2">Acceso restringido</h2>
-            <p className="text-sm text-muted-foreground mb-4">Necesitas rol de administrador para ver esta página.</p>
+            <p className="text-sm text-muted-foreground mb-4">Necesitas rol de administrador para ver esta pagina.</p>
             <Button onClick={() => navigate('/dashboard')}>Volver al dashboard</Button>
           </CardContent>
         </Card>
@@ -72,6 +72,8 @@ export default function PlanesPublicidadConfigPage() {
       tipo: 'publicidad',
       activo: true,
     });
+    // Forzar recarga de datos para mostrar el nuevo plan
+    recargar();
     setDialogoCrear(false);
     setNuevoPlan({ nombre: '', descripcion: '', precio_base: 0, moneda: 'USD', periodicidad: 'mensual' });
   };
@@ -81,6 +83,8 @@ export default function PlanesPublicidadConfigPage() {
       ...nuevaConfig,
       moneda_local: paises.find(p => p.id === nuevaConfig.pais_id)?.moneda || 'USD',
     });
+    // Forzar recarga de datos para mostrar la nueva configuracion
+    recargar();
     setDialogoConfig(false);
     setNuevaConfig({ plan_base_id: '', pais_id: '', precio_local: 0, precio_anual: 0, comision_aplicada: 0, descuento_porcentaje: 0 });
   };
@@ -101,7 +105,7 @@ export default function PlanesPublicidadConfigPage() {
             <ArrowLeft className="h-5 w-5" />
           </Button>
           <div>
-            <h1 className="text-2xl font-bold">Configuración Planes Publicidad</h1>
+            <h1 className="text-2xl font-bold">Configuracion Planes Publicidad</h1>
             <p className="text-sm text-muted-foreground">Gestiona planes para agencias de publicidad</p>
           </div>
         </div>
@@ -126,13 +130,13 @@ export default function PlanesPublicidadConfigPage() {
         </Card>
         <Card>
           <CardContent className="pt-4">
-            <p className="text-sm text-muted-foreground">Países</p>
+            <p className="text-sm text-muted-foreground">Paises</p>
             <p className="text-2xl font-bold">{paises.length}</p>
           </CardContent>
         </Card>
         <Card>
           <CardContent className="pt-4">
-            <p className="text-sm text-muted-foreground">Precio Base Máx</p>
+            <p className="text-sm text-muted-foreground">Precio Base Max</p>
             <p className="text-2xl font-bold">{planesPublicidad.length > 0 ? Math.max(...planesPublicidad.map(p => p.precio_base)) : 0} USD</p>
           </CardContent>
         </Card>
@@ -157,7 +161,7 @@ export default function PlanesPublicidadConfigPage() {
               <TableHeader>
                 <TableRow>
                   <TableHead>Nombre</TableHead>
-                  <TableHead>Descripción</TableHead>
+                  <TableHead>Descripcion</TableHead>
                   <TableHead>Precio Base</TableHead>
                   <TableHead>Moneda</TableHead>
                   <TableHead>Periodicidad</TableHead>
@@ -206,7 +210,7 @@ export default function PlanesPublicidadConfigPage() {
 
       <Card>
         <CardHeader>
-          <CardTitle className="text-lg">Configuraciones por País</CardTitle>
+          <CardTitle className="text-lg">Configuraciones por Pais</CardTitle>
         </CardHeader>
         <CardContent>
           <div className="overflow-x-auto">
@@ -214,10 +218,10 @@ export default function PlanesPublicidadConfigPage() {
               <TableHeader>
                 <TableRow>
                   <TableHead>Plan</TableHead>
-                  <TableHead>País</TableHead>
+                  <TableHead>Pais</TableHead>
                   <TableHead>Precio Local</TableHead>
                   <TableHead>Precio Anual</TableHead>
-                  <TableHead>Comisión</TableHead>
+                  <TableHead>Comision</TableHead>
                   <TableHead>Descuento</TableHead>
                   <TableHead>Estado</TableHead>
                 </TableRow>
@@ -270,8 +274,8 @@ export default function PlanesPublicidadConfigPage() {
               <Input id="nombre" value={nuevoPlan.nombre} onChange={(e) => setNuevoPlan({...nuevoPlan, nombre: e.target.value})} placeholder="Ej: Publicidad Premium" />
             </div>
             <div>
-              <Label htmlFor="descripcion">Descripción</Label>
-              <Input id="descripcion" value={nuevoPlan.descripcion} onChange={(e) => setNuevoPlan({...nuevoPlan, descripcion: e.target.value})} placeholder="Descripción del plan..." />
+              <Label htmlFor="descripcion">Descripcion</Label>
+              <Input id="descripcion" value={nuevoPlan.descripcion} onChange={(e) => setNuevoPlan({...nuevoPlan, descripcion: e.target.value})} placeholder="Descripcion del plan..." />
             </div>
             <div className="grid grid-cols-2 gap-4">
               <div>
@@ -302,7 +306,7 @@ export default function PlanesPublicidadConfigPage() {
       <Dialog open={dialogoConfig} onOpenChange={setDialogoConfig}>
         <DialogContent className="max-w-md">
           <DialogHeader>
-            <DialogTitle>Nueva Configuración por País</DialogTitle>
+            <DialogTitle>Nueva Configuracion por Pais</DialogTitle>
           </DialogHeader>
           <div className="space-y-4">
             <div>
@@ -317,9 +321,9 @@ export default function PlanesPublicidadConfigPage() {
               </Select>
             </div>
             <div>
-              <Label>País</Label>
+              <Label>Pais</Label>
               <Select value={nuevaConfig.pais_id} onValueChange={(v) => setNuevaConfig({...nuevaConfig, pais_id: v})}>
-                <SelectTrigger><SelectValue placeholder="Seleccionar país" /></SelectTrigger>
+                <SelectTrigger><SelectValue placeholder="Seleccionar pais" /></SelectTrigger>
                 <SelectContent>
                   {paises.map(p => (
                     <SelectItem key={p.id} value={p.id}>{getBanderaPais(p.codigo as any)} {p.nombre}</SelectItem>
@@ -340,7 +344,7 @@ export default function PlanesPublicidadConfigPage() {
             <div className="flex justify-end gap-2">
               <Button variant="outline" onClick={() => setDialogoConfig(false)}>Cancelar</Button>
               <Button onClick={handleCrearConfig} disabled={!nuevaConfig.plan_base_id || !nuevaConfig.pais_id} className="bg-[#d97706] hover:bg-[#d97706]/90">
-                <Plus className="h-4 w-4 mr-2" /> Crear Configuración
+                <Plus className="h-4 w-4 mr-2" /> Crear Configuracion
               </Button>
             </div>
           </div>

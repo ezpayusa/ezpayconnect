@@ -51,7 +51,7 @@ export default function PlanesFarmaceuticoConfigPage() {
         <Card className="max-w-md">
           <CardContent className="pt-6 text-center">
             <h2 className="text-xl font-bold mb-2">Acceso restringido</h2>
-            <p className="text-sm text-muted-foreground mb-4">Necesitas rol de administrador para ver esta página.</p>
+            <p className="text-sm text-muted-foreground mb-4">Necesitas rol de administrador para ver esta pagina.</p>
             <Button onClick={() => navigate('/dashboard')}>Volver al dashboard</Button>
           </CardContent>
         </Card>
@@ -72,6 +72,8 @@ export default function PlanesFarmaceuticoConfigPage() {
       tipo: 'farmaceutico',
       activo: true,
     });
+    // Forzar recarga de datos para mostrar el nuevo plan
+    recargar();
     setDialogoCrear(false);
     setNuevoPlan({ nombre: '', descripcion: '', precio_base: 0, moneda: 'USD', periodicidad: 'mensual' });
   };
@@ -81,6 +83,8 @@ export default function PlanesFarmaceuticoConfigPage() {
       ...nuevaConfig,
       moneda_local: paises.find(p => p.id === nuevaConfig.pais_id)?.moneda || 'USD',
     });
+    // Forzar recarga de datos para mostrar la nueva configuracion
+    recargar();
     setDialogoConfig(false);
     setNuevaConfig({ plan_base_id: '', pais_id: '', precio_local: 0, precio_anual: 0, comision_aplicada: 0, descuento_porcentaje: 0 });
   };
@@ -101,8 +105,8 @@ export default function PlanesFarmaceuticoConfigPage() {
             <ArrowLeft className="h-5 w-5" />
           </Button>
           <div>
-            <h1 className="text-2xl font-bold">Configuración Planes Farmacéutico</h1>
-            <p className="text-sm text-muted-foreground">Gestiona planes para empresas farmacéuticas</p>
+            <h1 className="text-2xl font-bold">Configuracion Planes Farmaceutico</h1>
+            <p className="text-sm text-muted-foreground">Gestiona planes para empresas farmaceuticas</p>
           </div>
         </div>
         <div className="flex gap-2">
@@ -126,13 +130,13 @@ export default function PlanesFarmaceuticoConfigPage() {
         </Card>
         <Card>
           <CardContent className="pt-4">
-            <p className="text-sm text-muted-foreground">Países</p>
+            <p className="text-sm text-muted-foreground">Paises</p>
             <p className="text-2xl font-bold">{paises.length}</p>
           </CardContent>
         </Card>
         <Card>
           <CardContent className="pt-4">
-            <p className="text-sm text-muted-foreground">Precio Base Máx</p>
+            <p className="text-sm text-muted-foreground">Precio Base Max</p>
             <p className="text-2xl font-bold">{planesFarmaceutico.length > 0 ? Math.max(...planesFarmaceutico.map(p => p.precio_base)) : 0} USD</p>
           </CardContent>
         </Card>
@@ -140,7 +144,7 @@ export default function PlanesFarmaceuticoConfigPage() {
 
       <Card className="mb-6">
         <CardHeader>
-          <CardTitle className="text-lg">Planes Base Farmacéutico</CardTitle>
+          <CardTitle className="text-lg">Planes Base Farmaceutico</CardTitle>
         </CardHeader>
         <CardContent>
           <div className="flex gap-4 mb-4">
@@ -157,7 +161,7 @@ export default function PlanesFarmaceuticoConfigPage() {
               <TableHeader>
                 <TableRow>
                   <TableHead>Nombre</TableHead>
-                  <TableHead>Descripción</TableHead>
+                  <TableHead>Descripcion</TableHead>
                   <TableHead>Precio Base</TableHead>
                   <TableHead>Moneda</TableHead>
                   <TableHead>Periodicidad</TableHead>
@@ -194,7 +198,7 @@ export default function PlanesFarmaceuticoConfigPage() {
                 {planesFiltrados.length === 0 && (
                   <TableRow>
                     <TableCell colSpan={7} className="text-center py-8 text-muted-foreground">
-                      No se encontraron planes farmacéutico
+                      No se encontraron planes farmaceutico
                     </TableCell>
                   </TableRow>
                 )}
@@ -206,7 +210,7 @@ export default function PlanesFarmaceuticoConfigPage() {
 
       <Card>
         <CardHeader>
-          <CardTitle className="text-lg">Configuraciones por País</CardTitle>
+          <CardTitle className="text-lg">Configuraciones por Pais</CardTitle>
         </CardHeader>
         <CardContent>
           <div className="overflow-x-auto">
@@ -214,10 +218,10 @@ export default function PlanesFarmaceuticoConfigPage() {
               <TableHeader>
                 <TableRow>
                   <TableHead>Plan</TableHead>
-                  <TableHead>País</TableHead>
+                  <TableHead>Pais</TableHead>
                   <TableHead>Precio Local</TableHead>
                   <TableHead>Precio Anual</TableHead>
-                  <TableHead>Comisión</TableHead>
+                  <TableHead>Comision</TableHead>
                   <TableHead>Descuento</TableHead>
                   <TableHead>Estado</TableHead>
                 </TableRow>
@@ -246,7 +250,7 @@ export default function PlanesFarmaceuticoConfigPage() {
                 {configsFarmaceutico.length === 0 && (
                   <TableRow>
                     <TableCell colSpan={7} className="text-center py-8 text-muted-foreground">
-                      No hay configuraciones de farmacéutico
+                      No hay configuraciones de farmaceutico
                     </TableCell>
                   </TableRow>
                 )}
@@ -261,17 +265,17 @@ export default function PlanesFarmaceuticoConfigPage() {
           <DialogHeader>
             <DialogTitle className="flex items-center gap-2">
               <Pill className="h-5 w-5 text-[#0d9488]" />
-              Nuevo Plan Farmacéutico
+              Nuevo Plan Farmaceutico
             </DialogTitle>
           </DialogHeader>
           <div className="space-y-4">
             <div>
               <Label htmlFor="nombre">Nombre *</Label>
-              <Input id="nombre" value={nuevoPlan.nombre} onChange={(e) => setNuevoPlan({...nuevoPlan, nombre: e.target.value})} placeholder="Ej: Farmacéutico Premium" />
+              <Input id="nombre" value={nuevoPlan.nombre} onChange={(e) => setNuevoPlan({...nuevoPlan, nombre: e.target.value})} placeholder="Ej: Farmaceutico Premium" />
             </div>
             <div>
-              <Label htmlFor="descripcion">Descripción</Label>
-              <Input id="descripcion" value={nuevoPlan.descripcion} onChange={(e) => setNuevoPlan({...nuevoPlan, descripcion: e.target.value})} placeholder="Descripción del plan..." />
+              <Label htmlFor="descripcion">Descripcion</Label>
+              <Input id="descripcion" value={nuevoPlan.descripcion} onChange={(e) => setNuevoPlan({...nuevoPlan, descripcion: e.target.value})} placeholder="Descripcion del plan..." />
             </div>
             <div className="grid grid-cols-2 gap-4">
               <div>
@@ -302,7 +306,7 @@ export default function PlanesFarmaceuticoConfigPage() {
       <Dialog open={dialogoConfig} onOpenChange={setDialogoConfig}>
         <DialogContent className="max-w-md">
           <DialogHeader>
-            <DialogTitle>Nueva Configuración por País</DialogTitle>
+            <DialogTitle>Nueva Configuracion por Pais</DialogTitle>
           </DialogHeader>
           <div className="space-y-4">
             <div>
@@ -317,9 +321,9 @@ export default function PlanesFarmaceuticoConfigPage() {
               </Select>
             </div>
             <div>
-              <Label>País</Label>
+              <Label>Pais</Label>
               <Select value={nuevaConfig.pais_id} onValueChange={(v) => setNuevaConfig({...nuevaConfig, pais_id: v})}>
-                <SelectTrigger><SelectValue placeholder="Seleccionar país" /></SelectTrigger>
+                <SelectTrigger><SelectValue placeholder="Seleccionar pais" /></SelectTrigger>
                 <SelectContent>
                   {paises.map(p => (
                     <SelectItem key={p.id} value={p.id}>{getBanderaPais(p.codigo as any)} {p.nombre}</SelectItem>
@@ -340,7 +344,7 @@ export default function PlanesFarmaceuticoConfigPage() {
             <div className="flex justify-end gap-2">
               <Button variant="outline" onClick={() => setDialogoConfig(false)}>Cancelar</Button>
               <Button onClick={handleCrearConfig} disabled={!nuevaConfig.plan_base_id || !nuevaConfig.pais_id} className="bg-[#0d9488] hover:bg-[#0d9488]/90">
-                <Plus className="h-4 w-4 mr-2" /> Crear Configuración
+                <Plus className="h-4 w-4 mr-2" /> Crear Configuracion
               </Button>
             </div>
           </div>
