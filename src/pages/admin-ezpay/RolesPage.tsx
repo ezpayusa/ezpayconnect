@@ -1,403 +1,465 @@
-import { useState, useEffect } from 'react';
-import { useNavigate } from 'react-router-dom';
-import { Button } from '@/components/ui/button';
-import { Input } from '@/components/ui/input';
-import { Label } from '@/components/ui/label';
-import { Switch } from '@/components/ui/switch';
-import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
-import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog';
-import { Badge } from '@/components/ui/badge';
-import { useAdminAuth } from '@/hooks/admin/useAdminAuth';
-import { supabase } from '@/lib/supabase';
-import { 
-  ArrowLeft, 
-  RefreshCw, 
-  Plus, 
-  Shield, 
-  Users,
-  Key,
-  Save,
-  X,
-  Edit,
-  Trash2
-} from 'lucide-react';
-
-interface Rol {
-  id: string;
-  nombre: string;
-  descripcion: string;
-  permisos: string[];
-  nivel: number;
-  activo: boolean;
-  usuarios_count?: number;
-}
-
-const PERMISOS_DISPONIBLES = [
-  { id: '*', label: 'Acceso Total', descripcion: 'Todos los permisos' },
-  { id: 'planes.read', label: 'Ver Planes', descripcion: 'Ver planes y precios' },
-  { id: 'planes.write', label: 'Editar Planes', descripcion: 'Crear y modificar planes' },
-  { id: 'usuarios.read', label: 'Ver Usuarios', descripcion: 'Ver lista de usuarios' },
-  { id: 'usuarios.write', label: 'Editar Usuarios', descripcion: 'Crear y modificar usuarios' },
-  { id: 'finanzas.read', label: 'Ver Finanzas', descripcion: 'Ver reportes financieros' },
-  { id: 'reportes.read', label: 'Ver Reportes', descripcion: 'Ver reportes y analytics' },
-  { id: 'comisiones.read', label: 'Ver Comisiones', descripcion: 'Ver comisiones por país' },
-  { id: 'clientes.read', label: 'Ver Clientes', descripcion: 'Ver clientes y suscripciones' },
-  { id: 'clientes.write', label: 'Editar Clientes', descripcion: 'Gestionar clientes' },
-  { id: 'tickets.read', label: 'Ver Tickets', descripcion: 'Ver tickets de soporte' },
-  { id: 'tickets.write', label: 'Editar Tickets', descripcion: 'Responder tickets' },
-  { id: 'perfil.read', label: 'Ver Perfil', descripcion: 'Ver perfil propio' },
-  { id: 'perfil.write', label: 'Editar Perfil', descripcion: 'Editar perfil propio' },
-  { id: 'mis_planes.read', label: 'Ver Mis Planes', descripcion: 'Ver suscripciones propias' },
-];
+import { useState, useEffect } from "react";
+import { useRoles, type NuevoEmpleado } from "@/hooks/useRoles";
+import { useAuth } from "@/hooks/useAuth";
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogHeader,
+  DialogTitle,
+  DialogTrigger,
+  DialogFooter,
+  DialogClose,
+} from "@/components/ui/dialog";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
+import {
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+} from "@/components/ui/table";
+import { Badge } from "@/components/ui/badge";
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Plus, UserPlus, Shield, Users, ToggleLeft, ToggleRight } from "lucide-react";
 
 export default function RolesPage() {
-  const navigate = useNavigate();
-  const { isAdmin, loading: adminLoading } = useAdminAuth();
-  const [roles, setRoles] = useState<Rol[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [dialogoNuevo, setDialogoNuevo] = useState(false);
-  const [dialogoEditar, setDialogoEditar] = useState<Rol | null>(null);
-  const [nuevoRol, setNuevoRol] = useState({
-    nombre: '',
-    descripcion: '',
-    permisos: [] as string[],
-    nivel: 1,
+  const { user } = useAuth();
+  const {
+    roles,
+    empleados,
+    loading,
+    creating,
+    fetchRoles,
+    fetchEmpleados,
+    crearEmpleado,
+    toggleEmpleadoActivo,
+    actualizarRolEmpleado,
+  } = useRoles();
+
+  const [isOpen, setIsOpen] = useState(false);
+  const [nuevoEmpleado, setNuevoEmpleado] = useState<NuevoEmpleado>({
+    email: "",
+    password: "",
+    nombre_completo: "",
+    nombre: "",
+    rol_id: "",
   });
 
-  const cargarRoles = async () => {
-    setLoading(true);
+  useEffect(() => {
+    fetchRoles();
+    fetchEmpleados();
+  }, [fetchRoles, fetchEmpleados]);
 
-    const { data, error } = await supabase
-      .from('roles')
-      .select('*')
-      .order('nivel', { ascending: false });
+  const handleSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
 
-    if (error) {
-      console.error('Error:', error.message);
-      alert('Error al cargar roles: ' + error.message);
-    } else {
-      // Obtener conteo de usuarios por rol
-      const rolesConConteo = await Promise.all((data || []).map(async (rol: Rol) => {
-        const { count } = await supabase
-          .from('usuario_roles')
-          .select('*', { count: 'exact', head: true })
-          .eq('rol_id', rol.id)
-          .eq('activo', true);
-        return { ...rol, usuarios_count: count || 0 };
-      }));
-      setRoles(rolesConConteo);
-    }
-    setLoading(false);
-  };
-
- useEffect(() => {
-  if (!adminLoading && !isAdmin) {
-    navigate('/dashboard');
-    return;
-  }
-  cargarRoles();
-}, [adminLoading, isAdmin, navigate]);
-
-  const handleCrearRol = async () => {
-    if (!nuevoRol.nombre) {
-      alert('El nombre del rol es obligatorio');
+    if (!nuevoEmpleado.email || !nuevoEmpleado.password || !nuevoEmpleado.rol_id) {
+      alert("Email, contraseña y rol son obligatorios");
       return;
     }
 
-    const { error } = await supabase
-      .from('roles')
-      .insert({
-        nombre: nuevoRol.nombre.toLowerCase().replace(/\s+/g, '_'),
-        descripcion: nuevoRol.descripcion,
-        permisos: nuevoRol.permisos,
-        nivel: nuevoRol.nivel,
-        activo: true,
+    try {
+      await crearEmpleado(nuevoEmpleado, user?.id);
+      setIsOpen(false);
+      setNuevoEmpleado({
+        email: "",
+        password: "",
+        nombre_completo: "",
+        nombre: "",
+        rol_id: "",
       });
-
-    if (error) {
-      alert('Error: ' + error.message);
-    } else {
-      alert('Rol creado correctamente');
-      setDialogoNuevo(false);
-      setNuevoRol({ nombre: '', descripcion: '', permisos: [], nivel: 1 });
-      cargarRoles();
+      alert("✅ Empleado creado exitosamente");
+    } catch (error: any) {
+      alert("❌ Error al crear empleado: " + (error.message || "Error desconocido"));
     }
   };
 
-  const handleActualizarRol = async () => {
-    if (!dialogoEditar) return;
-
-    const { error } = await supabase
-      .from('roles')
-      .update({
-        descripcion: dialogoEditar.descripcion,
-        permisos: dialogoEditar.permisos,
-        nivel: dialogoEditar.nivel,
-        activo: dialogoEditar.activo,
-      })
-      .eq('id', dialogoEditar.id);
-
-    if (error) {
-      alert('Error: ' + error.message);
-    } else {
-      alert('Rol actualizado');
-      setDialogoEditar(null);
-      cargarRoles();
+  const handleToggleActivo = async (id: string, activo: boolean) => {
+    try {
+      await toggleEmpleadoActivo(id, activo);
+      alert(activo ? "✅ Empleado activado" : "✅ Empleado desactivado");
+    } catch (error: any) {
+      alert("❌ Error: " + error.message);
     }
   };
 
-  const handleEliminarRol = async (rolId: string) => {
-    if (!confirm('¿Eliminar este rol? Los usuarios asignados perderán este permiso.')) return;
-
-    const { error } = await supabase
-      .from('roles')
-      .delete()
-      .eq('id', rolId);
-
-    if (error) {
-      alert('Error: ' + error.message);
-    } else {
-      alert('Rol eliminado');
-      cargarRoles();
+  const handleActualizarRol = async (userId: string, nuevoRolId: string) => {
+    try {
+      await actualizarRolEmpleado(userId, nuevoRolId);
+      alert("✅ Rol actualizado");
+    } catch (error: any) {
+      alert("❌ Error: " + error.message);
     }
   };
 
-  const togglePermiso = (permisoId: string, rol: Rol, isEdit: boolean = false) => {
-    const currentPermisos = isEdit && dialogoEditar ? [...dialogoEditar.permisos] : [...nuevoRol.permisos];
-
-    if (currentPermisos.includes(permisoId)) {
-      const filtered = currentPermisos.filter(p => p !== permisoId);
-      if (isEdit && dialogoEditar) {
-        setDialogoEditar({ ...dialogoEditar, permisos: filtered });
-      } else {
-        setNuevoRol({ ...nuevoRol, permisos: filtered });
-      }
-    } else {
-      const added = [...currentPermisos, permisoId];
-      if (isEdit && dialogoEditar) {
-        setDialogoEditar({ ...dialogoEditar, permisos: added });
-      } else {
-        setNuevoRol({ ...nuevoRol, permisos: added });
-      }
+  const getRolBadgeColor = (rol: string) => {
+    switch (rol?.toLowerCase()) {
+      case "admin":
+      case "administrador":
+        return "bg-red-500/10 text-red-500 border-red-500/20";
+      case "medico":
+      case "doctor":
+        return "bg-blue-500/10 text-blue-500 border-blue-500/20";
+      case "enfermera":
+      case "enfermero":
+        return "bg-green-500/10 text-green-500 border-green-500/20";
+      case "recepcionista":
+        return "bg-yellow-500/10 text-yellow-500 border-yellow-500/20";
+      default:
+        return "bg-gray-500/10 text-gray-500 border-gray-500/20";
     }
   };
-
-  const getNivelColor = (nivel: number) => {
-    if (nivel >= 5) return 'bg-red-100 text-red-700';
-    if (nivel >= 4) return 'bg-orange-100 text-orange-700';
-    if (nivel >= 3) return 'bg-yellow-100 text-yellow-700';
-    if (nivel >= 2) return 'bg-blue-100 text-blue-700';
-    return 'bg-gray-100 text-gray-700';
-  };
-
-  if (adminLoading) return <div className="flex justify-center p-8">Verificando permisos...</div>;
-  if (!isAdmin) return null;
 
   return (
-    <div className="container mx-auto px-4 py-6 max-w-7xl">
-      <div className="flex items-center justify-between mb-6">
-        <div className="flex items-center gap-4">
-          <Button variant="ghost" size="icon" onClick={() => navigate('/admin-ezpay')}>
-            <ArrowLeft className="h-5 w-5" />
-          </Button>
-          <div>
-            <h1 className="text-2xl font-bold">Gestión de Roles</h1>
-            <p className="text-sm text-muted-foreground">Administra roles y permisos del sistema</p>
-          </div>
+    <div className="space-y-6 p-6">
+      {/* Header */}
+      <div className="flex items-center justify-between">
+        <div>
+          <h1 className="text-3xl font-bold text-white">Gestión de Roles y Empleados</h1>
+          <p className="text-gray-400 mt-1">
+            Administra los roles del sistema y los empleados de tu organización
+          </p>
         </div>
-        <div className="flex gap-2">
-          <Button variant="outline" onClick={cargarRoles}><RefreshCw className="h-4 w-4 mr-2" /> Recargar</Button>
-          <Button onClick={() => setDialogoNuevo(true)} className="bg-[#1E5C8E] hover:bg-[#164a70]"><Plus className="h-4 w-4 mr-2" /> Nuevo Rol</Button>
-        </div>
-      </div>
+        <Dialog open={isOpen} onOpenChange={setIsOpen}>
+          <DialogTrigger asChild>
+            <Button className="bg-[#00f2ff] text-black hover:bg-[#00f2ff]/90 font-semibold">
+              <UserPlus className="w-4 h-4 mr-2" />
+              Nuevo Empleado
+            </Button>
+          </DialogTrigger>
+          <DialogContent className="bg-[#0a0a0a] border-gray-800 text-white max-w-md">
+            <DialogHeader>
+              <DialogTitle className="text-xl text-white flex items-center gap-2">
+                <Plus className="w-5 h-5 text-[#00f2ff]" />
+                Crear Nuevo Empleado
+              </DialogTitle>
+              <DialogDescription className="text-gray-400">
+                El empleado recibirá un email con sus credenciales de acceso.
+              </DialogDescription>
+            </DialogHeader>
 
-      {/* Stats */}
-      <div className="grid grid-cols-1 md:grid-cols-4 gap-4 mb-6">
-        <Card>
-          <CardContent className="pt-4">
-            <div className="flex items-center gap-2 mb-2">
-              <Shield className="h-5 w-5 text-[#1E5C8E]" />
-              <p className="text-sm text-muted-foreground">Total Roles</p>
-            </div>
-            <p className="text-2xl font-bold">{roles.length}</p>
-          </CardContent>
-        </Card>
-        <Card>
-          <CardContent className="pt-4">
-            <div className="flex items-center gap-2 mb-2">
-              <Key className="h-5 w-5 text-orange-600" />
-              <p className="text-sm text-muted-foreground">Permisos</p>
-            </div>
-            <p className="text-2xl font-bold">{PERMISOS_DISPONIBLES.length}</p>
-          </CardContent>
-        </Card>
-        <Card>
-          <CardContent className="pt-4">
-            <div className="flex items-center gap-2 mb-2">
-              <Users className="h-5 w-5 text-green-600" />
-              <p className="text-sm text-muted-foreground">Usuarios con Rol</p>
-            </div>
-            <p className="text-2xl font-bold">{roles.reduce((sum, r) => sum + (r.usuarios_count || 0), 0)}</p>
-          </CardContent>
-        </Card>
-        <Card>
-          <CardContent className="pt-4">
-            <div className="flex items-center gap-2 mb-2">
-              <Shield className="h-5 w-5 text-purple-600" />
-              <p className="text-sm text-muted-foreground">Nivel Máx</p>
-            </div>
-            <p className="text-2xl font-bold">{roles.length > 0 ? Math.max(...roles.map(r => r.nivel)) : 0}</p>
-          </CardContent>
-        </Card>
-      </div>
-
-      {/* Lista de roles */}
-      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4 mb-8">
-        {roles.map((rol) => (
-          <Card key={rol.id} className={rol.activo ? 'border-[#1E5C8E]/20' : 'border-gray-200 opacity-75'}>
-            <CardContent className="pt-6">
-              <div className="flex justify-between items-start mb-3">
-                <div>
-                  <h3 className="text-lg font-bold capitalize">{rol.nombre.replace(/_/g, ' ')}</h3>
-                  <p className="text-sm text-muted-foreground">{rol.descripcion}</p>
-                </div>
-                <Badge className={getNivelColor(rol.nivel)}>Nivel {rol.nivel}</Badge>
+            <form onSubmit={handleSubmit} className="space-y-4 mt-4">
+              <div className="space-y-2">
+                <Label htmlFor="email" className="text-gray-300">
+                  Email <span className="text-red-400">*</span>
+                </Label>
+                <Input
+                  id="email"
+                  type="email"
+                  placeholder="empleado@ezpayconnect.com"
+                  value={nuevoEmpleado.email}
+                  onChange={(e) =>
+                    setNuevoEmpleado({ ...nuevoEmpleado, email: e.target.value })
+                  }
+                  className="bg-[#1a1a1a] border-gray-700 text-white placeholder:text-gray-600"
+                  required
+                />
               </div>
 
-              <div className="flex items-center gap-4 mb-3 text-sm">
-                <div className="flex items-center gap-1">
-                  <Users className="h-4 w-4 text-muted-foreground" />
-                  <span>{rol.usuarios_count} usuarios</span>
-                </div>
-                <div className="flex items-center gap-1">
-                  <Key className="h-4 w-4 text-muted-foreground" />
-                  <span>{rol.permisos?.length || 0} permisos</span>
-                </div>
+              <div className="space-y-2">
+                <Label htmlFor="password" className="text-gray-300">
+                  Contraseña <span className="text-red-400">*</span>
+                </Label>
+                <Input
+                  id="password"
+                  type="password"
+                  placeholder="Mínimo 6 caracteres"
+                  value={nuevoEmpleado.password}
+                  onChange={(e) =>
+                    setNuevoEmpleado({ ...nuevoEmpleado, password: e.target.value })
+                  }
+                  className="bg-[#1a1a1a] border-gray-700 text-white placeholder:text-gray-600"
+                  required
+                  minLength={6}
+                />
               </div>
 
-              <div className="flex flex-wrap gap-1 mb-4">
-                {(rol.permisos || []).slice(0, 4).map((permiso) => (
-                  <Badge key={permiso} variant="outline" className="text-xs">
-                    {permiso}
-                  </Badge>
-                ))}
-                {(rol.permisos || []).length > 4 && (
-                  <Badge variant="outline" className="text-xs">+{(rol.permisos || []).length - 4} más</Badge>
-                )}
+              <div className="space-y-2">
+                <Label htmlFor="nombre_completo" className="text-gray-300">
+                  Nombre Completo
+                </Label>
+                <Input
+                  id="nombre_completo"
+                  placeholder="Juan Pérez"
+                  value={nuevoEmpleado.nombre_completo}
+                  onChange={(e) =>
+                    setNuevoEmpleado({ ...nuevoEmpleado, nombre_completo: e.target.value })
+                  }
+                  className="bg-[#1a1a1a] border-gray-700 text-white placeholder:text-gray-600"
+                />
               </div>
 
-              <div className="flex gap-2 pt-3 border-t">
-                <Button size="sm" variant="outline" onClick={() => setDialogoEditar(rol)}>
-                  <Edit className="h-3 w-3 mr-1" /> Editar
+              <div className="space-y-2">
+                <Label htmlFor="rol" className="text-gray-300">
+                  Rol <span className="text-red-400">*</span>
+                </Label>
+                <Select
+                  value={nuevoEmpleado.rol_id}
+                  onValueChange={(value) =>
+                    setNuevoEmpleado({ ...nuevoEmpleado, rol_id: value })
+                  }
+                >
+                  <SelectTrigger className="bg-[#1a1a1a] border-gray-700 text-white">
+                    <SelectValue placeholder="Selecciona un rol" />
+                  </SelectTrigger>
+                  <SelectContent className="bg-[#1a1a1a] border-gray-700">
+                    {roles.map((rol) => (
+                      <SelectItem
+                        key={rol.id}
+                        value={rol.id}
+                        className="text-white hover:bg-gray-800 focus:bg-gray-800"
+                      >
+                        <div className="flex items-center gap-2">
+                          <Shield className="w-4 h-4 text-[#00f2ff]" />
+                          {rol.nombre}
+                        </div>
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+
+              <DialogFooter className="mt-6">
+                <DialogClose asChild>
+                  <Button
+                    type="button"
+                    variant="outline"
+                    className="border-gray-700 text-gray-300 hover:bg-gray-800"
+                  >
+                    Cancelar
+                  </Button>
+                </DialogClose>
+                <Button
+                  type="submit"
+                  disabled={creating}
+                  className="bg-[#00f2ff] text-black hover:bg-[#00f2ff]/90 font-semibold"
+                >
+                  {creating ? "Creando..." : "Crear Empleado"}
                 </Button>
-                <Button size="sm" variant="ghost" className="text-red-500" onClick={() => handleEliminarRol(rol.id)}>
-                  <Trash2 className="h-3 w-3" />
-                </Button>
-              </div>
-            </CardContent>
-          </Card>
-        ))}
+              </DialogFooter>
+            </form>
+          </DialogContent>
+        </Dialog>
       </div>
 
-      {/* Dialogo Nuevo Rol */}
-      <Dialog open={dialogoNuevo} onOpenChange={setDialogoNuevo}>
-        <DialogContent className="max-w-lg max-h-[80vh] overflow-y-auto">
-          <DialogHeader>
-            <DialogTitle className="flex items-center gap-2">
-              <Shield className="h-5 w-5 text-[#1E5C8E]" />
-              Nuevo Rol
-            </DialogTitle>
-          </DialogHeader>
-          <div className="space-y-4">
-            <div>
-              <Label htmlFor="nombre">Nombre del Rol *</Label>
-              <Input id="nombre" value={nuevoRol.nombre} onChange={(e) => setNuevoRol({...nuevoRol, nombre: e.target.value})} placeholder="Ej: marketing_manager" />
-            </div>
-            <div>
-              <Label htmlFor="descripcion">Descripción</Label>
-              <Input id="descripcion" value={nuevoRol.descripcion} onChange={(e) => setNuevoRol({...nuevoRol, descripcion: e.target.value})} placeholder="Descripción del rol..." />
-            </div>
-            <div>
-              <Label htmlFor="nivel">Nivel (1-5)</Label>
-              <Input id="nivel" type="number" min={1} max={5} value={nuevoRol.nivel} onChange={(e) => setNuevoRol({...nuevoRol, nivel: parseInt(e.target.value)})} />
-            </div>
-            <div>
-              <Label>Permisos</Label>
-              <div className="grid grid-cols-1 gap-2 mt-2 max-h-60 overflow-y-auto">
-                {PERMISOS_DISPONIBLES.map((permiso) => (
-                  <div key={permiso.id} className="flex items-center gap-2 p-2 rounded hover:bg-gray-50">
-                    <input 
-                      type="checkbox" 
-                      checked={nuevoRol.permisos.includes(permiso.id)}
-                      onChange={() => togglePermiso(permiso.id, nuevoRol as any)}
-                      className="h-4 w-4"
-                    />
-                    <div>
-                      <p className="text-sm font-medium">{permiso.label}</p>
-                      <p className="text-xs text-muted-foreground">{permiso.descripcion}</p>
-                    </div>
-                  </div>
-                ))}
-              </div>
-            </div>
-            <div className="flex justify-end gap-2">
-              <Button variant="outline" onClick={() => setDialogoNuevo(false)}><X className="h-4 w-4 mr-1" /> Cancelar</Button>
-              <Button onClick={handleCrearRol} className="bg-[#1E5C8E] hover:bg-[#164a70]"><Save className="h-4 w-4 mr-1" /> Crear Rol</Button>
-            </div>
-          </div>
-        </DialogContent>
-      </Dialog>
+      {/* Stats Cards */}
+      <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+        <Card className="bg-[#0f0f0f] border-gray-800">
+          <CardHeader className="pb-2">
+            <CardTitle className="text-sm text-gray-400 flex items-center gap-2">
+              <Shield className="w-4 h-4 text-[#00f2ff]" />
+              Total Roles
+            </CardTitle>
+          </CardHeader>
+          <CardContent>
+            <p className="text-2xl font-bold text-white">{roles.length}</p>
+          </CardContent>
+        </Card>
+        <Card className="bg-[#0f0f0f] border-gray-800">
+          <CardHeader className="pb-2">
+            <CardTitle className="text-sm text-gray-400 flex items-center gap-2">
+              <Users className="w-4 h-4 text-[#00f2ff]" />
+              Total Empleados
+            </CardTitle>
+          </CardHeader>
+          <CardContent>
+            <p className="text-2xl font-bold text-white">{empleados.length}</p>
+          </CardContent>
+        </Card>
+        <Card className="bg-[#0f0f0f] border-gray-800">
+          <CardHeader className="pb-2">
+            <CardTitle className="text-sm text-gray-400 flex items-center gap-2">
+              <ToggleRight className="w-4 h-4 text-green-400" />
+              Empleados Activos
+            </CardTitle>
+          </CardHeader>
+          <CardContent>
+            <p className="text-2xl font-bold text-green-400">
+              {empleados.filter((e) => e.activo).length}
+            </p>
+          </CardContent>
+        </Card>
+      </div>
 
-      {/* Dialogo Editar Rol */}
-      <Dialog open={!!dialogoEditar} onOpenChange={() => setDialogoEditar(null)}>
-        <DialogContent className="max-w-lg max-h-[80vh] overflow-y-auto">
-          <DialogHeader>
-            <DialogTitle className="flex items-center gap-2">
-              <Shield className="h-5 w-5 text-[#1E5C8E]" />
-              Editar Rol: {dialogoEditar?.nombre}
-            </DialogTitle>
-          </DialogHeader>
-          {dialogoEditar && (
-            <div className="space-y-4">
-              <div>
-                <Label>Descripción</Label>
-                <Input value={dialogoEditar.descripcion} onChange={(e) => setDialogoEditar({...dialogoEditar, descripcion: e.target.value})} />
-              </div>
-              <div>
-                <Label>Nivel (1-5)</Label>
-                <Input type="number" min={1} max={5} value={dialogoEditar.nivel} onChange={(e) => setDialogoEditar({...dialogoEditar, nivel: parseInt(e.target.value)})} />
-              </div>
-              <div className="flex items-center gap-2">
-                <Switch checked={dialogoEditar.activo} onCheckedChange={(checked) => setDialogoEditar({...dialogoEditar, activo: checked})} />
-                <Label>Activo</Label>
-              </div>
-              <div>
-                <Label>Permisos</Label>
-                <div className="grid grid-cols-1 gap-2 mt-2 max-h-60 overflow-y-auto">
-                  {PERMISOS_DISPONIBLES.map((permiso) => (
-                    <div key={permiso.id} className="flex items-center gap-2 p-2 rounded hover:bg-gray-50">
-                      <input 
-                        type="checkbox" 
-                        checked={dialogoEditar.permisos.includes(permiso.id)}
-                        onChange={() => togglePermiso(permiso.id, dialogoEditar, true)}
-                        className="h-4 w-4"
-                      />
-                      <div>
-                        <p className="text-sm font-medium">{permiso.label}</p>
-                        <p className="text-xs text-muted-foreground">{permiso.descripcion}</p>
+      {/* Tabla de Empleados */}
+      <Card className="bg-[#0f0f0f] border-gray-800">
+        <CardHeader>
+          <CardTitle className="text-white flex items-center gap-2">
+            <Users className="w-5 h-5 text-[#00f2ff]" />
+            Empleados
+          </CardTitle>
+        </CardHeader>
+        <CardContent>
+          {loading ? (
+            <div className="text-center py-8 text-gray-500">Cargando empleados...</div>
+          ) : empleados.length === 0 ? (
+            <div className="text-center py-8 text-gray-500">
+              No hay empleados registrados. Crea el primero con el botón "Nuevo Empleado".
+            </div>
+          ) : (
+            <Table>
+              <TableHeader>
+                <TableRow className="border-gray-800 hover:bg-transparent">
+                  <TableHead className="text-gray-400">Nombre</TableHead>
+                  <TableHead className="text-gray-400">Email</TableHead>
+                  <TableHead className="text-gray-400">Rol</TableHead>
+                  <TableHead className="text-gray-400">Estado</TableHead>
+                  <TableHead className="text-gray-400 text-right">Acciones</TableHead>
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {empleados.map((empleado) => (
+                  <TableRow
+                    key={empleado.id}
+                    className="border-gray-800 hover:bg-[#1a1a1a]"
+                  >
+                    <TableCell className="text-white font-medium">
+                      {empleado.nombre_completo || empleado.nombre || "Sin nombre"}
+                    </TableCell>
+                    <TableCell className="text-gray-400">{empleado.email}</TableCell>
+                    <TableCell>
+                      <Badge
+                        variant="outline"
+                        className={getRolBadgeColor(empleado.rol)}
+                      >
+                        {empleado.rol || "Sin rol"}
+                      </Badge>
+                    </TableCell>
+                    <TableCell>
+                      <Badge
+                        variant="outline"
+                        className={
+                          empleado.activo
+                            ? "bg-green-500/10 text-green-500 border-green-500/20"
+                            : "bg-red-500/10 text-red-500 border-red-500/20"
+                        }
+                      >
+                        {empleado.activo ? "Activo" : "Inactivo"}
+                      </Badge>
+                    </TableCell>
+                    <TableCell className="text-right">
+                      <div className="flex items-center justify-end gap-2">
+                        {/* Cambiar Rol */}
+                        <Select
+                          value={empleado.rol_id || ""}
+                          onValueChange={(value) =>
+                            handleActualizarRol(empleado.id, value)
+                          }
+                        >
+                          <SelectTrigger className="w-[140px] bg-[#1a1a1a] border-gray-700 text-white text-xs h-8">
+                            <SelectValue placeholder="Cambiar rol" />
+                          </SelectTrigger>
+                          <SelectContent className="bg-[#1a1a1a] border-gray-700">
+                            {roles.map((rol) => (
+                              <SelectItem
+                                key={rol.id}
+                                value={rol.id}
+                                className="text-white hover:bg-gray-800 text-xs"
+                              >
+                                {rol.nombre}
+                              </SelectItem>
+                            ))}
+                          </SelectContent>
+                        </Select>
+
+                        {/* Activar/Desactivar */}
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          onClick={() =>
+                            handleToggleActivo(empleado.id, !empleado.activo)
+                          }
+                          className={
+                            empleado.activo
+                              ? "text-red-400 hover:text-red-300 hover:bg-red-500/10"
+                              : "text-green-400 hover:text-green-300 hover:bg-green-500/10"
+                          }
+                        >
+                          {empleado.activo ? (
+                            <ToggleLeft className="w-4 h-4" />
+                          ) : (
+                            <ToggleRight className="w-4 h-4" />
+                          )}
+                        </Button>
                       </div>
-                    </div>
-                  ))}
-                </div>
-              </div>
-              <div className="flex justify-end gap-2">
-                <Button variant="outline" onClick={() => setDialogoEditar(null)}><X className="h-4 w-4 mr-1" /> Cancelar</Button>
-                <Button onClick={handleActualizarRol} className="bg-[#1E5C8E] hover:bg-[#164a70]"><Save className="h-4 w-4 mr-1" /> Guardar</Button>
-              </div>
-            </div>
+                    </TableCell>
+                  </TableRow>
+                ))}
+              </TableBody>
+            </Table>
           )}
-        </DialogContent>
-      </Dialog>
+        </CardContent>
+      </Card>
+
+      {/* Tabla de Roles del Sistema */}
+      <Card className="bg-[#0f0f0f] border-gray-800">
+        <CardHeader>
+          <CardTitle className="text-white flex items-center gap-2">
+            <Shield className="w-5 h-5 text-[#00f2ff]" />
+            Roles del Sistema
+          </CardTitle>
+        </CardHeader>
+        <CardContent>
+          {loading ? (
+            <div className="text-center py-8 text-gray-500">Cargando roles...</div>
+          ) : (
+            <Table>
+              <TableHeader>
+                <TableRow className="border-gray-800 hover:bg-transparent">
+                  <TableHead className="text-gray-400">Nombre</TableHead>
+                  <TableHead className="text-gray-400">Descripción</TableHead>
+                  <TableHead className="text-gray-400">Permisos</TableHead>
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {roles.map((rol) => (
+                  <TableRow
+                    key={rol.id}
+                    className="border-gray-800 hover:bg-[#1a1a1a]"
+                  >
+                    <TableCell className="text-white font-medium">
+                      <div className="flex items-center gap-2">
+                        <Shield className="w-4 h-4 text-[#00f2ff]" />
+                        {rol.nombre}
+                      </div>
+                    </TableCell>
+                    <TableCell className="text-gray-400">
+                      {rol.descripcion || "Sin descripción"}
+                    </TableCell>
+                    <TableCell>
+                      <div className="flex flex-wrap gap-1">
+                        {(rol.permisos || []).map((permiso: string) => (
+                          <Badge
+                            key={permiso}
+                            variant="outline"
+                            className="bg-[#00f2ff]/10 text-[#00f2ff] border-[#00f2ff]/20 text-xs"
+                          >
+                            {permiso}
+                          </Badge>
+                        ))}
+                        {(rol.permisos || []).length === 0 && (
+                          <span className="text-gray-600 text-sm">Sin permisos definidos</span>
+                        )}
+                      </div>
+                    </TableCell>
+                  </TableRow>
+                ))}
+              </TableBody>
+            </Table>
+          )}
+        </CardContent>
+      </Card>
     </div>
   );
 }

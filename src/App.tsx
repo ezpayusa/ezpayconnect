@@ -1,3 +1,4 @@
+import AsignacionRolesPage from '@/pages/admin-ezpay/AsignacionRolesPage'
 import PaisesPage from '@/pages/admin-ezpay/PaisesPage';
 import NotificacionesPage from '@/pages/NotificacionesPage'
 import { BrowserRouter, Routes, Route, Navigate, useNavigate } from 'react-router-dom'
@@ -159,6 +160,7 @@ function App() {
           <Route index element={<AdminEzPayPage />} />
           <Route path="paises" element={<PaisesPage />} />
           <Route path="usuarios" element={<UsuariosAdminPage />} />
+          <Route path="asignacion-roles" element={<AsignacionRolesPage />} />
           <Route path="planes-todos" element={<Navigate to="/planes-todos" replace />} />
           <Route path="planes-medico" element={<Navigate to="/admin/planes/configuracion" replace />} />
           <Route path="planes-clinica" element={<Navigate to="/admin/planes/clinica" replace />} />
