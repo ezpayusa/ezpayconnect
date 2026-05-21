@@ -9,13 +9,13 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/u
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Label } from '@/components/ui/label';
 import { useAdminAuth } from '@/hooks/admin/useAdminAuth';
+import { useRoles } from '@/hooks/useRoles';
 import { supabase } from '@/lib/supabase';
 import { 
   ArrowLeft, 
   Plus, 
   Search, 
   RefreshCw, 
-  Trash2, 
   Users,
   Shield,
   UserCheck,
@@ -40,9 +40,7 @@ interface Rol {
 export default function AsignacionRolesPage() {
   const navigate = useNavigate();
   const { isAdmin, loading: adminLoading } = useAdminAuth();
-  const [usuarios, setUsuarios] = useState<UsuarioConRoles[]>([]);
-  const [roles, setRoles] = useState<Rol[]>([]);
-  const [loading, setLoading] = useState(true);
+  const { roles, empleados, loading, fetchRoles, fetchEmpleados } = useRoles();
   const [search, setSearch] = useState('');
   const [dialogoAsignar, setDialogoAsignar] = useState<string | null>(null);
   const [dialogoNuevoEmpleado, setDialogoNuevoEmpleado] = useState(false);
@@ -56,69 +54,12 @@ export default function AsignacionRolesPage() {
     rol: 'cliente',
   });
 
-  const cargarDatos = async () => {
-    setLoading(true);
-
-    // Cargar roles
-    const { data: rolesData, error: rolesError } = await supabase
-      .from('roles')
-      .select('*')
-      .order('nivel', { ascending: false });
-
-    if (rolesError) {
-      console.error('Error cargando roles:', rolesError);
-    } else {
-      setRoles(rolesData || []);
-    }
-
-    // Cargar usuarios SIN el join complejo
-    const { data: usuariosData, error: usuariosError } = await supabase
-      .from('perfiles')
-      .select('id, email, nombre_completo, nombre')
-      .order('nombre_completo');
-
-    if (usuariosError) {
-      console.error('Error cargando usuarios:', usuariosError);
-      setUsuarios([]);
-    } else {
-      // Cargar roles de cada usuario por separado
-      const usuariosConRoles = await Promise.all(
-        (usuariosData || []).map(async (u: any) => {
-          const { data: rolesUsuario } = await supabase
-            .from('usuario_roles')
-            .select(`
-              rol_id,
-              roles(id, nombre, nivel)
-            `)
-            .eq('usuario_id', u.id)
-            .eq('activo', true);
-
-          return {
-            id: u.id,
-            email: u.email,
-            nombre_completo: u.nombre_completo,
-            nombre: u.nombre,
-            roles: (rolesUsuario || [])
-              .filter((ur: any) => ur.roles)
-              .map((ur: any) => ({
-                id: ur.roles.id,
-                nombre: ur.roles.nombre,
-                nivel: ur.roles.nivel,
-              })),
-          };
-        })
-      );
-      setUsuarios(usuariosConRoles);
-    }
-
-    setLoading(false);
-  };
-
   useEffect(() => {
     if (!adminLoading && isAdmin) {
-      cargarDatos();
+      fetchRoles();
+      fetchEmpleados();
     }
-  }, [adminLoading, isAdmin]);
+  }, [adminLoading, isAdmin, fetchRoles, fetchEmpleados]);
 
   const handleAsignarRol = async () => {
     if (!dialogoAsignar || !rolSeleccionado) return;
@@ -140,7 +81,7 @@ export default function AsignacionRolesPage() {
     } else {
       setDialogoAsignar(null);
       setRolSeleccionado('');
-      cargarDatos();
+      fetchEmpleados();
     }
   };
 
@@ -154,83 +95,51 @@ export default function AsignacionRolesPage() {
     if (error) {
       alert('Error quitando rol: ' + error.message);
     } else {
-      cargarDatos();
+      fetchEmpleados();
     }
   };
 
   const handleCrearEmpleado = async () => {
     if (!nuevoEmpleado.email || !nuevoEmpleado.password || !nuevoEmpleado.nombre_completo) {
-      alert('Email, contraseña y nombre son obligatorios');
+      alert('Email, contrasena y nombre son obligatorios');
       return;
     }
 
     try {
-      // 1. Crear usuario en Auth
-      const { data: authData, error: authError } = await supabase.auth.signUp({
-        email: nuevoEmpleado.email,
-        password: nuevoEmpleado.password,
-        options: {
-          data: {
-            nombre_completo: nuevoEmpleado.nombre_completo,
-          }
-        }
-      });
+      const { data: userData } = await supabase.auth.getUser();
+      const adminUserId = userData.user?.id;
 
-      if (authError) {
-        alert('Error creando usuario en Auth: ' + authError.message);
+      const rolSeleccionadoObj = roles.find(r => r.nombre === nuevoEmpleado.rol);
+      if (!rolSeleccionadoObj) {
+        alert('Error: Rol seleccionado no encontrado');
         return;
       }
 
-      const userId = authData.user?.id;
-      if (!userId) {
-        alert('Error: No se pudo obtener el ID del usuario.\n\nVerifica que la confirmación de email esté DESACTIVADA en Supabase (Authentication → Settings → Email Auth → Enable email confirmations = OFF)');
-        return;
-      }
-
-      // 2. Esperar un momento para que el usuario se cree en auth.users
-      await new Promise(resolve => setTimeout(resolve, 1000));
-
-      // 3. Crear perfil en perfiles
-      const { error: perfilError } = await supabase
-        .from('perfiles')
-        .insert({
-          id: userId,
+      const { data, error } = await supabase.functions.invoke('crear-empleado', {
+        body: {
           email: nuevoEmpleado.email,
+          password: nuevoEmpleado.password,
           nombre_completo: nuevoEmpleado.nombre_completo,
           nombre: nuevoEmpleado.nombre || nuevoEmpleado.nombre_completo,
-          rol: nuevoEmpleado.rol,
-          activo: true,
-        });
+          rol_id: rolSeleccionadoObj.id,
+          asignado_por: adminUserId,
+        },
+      });
 
-      if (perfilError) {
-        alert('Error creando perfil: ' + perfilError.message + '\n\nEl usuario fue creado en Auth pero no en perfiles. Contacta al administrador.');
+      if (error) {
+        alert('Error: ' + error.message);
         return;
       }
 
-      // 4. Asignar rol en usuario_roles
-      const rolSeleccionado = roles.find(r => r.nombre === nuevoEmpleado.rol);
-      if (rolSeleccionado) {
-        const { data: userData } = await supabase.auth.getUser();
-        const { error: rolError } = await supabase
-          .from('usuario_roles')
-          .insert({
-            usuario_id: userId,
-            rol_id: rolSeleccionado.id,
-            asignado_por: userData.user?.id,
-            fecha_asignacion: new Date().toISOString(),
-            activo: true,
-          });
-
-        if (rolError) {
-          console.warn('Error asignando rol (no crítico):', rolError.message);
-        }
+      if (!data?.success) {
+        alert('Error: ' + (data?.error || 'Error desconocido'));
+        return;
       }
 
-      // Éxito
       setDialogoNuevoEmpleado(false);
       setNuevoEmpleado({ email: '', password: '', nombre_completo: '', nombre: '', rol: 'cliente' });
-      cargarDatos();
-      alert('Empleado creado exitosamente');
+      fetchEmpleados();
+      alert('Empleado creado exitosamente: ' + data.data.nombre_completo);
 
     } catch (error: any) {
       alert('Error inesperado: ' + error.message);
@@ -245,14 +154,14 @@ export default function AsignacionRolesPage() {
     return 'bg-gray-100 text-gray-700';
   };
 
-  const usuariosFiltrados = usuarios.filter(u => 
+  const usuariosFiltrados = empleados.filter(u => 
     !search || 
     u.nombre_completo?.toLowerCase().includes(search.toLowerCase()) ||
     u.email?.toLowerCase().includes(search.toLowerCase())
   );
 
-  const totalUsuarios = usuarios.length;
-  const usuariosConRol = usuarios.filter(u => u.roles.length > 0).length;
+  const totalUsuarios = empleados.length;
+  const usuariosConRol = empleados.filter(u => u.roles?.length > 0).length;
 
   if (adminLoading) {
     return (
@@ -289,7 +198,7 @@ export default function AsignacionRolesPage() {
           </div>
         </div>
         <div className="flex gap-2">
-          <Button variant="outline" onClick={cargarDatos}>
+          <Button variant="outline" onClick={fetchEmpleados}>
             <RefreshCw className="h-4 w-4 mr-2" /> Recargar
           </Button>
           <Button onClick={() => setDialogoNuevoEmpleado(true)} className="bg-green-600 hover:bg-green-700">
@@ -370,10 +279,10 @@ export default function AsignacionRolesPage() {
                     </TableCell>
                     <TableCell>
                       <div className="flex flex-wrap gap-1">
-                        {usuario.roles.length === 0 && (
+                        {(!usuario.roles || usuario.roles.length === 0) && (
                           <span className="text-sm text-muted-foreground">Sin roles asignados</span>
                         )}
-                        {usuario.roles.map((rol) => (
+                        {(usuario.roles || []).map((rol: any) => (
                           <Badge key={rol.id} className={getRolColor(rol.nivel)}>
                             {rol.nombre.replace('_', ' ')}
                             <button 
@@ -469,7 +378,7 @@ export default function AsignacionRolesPage() {
               <Input id="emp_email" type="email" value={nuevoEmpleado.email} onChange={(e) => setNuevoEmpleado({...nuevoEmpleado, email: e.target.value})} placeholder="empleado@ezpay.com" />
             </div>
             <div>
-              <Label htmlFor="emp_password">Contraseña Temporal *</Label>
+              <Label htmlFor="emp_password">Contrasena Temporal *</Label>
               <Input id="emp_password" type="password" value={nuevoEmpleado.password} onChange={(e) => setNuevoEmpleado({...nuevoEmpleado, password: e.target.value})} placeholder="Minimo 6 caracteres" />
             </div>
             <div>

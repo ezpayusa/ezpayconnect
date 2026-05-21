@@ -14,7 +14,6 @@ import FarmaciasPage from '@/pages/FarmaciasPage'
 import DispensarRecetaPage from '@/pages/DispensarRecetaPage'
 import ConfiguracionPage from '@/pages/ConfiguracionPage'
 import FacturasPage from '@/pages/FacturasPage'
-import ReportesPage from '@/pages/admin-ezpay/ReportesPage'
 
 // === IMPORTS ADMIN EZPAY ===
 import { useEffect } from 'react'
@@ -44,6 +43,11 @@ import FinanzasPage from '@/pages/admin-ezpay/FinanzasPage'
 import RolesPage from '@/pages/admin-ezpay/RolesPage'
 import UsuariosAdminPage from '@/pages/admin-ezpay/UsuariosAdminPage'
 import AuditoriaPage from '@/pages/admin-ezpay/AuditoriaPage'
+
+// === IMPORTS REPORTES (NUEVOS) ===
+import ReportesPage from '@/pages/admin-ezpay/ReportesPage'
+import ReportesEzPayPage from '@/pages/admin-ezpay/ReportesEzPayPage'
+import ReportesEzPayPageV2 from '@/pages/admin-ezpay/ReportesEzPayPageV2'
 
 function PrivateLayout({ children }: { children: React.ReactNode }) {
   const { user, loading } = useAuth()
@@ -77,7 +81,6 @@ function App() {
         <Route path="/farmacias" element={<PrivateLayout><FarmaciasPage /></PrivateLayout>} />
         <Route path="/dispensar-receta" element={<PrivateLayout><DispensarRecetaPage /></PrivateLayout>} />
         <Route path="/configuracion" element={<PrivateLayout><ConfiguracionPage /></PrivateLayout>} />
-        <Route path="/reportes" element={<PrivateLayout><ReportesPage /></PrivateLayout>} />
 
         {/* === RUTAS PLANES === */}
         <Route path="/planes" element={<PlanesPage />} />
@@ -96,6 +99,9 @@ function App() {
         <Route path="/admin/planes/publicidad" element={<AdminRoute><PlanesPublicidadConfigPage /></AdminRoute>} />
         <Route path="/admin/planes/empresas-afines" element={<AdminRoute><PlanesEmpresasAfinesConfigPage /></AdminRoute>} />
 
+        {/* === RUTAS REPORTES MEDICOS (Panel Medico) === */}
+        <Route path="/reportes" element={<PrivateLayout><ReportesPage /></PrivateLayout>} />
+
         {/* === RUTAS ADMIN EZPAY === */}
         <Route path="/admin-ezpay" element={<AdminRoute><AdminLayout /></AdminRoute>}>
           <Route index element={<AdminEzPayPage />} />
@@ -113,7 +119,12 @@ function App() {
           <Route path="planes-empresas-afines" element={<Navigate to="/admin/planes/empresas-afines" replace />} />
           <Route path="excepciones" element={<Navigate to="/admin/planes/excepciones" replace />} />
           <Route path="finanzas" element={<FinanzasPage />} />
+
+          {/* === RUTAS REPORTES EZPAY (NUEVAS) === */}
           <Route path="reportes" element={<ReportesPage />} />
+          <Route path="reportes-ezpay" element={<ReportesEzPayPage />} />
+          <Route path="reportes-ezpay-v2" element={<ReportesEzPayPageV2 />} />
+
           <Route path="roles" element={<RolesPage />} />
           <Route path="auditoria" element={<AuditoriaPage />} />
         </Route>

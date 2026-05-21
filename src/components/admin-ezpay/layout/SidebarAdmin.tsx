@@ -17,11 +17,11 @@ import {
   AlertCircle,
   DollarSign,
   BarChart3,
-  FileText,
   Shield,
   ChevronLeft,
   LogOut,
-  Activity
+  Activity,
+  BarChart4
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { supabase } from '@/lib/supabase';
@@ -48,7 +48,7 @@ export function SidebarAdmin() {
     { path: '/admin-ezpay/excepciones', icon: AlertCircle, label: 'Excepciones' },
     { path: '/admin-ezpay/finanzas', icon: DollarSign, label: 'Finanzas' },
     { path: '/admin-ezpay/reportes', icon: BarChart3, label: 'Reportes EZPay' },
-    { path: '/admin-ezpay/reportes-medico', icon: FileText, label: 'Reportes Médico' },
+    { path: '/admin-ezpay/reportes-ezpay-v2', icon: BarChart4, label: 'Reportes EZPay V2' },
     { path: '/admin-ezpay/roles', icon: Shield, label: 'Roles' },
     { path: '/admin-ezpay/auditoria', icon: Activity, label: 'Auditoría' },
   ];
