@@ -126,7 +126,36 @@ serve(async (req) => {
         ip_address: req.headers.get('x-forwarded-for') || req.headers.get('cf-connecting-ip') || 'unknown',
       })
 
-    // 9. Return success
+    // 9. NOTIFICAR ADMIN - Nuevo empleado registrado
+    try {
+      const supabaseUrl = Deno.env.get('SUPABASE_URL') ?? ''
+      const serviceRoleKey = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ?? ''
+      
+      await fetch(`${supabaseUrl}/functions/v1/notificar-admin`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${serviceRoleKey}`,
+        },
+        body: JSON.stringify({
+          tipo: 'empleado',
+          titulo: 'Nuevo empleado registrado',
+          mensaje: `${nombre_completo} fue registrado como ${rolData.nombre}`,
+          metadata: {
+            empleado_id: userId,
+            nombre: nombre_completo,
+            rol: rolData.nombre,
+            email: email,
+            creado_por: asignado_por,
+          },
+          accion_url: '/admin-ezpay/usuarios',
+        }),
+      })
+    } catch (notifError: any) {
+      console.warn('Error enviando notificacion admin (no critico):', notifError.message)
+    }
+
+    // 10. Return success
     return new Response(
       JSON.stringify({
         success: true,

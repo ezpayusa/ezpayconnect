@@ -1,3 +1,4 @@
+import VentasPage from '@/pages/admin-ezpay/VentasPage'
 import AsignacionRolesPage from '@/pages/admin-ezpay/AsignacionRolesPage'
 import PaisesPage from '@/pages/admin-ezpay/PaisesPage';
 import NotificacionesPage from '@/pages/NotificacionesPage'
@@ -105,6 +106,7 @@ function App() {
 
         {/* === RUTAS ADMIN EZPAY === */}
         <Route path="/admin-ezpay" element={<AdminRoute><AdminLayout /></AdminRoute>}>
+          <Route path="ventas" element={<VentasPage />} />
           <Route index element={<AdminEzPayPage />} />
           <Route path="paises" element={<PaisesPage />} />
           <Route path="usuarios" element={<UsuariosAdminPage />} />
