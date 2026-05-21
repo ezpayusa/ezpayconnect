@@ -1,6 +1,7 @@
 import AsignacionRolesPage from '@/pages/admin-ezpay/AsignacionRolesPage'
 import PaisesPage from '@/pages/admin-ezpay/PaisesPage';
 import NotificacionesPage from '@/pages/NotificacionesPage'
+import NotificacionesAdminPage from '@/pages/admin-ezpay/NotificacionesPage'
 import { BrowserRouter, Routes, Route, Navigate, useNavigate } from 'react-router-dom'
 import { useAuth } from '@/hooks/useAuth'
 import { Sidebar } from '@/components/layout/Sidebar'
@@ -127,6 +128,7 @@ function App() {
 
           <Route path="roles" element={<RolesPage />} />
           <Route path="auditoria" element={<AuditoriaPage />} />
+          <Route path="notificaciones" element={<NotificacionesAdminPage />} />
         </Route>
       </Routes>
     </BrowserRouter>
