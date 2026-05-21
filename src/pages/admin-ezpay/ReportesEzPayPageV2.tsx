@@ -24,7 +24,8 @@ import {
   Pill,
   Store,
   Megaphone,
-  Briefcase
+  Briefcase,
+  AlertTriangle
 } from 'lucide-react';
 
 interface ReportePais {
@@ -67,17 +68,28 @@ const periodos = [
   { id: 'mes', label: 'Este mes' },
   { id: 'trimestre', label: 'Este trimestre' },
   { id: 'anio', label: 'Este año' },
+  { id: 'todos', label: 'Todo el tiempo' },
 ];
+
+// Función para formatear números con separador de miles
+const formatNumber = (num: number, decimals: number = 2): string => {
+  return num.toLocaleString('en-US', {
+    minimumFractionDigits: decimals,
+    maximumFractionDigits: decimals,
+  });
+};
 
 export default function ReportesEzPayPageV2() {
   const navigate = useNavigate();
   const { isAdmin, loading: adminLoading } = useAdminAuth();
   const [tabActiva, setTabActiva] = useState('todos');
-  const [periodo, setPeriodo] = useState('mes');
+  const [periodo, setPeriodo] = useState('todos');
   const [reportePaises, setReportePaises] = useState<ReportePais[]>([]);
   const [reportePlanes, setReportePlanes] = useState<ReportePlan[]>([]);
   const [reporteMensual, setReporteMensual] = useState<ReporteMensual[]>([]);
   const [loading, setLoading] = useState(true);
+  const [errorMsg, setErrorMsg] = useState<string | null>(null);
+  const [debugInfo, setDebugInfo] = useState<string>('');
   const [stats, setStats] = useState({
     totalIngresos: 0,
     totalVentas: 0,
@@ -94,134 +106,78 @@ export default function ReportesEzPayPageV2() {
       case 'mes': return new Date(hoy.getFullYear(), hoy.getMonth(), 1);
       case 'trimestre': return new Date(hoy.getFullYear(), Math.floor(hoy.getMonth() / 3) * 3, 1);
       case 'anio': return new Date(hoy.getFullYear(), 0, 1);
+      case 'todos': return new Date(2000, 0, 1);
       default: return new Date(hoy.getFullYear(), hoy.getMonth(), 1);
     }
   };
 
+  const formatFechaSupabase = (fecha: Date): string => {
+    const year = fecha.getFullYear();
+    const month = String(fecha.getMonth() + 1).padStart(2, '0');
+    const day = String(fecha.getDate()).padStart(2, '0');
+    return `${year}-${month}-${day}`;
+  };
+
   const cargarDatos = async () => {
     setLoading(true);
+    setErrorMsg(null);
+    setDebugInfo('Cargando...');
+
     const fechaInicio = getFechaInicio();
+    const fechaStr = formatFechaSupabase(fechaInicio);
 
-    // Cargar países
-    const { data: paisesData } = await supabase.from('configuracion_pais').select('id, nombre, codigo, moneda').order('nombre');
-    const paisesMap: Record<string, { nombre: string; codigo: string; moneda: string }> = {};
-    (paisesData || []).forEach((p: any) => { paisesMap[p.id] = { nombre: p.nombre, codigo: p.codigo, moneda: p.moneda }; });
+    console.log('📊 Reportes V2 - Llamando edge function...');
+    console.log('Periodo:', periodo, '| Tab:', tabActiva, '| Fecha:', fechaStr);
 
-    // Cargar planes base
-    const { data: planesData } = await supabase.from('planes_base').select('id, nombre, tipo').eq('activo', true);
-    const planesMap: Record<string, { nombre: string; tipo: string }> = {};
-    (planesData || []).forEach((p: any) => { planesMap[p.id] = { nombre: p.nombre, tipo: p.tipo }; });
+    try {
+      const { data, error } = await supabase.functions.invoke('reportes-ezpay', {
+        body: {
+          periodo,
+          tabActiva,
+          fechaInicio: periodo !== 'todos' ? fechaStr : null
+        }
+      });
 
-    // Filtrar planes por tipo si no es "todos"
-    let planIdsFiltrados: string[] | null = null;
-    if (tabActiva !== 'todos') {
-      planIdsFiltrados = (planesData || []).filter((p: any) => p.tipo === tabActiva).map((p: any) => p.id);
-      if (planIdsFiltrados.length === 0) {
-        setReportePaises([]);
-        setReportePlanes([]);
-        setReporteMensual([]);
-        setStats({ totalIngresos: 0, totalVentas: 0, paisesActivos: 0, planesVendidos: 0, comisionesEstimadas: 0 });
+      if (error) {
+        console.error('❌ Error edge function:', error);
+        setErrorMsg('Error cargando datos: ' + error.message);
         setLoading(false);
         return;
       }
-    }
 
-    // Cargar transacciones
-    let query = supabase
-      .from('transacciones')
-      .select('*')
-      .eq('estado', 'completado')
-      .gte('fecha_pago', fechaInicio.toISOString());
+      console.log('✅ Respuesta edge function:', data);
 
-    if (planIdsFiltrados) {
-      query = query.in('plan_id', planIdsFiltrados);
-    }
+      if (!data.success) {
+        setErrorMsg(data.error || 'Error desconocido');
+        setLoading(false);
+        return;
+      }
 
-    const { data: transData, error } = await query;
+      const result = data.data;
 
-    if (error) {
-      console.error('Error:', error.message);
-      alert('Error al cargar transacciones: ' + error.message);
+      setReportePaises(result.paises || []);
+      setReportePlanes(result.planes || []);
+      setReporteMensual(result.mensual || []);
+      setStats(result.stats || {
+        totalIngresos: 0,
+        totalVentas: 0,
+        paisesActivos: 0,
+        planesVendidos: 0,
+        comisionesEstimadas: 0,
+      });
+
+      const totalTrans = (result.stats?.totalVentas || 0);
+      const totalPaises = (result.paises?.length || 0);
+      const totalIngresos = (result.stats?.totalIngresos || 0);
+
+      setDebugInfo(`✅ ${totalTrans} transacciones | ${totalPaises} países | $${formatNumber(totalIngresos)}`);
+
+    } catch (err: any) {
+      console.error('❌ Error general:', err);
+      setErrorMsg('Error inesperado: ' + err.message);
+    } finally {
       setLoading(false);
-      return;
     }
-
-    // Procesar por país
-    const paisesReporte: Record<string, ReportePais> = {};
-    const planesReporte: Record<string, ReportePlan> = {};
-    const mensualMap: Record<string, ReporteMensual> = {};
-
-    (transData || []).forEach((t: any) => {
-      const planInfo = planesMap[t.plan_id];
-      const paisInfo = paisesMap[t.pais_id];
-
-      if (!planInfo || !paisInfo) return;
-
-      // Por país
-      const paisKey = paisInfo.nombre;
-      if (!paisesReporte[paisKey]) {
-        paisesReporte[paisKey] = {
-          pais: paisInfo.nombre,
-          codigo: paisInfo.codigo,
-          transacciones: 0,
-          ingresos: 0,
-          moneda: paisInfo.moneda,
-        };
-      }
-      paisesReporte[paisKey].transacciones += 1;
-      paisesReporte[paisKey].ingresos += t.monto || 0;
-
-      // Por plan
-      const planKey = planInfo.nombre;
-      if (!planesReporte[planKey]) {
-        planesReporte[planKey] = {
-          plan: planInfo.nombre,
-          tipo: planInfo.tipo,
-          ventas: 0,
-          ingresos: 0,
-        };
-      }
-      planesReporte[planKey].ventas += 1;
-      planesReporte[planKey].ingresos += t.monto || 0;
-
-      // Mensual
-      const fecha = new Date(t.fecha_pago);
-      const mesKey = `${fecha.getFullYear()}-${String(fecha.getMonth() + 1).padStart(2, '0')}`;
-      const mesNombre = fecha.toLocaleDateString('es-ES', { month: 'short', year: 'numeric' });
-
-      if (!mensualMap[mesKey]) {
-        mensualMap[mesKey] = {
-          mes: mesNombre,
-          anio: fecha.getFullYear(),
-          total: 0,
-          transacciones: 0,
-        };
-      }
-      mensualMap[mesKey].total += t.monto || 0;
-      mensualMap[mesKey].transacciones += 1;
-    });
-
-    const paisesArray = Object.values(paisesReporte);
-    const planesArray = Object.values(planesReporte);
-    const mensualArray = Object.values(mensualMap).sort((a, b) => {
-      if (a.anio !== b.anio) return a.anio - b.anio;
-      return a.mes.localeCompare(b.mes);
-    });
-
-    const totalIngresos = paisesArray.reduce((sum, p) => sum + p.ingresos, 0);
-
-    setReportePaises(paisesArray);
-    setReportePlanes(planesArray);
-    setReporteMensual(mensualArray);
-    setStats({
-      totalIngresos,
-      totalVentas: paisesArray.reduce((sum, p) => sum + p.transacciones, 0),
-      paisesActivos: paisesArray.length,
-      planesVendidos: planesArray.length,
-      comisionesEstimadas: totalIngresos * 0.05,
-    });
-
-    setLoading(false);
   };
 
   useEffect(() => {
@@ -229,7 +185,10 @@ export default function ReportesEzPayPageV2() {
       navigate('/dashboard');
       return;
     }
-    cargarDatos();
+    if (!adminLoading && isAdmin) {
+      console.log('🚀 Iniciando carga de reportes...');
+      cargarDatos();
+    }
   }, [adminLoading, isAdmin, navigate, tabActiva, periodo]);
 
   const getBandera = (codigo: string) => {
@@ -265,6 +224,16 @@ export default function ReportesEzPayPageV2() {
     }
   };
 
+  const getMonedaSymbol = (moneda: string) => {
+    switch (moneda) {
+      case 'GTQ': return 'Q';
+      case 'HNL': return 'L';
+      case 'CRC': return '₡';
+      case 'USD': return '$';
+      default: return '$';
+    }
+  };
+
   const tabInfo = tabs.find(t => t.id === tabActiva) || tabs[0];
 
   if (adminLoading) return <div className="flex justify-center p-8">Verificando permisos...</div>;
@@ -282,8 +251,28 @@ export default function ReportesEzPayPageV2() {
             <p className="text-sm text-muted-foreground">Métricas de planes, suscripciones e ingresos</p>
           </div>
         </div>
-        <Button variant="outline" onClick={cargarDatos}><RefreshCw className="h-4 w-4 mr-2" /> Recargar</Button>
+        <div className="flex items-center gap-2">
+          {debugInfo && (
+            <span className="text-xs text-muted-foreground bg-gray-100 px-2 py-1 rounded">
+              {debugInfo}
+            </span>
+          )}
+          <Button variant="outline" onClick={cargarDatos}>
+            <RefreshCw className="h-4 w-4 mr-2" /> Recargar
+          </Button>
+        </div>
       </div>
+
+      {/* Error alert */}
+      {errorMsg && (
+        <div className="bg-red-50 border border-red-200 rounded-lg p-4 mb-6 flex items-center gap-3">
+          <AlertTriangle className="h-5 w-5 text-red-600" />
+          <div>
+            <p className="font-medium text-red-800">Error al cargar datos</p>
+            <p className="text-sm text-red-600">{errorMsg}</p>
+          </div>
+        </div>
+      )}
 
       {/* Tabs de tipo de plan */}
       <div className="flex flex-wrap gap-2 mb-4">
@@ -330,7 +319,7 @@ export default function ReportesEzPayPageV2() {
               <DollarSign className="h-5 w-5 text-green-600" />
               <p className="text-sm text-muted-foreground">Ingresos</p>
             </div>
-            <p className="text-2xl font-bold">${stats.totalIngresos.toFixed(2)}</p>
+            <p className="text-2xl font-bold">${formatNumber(stats.totalIngresos)}</p>
           </CardContent>
         </Card>
         <Card>
@@ -339,7 +328,7 @@ export default function ReportesEzPayPageV2() {
               <CreditCard className="h-5 w-5 text-blue-600" />
               <p className="text-sm text-muted-foreground">Ventas</p>
             </div>
-            <p className="text-2xl font-bold">{stats.totalVentas}</p>
+            <p className="text-2xl font-bold">{formatNumber(stats.totalVentas, 0)}</p>
           </CardContent>
         </Card>
         <Card>
@@ -366,7 +355,7 @@ export default function ReportesEzPayPageV2() {
               <TrendingUp className="h-5 w-5 text-teal-600" />
               <p className="text-sm text-muted-foreground">Comisiones</p>
             </div>
-            <p className="text-2xl font-bold">${stats.comisionesEstimadas.toFixed(2)}</p>
+            <p className="text-2xl font-bold">${formatNumber(stats.comisionesEstimadas)}</p>
           </CardContent>
         </Card>
       </div>
@@ -389,6 +378,7 @@ export default function ReportesEzPayPageV2() {
               {reportePaises.length === 0 ? (
                 <div className="text-center py-8 text-muted-foreground">
                   No hay datos de transacciones para {tabInfo.label} en este período
+                  <p className="text-sm mt-2">Periodo: {periodo}</p>
                 </div>
               ) : (
                 <div className="space-y-4">
@@ -405,8 +395,7 @@ export default function ReportesEzPayPageV2() {
                           </div>
                           <div className="text-right">
                             <span className="font-bold">
-                              {pais.moneda === 'GTQ' ? 'Q' : pais.moneda === 'HNL' ? 'L' : pais.moneda === 'CRC' ? '₡' : '$'}
-                              {pais.ingresos.toFixed(2)}
+                              {getMonedaSymbol(pais.moneda)}{formatNumber(pais.ingresos)}
                             </span>
                             <span className="text-sm text-muted-foreground ml-1">({pais.transacciones} ventas)</span>
                           </div>
@@ -454,7 +443,7 @@ export default function ReportesEzPayPageV2() {
                           </div>
                           <div className="text-right">
                             <span className="font-bold">{plan.ventas} ventas</span>
-                            <span className="text-sm text-muted-foreground ml-1">(${plan.ingresos.toFixed(2)})</span>
+                            <span className="text-sm text-muted-foreground ml-1">(${formatNumber(plan.ingresos)})</span>
                           </div>
                         </div>
                         <div className="w-full bg-gray-100 rounded-full h-3">
@@ -491,7 +480,7 @@ export default function ReportesEzPayPageV2() {
                         <div className="flex justify-between items-center">
                           <span className="font-medium">{mes.mes}</span>
                           <div className="text-right">
-                            <span className="font-bold">${mes.total.toFixed(2)}</span>
+                            <span className="font-bold">${formatNumber(mes.total)}</span>
                             <span className="text-sm text-muted-foreground ml-1">({mes.transacciones} trans.)</span>
                           </div>
                         </div>
@@ -537,14 +526,13 @@ export default function ReportesEzPayPageV2() {
                         </td>
                         <td className="py-3 px-4 text-center">{pais.transacciones}</td>
                         <td className="py-3 px-4 text-right font-semibold">
-                          {pais.moneda === 'GTQ' ? 'Q' : pais.moneda === 'HNL' ? 'L' : pais.moneda === 'CRC' ? '₡' : '$'}
-                          {pais.ingresos.toFixed(2)}
+                          {getMonedaSymbol(pais.moneda)}{formatNumber(pais.ingresos)}
                         </td>
                         <td className="py-3 px-4 text-right text-muted-foreground">
-                          {pais.transacciones > 0 ? (pais.ingresos / pais.transacciones).toFixed(2) : '0.00'}
+                          {pais.transacciones > 0 ? formatNumber(pais.ingresos / pais.transacciones) : '0.00'}
                         </td>
                         <td className="py-3 px-4 text-right text-muted-foreground">
-                          {(pais.ingresos * 0.05).toFixed(2)}
+                          {formatNumber(pais.ingresos * 0.05)}
                         </td>
                       </tr>
                     ))}
