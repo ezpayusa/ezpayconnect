@@ -22,8 +22,8 @@ export default function PlanesAsignacionesPage() {
   const { user } = useAuth();
   const { asignaciones, planesConfig, loading, cancelarAsignacion, renovarAsignacion, recargar } = usePlanes();
   const [search, setSearch] = useState('');
-  const [filtroEstado, setFiltroEstado] = useState<<EstadoPlanLocal | 'todos'>('todos');
-  const [asignacionSel, setAsignacionSel] = useState<<PlanAsignacion | null>(null);
+  const [filtroEstado, setFiltroEstado] = useState<EstadoPlanLocal | 'todos'>('todos');
+  const [asignacionSel, setAsignacionSel] = useState<PlanAsignacion | null>(null);
   const [dialogoDetalle, setDialogoDetalle] = useState(false);
   const [dialogoCancelar, setDialogoCancelar] = useState(false);
   const [motivoCancelacion, setMotivoCancelacion] = useState('');
