@@ -3,7 +3,22 @@ import { useNotificaciones } from '@/hooks/useNotificaciones'
 import { Bell, Check, Mail, AlertCircle, X } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
-import { formatDistanceToNow } from '@/lib/utils'
+
+// Función simple para mostrar tiempo relativo (reemplaza formatDistanceToNow)
+const formatDistanceToNow = (date: Date): string => {
+  const now = new Date()
+  const diffMs = now.getTime() - date.getTime()
+  const diffSec = Math.floor(diffMs / 1000)
+  const diffMin = Math.floor(diffSec / 60)
+  const diffHour = Math.floor(diffMin / 60)
+  const diffDay = Math.floor(diffHour / 24)
+
+  if (diffSec < 60) return 'hace un momento'
+  if (diffMin < 60) return `hace ${diffMin} minuto${diffMin > 1 ? 's' : ''}`
+  if (diffHour < 24) return `hace ${diffHour} hora${diffHour > 1 ? 's' : ''}`
+  if (diffDay < 30) return `hace ${diffDay} día${diffDay > 1 ? 's' : ''}`
+  return date.toLocaleDateString('es-GT')
+}
 
 export default function NotificacionesBadge() {
   const { notificaciones, noLeidas, marcarLeida, marcarTodasLeidas, loading } = useNotificaciones()
@@ -57,7 +72,7 @@ export default function NotificacionesBadge() {
                     <div
                       key={notif.id}
                       className={`p-4 border-b border-[#e8f0f8] hover:bg-[#f8fafc] transition-colors cursor-pointer ${
-                        notif.estado === 'enviado' ? 'bg-[#e8f0f8]' : ''
+                        !notif.leida ? 'bg-[#e8f0f8]' : ''
                       }`}
                       onClick={() => marcarLeida(notif.id)}
                     >
@@ -74,7 +89,7 @@ export default function NotificacionesBadge() {
                             {formatDistanceToNow(new Date(notif.created_at))}
                           </p>
                         </div>
-                        {notif.estado === 'enviado' && (
+                        {!notif.leida && (
                           <div className="w-2 h-2 bg-[#1E5C8E] rounded-full mt-1.5" />
                         )}
                       </div>
