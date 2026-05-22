@@ -1,8 +1,9 @@
 // src/pages/DispensarRecetaPage.tsx
-// Dia 18: Dispensar Receta - Escanear QR y dispensar
+// Dispensar Receta - Lee codigo desde query string o input manual
 // EzPayConnect
 
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
+import { useSearchParams } from 'react-router-dom'
 import { supabase } from '@/lib/supabase'
 import { useAuth } from '@/hooks/useAuth'
 import {
@@ -14,9 +15,11 @@ import {
   Package,
   X,
   Loader2,
-  Pill
+  Pill,
+  Home
 } from 'lucide-react'
 import { useNavigate } from 'react-router-dom'
+import { Button } from '@/components/ui/button'
 
 const EDGE_FUNCTION_URL = 'https://fqnsmvkxsuujahhmpzuk.supabase.co/functions/v1'
 
@@ -29,8 +32,13 @@ interface RecetaVerificada {
 
 export default function DispensarRecetaPage() {
   const navigate = useNavigate()
+  const [searchParams] = useSearchParams()
   const { user } = useAuth()
-  const [codigoQR, setCodigoQR] = useState('')
+
+  // Lee codigo desde URL (?codigo=XXX) o deja input manual
+  const codigoFromURL = searchParams.get('codigo') || ''
+
+  const [codigoQR, setCodigoQR] = useState(codigoFromURL)
   const [verificando, setVerificando] = useState(false)
   const [recetaData, setRecetaData] = useState<RecetaVerificada | null>(null)
   const [error, setError] = useState('')
@@ -39,8 +47,16 @@ export default function DispensarRecetaPage() {
   const [farmaceuticoNombre, setFarmaceuticoNombre] = useState('')
   const [medicamentosSeleccionados, setMedicamentosSeleccionados] = useState<any[]>([])
 
-  const verificarQR = async () => {
-    if (!codigoQR.trim()) {
+  // Auto-verificar si viene codigo en URL
+  useEffect(() => {
+    if (codigoFromURL && !recetaData && !verificando) {
+      verificarQR(codigoFromURL)
+    }
+  }, [codigoFromURL])
+
+  const verificarQR = async (codigo?: string) => {
+    const codigoAVerificar = codigo || codigoQR.trim()
+    if (!codigoAVerificar) {
       setError('Ingresa un codigo QR')
       return
     }
@@ -51,7 +67,7 @@ export default function DispensarRecetaPage() {
 
     try {
       const { data: result, error: fnError } = await supabase.functions.invoke('verificar-receta-qr', {
-        body: { codigo_qr: codigoQR.trim() }
+        body: { codigo_qr: codigoAVerificar }
       })
 
       if (fnError) throw fnError
@@ -128,18 +144,34 @@ export default function DispensarRecetaPage() {
 
   return (
     <div className="min-h-screen bg-gray-50 p-8">
-      <div className="flex items-center gap-4 mb-8">
-        <button 
-          onClick={() => navigate('/farmacias')}
-          className="p-2 bg-white rounded-lg hover:bg-gray-100 transition-colors shadow-sm"
+      {/* Botones de navegación */}
+      <div className="flex items-center gap-3 mb-6">
+        <Button
+          variant="outline"
+          size="sm"
+          onClick={() => navigate('/dashboard')}
+          className="border-[#1E5C8E] text-[#1E5C8E] hover:bg-[#e8f0f8]"
         >
-          <ArrowLeft size={24} className="text-[#1E5C8E]" />
-        </button>
+          <Home className="h-4 w-4 mr-2" />
+          Dashboard
+        </Button>
+        <Button
+          variant="outline"
+          size="sm"
+          onClick={() => navigate('/farmacias')}
+          className="border-gray-300 text-gray-600 hover:bg-gray-100"
+        >
+          <ArrowLeft className="h-4 w-4 mr-2" />
+          Farmacias
+        </Button>
+      </div>
+
+      <div className="flex items-center gap-4 mb-8">
+        <div className="p-3 bg-white rounded-lg shadow-sm">
+          <QrCode size={32} className="text-[#1E5C8E]" />
+        </div>
         <div>
-          <h1 className="text-3xl font-bold text-[#1a2a3a] flex items-center gap-3">
-            <QrCode size={32} className="text-[#1E5C8E]" />
-            Dispensar Receta
-          </h1>
+          <h1 className="text-3xl font-bold text-[#1a2a3a]">Dispensar Receta</h1>
           <p className="text-gray-500">Escanea el codigo QR de la receta para verificar y dispensar</p>
         </div>
       </div>
@@ -158,7 +190,7 @@ export default function DispensarRecetaPage() {
                 className="flex-1 p-3 border border-gray-200 rounded-lg focus:outline-none focus:border-[#1E5C8E] font-mono"
               />
               <button
-                onClick={verificarQR}
+                onClick={() => verificarQR()}
                 disabled={verificando}
                 className="px-6 py-3 bg-[#1E5C8E] hover:bg-[#3A8ABF] text-white rounded-lg font-semibold flex items-center gap-2 transition-colors disabled:opacity-50"
               >

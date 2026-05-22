@@ -23,28 +23,31 @@ export function Sidebar() {
   const { logout, perfil, isAdmin, isMedico, isAsistente } = useAuth()
   const { noLeidas } = useNotificaciones()
 
+  // Normalizar rol para comparación
+  const userRol = (perfil?.rol || '').toLowerCase().trim()
+
   // Definir items de navegación según rol
   const getNavItems = () => {
     const baseItems = [
-      { label: 'Dashboard', icon: LayoutDashboard, path: '/dashboard', roles: ['admin', 'medico', 'asistente'] },
-      { label: 'Pacientes', icon: Users, path: '/pacientes', roles: ['admin', 'medico', 'asistente'] },
-      { label: 'Citas', icon: CalendarDays, path: '/citas', roles: ['admin', 'medico', 'asistente'] },
+      { label: 'Dashboard', icon: LayoutDashboard, path: '/dashboard', roles: ['admin', 'medico', 'asistente', 'super_admin'] },
+      { label: 'Pacientes', icon: Users, path: '/pacientes', roles: ['admin', 'medico', 'asistente', 'super_admin'] },
+      { label: 'Citas', icon: CalendarDays, path: '/citas', roles: ['admin', 'medico', 'asistente', 'super_admin'] },
     ]
 
     const medicoItems = [
-      { label: 'Recetas', icon: FileText, path: '/recetas', roles: ['admin', 'medico'] },
-      { label: 'Facturas', icon: DollarSign, path: '/facturas', roles: ['admin', 'medico'] },
+      { label: 'Recetas', icon: FileText, path: '/recetas', roles: ['admin', 'medico', 'super_admin'] },
+      { label: 'Facturas', icon: DollarSign, path: '/facturas', roles: ['admin', 'medico', 'super_admin'] },
     ]
 
     const adminItems = [
-      { label: 'Farmacias', icon: Pill, path: '/farmacias', roles: ['admin', 'medico'] },
-      { label: 'Reportes', icon: BarChart3, path: '/reportes', roles: ['admin', 'medico'] },
-      { label: 'Configuracion', icon: Settings, path: '/configuracion', roles: ['admin'] },
+      { label: 'Farmacias', icon: Pill, path: '/farmacias', roles: ['admin', 'medico', 'super_admin'] },
+      { label: 'Reportes', icon: BarChart3, path: '/reportes', roles: ['admin', 'medico', 'super_admin'] },
+      { label: 'Configuracion', icon: Settings, path: '/configuracion', roles: ['admin', 'super_admin'] },
     ]
 
     const allItems = [...baseItems, ...medicoItems, ...adminItems]
 
-    return allItems.filter(item => item.roles.includes(perfil?.rol || ''))
+    return allItems.filter(item => item.roles.includes(userRol))
   }
 
   const navItems = getNavItems()

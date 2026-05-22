@@ -11,11 +11,13 @@ import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Badge } from '@/components/ui/badge'
-import { FileText, Plus, Trash2, Search, Printer, Eye, Loader2, X, Download, Mail, QrCode } from 'lucide-react'
+import { FileText, Plus, Trash2, Search, Printer, Eye, Loader2, X, Download, Mail, QrCode, ArrowLeft } from 'lucide-react'
 import type { RecetaItem } from '@/types'
 import EnviarRecetaEmail from '@/components/recetas/EnviarRecetaEmail'
+import { useNavigate } from 'react-router-dom'
 
 export default function RecetasPage() {
+  const navigate = useNavigate()
   const [searchParams] = useSearchParams()
   const { pacientes } = usePacientes()
   const { recetas, loading, createReceta, getRecetaCompleta, updateReceta } = useRecetas()
@@ -48,6 +50,9 @@ export default function RecetasPage() {
   })
   const [items, setItems] = useState<Partial<RecetaItem>[]>([])
   const [formError, setFormError] = useState('')
+
+  // URL base para QR (usa dominio si está verificado, fallback a vercel)
+  const QR_BASE_URL = 'https://med.ezpayconnect.com/dispensar-receta'
 
   const handleAddMedicamento = (med: typeof medicamentos[0]) => {
     setItems([...items, {
@@ -177,6 +182,19 @@ export default function RecetasPage() {
 
   return (
     <div className="p-8 space-y-6">
+      {/* Botón Volver al Dashboard */}
+      <div className="flex items-center gap-4">
+        <Button
+          variant="outline"
+          size="sm"
+          onClick={() => navigate('/dashboard')}
+          className="border-[#1E5C8E] text-[#1E5C8E] hover:bg-[#e8f0f8]"
+        >
+          <ArrowLeft className="h-4 w-4 mr-2" />
+          Volver al Dashboard
+        </Button>
+      </div>
+
       <div className="flex items-center justify-between">
         <div>
           <h1 className="text-3xl font-bold text-[#1a2a3a]">Recetas Médicas</h1>
@@ -566,11 +584,11 @@ export default function RecetasPage() {
                 </p>
               </div>
 
-              {/* QR Code generado con API externa */}
+              {/* QR Code generado con URL del dominio */}
               <div className="flex flex-col items-center gap-4">
                 <div className="bg-white p-4 rounded-xl shadow-lg border-2 border-[#1E5C8E]/20">
                   <img 
-                    src={`https://api.qrserver.com/v1/create-qr-code/?size=250x250&data=${encodeURIComponent(qrRecetaData.receta?.codigo_qr || `EZP-${qrRecetaData.receta?.id}`)}`}
+                    src={`https://api.qrserver.com/v1/create-qr-code/?size=250x250&data=${encodeURIComponent(`${QR_BASE_URL}?codigo=${qrRecetaData.receta?.codigo_qr || `EZP-${qrRecetaData.receta?.id}`}`)}`}
                     alt="QR Receta"
                     className="w-[250px] h-[250px]"
                   />
@@ -578,8 +596,8 @@ export default function RecetasPage() {
                 <p className="text-sm text-[#8a9aaa] text-center">
                   Escanea este código en la farmacia para dispensar la receta
                 </p>
-                <p className="text-xs text-[#8a9aaa] text-center font-mono">
-                  {qrRecetaData.receta?.codigo_qr || `EZP-${qrRecetaData.receta?.id}`}
+                <p className="text-xs text-[#1E5C8E] text-center font-mono break-all">
+                  {QR_BASE_URL}?codigo={qrRecetaData.receta?.codigo_qr || `EZP-${qrRecetaData.receta?.id}`}
                 </p>
               </div>
 
@@ -592,7 +610,7 @@ export default function RecetasPage() {
                   variant="outline"
                   className="border-[#1E5C8E] text-[#1E5C8E] hover:bg-[#e8f0f8]"
                   onClick={() => {
-                    const qrUrl = `https://api.qrserver.com/v1/create-qr-code/?size=400x400&data=${encodeURIComponent(qrRecetaData.receta?.codigo_qr || `EZP-${qrRecetaData.receta?.id}`)}`
+                    const qrUrl = `https://api.qrserver.com/v1/create-qr-code/?size=400x400&data=${encodeURIComponent(`${QR_BASE_URL}?codigo=${qrRecetaData.receta?.codigo_qr || `EZP-${qrRecetaData.receta?.id}`}`)}`
                     window.open(qrUrl, '_blank')
                   }}
                 >
