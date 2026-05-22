@@ -1,214 +1,576 @@
-import { useState } from 'react'
-import { useSearchParams } from 'react-router'
-import { usePacientes } from '@/hooks/usePacientes'
-import { useCitas } from '@/hooks/useCitas'
-import BotonWhatsAppCita from '@/components/BotonWhatsAppCita'
-import { Button } from '@/components/ui/button'
-import { Input } from '@/components/ui/input'
-import { Label } from '@/components/ui/label'
-import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
-import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog'
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
-import { Plus, Clock, Loader2 } from 'lucide-react'
+// src/pages/CitasPage.tsx
+// Dia 20: Citas Avanzado V2 - VERSION HIBRIDA FUNCIONAL
+// Muestra citas existentes (medicos de perfiles) + Crea citas nuevas (medicos de tabla medicos)
+// EzPayConnect
 
-const ESTADOS = ['agendada', 'confirmada', 'en_curso', 'completada', 'cancelada'] as const
-const DIAS = ['Dom', 'Lun', 'Mar', 'Mie', 'Jue', 'Vie', 'Sab']
+import { useState, useEffect } from 'react'
+import { supabase } from '@/lib/supabase'
+import { useAuth } from '@/hooks/useAuth'
+import {
+  Calendar,
+  Clock,
+  User,
+  Stethoscope,
+  Bell,
+  CheckCircle,
+  AlertCircle,
+  Plus,
+  ChevronLeft,
+  ChevronRight,
+  Loader2,
+  X
+} from 'lucide-react'
+
+interface Cita {
+  id: string
+  fecha: string
+  hora_inicio: string
+  hora_fin: string
+  estado: string
+  motivo: string
+  paciente_id: string
+  medico_id: string
+  paciente?: { nombre: string; telefono: string }
+  medico?: { nombre: string; nombre_completo?: string }
+}
+
+interface Paciente {
+  id: string
+  nombre: string
+  telefono: string
+}
+
+interface Medico {
+  id: string
+  nombre: string
+  nombre_completo?: string
+  especialidad?: string
+}
+
+interface Recordatorio {
+  id: string
+  cita_id: string
+  estado: string
+  tipo_recordatorio: string
+}
 
 export default function CitasPage() {
-  const [searchParams] = useSearchParams()
-  const { pacientes } = usePacientes()
-  const { citas, createCita, updateCita } = useCitas()
-  const [showForm, setShowForm] = useState(searchParams.get('nuevo') === 'true')
-  const [currentDate, setCurrentDate] = useState(new Date())
-  const [selectedDate, setSelectedDate] = useState<string>('')
-  const [saving, setSaving] = useState(false)
+  const { user } = useAuth()
+  const [citas, setCitas] = useState<Cita[]>([])
+  const [recordatorios, setRecordatorios] = useState<Recordatorio[]>([])
+  const [loading, setLoading] = useState(true)
+  const [fechaSeleccionada, setFechaSeleccionada] = useState(new Date().toISOString().split('T')[0])
+  const [vista, setVista] = useState<'dia' | 'semana' | 'mes'>('dia')
+  const [programando, setProgramando] = useState<string | null>(null)
 
-  const [form, setForm] = useState({
-    paciente_id: '', fecha: '', hora_inicio: '', hora_fin: '', motivo: '', notas: ''
+  // Modal nueva cita
+  const [showModal, setShowModal] = useState(false)
+  const [pacientes, setPacientes] = useState<Paciente[]>([])
+  const [medicos, setMedicos] = useState<Medico[]>([])
+  const [guardando, setGuardando] = useState(false)
+  const [nuevaCita, setNuevaCita] = useState({
+    paciente_id: '',
+    medico_id: '',
+    fecha: new Date().toISOString().split('T')[0],
+    hora_inicio: '09:00',
+    hora_fin: '10:00',
+    motivo: '',
+    notas: ''
   })
-  const [formError, setFormError] = useState('')
 
-  const year = currentDate.getFullYear()
-  const month = currentDate.getMonth()
-  const firstDay = new Date(year, month, 1).getDay()
-  const daysInMonth = new Date(year, month + 1, 0).getDate()
-  const monthNames = ['Enero', 'Febrero', 'Marzo', 'Abril', 'Mayo', 'Junio', 'Julio', 'Agosto', 'Septiembre', 'Octubre', 'Noviembre', 'Diciembre']
+  useEffect(() => {
+    cargarCitas()
+    cargarRecordatorios()
+    cargarPacientesYMedicos()
+  }, [fechaSeleccionada])
 
-  const citasPorDia = (dia: number) => {
-    const fechaStr = `${year}-${String(month + 1).padStart(2, '0')}-${String(dia).padStart(2, '0')}`
-    return citas.filter(c => c.fecha === fechaStr && c.estado !== 'cancelada')
-  }
+  // CARGAR CITAS - Version hibrida: busca medicos en AMBAS tablas
+  const cargarCitas = async () => {
+    setLoading(true)
 
-  const handleSubmit = async (e: React.FormEvent) => {
-    e.preventDefault()
-    setSaving(true)
-    setFormError('')
-    const { error } = await createCita({
-      paciente_id: parseInt(form.paciente_id),
-      fecha: form.fecha,
-      hora_inicio: form.hora_inicio,
-      hora_fin: form.hora_fin || null,
-      motivo: form.motivo,
-      notas: form.notas,
-      estado: 'agendada'
-    })
-    if (error) {
-      setFormError(typeof error === 'string' ? error : 'Error al crear cita. Verifica que seleccionaste un paciente.')
-      setSaving(false)
+    // 1. Cargar citas sin join
+    const { data: citasData, error: citasError } = await supabase
+      .from('citas')
+      .select('*')
+      .eq('fecha', fechaSeleccionada)
+      .order('hora_inicio')
+
+    if (citasError) {
+      console.error('Error cargando citas:', citasError)
+      setCitas([])
+      setLoading(false)
       return
     }
-    setForm({ paciente_id: '', fecha: '', hora_inicio: '', hora_fin: '', motivo: '', notas: '' })
-    setShowForm(false)
-    setSaving(false)
+
+    if (!citasData || citasData.length === 0) {
+      setCitas([])
+      setLoading(false)
+      return
+    }
+
+    // 2. Obtener IDs únicos
+    const pacienteIds = [...new Set(citasData.map(c => c.paciente_id).filter(Boolean))]
+    const medicoIds = [...new Set(citasData.map(c => c.medico_id).filter(Boolean))]
+
+    // 3. Cargar pacientes
+    let pacientesData: any[] = []
+    if (pacienteIds.length > 0) {
+      const { data: pacs } = await supabase
+        .from('pacientes')
+        .select('id, nombre, telefono')
+        .in('id', pacienteIds)
+      pacientesData = pacs || []
+    }
+
+    // 4. Cargar medicos de AMBAS tablas (perfiles + medicos)
+    let medicosData: any[] = []
+    if (medicoIds.length > 0) {
+      // Intentar tabla medicos primero
+      const { data: medsNuevos } = await supabase
+        .from('medicos')
+        .select('id, nombre_completo, especialidad')
+        .in('id', medicoIds)
+
+      // Intentar tabla perfiles como fallback
+      const { data: medsViejos } = await supabase
+        .from('perfiles')
+        .select('id, nombre, especialidad')
+        .in('id', medicoIds)
+        .eq('rol', 'medico')
+
+      // Combinar: medicos nuevos tienen prioridad
+      const medsNuevosMap = new Map((medsNuevos || []).map(m => [m.id, { ...m, nombre: m.nombre_completo }]))
+      const medsViejosMap = new Map((medsViejos || []).map(m => [m.id, m]))
+
+      // Usar medicos nuevos si existen, sino los viejos
+      medicosData = medicoIds.map(id => {
+        const nuevo = medsNuevosMap.get(id)
+        const viejo = medsViejosMap.get(id)
+        return nuevo || viejo || { id, nombre: 'Medico no encontrado' }
+      }).filter(Boolean)
+    }
+
+    // 5. Combinar datos
+    const citasCompletas = citasData.map(cita => ({
+      ...cita,
+      paciente: pacientesData.find(p => String(p.id) === String(cita.paciente_id)) || null,
+      medico: medicosData.find(m => String(m.id) === String(cita.medico_id)) || null
+    }))
+
+    setCitas(citasCompletas)
+    setLoading(false)
   }
 
-  const cambiarEstado = async (id: number, estado: string) => {
-    await updateCita(id, { estado: estado as any })
+  const cargarRecordatorios = async () => {
+    if (citas.length === 0) return
+    const { data } = await supabase
+      .from('recordatorios_programados')
+      .select('*')
+      .in('cita_id', citas.map(c => c.id))
+    setRecordatorios(data || [])
   }
+
+  // Cargar pacientes y medicos para el MODAL (solo tabla medicos)
+  const cargarPacientesYMedicos = async () => {
+    const { data: pacs } = await supabase
+      .from('pacientes')
+      .select('id, nombre, telefono')
+      .order('nombre')
+
+    const { data: meds } = await supabase
+      .from('medicos')
+      .select('id, nombre_completo, especialidad, activo')
+      .eq('activo', true)
+      .order('nombre_completo')
+
+    setPacientes(pacs || [])
+    setMedicos(meds || [])
+  }
+
+  const guardarCita = async (e: React.FormEvent) => {
+    e.preventDefault()
+    if (!nuevaCita.paciente_id || !nuevaCita.medico_id || !nuevaCita.fecha) {
+      alert('Paciente, medico y fecha son obligatorios')
+      return
+    }
+
+    setGuardando(true)
+    try {
+      const { error } = await supabase.from('citas').insert({
+        paciente_id: parseInt(nuevaCita.paciente_id),
+        medico_id: nuevaCita.medico_id,
+        fecha: nuevaCita.fecha,
+        hora_inicio: nuevaCita.hora_inicio,
+        hora_fin: nuevaCita.hora_fin,
+        motivo: nuevaCita.motivo,
+        notas: nuevaCita.notas,
+        estado: 'pendiente'
+      })
+
+      if (error) throw error
+
+      alert('Cita creada exitosamente')
+      setShowModal(false)
+      setNuevaCita({
+        paciente_id: '', medico_id: '', fecha: new Date().toISOString().split('T')[0],
+        hora_inicio: '09:00', hora_fin: '10:00', motivo: '', notas: ''
+      })
+      cargarCitas()
+    } catch (err: any) {
+      alert('Error: ' + err.message)
+    } finally {
+      setGuardando(false)
+    }
+  }
+
+  const programarRecordatorio = async (cita: Cita) => {
+    setProgramando(cita.id)
+    try {
+      const { data: result, error: fnError } = await supabase.functions.invoke('programar-recordatorio', {
+        body: {
+          cita_id: cita.id,
+          paciente_id: cita.paciente_id,
+          tipo_recordatorio: 'whatsapp',
+          horas_antes: 24
+        }
+      })
+
+      if (fnError) throw fnError
+
+      if (result?.success) {
+        alert('Recordatorio programado: ' + result.data.estado)
+        cargarRecordatorios()
+      } else {
+        alert('Error: ' + result?.error)
+      }
+    } catch (err: any) {
+      alert('Error: ' + err.message)
+    } finally {
+      setProgramando(null)
+    }
+  }
+
+  const cambiarFecha = (dias: number) => {
+    const fecha = new Date(fechaSeleccionada)
+    fecha.setDate(fecha.getDate() + dias)
+    setFechaSeleccionada(fecha.toISOString().split('T')[0])
+  }
+
+  const getRecordatoriosCita = (citaId: string) => {
+    return recordatorios.filter(r => r.cita_id === citaId)
+  }
+
+  const getIconoEstado = (estado: string) => {
+    switch (estado) {
+      case 'atendida': return <CheckCircle size={16} className="text-green-500" />
+      case 'cancelada': return <AlertCircle size={16} className="text-red-500" />
+      default: return <Clock size={16} className="text-yellow-500" />
+    }
+  }
+
+  if (loading) return (
+    <div className="min-h-screen bg-gray-50 flex items-center justify-center">
+      <Loader2 className="h-8 w-8 animate-spin text-[#1E5C8E]" />
+    </div>
+  )
 
   return (
-    <div className="p-8 space-y-6">
-      <div className="flex items-center justify-between">
-        <div>
-          <h1 className="text-3xl font-bold text-[#1a2a3a]">Agenda de Citas</h1>
-          <p className="text-[#8a9aaa] mt-1">Calendario y gestion de citas</p>
-        </div>
-        <Button onClick={() => setShowForm(true)} className="bg-[#1E5C8E] hover:bg-[#3A8ABF]">
-          <Plus className="h-4 w-4 mr-2" /> Nueva Cita
-        </Button>
+    <div className="min-h-screen bg-gray-50 p-8">
+      <div className="mb-8">
+        <h1 className="text-3xl font-bold text-[#1a2a3a] mb-2 flex items-center gap-3">
+          <Calendar size={32} className="text-[#1E5C8E]" />
+          Citas Avanzadas
+        </h1>
+        <p className="text-gray-500">Gestion de citas medicas con recordatorios automaticos</p>
       </div>
 
-      <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-        <Card className="lg:col-span-2">
-          <CardHeader className="flex flex-row items-center justify-between">
-            <CardTitle className="text-lg">{monthNames[month]} {year}</CardTitle>
-            <div className="flex gap-2">
-              <Button variant="outline" size="sm" onClick={() => setCurrentDate(new Date(year, month - 1))}>Anterior</Button>
-              <Button variant="outline" size="sm" onClick={() => setCurrentDate(new Date())}>Hoy</Button>
-              <Button variant="outline" size="sm" onClick={() => setCurrentDate(new Date(year, month + 1))}>Siguiente</Button>
-            </div>
-          </CardHeader>
-          <CardContent>
-            <div className="grid grid-cols-7 gap-1">
-              {DIAS.map(d => <div key={d} className="text-center text-sm font-medium text-[#8a9aaa] py-2">{d}</div>)}
-              {Array.from({ length: firstDay }).map((_, i) => <div key={`empty-${i}`} />)}
-              {Array.from({ length: daysInMonth }).map((_, i) => {
-                const dia = i + 1
-                const fechaStr = `${year}-${String(month + 1).padStart(2, '0')}-${String(dia).padStart(2, '0')}`
-                const citasDia = citasPorDia(dia)
-                const isSelected = selectedDate === fechaStr
-                const isToday = new Date().toISOString().split('T')[0] === fechaStr
-                return (
-                  <button
-                    key={dia}
-                    onClick={() => setSelectedDate(fechaStr)}
-                    className={`min-h-[80px] p-2 rounded-lg text-left transition-all ${
-                      isSelected ? 'bg-[#1E5C8E] text-white' : isToday ? 'bg-[#e8f0f8] border-2 border-[#1E5C8E]' : 'hover:bg-gray-50'
-                    }`}
-                  >
-                    <span className={`text-sm font-medium ${isSelected ? 'text-white' : ''}`}>{dia}</span>
-                    {citasDia.length > 0 && (
-                      <div className="mt-1 space-y-1">
-                        {citasDia.slice(0, 2).map(c => (
-                          <div key={c.id} className={`text-[10px] truncate px-1 rounded ${isSelected ? 'bg-white/20' : 'bg-[#e8f0f8] text-[#1E5C8E]'}`}>
-                            {c.hora_inicio} - {c.motivo || 'Consulta'}
-                          </div>
-                        ))}
-                        {citasDia.length > 2 && <p className={`text-[10px] ${isSelected ? 'text-white/70' : 'text-[#8a9aaa]'}`}>+{citasDia.length - 2} mas</p>}
-                      </div>
-                    )}
-                  </button>
-                )
-              })}
-            </div>
-          </CardContent>
-        </Card>
+      <div className="flex items-center justify-between mb-6 bg-white p-4 rounded-lg shadow-sm">
+        <div className="flex items-center gap-4">
+          <button onClick={() => cambiarFecha(-1)} className="p-2 hover:bg-gray-100 rounded-lg">
+            <ChevronLeft size={20} className="text-[#1E5C8E]" />
+          </button>
+          <div className="text-center">
+            <p className="text-sm text-gray-500">Fecha seleccionada</p>
+            <p className="text-lg font-semibold text-[#1a2a3a]">
+              {new Date(fechaSeleccionada).toLocaleDateString('es-ES', { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' })}
+            </p>
+          </div>
+          <button onClick={() => cambiarFecha(1)} className="p-2 hover:bg-gray-100 rounded-lg">
+            <ChevronRight size={20} className="text-[#1E5C8E]" />
+          </button>
+        </div>
+        <div className="flex gap-2">
+          <button
+            onClick={() => setFechaSeleccionada(new Date().toISOString().split('T')[0])}
+            className="px-4 py-2 bg-gray-100 hover:bg-gray-200 rounded-lg text-sm font-medium"
+          >
+            Hoy
+          </button>
+          <input
+            type="date"
+            value={fechaSeleccionada}
+            onChange={(e) => setFechaSeleccionada(e.target.value)}
+            className="px-4 py-2 border border-gray-200 rounded-lg"
+          />
+        </div>
+      </div>
 
-        <Card>
-          <CardHeader>
-            <CardTitle className="text-lg flex items-center gap-2">
-              <Clock className="h-5 w-5 text-[#1E5C8E]" />
-              {selectedDate ? `Citas: ${selectedDate}` : 'Selecciona un dia'}
-            </CardTitle>
-          </CardHeader>
-          <CardContent>
-            {selectedDate ? (
-              citas.filter(c => c.fecha === selectedDate && c.estado !== 'cancelada').length === 0 ? (
-                <p className="text-[#8a9aaa] text-sm text-center py-4">No hay citas este dia</p>
-              ) : (
-                <div className="space-y-3">
-                  {citas.filter(c => c.fecha === selectedDate && c.estado !== 'cancelada').map(cita => {
-                    const paciente = pacientes.find(p => p.id === cita.paciente_id)
-                    return (
-                      <div key={cita.id} className="p-3 rounded-lg bg-[#e8f0f8] space-y-2">
-                        <div className="flex justify-between items-start">
+      <div className="flex gap-2 mb-6">
+        {['dia', 'semana', 'mes'].map(v => (
+          <button
+            key={v}
+            onClick={() => setVista(v as any)}
+            className={`px-4 py-2 rounded-lg font-medium capitalize transition-colors ${
+              vista === v ? 'bg-[#1E5C8E] text-white' : 'bg-white text-gray-600 hover:bg-gray-100'
+            }`}
+          >
+            {v === 'dia' ? 'Dia' : v === 'semana' ? 'Semana' : 'Mes'}
+          </button>
+        ))}
+      </div>
+
+      <div className="space-y-4">
+        {citas.length === 0 ? (
+          <div className="bg-white rounded-xl shadow-sm p-12 text-center text-gray-400">
+            <Calendar size={48} className="mx-auto mb-4" />
+            <p className="text-lg">No hay citas programadas para esta fecha</p>
+            <button 
+              onClick={() => setShowModal(true)}
+              className="mt-4 px-4 py-2 bg-[#1E5C8E] text-white rounded-lg flex items-center gap-2 mx-auto hover:bg-[#3A8ABF] transition-colors"
+            >
+              <Plus size={18} /> Nueva Cita
+            </button>
+          </div>
+        ) : (
+          citas.map(cita => {
+            const recs = getRecordatoriosCita(cita.id)
+            const tieneRecordatorio = recs.length > 0
+            const recordatorioEnviado = recs.some(r => r.estado === 'enviado')
+            const recordatorioConfirmado = recs.some(r => r.estado === 'confirmado')
+
+            return (
+              <div key={cita.id} className={`bg-white rounded-xl shadow-sm border-l-4 overflow-hidden ${
+                cita.estado === 'atendida' ? 'border-green-500' :
+                cita.estado === 'cancelada' ? 'border-red-500' :
+                'border-[#1E5C8E]'
+              }`}>
+                <div className="p-6">
+                  <div className="flex items-start justify-between">
+                    <div className="flex-1">
+                      <div className="flex items-center gap-3 mb-2">
+                        <div className="bg-[#1E5C8E]/10 p-2 rounded-lg">
+                          <Clock size={20} className="text-[#1E5C8E]" />
+                        </div>
+                        <div>
+                          <p className="text-lg font-semibold text-[#1a2a3a]">
+                            {cita.hora_inicio} - {cita.hora_fin}
+                          </p>
+                          <span className={`inline-flex items-center gap-1 px-2 py-1 rounded text-xs font-medium ${
+                            cita.estado === 'atendida' ? 'bg-green-100 text-green-700' :
+                            cita.estado === 'cancelada' ? 'bg-red-100 text-red-700' :
+                            'bg-yellow-100 text-yellow-700'
+                          }`}>
+                            {getIconoEstado(cita.estado)}
+                            {cita.estado}
+                          </span>
+                        </div>
+                      </div>
+
+                      <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mt-4">
+                        <div className="flex items-center gap-2">
+                          <User size={16} className="text-gray-400" />
                           <div>
-                            <p className="font-medium text-sm">{paciente?.nombre} {paciente?.apellido}</p>
-                            <p className="text-xs text-[#1E5C8E] font-medium">{cita.hora_inicio} {cita.hora_fin ? `- ${cita.hora_fin}` : ''}</p>
-                            <p className="text-xs text-[#8a9aaa]">{cita.motivo || 'Consulta general'}</p>
-                          </div>
-                          <div className="flex gap-2">
-                            <BotonWhatsAppCita 
-                              paciente={paciente} 
-                              cita={cita}
-                              tipo="recordatorio"
-                            />
+                            <p className="font-medium">{cita.paciente?.nombre || 'Paciente'}</p>
+                            <p className="text-sm text-gray-500">{cita.paciente?.telefono || 'Sin telefono'}</p>
                           </div>
                         </div>
-                        <Select value={cita.estado} onValueChange={(v) => cambiarEstado(cita.id, v)}>
-                          <SelectTrigger className="h-8 text-xs">
-                            <SelectValue />
-                          </SelectTrigger>
-                          <SelectContent>
-                            {ESTADOS.map(e => <SelectItem key={e} value={e}>{e.charAt(0).toUpperCase() + e.slice(1)}</SelectItem>)}
-                          </SelectContent>
-                        </Select>
+                        <div className="flex items-center gap-2">
+                          <Stethoscope size={16} className="text-gray-400" />
+                          <p className="font-medium">
+                            {cita.medico?.nombre_completo || cita.medico?.nombre || 'Medico'}
+                            {cita.medico?.especialidad ? ` (${cita.medico.especialidad})` : ''}
+                          </p>
+                        </div>
+                        <div>
+                          <p className="text-sm text-gray-500">Motivo:</p>
+                          <p className="font-medium">{cita.motivo || 'No especificado'}</p>
+                        </div>
                       </div>
-                    )
-                  })}
+                    </div>
+
+                    <div className="flex flex-col gap-2">
+                      {!tieneRecordatorio && cita.estado === 'pendiente' && (
+                        <button
+                          onClick={() => programarRecordatorio(cita)}
+                          disabled={programando === cita.id}
+                          className="px-4 py-2 bg-[#1E5C8E] hover:bg-[#3A8ABF] text-white rounded-lg text-sm font-medium flex items-center gap-2 transition-colors disabled:opacity-50"
+                        >
+                          {programando === cita.id ? (
+                            <Loader2 size={16} className="animate-spin" />
+                          ) : (
+                            <Bell size={16} />
+                          )}
+                          {programando === cita.id ? 'Programando...' : 'Programar Recordatorio'}
+                        </button>
+                      )}
+
+                      {tieneRecordatorio && (
+                        <div className="flex flex-col gap-1">
+                          <span className={`inline-flex items-center gap-1 px-3 py-1 rounded-full text-xs font-medium ${
+                            recordatorioConfirmado ? 'bg-green-100 text-green-700' :
+                            recordatorioEnviado ? 'bg-blue-100 text-blue-700' :
+                            'bg-yellow-100 text-yellow-700'
+                          }`}>
+                            {recordatorioConfirmado ? <CheckCircle size={12} /> :
+                             recordatorioEnviado ? <Bell size={12} /> :
+                             <Clock size={12} />}
+                            {recordatorioConfirmado ? 'Confirmado' :
+                             recordatorioEnviado ? 'Enviado' :
+                             'Pendiente'}
+                          </span>
+                          <span className="text-xs text-gray-500">
+                            {recs.length} recordatorio{recs.length > 1 ? 's' : ''}
+                          </span>
+                        </div>
+                      )}
+                    </div>
+                  </div>
                 </div>
-              )
-            ) : (
-              <p className="text-[#8a9aaa] text-sm text-center py-8">Haz clic en un dia para ver sus citas</p>
-            )}
-          </CardContent>
-        </Card>
+              </div>
+            )
+          })
+        )}
       </div>
 
-      <Dialog open={showForm} onOpenChange={setShowForm}>
-        <DialogContent className="max-w-md">
-          <DialogHeader>
-            <DialogTitle>Nueva Cita</DialogTitle>
-          </DialogHeader>
-          <form onSubmit={handleSubmit} className="space-y-4">
-            <div className="space-y-2">
-              <Label>Paciente *</Label>
-              <Select value={form.paciente_id} onValueChange={(v) => setForm({...form, paciente_id: v})}>
-                <SelectTrigger><SelectValue placeholder="Seleccionar paciente" /></SelectTrigger>
-                <SelectContent>
-                  {pacientes.map(p => <SelectItem key={p.id} value={String(p.id)}>{p.nombre} {p.apellido}</SelectItem>)}
-                </SelectContent>
-              </Select>
+      <button
+        onClick={() => setShowModal(true)}
+        className="fixed bottom-8 right-8 px-6 py-4 bg-[#1E5C8E] hover:bg-[#3A8ABF] text-white rounded-full shadow-lg font-semibold flex items-center gap-2 transition-colors"
+      >
+        <Plus size={20} /> Nueva Cita
+      </button>
+
+      {showModal && (
+        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
+          <div className="bg-white rounded-xl max-w-lg w-full max-h-[90vh] overflow-y-auto">
+            <div className="p-6 border-b border-gray-100 flex items-center justify-between">
+              <h2 className="text-xl font-semibold text-[#1a2a3a]">Nueva Cita</h2>
+              <button onClick={() => setShowModal(false)} className="p-2 hover:bg-gray-100 rounded-lg">
+                <X size={20} className="text-gray-400" />
+              </button>
             </div>
-            <div className="space-y-2"><Label>Fecha *</Label><Input type="date" value={form.fecha} onChange={e => setForm({...form, fecha: e.target.value})} required /></div>
-            <div className="grid grid-cols-2 gap-4">
-              <div className="space-y-2"><Label>Hora Inicio *</Label><Input type="time" value={form.hora_inicio} onChange={e => setForm({...form, hora_inicio: e.target.value})} required /></div>
-              <div className="space-y-2"><Label>Hora Fin</Label><Input type="time" value={form.hora_fin} onChange={e => setForm({...form, hora_fin: e.target.value})} /></div>
-            </div>
-            <div className="space-y-2"><Label>Motivo</Label><Input value={form.motivo} onChange={e => setForm({...form, motivo: e.target.value})} placeholder="Consulta general" /></div>
-            <div className="space-y-2"><Label>Notas</Label><textarea className="w-full border rounded-md p-2 min-h-[60px]" value={form.notas} onChange={e => setForm({...form, notas: e.target.value})} /></div>
-            {formError && (
-              <p className="text-sm text-red-500 bg-red-50 p-2 rounded">{formError}</p>
-            )}
-            <div className="flex justify-end gap-3">
-              <Button type="button" variant="outline" onClick={() => { setShowForm(false); setFormError('') }}>Cancelar</Button>
-              <Button type="submit" className="bg-[#1E5C8E] hover:bg-[#3A8ABF]" disabled={saving}>
-                {saving && <Loader2 className="mr-2 h-4 w-4 animate-spin" />} Guardar Cita
-              </Button>
-            </div>
-          </form>
-        </DialogContent>
-      </Dialog>
+
+            <form onSubmit={guardarCita} className="p-6 space-y-4">
+              <div>
+                <label className="text-sm text-gray-500 mb-1 block">Paciente *</label>
+                <div className="relative">
+                  <select
+                    value={nuevaCita.paciente_id}
+                    onChange={e => setNuevaCita({...nuevaCita, paciente_id: e.target.value})}
+                    required
+                    className="w-full p-3 border border-gray-200 rounded-lg appearance-none focus:outline-none focus:border-[#1E5C8E]"
+                  >
+                    <option value="">Seleccionar paciente</option>
+                    {pacientes.map(p => (
+                      <option key={p.id} value={p.id}>{p.nombre} - {p.telefono}</option>
+                    ))}
+                  </select>
+                </div>
+              </div>
+
+              <div>
+                <label className="text-sm text-gray-500 mb-1 block">Medico *</label>
+                <div className="relative">
+                  <select
+                    value={nuevaCita.medico_id}
+                    onChange={e => setNuevaCita({...nuevaCita, medico_id: e.target.value})}
+                    required
+                    className="w-full p-3 border border-gray-200 rounded-lg appearance-none focus:outline-none focus:border-[#1E5C8E]"
+                  >
+                    <option value="">Seleccionar medico</option>
+                    {medicos.map(m => (
+                      <option key={m.id} value={m.id}>
+                        {m.nombre_completo || m.nombre} {m.especialidad ? `(${m.especialidad})` : ''}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+              </div>
+
+              <div>
+                <label className="text-sm text-gray-500 mb-1 block">Fecha *</label>
+                <input
+                  type="date"
+                  value={nuevaCita.fecha}
+                  onChange={e => setNuevaCita({...nuevaCita, fecha: e.target.value})}
+                  required
+                  className="w-full p-3 border border-gray-200 rounded-lg focus:outline-none focus:border-[#1E5C8E]"
+                />
+              </div>
+
+              <div className="grid grid-cols-2 gap-4">
+                <div>
+                  <label className="text-sm text-gray-500 mb-1 block">Hora inicio *</label>
+                  <input
+                    type="time"
+                    value={nuevaCita.hora_inicio}
+                    onChange={e => setNuevaCita({...nuevaCita, hora_inicio: e.target.value})}
+                    required
+                    className="w-full p-3 border border-gray-200 rounded-lg focus:outline-none focus:border-[#1E5C8E]"
+                  />
+                </div>
+                <div>
+                  <label className="text-sm text-gray-500 mb-1 block">Hora fin *</label>
+                  <input
+                    type="time"
+                    value={nuevaCita.hora_fin}
+                    onChange={e => setNuevaCita({...nuevaCita, hora_fin: e.target.value})}
+                    required
+                    className="w-full p-3 border border-gray-200 rounded-lg focus:outline-none focus:border-[#1E5C8E]"
+                  />
+                </div>
+              </div>
+
+              <div>
+                <label className="text-sm text-gray-500 mb-1 block">Motivo</label>
+                <input
+                  value={nuevaCita.motivo}
+                  onChange={e => setNuevaCita({...nuevaCita, motivo: e.target.value})}
+                  placeholder="Consulta general, control, etc."
+                  className="w-full p-3 border border-gray-200 rounded-lg focus:outline-none focus:border-[#1E5C8E]"
+                />
+              </div>
+
+              <div>
+                <label className="text-sm text-gray-500 mb-1 block">Notas</label>
+                <textarea
+                  value={nuevaCita.notas}
+                  onChange={e => setNuevaCita({...nuevaCita, notas: e.target.value})}
+                  rows={3}
+                  className="w-full p-3 border border-gray-200 rounded-lg focus:outline-none focus:border-[#1E5C8E]"
+                />
+              </div>
+
+              <div className="flex gap-3 pt-4">
+                <button
+                  type="submit"
+                  disabled={guardando}
+                  className="flex-1 py-3 bg-[#1E5C8E] hover:bg-[#3A8ABF] text-white rounded-lg font-semibold transition-colors disabled:opacity-50 flex items-center justify-center gap-2"
+                >
+                  {guardando ? <Loader2 size={18} className="animate-spin" /> : <Plus size={18} />}
+                  {guardando ? 'Guardando...' : 'Crear Cita'}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setShowModal(false)}
+                  className="px-6 py-3 bg-gray-100 hover:bg-gray-200 rounded-lg font-semibold transition-colors"
+                >
+                  Cancelar
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
     </div>
   )
 }
