@@ -1,6 +1,8 @@
-{
-  "outputDirectory": "build",
+﻿{
   "rewrites": [
-    { "source": "/(.*)", "destination": "/index.html" }
+    {
+      "source": "/((?!assets/|api/|favicon|robots|sitemap).*)",
+      "destination": "/index.html"
+    }
   ]
 }
