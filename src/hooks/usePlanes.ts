@@ -2,6 +2,7 @@
 
 import { useState, useEffect, useCallback } from 'react';
 import { supabase } from '@/lib/supabase';
+import { toast } from 'sonner';
 import type {
   PlanBase,
   PlanConfiguracion,
@@ -83,7 +84,6 @@ export function usePlanes(filtros?: FiltrosPlanes): UsePlanesReturn {
     try {
       let queryBase = supabase.from('planes_base').select('*').eq('activo', true);
       if (filtros?.tipo) queryBase = queryBase.eq('tipo', filtros.tipo);
-// Si no hay filtro de tipo, carga todos (medico + clinica + lab + visitador)
       const { data: baseData, error: baseError } = await queryBase;
       if (baseError) throw baseError;
       setPlanesBase(baseData || []);
@@ -105,8 +105,8 @@ export function usePlanes(filtros?: FiltrosPlanes): UsePlanesReturn {
 
       try {
         let queryAsig = supabase
-         .from('planes_asignaciones')
-.select('*, plan_configuracion:plan_config_id(*, plan_base:plan_base_id(*))')
+          .from('planes_asignaciones')
+          .select('*, plan_configuracion:plan_config_id(*, plan_base:plan_base_id(*))')
           .order('created_at', { ascending: false });
         if (filtros?.estado) queryAsig = queryAsig.eq('estado', filtros.estado);
         const { data: asigData } = await queryAsig;
@@ -133,6 +133,7 @@ export function usePlanes(filtros?: FiltrosPlanes): UsePlanesReturn {
     } catch (err: any) {
       setError(err.message);
       console.error('Error al cargar planes:', err.message);
+      toast.error('Error al cargar planes', { description: err.message });
     } finally {
       setLoading(false);
     }
@@ -145,9 +146,11 @@ export function usePlanes(filtros?: FiltrosPlanes): UsePlanesReturn {
       const { data: result, error } = await supabase.from('planes_base').insert(data).select().single();
       if (error) throw error;
       setPlanesBase(prev => [...prev, result]);
+      toast.success('Plan creado', { description: `${result.nombre} se creó exitosamente` });
       return result;
     } catch (err: any) {
       setError(err.message);
+      toast.error('Error al crear el plan', { description: err.message });
       return null;
     }
   };
@@ -157,9 +160,11 @@ export function usePlanes(filtros?: FiltrosPlanes): UsePlanesReturn {
       const { error } = await supabase.from('planes_base').update(data).eq('id', id);
       if (error) throw error;
       setPlanesBase(prev => prev.map(p => p.id === id ? { ...p, ...data } : p));
+      toast.success('Plan actualizado');
       return true;
     } catch (err: any) {
       setError(err.message);
+      toast.error('Error al actualizar el plan', { description: err.message });
       return false;
     }
   };
@@ -169,9 +174,11 @@ export function usePlanes(filtros?: FiltrosPlanes): UsePlanesReturn {
       const { error } = await supabase.from('planes_base').update({ activo: false }).eq('id', id);
       if (error) throw error;
       setPlanesBase(prev => prev.filter(p => p.id !== id));
+      toast.success('Plan desactivado');
       return true;
     } catch (err: any) {
       setError(err.message);
+      toast.error('Error al desactivar el plan', { description: err.message });
       return false;
     }
   };
@@ -185,9 +192,11 @@ export function usePlanes(filtros?: FiltrosPlanes): UsePlanesReturn {
         .single();
       if (error) throw error;
       setPlanesConfig(prev => [...prev, result]);
+      toast.success('Configuración creada');
       return result;
     } catch (err: any) {
       setError(err.message);
+      toast.error('Error al crear la configuración', { description: err.message });
       return null;
     }
   };
@@ -197,9 +206,11 @@ export function usePlanes(filtros?: FiltrosPlanes): UsePlanesReturn {
       const { error } = await supabase.from('planes_configuracion').update(data).eq('id', id);
       if (error) throw error;
       setPlanesConfig(prev => prev.map(p => p.id === id ? { ...p, ...data } : p));
+      toast.success('Configuración actualizada');
       return true;
     } catch (err: any) {
       setError(err.message);
+      toast.error('Error al actualizar la configuración', { description: err.message });
       return false;
     }
   };
@@ -209,9 +220,11 @@ export function usePlanes(filtros?: FiltrosPlanes): UsePlanesReturn {
       const { error } = await supabase.from('planes_configuracion').update({ activo: false }).eq('id', id);
       if (error) throw error;
       setPlanesConfig(prev => prev.filter(p => p.id !== id));
+      toast.success('Configuración desactivada');
       return true;
     } catch (err: any) {
       setError(err.message);
+      toast.error('Error al desactivar la configuración', { description: err.message });
       return false;
     }
   };
@@ -235,9 +248,11 @@ export function usePlanes(filtros?: FiltrosPlanes): UsePlanesReturn {
         usuario_admin_id: (await supabase.auth.getUser()).data.user?.id,
       });
 
+      toast.success('Asignación creada');
       return result;
     } catch (err: any) {
       setError(err.message);
+      toast.error('Error al crear la asignación', { description: err.message });
       return null;
     }
   };
@@ -298,9 +313,11 @@ export function usePlanes(filtros?: FiltrosPlanes): UsePlanesReturn {
       });
 
       setAsignaciones(prev => [result, ...prev]);
+      toast.success('Suscripción activada', { description: '¡Bienvenido a tu nuevo plan!' });
       return result;
     } catch (err: any) {
       setError(err.message);
+      toast.error('Error al procesar el pago', { description: err.message });
       return null;
     }
   };
@@ -310,9 +327,11 @@ export function usePlanes(filtros?: FiltrosPlanes): UsePlanesReturn {
       const { error } = await supabase.from('planes_asignaciones').update(data).eq('id', id);
       if (error) throw error;
       setAsignaciones(prev => prev.map(a => a.id === id ? { ...a, ...data } : a));
+      toast.success('Asignación actualizada');
       return true;
     } catch (err: any) {
       setError(err.message);
+      toast.error('Error al actualizar la asignación', { description: err.message });
       return false;
     }
   };
@@ -338,9 +357,11 @@ export function usePlanes(filtros?: FiltrosPlanes): UsePlanesReturn {
       });
 
       setAsignaciones(prev => prev.map(a => a.id === id ? { ...a, estado: 'cancelado' as EstadoPlan } : a));
+      toast.success('Suscripción cancelada');
       return true;
     } catch (err: any) {
       setError(err.message);
+      toast.error('Error al cancelar la suscripción', { description: err.message });
       return false;
     }
   };
@@ -370,9 +391,11 @@ export function usePlanes(filtros?: FiltrosPlanes): UsePlanesReturn {
       });
 
       setAsignaciones(prev => prev.map(a => a.id === id ? { ...a, fecha_fin: nuevaFechaFin, estado: 'activo' } : a));
+      toast.success('Suscripción renovada');
       return true;
     } catch (err: any) {
       setError(err.message);
+      toast.error('Error al renovar la suscripción', { description: err.message });
       return false;
     }
   };
@@ -386,9 +409,11 @@ export function usePlanes(filtros?: FiltrosPlanes): UsePlanesReturn {
         .single();
       if (error) throw error;
       setExcepciones(prev => [result, ...prev]);
+      toast.success('Excepción creada');
       return result;
     } catch (err: any) {
       setError(err.message);
+      toast.error('Error al crear la excepción', { description: err.message });
       return null;
     }
   };
@@ -398,9 +423,11 @@ export function usePlanes(filtros?: FiltrosPlanes): UsePlanesReturn {
       const { error } = await supabase.from('planes_excepciones').update(data).eq('id', id);
       if (error) throw error;
       setExcepciones(prev => prev.map(e => e.id === id ? { ...e, ...data } : e));
+      toast.success('Excepción actualizada');
       return true;
     } catch (err: any) {
       setError(err.message);
+      toast.error('Error al actualizar la excepción', { description: err.message });
       return false;
     }
   };
@@ -410,9 +437,11 @@ export function usePlanes(filtros?: FiltrosPlanes): UsePlanesReturn {
       const { error } = await supabase.from('planes_excepciones').update({ activo: false }).eq('id', id);
       if (error) throw error;
       setExcepciones(prev => prev.map(e => e.id === id ? { ...e, activo: false } : e));
+      toast.success('Excepción desactivada');
       return true;
     } catch (err: any) {
       setError(err.message);
+      toast.error('Error al desactivar la excepción', { description: err.message });
       return false;
     }
   };
