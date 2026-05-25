@@ -51,6 +51,9 @@ import ReportesPage from '@/pages/admin-ezpay/ReportesPage'
 import ReportesEzPayPage from '@/pages/admin-ezpay/ReportesEzPayPage'
 import ReportesEzPayPageV2 from '@/pages/admin-ezpay/ReportesEzPayPageV2'
 
+// === IMPORTS UI GLOBAL ===
+import { Toaster } from '@/components/ui/sonner'
+
 function PrivateLayout({ children }: { children: React.ReactNode }) {
   const { user, loading } = useAuth()
   if (loading) return <div className="min-h-screen flex items-center justify-center"><div className="animate-spin rounded-full h-12 w-12 border-b-2 border-[#1E5C8E]" /></div>
@@ -133,6 +136,7 @@ function App() {
           <Route path="notificaciones" element={<NotificacionesAdminPage />} />
         </Route>
       </Routes>
+      <Toaster richColors position="top-right" />
     </BrowserRouter>
   )
 }
