@@ -1,11 +1,11 @@
 // ═══════════════════════════════════════════════════════════════
-// EZPAYCONNECT - UTILIDADES DE PLANES
+// EZPAYCONNECT - UTILIDADES DE PLANES (Latinoamérica completa)
 // ═══════════════════════════════════════════════════════════════
 
 import type { PlanConfiguracion, PlanFeature } from '@/types/planes';
 
-// Tipo local para evitar problemas de importación con Vite
-type PaisCodigoLocal = 'GT' | 'SV' | 'HN';
+// Tipo local para todos los países soportados
+type PaisCodigoLocal = 'GT' | 'SV' | 'HN' | 'CR' | 'NI' | 'PA' | 'BZ' | 'MX' | 'DO' | 'CU' | 'PR' | 'CO' | 'VE' | 'EC' | 'PE' | 'BO' | 'CL' | 'AR' | 'PY' | 'UY' | 'BR' | 'GY' | 'SR' | 'GF' | 'US' | 'CA' | 'ES';
 
 export function generarFeaturesPlan(config: PlanConfiguracion): PlanFeature[] {
   return [
@@ -17,41 +17,127 @@ export function generarFeaturesPlan(config: PlanConfiguracion): PlanFeature[] {
 }
 
 export function formatearPrecio(precio: number, moneda: string): string {
-  // Mapeo de monedas comunes que pueden venir mal escritas
+  // Mapeo completo de monedas latinoamericanas + España/USA/Canadá
   const monedaMap: Record<string, string> = {
-    'COLON': 'GTQ',
-    'COLONES': 'GTQ',
+    // Centroamérica
     'QUETZAL': 'GTQ',
     'QUETZALES': 'GTQ',
+    'GTQ': 'GTQ',
     'DOLLAR': 'USD',
     'DOLAR': 'USD',
     'DOLARES': 'USD',
     'DOLLARS': 'USD',
+    'USD': 'USD',
     'LEMPIRA': 'HNL',
     'LEMPIRAS': 'HNL',
-    'COLON_SV': 'SVC',
-    'CORDOBA': 'NIO',
+    'HNL': 'HNL',
+    'COLON': 'CRC',           // Costa Rica
+    'COLONES': 'CRC',         // Costa Rica
+    'CRC': 'CRC',
+    'COLON_SV': 'SVC',        // El Salvador (histórico, ahora usa USD)
+    'SVC': 'SVC',
+    'CORDOBA': 'NIO',         // Nicaragua
     'CORDOBAS': 'NIO',
-    'BALBOA': 'PAB',
+    'NIO': 'NIO',
+    'BALBOA': 'PAB',          // Panamá
     'BALBOAS': 'PAB',
+    'PAB': 'PAB',
+    'BZD': 'BZD',             // Belice
+    
+    // Caribe
+    'PESO_MX': 'MXN',         // México
+    'PESO_MEXICANO': 'MXN',
+    'MXN': 'MXN',
+    'PESO_DO': 'DOP',         // República Dominicana
+    'PESO_DOMINICANO': 'DOP',
+    'DOP': 'DOP',
+    'PESO_CU': 'CUP',         // Cuba
+    'CUP': 'CUP',
+    'PESO_PR': 'USD',         // Puerto Rico usa USD
+    
+    // Sudamérica
+    'PESO_CO': 'COP',         // Colombia
+    'PESO_COLOMBIANO': 'COP',
+    'COP': 'COP',
+    'BOLIVAR': 'VES',         // Venezuela
+    'BOLIVARES': 'VES',
+    'VES': 'VES',
+    'VEF': 'VEF',             // Venezuela (viejo)
+    'DOLAR_EC': 'USD',        // Ecuador usa USD
+    'SOL': 'PEN',             // Perú
+    'SOLES': 'PEN',
+    'PEN': 'PEN',
+    'BOLIVIANO': 'BOB',       // Bolivia
+    'BOLIVIANOS': 'BOB',
+    'BOB': 'BOB',
+    'PESO_CL': 'CLP',         // Chile
+    'PESO_CHILENO': 'CLP',
+    'CLP': 'CLP',
+    'PESO_AR': 'ARS',         // Argentina
+    'PESO_ARGENTINO': 'ARS',
+    'ARS': 'ARS',
+    'GUARANI': 'PYG',         // Paraguay
+    'GUARANIES': 'PYG',
+    'PYG': 'PYG',
+    'PESO_UY': 'UYU',         // Uruguay
+    'PESO_URUGUAYO': 'UYU',
+    'UYU': 'UYU',
+    'REAL': 'BRL',            // Brasil
+    'REAIS': 'BRL',
+    'BRL': 'BRL',
+    'DOLAR_GY': 'GYD',        // Guyana
+    'GYD': 'GYD',
+    'DOLAR_SR': 'SRD',        // Surinam
+    'SRD': 'SRD',
+    'EURO_GF': 'EUR',         // Guayana Francesa
+    
+    // Norteamérica / Europa
+    'CAD': 'CAD',             // Canadá
+    'EUR': 'EUR',             // España / Europa
   };
 
   // Normalizar la moneda
   const monedaNormalizada = monedaMap[moneda?.toUpperCase()] || moneda?.toUpperCase() || 'USD';
 
   // Lista de monedas válidas para Intl.NumberFormat
-  const monedasValidas = ['GTQ', 'USD', 'HNL', 'SVC', 'NIO', 'PAB', 'EUR', 'MXN'];
+  const monedasValidas = [
+    'GTQ', 'USD', 'HNL', 'CRC', 'SVC', 'NIO', 'PAB', 'BZD',
+    'MXN', 'DOP', 'CUP',
+    'COP', 'VES', 'VEF', 'PEN', 'BOB', 'CLP', 'ARS', 'PYG', 'UYU', 'BRL', 'GYD', 'SRD',
+    'CAD', 'EUR', 'GBP'
+  ];
   const monedaFinal = monedasValidas.includes(monedaNormalizada) ? monedaNormalizada : 'USD';
+
+  // Locale por moneda
+  const localeMap: Record<string, string> = {
+    'GTQ': 'es-GT', 'USD': 'en-US', 'HNL': 'es-HN', 'CRC': 'es-CR',
+    'SVC': 'es-SV', 'NIO': 'es-NI', 'PAB': 'es-PA', 'BZD': 'en-BZ',
+    'MXN': 'es-MX', 'DOP': 'es-DO', 'CUP': 'es-CU',
+    'COP': 'es-CO', 'VES': 'es-VE', 'VEF': 'es-VE', 'PEN': 'es-PE',
+    'BOB': 'es-BO', 'CLP': 'es-CL', 'ARS': 'es-AR', 'PYG': 'es-PY',
+    'UYU': 'es-UY', 'BRL': 'pt-BR', 'GYD': 'en-GY', 'SRD': 'nl-SR',
+    'CAD': 'en-CA', 'EUR': 'es-ES', 'GBP': 'en-GB'
+  };
 
   try {
     const formato = new Intl.NumberFormat(
-      monedaFinal === 'GTQ' ? 'es-GT' : monedaFinal === 'USD' ? 'en-US' : 'es-SV',
+      localeMap[monedaFinal] || 'es-419',
       { style: 'currency', currency: monedaFinal, minimumFractionDigits: 2 }
     );
     return formato.format(precio);
   } catch (error) {
-    // Fallback si Intl falla por cualquier razón
-    return `$${precio.toFixed(2)} ${moneda}`;
+    // Fallback manual con símbolos conocidos
+    const simbolos: Record<string, string> = {
+      'GTQ': 'Q', 'USD': '$', 'HNL': 'L', 'CRC': '₡', 'SVC': '₡', 'NIO': 'C$',
+      'PAB': 'B/.', 'BZD': 'BZ$',
+      'MXN': '$', 'DOP': 'RD$', 'CUP': '$',
+      'COP': '$', 'VES': 'Bs.', 'VEF': 'Bs.F', 'PEN': 'S/', 'BOB': 'Bs.',
+      'CLP': '$', 'ARS': '$', 'PYG': '₲', 'UYU': '$', 'BRL': 'R$',
+      'GYD': '$', 'SRD': '$',
+      'CAD': 'C$', 'EUR': '€', 'GBP': '£'
+    };
+    const simbolo = simbolos[monedaFinal] || '$';
+    return `${simbolo}${precio.toFixed(2)} ${monedaFinal}`;
   }
 }
 
@@ -73,12 +159,27 @@ export function getColorPlan(tipo: string): string {
 }
 
 export function getNombrePais(codigo: PaisCodigoLocal): string {
-  const nombres: Record<PaisCodigoLocal, string> = { GT: 'Guatemala', SV: 'El Salvador', HN: 'Honduras' };
+  const nombres: Record<PaisCodigoLocal, string> = {
+    GT: 'Guatemala', SV: 'El Salvador', HN: 'Honduras', CR: 'Costa Rica',
+    NI: 'Nicaragua', PA: 'Panamá', BZ: 'Belice', MX: 'México',
+    DO: 'República Dominicana', CU: 'Cuba', PR: 'Puerto Rico',
+    CO: 'Colombia', VE: 'Venezuela', EC: 'Ecuador', PE: 'Perú',
+    BO: 'Bolivia', CL: 'Chile', AR: 'Argentina', PY: 'Paraguay',
+    UY: 'Uruguay', BR: 'Brasil', GY: 'Guyana', SR: 'Surinam',
+    GF: 'Guayana Francesa', US: 'Estados Unidos', CA: 'Canadá',
+    ES: 'España'
+  };
   return nombres[codigo] || codigo;
 }
 
 export function getBanderaPais(codigo: PaisCodigoLocal): string {
-  const banderas: Record<PaisCodigoLocal, string> = { GT: '🇬🇹', SV: '🇸🇻', HN: '🇭🇳' };
+  const banderas: Record<PaisCodigoLocal, string> = {
+    GT: '🇬🇹', SV: '🇸🇻', HN: '🇭🇳', CR: '🇨🇷', NI: '🇳🇮', PA: '🇵🇦', BZ: '🇧🇿',
+    MX: '🇲🇽', DO: '🇩🇴', CU: '🇨🇺', PR: '🇵🇷',
+    CO: '🇨🇴', VE: '🇻🇪', EC: '🇪🇨', PE: '🇵🇪', BO: '🇧🇴', CL: '🇨🇱', AR: '🇦🇷',
+    PY: '🇵🇾', UY: '🇺🇾', BR: '🇧🇷', GY: '🇬🇾', SR: '🇸🇷', GF: '🇬🇫',
+    US: '🇺🇸', CA: '🇨🇦', ES: '🇪🇸'
+  };
   return banderas[codigo] || '🌎';
 }
 
