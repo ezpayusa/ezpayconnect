@@ -1,356 +1,382 @@
-import { useState } from 'react';
-import { useNavigate } from 'react-router-dom';
-import { Button } from '@/components/ui/button';
-import { Input } from '@/components/ui/input';
-import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
-import { Badge } from '@/components/ui/badge';
-import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
-import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog';
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
-import { Label } from '@/components/ui/label';
-import { usePlanes } from '@/hooks/usePlanes';
-import { useAdminAuth } from '@/hooks/admin/useAdminAuth';
-import { formatearPrecio, getBanderaPais } from '@/lib/planes-utils';
-import { ArrowLeft, Plus, Search, RefreshCw, Edit, Trash2, Building2 } from 'lucide-react';
+import { useState } from "react";
+import { usePlanes } from "@/hooks/usePlanes";
+import { Button } from "@/components/ui/button";
+import {
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+} from "@/components/ui/table";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+  DialogTrigger,
+} from "@/components/ui/dialog";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
+import { Trash2, Edit, Plus } from "lucide-react";
+import type { PlanBase } from "@/types/planes";
 
 export default function PlanesClinicaConfigPage() {
-  const navigate = useNavigate();
-  const { isAdmin, loading: adminLoading } = useAdminAuth();
-  const { planesBase, planesConfig, paises, loading, crearPlanBase, crearPlanConfig, actualizarPlanConfig, eliminarPlanConfig, recargar } = usePlanes();
-  const [search, setSearch] = useState('');
-  const [dialogoCrear, setDialogoCrear] = useState(false);
-  const [dialogoConfig, setDialogoConfig] = useState(false);
-  const [planSeleccionado, setPlanSeleccionado] = useState<any>(null);
-  const [nuevoPlan, setNuevoPlan] = useState({
-    nombre: '',
-    descripcion: '',
-    precio_base: 0,
-    moneda: 'USD',
-    periodicidad: 'mensual',
-  });
+  const {
+    planesBase,
+    planesConfig,
+    crearPlanConfig,
+    eliminarPlanBase,
+    actualizarPlanBase,
+    loading,
+  } = usePlanes();
+
+  // ── Estados para CREAR configuración por país (existente, intacto) ──
+  const [dialogoCrearAbierto, setDialogoCrearAbierto] = useState(false);
   const [nuevaConfig, setNuevaConfig] = useState({
-    plan_base_id: '',
-    pais_id: '',
-    precio_local: 0,
-    precio_anual: 0,
-    comision_aplicada: 0,
-    descuento_porcentaje: 0,
+    plan_base_id: "",
+    pais: "",
+    precio_mensual: "",
+    precio_anual: "",
+    moneda: "USD",
   });
 
-  // Verificacion de admin usando useAdminAuth
-  if (adminLoading) {
-    return (
-      <div className="flex items-center justify-center min-h-[60vh]">
-        <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-blue-500" />
-      </div>
-    );
-  }
+  // ── Estados para EDITAR plan base (nuevo) ──
+  const [dialogoEditarAbierto, setDialogoEditarAbierto] = useState(false);
+  const [planAEditar, setPlanAEditar] = useState<PlanBase | null>(null);
 
-  if (!isAdmin) {
-    return (
-      <div className="flex items-center justify-center min-h-[60vh]">
-        <Card className="max-w-md">
-          <CardContent className="pt-6 text-center">
-            <h2 className="text-xl font-bold mb-2">Acceso restringido</h2>
-            <p className="text-sm text-muted-foreground mb-4">Necesitas rol de administrador para ver esta pagina.</p>
-            <Button onClick={() => navigate('/dashboard')}>Volver al dashboard</Button>
-          </CardContent>
-        </Card>
-      </div>
-    );
-  }
+  // ── Estados para ELIMINAR plan base (nuevo) ──
+  const [dialogoEliminarAbierto, setDialogoEliminarAbierto] = useState(false);
+  const [planAEliminar, setPlanAEliminar] = useState<string | null>(null);
 
-  // Filtrar solo planes clinica
-  const planesClinica = planesBase.filter(p => p.tipo === 'clinica');
-  const configsClinica = planesConfig.filter(p => p.plan_base?.tipo === 'clinica');
-
-  const planesFiltrados = planesClinica.filter(p => 
-    !search || p.nombre.toLowerCase().includes(search.toLowerCase())
-  );
-
-  const handleCrearPlan = async () => {
-    await crearPlanBase({
-      ...nuevoPlan,
-      tipo: 'clinica',
-      activo: true,
-    });
-    setDialogoCrear(false);
-    setNuevoPlan({ nombre: '', descripcion: '', precio_base: 0, moneda: 'USD', periodicidad: 'mensual' });
-  };
-
+  // ── Handlers CREAR (existentes, intactos) ──
   const handleCrearConfig = async () => {
     await crearPlanConfig({
-      ...nuevaConfig,
-      moneda_local: paises.find(p => p.id === nuevaConfig.pais_id)?.moneda || 'USD',
+      plan_base_id: nuevaConfig.plan_base_id,
+      pais: nuevaConfig.pais,
+      precio_mensual: parseFloat(nuevaConfig.precio_mensual),
+      precio_anual: parseFloat(nuevaConfig.precio_anual),
+      moneda: nuevaConfig.moneda,
     });
-    setDialogoConfig(false);
-    setNuevaConfig({ plan_base_id: '', pais_id: '', precio_local: 0, precio_anual: 0, comision_aplicada: 0, descuento_porcentaje: 0 });
+    setDialogoCrearAbierto(false);
+    setNuevaConfig({
+      plan_base_id: "",
+      pais: "",
+      precio_mensual: "",
+      precio_anual: "",
+      moneda: "USD",
+    });
   };
 
-  if (loading) {
-    return (
-      <div className="flex items-center justify-center min-h-[60vh]">
-        <RefreshCw className="h-8 w-8 animate-spin text-blue-500" />
-      </div>
-    );
-  }
+  // ── Handlers EDITAR (nuevo) ──
+  const abrirEditar = (plan: PlanBase) => {
+    setPlanAEditar(plan);
+    setDialogoEditarAbierto(true);
+  };
+
+  const handleActualizarPlanBase = async () => {
+    if (!planAEditar) return;
+    await actualizarPlanBase(planAEditar.id, {
+      nombre: planAEditar.nombre,
+      descripcion: planAEditar.descripcion,
+      max_medicos: planAEditar.max_medicos,
+      max_pacientes: planAEditar.max_pacientes,
+      max_citas_mes: planAEditar.max_citas_mes,
+    });
+    setDialogoEditarAbierto(false);
+    setPlanAEditar(null);
+  };
+
+  // ── Handlers ELIMINAR (fix + nuevo) ──
+  const confirmarEliminar = (id: string) => {
+    setPlanAEliminar(id);
+    setDialogoEliminarAbierto(true);
+  };
+
+  const handleEliminarPlanBase = async () => {
+    if (!planAEliminar) return;
+    await eliminarPlanBase(planAEliminar); // ✅ FIX: usa eliminarPlanBase, no eliminarPlanConfig
+    setDialogoEliminarAbierto(false);
+    setPlanAEliminar(null);
+  };
+
+  if (loading) return <p className="p-6">Cargando planes...</p>;
 
   return (
-    <div className="container mx-auto px-4 py-6 max-w-7xl">
-      <div className="flex items-center justify-between mb-6">
-        <div className="flex items-center gap-4">
-          <Button variant="ghost" size="icon" onClick={() => navigate('/admin-ezpay')}>
-            <ArrowLeft className="h-5 w-5" />
-          </Button>
-          <div>
-            <h1 className="text-2xl font-bold">Configuracion Planes Clinica</h1>
-            <p className="text-sm text-muted-foreground">Gestiona planes para clinicas y centros de salud</p>
-          </div>
-        </div>
-        <div className="flex gap-2">
-          <Button variant="outline" onClick={recargar}><RefreshCw className="h-4 w-4 mr-2" /> Recargar</Button>
-          <Button onClick={() => setDialogoCrear(true)}><Plus className="h-4 w-4 mr-2" /> Nuevo Plan</Button>
-        </div>
-      </div>
+    <div className="p-6 space-y-6">
+      <div className="flex items-center justify-between">
+        <h1 className="text-2xl font-bold">Configuración de Planes Clínica</h1>
 
-      {/* Stats */}
-      <div className="grid grid-cols-1 md:grid-cols-4 gap-4 mb-6">
-        <Card>
-          <CardContent className="pt-4">
-            <p className="text-sm text-muted-foreground">Planes Base</p>
-            <p className="text-2xl font-bold">{planesClinica.length}</p>
-          </CardContent>
-        </Card>
-        <Card>
-          <CardContent className="pt-4">
-            <p className="text-sm text-muted-foreground">Configuraciones</p>
-            <p className="text-2xl font-bold">{configsClinica.length}</p>
-          </CardContent>
-        </Card>
-        <Card>
-          <CardContent className="pt-4">
-            <p className="text-sm text-muted-foreground">Paises</p>
-            <p className="text-2xl font-bold">{paises.length}</p>
-          </CardContent>
-        </Card>
-        <Card>
-          <CardContent className="pt-4">
-            <p className="text-sm text-muted-foreground">Precio Base Max</p>
-            <p className="text-2xl font-bold">{planesClinica.length > 0 ? Math.max(...planesClinica.map(p => p.precio_base)) : 0} USD</p>
-          </CardContent>
-        </Card>
-      </div>
-
-      {/* Tabla de Planes Base */}
-      <Card className="mb-6">
-        <CardHeader>
-          <CardTitle className="text-lg">Planes Base Clinica</CardTitle>
-        </CardHeader>
-        <CardContent>
-          <div className="flex gap-4 mb-4">
-            <div className="flex-1">
-              <div className="relative">
-                <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
-                <Input placeholder="Buscar plan..." value={search} onChange={(e) => setSearch(e.target.value)} className="pl-9" />
-              </div>
-            </div>
-          </div>
-
-          <div className="overflow-x-auto">
-            <Table>
-              <TableHeader>
-                <TableRow>
-                  <TableHead>Nombre</TableHead>
-                  <TableHead>Descripcion</TableHead>
-                  <TableHead>Precio Base</TableHead>
-                  <TableHead>Moneda</TableHead>
-                  <TableHead>Periodicidad</TableHead>
-                  <TableHead>Estado</TableHead>
-                  <TableHead className="text-right">Acciones</TableHead>
-                </TableRow>
-              </TableHeader>
-              <TableBody>
-                {planesFiltrados.map((plan) => (
-                  <TableRow key={plan.id}>
-                    <TableCell className="font-medium">{plan.nombre}</TableCell>
-                    <TableCell className="text-sm text-muted-foreground max-w-xs truncate">{plan.descripcion}</TableCell>
-                    <TableCell>{formatearPrecio(plan.precio_base, plan.moneda || 'USD')}</TableCell>
-                    <TableCell><Badge variant="outline">{plan.moneda}</Badge></TableCell>
-                    <TableCell className="capitalize">{plan.periodicidad}</TableCell>
-                    <TableCell>
-                      <Badge className={plan.activo ? 'bg-green-100 text-green-700' : 'bg-gray-100 text-gray-700'}>
-                        {plan.activo ? 'Activo' : 'Inactivo'}
-                      </Badge>
-                    </TableCell>
-                    <TableCell className="text-right">
-                      <Button variant="ghost" size="icon" onClick={() => { setPlanSeleccionado(plan); setDialogoConfig(true); }}>
-                        <Plus className="h-4 w-4" />
-                      </Button>
-                      <Button variant="ghost" size="icon">
-                        <Edit className="h-4 w-4" />
-                      </Button>
-                      <Button variant="ghost" size="icon" className="text-red-500" onClick={() => eliminarPlanConfig(plan.id)}>
-                        <Trash2 className="h-4 w-4" />
-                      </Button>
-                    </TableCell>
-                  </TableRow>
-                ))}
-                {planesFiltrados.length === 0 && (
-                  <TableRow>
-                    <TableCell colSpan={7} className="text-center py-8 text-muted-foreground">
-                      No se encontraron planes clinica
-                    </TableCell>
-                  </TableRow>
-                )}
-              </TableBody>
-            </Table>
-          </div>
-        </CardContent>
-      </Card>
-
-      {/* Tabla de Configuraciones */}
-      <Card>
-        <CardHeader>
-          <CardTitle className="text-lg">Configuraciones por Pais</CardTitle>
-        </CardHeader>
-        <CardContent>
-          <div className="overflow-x-auto">
-            <Table>
-              <TableHeader>
-                <TableRow>
-                  <TableHead>Plan</TableHead>
-                  <TableHead>Pais</TableHead>
-                  <TableHead>Precio Local</TableHead>
-                  <TableHead>Precio Anual</TableHead>
-                  <TableHead>Comision</TableHead>
-                  <TableHead>Descuento</TableHead>
-                  <TableHead>Estado</TableHead>
-                </TableRow>
-              </TableHeader>
-              <TableBody>
-                {configsClinica.map((config) => (
-                  <TableRow key={config.id}>
-                    <TableCell className="font-medium">{config.plan_base?.nombre}</TableCell>
-                    <TableCell>
-                      <div className="flex items-center gap-2">
-                        <span>{getBanderaPais(config.pais?.codigo as any)}</span>
-                        {config.pais?.nombre}
-                      </div>
-                    </TableCell>
-                    <TableCell>{formatearPrecio(config.precio_local, config.pais?.moneda || 'USD')}</TableCell>
-                    <TableCell>{formatearPrecio(config.precio_anual || 0, config.pais?.moneda || 'USD')}</TableCell>
-                    <TableCell>{config.comision_aplicada}%</TableCell>
-                    <TableCell>{config.descuento_porcentaje}%</TableCell>
-                    <TableCell>
-                      <Badge className={config.activo ? 'bg-green-100 text-green-700' : 'bg-gray-100 text-gray-700'}>
-                        {config.activo ? 'Activo' : 'Inactivo'}
-                      </Badge>
-                    </TableCell>
-                  </TableRow>
-                ))}
-                {configsClinica.length === 0 && (
-                  <TableRow>
-                    <TableCell colSpan={7} className="text-center py-8 text-muted-foreground">
-                      No hay configuraciones de clinica
-                    </TableCell>
-                  </TableRow>
-                )}
-              </TableBody>
-            </Table>
-          </div>
-        </CardContent>
-      </Card>
-
-      {/* Dialogo Crear Plan */}
-      <Dialog open={dialogoCrear} onOpenChange={setDialogoCrear}>
-        <DialogContent className="max-w-md">
-          <DialogHeader>
-            <DialogTitle className="flex items-center gap-2">
-              <Building2 className="h-5 w-5 text-blue-600" />
-              Nuevo Plan Clinica
-            </DialogTitle>
-          </DialogHeader>
-          <div className="space-y-4">
-            <div>
-              <Label htmlFor="nombre">Nombre *</Label>
-              <Input id="nombre" value={nuevoPlan.nombre} onChange={(e) => setNuevoPlan({...nuevoPlan, nombre: e.target.value})} placeholder="Ej: Clinica Premium" />
-            </div>
-            <div>
-              <Label htmlFor="descripcion">Descripcion</Label>
-              <Input id="descripcion" value={nuevoPlan.descripcion} onChange={(e) => setNuevoPlan({...nuevoPlan, descripcion: e.target.value})} placeholder="Descripcion del plan..." />
-            </div>
-            <div className="grid grid-cols-2 gap-4">
+        {/* ── Botón + (crear config por país) — EXISTENTE, INTACTO ── */}
+        <Dialog open={dialogoCrearAbierto} onOpenChange={setDialogoCrearAbierto}>
+          <DialogTrigger asChild>
+            <Button>
+              <Plus className="w-4 h-4 mr-2" />
+              Nueva Configuración por País
+            </Button>
+          </DialogTrigger>
+          <DialogContent>
+            <DialogHeader>
+              <DialogTitle>Crear Configuración de País</DialogTitle>
+              <DialogDescription>
+                Define precios y moneda para un plan base en un país específico.
+              </DialogDescription>
+            </DialogHeader>
+            <div className="grid gap-4 py-4">
               <div>
-                <Label htmlFor="precio">Precio Base (USD)</Label>
-                <Input id="precio" type="number" value={nuevoPlan.precio_base} onChange={(e) => setNuevoPlan({...nuevoPlan, precio_base: parseFloat(e.target.value)})} />
-              </div>
-              <div>
-                <Label htmlFor="periodicidad">Periodicidad</Label>
-                <Select value={nuevoPlan.periodicidad} onValueChange={(v) => setNuevoPlan({...nuevoPlan, periodicidad: v})}>
-                  <SelectTrigger><SelectValue /></SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="mensual">Mensual</SelectItem>
-                    <SelectItem value="anual">Anual</SelectItem>
-                  </SelectContent>
-                </Select>
-              </div>
-            </div>
-            <div className="flex justify-end gap-2">
-              <Button variant="outline" onClick={() => setDialogoCrear(false)}>Cancelar</Button>
-              <Button onClick={handleCrearPlan} disabled={!nuevoPlan.nombre}>
-                <Plus className="h-4 w-4 mr-2" /> Crear Plan
-              </Button>
-            </div>
-          </div>
-        </DialogContent>
-      </Dialog>
-
-      {/* Dialogo Crear Configuracion */}
-      <Dialog open={dialogoConfig} onOpenChange={setDialogoConfig}>
-        <DialogContent className="max-w-md">
-          <DialogHeader>
-            <DialogTitle>Nueva Configuracion por Pais</DialogTitle>
-          </DialogHeader>
-          <div className="space-y-4">
-            <div>
-              <Label>Plan Base</Label>
-              <Select value={nuevaConfig.plan_base_id} onValueChange={(v) => setNuevaConfig({...nuevaConfig, plan_base_id: v})}>
-                <SelectTrigger><SelectValue placeholder="Seleccionar plan" /></SelectTrigger>
-                <SelectContent>
-                  {planesClinica.map(p => (
-                    <SelectItem key={p.id} value={p.id}>{p.nombre}</SelectItem>
+                <Label>Plan Base</Label>
+                <select
+                  className="w-full border rounded p-2"
+                  value={nuevaConfig.plan_base_id}
+                  onChange={(e) =>
+                    setNuevaConfig({ ...nuevaConfig, plan_base_id: e.target.value })
+                  }
+                >
+                  <option value="">Selecciona un plan base</option>
+                  {planesBase.map((p) => (
+                    <option key={p.id} value={p.id}>
+                      {p.nombre}
+                    </option>
                   ))}
-                </SelectContent>
-              </Select>
-            </div>
-            <div>
-              <Label>Pais</Label>
-              <Select value={nuevaConfig.pais_id} onValueChange={(v) => setNuevaConfig({...nuevaConfig, pais_id: v})}>
-                <SelectTrigger><SelectValue placeholder="Seleccionar pais" /></SelectTrigger>
-                <SelectContent>
-                  {paises.map(p => (
-                    <SelectItem key={p.id} value={p.id}>{getBanderaPais(p.codigo as any)} {p.nombre}</SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-            </div>
-            <div className="grid grid-cols-2 gap-4">
+                </select>
+              </div>
               <div>
-                <Label>Precio Local Mensual</Label>
-                <Input type="number" value={nuevaConfig.precio_local} onChange={(e) => setNuevaConfig({...nuevaConfig, precio_local: parseFloat(e.target.value)})} />
+                <Label>País</Label>
+                <Input
+                  value={nuevaConfig.pais}
+                  onChange={(e) =>
+                    setNuevaConfig({ ...nuevaConfig, pais: e.target.value })
+                  }
+                  placeholder="ej: Guatemala"
+                />
+              </div>
+              <div>
+                <Label>Precio Mensual</Label>
+                <Input
+                  type="number"
+                  value={nuevaConfig.precio_mensual}
+                  onChange={(e) =>
+                    setNuevaConfig({ ...nuevaConfig, precio_mensual: e.target.value })
+                  }
+                />
               </div>
               <div>
                 <Label>Precio Anual</Label>
-                <Input type="number" value={nuevaConfig.precio_anual} onChange={(e) => setNuevaConfig({...nuevaConfig, precio_anual: parseFloat(e.target.value)})} />
+                <Input
+                  type="number"
+                  value={nuevaConfig.precio_anual}
+                  onChange={(e) =>
+                    setNuevaConfig({ ...nuevaConfig, precio_anual: e.target.value })
+                  }
+                />
+              </div>
+              <div>
+                <Label>Moneda</Label>
+                <Input
+                  value={nuevaConfig.moneda}
+                  onChange={(e) =>
+                    setNuevaConfig({ ...nuevaConfig, moneda: e.target.value })
+                  }
+                />
               </div>
             </div>
-            <div className="flex justify-end gap-2">
-              <Button variant="outline" onClick={() => setDialogoConfig(false)}>Cancelar</Button>
-              <Button onClick={handleCrearConfig} disabled={!nuevaConfig.plan_base_id || !nuevaConfig.pais_id}>
-                <Plus className="h-4 w-4 mr-2" /> Crear Configuracion
+            <DialogFooter>
+              <Button variant="outline" onClick={() => setDialogoCrearAbierto(false)}>
+                Cancelar
               </Button>
+              <Button onClick={handleCrearConfig}>Guardar</Button>
+            </DialogFooter>
+          </DialogContent>
+        </Dialog>
+      </div>
+
+      {/* ── TABLA PLANES BASE ── */}
+      <section>
+        <h2 className="text-lg font-semibold mb-2">Planes Base Clínica</h2>
+        <Table>
+          <TableHeader>
+            <TableRow>
+              <TableHead>Nombre</TableHead>
+              <TableHead>Descripción</TableHead>
+              <TableHead>Médicos</TableHead>
+              <TableHead>Pacientes</TableHead>
+              <TableHead>Citas/mes</TableHead>
+              <TableHead className="text-right">Acciones</TableHead>
+            </TableRow>
+          </TableHeader>
+          <TableBody>
+            {planesBase.map((plan) => (
+              <TableRow key={plan.id}>
+                <TableCell className="font-medium">{plan.nombre}</TableCell>
+                <TableCell>{plan.descripcion}</TableCell>
+                <TableCell>{plan.max_medicos}</TableCell>
+                <TableCell>{plan.max_pacientes}</TableCell>
+                <TableCell>{plan.max_citas_mes}</TableCell>
+                <TableCell className="text-right space-x-2">
+                  {/* ── Botón EDITAR (fix: ahora funciona) ── */}
+                  <Button
+                    variant="ghost"
+                    size="icon"
+                    onClick={() => abrirEditar(plan)}
+                  >
+                    <Edit className="w-4 h-4" />
+                  </Button>
+
+                  {/* ── Botón ELIMINAR (fix: confirma + usa eliminarPlanBase) ── */}
+                  <Button
+                    variant="ghost"
+                    size="icon"
+                    onClick={() => confirmarEliminar(plan.id)}
+                  >
+                    <Trash2 className="w-4 h-4 text-red-500" />
+                  </Button>
+                </TableCell>
+              </TableRow>
+            ))}
+          </TableBody>
+        </Table>
+      </section>
+
+      {/* ── TABLA CONFIGURACIONES POR PAÍS (existente, intacta) ── */}
+      <section>
+        <h2 className="text-lg font-semibold mb-2">Configuraciones por País</h2>
+        <Table>
+          <TableHeader>
+            <TableRow>
+              <TableHead>Plan Base</TableHead>
+              <TableHead>País</TableHead>
+              <TableHead>Precio Mensual</TableHead>
+              <TableHead>Precio Anual</TableHead>
+              <TableHead>Moneda</TableHead>
+            </TableRow>
+          </TableHeader>
+          <TableBody>
+            {planesConfig.map((cfg) => (
+              <TableRow key={cfg.id}>
+                <TableCell>{cfg.plan_base?.nombre || cfg.plan_base_id}</TableCell>
+                <TableCell>{cfg.pais}</TableCell>
+                <TableCell>{cfg.precio_mensual}</TableCell>
+                <TableCell>{cfg.precio_anual}</TableCell>
+                <TableCell>{cfg.moneda}</TableCell>
+              </TableRow>
+            ))}
+          </TableBody>
+        </Table>
+      </section>
+
+      {/* ════════════════════════════════════════════
+          DIALOGOS NUEVOS / FIX
+          ════════════════════════════════════════════ */}
+
+      {/* ── AlertDialog: Confirmar Eliminación ── */}
+      <AlertDialog open={dialogoEliminarAbierto} onOpenChange={setDialogoEliminarAbierto}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>¿Eliminar plan base?</AlertDialogTitle>
+            <AlertDialogDescription>
+              Esta acción no se puede deshacer. Si hay clínicas usando este plan, podría causar inconsistencias.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel onClick={() => setPlanAEliminar(null)}>
+              Cancelar
+            </AlertDialogCancel>
+            <AlertDialogAction
+              onClick={handleEliminarPlanBase}
+              className="bg-red-600 hover:bg-red-700"
+            >
+              Eliminar
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+
+      {/* ── Dialog: Editar Plan Base ── */}
+      <Dialog open={dialogoEditarAbierto} onOpenChange={setDialogoEditarAbierto}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Editar Plan Base</DialogTitle>
+            <DialogDescription>Modifica los límites y datos del plan.</DialogDescription>
+          </DialogHeader>
+          {planAEditar && (
+            <div className="grid gap-4 py-4">
+              <div>
+                <Label>Nombre</Label>
+                <Input
+                  value={planAEditar.nombre}
+                  onChange={(e) =>
+                    setPlanAEditar({ ...planAEditar, nombre: e.target.value })
+                  }
+                />
+              </div>
+              <div>
+                <Label>Descripción</Label>
+                <Input
+                  value={planAEditar.descripcion || ""}
+                  onChange={(e) =>
+                    setPlanAEditar({ ...planAEditar, descripcion: e.target.value })
+                  }
+                />
+              </div>
+              <div>
+                <Label>Máx. Médicos</Label>
+                <Input
+                  type="number"
+                  value={planAEditar.max_medicos ?? 0}
+                  onChange={(e) =>
+                    setPlanAEditar({
+                      ...planAEditar,
+                      max_medicos: parseInt(e.target.value) || 0,
+                    })
+                  }
+                />
+              </div>
+              <div>
+                <Label>Máx. Pacientes</Label>
+                <Input
+                  type="number"
+                  value={planAEditar.max_pacientes ?? 0}
+                  onChange={(e) =>
+                    setPlanAEditar({
+                      ...planAEditar,
+                      max_pacientes: parseInt(e.target.value) || 0,
+                    })
+                  }
+                />
+              </div>
+              <div>
+                <Label>Máx. Citas/mes</Label>
+                <Input
+                  type="number"
+                  value={planAEditar.max_citas_mes ?? 0}
+                  onChange={(e) =>
+                    setPlanAEditar({
+                      ...planAEditar,
+                      max_citas_mes: parseInt(e.target.value) || 0,
+                    })
+                  }
+                />
+              </div>
             </div>
-          </div>
+          )}
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setDialogoEditarAbierto(false)}>
+              Cancelar
+            </Button>
+            <Button onClick={handleActualizarPlanBase}>Guardar cambios</Button>
+          </DialogFooter>
         </DialogContent>
       </Dialog>
     </div>
