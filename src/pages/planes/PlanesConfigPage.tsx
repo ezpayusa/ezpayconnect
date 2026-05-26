@@ -7,29 +7,14 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { usePlanes } from '@/hooks/usePlanes';
-import { useAuth } from '@/hooks/useAuth';
-import { ArrowLeft, Plus, Save, RotateCcw, Globe, DollarSign, Percent } from 'lucide-react';
+import { ArrowLeft, Save, RotateCcw, Globe, DollarSign, Percent } from 'lucide-react';
 
 export default function PlanesConfigPage() {
   const navigate = useNavigate();
-  const { user } = useAuth();
   const { planesBase, planesConfig, paises, loading, actualizarPlanConfig, recargar } = usePlanes();
   const [paisActivo, setPaisActivo] = useState<string>('');
   const [editando, setEditando] = useState<Record<string, boolean>>({});
   const [datos, setDatos] = useState<Record<string, any>>({});
-
-  if (user?.rol !== 'super_admin' && user?.rol !== 'admin') {
-    return (
-      <div className="flex items-center justify-center min-h-[60vh]">
-        <Card className="max-w-md">
-          <CardContent className="pt-6 text-center">
-            <h2 className="text-xl font-bold mb-2">Acceso restringido</h2>
-            <Button onClick={() => navigate('/dashboard')}>Volver al dashboard</Button>
-          </CardContent>
-        </Card>
-      </div>
-    );
-  }
 
   const planesMedicos = planesBase.filter(p => p.tipo === 'medico');
   const paisesConConfig = paises.filter(p => planesConfig.some(c => c.pais_id === p.id && planesMedicos.some(b => b.id === c.plan_base_id)));
