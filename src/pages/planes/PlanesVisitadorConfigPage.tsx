@@ -1,17 +1,88 @@
-import { useState } from 'react';
+import { useState, useRef, useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import { Badge } from '@/components/ui/badge';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
-import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Label } from '@/components/ui/label';
 import { usePlanes } from '@/hooks/usePlanes';
 import { useAdminAuth } from '@/hooks/admin/useAdminAuth';
 import { formatearPrecio, getBanderaPais } from '@/lib/planes-utils';
-import { ArrowLeft, Plus, Search, RefreshCw, Edit, Trash2, MapPin } from 'lucide-react';
+import { ArrowLeft, Plus, Search, RefreshCw, Edit, Trash2, MapPin, X } from 'lucide-react';
+
+// Componente reutilizable para ventana arrastrable
+function DraggableWindow({ 
+  isOpen, 
+  onClose, 
+  title, 
+  children,
+  initialPosition = { x: 100, y: 100 }
+}: { 
+  isOpen: boolean; 
+  onClose: () => void; 
+  title: string; 
+  children: React.ReactNode;
+  initialPosition?: { x: number; y: number };
+}) {
+  const [position, setPosition] = useState(initialPosition);
+  const [isDragging, setIsDragging] = useState(false);
+  const dragOffset = useRef({ x: 0, y: 0 });
+  const windowRef = useRef<HTMLDivElement>(null);
+
+  const handleMouseDown = useCallback((e: React.MouseEvent) => {
+    if ((e.target as HTMLElement).closest('.drag-handle')) {
+      setIsDragging(true);
+      dragOffset.current = {
+        x: e.clientX - position.x,
+        y: e.clientY - position.y
+      };
+    }
+  }, [position]);
+
+  const handleMouseMove = useCallback((e: React.MouseEvent) => {
+    if (isDragging) {
+      setPosition({
+        x: e.clientX - dragOffset.current.x,
+        y: e.clientY - dragOffset.current.y
+      });
+    }
+  }, [isDragging]);
+
+  const handleMouseUp = useCallback(() => {
+    setIsDragging(false);
+  }, []);
+
+  if (!isOpen) return null;
+
+  return (
+    <>
+      <div className="fixed inset-0 bg-black/50 z-50" onClick={onClose} />
+      <div
+        ref={windowRef}
+        className="fixed z-[60] w-[500px] bg-white rounded-lg border shadow-lg"
+        style={{ left: position.x, top: position.y }}
+        onMouseMove={handleMouseMove}
+        onMouseUp={handleMouseUp}
+        onMouseLeave={handleMouseUp}
+      >
+        <div 
+          className="drag-handle flex items-center justify-between p-4 border-b cursor-move bg-orange-50 rounded-t-lg select-none"
+          onMouseDown={handleMouseDown}
+        >
+          <h2 className="text-lg font-semibold">{title}</h2>
+          <Button variant="ghost" size="icon" className="h-8 w-8" onClick={onClose}>
+            <X className="h-4 w-4" />
+          </Button>
+        </div>
+        <div className="p-4">
+          {children}
+        </div>
+      </div>
+    </>
+  );
+}
 
 export default function PlanesVisitadorConfigPage() {
   const navigate = useNavigate();
@@ -24,17 +95,20 @@ export default function PlanesVisitadorConfigPage() {
   const [nuevoPlan, setNuevoPlan] = useState({
     nombre: '',
     descripcion: '',
-    precio_base: 0,
+    precio_base: '',
     moneda: 'USD',
     periodicidad: 'mensual',
+    limite_medicos: '',
+    limite_pacientes: '',
+    caracteristicas: '',
   });
   const [nuevaConfig, setNuevaConfig] = useState({
     plan_base_id: '',
     pais_id: '',
-    precio_local: 0,
-    precio_anual: 0,
-    comision_aplicada: 0,
-    descuento_porcentaje: 0,
+    precio_local: '',
+    precio_anual: '',
+    comision_aplicada: '',
+    descuento_porcentaje: '',
   });
 
   if (adminLoading) {
@@ -67,22 +141,43 @@ export default function PlanesVisitadorConfigPage() {
   );
 
   const handleCrearPlan = async () => {
+    if (!nuevoPlan.nombre.trim()) {
+      alert('El nombre del plan es obligatorio');
+      return;
+    }
+
     await crearPlanBase({
-      ...nuevoPlan,
+      nombre: nuevoPlan.nombre.trim(),
+      descripcion: nuevoPlan.descripcion.trim(),
       tipo: 'visitador',
+      precio_base: parseFloat(nuevoPlan.precio_base) || 0,
+      moneda: nuevoPlan.moneda,
+      periodicidad: nuevoPlan.periodicidad,
+      limite_medicos: nuevoPlan.limite_medicos ? parseInt(nuevoPlan.limite_medicos) : undefined,
+      limite_pacientes: nuevoPlan.limite_pacientes ? parseInt(nuevoPlan.limite_pacientes) : undefined,
+      caracteristicas: nuevoPlan.caracteristicas.split(',').map(c => c.trim()).filter(Boolean),
       activo: true,
     });
     setDialogoCrear(false);
-    setNuevoPlan({ nombre: '', descripcion: '', precio_base: 0, moneda: 'USD', periodicidad: 'mensual' });
+    setNuevoPlan({ nombre: '', descripcion: '', precio_base: '', moneda: 'USD', periodicidad: 'mensual', limite_medicos: '', limite_pacientes: '', caracteristicas: '' });
   };
 
   const handleCrearConfig = async () => {
+    if (!nuevaConfig.plan_base_id || !nuevaConfig.pais_id) {
+      alert('Debes seleccionar un plan y un país');
+      return;
+    }
+
     await crearPlanConfig({
-      ...nuevaConfig,
-      moneda_local: paises.find(p => p.id === nuevaConfig.pais_id)?.moneda || 'USD',
+      plan_base_id: nuevaConfig.plan_base_id,
+      pais_id: nuevaConfig.pais_id,
+      precio_local: parseFloat(nuevaConfig.precio_local) || 0,
+      precio_anual: nuevaConfig.precio_anual ? parseFloat(nuevaConfig.precio_anual) : undefined,
+      comision_aplicada: parseFloat(nuevaConfig.comision_aplicada) || 0,
+      descuento_porcentaje: parseFloat(nuevaConfig.descuento_porcentaje) || 0,
     });
     setDialogoConfig(false);
-    setNuevaConfig({ plan_base_id: '', pais_id: '', precio_local: 0, precio_anual: 0, comision_aplicada: 0, descuento_porcentaje: 0 });
+    setNuevaConfig({ plan_base_id: '', pais_id: '', precio_local: '', precio_anual: '', comision_aplicada: '', descuento_porcentaje: '' });
   };
 
   if (loading) {
@@ -113,37 +208,15 @@ export default function PlanesVisitadorConfigPage() {
 
       {/* Stats */}
       <div className="grid grid-cols-1 md:grid-cols-4 gap-4 mb-6">
-        <Card>
-          <CardContent className="pt-4">
-            <p className="text-sm text-muted-foreground">Planes Base</p>
-            <p className="text-2xl font-bold">{planesVisitador.length}</p>
-          </CardContent>
-        </Card>
-        <Card>
-          <CardContent className="pt-4">
-            <p className="text-sm text-muted-foreground">Configuraciones</p>
-            <p className="text-2xl font-bold">{configsVisitador.length}</p>
-          </CardContent>
-        </Card>
-        <Card>
-          <CardContent className="pt-4">
-            <p className="text-sm text-muted-foreground">Paises</p>
-            <p className="text-2xl font-bold">{paises.length}</p>
-          </CardContent>
-        </Card>
-        <Card>
-          <CardContent className="pt-4">
-            <p className="text-sm text-muted-foreground">Precio Base Max</p>
-            <p className="text-2xl font-bold">{planesVisitador.length > 0 ? Math.max(...planesVisitador.map(p => p.precio_base)) : 0} USD</p>
-          </CardContent>
-        </Card>
+        <Card><CardContent className="pt-4"><p className="text-sm text-muted-foreground">Planes Base</p><p className="text-2xl font-bold">{planesVisitador.length}</p></CardContent></Card>
+        <Card><CardContent className="pt-4"><p className="text-sm text-muted-foreground">Configuraciones</p><p className="text-2xl font-bold">{configsVisitador.length}</p></CardContent></Card>
+        <Card><CardContent className="pt-4"><p className="text-sm text-muted-foreground">Paises</p><p className="text-2xl font-bold">{paises.length}</p></CardContent></Card>
+        <Card><CardContent className="pt-4"><p className="text-sm text-muted-foreground">Precio Base Max</p><p className="text-2xl font-bold">{planesVisitador.length > 0 ? Math.max(...planesVisitador.map(p => p.precio_base)) : 0} USD</p></CardContent></Card>
       </div>
 
       {/* Tabla de Planes Base */}
       <Card className="mb-6">
-        <CardHeader>
-          <CardTitle className="text-lg">Planes Base Visitador</CardTitle>
-        </CardHeader>
+        <CardHeader><CardTitle className="text-lg">Planes Base Visitador</CardTitle></CardHeader>
         <CardContent>
           <div className="flex gap-4 mb-4">
             <div className="flex-1">
@@ -194,11 +267,7 @@ export default function PlanesVisitadorConfigPage() {
                   </TableRow>
                 ))}
                 {planesFiltrados.length === 0 && (
-                  <TableRow>
-                    <TableCell colSpan={7} className="text-center py-8 text-muted-foreground">
-                      No se encontraron planes visitador
-                    </TableCell>
-                  </TableRow>
+                  <TableRow><TableCell colSpan={7} className="text-center py-8 text-muted-foreground">No se encontraron planes visitador</TableCell></TableRow>
                 )}
               </TableBody>
             </Table>
@@ -208,9 +277,7 @@ export default function PlanesVisitadorConfigPage() {
 
       {/* Tabla de Configuraciones */}
       <Card>
-        <CardHeader>
-          <CardTitle className="text-lg">Configuraciones por Pais</CardTitle>
-        </CardHeader>
+        <CardHeader><CardTitle className="text-lg">Configuraciones por Pais</CardTitle></CardHeader>
         <CardContent>
           <div className="overflow-x-auto">
             <Table>
@@ -247,11 +314,7 @@ export default function PlanesVisitadorConfigPage() {
                   </TableRow>
                 ))}
                 {configsVisitador.length === 0 && (
-                  <TableRow>
-                    <TableCell colSpan={7} className="text-center py-8 text-muted-foreground">
-                      No hay configuraciones de visitador
-                    </TableCell>
-                  </TableRow>
+                  <TableRow><TableCell colSpan={7} className="text-center py-8 text-muted-foreground">No hay configuraciones de visitador</TableCell></TableRow>
                 )}
               </TableBody>
             </Table>
@@ -259,98 +322,123 @@ export default function PlanesVisitadorConfigPage() {
         </CardContent>
       </Card>
 
-      {/* Dialogo Crear Plan */}
-      <Dialog open={dialogoCrear} onOpenChange={setDialogoCrear}>
-        <DialogContent className="max-w-md">
-          <DialogHeader>
-            <DialogTitle className="flex items-center gap-2">
-              <MapPin className="h-5 w-5 text-orange-600" />
-              Nuevo Plan Visitador
-            </DialogTitle>
-          </DialogHeader>
-          <div className="space-y-4">
+      {/* ════════════════════════════════════════════════════
+          VENTANA ARRASTRABLE: Nuevo Plan Visitador
+          ════════════════════════════════════════════════════ */}
+      <DraggableWindow
+        isOpen={dialogoCrear}
+        onClose={() => setDialogoCrear(false)}
+        title="Nuevo Plan Visitador"
+        initialPosition={{ x: window.innerWidth / 2 - 250, y: 100 }}
+      >
+        <div className="space-y-4">
+          <div>
+            <Label htmlFor="nombre">Nombre *</Label>
+            <Input id="nombre" value={nuevoPlan.nombre} onChange={(e) => setNuevoPlan({...nuevoPlan, nombre: e.target.value})} placeholder="Ej: Visitador Premium" />
+          </div>
+          <div>
+            <Label htmlFor="descripcion">Descripcion</Label>
+            <Input id="descripcion" value={nuevoPlan.descripcion} onChange={(e) => setNuevoPlan({...nuevoPlan, descripcion: e.target.value})} placeholder="Descripcion del plan..." />
+          </div>
+          <div className="grid grid-cols-2 gap-4">
             <div>
-              <Label htmlFor="nombre">Nombre *</Label>
-              <Input id="nombre" value={nuevoPlan.nombre} onChange={(e) => setNuevoPlan({...nuevoPlan, nombre: e.target.value})} placeholder="Ej: Visitador Premium" />
+              <Label htmlFor="precio">Precio Base (USD)</Label>
+              <Input id="precio" type="number" value={nuevoPlan.precio_base} onChange={(e) => setNuevoPlan({...nuevoPlan, precio_base: e.target.value})} placeholder="0" />
             </div>
             <div>
-              <Label htmlFor="descripcion">Descripcion</Label>
-              <Input id="descripcion" value={nuevoPlan.descripcion} onChange={(e) => setNuevoPlan({...nuevoPlan, descripcion: e.target.value})} placeholder="Descripcion del plan..." />
-            </div>
-            <div className="grid grid-cols-2 gap-4">
-              <div>
-                <Label htmlFor="precio">Precio Base (USD)</Label>
-                <Input id="precio" type="number" value={nuevoPlan.precio_base} onChange={(e) => setNuevoPlan({...nuevoPlan, precio_base: parseFloat(e.target.value)})} />
-              </div>
-              <div>
-                <Label htmlFor="periodicidad">Periodicidad</Label>
-                <Select value={nuevoPlan.periodicidad} onValueChange={(v) => setNuevoPlan({...nuevoPlan, periodicidad: v})}>
-                  <SelectTrigger><SelectValue /></SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="mensual">Mensual</SelectItem>
-                    <SelectItem value="anual">Anual</SelectItem>
-                  </SelectContent>
-                </Select>
-              </div>
-            </div>
-            <div className="flex justify-end gap-2">
-              <Button variant="outline" onClick={() => setDialogoCrear(false)}>Cancelar</Button>
-              <Button onClick={handleCrearPlan} disabled={!nuevoPlan.nombre} className="bg-orange-600 hover:bg-orange-700">
-                <Plus className="h-4 w-4 mr-2" /> Crear Plan
-              </Button>
+              <Label htmlFor="periodicidad">Periodicidad</Label>
+              <Select value={nuevoPlan.periodicidad} onValueChange={(v) => setNuevoPlan({...nuevoPlan, periodicidad: v})}>
+                <SelectTrigger><SelectValue /></SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="mensual">Mensual</SelectItem>
+                  <SelectItem value="anual">Anual</SelectItem>
+                </SelectContent>
+              </Select>
             </div>
           </div>
-        </DialogContent>
-      </Dialog>
+          <div className="grid grid-cols-2 gap-4">
+            <div>
+              <Label htmlFor="limite_medicos">Límite Médicos (opcional)</Label>
+              <Input id="limite_medicos" type="number" value={nuevoPlan.limite_medicos} onChange={(e) => setNuevoPlan({...nuevoPlan, limite_medicos: e.target.value})} placeholder="Ilimitado" />
+            </div>
+            <div>
+              <Label htmlFor="limite_pacientes">Límite Pacientes (opcional)</Label>
+              <Input id="limite_pacientes" type="number" value={nuevoPlan.limite_pacientes} onChange={(e) => setNuevoPlan({...nuevoPlan, limite_pacientes: e.target.value})} placeholder="Ilimitado" />
+            </div>
+          </div>
+          <div>
+            <Label htmlFor="caracteristicas">Características (separadas por coma)</Label>
+            <Input id="caracteristicas" value={nuevoPlan.caracteristicas} onChange={(e) => setNuevoPlan({...nuevoPlan, caracteristicas: e.target.value})} placeholder="Ej: Recetas ilimitadas, Soporte 24/7, API access" />
+          </div>
+          <div className="flex justify-end gap-2 pt-2">
+            <Button variant="outline" onClick={() => setDialogoCrear(false)}>Cancelar</Button>
+            <Button onClick={handleCrearPlan} disabled={!nuevoPlan.nombre} className="bg-orange-600 hover:bg-orange-700">
+              <Plus className="h-4 w-4 mr-2" /> Crear Plan
+            </Button>
+          </div>
+        </div>
+      </DraggableWindow>
 
-      {/* Dialogo Crear Configuracion */}
-      <Dialog open={dialogoConfig} onOpenChange={setDialogoConfig}>
-        <DialogContent className="max-w-md">
-          <DialogHeader>
-            <DialogTitle>Nueva Configuracion por Pais</DialogTitle>
-          </DialogHeader>
-          <div className="space-y-4">
+      {/* ════════════════════════════════════════════════════
+          VENTANA ARRASTRABLE: Nueva Configuracion por Pais
+          ════════════════════════════════════════════════════ */}
+      <DraggableWindow
+        isOpen={dialogoConfig}
+        onClose={() => setDialogoConfig(false)}
+        title="Nueva Configuracion por Pais"
+        initialPosition={{ x: window.innerWidth / 2 - 250, y: 150 }}
+      >
+        <div className="space-y-4">
+          <div>
+            <Label>Plan Base</Label>
+            <Select value={nuevaConfig.plan_base_id} onValueChange={(v) => setNuevaConfig({...nuevaConfig, plan_base_id: v})}>
+              <SelectTrigger><SelectValue placeholder="Seleccionar plan" /></SelectTrigger>
+              <SelectContent>
+                {planesVisitador.map(p => (
+                  <SelectItem key={p.id} value={p.id}>{p.nombre}</SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </div>
+          <div>
+            <Label>Pais</Label>
+            <Select value={nuevaConfig.pais_id} onValueChange={(v) => setNuevaConfig({...nuevaConfig, pais_id: v})}>
+              <SelectTrigger><SelectValue placeholder="Seleccionar pais" /></SelectTrigger>
+              <SelectContent>
+                {paises.map(p => (
+                  <SelectItem key={p.id} value={p.id}>{getBanderaPais(p.codigo as any)} {p.nombre}</SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </div>
+          <div className="grid grid-cols-2 gap-4">
             <div>
-              <Label>Plan Base</Label>
-              <Select value={nuevaConfig.plan_base_id} onValueChange={(v) => setNuevaConfig({...nuevaConfig, plan_base_id: v})}>
-                <SelectTrigger><SelectValue placeholder="Seleccionar plan" /></SelectTrigger>
-                <SelectContent>
-                  {planesVisitador.map(p => (
-                    <SelectItem key={p.id} value={p.id}>{p.nombre}</SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
+              <Label>Precio Local Mensual</Label>
+              <Input type="number" value={nuevaConfig.precio_local} onChange={(e) => setNuevaConfig({...nuevaConfig, precio_local: e.target.value})} placeholder="0" />
             </div>
             <div>
-              <Label>Pais</Label>
-              <Select value={nuevaConfig.pais_id} onValueChange={(v) => setNuevaConfig({...nuevaConfig, pais_id: v})}>
-                <SelectTrigger><SelectValue placeholder="Seleccionar pais" /></SelectTrigger>
-                <SelectContent>
-                  {paises.map(p => (
-                    <SelectItem key={p.id} value={p.id}>{getBanderaPais(p.codigo as any)} {p.nombre}</SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-            </div>
-            <div className="grid grid-cols-2 gap-4">
-              <div>
-                <Label>Precio Local Mensual</Label>
-                <Input type="number" value={nuevaConfig.precio_local} onChange={(e) => setNuevaConfig({...nuevaConfig, precio_local: parseFloat(e.target.value)})} />
-              </div>
-              <div>
-                <Label>Precio Anual</Label>
-                <Input type="number" value={nuevaConfig.precio_anual} onChange={(e) => setNuevaConfig({...nuevaConfig, precio_anual: parseFloat(e.target.value)})} />
-              </div>
-            </div>
-            <div className="flex justify-end gap-2">
-              <Button variant="outline" onClick={() => setDialogoConfig(false)}>Cancelar</Button>
-              <Button onClick={handleCrearConfig} disabled={!nuevaConfig.plan_base_id || !nuevaConfig.pais_id} className="bg-orange-600 hover:bg-orange-700">
-                <Plus className="h-4 w-4 mr-2" /> Crear Configuracion
-              </Button>
+              <Label>Precio Anual</Label>
+              <Input type="number" value={nuevaConfig.precio_anual} onChange={(e) => setNuevaConfig({...nuevaConfig, precio_anual: e.target.value})} placeholder="0" />
             </div>
           </div>
-        </DialogContent>
-      </Dialog>
+          <div className="grid grid-cols-2 gap-4">
+            <div>
+              <Label>Comisión (%)</Label>
+              <Input type="number" value={nuevaConfig.comision_aplicada} onChange={(e) => setNuevaConfig({...nuevaConfig, comision_aplicada: e.target.value})} placeholder="0" />
+            </div>
+            <div>
+              <Label>Descuento (%)</Label>
+              <Input type="number" value={nuevaConfig.descuento_porcentaje} onChange={(e) => setNuevaConfig({...nuevaConfig, descuento_porcentaje: e.target.value})} placeholder="0" />
+            </div>
+          </div>
+          <div className="flex justify-end gap-2 pt-2">
+            <Button variant="outline" onClick={() => setDialogoConfig(false)}>Cancelar</Button>
+            <Button onClick={handleCrearConfig} disabled={!nuevaConfig.plan_base_id || !nuevaConfig.pais_id} className="bg-orange-600 hover:bg-orange-700">
+              <Plus className="h-4 w-4 mr-2" /> Crear Configuracion
+            </Button>
+          </div>
+        </div>
+      </DraggableWindow>
     </div>
   );
 }

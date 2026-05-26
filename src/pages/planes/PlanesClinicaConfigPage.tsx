@@ -10,15 +10,6 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogFooter,
-  DialogHeader,
-  DialogTitle,
-  DialogTrigger,
-} from "@/components/ui/dialog";
-import {
   AlertDialog,
   AlertDialogAction,
   AlertDialogCancel,
@@ -37,9 +28,10 @@ import {
 } from "@/components/ui/select";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { Trash2, Edit, Plus, ArrowLeft } from "lucide-react";
+import { Trash2, Edit, Plus, ArrowLeft, X } from "lucide-react";
 import { useNavigate } from "react-router-dom";
 import type { PlanBase } from "@/types/planes";
+import Draggable from "react-draggable";
 
 // Monedas latinoamericanas + España/USA/Canadá (match con planes-utils.ts)
 const MONEDAS_LATAM = [
@@ -175,119 +167,139 @@ export default function PlanesClinicaConfigPage() {
           </p>
         </div>
 
-        {/* ── Botón + (crear config por país) ── */}
-        <Dialog open={dialogoCrearAbierto} onOpenChange={setDialogoCrearAbierto}>
-          <DialogTrigger asChild>
-            <Button>
-              <Plus className="w-4 h-4 mr-2" />
-              Nueva Configuración por País
-            </Button>
-          </DialogTrigger>
-          <DialogContent>
-            <DialogHeader>
-              <DialogTitle>Crear Configuración de País</DialogTitle>
-              <DialogDescription>
-                Define precios y moneda para un plan base en un país específico.
-              </DialogDescription>
-            </DialogHeader>
-            <div className="grid gap-4 py-4">
-              {/* Plan Base — Select de shadcn/ui */}
-              <div>
-                <Label>Plan Base</Label>
-                <Select
-                  value={nuevaConfig.plan_base_id}
-                  onValueChange={(value) =>
-                    setNuevaConfig({ ...nuevaConfig, plan_base_id: value })
-                  }
+        {/* ── Botón + (abre diálogo draggable) ── */}
+        <Button onClick={() => setDialogoCrearAbierto(true)}>
+          <Plus className="w-4 h-4 mr-2" />
+          Nueva Configuración por País
+        </Button>
+      </div>
+
+      {/* ── DIÁLOGO DRAGGABLE (sin Dialog de Radix) ── */}
+      {dialogoCrearAbierto && (
+        <>
+          {/* Overlay oscuro */}
+          <div 
+            className="fixed inset-0 bg-black/50 z-50"
+            onClick={() => setDialogoCrearAbierto(false)}
+          />
+
+          {/* Ventana draggable */}
+          <Draggable handle=".drag-handle" bounds="body">
+            <div className="fixed top-20 left-1/2 -translate-x-1/2 z-[60] w-[500px] bg-white rounded-lg border shadow-lg">
+              {/* Header arrastrable */}
+              <div className="drag-handle flex items-center justify-between p-4 border-b cursor-move bg-gray-50 rounded-t-lg select-none">
+                <div>
+                  <h2 className="text-lg font-semibold">Crear Configuración de País</h2>
+                  <p className="text-sm text-muted-foreground">
+                    Define precios y moneda para un plan base en un país específico.
+                  </p>
+                </div>
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  className="h-8 w-8"
+                  onClick={() => setDialogoCrearAbierto(false)}
                 >
-                  <SelectTrigger className="w-full">
-                    <SelectValue placeholder="Selecciona un plan base" />
-                  </SelectTrigger>
-                  <SelectContent>
-                    {planesBase.map((p) => (
-                      <SelectItem key={p.id} value={p.id}>
-                        {p.nombre}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
+                  <X className="h-4 w-4" />
+                </Button>
               </div>
 
-              {/* País — Select de shadcn/ui */}
-              <div>
-                <Label>País</Label>
-                <Select
-                  value={nuevaConfig.pais_id}
-                  onValueChange={(value) =>
-                    setNuevaConfig({ ...nuevaConfig, pais_id: value })
-                  }
-                >
-                  <SelectTrigger className="w-full">
-                    <SelectValue placeholder="Selecciona un país" />
-                  </SelectTrigger>
-                  <SelectContent>
-                    {paises.map((p) => (
-                      <SelectItem key={p.id} value={p.id}>
-                        {p.nombre} ({p.codigo})
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
+              {/* Contenido */}
+              <div className="p-4 space-y-4">
+                <div>
+                  <Label>Plan Base</Label>
+                  <Select
+                    value={nuevaConfig.plan_base_id}
+                    onValueChange={(value) =>
+                      setNuevaConfig({ ...nuevaConfig, plan_base_id: value })
+                    }
+                  >
+                    <SelectTrigger className="w-full">
+                      <SelectValue placeholder="Selecciona un plan base" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {planesBase.map((p) => (
+                        <SelectItem key={p.id} value={p.id}>
+                          {p.nombre}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </div>
+                <div>
+                  <Label>País</Label>
+                  <Select
+                    value={nuevaConfig.pais_id}
+                    onValueChange={(value) =>
+                      setNuevaConfig({ ...nuevaConfig, pais_id: value })
+                    }
+                  >
+                    <SelectTrigger className="w-full">
+                      <SelectValue placeholder="Selecciona un país" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {paises.map((p) => (
+                        <SelectItem key={p.id} value={p.id}>
+                          {p.nombre} ({p.codigo})
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </div>
+                <div>
+                  <Label>Precio Local</Label>
+                  <Input
+                    type="number"
+                    value={nuevaConfig.precio_local}
+                    onChange={(e) =>
+                      setNuevaConfig({ ...nuevaConfig, precio_local: e.target.value })
+                    }
+                    placeholder="Precio mensual en moneda local"
+                  />
+                </div>
+                <div>
+                  <Label>Precio Anual (opcional)</Label>
+                  <Input
+                    type="number"
+                    value={nuevaConfig.precio_anual}
+                    onChange={(e) =>
+                      setNuevaConfig({ ...nuevaConfig, precio_anual: e.target.value })
+                    }
+                  />
+                </div>
+                <div>
+                  <Label>Moneda Local</Label>
+                  <Select
+                    value={nuevaConfig.moneda_local}
+                    onValueChange={(value) =>
+                      setNuevaConfig({ ...nuevaConfig, moneda_local: value })
+                    }
+                  >
+                    <SelectTrigger className="w-full">
+                      <SelectValue placeholder="Selecciona una moneda" />
+                    </SelectTrigger>
+                    <SelectContent className="max-h-[300px]">
+                      {MONEDAS_LATAM.map((m) => (
+                        <SelectItem key={m.codigo} value={m.codigo}>
+                          {m.simbolo} — {m.nombre}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </div>
               </div>
 
-              <div>
-                <Label>Precio Local</Label>
-                <Input
-                  type="number"
-                  value={nuevaConfig.precio_local}
-                  onChange={(e) =>
-                    setNuevaConfig({ ...nuevaConfig, precio_local: e.target.value })
-                  }
-                  placeholder="Precio mensual en moneda local"
-                />
-              </div>
-              <div>
-                <Label>Precio Anual (opcional)</Label>
-                <Input
-                  type="number"
-                  value={nuevaConfig.precio_anual}
-                  onChange={(e) =>
-                    setNuevaConfig({ ...nuevaConfig, precio_anual: e.target.value })
-                  }
-                />
-              </div>
-
-              {/* Moneda Local — Select de shadcn/ui */}
-              <div>
-                <Label>Moneda Local</Label>
-                <Select
-                  value={nuevaConfig.moneda_local}
-                  onValueChange={(value) =>
-                    setNuevaConfig({ ...nuevaConfig, moneda_local: value })
-                  }
-                >
-                  <SelectTrigger className="w-full">
-                    <SelectValue placeholder="Selecciona una moneda" />
-                  </SelectTrigger>
-                  <SelectContent className="max-h-[300px]">
-                    {MONEDAS_LATAM.map((m) => (
-                      <SelectItem key={m.codigo} value={m.codigo}>
-                        {m.simbolo} — {m.nombre}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
+              {/* Footer */}
+              <div className="flex justify-end gap-2 p-4 border-t">
+                <Button variant="outline" onClick={() => setDialogoCrearAbierto(false)}>
+                  Cancelar
+                </Button>
+                <Button onClick={handleCrearConfig}>Guardar</Button>
               </div>
             </div>
-            <DialogFooter>
-              <Button variant="outline" onClick={() => setDialogoCrearAbierto(false)}>
-                Cancelar
-              </Button>
-              <Button onClick={handleCrearConfig}>Guardar</Button>
-            </DialogFooter>
-          </DialogContent>
-        </Dialog>
-      </div>
+          </Draggable>
+        </>
+      )}
 
       {/* ── TABLA PLANES BASE ── */}
       <section>
@@ -382,70 +394,88 @@ export default function PlanesClinicaConfigPage() {
       </AlertDialog>
 
       {/* ── Dialog: Editar Plan Base ── */}
-      <Dialog open={dialogoEditarAbierto} onOpenChange={setDialogoEditarAbierto}>
-        <DialogContent>
-          <DialogHeader>
-            <DialogTitle>Editar Plan Base</DialogTitle>
-            <DialogDescription>Modifica los límites y datos del plan.</DialogDescription>
-          </DialogHeader>
-          {planAEditar && (
-            <div className="grid gap-4 py-4">
-              <div>
-                <Label>Nombre</Label>
-                <Input
-                  value={planAEditar.nombre}
-                  onChange={(e) =>
-                    setPlanAEditar({ ...planAEditar, nombre: e.target.value })
-                  }
-                />
+      {dialogoEditarAbierto && (
+        <>
+          <div 
+            className="fixed inset-0 bg-black/50 z-50"
+            onClick={() => setDialogoEditarAbierto(false)}
+          />
+          <Draggable handle=".drag-handle" bounds="body">
+            <div className="fixed top-20 left-1/2 -translate-x-1/2 z-[60] w-[500px] bg-white rounded-lg border shadow-lg">
+              <div className="drag-handle flex items-center justify-between p-4 border-b cursor-move bg-gray-50 rounded-t-lg select-none">
+                <div>
+                  <h2 className="text-lg font-semibold">Editar Plan Base</h2>
+                  <p className="text-sm text-muted-foreground">Modifica los límites y datos del plan.</p>
+                </div>
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  className="h-8 w-8"
+                  onClick={() => setDialogoEditarAbierto(false)}
+                >
+                  <X className="h-4 w-4" />
+                </Button>
               </div>
-              <div>
-                <Label>Descripción</Label>
-                <Input
-                  value={planAEditar.descripcion || ""}
-                  onChange={(e) =>
-                    setPlanAEditar({ ...planAEditar, descripcion: e.target.value })
-                  }
-                />
-              </div>
-              <div>
-                <Label>Límite Médicos</Label>
-                <Input
-                  type="number"
-                  value={planAEditar.limite_medicos ?? ""}
-                  onChange={(e) =>
-                    setPlanAEditar({
-                      ...planAEditar,
-                      limite_medicos: e.target.value ? parseInt(e.target.value) : undefined,
-                    })
-                  }
-                  placeholder="Dejar vacío para ilimitado"
-                />
-              </div>
-              <div>
-                <Label>Límite Pacientes</Label>
-                <Input
-                  type="number"
-                  value={planAEditar.limite_pacientes ?? ""}
-                  onChange={(e) =>
-                    setPlanAEditar({
-                      ...planAEditar,
-                      limite_pacientes: e.target.value ? parseInt(e.target.value) : undefined,
-                    })
-                  }
-                  placeholder="Dejar vacío para ilimitado"
-                />
-              </div>
+              {planAEditar && (
+                <div className="p-4 space-y-4">
+                  <div>
+                    <Label>Nombre</Label>
+                    <Input
+                      value={planAEditar.nombre}
+                      onChange={(e) =>
+                        setPlanAEditar({ ...planAEditar, nombre: e.target.value })
+                      }
+                    />
+                  </div>
+                  <div>
+                    <Label>Descripción</Label>
+                    <Input
+                      value={planAEditar.descripcion || ""}
+                      onChange={(e) =>
+                        setPlanAEditar({ ...planAEditar, descripcion: e.target.value })
+                      }
+                    />
+                  </div>
+                  <div>
+                    <Label>Límite Médicos</Label>
+                    <Input
+                      type="number"
+                      value={planAEditar.limite_medicos ?? ""}
+                      onChange={(e) =>
+                        setPlanAEditar({
+                          ...planAEditar,
+                          limite_medicos: e.target.value ? parseInt(e.target.value) : undefined,
+                        })
+                      }
+                      placeholder="Dejar vacío para ilimitado"
+                    />
+                  </div>
+                  <div>
+                    <Label>Límite Pacientes</Label>
+                    <Input
+                      type="number"
+                      value={planAEditar.limite_pacientes ?? ""}
+                      onChange={(e) =>
+                        setPlanAEditar({
+                          ...planAEditar,
+                          limite_pacientes: e.target.value ? parseInt(e.target.value) : undefined,
+                        })
+                      }
+                      placeholder="Dejar vacío para ilimitado"
+                    />
+                  </div>
+                  <div className="flex justify-end gap-2 pt-2">
+                    <Button variant="outline" onClick={() => setDialogoEditarAbierto(false)}>
+                      Cancelar
+                    </Button>
+                    <Button onClick={handleActualizarPlanBase}>Guardar cambios</Button>
+                  </div>
+                </div>
+              )}
             </div>
-          )}
-          <DialogFooter>
-            <Button variant="outline" onClick={() => setDialogoEditarAbierto(false)}>
-              Cancelar
-            </Button>
-            <Button onClick={handleActualizarPlanBase}>Guardar cambios</Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
+          </Draggable>
+        </>
+      )}
     </div>
   );
 }
