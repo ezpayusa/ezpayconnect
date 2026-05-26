@@ -10,9 +10,11 @@ import { Label } from '@/components/ui/label';
 import { usePlanes } from '@/hooks/usePlanes';
 import { useAdminAuth } from '@/hooks/admin/useAdminAuth';
 import { formatearPrecio, getBanderaPais } from '@/lib/planes-utils';
-import { ArrowLeft, Plus, Search, RefreshCw, Edit, Trash2, MapPin, X } from 'lucide-react';
+import { ArrowLeft, Plus, Search, RefreshCw, Edit, Trash2, MapPin, X, AlertTriangle } from 'lucide-react';
 
-// Componente reutilizable para ventana arrastrable
+// ════════════════════════════════════════════════════
+// COMPONENTE REUTILIZABLE: Ventana Arrastrable
+// ════════════════════════════════════════════════════
 function DraggableWindow({ 
   isOpen, 
   onClose, 
@@ -29,7 +31,6 @@ function DraggableWindow({
   const [position, setPosition] = useState(initialPosition);
   const [isDragging, setIsDragging] = useState(false);
   const dragOffset = useRef({ x: 0, y: 0 });
-  const windowRef = useRef<HTMLDivElement>(null);
 
   const handleMouseDown = useCallback((e: React.MouseEvent) => {
     if ((e.target as HTMLElement).closest('.drag-handle')) {
@@ -60,7 +61,6 @@ function DraggableWindow({
     <>
       <div className="fixed inset-0 bg-black/50 z-50" onClick={onClose} />
       <div
-        ref={windowRef}
         className="fixed z-[60] w-[500px] bg-white rounded-lg border shadow-lg"
         style={{ left: position.x, top: position.y }}
         onMouseMove={handleMouseMove}
@@ -84,14 +84,51 @@ function DraggableWindow({
   );
 }
 
+// Monedas disponibles
+const MONEDAS = [
+  { codigo: 'USD', nombre: 'Dólar Estadounidense' },
+  { codigo: 'GTQ', nombre: 'Quetzal Guatemalteco' },
+  { codigo: 'HNL', nombre: 'Lempira Hondureño' },
+  { codigo: 'NIO', nombre: 'Córdoba Nicaragüense' },
+  { codigo: 'CRC', nombre: 'Colón Costarricense' },
+  { codigo: 'PAB', nombre: 'Balboa Panameño' },
+  { codigo: 'DOP', nombre: 'Peso Dominicano' },
+  { codigo: 'CUP', nombre: 'Peso Cubano' },
+  { codigo: 'MXN', nombre: 'Peso Mexicano' },
+  { codigo: 'EUR', nombre: 'Euro' },
+];
+
 export default function PlanesVisitadorConfigPage() {
   const navigate = useNavigate();
   const { isAdmin, loading: adminLoading } = useAdminAuth();
-  const { planesBase, planesConfig, paises, loading, crearPlanBase, crearPlanConfig, actualizarPlanConfig, eliminarPlanConfig, recargar } = usePlanes();
+  const { 
+    planesBase, 
+    planesConfig, 
+    paises, 
+    loading, 
+    crearPlanBase, 
+    crearPlanConfig, 
+    actualizarPlanBase, 
+    eliminarPlanBase, 
+    eliminarPlanConfig,
+    recargar 
+  } = usePlanes();
+  
   const [search, setSearch] = useState('');
+  
+  // Modales de Plan Base
   const [dialogoCrear, setDialogoCrear] = useState(false);
+  const [dialogoEditar, setDialogoEditar] = useState<any>(null);
+  const [dialogoEliminarPlan, setDialogoEliminarPlan] = useState<string | null>(null);
+  
+  // Modal de Configuración
   const [dialogoConfig, setDialogoConfig] = useState(false);
   const [planSeleccionado, setPlanSeleccionado] = useState<any>(null);
+  
+  // Modal eliminar configuración
+  const [dialogoEliminarConfig, setDialogoEliminarConfig] = useState<string | null>(null);
+
+  // Estados formularios
   const [nuevoPlan, setNuevoPlan] = useState({
     nombre: '',
     descripcion: '',
@@ -102,6 +139,7 @@ export default function PlanesVisitadorConfigPage() {
     limite_pacientes: '',
     caracteristicas: '',
   });
+  
   const [nuevaConfig, setNuevaConfig] = useState({
     plan_base_id: '',
     pais_id: '',
@@ -135,11 +173,16 @@ export default function PlanesVisitadorConfigPage() {
 
   const planesVisitador = planesBase.filter(p => p.tipo === 'visitador');
   const configsVisitador = planesConfig.filter(p => p.plan_base?.tipo === 'visitador');
-
+// DEBUG
+console.log('configsVisitador:', configsVisitador);
+console.log('configsVisitador.length:', configsVisitador.length);
   const planesFiltrados = planesVisitador.filter(p => 
     !search || p.nombre.toLowerCase().includes(search.toLowerCase())
   );
 
+  // ════════════════════════════════════════════════════
+  // HANDLERS CREAR PLAN
+  // ════════════════════════════════════════════════════
   const handleCrearPlan = async () => {
     if (!nuevoPlan.nombre.trim()) {
       alert('El nombre del plan es obligatorio');
@@ -160,8 +203,51 @@ export default function PlanesVisitadorConfigPage() {
     });
     setDialogoCrear(false);
     setNuevoPlan({ nombre: '', descripcion: '', precio_base: '', moneda: 'USD', periodicidad: 'mensual', limite_medicos: '', limite_pacientes: '', caracteristicas: '' });
+    recargar();
   };
 
+  // ════════════════════════════════════════════════════
+  // HANDLERS EDITAR PLAN
+  // ════════════════════════════════════════════════════
+ const handleEditarPlan = async () => {
+  if (!dialogoEditar) return;
+  
+  // Convertir caracteristicas a array si es string, o mantener si ya es array
+  let caracteristicasArray: string[] = [];
+  if (typeof dialogoEditar.caracteristicas === 'string') {
+    caracteristicasArray = dialogoEditar.caracteristicas.split(',').map((c: string) => c.trim()).filter(Boolean);
+  } else if (Array.isArray(dialogoEditar.caracteristicas)) {
+    caracteristicasArray = dialogoEditar.caracteristicas;
+  }
+  
+  await actualizarPlanBase(dialogoEditar.id, {
+    nombre: dialogoEditar.nombre,
+    descripcion: dialogoEditar.descripcion,
+    precio_base: parseFloat(dialogoEditar.precio_base) || 0,
+    moneda: dialogoEditar.moneda,
+    periodicidad: dialogoEditar.periodicidad,
+    limite_medicos: dialogoEditar.limite_medicos ? parseInt(dialogoEditar.limite_medicos) : undefined,
+    limite_pacientes: dialogoEditar.limite_pacientes ? parseInt(dialogoEditar.limite_pacientes) : undefined,
+    caracteristicas: caracteristicasArray,
+    activo: dialogoEditar.activo,
+  });
+  setDialogoEditar(null);
+  recargar();
+};
+
+  // ════════════════════════════════════════════════════
+  // HANDLERS ELIMINAR PLAN
+  // ════════════════════════════════════════════════════
+  const handleEliminarPlan = async () => {
+    if (!dialogoEliminarPlan) return;
+    await eliminarPlanBase(dialogoEliminarPlan);
+    setDialogoEliminarPlan(null);
+    recargar();
+  };
+
+  // ════════════════════════════════════════════════════
+  // HANDLERS CREAR CONFIGURACIÓN
+  // ════════════════════════════════════════════════════
   const handleCrearConfig = async () => {
     if (!nuevaConfig.plan_base_id || !nuevaConfig.pais_id) {
       alert('Debes seleccionar un plan y un país');
@@ -178,6 +264,17 @@ export default function PlanesVisitadorConfigPage() {
     });
     setDialogoConfig(false);
     setNuevaConfig({ plan_base_id: '', pais_id: '', precio_local: '', precio_anual: '', comision_aplicada: '', descuento_porcentaje: '' });
+    recargar();
+  };
+
+  // ════════════════════════════════════════════════════
+  // HANDLERS ELIMINAR CONFIGURACIÓN
+  // ════════════════════════════════════════════════════
+  const handleEliminarConfig = async () => {
+    if (!dialogoEliminarConfig) return;
+    await eliminarPlanConfig(dialogoEliminarConfig);
+    setDialogoEliminarConfig(null);
+    recargar();
   };
 
   if (loading) {
@@ -236,6 +333,8 @@ export default function PlanesVisitadorConfigPage() {
                   <TableHead>Precio Base</TableHead>
                   <TableHead>Moneda</TableHead>
                   <TableHead>Periodicidad</TableHead>
+                  <TableHead>Límite Médicos</TableHead>
+                  <TableHead>Límite Pacientes</TableHead>
                   <TableHead>Estado</TableHead>
                   <TableHead className="text-right">Acciones</TableHead>
                 </TableRow>
@@ -248,26 +347,28 @@ export default function PlanesVisitadorConfigPage() {
                     <TableCell>{formatearPrecio(plan.precio_base, plan.moneda || 'USD')}</TableCell>
                     <TableCell><Badge variant="outline">{plan.moneda}</Badge></TableCell>
                     <TableCell className="capitalize">{plan.periodicidad}</TableCell>
+                    <TableCell>{plan.limite_medicos ?? 'Ilimitado'}</TableCell>
+                    <TableCell>{plan.limite_pacientes ?? 'Ilimitado'}</TableCell>
                     <TableCell>
                       <Badge className={plan.activo ? 'bg-green-100 text-green-700' : 'bg-gray-100 text-gray-700'}>
                         {plan.activo ? 'Activo' : 'Inactivo'}
                       </Badge>
                     </TableCell>
                     <TableCell className="text-right">
-                      <Button variant="ghost" size="icon" onClick={() => { setPlanSeleccionado(plan); setDialogoConfig(true); }}>
+                      <Button variant="ghost" size="icon" onClick={() => { setPlanSeleccionado(plan); setNuevaConfig({...nuevaConfig, plan_base_id: plan.id}); setDialogoConfig(true); }} title="Agregar configuracion por pais">
                         <Plus className="h-4 w-4" />
                       </Button>
-                      <Button variant="ghost" size="icon">
+                      <Button variant="ghost" size="icon" onClick={() => setDialogoEditar(plan)} title="Editar plan">
                         <Edit className="h-4 w-4" />
                       </Button>
-                      <Button variant="ghost" size="icon" className="text-red-500" onClick={() => eliminarPlanConfig(plan.id)}>
+                      <Button variant="ghost" size="icon" className="text-red-500" onClick={() => setDialogoEliminarPlan(plan.id)} title="Eliminar plan">
                         <Trash2 className="h-4 w-4" />
                       </Button>
                     </TableCell>
                   </TableRow>
                 ))}
                 {planesFiltrados.length === 0 && (
-                  <TableRow><TableCell colSpan={7} className="text-center py-8 text-muted-foreground">No se encontraron planes visitador</TableCell></TableRow>
+                  <TableRow><TableCell colSpan={9} className="text-center py-8 text-muted-foreground">No se encontraron planes visitador</TableCell></TableRow>
                 )}
               </TableBody>
             </Table>
@@ -290,6 +391,7 @@ export default function PlanesVisitadorConfigPage() {
                   <TableHead>Comision</TableHead>
                   <TableHead>Descuento</TableHead>
                   <TableHead>Estado</TableHead>
+                  <TableHead className="text-right">Acciones</TableHead>
                 </TableRow>
               </TableHeader>
               <TableBody>
@@ -311,10 +413,15 @@ export default function PlanesVisitadorConfigPage() {
                         {config.activo ? 'Activo' : 'Inactivo'}
                       </Badge>
                     </TableCell>
+                    <TableCell className="text-right">
+                     <Button variant="ghost" size="icon" className="text-red-500" onClick={() => setDialogoEliminarConfig(config.id)} title="Eliminar configuracion">
+                        <Trash2 className="h-4 w-4" />
+                      </Button>
+                    </TableCell>
                   </TableRow>
                 ))}
                 {configsVisitador.length === 0 && (
-                  <TableRow><TableCell colSpan={7} className="text-center py-8 text-muted-foreground">No hay configuraciones de visitador</TableCell></TableRow>
+                  <TableRow><TableCell colSpan={8} className="text-center py-8 text-muted-foreground">No hay configuraciones de visitador</TableCell></TableRow>
                 )}
               </TableBody>
             </Table>
@@ -346,15 +453,30 @@ export default function PlanesVisitadorConfigPage() {
               <Input id="precio" type="number" value={nuevoPlan.precio_base} onChange={(e) => setNuevoPlan({...nuevoPlan, precio_base: e.target.value})} placeholder="0" />
             </div>
             <div>
-              <Label htmlFor="periodicidad">Periodicidad</Label>
-              <Select value={nuevoPlan.periodicidad} onValueChange={(v) => setNuevoPlan({...nuevoPlan, periodicidad: v})}>
-                <SelectTrigger><SelectValue /></SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="mensual">Mensual</SelectItem>
-                  <SelectItem value="anual">Anual</SelectItem>
+              <Label htmlFor="moneda">Moneda</Label>
+              <Select value={nuevoPlan.moneda} onValueChange={(v) => setNuevoPlan({...nuevoPlan, moneda: v})}>
+                <SelectTrigger className="w-full"><SelectValue /></SelectTrigger>
+                <SelectContent position="popper" className="z-[70]">
+                  {MONEDAS.map(m => (
+                    <SelectItem key={m.codigo} value={m.codigo}>{m.codigo} - {m.nombre}</SelectItem>
+                  ))}
                 </SelectContent>
               </Select>
             </div>
+          </div>
+          <div className="grid grid-cols-2 gap-4">
+            <div>
+              <Label htmlFor="periodicidad">Periodicidad</Label>
+              <Select value={nuevoPlan.periodicidad} onValueChange={(v) => setNuevoPlan({...nuevoPlan, periodicidad: v})}>
+                <SelectTrigger className="w-full"><SelectValue /></SelectTrigger>
+                <SelectContent position="popper" className="z-[70]">
+                  <SelectItem value="mensual">Mensual</SelectItem>
+                  <SelectItem value="anual">Anual</SelectItem>
+                  <SelectItem value="semestral">Semestral</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+            <div></div>
           </div>
           <div className="grid grid-cols-2 gap-4">
             <div>
@@ -380,6 +502,109 @@ export default function PlanesVisitadorConfigPage() {
       </DraggableWindow>
 
       {/* ════════════════════════════════════════════════════
+          VENTANA ARRASTRABLE: Editar Plan Visitador
+          ════════════════════════════════════════════════════ */}
+      <DraggableWindow
+        isOpen={!!dialogoEditar}
+        onClose={() => setDialogoEditar(null)}
+        title="Editar Plan Visitador"
+        initialPosition={{ x: window.innerWidth / 2 - 250, y: 100 }}
+      >
+        {dialogoEditar && (
+          <div className="space-y-4">
+            <div>
+              <Label>Nombre</Label>
+              <Input value={dialogoEditar.nombre} onChange={(e) => setDialogoEditar({...dialogoEditar, nombre: e.target.value})} />
+            </div>
+            <div>
+              <Label>Descripcion</Label>
+              <Input value={dialogoEditar.descripcion || ''} onChange={(e) => setDialogoEditar({...dialogoEditar, descripcion: e.target.value})} />
+            </div>
+            <div className="grid grid-cols-2 gap-4">
+              <div>
+                <Label>Precio Base (USD)</Label>
+                <Input type="number" value={dialogoEditar.precio_base} onChange={(e) => setDialogoEditar({...dialogoEditar, precio_base: e.target.value})} />
+              </div>
+              <div>
+                <Label>Moneda</Label>
+                <Select value={dialogoEditar.moneda} onValueChange={(v) => setDialogoEditar({...dialogoEditar, moneda: v})}>
+                  <SelectTrigger className="w-full"><SelectValue /></SelectTrigger>
+                  <SelectContent position="popper" className="z-[70]">
+                    {MONEDAS.map(m => (
+                      <SelectItem key={m.codigo} value={m.codigo}>{m.codigo} - {m.nombre}</SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+            </div>
+            <div className="grid grid-cols-2 gap-4">
+              <div>
+                <Label>Periodicidad</Label>
+                <Select value={dialogoEditar.periodicidad} onValueChange={(v) => setDialogoEditar({...dialogoEditar, periodicidad: v})}>
+                  <SelectTrigger className="w-full"><SelectValue /></SelectTrigger>
+                  <SelectContent position="popper" className="z-[70]">
+                    <SelectItem value="mensual">Mensual</SelectItem>
+                    <SelectItem value="anual">Anual</SelectItem>
+                    <SelectItem value="semestral">Semestral</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+              <div></div>
+            </div>
+            <div className="grid grid-cols-2 gap-4">
+              <div>
+                <Label>Límite Médicos</Label>
+                <Input type="number" value={dialogoEditar.limite_medicos || ''} onChange={(e) => setDialogoEditar({...dialogoEditar, limite_medicos: e.target.value})} placeholder="Ilimitado" />
+              </div>
+              <div>
+                <Label>Límite Pacientes</Label>
+                <Input type="number" value={dialogoEditar.limite_pacientes || ''} onChange={(e) => setDialogoEditar({...dialogoEditar, limite_pacientes: e.target.value})} placeholder="Ilimitado" />
+              </div>
+            </div>
+            <div>
+              <Label>Características (separadas por coma)</Label>
+              <Input value={Array.isArray(dialogoEditar.caracteristicas) ? dialogoEditar.caracteristicas.join(', ') : dialogoEditar.caracteristicas || ''} onChange={(e) => setDialogoEditar({...dialogoEditar, caracteristicas: e.target.value})} placeholder="Ej: Recetas ilimitadas, Soporte 24/7" />
+            </div>
+            <div className="flex items-center gap-2">
+              <input type="checkbox" checked={dialogoEditar.activo} onChange={(e) => setDialogoEditar({...dialogoEditar, activo: e.target.checked})} className="h-4 w-4" />
+              <Label>Plan activo</Label>
+            </div>
+            <div className="flex justify-end gap-2 pt-2">
+              <Button variant="outline" onClick={() => setDialogoEditar(null)}>Cancelar</Button>
+              <Button onClick={handleEditarPlan} className="bg-orange-600 hover:bg-orange-700">
+                <Edit className="h-4 w-4 mr-2" /> Guardar Cambios
+              </Button>
+            </div>
+          </div>
+        )}
+      </DraggableWindow>
+
+      {/* ════════════════════════════════════════════════════
+          VENTANA ARRASTRABLE: Confirmar Eliminar Plan
+          ════════════════════════════════════════════════════ */}
+      <DraggableWindow
+        isOpen={!!dialogoEliminarPlan}
+        onClose={() => setDialogoEliminarPlan(null)}
+        title="Eliminar Plan"
+        initialPosition={{ x: window.innerWidth / 2 - 250, y: 150 }}
+      >
+        <div className="text-center py-4">
+          <AlertTriangle className="h-12 w-12 text-red-500 mx-auto mb-4" />
+          <p className="text-lg font-semibold mb-2">¿Eliminar plan base?</p>
+          <p className="text-sm text-muted-foreground mb-4">
+            Esta acción eliminará el plan base y todas sus configuraciones por país. No se puede deshacer.
+          </p>
+         <div className="flex justify-center gap-2">
+  <Button variant="outline" onClick={() => setDialogoEliminarPlan(null)}>Cancelar</Button>
+         <div className="flex justify-center gap-2">
+          <Button variant="outline" onClick={() => setDialogoEliminarPlan(null)}>Cancelar</Button>
+          <Button variant="destructive" onClick={handleEliminarPlan}>Eliminar</Button>
+        </div>
+      </div>
+    </div>
+  </DraggableWindow>
+
+      {/* ════════════════════════════════════════════════════
           VENTANA ARRASTRABLE: Nueva Configuracion por Pais
           ════════════════════════════════════════════════════ */}
       <DraggableWindow
@@ -392,8 +617,8 @@ export default function PlanesVisitadorConfigPage() {
           <div>
             <Label>Plan Base</Label>
             <Select value={nuevaConfig.plan_base_id} onValueChange={(v) => setNuevaConfig({...nuevaConfig, plan_base_id: v})}>
-              <SelectTrigger><SelectValue placeholder="Seleccionar plan" /></SelectTrigger>
-              <SelectContent>
+              <SelectTrigger className="w-full"><SelectValue placeholder="Seleccionar plan" /></SelectTrigger>
+              <SelectContent position="popper" className="z-[70]">
                 {planesVisitador.map(p => (
                   <SelectItem key={p.id} value={p.id}>{p.nombre}</SelectItem>
                 ))}
@@ -403,8 +628,8 @@ export default function PlanesVisitadorConfigPage() {
           <div>
             <Label>Pais</Label>
             <Select value={nuevaConfig.pais_id} onValueChange={(v) => setNuevaConfig({...nuevaConfig, pais_id: v})}>
-              <SelectTrigger><SelectValue placeholder="Seleccionar pais" /></SelectTrigger>
-              <SelectContent>
+              <SelectTrigger className="w-full"><SelectValue placeholder="Seleccionar pais" /></SelectTrigger>
+              <SelectContent position="popper" className="z-[70]">
                 {paises.map(p => (
                   <SelectItem key={p.id} value={p.id}>{getBanderaPais(p.codigo as any)} {p.nombre}</SelectItem>
                 ))}
@@ -435,6 +660,30 @@ export default function PlanesVisitadorConfigPage() {
             <Button variant="outline" onClick={() => setDialogoConfig(false)}>Cancelar</Button>
             <Button onClick={handleCrearConfig} disabled={!nuevaConfig.plan_base_id || !nuevaConfig.pais_id} className="bg-orange-600 hover:bg-orange-700">
               <Plus className="h-4 w-4 mr-2" /> Crear Configuracion
+            </Button>
+          </div>
+        </div>
+      </DraggableWindow>
+
+      {/* ════════════════════════════════════════════════════
+          VENTANA ARRASTRABLE: Confirmar Eliminar Configuración
+          ════════════════════════════════════════════════════ */}
+      <DraggableWindow
+        isOpen={!!dialogoEliminarConfig}
+        onClose={() => setDialogoEliminarConfig(null)}
+        title="Eliminar Configuracion"
+        initialPosition={{ x: window.innerWidth / 2 - 250, y: 200 }}
+      >
+        <div className="text-center py-4">
+          <AlertTriangle className="h-12 w-12 text-red-500 mx-auto mb-4" />
+          <p className="text-lg font-semibold mb-2">¿Eliminar configuración?</p>
+          <p className="text-sm text-muted-foreground mb-4">
+            Esta acción eliminará la configuración de precios para este país. No se puede deshacer.
+          </p>
+          <div className="flex justify-center gap-2">
+            <Button variant="outline" onClick={() => setDialogoEliminarConfig(null)}>Cancelar</Button>
+            <Button variant="destructive" onClick={handleEliminarConfig}>
+              <Trash2 className="h-4 w-4 mr-2" /> Eliminar
             </Button>
           </div>
         </div>
