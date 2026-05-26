@@ -29,7 +29,6 @@ export default function LoginPage() {
       if (error) setError(error.message)
       else {
         setIsRegister(false)
-        // Limpiar campos después de registro exitoso
         setEmail('')
         setPassword('')
         setNombre('')
@@ -46,14 +45,12 @@ export default function LoginPage() {
   const toggleMode = () => {
     setIsRegister(!isRegister)
     setError('')
-    // Limpiar TODOS los campos al cambiar entre login y registro
     setEmail('')
     setPassword('')
     setNombre('')
     setRol('medico')
   }
 
-  // Roles extensibles - fácil agregar más después
   const roles = [
     { value: 'admin', label: 'Administrador', icon: Shield, color: 'text-red-600', desc: 'Control total del sistema' },
     { value: 'medico', label: 'Médico', icon: Stethoscope, color: 'text-[#1E5C8E]', desc: 'Atención médica y recetas' },
@@ -71,7 +68,7 @@ export default function LoginPage() {
             <Stethoscope className="h-12 w-12 text-white" />
             <div>
               <h1 className="text-3xl font-bold text-white">EzPayConnect</h1>
-              <p className="text-[#B8D0E0]">Software Medico</p>
+              <p className="text-[#B8D0E0]">Software Médico</p>
             </div>
           </div>
         </div>
@@ -79,11 +76,11 @@ export default function LoginPage() {
         <Card className="border-0 shadow-2xl">
           <CardHeader className="space-y-1">
             <CardTitle className="text-2xl text-center">
-              {isRegister ? 'Crear Cuenta' : 'Iniciar Sesion'}
+              {isRegister ? 'Crear Cuenta' : 'Iniciar Sesión'}
             </CardTitle>
             <CardDescription className="text-center">
               {isRegister
-                ? 'Registrate para empezar a usar EzPayConnect'
+                ? 'Regístrate para empezar a usar EzPayConnect'
                 : 'Ingresa tus credenciales para continuar'}
             </CardDescription>
           </CardHeader>
@@ -97,7 +94,7 @@ export default function LoginPage() {
                       id="nombre"
                       value={nombre}
                       onChange={(e) => setNombre(e.target.value)}
-                      placeholder="Dr. Juan Perez"
+                      placeholder="Dr. Juan Pérez"
                       required
                     />
                   </div>
@@ -125,7 +122,7 @@ export default function LoginPage() {
                 </>
               )}
               <div className="space-y-2">
-                <Label htmlFor="email">Correo Electronico</Label>
+                <Label htmlFor="email">Correo Electrónico</Label>
                 <Input
                   id="email"
                   type="email"
@@ -136,7 +133,7 @@ export default function LoginPage() {
                 />
               </div>
               <div className="space-y-2">
-                <Label htmlFor="password">Contrasena</Label>
+                <Label htmlFor="password">Contraseña</Label>
                 <Input
                   id="password"
                   type="password"
@@ -152,18 +149,18 @@ export default function LoginPage() {
               )}
               <Button type="submit" className="w-full bg-[#1E5C8E] hover:bg-[#3A8ABF]" disabled={loading}>
                 {loading && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
-                {isRegister ? 'Registrarse' : 'Iniciar Sesion'}
+                {isRegister ? 'Registrarse' : 'Iniciar Sesión'}
               </Button>
             </form>
 
             <p className="text-center mt-4 text-sm text-muted-foreground">
-              {isRegister ? 'Ya tienes cuenta?' : 'No tienes cuenta?'}{' '}
+              {isRegister ? '¿Ya tienes cuenta?' : '¿No tienes cuenta?'}{' '}
               <button
                 type="button"
                 onClick={toggleMode}
                 className="text-[#1E5C8E] hover:underline font-medium"
               >
-                {isRegister ? 'Inicia Sesion' : 'Registrate'}
+                {isRegister ? 'Inicia Sesión' : 'Regístrate'}
               </button>
             </p>
           </CardContent>

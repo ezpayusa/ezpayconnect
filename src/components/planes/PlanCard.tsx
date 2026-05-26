@@ -50,7 +50,7 @@ export function PlanCard({
     : 16; // ~16% si no está definido (2 meses gratis)
 
   const precioMostrar = cicloSeleccionado === 'mensual' ? precioLocalMensual : precioAnualLocal;
-  const monedaLocal = configFinal.moneda_local || 'USD';
+  const monedaLocal = configFinal.pais?.moneda || 'USD';
 
   const esPopular = planFinal.nombre?.toLowerCase().includes('pro') || 
                     planFinal.nombre?.toLowerCase().includes('profesional') || 

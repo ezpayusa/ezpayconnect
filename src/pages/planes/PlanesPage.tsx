@@ -18,15 +18,11 @@ export default function PlanesPage() {
   const { planesConfig, paises, loading, crearAsignacionCheckout } = usePlanes();
   const [paisSeleccionado, setPaisSeleccionado] = useState<string>('');
   const [checkoutAbierto, setCheckoutAbierto] = useState(false);
-const [configCheckout, setConfigCheckout] = useState<any>(null);
+  const [configCheckout, setConfigCheckout] = useState<any>(null);
 
-  // Filtrar solo planes medicos activos
   const planesMedicos = planesConfig.filter(p => p.plan_base?.tipo === 'medico' && p.activo !== false);
-
-  // Obtener paises unicos de las configuraciones medicas
   const paisesUnicos = paises.filter(p => planesMedicos.some(pm => pm.pais_id === p.id));
 
-  // Seleccionar primer pais por defecto
   if (!paisSeleccionado && paisesUnicos.length > 0) {
     setPaisSeleccionado(paisesUnicos[0].id);
   }
@@ -79,11 +75,11 @@ const [configCheckout, setConfigCheckout] = useState<any>(null);
         <div className="container mx-auto px-4 text-center">
           <Badge className="mb-4 bg-white/20 text-white border-0">
             <Zap className="h-3 w-3 mr-1" />
-            Planes disenados para medicos
+            Planes diseñados para médicos
           </Badge>
-          <h1 className="text-4xl font-bold mb-4">Elige el plan perfecto para tu practica</h1>
+          <h1 className="text-4xl font-bold mb-4">Elige el plan perfecto para tu práctica</h1>
           <p className="text-lg text-cyan-100 max-w-2xl mx-auto">
-            Desde medicos independientes hasta grandes grupos medicos. Precios adaptados a tu pais.
+            Desde médicos independientes hasta grandes grupos médicos. Precios adaptados a tu país.
           </p>
         </div>
       </div>
@@ -115,7 +111,7 @@ const [configCheckout, setConfigCheckout] = useState<any>(null);
           
           {planesFiltrados.length === 0 && (
             <div className="col-span-full text-center py-12">
-              <p className="text-muted-foreground">No hay planes disponibles para este pais.</p>
+              <p className="text-muted-foreground">No hay planes disponibles para este país.</p>
             </div>
           )}
         </div>
@@ -126,13 +122,13 @@ const [configCheckout, setConfigCheckout] = useState<any>(null);
               <Shield className="h-6 w-6 text-cyan-600" />
             </div>
             <h3 className="font-semibold mb-2">Seguridad HIPAA</h3>
-            <p className="text-sm text-muted-foreground">Cumplimiento total con normativas de proteccion de datos medicos</p>
+            <p className="text-sm text-muted-foreground">Cumplimiento total con normativas de protección de datos médicos</p>
           </div>
           <div className="text-center bg-white p-6 rounded-xl shadow-sm">
             <div className="h-12 w-12 rounded-full bg-cyan-50 flex items-center justify-center mx-auto mb-4">
               <Globe className="h-6 w-6 text-cyan-600" />
             </div>
-            <h3 className="font-semibold mb-2">Multi-pais</h3>
+            <h3 className="font-semibold mb-2">Multi-país</h3>
             <p className="text-sm text-muted-foreground">Operaciones en Guatemala, El Salvador y Honduras con precios locales</p>
           </div>
           <div className="text-center bg-white p-6 rounded-xl shadow-sm">
@@ -146,7 +142,7 @@ const [configCheckout, setConfigCheckout] = useState<any>(null);
 
         <div className="text-center text-sm text-gray-500 bg-white p-4 rounded-lg">
           <p>Los precios base se muestran en USD como referencia internacional.</p>
-          <p>La facturacion se realiza en la moneda local seleccionada.</p>
+          <p>La facturación se realiza en la moneda local seleccionada.</p>
         </div>
       </div>
 

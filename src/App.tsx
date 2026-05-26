@@ -64,9 +64,26 @@ function PrivateLayout({ children }: { children: React.ReactNode }) {
 function AdminRoute({ children }: { children: React.ReactNode }) {
   const { isAdmin, loading } = useAdminAuth()
   const navigate = useNavigate()
-  useEffect(() => { if (!loading && !isAdmin) navigate('/dashboard') }, [loading, isAdmin, navigate])
-  if (loading) return <div className="flex items-center justify-center h-screen">Cargando...</div>
-  return isAdmin ? <>{children}</> : null
+
+  useEffect(() => {
+    if (!loading && !isAdmin) {
+      console.log('[AdminRoute] No es admin, redirigiendo a /dashboard')
+      navigate('/dashboard')
+    }
+  }, [loading, isAdmin, navigate])
+
+  if (loading) {
+    console.log('[AdminRoute] Cargando...')
+    return <div className="flex items-center justify-center h-screen">Cargando...</div>
+  }
+
+  if (!isAdmin) {
+    console.log('[AdminRoute] isAdmin=false, mostrando null')
+    return null
+  }
+
+  console.log('[AdminRoute] isAdmin=true, renderizando children')
+  return <>{children}</>
 }
 
 function App() {
@@ -87,27 +104,17 @@ function App() {
         <Route path="/dispensar-receta" element={<PrivateLayout><DispensarRecetaPage /></PrivateLayout>} />
         <Route path="/configuracion" element={<PrivateLayout><ConfiguracionPage /></PrivateLayout>} />
 
-        {/* === RUTAS PLANES === */}
+        {/* === RUTAS PLANES (PÚBLICAS / LANDING) === */}
         <Route path="/planes" element={<PlanesPage />} />
-        <Route path="/admin/planes/configuracion" element={<AdminRoute><PlanesConfigPage /></AdminRoute>} />
-        <Route path="/admin/planes/asignaciones" element={<AdminRoute><PlanesAsignacionesPage /></AdminRoute>} />
-        <Route path="/admin/planes/excepciones" element={<AdminRoute><PlanesExcepcionesPage /></AdminRoute>} />
         <Route path="/planes-clinica" element={<PlanesClinicaPage />} />
-        <Route path="/admin/planes/clinica" element={<AdminRoute><PlanesClinicaConfigPage /></AdminRoute>} />
         <Route path="/planes-lab" element={<PlanesLabPage />} />
-        <Route path="/admin/planes/lab" element={<AdminRoute><PlanesLabConfigPage /></AdminRoute>} />
         <Route path="/planes-visitador" element={<PlanesVisitadorPage />} />
-        <Route path="/admin/planes/visitador" element={<AdminRoute><PlanesVisitadorConfigPage /></AdminRoute>} />
         <Route path="/planes-todos" element={<PlanesTodosPage />} />
-        <Route path="/admin/planes/farmaceutico" element={<AdminRoute><PlanesFarmaceuticoConfigPage /></AdminRoute>} />
-        <Route path="/admin/planes/farmacia" element={<AdminRoute><PlanesFarmaciaConfigPage /></AdminRoute>} />
-        <Route path="/admin/planes/publicidad" element={<AdminRoute><PlanesPublicidadConfigPage /></AdminRoute>} />
-        <Route path="/admin/planes/empresas-afines" element={<AdminRoute><PlanesEmpresasAfinesConfigPage /></AdminRoute>} />
 
         {/* === RUTAS REPORTES MEDICOS (Panel Medico) === */}
         <Route path="/reportes" element={<PrivateLayout><ReportesPage /></PrivateLayout>} />
 
-        {/* === RUTAS ADMIN EZPAY === */}
+        {/* === RUTAS ADMIN EZPAY + PLANES (con AdminLayout) === */}
         <Route path="/admin-ezpay" element={<AdminRoute><AdminLayout /></AdminRoute>}>
           <Route path="ventas" element={<VentasPage />} />
           <Route index element={<AdminEzPayPage />} />
@@ -126,7 +133,7 @@ function App() {
           <Route path="excepciones" element={<Navigate to="/admin/planes/excepciones" replace />} />
           <Route path="finanzas" element={<FinanzasPage />} />
 
-          {/* === RUTAS REPORTES EZPAY (NUEVAS) === */}
+          {/* === RUTAS REPORTES EZPAY === */}
           <Route path="reportes" element={<ReportesPage />} />
           <Route path="reportes-ezpay" element={<ReportesEzPayPage />} />
           <Route path="reportes-ezpay-v2" element={<ReportesEzPayPageV2 />} />
@@ -134,6 +141,20 @@ function App() {
           <Route path="roles" element={<RolesPage />} />
           <Route path="auditoria" element={<AuditoriaPage />} />
           <Route path="notificaciones" element={<NotificacionesAdminPage />} />
+        </Route>
+
+        {/* === RUTAS ADMIN PLANES (con AdminLayout) — FIX: ahora tienen layout === */}
+        <Route path="/admin/planes" element={<AdminRoute><AdminLayout /></AdminRoute>}>
+          <Route path="configuracion" element={<PlanesConfigPage />} />
+          <Route path="asignaciones" element={<PlanesAsignacionesPage />} />
+          <Route path="excepciones" element={<PlanesExcepcionesPage />} />
+          <Route path="clinica" element={<PlanesClinicaConfigPage />} />
+          <Route path="lab" element={<PlanesLabConfigPage />} />
+          <Route path="visitador" element={<PlanesVisitadorConfigPage />} />
+          <Route path="farmaceutico" element={<PlanesFarmaceuticoConfigPage />} />
+          <Route path="farmacia" element={<PlanesFarmaciaConfigPage />} />
+          <Route path="publicidad" element={<PlanesPublicidadConfigPage />} />
+          <Route path="empresas-afines" element={<PlanesEmpresasAfinesConfigPage />} />
         </Route>
       </Routes>
       <Toaster richColors position="top-right" />

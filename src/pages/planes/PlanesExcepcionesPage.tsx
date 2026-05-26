@@ -9,14 +9,12 @@ import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from '@/components/ui/dialog';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { usePlanes } from '@/hooks/usePlanes';
-import { useAuth } from '@/hooks/useAuth';
 import type { PlanExcepcion } from '@/types/planes';
 import { formatearPrecio } from '@/lib/planes-utils';
 import { ArrowLeft, Plus, Tag, Percent, DollarSign, Ban, Search } from 'lucide-react';
 
 export default function PlanesExcepcionesPage() {
   const navigate = useNavigate();
-  const { user } = useAuth();
   const { excepciones, planesConfig, loading, crearExcepcion, desactivarExcepcion, recargar } = usePlanes();
   const [search, setSearch] = useState('');
   const [filtroActivo, setFiltroActivo] = useState<'todos' | 'activo' | 'inactivo'>('activo');
@@ -27,18 +25,8 @@ export default function PlanesExcepcionesPage() {
     motivo: '', fecha_inicio: new Date().toISOString().split('T')[0], fecha_fin: ''
   });
 
-  if (user?.rol !== 'super_admin' && user?.rol !== 'admin') {
-    return (
-      <div className="flex items-center justify-center min-h-[60vh]">
-        <Card className="max-w-md">
-          <CardContent className="pt-6 text-center">
-            <h2 className="text-xl font-bold mb-2">Acceso restringido</h2>
-            <Button onClick={() => navigate('/dashboard')}>Volver al dashboard</Button>
-          </CardContent>
-        </Card>
-      </div>
-    );
-  }
+  // Nota: La validación de admin se maneja en AdminRoute (App.tsx)
+  // No es necesario duplicarla aquí
 
   const excepcionesFiltradas = excepciones.filter(e => {
     const matchSearch = !search || e.motivo?.toLowerCase().includes(search.toLowerCase());

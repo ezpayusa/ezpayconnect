@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { Stethoscope, Building2, FlaskConical, Truck, Check, ArrowRight, CreditCard } from 'lucide-react';
+import { Stethoscope, Building2, FlaskConical, Truck, Check, ArrowRight, CreditCard, ArrowLeft } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
@@ -46,8 +46,21 @@ export default function PlanesTodosPage() {
   return (
     <div className="min-h-screen bg-gray-50">
       {/* Header */}
-      <div className="bg-gradient-to-r from-[#1E5C8E] to-[#2A7CC4] text-white py-16">
+      <div className="bg-gradient-to-r from-[#1E5C8E] to-[#2A7CC4] text-white py-16 relative">
         <div className="container mx-auto px-4 text-center">
+          {/* Botón Volver al Panel Maestro */}
+          <div className="absolute top-4 right-4">
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={() => navigate('/admin-ezpay')}
+              className="text-white hover:text-white hover:bg-white/20"
+            >
+              <ArrowLeft className="w-4 h-4 mr-1" />
+              Volver al Panel Maestro
+            </Button>
+          </div>
+
           <div className="flex justify-center mb-4">
             <CreditCard className="h-16 w-16 text-blue-200" />
           </div>

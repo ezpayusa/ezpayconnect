@@ -28,59 +28,98 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { Trash2, Edit, Plus } from "lucide-react";
+import { Trash2, Edit, Plus, ArrowLeft } from "lucide-react";
+import { useNavigate } from "react-router-dom";
 import type { PlanBase } from "@/types/planes";
 
+// Monedas latinoamericanas + España/USA/Canadá (match con planes-utils.ts)
+const MONEDAS_LATAM = [
+  { codigo: "GTQ", nombre: "Guatemala — Quetzal", simbolo: "Q" },
+  { codigo: "USD", nombre: "Estados Unidos / Panamá / Ecuador — Dólar", simbolo: "$" },
+  { codigo: "HNL", nombre: "Honduras — Lempira", simbolo: "L" },
+  { codigo: "CRC", nombre: "Costa Rica — Colón", simbolo: "₡" },
+  { codigo: "SVC", nombre: "El Salvador — Colón (histórico)", simbolo: "₡" },
+  { codigo: "NIO", nombre: "Nicaragua — Córdoba", simbolo: "C$" },
+  { codigo: "PAB", nombre: "Panamá — Balboa", simbolo: "B/." },
+  { codigo: "BZD", nombre: "Belice — Dólar", simbolo: "BZ$" },
+  { codigo: "MXN", nombre: "México — Peso Mexicano", simbolo: "$" },
+  { codigo: "DOP", nombre: "República Dominicana — Peso Dominicano", simbolo: "RD$" },
+  { codigo: "CUP", nombre: "Cuba — Peso Cubano", simbolo: "$" },
+  { codigo: "COP", nombre: "Colombia — Peso Colombiano", simbolo: "$" },
+  { codigo: "VES", nombre: "Venezuela — Bolívar Soberano", simbolo: "Bs." },
+  { codigo: "PEN", nombre: "Perú — Sol", simbolo: "S/" },
+  { codigo: "BOB", nombre: "Bolivia — Boliviano", simbolo: "Bs." },
+  { codigo: "CLP", nombre: "Chile — Peso Chileno", simbolo: "$" },
+  { codigo: "ARS", nombre: "Argentina — Peso Argentino", simbolo: "$" },
+  { codigo: "PYG", nombre: "Paraguay — Guaraní", simbolo: "₲" },
+  { codigo: "UYU", nombre: "Uruguay — Peso Uruguayo", simbolo: "$" },
+  { codigo: "BRL", nombre: "Brasil — Real", simbolo: "R$" },
+  { codigo: "GYD", nombre: "Guyana — Dólar", simbolo: "$" },
+  { codigo: "SRD", nombre: "Surinam — Dólar", simbolo: "$" },
+  { codigo: "CAD", nombre: "Canadá — Dólar Canadiense", simbolo: "C$" },
+  { codigo: "EUR", nombre: "España / Europa — Euro", simbolo: "€" },
+  { codigo: "GBP", nombre: "Reino Unido — Libra", simbolo: "£" },
+];
+
 export default function PlanesClinicaConfigPage() {
+  const navigate = useNavigate();
   const {
     planesBase,
     planesConfig,
+    paises,
     crearPlanConfig,
     eliminarPlanBase,
     actualizarPlanBase,
     loading,
   } = usePlanes();
 
-  // ── Estados para CREAR configuración por país (existente, intacto) ──
+  // ── Estados para CREAR configuración por país ──
   const [dialogoCrearAbierto, setDialogoCrearAbierto] = useState(false);
   const [nuevaConfig, setNuevaConfig] = useState({
     plan_base_id: "",
-    pais: "",
-    precio_mensual: "",
+    pais_id: "",
+    moneda_local: "USD",
+    precio_local: "",
     precio_anual: "",
-    moneda: "USD",
   });
 
-  // ── Estados para EDITAR plan base (nuevo) ──
+  // ── Estados para EDITAR plan base ──
   const [dialogoEditarAbierto, setDialogoEditarAbierto] = useState(false);
   const [planAEditar, setPlanAEditar] = useState<PlanBase | null>(null);
 
-  // ── Estados para ELIMINAR plan base (nuevo) ──
+  // ── Estados para ELIMINAR plan base ──
   const [dialogoEliminarAbierto, setDialogoEliminarAbierto] = useState(false);
   const [planAEliminar, setPlanAEliminar] = useState<string | null>(null);
 
-  // ── Handlers CREAR (existentes, intactos) ──
+  // ── Handlers CREAR ──
   const handleCrearConfig = async () => {
     await crearPlanConfig({
       plan_base_id: nuevaConfig.plan_base_id,
-      pais: nuevaConfig.pais,
-      precio_mensual: parseFloat(nuevaConfig.precio_mensual),
-      precio_anual: parseFloat(nuevaConfig.precio_anual),
-      moneda: nuevaConfig.moneda,
+      pais_id: nuevaConfig.pais_id,
+      moneda_local: nuevaConfig.moneda_local,
+      precio_local: parseFloat(nuevaConfig.precio_local),
+      precio_anual: nuevaConfig.precio_anual ? parseFloat(nuevaConfig.precio_anual) : undefined,
     });
     setDialogoCrearAbierto(false);
     setNuevaConfig({
       plan_base_id: "",
-      pais: "",
-      precio_mensual: "",
+      pais_id: "",
+      moneda_local: "USD",
+      precio_local: "",
       precio_anual: "",
-      moneda: "USD",
     });
   };
 
-  // ── Handlers EDITAR (nuevo) ──
+  // ── Handlers EDITAR ──
   const abrirEditar = (plan: PlanBase) => {
     setPlanAEditar(plan);
     setDialogoEditarAbierto(true);
@@ -91,15 +130,14 @@ export default function PlanesClinicaConfigPage() {
     await actualizarPlanBase(planAEditar.id, {
       nombre: planAEditar.nombre,
       descripcion: planAEditar.descripcion,
-      max_medicos: planAEditar.max_medicos,
-      max_pacientes: planAEditar.max_pacientes,
-      max_citas_mes: planAEditar.max_citas_mes,
+      limite_medicos: planAEditar.limite_medicos,
+      limite_pacientes: planAEditar.limite_pacientes,
     });
     setDialogoEditarAbierto(false);
     setPlanAEditar(null);
   };
 
-  // ── Handlers ELIMINAR (fix + nuevo) ──
+  // ── Handlers ELIMINAR ──
   const confirmarEliminar = (id: string) => {
     setPlanAEliminar(id);
     setDialogoEliminarAbierto(true);
@@ -107,7 +145,7 @@ export default function PlanesClinicaConfigPage() {
 
   const handleEliminarPlanBase = async () => {
     if (!planAEliminar) return;
-    await eliminarPlanBase(planAEliminar); // ✅ FIX: usa eliminarPlanBase, no eliminarPlanConfig
+    await eliminarPlanBase(planAEliminar);
     setDialogoEliminarAbierto(false);
     setPlanAEliminar(null);
   };
@@ -116,10 +154,28 @@ export default function PlanesClinicaConfigPage() {
 
   return (
     <div className="p-6 space-y-6">
-      <div className="flex items-center justify-between">
-        <h1 className="text-2xl font-bold">Configuración de Planes Clínica</h1>
+      {/* ── Breadcrumb / Botón Volver ── */}
+      <div className="flex items-center gap-2 mb-2">
+        <Button
+          variant="ghost"
+          size="sm"
+          onClick={() => navigate("/admin-ezpay")}
+          className="text-[#1E5C8E] hover:text-[#1E5C8E]/80 hover:bg-[#1E5C8E]/10 -ml-2"
+        >
+          <ArrowLeft className="w-4 h-4 mr-1" />
+          Volver al Panel Maestro
+        </Button>
+      </div>
 
-        {/* ── Botón + (crear config por país) — EXISTENTE, INTACTO ── */}
+      <div className="flex items-center justify-between">
+        <div>
+          <h1 className="text-2xl font-bold">Configuración de Planes Clínica</h1>
+          <p className="text-sm text-muted-foreground mt-1">
+            Gestiona los planes base y sus configuraciones por país
+          </p>
+        </div>
+
+        {/* ── Botón + (crear config por país) ── */}
         <Dialog open={dialogoCrearAbierto} onOpenChange={setDialogoCrearAbierto}>
           <DialogTrigger asChild>
             <Button>
@@ -135,45 +191,63 @@ export default function PlanesClinicaConfigPage() {
               </DialogDescription>
             </DialogHeader>
             <div className="grid gap-4 py-4">
+              {/* Plan Base — Select de shadcn/ui */}
               <div>
                 <Label>Plan Base</Label>
-                <select
-                  className="w-full border rounded p-2"
+                <Select
                   value={nuevaConfig.plan_base_id}
-                  onChange={(e) =>
-                    setNuevaConfig({ ...nuevaConfig, plan_base_id: e.target.value })
+                  onValueChange={(value) =>
+                    setNuevaConfig({ ...nuevaConfig, plan_base_id: value })
                   }
                 >
-                  <option value="">Selecciona un plan base</option>
-                  {planesBase.map((p) => (
-                    <option key={p.id} value={p.id}>
-                      {p.nombre}
-                    </option>
-                  ))}
-                </select>
+                  <SelectTrigger className="w-full">
+                    <SelectValue placeholder="Selecciona un plan base" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {planesBase.map((p) => (
+                      <SelectItem key={p.id} value={p.id}>
+                        {p.nombre}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
               </div>
+
+              {/* País — Select de shadcn/ui */}
               <div>
                 <Label>País</Label>
-                <Input
-                  value={nuevaConfig.pais}
-                  onChange={(e) =>
-                    setNuevaConfig({ ...nuevaConfig, pais: e.target.value })
+                <Select
+                  value={nuevaConfig.pais_id}
+                  onValueChange={(value) =>
+                    setNuevaConfig({ ...nuevaConfig, pais_id: value })
                   }
-                  placeholder="ej: Guatemala"
-                />
+                >
+                  <SelectTrigger className="w-full">
+                    <SelectValue placeholder="Selecciona un país" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {paises.map((p) => (
+                      <SelectItem key={p.id} value={p.id}>
+                        {p.nombre} ({p.codigo})
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
               </div>
+
               <div>
-                <Label>Precio Mensual</Label>
+                <Label>Precio Local</Label>
                 <Input
                   type="number"
-                  value={nuevaConfig.precio_mensual}
+                  value={nuevaConfig.precio_local}
                   onChange={(e) =>
-                    setNuevaConfig({ ...nuevaConfig, precio_mensual: e.target.value })
+                    setNuevaConfig({ ...nuevaConfig, precio_local: e.target.value })
                   }
+                  placeholder="Precio mensual en moneda local"
                 />
               </div>
               <div>
-                <Label>Precio Anual</Label>
+                <Label>Precio Anual (opcional)</Label>
                 <Input
                   type="number"
                   value={nuevaConfig.precio_anual}
@@ -182,14 +256,27 @@ export default function PlanesClinicaConfigPage() {
                   }
                 />
               </div>
+
+              {/* Moneda Local — Select de shadcn/ui */}
               <div>
-                <Label>Moneda</Label>
-                <Input
-                  value={nuevaConfig.moneda}
-                  onChange={(e) =>
-                    setNuevaConfig({ ...nuevaConfig, moneda: e.target.value })
+                <Label>Moneda Local</Label>
+                <Select
+                  value={nuevaConfig.moneda_local}
+                  onValueChange={(value) =>
+                    setNuevaConfig({ ...nuevaConfig, moneda_local: value })
                   }
-                />
+                >
+                  <SelectTrigger className="w-full">
+                    <SelectValue placeholder="Selecciona una moneda" />
+                  </SelectTrigger>
+                  <SelectContent className="max-h-[300px]">
+                    {MONEDAS_LATAM.map((m) => (
+                      <SelectItem key={m.codigo} value={m.codigo}>
+                        {m.simbolo} — {m.nombre}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
               </div>
             </div>
             <DialogFooter>
@@ -212,7 +299,6 @@ export default function PlanesClinicaConfigPage() {
               <TableHead>Descripción</TableHead>
               <TableHead>Médicos</TableHead>
               <TableHead>Pacientes</TableHead>
-              <TableHead>Citas/mes</TableHead>
               <TableHead className="text-right">Acciones</TableHead>
             </TableRow>
           </TableHeader>
@@ -221,11 +307,9 @@ export default function PlanesClinicaConfigPage() {
               <TableRow key={plan.id}>
                 <TableCell className="font-medium">{plan.nombre}</TableCell>
                 <TableCell>{plan.descripcion}</TableCell>
-                <TableCell>{plan.max_medicos}</TableCell>
-                <TableCell>{plan.max_pacientes}</TableCell>
-                <TableCell>{plan.max_citas_mes}</TableCell>
+                <TableCell>{plan.limite_medicos ?? "Ilimitado"}</TableCell>
+                <TableCell>{plan.limite_pacientes ?? "Ilimitado"}</TableCell>
                 <TableCell className="text-right space-x-2">
-                  {/* ── Botón EDITAR (fix: ahora funciona) ── */}
                   <Button
                     variant="ghost"
                     size="icon"
@@ -233,8 +317,6 @@ export default function PlanesClinicaConfigPage() {
                   >
                     <Edit className="w-4 h-4" />
                   </Button>
-
-                  {/* ── Botón ELIMINAR (fix: confirma + usa eliminarPlanBase) ── */}
                   <Button
                     variant="ghost"
                     size="icon"
@@ -249,7 +331,7 @@ export default function PlanesClinicaConfigPage() {
         </Table>
       </section>
 
-      {/* ── TABLA CONFIGURACIONES POR PAÍS (existente, intacta) ── */}
+      {/* ── TABLA CONFIGURACIONES POR PAÍS ── */}
       <section>
         <h2 className="text-lg font-semibold mb-2">Configuraciones por País</h2>
         <Table>
@@ -257,7 +339,7 @@ export default function PlanesClinicaConfigPage() {
             <TableRow>
               <TableHead>Plan Base</TableHead>
               <TableHead>País</TableHead>
-              <TableHead>Precio Mensual</TableHead>
+              <TableHead>Precio Local</TableHead>
               <TableHead>Precio Anual</TableHead>
               <TableHead>Moneda</TableHead>
             </TableRow>
@@ -265,20 +347,16 @@ export default function PlanesClinicaConfigPage() {
           <TableBody>
             {planesConfig.map((cfg) => (
               <TableRow key={cfg.id}>
-                <TableCell>{cfg.plan_base?.nombre || cfg.plan_base_id}</TableCell>
-                <TableCell>{cfg.pais}</TableCell>
-                <TableCell>{cfg.precio_mensual}</TableCell>
-                <TableCell>{cfg.precio_anual}</TableCell>
-                <TableCell>{cfg.moneda}</TableCell>
+                <TableCell>{cfg.plan_base?.nombre || cfg.plan_id}</TableCell>
+                <TableCell>{cfg.pais?.nombre || cfg.pais_id}</TableCell>
+                <TableCell>{cfg.precio_local}</TableCell>
+                <TableCell>{cfg.precio_anual ?? "—"}</TableCell>
+                <TableCell>{cfg.moneda_local}</TableCell>
               </TableRow>
             ))}
           </TableBody>
         </Table>
       </section>
-
-      {/* ════════════════════════════════════════════
-          DIALOGOS NUEVOS / FIX
-          ════════════════════════════════════════════ */}
 
       {/* ── AlertDialog: Confirmar Eliminación ── */}
       <AlertDialog open={dialogoEliminarAbierto} onOpenChange={setDialogoEliminarAbierto}>
@@ -331,42 +409,31 @@ export default function PlanesClinicaConfigPage() {
                 />
               </div>
               <div>
-                <Label>Máx. Médicos</Label>
+                <Label>Límite Médicos</Label>
                 <Input
                   type="number"
-                  value={planAEditar.max_medicos ?? 0}
+                  value={planAEditar.limite_medicos ?? ""}
                   onChange={(e) =>
                     setPlanAEditar({
                       ...planAEditar,
-                      max_medicos: parseInt(e.target.value) || 0,
+                      limite_medicos: e.target.value ? parseInt(e.target.value) : undefined,
                     })
                   }
+                  placeholder="Dejar vacío para ilimitado"
                 />
               </div>
               <div>
-                <Label>Máx. Pacientes</Label>
+                <Label>Límite Pacientes</Label>
                 <Input
                   type="number"
-                  value={planAEditar.max_pacientes ?? 0}
+                  value={planAEditar.limite_pacientes ?? ""}
                   onChange={(e) =>
                     setPlanAEditar({
                       ...planAEditar,
-                      max_pacientes: parseInt(e.target.value) || 0,
+                      limite_pacientes: e.target.value ? parseInt(e.target.value) : undefined,
                     })
                   }
-                />
-              </div>
-              <div>
-                <Label>Máx. Citas/mes</Label>
-                <Input
-                  type="number"
-                  value={planAEditar.max_citas_mes ?? 0}
-                  onChange={(e) =>
-                    setPlanAEditar({
-                      ...planAEditar,
-                      max_citas_mes: parseInt(e.target.value) || 0,
-                    })
-                  }
+                  placeholder="Dejar vacío para ilimitado"
                 />
               </div>
             </div>
