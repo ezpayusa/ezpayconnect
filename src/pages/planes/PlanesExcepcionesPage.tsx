@@ -5,13 +5,12 @@ import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import { Badge } from '@/components/ui/badge';
-import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
+import { Card, CardContent } from '@/components/ui/card';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from '@/components/ui/dialog';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { usePlanes } from '@/hooks/usePlanes';
-import type { PlanExcepcion } from '@/types/planes';
 import { formatearPrecio } from '@/lib/planes-utils';
-import { ArrowLeft, Plus, Tag, Percent, DollarSign, Ban, Search } from 'lucide-react';
+import { ArrowLeft, Plus, Tag, Search } from 'lucide-react';
 
 export default function PlanesExcepcionesPage() {
   const navigate = useNavigate();
@@ -19,14 +18,18 @@ export default function PlanesExcepcionesPage() {
   const [search, setSearch] = useState('');
   const [filtroActivo, setFiltroActivo] = useState<'todos' | 'activo' | 'inactivo'>('activo');
   const [dialogoCrear, setDialogoCrear] = useState(false);
-  const [nuevaExc, setNuevaExc] = useState({
-    plan_config_id: '', entidad_id: '', tipo_entidad: 'medico',
-    precio_especial: 0, comision_especial: 0,
-    motivo: '', fecha_inicio: new Date().toISOString().split('T')[0], fecha_fin: ''
-  });
 
-  // Nota: La validación de admin se maneja en AdminRoute (App.tsx)
-  // No es necesario duplicarla aquí
+  // FIX: Estado inicial con strings vacíos para campos numéricos (evita ceros fijos)
+  const [nuevaExc, setNuevaExc] = useState({
+    plan_config_id: '',
+    entidad_id: '',
+    tipo_entidad: 'medico',
+    precio_especial: '',
+    comision_especial: '',
+    motivo: '',
+    fecha_inicio: new Date().toISOString().split('T')[0],
+    fecha_fin: ''
+  });
 
   const excepcionesFiltradas = excepciones.filter(e => {
     const matchSearch = !search || e.motivo?.toLowerCase().includes(search.toLowerCase());
@@ -42,19 +45,53 @@ export default function PlanesExcepcionesPage() {
   };
 
   const handleCrear = async () => {
+    // FIX: Validación previa para evitar error null
+    if (!nuevaExc.plan_config_id) {
+      alert('Debes seleccionar un plan');
+      return;
+    }
+    if (!nuevaExc.motivo.trim()) {
+      alert('Debes ingresar un motivo');
+      return;
+    }
+
+    // FIX: Validar UUID si entidad_id tiene valor
+    let entidadIdFinal: string | null = null;
+    if (nuevaExc.entidad_id.trim()) {
+      const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+      if (!uuidRegex.test(nuevaExc.entidad_id.trim())) {
+        alert('ID Entidad debe ser un UUID válido (ej: 550e8400-e29b-41d4-a716-446655440000) o dejar vacío para promoción global');
+        return;
+      }
+      entidadIdFinal = nuevaExc.entidad_id.trim();
+    }
+
     await crearExcepcion({
       plan_config_id: nuevaExc.plan_config_id,
-      entidad_id: nuevaExc.entidad_id || null,
-      tipo_entidad: nuevaExc.entidad_id ? nuevaExc.tipo_entidad : null,
-      precio_especial: nuevaExc.precio_especial,
-      comision_especial: nuevaExc.comision_especial,
-      motivo: nuevaExc.motivo,
+      entidad_id: entidadIdFinal,
+      tipo_entidad: entidadIdFinal ? nuevaExc.tipo_entidad : null,
+      precio_especial: parseFloat(nuevaExc.precio_especial) || 0,
+      comision_especial: parseFloat(nuevaExc.comision_especial) || 0,
+      motivo: nuevaExc.motivo.trim(),
       fecha_inicio: nuevaExc.fecha_inicio,
       fecha_fin: nuevaExc.fecha_fin || undefined,
     });
+
     setDialogoCrear(false);
-    setNuevaExc({ plan_config_id: '', entidad_id: '', tipo_entidad: 'medico', precio_especial: 0, comision_especial: 0, motivo: '', fecha_inicio: new Date().toISOString().split('T')[0], fecha_fin: '' });
+    // FIX: Reset con strings vacíos
+    setNuevaExc({
+      plan_config_id: '',
+      entidad_id: '',
+      tipo_entidad: 'medico',
+      precio_especial: '',
+      comision_especial: '',
+      motivo: '',
+      fecha_inicio: new Date().toISOString().split('T')[0],
+      fecha_fin: ''
+    });
   };
+
+  if (loading) return <p className="p-6">Cargando...</p>;
 
   return (
     <div className="container mx-auto px-4 py-6 max-w-7xl">
@@ -156,7 +193,7 @@ export default function PlanesExcepcionesPage() {
                     <TableCell className="text-right">
                       {exc.activo && (
                         <Button variant="ghost" size="icon" className="text-red-500" onClick={() => desactivarExcepcion(exc.id)}>
-                          <Ban className="h-4 w-4" />
+                          <svg className="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M18.364 18.364A9 9 0 005.636 5.636m12.728 12.728A9 9 0 015.636 5.636m12.728 12.728L5.636 5.636" /></svg>
                         </Button>
                       )}
                     </TableCell>
@@ -190,18 +227,32 @@ export default function PlanesExcepcionesPage() {
               </Select>
             </div>
             <div className="grid grid-cols-2 gap-4">
-              <div><Label>Precio especial</Label>
-                <Input type="number" value={nuevaExc.precio_especial} onChange={(e) => setNuevaExc(p => ({ ...p, precio_especial: parseFloat(e.target.value) || 0 }))} />
+              <div>
+                <Label>Precio especial</Label>
+                <Input 
+                  type="number" 
+                  value={nuevaExc.precio_especial} 
+                  onChange={(e) => setNuevaExc(p => ({ ...p, precio_especial: e.target.value }))} 
+                  placeholder="0"
+                />
               </div>
-              <div><Label>Comisión especial (%)</Label>
-                <Input type="number" value={nuevaExc.comision_especial} onChange={(e) => setNuevaExc(p => ({ ...p, comision_especial: parseFloat(e.target.value) || 0 }))} />
+              <div>
+                <Label>Comisión especial (%)</Label>
+                <Input 
+                  type="number" 
+                  value={nuevaExc.comision_especial} 
+                  onChange={(e) => setNuevaExc(p => ({ ...p, comision_especial: e.target.value }))} 
+                  placeholder="0"
+                />
               </div>
             </div>
             <div className="grid grid-cols-2 gap-4">
-              <div><Label>ID Entidad (opcional)</Label>
-                <Input value={nuevaExc.entidad_id} onChange={(e) => setNuevaExc(p => ({ ...p, entidad_id: e.target.value }))} placeholder="UUID del médico" />
+              <div>
+                <Label>ID Entidad (opcional)</Label>
+                <Input value={nuevaExc.entidad_id} onChange={(e) => setNuevaExc(p => ({ ...p, entidad_id: e.target.value }))} placeholder="UUID válido o dejar vacío" />
               </div>
-              <div><Label>Tipo entidad</Label>
+              <div>
+                <Label>Tipo entidad</Label>
                 <Select value={nuevaExc.tipo_entidad} onValueChange={(v) => setNuevaExc(p => ({ ...p, tipo_entidad: v }))}>
                   <SelectTrigger><SelectValue /></SelectTrigger>
                   <SelectContent>
@@ -217,10 +268,13 @@ export default function PlanesExcepcionesPage() {
               <div><Label>Fecha inicio</Label><Input type="date" value={nuevaExc.fecha_inicio} onChange={(e) => setNuevaExc(p => ({ ...p, fecha_inicio: e.target.value }))} /></div>
               <div><Label>Fecha fin (opcional)</Label><Input type="date" value={nuevaExc.fecha_fin} onChange={(e) => setNuevaExc(p => ({ ...p, fecha_fin: e.target.value }))} /></div>
             </div>
-            <div><Label>Motivo</Label><Input value={nuevaExc.motivo} onChange={(e) => setNuevaExc(p => ({ ...p, motivo: e.target.value }))} placeholder="Ej: Promoción de lanzamiento..." /></div>
+            <div>
+              <Label>Motivo</Label>
+              <Input value={nuevaExc.motivo} onChange={(e) => setNuevaExc(p => ({ ...p, motivo: e.target.value }))} placeholder="Ej: Promoción de lanzamiento..." />
+            </div>
             <div className="flex justify-end gap-2">
               <Button variant="outline" onClick={() => setDialogoCrear(false)}>Cancelar</Button>
-              <Button className="bg-[#1E5C8E]" onClick={handleCrear} disabled={!nuevaExc.plan_config_id || !nuevaExc.motivo}>
+              <Button className="bg-[#1E5C8E]" onClick={handleCrear}>
                 <Plus className="h-4 w-4 mr-2" /> Crear
               </Button>
             </div>
