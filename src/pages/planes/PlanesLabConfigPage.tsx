@@ -1,3 +1,13 @@
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
 import { useState, useRef, useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { Button } from '@/components/ui/button';
@@ -10,7 +20,7 @@ import { Label } from '@/components/ui/label';
 import { usePlanes } from '@/hooks/usePlanes';
 import { useAdminAuth } from '@/hooks/admin/useAdminAuth';
 import { formatearPrecio, getBanderaPais } from '@/lib/planes-utils';
-import { ArrowLeft, Plus, Search, RefreshCw, Edit, Trash2, FlaskConical, X } from 'lucide-react';
+import { ArrowLeft, Plus, Search, RefreshCw, Edit, Trash2, X, AlertTriangle } from 'lucide-react';
 
 // ════════════════════════════════════════════════════
 // COMPONENTE REUTILIZABLE: Ventana Arrastrable
@@ -68,7 +78,7 @@ function DraggableWindow({
         onMouseLeave={handleMouseUp}
       >
         <div 
-          className="drag-handle flex items-center justify-between p-4 border-b cursor-move bg-green-50 rounded-t-lg select-none"
+          className="drag-handle flex items-center justify-between p-4 border-b cursor-move bg-emerald-50 rounded-t-lg select-none"
           onMouseDown={handleMouseDown}
         >
           <h2 className="text-lg font-semibold">{title}</h2>
@@ -84,14 +94,51 @@ function DraggableWindow({
   );
 }
 
+// Monedas disponibles
+const MONEDAS = [
+  { codigo: 'USD', nombre: 'Dólar Estadounidense' },
+  { codigo: 'GTQ', nombre: 'Quetzal Guatemalteco' },
+  { codigo: 'HNL', nombre: 'Lempira Hondureño' },
+  { codigo: 'NIO', nombre: 'Córdoba Nicaragüense' },
+  { codigo: 'CRC', nombre: 'Colón Costarricense' },
+  { codigo: 'PAB', nombre: 'Balboa Panameño' },
+  { codigo: 'DOP', nombre: 'Peso Dominicano' },
+  { codigo: 'CUP', nombre: 'Peso Cubano' },
+  { codigo: 'MXN', nombre: 'Peso Mexicano' },
+  { codigo: 'EUR', nombre: 'Euro' },
+];
+
 export default function PlanesLabConfigPage() {
   const navigate = useNavigate();
   const { isAdmin, loading: adminLoading } = useAdminAuth();
-  const { planesBase, planesConfig, paises, loading, crearPlanBase, crearPlanConfig, actualizarPlanConfig, eliminarPlanConfig, recargar } = usePlanes();
+  const { 
+    planesBase, 
+    planesConfig, 
+    paises, 
+    loading, 
+    crearPlanBase, 
+    crearPlanConfig, 
+    actualizarPlanBase, 
+    eliminarPlanBase, 
+    eliminarPlanConfig,
+    recargar 
+  } = usePlanes();
+
   const [search, setSearch] = useState('');
+
+  // Modales de Plan Base
   const [dialogoCrear, setDialogoCrear] = useState(false);
+  const [dialogoEditar, setDialogoEditar] = useState<any>(null);
+  const [dialogoEliminarPlan, setDialogoEliminarPlan] = useState<string | null>(null);
+
+  // Modal de Configuración
   const [dialogoConfig, setDialogoConfig] = useState(false);
   const [planSeleccionado, setPlanSeleccionado] = useState<any>(null);
+
+  // Modal eliminar configuración
+  const [dialogoEliminarConfig, setDialogoEliminarConfig] = useState<string | null>(null);
+
+  // Estados formularios
   const [nuevoPlan, setNuevoPlan] = useState({
     nombre: '',
     descripcion: '',
@@ -102,6 +149,7 @@ export default function PlanesLabConfigPage() {
     limite_pacientes: '',
     caracteristicas: '',
   });
+
   const [nuevaConfig, setNuevaConfig] = useState({
     plan_base_id: '',
     pais_id: '',
@@ -114,7 +162,7 @@ export default function PlanesLabConfigPage() {
   if (adminLoading) {
     return (
       <div className="flex items-center justify-center min-h-[60vh]">
-        <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-green-500" />
+        <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-emerald-500" />
       </div>
     );
   }
@@ -140,6 +188,9 @@ export default function PlanesLabConfigPage() {
     !search || p.nombre.toLowerCase().includes(search.toLowerCase())
   );
 
+  // ════════════════════════════════════════════════════
+  // HANDLERS CREAR PLAN
+  // ════════════════════════════════════════════════════
   const handleCrearPlan = async () => {
     if (!nuevoPlan.nombre.trim()) {
       alert('El nombre del plan es obligatorio');
@@ -160,8 +211,50 @@ export default function PlanesLabConfigPage() {
     });
     setDialogoCrear(false);
     setNuevoPlan({ nombre: '', descripcion: '', precio_base: '', moneda: 'USD', periodicidad: 'mensual', limite_medicos: '', limite_pacientes: '', caracteristicas: '' });
+    recargar();
   };
 
+  // ════════════════════════════════════════════════════
+  // HANDLERS EDITAR PLAN
+  // ════════════════════════════════════════════════════
+  const handleEditarPlan = async () => {
+    if (!dialogoEditar) return;
+
+    let caracteristicasArray: string[] = [];
+    if (typeof dialogoEditar.caracteristicas === 'string') {
+      caracteristicasArray = dialogoEditar.caracteristicas.split(',').map((c: string) => c.trim()).filter(Boolean);
+    } else if (Array.isArray(dialogoEditar.caracteristicas)) {
+      caracteristicasArray = dialogoEditar.caracteristicas;
+    }
+
+    await actualizarPlanBase(dialogoEditar.id, {
+      nombre: dialogoEditar.nombre,
+      descripcion: dialogoEditar.descripcion,
+      precio_base: parseFloat(dialogoEditar.precio_base) || 0,
+      moneda: dialogoEditar.moneda,
+      periodicidad: dialogoEditar.periodicidad,
+      limite_medicos: dialogoEditar.limite_medicos ? parseInt(dialogoEditar.limite_medicos) : undefined,
+      limite_pacientes: dialogoEditar.limite_pacientes ? parseInt(dialogoEditar.limite_pacientes) : undefined,
+      caracteristicas: caracteristicasArray,
+      activo: dialogoEditar.activo,
+    });
+    setDialogoEditar(null);
+    recargar();
+  };
+
+  // ════════════════════════════════════════════════════
+  // HANDLERS ELIMINAR PLAN
+  // ════════════════════════════════════════════════════
+  const handleEliminarPlan = async () => {
+    if (!dialogoEliminarPlan) return;
+    await eliminarPlanBase(dialogoEliminarPlan);
+    setDialogoEliminarPlan(null);
+    recargar();
+  };
+
+  // ════════════════════════════════════════════════════
+  // HANDLERS CREAR CONFIGURACIÓN
+  // ════════════════════════════════════════════════════
   const handleCrearConfig = async () => {
     if (!nuevaConfig.plan_base_id || !nuevaConfig.pais_id) {
       alert('Debes seleccionar un plan y un país');
@@ -178,12 +271,23 @@ export default function PlanesLabConfigPage() {
     });
     setDialogoConfig(false);
     setNuevaConfig({ plan_base_id: '', pais_id: '', precio_local: '', precio_anual: '', comision_aplicada: '', descuento_porcentaje: '' });
+    recargar();
+  };
+
+  // ════════════════════════════════════════════════════
+  // HANDLERS ELIMINAR CONFIGURACIÓN
+  // ════════════════════════════════════════════════════
+  const handleEliminarConfig = async () => {
+    if (!dialogoEliminarConfig) return;
+    await eliminarPlanConfig(dialogoEliminarConfig);
+    setDialogoEliminarConfig(null);
+    recargar();
   };
 
   if (loading) {
     return (
       <div className="flex items-center justify-center min-h-[60vh]">
-        <RefreshCw className="h-8 w-8 animate-spin text-green-500" />
+        <RefreshCw className="h-8 w-8 animate-spin text-emerald-500" />
       </div>
     );
   }
@@ -197,12 +301,12 @@ export default function PlanesLabConfigPage() {
           </Button>
           <div>
             <h1 className="text-2xl font-bold">Configuracion Planes Laboratorio</h1>
-            <p className="text-sm text-muted-foreground">Gestiona planes para laboratorios clinicos</p>
+            <p className="text-sm text-muted-foreground">Gestiona planes para laboratorios clínicos y análisis médicos</p>
           </div>
         </div>
         <div className="flex gap-2">
           <Button variant="outline" onClick={recargar}><RefreshCw className="h-4 w-4 mr-2" /> Recargar</Button>
-          <Button onClick={() => setDialogoCrear(true)} className="bg-green-600 hover:bg-green-700"><Plus className="h-4 w-4 mr-2" /> Nuevo Plan</Button>
+          <Button onClick={() => setDialogoCrear(true)} className="bg-emerald-500 hover:bg-emerald-600"><Plus className="h-4 w-4 mr-2" /> Nuevo Plan</Button>
         </div>
       </div>
 
@@ -236,6 +340,8 @@ export default function PlanesLabConfigPage() {
                   <TableHead>Precio Base</TableHead>
                   <TableHead>Moneda</TableHead>
                   <TableHead>Periodicidad</TableHead>
+                  <TableHead>Límite Médicos</TableHead>
+                  <TableHead>Límite Pacientes</TableHead>
                   <TableHead>Estado</TableHead>
                   <TableHead className="text-right">Acciones</TableHead>
                 </TableRow>
@@ -248,26 +354,28 @@ export default function PlanesLabConfigPage() {
                     <TableCell>{formatearPrecio(plan.precio_base, plan.moneda || 'USD')}</TableCell>
                     <TableCell><Badge variant="outline">{plan.moneda}</Badge></TableCell>
                     <TableCell className="capitalize">{plan.periodicidad}</TableCell>
+                    <TableCell>{plan.limite_medicos ?? 'Ilimitado'}</TableCell>
+                    <TableCell>{plan.limite_pacientes ?? 'Ilimitado'}</TableCell>
                     <TableCell>
                       <Badge className={plan.activo ? 'bg-green-100 text-green-700' : 'bg-gray-100 text-gray-700'}>
                         {plan.activo ? 'Activo' : 'Inactivo'}
                       </Badge>
                     </TableCell>
                     <TableCell className="text-right">
-                      <Button variant="ghost" size="icon" onClick={() => { setPlanSeleccionado(plan); setDialogoConfig(true); }}>
+                      <Button variant="ghost" size="icon" onClick={() => { setPlanSeleccionado(plan); setNuevaConfig({...nuevaConfig, plan_base_id: plan.id}); setDialogoConfig(true); }} title="Agregar configuracion por pais">
                         <Plus className="h-4 w-4" />
                       </Button>
-                      <Button variant="ghost" size="icon">
+                      <Button variant="ghost" size="icon" onClick={() => setDialogoEditar(plan)} title="Editar plan">
                         <Edit className="h-4 w-4" />
                       </Button>
-                      <Button variant="ghost" size="icon" className="text-red-500" onClick={() => eliminarPlanConfig(plan.id)}>
+                      <Button variant="ghost" size="icon" className="text-red-500" onClick={() => setDialogoEliminarPlan(plan.id)} title="Eliminar plan">
                         <Trash2 className="h-4 w-4" />
                       </Button>
                     </TableCell>
                   </TableRow>
                 ))}
                 {planesFiltrados.length === 0 && (
-                  <TableRow><TableCell colSpan={7} className="text-center py-8 text-muted-foreground">No se encontraron planes laboratorio</TableCell></TableRow>
+                  <TableRow><TableCell colSpan={9} className="text-center py-8 text-muted-foreground">No se encontraron planes lab</TableCell></TableRow>
                 )}
               </TableBody>
             </Table>
@@ -290,6 +398,7 @@ export default function PlanesLabConfigPage() {
                   <TableHead>Comision</TableHead>
                   <TableHead>Descuento</TableHead>
                   <TableHead>Estado</TableHead>
+                  <TableHead className="text-right">Acciones</TableHead>
                 </TableRow>
               </TableHeader>
               <TableBody>
@@ -311,10 +420,15 @@ export default function PlanesLabConfigPage() {
                         {config.activo ? 'Activo' : 'Inactivo'}
                       </Badge>
                     </TableCell>
+                    <TableCell className="text-right">
+                      <Button variant="ghost" size="icon" className="text-red-500" onClick={() => setDialogoEliminarConfig(config.id)} title="Eliminar configuracion">
+                        <Trash2 className="h-4 w-4" />
+                      </Button>
+                    </TableCell>
                   </TableRow>
                 ))}
                 {configsLab.length === 0 && (
-                  <TableRow><TableCell colSpan={7} className="text-center py-8 text-muted-foreground">No hay configuraciones de laboratorio</TableCell></TableRow>
+                  <TableRow><TableCell colSpan={8} className="text-center py-8 text-muted-foreground">No hay configuraciones de lab</TableCell></TableRow>
                 )}
               </TableBody>
             </Table>
@@ -329,12 +443,12 @@ export default function PlanesLabConfigPage() {
         isOpen={dialogoCrear}
         onClose={() => setDialogoCrear(false)}
         title="Nuevo Plan Laboratorio"
-        initialPosition={{ x: window.innerWidth / 2 - 250, y: 100 }}
+        initialPosition={{ x: typeof window !== 'undefined' ? window.innerWidth / 2 - 250 : 100, y: 100 }}
       >
         <div className="space-y-4">
           <div>
             <Label htmlFor="nombre">Nombre *</Label>
-            <Input id="nombre" value={nuevoPlan.nombre} onChange={(e) => setNuevoPlan({...nuevoPlan, nombre: e.target.value})} placeholder="Ej: Lab Premium" />
+            <Input id="nombre" value={nuevoPlan.nombre} onChange={(e) => setNuevoPlan({...nuevoPlan, nombre: e.target.value})} placeholder="Ej: Laboratorio Premium" />
           </div>
           <div>
             <Label htmlFor="descripcion">Descripcion</Label>
@@ -346,15 +460,30 @@ export default function PlanesLabConfigPage() {
               <Input id="precio" type="number" value={nuevoPlan.precio_base} onChange={(e) => setNuevoPlan({...nuevoPlan, precio_base: e.target.value})} placeholder="0" />
             </div>
             <div>
-              <Label htmlFor="periodicidad">Periodicidad</Label>
-              <Select value={nuevoPlan.periodicidad} onValueChange={(v) => setNuevoPlan({...nuevoPlan, periodicidad: v})}>
-                <SelectTrigger><SelectValue /></SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="mensual">Mensual</SelectItem>
-                  <SelectItem value="anual">Anual</SelectItem>
+              <Label htmlFor="moneda">Moneda</Label>
+              <Select value={nuevoPlan.moneda} onValueChange={(v) => setNuevoPlan({...nuevoPlan, moneda: v})}>
+                <SelectTrigger className="w-full"><SelectValue /></SelectTrigger>
+                <SelectContent position="popper" className="z-[70]">
+                  {MONEDAS.map(m => (
+                    <SelectItem key={m.codigo} value={m.codigo}>{m.codigo} - {m.nombre}</SelectItem>
+                  ))}
                 </SelectContent>
               </Select>
             </div>
+          </div>
+          <div className="grid grid-cols-2 gap-4">
+            <div>
+              <Label htmlFor="periodicidad">Periodicidad</Label>
+              <Select value={nuevoPlan.periodicidad} onValueChange={(v) => setNuevoPlan({...nuevoPlan, periodicidad: v})}>
+                <SelectTrigger className="w-full"><SelectValue /></SelectTrigger>
+                <SelectContent position="popper" className="z-[70]">
+                  <SelectItem value="mensual">Mensual</SelectItem>
+                  <SelectItem value="anual">Anual</SelectItem>
+                  <SelectItem value="semestral">Semestral</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+            <div></div>
           </div>
           <div className="grid grid-cols-2 gap-4">
             <div>
@@ -372,12 +501,114 @@ export default function PlanesLabConfigPage() {
           </div>
           <div className="flex justify-end gap-2 pt-2">
             <Button variant="outline" onClick={() => setDialogoCrear(false)}>Cancelar</Button>
-            <Button onClick={handleCrearPlan} disabled={!nuevoPlan.nombre} className="bg-green-600 hover:bg-green-700">
+            <Button onClick={handleCrearPlan} disabled={!nuevoPlan.nombre} className="bg-emerald-500 hover:bg-emerald-600">
               <Plus className="h-4 w-4 mr-2" /> Crear Plan
             </Button>
           </div>
         </div>
       </DraggableWindow>
+
+      {/* ════════════════════════════════════════════════════
+          VENTANA ARRASTRABLE: Editar Plan Laboratorio
+          ════════════════════════════════════════════════════ */}
+      <DraggableWindow
+        isOpen={!!dialogoEditar}
+        onClose={() => setDialogoEditar(null)}
+        title="Editar Plan Laboratorio"
+        initialPosition={{ x: typeof window !== 'undefined' ? window.innerWidth / 2 - 250 : 100, y: 100 }}
+      >
+        {dialogoEditar && (
+          <div className="space-y-4">
+            <div>
+              <Label>Nombre</Label>
+              <Input value={dialogoEditar.nombre} onChange={(e) => setDialogoEditar({...dialogoEditar, nombre: e.target.value})} />
+            </div>
+            <div>
+              <Label>Descripcion</Label>
+              <Input value={dialogoEditar.descripcion || ''} onChange={(e) => setDialogoEditar({...dialogoEditar, descripcion: e.target.value})} />
+            </div>
+            <div className="grid grid-cols-2 gap-4">
+              <div>
+                <Label>Precio Base (USD)</Label>
+                <Input type="number" value={dialogoEditar.precio_base} onChange={(e) => setDialogoEditar({...dialogoEditar, precio_base: e.target.value})} />
+              </div>
+              <div>
+                <Label>Moneda</Label>
+                <Select value={dialogoEditar.moneda} onValueChange={(v) => setDialogoEditar({...dialogoEditar, moneda: v})}>
+                  <SelectTrigger className="w-full"><SelectValue /></SelectTrigger>
+                  <SelectContent position="popper" className="z-[70]">
+                    {MONEDAS.map(m => (
+                      <SelectItem key={m.codigo} value={m.codigo}>{m.codigo} - {m.nombre}</SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+            </div>
+            <div className="grid grid-cols-2 gap-4">
+              <div>
+                <Label>Periodicidad</Label>
+                <Select value={dialogoEditar.periodicidad} onValueChange={(v) => setDialogoEditar({...dialogoEditar, periodicidad: v})}>
+                  <SelectTrigger className="w-full"><SelectValue /></SelectTrigger>
+                  <SelectContent position="popper" className="z-[70]">
+                    <SelectItem value="mensual">Mensual</SelectItem>
+                    <SelectItem value="anual">Anual</SelectItem>
+                    <SelectItem value="semestral">Semestral</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+              <div></div>
+            </div>
+            <div className="grid grid-cols-2 gap-4">
+              <div>
+                <Label>Límite Médicos</Label>
+                <Input type="number" value={dialogoEditar.limite_medicos || ''} onChange={(e) => setDialogoEditar({...dialogoEditar, limite_medicos: e.target.value})} placeholder="Ilimitado" />
+              </div>
+              <div>
+                <Label>Límite Pacientes</Label>
+                <Input type="number" value={dialogoEditar.limite_pacientes || ''} onChange={(e) => setDialogoEditar({...dialogoEditar, limite_pacientes: e.target.value})} placeholder="Ilimitado" />
+              </div>
+            </div>
+            <div>
+              <Label>Características (separadas por coma)</Label>
+              <Input value={Array.isArray(dialogoEditar.caracteristicas) ? dialogoEditar.caracteristicas.join(', ') : dialogoEditar.caracteristicas || ''} onChange={(e) => setDialogoEditar({...dialogoEditar, caracteristicas: e.target.value})} placeholder="Ej: Recetas ilimitadas, Soporte 24/7" />
+            </div>
+            <div className="flex items-center gap-2">
+              <input type="checkbox" checked={dialogoEditar.activo} onChange={(e) => setDialogoEditar({...dialogoEditar, activo: e.target.checked})} className="h-4 w-4" />
+              <Label>Plan activo</Label>
+            </div>
+            <div className="flex justify-end gap-2 pt-2">
+              <Button variant="outline" onClick={() => setDialogoEditar(null)}>Cancelar</Button>
+              <Button onClick={handleEditarPlan} className="bg-emerald-500 hover:bg-emerald-600">
+                <Edit className="h-4 w-4 mr-2" /> Guardar Cambios
+              </Button>
+            </div>
+          </div>
+        )}
+      </DraggableWindow>
+
+      {/* ════════════════════════════════════════════════════
+          MODAL ELIMINAR PLAN (AlertDialog estándar)
+          ════════════════════════════════════════════════════ */}
+      <AlertDialog open={!!dialogoEliminarPlan} onOpenChange={() => setDialogoEliminarPlan(null)}>
+        <AlertDialogContent className="z-[70]">
+          <AlertDialogHeader>
+            <AlertDialogTitle className="flex items-center gap-2 text-red-600">
+              <AlertTriangle className="h-5 w-5" />
+              ¿Eliminar plan base?
+            </AlertDialogTitle>
+            <AlertDialogDescription>
+              Esta acción eliminará permanentemente el plan y todas sus configuraciones por país. No se puede deshacer.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel onClick={() => setDialogoEliminarPlan(null)}>Cancelar</AlertDialogCancel>
+            <AlertDialogAction onClick={handleEliminarPlan} className="bg-red-600 hover:bg-red-700 text-white">
+              <Trash2 className="h-4 w-4 mr-2" />
+              Eliminar
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
 
       {/* ════════════════════════════════════════════════════
           VENTANA ARRASTRABLE: Nueva Configuracion por Pais
@@ -386,16 +617,16 @@ export default function PlanesLabConfigPage() {
         isOpen={dialogoConfig}
         onClose={() => setDialogoConfig(false)}
         title="Nueva Configuracion por Pais"
-        initialPosition={{ x: window.innerWidth / 2 - 250, y: 150 }}
+        initialPosition={{ x: typeof window !== 'undefined' ? window.innerWidth / 2 - 250 : 100, y: 150 }}
       >
         <div className="space-y-4">
           <div>
             <Label>Plan Base</Label>
             <Select value={nuevaConfig.plan_base_id} onValueChange={(v) => setNuevaConfig({...nuevaConfig, plan_base_id: v})}>
-              <SelectTrigger><SelectValue placeholder="Seleccionar plan" /></SelectTrigger>
-              <SelectContent>
+              <SelectTrigger className="w-full"><SelectValue placeholder="Seleccionar plan" /></SelectTrigger>
+              <SelectContent position="popper" className="z-[70]">
                 {planesLab.map(p => (
-                  <Item key={p.id} value={p.id}>{p.nombre}</Item>
+                  <SelectItem key={p.id} value={p.id}>{p.nombre}</SelectItem>
                 ))}
               </SelectContent>
             </Select>
@@ -403,8 +634,8 @@ export default function PlanesLabConfigPage() {
           <div>
             <Label>Pais</Label>
             <Select value={nuevaConfig.pais_id} onValueChange={(v) => setNuevaConfig({...nuevaConfig, pais_id: v})}>
-              <SelectTrigger><SelectValue placeholder="Seleccionar pais" /></SelectTrigger>
-              <SelectContent>
+              <SelectTrigger className="w-full"><SelectValue placeholder="Seleccionar pais" /></SelectTrigger>
+              <SelectContent position="popper" className="z-[70]">
                 {paises.map(p => (
                   <SelectItem key={p.id} value={p.id}>{getBanderaPais(p.codigo as any)} {p.nombre}</SelectItem>
                 ))}
@@ -433,12 +664,36 @@ export default function PlanesLabConfigPage() {
           </div>
           <div className="flex justify-end gap-2 pt-2">
             <Button variant="outline" onClick={() => setDialogoConfig(false)}>Cancelar</Button>
-            <Button onClick={handleCrearConfig} disabled={!nuevaConfig.plan_base_id || !nuevaConfig.pais_id} className="bg-green-600 hover:bg-green-700">
+            <Button onClick={handleCrearConfig} disabled={!nuevaConfig.plan_base_id || !nuevaConfig.pais_id} className="bg-emerald-500 hover:bg-emerald-600">
               <Plus className="h-4 w-4 mr-2" /> Crear Configuracion
             </Button>
           </div>
         </div>
       </DraggableWindow>
+
+      {/* ════════════════════════════════════════════════════
+          MODAL ELIMINAR CONFIGURACIÓN (AlertDialog estándar)
+          ════════════════════════════════════════════════════ */}
+      <AlertDialog open={!!dialogoEliminarConfig} onOpenChange={() => setDialogoEliminarConfig(null)}>
+        <AlertDialogContent className="z-[70]">
+          <AlertDialogHeader>
+            <AlertDialogTitle className="flex items-center gap-2 text-red-600">
+              <AlertTriangle className="h-5 w-5" />
+              ¿Eliminar configuración?
+            </AlertDialogTitle>
+            <AlertDialogDescription>
+              Esta acción eliminará la configuración de precios para este país. No se puede deshacer.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel onClick={() => setDialogoEliminarConfig(null)}>Cancelar</AlertDialogCancel>
+            <AlertDialogAction onClick={handleEliminarConfig} className="bg-red-600 hover:bg-red-700 text-white">
+              <Trash2 className="h-4 w-4 mr-2" />
+              Eliminar
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </div>
   );
 }
