@@ -1,3 +1,13 @@
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
 import { useState, useRef, useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { Button } from '@/components/ui/button';
@@ -579,30 +589,29 @@ console.log('configsVisitador.length:', configsVisitador.length);
         )}
       </DraggableWindow>
 
-      {/* ════════════════════════════════════════════════════
-          VENTANA ARRASTRABLE: Confirmar Eliminar Plan
-          ════════════════════════════════════════════════════ */}
-      <DraggableWindow
-        isOpen={!!dialogoEliminarPlan}
-        onClose={() => setDialogoEliminarPlan(null)}
-        title="Eliminar Plan"
-        initialPosition={{ x: window.innerWidth / 2 - 250, y: 150 }}
-      >
-        <div className="text-center py-4">
-          <AlertTriangle className="h-12 w-12 text-red-500 mx-auto mb-4" />
-          <p className="text-lg font-semibold mb-2">¿Eliminar plan base?</p>
-          <p className="text-sm text-muted-foreground mb-4">
-            Esta acción eliminará el plan base y todas sus configuraciones por país. No se puede deshacer.
-          </p>
-         <div className="flex justify-center gap-2">
-  <Button variant="outline" onClick={() => setDialogoEliminarPlan(null)}>Cancelar</Button>
-         <div className="flex justify-center gap-2">
-          <Button variant="outline" onClick={() => setDialogoEliminarPlan(null)}>Cancelar</Button>
-          <Button variant="destructive" onClick={handleEliminarPlan}>Eliminar</Button>
-        </div>
-      </div>
-    </div>
-  </DraggableWindow>
+ {/* ════════════════════════════════════════════════════
+    MODAL ELIMINAR PLAN (AlertDialog estándar)
+    ════════════════════════════════════════════════════ */}
+<AlertDialog open={!!dialogoEliminarPlan} onOpenChange={() => setDialogoEliminarPlan(null)}>
+  <AlertDialogContent className="z-[70]">
+    <AlertDialogHeader>
+      <AlertDialogTitle className="flex items-center gap-2 text-red-600">
+        <AlertTriangle className="h-5 w-5" />
+        ¿Eliminar plan base?
+      </AlertDialogTitle>
+      <AlertDialogDescription>
+        Esta acción eliminará permanentemente el plan <strong>{dialogoEliminarPlan?.nombre}</strong> y todas sus configuraciones por país. No se puede deshacer.
+      </AlertDialogDescription>
+    </AlertDialogHeader>
+    <AlertDialogFooter>
+      <AlertDialogCancel onClick={() => setDialogoEliminarPlan(null)}>Cancelar</AlertDialogCancel>
+      <AlertDialogAction onClick={handleEliminarPlan} className="bg-red-600 hover:bg-red-700 text-white">
+        <Trash2 className="h-4 w-4 mr-2" />
+        Eliminar
+      </AlertDialogAction>
+    </AlertDialogFooter>
+  </AlertDialogContent>
+</AlertDialog>
 
       {/* ════════════════════════════════════════════════════
           VENTANA ARRASTRABLE: Nueva Configuracion por Pais
