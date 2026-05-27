@@ -109,7 +109,7 @@ function App() {
         <Route path="/planes-clinica" element={<PlanesClinicaPage />} />
         <Route path="/planes-lab" element={<PlanesLabPage />} />
         <Route path="/planes-visitador" element={<PlanesVisitadorPage />} />
-        <Route path="/planes-todos" element={<PlanesTodosPage />} />
+        <Route path="/planes-todos" element={<Navigate to="/admin-ezpay/planes-todos" replace />} />
 
         {/* === RUTAS REPORTES MEDICOS (Panel Medico) === */}
         <Route path="/reportes" element={<PrivateLayout><ReportesPage /></PrivateLayout>} />
@@ -121,7 +121,7 @@ function App() {
           <Route path="paises" element={<PaisesPage />} />
           <Route path="usuarios" element={<UsuariosAdminPage />} />
           <Route path="asignacion-roles" element={<AsignacionRolesPage />} />
-          <Route path="planes-todos" element={<Navigate to="/planes-todos" replace />} />
+          <Route path="planes-todos" element={<PlanesTodosPage />} />
           <Route path="planes-medico" element={<Navigate to="/admin/planes/configuracion" replace />} />
           <Route path="planes-clinica" element={<Navigate to="/admin/planes/clinica" replace />} />
           <Route path="planes-lab" element={<Navigate to="/admin/planes/lab" replace />} />
