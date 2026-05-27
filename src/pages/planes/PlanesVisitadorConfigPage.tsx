@@ -589,29 +589,29 @@ console.log('configsVisitador.length:', configsVisitador.length);
         )}
       </DraggableWindow>
 
- {/* ════════════════════════════════════════════════════
-    MODAL ELIMINAR PLAN (AlertDialog estándar)
-    ════════════════════════════════════════════════════ */}
-<AlertDialog open={!!dialogoEliminarPlan} onOpenChange={() => setDialogoEliminarPlan(null)}>
-  <AlertDialogContent className="z-[70]">
-    <AlertDialogHeader>
-      <AlertDialogTitle className="flex items-center gap-2 text-red-600">
-        <AlertTriangle className="h-5 w-5" />
-        ¿Eliminar plan base?
-      </AlertDialogTitle>
-      <AlertDialogDescription>
-        Esta acción eliminará permanentemente el plan <strong>{dialogoEliminarPlan?.nombre}</strong> y todas sus configuraciones por país. No se puede deshacer.
-      </AlertDialogDescription>
-    </AlertDialogHeader>
-    <AlertDialogFooter>
-      <AlertDialogCancel onClick={() => setDialogoEliminarPlan(null)}>Cancelar</AlertDialogCancel>
-      <AlertDialogAction onClick={handleEliminarPlan} className="bg-red-600 hover:bg-red-700 text-white">
-        <Trash2 className="h-4 w-4 mr-2" />
-        Eliminar
-      </AlertDialogAction>
-    </AlertDialogFooter>
-  </AlertDialogContent>
-</AlertDialog>
+      {/* ════════════════════════════════════════════════════
+          MODAL ELIMINAR PLAN (AlertDialog estándar)
+          ════════════════════════════════════════════════════ */}
+      <AlertDialog open={!!dialogoEliminarPlan} onOpenChange={() => setDialogoEliminarPlan(null)}>
+        <AlertDialogContent className="z-[70]">
+          <AlertDialogHeader>
+            <AlertDialogTitle className="flex items-center gap-2 text-red-600">
+              <AlertTriangle className="h-5 w-5" />
+              ¿Eliminar plan base?
+            </AlertDialogTitle>
+            <AlertDialogDescription>
+              Esta acción eliminará permanentemente el plan y todas sus configuraciones por país. No se puede deshacer.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel onClick={() => setDialogoEliminarPlan(null)}>Cancelar</AlertDialogCancel>
+            <AlertDialogAction onClick={handleEliminarPlan} className="bg-red-600 hover:bg-red-700 text-white">
+              <Trash2 className="h-4 w-4 mr-2" />
+              Eliminar
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
 
       {/* ════════════════════════════════════════════════════
           VENTANA ARRASTRABLE: Nueva Configuracion por Pais
@@ -675,28 +675,28 @@ console.log('configsVisitador.length:', configsVisitador.length);
       </DraggableWindow>
 
       {/* ════════════════════════════════════════════════════
-          VENTANA ARRASTRABLE: Confirmar Eliminar Configuración
+          MODAL ELIMINAR CONFIGURACIÓN (AlertDialog estándar)
           ════════════════════════════════════════════════════ */}
-      <DraggableWindow
-        isOpen={!!dialogoEliminarConfig}
-        onClose={() => setDialogoEliminarConfig(null)}
-        title="Eliminar Configuracion"
-        initialPosition={{ x: window.innerWidth / 2 - 250, y: 200 }}
-      >
-        <div className="text-center py-4">
-          <AlertTriangle className="h-12 w-12 text-red-500 mx-auto mb-4" />
-          <p className="text-lg font-semibold mb-2">¿Eliminar configuración?</p>
-          <p className="text-sm text-muted-foreground mb-4">
-            Esta acción eliminará la configuración de precios para este país. No se puede deshacer.
-          </p>
-          <div className="flex justify-center gap-2">
-            <Button variant="outline" onClick={() => setDialogoEliminarConfig(null)}>Cancelar</Button>
-            <Button variant="destructive" onClick={handleEliminarConfig}>
-              <Trash2 className="h-4 w-4 mr-2" /> Eliminar
-            </Button>
-          </div>
-        </div>
-      </DraggableWindow>
-    </div>
+      <AlertDialog open={!!dialogoEliminarConfig} onOpenChange={() => setDialogoEliminarConfig(null)}>
+        <AlertDialogContent className="z-[70]">
+          <AlertDialogHeader>
+            <AlertDialogTitle className="flex items-center gap-2 text-red-600">
+              <AlertTriangle className="h-5 w-5" />
+              ¿Eliminar configuración?
+            </AlertDialogTitle>
+            <AlertDialogDescription>
+              Esta acción eliminará la configuración de precios para este país. No se puede deshacer.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel onClick={() => setDialogoEliminarConfig(null)}>Cancelar</AlertDialogCancel>
+            <AlertDialogAction onClick={handleEliminarConfig} className="bg-red-600 hover:bg-red-700 text-white">
+              <Trash2 className="h-4 w-4 mr-2" />
+              Eliminar
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+</div>
   );
 }
