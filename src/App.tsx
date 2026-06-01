@@ -1,3 +1,4 @@
+import BuscarMedicamentosPage from '@/pages/BuscarMedicamentosPage'
 import VentasPage from '@/pages/admin-ezpay/VentasPage'
 import AsignacionRolesPage from '@/pages/admin-ezpay/AsignacionRolesPage'
 import PaisesPage from '@/pages/admin-ezpay/PaisesPage';
@@ -101,6 +102,7 @@ function App() {
         <Route path="/recetas" element={<PrivateLayout><RecetasPage /></PrivateLayout>} />
         <Route path="/facturas" element={<PrivateLayout><FacturasPage /></PrivateLayout>} />
         <Route path="/farmacias" element={<PrivateLayout><FarmaciasPage /></PrivateLayout>} />
+        <Route path="/buscar-medicamentos" element={<PrivateLayout><BuscarMedicamentosPage /></PrivateLayout>} />
         <Route path="/dispensar-receta" element={<PrivateLayout><DispensarRecetaPage /></PrivateLayout>} />
         <Route path="/configuracion" element={<PrivateLayout><ConfiguracionPage /></PrivateLayout>} />
 

@@ -78,8 +78,8 @@ export interface RecetaItem {
   duracion: string | null
   instrucciones: string | null
   cantidad: number
+  farmacia_id: number | null  // <-- AGREGAR ESTA LÍNEA
 }
-
 export interface ExpedienteNota {
   id: number
   cita_id: number | null

@@ -2,6 +2,7 @@ import { useState } from 'react'
 import { useSearchParams } from 'react-router'
 import { usePacientes } from '@/hooks/usePacientes'
 import { useRecetas, useMedicamentos } from '@/hooks/useRecetas'
+import { useBusquedaMedicamentos } from '@/hooks/useBusquedaMedicamentos'
 import { useAuth } from '@/hooks/useAuth'
 import { generarPDFReceta, imprimirPDFReceta } from '@/lib/pdfReceta'
 import { Button } from '@/components/ui/button'
@@ -11,7 +12,7 @@ import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Badge } from '@/components/ui/badge'
-import { FileText, Plus, Trash2, Search, Printer, Eye, Loader2, X, Download, Mail, QrCode, ArrowLeft } from 'lucide-react'
+import { FileText, Plus, Trash2, Search, Printer, Eye, Loader2, X, Download, Mail, QrCode, ArrowLeft, Building2, FlaskConical, CheckCircle2 } from 'lucide-react'
 import type { RecetaItem } from '@/types'
 import EnviarRecetaEmail from '@/components/recetas/EnviarRecetaEmail'
 import { useNavigate } from 'react-router-dom'
@@ -23,6 +24,9 @@ export default function RecetasPage() {
   const { recetas, loading, createReceta, getRecetaCompleta, updateReceta } = useRecetas()
   const { medicamentos, loading: loadingMeds, error: errorMeds, fetchMedicamentos } = useMedicamentos()
   const { perfil } = useAuth()
+
+  // Hook de busqueda de medicamentos en farmacias/laboratorios
+  const { resultados: resultadosBusqueda, loading: loadingBusqueda, buscar: buscarEnProveedor } = useBusquedaMedicamentos()
 
   const [showForm, setShowForm] = useState(searchParams.get('nuevo') === 'true')
   const [showDetail, setShowDetail] = useState(false)
@@ -45,6 +49,14 @@ export default function RecetasPage() {
     receta: any, paciente: any
   } | null>(null)
 
+  // ============================================================
+  // NUEVO: Estados para modales de Farmacia / Laboratorio
+  // ============================================================
+  const [showFarmaciaModal, setShowFarmaciaModal] = useState(false)
+  const [showLaboratorioModal, setShowLaboratorioModal] = useState(false)
+  const [itemIdxBuscando, setItemIdxBuscando] = useState<number | null>(null)
+  const [busquedaProveedor, setBusquedaProveedor] = useState('')
+
   const [form, setForm] = useState({
     paciente_id: '', instrucciones_generales: ''
   })
@@ -58,7 +70,8 @@ export default function RecetasPage() {
     setItems([...items, {
       medicamento_id: med.id,
       nombre_medicamento: med.nombre_generico + (med.nombre_comercial ? ` (${med.nombre_comercial})` : ''),
-      dosis: '', frecuencia: '', duracion: '', instrucciones: '', cantidad: 1
+      dosis: '', frecuencia: '', duracion: '', instrucciones: '', cantidad: 1,
+      farmacia_id: null
     }])
   }
 
@@ -70,6 +83,117 @@ export default function RecetasPage() {
 
   const removeItem = (idx: number) => {
     setItems(items.filter((_, i) => i !== idx))
+  }
+
+  // ============================================================
+  // NUEVO: Abrir modal de Farmacia para un medicamento dado
+  // ============================================================
+  // ============================================================
+  // NUEVO: Helper para limpiar nombre antes de buscar en proveedores
+  // Quita "(Aspirina)" y similar para que el ILIKE matchee.
+  // Ej: "Acido Acetilsalicilico (Aspirina)" -> "Acido Acetilsalicilico"
+  // ============================================================
+  const limpiarNombreParaBusqueda = (nombre: string): string => {
+    if (!nombre) return ''
+    return nombre.replace(/\s*\(.*?\)/g, '').trim()
+  }
+
+  // ============================================================
+  // NUEVO: Abrir modal de Farmacia para un medicamento dado
+  // ============================================================
+  const abrirModalFarmacia = (idx: number) => {
+    setItemIdxBuscando(idx)
+    const nombre = limpiarNombreParaBusqueda(items[idx]?.nombre_medicamento || '')
+    setBusquedaProveedor(nombre)
+    if (nombre.trim()) buscarEnProveedor(nombre)
+    setShowFarmaciaModal(true)
+  }
+
+  // ============================================================
+  // NUEVO: Abrir modal de Laboratorio para un medicamento dado
+  // ============================================================
+  const abrirModalLaboratorio = (idx: number) => {
+    setItemIdxBuscando(idx)
+    const nombre = limpiarNombreParaBusqueda(items[idx]?.nombre_medicamento || '')
+    setBusquedaProveedor(nombre)
+    if (nombre.trim()) buscarEnProveedor(nombre)
+    setShowLaboratorioModal(true)
+  }
+
+  // ============================================================
+  // NUEVO: Asignar una farmacia/laboratorio al item activo
+  // ============================================================
+  const seleccionarFarmacia = (farmaciaId: number) => {
+    if (itemIdxBuscando === null) return
+    const newItems = [...items]
+    newItems[itemIdxBuscando] = { ...newItems[itemIdxBuscando], farmacia_id: farmaciaId }
+    setItems(newItems)
+    setShowFarmaciaModal(false)
+    setShowLaboratorioModal(false)
+    setItemIdxBuscando(null)
+    setBusquedaProveedor('')
+  }
+
+  // ============================================================
+  // NUEVO: Helper para renderizar resultados de busqueda
+  // tipoFiltro: 'farmacia' | 'laboratorio' — filtra por farmacia.tipo
+  // ============================================================
+  const renderResultadosBusqueda = (tipoFiltro: 'farmacia' | 'laboratorio') => {
+    // Filtrar por tipo (si el hook retorna farmacia.tipo, sino muestra todo)
+    const filtrados = resultadosBusqueda.filter((r: any) => {
+      if (!r.farmacia) return false
+      // Si no existe el campo tipo, no filtramos (mostramos todo)
+      if (r.farmacia.tipo === undefined || r.farmacia.tipo === null) return true
+      return r.farmacia.tipo === tipoFiltro
+    })
+
+    if (loadingBusqueda) {
+      return (
+        <div className="text-center py-4 text-[#8a9aaa] text-sm">
+          <Loader2 className="h-4 w-4 animate-spin inline mr-1" /> Buscando...
+        </div>
+      )
+    }
+
+    if (!loadingBusqueda && busquedaProveedor.trim().length > 0 && filtrados.length === 0) {
+      return (
+        <p className="text-sm text-[#8a9aaa] text-center py-4">
+          No se encontraron resultados en {tipoFiltro === 'farmacia' ? 'farmacias' : 'laboratorios'}
+        </p>
+      )
+    }
+
+    return (
+      <div className="space-y-2 max-h-96 overflow-y-auto">
+        {filtrados.map((r: any) => (
+          <Card key={r.id} className="border-l-4 border-l-[#1E5C8E] hover:bg-[#e8f0f8] transition-colors">
+            <CardContent className="p-3 flex justify-between items-center gap-3">
+              <div className="flex-1 min-w-0">
+                <p className="font-medium text-sm text-[#1a2a3a] truncate">{r.nombre_medicamento}</p>
+                <p className="text-xs text-[#8a9aaa] mt-0.5">
+                  <span className="font-medium text-[#1E5C8E]">{r.farmacia?.nombre || 'Sin proveedor'}</span>
+                  {r.farmacia?.direccion && <span> · {r.farmacia.direccion}</span>}
+                </p>
+                <p className="text-xs text-[#8a9aaa] mt-0.5">
+                  Stock: <span className="font-medium">{r.stock_actual}</span>
+                  {' · '}
+                  Precio: <span className="font-medium">Q{r.precio_unitario}</span>
+                  {r.farmacia?.telefono && <span> · Tel: {r.farmacia.telefono}</span>}
+                </p>
+              </div>
+              <Button
+                type="button"
+                size="sm"
+                className="bg-[#1E5C8E] hover:bg-[#3A8ABF] shrink-0"
+                onClick={() => seleccionarFarmacia(r.farmacia.id)}
+              >
+                Seleccionar
+              </Button>
+            </CardContent>
+          </Card>
+        ))}
+      </div>
+    )
   }
 
   const handleSubmit = async (e: React.FormEvent) => {
@@ -379,6 +503,41 @@ export default function RecetasPage() {
                         <div className="space-y-1"><Label className="text-xs">Cantidad</Label><Input type="number" className="h-8 text-sm" value={item.cantidad} onChange={e => updateItem(idx, 'cantidad', parseInt(e.target.value) || 1)} min={1} /></div>
                       </div>
                       <div className="space-y-1"><Label className="text-xs">Instrucciones especiales</Label><Input className="h-8 text-sm" value={item.instrucciones || ''} onChange={e => updateItem(idx, 'instrucciones', e.target.value)} placeholder="Tomar después de las comidas" /></div>
+
+                      {/* ============================================ */}
+                      {/* NUEVO: Botones Farmacia / Laboratorio */}
+                      {/* ============================================ */}
+                      <div className="flex items-center gap-2 pt-2 border-t border-[#1E5C8E]/10">
+                        <Button
+                          type="button"
+                          size="sm"
+                          variant="outline"
+                          onClick={() => abrirModalFarmacia(idx)}
+                          className={item.farmacia_id ? 'border-green-500 text-green-700 hover:bg-green-50' : 'border-[#1E5C8E] text-[#1E5C8E] hover:bg-white'}
+                        >
+                          {item.farmacia_id ? (
+                            <CheckCircle2 className="h-3 w-3 mr-1" />
+                          ) : (
+                            <Building2 className="h-3 w-3 mr-1" />
+                          )}
+                          Farmacias
+                        </Button>
+                        <Button
+                          type="button"
+                          size="sm"
+                          variant="outline"
+                          onClick={() => abrirModalLaboratorio(idx)}
+                          className="border-[#3A8ABF] text-[#3A8ABF] hover:bg-white"
+                        >
+                          <FlaskConical className="h-3 w-3 mr-1" />
+                          Laboratorios
+                        </Button>
+                        {item.farmacia_id && (
+                          <span className="text-xs text-green-700 ml-1">
+                            ✓ Proveedor asignado (#{item.farmacia_id})
+                          </span>
+                        )}
+                      </div>
                     </CardContent>
                   </Card>
                 ))}
@@ -454,6 +613,12 @@ export default function RecetasPage() {
                           </div>
                           {item.instrucciones && (
                             <p className="text-sm mt-2 text-[#8a9aaa]">Instrucciones: {item.instrucciones}</p>
+                          )}
+                          {item.farmacia_id && (
+                            <p className="text-sm mt-2 text-green-700">
+                              <CheckCircle2 className="h-3 w-3 inline mr-1" />
+                              Proveedor asignado (Farmacia #{item.farmacia_id})
+                            </p>
                           )}
                         </div>
                       </div>
@@ -619,6 +784,110 @@ export default function RecetasPage() {
               </div>
             </div>
           )}
+        </DialogContent>
+      </Dialog>
+
+      {/* ============================================================ */}
+      {/* NUEVO: Modal de busqueda de FARMACIAS */}
+      {/* ============================================================ */}
+      <Dialog open={showFarmaciaModal} onOpenChange={setShowFarmaciaModal}>
+        <DialogContent className="max-w-2xl max-h-[85vh] overflow-y-auto">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2">
+              <Building2 className="h-5 w-5 text-[#1E5C8E]" />
+              Seleccionar Farmacia
+            </DialogTitle>
+          </DialogHeader>
+
+          <div className="space-y-4">
+            {itemIdxBuscando !== null && items[itemIdxBuscando] && (
+              <div className="bg-[#e8f0f8] p-3 rounded-md">
+                <p className="text-xs text-[#8a9aaa]">Medicamento:</p>
+                <p className="font-medium text-[#1E5C8E]">{items[itemIdxBuscando].nombre_medicamento}</p>
+              </div>
+            )}
+
+            <div className="relative">
+              <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-[#8a9aaa]" />
+              <Input
+                placeholder="Buscar medicamento en farmacias..."
+                value={busquedaProveedor}
+                onChange={(e) => {
+                  setBusquedaProveedor(e.target.value)
+                  buscarEnProveedor(e.target.value)
+                }}
+                className="pl-10"
+              />
+            </div>
+
+            {renderResultadosBusqueda('farmacia')}
+
+            <div className="flex justify-end pt-2 border-t">
+              <Button
+                type="button"
+                variant="outline"
+                onClick={() => {
+                  setShowFarmaciaModal(false)
+                  setItemIdxBuscando(null)
+                  setBusquedaProveedor('')
+                }}
+              >
+                <X className="h-4 w-4 mr-2" /> Cancelar
+              </Button>
+            </div>
+          </div>
+        </DialogContent>
+      </Dialog>
+
+      {/* ============================================================ */}
+      {/* NUEVO: Modal de busqueda de LABORATORIOS */}
+      {/* ============================================================ */}
+      <Dialog open={showLaboratorioModal} onOpenChange={setShowLaboratorioModal}>
+        <DialogContent className="max-w-2xl max-h-[85vh] overflow-y-auto">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2">
+              <FlaskConical className="h-5 w-5 text-[#3A8ABF]" />
+              Seleccionar Laboratorio
+            </DialogTitle>
+          </DialogHeader>
+
+          <div className="space-y-4">
+            {itemIdxBuscando !== null && items[itemIdxBuscando] && (
+              <div className="bg-[#e8f0f8] p-3 rounded-md">
+                <p className="text-xs text-[#8a9aaa]">Medicamento:</p>
+                <p className="font-medium text-[#3A8ABF]">{items[itemIdxBuscando].nombre_medicamento}</p>
+              </div>
+            )}
+
+            <div className="relative">
+              <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-[#8a9aaa]" />
+              <Input
+                placeholder="Buscar medicamento en laboratorios..."
+                value={busquedaProveedor}
+                onChange={(e) => {
+                  setBusquedaProveedor(e.target.value)
+                  buscarEnProveedor(e.target.value)
+                }}
+                className="pl-10"
+              />
+            </div>
+
+            {renderResultadosBusqueda('laboratorio')}
+
+            <div className="flex justify-end pt-2 border-t">
+              <Button
+                type="button"
+                variant="outline"
+                onClick={() => {
+                  setShowLaboratorioModal(false)
+                  setItemIdxBuscando(null)
+                  setBusquedaProveedor('')
+                }}
+              >
+                <X className="h-4 w-4 mr-2" /> Cancelar
+              </Button>
+            </div>
+          </div>
         </DialogContent>
       </Dialog>
     </div>

@@ -23,7 +23,7 @@ export function useRecetas() {
 
   useEffect(() => { fetchRecetas() }, [fetchRecetas])
 
-  const createReceta = async (receta: Partial<Receta>, items: Partial<RecetaItem>[]) => {
+    const createReceta = async (receta: Partial<Receta>, items: Partial<RecetaItem>[]) => {
     const { data: { user } } = await supabase.auth.getUser()
     if (!user) return { error: 'Debes iniciar sesion para crear recetas' }
     if (!receta.paciente_id) return { error: 'Debes seleccionar un paciente' }
@@ -50,7 +50,8 @@ export function useRecetas() {
         frecuencia: i.frecuencia,
         duracion: i.duracion || null,
         instrucciones: i.instrucciones || null,
-        cantidad: i.cantidad || 1
+        cantidad: i.cantidad || 1,
+        farmacia_id: i.farmacia_id || null
       }))
       const { error: itemsError } = await supabase.from('receta_items').insert(itemsConReceta)
       if (itemsError) {
