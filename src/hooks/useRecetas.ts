@@ -8,16 +8,38 @@ export function useRecetas() {
 
   const fetchRecetas = useCallback(async () => {
     setLoading(true)
-    const { data, error } = await supabase
+    
+    const { data: recetasData, error: recetasError } = await supabase
       .from('recetas')
       .select(`*, pacientes(nombre, apellido)`)
       .order('created_at', { ascending: false })
-    if (error) console.error('Error fetching recetas:', error)
-    const mapped = (data || []).map((r: any) => ({
-      ...r,
-      paciente_nombre: r.pacientes?.nombre + ' ' + r.pacientes?.apellido
-    }))
-    setRecetas(mapped)
+    
+    if (recetasError) {
+      console.error('Error fetching recetas:', recetasError)
+      setRecetas([])
+      setLoading(false)
+      return
+    }
+
+    // Para cada receta, verificar si tiene al menos un item con farmacia_id
+    const recetasConFarmacia = await Promise.all(
+      (recetasData || []).map(async (r: any) => {
+        const { data: itemsData } = await supabase
+          .from('receta_items')
+          .select('farmacia_id')
+          .eq('receta_id', r.id)
+          .not('farmacia_id', 'is', null)
+          .limit(1)
+        
+        return {
+          ...r,
+          paciente_nombre: r.pacientes?.nombre + ' ' + r.pacientes?.apellido,
+          tiene_farmacia_asignada: (itemsData && itemsData.length > 0) || false
+        }
+      })
+    )
+
+    setRecetas(recetasConFarmacia)
     setLoading(false)
   }, [])
 
@@ -81,23 +103,46 @@ export function useRecetas() {
       return { receta: null, items: [], paciente: null }
     }
 
-    const { data: items, error: itemsError } = await supabase
-      .from('receta_items')
-      .select('*')
-      .eq('receta_id', id)
+   const { data: items, error: itemsError } = await supabase
+  .from('receta_items')
+  .select('*')
+  .eq('receta_id', id)
 
-    if (itemsError) {
-      console.error('Error fetching receta items:', itemsError)
-    }
+if (itemsError) {
+  console.error('Error fetching receta items:', itemsError)
+}
 
-    return { 
-      receta, 
-      items: items || [],
-      paciente: receta.pacientes || null
-    }
+// Traer nombres de farmacias si hay farmacia_id
+let itemsConFarmacia = items || []
+if (itemsConFarmacia.length > 0) {
+  const farmaciaIds = itemsConFarmacia
+    .filter((i: any) => i.farmacia_id)
+    .map((i: any) => i.farmacia_id)
+  
+  if (farmaciaIds.length > 0) {
+    const { data: farmaciasData } = await supabase
+      .from('farmacias')
+      .select('id, nombre, direccion, telefono')
+      .in('id', farmaciaIds)
+    
+    const farmaciasMap = (farmaciasData || []).reduce((acc: any, f: any) => {
+      acc[f.id] = f
+      return acc
+    }, {} as Record<number, any>)
+    
+    itemsConFarmacia = itemsConFarmacia.map((item: any) => ({
+      ...item,
+      farmacia: item.farmacia_id ? farmaciasMap[item.farmacia_id] : null
+    }))
   }
+}
 
-  // ✅ Cambiar estado de receta
+return { 
+  receta, 
+  items: itemsConFarmacia,
+  paciente: receta.pacientes || null
+}
+ } // ✅ Cambiar estado de receta
   const updateReceta = async (id: number, updates: Partial<Receta>) => {
     const { data, error } = await supabase.from('recetas').update(updates).eq('id', id).select().single()
     if (!error && data) {

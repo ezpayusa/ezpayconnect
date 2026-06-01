@@ -359,11 +359,17 @@ export default function RecetasPage() {
                 <div key={r.id} className="p-4 flex items-center justify-between hover:bg-[#e8f0f8] transition-colors">
                   <div className="flex-1 min-w-0">
                     <div className="flex items-center gap-3">
-                      <p className="font-medium truncate">{r.paciente_nombre || 'Paciente #' + r.paciente_id}</p>
-                      <Badge variant="outline" className={getEstadoColor(r.estado)}>
-                        {r.estado}
-                      </Badge>
-                    </div>
+  <p className="font-medium truncate">{r.paciente_nombre || 'Paciente #' + r.paciente_id}</p>
+  <Badge variant="outline" className={getEstadoColor(r.estado)}>
+    {r.estado}
+  </Badge>
+  {r.tiene_farmacia_asignada && (
+    <Badge variant="outline" className="bg-green-50 text-green-700 border-green-200 text-xs">
+      <Building2 className="h-3 w-3 mr-1" />
+      Farmacia asignada
+    </Badge>
+  )}
+</div>
                     <p className="text-sm text-[#8a9aaa]">
                       {new Date(r.created_at).toLocaleDateString('es-GT', { 
                         weekday: 'short', year: 'numeric', month: 'short', day: 'numeric',
@@ -614,12 +620,21 @@ export default function RecetasPage() {
                           {item.instrucciones && (
                             <p className="text-sm mt-2 text-[#8a9aaa]">Instrucciones: {item.instrucciones}</p>
                           )}
-                          {item.farmacia_id && (
-                            <p className="text-sm mt-2 text-green-700">
-                              <CheckCircle2 className="h-3 w-3 inline mr-1" />
-                              Proveedor asignado (Farmacia #{item.farmacia_id})
-                            </p>
-                          )}
+                         {item.farmacia_id && item.farmacia && (
+  <p className="text-sm mt-2 text-green-700">
+    <CheckCircle2 className="h-3 w-3 inline mr-1" />
+    Farmacia asignada: <strong>{item.farmacia.nombre}</strong>
+    {item.farmacia.direccion && (
+      <span className="text-xs text-[#8a9aaa] ml-1">({item.farmacia.direccion})</span>
+    )}
+  </p>
+)}
+{item.farmacia_id && !item.farmacia && (
+  <p className="text-sm mt-2 text-green-700">
+    <CheckCircle2 className="h-3 w-3 inline mr-1" />
+    Proveedor asignado (Farmacia #{item.farmacia_id})
+  </p>
+)}
                         </div>
                       </div>
                     </CardContent>
