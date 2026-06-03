@@ -21,6 +21,7 @@ import FacturasPage from '@/pages/FacturasPage'
 
 // === IMPORTS PORTAL PACIENTE ===
 import WebAppLayout from '@/webapp/layout/WebAppLayout'
+import WebAppPrivateRoute from '@/webapp/layout/WebAppPrivateRoute'
 import WebAppLoginPage from '@/webapp/pages/WebAppLoginPage'
 import WebAppRegistroPage from '@/webapp/pages/WebAppRegistroPage'
 import WebAppDashboard from '@/webapp/pages/WebAppDashboard'
@@ -123,7 +124,7 @@ function App() {
         {/* === RUTAS PORTAL DEL PACIENTE === */}
         <Route path="/paciente/login" element={<WebAppLoginPage />} />
         <Route path="/paciente/registro" element={<WebAppRegistroPage />} />
-        <Route path="/paciente" element={<WebAppLayout />}>
+        <Route path="/paciente" element={<WebAppPrivateRoute><WebAppLayout /></WebAppPrivateRoute>}>
           <Route index element={<Navigate to="/paciente/dashboard" replace />} />
           <Route path="dashboard" element={<WebAppDashboard />} />
           <Route path="citas" element={<WebAppCitas />} />
