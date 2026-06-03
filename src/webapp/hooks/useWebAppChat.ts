@@ -108,17 +108,23 @@ export function useWebAppChat(pacienteId: number | undefined) {
   }, [pacienteId])
 
   const enviarMensaje = useCallback(async (texto: string) => {
-    if (!pacienteId || !medicoId || !texto.trim()) return
+    if (!pacienteId || !texto.trim()) return
 
     try {
       setEnviando(true)
-      const { error: err } = await supabase.from('chat_mensajes').insert({
+      setError(null)
+      const insertData: any = {
         paciente_id: pacienteId,
-        medico_id: medicoId,
         remitente: 'paciente',
         mensaje: texto.trim(),
         leido: false,
-      })
+      }
+      // Solo incluir medico_id si existe y es válido
+      if (medicoId) {
+        insertData.medico_id = medicoId
+      }
+
+      const { error: err } = await supabase.from('chat_mensajes').insert(insertData)
 
       if (err) throw err
     } catch (err: any) {
