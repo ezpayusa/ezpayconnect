@@ -1,15 +1,17 @@
 import { useState } from 'react'
 import { useWebAppAuth } from '@/webapp/hooks/useWebAppAuth'
 import { useWebAppCitas } from '@/webapp/hooks/useWebAppCitas'
+import AgendarCitaModal from '@/webapp/components/AgendarCitaModal'
 import { Card, CardContent } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
-import { CalendarDays, Clock, MapPin, Plus, Loader2 } from 'lucide-react'
+import { CalendarDays, Clock, Plus, Loader2 } from 'lucide-react'
 
 export default function WebAppCitas() {
   const { perfil } = useWebAppAuth()
-  const { citas, proximas, pasadas, canceladas, loading, error } = useWebAppCitas(perfil?.id)
+  const { citas, proximas, pasadas, canceladas, loading, error, refetch } = useWebAppCitas(perfil?.id)
   const [tab, setTab] = useState<'proximas' | 'pasadas' | 'canceladas'>('proximas')
+  const [modalOpen, setModalOpen] = useState(false)
 
   const getEstadoColor = (estado: string) => {
     switch (estado) {
@@ -38,7 +40,10 @@ export default function WebAppCitas() {
           <h1 className="text-2xl font-bold text-slate-800">Mis Citas</h1>
           <p className="text-slate-500 mt-1">Gestiona tus consultas médicas</p>
         </div>
-        <Button className="bg-gradient-to-r from-sky-500 to-indigo-500 hover:from-sky-600 hover:to-indigo-600">
+        <Button
+          className="bg-gradient-to-r from-sky-500 to-indigo-500 hover:from-sky-600 hover:to-indigo-600"
+          onClick={() => setModalOpen(true)}
+        >
           <Plus className="h-4 w-4 mr-1" /> Agendar
         </Button>
       </div>
@@ -82,7 +87,7 @@ export default function WebAppCitas() {
           <Button
             variant="outline"
             className="mt-4 border-sky-200 text-sky-600 hover:bg-sky-50"
-            onClick={() => {}}
+            onClick={() => setModalOpen(true)}
           >
             <Plus className="h-4 w-4 mr-1" /> Agendar primera cita
           </Button>
@@ -128,6 +133,13 @@ export default function WebAppCitas() {
           ))}
         </div>
       )}
+
+      <AgendarCitaModal
+        pacienteId={perfil?.id}
+        open={modalOpen}
+        onClose={() => setModalOpen(false)}
+        onSuccess={() => refetch()}
+      />
     </div>
   )
 }

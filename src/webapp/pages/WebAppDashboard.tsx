@@ -1,7 +1,9 @@
+import { useState } from 'react'
 import { useWebAppAuth } from '@/webapp/hooks/useWebAppAuth'
 import { useWebAppCitas } from '@/webapp/hooks/useWebAppCitas'
 import { useWebAppRecetas } from '@/webapp/hooks/useWebAppRecetas'
 import { useWebAppExamenes } from '@/webapp/hooks/useWebAppExamenes'
+import AgendarCitaModal from '@/webapp/components/AgendarCitaModal'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
@@ -14,8 +16,9 @@ import {
 export default function WebAppDashboard() {
   const { perfil } = useWebAppAuth()
   const navigate = useNavigate()
+  const [modalCitaOpen, setModalCitaOpen] = useState(false)
 
-  const { proximas: citasProximas, loading: loadingCitas } = useWebAppCitas(perfil?.id)
+  const { proximas: citasProximas, loading: loadingCitas, refetch: refetchCitas } = useWebAppCitas(perfil?.id)
   const { activas: recetasActivas, loading: loadingRecetas } = useWebAppRecetas(perfil?.id)
   const { pendientes: examenesPendientes, loading: loadingExamenes } = useWebAppExamenes(perfil?.id)
 
@@ -96,7 +99,7 @@ export default function WebAppDashboard() {
               variant="secondary"
               size="sm"
               className="bg-white text-sky-600 hover:bg-sky-50"
-              onClick={() => navigate('/paciente/citas')}
+              onClick={() => setModalCitaOpen(true)}
             >
               <Plus className="h-4 w-4 mr-1" /> Agendar cita
             </Button>
@@ -139,6 +142,13 @@ export default function WebAppDashboard() {
           </CardContent>
         </Card>
       </div>
+
+      <AgendarCitaModal
+        pacienteId={perfil?.id}
+        open={modalCitaOpen}
+        onClose={() => setModalCitaOpen(false)}
+        onSuccess={() => refetchCitas()}
+      />
     </div>
   )
 }
