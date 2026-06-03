@@ -80,7 +80,10 @@ export default function BannerPublicidadGlobal() {
             size="sm"
             variant="outline"
             className="mt-3"
-            onClick={() => window.open(campana.link_url, '_blank')}
+            onClick={() => {
+              const url = campana.link_url?.startsWith('http') ? campana.link_url : `https://${campana.link_url}`
+              window.open(url, '_blank')
+            }}
           >
             <ExternalLink className="w-3 h-3 mr-1" />
             Ver oferta

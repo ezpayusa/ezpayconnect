@@ -205,6 +205,9 @@ export default function DashboardPage() {
         <p className="text-[#8a9aaa] mt-1">Bienvenido a tu panel de control medico</p>
       </div>
 
+      {/* Banner Publicitario */}
+      <BannerPublicidadGlobal />
+
       {/* KPI Cards */}
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
         <Card className="border-l-4 border-l-[#1E5C8E]">
@@ -512,9 +515,6 @@ export default function DashboardPage() {
             </CardContent>
           </Card>
         </div>
-
-        {/* Banner Publicitario */}
-        <BannerPublicidadGlobal />
 
         {/* Fila 4: Diagnósticos */}
         <Card>

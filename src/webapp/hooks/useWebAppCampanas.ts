@@ -39,7 +39,9 @@ export function useWebAppCampanas(pacienteId: number | undefined, perfil: any) {
         }
 
         // Filtro por condición (alergias/notas contienen la condición)
-        if (c.condicion_filtro) {
+        // Si el paciente NO tiene datos de salud registrados, mostrar todas las campañas
+        const tieneDatosSalud = perfil.alergias || perfil.notas
+        if (c.condicion_filtro && tieneDatosSalud) {
           const texto = `${perfil.alergias || ''} ${perfil.notas || ''}`.toLowerCase()
           if (!texto.includes(c.condicion_filtro.toLowerCase())) return false
         }

@@ -71,7 +71,8 @@ export default function BannerPublicidad() {
             className="mt-3 w-full"
             onClick={() => {
               registrarVista(campana.id, true)
-              window.open(campana.link_url, '_blank')
+              const url = campana.link_url?.startsWith('http') ? campana.link_url : `https://${campana.link_url}`
+              window.open(url, '_blank')
             }}
           >
             <ExternalLink className="w-3 h-3 mr-1" />
