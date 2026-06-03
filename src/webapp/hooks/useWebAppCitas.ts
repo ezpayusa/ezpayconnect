@@ -18,32 +18,39 @@ export function useWebAppCitas(pacienteId: number | undefined) {
       setLoading(true)
       setError(null)
 
-      const { data, error: err } = await supabase
+      // 1. Obtener citas del paciente (sin join, solo medico_id)
+      const { data: citasData, error: citasErr } = await supabase
         .from('citas')
-        .select(`
-          id,
-          fecha,
-          hora_inicio,
-          hora_fin,
-          motivo,
-          estado,
-          notas,
-          created_at,
-          perfiles!citas_medico_id_fkey(nombre_completo)
-        `)
+        .select('id, fecha, hora_inicio, hora_fin, motivo, estado, notas, created_at, medico_id')
         .eq('paciente_id', pacienteId)
         .order('fecha', { ascending: true })
 
-      if (err) throw err
+      if (citasErr) throw citasErr
 
-      const mapped: CitaPaciente[] = (data || []).map((c: any) => ({
+      // 2. Obtener nombres de médicos por separado
+      const medicoIds = [...new Set((citasData || []).map((c: any) => c.medico_id).filter(Boolean))]
+      let medicosMap: Record<string, string> = {}
+
+      if (medicoIds.length > 0) {
+        const { data: perfilesData } = await supabase
+          .from('perfiles')
+          .select('id, nombre_completo')
+          .in('id', medicoIds)
+
+        medicosMap = (perfilesData || []).reduce((acc: Record<string, string>, p: any) => {
+          acc[p.id] = p.nombre_completo
+          return acc
+        }, {})
+      }
+
+      const mapped: CitaPaciente[] = (citasData || []).map((c: any) => ({
         id: c.id,
         fecha: c.fecha,
         hora_inicio: c.hora_inicio,
         hora_fin: c.hora_fin,
         motivo: c.motivo,
         estado: c.estado,
-        medico_nombre: c.perfiles?.nombre_completo || 'Médico asignado',
+        medico_nombre: medicosMap[c.medico_id] || 'Médico asignado',
         medico_especialidad: undefined,
         notas: c.notas,
         created_at: c.created_at,

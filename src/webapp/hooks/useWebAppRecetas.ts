@@ -18,21 +18,30 @@ export function useWebAppRecetas(pacienteId: number | undefined) {
       setLoading(true)
       setError(null)
 
-      // Obtener recetas del paciente
+      // 1. Obtener recetas del paciente (sin join)
       const { data: recetasData, error: recetasErr } = await supabase
         .from('recetas')
-        .select(`
-          id,
-          estado,
-          instrucciones_generales,
-          codigo_qr,
-          created_at,
-          perfiles!recetas_medico_id_fkey(nombre_completo)
-        `)
+        .select('id, estado, instrucciones_generales, codigo_qr, created_at, medico_id')
         .eq('paciente_id', pacienteId)
         .order('created_at', { ascending: false })
 
       if (recetasErr) throw recetasErr
+
+      // 2. Obtener nombres de médicos por separado
+      const medicoIds = [...new Set((recetasData || []).map((r: any) => r.medico_id).filter(Boolean))]
+      let medicosMap: Record<string, string> = {}
+
+      if (medicoIds.length > 0) {
+        const { data: perfilesData } = await supabase
+          .from('perfiles')
+          .select('id, nombre_completo')
+          .in('id', medicoIds)
+
+        medicosMap = (perfilesData || []).reduce((acc: Record<string, string>, p: any) => {
+          acc[p.id] = p.nombre_completo
+          return acc
+        }, {})
+      }
 
       const recetasConItems: RecetaPaciente[] = []
 
@@ -55,7 +64,7 @@ export function useWebAppRecetas(pacienteId: number | undefined) {
 
         recetasConItems.push({
           id: r.id,
-          medico_nombre: r.perfiles?.nombre_completo || 'Médico asignado',
+          medico_nombre: medicosMap[r.medico_id] || 'Médico asignado',
           estado: r.estado,
           instrucciones_generales: r.instrucciones_generales,
           items,
