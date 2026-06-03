@@ -60,6 +60,7 @@ import FinanzasPage from '@/pages/admin-ezpay/FinanzasPage'
 import RolesPage from '@/pages/admin-ezpay/RolesPage'
 import UsuariosAdminPage from '@/pages/admin-ezpay/UsuariosAdminPage'
 import AuditoriaPage from '@/pages/admin-ezpay/AuditoriaPage'
+import CampanasPublicitariasPage from '@/pages/admin-ezpay/CampanasPublicitariasPage'
 
 // === IMPORTS REPORTES (NUEVOS) ===
 import ReportesPage from '@/pages/admin-ezpay/ReportesPage'
