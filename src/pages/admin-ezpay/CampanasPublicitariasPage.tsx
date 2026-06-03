@@ -7,7 +7,7 @@ import { Badge } from '@/components/ui/badge'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Switch } from '@/components/ui/switch'
-import { Megaphone, Plus, Trash2, Eye, EyeOff, Loader2 } from 'lucide-react'
+import { Megaphone, Plus, Trash2, Eye, EyeOff, Loader2, Upload, X } from 'lucide-react'
 import { toast } from 'sonner'
 
 interface Campana {
@@ -32,12 +32,16 @@ export default function CampanasPublicitariasPage() {
   const [loading, setLoading] = useState(true)
   const [mostrarForm, setMostrarForm] = useState(false)
   const [guardando, setGuardando] = useState(false)
+  const [imagenFile, setImagenFile] = useState<File | null>(null)
+  const [imagenPreview, setImagenPreview] = useState<string | null>(null)
+  const [subiendoImagen, setSubiendoImagen] = useState(false)
 
   const [form, setForm] = useState({
     titulo: '',
     descripcion: '',
     tipo: 'farmacia',
     imagen_url: '',
+    imagen_file: null as File | null,
     link_url: '',
     fecha_inicio: new Date().toISOString().split('T')[0],
     fecha_fin: new Date(Date.now() + 30 * 86400000).toISOString().split('T')[0],
@@ -67,6 +71,38 @@ export default function CampanasPublicitariasPage() {
     fetchCampanas()
   }, [])
 
+  const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0]
+    if (!file) return
+    if (file.size > 5 * 1024 * 1024) {
+      toast.error('La imagen no puede superar 5MB')
+      return
+    }
+    setImagenFile(file)
+    setImagenPreview(URL.createObjectURL(file))
+  }
+
+  const subirImagen = async (): Promise<string | null> => {
+    if (!imagenFile) return form.imagen_url || null
+    setSubiendoImagen(true)
+    const fileExt = imagenFile.name.split('.').pop()
+    const fileName = `${Date.now()}.${fileExt}`
+    const { error: uploadError } = await supabase.storage
+      .from('campanas')
+      .upload(fileName, imagenFile, { upsert: true })
+
+    if (uploadError) {
+      toast.error('Error subiendo imagen')
+      console.error(uploadError)
+      setSubiendoImagen(false)
+      return null
+    }
+
+    const { data: publicUrlData } = supabase.storage.from('campanas').getPublicUrl(fileName)
+    setSubiendoImagen(false)
+    return publicUrlData.publicUrl
+  }
+
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
     if (!form.titulo || !form.fecha_fin) {
@@ -75,11 +111,13 @@ export default function CampanasPublicitariasPage() {
     }
 
     setGuardando(true)
+    const imagenUrl = await subirImagen()
+
     const { error } = await supabase.from('campanas_publicitarias').insert({
       titulo: form.titulo,
       descripcion: form.descripcion || null,
       tipo: form.tipo,
-      imagen_url: form.imagen_url || null,
+      imagen_url: imagenUrl,
       link_url: form.link_url || null,
       fecha_inicio: form.fecha_inicio,
       fecha_fin: form.fecha_fin,
@@ -107,6 +145,8 @@ export default function CampanasPublicitariasPage() {
         edad_min: '',
         edad_max: '',
       })
+      setImagenFile(null)
+      setImagenPreview(null)
       setMostrarForm(false)
       fetchCampanas()
     }
@@ -199,13 +239,36 @@ export default function CampanasPublicitariasPage() {
                   </SelectContent>
                 </Select>
               </div>
-              <div>
-                <Label>URL de imagen</Label>
-                <Input
-                  value={form.imagen_url}
-                  onChange={(e) => setForm({ ...form, imagen_url: e.target.value })}
-                  placeholder="https://..."
-                />
+              <div className="md:col-span-2">
+                <Label>Imagen del producto / cupón</Label>
+                <div className="flex items-center gap-4">
+                  <label className="flex items-center gap-2 px-4 py-2 border border-slate-200 rounded-lg cursor-pointer hover:bg-slate-50 transition-colors">
+                    <Upload className="h-4 w-4 text-slate-500" />
+                    <span className="text-sm text-slate-600">
+                      {imagenFile ? imagenFile.name : 'Seleccionar imagen'}
+                    </span>
+                    <input
+                      type="file"
+                      accept="image/*"
+                      className="hidden"
+                      onChange={handleFileChange}
+                    />
+                  </label>
+                  {imagenPreview && (
+                    <div className="relative">
+                      <img src={imagenPreview} alt="Preview" className="h-16 w-16 object-cover rounded-lg border" />
+                      <button
+                        type="button"
+                        className="absolute -top-2 -right-2 bg-red-500 text-white rounded-full p-0.5"
+                        onClick={() => { setImagenFile(null); setImagenPreview(null) }}
+                      >
+                        <X className="h-3 w-3" />
+                      </button>
+                    </div>
+                  )}
+                  {subiendoImagen && <Loader2 className="h-4 w-4 animate-spin text-slate-400" />}
+                </div>
+                <p className="text-xs text-slate-400 mt-1">Máx 5MB. Formatos: JPG, PNG, WebP</p>
               </div>
               <div className="md:col-span-2">
                 <Label>Link de la oferta</Label>
