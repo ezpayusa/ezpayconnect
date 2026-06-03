@@ -242,12 +242,12 @@ export default function CampanasPublicitariasPage() {
               </div>
               <div>
                 <Label>Filtro por género</Label>
-                <Select value={form.genero_filtro} onValueChange={(v) => setForm({ ...form, genero_filtro: v })}>
+                <Select value={form.genero_filtro || 'todos'} onValueChange={(v) => setForm({ ...form, genero_filtro: v === 'todos' ? '' : v })}>
                   <SelectTrigger>
                     <SelectValue placeholder="Todos" />
                   </SelectTrigger>
                   <SelectContent>
-                    <SelectItem value="">Todos</SelectItem>
+                    <SelectItem value="todos">Todos</SelectItem>
                     <SelectItem value="M">Masculino</SelectItem>
                     <SelectItem value="F">Femenino</SelectItem>
                   </SelectContent>
