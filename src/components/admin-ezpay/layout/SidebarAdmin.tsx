@@ -47,6 +47,7 @@ export function SidebarAdmin() {
     { path: '/admin-ezpay/planes-empresas-afines', icon: Handshake, label: 'Empresas Afines' },
     { path: '/admin-ezpay/excepciones', icon: AlertCircle, label: 'Excepciones' },
     { path: '/admin-ezpay/finanzas', icon: DollarSign, label: 'Finanzas' },
+    { path: '/admin-ezpay/campanas-publicitarias', icon: Megaphone, label: 'Campañas Publicitarias' },
     { path: '/admin-ezpay/reportes', icon: BarChart3, label: 'Reportes EZPay' },
     { path: '/admin-ezpay/reportes-ezpay-v2', icon: BarChart4, label: 'Reportes EZPay V2' },
     { path: '/admin-ezpay/roles', icon: Shield, label: 'Roles' },

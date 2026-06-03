@@ -29,6 +29,7 @@ export default function NotificacionesDropdown() {
       case 'receta': return <FileText className="h-4 w-4 text-emerald-500" />
       case 'examen': return <FlaskConical className="h-4 w-4 text-amber-500" />
       case 'mensaje': return <MessageCircle className="h-4 w-4 text-indigo-500" />
+      case 'promocion': return <Megaphone className="h-4 w-4 text-rose-500" />
       default: return <Info className="h-4 w-4 text-slate-400" />
     }
   }

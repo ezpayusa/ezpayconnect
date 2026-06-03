@@ -172,6 +172,7 @@ function App() {
           <Route path="roles" element={<RolesPage />} />
           <Route path="auditoria" element={<AuditoriaPage />} />
           <Route path="notificaciones" element={<NotificacionesAdminPage />} />
+          <Route path="campanas-publicitarias" element={<CampanasPublicitariasPage />} />
         </Route>
 
         {/* === RUTAS ADMIN PLANES (con AdminLayout) — FIX: ahora tienen layout === */}

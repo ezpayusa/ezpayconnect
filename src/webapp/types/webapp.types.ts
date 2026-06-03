@@ -88,7 +88,7 @@ export interface ChatMensaje {
 
 export interface NotificacionPaciente {
   id: number
-  tipo: 'cita' | 'receta' | 'examen' | 'mensaje'
+  tipo: 'cita' | 'receta' | 'examen' | 'mensaje' | 'promocion'
   titulo: string
   mensaje: string | null
   leida: boolean
@@ -102,4 +102,21 @@ export interface MedicoDisponible {
   especialidad?: string
   foto_url?: string | null
   horarios?: { dia: string; inicio: string; fin: string }[]
+}
+
+export interface CampanaPublicitaria {
+  id: number
+  titulo: string
+  descripcion: string | null
+  tipo: 'farmacia' | 'equipo_medico' | 'laboratorio' | 'general'
+  imagen_url: string | null
+  link_url: string | null
+  fecha_inicio: string
+  fecha_fin: string
+  activa: boolean
+  condicion_filtro: string | null
+  genero_filtro: string | null
+  edad_min: number | null
+  edad_max: number | null
+  created_at: string
 }

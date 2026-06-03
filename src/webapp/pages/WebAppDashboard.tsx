@@ -4,6 +4,7 @@ import { useWebAppCitas } from '@/webapp/hooks/useWebAppCitas'
 import { useWebAppRecetas } from '@/webapp/hooks/useWebAppRecetas'
 import { useWebAppExamenes } from '@/webapp/hooks/useWebAppExamenes'
 import AgendarCitaModal from '@/webapp/components/AgendarCitaModal'
+import BannerPublicidad from '@/webapp/components/BannerPublicidad'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
@@ -141,6 +142,11 @@ export default function WebAppDashboard() {
             )}
           </CardContent>
         </Card>
+      </div>
+
+      {/* Banner de publicidad */}
+      <div className="mt-6">
+        <BannerPublicidad />
       </div>
 
       <AgendarCitaModal
