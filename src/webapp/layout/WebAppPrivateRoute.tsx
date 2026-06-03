@@ -1,8 +1,9 @@
 import { Navigate } from 'react-router-dom'
 import { useWebAppAuth } from '@/webapp/hooks/useWebAppAuth'
+import { LogOut } from 'lucide-react'
 
 export default function WebAppPrivateRoute({ children }: { children: React.ReactNode }) {
-  const { user, perfil, loading } = useWebAppAuth()
+  const { user, perfil, loading, logout } = useWebAppAuth()
 
   if (loading) {
     return (
@@ -34,6 +35,13 @@ export default function WebAppPrivateRoute({ children }: { children: React.React
           <p className="text-sm text-slate-400">
             Si crees que esto es un error, contacta a tu clínica.
           </p>
+          <button
+            onClick={() => logout()}
+            className="inline-flex items-center gap-2 px-4 py-2 rounded-lg border border-slate-200 text-slate-600 hover:bg-slate-50 transition-colors cursor-pointer"
+          >
+            <LogOut className="h-4 w-4" />
+            Cerrar sesión
+          </button>
         </div>
       </div>
     )
