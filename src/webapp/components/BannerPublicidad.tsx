@@ -43,6 +43,7 @@ export default function BannerPublicidad() {
       {campana.imagen_url && (
         <div className="h-40 w-full bg-slate-100">
           <img
+            key={campana.id + '-img'}
             src={campana.imagen_url}
             alt={campana.titulo}
             className="w-full h-full object-cover"
