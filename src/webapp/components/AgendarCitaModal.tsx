@@ -34,10 +34,17 @@ export default function AgendarCitaModal({ pacienteId, open, onClose, onSuccess 
     try {
       setGuardando(true)
 
+      // Calcular hora_fin (30 minutos después de hora_inicio)
+      const [h, m] = form.hora_inicio.split(':').map(Number)
+      const finDate = new Date()
+      finDate.setHours(h, m + 30)
+      const hora_fin = `${String(finDate.getHours()).padStart(2, '0')}:${String(finDate.getMinutes()).padStart(2, '0')}:00`
+
       const { error } = await supabase.from('citas').insert({
         paciente_id: pacienteId,
         fecha: form.fecha,
         hora_inicio: form.hora_inicio,
+        hora_fin: hora_fin,
         motivo: form.motivo || 'Consulta general',
         notas: form.notas || null,
         estado: 'solicitada',
