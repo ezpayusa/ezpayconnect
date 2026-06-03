@@ -102,8 +102,13 @@ export function useWebAppNotificaciones(pacienteId: number | undefined) {
   useEffect(() => {
     if (!pacienteId) return
 
+    const channelName = `notif_paciente_${pacienteId}`
+    
+    // Eliminar canal anterior si existe
+    supabase.removeChannel(supabase.channel(channelName)).catch(() => {})
+
     const channel = supabase
-      .channel(`notif_paciente_${pacienteId}`)
+      .channel(channelName)
       .on(
         'postgres_changes',
         {
@@ -133,7 +138,7 @@ export function useWebAppNotificaciones(pacienteId: number | undefined) {
       .subscribe()
 
     return () => {
-      channel.unsubscribe()
+      supabase.removeChannel(channel).catch(() => {})
     }
   }, [pacienteId])
 
