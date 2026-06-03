@@ -20,7 +20,8 @@ import { Label } from '@/components/ui/label';
 import { usePlanes } from '@/hooks/usePlanes';
 import { useAdminAuth } from '@/hooks/admin/useAdminAuth';
 import { formatearPrecio, getBanderaPais } from '@/lib/planes-utils';
-import { ArrowLeft, Plus, Search, RefreshCw, Edit, Trash2, X, AlertTriangle } from 'lucide-react';
+import { ArrowLeft, Plus, Search, RefreshCw, Edit, Trash2, X, AlertTriangle, Megaphone } from 'lucide-react';
+import CampanasPublicitariasContent from '@/webapp/components/CampanasPublicitariasContent';
 
 // ════════════════════════════════════════════════════
 // COMPONENTE REUTILIZABLE: Ventana Arrastrable
@@ -149,6 +150,8 @@ export default function PlanesPublicidadConfigPage() {
     limite_pacientes: '',
     caracteristicas: '',
   });
+
+  const [vista, setVista] = useState<'planes' | 'campanas'>('planes');
 
   const [nuevaConfig, setNuevaConfig] = useState({
     plan_base_id: '',

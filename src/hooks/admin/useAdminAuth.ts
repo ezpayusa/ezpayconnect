@@ -73,7 +73,7 @@ export function useAdminAuth() {
       });
 
       // 3. Verificar si el rol es admin
-      const adminRoles = ['super_admin', 'admin_pais', 'admin_finanzas', 'admin_soporte', 'admin_ventas'];
+      const adminRoles = ['super_admin', 'admin_pais', 'admin_finanzas', 'admin_soporte', 'admin_ventas', 'admin_publicidad'];
       const userRol = profile?.rol;
 
       console.log('[useAdminAuth] Rol del usuario:', userRol);
