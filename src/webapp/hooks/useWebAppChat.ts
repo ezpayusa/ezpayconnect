@@ -38,16 +38,16 @@ export function useWebAppChat(pacienteId: number | undefined) {
     }
 
     if (mid) {
-      setMedicoId(mid)
-      // Obtener nombre del médico
+      // Verificar que el médico realmente existe en perfiles
       const { data: perfilData } = await supabase
         .from('perfiles')
         .select('nombre_completo')
         .eq('id', mid)
         .single()
 
-      if (perfilData?.nombre_completo) {
-        setMedicoNombre(perfilData.nombre_completo)
+      if (perfilData) {
+        setMedicoId(mid)
+        setMedicoNombre(perfilData.nombre_completo || 'Tu médico')
       }
     }
   }, [pacienteId])
