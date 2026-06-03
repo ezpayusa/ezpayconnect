@@ -147,45 +147,51 @@ export function useWebAppChat(pacienteId: number | undefined) {
   useEffect(() => {
     if (!pacienteId) return
 
+    console.log('[Chat] Suscribiendo a realtime para paciente:', pacienteId)
+
     const channel = supabase
       .channel(`chat_paciente_${pacienteId}`)
       .on(
         'postgres_changes',
         {
-          event: '*',
+          event: 'INSERT',
           schema: 'public',
           table: 'chat_mensajes',
-          filter: `paciente_id=eq.${pacienteId}`,
         },
         (payload) => {
-          if (payload.eventType === 'INSERT') {
-            const nuevo = payload.new as any
-            setMensajes((prev) => {
-              // Evitar duplicados
-              if (prev.some((m) => m.id === nuevo.id)) return prev
-              return [
-                ...prev,
-                {
-                  id: nuevo.id,
-                  remitente: nuevo.remitente,
-                  mensaje: nuevo.mensaje,
-                  leido: nuevo.leido,
-                  created_at: nuevo.created_at,
-                },
-              ]
-            })
-            // Marcar como leído si es del médico
-            if (nuevo.remitente === 'medico') {
-              marcarComoLeidos()
-            }
+          console.log('[Chat] Evento realtime recibido:', payload)
+          const nuevo = payload.new as any
+          // Filtrar solo mensajes de este paciente
+          if (nuevo.paciente_id !== pacienteId) return
+
+          setMensajes((prev) => {
+            // Evitar duplicados
+            if (prev.some((m) => m.id === nuevo.id)) return prev
+            return [
+              ...prev,
+              {
+                id: nuevo.id,
+                remitente: nuevo.remitente,
+                mensaje: nuevo.mensaje,
+                leido: nuevo.leido,
+                created_at: nuevo.created_at,
+              },
+            ]
+          })
+          // Marcar como leído si es del médico
+          if (nuevo.remitente === 'medico') {
+            marcarComoLeidos()
           }
         }
       )
-      .subscribe()
+      .subscribe((status) => {
+        console.log('[Chat] Estado de suscripción:', status)
+      })
 
     channelRef.current = channel
 
     return () => {
+      console.log('[Chat] Desuscribiendo...')
       channel.unsubscribe()
     }
   }, [pacienteId, marcarComoLeidos])
