@@ -78,7 +78,9 @@ export interface RecetaItem {
   duracion: string | null
   instrucciones: string | null
   cantidad: number
-  farmacia_id: number | null  // <-- AGREGAR ESTA LÍNEA
+  farmacia_id: number | null
+  precio_unitario: number | null
+  stock_actual: number | null
 }
 export interface ExpedienteNota {
   id: number

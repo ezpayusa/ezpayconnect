@@ -123,10 +123,15 @@ export default function RecetasPage() {
   // ============================================================
   // NUEVO: Asignar una farmacia/laboratorio al item activo
   // ============================================================
-  const seleccionarFarmacia = (farmaciaId: number) => {
+  const seleccionarProveedor = (proveedor: any) => {
     if (itemIdxBuscando === null) return
     const newItems = [...items]
-    newItems[itemIdxBuscando] = { ...newItems[itemIdxBuscando], farmacia_id: farmaciaId }
+    newItems[itemIdxBuscando] = {
+      ...newItems[itemIdxBuscando],
+      farmacia_id: proveedor.farmacia?.id || null,
+      precio_unitario: proveedor.precio_unitario || null,
+      stock_actual: proveedor.stock_actual || null
+    }
     setItems(newItems)
     setShowFarmaciaModal(false)
     setShowLaboratorioModal(false)
@@ -185,7 +190,7 @@ export default function RecetasPage() {
                 type="button"
                 size="sm"
                 className="bg-[#1E5C8E] hover:bg-[#3A8ABF] shrink-0"
-                onClick={() => seleccionarFarmacia(r.farmacia.id)}
+                onClick={() => seleccionarProveedor(r)}
               >
                 Seleccionar
               </Button>
@@ -217,12 +222,8 @@ export default function RecetasPage() {
   }
 
   // Ver detalle de receta
-  const handleViewDetail = async (recetaId: number) => {
-    const data = await getRecetaCompleta(recetaId)
-    if (data.receta) {
-      setSelectedReceta(data)
-      setShowDetail(true)
-    }
+  const handleViewDetail = (recetaId: number) => {
+    navigate(`/recetas/${recetaId}`)
   }
 
   // Descargar PDF
@@ -688,7 +689,8 @@ export default function RecetasPage() {
                         telefono: ''
                       }
                       if (selectedReceta.receta && selectedReceta.paciente) {
-                        generarPDFReceta(selectedReceta.receta, selectedReceta.items, selectedReceta.paciente, medicoPerfil)
+                       console.log('Items para PDF:', selectedReceta.items) 
+                       generarPDFReceta(selectedReceta.receta, selectedReceta.items, selectedReceta.paciente, medicoPerfil)
                       } else {
                         alert('Faltan datos para generar el PDF')
                       }

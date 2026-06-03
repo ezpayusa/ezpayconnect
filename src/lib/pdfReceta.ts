@@ -1,5 +1,5 @@
 import { jsPDF } from 'jspdf'
-import 'jspdf-autotable'
+import autoTable from 'jspdf-autotable'
 import type { Receta, RecetaItem, Paciente, Perfil } from '@/types'
 
 function generarPDF(
@@ -91,72 +91,76 @@ function generarPDF(
   doc.text('Medicamentos Prescritos', 20, yPos)
   doc.line(20, yPos + 3, pageWidth - 20, yPos + 3)
 
-  const tableData = items.map((item, idx) => [
-    String(idx + 1),
-    item.nombre_medicamento,
-    item.dosis,
-    item.frecuencia,
-    item.duracion || 'Según indicación médica',
-    String(item.cantidad),
-    item.instrucciones || 'Tomar según prescripción'
-  ])
+  const tableData = items.map((item, idx) => {
+    const farmacia = item.farmacia
+    let farmaciaTexto = 'Sin farmacia asignada'
+    if (farmacia?.nombre) {
+      farmaciaTexto = farmacia.nombre
+      if (farmacia.direccion) farmaciaTexto += '\nDir: ' + farmacia.direccion
+      if (farmacia.telefono) farmaciaTexto += '\nTel: ' + farmacia.telefono
+    } else if (item.farmacia_id) {
+      farmaciaTexto = 'Farmacia #' + item.farmacia_id
+    }
+    // Mostrar precio si existe
+    if (item.precio_unitario) {
+      const total = item.cantidad * item.precio_unitario
+      farmaciaTexto += `\nPrecio: Q${item.precio_unitario.toFixed(2)}`
+      if (item.cantidad > 1) {
+        farmaciaTexto += ` (Total: Q${total.toFixed(2)})`
+      }
+    }
+    return [
+      String(idx + 1),
+      item.nombre_medicamento,
+      item.dosis,
+      item.frecuencia,
+      item.duracion || 'Según indicación médica',
+      String(item.cantidad),
+      item.instrucciones || 'Tomar según prescripción',
+      farmaciaTexto
+    ]
+  })
 
-  // Usar autoTable con el plugin importado
-  const autoTable = (doc as any).autoTable
-  if (typeof autoTable === 'function') {
-    autoTable({
-      startY: yPos + 8,
-      head: [['#', 'Medicamento', 'Dosis', 'Frecuencia', 'Duración', 'Cant.', 'Instrucciones']],
-      body: tableData,
-      theme: 'striped',
-      headStyles: {
-        fillColor: [30, 92, 142],
-        textColor: 255,
-        fontSize: 9,
-        fontStyle: 'bold',
-        halign: 'center'
-      },
-      bodyStyles: {
-        fontSize: 9,
-        textColor: 51,
-        cellPadding: 3
-      },
-      alternateRowStyles: {
-        fillColor: [232, 240, 248]
-      },
-      columnStyles: {
-        0: { cellWidth: 12, halign: 'center' },
-        1: { cellWidth: 'auto', fontStyle: 'bold' },
-        2: { cellWidth: 28, halign: 'center' },
-        3: { cellWidth: 32, halign: 'center' },
-        4: { cellWidth: 35, halign: 'center' },
-        5: { cellWidth: 15, halign: 'center' },
-        6: { cellWidth: 'auto' }
-      },
-      margin: { left: 20, right: 20 },
-      styles: {
-        overflow: 'linebreak',
-        cellWidth: 'wrap'
-      }
-    })
-  } else {
-    // Fallback si autoTable no está disponible
-    yPos += 15
-    items.forEach((item, idx) => {
-      doc.setFontSize(10)
-      doc.setFont('helvetica', 'bold')
-      doc.text(`${idx + 1}. ${item.nombre_medicamento}`, 20, yPos)
-      yPos += 7
-      doc.setFont('helvetica', 'normal')
-      doc.text(`   Dosis: ${item.dosis} | Frecuencia: ${item.frecuencia} | Duración: ${item.duracion || 'N/A'} | Cantidad: ${item.cantidad}`, 20, yPos)
-      yPos += 7
-      if (item.instrucciones) {
-        doc.text(`   Instrucciones: ${item.instrucciones}`, 20, yPos)
-        yPos += 7
-      }
-      yPos += 5
-    })
-  }
+  // Generar tabla con autoTable
+  autoTable(doc, {
+    startY: yPos + 8,
+    head: [['#', 'Medicamento', 'Dosis', 'Frec.', 'Duración', 'Cant.', 'Instrucciones', 'Farmacia']],
+    body: tableData,
+    theme: 'striped',
+    headStyles: {
+      fillColor: [30, 92, 142],
+      textColor: 255,
+      fontSize: 8,
+      fontStyle: 'bold',
+      halign: 'center',
+      valign: 'middle'
+    },
+    bodyStyles: {
+      fontSize: 8,
+      textColor: 51,
+      cellPadding: 2,
+      valign: 'middle'
+    },
+    alternateRowStyles: {
+      fillColor: [232, 240, 248]
+    },
+    columnStyles: {
+      0: { cellWidth: 8, halign: 'center' },
+      1: { cellWidth: 32, fontStyle: 'bold' },
+      2: { cellWidth: 18, halign: 'center' },
+      3: { cellWidth: 18, halign: 'center' },
+      4: { cellWidth: 20, halign: 'center' },
+      5: { cellWidth: 10, halign: 'center' },
+      6: { cellWidth: 32 },
+      7: { cellWidth: 28, fontStyle: 'bold' }
+    },
+    margin: { left: 15, right: 15 },
+    styles: {
+      overflow: 'linebreak',
+      cellWidth: 'wrap'
+    },
+    tableWidth: 'auto'
+  })
 
   // === INSTRUCCIONES GENERALES ===
   const finalY = (doc as any).lastAutoTable?.finalY || yPos + 60
@@ -219,13 +223,13 @@ export function generarPDFReceta(
   const nombreArchivo = `Receta_${paciente.nombre}_${paciente.apellido}_${new Date().toISOString().split('T')[0]}.pdf`
     .replace(/\s+/g, '_')
     .normalize('NFD')
-    .replace(/[\u0300-\u036f]/g, '')
+    .replace(/[̀-ͯ]/g, '')
 
   doc.save(nombreArchivo)
   return doc
 }
 
-// ✅ ABRIR PDF - Abre en nueva pestaña para imprimir manualmente
+// ✅ IMPRIMIR - Abre diálogo de impresión directamente sin descargar
 export function imprimirPDFReceta(
   receta: Receta,
   items: RecetaItem[],
@@ -234,25 +238,37 @@ export function imprimirPDFReceta(
 ) {
   const doc = generarPDF(receta, items, paciente, medico)
 
-  // Convertir a blob y crear URL
+  // Crear iframe invisible y disparar print() automáticamente
   const pdfBlob = doc.output('blob')
   const pdfUrl = URL.createObjectURL(pdfBlob)
+  const iframe = document.createElement('iframe')
+  iframe.style.position = 'fixed'
+  iframe.style.top = '-9999px'
+  iframe.style.left = '-9999px'
+  iframe.style.width = '1px'
+  iframe.style.height = '1px'
+  iframe.style.opacity = '0'
+  iframe.src = pdfUrl
+  document.body.appendChild(iframe)
 
-  // Abrir en nueva pestaña
-  const newWindow = window.open(pdfUrl, '_blank')
-
-  if (!newWindow) {
-    // Si el popup está bloqueado, descargar como fallback
-    alert('Por favor permite popups para abrir el PDF, o usa el botón de Descargar')
-    const nombreArchivo = `Receta_${paciente.nombre}_${paciente.apellido}_${new Date().toISOString().split('T')[0]}.pdf`
-      .replace(/\s+/g, '_')
-      .normalize('NFD')
-      .replace(/[\u0300-\u036f]/g, '')
-    doc.save(nombreArchivo)
+  // Esperar a que cargue el PDF e imprimir
+  const doPrint = () => {
+    try {
+      iframe.contentWindow?.print()
+    } catch (e) {
+      console.error('Error imprimiendo:', e)
+    }
   }
 
-  // Limpiar URL después de un tiempo
-  setTimeout(() => URL.revokeObjectURL(pdfUrl), 60000)
+  iframe.onload = doPrint
+  // Fallback por si onload no se dispara en algunos navegadores
+  setTimeout(doPrint, 1000)
+
+  // Limpiar después de un tiempo
+  setTimeout(() => {
+    if (iframe.parentNode) document.body.removeChild(iframe)
+    URL.revokeObjectURL(pdfUrl)
+  }, 120000)
 
   return doc
 }

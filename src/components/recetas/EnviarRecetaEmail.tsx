@@ -87,12 +87,31 @@ export default function EnviarRecetaEmail({
               <p className="text-sm font-medium text-[#1a2a3a]">Medicamentos ({medicamentos.length})</p>
               {medicamentos.slice(0, 3).map((med, i) => (
                 <p key={i} className="text-xs text-[#8a9aaa]">
-                  {i + 1}. {med.nombre_medicamento} - {med.dosis}
-                </p>
+  {i + 1}. {med.nombre_medicamento} - {med.dosis}
+  {med.farmacia?.nombre && (
+    <span className="text-green-600 ml-1">→ {med.farmacia.nombre}</span>
+  )}
+  {med.farmacia?.direccion && (
+    <span className="text-[#8a9aaa] ml-1">({med.farmacia.direccion})</span>
+  )}
+</p>
               ))}
               {medicamentos.length > 3 && (
                 <p className="text-xs text-[#8a9aaa]">... y {medicamentos.length - 3} más</p>
               )}
+              {/* Farmacias asignadas */}
+{medicamentos.some((med: any) => med.farmacia?.nombre) && (
+  <div className="mt-2 pt-2 border-t border-[#1E5C8E]/20">
+    <p className="text-xs font-medium text-[#1E5C8E]">Farmacias asignadas:</p>
+    {medicamentos
+      .filter((med: any) => med.farmacia?.nombre)
+      .map((med: any, i: number) => (
+        <p key={`farm-${i}`} className="text-xs text-green-700">
+          • {med.farmacia.nombre} {med.farmacia.direccion && `(${med.farmacia.direccion})`}
+        </p>
+      ))}
+  </div>
+)}
             </div>
           )}
 

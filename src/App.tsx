@@ -13,6 +13,7 @@ import PacientesPage from '@/pages/PacientesPage'
 import PacienteDetallePage from '@/pages/PacienteDetallePage'
 import CitasPage from '@/pages/CitasPage'
 import RecetasPage from '@/pages/RecetasPage'
+import RecetaDetallePage from '@/pages/RecetaDetallePage'
 import FarmaciasPage from '@/pages/FarmaciasPage'
 import DispensarRecetaPage from '@/pages/DispensarRecetaPage'
 import ConfiguracionPage from '@/pages/ConfiguracionPage'
@@ -100,6 +101,7 @@ function App() {
         <Route path="/pacientes/:id" element={<PrivateLayout><PacientesPage /></PrivateLayout>} />
         <Route path="/citas" element={<PrivateLayout><CitasPage /></PrivateLayout>} />
         <Route path="/recetas" element={<PrivateLayout><RecetasPage /></PrivateLayout>} />
+        <Route path="/recetas/:id" element={<PrivateLayout><RecetaDetallePage /></PrivateLayout>} />
         <Route path="/facturas" element={<PrivateLayout><FacturasPage /></PrivateLayout>} />
         <Route path="/farmacias" element={<PrivateLayout><FarmaciasPage /></PrivateLayout>} />
         <Route path="/buscar-medicamentos" element={<PrivateLayout><BuscarMedicamentosPage /></PrivateLayout>} />

@@ -73,7 +73,9 @@ export function useRecetas() {
         duracion: i.duracion || null,
         instrucciones: i.instrucciones || null,
         cantidad: i.cantidad || 1,
-        farmacia_id: i.farmacia_id || null
+        farmacia_id: i.farmacia_id || null,
+        precio_unitario: i.precio_unitario || null,
+        stock_actual: i.stock_actual || null
       }))
       const { error: itemsError } = await supabase.from('receta_items').insert(itemsConReceta)
       if (itemsError) {
@@ -96,7 +98,7 @@ export function useRecetas() {
       .from('recetas')
       .select(`*, pacientes(*)`)
       .eq('id', id)
-      .single()
+      .maybeSingle()
 
     if (recetaError || !receta) {
       console.error('Error fetching receta:', recetaError)
