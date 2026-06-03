@@ -30,12 +30,14 @@ export function useWebAppCampanas(pacienteId: number | undefined, perfil: any) {
         // Filtro por género
         if (c.genero_filtro && perfil.genero !== c.genero_filtro) return false
 
-        // Filtro por edad
+        // Filtro por edad (solo si el paciente tiene fecha de nacimiento)
         if (c.edad_min || c.edad_max) {
-          if (!perfil.fecha_nacimiento) return false
-          const edad = calcularEdad(perfil.fecha_nacimiento)
-          if (c.edad_min && edad < c.edad_min) return false
-          if (c.edad_max && edad > c.edad_max) return false
+          if (perfil.fecha_nacimiento) {
+            const edad = calcularEdad(perfil.fecha_nacimiento)
+            if (c.edad_min && edad < c.edad_min) return false
+            if (c.edad_max && edad > c.edad_max) return false
+          }
+          // Si no tiene fecha_nacimiento, no filtrar por edad
         }
 
         // Filtro por condición (alergias/notas contienen la condición)
