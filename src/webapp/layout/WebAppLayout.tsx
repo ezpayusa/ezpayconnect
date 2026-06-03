@@ -1,7 +1,8 @@
 import { Outlet } from 'react-router-dom'
 import WebAppSidebar from './WebAppSidebar'
 import { useWebAppAuth } from '@/webapp/hooks/useWebAppAuth'
-import { Bell, Menu } from 'lucide-react'
+import NotificacionesDropdown from '@/webapp/components/NotificacionesDropdown'
+import { Menu } from 'lucide-react'
 import { useState } from 'react'
 
 export default function WebAppLayout() {
@@ -21,14 +22,7 @@ export default function WebAppLayout() {
           <span className="font-semibold text-slate-800 text-sm">EzPayConnect</span>
         </div>
         <div className="flex items-center gap-3">
-          <button className="relative p-2 text-slate-500">
-            <Bell className="h-5 w-5" />
-            {notificacionesNoLeidas > 0 && (
-              <span className="absolute top-1 right-1 h-4 w-4 bg-red-500 rounded-full text-white text-[10px] flex items-center justify-center">
-                {notificacionesNoLeidas}
-              </span>
-            )}
-          </button>
+          <NotificacionesDropdown />
         </div>
       </header>
 
@@ -38,14 +32,7 @@ export default function WebAppLayout() {
           {perfil ? `Hola, ${perfil.nombre}` : 'Portal del Paciente'}
         </h2>
         <div className="flex items-center gap-4">
-          <button className="relative p-2 text-slate-500 hover:bg-slate-100 rounded-lg transition-colors">
-            <Bell className="h-5 w-5" />
-            {notificacionesNoLeidas > 0 && (
-              <span className="absolute top-1 right-1 h-4 w-4 bg-red-500 rounded-full text-white text-[10px] flex items-center justify-center">
-                {notificacionesNoLeidas}
-              </span>
-            )}
-          </button>
+          <NotificacionesDropdown />
           <div className="flex items-center gap-3">
             <div className="w-9 h-9 rounded-full bg-gradient-to-br from-sky-500 to-indigo-500 flex items-center justify-center text-white font-semibold text-sm">
               {perfil ? `${perfil.nombre?.charAt(0)}${perfil.apellido?.charAt(0)}` : '?'}
