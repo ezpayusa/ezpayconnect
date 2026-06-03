@@ -1,7 +1,7 @@
 import { useState } from 'react'
 import { useWebAppAuth } from '@/webapp/hooks/useWebAppAuth'
 import { supabase } from '@/lib/supabase'
-import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
+import { Card, CardContent } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
@@ -11,8 +11,30 @@ import {
 } from 'lucide-react'
 import { toast } from 'sonner'
 
+// Componente de campo de formulario (definido FUERA para evitar re-renders)
+function CampoPerfil({ icon: Icon, label, value, editando, editValue, onChange, type = 'text' }: any) {
+  return (
+    <div className="space-y-1.5">
+      <Label className="text-xs text-slate-500 flex items-center gap-1.5">
+        <Icon className="h-3.5 w-3.5" />
+        {label}
+      </Label>
+      {editando ? (
+        <Input
+          type={type}
+          value={editValue}
+          onChange={(e) => onChange?.(e.target.value)}
+          className="h-9 text-sm"
+        />
+      ) : (
+        <p className="text-sm text-slate-700">{value || 'No registrado'}</p>
+      )}
+    </div>
+  )
+}
+
 export default function WebAppPerfil() {
-  const { perfil, logout } = useWebAppAuth()
+  const { perfil } = useWebAppAuth()
   const [editando, setEditando] = useState(false)
   const [guardando, setGuardando] = useState(false)
   const [form, setForm] = useState({
@@ -51,7 +73,6 @@ export default function WebAppPerfil() {
       if (error) throw error
       toast.success('Perfil actualizado correctamente')
       setEditando(false)
-      // Recargar página para ver cambios
       window.location.reload()
     } catch (err: any) {
       toast.error('Error al guardar: ' + err.message)
@@ -75,25 +96,6 @@ export default function WebAppPerfil() {
     })
     setEditando(false)
   }
-
-  const InfoItem = ({ icon: Icon, label, value, editValue, onChange, type = 'text' }: any) => (
-    <div className="space-y-1.5">
-      <Label className="text-xs text-slate-500 flex items-center gap-1.5">
-        <Icon className="h-3.5 w-3.5" />
-        {label}
-      </Label>
-      {editando ? (
-        <Input
-          type={type}
-          value={editValue}
-          onChange={(e) => onChange?.(e.target.value)}
-          className="h-9 text-sm"
-        />
-      ) : (
-        <p className="text-sm text-slate-700">{value || 'No registrado'}</p>
-      )}
-    </div>
-  )
 
   return (
     <div className="space-y-6 max-w-2xl">
@@ -135,54 +137,61 @@ export default function WebAppPerfil() {
 
           <div className="space-y-5">
             <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-              <InfoItem
+              <CampoPerfil
                 icon={User}
                 label="Nombre"
                 value={perfil?.nombre}
+                editando={editando}
                 editValue={form.nombre}
                 onChange={(v: string) => setForm({ ...form, nombre: v })}
               />
-              <InfoItem
+              <CampoPerfil
                 icon={User}
                 label="Apellido"
                 value={perfil?.apellido}
+                editando={editando}
                 editValue={form.apellido}
                 onChange={(v: string) => setForm({ ...form, apellido: v })}
               />
-              <InfoItem
+              <CampoPerfil
                 icon={Mail}
                 label="Email"
                 value={perfil?.email}
+                editando={editando}
                 editValue={perfil?.email || ''}
               />
-              <InfoItem
+              <CampoPerfil
                 icon={Phone}
                 label="Teléfono"
                 value={perfil?.telefono}
+                editando={editando}
                 editValue={form.telefono}
                 onChange={(v: string) => setForm({ ...form, telefono: v })}
               />
-              <InfoItem
+              <CampoPerfil
                 icon={Calendar}
                 label="Fecha de nacimiento"
                 value={perfil?.fecha_nacimiento ? new Date(perfil.fecha_nacimiento).toLocaleDateString('es-GT') : ''}
+                editando={editando}
                 editValue={form.fecha_nacimiento}
                 onChange={(v: string) => setForm({ ...form, fecha_nacimiento: v })}
                 type="date"
               />
-              <InfoItem
+              <CampoPerfil
                 icon={User}
                 label="Género"
                 value={perfil?.genero}
+                editando={editando}
                 editValue={form.genero}
                 onChange={(v: string) => setForm({ ...form, genero: v })}
               />
             </div>
 
-            <InfoItem
+            <CampoPerfil
               icon={MapPin}
               label="Dirección"
               value={perfil?.direccion}
+              editando={editando}
               editValue={form.direccion}
               onChange={(v: string) => setForm({ ...form, direccion: v })}
             />
@@ -196,19 +205,21 @@ export default function WebAppPerfil() {
                 </div>
               </div>
             ) : (
-              <InfoItem
+              <CampoPerfil
                 icon={AlertTriangle}
                 label="Alergias"
                 value={perfil?.alergias}
+                editando={editando}
                 editValue={form.alergias}
                 onChange={(v: string) => setForm({ ...form, alergias: v })}
               />
             )}
 
-            <InfoItem
+            <CampoPerfil
               icon={Heart}
               label="Notas médicas"
               value={perfil?.notas}
+              editando={editando}
               editValue={form.notas}
               onChange={(v: string) => setForm({ ...form, notas: v })}
             />
@@ -219,17 +230,19 @@ export default function WebAppPerfil() {
                 Contacto de emergencia
               </h3>
               <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                <InfoItem
+                <CampoPerfil
                   icon={User}
                   label="Nombre"
                   value={perfil?.emergencia_nombre}
+                  editando={editando}
                   editValue={form.emergencia_nombre}
                   onChange={(v: string) => setForm({ ...form, emergencia_nombre: v })}
                 />
-                <InfoItem
+                <CampoPerfil
                   icon={Phone}
                   label="Teléfono"
                   value={perfil?.emergencia_telefono}
+                  editando={editando}
                   editValue={form.emergencia_telefono}
                   onChange={(v: string) => setForm({ ...form, emergencia_telefono: v })}
                 />
