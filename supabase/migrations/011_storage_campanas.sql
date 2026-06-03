@@ -9,7 +9,7 @@ VALUES (
   'campanas',
   true,
   false,
-  5242880, -- 5MB
+  5242880,
   ARRAY['image/jpeg', 'image/png', 'image/webp', 'image/gif', 'image/svg+xml']
 )
 ON CONFLICT (id) DO UPDATE SET
@@ -18,20 +18,38 @@ ON CONFLICT (id) DO UPDATE SET
   allowed_mime_types = ARRAY['image/jpeg', 'image/png', 'image/webp', 'image/gif', 'image/svg+xml'];
 
 -- 2. Políticas RLS para el bucket
--- Permitir a usuarios autenticados subir imágenes
-CREATE POLICY IF NOT EXISTS "Usuarios autenticados pueden subir campanas"
-  ON storage.objects
-  FOR INSERT
-  WITH CHECK (bucket_id = 'campanas' AND auth.role() = 'authenticated');
+DO $$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_policies WHERE policyname = 'Usuarios autenticados pueden subir campanas' AND tablename = 'objects' AND schemaname = 'storage'
+  ) THEN
+    CREATE POLICY "Usuarios autenticados pueden subir campanas"
+      ON storage.objects
+      FOR INSERT
+      WITH CHECK (bucket_id = 'campanas' AND auth.role() = 'authenticated');
+  END IF;
+END $$;
 
--- Permitir a usuarios autenticados eliminar imágenes
-CREATE POLICY IF NOT EXISTS "Usuarios autenticados pueden eliminar campanas"
-  ON storage.objects
-  FOR DELETE
-  USING (bucket_id = 'campanas' AND auth.role() = 'authenticated');
+DO $$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_policies WHERE policyname = 'Usuarios autenticados pueden eliminar campanas' AND tablename = 'objects' AND schemaname = 'storage'
+  ) THEN
+    CREATE POLICY "Usuarios autenticados pueden eliminar campanas"
+      ON storage.objects
+      FOR DELETE
+      USING (bucket_id = 'campanas' AND auth.role() = 'authenticated');
+  END IF;
+END $$;
 
--- Permitir lectura pública de imágenes
-CREATE POLICY IF NOT EXISTS "Lectura pública de campanas"
-  ON storage.objects
-  FOR SELECT
-  USING (bucket_id = 'campanas');
+DO $$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_policies WHERE policyname = 'Lectura pública de campanas' AND tablename = 'objects' AND schemaname = 'storage'
+  ) THEN
+    CREATE POLICY "Lectura pública de campanas"
+      ON storage.objects
+      FOR SELECT
+      USING (bucket_id = 'campanas');
+  END IF;
+END $$;

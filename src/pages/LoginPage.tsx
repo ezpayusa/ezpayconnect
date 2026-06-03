@@ -1,6 +1,7 @@
 import { useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useAuth } from '@/hooks/useAuth'
+import { supabase } from '@/lib/supabase'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
@@ -36,8 +37,27 @@ export default function LoginPage() {
       }
     } else {
       const { error } = await login(email, password)
-      if (error) setError(error.message)
-      else navigate('/dashboard')
+      if (error) {
+        setError(error.message)
+      } else {
+        // Verificar rol para redirigir al panel correcto
+        const { data: { user } } = await supabase.auth.getUser()
+        if (user) {
+          const { data: profile } = await supabase
+            .from('perfiles')
+            .select('rol')
+            .eq('id', user.id)
+            .single()
+          const adminRoles = ['super_admin', 'admin_pais', 'admin_finanzas', 'admin_soporte', 'admin_ventas']
+          if (profile?.rol && adminRoles.includes(profile.rol)) {
+            navigate('/admin-ezpay')
+          } else {
+            navigate('/dashboard')
+          }
+        } else {
+          navigate('/dashboard')
+        }
+      }
     }
     setLoading(false)
   }
