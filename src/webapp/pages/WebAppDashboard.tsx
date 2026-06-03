@@ -26,6 +26,7 @@ export default function WebAppDashboard() {
       case 'agendada': return <Badge variant="outline" className="bg-sky-50 text-sky-700 border-sky-200">Agendada</Badge>
       case 'confirmada': return <Badge variant="outline" className="bg-emerald-50 text-emerald-700 border-emerald-200">Confirmada</Badge>
       case 'en_curso': return <Badge variant="outline" className="bg-amber-50 text-amber-700 border-amber-200">En curso</Badge>
+      case 'pendiente': return <Badge variant="outline" className="bg-yellow-50 text-yellow-700 border-yellow-200">Pendiente</Badge>
       default: return <Badge variant="outline">{estado}</Badge>
     }
   }

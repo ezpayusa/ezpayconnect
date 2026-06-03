@@ -24,7 +24,7 @@ export interface CitaPaciente {
   hora_inicio: string
   hora_fin: string | null
   motivo: string | null
-  estado: 'agendada' | 'confirmada' | 'en_curso' | 'completada' | 'cancelada' | 'no_show'
+  estado: 'agendada' | 'confirmada' | 'en_curso' | 'completada' | 'cancelada' | 'no_show' | 'pendiente'
   medico_nombre?: string
   medico_especialidad?: string
   notas?: string | null

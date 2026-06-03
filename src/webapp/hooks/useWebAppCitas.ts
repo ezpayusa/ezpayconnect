@@ -49,7 +49,7 @@ export function useWebAppCitas(pacienteId: number | undefined) {
         hora_inicio: c.hora_inicio,
         hora_fin: c.hora_fin,
         motivo: c.motivo,
-        estado: c.estado,
+        estado: c.estado as any,
         medico_nombre: medicosMap[c.medico_id] || 'Médico asignado',
         medico_especialidad: undefined,
         notas: c.notas,
@@ -70,13 +70,13 @@ export function useWebAppCitas(pacienteId: number | undefined) {
   }, [fetchCitas])
 
   const proximas = citas.filter((c) =>
-    ['agendada', 'confirmada', 'en_curso'].includes(c.estado)
+    ['agendada', 'confirmada', 'en_curso', 'pendiente'].includes(c.estado)
   )
   const pasadas = citas.filter((c) =>
     ['completada'].includes(c.estado)
   )
   const canceladas = citas.filter((c) =>
-    c.estado === 'cancelada'
+    ['cancelada', 'no_show'].includes(c.estado)
   )
 
   return { citas, proximas, pasadas, canceladas, loading, error, refetch: fetchCitas }
