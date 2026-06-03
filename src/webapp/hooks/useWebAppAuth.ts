@@ -8,23 +8,35 @@ export function useWebAppAuth() {
   const [loading, setLoading] = useState(true)
   const [notificacionesNoLeidas, setNotificacionesNoLeidas] = useState(0)
 
-  const fetchPerfil = useCallback(async (userId: string) => {
-    // Buscar paciente vinculado al usuario de auth
-    const { data } = await supabase
+  const fetchPerfil = useCallback(async (userId: string, userEmail?: string) => {
+    // 1. Intentar buscar por auth_user_id (después de migración)
+    let { data, error } = await supabase
       .from('pacientes')
       .select('*')
       .eq('auth_user_id', userId)
-      .single()
+      .maybeSingle()
+
+    // 2. Fallback: buscar por email si auth_user_id no existe o no hay match
+    if ((!data || error) && userEmail) {
+      const { data: dataByEmail } = await supabase
+        .from('pacientes')
+        .select('*')
+        .eq('email', userEmail)
+        .maybeSingle()
+      data = dataByEmail
+    }
 
     if (data) {
       setPerfil(data as PacientePerfil)
-      // Contar notificaciones no leídas
+      // Contar notificaciones no leídas (ignorar error si tabla no existe)
       const { count } = await supabase
         .from('notificaciones_pacientes')
         .select('*', { count: 'exact', head: true })
         .eq('paciente_id', data.id)
         .eq('leida', false)
       setNotificacionesNoLeidas(count || 0)
+    } else {
+      setPerfil(null)
     }
   }, [])
 
@@ -32,7 +44,7 @@ export function useWebAppAuth() {
     const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, session) => {
       setUser(session?.user || null)
       if (session?.user) {
-        fetchPerfil(session.user.id)
+        fetchPerfil(session.user.id, session.user.email || undefined)
       } else {
         setPerfil(null)
       }
@@ -43,7 +55,7 @@ export function useWebAppAuth() {
     supabase.auth.getSession().then(({ data: { session } }) => {
       setUser(session?.user || null)
       if (session?.user) {
-        fetchPerfil(session.user.id)
+        fetchPerfil(session.user.id, session.user.email || undefined)
       }
       setLoading(false)
     })
