@@ -65,6 +65,7 @@ export interface Receta {
   estado: 'activa' | 'completada' | 'vencida' | 'cancelada'
   instrucciones_generales: string | null
   pdf_url: string | null
+  codigo_qr: string | null
   created_at: string
 }
 

@@ -54,11 +54,15 @@ export function useRecetas() {
         return { error: 'Todos los medicamentos deben tener dosis y frecuencia' }
       }
     }
+    // Generar código QR único para dispensación
+    const codigoQR = `EZP-${Date.now()}-${Math.random().toString(36).substring(2, 8).toUpperCase()}`
+
     const { data: recetaData, error } = await supabase.from('recetas').insert({
       paciente_id: receta.paciente_id,
       instrucciones_generales: receta.instrucciones_generales || null,
       medico_id: user.id,
-      estado: 'activa'
+      estado: 'activa',
+      codigo_qr: codigoQR
     }).select().single()
     if (error || !recetaData) {
       return { data: null, error: `Error al crear receta: ${error?.message || 'Error desconocido'}` }
@@ -138,6 +142,35 @@ if (itemsConFarmacia.length > 0) {
     }))
   }
 }
+
+  // Fallback: si items no tienen precio_unitario, buscar en farmacia_medicamentos
+  const itemsSinPrecio = itemsConFarmacia.filter((i: any) => i.farmacia_id && !i.precio_unitario)
+  if (itemsSinPrecio.length > 0) {
+    const farmaciaIdsUnicos = [...new Set(itemsSinPrecio.map((i: any) => i.farmacia_id))]
+    const nombresMedicamentos = [...new Set(itemsSinPrecio.map((i: any) => i.nombre_medicamento))]
+    
+    const { data: inventarioData } = await supabase
+      .from('farmacia_medicamentos')
+      .select('farmacia_id, nombre_medicamento, precio_unitario, stock_actual')
+      .in('farmacia_id', farmaciaIdsUnicos)
+      .in('nombre_medicamento', nombresMedicamentos)
+    
+    const inventarioMap = (inventarioData || []).reduce((acc: any, inv: any) => {
+      const key = `${inv.farmacia_id}_${inv.nombre_medicamento}`
+      acc[key] = inv
+      return acc
+    }, {} as Record<string, any>)
+    
+    itemsConFarmacia = itemsConFarmacia.map((item: any) => {
+      if (item.precio_unitario || !item.farmacia_id) return item
+      const key = `${item.farmacia_id}_${item.nombre_medicamento}`
+      const inv = inventarioMap[key]
+      if (inv) {
+        return { ...item, precio_unitario: inv.precio_unitario, stock_actual: inv.stock_actual }
+      }
+      return item
+    })
+  }
 
 return { 
   receta, 

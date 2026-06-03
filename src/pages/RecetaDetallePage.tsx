@@ -86,17 +86,11 @@ export default function RecetaDetallePage() {
     cargarReceta()
   }, [recetaId, getRecetaCompleta])
 
-  // === QR URL con farmacia_id ===
+  // === QR URL para dispensar receta en farmacia ===
   const getQRUrl = () => {
     if (!receta) return ''
-    const itemConFarmacia = receta.items?.find((item: any) => item.farmacia_id || item.farmacia?.id)
-    const farmaciaId = itemConFarmacia?.farmacia_id || itemConFarmacia?.farmacia?.id
-
-    let url = `https://med.ezpayconnect.com/recetas/${receta.id}`
-    if (farmaciaId) {
-      url += `?farmacia_id=${farmaciaId}`
-    }
-    return url
+    const codigo = receta.codigo_qr || `EZP-${receta.id}`
+    return `https://med.ezpayconnect.com/dispensar-receta?codigo=${codigo}`
   }
 
   // === HANDLERS ===
