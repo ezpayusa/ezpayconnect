@@ -67,21 +67,8 @@ export default function WebAppChat() {
         </div>
       )}
 
-      {/* Sin médico asignado */}
-      {!loading && !medicoId && !error && (
-        <Card className="bg-white border-slate-100 shrink-0">
-          <CardContent className="p-6 text-center">
-            <Stethoscope className="h-12 w-12 text-slate-300 mx-auto mb-3" />
-            <p className="text-slate-500">No tienes un médico asignado aún.</p>
-            <p className="text-sm text-slate-400 mt-1">
-              Agenda una cita primero para chatear con tu médico.
-            </p>
-          </CardContent>
-        </Card>
-      )}
-
       {/* Chat */}
-      {medicoId && (
+      {!loading && (
         <>
           {/* Mensajes */}
           <div
