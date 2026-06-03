@@ -19,6 +19,18 @@ import DispensarRecetaPage from '@/pages/DispensarRecetaPage'
 import ConfiguracionPage from '@/pages/ConfiguracionPage'
 import FacturasPage from '@/pages/FacturasPage'
 
+// === IMPORTS PORTAL PACIENTE ===
+import WebAppLayout from '@/webapp/layout/WebAppLayout'
+import WebAppLoginPage from '@/webapp/pages/WebAppLoginPage'
+import WebAppRegistroPage from '@/webapp/pages/WebAppRegistroPage'
+import WebAppDashboard from '@/webapp/pages/WebAppDashboard'
+import WebAppCitas from '@/webapp/pages/WebAppCitas'
+import WebAppRecetas from '@/webapp/pages/WebAppRecetas'
+import WebAppExamenes from '@/webapp/pages/WebAppExamenes'
+import WebAppHistorial from '@/webapp/pages/WebAppHistorial'
+import WebAppChat from '@/webapp/pages/WebAppChat'
+import WebAppPerfil from '@/webapp/pages/WebAppPerfil'
+
 // === IMPORTS ADMIN EZPAY ===
 import { useEffect } from 'react'
 import { AdminLayout } from '@/components/admin-ezpay/layout/AdminLayout'
@@ -107,6 +119,20 @@ function App() {
         <Route path="/buscar-medicamentos" element={<PrivateLayout><BuscarMedicamentosPage /></PrivateLayout>} />
         <Route path="/dispensar-receta" element={<PrivateLayout><DispensarRecetaPage /></PrivateLayout>} />
         <Route path="/configuracion" element={<PrivateLayout><ConfiguracionPage /></PrivateLayout>} />
+
+        {/* === RUTAS PORTAL DEL PACIENTE === */}
+        <Route path="/paciente/login" element={<WebAppLoginPage />} />
+        <Route path="/paciente/registro" element={<WebAppRegistroPage />} />
+        <Route path="/paciente" element={<WebAppLayout />}>
+          <Route index element={<Navigate to="/paciente/dashboard" replace />} />
+          <Route path="dashboard" element={<WebAppDashboard />} />
+          <Route path="citas" element={<WebAppCitas />} />
+          <Route path="recetas" element={<WebAppRecetas />} />
+          <Route path="examenes" element={<WebAppExamenes />} />
+          <Route path="historial" element={<WebAppHistorial />} />
+          <Route path="chat" element={<WebAppChat />} />
+          <Route path="perfil" element={<WebAppPerfil />} />
+        </Route>
 
         {/* === RUTAS PLANES (PÚBLICAS / LANDING) === */}
         <Route path="/planes" element={<PlanesPage />} />
