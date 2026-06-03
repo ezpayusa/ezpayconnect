@@ -6,6 +6,7 @@ import { useCitas } from '@/hooks/useCitas'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
 import { Users, CalendarDays, FileText, Pill, Activity, TrendingUp, Filter, ArrowRight } from 'lucide-react'
+import BannerPublicidadGlobal from '@/webapp/components/BannerPublicidadGlobal'
 
 export default function DashboardPage() {
   const navigate = useNavigate()
@@ -511,6 +512,9 @@ export default function DashboardPage() {
             </CardContent>
           </Card>
         </div>
+
+        {/* Banner Publicitario */}
+        <BannerPublicidadGlobal />
 
         {/* Fila 4: Diagnósticos */}
         <Card>
