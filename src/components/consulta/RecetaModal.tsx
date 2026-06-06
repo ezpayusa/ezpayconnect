@@ -47,6 +47,7 @@ export default function RecetaModal({ open, onOpenChange, pacienteIdPreseleccion
   const [saving, setSaving] = useState(false)
   const [formError, setFormError] = useState('')
   const [searchMed, setSearchMed] = useState('')
+  const [alertasMedicamentos, setAlertasMedicamentos] = useState<{idx: number; mensaje: string; tipo: 'alergia' | 'interaccion'}[]>([])
 
   // Modales farmacia/laboratorio
   const [showFarmaciaModal, setShowFarmaciaModal] = useState(false)
@@ -71,13 +72,40 @@ export default function RecetaModal({ open, onOpenChange, pacienteIdPreseleccion
     }
   }, [open, pacienteIdPreseleccionado])
 
+  const verificarAlertas = (nombreMed: string, idx: number) => {
+    const nuevasAlertas: {idx: number; mensaje: string; tipo: 'alergia' | 'interaccion'}[] = []
+    const nombreLower = nombreMed.toLowerCase()
+
+    // Verificar alergias
+    if (pacienteSeleccionado?.alergias) {
+      const alergias = pacienteSeleccionado.alergias.toLowerCase().split(/[,;]/).map(a => a.trim()).filter(Boolean)
+      for (const alergia of alergias) {
+        if (alergia.length > 2 && nombreLower.includes(alergia)) {
+          nuevasAlertas.push({ idx, mensaje: `⚠️ El medicamento contiene "${alergia}". El paciente tiene alergia registrada a: ${pacienteSeleccionado.alergias}`, tipo: 'alergia' })
+        }
+      }
+    }
+
+    // Verificar medicamentos en uso (recordatorio, no alerta estricta)
+    if (pacienteSeleccionado?.medicamentos_en_uso) {
+      nuevasAlertas.push({ idx, mensaje: `💊 Paciente toma: ${pacienteSeleccionado.medicamentos_en_uso}. Verificar interacciones.`, tipo: 'interaccion' })
+    }
+
+    if (nuevasAlertas.length > 0) {
+      setAlertasMedicamentos(prev => [...prev, ...nuevasAlertas])
+    }
+  }
+
   const handleAddMedicamento = (med: typeof medicamentos[0]) => {
-    setItems([...items, {
+    const nuevoItem = {
       medicamento_id: med.id,
       nombre_medicamento: med.nombre_generico + (med.nombre_comercial ? ` (${med.nombre_comercial})` : ''),
       dosis: '', frecuencia: '', duracion: '', instrucciones: '', cantidad: 1,
       farmacia_id: null
-    }])
+    }
+    const newIdx = items.length
+    setItems([...items, nuevoItem])
+    verificarAlertas(nuevoItem.nombre_medicamento, newIdx)
   }
 
   const updateItem = (idx: number, field: string, value: string | number) => {
@@ -218,6 +246,8 @@ export default function RecetaModal({ open, onOpenChange, pacienteIdPreseleccion
 
   const pacienteSeleccionado = pacientes.find(p => String(p.id) === form.paciente_id)
 
+  const alertasPorItem = (idx: number) => alertasMedicamentos.filter(a => a.idx === idx)
+
   return (
     <>
       <Dialog open={open} onOpenChange={onOpenChange}>
@@ -291,6 +321,15 @@ export default function RecetaModal({ open, onOpenChange, pacienteIdPreseleccion
                 {items.map((item, idx) => (
                   <Card key={idx} className="bg-[#e8f0f8]">
                     <CardContent className="p-4 space-y-3">
+                      {/* Alertas del medicamento */}
+                      {alertasPorItem(idx).map((alerta, i) => (
+                        <div key={i} className={`p-2 rounded text-xs flex items-start gap-2 ${
+                          alerta.tipo === 'alergia' ? 'bg-red-100 text-red-700 border border-red-200' : 'bg-amber-50 text-amber-700 border border-amber-200'
+                        }`}>
+                          <AlertCircle className="h-3 w-3 shrink-0 mt-0.5" />
+                          <span>{alerta.mensaje}</span>
+                        </div>
+                      ))}
                       <div className="flex items-center justify-between">
                         <p className="font-medium text-sm text-[#1E5C8E]">{item.nombre_medicamento}</p>
                         <Button type="button" variant="ghost" size="sm" onClick={() => removeItem(idx)}>
