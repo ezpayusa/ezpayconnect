@@ -18,7 +18,16 @@ import {
   QrCode,
   Download,
   Bell,
-  X
+  X,
+  Activity,
+  ClipboardList,
+  HeartPulse,
+  Thermometer,
+  Scale,
+  Ruler,
+  Droplets,
+  Gauge,
+  Wind,
 } from 'lucide-react'
 
 interface Paciente {
@@ -60,11 +69,13 @@ export default function PacienteDetallePage() {
   const { id } = useParams<{ id: string }>()
   const navigate = useNavigate()
   const { user } = useAuth()
-  const [activeTab, setActiveTab] = useState<'info' | 'historial' | 'recetas' | 'citas'>('info')
+  const [activeTab, setActiveTab] = useState<'info' | 'historial' | 'consultas' | 'signos_vitales' | 'recetas' | 'citas'>('info')
   const [paciente, setPaciente] = useState<Paciente | null>(null)
   const [historial, setHistorial] = useState<HistorialEvento[]>([])
   const [recetas, setRecetas] = useState<RecetaAvanzada[]>([])
   const [citas, setCitas] = useState<Cita[]>([])
+  const [consultas, setConsultas] = useState<any[]>([])
+  const [signosVitales, setSignosVitales] = useState<any[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
 
@@ -78,6 +89,8 @@ export default function PacienteDetallePage() {
       cargarHistorial()
       cargarRecetas()
       cargarCitas()
+      cargarConsultas()
+      cargarSignosVitales()
     }
   }, [id])
 
@@ -123,6 +136,25 @@ export default function PacienteDetallePage() {
       .eq('paciente_id', id)
       .order('fecha', { ascending: false })
     setCitas(data || [])
+  }
+
+  const cargarConsultas = async () => {
+    const { data } = await supabase
+      .from('expediente_notas')
+      .select('*, perfiles(nombre_completo)')
+      .eq('paciente_id', id)
+      .order('created_at', { ascending: false })
+    setConsultas(data || [])
+  }
+
+  const cargarSignosVitales = async () => {
+    const { data } = await supabase
+      .from('signos_vitales')
+      .select('*')
+      .eq('paciente_id', id)
+      .order('fecha_toma', { ascending: false })
+      .limit(20)
+    setSignosVitales(data || [])
   }
 
   const generarRecetaAvanzada = async () => {
@@ -249,6 +281,8 @@ export default function PacienteDetallePage() {
         {[
           { key: 'info', label: 'Informacion', icon: User },
           { key: 'historial', label: 'Historial Medico', icon: History },
+          { key: 'consultas', label: 'Consultas', icon: ClipboardList },
+          { key: 'signos_vitales', label: 'Signos Vitales', icon: Activity },
           { key: 'recetas', label: 'Recetas Avanzadas', icon: FileText },
           { key: 'citas', label: 'Citas', icon: Calendar },
         ].map(tab => (
@@ -293,9 +327,47 @@ export default function PacienteDetallePage() {
               </div>
             )}
             <div className="bg-gray-50 p-4 rounded-lg">
+              <label className="text-sm text-gray-500">Tipo de sangre</label>
+              <p className="text-lg font-medium text-[#1a2a3a]">{paciente.tipo_sangre || 'No registrado'}</p>
+            </div>
+            <div className="bg-gray-50 p-4 rounded-lg">
               <label className="text-sm text-gray-500">Registrado desde</label>
               <p className="text-lg font-medium text-[#1a2a3a]">{new Date(paciente.created_at).toLocaleDateString('es-ES')}</p>
             </div>
+            {(paciente.alergias || paciente.antecedentes_personales || paciente.antecedentes_familiares || paciente.medicamentos_en_uso) && (
+              <div className="md:col-span-2 bg-amber-50 p-4 rounded-lg border border-amber-200">
+                <h3 className="text-sm font-semibold text-amber-800 mb-2 flex items-center gap-2">
+                  <AlertCircle size={16} />
+                  Informacion Clinica Relevante
+                </h3>
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-3 text-sm">
+                  {paciente.alergias && (
+                    <div>
+                      <span className="font-medium text-amber-700">Alergias:</span>
+                      <p className="text-amber-600">{paciente.alergias}</p>
+                    </div>
+                  )}
+                  {paciente.antecedentes_personales && (
+                    <div>
+                      <span className="font-medium text-amber-700">Antecedentes personales:</span>
+                      <p className="text-amber-600">{paciente.antecedentes_personales}</p>
+                    </div>
+                  )}
+                  {paciente.antecedentes_familiares && (
+                    <div>
+                      <span className="font-medium text-amber-700">Antecedentes familiares:</span>
+                      <p className="text-amber-600">{paciente.antecedentes_familiares}</p>
+                    </div>
+                  )}
+                  {paciente.medicamentos_en_uso && (
+                    <div>
+                      <span className="font-medium text-amber-700">Medicacion habitual:</span>
+                      <p className="text-amber-600">{paciente.medicamentos_en_uso}</p>
+                    </div>
+                  )}
+                </div>
+              </div>
+            )}
           </div>
         </div>
       )}
@@ -337,6 +409,132 @@ export default function PacienteDetallePage() {
                     </div>
                   </div>
                 ))}
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* === TAB: CONSULTAS === */}
+      {activeTab === 'consultas' && (
+        <div className="bg-white rounded-xl shadow-sm overflow-hidden">
+          <div className="p-6 border-b border-gray-100">
+            <h2 className="text-xl font-semibold text-[#1a2a3a] flex items-center gap-2">
+              <ClipboardList size={22} className="text-[#1E5C8E]" />
+              Historial de Consultas
+            </h2>
+          </div>
+          <div className="p-6">
+            {consultas.length === 0 ? (
+              <div className="text-center text-gray-400 py-12">No hay consultas registradas</div>
+            ) : (
+              <div className="space-y-4">
+                {consultas.map((consulta: any) => (
+                  <div key={consulta.id} className="bg-gray-50 p-4 rounded-lg border-l-4 border-[#1E5C8E]">
+                    <div className="flex items-center justify-between mb-2">
+                      <span className="text-sm font-medium text-[#1a2a3a]">
+                        {new Date(consulta.created_at).toLocaleDateString('es-ES', { day: 'numeric', month: 'long', year: 'numeric' })}
+                      </span>
+                      <span className="text-xs text-gray-400">
+                        Dr. {consulta.perfiles?.nombre_completo || 'Medico'}
+                      </span>
+                    </div>
+                    {consulta.motivo_consulta && (
+                      <p className="text-sm text-gray-600 mb-1"><span className="font-medium">Motivo:</span> {consulta.motivo_consulta}</p>
+                    )}
+                    {consulta.diagnostico && (
+                      <p className="text-sm text-gray-600 mb-1"><span className="font-medium">Diagnostico:</span> {consulta.diagnostico}</p>
+                    )}
+                    <div className="grid grid-cols-2 md:grid-cols-4 gap-2 mt-3">
+                      {consulta.presion_arterial && (
+                        <div className="bg-white p-2 rounded text-center">
+                          <HeartPulse size={14} className="mx-auto text-red-500 mb-1" />
+                          <p className="text-xs text-gray-500">PA</p>
+                          <p className="text-sm font-medium">{consulta.presion_arterial}</p>
+                        </div>
+                      )}
+                      {consulta.temperatura && (
+                        <div className="bg-white p-2 rounded text-center">
+                          <Thermometer size={14} className="mx-auto text-orange-500 mb-1" />
+                          <p className="text-xs text-gray-500">Temp</p>
+                          <p className="text-sm font-medium">{consulta.temperatura}°C</p>
+                        </div>
+                      )}
+                      {consulta.peso_kg && (
+                        <div className="bg-white p-2 rounded text-center">
+                          <Scale size={14} className="mx-auto text-blue-500 mb-1" />
+                          <p className="text-xs text-gray-500">Peso</p>
+                          <p className="text-sm font-medium">{consulta.peso_kg} kg</p>
+                        </div>
+                      )}
+                      {consulta.imc && (
+                        <div className="bg-white p-2 rounded text-center">
+                          <Gauge size={14} className="mx-auto text-emerald-500 mb-1" />
+                          <p className="text-xs text-gray-500">IMC</p>
+                          <p className="text-sm font-medium">{consulta.imc}</p>
+                        </div>
+                      )}
+                    </div>
+                    {(consulta.subjetivo || consulta.objetivo || consulta.analisis || consulta.plan) && (
+                      <div className="mt-3 space-y-1 text-xs text-gray-600">
+                        {consulta.subjetivo && <p><span className="font-medium">S:</span> {consulta.subjetivo.substring(0, 100)}{consulta.subjetivo.length > 100 ? '...' : ''}</p>}
+                        {consulta.objetivo && <p><span className="font-medium">O:</span> {consulta.objetivo.substring(0, 100)}{consulta.objetivo.length > 100 ? '...' : ''}</p>}
+                        {consulta.analisis && <p><span className="font-medium">A:</span> {consulta.analisis.substring(0, 100)}{consulta.analisis.length > 100 ? '...' : ''}</p>}
+                        {consulta.plan && <p><span className="font-medium">P:</span> {consulta.plan.substring(0, 100)}{consulta.plan.length > 100 ? '...' : ''}</p>}
+                      </div>
+                    )}
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* === TAB: SIGNOS VITALES === */}
+      {activeTab === 'signos_vitales' && (
+        <div className="bg-white rounded-xl shadow-sm overflow-hidden">
+          <div className="p-6 border-b border-gray-100">
+            <h2 className="text-xl font-semibold text-[#1a2a3a] flex items-center gap-2">
+              <Activity size={22} className="text-[#1E5C8E]" />
+              Evolucion de Signos Vitales
+            </h2>
+          </div>
+          <div className="p-6">
+            {signosVitales.length === 0 ? (
+              <div className="text-center text-gray-400 py-12">No hay signos vitales registrados</div>
+            ) : (
+              <div className="overflow-x-auto">
+                <table className="w-full text-sm">
+                  <thead>
+                    <tr className="bg-gray-50 text-gray-500">
+                      <th className="px-4 py-3 text-left">Fecha</th>
+                      <th className="px-4 py-3 text-center">PA</th>
+                      <th className="px-4 py-3 text-center">FC</th>
+                      <th className="px-4 py-3 text-center">Temp</th>
+                      <th className="px-4 py-3 text-center">Peso</th>
+                      <th className="px-4 py-3 text-center">Talla</th>
+                      <th className="px-4 py-3 text-center">IMC</th>
+                      <th className="px-4 py-3 text-center">SpO2</th>
+                      <th className="px-4 py-3 text-center">Glucosa</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {signosVitales.map((sv: any) => (
+                      <tr key={sv.id} className="border-t border-gray-100 hover:bg-gray-50">
+                        <td className="px-4 py-3">{new Date(sv.fecha_toma).toLocaleDateString('es-ES')}</td>
+                        <td className="px-4 py-3 text-center font-medium">{sv.presion_arterial || '-'}</td>
+                        <td className="px-4 py-3 text-center">{sv.frecuencia_cardiaca || '-'}</td>
+                        <td className="px-4 py-3 text-center">{sv.temperatura ? `${sv.temperatura}°C` : '-'}</td>
+                        <td className="px-4 py-3 text-center">{sv.peso_kg ? `${sv.peso_kg} kg` : '-'}</td>
+                        <td className="px-4 py-3 text-center">{sv.talla_cm ? `${sv.talla_cm} cm` : '-'}</td>
+                        <td className="px-4 py-3 text-center font-medium text-[#1E5C8E]">{sv.imc || '-'}</td>
+                        <td className="px-4 py-3 text-center">{sv.saturacion_o2 ? `${sv.saturacion_o2}%` : '-'}</td>
+                        <td className="px-4 py-3 text-center">{sv.glucosa || '-'}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
               </div>
             )}
           </div>

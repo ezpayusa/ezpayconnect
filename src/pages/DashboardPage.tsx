@@ -3,6 +3,8 @@ import { useNavigate } from 'react-router-dom'
 import { useAuth } from '@/hooks/useAuth'
 import { usePacientes } from '@/hooks/usePacientes'
 import { useCitas } from '@/hooks/useCitas'
+import { useRecetas } from '@/hooks/useRecetas'
+import { supabase } from '@/lib/supabase'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
 import { Users, CalendarDays, FileText, Pill, Activity, TrendingUp, Filter, ArrowRight } from 'lucide-react'
@@ -13,6 +15,7 @@ export default function DashboardPage() {
   const { perfil } = useAuth()
   const { pacientes } = usePacientes()
   const { citas } = useCitas()
+  const { recetas } = useRecetas()
 
   const [periodo, setPeriodo] = useState('semana')
 
@@ -20,19 +23,45 @@ export default function DashboardPage() {
     pacientes: 0,
     citasHoy: 0,
     recetas: 0,
-    ingresosMes: 12450
+    consultasSemana: 0,
+    ingresosMes: 0
   })
 
   useEffect(() => {
-    const hoy = new Date().toISOString().split('T')[0]
-    const citasHoy = citas?.filter(c => c.fecha === hoy).length || 0
-    setStats({
-      pacientes: pacientes?.length || 0,
-      citasHoy,
-      recetas: 0,
-      ingresosMes: 12450
-    })
-  }, [pacientes, citas])
+    const cargarStats = async () => {
+      const hoy = new Date().toISOString().split('T')[0]
+      const inicioSemana = new Date()
+      inicioSemana.setDate(inicioSemana.getDate() - inicioSemana.getDay())
+      const inicioMes = new Date()
+      inicioMes.setDate(1)
+
+      const citasHoy = citas?.filter(c => c.fecha === hoy).length || 0
+      const recetasCount = recetas?.length || 0
+
+      // Consultas esta semana
+      const { count: consultasSemana } = await supabase
+        .from('expediente_notas')
+        .select('*', { count: 'exact', head: true })
+        .gte('created_at', inicioSemana.toISOString())
+
+      // Ingresos del mes (sumar desde recetas que tienen monto o desde facturas)
+      // Por ahora usamos un estimado basado en citas completadas
+      const citasCompletadasMes = citas?.filter(c =>
+        c.estado === 'completada' && c.fecha >= inicioMes.toISOString().split('T')[0]
+      ).length || 0
+      const ingresosEstimados = citasCompletadasMes * 250 // Q250 por consulta promedio
+
+      setStats({
+        pacientes: pacientes?.length || 0,
+        citasHoy,
+        recetas: recetasCount,
+        consultasSemana: consultasSemana || 0,
+        ingresosMes: ingresosEstimados
+      })
+    }
+
+    cargarStats()
+  }, [pacientes, citas, recetas])
 
   const quickActions = [
     { label: 'Nuevo Paciente', icon: Users, action: () => navigate('/pacientes?nuevo=true'), color: 'bg-[#1E5C8E]' },
@@ -236,7 +265,7 @@ export default function DashboardPage() {
           <CardContent className="p-6">
             <div className="flex items-center justify-between">
               <div>
-                <p className="text-sm text-[#8a9aaa]">Recetas</p>
+                <p className="text-sm text-[#8a9aaa]">Recetas Emitidas</p>
                 <p className="text-3xl font-bold text-[#1a2a3a]">{stats.recetas}</p>
               </div>
               <FileText className="h-10 w-10 text-[#5BA8D1]" />
@@ -247,8 +276,8 @@ export default function DashboardPage() {
           <CardContent className="p-6">
             <div className="flex items-center justify-between">
               <div>
-                <p className="text-sm text-[#8a9aaa]">Ingresos Mes</p>
-                <p className="text-3xl font-bold text-[#1a2a3a]">{formatQ(stats.ingresosMes)}</p>
+                <p className="text-sm text-[#8a9aaa]">Consultas Semana</p>
+                <p className="text-3xl font-bold text-[#1a2a3a]">{stats.consultasSemana}</p>
               </div>
               <Activity className="h-10 w-10 text-[#22c55e]" />
             </div>
