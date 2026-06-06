@@ -1,6 +1,7 @@
 import { useState, useRef, useCallback, useEffect } from 'react'
-import { Button } from '@/components/ui/button'
-import { Mic, MicOff } from 'lucide-react'
+import { AlertTriangle, Loader2 } from 'lucide-react'
+import { supabase } from '@/lib/supabase'
+import { toast } from 'sonner'
 
 interface DictadoVozProps {
   onTranscript: (text: string) => void
@@ -8,153 +9,200 @@ interface DictadoVozProps {
   className?: string
 }
 
-// Web Speech API types
-interface SpeechRecognitionEvent extends Event {
-  results: SpeechRecognitionResultList
-}
-
-interface SpeechRecognitionErrorEvent extends Event {
-  error: string
-}
-
-interface SpeechRecognition extends EventTarget {
-  lang: string
-  continuous: boolean
-  interimResults: boolean
-  maxAlternatives: number
-  start(): void
-  stop(): void
-  abort(): void
-  onresult: ((event: SpeechRecognitionEvent) => void) | null
-  onerror: ((event: SpeechRecognitionErrorEvent) => void) | null
-  onend: (() => void) | null
-}
-
-declare global {
-  interface Window {
-    webkitSpeechRecognition: new () => SpeechRecognition
-    SpeechRecognition: new () => SpeechRecognition
-  }
-}
-
 export default function DictadoVoz({ onTranscript, placeholder = 'Dicta tu nota aqui...', className = '' }: DictadoVozProps) {
-  const [grabando, setGrabando] = useState(false)
-  const [transcripcion, setTranscripcion] = useState('')
-  const [interim, setInterim] = useState('')
-  const [soportado, setSoportado] = useState(true)
-  const recognitionRef = useRef<SpeechRecognition | null>(null)
+  const [estado, setEstado] = useState<'idle' | 'grabando' | 'procesando'>('idle')
+  const [errorMsg, setErrorMsg] = useState('')
+  const [tiempoGrabacion, setTiempoGrabacion] = useState(0)
+  const mediaRecorderRef = useRef<MediaRecorder | null>(null)
+  const chunksRef = useRef<Blob[]>([])
+  const streamRef = useRef<MediaStream | null>(null)
+  const timerRef = useRef<ReturnType<typeof setInterval> | null>(null)
 
   useEffect(() => {
-    const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition
-    if (!SpeechRecognition) {
-      setSoportado(false)
-      return
+    return () => {
+      if (timerRef.current) clearInterval(timerRef.current)
+      if (streamRef.current) streamRef.current.getTracks().forEach(t => t.stop())
     }
+  }, [])
 
-    const recognition = new SpeechRecognition()
-    recognition.lang = 'es-ES'
-    recognition.continuous = true
-    recognition.interimResults = true
-    recognition.maxAlternatives = 1
+  const detenerGrabacion = useCallback(() => {
+    console.log('[DictadoVoz] detenerGrabacion llamado')
+    if (timerRef.current) {
+      clearInterval(timerRef.current)
+      timerRef.current = null
+    }
+    if (mediaRecorderRef.current && mediaRecorderRef.current.state !== 'inactive') {
+      try { mediaRecorderRef.current.stop() } catch (e) { console.log('stop error:', e) }
+    }
+    if (streamRef.current) {
+      streamRef.current.getTracks().forEach(t => t.stop())
+      streamRef.current = null
+    }
+    setEstado('idle')
+    setTiempoGrabacion(0)
+  }, [])
 
-    recognition.onresult = (event: SpeechRecognitionEvent) => {
-      let finalTranscript = ''
-      let interimTranscript = ''
+  const enviarAudio = useCallback(async (audioBlob: Blob) => {
+    console.log('[DictadoVoz] enviarAudio, tamaño:', audioBlob.size)
+    setEstado('procesando')
+    setErrorMsg('')
+    try {
+      const formData = new FormData()
+      formData.append('audio', audioBlob, 'audio.webm')
 
-      for (let i = event.results.length - 1; i >= 0; i--) {
-        const result = event.results[i]
-        if (result.isFinal) {
-          finalTranscript = result[0].transcript + ' ' + finalTranscript
+      const { data, error } = await supabase.functions.invoke('dictado-voz', {
+        body: formData,
+      })
+
+      if (error) throw error
+      if (data?.error) throw new Error(data.error)
+
+      const texto = data?.texto || ''
+      console.log('[DictadoVoz] Texto recibido:', texto)
+      if (texto) {
+        onTranscript(texto)
+        toast.success('Dictado transcrito')
+      } else {
+        toast.warning('No se detectó texto en el audio')
+      }
+    } catch (e: any) {
+      console.error('Error transcribiendo:', e)
+      const msg = e.message || 'Error al transcribir el audio'
+      setErrorMsg(msg)
+      toast.error(msg)
+    } finally {
+      setEstado('idle')
+      setTiempoGrabacion(0)
+    }
+  }, [onTranscript])
+
+  const iniciarGrabacion = useCallback(async () => {
+    console.log('[DictadoVoz] iniciarGrabacion')
+    setErrorMsg('')
+    chunksRef.current = []
+
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true })
+      streamRef.current = stream
+
+      const mimeType = MediaRecorder.isTypeSupported('audio/webm')
+        ? 'audio/webm'
+        : MediaRecorder.isTypeSupported('audio/mp4')
+          ? 'audio/mp4'
+          : 'audio/ogg'
+
+      const mediaRecorder = new MediaRecorder(stream, { mimeType })
+      mediaRecorderRef.current = mediaRecorder
+
+      mediaRecorder.ondataavailable = (e) => {
+        if (e.data.size > 0) chunksRef.current.push(e.data)
+      }
+
+      mediaRecorder.onstop = () => {
+        console.log('[DictadoVoz] onstop')
+        const audioBlob = new Blob(chunksRef.current, { type: mimeType })
+        stream.getTracks().forEach(t => t.stop())
+        streamRef.current = null
+        if (audioBlob.size > 100) {
+          enviarAudio(audioBlob)
         } else {
-          interimTranscript = result[0].transcript
+          setErrorMsg('El audio es muy corto. Intenta de nuevo hablando más.')
+          setEstado('idle')
+          setTiempoGrabacion(0)
         }
       }
 
-      if (finalTranscript) {
-        setTranscripcion(prev => {
-          const nuevo = prev + finalTranscript
-          onTranscript(nuevo)
-          return nuevo
-        })
+      mediaRecorder.onerror = () => {
+        setErrorMsg('Error al grabar audio.')
+        detenerGrabacion()
       }
-      setInterim(interimTranscript)
-    }
 
-    recognition.onerror = (event: SpeechRecognitionErrorEvent) => {
-      if (event.error === 'no-speech') return
-      console.error('Speech recognition error:', event.error)
-      setGrabando(false)
-    }
+      mediaRecorder.start(100)
+      setEstado('grabando')
 
-    recognition.onend = () => {
-      if (grabando) {
-        try { recognition.start() } catch {}
+      let segundos = 0
+      timerRef.current = setInterval(() => {
+        segundos++
+        setTiempoGrabacion(segundos)
+        if (segundos >= 120) detenerGrabacion()
+      }, 1000)
+
+    } catch (err: any) {
+      console.error('Error iniciando:', err)
+      if (err.name === 'NotAllowedError') {
+        setErrorMsg('Permiso de micrófono denegado. Actívalo en la barra de direcciones (🔒).')
+      } else if (err.name === 'NotFoundError') {
+        setErrorMsg('No se encontró micrófono.')
+      } else {
+        setErrorMsg('No se pudo acceder al micrófono.')
       }
+      setEstado('idle')
     }
+  }, [enviarAudio, detenerGrabacion])
 
-    recognitionRef.current = recognition
-
-    return () => {
-      recognition.abort()
-    }
-  }, [onTranscript, grabando])
-
-  const toggleGrabacion = useCallback(() => {
-    if (!recognitionRef.current) return
-
-    if (grabando) {
-      recognitionRef.current.stop()
-      setGrabando(false)
-      setInterim('')
-    } else {
-      setTranscripcion('')
-      setInterim('')
-      recognitionRef.current.start()
-      setGrabando(true)
-    }
-  }, [grabando])
-
-  if (!soportado) {
-    return (
-      <div className={`text-xs text-amber-600 bg-amber-50 p-2 rounded ${className}`}>
-        Tu navegador no soporta dictado por voz. Usa Chrome o Edge.
-      </div>
-    )
+  const formatearTiempo = (s: number) => {
+    const m = Math.floor(s / 60)
+    const seg = s % 60
+    return `${m}:${seg.toString().padStart(2, '0')}`
   }
+
+  console.log('[DictadoVoz] render estado:', estado)
 
   return (
     <div className={`flex flex-col gap-2 ${className}`}>
-      <div className="flex items-center gap-2">
-        <Button
+      {/* IDLE */}
+      {estado === 'idle' && (
+        <button
           type="button"
-          variant={grabando ? 'destructive' : 'outline'}
-          size="sm"
-          onClick={toggleGrabacion}
-          className={grabando ? 'animate-pulse' : ''}
+          onClick={iniciarGrabacion}
+          className="inline-flex items-center gap-1.5 px-3 py-1.5 text-sm font-medium border border-gray-300 rounded-md bg-white hover:bg-gray-50 text-gray-700 w-fit"
         >
-          {grabando ? (
-            <>
-              <MicOff className="h-4 w-4 mr-1" /> Detener
-            </>
-          ) : (
-            <>
-              <Mic className="h-4 w-4 mr-1" /> Dictar
-            </>
-          )}
-        </Button>
-        {grabando && (
-          <span className="text-xs text-red-500 animate-pulse flex items-center gap-1">
-            <span className="w-2 h-2 bg-red-500 rounded-full inline-block" />
-            Escuchando...
-          </span>
-        )}
-      </div>
-      {(transcripcion || interim) && (
-        <div className="bg-slate-50 p-3 rounded-lg border text-sm min-h-[60px]">
-          <p className="text-slate-700">{transcripcion}<span className="text-slate-400 italic">{interim}</span></p>
+          <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3Z"/><path d="M19 10v2a7 7 0 0 1-14 0v-2"/><line x1="12" x2="12" y1="19" y2="22"/></svg>
+          Dictar
+        </button>
+      )}
+
+      {/* GRABANDO */}
+      {estado === 'grabando' && (
+        <div className="flex flex-col gap-2">
+          <div className="flex items-center gap-3">
+            <button
+              type="button"
+              onClick={detenerGrabacion}
+              className="inline-flex items-center gap-1.5 px-3 py-1.5 text-sm font-medium rounded-md bg-red-600 hover:bg-red-700 text-white border border-red-700"
+            >
+              <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="currentColor" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><rect x="6" y="6" width="12" height="12" rx="2"/></svg>
+              Detener grabación
+            </button>
+            <span className="text-sm font-mono text-red-600 font-bold">
+              {formatearTiempo(tiempoGrabacion)}
+            </span>
+          </div>
+          <div className="flex items-center gap-2 text-xs text-red-600">
+            <span className="w-2.5 h-2.5 bg-red-500 rounded-full animate-pulse inline-block" />
+            Grabando audio... habla ahora y luego presiona el botón rojo de arriba
+          </div>
         </div>
       )}
-      {!transcripcion && !interim && !grabando && (
+
+      {/* PROCESANDO */}
+      {estado === 'procesando' && (
+        <div className="flex items-center gap-2 text-sm text-blue-600 bg-blue-50 p-2 rounded border border-blue-200">
+          <Loader2 className="h-4 w-4 animate-spin" />
+          Enviando a Whisper para transcribir...
+        </div>
+      )}
+
+      {/* ERROR */}
+      {errorMsg && (
+        <div className="text-xs text-red-600 bg-red-50 p-2 rounded flex items-start gap-1.5 border border-red-200">
+          <AlertTriangle className="h-3.5 w-3.5 shrink-0 mt-0.5" />
+          {errorMsg}
+        </div>
+      )}
+
+      {/* PLACEHOLDER */}
+      {estado === 'idle' && !errorMsg && (
         <p className="text-xs text-muted-foreground">{placeholder}</p>
       )}
     </div>

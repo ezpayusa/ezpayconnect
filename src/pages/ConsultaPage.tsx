@@ -380,7 +380,7 @@ export default function ConsultaPage() {
               <div className="grid grid-cols-2 gap-2">
                 <div>
                   <Label className="text-xs flex items-center gap-1"><HeartPulse className="h-3 w-3" /> PA (mmHg)</Label>
-                  <Input size-sm placeholder="120/80" value={sv.presion_arterial} onChange={e => handleSvChange('presion_arterial', e.target.value)} className="h-8 text-sm" />
+                  <Input placeholder="120/80" value={sv.presion_arterial} onChange={e => handleSvChange('presion_arterial', e.target.value)} className="h-8 text-sm" />
                 </div>
                 <div>
                   <Label className="text-xs flex items-center gap-1"><HeartPulse className="h-3 w-3" /> FC (lpm)</Label>
