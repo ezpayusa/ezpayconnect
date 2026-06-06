@@ -122,7 +122,17 @@ export default function PublicidadCampanaFormPage() {
       if (ok) navigate('/proveedor/publicidad/campanas')
     } else {
       const ok = await crearSolicitud({ ...campanaData, estado: 'borrador' }, imagenFile)
-      if (ok) navigate('/proveedor/publicidad/campanas')
+      if (ok) {
+        // Redirigir al checkout para forzar el pago inmediatamente
+        const planSeleccionado = planes.find((p) => String(p.id) === form.plan_publicidad_id)
+        if (planSeleccionado) {
+          navigate(
+            `/proveedor/checkout?tipo=campana&referencia_id=${ok}&monto=${planSeleccionado.precio}&descripcion=${encodeURIComponent(planSeleccionado.nombre)}`
+          )
+        } else {
+          navigate('/proveedor/publicidad/campanas')
+        }
+      }
     }
   }
 

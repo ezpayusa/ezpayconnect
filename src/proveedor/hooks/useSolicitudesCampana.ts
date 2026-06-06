@@ -35,10 +35,10 @@ export function useSolicitudesCampana() {
   const crearSolicitud = async (
     campana: Partial<SolicitudCampana>,
     imagenFile?: File | null
-  ): Promise<boolean> => {
+  ): Promise<string | null> => {
     if (!empresa?.id || !cuenta) {
       toast.error('No hay empresa vinculada')
-      return false
+      return null
     }
 
     setSaving(true)
@@ -55,14 +55,14 @@ export function useSolicitudesCampana() {
         toast.error('Error subiendo imagen')
         console.error(uploadError)
         setSaving(false)
-        return false
+        return null
       }
 
       const { data: publicUrlData } = supabase.storage.from('campanas').getPublicUrl(fileName)
       imagen_url = publicUrlData.publicUrl
     }
 
-    const { error } = await supabase.from('solicitudes_campana').insert({
+    const { data, error } = await supabase.from('solicitudes_campana').insert({
       empresa_id: empresa.id,
       cuenta_proveedor_id: cuenta.id,
       titulo: campana.titulo || '',
@@ -77,19 +77,19 @@ export function useSolicitudesCampana() {
       edad_min: campana.edad_min || null,
       edad_max: campana.edad_max || null,
       plan_publicidad_id: campana.plan_publicidad_id || null,
-      estado: 'enviada',
-    })
+      estado: campana.estado || 'enviada',
+    }).select().single()
 
     setSaving(false)
     if (error) {
       toast.error('Error creando campaña')
       console.error(error)
-      return false
+      return null
     }
 
-    toast.success('Campaña enviada a revisión')
+    toast.success(campana.estado === 'borrador' ? 'Campaña guardada' : 'Campaña enviada a revisión')
     fetchSolicitudes()
-    return true
+    return data.id
   }
 
   const actualizarSolicitud = async (

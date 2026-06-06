@@ -12,6 +12,9 @@ import {
   Loader2,
   Eye,
   Filter,
+  CreditCard,
+  ExternalLink,
+  AlertTriangle,
 } from 'lucide-react'
 import {
   Dialog,
@@ -19,6 +22,16 @@ import {
   DialogHeader,
   DialogTitle,
 } from '@/components/ui/dialog'
+
+interface PagoCampana {
+  id: string
+  monto: number
+  moneda: string
+  estado: string
+  comprobante_url: string | null
+  metodo_pago: string | null
+  referencia_id: string | null
+}
 
 interface SolicitudConEmpresa {
   id: string
@@ -39,13 +52,15 @@ interface SolicitudConEmpresa {
   notas_admin: string | null
   created_at: string
   empresa: { nombre_empresa: string; email_contacto: string } | null
+  plan_publicidad_id: number | null
 }
 
 export default function SolicitudesCampanaPage() {
   const [solicitudes, setSolicitudes] = useState<SolicitudConEmpresa[]>([])
+  const [pagosMap, setPagosMap] = useState<Record<string, PagoCampana>>({})
   const [loading, setLoading] = useState(true)
   const [filtro, setFiltro] = useState('')
-  const [estadoFiltro, setEstadoFiltro] = useState('')
+  const [estadoFiltro, setEstadoFiltro] = useState('enviada')
   const [solicitudActiva, setSolicitudActiva] = useState<SolicitudConEmpresa | null>(null)
   const [notasAdmin, setNotasAdmin] = useState('')
   const [procesando, setProcesando] = useState(false)
@@ -67,6 +82,21 @@ export default function SolicitudesCampanaPage() {
     } else {
       setSolicitudes((data || []) as SolicitudConEmpresa[])
     }
+
+    // Traer pagos asociados a campañas
+    const { data: pagosData } = await supabase
+      .from('pagos_proveedor')
+      .select('id, monto, moneda, estado, comprobante_url, metodo_pago, referencia_id')
+      .eq('tipo', 'campana')
+
+    const map: Record<string, PagoCampana> = {}
+    ;(pagosData || []).forEach((p: any) => {
+      if (p.referencia_id) {
+        map[p.referencia_id] = p
+      }
+    })
+    setPagosMap(map)
+
     setLoading(false)
   }
 
@@ -75,6 +105,12 @@ export default function SolicitudesCampanaPage() {
   }, [estadoFiltro])
 
   const aprobar = async (solicitud: SolicitudConEmpresa) => {
+    const pago = pagosMap[solicitud.id]
+    if (!pago || pago.estado !== 'verificado') {
+      toast.error('No se puede aprobar: el pago no está verificado. Verificalo primero en "Pagos de Proveedores".')
+      return
+    }
+
     setProcesando(true)
 
     // 1. Insertar en campanas_publicitarias
@@ -146,6 +182,18 @@ export default function SolicitudesCampanaPage() {
     publicada: 'bg-purple-100 text-purple-700',
   }
 
+  const pagoEstadoColor = (estado: string) => {
+    switch (estado) {
+      case 'verificado': return 'bg-emerald-100 text-emerald-700'
+      case 'pendiente': return 'bg-amber-100 text-amber-700'
+      case 'rechazado': return 'bg-red-100 text-red-700'
+      default: return 'bg-slate-100 text-slate-700'
+    }
+  }
+
+  const formatMoneda = (monto: number, moneda: string) =>
+    new Intl.NumberFormat('es-GT', { style: 'currency', currency: moneda || 'GTQ' }).format(monto)
+
   const filtradas = solicitudes.filter((s) =>
     s.titulo.toLowerCase().includes(filtro.toLowerCase()) ||
     s.empresa?.nombre_empresa?.toLowerCase().includes(filtro.toLowerCase())
@@ -159,7 +207,7 @@ export default function SolicitudesCampanaPage() {
             <Megaphone className="h-6 w-6 text-rose-500" />
             Solicitudes de Campaña
           </h1>
-          <p className="text-slate-500 mt-1">Revisa, aprueba o rechaza campañas publicitarias de proveedores</p>
+          <p className="text-slate-500 mt-1">Revisa contenido y estado de pago antes de publicar</p>
         </div>
       </div>
 
@@ -178,12 +226,13 @@ export default function SolicitudesCampanaPage() {
           onChange={(e) => setEstadoFiltro(e.target.value)}
           className="h-10 rounded-md border border-input bg-background px-3 py-2 text-sm"
         >
-          <option value="">Todos los estados</option>
-          <option value="enviada">Enviada</option>
+          <option value="enviada">Enviada (por revisar)</option>
           <option value="en_revision">En revisión</option>
           <option value="aprobada">Aprobada</option>
           <option value="rechazada">Rechazada</option>
           <option value="publicada">Publicada</option>
+          <option value="borrador">Borrador (sin pagar)</option>
+          <option value="">Todas</option>
         </select>
       </div>
 
@@ -195,55 +244,74 @@ export default function SolicitudesCampanaPage() {
         <Card>
           <CardContent className="py-12 text-center text-slate-500">
             <Megaphone className="h-12 w-12 mx-auto mb-3 text-slate-300" />
-            <p>No hay solicitudes pendientes</p>
+            <p>No hay solicitudes en este estado</p>
           </CardContent>
         </Card>
       ) : (
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-          {filtradas.map((s) => (
-            <Card key={s.id} className="overflow-hidden">
-              <div className="h-32 bg-slate-100 relative">
-                {s.imagen_url ? (
-                  <img
-                    src={s.imagen_url}
-                    alt={s.titulo}
-                    className="w-full h-full object-cover"
-                    onError={(e) => { (e.target as HTMLImageElement).style.display = 'none' }}
-                  />
-                ) : (
-                  <div className="flex items-center justify-center h-full">
-                    <Megaphone className="h-8 w-8 text-slate-300" />
+          {filtradas.map((s) => {
+            const pago = pagosMap[s.id]
+            return (
+              <Card key={s.id} className="overflow-hidden">
+                <div className="h-32 bg-slate-100 relative">
+                  {s.imagen_url ? (
+                    <img
+                      src={s.imagen_url}
+                      alt={s.titulo}
+                      className="w-full h-full object-cover"
+                      onError={(e) => { (e.target as HTMLImageElement).style.display = 'none' }}
+                    />
+                  ) : (
+                    <div className="flex items-center justify-center h-full">
+                      <Megaphone className="h-8 w-8 text-slate-300" />
+                    </div>
+                  )}
+                </div>
+                <CardContent className="p-4">
+                  <div className="flex items-center gap-2 mb-2 flex-wrap">
+                    <Badge className={estadoColor[s.estado] || estadoColor.borrador}>{s.estado}</Badge>
+                    {pago ? (
+                      <Badge className={pagoEstadoColor(pago.estado)}>
+                        <CreditCard className="h-3 w-3 mr-1" />
+                        Pago {pago.estado}
+                      </Badge>
+                    ) : s.estado !== 'borrador' ? (
+                      <Badge className="bg-red-100 text-red-700">
+                        <AlertTriangle className="h-3 w-3 mr-1" />
+                        Sin pago
+                      </Badge>
+                    ) : null}
+                    <span className="text-xs text-slate-400 ml-auto">{s.tipo}</span>
                   </div>
-                )}
-              </div>
-              <CardContent className="p-4">
-                <div className="flex items-center gap-2 mb-2">
-                  <Badge className={estadoColor[s.estado] || estadoColor.borrador}>{s.estado}</Badge>
-                  <span className="text-xs text-slate-400 ml-auto">{s.tipo}</span>
-                </div>
-                <h3 className="font-semibold text-slate-800">{s.titulo}</h3>
-                <p className="text-sm text-slate-500">{s.empresa?.nombre_empresa}</p>
-                <p className="text-xs text-slate-400 mt-1">{s.fecha_inicio} → {s.fecha_fin}</p>
-                {s.notas_admin && (
-                  <p className="text-xs text-amber-600 mt-2 bg-amber-50 p-2 rounded">
-                    Nota: {s.notas_admin}
-                  </p>
-                )}
-                <div className="flex gap-2 mt-3">
-                  <Button size="sm" variant="outline" className="flex-1" onClick={() => { setSolicitudActiva(s); setNotasAdmin('') }}>
-                    <Eye className="h-3.5 w-3.5 mr-1" />
-                    {s.estado === 'publicada' || s.estado === 'rechazada' ? 'Ver detalle' : 'Revisar'}
-                  </Button>
-                </div>
-              </CardContent>
-            </Card>
-          ))}
+                  <h3 className="font-semibold text-slate-800">{s.titulo}</h3>
+                  <p className="text-sm text-slate-500">{s.empresa?.nombre_empresa}</p>
+                  <p className="text-xs text-slate-400 mt-1">{s.fecha_inicio} → {s.fecha_fin}</p>
+                  {pago && (
+                    <p className="text-xs text-slate-500 mt-1">
+                      Monto: {formatMoneda(pago.monto, pago.moneda)}
+                    </p>
+                  )}
+                  {s.notas_admin && (
+                    <p className="text-xs text-amber-600 mt-2 bg-amber-50 p-2 rounded">
+                      Nota: {s.notas_admin}
+                    </p>
+                  )}
+                  <div className="flex gap-2 mt-3">
+                    <Button size="sm" variant="outline" className="flex-1" onClick={() => { setSolicitudActiva(s); setNotasAdmin('') }}>
+                      <Eye className="h-3.5 w-3.5 mr-1" />
+                      {s.estado === 'publicada' || s.estado === 'rechazada' ? 'Ver detalle' : 'Revisar'}
+                    </Button>
+                  </div>
+                </CardContent>
+              </Card>
+            )
+          })}
         </div>
       )}
 
       {/* Modal de revisión */}
       <Dialog open={!!solicitudActiva} onOpenChange={() => { setSolicitudActiva(null); setNotasAdmin('') }}>
-        <DialogContent className="max-w-lg">
+        <DialogContent className="max-w-lg max-h-[90vh] overflow-y-auto">
           <DialogHeader>
             <DialogTitle>Revisar campaña</DialogTitle>
           </DialogHeader>
@@ -252,19 +320,21 @@ export default function SolicitudesCampanaPage() {
               {solicitudActiva.imagen_url && (
                 <img src={solicitudActiva.imagen_url} alt="" className="w-full h-40 object-cover rounded-lg" />
               )}
-              <div>
-                <p className="text-sm font-medium">Título</p>
-                <p className="text-sm text-slate-600">{solicitudActiva.titulo}</p>
-              </div>
-              <div>
-                <p className="text-sm font-medium">Empresa</p>
-                <p className="text-sm text-slate-600">{solicitudActiva.empresa?.nombre_empresa} ({solicitudActiva.empresa?.email_contacto})</p>
-              </div>
-              <div>
-                <p className="text-sm font-medium">Descripción</p>
-                <p className="text-sm text-slate-600">{solicitudActiva.descripcion || '-'}</p>
-              </div>
-              <div className="grid grid-cols-2 gap-2 text-sm">
+
+              <div className="grid grid-cols-2 gap-3 text-sm">
+                <div>
+                  <p className="font-medium text-slate-700">Título</p>
+                  <p className="text-slate-600">{solicitudActiva.titulo}</p>
+                </div>
+                <div>
+                  <p className="font-medium text-slate-700">Empresa</p>
+                  <p className="text-slate-600">{solicitudActiva.empresa?.nombre_empresa}</p>
+                  <p className="text-xs text-slate-400">{solicitudActiva.empresa?.email_contacto}</p>
+                </div>
+                <div className="col-span-2">
+                  <p className="font-medium text-slate-700">Descripción</p>
+                  <p className="text-slate-600">{solicitudActiva.descripcion || '-'}</p>
+                </div>
                 <div><span className="font-medium">Tipo:</span> {solicitudActiva.tipo}</div>
                 <div><span className="font-medium">Link:</span> {solicitudActiva.link_url || '-'}</div>
                 <div><span className="font-medium">Inicio:</span> {solicitudActiva.fecha_inicio}</div>
@@ -272,6 +342,54 @@ export default function SolicitudesCampanaPage() {
                 <div><span className="font-medium">Condición:</span> {solicitudActiva.condicion_filtro || '-'}</div>
                 <div><span className="font-medium">Género:</span> {solicitudActiva.genero_filtro || '-'}</div>
                 <div><span className="font-medium">Edad:</span> {solicitudActiva.edad_min ?? '-'} - {solicitudActiva.edad_max ?? '-'}</div>
+              </div>
+
+              {/* Información de pago */}
+              <div className="border rounded-lg p-3 space-y-2 bg-slate-50">
+                <p className="text-sm font-semibold text-slate-800 flex items-center gap-2">
+                  <CreditCard className="h-4 w-4" />
+                  Información de pago
+                </p>
+                {(() => {
+                  const pago = pagosMap[solicitudActiva.id]
+                  if (!pago) {
+                    return (
+                      <div className="flex items-center gap-2 text-sm text-red-600">
+                        <AlertTriangle className="h-4 w-4" />
+                        <span>No se ha registrado ningún pago para esta campaña.</span>
+                      </div>
+                    )
+                  }
+                  return (
+                    <div className="space-y-2 text-sm">
+                      <div className="flex items-center justify-between">
+                        <span className="text-slate-500">Estado del pago</span>
+                        <Badge className={pagoEstadoColor(pago.estado)}>{pago.estado}</Badge>
+                      </div>
+                      <div className="flex items-center justify-between">
+                        <span className="text-slate-500">Monto</span>
+                        <span className="font-medium">{formatMoneda(pago.monto, pago.moneda)}</span>
+                      </div>
+                      <div className="flex items-center justify-between">
+                        <span className="text-slate-500">Método</span>
+                        <span className="font-medium capitalize">{pago.metodo_pago || '-'}</span>
+                      </div>
+                      {pago.comprobante_url && (
+                        <div className="pt-1">
+                          <a
+                            href={pago.comprobante_url}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="inline-flex items-center gap-1 text-blue-600 hover:underline text-sm"
+                          >
+                            <ExternalLink className="h-3.5 w-3.5" />
+                            Ver comprobante de pago
+                          </a>
+                        </div>
+                      )}
+                    </div>
+                  )
+                })()}
               </div>
 
               <div className="space-y-2">
@@ -304,7 +422,7 @@ export default function SolicitudesCampanaPage() {
                     </Button>
                     <Button
                       className="flex-1 bg-emerald-600 hover:bg-emerald-700 text-white"
-                      disabled={procesando}
+                      disabled={procesando || !pagosMap[solicitudActiva.id] || pagosMap[solicitudActiva.id].estado !== 'verificado'}
                       onClick={() => aprobar(solicitudActiva)}
                     >
                       <CheckCircle className="h-4 w-4 mr-1" />
@@ -313,6 +431,11 @@ export default function SolicitudesCampanaPage() {
                   </>
                 )}
               </div>
+              {solicitudActiva.estado !== 'publicada' && solicitudActiva.estado !== 'rechazada' && (!pagosMap[solicitudActiva.id] || pagosMap[solicitudActiva.id].estado !== 'verificado') && (
+                <p className="text-xs text-center text-red-500">
+                  Solo se puede aprobar si el pago está verificado en "Pagos de Proveedores".
+                </p>
+              )}
             </div>
           )}
         </DialogContent>
