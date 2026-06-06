@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react'
-import { useNavigate, useParams } from 'react-router-dom'
+import { useNavigate, useParams, useSearchParams } from 'react-router-dom'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
@@ -7,6 +7,7 @@ import { Card, CardContent } from '@/components/ui/card'
 import { toast } from 'sonner'
 import { ArrowLeft, Loader2, Upload, X } from 'lucide-react'
 import { useSolicitudesCampana } from '@/proveedor/hooks/useSolicitudesCampana'
+import { usePlanesPublicidad } from '@/proveedor/hooks/usePlanesPublicidad'
 import { supabase } from '@/lib/supabase'
 import type { SolicitudCampana } from '@/proveedor/types/proveedor.types'
 
@@ -20,8 +21,10 @@ const TIPOS = [
 export default function PublicidadCampanaFormPage() {
   const navigate = useNavigate()
   const { id } = useParams()
+  const [searchParams] = useSearchParams()
   const isEditing = Boolean(id)
   const { crearSolicitud, actualizarSolicitud, saving } = useSolicitudesCampana()
+  const { planes, loading: loadingPlanes } = usePlanesPublicidad()
   const [loadingData, setLoadingData] = useState(isEditing)
 
   const [form, setForm] = useState({
@@ -35,9 +38,18 @@ export default function PublicidadCampanaFormPage() {
     genero_filtro: '',
     edad_min: '',
     edad_max: '',
+    plan_publicidad_id: '',
   })
   const [imagenFile, setImagenFile] = useState<File | null>(null)
   const [imagenPreview, setImagenPreview] = useState<string | null>(null)
+
+  useEffect(() => {
+    // Pre-seleccionar plan desde query param
+    const planId = searchParams.get('plan_id')
+    if (planId && !isEditing) {
+      setForm((prev) => ({ ...prev, plan_publicidad_id: planId }))
+    }
+  }, [searchParams, isEditing])
 
   useEffect(() => {
     if (isEditing && id) {
@@ -65,6 +77,7 @@ export default function PublicidadCampanaFormPage() {
           genero_filtro: data.genero_filtro || '',
           edad_min: data.edad_min ? String(data.edad_min) : '',
           edad_max: data.edad_max ? String(data.edad_max) : '',
+          plan_publicidad_id: data.plan_publicidad_id ? String(data.plan_publicidad_id) : '',
         })
         if (data.imagen_url) setImagenPreview(data.imagen_url)
         setLoadingData(false)
@@ -92,9 +105,14 @@ export default function PublicidadCampanaFormPage() {
       toast.error('Completa los campos obligatorios')
       return
     }
+    if (!form.plan_publicidad_id) {
+      toast.error('Selecciona un plan de publicidad')
+      return
+    }
 
     const campanaData: Partial<SolicitudCampana> = {
       ...form,
+      plan_publicidad_id: parseInt(form.plan_publicidad_id),
       edad_min: form.edad_min ? parseInt(form.edad_min) : null,
       edad_max: form.edad_max ? parseInt(form.edad_max) : null,
     }
@@ -116,6 +134,8 @@ export default function PublicidadCampanaFormPage() {
     )
   }
 
+  const planSeleccionado = planes.find((p) => String(p.id) === form.plan_publicidad_id)
+
   return (
     <div className="space-y-6 max-w-2xl mx-auto">
       <div className="flex items-center gap-4">
@@ -133,6 +153,28 @@ export default function PublicidadCampanaFormPage() {
       <Card>
         <CardContent className="p-6">
           <form onSubmit={handleSubmit} className="space-y-5">
+            <div className="space-y-2">
+              <Label>Plan de publicidad *</Label>
+              <select
+                value={form.plan_publicidad_id}
+                onChange={(e) => update('plan_publicidad_id', e.target.value)}
+                className="w-full h-10 rounded-md border border-input bg-background px-3 py-2 text-sm"
+                required
+              >
+                <option value="">Selecciona un plan</option>
+                {planes.map((p) => (
+                  <option key={p.id} value={p.id}>
+                    {p.nombre} — {new Intl.NumberFormat('es-GT', { style: 'currency', currency: p.moneda }).format(p.precio)}
+                  </option>
+                ))}
+              </select>
+              {planSeleccionado && (
+                <p className="text-xs text-muted-foreground">
+                  {planSeleccionado.descripcion} · {planSeleccionado.dias} días de vigencia
+                </p>
+              )}
+            </div>
+
             <div className="space-y-2">
               <Label>Título *</Label>
               <Input

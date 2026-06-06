@@ -3,6 +3,7 @@ import { Card, CardContent } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
 import { useSolicitudesCampana } from '@/proveedor/hooks/useSolicitudesCampana'
+import { usePlanesPublicidad } from '@/proveedor/hooks/usePlanesPublicidad'
 import { Megaphone, Plus, Trash2, Pencil, Loader2, CreditCard } from 'lucide-react'
 
 const estadoColor: Record<string, string> = {
@@ -17,6 +18,14 @@ const estadoColor: Record<string, string> = {
 export default function PublicidadCampanasPage() {
   const navigate = useNavigate()
   const { solicitudes, loading, eliminarSolicitud } = useSolicitudesCampana()
+  const { planes, loading: loadingPlanes } = usePlanesPublicidad()
+
+  const getPlanPrecio = (planId: number | null): number => {
+    if (!planId) return 0
+    return planes.find((p) => p.id === planId)?.precio || 0
+  }
+
+  const isLoading = loading || loadingPlanes
 
   return (
     <div className="space-y-6">
@@ -35,7 +44,7 @@ export default function PublicidadCampanasPage() {
         </Link>
       </div>
 
-      {loading ? (
+      {isLoading ? (
         <div className="flex justify-center py-12">
           <Loader2 className="h-8 w-8 animate-spin text-slate-400" />
         </div>
@@ -101,11 +110,16 @@ export default function PublicidadCampanasPage() {
                     <Button
                       size="sm"
                       className="flex-1 bg-emerald-600 hover:bg-emerald-700 text-white"
-                      onClick={() =>
+                      onClick={() => {
+                        const monto = getPlanPrecio(c.plan_publicidad_id)
+                        if (!monto) {
+                          toast?.error?.('No se encontró el precio del plan')
+                          return
+                        }
                         navigate(
-                          `/proveedor/checkout?tipo=campana&referencia_id=${c.id}&monto=500&descripcion=${encodeURIComponent(c.titulo)}`
+                          `/proveedor/checkout?tipo=campana&referencia_id=${c.id}&monto=${monto}&descripcion=${encodeURIComponent(c.titulo)}`
                         )
-                      }
+                      }}
                     >
                       <CreditCard className="h-3.5 w-3.5 mr-1" />
                       Pagar y enviar

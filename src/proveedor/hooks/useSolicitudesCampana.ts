@@ -76,6 +76,7 @@ export function useSolicitudesCampana() {
       genero_filtro: campana.genero_filtro || null,
       edad_min: campana.edad_min || null,
       edad_max: campana.edad_max || null,
+      plan_publicidad_id: campana.plan_publicidad_id || null,
       estado: 'enviada',
     })
 
@@ -128,6 +129,7 @@ export function useSolicitudesCampana() {
       genero_filtro: campana.genero_filtro,
       edad_min: campana.edad_min,
       edad_max: campana.edad_max,
+      plan_publicidad_id: campana.plan_publicidad_id,
     }
     if (imagen_url !== undefined) updateData.imagen_url = imagen_url
 

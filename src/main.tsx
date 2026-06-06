@@ -9,9 +9,11 @@ import { registerSW } from 'virtual:pwa-register'
 const updateSW = registerSW({
   immediate: true,
   onNeedRefresh() {
-    if (confirm('Hay una nueva versión disponible. ¿Actualizar ahora?')) {
+    // Auto-recarga tras 3s para evitar cache de versiones viejas
+    console.log('[PWA] Nueva versión detectada. Recargando...')
+    setTimeout(() => {
       updateSW(true)
-    }
+    }, 3000)
   },
   onOfflineReady() {
     console.log('[PWA] App lista para uso offline')
