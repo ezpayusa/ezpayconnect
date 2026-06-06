@@ -7,7 +7,7 @@ import { useRecetas } from '@/hooks/useRecetas'
 import { supabase } from '@/lib/supabase'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
-import { Users, CalendarDays, FileText, Pill, Activity, TrendingUp, Filter, ArrowRight } from 'lucide-react'
+import { Users, CalendarDays, FileText, Pill, Activity, TrendingUp, Filter, ArrowRight, Stethoscope } from 'lucide-react'
 import BannerPublicidadGlobal from '@/webapp/components/BannerPublicidadGlobal'
 
 export default function DashboardPage() {
@@ -66,8 +66,16 @@ export default function DashboardPage() {
   const quickActions = [
     { label: 'Nuevo Paciente', icon: Users, action: () => navigate('/pacientes?nuevo=true'), color: 'bg-[#1E5C8E]' },
     { label: 'Nueva Cita', icon: CalendarDays, action: () => navigate('/citas?nuevo=true'), color: 'bg-[#3A8ABF]' },
-    { label: 'Nueva Receta', icon: FileText, action: () => navigate('/recetas?nuevo=true'), color: 'bg-[#5BA8D1]' },
-    { label: 'Buscar Medicamento', icon: Pill, action: () => navigate('/farmacias'), color: 'bg-[#1a2a3a]' },
+    { label: 'Iniciar Consulta', icon: Stethoscope, action: () => {
+      const hoy = new Date().toISOString().split('T')[0]
+      const citaHoy = citas?.find(c => c.fecha === hoy && (c.estado === 'agendada' || c.estado === 'confirmada'))
+      if (citaHoy) {
+        navigate(`/consulta/${citaHoy.id}`)
+      } else {
+        navigate('/citas')
+      }
+    }, color: 'bg-[#5BA8D1]' },
+    { label: 'Nueva Receta', icon: FileText, action: () => navigate('/recetas?nuevo=true'), color: 'bg-[#1a2a3a]' },
   ]
 
   const proximasCitas = (citas || [])

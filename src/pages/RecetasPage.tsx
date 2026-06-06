@@ -448,6 +448,22 @@ export default function RecetasPage() {
                   {pacientes.map(p => <SelectItem key={p.id} value={String(p.id)}>{p.nombre} {p.apellido}</SelectItem>)}
                 </SelectContent>
               </Select>
+              {/* Alerta de alergias */}
+              {form.paciente_id && (() => {
+                const paciente = pacientes.find(p => String(p.id) === form.paciente_id)
+                if (paciente?.alergias) {
+                  return (
+                    <div className="bg-red-50 border border-red-200 rounded-lg p-3 flex items-start gap-2">
+                      <AlertCircle className="h-4 w-4 text-red-600 shrink-0 mt-0.5" />
+                      <div>
+                        <p className="text-sm font-medium text-red-700">Alergias del paciente</p>
+                        <p className="text-sm text-red-600">{paciente.alergias}</p>
+                      </div>
+                    </div>
+                  )
+                }
+                return null
+              })()}
             </div>
 
             <Card className="border-dashed">
