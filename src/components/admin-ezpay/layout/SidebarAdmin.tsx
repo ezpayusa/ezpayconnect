@@ -53,6 +53,7 @@ export function SidebarAdmin() {
     { path: '/admin-ezpay/roles', icon: Shield, label: 'Roles' },
     { path: '/admin-ezpay/solicitudes-campana', icon: ClipboardCheck, label: 'Solicitudes Campaña' },
     { path: '/admin-ezpay/pagos-proveedores', icon: DollarSign, label: 'Pagos Proveedores' },
+    { path: '/admin-ezpay/empresas-proveedoras', icon: Building2, label: 'Empresas Proveedoras' },
     { path: '/admin-ezpay/auditoria', icon: Activity, label: 'Auditoría' },
   ];
 

@@ -90,6 +90,7 @@ import CampanasPublicitariasPage from '@/pages/admin-ezpay/CampanasPublicitarias
 import SolicitudesCampanaPage from '@/pages/admin-ezpay/SolicitudesCampanaPage'
 import PagosProveedoresPage from '@/pages/admin-ezpay/PagosProveedoresPage'
 import AdminVisitasProveedoresPage from '@/pages/admin-ezpay/AdminVisitasProveedoresPage'
+import EmpresasProveedorasPage from '@/pages/admin-ezpay/EmpresasProveedorasPage'
 
 // === IMPORTS REPORTES (NUEVOS) ===
 import ReportesPage from '@/pages/admin-ezpay/ReportesPage'
@@ -207,6 +208,7 @@ function App() {
           <Route path="solicitudes-campana" element={<SolicitudesCampanaPage />} />
           <Route path="pagos-proveedores" element={<PagosProveedoresPage />} />
           <Route path="visitas-proveedores" element={<AdminVisitasProveedoresPage />} />
+          <Route path="empresas-proveedoras" element={<EmpresasProveedorasPage />} />
         </Route>
 
         {/* === RUTAS PORTAL PROVEEDORES === */}
