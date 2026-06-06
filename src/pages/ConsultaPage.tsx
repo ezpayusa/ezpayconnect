@@ -141,12 +141,34 @@ export default function ConsultaPage() {
       }
 
       if (!pacienteData) {
-        toast.error('Paciente no encontrado')
-        navigate('/citas')
-        return
+        console.warn('Paciente no encontrado para cita', citaData.paciente_id)
+        // Intentar crear un paciente fantasma con los datos que tenemos
+        setPaciente({
+          id: citaData.paciente_id,
+          nombre: 'Paciente',
+          apellido: `#${citaData.paciente_id}`,
+          medico_id: citaData.medico_id,
+          clinica_id: null,
+          fecha_nacimiento: null,
+          genero: null,
+          telefono: null,
+          email: null,
+          direccion: null,
+          emergencia_nombre: null,
+          emergencia_telefono: null,
+          alergias: null,
+          notas: null,
+          tipo_sangre: null,
+          antecedentes_personales: null,
+          antecedentes_familiares: null,
+          medicamentos_en_uso: null,
+          activo: true,
+          created_at: citaData.created_at,
+        } as Paciente)
+        toast.warning('Paciente no encontrado en base de datos, pero puede continuar la consulta')
+      } else {
+        setPaciente(pacienteData as Paciente)
       }
-
-      setPaciente(pacienteData as Paciente)
 
       // Cargar consulta existente
       const consultaExistente = await fetchConsultaPorCita(id)
