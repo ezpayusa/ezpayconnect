@@ -3,22 +3,18 @@ import { useSearchParams, useNavigate } from 'react-router-dom'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
+import { Skeleton } from '@/components/ui/skeleton'
 import { usePagosProveedor } from '@/proveedor/hooks/usePagosProveedor'
+import { useConfiguracionSistema } from '@/proveedor/hooks/useConfiguracionSistema'
+import { supabase } from '@/lib/supabase'
 import { toast } from 'sonner'
-import { ArrowLeft, Upload, CreditCard, Building2, User, Hash, Loader2 } from 'lucide-react'
-
-const INSTRUCCIONES_PAGO = {
-  banco: 'Banco Industrial',
-  cuenta: '123-456789-0',
-  tipo: 'Cuenta Monetaria',
-  titular: 'EzPayConnect S.A.',
-  correo: 'pagos@ezpayconnect.com',
-}
+import { ArrowLeft, Upload, CreditCard, Building2, User, Hash, Loader2, Mail } from 'lucide-react'
 
 export default function PagoCheckoutPage() {
   const navigate = useNavigate()
   const [searchParams] = useSearchParams()
   const { crearPago, saving } = usePagosProveedor()
+  const { config, loading: loadingConfig } = useConfiguracionSistema()
 
   const tipo = searchParams.get('tipo') || ''
   const referenciaId = searchParams.get('referencia_id') || ''
@@ -45,8 +41,24 @@ export default function PagoCheckoutPage() {
       return
     }
 
-    const ok = await crearPago(tipo, monto, 'GTQ', referenciaId || null, comprobanteFile)
-    if (ok) {
+    const pagoId = await crearPago(tipo, monto, 'GTQ', referenciaId || null, comprobanteFile)
+    if (pagoId) {
+      // Si es campaña, actualizar estado a 'enviada' y guardar monto pagado
+      if (tipo === 'campana' && referenciaId) {
+        const { error: updError } = await supabase
+          .from('solicitudes_campana')
+          .update({
+            estado: 'enviada',
+            monto_pagado: monto,
+          })
+          .eq('id', referenciaId)
+
+        if (updError) {
+          toast.error('Error actualizando campaña')
+          console.error(updError)
+        }
+      }
+
       if (tipo === 'plan_visitador') {
         navigate('/proveedor/visitador/planes')
       } else if (tipo === 'campana') {
@@ -62,6 +74,9 @@ export default function PagoCheckoutPage() {
     else if (tipo === 'campana') navigate('/proveedor/publicidad/campanas')
     else navigate('/proveedor/dashboard')
   }
+
+  const formatMonto = (val: number) =>
+    new Intl.NumberFormat('es-GT', { style: 'currency', currency: 'GTQ' }).format(val)
 
   return (
     <div className="space-y-6 max-w-2xl mx-auto">
@@ -94,7 +109,7 @@ export default function PagoCheckoutPage() {
           </div>
           <div className="border-t pt-3 flex justify-between items-center">
             <span className="font-medium">Total a pagar</span>
-            <span className="text-2xl font-bold text-[#1E5C8E]">Q {monto.toLocaleString()}</span>
+            <span className="text-2xl font-bold text-[#1E5C8E]">{formatMonto(monto)}</span>
           </div>
         </CardContent>
       </Card>
@@ -108,39 +123,58 @@ export default function PagoCheckoutPage() {
           </CardTitle>
         </CardHeader>
         <CardContent className="space-y-4">
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 text-sm">
-            <div className="flex items-start gap-2">
-              <Building2 className="h-4 w-4 text-muted-foreground mt-0.5" />
-              <div>
-                <p className="text-muted-foreground">Banco</p>
-                <p className="font-medium">{INSTRUCCIONES_PAGO.banco}</p>
-              </div>
+          {loadingConfig ? (
+            <div className="space-y-3">
+              <Skeleton className="h-4 w-3/4" />
+              <Skeleton className="h-4 w-1/2" />
+              <Skeleton className="h-4 w-2/3" />
             </div>
-            <div className="flex items-start gap-2">
-              <Hash className="h-4 w-4 text-muted-foreground mt-0.5" />
-              <div>
-                <p className="text-muted-foreground">Número de cuenta</p>
-                <p className="font-medium">{INSTRUCCIONES_PAGO.cuenta}</p>
+          ) : (
+            <>
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 text-sm">
+                <div className="flex items-start gap-2">
+                  <Building2 className="h-4 w-4 text-muted-foreground mt-0.5" />
+                  <div>
+                    <p className="text-muted-foreground">Banco</p>
+                    <p className="font-medium">{config?.banco || '-'}</p>
+                  </div>
+                </div>
+                <div className="flex items-start gap-2">
+                  <Hash className="h-4 w-4 text-muted-foreground mt-0.5" />
+                  <div>
+                    <p className="text-muted-foreground">Número de cuenta</p>
+                    <p className="font-medium">{config?.cuenta_bancaria || '-'}</p>
+                  </div>
+                </div>
+                <div className="flex items-start gap-2">
+                  <CreditCard className="h-4 w-4 text-muted-foreground mt-0.5" />
+                  <div>
+                    <p className="text-muted-foreground">Tipo de cuenta</p>
+                    <p className="font-medium">{config?.tipo_cuenta || '-'}</p>
+                  </div>
+                </div>
+                <div className="flex items-start gap-2">
+                  <User className="h-4 w-4 text-muted-foreground mt-0.5" />
+                  <div>
+                    <p className="text-muted-foreground">A nombre de</p>
+                    <p className="font-medium">{config?.titular_cuenta || '-'}</p>
+                  </div>
+                </div>
               </div>
-            </div>
-            <div className="flex items-start gap-2">
-              <CreditCard className="h-4 w-4 text-muted-foreground mt-0.5" />
-              <div>
-                <p className="text-muted-foreground">Tipo de cuenta</p>
-                <p className="font-medium">{INSTRUCCIONES_PAGO.tipo}</p>
+              {config?.email_pagos && (
+                <div className="flex items-start gap-2 text-sm">
+                  <Mail className="h-4 w-4 text-muted-foreground mt-0.5" />
+                  <div>
+                    <p className="text-muted-foreground">Email para comprobantes</p>
+                    <p className="font-medium">{config.email_pagos}</p>
+                  </div>
+                </div>
+              )}
+              <div className="bg-amber-50 border border-amber-200 rounded-lg p-3 text-sm text-amber-800">
+                Una vez realizada la transferencia, sube el comprobante abajo. El admin lo verificará en un plazo de 24-48 horas hábiles.
               </div>
-            </div>
-            <div className="flex items-start gap-2">
-              <User className="h-4 w-4 text-muted-foreground mt-0.5" />
-              <div>
-                <p className="text-muted-foreground">A nombre de</p>
-                <p className="font-medium">{INSTRUCCIONES_PAGO.titular}</p>
-              </div>
-            </div>
-          </div>
-          <div className="bg-amber-50 border border-amber-200 rounded-lg p-3 text-sm text-amber-800">
-            Una vez realizada la transferencia, sube el comprobante abajo. El admin lo verificará en un plazo de 24-48 horas hábiles.
-          </div>
+            </>
+          )}
         </CardContent>
       </Card>
 
@@ -173,7 +207,7 @@ export default function PagoCheckoutPage() {
             </Button>
             <Button
               className="flex-1 bg-[#1E5C8E] hover:bg-[#164a70]"
-              disabled={saving || !comprobanteFile}
+              disabled={saving || !comprobanteFile || loadingConfig}
               onClick={handleSubmit}
             >
               {saving ? <Loader2 className="h-4 w-4 animate-spin mr-2" /> : <Upload className="h-4 w-4 mr-2" />}

@@ -5,6 +5,7 @@ import type { VisitaAgendada } from '@/proveedor/types/proveedor.types'
 import type { PlanAsignacion } from '@/types/planes'
 import type { UbicacionVisita } from './useRutaVisitador'
 import { toast } from 'sonner'
+import { enviarEmail, buildHtmlVisitaPropuesta, buildHtmlVisitaAprobada, buildHtmlVisitaRechazada } from '@/proveedor/lib/notificaciones'
 
 export function useVisitasAgendadas() {
   const { empresa, cuenta } = useProveedorAuth()
@@ -212,6 +213,33 @@ export function useVisitasAgendadas() {
       }
     }
 
+    // Notificar al admin si fue propuesta por visitador
+    if (!esAdmin && estadoFinal === 'propuesta' && empresa?.email_contacto && insertData) {
+      try {
+        const { data: medicoData } = await supabase
+          .from('perfiles')
+          .select('nombre_completo')
+          .eq('id', visita.medico_id)
+          .single()
+
+        await enviarEmail({
+          to: empresa.email_contacto,
+          subject: `Nueva visita propuesta - ${medicoData?.nombre_completo || 'Médico'}`,
+          html: buildHtmlVisitaPropuesta({
+            medicoNombre: medicoData?.nombre_completo || 'Médico',
+            visitadorNombre: cuenta.nombre_completo,
+            fecha: visita.fecha_visita || '',
+            hora: `${visita.hora_inicio} - ${visita.hora_fin}`,
+            tipo: visita.tipo_visita || 'presentacion_producto',
+            notas: visita.notas_empresa,
+          }),
+          tipo: 'visita_propuesta',
+        })
+      } catch (e) {
+        console.error('Error notificando propuesta:', e)
+      }
+    }
+
     toast.success(esAdmin ? 'Visita agendada' : 'Visita propuesta. Esperando aprobación.')
     fetchVisitas()
     return true
@@ -306,6 +334,39 @@ export function useVisitasAgendadas() {
             .update({ visitas_usadas: (planActivo.visitas_usadas || 0) + 1 })
             .eq('id', planActivo.id)
           fetchPlanesAsignados()
+        }
+      }
+
+      // Notificar al visitador
+      const visita = visitas.find((v) => v.id === id)
+      if (visita?.visitador?.email) {
+        try {
+          if (accion === 'aprobar' || accion === 'modificar') {
+            await enviarEmail({
+              to: visita.visitador.email,
+              subject: `Visita aprobada - ${visita.medico?.nombre_completo || 'Médico'}`,
+              html: buildHtmlVisitaAprobada({
+                medicoNombre: visita.medico?.nombre_completo || 'Médico',
+                fecha: visita.fecha_visita,
+                hora: `${visita.hora_inicio} - ${visita.hora_fin}`,
+                comentario: cambios?.comentario || visita.comentario_admin,
+              }),
+              tipo: 'visita_aprobada',
+            })
+          } else if (accion === 'rechazar') {
+            await enviarEmail({
+              to: visita.visitador.email,
+              subject: `Visita rechazada - ${visita.medico?.nombre_completo || 'Médico'}`,
+              html: buildHtmlVisitaRechazada({
+                medicoNombre: visita.medico?.nombre_completo || 'Médico',
+                fecha: visita.fecha_visita,
+                comentario: cambios?.comentario || visita.comentario_admin,
+              }),
+              tipo: 'visita_rechazada',
+            })
+          }
+        } catch (e) {
+          console.error('Error notificando visita:', e)
         }
       }
 
