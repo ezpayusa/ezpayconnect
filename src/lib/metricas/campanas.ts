@@ -62,16 +62,15 @@ export async function filtrarCampanasPorFrequencyCap<T extends { id: number }>(
 
     const { data } = await supabase
       .from('campana_metricas')
-      .select('campana_id, count')
+      .select('campana_id')
       .eq('perfil_id', user.id)
       .gte('visto_at', desde.toISOString())
       .eq('clickeado', false)
       .in('campana_id', [...new Set(campanas.map((c) => c.id))])
-      .group('campana_id')
 
     const conteo: Record<number, number> = {}
     ;(data || []).forEach((row: any) => {
-      conteo[row.campana_id] = parseInt(row.count)
+      conteo[row.campana_id] = (conteo[row.campana_id] || 0) + 1
     })
 
     return campanas.filter((c) => (conteo[c.id] || 0) < MAX_IMPRESIONES_POR_DIA)

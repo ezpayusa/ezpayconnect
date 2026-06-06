@@ -1,4 +1,5 @@
 import { serve } from 'https://deno.land/std@0.168.0/http/server.ts'
+import { createClient } from 'https://esm.sh/@supabase/supabase-js@2'
 
 const corsHeaders = {
   'Access-Control-Allow-Origin': '*',
@@ -11,7 +12,7 @@ serve(async (req) => {
   }
 
   try {
-    const { to, subject, html, tipo } = await req.json()
+    const { to, subject, html, tipo, metadata } = await req.json()
 
     if (!to || !subject || !html) {
       return new Response(
@@ -36,7 +37,7 @@ serve(async (req) => {
         'Content-Type': 'application/json',
       },
       body: JSON.stringify({
-        from: 'EzPayConnect <no-reply@ezpayconnect.com>',
+        from: 'EzPayConnect <onboarding@resend.dev>',
         to,
         subject,
         html,
@@ -44,6 +45,28 @@ serve(async (req) => {
     })
 
     const data = await res.json()
+
+    // Log en BD (notificaciones_email)
+    const supabaseUrl = Deno.env.get('SUPABASE_URL')!
+    const serviceRoleKey = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!
+    const supabase = createClient(supabaseUrl, serviceRoleKey, {
+      auth: { autoRefreshToken: false, persistSession: false },
+    })
+
+    const logPayload = {
+      destinatario: to,
+      asunto: subject,
+      tipo: tipo || 'general',
+      estado: res.ok ? 'enviado' : 'fallido',
+      error: res.ok ? null : (data?.message || JSON.stringify(data)),
+      proveedor_id: metadata?.proveedor_id || null,
+      visita_id: metadata?.visita_id || null,
+    }
+
+    const { error: logError } = await supabase.from('notificaciones_email').insert(logPayload)
+    if (logError) {
+      console.error('[notificar-email] Error logueando en BD:', logError)
+    }
 
     if (!res.ok) {
       console.error('[notificar-email] Error Resend:', data)
@@ -53,7 +76,6 @@ serve(async (req) => {
       )
     }
 
-    // Log opcional en consola
     console.log(`[notificar-email] Enviado a ${to} | tipo: ${tipo || 'general'} | id: ${data.id}`)
 
     return new Response(

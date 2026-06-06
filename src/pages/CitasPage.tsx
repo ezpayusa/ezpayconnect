@@ -137,13 +137,13 @@ export default function CitasPage() {
       // Intentar tabla perfiles como fallback
       const { data: medsViejos } = await supabase
         .from('perfiles')
-        .select('id, nombre, especialidad')
+        .select('id, nombre_completo, especialidad')
         .in('id', medicoIds)
         .eq('rol', 'medico')
 
       // Combinar: medicos nuevos tienen prioridad
       const medsNuevosMap = new Map((medsNuevos || []).map(m => [m.id, { ...m, nombre: m.nombre_completo }]))
-      const medsViejosMap = new Map((medsViejos || []).map(m => [m.id, m]))
+      const medsViejosMap = new Map((medsViejos || []).map(m => [m.id, { ...m, nombre: m.nombre_completo }]))
 
       // Usar medicos nuevos si existen, sino los viejos
       medicosData = medicoIds.map(id => {
@@ -199,7 +199,7 @@ export default function CitasPage() {
 
     setGuardando(true)
     try {
-      const { error } = await supabase.from('citas').insert({
+      const { data: citaCreada, error } = await supabase.from('citas').insert({
         paciente_id: parseInt(nuevaCita.paciente_id),
         medico_id: nuevaCita.medico_id,
         fecha: nuevaCita.fecha,
@@ -208,9 +208,24 @@ export default function CitasPage() {
         motivo: nuevaCita.motivo,
         notas: nuevaCita.notas,
         estado: 'pendiente'
-      })
+      }).select().single()
 
       if (error) throw error
+
+      // Programar recordatorio automático 24h antes
+      if (citaCreada?.id) {
+        try {
+          await supabase.functions.invoke('programar-recordatorio', {
+            body: {
+              tipo: 'cita',
+              referencia_id: citaCreada.id,
+              horas_antes: 24,
+            },
+          })
+        } catch (recErr) {
+          console.error('Error programando recordatorio:', recErr)
+        }
+      }
 
       alert('Cita creada exitosamente')
       setShowModal(false)
@@ -231,9 +246,8 @@ export default function CitasPage() {
     try {
       const { data: result, error: fnError } = await supabase.functions.invoke('programar-recordatorio', {
         body: {
-          cita_id: cita.id,
-          paciente_id: cita.paciente_id,
-          tipo_recordatorio: 'whatsapp',
+          tipo: 'cita',
+          referencia_id: cita.id,
           horas_antes: 24
         }
       })

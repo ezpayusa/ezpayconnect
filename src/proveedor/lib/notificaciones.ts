@@ -1,12 +1,41 @@
 import { supabase } from '@/lib/supabase'
 
-const FUNCTION_URL = `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/notificar-email`
+const FUNCTION_URL_EMAIL = `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/notificar-email`
+const FUNCTION_URL_NOTIF = `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/enviar-notificacion`
 
 async function getAuthHeaders() {
   const { data } = await supabase.auth.getSession()
   return {
     'Authorization': `Bearer ${data.session?.access_token || ''}`,
     'Content-Type': 'application/json',
+  }
+}
+
+export async function crearNotificacionInApp(params: {
+  usuario_id: string
+  tipo: string
+  titulo: string
+  mensaje: string
+  accion_url?: string
+  metadata?: Record<string, any>
+}): Promise<boolean> {
+  try {
+    const res = await fetch(FUNCTION_URL_NOTIF, {
+      method: 'POST',
+      headers: await getAuthHeaders(),
+      body: JSON.stringify(params),
+    })
+
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}))
+      console.error('[crearNotificacionInApp] Error:', err)
+      return false
+    }
+
+    return true
+  } catch (err) {
+    console.error('[crearNotificacionInApp] Excepción:', err)
+    return false
   }
 }
 
@@ -17,7 +46,7 @@ export async function enviarEmail(params: {
   tipo?: string
 }): Promise<boolean> {
   try {
-    const res = await fetch(FUNCTION_URL, {
+    const res = await fetch(FUNCTION_URL_EMAIL, {
       method: 'POST',
       headers: await getAuthHeaders(),
       body: JSON.stringify(params),

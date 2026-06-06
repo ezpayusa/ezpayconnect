@@ -40,7 +40,7 @@ export default function AgendarCitaModal({ pacienteId, open, onClose, onSuccess 
       finDate.setHours(h, m + 30)
       const hora_fin = `${String(finDate.getHours()).padStart(2, '0')}:${String(finDate.getMinutes()).padStart(2, '0')}:00`
 
-      const { error } = await supabase.from('citas').insert({
+      const { data: citaCreada, error } = await supabase.from('citas').insert({
         paciente_id: pacienteId,
         fecha: form.fecha,
         hora_inicio: form.hora_inicio,
@@ -48,9 +48,24 @@ export default function AgendarCitaModal({ pacienteId, open, onClose, onSuccess 
         motivo: form.motivo || 'Consulta general',
         notas: form.notas || null,
         estado: 'solicitada',
-      })
+      }).select().single()
 
       if (error) throw error
+
+      // Programar recordatorio automático 24h antes
+      if (citaCreada?.id) {
+        try {
+          await supabase.functions.invoke('programar-recordatorio', {
+            body: {
+              tipo: 'cita',
+              referencia_id: citaCreada.id,
+              horas_antes: 24,
+            },
+          })
+        } catch (recErr) {
+          console.error('Error programando recordatorio:', recErr)
+        }
+      }
 
       toast.success('Cita solicitada correctamente')
       setForm({ fecha: '', hora_inicio: '', motivo: '', notas: '' })

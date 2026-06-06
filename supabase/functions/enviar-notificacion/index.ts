@@ -1,4 +1,4 @@
-import { createClient } from "supabase";
+import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
@@ -26,6 +26,9 @@ Deno.serve(async (req) => {
       mensaje,
       accion_url,
       metadata,
+      evento_id,
+      rol_destinatario,
+      nivel_destinatario,
     } = body;
 
     if (!tipo || !titulo || !mensaje) {
@@ -44,6 +47,9 @@ Deno.serve(async (req) => {
         mensaje,
         accion_url: accion_url || null,
         metadata: metadata || {},
+        evento_id: evento_id || null,
+        rol_destinatario: rol_destinatario || null,
+        nivel_destinatario: nivel_destinatario || null,
       })
       .select()
       .single();
@@ -55,6 +61,7 @@ Deno.serve(async (req) => {
       { headers: { ...corsHeaders, "Content-Type": "application/json" } }
     );
   } catch (error: any) {
+    console.error("[enviar-notificacion] Error:", error);
     return new Response(
       JSON.stringify({ error: error.message }),
       { status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" } }

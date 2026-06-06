@@ -5,7 +5,7 @@ import type { VisitaAgendada } from '@/proveedor/types/proveedor.types'
 import type { PlanAsignacion } from '@/types/planes'
 import type { UbicacionVisita } from './useRutaVisitador'
 import { toast } from 'sonner'
-import { enviarEmail, buildHtmlVisitaPropuesta, buildHtmlVisitaAprobada, buildHtmlVisitaRechazada } from '@/proveedor/lib/notificaciones'
+import { enviarEmail, buildHtmlVisitaPropuesta, buildHtmlVisitaAprobada, buildHtmlVisitaRechazada, crearNotificacionInApp } from '@/proveedor/lib/notificaciones'
 
 export function useVisitasAgendadas() {
   const { empresa, cuenta } = useProveedorAuth()
@@ -235,6 +235,24 @@ export function useVisitasAgendadas() {
           }),
           tipo: 'visita_propuesta',
         })
+
+        // Notificación in-app a admins/editores de la empresa
+        const { data: admins } = await supabase
+          .from('cuentas_proveedor')
+          .select('id')
+          .eq('empresa_id', empresa.id)
+          .in('rol_en_empresa', ['admin', 'editor'])
+
+        for (const admin of admins || []) {
+          await crearNotificacionInApp({
+            usuario_id: admin.id,
+            tipo: 'visita_propuesta',
+            titulo: 'Nueva visita propuesta',
+            mensaje: `${cuenta.nombre_completo} propuso una visita con ${medicoData?.nombre_completo || 'Médico'} el ${visita.fecha_visita}.`,
+            accion_url: '/proveedor/visitador/admin-aprobar',
+            metadata: { visita_id: insertData.id },
+          })
+        }
       } catch (e) {
         console.error('Error notificando propuesta:', e)
       }
@@ -353,6 +371,30 @@ export function useVisitasAgendadas() {
               }),
               tipo: 'visita_aprobada',
             })
+
+            // Notificación in-app al visitador
+            if (visita.cuenta_proveedor_id) {
+              await crearNotificacionInApp({
+                usuario_id: visita.cuenta_proveedor_id,
+                tipo: 'visita_aprobada',
+                titulo: 'Visita aprobada',
+                mensaje: `Tu visita con ${visita.medico?.nombre_completo || 'Médico'} el ${visita.fecha_visita} fue confirmada.`,
+                metadata: { visita_id: id },
+              })
+            }
+
+            // Programar recordatorio 24h antes
+            try {
+              await supabase.functions.invoke('programar-recordatorio', {
+                body: {
+                  tipo: 'visita',
+                  referencia_id: id,
+                  horas_antes: 24,
+                },
+              })
+            } catch (recErr) {
+              console.error('Error programando recordatorio de visita:', recErr)
+            }
           } else if (accion === 'rechazar') {
             await enviarEmail({
               to: visita.visitador.email,
@@ -364,6 +406,17 @@ export function useVisitasAgendadas() {
               }),
               tipo: 'visita_rechazada',
             })
+
+            // Notificación in-app al visitador
+            if (visita.cuenta_proveedor_id) {
+              await crearNotificacionInApp({
+                usuario_id: visita.cuenta_proveedor_id,
+                tipo: 'visita_rechazada',
+                titulo: 'Visita rechazada',
+                mensaje: `Tu visita con ${visita.medico?.nombre_completo || 'Médico'} el ${visita.fecha_visita} no fue aprobada.`,
+                metadata: { visita_id: id },
+              })
+            }
           }
         } catch (e) {
           console.error('Error notificando visita:', e)

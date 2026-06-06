@@ -14,102 +14,150 @@ serve(async (req) => {
 
   try {
     const supabaseUrl = Deno.env.get('SUPABASE_URL')!
-    const supabaseServiceKey = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!
-    const supabase = createClient(supabaseUrl, supabaseServiceKey)
+    const serviceRoleKey = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!
+    const supabase = createClient(supabaseUrl, serviceRoleKey, {
+      auth: { autoRefreshToken: false, persistSession: false },
+    })
 
-    const { cita_id, paciente_id, tipo_recordatorio, horas_antes } = await req.json()
+    const body = await req.json()
+    console.log('[programar-recordatorio] Body recibido:', JSON.stringify(body))
+    
+    const { tipo, referencia_id, horas_antes = 24, destinatario_email } = body
 
-    if (!cita_id || !paciente_id) {
-      throw new Error('Faltan campos requeridos: cita_id, paciente_id')
+    if (!tipo || !referencia_id) {
+      console.error('[programar-recordatorio] Faltan campos:', { tipo, referencia_id })
+      return new Response(
+        JSON.stringify({ error: 'Faltan campos requeridos: tipo, referencia_id' }),
+        { status: 400, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+      )
     }
 
-    // Obtener datos de la cita SIN join (evita error de foreign key)
-    const { data: cita, error: citaError } = await supabase
-      .from('citas')
-      .select('*')
-      .eq('id', cita_id)
-      .single()
+    if (tipo !== 'cita' && tipo !== 'visita') {
+      return new Response(
+        JSON.stringify({ error: "tipo debe ser 'cita' o 'visita'" }),
+        { status: 400, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+      )
+    }
 
-    if (citaError || !cita) throw new Error('Cita no encontrada')
+    let cita_id: number | null = null
+    let visita_id: string | null = null
+    let fecha_envio_programada: string
+    let mensaje: string
+    let emailDestinatario: string | null = destinatario_email || null
+    let telefonoDestinatario: string | null = null
 
-    // Obtener paciente
-    const { data: paciente } = await supabase
-      .from('pacientes')
-      .select('nombre, telefono')
-      .eq('id', cita.paciente_id)
-      .single()
+    if (tipo === 'cita') {
+      // Query separada 1: cita
+      const { data: cita, error: citaError } = await supabase
+        .from('citas')
+        .select('*')
+        .eq('id', referencia_id)
+        .single()
 
-    // Obtener médico de AMBAS tablas (medicos primero, perfiles fallback)
-    let medico = null
-    const { data: medicoNuevo } = await supabase
-      .from('medicos')
-      .select('nombre_completo')
-      .eq('id', cita.medico_id)
-      .single()
-    
-    if (medicoNuevo) {
-      medico = { nombre: medicoNuevo.nombre_completo }
-    } else {
-      const { data: medicoViejo } = await supabase
+      if (citaError || !cita) {
+        console.error('[programar-recordatorio] Error buscando cita:', citaError)
+        return new Response(
+          JSON.stringify({ error: 'Cita no encontrada' }),
+          { status: 404, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+        )
+      }
+
+      cita_id = cita.id
+
+      // Query separada 2: paciente
+      const { data: paciente } = await supabase
+        .from('pacientes')
+        .select('nombre, email, telefono')
+        .eq('id', cita.paciente_id)
+        .single()
+
+      // Query separada 3: médico
+      const { data: medico } = await supabase
         .from('perfiles')
-        .select('nombre')
+        .select('nombre_completo, email')
         .eq('id', cita.medico_id)
         .single()
-      if (medicoViejo) medico = medicoViejo
+
+      const fechaCita = new Date(`${cita.fecha}T${cita.hora_inicio || '00:00:00'}`)
+      const fechaEnvio = new Date(fechaCita.getTime() - horas_antes * 60 * 60 * 1000)
+      fecha_envio_programada = fechaEnvio.toISOString()
+
+      const pacienteNombre = paciente?.nombre || 'Paciente'
+      const medicoNombre = medico?.nombre_completo || 'Médico'
+      mensaje = `Hola ${pacienteNombre}, le recordamos su cita médica el ${cita.fecha} a las ${cita.hora_inicio || 'hora por confirmar'} con el Dr. ${medicoNombre}. EzPayConnect`
+
+      if (!emailDestinatario) {
+        emailDestinatario = paciente?.email || null
+      }
+      telefonoDestinatario = paciente?.telefono || null
+    } else {
+      // tipo === 'visita'
+      // Query separada 1: visita
+      const { data: visita, error: visitaError } = await supabase
+        .from('visitas_agendadas')
+        .select('*')
+        .eq('id', referencia_id)
+        .single()
+
+      if (visitaError || !visita) {
+        console.error('[programar-recordatorio] Error buscando visita:', visitaError)
+        return new Response(
+          JSON.stringify({ error: 'Visita no encontrada' }),
+          { status: 404, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+        )
+      }
+
+      visita_id = visita.id
+
+      // Query separada 2: visitador
+      const { data: visitador } = await supabase
+        .from('cuentas_proveedor')
+        .select('nombre_completo, email, telefono')
+        .eq('id', visita.visitador_id)
+        .single()
+
+      // Query separada 3: médico
+      const { data: medico } = await supabase
+        .from('perfiles')
+        .select('nombre_completo')
+        .eq('id', visita.medico_id)
+        .single()
+
+      const fechaVisita = new Date(`${visita.fecha_visita}T${visita.hora_inicio || '00:00:00'}`)
+      const fechaEnvio = new Date(fechaVisita.getTime() - horas_antes * 60 * 60 * 1000)
+      fecha_envio_programada = fechaEnvio.toISOString()
+
+      const visitadorNombre = visitador?.nombre_completo || 'Visitador'
+      const medicoNombre = medico?.nombre_completo || 'Médico'
+      mensaje = `Hola ${visitadorNombre}, le recordamos su visita programada el ${visita.fecha_visita} a las ${visita.hora_inicio || 'hora por confirmar'} con el Dr. ${medicoNombre}. EzPayConnect`
+
+      if (!emailDestinatario) {
+        emailDestinatario = visitador?.email || null
+      }
+      telefonoDestinatario = visitador?.telefono || null
     }
 
-    // Calcular fecha de envio (24 horas antes por defecto)
-    const horas = horas_antes || 24
-    const fechaCita = new Date(`${cita.fecha}T${cita.hora_inicio || '00:00:00'}`)
-    const fechaEnvio = new Date(fechaCita.getTime() - horas * 60 * 60 * 1000)
-
-    // Crear mensaje
-    const mensaje = `Hola ${paciente?.nombre || 'Paciente'}, le recordamos su cita medica el ${cita.fecha} a las ${cita.hora_inicio || 'hora por confirmar'} con el Dr. ${medico?.nombre || 'Medico'}. EzPayConnect`
-
-    // Insertar en recordatorios_programados
     const { data: recordatorio, error: recError } = await supabase
-      .from('recordatorios_programados')
+      .from('recordatorios')
       .insert({
-        cita_id: String(cita_id),
-        paciente_id: String(paciente_id),
-        tipo_recordatorio: tipo_recordatorio || 'whatsapp',
+        tipo,
+        cita_id,
+        visita_id,
+        destinatario_email: emailDestinatario,
+        destinatario_telefono: telefonoDestinatario,
+        mensaje,
+        fecha_envio_programada,
         estado: 'pendiente',
-        fecha_envio_programada: fechaEnvio.toISOString(),
-        mensaje
       })
       .select()
       .single()
 
-    if (recError) throw recError
-
-    // Si es WhatsApp y hay telefono, enviar inmediatamente
-    let envioInmediato = null
-    if (tipo_recordatorio === 'whatsapp' && paciente?.telefono) {
-      try {
-        const notifResponse = await fetch(`${supabaseUrl}/functions/v1/enviar-notificacion`, {
-          method: 'POST',
-          headers: {
-            'Authorization': `Bearer ${supabaseServiceKey}`,
-            'Content-Type': 'application/json'
-          },
-          body: JSON.stringify({
-            tipo: 'whatsapp',
-            destinatario: paciente.telefono,
-            mensaje: mensaje,
-            metadata: { cita_id, recordatorio_id: recordatorio.id }
-          })
-        })
-
-        if (notifResponse.ok) {
-          await supabase
-            .from('recordatorios_programados')
-            .update({ estado: 'enviado', fecha_envio_real: new Date().toISOString() })
-            .eq('id', recordatorio.id)
-          envioInmediato = 'enviado'
-        }
-      } catch (e) {
-        envioInmediato = 'pendiente'
-      }
+    if (recError) {
+      console.error('[programar-recordatorio] Error insertando:', recError)
+      return new Response(
+        JSON.stringify({ error: 'Error guardando recordatorio', details: recError }),
+        { status: 500, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+      )
     }
 
     return new Response(
@@ -117,20 +165,21 @@ serve(async (req) => {
         success: true,
         data: {
           recordatorio_id: recordatorio.id,
-          estado: envioInmediato || 'pendiente',
-          fecha_envio_programada: fechaEnvio.toISOString(),
+          tipo,
+          referencia_id,
+          estado: 'pendiente',
+          fecha_envio_programada,
           mensaje,
-          paciente: paciente?.nombre,
-          telefono: paciente?.telefono
-        }
+          destinatario_email: emailDestinatario,
+        },
       }),
       { headers: { ...corsHeaders, 'Content-Type': 'application/json' }, status: 200 }
     )
-
-  } catch (error) {
+  } catch (error: any) {
+    console.error('[programar-recordatorio] Error:', error)
     return new Response(
-      JSON.stringify({ success: false, error: error.message }),
-      { headers: { ...corsHeaders, 'Content-Type': 'application/json' }, status: 400 }
+      JSON.stringify({ error: error.message || 'Error interno' }),
+      { status: 500, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
     )
   }
 })

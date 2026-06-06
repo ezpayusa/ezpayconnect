@@ -42,6 +42,19 @@ export function useCitas() {
       return { data: null, error: `Error: ${error.message} (${error.code})` }
     }
     
+    // Programar recordatorio automático 24h antes
+    try {
+      await supabase.functions.invoke('programar-recordatorio', {
+        body: {
+          tipo: 'cita',
+          referencia_id: data.id,
+          horas_antes: 24,
+        },
+      })
+    } catch (recErr) {
+      console.error('Error programando recordatorio:', recErr)
+    }
+    
     setCitas(prev => [...prev, data])
     return { data, error: null }
   }
