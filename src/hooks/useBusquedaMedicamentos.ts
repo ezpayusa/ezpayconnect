@@ -1,6 +1,7 @@
 import { useState, useCallback } from 'react';
 import { supabase } from '@/lib/supabase';
 import { toast } from 'sonner';
+import type { ProductoEmpresa } from '@/proveedor/types/proveedor.types';
 
 export interface FarmaciaMedicamento {
   id: string;
@@ -32,6 +33,9 @@ interface UseBusquedaMedicamentosReturn {
   // Laboratorios
   resultadosLaboratorios: FarmaciaMedicamento[];
   buscarEnLaboratorios: (query: string) => Promise<void>;
+  // Proveedores
+  resultadosProveedores: ProductoEmpresa[];
+  buscarEnProveedores: (query: string) => Promise<void>;
   // General
   loading: boolean;
   buscar: (query: string) => Promise<void>;
@@ -41,6 +45,7 @@ interface UseBusquedaMedicamentosReturn {
 export function useBusquedaMedicamentos(): UseBusquedaMedicamentosReturn {
   const [resultadosFarmacias, setResultadosFarmacias] = useState<FarmaciaMedicamento[]>([]);
   const [resultadosLaboratorios, setResultadosLaboratorios] = useState<FarmaciaMedicamento[]>([]);
+  const [resultadosProveedores, setResultadosProveedores] = useState<ProductoEmpresa[]>([]);
   const [resultados, setResultados] = useState<FarmaciaMedicamento[]>([]);
   const [loading, setLoading] = useState(false);
 
@@ -48,11 +53,13 @@ export function useBusquedaMedicamentos(): UseBusquedaMedicamentosReturn {
   const buscar = useCallback(async (query: string) => {
     if (!query.trim()) {
       setResultados([]);
+      setResultadosProveedores([]);
       return;
     }
     setLoading(true);
     try {
-      const { data, error } = await supabase
+      // Buscar en farmacias
+      const { data: farmaciaData, error: farmaciaError } = await supabase
         .from('farmacia_medicamentos')
         .select(`
           *,
@@ -61,12 +68,25 @@ export function useBusquedaMedicamentos(): UseBusquedaMedicamentosReturn {
         .ilike('nombre_medicamento', `%${query.trim()}%`)
         .gt('stock_actual', 0)
         .order('precio_unitario', { ascending: true });
-      if (error) throw error;
-      setResultados(data || []);
+
+      if (farmaciaError) throw farmaciaError;
+      setResultados(farmaciaData || []);
+
+      // Buscar en proveedores
+      const { data: proveedorData, error: proveedorError } = await supabase
+        .from('productos_empresa')
+        .select('*, empresa:empresa_id(nombre_empresa, tipo)')
+        .ilike('nombre_producto', `%${query.trim()}%`)
+        .eq('estado', 'activo')
+        .order('precio_unitario', { ascending: true });
+
+      if (proveedorError) throw proveedorError;
+      setResultadosProveedores((proveedorData || []) as ProductoEmpresa[]);
     } catch (err: any) {
       console.error('Error buscando medicamentos:', err);
       toast.error('Error al buscar medicamentos', { description: err.message });
       setResultados([]);
+      setResultadosProveedores([]);
     } finally {
       setLoading(false);
     }
@@ -132,6 +152,32 @@ export function useBusquedaMedicamentos(): UseBusquedaMedicamentosReturn {
     }
   }, []);
 
+  // ─── Búsqueda en proveedores ───
+  const buscarEnProveedores = useCallback(async (query: string) => {
+    if (!query.trim()) {
+      setResultadosProveedores([]);
+      return;
+    }
+    setLoading(true);
+    try {
+      const { data, error } = await supabase
+        .from('productos_empresa')
+        .select('*, empresa:empresa_id(nombre_empresa, tipo)')
+        .ilike('nombre_producto', `%${query.trim()}%`)
+        .eq('estado', 'activo')
+        .order('precio_unitario', { ascending: true });
+
+      if (error) throw error;
+      setResultadosProveedores((data || []) as ProductoEmpresa[]);
+    } catch (err: any) {
+      console.error('Error buscando en proveedores:', err);
+      toast.error('Error al buscar proveedores', { description: err.message });
+      setResultadosProveedores([]);
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
   // ─── Búsqueda por farmacia específica (compatibilidad) ───
   const buscarPorFarmacia = useCallback(async (farmaciaId: number) => {
     setLoading(true);
@@ -165,5 +211,7 @@ export function useBusquedaMedicamentos(): UseBusquedaMedicamentosReturn {
     buscarEnFarmacias,
     resultadosLaboratorios,
     buscarEnLaboratorios,
+    resultadosProveedores,
+    buscarEnProveedores,
   };
 }

@@ -5,12 +5,12 @@ import { Input } from '@/components/ui/input';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { useBusquedaMedicamentos } from '@/hooks/useBusquedaMedicamentos';
-import { Search, MapPin, Phone, DollarSign, Package, Building2, ArrowLeft, Copy, CheckCircle, ShoppingCart } from 'lucide-react';
+import { Search, MapPin, Phone, DollarSign, Package, Building2, ArrowLeft, Copy, CheckCircle, ShoppingCart, Store } from 'lucide-react';
 import { toast } from 'sonner';
 
 export default function BuscarMedicamentosPage() {
   const navigate = useNavigate();
-  const { resultados, loading, buscar } = useBusquedaMedicamentos();
+  const { resultados, resultadosProveedores, loading, buscar } = useBusquedaMedicamentos();
   const [query, setQuery] = useState('');
   const [seleccionado, setSeleccionado] = useState<string | null>(null);
   const [copiado, setCopiado] = useState(false);
@@ -28,6 +28,14 @@ export default function BuscarMedicamentosPage() {
     setTimeout(() => setCopiado(false), 2000);
   };
 
+  const handleCopiarInfoProveedor = (item: any) => {
+    const texto = `Producto: ${item.nombre_producto}\nPresentación: ${item.presentacion}\nProveedor: ${item.empresa?.nombre_empresa}\nPrecio: Q${item.precio_unitario}\nStock: ${item.stock_disponible} unidades`;
+    navigator.clipboard.writeText(texto);
+    setCopiado(true);
+    toast.success('Información copiada al portapapeles');
+    setTimeout(() => setCopiado(false), 2000);
+  };
+
   // Agrupar resultados por medicamento
   const agrupados = resultados.reduce((acc: any, item) => {
     const key = item.nombre_medicamento;
@@ -35,6 +43,9 @@ export default function BuscarMedicamentosPage() {
     acc[key].push(item);
     return acc;
   }, {});
+
+  const tieneResultados = Object.keys(agrupados).length > 0 || resultadosProveedores.length > 0;
+  const sinResultados = query && !loading && resultados.length === 0 && resultadosProveedores.length === 0;
 
   return (
     <div className="container mx-auto px-4 py-6 max-w-7xl">
@@ -72,9 +83,13 @@ export default function BuscarMedicamentosPage() {
         </CardContent>
       </Card>
 
-      {/* Resultados */}
+      {/* Resultados de Farmacias */}
       {Object.keys(agrupados).length > 0 && (
-        <div className="space-y-6">
+        <div className="space-y-6 mb-8">
+          <h2 className="text-lg font-semibold text-gray-800 flex items-center gap-2">
+            <Building2 className="h-5 w-5 text-[#1E5C8E]" />
+            En farmacias ({resultados.length} resultado{resultados.length > 1 ? 's' : ''})
+          </h2>
           {Object.entries(agrupados).map(([nombreMedicamento, farmacias]: [string, any]) => (
             <Card key={nombreMedicamento} className="overflow-hidden">
               <CardHeader className="bg-gradient-to-r from-[#1E5C8E] to-[#2A7CC4] text-white">
@@ -157,7 +172,6 @@ export default function BuscarMedicamentosPage() {
                                 onClick={(e) => {
                                   e.stopPropagation();
                                   toast.success('Farmacia seleccionada para la receta');
-                                  // Aquí se integraría con el sistema de recetas
                                 }}
                               >
                                 <ShoppingCart className="h-4 w-4 mr-1" />
@@ -176,13 +190,92 @@ export default function BuscarMedicamentosPage() {
         </div>
       )}
 
+      {/* Resultados de Proveedores */}
+      {resultadosProveedores.length > 0 && (
+        <div className="space-y-6 mb-8">
+          <h2 className="text-lg font-semibold text-gray-800 flex items-center gap-2">
+            <Store className="h-5 w-5 text-emerald-600" />
+            En proveedores ({resultadosProveedores.length} resultado{resultadosProveedores.length > 1 ? 's' : ''})
+          </h2>
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+            {resultadosProveedores.map((item) => (
+              <Card key={item.id} className="overflow-hidden">
+                <div className="h-32 bg-slate-100 relative">
+                  {item.imagen_url ? (
+                    <img
+                      src={item.imagen_url}
+                      alt={item.nombre_producto}
+                      className="w-full h-full object-cover"
+                      onError={(e) => { (e.target as HTMLImageElement).style.display = 'none' }}
+                    />
+                  ) : (
+                    <div className="flex items-center justify-center h-full">
+                      <Package className="h-10 w-10 text-slate-300" />
+                    </div>
+                  )}
+                  {item.requiere_receta && (
+                    <div className="absolute top-2 right-2">
+                      <Badge variant="outline" className="bg-white/90 text-amber-600 border-amber-600">
+                        Receta
+                      </Badge>
+                    </div>
+                  )}
+                </div>
+                <CardContent className="p-4">
+                  <div className="flex items-center justify-between mb-1">
+                    <h3 className="font-semibold text-gray-900">{item.nombre_producto}</h3>
+                    <Badge className="bg-emerald-100 text-emerald-700">{item.empresa?.tipo?.replace('_', ' ')}</Badge>
+                  </div>
+                  <p className="text-sm text-muted-foreground">
+                    {item.principio_activo || '-'} • {item.presentacion || '-'} • {item.concentracion || '-'}
+                  </p>
+                  <div className="flex items-center justify-between mt-3">
+                    <div className="text-lg font-bold text-[#1E5C8E]">
+                      Q {Number(item.precio_unitario).toFixed(2)}
+                    </div>
+                    <div className="text-sm text-muted-foreground">
+                      Stock: {item.stock_disponible}
+                    </div>
+                  </div>
+                  <div className="mt-2 text-sm text-muted-foreground flex items-center gap-1">
+                    <Store className="h-3.5 w-3.5" />
+                    {item.empresa?.nombre_empresa}
+                  </div>
+                  <div className="flex gap-2 mt-3">
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      className="flex-1"
+                      onClick={() => handleCopiarInfoProveedor(item)}
+                    >
+                      <Copy className="h-3.5 w-3.5 mr-1" />
+                      Copiar
+                    </Button>
+                    <Button
+                      size="sm"
+                      className="flex-1 bg-[#1E5C8E] hover:bg-[#164a70]"
+                      onClick={() => {
+                        toast.success('Producto seleccionado para la receta');
+                      }}
+                    >
+                      <ShoppingCart className="h-3.5 w-3.5 mr-1" />
+                      Seleccionar
+                    </Button>
+                  </div>
+                </CardContent>
+              </Card>
+            ))}
+          </div>
+        </div>
+      )}
+
       {/* Estado vacío */}
-      {query && !loading && resultados.length === 0 && (
+      {sinResultados && (
         <Card className="p-8 text-center">
           <Package className="h-12 w-12 text-gray-300 mx-auto mb-4" />
           <h3 className="text-lg font-semibold text-gray-900 mb-2">No se encontraron resultados</h3>
           <p className="text-muted-foreground">
-            No hay farmacias con &quot;{query}&quot; en stock actualmente.
+            No hay farmacias ni proveedores con &quot;{query}&quot; en stock actualmente.
           </p>
         </Card>
       )}
@@ -193,7 +286,7 @@ export default function BuscarMedicamentosPage() {
           <Search className="h-12 w-12 text-gray-300 mx-auto mb-4" />
           <h3 className="text-lg font-semibold text-gray-900 mb-2">Busca un medicamento</h3>
           <p className="text-muted-foreground max-w-md mx-auto">
-            Escribe el nombre del medicamento arriba para ver qué farmacias lo tienen disponible, 
+            Escribe el nombre del medicamento arriba para ver qué farmacias y proveedores lo tienen disponible,
             comparar precios y seleccionar la mejor opción para tu paciente.
           </p>
         </Card>

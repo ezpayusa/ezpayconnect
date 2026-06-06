@@ -20,7 +20,8 @@ import { Label } from '@/components/ui/label';
 import { usePlanes } from '@/hooks/usePlanes';
 import { useAdminAuth } from '@/hooks/admin/useAdminAuth';
 import { formatearPrecio, getBanderaPais } from '@/lib/planes-utils';
-import { ArrowLeft, Plus, Search, RefreshCw, Edit, Trash2, X, AlertTriangle, Megaphone } from 'lucide-react';
+import { ArrowLeft, Plus, Search, RefreshCw, Edit, Trash2, X, AlertTriangle, Megaphone, CreditCard } from 'lucide-react';
+import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import CampanasPublicitariasContent from '@/webapp/components/CampanasPublicitariasContent';
 
 // ════════════════════════════════════════════════════
@@ -309,10 +310,28 @@ export default function PlanesPublicidadConfigPage() {
         </div>
         <div className="flex gap-2">
           <Button variant="outline" onClick={recargar}><RefreshCw className="h-4 w-4 mr-2" /> Recargar</Button>
-          <Button onClick={() => setDialogoCrear(true)} className="bg-amber-600 hover:bg-amber-700"><Plus className="h-4 w-4 mr-2" /> Nuevo Plan</Button>
+          {vista === 'planes' && (
+            <Button onClick={() => setDialogoCrear(true)} className="bg-amber-600 hover:bg-amber-700"><Plus className="h-4 w-4 mr-2" /> Nuevo Plan</Button>
+          )}
         </div>
       </div>
 
+      {/* Tabs de navegación */}
+      <Tabs value={vista} onValueChange={(v) => setVista(v as 'planes' | 'campanas')} className="w-full mb-6">
+        <TabsList className="grid w-full max-w-md grid-cols-2">
+          <TabsTrigger value="planes" className="flex items-center gap-2">
+            <CreditCard className="h-4 w-4" /> Planes de Suscripción
+          </TabsTrigger>
+          <TabsTrigger value="campanas" className="flex items-center gap-2">
+            <Megaphone className="h-4 w-4" /> Campañas Publicitarias
+          </TabsTrigger>
+        </TabsList>
+      </Tabs>
+
+      {vista === 'campanas' ? (
+        <CampanasPublicitariasContent />
+      ) : (
+        <>
       {/* Stats */}
       <div className="grid grid-cols-1 md:grid-cols-4 gap-4 mb-6">
         <Card><CardContent className="pt-4"><p className="text-sm text-muted-foreground">Planes Base</p><p className="text-2xl font-bold">{planesPublicidad.length}</p></CardContent></Card>
@@ -697,6 +716,8 @@ export default function PlanesPublicidadConfigPage() {
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
+        </>
+      )}
     </div>
   );
 }

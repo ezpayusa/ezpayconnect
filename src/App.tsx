@@ -18,6 +18,7 @@ import FarmaciasPage from '@/pages/FarmaciasPage'
 import DispensarRecetaPage from '@/pages/DispensarRecetaPage'
 import ConfiguracionPage from '@/pages/ConfiguracionPage'
 import FacturasPage from '@/pages/FacturasPage'
+import DisponibilidadVisitasPage from '@/pages/DisponibilidadVisitasPage'
 
 // === IMPORTS PORTAL PACIENTE ===
 import WebAppLayout from '@/webapp/layout/WebAppLayout'
@@ -37,6 +38,30 @@ import { useEffect } from 'react'
 import { AdminLayout } from '@/components/admin-ezpay/layout/AdminLayout'
 import AdminEzPayPage from '@/pages/admin-ezpay/AdminEzPayPage'
 import { useAdminAuth } from '@/hooks/admin/useAdminAuth'
+
+// === IMPORTS PORTAL PROVEEDORES ===
+import ProveedorLayout from '@/proveedor/layout/ProveedorLayout'
+import ProveedorPrivateRoute from '@/proveedor/components/ProveedorPrivateRoute'
+import ProveedorLogin from '@/proveedor/pages/ProveedorLogin'
+import ProveedorRegistro from '@/proveedor/pages/ProveedorRegistro'
+import ProveedorRegistroVisitador from '@/proveedor/pages/visitador/ProveedorRegistroVisitador'
+import ProveedorDashboard from '@/proveedor/pages/ProveedorDashboard'
+import ProductosListPage from '@/proveedor/pages/productos/ProductosListPage'
+import ProductoFormPage from '@/proveedor/pages/productos/ProductoFormPage'
+import VisitadorPlanesPage from '@/proveedor/pages/visitador/VisitadorPlanesPage'
+import VisitadorAgendarPage from '@/proveedor/pages/visitador/VisitadorAgendarPage'
+import VisitadorMisVisitasPage from '@/proveedor/pages/visitador/VisitadorMisVisitasPage'
+import VisitadorRutaPage from '@/proveedor/pages/visitador/VisitadorRutaPage'
+import ProveedorReporteVisitasPage from '@/proveedor/pages/visitador/ProveedorReporteVisitasPage'
+import AdminAprobarVisitasPage from '@/proveedor/pages/visitador/AdminAprobarVisitasPage'
+import AdminVisitadoresPage from '@/proveedor/pages/visitador/AdminVisitadoresPage'
+import AdminUbicacionesMedicosPage from '@/proveedor/pages/visitador/AdminUbicacionesMedicosPage'
+import PublicidadPlanesPage from '@/proveedor/pages/publicidad/PublicidadPlanesPage'
+import PublicidadCampanasPage from '@/proveedor/pages/publicidad/PublicidadCampanasPage'
+import PublicidadCampanaFormPage from '@/proveedor/pages/publicidad/PublicidadCampanaFormPage'
+import ProveedorPerfilPage from '@/proveedor/pages/cuenta/ProveedorPerfilPage'
+import ProveedorPagosPage from '@/proveedor/pages/cuenta/ProveedorPagosPage'
+import PagoCheckoutPage from '@/proveedor/pages/PagoCheckoutPage'
 
 // === IMPORTS PLANES ===
 import PlanesPage from '@/pages/planes/PlanesPage'
@@ -61,6 +86,9 @@ import RolesPage from '@/pages/admin-ezpay/RolesPage'
 import UsuariosAdminPage from '@/pages/admin-ezpay/UsuariosAdminPage'
 import AuditoriaPage from '@/pages/admin-ezpay/AuditoriaPage'
 import CampanasPublicitariasPage from '@/pages/admin-ezpay/CampanasPublicitariasPage'
+import SolicitudesCampanaPage from '@/pages/admin-ezpay/SolicitudesCampanaPage'
+import PagosProveedoresPage from '@/pages/admin-ezpay/PagosProveedoresPage'
+import AdminVisitasProveedoresPage from '@/pages/admin-ezpay/AdminVisitasProveedoresPage'
 
 // === IMPORTS REPORTES (NUEVOS) ===
 import ReportesPage from '@/pages/admin-ezpay/ReportesPage'
@@ -121,6 +149,7 @@ function App() {
         <Route path="/buscar-medicamentos" element={<PrivateLayout><BuscarMedicamentosPage /></PrivateLayout>} />
         <Route path="/dispensar-receta" element={<PrivateLayout><DispensarRecetaPage /></PrivateLayout>} />
         <Route path="/configuracion" element={<PrivateLayout><ConfiguracionPage /></PrivateLayout>} />
+        <Route path="/disponibilidad-visitas" element={<PrivateLayout><DisponibilidadVisitasPage /></PrivateLayout>} />
 
         {/* === RUTAS PORTAL DEL PACIENTE === */}
         <Route path="/paciente/login" element={<WebAppLoginPage />} />
@@ -174,6 +203,35 @@ function App() {
           <Route path="auditoria" element={<AuditoriaPage />} />
           <Route path="notificaciones" element={<NotificacionesAdminPage />} />
           <Route path="campanas-publicitarias" element={<CampanasPublicitariasPage />} />
+          <Route path="solicitudes-campana" element={<SolicitudesCampanaPage />} />
+          <Route path="pagos-proveedores" element={<PagosProveedoresPage />} />
+          <Route path="visitas-proveedores" element={<AdminVisitasProveedoresPage />} />
+        </Route>
+
+        {/* === RUTAS PORTAL PROVEEDORES === */}
+        <Route path="/proveedor/login" element={<ProveedorLogin />} />
+        <Route path="/proveedor/registro" element={<ProveedorRegistro />} />
+        <Route path="/proveedor/registro-visitador" element={<ProveedorRegistroVisitador />} />
+        <Route path="/proveedor/*" element={<ProveedorPrivateRoute><ProveedorLayout /></ProveedorPrivateRoute>}>
+          <Route index element={<Navigate to="/proveedor/dashboard" replace />} />
+          <Route path="dashboard" element={<ProveedorDashboard />} />
+          <Route path="productos" element={<ProductosListPage />} />
+          <Route path="productos/nuevo" element={<ProductoFormPage />} />
+          <Route path="productos/:id/editar" element={<ProductoFormPage />} />
+          <Route path="visitador/planes" element={<VisitadorPlanesPage />} />
+          <Route path="visitador/agendar" element={<VisitadorAgendarPage />} />
+          <Route path="visitador/mis-visitas" element={<VisitadorMisVisitasPage />} />
+          <Route path="visitador/ruta" element={<VisitadorRutaPage />} />
+          <Route path="visitador/reporte" element={<ProveedorReporteVisitasPage />} />
+          <Route path="visitador/aprobar" element={<AdminAprobarVisitasPage />} />
+          <Route path="visitador/ubicaciones-medicos" element={<AdminUbicacionesMedicosPage />} />
+          <Route path="visitadores" element={<AdminVisitadoresPage />} />
+          <Route path="publicidad/planes" element={<PublicidadPlanesPage />} />
+          <Route path="publicidad/campanas" element={<PublicidadCampanasPage />} />
+          <Route path="publicidad/campanas/nueva" element={<PublicidadCampanaFormPage />} />
+          <Route path="perfil" element={<ProveedorPerfilPage />} />
+          <Route path="pagos" element={<ProveedorPagosPage />} />
+          <Route path="checkout" element={<PagoCheckoutPage />} />
         </Route>
 
         {/* === RUTAS ADMIN PLANES (con AdminLayout) — FIX: ahora tienen layout === */}

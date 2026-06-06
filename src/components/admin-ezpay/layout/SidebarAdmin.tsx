@@ -1,5 +1,6 @@
 import { UserCheck } from 'lucide-react';
 import { Users } from 'lucide-react';
+import { ClipboardCheck } from 'lucide-react';
 import { useNavigate, useLocation } from 'react-router-dom';
 import { useAdminAuth } from '@/hooks/admin/useAdminAuth';
 import { 
@@ -50,6 +51,8 @@ export function SidebarAdmin() {
     { path: '/admin-ezpay/reportes', icon: BarChart3, label: 'Reportes EZPay' },
     { path: '/admin-ezpay/reportes-ezpay-v2', icon: BarChart4, label: 'Reportes EZPay V2' },
     { path: '/admin-ezpay/roles', icon: Shield, label: 'Roles' },
+    { path: '/admin-ezpay/solicitudes-campana', icon: ClipboardCheck, label: 'Solicitudes Campaña' },
+    { path: '/admin-ezpay/pagos-proveedores', icon: DollarSign, label: 'Pagos Proveedores' },
     { path: '/admin-ezpay/auditoria', icon: Activity, label: 'Auditoría' },
   ];
 

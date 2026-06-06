@@ -390,11 +390,11 @@ export default function CampanasPublicitariasContent() {
                 )}
                 <div className="flex items-center gap-2 mt-3">
                   <Button size="sm" variant="outline" className="flex-1" onClick={() => toggleActiva(c)}>
-                    {c.activa ? <EyeOff className="h-3 w-3 mr-1" /> : <Eye className="h-3 w-3 mr-1" />}
+                    {c.activa ? <EyeOff className="h-4 w-4 mr-1" /> : <Eye className="h-4 w-4 mr-1" />}
                     {c.activa ? 'Pausar' : 'Activar'}
                   </Button>
-                  <Button size="sm" variant="destructive" onClick={() => eliminarCampana(c.id)}>
-                    <Trash2 className="h-3 w-3" />
+                  <Button size="sm" className="gap-1 bg-red-600 hover:bg-red-700 text-white font-semibold shadow-sm" onClick={() => eliminarCampana(c.id)}>
+                    <Trash2 className="h-4 w-4" /> Eliminar
                   </Button>
                 </div>
               </CardContent>

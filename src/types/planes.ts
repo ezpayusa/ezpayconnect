@@ -1,7 +1,7 @@
 // src/types/planes.ts
 // Tipos para el módulo de Planes Médicos y Clínicas
 
-export type TipoPlan = 'medico' | 'clinica';
+export type TipoPlan = 'medico' | 'clinica' | 'visitador' | 'publicidad' | 'farmacia' | 'farmaceutico' | 'empresas_afines';
 export type EstadoPlan = 'activo' | 'inactivo' | 'pendiente' | 'suspendido' | 'cancelado';
 export type CicloFacturacion = 'mensual' | 'anual';
 export type MetodoPago = 'tarjeta' | 'transferencia' | 'movil';
@@ -23,6 +23,7 @@ export interface PlanBase {
   popular?: boolean;
   activo: boolean;
   orden: number;
+  atributos?: Record<string, any>;
   created_at?: string;
   updated_at?: string;
 }
@@ -75,6 +76,7 @@ export interface PlanAsignacion {
   id: string;
   usuario_id?: string;
   medico_id?: string;
+  empresa_id?: string;
   plan_id?: string;
   plan_config_id?: string;
   configuracion_id?: string;
