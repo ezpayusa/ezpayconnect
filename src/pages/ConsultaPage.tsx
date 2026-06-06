@@ -1,0 +1,524 @@
+import { useState, useEffect, useCallback } from 'react'
+import { useParams, useNavigate } from 'react-router-dom'
+import { supabase } from '@/lib/supabase'
+import { useAuth } from '@/hooks/useAuth'
+import { useConsultas } from '@/hooks/useConsultas'
+import { useCitas } from '@/hooks/useCitas'
+import { Button } from '@/components/ui/button'
+import { Input } from '@/components/ui/input'
+import { Label } from '@/components/ui/label'
+import { Textarea } from '@/components/ui/textarea'
+import { Badge } from '@/components/ui/badge'
+import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
+import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
+import DictadoVoz from '@/components/consulta/DictadoVoz'
+import { toast } from 'sonner'
+import type { Paciente, Cita, ExpedienteNota } from '@/types'
+import {
+  ArrowLeft,
+  User,
+  Activity,
+  FileText,
+  Pill,
+  FlaskConical,
+  Upload,
+  Clock,
+  CheckCircle2,
+  AlertTriangle,
+  Save,
+  Stethoscope,
+  HeartPulse,
+  Thermometer,
+  Scale,
+  Ruler,
+  Droplets,
+  Syringe,
+  Wind,
+  Gauge,
+  ClipboardList,
+} from 'lucide-react'
+
+function calcularEdad(fechaNacimiento: string | null): number | null {
+  if (!fechaNacimiento) return null
+  const hoy = new Date()
+  const nac = new Date(fechaNacimiento)
+  let edad = hoy.getFullYear() - nac.getFullYear()
+  const m = hoy.getMonth() - nac.getMonth()
+  if (m < 0 || (m === 0 && hoy.getDate() < nac.getDate())) edad--
+  return edad
+}
+
+export default function ConsultaPage() {
+  const { citaId } = useParams<{ citaId: string }>()
+  const navigate = useNavigate()
+  const { perfil } = useAuth()
+  const { updateCita } = useCitas()
+  const {
+    loading: loadingConsulta,
+    saving,
+    fetchConsultaPorCita,
+    crearOActualizarConsulta,
+  } = useConsultas()
+
+  const [cita, setCita] = useState<Cita | null>(null)
+  const [paciente, setPaciente] = useState<Paciente | null>(null)
+  const [consultaId, setConsultaId] = useState<number | undefined>()
+  const [cargando, setCargando] = useState(true)
+
+  // Signos vitales
+  const [sv, setSv] = useState({
+    presion_arterial: '',
+    frecuencia_cardiaca: '',
+    frecuencia_respiratoria: '',
+    temperatura: '',
+    peso_kg: '',
+    talla_cm: '',
+    saturacion_o2: '',
+    glucosa: '',
+  })
+
+  // Nota SOAP
+  const [soap, setSoap] = useState({
+    motivo_consulta: '',
+    subjetivo: '',
+    objetivo: '',
+    analisis: '',
+    plan: '',
+    diagnostico: '',
+  })
+
+  const calcularIMC = useCallback(() => {
+    const peso = parseFloat(sv.peso_kg)
+    const talla = parseFloat(sv.talla_cm)
+    if (peso > 0 && talla > 0) {
+      return (peso / ((talla / 100) ** 2)).toFixed(2)
+    }
+    return ''
+  }, [sv.peso_kg, sv.talla_cm])
+
+  // Cargar cita, paciente y consulta existente
+  useEffect(() => {
+    const cargar = async () => {
+      if (!citaId) return
+      setCargando(true)
+
+      const id = parseInt(citaId)
+
+      // Cargar cita
+      const { data: citaData } = await supabase
+        .from('citas')
+        .select('*, pacientes(*)')
+        .eq('id', id)
+        .single()
+
+      if (!citaData) {
+        toast.error('Cita no encontrada')
+        navigate('/citas')
+        return
+      }
+
+      setCita(citaData as Cita)
+      setPaciente(citaData.pacientes as Paciente)
+
+      // Cargar consulta existente
+      const consultaExistente = await fetchConsultaPorCita(id)
+      if (consultaExistente) {
+        setConsultaId(consultaExistente.id)
+        setSoap({
+          motivo_consulta: consultaExistente.motivo_consulta || '',
+          subjetivo: consultaExistente.subjetivo || '',
+          objetivo: consultaExistente.objetivo || '',
+          analisis: consultaExistente.analisis || '',
+          plan: consultaExistente.plan || '',
+          diagnostico: consultaExistente.diagnostico || '',
+        })
+        setSv({
+          presion_arterial: consultaExistente.presion_arterial || '',
+          frecuencia_cardiaca: consultaExistente.frecuencia_cardiaca?.toString() || '',
+          frecuencia_respiratoria: consultaExistente.frecuencia_respiratoria?.toString() || '',
+          temperatura: consultaExistente.temperatura?.toString() || '',
+          peso_kg: consultaExistente.peso_kg?.toString() || '',
+          talla_cm: consultaExistente.talla_cm?.toString() || '',
+          saturacion_o2: consultaExistente.saturacion_o2?.toString() || '',
+          glucosa: consultaExistente.glucosa?.toString() || '',
+        })
+      } else {
+        // Pre-llenar motivo con el de la cita
+        setSoap(prev => ({ ...prev, motivo_consulta: citaData.motivo || '' }))
+      }
+
+      setCargando(false)
+    }
+
+    cargar()
+  }, [citaId, fetchConsultaPorCita, navigate])
+
+  const guardarNotaSOAP = async () => {
+    if (!cita || !paciente) return
+
+    const result = await crearOActualizarConsulta(
+      {
+        cita_id: cita.id,
+        paciente_id: paciente.id,
+        ...soap,
+        presion_arterial: sv.presion_arterial || null,
+        frecuencia_cardiaca: sv.frecuencia_cardiaca ? parseInt(sv.frecuencia_cardiaca) : undefined,
+        frecuencia_respiratoria: sv.frecuencia_respiratoria ? parseInt(sv.frecuencia_respiratoria) : undefined,
+        temperatura: sv.temperatura ? parseFloat(sv.temperatura) : undefined,
+        peso_kg: sv.peso_kg ? parseFloat(sv.peso_kg) : undefined,
+        talla_cm: sv.talla_cm ? parseFloat(sv.talla_cm) : undefined,
+        saturacion_o2: sv.saturacion_o2 ? parseInt(sv.saturacion_o2) : undefined,
+        glucosa: sv.glucosa ? parseInt(sv.glucosa) : undefined,
+      },
+      consultaId
+    )
+
+    if (result.error) {
+      toast.error('Error al guardar: ' + result.error)
+    } else {
+      toast.success('Consulta guardada correctamente')
+      if (result.data) setConsultaId(result.data.id)
+    }
+  }
+
+  const cambiarEstadoCita = async (nuevoEstado: Cita['estado']) => {
+    if (!cita) return
+    const { error } = await updateCita(cita.id, { estado: nuevoEstado })
+    if (error) {
+      toast.error('Error: ' + error.message)
+    } else {
+      setCita({ ...cita, estado: nuevoEstado })
+      toast.success(`Cita marcada como ${nuevoEstado.replace('_', ' ')}`)
+    }
+  }
+
+  const handleSvChange = (field: string, value: string) => {
+    setSv(prev => ({ ...prev, [field]: value }))
+  }
+
+  if (cargando || loadingConsulta) {
+    return (
+      <div className="flex items-center justify-center min-h-screen">
+        <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-[#1E5C8E]" />
+      </div>
+    )
+  }
+
+  if (!cita || !paciente) {
+    return (
+      <div className="container mx-auto px-4 py-8 text-center">
+        <p className="text-muted-foreground">Cita no encontrada</p>
+        <Button onClick={() => navigate('/citas')} className="mt-4">
+          <ArrowLeft className="h-4 w-4 mr-2" /> Volver a Citas
+        </Button>
+      </div>
+    )
+  }
+
+  const edad = calcularEdad(paciente.fecha_nacimiento)
+  const imc = calcularIMC()
+
+  const getEstadoColor = (estado: Cita['estado']) => {
+    const map: Record<string, string> = {
+      agendada: 'bg-gray-100 text-gray-700',
+      confirmada: 'bg-blue-100 text-blue-700',
+      en_curso: 'bg-amber-100 text-amber-700',
+      completada: 'bg-green-100 text-green-700',
+      cancelada: 'bg-red-100 text-red-700',
+      no_show: 'bg-red-200 text-red-800',
+    }
+    return map[estado] || 'bg-gray-100'
+  }
+
+  return (
+    <div className="min-h-screen bg-slate-50">
+      {/* Header */}
+      <div className="bg-white border-b px-4 py-3 flex items-center justify-between sticky top-0 z-30">
+        <div className="flex items-center gap-3">
+          <Button variant="ghost" size="icon" onClick={() => navigate('/citas')}>
+            <ArrowLeft className="h-5 w-5" />
+          </Button>
+          <div>
+            <h1 className="text-lg font-bold flex items-center gap-2">
+              <Stethoscope className="h-5 w-5 text-[#1E5C8E]" />
+              Consulta Médica
+            </h1>
+            <p className="text-xs text-muted-foreground">
+              {new Date(cita.fecha).toLocaleDateString('es-ES')} · {cita.hora_inicio} — {paciente.nombre} {paciente.apellido}
+            </p>
+          </div>
+        </div>
+        <div className="flex items-center gap-2">
+          <Badge className={getEstadoColor(cita.estado)}>
+            {cita.estado.replace('_', ' ').toUpperCase()}
+          </Badge>
+          {cita.estado === 'confirmada' && (
+            <Button size="sm" variant="outline" onClick={() => cambiarEstadoCita('en_curso')}>
+              <Clock className="h-4 w-4 mr-1" /> En Sala
+            </Button>
+          )}
+          {cita.estado === 'en_curso' && (
+            <Button size="sm" className="bg-green-600 hover:bg-green-700" onClick={() => cambiarEstadoCita('completada')}>
+              <CheckCircle2 className="h-4 w-4 mr-1" /> Finalizar
+            </Button>
+          )}
+          <Button size="sm" onClick={guardarNotaSOAP} disabled={saving} className="bg-[#1E5C8E]">
+            <Save className="h-4 w-4 mr-1" /> {saving ? 'Guardando...' : 'Guardar'}
+          </Button>
+        </div>
+      </div>
+
+      {/* Alergias alerta */}
+      {paciente.alergias && (
+        <div className="bg-red-50 border-b border-red-200 px-4 py-2 flex items-center gap-2">
+          <AlertTriangle className="h-4 w-4 text-red-600" />
+          <span className="text-sm text-red-700 font-medium">
+            Alergias: {paciente.alergias}
+          </span>
+        </div>
+      )}
+
+      {/* Main layout */}
+      <div className="p-4 grid grid-cols-1 lg:grid-cols-12 gap-4 max-w-[1600px] mx-auto">
+        {/* COLUMNA IZQUIERDA: Info paciente + Signos vitales */}
+        <div className="lg:col-span-3 space-y-4">
+          {/* Info paciente */}
+          <Card>
+            <CardHeader className="pb-3">
+              <CardTitle className="text-sm flex items-center gap-2">
+                <User className="h-4 w-4 text-[#1E5C8E]" />
+                Paciente
+              </CardTitle>
+            </CardHeader>
+            <CardContent className="space-y-2 text-sm">
+              <p className="font-bold text-lg">{paciente.nombre} {paciente.apellido}</p>
+              <div className="grid grid-cols-2 gap-2 text-muted-foreground">
+                <div>Edad: <span className="text-slate-700 font-medium">{edad ?? '—'} años</span></div>
+                <div>Género: <span className="text-slate-700 font-medium">{paciente.genero || '—'}</span></div>
+                <div>Tel: <span className="text-slate-700">{paciente.telefono || '—'}</span></div>
+                <div>Tipo Sangre: <span className="text-slate-700 font-medium">{paciente.tipo_sangre || '—'}</span></div>
+              </div>
+              {paciente.medicamentos_en_uso && (
+                <div className="bg-blue-50 p-2 rounded text-xs">
+                  <span className="font-medium text-blue-700">Medicación habitual:</span>
+                  <p className="text-blue-600 mt-0.5">{paciente.medicamentos_en_uso}</p>
+                </div>
+              )}
+              {paciente.antecedentes_personales && (
+                <div className="text-xs text-muted-foreground">
+                  <span className="font-medium">Antecedentes:</span> {paciente.antecedentes_personales}
+                </div>
+              )}
+            </CardContent>
+          </Card>
+
+          {/* Signos vitales */}
+          <Card>
+            <CardHeader className="pb-3">
+              <CardTitle className="text-sm flex items-center gap-2">
+                <Activity className="h-4 w-4 text-emerald-600" />
+                Signos Vitales
+              </CardTitle>
+            </CardHeader>
+            <CardContent className="space-y-3">
+              <div className="grid grid-cols-2 gap-2">
+                <div>
+                  <Label className="text-xs flex items-center gap-1"><HeartPulse className="h-3 w-3" /> PA (mmHg)</Label>
+                  <Input size-sm placeholder="120/80" value={sv.presion_arterial} onChange={e => handleSvChange('presion_arterial', e.target.value)} className="h-8 text-sm" />
+                </div>
+                <div>
+                  <Label className="text-xs flex items-center gap-1"><HeartPulse className="h-3 w-3" /> FC (lpm)</Label>
+                  <Input type="number" placeholder="72" value={sv.frecuencia_cardiaca} onChange={e => handleSvChange('frecuencia_cardiaca', e.target.value)} className="h-8 text-sm" />
+                </div>
+                <div>
+                  <Label className="text-xs flex items-center gap-1"><Wind className="h-3 w-3" /> FR (rpm)</Label>
+                  <Input type="number" placeholder="16" value={sv.frecuencia_respiratoria} onChange={e => handleSvChange('frecuencia_respiratoria', e.target.value)} className="h-8 text-sm" />
+                </div>
+                <div>
+                  <Label className="text-xs flex items-center gap-1"><Thermometer className="h-3 w-3" /> Temp (°C)</Label>
+                  <Input type="number" step="0.1" placeholder="36.5" value={sv.temperatura} onChange={e => handleSvChange('temperatura', e.target.value)} className="h-8 text-sm" />
+                </div>
+                <div>
+                  <Label className="text-xs flex items-center gap-1"><Scale className="h-3 w-3" /> Peso (kg)</Label>
+                  <Input type="number" step="0.1" placeholder="70.0" value={sv.peso_kg} onChange={e => handleSvChange('peso_kg', e.target.value)} className="h-8 text-sm" />
+                </div>
+                <div>
+                  <Label className="text-xs flex items-center gap-1"><Ruler className="h-3 w-3" /> Talla (cm)</Label>
+                  <Input type="number" placeholder="170" value={sv.talla_cm} onChange={e => handleSvChange('talla_cm', e.target.value)} className="h-8 text-sm" />
+                </div>
+                <div>
+                  <Label className="text-xs flex items-center gap-1"><Gauge className="h-3 w-3" /> SpO2 (%)</Label>
+                  <Input type="number" placeholder="98" value={sv.saturacion_o2} onChange={e => handleSvChange('saturacion_o2', e.target.value)} className="h-8 text-sm" />
+                </div>
+                <div>
+                  <Label className="text-xs flex items-center gap-1"><Droplets className="h-3 w-3" /> Glucosa</Label>
+                  <Input type="number" placeholder="90" value={sv.glucosa} onChange={e => handleSvChange('glucosa', e.target.value)} className="h-8 text-sm" />
+                </div>
+              </div>
+              {imc && (
+                <div className="bg-slate-50 p-2 rounded text-center">
+                  <span className="text-xs text-muted-foreground">IMC calculado: </span>
+                  <span className="font-bold text-[#1E5C8E]">{imc}</span>
+                </div>
+              )}
+            </CardContent>
+          </Card>
+        </div>
+
+        {/* COLUMNA CENTRO: Nota SOAP */}
+        <div className="lg:col-span-6">
+          <Card className="h-full flex flex-col">
+            <CardHeader className="pb-2">
+              <CardTitle className="text-sm flex items-center gap-2">
+                <ClipboardList className="h-4 w-4 text-[#1E5C8E]" />
+                Nota Clínica SOAP
+              </CardTitle>
+            </CardHeader>
+            <CardContent className="flex-1">
+              <Tabs defaultValue="subjetivo" className="h-full flex flex-col">
+                <TabsList className="grid grid-cols-5 mb-4">
+                  <TabsTrigger value="motivo">Motivo</TabsTrigger>
+                  <TabsTrigger value="subjetivo">Subjetivo</TabsTrigger>
+                  <TabsTrigger value="objetivo">Objetivo</TabsTrigger>
+                  <TabsTrigger value="analisis">Análisis</TabsTrigger>
+                  <TabsTrigger value="plan">Plan</TabsTrigger>
+                </TabsList>
+
+                <TabsContent value="motivo" className="flex-1 flex flex-col gap-2">
+                  <Label>Motivo de consulta</Label>
+                  <DictadoVoz
+                    onTranscript={text => setSoap(p => ({ ...p, motivo_consulta: text }))}
+                    placeholder="Dicta el motivo de consulta..."
+                  />
+                  <Textarea
+                    value={soap.motivo_consulta}
+                    onChange={e => setSoap(p => ({ ...p, motivo_consulta: e.target.value }))}
+                    placeholder="Ej: Dolor de cabeza intenso desde hace 3 días..."
+                    className="flex-1 min-h-[200px]"
+                  />
+                </TabsContent>
+
+                <TabsContent value="subjetivo" className="flex-1 flex flex-col gap-2">
+                  <Label>Subjetivo — Lo que refiere el paciente</Label>
+                  <DictadoVoz
+                    onTranscript={text => setSoap(p => ({ ...p, subjetivo: text }))}
+                    placeholder="Dicta lo que el paciente cuenta..."
+                  />
+                  <Textarea
+                    value={soap.subjetivo}
+                    onChange={e => setSoap(p => ({ ...p, subjetivo: e.target.value }))}
+                    placeholder="Ej: Paciente refiere cefalea frontal pulsátil de intensidad 8/10, acompañada de náuseas..."
+                    className="flex-1 min-h-[200px]"
+                  />
+                </TabsContent>
+
+                <TabsContent value="objetivo" className="flex-1 flex flex-col gap-2">
+                  <Label>Objetivo — Hallazgos de exploración física</Label>
+                  <DictadoVoz
+                    onTranscript={text => setSoap(p => ({ ...p, objetivo: text }))}
+                    placeholder="Dicta los hallazgos de la exploración..."
+                  />
+                  <Textarea
+                    value={soap.objetivo}
+                    onChange={e => setSoap(p => ({ ...p, objetivo: e.target.value }))}
+                    placeholder="Ej: Consciente, orientado. Pupilas isocóricas. Faringe eritematosa. Auscultación cardiopulmonar normal..."
+                    className="flex-1 min-h-[200px]"
+                  />
+                </TabsContent>
+
+                <TabsContent value="analisis" className="flex-1 flex flex-col gap-2">
+                  <Label>Análisis — Diagnóstico e interpretación</Label>
+                  <DictadoVoz
+                    onTranscript={text => setSoap(p => ({ ...p, analisis: text }))}
+                    placeholder="Dicta tu análisis diagnóstico..."
+                  />
+                  <Textarea
+                    value={soap.analisis}
+                    onChange={e => setSoap(p => ({ ...p, analisis: e.target.value }))}
+                    placeholder="Ej: Cefalea tensional probablemente relacionada con estrés laboral. Se descartan signos de alarma..."
+                    className="flex-1 min-h-[200px]"
+                  />
+                </TabsContent>
+
+                <TabsContent value="plan" className="flex-1 flex flex-col gap-2">
+                  <Label>Plan — Tratamiento, estudios, indicaciones</Label>
+                  <DictadoVoz
+                    onTranscript={text => setSoap(p => ({ ...p, plan: text }))}
+                    placeholder="Dicta el plan de tratamiento..."
+                  />
+                  <Textarea
+                    value={soap.plan}
+                    onChange={e => setSoap(p => ({ ...p, plan: e.target.value }))}
+                    placeholder="Ej: 1. Paracetamol 500mg c/8h x 5 días. 2. Hidratación abundante. 3. Reposo. 4. Control en 7 días..."
+                    className="flex-1 min-h-[200px]"
+                  />
+                </TabsContent>
+              </Tabs>
+
+              {/* Diagnóstico general */}
+              <div className="mt-4 pt-4 border-t">
+                <Label className="text-xs text-muted-foreground">Diagnóstico (para receta y reportes)</Label>
+                <Input
+                  value={soap.diagnostico}
+                  onChange={e => setSoap(p => ({ ...p, diagnostico: e.target.value }))}
+                  placeholder="Diagnóstico principal (ej: Cefalea tensional)"
+                  className="mt-1"
+                />
+              </div>
+            </CardContent>
+          </Card>
+        </div>
+
+        {/* COLUMNA DERECHA: Acciones rápidas */}
+        <div className="lg:col-span-3 space-y-4">
+          <Card>
+            <CardHeader className="pb-3">
+              <CardTitle className="text-sm">Acciones</CardTitle>
+            </CardHeader>
+            <CardContent className="space-y-2">
+              <Button
+                className="w-full justify-start bg-[#1E5C8E] hover:bg-[#164a70]"
+                onClick={() => navigate(`/recetas?nuevo=true&paciente_id=${paciente.id}&cita_id=${cita.id}`)}
+              >
+                <FileText className="h-4 w-4 mr-2" /> Nueva Receta
+              </Button>
+              <Button
+                variant="outline"
+                className="w-full justify-start"
+                onClick={() => navigate(`/buscar-medicamentos`)}
+              >
+                <Pill className="h-4 w-4 mr-2" /> Buscar Medicamentos
+              </Button>
+              <Button
+                variant="outline"
+                className="w-full justify-start"
+                onClick={() => toast.info('Órdenes de examen — próximamente')}
+              >
+                <FlaskConical className="h-4 w-4 mr-2" /> Orden de Examen
+              </Button>
+              <Button
+                variant="outline"
+                className="w-full justify-start"
+                onClick={() => navigate(`/pacientes/${paciente.id}/detalle`)}
+              >
+                <User className="h-4 w-4 mr-2" /> Ver Expediente
+              </Button>
+            </CardContent>
+          </Card>
+
+          {/* Historial rápido */}
+          <Card>
+            <CardHeader className="pb-3">
+              <CardTitle className="text-sm text-muted-foreground">Última Consulta</CardTitle>
+            </CardHeader>
+            <CardContent>
+              <p className="text-xs text-muted-foreground italic">
+                El historial completo está disponible en el expediente del paciente.
+              </p>
+            </CardContent>
+          </Card>
+        </div>
+      </div>
+    </div>
+  )
+}

@@ -25,6 +25,10 @@ export interface Paciente {
   emergencia_telefono: string | null
   alergias: string | null
   notas: string | null
+  tipo_sangre: string | null
+  antecedentes_personales: string | null
+  antecedentes_familiares: string | null
+  medicamentos_en_uso: string | null
   activo: boolean
   created_at: string
 }
@@ -90,6 +94,39 @@ export interface ExpedienteNota {
   medico_id: string
   nota: string
   diagnostico: string | null
+  motivo_consulta: string | null
+  subjetivo: string | null
+  objetivo: string | null
+  analisis: string | null
+  plan: string | null
+  presion_arterial: string | null
+  frecuencia_cardiaca: number | null
+  frecuencia_respiratoria: number | null
+  temperatura: number | null
+  peso_kg: number | null
+  talla_cm: number | null
+  imc: number | null
+  saturacion_o2: number | null
+  glucosa: number | null
   signos_vitales: Record<string, any> | null
+  created_at: string
+}
+
+export interface SignosVitales {
+  id: number
+  paciente_id: number
+  medico_id: string | null
+  consulta_id: number | null
+  presion_arterial: string | null
+  frecuencia_cardiaca: number | null
+  frecuencia_respiratoria: number | null
+  temperatura: number | null
+  peso_kg: number | null
+  talla_cm: number | null
+  imc: number | null
+  saturacion_o2: number | null
+  glucosa: number | null
+  notas: string | null
+  fecha_toma: string
   created_at: string
 }

@@ -36,6 +36,7 @@ export function Sidebar() {
 
     const medicoItems = [
       { label: 'Recetas', icon: FileText, path: '/recetas', roles: ['admin', 'medico', 'super_admin'] },
+      { label: 'Buscar Medicamentos', icon: Pill, path: '/buscar-medicamentos', roles: ['admin', 'medico', 'super_admin'] },
       { label: 'Facturas', icon: DollarSign, path: '/facturas', roles: ['admin', 'medico', 'super_admin'] },
     ]
 

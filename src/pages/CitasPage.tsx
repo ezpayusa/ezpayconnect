@@ -4,6 +4,7 @@
 // EzPayConnect
 
 import { useState, useEffect } from 'react'
+import { useNavigate } from 'react-router-dom'
 import { supabase } from '@/lib/supabase'
 import { useAuth } from '@/hooks/useAuth'
 import {
@@ -18,7 +19,8 @@ import {
   ChevronLeft,
   ChevronRight,
   Loader2,
-  X
+  X,
+  Play
 } from 'lucide-react'
 
 interface Cita {
@@ -55,6 +57,7 @@ interface Recordatorio {
 }
 
 export default function CitasPage() {
+  const navigate = useNavigate()
   const { user } = useAuth()
   const [citas, setCitas] = useState<Cita[]>([])
   const [recordatorios, setRecordatorios] = useState<Recordatorio[]>([])
@@ -262,8 +265,11 @@ export default function CitasPage() {
 
   const getIconoEstado = (estado: string) => {
     switch (estado) {
+      case 'completada':
       case 'atendida': return <CheckCircle size={16} className="text-green-500" />
       case 'cancelada': return <AlertCircle size={16} className="text-red-500" />
+      case 'en_curso': return <Play size={16} className="text-amber-500" />
+      case 'no_show': return <AlertCircle size={16} className="text-red-700" />
       default: return <Clock size={16} className="text-yellow-500" />
     }
   }
@@ -350,8 +356,10 @@ export default function CitasPage() {
 
             return (
               <div key={cita.id} className={`bg-white rounded-xl shadow-sm border-l-4 overflow-hidden ${
-                cita.estado === 'atendida' ? 'border-green-500' :
+                cita.estado === 'completada' || cita.estado === 'atendida' ? 'border-green-500' :
                 cita.estado === 'cancelada' ? 'border-red-500' :
+                cita.estado === 'en_curso' ? 'border-amber-500' :
+                cita.estado === 'no_show' ? 'border-red-700' :
                 'border-[#1E5C8E]'
               }`}>
                 <div className="p-6">
@@ -366,12 +374,14 @@ export default function CitasPage() {
                             {cita.hora_inicio} - {cita.hora_fin}
                           </p>
                           <span className={`inline-flex items-center gap-1 px-2 py-1 rounded text-xs font-medium ${
-                            cita.estado === 'atendida' ? 'bg-green-100 text-green-700' :
+                            cita.estado === 'completada' || cita.estado === 'atendida' ? 'bg-green-100 text-green-700' :
                             cita.estado === 'cancelada' ? 'bg-red-100 text-red-700' :
+                            cita.estado === 'en_curso' ? 'bg-amber-100 text-amber-700' :
+                            cita.estado === 'no_show' ? 'bg-red-200 text-red-800' :
                             'bg-yellow-100 text-yellow-700'
                           }`}>
                             {getIconoEstado(cita.estado)}
-                            {cita.estado}
+                            {cita.estado.replace('_', ' ')}
                           </span>
                         </div>
                       </div>
@@ -399,18 +409,38 @@ export default function CitasPage() {
                     </div>
 
                     <div className="flex flex-col gap-2">
-                      {!tieneRecordatorio && cita.estado === 'pendiente' && (
+                      {(cita.estado === 'agendada' || cita.estado === 'confirmada' || cita.estado === 'pendiente') && (
+                        <button
+                          onClick={() => navigate(`/consulta/${cita.id}`)}
+                          className="px-4 py-2 bg-[#1E5C8E] hover:bg-[#3A8ABF] text-white rounded-lg text-sm font-medium flex items-center gap-2 transition-colors"
+                        >
+                          <Stethoscope size={16} />
+                          Atender
+                        </button>
+                      )}
+
+                      {cita.estado === 'en_curso' && (
+                        <button
+                          onClick={() => navigate(`/consulta/${cita.id}`)}
+                          className="px-4 py-2 bg-amber-600 hover:bg-amber-700 text-white rounded-lg text-sm font-medium flex items-center gap-2 transition-colors"
+                        >
+                          <Play size={16} />
+                          Continuar Consulta
+                        </button>
+                      )}
+
+                      {!tieneRecordatorio && (cita.estado === 'pendiente' || cita.estado === 'agendada' || cita.estado === 'confirmada') && (
                         <button
                           onClick={() => programarRecordatorio(cita)}
                           disabled={programando === cita.id}
-                          className="px-4 py-2 bg-[#1E5C8E] hover:bg-[#3A8ABF] text-white rounded-lg text-sm font-medium flex items-center gap-2 transition-colors disabled:opacity-50"
+                          className="px-4 py-2 bg-white border border-[#1E5C8E] text-[#1E5C8E] hover:bg-[#1E5C8E]/5 rounded-lg text-sm font-medium flex items-center gap-2 transition-colors disabled:opacity-50"
                         >
                           {programando === cita.id ? (
                             <Loader2 size={16} className="animate-spin" />
                           ) : (
                             <Bell size={16} />
                           )}
-                          {programando === cita.id ? 'Programando...' : 'Programar Recordatorio'}
+                          {programando === cita.id ? 'Programando...' : 'Recordatorio'}
                         </button>
                       )}
 

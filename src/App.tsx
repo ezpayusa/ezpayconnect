@@ -19,6 +19,7 @@ import DispensarRecetaPage from '@/pages/DispensarRecetaPage'
 import ConfiguracionPage from '@/pages/ConfiguracionPage'
 import FacturasPage from '@/pages/FacturasPage'
 import DisponibilidadVisitasPage from '@/pages/DisponibilidadVisitasPage'
+import ConsultaPage from '@/pages/ConsultaPage'
 
 // === IMPORTS PORTAL PACIENTE ===
 import WebAppLayout from '@/webapp/layout/WebAppLayout'
@@ -152,6 +153,7 @@ function App() {
         <Route path="/dispensar-receta" element={<PrivateLayout><DispensarRecetaPage /></PrivateLayout>} />
         <Route path="/configuracion" element={<PrivateLayout><ConfiguracionPage /></PrivateLayout>} />
         <Route path="/disponibilidad-visitas" element={<PrivateLayout><DisponibilidadVisitasPage /></PrivateLayout>} />
+        <Route path="/consulta/:citaId" element={<PrivateLayout><ConsultaPage /></PrivateLayout>} />
 
         {/* === RUTAS PORTAL DEL PACIENTE === */}
         <Route path="/paciente/login" element={<WebAppLoginPage />} />
