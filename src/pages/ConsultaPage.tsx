@@ -111,11 +111,15 @@ export default function ConsultaPage() {
       const id = parseInt(citaId)
 
       // Cargar cita
-      const { data: citaData } = await supabase
+      const { data: citaData, error: citaError } = await supabase
         .from('citas')
-        .select('*, pacientes(*)')
+        .select('*')
         .eq('id', id)
         .single()
+
+      if (citaError) {
+        console.error('Error cargando cita:', citaError)
+      }
 
       if (!citaData) {
         toast.error('Cita no encontrada')
@@ -124,7 +128,25 @@ export default function ConsultaPage() {
       }
 
       setCita(citaData as Cita)
-      setPaciente(citaData.pacientes as Paciente)
+
+      // Cargar paciente por separado
+      const { data: pacienteData, error: pacienteError } = await supabase
+        .from('pacientes')
+        .select('*')
+        .eq('id', citaData.paciente_id)
+        .single()
+
+      if (pacienteError) {
+        console.error('Error cargando paciente:', pacienteError)
+      }
+
+      if (!pacienteData) {
+        toast.error('Paciente no encontrado')
+        navigate('/citas')
+        return
+      }
+
+      setPaciente(pacienteData as Paciente)
 
       // Cargar consulta existente
       const consultaExistente = await fetchConsultaPorCita(id)
