@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback } from 'react'
 import { supabase } from '@/lib/supabase'
 import type { CuentaProveedor, EmpresaProveedora } from '@/proveedor/types/proveedor.types'
+import { toast } from 'sonner'
 
 export function useProveedorAuth() {
   const [user, setUser] = useState<any>(null)
@@ -107,6 +108,48 @@ export function useProveedorAuth() {
     setEmpresa(null)
   }, [])
 
+  const actualizarEmpresa = useCallback(async (data: Partial<EmpresaProveedora>): Promise<boolean> => {
+    if (!empresa?.id) {
+      toast.error('No hay empresa vinculada')
+      return false
+    }
+    const { error } = await supabase
+      .from('empresas_proveedoras')
+      .update(data)
+      .eq('id', empresa.id)
+
+    if (error) {
+      toast.error('Error actualizando empresa')
+      console.error(error)
+      return false
+    }
+
+    setEmpresa((prev) => (prev ? { ...prev, ...data } : null))
+    toast.success('Empresa actualizada')
+    return true
+  }, [empresa?.id])
+
+  const actualizarCuenta = useCallback(async (data: Partial<CuentaProveedor>): Promise<boolean> => {
+    if (!cuenta?.id) {
+      toast.error('No hay cuenta vinculada')
+      return false
+    }
+    const { error } = await supabase
+      .from('cuentas_proveedor')
+      .update(data)
+      .eq('id', cuenta.id)
+
+    if (error) {
+      toast.error('Error actualizando cuenta')
+      console.error(error)
+      return false
+    }
+
+    setCuenta((prev) => (prev ? { ...prev, ...data } : null))
+    toast.success('Cuenta actualizada')
+    return true
+  }, [cuenta?.id])
+
   const isAdmin = cuenta?.rol_en_empresa === 'admin'
   const isEditor = cuenta?.rol_en_empresa === 'editor' || isAdmin
 
@@ -118,6 +161,8 @@ export function useProveedorAuth() {
     login,
     register,
     logout,
+    actualizarEmpresa,
+    actualizarCuenta,
     isAdmin,
     isEditor,
   }

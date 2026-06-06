@@ -1,6 +1,8 @@
 import { useProveedorAuth } from '@/proveedor/hooks/useProveedorAuth'
+import { useProveedorStats } from '@/proveedor/hooks/useProveedorStats'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
+import { Badge } from '@/components/ui/badge'
 import { Link } from 'react-router-dom'
 import {
   Building2,
@@ -13,10 +15,15 @@ import {
   CalendarDays,
   Route,
   FileText,
+  Loader2,
+  Boxes,
+  MapPinCheck,
+  Banknote,
 } from 'lucide-react'
 
 export default function ProveedorDashboard() {
   const { empresa, cuenta } = useProveedorAuth()
+  const { stats, loading } = useProveedorStats()
   const esVisitador = cuenta?.rol_en_empresa === 'visitador_medico'
 
   const modulesAdmin = [
@@ -152,16 +159,104 @@ export default function ProveedorDashboard() {
         ))}
       </div>
 
-      {/* Placeholder para estadísticas futuras */}
-      <Card className="bg-gray-50 border-dashed">
-        <CardContent className="p-8 text-center">
-          <TrendingUp className="h-10 w-10 text-gray-300 mx-auto mb-3" />
-          <h3 className="text-lg font-semibold text-gray-700">Estadísticas próximamente</h3>
-          <p className="text-sm text-muted-foreground max-w-md mx-auto mt-1">
-            Aquí verás métricas de tus productos, visitas agendadas y campañas publicitarias.
-          </p>
-        </CardContent>
-      </Card>
+      {/* Estadísticas reales */}
+      {loading ? (
+        <div className="flex items-center justify-center py-12">
+          <Loader2 className="h-8 w-8 animate-spin text-[#1E5C8E]" />
+        </div>
+      ) : stats ? (
+        <div className="space-y-4">
+          <h2 className="text-lg font-semibold text-gray-900">Resumen de actividad</h2>
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+            <Card>
+              <CardContent className="p-5">
+                <div className="flex items-center justify-between">
+                  <div>
+                    <p className="text-sm text-muted-foreground">Productos activos</p>
+                    <p className="text-2xl font-bold mt-1">{stats.productosActivos}</p>
+                  </div>
+                  <div className="w-10 h-10 rounded-lg bg-blue-50 text-blue-600 flex items-center justify-center">
+                    <Boxes className="h-5 w-5" />
+                  </div>
+                </div>
+                <p className="text-xs text-muted-foreground mt-2">de {stats.productosTotal} registrados</p>
+              </CardContent>
+            </Card>
+
+            <Card>
+              <CardContent className="p-5">
+                <div className="flex items-center justify-between">
+                  <div>
+                    <p className="text-sm text-muted-foreground">Visitas esta semana</p>
+                    <p className="text-2xl font-bold mt-1">{stats.visitasSemana}</p>
+                  </div>
+                  <div className="w-10 h-10 rounded-lg bg-emerald-50 text-emerald-600 flex items-center justify-center">
+                    <MapPinCheck className="h-5 w-5" />
+                  </div>
+                </div>
+                <p className="text-xs text-muted-foreground mt-2">
+                  {stats.visitasHoy} hoy · {stats.visitasConfirmadas} confirmadas
+                </p>
+              </CardContent>
+            </Card>
+
+            <Card>
+              <CardContent className="p-5">
+                <div className="flex items-center justify-between">
+                  <div>
+                    <p className="text-sm text-muted-foreground">Campañas activas</p>
+                    <p className="text-2xl font-bold mt-1">{stats.campanasAprobadas}</p>
+                  </div>
+                  <div className="w-10 h-10 rounded-lg bg-amber-50 text-amber-600 flex items-center justify-center">
+                    <Megaphone className="h-5 w-5" />
+                  </div>
+                </div>
+                <p className="text-xs text-muted-foreground mt-2">{stats.campanasEnviadas} en revisión</p>
+              </CardContent>
+            </Card>
+
+            <Card>
+              <CardContent className="p-5">
+                <div className="flex items-center justify-between">
+                  <div>
+                    <p className="text-sm text-muted-foreground">Pagos pendientes</p>
+                    <p className="text-2xl font-bold mt-1">{stats.pagosPendientes}</p>
+                  </div>
+                  <div className="w-10 h-10 rounded-lg bg-purple-50 text-purple-600 flex items-center justify-center">
+                    <Banknote className="h-5 w-5" />
+                  </div>
+                </div>
+                <p className="text-xs text-muted-foreground mt-2">{stats.pagosVerificados} verificados</p>
+              </CardContent>
+            </Card>
+          </div>
+
+          {/* Detalle de visitas */}
+          {!esVisitador && (
+            <Card>
+              <CardHeader className="pb-3">
+                <CardTitle className="text-base">Estado de visitas</CardTitle>
+              </CardHeader>
+              <CardContent className="pb-5">
+                <div className="flex flex-wrap gap-2">
+                  <Badge variant="secondary" className="bg-gray-100 text-gray-700">
+                    Total: {stats.visitasTotal}
+                  </Badge>
+                  <Badge variant="secondary" className="bg-blue-50 text-blue-700">
+                    Propuestas: {stats.visitasPropuestas}
+                  </Badge>
+                  <Badge variant="secondary" className="bg-emerald-50 text-emerald-700">
+                    Confirmadas: {stats.visitasConfirmadas}
+                  </Badge>
+                  <Badge variant="secondary" className="bg-purple-50 text-purple-700">
+                    Completadas: {stats.visitasCompletadas}
+                  </Badge>
+                </div>
+              </CardContent>
+            </Card>
+          )}
+        </div>
+      ) : null}
     </div>
   )
 }
