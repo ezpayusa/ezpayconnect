@@ -12,6 +12,8 @@ import { Badge } from '@/components/ui/badge'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import DictadoVoz from '@/components/consulta/DictadoVoz'
+import BibliotecaMedica from '@/components/consulta/BibliotecaMedica'
+import AsistenteIA from '@/components/consulta/AsistenteIA'
 import { toast } from 'sonner'
 import type { Paciente, Cita, ExpedienteNota } from '@/types'
 import {
@@ -86,6 +88,10 @@ export default function ConsultaPage() {
     plan: '',
     diagnostico: '',
   })
+
+  // Paneles desplegables
+  const [mostrarBiblioteca, setMostrarBiblioteca] = useState(false)
+  const [mostrarAsistenteIA, setMostrarAsistenteIA] = useState(false)
 
   const calcularIMC = useCallback(() => {
     const peso = parseFloat(sv.peso_kg)
@@ -506,16 +512,56 @@ export default function ConsultaPage() {
             </CardContent>
           </Card>
 
-          {/* Historial rápido */}
+          {/* Biblioteca Médica */}
           <Card>
-            <CardHeader className="pb-3">
-              <CardTitle className="text-sm text-muted-foreground">Última Consulta</CardTitle>
+            <CardHeader className="pb-3 cursor-pointer" onClick={() => setMostrarBiblioteca(!mostrarBiblioteca)}>
+              <CardTitle className="text-sm flex items-center justify-between">
+                <span className="flex items-center gap-2">
+                  <BookOpen className="h-4 w-4 text-blue-600" />
+                  Biblioteca Médica
+                </span>
+                {mostrarBiblioteca ? <ChevronUp className="h-4 w-4" /> : <ChevronDown className="h-4 w-4" />}
+              </CardTitle>
             </CardHeader>
-            <CardContent>
-              <p className="text-xs text-muted-foreground italic">
-                El historial completo está disponible en el expediente del paciente.
-              </p>
-            </CardContent>
+            {mostrarBiblioteca && (
+              <CardContent>
+                <BibliotecaMedica onCopiar={texto => setSoap(p => ({ ...p, plan: p.plan + '\n\n[Referencia bibliográfica]\n' + texto }))} />
+              </CardContent>
+            )}
+          </Card>
+
+          {/* Asistente IA */}
+          <Card>
+            <CardHeader className="pb-3 cursor-pointer" onClick={() => setMostrarAsistenteIA(!mostrarAsistenteIA)}>
+              <CardTitle className="text-sm flex items-center justify-between">
+                <span className="flex items-center gap-2">
+                  <Brain className="h-4 w-4 text-purple-600" />
+                  Asistente IA
+                </span>
+                {mostrarAsistenteIA ? <ChevronUp className="h-4 w-4" /> : <ChevronDown className="h-4 w-4" />}
+              </CardTitle>
+            </CardHeader>
+            {mostrarAsistenteIA && (
+              <CardContent>
+                <AsistenteIA
+                  contexto={{
+                    edad,
+                    genero: paciente?.genero,
+                    peso_kg: sv.peso_kg,
+                    motivo_consulta: soap.motivo_consulta,
+                    subjetivo: soap.subjetivo,
+                    objetivo: soap.objetivo,
+                    presion_arterial: sv.presion_arterial,
+                    temperatura: sv.temperatura,
+                    frecuencia_cardiaca: sv.frecuencia_cardiaca,
+                    alergias: paciente?.alergias,
+                    medicamentos_en_uso: paciente?.medicamentos_en_uso,
+                    antecedentes: paciente?.antecedentes_personales,
+                  }}
+                  onCopiarSugerencia={texto => setSoap(p => ({ ...p, analisis: p.analisis + '\n\n[Sugerencia IA]\n' + texto }))}
+                />
+              </CardContent>
+            )}
           </Card>
         </div>
       </div>
