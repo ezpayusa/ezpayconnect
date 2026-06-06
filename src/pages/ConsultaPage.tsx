@@ -38,6 +38,10 @@ import {
   Wind,
   Gauge,
   ClipboardList,
+  BookOpen,
+  Brain,
+  ChevronDown,
+  ChevronUp,
 } from 'lucide-react'
 
 function calcularEdad(fechaNacimiento: string | null): number | null {
