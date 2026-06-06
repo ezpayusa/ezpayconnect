@@ -14,6 +14,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import DictadoVoz from '@/components/consulta/DictadoVoz'
 import BibliotecaMedica from '@/components/consulta/BibliotecaMedica'
 import AsistenteIA from '@/components/consulta/AsistenteIA'
+import RecetaModal from '@/components/consulta/RecetaModal'
 import { toast } from 'sonner'
 import type { Paciente, Cita, ExpedienteNota } from '@/types'
 import {
@@ -96,6 +97,7 @@ export default function ConsultaPage() {
   // Paneles desplegables
   const [mostrarBiblioteca, setMostrarBiblioteca] = useState(false)
   const [mostrarAsistenteIA, setMostrarAsistenteIA] = useState(false)
+  const [modalReceta, setModalReceta] = useState(false)
 
   const calcularIMC = useCallback(() => {
     const peso = parseFloat(sv.peso_kg)
@@ -532,7 +534,7 @@ export default function ConsultaPage() {
             <CardContent className="space-y-2">
               <Button
                 className="w-full justify-start bg-[#1E5C8E] hover:bg-[#164a70]"
-                onClick={() => navigate(`/recetas?nuevo=true&paciente_id=${paciente.id}&cita_id=${cita.id}`)}
+                onClick={() => setModalReceta(true)}
               >
                 <FileText className="h-4 w-4 mr-2" /> Nueva Receta
               </Button>
@@ -613,6 +615,16 @@ export default function ConsultaPage() {
           </Card>
         </div>
       </div>
+
+      <RecetaModal
+        open={modalReceta}
+        onOpenChange={setModalReceta}
+        pacienteIdPreseleccionado={paciente ? String(paciente.id) : undefined}
+        citaId={cita?.id}
+        onSuccess={() => {
+          toast.success('Receta creada desde la consulta')
+        }}
+      />
     </div>
   )
 }
