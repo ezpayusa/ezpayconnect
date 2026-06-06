@@ -59,6 +59,7 @@ import AdminUbicacionesMedicosPage from '@/proveedor/pages/visitador/AdminUbicac
 import PublicidadPlanesPage from '@/proveedor/pages/publicidad/PublicidadPlanesPage'
 import PublicidadCampanasPage from '@/proveedor/pages/publicidad/PublicidadCampanasPage'
 import PublicidadCampanaFormPage from '@/proveedor/pages/publicidad/PublicidadCampanaFormPage'
+import PublicidadMetricasPage from '@/proveedor/pages/publicidad/PublicidadMetricasPage'
 import ProveedorPerfilPage from '@/proveedor/pages/cuenta/ProveedorPerfilPage'
 import ProveedorPagosPage from '@/proveedor/pages/cuenta/ProveedorPagosPage'
 import PagoCheckoutPage from '@/proveedor/pages/PagoCheckoutPage'
@@ -229,6 +230,7 @@ function App() {
           <Route path="publicidad/planes" element={<PublicidadPlanesPage />} />
           <Route path="publicidad/campanas" element={<PublicidadCampanasPage />} />
           <Route path="publicidad/campanas/nueva" element={<PublicidadCampanaFormPage />} />
+          <Route path="publicidad/metricas" element={<PublicidadMetricasPage />} />
           <Route path="perfil" element={<ProveedorPerfilPage />} />
           <Route path="pagos" element={<ProveedorPagosPage />} />
           <Route path="checkout" element={<PagoCheckoutPage />} />

@@ -4,7 +4,7 @@ import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
 import { useSolicitudesCampana } from '@/proveedor/hooks/useSolicitudesCampana'
 import { usePlanesPublicidad } from '@/proveedor/hooks/usePlanesPublicidad'
-import { Megaphone, Plus, Trash2, Pencil, Loader2, CreditCard } from 'lucide-react'
+import { Megaphone, Plus, Trash2, Pencil, Loader2, CreditCard, BarChart3 } from 'lucide-react'
 
 const estadoColor: Record<string, string> = {
   borrador: 'bg-slate-100 text-slate-700',
@@ -36,12 +36,20 @@ export default function PublicidadCampanasPage() {
             {solicitudes.length} campaña{solicitudes.length !== 1 ? 's' : ''} registrada{solicitudes.length !== 1 ? 's' : ''}
           </p>
         </div>
-        <Link to="/proveedor/publicidad/campanas/nueva">
-          <Button className="bg-[#1E5C8E] hover:bg-[#164a70]">
-            <Plus className="h-4 w-4 mr-2" />
-            Nueva campaña
-          </Button>
-        </Link>
+        <div className="flex items-center gap-2">
+          <Link to="/proveedor/publicidad/metricas">
+            <Button variant="outline">
+              <BarChart3 className="h-4 w-4 mr-2" />
+              Métricas
+            </Button>
+          </Link>
+          <Link to="/proveedor/publicidad/campanas/nueva">
+            <Button className="bg-[#1E5C8E] hover:bg-[164a70]">
+              <Plus className="h-4 w-4 mr-2" />
+              Nueva campaña
+            </Button>
+          </Link>
+        </div>
       </div>
 
       {isLoading ? (

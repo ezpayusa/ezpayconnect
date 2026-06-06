@@ -107,11 +107,13 @@ export default function PagosProveedoresPage() {
       if (pagoData?.tipo === 'campana' && pagoData.referencia_id) {
         const { data: campana } = await supabase
           .from('solicitudes_campana')
-          .select('*')
+          .select('*, plan:plan_publicidad_id(peso)')
           .eq('id', pagoData.referencia_id)
           .single()
 
         if (campana) {
+          const pesoPlan = (campana.plan as any)?.peso || 1
+
           const { error: pubError } = await supabase.from('campanas_publicitarias').insert({
             titulo: campana.titulo,
             descripcion: campana.descripcion,
@@ -125,6 +127,7 @@ export default function PagosProveedoresPage() {
             genero_filtro: campana.genero_filtro,
             edad_min: campana.edad_min,
             edad_max: campana.edad_max,
+            peso: pesoPlan,
           })
 
           const { error: updError } = await supabase
