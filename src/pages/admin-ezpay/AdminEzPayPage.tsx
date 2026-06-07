@@ -11,6 +11,7 @@ import {
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { useEffect, useState } from 'react';
 import { supabase } from '@/lib/supabase';
+import { usePaisFiltro } from '@/hooks/usePaisFiltro';
 
 interface AdminStats {
   total_medicos: number;
@@ -40,6 +41,7 @@ export default function AdminEzPayPage() {
   });
   const [paises, setPaises] = useState<PaisConfig[]>([]);
   const [loading, setLoading] = useState(true);
+  const { paisId } = usePaisFiltro();
 
   useEffect(() => {
     fetchDashboardData();
@@ -47,15 +49,19 @@ export default function AdminEzPayPage() {
 
   const fetchDashboardData = async () => {
     try {
-      const { count: medicosCount } = await supabase
+      let medicosQuery = supabase
         .from('perfiles')
         .select('*', { count: 'exact', head: true })
-        .eq('rol', 'medico');
+        .eq('rol', 'medico')
+      if (paisId) medicosQuery = medicosQuery.eq('pais_id', paisId)
+      const { count: medicosCount } = await medicosQuery
 
-      const { count: clinicasCount } = await supabase
+      let clinicasQuery = supabase
         .from('perfiles')
         .select('*', { count: 'exact', head: true })
-        .eq('rol', 'clinica');
+        .eq('rol', 'clinica')
+      if (paisId) clinicasQuery = clinicasQuery.eq('pais_id', paisId)
+      const { count: clinicasCount } = await clinicasQuery
 
       const { data: paisesData } = await supabase
         .from('configuracion_pais')

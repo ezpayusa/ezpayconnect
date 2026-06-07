@@ -10,6 +10,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@
 import { Label } from '@/components/ui/label';
 import { Switch } from '@/components/ui/switch';
 import { useAdminAuth } from '@/hooks/admin/useAdminAuth';
+import { usePaisFiltro } from '@/hooks/usePaisFiltro';
 import { supabase } from '@/lib/supabase';
 import { 
   ArrowLeft, 
@@ -55,6 +56,7 @@ export default function UsuariosAdminPage() {
   const [dialogoCrear, setDialogoCrear] = useState(false);
   const [dialogoEditar, setDialogoEditar] = useState<UsuarioAdmin | null>(null);
   const [dialogoEliminar, setDialogoEliminar] = useState<string | null>(null);
+  const { paisId } = usePaisFiltro();
 
   const [nuevoUsuario, setNuevoUsuario] = useState({
     email: '',
@@ -66,10 +68,11 @@ export default function UsuariosAdminPage() {
 
   const cargarUsuarios = async () => {
     setLoading(true);
-    const { data, error } = await supabase
+    let query = supabase
       .from('perfiles')
       .select('*')
-      .order('created_at', { ascending: false });
+    if (paisId) query = query.eq('pais_id', paisId)
+    const { data, error } = await query.order('created_at', { ascending: false });
 
     if (error) {
       console.error('Error cargando usuarios:', error);

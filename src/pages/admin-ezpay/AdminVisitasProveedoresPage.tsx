@@ -3,6 +3,7 @@ import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Badge } from '@/components/ui/badge'
 import { Input } from '@/components/ui/input'
 import { supabase } from '@/lib/supabase'
+import { usePaisFiltro } from '@/hooks/usePaisFiltro'
 import { toast } from 'sonner'
 import { CalendarDays, MapPin, CheckCircle, Loader2, Search, User, Building2 } from 'lucide-react'
 
@@ -41,10 +42,11 @@ export default function AdminVisitasProveedoresPage() {
   const [loading, setLoading] = useState(false)
   const [filtroEmpresa, setFiltroEmpresa] = useState('')
   const [filtroEstado, setFiltroEstado] = useState('')
+  const { paisId } = usePaisFiltro()
 
   const cargar = useCallback(async () => {
     setLoading(true)
-    const { data, error } = await supabase
+    let query = supabase
       .from('visitas_agendadas')
       .select(`
         id, fecha_visita, hora_inicio, hora_fin, tipo_visita, estado,
@@ -54,6 +56,8 @@ export default function AdminVisitasProveedoresPage() {
       `)
       .order('fecha_visita', { ascending: false })
       .limit(200)
+    if (paisId) query = query.eq('pais_id', paisId)
+    const { data, error } = await query
 
     if (error) {
       toast.error('Error cargando visitas')

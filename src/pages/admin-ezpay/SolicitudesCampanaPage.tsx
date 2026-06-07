@@ -1,5 +1,6 @@
 import { useState, useEffect } from 'react'
 import { supabase } from '@/lib/supabase'
+import { usePaisFiltro } from '@/hooks/usePaisFiltro'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Card, CardContent } from '@/components/ui/card'
@@ -64,6 +65,7 @@ export default function SolicitudesCampanaPage() {
   const [solicitudActiva, setSolicitudActiva] = useState<SolicitudConEmpresa | null>(null)
   const [notasAdmin, setNotasAdmin] = useState('')
   const [procesando, setProcesando] = useState(false)
+  const { paisId } = usePaisFiltro()
 
   const fetchSolicitudes = async () => {
     setLoading(true)
@@ -73,6 +75,7 @@ export default function SolicitudesCampanaPage() {
       .order('created_at', { ascending: false })
 
     if (estadoFiltro) q = q.eq('estado', estadoFiltro)
+    if (paisId) q = q.eq('pais_id', paisId)
 
     const { data, error } = await q
 

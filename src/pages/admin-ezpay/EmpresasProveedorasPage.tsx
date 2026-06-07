@@ -9,6 +9,7 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/u
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Label } from '@/components/ui/label';
 import { useAdminAuth } from '@/hooks/admin/useAdminAuth';
+import { usePaisFiltro } from '@/hooks/usePaisFiltro';
 import { supabase } from '@/lib/supabase';
 import { toast } from 'sonner';
 import type { EmpresaProveedora, EmpresaEstado } from '@/proveedor/types/proveedor.types';
@@ -87,10 +88,11 @@ export default function EmpresasProveedorasPage() {
     nuevoEstado: EmpresaEstado;
   } | null>(null);
   const [procesando, setProcesando] = useState(false);
+  const { paisId } = usePaisFiltro();
 
   const cargarEmpresas = async () => {
     setLoading(true);
-    const { data, error } = await supabase
+    let query = supabase
       .from('empresas_proveedoras')
       .select(
         `*,
@@ -99,7 +101,8 @@ export default function EmpresasProveedorasPage() {
         campanas_count:solicitudes_campana(count),
         pagos_count:pagos_proveedor(count)`
       )
-      .order('created_at', { ascending: false });
+    if (paisId) query = query.eq('pais_id', paisId)
+    const { data, error } = await query.order('created_at', { ascending: false });
 
     if (error) {
       console.error('Error cargando empresas:', error);
