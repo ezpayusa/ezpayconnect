@@ -57,7 +57,7 @@ export function SidebarAdmin() {
     { path: '/admin-ezpay/planes-visitador', icon: Car, label: 'Planes Visitador' },
     { path: '/admin-ezpay/planes-farmaceutico', icon: Pill, label: 'Planes Farmacéutico' },
     { path: '/admin-ezpay/planes-farmacia', icon: Store, label: 'Planes Farmacia' },
-    { path: '/admin-ezpay/planes-publicidad', icon: Megaphone, label: 'Planes Publicidad' },
+    { path: '/admin-ezpay/planes-publicidad-config', icon: Megaphone, label: 'Planes Publicidad' },
     { path: '/admin-ezpay/planes-empresas-afines', icon: Handshake, label: 'Empresas Afines' },
     { path: '/admin-ezpay/excepciones', icon: AlertCircle, label: 'Excepciones' },
     { path: '/admin-ezpay/finanzas', icon: DollarSign, label: 'Finanzas' },

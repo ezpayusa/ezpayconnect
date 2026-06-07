@@ -224,6 +224,7 @@ function App() {
           <Route path="auditoria" element={<AuditoriaPage />} />
           <Route path="notificaciones" element={<NotificacionesAdminPage />} />
           <Route path="campanas-publicitarias" element={<CampanasPublicitariasPage />} />
+          <Route path="planes-publicidad-config" element={<PlanesPublicidadConfigPage />} />
           <Route path="solicitudes-campana" element={<SolicitudesCampanaPage />} />
           <Route path="pagos-proveedores" element={<PagosProveedoresPage />} />
           <Route path="visitas-proveedores" element={<AdminVisitasProveedoresPage />} />
