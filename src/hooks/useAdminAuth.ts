@@ -53,7 +53,7 @@ export function useAdminAuth() {
           email: user.email || '',
           nombre: profile.nombre_completo || user.email || 'Usuario',
           rol: userRol as AdminRole,
-          pais_id: profile.rol_id || null,
+          pais_id: profile.pais_id || null,
           activo: profile.activo ?? true,
           created_at: profile.created_at,
         });

@@ -2,6 +2,9 @@ import { useState, useEffect, useCallback } from 'react'
 import { supabase } from '@/lib/supabase'
 import type { Perfil } from '@/types'
 
+// País default (Guatemala) para registros sin país explícito
+const PAIS_DEFAULT = 'cbbbbe6d-59fe-4cf2-91ee-3e31ba1d5909'
+
 export function useAuth() {
   const [user, setUser] = useState<any>(null)
   const [perfil, setPerfil] = useState<Perfil | null>(null)
@@ -49,7 +52,8 @@ export function useAuth() {
         id: data.user.id,
         email,
         nombre_completo,
-        rol: rol || 'medico'
+        rol: rol || 'medico',
+        pais_id: PAIS_DEFAULT,
       })
       if (perfilError) {
         console.error('Error creando perfil:', perfilError)

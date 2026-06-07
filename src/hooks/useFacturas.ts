@@ -1,10 +1,12 @@
 import { useState, useEffect, useCallback } from 'react'
 import { supabase } from '@/lib/supabase'
+import { usePaisFiltro } from './usePaisFiltro'
 import type { Factura } from '@/types'
 
 export function useFacturas(pacienteId?: number) {
   const [facturas, setFacturas] = useState<Factura[]>([])
   const [loading, setLoading] = useState(true)
+  const { paisId } = usePaisFiltro()
 
   const fetchFacturas = useCallback(async () => {
     setLoading(true)
@@ -16,6 +18,9 @@ export function useFacturas(pacienteId?: number) {
 
     if (pacienteId) {
       query = query.eq('paciente_id', pacienteId)
+    }
+    if (paisId) {
+      query = query.eq('pais_id', paisId)
     }
 
     const { data, error } = await query
@@ -51,7 +56,8 @@ export function useFacturas(pacienteId?: number) {
       metodo_pago: factura.metodo_pago || null,
       estado: factura.estado || 'pendiente',
       notas: factura.notas || null,
-      medico_id: user.id
+      medico_id: user.id,
+      pais_id: paisId,
     }).select().single()
 
     if (!error && data) {

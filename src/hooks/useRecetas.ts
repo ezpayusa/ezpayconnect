@@ -1,18 +1,22 @@
 import { useState, useEffect, useCallback } from 'react'
 import { supabase } from '@/lib/supabase'
+import { usePaisFiltro } from './usePaisFiltro'
 import type { Receta, RecetaItem, Medicamento } from '@/types'
 
 export function useRecetas() {
   const [recetas, setRecetas] = useState<Receta[]>([])
   const [loading, setLoading] = useState(true)
+  const { paisId } = usePaisFiltro()
 
   const fetchRecetas = useCallback(async () => {
     setLoading(true)
     
-    const { data: recetasData, error: recetasError } = await supabase
+    let recetasQuery = supabase
       .from('recetas')
       .select(`*, pacientes(nombre, apellido)`)
       .order('created_at', { ascending: false })
+    if (paisId) recetasQuery = recetasQuery.eq('pais_id', paisId)
+    const { data: recetasData, error: recetasError } = await recetasQuery
     
     if (recetasError) {
       console.error('Error fetching recetas:', recetasError)
@@ -62,7 +66,8 @@ export function useRecetas() {
       instrucciones_generales: receta.instrucciones_generales || null,
       medico_id: user.id,
       estado: 'activa',
-      codigo_qr: codigoQR
+      codigo_qr: codigoQR,
+      pais_id: paisId,
     }).select().single()
     if (error || !recetaData) {
       return { data: null, error: `Error al crear receta: ${error?.message || 'Error desconocido'}` }

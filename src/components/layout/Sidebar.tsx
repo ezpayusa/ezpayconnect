@@ -28,6 +28,14 @@ export function Sidebar() {
 
   // Definir items de navegación según rol
   const getNavItems = () => {
+    // Si es admin_clinica, redirige a su panel
+    if (userRol === 'admin_clinica') {
+      return [
+        { label: 'Mi Clínica', icon: LayoutDashboard, path: '/clinica', roles: ['admin_clinica'] },
+        { label: 'Personal', icon: Users, path: '/clinica/personal', roles: ['admin_clinica'] },
+      ]
+    }
+
     const baseItems = [
       { label: 'Dashboard', icon: LayoutDashboard, path: '/dashboard', roles: ['admin', 'medico', 'asistente', 'super_admin'] },
       { label: 'Pacientes', icon: Users, path: '/pacientes', roles: ['admin', 'medico', 'asistente', 'super_admin'] },

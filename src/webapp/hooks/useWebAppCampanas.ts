@@ -16,12 +16,13 @@ export function useWebAppCampanas(pacienteId: number | undefined, perfil: any) {
     try {
       setLoading(true)
 
-      const { data, error } = await supabase
+      let query = supabase
         .from('campanas_publicitarias')
         .select('*')
         .eq('activa', true)
         .gte('fecha_fin', new Date().toISOString().split('T')[0])
-        .order('created_at', { ascending: false })
+      if (perfil?.pais_id) query = query.eq('pais_id', perfil.pais_id)
+      const { data, error } = await query.order('created_at', { ascending: false })
 
       if (error) throw error
 

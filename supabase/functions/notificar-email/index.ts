@@ -37,7 +37,7 @@ serve(async (req) => {
         'Content-Type': 'application/json',
       },
       body: JSON.stringify({
-        from: 'EzPayConnect <onboarding@resend.dev>',
+        from: 'EzPayConnect <no-reply@ezpayconnect.com>',
         to,
         subject,
         html,

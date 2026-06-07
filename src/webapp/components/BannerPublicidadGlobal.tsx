@@ -1,5 +1,6 @@
 import { useEffect, useState, useRef, useCallback } from 'react'
 import { supabase } from '@/lib/supabase'
+import { usePaisFiltro } from '@/hooks/usePaisFiltro'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { ExternalLink, ChevronLeft, ChevronRight, Megaphone } from 'lucide-react'
@@ -24,15 +25,17 @@ export default function BannerPublicidadGlobal() {
   const [pausado, setPausado] = useState(false)
   const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null)
   const yaRegistradas = useRef<Set<number>>(new Set())
+  const { paisId } = usePaisFiltro()
 
   useEffect(() => {
     const fetchCampanas = async () => {
-      const { data, error } = await supabase
+      let query = supabase
         .from('campanas_publicitarias')
         .select('id, titulo, descripcion, tipo, imagen_url, link_url, peso')
         .eq('activa', true)
         .gte('fecha_fin', new Date().toISOString().split('T')[0])
-        .order('created_at', { ascending: false })
+      if (paisId) query = query.eq('pais_id', paisId)
+      const { data, error } = await query.order('created_at', { ascending: false })
 
       if (!error) {
         const filtradas = await filtrarCampanasPorFrequencyCap(data || [])

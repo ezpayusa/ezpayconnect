@@ -1,5 +1,6 @@
 import { useState } from 'react'
 import { supabase } from '@/lib/supabase'
+import { usePaisFiltro } from '@/hooks/usePaisFiltro'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
@@ -20,6 +21,7 @@ export default function AgendarCitaModal({ pacienteId, open, onClose, onSuccess 
     motivo: '',
     notas: '',
   })
+  const { paisId } = usePaisFiltro()
   const [guardando, setGuardando] = useState(false)
 
   if (!open) return null
@@ -48,6 +50,7 @@ export default function AgendarCitaModal({ pacienteId, open, onClose, onSuccess 
         motivo: form.motivo || 'Consulta general',
         notas: form.notas || null,
         estado: 'solicitada',
+        pais_id: paisId,
       }).select().single()
 
       if (error) throw error

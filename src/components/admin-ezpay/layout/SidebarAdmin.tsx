@@ -3,6 +3,7 @@ import { Users } from 'lucide-react';
 import { ClipboardCheck } from 'lucide-react';
 import { useNavigate, useLocation } from 'react-router-dom';
 import { useAdminAuth } from '@/hooks/admin/useAdminAuth';
+import { usePaisActivo } from '@/hooks/usePaisActivo';
 import { 
   LayoutDashboard, 
   Globe, 
@@ -22,7 +23,9 @@ import {
   ChevronLeft,
   LogOut,
   Activity,
-  BarChart4
+  BarChart4,
+  MapPin,
+  ArrowLeftRight
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { supabase } from '@/lib/supabase';
@@ -31,12 +34,22 @@ export function SidebarAdmin() {
   const navigate = useNavigate();
   const location = useLocation();
   const { adminUser } = useAdminAuth();
+  const { paisActivo, clearPaisActivo } = usePaisActivo();
 
-  const menuItems = [
+  // Detectar si estamos en modo "país activo"
+  const enModoPais = location.pathname.startsWith('/admin-ezpay/pais/');
+  const paisIdMatch = location.pathname.match(/^\/admin-ezpay\/pais\/([^/]+)/);
+  const paisIdActual = paisIdMatch ? paisIdMatch[1] : null;
+
+  const menuItemsBase = [
     { path: '/admin-ezpay/asignacion-roles', icon: UserCheck, label: 'Asignar Roles' },
     { path: '/admin-ezpay/usuarios', icon: Users, label: 'Usuarios' },
     { path: '/admin-ezpay', icon: LayoutDashboard, label: 'Dashboard' },
     { path: '/admin-ezpay/paises', icon: Globe, label: 'Países' },
+  ];
+
+  const menuItemsPais = paisIdActual ? [
+    { path: `/admin-ezpay/pais/${paisIdActual}`, icon: LayoutDashboard, label: 'Dashboard País' },
     { path: '/admin-ezpay/planes-todos', icon: Layers, label: 'Todos los Planes' },
     { path: '/admin-ezpay/planes-medico', icon: Stethoscope, label: 'Planes Médico' },
     { path: '/admin-ezpay/planes-clinica', icon: Building2, label: 'Planes Clínica' },
@@ -55,13 +68,20 @@ export function SidebarAdmin() {
     { path: '/admin-ezpay/pagos-proveedores', icon: DollarSign, label: 'Pagos Proveedores' },
     { path: '/admin-ezpay/empresas-proveedoras', icon: Building2, label: 'Empresas Proveedoras' },
     { path: '/admin-ezpay/auditoria', icon: Activity, label: 'Auditoría' },
-  ];
+  ] : [];
+
+  const menuItems = enModoPais ? menuItemsPais : menuItemsBase;
 
   const isActive = (path: string) => {
     if (path === '/admin-ezpay') {
       return location.pathname === '/admin-ezpay';
     }
     return location.pathname.startsWith(path);
+  };
+
+  const handleCambiarPais = () => {
+    clearPaisActivo();
+    navigate('/admin-ezpay/paises');
   };
 
   return (
@@ -77,6 +97,27 @@ export function SidebarAdmin() {
           </div>
         </div>
       </div>
+
+      {/* Indicador de País Activo */}
+      {enModoPais && paisActivo && (
+        <div className="mx-3 mt-3 p-3 bg-white/10 rounded-lg">
+          <div className="flex items-center gap-2 mb-1">
+            <MapPin className="w-4 h-4 text-[#87CEEB]" />
+            <span className="text-xs text-white/70">Administrando</span>
+          </div>
+          <p className="text-sm font-bold">{paisActivo.nombre}</p>
+          <p className="text-xs text-white/60">{paisActivo.codigo} · {paisActivo.moneda}</p>
+          <Button
+            variant="ghost"
+            size="sm"
+            className="w-full mt-2 justify-start text-white/70 hover:text-white hover:bg-white/10 px-2 h-7 text-xs"
+            onClick={handleCambiarPais}
+          >
+            <ArrowLeftRight className="w-3 h-3 mr-1" />
+            Cambiar País
+          </Button>
+        </div>
+      )}
 
       <nav className="flex-1 overflow-y-auto py-4 px-3 space-y-1">
         {menuItems.map((item) => {

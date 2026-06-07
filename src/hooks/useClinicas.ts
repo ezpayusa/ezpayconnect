@@ -1,5 +1,6 @@
 import { useState, useEffect, useCallback } from 'react'
 import { supabase } from '@/lib/supabase'
+import { usePaisFiltro } from './usePaisFiltro'
 
 export interface Clinica {
   id: string
@@ -28,6 +29,7 @@ export function useClinicas() {
   const [loading, setLoading] = useState(true)
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const { paisId } = usePaisFiltro()
 
   const cargarClinicas = useCallback(async () => {
     setLoading(true)
@@ -78,7 +80,8 @@ export function useClinicas() {
         telefono: clinica.telefono || '',
         email: clinica.email || '',
         horarios: clinica.horarios || defaultHorarios,
-        activa: esPrimera, // Solo activa si es la primera
+        activa: esPrimera,
+        pais_id: paisId,
       }
 
       const { data, error: dbError } = await supabase

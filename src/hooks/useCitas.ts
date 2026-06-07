@@ -1,20 +1,24 @@
 import { useState, useEffect, useCallback } from 'react'
 import { supabase } from '@/lib/supabase'
+import { usePaisFiltro } from './usePaisFiltro'
 import type { Cita } from '@/types'
 
 export function useCitas() {
   const [citas, setCitas] = useState<Cita[]>([])
   const [loading, setLoading] = useState(true)
+  const { paisId } = usePaisFiltro()
 
   const fetchCitas = useCallback(async () => {
     setLoading(true)
-    const { data } = await supabase
+    let query = supabase
       .from('citas')
       .select('*')
       .order('fecha', { ascending: true })
+    if (paisId) query = query.eq('pais_id', paisId)
+    const { data } = await query
     setCitas(data || [])
     setLoading(false)
-  }, [])
+  }, [paisId])
 
   useEffect(() => { fetchCitas() }, [fetchCitas])
 
@@ -35,6 +39,7 @@ export function useCitas() {
       notas: cita.notas || null,
       estado: cita.estado || 'agendada',
       medico_id: user.id,
+      pais_id: paisId,
     }).select().single()
     
     if (error) {

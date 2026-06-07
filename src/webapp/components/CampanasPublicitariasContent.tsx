@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react'
 import { supabase } from '@/lib/supabase'
+import { usePaisFiltro } from '@/hooks/usePaisFiltro'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
@@ -29,6 +30,7 @@ interface Campana {
 export default function CampanasPublicitariasContent() {
   const [campanas, setCampanas] = useState<Campana[]>([])
   const [loading, setLoading] = useState(true)
+  const { paisId } = usePaisFiltro()
   const [mostrarForm, setMostrarForm] = useState(false)
   const [guardando, setGuardando] = useState(false)
   const [imagenFile, setImagenFile] = useState<File | null>(null)
@@ -51,10 +53,11 @@ export default function CampanasPublicitariasContent() {
 
   const fetchCampanas = async () => {
     setLoading(true)
-    const { data, error } = await supabase
+    let query = supabase
       .from('campanas_publicitarias')
       .select('*')
-      .order('created_at', { ascending: false })
+    if (paisId) query = query.eq('pais_id', paisId)
+    const { data, error } = await query.order('created_at', { ascending: false })
 
     if (error) {
       toast.error('Error cargando campañas')
@@ -118,6 +121,7 @@ export default function CampanasPublicitariasContent() {
       imagen_url: imagenUrl,
       link_url: form.link_url || null,
       fecha_inicio: form.fecha_inicio,
+      pais_id: paisId,
       fecha_fin: form.fecha_fin,
       condicion_filtro: form.condicion_filtro || null,
       genero_filtro: form.genero_filtro || null,

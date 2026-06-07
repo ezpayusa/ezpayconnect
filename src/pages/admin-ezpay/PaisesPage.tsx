@@ -169,7 +169,7 @@ export default function PaisesPage() {
       {/* Grid de países */}
       <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-8">
         {paises.map((pais) => (
-          <Card key={pais.id} className={pais.activo ? 'border-blue-200' : 'border-gray-200 opacity-75'}>
+          <Card key={pais.id} className={pais.activo ? 'border-blue-200 cursor-pointer hover:shadow-md transition-shadow' : 'border-gray-200 opacity-75 cursor-pointer hover:shadow-md transition-shadow'} onClick={() => navigate(`/admin-ezpay/pais/${pais.id}`)}>
             <CardContent className="pt-6">
               <div className="flex justify-between items-start mb-2">
                 <div>
@@ -211,7 +211,7 @@ export default function PaisesPage() {
               </thead>
               <tbody>
                 {paises.map((pais) => (
-                  <tr key={pais.id} className="border-b hover:bg-gray-50">
+                  <tr key={pais.id} className="border-b hover:bg-gray-50 cursor-pointer" onClick={() => navigate(`/admin-ezpay/pais/${pais.id}`)}>
                     <td className="py-3 px-4 font-medium">{pais.nombre}</td>
                     <td className="py-3 px-4">{pais.codigo}</td>
                     <td className="py-3 px-4">{pais.moneda}</td>

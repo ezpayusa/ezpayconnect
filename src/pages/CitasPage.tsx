@@ -7,6 +7,7 @@ import { useState, useEffect } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { supabase } from '@/lib/supabase'
 import { useAuth } from '@/hooks/useAuth'
+import { usePaisFiltro } from '@/hooks/usePaisFiltro'
 import {
   Calendar,
   Clock,
@@ -59,6 +60,7 @@ interface Recordatorio {
 export default function CitasPage() {
   const navigate = useNavigate()
   const { user } = useAuth()
+  const { paisId } = usePaisFiltro()
   const [citas, setCitas] = useState<Cita[]>([])
   const [recordatorios, setRecordatorios] = useState<Recordatorio[]>([])
   const [loading, setLoading] = useState(true)
@@ -92,11 +94,12 @@ export default function CitasPage() {
     setLoading(true)
 
     // 1. Cargar citas sin join
-    const { data: citasData, error: citasError } = await supabase
+    let citasQuery = supabase
       .from('citas')
       .select('*')
       .eq('fecha', fechaSeleccionada)
-      .order('hora_inicio')
+    if (paisId) citasQuery = citasQuery.eq('pais_id', paisId)
+    const { data: citasData, error: citasError } = await citasQuery.order('hora_inicio')
 
     if (citasError) {
       console.error('Error cargando citas:', citasError)
@@ -175,16 +178,20 @@ export default function CitasPage() {
 
   // Cargar pacientes y medicos para el MODAL (solo tabla medicos)
   const cargarPacientesYMedicos = async () => {
-    const { data: pacs } = await supabase
+    let pacsQuery = supabase
       .from('pacientes')
       .select('id, nombre, telefono')
       .order('nombre')
+    if (paisId) pacsQuery = pacsQuery.eq('pais_id', paisId)
+    const { data: pacs } = await pacsQuery
 
-    const { data: meds } = await supabase
+    let medsQuery = supabase
       .from('medicos')
       .select('id, nombre_completo, especialidad, activo')
       .eq('activo', true)
       .order('nombre_completo')
+    if (paisId) medsQuery = medsQuery.eq('pais_id', paisId)
+    const { data: meds } = await medsQuery
 
     setPacientes(pacs || [])
     setMedicos(meds || [])
@@ -207,7 +214,8 @@ export default function CitasPage() {
         hora_fin: nuevaCita.hora_fin,
         motivo: nuevaCita.motivo,
         notas: nuevaCita.notas,
-        estado: 'pendiente'
+        estado: 'pendiente',
+        pais_id: paisId,
       }).select().single()
 
       if (error) throw error

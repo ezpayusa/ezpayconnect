@@ -60,7 +60,7 @@ serve(async (req) => {
 
             // Obtener médico por separado
             const { data: medico } = await supabase
-              .from('perfiles')
+              .from('medicos')
               .select('nombre_completo, email, id')
               .eq('id', cita.medico_id)
               .single()
@@ -202,7 +202,7 @@ async function sendEmailDirect(params: {
         'Content-Type': 'application/json',
       },
       body: JSON.stringify({
-        from: 'EzPayConnect <onboarding@resend.dev>',
+        from: 'EzPayConnect <no-reply@ezpayconnect.com>',
         to: params.to,
         subject: params.subject,
         html: params.html,

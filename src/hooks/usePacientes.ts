@@ -1,23 +1,27 @@
 import { useState, useEffect, useCallback } from 'react'
 import { supabase } from '@/lib/supabase'
+import { usePaisFiltro } from './usePaisFiltro'
 import type { Paciente } from '@/types'
 
 export function usePacientes() {
   const [pacientes, setPacientes] = useState<Paciente[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
+  const { paisId } = usePaisFiltro()
 
   const fetchPacientes = useCallback(async () => {
     setLoading(true)
-    const { data, error } = await supabase
+    let query = supabase
       .from('pacientes')
       .select('*')
       .eq('activo', true)
       .order('created_at', { ascending: false })
+    if (paisId) query = query.eq('pais_id', paisId)
+    const { data, error } = await query
     if (error) setError(error.message)
     else setPacientes(data || [])
     setLoading(false)
-  }, [])
+  }, [paisId])
 
   useEffect(() => { fetchPacientes() }, [fetchPacientes])
 
@@ -42,7 +46,8 @@ export function usePacientes() {
       alergias: paciente.alergias || null,
       notas: paciente.notas || null,
       medico_id: user.id,
-      activo: true
+      activo: true,
+      pais_id: paisId,
     }).select().single()
     
     if (error) {

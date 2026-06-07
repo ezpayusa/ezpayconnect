@@ -81,7 +81,8 @@ export function useWebAppAuth() {
       telefono: datos.telefono || null,
       fecha_nacimiento: datos.fecha_nacimiento || null,
       genero: datos.genero || null,
-      activo: true
+      activo: true,
+      pais_id: PAIS_DEFAULT,
     })
 
     return { error: null }

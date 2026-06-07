@@ -78,6 +78,7 @@ export function useSolicitudesCampana() {
       edad_max: campana.edad_max || null,
       plan_publicidad_id: campana.plan_publicidad_id || null,
       estado: campana.estado || 'enviada',
+      pais_id: empresa.pais_id,
     }).select().single()
 
     setSaving(false)

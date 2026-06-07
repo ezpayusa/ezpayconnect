@@ -73,7 +73,7 @@ serve(async (req) => {
 
       // Query separada 3: médico
       const { data: medico } = await supabase
-        .from('perfiles')
+        .from('medicos')
         .select('nombre_completo, email')
         .eq('id', cita.medico_id)
         .single()
@@ -118,7 +118,7 @@ serve(async (req) => {
 
       // Query separada 3: médico
       const { data: medico } = await supabase
-        .from('perfiles')
+        .from('medicos')
         .select('nombre_completo')
         .eq('id', visita.medico_id)
         .single()

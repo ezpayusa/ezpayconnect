@@ -100,6 +100,17 @@ import ReportesEzPayPageV2 from '@/pages/admin-ezpay/ReportesEzPayPageV2'
 
 // === IMPORTS UI GLOBAL ===
 import { Toaster } from '@/components/ui/sonner'
+import { PaisProvider } from '@/contexts/PaisContext'
+import PaisDashboardPage from '@/pages/admin-ezpay/PaisDashboardPage'
+import InvitacionesMedicosPage from '@/pages/admin-ezpay/InvitacionesMedicosPage'
+import InvitacionesClinicasPage from '@/pages/admin-ezpay/InvitacionesClinicasPage'
+import RegistroMedicoPage from '@/pages/RegistroMedicoPage'
+import RegistroClinicaPage from '@/pages/RegistroClinicaPage'
+import { ClinicaLayout } from '@/clinica/layout/ClinicaLayout'
+import ClinicaDashboardPage from '@/clinica/pages/ClinicaDashboardPage'
+import ClinicaPersonalPage from '@/clinica/pages/ClinicaPersonalPage'
+import ClinicaInvitarMedicoPage from '@/clinica/pages/ClinicaInvitarMedicoPage'
+import ClinicaInvitarStaffPage from '@/clinica/pages/ClinicaInvitarStaffPage'
 
 function PrivateLayout({ children }: { children: React.ReactNode }) {
   const { user, loading } = useAuth()
@@ -135,9 +146,12 @@ function AdminRoute({ children }: { children: React.ReactNode }) {
 
 function App() {
   return (
+    <PaisProvider>
     <BrowserRouter>
       <Routes>
         <Route path="/notificaciones" element={<PrivateLayout><NotificacionesPage /></PrivateLayout>} />
+        <Route path="/registro-medico" element={<RegistroMedicoPage />} />
+        <Route path="/registro-clinica" element={<RegistroClinicaPage />} />
         <Route path="/login" element={<LoginPage />} />
         <Route path="/" element={<Navigate to="/dashboard" replace />} />
         <Route path="/dashboard" element={<PrivateLayout><DashboardPage /></PrivateLayout>} />
@@ -184,6 +198,9 @@ function App() {
           <Route path="ventas" element={<VentasPage />} />
           <Route index element={<AdminEzPayPage />} />
           <Route path="paises" element={<PaisesPage />} />
+          <Route path="pais/:paisId" element={<PaisDashboardPage />} />
+          <Route path="pais/:paisId/invitaciones-medicos" element={<InvitacionesMedicosPage />} />
+          <Route path="pais/:paisId/invitaciones-clinicas" element={<InvitacionesClinicasPage />} />
           <Route path="usuarios" element={<UsuariosAdminPage />} />
           <Route path="asignacion-roles" element={<AsignacionRolesPage />} />
           <Route path="planes-todos" element={<PlanesTodosPage />} />
@@ -211,6 +228,14 @@ function App() {
           <Route path="pagos-proveedores" element={<PagosProveedoresPage />} />
           <Route path="visitas-proveedores" element={<AdminVisitasProveedoresPage />} />
           <Route path="empresas-proveedoras" element={<EmpresasProveedorasPage />} />
+        </Route>
+
+        {/* === RUTAS CLÍNICA === */}
+        <Route path="/clinica" element={<ClinicaLayout />}>
+          <Route index element={<ClinicaDashboardPage />} />
+          <Route path="personal" element={<ClinicaPersonalPage />} />
+          <Route path="invitar-medico" element={<ClinicaInvitarMedicoPage />} />
+          <Route path="invitar-staff" element={<ClinicaInvitarStaffPage />} />
         </Route>
 
         {/* === RUTAS PORTAL PROVEEDORES === */}
@@ -256,6 +281,7 @@ function App() {
       </Routes>
       <Toaster richColors position="top-right" />
     </BrowserRouter>
+    </PaisProvider>
   )
 }
 

@@ -190,6 +190,7 @@ export function useVisitasAgendadas() {
       estado: estadoFinal,
       notas_empresa: visita.notas_empresa || null,
       propuesta_por: !esAdmin ? cuenta.id : null,
+      pais_id: empresa.pais_id,
     }).select().single()
     setSaving(false)
 
