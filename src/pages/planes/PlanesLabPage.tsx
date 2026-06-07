@@ -8,13 +8,15 @@ import { Label } from '@/components/ui/label';
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import { usePlanes } from '@/hooks/usePlanes';
 import { useAuth } from '@/hooks/useAuth';
+import { usePaisFiltro } from '@/hooks/usePaisFiltro';
 import { formatearPrecio, getBanderaPais } from '@/lib/planes-utils';
 
 export default function PlanesLabPage() {
-  const { planesBase, planesConfig, paises, loading } = usePlanes();
+  const { paisId } = usePaisFiltro();
+  const { planesBase, planesConfig, paises, loading } = usePlanes({ pais_id: paisId || undefined });
   const { user } = useAuth();
   const [esAnual, setEsAnual] = useState(false);
-  const [paisSeleccionado, setPaisSeleccionado] = useState('GT');
+  const [paisSeleccionado, setPaisSeleccionado] = useState(paisId || 'GT');
   const [planCheckout, setPlanCheckout] = useState<any>(null);
 
   // Filtrar solo planes lab

@@ -8,6 +8,7 @@ import { Switch } from '@/components/ui/switch';
 import { Label } from '@/components/ui/label';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { usePlanes } from '@/hooks/usePlanes';
+import { usePaisFiltro } from '@/hooks/usePaisFiltro';
 import { formatearPrecio, getBanderaPais } from '@/lib/planes-utils';
 
 const categorias = [
@@ -24,10 +25,11 @@ const colorClasses: any = {
 };
 
 export default function PlanesTodosPage() {
-  const { planesBase, planesConfig, paises, loading } = usePlanes();
+  const { paisId } = usePaisFiltro();
+  const { planesBase, planesConfig, paises, loading } = usePlanes({ pais_id: paisId || undefined });
   const navigate = useNavigate();
   const [esAnual, setEsAnual] = useState(false);
-  const [paisSeleccionado, setPaisSeleccionado] = useState('GT');
+  const [paisSeleccionado, setPaisSeleccionado] = useState(paisId || 'GT');
 
   const getConfigForPlan = (planId: string) => {
     return planesConfig.find(c => c.plan_base_id === planId && c.pais?.codigo === paisSeleccionado);

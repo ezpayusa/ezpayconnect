@@ -10,6 +10,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@
 import { Label } from '@/components/ui/label';
 import { usePlanes } from '@/hooks/usePlanes';
 import { useAuth } from '@/hooks/useAuth';
+import { usePaisFiltro } from '@/hooks/usePaisFiltro';
 import type { PlanAsignacion } from '@/types/planes';
 import { formatearPrecio, getEstadoConfig, diasRestantes } from '@/lib/planes-utils';
 import { ArrowLeft, Search, RefreshCw, Ban, RotateCcw, Eye, Download } from 'lucide-react';
@@ -20,7 +21,8 @@ type EstadoPlanLocal = 'activo' | 'inactivo' | 'pendiente' | 'suspendido' | 'can
 export default function PlanesAsignacionesPage() {
   const navigate = useNavigate();
   const { user } = useAuth();
-  const { asignaciones, planesConfig, loading, cancelarAsignacion, renovarAsignacion, recargar } = usePlanes();
+  const { paisId } = usePaisFiltro();
+  const { asignaciones, planesConfig, loading, cancelarAsignacion, renovarAsignacion, recargar } = usePlanes({ pais_id: paisId || undefined });
   const [search, setSearch] = useState('');
   const [filtroEstado, setFiltroEstado] = useState<EstadoPlanLocal | 'todos'>('todos');
   const [asignacionSel, setAsignacionSel] = useState<PlanAsignacion | null>(null);

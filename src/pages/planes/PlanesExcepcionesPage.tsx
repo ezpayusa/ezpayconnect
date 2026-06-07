@@ -9,12 +9,14 @@ import { Card, CardContent } from '@/components/ui/card';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from '@/components/ui/dialog';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { usePlanes } from '@/hooks/usePlanes';
+import { usePaisFiltro } from '@/hooks/usePaisFiltro';
 import { formatearPrecio } from '@/lib/planes-utils';
 import { ArrowLeft, Plus, Tag, Search } from 'lucide-react';
 
 export default function PlanesExcepcionesPage() {
   const navigate = useNavigate();
-  const { excepciones, planesConfig, loading, crearExcepcion, desactivarExcepcion, recargar } = usePlanes();
+  const { paisId } = usePaisFiltro();
+  const { excepciones, planesConfig, loading, crearExcepcion, desactivarExcepcion, recargar } = usePlanes({ pais_id: paisId || undefined });
   const [search, setSearch] = useState('');
   const [filtroActivo, setFiltroActivo] = useState<'todos' | 'activo' | 'inactivo'>('activo');
   const [dialogoCrear, setDialogoCrear] = useState(false);

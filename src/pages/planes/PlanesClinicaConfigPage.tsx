@@ -1,5 +1,6 @@
 import { useState } from "react";
 import { usePlanes } from "@/hooks/usePlanes";
+import { usePaisFiltro } from "@/hooks/usePaisFiltro";
 import { Button } from "@/components/ui/button";
 import {
   Table,
@@ -64,6 +65,7 @@ const MONEDAS_LATAM = [
 
 export default function PlanesClinicaConfigPage() {
   const navigate = useNavigate();
+  const { paisId } = usePaisFiltro();
   const {
     planesBase,
     planesConfig,
@@ -72,7 +74,7 @@ export default function PlanesClinicaConfigPage() {
     eliminarPlanBase,
     actualizarPlanBase,
     loading,
-  } = usePlanes();
+  } = usePlanes({ pais_id: paisId || undefined });
 
   // ── Estados para CREAR configuración por país ──
   const [dialogoCrearAbierto, setDialogoCrearAbierto] = useState(false);

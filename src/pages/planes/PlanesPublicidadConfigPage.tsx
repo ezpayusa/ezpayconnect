@@ -19,6 +19,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@
 import { Label } from '@/components/ui/label';
 import { usePlanes } from '@/hooks/usePlanes';
 import { useAdminAuth } from '@/hooks/admin/useAdminAuth';
+import { usePaisFiltro } from '@/hooks/usePaisFiltro';
 import { formatearPrecio, getBanderaPais } from '@/lib/planes-utils';
 import { ArrowLeft, Plus, Search, RefreshCw, Edit, Trash2, X, AlertTriangle, Megaphone, CreditCard } from 'lucide-react';
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
@@ -113,6 +114,7 @@ const MONEDAS = [
 export default function PlanesPublicidadConfigPage() {
   const navigate = useNavigate();
   const { isAdmin, loading: adminLoading } = useAdminAuth();
+  const { paisId } = usePaisFiltro();
   const { 
     planesBase, 
     planesConfig, 
@@ -124,7 +126,7 @@ export default function PlanesPublicidadConfigPage() {
     eliminarPlanBase, 
     eliminarPlanConfig,
     recargar 
-  } = usePlanes();
+  } = usePlanes({ pais_id: paisId || undefined });
 
   const [search, setSearch] = useState('');
 

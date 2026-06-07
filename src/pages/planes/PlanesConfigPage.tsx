@@ -7,17 +7,22 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { usePlanes } from '@/hooks/usePlanes';
+import { usePaisFiltro } from '@/hooks/usePaisFiltro';
 import { ArrowLeft, Save, RotateCcw, Globe, DollarSign, Percent } from 'lucide-react';
 
 export default function PlanesConfigPage() {
   const navigate = useNavigate();
+  const { paisId, esAdmin } = usePaisFiltro();
   const { planesBase, planesConfig, paises, loading, actualizarPlanConfig, recargar } = usePlanes();
-  const [paisActivo, setPaisActivo] = useState<string>('');
+  const [paisActivo, setPaisActivo] = useState<string>(paisId || '');
   const [editando, setEditando] = useState<Record<string, boolean>>({});
   const [datos, setDatos] = useState<Record<string, any>>({});
 
   const planesMedicos = planesBase.filter(p => p.tipo === 'medico');
-  const paisesConConfig = paises.filter(p => planesConfig.some(c => c.pais_id === p.id && planesMedicos.some(b => b.id === c.plan_base_id)));
+  let paisesConConfig = paises.filter(p => planesConfig.some(c => c.pais_id === p.id && planesMedicos.some(b => b.id === c.plan_base_id)));
+  if (paisId && !esAdmin) {
+    paisesConConfig = paisesConConfig.filter(p => p.id === paisId);
+  }
 
   if (!paisActivo && paisesConConfig.length > 0) setPaisActivo(paisesConConfig[0].id);
 

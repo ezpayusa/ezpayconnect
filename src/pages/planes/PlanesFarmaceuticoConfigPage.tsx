@@ -1,5 +1,6 @@
 import { useState } from "react";
 import { usePlanes } from "@/hooks/usePlanes";
+import { usePaisFiltro } from "@/hooks/usePaisFiltro";
 import { Button } from "@/components/ui/button";
 import {
   Table,
@@ -71,6 +72,7 @@ const MONEDAS_LATAM = [
 
 export default function PlanesFarmaceuticoConfigPage() {
   const navigate = useNavigate();
+  const { paisId } = usePaisFiltro();
   const {
     planesBase,
     planesConfig,
@@ -80,7 +82,7 @@ export default function PlanesFarmaceuticoConfigPage() {
     eliminarPlanBase,
     actualizarPlanBase,
     loading,
-  } = usePlanes();
+  } = usePlanes({ pais_id: paisId || undefined });
 
   const planesFarmaceutico = planesBase.filter((p) => p.tipo === "farmaceutico");
 

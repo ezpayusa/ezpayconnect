@@ -99,9 +99,11 @@ export function usePlanes(filtros?: FiltrosPlanes): UsePlanesReturn {
         .from('planes_configuracion')
         .select('*, plan_base:plan_base_id(*), pais:pais_id(*)')
         .eq('activo', true);
+      if (filtros?.pais_id) queryConfig = queryConfig.eq('pais_id', filtros.pais_id);
       const { data: configData, error: configError } = await queryConfig;
       if (configError) throw configError;
-      setPlanesConfig(configData || []);
+      const configs = configData || [];
+      setPlanesConfig(configs);
 
       try {
         let queryAsig = supabase
@@ -110,7 +112,12 @@ export function usePlanes(filtros?: FiltrosPlanes): UsePlanesReturn {
           .order('created_at', { ascending: false });
         if (filtros?.estado) queryAsig = queryAsig.eq('estado', filtros.estado);
         const { data: asigData } = await queryAsig;
-        setAsignaciones(asigData || []);
+        let asigs = asigData || [];
+        if (filtros?.pais_id) {
+          const configIds = new Set(configs.map(c => c.id));
+          asigs = asigs.filter(a => configIds.has(a.plan_config_id || a.configuracion_id || ''));
+        }
+        setAsignaciones(asigs);
       } catch {
         setAsignaciones([]);
       }
@@ -120,7 +127,12 @@ export function usePlanes(filtros?: FiltrosPlanes): UsePlanesReturn {
         .select('*, plan_configuracion:plan_config_id(*, plan_base:plan_base_id(*))')
         .order('created_at', { ascending: false });
       if (excError) throw excError;
-      setExcepciones(excData || []);
+      let excs = excData || [];
+      if (filtros?.pais_id) {
+        const configIds = new Set(configs.map(c => c.id));
+        excs = excs.filter(e => configIds.has(e.plan_config_id || e.plan_id || ''));
+      }
+      setExcepciones(excs);
 
       const { data: histData, error: histError } = await supabase
         .from('planes_historial')
@@ -128,7 +140,12 @@ export function usePlanes(filtros?: FiltrosPlanes): UsePlanesReturn {
         .order('created_at', { ascending: false })
         .limit(100);
       if (histError) throw histError;
-      setHistorial(histData || []);
+      let hists = histData || [];
+      if (filtros?.pais_id) {
+        const configIds = new Set(configs.map(c => c.id));
+        hists = hists.filter(h => configIds.has(h.plan_config_id || ''));
+      }
+      setHistorial(hists);
 
     } catch (err: any) {
       setError(err.message);

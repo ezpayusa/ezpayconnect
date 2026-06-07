@@ -8,14 +8,16 @@ import { PlanCheckout } from '@/components/planes/PlanCheckout';
 import type { CheckoutData } from '@/components/planes/PlanCheckout';
 import { usePlanes } from '@/hooks/usePlanes';
 import { useAuth } from '@/hooks/useAuth';
+import { usePaisFiltro } from '@/hooks/usePaisFiltro';
 import { getBanderaPais } from '@/lib/planes-utils';
 import { Building2, Shield, Globe, CheckCircle2 } from 'lucide-react';
 
 export default function PlanesClinicaPage() {
   const navigate = useNavigate();
   const { user } = useAuth();
-  const { planesConfig, paises, loading, crearAsignacionCheckout } = usePlanes();
-  const [paisSeleccionado, setPaisSeleccionado] = useState<string>('');
+  const { paisId } = usePaisFiltro();
+  const { planesConfig, paises, loading, crearAsignacionCheckout } = usePlanes({ pais_id: paisId || undefined });
+  const [paisSeleccionado, setPaisSeleccionado] = useState<string>(paisId || '');
   const [checkoutAbierto, setCheckoutAbierto] = useState(false);
   const [configCheckout, setConfigCheckout] = useState<any>(null);
 
