@@ -1,17 +1,19 @@
 import { useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useWebAppAuth } from '@/webapp/hooks/useWebAppAuth'
+import { usePaisesRegistro } from '@/hooks/usePaisesRegistro'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
-import { Mail, Lock, User, Loader2 } from 'lucide-react'
+import { Mail, Lock, User, Loader2, Globe } from 'lucide-react'
 import { toast } from 'sonner'
 
 export default function WebAppRegistroPage() {
   const navigate = useNavigate()
   const { register } = useWebAppAuth()
+  const { paises } = usePaisesRegistro()
   const [form, setForm] = useState({
-    nombre: '', apellido: '', email: '', password: '', telefono: ''
+    nombre: '', apellido: '', email: '', password: '', telefono: '', pais_id: ''
   })
   const [loading, setLoading] = useState(false)
 
@@ -25,7 +27,8 @@ export default function WebAppRegistroPage() {
     const { error } = await register(form.email, form.password, {
       nombre: form.nombre,
       apellido: form.apellido,
-      telefono: form.telefono || null
+      telefono: form.telefono || null,
+      pais_id: form.pais_id || undefined
     })
     if (error) {
       toast.error('Error al registrarse: ' + (error as Error).message)
@@ -65,6 +68,22 @@ export default function WebAppRegistroPage() {
           <div className="space-y-2">
             <Label>Teléfono</Label>
             <Input value={form.telefono} onChange={e => setForm({...form, telefono: e.target.value})} />
+          </div>
+          <div className="space-y-2">
+            <Label className="flex items-center gap-1">
+              <Globe className="h-3.5 w-3.5" /> País
+            </Label>
+            <select
+              value={form.pais_id}
+              onChange={e => setForm({...form, pais_id: e.target.value})}
+              className="w-full h-10 rounded-md border border-input bg-background px-3 py-2 text-sm"
+              required
+            >
+              <option value="">Selecciona tu país</option>
+              {paises.map((p) => (
+                <option key={p.id} value={p.id}>{p.nombre}</option>
+              ))}
+            </select>
           </div>
           <div className="space-y-2">
             <Label>Contraseña</Label>

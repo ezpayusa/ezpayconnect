@@ -44,7 +44,7 @@ export function useAuth() {
     return { data, error }
   }, [])
 
-  const register = useCallback(async (email: string, password: string, nombre_completo: string, rol: string = 'medico') => {
+  const register = useCallback(async (email: string, password: string, nombre_completo: string, rol: string = 'medico', pais_id?: string) => {
     const { data, error } = await supabase.auth.signUp({ email, password })
     if (error) return { data, error }
     if (data.user) {
@@ -53,7 +53,7 @@ export function useAuth() {
         email,
         nombre_completo,
         rol: rol || 'medico',
-        pais_id: PAIS_DEFAULT,
+        pais_id: pais_id || PAIS_DEFAULT,
       })
       if (perfilError) {
         console.error('Error creando perfil:', perfilError)

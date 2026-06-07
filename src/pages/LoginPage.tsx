@@ -1,6 +1,7 @@
 import { useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useAuth } from '@/hooks/useAuth'
+import { usePaisesRegistro } from '@/hooks/usePaisesRegistro'
 import { supabase } from '@/lib/supabase'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -17,8 +18,10 @@ export default function LoginPage() {
   const [password, setPassword] = useState('')
   const [nombre, setNombre] = useState('')
   const [rol, setRol] = useState('medico')
+  const [paisId, setPaisId] = useState('')
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
+  const { paises } = usePaisesRegistro()
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
@@ -26,7 +29,7 @@ export default function LoginPage() {
     setError('')
 
     if (isRegister) {
-      const { error } = await register(email, password, nombre, rol)
+      const { error } = await register(email, password, nombre, rol, paisId)
       if (error) setError(error.message)
       else {
         setIsRegister(false)
@@ -69,6 +72,7 @@ export default function LoginPage() {
     setPassword('')
     setNombre('')
     setRol('medico')
+    setPaisId('')
   }
 
   const roles = [
@@ -117,6 +121,21 @@ export default function LoginPage() {
                       placeholder="Dr. Juan Pérez"
                       required
                     />
+                  </div>
+                  <div className="space-y-2">
+                    <Label>País</Label>
+                    <Select value={paisId} onValueChange={setPaisId}>
+                      <SelectTrigger>
+                        <SelectValue placeholder="Selecciona tu país" />
+                      </SelectTrigger>
+                      <SelectContent>
+                        {paises.map((p) => (
+                          <SelectItem key={p.id} value={p.id}>
+                            {p.nombre} ({p.codigo})
+                          </SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
                   </div>
                   <div className="space-y-2">
                     <Label htmlFor="rol">Tipo de Usuario</Label>

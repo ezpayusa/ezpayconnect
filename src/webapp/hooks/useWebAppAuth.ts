@@ -68,7 +68,7 @@ export function useWebAppAuth() {
     return { error }
   }
 
-  const register = async (email: string, password: string, datos: Partial<PacientePerfil>) => {
+  const register = async (email: string, password: string, datos: Partial<PacientePerfil> & { pais_id?: string }) => {
     const { data, error } = await supabase.auth.signUp({ email, password })
     if (error || !data.user) return { error }
 
@@ -82,7 +82,7 @@ export function useWebAppAuth() {
       fecha_nacimiento: datos.fecha_nacimiento || null,
       genero: datos.genero || null,
       activo: true,
-      pais_id: PAIS_DEFAULT,
+      pais_id: datos.pais_id || PAIS_DEFAULT,
     })
 
     return { error: null }
