@@ -38,12 +38,17 @@ export function usePlanesVisitador() {
         return
       }
 
-      // 2. Leer configuraciones de esos planes
+      // 2. Leer configuraciones de esos planes (filtrado por país de la empresa)
+      if (!empresa?.pais_id) {
+        setPlanesDisponibles([])
+        return
+      }
       const baseIds = bases.map((b) => b.id)
       const { data: configData, error: configError } = await supabase
         .from('planes_configuracion')
         .select('*')
         .eq('activo', true)
+        .eq('pais_id', empresa.pais_id)
         .in('plan_base_id', baseIds)
 
       if (configError) throw configError
@@ -71,7 +76,7 @@ export function usePlanesVisitador() {
       toast.error('Error cargando planes disponibles')
       console.error(err)
     }
-  }, [])
+  }, [empresa])
 
   // Cargar planes asignados a la empresa proveedora vía RPC (evita problemas RLS con joins)
   const fetchPlanesAsignados = useCallback(async () => {
