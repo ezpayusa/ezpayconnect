@@ -25,11 +25,20 @@ export function useNotificaciones() {
   const listarNotificaciones = useCallback(async () => {
     setLoading(true);
     try {
-      const { data, error } = await supabase
+      const { data: sessionData } = await supabase.auth.getSession();
+      const userId = sessionData.session?.user?.id;
+
+      let query = supabase
         .from("notificaciones")
         .select("*")
         .order("created_at", { ascending: false })
         .limit(50);
+
+      if (userId) {
+        query = query.eq("usuario_id", userId);
+      }
+
+      const { data, error } = await query;
 
       if (error) throw error;
 

@@ -63,6 +63,7 @@ import PublicidadCampanaFormPage from '@/proveedor/pages/publicidad/PublicidadCa
 import PublicidadMetricasPage from '@/proveedor/pages/publicidad/PublicidadMetricasPage'
 import ProveedorPerfilPage from '@/proveedor/pages/cuenta/ProveedorPerfilPage'
 import ProveedorPagosPage from '@/proveedor/pages/cuenta/ProveedorPagosPage'
+import ProveedorNotificacionesPage from '@/proveedor/pages/ProveedorNotificacionesPage'
 import PagoCheckoutPage from '@/proveedor/pages/PagoCheckoutPage'
 
 // === IMPORTS PLANES ===
@@ -263,6 +264,7 @@ function App() {
           <Route path="publicidad/metricas" element={<PublicidadMetricasPage />} />
           <Route path="perfil" element={<ProveedorPerfilPage />} />
           <Route path="pagos" element={<ProveedorPagosPage />} />
+          <Route path="notificaciones" element={<ProveedorNotificacionesPage />} />
           <Route path="checkout" element={<PagoCheckoutPage />} />
         </Route>
 

@@ -1,5 +1,6 @@
 import { Link, useLocation, useNavigate, Outlet } from 'react-router-dom'
 import { useProveedorAuth } from '@/proveedor/hooks/useProveedorAuth'
+import { useNotificaciones } from '@/hooks/useNotificaciones'
 import { Button } from '@/components/ui/button'
 import {
   LayoutDashboard,
@@ -15,10 +16,18 @@ import {
   Users,
   MapPin,
   BarChart3,
+  Bell,
 } from 'lucide-react'
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 
-const navItemsBase = [
+interface NavItem {
+  label: string
+  path: string
+  icon: React.ElementType
+  badge?: boolean
+}
+
+const navItemsBase: NavItem[] = [
   { label: 'Dashboard', path: '/proveedor/dashboard', icon: LayoutDashboard },
 ]
 
@@ -31,6 +40,7 @@ const navItemsAdmin = [
   { label: 'Publicidad', path: '/proveedor/publicidad/planes', icon: Megaphone },
   { label: 'Perfil Empresa', path: '/proveedor/perfil', icon: Building2 },
   { label: 'Pagos', path: '/proveedor/pagos', icon: CreditCard },
+  { label: 'Notificaciones', path: '/proveedor/notificaciones', icon: Bell, badge: true },
 ]
 
 const navItemsVisitador = [
@@ -39,10 +49,12 @@ const navItemsVisitador = [
   { label: 'Mi Ruta', path: '/proveedor/visitador/ruta', icon: MapPin },
   { label: 'Reporte', path: '/proveedor/visitador/reporte', icon: BarChart3 },
   { label: 'Perfil', path: '/proveedor/perfil', icon: Building2 },
+  { label: 'Notificaciones', path: '/proveedor/notificaciones', icon: Bell, badge: true },
 ]
 
 export default function ProveedorLayout() {
   const { empresa, logout, loading, cuenta } = useProveedorAuth()
+  const { noLeidas, listarNotificaciones } = useNotificaciones()
   const location = useLocation()
   const navigate = useNavigate()
   const [mobileOpen, setMobileOpen] = useState(false)
@@ -53,6 +65,12 @@ export default function ProveedorLayout() {
   const navItems = esAdmin 
     ? [...navItemsBase, ...navItemsAdmin] 
     : [...navItemsBase, ...navItemsVisitador]
+
+  useEffect(() => {
+    listarNotificaciones()
+    const interval = setInterval(listarNotificaciones, 60000)
+    return () => clearInterval(interval)
+  }, [listarNotificaciones])
 
   if (loading) {
     return (
@@ -97,7 +115,12 @@ export default function ProveedorLayout() {
                 }`}
               >
                 <item.icon className="h-4 w-4 shrink-0" />
-                <span className="truncate">{item.label}</span>
+                <span className="truncate flex-1">{item.label}</span>
+                {item.badge && noLeidas > 0 && (
+                  <span className="bg-red-500 text-white text-[10px] font-bold px-1.5 py-0.5 rounded-full min-w-[18px] text-center">
+                    {noLeidas > 99 ? '99+' : noLeidas}
+                  </span>
+                )}
               </Link>
             )
           })}
@@ -155,7 +178,12 @@ export default function ProveedorLayout() {
                   }`}
                 >
                   <item.icon className="h-4 w-4 shrink-0" />
-                  <span>{item.label}</span>
+                  <span className="flex-1">{item.label}</span>
+                  {item.badge && noLeidas > 0 && (
+                    <span className="bg-red-500 text-white text-[10px] font-bold px-1.5 py-0.5 rounded-full min-w-[18px] text-center">
+                      {noLeidas > 99 ? '99+' : noLeidas}
+                    </span>
+                  )}
                 </Link>
               )
             })}

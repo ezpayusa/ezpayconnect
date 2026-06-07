@@ -202,7 +202,7 @@ async function sendEmailDirect(params: {
         'Content-Type': 'application/json',
       },
       body: JSON.stringify({
-        from: 'EzPayConnect <no-reply@ezpayconnect.com>',
+        from: 'EzPayConnect <onboarding@resend.dev>',
         to: params.to,
         subject: params.subject,
         html: params.html,
