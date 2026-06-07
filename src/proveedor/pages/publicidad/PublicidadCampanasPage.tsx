@@ -4,6 +4,7 @@ import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
 import { useSolicitudesCampana } from '@/proveedor/hooks/useSolicitudesCampana'
 import { usePlanesPublicidad } from '@/proveedor/hooks/usePlanesPublicidad'
+import { useProveedorAuth } from '@/proveedor/hooks/useProveedorAuth'
 import { Megaphone, Plus, Trash2, Pencil, Loader2, CreditCard, BarChart3 } from 'lucide-react'
 
 const estadoColor: Record<string, string> = {
@@ -18,11 +19,20 @@ const estadoColor: Record<string, string> = {
 export default function PublicidadCampanasPage() {
   const navigate = useNavigate()
   const { solicitudes, loading, eliminarSolicitud } = useSolicitudesCampana()
-  const { planes, loading: loadingPlanes } = usePlanesPublicidad()
+  const { empresa } = useProveedorAuth()
+  const paisIdProveedor = empresa?.pais_id || undefined
+  const { planes, loading: loadingPlanes } = usePlanesPublicidad(paisIdProveedor)
 
   const getPlanPrecio = (planId: number | null): number => {
     if (!planId) return 0
-    return planes.find((p) => p.id === planId)?.precio || 0
+    const plan = planes.find((p) => p.id === planId)
+    return plan?.precio_local || plan?.precio || 0
+  }
+
+  const getPlanMoneda = (planId: number | null): string => {
+    if (!planId) return 'GTQ'
+    const plan = planes.find((p) => p.id === planId)
+    return plan?.moneda_local || plan?.moneda || 'GTQ'
   }
 
   const isLoading = loading || loadingPlanes
@@ -120,12 +130,13 @@ export default function PublicidadCampanasPage() {
                       className="flex-1 bg-emerald-600 hover:bg-emerald-700 text-white"
                       onClick={() => {
                         const monto = getPlanPrecio(c.plan_publicidad_id)
+                        const moneda = getPlanMoneda(c.plan_publicidad_id)
                         if (!monto) {
                           toast?.error?.('No se encontró el precio del plan')
                           return
                         }
                         navigate(
-                          `/proveedor/checkout?tipo=campana&referencia_id=${c.id}&monto=${monto}&descripcion=${encodeURIComponent(c.titulo)}`
+                          `/proveedor/checkout?tipo=campana&referencia_id=${c.id}&monto=${monto}&moneda=${moneda}&descripcion=${encodeURIComponent(c.titulo)}`
                         )
                       }}
                     >

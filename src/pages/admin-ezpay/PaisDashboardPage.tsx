@@ -18,6 +18,8 @@ import {
   FileText,
   BrainCircuit,
   CreditCard,
+  Eye,
+  MousePointerClick,
 } from 'lucide-react'
 
 interface PaisStats {
@@ -32,11 +34,22 @@ interface PaisStats {
   total_facturas: number
 }
 
+interface CampanaMetrics {
+  impresiones: number
+  clicks: number
+  ctr: number
+}
+
 export default function PaisDashboardPage() {
   const navigate = useNavigate()
   const { paisId } = useParams<{ paisId: string }>()
   const { isAdmin, loading: adminLoading } = useAdminAuth()
   const { paisActivo, setPaisActivo, clearPaisActivo } = usePaisActivo()
+  const [campanaMetrics, setCampanaMetrics] = useState<CampanaMetrics>({
+    impresiones: 0,
+    clicks: 0,
+    ctr: 0,
+  })
   const [stats, setStats] = useState<PaisStats>({
     total_medicos: 0,
     total_clinicas: 0,
@@ -133,6 +146,19 @@ export default function PaisDashboardPage() {
           .select('*', { count: 'exact', head: true })
           .eq('pais_id', paisId)
           .catch(() => ({ count: 0 }))
+
+        // Métricas de campañas
+        const { data: metricasData } = await supabase
+          .from('campana_metricas')
+          .select('clickeado')
+          .eq('pais_id', paisId)
+          .catch(() => ({ data: [] }))
+
+        const impresiones = (metricasData || []).filter((m: any) => !m.clickeado).length
+        const clicks = (metricasData || []).filter((m: any) => m.clickeado).length
+        const ctr = impresiones > 0 ? Math.round((clicks / impresiones) * 100 * 100) / 100 : 0
+
+        setCampanaMetrics({ impresiones, clicks, ctr })
 
         setStats({
           total_medicos: medicosCount || 0,
@@ -284,6 +310,47 @@ export default function PaisDashboardPage() {
           )
         })}
       </div>
+
+      {/* Métricas de Campañas */}
+      <Card className="mb-8">
+        <CardHeader>
+          <CardTitle className="text-lg flex items-center gap-2">
+            <Megaphone className="w-5 h-5 text-purple-600" />
+            Campañas Publicitarias
+          </CardTitle>
+        </CardHeader>
+        <CardContent>
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+            <div className="flex items-center gap-3">
+              <div className="p-2 bg-blue-100 rounded-lg">
+                <Eye className="w-5 h-5 text-blue-600" />
+              </div>
+              <div>
+                <p className="text-sm text-gray-500">Impresiones</p>
+                <p className="text-xl font-bold">{campanaMetrics.impresiones.toLocaleString()}</p>
+              </div>
+            </div>
+            <div className="flex items-center gap-3">
+              <div className="p-2 bg-emerald-100 rounded-lg">
+                <MousePointerClick className="w-5 h-5 text-emerald-600" />
+              </div>
+              <div>
+                <p className="text-sm text-gray-500">Clicks</p>
+                <p className="text-xl font-bold">{campanaMetrics.clicks.toLocaleString()}</p>
+              </div>
+            </div>
+            <div className="flex items-center gap-3">
+              <div className="p-2 bg-amber-100 rounded-lg">
+                <TrendingUp className="w-5 h-5 text-amber-600" />
+              </div>
+              <div>
+                <p className="text-sm text-gray-500">CTR</p>
+                <p className="text-xl font-bold">{campanaMetrics.ctr}%</p>
+              </div>
+            </div>
+          </div>
+        </CardContent>
+      </Card>
 
       {/* Acciones rápidas */}
       <Card>

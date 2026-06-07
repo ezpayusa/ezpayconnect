@@ -14,6 +14,7 @@ export async function registrarMetricaCampana(
     contexto?: string
     tipoPerfil?: 'paciente' | 'medico' | 'admin' | 'visitador'
     pacienteId?: number
+    paisId?: string
   } = {}
 ) {
   try {
@@ -28,6 +29,7 @@ export async function registrarMetricaCampana(
       p_sesion_id: sesionId,
       p_clickeado: opciones.clickeado || false,
       p_contexto: opciones.contexto || null,
+      p_pais_id: opciones.paisId || null,
     })
   } catch (err) {
     console.error('Error registrando métrica:', err)

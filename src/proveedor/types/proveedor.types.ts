@@ -13,7 +13,7 @@ export interface EmpresaProveedora {
   nombre_empresa: string
   tipo: 'farmacia' | 'laboratorio_farmaceutico' | 'laboratorio_clinico' | 'empresa_afin'
   ruc_nit: string | null
-  pais_id: number | null
+  pais_id: string | null
   ciudad: string | null
   direccion: string | null
   email_contacto: string

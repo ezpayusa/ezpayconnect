@@ -8,6 +8,7 @@ import { toast } from 'sonner'
 import { ArrowLeft, Loader2, Upload, X } from 'lucide-react'
 import { useSolicitudesCampana } from '@/proveedor/hooks/useSolicitudesCampana'
 import { usePlanesPublicidad } from '@/proveedor/hooks/usePlanesPublicidad'
+import { useProveedorAuth } from '@/proveedor/hooks/useProveedorAuth'
 import { supabase } from '@/lib/supabase'
 import type { SolicitudCampana } from '@/proveedor/types/proveedor.types'
 
@@ -24,7 +25,9 @@ export default function PublicidadCampanaFormPage() {
   const [searchParams] = useSearchParams()
   const isEditing = Boolean(id)
   const { crearSolicitud, actualizarSolicitud, saving } = useSolicitudesCampana()
-  const { planes, loading: loadingPlanes } = usePlanesPublicidad()
+  const { empresa } = useProveedorAuth()
+  const paisIdProveedor = empresa?.pais_id || undefined
+  const { planes, loading: loadingPlanes } = usePlanesPublicidad(paisIdProveedor)
   const [loadingData, setLoadingData] = useState(isEditing)
 
   const [form, setForm] = useState({
@@ -127,7 +130,7 @@ export default function PublicidadCampanaFormPage() {
         const planSeleccionado = planes.find((p) => String(p.id) === form.plan_publicidad_id)
         if (planSeleccionado) {
           navigate(
-            `/proveedor/checkout?tipo=campana&referencia_id=${ok}&monto=${planSeleccionado.precio}&descripcion=${encodeURIComponent(planSeleccionado.nombre)}`
+            `/proveedor/checkout?tipo=campana&referencia_id=${ok}&monto=${planSeleccionado.precio_local}&descripcion=${encodeURIComponent(planSeleccionado.nombre)}`
           )
         } else {
           navigate('/proveedor/publicidad/campanas')
@@ -174,7 +177,7 @@ export default function PublicidadCampanaFormPage() {
                 <option value="">Selecciona un plan</option>
                 {planes.map((p) => (
                   <option key={p.id} value={p.id}>
-                    {p.nombre} — {new Intl.NumberFormat('es-GT', { style: 'currency', currency: p.moneda }).format(p.precio)}
+                    {p.nombre} — {new Intl.NumberFormat('es-GT', { style: 'currency', currency: p.moneda_local }).format(p.precio_local)}
                   </option>
                 ))}
               </select>
