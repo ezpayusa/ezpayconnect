@@ -5,7 +5,7 @@ import AgendarCitaModal from '@/webapp/components/AgendarCitaModal'
 import { Card, CardContent } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
-import { CalendarDays, Clock, Plus, Loader2 } from 'lucide-react'
+import { CalendarDays, Clock, Plus, Loader2, MapPin } from 'lucide-react'
 
 export default function WebAppCitas() {
   const { perfil } = useWebAppAuth()
