@@ -7,7 +7,7 @@ import { Label } from '@/components/ui/label'
 import {
   CalendarDays, Clock, FileText, StickyNote, X, Loader2,
   User, MapPin, ChevronLeft, ChevronRight, Stethoscope,
-  Building2, Search, Star, Check,
+  Building, Search, Star, Check,
 } from 'lucide-react'
 import { toast } from 'sonner'
 
@@ -210,12 +210,14 @@ export default function AgendarCitaModal({ pacienteId, pacienteNombre, paisIdPro
         const filtradas = clinicas.filter(c => clinicaIds.includes(c.id))
         setClinicasFiltradas(filtradas)
 
-        // Si el médico atiende en una sola clínica, preseleccionarla
-        if (filtradas.length === 1 && !clinicaId) {
+        // Si hay clínicas disponibles, asegurar que haya una seleccionada
+        if (filtradas.length === 1) {
           setClinicaId(filtradas[0].id)
-        } else if (clinicaId && !filtradas.find(c => c.id === clinicaId)) {
-          // La clínica seleccionada no está en la lista filtrada, resetear
-          setClinicaId(null)
+        } else if (filtradas.length > 1) {
+          // Si la clínica seleccionada no está en la lista, preseleccionar la primera
+          if (!clinicaId || !filtradas.find(c => c.id === clinicaId)) {
+            setClinicaId(filtradas[0].id)
+          }
         }
       }
     }
@@ -497,7 +499,7 @@ export default function AgendarCitaModal({ pacienteId, pacienteNombre, paisIdPro
                 <div className="flex items-center gap-2">
                   <Building2 className="h-4 w-4 text-sky-500" />
                   <Label className="text-sm font-medium text-slate-700">
-                    Clínica {medicoId && clinicasFiltradas.length > 0 ? `(${clinicasFiltradas.length} disponible${clinicasFiltradas.length !== 1 ? 's' : ''})` : '(opcional)'}
+                    Clínica {medicoId && clinicasFiltradas.length > 0 ? `(${clinicasFiltradas.length} disponible${clinicasFiltradas.length !== 1 ? 's' : ''})` : '*'}
                   </Label>
                 </div>
 
@@ -507,24 +509,6 @@ export default function AgendarCitaModal({ pacienteId, pacienteNombre, paisIdPro
                   </div>
                 ) : (
                   <div className="space-y-2">
-                    <button
-                      type="button"
-                      onClick={() => setClinicaId(null)}
-                      className={`flex items-center gap-3 p-3 rounded-xl border text-left transition-all w-full ${
-                        clinicaId === null
-                          ? 'border-sky-500 bg-sky-50 ring-1 ring-sky-500'
-                          : 'border-slate-200 hover:border-slate-300 bg-white'
-                      }`}
-                    >
-                      <div className="w-10 h-10 rounded-full bg-slate-100 flex items-center justify-center shrink-0">
-                        <MapPin className="h-5 w-5 text-slate-400" />
-                      </div>
-                      <div>
-                        <p className="text-sm font-medium text-slate-800">Sin preferencia</p>
-                        <p className="text-xs text-slate-500">Cualquier clínica de tu país</p>
-                      </div>
-                    </button>
-
                     {clinicasFiltradas.map((cli) => (
                       <button
                         key={cli.id}
@@ -537,7 +521,7 @@ export default function AgendarCitaModal({ pacienteId, pacienteNombre, paisIdPro
                         }`}
                       >
                         <div className="w-10 h-10 rounded-full bg-emerald-100 flex items-center justify-center shrink-0">
-                          <Building2 className="h-5 w-5 text-emerald-600" />
+                          <Building className="h-5 w-5 text-emerald-600" />
                         </div>
                         <div className="flex-1 min-w-0">
                           <p className="text-sm font-medium text-slate-800">
@@ -555,7 +539,7 @@ export default function AgendarCitaModal({ pacienteId, pacienteNombre, paisIdPro
 
                     {clinicasFiltradas.length === 0 && medicoId && (
                       <p className="text-sm text-amber-600 text-center py-2">
-                        Este médico no tiene clínicas asignadas. Puedes seleccionar &quot;Sin preferencia&quot;.
+                        Este médico no tiene clínicas asignadas.
                       </p>
                     )}
                   </div>
@@ -670,7 +654,7 @@ export default function AgendarCitaModal({ pacienteId, pacienteNombre, paisIdPro
               type="button"
               className="flex-1 bg-sky-500 hover:bg-sky-600"
               onClick={() => setPaso(2)}
-              disabled={cargandoOpciones}
+              disabled={cargandoOpciones || !clinicaId}
             >
               Continuar
               <ChevronRight className="h-4 w-4 ml-1" />
