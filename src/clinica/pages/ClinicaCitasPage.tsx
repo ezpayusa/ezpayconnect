@@ -13,6 +13,7 @@ import {
   UserPlus,
   Stethoscope,
   AlertCircle,
+  Building2,
 } from 'lucide-react'
 
 export default function ClinicaCitasPage() {
@@ -23,6 +24,10 @@ export default function ClinicaCitasPage() {
     filtroEstado,
     setFiltroEstado,
     medicosClinica,
+    clinicas,
+    clinicaId,
+    clinicaNombre,
+    cambiarClinica,
     fetchCitas,
     confirmarCita,
     rechazarCita,
@@ -89,6 +94,38 @@ export default function ClinicaCitasPage() {
         </Button>
       </div>
 
+      {/* Selector de clínica */}
+      {clinicas.length > 1 && (
+        <Card className="border-blue-100 bg-blue-50/50">
+          <CardContent className="p-4 flex items-center gap-3">
+            <Building2 className="h-5 w-5 text-[#1E5C8E] shrink-0" />
+            <div className="flex items-center gap-3 flex-wrap">
+              <span className="text-sm font-medium text-[#1a2a3a]">Clínica:</span>
+              <Select value={clinicaId || ''} onValueChange={cambiarClinica}>
+                <SelectTrigger className="w-64 bg-white">
+                  <SelectValue placeholder="Seleccionar clínica" />
+                </SelectTrigger>
+                <SelectContent>
+                  {clinicas.map((c) => (
+                    <SelectItem key={c.id} value={c.id}>
+                      {c.nombre}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+          </CardContent>
+        </Card>
+      )}
+
+      {/* Nombre de la clínica actual (si solo hay 1 o como info adicional) */}
+      {clinicas.length === 1 && clinicaNombre && (
+        <div className="flex items-center gap-2 text-sm text-muted-foreground">
+          <Building2 className="h-4 w-4" />
+          <span>{clinicaNombre}</span>
+        </div>
+      )}
+
       {/* Filtros */}
       <CitasFilter filtro={filtroEstado} onChange={setFiltroEstado} counts={counts} />
 
@@ -111,7 +148,7 @@ export default function ClinicaCitasPage() {
             <CalendarDays className="h-12 w-12 mx-auto mb-4 text-gray-300" />
             <p className="text-lg font-medium text-gray-500">
               {filtroEstado === 'todos'
-                ? 'No hay citas en la clínica'
+                ? `No hay citas en ${clinicaNombre || 'la clínica'}`
                 : `No hay citas ${filtroEstado}`}
             </p>
           </div>

@@ -3,12 +3,19 @@ import { supabase } from '@/lib/supabase'
 import { toast } from 'sonner'
 import type { CitaConPaciente, FiltroCitaEstado } from '@/medico/types/medico.types'
 
+export interface ClinicaOption {
+  id: string
+  nombre: string
+}
+
 export function useClinicaCitas() {
   const [citas, setCitas] = useState<CitaConPaciente[]>([])
   const [loading, setLoading] = useState(true)
   const [filtroEstado, setFiltroEstado] = useState<FiltroCitaEstado>('todos')
   const [medicosClinica, setMedicosClinica] = useState<{ id: string; nombre_completo: string; especialidad: string | null }[]>([])
+  const [clinicas, setClinicas] = useState<ClinicaOption[]>([])
   const [clinicaId, setClinicaId] = useState<string | null>(null)
+  const [clinicaNombre, setClinicaNombre] = useState<string | null>(null)
 
   const fetchClinicaYCitas = useCallback(async () => {
     setLoading(true)
@@ -20,22 +27,41 @@ export function useClinicaCitas() {
         return
       }
 
-      // 1. Obtener clínica del usuario via RPC
-      const { data: clinicaRel } = await supabase
+      // 1. Obtener TODAS las clínicas del usuario via RPC
+      const { data: clinicasRel, error: clinicasError } = await supabase
         .rpc('obtener_clinica_usuario', { p_user_id: user.id })
-        .maybeSingle()
 
-      const currentClinicaId = clinicaRel?.clinica_id || null
-      setClinicaId(currentClinicaId)
+      if (clinicasError) {
+        console.error('Error cargando clínicas:', clinicasError)
+        toast.error('Error cargando clínicas')
+        setLoading(false)
+        return
+      }
 
-      if (!currentClinicaId) {
+      const clinicasList: ClinicaOption[] = (clinicasRel || []).map((c: any) => ({
+        id: c.clinica_id,
+        nombre: c.clinica_nombre || 'Clínica sin nombre',
+      }))
+
+      setClinicas(clinicasList)
+
+      if (clinicasList.length === 0) {
         console.warn('[useClinicaCitas] Usuario sin clínica asociada')
         setCitas([])
         setLoading(false)
         return
       }
 
-      // 2. Cargar médicos de la clínica
+      // Si hay una sola clínica, usarla. Si hay múltiples y no hay seleccionada, usar la primera
+      const currentClinicaId = clinicaId || clinicasList[0].id
+      const currentClinicaNombre = clinicasList.find(c => c.id === currentClinicaId)?.nombre || clinicasList[0].nombre
+
+      if (!clinicaId) {
+        setClinicaId(currentClinicaId)
+      }
+      setClinicaNombre(currentClinicaNombre)
+
+      // 2. Cargar médicos de la clínica seleccionada
       const { data: relMedicos } = await supabase
         .rpc('obtener_medicos_clinica', { p_clinica_id: currentClinicaId })
 
@@ -103,11 +129,17 @@ export function useClinicaCitas() {
     } finally {
       setLoading(false)
     }
-  }, [filtroEstado])
+  }, [filtroEstado, clinicaId])
 
   useEffect(() => {
     fetchClinicaYCitas()
   }, [fetchClinicaYCitas])
+
+  const cambiarClinica = useCallback((nuevaClinicaId: string) => {
+    setClinicaId(nuevaClinicaId)
+    const nombre = clinicas.find(c => c.id === nuevaClinicaId)?.nombre || null
+    setClinicaNombre(nombre)
+  }, [clinicas])
 
   const updateCitaEstado = async (cita: CitaConPaciente, nuevoEstado: CitaConPaciente['estado'], mensaje?: string) => {
     const { error } = await supabase
@@ -223,6 +255,10 @@ export function useClinicaCitas() {
     filtroEstado,
     setFiltroEstado,
     medicosClinica,
+    clinicas,
+    clinicaId,
+    clinicaNombre,
+    cambiarClinica,
     fetchCitas: fetchClinicaYCitas,
     confirmarCita,
     rechazarCita,
