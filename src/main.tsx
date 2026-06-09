@@ -3,6 +3,8 @@ import { createRoot } from 'react-dom/client'
 import './index.css'
 import App from './App'
 
+console.log('[BUILD] EzPayConnect v3.1 - 2025-06-09')
+
 // Registro del Service Worker para PWA
 import { registerSW } from 'virtual:pwa-register'
 
