@@ -38,16 +38,29 @@ export function useWebAppChat(pacienteId: number | undefined) {
     }
 
     if (mid) {
-      // Verificar que el médico realmente existe en perfiles
+      // 1. Buscar en perfiles primero (médicos con login)
       const { data: perfilData } = await supabase
         .from('perfiles')
         .select('nombre_completo')
         .eq('id', mid)
-        .single()
+        .maybeSingle()
 
       if (perfilData) {
         setMedicoId(mid)
         setMedicoNombre(perfilData.nombre_completo || 'Tu médico')
+        return
+      }
+
+      // 2. Fallback: buscar en medicos (entidades sin login / seed)
+      const { data: medicoData } = await supabase
+        .from('medicos')
+        .select('nombre_completo')
+        .eq('id', mid)
+        .maybeSingle()
+
+      if (medicoData) {
+        setMedicoId(mid)
+        setMedicoNombre(medicoData.nombre_completo || 'Tu médico')
       }
     }
   }, [pacienteId])
