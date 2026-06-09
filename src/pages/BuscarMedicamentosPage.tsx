@@ -5,7 +5,7 @@ import { Input } from '@/components/ui/input';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { useBusquedaMedicamentos } from '@/hooks/useBusquedaMedicamentos';
-import { Search, MapPin, Phone, DollarSign, Package, Building, ArrowLeft, Copy, CheckCircle, ShoppingCart, Store } from 'lucide-react';
+import { Search, MapPin, Phone, DollarSign, Package, Home, ArrowLeft, Copy, CheckCircle, ShoppingCart, Store } from 'lucide-react';
 import { toast } from 'sonner';
 
 export default function BuscarMedicamentosPage() {
@@ -87,7 +87,7 @@ export default function BuscarMedicamentosPage() {
       {Object.keys(agrupados).length > 0 && (
         <div className="space-y-6 mb-8">
           <h2 className="text-lg font-semibold text-gray-800 flex items-center gap-2">
-            <Building className="h-5 w-5 text-[#1E5C8E]" />
+            <Home className="h-5 w-5 text-[#1E5C8E]" />
             En farmacias ({resultados.length} resultado{resultados.length > 1 ? 's' : ''})
           </h2>
           {Object.entries(agrupados).map(([nombreMedicamento, farmacias]: [string, any]) => (
@@ -118,7 +118,7 @@ export default function BuscarMedicamentosPage() {
                     >
                       {/* Icono farmacia */}
                       <div className="mt-1">
-                        <Building className="h-5 w-5 text-[#1E5C8E]" />
+                        <Home className="h-5 w-5 text-[#1E5C8E]" />
                       </div>
 
                       {/* Info */}

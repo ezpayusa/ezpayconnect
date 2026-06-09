@@ -5,7 +5,7 @@ import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { useProveedorAuth } from '@/proveedor/hooks/useProveedorAuth'
-import { Building, Loader2 } from 'lucide-react'
+import { Home, Loader2 } from 'lucide-react'
 import { toast } from 'sonner'
 
 export default function ProveedorLogin() {
@@ -33,7 +33,7 @@ export default function ProveedorLogin() {
       <Card className="w-full max-w-md shadow-xl">
         <CardHeader className="text-center">
           <div className="mx-auto w-12 h-12 rounded-xl bg-[#1E5C8E] flex items-center justify-center mb-4">
-            <Building className="h-6 w-6 text-white" />
+            <Home className="h-6 w-6 text-white" />
           </div>
           <CardTitle className="text-xl">Portal Proveedores</CardTitle>
           <p className="text-sm text-muted-foreground">Inicia sesión con tu cuenta de empresa</p>

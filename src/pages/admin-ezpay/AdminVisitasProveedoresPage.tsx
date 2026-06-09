@@ -5,7 +5,7 @@ import { Input } from '@/components/ui/input'
 import { supabase } from '@/lib/supabase'
 import { usePaisFiltro } from '@/hooks/usePaisFiltro'
 import { toast } from 'sonner'
-import { CalendarDays, MapPin, CheckCircle, Loader2, Search, User, Building } from 'lucide-react'
+import { CalendarDays, MapPin, CheckCircle, Loader2, Search, User, Home } from 'lucide-react'
 
 interface VisitaAdmin {
   id: string
@@ -157,7 +157,7 @@ export default function AdminVisitasProveedoresPage() {
                       {v.visita_concretada && <Badge className="bg-emerald-100 text-emerald-700">Concretada</Badge>}
                     </div>
                     <div className="flex items-center gap-4 text-sm">
-                      <span className="font-medium flex items-center gap-1"><Building className="h-3.5 w-3.5 text-slate-400" />{v.empresa_nombre}</span>
+                      <span className="font-medium flex items-center gap-1"><Home className="h-3.5 w-3.5 text-slate-400" />{v.empresa_nombre}</span>
                       <span className="flex items-center gap-1"><User className="h-3.5 w-3.5 text-slate-400" />{v.medico_nombre}</span>
                     </div>
                     <p className="text-sm text-muted-foreground mt-1">

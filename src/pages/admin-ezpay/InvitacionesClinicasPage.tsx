@@ -10,7 +10,7 @@ import { usePaisActivo } from '@/hooks/usePaisActivo'
 import { supabase } from '@/lib/supabase'
 import { toast } from 'sonner'
 import {
-  Building,
+  Home,
   Plus,
   ArrowLeft,
   RefreshCw,
@@ -140,7 +140,7 @@ export default function InvitacionesClinicasPage() {
           </Button>
           <div>
             <h1 className="text-2xl font-bold flex items-center gap-2">
-              <Building className="w-6 h-6 text-[#1E5C8E]" />
+              <Home className="w-6 h-6 text-[#1E5C8E]" />
               Invitaciones de Clínicas
             </h1>
             <p className="text-sm text-muted-foreground">
@@ -217,7 +217,7 @@ export default function InvitacionesClinicasPage() {
         <DialogContent className="max-w-md">
           <DialogHeader>
             <DialogTitle className="flex items-center gap-2">
-              <Building className="h-5 w-5 text-[#1E5C8E]" />
+              <Home className="h-5 w-5 text-[#1E5C8E]" />
               Invitar Clínica
             </DialogTitle>
           </DialogHeader>

@@ -7,7 +7,7 @@ import {
   Stethoscope,
   CalendarDays,
   FileText,
-  Building,
+  Home,
   TrendingUp,
 } from 'lucide-react'
 

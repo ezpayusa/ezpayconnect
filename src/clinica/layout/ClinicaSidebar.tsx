@@ -8,7 +8,7 @@ import {
   UserPlus,
   Settings,
   LogOut,
-  Building,
+  Home,
   ChevronLeft,
   CalendarDays,
 } from 'lucide-react'
@@ -35,7 +35,7 @@ export function ClinicaSidebar() {
     <aside className="w-64 bg-[#1a2a3a] text-white flex flex-col h-screen sticky top-0">
       <div className="p-6 border-b border-white/10">
         <div className="flex items-center gap-3">
-          <Building className="h-8 w-8 text-[#5BA8D1]" />
+          <Home className="h-8 w-8 text-[#5BA8D1]" />
           <div>
             <h1 className="text-lg font-bold tracking-wide">{clinica?.nombre || 'Clínica'}</h1>
             <p className="text-xs text-[#8a9aaa]">Panel Administrativo</p>

@@ -12,7 +12,7 @@ import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Badge } from '@/components/ui/badge'
-import { FileText, Plus, Trash2, Search, Printer, Eye, Loader2, X, Download, Mail, QrCode, ArrowLeft, Building, FlaskConical, CheckCircle2 } from 'lucide-react'
+import { FileText, Plus, Trash2, Search, Printer, Eye, Loader2, X, Download, Mail, QrCode, ArrowLeft, Home, FlaskConical, CheckCircle2 } from 'lucide-react'
 import type { RecetaItem } from '@/types'
 import EnviarRecetaEmail from '@/components/recetas/EnviarRecetaEmail'
 import { useNavigate } from 'react-router-dom'
@@ -366,7 +366,7 @@ export default function RecetasPage() {
   </Badge>
   {r.tiene_farmacia_asignada && (
     <Badge variant="outline" className="bg-green-50 text-green-700 border-green-200 text-xs">
-      <Building className="h-3 w-3 mr-1" />
+      <Home className="h-3 w-3 mr-1" />
       Farmacia asignada
     </Badge>
   )}
@@ -541,7 +541,7 @@ export default function RecetasPage() {
                           {item.farmacia_id ? (
                             <CheckCircle2 className="h-3 w-3 mr-1" />
                           ) : (
-                            <Building className="h-3 w-3 mr-1" />
+                            <Home className="h-3 w-3 mr-1" />
                           )}
                           Farmacias
                         </Button>
@@ -827,7 +827,7 @@ export default function RecetasPage() {
         <DialogContent className="max-w-2xl max-h-[85vh] overflow-y-auto">
           <DialogHeader>
             <DialogTitle className="flex items-center gap-2">
-              <Building className="h-5 w-5 text-[#1E5C8E]" />
+              <Home className="h-5 w-5 text-[#1E5C8E]" />
               Seleccionar Farmacia
             </DialogTitle>
           </DialogHeader>

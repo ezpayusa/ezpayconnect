@@ -4,7 +4,7 @@ import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
-import { Building, Mail, Phone, MapPin, Briefcase, User, Save, X, Pencil } from 'lucide-react'
+import { Home, Mail, Phone, MapPin, Briefcase, User, Save, X, Pencil } from 'lucide-react'
 
 export default function ProveedorPerfilPage() {
   const { empresa, cuenta, actualizarEmpresa, actualizarCuenta, isEditor } = useProveedorAuth()
@@ -81,7 +81,7 @@ export default function ProveedorPerfilPage() {
       <Card>
         <CardHeader className="pb-3">
           <CardTitle className="text-lg flex items-center gap-2">
-            <Building className="h-5 w-5 text-[#1E5C8E]" />
+            <Home className="h-5 w-5 text-[#1E5C8E]" />
             {editando ? 'Datos de la empresa' : (empresa?.nombre_empresa || 'Empresa')}
           </CardTitle>
         </CardHeader>
@@ -182,7 +182,7 @@ export default function ProveedorPerfilPage() {
               </div>
               {empresa?.ruc_nit && (
                 <div className="flex items-center gap-3">
-                  <Building className="h-4 w-4 text-muted-foreground" />
+                  <Home className="h-4 w-4 text-muted-foreground" />
                   <span className="text-muted-foreground w-24">RUC/NIT</span>
                   <span className="font-medium">{empresa.ruc_nit}</span>
                 </div>

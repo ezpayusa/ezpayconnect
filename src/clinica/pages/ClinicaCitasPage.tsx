@@ -13,7 +13,7 @@ import {
   UserPlus,
   Stethoscope,
   AlertCircle,
-  Building,
+  Home,
 } from 'lucide-react'
 
 export default function ClinicaCitasPage() {
@@ -98,7 +98,7 @@ export default function ClinicaCitasPage() {
       {clinicas.length > 1 && (
         <Card className="border-blue-100 bg-blue-50/50">
           <CardContent className="p-4 flex items-center gap-3">
-            <Building className="h-5 w-5 text-[#1E5C8E] shrink-0" />
+            <Home className="h-5 w-5 text-[#1E5C8E] shrink-0" />
             <div className="flex items-center gap-3 flex-wrap">
               <span className="text-sm font-medium text-[#1a2a3a]">Clínica:</span>
               <Select value={clinicaId || ''} onValueChange={cambiarClinica}>
@@ -121,7 +121,7 @@ export default function ClinicaCitasPage() {
       {/* Nombre de la clínica actual (si solo hay 1 o como info adicional) */}
       {clinicas.length === 1 && clinicaNombre && (
         <div className="flex items-center gap-2 text-sm text-muted-foreground">
-          <Building className="h-4 w-4" />
+          <Home className="h-4 w-4" />
           <span>{clinicaNombre}</span>
         </div>
       )}

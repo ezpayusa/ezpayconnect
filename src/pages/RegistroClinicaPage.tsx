@@ -6,7 +6,7 @@ import { Label } from '@/components/ui/label'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { supabase } from '@/lib/supabase'
 import { toast } from 'sonner'
-import { Loader2, Building, AlertCircle, CheckCircle } from 'lucide-react'
+import { Loader2, Home, AlertCircle, CheckCircle } from 'lucide-react'
 
 export default function RegistroClinicaPage() {
   const [searchParams] = useSearchParams()
@@ -138,7 +138,7 @@ export default function RegistroClinicaPage() {
       <Card className="w-full max-w-md">
         <CardHeader className="text-center">
           <div className="w-12 h-12 bg-[#1E5C8E]/10 rounded-full flex items-center justify-center mx-auto mb-3">
-            <Building className="w-6 h-6 text-[#1E5C8E]" />
+            <Home className="w-6 h-6 text-[#1E5C8E]" />
           </div>
           <CardTitle className="text-xl">Registro de Clínica</CardTitle>
           <p className="text-sm text-gray-500">
