@@ -23,7 +23,6 @@ import {
   Stethoscope,
   MapPin,
   Phone,
-  MapPin,
   AlertTriangle
 } from 'lucide-react'
 

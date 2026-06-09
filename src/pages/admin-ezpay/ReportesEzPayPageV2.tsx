@@ -5,28 +5,7 @@ import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { useAdminAuth } from '@/hooks/admin/useAdminAuth';
 import { supabase } from '@/lib/supabase';
-import { 
-  ArrowLeft, 
-  RefreshCw, 
-  DollarSign, 
-  BarChart3, 
-  TrendingUp, 
-  Globe,
-  Calendar,
-  Stethoscope,
-  MapPin,
-  FlaskConical,
-  Truck,
-  Layers,
-  CreditCard,
-  Users,
-  MapPin,
-  Pill,
-  Store,
-  Megaphone,
-  Briefcase,
-  AlertTriangle
-} from 'lucide-react';
+import { ArrowLeft, RefreshCw, DollarSign, BarChart3, TrendingUp, Globe, Calendar, Stethoscope, MapPin, FlaskConical, Truck, Layers, CreditCard, Users, Pill, Store, Megaphone, Briefcase, AlertTriangle } from 'lucide-react';
 
 interface ReportePais {
   pais: string;

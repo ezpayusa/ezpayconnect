@@ -2,22 +2,7 @@ import { Link, useLocation, useNavigate, Outlet } from 'react-router-dom'
 import { useProveedorAuth } from '@/proveedor/hooks/useProveedorAuth'
 import { useNotificaciones } from '@/hooks/useNotificaciones'
 import { Button } from '@/components/ui/button'
-import {
-  LayoutDashboard,
-  Package,
-  CalendarCheck,
-  Megaphone,
-  MapPin,
-  CreditCard,
-  LogOut,
-  Menu,
-  X,
-  CheckCircle,
-  Users,
-  MapPin,
-  BarChart3,
-  Bell,
-} from 'lucide-react'
+import { LayoutDashboard, Package, CalendarCheck, Megaphone, MapPin, CreditCard, LogOut, Menu, X, CheckCircle, Users, BarChart3, Bell } from 'lucide-react'
 import { useState, useEffect } from 'react'
 
 interface NavItem {

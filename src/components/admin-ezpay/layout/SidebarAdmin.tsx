@@ -4,29 +4,7 @@ import { ClipboardCheck } from 'lucide-react';
 import { useNavigate, useLocation } from 'react-router-dom';
 import { useAdminAuth } from '@/hooks/admin/useAdminAuth';
 import { usePaisActivo } from '@/hooks/usePaisActivo';
-import { 
-  LayoutDashboard, 
-  Globe, 
-  Layers, 
-  Stethoscope, 
-  MapPin, 
-  FlaskConical, 
-  Car,
-  Pill,
-  Store,
-  Megaphone,
-  Handshake,
-  AlertCircle,
-  DollarSign,
-  BarChart3,
-  Shield,
-  ChevronLeft,
-  LogOut,
-  Activity,
-  BarChart4,
-  MapPin,
-  ArrowLeftRight
-} from 'lucide-react';
+import { LayoutDashboard, Globe, Layers, Stethoscope, MapPin, FlaskConical, Car, Pill, Store, Megaphone, Handshake, AlertCircle, DollarSign, BarChart3, Shield, ChevronLeft, LogOut, Activity, BarChart4, ArrowLeftRight } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { supabase } from '@/lib/supabase';
 

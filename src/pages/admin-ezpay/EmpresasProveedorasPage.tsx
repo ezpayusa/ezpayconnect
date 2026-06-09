@@ -13,28 +13,7 @@ import { usePaisFiltro } from '@/hooks/usePaisFiltro';
 import { supabase } from '@/lib/supabase';
 import { toast } from 'sonner';
 import type { EmpresaProveedora, EmpresaEstado } from '@/proveedor/types/proveedor.types';
-import {
-  ArrowLeft,
-  Search,
-  RefreshCw,
-  MapPin,
-  CheckCircle2,
-  XCircle,
-  AlertTriangle,
-  Clock,
-  Eye,
-  MapPin,
-  Mail,
-  Phone,
-  Store,
-  FlaskConical,
-  Pill,
-  Handshake,
-  Users,
-  Package,
-  Megaphone,
-  DollarSign,
-} from 'lucide-react';
+import { ArrowLeft, Search, RefreshCw, MapPin, CheckCircle2, XCircle, AlertTriangle, Clock, Eye, Mail, Phone, Store, FlaskConical, Pill, Handshake, Users, Package, Megaphone, DollarSign } from 'lucide-react';
 
 interface EmpresaConConteos extends EmpresaProveedora {
   cuentas_count?: number;
