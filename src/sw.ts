@@ -107,5 +107,17 @@ self.addEventListener('install', () => {
 })
 
 self.addEventListener('activate', (event) => {
-  event.waitUntil(self.clients.claim())
+  event.waitUntil(
+    Promise.all([
+      // Limpiar todos los caches viejos
+      caches.keys().then((cacheNames) => {
+        return Promise.all(
+          cacheNames.map((cacheName) => {
+            return caches.delete(cacheName)
+          })
+        )
+      }),
+      self.clients.claim(),
+    ])
+  )
 })
