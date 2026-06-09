@@ -52,6 +52,39 @@ export function usePushNotifications() {
     verificarSuscripcion()
   }, [verificarSuscripcion])
 
+  // Suscripción automática al montar (si no está denegado)
+  useEffect(() => {
+    const autoSuscribir = async () => {
+      if (!soportado) return
+      if (Notification.permission === 'denied') return
+
+      try {
+        const registration = await navigator.serviceWorker.ready
+        const existing = await registration.pushManager.getSubscription()
+        if (existing) {
+          setSuscrito(true)
+          return
+        }
+
+        // Si no hay suscripción y el permiso es default, intentar automáticamente
+        if (Notification.permission === 'default') {
+          const permission = await Notification.requestPermission()
+          if (permission !== 'granted') return
+        }
+
+        if (Notification.permission === 'granted') {
+          await suscribir()
+        }
+      } catch (err) {
+        console.error('[Push] Error en suscripción automática:', err)
+      }
+    }
+
+    // Esperar un poco para no bloquear el render inicial
+    const timer = setTimeout(autoSuscribir, 2000)
+    return () => clearTimeout(timer)
+  }, [soportado])
+
   const solicitarPermiso = useCallback(async () => {
     if (!soportado) {
       toast.error('Tu navegador no soporta notificaciones push')
