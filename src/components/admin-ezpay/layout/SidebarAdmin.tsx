@@ -9,7 +9,7 @@ import {
   Globe, 
   Layers, 
   Stethoscope, 
-  Home, 
+  MapPin, 
   FlaskConical, 
   Car,
   Pill,
@@ -52,7 +52,7 @@ export function SidebarAdmin() {
     { path: `/admin-ezpay/pais/${paisIdActual}`, icon: LayoutDashboard, label: 'Dashboard País' },
     { path: '/admin-ezpay/planes-todos', icon: Layers, label: 'Todos los Planes' },
     { path: '/admin-ezpay/planes-medico', icon: Stethoscope, label: 'Planes Médico' },
-    { path: '/admin-ezpay/planes-clinica', icon: Home, label: 'Planes Clínica' },
+    { path: '/admin-ezpay/planes-clinica', icon: MapPin, label: 'Planes Clínica' },
     { path: '/admin-ezpay/planes-lab', icon: FlaskConical, label: 'Planes Lab/Farmacia' },
     { path: '/admin-ezpay/planes-visitador', icon: Car, label: 'Planes Visitador' },
     { path: '/admin-ezpay/planes-farmaceutico', icon: Pill, label: 'Planes Farmacéutico' },
@@ -66,7 +66,7 @@ export function SidebarAdmin() {
     { path: '/admin-ezpay/roles', icon: Shield, label: 'Roles' },
     { path: '/admin-ezpay/solicitudes-campana', icon: ClipboardCheck, label: 'Solicitudes Campaña' },
     { path: '/admin-ezpay/pagos-proveedores', icon: DollarSign, label: 'Pagos Proveedores' },
-    { path: '/admin-ezpay/empresas-proveedoras', icon: Home, label: 'Empresas Proveedoras' },
+    { path: '/admin-ezpay/empresas-proveedoras', icon: MapPin, label: 'Empresas Proveedoras' },
     { path: '/admin-ezpay/auditoria', icon: Activity, label: 'Auditoría' },
   ] : [];
 

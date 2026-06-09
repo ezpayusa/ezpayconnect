@@ -12,7 +12,7 @@ import { Badge } from '@/components/ui/badge'
 import { useNavigate } from 'react-router-dom'
 import {
   CalendarDays, FileText, FlaskConical, MessageCircle, Plus, Clock, Pill,
-  Home, Loader2, Bell, BellOff
+  MapPin, Loader2, Bell, BellOff
 } from 'lucide-react'
 
 export default function WebAppDashboard() {
@@ -141,7 +141,7 @@ export default function WebAppDashboard() {
                 </div>
                 {proximaCita.clinica_nombre && (
                   <div className="flex items-center gap-2 text-slate-500 text-sm">
-                    <Home className="h-4 w-4" />
+                    <MapPin className="h-4 w-4" />
                     <span>{proximaCita.clinica_nombre}</span>
                   </div>
                 )}

@@ -16,7 +16,7 @@ import {
   X,
   Loader2,
   Pill,
-  Home
+  MapPin
 } from 'lucide-react'
 import { useNavigate } from 'react-router-dom'
 import { Button } from '@/components/ui/button'
@@ -152,7 +152,7 @@ export default function DispensarRecetaPage() {
           onClick={() => navigate('/dashboard')}
           className="border-[#1E5C8E] text-[#1E5C8E] hover:bg-[#e8f0f8]"
         >
-          <Home className="h-4 w-4 mr-2" />
+          <MapPin className="h-4 w-4 mr-2" />
           Dashboard
         </Button>
         <Button

@@ -7,7 +7,7 @@ import { usePaisActivo } from '@/hooks/usePaisActivo'
 import { supabase } from '@/lib/supabase'
 import {
   Users,
-  Home,
+  MapPin,
   Globe,
   Stethoscope,
   ArrowLeft,
@@ -198,7 +198,7 @@ export default function PaisDashboardPage() {
     {
       title: 'Clínicas',
       value: stats.total_clinicas,
-      icon: Home,
+      icon: MapPin,
       color: 'bg-emerald-50 text-emerald-600',
       path: `/admin-ezpay/pais/${paisId}/invitaciones-clinicas`,
     },
@@ -360,14 +360,14 @@ export default function PaisDashboardPage() {
             variant="outline"
             onClick={() => navigate(`/admin-ezpay/pais/${paisId}/clinicas`)}
           >
-            <Home className="w-4 h-4 mr-2" />
+            <MapPin className="w-4 h-4 mr-2" />
             Ver Clínicas
           </Button>
           <Button
             variant="outline"
             onClick={() => navigate(`/admin-ezpay/pais/${paisId}/invitaciones-clinicas`)}
           >
-            <Home className="w-4 h-4 mr-2" />
+            <MapPin className="w-4 h-4 mr-2" />
             Invitar Clínica
           </Button>
           <Button

@@ -7,7 +7,7 @@ import { Label } from '@/components/ui/label'
 import {
   CalendarDays, Clock, FileText, StickyNote, X, Loader2,
   User, MapPin, ChevronLeft, ChevronRight, Stethoscope,
-  Home, Search, Star, Check,
+  MapPin, Search, Star, Check,
 } from 'lucide-react'
 import { toast } from 'sonner'
 
@@ -497,7 +497,7 @@ export default function AgendarCitaModal({ pacienteId, pacienteNombre, paisIdPro
               {/* Clínicas filtradas por médico */}
               <div className="space-y-3">
                 <div className="flex items-center gap-2">
-                  <Home className="h-4 w-4 text-sky-500" />
+                  <MapPin className="h-4 w-4 text-sky-500" />
                   <Label className="text-sm font-medium text-slate-700">
                     Clínica {medicoId && clinicasFiltradas.length > 0 ? `(${clinicasFiltradas.length} disponible${clinicasFiltradas.length !== 1 ? 's' : ''})` : '*'}
                   </Label>
@@ -521,7 +521,7 @@ export default function AgendarCitaModal({ pacienteId, pacienteNombre, paisIdPro
                         }`}
                       >
                         <div className="w-10 h-10 rounded-full bg-emerald-100 flex items-center justify-center shrink-0">
-                          <Home className="h-5 w-5 text-emerald-600" />
+                          <MapPin className="h-5 w-5 text-emerald-600" />
                         </div>
                         <div className="flex-1 min-w-0">
                           <p className="text-sm font-medium text-slate-800">

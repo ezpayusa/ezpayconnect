@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { Stethoscope, Home, FlaskConical, Truck, Check, ArrowRight, CreditCard } from 'lucide-react';
+import { Stethoscope, MapPin, FlaskConical, Truck, Check, ArrowRight, CreditCard } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
@@ -13,7 +13,7 @@ import { formatearPrecio, getBanderaPais } from '@/lib/planes-utils';
 
 const categorias = [
   { id: 'medico', label: 'Médico', icon: Stethoscope, color: 'blue', path: '/planes' },
-  { id: 'clinica', label: 'Clínica', icon: Home, color: 'blue', path: '/planes-clinica' },
+  { id: 'clinica', label: 'Clínica', icon: MapPin, color: 'blue', path: '/planes-clinica' },
   { id: 'lab', label: 'Laboratorio', icon: FlaskConical, color: 'green', path: '/planes-lab' },
   { id: 'visitador', label: 'Visitador', icon: Truck, color: 'orange', path: '/planes-visitador' },
 ];

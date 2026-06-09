@@ -2,7 +2,7 @@ import { useState } from 'react';
 import { Card, CardContent, CardHeader, CardTitle, CardDescription, CardFooter } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
-import { Check, Zap, Home } from 'lucide-react';
+import { Check, Zap, MapPin } from 'lucide-react';
 import type { PlanBase, PlanConfiguracion, PlanAsignacion } from '@/types/planes';
 import { formatearPrecio } from '@/lib/planes-utils';
 
@@ -87,7 +87,7 @@ export function PlanCard({
 
       <CardHeader className="text-center pb-4">
         <div className="mx-auto w-12 h-12 bg-cyan-50 rounded-full flex items-center justify-center mb-3">
-          {planFinal.tipo === 'medico' ? <Zap className="w-6 h-6 text-cyan-600" /> : <Home className="w-6 h-6 text-cyan-600" />}
+          {planFinal.tipo === 'medico' ? <Zap className="w-6 h-6 text-cyan-600" /> : <MapPin className="w-6 h-6 text-cyan-600" />}
         </div>
         <CardTitle className="text-xl font-bold text-gray-900">{planFinal.nombre}</CardTitle>
         <CardDescription className="text-sm text-gray-500">{planFinal.descripcion}</CardDescription>

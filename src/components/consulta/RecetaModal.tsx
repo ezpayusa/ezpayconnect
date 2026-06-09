@@ -16,7 +16,7 @@ import {
   Plus,
   Trash2,
   Loader2,
-  Home,
+  MapPin,
   FlaskConical,
   CheckCircle2,
   AlertCircle,
@@ -345,7 +345,7 @@ export default function RecetaModal({ open, onOpenChange, pacienteIdPreseleccion
                       <div className="space-y-1"><Label className="text-xs">Instrucciones especiales</Label><Input className="h-8 text-sm" value={item.instrucciones || ''} onChange={e => updateItem(idx, 'instrucciones', e.target.value)} placeholder="Tomar después de las comidas" /></div>
                       <div className="flex items-center gap-2 pt-2 border-t border-[#1E5C8E]/10">
                         <Button type="button" size="sm" variant="outline" onClick={() => abrirModalFarmacia(idx)} className={item.farmacia_id ? 'border-green-500 text-green-700 hover:bg-green-50' : 'border-[#1E5C8E] text-[#1E5C8E] hover:bg-white'}>
-                          {item.farmacia_id ? <CheckCircle2 className="h-3 w-3 mr-1" /> : <Home className="h-3 w-3 mr-1" />}
+                          {item.farmacia_id ? <CheckCircle2 className="h-3 w-3 mr-1" /> : <MapPin className="h-3 w-3 mr-1" />}
                           Farmacias
                         </Button>
                         <Button type="button" size="sm" variant="outline" onClick={() => abrirModalLaboratorio(idx)} className="border-[#3A8ABF] text-[#3A8ABF] hover:bg-white">
@@ -389,7 +389,7 @@ export default function RecetaModal({ open, onOpenChange, pacienteIdPreseleccion
         <DialogContent className="max-w-lg max-h-[80vh] overflow-y-auto">
           <DialogHeader>
             <DialogTitle className="flex items-center gap-2">
-              <Home className="h-5 w-5 text-[#1E5C8E]" />
+              <MapPin className="h-5 w-5 text-[#1E5C8E]" />
               Buscar en Farmacias
             </DialogTitle>
           </DialogHeader>
