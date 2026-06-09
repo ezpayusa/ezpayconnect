@@ -181,7 +181,7 @@ export function useClinicaCitas() {
     const pacienteAuthId = (cita.paciente as any)?.auth_user_id
     if (pacienteAuthId) {
       try {
-        await enviarNotificacionPaciente(pacienteAuthId, cita, medicoNombre)
+        await enviarNotificacionPaciente(pacienteAuthId, cita, 'cita_asignada', medicoNombre)
       } catch (err) {
         console.error('[useClinicaCitas] Error notificando paciente:', err)
       }
@@ -195,14 +195,30 @@ export function useClinicaCitas() {
   const enviarNotificacionPaciente = async (
     pacienteAuthId: string,
     cita: CitaConPaciente,
-    medicoNombre: string
+    tipo: 'cita_asignada' | 'cita_confirmada' | 'cita_cancelada',
+    medicoNombre?: string
   ) => {
     const fechaStr = new Date(cita.fecha).toLocaleDateString('es-GT', {
       weekday: 'long', month: 'long', day: 'numeric',
     })
 
-    const titulo = 'Médico asignado a tu cita'
-    const mensaje = `Tu cita para el ${fechaStr} a las ${cita.hora_inicio?.slice(0, 5)} ha sido asignada al Dr. ${medicoNombre}.`
+    let titulo: string
+    let mensaje: string
+
+    switch (tipo) {
+      case 'cita_confirmada':
+        titulo = 'Tu cita ha sido confirmada'
+        mensaje = `Tu cita para el ${fechaStr} a las ${cita.hora_inicio?.slice(0, 5)} ha sido confirmada.`
+        break
+      case 'cita_cancelada':
+        titulo = 'Tu cita ha sido cancelada'
+        mensaje = `Tu cita para el ${fechaStr} a las ${cita.hora_inicio?.slice(0, 5)} ha sido cancelada.`
+        break
+      default:
+        titulo = 'Médico asignado a tu cita'
+        mensaje = `Tu cita para el ${fechaStr} a las ${cita.hora_inicio?.slice(0, 5)} ha sido asignada al Dr. ${medicoNombre || 'tu médico'}.`
+    }
+
     const url = '/paciente/citas'
 
     console.log('[useClinicaCitas] Enviando notificación a:', pacienteAuthId)
@@ -212,7 +228,7 @@ export function useClinicaCitas() {
       await supabase.functions.invoke('enviar-notificacion', {
         body: {
           usuario_id: pacienteAuthId,
-          tipo: 'cita_asignada',
+          tipo,
           titulo,
           mensaje,
           accion_url: url,
@@ -242,11 +258,33 @@ export function useClinicaCitas() {
   }
 
   const confirmarCita = async (cita: CitaConPaciente) => {
-    return updateCitaEstado(cita, 'confirmada', 'Cita confirmada correctamente')
+    const result = await updateCitaEstado(cita, 'confirmada', 'Cita confirmada correctamente')
+    if (result) {
+      const pacienteAuthId = (cita.paciente as any)?.auth_user_id
+      if (pacienteAuthId) {
+        try {
+          await enviarNotificacionPaciente(pacienteAuthId, cita, 'cita_confirmada')
+        } catch (err) {
+          console.error('[useClinicaCitas] Error notificando paciente:', err)
+        }
+      }
+    }
+    return result
   }
 
   const rechazarCita = async (cita: CitaConPaciente) => {
-    return updateCitaEstado(cita, 'cancelada', 'Cita cancelada correctamente')
+    const result = await updateCitaEstado(cita, 'cancelada', 'Cita cancelada correctamente')
+    if (result) {
+      const pacienteAuthId = (cita.paciente as any)?.auth_user_id
+      if (pacienteAuthId) {
+        try {
+          await enviarNotificacionPaciente(pacienteAuthId, cita, 'cita_cancelada')
+        } catch (err) {
+          console.error('[useClinicaCitas] Error notificando paciente:', err)
+        }
+      }
+    }
+    return result
   }
 
   return {
