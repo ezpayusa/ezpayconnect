@@ -36,18 +36,18 @@ export default function ClinicaDashboardPage() {
     const cargarStats = async () => {
       setLoading(true)
       try {
-        // Obtener médicos de esta clínica
+        // Obtener médicos de esta clínica via RPC
         const { data: medicosRel } = await supabase
-          .from('medico_clinicas')
-          .select('medico_id')
-          .eq('clinica_id', clinica.id)
+          .rpc('obtener_medicos_clinica', { p_clinica_id: clinica.id })
 
         const medicoIds = medicosRel?.map(m => m.medico_id) || []
 
-        const { count: medicosCount } = await supabase
-          .from('medicos')
-          .select('*', { count: 'exact', head: true })
-          .in('id', medicoIds.length > 0 ? medicoIds : ['no-existe'])
+        let medicosCount = 0
+        if (medicoIds.length > 0) {
+          const { data: countResult } = await supabase
+            .rpc('contar_medicos_por_ids', { p_medico_ids: medicoIds })
+          medicosCount = countResult || 0
+        }
 
         const { count: citasCount } = await supabase
           .from('citas')

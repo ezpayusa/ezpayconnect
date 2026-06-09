@@ -1,5 +1,6 @@
 import { useState } from 'react'
 import { useWebAppAuth } from '@/webapp/hooks/useWebAppAuth'
+import { usePushNotifications } from '@/webapp/hooks/usePushNotifications'
 import { supabase } from '@/lib/supabase'
 import { Card, CardContent } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
@@ -7,7 +8,7 @@ import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import {
   User, Mail, Phone, Calendar, AlertTriangle, MapPin, Heart, Users,
-  Pencil, Save, X, Loader2
+  Pencil, Save, X, Loader2, Bell, BellOff
 } from 'lucide-react'
 import { toast } from 'sonner'
 
@@ -35,6 +36,14 @@ function CampoPerfil({ icon: Icon, label, value, editando, editValue, onChange, 
 
 export default function WebAppPerfil() {
   const { perfil } = useWebAppAuth()
+  const {
+    soportado: pushSoportado,
+    suscrito: pushSuscrito,
+    permiso: pushPermiso,
+    suscribir: suscribirPush,
+    desuscribir: desuscribirPush,
+    cargando: pushCargando,
+  } = usePushNotifications()
   const [editando, setEditando] = useState(false)
   const [guardando, setGuardando] = useState(false)
   const [form, setForm] = useState({
@@ -223,6 +232,68 @@ export default function WebAppPerfil() {
               editValue={form.notas}
               onChange={(v: string) => setForm({ ...form, notas: v })}
             />
+
+            {/* Notificaciones push */}
+            <div className="border-t border-slate-100 pt-4">
+              <h3 className="text-sm font-medium text-slate-700 mb-3 flex items-center gap-1.5">
+                <Bell className="h-4 w-4" />
+                Notificaciones push
+              </h3>
+              {pushSoportado && pushPermiso !== 'denied' && (
+                <div className={`flex items-center justify-between p-3 rounded-lg ${pushSuscrito ? 'bg-emerald-50' : 'bg-amber-50'}`}>
+                  <div className="flex items-center gap-3">
+                    {pushSuscrito ? (
+                      <Bell className="h-4 w-4 text-emerald-600" />
+                    ) : (
+                      <BellOff className="h-4 w-4 text-amber-600" />
+                    )}
+                    <div>
+                      <p className="text-sm font-medium text-slate-700">
+                        {pushSuscrito ? 'Activadas' : 'Desactivadas'}
+                      </p>
+                      <p className="text-xs text-slate-500">
+                        {pushSuscrito
+                          ? 'Recibes alertas de citas y mensajes en tiempo real'
+                          : 'Activa para recibir alertas de citas y mensajes'}
+                      </p>
+                    </div>
+                  </div>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    className={pushSuscrito ? 'border-emerald-200 text-emerald-700 hover:bg-emerald-100' : 'border-amber-200 text-amber-700 hover:bg-amber-100'}
+                    onClick={pushSuscrito ? desuscribirPush : suscribirPush}
+                    disabled={pushCargando}
+                  >
+                    {pushCargando ? <Loader2 className="h-4 w-4 animate-spin" /> : (
+                      pushSuscrito ? 'Desactivar' : 'Activar'
+                    )}
+                  </Button>
+                </div>
+              )}
+              {pushSoportado && pushPermiso === 'denied' && (
+                <div className="flex items-center gap-3 p-3 rounded-lg bg-red-50">
+                  <BellOff className="h-4 w-4 text-red-500" />
+                  <div>
+                    <p className="text-sm font-medium text-red-700">Bloqueadas por el navegador</p>
+                    <p className="text-xs text-red-500">
+                      Usa una ventana normal (no incógnito) o haz clic en el 🔒 de la barra de direcciones para activar notificaciones.
+                    </p>
+                  </div>
+                </div>
+              )}
+              {!pushSoportado && (
+                <div className="flex items-center gap-3 p-3 rounded-lg bg-gray-50">
+                  <BellOff className="h-4 w-4 text-gray-400" />
+                  <div>
+                    <p className="text-sm text-slate-600">No disponibles en este navegador</p>
+                    <p className="text-xs text-slate-400">
+                      Usa Chrome, Edge o Safari en modo normal (no incógnito) para activar notificaciones.
+                    </p>
+                  </div>
+                </div>
+              )}
+            </div>
 
             <div className="border-t border-slate-100 pt-4">
               <h3 className="text-sm font-medium text-slate-700 mb-3 flex items-center gap-1.5">

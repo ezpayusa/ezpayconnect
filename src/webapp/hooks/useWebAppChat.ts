@@ -127,6 +127,23 @@ export function useWebAppChat(pacienteId: number | undefined) {
       const { error: err } = await supabase.from('chat_mensajes').insert(insertData)
 
       if (err) throw err
+
+      // Notificación push al médico
+      if (medicoId) {
+        try {
+          await supabase.functions.invoke('enviar-push', {
+            body: {
+              usuario_ids: [medicoId],
+              titulo: 'Nuevo mensaje de paciente',
+              mensaje: texto.trim().slice(0, 100),
+              url: '/paciente/chat',
+              tag: `chat-${pacienteId}`,
+            },
+          })
+        } catch (pushErr) {
+          console.error('Error enviando push de chat:', pushErr)
+        }
+      }
     } catch (err: any) {
       console.error('Error enviando mensaje:', err)
       setError(err.message || 'Error al enviar mensaje')

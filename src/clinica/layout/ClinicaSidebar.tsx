@@ -10,6 +10,7 @@ import {
   LogOut,
   Building2,
   ChevronLeft,
+  CalendarDays,
 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 
@@ -21,6 +22,7 @@ export function ClinicaSidebar() {
 
   const navItems = [
     { label: 'Dashboard', icon: LayoutDashboard, path: '/clinica' },
+    { label: 'Citas', icon: CalendarDays, path: '/clinica/citas' },
     { label: 'Personal', icon: Users, path: '/clinica/personal' },
     { label: 'Invitar Médico', icon: Stethoscope, path: '/clinica/invitar-medico' },
     { label: 'Invitar Staff', icon: UserPlus, path: '/clinica/invitar-staff' },

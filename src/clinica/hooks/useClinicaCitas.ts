@@ -1,0 +1,231 @@
+import { useState, useEffect, useCallback } from 'react'
+import { supabase } from '@/lib/supabase'
+import { toast } from 'sonner'
+import type { CitaConPaciente, FiltroCitaEstado } from '@/medico/types/medico.types'
+
+export function useClinicaCitas() {
+  const [citas, setCitas] = useState<CitaConPaciente[]>([])
+  const [loading, setLoading] = useState(true)
+  const [filtroEstado, setFiltroEstado] = useState<FiltroCitaEstado>('todos')
+  const [medicosClinica, setMedicosClinica] = useState<{ id: string; nombre_completo: string; especialidad: string | null }[]>([])
+  const [clinicaId, setClinicaId] = useState<string | null>(null)
+
+  const fetchClinicaYCitas = useCallback(async () => {
+    setLoading(true)
+    try {
+      const { data: { user } } = await supabase.auth.getUser()
+      if (!user) {
+        setCitas([])
+        setLoading(false)
+        return
+      }
+
+      // 1. Obtener clínica del usuario via RPC
+      const { data: clinicaRel } = await supabase
+        .rpc('obtener_clinica_usuario', { p_user_id: user.id })
+        .maybeSingle()
+
+      const currentClinicaId = clinicaRel?.clinica_id || null
+      setClinicaId(currentClinicaId)
+
+      if (!currentClinicaId) {
+        console.warn('[useClinicaCitas] Usuario sin clínica asociada')
+        setCitas([])
+        setLoading(false)
+        return
+      }
+
+      // 2. Cargar médicos de la clínica
+      const { data: relMedicos } = await supabase
+        .rpc('obtener_medicos_clinica', { p_clinica_id: currentClinicaId })
+
+      const medicoIds = relMedicos?.map((r: any) => r.medico_id) || []
+
+      // Cargar datos de todos los médicos disponibles para asignar
+      const { data: todosMedicos } = await supabase
+        .rpc('listar_medicos_por_pais')
+
+      const todosMedicosList = (todosMedicos || []) as any[]
+      const medicosFiltrados = todosMedicosList
+        .filter((m: any) => medicoIds.includes(m.id))
+        .map((m: any) => ({
+          id: m.id,
+          nombre_completo: m.nombre_completo,
+          especialidad: m.especialidad || null,
+        }))
+      setMedicosClinica(medicosFiltrados)
+
+      // 3. Cargar citas de la clínica via RPC (bypass RLS)
+      const { data: citasData, error: citasError } = await supabase
+        .rpc('obtener_citas_clinica', { p_clinica_id: currentClinicaId })
+
+      if (citasError) {
+        console.error('Error cargando citas:', citasError)
+        toast.error('Error cargando citas')
+        setCitas([])
+        setLoading(false)
+        return
+      }
+
+      let citasList = (citasData || []) as any[]
+
+      if (filtroEstado !== 'todos') {
+        citasList = citasList.filter((c: any) => c.estado === filtroEstado)
+      }
+
+      // 4. Mapear al formato del frontend
+      const citasConPaciente: CitaConPaciente[] = citasList.map((cita: any) => ({
+        id: cita.id,
+        medico_id: cita.medico_id,
+        paciente_id: cita.paciente_id,
+        clinica_id: cita.clinica_id,
+        fecha: cita.fecha,
+        hora_inicio: cita.hora_inicio,
+        hora_fin: cita.hora_fin,
+        motivo: cita.motivo,
+        estado: cita.estado,
+        notas: cita.notas,
+        created_at: cita.created_at,
+        paciente: cita.paciente_id ? {
+          id: cita.paciente_id,
+          nombre: cita.paciente_nombre || '',
+          apellido: cita.paciente_apellido || '',
+          telefono: cita.paciente_telefono || null,
+          email: cita.paciente_email || null,
+          auth_user_id: cita.paciente_auth_user_id,
+        } : undefined,
+      }))
+
+      setCitas(citasConPaciente)
+    } catch (err) {
+      console.error('Error:', err)
+      setCitas([])
+    } finally {
+      setLoading(false)
+    }
+  }, [filtroEstado])
+
+  useEffect(() => {
+    fetchClinicaYCitas()
+  }, [fetchClinicaYCitas])
+
+  const updateCitaEstado = async (cita: CitaConPaciente, nuevoEstado: CitaConPaciente['estado'], mensaje?: string) => {
+    const { error } = await supabase
+      .rpc('actualizar_estado_cita', {
+        p_cita_id: cita.id,
+        p_estado: nuevoEstado,
+      })
+
+    if (error) {
+      toast.error('Error: ' + error.message)
+      return false
+    }
+
+    setCitas(prev => prev.map(c => c.id === cita.id ? { ...c, estado: nuevoEstado } : c))
+    if (mensaje) toast.success(mensaje)
+    return true
+  }
+
+  const asignarMedico = async (cita: CitaConPaciente, medicoId: string) => {
+    const { error } = await supabase
+      .rpc('asignar_medico_cita', {
+        p_cita_id: cita.id,
+        p_medico_id: medicoId,
+      })
+
+    if (error) {
+      toast.error('Error asignando médico: ' + error.message)
+      return false
+    }
+
+    // Obtener nombre del médico asignado
+    const medico = medicosClinica.find(m => m.id === medicoId)
+    const medicoNombre = medico?.nombre_completo || 'asignado'
+
+    setCitas(prev => prev.map(c => c.id === cita.id ? { ...c, medico_id: medicoId, estado: 'agendada' } : c))
+    toast.success('Médico asignado correctamente')
+
+    // Notificar al paciente
+    const pacienteAuthId = (cita.paciente as any)?.auth_user_id
+    if (pacienteAuthId) {
+      try {
+        await enviarNotificacionPaciente(pacienteAuthId, cita, medicoNombre)
+      } catch (err) {
+        console.error('[useClinicaCitas] Error notificando paciente:', err)
+      }
+    } else {
+      console.warn('[useClinicaCitas] Paciente sin auth_user_id, no se puede notificar. paciente_id:', cita.paciente_id)
+    }
+
+    return true
+  }
+
+  const enviarNotificacionPaciente = async (
+    pacienteAuthId: string,
+    cita: CitaConPaciente,
+    medicoNombre: string
+  ) => {
+    const fechaStr = new Date(cita.fecha).toLocaleDateString('es-GT', {
+      weekday: 'long', month: 'long', day: 'numeric',
+    })
+
+    const titulo = 'Médico asignado a tu cita'
+    const mensaje = `Tu cita para el ${fechaStr} a las ${cita.hora_inicio?.slice(0, 5)} ha sido asignada al Dr. ${medicoNombre}.`
+    const url = '/paciente/citas'
+
+    console.log('[useClinicaCitas] Enviando notificación a:', pacienteAuthId)
+
+    // Notificación in-app
+    try {
+      await supabase.functions.invoke('enviar-notificacion', {
+        body: {
+          usuario_id: pacienteAuthId,
+          tipo: 'cita_asignada',
+          titulo,
+          mensaje,
+          accion_url: url,
+          metadata: { cita_id: cita.id, paciente_id: cita.paciente_id },
+        },
+      })
+      console.log('[useClinicaCitas] Notificación in-app enviada')
+    } catch (e) {
+      console.error('Error notificación in-app:', e)
+    }
+
+    // Push notification
+    try {
+      await supabase.functions.invoke('enviar-push', {
+        body: {
+          usuario_ids: [pacienteAuthId],
+          titulo,
+          mensaje,
+          url,
+          tag: `cita-${cita.id}`,
+        },
+      })
+      console.log('[useClinicaCitas] Push notification enviada')
+    } catch (e) {
+      console.error('Error push notification:', e)
+    }
+  }
+
+  const confirmarCita = async (cita: CitaConPaciente) => {
+    return updateCitaEstado(cita, 'confirmada', 'Cita confirmada correctamente')
+  }
+
+  const rechazarCita = async (cita: CitaConPaciente) => {
+    return updateCitaEstado(cita, 'cancelada', 'Cita cancelada correctamente')
+  }
+
+  return {
+    citas,
+    loading,
+    filtroEstado,
+    setFiltroEstado,
+    medicosClinica,
+    fetchCitas: fetchClinicaYCitas,
+    confirmarCita,
+    rechazarCita,
+    asignarMedico,
+  }
+}

@@ -62,11 +62,11 @@ export default function ClinicaInvitarStaffPage() {
         activo: true,
       })
 
-      // Asociar a la clínica
-      await supabase.from('medico_clinicas').insert({
-        medico_id: userId,
-        clinica_id: clinica?.id,
-        es_principal: false,
+      // Asociar a la clínica via RPC
+      await supabase.rpc('asociar_medico_clinica', {
+        p_medico_id: userId,
+        p_clinica_id: clinica?.id,
+        p_es_principal: false,
       })
 
       // Enviar email con credenciales
@@ -79,7 +79,7 @@ export default function ClinicaInvitarStaffPage() {
             'Content-Type': 'application/json',
           },
           body: JSON.stringify({
-            from: 'EzPayConnect <onboarding@resend.dev>',
+            from: 'EzPayConnect <no-reply@ezpayconnect.com>',
             to: form.email,
             subject: 'Bienvenido a EzPayConnect — Credenciales de acceso',
             html: `<div style="font-family:sans-serif;max-width:480px;margin:0 auto;padding:24px;border:1px solid #e5e7eb;border-radius:8px;">

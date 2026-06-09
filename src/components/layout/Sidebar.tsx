@@ -36,6 +36,16 @@ export function Sidebar() {
       ]
     }
 
+    // Si es medico, redirige a su portal dedicado
+    if (userRol === 'medico') {
+      return [
+        { label: 'Portal Médico', icon: Stethoscope, path: '/medico', roles: ['medico'] },
+        { label: 'Mis Citas', icon: CalendarDays, path: '/medico/citas', roles: ['medico'] },
+        { label: 'Mis Pacientes', icon: Users, path: '/medico/pacientes', roles: ['medico'] },
+        { label: 'Mis Recetas', icon: FileText, path: '/medico/recetas', roles: ['medico'] },
+      ]
+    }
+
     const baseItems = [
       { label: 'Dashboard', icon: LayoutDashboard, path: '/dashboard', roles: ['admin', 'medico', 'asistente', 'super_admin'] },
       { label: 'Pacientes', icon: Users, path: '/pacientes', roles: ['admin', 'medico', 'asistente', 'super_admin'] },

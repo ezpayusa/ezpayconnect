@@ -124,8 +124,16 @@ export default function WebAppCitas() {
                       </div>
                     </div>
                     <p className="text-sm text-slate-500">
-                      Dr. {cita.medico_nombre}
+                      {cita.medico_nombre?.startsWith('Médico por')
+                        ? cita.medico_nombre
+                        : (() => { const n = cita.medico_nombre || ''; return /^Dr\.?\s|^Dra\.?\s/i.test(n) ? n : `Dr. ${n}` })()}
                     </p>
+                    {cita.clinica_nombre && (
+                      <p className="text-sm text-slate-500 flex items-center gap-1">
+                        <Building2 className="h-3.5 w-3.5" />
+                        {cita.clinica_nombre}
+                      </p>
+                    )}
                   </div>
                 </div>
               </CardContent>
@@ -136,6 +144,8 @@ export default function WebAppCitas() {
 
       <AgendarCitaModal
         pacienteId={perfil?.id}
+        pacienteNombre={perfil?.nombre}
+        paisIdProp={perfil?.pais_id}
         open={modalOpen}
         onClose={() => setModalOpen(false)}
         onSuccess={() => refetch()}

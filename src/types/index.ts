@@ -42,7 +42,7 @@ export interface Cita {
   hora_inicio: string
   hora_fin: string | null
   motivo: string | null
-  estado: 'agendada' | 'confirmada' | 'en_curso' | 'completada' | 'cancelada' | 'no_show'
+  estado: 'agendada' | 'confirmada' | 'en_curso' | 'completada' | 'cancelada' | 'no_show' | 'solicitada' | 'pendiente'
   notas: string | null
   created_at: string
 }

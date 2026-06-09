@@ -2,7 +2,7 @@ import { useState, useEffect, useCallback } from 'react'
 import { supabase } from '@/lib/supabase'
 
 interface ClinicaData {
-  id: number
+  id: string
   nombre: string
   direccion: string | null
   telefono: string | null
@@ -16,7 +16,7 @@ interface ClinicaUser {
   nombre_completo: string
   email: string
   rol: string
-  clinica_id: number | null
+  clinica_id: string | null
 }
 
 export function useClinicaAuth() {
@@ -51,14 +51,10 @@ export function useClinicaAuth() {
 
       setIsAdminClinica(true)
 
-      // 2. Buscar clínica asociada al usuario (por es_principal en medico_clinicas)
+      // 2. Buscar clínica asociada al usuario via RPC
       const { data: rel } = await supabase
-        .from('medico_clinicas')
-        .select('clinica_id')
-        .eq('medico_id', user.id)
-        .eq('es_principal', true)
-        .limit(1)
-        .single()
+        .rpc('obtener_clinica_usuario', { p_user_id: user.id })
+        .maybeSingle()
 
       if (!rel) {
         setError('No se encontró clínica asociada a este usuario')

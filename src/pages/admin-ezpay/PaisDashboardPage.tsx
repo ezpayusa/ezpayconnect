@@ -99,10 +99,8 @@ export default function PaisDashboardPage() {
     const cargarStats = async () => {
       setLoading(true)
       try {
-        const { count: medicosCount } = await supabase
-          .from('medicos')
-          .select('*', { count: 'exact', head: true })
-          .eq('pais_id', paisId)
+        const { data: medicosCount } = await supabase
+          .rpc('contar_medicos_por_pais', { p_pais_id: paisId })
 
         const { count: clinicasCount } = await supabase
           .from('clinicas')

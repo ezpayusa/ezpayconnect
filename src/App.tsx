@@ -112,6 +112,16 @@ import ClinicaDashboardPage from '@/clinica/pages/ClinicaDashboardPage'
 import ClinicaPersonalPage from '@/clinica/pages/ClinicaPersonalPage'
 import ClinicaInvitarMedicoPage from '@/clinica/pages/ClinicaInvitarMedicoPage'
 import ClinicaInvitarStaffPage from '@/clinica/pages/ClinicaInvitarStaffPage'
+import ClinicaCitasPage from '@/clinica/pages/ClinicaCitasPage'
+
+// === IMPORTS PORTAL MÉDICO ===
+import { MedicoLayout } from '@/medico/layout/MedicoLayout'
+import MedicoPrivateRoute from '@/medico/components/MedicoPrivateRoute'
+import MedicoDashboardPage from '@/medico/pages/MedicoDashboardPage'
+import MedicoCitasPage from '@/medico/pages/MedicoCitasPage'
+import MedicoPacientesPage from '@/medico/pages/MedicoPacientesPage'
+import MedicoRecetasPage from '@/medico/pages/MedicoRecetasPage'
+import MedicoDisponibilidadPage from '@/medico/pages/MedicoDisponibilidadPage'
 
 function PrivateLayout({ children }: { children: React.ReactNode }) {
   const { user, loading } = useAuth()
@@ -232,9 +242,19 @@ function App() {
           <Route path="empresas-proveedoras" element={<EmpresasProveedorasPage />} />
         </Route>
 
+        {/* === RUTAS MÉDICO === */}
+        <Route path="/medico" element={<MedicoPrivateRoute><MedicoLayout /></MedicoPrivateRoute>}>
+          <Route index element={<MedicoDashboardPage />} />
+          <Route path="citas" element={<MedicoCitasPage />} />
+          <Route path="pacientes" element={<MedicoPacientesPage />} />
+          <Route path="recetas" element={<MedicoRecetasPage />} />
+          <Route path="disponibilidad" element={<MedicoDisponibilidadPage />} />
+        </Route>
+
         {/* === RUTAS CLÍNICA === */}
         <Route path="/clinica" element={<ClinicaLayout />}>
           <Route index element={<ClinicaDashboardPage />} />
+          <Route path="citas" element={<ClinicaCitasPage />} />
           <Route path="personal" element={<ClinicaPersonalPage />} />
           <Route path="invitar-medico" element={<ClinicaInvitarMedicoPage />} />
           <Route path="invitar-staff" element={<ClinicaInvitarStaffPage />} />

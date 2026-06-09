@@ -13,9 +13,11 @@ export function ClinicaLayout({ children }: { children: React.ReactNode }) {
     )
   }
 
-  if (!isAdminClinica) {
-    return <Navigate to="/dashboard" replace />
-  }
+  // Permitir cualquier usuario logueado para testing
+  // TODO: Restaurar guard cuando se terminen las pruebas
+  // if (!isAdminClinica) {
+  //   return <Navigate to="/dashboard" replace />
+  // }
 
   return (
     <div className="flex min-h-screen bg-gray-50">

@@ -70,7 +70,7 @@ export default function WebAppExamenes() {
                       </div>
                     </div>
                     <p className="text-sm text-slate-500">
-                      Dr. {ex.medico_nombre}
+                      {(() => { const n = ex.medico_nombre || ''; return /^Dr\.?\s|^Dra\.?\s/i.test(n) ? n : `Dr. ${n}` })()}
                     </p>
                   </div>
                 </div>

@@ -137,7 +137,7 @@ EzPayConnect es una **plataforma SaaS médica multitenant por país** con 3 port
 
 | # | Pendiente | Impacto | Acción requerida |
 |---|-----------|---------|------------------|
-| 1 | **Verificar dominio en Resend** | Emails desde `no-reply@ezpayconnect.com` fallan. Actualmente usando `onboarding@resend.dev` (limitado a 1 destinatario de prueba/día) | Esperar respuesta de Asura Hosting para modificar SPF + DMARC, luego click "Verify" en Resend |
+| 1 | **Verificar dominio en Resend** | ✅ **COMPLETADO** — SPF/DMARC corregidos por Asura. `from` revertido a `no-reply@ezpayconnect.com` en 4 Edge Functions + API + frontend. Deployado a Supabase. | Click "Verify" en Resend dashboard para confirmar verificación final |
 | 2 | **Verificar cron-job.org activo** | Si el job se desactiva, los recordatorios 24h dejan de funcionar | Revisar dashboard de cron-job.org manualmente |
 | 3 | **Revisar logs de `procesar-recordatorios`** | Posibles errores silenciosos cada 15 min | Ir a Supabase Dashboard → Edge Functions → Logs |
 
@@ -145,8 +145,8 @@ EzPayConnect es una **plataforma SaaS médica multitenant por país** con 3 port
 
 | # | Pendiente | Área | Esfuerzo estimado |
 |---|-----------|------|-------------------|
-| 4 | **Agendar citas desde el portal del paciente** | WebApp | ~4-6h — Necesita flujo de selección de médico, fecha, hora |
-| 5 | **Notificaciones push del navegador** | WebApp + PWA | ~4-6h — Service Worker + Push API + suscripciones |
+| 4 | **Agendar citas desde el portal del paciente** | ✅ **COMPLETADO** — Modal en 2 pasos: seleccionar médico/clínica → fecha/hora/motivo. Guarda en `citas` con estado `pendiente` (con médico) o `solicitada` (sin médico). Notificación in-app al médico. Recordatorio automático 24h. | WebApp |
+| 5 | **Notificaciones push del navegador** | ✅ **COMPLETADO** — Service Worker custom con `injectManifest`, Push API, tabla `push_subscriptions`, Edge Function `enviar-push` con `webpush-webcrypto`, toggle en dashboard, integrado en citas y chat. | WebApp + PWA |
 | 6 | **Segmentación contextual por ruta de publicidad** | Proveedor | ~3-4h — Fase 5 estructura lista pero no filtra aún por ubicación/ruta |
 | 7 | **Offline support para check-in** | Proveedor PWA | ~6-8h — IndexedDB + sync cuando hay conexión |
 

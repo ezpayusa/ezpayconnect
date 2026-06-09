@@ -11,7 +11,7 @@ import { toast } from 'sonner'
 export default function WebAppRegistroPage() {
   const navigate = useNavigate()
   const { register } = useWebAppAuth()
-  const { paises } = usePaisesRegistro()
+  const { paises, error: paisesError } = usePaisesRegistro()
   const [form, setForm] = useState({
     nombre: '', apellido: '', email: '', password: '', telefono: '', pais_id: ''
   })
@@ -77,13 +77,19 @@ export default function WebAppRegistroPage() {
               value={form.pais_id}
               onChange={e => setForm({...form, pais_id: e.target.value})}
               className="w-full h-10 rounded-md border border-input bg-background px-3 py-2 text-sm"
-              required
+              required={paises.length > 0}
             >
               <option value="">Selecciona tu país</option>
               {paises.map((p) => (
                 <option key={p.id} value={p.id}>{p.nombre}</option>
               ))}
             </select>
+            {paisesError && (
+              <p className="text-xs text-red-500">Error cargando países: {paisesError}</p>
+            )}
+            {paises.length === 0 && !paisesError && (
+              <p className="text-xs text-amber-600">No hay países disponibles. Contacta soporte.</p>
+            )}
           </div>
           <div className="space-y-2">
             <Label>Contraseña</Label>

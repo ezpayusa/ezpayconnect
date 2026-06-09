@@ -52,7 +52,9 @@ export default function LoginPage() {
             .eq('id', user.id)
             .single()
           const adminRoles = ['super_admin', 'admin_pais', 'admin_finanzas', 'admin_soporte', 'admin_ventas']
-          if (profile?.rol && adminRoles.includes(profile.rol)) {
+          if (profile?.rol === 'medico') {
+            navigate('/medico')
+          } else if (profile?.rol && adminRoles.includes(profile.rol)) {
             navigate('/admin-ezpay')
           } else {
             navigate('/dashboard')

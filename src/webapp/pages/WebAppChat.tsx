@@ -51,7 +51,7 @@ export default function WebAppChat() {
         <div>
           <h1 className="text-2xl font-bold text-slate-800">Chat con mi Médico</h1>
           <p className="text-slate-500 mt-1">
-            {medicoId ? `Dr. ${medicoNombre}` : 'Buscando médico asignado...'}
+            {medicoId ? (() => { const n = medicoNombre || ''; return /^Dr\.?\s|^Dra\.?\s/i.test(n) ? n : `Dr. ${n}` })() : 'Buscando médico asignado...'}
           </p>
         </div>
         <div className="w-10 h-10 rounded-full bg-sky-50 flex items-center justify-center">

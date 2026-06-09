@@ -101,7 +101,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
     // Enviar email
     const { data, error } = await resend.emails.send({
-      from: process.env.FROM_EMAIL || 'onboarding@resend.dev',
+      from: process.env.FROM_EMAIL || 'no-reply@ezpayconnect.com',
       to: [to],
       subject: `Receta Médica - ${pacienteNombre} - EzPayConnect`,
       html: html,

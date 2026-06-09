@@ -15,8 +15,8 @@ serve(async (req) => {
   try {
     // 1. Create Supabase admin client with Service Role Key
     const supabaseAdmin = createClient(
-      Deno.env.get('SUPABASE_URL') ?? '',
-      Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ?? '',
+      (Deno.env.get('SB_URL') || Deno.env.get('SUPABASE_URL')) ?? '',
+      (Deno.env.get('SB_SERVICE_ROLE_KEY') || Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')) ?? '',
       {
         auth: {
           autoRefreshToken: false,
@@ -128,8 +128,8 @@ serve(async (req) => {
 
     // 9. NOTIFICAR ADMIN - Nuevo empleado registrado
     try {
-      const supabaseUrl = Deno.env.get('SUPABASE_URL') ?? ''
-      const serviceRoleKey = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ?? ''
+      const supabaseUrl = (Deno.env.get('SB_URL') || Deno.env.get('SUPABASE_URL')) ?? ''
+      const serviceRoleKey = (Deno.env.get('SB_SERVICE_ROLE_KEY') || Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')) ?? ''
       
       await fetch(`${supabaseUrl}/functions/v1/notificar-admin`, {
         method: 'POST',

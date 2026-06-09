@@ -14,6 +14,7 @@ export interface PacientePerfil {
   emergencia_nombre: string | null
   emergencia_telefono: string | null
   foto_url: string | null
+  pais_id?: string | null
   activo: boolean
   created_at: string
 }
@@ -27,6 +28,7 @@ export interface CitaPaciente {
   estado: 'solicitada' | 'agendada' | 'confirmada' | 'en_curso' | 'completada' | 'cancelada' | 'no_show' | 'pendiente'
   medico_nombre?: string
   medico_especialidad?: string
+  clinica_nombre?: string
   notas?: string | null
   created_at: string
 }

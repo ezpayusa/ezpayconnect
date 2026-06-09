@@ -3,6 +3,7 @@ import { useWebAppAuth } from '@/webapp/hooks/useWebAppAuth'
 import { useWebAppCitas } from '@/webapp/hooks/useWebAppCitas'
 import { useWebAppRecetas } from '@/webapp/hooks/useWebAppRecetas'
 import { useWebAppExamenes } from '@/webapp/hooks/useWebAppExamenes'
+import { usePushNotifications } from '@/webapp/hooks/usePushNotifications'
 import AgendarCitaModal from '@/webapp/components/AgendarCitaModal'
 import BannerPublicidad from '@/webapp/components/BannerPublicidad'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
@@ -11,7 +12,7 @@ import { Badge } from '@/components/ui/badge'
 import { useNavigate } from 'react-router-dom'
 import {
   CalendarDays, FileText, FlaskConical, MessageCircle, Plus, Clock, Pill,
-  Loader2
+  Building2, Loader2, Bell, BellOff
 } from 'lucide-react'
 
 export default function WebAppDashboard() {
@@ -22,6 +23,7 @@ export default function WebAppDashboard() {
   const { proximas: citasProximas, loading: loadingCitas, refetch: refetchCitas } = useWebAppCitas(perfil?.id)
   const { activas: recetasActivas, loading: loadingRecetas } = useWebAppRecetas(perfil?.id)
   const { pendientes: examenesPendientes, loading: loadingExamenes } = useWebAppExamenes(perfil?.id)
+  const { soportado: pushSoportado, suscrito: pushSuscrito, permiso: pushPermiso, suscribir: suscribirPush, desuscribir: desuscribirPush, cargando: pushCargando } = usePushNotifications()
 
   const proximaCita = citasProximas[0]
 
@@ -131,8 +133,18 @@ export default function WebAppDashboard() {
                 </div>
                 <div className="flex items-center gap-2 text-slate-500 text-sm">
                   <Pill className="h-4 w-4" />
-                  <span>Dr. {proximaCita.medico_nombre}</span>
+                  <span>
+                    {proximaCita.medico_nombre?.startsWith('Médico por')
+                      ? proximaCita.medico_nombre
+                      : (() => { const n = proximaCita.medico_nombre || ''; return /^Dr\.?\s|^Dra\.?\s/i.test(n) ? n : `Dr. ${n}` })()}
+                  </span>
                 </div>
+                {proximaCita.clinica_nombre && (
+                  <div className="flex items-center gap-2 text-slate-500 text-sm">
+                    <Building2 className="h-4 w-4" />
+                    <span>{proximaCita.clinica_nombre}</span>
+                  </div>
+                )}
               </div>
             ) : (
               <div className="flex items-center gap-3 mt-3 text-slate-500">
@@ -144,6 +156,70 @@ export default function WebAppDashboard() {
         </Card>
       </div>
 
+      {/* Notificaciones push */}
+      {pushSoportado && pushPermiso !== 'denied' && (
+        <Card className={`border-0 ${pushSuscrito ? 'bg-emerald-50' : 'bg-amber-50'}`}>
+          <CardContent className="p-4 flex items-center justify-between">
+            <div className="flex items-center gap-3">
+              <div className={`w-10 h-10 rounded-full flex items-center justify-center ${pushSuscrito ? 'bg-emerald-100' : 'bg-amber-100'}`}>
+                {pushSuscrito ? (
+                  <Bell className="h-5 w-5 text-emerald-600" />
+                ) : (
+                  <BellOff className="h-5 w-5 text-amber-600" />
+                )}
+              </div>
+              <div>
+                <p className="text-sm font-medium text-slate-800">
+                  {pushSuscrito ? 'Notificaciones push activas' : 'Activa notificaciones push'}
+                </p>
+                <p className="text-xs text-slate-500">
+                  {pushSuscrito
+                    ? 'Recibirás alertas de citas y mensajes en tiempo real'
+                    : 'No te pierdas citas, recetas ni mensajes de tu médico'}
+                </p>
+              </div>
+            </div>
+            <Button
+              variant="outline"
+              size="sm"
+              className={pushSuscrito ? 'border-emerald-200 text-emerald-700 hover:bg-emerald-100' : 'border-amber-200 text-amber-700 hover:bg-amber-100'}
+              onClick={pushSuscrito ? desuscribirPush : suscribirPush}
+              disabled={pushCargando}
+            >
+              {pushCargando ? <Loader2 className="h-4 w-4 animate-spin" /> : (
+                pushSuscrito ? 'Desactivar' : 'Activar'
+              )}
+            </Button>
+          </CardContent>
+        </Card>
+      )}
+      {pushSoportado && pushPermiso === 'denied' && (
+        <Card className="bg-red-50 border-red-200">
+          <CardContent className="p-4 flex items-center gap-3">
+            <BellOff className="h-5 w-5 text-red-500" />
+            <div>
+              <p className="text-sm font-medium text-red-700">Notificaciones bloqueadas</p>
+              <p className="text-xs text-red-500">
+                El navegador bloqueó las notificaciones. Usa una ventana normal (no incógnito) o haz clic en el 🔒 de la barra de direcciones para activarlas.
+              </p>
+            </div>
+          </CardContent>
+        </Card>
+      )}
+      {!pushSoportado && (
+        <Card className="bg-gray-50 border-gray-200">
+          <CardContent className="p-4 flex items-center gap-3">
+            <BellOff className="h-5 w-5 text-gray-400" />
+            <div>
+              <p className="text-sm font-medium text-slate-600">Notificaciones push no disponibles</p>
+              <p className="text-xs text-slate-400">
+                Usa Chrome, Edge o Safari en modo normal (no incógnito) para recibir notificaciones.
+              </p>
+            </div>
+          </CardContent>
+        </Card>
+      )}
+
       {/* Banner de publicidad */}
       <div className="mt-6">
         <BannerPublicidad />
@@ -151,6 +227,8 @@ export default function WebAppDashboard() {
 
       <AgendarCitaModal
         pacienteId={perfil?.id}
+        pacienteNombre={perfil?.nombre}
+        paisIdProp={perfil?.pais_id}
         open={modalCitaOpen}
         onClose={() => setModalCitaOpen(false)}
         onSuccess={() => refetchCitas()}

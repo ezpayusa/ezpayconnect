@@ -131,11 +131,9 @@ export default function CitasPage() {
     // 4. Cargar medicos de AMBAS tablas (perfiles + medicos)
     let medicosData: any[] = []
     if (medicoIds.length > 0) {
-      // Intentar tabla medicos primero
+      // Intentar tabla medicos primero via RPC
       const { data: medsNuevos } = await supabase
-        .from('medicos')
-        .select('id, nombre_completo, especialidad')
-        .in('id', medicoIds)
+        .rpc('obtener_medicos_por_ids', { p_medico_ids: medicoIds })
 
       // Intentar tabla perfiles como fallback
       const { data: medsViejos } = await supabase
@@ -185,13 +183,8 @@ export default function CitasPage() {
     if (paisId) pacsQuery = pacsQuery.eq('pais_id', paisId)
     const { data: pacs } = await pacsQuery
 
-    let medsQuery = supabase
-      .from('medicos')
-      .select('id, nombre_completo, especialidad, activo')
-      .eq('activo', true)
-      .order('nombre_completo')
-    if (paisId) medsQuery = medsQuery.eq('pais_id', paisId)
-    const { data: meds } = await medsQuery
+    const { data: meds } = await supabase
+      .rpc('listar_medicos_por_pais', { p_pais_id: paisId || undefined })
 
     setPacientes(pacs || [])
     setMedicos(meds || [])

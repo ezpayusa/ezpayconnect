@@ -152,7 +152,7 @@ export default function WebAppHistorial() {
                             <div className="flex items-center gap-2 mt-2 flex-wrap">
                               {item.medico_nombre && (
                                 <span className="text-xs text-slate-400">
-                                  Dr. {item.medico_nombre}
+                                  {(() => { const n = item.medico_nombre || ''; return /^Dr\.?\s|^Dra\.?\s/i.test(n) ? n : `Dr. ${n}` })()}
                                 </span>
                               )}
                               {item.detalles?.estado && getEstadoBadge(item.detalles.estado)}

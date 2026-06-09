@@ -36,11 +36,9 @@ export default function ClinicaPersonalPage() {
     setLoading(true)
 
     try {
-      // Obtener relaciones medico-clinica
+      // Obtener relaciones medico-clinica via RPC
       const { data: relaciones } = await supabase
-        .from('medico_clinicas')
-        .select('medico_id, es_principal')
-        .eq('clinica_id', clinica.id)
+        .rpc('obtener_medicos_clinica', { p_clinica_id: clinica.id })
 
       if (!relaciones || relaciones.length === 0) {
         setPersonal([])
@@ -56,11 +54,9 @@ export default function ClinicaPersonalPage() {
         .select('id, nombre_completo, email, rol, telefono')
         .in('id', medicoIds)
 
-      // Obtener datos de médicos
+      // Obtener datos de médicos via RPC
       const { data: medicos } = await supabase
-        .from('medicos')
-        .select('id, especialidad')
-        .in('id', medicoIds)
+        .rpc('obtener_medicos_por_ids', { p_medico_ids: medicoIds })
 
       const medicosMap = new Map(medicos?.map(m => [m.id, m.especialidad]) || [])
       const relMap = new Map(relaciones.map(r => [r.medico_id, r.es_principal]))

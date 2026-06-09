@@ -15,12 +15,22 @@ export function useAuth() {
       const { data: { session } } = await supabase.auth.getSession()
       setUser(session?.user ?? null)
       if (session?.user) {
-        const { data } = await supabase
-          .from('perfiles')
-          .select('*')
-          .eq('id', session.user.id)
-          .single()
-        setPerfil(data)
+        // Intentar via RPC primero (bypass PostgREST schema cache)
+        const { data: perfilRpc } = await supabase
+          .rpc('obtener_perfil', { p_user_id: session.user.id })
+          .maybeSingle()
+        
+        if (perfilRpc) {
+          setPerfil(perfilRpc as any)
+        } else {
+          // Fallback a query directa
+          const { data } = await supabase
+            .from('perfiles')
+            .select('*')
+            .eq('id', session.user.id)
+            .single()
+          setPerfil(data)
+        }
       }
       setLoading(false)
     }
@@ -29,8 +39,18 @@ export function useAuth() {
     const { data: listener } = supabase.auth.onAuthStateChange((_event, session) => {
       setUser(session?.user ?? null)
       if (session?.user) {
-        supabase.from('perfiles').select('*').eq('id', session.user.id).single()
-          .then(({ data }) => setPerfil(data))
+        // Intentar via RPC primero (bypass PostgREST schema cache)
+        supabase.rpc('obtener_perfil', { p_user_id: session.user.id })
+          .maybeSingle()
+          .then(({ data: perfilRpc }) => {
+            if (perfilRpc) {
+              setPerfil(perfilRpc as any)
+            } else {
+              // Fallback a query directa
+              supabase.from('perfiles').select('*').eq('id', session.user.id).single()
+                .then(({ data }) => setPerfil(data))
+            }
+          })
       } else {
         setPerfil(null)
       }

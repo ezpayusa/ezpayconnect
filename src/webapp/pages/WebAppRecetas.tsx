@@ -66,7 +66,7 @@ export default function WebAppRecetas() {
                         </Badge>
                       </div>
                       <p className="text-sm text-slate-500">
-                        Dr. {r.medico_nombre}
+                        {(() => { const n = r.medico_nombre || ''; return /^Dr\.?\s|^Dra\.?\s/i.test(n) ? n : `Dr. ${n}` })()}
                       </p>
                       <p className="text-xs text-slate-400">
                         {new Date(r.created_at).toLocaleDateString('es-GT', {
