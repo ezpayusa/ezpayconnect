@@ -98,7 +98,7 @@ export function useWebAppCitas(pacienteId: number | undefined) {
   }, [fetchCitas])
 
   const proximas = citas.filter((c) =>
-    ['solicitada', 'agendada', 'confirmada', 'en_curso', 'pendiente'].includes(c.estado)
+    ['solicitada', 'agendada', 'confirmada', 'en_curso'].includes(c.estado)
   )
   const pasadas = citas.filter((c) =>
     ['completada'].includes(c.estado)

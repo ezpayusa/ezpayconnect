@@ -207,7 +207,7 @@ export default function CitasPage() {
         hora_fin: nuevaCita.hora_fin,
         motivo: nuevaCita.motivo,
         notas: nuevaCita.notas,
-        estado: 'pendiente',
+        estado: 'agendada',
         pais_id: paisId,
       }).select().single()
 
@@ -424,7 +424,7 @@ export default function CitasPage() {
                     </div>
 
                     <div className="flex flex-col gap-2">
-                      {(cita.estado === 'agendada' || cita.estado === 'confirmada' || cita.estado === 'pendiente') && (
+                      {(cita.estado === 'solicitada' || cita.estado === 'agendada' || cita.estado === 'confirmada') && (
                         <button
                           onClick={() => navigate(`/consulta/${cita.id}`)}
                           className="px-4 py-2 bg-[#1E5C8E] hover:bg-[#3A8ABF] text-white rounded-lg text-sm font-medium flex items-center gap-2 transition-colors"
@@ -444,7 +444,7 @@ export default function CitasPage() {
                         </button>
                       )}
 
-                      {!tieneRecordatorio && (cita.estado === 'pendiente' || cita.estado === 'agendada' || cita.estado === 'confirmada') && (
+                      {!tieneRecordatorio && (cita.estado === 'solicitada' || cita.estado === 'agendada' || cita.estado === 'confirmada') && (
                         <button
                           onClick={() => programarRecordatorio(cita)}
                           disabled={programando === cita.id}

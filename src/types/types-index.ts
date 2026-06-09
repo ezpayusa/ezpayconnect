@@ -13,7 +13,7 @@ export interface Perfil {
 export interface Paciente {
   id: number
   medico_id: string
-  clinica_id: number | null
+  clinica_id: string | null
   nombre: string
   apellido: string
   fecha_nacimiento: string | null
@@ -33,12 +33,12 @@ export interface Cita {
   id: number
   medico_id: string
   paciente_id: number
-  clinica_id: number | null
+  clinica_id: string | null
   fecha: string
   hora_inicio: string
   hora_fin: string | null
   motivo: string | null
-  estado: 'agendada' | 'confirmada' | 'en_curso' | 'completada' | 'cancelada' | 'no_show'
+  estado: 'agendada' | 'confirmada' | 'en_curso' | 'completada' | 'cancelada' | 'no_show' | 'solicitada'
   notas: string | null
   created_at: string
 }
