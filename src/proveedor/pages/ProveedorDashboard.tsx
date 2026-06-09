@@ -5,7 +5,7 @@ import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
 import { Link } from 'react-router-dom'
 import {
-  Building2,
+  Building,
   Package,
   CalendarCheck,
   Megaphone,
@@ -120,7 +120,7 @@ export default function ProveedorDashboard() {
       <Card>
         <CardHeader className="pb-3">
           <CardTitle className="text-lg flex items-center gap-2">
-            <Building2 className="h-5 w-5 text-[#1E5C8E]" />
+            <Building className="h-5 w-5 text-[#1E5C8E]" />
             {empresa?.nombre_empresa || 'Empresa'}
           </CardTitle>
         </CardHeader>

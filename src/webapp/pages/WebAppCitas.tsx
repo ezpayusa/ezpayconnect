@@ -130,7 +130,7 @@ export default function WebAppCitas() {
                     </p>
                     {cita.clinica_nombre && (
                       <p className="text-sm text-slate-500 flex items-center gap-1">
-                        <Building2 className="h-3.5 w-3.5" />
+                        <Building className="h-3.5 w-3.5" />
                         {cita.clinica_nombre}
                       </p>
                     )}

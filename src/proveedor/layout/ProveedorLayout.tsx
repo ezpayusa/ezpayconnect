@@ -7,7 +7,7 @@ import {
   Package,
   CalendarCheck,
   Megaphone,
-  Building2,
+  Building,
   CreditCard,
   LogOut,
   Menu,
@@ -38,7 +38,7 @@ const navItemsAdmin = [
   { label: 'Visitadores', path: '/proveedor/visitadores', icon: Users },
   { label: 'Ubicaciones Médicos', path: '/proveedor/visitador/ubicaciones-medicos', icon: MapPin },
   { label: 'Publicidad', path: '/proveedor/publicidad/planes', icon: Megaphone },
-  { label: 'Perfil Empresa', path: '/proveedor/perfil', icon: Building2 },
+  { label: 'Perfil Empresa', path: '/proveedor/perfil', icon: Building },
   { label: 'Pagos', path: '/proveedor/pagos', icon: CreditCard },
   { label: 'Notificaciones', path: '/proveedor/notificaciones', icon: Bell, badge: true },
 ]
@@ -48,7 +48,7 @@ const navItemsVisitador = [
   { label: 'Agendar Visita', path: '/proveedor/visitador/agendar', icon: CalendarCheck },
   { label: 'Mi Ruta', path: '/proveedor/visitador/ruta', icon: MapPin },
   { label: 'Reporte', path: '/proveedor/visitador/reporte', icon: BarChart3 },
-  { label: 'Perfil', path: '/proveedor/perfil', icon: Building2 },
+  { label: 'Perfil', path: '/proveedor/perfil', icon: Building },
   { label: 'Notificaciones', path: '/proveedor/notificaciones', icon: Bell, badge: true },
 ]
 
@@ -92,7 +92,7 @@ export default function ProveedorLayout() {
         <div className="p-6 border-b border-white/10">
           <Link to="/proveedor/dashboard" className="flex items-center gap-3">
             <div className="w-10 h-10 rounded-lg bg-[#1E5C8E] flex items-center justify-center">
-              <Building2 className="h-5 w-5 text-white" />
+              <Building className="h-5 w-5 text-white" />
             </div>
             <div className="min-w-0">
               <h1 className="font-bold text-sm truncate">EzPayConnect</h1>
@@ -152,7 +152,7 @@ export default function ProveedorLayout() {
       {/* Mobile Header */}
       <div className="md:hidden fixed top-0 left-0 right-0 bg-[#1a2a3a] text-white z-30 flex items-center justify-between px-4 h-14">
         <div className="flex items-center gap-2">
-          <Building2 className="h-5 w-5" />
+          <Building className="h-5 w-5" />
           <span className="font-bold text-sm">Proveedores</span>
         </div>
         <button onClick={() => setMobileOpen(!mobileOpen)}>

@@ -23,7 +23,7 @@ import {
   Stethoscope,
   MapPin,
   Phone,
-  Building2,
+  Building,
   AlertTriangle
 } from 'lucide-react'
 
@@ -346,7 +346,7 @@ export default function RecetaDetallePage() {
                   <div className="pl-11">
                     <div className="bg-green-50 border border-green-200 rounded-lg p-3">
                       <div className="flex items-center gap-2 text-green-700 font-medium mb-1">
-                        <Building2 className="h-4 w-4" />
+                        <Building className="h-4 w-4" />
                         Farmacia Asignada
                       </div>
                       <div className="text-sm text-green-800 space-y-0.5">

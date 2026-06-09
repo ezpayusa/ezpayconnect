@@ -14,7 +14,7 @@ import {
   Globe,
   Calendar,
   Stethoscope,
-  Building2,
+  Building,
   FlaskConical,
   Truck,
   Layers,
@@ -52,7 +52,7 @@ interface ReporteMensual {
 const tabs = [
   { id: 'todos', label: 'Todos los Planes', icon: Layers, color: 'bg-[#1E5C8E]', barColor: 'bg-[#1E5C8E]' },
   { id: 'medico', label: 'Plan Médico', icon: Stethoscope, color: 'bg-blue-600', barColor: 'bg-blue-500' },
-  { id: 'clinica', label: 'Planes Clínica', icon: Building2, color: 'bg-indigo-600', barColor: 'bg-indigo-500' },
+  { id: 'clinica', label: 'Planes Clínica', icon: Building, color: 'bg-indigo-600', barColor: 'bg-indigo-500' },
   { id: 'lab', label: 'Planes Lab', icon: FlaskConical, color: 'bg-green-600', barColor: 'bg-green-500' },
   { id: 'visitador', label: 'Planes Visitador', icon: Truck, color: 'bg-orange-600', barColor: 'bg-orange-500' },
   { id: 'farmaceutico', label: 'Farmacéutico', icon: Pill, color: 'bg-red-600', barColor: 'bg-red-500' },
@@ -256,7 +256,7 @@ export default function ReportesEzPayPage() {
   const getTipoIcon = (tipo: string) => {
     switch (tipo) {
       case 'medico': return <Stethoscope className="h-4 w-4" />;
-      case 'clinica': return <Building2 className="h-4 w-4" />;
+      case 'clinica': return <Building className="h-4 w-4" />;
       case 'lab': return <FlaskConical className="h-4 w-4" />;
       case 'visitador': return <Truck className="h-4 w-4" />;
       case 'farmaceutico': return <Pill className="h-4 w-4" />;

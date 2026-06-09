@@ -10,7 +10,7 @@ import { usePlanes } from '@/hooks/usePlanes';
 import { useAuth } from '@/hooks/useAuth';
 import { usePaisFiltro } from '@/hooks/usePaisFiltro';
 import { getBanderaPais } from '@/lib/planes-utils';
-import { Building2, Shield, Globe, CheckCircle2 } from 'lucide-react';
+import { Building, Shield, Globe, CheckCircle2 } from 'lucide-react';
 
 export default function PlanesClinicaPage() {
   const navigate = useNavigate();
@@ -80,7 +80,7 @@ export default function PlanesClinicaPage() {
       <div className="bg-gradient-to-r from-blue-600 to-indigo-700 text-white py-16">
         <div className="container mx-auto px-4 text-center">
           <Badge className="mb-4 bg-white/20 text-white border-0">
-            <Building2 className="h-3 w-3 mr-1" />
+            <Building className="h-3 w-3 mr-1" />
             Planes diseñados para clínicas
           </Badge>
           <h1 className="text-4xl font-bold mb-4">Soluciones para tu clínica</h1>

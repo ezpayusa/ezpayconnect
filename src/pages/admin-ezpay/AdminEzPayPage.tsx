@@ -1,6 +1,6 @@
 import { 
   Users, 
-  Building2, 
+  Building, 
   DollarSign, 
   CreditCard, 
   TrendingUp, 
@@ -96,7 +96,7 @@ export default function AdminEzPayPage() {
     { 
       title: 'Clínicas Registradas', 
       value: stats.total_clinicas, 
-      icon: Building2, 
+      icon: Building, 
       trend: '+5%',
       trendUp: true,
       color: 'bg-emerald-50 text-emerald-600' 

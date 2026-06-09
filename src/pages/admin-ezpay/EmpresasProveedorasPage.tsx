@@ -17,7 +17,7 @@ import {
   ArrowLeft,
   Search,
   RefreshCw,
-  Building2,
+  Building,
   CheckCircle2,
   XCircle,
   AlertTriangle,
@@ -205,7 +205,7 @@ export default function EmpresasProveedorasPage() {
         <Card>
           <CardContent className="pt-4">
             <div className="flex items-center gap-2 mb-2">
-              <Building2 className="h-5 w-5 text-[#1E5C8E]" />
+              <Building className="h-5 w-5 text-[#1E5C8E]" />
               <p className="text-sm text-muted-foreground">Total Empresas</p>
             </div>
             <p className="text-2xl font-bold">{total}</p>
@@ -297,7 +297,7 @@ export default function EmpresasProveedorasPage() {
                             {empresa.logo_url ? (
                               <img src={empresa.logo_url} alt="" className="w-8 h-8 rounded object-cover" />
                             ) : (
-                              <Building2 className="h-4 w-4" />
+                              <Building className="h-4 w-4" />
                             )}
                           </div>
                           <div>
@@ -407,7 +407,7 @@ export default function EmpresasProveedorasPage() {
         <DialogContent className="max-w-lg">
           <DialogHeader>
             <DialogTitle className="flex items-center gap-2">
-              <Building2 className="h-5 w-5 text-[#1E5C8E]" />
+              <Building className="h-5 w-5 text-[#1E5C8E]" />
               Detalle de Empresa
             </DialogTitle>
           </DialogHeader>
@@ -418,7 +418,7 @@ export default function EmpresasProveedorasPage() {
                   {empresaDetalle.logo_url ? (
                     <img src={empresaDetalle.logo_url} alt="" className="w-14 h-14 rounded-lg object-cover" />
                   ) : (
-                    <Building2 className="h-7 w-7 text-[#1E5C8E]" />
+                    <Building className="h-7 w-7 text-[#1E5C8E]" />
                   )}
                 </div>
                 <div>

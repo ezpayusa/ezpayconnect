@@ -8,7 +8,7 @@ import { usePagosProveedor } from '@/proveedor/hooks/usePagosProveedor'
 import { useConfiguracionSistema } from '@/proveedor/hooks/useConfiguracionSistema'
 import { supabase } from '@/lib/supabase'
 import { toast } from 'sonner'
-import { ArrowLeft, Upload, CreditCard, Building2, User, Hash, Loader2, Mail } from 'lucide-react'
+import { ArrowLeft, Upload, CreditCard, Building, User, Hash, Loader2, Mail } from 'lucide-react'
 
 export default function PagoCheckoutPage() {
   const navigate = useNavigate()
@@ -118,7 +118,7 @@ export default function PagoCheckoutPage() {
       <Card>
         <CardHeader>
           <CardTitle className="text-lg flex items-center gap-2">
-            <Building2 className="h-5 w-5 text-[#1E5C8E]" />
+            <Building className="h-5 w-5 text-[#1E5C8E]" />
             Datos bancarios
           </CardTitle>
         </CardHeader>
@@ -133,7 +133,7 @@ export default function PagoCheckoutPage() {
             <>
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 text-sm">
                 <div className="flex items-start gap-2">
-                  <Building2 className="h-4 w-4 text-muted-foreground mt-0.5" />
+                  <Building className="h-4 w-4 text-muted-foreground mt-0.5" />
                   <div>
                     <p className="text-muted-foreground">Banco</p>
                     <p className="font-medium">{config?.banco || '-'}</p>

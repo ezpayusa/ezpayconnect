@@ -497,7 +497,7 @@ export default function AgendarCitaModal({ pacienteId, pacienteNombre, paisIdPro
               {/* Clínicas filtradas por médico */}
               <div className="space-y-3">
                 <div className="flex items-center gap-2">
-                  <Building2 className="h-4 w-4 text-sky-500" />
+                  <Building className="h-4 w-4 text-sky-500" />
                   <Label className="text-sm font-medium text-slate-700">
                     Clínica {medicoId && clinicasFiltradas.length > 0 ? `(${clinicasFiltradas.length} disponible${clinicasFiltradas.length !== 1 ? 's' : ''})` : '*'}
                   </Label>
