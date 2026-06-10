@@ -98,57 +98,46 @@ export function useWebAppNotificaciones(pacienteId: number | undefined) {
     fetchNotificaciones()
   }, [fetchNotificaciones])
 
-  // Suscripción en tiempo real
+  // Suscripción en tiempo real (patrón síncrono, igual que el chat).
+  // supabase-js ya autentica la conexión realtime con la sesión activa,
+  // así que el RLS de notificaciones_pacientes deja pasar los eventos.
   useEffect(() => {
     if (!pacienteId) return
 
-    let channel: ReturnType<typeof supabase.channel> | null = null
-
-    const setup = async () => {
-      // Autenticar la conexión realtime con el JWT del usuario para que el RLS
-      // de notificaciones_pacientes permita recibir los eventos del paciente.
-      const { data: { session } } = await supabase.auth.getSession()
-      if (session?.access_token) {
-        supabase.realtime.setAuth(session.access_token)
-      }
-
-      channel = supabase
-        .channel(`notif_paciente_${pacienteId}`)
-        .on(
-          'postgres_changes',
-          {
-            event: 'INSERT',
-            schema: 'public',
-            table: 'notificaciones_pacientes',
-            filter: `paciente_id=eq.${pacienteId}`,
-          },
-          (payload) => {
-            const nuevo = payload.new as any
-            setNotificaciones((prev) => {
-              if (prev.some((n) => n.id === nuevo.id)) return prev
-              const nuevaNotif: NotificacionPaciente = {
-                id: nuevo.id,
-                tipo: nuevo.tipo,
-                titulo: nuevo.titulo,
-                mensaje: nuevo.mensaje,
-                leida: nuevo.leida,
-                accion_url: nuevo.accion_url,
-                created_at: nuevo.created_at,
-              }
-              return [nuevaNotif, ...prev]
-            })
-            setNoLeidas((prev) => prev + 1)
-          }
-        )
-        .subscribe((status) => {
-          console.log('[Notif] Estado de suscripción realtime:', status)
-        })
-    }
-
-    setup()
+    const channel = supabase
+      .channel(`notif_paciente_${pacienteId}`)
+      .on(
+        'postgres_changes',
+        {
+          event: 'INSERT',
+          schema: 'public',
+          table: 'notificaciones_pacientes',
+          filter: `paciente_id=eq.${pacienteId}`,
+        },
+        (payload) => {
+          const nuevo = payload.new as any
+          setNotificaciones((prev) => {
+            if (prev.some((n) => n.id === nuevo.id)) return prev
+            const nuevaNotif: NotificacionPaciente = {
+              id: nuevo.id,
+              tipo: nuevo.tipo,
+              titulo: nuevo.titulo,
+              mensaje: nuevo.mensaje,
+              leida: nuevo.leida,
+              accion_url: nuevo.accion_url,
+              created_at: nuevo.created_at,
+            }
+            return [nuevaNotif, ...prev]
+          })
+          setNoLeidas((prev) => prev + 1)
+        }
+      )
+      .subscribe((status) => {
+        console.log('[Notif] Estado de suscripción realtime:', status)
+      })
 
     return () => {
-      if (channel) supabase.removeChannel(channel).catch(() => {})
+      supabase.removeChannel(channel).catch(() => {})
     }
   }, [pacienteId])
 
