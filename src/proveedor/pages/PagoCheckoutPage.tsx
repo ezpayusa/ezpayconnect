@@ -6,6 +6,7 @@ import { Skeleton } from '@/components/ui/skeleton'
 import { usePagosProveedor } from '@/proveedor/hooks/usePagosProveedor'
 import { useProveedorAuth } from '@/proveedor/hooks/useProveedorAuth'
 import { useCuentaBancariaCheckout } from '@/proveedor/hooks/useCuentaBancariaCheckout'
+import { crearNotificacionInApp } from '@/proveedor/lib/notificaciones'
 import { supabase } from '@/lib/supabase'
 import { toast } from 'sonner'
 import { ArrowLeft, Upload, CreditCard, MapPin, User, Hash, Loader2, Mail, FileText, AlertCircle } from 'lucide-react'
@@ -53,6 +54,19 @@ export default function PagoCheckoutPage() {
         if (updError) {
           toast.error('Error actualizando campaña')
           console.error(updError)
+        } else {
+          // Avisar a los admins de EzPay que hay una nueva solicitud por revisar
+          const { data: admins } = await supabase.rpc('obtener_admins_ezpay')
+          for (const a of (admins || []) as { user_id: string }[]) {
+            await crearNotificacionInApp({
+              usuario_id: a.user_id,
+              tipo: 'campana',
+              titulo: 'Nueva solicitud de publicidad',
+              mensaje: `Una empresa envió una campaña a revisión por ${formatMonto(monto)}.`,
+              accion_url: '/admin-ezpay/solicitudes-campana',
+              metadata: { solicitud_id: referenciaId },
+            })
+          }
         }
       }
 

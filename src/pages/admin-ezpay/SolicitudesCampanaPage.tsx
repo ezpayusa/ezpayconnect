@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react'
 import { supabase } from '@/lib/supabase'
 import { usePaisFiltro } from '@/hooks/usePaisFiltro'
+import { crearNotificacionInApp } from '@/proveedor/lib/notificaciones'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Card, CardContent } from '@/components/ui/card'
@@ -107,6 +108,28 @@ export default function SolicitudesCampanaPage() {
     fetchSolicitudes()
   }, [estadoFiltro])
 
+  // Avisar a los usuarios de la empresa proveedora (campanita del portal)
+  const notificarProveedor = async (solicitud: SolicitudConEmpresa, resultado: 'aprobada' | 'rechazada') => {
+    const empresaId = (solicitud as any).empresa_id
+    if (!empresaId) return
+    const { data: usuarios } = await supabase.rpc('obtener_usuarios_empresa', { p_empresa_id: empresaId })
+    const titulo = resultado === 'aprobada' ? 'Campaña aprobada' : 'Campaña rechazada'
+    const mensaje =
+      resultado === 'aprobada'
+        ? `Tu campaña "${solicitud.titulo}" fue aprobada y publicada.`
+        : `Tu campaña "${solicitud.titulo}" fue rechazada.${notasAdmin ? ' Motivo: ' + notasAdmin : ''}`
+    for (const u of (usuarios || []) as { user_id: string }[]) {
+      await crearNotificacionInApp({
+        usuario_id: u.user_id,
+        tipo: 'campana',
+        titulo,
+        mensaje,
+        accion_url: '/proveedor/publicidad/campanas',
+        metadata: { solicitud_id: solicitud.id },
+      })
+    }
+  }
+
   const aprobar = async (solicitud: SolicitudConEmpresa) => {
     const pago = pagosMap[solicitud.id]
     if (!pago || pago.estado !== 'verificado') {
@@ -150,6 +173,7 @@ export default function SolicitudesCampanaPage() {
       console.error(updateError)
     } else {
       toast.success('Campaña aprobada y publicada')
+      await notificarProveedor(solicitud, 'aprobada')
       setSolicitudActiva(null)
       setNotasAdmin('')
       fetchSolicitudes()
@@ -169,6 +193,7 @@ export default function SolicitudesCampanaPage() {
       console.error(error)
     } else {
       toast.success('Campaña rechazada')
+      await notificarProveedor(solicitud, 'rechazada')
       setSolicitudActiva(null)
       setNotasAdmin('')
       fetchSolicitudes()
