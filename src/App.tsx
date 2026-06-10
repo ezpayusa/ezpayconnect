@@ -119,6 +119,7 @@ const ClinicaPersonalPage = lazy(() => import('@/clinica/pages/ClinicaPersonalPa
 const ClinicaInvitarMedicoPage = lazy(() => import('@/clinica/pages/ClinicaInvitarMedicoPage'))
 const ClinicaInvitarStaffPage = lazy(() => import('@/clinica/pages/ClinicaInvitarStaffPage'))
 const ClinicaCitasPage = lazy(() => import('@/clinica/pages/ClinicaCitasPage'))
+const ClinicaConfiguracionPage = lazy(() => import('@/clinica/pages/ClinicaConfiguracionPage'))
 
 // === PORTAL MÉDICO ===
 const MedicoDashboardPage = lazy(() => import('@/medico/pages/MedicoDashboardPage'))
@@ -271,6 +272,7 @@ function App() {
           <Route path="personal" element={<ClinicaPersonalPage />} />
           <Route path="invitar-medico" element={<ClinicaInvitarMedicoPage />} />
           <Route path="invitar-staff" element={<ClinicaInvitarStaffPage />} />
+          <Route path="configuracion" element={<ClinicaConfiguracionPage />} />
         </Route>
 
         {/* === RUTAS PORTAL PROVEEDORES === */}
