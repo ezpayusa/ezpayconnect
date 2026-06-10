@@ -13,7 +13,7 @@ import {
   CalendarDays,
 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
-import NotificacionesBadge from '@/components/NotificacionesBadge'
+import ClinicaNotificacionesDropdown from '@/clinica/layout/ClinicaNotificacionesDropdown'
 
 export function ClinicaSidebar() {
   const navigate = useNavigate()
@@ -41,7 +41,7 @@ export function ClinicaSidebar() {
             <h1 className="text-lg font-bold tracking-wide truncate">{clinica?.nombre || 'Clínica'}</h1>
             <p className="text-xs text-[#8a9aaa]">Panel Administrativo</p>
           </div>
-          <NotificacionesBadge />
+          <ClinicaNotificacionesDropdown />
         </div>
       </div>
 
