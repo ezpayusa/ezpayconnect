@@ -2,6 +2,11 @@ import { useState, useEffect, useCallback } from 'react'
 import { supabase } from '@/lib/supabase'
 import type { NotificacionPaciente } from '@/webapp/types/webapp.types'
 
+// Contador global para topics únicos: el hook puede montarse en varios lugares
+// (campanita del header + sidebar) y dos canales con el mismo topic provocan
+// "cannot add postgres_changes callbacks after subscribe()".
+let channelSeq = 0
+
 export function useWebAppNotificaciones(pacienteId: number | undefined) {
   const [notificaciones, setNotificaciones] = useState<NotificacionPaciente[]>([])
   const [noLeidas, setNoLeidas] = useState(0)
@@ -104,40 +109,49 @@ export function useWebAppNotificaciones(pacienteId: number | undefined) {
   useEffect(() => {
     if (!pacienteId) return
 
-    const channel = supabase
-      .channel(`notif_paciente_${pacienteId}`)
-      .on(
-        'postgres_changes',
-        {
-          event: 'INSERT',
-          schema: 'public',
-          table: 'notificaciones_pacientes',
-          filter: `paciente_id=eq.${pacienteId}`,
-        },
-        (payload) => {
-          const nuevo = payload.new as any
-          setNotificaciones((prev) => {
-            if (prev.some((n) => n.id === nuevo.id)) return prev
-            const nuevaNotif: NotificacionPaciente = {
-              id: nuevo.id,
-              tipo: nuevo.tipo,
-              titulo: nuevo.titulo,
-              mensaje: nuevo.mensaje,
-              leida: nuevo.leida,
-              accion_url: nuevo.accion_url,
-              created_at: nuevo.created_at,
-            }
-            return [nuevaNotif, ...prev]
-          })
-          setNoLeidas((prev) => prev + 1)
-        }
-      )
-      .subscribe((status) => {
-        console.log('[Notif] Estado de suscripción realtime:', status)
-      })
+    // Topic único por instancia del hook -> nunca colisiona aunque se monte
+    // en varios componentes a la vez. Envuelto en try/catch para que un fallo
+    // de realtime jamás tumbe la página (el fetch inicial ya muestra los datos).
+    let channel: ReturnType<typeof supabase.channel> | null = null
+    try {
+      const topic = `notif_paciente_${pacienteId}_${++channelSeq}`
+      channel = supabase
+        .channel(topic)
+        .on(
+          'postgres_changes',
+          {
+            event: 'INSERT',
+            schema: 'public',
+            table: 'notificaciones_pacientes',
+            filter: `paciente_id=eq.${pacienteId}`,
+          },
+          (payload) => {
+            const nuevo = payload.new as any
+            setNotificaciones((prev) => {
+              if (prev.some((n) => n.id === nuevo.id)) return prev
+              const nuevaNotif: NotificacionPaciente = {
+                id: nuevo.id,
+                tipo: nuevo.tipo,
+                titulo: nuevo.titulo,
+                mensaje: nuevo.mensaje,
+                leida: nuevo.leida,
+                accion_url: nuevo.accion_url,
+                created_at: nuevo.created_at,
+              }
+              return [nuevaNotif, ...prev]
+            })
+            setNoLeidas((prev) => prev + 1)
+          }
+        )
+        .subscribe((status) => {
+          console.log('[Notif] Estado de suscripción realtime:', status)
+        })
+    } catch (e) {
+      console.error('[Notif] Error suscribiendo realtime:', e)
+    }
 
     return () => {
-      supabase.removeChannel(channel).catch(() => {})
+      if (channel) supabase.removeChannel(channel).catch(() => {})
     }
   }, [pacienteId])
 
