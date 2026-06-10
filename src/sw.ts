@@ -1,27 +1,62 @@
 /// <reference lib="WebWorker" />
 /// <reference types="vite-plugin-pwa/client" />
 
-import { precacheAndRoute, createHandlerBoundToURL } from 'workbox-precaching'
+import {
+  precacheAndRoute,
+  cleanupOutdatedCaches,
+  matchPrecache,
+} from 'workbox-precaching'
 import { registerRoute, NavigationRoute } from 'workbox-routing'
 import { NetworkFirst } from 'workbox-strategies'
 import { ExpirationPlugin } from 'workbox-expiration'
+import { clientsClaim } from 'workbox-core'
 
 declare const self: ServiceWorkerGlobalScope
 
 // Precachear todos los assets del build (inyectados por vite-plugin-pwa)
 precacheAndRoute(self.__WB_MANIFEST)
 
+// Limpiar SOLO los precaches obsoletos de versiones anteriores.
+// NUNCA borrar todos los caches a mano: eso destruye el precache recién creado.
+cleanupOutdatedCaches()
+
 // ============================================
-// Navigation fallback: para que la SPA funcione al recargar cualquier ruta
+// Navigation: NetworkFirst sobre el shell HTML
+// Online -> siempre el index.html del último deploy (apunta al JS más reciente).
+// Offline / red lenta -> cae al cache y, en última instancia, al precache.
 // ============================================
-const handler = createHandlerBoundToURL('/index.html')
-const navigationRoute = new NavigationRoute(handler, {
-  denylist: [
-    /^\/api\//,
-    /^\/.well-known/,
-    /^\/supabase\/functions/,
+const htmlStrategy = new NetworkFirst({
+  cacheName: 'html-shell',
+  networkTimeoutSeconds: 3,
+  plugins: [
+    new ExpirationPlugin({
+      maxEntries: 1,
+      maxAgeSeconds: 86400,
+    }),
   ],
 })
+
+const navigationRoute = new NavigationRoute(
+  async (options) => {
+    try {
+      const res = await htmlStrategy.handle({
+        ...options,
+        request: new Request('/index.html'),
+      })
+      if (res) return res
+    } catch {
+      // cae al fallback de precache abajo
+    }
+    return (await matchPrecache('/index.html')) || Response.error()
+  },
+  {
+    denylist: [
+      /^\/api\//,
+      /^\/.well-known/,
+      /^\/supabase\/functions/,
+    ],
+  }
+)
 registerRoute(navigationRoute)
 
 // Runtime caching para API de Supabase
@@ -99,34 +134,9 @@ self.addEventListener('notificationclick', (event) => {
 })
 
 // ============================================
-// Install / Activate
+// Ciclo de actualización: activar el SW nuevo de inmediato y tomar control.
+// El reload de la página lo dispara workbox-window (evento `controlling`)
+// gracias a registerType: "autoUpdate" en main.tsx.
 // ============================================
-self.addEventListener('install', () => {
-  console.log('[SW] EzPayConnect v3 installed - 2025-06-08')
-  self.skipWaiting()
-})
-
-self.addEventListener('activate', (event) => {
-  event.waitUntil(
-    Promise.all([
-      // Limpiar todos los caches viejos
-      caches.keys().then((cacheNames) => {
-        return Promise.all(
-          cacheNames.map((cacheName) => {
-            return caches.delete(cacheName)
-          })
-        )
-      }),
-      self.clients.claim(),
-    ]).then(() => {
-      // Notificar a todos los clients que hay nueva version y recargar
-      self.clients.matchAll({ type: 'window' }).then((clients) => {
-        clients.forEach((client) => {
-          if ('postMessage' in client) {
-            client.postMessage({ type: 'SW_UPDATED', version: '3.1' })
-          }
-        })
-      })
-    })
-  )
-})
+self.skipWaiting()
+clientsClaim()

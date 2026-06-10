@@ -5,17 +5,20 @@ import App from './App'
 
 console.log('[BUILD] EzPayConnect v3.1 - 2025-06-09')
 
-// Registro del Service Worker para PWA
+// Registro del Service Worker para PWA.
+// registerType: "autoUpdate" -> workbox-window aplica el SW nuevo y recarga
+// automáticamente la página (evento `controlling`). No usamos onNeedRefresh.
 import { registerSW } from 'virtual:pwa-register'
 
-const updateSW = registerSW({
+registerSW({
   immediate: true,
-  onNeedRefresh() {
-    // Auto-recarga tras 3s para evitar cache de versiones viejas
-    console.log('[PWA] Nueva versión detectada. Recargando...')
-    setTimeout(() => {
-      updateSW(true)
-    }, 3000)
+  onRegisteredSW(swUrl, registration) {
+    // Revisar si hay un deploy nuevo cada 60s, para pestañas abiertas mucho tiempo.
+    if (registration) {
+      setInterval(() => {
+        registration.update().catch(() => {})
+      }, 60_000)
+    }
   },
   onOfflineReady() {
     console.log('[PWA] App lista para uso offline')
