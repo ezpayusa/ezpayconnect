@@ -30,6 +30,7 @@ export interface CitaPaciente {
   medico_especialidad?: string
   clinica_nombre?: string
   notas?: string | null
+  motivo_cancelacion?: string | null
   created_at: string
 }
 

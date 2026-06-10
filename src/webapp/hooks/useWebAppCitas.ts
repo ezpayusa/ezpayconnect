@@ -21,7 +21,7 @@ export function useWebAppCitas(pacienteId: number | undefined) {
       // 1. Obtener citas del paciente (con clinica_id restaurado)
       const citasRes = await supabase
         .from('citas')
-        .select('id, fecha, hora_inicio, hora_fin, motivo, estado, notas, created_at, medico_id, clinica_id')
+        .select('id, fecha, hora_inicio, hora_fin, motivo, estado, notas, motivo_cancelacion, created_at, medico_id, clinica_id')
         .eq('paciente_id', pacienteId)
         .order('fecha', { ascending: true })
 
@@ -81,6 +81,7 @@ export function useWebAppCitas(pacienteId: number | undefined) {
         medico_especialidad: c.medico_id ? medicosMap[c.medico_id]?.especialidad : undefined,
         clinica_nombre: c.clinica_id ? clinicasMap[c.clinica_id] : undefined,
         notas: c.notas,
+        motivo_cancelacion: c.motivo_cancelacion,
         created_at: c.created_at,
       }))
 
@@ -97,6 +98,77 @@ export function useWebAppCitas(pacienteId: number | undefined) {
     fetchCitas()
   }, [fetchCitas])
 
+  // Cancelar una cita (con motivo) y avisar a la clínica + médico
+  const cancelarCita = useCallback(
+    async (citaId: number, motivo: string, pacienteNombre?: string) => {
+      // 1. Cancelar vía RPC seguro (solo cancela citas del propio paciente)
+      const { data, error: err } = await supabase.rpc('cancelar_cita_paciente', {
+        p_cita_id: citaId,
+        p_motivo: motivo,
+      })
+      if (err) {
+        console.error('Error cancelando cita:', err)
+        return { ok: false as const, error: err.message }
+      }
+
+      const row = (Array.isArray(data) ? data[0] : data) as
+        | { medico_id: string | null; clinica_id: string | null }
+        | undefined
+      const medicoId = row?.medico_id || undefined
+      const clinicaId = row?.clinica_id || undefined
+
+      // 2. Construir mensaje con el motivo
+      const cita = citas.find((c) => c.id === citaId)
+      const fechaStr = cita
+        ? new Date(cita.fecha).toLocaleDateString('es-GT', { weekday: 'long', month: 'long', day: 'numeric' })
+        : ''
+      const titulo = 'Cita cancelada por el paciente'
+      const mensaje = `${pacienteNombre || 'Un paciente'} canceló su cita${fechaStr ? ' del ' + fechaStr : ''}${
+        cita?.hora_inicio ? ' a las ' + cita.hora_inicio.slice(0, 5) : ''
+      }. Motivo: ${motivo}`
+
+      // 3. Destinatarios: médico asignado + admins de la clínica
+      const destinatarios: string[] = []
+      if (medicoId) destinatarios.push(medicoId)
+      if (clinicaId) {
+        const { data: admins } = await supabase.rpc('obtener_admins_clinica', { p_clinica_id: clinicaId })
+        for (const a of (admins || []) as { user_id: string }[]) destinatarios.push(a.user_id)
+      }
+      const unicos = [...new Set(destinatarios)]
+
+      // 4. Notificar (in-app + push). No fallar la cancelación si falla el aviso.
+      for (const uid of unicos) {
+        try {
+          await supabase.functions.invoke('enviar-notificacion', {
+            body: {
+              usuario_id: uid,
+              tipo: 'in-app',
+              titulo,
+              mensaje,
+              accion_url: '/clinica/citas',
+              metadata: { cita_id: citaId, motivo_cancelacion: motivo },
+            },
+          })
+        } catch (e) {
+          console.error('Error notificación in-app cancelación:', e)
+        }
+      }
+      if (unicos.length > 0) {
+        try {
+          await supabase.functions.invoke('enviar-push', {
+            body: { usuario_ids: unicos, titulo, mensaje, url: '/clinica/citas', tag: `cita-${citaId}` },
+          })
+        } catch (e) {
+          console.error('Error push cancelación:', e)
+        }
+      }
+
+      await fetchCitas()
+      return { ok: true as const }
+    },
+    [citas, fetchCitas]
+  )
+
   const proximas = citas.filter((c) =>
     ['solicitada', 'agendada', 'confirmada', 'en_curso'].includes(c.estado)
   )
@@ -107,5 +179,5 @@ export function useWebAppCitas(pacienteId: number | undefined) {
     ['cancelada', 'no_show'].includes(c.estado)
   )
 
-  return { citas, proximas, pasadas, canceladas, loading, error, refetch: fetchCitas }
+  return { citas, proximas, pasadas, canceladas, loading, error, refetch: fetchCitas, cancelarCita }
 }
