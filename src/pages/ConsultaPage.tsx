@@ -98,6 +98,32 @@ export default function ConsultaPage() {
   const [mostrarBiblioteca, setMostrarBiblioteca] = useState(false)
   const [mostrarAsistenteIA, setMostrarAsistenteIA] = useState(false)
   const [modalReceta, setModalReceta] = useState(false)
+  const [modalExamen, setModalExamen] = useState(false)
+  const [examenForm, setExamenForm] = useState({ tipo: '', descripcion: '' })
+  const [guardandoExamen, setGuardandoExamen] = useState(false)
+
+  const handleCrearExamen = async () => {
+    if (!paciente || !examenForm.tipo.trim()) {
+      toast.error('Indica el tipo de examen')
+      return
+    }
+    setGuardandoExamen(true)
+    const { error } = await supabase.from('examenes').insert({
+      paciente_id: paciente.id,
+      medico_id: perfil?.id,
+      tipo: examenForm.tipo.trim(),
+      descripcion: examenForm.descripcion.trim() || null,
+      estado: 'pendiente',
+    })
+    setGuardandoExamen(false)
+    if (error) {
+      toast.error('Error al crear la orden: ' + error.message)
+      return
+    }
+    toast.success('Orden de examen creada. El paciente la verá en su portal.')
+    setModalExamen(false)
+    setExamenForm({ tipo: '', descripcion: '' })
+  }
 
   const calcularIMC = useCallback(() => {
     const peso = parseFloat(sv.peso_kg)
@@ -548,7 +574,7 @@ export default function ConsultaPage() {
               <Button
                 variant="outline"
                 className="w-full justify-start"
-                onClick={() => toast.info('Órdenes de examen — próximamente')}
+                onClick={() => { setExamenForm({ tipo: '', descripcion: '' }); setModalExamen(true) }}
               >
                 <FlaskConical className="h-4 w-4 mr-2" /> Orden de Examen
               </Button>
@@ -625,6 +651,67 @@ export default function ConsultaPage() {
           toast.success('Receta creada desde la consulta')
         }}
       />
+
+      {/* Modal: nueva orden de examen */}
+      {modalExamen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
+          <div className="bg-white rounded-2xl shadow-xl w-full max-w-md overflow-hidden">
+            <div className="flex items-center justify-between p-4 border-b">
+              <h3 className="font-semibold flex items-center gap-2">
+                <FlaskConical className="h-5 w-5 text-[#1E5C8E]" /> Nueva orden de examen
+              </h3>
+              <button
+                onClick={() => { if (!guardandoExamen) setModalExamen(false) }}
+                className="text-slate-400 hover:text-slate-600 text-lg leading-none"
+              >
+                ✕
+              </button>
+            </div>
+            <div className="p-4 space-y-3">
+              <div>
+                <Label>Tipo de examen *</Label>
+                <Input
+                  value={examenForm.tipo}
+                  onChange={(e) => setExamenForm((p) => ({ ...p, tipo: e.target.value }))}
+                  placeholder="Ej: Hemograma, Glucosa, Radiografía de tórax"
+                  list="examenes-comunes"
+                  autoFocus
+                />
+                <datalist id="examenes-comunes">
+                  <option value="Hemograma completo" />
+                  <option value="Glucosa en ayunas" />
+                  <option value="Perfil lipídico" />
+                  <option value="Examen general de orina" />
+                  <option value="Radiografía de tórax" />
+                  <option value="Electrocardiograma" />
+                  <option value="Ultrasonido abdominal" />
+                </datalist>
+              </div>
+              <div>
+                <Label>Indicaciones / descripción</Label>
+                <Textarea
+                  value={examenForm.descripcion}
+                  onChange={(e) => setExamenForm((p) => ({ ...p, descripcion: e.target.value }))}
+                  rows={3}
+                  placeholder="Detalles o indicaciones para el laboratorio…"
+                />
+              </div>
+            </div>
+            <div className="flex items-center justify-end gap-2 p-4 border-t">
+              <Button variant="outline" onClick={() => setModalExamen(false)} disabled={guardandoExamen}>
+                Cancelar
+              </Button>
+              <Button
+                className="bg-[#1E5C8E] hover:bg-[#164a70]"
+                onClick={handleCrearExamen}
+                disabled={guardandoExamen || !examenForm.tipo.trim()}
+              >
+                {guardandoExamen ? 'Creando…' : 'Crear orden'}
+              </Button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   )
 }
