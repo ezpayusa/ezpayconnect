@@ -127,22 +127,26 @@ export function useWebAppCitas(pacienteId: number | undefined) {
         cita?.hora_inicio ? ' a las ' + cita.hora_inicio.slice(0, 5) : ''
       }. Motivo: ${motivo}`
 
-      // 3. Destinatarios: médico asignado + admins de la clínica
-      const destinatarios: string[] = []
-      if (medicoId) destinatarios.push(medicoId)
+      // 3. Destinatarios:
+      //    - in-app: SOLO admins de la clínica (vienen de perfiles -> son auth users).
+      //      El medico_id de la cita puede ser de la tabla 'medicos' y NO un auth user,
+      //      lo que rompe enviar-notificacion (FK a auth.users -> error 500).
+      //    - push: médico + admins (enviar-push degrada sin error si no hay suscripción).
+      const adminIds: string[] = []
       if (clinicaId) {
         const { data: admins } = await supabase.rpc('obtener_admins_clinica', { p_clinica_id: clinicaId })
-        for (const a of (admins || []) as { user_id: string }[]) destinatarios.push(a.user_id)
+        for (const a of (admins || []) as { user_id: string }[]) adminIds.push(a.user_id)
       }
-      const unicos = [...new Set(destinatarios)]
+      const inAppIds = [...new Set(adminIds)]
+      const pushIds = [...new Set([...(medicoId ? [medicoId] : []), ...adminIds])]
 
-      // 4. Notificar (in-app + push). No fallar la cancelación si falla el aviso.
-      for (const uid of unicos) {
+      // 4. Notificar (best-effort; no falla la cancelación)
+      for (const uid of inAppIds) {
         try {
           await supabase.functions.invoke('enviar-notificacion', {
             body: {
               usuario_id: uid,
-              tipo: 'in-app',
+              tipo: 'cita_cancelada',
               titulo,
               mensaje,
               accion_url: '/clinica/citas',
@@ -153,10 +157,10 @@ export function useWebAppCitas(pacienteId: number | undefined) {
           console.error('Error notificación in-app cancelación:', e)
         }
       }
-      if (unicos.length > 0) {
+      if (pushIds.length > 0) {
         try {
           await supabase.functions.invoke('enviar-push', {
-            body: { usuario_ids: unicos, titulo, mensaje, url: '/clinica/citas', tag: `cita-${citaId}` },
+            body: { usuario_ids: pushIds, titulo, mensaje, url: '/clinica/citas', tag: `cita-${citaId}` },
           })
         } catch (e) {
           console.error('Error push cancelación:', e)
