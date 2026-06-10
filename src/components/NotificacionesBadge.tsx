@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 import { useNotificaciones } from '@/hooks/useNotificaciones'
 import { Bell, Check, Mail, AlertCircle, X } from 'lucide-react'
 import { Button } from '@/components/ui/button'
@@ -21,8 +21,13 @@ const formatDistanceToNow = (date: Date): string => {
 }
 
 export default function NotificacionesBadge() {
-  const { notificaciones, noLeidas, marcarLeida, marcarTodasLeidas, loading } = useNotificaciones()
+  const { notificaciones, noLeidas, marcarLeida, marcarTodasLeidas, loading, listarNotificaciones } = useNotificaciones()
   const [abierto, setAbierto] = useState(false)
+
+  // El hook no auto-cargaba: por eso el badge salía siempre vacío en toda la app.
+  useEffect(() => {
+    listarNotificaciones()
+  }, [listarNotificaciones])
 
   return (
     <div className="relative">

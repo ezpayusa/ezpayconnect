@@ -338,6 +338,35 @@ export default function AgendarCitaModal({ pacienteId, pacienteNombre, paisIdPro
         }
       }
 
+      // Notificación in-app a los admins de la clínica (campanita del panel)
+      if (clinicaIdFinal && citaCreada?.id) {
+        try {
+          const nombrePaciente = pacienteNombre || 'Un paciente'
+          const fechaStr = new Date(form.fecha).toLocaleDateString('es-GT', {
+            weekday: 'long', month: 'long', day: 'numeric'
+          })
+
+          const { data: admins } = await supabase
+            .rpc('obtener_admins_clinica', { p_clinica_id: clinicaIdFinal })
+
+          for (const admin of (admins || []) as { user_id: string }[]) {
+            await supabase.functions.invoke('enviar-notificacion', {
+              body: {
+                usuario_id: admin.user_id,
+                tipo: 'in-app',
+                titulo: 'Nueva solicitud de cita',
+                mensaje: `${nombrePaciente} solicitó una cita para el ${fechaStr} a las ${form.hora_inicio.slice(0, 5)}. Pendiente de aprobación.`,
+                accion_url: '/clinica/citas',
+                metadata: { cita_id: citaCreada.id, paciente_id: pacienteId },
+              },
+            })
+          }
+        } catch (notifErr) {
+          console.error('Error notificando a la clínica:', notifErr)
+          // No fallar la cita si la notificación falla
+        }
+      }
+
       // Programar recordatorio automático 24h antes
       if (citaCreada?.id) {
         try {
