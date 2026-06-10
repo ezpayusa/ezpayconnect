@@ -118,6 +118,15 @@ self.addEventListener('activate', (event) => {
         )
       }),
       self.clients.claim(),
-    ])
+    ]).then(() => {
+      // Notificar a todos los clients que hay nueva version y recargar
+      self.clients.matchAll({ type: 'window' }).then((clients) => {
+        clients.forEach((client) => {
+          if ('postMessage' in client) {
+            client.postMessage({ type: 'SW_UPDATED', version: '3.1' })
+          }
+        })
+      })
+    })
   )
 })
