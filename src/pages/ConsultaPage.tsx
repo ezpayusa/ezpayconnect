@@ -120,6 +120,18 @@ export default function ConsultaPage() {
       toast.error('Error al crear la orden: ' + error.message)
       return
     }
+    // Notificar al paciente (campanita del webapp)
+    try {
+      await supabase.rpc('notificar_paciente', {
+        p_paciente_id: paciente.id,
+        p_tipo: 'examen',
+        p_titulo: 'Nueva orden de examen',
+        p_mensaje: `Tu médico te ordenó un examen: ${examenForm.tipo.trim()}.`,
+        p_accion_url: '/paciente/examenes',
+      })
+    } catch (e) {
+      console.error('Error notificando examen al paciente:', e)
+    }
     toast.success('Orden de examen creada. El paciente la verá en su portal.')
     setModalExamen(false)
     setExamenForm({ tipo: '', descripcion: '' })

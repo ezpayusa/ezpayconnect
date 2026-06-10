@@ -92,6 +92,19 @@ export function useRecetas() {
         return { data: null, error: `Error al guardar medicamentos: ${itemsError.message}` }
       }
     }
+    // Notificar al paciente (campanita del webapp)
+    try {
+      await supabase.rpc('notificar_paciente', {
+        p_paciente_id: receta.paciente_id,
+        p_tipo: 'receta',
+        p_titulo: 'Nueva receta',
+        p_mensaje: 'Tu médico te emitió una nueva receta. Revísala en la app.',
+        p_accion_url: '/paciente/recetas',
+      })
+    } catch (e) {
+      console.error('Error notificando receta al paciente:', e)
+    }
+
     const { data: pacienteData } = await supabase.from('pacientes').select('nombre, apellido').eq('id', receta.paciente_id).single()
     const recetaConNombre = {
       ...recetaData,

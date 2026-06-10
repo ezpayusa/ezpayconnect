@@ -12,6 +12,7 @@ import { useAdminAuth } from '@/hooks/admin/useAdminAuth';
 import { usePaisFiltro } from '@/hooks/usePaisFiltro';
 import { supabase } from '@/lib/supabase';
 import { toast } from 'sonner';
+import { crearNotificacionInApp } from '@/proveedor/lib/notificaciones';
 import type { EmpresaProveedora, EmpresaEstado } from '@/proveedor/types/proveedor.types';
 import { ArrowLeft, Search, RefreshCw, MapPin, CheckCircle2, XCircle, AlertTriangle, Clock, Eye, Mail, Phone, Store, FlaskConical, Pill, Handshake, Users, Package, Megaphone, DollarSign } from 'lucide-react';
 
@@ -116,6 +117,27 @@ export default function EmpresasProveedorasPage() {
       toast.error('Error al actualizar estado: ' + error.message);
     } else {
       toast.success(`Empresa ${nuevoEstado === 'activa' ? 'aprobada' : nuevoEstado === 'suspendida' ? 'suspendida' : 'actualizada'} correctamente`);
+
+      // Notificar a los usuarios de la empresa
+      try {
+        const { data: usuarios } = await supabase.rpc('obtener_usuarios_empresa', { p_empresa_id: empresaId });
+        const aprobada = nuevoEstado === 'activa';
+        for (const u of (usuarios || []) as { user_id: string }[]) {
+          await crearNotificacionInApp({
+            usuario_id: u.user_id,
+            tipo: 'empresa',
+            titulo: aprobada ? 'Empresa aprobada' : 'Estado de tu empresa actualizado',
+            mensaje: aprobada
+              ? 'Tu empresa fue aprobada. Ya puedes operar en EzPayConnect.'
+              : `El estado de tu empresa cambió a: ${nuevoEstado}.`,
+            accion_url: '/proveedor/dashboard',
+            metadata: { empresa_id: empresaId },
+          });
+        }
+      } catch (e) {
+        console.error('Error notificando a la empresa:', e);
+      }
+
       setDialogoAccion(null);
       setEmpresaDetalle((prev) => (prev ? { ...prev, estado: nuevoEstado } : null));
       cargarEmpresas();
