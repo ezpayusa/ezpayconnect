@@ -1,131 +1,143 @@
-import BuscarMedicamentosPage from '@/pages/BuscarMedicamentosPage'
-import VentasPage from '@/pages/admin-ezpay/VentasPage'
-import AsignacionRolesPage from '@/pages/admin-ezpay/AsignacionRolesPage'
-import PaisesPage from '@/pages/admin-ezpay/PaisesPage';
-import NotificacionesPage from '@/pages/NotificacionesPage'
-import NotificacionesAdminPage from '@/pages/admin-ezpay/NotificacionesPage'
+import { lazy, Suspense, useEffect } from 'react'
 import { BrowserRouter, Routes, Route, Navigate, useNavigate } from 'react-router-dom'
 import { useAuth } from '@/hooks/useAuth'
-import { Sidebar } from '@/components/layout/Sidebar'
-import LoginPage from '@/pages/LoginPage'
-import DashboardPage from '@/pages/DashboardPage'
-import PacientesPage from '@/pages/PacientesPage'
-import PacienteDetallePage from '@/pages/PacienteDetallePage'
-import CitasPage from '@/pages/CitasPage'
-import RecetasPage from '@/pages/RecetasPage'
-import RecetaDetallePage from '@/pages/RecetaDetallePage'
-import FarmaciasPage from '@/pages/FarmaciasPage'
-import DispensarRecetaPage from '@/pages/DispensarRecetaPage'
-import ConfiguracionPage from '@/pages/ConfiguracionPage'
-import FacturasPage from '@/pages/FacturasPage'
-import DisponibilidadVisitasPage from '@/pages/DisponibilidadVisitasPage'
-import ConsultaPage from '@/pages/ConsultaPage'
-
-// === IMPORTS PORTAL PACIENTE ===
-import WebAppLayout from '@/webapp/layout/WebAppLayout'
-import WebAppPrivateRoute from '@/webapp/layout/WebAppPrivateRoute'
-import WebAppLoginPage from '@/webapp/pages/WebAppLoginPage'
-import WebAppRegistroPage from '@/webapp/pages/WebAppRegistroPage'
-import WebAppDashboard from '@/webapp/pages/WebAppDashboard'
-import WebAppCitas from '@/webapp/pages/WebAppCitas'
-import WebAppRecetas from '@/webapp/pages/WebAppRecetas'
-import WebAppExamenes from '@/webapp/pages/WebAppExamenes'
-import WebAppHistorial from '@/webapp/pages/WebAppHistorial'
-import WebAppChat from '@/webapp/pages/WebAppChat'
-import WebAppPerfil from '@/webapp/pages/WebAppPerfil'
-
-// === IMPORTS ADMIN EZPAY ===
-import { useEffect } from 'react'
-import { AdminLayout } from '@/components/admin-ezpay/layout/AdminLayout'
-import AdminEzPayPage from '@/pages/admin-ezpay/AdminEzPayPage'
 import { useAdminAuth } from '@/hooks/admin/useAdminAuth'
 
-// === IMPORTS PORTAL PROVEEDORES ===
+// === LAYOUTS / GUARDS (eager: shells compartidos y lógica de routing) ===
+import { Sidebar } from '@/components/layout/Sidebar'
+import { AdminLayout } from '@/components/admin-ezpay/layout/AdminLayout'
+import WebAppLayout from '@/webapp/layout/WebAppLayout'
+import WebAppPrivateRoute from '@/webapp/layout/WebAppPrivateRoute'
 import ProveedorLayout from '@/proveedor/layout/ProveedorLayout'
 import ProveedorPrivateRoute from '@/proveedor/components/ProveedorPrivateRoute'
-import ProveedorLogin from '@/proveedor/pages/ProveedorLogin'
-import ProveedorRegistro from '@/proveedor/pages/ProveedorRegistro'
-import ProveedorRegistroVisitador from '@/proveedor/pages/visitador/ProveedorRegistroVisitador'
-import ProveedorDashboard from '@/proveedor/pages/ProveedorDashboard'
-import ProductosListPage from '@/proveedor/pages/productos/ProductosListPage'
-import ProductoFormPage from '@/proveedor/pages/productos/ProductoFormPage'
-import VisitadorPlanesPage from '@/proveedor/pages/visitador/VisitadorPlanesPage'
-import VisitadorAgendarPage from '@/proveedor/pages/visitador/VisitadorAgendarPage'
-import VisitadorMisVisitasPage from '@/proveedor/pages/visitador/VisitadorMisVisitasPage'
-import VisitadorRutaPage from '@/proveedor/pages/visitador/VisitadorRutaPage'
-import ProveedorReporteVisitasPage from '@/proveedor/pages/visitador/ProveedorReporteVisitasPage'
-import AdminAprobarVisitasPage from '@/proveedor/pages/visitador/AdminAprobarVisitasPage'
-import AdminVisitadoresPage from '@/proveedor/pages/visitador/AdminVisitadoresPage'
-import AdminUbicacionesMedicosPage from '@/proveedor/pages/visitador/AdminUbicacionesMedicosPage'
-import PublicidadPlanesPage from '@/proveedor/pages/publicidad/PublicidadPlanesPage'
-import PublicidadCampanasPage from '@/proveedor/pages/publicidad/PublicidadCampanasPage'
-import PublicidadCampanaFormPage from '@/proveedor/pages/publicidad/PublicidadCampanaFormPage'
-import PublicidadMetricasPage from '@/proveedor/pages/publicidad/PublicidadMetricasPage'
-import ProveedorPerfilPage from '@/proveedor/pages/cuenta/ProveedorPerfilPage'
-import ProveedorPagosPage from '@/proveedor/pages/cuenta/ProveedorPagosPage'
-import ProveedorNotificacionesPage from '@/proveedor/pages/ProveedorNotificacionesPage'
-import PagoCheckoutPage from '@/proveedor/pages/PagoCheckoutPage'
-
-// === IMPORTS PLANES ===
-import PlanesPage from '@/pages/planes/PlanesPage'
-import PlanesConfigPage from '@/pages/planes/PlanesConfigPage'
-import PlanesAsignacionesPage from '@/pages/planes/PlanesAsignacionesPage'
-import PlanesExcepcionesPage from '@/pages/planes/PlanesExcepcionesPage'
-import PlanesClinicaPage from '@/pages/planes/PlanesClinicaPage'
-import PlanesClinicaConfigPage from '@/pages/planes/PlanesClinicaConfigPage'
-import PlanesLabPage from '@/pages/planes/PlanesLabPage'
-import PlanesLabConfigPage from '@/pages/planes/PlanesLabConfigPage'
-import PlanesVisitadorPage from '@/pages/planes/PlanesVisitadorPage'
-import PlanesVisitadorConfigPage from '@/pages/planes/PlanesVisitadorConfigPage'
-import PlanesTodosPage from '@/pages/planes/PlanesTodosPage'
-import PlanesFarmaceuticoConfigPage from '@/pages/planes/PlanesFarmaceuticoConfigPage'
-import PlanesFarmaciaConfigPage from '@/pages/planes/PlanesFarmaciaConfigPage'
-import PlanesPublicidadConfigPage from '@/pages/planes/PlanesPublicidadConfigPage'
-import PlanesEmpresasAfinesConfigPage from '@/pages/planes/PlanesEmpresasAfinesConfigPage'
-
-// === IMPORTS ADMIN ===
-import FinanzasPage from '@/pages/admin-ezpay/FinanzasPage'
-import RolesPage from '@/pages/admin-ezpay/RolesPage'
-import UsuariosAdminPage from '@/pages/admin-ezpay/UsuariosAdminPage'
-import AuditoriaPage from '@/pages/admin-ezpay/AuditoriaPage'
-import CampanasPublicitariasPage from '@/pages/admin-ezpay/CampanasPublicitariasPage'
-import SolicitudesCampanaPage from '@/pages/admin-ezpay/SolicitudesCampanaPage'
-import PagosProveedoresPage from '@/pages/admin-ezpay/PagosProveedoresPage'
-import AdminVisitasProveedoresPage from '@/pages/admin-ezpay/AdminVisitasProveedoresPage'
-import EmpresasProveedorasPage from '@/pages/admin-ezpay/EmpresasProveedorasPage'
-
-// === IMPORTS REPORTES (NUEVOS) ===
-import ReportesPage from '@/pages/admin-ezpay/ReportesPage'
-import ReportesEzPayPage from '@/pages/admin-ezpay/ReportesEzPayPage'
-import ReportesEzPayPageV2 from '@/pages/admin-ezpay/ReportesEzPayPageV2'
-
-// === IMPORTS UI GLOBAL ===
-import { Toaster } from '@/components/ui/sonner'
-import { PaisProvider } from '@/contexts/PaisContext'
-import PaisDashboardPage from '@/pages/admin-ezpay/PaisDashboardPage'
-import InvitacionesMedicosPage from '@/pages/admin-ezpay/InvitacionesMedicosPage'
-import InvitacionesClinicasPage from '@/pages/admin-ezpay/InvitacionesClinicasPage'
-import RegistroMedicoPage from '@/pages/RegistroMedicoPage'
-import RegistroClinicaPage from '@/pages/RegistroClinicaPage'
-import { ClinicaLayout } from '@/clinica/layout/ClinicaLayout'
-import ClinicaDashboardPage from '@/clinica/pages/ClinicaDashboardPage'
-import ClinicaPersonalPage from '@/clinica/pages/ClinicaPersonalPage'
-import ClinicaInvitarMedicoPage from '@/clinica/pages/ClinicaInvitarMedicoPage'
-import ClinicaInvitarStaffPage from '@/clinica/pages/ClinicaInvitarStaffPage'
-import ClinicaCitasPage from '@/clinica/pages/ClinicaCitasPage'
-
-// === IMPORTS PORTAL MÉDICO ===
 import { MedicoLayout } from '@/medico/layout/MedicoLayout'
 import MedicoPrivateRoute from '@/medico/components/MedicoPrivateRoute'
-import MedicoDashboardPage from '@/medico/pages/MedicoDashboardPage'
-import MedicoCitasPage from '@/medico/pages/MedicoCitasPage'
-import MedicoPacientesPage from '@/medico/pages/MedicoPacientesPage'
-import MedicoRecetasPage from '@/medico/pages/MedicoRecetasPage'
-import MedicoDisponibilidadPage from '@/medico/pages/MedicoDisponibilidadPage'
+import { ClinicaLayout } from '@/clinica/layout/ClinicaLayout'
+
+// === UI GLOBAL (eager) ===
+import { Toaster } from '@/components/ui/sonner'
+import { PaisProvider } from '@/contexts/PaisContext'
+
+// ============================================================
+// PÁGINAS (lazy: cada ruta se descarga en su propio chunk)
+// ============================================================
+const BuscarMedicamentosPage = lazy(() => import('@/pages/BuscarMedicamentosPage'))
+const NotificacionesPage = lazy(() => import('@/pages/NotificacionesPage'))
+const LoginPage = lazy(() => import('@/pages/LoginPage'))
+const DashboardPage = lazy(() => import('@/pages/DashboardPage'))
+const PacientesPage = lazy(() => import('@/pages/PacientesPage'))
+const PacienteDetallePage = lazy(() => import('@/pages/PacienteDetallePage'))
+const CitasPage = lazy(() => import('@/pages/CitasPage'))
+const RecetasPage = lazy(() => import('@/pages/RecetasPage'))
+const RecetaDetallePage = lazy(() => import('@/pages/RecetaDetallePage'))
+const FarmaciasPage = lazy(() => import('@/pages/FarmaciasPage'))
+const DispensarRecetaPage = lazy(() => import('@/pages/DispensarRecetaPage'))
+const ConfiguracionPage = lazy(() => import('@/pages/ConfiguracionPage'))
+const FacturasPage = lazy(() => import('@/pages/FacturasPage'))
+const DisponibilidadVisitasPage = lazy(() => import('@/pages/DisponibilidadVisitasPage'))
+const ConsultaPage = lazy(() => import('@/pages/ConsultaPage'))
+const RegistroMedicoPage = lazy(() => import('@/pages/RegistroMedicoPage'))
+const RegistroClinicaPage = lazy(() => import('@/pages/RegistroClinicaPage'))
+
+// === PORTAL PACIENTE ===
+const WebAppLoginPage = lazy(() => import('@/webapp/pages/WebAppLoginPage'))
+const WebAppRegistroPage = lazy(() => import('@/webapp/pages/WebAppRegistroPage'))
+const WebAppDashboard = lazy(() => import('@/webapp/pages/WebAppDashboard'))
+const WebAppCitas = lazy(() => import('@/webapp/pages/WebAppCitas'))
+const WebAppRecetas = lazy(() => import('@/webapp/pages/WebAppRecetas'))
+const WebAppExamenes = lazy(() => import('@/webapp/pages/WebAppExamenes'))
+const WebAppHistorial = lazy(() => import('@/webapp/pages/WebAppHistorial'))
+const WebAppChat = lazy(() => import('@/webapp/pages/WebAppChat'))
+const WebAppPerfil = lazy(() => import('@/webapp/pages/WebAppPerfil'))
+
+// === ADMIN EZPAY ===
+const AdminEzPayPage = lazy(() => import('@/pages/admin-ezpay/AdminEzPayPage'))
+const VentasPage = lazy(() => import('@/pages/admin-ezpay/VentasPage'))
+const AsignacionRolesPage = lazy(() => import('@/pages/admin-ezpay/AsignacionRolesPage'))
+const PaisesPage = lazy(() => import('@/pages/admin-ezpay/PaisesPage'))
+const NotificacionesAdminPage = lazy(() => import('@/pages/admin-ezpay/NotificacionesPage'))
+const PaisDashboardPage = lazy(() => import('@/pages/admin-ezpay/PaisDashboardPage'))
+const InvitacionesMedicosPage = lazy(() => import('@/pages/admin-ezpay/InvitacionesMedicosPage'))
+const InvitacionesClinicasPage = lazy(() => import('@/pages/admin-ezpay/InvitacionesClinicasPage'))
+const FinanzasPage = lazy(() => import('@/pages/admin-ezpay/FinanzasPage'))
+const RolesPage = lazy(() => import('@/pages/admin-ezpay/RolesPage'))
+const UsuariosAdminPage = lazy(() => import('@/pages/admin-ezpay/UsuariosAdminPage'))
+const AuditoriaPage = lazy(() => import('@/pages/admin-ezpay/AuditoriaPage'))
+const CampanasPublicitariasPage = lazy(() => import('@/pages/admin-ezpay/CampanasPublicitariasPage'))
+const SolicitudesCampanaPage = lazy(() => import('@/pages/admin-ezpay/SolicitudesCampanaPage'))
+const PagosProveedoresPage = lazy(() => import('@/pages/admin-ezpay/PagosProveedoresPage'))
+const AdminVisitasProveedoresPage = lazy(() => import('@/pages/admin-ezpay/AdminVisitasProveedoresPage'))
+const EmpresasProveedorasPage = lazy(() => import('@/pages/admin-ezpay/EmpresasProveedorasPage'))
+const ReportesPage = lazy(() => import('@/pages/admin-ezpay/ReportesPage'))
+const ReportesEzPayPage = lazy(() => import('@/pages/admin-ezpay/ReportesEzPayPage'))
+const ReportesEzPayPageV2 = lazy(() => import('@/pages/admin-ezpay/ReportesEzPayPageV2'))
+
+// === PROVEEDORES ===
+const ProveedorLogin = lazy(() => import('@/proveedor/pages/ProveedorLogin'))
+const ProveedorRegistro = lazy(() => import('@/proveedor/pages/ProveedorRegistro'))
+const ProveedorRegistroVisitador = lazy(() => import('@/proveedor/pages/visitador/ProveedorRegistroVisitador'))
+const ProveedorDashboard = lazy(() => import('@/proveedor/pages/ProveedorDashboard'))
+const ProductosListPage = lazy(() => import('@/proveedor/pages/productos/ProductosListPage'))
+const ProductoFormPage = lazy(() => import('@/proveedor/pages/productos/ProductoFormPage'))
+const VisitadorPlanesPage = lazy(() => import('@/proveedor/pages/visitador/VisitadorPlanesPage'))
+const VisitadorAgendarPage = lazy(() => import('@/proveedor/pages/visitador/VisitadorAgendarPage'))
+const VisitadorMisVisitasPage = lazy(() => import('@/proveedor/pages/visitador/VisitadorMisVisitasPage'))
+const VisitadorRutaPage = lazy(() => import('@/proveedor/pages/visitador/VisitadorRutaPage'))
+const ProveedorReporteVisitasPage = lazy(() => import('@/proveedor/pages/visitador/ProveedorReporteVisitasPage'))
+const AdminAprobarVisitasPage = lazy(() => import('@/proveedor/pages/visitador/AdminAprobarVisitasPage'))
+const AdminVisitadoresPage = lazy(() => import('@/proveedor/pages/visitador/AdminVisitadoresPage'))
+const AdminUbicacionesMedicosPage = lazy(() => import('@/proveedor/pages/visitador/AdminUbicacionesMedicosPage'))
+const PublicidadPlanesPage = lazy(() => import('@/proveedor/pages/publicidad/PublicidadPlanesPage'))
+const PublicidadCampanasPage = lazy(() => import('@/proveedor/pages/publicidad/PublicidadCampanasPage'))
+const PublicidadCampanaFormPage = lazy(() => import('@/proveedor/pages/publicidad/PublicidadCampanaFormPage'))
+const PublicidadMetricasPage = lazy(() => import('@/proveedor/pages/publicidad/PublicidadMetricasPage'))
+const ProveedorPerfilPage = lazy(() => import('@/proveedor/pages/cuenta/ProveedorPerfilPage'))
+const ProveedorPagosPage = lazy(() => import('@/proveedor/pages/cuenta/ProveedorPagosPage'))
+const ProveedorNotificacionesPage = lazy(() => import('@/proveedor/pages/ProveedorNotificacionesPage'))
+const PagoCheckoutPage = lazy(() => import('@/proveedor/pages/PagoCheckoutPage'))
+
+// === PLANES ===
+const PlanesPage = lazy(() => import('@/pages/planes/PlanesPage'))
+const PlanesConfigPage = lazy(() => import('@/pages/planes/PlanesConfigPage'))
+const PlanesAsignacionesPage = lazy(() => import('@/pages/planes/PlanesAsignacionesPage'))
+const PlanesExcepcionesPage = lazy(() => import('@/pages/planes/PlanesExcepcionesPage'))
+const PlanesClinicaPage = lazy(() => import('@/pages/planes/PlanesClinicaPage'))
+const PlanesClinicaConfigPage = lazy(() => import('@/pages/planes/PlanesClinicaConfigPage'))
+const PlanesLabPage = lazy(() => import('@/pages/planes/PlanesLabPage'))
+const PlanesLabConfigPage = lazy(() => import('@/pages/planes/PlanesLabConfigPage'))
+const PlanesVisitadorPage = lazy(() => import('@/pages/planes/PlanesVisitadorPage'))
+const PlanesVisitadorConfigPage = lazy(() => import('@/pages/planes/PlanesVisitadorConfigPage'))
+const PlanesTodosPage = lazy(() => import('@/pages/planes/PlanesTodosPage'))
+const PlanesFarmaceuticoConfigPage = lazy(() => import('@/pages/planes/PlanesFarmaceuticoConfigPage'))
+const PlanesFarmaciaConfigPage = lazy(() => import('@/pages/planes/PlanesFarmaciaConfigPage'))
+const PlanesPublicidadConfigPage = lazy(() => import('@/pages/planes/PlanesPublicidadConfigPage'))
+const PlanesEmpresasAfinesConfigPage = lazy(() => import('@/pages/planes/PlanesEmpresasAfinesConfigPage'))
+
+// === CLÍNICA ===
+const ClinicaDashboardPage = lazy(() => import('@/clinica/pages/ClinicaDashboardPage'))
+const ClinicaPersonalPage = lazy(() => import('@/clinica/pages/ClinicaPersonalPage'))
+const ClinicaInvitarMedicoPage = lazy(() => import('@/clinica/pages/ClinicaInvitarMedicoPage'))
+const ClinicaInvitarStaffPage = lazy(() => import('@/clinica/pages/ClinicaInvitarStaffPage'))
+const ClinicaCitasPage = lazy(() => import('@/clinica/pages/ClinicaCitasPage'))
+
+// === PORTAL MÉDICO ===
+const MedicoDashboardPage = lazy(() => import('@/medico/pages/MedicoDashboardPage'))
+const MedicoCitasPage = lazy(() => import('@/medico/pages/MedicoCitasPage'))
+const MedicoPacientesPage = lazy(() => import('@/medico/pages/MedicoPacientesPage'))
+const MedicoRecetasPage = lazy(() => import('@/medico/pages/MedicoRecetasPage'))
+const MedicoDisponibilidadPage = lazy(() => import('@/medico/pages/MedicoDisponibilidadPage'))
+
+function Spinner() {
+  return (
+    <div className="min-h-screen flex items-center justify-center">
+      <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-[#1E5C8E]" />
+    </div>
+  )
+}
 
 function PrivateLayout({ children }: { children: React.ReactNode }) {
   const { user, loading } = useAuth()
-  if (loading) return <div className="min-h-screen flex items-center justify-center"><div className="animate-spin rounded-full h-12 w-12 border-b-2 border-[#1E5C8E]" /></div>
+  if (loading) return <Spinner />
   if (!user) return <Navigate to="/login" replace />
   return <div className="flex min-h-screen bg-gray-50"><Sidebar /><main className="flex-1 ml-0 overflow-auto">{children}</main></div>
 }
@@ -159,6 +171,7 @@ function App() {
   return (
     <PaisProvider>
     <BrowserRouter>
+      <Suspense fallback={<Spinner />}>
       <Routes>
         <Route path="/notificaciones" element={<PrivateLayout><NotificacionesPage /></PrivateLayout>} />
         <Route path="/registro-medico" element={<RegistroMedicoPage />} />
@@ -302,6 +315,7 @@ function App() {
           <Route path="empresas-afines" element={<PlanesEmpresasAfinesConfigPage />} />
         </Route>
       </Routes>
+      </Suspense>
       <Toaster richColors position="top-right" />
     </BrowserRouter>
     </PaisProvider>

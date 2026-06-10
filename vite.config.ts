@@ -58,4 +58,19 @@ export default defineConfig({
       "@": path.resolve(__dirname, "./src"),
     },
   },
+  build: {
+    rollupOptions: {
+      output: {
+        manualChunks: {
+          // Vendor base (siempre cargado)
+          "react-vendor": ["react", "react-dom", "react-router-dom"],
+          // Librerías pesadas usadas solo por algunas rutas -> chunks bajo demanda
+          charts: ["recharts"],
+          pdf: ["jspdf", "jspdf-autotable"],
+          maps: ["leaflet", "react-leaflet"],
+          qr: ["html5-qrcode", "qrcode.react"],
+        },
+      },
+    },
+  },
 })
