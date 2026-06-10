@@ -1,25 +1,27 @@
 import { useState } from 'react'
 import { useSearchParams, useNavigate } from 'react-router-dom'
 import { Button } from '@/components/ui/button'
-import { Input } from '@/components/ui/input'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Skeleton } from '@/components/ui/skeleton'
 import { usePagosProveedor } from '@/proveedor/hooks/usePagosProveedor'
-import { useConfiguracionSistema } from '@/proveedor/hooks/useConfiguracionSistema'
+import { useProveedorAuth } from '@/proveedor/hooks/useProveedorAuth'
+import { useCuentaBancariaCheckout } from '@/proveedor/hooks/useCuentaBancariaCheckout'
 import { supabase } from '@/lib/supabase'
 import { toast } from 'sonner'
-import { ArrowLeft, Upload, CreditCard, MapPin, User, Hash, Loader2, Mail } from 'lucide-react'
+import { ArrowLeft, Upload, CreditCard, MapPin, User, Hash, Loader2, Mail, FileText, AlertCircle } from 'lucide-react'
 
 export default function PagoCheckoutPage() {
   const navigate = useNavigate()
   const [searchParams] = useSearchParams()
   const { crearPago, saving } = usePagosProveedor()
-  const { config, loading: loadingConfig } = useConfiguracionSistema()
+  const { empresa } = useProveedorAuth()
+  const { cuenta, loading: loadingCuenta } = useCuentaBancariaCheckout(empresa?.pais_id)
 
   const tipo = searchParams.get('tipo') || ''
   const referenciaId = searchParams.get('referencia_id') || ''
   const monto = parseFloat(searchParams.get('monto') || '0')
   const descripcion = searchParams.get('descripcion') || ''
+  const moneda = cuenta?.moneda || 'GTQ'
 
   const [comprobanteFile, setComprobanteFile] = useState<File | null>(null)
   const [comprobantePreview, setComprobantePreview] = useState<string | null>(null)
@@ -41,18 +43,13 @@ export default function PagoCheckoutPage() {
       return
     }
 
-    const pagoId = await crearPago(tipo, monto, 'GTQ', referenciaId || null, comprobanteFile)
+    const pagoId = await crearPago(tipo, monto, moneda, referenciaId || null, comprobanteFile)
     if (pagoId) {
-      // Si es campaña, actualizar estado a 'enviada' y guardar monto pagado
       if (tipo === 'campana' && referenciaId) {
         const { error: updError } = await supabase
           .from('solicitudes_campana')
-          .update({
-            estado: 'enviada',
-            monto_pagado: monto,
-          })
+          .update({ estado: 'enviada', monto_pagado: monto })
           .eq('id', referenciaId)
-
         if (updError) {
           toast.error('Error actualizando campaña')
           console.error(updError)
@@ -75,8 +72,15 @@ export default function PagoCheckoutPage() {
     else navigate('/proveedor/dashboard')
   }
 
-  const formatMonto = (val: number) =>
-    new Intl.NumberFormat('es-GT', { style: 'currency', currency: 'GTQ' }).format(val)
+  const formatMonto = (val: number) => {
+    try {
+      return new Intl.NumberFormat('es-GT', { style: 'currency', currency: moneda }).format(val)
+    } catch {
+      return `${moneda} ${val.toLocaleString()}`
+    }
+  }
+
+  const sinCuenta = !loadingCuenta && !cuenta
 
   return (
     <div className="space-y-6 max-w-2xl mx-auto">
@@ -123,11 +127,19 @@ export default function PagoCheckoutPage() {
           </CardTitle>
         </CardHeader>
         <CardContent className="space-y-4">
-          {loadingConfig ? (
+          {loadingCuenta ? (
             <div className="space-y-3">
               <Skeleton className="h-4 w-3/4" />
               <Skeleton className="h-4 w-1/2" />
               <Skeleton className="h-4 w-2/3" />
+            </div>
+          ) : sinCuenta ? (
+            <div className="bg-amber-50 border border-amber-200 rounded-lg p-4 text-sm text-amber-800 flex items-start gap-2">
+              <AlertCircle className="h-5 w-5 shrink-0 mt-0.5" />
+              <div>
+                <p className="font-medium">Pago por transferencia no disponible aún en tu país.</p>
+                <p>Contacta al equipo de EzPayConnect para coordinar tu pago.</p>
+              </div>
             </div>
           ) : (
             <>
@@ -136,42 +148,62 @@ export default function PagoCheckoutPage() {
                   <MapPin className="h-4 w-4 text-muted-foreground mt-0.5" />
                   <div>
                     <p className="text-muted-foreground">Banco</p>
-                    <p className="font-medium">{config?.banco || '-'}</p>
+                    <p className="font-medium">{cuenta!.banco}</p>
                   </div>
                 </div>
                 <div className="flex items-start gap-2">
                   <Hash className="h-4 w-4 text-muted-foreground mt-0.5" />
                   <div>
                     <p className="text-muted-foreground">Número de cuenta</p>
-                    <p className="font-medium">{config?.cuenta_bancaria || '-'}</p>
+                    <p className="font-medium">{cuenta!.numero_cuenta}</p>
                   </div>
                 </div>
                 <div className="flex items-start gap-2">
                   <CreditCard className="h-4 w-4 text-muted-foreground mt-0.5" />
                   <div>
                     <p className="text-muted-foreground">Tipo de cuenta</p>
-                    <p className="font-medium">{config?.tipo_cuenta || '-'}</p>
+                    <p className="font-medium">{cuenta!.tipo_cuenta || '-'}</p>
                   </div>
                 </div>
                 <div className="flex items-start gap-2">
                   <User className="h-4 w-4 text-muted-foreground mt-0.5" />
                   <div>
                     <p className="text-muted-foreground">A nombre de</p>
-                    <p className="font-medium">{config?.titular_cuenta || '-'}</p>
+                    <p className="font-medium">{cuenta!.titular}</p>
                   </div>
                 </div>
+                {cuenta!.nit && (
+                  <div className="flex items-start gap-2">
+                    <FileText className="h-4 w-4 text-muted-foreground mt-0.5" />
+                    <div>
+                      <p className="text-muted-foreground">NIT</p>
+                      <p className="font-medium">{cuenta!.nit}</p>
+                    </div>
+                  </div>
+                )}
+                {cuenta!.moneda && (
+                  <div className="flex items-start gap-2">
+                    <CreditCard className="h-4 w-4 text-muted-foreground mt-0.5" />
+                    <div>
+                      <p className="text-muted-foreground">Moneda</p>
+                      <p className="font-medium">{cuenta!.moneda}</p>
+                    </div>
+                  </div>
+                )}
               </div>
-              {config?.email_pagos && (
+              {cuenta!.email_pagos && (
                 <div className="flex items-start gap-2 text-sm">
                   <Mail className="h-4 w-4 text-muted-foreground mt-0.5" />
                   <div>
                     <p className="text-muted-foreground">Email para comprobantes</p>
-                    <p className="font-medium">{config.email_pagos}</p>
+                    <p className="font-medium">{cuenta!.email_pagos}</p>
                   </div>
                 </div>
               )}
               <div className="bg-amber-50 border border-amber-200 rounded-lg p-3 text-sm text-amber-800">
-                Una vez realizada la transferencia, sube el comprobante abajo. El admin lo verificará en un plazo de 24-48 horas hábiles.
+                {cuenta!.instrucciones
+                  ? cuenta!.instrucciones
+                  : 'Una vez realizada la transferencia, sube el comprobante abajo. El admin lo verificará en un plazo de 24-48 horas hábiles.'}
               </div>
             </>
           )}
@@ -179,43 +211,45 @@ export default function PagoCheckoutPage() {
       </Card>
 
       {/* Subir comprobante */}
-      <Card>
-        <CardHeader>
-          <CardTitle className="text-lg flex items-center gap-2">
-            <Upload className="h-5 w-5 text-[#1E5C8E]" />
-            Subir comprobante
-          </CardTitle>
-        </CardHeader>
-        <CardContent className="space-y-4">
-          <div className="flex items-center gap-4">
-            <label className="flex items-center gap-2 px-4 py-2 border border-slate-200 rounded-lg cursor-pointer hover:bg-slate-50 transition-colors">
-              <Upload className="h-4 w-4 text-slate-500" />
-              <span className="text-sm text-slate-600">
-                {comprobanteFile ? comprobanteFile.name : 'Seleccionar archivo'}
-              </span>
-              <input type="file" accept="image/jpeg,image/png,image/webp,application/pdf" className="hidden" onChange={handleFileChange} />
-            </label>
-          </div>
-          {comprobantePreview && comprobanteFile?.type.startsWith('image/') && (
-            <img src={comprobantePreview} alt="Preview" className="h-32 object-contain rounded-lg border" />
-          )}
-          <p className="text-xs text-slate-400">Máx 5MB. Formatos: JPG, PNG, WebP, PDF</p>
+      {!sinCuenta && (
+        <Card>
+          <CardHeader>
+            <CardTitle className="text-lg flex items-center gap-2">
+              <Upload className="h-5 w-5 text-[#1E5C8E]" />
+              Subir comprobante
+            </CardTitle>
+          </CardHeader>
+          <CardContent className="space-y-4">
+            <div className="flex items-center gap-4">
+              <label className="flex items-center gap-2 px-4 py-2 border border-slate-200 rounded-lg cursor-pointer hover:bg-slate-50 transition-colors">
+                <Upload className="h-4 w-4 text-slate-500" />
+                <span className="text-sm text-slate-600">
+                  {comprobanteFile ? comprobanteFile.name : 'Seleccionar archivo'}
+                </span>
+                <input type="file" accept="image/jpeg,image/png,image/webp,application/pdf" className="hidden" onChange={handleFileChange} />
+              </label>
+            </div>
+            {comprobantePreview && comprobanteFile?.type.startsWith('image/') && (
+              <img src={comprobantePreview} alt="Preview" className="h-32 object-contain rounded-lg border" />
+            )}
+            <p className="text-xs text-slate-400">Máx 5MB. Formatos: JPG, PNG, WebP, PDF</p>
 
-          <div className="flex gap-3 pt-2">
-            <Button variant="outline" className="flex-1" onClick={volver}>
-              Cancelar
-            </Button>
-            <Button
-              className="flex-1 bg-[#1E5C8E] hover:bg-[#164a70]"
-              disabled={saving || !comprobanteFile || loadingConfig}
-              onClick={handleSubmit}
-            >
-              {saving ? <Loader2 className="h-4 w-4 animate-spin mr-2" /> : <Upload className="h-4 w-4 mr-2" />}
-              Enviar comprobante
-            </Button>
-          </div>
-        </CardContent>
-      </Card>
+            <div className="flex gap-3 pt-2">
+              <Button variant="outline" className="flex-1" onClick={volver}>
+                Cancelar
+              </Button>
+              <Button
+                className="flex-1 bg-[#1E5C8E] hover:bg-[#164a70]"
+                disabled={saving || !comprobanteFile || loadingCuenta}
+                onClick={handleSubmit}
+              >
+                {saving ? <Loader2 className="h-4 w-4 animate-spin mr-2" /> : <Upload className="h-4 w-4 mr-2" />}
+                Enviar comprobante
+              </Button>
+            </div>
+          </CardContent>
+        </Card>
+      )}
     </div>
   )
 }
