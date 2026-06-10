@@ -65,10 +65,16 @@ export default function ClinicaDashboardPage() {
           .select('*', { count: 'exact', head: true })
           .in('medico_id', medicoIds.length > 0 ? medicoIds : ['no-existe'])
 
+        // Pacientes atendidos por los médicos de la clínica
+        const { count: pacientesCount } = await supabase
+          .from('pacientes')
+          .select('*', { count: 'exact', head: true })
+          .in('medico_id', medicoIds.length > 0 ? medicoIds : ['no-existe'])
+
         setStats({
           total_medicos: medicosCount || 0,
           total_staff: medicoIds.length,
-          total_pacientes: 0, // Se calcularía de pacientes asociados a médicos de la clínica
+          total_pacientes: pacientesCount || 0,
           total_citas: citasCount || 0,
           total_recetas: recetasCount || 0,
         })
@@ -105,7 +111,7 @@ export default function ClinicaDashboardPage() {
 
   const statCards = [
     { title: 'Médicos', value: stats.total_medicos, icon: Stethoscope, color: 'bg-[#87CEEB]/10 text-[#1E5C8E]' },
-    { title: 'Personal Total', value: stats.total_staff, icon: Users, color: 'bg-blue-50 text-blue-600' },
+    { title: 'Pacientes', value: stats.total_pacientes, icon: Users, color: 'bg-violet-50 text-violet-600' },
     { title: 'Citas', value: stats.total_citas, icon: CalendarDays, color: 'bg-amber-50 text-amber-600' },
     { title: 'Recetas', value: stats.total_recetas, icon: FileText, color: 'bg-cyan-50 text-cyan-600' },
   ]
