@@ -3,7 +3,7 @@ import { createRoot } from 'react-dom/client'
 import './index.css'
 import App from './App'
 
-console.log('[BUILD] EzPayConnect v3.1 - 2025-06-09')
+console.log('[BUILD] EzPayConnect v3.2 - 2026-06-10 (pwa networkfirst)')
 
 // Registro del Service Worker para PWA.
 // registerType: "autoUpdate" -> workbox-window aplica el SW nuevo y recarga
