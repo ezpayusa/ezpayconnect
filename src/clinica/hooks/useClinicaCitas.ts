@@ -267,6 +267,8 @@ export function useClinicaCitas() {
         } catch (err) {
           console.error('[useClinicaCitas] Error notificando paciente:', err)
         }
+      } else {
+        console.warn('[useClinicaCitas] Paciente sin auth_user_id, no se puede notificar confirmación. paciente_id:', cita.paciente_id)
       }
     }
     return result

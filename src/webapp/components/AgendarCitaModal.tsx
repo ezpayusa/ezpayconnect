@@ -256,7 +256,19 @@ export default function AgendarCitaModal({ pacienteId, pacienteNombre, paisIdPro
       finDate.setHours(h, m + 30)
       const hora_fin = `${String(finDate.getHours()).padStart(2, '0')}:${String(finDate.getMinutes()).padStart(2, '0')}:00`
 
-      const estado = medicoId ? 'agendada' : 'solicitada'
+      // Toda cita creada desde el portal del paciente nace 'solicitada'
+      // (pendiente de aprobación por la clínica), tenga médico o no.
+      const estado = 'solicitada'
+
+      // Garantizar clinica_id: si eligió médico pero no hay clínica resuelta,
+      // derivar la clínica del médico para que la cita sea visible en el panel
+      // de la clínica (el RPC obtener_citas_clinica filtra por clinica_id).
+      let clinicaIdFinal = clinicaId
+      if (!clinicaIdFinal && medicoId) {
+        const { data: relsClinica } = await supabase
+          .rpc('obtener_clinicas_medico', { p_medico_id: medicoId })
+        clinicaIdFinal = relsClinica?.[0]?.clinica_id || null
+      }
 
       // Asegurar que paisId sea null si está vacío
       const paisIdUuid = paisId || null
@@ -265,7 +277,7 @@ export default function AgendarCitaModal({ pacienteId, pacienteNombre, paisIdPro
       const { data: citaIdCreada, error } = await supabase.rpc('crear_cita', {
         p_paciente_id: pacienteId,
         p_medico_id: medicoId,
-        p_clinica_id: clinicaId || null,
+        p_clinica_id: clinicaIdFinal,
         p_fecha: form.fecha,
         p_hora_inicio: form.hora_inicio,
         p_hora_fin: hora_fin,
@@ -341,7 +353,7 @@ export default function AgendarCitaModal({ pacienteId, pacienteNombre, paisIdPro
         }
       }
 
-      toast.success(medicoId ? 'Cita agendada correctamente' : 'Cita solicitada correctamente')
+      toast.success('Cita solicitada. La clínica la revisará y confirmará.')
       onClose()
       onSuccess?.()
     } catch (err: any) {
