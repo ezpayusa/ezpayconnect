@@ -1,10 +1,11 @@
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { useProveedorAuth } from '@/proveedor/hooks/useProveedorAuth'
+import { supabase } from '@/lib/supabase'
 import { MapPin, Loader2 } from 'lucide-react'
 import { toast } from 'sonner'
 
@@ -36,14 +37,25 @@ export default function ProveedorRegistro() {
     confirmPassword: '',
   })
 
+  const [paises, setPaises] = useState<{ id: string; nombre: string }[]>([])
+
+  useEffect(() => {
+    supabase
+      .from('configuracion_pais')
+      .select('id, nombre')
+      .eq('activo', true)
+      .order('nombre')
+      .then(({ data }) => setPaises((data || []) as { id: string; nombre: string }[]))
+  }, [])
+
   const update = (field: string, value: string) => setForm((prev) => ({ ...prev, [field]: value }))
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
 
     if (step === 1) {
-      if (!form.nombre_empresa || !form.email_contacto) {
-        toast.error('Completa los campos obligatorios')
+      if (!form.nombre_empresa || !form.email_contacto || !form.pais_id) {
+        toast.error('Completa los campos obligatorios (incluido el país)')
         return
       }
       setStep(2)
@@ -64,7 +76,7 @@ export default function ProveedorRegistro() {
       nombre_empresa: form.nombre_empresa,
       tipo: form.tipo,
       ruc_nit: form.ruc_nit || null,
-      pais_id: form.pais_id ? parseInt(form.pais_id) : null,
+      pais_id: form.pais_id || null,
       ciudad: form.ciudad || null,
       direccion: form.direccion || null,
       email_contacto: form.email_contacto,
@@ -118,6 +130,21 @@ export default function ProveedorRegistro() {
                     >
                       {tiposEmpresa.map((t) => (
                         <option key={t.value} value={t.value}>{t.label}</option>
+                      ))}
+                    </select>
+                  </div>
+                  <div className="space-y-2">
+                    <Label htmlFor="pais">País *</Label>
+                    <select
+                      id="pais"
+                      value={form.pais_id}
+                      onChange={(e) => update('pais_id', e.target.value)}
+                      className="w-full h-10 rounded-md border border-input bg-background px-3 py-2 text-sm"
+                      required
+                    >
+                      <option value="">Selecciona tu país</option>
+                      {paises.map((p) => (
+                        <option key={p.id} value={p.id}>{p.nombre}</option>
                       ))}
                     </select>
                   </div>
