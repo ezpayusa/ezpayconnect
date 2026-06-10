@@ -1,23 +1,29 @@
 import { Navigate, Outlet } from 'react-router-dom'
-import { useClinicaAuth } from '@/clinica/hooks/useClinicaAuth'
+import { useAuth } from '@/hooks/useAuth'
 import { ClinicaSidebar } from './ClinicaSidebar'
+import { Loader2 } from 'lucide-react'
 
-export function ClinicaLayout({ children }: { children: React.ReactNode }) {
-  const { isAdminClinica, loading } = useClinicaAuth()
+// Roles autorizados a entrar al panel de clínica.
+const ROLES_PERMITIDOS = ['admin_clinica', 'admin', 'super_admin']
+
+export function ClinicaLayout() {
+  const { user, perfil, loading } = useAuth()
 
   if (loading) {
     return (
       <div className="min-h-screen flex items-center justify-center bg-gray-50">
-        <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-[#1E5C8E]" />
+        <Loader2 className="h-10 w-10 animate-spin text-[#1E5C8E]" />
       </div>
     )
   }
 
-  // Permitir cualquier usuario logueado para testing
-  // TODO: Restaurar guard cuando se terminen las pruebas
-  // if (!isAdminClinica) {
-  //   return <Navigate to="/dashboard" replace />
-  // }
+  if (!user) {
+    return <Navigate to="/login" replace />
+  }
+
+  if (!ROLES_PERMITIDOS.includes(perfil?.rol || '')) {
+    return <Navigate to="/dashboard" replace />
+  }
 
   return (
     <div className="flex min-h-screen bg-gray-50">

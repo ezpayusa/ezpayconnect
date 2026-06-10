@@ -2,6 +2,9 @@ import { useState, useEffect, useCallback } from 'react'
 import { supabase } from '@/lib/supabase'
 import type { PacientePerfil } from '@/webapp/types/webapp.types'
 
+// País por defecto (Guatemala) — mismo valor que src/hooks/useAuth.ts
+const PAIS_DEFAULT = 'cbbbbe6d-59fe-4cf2-91ee-3e31ba1d5909'
+
 export function useWebAppAuth() {
   const [user, setUser] = useState<any>(null)
   const [perfil, setPerfil] = useState<PacientePerfil | null>(null)

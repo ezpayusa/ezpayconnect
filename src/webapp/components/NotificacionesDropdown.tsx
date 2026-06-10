@@ -1,7 +1,7 @@
 import { useState, useRef, useEffect } from 'react'
 import { useWebAppAuth } from '@/webapp/hooks/useWebAppAuth'
 import { useWebAppNotificaciones } from '@/webapp/hooks/useWebAppNotificaciones'
-import { Bell, Check, Calendar, FileText, FlaskConical, MessageCircle, Info, Loader2 } from 'lucide-react'
+import { Bell, Check, Calendar, FileText, FlaskConical, MessageCircle, Info, Loader2, Megaphone } from 'lucide-react'
 import { useNavigate } from 'react-router-dom'
 
 export default function NotificacionesDropdown() {

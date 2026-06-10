@@ -3,7 +3,7 @@ import { createRoot } from 'react-dom/client'
 import './index.css'
 import App from './App'
 
-console.log('[BUILD] EzPayConnect v3.4 - 2026-06-10 (cancelar cita paciente)')
+console.log('[BUILD] EzPayConnect v3.5 - 2026-06-10 (seguridad: guards + staff)')
 
 // Registro del Service Worker para PWA.
 // registerType: "autoUpdate" -> workbox-window aplica el SW nuevo y recarga
