@@ -45,7 +45,8 @@ export default function AdminEzPayPage() {
 
   useEffect(() => {
     fetchDashboardData();
-  }, []);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [paisId]);
 
   const fetchDashboardData = async () => {
     try {
@@ -68,12 +69,52 @@ export default function AdminEzPayPage() {
         .select('*')
         .eq('activo', true);
 
+      // Inicio del mes actual
+      const inicioMes = new Date()
+      inicioMes.setDate(1)
+      inicioMes.setHours(0, 0, 0, 0)
+      const inicioMesISO = inicioMes.toISOString()
+
+      // Transacciones e ingresos del mes (resiliente: no rompe el resto si falla)
+      let ingresosMes = 0
+      let totalTx = 0
+      try {
+        let txQuery = supabase
+          .from('transacciones')
+          .select('monto, estado')
+          .gte('created_at', inicioMesISO)
+        if (paisId) txQuery = txQuery.eq('pais_id', paisId)
+        const { data: txData } = await txQuery
+        const txList = (txData || []) as { monto: number | null; estado: string | null }[]
+        totalTx = txList.length
+        ingresosMes = txList
+          .filter((t) => ['completado', 'pagado', 'verificado'].includes((t.estado || '').toLowerCase()))
+          .reduce((s, t) => s + (Number(t.monto) || 0), 0)
+      } catch (e) {
+        console.error('Error cargando transacciones:', e)
+      }
+
+      // Médicos nuevos del mes
+      let medicosNuevos = 0
+      try {
+        let nuevosQuery = supabase
+          .from('perfiles')
+          .select('*', { count: 'exact', head: true })
+          .eq('rol', 'medico')
+          .gte('created_at', inicioMesISO)
+        if (paisId) nuevosQuery = nuevosQuery.eq('pais_id', paisId)
+        const { count } = await nuevosQuery
+        medicosNuevos = count || 0
+      } catch (e) {
+        console.error('Error cargando médicos nuevos:', e)
+      }
+
       setStats({
         total_medicos: medicosCount || 0,
         total_clinicas: clinicasCount || 0,
-        total_ingresos_mes: 0,
-        total_transacciones: 0,
-        medicos_nuevos_mes: 0,
+        total_ingresos_mes: ingresosMes,
+        total_transacciones: totalTx,
+        medicos_nuevos_mes: medicosNuevos,
       });
 
       setPaises(paisesData || []);
