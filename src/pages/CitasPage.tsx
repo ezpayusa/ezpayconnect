@@ -138,7 +138,7 @@ export default function CitasPage() {
       // Intentar tabla perfiles como fallback
       const { data: medsViejos } = await supabase
         .from('perfiles')
-        .select('id, nombre_completo, especialidad')
+        .select('id, nombre_completo')
         .in('id', medicoIds)
         .eq('rol', 'medico')
 
