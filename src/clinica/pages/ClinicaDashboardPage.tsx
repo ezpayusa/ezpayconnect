@@ -20,7 +20,7 @@ interface ClinicaStats {
 }
 
 export default function ClinicaDashboardPage() {
-  const { clinica } = useClinicaAuth()
+  const { clinica, loading: clinicaLoading, error: clinicaError } = useClinicaAuth()
   const [stats, setStats] = useState<ClinicaStats>({
     total_medicos: 0,
     total_staff: 0,
@@ -31,7 +31,13 @@ export default function ClinicaDashboardPage() {
   const [loading, setLoading] = useState(true)
 
   useEffect(() => {
-    if (!clinica) return
+    // Esperar a que useClinicaAuth resuelva
+    if (clinicaLoading) return
+    // Resuelto pero sin clínica: detener el spinner y mostrar mensaje
+    if (!clinica) {
+      setLoading(false)
+      return
+    }
 
     const cargarStats = async () => {
       setLoading(true)
@@ -74,12 +80,25 @@ export default function ClinicaDashboardPage() {
     }
 
     cargarStats()
-  }, [clinica])
+  }, [clinica, clinicaLoading])
 
-  if (loading) {
+  if (clinicaLoading || loading) {
     return (
       <div className="flex items-center justify-center h-64">
         <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-[#1E5C8E]" />
+      </div>
+    )
+  }
+
+  if (!clinica) {
+    return (
+      <div className="max-w-5xl mx-auto p-6">
+        <Card>
+          <CardContent className="p-8 text-center text-gray-600">
+            <MapPin className="h-10 w-10 mx-auto mb-3 text-gray-300" />
+            <p className="font-medium">{clinicaError || 'No se encontró una clínica asociada a este usuario.'}</p>
+          </CardContent>
+        </Card>
       </div>
     )
   }

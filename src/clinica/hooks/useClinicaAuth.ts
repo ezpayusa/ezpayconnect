@@ -36,27 +36,25 @@ export function useClinicaAuth() {
         return
       }
 
-      // 1. Obtener perfil
+      // 1. Obtener perfil (informativo: marca si es admin de clínica)
       const { data: perfil } = await supabase
         .from('perfiles')
         .select('*')
         .eq('id', user.id)
         .single()
 
-      if (!perfil || perfil.rol !== 'admin_clinica') {
-        setIsAdminClinica(false)
-        setLoading(false)
-        return
-      }
+      setIsAdminClinica(perfil?.rol === 'admin_clinica')
 
-      setIsAdminClinica(true)
-
-      // 2. Buscar clínica asociada al usuario via RPC
-      const { data: rel } = await supabase
+      // 2. Buscar clínica asociada al usuario via RPC.
+      //    Puede devolver varias filas; tomar la primera. No usar .maybeSingle()
+      //    porque lanza error si el usuario tiene más de una clínica asociada.
+      //    No bloqueamos por rol: la autorización la da el propio RPC
+      //    (SECURITY DEFINER, acotado al usuario), igual que en el panel de Citas.
+      const { data: rels } = await supabase
         .rpc('obtener_clinica_usuario', { p_user_id: user.id })
-        .maybeSingle()
+      const rel = Array.isArray(rels) ? rels[0] : rels
 
-      if (!rel) {
+      if (!rel?.clinica_id) {
         setError('No se encontró clínica asociada a este usuario')
         setLoading(false)
         return
