@@ -9,28 +9,21 @@
 -- medico_clinicas/perfiles de otros por RLS).
 -- ============================================================
 
+-- Devuelve los miembros de la clínica que pueden gestionar/aprobar citas:
+-- admin_clinica o super_admin (los médicos normales NO se incluyen aquí; ellos
+-- ya reciben su propio aviso "Nueva cita solicitada" cuando son el médico
+-- elegido). Así un super_admin que administra la clínica también recibe el aviso.
 CREATE OR REPLACE FUNCTION obtener_admins_clinica(p_clinica_id UUID)
 RETURNS TABLE (user_id UUID)
-LANGUAGE plpgsql
+LANGUAGE sql
 SECURITY DEFINER
 SET search_path = public
 AS $$
-BEGIN
-  RETURN QUERY
   SELECT DISTINCT mc.medico_id
   FROM medico_clinicas mc
   JOIN perfiles p ON p.id = mc.medico_id
   WHERE mc.clinica_id = p_clinica_id
-    AND p.rol = 'admin_clinica';
-
-  IF NOT FOUND THEN
-    RETURN QUERY
-    SELECT DISTINCT mc.medico_id
-    FROM medico_clinicas mc
-    WHERE mc.clinica_id = p_clinica_id
-      AND mc.es_principal = true;
-  END IF;
-END;
+    AND p.rol IN ('admin_clinica', 'super_admin');
 $$;
 
 GRANT EXECUTE ON FUNCTION obtener_admins_clinica(UUID) TO authenticated;
