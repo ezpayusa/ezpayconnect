@@ -4,7 +4,7 @@ import { ClipboardCheck } from 'lucide-react';
 import { useNavigate, useLocation } from 'react-router-dom';
 import { useAdminAuth } from '@/hooks/admin/useAdminAuth';
 import { usePaisActivo } from '@/hooks/usePaisActivo';
-import { LayoutDashboard, Globe, Layers, Stethoscope, MapPin, FlaskConical, Car, Pill, Store, Megaphone, Handshake, AlertCircle, DollarSign, BarChart3, Shield, ChevronLeft, LogOut, Activity, BarChart4, ArrowLeftRight } from 'lucide-react';
+import { LayoutDashboard, Globe, Layers, Stethoscope, MapPin, FlaskConical, Car, Pill, Store, Megaphone, Handshake, AlertCircle, DollarSign, BarChart3, Shield, ChevronLeft, LogOut, Activity, BarChart4, ArrowLeftRight, Landmark } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { supabase } from '@/lib/supabase';
 
@@ -39,6 +39,7 @@ export function SidebarAdmin() {
     { path: '/admin-ezpay/planes-empresas-afines', icon: Handshake, label: 'Empresas Afines' },
     { path: '/admin-ezpay/excepciones', icon: AlertCircle, label: 'Excepciones' },
     { path: '/admin-ezpay/finanzas', icon: DollarSign, label: 'Finanzas' },
+    { path: '/admin-ezpay/cuentas-bancarias', icon: Landmark, label: 'Cuentas Bancarias' },
     { path: '/admin-ezpay/reportes', icon: BarChart3, label: 'Reportes EZPay' },
     { path: '/admin-ezpay/reportes-ezpay-v2', icon: BarChart4, label: 'Reportes EZPay V2' },
     { path: '/admin-ezpay/roles', icon: Shield, label: 'Roles' },

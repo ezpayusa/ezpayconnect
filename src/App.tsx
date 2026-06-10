@@ -60,6 +60,7 @@ const PaisDashboardPage = lazy(() => import('@/pages/admin-ezpay/PaisDashboardPa
 const InvitacionesMedicosPage = lazy(() => import('@/pages/admin-ezpay/InvitacionesMedicosPage'))
 const InvitacionesClinicasPage = lazy(() => import('@/pages/admin-ezpay/InvitacionesClinicasPage'))
 const FinanzasPage = lazy(() => import('@/pages/admin-ezpay/FinanzasPage'))
+const CuentasBancariasPage = lazy(() => import('@/pages/admin-ezpay/CuentasBancariasPage'))
 const RolesPage = lazy(() => import('@/pages/admin-ezpay/RolesPage'))
 const UsuariosAdminPage = lazy(() => import('@/pages/admin-ezpay/UsuariosAdminPage'))
 const AuditoriaPage = lazy(() => import('@/pages/admin-ezpay/AuditoriaPage'))
@@ -239,6 +240,7 @@ function App() {
           <Route path="planes-empresas-afines" element={<Navigate to="/admin/planes/empresas-afines" replace />} />
           <Route path="excepciones" element={<Navigate to="/admin/planes/excepciones" replace />} />
           <Route path="finanzas" element={<FinanzasPage />} />
+          <Route path="cuentas-bancarias" element={<CuentasBancariasPage />} />
 
           {/* === RUTAS REPORTES EZPAY === */}
           <Route path="reportes" element={<ReportesPage />} />
