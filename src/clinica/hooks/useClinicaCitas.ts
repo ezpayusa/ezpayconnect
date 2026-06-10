@@ -223,7 +223,23 @@ export function useClinicaCitas() {
 
     console.log('[useClinicaCitas] Enviando notificación a:', pacienteAuthId)
 
-    // Notificación in-app
+    // Campanita del webapp del paciente (tabla notificaciones_pacientes).
+    // Vía RPC SECURITY DEFINER porque el RLS solo permite al propio paciente.
+    // El hook useWebAppNotificaciones tiene realtime, así que aparece al instante.
+    try {
+      await supabase.rpc('notificar_paciente', {
+        p_paciente_id: cita.paciente_id,
+        p_tipo: 'cita',
+        p_titulo: titulo,
+        p_mensaje: mensaje,
+        p_accion_url: url,
+      })
+      console.log('[useClinicaCitas] Notificación campanita creada')
+    } catch (e) {
+      console.error('Error notificación campanita:', e)
+    }
+
+    // Notificación in-app (tabla general 'notificaciones', otros paneles)
     try {
       await supabase.functions.invoke('enviar-notificacion', {
         body: {
