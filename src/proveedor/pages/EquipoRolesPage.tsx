@@ -29,6 +29,9 @@ export default function EquipoRolesPage() {
   const [invRol, setInvRol] = useState('visitador_medico')
   const [invitando, setInvitando] = useState(false)
   const [linkInvitacion, setLinkInvitacion] = useState<string | null>(null)
+  const [pendientes, setPendientes] = useState<
+    { id: string; nombre_completo: string; email: string; rol: string; token: string; expires_at: string }[]
+  >([])
 
   const cargar = useCallback(async () => {
     if (!empresa?.id) return
@@ -44,6 +47,15 @@ export default function EquipoRolesPage() {
     } else {
       setMiembros((data || []) as Miembro[])
     }
+
+    const { data: invs } = await supabase
+      .from('invitaciones_visitador')
+      .select('id, nombre_completo, email, rol, token, expires_at')
+      .eq('empresa_id', empresa.id)
+      .eq('estado', 'pendiente')
+      .order('created_at', { ascending: false })
+    setPendientes((invs || []) as typeof pendientes)
+
     setLoading(false)
   }, [empresa?.id])
 
@@ -89,6 +101,7 @@ export default function EquipoRolesPage() {
     setInvNombre('')
     setInvEmail('')
     setInvTelefono('')
+    cargar()
   }
 
   if (!puede('usuarios.gestionar')) {
@@ -253,12 +266,48 @@ export default function EquipoRolesPage() {
               <CardContent className="p-8 text-center text-muted-foreground">
                 <Users className="h-10 w-10 mx-auto mb-3 text-gray-300" />
                 <p>Aún no hay miembros en el equipo.</p>
-                <p className="text-sm mt-1">
-                  Invita visitadores desde la sección "Visitadores".
-                </p>
+                <p className="text-sm mt-1">Usa "Invitar personal" arriba para sumar a tu equipo.</p>
               </CardContent>
             </Card>
           )}
+        </div>
+      )}
+
+      {/* Invitaciones pendientes */}
+      {pendientes.length > 0 && (
+        <div className="space-y-3">
+          <h2 className="text-lg font-semibold">Invitaciones pendientes ({pendientes.length})</h2>
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+            {pendientes.map((inv) => {
+              const url = `${window.location.origin}/proveedor/registro-visitador?token=${inv.token}`
+              const expirada = new Date(inv.expires_at) < new Date()
+              return (
+                <Card key={inv.id} className={expirada ? 'opacity-60' : ''}>
+                  <CardContent className="p-4 space-y-2">
+                    <div className="flex items-center justify-between gap-2">
+                      <div className="min-w-0">
+                        <p className="font-medium text-sm truncate">{inv.nombre_completo || '(sin nombre)'}</p>
+                        <p className="text-xs text-muted-foreground truncate">{inv.email}</p>
+                      </div>
+                      <Badge variant="outline" className="text-xs shrink-0">{etiquetaRol(inv.rol)}</Badge>
+                    </div>
+                    <div className="flex items-center justify-between gap-2">
+                      <span className="text-xs text-muted-foreground">{expirada ? 'Expirada' : 'Pendiente'}</span>
+                      {!expirada && (
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          onClick={() => { navigator.clipboard.writeText(url); toast.success('Link copiado') }}
+                        >
+                          <Copy className="h-3.5 w-3.5 mr-1" /> Copiar link
+                        </Button>
+                      )}
+                    </div>
+                  </CardContent>
+                </Card>
+              )
+            })}
+          </div>
         </div>
       )}
     </div>
