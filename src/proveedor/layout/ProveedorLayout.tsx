@@ -29,7 +29,7 @@ const NAV_ITEMS: NavItem[] = [
   { label: 'Visitadores', path: '/proveedor/visitadores', icon: Users, permiso: 'visitadores.gestionar' },
   { label: 'Ubicaciones Médicos', path: '/proveedor/visitador/ubicaciones-medicos', icon: MapPin, permiso: 'ubicaciones.gestionar' },
   { label: 'Publicidad', path: '/proveedor/publicidad/planes', icon: Megaphone, permiso: 'publicidad.ver' },
-  { label: 'Equipo y Roles', path: '/proveedor/equipo', icon: ShieldCheck, permiso: 'usuarios.gestionar' },
+  { label: 'Personal y Roles', path: '/proveedor/equipo', icon: ShieldCheck, permiso: 'usuarios.gestionar' },
   { label: 'Pagos', path: '/proveedor/pagos', icon: CreditCard, permiso: 'pagos.ver' },
   // Siempre visibles
   { label: 'Perfil', path: '/proveedor/perfil', icon: MapPin },

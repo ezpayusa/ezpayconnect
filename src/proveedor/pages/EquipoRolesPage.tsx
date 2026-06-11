@@ -4,8 +4,10 @@ import { useProveedorAuth } from '@/proveedor/hooks/useProveedorAuth'
 import { ROLES_PROVEEDOR, etiquetaRol } from '@/proveedor/lib/permisos'
 import { Card, CardContent } from '@/components/ui/card'
 import { Badge } from '@/components/ui/badge'
+import { Button } from '@/components/ui/button'
+import { Input } from '@/components/ui/input'
 import { toast } from 'sonner'
-import { ShieldCheck, Loader2, AlertTriangle, Users } from 'lucide-react'
+import { ShieldCheck, Loader2, AlertTriangle, Users, UserPlus, Copy } from 'lucide-react'
 
 interface Miembro {
   id: string
@@ -20,6 +22,13 @@ export default function EquipoRolesPage() {
   const [miembros, setMiembros] = useState<Miembro[]>([])
   const [loading, setLoading] = useState(true)
   const [guardando, setGuardando] = useState<string | null>(null)
+  // Invitar miembro
+  const [invNombre, setInvNombre] = useState('')
+  const [invEmail, setInvEmail] = useState('')
+  const [invTelefono, setInvTelefono] = useState('')
+  const [invRol, setInvRol] = useState('visitador_medico')
+  const [invitando, setInvitando] = useState(false)
+  const [linkInvitacion, setLinkInvitacion] = useState<string | null>(null)
 
   const cargar = useCallback(async () => {
     if (!empresa?.id) return
@@ -57,6 +66,31 @@ export default function EquipoRolesPage() {
     cargar()
   }
 
+  const invitar = async () => {
+    if (!invNombre.trim() || !invEmail.trim()) {
+      toast.error('Completa nombre y email')
+      return
+    }
+    setInvitando(true)
+    const { data, error } = await supabase.rpc('invitar_miembro_proveedor', {
+      p_email: invEmail.trim(),
+      p_nombre: invNombre.trim(),
+      p_rol: invRol,
+      p_telefono: invTelefono.trim() || null,
+    })
+    setInvitando(false)
+    if (error) {
+      toast.error(error.message || 'No se pudo crear la invitación')
+      return
+    }
+    const url = `${window.location.origin}/proveedor/registro-visitador?token=${data}`
+    setLinkInvitacion(url)
+    toast.success('Invitación creada. Comparte el link con la persona.')
+    setInvNombre('')
+    setInvEmail('')
+    setInvTelefono('')
+  }
+
   if (!puede('usuarios.gestionar')) {
     return (
       <div className="p-8 text-center">
@@ -74,13 +108,70 @@ export default function EquipoRolesPage() {
       <div>
         <h1 className="text-2xl font-bold flex items-center gap-2">
           <ShieldCheck className="w-6 h-6" />
-          Equipo y Roles
+          Personal y Roles
         </h1>
         <p className="text-sm text-muted-foreground">
-          Asigna a cada miembro el rol que corresponde a su trabajo. Cada rol ve y puede hacer
-          únicamente lo de su área (confidencialidad y distribución de tareas).
+          Invita a tu personal y asigna a cada uno el rol que corresponde a su trabajo. Cada rol ve
+          y puede hacer únicamente lo de su área (confidencialidad y distribución de tareas).
         </p>
       </div>
+
+      {/* Invitar miembro */}
+      <Card>
+        <CardContent className="p-4 space-y-3">
+          <p className="text-sm font-semibold flex items-center gap-2">
+            <UserPlus className="w-4 h-4" /> Invitar personal
+          </p>
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+            <Input placeholder="Nombre completo" value={invNombre} onChange={(e) => setInvNombre(e.target.value)} />
+            <Input type="email" placeholder="Email" value={invEmail} onChange={(e) => setInvEmail(e.target.value)} />
+            <Input placeholder="Teléfono (opcional)" value={invTelefono} onChange={(e) => setInvTelefono(e.target.value)} />
+            <select
+              className="h-10 rounded-md border border-input bg-background px-3 text-sm"
+              value={invRol}
+              onChange={(e) => setInvRol(e.target.value)}
+            >
+              {ROLES_PROVEEDOR.map((r) => (
+                <option key={r.value} value={r.value}>{r.label}</option>
+              ))}
+            </select>
+          </div>
+          <Button onClick={invitar} disabled={invitando} className="bg-[#1E5C8E] hover:bg-[#164a70]">
+            {invitando ? <Loader2 className="h-4 w-4 animate-spin mr-2" /> : <UserPlus className="h-4 w-4 mr-2" />}
+            Generar link de invitación
+          </Button>
+          {linkInvitacion && (
+            <div className="bg-emerald-50 border border-emerald-200 rounded-lg p-3 space-y-2">
+              <p className="text-sm font-medium text-emerald-800">¡Invitación creada! Comparte este link:</p>
+              <p className="text-xs break-all bg-white rounded p-2 border">{linkInvitacion}</p>
+              <div className="flex gap-2">
+                <Button
+                  size="sm"
+                  variant="outline"
+                  onClick={() => {
+                    navigator.clipboard.writeText(linkInvitacion)
+                    toast.success('Link copiado')
+                  }}
+                >
+                  <Copy className="h-3.5 w-3.5 mr-1" /> Copiar link
+                </Button>
+                <Button
+                  size="sm"
+                  variant="outline"
+                  onClick={() =>
+                    window.open(
+                      `https://wa.me/?text=${encodeURIComponent('¡Hola! Te invitamos a unirte al portal de EzPayConnect. Completa tu registro aquí: ' + linkInvitacion)}`,
+                      '_blank'
+                    )
+                  }
+                >
+                  Enviar por WhatsApp
+                </Button>
+              </div>
+            </div>
+          )}
+        </CardContent>
+      </Card>
 
       {/* Leyenda de roles */}
       <Card>
