@@ -1,9 +1,11 @@
+import { useState } from 'react'
 import { Link } from 'react-router-dom'
 import { Card, CardContent } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
 import { useProductosEmpresa } from '@/proveedor/hooks/useProductosEmpresa'
-import { Package, Plus, Pencil, Trash2, Loader2 } from 'lucide-react'
+import { Package, Plus, Pencil, Trash2, Loader2, Upload } from 'lucide-react'
+import ImportarProductosModal from './ImportarProductosModal'
 
 const estadoColor: Record<string, string> = {
   activo: 'bg-emerald-100 text-emerald-700',
@@ -12,24 +14,37 @@ const estadoColor: Record<string, string> = {
 }
 
 export default function ProductosListPage() {
-  const { productos, loading, eliminarProducto } = useProductosEmpresa()
+  const { productos, loading, eliminarProducto, fetchProductos } = useProductosEmpresa()
+  const [importarOpen, setImportarOpen] = useState(false)
 
   return (
     <div className="space-y-6">
-      <div className="flex items-center justify-between">
+      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
         <div>
           <h1 className="text-2xl font-bold text-gray-900">Productos</h1>
           <p className="text-sm text-muted-foreground">
             {productos.length} producto{productos.length !== 1 ? 's' : ''} en catálogo
           </p>
         </div>
-        <Link to="/proveedor/productos/nuevo">
-          <Button className="bg-[#1E5C8E] hover:bg-[#164a70]">
-            <Plus className="h-4 w-4 mr-2" />
-            Nuevo producto
+        <div className="flex items-center gap-2">
+          <Button variant="outline" onClick={() => setImportarOpen(true)}>
+            <Upload className="h-4 w-4 mr-2" />
+            Importar
           </Button>
-        </Link>
+          <Link to="/proveedor/productos/nuevo">
+            <Button className="bg-[#1E5C8E] hover:bg-[#164a70]">
+              <Plus className="h-4 w-4 mr-2" />
+              Nuevo producto
+            </Button>
+          </Link>
+        </div>
       </div>
+
+      <ImportarProductosModal
+        open={importarOpen}
+        onClose={() => setImportarOpen(false)}
+        onImported={fetchProductos}
+      />
 
       {loading ? (
         <div className="flex justify-center py-12">
@@ -43,12 +58,18 @@ export default function ProductosListPage() {
             <p className="text-sm text-muted-foreground max-w-md mx-auto mt-1">
               Agrega tu primer producto para que los médicos puedan encontrarlo en las búsquedas.
             </p>
-            <Link to="/proveedor/productos/nuevo" className="inline-block mt-4">
-              <Button variant="outline">
-                <Plus className="h-4 w-4 mr-2" />
-                Agregar producto
+            <div className="flex items-center justify-center gap-2 mt-4">
+              <Link to="/proveedor/productos/nuevo" className="inline-block">
+                <Button variant="outline">
+                  <Plus className="h-4 w-4 mr-2" />
+                  Agregar producto
+                </Button>
+              </Link>
+              <Button variant="outline" onClick={() => setImportarOpen(true)}>
+                <Upload className="h-4 w-4 mr-2" />
+                Importar Excel/CSV
               </Button>
-            </Link>
+            </div>
           </CardContent>
         </Card>
       ) : (

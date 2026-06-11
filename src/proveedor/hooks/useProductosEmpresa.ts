@@ -89,6 +89,48 @@ export function useProductosEmpresa() {
     return true
   }
 
+  // Carga masiva: inserta muchos productos de una sola vez (importación por archivo).
+  // No maneja imágenes (se agregan luego por producto). Devuelve cuántos se crearon.
+  const crearProductosMasivo = async (
+    productos: Partial<ProductoEmpresa>[]
+  ): Promise<{ creados: number; error: string | null }> => {
+    if (!empresa?.id || !cuenta) {
+      return { creados: 0, error: 'No hay empresa vinculada' }
+    }
+    if (productos.length === 0) {
+      return { creados: 0, error: 'No hay productos para importar' }
+    }
+
+    setSaving(true)
+    const rows = productos.map((p) => ({
+      empresa_id: empresa.id,
+      nombre_producto: p.nombre_producto || '',
+      principio_activo: p.principio_activo || null,
+      presentacion: p.presentacion || null,
+      concentracion: p.concentracion || null,
+      categoria: p.categoria || null,
+      precio_unitario: p.precio_unitario || 0,
+      moneda: p.moneda || 'GTQ',
+      stock_disponible: p.stock_disponible || 0,
+      requiere_receta: p.requiere_receta || false,
+      estado: 'activo',
+    }))
+
+    const { data, error } = await supabase
+      .from('productos_empresa')
+      .insert(rows)
+      .select('id')
+
+    setSaving(false)
+    if (error) {
+      console.error(error)
+      return { creados: 0, error: error.message }
+    }
+
+    fetchProductos()
+    return { creados: data?.length ?? rows.length, error: null }
+  }
+
   const actualizarProducto = async (
     id: string,
     producto: Partial<ProductoEmpresa>,
@@ -167,6 +209,7 @@ export function useProductosEmpresa() {
     saving,
     fetchProductos,
     crearProducto,
+    crearProductosMasivo,
     actualizarProducto,
     eliminarProducto,
   }
