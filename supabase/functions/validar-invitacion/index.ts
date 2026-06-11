@@ -46,6 +46,7 @@ serve(async (req) => {
         email: invitacion.email,
         nombre_completo: invitacion.nombre_completo,
         telefono: invitacion.telefono,
+        rol: invitacion.rol,
         empresa_nombre: invitacion.empresa?.nombre_empresa,
         expires_at: invitacion.expires_at,
       }),

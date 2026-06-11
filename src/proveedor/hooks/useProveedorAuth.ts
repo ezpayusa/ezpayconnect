@@ -11,14 +11,17 @@ export function useProveedorAuth() {
   const [loading, setLoading] = useState(true)
 
   const fetchCuenta = useCallback(async (userId: string) => {
+    // maybeSingle: si el usuario no es proveedor devuelve data=null sin error 406.
     const { data, error } = await supabase
       .from('cuentas_proveedor')
       .select('*, empresa:empresa_id(*)')
       .eq('id', userId)
-      .single()
+      .maybeSingle()
 
-    if (error || !data) {
+    if (error) {
       console.error('[useProveedorAuth] Error obteniendo cuenta:', error)
+    }
+    if (error || !data) {
       setCuenta(null)
       setEmpresa(null)
       return
@@ -55,7 +58,24 @@ export function useProveedorAuth() {
 
   const login = useCallback(async (email: string, password: string) => {
     const { data, error } = await supabase.auth.signInWithPassword({ email, password })
-    return { data, error }
+    if (error) return { data, error }
+
+    // Verificar que la cuenta sea de proveedor; si no, cerrar sesión y avisar claro
+    // (evita el rebote silencioso al usar una cuenta de admin/médico/paciente aquí).
+    const { data: cuentaData } = await supabase
+      .from('cuentas_proveedor')
+      .select('id')
+      .eq('id', data.user!.id)
+      .maybeSingle()
+
+    if (!cuentaData) {
+      await supabase.auth.signOut()
+      return {
+        data,
+        error: { message: 'Esta cuenta no es de un proveedor. Usa el portal que corresponde a tu cuenta.' },
+      }
+    }
+    return { data, error: null }
   }, [])
 
   const register = useCallback(async (

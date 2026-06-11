@@ -5,6 +5,7 @@ import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { supabase } from '@/lib/supabase'
+import { etiquetaRol } from '@/proveedor/lib/permisos'
 import { toast } from 'sonner'
 import { Loader2, UserPlus, AlertCircle, CheckCircle } from 'lucide-react'
 
@@ -176,7 +177,7 @@ export default function ProveedorRegistroVisitador() {
           </div>
           <CardTitle className="text-xl">Completa tu registro</CardTitle>
           <p className="text-sm text-muted-foreground">
-            Has sido invitado como Visitador Médico en <strong>{invitacion?.empresa_nombre}</strong>
+            Has sido invitado como <strong>{invitacion?.rol ? etiquetaRol(invitacion.rol) : 'Visitador Médico'}</strong> en <strong>{invitacion?.empresa_nombre}</strong>
           </p>
         </CardHeader>
         <CardContent>
