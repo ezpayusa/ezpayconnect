@@ -88,6 +88,7 @@ const VisitadorRutaPage = lazy(() => import('@/proveedor/pages/visitador/Visitad
 const ProveedorReporteVisitasPage = lazy(() => import('@/proveedor/pages/visitador/ProveedorReporteVisitasPage'))
 const AdminAprobarVisitasPage = lazy(() => import('@/proveedor/pages/visitador/AdminAprobarVisitasPage'))
 const AdminVisitadoresPage = lazy(() => import('@/proveedor/pages/visitador/AdminVisitadoresPage'))
+const VisitadorDetallePage = lazy(() => import('@/proveedor/pages/visitador/VisitadorDetallePage'))
 const AdminUbicacionesMedicosPage = lazy(() => import('@/proveedor/pages/visitador/AdminUbicacionesMedicosPage'))
 const PublicidadPlanesPage = lazy(() => import('@/proveedor/pages/publicidad/PublicidadPlanesPage'))
 const PublicidadCampanasPage = lazy(() => import('@/proveedor/pages/publicidad/PublicidadCampanasPage'))
@@ -296,6 +297,7 @@ function App() {
           <Route path="visitador/aprobar" element={<AdminAprobarVisitasPage />} />
           <Route path="visitador/ubicaciones-medicos" element={<AdminUbicacionesMedicosPage />} />
           <Route path="visitadores" element={<AdminVisitadoresPage />} />
+          <Route path="visitadores/:id" element={<VisitadorDetallePage />} />
           <Route path="publicidad/planes" element={<PublicidadPlanesPage />} />
           <Route path="publicidad/campanas" element={<PublicidadCampanasPage />} />
           <Route path="publicidad/campanas/nueva" element={<PublicidadCampanaFormPage />} />

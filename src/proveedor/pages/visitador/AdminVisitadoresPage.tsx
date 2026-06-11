@@ -1,4 +1,5 @@
 import { useState } from 'react'
+import { Link } from 'react-router-dom'
 import { useVisitadoresEmpresa } from '@/proveedor/hooks/useVisitadoresEmpresa'
 import { useProveedorAuth } from '@/proveedor/hooks/useProveedorAuth'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
@@ -180,7 +181,8 @@ export default function AdminVisitadoresPage() {
         <h2 className="text-lg font-semibold">Visitadores activos ({visitadores.length})</h2>
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
           {visitadores.map((v) => (
-            <Card key={v.id}>
+            <Link key={v.id} to={`/proveedor/visitadores/${v.id}`} className="block">
+            <Card className="hover:shadow-md hover:border-primary/40 transition cursor-pointer h-full">
               <CardContent className="p-4 space-y-3">
                 <div className="flex items-start justify-between">
                   <div className="flex items-center gap-3">
@@ -217,8 +219,10 @@ export default function AdminVisitadoresPage() {
                     <p className="text-xs text-green-600">Completadas</p>
                   </div>
                 </div>
+                <p className="text-xs text-primary font-medium pt-1">Ver desempeño →</p>
               </CardContent>
             </Card>
+            </Link>
           ))}
         </div>
       </div>
