@@ -90,43 +90,69 @@ export function useMedicoCitas() {
 
   const enviarNotificacionPaciente = async (
     cita: CitaConPaciente,
-    tipo: 'confirmada' | 'cancelada' | 'recordatorio'
+    tipo: 'confirmada' | 'cancelada' | 'en_curso' | 'completada' | 'recordatorio'
   ) => {
     const pacienteAuthId = (cita.paciente as any)?.auth_user_id
-    if (!pacienteAuthId) {
-      console.warn('Paciente sin auth_user_id, no se puede notificar')
-      return
-    }
-
-    const nombrePaciente = cita.paciente
-      ? `${cita.paciente.nombre} ${cita.paciente.apellido}`
-      : 'Paciente'
 
     const fechaStr = new Date(cita.fecha).toLocaleDateString('es-GT', {
       weekday: 'long', month: 'long', day: 'numeric',
     })
+    const horaStr = cita.hora_inicio?.slice(0, 5)
 
     let titulo = ''
     let mensaje = ''
-    let url = '/paciente/citas'
+    const url = '/paciente/citas'
+    // tipo para la tabla general 'notificaciones' (otros paneles)
+    let tipoGeneral = 'recordatorio_cita'
 
     if (tipo === 'confirmada') {
       titulo = 'Cita confirmada'
-      mensaje = `Tu cita para el ${fechaStr} a las ${cita.hora_inicio?.slice(0, 5)} ha sido confirmada por el médico.`
+      mensaje = `Tu cita para el ${fechaStr} a las ${horaStr} ha sido confirmada por el médico.`
+      tipoGeneral = 'cita_confirmada'
     } else if (tipo === 'cancelada') {
       titulo = 'Cita cancelada'
-      mensaje = `Tu cita para el ${fechaStr} a las ${cita.hora_inicio?.slice(0, 5)} ha sido cancelada. Por favor agenda una nueva cita.`
+      mensaje = `Tu cita para el ${fechaStr} a las ${horaStr} ha sido cancelada. Por favor agenda una nueva cita.`
+      tipoGeneral = 'cita_cancelada'
+    } else if (tipo === 'en_curso') {
+      titulo = 'Tu consulta ha comenzado'
+      mensaje = `El médico te ha llamado a consulta para tu cita del ${fechaStr} a las ${horaStr}.`
+      tipoGeneral = 'cita_en_curso'
+    } else if (tipo === 'completada') {
+      titulo = 'Consulta completada'
+      mensaje = `Tu consulta del ${fechaStr} a las ${horaStr} ha finalizado. Revisa tus recetas y órdenes de examen si aplica.`
+      tipoGeneral = 'cita_completada'
     } else {
       titulo = 'Recordatorio de cita'
-      mensaje = `Recordatorio: tienes una cita el ${fechaStr} a las ${cita.hora_inicio?.slice(0, 5)}.`
+      mensaje = `Recordatorio: tienes una cita el ${fechaStr} a las ${horaStr}.`
+      tipoGeneral = 'recordatorio_cita'
     }
 
-    // Notificación in-app
+    // Campanita del webapp del paciente (tabla notificaciones_pacientes).
+    // Vía RPC SECURITY DEFINER porque el RLS solo permite al propio paciente.
+    // El hook useWebAppNotificaciones tiene realtime, así que aparece al instante.
+    try {
+      await supabase.rpc('notificar_paciente', {
+        p_paciente_id: cita.paciente_id,
+        p_tipo: 'cita',
+        p_titulo: titulo,
+        p_mensaje: mensaje,
+        p_accion_url: url,
+      })
+    } catch (e) {
+      console.error('Error notificación campanita:', e)
+    }
+
+    if (!pacienteAuthId) {
+      console.warn('Paciente sin auth_user_id, no se envían in-app/push')
+      return
+    }
+
+    // Notificación in-app (tabla general 'notificaciones')
     try {
       await supabase.functions.invoke('enviar-notificacion', {
         body: {
           usuario_id: pacienteAuthId,
-          tipo: tipo === 'confirmada' ? 'cita_confirmada' : tipo === 'cancelada' ? 'cita_cancelada' : 'recordatorio_cita',
+          tipo: tipoGeneral,
           titulo,
           mensaje,
           accion_url: url,
@@ -168,11 +194,15 @@ export function useMedicoCitas() {
 
     if (mensaje) toast.success(mensaje)
 
-    // Enviar notificación al paciente si es confirmada o cancelada
+    // Enviar notificación al paciente según el nuevo estado
     if (nuevoEstado === 'confirmada') {
       await enviarNotificacionPaciente(cita, 'confirmada')
     } else if (nuevoEstado === 'cancelada') {
       await enviarNotificacionPaciente(cita, 'cancelada')
+    } else if (nuevoEstado === 'en_curso') {
+      await enviarNotificacionPaciente(cita, 'en_curso')
+    } else if (nuevoEstado === 'completada') {
+      await enviarNotificacionPaciente(cita, 'completada')
     }
 
     return true
