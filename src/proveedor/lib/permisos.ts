@@ -42,13 +42,17 @@ const TODOS: PermisoProveedor[] = [
   'reportes.ver',
 ]
 
+// Permisos de gestión total, PERO sin 'visitas.propias' (la agenda personal del
+// visitador). El admin gestiona el equipo, no tiene su propia agenda de visitas.
+const GESTION_TOTAL: PermisoProveedor[] = TODOS.filter((p) => p !== 'visitas.propias')
+
 // Catálogo PREDEFINIDO (el admin asigna estos roles; no se crean a medida).
 export const ROLES_PROVEEDOR: RolProveedor[] = [
   {
     value: 'admin',
     label: 'Administrador',
-    descripcion: 'Control total: empresa, pagos, usuarios y roles, y todo el panel.',
-    permisos: TODOS,
+    descripcion: 'Control total: empresa, pagos, usuarios y roles, y todo el panel de gestión.',
+    permisos: GESTION_TOTAL,
   },
   {
     value: 'supervisor',
@@ -99,7 +103,7 @@ export const ROLES_PROVEEDOR: RolProveedor[] = [
 // Roles legacy que pueden existir en datos viejos -> a qué permisos equivalen.
 // 'editor' se trataba como admin-lite; 'viewer' como solo lectura.
 const LEGACY: Record<string, PermisoProveedor[]> = {
-  editor: TODOS,
+  editor: GESTION_TOTAL,
   viewer: ROLES_PROVEEDOR.find((r) => r.value === 'lectura')!.permisos,
 }
 
