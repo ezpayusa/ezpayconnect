@@ -1,16 +1,5 @@
 import { supabase } from '@/lib/supabase'
 
-const FUNCTION_URL_EMAIL = `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/notificar-email`
-const FUNCTION_URL_NOTIF = `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/enviar-notificacion`
-
-async function getAuthHeaders() {
-  const { data } = await supabase.auth.getSession()
-  return {
-    'Authorization': `Bearer ${data.session?.access_token || ''}`,
-    'Content-Type': 'application/json',
-  }
-}
-
 export async function crearNotificacionInApp(params: {
   usuario_id: string
   tipo: string
@@ -20,15 +9,16 @@ export async function crearNotificacionInApp(params: {
   metadata?: Record<string, any>
 }): Promise<boolean> {
   try {
-    const res = await fetch(FUNCTION_URL_NOTIF, {
-      method: 'POST',
-      headers: await getAuthHeaders(),
-      body: JSON.stringify(params),
+    // Usar supabase.functions.invoke (URL hardcodeada en lib/supabase + auth + apikey).
+    // Antes esto usaba fetch con import.meta.env.VITE_SUPABASE_URL, que en el build de
+    // producción llega undefined -> POST a "undefined/functions/v1/..." (URL relativa)
+    // que pegaba en Vercel y devolvía 405, por eso las campanitas de campañas/pagos no salían.
+    const { error } = await supabase.functions.invoke('enviar-notificacion', {
+      body: params,
     })
 
-    if (!res.ok) {
-      const err = await res.json().catch(() => ({}))
-      console.error('[crearNotificacionInApp] Error:', err)
+    if (error) {
+      console.error('[crearNotificacionInApp] Error:', error)
       return false
     }
 
@@ -46,15 +36,12 @@ export async function enviarEmail(params: {
   tipo?: string
 }): Promise<boolean> {
   try {
-    const res = await fetch(FUNCTION_URL_EMAIL, {
-      method: 'POST',
-      headers: await getAuthHeaders(),
-      body: JSON.stringify(params),
+    const { error } = await supabase.functions.invoke('notificar-email', {
+      body: params,
     })
 
-    if (!res.ok) {
-      const err = await res.json().catch(() => ({}))
-      console.error('[enviarEmail] Error:', err)
+    if (error) {
+      console.error('[enviarEmail] Error:', error)
       return false
     }
 
