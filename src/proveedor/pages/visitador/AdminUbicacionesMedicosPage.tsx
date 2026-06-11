@@ -17,7 +17,7 @@ import MapaInteractivo from '@/components/MapaInteractivo'
 export default function AdminUbicacionesMedicosPage() {
   const { ubicaciones, loading, saving, guardarUbicacion, eliminarUbicacion, geocodificar } = useUbicacionesMedico()
   const { medicos, loading: loadingMedicos, buscarMedicos } = useMedicosDisponibles()
-  const { cuenta } = useProveedorAuth()
+  const { cuenta, puede } = useProveedorAuth()
   const [query, setQuery] = useState('')
   const [editandoMedico, setEditandoMedico] = useState<string | null>(null)
   const [direccion, setDireccion] = useState('')
@@ -28,7 +28,7 @@ export default function AdminUbicacionesMedicosPage() {
   const [mostrarMapaManual, setMostrarMapaManual] = useState(false)
   const [urlGoogleMaps, setUrlGoogleMaps] = useState('')
 
-  const esAdmin = cuenta?.rol_en_empresa === 'admin' || cuenta?.rol_en_empresa === 'editor'
+  const esAdmin = puede('ubicaciones.gestionar')
 
   if (!esAdmin) {
     return (

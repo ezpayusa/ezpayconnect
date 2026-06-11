@@ -11,7 +11,7 @@ import { UserPlus, Users, Mail, Phone, Copy, MessageCircle, CheckCircle, Clock, 
 
 export default function AdminVisitadoresPage() {
   const { visitadores, invitaciones, loading, invitarVisitador } = useVisitadoresEmpresa()
-  const { cuenta } = useProveedorAuth()
+  const { cuenta, puede } = useProveedorAuth()
   const [mostrarForm, setMostrarForm] = useState(false)
   const [email, setEmail] = useState('')
   const [nombre, setNombre] = useState('')
@@ -19,7 +19,7 @@ export default function AdminVisitadoresPage() {
   const [invitando, setInvitando] = useState(false)
   const [linkGenerado, setLinkGenerado] = useState<string | null>(null)
 
-  const esAdmin = cuenta?.rol_en_empresa === 'admin' || cuenta?.rol_en_empresa === 'editor'
+  const esAdmin = puede('visitadores.gestionar')
 
   if (!esAdmin) {
     return (

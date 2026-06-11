@@ -8,13 +8,14 @@ import { toast } from 'sonner'
 import { enviarEmail, buildHtmlVisitaPropuesta, buildHtmlVisitaAprobada, buildHtmlVisitaRechazada, crearNotificacionInApp } from '@/proveedor/lib/notificaciones'
 
 export function useVisitasAgendadas() {
-  const { empresa, cuenta } = useProveedorAuth()
+  const { empresa, cuenta, puede } = useProveedorAuth()
   const [visitas, setVisitas] = useState<VisitaAgendada[]>([])
   const [planesAsignados, setPlanesAsignados] = useState<PlanAsignacion[]>([])
   const [loading, setLoading] = useState(false)
   const [saving, setSaving] = useState(false)
   const rol = cuenta?.rol_en_empresa || 'visitador_medico'
-  const esAdmin = rol === 'admin' || rol === 'editor'
+  // "esAdmin" aquí = puede aprobar/confirmar visitas y ver las de todo el equipo.
+  const esAdmin = puede('visitas.aprobar')
 
   // Cargar planes asignados (pool compartido de la empresa)
   const fetchPlanesAsignados = useCallback(async () => {

@@ -14,7 +14,7 @@ import {
 
 export default function AdminAprobarVisitasPage() {
   const { visitas, loading, saving, administrarVisita, fetchVisitas } = useVisitasAgendadas()
-  const { cuenta } = useProveedorAuth()
+  const { cuenta, puede } = useProveedorAuth()
   const [expandedId, setExpandedId] = useState<string | null>(null)
   const [modificandoId, setModificandoId] = useState<string | null>(null)
   const [nuevaFecha, setNuevaFecha] = useState('')
@@ -22,7 +22,7 @@ export default function AdminAprobarVisitasPage() {
   const [nuevaHoraFin, setNuevaHoraFin] = useState('')
   const [comentario, setComentario] = useState('')
 
-  const esAdmin = cuenta?.rol_en_empresa === 'admin' || cuenta?.rol_en_empresa === 'editor'
+  const esAdmin = puede('visitas.aprobar')
   
   if (!esAdmin) {
     return (

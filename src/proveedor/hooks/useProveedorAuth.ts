@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback } from 'react'
 import { supabase } from '@/lib/supabase'
 import type { CuentaProveedor, EmpresaProveedora } from '@/proveedor/types/proveedor.types'
+import { permisosDeRol, puedeRol, type PermisoProveedor } from '@/proveedor/lib/permisos'
 import { toast } from 'sonner'
 
 export function useProveedorAuth() {
@@ -150,8 +151,11 @@ export function useProveedorAuth() {
     return true
   }, [cuenta?.id])
 
-  const isAdmin = cuenta?.rol_en_empresa === 'admin'
-  const isEditor = cuenta?.rol_en_empresa === 'editor' || isAdmin
+  const rol = cuenta?.rol_en_empresa ?? null
+  const isAdmin = rol === 'admin'
+  const isEditor = rol === 'editor' || isAdmin
+  const permisos = permisosDeRol(rol)
+  const puede = (permiso: PermisoProveedor) => puedeRol(rol, permiso)
 
   return {
     user,
@@ -165,5 +169,8 @@ export function useProveedorAuth() {
     actualizarCuenta,
     isAdmin,
     isEditor,
+    rol,
+    permisos,
+    puede,
   }
 }

@@ -2,54 +2,49 @@ import { Link, useLocation, useNavigate, Outlet } from 'react-router-dom'
 import { useProveedorAuth } from '@/proveedor/hooks/useProveedorAuth'
 import { useNotificaciones } from '@/hooks/useNotificaciones'
 import { Button } from '@/components/ui/button'
-import { LayoutDashboard, Package, CalendarCheck, Megaphone, MapPin, CreditCard, LogOut, Menu, X, CheckCircle, Users, BarChart3, Bell } from 'lucide-react'
+import { LayoutDashboard, Package, CalendarCheck, Megaphone, MapPin, CreditCard, LogOut, Menu, X, CheckCircle, Users, BarChart3, Bell, ShieldCheck } from 'lucide-react'
 import { useState, useEffect } from 'react'
+import { etiquetaRol, type PermisoProveedor } from '@/proveedor/lib/permisos'
 
 interface NavItem {
   label: string
   path: string
   icon: React.ElementType
   badge?: boolean
+  permiso?: PermisoProveedor // sin permiso => siempre visible
 }
 
-const navItemsBase: NavItem[] = [
+// Menú único dirigido por permisos. Cada usuario ve solo lo que su rol permite.
+const NAV_ITEMS: NavItem[] = [
   { label: 'Dashboard', path: '/proveedor/dashboard', icon: LayoutDashboard },
-]
-
-const navItemsAdmin = [
-  { label: 'Productos', path: '/proveedor/productos', icon: Package },
-  { label: 'Planes Visitador', path: '/proveedor/visitador/planes', icon: CalendarCheck },
-  { label: 'Aprobar Visitas', path: '/proveedor/visitador/aprobar', icon: CheckCircle },
-  { label: 'Visitadores', path: '/proveedor/visitadores', icon: Users },
-  { label: 'Ubicaciones Médicos', path: '/proveedor/visitador/ubicaciones-medicos', icon: MapPin },
-  { label: 'Publicidad', path: '/proveedor/publicidad/planes', icon: Megaphone },
-  { label: 'Perfil Empresa', path: '/proveedor/perfil', icon: MapPin },
-  { label: 'Pagos', path: '/proveedor/pagos', icon: CreditCard },
-  { label: 'Notificaciones', path: '/proveedor/notificaciones', icon: Bell, badge: true },
-]
-
-const navItemsVisitador = [
-  { label: 'Mis Visitas', path: '/proveedor/visitador/mis-visitas', icon: CalendarCheck },
-  { label: 'Agendar Visita', path: '/proveedor/visitador/agendar', icon: CalendarCheck },
-  { label: 'Mi Ruta', path: '/proveedor/visitador/ruta', icon: MapPin },
-  { label: 'Reporte', path: '/proveedor/visitador/reporte', icon: BarChart3 },
+  // Trabajo del visitador (su propia agenda)
+  { label: 'Mis Visitas', path: '/proveedor/visitador/mis-visitas', icon: CalendarCheck, permiso: 'visitas.propias' },
+  { label: 'Agendar Visita', path: '/proveedor/visitador/agendar', icon: CalendarCheck, permiso: 'visitas.propias' },
+  { label: 'Mi Ruta', path: '/proveedor/visitador/ruta', icon: MapPin, permiso: 'visitas.propias' },
+  { label: 'Mi Reporte', path: '/proveedor/visitador/reporte', icon: BarChart3, permiso: 'visitas.propias' },
+  // Gestión (según rol)
+  { label: 'Productos', path: '/proveedor/productos', icon: Package, permiso: 'productos.ver' },
+  { label: 'Planes Visitador', path: '/proveedor/visitador/planes', icon: CalendarCheck, permiso: 'planes.contratar' },
+  { label: 'Aprobar Visitas', path: '/proveedor/visitador/aprobar', icon: CheckCircle, permiso: 'visitas.aprobar' },
+  { label: 'Visitadores', path: '/proveedor/visitadores', icon: Users, permiso: 'visitadores.gestionar' },
+  { label: 'Ubicaciones Médicos', path: '/proveedor/visitador/ubicaciones-medicos', icon: MapPin, permiso: 'ubicaciones.gestionar' },
+  { label: 'Publicidad', path: '/proveedor/publicidad/planes', icon: Megaphone, permiso: 'publicidad.ver' },
+  { label: 'Equipo y Roles', path: '/proveedor/equipo', icon: ShieldCheck, permiso: 'usuarios.gestionar' },
+  { label: 'Pagos', path: '/proveedor/pagos', icon: CreditCard, permiso: 'pagos.ver' },
+  // Siempre visibles
   { label: 'Perfil', path: '/proveedor/perfil', icon: MapPin },
   { label: 'Notificaciones', path: '/proveedor/notificaciones', icon: Bell, badge: true },
 ]
 
 export default function ProveedorLayout() {
-  const { empresa, logout, loading, cuenta } = useProveedorAuth()
+  const { empresa, logout, loading, cuenta, puede } = useProveedorAuth()
   const { noLeidas, listarNotificaciones } = useNotificaciones()
   const location = useLocation()
   const navigate = useNavigate()
   const [mobileOpen, setMobileOpen] = useState(false)
-  
+
   const rol = cuenta?.rol_en_empresa || 'visitador_medico'
-  const esAdmin = rol === 'admin' || rol === 'editor'
-  
-  const navItems = esAdmin 
-    ? [...navItemsBase, ...navItemsAdmin] 
-    : [...navItemsBase, ...navItemsVisitador]
+  const navItems = NAV_ITEMS.filter((item) => !item.permiso || puede(item.permiso))
 
   useEffect(() => {
     listarNotificaciones()
@@ -114,7 +109,7 @@ export default function ProveedorLayout() {
         <div className="px-4 pb-2">
           <div className="px-3 py-2 rounded-lg bg-white/5">
             <p className="text-[10px] text-white/40 uppercase tracking-wider">Rol</p>
-            <p className="text-xs text-white/80 capitalize">{rol.replace('_', ' ')}</p>
+            <p className="text-xs text-white/80">{etiquetaRol(rol)}</p>
           </div>
         </div>
 

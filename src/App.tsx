@@ -80,6 +80,7 @@ const ProveedorRegistroVisitador = lazy(() => import('@/proveedor/pages/visitado
 const ProveedorDashboard = lazy(() => import('@/proveedor/pages/ProveedorDashboard'))
 const ProductosListPage = lazy(() => import('@/proveedor/pages/productos/ProductosListPage'))
 const ProductoFormPage = lazy(() => import('@/proveedor/pages/productos/ProductoFormPage'))
+const EquipoRolesPage = lazy(() => import('@/proveedor/pages/EquipoRolesPage'))
 const VisitadorPlanesPage = lazy(() => import('@/proveedor/pages/visitador/VisitadorPlanesPage'))
 const VisitadorAgendarPage = lazy(() => import('@/proveedor/pages/visitador/VisitadorAgendarPage'))
 const VisitadorMisVisitasPage = lazy(() => import('@/proveedor/pages/visitador/VisitadorMisVisitasPage'))
@@ -300,6 +301,7 @@ function App() {
           <Route path="publicidad/campanas/nueva" element={<PublicidadCampanaFormPage />} />
           <Route path="publicidad/metricas" element={<PublicidadMetricasPage />} />
           <Route path="perfil" element={<ProveedorPerfilPage />} />
+          <Route path="equipo" element={<EquipoRolesPage />} />
           <Route path="pagos" element={<ProveedorPagosPage />} />
           <Route path="notificaciones" element={<ProveedorNotificacionesPage />} />
           <Route path="checkout" element={<PagoCheckoutPage />} />
