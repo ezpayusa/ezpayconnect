@@ -1,4 +1,4 @@
-import { createContext, useContext, useState, useEffect, type ReactNode } from 'react'
+import { createContext, useContext, useState, useCallback, useMemo, type ReactNode } from 'react'
 
 interface Pais {
   id: string
@@ -28,22 +28,30 @@ export function PaisProvider({ children }: { children: ReactNode }) {
     }
   })
 
-  const setPaisActivo = (pais: Pais | null) => {
+  // useCallback/useMemo: sin esto, setPaisActivo se recreaba en cada render y
+  // los useEffect que lo tienen en deps (p.ej. PaisDashboardPage) entraban en
+  // bucle infinito (re-fetch sin parar de configuracion_pais).
+  const setPaisActivo = useCallback((pais: Pais | null) => {
     setPaisState(pais)
     if (pais) {
       localStorage.setItem(STORAGE_KEY, JSON.stringify(pais))
     } else {
       localStorage.removeItem(STORAGE_KEY)
     }
-  }
+  }, [])
 
-  const clearPaisActivo = () => {
+  const clearPaisActivo = useCallback(() => {
     setPaisState(null)
     localStorage.removeItem(STORAGE_KEY)
-  }
+  }, [])
+
+  const value = useMemo(
+    () => ({ paisActivo, setPaisActivo, clearPaisActivo }),
+    [paisActivo, setPaisActivo, clearPaisActivo]
+  )
 
   return (
-    <PaisContext.Provider value={{ paisActivo, setPaisActivo, clearPaisActivo }}>
+    <PaisContext.Provider value={value}>
       {children}
     </PaisContext.Provider>
   )

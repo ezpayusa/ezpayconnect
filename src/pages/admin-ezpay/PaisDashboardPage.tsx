@@ -143,14 +143,12 @@ export default function PaisDashboardPage() {
           .from('consultas_profesional')
           .select('*', { count: 'exact', head: true })
           .eq('pais_id', paisId)
-          .catch(() => ({ count: 0 }))
 
         // Métricas de campañas
         const { data: metricasData } = await supabase
           .from('campana_metricas')
           .select('clickeado')
           .eq('pais_id', paisId)
-          .catch(() => ({ data: [] }))
 
         const impresiones = (metricasData || []).filter((m: any) => !m.clickeado).length
         const clicks = (metricasData || []).filter((m: any) => m.clickeado).length
