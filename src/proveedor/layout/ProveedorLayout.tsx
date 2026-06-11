@@ -18,7 +18,7 @@ const navItemsBase: NavItem[] = [
 
 const navItemsAdmin = [
   { label: 'Productos', path: '/proveedor/productos', icon: Package },
-  { label: 'Visitador Médico', path: '/proveedor/visitador/planes', icon: CalendarCheck },
+  { label: 'Planes Visitador', path: '/proveedor/visitador/planes', icon: CalendarCheck },
   { label: 'Aprobar Visitas', path: '/proveedor/visitador/aprobar', icon: CheckCircle },
   { label: 'Visitadores', path: '/proveedor/visitadores', icon: Users },
   { label: 'Ubicaciones Médicos', path: '/proveedor/visitador/ubicaciones-medicos', icon: MapPin },
