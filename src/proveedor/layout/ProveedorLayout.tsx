@@ -1,6 +1,7 @@
 import { Link, useLocation, useNavigate, Outlet } from 'react-router-dom'
 import { useProveedorAuth } from '@/proveedor/hooks/useProveedorAuth'
 import { useNotificaciones } from '@/hooks/useNotificaciones'
+import { usePushNotifications } from '@/webapp/hooks/usePushNotifications'
 import { Button } from '@/components/ui/button'
 import { LayoutDashboard, Package, CalendarCheck, Megaphone, MapPin, CreditCard, LogOut, Menu, X, CheckCircle, Users, BarChart3, Bell, ShieldCheck, MessageSquare } from 'lucide-react'
 import { useState, useEffect } from 'react'
@@ -40,6 +41,7 @@ const NAV_ITEMS: NavItem[] = [
 
 export default function ProveedorLayout() {
   const { empresa, logout, loading, cuenta, puede } = useProveedorAuth()
+  usePushNotifications() // registra la suscripción push del proveedor (auto, si acepta permiso)
   const { noLeidas, listarNotificaciones } = useNotificaciones()
   const location = useLocation()
   const navigate = useNavigate()

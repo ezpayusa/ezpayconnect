@@ -95,6 +95,16 @@ export default function MensajesPage() {
     if (error) { toast.error(error.message || 'No se pudo enviar'); setTexto(cuerpo); return }
     cargarMensajes(activa.id)
     cargarConvs()
+    // Push a los destinatarios (best-effort; solo llega a quien activó notificaciones)
+    const conv = activa
+    supabase.rpc('destinatarios_conversacion', { p_conv: conv.id }).then(({ data }) => {
+      const ids = (data || []).map((d: any) => d.cuenta_id)
+      if (ids.length) {
+        supabase.functions.invoke('enviar-push', {
+          body: { usuario_ids: ids, titulo: `Mensaje · ${tipoLabel(conv)}`, mensaje: cuerpo.slice(0, 120), url: '/proveedor/mensajes', tag: `chat-${conv.id}` },
+        }).catch(() => {})
+      }
+    }).catch(() => {})
   }
 
   const iniciarDirecto = async (c: Contacto) => {
