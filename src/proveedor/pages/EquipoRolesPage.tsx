@@ -7,7 +7,7 @@ import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { toast } from 'sonner'
-import { ShieldCheck, Loader2, AlertTriangle, Users, UserPlus, Copy } from 'lucide-react'
+import { ShieldCheck, Loader2, AlertTriangle, Users, UserPlus, Copy, UserX, UserCheck } from 'lucide-react'
 
 interface Miembro {
   id: string
@@ -75,6 +75,16 @@ export default function EquipoRolesPage() {
       return
     }
     toast.success('Rol actualizado')
+    cargar()
+  }
+
+  const cambiarEstado = async (id: string, activar: boolean, nombre: string) => {
+    if (!activar && !window.confirm(`¿Dar de baja a ${nombre}? Perderá el acceso al panel de inmediato.`)) return
+    setGuardando(id)
+    const { error } = await supabase.rpc('cambiar_estado_miembro_proveedor', { p_id: id, p_activo: activar })
+    setGuardando(null)
+    if (error) { toast.error(error.message || 'No se pudo actualizar'); return }
+    toast.success(activar ? 'Miembro reactivado' : 'Miembro dado de baja')
     cargar()
   }
 
@@ -254,6 +264,19 @@ export default function EquipoRolesPage() {
                         </option>
                       ))}
                     </select>
+                    {!esYo && (
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        className={m.activo ? 'text-red-600 hover:bg-red-50' : 'text-emerald-600 hover:bg-emerald-50'}
+                        disabled={guardando === m.id}
+                        onClick={() => cambiarEstado(m.id, !m.activo, m.nombre_completo || m.email)}
+                      >
+                        {m.activo
+                          ? <><UserX className="h-3.5 w-3.5 mr-1" /> Dar de baja</>
+                          : <><UserCheck className="h-3.5 w-3.5 mr-1" /> Reactivar</>}
+                      </Button>
+                    )}
                     {guardando === m.id && <Loader2 className="h-4 w-4 animate-spin" />}
                   </div>
                 </CardContent>

@@ -21,7 +21,8 @@ export function useProveedorAuth() {
     if (error) {
       console.error('[useProveedorAuth] Error obteniendo cuenta:', error)
     }
-    if (error || !data) {
+    // Sin cuenta o cuenta dada de baja (activo=false) => sin acceso.
+    if (error || !data || (data as any).activo === false) {
       setCuenta(null)
       setEmpresa(null)
       return
@@ -64,7 +65,7 @@ export function useProveedorAuth() {
     // (evita el rebote silencioso al usar una cuenta de admin/médico/paciente aquí).
     const { data: cuentaData } = await supabase
       .from('cuentas_proveedor')
-      .select('id')
+      .select('id, activo')
       .eq('id', data.user!.id)
       .maybeSingle()
 
@@ -73,6 +74,13 @@ export function useProveedorAuth() {
       return {
         data,
         error: { message: 'Esta cuenta no es de un proveedor. Usa el portal que corresponde a tu cuenta.' },
+      }
+    }
+    if (!cuentaData.activo) {
+      await supabase.auth.signOut()
+      return {
+        data,
+        error: { message: 'Tu cuenta fue desactivada. Contacta al administrador de tu empresa.' },
       }
     }
     return { data, error: null }
