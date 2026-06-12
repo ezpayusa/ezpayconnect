@@ -11,6 +11,7 @@ import {
   MapPin,
   ChevronLeft,
   CalendarDays,
+  Clock,
 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import ClinicaNotificacionesDropdown from '@/clinica/layout/ClinicaNotificacionesDropdown'
@@ -25,6 +26,7 @@ export function ClinicaSidebar() {
     { label: 'Dashboard', icon: LayoutDashboard, path: '/clinica' },
     { label: 'Citas', icon: CalendarDays, path: '/clinica/citas' },
     { label: 'Personal', icon: Users, path: '/clinica/personal' },
+    { label: 'Horarios Médicos', icon: Clock, path: '/clinica/horarios-medicos' },
     { label: 'Invitar Médico', icon: Stethoscope, path: '/clinica/invitar-medico' },
     { label: 'Invitar Staff', icon: UserPlus, path: '/clinica/invitar-staff' },
     { label: 'Configuración', icon: Settings, path: '/clinica/configuracion' },

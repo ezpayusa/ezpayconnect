@@ -1,0 +1,190 @@
+import { useState, useEffect, useCallback } from 'react'
+import { supabase } from '@/lib/supabase'
+import { useClinicaAuth } from '@/clinica/hooks/useClinicaAuth'
+import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
+import { Button } from '@/components/ui/button'
+import { Input } from '@/components/ui/input'
+import { Label } from '@/components/ui/label'
+import { Badge } from '@/components/ui/badge'
+import { toast } from 'sonner'
+import { Clock, Plus, Trash2, Loader2, Stethoscope } from 'lucide-react'
+
+const DIAS = ['Domingo', 'Lunes', 'Martes', 'Miércoles', 'Jueves', 'Viernes', 'Sábado']
+
+interface Medico { id: string; nombre_completo: string; email: string }
+interface Slot { id: string; dia_semana: number; hora_inicio: string; hora_fin: string; duracion_slot: number }
+
+export default function ClinicaHorariosMedicosPage() {
+  const { clinica } = useClinicaAuth()
+  const [medicos, setMedicos] = useState<Medico[]>([])
+  const [medicoSel, setMedicoSel] = useState<string>('')
+  const [slots, setSlots] = useState<Slot[]>([])
+  const [loading, setLoading] = useState(false)
+  const [saving, setSaving] = useState(false)
+  const [form, setForm] = useState({ dia_semana: 1, hora_inicio: '09:00', hora_fin: '12:00', duracion_slot: 30 })
+
+  // Cargar médicos de la clínica
+  useEffect(() => {
+    if (!clinica?.id) return
+    ;(async () => {
+      const { data: rel } = await supabase.rpc('obtener_medicos_clinica', { p_clinica_id: clinica.id })
+      const ids = (rel || []).map((r: any) => r.medico_id)
+      if (ids.length === 0) { setMedicos([]); return }
+      const { data: perfiles } = await supabase.from('perfiles').select('id, nombre_completo, email').in('id', ids)
+      setMedicos((perfiles || []) as Medico[])
+    })()
+  }, [clinica?.id])
+
+  const fetchSlots = useCallback(async (medicoId: string) => {
+    if (!medicoId) { setSlots([]); return }
+    setLoading(true)
+    const { data } = await supabase
+      .from('disponibilidad_medico')
+      .select('id, dia_semana, hora_inicio, hora_fin, duracion_slot')
+      .eq('medico_id', medicoId)
+      .eq('contexto', 'paciente')
+      .eq('activo', true)
+      .order('dia_semana')
+      .order('hora_inicio')
+    setSlots((data || []) as Slot[])
+    setLoading(false)
+  }, [])
+
+  useEffect(() => { fetchSlots(medicoSel) }, [medicoSel, fetchSlots])
+
+  const crear = async () => {
+    if (!medicoSel) { toast.error('Elige un médico'); return }
+    if (form.hora_fin <= form.hora_inicio) { toast.error('La hora de fin debe ser posterior a la de inicio'); return }
+    setSaving(true)
+    const { error } = await supabase.from('disponibilidad_medico').insert({
+      medico_id: medicoSel,
+      dia_semana: form.dia_semana,
+      hora_inicio: form.hora_inicio,
+      hora_fin: form.hora_fin,
+      duracion_slot: form.duracion_slot || 30,
+      contexto: 'paciente',
+      activo: true,
+    })
+    setSaving(false)
+    if (error) { toast.error('No se pudo guardar: ' + error.message); return }
+    toast.success('Horario agregado')
+    setForm({ dia_semana: 1, hora_inicio: '09:00', hora_fin: '12:00', duracion_slot: 30 })
+    fetchSlots(medicoSel)
+  }
+
+  const eliminar = async (id: string) => {
+    if (!window.confirm('¿Eliminar este horario?')) return
+    const { error } = await supabase.from('disponibilidad_medico').delete().eq('id', id)
+    if (error) { toast.error('No se pudo eliminar'); return }
+    toast.success('Horario eliminado')
+    fetchSlots(medicoSel)
+  }
+
+  const agrupados = slots.reduce((acc: Record<string, Slot[]>, s) => {
+    const dia = DIAS[s.dia_semana] || 'Desconocido'
+    if (!acc[dia]) acc[dia] = []
+    acc[dia].push(s)
+    return acc
+  }, {})
+
+  return (
+    <div className="p-4 md:p-6 max-w-4xl mx-auto space-y-6">
+      <div>
+        <h1 className="text-2xl font-bold flex items-center gap-2">
+          <Clock className="h-6 w-6 text-[#1E5C8E]" /> Horarios de atención a pacientes
+        </h1>
+        <p className="text-sm text-muted-foreground">
+          Configura los horarios en los que tus médicos atienden pacientes. El portal del paciente
+          solo deja agendar dentro de estos horarios.
+        </p>
+      </div>
+
+      {/* Selector de médico */}
+      <Card>
+        <CardContent className="p-4">
+          <Label className="text-sm">Médico</Label>
+          <select
+            className="w-full h-10 rounded-md border border-input bg-background px-3 mt-1 text-sm"
+            value={medicoSel}
+            onChange={(e) => setMedicoSel(e.target.value)}
+          >
+            <option value="">Selecciona un médico…</option>
+            {medicos.map((m) => <option key={m.id} value={m.id}>{m.nombre_completo} · {m.email}</option>)}
+          </select>
+          {medicos.length === 0 && (
+            <p className="text-xs text-amber-600 mt-2">No hay médicos en esta clínica todavía.</p>
+          )}
+        </CardContent>
+      </Card>
+
+      {medicoSel && (
+        <>
+          {/* Form nuevo horario */}
+          <Card>
+            <CardHeader><CardTitle className="text-lg flex items-center gap-2"><Plus className="h-4 w-4" /> Nuevo horario de pacientes</CardTitle></CardHeader>
+            <CardContent>
+              <div className="grid grid-cols-1 md:grid-cols-4 gap-3">
+                <div className="space-y-1">
+                  <Label className="text-xs">Día</Label>
+                  <select className="w-full h-10 rounded-md border border-input bg-background px-3 text-sm"
+                    value={form.dia_semana} onChange={(e) => setForm({ ...form, dia_semana: parseInt(e.target.value) })}>
+                    {DIAS.map((d, i) => <option key={i} value={i}>{d}</option>)}
+                  </select>
+                </div>
+                <div className="space-y-1">
+                  <Label className="text-xs">Hora inicio</Label>
+                  <Input type="time" value={form.hora_inicio} onChange={(e) => setForm({ ...form, hora_inicio: e.target.value })} />
+                </div>
+                <div className="space-y-1">
+                  <Label className="text-xs">Hora fin</Label>
+                  <Input type="time" value={form.hora_fin} onChange={(e) => setForm({ ...form, hora_fin: e.target.value })} />
+                </div>
+                <div className="space-y-1">
+                  <Label className="text-xs">Duración por cita (min)</Label>
+                  <Input type="number" min={10} step={5} value={form.duracion_slot} onChange={(e) => setForm({ ...form, duracion_slot: parseInt(e.target.value) })} />
+                </div>
+              </div>
+              <Button className="mt-3 bg-[#1E5C8E] hover:bg-[#164a70]" onClick={crear} disabled={saving}>
+                {saving ? <Loader2 className="h-4 w-4 animate-spin mr-1" /> : <Plus className="h-4 w-4 mr-1" />} Guardar horario
+              </Button>
+            </CardContent>
+          </Card>
+
+          {/* Lista */}
+          {loading ? (
+            <div className="flex justify-center py-10"><Loader2 className="h-7 w-7 animate-spin text-slate-400" /></div>
+          ) : slots.length === 0 ? (
+            <Card className="bg-gray-50 border-dashed">
+              <CardContent className="p-8 text-center text-muted-foreground">
+                <Stethoscope className="h-9 w-9 mx-auto mb-2 text-gray-300" />
+                Este médico no tiene horarios de pacientes. Agrega al menos uno para que los pacientes puedan agendar.
+              </CardContent>
+            </Card>
+          ) : (
+            <div className="space-y-3">
+              {Object.entries(agrupados).map(([dia, sl]) => (
+                <Card key={dia}>
+                  <CardHeader className="pb-2"><CardTitle className="text-base">{dia}</CardTitle></CardHeader>
+                  <CardContent className="space-y-2">
+                    {sl.map((s) => (
+                      <div key={s.id} className="flex items-center justify-between p-3 bg-gray-50 rounded-lg">
+                        <div className="flex items-center gap-3">
+                          <Clock className="h-4 w-4 text-[#1E5C8E]" />
+                          <span className="text-sm font-medium">{s.hora_inicio} – {s.hora_fin}</span>
+                          <Badge variant="outline" className="text-xs">{s.duracion_slot} min/cita</Badge>
+                        </div>
+                        <Button size="sm" variant="ghost" className="text-red-600 hover:bg-red-50" onClick={() => eliminar(s.id)}>
+                          <Trash2 className="h-4 w-4" />
+                        </Button>
+                      </div>
+                    ))}
+                  </CardContent>
+                </Card>
+              ))}
+            </div>
+          )}
+        </>
+      )}
+    </div>
+  )
+}
