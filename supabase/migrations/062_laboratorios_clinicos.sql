@@ -225,8 +225,9 @@ DECLARE
   v_clinica UUID;
   v_pref    UUID;
 BEGIN
-  SELECT pais_id, laboratorio_preferido_id INTO v_pais, v_pref FROM perfiles WHERE id = auth.uid();
-  SELECT clinica_id INTO v_clinica FROM obtener_clinica_principal_medico(auth.uid()) LIMIT 1;
+  SELECT p.pais_id, p.laboratorio_preferido_id INTO v_pais, v_pref
+  FROM perfiles p WHERE p.id = auth.uid();
+  SELECT m.clinica_id INTO v_clinica FROM obtener_clinica_principal_medico(auth.uid()) m LIMIT 1;
 
   RETURN QUERY
   SELECT e.id, e.nombre_empresa, e.ciudad,
