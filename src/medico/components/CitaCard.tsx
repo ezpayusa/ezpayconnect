@@ -1,4 +1,4 @@
-import { useNavigate } from 'react-router-dom'
+import { useNavigate, useLocation } from 'react-router-dom'
 import { Card, CardContent } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
@@ -34,6 +34,9 @@ export default function CitaCard({
   accionEnProgreso,
 }: CitaCardProps) {
   const navigate = useNavigate()
+  const location = useLocation()
+  // Mantener la consulta dentro del panel del médico cuando se navega desde /medico
+  const base = location.pathname.startsWith('/medico') ? '/medico' : ''
 
   const estadoConfig: Record<string, { label: string; color: string; border: string; icon: React.ElementType }> = {
     solicitada: { label: 'Solicitada', color: 'bg-slate-100 text-slate-700', border: 'border-slate-400', icon: AlertTriangle },
@@ -169,7 +172,7 @@ export default function CitaCard({
               <Button
                 size="sm"
                 className="w-full bg-purple-600 hover:bg-purple-700"
-                onClick={() => navigate(`/consulta/${cita.id}`)}
+                onClick={() => navigate(`${base}/consulta/${cita.id}`)}
               >
                 <Stethoscope className="h-4 w-4 mr-1" />
                 Continuar consulta
@@ -182,7 +185,7 @@ export default function CitaCard({
                 size="sm"
                 variant="outline"
                 className="w-full"
-                onClick={() => navigate(`/consulta/${cita.id}`)}
+                onClick={() => navigate(`${base}/consulta/${cita.id}`)}
               >
                 <FileText className="h-4 w-4 mr-1" />
                 Ver consulta
