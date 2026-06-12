@@ -42,6 +42,11 @@ export function useDisponibilidadMedico() {
     const { data: { user } } = await supabase.auth.getUser()
     if (!user) return false
 
+    if (slot.hora_inicio && slot.hora_fin && slot.hora_fin <= slot.hora_inicio) {
+      toast.error('La hora de fin debe ser posterior a la de inicio')
+      return false
+    }
+
     // Visitadores: slot fijo de 15 min. Pacientes: lo que configure el médico.
     const contexto = (slot as any).contexto === 'paciente' ? 'paciente' : 'visitador'
     const duracion = contexto === 'visitador' ? 15 : (slot.duracion_slot || 30)

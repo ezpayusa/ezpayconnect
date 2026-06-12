@@ -325,7 +325,8 @@ export default function VisitadorAgendarPage() {
             <Card className="bg-gray-50 border-dashed">
               <CardContent className="p-6 text-center text-muted-foreground">
                 <CalendarDays className="h-8 w-8 mx-auto mb-2 text-gray-300" />
-                No hay horarios disponibles en esta semana.
+                <p>No hay horarios disponibles en esta semana.</p>
+                <p className="text-sm mt-1">Prueba con <strong>"Semana siguiente"</strong> arriba.</p>
               </CardContent>
             </Card>
           ) : (
