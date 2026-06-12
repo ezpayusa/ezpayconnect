@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate, useLocation } from 'react-router-dom';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
@@ -10,6 +10,8 @@ import { toast } from 'sonner';
 
 export default function BuscarMedicamentosPage() {
   const navigate = useNavigate();
+  const location = useLocation();
+  const enMedico = location.pathname.startsWith('/medico');
   const { resultados, resultadosProveedores, loading, buscar } = useBusquedaMedicamentos();
   const [query, setQuery] = useState('');
   const [seleccionado, setSeleccionado] = useState<string | null>(null);
@@ -51,7 +53,7 @@ export default function BuscarMedicamentosPage() {
     <div className="container mx-auto px-4 py-6 max-w-7xl">
       {/* Header */}
       <div className="flex items-center gap-4 mb-6">
-        <Button variant="ghost" size="icon" onClick={() => navigate('/dashboard')}>
+        <Button variant="ghost" size="icon" onClick={() => navigate(enMedico ? '/medico' : '/dashboard')}>
           <ArrowLeft className="h-5 w-5" />
         </Button>
         <div>

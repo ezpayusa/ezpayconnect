@@ -84,7 +84,7 @@ export default function MedicoPacientesPage() {
             <Card
               key={p.id}
               className="cursor-pointer transition-shadow hover:shadow-md"
-              onClick={() => navigate(`/pacientes/${p.id}/detalle`)}
+              onClick={() => navigate(`/medico/pacientes/${p.id}/detalle`)}
             >
               <CardContent className="p-4">
                 <div className="flex items-start justify-between">

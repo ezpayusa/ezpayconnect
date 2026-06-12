@@ -270,6 +270,9 @@ function App() {
           <Route path="pacientes" element={<MedicoPacientesPage />} />
           <Route path="recetas" element={<MedicoRecetasPage />} />
           <Route path="disponibilidad" element={<MedicoDisponibilidadPage />} />
+          <Route path="consulta/:citaId" element={<ConsultaPage />} />
+          <Route path="buscar-medicamentos" element={<BuscarMedicamentosPage />} />
+          <Route path="pacientes/:id/detalle" element={<PacienteDetallePage />} />
         </Route>
 
         {/* === RUTAS CLÍNICA === */}

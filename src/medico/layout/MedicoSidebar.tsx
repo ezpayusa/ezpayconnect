@@ -8,6 +8,7 @@ import {
   FileText,
   Clock,
   Stethoscope,
+  Pill,
   LogOut,
   ChevronLeft,
   Bell,
@@ -30,6 +31,7 @@ export function MedicoSidebar() {
     },
     { label: 'Mis Pacientes', icon: Users, path: '/medico/pacientes' },
     { label: 'Mis Recetas', icon: FileText, path: '/medico/recetas' },
+    { label: 'Buscar Medicamentos', icon: Pill, path: '/medico/buscar-medicamentos' },
     { label: 'Mi Disponibilidad', icon: Clock, path: '/medico/disponibilidad' },
   ]
 

@@ -3,7 +3,7 @@
 // EzPayConnect
 
 import { useState, useEffect } from 'react'
-import { useParams, useNavigate } from 'react-router-dom'
+import { useParams, useNavigate, useLocation } from 'react-router-dom'
 import { supabase } from '@/lib/supabase'
 import { useAuth } from '@/hooks/useAuth'
 import {
@@ -68,6 +68,8 @@ interface Cita {
 export default function PacienteDetallePage() {
   const { id } = useParams<{ id: string }>()
   const navigate = useNavigate()
+  const location = useLocation()
+  const base = location.pathname.startsWith('/medico') ? '/medico' : ''
   const { user } = useAuth()
   const [activeTab, setActiveTab] = useState<'info' | 'historial' | 'consultas' | 'signos_vitales' | 'recetas' | 'citas'>('info')
   const [paciente, setPaciente] = useState<Paciente | null>(null)
@@ -262,7 +264,7 @@ export default function PacienteDetallePage() {
       {/* Header */}
       <div className="flex items-center gap-4 mb-8">
         <button 
-          onClick={() => navigate('/pacientes')}
+          onClick={() => navigate(`${base}/pacientes`)}
           className="p-2 bg-white rounded-lg hover:bg-gray-100 transition-colors shadow-sm"
         >
           <ArrowLeft size={24} className="text-[#1E5C8E]" />

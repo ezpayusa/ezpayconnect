@@ -38,7 +38,7 @@ export default function MedicoCitasPage() {
     setAccionEnProgreso(`ensala-${cita.id}`)
     await marcarEnSala(cita)
     setAccionEnProgreso(null)
-    navigate(`/consulta/${cita.id}`)
+    navigate(`/medico/consulta/${cita.id}`)
   }
 
   const counts = useMemo(() => {

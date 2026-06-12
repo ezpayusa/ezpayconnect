@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback } from 'react'
-import { useParams, useNavigate } from 'react-router-dom'
+import { useParams, useNavigate, useLocation } from 'react-router-dom'
 import { supabase } from '@/lib/supabase'
 import { useAuth } from '@/hooks/useAuth'
 import { useConsultas } from '@/hooks/useConsultas'
@@ -58,6 +58,10 @@ function calcularEdad(fechaNacimiento: string | null): number | null {
 export default function ConsultaPage() {
   const { citaId } = useParams<{ citaId: string }>()
   const navigate = useNavigate()
+  const location = useLocation()
+  // Prefijo de panel: si la consulta se abre dentro del portal del médico,
+  // toda la navegación interna se queda dentro de /medico (no saca al médico de su panel).
+  const base = location.pathname.startsWith('/medico') ? '/medico' : ''
   const { perfil } = useAuth()
   const { updateCita } = useCitas()
   const {
@@ -167,7 +171,7 @@ export default function ConsultaPage() {
 
       if (!citaData) {
         toast.error('Cita no encontrada')
-        navigate('/citas')
+        navigate(`${base}/citas`)
         return
       }
 
@@ -302,7 +306,7 @@ export default function ConsultaPage() {
     return (
       <div className="container mx-auto px-4 py-8 text-center">
         <p className="text-muted-foreground">Cita no encontrada</p>
-        <Button onClick={() => navigate('/citas')} className="mt-4">
+        <Button onClick={() => navigate(`${base}/citas`)} className="mt-4">
           <ArrowLeft className="h-4 w-4 mr-2" /> Volver a Citas
         </Button>
       </div>
@@ -329,7 +333,7 @@ export default function ConsultaPage() {
       {/* Header */}
       <div className="bg-white border-b px-4 py-3 flex items-center justify-between sticky top-0 z-30">
         <div className="flex items-center gap-3">
-          <Button variant="ghost" size="icon" onClick={() => navigate('/citas')}>
+          <Button variant="ghost" size="icon" onClick={() => navigate(`${base}/citas`)}>
             <ArrowLeft className="h-5 w-5" />
           </Button>
           <div>
@@ -579,7 +583,7 @@ export default function ConsultaPage() {
               <Button
                 variant="outline"
                 className="w-full justify-start"
-                onClick={() => navigate(`/buscar-medicamentos`)}
+                onClick={() => navigate(`${base}/buscar-medicamentos`)}
               >
                 <Pill className="h-4 w-4 mr-2" /> Buscar Medicamentos
               </Button>
@@ -593,7 +597,7 @@ export default function ConsultaPage() {
               <Button
                 variant="outline"
                 className="w-full justify-start"
-                onClick={() => navigate(`/pacientes/${paciente.id}/detalle`)}
+                onClick={() => navigate(`${base}/pacientes/${paciente.id}/detalle`)}
               >
                 <User className="h-4 w-4 mr-2" /> Ver Expediente
               </Button>
