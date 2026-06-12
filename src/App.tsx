@@ -108,6 +108,7 @@ const LabLogin = lazy(() => import('@/laboratorio/pages/LabLogin'))
 const LabRegistro = lazy(() => import('@/laboratorio/pages/LabRegistro'))
 const LabDashboard = lazy(() => import('@/laboratorio/pages/LabDashboard'))
 const LabOrdenesPage = lazy(() => import('@/laboratorio/pages/LabOrdenesPage'))
+const LabCatalogoPage = lazy(() => import('@/laboratorio/pages/LabCatalogoPage'))
 const LabWalkInPage = lazy(() => import('@/laboratorio/pages/LabWalkInPage'))
 const LabAfiliacionesPage = lazy(() => import('@/laboratorio/pages/LabAfiliacionesPage'))
 const LabPerfilPage = lazy(() => import('@/laboratorio/pages/LabPerfilPage'))
@@ -339,6 +340,7 @@ function App() {
           <Route index element={<Navigate to="/laboratorio/dashboard" replace />} />
           <Route path="dashboard" element={<LabDashboard />} />
           <Route path="ordenes" element={<LabOrdenesPage />} />
+          <Route path="catalogo" element={<LabCatalogoPage />} />
           <Route path="walk-in" element={<LabWalkInPage />} />
           <Route path="afiliaciones" element={<LabAfiliacionesPage />} />
           <Route path="perfil" element={<LabPerfilPage />} />

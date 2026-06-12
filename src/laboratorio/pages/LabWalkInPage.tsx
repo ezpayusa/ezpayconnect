@@ -1,5 +1,5 @@
-import { useState } from 'react'
-import { useNavigate } from 'react-router-dom'
+import { useEffect, useMemo, useState } from 'react'
+import { useNavigate, Link } from 'react-router-dom'
 import { useLaboratorio } from '@/laboratorio/hooks/useLaboratorio'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
@@ -9,21 +9,35 @@ import { Textarea } from '@/components/ui/textarea'
 import { UserPlus, Loader2 } from 'lucide-react'
 
 export default function LabWalkInPage() {
-  const { crearWalkIn } = useLaboratorio()
+  const { crearWalkIn, catalogo, fetchCatalogo } = useLaboratorio()
   const navigate = useNavigate()
+  const [sel, setSel] = useState<Set<string>>(new Set())
+  const [otros, setOtros] = useState('')
   const [form, setForm] = useState({
-    paciente_nombre: '', paciente_documento: '', paciente_telefono: '',
-    tipo: '', descripcion: '', prioridad: 'normal',
+    paciente_nombre: '', paciente_documento: '', paciente_telefono: '', instrucciones: '', prioridad: 'normal',
   })
   const [saving, setSaving] = useState(false)
 
+  useEffect(() => { fetchCatalogo() }, [fetchCatalogo])
+
+  const porCategoria = useMemo(() => {
+    const acc: Record<string, typeof catalogo> = {}
+    catalogo.filter((c) => c.activo).forEach((c) => { (acc[c.categoria || 'Sin categoría'] ||= []).push(c) })
+    return acc
+  }, [catalogo])
+
+  const toggle = (nombre: string) => {
+    setSel((prev) => { const n = new Set(prev); n.has(nombre) ? n.delete(nombre) : n.add(nombre); return n })
+  }
+
   const submit = async (e: React.FormEvent) => {
     e.preventDefault()
-    if (!form.paciente_nombre.trim() || !form.tipo.trim()) return
+    const examenes = [...sel, ...otros.split('\n').map((s) => s.trim()).filter(Boolean)]
+    if (!form.paciente_nombre.trim() || examenes.length === 0) return
     setSaving(true)
     const ok = await crearWalkIn({
-      tipo: form.tipo.trim(),
-      descripcion: form.descripcion.trim() || undefined,
+      examenes,
+      instrucciones: form.instrucciones.trim() || undefined,
       prioridad: form.prioridad,
       paciente_nombre: form.paciente_nombre.trim(),
       paciente_documento: form.paciente_documento.trim() || undefined,
@@ -33,38 +47,33 @@ export default function LabWalkInPage() {
     if (ok) navigate('/laboratorio/ordenes')
   }
 
+  const total = sel.size + otros.split('\n').map((s) => s.trim()).filter(Boolean).length
+
   return (
     <div className="max-w-2xl mx-auto space-y-6">
       <div>
         <h1 className="text-2xl font-bold flex items-center gap-2 text-[#0c2a26]">
           <UserPlus className="h-7 w-7 text-[#0E7C6B]" /> Paciente walk-in
         </h1>
-        <p className="text-sm text-muted-foreground">
-          Registra una orden para un paciente que llega sin haber sido referido por un médico.
-        </p>
+        <p className="text-sm text-muted-foreground">Registra una orden para un paciente que llega sin orden médica.</p>
       </div>
 
-      <Card>
-        <CardHeader><CardTitle className="text-lg">Datos del paciente y del examen</CardTitle></CardHeader>
-        <CardContent>
-          <form onSubmit={submit} className="space-y-4">
+      <form onSubmit={submit} className="space-y-6">
+        <Card>
+          <CardHeader><CardTitle className="text-lg">Datos del paciente</CardTitle></CardHeader>
+          <CardContent>
             <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
               <div className="space-y-1 md:col-span-2">
                 <Label>Nombre del paciente *</Label>
                 <Input value={form.paciente_nombre} onChange={(e) => setForm({ ...form, paciente_nombre: e.target.value })} required />
               </div>
               <div className="space-y-1">
-                <Label>Documento / identificación</Label>
+                <Label>Documento</Label>
                 <Input value={form.paciente_documento} onChange={(e) => setForm({ ...form, paciente_documento: e.target.value })} />
               </div>
               <div className="space-y-1">
                 <Label>Teléfono</Label>
                 <Input value={form.paciente_telefono} onChange={(e) => setForm({ ...form, paciente_telefono: e.target.value })} />
-              </div>
-              <div className="space-y-1">
-                <Label>Tipo de examen *</Label>
-                <Input value={form.tipo} onChange={(e) => setForm({ ...form, tipo: e.target.value })}
-                  placeholder="Ej: Hemograma completo" required />
               </div>
               <div className="space-y-1">
                 <Label>Prioridad</Label>
@@ -74,20 +83,50 @@ export default function LabWalkInPage() {
                   <option value="urgente">Urgente</option>
                 </select>
               </div>
-              <div className="space-y-1 md:col-span-2">
-                <Label>Indicaciones / descripción</Label>
-                <Textarea rows={3} value={form.descripcion} onChange={(e) => setForm({ ...form, descripcion: e.target.value })} />
-              </div>
             </div>
-            <div className="flex justify-end gap-2">
-              <Button type="button" variant="outline" onClick={() => navigate('/laboratorio/ordenes')}>Cancelar</Button>
-              <Button type="submit" className="bg-[#0E7C6B] hover:bg-[#0a5e51]" disabled={saving || !form.paciente_nombre.trim() || !form.tipo.trim()}>
-                {saving ? <Loader2 className="h-4 w-4 animate-spin mr-1" /> : null} Registrar orden
-              </Button>
+          </CardContent>
+        </Card>
+
+        <Card>
+          <CardHeader><CardTitle className="text-lg">Exámenes a realizar</CardTitle></CardHeader>
+          <CardContent className="space-y-4">
+            {catalogo.length === 0 ? (
+              <p className="text-sm text-muted-foreground">
+                Tu catálogo está vacío. Agrega exámenes en <Link to="/laboratorio/catalogo" className="text-[#0E7C6B] underline">Catálogo</Link>, o escríbelos abajo en "Otros".
+              </p>
+            ) : (
+              Object.entries(porCategoria).map(([cat, items]) => (
+                <div key={cat}>
+                  <p className="text-xs font-semibold text-muted-foreground uppercase mb-1">{cat}</p>
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-1">
+                    {items.map((c) => (
+                      <label key={c.id} className="flex items-center gap-2 p-2 rounded-lg hover:bg-gray-50 cursor-pointer text-sm">
+                        <input type="checkbox" checked={sel.has(c.nombre)} onChange={() => toggle(c.nombre)} className="accent-[#0E7C6B] h-4 w-4" />
+                        {c.nombre}
+                      </label>
+                    ))}
+                  </div>
+                </div>
+              ))
+            )}
+            <div className="space-y-1">
+              <Label>Otros exámenes (uno por línea)</Label>
+              <Textarea rows={2} value={otros} onChange={(e) => setOtros(e.target.value)} placeholder="Examen no listado…" />
             </div>
-          </form>
-        </CardContent>
-      </Card>
+            <div className="space-y-1">
+              <Label>Instrucciones / observaciones</Label>
+              <Textarea rows={2} value={form.instrucciones} onChange={(e) => setForm({ ...form, instrucciones: e.target.value })} />
+            </div>
+          </CardContent>
+        </Card>
+
+        <div className="flex justify-end gap-2">
+          <Button type="button" variant="outline" onClick={() => navigate('/laboratorio/ordenes')}>Cancelar</Button>
+          <Button type="submit" className="bg-[#0E7C6B] hover:bg-[#0a5e51]" disabled={saving || !form.paciente_nombre.trim() || total === 0}>
+            {saving ? <Loader2 className="h-4 w-4 animate-spin mr-1" /> : null} Registrar orden ({total})
+          </Button>
+        </div>
+      </form>
     </div>
   )
 }

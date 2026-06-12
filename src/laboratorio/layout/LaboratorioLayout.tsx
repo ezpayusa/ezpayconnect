@@ -2,7 +2,7 @@ import { Link, useLocation, useNavigate, Outlet } from 'react-router-dom'
 import { useProveedorAuth } from '@/proveedor/hooks/useProveedorAuth'
 import { useNotificaciones } from '@/hooks/useNotificaciones'
 import { Button } from '@/components/ui/button'
-import { LayoutDashboard, FlaskConical, ClipboardList, UserPlus, Building2, Bell, LogOut, Menu, X } from 'lucide-react'
+import { LayoutDashboard, FlaskConical, ClipboardList, UserPlus, Building2, Bell, LogOut, Menu, X, ListChecks } from 'lucide-react'
 import { useState, useEffect } from 'react'
 
 interface NavItem { label: string; path: string; icon: React.ElementType; badge?: boolean }
@@ -10,6 +10,7 @@ interface NavItem { label: string; path: string; icon: React.ElementType; badge?
 const NAV_ITEMS: NavItem[] = [
   { label: 'Dashboard', path: '/laboratorio/dashboard', icon: LayoutDashboard },
   { label: 'Órdenes de examen', path: '/laboratorio/ordenes', icon: ClipboardList },
+  { label: 'Catálogo de exámenes', path: '/laboratorio/catalogo', icon: ListChecks },
   { label: 'Paciente walk-in', path: '/laboratorio/walk-in', icon: UserPlus },
   { label: 'Afiliaciones', path: '/laboratorio/afiliaciones', icon: Building2 },
   { label: 'Perfil', path: '/laboratorio/perfil', icon: FlaskConical },

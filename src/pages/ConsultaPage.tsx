@@ -111,6 +111,12 @@ export default function ConsultaPage() {
   const [labs, setLabs] = useState<LabOpcion[]>([])
   const [labSel, setLabSel] = useState<string>('')
 
+  // Hoja de orden: catálogo del lab elegido + selección + "otros"
+  type CatItem = { id: string; nombre: string; categoria: string | null }
+  const [catalogoLab, setCatalogoLab] = useState<CatItem[]>([])
+  const [examenesSel, setExamenesSel] = useState<Set<string>>(new Set())
+  const [otrosExamenes, setOtrosExamenes] = useState('')
+
   useEffect(() => {
     if (!modalExamen) return
     supabase.rpc('laboratorios_para_medico').then(({ data }) => {
@@ -120,48 +126,94 @@ export default function ConsultaPage() {
     })
   }, [modalExamen])
 
+  // Cargar el catálogo del laboratorio seleccionado
+  useEffect(() => {
+    if (!labSel) { setCatalogoLab([]); setExamenesSel(new Set()); return }
+    supabase.from('examenes_catalogo')
+      .select('id, nombre, categoria')
+      .eq('laboratorio_id', labSel)
+      .eq('activo', true)
+      .order('categoria', { nullsFirst: false })
+      .order('nombre')
+      .then(({ data }) => { setCatalogoLab((data || []) as CatItem[]); setExamenesSel(new Set()) })
+  }, [labSel])
+
+  const toggleExamenSel = (nombre: string) =>
+    setExamenesSel((prev) => { const n = new Set(prev); n.has(nombre) ? n.delete(nombre) : n.add(nombre); return n })
+
+  const examenesElegidos = () => [
+    ...examenesSel,
+    ...otrosExamenes.split('\n').map((s) => s.trim()).filter(Boolean),
+  ]
+
   const handleCrearExamen = async () => {
-    if (!paciente || !examenForm.tipo.trim()) {
-      toast.error('Indica el tipo de examen')
+    if (!paciente) return
+    // Exámenes elegidos: del catálogo + "otros". Si no hay lab/catálogo, el campo libre "tipo".
+    const lista = labSel ? examenesElegidos() : examenesElegidos().concat(examenForm.tipo.trim() ? [examenForm.tipo.trim()] : [])
+    if (lista.length === 0) {
+      toast.error('Selecciona o escribe al menos un examen')
       return
     }
     setGuardandoExamen(true)
 
-    // Clínica del médico (snapshot para que el lab la vea sin chocar con RLS)
     const { data: clinicaRows } = await supabase.rpc('mi_clinica_medico')
     const clinica = (clinicaRows || [])[0] as { clinica_id: string; clinica_nombre: string } | undefined
     const labElegido = labs.find((l) => l.id === labSel)
+    const pacienteNombre = `${paciente.nombre} ${paciente.apellido}`.trim()
+    const instrucciones = examenForm.descripcion.trim() || null
 
-    const { error } = await supabase.from('examenes').insert({
+    // 1. Cabecera de la orden
+    const { data: orden, error: oErr } = await supabase.from('ordenes_examen').insert({
+      laboratorio_id: labSel || null,
+      clinica_id: clinica?.clinica_id || null,
+      medico_id: perfil?.id,
+      paciente_id: paciente.id,
+      origen: 'medico',
+      instrucciones,
+      paciente_nombre: pacienteNombre,
+      medico_nombre: perfil?.nombre_completo || null,
+      clinica_nombre: clinica?.clinica_nombre || null,
+    }).select('id').single()
+
+    if (oErr || !orden) {
+      setGuardandoExamen(false)
+      toast.error('Error al crear la orden: ' + (oErr?.message || ''))
+      return
+    }
+
+    // 2. Un ítem (fila examenes) por examen
+    const filas = lista.map((tipo) => ({
+      orden_id: orden.id,
       paciente_id: paciente.id,
       medico_id: perfil?.id,
-      tipo: examenForm.tipo.trim(),
-      descripcion: examenForm.descripcion.trim() || null,
+      tipo,
+      descripcion: instrucciones,
       estado: 'pendiente',
       laboratorio_id: labSel || null,
       clinica_id: clinica?.clinica_id || null,
       origen: 'medico',
-      paciente_nombre: `${paciente.nombre} ${paciente.apellido}`.trim(),
+      paciente_nombre: pacienteNombre,
       medico_nombre: perfil?.nombre_completo || null,
       clinica_nombre: clinica?.clinica_nombre || null,
-    })
+    }))
+    const { error } = await supabase.from('examenes').insert(filas)
     setGuardandoExamen(false)
     if (error) {
-      toast.error('Error al crear la orden: ' + error.message)
+      toast.error('Error al crear los exámenes: ' + error.message)
       return
     }
-    // Notificar al paciente (campanita del webapp)
+
+    const resumen = lista.length === 1 ? lista[0] : `${lista.length} exámenes`
+    // Notificar al paciente
     try {
       await supabase.rpc('notificar_paciente', {
         p_paciente_id: paciente.id,
         p_tipo: 'examen',
         p_titulo: 'Nueva orden de examen',
-        p_mensaje: `Tu médico te ordenó un examen: ${examenForm.tipo.trim()}.`,
+        p_mensaje: `Tu médico te ordenó: ${resumen}.`,
         p_accion_url: '/paciente/examenes',
       })
-    } catch (e) {
-      console.error('Error notificando examen al paciente:', e)
-    }
+    } catch (e) { console.error('Error notificando examen al paciente:', e) }
     // Notificar al laboratorio asignado
     if (labSel) {
       try {
@@ -169,21 +221,21 @@ export default function ConsultaPage() {
           p_laboratorio_id: labSel,
           p_tipo: 'orden_examen',
           p_titulo: 'Nueva orden de examen',
-          p_mensaje: `${perfil?.nombre_completo || 'Un médico'} ordenó: ${examenForm.tipo.trim()} para ${paciente.nombre} ${paciente.apellido}.`,
+          p_mensaje: `${perfil?.nombre_completo || 'Un médico'} ordenó ${resumen} para ${pacienteNombre}.`,
           p_accion_url: '/laboratorio/ordenes',
         })
-      } catch (e) {
-        console.error('Error notificando al laboratorio:', e)
-      }
+      } catch (e) { console.error('Error notificando al laboratorio:', e) }
     }
     toast.success(
       labElegido
-        ? `Orden enviada a ${labElegido.nombre_empresa}. El paciente también la verá en su portal.`
-        : 'Orden de examen creada. El paciente la verá en su portal.'
+        ? `Orden (${lista.length}) enviada a ${labElegido.nombre_empresa}. El paciente también la verá en su portal.`
+        : `Orden de examen creada (${lista.length}). El paciente la verá en su portal.`
     )
     setModalExamen(false)
     setExamenForm({ tipo: '', descripcion: '' })
     setLabSel('')
+    setExamenesSel(new Set())
+    setOtrosExamenes('')
   }
 
   const calcularIMC = useCallback(() => {
@@ -716,7 +768,7 @@ export default function ConsultaPage() {
       {/* Modal: nueva orden de examen */}
       {modalExamen && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
-          <div className="bg-white rounded-2xl shadow-xl w-full max-w-md overflow-hidden">
+          <div className="bg-white rounded-2xl shadow-xl w-full max-w-lg overflow-hidden flex flex-col max-h-[90vh]">
             <div className="flex items-center justify-between p-4 border-b">
               <h3 className="font-semibold flex items-center gap-2">
                 <FlaskConical className="h-5 w-5 text-[#1E5C8E]" /> Nueva orden de examen
@@ -728,26 +780,8 @@ export default function ConsultaPage() {
                 ✕
               </button>
             </div>
-            <div className="p-4 space-y-3">
-              <div>
-                <Label>Tipo de examen *</Label>
-                <Input
-                  value={examenForm.tipo}
-                  onChange={(e) => setExamenForm((p) => ({ ...p, tipo: e.target.value }))}
-                  placeholder="Ej: Hemograma, Glucosa, Radiografía de tórax"
-                  list="examenes-comunes"
-                  autoFocus
-                />
-                <datalist id="examenes-comunes">
-                  <option value="Hemograma completo" />
-                  <option value="Glucosa en ayunas" />
-                  <option value="Perfil lipídico" />
-                  <option value="Examen general de orina" />
-                  <option value="Radiografía de tórax" />
-                  <option value="Electrocardiograma" />
-                  <option value="Ultrasonido abdominal" />
-                </datalist>
-              </div>
+            <div className="p-4 space-y-3 overflow-y-auto">
+              {/* Laboratorio (define el catálogo que se muestra) */}
               <div>
                 <Label>Laboratorio clínico</Label>
                 <select
@@ -775,9 +809,6 @@ export default function ConsultaPage() {
                     </>
                   )}
                 </select>
-                <p className="text-xs text-muted-foreground mt-1">
-                  La orden se enviará directo a este laboratorio. ⭐ = tu laboratorio de confianza.
-                </p>
                 {labSel && !labs.find((l) => l.id === labSel)?.es_preferido && (
                   <button
                     type="button"
@@ -793,13 +824,65 @@ export default function ConsultaPage() {
                   </button>
                 )}
               </div>
+
+              {/* Hoja de exámenes */}
+              {labSel ? (
+                <div>
+                  <Label>Exámenes a solicitar *</Label>
+                  {catalogoLab.length > 0 ? (
+                    <div className="mt-1 border rounded-lg divide-y max-h-56 overflow-y-auto">
+                      {Object.entries(
+                        catalogoLab.reduce((acc: Record<string, CatItem[]>, c) => {
+                          (acc[c.categoria || 'Sin categoría'] ||= []).push(c); return acc
+                        }, {})
+                      ).map(([cat, items]) => (
+                        <div key={cat} className="p-2">
+                          <p className="text-[11px] font-semibold text-muted-foreground uppercase mb-1">{cat}</p>
+                          {items.map((c) => (
+                            <label key={c.id} className="flex items-center gap-2 px-1 py-1 rounded hover:bg-gray-50 cursor-pointer text-sm">
+                              <input type="checkbox" checked={examenesSel.has(c.nombre)} onChange={() => toggleExamenSel(c.nombre)} className="accent-[#1E5C8E] h-4 w-4" />
+                              {c.nombre}
+                            </label>
+                          ))}
+                        </div>
+                      ))}
+                    </div>
+                  ) : (
+                    <p className="text-xs text-amber-600 mt-1">Este laboratorio aún no publicó su catálogo. Escribe los exámenes en "Otros".</p>
+                  )}
+                  <div className="mt-2">
+                    <Label className="text-xs">Otros exámenes (uno por línea)</Label>
+                    <Textarea value={otrosExamenes} onChange={(e) => setOtrosExamenes(e.target.value)} rows={2}
+                      placeholder="Examen no listado…" />
+                  </div>
+                </div>
+              ) : (
+                <div>
+                  <Label>Tipo de examen *</Label>
+                  <Input
+                    value={examenForm.tipo}
+                    onChange={(e) => setExamenForm((p) => ({ ...p, tipo: e.target.value }))}
+                    placeholder="Ej: Hemograma, Glucosa, Radiografía de tórax"
+                    list="examenes-comunes"
+                  />
+                  <datalist id="examenes-comunes">
+                    <option value="Hemograma completo" />
+                    <option value="Glucosa en ayunas" />
+                    <option value="Perfil lipídico" />
+                    <option value="Examen general de orina" />
+                    <option value="Radiografía de tórax" />
+                  </datalist>
+                  <p className="text-xs text-muted-foreground mt-1">Elige un laboratorio para ver su hoja de exámenes con casillas.</p>
+                </div>
+              )}
+
               <div>
-                <Label>Indicaciones / descripción</Label>
+                <Label>Instrucciones / observaciones</Label>
                 <Textarea
                   value={examenForm.descripcion}
                   onChange={(e) => setExamenForm((p) => ({ ...p, descripcion: e.target.value }))}
-                  rows={3}
-                  placeholder="Detalles o indicaciones para el laboratorio…"
+                  rows={2}
+                  placeholder="Indicaciones especiales para el laboratorio…"
                 />
               </div>
             </div>
@@ -810,7 +893,7 @@ export default function ConsultaPage() {
               <Button
                 className="bg-[#1E5C8E] hover:bg-[#164a70]"
                 onClick={handleCrearExamen}
-                disabled={guardandoExamen || !examenForm.tipo.trim()}
+                disabled={guardandoExamen || (labSel ? examenesElegidos().length === 0 : !examenForm.tipo.trim())}
               >
                 {guardandoExamen ? 'Creando…' : 'Crear orden'}
               </Button>
