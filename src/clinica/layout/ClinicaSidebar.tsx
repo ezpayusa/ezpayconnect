@@ -12,6 +12,7 @@ import {
   ChevronLeft,
   CalendarDays,
   Clock,
+  FlaskConical,
 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import ClinicaNotificacionesDropdown from '@/clinica/layout/ClinicaNotificacionesDropdown'
@@ -28,6 +29,7 @@ export function ClinicaSidebar() {
     { label: 'Personal', icon: Users, path: '/clinica/personal' },
     { label: 'Horarios Médicos', icon: Clock, path: '/clinica/horarios-medicos' },
     { label: 'Invitar Médico', icon: Stethoscope, path: '/clinica/invitar-medico' },
+    { label: 'Invitar Laboratorio', icon: FlaskConical, path: '/clinica/invitar-laboratorio' },
     { label: 'Invitar Staff', icon: UserPlus, path: '/clinica/invitar-staff' },
     { label: 'Configuración', icon: Settings, path: '/clinica/configuracion' },
   ]

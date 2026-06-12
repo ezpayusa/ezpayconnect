@@ -10,6 +10,8 @@ import WebAppLayout from '@/webapp/layout/WebAppLayout'
 import WebAppPrivateRoute from '@/webapp/layout/WebAppPrivateRoute'
 import ProveedorLayout from '@/proveedor/layout/ProveedorLayout'
 import ProveedorPrivateRoute from '@/proveedor/components/ProveedorPrivateRoute'
+import LaboratorioLayout from '@/laboratorio/layout/LaboratorioLayout'
+import LaboratorioPrivateRoute from '@/laboratorio/components/LaboratorioPrivateRoute'
 import { MedicoLayout } from '@/medico/layout/MedicoLayout'
 import MedicoPrivateRoute from '@/medico/components/MedicoPrivateRoute'
 import { ClinicaLayout } from '@/clinica/layout/ClinicaLayout'
@@ -101,6 +103,15 @@ const ProveedorPagosPage = lazy(() => import('@/proveedor/pages/cuenta/Proveedor
 const ProveedorNotificacionesPage = lazy(() => import('@/proveedor/pages/ProveedorNotificacionesPage'))
 const PagoCheckoutPage = lazy(() => import('@/proveedor/pages/PagoCheckoutPage'))
 
+// === PORTAL LABORATORIO CLÍNICO ===
+const LabLogin = lazy(() => import('@/laboratorio/pages/LabLogin'))
+const LabRegistro = lazy(() => import('@/laboratorio/pages/LabRegistro'))
+const LabDashboard = lazy(() => import('@/laboratorio/pages/LabDashboard'))
+const LabOrdenesPage = lazy(() => import('@/laboratorio/pages/LabOrdenesPage'))
+const LabWalkInPage = lazy(() => import('@/laboratorio/pages/LabWalkInPage'))
+const LabAfiliacionesPage = lazy(() => import('@/laboratorio/pages/LabAfiliacionesPage'))
+const LabPerfilPage = lazy(() => import('@/laboratorio/pages/LabPerfilPage'))
+
 // === PLANES ===
 const PlanesPage = lazy(() => import('@/pages/planes/PlanesPage'))
 const PlanesConfigPage = lazy(() => import('@/pages/planes/PlanesConfigPage'))
@@ -122,6 +133,7 @@ const PlanesEmpresasAfinesConfigPage = lazy(() => import('@/pages/planes/PlanesE
 const ClinicaDashboardPage = lazy(() => import('@/clinica/pages/ClinicaDashboardPage'))
 const ClinicaPersonalPage = lazy(() => import('@/clinica/pages/ClinicaPersonalPage'))
 const ClinicaInvitarMedicoPage = lazy(() => import('@/clinica/pages/ClinicaInvitarMedicoPage'))
+const ClinicaInvitarLaboratorioPage = lazy(() => import('@/clinica/pages/ClinicaInvitarLaboratorioPage'))
 const ClinicaInvitarStaffPage = lazy(() => import('@/clinica/pages/ClinicaInvitarStaffPage'))
 const ClinicaCitasPage = lazy(() => import('@/clinica/pages/ClinicaCitasPage'))
 const ClinicaConfiguracionPage = lazy(() => import('@/clinica/pages/ClinicaConfiguracionPage'))
@@ -283,6 +295,7 @@ function App() {
           <Route path="personal" element={<ClinicaPersonalPage />} />
           <Route path="horarios-medicos" element={<ClinicaHorariosMedicosPage />} />
           <Route path="invitar-medico" element={<ClinicaInvitarMedicoPage />} />
+          <Route path="invitar-laboratorio" element={<ClinicaInvitarLaboratorioPage />} />
           <Route path="invitar-staff" element={<ClinicaInvitarStaffPage />} />
           <Route path="configuracion" element={<ClinicaConfiguracionPage />} />
         </Route>
@@ -317,6 +330,19 @@ function App() {
           <Route path="pagos" element={<ProveedorPagosPage />} />
           <Route path="notificaciones" element={<ProveedorNotificacionesPage />} />
           <Route path="checkout" element={<PagoCheckoutPage />} />
+        </Route>
+
+        {/* === RUTAS PORTAL LABORATORIO CLÍNICO === */}
+        <Route path="/laboratorio/login" element={<LabLogin />} />
+        <Route path="/laboratorio/registro" element={<LabRegistro />} />
+        <Route path="/laboratorio/*" element={<LaboratorioPrivateRoute><LaboratorioLayout /></LaboratorioPrivateRoute>}>
+          <Route index element={<Navigate to="/laboratorio/dashboard" replace />} />
+          <Route path="dashboard" element={<LabDashboard />} />
+          <Route path="ordenes" element={<LabOrdenesPage />} />
+          <Route path="walk-in" element={<LabWalkInPage />} />
+          <Route path="afiliaciones" element={<LabAfiliacionesPage />} />
+          <Route path="perfil" element={<LabPerfilPage />} />
+          <Route path="notificaciones" element={<ProveedorNotificacionesPage />} />
         </Route>
 
         {/* === RUTAS ADMIN PLANES (con AdminLayout) — FIX: ahora tienen layout === */}

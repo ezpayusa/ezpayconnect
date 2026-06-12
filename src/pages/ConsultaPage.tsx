@@ -106,18 +106,44 @@ export default function ConsultaPage() {
   const [examenForm, setExamenForm] = useState({ tipo: '', descripcion: '' })
   const [guardandoExamen, setGuardandoExamen] = useState(false)
 
+  // Laboratorios para dirigir la orden (afiliados a la clínica + lab de confianza del médico)
+  type LabOpcion = { id: string; nombre_empresa: string; ciudad: string | null; afiliado: boolean; es_preferido: boolean }
+  const [labs, setLabs] = useState<LabOpcion[]>([])
+  const [labSel, setLabSel] = useState<string>('')
+
+  useEffect(() => {
+    if (!modalExamen) return
+    supabase.rpc('laboratorios_para_medico').then(({ data }) => {
+      const list = (data || []) as LabOpcion[]
+      setLabs(list)
+      setLabSel((prev) => prev || (list.find((l) => l.es_preferido)?.id || list.find((l) => l.afiliado)?.id || ''))
+    })
+  }, [modalExamen])
+
   const handleCrearExamen = async () => {
     if (!paciente || !examenForm.tipo.trim()) {
       toast.error('Indica el tipo de examen')
       return
     }
     setGuardandoExamen(true)
+
+    // Clínica del médico (snapshot para que el lab la vea sin chocar con RLS)
+    const { data: clinicaRows } = await supabase.rpc('mi_clinica_medico')
+    const clinica = (clinicaRows || [])[0] as { clinica_id: string; clinica_nombre: string } | undefined
+    const labElegido = labs.find((l) => l.id === labSel)
+
     const { error } = await supabase.from('examenes').insert({
       paciente_id: paciente.id,
       medico_id: perfil?.id,
       tipo: examenForm.tipo.trim(),
       descripcion: examenForm.descripcion.trim() || null,
       estado: 'pendiente',
+      laboratorio_id: labSel || null,
+      clinica_id: clinica?.clinica_id || null,
+      origen: 'medico',
+      paciente_nombre: `${paciente.nombre} ${paciente.apellido}`.trim(),
+      medico_nombre: perfil?.nombre_completo || null,
+      clinica_nombre: clinica?.clinica_nombre || null,
     })
     setGuardandoExamen(false)
     if (error) {
@@ -136,9 +162,28 @@ export default function ConsultaPage() {
     } catch (e) {
       console.error('Error notificando examen al paciente:', e)
     }
-    toast.success('Orden de examen creada. El paciente la verá en su portal.')
+    // Notificar al laboratorio asignado
+    if (labSel) {
+      try {
+        await supabase.rpc('notificar_laboratorio', {
+          p_laboratorio_id: labSel,
+          p_tipo: 'orden_examen',
+          p_titulo: 'Nueva orden de examen',
+          p_mensaje: `${perfil?.nombre_completo || 'Un médico'} ordenó: ${examenForm.tipo.trim()} para ${paciente.nombre} ${paciente.apellido}.`,
+          p_accion_url: '/laboratorio/ordenes',
+        })
+      } catch (e) {
+        console.error('Error notificando al laboratorio:', e)
+      }
+    }
+    toast.success(
+      labElegido
+        ? `Orden enviada a ${labElegido.nombre_empresa}. El paciente también la verá en su portal.`
+        : 'Orden de examen creada. El paciente la verá en su portal.'
+    )
     setModalExamen(false)
     setExamenForm({ tipo: '', descripcion: '' })
+    setLabSel('')
   }
 
   const calcularIMC = useCallback(() => {
@@ -702,6 +747,51 @@ export default function ConsultaPage() {
                   <option value="Electrocardiograma" />
                   <option value="Ultrasonido abdominal" />
                 </datalist>
+              </div>
+              <div>
+                <Label>Laboratorio clínico</Label>
+                <select
+                  value={labSel}
+                  onChange={(e) => setLabSel(e.target.value)}
+                  className="w-full h-10 rounded-md border border-input bg-background px-3 text-sm"
+                >
+                  <option value="">— Sin asignar (el paciente elige) —</option>
+                  {labs.length > 0 && (
+                    <>
+                      <optgroup label="Afiliados a tu clínica">
+                        {labs.filter((l) => l.afiliado).map((l) => (
+                          <option key={l.id} value={l.id}>
+                            {l.nombre_empresa}{l.ciudad ? ` · ${l.ciudad}` : ''}{l.es_preferido ? ' ⭐' : ''}
+                          </option>
+                        ))}
+                      </optgroup>
+                      <optgroup label="Otros laboratorios del país">
+                        {labs.filter((l) => !l.afiliado).map((l) => (
+                          <option key={l.id} value={l.id}>
+                            {l.nombre_empresa}{l.ciudad ? ` · ${l.ciudad}` : ''}{l.es_preferido ? ' ⭐' : ''}
+                          </option>
+                        ))}
+                      </optgroup>
+                    </>
+                  )}
+                </select>
+                <p className="text-xs text-muted-foreground mt-1">
+                  La orden se enviará directo a este laboratorio. ⭐ = tu laboratorio de confianza.
+                </p>
+                {labSel && !labs.find((l) => l.id === labSel)?.es_preferido && (
+                  <button
+                    type="button"
+                    onClick={async () => {
+                      const { error } = await supabase.from('perfiles').update({ laboratorio_preferido_id: labSel }).eq('id', perfil?.id)
+                      if (error) { toast.error('No se pudo guardar'); return }
+                      setLabs((prev) => prev.map((l) => ({ ...l, es_preferido: l.id === labSel })))
+                      toast.success('Laboratorio de confianza actualizado')
+                    }}
+                    className="text-xs text-[#1E5C8E] hover:underline mt-1"
+                  >
+                    ⭐ Marcar como mi laboratorio de confianza
+                  </button>
+                )}
               </div>
               <div>
                 <Label>Indicaciones / descripción</Label>
