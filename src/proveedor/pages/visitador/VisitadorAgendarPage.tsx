@@ -4,6 +4,7 @@ import { useNavigate } from 'react-router-dom'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
+import { supabase } from '@/lib/supabase'
 import { useMedicosDisponibles } from '@/proveedor/hooks/useMedicosDisponibles'
 import { useVisitasAgendadas } from '@/proveedor/hooks/useVisitasAgendadas'
 import { usePlanesVisitador } from '@/proveedor/hooks/usePlanesVisitador'
@@ -56,6 +57,13 @@ export default function VisitadorAgendarPage() {
   const [tipoVisita, setTipoVisita] = useState<VisitaTipo>('presentacion_producto')
   const [notas, setNotas] = useState('')
   const [semanaOffset, setSemanaOffset] = useState(0)
+  const [planEstado, setPlanEstado] = useState<{ tiene_plan: boolean; cupo: number; ilimitado: boolean; usadas_mes: number } | null>(null)
+
+  useEffect(() => {
+    supabase.rpc('estado_plan_visitas').then(({ data }) => {
+      if (data && data[0]) setPlanEstado(data[0])
+    })
+  }, [])
   const [slotsGenerados, setSlotsGenerados] = useState<SlotGenerado[]>([])
   const [cargandoSlots, setCargandoSlots] = useState(false)
 
@@ -190,6 +198,34 @@ export default function VisitadorAgendarPage() {
           <p className="text-sm text-muted-foreground">Busca un médico y selecciona un horario</p>
         </div>
       </div>
+
+      {/* Estado del plan de visitas */}
+      {planEstado && (
+        planEstado.tiene_plan ? (
+          !planEstado.ilimitado && (
+            <Card className={planEstado.usadas_mes >= planEstado.cupo ? 'border-red-300 bg-red-50' : 'bg-slate-50'}>
+              <CardContent className="p-3 text-sm flex items-center justify-between">
+                <span>Visitas de este mes: <strong>{planEstado.usadas_mes} / {planEstado.cupo}</strong></span>
+                {planEstado.usadas_mes >= planEstado.cupo && (
+                  <span className="text-red-600 font-medium">Límite alcanzado · mejora tu plan</span>
+                )}
+              </CardContent>
+            </Card>
+          )
+        ) : (
+          <Card className="border-amber-300 bg-amber-50">
+            <CardContent className="p-4 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+              <div className="text-sm text-amber-800">
+                <p className="font-semibold">Tu empresa no tiene un plan de visitas activo.</p>
+                <p>Contrata un plan para poder agendar visitas con médicos.</p>
+              </div>
+              <Button className="bg-[#1E5C8E] hover:bg-[#164a70]" onClick={() => navigate('/proveedor/visitador/planes')}>
+                Ver planes
+              </Button>
+            </CardContent>
+          </Card>
+        )
+      )}
 
       {/* Buscador médicos */}
       <Card>

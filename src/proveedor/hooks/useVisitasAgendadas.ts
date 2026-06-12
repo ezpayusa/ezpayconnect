@@ -196,9 +196,18 @@ export function useVisitasAgendadas() {
     setSaving(false)
 
     if (error) {
+      const msg = (error as any).message || ''
       // 23505 = el slot ya fue tomado por otro proveedor entre que lo viste y lo guardaste.
       if ((error as any).code === '23505') {
         toast.error('Ese horario acaba de ser tomado por otro proveedor. Por favor elige otro.', { duration: 6000 })
+        return false
+      }
+      if (msg.includes('SIN_PLAN')) {
+        toast.error('Tu empresa no tiene un plan de visitas activo. Contrata un plan para poder agendar.', { duration: 7000 })
+        return false
+      }
+      if (msg.includes('LIMITE_MENSUAL')) {
+        toast.error('Alcanzaste el límite de visitas de tu plan este mes. Mejora tu plan para agendar más.', { duration: 7000 })
         return false
       }
       toast.error('Error agendando visita')
