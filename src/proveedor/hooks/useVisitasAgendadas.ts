@@ -196,6 +196,11 @@ export function useVisitasAgendadas() {
     setSaving(false)
 
     if (error) {
+      // 23505 = el slot ya fue tomado por otro proveedor entre que lo viste y lo guardaste.
+      if ((error as any).code === '23505') {
+        toast.error('Ese horario acaba de ser tomado por otro proveedor. Por favor elige otro.', { duration: 6000 })
+        return false
+      }
       toast.error('Error agendando visita')
       console.error(error)
       return false

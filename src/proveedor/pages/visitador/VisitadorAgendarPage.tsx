@@ -154,6 +154,10 @@ export default function VisitadorAgendarPage() {
     if (ok) {
       toast.success('Visita propuesta. Tu administrador la revisará pronto.')
       navigate('/proveedor/visitador/mis-visitas')
+    } else {
+      // Pudo haber sido tomado por otro proveedor: limpiar selección y refrescar slots.
+      setSlotSeleccionado(null)
+      if (medicoSeleccionado) generarSlots(medicoSeleccionado, disponibilidad, semanaOffset)
     }
   }
 
