@@ -57,14 +57,11 @@ export const ROLES_PROVEEDOR: RolProveedor[] = [
   {
     value: 'supervisor',
     label: 'Supervisor de visitadores',
-    descripcion: 'Aprueba visitas, gestiona el equipo de visitadores, rutas y ubicaciones. No ve pagos ni configura la empresa.',
+    descripcion: 'Aprueba visitas, gestiona su equipo de visitadores, rutas y ubicaciones de médicos. No ve catálogo, publicidad, pagos ni configura la empresa.',
     permisos: [
       'visitas.aprobar',
       'visitadores.gestionar',
       'ubicaciones.gestionar',
-      'planes.contratar',
-      'productos.ver',
-      'publicidad.ver',
       'reportes.ver',
     ],
   },
