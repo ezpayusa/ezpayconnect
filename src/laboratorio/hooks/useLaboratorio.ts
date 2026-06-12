@@ -107,6 +107,19 @@ export function useLaboratorio() {
 
   useEffect(() => { if (labId) { fetchOrdenes() } }, [labId, fetchOrdenes])
 
+  // Realtime: refresca la bandeja cuando entra/cambia una orden de este lab (sin refrescar a mano)
+  useEffect(() => {
+    if (!labId) return
+    const channel = supabase
+      .channel(`lab_ordenes_${labId}`)
+      .on('postgres_changes',
+        { event: '*', schema: 'public', table: 'examenes', filter: `laboratorio_id=eq.${labId}` },
+        () => { fetchOrdenes() }
+      )
+      .subscribe()
+    return () => { supabase.removeChannel(channel) }
+  }, [labId, fetchOrdenes])
+
   const cambiarEstado = async (ordenId: number, estado: string) => {
     const patch: any = { estado }
     if (estado === 'completado') patch.fecha_resultado = new Date().toISOString().slice(0, 10)
@@ -127,7 +140,7 @@ export function useLaboratorio() {
     return data.publicUrl
   }
 
-  const subirResultado = async (ordenId: number, resultados: string, archivo?: File | null) => {
+  const subirResultado = async (ordenId: number, resultados: string, archivo?: File | null, tipo?: string) => {
     let archivo_url: string | null = null
     if (archivo) {
       archivo_url = await subirArchivo(ordenId, archivo)
@@ -140,8 +153,18 @@ export function useLaboratorio() {
       fecha_resultado: new Date().toISOString().slice(0, 10),
     }).eq('id', ordenId)
     if (error) { toast.error('No se pudo guardar el resultado: ' + error.message); return false }
-    // Avisar al médico y al paciente (RPC security definer)
-    try { await supabase.rpc('notificar_resultado_examen', { p_examen_id: ordenId }) } catch (e) { console.error(e) }
+    // Avisar al médico y al paciente: in-app (RPC) + push web dirigido
+    try {
+      const { data: dest } = await supabase.rpc('notificar_resultado_examen', { p_examen_id: ordenId })
+      const titulo = 'Resultado de examen listo'
+      const detalle = tipo ? `Resultado de ${tipo} disponible.` : 'Un resultado de examen está disponible.'
+      const enviarPush = (ids: string[], url: string) =>
+        supabase.functions.invoke('enviar-push', {
+          body: { usuario_ids: ids, titulo, mensaje: detalle, url, tag: `resultado-${ordenId}` },
+        })
+      if (dest?.medico) await enviarPush([dest.medico], '/medico/citas')
+      if (dest?.paciente) await enviarPush([dest.paciente], '/paciente/examenes')
+    } catch (e) { console.error(e) }
     toast.success('Resultado enviado')
     fetchOrdenes()
     return true

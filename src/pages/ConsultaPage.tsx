@@ -232,16 +232,24 @@ export default function ConsultaPage() {
         p_accion_url: '/paciente/examenes',
       })
     } catch (e) { console.error('Error notificando examen al paciente:', e) }
-    // Notificar al laboratorio asignado
+    // Notificar al laboratorio asignado (in-app + push)
     if (labSel) {
+      const tituloLab = 'Nueva orden de examen'
+      const mensajeLab = `${perfil?.nombre_completo || 'Un médico'} ordenó ${resumen} para ${pacienteNombre}.`
       try {
-        await supabase.rpc('notificar_laboratorio', {
+        const { data: idsLab } = await supabase.rpc('notificar_laboratorio', {
           p_laboratorio_id: labSel,
           p_tipo: 'orden_examen',
-          p_titulo: 'Nueva orden de examen',
-          p_mensaje: `${perfil?.nombre_completo || 'Un médico'} ordenó ${resumen} para ${pacienteNombre}.`,
+          p_titulo: tituloLab,
+          p_mensaje: mensajeLab,
           p_accion_url: '/laboratorio/ordenes',
         })
+        // Push web a las cuentas del laboratorio (degrada si no hay suscripción)
+        if (Array.isArray(idsLab) && idsLab.length > 0) {
+          await supabase.functions.invoke('enviar-push', {
+            body: { usuario_ids: idsLab, titulo: tituloLab, mensaje: mensajeLab, url: '/laboratorio/ordenes', tag: `orden-${orden.id}` },
+          })
+        }
       } catch (e) { console.error('Error notificando al laboratorio:', e) }
     }
     toast.success(

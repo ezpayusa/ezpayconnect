@@ -43,7 +43,7 @@ export default function LabOrdenesPage() {
   const guardarResultado = async () => {
     if (!modal || !resultado.trim()) return
     setGuardando(true)
-    const ok = await subirResultado(modal.id, resultado.trim(), archivoFile)
+    const ok = await subirResultado(modal.id, resultado.trim(), archivoFile, modal.tipo)
     setGuardando(false)
     if (ok) setModal(null)
   }
