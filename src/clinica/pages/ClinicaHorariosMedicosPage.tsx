@@ -11,7 +11,7 @@ import { Clock, Plus, Trash2, Loader2, Stethoscope } from 'lucide-react'
 
 const DIAS = ['Domingo', 'Lunes', 'Martes', 'Miércoles', 'Jueves', 'Viernes', 'Sábado']
 
-interface Medico { id: string; nombre_completo: string; email: string }
+interface Medico { id: string; nombre_completo: string; especialidad: string }
 interface Slot { id: string; dia_semana: number; hora_inicio: string; hora_fin: string; duracion_slot: number }
 
 export default function ClinicaHorariosMedicosPage() {
@@ -23,15 +23,16 @@ export default function ClinicaHorariosMedicosPage() {
   const [saving, setSaving] = useState(false)
   const [form, setForm] = useState({ dia_semana: 1, hora_inicio: '09:00', hora_fin: '12:00', duracion_slot: 30 })
 
-  // Cargar médicos de la clínica
+  // Cargar médicos de la clínica (vía RPC definer; excluye al propio admin)
   useEffect(() => {
     if (!clinica?.id) return
     ;(async () => {
+      const { data: { user } } = await supabase.auth.getUser()
       const { data: rel } = await supabase.rpc('obtener_medicos_clinica', { p_clinica_id: clinica.id })
-      const ids = (rel || []).map((r: any) => r.medico_id)
+      const ids = (rel || []).map((r: any) => r.medico_id).filter((id: string) => id !== user?.id)
       if (ids.length === 0) { setMedicos([]); return }
-      const { data: perfiles } = await supabase.from('perfiles').select('id, nombre_completo, email').in('id', ids)
-      setMedicos((perfiles || []) as Medico[])
+      const { data: meds } = await supabase.rpc('obtener_medicos_por_ids', { p_medico_ids: ids })
+      setMedicos((meds || []).map((m: any) => ({ id: m.id, nombre_completo: m.nombre_completo, especialidad: m.especialidad || '' })))
     })()
   }, [clinica?.id])
 
@@ -109,7 +110,7 @@ export default function ClinicaHorariosMedicosPage() {
             onChange={(e) => setMedicoSel(e.target.value)}
           >
             <option value="">Selecciona un médico…</option>
-            {medicos.map((m) => <option key={m.id} value={m.id}>{m.nombre_completo} · {m.email}</option>)}
+            {medicos.map((m) => <option key={m.id} value={m.id}>{m.nombre_completo}{m.especialidad ? ` · ${m.especialidad}` : ''}</option>)}
           </select>
           {medicos.length === 0 && (
             <p className="text-xs text-amber-600 mt-2">No hay médicos en esta clínica todavía.</p>
