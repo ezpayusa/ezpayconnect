@@ -25,6 +25,24 @@ registerSW({
   },
 })
 
+// Si un chunk lazy falla al cargar (deploy nuevo + Service Worker con un index
+// viejo que apunta a chunks que ya no existen), recargar UNA vez para traer el
+// bundle consistente. Evita las pantallas en blanco al navegar a una ruta lazy.
+function recargarPorChunkObsoleto() {
+  const ultima = Number(sessionStorage.getItem('chunk_reload_ts') || 0)
+  if (Date.now() - ultima > 10_000) {
+    sessionStorage.setItem('chunk_reload_ts', String(Date.now()))
+    window.location.reload()
+  }
+}
+window.addEventListener('vite:preloadError', recargarPorChunkObsoleto)
+window.addEventListener('error', (e) => {
+  const msg = (e?.message || '') + ''
+  if (/dynamically imported module|Importing a module script failed|ChunkLoadError/i.test(msg)) {
+    recargarPorChunkObsoleto()
+  }
+})
+
 createRoot(document.getElementById('root')!).render(
   <StrictMode>
     <App />
