@@ -95,6 +95,12 @@ export default function AgendarCitaModal({ pacienteId, pacienteNombre, paisIdPro
     notas: '',
   })
 
+  // Slots de disponibilidad del médico (contexto paciente)
+  const [dispPac, setDispPac] = useState<any[]>([])
+  const [ocupados, setOcupados] = useState<Set<string>>(new Set())
+  const [slotSel, setSlotSel] = useState<{ fecha: string; hora: string; dur: number } | null>(null)
+  const [cargandoSlots, setCargandoSlots] = useState(false)
+
   const { perfil } = useWebAppAuth()
   const paisId = paisIdProp || perfil?.pais_id
   const [guardando, setGuardando] = useState(false)
@@ -221,12 +227,69 @@ export default function AgendarCitaModal({ pacienteId, pacienteNombre, paisIdPro
     filtrar()
   }, [medicoId, clinicas])
 
+  // Cargar disponibilidad (contexto paciente) + slots ocupados al elegir médico
+  useEffect(() => {
+    if (!medicoId) { setDispPac([]); setOcupados(new Set()); setSlotSel(null); return }
+    let cancel = false
+    ;(async () => {
+      setCargandoSlots(true)
+      setSlotSel(null)
+      setForm((f) => ({ ...f, fecha: '', hora_inicio: '' }))
+      const fmt = (d: Date) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
+      const hoy = new Date()
+      const hasta = new Date(); hasta.setDate(hasta.getDate() + 21)
+      const [{ data: disp }, { data: occ }] = await Promise.all([
+        supabase.from('disponibilidad_medico').select('*').eq('medico_id', medicoId).eq('activo', true).eq('contexto', 'paciente'),
+        supabase.rpc('slots_ocupados_cita', { p_medico_id: medicoId, p_desde: fmt(hoy), p_hasta: fmt(hasta) }),
+      ])
+      if (cancel) return
+      setDispPac(disp || [])
+      const set = new Set<string>()
+      ;(occ || []).forEach((o: any) => set.add(`${o.fecha}|${(o.hora_inicio || '').slice(0, 5)}`))
+      setOcupados(set)
+      setCargandoSlots(false)
+    })()
+    return () => { cancel = true }
+  }, [medicoId])
+
+  // Generar slots disponibles por día (próximos 21 días)
+  const slotsPorDia = useMemo(() => {
+    if (dispPac.length === 0) return [] as { fecha: string; fechaLabel: string; slots: { hora: string; dur: number; ocupado: boolean }[] }[]
+    const ahora = new Date()
+    const out: { fecha: string; fechaLabel: string; slots: { hora: string; dur: number; ocupado: boolean }[] }[] = []
+    for (let i = 0; i < 21; i++) {
+      const d = new Date(); d.setDate(d.getDate() + i); d.setHours(0, 0, 0, 0)
+      const dow = d.getDay()
+      const fecha = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
+      const slots: { hora: string; dur: number; ocupado: boolean }[] = []
+      dispPac.filter((x) => x.dia_semana === dow).forEach((x) => {
+        const dur = x.duracion_slot || 30
+        const [hi, mi] = String(x.hora_inicio).split(':').map(Number)
+        const [hf, mf] = String(x.hora_fin).split(':').map(Number)
+        let cur = hi * 60 + mi
+        const fin = hf * 60 + mf
+        while (cur + dur <= fin) {
+          const hora = `${String(Math.floor(cur / 60)).padStart(2, '0')}:${String(cur % 60).padStart(2, '0')}`
+          const sd = new Date(d); sd.setHours(Math.floor(cur / 60), cur % 60, 0, 0)
+          if (sd > ahora) slots.push({ hora, dur, ocupado: ocupados.has(`${fecha}|${hora}`) })
+          cur += dur
+        }
+      })
+      if (slots.length) {
+        slots.sort((a, b) => a.hora.localeCompare(b.hora))
+        out.push({ fecha, fechaLabel: d.toLocaleDateString('es-GT', { weekday: 'short', day: '2-digit', month: '2-digit' }), slots })
+      }
+    }
+    return out
+  }, [dispPac, ocupados])
+
   // Resetear al cerrar
   useEffect(() => {
     if (!open) {
       setPaso(1)
       setMedicoId(null)
       setClinicaId(null)
+      setSlotSel(null)
       setForm({ fecha: '', hora_inicio: '', motivo: '', notas: '' })
       setBusquedaMedico('')
       setBusquedaDebounced('')
@@ -250,10 +313,11 @@ export default function AgendarCitaModal({ pacienteId, pacienteNombre, paisIdPro
     try {
       setGuardando(true)
 
-      // Calcular hora_fin (30 minutos después de hora_inicio)
+      // Calcular hora_fin según la duración del slot elegido por el médico
+      const dur = slotSel?.dur || 30
       const [h, m] = form.hora_inicio.split(':').map(Number)
       const finDate = new Date()
-      finDate.setHours(h, m + 30)
+      finDate.setHours(h, m + dur)
       const hora_fin = `${String(finDate.getHours()).padStart(2, '0')}:${String(finDate.getMinutes()).padStart(2, '0')}:00`
 
       // Toda cita creada desde el portal del paciente nace 'solicitada'
@@ -600,34 +664,53 @@ export default function AgendarCitaModal({ pacienteId, pacienteNombre, paisIdPro
             </div>
           ) : (
             <form id="cita-form" onSubmit={handleSubmit} className="space-y-4">
-              <div className="grid grid-cols-2 gap-3">
-                <div className="space-y-1.5">
-                  <Label className="text-xs text-slate-500 flex items-center gap-1">
-                    <CalendarDays className="h-3.5 w-3.5" />
-                    Fecha *
-                  </Label>
-                  <Input
-                    type="date"
-                    required
-                    value={form.fecha}
-                    onChange={(e) => setForm({ ...form, fecha: e.target.value })}
-                    className="h-9 text-sm"
-                    min={new Date().toISOString().split('T')[0]}
-                  />
-                </div>
-                <div className="space-y-1.5">
-                  <Label className="text-xs text-slate-500 flex items-center gap-1">
-                    <Clock className="h-3.5 w-3.5" />
-                    Hora *
-                  </Label>
-                  <Input
-                    type="time"
-                    required
-                    value={form.hora_inicio}
-                    onChange={(e) => setForm({ ...form, hora_inicio: e.target.value })}
-                    className="h-9 text-sm"
-                  />
-                </div>
+              <div className="space-y-1.5">
+                <Label className="text-xs text-slate-500 flex items-center gap-1">
+                  <CalendarDays className="h-3.5 w-3.5" />
+                  Elige un horario disponible *
+                </Label>
+                {!medicoId ? (
+                  <p className="text-sm text-amber-600">Selecciona un médico primero para ver sus horarios.</p>
+                ) : cargandoSlots ? (
+                  <p className="text-sm text-slate-500">Cargando horarios…</p>
+                ) : slotsPorDia.length === 0 ? (
+                  <p className="text-sm text-amber-600">
+                    Este médico no tiene horarios disponibles para pacientes por ahora. Intenta con otro médico.
+                  </p>
+                ) : (
+                  <div className="max-h-64 overflow-y-auto space-y-3 border rounded-lg p-2">
+                    {slotsPorDia.map((d) => (
+                      <div key={d.fecha}>
+                        <p className="text-xs font-semibold text-slate-600 mb-1 capitalize">{d.fechaLabel}</p>
+                        <div className="flex flex-wrap gap-1.5">
+                          {d.slots.map((s) => {
+                            const sel = slotSel?.fecha === d.fecha && slotSel?.hora === s.hora
+                            return (
+                              <button
+                                key={s.hora}
+                                type="button"
+                                disabled={s.ocupado}
+                                onClick={() => {
+                                  setSlotSel({ fecha: d.fecha, hora: s.hora, dur: s.dur })
+                                  setForm((f) => ({ ...f, fecha: d.fecha, hora_inicio: s.hora }))
+                                }}
+                                className={`text-xs px-2 py-1 rounded border transition ${
+                                  s.ocupado
+                                    ? 'opacity-40 line-through cursor-not-allowed'
+                                    : sel
+                                    ? 'bg-[#1E5C8E] text-white border-[#1E5C8E]'
+                                    : 'hover:bg-slate-100 border-slate-200'
+                                }`}
+                              >
+                                {s.hora}
+                              </button>
+                            )
+                          })}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
               </div>
 
               <div className="space-y-1.5">
