@@ -117,10 +117,25 @@ export function useLaboratorio() {
     return true
   }
 
-  const subirResultado = async (ordenId: number, resultados: string, archivo_url?: string) => {
+  const subirArchivo = async (ordenId: number, file: File): Promise<string | null> => {
+    if (!labId) return null
+    const ext = file.name.split('.').pop() || 'pdf'
+    const path = `${labId}/${ordenId}-${Date.now()}.${ext}`
+    const { error } = await supabase.storage.from('resultados-examenes').upload(path, file, { upsert: true })
+    if (error) { toast.error('No se pudo subir el archivo: ' + error.message); return null }
+    const { data } = supabase.storage.from('resultados-examenes').getPublicUrl(path)
+    return data.publicUrl
+  }
+
+  const subirResultado = async (ordenId: number, resultados: string, archivo?: File | null) => {
+    let archivo_url: string | null = null
+    if (archivo) {
+      archivo_url = await subirArchivo(ordenId, archivo)
+      if (!archivo_url) return false // el toast ya se mostró
+    }
     const { error } = await supabase.from('examenes').update({
       resultados,
-      archivo_url: archivo_url || null,
+      ...(archivo_url ? { archivo_url } : {}),
       estado: 'completado',
       fecha_resultado: new Date().toISOString().slice(0, 10),
     }).eq('id', ordenId)

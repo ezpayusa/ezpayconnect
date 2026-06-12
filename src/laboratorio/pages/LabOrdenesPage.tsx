@@ -4,7 +4,6 @@ import { Card, CardContent } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
 import { Textarea } from '@/components/ui/textarea'
-import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { ClipboardList, Loader2, RefreshCw, FlaskConical, User, Stethoscope, Clock, X, FileText, MessageSquare } from 'lucide-react'
 
@@ -29,7 +28,7 @@ export default function LabOrdenesPage() {
   const [filtro, setFiltro] = useState('activas')
   const [modal, setModal] = useState<OrdenExamen | null>(null)
   const [resultado, setResultado] = useState('')
-  const [archivoUrl, setArchivoUrl] = useState('')
+  const [archivoFile, setArchivoFile] = useState<File | null>(null)
   const [guardando, setGuardando] = useState(false)
 
   const lista = useMemo(() => {
@@ -39,12 +38,12 @@ export default function LabOrdenesPage() {
   }, [ordenes, filtro])
 
   const abrirResultado = (i: OrdenExamen) => {
-    setModal(i); setResultado(i.resultados || ''); setArchivoUrl(i.archivo_url || '')
+    setModal(i); setResultado(i.resultados || ''); setArchivoFile(null)
   }
   const guardarResultado = async () => {
     if (!modal || !resultado.trim()) return
     setGuardando(true)
-    const ok = await subirResultado(modal.id, resultado.trim(), archivoUrl.trim() || undefined)
+    const ok = await subirResultado(modal.id, resultado.trim(), archivoFile)
     setGuardando(false)
     if (ok) setModal(null)
   }
@@ -163,7 +162,7 @@ export default function LabOrdenesPage() {
       {/* Modal resultado por examen */}
       {modal && (
         <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4" onClick={() => setModal(null)}>
-          <Card className="w-full max-w-lg" onClick={(e) => e.stopPropagation()}>
+          <Card className="w-full max-w-lg bg-white shadow-xl" onClick={(e) => e.stopPropagation()}>
             <CardContent className="p-6 space-y-4">
               <div className="flex items-center justify-between">
                 <h2 className="text-lg font-semibold flex items-center gap-2">
@@ -176,11 +175,28 @@ export default function LabOrdenesPage() {
                 <Textarea rows={6} value={resultado} onChange={(e) => setResultado(e.target.value)}
                   placeholder="Escribe el resultado del examen…" disabled={modal.estado === 'completado'} />
               </div>
-              <div className="space-y-2">
-                <Label>Enlace al archivo (PDF) — opcional</Label>
-                <Input value={archivoUrl} onChange={(e) => setArchivoUrl(e.target.value)}
-                  placeholder="https://…" disabled={modal.estado === 'completado'} />
-              </div>
+
+              {/* Archivo ya subido (si existe) */}
+              {modal.archivo_url && (
+                <a href={modal.archivo_url} target="_blank" rel="noopener noreferrer"
+                  className="flex items-center gap-2 text-sm text-[#0E7C6B] hover:underline">
+                  <FileText className="h-4 w-4" /> Ver archivo adjunto actual
+                </a>
+              )}
+
+              {modal.estado !== 'completado' && (
+                <div className="space-y-2">
+                  <Label>Adjuntar archivo (PDF o imagen) — opcional</Label>
+                  <input
+                    type="file"
+                    accept=".pdf,image/*"
+                    onChange={(e) => setArchivoFile(e.target.files?.[0] || null)}
+                    className="block w-full text-sm text-gray-600 file:mr-3 file:py-2 file:px-3 file:rounded-lg file:border-0 file:bg-[#0E7C6B] file:text-white hover:file:bg-[#0a5e51] file:cursor-pointer"
+                  />
+                  {archivoFile && <p className="text-xs text-muted-foreground">Seleccionado: {archivoFile.name}</p>}
+                </div>
+              )}
+
               {modal.estado !== 'completado' && (
                 <div className="flex justify-end gap-2">
                   <Button variant="outline" onClick={() => setModal(null)}>Cancelar</Button>

@@ -101,6 +101,24 @@ export default function ConsultaPage() {
   // Paneles desplegables
   const [mostrarBiblioteca, setMostrarBiblioteca] = useState(false)
   const [mostrarAsistenteIA, setMostrarAsistenteIA] = useState(false)
+
+  // Exámenes del paciente (para verlos durante la consulta / reconsulta)
+  const [examenesPaciente, setExamenesPaciente] = useState<any[]>([])
+  const [mostrarExamenes, setMostrarExamenes] = useState(false)
+
+  useEffect(() => {
+    if (!paciente?.id) return
+    supabase
+      .from('examenes')
+      .select('id, tipo, estado, resultados, archivo_url, fecha_solicitud, fecha_resultado')
+      .eq('paciente_id', paciente.id)
+      .order('created_at', { ascending: false })
+      .then(({ data }) => {
+        const list = data || []
+        setExamenesPaciente(list)
+        if (list.some((e: any) => e.estado === 'completado')) setMostrarExamenes(true)
+      })
+  }, [paciente?.id])
   const [modalReceta, setModalReceta] = useState(false)
   const [modalExamen, setModalExamen] = useState(false)
   const [examenForm, setExamenForm] = useState({ tipo: '', descripcion: '' })
@@ -699,6 +717,52 @@ export default function ConsultaPage() {
                 <User className="h-4 w-4 mr-2" /> Ver Expediente
               </Button>
             </CardContent>
+          </Card>
+
+          {/* Exámenes de laboratorio del paciente */}
+          <Card>
+            <CardHeader className="pb-3 cursor-pointer" onClick={() => setMostrarExamenes(!mostrarExamenes)}>
+              <CardTitle className="text-sm flex items-center justify-between">
+                <span className="flex items-center gap-2">
+                  <FlaskConical className="h-4 w-4 text-[#1E5C8E]" />
+                  Exámenes de laboratorio
+                  {examenesPaciente.length > 0 && (
+                    <span className="bg-[#1E5C8E] text-white text-[10px] font-bold px-1.5 py-0.5 rounded-full">
+                      {examenesPaciente.length}
+                    </span>
+                  )}
+                </span>
+                {mostrarExamenes ? <ChevronUp className="h-4 w-4" /> : <ChevronDown className="h-4 w-4" />}
+              </CardTitle>
+            </CardHeader>
+            {mostrarExamenes && (
+              <CardContent className="space-y-2 max-h-72 overflow-y-auto">
+                {examenesPaciente.length === 0 ? (
+                  <p className="text-xs text-muted-foreground">Este paciente no tiene exámenes registrados.</p>
+                ) : (
+                  examenesPaciente.map((ex: any) => {
+                    const completado = ex.estado === 'completado'
+                    return (
+                      <div key={ex.id} className={`p-2 rounded-lg border-l-4 text-sm ${completado ? 'border-green-500 bg-green-50/50' : 'border-slate-300 bg-slate-50'}`}>
+                        <div className="flex items-center justify-between gap-2">
+                          <span className="font-medium">{ex.tipo}</span>
+                          <span className={`text-[10px] px-1.5 py-0.5 rounded ${completado ? 'bg-green-100 text-green-700' : 'bg-amber-100 text-amber-700'}`}>
+                            {completado ? 'Listo' : ex.estado}
+                          </span>
+                        </div>
+                        {ex.resultados && <p className="text-xs text-gray-600 mt-1 whitespace-pre-wrap line-clamp-4">{ex.resultados}</p>}
+                        {ex.archivo_url && (
+                          <div className="flex gap-3 mt-1">
+                            <a href={ex.archivo_url} target="_blank" rel="noopener noreferrer" className="text-xs text-[#1E5C8E] hover:underline">Ver archivo</a>
+                            <a href={ex.archivo_url} download className="text-xs text-gray-500 hover:underline">Descargar</a>
+                          </div>
+                        )}
+                      </div>
+                    )
+                  })
+                )}
+              </CardContent>
+            )}
           </Card>
 
           {/* Biblioteca Médica */}

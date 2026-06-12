@@ -17,6 +17,7 @@ import {
   Loader2,
   QrCode,
   Download,
+  FlaskConical,
   Bell,
   X,
   Activity,
@@ -71,13 +72,14 @@ export default function PacienteDetallePage() {
   const location = useLocation()
   const base = location.pathname.startsWith('/medico') ? '/medico' : ''
   const { user } = useAuth()
-  const [activeTab, setActiveTab] = useState<'info' | 'historial' | 'consultas' | 'signos_vitales' | 'recetas' | 'citas'>('info')
+  const [activeTab, setActiveTab] = useState<'info' | 'historial' | 'consultas' | 'signos_vitales' | 'recetas' | 'citas' | 'examenes'>('info')
   const [paciente, setPaciente] = useState<Paciente | null>(null)
   const [historial, setHistorial] = useState<HistorialEvento[]>([])
   const [recetas, setRecetas] = useState<RecetaAvanzada[]>([])
   const [citas, setCitas] = useState<Cita[]>([])
   const [consultas, setConsultas] = useState<any[]>([])
   const [signosVitales, setSignosVitales] = useState<any[]>([])
+  const [examenes, setExamenes] = useState<any[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
 
@@ -93,8 +95,18 @@ export default function PacienteDetallePage() {
       cargarCitas()
       cargarConsultas()
       cargarSignosVitales()
+      cargarExamenes()
     }
   }, [id])
+
+  const cargarExamenes = async () => {
+    const { data } = await supabase
+      .from('examenes')
+      .select('id, tipo, descripcion, estado, resultados, archivo_url, fecha_solicitud, fecha_resultado, orden_id, laboratorio_id')
+      .eq('paciente_id', id)
+      .order('created_at', { ascending: false })
+    setExamenes(data || [])
+  }
 
   const cargarPaciente = async () => {
     setLoading(true)
@@ -301,6 +313,7 @@ export default function PacienteDetallePage() {
           { key: 'consultas', label: 'Consultas', icon: ClipboardList },
           { key: 'signos_vitales', label: 'Signos Vitales', icon: Activity },
           { key: 'recetas', label: 'Recetas Avanzadas', icon: FileText },
+          { key: 'examenes', label: 'Exámenes', icon: FlaskConical },
           { key: 'citas', label: 'Citas', icon: Calendar },
         ].map(tab => (
           <button
@@ -605,6 +618,67 @@ export default function PacienteDetallePage() {
               ))}
             </div>
           )}
+        </div>
+      )}
+
+      {/* === TAB: EXÁMENES === */}
+      {activeTab === 'examenes' && (
+        <div className="bg-white rounded-xl shadow-sm overflow-hidden">
+          <div className="p-6 border-b border-gray-100">
+            <h2 className="text-xl font-semibold text-[#1a2a3a] flex items-center gap-2">
+              <FlaskConical size={22} className="text-[#1E5C8E]" /> Exámenes de laboratorio
+            </h2>
+          </div>
+          <div className="p-6">
+            {examenes.length === 0 ? (
+              <div className="text-center text-gray-400 py-12">No hay exámenes ordenados</div>
+            ) : (
+              <div className="space-y-3">
+                {examenes.map((ex: any) => {
+                  const completado = ex.estado === 'completado'
+                  return (
+                    <div key={ex.id} className={`p-4 rounded-lg border-l-4 ${completado ? 'border-green-500 bg-green-50/40' : 'border-[#1E5C8E] bg-gray-50'}`}>
+                      <div className="flex items-start justify-between gap-3 flex-wrap">
+                        <div className="min-w-0">
+                          <p className="font-medium text-[#1a2a3a]">{ex.tipo}</p>
+                          <p className="text-xs text-gray-500">
+                            Solicitado: {ex.fecha_solicitud}
+                            {ex.fecha_resultado ? ` · Resultado: ${ex.fecha_resultado}` : ''}
+                          </p>
+                        </div>
+                        <span className={`px-2 py-1 rounded text-xs font-medium ${
+                          completado ? 'bg-green-100 text-green-700' :
+                          ex.estado === 'en_proceso' ? 'bg-purple-100 text-purple-700' :
+                          ex.estado === 'recibida' ? 'bg-blue-100 text-blue-700' :
+                          'bg-amber-100 text-amber-700'
+                        }`}>
+                          {ex.estado === 'completado' ? 'Resultado listo' : ex.estado}
+                        </span>
+                      </div>
+                      {ex.resultados && (
+                        <div className="mt-3 bg-white border rounded-lg p-3">
+                          <p className="text-xs text-gray-500 mb-1">Resultado</p>
+                          <p className="text-sm text-gray-700 whitespace-pre-wrap">{ex.resultados}</p>
+                        </div>
+                      )}
+                      {ex.archivo_url && (
+                        <div className="mt-3 flex gap-2">
+                          <a href={ex.archivo_url} target="_blank" rel="noopener noreferrer"
+                            className="inline-flex items-center gap-1 text-sm text-[#1E5C8E] hover:underline">
+                            <FileText size={16} /> Ver archivo
+                          </a>
+                          <a href={ex.archivo_url} download
+                            className="inline-flex items-center gap-1 text-sm text-gray-600 hover:underline">
+                            <Download size={16} /> Descargar
+                          </a>
+                        </div>
+                      )}
+                    </div>
+                  )
+                })}
+              </div>
+            )}
+          </div>
         </div>
       )}
 
