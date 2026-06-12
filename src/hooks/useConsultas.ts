@@ -112,9 +112,13 @@ export function useConsultas() {
   }, [])
 
   const guardarSignosVitales = useCallback(async (sv: Omit<SignosVitales, 'id' | 'created_at'>) => {
+    // La RLS exige medico_id = auth.uid() al insertar; lo inyectamos siempre.
+    const { data: { user } } = await supabase.auth.getUser()
+    if (!user) return { data: null, error: 'Usuario no autenticado' }
+
     const { data, error } = await supabase
       .from('signos_vitales')
-      .insert(sv)
+      .insert({ ...sv, medico_id: user.id })
       .select()
       .single()
 

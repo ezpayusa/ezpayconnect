@@ -65,7 +65,7 @@ Hallazgos empíricos confirmados que `run.sh` debe reflejar HOY (antes de las fa
 
 ## Cómo se "ponen en verde" por fase
 - **Fase 1** ✅ APLICADA: `anon`/usuarios ya no ven `invitaciones_*` (anon `invitaciones_clinica` 1→0; solo super_admin la ve vía `*_admin_all`) ni pueden insertar en `notificaciones`/`cuentas_proveedor`/`empresas_proveedoras` (P4/P5/P6 → BLOQUEADO). `push_subscriptions`/`notificaciones` siguen funcionando por-usuario (verificado).
-- **Fase 2**: `historial_medico`, `recetas_avanzadas`, `receta_items`, `dispensaciones` pasan a "solo lo suyo"; `expediente_notas` y `signos_vitales` dejan de estar en deny‑all.
+- **Fase 2** ✅ APLICADA (modelo POR CITA): `historial_medico`, `recetas_avanzadas`, `receta_items`, `dispensaciones` pasan a "cabecera O cita O autor" (lectura) y "cita" (escritura); `expediente_notas` y `signos_vitales` salen de deny‑all; super_admin gana acceso global a PHI (historial/examenes 0→59/4); `pacientes` suma lectura por cita (arregla "paciente fantasma"). Helper nuevo `private.medico_atiende_paciente`. Fixture P14: `tests/rls/fixtures/qa_paciente_recetas.sql`.
 - **Fase 3**: `citas` pasa a "solo lo suyo / su clínica"; las RPC de citas revalidan al caller.
 - **Fase 4**: `medicos` deja de ser escribible por anon; `cuentas_bancarias_pais` exige auth.
 - **Fase 6**: roles administrativos alineados al catálogo; sin ramas muertas.
@@ -83,6 +83,14 @@ Todas terminan en **ROLLBACK**: nunca persisten, aunque la operación sea permit
 | P4 `anon_insert_notificaciones` | que `anon` inserte una notificación | 🔴 PERMITIDO | BLOQUEADO | Fase 1 | ✅ **VERDE** (42501) |
 | P5 `anon_insert_cuentas_proveedor` | que `anon` cree una cuenta de proveedor | 🔴 PERMITIDO | BLOQUEADO | Fase 1 | ✅ **VERDE** (42501) |
 | P6 `anon_insert_empresas_proveedoras` | que `anon` cree una empresa | 🔴 PERMITIDO | BLOQUEADO | Fase 1 | ✅ **VERDE** (42501) |
+| P7 `medico_ve_historial_sin_cita` | médico ve historial de paciente sin cita/cabecera | 🔴 PERMITIDO (51) | BLOQUEADO (0) | Fase 2 | ✅ **VERDE** (0) |
+| P8 `medico_ve_recetas_adv_sin_cita` | médico ve recetas avanzadas ajenas | 🔴 PERMITIDO (1) | BLOQUEADO (0) | Fase 2 | ✅ **VERDE** (0) |
+| P11 `medico_ve_expediente_sin_cita` | médico ve notas de expediente ajenas | 🟢 BLOQUEADO | BLOQUEADO (0) | Fase 2 | ✅ guard |
+| P9 `medico_inserta_expediente_propio` | médico inserta su nota (paciente que atiende) | 🛠️ BLOQUEADO (roto) | OK | Fase 2 | ✅ **VERDE** (OK) |
+| P10 `medico_inserta_signos_propio` | médico inserta signos (paciente que atiende) | 🛠️ BLOQUEADO (roto) | OK | Fase 2 | ✅ **VERDE** (OK) |
+| P12 `medico_inserta_historial_ajeno` | médico inserta historial para paciente sin cita | 🔴 PERMITIDO | BLOQUEADO | Fase 2 | ✅ **VERDE** (42501) |
+| P13 `medico_inserta_expediente_ajeno` | médico inserta nota para paciente sin cita | 🟢 BLOQUEADO | BLOQUEADO | Fase 2 | ✅ guard (42501) |
+| P14 `paciente_ve_sus_receta_items` | paciente ve los items de SUS recetas (no ajenos) | ⚪ N/A | >0 propios / 0 ajenos | Fase 2 | ✅ **VERDE** (2/0) |
 
 > P1/P2/P3 (citas) siguen en rojo a propósito hasta la Fase 3 (RLS scoped de
 > `citas` + revalidación de autorización dentro de las RPC definer).

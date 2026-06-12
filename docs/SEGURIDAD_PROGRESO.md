@@ -4,7 +4,7 @@
 **Entorno de trabajo:** proyecto Supabase remoto linkeado (datos FICTICIOS = "staging").
 Las migraciones se aplican manualmente con `npx supabase db query --linked -f <archivo>`
 (este proyecto NO usa el ledger de migraciones del CLI; el orden lo da el número de archivo).
-**Punto de retome:** este archivo. Siguiente = **Fase 2 / Bloque B (PHI clínico)**.
+**Punto de retome:** este archivo. Siguiente = **Fase 3 / Bloque A (citas + RPC)**.
 
 ---
 
@@ -69,6 +69,35 @@ que NOT NULL** en un INSERT (cuando la RLS deniega → 42501 aunque falte un
 NOT NULL). Por eso el patrón de probes "42501 vs otra constraint" distingue bien
 rojo/verde.
 
+### ✅ Fase 2 — Bloque B (PHI clínico, modelo POR CITA)
+Aplicada al remoto y verificada. Migración:
+`supabase/migrations/070_fase2_rls_phi_clinico.sql`.
+
+**Modelo decidido:** acceso al PHI por relación de tratamiento:
+- **LECTURA**: cabecera (`es_medico_de`) **O** por cita (`medico_atiende_paciente`) **O** autor (`medico_id=auth.uid()`).
+- **ESCRITURA**: solo por cita (`medico_id=auth.uid() AND medico_atiende_paciente`).
+Motivo: 39/45 citas son cruzadas; solo-cita le quitaba lectura al médico de cabecera y solo-cabecera dejaba "paciente fantasma".
+
+**Qué hizo:**
+- Helper nuevo `private.medico_atiende_paciente(bigint|text)` (search_path='').
+- Reescribió RLS de `historial_medico`, `recetas_avanzadas`, `receta_items` (por receta padre), `dispensaciones`.
+- Reparó deny-all: políticas de `expediente_notas` (5) y el INSERT de `signos_vitales` (+ hook `useConsultas.guardarSignosVitales` ahora inyecta `medico_id`).
+- Eliminó los INSERT anónimos de historial; rama `super_admin` global en todas (incl. `examenes`).
+- `pacientes`: política aditiva de lectura por cita (arregla "paciente fantasma"; las demás se mantienen).
+
+**Resultado (rojo→verde, medido):**
+- P7 médico ve historial sin cita: 51 → **0**. P8 recetas_adv: 1 → **0**.
+- P9/P10 (insertar expediente/signos propios): roto → **OK**.
+- P12 (insertar historial a paciente sin cita): PERMITIDO → **BLOQUEADO (42501)**. P11/P13 guards (0/42501).
+- P14 (paciente ve sus receta_items): **2 propios / 0 ajenos** (fixture `tests/rls/fixtures/qa_paciente_recetas.sql`).
+- Lectura: super_admin ahora ve historial(59)/examenes(4) (antes 0); paciente ve solo lo suyo; médico solo lo de sus pacientes (cita/cabecera); anon 0.
+
+**Notas:**
+- `historial_medico`/`recetas_avanzadas`/`dispensaciones` usan `paciente_id`/`medico_id` TEXT → overloads TEXT + `::text`; `expediente_notas`/`signos_vitales` INTEGER → `paciente_id::bigint`.
+- Triggers `trg_historial_cita`/`trg_historial_receta` auto-registran historial al crear cita/receta (por eso el fixture sumó +2 historial; benigno).
+- `admin_clinica` aún ve 0 en PHI (su acceso clínico por clínica es una política aparte, futura).
+- `run.sh` resuelve la persona `paciente` con `LIMIT 1` no determinista; el check autoritativo del paciente es P14 (determinista).
+
 ## Baseline ROJO capturado (estado ANTES de remediar)
 
 Medido con la fundación ya aplicada (las políticas de negocio aún sin tocar).
@@ -126,18 +155,21 @@ Medido con la fundación ya aplicada (las políticas de negocio aún sin tocar).
 
 ---
 
-## PRÓXIMO PASO — Fase 2 / Bloque B (PHI clínico)
-Reescribir la RLS de `historial_medico`, `recetas_avanzadas`, `receta_items` y
-`dispensaciones` con scoping real (helpers de Fase 0; recordar `::text` en las
-tablas con `paciente_id`/`medico_id` TEXT). Crear las 4 políticas faltantes de
-`expediente_notas` y la política INSERT de `signos_vitales` (hoy deny-all =
-features rotas). Eliminar los INSERT anónimos. Coordinar el hook de
-`signos_vitales` para que mande `medico_id`. Dar acceso legítimo a `super_admin`
-donde hoy ve 0 (historial/exámenes).
+## PRÓXIMO PASO — Fase 3 / Bloque A (citas + RPC van juntos)
+- Eliminar las 3 políticas abiertas de `citas` (SELECT `USING(true)`, INSERT anon/auth abiertos).
+- Agregar SELECT/INSERT scoped: paciente dueño, médico dueño, admin_clinica por
+  `clinica_id`/`private.clinicas_del_usuario()`, super_admin.
+- **Endurecer las RPC SECURITY DEFINER** `actualizar_estado_cita`,
+  `asignar_medico_cita`, `crear_cita` (toman `p_cita_id integer`) para REVALIDAR
+  al caller (hoy P2/P3 prueban que un médico cancela/roba citas ajenas).
+- Migrar `src/pages/CitasPage.tsx` y `src/hooks/useCitas.ts` (legacy) a las RPC
+  scoped (`obtener_citas_clinica`, `crear_cita`). La clínica ya usa RPC definer.
+- Barrer TODAS las funciones SECURITY DEFINER del proyecto y confirmar que
+  revaliden autorización; reportar las que no.
 
-**Verificación esperada tras Fase 2:** `medico` deja de ver historial/recetas
-avanzadas/receta_items ajenos (solo de sus pacientes); `paciente` ve lo suyo;
-`expediente_notas`/`signos_vitales` dejan de estar en deny-all.
+**Verificación esperada tras Fase 3:** P1 (anon insert citas) → BLOQUEADO;
+P2/P3 (médico cancela/roba cita ajena vía RPC) → BLOQUEADO; en `run.sh`, `citas`
+deja de ser 45 para todo autenticado (cada rol ve solo lo suyo / su clínica).
 
 ### Recordatorio de proceso (reglas del usuario)
 - Una fase a la vez, en orden. Generar migración + listar cambios de frontend, aplicar en
