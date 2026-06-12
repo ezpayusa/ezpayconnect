@@ -37,6 +37,7 @@ export function useMedicosDisponibles() {
       .select('*')
       .eq('medico_id', medicoId)
       .eq('activo', true)
+      .eq('contexto', 'visitador') // el visitador solo agenda en el horario de visitadores
       .order('dia_semana', { ascending: true })
       .order('hora_inicio', { ascending: true })
 

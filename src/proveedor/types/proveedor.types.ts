@@ -62,6 +62,7 @@ export interface DisponibilidadMedico {
   hora_inicio: string
   hora_fin: string
   duracion_slot: number
+  contexto?: 'visitador' | 'paciente'
   clinica_id: number | null
   activo: boolean
   created_at: string

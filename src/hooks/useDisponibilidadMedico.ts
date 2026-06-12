@@ -42,13 +42,18 @@ export function useDisponibilidadMedico() {
     const { data: { user } } = await supabase.auth.getUser()
     if (!user) return false
 
+    // Visitadores: slot fijo de 15 min. Pacientes: lo que configure el médico.
+    const contexto = (slot as any).contexto === 'paciente' ? 'paciente' : 'visitador'
+    const duracion = contexto === 'visitador' ? 15 : (slot.duracion_slot || 30)
+
     setSaving(true)
     const { error } = await supabase.from('disponibilidad_medico').insert({
       medico_id: user.id,
       dia_semana: slot.dia_semana,
       hora_inicio: slot.hora_inicio,
       hora_fin: slot.hora_fin,
-      duracion_slot: slot.duracion_slot || 30,
+      duracion_slot: duracion,
+      contexto,
       clinica_id: slot.clinica_id || null,
       activo: true,
     })
