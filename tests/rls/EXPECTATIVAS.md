@@ -64,7 +64,7 @@ Hallazgos empíricos confirmados que `run.sh` debe reflejar HOY (antes de las fa
 | 🟢 `recetas` (básica) y `examenes` ya están scoped correctamente | mantener (patrón de referencia) |
 
 ## Cómo se "ponen en verde" por fase
-- **Fase 1**: `anon`/usuarios ya no ven `invitaciones_*` ni pueden insertar en `notificaciones`/`cuentas_proveedor`/`empresas_proveedoras`.
+- **Fase 1** ✅ APLICADA: `anon`/usuarios ya no ven `invitaciones_*` (anon `invitaciones_clinica` 1→0; solo super_admin la ve vía `*_admin_all`) ni pueden insertar en `notificaciones`/`cuentas_proveedor`/`empresas_proveedoras` (P4/P5/P6 → BLOQUEADO). `push_subscriptions`/`notificaciones` siguen funcionando por-usuario (verificado).
 - **Fase 2**: `historial_medico`, `recetas_avanzadas`, `receta_items`, `dispensaciones` pasan a "solo lo suyo"; `expediente_notas` y `signos_vitales` dejan de estar en deny‑all.
 - **Fase 3**: `citas` pasa a "solo lo suyo / su clínica"; las RPC de citas revalidan al caller.
 - **Fase 4**: `medicos` deja de ser escribible por anon; `cuentas_bancarias_pais` exige auth.
@@ -75,16 +75,21 @@ Hallazgos empíricos confirmados que `run.sh` debe reflejar HOY (antes de las fa
 Archivo: `tests/rls/probes_escritura.sql` (corre con `WITH_WRITES=1 bash tests/rls/run.sh`).
 Todas terminan en **ROLLBACK**: nunca persisten, aunque la operación sea permitida.
 
-| Probe | Qué intenta | Estado HOY (baseline) | Objetivo | Se arregla en |
-|---|---|---|---|---|
-| P1 `anon_insert_citas` | que `anon` inserte una cita | 🔴 **PERMITIDO** (política `Allow anon insert citas` WITH CHECK true) | BLOQUEADO | Fase 3 |
-| P2 `medico_cancela_ajena_rpc` | que un médico cancele una cita de otra clínica vía `actualizar_estado_cita` | 🔴 **PERMITIDO** (RPC definer no revalida al caller) | BLOQUEADO | Fase 3 |
-| P3 `medico_roba_cita_rpc` | que un médico se autoasigne una cita ajena vía `asignar_medico_cita` | 🔴 **PERMITIDO** (RPC definer no revalida) | BLOQUEADO | Fase 3 |
+| Probe | Qué intenta | Baseline | Objetivo | Fase | Estado |
+|---|---|---|---|---|---|
+| P1 `anon_insert_citas` | que `anon` inserte una cita | 🔴 PERMITIDO | BLOQUEADO | Fase 3 | pendiente |
+| P2 `medico_cancela_ajena_rpc` | médico cancela cita ajena vía `actualizar_estado_cita` | 🔴 PERMITIDO | BLOQUEADO | Fase 3 | pendiente |
+| P3 `medico_roba_cita_rpc` | médico se autoasigna cita ajena vía `asignar_medico_cita` | 🔴 PERMITIDO | BLOQUEADO | Fase 3 | pendiente |
+| P4 `anon_insert_notificaciones` | que `anon` inserte una notificación | 🔴 PERMITIDO | BLOQUEADO | Fase 1 | ✅ **VERDE** (42501) |
+| P5 `anon_insert_cuentas_proveedor` | que `anon` cree una cuenta de proveedor | 🔴 PERMITIDO | BLOQUEADO | Fase 1 | ✅ **VERDE** (42501) |
+| P6 `anon_insert_empresas_proveedoras` | que `anon` cree una empresa | 🔴 PERMITIDO | BLOQUEADO | Fase 1 | ✅ **VERDE** (42501) |
 
-> Estas tres quedan **en rojo a propósito** en Fase 0: documentan el hueco de
-> escritura que la Fase 3 cierra (RLS scoped de `citas` + revalidación de
-> autorización dentro de las RPC definer). El harness ya las ejecuta para poder
-> verificar el paso a verde tras la Fase 3.
+> P1/P2/P3 (citas) siguen en rojo a propósito hasta la Fase 3 (RLS scoped de
+> `citas` + revalidación de autorización dentro de las RPC definer).
+> P4/P5/P6 pasaron a VERDE en la **Fase 1** (cierre de los INSERT públicos).
+> Nota verificada: la RLS WITH CHECK se evalúa ANTES que NOT NULL → cuando la
+> RLS deniega sale 42501 aunque falte un NOT NULL (por eso el patrón "42501 vs
+> otra constraint" sí distingue bien rojo/verde).
 
 ## Nota sobre los helpers (Fase 0)
 - Viven en el esquema **`private`** (no expuesto a la Data API), con `EXECUTE`

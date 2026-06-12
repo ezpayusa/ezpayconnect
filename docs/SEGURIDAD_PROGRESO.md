@@ -4,7 +4,7 @@
 **Entorno de trabajo:** proyecto Supabase remoto linkeado (datos FICTICIOS = "staging").
 Las migraciones se aplican manualmente con `npx supabase db query --linked -f <archivo>`
 (este proyecto NO usa el ledger de migraciones del CLI; el orden lo da el número de archivo).
-**Punto de retome:** este archivo. Siguiente = **Fase 1 / Bloque C**.
+**Punto de retome:** este archivo. Siguiente = **Fase 2 / Bloque B (PHI clínico)**.
 
 ---
 
@@ -34,6 +34,40 @@ Aplicada al remoto y verificada (sin drift). NO toca políticas de negocio.
 **Exposed schemas** que `private` NO esté listado (debe ser solo `public, graphql_public`).
 
 ---
+
+### ✅ Fase 1 — Bloque C (service_all → service_role + cerrar INSERT abiertos)
+Aplicada al remoto y verificada (commit de Fase 1). Migración:
+`supabase/migrations/069_fase1_service_role_y_cerrar_inserts.sql`.
+
+**Qué hizo:**
+- Reasignó 5 políticas `service_all` de `{public}` → `service_role`:
+  `invitaciones_clinica`, `invitaciones_medico`, `medico_clinicas`,
+  `push_subscriptions`, `recordatorios`.
+- Cerró 4 INSERT `WITH CHECK(true)` abiertos a `{public}`:
+  `notificaciones` (x2), `cuentas_proveedor`, `empresas_proveedoras`.
+
+**Verificación ANTES (frontend + DB):** medico_clinicas/recordatorios sin uso
+directo; invitaciones solo `.select` admin; push_subscriptions cubierto por
+políticas por-usuario; inserts legítimos por RPC definer owner=postgres
+(rolbypassrls=true). Las 4 políticas de INSERT eran `{public}` `WITH CHECK true`
+(ninguna era flujo authenticated legítimo).
+
+**Resultado (rojo→verde, medido):**
+- Lectura `invitaciones_clinica`: `anon` y no-admin **1 → 0** (solo super_admin la ve).
+- Escritura P4/P5/P6 (anon insert notificaciones/cuentas/empresas): **PERMITIDO → BLOQUEADO (42501)**.
+- `notificaciones` por-usuario: el usuario ve sus propias + broadcasts (23 = 20+3) ✓.
+- `push_subscriptions` por-usuario: insertar la suya OK; con `user_id` ajeno → BLOQUEADO 42501 ✓.
+- P1/P2/P3 (citas) siguen ROJAS (corresponden a la Fase 3).
+
+**Nota (no es de esta fase):** tras la Fase 1, **solo `super_admin` ve las
+invitaciones** (vía `*_admin_all`). Si más adelante un `admin_clinica` debe
+gestionar las invitaciones de SU clínica, será una política aparte (scoped por
+`private.clinicas_del_usuario()`), no un retorno a `{public}`.
+
+**Aprendizaje verificado:** en este Postgres la **RLS WITH CHECK se evalúa ANTES
+que NOT NULL** en un INSERT (cuando la RLS deniega → 42501 aunque falte un
+NOT NULL). Por eso el patrón de probes "42501 vs otra constraint" distingue bien
+rojo/verde.
 
 ## Baseline ROJO capturado (estado ANTES de remediar)
 
@@ -92,17 +126,18 @@ Medido con la fundación ya aplicada (las políticas de negocio aún sin tocar).
 
 ---
 
-## PRÓXIMO PASO — Fase 1 / Bloque C (cero rotura esperada)
-Reasignar a `service_role` las políticas `service_all` que hoy están a `{public}`:
-`invitaciones_clinica_service_all`, `invitaciones_medico_service_all`,
-`Service role all medico_clinicas`, `Service role all push subscriptions`,
-`recordatorios_service_all`. Y cerrar los INSERT `WITH CHECK(true)` de
-`notificaciones`, `cuentas_proveedor`, `empresas_proveedoras`.
-Verificado en auditoría que TODO el acceso legítimo va por edge functions (service_role) o
-RPC `SECURITY DEFINER` → no rompe el frontend.
+## PRÓXIMO PASO — Fase 2 / Bloque B (PHI clínico)
+Reescribir la RLS de `historial_medico`, `recetas_avanzadas`, `receta_items` y
+`dispensaciones` con scoping real (helpers de Fase 0; recordar `::text` en las
+tablas con `paciente_id`/`medico_id` TEXT). Crear las 4 políticas faltantes de
+`expediente_notas` y la política INSERT de `signos_vitales` (hoy deny-all =
+features rotas). Eliminar los INSERT anónimos. Coordinar el hook de
+`signos_vitales` para que mande `medico_id`. Dar acceso legítimo a `super_admin`
+donde hoy ve 0 (historial/exámenes).
 
-**Verificación esperada tras Fase 1:** en `run.sh`, `anon` debe pasar a ver
-`invitaciones_clinica = 0` (hoy 1). El resto del baseline igual hasta sus fases.
+**Verificación esperada tras Fase 2:** `medico` deja de ver historial/recetas
+avanzadas/receta_items ajenos (solo de sus pacientes); `paciente` ve lo suyo;
+`expediente_notas`/`signos_vitales` dejan de estar en deny-all.
 
 ### Recordatorio de proceso (reglas del usuario)
 - Una fase a la vez, en orden. Generar migración + listar cambios de frontend, aplicar en

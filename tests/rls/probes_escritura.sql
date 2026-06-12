@@ -56,6 +56,53 @@ BEGIN
 END $$;
 
 -- ------------------------------------------------------------
+-- PROBE 4/5/6 — anon NO debe poder INSERT en notificaciones / cuentas_proveedor
+-- / empresas_proveedoras (Fase 1 cierra estos INSERT WITH CHECK(true) a public).
+-- Mismo patrón que P1: 42501 = RLS bloqueó (VERDE); cualquier otro error o éxito
+-- = la RLS dejó pasar (ROJO). Verificado: la RLS se evalúa ANTES que NOT NULL,
+-- así que tras la Fase 1 estos darán 42501 = BLOQUEADO.
+-- (Siguen con role=anon, fijado en P1.)
+-- ------------------------------------------------------------
+DO $$
+DECLARE s TEXT;
+BEGIN
+  BEGIN
+    INSERT INTO public.notificaciones (titulo) VALUES ('rls_probe');
+    PERFORM set_config('probe.p4', 'PERMITIDO (insertó como anon)', false);
+  EXCEPTION WHEN OTHERS THEN
+    GET STACKED DIAGNOSTICS s = RETURNED_SQLSTATE;
+    IF s = '42501' THEN PERFORM set_config('probe.p4', 'BLOQUEADO (RLS rechazó: 42501)', false);
+    ELSE PERFORM set_config('probe.p4', 'PERMITIDO por RLS (falló otra constraint: '||s||')', false); END IF;
+  END;
+END $$;
+
+DO $$
+DECLARE s TEXT;
+BEGIN
+  BEGIN
+    INSERT INTO public.cuentas_proveedor (nombre_completo) VALUES ('rls_probe');
+    PERFORM set_config('probe.p5', 'PERMITIDO (insertó como anon)', false);
+  EXCEPTION WHEN OTHERS THEN
+    GET STACKED DIAGNOSTICS s = RETURNED_SQLSTATE;
+    IF s = '42501' THEN PERFORM set_config('probe.p5', 'BLOQUEADO (RLS rechazó: 42501)', false);
+    ELSE PERFORM set_config('probe.p5', 'PERMITIDO por RLS (falló otra constraint: '||s||')', false); END IF;
+  END;
+END $$;
+
+DO $$
+DECLARE s TEXT;
+BEGIN
+  BEGIN
+    INSERT INTO public.empresas_proveedoras (nombre_empresa) VALUES ('rls_probe');
+    PERFORM set_config('probe.p6', 'PERMITIDO (insertó como anon)', false);
+  EXCEPTION WHEN OTHERS THEN
+    GET STACKED DIAGNOSTICS s = RETURNED_SQLSTATE;
+    IF s = '42501' THEN PERFORM set_config('probe.p6', 'BLOQUEADO (RLS rechazó: 42501)', false);
+    ELSE PERFORM set_config('probe.p6', 'PERMITIDO por RLS (falló otra constraint: '||s||')', false); END IF;
+  END;
+END $$;
+
+-- ------------------------------------------------------------
 -- Captura con rol ELEVADO (login role, sin RLS), ANTES de simular al médico:
 --   probe.medico   = uid de un médico
 --   probe.cita_p2  = cita ajena con estado <> 'cancelada' (para P2)
@@ -170,6 +217,12 @@ SELECT 'P1_anon_insert_citas'         AS probe, current_setting('probe.p1', true
 UNION ALL
 SELECT 'P2_medico_cancela_ajena_rpc',  current_setting('probe.p2', true), 'BLOQUEADO'
 UNION ALL
-SELECT 'P3_medico_roba_cita_rpc',      current_setting('probe.p3', true), 'BLOQUEADO';
+SELECT 'P3_medico_roba_cita_rpc',      current_setting('probe.p3', true), 'BLOQUEADO'
+UNION ALL
+SELECT 'P4_anon_insert_notificaciones',        current_setting('probe.p4', true), 'BLOQUEADO'
+UNION ALL
+SELECT 'P5_anon_insert_cuentas_proveedor',     current_setting('probe.p5', true), 'BLOQUEADO'
+UNION ALL
+SELECT 'P6_anon_insert_empresas_proveedoras',  current_setting('probe.p6', true), 'BLOQUEADO';
 
 ROLLBACK;  -- nada de lo anterior se persiste
