@@ -7,7 +7,7 @@ import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Badge } from '@/components/ui/badge'
 import { toast } from 'sonner'
-import { Clock, Plus, Trash2, Loader2, Stethoscope } from 'lucide-react'
+import { Clock, Plus, Trash2, Loader2, Stethoscope, Briefcase } from 'lucide-react'
 
 const DIAS = ['Domingo', 'Lunes', 'Martes', 'Miércoles', 'Jueves', 'Viernes', 'Sábado']
 
@@ -22,6 +22,8 @@ export default function ClinicaHorariosMedicosPage() {
   const [loading, setLoading] = useState(false)
   const [saving, setSaving] = useState(false)
   const [form, setForm] = useState({ dia_semana: 1, hora_inicio: '09:00', hora_fin: '12:00', duracion_slot: 30 })
+  const [tab, setTab] = useState<'visitador' | 'paciente'>('visitador')
+  const esVisitador = tab === 'visitador'
 
   // Cargar médicos de la clínica (vía RPC definer; excluye al propio admin)
   useEffect(() => {
@@ -36,14 +38,14 @@ export default function ClinicaHorariosMedicosPage() {
     })()
   }, [clinica?.id])
 
-  const fetchSlots = useCallback(async (medicoId: string) => {
+  const fetchSlots = useCallback(async (medicoId: string, contexto: string) => {
     if (!medicoId) { setSlots([]); return }
     setLoading(true)
     const { data } = await supabase
       .from('disponibilidad_medico')
       .select('id, dia_semana, hora_inicio, hora_fin, duracion_slot')
       .eq('medico_id', medicoId)
-      .eq('contexto', 'paciente')
+      .eq('contexto', contexto)
       .eq('activo', true)
       .order('dia_semana')
       .order('hora_inicio')
@@ -51,7 +53,7 @@ export default function ClinicaHorariosMedicosPage() {
     setLoading(false)
   }, [])
 
-  useEffect(() => { fetchSlots(medicoSel) }, [medicoSel, fetchSlots])
+  useEffect(() => { fetchSlots(medicoSel, tab) }, [medicoSel, tab, fetchSlots])
 
   const crear = async () => {
     if (!medicoSel) { toast.error('Elige un médico'); return }
@@ -62,15 +64,15 @@ export default function ClinicaHorariosMedicosPage() {
       dia_semana: form.dia_semana,
       hora_inicio: form.hora_inicio,
       hora_fin: form.hora_fin,
-      duracion_slot: form.duracion_slot || 30,
-      contexto: 'paciente',
+      duracion_slot: esVisitador ? 15 : (form.duracion_slot || 30),
+      contexto: tab,
       activo: true,
     })
     setSaving(false)
     if (error) { toast.error('No se pudo guardar: ' + error.message); return }
     toast.success('Horario agregado')
     setForm({ dia_semana: 1, hora_inicio: '09:00', hora_fin: '12:00', duracion_slot: 30 })
-    fetchSlots(medicoSel)
+    fetchSlots(medicoSel, tab)
   }
 
   const eliminar = async (id: string) => {
@@ -78,7 +80,7 @@ export default function ClinicaHorariosMedicosPage() {
     const { error } = await supabase.from('disponibilidad_medico').delete().eq('id', id)
     if (error) { toast.error('No se pudo eliminar'); return }
     toast.success('Horario eliminado')
-    fetchSlots(medicoSel)
+    fetchSlots(medicoSel, tab)
   }
 
   const agrupados = slots.reduce((acc: Record<string, Slot[]>, s) => {
@@ -92,11 +94,11 @@ export default function ClinicaHorariosMedicosPage() {
     <div className="p-4 md:p-6 max-w-4xl mx-auto space-y-6">
       <div>
         <h1 className="text-2xl font-bold flex items-center gap-2">
-          <Clock className="h-6 w-6 text-[#1E5C8E]" /> Horarios de atención a pacientes
+          <Clock className="h-6 w-6 text-[#1E5C8E]" /> Horarios de tus médicos
         </h1>
         <p className="text-sm text-muted-foreground">
-          Configura los horarios en los que tus médicos atienden pacientes. El portal del paciente
-          solo deja agendar dentro de estos horarios.
+          Configura dos agendas por médico: una para <strong>visitadores médicos</strong> (15 min) y
+          otra para <strong>pacientes</strong> (la usa el portal del paciente).
         </p>
       </div>
 
@@ -120,9 +122,30 @@ export default function ClinicaHorariosMedicosPage() {
 
       {medicoSel && (
         <>
+          {/* Selector de agenda */}
+          <div className="inline-flex rounded-lg border p-1 bg-muted/30">
+            <button
+              onClick={() => setTab('visitador')}
+              className={`px-4 py-2 rounded-md text-sm font-medium flex items-center gap-2 ${esVisitador ? 'bg-white shadow text-[#1E5C8E]' : 'text-muted-foreground'}`}
+            >
+              <Briefcase className="h-4 w-4" /> Visitadores médicos
+            </button>
+            <button
+              onClick={() => setTab('paciente')}
+              className={`px-4 py-2 rounded-md text-sm font-medium flex items-center gap-2 ${!esVisitador ? 'bg-white shadow text-[#1E5C8E]' : 'text-muted-foreground'}`}
+            >
+              <Stethoscope className="h-4 w-4" /> Pacientes
+            </button>
+          </div>
+          <p className="text-sm text-muted-foreground">
+            {esVisitador
+              ? 'Horarios en los que el médico atiende a visitadores médicos. Cada cita dura 15 minutos (fijo).'
+              : 'Horarios en los que el médico atiende a pacientes. Estos horarios los usa el portal del paciente.'}
+          </p>
+
           {/* Form nuevo horario */}
           <Card>
-            <CardHeader><CardTitle className="text-lg flex items-center gap-2"><Plus className="h-4 w-4" /> Nuevo horario de pacientes</CardTitle></CardHeader>
+            <CardHeader><CardTitle className="text-lg flex items-center gap-2"><Plus className="h-4 w-4" /> Nuevo horario · {esVisitador ? 'Visitadores' : 'Pacientes'}</CardTitle></CardHeader>
             <CardContent>
               <div className="grid grid-cols-1 md:grid-cols-4 gap-3">
                 <div className="space-y-1">
@@ -140,10 +163,17 @@ export default function ClinicaHorariosMedicosPage() {
                   <Label className="text-xs">Hora fin</Label>
                   <Input type="time" value={form.hora_fin} onChange={(e) => setForm({ ...form, hora_fin: e.target.value })} />
                 </div>
-                <div className="space-y-1">
-                  <Label className="text-xs">Duración por cita (min)</Label>
-                  <Input type="number" min={10} step={5} value={form.duracion_slot} onChange={(e) => setForm({ ...form, duracion_slot: parseInt(e.target.value) })} />
-                </div>
+                {esVisitador ? (
+                  <div className="space-y-1">
+                    <Label className="text-xs">Duración por cita</Label>
+                    <div className="h-10 flex items-center text-sm text-muted-foreground">15 min (fijo)</div>
+                  </div>
+                ) : (
+                  <div className="space-y-1">
+                    <Label className="text-xs">Duración por cita (min)</Label>
+                    <Input type="number" min={10} step={5} value={form.duracion_slot} onChange={(e) => setForm({ ...form, duracion_slot: parseInt(e.target.value) })} />
+                  </div>
+                )}
               </div>
               <Button className="mt-3 bg-[#1E5C8E] hover:bg-[#164a70]" onClick={crear} disabled={saving}>
                 {saving ? <Loader2 className="h-4 w-4 animate-spin mr-1" /> : <Plus className="h-4 w-4 mr-1" />} Guardar horario
@@ -158,7 +188,9 @@ export default function ClinicaHorariosMedicosPage() {
             <Card className="bg-gray-50 border-dashed">
               <CardContent className="p-8 text-center text-muted-foreground">
                 <Stethoscope className="h-9 w-9 mx-auto mb-2 text-gray-300" />
-                Este médico no tiene horarios de pacientes. Agrega al menos uno para que los pacientes puedan agendar.
+                {esVisitador
+                  ? 'Este médico no tiene horarios para visitadores. Agrega al menos uno.'
+                  : 'Este médico no tiene horarios de pacientes. Agrega al menos uno para que los pacientes puedan agendar.'}
               </CardContent>
             </Card>
           ) : (
