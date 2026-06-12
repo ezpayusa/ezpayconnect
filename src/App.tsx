@@ -273,6 +273,7 @@ function App() {
           <Route path="consulta/:citaId" element={<ConsultaPage />} />
           <Route path="buscar-medicamentos" element={<BuscarMedicamentosPage />} />
           <Route path="pacientes/:id/detalle" element={<PacienteDetallePage />} />
+          <Route path="notificaciones" element={<NotificacionesPage />} />
         </Route>
 
         {/* === RUTAS CLÍNICA === */}

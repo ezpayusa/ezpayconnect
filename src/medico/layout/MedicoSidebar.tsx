@@ -65,7 +65,7 @@ export function MedicoSidebar() {
       {/* Notificaciones */}
       <div className="px-4 pt-2">
         <button
-          onClick={() => navigate('/notificaciones')}
+          onClick={() => navigate('/medico/notificaciones')}
           className="w-full flex items-center justify-between px-4 py-3 rounded-lg text-sm transition-all text-[#8a9aaa] hover:bg-white/5 hover:text-white"
         >
           <div className="flex items-center gap-3">
