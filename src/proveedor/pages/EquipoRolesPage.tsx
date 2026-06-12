@@ -7,7 +7,7 @@ import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { toast } from 'sonner'
-import { ShieldCheck, Loader2, AlertTriangle, Users, UserPlus, Copy, UserX, UserCheck } from 'lucide-react'
+import { ShieldCheck, Loader2, AlertTriangle, Users, UserPlus, Copy, UserX, UserCheck, Eye } from 'lucide-react'
 
 interface Miembro {
   id: string
@@ -15,6 +15,7 @@ interface Miembro {
   email: string
   rol_en_empresa: string
   activo: boolean
+  audita_chat: boolean
 }
 
 export default function EquipoRolesPage() {
@@ -38,7 +39,7 @@ export default function EquipoRolesPage() {
     setLoading(true)
     const { data, error } = await supabase
       .from('cuentas_proveedor')
-      .select('id, nombre_completo, email, rol_en_empresa, activo')
+      .select('id, nombre_completo, email, rol_en_empresa, activo, audita_chat')
       .eq('empresa_id', empresa.id)
       .order('nombre_completo')
     if (error) {
@@ -85,6 +86,15 @@ export default function EquipoRolesPage() {
     setGuardando(null)
     if (error) { toast.error(error.message || 'No se pudo actualizar'); return }
     toast.success(activar ? 'Miembro reactivado' : 'Miembro dado de baja')
+    cargar()
+  }
+
+  const cambiarAuditoria = async (id: string, activar: boolean) => {
+    setGuardando(id)
+    const { error } = await supabase.rpc('cambiar_auditoria_chat', { p_id: id, p_activo: activar })
+    setGuardando(null)
+    if (error) { toast.error(error.message || 'No se pudo actualizar'); return }
+    toast.success(activar ? 'Auditoría de chat concedida' : 'Auditoría de chat retirada')
     cargar()
   }
 
@@ -264,6 +274,18 @@ export default function EquipoRolesPage() {
                         </option>
                       ))}
                     </select>
+                    {!esYo && (
+                      <Button
+                        size="sm"
+                        variant="ghost"
+                        className={m.audita_chat ? 'text-indigo-600' : 'text-muted-foreground'}
+                        disabled={guardando === m.id}
+                        title="Acceso de auditoría de chat (solo lectura de conversaciones de operación)"
+                        onClick={() => cambiarAuditoria(m.id, !m.audita_chat)}
+                      >
+                        <Eye className="h-3.5 w-3.5 mr-1" /> {m.audita_chat ? 'Auditoría ON' : 'Auditoría'}
+                      </Button>
+                    )}
                     {!esYo && (
                       <Button
                         size="sm"
