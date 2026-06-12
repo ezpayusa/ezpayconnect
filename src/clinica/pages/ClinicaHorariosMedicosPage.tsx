@@ -120,6 +120,16 @@ export default function ClinicaHorariosMedicosPage() {
         </CardContent>
       </Card>
 
+      {!medicoSel && (
+        <Card className="bg-gray-50 border-dashed">
+          <CardContent className="p-8 text-center text-muted-foreground">
+            <Clock className="h-9 w-9 mx-auto mb-2 text-gray-300" />
+            <p>Selecciona un médico arriba para ver y configurar sus horarios.</p>
+            <p className="text-sm mt-1">Cada médico tiene dos agendas: una para visitadores (15 min) y otra para pacientes.</p>
+          </CardContent>
+        </Card>
+      )}
+
       {medicoSel && (
         <>
           {/* Selector de agenda */}
