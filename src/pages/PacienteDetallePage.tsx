@@ -259,23 +259,38 @@ export default function PacienteDetallePage() {
     </div>
   )
 
+  // Cita "activa" del paciente para entrar directo a la consulta (dictado/IA/biblioteca).
+  // Prioriza una en curso; si no, una confirmada.
+  const citaActiva =
+    citas.find((c: any) => c.estado === 'en_curso') ||
+    citas.find((c: any) => c.estado === 'confirmada')
+
   return (
     <div className="min-h-screen bg-gray-50 p-8">
       {/* Header */}
       <div className="flex items-center gap-4 mb-8">
-        <button 
+        <button
           onClick={() => navigate(`${base}/pacientes`)}
           className="p-2 bg-white rounded-lg hover:bg-gray-100 transition-colors shadow-sm"
         >
           <ArrowLeft size={24} className="text-[#1E5C8E]" />
         </button>
-        <div>
+        <div className="flex-1">
           <h1 className="text-3xl font-bold text-[#1a2a3a] flex items-center gap-3">
             <User size={32} className="text-[#1E5C8E]" />
             {paciente.nombre} {paciente.apellido}
           </h1>
           <p className="text-gray-500">{paciente.telefono} {paciente.email && `| ${paciente.email}`}</p>
         </div>
+        {citaActiva && (
+          <button
+            onClick={() => navigate(`${base}/consulta/${citaActiva.id}`)}
+            className="flex items-center gap-2 px-5 py-3 bg-[#1E5C8E] hover:bg-[#164a70] text-white rounded-lg font-medium shadow-sm transition-colors"
+          >
+            <Stethoscope size={20} />
+            {citaActiva.estado === 'en_curso' ? 'Continuar consulta' : 'Iniciar consulta'}
+          </button>
+        )}
       </div>
 
       {/* Tabs */}
@@ -625,22 +640,46 @@ export default function PacienteDetallePage() {
                       <td className="px-6 py-4">{cita.hora}</td>
                       <td className="px-6 py-4 text-center">
                         <span className={`px-2 py-1 rounded text-xs font-medium ${
-                          cita.estado === 'atendida' ? 'bg-green-100 text-green-700' :
-                          cita.estado === 'cancelada' ? 'bg-red-100 text-red-700' :
+                          cita.estado === 'completada' ? 'bg-green-100 text-green-700' :
+                          cita.estado === 'en_curso' ? 'bg-purple-100 text-purple-700' :
+                          cita.estado === 'confirmada' ? 'bg-blue-100 text-blue-700' :
+                          (cita.estado === 'cancelada' || cita.estado === 'no_show') ? 'bg-red-100 text-red-700' :
                           'bg-yellow-100 text-yellow-700'
                         }`}>
                           {cita.estado}
                         </span>
                       </td>
                       <td className="px-6 py-4 text-gray-500">{cita.motivo || '-'}</td>
-                      <td className="px-6 py-4 text-center">
-                        <button
-                          onClick={() => enviarRecordatorio(cita.id)}
-                          className="p-2 bg-gray-100 hover:bg-gray-200 rounded-lg transition-colors"
-                          title="Enviar recordatorio"
-                        >
-                          <Bell size={16} className="text-[#1E5C8E]" />
-                        </button>
+                      <td className="px-6 py-4">
+                        <div className="flex items-center justify-center gap-2">
+                          {(cita.estado === 'confirmada' || cita.estado === 'en_curso') && (
+                            <button
+                              onClick={() => navigate(`${base}/consulta/${cita.id}`)}
+                              className="flex items-center gap-1 px-3 py-2 bg-[#1E5C8E] hover:bg-[#164a70] text-white rounded-lg text-sm font-medium transition-colors"
+                              title="Abrir consulta (dictado, IA, biblioteca)"
+                            >
+                              <Stethoscope size={15} />
+                              {cita.estado === 'en_curso' ? 'Continuar' : 'Atender'}
+                            </button>
+                          )}
+                          {cita.estado === 'completada' && (
+                            <button
+                              onClick={() => navigate(`${base}/consulta/${cita.id}`)}
+                              className="flex items-center gap-1 px-3 py-2 bg-gray-100 hover:bg-gray-200 text-gray-700 rounded-lg text-sm font-medium transition-colors"
+                              title="Ver consulta"
+                            >
+                              <FileText size={15} />
+                              Ver
+                            </button>
+                          )}
+                          <button
+                            onClick={() => enviarRecordatorio(cita.id)}
+                            className="p-2 bg-gray-100 hover:bg-gray-200 rounded-lg transition-colors"
+                            title="Enviar recordatorio"
+                          >
+                            <Bell size={16} className="text-[#1E5C8E]" />
+                          </button>
+                        </div>
                       </td>
                     </tr>
                   ))
