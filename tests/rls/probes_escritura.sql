@@ -338,6 +338,91 @@ BEGIN
   END IF;
 END $$;
 
+-- ============================================================
+-- FASE 4 · tablas abiertas
+-- ============================================================
+-- P20 — anon NO debe poder ESCRIBIR en medicos (insert; cubre el CRUD cerrado).
+-- (DELETE/UPDATE quedan cerrados por el mismo DROP de medicos_insert/update/delete;
+--  insert se prueba con el patrón 42501, sin ruido de FK.)
+SELECT set_config('request.jwt.claims', NULL, true);
+SELECT set_config('role', 'anon', true);
+DO $$ DECLARE s TEXT;
+BEGIN
+  BEGIN INSERT INTO public.medicos DEFAULT VALUES;
+    PERFORM set_config('probe.p20','PERMITIDO (insertó médico)',false);
+  EXCEPTION WHEN OTHERS THEN GET STACKED DIAGNOSTICS s=RETURNED_SQLSTATE;
+    IF s='42501' THEN PERFORM set_config('probe.p20','BLOQUEADO (RLS rechazó: 42501)',false);
+    ELSE PERFORM set_config('probe.p20','PERMITIDO por RLS (otra constraint: '||s||')',false); END IF;
+  END;
+END $$;
+
+-- P21 — un authenticated común (médico) NO debe escribir medicamentos
+SELECT set_config('request.jwt.claims',
+  json_build_object('sub', (SELECT id FROM public.perfiles WHERE rol='medico' ORDER BY id LIMIT 1), 'role','authenticated')::text, true);
+SELECT set_config('role', 'authenticated', true);
+DO $$ DECLARE s TEXT;
+BEGIN
+  BEGIN INSERT INTO public.medicamentos DEFAULT VALUES;
+    PERFORM set_config('probe.p21','PERMITIDO (insertó medicamento)',false);
+  EXCEPTION WHEN OTHERS THEN GET STACKED DIAGNOSTICS s=RETURNED_SQLSTATE;
+    IF s='42501' THEN PERFORM set_config('probe.p21','BLOQUEADO (RLS rechazó: 42501)',false);
+    ELSE PERFORM set_config('probe.p21','PERMITIDO por RLS (otra constraint: '||s||')',false); END IF;
+  END;
+END $$;
+
+-- P22 — un authenticated común (médico) NO debe escribir farmacias
+DO $$ DECLARE s TEXT;
+BEGIN
+  BEGIN INSERT INTO public.farmacias DEFAULT VALUES;
+    PERFORM set_config('probe.p22','PERMITIDO (insertó farmacia)',false);
+  EXCEPTION WHEN OTHERS THEN GET STACKED DIAGNOSTICS s=RETURNED_SQLSTATE;
+    IF s='42501' THEN PERFORM set_config('probe.p22','BLOQUEADO (RLS rechazó: 42501)',false);
+    ELSE PERFORM set_config('probe.p22','PERMITIDO por RLS (otra constraint: '||s||')',false); END IF;
+  END;
+END $$;
+
+-- P23 — anon NO debe leer cuentas_bancarias_pais
+SELECT set_config('request.jwt.claims', NULL, true);
+SELECT set_config('role', 'anon', true);
+DO $$ DECLARE n INT;
+BEGIN
+  SELECT count(*) INTO n FROM public.cuentas_bancarias_pais;
+  IF n > 0 THEN PERFORM set_config('probe.p23','PERMITIDO (anon ve '||n||' cuentas bancarias)',false);
+  ELSE PERFORM set_config('probe.p23','BLOQUEADO (0 cuentas visibles)',false); END IF;
+END $$;
+
+-- P25 — anon NO debe leer PII de medicos (cédula). Hoy lee; post = sin acceso a la columna.
+SELECT set_config('request.jwt.claims', NULL, true);
+SELECT set_config('role', 'anon', true);
+DO $$ DECLARE s TEXT; n INT;
+BEGIN
+  BEGIN
+    SELECT count(cedula_profesional) INTO n FROM public.medicos;
+    PERFORM set_config('probe.p25','PERMITIDO (anon lee cédula de '||n||' médicos)',false);
+  EXCEPTION WHEN OTHERS THEN GET STACKED DIAGNOSTICS s=RETURNED_SQLSTATE;
+    PERFORM set_config('probe.p25','BLOQUEADO (sin acceso a la columna PII: '||s||')',false);
+  END;
+END $$;
+
+-- P24 — POSITIVO: un usuario autenticado de país X SÍ ve la cuenta de su país (checkout legítimo)
+SELECT set_config('role', 'none', true);
+SELECT set_config('probe.user_px',
+  (SELECT id::text FROM public.cuentas_proveedor
+    WHERE pais_id = (SELECT pais_id FROM public.cuentas_bancarias_pais WHERE activo=true LIMIT 1) LIMIT 1), false);
+SELECT set_config('request.jwt.claims',
+  json_build_object('sub', current_setting('probe.user_px', true), 'role','authenticated')::text, true);
+SELECT set_config('role', 'authenticated', true);
+DO $$ DECLARE n INT;
+BEGIN
+  IF NULLIF(current_setting('probe.user_px', true), '') IS NULL THEN
+    PERFORM set_config('probe.p24','N/A (sin proveedor de ese país)',false);
+  ELSE
+    SELECT count(*) INTO n FROM public.cuentas_bancarias_pais;  -- la política limita a mi_pais()
+    IF n > 0 THEN PERFORM set_config('probe.p24','OK (ve '||n||' cuenta(s) de su país)',false);
+    ELSE PERFORM set_config('probe.p24','REGRESIÓN (no ve la cuenta de su país)',false); END IF;
+  END IF;
+END $$;
+
 -- ===== Veredictos como result set =====
 SELECT 'P1_anon_insert_citas'              AS probe, current_setting('probe.p1', true)  AS verdict, 'BLOQUEADO' AS esperado_post_fix
 UNION ALL SELECT 'P2_medico_cancela_ajena_rpc',         current_setting('probe.p2', true),  'BLOQUEADO'
@@ -357,6 +442,12 @@ UNION ALL SELECT 'P15_medico_ve_citas_ajenas',          current_setting('probe.p
 UNION ALL SELECT 'P16_paciente_ve_citas_ajenas',        current_setting('probe.p16', true), 'BLOQUEADO'
 UNION ALL SELECT 'P17_paciente_no_crea_agendada',       current_setting('probe.p17', true), 'BLOQUEADO'
 UNION ALL SELECT 'P18_authn_asocia_medico_clinica',     current_setting('probe.p18', true), 'BLOQUEADO'
-UNION ALL SELECT 'P19_medico_miembro_no_es_admin',      current_setting('probe.p19', true), 'BLOQUEADO';
+UNION ALL SELECT 'P19_medico_miembro_no_es_admin',      current_setting('probe.p19', true), 'BLOQUEADO'
+UNION ALL SELECT 'P20_anon_escribe_medicos',            current_setting('probe.p20', true), 'BLOQUEADO'
+UNION ALL SELECT 'P21_authn_escribe_medicamentos',      current_setting('probe.p21', true), 'BLOQUEADO'
+UNION ALL SELECT 'P22_authn_escribe_farmacias',         current_setting('probe.p22', true), 'BLOQUEADO'
+UNION ALL SELECT 'P23_anon_lee_cuentas_bancarias',      current_setting('probe.p23', true), 'BLOQUEADO'
+UNION ALL SELECT 'P25_anon_lee_pii_medicos',            current_setting('probe.p25', true), 'BLOQUEADO'
+UNION ALL SELECT 'P24_proveedor_ve_cuenta_su_pais',     current_setting('probe.p24', true), 'OK (>0)';
 
 ROLLBACK;  -- nada de lo anterior se persiste

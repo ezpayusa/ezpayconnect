@@ -94,6 +94,14 @@ Todas terminan en **ROLLBACK**: nunca persisten, aunque la operación sea permit
 | P12 `medico_inserta_historial_ajeno` | médico inserta historial para paciente sin cita | 🔴 PERMITIDO | BLOQUEADO | Fase 2 | ✅ **VERDE** (42501) |
 | P13 `medico_inserta_expediente_ajeno` | médico inserta nota para paciente sin cita | 🟢 BLOQUEADO | BLOQUEADO | Fase 2 | ✅ guard (42501) |
 | P14 `paciente_ve_sus_receta_items` | paciente ve los items de SUS recetas (no ajenos) | ⚪ N/A | >0 propios / 0 ajenos | Fase 2 | ✅ **VERDE** (2/0) |
+| P18 `authn_asocia_medico_clinica` | authenticated asocia médico a clínica ajena | 🔴 PERMITIDO | BLOQUEADO | Intermedio | ✅ **VERDE** (42501) |
+| P19 `medico_miembro_no_es_admin` | gate de staff: médico miembro ≠ admin | 🟢 BLOQUEADO | BLOQUEADO | Intermedio | ✅ guard |
+| P20 `anon_escribe_medicos` | anon inserta/escribe en medicos | 🔴 PERMITIDO | BLOQUEADO | Fase 4 | ✅ **VERDE** (42501) |
+| P21 `authn_escribe_medicamentos` | authenticated común escribe medicamentos | 🔴 PERMITIDO | BLOQUEADO | Fase 4 | ✅ **VERDE** (42501) |
+| P22 `authn_escribe_farmacias` | authenticated común escribe farmacias | 🔴 PERMITIDO | BLOQUEADO | Fase 4 | ✅ **VERDE** (42501) |
+| P23 `anon_lee_cuentas_bancarias` | anon lee cuentas_bancarias_pais | 🔴 PERMITIDO (1) | BLOQUEADO (0) | Fase 4 | ✅ **VERDE** (0) |
+| P25 `anon_lee_pii_medicos` | anon lee cédula/PII de medicos | 🔴 PERMITIDO (3) | sin acceso a columna | Fase 4 | ✅ **VERDE** (42501) |
+| P24 `proveedor_ve_cuenta_su_pais` | (positivo) proveedor ve la cuenta de su país | 🟢 OK (1) | OK (≥1) | Fase 4 | ✅ **VERDE** (1) |
 
 > P1/P2/P3 (citas) siguen en rojo a propósito hasta la Fase 3 (RLS scoped de
 > `citas` + revalidación de autorización dentro de las RPC definer).

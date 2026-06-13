@@ -4,7 +4,7 @@
 **Entorno de trabajo:** proyecto Supabase remoto linkeado (datos FICTICIOS = "staging").
 Las migraciones se aplican manualmente con `npx supabase db query --linked -f <archivo>`
 (este proyecto NO usa el ledger de migraciones del CLI; el orden lo da el número de archivo).
-**Punto de retome:** este archivo. Siguiente = **Fase 4 / Bloque D (tablas abiertas)**. (Paso intermedio `asociar_medico_clinica` ✅ aplicado; falta solo el deploy del fix de `crear-staff-clinica`.)
+**Punto de retome:** este archivo. Siguiente = **pasada agrupada de definer 🟡** (`enviar_notificacion_promocion`, `notificar_paciente/laboratorio`, `administrar_visita`) → luego **Fase 5 (storage privado + signed URLs)** y **Fase 6 (roles + CHECK anti fail-open)**. (Fases 0–4 + paso intermedio ✅ aplicadas; `crear-staff-clinica` ✅ deployado.)
 
 ---
 
@@ -124,6 +124,29 @@ Aplicada al remoto y verificada. Migración:
 - P15/P16 (médico/paciente ven citas ajenas) → **0**. P17 (paciente crea 'agendada') → **'solicitada' forzada**.
 - Lectura: citas deja de ser 45 para todos → super_admin 46, admin_clinica 12 (su clínica), médico/paciente solo lo suyo, anon 0.
 - El creador puede leer su cita recién creada (P17 lo demuestra para el paciente).
+
+### ✅ Fase 4 — Bloque D (tablas abiertas)
+Aplicada al remoto y verificada. Migración: `supabase/migrations/073_fase4_tablas_abiertas.sql`.
+
+**Qué hizo:**
+- **`medicos`:** drop del CRUD abierto (insert/update/delete `USING(true)` a public).
+  Escritura → médico sobre su propio registro (`id=auth.uid()`) + admin_clinica/gerente sobre
+  su clínica + super_admin. **GRANT por columna a anon** (solo `id, nombre_completo, especialidad,
+  foto_url, clinica_id, pais_id, activo`) → anon ya **no lee PII** (cédula/teléfono/email). Lecturas
+  del frontend (`id, nombre_completo`) intactas; alta de médico va por `registrar_medico_desde_invitacion` (definer).
+- **`medicamentos` / `farmacias`:** drop del write abierto → escritura solo `super_admin`; lecturas (catálogo/directorio) se mantienen.
+- **`cuentas_bancarias_pais`:** drop de `cuentas_banco_read` (`USING(true)` público) → SELECT
+  `TO authenticated USING (pais_id = private.mi_pais())`. Helper nuevo `private.mi_pais()` (cubre
+  perfil **y** proveedor). El checkout (`PagoCheckoutPage`, autenticado, cuenta de su país) no se rompe.
+
+**Resultado (rojo→verde, medido):**
+- P20 (anon escribe medicos), P21 (authn escribe medicamentos), P22 (authn escribe farmacias) → BLOQUEADO (42501).
+- P23 (anon lee cuentas_bancarias) → 0. P25 (anon lee cédula) → sin acceso a columna (42501).
+- **P24 (positivo):** proveedor de su país **sí** ve su cuenta (checkout intacto). Directorio de médicos sigue legible para anon (8 visibles, sin PII).
+- P1–P19 sin regresión.
+
+**Caveats:** `farmacias` write ahora solo super_admin (si otros roles admin lo necesitan → Fase 6).
+PII de `medicos` para authenticated sigue completa (necesario para "Medico ve su perfil"); solo se acotó anon.
 
 ## Baseline ROJO capturado (estado ANTES de remediar)
 
