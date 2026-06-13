@@ -257,10 +257,21 @@ La última fase. Cierra el plan. **Más delicada** (tocó políticas en 3 sistem
   `hooks/admin/useAdminAuth` → super_admin; duplicado `hooks/useAdminAuth` **borrado**;
   AuditoriaPage repuntado).
 
-**⚠️ ORDEN DE DESPLIEGUE (replicar en prod):** `supabase functions deploy crear-staff-clinica`
-**ANTES** de aplicar la migración 076. Si el FK entra antes de redeployar, la función vieja
-inserta `secretaria` → FK 23503 → creación de staff rota. Orden: (1) deploy función → (2)
-migración → (3) harness → (4) verificación HTTP.
+**⚠️ ORDEN DE DESPLIEGUE (replicar en prod) — la función ANTES del FK:**
+0. **Pre-vuelo de datos** (los datos de prod pueden tener roles legacy ≠ staging): correr
+   ```sql
+   SELECT rol, count(*) FROM public.perfiles
+   WHERE rol IS NULL OR rol NOT IN (SELECT codigo FROM public.roles_catalogo)
+   GROUP BY rol;
+   ```
+   Si devuelve filas → **mapear/limpiar esos roles ANTES** del paso 2, o el `ADD CONSTRAINT
+   … FK` de la 076 falla (23503) al validar las filas existentes. En staging dio 0 filas.
+1. `supabase functions deploy crear-staff-clinica` — escribe `gerente` (válido con o sin FK).
+   Si el FK entra antes de redeployar, la función vieja inserta `secretaria` → FK 23503 →
+   creación de staff rota.
+2. aplicar la migración 076 (políticas + FK + NOT NULL).
+3. correr el harness `tests/rls/probes_escritura.sql` (P1–P54).
+4. verificación HTTP de `crear-staff` (no-admin→403; admin→200 con staff gerente + acceso clínica).
 
 **Bug encontrado y corregido por la verificación HTTP**: `crear-staff-clinica` no creaba la fila
 en `medicos` (FK de `medico_clinicas`) → la asociación a la clínica fallaba en silencio y el
