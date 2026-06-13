@@ -25,6 +25,10 @@ dist-ssr
 .vercel
 
 # Docs internas y respaldos
-docs/
+# Se ignora docs/ salvo la documentación curada de diseño/seguridad (markdown).
+# Los binarios (.docx) y notas scratch (info.md) siguen fuera del repo.
+docs/*
+!docs/SEGURIDAD_PROGRESO.md
+!docs/DISEÑO_PANELES.md
 *.zip
 *.rar
