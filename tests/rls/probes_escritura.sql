@@ -831,6 +831,106 @@ EXCEPTION
   WHEN others THEN PERFORM set_config('probe.p46','REGRESIÓN ('||SQLSTATE||')',false);
 END $$;
 
+-- ============================================================
+-- FASE 6 · roles alineados al catálogo + FK anti fail-open
+-- ============================================================
+-- P47 — POSITIVO: super_admin (rol admin real) ve un recurso admin-gated
+SELECT set_config('role', 'none', true);
+SELECT set_config('request.jwt.claims',
+  json_build_object('sub', current_setting('probe.sa', true), 'role','authenticated')::text, true);
+SELECT set_config('role', 'authenticated', true);
+DO $$ DECLARE n INT; BEGIN
+  SELECT count(*) INTO n FROM public.cuentas_proveedor;  -- política admin → super_admin ve todas
+  IF n > 0 THEN PERFORM set_config('probe.p47','OK (super_admin ve '||n||' cuentas)',false);
+  ELSE PERFORM set_config('probe.p47','REGRESIÓN (super_admin no ve nada)',false); END IF;
+EXCEPTION WHEN others THEN PERFORM set_config('probe.p47','REGRESIÓN ('||SQLSTATE||')',false);
+END $$;
+
+-- P48 — NEGATIVO: no se puede asignar un rol FUERA del catálogo (cierra el fail-open)
+SELECT set_config('role', 'none', true);
+SELECT set_config('probe.fk_target', (SELECT id::text FROM public.perfiles ORDER BY id LIMIT 1), false);
+DO $$ BEGIN
+  UPDATE public.perfiles SET rol='admin' WHERE id = current_setting('probe.fk_target', true)::uuid;
+  PERFORM set_config('probe.p48','PERMITIDO (asignó rol fuera del catálogo)',false);
+EXCEPTION
+  WHEN foreign_key_violation THEN PERFORM set_config('probe.p48','BLOQUEADO (FK rechazó: 23503)',false);
+  WHEN others THEN PERFORM set_config('probe.p48','BLOQUEADO ('||SQLSTATE||')',false);
+END $$;
+
+-- P49 — POSITIVO: un rol VÁLIDO del catálogo sí se asigna
+SELECT set_config('role', 'none', true);
+DO $$ BEGIN
+  UPDATE public.perfiles SET rol='gerente' WHERE id = current_setting('probe.fk_target', true)::uuid;
+  PERFORM set_config('probe.p49','OK (asignó rol válido del catálogo)',false);
+EXCEPTION WHEN others THEN PERFORM set_config('probe.p49','REGRESIÓN ('||SQLSTATE||')',false);
+END $$;
+
+-- ---- Remapeo a super_admin (farmacia_medicamentos / reportes_guardados) ----
+-- Trick 42501: RLS WITH CHECK se evalúa ANTES que NOT NULL → 42501 = RLS bloqueó;
+-- otro SQLSTATE (o éxito) = RLS permitió (solo faltó dato de prueba).
+-- P50 — super_admin SÍ edita farmacia_medicamentos
+SELECT set_config('role', 'none', true);
+SELECT set_config('request.jwt.claims',
+  json_build_object('sub', current_setting('probe.sa', true), 'role','authenticated')::text, true);
+SELECT set_config('role', 'authenticated', true);
+DO $$ BEGIN
+  INSERT INTO public.farmacia_medicamentos DEFAULT VALUES;
+  PERFORM set_config('probe.p50','OK (RLS permitió el INSERT)',false);
+EXCEPTION
+  WHEN insufficient_privilege THEN PERFORM set_config('probe.p50','REGRESIÓN (RLS bloqueó a super_admin: 42501)',false);
+  WHEN others THEN PERFORM set_config('probe.p50','OK (RLS permitió; faltó dato: '||SQLSTATE||')',false);
+END $$;
+
+-- P51 — un no-super_admin (médico) NO edita farmacia_medicamentos
+SELECT set_config('role', 'none', true);
+SELECT set_config('request.jwt.claims',
+  json_build_object('sub', current_setting('probe.np_medico', true), 'role','authenticated')::text, true);
+SELECT set_config('role', 'authenticated', true);
+DO $$ BEGIN
+  INSERT INTO public.farmacia_medicamentos DEFAULT VALUES;
+  PERFORM set_config('probe.p51','PERMITIDO (médico editó farmacia!)',false);
+EXCEPTION
+  WHEN insufficient_privilege THEN PERFORM set_config('probe.p51','BLOQUEADO (RLS: 42501)',false);
+  WHEN others THEN PERFORM set_config('probe.p51','PERMITIDO? (RLS dejó pasar: '||SQLSTATE||')',false);
+END $$;
+
+-- P52 — super_admin SÍ crea reportes_guardados
+SELECT set_config('role', 'none', true);
+SELECT set_config('request.jwt.claims',
+  json_build_object('sub', current_setting('probe.sa', true), 'role','authenticated')::text, true);
+SELECT set_config('role', 'authenticated', true);
+DO $$ BEGIN
+  INSERT INTO public.reportes_guardados DEFAULT VALUES;
+  PERFORM set_config('probe.p52','OK (RLS permitió el INSERT)',false);
+EXCEPTION
+  WHEN insufficient_privilege THEN PERFORM set_config('probe.p52','REGRESIÓN (RLS bloqueó a super_admin: 42501)',false);
+  WHEN others THEN PERFORM set_config('probe.p52','OK (RLS permitió; faltó dato: '||SQLSTATE||')',false);
+END $$;
+
+-- P53 — un no-super_admin (médico) NO crea reportes_guardados
+SELECT set_config('role', 'none', true);
+SELECT set_config('request.jwt.claims',
+  json_build_object('sub', current_setting('probe.np_medico', true), 'role','authenticated')::text, true);
+SELECT set_config('role', 'authenticated', true);
+DO $$ BEGIN
+  INSERT INTO public.reportes_guardados DEFAULT VALUES;
+  PERFORM set_config('probe.p53','PERMITIDO (médico creó reporte!)',false);
+EXCEPTION
+  WHEN insufficient_privilege THEN PERFORM set_config('probe.p53','BLOQUEADO (RLS: 42501)',false);
+  WHEN others THEN PERFORM set_config('probe.p53','PERMITIDO? (RLS dejó pasar: '||SQLSTATE||')',false);
+END $$;
+
+-- P54 — POSITIVO: super_admin VE reportes_guardados sin error
+SELECT set_config('role', 'none', true);
+SELECT set_config('request.jwt.claims',
+  json_build_object('sub', current_setting('probe.sa', true), 'role','authenticated')::text, true);
+SELECT set_config('role', 'authenticated', true);
+DO $$ DECLARE n INT; BEGIN
+  SELECT count(*) INTO n FROM public.reportes_guardados;
+  PERFORM set_config('probe.p54','OK (super_admin ve reportes, n='||n||')',false);
+EXCEPTION WHEN others THEN PERFORM set_config('probe.p54','REGRESIÓN ('||SQLSTATE||')',false);
+END $$;
+
 -- ===== Veredictos como result set =====
 SELECT 'P1_anon_insert_citas'              AS probe, current_setting('probe.p1', true)  AS verdict, 'BLOQUEADO' AS esperado_post_fix
 UNION ALL SELECT 'P2_medico_cancela_ajena_rpc',         current_setting('probe.p2', true),  'BLOQUEADO'
@@ -877,6 +977,14 @@ UNION ALL SELECT 'P42_ajeno_notifica_laboratorio',       current_setting('probe.
 UNION ALL SELECT 'P43_medico_orden_notifica_lab',        current_setting('probe.p43', true), 'OK'
 UNION ALL SELECT 'P44_ajeno_administra_visita',          current_setting('probe.p44', true), 'BLOQUEADO'
 UNION ALL SELECT 'P45_proveedor_visita_administra',      current_setting('probe.p45', true), 'OK'
-UNION ALL SELECT 'P46_staff_clinica_notifica_paciente',  current_setting('probe.p46', true), 'OK';
+UNION ALL SELECT 'P46_staff_clinica_notifica_paciente',  current_setting('probe.p46', true), 'OK'
+UNION ALL SELECT 'P47_superadmin_ve_admin_gated',        current_setting('probe.p47', true), 'OK'
+UNION ALL SELECT 'P48_rol_fuera_catalogo_rechazado',     current_setting('probe.p48', true), 'BLOQUEADO'
+UNION ALL SELECT 'P49_rol_valido_asignado',              current_setting('probe.p49', true), 'OK'
+UNION ALL SELECT 'P50_superadmin_edita_farmacia',        current_setting('probe.p50', true), 'OK'
+UNION ALL SELECT 'P51_medico_no_edita_farmacia',         current_setting('probe.p51', true), 'BLOQUEADO'
+UNION ALL SELECT 'P52_superadmin_crea_reporte',          current_setting('probe.p52', true), 'OK'
+UNION ALL SELECT 'P53_medico_no_crea_reporte',           current_setting('probe.p53', true), 'BLOQUEADO'
+UNION ALL SELECT 'P54_superadmin_ve_reportes',           current_setting('probe.p54', true), 'OK';
 
 ROLLBACK;  -- nada de lo anterior se persiste

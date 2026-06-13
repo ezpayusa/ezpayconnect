@@ -1,6 +1,6 @@
 import { useState, useEffect } from "react";
 import { useAuditoria } from "@/hooks/useAuditoria";
-import { useAdminAuth } from "@/hooks/useAdminAuth";
+import { useAdminAuth } from "@/hooks/admin/useAdminAuth";
 import {
   Search,
   Filter,

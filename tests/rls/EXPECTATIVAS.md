@@ -136,6 +136,21 @@ no-proveedores, así que `false OR (NULL = empresa) OR …` = NULL y `IF NOT NUL
 RAISE (autoriza). Corregido envolviendo la comparación en `COALESCE(… , false)`. Los probes
 NEGATIVOS lo cazaron antes del commit.
 
+| P47 `superadmin_ve_admin_gated` | super_admin ve recurso admin-gated (cuentas_proveedor) | 🟢 OK | OK | Fase 6 | ✅ **VERDE** (no regresión) |
+| P48 `rol_fuera_catalogo_rechazado` | asignar `perfiles.rol='admin'` (fuera del catálogo) | 🔴 PERMITIDO | BLOQUEADO | Fase 6 | ✅ **VERDE** (FK 23503) |
+| P49 `rol_valido_asignado` | asignar `rol='gerente'` (válido) | 🟢 OK | OK | Fase 6 | ✅ **VERDE** (OK) |
+| P50 `superadmin_edita_farmacia` | super_admin edita farmacia_medicamentos (remap) | 🔴 REGRESIÓN (42501) | OK | Fase 6 | ✅ **VERDE** (RLS permite) |
+| P51 `medico_no_edita_farmacia` | un no-super edita farmacia_medicamentos | 🟢 BLOQUEADO | BLOQUEADO | Fase 6 | ✅ guard (42501) |
+| P52 `superadmin_crea_reporte` | super_admin crea reportes_guardados (remap) | 🔴 REGRESIÓN (42501) | OK | Fase 6 | ✅ **VERDE** (RLS permite) |
+| P53 `medico_no_crea_reporte` | un no-super crea reportes_guardados | 🟢 BLOQUEADO | BLOQUEADO | Fase 6 | ✅ guard (42501) |
+| P54 `superadmin_ve_reportes` | super_admin ve reportes_guardados | 🟢 OK | OK | Fase 6 | ✅ **VERDE** (OK) |
+
+**Verificación HTTP (fuera del harness SQL)** de `crear-staff-clinica` tras la Fase 6:
+no-admin (medico.qa) → **403**; admin_clinica (clinica.qa) → **200**, crea staff con
+`perfiles.rol='gerente'` **y** membresía `medico_clinicas` de su clínica (acceso RLS real).
+Bug encontrado y corregido: la función no creaba la fila en `medicos` (FK de
+`medico_clinicas`) → la asociación fallaba en silencio y el staff quedaba sin acceso de clínica.
+
 > P1/P2/P3 (citas) siguen en rojo a propósito hasta la Fase 3 (RLS scoped de
 > `citas` + revalidación de autorización dentro de las RPC definer).
 > P4/P5/P6 pasaron a VERDE en la **Fase 1** (cierre de los INSERT públicos).

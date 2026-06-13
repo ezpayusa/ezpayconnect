@@ -94,9 +94,11 @@ export function useAuth() {
     return roles.includes(perfil?.rol || '')
   }, [perfil])
 
-  const isAdmin = useCallback(() => perfil?.rol === 'admin', [perfil])
+  // Roles del catálogo (roles_catalogo): admin de clínica = admin_clinica;
+  // staff no-médico = gerente. ('admin'/'asistente' eran roles inexistentes.)
+  const isAdmin = useCallback(() => ['super_admin', 'admin_clinica'].includes(perfil?.rol ?? ''), [perfil])
   const isMedico = useCallback(() => perfil?.rol === 'medico', [perfil])
-  const isAsistente = useCallback(() => perfil?.rol === 'asistente', [perfil])
+  const isAsistente = useCallback(() => ['gerente', 'soporte'].includes(perfil?.rol ?? ''), [perfil])
 
   return { user, perfil, loading, login, register, logout, hasRole, isAdmin, isMedico, isAsistente }
 }

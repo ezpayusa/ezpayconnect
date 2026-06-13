@@ -29,7 +29,13 @@ export default function LoginPage() {
     setError('')
 
     if (isRegister) {
-      const { error } = await register(email, password, nombre, rol, paisId)
+      // Mapeo a roles del catálogo (perfiles.rol tiene FK → roles_catalogo):
+      // admin→admin_clinica; asistente/enfermera/contador→gerente; medico/gerente igual.
+      const ROL_CATALOGO: Record<string, string> = {
+        admin: 'admin_clinica', asistente: 'gerente', enfermera: 'gerente',
+        contador: 'gerente', medico: 'medico', gerente: 'gerente',
+      }
+      const { error } = await register(email, password, nombre, ROL_CATALOGO[rol] ?? 'medico', paisId)
       if (error) setError(error.message)
       else {
         setIsRegister(false)
@@ -51,7 +57,7 @@ export default function LoginPage() {
             .select('rol')
             .eq('id', user.id)
             .single()
-          const adminRoles = ['super_admin', 'admin_pais', 'admin_finanzas', 'admin_soporte', 'admin_ventas']
+          const adminRoles = ['super_admin']  // único admin de sistema real del catálogo
           if (profile?.rol === 'medico') {
             navigate('/medico')
           } else if (profile?.rol && adminRoles.includes(profile.rol)) {

@@ -81,12 +81,15 @@ Deno.serve(async (req) => {
     const userId = authData.user!.id;
 
     // 2. Crear perfil
+    // El staff (secretaria/asistente) se persiste como 'gerente', el rol de
+    // staff clínico del catálogo (perfiles.rol tiene FK → roles_catalogo). Así
+    // además obtienen el acceso RLS de clínica (es_admin_clinica usa gerente).
     const { error: perfilError } = await supabase.from("perfiles").insert({
       id: userId,
       email,
       nombre_completo,
       telefono: telefono || null,
-      rol,
+      rol: "gerente",
       pais_id: pais_id || null,
       activo: true,
     });
@@ -99,14 +102,38 @@ Deno.serve(async (req) => {
       );
     }
 
-    // 3. Asociar a la clínica
+    // 2.5 Crear fila en `medicos` — requisito del schema: medico_clinicas.medico_id
+    //     tiene FK a `medicos`. Sin esto, la asociación a la clínica (paso 3) falla
+    //     y el staff queda con rol pero SIN acceso de clínica.
+    const { error: medError } = await supabase.from("medicos").insert({
+      id: userId,
+      clinica_id,
+      nombre_completo,
+    });
+    if (medError) {
+      await supabase.from("perfiles").delete().eq("id", userId);
+      await supabase.auth.admin.deleteUser(userId).catch(() => {});
+      return new Response(
+        JSON.stringify({ error: "Error creando registro médico: " + medError.message }),
+        { status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+      );
+    }
+
+    // 3. Asociar a la clínica (medico_clinicas). Si falla, revertir todo: un staff
+    //    sin asociación no tendría acceso de clínica, así que no lo dejamos a medias.
     const { error: asocError } = await supabase.rpc("asociar_medico_clinica", {
       p_medico_id: userId,
       p_clinica_id: clinica_id,
       p_es_principal: false,
     });
     if (asocError) {
-      console.error("[crear-staff-clinica] Error asociando clínica:", asocError.message);
+      await supabase.from("medicos").delete().eq("id", userId);
+      await supabase.from("perfiles").delete().eq("id", userId);
+      await supabase.auth.admin.deleteUser(userId).catch(() => {});
+      return new Response(
+        JSON.stringify({ error: "Error asociando a la clínica: " + asocError.message }),
+        { status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+      );
     }
 
     // 4. Email con credenciales (best-effort)

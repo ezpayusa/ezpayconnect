@@ -1,7 +1,9 @@
 import { useEffect, useState } from 'react';
 import { supabase } from '../../lib/supabase';
 
-export type AdminRole = 'super_admin' | 'admin_pais' | 'admin_finanzas' | 'admin_soporte' | 'admin_ventas';
+// Fuente única de verdad: roles_catalogo. El back-office EzPay = super_admin
+// (los roles granulares admin_pais/finanzas/ventas/... nunca existieron).
+export type AdminRole = 'super_admin';
 
 export interface AdminUser {
   id: string;
@@ -73,7 +75,7 @@ export function useAdminAuth() {
       });
 
       // 3. Verificar si el rol es admin
-      const adminRoles = ['super_admin', 'admin_pais', 'admin_finanzas', 'admin_soporte', 'admin_ventas', 'admin_publicidad'];
+      const adminRoles = ['super_admin'];
       const userRol = profile?.rol;
 
       console.log('[useAdminAuth] Rol del usuario:', userRol);

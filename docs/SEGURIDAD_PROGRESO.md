@@ -4,7 +4,7 @@
 **Entorno de trabajo:** proyecto Supabase remoto linkeado (datos FICTICIOS = "staging").
 Las migraciones se aplican manualmente con `npx supabase db query --linked -f <archivo>`
 (este proyecto NO usa el ledger de migraciones del CLI; el orden lo da el número de archivo).
-**Punto de retome:** este archivo. Siguiente = **Fase 6 (roles + CHECK anti fail-open)**. (Fases 0–5 + paso intermedio + pasada definer ✅ aplicadas; `crear-staff-clinica` ✅ deployado.)
+**Punto de retome:** este archivo. **Plan de remediación RLS COMPLETO** — Fases 0–6 + paso intermedio + pasada definer ✅ aplicadas y verificadas (harness P1–P54 verde). `crear-staff-clinica` ✅ deployado (con fix de Fase 6).
 
 ---
 
@@ -228,6 +228,49 @@ Qué se hizo:
   WebAppExamenes, WebAppHistorial, PagosProveedores, SolicitudesCampana, ProveedorPagos).
 - **Probes P26–P36** (lectura + escritura negativa/positiva en ambos buckets) → todos VERDE;
   P1–P25 sin regresión. Build limpio.
+
+## Fase 6 — Roles alineados al catálogo + cierre del fail-open ✅ APLICADA (migración `076`)
+La última fase. Cierra el plan. **Más delicada** (tocó políticas en 3 sistemas de rol).
+
+**Desambiguación de 3 sistemas de rol** (clave para no romper nada):
+- `perfiles.rol` (catálogo de 7) → **42 políticas alineadas** (41 reescritas + 2 dropeadas).
+- Sistema **proveedor** (`cuentas_proveedor.rol_en_empresa` / `mi_rol_proveedor`) → `'admin'` es
+  rol REAL de empresa → **9 políticas intactas**.
+- Falsos positivos `planes_base`/`planes_configuracion` → `'farmaceutico'` es un VALOR de la
+  columna `tipo`, no un rol → **intactos**.
+
+**Qué se hizo:**
+- Quitadas las ramas de rol FANTASMA (admin, admin_pais, ezpay_admin, admin_finanzas,
+  admin_publicidad, admin_ventas, farmaceutico) de las políticas de `perfiles.rol`; colapsadas
+  a `super_admin` (y `medico` donde aplicaba). El back-office EzPay ya funcionaba SOLO para
+  super_admin (los roles granulares nunca existieron).
+- 2 dropeadas (redundantes con hermana super_admin); 2 remapeadas a super_admin
+  (`farmacia_medicamentos/editar`, `reportes_guardados`); 3 con DROP dinámico por patrón +
+  nombre ASCII (sus nombres tenían **mojibake guardado en la BD**).
+- **FK + NOT NULL**: `perfiles.rol → roles_catalogo(codigo)` → el frontend ya no puede escribir
+  un rol fuera del catálogo (cierre del fail-open por datos). *(En USING/CHECK un NULL DENIEGA
+  → fail-closed; no requiere COALESCE.)*
+- **Drift de código reconciliado ANTES del FK**: `LoginPage` (signup) y `crear-staff-clinica`
+  escribían roles fuera del catálogo (admin/asistente/enfermera/contador/secretaria). Mapeados
+  a catálogo: admin→admin_clinica; asistente/enfermera/contador/secretaria→**gerente**.
+- **Frontend**: `useAuth.isAdmin/isAsistente` a roles reales; `useAdminAuth` unificado (canónico
+  `hooks/admin/useAdminAuth` → super_admin; duplicado `hooks/useAdminAuth` **borrado**;
+  AuditoriaPage repuntado).
+
+**⚠️ ORDEN DE DESPLIEGUE (replicar en prod):** `supabase functions deploy crear-staff-clinica`
+**ANTES** de aplicar la migración 076. Si el FK entra antes de redeployar, la función vieja
+inserta `secretaria` → FK 23503 → creación de staff rota. Orden: (1) deploy función → (2)
+migración → (3) harness → (4) verificación HTTP.
+
+**Bug encontrado y corregido por la verificación HTTP**: `crear-staff-clinica` no creaba la fila
+en `medicos` (FK de `medico_clinicas`) → la asociación a la clínica fallaba en silencio y el
+staff quedaba con rol pero **sin acceso de clínica**. Ahora crea `medicos` antes de asociar y
+revierte si la asociación falla. Verificado: admin crea staff `gerente` CON membresía de clínica;
+no-admin → 403.
+
+**Harness P1–P54 verde, cero regresión.** Probes Fase 6: P47 (super_admin admin-gated OK),
+P48 (rol fuera de catálogo → FK 23503 BLOQUEADO), P49 (rol válido OK), P50/P52 (remap: super_admin
+edita farmacia / crea reportes OK), P51/P53 (no-super BLOQUEADO), P54 (super_admin ve reportes OK).
 
 ## Pasada agrupada — funciones SECURITY DEFINER sin revalidar ✅ APLICADA (migración `075`)
 Las 4 funciones eran ejecutables por **anon+authenticated** y NO revalidaban al caller →
