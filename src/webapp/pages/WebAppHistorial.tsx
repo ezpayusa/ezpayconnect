@@ -1,4 +1,5 @@
 import { useState } from 'react'
+import { openSignedUrl } from '@/lib/signedUrl'
 import { useWebAppAuth } from '@/webapp/hooks/useWebAppAuth'
 import { useWebAppHistorial } from '@/webapp/hooks/useWebAppHistorial'
 import { Badge } from '@/components/ui/badge'
@@ -197,16 +198,14 @@ export default function WebAppHistorial() {
                                   </p>
                                 )}
                                 {item.detalles.archivo_url && (
-                                  <a
-                                    href={item.detalles.archivo_url}
-                                    target="_blank"
-                                    rel="noopener noreferrer"
+                                  <button
+                                    type="button"
                                     className="inline-flex items-center gap-1 text-xs text-sky-600 hover:underline"
-                                    onClick={(e) => e.stopPropagation()}
+                                    onClick={(e) => { e.stopPropagation(); openSignedUrl('resultados-examenes', item.detalles.archivo_url) }}
                                   >
                                     <Download className="h-3 w-3" />
                                     Ver archivo adjunto
-                                  </a>
+                                  </button>
                                 )}
                               </div>
                             )}

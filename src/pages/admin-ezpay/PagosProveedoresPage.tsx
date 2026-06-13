@@ -1,5 +1,6 @@
 import { useState, useEffect } from 'react'
 import { supabase } from '@/lib/supabase'
+import { openSignedUrl } from '@/lib/signedUrl'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Card, CardContent } from '@/components/ui/card'
@@ -290,14 +291,13 @@ export default function PagosProveedoresPage() {
               {pagoActivo.comprobante_url && (
                 <div>
                   <p className="text-sm font-medium mb-1">Comprobante</p>
-                  <a
-                    href={pagoActivo.comprobante_url}
-                    target="_blank"
-                    rel="noopener noreferrer"
+                  <button
+                    type="button"
+                    onClick={() => openSignedUrl('comprobantes', pagoActivo.comprobante_url)}
                     className="text-sm text-[#1E5C8E] hover:underline"
                   >
                     Ver comprobante
-                  </a>
+                  </button>
                 </div>
               )}
               {pagoActivo.estado === 'pendiente' && (

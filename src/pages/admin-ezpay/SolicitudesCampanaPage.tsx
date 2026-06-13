@@ -1,5 +1,6 @@
 import { useState, useEffect } from 'react'
 import { supabase } from '@/lib/supabase'
+import { openSignedUrl } from '@/lib/signedUrl'
 import { usePaisFiltro } from '@/hooks/usePaisFiltro'
 import { crearNotificacionInApp } from '@/proveedor/lib/notificaciones'
 import { Button } from '@/components/ui/button'
@@ -404,15 +405,14 @@ export default function SolicitudesCampanaPage() {
                       </div>
                       {pago.comprobante_url && (
                         <div className="pt-1">
-                          <a
-                            href={pago.comprobante_url}
-                            target="_blank"
-                            rel="noopener noreferrer"
+                          <button
+                            type="button"
+                            onClick={() => openSignedUrl('comprobantes', pago.comprobante_url)}
                             className="inline-flex items-center gap-1 text-blue-600 hover:underline text-sm"
                           >
                             <ExternalLink className="h-3.5 w-3.5" />
                             Ver comprobante de pago
-                          </a>
+                          </button>
                         </div>
                       )}
                     </div>

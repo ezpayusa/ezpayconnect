@@ -5,6 +5,7 @@
 import { useState, useEffect } from 'react'
 import { useParams, useNavigate, useLocation } from 'react-router-dom'
 import { supabase } from '@/lib/supabase'
+import { openSignedUrl } from '@/lib/signedUrl'
 import { useAuth } from '@/hooks/useAuth'
 import {
   ArrowLeft,
@@ -663,14 +664,14 @@ export default function PacienteDetallePage() {
                       )}
                       {ex.archivo_url && (
                         <div className="mt-3 flex gap-2">
-                          <a href={ex.archivo_url} target="_blank" rel="noopener noreferrer"
+                          <button type="button" onClick={() => openSignedUrl('resultados-examenes', ex.archivo_url)}
                             className="inline-flex items-center gap-1 text-sm text-[#1E5C8E] hover:underline">
                             <FileText size={16} /> Ver archivo
-                          </a>
-                          <a href={ex.archivo_url} download
+                          </button>
+                          <button type="button" onClick={() => openSignedUrl('resultados-examenes', ex.archivo_url, { download: true })}
                             className="inline-flex items-center gap-1 text-sm text-gray-600 hover:underline">
                             <Download size={16} /> Descargar
-                          </a>
+                          </button>
                         </div>
                       )}
                     </div>

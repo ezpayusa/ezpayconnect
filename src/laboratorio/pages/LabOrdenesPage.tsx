@@ -1,4 +1,5 @@
 import { useState, useMemo } from 'react'
+import { openSignedUrl } from '@/lib/signedUrl'
 import { useLaboratorio, type OrdenExamen, type OrdenAgrupada } from '@/laboratorio/hooks/useLaboratorio'
 import { Card, CardContent } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
@@ -178,10 +179,10 @@ export default function LabOrdenesPage() {
 
               {/* Archivo ya subido (si existe) */}
               {modal.archivo_url && (
-                <a href={modal.archivo_url} target="_blank" rel="noopener noreferrer"
+                <button type="button" onClick={() => openSignedUrl('resultados-examenes', modal.archivo_url)}
                   className="flex items-center gap-2 text-sm text-[#0E7C6B] hover:underline">
                   <FileText className="h-4 w-4" /> Ver archivo adjunto actual
-                </a>
+                </button>
               )}
 
               {modal.estado !== 'completado' && (

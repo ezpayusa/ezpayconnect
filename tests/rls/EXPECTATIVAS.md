@@ -68,7 +68,14 @@ Hallazgos empíricos confirmados que `run.sh` debe reflejar HOY (antes de las fa
 - **Fase 2** ✅ APLICADA (modelo POR CITA): `historial_medico`, `recetas_avanzadas`, `receta_items`, `dispensaciones` pasan a "cabecera O cita O autor" (lectura) y "cita" (escritura); `expediente_notas` y `signos_vitales` salen de deny‑all; super_admin gana acceso global a PHI (historial/examenes 0→59/4); `pacientes` suma lectura por cita (arregla "paciente fantasma"). Helper nuevo `private.medico_atiende_paciente`. Fixture P14: `tests/rls/fixtures/qa_paciente_recetas.sql`.
 - **Fase 3** ✅ APLICADA: `citas` deja de ser 45 para todo autenticado (médico ve las suyas, paciente las suyas, admin_clinica su clínica, super_admin todas, anon 0). Políticas abiertas eliminadas; **INSERT solo vía RPC `crear_cita`** (revalida + fuerza estado por rol: paciente→'solicitada'). RPC `actualizar_estado_cita`/`asignar_medico_cita`/`crear_cita` revalidan al caller (integer→bigint). Triggers de historial → SECURITY DEFINER (cabo de Fase 2).
 - **Fase 4**: `medicos` deja de ser escribible por anon; `cuentas_bancarias_pais` exige auth.
+- **Fase 5** ✅ APLICADA (migración `074`): buckets `resultados-examenes` (PHI) y `comprobantes` (financiero) eran **públicos** → cualquiera con la URL accedía. Ahora son **privados** + RLS scoped en `storage.objects`. Lectura por objeto (resultado: paciente dueño / médico que ordenó o atiende / admin de la clínica / lab dueño / super_admin — match EXACTO del path, sin comodines LIKE; comprobante: empresa dueña por 1er segmento del path / super_admin). **Escritura** (antes abierta a cualquier authenticated → inyección/sobrescritura ajena) ahora scoped al folder propio (`split_part(name,'/',1)=mi_empresa_proveedor`). El frontend pasa de `getPublicUrl()` a `createSignedUrl()` (helper `src/lib/signedUrl.ts`), que **exige SELECT sobre el objeto** → no se firma sin derecho. 8 lectores migrados.
 - **Fase 6**: roles administrativos alineados al catálogo; sin ramas muertas.
+
+### Storage (Fase 5) — objetivos por bucket
+| Bucket | super_admin | dueño (paciente/médico/lab/empresa) | ajeno authenticated | anon |
+|---|---|---|---|---|
+| `resultados-examenes` (PHI) | Todo | Su examen (lee+firma) | Nada | Nada |
+| `comprobantes` (financiero) | Todo | Su empresa (lee+firma+sube) | Nada | Nada |
 
 ## Pruebas de ESCRITURA NEGATIVA (baseline ROJO)
 
@@ -102,6 +109,17 @@ Todas terminan en **ROLLBACK**: nunca persisten, aunque la operación sea permit
 | P23 `anon_lee_cuentas_bancarias` | anon lee cuentas_bancarias_pais | 🔴 PERMITIDO (1) | BLOQUEADO (0) | Fase 4 | ✅ **VERDE** (0) |
 | P25 `anon_lee_pii_medicos` | anon lee cédula/PII de medicos | 🔴 PERMITIDO (3) | sin acceso a columna | Fase 4 | ✅ **VERDE** (42501) |
 | P24 `proveedor_ve_cuenta_su_pais` | (positivo) proveedor ve la cuenta de su país | 🟢 OK (1) | OK (≥1) | Fase 4 | ✅ **VERDE** (1) |
+| P26 `anon_lee_resultado_examen` | anon lee un resultado de examen (PHI) | 🔴 PERMITIDO (1) | BLOQUEADO (0) | Fase 5 | ✅ **VERDE** (0) |
+| P27 `medico_ajeno_lee_resultado` | médico que no ordenó/atiende lee el resultado | 🔴 PERMITIDO (1) | BLOQUEADO (0) | Fase 5 | ✅ **VERDE** (0) |
+| P28 `paciente_dueno_lee_resultado` | (positivo) paciente dueño firma su resultado | 🟢 OK (1) | OK (≥1) | Fase 5 | ✅ **VERDE** (1) |
+| P29 `medico_orden_lee_resultado` | (positivo) médico que ordenó firma el resultado | 🟢 OK (1) | OK (≥1) | Fase 5 | ✅ **VERDE** (1) |
+| P30 `anon_lee_comprobante` | anon lee un comprobante (financiero) | 🟢 BLOQUEADO (0) | BLOQUEADO (0) | Fase 5 | ✅ guard (0) |
+| P31 `proveedor_ajeno_lee_comprobante` | proveedor de OTRA empresa lee el comprobante | 🔴 PERMITIDO (1) | BLOQUEADO (0) | Fase 5 | ✅ **VERDE** (0) |
+| P32 `proveedor_dueno_lee_comprobante` | (positivo) proveedor dueño firma su comprobante | 🟢 OK (1) | OK (≥1) | Fase 5 | ✅ **VERDE** (1) |
+| P33 `proveedor_ajeno_escribe_comprob` | proveedor sube/sobrescribe en folder de otra empresa | 🔴 PERMITIDO | BLOQUEADO | Fase 5 | ✅ **VERDE** (42501) |
+| P34 `proveedor_dueno_escribe_comprob` | (positivo) proveedor sube a SU folder | 🟢 OK | OK | Fase 5 | ✅ **VERDE** (OK) |
+| P35 `ajeno_escribe_resultado_lab` | un ajeno sube un resultado en el folder de otro lab | 🔴 PERMITIDO | BLOQUEADO | Fase 5 | ✅ **VERDE** (42501) |
+| P36 `lab_dueno_escribe_resultado` | (positivo) el lab sube a SU folder (upload legítimo) | 🟢 OK | OK | Fase 5 | ✅ **VERDE** (OK) |
 
 > P1/P2/P3 (citas) siguen en rojo a propósito hasta la Fase 3 (RLS scoped de
 > `citas` + revalidación de autorización dentro de las RPC definer).

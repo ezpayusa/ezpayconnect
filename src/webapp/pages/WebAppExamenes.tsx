@@ -1,4 +1,5 @@
 import { useWebAppAuth } from '@/webapp/hooks/useWebAppAuth'
+import { openSignedUrl } from '@/lib/signedUrl'
 import { useWebAppExamenes } from '@/webapp/hooks/useWebAppExamenes'
 import { Card, CardContent } from '@/components/ui/card'
 import { Badge } from '@/components/ui/badge'
@@ -86,14 +87,13 @@ export default function WebAppExamenes() {
 
                 {ex.archivo_url && (
                   <div className="mt-2">
-                    <a
-                      href={ex.archivo_url}
-                      target="_blank"
-                      rel="noopener noreferrer"
+                    <button
+                      type="button"
+                      onClick={() => openSignedUrl('resultados-examenes', ex.archivo_url)}
                       className="text-sm text-sky-600 hover:underline"
                     >
                       Ver archivo adjunto →
-                    </a>
+                    </button>
                   </div>
                 )}
               </CardContent>

@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback } from 'react'
 import { useParams, useNavigate, useLocation } from 'react-router-dom'
 import { supabase } from '@/lib/supabase'
+import { openSignedUrl } from '@/lib/signedUrl'
 import { useAuth } from '@/hooks/useAuth'
 import { useConsultas } from '@/hooks/useConsultas'
 import { useCitas } from '@/hooks/useCitas'
@@ -761,8 +762,8 @@ export default function ConsultaPage() {
                         {ex.resultados && <p className="text-xs text-gray-600 mt-1 whitespace-pre-wrap line-clamp-4">{ex.resultados}</p>}
                         {ex.archivo_url && (
                           <div className="flex gap-3 mt-1">
-                            <a href={ex.archivo_url} target="_blank" rel="noopener noreferrer" className="text-xs text-[#1E5C8E] hover:underline">Ver archivo</a>
-                            <a href={ex.archivo_url} download className="text-xs text-gray-500 hover:underline">Descargar</a>
+                            <button type="button" onClick={() => openSignedUrl('resultados-examenes', ex.archivo_url)} className="text-xs text-[#1E5C8E] hover:underline">Ver archivo</button>
+                            <button type="button" onClick={() => openSignedUrl('resultados-examenes', ex.archivo_url, { download: true })} className="text-xs text-gray-500 hover:underline">Descargar</button>
                           </div>
                         )}
                       </div>

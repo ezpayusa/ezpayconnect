@@ -4,7 +4,7 @@
 **Entorno de trabajo:** proyecto Supabase remoto linkeado (datos FICTICIOS = "staging").
 Las migraciones se aplican manualmente con `npx supabase db query --linked -f <archivo>`
 (este proyecto NO usa el ledger de migraciones del CLI; el orden lo da el número de archivo).
-**Punto de retome:** este archivo. Siguiente = **pasada agrupada de definer 🟡** (`enviar_notificacion_promocion`, `notificar_paciente/laboratorio`, `administrar_visita`) → luego **Fase 5 (storage privado + signed URLs)** y **Fase 6 (roles + CHECK anti fail-open)**. (Fases 0–4 + paso intermedio ✅ aplicadas; `crear-staff-clinica` ✅ deployado.)
+**Punto de retome:** este archivo. Siguiente = **pasada agrupada de definer 🟡** (`enviar_notificacion_promocion`, `notificar_paciente/laboratorio`, `administrar_visita`) → luego **Fase 6 (roles + CHECK anti fail-open)**. (Fases 0–5 + paso intermedio ✅ aplicadas; `crear-staff-clinica` ✅ deployado.)
 
 ---
 
@@ -204,6 +204,30 @@ Medido con la fundación ya aplicada (las políticas de negocio aún sin tocar).
   `admin_publicidad`, `admin_ventas`, `farmaceutico`): alinear al catálogo + CHECK anti fail-open (Fase 6).
 
 ---
+
+## Fase 5 / Bloque E — Storage privado + RLS scoped ✅ APLICADA (migración `074`)
+**Hallazgo CRÍTICO cerrado:** los buckets `resultados-examenes` (PHI) y `comprobantes`
+(financiero) eran **públicos** → cualquiera con la URL (o adivinando el path) accedía a
+resultados de laboratorio y comprobantes de pago sin autenticación.
+
+Qué se hizo:
+- Buckets → **privados**. Se eliminaron las políticas SELECT abiertas (`Lectura publica
+  resultados`, `Autenticados ven comprobantes`/`sus comprobantes`/`Admin ve comprobantes`).
+- **SELECT scoped** en `storage.objects`:
+  - resultados: une el objeto al `examen` por **match EXACTO del path** derivado de
+    `archivo_url` (`split_part(...,'/resultados-examenes/',2)`), **sin `LIKE`** — así `_`/`%`
+    del nombre no actúan como comodines y cruzan el examen de otro. Acceso: paciente dueño /
+    médico que ordenó (`medico_id`) o atiende / admin de la clínica / lab dueño / super_admin.
+  - comprobantes: `split_part(name,'/',1) = mi_empresa_proveedor()` / super_admin.
+- **INSERT/UPDATE scoped** (antes ABIERTOS: cualquier authenticated subía/sobrescribía en
+  CUALQUIER path → inyección/tampering de PHI ajena). Ahora cada quien sólo escribe en su
+  folder de empresa (lab → `labId/...`, proveedor → `empresaId/...`). DELETE ya estaba denegado.
+- **Frontend:** helper `src/lib/signedUrl.ts` (`openSignedUrl`) usa `createSignedUrl(path,120s)`,
+  que **exige SELECT sobre el objeto** vía la RLS → un usuario sin derecho no puede firmar. Se
+  migraron los **8 lectores** de `getPublicUrl()`/`<a href>` (Lab, Consulta, PacienteDetalle,
+  WebAppExamenes, WebAppHistorial, PagosProveedores, SolicitudesCampana, ProveedorPagos).
+- **Probes P26–P36** (lectura + escritura negativa/positiva en ambos buckets) → todos VERDE;
+  P1–P25 sin regresión. Build limpio.
 
 ## Backlog de seguridad — barrido de funciones SECURITY DEFINER (Fase 3)
 Funciones definer ejecutables por **anon + authenticated** que NO revalidan al caller:

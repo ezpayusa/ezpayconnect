@@ -423,6 +423,217 @@ BEGIN
   END IF;
 END $$;
 
+-- ============================================================
+-- FASE 5 · Storage (acceso al objeto = poder firmar la URL). storage.objects RLS.
+-- ============================================================
+-- Captura (ELEVADO): el examen vinculado al objeto de resultados y sus actores.
+SELECT set_config('role', 'none', true);
+SELECT set_config('probe.res_pac_auth',
+  (SELECT p.auth_user_id::text FROM public.pacientes p
+    WHERE p.id = (SELECT e.paciente_id FROM public.examenes e
+                  JOIN storage.objects o ON COALESCE(NULLIF(split_part(e.archivo_url,'/resultados-examenes/',2),''), e.archivo_url) = o.name
+                  WHERE o.bucket_id='resultados-examenes' LIMIT 1)), false);
+SELECT set_config('probe.res_med',
+  (SELECT e.medico_id::text FROM public.examenes e
+    JOIN storage.objects o ON COALESCE(NULLIF(split_part(e.archivo_url,'/resultados-examenes/',2),''), e.archivo_url) = o.name
+    WHERE o.bucket_id='resultados-examenes' LIMIT 1), false);
+SELECT set_config('probe.res_med_ajeno',
+  (SELECT id::text FROM public.perfiles
+    WHERE rol='medico' AND id <> NULLIF(current_setting('probe.res_med', true),'')::uuid ORDER BY id LIMIT 1), false);
+
+-- P26 — anon NO accede a un resultado de examen (no puede ver el objeto → no firma)
+SELECT set_config('request.jwt.claims', NULL, true);
+SELECT set_config('role', 'anon', true);
+DO $$ DECLARE n INT;
+BEGIN
+  SELECT count(*) INTO n FROM storage.objects WHERE bucket_id='resultados-examenes';
+  IF n > 0 THEN PERFORM set_config('probe.p26','PERMITIDO (anon ve '||n||' objeto(s) de resultados)',false);
+  ELSE PERFORM set_config('probe.p26','BLOQUEADO (0 objetos visibles)',false); END IF;
+END $$;
+
+-- P27 — un médico AJENO (no ordenó, no atiende, no es el lab) NO accede al resultado
+SELECT set_config('request.jwt.claims',
+  json_build_object('sub', current_setting('probe.res_med_ajeno', true), 'role','authenticated')::text, true);
+SELECT set_config('role', 'authenticated', true);
+DO $$ DECLARE n INT;
+BEGIN
+  IF NULLIF(current_setting('probe.res_med_ajeno', true), '') IS NULL THEN PERFORM set_config('probe.p27','N/A',false);
+  ELSE
+    SELECT count(*) INTO n FROM storage.objects WHERE bucket_id='resultados-examenes';
+    IF n > 0 THEN PERFORM set_config('probe.p27','PERMITIDO (médico ajeno ve '||n||' objeto(s))',false);
+    ELSE PERFORM set_config('probe.p27','BLOQUEADO (0 objetos visibles)',false); END IF;
+  END IF;
+END $$;
+
+-- P28 — POSITIVO: el paciente DUEÑO del examen SÍ accede a su resultado
+SELECT set_config('role', 'none', true);
+SELECT set_config('request.jwt.claims',
+  json_build_object('sub', current_setting('probe.res_pac_auth', true), 'role','authenticated')::text, true);
+SELECT set_config('role', 'authenticated', true);
+DO $$ DECLARE n INT;
+BEGIN
+  IF NULLIF(current_setting('probe.res_pac_auth', true), '') IS NULL THEN PERFORM set_config('probe.p28','N/A (paciente sin auth)',false);
+  ELSE
+    SELECT count(*) INTO n FROM storage.objects WHERE bucket_id='resultados-examenes';
+    IF n > 0 THEN PERFORM set_config('probe.p28','OK (ve '||n||' objeto(s) de su examen)',false);
+    ELSE PERFORM set_config('probe.p28','REGRESIÓN (no ve su propio resultado)',false); END IF;
+  END IF;
+END $$;
+
+-- P29 — POSITIVO: el médico que ORDENÓ el examen SÍ accede a su resultado
+SELECT set_config('role', 'none', true);
+SELECT set_config('request.jwt.claims',
+  json_build_object('sub', current_setting('probe.res_med', true), 'role','authenticated')::text, true);
+SELECT set_config('role', 'authenticated', true);
+DO $$ DECLARE n INT;
+BEGIN
+  IF NULLIF(current_setting('probe.res_med', true), '') IS NULL THEN PERFORM set_config('probe.p29','N/A',false);
+  ELSE
+    SELECT count(*) INTO n FROM storage.objects WHERE bucket_id='resultados-examenes';
+    IF n > 0 THEN PERFORM set_config('probe.p29','OK (ve '||n||' objeto(s) de su examen)',false);
+    ELSE PERFORM set_config('probe.p29','REGRESIÓN (no ve el resultado que ordenó)',false); END IF;
+  END IF;
+END $$;
+
+-- ---- Comprobantes (financiero): aislamiento por empresa ----
+-- Captura (ELEVADO): un comprobante concreto + su proveedor dueño y uno ajeno.
+SELECT set_config('role', 'none', true);
+SELECT set_config('probe.comp_obj',
+  (SELECT name FROM storage.objects WHERE bucket_id='comprobantes' ORDER BY name LIMIT 1), false);
+SELECT set_config('probe.comp_dueno',
+  (SELECT cp.id::text FROM public.cuentas_proveedor cp
+    WHERE cp.activo AND cp.empresa_id = split_part(current_setting('probe.comp_obj', true),'/',1)::uuid
+    ORDER BY cp.id LIMIT 1), false);
+SELECT set_config('probe.comp_ajeno',
+  (SELECT cp.id::text FROM public.cuentas_proveedor cp
+    WHERE cp.activo AND cp.empresa_id <> split_part(current_setting('probe.comp_obj', true),'/',1)::uuid
+    ORDER BY cp.id LIMIT 1), false);
+
+-- P30 — anon NO lee un comprobante
+SELECT set_config('request.jwt.claims', NULL, true);
+SELECT set_config('role', 'anon', true);
+DO $$ DECLARE n INT;
+BEGIN
+  SELECT count(*) INTO n FROM storage.objects
+    WHERE bucket_id='comprobantes' AND name = current_setting('probe.comp_obj', true);
+  IF n > 0 THEN PERFORM set_config('probe.p30','PERMITIDO (anon ve el comprobante)',false);
+  ELSE PERFORM set_config('probe.p30','BLOQUEADO (0)',false); END IF;
+END $$;
+
+-- P31 — un proveedor de OTRA empresa NO lee el comprobante ajeno
+SELECT set_config('role', 'none', true);
+SELECT set_config('request.jwt.claims',
+  json_build_object('sub', current_setting('probe.comp_ajeno', true), 'role','authenticated')::text, true);
+SELECT set_config('role', 'authenticated', true);
+DO $$ DECLARE n INT;
+BEGIN
+  IF NULLIF(current_setting('probe.comp_ajeno', true), '') IS NULL THEN PERFORM set_config('probe.p31','N/A (sin proveedor ajeno)',false);
+  ELSE
+    SELECT count(*) INTO n FROM storage.objects
+      WHERE bucket_id='comprobantes' AND name = current_setting('probe.comp_obj', true);
+    IF n > 0 THEN PERFORM set_config('probe.p31','PERMITIDO (proveedor ajeno ve el comprobante)',false);
+    ELSE PERFORM set_config('probe.p31','BLOQUEADO (0)',false); END IF;
+  END IF;
+END $$;
+
+-- P32 — POSITIVO: el proveedor DUEÑO SÍ lee su comprobante
+SELECT set_config('role', 'none', true);
+SELECT set_config('request.jwt.claims',
+  json_build_object('sub', current_setting('probe.comp_dueno', true), 'role','authenticated')::text, true);
+SELECT set_config('role', 'authenticated', true);
+DO $$ DECLARE n INT;
+BEGIN
+  IF NULLIF(current_setting('probe.comp_dueno', true), '') IS NULL THEN PERFORM set_config('probe.p32','N/A (sin proveedor dueño)',false);
+  ELSE
+    SELECT count(*) INTO n FROM storage.objects
+      WHERE bucket_id='comprobantes' AND name = current_setting('probe.comp_obj', true);
+    IF n > 0 THEN PERFORM set_config('probe.p32','OK (ve su comprobante)',false);
+    ELSE PERFORM set_config('probe.p32','REGRESIÓN (no ve su propio comprobante)',false); END IF;
+  END IF;
+END $$;
+
+-- ---- ESCRITURA NEGATIVA/POSITIVA: nadie escribe en folder de otra empresa ----
+-- Verifica empíricamente el fix del punto 2 (INSERT/UPDATE scoped) en AMBOS buckets.
+-- Captura (ELEVADO): el lab del examen de resultados y su usuario.
+SELECT set_config('role', 'none', true);
+SELECT set_config('probe.res_lab_emp',
+  (SELECT e.laboratorio_id::text FROM public.examenes e
+    JOIN storage.objects o ON COALESCE(NULLIF(split_part(e.archivo_url,'/resultados-examenes/',2),''), e.archivo_url) = o.name
+    WHERE o.bucket_id='resultados-examenes' LIMIT 1), false);
+SELECT set_config('probe.res_lab_uid',
+  (SELECT cp.id::text FROM public.cuentas_proveedor cp
+    WHERE cp.activo AND cp.empresa_id = NULLIF(current_setting('probe.res_lab_emp', true),'')::uuid
+    ORDER BY cp.id LIMIT 1), false);
+
+-- P33 — NEGATIVA: proveedor AJENO NO sube/sobrescribe en el folder de OTRA empresa (comprobantes)
+SELECT set_config('request.jwt.claims',
+  json_build_object('sub', current_setting('probe.comp_ajeno', true), 'role','authenticated')::text, true);
+SELECT set_config('role', 'authenticated', true);
+DO $$
+BEGIN
+  INSERT INTO storage.objects(bucket_id, name, owner)
+    VALUES ('comprobantes', split_part(current_setting('probe.comp_obj', true),'/',1)||'/__probe_ajeno.txt',
+            current_setting('probe.comp_ajeno', true)::uuid);
+  PERFORM set_config('probe.p33','PERMITIDO (escribió en folder ajeno!)',false);
+EXCEPTION
+  WHEN insufficient_privilege THEN PERFORM set_config('probe.p33','BLOQUEADO (RLS rechazó: 42501)',false);
+  WHEN others THEN PERFORM set_config('probe.p33','BLOQUEADO? (otro error: '||SQLSTATE||')',false);
+END $$;
+
+-- P34 — POSITIVA: proveedor DUEÑO SÍ sube a SU propio folder (comprobantes)
+SELECT set_config('role', 'none', true);
+SELECT set_config('request.jwt.claims',
+  json_build_object('sub', current_setting('probe.comp_dueno', true), 'role','authenticated')::text, true);
+SELECT set_config('role', 'authenticated', true);
+DO $$
+BEGIN
+  INSERT INTO storage.objects(bucket_id, name, owner)
+    VALUES ('comprobantes', split_part(current_setting('probe.comp_obj', true),'/',1)||'/__probe_dueno.txt',
+            current_setting('probe.comp_dueno', true)::uuid);
+  PERFORM set_config('probe.p34','OK (subió a su propio folder)',false);
+EXCEPTION
+  WHEN insufficient_privilege THEN PERFORM set_config('probe.p34','REGRESIÓN (no pudo subir a su folder: 42501)',false);
+  WHEN others THEN PERFORM set_config('probe.p34','REGRESIÓN? (otro error: '||SQLSTATE||')',false);
+END $$;
+
+-- P35 — NEGATIVA: un proveedor AJENO NO sube en el folder del LABORATORIO (resultados)
+SELECT set_config('role', 'none', true);
+SELECT set_config('request.jwt.claims',
+  json_build_object('sub', current_setting('probe.comp_ajeno', true), 'role','authenticated')::text, true);
+SELECT set_config('role', 'authenticated', true);
+DO $$
+BEGIN
+  IF NULLIF(current_setting('probe.res_lab_emp', true),'') IS NULL THEN PERFORM set_config('probe.p35','N/A',false);
+  ELSE
+    INSERT INTO storage.objects(bucket_id, name, owner)
+      VALUES ('resultados-examenes', current_setting('probe.res_lab_emp', true)||'/__probe_ajeno.txt',
+              current_setting('probe.comp_ajeno', true)::uuid);
+    PERFORM set_config('probe.p35','PERMITIDO (escribió resultado en folder de lab ajeno!)',false);
+  END IF;
+EXCEPTION
+  WHEN insufficient_privilege THEN PERFORM set_config('probe.p35','BLOQUEADO (RLS rechazó: 42501)',false);
+  WHEN others THEN PERFORM set_config('probe.p35','BLOQUEADO? (otro error: '||SQLSTATE||')',false);
+END $$;
+
+-- P36 — POSITIVA: el LABORATORIO dueño SÍ sube a SU propio folder (resultados, upload legítimo)
+SELECT set_config('role', 'none', true);
+SELECT set_config('request.jwt.claims',
+  json_build_object('sub', current_setting('probe.res_lab_uid', true), 'role','authenticated')::text, true);
+SELECT set_config('role', 'authenticated', true);
+DO $$
+BEGIN
+  IF NULLIF(current_setting('probe.res_lab_uid', true),'') IS NULL THEN PERFORM set_config('probe.p36','N/A (lab sin usuario)',false);
+  ELSE
+    INSERT INTO storage.objects(bucket_id, name, owner)
+      VALUES ('resultados-examenes', current_setting('probe.res_lab_emp', true)||'/__probe_lab.txt',
+              current_setting('probe.res_lab_uid', true)::uuid);
+    PERFORM set_config('probe.p36','OK (lab subió a su propio folder)',false);
+  END IF;
+EXCEPTION
+  WHEN insufficient_privilege THEN PERFORM set_config('probe.p36','REGRESIÓN (lab no pudo subir a su folder: 42501)',false);
+  WHEN others THEN PERFORM set_config('probe.p36','REGRESIÓN? (otro error: '||SQLSTATE||')',false);
+END $$;
+
 -- ===== Veredictos como result set =====
 SELECT 'P1_anon_insert_citas'              AS probe, current_setting('probe.p1', true)  AS verdict, 'BLOQUEADO' AS esperado_post_fix
 UNION ALL SELECT 'P2_medico_cancela_ajena_rpc',         current_setting('probe.p2', true),  'BLOQUEADO'
@@ -448,6 +659,17 @@ UNION ALL SELECT 'P21_authn_escribe_medicamentos',      current_setting('probe.p
 UNION ALL SELECT 'P22_authn_escribe_farmacias',         current_setting('probe.p22', true), 'BLOQUEADO'
 UNION ALL SELECT 'P23_anon_lee_cuentas_bancarias',      current_setting('probe.p23', true), 'BLOQUEADO'
 UNION ALL SELECT 'P25_anon_lee_pii_medicos',            current_setting('probe.p25', true), 'BLOQUEADO'
-UNION ALL SELECT 'P24_proveedor_ve_cuenta_su_pais',     current_setting('probe.p24', true), 'OK (>0)';
+UNION ALL SELECT 'P24_proveedor_ve_cuenta_su_pais',     current_setting('probe.p24', true), 'OK (>0)'
+UNION ALL SELECT 'P26_anon_lee_resultado_examen',       current_setting('probe.p26', true), 'BLOQUEADO'
+UNION ALL SELECT 'P27_medico_ajeno_lee_resultado',      current_setting('probe.p27', true), 'BLOQUEADO'
+UNION ALL SELECT 'P28_paciente_dueno_lee_resultado',    current_setting('probe.p28', true), 'OK (>0)'
+UNION ALL SELECT 'P29_medico_orden_lee_resultado',      current_setting('probe.p29', true), 'OK (>0)'
+UNION ALL SELECT 'P30_anon_lee_comprobante',            current_setting('probe.p30', true), 'BLOQUEADO'
+UNION ALL SELECT 'P31_proveedor_ajeno_lee_comprobante', current_setting('probe.p31', true), 'BLOQUEADO'
+UNION ALL SELECT 'P32_proveedor_dueno_lee_comprobante', current_setting('probe.p32', true), 'OK (>0)'
+UNION ALL SELECT 'P33_proveedor_ajeno_escribe_comprob',  current_setting('probe.p33', true), 'BLOQUEADO'
+UNION ALL SELECT 'P34_proveedor_dueno_escribe_comprob',  current_setting('probe.p34', true), 'OK'
+UNION ALL SELECT 'P35_ajeno_escribe_resultado_lab',      current_setting('probe.p35', true), 'BLOQUEADO'
+UNION ALL SELECT 'P36_lab_dueno_escribe_resultado',      current_setting('probe.p36', true), 'OK';
 
 ROLLBACK;  -- nada de lo anterior se persiste

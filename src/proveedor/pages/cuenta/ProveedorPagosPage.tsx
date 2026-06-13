@@ -1,4 +1,5 @@
 import { usePagosProveedor } from '@/proveedor/hooks/usePagosProveedor'
+import { openSignedUrl } from '@/lib/signedUrl'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
@@ -102,11 +103,9 @@ export default function ProveedorPagosPage() {
                       <td className="px-4 py-3 text-muted-foreground capitalize">{pago.metodo_pago || '-'}</td>
                       <td className="px-4 py-3 text-right">
                         {pago.comprobante_url ? (
-                          <Button variant="ghost" size="sm" asChild>
-                            <a href={pago.comprobante_url} target="_blank" rel="noopener noreferrer">
-                              <ExternalLink className="h-4 w-4 mr-1" />
-                              Ver
-                            </a>
+                          <Button variant="ghost" size="sm" onClick={() => openSignedUrl('comprobantes', pago.comprobante_url)}>
+                            <ExternalLink className="h-4 w-4 mr-1" />
+                            Ver
                           </Button>
                         ) : (
                           <span className="text-muted-foreground text-xs">-</span>
