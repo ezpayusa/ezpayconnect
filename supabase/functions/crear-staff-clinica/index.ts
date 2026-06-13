@@ -40,6 +40,30 @@ Deno.serve(async (req) => {
       );
     }
 
+    // 0. Validar al SOLICITANTE: debe ser admin_clinica/gerente de ESA clínica, o super_admin.
+    //    (obtener_clinica_usuario solo prueba pertenencia, NO rol → exigimos también el rol.)
+    const authHeader = req.headers.get("Authorization");
+    if (!authHeader) {
+      return new Response(JSON.stringify({ error: "Falta Authorization" }),
+        { status: 401, headers: { ...corsHeaders, "Content-Type": "application/json" } });
+    }
+    const token = authHeader.replace("Bearer ", "");
+    const { data: { user: solicitante } } = await supabase.auth.getUser(token);
+    if (!solicitante) {
+      return new Response(JSON.stringify({ error: "No autenticado" }),
+        { status: 401, headers: { ...corsHeaders, "Content-Type": "application/json" } });
+    }
+    const { data: perfilReq } = await supabase.from("perfiles").select("rol").eq("id", solicitante.id).maybeSingle();
+    let autorizado = perfilReq?.rol === "super_admin";
+    if (!autorizado && (perfilReq?.rol === "admin_clinica" || perfilReq?.rol === "gerente")) {
+      const { data: rel } = await supabase.rpc("obtener_clinica_usuario", { p_user_id: solicitante.id });
+      autorizado = Array.isArray(rel) && rel.some((r: any) => r.clinica_id === clinica_id);
+    }
+    if (!autorizado) {
+      return new Response(JSON.stringify({ error: "No autorizado para crear staff en esta clínica" }),
+        { status: 403, headers: { ...corsHeaders, "Content-Type": "application/json" } });
+    }
+
     // 1. Crear usuario en Auth (service role; auto-confirma email)
     const password = Math.random().toString(36).slice(-8) + "A1!";
     const { data: authData, error: authError } = await supabase.auth.admin.createUser({

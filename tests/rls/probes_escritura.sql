@@ -294,6 +294,50 @@ BEGIN
   END IF;
 END $$;
 
+-- P18 — un authenticated NO-admin NO debe poder asociar un médico a una clínica ajena
+SELECT set_config('role', 'none', true);
+SELECT set_config('probe.clin_x', (SELECT id::text FROM public.clinicas ORDER BY id LIMIT 1), false);
+SELECT set_config('probe.med_x',  (SELECT id::text FROM public.perfiles WHERE rol='medico' ORDER BY id DESC LIMIT 1), false);
+-- atacante: un médico cualquiera (no admin de clin_x)
+SELECT set_config('request.jwt.claims',
+  json_build_object('sub', (SELECT id FROM public.perfiles WHERE rol='medico' ORDER BY id LIMIT 1), 'role','authenticated')::text, true);
+SELECT set_config('role', 'authenticated', true);
+DO $$ DECLARE s TEXT;
+BEGIN
+  BEGIN
+    PERFORM public.asociar_medico_clinica(
+      NULLIF(current_setting('probe.med_x', true), '')::uuid,
+      NULLIF(current_setting('probe.clin_x', true), '')::uuid, false);
+    PERFORM set_config('probe.p18','PERMITIDO (asoció médico a clínica ajena)',false);
+  EXCEPTION WHEN OTHERS THEN GET STACKED DIAGNOSTICS s = RETURNED_SQLSTATE;
+    IF s='42501' THEN PERFORM set_config('probe.p18','BLOQUEADO (permiso/autorización: 42501)',false);
+    ELSE PERFORM set_config('probe.p18','BLOQUEADO ('||s||')',false); END IF;
+  END;
+END $$;
+
+-- P19 — flujo: un médico MIEMBRO de una clínica NO es admin de ella (gate que usa
+-- crear-staff-clinica: rol admin_clinica/gerente + pertenencia). Debe rechazar.
+SELECT set_config('role', 'none', true);
+SELECT set_config('probe.med_mem',
+  (SELECT mc.medico_id::text FROM public.medico_clinicas mc JOIN public.perfiles p ON p.id=mc.medico_id
+   WHERE p.rol='medico' ORDER BY mc.medico_id, mc.clinica_id LIMIT 1), false);
+SELECT set_config('probe.clin_mem',
+  (SELECT mc.clinica_id::text FROM public.medico_clinicas mc JOIN public.perfiles p ON p.id=mc.medico_id
+   WHERE p.rol='medico' ORDER BY mc.medico_id, mc.clinica_id LIMIT 1), false);
+SELECT set_config('request.jwt.claims',
+  json_build_object('sub', current_setting('probe.med_mem', true), 'role','authenticated')::text, true);
+SELECT set_config('role', 'authenticated', true);
+DO $$ DECLARE es_admin BOOLEAN;
+BEGIN
+  IF NULLIF(current_setting('probe.med_mem', true), '') IS NULL THEN
+    PERFORM set_config('probe.p19','N/A (sin médico miembro)',false);
+  ELSE
+    es_admin := private.es_admin_clinica(NULLIF(current_setting('probe.clin_mem', true), '')::uuid);
+    IF es_admin THEN PERFORM set_config('probe.p19','PERMITIDO (médico miembro cuenta como admin!)',false);
+    ELSE PERFORM set_config('probe.p19','BLOQUEADO (médico miembro NO es admin → no crea staff)',false); END IF;
+  END IF;
+END $$;
+
 -- ===== Veredictos como result set =====
 SELECT 'P1_anon_insert_citas'              AS probe, current_setting('probe.p1', true)  AS verdict, 'BLOQUEADO' AS esperado_post_fix
 UNION ALL SELECT 'P2_medico_cancela_ajena_rpc',         current_setting('probe.p2', true),  'BLOQUEADO'
@@ -311,6 +355,8 @@ UNION ALL SELECT 'P13_medico_inserta_expediente_ajeno', current_setting('probe.p
 UNION ALL SELECT 'P14_paciente_ve_sus_receta_items',    current_setting('probe.p14', true), '>0 propios / 0 ajenos'
 UNION ALL SELECT 'P15_medico_ve_citas_ajenas',          current_setting('probe.p15', true), 'BLOQUEADO'
 UNION ALL SELECT 'P16_paciente_ve_citas_ajenas',        current_setting('probe.p16', true), 'BLOQUEADO'
-UNION ALL SELECT 'P17_paciente_no_crea_agendada',       current_setting('probe.p17', true), 'BLOQUEADO';
+UNION ALL SELECT 'P17_paciente_no_crea_agendada',       current_setting('probe.p17', true), 'BLOQUEADO'
+UNION ALL SELECT 'P18_authn_asocia_medico_clinica',     current_setting('probe.p18', true), 'BLOQUEADO'
+UNION ALL SELECT 'P19_medico_miembro_no_es_admin',      current_setting('probe.p19', true), 'BLOQUEADO';
 
 ROLLBACK;  -- nada de lo anterior se persiste

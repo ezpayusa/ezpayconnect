@@ -4,7 +4,7 @@
 **Entorno de trabajo:** proyecto Supabase remoto linkeado (datos FICTICIOS = "staging").
 Las migraciones se aplican manualmente con `npx supabase db query --linked -f <archivo>`
 (este proyecto NO usa el ledger de migraciones del CLI; el orden lo da el número de archivo).
-**Punto de retome:** este archivo. Siguiente = **paso intermedio (🔴 `asociar_medico_clinica`) → luego Fase 4 / Bloque D (tablas abiertas)**.
+**Punto de retome:** este archivo. Siguiente = **Fase 4 / Bloque D (tablas abiertas)**. (Paso intermedio `asociar_medico_clinica` ✅ aplicado; falta solo el deploy del fix de `crear-staff-clinica`.)
 
 ---
 
@@ -184,9 +184,13 @@ Medido con la fundación ya aplicada (las políticas de negocio aún sin tocar).
 
 ## Backlog de seguridad — barrido de funciones SECURITY DEFINER (Fase 3)
 Funciones definer ejecutables por **anon + authenticated** que NO revalidan al caller:
-- 🔴 **`asociar_medico_clinica`** — `INSERT medico_clinicas` sin chequeo → cualquiera
-  asocia un médico a cualquier clínica = **escalada de tenant** que burla el
-  aislamiento. **PRIORIDAD ALTA: endurecer como paso INTERMEDIO entre Fase 3 y Fase 4.**
+- ✅ **`asociar_medico_clinica`** — HECHO (migración `072`): REVOKE de anon/public/authenticated
+  → solo `service_role`; + defensa en profundidad (si `auth.uid()` no NULL, debe ser admin de
+  esa clínica o super_admin). Único caller = edge function `crear-staff-clinica` (confirmado).
+  Probes P18 (authenticated ya no ejecuta) y P19 (médico miembro ≠ admin) en verde.
+  **PENDIENTE DE DEPLOY:** el fix de `crear-staff-clinica` (validar que el solicitante sea
+  admin_clinica/gerente de esa clínica o super_admin — antes era endpoint público sin validar)
+  está commiteado pero requiere `supabase functions deploy crear-staff-clinica` + verificación manual.
 - 🔴 `enviar_notificacion_promocion` — broadcast a TODOS los pacientes sin chequeo (spam masivo).
 - 🟡 `notificar_paciente`, `notificar_laboratorio` — insertan 1 notificación sin chequeo (spam dirigido).
 - 🟡 `administrar_visita` — aprueba/gestiona visitas; confirmar que valide supervisor.
