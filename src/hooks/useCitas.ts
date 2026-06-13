@@ -30,37 +30,41 @@ export function useCitas() {
       return { error: 'Paciente, fecha y hora son requeridos' }
     }
     
-    const { data, error } = await supabase.from('citas').insert({
-      paciente_id: cita.paciente_id,
-      fecha: cita.fecha,
-      hora_inicio: cita.hora_inicio,
-      hora_fin: cita.hora_fin || null,
-      motivo: cita.motivo || null,
-      notas: cita.notas || null,
-      estado: cita.estado || 'agendada',
-      medico_id: user.id,
-      pais_id: paisId,
-    }).select().single()
-    
+    // Crear vía RPC SECURITY DEFINER (valida autorización del caller).
+    const { data: nuevoId, error } = await supabase.rpc('crear_cita', {
+      p_paciente_id: cita.paciente_id,
+      p_medico_id: user.id,
+      p_fecha: cita.fecha,
+      p_hora_inicio: cita.hora_inicio,
+      p_hora_fin: cita.hora_fin || null,
+      p_motivo: cita.motivo || null,
+      p_notas: cita.notas || null,
+      p_estado: cita.estado || 'agendada',
+      p_pais_id: paisId,
+    })
+
     if (error) {
       console.error('Error creating cita:', error)
       return { data: null, error: `Error: ${error.message} (${error.code})` }
     }
-    
+
+    // La RPC devuelve solo el id → recuperar la fila creada
+    const { data } = await supabase.from('citas').select('*').eq('id', nuevoId).single()
+
     // Programar recordatorio automático 24h antes
     try {
       await supabase.functions.invoke('programar-recordatorio', {
         body: {
           tipo: 'cita',
-          referencia_id: data.id,
+          referencia_id: nuevoId,
           horas_antes: 24,
         },
       })
     } catch (recErr) {
       console.error('Error programando recordatorio:', recErr)
     }
-    
-    setCitas(prev => [...prev, data])
+
+    if (data) setCitas(prev => [...prev, data])
     return { data, error: null }
   }
 

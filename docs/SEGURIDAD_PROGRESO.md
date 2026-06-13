@@ -4,7 +4,7 @@
 **Entorno de trabajo:** proyecto Supabase remoto linkeado (datos FICTICIOS = "staging").
 Las migraciones se aplican manualmente con `npx supabase db query --linked -f <archivo>`
 (este proyecto NO usa el ledger de migraciones del CLI; el orden lo da el número de archivo).
-**Punto de retome:** este archivo. Siguiente = **Fase 3 / Bloque A (citas + RPC)**.
+**Punto de retome:** este archivo. Siguiente = **paso intermedio (🔴 `asociar_medico_clinica`) → luego Fase 4 / Bloque D (tablas abiertas)**.
 
 ---
 
@@ -98,6 +98,33 @@ Motivo: 39/45 citas son cruzadas; solo-cita le quitaba lectura al médico de cab
 - `admin_clinica` aún ve 0 en PHI (su acceso clínico por clínica es una política aparte, futura).
 - `run.sh` resuelve la persona `paciente` con `LIMIT 1` no determinista; el check autoritativo del paciente es P14 (determinista).
 
+### ✅ Fase 3 — Bloque A (citas + RPC + cabo de Fase 2)
+Aplicada al remoto y verificada. Migración:
+`supabase/migrations/071_fase3_citas_y_rpc.sql`. Frontend: `CitasPage.tsx`,
+`src/hooks/useCitas.ts` (INSERT directo → RPC `crear_cita`).
+
+**Qué hizo:**
+- **citas RLS:** drop de `citas_select_all`(USING true), `Allow anon/authenticated insert`,
+  y de las INSERT por-cliente (`citas_insert`, `Paciente crea sus citas`). SELECT/UPDATE
+  scoped (médico dueño, admin_clinica por clínica) + super_admin (ALL país, se mantiene).
+  **INSERT solo vía RPC `crear_cita`** (puerta única).
+- **RPC endurecidas** (revalidan al caller + integer→bigint + search_path=''):
+  - `actualizar_estado_cita`: caller = médico de la cita / paciente dueño / admin de la
+    clínica / super_admin; valida `p_estado` contra el set permitido.
+  - `asignar_medico_cita`: caller = admin de la clínica / super_admin, **y** el médico
+    asignado debe pertenecer a esa clínica (`medico_clinicas`). Deja fuera al médico (P3).
+  - `crear_cita`: 4 ramas con coherencia paciente/médico/clínica con el caller; **fuerza el
+    estado inicial por rol** (paciente→'solicitada', staff→'agendada'), ignora `p_estado`.
+- **Cabo de Fase 2 cerrado:** `insertar_historial_cita`/`insertar_historial_receta` →
+  SECURITY DEFINER + search_path='' (eran INVOKER → un no-médico creando cita/receta
+  fallaba contra la nueva RLS de historial).
+
+**Resultado (rojo→verde, medido):**
+- P1 (anon insert citas) → BLOQUEADO (42501). P2/P3 (médico cancela/roba cita ajena vía RPC) → BLOQUEADO (RPC revalida).
+- P15/P16 (médico/paciente ven citas ajenas) → **0**. P17 (paciente crea 'agendada') → **'solicitada' forzada**.
+- Lectura: citas deja de ser 45 para todos → super_admin 46, admin_clinica 12 (su clínica), médico/paciente solo lo suyo, anon 0.
+- El creador puede leer su cita recién creada (P17 lo demuestra para el paciente).
+
 ## Baseline ROJO capturado (estado ANTES de remediar)
 
 Medido con la fundación ya aplicada (las políticas de negocio aún sin tocar).
@@ -155,21 +182,30 @@ Medido con la fundación ya aplicada (las políticas de negocio aún sin tocar).
 
 ---
 
-## PRÓXIMO PASO — Fase 3 / Bloque A (citas + RPC van juntos)
-- Eliminar las 3 políticas abiertas de `citas` (SELECT `USING(true)`, INSERT anon/auth abiertos).
-- Agregar SELECT/INSERT scoped: paciente dueño, médico dueño, admin_clinica por
-  `clinica_id`/`private.clinicas_del_usuario()`, super_admin.
-- **Endurecer las RPC SECURITY DEFINER** `actualizar_estado_cita`,
-  `asignar_medico_cita`, `crear_cita` (toman `p_cita_id integer`) para REVALIDAR
-  al caller (hoy P2/P3 prueban que un médico cancela/roba citas ajenas).
-- Migrar `src/pages/CitasPage.tsx` y `src/hooks/useCitas.ts` (legacy) a las RPC
-  scoped (`obtener_citas_clinica`, `crear_cita`). La clínica ya usa RPC definer.
-- Barrer TODAS las funciones SECURITY DEFINER del proyecto y confirmar que
-  revaliden autorización; reportar las que no.
+## Backlog de seguridad — barrido de funciones SECURITY DEFINER (Fase 3)
+Funciones definer ejecutables por **anon + authenticated** que NO revalidan al caller:
+- 🔴 **`asociar_medico_clinica`** — `INSERT medico_clinicas` sin chequeo → cualquiera
+  asocia un médico a cualquier clínica = **escalada de tenant** que burla el
+  aislamiento. **PRIORIDAD ALTA: endurecer como paso INTERMEDIO entre Fase 3 y Fase 4.**
+- 🔴 `enviar_notificacion_promocion` — broadcast a TODOS los pacientes sin chequeo (spam masivo).
+- 🟡 `notificar_paciente`, `notificar_laboratorio` — insertan 1 notificación sin chequeo (spam dirigido).
+- 🟡 `administrar_visita` — aprueba/gestiona visitas; confirmar que valide supervisor.
+- ✅ `registrar_*_desde_invitacion` (token), `registrar_campana_metrica`, `auto_configurar_planes_publicidad` (trigger) — OK por diseño.
 
-**Verificación esperada tras Fase 3:** P1 (anon insert citas) → BLOQUEADO;
-P2/P3 (médico cancela/roba cita ajena vía RPC) → BLOQUEADO; en `run.sh`, `citas`
-deja de ser 45 para todo autenticado (cada rol ve solo lo suyo / su clínica).
+→ `enviar_notificacion_promocion` + los 🟡 van en una **pasada agrupada** posterior (revocar
+EXECUTE de anon/public + revalidar caller / restringir a rol admin según corresponda).
+
+## PRÓXIMO PASO — Paso intermedio (🔴 ALTA) antes de Fase 4
+**Endurecer `asociar_medico_clinica`** (ver "Backlog de seguridad" arriba): hoy es
+ejecutable por anon+authenticated e inserta en `medico_clinicas` sin revalidar → cualquiera
+asocia un médico a cualquier clínica y burla el aislamiento por clínica que se construyó en
+Fases 2-3. Endurecer: revocar EXECUTE de anon/public y revalidar caller (solo admin de esa
+clínica o super_admin). Agregar probe de escritura negativa.
+
+Luego **Fase 4 / Bloque D (tablas abiertas):** `medicos` (cerrar CRUD anon — DELETE/UPDATE/
+INSERT abiertos), `medicamentos`/`farmacias` (write solo admin), `cuentas_bancarias_pais`
+(SELECT requiere auth + acotar país). Después: `enviar_notificacion_promocion` + 🟡 del
+barrido (pasada agrupada), Fase 5 (storage privado + signed URLs), Fase 6 (roles + CHECK).
 
 ### Recordatorio de proceso (reglas del usuario)
 - Una fase a la vez, en orden. Generar migración + listar cambios de frontend, aplicar en

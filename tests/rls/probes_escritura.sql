@@ -86,7 +86,7 @@ DO $$ DECLARE v_cita BIGINT := NULLIF(current_setting('probe.cita_p2', true), ''
 BEGIN
   IF v_cita IS NULL THEN PERFORM set_config('probe.p2_err','NA',false);
   ELSE BEGIN
-    PERFORM public.actualizar_estado_cita(v_cita::int, 'cancelada');
+    PERFORM public.actualizar_estado_cita(v_cita, 'cancelada');  -- RPC bigint (Fase 3)
     PERFORM set_config('probe.p2_err','',false);
   EXCEPTION WHEN OTHERS THEN PERFORM set_config('probe.p2_err', SQLERRM, false); END; END IF;
 END $$;
@@ -96,7 +96,7 @@ DO $$ DECLARE v_cita BIGINT := NULLIF(current_setting('probe.cita_p3', true), ''
 BEGIN
   IF v_cita IS NULL THEN PERFORM set_config('probe.p3_err','NA',false);
   ELSE BEGIN
-    PERFORM public.asignar_medico_cita(v_cita::int, auth.uid());
+    PERFORM public.asignar_medico_cita(v_cita, auth.uid());  -- RPC bigint (Fase 3)
     PERFORM set_config('probe.p3_err','',false);
   EXCEPTION WHEN OTHERS THEN PERFORM set_config('probe.p3_err', SQLERRM, false); END; END IF;
 END $$;
@@ -237,6 +237,14 @@ BEGIN
   END; END IF;
 END $$;
 
+-- P15 — el médico NO debe ver citas de OTROS médicos (lectura scoped de citas)
+DO $$ DECLARE n INT;
+BEGIN
+  SELECT count(*) INTO n FROM public.citas c WHERE c.medico_id IS DISTINCT FROM auth.uid();
+  IF n > 0 THEN PERFORM set_config('probe.p15','PERMITIDO (ve '||n||' citas ajenas)',false);
+  ELSE PERFORM set_config('probe.p15','BLOQUEADO (0 citas ajenas visibles)',false); END IF;
+END $$;
+
 -- P14 — el paciente SÍ ve los items de SUS recetas (y NO los ajenos)
 SELECT set_config('role', 'none', true);
 SELECT set_config('request.jwt.claims',
@@ -255,6 +263,37 @@ BEGIN
   END IF;
 END $$;
 
+-- P16 — el paciente NO debe ver citas de OTROS pacientes (lectura scoped de citas)
+DO $$ DECLARE n INT;
+BEGIN
+  IF NULLIF(current_setting('probe.paciente_u', true), '') IS NULL THEN
+    PERFORM set_config('probe.p16','N/A (sin paciente)',false);
+  ELSE
+    SELECT count(*) INTO n FROM public.citas c
+     WHERE c.paciente_id NOT IN (SELECT p.id FROM public.pacientes p WHERE p.auth_user_id = auth.uid());
+    IF n > 0 THEN PERFORM set_config('probe.p16','PERMITIDO (ve '||n||' citas ajenas)',false);
+    ELSE PERFORM set_config('probe.p16','BLOQUEADO (0 citas ajenas visibles)',false); END IF;
+  END IF;
+END $$;
+
+-- P17 — el paciente NO puede crear su cita ya 'agendada' (crear_cita fuerza 'solicitada').
+-- Usa ::int para que la llamada resuelva pre-071 (integer) y post-071 (bigint).
+DO $$ DECLARE v_pac BIGINT; v_id BIGINT; v_estado TEXT;
+BEGIN
+  v_pac := (SELECT id FROM public.pacientes WHERE auth_user_id = auth.uid() LIMIT 1);
+  IF v_pac IS NULL THEN PERFORM set_config('probe.p17','N/A (sin paciente)',false);
+  ELSE BEGIN
+    v_id := public.crear_cita(v_pac::int, NULL, NULL, CURRENT_DATE, '06:00'::time, '06:15'::time, 'probe', NULL, 'agendada', NULL);
+    SELECT estado INTO v_estado FROM public.citas WHERE id = v_id;
+    IF v_estado = 'solicitada' THEN
+      PERFORM set_config('probe.p17','BLOQUEADO (forzó solicitada, ignoró agendada)',false);
+    ELSE
+      PERFORM set_config('probe.p17','PERMITIDO (paciente creó en estado '||COALESCE(v_estado,'?')||')',false);
+    END IF;
+  EXCEPTION WHEN OTHERS THEN PERFORM set_config('probe.p17','N/A (crear_cita lanzó: '||SQLERRM||')',false); END;
+  END IF;
+END $$;
+
 -- ===== Veredictos como result set =====
 SELECT 'P1_anon_insert_citas'              AS probe, current_setting('probe.p1', true)  AS verdict, 'BLOQUEADO' AS esperado_post_fix
 UNION ALL SELECT 'P2_medico_cancela_ajena_rpc',         current_setting('probe.p2', true),  'BLOQUEADO'
@@ -269,6 +308,9 @@ UNION ALL SELECT 'P9_medico_inserta_expediente_propio', current_setting('probe.p
 UNION ALL SELECT 'P10_medico_inserta_signos_propio',    current_setting('probe.p10', true), 'OK'
 UNION ALL SELECT 'P12_medico_inserta_historial_ajeno',  current_setting('probe.p12', true), 'BLOQUEADO'
 UNION ALL SELECT 'P13_medico_inserta_expediente_ajeno', current_setting('probe.p13', true), 'BLOQUEADO'
-UNION ALL SELECT 'P14_paciente_ve_sus_receta_items',    current_setting('probe.p14', true), '>0 propios / 0 ajenos';
+UNION ALL SELECT 'P14_paciente_ve_sus_receta_items',    current_setting('probe.p14', true), '>0 propios / 0 ajenos'
+UNION ALL SELECT 'P15_medico_ve_citas_ajenas',          current_setting('probe.p15', true), 'BLOQUEADO'
+UNION ALL SELECT 'P16_paciente_ve_citas_ajenas',        current_setting('probe.p16', true), 'BLOQUEADO'
+UNION ALL SELECT 'P17_paciente_no_crea_agendada',       current_setting('probe.p17', true), 'BLOQUEADO';
 
 ROLLBACK;  -- nada de lo anterior se persiste

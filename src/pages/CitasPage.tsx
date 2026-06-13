@@ -199,27 +199,28 @@ export default function CitasPage() {
 
     setGuardando(true)
     try {
-      const { data: citaCreada, error } = await supabase.from('citas').insert({
-        paciente_id: parseInt(nuevaCita.paciente_id),
-        medico_id: nuevaCita.medico_id,
-        fecha: nuevaCita.fecha,
-        hora_inicio: nuevaCita.hora_inicio,
-        hora_fin: nuevaCita.hora_fin,
-        motivo: nuevaCita.motivo,
-        notas: nuevaCita.notas,
-        estado: 'agendada',
-        pais_id: paisId,
-      }).select().single()
+      // Crear vía RPC SECURITY DEFINER (valida autorización del caller).
+      const { data: nuevaCitaId, error } = await supabase.rpc('crear_cita', {
+        p_paciente_id: parseInt(nuevaCita.paciente_id),
+        p_medico_id: nuevaCita.medico_id,
+        p_fecha: nuevaCita.fecha,
+        p_hora_inicio: nuevaCita.hora_inicio,
+        p_hora_fin: nuevaCita.hora_fin,
+        p_motivo: nuevaCita.motivo,
+        p_notas: nuevaCita.notas,
+        p_estado: 'agendada',
+        p_pais_id: paisId,
+      })
 
       if (error) throw error
 
       // Programar recordatorio automático 24h antes
-      if (citaCreada?.id) {
+      if (nuevaCitaId) {
         try {
           await supabase.functions.invoke('programar-recordatorio', {
             body: {
               tipo: 'cita',
-              referencia_id: citaCreada.id,
+              referencia_id: nuevaCitaId,
               horas_antes: 24,
             },
           })
