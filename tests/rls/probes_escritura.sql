@@ -634,6 +634,203 @@ EXCEPTION
   WHEN others THEN PERFORM set_config('probe.p36','REGRESIÓN? (otro error: '||SQLSTATE||')',false);
 END $$;
 
+-- ============================================================
+-- PASADA DEFINER · funciones SECURITY DEFINER con revalidación del caller
+-- ============================================================
+-- Captura (ELEVADO) de actores reales.
+SELECT set_config('role', 'none', true);
+SELECT set_config('probe.sa',
+  (SELECT id::text FROM public.perfiles WHERE rol='super_admin' ORDER BY id LIMIT 1), false);
+SELECT set_config('probe.np_pac',
+  (SELECT c.paciente_id::text FROM public.citas c WHERE c.medico_id IS NOT NULL ORDER BY c.id LIMIT 1), false);
+SELECT set_config('probe.np_medico',  -- médico que SÍ atiende a ese paciente
+  (SELECT c.medico_id::text FROM public.citas c WHERE c.medico_id IS NOT NULL ORDER BY c.id LIMIT 1), false);
+SELECT set_config('probe.np_ajeno',   -- médico SIN cita con ese paciente
+  (SELECT m.id::text FROM public.perfiles m WHERE m.rol='medico'
+     AND NOT EXISTS (SELECT 1 FROM public.citas c2 WHERE c2.medico_id=m.id
+        AND c2.paciente_id = NULLIF(current_setting('probe.np_pac', true),'')::bigint)
+     ORDER BY m.id LIMIT 1), false);
+SELECT set_config('probe.nl_lab',
+  (SELECT e.laboratorio_id::text FROM public.examenes e WHERE e.laboratorio_id IS NOT NULL AND e.medico_id IS NOT NULL ORDER BY e.id LIMIT 1), false);
+SELECT set_config('probe.nl_medico', -- médico que ordenó a ese lab
+  (SELECT e.medico_id::text FROM public.examenes e WHERE e.laboratorio_id IS NOT NULL AND e.medico_id IS NOT NULL ORDER BY e.id LIMIT 1), false);
+SELECT set_config('probe.av_visita',
+  (SELECT v.id::text FROM public.visitas_agendadas v WHERE v.medico_id IS NOT NULL ORDER BY v.id LIMIT 1), false);
+SELECT set_config('probe.av_medico', -- médico de esa visita (parte VISITADA, no aprueba)
+  (SELECT v.medico_id::text FROM public.visitas_agendadas v WHERE v.medico_id IS NOT NULL ORDER BY v.id LIMIT 1), false);
+SELECT set_config('probe.av_emp_member', -- miembro proveedor de la empresa de la visita (aprobador legítimo)
+  (SELECT cp.id::text FROM public.cuentas_proveedor cp WHERE cp.activo
+     AND cp.empresa_id = (SELECT v.empresa_id FROM public.visitas_agendadas v WHERE v.medico_id IS NOT NULL ORDER BY v.id LIMIT 1)
+     ORDER BY cp.id LIMIT 1), false);
+-- "ajeno universal" para notif lab y visita: el médico que atiende al paciente np_pac
+-- (no es miembro del lab nl_lab ni parte de la visita av_visita).
+SELECT set_config('probe.ajeno', current_setting('probe.np_medico', true), false);
+
+-- P37 — promo: anon NO dispara broadcast masivo
+SELECT set_config('request.jwt.claims', NULL, true);
+SELECT set_config('role', 'anon', true);
+DO $$ BEGIN
+  PERFORM public.enviar_notificacion_promocion('__probe_promo','__probe_promo','general');
+  PERFORM set_config('probe.p37','PERMITIDO (anon disparó broadcast)',false);
+EXCEPTION
+  WHEN insufficient_privilege THEN PERFORM set_config('probe.p37','BLOQUEADO (42501)',false);
+  WHEN others THEN PERFORM set_config('probe.p37','BLOQUEADO ('||SQLSTATE||')',false);
+END $$;
+
+-- P38 — promo: un médico (authenticated, no super_admin) NO dispara broadcast
+SELECT set_config('role', 'none', true);
+SELECT set_config('request.jwt.claims',
+  json_build_object('sub', current_setting('probe.np_medico', true), 'role','authenticated')::text, true);
+SELECT set_config('role', 'authenticated', true);
+DO $$ BEGIN
+  PERFORM public.enviar_notificacion_promocion('__probe_promo2','__probe_promo2','general');
+  PERFORM set_config('probe.p38','PERMITIDO (médico disparó broadcast)',false);
+EXCEPTION
+  WHEN others THEN PERFORM set_config('probe.p38','BLOQUEADO ('||SQLSTATE||')',false);
+END $$;
+
+-- P39 — promo POSITIVO: super_admin SÍ dispara el broadcast
+SELECT set_config('role', 'none', true);
+SELECT set_config('request.jwt.claims',
+  json_build_object('sub', current_setting('probe.sa', true), 'role','authenticated')::text, true);
+SELECT set_config('role', 'authenticated', true);
+DO $$ BEGIN
+  PERFORM public.enviar_notificacion_promocion('__probe_promo_sa','__probe_promo_sa','general');
+  PERFORM set_config('probe.p39_err','',false);
+EXCEPTION
+  WHEN others THEN PERFORM set_config('probe.p39_err', SQLSTATE, false);
+END $$;
+-- Verificación del efecto en rol ELEVADO (la RLS de notificaciones_pacientes
+-- ocultaría las filas si se contara como el propio super_admin authenticated).
+SELECT set_config('role', 'none', true);
+DO $$ DECLARE n INT; BEGIN
+  IF NULLIF(current_setting('probe.p39_err', true),'') IS NOT NULL THEN
+    PERFORM set_config('probe.p39','REGRESIÓN (lanzó '||current_setting('probe.p39_err', true)||')',false);
+  ELSE
+    SELECT count(*) INTO n FROM public.notificaciones_pacientes WHERE titulo='__probe_promo_sa';
+    IF n > 0 THEN PERFORM set_config('probe.p39','OK (broadcast a '||n||' pacientes)',false);
+    ELSE PERFORM set_config('probe.p39','REGRESIÓN (no insertó)',false); END IF;
+  END IF;
+END $$;
+
+-- P40 — notificar_paciente: médico AJENO (sin cita con el paciente) NO notifica
+SELECT set_config('role', 'none', true);
+SELECT set_config('request.jwt.claims',
+  json_build_object('sub', current_setting('probe.np_ajeno', true), 'role','authenticated')::text, true);
+SELECT set_config('role', 'authenticated', true);
+DO $$ BEGIN
+  IF NULLIF(current_setting('probe.np_ajeno', true),'') IS NULL THEN PERFORM set_config('probe.p40','N/A',false);
+  ELSE
+    PERFORM public.notificar_paciente(NULLIF(current_setting('probe.np_pac', true),'')::int,'cita','__p','m','/x');
+    PERFORM set_config('probe.p40','PERMITIDO (notificó a paciente ajeno)',false);
+  END IF;
+EXCEPTION
+  WHEN others THEN PERFORM set_config('probe.p40','BLOQUEADO ('||SQLSTATE||')',false);
+END $$;
+
+-- P41 — notificar_paciente POSITIVO: el médico que lo atiende SÍ notifica
+SELECT set_config('role', 'none', true);
+SELECT set_config('request.jwt.claims',
+  json_build_object('sub', current_setting('probe.np_medico', true), 'role','authenticated')::text, true);
+SELECT set_config('role', 'authenticated', true);
+DO $$ DECLARE v INT; BEGIN
+  v := public.notificar_paciente(NULLIF(current_setting('probe.np_pac', true),'')::int,'cita','__p_ok','m','/x');
+  IF v IS NOT NULL THEN PERFORM set_config('probe.p41','OK (notificó id '||v||')',false);
+  ELSE PERFORM set_config('probe.p41','REGRESIÓN (no devolvió id)',false); END IF;
+EXCEPTION
+  WHEN others THEN PERFORM set_config('probe.p41','REGRESIÓN ('||SQLSTATE||')',false);
+END $$;
+
+-- P42 — notificar_laboratorio: un médico AJENO al lab (no le ordenó) NO notifica
+SELECT set_config('role', 'none', true);
+SELECT set_config('request.jwt.claims',
+  json_build_object('sub', current_setting('probe.ajeno', true), 'role','authenticated')::text, true);
+SELECT set_config('role', 'authenticated', true);
+DO $$ BEGIN
+  IF NULLIF(current_setting('probe.nl_lab', true),'') IS NULL THEN PERFORM set_config('probe.p42','N/A',false);
+  ELSE
+    PERFORM public.notificar_laboratorio(current_setting('probe.nl_lab', true)::uuid,'orden_examen','__l','m','/x');
+    PERFORM set_config('probe.p42','PERMITIDO (notificó a lab ajeno)',false);
+  END IF;
+EXCEPTION
+  WHEN others THEN PERFORM set_config('probe.p42','BLOQUEADO ('||SQLSTATE||')',false);
+END $$;
+
+-- P43 — notificar_laboratorio POSITIVO: el médico que ordenó a ese lab SÍ notifica
+SELECT set_config('role', 'none', true);
+SELECT set_config('request.jwt.claims',
+  json_build_object('sub', current_setting('probe.nl_medico', true), 'role','authenticated')::text, true);
+SELECT set_config('role', 'authenticated', true);
+DO $$ DECLARE arr uuid[]; BEGIN
+  arr := public.notificar_laboratorio(current_setting('probe.nl_lab', true)::uuid,'orden_examen','__l_ok','m','/x');
+  IF array_length(arr,1) >= 1 THEN PERFORM set_config('probe.p43','OK (notificó '||array_length(arr,1)||' cuenta(s))',false);
+  ELSE PERFORM set_config('probe.p43','OK (lab sin cuentas activas, pero autorizó)',false); END IF;
+EXCEPTION
+  WHEN others THEN PERFORM set_config('probe.p43','REGRESIÓN ('||SQLSTATE||')',false);
+END $$;
+
+-- P44 — administrar_visita: un ajeno (ni médico de la visita ni su empresa) NO la administra
+SELECT set_config('role', 'none', true);
+SELECT set_config('request.jwt.claims',
+  json_build_object('sub', current_setting('probe.ajeno', true), 'role','authenticated')::text, true);
+SELECT set_config('role', 'authenticated', true);
+DO $$ DECLARE r jsonb; BEGIN
+  IF NULLIF(current_setting('probe.av_visita', true),'') IS NULL THEN PERFORM set_config('probe.p44','N/A (sin visitas)',false);
+  ELSE
+    r := public.administrar_visita(current_setting('probe.av_visita', true)::uuid,'rechazar',NULL,NULL,NULL,'__probe');
+    IF r ? 'success' THEN PERFORM set_config('probe.p44','PERMITIDO (administró visita ajena)',false);
+    ELSE PERFORM set_config('probe.p44','BLOQUEADO? (devolvió: '||r::text||')',false); END IF;
+  END IF;
+EXCEPTION
+  WHEN others THEN PERFORM set_config('probe.p44','BLOQUEADO ('||SQLSTATE||')',false);
+END $$;
+
+-- P45 — administrar_visita POSITIVO: un miembro de la empresa proveedora SÍ la administra
+SELECT set_config('role', 'none', true);
+SELECT set_config('request.jwt.claims',
+  json_build_object('sub', current_setting('probe.av_emp_member', true), 'role','authenticated')::text, true);
+SELECT set_config('role', 'authenticated', true);
+DO $$ DECLARE r jsonb; BEGIN
+  IF NULLIF(current_setting('probe.av_emp_member', true),'') IS NULL THEN PERFORM set_config('probe.p45','N/A (empresa sin proveedor activo)',false);
+  ELSE
+    r := public.administrar_visita(current_setting('probe.av_visita', true)::uuid,'rechazar',NULL,NULL,NULL,'__probe_ok');
+    IF r ? 'success' THEN PERFORM set_config('probe.p45','OK (proveedor administró su visita)',false);
+    ELSE PERFORM set_config('probe.p45','REGRESIÓN (devolvió: '||r::text||')',false); END IF;
+  END IF;
+EXCEPTION
+  WHEN others THEN PERFORM set_config('probe.p45','REGRESIÓN ('||SQLSTATE||')',false);
+END $$;
+
+-- P46 — notificar_paciente POSITIVO: STAFF de clínica (rama "clínica" de la regla,
+--   cubre useClinicaCitas). Staff miembro de una clínica con cita del paciente,
+--   que NO es el médico de la cita ni lo atiende → solo pasa por la rama staff.
+SELECT set_config('role', 'none', true);
+SELECT set_config('probe.cs_pac', (
+  SELECT c.paciente_id::text FROM public.citas c
+  JOIN public.medico_clinicas staff ON staff.clinica_id = c.clinica_id
+  WHERE c.clinica_id IS NOT NULL AND staff.medico_id <> c.medico_id
+    AND NOT EXISTS (SELECT 1 FROM public.citas c2 WHERE c2.medico_id=staff.medico_id AND c2.paciente_id=c.paciente_id)
+  ORDER BY c.id LIMIT 1), false);
+SELECT set_config('probe.cs_staff', (
+  SELECT staff.medico_id::text FROM public.citas c
+  JOIN public.medico_clinicas staff ON staff.clinica_id = c.clinica_id
+  WHERE c.clinica_id IS NOT NULL AND staff.medico_id <> c.medico_id
+    AND NOT EXISTS (SELECT 1 FROM public.citas c2 WHERE c2.medico_id=staff.medico_id AND c2.paciente_id=c.paciente_id)
+  ORDER BY c.id LIMIT 1), false);
+SELECT set_config('request.jwt.claims',
+  json_build_object('sub', current_setting('probe.cs_staff', true), 'role','authenticated')::text, true);
+SELECT set_config('role', 'authenticated', true);
+DO $$ DECLARE v INT; BEGIN
+  IF NULLIF(current_setting('probe.cs_staff', true),'') IS NULL THEN PERFORM set_config('probe.p46','N/A (sin staff candidato)',false);
+  ELSE
+    v := public.notificar_paciente(NULLIF(current_setting('probe.cs_pac', true),'')::int,'cita','__p_staff','m','/x');
+    IF v IS NOT NULL THEN PERFORM set_config('probe.p46','OK (staff notificó id '||v||')',false);
+    ELSE PERFORM set_config('probe.p46','REGRESIÓN (no devolvió id)',false); END IF;
+  END IF;
+EXCEPTION
+  WHEN others THEN PERFORM set_config('probe.p46','REGRESIÓN ('||SQLSTATE||')',false);
+END $$;
+
 -- ===== Veredictos como result set =====
 SELECT 'P1_anon_insert_citas'              AS probe, current_setting('probe.p1', true)  AS verdict, 'BLOQUEADO' AS esperado_post_fix
 UNION ALL SELECT 'P2_medico_cancela_ajena_rpc',         current_setting('probe.p2', true),  'BLOQUEADO'
@@ -670,6 +867,16 @@ UNION ALL SELECT 'P32_proveedor_dueno_lee_comprobante', current_setting('probe.p
 UNION ALL SELECT 'P33_proveedor_ajeno_escribe_comprob',  current_setting('probe.p33', true), 'BLOQUEADO'
 UNION ALL SELECT 'P34_proveedor_dueno_escribe_comprob',  current_setting('probe.p34', true), 'OK'
 UNION ALL SELECT 'P35_ajeno_escribe_resultado_lab',      current_setting('probe.p35', true), 'BLOQUEADO'
-UNION ALL SELECT 'P36_lab_dueno_escribe_resultado',      current_setting('probe.p36', true), 'OK';
+UNION ALL SELECT 'P36_lab_dueno_escribe_resultado',      current_setting('probe.p36', true), 'OK'
+UNION ALL SELECT 'P37_anon_broadcast_promo',             current_setting('probe.p37', true), 'BLOQUEADO'
+UNION ALL SELECT 'P38_medico_broadcast_promo',           current_setting('probe.p38', true), 'BLOQUEADO'
+UNION ALL SELECT 'P39_superadmin_broadcast_promo',       current_setting('probe.p39', true), 'OK (>0)'
+UNION ALL SELECT 'P40_medico_ajeno_notifica_paciente',   current_setting('probe.p40', true), 'BLOQUEADO'
+UNION ALL SELECT 'P41_medico_atiende_notifica_paciente', current_setting('probe.p41', true), 'OK'
+UNION ALL SELECT 'P42_ajeno_notifica_laboratorio',       current_setting('probe.p42', true), 'BLOQUEADO'
+UNION ALL SELECT 'P43_medico_orden_notifica_lab',        current_setting('probe.p43', true), 'OK'
+UNION ALL SELECT 'P44_ajeno_administra_visita',          current_setting('probe.p44', true), 'BLOQUEADO'
+UNION ALL SELECT 'P45_proveedor_visita_administra',      current_setting('probe.p45', true), 'OK'
+UNION ALL SELECT 'P46_staff_clinica_notifica_paciente',  current_setting('probe.p46', true), 'OK';
 
 ROLLBACK;  -- nada de lo anterior se persiste

@@ -120,6 +120,21 @@ Todas terminan en **ROLLBACK**: nunca persisten, aunque la operación sea permit
 | P34 `proveedor_dueno_escribe_comprob` | (positivo) proveedor sube a SU folder | 🟢 OK | OK | Fase 5 | ✅ **VERDE** (OK) |
 | P35 `ajeno_escribe_resultado_lab` | un ajeno sube un resultado en el folder de otro lab | 🔴 PERMITIDO | BLOQUEADO | Fase 5 | ✅ **VERDE** (42501) |
 | P36 `lab_dueno_escribe_resultado` | (positivo) el lab sube a SU folder (upload legítimo) | 🟢 OK | OK | Fase 5 | ✅ **VERDE** (OK) |
+| P37 `anon_broadcast_promo` | anon dispara broadcast masivo a TODOS los pacientes | 🔴 PERMITIDO | BLOQUEADO | Definer | ✅ **VERDE** (42501) |
+| P38 `medico_broadcast_promo` | médico común (no super_admin) dispara broadcast | 🔴 PERMITIDO | BLOQUEADO | Definer | ✅ **VERDE** (P0001) |
+| P39 `superadmin_broadcast_promo` | (positivo) super_admin sí dispara el broadcast | 🟢 OK (14) | OK (>0) | Definer | ✅ **VERDE** (14) |
+| P40 `medico_ajeno_notifica_paciente` | médico sin cita con el paciente lo notifica | 🔴 PERMITIDO | BLOQUEADO | Definer | ✅ **VERDE** (P0001) |
+| P41 `medico_atiende_notifica_paciente` | (positivo) el médico que lo atiende notifica | 🟢 OK | OK | Definer | ✅ **VERDE** (OK) |
+| P42 `ajeno_notifica_laboratorio` | un ajeno (no ordenó, no es el lab) notifica al lab | 🔴 PERMITIDO | BLOQUEADO | Definer | ✅ **VERDE** (P0001)† |
+| P43 `medico_orden_notifica_lab` | (positivo) el médico que ordenó notifica al lab | 🟢 OK | OK | Definer | ✅ **VERDE** (OK) |
+| P44 `ajeno_administra_visita` | un ajeno administra (aprueba/rechaza) visita ajena | 🔴 PERMITIDO | BLOQUEADO | Definer | ✅ **VERDE** (P0001)† |
+| P45 `proveedor_visita_administra` | (positivo) miembro de la empresa proveedora la administra | 🟢 OK | OK | Definer | ✅ **VERDE** (OK) |
+| P46 `staff_clinica_notifica_paciente` | (positivo) staff de clínica con cita del paciente lo notifica | 🟢 OK | OK | Definer | ✅ **VERDE** (OK) |
+
+† P42/P44 destaparon un **fail-open trivaluado**: `mi_empresa_proveedor()` es NULL para
+no-proveedores, así que `false OR (NULL = empresa) OR …` = NULL y `IF NOT NULL` salta el
+RAISE (autoriza). Corregido envolviendo la comparación en `COALESCE(… , false)`. Los probes
+NEGATIVOS lo cazaron antes del commit.
 
 > P1/P2/P3 (citas) siguen en rojo a propósito hasta la Fase 3 (RLS scoped de
 > `citas` + revalidación de autorización dentro de las RPC definer).

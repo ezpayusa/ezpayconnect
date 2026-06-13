@@ -4,7 +4,7 @@
 **Entorno de trabajo:** proyecto Supabase remoto linkeado (datos FICTICIOS = "staging").
 Las migraciones se aplican manualmente con `npx supabase db query --linked -f <archivo>`
 (este proyecto NO usa el ledger de migraciones del CLI; el orden lo da el número de archivo).
-**Punto de retome:** este archivo. Siguiente = **pasada agrupada de definer 🟡** (`enviar_notificacion_promocion`, `notificar_paciente/laboratorio`, `administrar_visita`) → luego **Fase 6 (roles + CHECK anti fail-open)**. (Fases 0–5 + paso intermedio ✅ aplicadas; `crear-staff-clinica` ✅ deployado.)
+**Punto de retome:** este archivo. Siguiente = **Fase 6 (roles + CHECK anti fail-open)**. (Fases 0–5 + paso intermedio + pasada definer ✅ aplicadas; `crear-staff-clinica` ✅ deployado.)
 
 ---
 
@@ -229,6 +229,35 @@ Qué se hizo:
 - **Probes P26–P36** (lectura + escritura negativa/positiva en ambos buckets) → todos VERDE;
   P1–P25 sin regresión. Build limpio.
 
+## Pasada agrupada — funciones SECURITY DEFINER sin revalidar ✅ APLICADA (migración `075`)
+Las 4 funciones eran ejecutables por **anon+authenticated** y NO revalidaban al caller →
+cualquiera disparaba broadcasts/notificaciones/gestión de visitas ajenas. Se verificó primero
+quién las llama legítimamente (frontend + edge), igual que con `asociar_medico_clinica`:
+
+- **`enviar_notificacion_promocion`** (el más urgente: broadcast a TODOS los pacientes,
+  anon-ejecutable): NINGÚN caller (código muerto; su default `tipo='promocion'` ni siquiera
+  pasa el CHECK de `notificaciones_pacientes`). → solo `super_admin`; RAISE si no.
+  *(Limpieza futura: ELIMINARLA en vez de mantenerla — anotado en backlog.)*
+- **`notificar_paciente`** (callers: `useRecetas`, `useMedicoCitas`, `ConsultaPage`,
+  `useClinicaCitas`): revalida super_admin / médico que atiende / staff de una clínica con
+  cita del paciente.
+- **`notificar_laboratorio`** (caller: `ConsultaPage` al ordenar examen): revalida
+  super_admin / miembro del lab / médico que ordenó a ese lab.
+- **`administrar_visita`** (sin callers; la UI `AdminVisitas` solo lee): la FK
+  `aprobada_por → cuentas_proveedor` confirma que el aprobador es la **empresa proveedora**
+  (supervisor), no el médico (parte visitada). Revalida super_admin / miembro de la empresa
+  proveedora; setea `aprobada_por = auth.uid()` solo si el caller es proveedor (super_admin
+  preserva el valor previo → no viola la FK).
+
+Las 4: `SECURITY DEFINER` + `search_path=''` (las 2 que faltaban) + revalidación interna +
+`REVOKE EXECUTE FROM PUBLIC, anon` / `GRANT TO authenticated, service_role`.
+
+**Fail-open trivaluado cazado por los probes negativos** (antes del commit): las ramas
+`mi_empresa_proveedor() = X` devuelven NULL para no-proveedores, y `false OR NULL OR false`
+= NULL → `IF NOT NULL` salta el RAISE (autoriza). Corregido con `COALESCE(… , false)` en
+`notificar_laboratorio` (P42) y `administrar_visita` (P44). `notificar_paciente`/promo eran
+inmunes (ramas booleanas puras). Probes **P37–P46** en verde; P1–P36 sin regresión.
+
 ## Backlog de seguridad — barrido de funciones SECURITY DEFINER (Fase 3)
 Funciones definer ejecutables por **anon + authenticated** que NO revalidan al caller:
 - ✅ **`asociar_medico_clinica`** — HECHO (migración `072`): REVOKE de anon/public/authenticated
@@ -238,13 +267,18 @@ Funciones definer ejecutables por **anon + authenticated** que NO revalidan al c
   **PENDIENTE DE DEPLOY:** el fix de `crear-staff-clinica` (validar que el solicitante sea
   admin_clinica/gerente de esa clínica o super_admin — antes era endpoint público sin validar)
   está commiteado pero requiere `supabase functions deploy crear-staff-clinica` + verificación manual.
-- 🔴 `enviar_notificacion_promocion` — broadcast a TODOS los pacientes sin chequeo (spam masivo).
-- 🟡 `notificar_paciente`, `notificar_laboratorio` — insertan 1 notificación sin chequeo (spam dirigido).
-- 🟡 `administrar_visita` — aprueba/gestiona visitas; confirmar que valide supervisor.
+- ✅ `enviar_notificacion_promocion` — HECHO (migración `075`): solo super_admin + REVOKE anon.
+  ⚠️ **Limpieza futura:** es código muerto (sin callers) y su default `tipo='promocion'` viola
+  el CHECK de `notificaciones_pacientes` → considerar ELIMINARLA en vez de mantenerla.
+- ✅ `notificar_paciente`, `notificar_laboratorio` — HECHO (migración `075`): revalidan relación
+  con el destinatario (médico que atiende / staff de clínica / lab que ordenó / miembro del lab).
+- ✅ `administrar_visita` — HECHO (migración `075`): revalida miembro de la empresa proveedora
+  (la FK `aprobada_por → cuentas_proveedor` confirma que aprueba el proveedor, no el médico).
 - ✅ `registrar_*_desde_invitacion` (token), `registrar_campana_metrica`, `auto_configurar_planes_publicidad` (trigger) — OK por diseño.
 
-→ `enviar_notificacion_promocion` + los 🟡 van en una **pasada agrupada** posterior (revocar
-EXECUTE de anon/public + revalidar caller / restringir a rol admin según corresponda).
+→ Pasada agrupada COMPLETADA en `075`. Lección: las ramas `mi_empresa_proveedor() = X` daban
+**fail-open trivaluado** (NULL ⇒ RAISE saltado); se cierran con `COALESCE(… , false)`. Tener
+presente este patrón en la Fase 6 (CHECK anti fail-open).
 
 ## PRÓXIMO PASO — Paso intermedio (🔴 ALTA) antes de Fase 4
 **Endurecer `asociar_medico_clinica`** (ver "Backlog de seguridad" arriba): hoy es
