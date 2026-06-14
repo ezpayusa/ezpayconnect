@@ -12,6 +12,8 @@ import ProveedorLayout from '@/proveedor/layout/ProveedorLayout'
 import ProveedorPrivateRoute from '@/proveedor/components/ProveedorPrivateRoute'
 import LaboratorioLayout from '@/laboratorio/layout/LaboratorioLayout'
 import LaboratorioPrivateRoute from '@/laboratorio/components/LaboratorioPrivateRoute'
+import FarmaciaLayout from '@/farmacia/layout/FarmaciaLayout'
+import FarmaciaPrivateRoute from '@/farmacia/components/FarmaciaPrivateRoute'
 import { MedicoLayout } from '@/medico/layout/MedicoLayout'
 import MedicoPrivateRoute from '@/medico/components/MedicoPrivateRoute'
 import { ClinicaLayout } from '@/clinica/layout/ClinicaLayout'
@@ -112,6 +114,11 @@ const LabCatalogoPage = lazy(() => import('@/laboratorio/pages/LabCatalogoPage')
 const LabWalkInPage = lazy(() => import('@/laboratorio/pages/LabWalkInPage'))
 const LabAfiliacionesPage = lazy(() => import('@/laboratorio/pages/LabAfiliacionesPage'))
 const LabPerfilPage = lazy(() => import('@/laboratorio/pages/LabPerfilPage'))
+const FarmaciaLogin = lazy(() => import('@/farmacia/pages/FarmaciaLogin'))
+const FarmaciaRegistro = lazy(() => import('@/farmacia/pages/FarmaciaRegistro'))
+const FarmaciaDashboard = lazy(() => import('@/farmacia/pages/FarmaciaDashboard'))
+const FarmaciaInventarioPage = lazy(() => import('@/farmacia/pages/FarmaciaInventarioPage'))
+const FarmaciaPersonalPage = lazy(() => import('@/farmacia/pages/FarmaciaPersonalPage'))
 
 // === PLANES ===
 const PlanesPage = lazy(() => import('@/pages/planes/PlanesPage'))
@@ -344,6 +351,19 @@ function App() {
           <Route path="walk-in" element={<LabWalkInPage />} />
           <Route path="afiliaciones" element={<LabAfiliacionesPage />} />
           <Route path="perfil" element={<LabPerfilPage />} />
+          <Route path="notificaciones" element={<ProveedorNotificacionesPage />} />
+        </Route>
+
+        {/* === PORTAL FARMACIA (tenant; guard por tipo='farmacia') === */}
+        <Route path="/farmacia/login" element={<FarmaciaLogin />} />
+        <Route path="/farmacia/registro" element={<FarmaciaRegistro />} />
+        <Route path="/farmacia/*" element={<FarmaciaPrivateRoute><FarmaciaLayout /></FarmaciaPrivateRoute>}>
+          <Route index element={<Navigate to="/farmacia/dashboard" replace />} />
+          <Route path="dashboard" element={<FarmaciaDashboard />} />
+          <Route path="inventario" element={<FarmaciaInventarioPage />} />
+          <Route path="personal" element={<FarmaciaPersonalPage />} />
+          <Route path="pagos" element={<ProveedorPagosPage />} />
+          <Route path="perfil" element={<ProveedorPerfilPage />} />
           <Route path="notificaciones" element={<ProveedorNotificacionesPage />} />
         </Route>
 

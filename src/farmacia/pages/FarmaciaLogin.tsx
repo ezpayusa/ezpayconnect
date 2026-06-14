@@ -6,10 +6,10 @@ import { Label } from '@/components/ui/label'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { useProveedorAuth } from '@/proveedor/hooks/useProveedorAuth'
 import { supabase } from '@/lib/supabase'
-import { FlaskConical, Loader2 } from 'lucide-react'
+import { Pill, Loader2 } from 'lucide-react'
 import { toast } from 'sonner'
 
-export default function LabLogin() {
+export default function FarmaciaLogin() {
   const navigate = useNavigate()
   const { login } = useProveedorAuth()
   const [email, setEmail] = useState('')
@@ -25,7 +25,6 @@ export default function LabLogin() {
       toast.error('Error al iniciar sesión', { description: error.message })
       return
     }
-    // Enrutar según el tipo de empresa
     const { data: { user } } = await supabase.auth.getUser()
     const { data: cuenta } = await supabase
       .from('cuentas_proveedor')
@@ -35,30 +34,26 @@ export default function LabLogin() {
     setLoading(false)
     const tipo = (cuenta as any)?.empresa?.tipo
     toast.success('Bienvenido')
-    if (tipo === 'laboratorio_clinico') {
-      navigate('/laboratorio/dashboard')
-    } else if (tipo === 'farmacia') {
-      navigate('/farmacia/dashboard')
-    } else {
-      navigate('/proveedor/dashboard')
-    }
+    if (tipo === 'farmacia') navigate('/farmacia/dashboard')
+    else if (tipo === 'laboratorio_clinico') navigate('/laboratorio/dashboard')
+    else navigate('/proveedor/dashboard')
   }
 
   return (
-    <div className="min-h-screen bg-gradient-to-br from-emerald-50 to-teal-50 flex items-center justify-center p-4">
+    <div className="min-h-screen bg-gradient-to-br from-amber-50 to-orange-50 flex items-center justify-center p-4">
       <Card className="w-full max-w-md shadow-xl">
         <CardHeader className="text-center">
-          <div className="mx-auto w-12 h-12 rounded-xl bg-[#0E7C6B] flex items-center justify-center mb-4">
-            <FlaskConical className="h-6 w-6 text-white" />
+          <div className="mx-auto w-12 h-12 rounded-xl bg-[#B45309] flex items-center justify-center mb-4">
+            <Pill className="h-6 w-6 text-white" />
           </div>
-          <CardTitle className="text-xl">Laboratorio Clínico</CardTitle>
-          <p className="text-sm text-muted-foreground">Inicia sesión con tu cuenta de laboratorio</p>
+          <CardTitle className="text-xl">Portal Farmacia</CardTitle>
+          <p className="text-sm text-muted-foreground">Inicia sesión con tu cuenta de farmacia</p>
         </CardHeader>
         <CardContent>
           <form onSubmit={handleSubmit} className="space-y-4">
             <div className="space-y-2">
               <Label htmlFor="email">Correo electrónico</Label>
-              <Input id="email" type="email" placeholder="contacto@laboratorio.com"
+              <Input id="email" type="email" placeholder="contacto@farmacia.com"
                 value={email} onChange={(e) => setEmail(e.target.value)} required />
             </div>
             <div className="space-y-2">
@@ -66,15 +61,15 @@ export default function LabLogin() {
               <Input id="password" type="password" placeholder="••••••••"
                 value={password} onChange={(e) => setPassword(e.target.value)} required />
             </div>
-            <Button type="submit" className="w-full bg-[#0E7C6B] hover:bg-[#0a5e51]" disabled={loading}>
+            <Button type="submit" className="w-full bg-[#B45309] hover:bg-[#92400e]" disabled={loading}>
               {loading ? <Loader2 className="h-4 w-4 animate-spin mr-2" /> : null}
               Iniciar sesión
             </Button>
           </form>
           <div className="mt-6 text-center text-sm">
             <span className="text-muted-foreground">¿No tienes cuenta? </span>
-            <Link to="/laboratorio/registro" className="text-[#0E7C6B] hover:underline font-medium">
-              Registra tu laboratorio
+            <Link to="/farmacia/registro" className="text-[#B45309] hover:underline font-medium">
+              Registra tu farmacia
             </Link>
           </div>
           <div className="mt-4 text-center text-xs text-muted-foreground">

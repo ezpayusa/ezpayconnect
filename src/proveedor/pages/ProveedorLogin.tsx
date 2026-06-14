@@ -34,8 +34,11 @@ export default function ProveedorLogin() {
       .maybeSingle()
     setLoading(false)
     toast.success('Bienvenido')
-    if ((cuenta as any)?.empresa?.tipo === 'laboratorio_clinico') {
+    const tipo = (cuenta as any)?.empresa?.tipo
+    if (tipo === 'laboratorio_clinico') {
       navigate('/laboratorio/dashboard')
+    } else if (tipo === 'farmacia') {
+      navigate('/farmacia/dashboard')
     } else {
       navigate('/proveedor/dashboard')
     }
