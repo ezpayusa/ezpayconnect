@@ -4,7 +4,7 @@
 **Entorno de trabajo:** proyecto Supabase remoto linkeado (datos FICTICIOS = "staging").
 Las migraciones se aplican manualmente con `npx supabase db query --linked -f <archivo>`
 (este proyecto NO usa el ledger de migraciones del CLI; el orden lo da el número de archivo).
-**Punto de retome:** este archivo. **Plan de remediación RLS COMPLETO** — Fases 0–6 + paso intermedio + pasada definer ✅ aplicadas y verificadas (harness P1–P54 verde). `crear-staff-clinica` ✅ deployado (con fix de Fase 6).
+**Punto de retome:** este archivo. **Plan de remediación RLS COMPLETO** — Fases 0–6 + paso intermedio + pasada definer + **Inc.0 (cierre de huecos de proveedores)** ✅ aplicados y verificados (**harness P1–P64 verde**). Migraciones **067–077**. `crear-staff-clinica` ✅ deployado (con fix de Fase 6). Rama lista para merge a `main` (el merge/deploy lo decide el usuario).
 
 ---
 
@@ -282,6 +282,27 @@ no-admin → 403.
 **Harness P1–P54 verde, cero regresión.** Probes Fase 6: P47 (super_admin admin-gated OK),
 P48 (rol fuera de catálogo → FK 23503 BLOQUEADO), P49 (rol válido OK), P50/P52 (remap: super_admin
 edita farmacia / crea reportes OK), P51/P53 (no-super BLOQUEADO), P54 (super_admin ve reportes OK).
+
+## Inc.0 (paneles) — Cerrar huecos del esquema de proveedores ✅ APLICADA (migración `077`)
+Cierres de seguridad descubiertos al diseñar los paneles (ver `docs/DISEÑO_PANELES.md`); van con
+el deploy de seguridad porque son huecos RLS/fail-open de la misma clase que las Fases 0–6.
+- **`planes_asignaciones`** (tabla DUAL médico/empresa): tenía `[ALL] auth.role()='authenticated'`
+  → cualquier autenticado leía/escribía TODAS las asignaciones. Nueva `asig_scoped_all` —
+  USING = super_admin / empresa propia / médico dueño (COALESCE NULL-safe); **WITH CHECK separado
+  por tipo de fila** (filas excluyentes, 0 con ambos): médico solo su fila sin `empresa_id`,
+  proveedor solo su fila sin `medico_id` → sin forja cruzada de dueño.
+- **`campanas_publicitarias`**: tenía INSERT/UPDATE/DELETE con solo `auth.uid() IS NOT NULL`
+  → cualquiera publicaba/editaba/borraba anuncios. Escritura cerrada a super_admin; publicación
+  canónica vía RPC **`aprobar_solicitud_campana`** (SECURITY DEFINER, `search_path=''`, revalida
+  super_admin con COALESCE; copia `pais_id`). `SolicitudesCampanaPage` migrada al RPC. Lectura de
+  audiencia (activa+país) intacta.
+- **`empresas_proveedoras.tipo`**: texto libre (fail-open) → CHECK al catálogo válido
+  (`laboratorio_clinico/laboratorio_farmaceutico/farmacia/empresa_afin`; pre-vuelo 0 inválidas).
+
+**Harness P1–P64 verde.** Probes Inc.0: P55/P56 (ajeno NO ve/edita asignación ajena), P57
+(no-super NO inserta campaña), P58 (guard: DELETE ya bloqueado), P59 (tipo fuera de catálogo →
+CHECK 23514), P63 (no-super NO aprueba vía RPC), P64 (médico NO forja `empresa_id` ajeno) →
+BLOQUEADO; P60/P61 (proveedor/médico gestionan lo suyo), P62 (super_admin publica vía RPC) → OK.
 
 ## Pasada agrupada — funciones SECURITY DEFINER sin revalidar ✅ APLICADA (migración `075`)
 Las 4 funciones eran ejecutables por **anon+authenticated** y NO revalidaban al caller →

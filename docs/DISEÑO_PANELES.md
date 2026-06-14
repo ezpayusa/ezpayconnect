@@ -1,8 +1,8 @@
 # Propuesta de diseño — Paneles "Empresas Afines" y "Farmacias"
 
-> **Estado:** DISEÑO APROBADO — decisiones D1–D4 resueltas (§4). No hay código ni migraciones aún;
-> todo es **aditivo** sobre el modelo de empresa proveedora existente. Listo para construir el
-> Incremento 0 (§5) cuando se indique. Versionado en el repo (`.gitignore` acotado a binarios).
+> **Estado:** DISEÑO APROBADO — D1–D4 resueltas (§4). **Inc.0 ✅ HECHO** (migración `077`, harness
+> P1–P64 verde, en `seguridad/rls-remediacion`). Inc.1+ pendientes, irán en rama de paneles aparte.
+> Todo el modelo de datos es **aditivo** sobre la empresa proveedora existente.
 
 ---
 
@@ -136,11 +136,11 @@ mismo auth, portal separado, routing por `tipo`.
 ## 5. Plan de construcción por incrementos (aprobado — D1–D4 resueltas)
 Cada incremento con su migración + probes (rojo→verde) y el patrón de siempre (mostrar → OK → aplicar staging → harness → commit). Los probes siguen la numeración del harness existente (P1–P54 → P55…).
 
-- **Incremento 0 — Cerrar huecos + blindar `tipo` (D4).**
-  - `campanas_publicitarias`: quitar INSERT/UPDATE/DELETE abiertos; publicación solo vía RPC `aprobar_solicitud_campana` (SECURITY DEFINER, `search_path=''`, revalida `super_admin` con `COALESCE(...,false)`).
-  - `planes_asignaciones`: eliminar `[ALL] authenticated`; SELECT scoped por empresa + escritura super_admin (gemelo de `planes_visitador_contratados`).
-  - CHECK/catálogo de `empresas_proveedoras.tipo` (pre-vuelo: 4 valores ya válidos).
-  - **Probes:** anon/ajeno NO inserta/edita/borra `campanas_publicitarias` → BLOQUEADO; super_admin publica vía RPC → OK; ajeno NO lee/escribe `planes_asignaciones` de otra empresa → BLOQUEADO; empresa dueña SÍ ve los suyos; asignar `tipo` inválido → rechazado por CHECK.
+- **Incremento 0 — Cerrar huecos + blindar `tipo` (D4). ✅ HECHO** (migración `077`, commit `4266216`).
+  - `campanas_publicitarias`: INSERT/UPDATE/DELETE abiertos eliminados → escritura solo super_admin; publicación canónica vía RPC `aprobar_solicitud_campana` (SECURITY DEFINER, `search_path=''`, revalida `super_admin` con `COALESCE`; copia `pais_id`). `SolicitudesCampanaPage` migrada al RPC. Lectura de audiencia intacta.
+  - `planes_asignaciones`: eliminado `[ALL] authenticated` → `asig_scoped_all` (USING: super_admin / empresa propia / médico dueño). **WITH CHECK separado por tipo de fila** (filas excluyentes verificadas): médico solo su fila sin `empresa_id`, proveedor solo su fila sin `medico_id` → sin forja cruzada.
+  - CHECK de `empresas_proveedoras.tipo` al catálogo válido (pre-vuelo: 0 filas inválidas).
+  - **Probes P55–P64 verdes** (ajeno NO lee/escribe asignaciones ni campañas; tipo inválido y forja de empresa → BLOQUEADO; proveedor/médico gestionan lo suyo y super_admin publica vía RPC → OK). Suite completa **P1–P64 sin regresión**.
 - **Incremento 1 — Farmacia tenant (D3 convivencia + promoción super_admin).**
   - `farmacias.empresa_id` (FK nullable) + RPC `promover_farmacia_a_tenant(p_farmacia_id, p_empresa_id)` (SECURITY DEFINER, solo super_admin) + políticas scoped de `farmacia_medicamentos` (write por `farmacia_id ∈ farmacias de mi_empresa_proveedor()`), **manteniendo** la SELECT pública.
   - **Probes:** farmacia tenant A NO ve/edita inventario de B → BLOQUEADO; admin de A SÍ → OK; médico sigue leyendo disponibilidad (lectura pública intacta) → OK; no-super_admin NO promueve → BLOQUEADO.
@@ -150,4 +150,4 @@ Cada incremento con su migración + probes (rojo→verde) y el patrón de siempr
   - **D2:** ocultar visitadores/equipos/rutas/ubicaciones en `/proveedor/*` cuando `tipo='empresa_afin'` **y** acotar esas políticas RLS por tipo. Probes: `empresa_afin` NO accede a visitas/equipos/ubicaciones por API → BLOQUEADO; sí gestiona productos/publicidad/pagos → OK.
 - **Incremento 4 — Publicidad para ambos**: usar la RPC de aprobación del Inc.0 + SELECT de `campana_metricas` para que la empresa vea métricas de SUS campañas. Probes: empresa ve métricas propias / no ajenas; audiencia solo ve campañas `activa` de su país.
 
-> Listo para construir el **Incremento 0** cuando lo indiques (con el patrón: migración + probes → mostrar → tu OK → staging → harness → commit).
+> **Inc.0 ✅ aplicado en `seguridad/rls-remediacion`** (viaja con el deploy de seguridad). Inc.1+ (construcción de paneles) irá en **rama aparte** desde la base actual cuando se arranque.
