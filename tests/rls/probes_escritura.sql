@@ -1098,6 +1098,124 @@ EXCEPTION
   WHEN others THEN PERFORM set_config('probe.p64','PERMITIDO? (RLS dejó pasar: '||SQLSTATE||')',false);
 END $$;
 
+-- ============================================================
+-- INCREMENTO 1 (paneles) · Farmacia tenant (promoción super_admin + scoping)
+-- ============================================================
+-- Captura (ELEVADO) de actores. Orden: P67 (no-super promueve→falla) → P68
+-- (super promueve→liga la farmacia) → P65/P66 (ajeno) → P69 (dueño) → P70 (público).
+SELECT set_config('role', 'none', true);
+SELECT set_config('probe.farm',
+  (SELECT id::text FROM public.farmacias ORDER BY id LIMIT 1), false);
+SELECT set_config('probe.farm_emp',
+  (SELECT id::text FROM public.empresas_proveedoras WHERE tipo='farmacia' LIMIT 1), false);
+SELECT set_config('probe.farm_owner',
+  (SELECT cp.id::text FROM public.cuentas_proveedor cp JOIN public.empresas_proveedoras e ON e.id=cp.empresa_id
+     WHERE e.tipo='farmacia' AND cp.activo ORDER BY cp.id LIMIT 1), false);
+SELECT set_config('probe.farm_ajeno',
+  (SELECT cp.id::text FROM public.cuentas_proveedor cp JOIN public.empresas_proveedoras e ON e.id=cp.empresa_id
+     WHERE e.tipo <> 'farmacia' AND cp.activo ORDER BY cp.id LIMIT 1), false);
+SELECT set_config('probe.farm_ajeno_emp',
+  (SELECT cp.empresa_id::text FROM public.cuentas_proveedor cp
+     WHERE cp.id = NULLIF(current_setting('probe.farm_ajeno', true),'')::uuid), false);
+-- Aislamiento ENTRE tenants: convertir la empresa del ajeno en OTRA empresa-farmacia
+-- (así P65/P66 prueban tenant-vs-tenant, no usuario-sin-empresa). Dentro del ROLLBACK.
+UPDATE public.empresas_proveedoras SET tipo='farmacia'
+  WHERE id = NULLIF(current_setting('probe.farm_ajeno_emp', true),'')::uuid;
+
+-- P67 — NEG: un no-super_admin NO promueve una farmacia (vía RPC)
+SELECT set_config('request.jwt.claims',
+  json_build_object('sub', current_setting('probe.np_medico', true), 'role','authenticated')::text, true);
+SELECT set_config('role', 'authenticated', true);
+DO $$ BEGIN
+  PERFORM public.promover_farmacia_a_tenant(current_setting('probe.farm', true)::int, current_setting('probe.farm_emp', true)::uuid);
+  PERFORM set_config('probe.p67','PERMITIDO (no-super promovió)',false);
+EXCEPTION
+  WHEN undefined_function THEN PERFORM set_config('probe.p67','N/A (RPC no existe aún)',false);
+  WHEN others THEN PERFORM set_config('probe.p67','BLOQUEADO ('||SQLSTATE||')',false);
+END $$;
+
+-- P68 — POS: super_admin promueve la farmacia a tenant (la liga a su empresa)
+SELECT set_config('role', 'none', true);
+SELECT set_config('request.jwt.claims',
+  json_build_object('sub', current_setting('probe.sa', true), 'role','authenticated')::text, true);
+SELECT set_config('role', 'authenticated', true);
+DO $$ BEGIN
+  PERFORM public.promover_farmacia_a_tenant(current_setting('probe.farm', true)::int, current_setting('probe.farm_emp', true)::uuid);
+  PERFORM set_config('probe.p68','OK (super_admin promovió la farmacia)',false);
+EXCEPTION
+  WHEN undefined_function THEN PERFORM set_config('probe.p68','N/A (RPC no existe aún)',false);
+  WHEN others THEN PERFORM set_config('probe.p68','REGRESIÓN ('||SQLSTATE||')',false);
+END $$;
+
+-- P65 — NEG: un proveedor AJENO NO gestiona la farmacia-tenant ajena
+SELECT set_config('role', 'none', true);
+SELECT set_config('request.jwt.claims',
+  json_build_object('sub', current_setting('probe.farm_ajeno', true), 'role','authenticated')::text, true);
+SELECT set_config('role', 'authenticated', true);
+DO $$ DECLARE n INT; BEGIN
+  UPDATE public.farmacias SET activo = activo WHERE id = current_setting('probe.farm', true)::int;
+  GET DIAGNOSTICS n = ROW_COUNT;
+  IF n > 0 THEN PERFORM set_config('probe.p65','PERMITIDO (gestionó farmacia ajena)',false);
+  ELSE PERFORM set_config('probe.p65','BLOQUEADO (0 filas)',false); END IF;
+EXCEPTION WHEN insufficient_privilege THEN PERFORM set_config('probe.p65','BLOQUEADO (42501)',false);
+  WHEN others THEN PERFORM set_config('probe.p65','BLOQUEADO ('||SQLSTATE||')',false);
+END $$;
+
+-- P66 — NEG: un proveedor AJENO NO edita el inventario de la farmacia-tenant ajena
+SELECT set_config('role', 'none', true);
+SELECT set_config('request.jwt.claims',
+  json_build_object('sub', current_setting('probe.farm_ajeno', true), 'role','authenticated')::text, true);
+SELECT set_config('role', 'authenticated', true);
+DO $$ DECLARE n INT; BEGIN
+  UPDATE public.farmacia_medicamentos SET activo = activo WHERE farmacia_id = current_setting('probe.farm', true)::int;
+  GET DIAGNOSTICS n = ROW_COUNT;
+  IF n > 0 THEN PERFORM set_config('probe.p66','PERMITIDO (editó inventario ajeno '||n||')',false);
+  ELSE PERFORM set_config('probe.p66','BLOQUEADO (0 filas)',false); END IF;
+EXCEPTION WHEN insufficient_privilege THEN PERFORM set_config('probe.p66','BLOQUEADO (42501)',false);
+  WHEN others THEN PERFORM set_config('probe.p66','BLOQUEADO ('||SQLSTATE||')',false);
+END $$;
+
+-- P69 — POS: el DUEÑO (miembro de la empresa) gestiona su farmacia-tenant + inventario
+SELECT set_config('role', 'none', true);
+SELECT set_config('request.jwt.claims',
+  json_build_object('sub', current_setting('probe.farm_owner', true), 'role','authenticated')::text, true);
+SELECT set_config('role', 'authenticated', true);
+DO $$ DECLARE n1 INT; n2 INT; BEGIN
+  UPDATE public.farmacias SET activo = activo WHERE id = current_setting('probe.farm', true)::int;
+  GET DIAGNOSTICS n1 = ROW_COUNT;
+  UPDATE public.farmacia_medicamentos SET activo = activo WHERE farmacia_id = current_setting('probe.farm', true)::int;
+  GET DIAGNOSTICS n2 = ROW_COUNT;
+  IF n1 > 0 AND n2 > 0 THEN PERFORM set_config('probe.p69','OK (gestiona farmacia + inventario: '||n1||'/'||n2||')',false);
+  ELSE PERFORM set_config('probe.p69','REGRESIÓN (farmacia='||n1||' inv='||n2||')',false); END IF;
+EXCEPTION WHEN others THEN PERFORM set_config('probe.p69','REGRESIÓN ('||SQLSTATE||')',false);
+END $$;
+
+-- P70 — POS: la búsqueda pública del médico sigue viendo el catálogo/inventario
+SELECT set_config('role', 'none', true);
+SELECT set_config('request.jwt.claims',
+  json_build_object('sub', current_setting('probe.np_medico', true), 'role','authenticated')::text, true);
+SELECT set_config('role', 'authenticated', true);
+DO $$ DECLARE n INT; BEGIN
+  SELECT count(*) INTO n FROM public.farmacia_medicamentos WHERE farmacia_id = current_setting('probe.farm', true)::int;
+  IF n > 0 THEN PERFORM set_config('probe.p70','OK (médico ve inventario: '||n||')',false);
+  ELSE PERFORM set_config('probe.p70','REGRESIÓN (no ve catálogo)',false); END IF;
+EXCEPTION WHEN others THEN PERFORM set_config('probe.p70','REGRESIÓN ('||SQLSTATE||')',false);
+END $$;
+
+-- P71 — NEG (anti-suplantación): promover una farmacia que YA es tenant → RECHAZADA.
+--   La farmacia ya fue promovida en P68 → el RPC valida empresa_id IS NULL y rechaza.
+SELECT set_config('role', 'none', true);
+SELECT set_config('request.jwt.claims',
+  json_build_object('sub', current_setting('probe.sa', true), 'role','authenticated')::text, true);
+SELECT set_config('role', 'authenticated', true);
+DO $$ BEGIN
+  PERFORM public.promover_farmacia_a_tenant(current_setting('probe.farm', true)::int, current_setting('probe.farm_emp', true)::uuid);
+  PERFORM set_config('probe.p71','PERMITIDO (reapropió una farmacia ya tenant!)',false);
+EXCEPTION
+  WHEN undefined_function THEN PERFORM set_config('probe.p71','N/A (RPC no existe aún)',false);
+  WHEN others THEN PERFORM set_config('probe.p71','BLOQUEADO ('||SQLSTATE||')',false);
+END $$;
+
 -- ===== Veredictos como result set =====
 SELECT 'P1_anon_insert_citas'              AS probe, current_setting('probe.p1', true)  AS verdict, 'BLOQUEADO' AS esperado_post_fix
 UNION ALL SELECT 'P2_medico_cancela_ajena_rpc',         current_setting('probe.p2', true),  'BLOQUEADO'
@@ -1162,6 +1280,13 @@ UNION ALL SELECT 'P60_proveedor_gestiona_su_asig',      current_setting('probe.p
 UNION ALL SELECT 'P61_medico_gestiona_su_asig',         current_setting('probe.p61', true), 'OK'
 UNION ALL SELECT 'P62_superadmin_publica_rpc',          current_setting('probe.p62', true), 'OK'
 UNION ALL SELECT 'P63_nosuper_no_aprueba_rpc',          current_setting('probe.p63', true), 'BLOQUEADO'
-UNION ALL SELECT 'P64_medico_no_forja_empresa',         current_setting('probe.p64', true), 'BLOQUEADO';
+UNION ALL SELECT 'P64_medico_no_forja_empresa',         current_setting('probe.p64', true), 'BLOQUEADO'
+UNION ALL SELECT 'P65_otro_tenant_gestiona_farmacia',         current_setting('probe.p65', true), 'BLOQUEADO'
+UNION ALL SELECT 'P66_otro_tenant_edita_inventario',          current_setting('probe.p66', true), 'BLOQUEADO'
+UNION ALL SELECT 'P67_nosuper_no_promueve',             current_setting('probe.p67', true), 'BLOQUEADO'
+UNION ALL SELECT 'P68_superadmin_promueve',             current_setting('probe.p68', true), 'OK'
+UNION ALL SELECT 'P69_dueno_gestiona_tenant',           current_setting('probe.p69', true), 'OK'
+UNION ALL SELECT 'P70_medico_ve_catalogo',              current_setting('probe.p70', true), 'OK'
+UNION ALL SELECT 'P71_reapropiacion_rechazada',         current_setting('probe.p71', true), 'BLOQUEADO';
 
 ROLLBACK;  -- nada de lo anterior se persiste
