@@ -1216,6 +1216,169 @@ EXCEPTION
   WHEN others THEN PERFORM set_config('probe.p71','BLOQUEADO ('||SQLSTATE||')',false);
 END $$;
 
+-- ============================================================
+-- INCREMENTO 2 · FRENTE A — permisos data-driven + anti-escalada de roles
+-- ============================================================
+-- Reparto (ELEVADO, dentro del ROLLBACK): reasigno cuentas reales a la empresa-
+-- farmacia (probe.farm_emp) con roles. farmacia probe.farm ya es tenant (P68).
+SELECT set_config('role', 'none', true);
+SELECT set_config('probe.fa_admin',
+  (SELECT cp.id::text FROM public.cuentas_proveedor cp JOIN public.empresas_proveedoras e ON e.id=cp.empresa_id
+     WHERE e.tipo='farmacia' AND cp.rol_en_empresa='admin' AND cp.activo ORDER BY cp.id LIMIT 1), false);
+SELECT set_config('probe.fa_ajeno',
+  (SELECT id::text FROM public.cuentas_proveedor
+     WHERE empresa_id <> current_setting('probe.farm_emp', true)::uuid AND activo ORDER BY id LIMIT 1), false);
+SELECT set_config('probe.fa_gerente',
+  (SELECT id::text FROM public.cuentas_proveedor
+     WHERE id NOT IN (NULLIF(current_setting('probe.fa_admin',true),'')::uuid, NULLIF(current_setting('probe.fa_ajeno',true),'')::uuid)
+     ORDER BY id LIMIT 1 OFFSET 0), false);
+SELECT set_config('probe.fa_cajero',
+  (SELECT id::text FROM public.cuentas_proveedor
+     WHERE id NOT IN (NULLIF(current_setting('probe.fa_admin',true),'')::uuid, NULLIF(current_setting('probe.fa_ajeno',true),'')::uuid)
+     ORDER BY id LIMIT 1 OFFSET 1), false);
+SELECT set_config('probe.fa_inv',
+  (SELECT id::text FROM public.cuentas_proveedor
+     WHERE id NOT IN (NULLIF(current_setting('probe.fa_admin',true),'')::uuid, NULLIF(current_setting('probe.fa_ajeno',true),'')::uuid)
+     ORDER BY id LIMIT 1 OFFSET 2), false);
+SELECT set_config('probe.fa_target',
+  (SELECT id::text FROM public.cuentas_proveedor
+     WHERE id NOT IN (NULLIF(current_setting('probe.fa_admin',true),'')::uuid, NULLIF(current_setting('probe.fa_ajeno',true),'')::uuid)
+     ORDER BY id LIMIT 1 OFFSET 3), false);
+-- Reasignación del reparto a la empresa-farmacia con sus roles (ROLLBACK)
+UPDATE public.cuentas_proveedor SET empresa_id=current_setting('probe.farm_emp',true)::uuid, rol_en_empresa='gerente_farmacia', activo=true, equipo_id=NULL WHERE id=NULLIF(current_setting('probe.fa_gerente',true),'')::uuid;
+UPDATE public.cuentas_proveedor SET empresa_id=current_setting('probe.farm_emp',true)::uuid, rol_en_empresa='cajero',           activo=true, equipo_id=NULL WHERE id=NULLIF(current_setting('probe.fa_cajero',true),'')::uuid;
+UPDATE public.cuentas_proveedor SET empresa_id=current_setting('probe.farm_emp',true)::uuid, rol_en_empresa='inventario',       activo=true, equipo_id=NULL WHERE id=NULLIF(current_setting('probe.fa_inv',true),'')::uuid;
+UPDATE public.cuentas_proveedor SET empresa_id=current_setting('probe.farm_emp',true)::uuid, rol_en_empresa='dependiente',      activo=true, equipo_id=NULL WHERE id=NULLIF(current_setting('probe.fa_target',true),'')::uuid;
+
+-- ---- RLS por PERMISO (tenant farmacia) ----
+-- P72 — NEG: rol sin inventario_editar (cajero) NO edita inventario
+SELECT set_config('request.jwt.claims', json_build_object('sub', current_setting('probe.fa_cajero', true), 'role','authenticated')::text, true);
+SELECT set_config('role', 'authenticated', true);
+DO $$ DECLARE n INT; BEGIN
+  UPDATE public.farmacia_medicamentos SET activo = activo WHERE farmacia_id = current_setting('probe.farm', true)::int;
+  GET DIAGNOSTICS n = ROW_COUNT;
+  IF n > 0 THEN PERFORM set_config('probe.p72','PERMITIDO (sin permiso editó inventario '||n||')',false);
+  ELSE PERFORM set_config('probe.p72','BLOQUEADO (0 filas)',false); END IF;
+EXCEPTION WHEN insufficient_privilege THEN PERFORM set_config('probe.p72','BLOQUEADO (42501)',false);
+  WHEN others THEN PERFORM set_config('probe.p72','BLOQUEADO ('||SQLSTATE||')',false);
+END $$;
+
+-- P73 — NEG: rol sin config_empresa (cajero) NO edita datos de la farmacia
+SELECT set_config('role', 'none', true);
+SELECT set_config('request.jwt.claims', json_build_object('sub', current_setting('probe.fa_cajero', true), 'role','authenticated')::text, true);
+SELECT set_config('role', 'authenticated', true);
+DO $$ DECLARE n INT; BEGIN
+  UPDATE public.farmacias SET activo = activo WHERE id = current_setting('probe.farm', true)::int;
+  GET DIAGNOSTICS n = ROW_COUNT;
+  IF n > 0 THEN PERFORM set_config('probe.p73','PERMITIDO (sin permiso editó datos)',false);
+  ELSE PERFORM set_config('probe.p73','BLOQUEADO (0 filas)',false); END IF;
+EXCEPTION WHEN insufficient_privilege THEN PERFORM set_config('probe.p73','BLOQUEADO (42501)',false);
+  WHEN others THEN PERFORM set_config('probe.p73','BLOQUEADO ('||SQLSTATE||')',false);
+END $$;
+
+-- P74 — POS: rol Inventario SÍ edita inventario
+SELECT set_config('role', 'none', true);
+SELECT set_config('request.jwt.claims', json_build_object('sub', current_setting('probe.fa_inv', true), 'role','authenticated')::text, true);
+SELECT set_config('role', 'authenticated', true);
+DO $$ DECLARE n INT; BEGIN
+  UPDATE public.farmacia_medicamentos SET activo = activo WHERE farmacia_id = current_setting('probe.farm', true)::int;
+  GET DIAGNOSTICS n = ROW_COUNT;
+  IF n > 0 THEN PERFORM set_config('probe.p74','OK (Inventario editó inventario: '||n||')',false);
+  ELSE PERFORM set_config('probe.p74','REGRESIÓN (0 filas)',false); END IF;
+EXCEPTION WHEN others THEN PERFORM set_config('probe.p74','REGRESIÓN ('||SQLSTATE||')',false);
+END $$;
+
+-- P75 — NEG: rol Inventario NO edita los DATOS de la farmacia (no config_empresa)
+SELECT set_config('role', 'none', true);
+SELECT set_config('request.jwt.claims', json_build_object('sub', current_setting('probe.fa_inv', true), 'role','authenticated')::text, true);
+SELECT set_config('role', 'authenticated', true);
+DO $$ DECLARE n INT; BEGIN
+  UPDATE public.farmacias SET activo = activo WHERE id = current_setting('probe.farm', true)::int;
+  GET DIAGNOSTICS n = ROW_COUNT;
+  IF n > 0 THEN PERFORM set_config('probe.p75','PERMITIDO (Inventario editó datos)',false);
+  ELSE PERFORM set_config('probe.p75','BLOQUEADO (0 filas)',false); END IF;
+EXCEPTION WHEN insufficient_privilege THEN PERFORM set_config('probe.p75','BLOQUEADO (42501)',false);
+  WHEN others THEN PERFORM set_config('probe.p75','BLOQUEADO ('||SQLSTATE||')',false);
+END $$;
+
+-- ---- Anti-escalada (RPC asignar_rol_miembro) — los NEGATIVOS son los críticos ----
+-- P76 — NEG: Gerente asigna ADMIN → rechazado (nivel)
+SELECT set_config('role', 'none', true);
+SELECT set_config('request.jwt.claims', json_build_object('sub', current_setting('probe.fa_gerente', true), 'role','authenticated')::text, true);
+SELECT set_config('role', 'authenticated', true);
+DO $$ BEGIN
+  PERFORM public.asignar_rol_miembro(current_setting('probe.fa_target', true)::uuid, 'admin');
+  PERFORM set_config('probe.p76','PERMITIDO (Gerente asignó Admin!)',false);
+EXCEPTION WHEN undefined_function THEN PERFORM set_config('probe.p76','N/A (RPC no existe aún)',false);
+  WHEN others THEN PERFORM set_config('probe.p76','BLOQUEADO ('||SQLSTATE||')',false);
+END $$;
+
+-- P77 — NEG: Gerente modifica/degrada a un ADMIN existente → rechazado
+SELECT set_config('role', 'none', true);
+SELECT set_config('request.jwt.claims', json_build_object('sub', current_setting('probe.fa_gerente', true), 'role','authenticated')::text, true);
+SELECT set_config('role', 'authenticated', true);
+DO $$ BEGIN
+  PERFORM public.asignar_rol_miembro(current_setting('probe.fa_admin', true)::uuid, 'cajero');
+  PERFORM set_config('probe.p77','PERMITIDO (Gerente degradó a un Admin!)',false);
+EXCEPTION WHEN undefined_function THEN PERFORM set_config('probe.p77','N/A (RPC no existe aún)',false);
+  WHEN others THEN PERFORM set_config('probe.p77','BLOQUEADO ('||SQLSTATE||')',false);
+END $$;
+
+-- P78 — NEG: Gerente asigna otro GERENTE → rechazado (mismo nivel)
+SELECT set_config('role', 'none', true);
+SELECT set_config('request.jwt.claims', json_build_object('sub', current_setting('probe.fa_gerente', true), 'role','authenticated')::text, true);
+SELECT set_config('role', 'authenticated', true);
+DO $$ BEGIN
+  PERFORM public.asignar_rol_miembro(current_setting('probe.fa_target', true)::uuid, 'gerente_farmacia');
+  PERFORM set_config('probe.p78','PERMITIDO (Gerente asignó otro Gerente!)',false);
+EXCEPTION WHEN undefined_function THEN PERFORM set_config('probe.p78','N/A (RPC no existe aún)',false);
+  WHEN others THEN PERFORM set_config('probe.p78','BLOQUEADO ('||SQLSTATE||')',false);
+END $$;
+
+-- P79 — NEG: un rol operativo (Cajero) asigna CUALQUIER rol → rechazado (sin usuarios_roles)
+SELECT set_config('role', 'none', true);
+SELECT set_config('request.jwt.claims', json_build_object('sub', current_setting('probe.fa_cajero', true), 'role','authenticated')::text, true);
+SELECT set_config('role', 'authenticated', true);
+DO $$ BEGIN
+  PERFORM public.asignar_rol_miembro(current_setting('probe.fa_target', true)::uuid, 'cajero');
+  PERFORM set_config('probe.p79','PERMITIDO (operativo asignó rol!)',false);
+EXCEPTION WHEN undefined_function THEN PERFORM set_config('probe.p79','N/A (RPC no existe aún)',false);
+  WHEN others THEN PERFORM set_config('probe.p79','BLOQUEADO ('||SQLSTATE||')',false);
+END $$;
+
+-- P80 — NEG: asignar rol en EMPRESA AJENA → rechazado (scope)
+SELECT set_config('role', 'none', true);
+SELECT set_config('request.jwt.claims', json_build_object('sub', current_setting('probe.fa_gerente', true), 'role','authenticated')::text, true);
+SELECT set_config('role', 'authenticated', true);
+DO $$ BEGIN
+  PERFORM public.asignar_rol_miembro(current_setting('probe.fa_ajeno', true)::uuid, 'cajero');
+  PERFORM set_config('probe.p80','PERMITIDO (asignó en empresa ajena!)',false);
+EXCEPTION WHEN undefined_function THEN PERFORM set_config('probe.p80','N/A (RPC no existe aún)',false);
+  WHEN others THEN PERFORM set_config('probe.p80','BLOQUEADO ('||SQLSTATE||')',false);
+END $$;
+
+-- P82 — POS: Gerente asigna un rol OPERATIVO (Cajero) → permitido (antes de promover el target a admin)
+SELECT set_config('role', 'none', true);
+SELECT set_config('request.jwt.claims', json_build_object('sub', current_setting('probe.fa_gerente', true), 'role','authenticated')::text, true);
+SELECT set_config('role', 'authenticated', true);
+DO $$ BEGIN
+  PERFORM public.asignar_rol_miembro(current_setting('probe.fa_target', true)::uuid, 'cajero');
+  PERFORM set_config('probe.p82','OK (Gerente asignó Cajero)',false);
+EXCEPTION WHEN undefined_function THEN PERFORM set_config('probe.p82','N/A (RPC no existe aún)',false);
+  WHEN others THEN PERFORM set_config('probe.p82','REGRESIÓN ('||SQLSTATE||')',false);
+END $$;
+
+-- P81 — POS: Admin asigna CUALQUIER rol, incluido Admin → permitido
+SELECT set_config('role', 'none', true);
+SELECT set_config('request.jwt.claims', json_build_object('sub', current_setting('probe.fa_admin', true), 'role','authenticated')::text, true);
+SELECT set_config('role', 'authenticated', true);
+DO $$ BEGIN
+  PERFORM public.asignar_rol_miembro(current_setting('probe.fa_target', true)::uuid, 'admin');
+  PERFORM set_config('probe.p81','OK (Admin asignó Admin)',false);
+EXCEPTION WHEN undefined_function THEN PERFORM set_config('probe.p81','N/A (RPC no existe aún)',false);
+  WHEN others THEN PERFORM set_config('probe.p81','REGRESIÓN ('||SQLSTATE||')',false);
+END $$;
+
 -- ===== Veredictos como result set =====
 SELECT 'P1_anon_insert_citas'              AS probe, current_setting('probe.p1', true)  AS verdict, 'BLOQUEADO' AS esperado_post_fix
 UNION ALL SELECT 'P2_medico_cancela_ajena_rpc',         current_setting('probe.p2', true),  'BLOQUEADO'
@@ -1287,6 +1450,17 @@ UNION ALL SELECT 'P67_nosuper_no_promueve',             current_setting('probe.p
 UNION ALL SELECT 'P68_superadmin_promueve',             current_setting('probe.p68', true), 'OK'
 UNION ALL SELECT 'P69_dueno_gestiona_tenant',           current_setting('probe.p69', true), 'OK'
 UNION ALL SELECT 'P70_medico_ve_catalogo',              current_setting('probe.p70', true), 'OK'
-UNION ALL SELECT 'P71_reapropiacion_rechazada',         current_setting('probe.p71', true), 'BLOQUEADO';
+UNION ALL SELECT 'P71_reapropiacion_rechazada',         current_setting('probe.p71', true), 'BLOQUEADO'
+UNION ALL SELECT 'P72_sinpermiso_no_edita_inventario',  current_setting('probe.p72', true), 'BLOQUEADO'
+UNION ALL SELECT 'P73_sinpermiso_no_edita_datos',       current_setting('probe.p73', true), 'BLOQUEADO'
+UNION ALL SELECT 'P74_inventario_edita_inventario',     current_setting('probe.p74', true), 'OK'
+UNION ALL SELECT 'P75_inventario_no_edita_datos',       current_setting('probe.p75', true), 'BLOQUEADO'
+UNION ALL SELECT 'P76_gerente_no_asigna_admin',         current_setting('probe.p76', true), 'BLOQUEADO'
+UNION ALL SELECT 'P77_gerente_no_modifica_admin',       current_setting('probe.p77', true), 'BLOQUEADO'
+UNION ALL SELECT 'P78_gerente_no_asigna_gerente',       current_setting('probe.p78', true), 'BLOQUEADO'
+UNION ALL SELECT 'P79_operativo_no_asigna',             current_setting('probe.p79', true), 'BLOQUEADO'
+UNION ALL SELECT 'P80_no_asigna_empresa_ajena',         current_setting('probe.p80', true), 'BLOQUEADO'
+UNION ALL SELECT 'P81_admin_asigna_cualquiera',         current_setting('probe.p81', true), 'OK'
+UNION ALL SELECT 'P82_gerente_asigna_operativo',        current_setting('probe.p82', true), 'OK';
 
 ROLLBACK;  -- nada de lo anterior se persiste
