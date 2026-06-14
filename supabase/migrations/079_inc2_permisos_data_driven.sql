@@ -118,8 +118,8 @@ AS $function$
 DECLARE
   v_emp uuid; v_tipo text; v_asig_rol text;
   v_asig_nivel integer; v_asig_admin boolean;
-  v_target_emp uuid; v_target_rol text; v_target_admin boolean;
-  v_nuevo_nivel integer;
+  v_target_emp uuid; v_target_rol text; v_target_admin boolean; v_target_tipo text;
+  v_nuevo_nivel integer; v_nuevo_admin boolean;
 BEGIN
   -- (a) El asignador debe poder gestionar usuarios_roles
   IF NOT COALESCE(private.tiene_permiso('usuarios_roles'), false) THEN
@@ -136,24 +136,26 @@ BEGIN
   SELECT nivel, es_admin INTO v_asig_nivel, v_asig_admin
   FROM public.roles_empresa_catalogo WHERE tipo_empresa = v_tipo AND rol = v_asig_rol;
 
-  -- target: debe existir y ser de LA MISMA empresa (scope)
-  SELECT cp.empresa_id, cp.rol_en_empresa INTO v_target_emp, v_target_rol
-  FROM public.cuentas_proveedor cp WHERE cp.id = p_target_id;
+  -- target: debe existir y ser de LA MISMA empresa (scope). Resolvemos su TIPO
+  -- explícitamente para validar el rol nuevo contra el tipo del TARGET (ajuste b).
+  SELECT cp.empresa_id, cp.rol_en_empresa, e.tipo INTO v_target_emp, v_target_rol, v_target_tipo
+  FROM public.cuentas_proveedor cp JOIN public.empresas_proveedoras e ON e.id = cp.empresa_id
+  WHERE cp.id = p_target_id;
   IF v_target_emp IS NULL THEN RAISE EXCEPTION 'Miembro destino no existe'; END IF;
   IF v_target_emp <> v_emp THEN
     RAISE EXCEPTION 'No autorizado: el miembro no pertenece a tu empresa';
   END IF;
 
-  -- el rol nuevo debe existir en el catálogo de ese tipo de empresa
-  SELECT nivel INTO v_nuevo_nivel
-  FROM public.roles_empresa_catalogo WHERE tipo_empresa = v_tipo AND rol = p_nuevo_rol;
+  -- (b) el rol nuevo debe existir en el catálogo para el TIPO DEL TARGET
+  SELECT nivel, es_admin INTO v_nuevo_nivel, v_nuevo_admin
+  FROM public.roles_empresa_catalogo WHERE tipo_empresa = v_target_tipo AND rol = p_nuevo_rol;
   IF v_nuevo_nivel IS NULL THEN
-    RAISE EXCEPTION 'Rol "%" no existe para tipo %', p_nuevo_rol, v_tipo;
+    RAISE EXCEPTION 'Rol "%" no existe para el tipo de empresa del miembro (%)', p_nuevo_rol, v_target_tipo;
   END IF;
 
-  -- es_admin del rol ACTUAL del target
+  -- es_admin del rol ACTUAL del target (en su propio tipo)
   SELECT es_admin INTO v_target_admin
-  FROM public.roles_empresa_catalogo WHERE tipo_empresa = v_tipo AND rol = v_target_rol;
+  FROM public.roles_empresa_catalogo WHERE tipo_empresa = v_target_tipo AND rol = v_target_rol;
 
   -- (b) Nadie modifica/degrada a un Admin salvo otro Admin
   IF COALESCE(v_target_admin, false) AND NOT COALESCE(v_asig_admin, false) THEN
@@ -168,8 +170,173 @@ BEGIN
     END IF;
   END IF;
 
+  -- (d) Protección del ÚLTIMO Admin: la operación no puede dejar a la empresa sin Admin activo.
+  IF COALESCE(v_target_admin, false) AND NOT COALESCE(v_nuevo_admin, false)
+     AND (SELECT count(*) FROM public.cuentas_proveedor cp2
+          JOIN public.roles_empresa_catalogo rc
+            ON rc.tipo_empresa = v_target_tipo AND rc.rol = cp2.rol_en_empresa
+          WHERE cp2.empresa_id = v_emp AND cp2.activo = true AND rc.es_admin) <= 1
+  THEN
+    RAISE EXCEPTION 'No autorizado: la empresa quedaría sin ningún Admin activo';
+  END IF;
+
   UPDATE public.cuentas_proveedor SET rol_en_empresa = p_nuevo_rol WHERE id = p_target_id;
 END;
 $function$;
 REVOKE EXECUTE ON FUNCTION public.asignar_rol_miembro(uuid,text) FROM PUBLIC, anon;
 GRANT  EXECUTE ON FUNCTION public.asignar_rol_miembro(uuid,text) TO authenticated, service_role;
+
+-- 6b) RPC alta_miembro_farmacia — ÚNICO camino para CREAR un miembro de farmacia
+--     (INSERT en cuentas_proveedor con rol). Misma jerarquía que asignar_rol_miembro.
+--     El INSERT directo a cuentas_proveedor ya está cerrado (sin política INSERT + RLS),
+--     así que este RPC SECURITY DEFINER (owner) es la única vía. p_user_id debe ser un
+--     auth.users existente sin cuenta de proveedor (el alta NO reduce admins → sin guard
+--     de último-admin). El alta NO puede reducir admins, por eso no lleva ese guard.
+CREATE OR REPLACE FUNCTION public.alta_miembro_farmacia(
+  p_user_id uuid, p_empresa_id uuid, p_nombre text, p_email text,
+  p_nuevo_rol text, p_telefono text DEFAULT NULL::text)
+RETURNS void
+LANGUAGE plpgsql SECURITY DEFINER SET search_path TO ''
+AS $function$
+DECLARE
+  v_emp uuid; v_tipo text; v_asig_rol text; v_asig_nivel integer; v_asig_admin boolean;
+  v_nuevo_nivel integer;
+BEGIN
+  -- (a) el que da de alta necesita usuarios_roles
+  IF NOT COALESCE(private.tiene_permiso('usuarios_roles'), false) THEN
+    RAISE EXCEPTION 'No autorizado: no puedes dar de alta miembros';
+  END IF;
+
+  SELECT cp.empresa_id, e.tipo, cp.rol_en_empresa
+    INTO v_emp, v_tipo, v_asig_rol
+  FROM public.cuentas_proveedor cp JOIN public.empresas_proveedoras e ON e.id = cp.empresa_id
+  WHERE cp.id = auth.uid() AND cp.activo = true;
+  IF v_emp IS NULL THEN RAISE EXCEPTION 'Asignador sin empresa activa'; END IF;
+
+  -- (b) alta SOLO en su misma empresa
+  IF p_empresa_id IS DISTINCT FROM v_emp THEN
+    RAISE EXCEPTION 'No autorizado: solo puedes dar de alta en tu propia empresa';
+  END IF;
+
+  -- este camino data-driven es para farmacia (otros tipos usan su flujo legado)
+  IF v_tipo <> 'farmacia' THEN
+    RAISE EXCEPTION 'Alta data-driven disponible solo para empresas tipo farmacia';
+  END IF;
+
+  -- (c) nuevo_rol debe existir para el tipo de la empresa
+  SELECT nivel INTO v_nuevo_nivel
+  FROM public.roles_empresa_catalogo WHERE tipo_empresa = v_tipo AND rol = p_nuevo_rol;
+  IF v_nuevo_nivel IS NULL THEN
+    RAISE EXCEPTION 'Rol "%" no existe para tipo %', p_nuevo_rol, v_tipo;
+  END IF;
+
+  SELECT nivel, es_admin INTO v_asig_nivel, v_asig_admin
+  FROM public.roles_empresa_catalogo WHERE tipo_empresa = v_tipo AND rol = v_asig_rol;
+
+  -- (d) Admin da de alta cualquier rol; un NO-admin solo nivel ESTRICTAMENTE inferior
+  IF NOT COALESCE(v_asig_admin, false) THEN
+    IF v_asig_nivel IS NULL OR NOT (v_nuevo_nivel < v_asig_nivel) THEN
+      RAISE EXCEPTION 'No autorizado: solo puedes dar de alta roles de nivel inferior al tuyo';
+    END IF;
+  END IF;
+
+  -- (e) el usuario no debe tener ya una cuenta de proveedor
+  IF EXISTS (SELECT 1 FROM public.cuentas_proveedor WHERE id = p_user_id) THEN
+    RAISE EXCEPTION 'El usuario ya tiene una cuenta de proveedor';
+  END IF;
+
+  INSERT INTO public.cuentas_proveedor (id, empresa_id, nombre_completo, email, telefono, rol_en_empresa, activo)
+  VALUES (p_user_id, v_emp, p_nombre, p_email, p_telefono, p_nuevo_rol, true);
+END;
+$function$;
+REVOKE EXECUTE ON FUNCTION public.alta_miembro_farmacia(uuid,uuid,text,text,text,text) FROM PUBLIC, anon;
+GRANT  EXECUTE ON FUNCTION public.alta_miembro_farmacia(uuid,uuid,text,text,text,text) TO authenticated, service_role;
+
+-- ============================================================
+-- 7) AJUSTE (a) — asignar_rol_miembro como ÚNICO camino para tocar rol_en_empresa
+-- ------------------------------------------------------------
+-- Estado verificado: cuentas_proveedor tiene RLS activo y NINGUNA política
+-- UPDATE/INSERT → la escritura directa por authenticated/anon ya está denegada.
+-- (a.1) Defensa en profundidad a nivel COLUMNA: aunque algún día se añada una
+-- política UPDATE, la columna del rol no podrá escribirse por el cliente. Las
+-- funciones SECURITY DEFINER corren como owner → no les afecta este REVOKE.
+REVOKE UPDATE (rol_en_empresa) ON public.cuentas_proveedor FROM authenticated, anon;
+
+-- (a.2) Cerrar la PUERTA LATERAL de los RPC legados para FARMACIA: ambos son
+-- admin-only y usan una lista de roles hardcodeada (no-farmacia), pero un admin
+-- de farmacia podría usarlos para fijar roles saltándose la jerarquía data-driven.
+-- Para tipo='farmacia' obligan a usar asignar_rol_miembro. Laboratorio/visitador
+-- (su catálogo vive en permisos.ts) quedan INTACTOS.
+CREATE OR REPLACE FUNCTION public.cambiar_rol_proveedor(p_cuenta_id uuid, p_rol text)
+RETURNS void LANGUAGE plpgsql SECURITY DEFINER SET search_path TO 'public'
+AS $function$
+DECLARE
+  v_caller_empresa uuid; v_caller_rol text; v_caller_tipo text; v_target_empresa uuid;
+BEGIN
+  SELECT cp.empresa_id, cp.rol_en_empresa, e.tipo
+    INTO v_caller_empresa, v_caller_rol, v_caller_tipo
+  FROM cuentas_proveedor cp JOIN empresas_proveedoras e ON e.id = cp.empresa_id
+  WHERE cp.id = auth.uid();
+
+  -- Camino único para farmacia: la jerarquía data-driven la impone asignar_rol_miembro
+  IF v_caller_tipo = 'farmacia' THEN
+    RAISE EXCEPTION 'En farmacia los roles se cambian con asignar_rol_miembro (jerarquía data-driven)';
+  END IF;
+
+  IF v_caller_rol IS DISTINCT FROM 'admin' THEN
+    RAISE EXCEPTION 'No autorizado: solo un administrador puede cambiar roles';
+  END IF;
+  IF p_rol NOT IN ('admin','supervisor','visitador_medico','catalogo','marketing','finanzas','lectura') THEN
+    RAISE EXCEPTION 'Rol inválido: %', p_rol;
+  END IF;
+  SELECT empresa_id INTO v_target_empresa FROM cuentas_proveedor WHERE id = p_cuenta_id;
+  IF v_target_empresa IS NULL THEN RAISE EXCEPTION 'La cuenta no existe'; END IF;
+  IF v_target_empresa IS DISTINCT FROM v_caller_empresa THEN
+    RAISE EXCEPTION 'La cuenta no pertenece a tu empresa';
+  END IF;
+  IF p_cuenta_id = auth.uid() AND p_rol <> 'admin'
+     AND (SELECT count(*) FROM cuentas_proveedor
+          WHERE empresa_id = v_caller_empresa AND rol_en_empresa = 'admin' AND activo = true) <= 1 THEN
+    RAISE EXCEPTION 'No puedes quitarte el rol de administrador: la empresa quedaría sin administradores';
+  END IF;
+  UPDATE cuentas_proveedor SET rol_en_empresa = p_rol, updated_at = now() WHERE id = p_cuenta_id;
+END;
+$function$;
+
+CREATE OR REPLACE FUNCTION public.invitar_miembro_proveedor(p_email text, p_nombre text, p_rol text, p_telefono text DEFAULT NULL::text)
+RETURNS uuid LANGUAGE plpgsql SECURITY DEFINER SET search_path TO 'public'
+AS $function$
+DECLARE
+  v_empresa_id uuid; v_caller_rol text; v_caller_tipo text; v_token uuid;
+BEGIN
+  SELECT cp.empresa_id, cp.rol_en_empresa, e.tipo
+    INTO v_empresa_id, v_caller_rol, v_caller_tipo
+  FROM cuentas_proveedor cp JOIN empresas_proveedoras e ON e.id = cp.empresa_id
+  WHERE cp.id = auth.uid();
+
+  -- Farmacia: el alta/rol pasa por el flujo data-driven, no por esta invitación legada
+  IF v_caller_tipo = 'farmacia' THEN
+    RAISE EXCEPTION 'En farmacia el alta de personal usa el flujo data-driven (no esta invitación legada)';
+  END IF;
+
+  IF v_caller_rol IS DISTINCT FROM 'admin' THEN
+    RAISE EXCEPTION 'No autorizado: solo un administrador puede invitar miembros';
+  END IF;
+  IF p_rol NOT IN ('admin','supervisor','visitador_medico','catalogo','marketing','finanzas','lectura') THEN
+    RAISE EXCEPTION 'Rol inválido: %', p_rol;
+  END IF;
+  IF p_email IS NULL OR length(trim(p_email)) = 0 THEN
+    RAISE EXCEPTION 'El email es obligatorio';
+  END IF;
+  INSERT INTO invitaciones_visitador (empresa_id, email, nombre_completo, telefono, rol, estado, expires_at)
+  VALUES (v_empresa_id, lower(trim(p_email)), p_nombre, p_telefono, p_rol, 'pendiente', now() + interval '7 days')
+  RETURNING token INTO v_token;
+  RETURN v_token;
+END;
+$function$;
+
+-- Nota (Frente B): el alta de personal de FARMACIA (invitación + registro con rol
+-- data-driven) se construirá en el portal /farmacia/*; la edge function
+-- invitar-visitador y registrar_visitador_desde_invitacion siguen sirviendo al
+-- flujo de visitadores (no fijan roles de farmacia; visitador_medico no tiene
+-- permisos de farmacia). Pendiente anotado, no es vía de escalada.
