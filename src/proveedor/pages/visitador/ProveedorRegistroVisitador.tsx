@@ -6,6 +6,7 @@ import { Label } from '@/components/ui/label'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { supabase } from '@/lib/supabase'
 import { etiquetaRol } from '@/proveedor/lib/permisos'
+import { guardarTokenInvitacion, aceptarInvitacionPendiente } from '@/lib/invitacionProveedor'
 import { toast } from 'sonner'
 import { Loader2, UserPlus, AlertCircle, CheckCircle } from 'lucide-react'
 
@@ -91,26 +92,24 @@ export default function ProveedorRegistroVisitador() {
         return
       }
 
-      // 2. Completar registro como visitador usando la RPC
-      const { data: empresaId, error: rpcError } = await supabase.rpc('registrar_visitador_desde_invitacion', {
-        p_token: token,
-        p_user_id: authData.user.id,
-        p_email: invitacion.email,
-        p_nombre_completo: invitacion.nombre_completo,
-        p_telefono: invitacion.telefono,
-      })
+      // 2. La aceptación corre AUTENTICADA (aceptar_invitacion_proveedor ata la
+      //    membresía a auth.uid() + email verificado). Persistimos el token para
+      //    aceptarlo tras el login. Si signUp ya devolvió sesión (Confirm email OFF),
+      //    intentamos aceptar de una vez; si no, el usuario confirma email e inicia
+      //    sesión, y la aceptación ocurre en el login.
+      guardarTokenInvitacion(token as string)
 
-      if (rpcError) {
-        console.error('Error RPC registrar_visitador_desde_invitacion:', rpcError)
-        // Si la RPC falló, intentar limpiar
-        await supabase.auth.signOut()
-        toast.error(`Error al completar el registro: ${rpcError.message}`)
-        setRegistrando(false)
-        return
+      if (authData.session) {
+        const ok = await aceptarInvitacionPendiente()
+        if (!ok) {
+          toast.error('Crea la sesión e inténtalo: confirma tu email e inicia sesión para activar tu cuenta.')
+          setRegistrando(false)
+          return
+        }
       }
 
       setRegistrado(true)
-      toast.success('¡Registro completado! Ahora puedes iniciar sesión.')
+      toast.success('¡Cuenta creada! Confirma tu email e inicia sesión para activar tu acceso.')
     } catch (err: any) {
       console.error('Error en registro:', err)
       toast.error(err.message || 'Error al registrarse')

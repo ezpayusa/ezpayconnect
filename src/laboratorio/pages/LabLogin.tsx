@@ -6,6 +6,7 @@ import { Label } from '@/components/ui/label'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { useProveedorAuth } from '@/proveedor/hooks/useProveedorAuth'
 import { supabase } from '@/lib/supabase'
+import { aceptarInvitacionPendiente } from '@/lib/invitacionProveedor'
 import { FlaskConical, Loader2 } from 'lucide-react'
 import { toast } from 'sonner'
 
@@ -25,6 +26,7 @@ export default function LabLogin() {
       toast.error('Error al iniciar sesión', { description: error.message })
       return
     }
+    await aceptarInvitacionPendiente()
     // Enrutar según el tipo de empresa
     const { data: { user } } = await supabase.auth.getUser()
     const { data: cuenta } = await supabase

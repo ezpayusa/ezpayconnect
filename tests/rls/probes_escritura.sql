@@ -1480,6 +1480,219 @@ EXCEPTION WHEN undefined_function THEN PERFORM set_config('probe.p87','N/A (RPC 
   WHEN others THEN PERFORM set_config('probe.p87','REGRESIÓN ('||SQLSTATE||')',false);
 END $$;
 
+-- ============================================================
+-- INCREMENTO 2 · Alta por INVITACIÓN (invitar_miembro_farmacia + consumo) + puerta trasera
+-- ============================================================
+-- Captura (ELEVADO): dos invitados frescos (auth sin cuenta) con su EMAIL REAL de
+-- auth.users (el consumo ata contra ese email verificado), una empresa NO-farmacia,
+-- y tokens sembrados (expirado farmacia; lab con el email real de invitee2).
+SELECT set_config('role', 'none', true);
+SELECT set_config('probe.invitee',
+  (SELECT id::text FROM auth.users WHERE id NOT IN (SELECT id FROM public.cuentas_proveedor) ORDER BY id LIMIT 1), false);
+SELECT set_config('probe.invitee_email',
+  (SELECT email FROM auth.users WHERE id = current_setting('probe.invitee', true)::uuid), false);
+SELECT set_config('probe.invitee2',
+  (SELECT id::text FROM auth.users WHERE id NOT IN (SELECT id FROM public.cuentas_proveedor)
+     AND id <> current_setting('probe.invitee', true)::uuid ORDER BY id LIMIT 1), false);
+SELECT set_config('probe.invitee2_email',
+  (SELECT email FROM auth.users WHERE id = current_setting('probe.invitee2', true)::uuid), false);
+SELECT set_config('probe.lab_emp',
+  (SELECT id::text FROM public.empresas_proveedoras WHERE tipo <> 'farmacia' ORDER BY id LIMIT 1), false);
+DO $$ DECLARE t uuid; BEGIN  -- token EXPIRADO (farmacia)
+  INSERT INTO public.invitaciones_visitador (empresa_id, email, nombre_completo, rol, estado, expires_at)
+  VALUES (current_setting('probe.farm_emp', true)::uuid, current_setting('probe.invitee_email', true), 'Exp', 'cajero', 'pendiente', now() - interval '1 day')
+  RETURNING token INTO t;
+  PERFORM set_config('probe.exp_token', t::text, false);
+END $$;
+DO $$ DECLARE t uuid; BEGIN  -- token VISITADOR/LAB (empresa no-farmacia), email = invitee2 real
+  INSERT INTO public.invitaciones_visitador (empresa_id, email, nombre_completo, rol, estado, expires_at)
+  VALUES (current_setting('probe.lab_emp', true)::uuid, current_setting('probe.invitee2_email', true), 'Lab Inv', 'visitador_medico', 'pendiente', now() + interval '7 days')
+  RETURNING token INTO t;
+  PERFORM set_config('probe.lab_token', t::text, false);
+END $$;
+
+-- P91 — NEG: Gerente invita ADMIN → BLOQUEADO (nivel)
+SELECT set_config('request.jwt.claims', json_build_object('sub', current_setting('probe.fa_gerente', true), 'role','authenticated')::text, true);
+SELECT set_config('role', 'authenticated', true);
+DO $$ BEGIN
+  PERFORM public.invitar_miembro_farmacia('nuevo1@probe.test','Nuevo','admin',NULL);
+  PERFORM set_config('probe.p91','PERMITIDO (Gerente invitó Admin!)',false);
+EXCEPTION WHEN undefined_function THEN PERFORM set_config('probe.p91','N/A (RPC no existe aún)',false);
+  WHEN others THEN PERFORM set_config('probe.p91','BLOQUEADO ('||SQLSTATE||')',false);
+END $$;
+
+-- P92 — NEG: Gerente invita otro GERENTE → BLOQUEADO (mismo nivel)
+SELECT set_config('role', 'none', true);
+SELECT set_config('request.jwt.claims', json_build_object('sub', current_setting('probe.fa_gerente', true), 'role','authenticated')::text, true);
+SELECT set_config('role', 'authenticated', true);
+DO $$ BEGIN
+  PERFORM public.invitar_miembro_farmacia('nuevo2@probe.test','Nuevo','gerente_farmacia',NULL);
+  PERFORM set_config('probe.p92','PERMITIDO (Gerente invitó Gerente!)',false);
+EXCEPTION WHEN undefined_function THEN PERFORM set_config('probe.p92','N/A (RPC no existe aún)',false);
+  WHEN others THEN PERFORM set_config('probe.p92','BLOQUEADO ('||SQLSTATE||')',false);
+END $$;
+
+-- P93 — NEG: un operativo (Cajero) invita → BLOQUEADO (sin usuarios_roles)
+SELECT set_config('role', 'none', true);
+SELECT set_config('request.jwt.claims', json_build_object('sub', current_setting('probe.fa_cajero', true), 'role','authenticated')::text, true);
+SELECT set_config('role', 'authenticated', true);
+DO $$ BEGIN
+  PERFORM public.invitar_miembro_farmacia('nuevo3@probe.test','Nuevo','cajero',NULL);
+  PERFORM set_config('probe.p93','PERMITIDO (operativo invitó!)',false);
+EXCEPTION WHEN undefined_function THEN PERFORM set_config('probe.p93','N/A (RPC no existe aún)',false);
+  WHEN others THEN PERFORM set_config('probe.p93','BLOQUEADO ('||SQLSTATE||')',false);
+END $$;
+
+-- P94 — NEG: invitar un rol INEXISTENTE → BLOQUEADO
+SELECT set_config('role', 'none', true);
+SELECT set_config('request.jwt.claims', json_build_object('sub', current_setting('probe.fa_gerente', true), 'role','authenticated')::text, true);
+SELECT set_config('role', 'authenticated', true);
+DO $$ BEGIN
+  PERFORM public.invitar_miembro_farmacia('nuevo4@probe.test','Nuevo','rol_fantasma',NULL);
+  PERFORM set_config('probe.p94','PERMITIDO (invitó rol inexistente!)',false);
+EXCEPTION WHEN undefined_function THEN PERFORM set_config('probe.p94','N/A (RPC no existe aún)',false);
+  WHEN others THEN PERFORM set_config('probe.p94','BLOQUEADO ('||SQLSTATE||')',false);
+END $$;
+
+-- P95 — POS: Gerente invita un CAJERO (inferior) → OK (captura el token)
+SELECT set_config('role', 'none', true);
+SELECT set_config('request.jwt.claims', json_build_object('sub', current_setting('probe.fa_gerente', true), 'role','authenticated')::text, true);
+SELECT set_config('role', 'authenticated', true);
+DO $$ DECLARE v_tok uuid; BEGIN
+  v_tok := public.invitar_miembro_farmacia(current_setting('probe.invitee_email', true),'Invitado','cajero',NULL);
+  PERFORM set_config('probe.inv_token', v_tok::text, false);
+  PERFORM set_config('probe.p95','OK (Gerente invitó Cajero)',false);
+EXCEPTION WHEN undefined_function THEN PERFORM set_config('probe.p95','N/A (RPC no existe aún)',false);
+  WHEN others THEN PERFORM set_config('probe.p95','REGRESIÓN ('||SQLSTATE||')',false);
+END $$;
+
+-- P96 — PUERTA TRASERA: INSERT directo de invitación en farmacia → BLOQUEADO
+SELECT set_config('role', 'none', true);
+SELECT set_config('request.jwt.claims', json_build_object('sub', current_setting('probe.fa_admin', true), 'role','authenticated')::text, true);
+SELECT set_config('role', 'authenticated', true);
+DO $$ BEGIN
+  INSERT INTO public.invitaciones_visitador (empresa_id, email, nombre_completo, rol, estado, expires_at)
+  VALUES (current_setting('probe.farm_emp', true)::uuid, 'directo@probe.test', 'Directo', 'admin', 'pendiente', now() + interval '7 days');
+  PERFORM set_config('probe.p96','PERMITIDO (INSERT directo de invitación!)',false);
+EXCEPTION WHEN insufficient_privilege THEN PERFORM set_config('probe.p96','BLOQUEADO (42501)',false);
+  WHEN others THEN PERFORM set_config('probe.p96','BLOQUEADO ('||SQLSTATE||')',false);
+END $$;
+
+-- P97 — POS + PT: el invitado (AUTENTICADO, email verificado) acepta el token →
+--   membresía con id=auth.uid(), rol FIJADO (cajero) y empresa del token. Sin
+--   parámetros de rol/empresa/user_id → no manipulable.
+SELECT set_config('role', 'none', true);
+SELECT set_config('request.jwt.claims', json_build_object('sub', current_setting('probe.invitee', true), 'role','authenticated')::text, true);
+SELECT set_config('role', 'authenticated', true);
+DO $$ BEGIN
+  IF NULLIF(current_setting('probe.inv_token', true),'') IS NULL THEN PERFORM set_config('probe.p97','N/A (sin token: invitar no existe)',false);
+  ELSE
+    PERFORM public.aceptar_invitacion_proveedor(current_setting('probe.inv_token', true)::uuid);
+    PERFORM set_config('probe.p97_done','1',false);
+  END IF;
+EXCEPTION WHEN undefined_function THEN PERFORM set_config('probe.p97','N/A (RPC no existe)',false);
+  WHEN others THEN PERFORM set_config('probe.p97','REGRESIÓN ('||SQLSTATE||')',false);
+END $$;
+SELECT set_config('role', 'none', true);
+DO $$ DECLARE v_rol text; v_emp uuid; BEGIN
+  IF current_setting('probe.p97_done', true) = '1' THEN
+    SELECT rol_en_empresa, empresa_id INTO v_rol, v_emp FROM public.cuentas_proveedor
+      WHERE id = current_setting('probe.invitee', true)::uuid;
+    IF v_rol = 'cajero' AND v_emp = current_setting('probe.farm_emp', true)::uuid THEN
+      PERFORM set_config('probe.p97','OK (alta con rol FIJADO cajero en empresa del token)',false);
+    ELSE PERFORM set_config('probe.p97','REGRESIÓN (rol/empresa efectivos: '||COALESCE(v_rol,'?')||'/'||COALESCE(v_emp::text,'?')||')',false); END IF;
+  ELSIF NULLIF(current_setting('probe.p97', true),'') IS NULL THEN PERFORM set_config('probe.p97','REGRESIÓN (no consumió)',false);
+  END IF;
+END $$;
+
+-- P98 — PT: re-aceptar un token YA USADO → BLOQUEADO (un solo uso)
+SELECT set_config('request.jwt.claims', json_build_object('sub', current_setting('probe.invitee', true), 'role','authenticated')::text, true);
+SELECT set_config('role', 'authenticated', true);
+DO $$ BEGIN
+  IF NULLIF(current_setting('probe.inv_token', true),'') IS NULL THEN PERFORM set_config('probe.p98','N/A (sin token)',false);
+  ELSE
+    PERFORM public.aceptar_invitacion_proveedor(current_setting('probe.inv_token', true)::uuid);
+    PERFORM set_config('probe.p98','PERMITIDO (reusó token usado!)',false);
+  END IF;
+EXCEPTION WHEN undefined_function THEN PERFORM set_config('probe.p98','N/A (RPC no existe)',false);
+  WHEN others THEN PERFORM set_config('probe.p98','BLOQUEADO ('||SQLSTATE||')',false);
+END $$;
+
+-- P99 — PT: aceptar un token EXPIRADO → BLOQUEADO
+SELECT set_config('role', 'none', true);
+SELECT set_config('request.jwt.claims', json_build_object('sub', current_setting('probe.invitee', true), 'role','authenticated')::text, true);
+SELECT set_config('role', 'authenticated', true);
+DO $$ BEGIN
+  PERFORM public.aceptar_invitacion_proveedor(current_setting('probe.exp_token', true)::uuid);
+  PERFORM set_config('probe.p99','PERMITIDO (consumió token expirado!)',false);
+EXCEPTION WHEN undefined_function THEN PERFORM set_config('probe.p99','N/A (RPC no existe)',false);
+  WHEN others THEN PERFORM set_config('probe.p99','BLOQUEADO ('||SQLSTATE||')',false);
+END $$;
+
+-- ---- Binding contra el email AUTENTICADO (PT) + no-regresión visitador/lab ----
+-- setup P100: el Gerente crea una invitación de farmacia para invitee_email
+SELECT set_config('role', 'none', true);
+SELECT set_config('request.jwt.claims', json_build_object('sub', current_setting('probe.fa_gerente', true), 'role','authenticated')::text, true);
+SELECT set_config('role', 'authenticated', true);
+DO $$ DECLARE v_tok uuid; BEGIN
+  v_tok := public.invitar_miembro_farmacia(current_setting('probe.invitee_email', true),'Bind','cajero',NULL);
+  PERFORM set_config('probe.bind_token', v_tok::text, false);
+EXCEPTION WHEN others THEN PERFORM set_config('probe.bind_token','',false);
+END $$;
+
+-- P100 — PT: OTRO usuario autenticado (email ≠ invitación) acepta el token → BLOQUEADO
+--   (binding contra el email verificado del autenticado, no contra un parámetro)
+SELECT set_config('role', 'none', true);
+SELECT set_config('request.jwt.claims', json_build_object('sub', current_setting('probe.invitee2', true), 'role','authenticated')::text, true);
+SELECT set_config('role', 'authenticated', true);
+DO $$ BEGIN
+  IF NULLIF(current_setting('probe.bind_token', true),'') IS NULL THEN PERFORM set_config('probe.p100','N/A (sin token; invitar no existe)',false);
+  ELSE
+    PERFORM public.aceptar_invitacion_proveedor(current_setting('probe.bind_token', true)::uuid);
+    PERFORM set_config('probe.p100','PERMITIDO (otro autenticado consumió token ajeno!)',false);
+  END IF;
+EXCEPTION WHEN undefined_function THEN PERFORM set_config('probe.p100','N/A (RPC no existe)',false);
+  WHEN others THEN PERFORM set_config('probe.p100','BLOQUEADO ('||SQLSTATE||')',false);
+END $$;
+
+-- P101 — NO-REGRESIÓN: invitado correcto (autenticado, email coincide) acepta una
+--   invitación VISITADOR/LAB e2e → OK (empresa+rol del token).
+SELECT set_config('role', 'none', true);
+SELECT set_config('request.jwt.claims', json_build_object('sub', current_setting('probe.invitee2', true), 'role','authenticated')::text, true);
+SELECT set_config('role', 'authenticated', true);
+DO $$ BEGIN
+  PERFORM public.aceptar_invitacion_proveedor(current_setting('probe.lab_token', true)::uuid);
+  PERFORM set_config('probe.p101_done','1',false);
+EXCEPTION WHEN undefined_function THEN PERFORM set_config('probe.p101','N/A (RPC no existe)',false);
+  WHEN others THEN PERFORM set_config('probe.p101','REGRESIÓN ('||SQLSTATE||')',false);
+END $$;
+SELECT set_config('role', 'none', true);
+DO $$ DECLARE v_emp uuid; v_rol text; BEGIN
+  IF current_setting('probe.p101_done', true) = '1' THEN
+    SELECT empresa_id, rol_en_empresa INTO v_emp, v_rol FROM public.cuentas_proveedor
+      WHERE id = current_setting('probe.invitee2', true)::uuid;
+    IF v_emp = current_setting('probe.lab_emp', true)::uuid AND v_rol = 'visitador_medico'
+      THEN PERFORM set_config('probe.p101','OK (consumo visitador/lab e2e: empresa+rol del token)',false);
+      ELSE PERFORM set_config('probe.p101','REGRESIÓN (efectivo '||COALESCE(v_emp::text,'?')||'/'||COALESCE(v_rol,'?')||')',false); END IF;
+  ELSIF NULLIF(current_setting('probe.p101', true),'') IS NULL THEN PERFORM set_config('probe.p101','REGRESIÓN (no consumió)',false);
+  END IF;
+END $$;
+
+-- P102 — PT: el camino viejo (registrar_visitador_desde_invitacion, anon, user_id
+--   arbitrario) debe estar CERRADO → invocarlo como anon = función inexistente.
+SELECT set_config('role', 'none', true);
+SELECT set_config('request.jwt.claims', NULL, true);
+SELECT set_config('role', 'anon', true);
+DO $$ BEGIN
+  PERFORM public.registrar_visitador_desde_invitacion(
+    current_setting('probe.exp_token', true)::uuid, current_setting('probe.invitee', true)::uuid, 'z@probe.test','Z',NULL);
+  PERFORM set_config('probe.p102','PERMITIDO (camino viejo reachable por anon!)',false);
+EXCEPTION
+  WHEN undefined_function THEN PERFORM set_config('probe.p102','BLOQUEADO (función inexistente)',false);
+  WHEN insufficient_privilege THEN PERFORM set_config('probe.p102','BLOQUEADO (42501)',false);
+  WHEN others THEN PERFORM set_config('probe.p102','PERMITIDO? (alcanzó el cuerpo: '||SQLSTATE||')',false);
+END $$;
+
 -- ===== Veredictos como result set =====
 SELECT 'P1_anon_insert_citas'              AS probe, current_setting('probe.p1', true)  AS verdict, 'BLOQUEADO' AS esperado_post_fix
 UNION ALL SELECT 'P2_medico_cancela_ajena_rpc',         current_setting('probe.p2', true),  'BLOQUEADO'
@@ -1570,6 +1783,18 @@ UNION ALL SELECT 'P86_ultimo_admin_protegido',          current_setting('probe.p
 UNION ALL SELECT 'P87_alta_gerente_cajero',             current_setting('probe.p87', true), 'OK'
 UNION ALL SELECT 'P88_alta_gerente_admin_bloqueada',    current_setting('probe.p88', true), 'BLOQUEADO'
 UNION ALL SELECT 'P89_alta_empresa_ajena_bloqueada',    current_setting('probe.p89', true), 'BLOQUEADO'
-UNION ALL SELECT 'P90_alta_rol_inexistente_bloqueada',  current_setting('probe.p90', true), 'BLOQUEADO';
+UNION ALL SELECT 'P90_alta_rol_inexistente_bloqueada',  current_setting('probe.p90', true), 'BLOQUEADO'
+UNION ALL SELECT 'P91_gerente_invita_admin',            current_setting('probe.p91', true), 'BLOQUEADO'
+UNION ALL SELECT 'P92_gerente_invita_gerente',          current_setting('probe.p92', true), 'BLOQUEADO'
+UNION ALL SELECT 'P93_operativo_invita',                current_setting('probe.p93', true), 'BLOQUEADO'
+UNION ALL SELECT 'P94_invita_rol_inexistente',          current_setting('probe.p94', true), 'BLOQUEADO'
+UNION ALL SELECT 'P95_gerente_invita_cajero',           current_setting('probe.p95', true), 'OK'
+UNION ALL SELECT 'P96_insert_directo_invitacion',       current_setting('probe.p96', true), 'BLOQUEADO'
+UNION ALL SELECT 'P97_consume_rol_fijado',              current_setting('probe.p97', true), 'OK'
+UNION ALL SELECT 'P98_reconsume_token_usado',           current_setting('probe.p98', true), 'BLOQUEADO'
+UNION ALL SELECT 'P99_consume_token_expirado',          current_setting('probe.p99', true), 'BLOQUEADO'
+UNION ALL SELECT 'P100_consume_email_distinto',         current_setting('probe.p100', true), 'BLOQUEADO'
+UNION ALL SELECT 'P101_consume_visitador_lab_e2e',      current_setting('probe.p101', true), 'OK'
+UNION ALL SELECT 'P102_camino_viejo_cerrado',           current_setting('probe.p102', true), 'BLOQUEADO';
 
 ROLLBACK;  -- nada de lo anterior se persiste

@@ -5,8 +5,9 @@ import { useFarmaciaPermisos } from '@/farmacia/hooks/useFarmaciaPermisos'
 import { Card, CardContent } from '@/components/ui/card'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
+import { Input } from '@/components/ui/input'
 import { toast } from 'sonner'
-import { ShieldCheck, Loader2, AlertTriangle, Users, Info } from 'lucide-react'
+import { ShieldCheck, Loader2, AlertTriangle, Users, UserPlus, Copy } from 'lucide-react'
 
 interface Miembro {
   id: string
@@ -22,6 +23,12 @@ export default function FarmaciaPersonalPage() {
   const [miembros, setMiembros] = useState<Miembro[]>([])
   const [loading, setLoading] = useState(true)
   const [guardando, setGuardando] = useState<string | null>(null)
+  // Invitar (alta): crea la invitación; el invitado la acepta tras confirmar email + login.
+  const [invNombre, setInvNombre] = useState('')
+  const [invEmail, setInvEmail] = useState('')
+  const [invRol, setInvRol] = useState('')
+  const [invitando, setInvitando] = useState(false)
+  const [linkInvitacion, setLinkInvitacion] = useState<string | null>(null)
 
   const etiqueta = (rol: string) => roles.find((r) => r.rol === rol)?.label ?? rol
 
@@ -54,6 +61,27 @@ export default function FarmaciaPersonalPage() {
     if (error) { toast.error(error.message || 'No se pudo cambiar el rol'); return }
     toast.success('Rol actualizado')
     cargar()
+  }
+
+  // === CABLEADO DE SEGURIDAD: alta vía invitación (invitar_miembro_farmacia) ===
+  // El RPC fija empresa (la del invitador) y rol, e impone la jerarquía. El alta
+  // efectiva la hace el invitado al aceptar autenticado (aceptar_invitacion_proveedor).
+  const invitar = async () => {
+    if (!invNombre.trim() || !invEmail.trim() || !invRol) {
+      toast.error('Completa nombre, email y rol'); return
+    }
+    setInvitando(true)
+    const { data, error } = await supabase.rpc('invitar_miembro_farmacia', {
+      p_email: invEmail.trim(),
+      p_nombre: invNombre.trim(),
+      p_nuevo_rol: invRol,
+      p_telefono: null,
+    })
+    setInvitando(false)
+    if (error) { toast.error(error.message || 'No se pudo crear la invitación'); return }
+    setLinkInvitacion(`${window.location.origin}/proveedor/registro-visitador?token=${data}`)
+    toast.success('Invitación creada. Comparte el link con la persona.')
+    setInvNombre(''); setInvEmail(''); setInvRol('')
   }
 
   if (!permLoading && !tienePermiso('usuarios_roles')) {
@@ -134,19 +162,35 @@ export default function FarmaciaPersonalPage() {
         </div>
       )}
 
-      {/* Alta de personal nuevo — pendiente del flujo de invitación (backend) */}
-      <Card className="bg-amber-50 border-amber-200">
-        <CardContent className="p-4 flex gap-3">
-          <Info className="h-5 w-5 text-amber-600 shrink-0 mt-0.5" />
-          <div className="text-sm text-amber-900">
-            <p className="font-semibold">Alta de personal nuevo</p>
-            <p className="mt-1">
-              El RPC <code>alta_miembro_farmacia</code> vincula a un usuario que YA tiene cuenta en la
-              plataforma. El alta de alguien <em>nuevo</em> (invitación por email → registro) requiere un
-              flujo de invitación propio de farmacia, pendiente de construir en backend. Por ahora, el
-              cambio de rol de miembros existentes ya funciona arriba.
-            </p>
+      {/* Alta de personal nuevo por invitación */}
+      <Card>
+        <CardContent className="p-4 space-y-3">
+          <p className="text-sm font-semibold flex items-center gap-2"><UserPlus className="w-4 h-4" /> Invitar personal</p>
+          <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+            <Input placeholder="Nombre completo" value={invNombre} onChange={(e) => setInvNombre(e.target.value)} />
+            <Input type="email" placeholder="Email" value={invEmail} onChange={(e) => setInvEmail(e.target.value)} />
+            <select className="h-10 rounded-md border border-input bg-background px-3 text-sm" value={invRol} onChange={(e) => setInvRol(e.target.value)}>
+              <option value="">Rol…</option>
+              {rolesAsignables.map((r) => <option key={r.rol} value={r.rol}>{r.label ?? r.rol}</option>)}
+            </select>
           </div>
+          <Button onClick={invitar} disabled={invitando} className="bg-[#B45309] hover:bg-[#92400e]">
+            {invitando ? <Loader2 className="h-4 w-4 animate-spin mr-2" /> : <UserPlus className="h-4 w-4 mr-2" />}
+            Generar link de invitación
+          </Button>
+          <p className="text-xs text-muted-foreground">
+            La persona abre el link, crea su cuenta con ESE email, lo confirma e inicia sesión: ahí se
+            activa con el rol asignado. El rol y la empresa quedan fijados; no los puede cambiar.
+          </p>
+          {linkInvitacion && (
+            <div className="bg-amber-50 border border-amber-200 rounded-lg p-3 space-y-2">
+              <p className="text-sm font-medium text-amber-900">¡Invitación creada! Comparte este link:</p>
+              <p className="text-xs break-all bg-white rounded p-2 border">{linkInvitacion}</p>
+              <Button size="sm" variant="outline" onClick={() => { navigator.clipboard.writeText(linkInvitacion); toast.success('Link copiado') }}>
+                <Copy className="h-3.5 w-3.5 mr-1" /> Copiar link
+              </Button>
+            </div>
+          )}
         </CardContent>
       </Card>
     </div>

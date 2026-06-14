@@ -6,6 +6,7 @@ import { Label } from '@/components/ui/label'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { useProveedorAuth } from '@/proveedor/hooks/useProveedorAuth'
 import { supabase } from '@/lib/supabase'
+import { aceptarInvitacionPendiente } from '@/lib/invitacionProveedor'
 import { MapPin, Loader2 } from 'lucide-react'
 import { toast } from 'sonner'
 
@@ -25,6 +26,8 @@ export default function ProveedorLogin() {
       toast.error('Error al iniciar sesión', { description: error.message })
       return
     }
+    // Si venía de una invitación, aceptarla ahora (autenticado) antes de rutear.
+    await aceptarInvitacionPendiente()
     // Un laboratorio clínico tiene su propio portal: lo enviamos allí.
     const { data: { user } } = await supabase.auth.getUser()
     const { data: cuenta } = await supabase
