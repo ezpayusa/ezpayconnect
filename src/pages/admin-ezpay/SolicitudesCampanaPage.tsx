@@ -140,45 +140,25 @@ export default function SolicitudesCampanaPage() {
 
     setProcesando(true)
 
-    // 1. Insertar en campanas_publicitarias
-    const { error: insertError } = await supabase.from('campanas_publicitarias').insert({
-      titulo: solicitud.titulo,
-      descripcion: solicitud.descripcion,
-      tipo: solicitud.tipo,
-      imagen_url: solicitud.imagen_url,
-      link_url: solicitud.link_url,
-      fecha_inicio: solicitud.fecha_inicio,
-      fecha_fin: solicitud.fecha_fin,
-      activa: true,
-      condicion_filtro: solicitud.condicion_filtro,
-      genero_filtro: solicitud.genero_filtro,
-      edad_min: solicitud.edad_min,
-      edad_max: solicitud.edad_max,
+    // Publicar vía RPC SECURITY DEFINER (revalida super_admin server-side):
+    // inserta la campaña + marca la solicitud 'publicada' atómicamente.
+    const { error: rpcError } = await supabase.rpc('aprobar_solicitud_campana', {
+      p_solicitud_id: solicitud.id,
+      p_notas_admin: notasAdmin || null,
     })
 
-    if (insertError) {
+    if (rpcError) {
       toast.error('Error publicando campaña')
-      console.error(insertError)
+      console.error(rpcError)
       setProcesando(false)
       return
     }
 
-    // 2. Actualizar solicitud
-    const { error: updateError } = await supabase
-      .from('solicitudes_campana')
-      .update({ estado: 'publicada', notas_admin: notasAdmin || null })
-      .eq('id', solicitud.id)
-
-    if (updateError) {
-      toast.error('Error actualizando solicitud')
-      console.error(updateError)
-    } else {
-      toast.success('Campaña aprobada y publicada')
-      await notificarProveedor(solicitud, 'aprobada')
-      setSolicitudActiva(null)
-      setNotasAdmin('')
-      fetchSolicitudes()
-    }
+    toast.success('Campaña aprobada y publicada')
+    await notificarProveedor(solicitud, 'aprobada')
+    setSolicitudActiva(null)
+    setNotasAdmin('')
+    fetchSolicitudes()
     setProcesando(false)
   }
 

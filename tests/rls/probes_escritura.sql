@@ -931,6 +931,173 @@ DO $$ DECLARE n INT; BEGIN
 EXCEPTION WHEN others THEN PERFORM set_config('probe.p54','REGRESIÓN ('||SQLSTATE||')',false);
 END $$;
 
+-- ============================================================
+-- INCREMENTO 0 (paneles) · cerrar huecos planes_asignaciones + campanas + tipo
+-- ============================================================
+-- Captura (ELEVADO) de actores reales.
+SELECT set_config('role', 'none', true);
+SELECT set_config('probe.asig_emp',
+  (SELECT id::text FROM public.planes_asignaciones WHERE empresa_id IS NOT NULL ORDER BY id LIMIT 1), false);
+SELECT set_config('probe.asig_emp_owner',
+  (SELECT cp.id::text FROM public.cuentas_proveedor cp WHERE cp.activo
+     AND cp.empresa_id = (SELECT empresa_id FROM public.planes_asignaciones WHERE empresa_id IS NOT NULL ORDER BY id LIMIT 1)
+     ORDER BY cp.id LIMIT 1), false);
+SELECT set_config('probe.asig_emp_ajeno',
+  (SELECT cp.id::text FROM public.cuentas_proveedor cp WHERE cp.activo
+     AND cp.empresa_id <> (SELECT empresa_id FROM public.planes_asignaciones WHERE empresa_id IS NOT NULL ORDER BY id LIMIT 1)
+     ORDER BY cp.id LIMIT 1), false);
+SELECT set_config('probe.asig_med',
+  (SELECT id::text FROM public.planes_asignaciones WHERE medico_id IS NOT NULL ORDER BY id LIMIT 1), false);
+SELECT set_config('probe.asig_med_owner',
+  (SELECT medico_id::text FROM public.planes_asignaciones WHERE medico_id IS NOT NULL ORDER BY id LIMIT 1), false);
+SELECT set_config('probe.solicitud',
+  (SELECT id::text FROM public.solicitudes_campana ORDER BY id LIMIT 1), false);
+SELECT set_config('probe.campana',
+  (SELECT id::text FROM public.campanas_publicitarias ORDER BY id LIMIT 1), false);
+SELECT set_config('probe.emp_target',
+  (SELECT id::text FROM public.empresas_proveedoras ORDER BY id LIMIT 1), false);
+SELECT set_config('probe.forge_emp',  -- una empresa ajena al médico, para intentar forjarla
+  (SELECT empresa_id::text FROM public.planes_asignaciones WHERE empresa_id IS NOT NULL ORDER BY id LIMIT 1), false);
+
+-- P55 — NEG: un proveedor AJENO NO ve la asignación de otra empresa
+SELECT set_config('request.jwt.claims',
+  json_build_object('sub', current_setting('probe.asig_emp_ajeno', true), 'role','authenticated')::text, true);
+SELECT set_config('role', 'authenticated', true);
+DO $$ DECLARE n INT; BEGIN
+  SELECT count(*) INTO n FROM public.planes_asignaciones WHERE id = current_setting('probe.asig_emp', true)::uuid;
+  IF n > 0 THEN PERFORM set_config('probe.p55','PERMITIDO (ve asignación ajena)',false);
+  ELSE PERFORM set_config('probe.p55','BLOQUEADO (0)',false); END IF;
+END $$;
+
+-- P56 — NEG: un proveedor AJENO NO actualiza la asignación ajena
+SELECT set_config('role', 'none', true);
+SELECT set_config('request.jwt.claims',
+  json_build_object('sub', current_setting('probe.asig_emp_ajeno', true), 'role','authenticated')::text, true);
+SELECT set_config('role', 'authenticated', true);
+DO $$ DECLARE n INT; BEGIN
+  UPDATE public.planes_asignaciones SET visitas_usadas = COALESCE(visitas_usadas,0)
+    WHERE id = current_setting('probe.asig_emp', true)::uuid;
+  GET DIAGNOSTICS n = ROW_COUNT;
+  IF n > 0 THEN PERFORM set_config('probe.p56','PERMITIDO (actualizó '||n||' fila ajena)',false);
+  ELSE PERFORM set_config('probe.p56','BLOQUEADO (0 filas)',false); END IF;
+EXCEPTION WHEN insufficient_privilege THEN PERFORM set_config('probe.p56','BLOQUEADO (42501)',false);
+  WHEN others THEN PERFORM set_config('probe.p56','BLOQUEADO ('||SQLSTATE||')',false);
+END $$;
+
+-- P57 — NEG: un no-super_admin NO inserta en campanas_publicitarias
+SELECT set_config('role', 'none', true);
+SELECT set_config('request.jwt.claims',
+  json_build_object('sub', current_setting('probe.np_medico', true), 'role','authenticated')::text, true);
+SELECT set_config('role', 'authenticated', true);
+DO $$ BEGIN
+  INSERT INTO public.campanas_publicitarias (titulo, descripcion, tipo, activa, fecha_inicio, fecha_fin)
+  VALUES ('__probe','__probe','general', true, CURRENT_DATE, CURRENT_DATE);
+  PERFORM set_config('probe.p57','PERMITIDO (no-super insertó campaña)',false);
+EXCEPTION WHEN insufficient_privilege THEN PERFORM set_config('probe.p57','BLOQUEADO (42501)',false);
+  WHEN others THEN PERFORM set_config('probe.p57','PERMITIDO? (RLS dejó pasar: '||SQLSTATE||')',false);
+END $$;
+
+-- P58 — NEG: un no-super_admin NO borra una campaña
+SELECT set_config('role', 'none', true);
+SELECT set_config('request.jwt.claims',
+  json_build_object('sub', current_setting('probe.np_medico', true), 'role','authenticated')::text, true);
+SELECT set_config('role', 'authenticated', true);
+DO $$ DECLARE n INT; BEGIN
+  DELETE FROM public.campanas_publicitarias WHERE id = current_setting('probe.campana', true)::int;
+  GET DIAGNOSTICS n = ROW_COUNT;
+  IF n > 0 THEN PERFORM set_config('probe.p58','PERMITIDO (borró '||n||' campaña)',false);
+  ELSE PERFORM set_config('probe.p58','BLOQUEADO (0 filas)',false); END IF;
+EXCEPTION WHEN insufficient_privilege THEN PERFORM set_config('probe.p58','BLOQUEADO (42501)',false);
+  WHEN others THEN PERFORM set_config('probe.p58','BLOQUEADO ('||SQLSTATE||')',false);
+END $$;
+
+-- P59 — NEG: asignar un tipo FUERA del catálogo a empresas_proveedoras
+SELECT set_config('role', 'none', true);
+SELECT set_config('request.jwt.claims',
+  json_build_object('sub', current_setting('probe.sa', true), 'role','authenticated')::text, true);
+SELECT set_config('role', 'authenticated', true);
+DO $$ BEGIN
+  UPDATE public.empresas_proveedoras SET tipo = '__tipo_invalido'
+    WHERE id = current_setting('probe.emp_target', true)::uuid;
+  PERFORM set_config('probe.p59','PERMITIDO (asignó tipo fuera de catálogo)',false);
+EXCEPTION WHEN check_violation THEN PERFORM set_config('probe.p59','BLOQUEADO (CHECK: 23514)',false);
+  WHEN others THEN PERFORM set_config('probe.p59','BLOQUEADO ('||SQLSTATE||')',false);
+END $$;
+
+-- P60 — POS: el proveedor DUEÑO ve y gestiona SU asignación
+SELECT set_config('role', 'none', true);
+SELECT set_config('request.jwt.claims',
+  json_build_object('sub', current_setting('probe.asig_emp_owner', true), 'role','authenticated')::text, true);
+SELECT set_config('role', 'authenticated', true);
+DO $$ DECLARE n INT; v INT; BEGIN
+  SELECT count(*) INTO v FROM public.planes_asignaciones WHERE id = current_setting('probe.asig_emp', true)::uuid;
+  UPDATE public.planes_asignaciones SET visitas_usadas = COALESCE(visitas_usadas,0)
+    WHERE id = current_setting('probe.asig_emp', true)::uuid;
+  GET DIAGNOSTICS n = ROW_COUNT;
+  IF v > 0 AND n > 0 THEN PERFORM set_config('probe.p60','OK (ve y actualiza su asignación)',false);
+  ELSE PERFORM set_config('probe.p60','REGRESIÓN (ve='||v||' upd='||n||')',false); END IF;
+EXCEPTION WHEN others THEN PERFORM set_config('probe.p60','REGRESIÓN ('||SQLSTATE||')',false);
+END $$;
+
+-- P61 — POS: un MÉDICO real (rol=medico, sin empresa) SÍ crea SU fila legítima
+--   (medico_id=auth.uid(), empresa_id NULL). Truco 42501: 42501=RLS bloqueó;
+--   otro SQLSTATE (NOT NULL)=RLS permitió la fila.
+SELECT set_config('role', 'none', true);
+SELECT set_config('request.jwt.claims',
+  json_build_object('sub', current_setting('probe.np_medico', true), 'role','authenticated')::text, true);
+SELECT set_config('role', 'authenticated', true);
+DO $$ BEGIN
+  INSERT INTO public.planes_asignaciones (medico_id, empresa_id, estado)
+  VALUES (current_setting('probe.np_medico', true)::uuid, NULL, 'activo');
+  PERFORM set_config('probe.p61','OK (RLS permite su fila de médico)',false);
+EXCEPTION
+  WHEN insufficient_privilege THEN PERFORM set_config('probe.p61','REGRESIÓN (RLS bloqueó su fila: 42501)',false);
+  WHEN others THEN PERFORM set_config('probe.p61','OK (RLS permite; faltó dato: '||SQLSTATE||')',false);
+END $$;
+
+-- P62 — POS: super_admin publica una campaña vía RPC
+SELECT set_config('role', 'none', true);
+SELECT set_config('request.jwt.claims',
+  json_build_object('sub', current_setting('probe.sa', true), 'role','authenticated')::text, true);
+SELECT set_config('role', 'authenticated', true);
+DO $$ DECLARE v INT; BEGIN
+  v := public.aprobar_solicitud_campana(current_setting('probe.solicitud', true)::uuid, '__probe');
+  IF v IS NOT NULL THEN PERFORM set_config('probe.p62','OK (publicó campaña id '||v||')',false);
+  ELSE PERFORM set_config('probe.p62','REGRESIÓN (no devolvió id)',false); END IF;
+EXCEPTION
+  WHEN undefined_function THEN PERFORM set_config('probe.p62','N/A (RPC no existe aún)',false);
+  WHEN others THEN PERFORM set_config('probe.p62','REGRESIÓN ('||SQLSTATE||')',false);
+END $$;
+
+-- P63 — NEG: un no-super_admin NO puede aprobar vía RPC
+SELECT set_config('role', 'none', true);
+SELECT set_config('request.jwt.claims',
+  json_build_object('sub', current_setting('probe.np_medico', true), 'role','authenticated')::text, true);
+SELECT set_config('role', 'authenticated', true);
+DO $$ DECLARE v INT; BEGIN
+  v := public.aprobar_solicitud_campana(current_setting('probe.solicitud', true)::uuid, '__probe');
+  PERFORM set_config('probe.p63','PERMITIDO (no-super aprobó!)',false);
+EXCEPTION
+  WHEN undefined_function THEN PERFORM set_config('probe.p63','N/A (RPC no existe aún)',false);
+  WHEN others THEN PERFORM set_config('probe.p63','BLOQUEADO ('||SQLSTATE||')',false);
+END $$;
+
+-- P64 — NEG (semántica DUAL): un MÉDICO real NO puede forjar un empresa_id ajeno
+--   (medico_id=auth.uid() + empresa_id=ajeno). El WITH CHECK separado lo rechaza.
+--   42501 = RLS bloqueó (correcto); otro SQLSTATE = RLS dejó pasar (forja).
+SELECT set_config('role', 'none', true);
+SELECT set_config('request.jwt.claims',
+  json_build_object('sub', current_setting('probe.np_medico', true), 'role','authenticated')::text, true);
+SELECT set_config('role', 'authenticated', true);
+DO $$ BEGIN
+  INSERT INTO public.planes_asignaciones (medico_id, empresa_id, estado)
+  VALUES (current_setting('probe.np_medico', true)::uuid, current_setting('probe.forge_emp', true)::uuid, 'activo');
+  PERFORM set_config('probe.p64','PERMITIDO (médico forjó empresa_id ajeno)',false);
+EXCEPTION
+  WHEN insufficient_privilege THEN PERFORM set_config('probe.p64','BLOQUEADO (42501)',false);
+  WHEN others THEN PERFORM set_config('probe.p64','PERMITIDO? (RLS dejó pasar: '||SQLSTATE||')',false);
+END $$;
+
 -- ===== Veredictos como result set =====
 SELECT 'P1_anon_insert_citas'              AS probe, current_setting('probe.p1', true)  AS verdict, 'BLOQUEADO' AS esperado_post_fix
 UNION ALL SELECT 'P2_medico_cancela_ajena_rpc',         current_setting('probe.p2', true),  'BLOQUEADO'
@@ -985,6 +1152,16 @@ UNION ALL SELECT 'P50_superadmin_edita_farmacia',        current_setting('probe.
 UNION ALL SELECT 'P51_medico_no_edita_farmacia',         current_setting('probe.p51', true), 'BLOQUEADO'
 UNION ALL SELECT 'P52_superadmin_crea_reporte',          current_setting('probe.p52', true), 'OK'
 UNION ALL SELECT 'P53_medico_no_crea_reporte',           current_setting('probe.p53', true), 'BLOQUEADO'
-UNION ALL SELECT 'P54_superadmin_ve_reportes',           current_setting('probe.p54', true), 'OK';
+UNION ALL SELECT 'P54_superadmin_ve_reportes',           current_setting('probe.p54', true), 'OK'
+UNION ALL SELECT 'P55_ajeno_ve_asignacion',             current_setting('probe.p55', true), 'BLOQUEADO'
+UNION ALL SELECT 'P56_ajeno_actualiza_asignacion',      current_setting('probe.p56', true), 'BLOQUEADO'
+UNION ALL SELECT 'P57_nosuper_inserta_campana',         current_setting('probe.p57', true), 'BLOQUEADO'
+UNION ALL SELECT 'P58_nosuper_borra_campana',           current_setting('probe.p58', true), 'BLOQUEADO'
+UNION ALL SELECT 'P59_tipo_fuera_catalogo',             current_setting('probe.p59', true), 'BLOQUEADO'
+UNION ALL SELECT 'P60_proveedor_gestiona_su_asig',      current_setting('probe.p60', true), 'OK'
+UNION ALL SELECT 'P61_medico_gestiona_su_asig',         current_setting('probe.p61', true), 'OK'
+UNION ALL SELECT 'P62_superadmin_publica_rpc',          current_setting('probe.p62', true), 'OK'
+UNION ALL SELECT 'P63_nosuper_no_aprueba_rpc',          current_setting('probe.p63', true), 'BLOQUEADO'
+UNION ALL SELECT 'P64_medico_no_forja_empresa',         current_setting('probe.p64', true), 'BLOQUEADO';
 
 ROLLBACK;  -- nada de lo anterior se persiste
