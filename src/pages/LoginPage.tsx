@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { useNavigate } from 'react-router-dom'
+import { useNavigate, Link } from 'react-router-dom'
 import { useAuth } from '@/hooks/useAuth'
 import { usePaisesRegistro } from '@/hooks/usePaisesRegistro'
 import { supabase } from '@/lib/supabase'
@@ -199,6 +199,12 @@ export default function LoginPage() {
                 {isRegister ? 'Registrarse' : 'Iniciar Sesión'}
               </Button>
             </form>
+
+            {!isRegister && (
+              <p className="text-center mt-3 text-sm">
+                <Link to="/recuperar-password" className="text-[#1E5C8E] hover:underline">¿Olvidaste tu contraseña?</Link>
+              </p>
+            )}
 
             <p className="text-center mt-4 text-sm text-muted-foreground">
               {isRegister ? '¿Ya tienes cuenta?' : '¿No tienes cuenta?'}{' '}

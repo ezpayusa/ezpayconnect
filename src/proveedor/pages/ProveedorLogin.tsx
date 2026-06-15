@@ -86,7 +86,10 @@ export default function ProveedorLogin() {
               Iniciar sesión
             </Button>
           </form>
-          <div className="mt-6 text-center text-sm">
+          <div className="mt-3 text-center text-sm">
+            <Link to="/recuperar-password" className="text-[#1E5C8E] hover:underline">¿Olvidaste tu contraseña?</Link>
+          </div>
+          <div className="mt-4 text-center text-sm">
             <span className="text-muted-foreground">¿No tienes cuenta? </span>
             <Link to="/proveedor/registro" className="text-[#1E5C8E] hover:underline font-medium">
               Registra tu empresa

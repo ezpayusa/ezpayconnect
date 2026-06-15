@@ -73,7 +73,10 @@ export default function LabLogin() {
               Iniciar sesión
             </Button>
           </form>
-          <div className="mt-6 text-center text-sm">
+          <div className="mt-3 text-center text-sm">
+            <Link to="/recuperar-password" className="text-[#0E7C6B] hover:underline">¿Olvidaste tu contraseña?</Link>
+          </div>
+          <div className="mt-4 text-center text-sm">
             <span className="text-muted-foreground">¿No tienes cuenta? </span>
             <Link to="/laboratorio/registro" className="text-[#0E7C6B] hover:underline font-medium">
               Registra tu laboratorio

@@ -156,7 +156,7 @@ export default function ProveedorRegistroVisitador() {
             <CheckCircle className="mx-auto h-12 w-12 text-green-600" />
             <h2 className="text-xl font-semibold">¡Registro exitoso!</h2>
             <p className="text-muted-foreground">
-              Tu cuenta de visitador médico ha sido creada. Ya puedes iniciar sesión.
+              Tu cuenta ha sido creada. Confirma tu email e inicia sesión para activar tu acceso.
             </p>
             <Button className="w-full bg-[#1E5C8E] hover:bg-[#164a70]" onClick={() => navigate('/proveedor/login')}>
               Iniciar sesión
@@ -176,7 +176,7 @@ export default function ProveedorRegistroVisitador() {
           </div>
           <CardTitle className="text-xl">Completa tu registro</CardTitle>
           <p className="text-sm text-muted-foreground">
-            Has sido invitado como <strong>{invitacion?.rol ? etiquetaRol(invitacion.rol) : 'Visitador Médico'}</strong> en <strong>{invitacion?.empresa_nombre}</strong>
+            Has sido invitado como <strong>{invitacion?.rol ? etiquetaRol(invitacion.rol) : 'miembro del equipo'}</strong> en <strong>{invitacion?.empresa_nombre}</strong>
           </p>
         </CardHeader>
         <CardContent>

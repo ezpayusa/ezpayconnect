@@ -68,7 +68,10 @@ export default function FarmaciaLogin() {
               Iniciar sesión
             </Button>
           </form>
-          <div className="mt-6 text-center text-sm">
+          <div className="mt-3 text-center text-sm">
+            <Link to="/recuperar-password" className="text-[#B45309] hover:underline">¿Olvidaste tu contraseña?</Link>
+          </div>
+          <div className="mt-4 text-center text-sm">
             <span className="text-muted-foreground">¿No tienes cuenta? </span>
             <Link to="/farmacia/registro" className="text-[#B45309] hover:underline font-medium">
               Registra tu farmacia
