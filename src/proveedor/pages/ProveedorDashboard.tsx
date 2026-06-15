@@ -25,6 +25,7 @@ export default function ProveedorDashboard() {
   const { empresa, cuenta } = useProveedorAuth()
   const { stats, loading } = useProveedorStats()
   const esVisitador = cuenta?.rol_en_empresa === 'visitador_medico'
+  const esAfin = empresa?.tipo === 'empresa_afin'
 
   const modulesAdmin = [
     {
@@ -88,7 +89,10 @@ export default function ProveedorDashboard() {
     },
   ]
 
-  const modules = esVisitador ? modulesVisitador : modulesAdmin
+  // Empresa afín: su modelo no usa visitadores → oculta la tarjeta "Visitador Médico"
+  // (quedan Productos y Publicidad como accesos principales, además de Pagos).
+  const modulesAfin = modulesAdmin.filter((m) => !m.path.startsWith('/proveedor/visitador'))
+  const modules = esVisitador ? modulesVisitador : esAfin ? modulesAfin : modulesAdmin
 
   return (
     <div className="space-y-6">
@@ -183,6 +187,7 @@ export default function ProveedorDashboard() {
               </CardContent>
             </Card>
 
+            {!esAfin && (
             <Card>
               <CardContent className="p-5">
                 <div className="flex items-center justify-between">
@@ -199,6 +204,7 @@ export default function ProveedorDashboard() {
                 </p>
               </CardContent>
             </Card>
+            )}
 
             <Card>
               <CardContent className="p-5">
@@ -231,8 +237,8 @@ export default function ProveedorDashboard() {
             </Card>
           </div>
 
-          {/* Detalle de visitas */}
-          {!esVisitador && (
+          {/* Detalle de visitas (no aplica a empresas afines) */}
+          {!esVisitador && !esAfin && (
             <Card>
               <CardHeader className="pb-3">
                 <CardTitle className="text-base">Estado de visitas</CardTitle>
