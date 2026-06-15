@@ -152,3 +152,44 @@ Cada incremento con su migración + probes (rojo→verde) y el patrón de siempr
 - **Incremento 4 — Publicidad para ambos**: usar la RPC de aprobación del Inc.0 + SELECT de `campana_metricas` para que la empresa vea métricas de SUS campañas. Probes: empresa ve métricas propias / no ajenas; audiencia solo ve campañas `activa` de su país.
 
 > **Inc.0 ✅ aplicado en `seguridad/rls-remediacion`** (viaja con el deploy de seguridad). Inc.1+ (construcción de paneles) irá en **rama aparte** desde la base actual cuando se arranque.
+
+---
+
+## 6. Inc.3 — Empresas Afines · DISEÑO (sin código; FASE DE DISEÑO)
+Reusa el modelo de empresa proveedora. `empresa_afin` ya es `tipo` válido (datos: 1 empresa, 1 cuenta, 0 productos, 0 roles-seed). **Aislamiento base ya existe:** `mi_empresa_proveedor()` aísla por empresa en `productos_empresa`/`pagos_proveedor`/`solicitudes_campana` → un afín no ve datos de otra empresa (afín/lab/farmacia) sin trabajo extra. Lo "por tipo" solo hace falta donde hay lecturas CROSS-tipo (médico) o gating de secciones.
+
+### 6.1 Gateo `/proveedor/*` por tipo (UI) + RLS por tipo (barrera real)
+- **UI (rutina):** ocultar visitadores/equipos/rutas/ubicaciones cuando `empresa.tipo='empresa_afin'`; mostrar dashboard, productos, publicidad, pagos, personal-roles, perfil (reusar `ProveedorLayout`+`puede()`). El guard de UI NO es la barrera.
+- **RLS (SEGURIDAD):** auditar que las tablas/RPC de visitador (`visitas_agendadas`, `equipos_visitadores`, `ubicaciones_medico_proveedor`, `planes_visitador_contratados`) **nieguen** a un afín (un afín no tiene filas ahí → da vacío; el probe confirma 0/BLOQUEADO, no fuga).
+
+### 6.2 Catálogo de productos (D1) — reusar `productos_empresa` + filtro por tipo
+- Afín gestiona SUS productos (ya scopeado por empresa+rol), sin cambios de tabla.
+- **Servidor (SEGURIDAD):** la política `"Médico ve productos activos"` hoy es `USING (estado='activo')` (sin tipo) → los productos de afín aparecerían en la búsqueda de disponibilidad del médico. Cambiar a `estado='activo' AND empresa NO es 'empresa_afin'`. Paquete de revisión.
+- **Cliente (rutina):** `useBusquedaMedicamentos` (2 queries) excluye afines (defensa en profundidad).
+- **Storefront del afín:** lectura nueva scopeada a los productos activos de ESE afín (no abre `productos_empresa` global).
+
+### 6.3 "Comprar" — RESUELTO: (a) el afín COMPRA PUBLICIDAD a EzPay (NO marketplace)
+**Decisión confirmada:** el afín paga a EzPay por **publicidad de sus productos**, que se muestra dentro del software en los **paneles de clínica y paciente**. NO hay compra comprador→afín (sin marketplace, sin tabla de pedidos, se descarta Inc.3.C).
+- **Reusa el flujo de publicidad existente:** afín crea `solicitudes_campana` → super_admin aprueba vía `aprobar_solicitud_campana` (Inc.0) → `campanas_publicitarias` (`activa`) → audiencia (`BannerPublicidadGlobal` en webapp/paciente + dashboard de clínica/médico). Pago vía `pagos_proveedor` (asegurado). **Sin tablas nuevas.**
+- **Productos del afín** = catálogo en `productos_empresa` (lo que anuncia). Se siembran productos ficticios para pruebas.
+- **Nuance de permiso (SEGURIDAD):** la política INSERT/UPDATE de `solicitudes_campana` hoy exige `rol_en_empresa IN ('admin','editor')`. El **admin** del afín ya puede crear campañas; para que el rol **marketing** (data-driven) también pueda, hay que cablear `tiene_permiso('publicidad_gestionar')` en esa política (o dejar MVP = solo admin gestiona, y diferir la granularidad como en farmacia).
+
+### 6.4 Publicidad — reusar Inc.0
+Afín (rol marketing) crea `solicitudes_campana` → super_admin aprueba vía `aprobar_solicitud_campana` → solo `activa` visible. Sin tablas nuevas. (Métricas propias = Inc.4.)
+
+### 6.5 Roles admin del afín — data-driven (modelo Inc.2)
+Seed `roles_empresa_catalogo`+`permisos_empresa_rol` para `tipo='empresa_afin'`. Matriz propuesta (a confirmar): `admin`(100,es_admin,todas) · `gerente`(80) · `catalogo`(40, productos_editar) · `marketing`(40, publicidad_gestionar) · `finanzas`(40, pagos_ezpay+finanzas_reportes) · `lectura`(10). Acciones: config_empresa, usuarios_roles, productos_editar, publicidad_gestionar, pagos_ezpay, finanzas_reportes (+ ventas si (b)).
+- **SEGURIDAD:** `alta_miembro_farmacia` e `invitar_miembro_farmacia` hoy hardcodean `tipo='farmacia'` → **generalizar** a `tipo IN ('farmacia','empresa_afin')` (o cualquier tipo con seed). `asignar_rol_miembro` ya es genérico. Misma jerarquía anti-escalada + último-admin. Paquete de revisión.
+
+### 6.6 SEGURIDAD (paquete de revisión) vs RUTINA
+- **SEGURIDAD:** filtro RLS productos-médico por tipo; negación de visitas/equipos/ubicaciones a afines; seed roles afín + generalización de RPC alta/invitar; (si (b)) tabla compra + RLS + RPC.
+- **RUTINA:** gating de secciones UI; storefront/catálogo afín; filtro cliente `useBusquedaMedicamentos`; pantallas del panel.
+
+### 6.7 Plan por incrementos
+- **Inc.3.A (SEGURIDAD):** seed roles afín + generalizar RPC alta/invitar; filtro RLS productos por tipo; negación visitas/equipos. Probes: afín gestiona productos/publicidad/pagos propios (OK); afín NO ve visitas/equipos/ubicaciones (BLOQUEADO); producto afín NO aparece en búsqueda del médico, lab sí; jerarquía afín (gerente no asigna admin).
+  - + seed de productos ficticios del afín (para probar catálogo + filtro del médico).
+  - + cablear `tiene_permiso('publicidad_gestionar')` en `solicitudes_campana` (INSERT/UPDATE) → rol marketing granular del afín gestiona campañas. **DECISIÓN: granular.**
+- **Inc.3.B (UI rutina):** gating de secciones por tipo + catálogo del afín + pantalla de solicitar campaña (reusa el form de publicidad) + filtro cliente `useBusquedaMedicamentos`. tsc/build + no-regresión P1–P113.
+- ~~Inc.3.C~~ descartado (no hay marketplace; "comprar" = publicidad, ver §6.3).
+
+> ✅ Decisiones tomadas: (1) "comprar" = **(a) publicidad** (sin marketplace); (2) matriz de roles afín **aprobada**. Construir por incrementos — SEGURIDAD primero con paquete de revisión.

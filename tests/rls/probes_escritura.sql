@@ -1772,6 +1772,344 @@ EXCEPTION WHEN undefined_function THEN PERFORM set_config('probe.p113','N/A (RPC
   WHEN others THEN PERFORM set_config('probe.p113','BLOQUEADO ('||SQLSTATE||')',false);
 END $$;
 
+-- ============================================================
+-- INCREMENTO 3 · Empresas Afines — SEGURIDAD (Inc.3.A) · P114–P121
+-- ============================================================
+-- Captura (ELEVADO): empresa afín + su admin existente; se piden prestadas cuentas
+-- para roles marketing/lectura/gerente (re-asignadas a la afín; ROLLBACK), un
+-- producto afín activo ficticio, y un auth.user libre para el alta.
+SELECT set_config('role', 'none', true);
+SELECT set_config('probe.af_emp',
+  (SELECT id::text FROM public.empresas_proveedoras WHERE tipo='empresa_afin' ORDER BY id LIMIT 1), false);
+-- médico PURO (no es cuenta_proveedor) → solo ve productos por la policy "Médico ve productos activos",
+-- nunca por membresía. (Evita que un id compartido perfil/cuenta contamine P114/P134.)
+SELECT set_config('probe.af_medico',
+  (SELECT id::text FROM public.perfiles WHERE rol='medico'
+     AND id NOT IN (SELECT id FROM public.cuentas_proveedor) ORDER BY id LIMIT 1), false);
+-- 4 cuentas prestadas (las fixtures de farmacia ya corrieron; reusarlas es inocuo) y
+-- re-asignadas A LA AFÍN con sus roles data-driven, incluido el admin (ROLLBACK).
+SELECT set_config('probe.af_admin',   (SELECT id::text FROM public.cuentas_proveedor ORDER BY id LIMIT 1 OFFSET 0), false);
+SELECT set_config('probe.af_mkt',     (SELECT id::text FROM public.cuentas_proveedor ORDER BY id LIMIT 1 OFFSET 1), false);
+SELECT set_config('probe.af_lectura', (SELECT id::text FROM public.cuentas_proveedor ORDER BY id LIMIT 1 OFFSET 2), false);
+SELECT set_config('probe.af_gerente', (SELECT id::text FROM public.cuentas_proveedor ORDER BY id LIMIT 1 OFFSET 3), false);
+SELECT set_config('probe.af_alta_user',
+  (SELECT id::text FROM auth.users WHERE id NOT IN (SELECT id FROM public.cuentas_proveedor) ORDER BY id LIMIT 1), false);
+UPDATE public.cuentas_proveedor SET empresa_id=NULLIF(current_setting('probe.af_emp',true),'')::uuid, rol_en_empresa='admin',     activo=true, equipo_id=NULL WHERE id=NULLIF(current_setting('probe.af_admin',true),'')::uuid;
+UPDATE public.cuentas_proveedor SET empresa_id=NULLIF(current_setting('probe.af_emp',true),'')::uuid, rol_en_empresa='marketing', activo=true, equipo_id=NULL WHERE id=NULLIF(current_setting('probe.af_mkt',true),'')::uuid;
+UPDATE public.cuentas_proveedor SET empresa_id=NULLIF(current_setting('probe.af_emp',true),'')::uuid, rol_en_empresa='lectura',   activo=true, equipo_id=NULL WHERE id=NULLIF(current_setting('probe.af_lectura',true),'')::uuid;
+UPDATE public.cuentas_proveedor SET empresa_id=NULLIF(current_setting('probe.af_emp',true),'')::uuid, rol_en_empresa='gerente',   activo=true, equipo_id=NULL WHERE id=NULLIF(current_setting('probe.af_gerente',true),'')::uuid;
+-- Producto afín activo ficticio (para el test de visibilidad del médico)
+DO $$ DECLARE v_id uuid; BEGIN
+  IF NULLIF(current_setting('probe.af_emp',true),'') IS NOT NULL THEN
+    INSERT INTO public.productos_empresa (empresa_id, nombre_producto, precio_unitario, estado)
+      VALUES (current_setting('probe.af_emp',true)::uuid, 'Probe Afin Visible', 10, 'activo')
+      RETURNING id INTO v_id;
+    PERFORM set_config('probe.af_prod', v_id::text, false);
+  END IF;
+END $$;
+-- afín B (2ª empresa afín) + producto + miembro admin + solicitud → aislamiento afín↔afín (ROLLBACK)
+DO $$ DECLARE v_b uuid; v_pais uuid; BEGIN
+  SELECT pais_id INTO v_pais FROM public.empresas_proveedoras WHERE id = current_setting('probe.af_emp',true)::uuid;
+  INSERT INTO public.empresas_proveedoras (nombre_empresa, email_contacto, tipo, pais_id)
+    VALUES ('Probe Afin B', 'afinb@probe.test', 'empresa_afin', v_pais) RETURNING id INTO v_b;
+  PERFORM set_config('probe.af_emp_b', v_b::text, false);
+  INSERT INTO public.productos_empresa (empresa_id, nombre_producto, precio_unitario, estado)
+    VALUES (v_b, 'Probe Afin B Producto', 10, 'activo');
+END $$;
+SELECT set_config('probe.af_b_member', (SELECT id::text FROM public.cuentas_proveedor ORDER BY id LIMIT 1 OFFSET 4), false);
+UPDATE public.cuentas_proveedor SET empresa_id=NULLIF(current_setting('probe.af_emp_b',true),'')::uuid, rol_en_empresa='admin', activo=true, equipo_id=NULL WHERE id=NULLIF(current_setting('probe.af_b_member',true),'')::uuid;
+DO $$ DECLARE v_id uuid; BEGIN
+  IF NULLIF(current_setting('probe.af_b_member',true),'') IS NOT NULL THEN
+    INSERT INTO public.solicitudes_campana (empresa_id, cuenta_proveedor_id, titulo, fecha_inicio, fecha_fin, estado)
+      VALUES (current_setting('probe.af_emp_b',true)::uuid, current_setting('probe.af_b_member',true)::uuid, 'Solic Afin B', now(), now()+interval '7 days', 'borrador')
+      RETURNING id INTO v_id;
+    PERFORM set_config('probe.af_b_solic', v_id::text, false);
+  END IF;
+END $$;
+-- solicitud PROPIA de afín A (de af_mkt) para tests de auto-aprobación/edición de contenido
+DO $$ DECLARE v_id uuid; BEGIN
+  INSERT INTO public.solicitudes_campana (empresa_id, cuenta_proveedor_id, titulo, fecha_inicio, fecha_fin, estado)
+    VALUES (current_setting('probe.af_emp',true)::uuid, current_setting('probe.af_mkt',true)::uuid, 'Solic Afin A', now(), now()+interval '7 days', 'borrador')
+    RETURNING id INTO v_id;
+  PERFORM set_config('probe.af_a_solic', v_id::text, false);
+END $$;
+-- producto activo de una empresa NO-afín (para confirmar que el médico la SIGUE viendo tras el fix)
+DO $$ DECLARE v_e uuid; BEGIN
+  SELECT id INTO v_e FROM public.empresas_proveedoras WHERE tipo <> 'empresa_afin' ORDER BY id LIMIT 1;
+  PERFORM set_config('probe.nonafin_emp', COALESCE(v_e::text,''), false);
+  IF v_e IS NOT NULL THEN
+    INSERT INTO public.productos_empresa (empresa_id, nombre_producto, precio_unitario, estado)
+      VALUES (v_e, 'Probe NoAfin Visible', 10, 'activo');
+  END IF;
+END $$;
+
+-- P114 — BARRERA: el MÉDICO NO ve productos de empresa_afin en su búsqueda
+SELECT set_config('role', 'none', true);
+SELECT set_config('request.jwt.claims', json_build_object('sub', current_setting('probe.af_medico', true), 'role','authenticated')::text, true);
+SELECT set_config('role', 'authenticated', true);
+DO $$ DECLARE n INT; BEGIN
+  IF NULLIF(current_setting('probe.af_medico',true),'') IS NULL THEN PERFORM set_config('probe.p114','N/A (sin médico puro)',false);
+  ELSE
+    SELECT count(*) INTO n FROM public.productos_empresa
+      WHERE empresa_id = NULLIF(current_setting('probe.af_emp',true),'')::uuid AND estado='activo';
+    IF n > 0 THEN PERFORM set_config('probe.p114','VISIBLE (médico ve '||n||' productos afín!)',false);
+    ELSE PERFORM set_config('probe.p114','OCULTO (0 productos afín al médico)',false); END IF;
+  END IF;
+EXCEPTION WHEN others THEN PERFORM set_config('probe.p114','OCULTO ('||SQLSTATE||')',false);
+END $$;
+
+-- P115 — NO-REGRESIÓN: el AFÍN sigue viendo SUS propios productos
+SELECT set_config('role', 'none', true);
+SELECT set_config('request.jwt.claims', json_build_object('sub', current_setting('probe.af_admin', true), 'role','authenticated')::text, true);
+SELECT set_config('role', 'authenticated', true);
+DO $$ DECLARE n INT; BEGIN
+  SELECT count(*) INTO n FROM public.productos_empresa
+    WHERE empresa_id = NULLIF(current_setting('probe.af_emp',true),'')::uuid;
+  IF n > 0 THEN PERFORM set_config('probe.p115','OK (afín ve '||n||' productos propios)',false);
+  ELSE PERFORM set_config('probe.p115','REGRESIÓN (afín no ve sus productos)',false); END IF;
+EXCEPTION WHEN others THEN PERFORM set_config('probe.p115','REGRESIÓN ('||SQLSTATE||')',false);
+END $$;
+
+-- P116 — POS: el rol MARKETING del afín CREA una campaña (publicidad_gestionar)
+SELECT set_config('role', 'none', true);
+SELECT set_config('request.jwt.claims', json_build_object('sub', current_setting('probe.af_mkt', true), 'role','authenticated')::text, true);
+SELECT set_config('role', 'authenticated', true);
+DO $$ BEGIN
+  INSERT INTO public.solicitudes_campana (empresa_id, cuenta_proveedor_id, titulo, fecha_inicio, fecha_fin)
+    VALUES (NULLIF(current_setting('probe.af_emp',true),'')::uuid, NULLIF(current_setting('probe.af_mkt',true),'')::uuid,
+            'Probe Campaña Afín', now(), now() + interval '7 days');
+  PERFORM set_config('probe.p116','OK (marketing creó campaña)',false);
+EXCEPTION WHEN insufficient_privilege THEN PERFORM set_config('probe.p116','BLOQUEADO (42501)',false);
+  WHEN others THEN PERFORM set_config('probe.p116','BLOQUEADO ('||SQLSTATE||')',false);
+END $$;
+
+-- P117 — NEG: el rol LECTURA del afín NO crea campañas
+SELECT set_config('role', 'none', true);
+SELECT set_config('request.jwt.claims', json_build_object('sub', current_setting('probe.af_lectura', true), 'role','authenticated')::text, true);
+SELECT set_config('role', 'authenticated', true);
+DO $$ BEGIN
+  INSERT INTO public.solicitudes_campana (empresa_id, cuenta_proveedor_id, titulo, fecha_inicio, fecha_fin)
+    VALUES (NULLIF(current_setting('probe.af_emp',true),'')::uuid, NULLIF(current_setting('probe.af_lectura',true),'')::uuid,
+            'Probe Campaña Lectura', now(), now() + interval '7 days');
+  PERFORM set_config('probe.p117','PERMITIDO (lectura creó campaña!)',false);
+EXCEPTION WHEN insufficient_privilege THEN PERFORM set_config('probe.p117','BLOQUEADO (42501)',false);
+  WHEN others THEN PERFORM set_config('probe.p117','BLOQUEADO ('||SQLSTATE||')',false);
+END $$;
+
+-- P118 — POS: el ADMIN del afín da de alta un MARKETING (alta_miembro_farmacia generalizada)
+SELECT set_config('role', 'none', true);
+SELECT set_config('request.jwt.claims', json_build_object('sub', current_setting('probe.af_admin', true), 'role','authenticated')::text, true);
+SELECT set_config('role', 'authenticated', true);
+DO $$ BEGIN
+  IF NULLIF(current_setting('probe.af_alta_user', true),'') IS NULL THEN PERFORM set_config('probe.p118','N/A (sin auth.user libre)',false);
+  ELSE
+    PERFORM public.alta_miembro_farmacia(current_setting('probe.af_alta_user', true)::uuid,
+      current_setting('probe.af_emp', true)::uuid, 'Nuevo Afín', 'nuevoafin@probe.test', 'marketing', NULL);
+    PERFORM set_config('probe.p118','OK (admin afín dio de alta marketing)',false);
+  END IF;
+EXCEPTION WHEN undefined_function THEN PERFORM set_config('probe.p118','N/A (RPC no existe)',false);
+  WHEN others THEN PERFORM set_config('probe.p118','BLOQUEADO ('||SQLSTATE||')',false);
+END $$;
+
+-- P119 — NEG: el GERENTE del afín NO da de alta un ADMIN (jerarquía anti-escalada)
+SELECT set_config('role', 'none', true);
+SELECT set_config('request.jwt.claims', json_build_object('sub', current_setting('probe.af_gerente', true), 'role','authenticated')::text, true);
+SELECT set_config('role', 'authenticated', true);
+DO $$ BEGIN
+  PERFORM public.alta_miembro_farmacia(current_setting('probe.af_alta_user', true)::uuid,
+    current_setting('probe.af_emp', true)::uuid, 'Nuevo', 'nuevoafin2@probe.test', 'admin', NULL);
+  PERFORM set_config('probe.p119','PERMITIDO (gerente afín dio de alta Admin!)',false);
+EXCEPTION WHEN undefined_function THEN PERFORM set_config('probe.p119','N/A (RPC no existe)',false);
+  WHEN others THEN PERFORM set_config('probe.p119','BLOQUEADO ('||SQLSTATE||')',false);
+END $$;
+
+-- P120 — PT: el RPC legado cambiar_rol_proveedor debe estar CERRADO para empresa_afin
+--   (camino único = asignar_rol_miembro). Antes de 083 el admin afín podía usarlo.
+SELECT set_config('role', 'none', true);
+SELECT set_config('request.jwt.claims', json_build_object('sub', current_setting('probe.af_admin', true), 'role','authenticated')::text, true);
+SELECT set_config('role', 'authenticated', true);
+DO $$ BEGIN
+  PERFORM public.cambiar_rol_proveedor(current_setting('probe.af_mkt', true)::uuid, 'lectura');
+  PERFORM set_config('probe.p120','PERMITIDO (RPC legado cambió rol en afín!)',false);
+EXCEPTION WHEN undefined_function THEN PERFORM set_config('probe.p120','N/A (RPC no existe)',false);
+  WHEN others THEN PERFORM set_config('probe.p120','BLOQUEADO ('||SQLSTATE||')',false);
+END $$;
+
+-- P121 — POS: el GERENTE del afín EDITA productos por permiso data-driven 'productos_editar'
+--   (su rol no está en el string-list legado admin/editor/catalogo)
+SELECT set_config('role', 'none', true);
+SELECT set_config('request.jwt.claims', json_build_object('sub', current_setting('probe.af_gerente', true), 'role','authenticated')::text, true);
+SELECT set_config('role', 'authenticated', true);
+DO $$ DECLARE n INT; BEGIN
+  UPDATE public.productos_empresa SET nombre_producto = nombre_producto
+    WHERE empresa_id = NULLIF(current_setting('probe.af_emp',true),'')::uuid;
+  GET DIAGNOSTICS n = ROW_COUNT;
+  IF n > 0 THEN PERFORM set_config('probe.p121','OK (gerente editó '||n||' productos via productos_editar)',false);
+  ELSE PERFORM set_config('probe.p121','BLOQUEADO (0 filas)',false); END IF;
+EXCEPTION WHEN insufficient_privilege THEN PERFORM set_config('probe.p121','BLOQUEADO (42501)',false);
+  WHEN others THEN PERFORM set_config('probe.p121','BLOQUEADO ('||SQLSTATE||')',false);
+END $$;
+
+-- ---- ANTI-AUTO-APROBACIÓN de publicidad (pieza 7) ----
+-- P122 — NEG ★: marketing del afín UPDATE de SU solicitud poniendo estado='publicada' → BLOQUEADO
+SELECT set_config('role','none',true);
+SELECT set_config('request.jwt.claims', json_build_object('sub', current_setting('probe.af_mkt', true), 'role','authenticated')::text, true);
+SELECT set_config('role','authenticated',true);
+DO $$ DECLARE n INT; BEGIN
+  UPDATE public.solicitudes_campana SET estado='publicada' WHERE id = NULLIF(current_setting('probe.af_a_solic',true),'')::uuid;
+  GET DIAGNOSTICS n = ROW_COUNT;
+  IF n > 0 THEN PERFORM set_config('probe.p122','PERMITIDO (afín auto-aprobó su campaña!)',false);
+  ELSE PERFORM set_config('probe.p122','BLOQUEADO (0 filas)',false); END IF;
+EXCEPTION WHEN insufficient_privilege THEN PERFORM set_config('probe.p122','BLOQUEADO (42501)',false);
+  WHEN others THEN PERFORM set_config('probe.p122','BLOQUEADO ('||SQLSTATE||')',false);
+END $$;
+
+-- P123 — POS: marketing del afín edita el CONTENIDO de SU solicitud (estado intacto) → OK
+SELECT set_config('role','none',true);
+SELECT set_config('request.jwt.claims', json_build_object('sub', current_setting('probe.af_mkt', true), 'role','authenticated')::text, true);
+SELECT set_config('role','authenticated',true);
+DO $$ DECLARE n INT; BEGIN
+  UPDATE public.solicitudes_campana SET titulo='Solic Afin A (editada)' WHERE id = NULLIF(current_setting('probe.af_a_solic',true),'')::uuid;
+  GET DIAGNOSTICS n = ROW_COUNT;
+  IF n > 0 THEN PERFORM set_config('probe.p123','OK (afín editó contenido de su solicitud)',false);
+  ELSE PERFORM set_config('probe.p123','BLOQUEADO (0 filas)',false); END IF;
+EXCEPTION WHEN insufficient_privilege THEN PERFORM set_config('probe.p123','BLOQUEADO (42501)',false);
+  WHEN others THEN PERFORM set_config('probe.p123','BLOQUEADO ('||SQLSTATE||')',false);
+END $$;
+
+-- P124 — NEG: marketing del afín INSERT solicitud con empresa_id de OTRA empresa (afín B) → BLOQUEADO
+SELECT set_config('role','none',true);
+SELECT set_config('request.jwt.claims', json_build_object('sub', current_setting('probe.af_mkt', true), 'role','authenticated')::text, true);
+SELECT set_config('role','authenticated',true);
+DO $$ BEGIN
+  INSERT INTO public.solicitudes_campana (empresa_id, cuenta_proveedor_id, titulo, fecha_inicio, fecha_fin)
+    VALUES (NULLIF(current_setting('probe.af_emp_b',true),'')::uuid, NULLIF(current_setting('probe.af_mkt',true),'')::uuid, 'Cross empresa', now(), now()+interval '7 days');
+  PERFORM set_config('probe.p124','PERMITIDO (insertó en empresa ajena!)',false);
+EXCEPTION WHEN insufficient_privilege THEN PERFORM set_config('probe.p124','BLOQUEADO (42501)',false);
+  WHEN others THEN PERFORM set_config('probe.p124','BLOQUEADO ('||SQLSTATE||')',false);
+END $$;
+
+-- P125 — NEG: marketing del afín INSERT solicitud PROPIA que NACE 'publicada' → BLOQUEADO
+SELECT set_config('role','none',true);
+SELECT set_config('request.jwt.claims', json_build_object('sub', current_setting('probe.af_mkt', true), 'role','authenticated')::text, true);
+SELECT set_config('role','authenticated',true);
+DO $$ BEGIN
+  INSERT INTO public.solicitudes_campana (empresa_id, cuenta_proveedor_id, titulo, fecha_inicio, fecha_fin, estado)
+    VALUES (NULLIF(current_setting('probe.af_emp',true),'')::uuid, NULLIF(current_setting('probe.af_mkt',true),'')::uuid, 'Nace publicada', now(), now()+interval '7 days', 'publicada');
+  PERFORM set_config('probe.p125','PERMITIDO (nació publicada!)',false);
+EXCEPTION WHEN insufficient_privilege THEN PERFORM set_config('probe.p125','BLOQUEADO (42501)',false);
+  WHEN others THEN PERFORM set_config('probe.p125','BLOQUEADO ('||SQLSTATE||')',false);
+END $$;
+
+-- P126 — NEG: marketing del afín UPDATE solicitud de OTRA empresa (afín B) → BLOQUEADO
+SELECT set_config('role','none',true);
+SELECT set_config('request.jwt.claims', json_build_object('sub', current_setting('probe.af_mkt', true), 'role','authenticated')::text, true);
+SELECT set_config('role','authenticated',true);
+DO $$ DECLARE n INT; BEGIN
+  UPDATE public.solicitudes_campana SET titulo='hack' WHERE id = NULLIF(current_setting('probe.af_b_solic',true),'')::uuid;
+  GET DIAGNOSTICS n = ROW_COUNT;
+  IF n > 0 THEN PERFORM set_config('probe.p126','PERMITIDO (editó solicitud ajena!)',false);
+  ELSE PERFORM set_config('probe.p126','BLOQUEADO (0 filas)',false); END IF;
+EXCEPTION WHEN insufficient_privilege THEN PERFORM set_config('probe.p126','BLOQUEADO (42501)',false);
+  WHEN others THEN PERFORM set_config('probe.p126','BLOQUEADO ('||SQLSTATE||')',false);
+END $$;
+
+-- ---- AISLAMIENTO afín↔afín (productos / solicitudes / miembros) ----
+-- P127 — NEG: afín A NO ve productos de afín B
+SELECT set_config('role','none',true);
+SELECT set_config('request.jwt.claims', json_build_object('sub', current_setting('probe.af_admin', true), 'role','authenticated')::text, true);
+SELECT set_config('role','authenticated',true);
+DO $$ DECLARE n INT; BEGIN
+  SELECT count(*) INTO n FROM public.productos_empresa WHERE empresa_id = NULLIF(current_setting('probe.af_emp_b',true),'')::uuid;
+  IF n > 0 THEN PERFORM set_config('probe.p127','VISIBLE (afín A ve '||n||' productos de afín B!)',false);
+  ELSE PERFORM set_config('probe.p127','OCULTO (0 productos de B)',false); END IF;
+EXCEPTION WHEN others THEN PERFORM set_config('probe.p127','OCULTO ('||SQLSTATE||')',false);
+END $$;
+
+-- P128 — NEG: afín A NO edita productos de afín B
+SELECT set_config('role','none',true);
+SELECT set_config('request.jwt.claims', json_build_object('sub', current_setting('probe.af_admin', true), 'role','authenticated')::text, true);
+SELECT set_config('role','authenticated',true);
+DO $$ DECLARE n INT; BEGIN
+  UPDATE public.productos_empresa SET nombre_producto=nombre_producto WHERE empresa_id = NULLIF(current_setting('probe.af_emp_b',true),'')::uuid;
+  GET DIAGNOSTICS n = ROW_COUNT;
+  IF n > 0 THEN PERFORM set_config('probe.p128','PERMITIDO (editó productos de B!)',false);
+  ELSE PERFORM set_config('probe.p128','BLOQUEADO (0 filas)',false); END IF;
+EXCEPTION WHEN insufficient_privilege THEN PERFORM set_config('probe.p128','BLOQUEADO (42501)',false);
+  WHEN others THEN PERFORM set_config('probe.p128','BLOQUEADO ('||SQLSTATE||')',false);
+END $$;
+
+-- P129 — NEG: afín A NO ve solicitudes de afín B
+SELECT set_config('role','none',true);
+SELECT set_config('request.jwt.claims', json_build_object('sub', current_setting('probe.af_admin', true), 'role','authenticated')::text, true);
+SELECT set_config('role','authenticated',true);
+DO $$ DECLARE n INT; BEGIN
+  SELECT count(*) INTO n FROM public.solicitudes_campana WHERE empresa_id = NULLIF(current_setting('probe.af_emp_b',true),'')::uuid;
+  IF n > 0 THEN PERFORM set_config('probe.p129','VISIBLE (afín A ve '||n||' solicitudes de afín B!)',false);
+  ELSE PERFORM set_config('probe.p129','OCULTO (0 solicitudes de B)',false); END IF;
+EXCEPTION WHEN others THEN PERFORM set_config('probe.p129','OCULTO ('||SQLSTATE||')',false);
+END $$;
+
+-- ---- ANTI-ESCALADA + último-admin + scope de miembros (afín) ----
+-- P130 — NEG: gerente del afín NO asigna rol admin (jerarquía, asignar_rol_miembro)
+SELECT set_config('role','none',true);
+SELECT set_config('request.jwt.claims', json_build_object('sub', current_setting('probe.af_gerente', true), 'role','authenticated')::text, true);
+SELECT set_config('role','authenticated',true);
+DO $$ BEGIN
+  PERFORM public.asignar_rol_miembro(current_setting('probe.af_mkt', true)::uuid, 'admin');
+  PERFORM set_config('probe.p130','PERMITIDO (gerente afín asignó Admin!)',false);
+EXCEPTION WHEN undefined_function THEN PERFORM set_config('probe.p130','N/A (RPC no existe)',false);
+  WHEN others THEN PERFORM set_config('probe.p130','BLOQUEADO ('||SQLSTATE||')',false);
+END $$;
+
+-- P131 — NEG: admin del afín A NO asigna rol a un miembro de afín B (scope/aislamiento)
+SELECT set_config('role','none',true);
+SELECT set_config('request.jwt.claims', json_build_object('sub', current_setting('probe.af_admin', true), 'role','authenticated')::text, true);
+SELECT set_config('role','authenticated',true);
+DO $$ BEGIN
+  PERFORM public.asignar_rol_miembro(current_setting('probe.af_b_member', true)::uuid, 'lectura');
+  PERFORM set_config('probe.p131','PERMITIDO (admin A tocó miembro de B!)',false);
+EXCEPTION WHEN undefined_function THEN PERFORM set_config('probe.p131','N/A (RPC no existe)',false);
+  WHEN others THEN PERFORM set_config('probe.p131','BLOQUEADO ('||SQLSTATE||')',false);
+END $$;
+
+-- P132 — NEG: el guard de ÚLTIMO ADMIN sigue vigente para afín (admin se auto-degrada → BLOQUEADO)
+SELECT set_config('role','none',true);
+SELECT set_config('request.jwt.claims', json_build_object('sub', current_setting('probe.af_admin', true), 'role','authenticated')::text, true);
+SELECT set_config('role','authenticated',true);
+DO $$ BEGIN
+  PERFORM public.asignar_rol_miembro(current_setting('probe.af_admin', true)::uuid, 'lectura');
+  PERFORM set_config('probe.p132','PERMITIDO (afín quedó sin admin!)',false);
+EXCEPTION WHEN undefined_function THEN PERFORM set_config('probe.p132','N/A (RPC no existe)',false);
+  WHEN others THEN PERFORM set_config('probe.p132','BLOQUEADO ('||SQLSTATE||')',false);
+END $$;
+
+-- P133 — NEG (cross-tipo): el afín NO ve datos privados de laboratorio/visitador
+SELECT set_config('role','none',true);
+SELECT set_config('request.jwt.claims', json_build_object('sub', current_setting('probe.af_admin', true), 'role','authenticated')::text, true);
+SELECT set_config('role','authenticated',true);
+DO $$ DECLARE n INT; BEGIN
+  SELECT (SELECT count(*) FROM public.visitas_agendadas) + (SELECT count(*) FROM public.ordenes_examen) INTO n;
+  IF n > 0 THEN PERFORM set_config('probe.p133','VISIBLE (afín ve '||n||' filas lab/visitador!)',false);
+  ELSE PERFORM set_config('probe.p133','OCULTO (0 filas lab/visitador)',false); END IF;
+EXCEPTION WHEN others THEN PERFORM set_config('probe.p133','OCULTO ('||SQLSTATE||')',false);
+END $$;
+
+-- P134 — POS (no sobre-filtrado): el médico SIGUE viendo productos activos de tipos NO-afín
+SELECT set_config('role','none',true);
+SELECT set_config('request.jwt.claims', json_build_object('sub', current_setting('probe.af_medico', true), 'role','authenticated')::text, true);
+SELECT set_config('role','authenticated',true);
+DO $$ DECLARE n INT; BEGIN
+  IF NULLIF(current_setting('probe.af_medico',true),'') IS NULL THEN PERFORM set_config('probe.p134','N/A (sin médico puro)',false);
+  ELSE
+    SELECT count(*) INTO n FROM public.productos_empresa
+      WHERE empresa_id = NULLIF(current_setting('probe.nonafin_emp',true),'')::uuid AND estado='activo';
+    IF n > 0 THEN PERFORM set_config('probe.p134','OK (médico ve '||n||' productos NO-afín activos)',false);
+    ELSE PERFORM set_config('probe.p134','REGRESIÓN (sobre-filtrado: médico no ve NO-afín)',false); END IF;
+  END IF;
+EXCEPTION WHEN others THEN PERFORM set_config('probe.p134','REGRESIÓN ('||SQLSTATE||')',false);
+END $$;
+
 -- ===== Veredictos como result set =====
 SELECT 'P1_anon_insert_citas'              AS probe, current_setting('probe.p1', true)  AS verdict, 'BLOQUEADO' AS esperado_post_fix
 UNION ALL SELECT 'P2_medico_cancela_ajena_rpc',         current_setting('probe.p2', true),  'BLOQUEADO'
@@ -1878,6 +2216,27 @@ UNION ALL SELECT 'P102_camino_viejo_cerrado',           current_setting('probe.p
 UNION ALL SELECT 'P110_miembro_ve_su_equipo',           current_setting('probe.p110', true), 'OK'
 UNION ALL SELECT 'P111_ajeno_no_ve_personal',           current_setting('probe.p111', true), 'BLOQUEADO'
 UNION ALL SELECT 'P112_miembroA_no_ve_clinicaB',        current_setting('probe.p112', true), 'BLOQUEADO'
-UNION ALL SELECT 'P113_personal_clinica_null',          current_setting('probe.p113', true), 'BLOQUEADO';
+UNION ALL SELECT 'P113_personal_clinica_null',          current_setting('probe.p113', true), 'BLOQUEADO'
+UNION ALL SELECT 'P114_medico_no_ve_producto_afin',     current_setting('probe.p114', true), 'OCULTO (0)'
+UNION ALL SELECT 'P115_afin_ve_sus_productos',          current_setting('probe.p115', true), 'OK'
+UNION ALL SELECT 'P116_marketing_crea_campana',         current_setting('probe.p116', true), 'OK'
+UNION ALL SELECT 'P117_lectura_no_crea_campana',        current_setting('probe.p117', true), 'BLOQUEADO'
+UNION ALL SELECT 'P118_admin_afin_alta_marketing',      current_setting('probe.p118', true), 'OK'
+UNION ALL SELECT 'P119_gerente_afin_no_alta_admin',     current_setting('probe.p119', true), 'BLOQUEADO'
+UNION ALL SELECT 'P120_rpc_legado_afin_cerrado',        current_setting('probe.p120', true), 'BLOQUEADO'
+UNION ALL SELECT 'P121_gerente_afin_edita_productos',   current_setting('probe.p121', true), 'OK'
+UNION ALL SELECT 'P122_afin_no_autoaprueba_publicidad', current_setting('probe.p122', true), 'BLOQUEADO'
+UNION ALL SELECT 'P123_afin_edita_contenido_solicitud', current_setting('probe.p123', true), 'OK'
+UNION ALL SELECT 'P124_afin_no_insert_empresa_ajena',   current_setting('probe.p124', true), 'BLOQUEADO'
+UNION ALL SELECT 'P125_afin_solicitud_no_nace_publicada',current_setting('probe.p125', true), 'BLOQUEADO'
+UNION ALL SELECT 'P126_afin_no_update_solicitud_ajena',  current_setting('probe.p126', true), 'BLOQUEADO'
+UNION ALL SELECT 'P127_afinA_no_ve_productos_afinB',     current_setting('probe.p127', true), 'OCULTO (0)'
+UNION ALL SELECT 'P128_afinA_no_edita_productos_afinB',  current_setting('probe.p128', true), 'BLOQUEADO'
+UNION ALL SELECT 'P129_afinA_no_ve_solicitudes_afinB',   current_setting('probe.p129', true), 'OCULTO (0)'
+UNION ALL SELECT 'P130_gerente_afin_no_asigna_admin',    current_setting('probe.p130', true), 'BLOQUEADO'
+UNION ALL SELECT 'P131_adminA_no_toca_miembro_afinB',    current_setting('probe.p131', true), 'BLOQUEADO'
+UNION ALL SELECT 'P132_afin_ultimo_admin_protegido',     current_setting('probe.p132', true), 'BLOQUEADO'
+UNION ALL SELECT 'P133_afin_no_ve_lab_visitador',        current_setting('probe.p133', true), 'OCULTO (0)'
+UNION ALL SELECT 'P134_medico_sigue_viendo_no_afin',     current_setting('probe.p134', true), 'OK';
 
 ROLLBACK;  -- nada de lo anterior se persiste
