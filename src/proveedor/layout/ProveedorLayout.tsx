@@ -15,6 +15,18 @@ interface NavItem {
   permiso?: PermisoProveedor // sin permiso => siempre visible
 }
 
+// Secciones específicas del flujo de VISITADOR. Las empresas afines no las usan:
+// se ocultan del menú y se bloquea su ruta (la RLS ya las deja vacías; esto es UI).
+const PERMISOS_VISITADOR: PermisoProveedor[] = [
+  'visitas.propias',
+  'visitas.aprobar',
+  'visitadores.gestionar',
+  'ubicaciones.gestionar',
+  'planes.contratar',
+]
+// Prefijos de ruta de visitador (para redirigir a un afín que llegue por URL directa).
+const RUTAS_VISITADOR = ['/proveedor/visitador', '/proveedor/visitadores', '/proveedor/equipos']
+
 // Menú único dirigido por permisos. Cada usuario ve solo lo que su rol permite.
 const NAV_ITEMS: NavItem[] = [
   { label: 'Dashboard', path: '/proveedor/dashboard', icon: LayoutDashboard },
@@ -48,13 +60,28 @@ export default function ProveedorLayout() {
   const [mobileOpen, setMobileOpen] = useState(false)
 
   const rol = cuenta?.rol_en_empresa || 'visitador_medico'
-  const navItems = NAV_ITEMS.filter((item) => !item.permiso || puede(item.permiso))
+  const esAfin = empresa?.tipo === 'empresa_afin'
+  const navItems = NAV_ITEMS.filter((item) => {
+    if (item.permiso && !puede(item.permiso)) return false
+    // Empresa afín: oculta las secciones de visitador (no aplican a su modelo)
+    if (esAfin && item.permiso && PERMISOS_VISITADOR.includes(item.permiso)) return false
+    return true
+  })
 
   useEffect(() => {
     listarNotificaciones()
     const interval = setInterval(listarNotificaciones, 60000)
     return () => clearInterval(interval)
   }, [listarNotificaciones])
+
+  // Gating de routing: un afín que llegue por URL directa a una ruta de visitador
+  // se redirige al dashboard (la RLS ya devuelve vacío; esto evita una pantalla rota).
+  useEffect(() => {
+    if (loading) return
+    if (esAfin && RUTAS_VISITADOR.some((p) => location.pathname.startsWith(p))) {
+      navigate('/proveedor/dashboard', { replace: true })
+    }
+  }, [loading, esAfin, location.pathname, navigate])
 
   if (loading) {
     return (

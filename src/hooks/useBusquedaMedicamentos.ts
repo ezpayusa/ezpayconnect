@@ -81,7 +81,10 @@ export function useBusquedaMedicamentos(): UseBusquedaMedicamentosReturn {
         .order('precio_unitario', { ascending: true });
 
       if (proveedorError) throw proveedorError;
-      setResultadosProveedores((proveedorData || []) as ProductoEmpresa[]);
+      // Defensa en profundidad: excluir productos de empresas afines de la búsqueda
+      // del médico (la RLS ya los excluye en servidor; esto cubre cualquier camino).
+      const sinAfines = (proveedorData || []).filter((p: any) => p.empresa?.tipo !== 'empresa_afin');
+      setResultadosProveedores(sinAfines as ProductoEmpresa[]);
     } catch (err: any) {
       console.error('Error buscando medicamentos:', err);
       toast.error('Error al buscar medicamentos', { description: err.message });
@@ -168,7 +171,9 @@ export function useBusquedaMedicamentos(): UseBusquedaMedicamentosReturn {
         .order('precio_unitario', { ascending: true });
 
       if (error) throw error;
-      setResultadosProveedores((data || []) as ProductoEmpresa[]);
+      // Defensa en profundidad: excluir empresas afines (la RLS ya las excluye en servidor).
+      const sinAfines = (data || []).filter((p: any) => p.empresa?.tipo !== 'empresa_afin');
+      setResultadosProveedores(sinAfines as ProductoEmpresa[]);
     } catch (err: any) {
       console.error('Error buscando en proveedores:', err);
       toast.error('Error al buscar proveedores', { description: err.message });

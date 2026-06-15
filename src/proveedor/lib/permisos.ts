@@ -104,9 +104,25 @@ const LEGACY: Record<string, PermisoProveedor[]> = {
   viewer: ROLES_PROVEEDOR.find((r) => r.value === 'lectura')!.permisos,
 }
 
+// Rol específico de EMPRESAS AFINES. El catálogo de roles del afín es data-driven
+// en BD (roles_empresa_catalogo / permisos_empresa_rol, migración 083) y la RLS es
+// la barrera real; este mapeo SOLO dirige el menú/gating de la UI del proveedor.
+// 'gerente' afín ≈ gestión del panel SIN pagos (no tiene pagos_ezpay) ni visitadores
+// (las secciones de visitador se ocultan por tipo en ProveedorLayout).
+const GERENTE_AFIN: PermisoProveedor[] = [
+  'usuarios.gestionar',
+  'empresa.editar',
+  'productos.ver',
+  'productos.editar',
+  'publicidad.ver',
+  'publicidad.gestionar',
+  'reportes.ver',
+]
+
 const MAPA: Record<string, PermisoProveedor[]> = {
   ...Object.fromEntries(ROLES_PROVEEDOR.map((r) => [r.value, r.permisos])),
   ...LEGACY,
+  gerente: GERENTE_AFIN,
 }
 
 export function permisosDeRol(rol: string | null | undefined): PermisoProveedor[] {
