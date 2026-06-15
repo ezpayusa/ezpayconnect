@@ -1113,6 +1113,13 @@ SELECT set_config('probe.clin_ajeno',
   (SELECT cp.id::text FROM public.cuentas_proveedor cp WHERE cp.activo
     AND cp.id NOT IN (SELECT medico_id FROM public.medico_clinicas WHERE clinica_id = current_setting('probe.clin', true)::uuid)
     ORDER BY cp.id LIMIT 1), false);
+-- Clínica B: otra clínica donde clin_member NO es miembro (test cross-clínica)
+SELECT set_config('probe.clin_b',
+  (SELECT c.id::text FROM public.clinicas c
+    WHERE c.id <> current_setting('probe.clin', true)::uuid
+      AND NOT EXISTS (SELECT 1 FROM public.medico_clinicas mc
+                      WHERE mc.clinica_id = c.id AND mc.medico_id = current_setting('probe.clin_member', true)::uuid)
+    ORDER BY c.id LIMIT 1), false);
 
 -- P110 — POS: un MIEMBRO de la clínica ve a todo su equipo (>1)
 SELECT set_config('request.jwt.claims',
@@ -1140,6 +1147,21 @@ DO $$ DECLARE n INT; BEGIN
   END IF;
 EXCEPTION WHEN undefined_function THEN PERFORM set_config('probe.p111','N/A (RPC no existe aún)',false);
   WHEN others THEN PERFORM set_config('probe.p111','BLOQUEADO ('||SQLSTATE||')',false);
+END $$;
+
+-- P112 — NEG (cross-clínica): un MIEMBRO de la Clínica A NO ve el personal de la Clínica B
+SELECT set_config('role', 'none', true);
+SELECT set_config('request.jwt.claims',
+  json_build_object('sub', current_setting('probe.clin_member', true), 'role','authenticated')::text, true);
+SELECT set_config('role', 'authenticated', true);
+DO $$ DECLARE n INT; BEGIN
+  IF NULLIF(current_setting('probe.clin_b', true),'') IS NULL THEN PERFORM set_config('probe.p112','N/A (sin clínica B)',false);
+  ELSE
+    SELECT count(*) INTO n FROM public.obtener_personal_clinica(current_setting('probe.clin_b', true)::uuid);
+    PERFORM set_config('probe.p112','PERMITIDO (miembro de A vio '||n||' de la Clínica B!)',false);
+  END IF;
+EXCEPTION WHEN undefined_function THEN PERFORM set_config('probe.p112','N/A (RPC no existe aún)',false);
+  WHEN others THEN PERFORM set_config('probe.p112','BLOQUEADO ('||SQLSTATE||')',false);
 END $$;
 
 -- ===== Veredictos como result set =====
@@ -1208,6 +1230,7 @@ UNION ALL SELECT 'P62_superadmin_publica_rpc',          current_setting('probe.p
 UNION ALL SELECT 'P63_nosuper_no_aprueba_rpc',          current_setting('probe.p63', true), 'BLOQUEADO'
 UNION ALL SELECT 'P64_medico_no_forja_empresa',         current_setting('probe.p64', true), 'BLOQUEADO'
 UNION ALL SELECT 'P110_miembro_ve_su_equipo',           current_setting('probe.p110', true), 'OK'
-UNION ALL SELECT 'P111_ajeno_no_ve_personal',           current_setting('probe.p111', true), 'BLOQUEADO';
+UNION ALL SELECT 'P111_ajeno_no_ve_personal',           current_setting('probe.p111', true), 'BLOQUEADO'
+UNION ALL SELECT 'P112_miembroA_no_ve_clinicaB',        current_setting('probe.p112', true), 'BLOQUEADO';
 
 ROLLBACK;  -- nada de lo anterior se persiste
