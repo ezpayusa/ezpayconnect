@@ -2073,13 +2073,40 @@ EXCEPTION WHEN undefined_function THEN PERFORM set_config('probe.p131','N/A (RPC
   WHEN others THEN PERFORM set_config('probe.p131','BLOQUEADO ('||SQLSTATE||')',false);
 END $$;
 
--- P132 — NEG: el guard de ÚLTIMO ADMIN sigue vigente para afín (admin se auto-degrada → BLOQUEADO)
+-- P132 — NEG: el guard de ÚLTIMO ADMIN sigue vigente para afín (admin se auto-degrada → BLOQUEADO).
+--   AISLADO: empresa afín de prueba con UN SOLO admin (no usa la empresa afín real,
+--   cuyo conteo de admins puede estar contaminado por cuentas QA reales). Todo en la
+--   transacción del harness (ROLLBACK). Pide prestada una cuenta distinta de las que
+--   usan otros probes afín (af_admin/mkt/lectura/gerente/b_member) y la re-asigna como
+--   ÚNICO admin de la empresa aislada.
 SELECT set_config('role','none',true);
-SELECT set_config('request.jwt.claims', json_build_object('sub', current_setting('probe.af_admin', true), 'role','authenticated')::text, true);
+DO $$ DECLARE v_emp uuid; v_admin uuid; v_pais uuid; BEGIN
+  SELECT pais_id INTO v_pais FROM public.empresas_proveedoras WHERE id = current_setting('probe.af_emp',true)::uuid;
+  INSERT INTO public.empresas_proveedoras (nombre_empresa, email_contacto, tipo, pais_id, estado)
+    VALUES ('Probe Afin UltimoAdmin', 'p132@probe.test', 'empresa_afin', v_pais, 'activa')
+    RETURNING id INTO v_emp;
+  SELECT id INTO v_admin FROM public.cuentas_proveedor
+    WHERE id NOT IN (
+      NULLIF(current_setting('probe.af_admin',true),'')::uuid,
+      NULLIF(current_setting('probe.af_mkt',true),'')::uuid,
+      NULLIF(current_setting('probe.af_lectura',true),'')::uuid,
+      NULLIF(current_setting('probe.af_gerente',true),'')::uuid,
+      NULLIF(current_setting('probe.af_b_member',true),'')::uuid
+    ) ORDER BY id LIMIT 1;
+  IF v_admin IS NOT NULL THEN
+    UPDATE public.cuentas_proveedor SET empresa_id=v_emp, rol_en_empresa='admin', activo=true, equipo_id=NULL WHERE id=v_admin;
+    PERFORM set_config('probe.p132_admin', v_admin::text, false);
+  END IF;
+END $$;
+SELECT set_config('role','none',true);
+SELECT set_config('request.jwt.claims', json_build_object('sub', current_setting('probe.p132_admin', true), 'role','authenticated')::text, true);
 SELECT set_config('role','authenticated',true);
 DO $$ BEGIN
-  PERFORM public.asignar_rol_miembro(current_setting('probe.af_admin', true)::uuid, 'lectura');
-  PERFORM set_config('probe.p132','PERMITIDO (afín quedó sin admin!)',false);
+  IF NULLIF(current_setting('probe.p132_admin', true),'') IS NULL THEN PERFORM set_config('probe.p132','N/A (sin cuenta para fixture)',false);
+  ELSE
+    PERFORM public.asignar_rol_miembro(current_setting('probe.p132_admin', true)::uuid, 'lectura');
+    PERFORM set_config('probe.p132','PERMITIDO (afín quedó sin admin!)',false);
+  END IF;
 EXCEPTION WHEN undefined_function THEN PERFORM set_config('probe.p132','N/A (RPC no existe)',false);
   WHEN others THEN PERFORM set_config('probe.p132','BLOQUEADO ('||SQLSTATE||')',false);
 END $$;
