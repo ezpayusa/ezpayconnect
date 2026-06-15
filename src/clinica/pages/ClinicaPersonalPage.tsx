@@ -36,39 +36,28 @@ export default function ClinicaPersonalPage() {
     setLoading(true)
 
     try {
-      // Obtener relaciones medico-clinica via RPC
-      const { data: relaciones } = await supabase
-        .rpc('obtener_medicos_clinica', { p_clinica_id: clinica.id })
+      // RPC SECURITY DEFINER: devuelve el personal de la clínica revalidando que
+      // el caller pertenece a ella. (perfiles SELECT está restringido a "propio";
+      // por eso NO se lee perfiles directo, que solo devolvería al propio admin.)
+      const { data, error } = await supabase
+        .rpc('obtener_personal_clinica', { p_clinica_id: clinica.id })
 
-      if (!relaciones || relaciones.length === 0) {
+      if (error) {
+        console.error('Error cargando personal:', error)
+        toast.error('Error cargando personal')
         setPersonal([])
         setLoading(false)
         return
       }
 
-      const medicoIds = relaciones.map(r => r.medico_id)
-
-      // Obtener datos de perfiles
-      const { data: perfiles } = await supabase
-        .from('perfiles')
-        .select('id, nombre_completo, email, rol, telefono')
-        .in('id', medicoIds)
-
-      // Obtener datos de médicos via RPC
-      const { data: medicos } = await supabase
-        .rpc('obtener_medicos_por_ids', { p_medico_ids: medicoIds })
-
-      const medicosMap = new Map(medicos?.map(m => [m.id, m.especialidad]) || [])
-      const relMap = new Map(relaciones.map(r => [r.medico_id, r.es_principal]))
-
-      const combined = (perfiles || []).map(p => ({
-        id: p.id,
-        nombre_completo: p.nombre_completo,
-        email: p.email,
-        rol: p.rol,
-        telefono: p.telefono,
-        especialidad: medicosMap.get(p.id) || null,
-        es_principal: relMap.get(p.id) || false,
+      const combined = (data || []).map((r: any) => ({
+        id: r.medico_id,
+        nombre_completo: r.nombre_completo,
+        email: r.email,
+        rol: r.rol,
+        telefono: r.telefono,
+        especialidad: r.especialidad || null,
+        es_principal: r.es_principal || false,
       }))
 
       setPersonal(combined)

@@ -1098,6 +1098,50 @@ EXCEPTION
   WHEN others THEN PERFORM set_config('probe.p64','PERMITIDO? (RLS dejó pasar: '||SQLSTATE||')',false);
 END $$;
 
+-- ============================================================
+-- FIX visibilidad personal de clínica (obtener_personal_clinica) — P110/P111
+-- ============================================================
+-- Captura (ELEVADO): una clínica con varios miembros, un admin/miembro de ESA
+-- clínica, y un AJENO (no miembro).
+SELECT set_config('role', 'none', true);
+SELECT set_config('probe.clin',
+  (SELECT mc.clinica_id::text FROM public.medico_clinicas mc GROUP BY mc.clinica_id ORDER BY count(*) DESC LIMIT 1), false);
+SELECT set_config('probe.clin_member',
+  (SELECT mc.medico_id::text FROM public.medico_clinicas mc
+    WHERE mc.clinica_id = current_setting('probe.clin', true)::uuid ORDER BY mc.medico_id LIMIT 1), false);
+SELECT set_config('probe.clin_ajeno',
+  (SELECT cp.id::text FROM public.cuentas_proveedor cp WHERE cp.activo
+    AND cp.id NOT IN (SELECT medico_id FROM public.medico_clinicas WHERE clinica_id = current_setting('probe.clin', true)::uuid)
+    ORDER BY cp.id LIMIT 1), false);
+
+-- P110 — POS: un MIEMBRO de la clínica ve a todo su equipo (>1)
+SELECT set_config('request.jwt.claims',
+  json_build_object('sub', current_setting('probe.clin_member', true), 'role','authenticated')::text, true);
+SELECT set_config('role', 'authenticated', true);
+DO $$ DECLARE n INT; BEGIN
+  SELECT count(*) INTO n FROM public.obtener_personal_clinica(current_setting('probe.clin', true)::uuid);
+  IF n > 1 THEN PERFORM set_config('probe.p110','OK (ve '||n||' miembros de su clínica)',false);
+  ELSIF n = 1 THEN PERFORM set_config('probe.p110','REGRESIÓN (solo se ve a sí mismo: 1)',false);
+  ELSE PERFORM set_config('probe.p110','REGRESIÓN (0 miembros)',false); END IF;
+EXCEPTION WHEN undefined_function THEN PERFORM set_config('probe.p110','N/A (RPC no existe aún)',false);
+  WHEN others THEN PERFORM set_config('probe.p110','REGRESIÓN ('||SQLSTATE||')',false);
+END $$;
+
+-- P111 — NEG: un AJENO (no miembro) NO ve el personal de esa clínica
+SELECT set_config('role', 'none', true);
+SELECT set_config('request.jwt.claims',
+  json_build_object('sub', current_setting('probe.clin_ajeno', true), 'role','authenticated')::text, true);
+SELECT set_config('role', 'authenticated', true);
+DO $$ DECLARE n INT; BEGIN
+  IF NULLIF(current_setting('probe.clin_ajeno', true),'') IS NULL THEN PERFORM set_config('probe.p111','N/A (sin ajeno)',false);
+  ELSE
+    SELECT count(*) INTO n FROM public.obtener_personal_clinica(current_setting('probe.clin', true)::uuid);
+    PERFORM set_config('probe.p111','PERMITIDO (ajeno vio '||n||' miembros!)',false);
+  END IF;
+EXCEPTION WHEN undefined_function THEN PERFORM set_config('probe.p111','N/A (RPC no existe aún)',false);
+  WHEN others THEN PERFORM set_config('probe.p111','BLOQUEADO ('||SQLSTATE||')',false);
+END $$;
+
 -- ===== Veredictos como result set =====
 SELECT 'P1_anon_insert_citas'              AS probe, current_setting('probe.p1', true)  AS verdict, 'BLOQUEADO' AS esperado_post_fix
 UNION ALL SELECT 'P2_medico_cancela_ajena_rpc',         current_setting('probe.p2', true),  'BLOQUEADO'
@@ -1162,6 +1206,8 @@ UNION ALL SELECT 'P60_proveedor_gestiona_su_asig',      current_setting('probe.p
 UNION ALL SELECT 'P61_medico_gestiona_su_asig',         current_setting('probe.p61', true), 'OK'
 UNION ALL SELECT 'P62_superadmin_publica_rpc',          current_setting('probe.p62', true), 'OK'
 UNION ALL SELECT 'P63_nosuper_no_aprueba_rpc',          current_setting('probe.p63', true), 'BLOQUEADO'
-UNION ALL SELECT 'P64_medico_no_forja_empresa',         current_setting('probe.p64', true), 'BLOQUEADO';
+UNION ALL SELECT 'P64_medico_no_forja_empresa',         current_setting('probe.p64', true), 'BLOQUEADO'
+UNION ALL SELECT 'P110_miembro_ve_su_equipo',           current_setting('probe.p110', true), 'OK'
+UNION ALL SELECT 'P111_ajeno_no_ve_personal',           current_setting('probe.p111', true), 'BLOQUEADO';
 
 ROLLBACK;  -- nada de lo anterior se persiste
