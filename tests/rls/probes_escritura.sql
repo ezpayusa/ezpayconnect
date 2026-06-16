@@ -3222,6 +3222,85 @@ DO $$ DECLARE v jsonb; n_a int; n_a2 int; BEGIN
 EXCEPTION WHEN others THEN PERFORM set_config('probe.p190','FALLO ('||SQLERRM||')',false); END $$;
 SELECT set_config('role','none',true);
 
+-- ============================================================
+-- PAÍS-0 · Helpers de país (P191–P194). Rojo-primero: pre-093 los helpers no existen → N/A.
+-- Fixture: país GT (el del médico) + 2º país HN (existente ≠ GT) + farmacia/empresa GT y HN
+-- frescas + un médico con pais_id NULL. El rojo/verde aquí es a NIVEL DEL BOOL del helper
+-- (los NEG "médico no ve fila HN" por superficie son de los increments #2–#5).
+-- ============================================================
+SELECT set_config('role','none',true);
+DO $$ DECLARE v_gt uuid; v_hn uuid; v_fgt int; v_fhn int; v_lgt uuid; v_lhn uuid; v_mednull uuid; BEGIN
+  SELECT pais_id INTO v_gt FROM public.perfiles WHERE id = NULLIF(current_setting('probe.medico',true),'')::uuid;
+  SELECT id INTO v_hn FROM public.configuracion_pais WHERE id <> v_gt LIMIT 1;
+  SELECT id INTO v_mednull FROM public.perfiles WHERE rol='medico' AND id <> NULLIF(current_setting('probe.medico',true),'')::uuid LIMIT 1;
+  IF v_gt IS NULL OR v_hn IS NULL OR v_mednull IS NULL THEN PERFORM set_config('probe.p0_ready','0',false); RETURN; END IF;
+  -- farmacias GT / HN
+  INSERT INTO public.farmacias (nombre,tipo,pais_id) VALUES ('P0 FARM GT','farmacia',v_gt) RETURNING id INTO v_fgt;
+  INSERT INTO public.farmacias (nombre,tipo,pais_id) VALUES ('P0 FARM HN','farmacia',v_hn) RETURNING id INTO v_fhn;
+  -- empresas (lab) GT / HN
+  INSERT INTO public.empresas_proveedoras (nombre_empresa,email_contacto,tipo,pais_id,estado) VALUES ('P0 LAB GT','plgt@p.test','laboratorio_clinico',v_gt,'activa') RETURNING id INTO v_lgt;
+  INSERT INTO public.empresas_proveedoras (nombre_empresa,email_contacto,tipo,pais_id,estado) VALUES ('P0 LAB HN','plhn@p.test','laboratorio_clinico',v_hn,'activa') RETURNING id INTO v_lhn;
+  -- médico con país NULL (rollback lo revierte)
+  UPDATE public.perfiles SET pais_id = NULL WHERE id = v_mednull;
+  PERFORM set_config('probe.p0_ready','1',false);
+  PERFORM set_config('probe.p0_fgt',v_fgt::text,false); PERFORM set_config('probe.p0_fhn',v_fhn::text,false);
+  PERFORM set_config('probe.p0_lgt',v_lgt::text,false); PERFORM set_config('probe.p0_lhn',v_lhn::text,false);
+  PERFORM set_config('probe.p0_mednull',v_mednull::text,false);
+END $$;
+
+DO $$ BEGIN
+  PERFORM set_config('probe.p0_rpc', CASE WHEN to_regprocedure('private.farmacia_en_mi_pais(integer)') IS NOT NULL AND to_regprocedure('private.lab_en_mi_pais(uuid)') IS NOT NULL THEN '1' ELSE '0' END, false);
+END $$;
+
+-- P191 — POS: médico GT → helpers true para farmacia/lab GT
+DO $$ DECLARE a boolean; b boolean; BEGIN
+  IF current_setting('probe.p0_ready',true)<>'1' OR current_setting('probe.p0_rpc',true)<>'1' THEN PERFORM set_config('probe.p191','N/A (pendiente 093)',false);
+  ELSE
+    PERFORM set_config('request.jwt.claims', json_build_object('sub', current_setting('probe.medico',true))::text, true);
+    SELECT private.farmacia_en_mi_pais(NULLIF(current_setting('probe.p0_fgt',true),'')::int) INTO a;
+    SELECT private.lab_en_mi_pais(NULLIF(current_setting('probe.p0_lgt',true),'')::uuid) INTO b;
+    IF a AND b THEN PERFORM set_config('probe.p191','OK (médico GT: farmacia_GT=true, lab_GT=true)',false);
+    ELSE PERFORM set_config('probe.p191','FALLO (farm='||a||' lab='||b||')',false); END IF;
+  END IF;
+EXCEPTION WHEN others THEN PERFORM set_config('probe.p191','FALLO ('||SQLERRM||')',false); END $$;
+
+-- P192 — NEG: médico GT → helpers false para farmacia/lab HN
+DO $$ DECLARE a boolean; b boolean; BEGIN
+  IF current_setting('probe.p0_ready',true)<>'1' OR current_setting('probe.p0_rpc',true)<>'1' THEN PERFORM set_config('probe.p192','N/A (pendiente 093)',false);
+  ELSE
+    PERFORM set_config('request.jwt.claims', json_build_object('sub', current_setting('probe.medico',true))::text, true);
+    SELECT private.farmacia_en_mi_pais(NULLIF(current_setting('probe.p0_fhn',true),'')::int) INTO a;
+    SELECT private.lab_en_mi_pais(NULLIF(current_setting('probe.p0_lhn',true),'')::uuid) INTO b;
+    IF (a IS FALSE) AND (b IS FALSE) THEN PERFORM set_config('probe.p192','OK (médico GT: farmacia_HN=false, lab_HN=false)',false);
+    ELSE PERFORM set_config('probe.p192','FALLO (farm='||a||' lab='||b||')',false); END IF;
+  END IF;
+EXCEPTION WHEN others THEN PERFORM set_config('probe.p192','FALLO ('||SQLERRM||')',false); END $$;
+
+-- P193 — fail-closed: médico con pais_id NULL → ambos helpers false (sin error) para id GT
+DO $$ DECLARE a boolean; b boolean; BEGIN
+  IF current_setting('probe.p0_ready',true)<>'1' OR current_setting('probe.p0_rpc',true)<>'1' THEN PERFORM set_config('probe.p193','N/A (pendiente 093)',false);
+  ELSE
+    PERFORM set_config('request.jwt.claims', json_build_object('sub', current_setting('probe.p0_mednull',true))::text, true);
+    SELECT private.farmacia_en_mi_pais(NULLIF(current_setting('probe.p0_fgt',true),'')::int) INTO a;
+    SELECT private.lab_en_mi_pais(NULLIF(current_setting('probe.p0_lgt',true),'')::uuid) INTO b;
+    IF (a IS FALSE) AND (b IS FALSE) THEN PERFORM set_config('probe.p193','OK (país NULL → fail-closed false, sin error)',false);
+    ELSE PERFORM set_config('probe.p193','FALLO (farm='||a||' lab='||b||')',false); END IF;
+  END IF;
+EXCEPTION WHEN others THEN PERFORM set_config('probe.p193','FALLO ('||SQLERRM||')',false); END $$;
+
+-- P194 — p_id NULL → false en ambos (médico GT)
+DO $$ DECLARE a boolean; b boolean; BEGIN
+  IF current_setting('probe.p0_ready',true)<>'1' OR current_setting('probe.p0_rpc',true)<>'1' THEN PERFORM set_config('probe.p194','N/A (pendiente 093)',false);
+  ELSE
+    PERFORM set_config('request.jwt.claims', json_build_object('sub', current_setting('probe.medico',true))::text, true);
+    SELECT private.farmacia_en_mi_pais(NULL) INTO a;
+    SELECT private.lab_en_mi_pais(NULL) INTO b;
+    IF (a IS FALSE) AND (b IS FALSE) THEN PERFORM set_config('probe.p194','OK (p_id NULL → false en ambos)',false);
+    ELSE PERFORM set_config('probe.p194','FALLO (farm='||a||' lab='||b||')',false); END IF;
+  END IF;
+EXCEPTION WHEN others THEN PERFORM set_config('probe.p194','FALLO ('||SQLERRM||')',false); END $$;
+SELECT set_config('role','none',true);
+
 -- ===== Veredictos como result set =====
 SELECT 'P1_anon_insert_citas'              AS probe, current_setting('probe.p1', true)  AS verdict, 'BLOQUEADO' AS esperado_post_fix
 UNION ALL SELECT 'P2_medico_cancela_ajena_rpc',         current_setting('probe.p2', true),  'BLOQUEADO'
@@ -3405,6 +3484,10 @@ UNION ALL SELECT 'P186_S_empresa_isolation',              current_setting('probe
 UNION ALL SELECT 'P187_S_phi_minima',                     current_setting('probe.p187', true), 'OK'
 UNION ALL SELECT 'P188_S_finanzas_sin_medicamento',       current_setting('probe.p188', true), 'OK'
 UNION ALL SELECT 'P189_S_celdas_pequenas',                current_setting('probe.p189', true), 'OK'
-UNION ALL SELECT 'P190_S_sucursal_aware',                 current_setting('probe.p190', true), 'OK';
+UNION ALL SELECT 'P190_S_sucursal_aware',                 current_setting('probe.p190', true), 'OK'
+UNION ALL SELECT 'P191_pais0_helper_pos_GT',             current_setting('probe.p191', true), 'OK'
+UNION ALL SELECT 'P192_pais0_helper_neg_HN',             current_setting('probe.p192', true), 'OK'
+UNION ALL SELECT 'P193_pais0_failclosed_paisnull',       current_setting('probe.p193', true), 'OK'
+UNION ALL SELECT 'P194_pais0_pid_null',                  current_setting('probe.p194', true), 'OK';
 
 ROLLBACK;  -- nada de lo anterior se persiste
