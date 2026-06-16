@@ -3438,6 +3438,98 @@ DO $$ BEGIN
 END $$;
 SELECT set_config('role','none',true);
 
+-- ============================================================
+-- PAÍS #2 · farmacia_medicamentos (P204–P209). Red-first: P204/P206/P208 ROJO pre-096 → OK post.
+-- Reusa fixture país-0 (p0_fgt/p0_fhn farmacias GT/HN; probe.medico GT; p0_mednull país-NULL;
+-- cat_clinico clínico no-médico; cat_inv/cat_fA proveedor). ROJO ≠ FALLO.
+-- ============================================================
+SELECT set_config('role','none',true);
+DO $$ DECLARE v_medgt uuid; BEGIN
+  -- médico-GT REAL (rol='medico', país no-NULL = GT; distinto del país-NULL p0_mednull)
+  SELECT id INTO v_medgt FROM public.perfiles WHERE rol='medico' AND pais_id IS NOT NULL
+    AND id <> current_setting('probe.p0_mednull',true)::uuid LIMIT 1;
+  IF current_setting('probe.p0_ready',true)<>'1' OR NULLIF(current_setting('probe.cat_clinico',true),'') IS NULL OR v_medgt IS NULL THEN PERFORM set_config('probe.fm_ready','0',false); RETURN; END IF;
+  INSERT INTO public.farmacia_medicamentos (farmacia_id,nombre_medicamento,stock_actual,stock_minimo,precio_unitario,activo)
+    VALUES (current_setting('probe.p0_fgt',true)::int,'FM GT PAIS',10,1,5.0,true);
+  INSERT INTO public.farmacia_medicamentos (farmacia_id,nombre_medicamento,stock_actual,stock_minimo,precio_unitario,activo)
+    VALUES (current_setting('probe.p0_fhn',true)::int,'FM HN PAIS',10,1,5.0,true);
+  UPDATE public.perfiles SET pais_id = current_setting('probe.p0_gt',true)::uuid WHERE id = current_setting('probe.cat_clinico',true)::uuid;  -- clínico GT
+  PERFORM set_config('probe.fm_medgt', v_medgt::text, false);
+  PERFORM set_config('probe.fm_ready','1',false);
+EXCEPTION WHEN others THEN PERFORM set_config('probe.fm_ready','0',false); END $$;
+
+-- P204 — NEG (red-first): médico GT NO ve stock de farmacia HN
+SELECT set_config('request.jwt.claims', json_build_object('sub', current_setting('probe.fm_medgt',true))::text, true);
+SELECT set_config('role','authenticated',true);
+DO $$ DECLARE n int; BEGIN
+  IF current_setting('probe.fm_ready',true)<>'1' THEN PERFORM set_config('probe.p204','N/A',false);
+  ELSE
+    SELECT count(*) INTO n FROM public.farmacia_medicamentos WHERE farmacia_id=current_setting('probe.p0_fhn',true)::int;
+    IF n=0 THEN PERFORM set_config('probe.p204','OK (médico GT no ve stock HN)',false);
+    ELSE PERFORM set_config('probe.p204','ROJO (médico GT ve stock HN — leak vivo, n='||n||')',false); END IF;
+  END IF;
+EXCEPTION WHEN others THEN PERFORM set_config('probe.p204','FALLO ('||SQLERRM||')',false); END $$;
+
+-- P205 — POS no-regresión: médico GT SÍ ve stock de farmacia GT
+DO $$ DECLARE n int; BEGIN
+  IF current_setting('probe.fm_ready',true)<>'1' THEN PERFORM set_config('probe.p205','N/A',false);
+  ELSE
+    SELECT count(*) INTO n FROM public.farmacia_medicamentos WHERE farmacia_id=current_setting('probe.p0_fgt',true)::int;
+    IF n>0 THEN PERFORM set_config('probe.p205','OK (médico GT ve stock GT)',false);
+    ELSE PERFORM set_config('probe.p205','FALLO (médico GT NO ve stock GT)',false); END IF;
+  END IF;
+EXCEPTION WHEN others THEN PERFORM set_config('probe.p205','FALLO ('||SQLERRM||')',false); END $$;
+
+-- P206 — NEG (red-first): clínico-no-médico GT NO ve stock de farmacia HN
+SELECT set_config('request.jwt.claims', json_build_object('sub', current_setting('probe.cat_clinico',true))::text, true);
+DO $$ DECLARE n int; BEGIN
+  IF current_setting('probe.fm_ready',true)<>'1' THEN PERFORM set_config('probe.p206','N/A',false);
+  ELSE
+    SELECT count(*) INTO n FROM public.farmacia_medicamentos WHERE farmacia_id=current_setting('probe.p0_fhn',true)::int;
+    IF n=0 THEN PERFORM set_config('probe.p206','OK (clínico GT no ve stock HN)',false);
+    ELSE PERFORM set_config('probe.p206','ROJO (clínico GT ve stock HN — leak vivo, n='||n||')',false); END IF;
+  END IF;
+EXCEPTION WHEN others THEN PERFORM set_config('probe.p206','FALLO ('||SQLERRM||')',false); END $$;
+
+-- P207 — POS no-regresión: clínico GT SÍ ve stock de farmacia GT
+DO $$ DECLARE n int; BEGIN
+  IF current_setting('probe.fm_ready',true)<>'1' THEN PERFORM set_config('probe.p207','N/A',false);
+  ELSE
+    SELECT count(*) INTO n FROM public.farmacia_medicamentos WHERE farmacia_id=current_setting('probe.p0_fgt',true)::int;
+    IF n>0 THEN PERFORM set_config('probe.p207','OK (clínico GT ve stock GT)',false);
+    ELSE PERFORM set_config('probe.p207','FALLO (clínico GT NO ve stock GT)',false); END IF;
+  END IF;
+EXCEPTION WHEN others THEN PERFORM set_config('probe.p207','FALLO ('||SQLERRM||')',false); END $$;
+
+-- P208 — fail-closed (red-first): médico país-NULL → 0 stock de la fixture
+SELECT set_config('request.jwt.claims', json_build_object('sub', current_setting('probe.p0_mednull',true))::text, true);
+DO $$ DECLARE n int; BEGIN
+  IF current_setting('probe.fm_ready',true)<>'1' THEN PERFORM set_config('probe.p208','N/A',false);
+  ELSE
+    SELECT count(*) INTO n FROM public.farmacia_medicamentos WHERE farmacia_id IN (current_setting('probe.p0_fgt',true)::int, current_setting('probe.p0_fhn',true)::int);
+    IF n=0 THEN PERFORM set_config('probe.p208','OK (país-NULL no ve stock)',false);
+    ELSE PERFORM set_config('probe.p208','ROJO (país-NULL ve stock — fail-open, n='||n||')',false); END IF;
+  END IF;
+EXCEPTION WHEN others THEN PERFORM set_config('probe.p208','FALLO ('||SQLERRM||')',false); END $$;
+
+-- P209 — no-regresión proveedor: ve su empresa (sin país); anon → 0
+SELECT set_config('role','none',true);
+SELECT set_config('request.jwt.claims', json_build_object('sub', current_setting('probe.cat_inv',true), 'role','authenticated')::text, true);
+SELECT set_config('role','authenticated',true);
+DO $$ DECLARE n int; an int; BEGIN
+  IF current_setting('probe.cat_ready',true)<>'1' THEN PERFORM set_config('probe.p209','N/A',false);
+  ELSE
+    SELECT count(*) INTO n FROM public.farmacia_medicamentos WHERE farmacia_id=current_setting('probe.cat_fA',true)::int;  -- proveedor ve su farmacia
+    PERFORM set_config('role','none',true);
+    PERFORM set_config('request.jwt.claims', '{"role":"anon"}', true); PERFORM set_config('role','anon',true);
+    BEGIN SELECT count(*) INTO an FROM public.farmacia_medicamentos; EXCEPTION WHEN others THEN an:=-1; END;
+    PERFORM set_config('role','none',true);
+    IF n>0 AND an=0 THEN PERFORM set_config('probe.p209','OK (proveedor ve su empresa='||n||'; anon=0)',false);
+    ELSE PERFORM set_config('probe.p209','FALLO (proveedor='||n||' anon='||an||')',false); END IF;
+  END IF;
+EXCEPTION WHEN others THEN PERFORM set_config('role','none',true); PERFORM set_config('probe.p209','FALLO ('||SQLERRM||')',false); END $$;
+SELECT set_config('role','none',true);
+
 -- ===== Veredictos como result set =====
 SELECT 'P1_anon_insert_citas'              AS probe, current_setting('probe.p1', true)  AS verdict, 'BLOQUEADO' AS esperado_post_fix
 UNION ALL SELECT 'P2_medico_cancela_ajena_rpc',         current_setting('probe.p2', true),  'BLOQUEADO'
@@ -3634,6 +3726,12 @@ UNION ALL SELECT 'P203_prodemp_trigger_reasigna',        current_setting('probe.
 UNION ALL SELECT 'P199_G1_helper_opera',                 current_setting('probe.p199', true), 'OK post-095'
 UNION ALL SELECT 'P200_G1_proveedor_bloq',               current_setting('probe.p200', true), 'BLOQUEADO post-095'
 UNION ALL SELECT 'P201_G1_superadmin',                   current_setting('probe.p201', true), 'OK post-095'
-UNION ALL SELECT 'P202_G1_restrict_pais',                current_setting('probe.p202', true), 'BLOQUEADO post-095';
+UNION ALL SELECT 'P202_G1_restrict_pais',                current_setting('probe.p202', true), 'BLOQUEADO post-095'
+UNION ALL SELECT 'P204_farmed_medico_neg_HN',           current_setting('probe.p204', true), 'OK post-096 (ROJO pre)'
+UNION ALL SELECT 'P205_farmed_medico_pos_GT',           current_setting('probe.p205', true), 'OK'
+UNION ALL SELECT 'P206_farmed_clinico_neg_HN',          current_setting('probe.p206', true), 'OK post-096 (ROJO pre)'
+UNION ALL SELECT 'P207_farmed_clinico_pos_GT',          current_setting('probe.p207', true), 'OK'
+UNION ALL SELECT 'P208_farmed_failclosed',              current_setting('probe.p208', true), 'OK post-096 (ROJO pre)'
+UNION ALL SELECT 'P209_farmed_proveedor_anon',          current_setting('probe.p209', true), 'OK';
 
 ROLLBACK;  -- nada de lo anterior se persiste
