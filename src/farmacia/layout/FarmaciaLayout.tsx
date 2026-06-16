@@ -13,6 +13,9 @@ interface NavItem { label: string; path: string; icon: React.ElementType; accion
 const NAV_ITEMS: NavItem[] = [
   { label: 'Dashboard', path: '/farmacia/dashboard', icon: LayoutDashboard },
   { label: 'Inventario', path: '/farmacia/inventario', icon: Package },
+  // PUNTO DE EXTENSIÓN (futura bandeja de recetas entrantes — NO construir aún):
+  //   { label: 'Recetas entrantes', path: '/farmacia/recetas', icon: ClipboardList, accion: 'recetas_dispensar' },
+  // El gating por `accion` ya está soportado abajo; al crear la página + ruta, descomentar.
   { label: 'Personal y Roles', path: '/farmacia/personal', icon: Users, accion: 'usuarios_roles' },
   { label: 'Pagos', path: '/farmacia/pagos', icon: CreditCard, accion: 'finanzas_reportes' },
   { label: 'Perfil', path: '/farmacia/perfil', icon: Building2 },

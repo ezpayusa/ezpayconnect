@@ -27,8 +27,8 @@ LANGUAGE plpgsql SECURITY DEFINER SET search_path TO ''
 AS $function$
 DECLARE
   v_ins int := 0; v_upd int := 0; v_rech jsonb := '[]'::jsonb;
-  r jsonb; i int := 0; v_nombre text; v_stock numeric; v_precio numeric; v_inserted boolean;
-  v_activo boolean; v_fv date;
+  r jsonb; i bigint := 0; v_nombre text; v_stock numeric; v_precio numeric; v_inserted boolean;
+  v_activo boolean; v_fv date; v_smin int; v_nn text; v_lastmap jsonb;
 BEGIN
   IF NOT COALESCE(private.tiene_permiso('inventario_editar'), false) THEN
     RAISE EXCEPTION 'No autorizado: tu rol no puede editar inventario';
@@ -42,17 +42,34 @@ BEGIN
     RAISE EXCEPTION 'p_rows debe ser un arreglo JSON';
   END IF;
 
-  FOR r IN SELECT value FROM jsonb_array_elements(p_rows) LOOP
-    i := i + 1;
+  -- DUPS INTRA-ARCHIVO: mapa clave_normalizada -> última posición (1-based). El upsert
+  -- fila-por-fila colapsaría en silencio (última gana); en su lugar reportamos las
+  -- ocurrencias previas y solo upsertamos la ÚLTIMA. Misma normalización que la columna.
+  SELECT COALESCE(jsonb_object_agg(nn, last_ord), '{}'::jsonb) INTO v_lastmap FROM (
+    SELECT upper(btrim(regexp_replace(translate(btrim(elem->>'nombre_medicamento'),
+             'áéíóúüÁÉÍÓÚÜñÑ','aeiouuAEIOUUnN'), '\s+', ' ', 'g'))) AS nn,
+           max(ord) AS last_ord
+    FROM jsonb_array_elements(p_rows) WITH ORDINALITY AS t(elem, ord)
+    WHERE btrim(COALESCE(elem->>'nombre_medicamento','')) <> ''
+    GROUP BY 1
+  ) m;
+
+  FOR r, i IN SELECT value, ordinality FROM jsonb_array_elements(p_rows) WITH ORDINALITY AS t(value, ordinality) LOOP
     -- NOTA: NUNCA se lee r->>'farmacia_id'; el destino es SIEMPRE p_farmacia_id.
     v_nombre := btrim(COALESCE(r->>'nombre_medicamento',''));
     IF v_nombre = '' THEN
       v_rech := v_rech || jsonb_build_object('fila', i, 'motivo', 'nombre_medicamento vacío'); CONTINUE;
     END IF;
+    v_nn := upper(btrim(regexp_replace(translate(v_nombre,'áéíóúüÁÉÍÓÚÜñÑ','aeiouuAEIOUUnN'),'\s+',' ','g')));
+    IF (v_lastmap->>v_nn) IS NOT NULL AND i <> (v_lastmap->>v_nn)::bigint THEN
+      v_rech := v_rech || jsonb_build_object('fila', i, 'motivo', 'duplica clave del archivo; se usó la fila '||(v_lastmap->>v_nn));
+      CONTINUE;
+    END IF;
     BEGIN
       v_stock  := CASE WHEN COALESCE(btrim(r->>'stock_actual'),'') = '' THEN NULL ELSE (r->>'stock_actual')::numeric END;
       v_precio := CASE WHEN COALESCE(btrim(r->>'precio_unitario'),'') = '' THEN NULL ELSE (r->>'precio_unitario')::numeric END;
       v_fv     := CASE WHEN COALESCE(btrim(r->>'fecha_vencimiento'),'') = '' THEN NULL ELSE (r->>'fecha_vencimiento')::date END;
+      v_smin   := CASE WHEN COALESCE(btrim(r->>'stock_minimo'),'') = '' THEN 0 ELSE (r->>'stock_minimo')::int END;
     EXCEPTION WHEN others THEN
       v_rech := v_rech || jsonb_build_object('fila', i, 'motivo', 'valor numérico/fecha inválido'); CONTINUE;
     END;
@@ -71,7 +88,7 @@ BEGIN
        NULLIF(btrim(COALESCE(r->>'descripcion','')),''),
        NULLIF(btrim(COALESCE(r->>'laboratorio','')),''),
        COALESCE(v_stock, 0)::int,
-       COALESCE(NULLIF(btrim(r->>'stock_minimo'),'')::int, 0),
+       COALESCE(v_smin, 0),
        v_precio, v_fv, COALESCE(v_activo, true))
     ON CONFLICT (farmacia_id, nombre_normalizado) DO UPDATE SET
        stock_actual      = COALESCE(v_stock::int, public.farmacia_medicamentos.stock_actual),

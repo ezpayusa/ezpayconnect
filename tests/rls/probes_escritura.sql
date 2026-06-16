@@ -2666,6 +2666,34 @@ DO $$ DECLARE n INT; BEGIN
 EXCEPTION WHEN others THEN PERFORM set_config('probe.p160','REGRESIÓN ('||SQLSTATE||')',false);
 END $$;
 
+-- P161 — POS: dup INTRA-ARCHIVO (dos filas → misma clave normalizada) → reporta la
+-- superada y deja UNA fila (gana la última); no colapsa en silencio.
+SELECT set_config('role','none',true);
+SELECT set_config('request.jwt.claims', json_build_object('sub', current_setting('probe.cat_inv', true), 'role','authenticated')::text, true);
+SELECT set_config('role','authenticated',true);
+DO $$ DECLARE v jsonb; BEGIN
+  IF to_regprocedure('public.cargar_catalogo_farmacia(integer,jsonb)') IS NULL OR current_setting('probe.cat_ready',true)<>'1' THEN PERFORM set_config('probe.p161_done','0',false);
+  ELSE
+    v := public.cargar_catalogo_farmacia(NULLIF(current_setting('probe.cat_fA',true),'')::int,
+      '[{"nombre_medicamento":"DUP TEST","stock_actual":"1"},{"nombre_medicamento":"  dup   test ","stock_actual":"9"}]'::jsonb);
+    PERFORM set_config('probe.p161_rech', COALESCE((v->>'total_rechazadas'),'?'), false);
+    PERFORM set_config('probe.p161_done','1',false);
+  END IF;
+EXCEPTION WHEN undefined_function THEN PERFORM set_config('probe.p161_done','0',false);
+  WHEN others THEN PERFORM set_config('probe.p161_done','err',false);
+END $$;
+SELECT set_config('role','none',true);
+DO $$ DECLARE n INT; st INT; BEGIN
+  IF current_setting('probe.p161_done',true)<>'1' THEN PERFORM set_config('probe.p161','N/A (pendiente migración 087)',false);
+  ELSE
+    SELECT count(*), max(stock_actual) INTO n, st FROM public.farmacia_medicamentos
+      WHERE farmacia_id=NULLIF(current_setting('probe.cat_fA',true),'')::int AND nombre_normalizado='DUP TEST';
+    IF n=1 AND st=9 AND current_setting('probe.p161_rech',true)='1'
+      THEN PERFORM set_config('probe.p161','OK (1 fila, última gana stock=9, 1 superada reportada)',false);
+      ELSE PERFORM set_config('probe.p161','FALLO (n='||COALESCE(n::text,'?')||' stock='||COALESCE(st::text,'?')||' rech='||current_setting('probe.p161_rech',true)||')',false); END IF;
+  END IF;
+END $$;
+
 -- ===== Veredictos como result set =====
 SELECT 'P1_anon_insert_citas'              AS probe, current_setting('probe.p1', true)  AS verdict, 'BLOQUEADO' AS esperado_post_fix
 UNION ALL SELECT 'P2_medico_cancela_ajena_rpc',         current_setting('probe.p2', true),  'BLOQUEADO'
@@ -2819,6 +2847,7 @@ UNION ALL SELECT 'P156_rpc_reporte_por_fila',            current_setting('probe.
 UNION ALL SELECT 'P157_rpc_stock_vacio_conserva',        current_setting('probe.p157', true), 'OK'
 UNION ALL SELECT 'P158_rpc_carga_ok',                    current_setting('probe.p158', true), 'OK'
 UNION ALL SELECT 'P159_anon_no_lee_catalogo',            current_setting('probe.p159', true), 'OCULTO (0)'
-UNION ALL SELECT 'P160_clinico_no_medico_disponibilidad',current_setting('probe.p160', true), 'OK';
+UNION ALL SELECT 'P160_clinico_no_medico_disponibilidad',current_setting('probe.p160', true), 'OK'
+UNION ALL SELECT 'P161_rpc_dup_intra_archivo',           current_setting('probe.p161', true), 'OK';
 
 ROLLBACK;  -- nada de lo anterior se persiste
