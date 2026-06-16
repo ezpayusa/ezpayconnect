@@ -3,7 +3,7 @@ import { useProveedorAuth } from '@/proveedor/hooks/useProveedorAuth'
 import { useFarmaciaPermisos } from '@/farmacia/hooks/useFarmaciaPermisos'
 import { useNotificaciones } from '@/hooks/useNotificaciones'
 import { Button } from '@/components/ui/button'
-import { LayoutDashboard, Pill, Package, Users, CreditCard, Bell, LogOut, Menu, X, Building2 } from 'lucide-react'
+import { LayoutDashboard, Pill, Package, Users, CreditCard, Bell, LogOut, Menu, X, Building2, ClipboardList } from 'lucide-react'
 import { useState, useEffect } from 'react'
 
 interface NavItem { label: string; path: string; icon: React.ElementType; accion?: string; badge?: boolean }
@@ -13,9 +13,7 @@ interface NavItem { label: string; path: string; icon: React.ElementType; accion
 const NAV_ITEMS: NavItem[] = [
   { label: 'Dashboard', path: '/farmacia/dashboard', icon: LayoutDashboard },
   { label: 'Inventario', path: '/farmacia/inventario', icon: Package },
-  // PUNTO DE EXTENSIÓN (futura bandeja de recetas entrantes — NO construir aún):
-  //   { label: 'Recetas entrantes', path: '/farmacia/recetas', icon: ClipboardList, accion: 'recetas_dispensar' },
-  // El gating por `accion` ya está soportado abajo; al crear la página + ruta, descomentar.
+  { label: 'Recetas entrantes', path: '/farmacia/recetas', icon: ClipboardList, accion: 'recetas_dispensar' },
   { label: 'Personal y Roles', path: '/farmacia/personal', icon: Users, accion: 'usuarios_roles' },
   { label: 'Pagos', path: '/farmacia/pagos', icon: CreditCard, accion: 'finanzas_reportes' },
   { label: 'Perfil', path: '/farmacia/perfil', icon: Building2 },
