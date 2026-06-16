@@ -42,7 +42,7 @@ const esFecha = (v: string) => v === '' || !isNaN(Date.parse(v))
 // espacios, trim, upper) → para detectar dups intra-archivo igual que el UNIQUE.
 const claveNorm = (s: string) => s.normalize('NFD').replace(/[̀-ͯ]/g, '').replace(/\s+/g, ' ').trim().toUpperCase()
 
-interface Fila { raw: Record<string, string>; errores: string[] }
+interface Fila { raw: Record<string, string>; errores: string[]; warn?: string }
 
 export default function ImportarCatalogoModal({ open, onClose, sucursales, onImported }: Props) {
   const [farmaciaId, setFarmaciaId] = useState<string>(sucursales.length === 1 ? String(sucursales[0].id) : '')
@@ -97,14 +97,15 @@ export default function ImportarCatalogoModal({ open, onClose, sucursales, onImp
       })
 
       // DUPS INTRA-ARCHIVO: dos filas que normalizan a la misma clave (p.ej.
-      // "Paracetamol 500mg" / "PARACETAMOL  500 MG"). Gana la ÚLTIMA; las previas se
-      // marcan (se omiten del envío) — coherente con el RPC. No colapsar en silencio.
+      // "Paracetamol 500mg" / "PARACETAMOL  500 MG"). Solo ADVERTIMOS en el preview y
+      // enviamos TODAS las filas: el de-dup autoritativo es el pre-scan del RPC (única
+      // fuente de normalización = la columna SQL) → anti-drift cliente↔servidor.
       const ultimaPorClave = new Map<string, number>()
       parseadas.forEach((f, idx) => { if (f.errores.length === 0) ultimaPorClave.set(claveNorm(f.raw.nombre_medicamento), idx) })
       parseadas.forEach((f, idx) => {
         if (f.errores.length === 0) {
           const k = claveNorm(f.raw.nombre_medicamento)
-          if (ultimaPorClave.get(k) !== idx) f.errores.push(`duplica fila ${(ultimaPorClave.get(k) as number) + 1} tras normalizar (se usa la última)`)
+          if (ultimaPorClave.get(k) !== idx) f.warn = `duplica fila ${(ultimaPorClave.get(k) as number) + 1} (el servidor usa la última)`
         }
       })
 
@@ -184,6 +185,7 @@ export default function ImportarCatalogoModal({ open, onClose, sucursales, onImp
               <div className="flex items-center gap-4 text-sm">
                 <span className="flex items-center gap-1 text-emerald-600 font-medium"><CheckCircle className="w-4 h-4" /> {validas.length} válidas</span>
                 {invalidas.length > 0 && <span className="flex items-center gap-1 text-amber-600 font-medium"><AlertTriangle className="w-4 h-4" /> {invalidas.length} con error (se omiten)</span>}
+                {validas.some((f) => f.warn) && <span className="text-blue-600 font-medium">{validas.filter((f) => f.warn).length} duplicada(s) (servidor usa la última)</span>}
                 <span className="text-muted-foreground ml-auto truncate max-w-[40%]">{nombreArchivo}</span>
               </div>
               <div className="border rounded-lg overflow-hidden">
@@ -195,7 +197,7 @@ export default function ImportarCatalogoModal({ open, onClose, sucursales, onImp
                         <td className="p-2 truncate max-w-[200px]">{f.raw.nombre_medicamento || <em className="text-muted-foreground">(sin nombre)</em>}</td>
                         <td className="p-2">{f.raw.stock_actual || '—'}</td>
                         <td className="p-2">{f.raw.precio_unitario || '—'}</td>
-                        <td className="p-2">{f.errores.length === 0 ? <span className="text-emerald-600">OK</span> : <span className="text-amber-600 text-xs">{f.errores.join(', ')}</span>}</td>
+                        <td className="p-2">{f.errores.length ? <span className="text-amber-600 text-xs">{f.errores.join(', ')}</span> : f.warn ? <span className="text-blue-600 text-xs">{f.warn}</span> : <span className="text-emerald-600">OK</span>}</td>
                       </tr>
                     ))}
                   </tbody>
