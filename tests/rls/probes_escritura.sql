@@ -2738,8 +2738,9 @@ BEGIN
   SELECT id INTO v_pac FROM public.pacientes ORDER BY id LIMIT 1;
   SELECT id INTO v_norx FROM public.cuentas_proveedor ORDER BY id LIMIT 1 OFFSET 12;
   IF v_med IS NULL OR v_pac IS NULL OR v_norx IS NULL THEN PERFORM set_config('probe.rx_ready','0',false); RETURN; END IF;
-  -- usuario en empresa A SIN recetas_dispensar (rol 'inventario')
-  UPDATE public.cuentas_proveedor SET empresa_id=v_eA, rol_en_empresa='inventario', activo=true, equipo_id=NULL WHERE id=v_norx;
+  -- usuario en empresa A con rol 'finanzas': SIN recetas_dispensar (sirve P164) y SIN
+  -- recetas_reportes pero CON finanzas_reportes (sirve S-NEG2/S-SUC de stats).
+  UPDATE public.cuentas_proveedor SET empresa_id=v_eA, rol_en_empresa='finanzas', activo=true, equipo_id=NULL, sucursal_id=NULL WHERE id=v_norx;
 
   -- (a) receta MIXTA (ítem en A + ítem en B) CON recetas_avanzadas (despachable)
   INSERT INTO public.recetas (medico_id,paciente_id,estado) VALUES (v_med,v_pac,'activa') RETURNING id INTO v_rx;
@@ -3047,6 +3048,180 @@ DO $$ DECLARE v_id int; BEGIN
 EXCEPTION WHEN others THEN PERFORM set_config('probe.p180','FALLO ('||SQLERRM||')',false); END $$;
 SELECT set_config('role','none',true);
 
+-- ============================================================
+-- STATS por sucursal (P181–P190). Fixture: siembra dispensaciones 'completada' en empA
+-- (STATPOP×6 = sobre k; STATRARE×1 = bajo k; STATPOP rechazada×1 = excluida; STAT2×1 en
+-- 2da sucursal empA) y 1 en empB (aislamiento). Todo en el BEGIN…ROLLBACK.
+-- ============================================================
+DO $$
+DECLARE v_eA uuid; v_fB int; v_fA1 int; v_fA2 int; v_ra_a uuid; v_ra_b uuid; v_pac text; v_med text;
+BEGIN
+  IF current_setting('probe.rx_ready',true)<>'1' THEN PERFORM set_config('probe.st_ready','0',false); RETURN; END IF;
+  v_fB := NULLIF(current_setting('probe.cat_fB',true),'')::int;
+  SELECT empresa_id INTO v_eA FROM public.farmacias WHERE id = NULLIF(current_setting('probe.cat_fA',true),'')::int;
+  SELECT id, paciente_id, medico_id INTO v_ra_a, v_pac, v_med FROM public.recetas_avanzadas WHERE receta_base_id = NULLIF(current_setting('probe.rx_disp',true),'')::bigint;
+  SELECT id INTO v_ra_b FROM public.recetas_avanzadas WHERE receta_base_id = NULLIF(current_setting('probe.rx_only_b',true),'')::bigint;
+  IF v_ra_a IS NULL OR v_ra_b IS NULL THEN PERFORM set_config('probe.st_ready','0',false); RETURN; END IF;
+  -- DOS sucursales FRESCAS en empA (aisladas de v_fA, que P166 ya tocó con un despacho).
+  INSERT INTO public.farmacias (nombre, empresa_id, tipo, pais_id) SELECT 'ST SUC A1', v_eA, 'farmacia', pais_id FROM public.empresas_proveedoras WHERE id=v_eA RETURNING id INTO v_fA1;
+  INSERT INTO public.farmacias (nombre, empresa_id, tipo, pais_id) SELECT 'ST SUC A2', v_eA, 'farmacia', pais_id FROM public.empresas_proveedoras WHERE id=v_eA RETURNING id INTO v_fA2;
+  -- STATPOP × 6 (completada) en sucursal A1 → sobre k
+  INSERT INTO public.dispensaciones (receta_avanzada_id,farmacia_id,paciente_id,medico_id,codigo_qr,medicamentos_dispensados,cantidad_items,total_dispensado,estado_dispensacion,fecha_dispensacion)
+  SELECT v_ra_a, v_fA1, v_pac, v_med, 'STATS', jsonb_build_array(jsonb_build_object('nombre','STATPOP','cantidad',1)), 1, 10, 'completada', now() FROM generate_series(1,6);
+  -- STATRARE × 1 (completada) → bajo k
+  INSERT INTO public.dispensaciones (receta_avanzada_id,farmacia_id,paciente_id,medico_id,codigo_qr,medicamentos_dispensados,cantidad_items,total_dispensado,estado_dispensacion,fecha_dispensacion)
+  VALUES (v_ra_a, v_fA1, v_pac, v_med, 'STATS', jsonb_build_array(jsonb_build_object('nombre','STATRARE','cantidad',1)), 1, 10, 'completada', now());
+  -- STATPOP rechazada × 1 → NO debe contar (montos/clínico solo completada)
+  INSERT INTO public.dispensaciones (receta_avanzada_id,farmacia_id,paciente_id,medico_id,codigo_qr,medicamentos_dispensados,cantidad_items,total_dispensado,estado_dispensacion,fecha_dispensacion)
+  VALUES (v_ra_a, v_fA1, v_pac, v_med, 'STATS', jsonb_build_array(jsonb_build_object('nombre','STATPOP','cantidad',1)), 1, 999, 'rechazada', now());
+  -- STAT2 × 1 en sucursal A2
+  INSERT INTO public.dispensaciones (receta_avanzada_id,farmacia_id,paciente_id,medico_id,codigo_qr,medicamentos_dispensados,cantidad_items,total_dispensado,estado_dispensacion,fecha_dispensacion)
+  VALUES (v_ra_a, v_fA2, v_pac, v_med, 'STATS', jsonb_build_array(jsonb_build_object('nombre','STAT2','cantidad',1)), 1, 10, 'completada', now());
+  -- STATB × 1 en empB (aislamiento)
+  INSERT INTO public.dispensaciones (receta_avanzada_id,farmacia_id,paciente_id,medico_id,codigo_qr,medicamentos_dispensados,cantidad_items,total_dispensado,estado_dispensacion,fecha_dispensacion)
+  VALUES (v_ra_b, v_fB, v_pac, v_med, 'STATS', jsonb_build_array(jsonb_build_object('nombre','STATB','cantidad',1)), 1, 10, 'completada', now());
+  PERFORM set_config('probe.st_fa1', v_fA1::text, false);
+  PERFORM set_config('probe.st_fa2', v_fA2::text, false);
+  PERFORM set_config('probe.st_ready','1',false);
+EXCEPTION WHEN others THEN PERFORM set_config('probe.st_ready','0',false); PERFORM set_config('probe.st_err', SQLERRM, false); END $$;
+
+-- guarda: ¿existen las RPC de stats?
+DO $$ BEGIN
+  PERFORM set_config('probe.st_rpc',
+    CASE WHEN to_regprocedure('public.stats_finanzas_sucursal(date,date,integer)') IS NOT NULL
+          AND to_regprocedure('public.stats_recetas_sucursal(date,date,integer)') IS NOT NULL
+         THEN '1' ELSE '0' END, false);
+END $$;
+
+-- P181 — S-POS1: admin (finanzas_reportes) → stats_finanzas: sucursal A total=70 (7 completadas, no la rechazada 999); empB ausente
+SELECT set_config('role','none',true);
+SELECT set_config('request.jwt.claims', json_build_object('sub', current_setting('probe.cat_inv', true), 'role','authenticated')::text, true);
+SELECT set_config('role','authenticated',true);
+DO $$ DECLARE v jsonb; v_tot numeric; v_n int; v_fb int; BEGIN
+  IF current_setting('probe.st_ready',true)<>'1' OR current_setting('probe.st_rpc',true)<>'1' THEN PERFORM set_config('probe.p181','N/A (pendiente 092)',false);
+  ELSE
+    v := public.stats_finanzas_sucursal('2000-01-01','2999-12-31');
+    SELECT (e->>'total_dispensado')::numeric, (e->>'dispensaciones')::int INTO v_tot, v_n FROM jsonb_array_elements(v) e WHERE (e->>'sucursal_id')::int = NULLIF(current_setting('probe.st_fa1',true),'')::int;
+    SELECT count(*) INTO v_fb FROM jsonb_array_elements(v) e WHERE (e->>'sucursal_id')::int = NULLIF(current_setting('probe.cat_fB',true),'')::int;
+    IF v_tot=70 AND v_n=7 AND v_fb=0 THEN PERFORM set_config('probe.p181','OK (sucA1 total=70/7 completadas; rechazada excluida; empB ausente)',false);
+    ELSE PERFORM set_config('probe.p181','FALLO (tot='||COALESCE(v_tot::text,'?')||' n='||COALESCE(v_n::text,'?')||' fb='||v_fb||')',false); END IF;
+  END IF;
+EXCEPTION WHEN others THEN PERFORM set_config('probe.p181','FALLO ('||SQLERRM||')',false); END $$;
+
+-- P182 — S-POS2: admin (recetas_reportes) → stats_recetas: STATPOP presente; sin paciente/medico/receta
+DO $$ DECLARE v jsonb; n_pop int; BEGIN
+  IF current_setting('probe.st_ready',true)<>'1' OR current_setting('probe.st_rpc',true)<>'1' THEN PERFORM set_config('probe.p182','N/A (pendiente 092)',false);
+  ELSE
+    v := public.stats_recetas_sucursal('2000-01-01','2999-12-31');
+    SELECT count(*) INTO n_pop FROM jsonb_array_elements(v) e WHERE e->>'medicamento'='STATPOP' AND (e->>'veces_dispensado')::int = 6;
+    IF n_pop=1 THEN PERFORM set_config('probe.p182','OK (STATPOP veces=6 por nombre; agregado)',false);
+    ELSE PERFORM set_config('probe.p182','FALLO (n_pop='||n_pop||')',false); END IF;
+  END IF;
+EXCEPTION WHEN others THEN PERFORM set_config('probe.p182','FALLO ('||SQLERRM||')',false); END $$;
+
+-- P183 — S-NEG1: cajero (sin finanzas_reportes) → stats_finanzas BLOQUEADO
+SELECT set_config('role','none',true);
+SELECT set_config('request.jwt.claims', json_build_object('sub', current_setting('probe.cat_sin', true), 'role','authenticated')::text, true);
+SELECT set_config('role','authenticated',true);
+DO $$ BEGIN
+  IF current_setting('probe.st_rpc',true)<>'1' THEN PERFORM set_config('probe.p183','N/A (pendiente 092)',false);
+  ELSE BEGIN PERFORM public.stats_finanzas_sucursal('2000-01-01','2999-12-31'); PERFORM set_config('probe.p183','FALLO (PERMITIDO sin finanzas_reportes)',false);
+       EXCEPTION WHEN others THEN PERFORM set_config('probe.p183','BLOQUEADO ('||SQLSTATE||')',false); END;
+  END IF;
+END $$;
+
+-- P184 — S-NEG2: finanzas (tiene finanzas_reportes, NO recetas_reportes) → stats_recetas BLOQUEADO (separación)
+SELECT set_config('role','none',true);
+SELECT set_config('request.jwt.claims', json_build_object('sub', current_setting('probe.rx_norx', true), 'role','authenticated')::text, true);
+SELECT set_config('role','authenticated',true);
+DO $$ BEGIN
+  IF current_setting('probe.rx_ready',true)<>'1' OR current_setting('probe.st_rpc',true)<>'1' THEN PERFORM set_config('probe.p184','N/A (pendiente 092)',false);
+  ELSE BEGIN PERFORM public.stats_recetas_sucursal('2000-01-01','2999-12-31'); PERFORM set_config('probe.p184','FALLO (financiero pudo ver clínico)',false);
+       EXCEPTION WHEN others THEN PERFORM set_config('probe.p184','BLOQUEADO ('||SQLSTATE||')',false); END;
+  END IF;
+END $$;
+
+-- P185 — S-NEG3: anon → ambas BLOQUEADO
+SELECT set_config('role','none',true);
+SELECT set_config('request.jwt.claims', '{"role":"anon"}', true);
+SELECT set_config('role','anon',true);
+DO $$ DECLARE a boolean:=false; b boolean:=false; BEGIN
+  IF current_setting('probe.st_rpc',true)<>'1' THEN PERFORM set_config('probe.p185','N/A (pendiente 092)',false);
+  ELSE
+    BEGIN PERFORM public.stats_finanzas_sucursal('2000-01-01','2999-12-31'); EXCEPTION WHEN others THEN a:=true; END;
+    BEGIN PERFORM public.stats_recetas_sucursal('2000-01-01','2999-12-31'); EXCEPTION WHEN others THEN b:=true; END;
+    IF a AND b THEN PERFORM set_config('probe.p185','BLOQUEADO (anon en ambas)',false);
+    ELSE PERFORM set_config('probe.p185','FALLO (fin='||a||' rec='||b||')',false); END IF;
+  END IF;
+END $$;
+
+-- P186 — S-NEG4 (no-regresión empresa↔empresa): stats de A NO incluyen empB (ni sucursal ni STATB)
+SELECT set_config('role','none',true);
+SELECT set_config('request.jwt.claims', json_build_object('sub', current_setting('probe.cat_inv', true), 'role','authenticated')::text, true);
+SELECT set_config('role','authenticated',true);
+DO $$ DECLARE vf jsonb; vr jsonb; n_fb int; n_statb int; BEGIN
+  IF current_setting('probe.st_ready',true)<>'1' OR current_setting('probe.st_rpc',true)<>'1' THEN PERFORM set_config('probe.p186','N/A (pendiente 092)',false);
+  ELSE
+    vf := public.stats_finanzas_sucursal('2000-01-01','2999-12-31');
+    vr := public.stats_recetas_sucursal('2000-01-01','2999-12-31');
+    SELECT count(*) INTO n_fb FROM jsonb_array_elements(vf) e WHERE (e->>'sucursal_id')::int = NULLIF(current_setting('probe.cat_fB',true),'')::int;
+    SELECT count(*) INTO n_statb FROM jsonb_array_elements(vr) e WHERE e->>'medicamento'='STATB';
+    IF n_fb=0 AND n_statb=0 THEN PERFORM set_config('probe.p186','OK (empB excluida de finanzas y recetas)',false);
+    ELSE PERFORM set_config('probe.p186','FALLO (fb='||n_fb||' statb='||n_statb||')',false); END IF;
+  END IF;
+EXCEPTION WHEN others THEN PERFORM set_config('probe.p186','FALLO ('||SQLERRM||')',false); END $$;
+
+-- P187 — S-NEG5 (PHI): payload de stats_recetas sin paciente/medico_id/receta
+DO $$ DECLARE v jsonb; BEGIN
+  IF current_setting('probe.st_ready',true)<>'1' OR current_setting('probe.st_rpc',true)<>'1' THEN PERFORM set_config('probe.p187','N/A (pendiente 092)',false);
+  ELSE
+    v := public.stats_recetas_sucursal('2000-01-01','2999-12-31');
+    IF v::text NOT ILIKE '%paciente%' AND v::text NOT ILIKE '%medico_id%' AND v::text NOT ILIKE '%receta%'
+      THEN PERFORM set_config('probe.p187','OK (sin paciente/medico_id/receta)',false);
+      ELSE PERFORM set_config('probe.p187','FALLO (PHI en payload)',false); END IF;
+  END IF;
+EXCEPTION WHEN others THEN PERFORM set_config('probe.p187','FALLO ('||SQLERRM||')',false); END $$;
+
+-- P188 — S-NEG5b: payload de stats_finanzas SIN clave 'medicamento' (separación a nivel payload)
+DO $$ DECLARE v jsonb; BEGIN
+  IF current_setting('probe.st_ready',true)<>'1' OR current_setting('probe.st_rpc',true)<>'1' THEN PERFORM set_config('probe.p188','N/A (pendiente 092)',false);
+  ELSE
+    v := public.stats_finanzas_sucursal('2000-01-01','2999-12-31');
+    IF v::text NOT ILIKE '%medicamento%' THEN PERFORM set_config('probe.p188','OK (finanzas sin clave medicamento)',false);
+    ELSE PERFORM set_config('probe.p188','FALLO (medicamento en payload financiero)',false); END IF;
+  END IF;
+EXCEPTION WHEN others THEN PERFORM set_config('probe.p188','FALLO ('||SQLERRM||')',false); END $$;
+
+-- P189 — S-NEG6 (celdas pequeñas): STATRARE (veces<k) NO aparece por nombre; STATPOP sí; '(otros)' presente
+DO $$ DECLARE v jsonb; n_rare int; n_pop int; n_otros int; BEGIN
+  IF current_setting('probe.st_ready',true)<>'1' OR current_setting('probe.st_rpc',true)<>'1' THEN PERFORM set_config('probe.p189','N/A (pendiente 092)',false);
+  ELSE
+    v := public.stats_recetas_sucursal('2000-01-01','2999-12-31');
+    SELECT count(*) INTO n_rare FROM jsonb_array_elements(v) e WHERE e->>'medicamento'='STATRARE';
+    SELECT count(*) INTO n_pop FROM jsonb_array_elements(v) e WHERE e->>'medicamento'='STATPOP';
+    SELECT count(*) INTO n_otros FROM jsonb_array_elements(v) e WHERE e->>'medicamento'='(otros)';
+    IF n_rare=0 AND n_pop=1 AND n_otros>=1 THEN PERFORM set_config('probe.p189','OK (STATRARE suprimida→(otros); STATPOP visible)',false);
+    ELSE PERFORM set_config('probe.p189','FALLO (rare='||n_rare||' pop='||n_pop||' otros='||n_otros||')',false); END IF;
+  END IF;
+EXCEPTION WHEN others THEN PERFORM set_config('probe.p189','FALLO ('||SQLERRM||')',false); END $$;
+
+-- P190 — S-SUC (sucursal-aware): usuario scoped a sucursal A solo ve A en stats (no la 2da sucursal empA)
+SELECT set_config('role','none',true);
+DO $$ DECLARE v jsonb; n_a int; n_a2 int; BEGIN
+  IF current_setting('probe.st_ready',true)<>'1' OR current_setting('probe.st_rpc',true)<>'1' THEN PERFORM set_config('probe.p190','N/A (pendiente 092)',false);
+  ELSE
+    -- atar rx_norx (finanzas) a la sucursal A1; mi_sucursal() (DEFINER) lo lee vía auth.uid()
+    UPDATE public.cuentas_proveedor SET sucursal_id = NULLIF(current_setting('probe.st_fa1',true),'')::int WHERE id = NULLIF(current_setting('probe.rx_norx',true),'')::uuid;
+    PERFORM set_config('request.jwt.claims', json_build_object('sub', current_setting('probe.rx_norx', true))::text, true);
+    v := public.stats_finanzas_sucursal('2000-01-01','2999-12-31');
+    SELECT count(*) INTO n_a  FROM jsonb_array_elements(v) e WHERE (e->>'sucursal_id')::int = NULLIF(current_setting('probe.st_fa1',true),'')::int;
+    SELECT count(*) INTO n_a2 FROM jsonb_array_elements(v) e WHERE (e->>'sucursal_id')::int = NULLIF(current_setting('probe.st_fa2',true),'')::int;
+    IF n_a=1 AND n_a2=0 THEN PERFORM set_config('probe.p190','OK (scoped a A1 ve solo A1, no la 2da sucursal)',false);
+    ELSE PERFORM set_config('probe.p190','FALLO (a='||n_a||' a2='||n_a2||')',false); END IF;
+  END IF;
+EXCEPTION WHEN others THEN PERFORM set_config('probe.p190','FALLO ('||SQLERRM||')',false); END $$;
+SELECT set_config('role','none',true);
+
 -- ===== Veredictos como result set =====
 SELECT 'P1_anon_insert_citas'              AS probe, current_setting('probe.p1', true)  AS verdict, 'BLOQUEADO' AS esperado_post_fix
 UNION ALL SELECT 'P2_medico_cancela_ajena_rpc',         current_setting('probe.p2', true),  'BLOQUEADO'
@@ -3220,6 +3395,16 @@ UNION ALL SELECT 'P176_C1_crear_sin_permiso',            current_setting('probe.
 UNION ALL SELECT 'P177_C1_empresa_forzada',              current_setting('probe.p177', true), 'OK'
 UNION ALL SELECT 'P178_C1_mi_sucursal_null',             current_setting('probe.p178', true), 'OK'
 UNION ALL SELECT 'P179_C1_no_proveedor_bloqueado',       current_setting('probe.p179', true), 'BLOQUEADO'
-UNION ALL SELECT 'P180_C1_borrar_sucursal_scoped_restrict', current_setting('probe.p180', true), 'BLOQUEADO';
+UNION ALL SELECT 'P180_C1_borrar_sucursal_scoped_restrict', current_setting('probe.p180', true), 'BLOQUEADO'
+UNION ALL SELECT 'P181_S_finanzas_pos',                   current_setting('probe.p181', true), 'OK'
+UNION ALL SELECT 'P182_S_recetas_pos',                    current_setting('probe.p182', true), 'OK'
+UNION ALL SELECT 'P183_S_finanzas_sin_permiso',           current_setting('probe.p183', true), 'BLOQUEADO'
+UNION ALL SELECT 'P184_S_recetas_separacion',             current_setting('probe.p184', true), 'BLOQUEADO'
+UNION ALL SELECT 'P185_S_anon',                           current_setting('probe.p185', true), 'BLOQUEADO'
+UNION ALL SELECT 'P186_S_empresa_isolation',              current_setting('probe.p186', true), 'OK'
+UNION ALL SELECT 'P187_S_phi_minima',                     current_setting('probe.p187', true), 'OK'
+UNION ALL SELECT 'P188_S_finanzas_sin_medicamento',       current_setting('probe.p188', true), 'OK'
+UNION ALL SELECT 'P189_S_celdas_pequenas',                current_setting('probe.p189', true), 'OK'
+UNION ALL SELECT 'P190_S_sucursal_aware',                 current_setting('probe.p190', true), 'OK';
 
 ROLLBACK;  -- nada de lo anterior se persiste
