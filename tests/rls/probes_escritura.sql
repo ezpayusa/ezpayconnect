@@ -2946,6 +2946,107 @@ DO $$ DECLARE n1 int; n2 int; n3 int; BEGIN
 END $$;
 SELECT set_config('role','none',true);
 
+-- ============================================================
+-- FRENTE C.1 · Maquinaria de sucursal (P175–P179). Rojo-primero: pre-091 las funciones
+-- no existen → N/A (pendiente 091). Reusa el fixture de catálogo (cat_inv=admin empA,
+-- cat_sin=cajero empA, cat_fA/cat_fB=farmacias empA/empB, probe.medico=médico).
+-- ============================================================
+-- guarda: ¿existe la maquinaria C.1?
+DO $$ BEGIN
+  PERFORM set_config('probe.c1_rpc',
+    CASE WHEN to_regprocedure('public.crear_sucursal(text,text,text,text,text)') IS NOT NULL
+          AND to_regprocedure('private.mi_sucursal()') IS NOT NULL
+         THEN '1' ELSE '0' END, false);
+END $$;
+
+-- P175 — C-POS1: admin crea sucursal → OK; empresa de la sucursal = la del actor (forzada)
+SELECT set_config('role','none',true);
+SELECT set_config('request.jwt.claims', json_build_object('sub', current_setting('probe.cat_inv', true), 'role','authenticated')::text, true);
+SELECT set_config('role','authenticated',true);
+DO $$ DECLARE v_id int; v_emp uuid; v_exp uuid; BEGIN
+  IF current_setting('probe.cat_ready',true)<>'1' OR current_setting('probe.c1_rpc',true)<>'1' THEN PERFORM set_config('probe.p175','N/A (pendiente 091)',false);
+  ELSE
+    v_id := public.crear_sucursal('C1 SUC POS', 'Dir 1', NULL, NULL, NULL);
+    SELECT empresa_id INTO v_emp FROM public.farmacias WHERE id = v_id;
+    SELECT empresa_id INTO v_exp FROM public.farmacias WHERE id = NULLIF(current_setting('probe.cat_fA',true),'')::int;
+    IF v_id IS NOT NULL AND v_emp = v_exp THEN PERFORM set_config('probe.p175','OK (creada id='||v_id||', empresa forzada = la del actor)',false);
+    ELSE PERFORM set_config('probe.p175','FALLO (id='||COALESCE(v_id::text,'?')||' emp='||COALESCE(v_emp::text,'?')||' exp='||COALESCE(v_exp::text,'?')||')',false); END IF;
+  END IF;
+EXCEPTION WHEN others THEN PERFORM set_config('probe.p175','FALLO ('||SQLERRM||')',false); END $$;
+
+-- P176 — C-NEG4: cajero (sin sucursales_gestionar) crea → BLOQUEADO
+SELECT set_config('role','none',true);
+SELECT set_config('request.jwt.claims', json_build_object('sub', current_setting('probe.cat_sin', true), 'role','authenticated')::text, true);
+SELECT set_config('role','authenticated',true);
+DO $$ BEGIN
+  IF current_setting('probe.cat_ready',true)<>'1' OR current_setting('probe.c1_rpc',true)<>'1' THEN PERFORM set_config('probe.p176','N/A (pendiente 091)',false);
+  ELSE
+    BEGIN PERFORM public.crear_sucursal('C1 SUC CAJERO'); PERFORM set_config('probe.p176','FALLO (PERMITIDO sin permiso)',false);
+    EXCEPTION WHEN others THEN PERFORM set_config('probe.p176','BLOQUEADO ('||SQLERRM||')',false); END;
+  END IF;
+END $$;
+
+-- P177 — C-NEG5: empresa FORZADA — admin de A crea → empresa = A y NUNCA la de B
+SELECT set_config('role','none',true);
+SELECT set_config('request.jwt.claims', json_build_object('sub', current_setting('probe.cat_inv', true), 'role','authenticated')::text, true);
+SELECT set_config('role','authenticated',true);
+DO $$ DECLARE v_id int; v_emp uuid; v_a uuid; v_b uuid; BEGIN
+  IF current_setting('probe.cat_ready',true)<>'1' OR current_setting('probe.c1_rpc',true)<>'1' THEN PERFORM set_config('probe.p177','N/A (pendiente 091)',false);
+  ELSE
+    v_id := public.crear_sucursal('C1 SUC FORZADA');
+    SELECT empresa_id INTO v_emp FROM public.farmacias WHERE id = v_id;
+    SELECT empresa_id INTO v_a FROM public.farmacias WHERE id = NULLIF(current_setting('probe.cat_fA',true),'')::int;
+    SELECT empresa_id INTO v_b FROM public.farmacias WHERE id = NULLIF(current_setting('probe.cat_fB',true),'')::int;
+    IF v_emp = v_a AND v_emp <> v_b THEN PERFORM set_config('probe.p177','OK (empresa = A, NUNCA B; sin parámetro de empresa)',false);
+    ELSE PERFORM set_config('probe.p177','FALLO (emp='||COALESCE(v_emp::text,'?')||' A='||COALESCE(v_a::text,'?')||' B='||COALESCE(v_b::text,'?')||')',false); END IF;
+  END IF;
+EXCEPTION WHEN others THEN PERFORM set_config('probe.p177','FALLO ('||SQLERRM||')',false); END $$;
+
+-- P178 — mi_sucursal() = NULL para empresa-wide (admin) Y para no-proveedor (médico)
+DO $$ DECLARE v_admin int; v_med int; BEGIN
+  IF current_setting('probe.c1_rpc',true)<>'1' THEN PERFORM set_config('probe.p178','N/A (pendiente 091)',false);
+  ELSE
+    -- mi_sucursal() es SECURITY DEFINER: solo necesita auth.uid() vía jwt.claims (no el role).
+    PERFORM set_config('request.jwt.claims', json_build_object('sub', current_setting('probe.cat_inv', true))::text, true);
+    SELECT private.mi_sucursal() INTO v_admin;
+    PERFORM set_config('request.jwt.claims', json_build_object('sub', current_setting('probe.medico', true))::text, true);
+    SELECT private.mi_sucursal() INTO v_med;
+    IF v_admin IS NULL AND v_med IS NULL THEN PERFORM set_config('probe.p178','OK (admin empresa-wide NULL; médico no-proveedor NULL)',false);
+    ELSE PERFORM set_config('probe.p178','FALLO (admin='||COALESCE(v_admin::text,'NULL')||' medico='||COALESCE(v_med::text,'NULL')||')',false); END IF;
+  END IF;
+EXCEPTION WHEN others THEN PERFORM set_config('role','none',true); PERFORM set_config('probe.p178','FALLO ('||SQLERRM||')',false); END $$;
+
+-- P179 — C no-proveedor: médico crea sucursal → BLOQUEADO (lo frena el gate de permiso/empresa)
+SELECT set_config('role','none',true);
+SELECT set_config('request.jwt.claims', json_build_object('sub', current_setting('probe.medico', true), 'role','authenticated')::text, true);
+SELECT set_config('role','authenticated',true);
+DO $$ BEGIN
+  IF current_setting('probe.c1_rpc',true)<>'1' THEN PERFORM set_config('probe.p179','N/A (pendiente 091)',false);
+  ELSE
+    BEGIN PERFORM public.crear_sucursal('C1 SUC MEDICO'); PERFORM set_config('probe.p179','FALLO (PERMITIDO no-proveedor)',false);
+    EXCEPTION WHEN others THEN PERFORM set_config('probe.p179','BLOQUEADO ('||SQLERRM||')',false); END;
+  END IF;
+END $$;
+
+-- P180 — fail-closed: borrar una sucursal con staff scoped (sucursal_id=X) → BLOQUEADO
+-- por el FK ON DELETE RESTRICT. Sucursal fresca (sin otras refs) para aislar este FK.
+-- Como owner (role none) para bypassear RLS y que el FK sea el único blocker.
+SELECT set_config('role','none',true);
+SELECT set_config('request.jwt.claims', json_build_object('sub', current_setting('probe.cat_inv', true))::text, true);
+DO $$ DECLARE v_id int; BEGIN
+  IF current_setting('probe.cat_ready',true)<>'1' OR current_setting('probe.c1_rpc',true)<>'1' THEN PERFORM set_config('probe.p180','N/A (pendiente 091)',false);
+  ELSE
+    v_id := public.crear_sucursal('C1 SUC P180');   -- DEFINER; auth.uid()=cat_inv (admin) → permitido
+    UPDATE public.cuentas_proveedor SET sucursal_id = v_id WHERE id = NULLIF(current_setting('probe.cat_sin',true),'')::uuid;
+    BEGIN
+      DELETE FROM public.farmacias WHERE id = v_id;
+      PERFORM set_config('probe.p180','FALLO (borró sucursal con staff scoped — fail-open)',false);
+    EXCEPTION WHEN foreign_key_violation THEN PERFORM set_config('probe.p180','BLOQUEADO (FK RESTRICT, fail-closed)',false);
+             WHEN others THEN PERFORM set_config('probe.p180','BLOQUEADO ('||SQLSTATE||')',false); END;
+  END IF;
+EXCEPTION WHEN others THEN PERFORM set_config('probe.p180','FALLO ('||SQLERRM||')',false); END $$;
+SELECT set_config('role','none',true);
+
 -- ===== Veredictos como result set =====
 SELECT 'P1_anon_insert_citas'              AS probe, current_setting('probe.p1', true)  AS verdict, 'BLOQUEADO' AS esperado_post_fix
 UNION ALL SELECT 'P2_medico_cancela_ajena_rpc',         current_setting('probe.p2', true),  'BLOQUEADO'
@@ -3113,6 +3214,12 @@ UNION ALL SELECT 'P170_lectura_directa_tabla_oculta',    current_setting('probe.
 UNION ALL SELECT 'P171_farmaceutico_requerido',          current_setting('probe.p171', true), 'BLOQUEADO'
 UNION ALL SELECT 'P172_edge_sin_recetas_avanzadas',      current_setting('probe.p172', true), 'BLOQUEADO'
 UNION ALL SELECT 'P173_auditoria_despachado_por',        current_setting('probe.p173', true), 'OK'
-UNION ALL SELECT 'P174_token_no_filtrado',               current_setting('probe.p174', true), 'OK';
+UNION ALL SELECT 'P174_token_no_filtrado',               current_setting('probe.p174', true), 'OK'
+UNION ALL SELECT 'P175_C1_crear_sucursal_pos',           current_setting('probe.p175', true), 'OK'
+UNION ALL SELECT 'P176_C1_crear_sin_permiso',            current_setting('probe.p176', true), 'BLOQUEADO'
+UNION ALL SELECT 'P177_C1_empresa_forzada',              current_setting('probe.p177', true), 'OK'
+UNION ALL SELECT 'P178_C1_mi_sucursal_null',             current_setting('probe.p178', true), 'OK'
+UNION ALL SELECT 'P179_C1_no_proveedor_bloqueado',       current_setting('probe.p179', true), 'BLOQUEADO'
+UNION ALL SELECT 'P180_C1_borrar_sucursal_scoped_restrict', current_setting('probe.p180', true), 'BLOQUEADO';
 
 ROLLBACK;  -- nada de lo anterior se persiste
