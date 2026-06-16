@@ -15,12 +15,10 @@ import {
   CheckCircle,
   X,
   Loader2,
-  QrCode,
   Pill,
   Clock,
   ChevronDown
 } from 'lucide-react'
-import { useNavigate } from 'react-router-dom'
 
 interface Farmacia {
   id: number
@@ -50,7 +48,6 @@ const DIAS_SEMANA = ['Lunes', 'Martes', 'Miercoles', 'Jueves', 'Viernes', 'Sabad
 const HORAS = Array.from({ length: 24 }, (_, i) => `${String(i).padStart(2, '0')}:00`)
 
 export default function FarmaciasPage() {
-  const navigate = useNavigate()
   const { user } = useAuth()
   const [activeTab, setActiveTab] = useState<'farmacias' | 'inventario' | 'alertas'>('farmacias')
   const [farmacias, setFarmacias] = useState<Farmacia[]>([])
@@ -322,13 +319,6 @@ export default function FarmaciasPage() {
         >
           <Plus size={20} />
           {activeTab === 'farmacias' ? 'Nueva Farmacia' : 'Nuevo Medicamento'}
-        </button>
-        <button
-          onClick={() => navigate('/dispensar-receta')}
-          className="px-4 py-3 bg-green-600 hover:bg-green-700 text-white rounded-lg font-semibold flex items-center gap-2 transition-colors"
-        >
-          <QrCode size={20} />
-          Dispensar Receta
         </button>
       </div>
 

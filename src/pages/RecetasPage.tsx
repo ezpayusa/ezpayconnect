@@ -12,7 +12,7 @@ import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Badge } from '@/components/ui/badge'
-import { FileText, Plus, Trash2, Search, Printer, Eye, Loader2, X, Download, Mail, QrCode, ArrowLeft, MapPin, FlaskConical, CheckCircle2 } from 'lucide-react'
+import { FileText, Plus, Trash2, Search, Printer, Eye, Loader2, X, Download, Mail, ArrowLeft, MapPin, FlaskConical, CheckCircle2 } from 'lucide-react'
 import type { RecetaItem } from '@/types'
 import EnviarRecetaEmail from '@/components/recetas/EnviarRecetaEmail'
 import { useNavigate } from 'react-router-dom'
@@ -43,12 +43,6 @@ export default function RecetasPage() {
     receta: any, items: any[], paciente: any
   } | null>(null)
 
-  // Estados para modal QR
-  const [showQRModal, setShowQRModal] = useState(false)
-  const [qrRecetaData, setQrRecetaData] = useState<{
-    receta: any, paciente: any
-  } | null>(null)
-
   // ============================================================
   // NUEVO: Estados para modales de Farmacia / Laboratorio
   // ============================================================
@@ -62,9 +56,6 @@ export default function RecetasPage() {
   })
   const [items, setItems] = useState<Partial<RecetaItem>[]>([])
   const [formError, setFormError] = useState('')
-
-  // URL base para QR (usa dominio si está verificado, fallback a vercel)
-  const QR_BASE_URL = 'https://med.ezpayconnect.com/dispensar-receta'
 
   const handleAddMedicamento = (med: typeof medicamentos[0]) => {
     setItems([...items, {
@@ -281,15 +272,6 @@ export default function RecetasPage() {
     }
   }
 
-  // Generar QR para dispensar receta
-  const handleGenerarQR = async (recetaId: number) => {
-    const data = await getRecetaCompleta(recetaId)
-    if (data.receta) {
-      setQrRecetaData(data)
-      setShowQRModal(true)
-    }
-  }
-
   // Cambiar estado
   const handleEstadoChange = async (id: number, estado: string) => {
     await updateReceta(id, { estado: estado as any })
@@ -394,14 +376,6 @@ export default function RecetasPage() {
                       title="Enviar por email"
                     >
                       <Mail className="h-4 w-4 text-[#3A8ABF]" />
-                    </Button>
-                    <Button 
-                      variant="ghost" 
-                      size="sm" 
-                      onClick={() => handleGenerarQR(r.id)}
-                      title="Generar QR para dispensar"
-                    >
-                      <QrCode className="h-4 w-4 text-[#22c55e]" />
                     </Button>
                     <Button 
                       variant="ghost" 
@@ -754,71 +728,6 @@ export default function RecetasPage() {
         medicamentos={emailRecetaData?.items || []}
         medicoNombre={perfil?.nombre_completo}
       />
-
-      {/* Dialog: Generar QR para Dispensar */}
-      <Dialog open={showQRModal} onOpenChange={setShowQRModal}>
-        <DialogContent className="max-w-md">
-          <DialogHeader>
-            <DialogTitle className="flex items-center gap-2">
-              <QrCode className="h-5 w-5 text-[#22c55e]" />
-              QR para Dispensar Receta
-            </DialogTitle>
-          </DialogHeader>
-
-          {qrRecetaData && (
-            <div className="space-y-6">
-              {/* Info de la receta */}
-              <div className="bg-[#e8f0f8] p-4 rounded-lg space-y-2">
-                <p className="font-medium text-[#1a2a3a]">
-                  Paciente: {qrRecetaData.paciente?.nombre} {qrRecetaData.paciente?.apellido}
-                </p>
-                <p className="text-sm text-[#8a9aaa]">
-                  Código: <span className="font-mono">{qrRecetaData.receta?.codigo_qr || `EZP-${qrRecetaData.receta?.id}`}</span>
-                </p>
-                <p className="text-sm text-[#8a9aaa]">
-                  Estado: <Badge variant="outline" className={getEstadoColor(qrRecetaData.receta?.estado)}>
-                    {qrRecetaData.receta?.estado}
-                  </Badge>
-                </p>
-              </div>
-
-              {/* QR Code generado con URL del dominio */}
-              <div className="flex flex-col items-center gap-4">
-                <div className="bg-white p-4 rounded-xl shadow-lg border-2 border-[#1E5C8E]/20">
-                  <img 
-                    src={`https://api.qrserver.com/v1/create-qr-code/?size=250x250&data=${encodeURIComponent(`${QR_BASE_URL}?codigo=${qrRecetaData.receta?.codigo_qr || `EZP-${qrRecetaData.receta?.id}`}`)}`}
-                    alt="QR Receta"
-                    className="w-[250px] h-[250px]"
-                  />
-                </div>
-                <p className="text-sm text-[#8a9aaa] text-center">
-                  Escanea este código en la farmacia para dispensar la receta
-                </p>
-                <p className="text-xs text-[#1E5C8E] text-center font-mono break-all">
-                  {QR_BASE_URL}?codigo={qrRecetaData.receta?.codigo_qr || `EZP-${qrRecetaData.receta?.id}`}
-                </p>
-              </div>
-
-              {/* Botones */}
-              <div className="flex gap-3 justify-center">
-                <Button variant="outline" onClick={() => setShowQRModal(false)}>
-                  <X className="h-4 w-4 mr-2" /> Cerrar
-                </Button>
-                <Button 
-                  variant="outline"
-                  className="border-[#1E5C8E] text-[#1E5C8E] hover:bg-[#e8f0f8]"
-                  onClick={() => {
-                    const qrUrl = `https://api.qrserver.com/v1/create-qr-code/?size=400x400&data=${encodeURIComponent(`${QR_BASE_URL}?codigo=${qrRecetaData.receta?.codigo_qr || `EZP-${qrRecetaData.receta?.id}`}`)}`
-                    window.open(qrUrl, '_blank')
-                  }}
-                >
-                  <Download className="h-4 w-4 mr-2" /> Descargar QR
-                </Button>
-              </div>
-            </div>
-          )}
-        </DialogContent>
-      </Dialog>
 
       {/* ============================================================ */}
       {/* NUEVO: Modal de busqueda de FARMACIAS */}

@@ -15,7 +15,6 @@ import {
   Printer,
   Download,
   Mail,
-  QrCode,
   Pill,
   Clock,
   Calendar,
@@ -26,8 +25,6 @@ import {
   AlertTriangle
 } from 'lucide-react'
 
-import { QRCodeSVG } from 'qrcode.react'
-
 export default function RecetaDetallePage() {
   const { id } = useParams<{ id: string }>()
   const navigate = useNavigate()
@@ -36,7 +33,6 @@ export default function RecetaDetallePage() {
 
   const [receta, setReceta] = useState<any>(null)
   const [loading, setLoading] = useState(true)
-  const [showQR, setShowQR] = useState(false)
   const [showEmailModal, setShowEmailModal] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
@@ -84,13 +80,6 @@ export default function RecetaDetallePage() {
 
     cargarReceta()
   }, [recetaId, getRecetaCompleta])
-
-  // === QR URL para dispensar receta en farmacia ===
-  const getQRUrl = () => {
-    if (!receta) return ''
-    const codigo = receta.codigo_qr || `EZP-${receta.id}`
-    return `https://med.ezpayconnect.com/dispensar-receta?codigo=${codigo}`
-  }
 
   // === HANDLERS ===
   const handleDescargarPDF = () => {
@@ -164,7 +153,6 @@ export default function RecetaDetallePage() {
     weekday: 'long', year: 'numeric', month: 'long', day: 'numeric'
   })
 
-  const tieneFarmaciaAsignada = receta.items?.some((item: any) => item.farmacia || item.farmacia_id)
 
   return (
     <div className="min-h-screen bg-gray-50 p-4 md:p-6">
@@ -195,39 +183,8 @@ export default function RecetaDetallePage() {
               <Mail className="h-4 w-4" />
               Email
             </Button>
-            <Button
-              variant={showQR ? 'default' : 'outline'}
-              onClick={() => setShowQR(!showQR)}
-              className="gap-2"
-            >
-              <QrCode className="h-4 w-4" />
-              {showQR ? 'Ocultar QR' : 'Ver QR'}
-            </Button>
           </div>
         </div>
-
-        {/* === QR CODE === */}
-        {showQR && (
-          <Card className="border-dashed border-2 border-[#1E5C8E]">
-            <CardContent className="p-6 flex flex-col items-center gap-4">
-              <QRCodeSVG
-                value={getQRUrl()}
-                size={200}
-                level="H"
-                includeMargin={true}
-              />
-              <div className="text-center space-y-1">
-                <p className="text-sm font-medium text-[#1a2a3a]">Escanea para ver en farmacia</p>
-                <p className="text-xs text-gray-500 break-all max-w-sm">{getQRUrl()}</p>
-                {tieneFarmaciaAsignada && (
-                  <Badge variant="outline" className="mt-2 bg-green-50 text-green-700 border-green-200">
-                    Farmacia asignada incluida en el QR
-                  </Badge>
-                )}
-              </div>
-            </CardContent>
-          </Card>
-        )}
 
         {/* === INFO GENERAL === */}
         <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
