@@ -2436,6 +2436,236 @@ DO $$ DECLARE v_b_intacto bool; BEGIN
   END IF;
 END $$;
 
+-- ============================================================
+-- INCREMENTO 5 (Frente A) · Catálogo de farmacia + CSV · P149–P158
+-- Fixture (ROLLBACK): empresa farmacia A (sucursal + cuenta admin c/ inventario_editar
+-- + cuenta cajero SIN permiso) + empresa farmacia B (sucursal + med ajeno).
+-- P149–P152 corren siempre (RLS escritura ya existe; P151 = lectura, rojo pre-086).
+-- P153–P158 guardan en el RPC cargar_catalogo_farmacia (N/A pre-086).
+-- ============================================================
+SELECT set_config('role','none',true);
+DO $$
+DECLARE v_pais uuid; v_eA uuid; v_eB uuid; v_fA int; v_fB int; v_inv uuid; v_sin uuid; v_mA uuid; v_mB uuid; v_clin uuid;
+BEGIN
+  SELECT pais_id INTO v_pais FROM public.empresas_proveedoras WHERE tipo='empresa_afin' LIMIT 1;
+  SELECT id INTO v_inv FROM public.cuentas_proveedor ORDER BY id LIMIT 1 OFFSET 10;
+  SELECT id INTO v_sin FROM public.cuentas_proveedor ORDER BY id LIMIT 1 OFFSET 11;
+  -- actor clínico NO-médico, NO-proveedor (enfermera/asistente → perfil rol no medico/super_admin)
+  SELECT id INTO v_clin FROM public.perfiles WHERE rol NOT IN ('medico','super_admin')
+    AND id NOT IN (SELECT id FROM public.cuentas_proveedor) ORDER BY id LIMIT 1;
+  IF v_sin IS NULL THEN
+    PERFORM set_config('probe.cat_ready','0',false);
+    PERFORM set_config('probe.p149','N/A (datos insuficientes)',false);
+    PERFORM set_config('probe.p150','N/A',false); PERFORM set_config('probe.p151','N/A',false);
+    PERFORM set_config('probe.p152','N/A',false); PERFORM set_config('probe.p153','N/A',false);
+    PERFORM set_config('probe.p154','N/A',false); PERFORM set_config('probe.p155','N/A',false);
+    PERFORM set_config('probe.p156','N/A',false); PERFORM set_config('probe.p157','N/A',false);
+    PERFORM set_config('probe.p158','N/A',false);
+    PERFORM set_config('probe.p159','N/A',false); PERFORM set_config('probe.p160','N/A',false); RETURN;
+  END IF;
+  PERFORM set_config('probe.cat_ready','1',false);
+  INSERT INTO public.empresas_proveedoras (nombre_empresa,email_contacto,tipo,pais_id,estado) VALUES ('CAT FarmA','cata@p.test','farmacia',v_pais,'activa') RETURNING id INTO v_eA;
+  INSERT INTO public.empresas_proveedoras (nombre_empresa,email_contacto,tipo,pais_id,estado) VALUES ('CAT FarmB','catb@p.test','farmacia',v_pais,'activa') RETURNING id INTO v_eB;
+  INSERT INTO public.farmacias (nombre,empresa_id,tipo,pais_id) VALUES ('CAT SucA',v_eA,'farmacia',v_pais) RETURNING id INTO v_fA;
+  INSERT INTO public.farmacias (nombre,empresa_id,tipo,pais_id) VALUES ('CAT SucB',v_eB,'farmacia',v_pais) RETURNING id INTO v_fB;
+  UPDATE public.cuentas_proveedor SET empresa_id=v_eA, rol_en_empresa='admin',  activo=true, equipo_id=NULL WHERE id=v_inv;
+  UPDATE public.cuentas_proveedor SET empresa_id=v_eA, rol_en_empresa='cajero', activo=true, equipo_id=NULL WHERE id=v_sin;
+  INSERT INTO public.farmacia_medicamentos (farmacia_id,nombre_medicamento,stock_actual,stock_minimo,precio_unitario,activo) VALUES (v_fA,'MED PROPIO A',10,1,5.0,true) RETURNING id INTO v_mA;
+  INSERT INTO public.farmacia_medicamentos (farmacia_id,nombre_medicamento,stock_actual,stock_minimo,precio_unitario,activo) VALUES (v_fB,'MED AJENO B',20,1,9.0,true) RETURNING id INTO v_mB;
+  PERFORM set_config('probe.cat_inv',v_inv::text,false); PERFORM set_config('probe.cat_sin',v_sin::text,false);
+  PERFORM set_config('probe.cat_fA',v_fA::text,false);   PERFORM set_config('probe.cat_fB',v_fB::text,false);
+  PERFORM set_config('probe.cat_mA',v_mA::text,false);   PERFORM set_config('probe.cat_mB',v_mB::text,false);
+  PERFORM set_config('probe.cat_clinico', COALESCE(v_clin::text,''), false);
+END $$;
+
+-- P149 — NEG: cuenta SIN inventario_editar (cajero) edita inventario → BLOQUEADO
+SELECT set_config('role','none',true);
+SELECT set_config('request.jwt.claims', json_build_object('sub', current_setting('probe.cat_sin', true), 'role','authenticated')::text, true);
+SELECT set_config('role','authenticated',true);
+DO $$ DECLARE n INT; BEGIN
+  IF current_setting('probe.cat_ready',true)<>'1' THEN PERFORM set_config('probe.p149','N/A (datos insuficientes)',false);
+  ELSE
+    UPDATE public.farmacia_medicamentos SET precio_unitario=999 WHERE id=NULLIF(current_setting('probe.cat_mA',true),'')::uuid;
+    GET DIAGNOSTICS n=ROW_COUNT;
+    IF n>0 THEN PERFORM set_config('probe.p149','PERMITIDO (cajero editó inventario!)',false);
+    ELSE PERFORM set_config('probe.p149','BLOQUEADO (0 filas)',false); END IF;
+  END IF;
+EXCEPTION WHEN insufficient_privilege THEN PERFORM set_config('probe.p149','BLOQUEADO (42501)',false);
+  WHEN others THEN PERFORM set_config('probe.p149','BLOQUEADO ('||SQLSTATE||')',false);
+END $$;
+
+-- P150 — NEG: cuenta de empresa A edita catálogo de empresa B (ajeno) → BLOQUEADO
+SELECT set_config('role','none',true);
+SELECT set_config('request.jwt.claims', json_build_object('sub', current_setting('probe.cat_inv', true), 'role','authenticated')::text, true);
+SELECT set_config('role','authenticated',true);
+DO $$ DECLARE n INT; BEGIN
+  IF current_setting('probe.cat_ready',true)<>'1' THEN PERFORM set_config('probe.p150','N/A',false);
+  ELSE
+    UPDATE public.farmacia_medicamentos SET precio_unitario=999 WHERE id=NULLIF(current_setting('probe.cat_mB',true),'')::uuid;
+    GET DIAGNOSTICS n=ROW_COUNT;
+    IF n>0 THEN PERFORM set_config('probe.p150','PERMITIDO (editó catálogo ajeno!)',false);
+    ELSE PERFORM set_config('probe.p150','BLOQUEADO (0 filas)',false); END IF;
+  END IF;
+EXCEPTION WHEN insufficient_privilege THEN PERFORM set_config('probe.p150','BLOQUEADO (42501)',false);
+  WHEN others THEN PERFORM set_config('probe.p150','BLOQUEADO ('||SQLSTATE||')',false);
+END $$;
+
+-- P151 — NEG (B, rojo pre-086): cuenta de farmacia A LEE catálogo de empresa B → OCULTO(0)
+SELECT set_config('role','none',true);
+SELECT set_config('request.jwt.claims', json_build_object('sub', current_setting('probe.cat_inv', true), 'role','authenticated')::text, true);
+SELECT set_config('role','authenticated',true);
+DO $$ DECLARE n INT; BEGIN
+  IF current_setting('probe.cat_ready',true)<>'1' THEN PERFORM set_config('probe.p151','N/A',false);
+  ELSE
+    SELECT count(*) INTO n FROM public.farmacia_medicamentos WHERE farmacia_id=NULLIF(current_setting('probe.cat_fB',true),'')::int;
+    IF n>0 THEN PERFORM set_config('probe.p151','VISIBLE (farmacia ve '||n||' ajeno!)',false);
+    ELSE PERFORM set_config('probe.p151','OCULTO (0 ajeno)',false); END IF;
+  END IF;
+EXCEPTION WHEN others THEN PERFORM set_config('probe.p151','OCULTO ('||SQLSTATE||')',false);
+END $$;
+
+-- P152 — POS (no-regresión disponibilidad): médico VE inventario de farmacia → OK
+SELECT set_config('role','none',true);
+SELECT set_config('request.jwt.claims', json_build_object('sub', current_setting('probe.af_medico', true), 'role','authenticated')::text, true);
+SELECT set_config('role','authenticated',true);
+DO $$ DECLARE n INT; BEGIN
+  IF current_setting('probe.cat_ready',true)<>'1' OR NULLIF(current_setting('probe.af_medico',true),'') IS NULL THEN PERFORM set_config('probe.p152','N/A',false);
+  ELSE
+    SELECT count(*) INTO n FROM public.farmacia_medicamentos WHERE farmacia_id IN (NULLIF(current_setting('probe.cat_fA',true),'')::int, NULLIF(current_setting('probe.cat_fB',true),'')::int);
+    IF n>0 THEN PERFORM set_config('probe.p152','OK (médico ve '||n||' disponibilidad)',false);
+    ELSE PERFORM set_config('probe.p152','REGRESIÓN (médico no ve disponibilidad)',false); END IF;
+  END IF;
+EXCEPTION WHEN others THEN PERFORM set_config('probe.p152','REGRESIÓN ('||SQLSTATE||')',false);
+END $$;
+
+-- P153 — NEG: RPC carga sin inventario_editar (cajero) → BLOQUEADO
+SELECT set_config('role','none',true);
+SELECT set_config('request.jwt.claims', json_build_object('sub', current_setting('probe.cat_sin', true), 'role','authenticated')::text, true);
+SELECT set_config('role','authenticated',true);
+DO $$ BEGIN
+  IF to_regprocedure('public.cargar_catalogo_farmacia(integer,jsonb)') IS NULL THEN PERFORM set_config('probe.p153','N/A (pendiente migración 086)',false);
+  ELSE PERFORM public.cargar_catalogo_farmacia(NULLIF(current_setting('probe.cat_fA',true),'')::int, '[{"nombre_medicamento":"CAT X"}]'::jsonb);
+       PERFORM set_config('probe.p153','PERMITIDO (cargó sin permiso!)',false); END IF;
+EXCEPTION WHEN undefined_function THEN PERFORM set_config('probe.p153','N/A (RPC no existe)',false);
+  WHEN others THEN PERFORM set_config('probe.p153','BLOQUEADO ('||SQLSTATE||')',false);
+END $$;
+
+-- P154 — NEG: RPC carga a farmacia AJENA (empresa B) → BLOQUEADO
+SELECT set_config('role','none',true);
+SELECT set_config('request.jwt.claims', json_build_object('sub', current_setting('probe.cat_inv', true), 'role','authenticated')::text, true);
+SELECT set_config('role','authenticated',true);
+DO $$ BEGIN
+  IF to_regprocedure('public.cargar_catalogo_farmacia(integer,jsonb)') IS NULL THEN PERFORM set_config('probe.p154','N/A (pendiente migración 086)',false);
+  ELSE PERFORM public.cargar_catalogo_farmacia(NULLIF(current_setting('probe.cat_fB',true),'')::int, '[{"nombre_medicamento":"CAT X"}]'::jsonb);
+       PERFORM set_config('probe.p154','PERMITIDO (cargó a farmacia ajena!)',false); END IF;
+EXCEPTION WHEN undefined_function THEN PERFORM set_config('probe.p154','N/A (RPC no existe)',false);
+  WHEN others THEN PERFORM set_config('probe.p154','BLOQUEADO ('||SQLSTATE||')',false);
+END $$;
+
+-- P155 — POS idempotencia: cargar el mismo nombre 2 veces → 1 sola fila
+SELECT set_config('role','none',true);
+SELECT set_config('request.jwt.claims', json_build_object('sub', current_setting('probe.cat_inv', true), 'role','authenticated')::text, true);
+SELECT set_config('role','authenticated',true);
+DO $$ BEGIN
+  IF to_regprocedure('public.cargar_catalogo_farmacia(integer,jsonb)') IS NULL THEN PERFORM set_config('probe.p155_done','0',false);
+  ELSE
+    PERFORM public.cargar_catalogo_farmacia(NULLIF(current_setting('probe.cat_fA',true),'')::int, '[{"nombre_medicamento":"CAT IDEM","stock_actual":"3"}]'::jsonb);
+    PERFORM public.cargar_catalogo_farmacia(NULLIF(current_setting('probe.cat_fA',true),'')::int, '[{"nombre_medicamento":"  cat   idem ","stock_actual":"7"}]'::jsonb);  -- misma forma normalizada
+    PERFORM set_config('probe.p155_done','1',false);
+  END IF;
+EXCEPTION WHEN undefined_function THEN PERFORM set_config('probe.p155_done','0',false);
+  WHEN others THEN PERFORM set_config('probe.p155_done','err',false);
+END $$;
+SELECT set_config('role','none',true);  -- verificación de estado bypass RLS
+DO $$ DECLARE n INT; BEGIN
+  IF current_setting('probe.p155_done',true)<>'1' THEN PERFORM set_config('probe.p155','N/A (pendiente migración 086)',false);
+  ELSE
+    SELECT count(*) INTO n FROM public.farmacia_medicamentos WHERE farmacia_id=NULLIF(current_setting('probe.cat_fA',true),'')::int AND nombre_normalizado = 'CAT IDEM';
+    IF n=1 THEN PERFORM set_config('probe.p155','OK (idempotente: 1 fila)',false);
+    ELSE PERFORM set_config('probe.p155','FALLO (filas='||n||')',false); END IF;
+  END IF;
+END $$;
+
+-- P156 — POS reporte por fila: [{vacío},{válido}] → 1 rechazada, ≥1 válida
+SELECT set_config('role','none',true);
+SELECT set_config('request.jwt.claims', json_build_object('sub', current_setting('probe.cat_inv', true), 'role','authenticated')::text, true);
+SELECT set_config('role','authenticated',true);
+DO $$ DECLARE v jsonb; BEGIN
+  IF to_regprocedure('public.cargar_catalogo_farmacia(integer,jsonb)') IS NULL THEN PERFORM set_config('probe.p156','N/A (pendiente migración 086)',false);
+  ELSE
+    v := public.cargar_catalogo_farmacia(NULLIF(current_setting('probe.cat_fA',true),'')::int, '[{"nombre_medicamento":""},{"nombre_medicamento":"CAT VALIDO","stock_actual":"2"}]'::jsonb);
+    IF (v->>'total_rechazadas')::int = 1 AND ((v->>'insertadas')::int + (v->>'actualizadas')::int) >= 1
+      THEN PERFORM set_config('probe.p156','OK (1 rechazada, válida entró)',false);
+      ELSE PERFORM set_config('probe.p156','FALLO ('||v::text||')',false); END IF;
+  END IF;
+EXCEPTION WHEN undefined_function THEN PERFORM set_config('probe.p156','N/A (RPC no existe)',false);
+  WHEN others THEN PERFORM set_config('probe.p156','FALLO ('||SQLSTATE||')',false);
+END $$;
+
+-- P157 — POS: stock vacío NO borra el existente (conserva)
+SELECT set_config('role','none',true);
+SELECT set_config('request.jwt.claims', json_build_object('sub', current_setting('probe.cat_inv', true), 'role','authenticated')::text, true);
+SELECT set_config('role','authenticated',true);
+DO $$ BEGIN
+  IF to_regprocedure('public.cargar_catalogo_farmacia(integer,jsonb)') IS NULL THEN PERFORM set_config('probe.p157_done','0',false);
+  ELSE PERFORM public.cargar_catalogo_farmacia(NULLIF(current_setting('probe.cat_fA',true),'')::int, '[{"nombre_medicamento":"MED PROPIO A","stock_actual":""}]'::jsonb);
+       PERFORM set_config('probe.p157_done','1',false); END IF;
+EXCEPTION WHEN undefined_function THEN PERFORM set_config('probe.p157_done','0',false);
+  WHEN others THEN PERFORM set_config('probe.p157_done','err',false);
+END $$;
+SELECT set_config('role','none',true);
+DO $$ DECLARE v INT; BEGIN
+  IF current_setting('probe.p157_done',true)<>'1' THEN PERFORM set_config('probe.p157','N/A (pendiente migración 086)',false);
+  ELSE
+    SELECT stock_actual INTO v FROM public.farmacia_medicamentos WHERE id=NULLIF(current_setting('probe.cat_mA',true),'')::uuid;
+    IF v=10 THEN PERFORM set_config('probe.p157','OK (stock conservado=10, blanco no borró)',false);
+    ELSE PERFORM set_config('probe.p157','FALLO (stock='||COALESCE(v::text,'NULL')||')',false); END IF;
+  END IF;
+END $$;
+
+-- P158 — POS: rol con inventario_editar carga su catálogo → OK
+SELECT set_config('role','none',true);
+SELECT set_config('request.jwt.claims', json_build_object('sub', current_setting('probe.cat_inv', true), 'role','authenticated')::text, true);
+SELECT set_config('role','authenticated',true);
+DO $$ DECLARE v jsonb; BEGIN
+  IF to_regprocedure('public.cargar_catalogo_farmacia(integer,jsonb)') IS NULL THEN PERFORM set_config('probe.p158','N/A (pendiente migración 086)',false);
+  ELSE
+    v := public.cargar_catalogo_farmacia(NULLIF(current_setting('probe.cat_fA',true),'')::int, '[{"nombre_medicamento":"CAT POS","stock_actual":"5","precio_unitario":"12.5"}]'::jsonb);
+    IF ((v->>'insertadas')::int + (v->>'actualizadas')::int) >= 1 THEN PERFORM set_config('probe.p158','OK (cargó su catálogo)',false);
+    ELSE PERFORM set_config('probe.p158','FALLO ('||v::text||')',false); END IF;
+  END IF;
+EXCEPTION WHEN undefined_function THEN PERFORM set_config('probe.p158','N/A (RPC no existe)',false);
+  WHEN others THEN PERFORM set_config('probe.p158','FALLO ('||SQLSTATE||')',false);
+END $$;
+
+-- P159 — NEG (B, rojo pre-086): ANON NO lee farmacia_medicamentos → OCULTO(0)
+SELECT set_config('role','none',true);
+SELECT set_config('request.jwt.claims', NULL, true);
+SELECT set_config('role','anon',true);
+DO $$ DECLARE n INT; BEGIN
+  IF current_setting('probe.cat_ready',true)<>'1' THEN PERFORM set_config('probe.p159','N/A',false);
+  ELSE
+    SELECT count(*) INTO n FROM public.farmacia_medicamentos WHERE farmacia_id IN (NULLIF(current_setting('probe.cat_fA',true),'')::int, NULLIF(current_setting('probe.cat_fB',true),'')::int);
+    IF n>0 THEN PERFORM set_config('probe.p159','VISIBLE (anon lee '||n||'!)',false);
+    ELSE PERFORM set_config('probe.p159','OCULTO (0 anon)',false); END IF;
+  END IF;
+EXCEPTION WHEN others THEN PERFORM set_config('probe.p159','OCULTO ('||SQLSTATE||')',false);
+END $$;
+
+-- P160 — POS: lado clínico NO-médico (enfermera/asistente) VE disponibilidad → OK
+SELECT set_config('role','none',true);
+SELECT set_config('request.jwt.claims', json_build_object('sub', current_setting('probe.cat_clinico', true), 'role','authenticated')::text, true);
+SELECT set_config('role','authenticated',true);
+DO $$ DECLARE n INT; BEGIN
+  IF current_setting('probe.cat_ready',true)<>'1' OR NULLIF(current_setting('probe.cat_clinico',true),'') IS NULL THEN PERFORM set_config('probe.p160','N/A (sin clínico no-médico)',false);
+  ELSE
+    SELECT count(*) INTO n FROM public.farmacia_medicamentos WHERE farmacia_id IN (NULLIF(current_setting('probe.cat_fA',true),'')::int, NULLIF(current_setting('probe.cat_fB',true),'')::int) AND COALESCE(activo,true);
+    IF n>0 THEN PERFORM set_config('probe.p160','OK (clínico no-médico ve '||n||' disponibilidad)',false);
+    ELSE PERFORM set_config('probe.p160','REGRESIÓN (clínico no-médico no ve disponibilidad)',false); END IF;
+  END IF;
+EXCEPTION WHEN others THEN PERFORM set_config('probe.p160','REGRESIÓN ('||SQLSTATE||')',false);
+END $$;
+
 -- ===== Veredictos como result set =====
 SELECT 'P1_anon_insert_citas'              AS probe, current_setting('probe.p1', true)  AS verdict, 'BLOQUEADO' AS esperado_post_fix
 UNION ALL SELECT 'P2_medico_cancela_ajena_rpc',         current_setting('probe.p2', true),  'BLOQUEADO'
@@ -2577,6 +2807,18 @@ UNION ALL SELECT 'P144_phi_minima_sin_telefono',         current_setting('probe.
 UNION ALL SELECT 'P145_token_expirado',                  current_setting('probe.p145', true), 'BLOQUEADO'
 UNION ALL SELECT 'P146_aislamiento_por_item',            current_setting('probe.p146', true), 'OK'
 UNION ALL SELECT 'P147_binding_token_receta',            current_setting('probe.p147', true), 'BLOQUEADO'
-UNION ALL SELECT 'P148_array_mixto_solo_propio',         current_setting('probe.p148', true), 'OK';
+UNION ALL SELECT 'P148_array_mixto_solo_propio',         current_setting('probe.p148', true), 'OK'
+UNION ALL SELECT 'P149_cat_sin_inventario_editar',       current_setting('probe.p149', true), 'BLOQUEADO'
+UNION ALL SELECT 'P150_cat_escribe_ajeno',               current_setting('probe.p150', true), 'BLOQUEADO'
+UNION ALL SELECT 'P151_cat_farmacia_lee_ajeno',          current_setting('probe.p151', true), 'OCULTO (0)'
+UNION ALL SELECT 'P152_cat_medico_disponibilidad',       current_setting('probe.p152', true), 'OK'
+UNION ALL SELECT 'P153_rpc_carga_sin_permiso',           current_setting('probe.p153', true), 'BLOQUEADO'
+UNION ALL SELECT 'P154_rpc_carga_farmacia_ajena',        current_setting('probe.p154', true), 'BLOQUEADO'
+UNION ALL SELECT 'P155_rpc_idempotente',                 current_setting('probe.p155', true), 'OK'
+UNION ALL SELECT 'P156_rpc_reporte_por_fila',            current_setting('probe.p156', true), 'OK'
+UNION ALL SELECT 'P157_rpc_stock_vacio_conserva',        current_setting('probe.p157', true), 'OK'
+UNION ALL SELECT 'P158_rpc_carga_ok',                    current_setting('probe.p158', true), 'OK'
+UNION ALL SELECT 'P159_anon_no_lee_catalogo',            current_setting('probe.p159', true), 'OCULTO (0)'
+UNION ALL SELECT 'P160_clinico_no_medico_disponibilidad',current_setting('probe.p160', true), 'OK';
 
 ROLLBACK;  -- nada de lo anterior se persiste
