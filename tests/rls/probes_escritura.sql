@@ -3301,6 +3301,142 @@ DO $$ DECLARE a boolean; b boolean; BEGIN
 EXCEPTION WHEN others THEN PERFORM set_config('probe.p194','FALLO ('||SQLERRM||')',false); END $$;
 SELECT set_config('role','none',true);
 
+-- ============================================================
+-- PAÍS #1 (productos_empresa, P195–P198) + MONETIZACIÓN-0 (G1, P199–P202).
+-- Red-first: P195/P197/P198 muestran ROJO (leak vivo) PRE-094 → OK post-094. P199–P202 N/A
+-- pre-095 (tabla/helper ausentes). ROJO ≠ FALLO (es el rojo esperado del increment).
+-- Reusa fixture país-0 (probe.p0_*). Médico GT = probe.medico; país-NULL = probe.p0_mednull.
+-- ============================================================
+SELECT set_config('role','none',true);
+DO $$ BEGIN
+  IF current_setting('probe.p0_ready',true)<>'1' THEN PERFORM set_config('probe.pe_ready','0',false); RETURN; END IF;
+  INSERT INTO public.productos_empresa (nombre_producto,empresa_id,precio_unitario,moneda,stock_disponible,requiere_receta,estado,pais_id)
+    VALUES ('PE GT', current_setting('probe.p0_lgt',true)::uuid, 10,'GTQ',5,false,'activo', current_setting('probe.p0_gt',true)::uuid);
+  INSERT INTO public.productos_empresa (nombre_producto,empresa_id,precio_unitario,moneda,stock_disponible,requiere_receta,estado,pais_id)
+    VALUES ('PE HN', current_setting('probe.p0_lhn',true)::uuid, 10,'HNL',5,false,'activo', current_setting('probe.p0_hn',true)::uuid);
+  PERFORM set_config('probe.pe_ready','1',false);
+EXCEPTION WHEN others THEN PERFORM set_config('probe.pe_ready','0',false); END $$;
+
+-- P195 — NEG (red-first): médico GT NO debe ver producto HN
+SELECT set_config('request.jwt.claims', json_build_object('sub', current_setting('probe.medico',true))::text, true);
+SELECT set_config('role','authenticated',true);
+DO $$ DECLARE n int; BEGIN
+  IF current_setting('probe.pe_ready',true)<>'1' THEN PERFORM set_config('probe.p195','N/A',false);
+  ELSE
+    SELECT count(*) INTO n FROM public.productos_empresa WHERE empresa_id = current_setting('probe.p0_lhn',true)::uuid;
+    IF n=0 THEN PERFORM set_config('probe.p195','OK (médico GT no ve producto HN)',false);
+    ELSE PERFORM set_config('probe.p195','ROJO (médico GT ve producto HN — leak vivo, n='||n||')',false); END IF;
+  END IF;
+EXCEPTION WHEN others THEN PERFORM set_config('probe.p195','FALLO ('||SQLERRM||')',false); END $$;
+
+-- P196 — POS no-regresión: médico GT SÍ ve producto GT
+DO $$ DECLARE n int; BEGIN
+  IF current_setting('probe.pe_ready',true)<>'1' THEN PERFORM set_config('probe.p196','N/A',false);
+  ELSE
+    SELECT count(*) INTO n FROM public.productos_empresa WHERE empresa_id = current_setting('probe.p0_lgt',true)::uuid;
+    IF n>0 THEN PERFORM set_config('probe.p196','OK (médico GT ve su producto GT)',false);
+    ELSE PERFORM set_config('probe.p196','FALLO (médico GT NO ve su producto GT)',false); END IF;
+  END IF;
+EXCEPTION WHEN others THEN PERFORM set_config('probe.p196','FALLO ('||SQLERRM||')',false); END $$;
+
+-- P197 — fail-closed (red-first): médico país-NULL → 0 productos de la fixture
+SELECT set_config('request.jwt.claims', json_build_object('sub', current_setting('probe.p0_mednull',true))::text, true);
+DO $$ DECLARE n int; BEGIN
+  IF current_setting('probe.pe_ready',true)<>'1' THEN PERFORM set_config('probe.p197','N/A',false);
+  ELSE
+    SELECT count(*) INTO n FROM public.productos_empresa WHERE empresa_id IN (current_setting('probe.p0_lgt',true)::uuid, current_setting('probe.p0_lhn',true)::uuid);
+    IF n=0 THEN PERFORM set_config('probe.p197','OK (país-NULL no ve productos)',false);
+    ELSE PERFORM set_config('probe.p197','ROJO (país-NULL ve productos — fail-open, n='||n||')',false); END IF;
+  END IF;
+EXCEPTION WHEN others THEN PERFORM set_config('probe.p197','FALLO ('||SQLERRM||')',false); END $$;
+
+-- P198 — backfill (red-first): productos_empresa con pais_id NULL = 0 (owner)
+SELECT set_config('role','none',true);
+DO $$ DECLARE n int; BEGIN
+  SELECT count(*) INTO n FROM public.productos_empresa WHERE pais_id IS NULL;
+  IF n=0 THEN PERFORM set_config('probe.p198','OK (0 productos con país NULL)',false);
+  ELSE PERFORM set_config('probe.p198','ROJO ('||n||' productos con país NULL — pendiente backfill 094)',false); END IF;
+END $$;
+
+-- P203 — trigger re-deriva país al cambiar empresa_id (sin tocar pais_id). Owner (role none);
+-- el trigger es DEFINER. Pre-094 (sin trigger) el país NO cambia → ROJO; post-094 → HN.
+SELECT set_config('role','none',true);
+DO $$ DECLARE v_pais uuid; v_esperado uuid; v_old uuid; BEGIN
+  IF current_setting('probe.pe_ready',true)<>'1' THEN PERFORM set_config('probe.p203','N/A',false);
+  ELSE
+    SELECT pais_id INTO v_old FROM public.productos_empresa WHERE nombre_producto='PE GT' LIMIT 1;  -- GT antes
+    UPDATE public.productos_empresa SET empresa_id = current_setting('probe.p0_lhn',true)::uuid
+      WHERE nombre_producto='PE GT' AND empresa_id = current_setting('probe.p0_lgt',true)::uuid;
+    SELECT pais_id INTO v_pais FROM public.productos_empresa WHERE nombre_producto='PE GT' LIMIT 1;  -- ¿re-derivado?
+    SELECT pais_id INTO v_esperado FROM public.empresas_proveedoras WHERE id = current_setting('probe.p0_lhn',true)::uuid;  -- país real de la nueva empresa
+    IF v_pais = v_esperado AND v_pais <> v_old THEN PERFORM set_config('probe.p203','OK (re-asignar empresa re-deriva país = país de la nueva empresa, cambió desde GT)',false);
+    ELSE PERFORM set_config('probe.p203','ROJO (país='||COALESCE(v_pais::text,'NULL')||' esperado='||COALESCE(v_esperado::text,'NULL')||' old='||COALESCE(v_old::text,'NULL')||')',false); END IF;
+  END IF;
+EXCEPTION WHEN others THEN PERFORM set_config('probe.p203','FALLO ('||SQLERRM||')',false); END $$;
+
+-- ===== MONETIZACIÓN-0 / G1 =====
+DO $$ BEGIN
+  IF current_setting('probe.p0_ready',true)<>'1' OR to_regclass('public.empresa_paises_operacion') IS NULL THEN PERFORM set_config('probe.g1_ready','0',false); RETURN; END IF;
+  INSERT INTO public.empresa_paises_operacion (empresa_id,pais_id,activo)
+    VALUES (current_setting('probe.p0_lgt',true)::uuid, current_setting('probe.p0_gt',true)::uuid, true) ON CONFLICT DO NOTHING;
+  PERFORM set_config('probe.g1_ready','1',false);
+EXCEPTION WHEN others THEN PERFORM set_config('probe.g1_ready','0',false); END $$;
+
+-- P199 — helper: opera-GT true / no-opera-HN false / inactivo false / NULL false
+DO $$ DECLARE a boolean; b boolean; c boolean; d boolean; BEGIN
+  IF current_setting('probe.g1_ready',true)<>'1' THEN PERFORM set_config('probe.p199','N/A (pendiente 095)',false);
+  ELSE
+    a := private.empresa_opera_en_pais(current_setting('probe.p0_lgt',true)::uuid, current_setting('probe.p0_gt',true)::uuid);
+    b := private.empresa_opera_en_pais(current_setting('probe.p0_lgt',true)::uuid, current_setting('probe.p0_hn',true)::uuid);
+    UPDATE public.empresa_paises_operacion SET activo=false WHERE empresa_id=current_setting('probe.p0_lgt',true)::uuid AND pais_id=current_setting('probe.p0_gt',true)::uuid;
+    c := private.empresa_opera_en_pais(current_setting('probe.p0_lgt',true)::uuid, current_setting('probe.p0_gt',true)::uuid);
+    d := private.empresa_opera_en_pais(NULL, current_setting('probe.p0_gt',true)::uuid);
+    UPDATE public.empresa_paises_operacion SET activo=true WHERE empresa_id=current_setting('probe.p0_lgt',true)::uuid AND pais_id=current_setting('probe.p0_gt',true)::uuid;
+    IF a AND (b IS FALSE) AND (c IS FALSE) AND (d IS FALSE) THEN PERFORM set_config('probe.p199','OK (opera-GT true; no-HN/inactivo/NULL false)',false);
+    ELSE PERFORM set_config('probe.p199','FALLO (a='||a||' b='||b||' c='||c||' d='||d||')',false); END IF;
+  END IF;
+EXCEPTION WHEN others THEN PERFORM set_config('probe.p199','FALLO ('||SQLERRM||')',false); END $$;
+
+-- P200 — NEG: proveedor INSERT directo → BLOQ y SELECT directo → 0
+SELECT set_config('request.jwt.claims', json_build_object('sub', current_setting('probe.cat_inv',true), 'role','authenticated')::text, true);
+SELECT set_config('role','authenticated',true);
+DO $$ DECLARE n int; ins text; BEGIN
+  IF current_setting('probe.g1_ready',true)<>'1' THEN PERFORM set_config('probe.p200','N/A (pendiente 095)',false);
+  ELSE
+    BEGIN INSERT INTO public.empresa_paises_operacion (empresa_id,pais_id,activo) VALUES (current_setting('probe.p0_lgt',true)::uuid, current_setting('probe.p0_hn',true)::uuid, true); ins:='PERMITIDO';
+    EXCEPTION WHEN others THEN ins:='BLOQ'; END;
+    SELECT count(*) INTO n FROM public.empresa_paises_operacion;
+    IF ins='BLOQ' AND n=0 THEN PERFORM set_config('probe.p200','BLOQUEADO (proveedor: insert BLOQ, select 0)',false);
+    ELSE PERFORM set_config('probe.p200','FALLO (ins='||ins||' select='||n||')',false); END IF;
+  END IF;
+END $$;
+
+-- P201 — POS: super_admin gestiona (ve filas)
+SELECT set_config('role','none',true);
+SELECT set_config('request.jwt.claims', json_build_object('sub', (SELECT id::text FROM public.perfiles WHERE rol='super_admin' LIMIT 1), 'role','authenticated')::text, true);
+SELECT set_config('role','authenticated',true);
+DO $$ DECLARE n int; BEGIN
+  IF current_setting('probe.g1_ready',true)<>'1' THEN PERFORM set_config('probe.p201','N/A (pendiente 095)',false);
+  ELSE
+    SELECT count(*) INTO n FROM public.empresa_paises_operacion;
+    IF n>0 THEN PERFORM set_config('probe.p201','OK (super_admin ve '||n||' filas)',false);
+    ELSE PERFORM set_config('probe.p201','FALLO (super_admin ve 0)',false); END IF;
+  END IF;
+EXCEPTION WHEN others THEN PERFORM set_config('probe.p201','FALLO ('||SQLERRM||')',false); END $$;
+
+-- P202 — RESTRICT: borrar país con operación → BLOQ
+SELECT set_config('role','none',true);
+DO $$ BEGIN
+  IF current_setting('probe.g1_ready',true)<>'1' THEN PERFORM set_config('probe.p202','N/A (pendiente 095)',false);
+  ELSE
+    INSERT INTO public.empresa_paises_operacion (empresa_id,pais_id,activo) VALUES (current_setting('probe.p0_lhn',true)::uuid, current_setting('probe.p0_hn',true)::uuid, true) ON CONFLICT DO NOTHING;
+    BEGIN DELETE FROM public.configuracion_pais WHERE id=current_setting('probe.p0_hn',true)::uuid; PERFORM set_config('probe.p202','FALLO (borró país con operación)',false);
+    EXCEPTION WHEN foreign_key_violation THEN PERFORM set_config('probe.p202','BLOQUEADO (FK RESTRICT)',false);
+             WHEN others THEN PERFORM set_config('probe.p202','BLOQUEADO ('||SQLSTATE||')',false); END;
+  END IF;
+END $$;
+SELECT set_config('role','none',true);
+
 -- ===== Veredictos como result set =====
 SELECT 'P1_anon_insert_citas'              AS probe, current_setting('probe.p1', true)  AS verdict, 'BLOQUEADO' AS esperado_post_fix
 UNION ALL SELECT 'P2_medico_cancela_ajena_rpc',         current_setting('probe.p2', true),  'BLOQUEADO'
@@ -3488,6 +3624,15 @@ UNION ALL SELECT 'P190_S_sucursal_aware',                 current_setting('probe
 UNION ALL SELECT 'P191_pais0_helper_pos_GT',             current_setting('probe.p191', true), 'OK'
 UNION ALL SELECT 'P192_pais0_helper_neg_HN',             current_setting('probe.p192', true), 'OK'
 UNION ALL SELECT 'P193_pais0_failclosed_paisnull',       current_setting('probe.p193', true), 'OK'
-UNION ALL SELECT 'P194_pais0_pid_null',                  current_setting('probe.p194', true), 'OK';
+UNION ALL SELECT 'P194_pais0_pid_null',                  current_setting('probe.p194', true), 'OK'
+UNION ALL SELECT 'P195_prodemp_neg_HN',                  current_setting('probe.p195', true), 'OK post-094 (ROJO pre)'
+UNION ALL SELECT 'P196_prodemp_pos_GT',                  current_setting('probe.p196', true), 'OK'
+UNION ALL SELECT 'P197_prodemp_failclosed',              current_setting('probe.p197', true), 'OK post-094 (ROJO pre)'
+UNION ALL SELECT 'P198_prodemp_backfill',                current_setting('probe.p198', true), 'OK post-094 (ROJO pre)'
+UNION ALL SELECT 'P203_prodemp_trigger_reasigna',        current_setting('probe.p203', true), 'OK post-094 (ROJO pre)'
+UNION ALL SELECT 'P199_G1_helper_opera',                 current_setting('probe.p199', true), 'OK post-095'
+UNION ALL SELECT 'P200_G1_proveedor_bloq',               current_setting('probe.p200', true), 'BLOQUEADO post-095'
+UNION ALL SELECT 'P201_G1_superadmin',                   current_setting('probe.p201', true), 'OK post-095'
+UNION ALL SELECT 'P202_G1_restrict_pais',                current_setting('probe.p202', true), 'BLOQUEADO post-095';
 
 ROLLBACK;  -- nada de lo anterior se persiste
