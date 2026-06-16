@@ -3246,6 +3246,7 @@ DO $$ DECLARE v_gt uuid; v_hn uuid; v_fgt int; v_fhn int; v_lgt uuid; v_lhn uuid
   PERFORM set_config('probe.p0_fgt',v_fgt::text,false); PERFORM set_config('probe.p0_fhn',v_fhn::text,false);
   PERFORM set_config('probe.p0_lgt',v_lgt::text,false); PERFORM set_config('probe.p0_lhn',v_lhn::text,false);
   PERFORM set_config('probe.p0_mednull',v_mednull::text,false);
+  PERFORM set_config('probe.p0_gt',v_gt::text,false);   PERFORM set_config('probe.p0_hn',v_hn::text,false);
 END $$;
 
 DO $$ BEGIN
@@ -3380,7 +3381,7 @@ DO $$ BEGIN
   INSERT INTO public.empresa_paises_operacion (empresa_id,pais_id,activo)
     VALUES (current_setting('probe.p0_lgt',true)::uuid, current_setting('probe.p0_gt',true)::uuid, true) ON CONFLICT DO NOTHING;
   PERFORM set_config('probe.g1_ready','1',false);
-EXCEPTION WHEN others THEN PERFORM set_config('probe.g1_ready','0',false); END $$;
+EXCEPTION WHEN others THEN PERFORM set_config('probe.g1_ready','0',false); PERFORM set_config('probe.g1_err', SQLERRM, false); END $$;
 
 -- P199 — helper: opera-GT true / no-opera-HN false / inactivo false / NULL false
 DO $$ DECLARE a boolean; b boolean; c boolean; d boolean; BEGIN
