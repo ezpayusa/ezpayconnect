@@ -4,6 +4,7 @@
 
 import { serve } from 'https://deno.land/std@0.168.0/http/server.ts'
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2'
+import QRCode from 'https://esm.sh/qrcode@1.5.3'
 
 const corsHeaders = {
   'Access-Control-Allow-Origin': '*',
@@ -65,6 +66,9 @@ serve(async (req) => {
 
     if (selError || !recetaAvanzada) throw (selError || new Error('No se pudo obtener el token de despacho'))
     const codigoQR = recetaAvanzada.dispatch_token
+    // MISMO token, ahora como IMAGEN QR escaneable (SVG inline; sin canvas/PNG → Deno-friendly).
+    // El valor codificado es exactamente el dispatch_token (no cambia el token ni su semántica).
+    const qrSvg = await QRCode.toString(codigoQR, { type: 'svg', margin: 1, width: 200 })
 
     const fecha = new Date().toLocaleDateString('es-ES', { day: 'numeric', month: 'long', year: 'numeric' })
 
@@ -80,7 +84,8 @@ body { font-family: Arial, sans-serif; margin: 40px; color: #333; }
 .info-item { background: #f5f5f5; padding: 10px; border-radius: 5px; }
 .medicamentos { background: #f0f9ff; padding: 15px; border-radius: 8px; border-left: 4px solid #00f2ff; }
 .qr-section { text-align: center; margin-top: 30px; padding: 20px; border: 2px dashed #00f2ff; border-radius: 10px; }
-.qr-code { font-family: monospace; font-size: 14px; background: #1a1f2e; color: #00f2ff; padding: 10px; border-radius: 5px; display: inline-block; }
+.qr-img { display: inline-block; background: #fff; padding: 10px; border-radius: 5px; }
+.qr-img svg { width: 200px; height: 200px; display: block; }
 .footer { margin-top: 40px; text-align: center; font-size: 12px; color: #999; border-top: 1px solid #eee; padding-top: 20px; }
 .firma { margin-top: 30px; text-align: right; }
 .firma-line { border-top: 1px solid #333; width: 200px; display: inline-block; margin-top: 50px; }
@@ -100,7 +105,7 @@ body { font-family: Arial, sans-serif; margin: 40px; color: #333; }
 ${Array.isArray(medicamentos) ? medicamentos.map((m) => `<li>${m}</li>`).join('') : `<li>${medicamentos || 'No especificado'}</li>`}
 </ul></div></div>
 ${indicaciones ? `<div class="section"><h3>📋 Indicaciones</h3><div class="medicamentos"><p>${indicaciones}</p></div></div>` : ''}
-<div class="qr-section"><h3>📱 Codigo QR de Verificacion</h3><div class="qr-code">${codigoQR}</div>
+<div class="qr-section"><h3>📱 Codigo QR de Verificacion</h3><div class="qr-img">${qrSvg}</div>
 <p style="font-size: 12px; color: #666; margin-top: 10px;">Escanea este codigo en farmacia para verificar la receta</p></div>
 <div class="firma"><div class="firma-line"></div><p><strong>${medico?.nombre || 'Medico'}</strong></p>
 <p style="font-size: 12px; color: #666;">Firma Digital: ${recetaAvanzada?.firma_digital || 'N/A'}</p></div>
