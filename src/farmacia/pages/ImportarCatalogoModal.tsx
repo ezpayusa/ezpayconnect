@@ -38,9 +38,14 @@ const EJEMPLO = ['Paracetamol 500mg', 'Tabletas', 'Analgésico', 'Bayer', 100, 1
 const esNumero = (v: string) => v === '' || !isNaN(Number(v.replace(',', '.')))
 const esEntero = (v: string) => v === '' || /^-?\d+$/.test(v)
 const esFecha = (v: string) => v === '' || !isNaN(Date.parse(v))
-// Clave normalizada EQUIVALENTE a la columna generada de la BD (acentos fuera, colapsa
-// espacios, trim, upper) → para detectar dups intra-archivo igual que el UNIQUE.
-const claveNorm = (s: string) => s.normalize('NFD').replace(/[̀-ͯ]/g, '').replace(/\s+/g, ' ').trim().toUpperCase()
+// Clave normalizada EQUIVALENTE a private.norm_med_nombre (acentos fuera → colapsa
+// espacios → quita espacio dígito↔unidad "500 mg"->"500mg" → trim → upper). Solo para
+// ADVERTIR dups intra-archivo en el preview; el de-dup autoritativo es el RPC (anti-drift).
+const claveNorm = (s: string) =>
+  s.normalize('NFD').replace(/[̀-ͯ]/g, '')   // acentos/ñ fuera (NFD + quita diacríticos)
+    .replace(/\s+/g, ' ')                       // colapsa espacios
+    .replace(/(\d)\s+([A-Za-z])/g, '$1$2')      // "500 mg" -> "500mg" (todos los pares)
+    .trim().toUpperCase()
 
 interface Fila { raw: Record<string, string>; errores: string[]; warn?: string }
 
