@@ -3530,6 +3530,91 @@ DO $$ DECLARE n int; an int; BEGIN
 EXCEPTION WHEN others THEN PERFORM set_config('role','none',true); PERFORM set_config('probe.p209','FALLO ('||SQLERRM||')',false); END $$;
 SELECT set_config('role','none',true);
 
+-- ============================================================
+-- PAÍS #3 · examenes_catalogo + laboratorios_para_medico (P210–P215). Red-first.
+-- Reusa: p0_lgt/p0_lhn (empresas lab clínico GT/HN), fm_medgt (médico-GT real), p0_mednull.
+-- ============================================================
+SELECT set_config('role','none',true);
+DO $$ BEGIN
+  IF current_setting('probe.fm_ready',true)<>'1' THEN PERFORM set_config('probe.ex_ready','0',false); RETURN; END IF;
+  INSERT INTO public.examenes_catalogo (laboratorio_id,nombre,categoria,activo)
+    VALUES (current_setting('probe.p0_lgt',true)::uuid,'EX GT PAIS','cat',true);
+  INSERT INTO public.examenes_catalogo (laboratorio_id,nombre,categoria,activo)
+    VALUES (current_setting('probe.p0_lhn',true)::uuid,'EX HN PAIS','cat',true);
+  PERFORM set_config('probe.ex_ready','1',false);
+EXCEPTION WHEN others THEN PERFORM set_config('probe.ex_ready','0',false); END $$;
+
+-- P210 — NEG (red-first): médico-GT NO ve examen de lab HN
+SELECT set_config('request.jwt.claims', json_build_object('sub', current_setting('probe.fm_medgt',true))::text, true);
+SELECT set_config('role','authenticated',true);
+DO $$ DECLARE n int; BEGIN
+  IF current_setting('probe.ex_ready',true)<>'1' THEN PERFORM set_config('probe.p210','N/A',false);
+  ELSE
+    SELECT count(*) INTO n FROM public.examenes_catalogo WHERE laboratorio_id=current_setting('probe.p0_lhn',true)::uuid;
+    IF n=0 THEN PERFORM set_config('probe.p210','OK (médico GT no ve examen lab HN)',false);
+    ELSE PERFORM set_config('probe.p210','ROJO (médico GT ve examen lab HN — leak vivo, n='||n||')',false); END IF;
+  END IF;
+EXCEPTION WHEN others THEN PERFORM set_config('probe.p210','FALLO ('||SQLERRM||')',false); END $$;
+
+-- P211 — POS: médico-GT SÍ ve examen de lab GT
+DO $$ DECLARE n int; BEGIN
+  IF current_setting('probe.ex_ready',true)<>'1' THEN PERFORM set_config('probe.p211','N/A',false);
+  ELSE
+    SELECT count(*) INTO n FROM public.examenes_catalogo WHERE laboratorio_id=current_setting('probe.p0_lgt',true)::uuid;
+    IF n>0 THEN PERFORM set_config('probe.p211','OK (médico GT ve examen lab GT)',false);
+    ELSE PERFORM set_config('probe.p211','FALLO (médico GT NO ve examen lab GT)',false); END IF;
+  END IF;
+EXCEPTION WHEN others THEN PERFORM set_config('probe.p211','FALLO ('||SQLERRM||')',false); END $$;
+
+-- P212 — fail-closed (red-first): médico país-NULL → 0 exámenes de la fixture
+SELECT set_config('request.jwt.claims', json_build_object('sub', current_setting('probe.p0_mednull',true))::text, true);
+DO $$ DECLARE n int; BEGIN
+  IF current_setting('probe.ex_ready',true)<>'1' THEN PERFORM set_config('probe.p212','N/A',false);
+  ELSE
+    SELECT count(*) INTO n FROM public.examenes_catalogo WHERE laboratorio_id IN (current_setting('probe.p0_lgt',true)::uuid, current_setting('probe.p0_lhn',true)::uuid);
+    IF n=0 THEN PERFORM set_config('probe.p212','OK (país-NULL no ve exámenes)',false);
+    ELSE PERFORM set_config('probe.p212','ROJO (país-NULL ve exámenes — fail-open, n='||n||')',false); END IF;
+  END IF;
+EXCEPTION WHEN others THEN PERFORM set_config('probe.p212','FALLO ('||SQLERRM||')',false); END $$;
+
+-- P213 — RPC POS/no-regresión: médico-GT obtiene lab GT, NO el lab HN
+SELECT set_config('request.jwt.claims', json_build_object('sub', current_setting('probe.fm_medgt',true))::text, true);
+DO $$ DECLARE g int; h int; BEGIN
+  IF current_setting('probe.ex_ready',true)<>'1' OR to_regprocedure('public.laboratorios_para_medico()') IS NULL THEN PERFORM set_config('probe.p213','N/A',false);
+  ELSE
+    SELECT count(*) INTO g FROM public.laboratorios_para_medico() WHERE id=current_setting('probe.p0_lgt',true)::uuid;
+    SELECT count(*) INTO h FROM public.laboratorios_para_medico() WHERE id=current_setting('probe.p0_lhn',true)::uuid;
+    IF g>0 AND h=0 THEN PERFORM set_config('probe.p213','OK (RPC médico GT: lab GT sí, lab HN no)',false);
+    ELSE PERFORM set_config('probe.p213','FALLO (gt='||g||' hn='||h||')',false); END IF;
+  END IF;
+EXCEPTION WHEN others THEN PERFORM set_config('probe.p213','FALLO ('||SQLERRM||')',false); END $$;
+
+-- P214 — RPC fail-closed (red-first): médico país-NULL → 0 labs (pre: todos, incl HN)
+SELECT set_config('request.jwt.claims', json_build_object('sub', current_setting('probe.p0_mednull',true))::text, true);
+DO $$ DECLARE h int; tot int; BEGIN
+  IF current_setting('probe.ex_ready',true)<>'1' OR to_regprocedure('public.laboratorios_para_medico()') IS NULL THEN PERFORM set_config('probe.p214','N/A',false);
+  ELSE
+    SELECT count(*) INTO tot FROM public.laboratorios_para_medico();
+    SELECT count(*) INTO h FROM public.laboratorios_para_medico() WHERE id=current_setting('probe.p0_lhn',true)::uuid;
+    IF tot=0 AND h=0 THEN PERFORM set_config('probe.p214','OK (país-NULL → 0 labs, fail-closed)',false);
+    ELSE PERFORM set_config('probe.p214','ROJO (país-NULL obtiene labs — fail-open, tot='||tot||' hn='||h||')',false); END IF;
+  END IF;
+EXCEPTION WHEN others THEN PERFORM set_config('probe.p214','FALLO ('||SQLERRM||')',false); END $$;
+
+-- P215 — no-regresión: anon NO lee examenes_catalogo (post-097: TO authenticated → 0)
+SELECT set_config('role','none',true);
+SELECT set_config('request.jwt.claims', '{"role":"anon"}', true);
+SELECT set_config('role','anon',true);
+DO $$ DECLARE n int; BEGIN
+  IF current_setting('probe.ex_ready',true)<>'1' THEN PERFORM set_config('probe.p215','N/A',false);
+  ELSE
+    BEGIN SELECT count(*) INTO n FROM public.examenes_catalogo; EXCEPTION WHEN others THEN n:=-1; END;
+    IF n=0 THEN PERFORM set_config('probe.p215','OK (anon no lee examenes_catalogo)',false);
+    ELSE PERFORM set_config('probe.p215','ROJO/INFO (anon lee '||n||' — pre-097 era public)',false); END IF;
+  END IF;
+END $$;
+SELECT set_config('role','none',true);
+
 -- ===== Veredictos como result set =====
 SELECT 'P1_anon_insert_citas'              AS probe, current_setting('probe.p1', true)  AS verdict, 'BLOQUEADO' AS esperado_post_fix
 UNION ALL SELECT 'P2_medico_cancela_ajena_rpc',         current_setting('probe.p2', true),  'BLOQUEADO'
@@ -3732,6 +3817,12 @@ UNION ALL SELECT 'P205_farmed_medico_pos_GT',           current_setting('probe.p
 UNION ALL SELECT 'P206_farmed_clinico_neg_HN',          current_setting('probe.p206', true), 'OK post-096 (ROJO pre)'
 UNION ALL SELECT 'P207_farmed_clinico_pos_GT',          current_setting('probe.p207', true), 'OK'
 UNION ALL SELECT 'P208_farmed_failclosed',              current_setting('probe.p208', true), 'OK post-096 (ROJO pre)'
-UNION ALL SELECT 'P209_farmed_proveedor_anon',          current_setting('probe.p209', true), 'OK';
+UNION ALL SELECT 'P209_farmed_proveedor_anon',          current_setting('probe.p209', true), 'OK'
+UNION ALL SELECT 'P210_examenes_medico_neg_HN',         current_setting('probe.p210', true), 'OK post-097 (ROJO pre)'
+UNION ALL SELECT 'P211_examenes_medico_pos_GT',         current_setting('probe.p211', true), 'OK'
+UNION ALL SELECT 'P212_examenes_failclosed',            current_setting('probe.p212', true), 'OK post-097 (ROJO pre)'
+UNION ALL SELECT 'P213_rpc_labs_medico_GT',             current_setting('probe.p213', true), 'OK'
+UNION ALL SELECT 'P214_rpc_labs_failclosed',            current_setting('probe.p214', true), 'OK post-097 (ROJO pre)'
+UNION ALL SELECT 'P215_examenes_anon',                  current_setting('probe.p215', true), 'OK post-097';
 
 ROLLBACK;  -- nada de lo anterior se persiste
