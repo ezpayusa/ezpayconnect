@@ -2723,6 +2723,229 @@ DO $$ DECLARE n INT; st INT; BEGIN
   END IF;
 END $$;
 
+-- ============================================================
+-- FRENTE B · Bandeja de recetas entrantes (P163–P174). Fixture en este BEGIN…ROLLBACK.
+-- ============================================================
+DO $$
+DECLARE v_eA uuid; v_fA int; v_fB int; v_norx uuid; v_med uuid; v_pac int;
+        v_rx bigint; v_rx2 bigint; v_rxB bigint; v_itA bigint; v_itB bigint;
+BEGIN
+  IF current_setting('probe.cat_ready',true)<>'1' THEN PERFORM set_config('probe.rx_ready','0',false); RETURN; END IF;
+  v_fA := NULLIF(current_setting('probe.cat_fA',true),'')::int;
+  v_fB := NULLIF(current_setting('probe.cat_fB',true),'')::int;
+  SELECT empresa_id INTO v_eA FROM public.farmacias WHERE id=v_fA;
+  SELECT id INTO v_med FROM public.perfiles WHERE rol='medico' ORDER BY id LIMIT 1;
+  SELECT id INTO v_pac FROM public.pacientes ORDER BY id LIMIT 1;
+  SELECT id INTO v_norx FROM public.cuentas_proveedor ORDER BY id LIMIT 1 OFFSET 12;
+  IF v_med IS NULL OR v_pac IS NULL OR v_norx IS NULL THEN PERFORM set_config('probe.rx_ready','0',false); RETURN; END IF;
+  -- usuario en empresa A SIN recetas_dispensar (rol 'inventario')
+  UPDATE public.cuentas_proveedor SET empresa_id=v_eA, rol_en_empresa='inventario', activo=true, equipo_id=NULL WHERE id=v_norx;
+
+  -- (a) receta MIXTA (ítem en A + ítem en B) CON recetas_avanzadas (despachable)
+  INSERT INTO public.recetas (medico_id,paciente_id,estado) VALUES (v_med,v_pac,'activa') RETURNING id INTO v_rx;
+  INSERT INTO public.receta_items (receta_id,nombre_medicamento,dosis,frecuencia,cantidad,farmacia_id)
+    VALUES (v_rx,'MED PROPIO A','1 tab','c/8h',2,v_fA) RETURNING id INTO v_itA;
+  INSERT INTO public.receta_items (receta_id,nombre_medicamento,dosis,frecuencia,cantidad,farmacia_id)
+    VALUES (v_rx,'MED AJENO B','1 tab','c/12h',1,v_fB) RETURNING id INTO v_itB;
+  INSERT INTO public.recetas_avanzadas (receta_base_id,paciente_id,medico_id,estado_dispensacion)
+    VALUES (v_rx,v_pac::text,v_med::text,'pendiente');
+
+  -- (b) receta SOLO B (para aislamiento: A no debe verla)
+  INSERT INTO public.recetas (medico_id,paciente_id,estado) VALUES (v_med,v_pac,'activa') RETURNING id INTO v_rxB;
+  INSERT INTO public.receta_items (receta_id,nombre_medicamento,dosis,frecuencia,cantidad,farmacia_id)
+    VALUES (v_rxB,'SOLO B','1','c/24h',1,v_fB);
+  INSERT INTO public.recetas_avanzadas (receta_base_id,paciente_id,medico_id,estado_dispensacion)
+    VALUES (v_rxB,v_pac::text,v_med::text,'pendiente');
+
+  -- (c) receta SIN recetas_avanzadas (edge: no despachable, rechazo limpio)
+  INSERT INTO public.recetas (medico_id,paciente_id,estado) VALUES (v_med,v_pac,'activa') RETURNING id INTO v_rx2;
+  INSERT INTO public.receta_items (receta_id,nombre_medicamento,dosis,frecuencia,cantidad,farmacia_id)
+    VALUES (v_rx2,'MED PROPIO A','1','c/8h',1,v_fA);
+
+  PERFORM set_config('probe.rx_ready','1',false);
+  PERFORM set_config('probe.rx_disp',v_rx::text,false);
+  PERFORM set_config('probe.rx_only_b',v_rxB::text,false);
+  PERFORM set_config('probe.rx_notoken',v_rx2::text,false);
+  PERFORM set_config('probe.rx_itA',v_itA::text,false);
+  PERFORM set_config('probe.rx_itB',v_itB::text,false);
+  PERFORM set_config('probe.rx_norx',v_norx::text,false);
+END $$;
+
+-- Helper: ¿existen las RPC de Frente B? (guarda rojo-primero)
+DO $$ BEGIN
+  PERFORM set_config('probe.rx_rpc',
+    CASE WHEN to_regprocedure('public.listar_recetas_entrantes()') IS NOT NULL
+          AND to_regprocedure('public.registrar_dispensacion_dirigida(bigint,bigint[],text)') IS NOT NULL
+         THEN '1' ELSE '0' END, false);
+END $$;
+
+-- P163 — POS/aislamiento: A lista entrantes → ve la MIXTA (solo su ítem A) y la edge;
+-- NO ve la receta SOLO-B.
+SELECT set_config('role','none',true);
+SELECT set_config('request.jwt.claims', json_build_object('sub', current_setting('probe.cat_inv', true), 'role','authenticated')::text, true);
+SELECT set_config('role','authenticated',true);
+DO $$ DECLARE v jsonb; n_total int; n_disp int; n_notoken int; n_b int; n_items int; BEGIN
+  IF current_setting('probe.rx_ready',true)<>'1' OR current_setting('probe.rx_rpc',true)<>'1' THEN PERFORM set_config('probe.p163','N/A (pendiente 090)',false);
+  ELSE
+    v := public.listar_recetas_entrantes();
+    n_total := jsonb_array_length(v);
+    SELECT count(*) INTO n_disp    FROM jsonb_array_elements(v) e WHERE (e->>'receta_id')::bigint = NULLIF(current_setting('probe.rx_disp',true),'')::bigint;
+    SELECT count(*) INTO n_notoken FROM jsonb_array_elements(v) e WHERE (e->>'receta_id')::bigint = NULLIF(current_setting('probe.rx_notoken',true),'')::bigint;
+    SELECT count(*) INTO n_b       FROM jsonb_array_elements(v) e WHERE (e->>'receta_id')::bigint = NULLIF(current_setting('probe.rx_only_b',true),'')::bigint;
+    SELECT jsonb_array_length(e->'items_pendientes') INTO n_items FROM jsonb_array_elements(v) e WHERE (e->>'receta_id')::bigint = NULLIF(current_setting('probe.rx_disp',true),'')::bigint;
+    -- POSITIVO (A ve LAS SUYAS, count>0): mixta + edge presentes, 1 ítem propio en la mixta.
+    -- NEGATIVO (no verde-vacío): SOLO-B ausente.
+    IF n_total>0 AND n_disp=1 AND n_notoken=1 AND n_b=0 AND n_items=1
+      THEN PERFORM set_config('probe.p163','OK (A ve sus 2 recetas [mixta 1 ítem propio + edge]; NO ve SOLO-B)',false);
+      ELSE PERFORM set_config('probe.p163','FALLO (total='||n_total||' disp='||n_disp||' notoken='||n_notoken||' soloB='||n_b||' items='||COALESCE(n_items,-1)||')',false); END IF;
+  END IF;
+EXCEPTION WHEN others THEN PERFORM set_config('probe.p163','FALLO ('||SQLERRM||')',false); END $$;
+
+-- P174 — token NUNCA filtrado: el payload de listar no contiene dispatch_token (solo tiene_token)
+DO $$ DECLARE v jsonb; BEGIN
+  IF current_setting('probe.rx_ready',true)<>'1' OR current_setting('probe.rx_rpc',true)<>'1' THEN PERFORM set_config('probe.p174','N/A (pendiente 090)',false);
+  ELSE
+    v := public.listar_recetas_entrantes();
+    IF v::text NOT ILIKE '%dispatch_token%' AND v::text ILIKE '%tiene_token%' THEN PERFORM set_config('probe.p174','OK (tiene_token sí; dispatch_token NO)',false);
+    ELSE PERFORM set_config('probe.p174','FALLO (token filtrado en payload)',false); END IF;
+  END IF;
+EXCEPTION WHEN others THEN PERFORM set_config('probe.p174','FALLO ('||SQLERRM||')',false); END $$;
+
+-- P168 — PHI: el payload no contiene diagnóstico/teléfono/dirección
+DO $$ DECLARE v jsonb; BEGIN
+  IF current_setting('probe.rx_ready',true)<>'1' OR current_setting('probe.rx_rpc',true)<>'1' THEN PERFORM set_config('probe.p168','N/A (pendiente 090)',false);
+  ELSE
+    v := public.listar_recetas_entrantes();
+    IF v::text NOT ILIKE '%diagnostico%' AND v::text NOT ILIKE '%telefono%' AND v::text NOT ILIKE '%direccion%'
+      THEN PERFORM set_config('probe.p168','OK (sin diagnóstico/teléfono/dirección)',false);
+      ELSE PERFORM set_config('probe.p168','FALLO (PHI sensible en payload)',false); END IF;
+  END IF;
+EXCEPTION WHEN others THEN PERFORM set_config('probe.p168','FALLO ('||SQLERRM||')',false); END $$;
+
+-- P164 — NEG: usuario SIN recetas_dispensar → listar BLOQUEADO
+SELECT set_config('role','none',true);
+SELECT set_config('request.jwt.claims', json_build_object('sub', current_setting('probe.rx_norx', true), 'role','authenticated')::text, true);
+SELECT set_config('role','authenticated',true);
+DO $$ DECLARE v jsonb; BEGIN
+  IF current_setting('probe.rx_ready',true)<>'1' OR current_setting('probe.rx_rpc',true)<>'1' THEN PERFORM set_config('probe.p164','N/A (pendiente 090)',false);
+  ELSE
+    BEGIN v := public.listar_recetas_entrantes(); PERFORM set_config('probe.p164','FALLO (PERMITIDO sin permiso)',false);
+    EXCEPTION WHEN others THEN PERFORM set_config('probe.p164','BLOQUEADO ('||SQLSTATE||')',false); END;
+  END IF;
+END $$;
+
+-- P165 — NEG: anon → listar BLOQUEADO
+SELECT set_config('role','none',true);
+SELECT set_config('request.jwt.claims', '{"role":"anon"}', true);
+SELECT set_config('role','anon',true);
+DO $$ DECLARE v jsonb; BEGIN
+  IF current_setting('probe.rx_rpc',true)<>'1' THEN PERFORM set_config('probe.p165','N/A (pendiente 090)',false);
+  ELSE
+    BEGIN v := public.listar_recetas_entrantes(); PERFORM set_config('probe.p165','FALLO (PERMITIDO anon)',false);
+    EXCEPTION WHEN others THEN PERFORM set_config('probe.p165','BLOQUEADO ('||SQLSTATE||')',false); END;
+  END IF;
+END $$;
+
+-- P171 — NEG: farmacéutico vacío → BLOQUEADO (antes de cualquier escritura)
+SELECT set_config('role','none',true);
+SELECT set_config('request.jwt.claims', json_build_object('sub', current_setting('probe.cat_inv', true), 'role','authenticated')::text, true);
+SELECT set_config('role','authenticated',true);
+DO $$ BEGIN
+  IF current_setting('probe.rx_ready',true)<>'1' OR current_setting('probe.rx_rpc',true)<>'1' THEN PERFORM set_config('probe.p171','N/A (pendiente 090)',false);
+  ELSE
+    BEGIN PERFORM public.registrar_dispensacion_dirigida(NULLIF(current_setting('probe.rx_disp',true),'')::bigint, ARRAY[NULLIF(current_setting('probe.rx_itA',true),'')::bigint], '   ');
+      PERFORM set_config('probe.p171','FALLO (PERMITIDO farmacéutico vacío)',false);
+    EXCEPTION WHEN others THEN PERFORM set_config('probe.p171','BLOQUEADO ('||SQLERRM||')',false); END;
+  END IF;
+END $$;
+
+-- P172 — edge: receta SIN recetas_avanzadas → RECHAZO limpio (sin FK crudo)
+DO $$ BEGIN
+  IF current_setting('probe.rx_ready',true)<>'1' OR current_setting('probe.rx_rpc',true)<>'1' THEN PERFORM set_config('probe.p172','N/A (pendiente 090)',false);
+  ELSE
+    BEGIN PERFORM public.registrar_dispensacion_dirigida(NULLIF(current_setting('probe.rx_notoken',true),'')::bigint,
+            ARRAY[(SELECT id FROM public.receta_items WHERE receta_id=NULLIF(current_setting('probe.rx_notoken',true),'')::bigint LIMIT 1)], 'Farm QA');
+      PERFORM set_config('probe.p172','FALLO (despachó sin recetas_avanzadas)',false);
+    EXCEPTION WHEN others THEN PERFORM set_config('probe.p172','BLOQUEADO ('||SQLERRM||')',false); END;
+  END IF;
+END $$;
+
+-- P166 (LLAMADA) — A despacha [itemA, itemB] bajo rol farmacia (authenticated, cat_inv).
+-- La verificación va aparte como role='none' (ground-truth) porque dispensaciones/
+-- receta_items están RLS-cerradas para la farmacia (lo que prueba P170): leerlas como
+-- la farmacia daría 0/NULL falsos.
+DO $$ DECLARE v jsonb; BEGIN
+  IF current_setting('probe.rx_ready',true)<>'1' OR current_setting('probe.rx_rpc',true)<>'1' THEN PERFORM set_config('probe.p166_disp','na',false);
+  ELSE
+    BEGIN
+      v := public.registrar_dispensacion_dirigida(NULLIF(current_setting('probe.rx_disp',true),'')::bigint,
+             ARRAY[NULLIF(current_setting('probe.rx_itA',true),'')::bigint, NULLIF(current_setting('probe.rx_itB',true),'')::bigint], 'Farm QA');
+      PERFORM set_config('probe.p166_disp', COALESCE(v->>'despachados','?'), false);
+    EXCEPTION WHEN others THEN PERFORM set_config('probe.p166_disp','err:'||SQLERRM, false); END;
+  END IF;
+END $$;
+-- VERIFICACIÓN ground-truth (bypassa RLS): el RPC ya escribió; ahora leemos como owner.
+SELECT set_config('role','none',true);
+
+-- P166 (VEREDICTO): despachados=1 (solo A) y itemB ajeno intacto (dispensado=false)
+DO $$ DECLARE b_disp boolean; d text; BEGIN
+  IF current_setting('probe.rx_ready',true)<>'1' OR current_setting('probe.rx_rpc',true)<>'1' THEN PERFORM set_config('probe.p166','N/A (pendiente 090)',false);
+  ELSE
+    d := current_setting('probe.p166_disp',true);
+    SELECT dispensado INTO b_disp FROM public.receta_items WHERE id=NULLIF(current_setting('probe.rx_itB',true),'')::bigint;
+    IF d='1' AND b_disp IS NOT NULL AND b_disp=false THEN PERFORM set_config('probe.p166','OK (1 despachado=A; B ajeno intacto)',false);
+    ELSE PERFORM set_config('probe.p166','FALLO (despachados='||COALESCE(d,'?')||' B_dispensado='||COALESCE(b_disp::text,'NULL')||')',false); END IF;
+  END IF;
+END $$;
+
+-- P169 — POS (ground-truth): tras P166, stock baja (10→8) + 1 dispensación + estado parcial
+DO $$ DECLARE v_st int; v_disp int; v_estado text; BEGIN
+  IF current_setting('probe.rx_ready',true)<>'1' OR current_setting('probe.rx_rpc',true)<>'1' THEN PERFORM set_config('probe.p169','N/A (pendiente 090)',false);
+  ELSE
+    SELECT stock_actual INTO v_st FROM public.farmacia_medicamentos WHERE farmacia_id=NULLIF(current_setting('probe.cat_fA',true),'')::int AND nombre_medicamento='MED PROPIO A';
+    SELECT count(*) INTO v_disp FROM public.dispensaciones WHERE receta_avanzada_id IN (SELECT id FROM public.recetas_avanzadas WHERE receta_base_id=NULLIF(current_setting('probe.rx_disp',true),'')::bigint);
+    SELECT estado_dispensacion INTO v_estado FROM public.recetas_avanzadas WHERE receta_base_id=NULLIF(current_setting('probe.rx_disp',true),'')::bigint;
+    IF v_st=8 AND v_disp=1 AND v_estado='parcial' THEN PERFORM set_config('probe.p169','OK (stock 10→8, 1 dispensación, estado parcial)',false);
+    ELSE PERFORM set_config('probe.p169','FALLO (stock='||COALESCE(v_st::text,'?')||' disp='||COALESCE(v_disp::text,'?')||' estado='||COALESCE(v_estado,'?')||')',false); END IF;
+  END IF;
+EXCEPTION WHEN others THEN PERFORM set_config('probe.p169','FALLO ('||SQLERRM||')',false); END $$;
+
+-- P173 — auditoría (ground-truth): la fila dispensaciones lleva despachado_por = actor
+DO $$ DECLARE v_dp uuid; BEGIN
+  IF current_setting('probe.rx_ready',true)<>'1' OR current_setting('probe.rx_rpc',true)<>'1' THEN PERFORM set_config('probe.p173','N/A (pendiente 090)',false);
+  ELSE
+    SELECT despachado_por INTO v_dp FROM public.dispensaciones WHERE receta_avanzada_id IN (SELECT id FROM public.recetas_avanzadas WHERE receta_base_id=NULLIF(current_setting('probe.rx_disp',true),'')::bigint) LIMIT 1;
+    IF v_dp = NULLIF(current_setting('probe.cat_inv',true),'')::uuid THEN PERFORM set_config('probe.p173','OK (despachado_por = actor)',false);
+    ELSE PERFORM set_config('probe.p173','FALLO (despachado_por='||COALESCE(v_dp::text,'NULL')||')',false); END IF;
+  END IF;
+EXCEPTION WHEN others THEN PERFORM set_config('probe.p173','FALLO ('||SQLERRM||')',false); END $$;
+
+-- P167 — NEG: re-despacho de itemA ya dispensado → no-op (error 'sin ítems')
+SELECT set_config('role','none',true);
+SELECT set_config('request.jwt.claims', json_build_object('sub', current_setting('probe.cat_inv', true), 'role','authenticated')::text, true);
+SELECT set_config('role','authenticated',true);
+DO $$ BEGIN
+  IF current_setting('probe.rx_ready',true)<>'1' OR current_setting('probe.rx_rpc',true)<>'1' THEN PERFORM set_config('probe.p167','N/A (pendiente 090)',false);
+  ELSE
+    BEGIN PERFORM public.registrar_dispensacion_dirigida(NULLIF(current_setting('probe.rx_disp',true),'')::bigint, ARRAY[NULLIF(current_setting('probe.rx_itA',true),'')::bigint], 'Farm QA');
+      PERFORM set_config('probe.p167','FALLO (re-despachó ítem ya dispensado)',false);
+    EXCEPTION WHEN others THEN PERFORM set_config('probe.p167','BLOQUEADO ('||SQLERRM||')',false); END;
+  END IF;
+END $$;
+
+-- P170 — NEG: lectura DIRECTA por tabla (recetas/receta_items/dispensaciones) por la farmacia → 0
+DO $$ DECLARE n1 int; n2 int; n3 int; BEGIN
+  IF current_setting('probe.rx_ready',true)<>'1' THEN PERFORM set_config('probe.p170','N/A',false);
+  ELSE
+    SELECT count(*) INTO n1 FROM public.recetas WHERE id=NULLIF(current_setting('probe.rx_disp',true),'')::bigint;
+    SELECT count(*) INTO n2 FROM public.receta_items WHERE receta_id=NULLIF(current_setting('probe.rx_disp',true),'')::bigint;
+    SELECT count(*) INTO n3 FROM public.dispensaciones WHERE farmacia_id=NULLIF(current_setting('probe.cat_fA',true),'')::int;
+    IF n1=0 AND n2=0 AND n3=0 THEN PERFORM set_config('probe.p170','OCULTO (0/0/0 por tabla; RLS no se afloja)',false);
+    ELSE PERFORM set_config('probe.p170','FALLO (recetas='||n1||' items='||n2||' disp='||n3||')',false); END IF;
+  END IF;
+END $$;
+SELECT set_config('role','none',true);
+
 -- ===== Veredictos como result set =====
 SELECT 'P1_anon_insert_citas'              AS probe, current_setting('probe.p1', true)  AS verdict, 'BLOQUEADO' AS esperado_post_fix
 UNION ALL SELECT 'P2_medico_cancela_ajena_rpc',         current_setting('probe.p2', true),  'BLOQUEADO'
@@ -2878,6 +3101,18 @@ UNION ALL SELECT 'P158_rpc_carga_ok',                    current_setting('probe.
 UNION ALL SELECT 'P159_anon_no_lee_catalogo',            current_setting('probe.p159', true), 'OCULTO (0)'
 UNION ALL SELECT 'P160_clinico_no_medico_disponibilidad',current_setting('probe.p160', true), 'OK'
 UNION ALL SELECT 'P161_rpc_dup_intra_archivo',           current_setting('probe.p161', true), 'OK'
-UNION ALL SELECT 'P162_norm_500mg_eq_500MG',             current_setting('probe.p162', true), 'OK';
+UNION ALL SELECT 'P162_norm_500mg_eq_500MG',             current_setting('probe.p162', true), 'OK'
+UNION ALL SELECT 'P163_bandeja_aislamiento',             current_setting('probe.p163', true), 'OK'
+UNION ALL SELECT 'P164_listar_sin_permiso',              current_setting('probe.p164', true), 'BLOQUEADO'
+UNION ALL SELECT 'P165_listar_anon',                     current_setting('probe.p165', true), 'BLOQUEADO'
+UNION ALL SELECT 'P166_despacho_mixto_reduce',           current_setting('probe.p166', true), 'OK'
+UNION ALL SELECT 'P167_redespacho_noop',                 current_setting('probe.p167', true), 'BLOQUEADO'
+UNION ALL SELECT 'P168_phi_minima',                      current_setting('probe.p168', true), 'OK'
+UNION ALL SELECT 'P169_despacho_dirigido_efectos',       current_setting('probe.p169', true), 'OK'
+UNION ALL SELECT 'P170_lectura_directa_tabla_oculta',    current_setting('probe.p170', true), 'OCULTO'
+UNION ALL SELECT 'P171_farmaceutico_requerido',          current_setting('probe.p171', true), 'BLOQUEADO'
+UNION ALL SELECT 'P172_edge_sin_recetas_avanzadas',      current_setting('probe.p172', true), 'BLOQUEADO'
+UNION ALL SELECT 'P173_auditoria_despachado_por',        current_setting('probe.p173', true), 'OK'
+UNION ALL SELECT 'P174_token_no_filtrado',               current_setting('probe.p174', true), 'OK';
 
 ROLLBACK;  -- nada de lo anterior se persiste
