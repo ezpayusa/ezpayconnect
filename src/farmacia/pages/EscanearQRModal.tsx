@@ -155,16 +155,13 @@ export default function EscanearQRModal({ open, onClose }: Props) {
                 <span className="ml-1">Verificar</span>
               </Button>
             </div>
-            <p className="text-xs text-gray-500">Entrada manual (lector de mano o pegar el código). Es el camino primario.</p>
-            {/* Cámara deshabilitada: los PDF actuales emiten el código como TEXTO, no como
-                imagen QR escaneable. Se reactiva cuando generar-pdf-receta emita imagen QR
-                (sub-tarea aparte). El flujo de cámara abajo queda cableado pero inerte. */}
+            <p className="text-xs text-gray-500">Entrada manual (lector de mano o pegar el código) o cámara. Los PDF nuevos traen QR escaneable; los viejos (código en texto) van por entrada manual.</p>
             <button
-              type="button" disabled
-              title="Requiere QR como imagen en el PDF — por ahora usa la entrada manual"
-              className="text-sm text-gray-400 flex items-center gap-1 cursor-not-allowed"
+              type="button"
+              onClick={() => setCamActiva((v) => !v)}
+              className="text-sm text-[#B45309] hover:underline flex items-center gap-1"
             >
-              <Camera className="h-4 w-4" /> Cámara (requiere QR en el PDF — usa entrada manual)
+              <Camera className="h-4 w-4" /> {camActiva ? 'Cerrar cámara' : 'Usar cámara'}
             </button>
             {camActiva && <div id={READER_ID} className="rounded-lg overflow-hidden border" />}
           </div>
