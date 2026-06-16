@@ -136,9 +136,11 @@ export default function PacienteDetallePage() {
   }
 
   const cargarRecetas = async () => {
+    // NO traer dispatch_token / dispatch_token_expira_at al cliente médico (es el secreto
+    // del QR del paciente; no se muestra ni se usa aquí). Lista explícita en vez de '*'.
     const { data } = await supabase
       .from('recetas_avanzadas')
-      .select('*')
+      .select('id, receta_base_id, paciente_id, medico_id, codigo_qr, firma_digital, estado_dispensacion, farmacia_id, fecha_dispensacion, pdf_url, created_at, updated_at')
       .eq('paciente_id', id)
       .order('created_at', { ascending: false })
     setRecetas(data || [])
@@ -244,7 +246,7 @@ export default function PacienteDetallePage() {
     const url = URL.createObjectURL(blob)
     const a = document.createElement('a')
     a.href = url
-    a.download = `receta_${recetaData.codigo_qr}.html`
+    a.download = `receta_${recetaData.receta_avanzada_id || 'descarga'}.html`
     document.body.appendChild(a)
     a.click()
     URL.revokeObjectURL(url)
@@ -608,10 +610,6 @@ export default function PacienteDetallePage() {
                       {receta.estado_dispensacion}
                     </span>
                   </div>
-                  <div className="bg-gray-50 p-3 rounded-lg mb-4">
-                    <p className="text-xs text-gray-500 mb-1">Codigo QR</p>
-                    <p className="font-mono text-[#1E5C8E] text-sm">{receta.codigo_qr}</p>
-                  </div>
                   <p className="text-xs text-gray-500 mb-1">Firma Digital</p>
                   <p className="text-sm text-gray-600 truncate">{receta.firma_digital}</p>
                   <p className="text-xs text-gray-400 mt-4">{new Date(receta.created_at).toLocaleDateString('es-ES')}</p>
@@ -785,7 +783,7 @@ export default function PacienteDetallePage() {
                 <div className="inline-block bg-white p-4 rounded-lg shadow-sm">
                   <QrCode size={120} className="text-[#1E5C8E]" />
                 </div>
-                <p className="font-mono text-[#1E5C8E] mt-2">{recetaData.codigo_qr}</p>
+                <p className="text-xs text-gray-500 mt-2">El QR escaneable está en el PDF descargable de la receta.</p>
               </div>
 
               <div className="bg-gray-50 p-4 rounded-lg">

@@ -112,12 +112,6 @@ export default function WebAppRecetas() {
                         </div>
                       ))}
                     </div>
-
-                    {r.codigo_qr && (
-                      <p className="text-xs text-slate-400">
-                        Código QR: {r.codigo_qr}
-                      </p>
-                    )}
                   </div>
                 )}
               </CardContent>

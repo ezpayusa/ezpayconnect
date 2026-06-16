@@ -181,11 +181,6 @@ export default function WebAppHistorial() {
                                     </span>
                                   </div>
                                 ))}
-                                {item.detalles.codigo_qr && (
-                                  <p className="text-[10px] text-slate-400">
-                                    QR: {item.detalles.codigo_qr}
-                                  </p>
-                                )}
                               </div>
                             )}
 
