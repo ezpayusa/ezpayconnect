@@ -29,8 +29,6 @@ serve(async (req) => {
       throw new Error('Faltan campos requeridos: receta_id, paciente_id, medico_id')
     }
 
-    const codigoQR = `EZP-${Date.now()}-${Math.random().toString(36).substring(2, 8).toUpperCase()}`
-
     const { data: paciente } = await supabase
       .from('pacientes')
       .select('nombre, telefono, fecha_nacimiento')
@@ -43,20 +41,30 @@ serve(async (req) => {
       .eq('id', medico_id)
       .single()
 
-    const { data: recetaAvanzada, error: insertError } = await supabase
+    // Token de despacho FUERTE: lo genera la BD (DEFAULT gen_random_bytes, 256 bits).
+    // upsert con ON CONFLICT(receta_base_id) DO NOTHING: 1 receta_avanzada por receta
+    // (no se rota el token si ya existe; ver migración 085).
+    const { error: insertError } = await supabase
       .from('recetas_avanzadas')
-      .insert({
+      .upsert({
         receta_base_id: receta_id,
         paciente_id,
         medico_id,
-        codigo_qr: codigoQR,
         firma_digital: `FIRMADO-${medico?.nombre || 'Medico'}-${new Date().toISOString()}`,
         estado_dispensacion: 'pendiente'
-      })
-      .select()
-      .single()
+      }, { onConflict: 'receta_base_id', ignoreDuplicates: true })
 
     if (insertError) throw insertError
+
+    // Leer el dispatch_token (recién creado o existente) para el QR del PDF.
+    const { data: recetaAvanzada, error: selError } = await supabase
+      .from('recetas_avanzadas')
+      .select('id, dispatch_token, firma_digital')
+      .eq('receta_base_id', receta_id)
+      .single()
+
+    if (selError || !recetaAvanzada) throw (selError || new Error('No se pudo obtener el token de despacho'))
+    const codigoQR = recetaAvanzada.dispatch_token
 
     const fecha = new Date().toLocaleDateString('es-ES', { day: 'numeric', month: 'long', year: 'numeric' })
 

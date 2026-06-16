@@ -2137,6 +2137,305 @@ DO $$ DECLARE n INT; BEGIN
 EXCEPTION WHEN others THEN PERFORM set_config('probe.p134','REGRESIÓN ('||SQLSTATE||')',false);
 END $$;
 
+-- ============================================================
+-- INCREMENTO 4 · Saneo QR de despacho (A-refinada) · P135–P146
+-- ------------------------------------------------------------
+-- GUARDADO: si los RPC nuevos no existen aún (pre-migración 085) TODO queda
+-- 'N/A (pendiente migración 085)' = rojo. Fixture en la transacción del harness
+-- (ROLLBACK): 2 empresas farmacia con ítems (A,B) + 1 sin ítems (C) + actor sin
+-- permiso (delivery) + receta médico con ítem para A y para B + receta con token
+-- EXPIRADO. Todos los datos nuevos se tocan solo dentro del guard.
+-- ============================================================
+SELECT set_config('role','none',true);
+DO $$
+DECLARE
+  v_pais uuid; v_empA uuid; v_empB uuid; v_empC uuid; v_farmA int; v_farmB int;
+  v_actorA uuid; v_actorB uuid; v_actorC uuid; v_noperm uuid;
+  v_medico uuid; v_paciente bigint; v_r1 bigint; v_iA bigint; v_iB bigint;
+  v_ra1 uuid; v_tok1 text; v_r3 bigint; v_iA3 bigint; v_ra3 uuid; v_tok3 text;
+  v_rY bigint; v_iY1 bigint; v_raY uuid; v_tokY text;
+BEGIN
+  IF to_regprocedure('public.verificar_receta_despacho(text)') IS NULL THEN
+    PERFORM set_config('probe.qr_ready','0',false);
+    PERFORM set_config('probe.p135','N/A (pendiente migración 085)',false);
+    PERFORM set_config('probe.p136','N/A (pendiente migración 085)',false);
+    PERFORM set_config('probe.p137','N/A (pendiente migración 085)',false);
+    PERFORM set_config('probe.p138','N/A (pendiente migración 085)',false);
+    PERFORM set_config('probe.p139','N/A (pendiente migración 085)',false);
+    PERFORM set_config('probe.p140','N/A (pendiente migración 085)',false);
+    PERFORM set_config('probe.p141','N/A (pendiente migración 085)',false);
+    PERFORM set_config('probe.p142','N/A (pendiente migración 085)',false);
+    PERFORM set_config('probe.p143','N/A (pendiente migración 085)',false);
+    PERFORM set_config('probe.p144','N/A (pendiente migración 085)',false);
+    PERFORM set_config('probe.p145','N/A (pendiente migración 085)',false);
+    PERFORM set_config('probe.p146','N/A (pendiente migración 085)',false);
+    PERFORM set_config('probe.p147','N/A (pendiente migración 085)',false);
+    PERFORM set_config('probe.p148','N/A (pendiente migración 085)',false);
+    RETURN;
+  END IF;
+  SELECT pais_id INTO v_pais FROM public.empresas_proveedoras WHERE tipo='empresa_afin' LIMIT 1;
+  SELECT id INTO v_actorA FROM public.cuentas_proveedor ORDER BY id LIMIT 1 OFFSET 6;
+  SELECT id INTO v_actorB FROM public.cuentas_proveedor ORDER BY id LIMIT 1 OFFSET 7;
+  SELECT id INTO v_actorC FROM public.cuentas_proveedor ORDER BY id LIMIT 1 OFFSET 8;
+  SELECT id INTO v_noperm FROM public.cuentas_proveedor ORDER BY id LIMIT 1 OFFSET 9;
+  SELECT id INTO v_medico FROM public.perfiles WHERE rol='medico' ORDER BY id LIMIT 1;
+  SELECT id INTO v_paciente FROM public.pacientes ORDER BY id LIMIT 1;
+  IF v_noperm IS NULL OR v_paciente IS NULL OR v_medico IS NULL THEN
+    PERFORM set_config('probe.qr_ready','0',false);
+    PERFORM set_config('probe.p135','N/A (datos insuficientes)',false);  -- (el resto hereda N/A si quedó del run previo)
+    RETURN;
+  END IF;
+  PERFORM set_config('probe.qr_ready','1',false);
+  -- empresas farmacia + sucursales
+  INSERT INTO public.empresas_proveedoras (nombre_empresa,email_contacto,tipo,pais_id,estado) VALUES ('QR FarmA','qra@probe.test','farmacia',v_pais,'activa') RETURNING id INTO v_empA;
+  INSERT INTO public.empresas_proveedoras (nombre_empresa,email_contacto,tipo,pais_id,estado) VALUES ('QR FarmB','qrb@probe.test','farmacia',v_pais,'activa') RETURNING id INTO v_empB;
+  INSERT INTO public.empresas_proveedoras (nombre_empresa,email_contacto,tipo,pais_id,estado) VALUES ('QR FarmC','qrc@probe.test','farmacia',v_pais,'activa') RETURNING id INTO v_empC;
+  INSERT INTO public.farmacias (nombre,empresa_id,tipo,pais_id) VALUES ('Suc A',v_empA,'farmacia',v_pais) RETURNING id INTO v_farmA;
+  INSERT INTO public.farmacias (nombre,empresa_id,tipo,pais_id) VALUES ('Suc B',v_empB,'farmacia',v_pais) RETURNING id INTO v_farmB;
+  UPDATE public.cuentas_proveedor SET empresa_id=v_empA, rol_en_empresa='admin',    activo=true, equipo_id=NULL WHERE id=v_actorA;
+  UPDATE public.cuentas_proveedor SET empresa_id=v_empB, rol_en_empresa='admin',    activo=true, equipo_id=NULL WHERE id=v_actorB;
+  UPDATE public.cuentas_proveedor SET empresa_id=v_empC, rol_en_empresa='admin',    activo=true, equipo_id=NULL WHERE id=v_actorC;
+  UPDATE public.cuentas_proveedor SET empresa_id=v_empA, rol_en_empresa='delivery', activo=true, equipo_id=NULL WHERE id=v_noperm;  -- delivery: sin recetas_dispensar
+  -- R1: receta con ítem para farmacia A y para B + recetas_avanzadas (token fuerte por DEFAULT)
+  INSERT INTO public.recetas (medico_id,paciente_id,estado) VALUES (v_medico,v_paciente,'activa') RETURNING id INTO v_r1;
+  INSERT INTO public.receta_items (receta_id,nombre_medicamento,dosis,frecuencia,cantidad,farmacia_id) VALUES (v_r1,'Med A1','1','c/8h',2,v_farmA) RETURNING id INTO v_iA;
+  INSERT INTO public.receta_items (receta_id,nombre_medicamento,dosis,frecuencia,cantidad,farmacia_id) VALUES (v_r1,'Med B1','1','c/12h',1,v_farmB) RETURNING id INTO v_iB;
+  INSERT INTO public.recetas_avanzadas (receta_base_id,paciente_id,medico_id,estado_dispensacion) VALUES (v_r1, v_paciente::text, v_medico::text, 'pendiente') RETURNING id, dispatch_token INTO v_ra1, v_tok1;
+  -- R3: token EXPIRADO (vencido ayer)
+  INSERT INTO public.recetas (medico_id,paciente_id,estado) VALUES (v_medico,v_paciente,'activa') RETURNING id INTO v_r3;
+  INSERT INTO public.receta_items (receta_id,nombre_medicamento,dosis,frecuencia,cantidad,farmacia_id) VALUES (v_r3,'Med A3','1','c/8h',1,v_farmA) RETURNING id INTO v_iA3;
+  INSERT INTO public.recetas_avanzadas (receta_base_id,paciente_id,medico_id,estado_dispensacion,dispatch_token_expira_at) VALUES (v_r3, v_paciente::text, v_medico::text, 'pendiente', now() - interval '1 day') RETURNING id, dispatch_token INTO v_ra3, v_tok3;
+  -- RY: OTRA receta con un ítem en la MISMA farmacia A (para binding token↔receta y array mixto)
+  INSERT INTO public.recetas (medico_id,paciente_id,estado) VALUES (v_medico,v_paciente,'activa') RETURNING id INTO v_rY;
+  INSERT INTO public.receta_items (receta_id,nombre_medicamento,dosis,frecuencia,cantidad,farmacia_id) VALUES (v_rY,'Med Y1','1','c/8h',1,v_farmA) RETURNING id INTO v_iY1;
+  INSERT INTO public.recetas_avanzadas (receta_base_id,paciente_id,medico_id,estado_dispensacion) VALUES (v_rY, v_paciente::text, v_medico::text, 'pendiente') RETURNING id, dispatch_token INTO v_raY, v_tokY;
+  PERFORM set_config('probe.qr_actorA', v_actorA::text, false);
+  PERFORM set_config('probe.qr_actorB', v_actorB::text, false);
+  PERFORM set_config('probe.qr_actorC', v_actorC::text, false);
+  PERFORM set_config('probe.qr_noperm', v_noperm::text, false);
+  PERFORM set_config('probe.qr_medico', v_medico::text, false);
+  PERFORM set_config('probe.qr_tok1', v_tok1, false);
+  PERFORM set_config('probe.qr_tok3', v_tok3, false);
+  PERFORM set_config('probe.qr_iA', v_iA::text, false);
+  PERFORM set_config('probe.qr_iB', v_iB::text, false);
+  PERFORM set_config('probe.qr_iY1', v_iY1::text, false);
+  PERFORM set_config('probe.qr_tokY', v_tokY, false);
+END $$;
+
+-- Helper de aserción: cada probe corre como un actor (jwt) y captura el veredicto.
+-- P135 — NEG: autenticado SIN recetas_dispensar (delivery) + token válido → BLOQUEADO
+SELECT set_config('role','none',true);
+SELECT set_config('request.jwt.claims', json_build_object('sub', current_setting('probe.qr_noperm', true), 'role','authenticated')::text, true);
+SELECT set_config('role','authenticated',true);
+DO $$ BEGIN
+  IF current_setting('probe.qr_ready', true) <> '1' THEN PERFORM set_config('probe.p135','N/A (pendiente migración 085)',false);
+  ELSE PERFORM public.verificar_receta_despacho(current_setting('probe.qr_tok1', true));
+       PERFORM set_config('probe.p135','PERMITIDO (sin permiso vio receta!)',false); END IF;
+EXCEPTION WHEN undefined_function THEN PERFORM set_config('probe.p135','N/A (RPC no existe)',false);
+  WHEN others THEN PERFORM set_config('probe.p135','BLOQUEADO ('||SQLSTATE||')',false);
+END $$;
+
+-- P136 — NEG: token viejo/adivinado (formato EZP-…) → no resuelve → BLOQUEADO
+SELECT set_config('role','none',true);
+SELECT set_config('request.jwt.claims', json_build_object('sub', current_setting('probe.qr_actorA', true), 'role','authenticated')::text, true);
+SELECT set_config('role','authenticated',true);
+DO $$ BEGIN
+  IF current_setting('probe.qr_ready', true) <> '1' THEN PERFORM set_config('probe.p136','N/A (pendiente migración 085)',false);
+  ELSE PERFORM public.verificar_receta_despacho('EZP-1700000000-ABC123');
+       PERFORM set_config('probe.p136','PERMITIDO (token viejo resolvió!)',false); END IF;
+EXCEPTION WHEN undefined_function THEN PERFORM set_config('probe.p136','N/A (RPC no existe)',false);
+  WHEN others THEN PERFORM set_config('probe.p136','BLOQUEADO ('||SQLSTATE||')',false);
+END $$;
+
+-- P137 — NEG: verificar cross-farmacia (actor de empresa C, sin ítems en la receta) → BLOQUEADO
+SELECT set_config('role','none',true);
+SELECT set_config('request.jwt.claims', json_build_object('sub', current_setting('probe.qr_actorC', true), 'role','authenticated')::text, true);
+SELECT set_config('role','authenticated',true);
+DO $$ BEGIN
+  IF current_setting('probe.qr_ready', true) <> '1' THEN PERFORM set_config('probe.p137','N/A (pendiente migración 085)',false);
+  ELSE PERFORM public.verificar_receta_despacho(current_setting('probe.qr_tok1', true));
+       PERFORM set_config('probe.p137','PERMITIDO (farmacia ajena vio receta!)',false); END IF;
+EXCEPTION WHEN undefined_function THEN PERFORM set_config('probe.p137','N/A (RPC no existe)',false);
+  WHEN others THEN PERFORM set_config('probe.p137','BLOQUEADO ('||SQLSTATE||')',false);
+END $$;
+
+-- P146 — AISLAMIENTO POR ÍTEM: actor A verifica → ve SOLO su ítem (A1), NO el de B (B1)
+SELECT set_config('role','none',true);
+SELECT set_config('request.jwt.claims', json_build_object('sub', current_setting('probe.qr_actorA', true), 'role','authenticated')::text, true);
+SELECT set_config('role','authenticated',true);
+DO $$ DECLARE v jsonb; v_a bool; v_b bool; BEGIN
+  IF current_setting('probe.qr_ready', true) <> '1' THEN PERFORM set_config('probe.p146','N/A (pendiente migración 085)',false);
+  ELSE
+    v := public.verificar_receta_despacho(current_setting('probe.qr_tok1', true));
+    v_a := EXISTS (SELECT 1 FROM jsonb_array_elements(v->'items') e WHERE (e->>'item_id') = current_setting('probe.qr_iA',true));
+    v_b := EXISTS (SELECT 1 FROM jsonb_array_elements(v->'items') e WHERE (e->>'item_id') = current_setting('probe.qr_iB',true));
+    IF v_a AND NOT v_b THEN PERFORM set_config('probe.p146','OK (ve solo su ítem A, no el de B)',false);
+    ELSE PERFORM set_config('probe.p146','FUGA (a='||v_a||' b='||v_b||')',false); END IF;
+  END IF;
+EXCEPTION WHEN undefined_function THEN PERFORM set_config('probe.p146','N/A (RPC no existe)',false);
+  WHEN others THEN PERFORM set_config('probe.p146','ERROR ('||SQLSTATE||')',false);
+END $$;
+
+-- P144 — PHI MÍNIMA: el payload NO trae teléfono (ni PII de más)
+SELECT set_config('role','none',true);
+SELECT set_config('request.jwt.claims', json_build_object('sub', current_setting('probe.qr_actorA', true), 'role','authenticated')::text, true);
+SELECT set_config('role','authenticated',true);
+DO $$ DECLARE v jsonb; BEGIN
+  IF current_setting('probe.qr_ready', true) <> '1' THEN PERFORM set_config('probe.p144','N/A (pendiente migración 085)',false);
+  ELSE
+    v := public.verificar_receta_despacho(current_setting('probe.qr_tok1', true));
+    IF (v ? 'telefono') OR (v::text ILIKE '%telefono%') OR (v::text ILIKE '%direccion%') OR (v::text ILIKE '%diagnostico%') OR (v::text ILIKE '%firma%')
+      THEN PERFORM set_config('probe.p144','FUGA (trae PII de más!)',false);
+      ELSE PERFORM set_config('probe.p144','OK (PHI mínima: sin teléfono/PII)',false); END IF;
+  END IF;
+EXCEPTION WHEN undefined_function THEN PERFORM set_config('probe.p144','N/A (RPC no existe)',false);
+  WHEN others THEN PERFORM set_config('probe.p144','ERROR ('||SQLSTATE||')',false);
+END $$;
+
+-- P143 — NEG: token NULL/vacío → BLOQUEADO
+SELECT set_config('role','none',true);
+SELECT set_config('request.jwt.claims', json_build_object('sub', current_setting('probe.qr_actorA', true), 'role','authenticated')::text, true);
+SELECT set_config('role','authenticated',true);
+DO $$ BEGIN
+  IF current_setting('probe.qr_ready', true) <> '1' THEN PERFORM set_config('probe.p143','N/A (pendiente migración 085)',false);
+  ELSE PERFORM public.verificar_receta_despacho(NULL);
+       PERFORM set_config('probe.p143','PERMITIDO (token NULL resolvió!)',false); END IF;
+EXCEPTION WHEN undefined_function THEN PERFORM set_config('probe.p143','N/A (RPC no existe)',false);
+  WHEN others THEN PERFORM set_config('probe.p143','BLOQUEADO ('||SQLSTATE||')',false);
+END $$;
+
+-- P145 — NEG: token EXPIRADO → BLOQUEADO
+SELECT set_config('role','none',true);
+SELECT set_config('request.jwt.claims', json_build_object('sub', current_setting('probe.qr_actorA', true), 'role','authenticated')::text, true);
+SELECT set_config('role','authenticated',true);
+DO $$ BEGIN
+  IF current_setting('probe.qr_ready', true) <> '1' THEN PERFORM set_config('probe.p145','N/A (pendiente migración 085)',false);
+  ELSE PERFORM public.verificar_receta_despacho(current_setting('probe.qr_tok3', true));
+       PERFORM set_config('probe.p145','PERMITIDO (token expirado resolvió!)',false); END IF;
+EXCEPTION WHEN undefined_function THEN PERFORM set_config('probe.p145','N/A (RPC no existe)',false);
+  WHEN others THEN PERFORM set_config('probe.p145','BLOQUEADO ('||SQLSTATE||')',false);
+END $$;
+
+-- P139 — NEG: registrar sin permiso (delivery) → BLOQUEADO
+SELECT set_config('role','none',true);
+SELECT set_config('request.jwt.claims', json_build_object('sub', current_setting('probe.qr_noperm', true), 'role','authenticated')::text, true);
+SELECT set_config('role','authenticated',true);
+DO $$ BEGIN
+  IF current_setting('probe.qr_ready', true) <> '1' THEN PERFORM set_config('probe.p139','N/A (pendiente migración 085)',false);
+  ELSE PERFORM public.registrar_dispensacion(current_setting('probe.qr_tok1', true), ARRAY[NULLIF(current_setting('probe.qr_iA',true),'')::bigint], 'X');
+       PERFORM set_config('probe.p139','PERMITIDO (sin permiso despachó!)',false); END IF;
+EXCEPTION WHEN undefined_function THEN PERFORM set_config('probe.p139','N/A (RPC no existe)',false);
+  WHEN others THEN PERFORM set_config('probe.p139','BLOQUEADO ('||SQLSTATE||')',false);
+END $$;
+
+-- P140 — NEG: registrar cross-farmacia (actor B intenta despachar el ítem de A) → BLOQUEADO
+SELECT set_config('role','none',true);
+SELECT set_config('request.jwt.claims', json_build_object('sub', current_setting('probe.qr_actorB', true), 'role','authenticated')::text, true);
+SELECT set_config('role','authenticated',true);
+DO $$ BEGIN
+  IF current_setting('probe.qr_ready', true) <> '1' THEN PERFORM set_config('probe.p140','N/A (pendiente migración 085)',false);
+  ELSE PERFORM public.registrar_dispensacion(current_setting('probe.qr_tok1', true), ARRAY[NULLIF(current_setting('probe.qr_iA',true),'')::bigint], 'X');
+       PERFORM set_config('probe.p140','PERMITIDO (despachó ítem de otra farmacia!)',false); END IF;
+EXCEPTION WHEN undefined_function THEN PERFORM set_config('probe.p140','N/A (RPC no existe)',false);
+  WHEN others THEN PERFORM set_config('probe.p140','BLOQUEADO ('||SQLSTATE||')',false);
+END $$;
+
+-- P142 — NEG: médico (sin cuenta de farmacia) intenta registrar → BLOQUEADO
+SELECT set_config('role','none',true);
+SELECT set_config('request.jwt.claims', json_build_object('sub', current_setting('probe.qr_medico', true), 'role','authenticated')::text, true);
+SELECT set_config('role','authenticated',true);
+DO $$ BEGIN
+  IF current_setting('probe.qr_ready', true) <> '1' THEN PERFORM set_config('probe.p142','N/A (pendiente migración 085)',false);
+  ELSE PERFORM public.registrar_dispensacion(current_setting('probe.qr_tok1', true), ARRAY[NULLIF(current_setting('probe.qr_iA',true),'')::bigint], 'X');
+       PERFORM set_config('probe.p142','PERMITIDO (médico despachó!)',false); END IF;
+EXCEPTION WHEN undefined_function THEN PERFORM set_config('probe.p142','N/A (RPC no existe)',false);
+  WHEN others THEN PERFORM set_config('probe.p142','BLOQUEADO ('||SQLSTATE||')',false);
+END $$;
+
+-- P138 — POSITIVO: actor A (recetas_dispensar, farmacia asignada) verifica + despacha SU ítem → OK
+SELECT set_config('role','none',true);
+SELECT set_config('request.jwt.claims', json_build_object('sub', current_setting('probe.qr_actorA', true), 'role','authenticated')::text, true);
+SELECT set_config('role','authenticated',true);
+DO $$ DECLARE v jsonb; v_n int; BEGIN
+  IF current_setting('probe.qr_ready', true) <> '1' THEN PERFORM set_config('probe.p138','N/A (pendiente migración 085)',false);
+  ELSE
+    PERFORM public.verificar_receta_despacho(current_setting('probe.qr_tok1', true));   -- ve su ítem
+    v := public.registrar_dispensacion(current_setting('probe.qr_tok1', true), ARRAY[NULLIF(current_setting('probe.qr_iA',true),'')::bigint], 'Farmaceutico A');
+    v_n := (v->>'despachados')::int;
+    IF v_n = 1 THEN PERFORM set_config('probe.p138','OK (despachó su ítem A)',false);
+    ELSE PERFORM set_config('probe.p138','REGRESIÓN (despachados='||COALESCE(v_n,-1)||')',false); END IF;
+  END IF;
+EXCEPTION WHEN undefined_function THEN PERFORM set_config('probe.p138','N/A (RPC no existe)',false);
+  WHEN others THEN PERFORM set_config('probe.p138','REGRESIÓN ('||SQLSTATE||')',false);
+END $$;
+
+-- P141 — NEG: re-despacho del mismo ítem (ya dispensado por P138) → BLOQUEADO.
+--   La ACCIÓN corre como el actor; la VERIFICACIÓN de estado de receta_items corre
+--   con role='none' (bypass RLS) porque un actor de farmacia no puede LEER receta_items.
+SELECT set_config('role','none',true);
+SELECT set_config('request.jwt.claims', json_build_object('sub', current_setting('probe.qr_actorA', true), 'role','authenticated')::text, true);
+SELECT set_config('role','authenticated',true);
+DO $$ BEGIN
+  IF current_setting('probe.qr_ready', true) <> '1' THEN PERFORM set_config('probe.p141_act','N/A (pendiente migración 085)',false);
+  ELSE
+    BEGIN
+      PERFORM public.registrar_dispensacion(current_setting('probe.qr_tok1', true), ARRAY[NULLIF(current_setting('probe.qr_iA',true),'')::bigint], 'X');
+      PERFORM set_config('probe.p141_act','PERMITIDO',false);
+    EXCEPTION WHEN others THEN PERFORM set_config('probe.p141_act','BLOQUEADO',false);
+    END;
+  END IF;
+EXCEPTION WHEN undefined_function THEN PERFORM set_config('probe.p141_act','N/A (RPC no existe)',false);
+END $$;
+SELECT set_config('role','none',true);  -- verificación de estado bypass RLS
+DO $$ DECLARE v_bpend bool; BEGIN
+  IF current_setting('probe.p141_act', true) NOT IN ('BLOQUEADO','PERMITIDO') THEN PERFORM set_config('probe.p141',current_setting('probe.p141_act',true),false);
+  ELSE
+    SELECT (dispensado = false) INTO v_bpend FROM public.receta_items WHERE id = NULLIF(current_setting('probe.qr_iB',true),'')::bigint;
+    IF current_setting('probe.p141_act',true)='BLOQUEADO' AND COALESCE(v_bpend,false)
+      THEN PERFORM set_config('probe.p141','BLOQUEADO (re-despacho; ítem B sigue pendiente)',false);
+      ELSE PERFORM set_config('probe.p141','FALLO (act='||current_setting('probe.p141_act',true)||' B_pend='||COALESCE(v_bpend::text,'NULL')||')',false); END IF;
+  END IF;
+END $$;
+
+-- P147 — NEG (binding token↔receta): token de R1 + ítem de la PROPIA farmacia A pero de
+--   OTRA receta (RY) → BLOQUEADO (el array NO puede despachar fuera de la receta del token).
+SELECT set_config('role','none',true);
+SELECT set_config('request.jwt.claims', json_build_object('sub', current_setting('probe.qr_actorA', true), 'role','authenticated')::text, true);
+SELECT set_config('role','authenticated',true);
+DO $$ BEGIN
+  IF current_setting('probe.qr_ready', true) <> '1' THEN PERFORM set_config('probe.p147','N/A (pendiente migración 085)',false);
+  ELSE PERFORM public.registrar_dispensacion(current_setting('probe.qr_tok1', true), ARRAY[NULLIF(current_setting('probe.qr_iY1',true),'')::bigint], 'X');
+       PERFORM set_config('probe.p147','PERMITIDO (despachó ítem de otra receta vía array!)',false); END IF;
+EXCEPTION WHEN undefined_function THEN PERFORM set_config('probe.p147','N/A (RPC no existe)',false);
+  WHEN others THEN PERFORM set_config('probe.p147','BLOQUEADO ('||SQLSTATE||')',false);
+END $$;
+
+-- P148 — array MIXTO: token de RY + [iY1 (propio, RY) , iB (R1/otra farmacia)] → despacha
+--   SOLO iY1; iB queda intacto (no escrito).
+SELECT set_config('role','none',true);
+SELECT set_config('request.jwt.claims', json_build_object('sub', current_setting('probe.qr_actorA', true), 'role','authenticated')::text, true);
+SELECT set_config('role','authenticated',true);
+DO $$ DECLARE v jsonb; BEGIN
+  IF current_setting('probe.qr_ready', true) <> '1' THEN PERFORM set_config('probe.p148_n','N/A (pendiente migración 085)',false);
+  ELSE
+    v := public.registrar_dispensacion(current_setting('probe.qr_tokY', true),
+           ARRAY[NULLIF(current_setting('probe.qr_iY1',true),'')::bigint, NULLIF(current_setting('probe.qr_iB',true),'')::bigint], 'Farm A');
+    PERFORM set_config('probe.p148_n', COALESCE((v->>'despachados'),'?'), false);
+  END IF;
+EXCEPTION WHEN undefined_function THEN PERFORM set_config('probe.p148_n','N/A (RPC no existe)',false);
+  WHEN others THEN PERFORM set_config('probe.p148_n','ERROR ('||SQLSTATE||')',false);
+END $$;
+SELECT set_config('role','none',true);  -- verificación de estado bypass RLS
+DO $$ DECLARE v_b_intacto bool; BEGIN
+  IF current_setting('probe.p148_n', true) !~ '^[0-9]+$' THEN PERFORM set_config('probe.p148',current_setting('probe.p148_n',true),false);
+  ELSE
+    SELECT (dispensado = false) INTO v_b_intacto FROM public.receta_items WHERE id = NULLIF(current_setting('probe.qr_iB',true),'')::bigint;
+    IF current_setting('probe.p148_n',true)='1' AND COALESCE(v_b_intacto,false)
+      THEN PERFORM set_config('probe.p148','OK (despachó solo el propio; ajeno intacto)',false);
+      ELSE PERFORM set_config('probe.p148','FUGA (despachados='||current_setting('probe.p148_n',true)||' b_intacto='||COALESCE(v_b_intacto::text,'NULL')||')',false); END IF;
+  END IF;
+END $$;
+
 -- ===== Veredictos como result set =====
 SELECT 'P1_anon_insert_citas'              AS probe, current_setting('probe.p1', true)  AS verdict, 'BLOQUEADO' AS esperado_post_fix
 UNION ALL SELECT 'P2_medico_cancela_ajena_rpc',         current_setting('probe.p2', true),  'BLOQUEADO'
@@ -2264,6 +2563,20 @@ UNION ALL SELECT 'P130_gerente_afin_no_asigna_admin',    current_setting('probe.
 UNION ALL SELECT 'P131_adminA_no_toca_miembro_afinB',    current_setting('probe.p131', true), 'BLOQUEADO'
 UNION ALL SELECT 'P132_afin_ultimo_admin_protegido',     current_setting('probe.p132', true), 'BLOQUEADO'
 UNION ALL SELECT 'P133_afin_no_ve_lab_visitador',        current_setting('probe.p133', true), 'OCULTO (0)'
-UNION ALL SELECT 'P134_medico_sigue_viendo_no_afin',     current_setting('probe.p134', true), 'OK';
+UNION ALL SELECT 'P134_medico_sigue_viendo_no_afin',     current_setting('probe.p134', true), 'OK'
+UNION ALL SELECT 'P135_despacho_sin_permiso',            current_setting('probe.p135', true), 'BLOQUEADO'
+UNION ALL SELECT 'P136_token_viejo_no_resuelve',         current_setting('probe.p136', true), 'BLOQUEADO'
+UNION ALL SELECT 'P137_verificar_cross_farmacia',        current_setting('probe.p137', true), 'BLOQUEADO'
+UNION ALL SELECT 'P138_despacho_rol_correcto_OK',        current_setting('probe.p138', true), 'OK'
+UNION ALL SELECT 'P139_registrar_sin_permiso',           current_setting('probe.p139', true), 'BLOQUEADO'
+UNION ALL SELECT 'P140_registrar_cross_farmacia',        current_setting('probe.p140', true), 'BLOQUEADO'
+UNION ALL SELECT 'P141_re_despacho',                     current_setting('probe.p141', true), 'BLOQUEADO'
+UNION ALL SELECT 'P142_medico_paciente_no_despacha',     current_setting('probe.p142', true), 'BLOQUEADO'
+UNION ALL SELECT 'P143_token_null',                      current_setting('probe.p143', true), 'BLOQUEADO'
+UNION ALL SELECT 'P144_phi_minima_sin_telefono',         current_setting('probe.p144', true), 'OK'
+UNION ALL SELECT 'P145_token_expirado',                  current_setting('probe.p145', true), 'BLOQUEADO'
+UNION ALL SELECT 'P146_aislamiento_por_item',            current_setting('probe.p146', true), 'OK'
+UNION ALL SELECT 'P147_binding_token_receta',            current_setting('probe.p147', true), 'BLOQUEADO'
+UNION ALL SELECT 'P148_array_mixto_solo_propio',         current_setting('probe.p148', true), 'OK';
 
 ROLLBACK;  -- nada de lo anterior se persiste

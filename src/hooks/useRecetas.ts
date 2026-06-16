@@ -58,15 +58,13 @@ export function useRecetas() {
         return { error: 'Todos los medicamentos deben tener dosis y frecuencia' }
       }
     }
-    // Generar código QR único para dispensación
-    const codigoQR = `EZP-${Date.now()}-${Math.random().toString(36).substring(2, 8).toUpperCase()}`
-
+    // El token de despacho (QR) lo genera la BD en recetas_avanzadas (DEFAULT fuerte,
+    // 256 bits) al generar el PDF; el cliente ya NO genera ningún código.
     const { data: recetaData, error } = await supabase.from('recetas').insert({
       paciente_id: receta.paciente_id,
       instrucciones_generales: receta.instrucciones_generales || null,
       medico_id: user.id,
       estado: 'activa',
-      codigo_qr: codigoQR,
       pais_id: paisId,
     }).select().single()
     if (error || !recetaData) {
