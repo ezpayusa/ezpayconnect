@@ -3911,6 +3911,68 @@ DO $$ DECLARE n int; BEGIN
 END $$;
 SELECT set_config('role','none',true);
 
+-- ============================================================
+-- V-G3 · re-tipo pais_id de planes_visitador_contratados (P237–P240). Red-first: N/A pre-101.
+-- Estructura/FK (como país-0/G1). Todo como owner (role none).
+-- ============================================================
+SELECT set_config('role','none',true);
+DO $$ BEGIN
+  PERFORM set_config('probe.vg3_ready',
+    CASE WHEN (SELECT data_type FROM information_schema.columns WHERE table_schema='public' AND table_name='planes_visitador_contratados' AND column_name='pais_id') = 'uuid' THEN '1' ELSE '0' END, false);
+END $$;
+
+-- P237 — estructura: pais_id = uuid + FK a configuracion_pais
+DO $$ DECLARE v_fk boolean; BEGIN
+  IF current_setting('probe.vg3_ready',true)<>'1' THEN PERFORM set_config('probe.p237','N/A (pendiente 101)',false);
+  ELSE
+    SELECT count(*)>0 INTO v_fk FROM pg_constraint WHERE conrelid='public.planes_visitador_contratados'::regclass AND contype='f' AND confrelid='public.configuracion_pais'::regclass;
+    IF v_fk THEN PERFORM set_config('probe.p237','OK (pais_id uuid + FK a configuracion_pais)',false);
+    ELSE PERFORM set_config('probe.p237','FALLO (sin FK a configuracion_pais)',false); END IF;
+  END IF;
+EXCEPTION WHEN others THEN PERFORM set_config('probe.p237','FALLO ('||SQLERRM||')',false); END $$;
+
+-- P238 — NEG: INSERT con país inexistente → violación FK (BLOQ)
+DO $$ DECLARE v_e uuid; BEGIN
+  IF current_setting('probe.vg3_ready',true)<>'1' THEN PERFORM set_config('probe.p238','N/A (pendiente 101)',false);
+  ELSE
+    SELECT id INTO v_e FROM public.empresas_proveedoras WHERE pais_id IS NOT NULL LIMIT 1;
+    BEGIN
+      INSERT INTO public.planes_visitador_contratados (empresa_id,plan_visitador_id,pais_id,cantidad_visitas_incluidas,visitas_usadas,precio_pagado,fecha_inicio,fecha_fin,estado)
+        VALUES (v_e, 1, gen_random_uuid(), 10, 0, 100, CURRENT_DATE, CURRENT_DATE+30, 'activo');
+      PERFORM set_config('probe.p238','FALLO (insertó país inexistente)',false);
+    EXCEPTION WHEN foreign_key_violation THEN PERFORM set_config('probe.p238','BLOQUEADO (FK)',false);
+             WHEN others THEN PERFORM set_config('probe.p238','BLOQUEADO ('||SQLSTATE||')',false); END;
+  END IF;
+EXCEPTION WHEN others THEN PERFORM set_config('probe.p238','FALLO ('||SQLERRM||')',false); END $$;
+
+-- P239 — POS: INSERT con país válido → OK
+DO $$ DECLARE v_e uuid; BEGIN
+  IF current_setting('probe.vg3_ready',true)<>'1' THEN PERFORM set_config('probe.p239','N/A (pendiente 101)',false);
+  ELSE
+    SELECT id INTO v_e FROM public.empresas_proveedoras WHERE pais_id IS NOT NULL LIMIT 1;
+    BEGIN
+      INSERT INTO public.planes_visitador_contratados (empresa_id,plan_visitador_id,pais_id,cantidad_visitas_incluidas,visitas_usadas,precio_pagado,fecha_inicio,fecha_fin,estado)
+        VALUES (v_e, 1, current_setting('probe.p0_gt',true)::uuid, 10, 0, 100, CURRENT_DATE, CURRENT_DATE+30, 'activo');
+      PERFORM set_config('probe.p239','OK (país válido aceptado)',false);
+    EXCEPTION WHEN others THEN PERFORM set_config('probe.p239','FALLO ('||SQLERRM||')',false); END;
+  END IF;
+EXCEPTION WHEN others THEN PERFORM set_config('probe.p239','FALLO ('||SQLERRM||')',false); END $$;
+
+-- P240 — RESTRICT: borrar un país con plan asociado → BLOQ (eje fail-closed)
+DO $$ DECLARE v_e uuid; v_p3 uuid; BEGIN
+  IF current_setting('probe.vg3_ready',true)<>'1' THEN PERFORM set_config('probe.p240','N/A (pendiente 101)',false);
+  ELSE
+    SELECT id INTO v_e FROM public.empresas_proveedoras WHERE pais_id IS NOT NULL LIMIT 1;
+    SELECT id INTO v_p3 FROM public.configuracion_pais WHERE id NOT IN (current_setting('probe.p0_gt',true)::uuid, current_setting('probe.p0_hn',true)::uuid) LIMIT 1;  -- país fresco (solo lo referenciará el plan)
+    INSERT INTO public.planes_visitador_contratados (empresa_id,plan_visitador_id,pais_id,cantidad_visitas_incluidas,visitas_usadas,precio_pagado,fecha_inicio,fecha_fin,estado)
+      VALUES (v_e, 1, v_p3, 10, 0, 100, CURRENT_DATE, CURRENT_DATE+30, 'activo');
+    BEGIN DELETE FROM public.configuracion_pais WHERE id = v_p3; PERFORM set_config('probe.p240','FALLO (borró país con plan)',false);
+    EXCEPTION WHEN foreign_key_violation THEN PERFORM set_config('probe.p240','BLOQUEADO (FK RESTRICT)',false);
+             WHEN others THEN PERFORM set_config('probe.p240','BLOQUEADO ('||SQLSTATE||')',false); END;
+  END IF;
+EXCEPTION WHEN others THEN PERFORM set_config('probe.p240','FALLO ('||SQLERRM||')',false); END $$;
+SELECT set_config('role','none',true);
+
 -- ===== Veredictos como result set =====
 SELECT 'P1_anon_insert_citas'              AS probe, current_setting('probe.p1', true)  AS verdict, 'BLOQUEADO' AS esperado_post_fix
 UNION ALL SELECT 'P2_medico_cancela_ajena_rpc',         current_setting('probe.p2', true),  'BLOQUEADO'
@@ -4140,6 +4202,10 @@ UNION ALL SELECT 'P232_pubb_paciente_ve_GT',            current_setting('probe.p
 UNION ALL SELECT 'P233_pubb_paciente_no_HN',            current_setting('probe.p233', true), 'OK'
 UNION ALL SELECT 'P234_pubb_vigencia_inicio_futuro',    current_setting('probe.p234', true), 'OK post-100 (ROJO pre)'
 UNION ALL SELECT 'P235_pubb_failclosed',                current_setting('probe.p235', true), 'OK'
-UNION ALL SELECT 'P236_pubb_anon',                      current_setting('probe.p236', true), 'OK';
+UNION ALL SELECT 'P236_pubb_anon',                      current_setting('probe.p236', true), 'OK'
+UNION ALL SELECT 'P237_vg3_estructura_fk',              current_setting('probe.p237', true), 'OK post-101'
+UNION ALL SELECT 'P238_vg3_fk_pais_inexistente',        current_setting('probe.p238', true), 'BLOQUEADO post-101'
+UNION ALL SELECT 'P239_vg3_pais_valido',                current_setting('probe.p239', true), 'OK post-101'
+UNION ALL SELECT 'P240_vg3_restrict_pais',              current_setting('probe.p240', true), 'BLOQUEADO post-101';
 
 ROLLBACK;  -- nada de lo anterior se persiste
