@@ -1,5 +1,6 @@
 import { useNavigate } from 'react-router-dom'
 import { useMedicoStats } from '@/medico/hooks/useMedicoStats'
+import BannerPublicidadProfesional from '@/components/BannerPublicidadProfesional'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
@@ -70,6 +71,9 @@ export default function MedicoDashboardPage() {
           Bienvenido de vuelta. Aquí está el resumen de tu actividad.
         </p>
       </div>
+
+      {/* Banner publicitario (sección dedicada — país filtrado por RLS, separado del catálogo) */}
+      <BannerPublicidadProfesional tipoPerfil="medico" contexto="dashboard" />
 
       {/* Stats Grid */}
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">

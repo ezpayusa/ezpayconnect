@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { useClinicaAuth } from '@/clinica/hooks/useClinicaAuth'
 import { supabase } from '@/lib/supabase'
+import BannerPublicidadProfesional from '@/components/BannerPublicidadProfesional'
 import {
   Users,
   Stethoscope,
@@ -122,6 +123,9 @@ export default function ClinicaDashboardPage() {
         <h1 className="text-2xl font-bold text-[#1E5C8E]">{clinica?.nombre}</h1>
         <p className="text-sm text-gray-500">{clinica?.direccion}</p>
       </div>
+
+      {/* Banner publicitario (sección dedicada — país filtrado por RLS, separado del catálogo) */}
+      <BannerPublicidadProfesional tipoPerfil="clinica" contexto="dashboard" />
 
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4 mb-8">
         {statCards.map((card) => {

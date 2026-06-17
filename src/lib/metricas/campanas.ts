@@ -12,7 +12,7 @@ export async function registrarMetricaCampana(
   opciones: {
     clickeado?: boolean
     contexto?: string
-    tipoPerfil?: 'paciente' | 'medico' | 'admin' | 'visitador'
+    tipoPerfil?: 'paciente' | 'medico' | 'admin' | 'visitador' | 'clinica'
     pacienteId?: number
     paisId?: string
   } = {}
