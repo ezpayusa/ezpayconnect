@@ -2988,14 +2988,19 @@ DO $$ BEGIN
 END $$;
 
 -- P177 — C-NEG5: empresa FORZADA — admin de A crea → empresa = A y NUNCA la de B
+-- (crear como cat_inv; VERIFICAR como owner: post-098 el actor ya no ve farmacias ajenas).
 SELECT set_config('role','none',true);
 SELECT set_config('request.jwt.claims', json_build_object('sub', current_setting('probe.cat_inv', true), 'role','authenticated')::text, true);
 SELECT set_config('role','authenticated',true);
-DO $$ DECLARE v_id int; v_emp uuid; v_a uuid; v_b uuid; BEGIN
-  IF current_setting('probe.cat_ready',true)<>'1' OR current_setting('probe.c1_rpc',true)<>'1' THEN PERFORM set_config('probe.p177','N/A (pendiente 091)',false);
+DO $$ DECLARE v_id int; BEGIN
+  IF current_setting('probe.cat_ready',true)<>'1' OR current_setting('probe.c1_rpc',true)<>'1' THEN PERFORM set_config('probe.p177_id','',false);
+  ELSE v_id := public.crear_sucursal('C1 SUC FORZADA'); PERFORM set_config('probe.p177_id', v_id::text, false); END IF;
+EXCEPTION WHEN others THEN PERFORM set_config('probe.p177_id','err',false); END $$;
+SELECT set_config('role','none',true);
+DO $$ DECLARE v_emp uuid; v_a uuid; v_b uuid; BEGIN
+  IF NULLIF(current_setting('probe.p177_id',true),'') IS NULL OR current_setting('probe.p177_id',true)='err' THEN PERFORM set_config('probe.p177','N/A (pendiente 091)',false);
   ELSE
-    v_id := public.crear_sucursal('C1 SUC FORZADA');
-    SELECT empresa_id INTO v_emp FROM public.farmacias WHERE id = v_id;
+    SELECT empresa_id INTO v_emp FROM public.farmacias WHERE id = current_setting('probe.p177_id',true)::int;
     SELECT empresa_id INTO v_a FROM public.farmacias WHERE id = NULLIF(current_setting('probe.cat_fA',true),'')::int;
     SELECT empresa_id INTO v_b FROM public.farmacias WHERE id = NULLIF(current_setting('probe.cat_fB',true),'')::int;
     IF v_emp = v_a AND v_emp <> v_b THEN PERFORM set_config('probe.p177','OK (empresa = A, NUNCA B; sin parámetro de empresa)',false);
@@ -3615,6 +3620,100 @@ DO $$ DECLARE n int; BEGIN
 END $$;
 SELECT set_config('role','none',true);
 
+-- ============================================================
+-- PAÍS #4 · farmacias (P216–P223). Red-first. Reusa: cat_inv/cat_fA (proveedor empresa A),
+-- cat_fB (farmacia empresa B, MISMO país GT), fm_medgt (médico GT), cat_clinico (clínico GT),
+-- p0_mednull (país NULL), p0_fgt/p0_fhn (GT/HN). guard: cat_ready+p0_ready+fm_ready.
+-- ============================================================
+SELECT set_config('role','none',true);
+-- P216 — NEG CLAVE (red-first): proveedor-GT NO ve farmacia de OTRA empresa del mismo país
+SELECT set_config('request.jwt.claims', json_build_object('sub', current_setting('probe.cat_inv',true), 'role','authenticated')::text, true);
+SELECT set_config('role','authenticated',true);
+DO $$ DECLARE n int; BEGIN
+  IF current_setting('probe.cat_ready',true)<>'1' THEN PERFORM set_config('probe.p216','N/A',false);
+  ELSE
+    SELECT count(*) INTO n FROM public.farmacias WHERE id=current_setting('probe.cat_fB',true)::int;
+    IF n=0 THEN PERFORM set_config('probe.p216','OK (proveedor no ve farmacia de otra empresa del mismo país)',false);
+    ELSE PERFORM set_config('probe.p216','ROJO (proveedor ve farmacia de otra empresa GT — leak cross-tenant, n='||n||')',false); END IF;
+  END IF;
+EXCEPTION WHEN others THEN PERFORM set_config('probe.p216','FALLO ('||SQLERRM||')',false); END $$;
+
+-- P217 — POS no-regresión: proveedor-GT ve SU propia farmacia
+DO $$ DECLARE n int; BEGIN
+  IF current_setting('probe.cat_ready',true)<>'1' THEN PERFORM set_config('probe.p217','N/A',false);
+  ELSE
+    SELECT count(*) INTO n FROM public.farmacias WHERE id=current_setting('probe.cat_fA',true)::int;
+    IF n>0 THEN PERFORM set_config('probe.p217','OK (proveedor ve su empresa)',false);
+    ELSE PERFORM set_config('probe.p217','FALLO (proveedor NO ve su empresa)',false); END IF;
+  END IF;
+EXCEPTION WHEN others THEN PERFORM set_config('probe.p217','FALLO ('||SQLERRM||')',false); END $$;
+
+-- P218 — NEG (red-first): médico-GT NO ve farmacia HN
+SELECT set_config('request.jwt.claims', json_build_object('sub', current_setting('probe.fm_medgt',true))::text, true);
+DO $$ DECLARE n int; BEGIN
+  IF current_setting('probe.fm_ready',true)<>'1' THEN PERFORM set_config('probe.p218','N/A',false);
+  ELSE
+    SELECT count(*) INTO n FROM public.farmacias WHERE id=current_setting('probe.p0_fhn',true)::int;
+    IF n=0 THEN PERFORM set_config('probe.p218','OK (médico GT no ve farmacia HN)',false);
+    ELSE PERFORM set_config('probe.p218','ROJO (médico GT ve farmacia HN — leak vivo, n='||n||')',false); END IF;
+  END IF;
+EXCEPTION WHEN others THEN PERFORM set_config('probe.p218','FALLO ('||SQLERRM||')',false); END $$;
+
+-- P219 — POS: médico-GT ve farmacia GT
+DO $$ DECLARE n int; BEGIN
+  IF current_setting('probe.fm_ready',true)<>'1' THEN PERFORM set_config('probe.p219','N/A',false);
+  ELSE
+    SELECT count(*) INTO n FROM public.farmacias WHERE id=current_setting('probe.p0_fgt',true)::int;
+    IF n>0 THEN PERFORM set_config('probe.p219','OK (médico GT ve farmacia GT)',false);
+    ELSE PERFORM set_config('probe.p219','FALLO (médico GT NO ve farmacia GT)',false); END IF;
+  END IF;
+EXCEPTION WHEN others THEN PERFORM set_config('probe.p219','FALLO ('||SQLERRM||')',false); END $$;
+
+-- P220 — NEG (red-first): clínico-GT NO ve farmacia HN
+SELECT set_config('request.jwt.claims', json_build_object('sub', current_setting('probe.cat_clinico',true))::text, true);
+DO $$ DECLARE n int; BEGIN
+  IF current_setting('probe.fm_ready',true)<>'1' THEN PERFORM set_config('probe.p220','N/A',false);
+  ELSE
+    SELECT count(*) INTO n FROM public.farmacias WHERE id=current_setting('probe.p0_fhn',true)::int;
+    IF n=0 THEN PERFORM set_config('probe.p220','OK (clínico GT no ve farmacia HN)',false);
+    ELSE PERFORM set_config('probe.p220','ROJO (clínico GT ve farmacia HN — leak vivo, n='||n||')',false); END IF;
+  END IF;
+EXCEPTION WHEN others THEN PERFORM set_config('probe.p220','FALLO ('||SQLERRM||')',false); END $$;
+
+-- P221 — fail-closed (red-first): médico país-NULL → 0 farmacias de la fixture
+SELECT set_config('request.jwt.claims', json_build_object('sub', current_setting('probe.p0_mednull',true))::text, true);
+DO $$ DECLARE n int; BEGIN
+  IF current_setting('probe.fm_ready',true)<>'1' THEN PERFORM set_config('probe.p221','N/A',false);
+  ELSE
+    SELECT count(*) INTO n FROM public.farmacias WHERE id IN (current_setting('probe.p0_fgt',true)::int, current_setting('probe.p0_fhn',true)::int, current_setting('probe.cat_fA',true)::int);
+    IF n=0 THEN PERFORM set_config('probe.p221','OK (país-NULL no ve farmacias)',false);
+    ELSE PERFORM set_config('probe.p221','ROJO (país-NULL ve farmacias — fail-open, n='||n||')',false); END IF;
+  END IF;
+EXCEPTION WHEN others THEN PERFORM set_config('probe.p221','FALLO ('||SQLERRM||')',false); END $$;
+
+-- P222 — anon → 0 farmacias (red-first: hoy la policy anon=true muestra todo)
+SELECT set_config('role','none',true);
+SELECT set_config('request.jwt.claims','{"role":"anon"}',true); SELECT set_config('role','anon',true);
+DO $$ DECLARE n int; BEGIN
+  BEGIN SELECT count(*) INTO n FROM public.farmacias; EXCEPTION WHEN others THEN n:=-1; END;
+  IF n=0 THEN PERFORM set_config('probe.p222','OK (anon no ve farmacias)',false);
+  ELSE PERFORM set_config('probe.p222','ROJO (anon ve '||n||' farmacias — policy anon vestigial)',false); END IF;
+END $$;
+
+-- P223 — POS super_admin: ve TODAS (incl HN) vía farmacias_write_admin (ALL)
+SELECT set_config('role','none',true);
+SELECT set_config('request.jwt.claims', json_build_object('sub', (SELECT id::text FROM public.perfiles WHERE rol='super_admin' LIMIT 1), 'role','authenticated')::text, true);
+SELECT set_config('role','authenticated',true);
+DO $$ DECLARE n int; BEGIN
+  IF current_setting('probe.fm_ready',true)<>'1' THEN PERFORM set_config('probe.p223','N/A',false);
+  ELSE
+    SELECT count(*) INTO n FROM public.farmacias WHERE id=current_setting('probe.p0_fhn',true)::int;
+    IF n>0 THEN PERFORM set_config('probe.p223','OK (super_admin ve farmacia HN — ve todas)',false);
+    ELSE PERFORM set_config('probe.p223','FALLO (super_admin NO ve HN)',false); END IF;
+  END IF;
+EXCEPTION WHEN others THEN PERFORM set_config('probe.p223','FALLO ('||SQLERRM||')',false); END $$;
+SELECT set_config('role','none',true);
+
 -- ===== Veredictos como result set =====
 SELECT 'P1_anon_insert_citas'              AS probe, current_setting('probe.p1', true)  AS verdict, 'BLOQUEADO' AS esperado_post_fix
 UNION ALL SELECT 'P2_medico_cancela_ajena_rpc',         current_setting('probe.p2', true),  'BLOQUEADO'
@@ -3823,6 +3922,14 @@ UNION ALL SELECT 'P211_examenes_medico_pos_GT',         current_setting('probe.p
 UNION ALL SELECT 'P212_examenes_failclosed',            current_setting('probe.p212', true), 'OK post-097 (ROJO pre)'
 UNION ALL SELECT 'P213_rpc_labs_medico_GT',             current_setting('probe.p213', true), 'OK'
 UNION ALL SELECT 'P214_rpc_labs_failclosed',            current_setting('probe.p214', true), 'OK post-097 (ROJO pre)'
-UNION ALL SELECT 'P215_examenes_anon',                  current_setting('probe.p215', true), 'OK post-097';
+UNION ALL SELECT 'P215_examenes_anon',                  current_setting('probe.p215', true), 'OK post-097'
+UNION ALL SELECT 'P216_farmacias_prov_cross_empresa',   current_setting('probe.p216', true), 'OK post-098 (ROJO pre)'
+UNION ALL SELECT 'P217_farmacias_prov_pos',             current_setting('probe.p217', true), 'OK'
+UNION ALL SELECT 'P218_farmacias_medico_neg_HN',        current_setting('probe.p218', true), 'OK post-098 (ROJO pre)'
+UNION ALL SELECT 'P219_farmacias_medico_pos_GT',        current_setting('probe.p219', true), 'OK'
+UNION ALL SELECT 'P220_farmacias_clinico_neg_HN',       current_setting('probe.p220', true), 'OK post-098 (ROJO pre)'
+UNION ALL SELECT 'P221_farmacias_failclosed',           current_setting('probe.p221', true), 'OK post-098 (ROJO pre)'
+UNION ALL SELECT 'P222_farmacias_anon',                 current_setting('probe.p222', true), 'OK post-098 (ROJO pre)'
+UNION ALL SELECT 'P223_farmacias_superadmin_all',       current_setting('probe.p223', true), 'OK';
 
 ROLLBACK;  -- nada de lo anterior se persiste
