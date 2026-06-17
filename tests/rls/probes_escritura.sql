@@ -1191,14 +1191,20 @@ DO $$ DECLARE n1 INT; n2 INT; BEGIN
 EXCEPTION WHEN others THEN PERFORM set_config('probe.p69','REGRESIÓN ('||SQLSTATE||')',false);
 END $$;
 
--- P70 — POS: la búsqueda pública del médico sigue viendo el catálogo/inventario
+-- P70 — POS: la búsqueda del médico sigue viendo el catálogo/inventario DE SU PAÍS.
+-- Usa un médico en un país que SÍ tiene catálogo (post-096 el read es país-scoped; np_medico
+-- podría estar en un país sin farmacias → 0 legítimo pero no prueba la no-regresión).
 SELECT set_config('role', 'none', true);
 SELECT set_config('request.jwt.claims',
-  json_build_object('sub', current_setting('probe.np_medico', true), 'role','authenticated')::text, true);
+  json_build_object('sub', (SELECT p.id::text FROM public.perfiles p WHERE p.rol='medico'
+       AND p.pais_id IN (SELECT f.pais_id FROM public.farmacia_medicamentos fm JOIN public.farmacias f ON f.id=fm.farmacia_id)
+     LIMIT 1), 'role','authenticated')::text, true);
 SELECT set_config('role', 'authenticated', true);
+-- Post aislamiento por país (096): el médico ve el catálogo de SU país. Contamos lo visible
+-- bajo su RLS (país-filtrado) en vez de atar a una farmacia con país posiblemente inconsistente.
 DO $$ DECLARE n INT; BEGIN
-  SELECT count(*) INTO n FROM public.farmacia_medicamentos WHERE farmacia_id = current_setting('probe.farm', true)::int;
-  IF n > 0 THEN PERFORM set_config('probe.p70','OK (médico ve inventario: '||n||')',false);
+  SELECT count(*) INTO n FROM public.farmacia_medicamentos;
+  IF n > 0 THEN PERFORM set_config('probe.p70','OK (médico ve inventario de su país: '||n||')',false);
   ELSE PERFORM set_config('probe.p70','REGRESIÓN (no ve catálogo)',false); END IF;
 EXCEPTION WHEN others THEN PERFORM set_config('probe.p70','REGRESIÓN ('||SQLSTATE||')',false);
 END $$;
@@ -1820,16 +1826,18 @@ SELECT set_config('probe.af_b_member', (SELECT id::text FROM public.cuentas_prov
 UPDATE public.cuentas_proveedor SET empresa_id=NULLIF(current_setting('probe.af_emp_b',true),'')::uuid, rol_en_empresa='admin', activo=true, equipo_id=NULL WHERE id=NULLIF(current_setting('probe.af_b_member',true),'')::uuid;
 DO $$ DECLARE v_id uuid; BEGIN
   IF NULLIF(current_setting('probe.af_b_member',true),'') IS NOT NULL THEN
-    INSERT INTO public.solicitudes_campana (empresa_id, cuenta_proveedor_id, titulo, fecha_inicio, fecha_fin, estado)
-      VALUES (current_setting('probe.af_emp_b',true)::uuid, current_setting('probe.af_b_member',true)::uuid, 'Solic Afin B', now(), now()+interval '7 days', 'borrador')
+    INSERT INTO public.solicitudes_campana (empresa_id, cuenta_proveedor_id, titulo, fecha_inicio, fecha_fin, estado, pais_id)
+      VALUES (current_setting('probe.af_emp_b',true)::uuid, current_setting('probe.af_b_member',true)::uuid, 'Solic Afin B', now(), now()+interval '7 days', 'borrador',
+              (SELECT pais_id FROM public.empresas_proveedoras WHERE id=current_setting('probe.af_emp_b',true)::uuid))
       RETURNING id INTO v_id;
     PERFORM set_config('probe.af_b_solic', v_id::text, false);
   END IF;
 END $$;
 -- solicitud PROPIA de afín A (de af_mkt) para tests de auto-aprobación/edición de contenido
 DO $$ DECLARE v_id uuid; BEGIN
-  INSERT INTO public.solicitudes_campana (empresa_id, cuenta_proveedor_id, titulo, fecha_inicio, fecha_fin, estado)
-    VALUES (current_setting('probe.af_emp',true)::uuid, current_setting('probe.af_mkt',true)::uuid, 'Solic Afin A', now(), now()+interval '7 days', 'borrador')
+  INSERT INTO public.solicitudes_campana (empresa_id, cuenta_proveedor_id, titulo, fecha_inicio, fecha_fin, estado, pais_id)
+    VALUES (current_setting('probe.af_emp',true)::uuid, current_setting('probe.af_mkt',true)::uuid, 'Solic Afin A', now(), now()+interval '7 days', 'borrador',
+            (SELECT pais_id FROM public.empresas_proveedoras WHERE id=current_setting('probe.af_emp',true)::uuid))
     RETURNING id INTO v_id;
   PERFORM set_config('probe.af_a_solic', v_id::text, false);
 END $$;
@@ -1875,9 +1883,10 @@ SELECT set_config('role', 'none', true);
 SELECT set_config('request.jwt.claims', json_build_object('sub', current_setting('probe.af_mkt', true), 'role','authenticated')::text, true);
 SELECT set_config('role', 'authenticated', true);
 DO $$ BEGIN
-  INSERT INTO public.solicitudes_campana (empresa_id, cuenta_proveedor_id, titulo, fecha_inicio, fecha_fin)
+  INSERT INTO public.solicitudes_campana (empresa_id, cuenta_proveedor_id, titulo, fecha_inicio, fecha_fin, pais_id)
     VALUES (NULLIF(current_setting('probe.af_emp',true),'')::uuid, NULLIF(current_setting('probe.af_mkt',true),'')::uuid,
-            'Probe Campaña Afín', now(), now() + interval '7 days');
+            'Probe Campaña Afín', now(), now() + interval '7 days',
+            (SELECT pais_id FROM public.empresas_proveedoras WHERE id=NULLIF(current_setting('probe.af_emp',true),'')::uuid));
   PERFORM set_config('probe.p116','OK (marketing creó campaña)',false);
 EXCEPTION WHEN insufficient_privilege THEN PERFORM set_config('probe.p116','BLOQUEADO (42501)',false);
   WHEN others THEN PERFORM set_config('probe.p116','BLOQUEADO ('||SQLSTATE||')',false);
@@ -1888,9 +1897,10 @@ SELECT set_config('role', 'none', true);
 SELECT set_config('request.jwt.claims', json_build_object('sub', current_setting('probe.af_lectura', true), 'role','authenticated')::text, true);
 SELECT set_config('role', 'authenticated', true);
 DO $$ BEGIN
-  INSERT INTO public.solicitudes_campana (empresa_id, cuenta_proveedor_id, titulo, fecha_inicio, fecha_fin)
+  INSERT INTO public.solicitudes_campana (empresa_id, cuenta_proveedor_id, titulo, fecha_inicio, fecha_fin, pais_id)
     VALUES (NULLIF(current_setting('probe.af_emp',true),'')::uuid, NULLIF(current_setting('probe.af_lectura',true),'')::uuid,
-            'Probe Campaña Lectura', now(), now() + interval '7 days');
+            'Probe Campaña Lectura', now(), now() + interval '7 days',
+            (SELECT pais_id FROM public.empresas_proveedoras WHERE id=NULLIF(current_setting('probe.af_emp',true),'')::uuid));
   PERFORM set_config('probe.p117','PERMITIDO (lectura creó campaña!)',false);
 EXCEPTION WHEN insufficient_privilege THEN PERFORM set_config('probe.p117','BLOQUEADO (42501)',false);
   WHEN others THEN PERFORM set_config('probe.p117','BLOQUEADO ('||SQLSTATE||')',false);
@@ -1982,8 +1992,9 @@ SELECT set_config('role','none',true);
 SELECT set_config('request.jwt.claims', json_build_object('sub', current_setting('probe.af_mkt', true), 'role','authenticated')::text, true);
 SELECT set_config('role','authenticated',true);
 DO $$ BEGIN
-  INSERT INTO public.solicitudes_campana (empresa_id, cuenta_proveedor_id, titulo, fecha_inicio, fecha_fin)
-    VALUES (NULLIF(current_setting('probe.af_emp_b',true),'')::uuid, NULLIF(current_setting('probe.af_mkt',true),'')::uuid, 'Cross empresa', now(), now()+interval '7 days');
+  INSERT INTO public.solicitudes_campana (empresa_id, cuenta_proveedor_id, titulo, fecha_inicio, fecha_fin, pais_id)
+    VALUES (NULLIF(current_setting('probe.af_emp_b',true),'')::uuid, NULLIF(current_setting('probe.af_mkt',true),'')::uuid, 'Cross empresa', now(), now()+interval '7 days',
+            (SELECT pais_id FROM public.empresas_proveedoras WHERE id=NULLIF(current_setting('probe.af_emp_b',true),'')::uuid));
   PERFORM set_config('probe.p124','PERMITIDO (insertó en empresa ajena!)',false);
 EXCEPTION WHEN insufficient_privilege THEN PERFORM set_config('probe.p124','BLOQUEADO (42501)',false);
   WHEN others THEN PERFORM set_config('probe.p124','BLOQUEADO ('||SQLSTATE||')',false);
@@ -1994,8 +2005,9 @@ SELECT set_config('role','none',true);
 SELECT set_config('request.jwt.claims', json_build_object('sub', current_setting('probe.af_mkt', true), 'role','authenticated')::text, true);
 SELECT set_config('role','authenticated',true);
 DO $$ BEGIN
-  INSERT INTO public.solicitudes_campana (empresa_id, cuenta_proveedor_id, titulo, fecha_inicio, fecha_fin, estado)
-    VALUES (NULLIF(current_setting('probe.af_emp',true),'')::uuid, NULLIF(current_setting('probe.af_mkt',true),'')::uuid, 'Nace publicada', now(), now()+interval '7 days', 'publicada');
+  INSERT INTO public.solicitudes_campana (empresa_id, cuenta_proveedor_id, titulo, fecha_inicio, fecha_fin, estado, pais_id)
+    VALUES (NULLIF(current_setting('probe.af_emp',true),'')::uuid, NULLIF(current_setting('probe.af_mkt',true),'')::uuid, 'Nace publicada', now(), now()+interval '7 days', 'publicada',
+            (SELECT pais_id FROM public.empresas_proveedoras WHERE id=NULLIF(current_setting('probe.af_emp',true),'')::uuid));
   PERFORM set_config('probe.p125','PERMITIDO (nació publicada!)',false);
 EXCEPTION WHEN insufficient_privilege THEN PERFORM set_config('probe.p125','BLOQUEADO (42501)',false);
   WHEN others THEN PERFORM set_config('probe.p125','BLOQUEADO ('||SQLSTATE||')',false);
@@ -3714,6 +3726,87 @@ DO $$ DECLARE n int; BEGIN
 EXCEPTION WHEN others THEN PERFORM set_config('probe.p223','FALLO ('||SQLERRM||')',false); END $$;
 SELECT set_config('role','none',true);
 
+-- ============================================================
+-- PUB-A · targeting país publicidad (P224–P228). Red-first.
+-- Fixture: empresa A (de cat_fA) opera en GT (no en HN). proveedor cat_inv (admin A).
+-- ============================================================
+SELECT set_config('role','none',true);
+DO $$ DECLARE v_ea uuid; v_sid uuid; BEGIN
+  IF current_setting('probe.cat_ready',true)<>'1' OR current_setting('probe.p0_ready',true)<>'1' OR to_regprocedure('private.empresa_opera_en_pais(uuid,uuid)') IS NULL THEN PERFORM set_config('probe.pa_ready','0',false); RETURN; END IF;
+  SELECT empresa_id INTO v_ea FROM public.farmacias WHERE id=current_setting('probe.cat_fA',true)::int;
+  INSERT INTO public.empresa_paises_operacion (empresa_id,pais_id,activo) VALUES (v_ea, current_setting('probe.p0_gt',true)::uuid, true) ON CONFLICT DO NOTHING;  -- A opera en GT
+  -- solicitud HN sembrada como owner (para el probe de aprobar; bypass del WITH CHECK)
+  INSERT INTO public.solicitudes_campana (empresa_id,cuenta_proveedor_id,titulo,tipo,fecha_inicio,fecha_fin,estado,pais_id)
+    VALUES (v_ea, current_setting('probe.cat_inv',true)::uuid, 'PA SOL HN','banner',CURRENT_DATE,CURRENT_DATE+30,'enviada', current_setting('probe.p0_hn',true)::uuid) RETURNING id INTO v_sid;
+  PERFORM set_config('probe.pa_ea', v_ea::text, false);
+  PERFORM set_config('probe.pa_sol_hn', v_sid::text, false);
+  PERFORM set_config('probe.pa_ready','1',false);
+EXCEPTION WHEN others THEN PERFORM set_config('probe.pa_ready','0',false); END $$;
+
+-- P224 — NEG (red-first): proveedor crea solicitud en país NO operado (HN) → BLOQ
+SELECT set_config('request.jwt.claims', json_build_object('sub', current_setting('probe.cat_inv',true), 'role','authenticated')::text, true);
+SELECT set_config('role','authenticated',true);
+DO $$ BEGIN
+  IF current_setting('probe.pa_ready',true)<>'1' THEN PERFORM set_config('probe.p224','N/A',false);
+  ELSE
+    BEGIN
+      INSERT INTO public.solicitudes_campana (empresa_id,cuenta_proveedor_id,titulo,tipo,fecha_inicio,fecha_fin,estado,pais_id)
+        VALUES (current_setting('probe.pa_ea',true)::uuid, current_setting('probe.cat_inv',true)::uuid, 'PA CREA HN','banner',CURRENT_DATE,CURRENT_DATE+30,'borrador', current_setting('probe.p0_hn',true)::uuid);
+      PERFORM set_config('probe.p224','ROJO (creó campaña en país NO operado — leak vivo)',false);
+    EXCEPTION WHEN others THEN PERFORM set_config('probe.p224','BLOQUEADO ('||SQLSTATE||')',false); END;
+  END IF;
+END $$;
+
+-- P225 — POS: proveedor crea solicitud en país operado (GT) → OK
+DO $$ BEGIN
+  IF current_setting('probe.pa_ready',true)<>'1' THEN PERFORM set_config('probe.p225','N/A',false);
+  ELSE
+    BEGIN
+      INSERT INTO public.solicitudes_campana (empresa_id,cuenta_proveedor_id,titulo,tipo,fecha_inicio,fecha_fin,estado,pais_id)
+        VALUES (current_setting('probe.pa_ea',true)::uuid, current_setting('probe.cat_inv',true)::uuid, 'PA CREA GT','banner',CURRENT_DATE,CURRENT_DATE+30,'borrador', current_setting('probe.p0_gt',true)::uuid);
+      PERFORM set_config('probe.p225','OK (crea en país operado)',false);
+    EXCEPTION WHEN others THEN PERFORM set_config('probe.p225','FALLO ('||SQLERRM||')',false); END;
+  END IF;
+END $$;
+
+-- P226 — NEG aprobar (red-first): super_admin aprueba solicitud país ∉ operación → BLOQ
+SELECT set_config('role','none',true);
+SELECT set_config('request.jwt.claims', json_build_object('sub', (SELECT id::text FROM public.perfiles WHERE rol='super_admin' LIMIT 1), 'role','authenticated')::text, true);
+SELECT set_config('role','authenticated',true);
+DO $$ BEGIN
+  IF current_setting('probe.pa_ready',true)<>'1' OR to_regprocedure('public.aprobar_solicitud_campana(uuid,text)') IS NULL THEN PERFORM set_config('probe.p226','N/A',false);
+  ELSE
+    BEGIN PERFORM public.aprobar_solicitud_campana(current_setting('probe.pa_sol_hn',true)::uuid, NULL);
+      PERFORM set_config('probe.p226','ROJO (aprobó campaña en país NO operado — leak vivo)',false);
+    EXCEPTION WHEN others THEN PERFORM set_config('probe.p226','BLOQUEADO ('||SQLERRM||')',false); END;
+  END IF;
+END $$;
+
+-- P227 — backfill (red-first): solicitudes + campanas con país NULL = 0 (owner)
+SELECT set_config('role','none',true);
+DO $$ DECLARE n1 int; n2 int; BEGIN
+  SELECT count(*) INTO n1 FROM public.solicitudes_campana WHERE pais_id IS NULL;
+  SELECT count(*) INTO n2 FROM public.campanas_publicitarias WHERE pais_id IS NULL;
+  IF n1=0 AND n2=0 THEN PERFORM set_config('probe.p227','OK (0 país NULL en solicitudes y campanas)',false);
+  ELSE PERFORM set_config('probe.p227','ROJO (solicitudes NULL='||n1||' campanas NULL='||n2||' — pendiente backfill 099)',false); END IF;
+END $$;
+
+-- P228 — anti-escalada (no-regresión): proveedor crea solicitud atribuida a empresa AJENA → BLOQ
+SELECT set_config('request.jwt.claims', json_build_object('sub', current_setting('probe.cat_inv',true), 'role','authenticated')::text, true);
+SELECT set_config('role','authenticated',true);
+DO $$ DECLARE v_eb uuid; BEGIN
+  IF current_setting('probe.pa_ready',true)<>'1' THEN PERFORM set_config('probe.p228','N/A',false);
+  ELSE
+    SELECT empresa_id INTO v_eb FROM public.farmacias WHERE id=current_setting('probe.cat_fB',true)::int;
+    BEGIN
+      INSERT INTO public.solicitudes_campana (empresa_id,cuenta_proveedor_id,titulo,tipo,fecha_inicio,fecha_fin,estado,pais_id)
+        VALUES (v_eb, current_setting('probe.cat_inv',true)::uuid, 'PA AJENA','banner',CURRENT_DATE,CURRENT_DATE+30,'borrador', current_setting('probe.p0_gt',true)::uuid);
+      PERFORM set_config('probe.p228','ROJO (creó campaña atribuida a empresa ajena)',false);
+    EXCEPTION WHEN others THEN PERFORM set_config('probe.p228','BLOQUEADO ('||SQLSTATE||')',false); END;
+  END IF;
+END $$;
+SELECT set_config('role','none',true);
+
 -- ===== Veredictos como result set =====
 SELECT 'P1_anon_insert_citas'              AS probe, current_setting('probe.p1', true)  AS verdict, 'BLOQUEADO' AS esperado_post_fix
 UNION ALL SELECT 'P2_medico_cancela_ajena_rpc',         current_setting('probe.p2', true),  'BLOQUEADO'
@@ -3930,6 +4023,11 @@ UNION ALL SELECT 'P219_farmacias_medico_pos_GT',        current_setting('probe.p
 UNION ALL SELECT 'P220_farmacias_clinico_neg_HN',       current_setting('probe.p220', true), 'OK post-098 (ROJO pre)'
 UNION ALL SELECT 'P221_farmacias_failclosed',           current_setting('probe.p221', true), 'OK post-098 (ROJO pre)'
 UNION ALL SELECT 'P222_farmacias_anon',                 current_setting('probe.p222', true), 'OK post-098 (ROJO pre)'
-UNION ALL SELECT 'P223_farmacias_superadmin_all',       current_setting('probe.p223', true), 'OK';
+UNION ALL SELECT 'P223_farmacias_superadmin_all',       current_setting('probe.p223', true), 'OK'
+UNION ALL SELECT 'P224_puba_crea_pais_no_operado',      current_setting('probe.p224', true), 'BLOQUEADO post-099 (ROJO pre)'
+UNION ALL SELECT 'P225_puba_crea_pais_operado',         current_setting('probe.p225', true), 'OK'
+UNION ALL SELECT 'P226_puba_aprobar_no_operado',        current_setting('probe.p226', true), 'BLOQUEADO post-099 (ROJO pre)'
+UNION ALL SELECT 'P227_puba_backfill_notnull',          current_setting('probe.p227', true), 'OK post-099 (ROJO pre)'
+UNION ALL SELECT 'P228_puba_antiescalada_empresa',      current_setting('probe.p228', true), 'BLOQUEADO';
 
 ROLLBACK;  -- nada de lo anterior se persiste
