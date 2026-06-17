@@ -3973,6 +3973,79 @@ DO $$ DECLARE v_e uuid; v_p3 uuid; BEGIN
 EXCEPTION WHEN others THEN PERFORM set_config('probe.p240','FALLO ('||SQLERRM||')',false); END $$;
 SELECT set_config('role','none',true);
 
+-- ============================================================
+-- VIS-A · plan de visitas por país ∈ operación (P241–P245). Red-first.
+-- Reusa pa_ea (empresa A, opera GT por fixture Pub-A) + super_admin + cat_inv (proveedor A).
+-- guard: pa_ready (da operación eA-GT) + vg3_ready (pais_id uuid). Helper de inserción común.
+-- ============================================================
+SELECT set_config('role','none',true);
+-- P241 — NEG (red-first): super_admin crea plan en país NO operado (HN) → BLOQ
+SELECT set_config('request.jwt.claims', json_build_object('sub', (SELECT id::text FROM public.perfiles WHERE rol='super_admin' LIMIT 1), 'role','authenticated')::text, true);
+SELECT set_config('role','authenticated',true);
+DO $$ BEGIN
+  IF current_setting('probe.pa_ready',true)<>'1' OR current_setting('probe.vg3_ready',true)<>'1' THEN PERFORM set_config('probe.p241','N/A',false);
+  ELSE
+    BEGIN
+      INSERT INTO public.planes_visitador_contratados (empresa_id,plan_visitador_id,pais_id,cantidad_visitas_incluidas,visitas_usadas,precio_pagado,fecha_inicio,fecha_fin,estado)
+        VALUES (current_setting('probe.pa_ea',true)::uuid, 1, current_setting('probe.p0_hn',true)::uuid, 10,0,100,CURRENT_DATE,CURRENT_DATE+30,'activo');
+      PERFORM set_config('probe.p241','ROJO (creó plan en país NO operado — leak vivo)',false);
+    EXCEPTION WHEN others THEN PERFORM set_config('probe.p241','BLOQUEADO ('||SQLSTATE||')',false); END;
+  END IF;
+END $$;
+
+-- P242 — POS: super_admin crea plan en país operado (GT) → OK
+DO $$ BEGIN
+  IF current_setting('probe.pa_ready',true)<>'1' OR current_setting('probe.vg3_ready',true)<>'1' THEN PERFORM set_config('probe.p242','N/A',false);
+  ELSE
+    BEGIN
+      INSERT INTO public.planes_visitador_contratados (empresa_id,plan_visitador_id,pais_id,cantidad_visitas_incluidas,visitas_usadas,precio_pagado,fecha_inicio,fecha_fin,estado)
+        VALUES (current_setting('probe.pa_ea',true)::uuid, 1, current_setting('probe.p0_gt',true)::uuid, 10,0,100,CURRENT_DATE,CURRENT_DATE+30,'activo');
+      PERFORM set_config('probe.p242','OK (plan en país operado)',false);
+    EXCEPTION WHEN others THEN PERFORM set_config('probe.p242','FALLO ('||SQLERRM||')',false); END;
+  END IF;
+END $$;
+
+-- P243 — fail-closed: país NULL → BLOQ (NOT NULL)
+DO $$ BEGIN
+  IF current_setting('probe.pa_ready',true)<>'1' OR current_setting('probe.vg3_ready',true)<>'1' THEN PERFORM set_config('probe.p243','N/A',false);
+  ELSE
+    BEGIN
+      INSERT INTO public.planes_visitador_contratados (empresa_id,plan_visitador_id,pais_id,cantidad_visitas_incluidas,visitas_usadas,precio_pagado,fecha_inicio,fecha_fin,estado)
+        VALUES (current_setting('probe.pa_ea',true)::uuid, 1, NULL, 10,0,100,CURRENT_DATE,CURRENT_DATE+30,'activo');
+      PERFORM set_config('probe.p243','ROJO (aceptó país NULL)',false);
+    EXCEPTION WHEN others THEN PERFORM set_config('probe.p243','BLOQUEADO ('||SQLSTATE||')',false); END;
+  END IF;
+END $$;
+
+-- P244 — anti-escalada (no-regresión): proveedor NO crea plan (su empresa, estado='activo') → BLOQ
+SELECT set_config('role','none',true);
+SELECT set_config('request.jwt.claims', json_build_object('sub', current_setting('probe.cat_inv',true), 'role','authenticated')::text, true);
+SELECT set_config('role','authenticated',true);
+DO $$ BEGIN
+  IF current_setting('probe.pa_ready',true)<>'1' OR current_setting('probe.vg3_ready',true)<>'1' THEN PERFORM set_config('probe.p244','N/A',false);
+  ELSE
+    BEGIN
+      INSERT INTO public.planes_visitador_contratados (empresa_id,plan_visitador_id,pais_id,cantidad_visitas_incluidas,visitas_usadas,precio_pagado,fecha_inicio,fecha_fin,estado)
+        VALUES (current_setting('probe.pa_ea',true)::uuid, 1, current_setting('probe.p0_gt',true)::uuid, 10,0,100,CURRENT_DATE,CURRENT_DATE+30,'activo');
+      PERFORM set_config('probe.p244','ROJO (proveedor creó/auto-activó plan)',false);
+    EXCEPTION WHEN others THEN PERFORM set_config('probe.p244','BLOQUEADO ('||SQLSTATE||')',false); END;
+  END IF;
+END $$;
+
+-- P245 — anti-escalada empresa (no-regresión): proveedor NO crea plan atribuido a empresa ajena → BLOQ
+DO $$ DECLARE v_eb uuid; BEGIN
+  IF current_setting('probe.pa_ready',true)<>'1' OR current_setting('probe.vg3_ready',true)<>'1' THEN PERFORM set_config('probe.p245','N/A',false);
+  ELSE
+    SELECT empresa_id INTO v_eb FROM public.farmacias WHERE id=current_setting('probe.cat_fB',true)::int;
+    BEGIN
+      INSERT INTO public.planes_visitador_contratados (empresa_id,plan_visitador_id,pais_id,cantidad_visitas_incluidas,visitas_usadas,precio_pagado,fecha_inicio,fecha_fin,estado)
+        VALUES (v_eb, 1, current_setting('probe.p0_gt',true)::uuid, 10,0,100,CURRENT_DATE,CURRENT_DATE+30,'activo');
+      PERFORM set_config('probe.p245','ROJO (proveedor creó plan de empresa ajena)',false);
+    EXCEPTION WHEN others THEN PERFORM set_config('probe.p245','BLOQUEADO ('||SQLSTATE||')',false); END;
+  END IF;
+END $$;
+SELECT set_config('role','none',true);
+
 -- ===== Veredictos como result set =====
 SELECT 'P1_anon_insert_citas'              AS probe, current_setting('probe.p1', true)  AS verdict, 'BLOQUEADO' AS esperado_post_fix
 UNION ALL SELECT 'P2_medico_cancela_ajena_rpc',         current_setting('probe.p2', true),  'BLOQUEADO'
@@ -4206,6 +4279,11 @@ UNION ALL SELECT 'P236_pubb_anon',                      current_setting('probe.p
 UNION ALL SELECT 'P237_vg3_estructura_fk',              current_setting('probe.p237', true), 'OK post-101'
 UNION ALL SELECT 'P238_vg3_fk_pais_inexistente',        current_setting('probe.p238', true), 'BLOQUEADO post-101'
 UNION ALL SELECT 'P239_vg3_pais_valido',                current_setting('probe.p239', true), 'OK post-101'
-UNION ALL SELECT 'P240_vg3_restrict_pais',              current_setting('probe.p240', true), 'BLOQUEADO post-101';
+UNION ALL SELECT 'P240_vg3_restrict_pais',              current_setting('probe.p240', true), 'BLOQUEADO post-101'
+UNION ALL SELECT 'P241_visa_plan_pais_no_operado',      current_setting('probe.p241', true), 'BLOQUEADO post-102 (ROJO pre)'
+UNION ALL SELECT 'P242_visa_plan_pais_operado',         current_setting('probe.p242', true), 'OK post-102'
+UNION ALL SELECT 'P243_visa_pais_null',                 current_setting('probe.p243', true), 'BLOQUEADO post-102 (ROJO pre)'
+UNION ALL SELECT 'P244_visa_proveedor_no_crea',         current_setting('probe.p244', true), 'BLOQUEADO'
+UNION ALL SELECT 'P245_visa_antiescalada_empresa',      current_setting('probe.p245', true), 'BLOQUEADO';
 
 ROLLBACK;  -- nada de lo anterior se persiste
