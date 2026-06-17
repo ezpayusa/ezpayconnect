@@ -4164,6 +4164,131 @@ DO $$ DECLARE n int; BEGIN
 EXCEPTION WHEN others THEN PERFORM set_config('probe.p253','FALLO ('||SQLERRM||')',false); END $$;
 SELECT set_config('role','none',true);
 
+-- ============================================================
+-- V-G2 · agendar gateado por plan+país (P254–P260). Red-first.
+-- Fixture: planes_asignaciones activo eA (cuota pasa) + manejo de planes_visitador_contratados.
+-- Reusa fm_medgt (médico GT), vg1_medhn (médico HN), cat_inv (visitador eA). guard vg1_ready.
+-- ============================================================
+SELECT set_config('role','none',true);
+DO $$ BEGIN
+  IF current_setting('probe.vg1_ready',true)<>'1' THEN PERFORM set_config('probe.va2_ready','0',false); RETURN; END IF;
+  DELETE FROM public.planes_visitador_contratados WHERE empresa_id = current_setting('probe.pa_ea',true)::uuid;
+  DELETE FROM public.planes_asignaciones WHERE empresa_id = current_setting('probe.pa_ea',true)::uuid;
+  -- planes_asignaciones activo (cuota: plan_config_id NULL → ilimitado → pasa trg_limite)
+  INSERT INTO public.planes_asignaciones (empresa_id,fecha_inicio,tipo_ciclo,precio_aplicado,moneda,estado,visitas_usadas)
+    VALUES (current_setting('probe.pa_ea',true)::uuid, CURRENT_DATE, 'mensual', 0, 'GTQ', 'activo', 0);
+  PERFORM set_config('probe.va2_ready','1',false);
+EXCEPTION WHEN others THEN PERFORM set_config('probe.va2_ready','0',false); PERFORM set_config('probe.va2_err',SQLERRM,false); END $$;
+
+-- P254 — NEG (red-first): visitador SIN plan-visitador agenda médico GT → BLOQ (hoy agenda)
+SELECT set_config('request.jwt.claims', json_build_object('sub', current_setting('probe.cat_inv',true), 'role','authenticated')::text, true);
+SELECT set_config('role','authenticated',true);
+DO $$ BEGIN
+  IF current_setting('probe.va2_ready',true)<>'1' THEN PERFORM set_config('probe.p254','N/A',false);
+  ELSE
+    BEGIN
+      INSERT INTO public.visitas_agendadas (empresa_id,medico_id,cuenta_proveedor_id,fecha_visita,hora_inicio,hora_fin,tipo_visita,estado)
+        VALUES (current_setting('probe.pa_ea',true)::uuid, current_setting('probe.fm_medgt',true)::uuid, current_setting('probe.cat_inv',true)::uuid, CURRENT_DATE+7,'09:00','10:00','presencial','pendiente');
+      PERFORM set_config('probe.p254','ROJO (agendó sin plan de visitas — leak vivo)',false);
+    EXCEPTION WHEN others THEN PERFORM set_config('probe.p254','BLOQUEADO ('||SQLSTATE||')',false); END;
+  END IF;
+END $$;
+
+-- insertar plan-visitador ACTIVO vigente GT (owner)
+SELECT set_config('role','none',true);
+DO $$ BEGIN IF current_setting('probe.va2_ready',true)='1' THEN
+  INSERT INTO public.planes_visitador_contratados (empresa_id,plan_visitador_id,pais_id,cantidad_visitas_incluidas,visitas_usadas,precio_pagado,fecha_inicio,fecha_fin,estado)
+    VALUES (current_setting('probe.pa_ea',true)::uuid, 1, current_setting('probe.p0_gt',true)::uuid, 10,0,100,CURRENT_DATE-1,CURRENT_DATE+30,'activo');
+END IF; END $$;
+
+-- P255 — POS: visitador con plan GT activo agenda médico GT → OK
+SELECT set_config('request.jwt.claims', json_build_object('sub', current_setting('probe.cat_inv',true), 'role','authenticated')::text, true);
+SELECT set_config('role','authenticated',true);
+DO $$ DECLARE v_id uuid; BEGIN
+  IF current_setting('probe.va2_ready',true)<>'1' THEN PERFORM set_config('probe.p255','N/A',false);
+  ELSE
+    BEGIN
+      INSERT INTO public.visitas_agendadas (empresa_id,medico_id,cuenta_proveedor_id,fecha_visita,hora_inicio,hora_fin,tipo_visita,estado)
+        VALUES (current_setting('probe.pa_ea',true)::uuid, current_setting('probe.fm_medgt',true)::uuid, current_setting('probe.cat_inv',true)::uuid, CURRENT_DATE+8,'09:00','10:00','presencial','pendiente') RETURNING id INTO v_id;
+      PERFORM set_config('probe.va2_visita', v_id::text, false);
+      PERFORM set_config('probe.p255','OK (agenda con plan país-cubriente)',false);
+    EXCEPTION WHEN others THEN PERFORM set_config('probe.p255','FALLO ('||SQLERRM||')',false); END;
+  END IF;
+END $$;
+
+-- P256 — NEG: visitador (plan GT) agenda médico HN → BLOQ
+DO $$ BEGIN
+  IF current_setting('probe.va2_ready',true)<>'1' THEN PERFORM set_config('probe.p256','N/A',false);
+  ELSE
+    BEGIN
+      INSERT INTO public.visitas_agendadas (empresa_id,medico_id,cuenta_proveedor_id,fecha_visita,hora_inicio,hora_fin,tipo_visita,estado)
+        VALUES (current_setting('probe.pa_ea',true)::uuid, current_setting('probe.vg1_medhn',true)::uuid, current_setting('probe.cat_inv',true)::uuid, CURRENT_DATE+9,'09:00','10:00','presencial','pendiente');
+      PERFORM set_config('probe.p256','ROJO (agendó médico de otro país — leak vivo)',false);
+    EXCEPTION WHEN others THEN PERFORM set_config('probe.p256','BLOQUEADO ('||SQLSTATE||')',false); END;
+  END IF;
+END $$;
+
+-- P257 — NEG: plan-visitador vencido → BLOQ
+SELECT set_config('role','none',true);
+DO $$ BEGIN IF current_setting('probe.va2_ready',true)='1' THEN
+  UPDATE public.planes_visitador_contratados SET fecha_fin=CURRENT_DATE-1 WHERE empresa_id=current_setting('probe.pa_ea',true)::uuid;
+END IF; END $$;
+SELECT set_config('request.jwt.claims', json_build_object('sub', current_setting('probe.cat_inv',true), 'role','authenticated')::text, true);
+SELECT set_config('role','authenticated',true);
+DO $$ BEGIN
+  IF current_setting('probe.va2_ready',true)<>'1' THEN PERFORM set_config('probe.p257','N/A',false);
+  ELSE
+    BEGIN
+      INSERT INTO public.visitas_agendadas (empresa_id,medico_id,cuenta_proveedor_id,fecha_visita,hora_inicio,hora_fin,tipo_visita,estado)
+        VALUES (current_setting('probe.pa_ea',true)::uuid, current_setting('probe.fm_medgt',true)::uuid, current_setting('probe.cat_inv',true)::uuid, CURRENT_DATE+10,'09:00','10:00','presencial','pendiente');
+      PERFORM set_config('probe.p257','ROJO (agendó con plan vencido — leak vivo)',false);
+    EXCEPTION WHEN others THEN PERFORM set_config('probe.p257','BLOQUEADO ('||SQLSTATE||')',false); END;
+  END IF;
+END $$;
+
+-- P258 — re-targeting: UPDATE de medico_id a un médico no cubierto → BLOQ (restaura plan antes)
+SELECT set_config('role','none',true);
+DO $$ BEGIN IF current_setting('probe.va2_ready',true)='1' THEN
+  UPDATE public.planes_visitador_contratados SET fecha_fin=CURRENT_DATE+30 WHERE empresa_id=current_setting('probe.pa_ea',true)::uuid;
+END IF; END $$;
+SELECT set_config('request.jwt.claims', json_build_object('sub', current_setting('probe.cat_inv',true), 'role','authenticated')::text, true);
+SELECT set_config('role','authenticated',true);
+DO $$ DECLARE v_id uuid; BEGIN
+  IF current_setting('probe.va2_ready',true)<>'1' THEN PERFORM set_config('probe.p258','N/A',false);
+  ELSE
+    -- visita propia de P258 (médico GT, plan activo) para no tocar va2_visita (usada por P259)
+    INSERT INTO public.visitas_agendadas (empresa_id,medico_id,cuenta_proveedor_id,fecha_visita,hora_inicio,hora_fin,tipo_visita,estado)
+      VALUES (current_setting('probe.pa_ea',true)::uuid, current_setting('probe.fm_medgt',true)::uuid, current_setting('probe.cat_inv',true)::uuid, CURRENT_DATE+11,'09:00','10:00','presencial','pendiente') RETURNING id INTO v_id;
+    BEGIN
+      UPDATE public.visitas_agendadas SET medico_id = current_setting('probe.vg1_medhn',true)::uuid WHERE id = v_id;
+      PERFORM set_config('probe.p258','ROJO (re-targeteó a médico no cubierto — leak vivo)',false);
+    EXCEPTION WHEN others THEN PERFORM set_config('probe.p258','BLOQUEADO ('||SQLSTATE||')',false); END;
+  END IF;
+EXCEPTION WHEN others THEN PERFORM set_config('probe.p258','FALLO ('||SQLERRM||')',false); END $$;
+
+-- P259 — NO-REGRESIÓN: médico aprueba/cancela (UPDATE de estado sin tocar medico_id) → OK
+SELECT set_config('request.jwt.claims', json_build_object('sub', current_setting('probe.fm_medgt',true), 'role','authenticated')::text, true);
+DO $$ DECLARE v_n int; BEGIN
+  IF current_setting('probe.va2_ready',true)<>'1' OR NULLIF(current_setting('probe.va2_visita',true),'') IS NULL THEN PERFORM set_config('probe.p259','N/A',false);
+  ELSE
+    BEGIN
+      UPDATE public.visitas_agendadas SET estado='confirmada' WHERE id = current_setting('probe.va2_visita',true)::uuid AND medico_id = current_setting('probe.fm_medgt',true)::uuid;
+      GET DIAGNOSTICS v_n = ROW_COUNT;
+      IF v_n=1 THEN PERFORM set_config('probe.p259','OK (médico aprueba/cancela sin disparar el gate país)',false);
+      ELSE PERFORM set_config('probe.p259','FALLO (UPDATE de estado afectó '||v_n||' filas)',false); END IF;
+    EXCEPTION WHEN others THEN PERFORM set_config('probe.p259','FALLO (gate bloqueó UPDATE de estado: '||SQLERRM||')',false); END;
+  END IF;
+END $$;
+
+-- P260 — NO-REGRESIÓN cuota: trg_limite_visitas sigue presente (no se tocó)
+SELECT set_config('role','none',true);
+DO $$ DECLARE v_ok boolean; BEGIN
+  SELECT count(*)>0 INTO v_ok FROM pg_trigger t JOIN pg_class c ON c.oid=t.tgrelid WHERE c.relname='visitas_agendadas' AND t.tgname='trg_limite_visitas' AND NOT t.tgisinternal;
+  IF v_ok THEN PERFORM set_config('probe.p260','OK (trg_limite_visitas intacto)',false);
+  ELSE PERFORM set_config('probe.p260','FALLO (trg_limite_visitas ausente)',false); END IF;
+END $$;
+SELECT set_config('role','none',true);
+
 -- ===== Veredictos como result set =====
 SELECT 'P1_anon_insert_citas'              AS probe, current_setting('probe.p1', true)  AS verdict, 'BLOQUEADO' AS esperado_post_fix
 UNION ALL SELECT 'P2_medico_cancela_ajena_rpc',         current_setting('probe.p2', true),  'BLOQUEADO'
@@ -4410,6 +4535,13 @@ UNION ALL SELECT 'P249_vg1_plan_vencido',               current_setting('probe.p
 UNION ALL SELECT 'P250_vg1_plan_activo_pos',            current_setting('probe.p250', true), 'OK'
 UNION ALL SELECT 'P251_vg1_failclosed_noproveedor',     current_setting('probe.p251', true), 'OK'
 UNION ALL SELECT 'P252_vg1_paciente_agenda',            current_setting('probe.p252', true), 'OK'
-UNION ALL SELECT 'P253_vg1_medico_propia',              current_setting('probe.p253', true), 'OK';
+UNION ALL SELECT 'P253_vg1_medico_propia',              current_setting('probe.p253', true), 'OK'
+UNION ALL SELECT 'P254_vg2_sin_plan',                   current_setting('probe.p254', true), 'BLOQUEADO post-104 (ROJO pre)'
+UNION ALL SELECT 'P255_vg2_plan_pos',                   current_setting('probe.p255', true), 'OK post-104'
+UNION ALL SELECT 'P256_vg2_medico_otro_pais',           current_setting('probe.p256', true), 'BLOQUEADO post-104 (ROJO pre)'
+UNION ALL SELECT 'P257_vg2_plan_vencido',               current_setting('probe.p257', true), 'BLOQUEADO post-104 (ROJO pre)'
+UNION ALL SELECT 'P258_vg2_retargeting',                current_setting('probe.p258', true), 'BLOQUEADO post-104 (ROJO pre)'
+UNION ALL SELECT 'P259_vg2_medico_estado_noregresion',  current_setting('probe.p259', true), 'OK'
+UNION ALL SELECT 'P260_vg2_cuota_intacta',              current_setting('probe.p260', true), 'OK';
 
 ROLLBACK;  -- nada de lo anterior se persiste
