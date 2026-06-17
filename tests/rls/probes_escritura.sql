@@ -3807,6 +3807,110 @@ DO $$ DECLARE v_eb uuid; BEGIN
 END $$;
 SELECT set_config('role','none',true);
 
+-- ============================================================
+-- PUB-B · display por país del viewer (P229–P236). Red-first.
+-- Fixture: campañas 'PB GT'/'PB HN' (vigentes) + 'PB GT FUT' (inicio futuro); paciente GT,
+-- admin_clinica GT, médico GT (fm_medgt), viewer sin país (p0_mednull).
+-- ============================================================
+SELECT set_config('role','none',true);
+DO $$ DECLARE v_pac uuid; v_clin uuid; BEGIN
+  IF current_setting('probe.fm_ready',true)<>'1' THEN PERFORM set_config('probe.pb_ready','0',false); RETURN; END IF;
+  SELECT auth_user_id INTO v_pac FROM public.pacientes WHERE auth_user_id IS NOT NULL AND pais_id = current_setting('probe.p0_gt',true)::uuid LIMIT 1;
+  SELECT id INTO v_clin FROM public.perfiles WHERE rol='admin_clinica' AND pais_id = current_setting('probe.p0_gt',true)::uuid LIMIT 1;
+  IF v_pac IS NULL OR v_clin IS NULL THEN PERFORM set_config('probe.pb_ready','0',false); RETURN; END IF;
+  INSERT INTO public.campanas_publicitarias (titulo,tipo,fecha_inicio,fecha_fin,activa,peso,pais_id)
+    VALUES ('PB GT','banner',CURRENT_DATE-1,CURRENT_DATE+30,true,1, current_setting('probe.p0_gt',true)::uuid);
+  INSERT INTO public.campanas_publicitarias (titulo,tipo,fecha_inicio,fecha_fin,activa,peso,pais_id)
+    VALUES ('PB HN','banner',CURRENT_DATE-1,CURRENT_DATE+30,true,1, current_setting('probe.p0_hn',true)::uuid);
+  INSERT INTO public.campanas_publicitarias (titulo,tipo,fecha_inicio,fecha_fin,activa,peso,pais_id)
+    VALUES ('PB GT FUT','banner',CURRENT_DATE+5,CURRENT_DATE+30,true,1, current_setting('probe.p0_gt',true)::uuid);
+  PERFORM set_config('probe.pb_pac', v_pac::text, false);
+  PERFORM set_config('probe.pb_clin', v_clin::text, false);
+  PERFORM set_config('probe.pb_ready','1',false);
+EXCEPTION WHEN others THEN PERFORM set_config('probe.pb_ready','0',false); END $$;
+
+-- P229 — POS audiencia#2 (red-first): médico-GT ve campaña GT (hoy ve 0)
+SELECT set_config('request.jwt.claims', json_build_object('sub', current_setting('probe.fm_medgt',true))::text, true);
+SELECT set_config('role','authenticated',true);
+DO $$ DECLARE n int; BEGIN
+  IF current_setting('probe.pb_ready',true)<>'1' THEN PERFORM set_config('probe.p229','N/A',false);
+  ELSE SELECT count(*) INTO n FROM public.campanas_publicitarias WHERE titulo='PB GT';
+    IF n>0 THEN PERFORM set_config('probe.p229','OK (médico GT ve ads de su país)',false);
+    ELSE PERFORM set_config('probe.p229','ROJO (médico GT no ve ads de su país — audiencia no servida)',false); END IF;
+  END IF;
+EXCEPTION WHEN others THEN PERFORM set_config('probe.p229','FALLO ('||SQLERRM||')',false); END $$;
+
+-- P230 — POS audiencia#2 (red-first): clínica (admin_clinica) GT ve campaña GT
+SELECT set_config('request.jwt.claims', json_build_object('sub', current_setting('probe.pb_clin',true))::text, true);
+DO $$ DECLARE n int; BEGIN
+  IF current_setting('probe.pb_ready',true)<>'1' THEN PERFORM set_config('probe.p230','N/A',false);
+  ELSE SELECT count(*) INTO n FROM public.campanas_publicitarias WHERE titulo='PB GT';
+    IF n>0 THEN PERFORM set_config('probe.p230','OK (clínica GT ve ads de su país)',false);
+    ELSE PERFORM set_config('probe.p230','ROJO (clínica GT no ve ads de su país)',false); END IF;
+  END IF;
+EXCEPTION WHEN others THEN PERFORM set_config('probe.p230','FALLO ('||SQLERRM||')',false); END $$;
+
+-- P231 — NEG aislamiento: médico-GT NO ve campaña HN (OR-trap: super_admin ALL no re-abre)
+SELECT set_config('request.jwt.claims', json_build_object('sub', current_setting('probe.fm_medgt',true))::text, true);
+DO $$ DECLARE n int; BEGIN
+  IF current_setting('probe.pb_ready',true)<>'1' THEN PERFORM set_config('probe.p231','N/A',false);
+  ELSE SELECT count(*) INTO n FROM public.campanas_publicitarias WHERE titulo='PB HN';
+    IF n=0 THEN PERFORM set_config('probe.p231','OK (médico GT no ve campaña HN)',false);
+    ELSE PERFORM set_config('probe.p231','ROJO (médico GT ve campaña HN — leak, n='||n||')',false); END IF;
+  END IF;
+EXCEPTION WHEN others THEN PERFORM set_config('probe.p231','FALLO ('||SQLERRM||')',false); END $$;
+
+-- P232 — POS no-regresión paciente: paciente-GT ve campaña GT
+SELECT set_config('request.jwt.claims', json_build_object('sub', current_setting('probe.pb_pac',true))::text, true);
+DO $$ DECLARE n int; BEGIN
+  IF current_setting('probe.pb_ready',true)<>'1' THEN PERFORM set_config('probe.p232','N/A',false);
+  ELSE SELECT count(*) INTO n FROM public.campanas_publicitarias WHERE titulo='PB GT';
+    IF n>0 THEN PERFORM set_config('probe.p232','OK (paciente GT ve ads de su país — cobertura mi_pais_viewer)',false);
+    ELSE PERFORM set_config('probe.p232','FALLO (paciente GT NO ve sus ads — helper no cubre paciente)',false); END IF;
+  END IF;
+EXCEPTION WHEN others THEN PERFORM set_config('probe.p232','FALLO ('||SQLERRM||')',false); END $$;
+
+-- P233 — NEG paciente cross-país: paciente-GT NO ve campaña HN
+DO $$ DECLARE n int; BEGIN
+  IF current_setting('probe.pb_ready',true)<>'1' THEN PERFORM set_config('probe.p233','N/A',false);
+  ELSE SELECT count(*) INTO n FROM public.campanas_publicitarias WHERE titulo='PB HN';
+    IF n=0 THEN PERFORM set_config('probe.p233','OK (paciente GT no ve campaña HN)',false);
+    ELSE PERFORM set_config('probe.p233','ROJO (paciente GT ve campaña HN, n='||n||')',false); END IF;
+  END IF;
+EXCEPTION WHEN others THEN PERFORM set_config('probe.p233','FALLO ('||SQLERRM||')',false); END $$;
+
+-- P234 — vigencia (red-first): paciente-GT NO ve campaña con fecha_inicio FUTURA
+DO $$ DECLARE n int; BEGIN
+  IF current_setting('probe.pb_ready',true)<>'1' THEN PERFORM set_config('probe.p234','N/A',false);
+  ELSE SELECT count(*) INTO n FROM public.campanas_publicitarias WHERE titulo='PB GT FUT';
+    IF n=0 THEN PERFORM set_config('probe.p234','OK (campaña con inicio futuro NO se muestra)',false);
+    ELSE PERFORM set_config('probe.p234','ROJO (campaña con inicio futuro se muestra — fail-open vigencia)',false); END IF;
+  END IF;
+EXCEPTION WHEN others THEN PERFORM set_config('probe.p234','FALLO ('||SQLERRM||')',false); END $$;
+
+-- P235 — fail-closed: viewer sin país (médico país-NULL) → 0 campañas
+SELECT set_config('request.jwt.claims', json_build_object('sub', current_setting('probe.p0_mednull',true))::text, true);
+DO $$ DECLARE n int; BEGIN
+  IF current_setting('probe.pb_ready',true)<>'1' THEN PERFORM set_config('probe.p235','N/A',false);
+  ELSE SELECT count(*) INTO n FROM public.campanas_publicitarias WHERE titulo IN ('PB GT','PB HN','PB GT FUT');
+    IF n=0 THEN PERFORM set_config('probe.p235','OK (viewer sin país no ve ads)',false);
+    ELSE PERFORM set_config('probe.p235','ROJO (viewer sin país ve ads — fail-open, n='||n||')',false); END IF;
+  END IF;
+EXCEPTION WHEN others THEN PERFORM set_config('probe.p235','FALLO ('||SQLERRM||')',false); END $$;
+
+-- P236 — anon: comportamiento definido (0, sin error)
+SELECT set_config('role','none',true);
+SELECT set_config('request.jwt.claims','{"role":"anon"}',true); SELECT set_config('role','anon',true);
+DO $$ DECLARE n int; BEGIN
+  IF current_setting('probe.pb_ready',true)<>'1' THEN PERFORM set_config('probe.p236','N/A',false);
+  ELSE
+    BEGIN SELECT count(*) INTO n FROM public.campanas_publicitarias WHERE titulo='PB GT'; EXCEPTION WHEN others THEN n:=-1; END;
+    IF n=0 THEN PERFORM set_config('probe.p236','OK (anon no ve ads, sin error)',false);
+    ELSE PERFORM set_config('probe.p236','ROJO (anon ve '||n||' o error)',false); END IF;
+  END IF;
+END $$;
+SELECT set_config('role','none',true);
+
 -- ===== Veredictos como result set =====
 SELECT 'P1_anon_insert_citas'              AS probe, current_setting('probe.p1', true)  AS verdict, 'BLOQUEADO' AS esperado_post_fix
 UNION ALL SELECT 'P2_medico_cancela_ajena_rpc',         current_setting('probe.p2', true),  'BLOQUEADO'
@@ -4028,6 +4132,14 @@ UNION ALL SELECT 'P224_puba_crea_pais_no_operado',      current_setting('probe.p
 UNION ALL SELECT 'P225_puba_crea_pais_operado',         current_setting('probe.p225', true), 'OK'
 UNION ALL SELECT 'P226_puba_aprobar_no_operado',        current_setting('probe.p226', true), 'BLOQUEADO post-099 (ROJO pre)'
 UNION ALL SELECT 'P227_puba_backfill_notnull',          current_setting('probe.p227', true), 'OK post-099 (ROJO pre)'
-UNION ALL SELECT 'P228_puba_antiescalada_empresa',      current_setting('probe.p228', true), 'BLOQUEADO';
+UNION ALL SELECT 'P228_puba_antiescalada_empresa',      current_setting('probe.p228', true), 'BLOQUEADO'
+UNION ALL SELECT 'P229_pubb_medico_ve_GT',              current_setting('probe.p229', true), 'OK post-100 (ROJO pre)'
+UNION ALL SELECT 'P230_pubb_clinica_ve_GT',             current_setting('probe.p230', true), 'OK post-100 (ROJO pre)'
+UNION ALL SELECT 'P231_pubb_medico_no_HN',              current_setting('probe.p231', true), 'OK'
+UNION ALL SELECT 'P232_pubb_paciente_ve_GT',            current_setting('probe.p232', true), 'OK'
+UNION ALL SELECT 'P233_pubb_paciente_no_HN',            current_setting('probe.p233', true), 'OK'
+UNION ALL SELECT 'P234_pubb_vigencia_inicio_futuro',    current_setting('probe.p234', true), 'OK post-100 (ROJO pre)'
+UNION ALL SELECT 'P235_pubb_failclosed',                current_setting('probe.p235', true), 'OK'
+UNION ALL SELECT 'P236_pubb_anon',                      current_setting('probe.p236', true), 'OK';
 
 ROLLBACK;  -- nada de lo anterior se persiste
