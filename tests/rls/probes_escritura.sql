@@ -4710,14 +4710,15 @@ SELECT set_config('role','none',true);
 -- ============================================================
 -- Ola 2 · Endurecer search_path registrar_campana_metrica (P292–P294). Red-first.
 -- ============================================================
--- P292 — estructural: AMBOS overloads fijan search_path '' (no null, no 'public')
+-- P292 — estructural: TODOS los overloads vivos fijan search_path '' (no null, no 'public')
+-- (n_tot puede variar: tras 115 queda solo el 8-arg; la aserción es n_ok=n_tot con n_tot>=1)
 DO $$ DECLARE n_ok int; n_tot int; BEGIN
   SELECT count(*) FILTER (WHERE EXISTS (SELECT 1 FROM unnest(coalesce(p.proconfig,'{}'::text[])) e WHERE e LIKE 'search_path=%' AND e<>'search_path=public')),
          count(*)
     INTO n_ok, n_tot
   FROM pg_proc p JOIN pg_namespace n ON n.oid=p.pronamespace
   WHERE n.nspname='public' AND p.proname='registrar_campana_metrica';
-  IF n_tot=2 AND n_ok=2 THEN PERFORM set_config('probe.p292','OK (ambos overloads fijan search_path vacío)',false);
+  IF n_tot>=1 AND n_ok=n_tot THEN PERFORM set_config('probe.p292','OK ('||n_ok||'/'||n_tot||' overloads fijan search_path vacío)',false);
   ELSE PERFORM set_config('probe.p292','ROJO (search_path sin endurecer: '||n_ok||'/'||n_tot||' overloads)',false); END IF;
 END $$;
 SELECT set_config('role','none',true);
@@ -5120,6 +5121,16 @@ DO $$ BEGIN
 END $$;
 SELECT set_config('role','none',true);
 
+-- P319 — limpieza: el overload 7-arg muerto NO existe; el 8-arg (camino vivo) intacto
+DO $$ DECLARE v_7 boolean; v_8 boolean; BEGIN
+  v_7 := to_regprocedure('public.registrar_campana_metrica(integer,uuid,integer,text,text,boolean,text)') IS NOT NULL;
+  v_8 := to_regprocedure('public.registrar_campana_metrica(integer,uuid,integer,text,text,boolean,text,uuid)') IS NOT NULL;
+  IF (NOT v_7) AND v_8 THEN PERFORM set_config('probe.p319','OK (7-arg dropeado, 8-arg intacto)',false);
+  ELSIF v_7 THEN PERFORM set_config('probe.p319','ROJO (overload 7-arg muerto todavía existe)',false);
+  ELSE PERFORM set_config('probe.p319','FALLO (8-arg ausente!)',false); END IF;
+END $$;
+SELECT set_config('role','none',true);
+
 -- ===== Veredictos como result set =====
 SELECT 'P1_anon_insert_citas'              AS probe, current_setting('probe.p1', true)  AS verdict, 'BLOQUEADO' AS esperado_post_fix
 UNION ALL SELECT 'P2_medico_cancela_ajena_rpc',         current_setting('probe.p2', true),  'BLOQUEADO'
@@ -5431,6 +5442,7 @@ UNION ALL SELECT 'P314_c2_grandfather_ve_todo',         current_setting('probe.p
 UNION ALL SELECT 'P315_c2_cross_empresa_intacto',       current_setting('probe.p315', true), 'OK (boundary empresa)'
 UNION ALL SELECT 'P316_c2_anon_cerrado',                current_setting('probe.p316', true), 'OK'
 UNION ALL SELECT 'P317_c2_confinable_escribe_su_sucursal', current_setting('probe.p317', true), 'OK (no-regresión escritura propia)'
-UNION ALL SELECT 'P318_c2_exento_escribe_cualquiera',   current_setting('probe.p318', true), 'OK (no-regresión escritura exento)';
+UNION ALL SELECT 'P318_c2_exento_escribe_cualquiera',   current_setting('probe.p318', true), 'OK (no-regresión escritura exento)'
+UNION ALL SELECT 'P319_overload_7arg_dropeado',         current_setting('probe.p319', true), 'OK post-115 (ROJO pre)';
 
 ROLLBACK;  -- nada de lo anterior se persiste
