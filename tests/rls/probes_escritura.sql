@@ -4978,6 +4978,148 @@ DO $$ DECLARE v_inv text; BEGIN
 END $$;
 SELECT set_config('role','none',true);
 
+-- ============================================================
+-- C.2 · confinar staff a sucursal en farmacia_medicamentos (P309–P316). Red-first.
+-- Siembra transaccional (staff_con_sucursal=0 hoy): empresa A con sucursal X (real) + Y (sembrada),
+-- fm markers en X/Y, 8 cuentas ancladas a A (cajero/inventario/supervisor/admin/gerente_farmacia/
+-- finanzas/pagador @X + grandfather @NULL) + staffB de otra empresa. Todo revertido por el ROLLBACK.
+-- ============================================================
+SELECT set_config('role','none',true);
+DO $$ DECLARE v_empA uuid; v_pais uuid; v_X int; v_Y int; v_ids uuid[]; v_staffB uuid; BEGIN
+  SELECT f.empresa_id, f.id, f.pais_id INTO v_empA, v_X, v_pais FROM public.farmacias f WHERE f.empresa_id IS NOT NULL LIMIT 1;
+  IF v_empA IS NULL THEN PERFORM set_config('probe.c2_ready','0',false); PERFORM set_config('probe.c2_err','sin farmacia con empresa',false); RETURN; END IF;
+  INSERT INTO public.farmacias (nombre, tipo, pais_id, empresa_id) VALUES ('PROBE C2 Sucursal Y','farmacia',v_pais,v_empA) RETURNING id INTO v_Y;
+  INSERT INTO public.farmacia_medicamentos (farmacia_id,nombre_medicamento,stock_actual,stock_minimo,activo) VALUES (v_X,'PROBE C2 X',50,10,true);
+  INSERT INTO public.farmacia_medicamentos (farmacia_id,nombre_medicamento,stock_actual,stock_minimo,activo) VALUES (v_Y,'PROBE C2 Y',50,10,true);
+  SELECT array_agg(id ORDER BY id) INTO v_ids FROM (SELECT id FROM public.cuentas_proveedor ORDER BY id LIMIT 8) t;
+  SELECT id INTO v_staffB FROM public.cuentas_proveedor WHERE id <> ALL(v_ids) AND empresa_id IS NOT NULL AND empresa_id<>v_empA LIMIT 1;
+  IF coalesce(array_length(v_ids,1),0) < 8 OR v_staffB IS NULL THEN PERFORM set_config('probe.c2_ready','0',false); PERFORM set_config('probe.c2_err','faltan cuentas',false); RETURN; END IF;
+  UPDATE public.cuentas_proveedor SET empresa_id=v_empA, rol_en_empresa='cajero',          sucursal_id=v_X,  activo=true, equipo_id=NULL WHERE id=v_ids[1];
+  UPDATE public.cuentas_proveedor SET empresa_id=v_empA, rol_en_empresa='inventario',      sucursal_id=v_X,  activo=true, equipo_id=NULL WHERE id=v_ids[2];
+  UPDATE public.cuentas_proveedor SET empresa_id=v_empA, rol_en_empresa='supervisor',      sucursal_id=v_X,  activo=true, equipo_id=NULL WHERE id=v_ids[3];
+  UPDATE public.cuentas_proveedor SET empresa_id=v_empA, rol_en_empresa='admin',           sucursal_id=v_X,  activo=true, equipo_id=NULL WHERE id=v_ids[4];
+  UPDATE public.cuentas_proveedor SET empresa_id=v_empA, rol_en_empresa='gerente_farmacia',sucursal_id=v_X,  activo=true, equipo_id=NULL WHERE id=v_ids[5];
+  UPDATE public.cuentas_proveedor SET empresa_id=v_empA, rol_en_empresa='finanzas',        sucursal_id=v_X,  activo=true, equipo_id=NULL WHERE id=v_ids[6];
+  UPDATE public.cuentas_proveedor SET empresa_id=v_empA, rol_en_empresa='pagador',         sucursal_id=v_X,  activo=true, equipo_id=NULL WHERE id=v_ids[7];
+  UPDATE public.cuentas_proveedor SET empresa_id=v_empA, rol_en_empresa='cajero',          sucursal_id=NULL, activo=true, equipo_id=NULL WHERE id=v_ids[8];  -- grandfather
+  PERFORM set_config('probe.c2_X',v_X::text,false);     PERFORM set_config('probe.c2_Y',v_Y::text,false);
+  PERFORM set_config('probe.c2_cajero',v_ids[1]::text,false); PERFORM set_config('probe.c2_inv',v_ids[2]::text,false);
+  PERFORM set_config('probe.c2_sup',v_ids[3]::text,false);    PERFORM set_config('probe.c2_admin',v_ids[4]::text,false);
+  PERFORM set_config('probe.c2_ger',v_ids[5]::text,false);    PERFORM set_config('probe.c2_fin',v_ids[6]::text,false);
+  PERFORM set_config('probe.c2_pag',v_ids[7]::text,false);    PERFORM set_config('probe.c2_grand',v_ids[8]::text,false);
+  PERFORM set_config('probe.c2_staffB',v_staffB::text,false); PERFORM set_config('probe.c2_ready','1',false);
+EXCEPTION WHEN others THEN PERFORM set_config('probe.c2_ready','0',false); PERFORM set_config('probe.c2_err',SQLERRM,false); END $$;
+
+-- P309 — confinable LEE solo su sucursal: cajero(X) NO ve Y (PRE 🔴 ve toda la empresa)
+SELECT set_config('request.jwt.claims', json_build_object('sub',current_setting('probe.c2_cajero',true),'role','authenticated')::text,true);
+SELECT set_config('role','authenticated',true);
+DO $$ DECLARE n int; BEGIN
+  IF current_setting('probe.c2_ready',true)<>'1' THEN PERFORM set_config('probe.p309','N/A ('||coalesce(current_setting('probe.c2_err',true),'')||')',false);
+  ELSE SELECT count(*) INTO n FROM public.farmacia_medicamentos WHERE nombre_medicamento='PROBE C2 Y';
+    PERFORM set_config('probe.p309', CASE WHEN n=0 THEN 'OK (cajero no ve otra sucursal)' ELSE 'ROJO (cajero ve sucursal Y de su empresa: '||n||')' END, false);
+  END IF;
+EXCEPTION WHEN others THEN PERFORM set_config('probe.p309','FALLO ('||SQLERRM||')',false); END $$;
+
+-- P310 — NO-REGRESIÓN: cajero(X) SÍ ve su sucursal X
+DO $$ DECLARE n int; BEGIN
+  IF current_setting('probe.c2_ready',true)<>'1' THEN PERFORM set_config('probe.p310','N/A',false);
+  ELSE SELECT count(*) INTO n FROM public.farmacia_medicamentos WHERE nombre_medicamento='PROBE C2 X';
+    PERFORM set_config('probe.p310', CASE WHEN n>=1 THEN 'OK (cajero ve su sucursal X: '||n||')' ELSE 'REGRESIÓN (cajero no ve su sucursal)' END, false);
+  END IF;
+END $$;
+
+-- P311 — WITH CHECK guard: inventario(X) NO puede INSERT stock en Y (PRE 🔴 escribe, POST bloqueado)
+SELECT set_config('request.jwt.claims', json_build_object('sub',current_setting('probe.c2_inv',true),'role','authenticated')::text,true);
+DO $$ BEGIN
+  IF current_setting('probe.c2_ready',true)<>'1' THEN PERFORM set_config('probe.p311','N/A',false);
+  ELSE
+    BEGIN
+      INSERT INTO public.farmacia_medicamentos (farmacia_id,nombre_medicamento,stock_actual,stock_minimo,activo)
+        VALUES (current_setting('probe.c2_Y',true)::int,'PROBE C2 WRITE Y',5,10,true);
+      PERFORM set_config('probe.p311','ROJO (inventario escribió stock en otra sucursal — sin WITH CHECK)',false);
+    EXCEPTION WHEN others THEN PERFORM set_config('probe.p311','BLOQUEADO ('||SQLSTATE||')',false); END;
+  END IF;
+END $$;
+
+-- P312 — supervisor(X) cayó en CONFINABLE (no exento): NO ve Y (PRE 🔴, POST 0)
+SELECT set_config('request.jwt.claims', json_build_object('sub',current_setting('probe.c2_sup',true),'role','authenticated')::text,true);
+DO $$ DECLARE n int; BEGIN
+  IF current_setting('probe.c2_ready',true)<>'1' THEN PERFORM set_config('probe.p312','N/A',false);
+  ELSE SELECT count(*) INTO n FROM public.farmacia_medicamentos WHERE nombre_medicamento='PROBE C2 Y';
+    PERFORM set_config('probe.p312', CASE WHEN n=0 THEN 'OK (supervisor confinado a su sucursal)' ELSE 'ROJO (supervisor ve otra sucursal — no quedó confinable: '||n||')' END, false);
+  END IF;
+END $$;
+
+-- P313 — NO-REGRESIÓN exentos: {admin,gerente_farmacia,finanzas,pagador} (con sucursal X) ven Y igual
+SELECT set_config('role','authenticated',true);
+DO $$ DECLARE acct text; n int; n_ok int := 0; BEGIN
+  IF current_setting('probe.c2_ready',true)<>'1' THEN PERFORM set_config('probe.p313','N/A',false);
+  ELSE
+    FOREACH acct IN ARRAY ARRAY[current_setting('probe.c2_admin',true),current_setting('probe.c2_ger',true),current_setting('probe.c2_fin',true),current_setting('probe.c2_pag',true)] LOOP
+      PERFORM set_config('request.jwt.claims', json_build_object('sub',acct,'role','authenticated')::text, true);
+      SELECT count(*) INTO n FROM public.farmacia_medicamentos WHERE nombre_medicamento='PROBE C2 Y';
+      IF n>=1 THEN n_ok:=n_ok+1; END IF;
+    END LOOP;
+    IF n_ok=4 THEN PERFORM set_config('probe.p313','OK (4/4 exentos ven todas las sucursales de su empresa)',false);
+    ELSE PERFORM set_config('probe.p313','REGRESIÓN (solo '||n_ok||'/4 exentos ven todo)',false); END IF;
+  END IF;
+END $$;
+
+-- P314 — NO-REGRESIÓN grandfather: staff sin sucursal ve todo (Y incluida)
+SELECT set_config('request.jwt.claims', json_build_object('sub',current_setting('probe.c2_grand',true),'role','authenticated')::text,true);
+DO $$ DECLARE n int; BEGIN
+  IF current_setting('probe.c2_ready',true)<>'1' THEN PERFORM set_config('probe.p314','N/A',false);
+  ELSE SELECT count(*) INTO n FROM public.farmacia_medicamentos WHERE nombre_medicamento='PROBE C2 Y';
+    PERFORM set_config('probe.p314', CASE WHEN n>=1 THEN 'OK (grandfather sin sucursal ve todo)' ELSE 'REGRESIÓN (grandfather no ve)' END, false);
+  END IF;
+END $$;
+
+-- P315 — GUARD boundary empresa: staff de OTRA empresa NO ve markers de A (cross-empresa intacto)
+SELECT set_config('request.jwt.claims', json_build_object('sub',current_setting('probe.c2_staffB',true),'role','authenticated')::text,true);
+DO $$ DECLARE n int; BEGIN
+  IF current_setting('probe.c2_ready',true)<>'1' THEN PERFORM set_config('probe.p315','N/A',false);
+  ELSE SELECT count(*) INTO n FROM public.farmacia_medicamentos WHERE nombre_medicamento IN ('PROBE C2 X','PROBE C2 Y');
+    PERFORM set_config('probe.p315', CASE WHEN n=0 THEN 'OK (otra empresa no ve stock de A)' ELSE 'ROJO (cross-empresa: ve stock de A: '||n||')' END, false);
+  END IF;
+END $$;
+
+-- P316 — anon = 0
+SELECT set_config('request.jwt.claims', json_build_object('role','anon')::text,true);
+SELECT set_config('role','anon',true);
+DO $$ DECLARE n int; BEGIN
+  BEGIN SELECT count(*) INTO n FROM public.farmacia_medicamentos WHERE nombre_medicamento IN ('PROBE C2 X','PROBE C2 Y');
+    PERFORM set_config('probe.p316', CASE WHEN n=0 THEN 'OK (anon no ve stock)' ELSE 'PERMITIDO (anon ve '||n||')' END, false);
+  EXCEPTION WHEN others THEN PERFORM set_config('probe.p316','OK (anon sin acceso: '||SQLSTATE||')',false); END;
+END $$;
+
+-- P317 — POS escritura (no-regresión WITH CHECK): inventario(X) SÍ escribe stock en SU sucursal X
+SELECT set_config('request.jwt.claims', json_build_object('sub',current_setting('probe.c2_inv',true),'role','authenticated')::text,true);
+SELECT set_config('role','authenticated',true);
+DO $$ BEGIN
+  IF current_setting('probe.c2_ready',true)<>'1' THEN PERFORM set_config('probe.p317','N/A',false);
+  ELSE
+    BEGIN
+      INSERT INTO public.farmacia_medicamentos (farmacia_id,nombre_medicamento,stock_actual,stock_minimo,activo)
+        VALUES (current_setting('probe.c2_X',true)::int,'PROBE C2 WRITE X',5,10,true);
+      PERFORM set_config('probe.p317','OK (inventario escribe su propia sucursal)',false);
+    EXCEPTION WHEN others THEN PERFORM set_config('probe.p317','REGRESIÓN (WITH CHECK sobre-bloqueó su propia sucursal: '||SQLSTATE||')',false); END;
+  END IF;
+END $$;
+
+-- P318 — POS escritura (no-regresión exento): admin (exento) SÍ escribe en cualquier sucursal (Y)
+SELECT set_config('request.jwt.claims', json_build_object('sub',current_setting('probe.c2_admin',true),'role','authenticated')::text,true);
+DO $$ BEGIN
+  IF current_setting('probe.c2_ready',true)<>'1' THEN PERFORM set_config('probe.p318','N/A',false);
+  ELSE
+    BEGIN
+      INSERT INTO public.farmacia_medicamentos (farmacia_id,nombre_medicamento,stock_actual,stock_minimo,activo)
+        VALUES (current_setting('probe.c2_Y',true)::int,'PROBE C2 WRITE Y ADMIN',5,10,true);
+      PERFORM set_config('probe.p318','OK (exento escribe cualquier sucursal de su empresa)',false);
+    EXCEPTION WHEN others THEN PERFORM set_config('probe.p318','REGRESIÓN (exento bloqueado al escribir otra sucursal: '||SQLSTATE||')',false); END;
+  END IF;
+END $$;
+SELECT set_config('role','none',true);
+
 -- ===== Veredictos como result set =====
 SELECT 'P1_anon_insert_citas'              AS probe, current_setting('probe.p1', true)  AS verdict, 'BLOQUEADO' AS esperado_post_fix
 UNION ALL SELECT 'P2_medico_cancela_ajena_rpc',         current_setting('probe.p2', true),  'BLOQUEADO'
@@ -5279,6 +5421,16 @@ UNION ALL SELECT 'P304_bajostock_anon_leak',            current_setting('probe.p
 UNION ALL SELECT 'P305_bajostock_staff_noregresion',    current_setting('probe.p305', true), 'OK'
 UNION ALL SELECT 'P306_bajostock_cross_empresa',        current_setting('probe.p306', true), 'OK post-113 (ROJO pre)'
 UNION ALL SELECT 'P307_bajostock_superadmin_noregres',  current_setting('probe.p307', true), 'OK'
-UNION ALL SELECT 'P308_bajostock_invoker_estructural',  current_setting('probe.p308', true), 'OK post-113 (ROJO pre)';
+UNION ALL SELECT 'P308_bajostock_invoker_estructural',  current_setting('probe.p308', true), 'OK post-113 (ROJO pre)'
+UNION ALL SELECT 'P309_c2_cajero_no_ve_otra_sucursal',  current_setting('probe.p309', true), 'OK post-114 (ROJO pre)'
+UNION ALL SELECT 'P310_c2_cajero_ve_su_sucursal',       current_setting('probe.p310', true), 'OK'
+UNION ALL SELECT 'P311_c2_withcheck_no_escribe_otra',   current_setting('probe.p311', true), 'BLOQUEADO post-114 (ROJO pre)'
+UNION ALL SELECT 'P312_c2_supervisor_confinado',        current_setting('probe.p312', true), 'OK post-114 (ROJO pre)'
+UNION ALL SELECT 'P313_c2_exentos_ven_todo',            current_setting('probe.p313', true), 'OK (no-regresión exentos)'
+UNION ALL SELECT 'P314_c2_grandfather_ve_todo',         current_setting('probe.p314', true), 'OK (no-regresión grandfather)'
+UNION ALL SELECT 'P315_c2_cross_empresa_intacto',       current_setting('probe.p315', true), 'OK (boundary empresa)'
+UNION ALL SELECT 'P316_c2_anon_cerrado',                current_setting('probe.p316', true), 'OK'
+UNION ALL SELECT 'P317_c2_confinable_escribe_su_sucursal', current_setting('probe.p317', true), 'OK (no-regresión escritura propia)'
+UNION ALL SELECT 'P318_c2_exento_escribe_cualquiera',   current_setting('probe.p318', true), 'OK (no-regresión escritura exento)';
 
 ROLLBACK;  -- nada de lo anterior se persiste
