@@ -4586,6 +4586,127 @@ DO $$ DECLARE n int; BEGIN
 END $$;
 SELECT set_config('role','none',true);
 
+-- ============================================================
+-- Ola 2 · LEAK-FIX métricas de campaña (P283–P290). Red-first.
+-- Fixture: una campaña, un médico (authenticated no-admin), un super_admin, un paciente.
+-- ============================================================
+SELECT set_config('role','none',true);
+DO $$ DECLARE v_camp int; v_med uuid; v_sa uuid; v_pac int; BEGIN
+  SELECT id INTO v_camp FROM public.campanas_publicitarias LIMIT 1;
+  SELECT id INTO v_med FROM public.perfiles WHERE rol='medico' LIMIT 1;
+  SELECT id INTO v_sa FROM public.perfiles WHERE rol='super_admin' LIMIT 1;
+  SELECT id INTO v_pac FROM public.pacientes WHERE auth_user_id = NULLIF(current_setting('probe.paciente_u',true),'')::uuid LIMIT 1;
+  PERFORM set_config('probe.cm_camp',COALESCE(v_camp::text,''),false);
+  PERFORM set_config('probe.cm_med',COALESCE(v_med::text,''),false);
+  PERFORM set_config('probe.cm_sa',COALESCE(v_sa::text,''),false);
+  PERFORM set_config('probe.cm_pac',COALESCE(v_pac::text,''),false);
+  PERFORM set_config('probe.cm_ready', CASE WHEN v_camp IS NOT NULL AND v_med IS NOT NULL AND v_sa IS NOT NULL THEN '1' ELSE '0' END, false);
+END $$;
+
+-- P283 — anon NO ve v_metricas_campana_resumen (PRE 🔴 leak, POST 0)
+SELECT set_config('request.jwt.claims', json_build_object('role','anon')::text, true);
+SELECT set_config('role','anon',true);
+DO $$ DECLARE n int; BEGIN
+  BEGIN SELECT count(*) INTO n FROM public.v_metricas_campana_resumen;
+    PERFORM set_config('probe.p283', CASE WHEN n=0 THEN 'OK (anon no ve resumen)' ELSE 'ROJO (anon ve métricas resumen de todas las empresas: '||n||')' END, false);
+  EXCEPTION WHEN others THEN PERFORM set_config('probe.p283','OK (anon sin acceso: '||SQLSTATE||')',false); END;
+END $$;
+
+-- P284 — anon NO ve v_metricas_campana_pais (PRE 🔴, POST 0)
+DO $$ DECLARE n int; BEGIN
+  BEGIN SELECT count(*) INTO n FROM public.v_metricas_campana_pais;
+    PERFORM set_config('probe.p284', CASE WHEN n=0 THEN 'OK (anon no ve pais)' ELSE 'ROJO (anon ve métricas pais: '||n||')' END, false);
+  EXCEPTION WHEN others THEN PERFORM set_config('probe.p284','OK (anon sin acceso: '||SQLSTATE||')',false); END;
+END $$;
+
+-- P285 — authenticated no-admin NO ve v_resumen (PRE 🔴, POST 0)
+SELECT set_config('request.jwt.claims', json_build_object('sub',current_setting('probe.cm_med',true),'role','authenticated')::text, true);
+SELECT set_config('role','authenticated',true);
+DO $$ DECLARE n int; BEGIN
+  IF current_setting('probe.cm_ready',true)<>'1' THEN PERFORM set_config('probe.p285','N/A',false);
+  ELSE BEGIN SELECT count(*) INTO n FROM public.v_metricas_campana_resumen;
+    PERFORM set_config('probe.p285', CASE WHEN n=0 THEN 'OK (no-admin no ve resumen)' ELSE 'ROJO (no-admin ve métricas resumen ajenas: '||n||')' END, false);
+  EXCEPTION WHEN others THEN PERFORM set_config('probe.p285','OK (no-admin sin acceso: '||SQLSTATE||')',false); END; END IF;
+END $$;
+
+-- P286 — no-admin NO ve MÉTRICAS de rendimiento en v_pais (impr+clicks); residual conteo no-sensible
+DO $$ DECLARE m bigint; BEGIN
+  IF current_setting('probe.cm_ready',true)<>'1' THEN PERFORM set_config('probe.p286','N/A',false);
+  ELSE BEGIN SELECT COALESCE(sum(impresiones_totales+clicks_totales),0) INTO m FROM public.v_metricas_campana_pais;
+    PERFORM set_config('probe.p286', CASE WHEN m=0 THEN 'OK (no-admin ve 0 métricas de rendimiento)' ELSE 'ROJO (no-admin ve métricas de rendimiento ajenas: '||m||')' END, false);
+  EXCEPTION WHEN others THEN PERFORM set_config('probe.p286','OK (no-admin sin acceso: '||SQLSTATE||')',false); END; END IF;
+END $$;
+
+-- P287 — NO-REGRESIÓN super_admin: sigue viendo las vistas completas (crítico para dashboard admin)
+SELECT set_config('request.jwt.claims', json_build_object('sub',current_setting('probe.cm_sa',true),'role','authenticated')::text, true);
+DO $$ DECLARE n int; m bigint; BEGIN
+  IF current_setting('probe.cm_ready',true)<>'1' THEN PERFORM set_config('probe.p287','N/A',false);
+  ELSE SELECT count(*) INTO n FROM public.v_metricas_campana_resumen;
+       SELECT COALESCE(sum(impresiones_totales+clicks_totales),0) INTO m FROM public.v_metricas_campana_pais;
+    IF n>0 AND m>0 THEN PERFORM set_config('probe.p287','OK (super_admin ve métricas completas: resumen='||n||', metricas_pais='||m||')',false);
+    ELSE PERFORM set_config('probe.p287','REGRESIÓN (super_admin perdió acceso: resumen='||n||', metricas='||m||')',false); END IF;
+  END IF;
+EXCEPTION WHEN others THEN PERFORM set_config('probe.p287','REGRESIÓN (super_admin error: '||SQLERRM||')',false); END $$;
+
+-- P288 — tabla base campana_metricas: no-admin = 0 (RLS intacta) — no-regresión
+SELECT set_config('request.jwt.claims', json_build_object('sub',current_setting('probe.cm_med',true),'role','authenticated')::text, true);
+DO $$ DECLARE n int; BEGIN
+  SELECT count(*) INTO n FROM public.campana_metricas;
+  PERFORM set_config('probe.p288', CASE WHEN n=0 THEN 'OK (no-admin no ve tabla base)' ELSE 'PERMITIDO (no-admin ve '||n||' filas base)' END, false);
+END $$;
+
+-- P289 — WRITE-LEAK: authenticated NO debe poder INSERT directo en campana_metricas (PRE 🔴, POST bloqueado)
+DO $$ BEGIN
+  IF current_setting('probe.cm_ready',true)<>'1' THEN PERFORM set_config('probe.p289','N/A',false);
+  ELSE
+    BEGIN
+      INSERT INTO public.campana_metricas (campana_id, clickeado, tipo_perfil, sesion_id)
+        VALUES (current_setting('probe.cm_camp',true)::int, true, 'probe', 'probe-sesion');
+      PERFORM set_config('probe.p289','ROJO (authenticated insertó métrica arbitraria — write-leak vivo)',false);
+    EXCEPTION WHEN others THEN PERFORM set_config('probe.p289','BLOQUEADO ('||SQLSTATE||')',false); END;
+  END IF;
+END $$;
+
+-- P290 — NO-REGRESIÓN: el paciente SIGUE pudiendo registrar su vista de anuncio (campana_vistas)
+SELECT set_config('request.jwt.claims', json_build_object('sub',current_setting('probe.paciente_u',true),'role','authenticated')::text, true);
+DO $$ BEGIN
+  IF NULLIF(current_setting('probe.cm_pac',true),'')='' OR current_setting('probe.cm_ready',true)<>'1' THEN PERFORM set_config('probe.p290','N/A (sin paciente)',false);
+  ELSE
+    BEGIN
+      INSERT INTO public.campana_vistas (campana_id, paciente_id, clickeado)
+        VALUES (current_setting('probe.cm_camp',true)::int, current_setting('probe.cm_pac',true)::int, false);
+      PERFORM set_config('probe.p290','OK (paciente registra su vista de anuncio)',false);
+    EXCEPTION WHEN others THEN PERFORM set_config('probe.p290','REGRESIÓN (paciente no puede registrar vista: '||SQLSTATE||')',false); END;
+  END IF;
+END $$;
+
+-- P291 — NO-REGRESIÓN logging legítimo: registrar_campana_metrica (DEFINER) sigue insertando
+-- pese al revoke del grant + drop de la policy (camino real del frontend). Llama como
+-- authenticated; verifica la fila como owner (role none, bypassa RLS).
+SELECT set_config('request.jwt.claims', json_build_object('sub',current_setting('probe.cm_med',true),'role','authenticated')::text, true);
+SELECT set_config('role','authenticated',true);
+DO $$ BEGIN
+  IF current_setting('probe.cm_ready',true)<>'1' THEN PERFORM set_config('probe.p291_called','0',false);
+  ELSE
+    BEGIN
+      PERFORM public.registrar_campana_metrica(   -- overload de 8 args (p_pais_id) = el del frontend
+        p_campana_id := current_setting('probe.cm_camp',true)::int,
+        p_tipo_perfil := 'probe', p_sesion_id := 'probe-logging-291', p_clickeado := false,
+        p_pais_id := NULL::uuid);
+      PERFORM set_config('probe.p291_called','1',false);
+    EXCEPTION WHEN others THEN PERFORM set_config('probe.p291','REGRESIÓN (RPC logging falló: '||SQLERRM||')',false); PERFORM set_config('probe.p291_called','0',false); END;
+  END IF;
+END $$;
+SELECT set_config('role','none',true);
+DO $$ DECLARE n int; BEGIN
+  IF current_setting('probe.cm_ready',true)<>'1' THEN PERFORM set_config('probe.p291','N/A',false);
+  ELSIF current_setting('probe.p291_called',true)<>'1' THEN NULL;  -- ya marcado REGRESIÓN por el call
+  ELSE SELECT count(*) INTO n FROM public.campana_metricas WHERE sesion_id='probe-logging-291';
+    PERFORM set_config('probe.p291', CASE WHEN n>=1 THEN 'OK (logging legítimo vivo: RPC DEFINER insertó '||n||')' ELSE 'REGRESIÓN (RPC no insertó la métrica)' END, false);
+  END IF;
+END $$;
+SELECT set_config('role','none',true);
+
 -- ===== Veredictos como result set =====
 SELECT 'P1_anon_insert_citas'              AS probe, current_setting('probe.p1', true)  AS verdict, 'BLOQUEADO' AS esperado_post_fix
 UNION ALL SELECT 'P2_medico_cancela_ajena_rpc',         current_setting('probe.p2', true),  'BLOQUEADO'
@@ -4861,6 +4982,15 @@ UNION ALL SELECT 'P278_antiORtrap_medico_colega',       current_setting('probe.p
 UNION ALL SELECT 'P279_noregresion_paciente',           current_setting('probe.p279', true), 'OK'
 UNION ALL SELECT 'P280_noregresion_citas_admin',        current_setting('probe.p280', true), 'OK'
 UNION ALL SELECT 'P281_anon_cerrado_phi',               current_setting('probe.p281', true), 'OK'
-UNION ALL SELECT 'P282_guard_divergencia_idspace',      current_setting('probe.p282', true), 'OK (guard: 0 pre y post)';
+UNION ALL SELECT 'P282_guard_divergencia_idspace',      current_setting('probe.p282', true), 'OK (guard: 0 pre y post)'
+UNION ALL SELECT 'P283_anon_no_ve_resumen',             current_setting('probe.p283', true), 'OK post-109 (ROJO pre)'
+UNION ALL SELECT 'P284_anon_no_ve_pais',                current_setting('probe.p284', true), 'OK post-109 (ROJO pre)'
+UNION ALL SELECT 'P285_noadmin_no_ve_resumen',          current_setting('probe.p285', true), 'OK post-109 (ROJO pre)'
+UNION ALL SELECT 'P286_noadmin_no_ve_metricas_pais',    current_setting('probe.p286', true), 'OK post-109 (ROJO pre)'
+UNION ALL SELECT 'P287_noregresion_superadmin',         current_setting('probe.p287', true), 'OK (no-regresión crítica)'
+UNION ALL SELECT 'P288_noadmin_tabla_base_0',           current_setting('probe.p288', true), 'OK'
+UNION ALL SELECT 'P289_writeleak_authenticated',        current_setting('probe.p289', true), 'BLOQUEADO post-109 (ROJO pre)'
+UNION ALL SELECT 'P290_noregresion_paciente_vistas',    current_setting('probe.p290', true), 'OK'
+UNION ALL SELECT 'P291_logging_legitimo_rpc_definer',   current_setting('probe.p291', true), 'OK (no-regresión logging)';
 
 ROLLBACK;  -- nada de lo anterior se persiste
