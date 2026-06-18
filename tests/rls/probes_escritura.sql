@@ -936,6 +936,15 @@ END $$;
 -- ============================================================
 -- Captura (ELEVADO) de actores reales.
 SELECT set_config('role', 'none', true);
+-- (mig 116 desacopló las filas empresa_cuota de planes_asignaciones → este bloque crea su PROPIA
+--  fila empresa de prueba, revertida por el ROLLBACK, para ejercitar la policy asig_scoped_all.)
+DO $$ DECLARE v_emp uuid; BEGIN
+  SELECT empresa_id INTO v_emp FROM public.cuentas_proveedor WHERE activo AND empresa_id IS NOT NULL
+    GROUP BY empresa_id ORDER BY empresa_id LIMIT 1;
+  IF v_emp IS NOT NULL THEN
+    INSERT INTO public.planes_asignaciones (empresa_id, estado) VALUES (v_emp, 'activo');
+  END IF;
+END $$;
 SELECT set_config('probe.asig_emp',
   (SELECT id::text FROM public.planes_asignaciones WHERE empresa_id IS NOT NULL ORDER BY id LIMIT 1), false);
 SELECT set_config('probe.asig_emp_owner',
@@ -4280,12 +4289,13 @@ DO $$ DECLARE v_n int; BEGIN
   END IF;
 END $$;
 
--- P260 — NO-REGRESIÓN cuota: trg_limite_visitas sigue presente (no se tocó)
+-- P260 — cuota enforcing: el gate unificado trg_gate_visita_pais (país+bucket) está presente.
+-- (Post-116 el conteo mensual trg_limite_visitas se RETIRÓ a propósito → la cuota es la bolsa pvc.)
 SELECT set_config('role','none',true);
 DO $$ DECLARE v_ok boolean; BEGIN
-  SELECT count(*)>0 INTO v_ok FROM pg_trigger t JOIN pg_class c ON c.oid=t.tgrelid WHERE c.relname='visitas_agendadas' AND t.tgname='trg_limite_visitas' AND NOT t.tgisinternal;
-  IF v_ok THEN PERFORM set_config('probe.p260','OK (trg_limite_visitas intacto)',false);
-  ELSE PERFORM set_config('probe.p260','FALLO (trg_limite_visitas ausente)',false); END IF;
+  SELECT count(*)>0 INTO v_ok FROM pg_trigger t JOIN pg_class c ON c.oid=t.tgrelid WHERE c.relname='visitas_agendadas' AND t.tgname='trg_gate_visita_pais' AND NOT t.tgisinternal;
+  IF v_ok THEN PERFORM set_config('probe.p260','OK (gate unificado país+bucket presente)',false);
+  ELSE PERFORM set_config('probe.p260','FALLO (gate trg_gate_visita_pais ausente)',false); END IF;
 END $$;
 SELECT set_config('role','none',true);
 
@@ -5131,6 +5141,133 @@ DO $$ DECLARE v_7 boolean; v_8 boolean; BEGIN
 END $$;
 SELECT set_config('role','none',true);
 
+-- ============================================================
+-- Ola 3 · BUCKET pvc (P320–P329). Red-first. Detector POST = trg_limite_visitas ausente (mig 116).
+-- Fixture: empresa A (pa_ea) con planes_asignaciones activo (PRE: pasa SIN_PLAN) + pvc GT cap=1.
+-- Reusa p0_gt/p0_hn/fm_medgt/vg1_medhn/cat_inv. guard vg1_ready.
+-- ============================================================
+SELECT set_config('role','none',true);
+DO $$ DECLARE v_post boolean; BEGIN
+  v_post := NOT EXISTS (SELECT 1 FROM pg_trigger WHERE tgname='trg_limite_visitas');
+  PERFORM set_config('probe.c3_post', CASE WHEN v_post THEN '1' ELSE '0' END, false);
+  IF current_setting('probe.vg1_ready',true)<>'1' THEN PERFORM set_config('probe.c3_ready','0',false); RETURN; END IF;
+  -- slate limpio para el test de bolsa: las probes V-G1/V-G2 crearon visitas de pa_ea+GT que el
+  -- gate nuevo estampa y contarían contra la bolsa. Sus verdicts ya se computaron → borrarlas es seguro.
+  DELETE FROM public.visitas_agendadas WHERE empresa_id=current_setting('probe.pa_ea',true)::uuid;
+  DELETE FROM public.planes_visitador_contratados WHERE empresa_id=current_setting('probe.pa_ea',true)::uuid;
+  DELETE FROM public.planes_asignaciones WHERE empresa_id=current_setting('probe.pa_ea',true)::uuid;
+  INSERT INTO public.planes_asignaciones (empresa_id,fecha_inicio,tipo_ciclo,precio_aplicado,moneda,estado,visitas_usadas)
+    VALUES (current_setting('probe.pa_ea',true)::uuid, CURRENT_DATE, 'mensual', 0, 'GTQ', 'activo', 0);
+  PERFORM set_config('probe.c3_ready','1',false);
+EXCEPTION WHEN others THEN PERFORM set_config('probe.c3_ready','0',false); PERFORM set_config('probe.c3_err',SQLERRM,false); END $$;
+
+-- P320 — conteo mensual (trg_limite_visitas) RETIRADO (PRE 🔴 existe, POST ausente)
+DO $$ DECLARE v_ex boolean; BEGIN
+  v_ex := EXISTS (SELECT 1 FROM pg_trigger WHERE tgname='trg_limite_visitas');
+  PERFORM set_config('probe.p320', CASE WHEN NOT v_ex THEN 'OK (trg_limite_visitas retirado)' ELSE 'ROJO (conteo mensual trg_limite_visitas todavía activo)' END, false);
+END $$;
+
+-- P321 — gate lockea pvc FOR UPDATE (anti-TOCTOU) — estructural (PRE 🔴 sin lock, POST con lock)
+DO $$ DECLARE v_src text; BEGIN
+  SELECT pg_get_functiondef('private.gate_visita_pais()'::regprocedure) INTO v_src;
+  PERFORM set_config('probe.p321', CASE WHEN v_src ILIKE '%FOR UPDATE%' THEN 'OK (gate lockea pvc FOR UPDATE)' ELSE 'ROJO (gate sin FOR UPDATE — TOCTOU)' END, false);
+END $$;
+
+-- P322 — sin pvc activo → BLOQUEADO (país) [invariante, pre y post]
+SELECT set_config('request.jwt.claims', json_build_object('sub',current_setting('probe.cat_inv',true),'role','authenticated')::text,true);
+SELECT set_config('role','authenticated',true);
+DO $$ BEGIN
+  IF current_setting('probe.c3_ready',true)<>'1' THEN PERFORM set_config('probe.p322','N/A',false);
+  ELSE BEGIN
+    INSERT INTO public.visitas_agendadas (empresa_id,medico_id,cuenta_proveedor_id,fecha_visita,hora_inicio,hora_fin,tipo_visita,estado)
+      VALUES (current_setting('probe.pa_ea',true)::uuid, current_setting('probe.fm_medgt',true)::uuid, current_setting('probe.cat_inv',true)::uuid, CURRENT_DATE+20,'09:00','10:00','presencial','pendiente');
+    PERFORM set_config('probe.p322','ROJO (agendó sin pvc — leak)',false);
+  EXCEPTION WHEN others THEN PERFORM set_config('probe.p322','BLOQUEADO ('||SQLSTATE||')',false); END; END IF;
+END $$;
+
+SELECT set_config('role','none',true);
+DO $$ BEGIN IF current_setting('probe.c3_ready',true)='1' THEN
+  INSERT INTO public.planes_visitador_contratados (empresa_id,plan_visitador_id,pais_id,cantidad_visitas_incluidas,visitas_usadas,precio_pagado,fecha_inicio,fecha_fin,estado)
+    VALUES (current_setting('probe.pa_ea',true)::uuid, 1, current_setting('probe.p0_gt',true)::uuid, 1, 0, 0, CURRENT_DATE-1, CURRENT_DATE+30, 'activo');
+END IF; END $$;
+
+-- P323 — país del médico ≠ pvc (médico HN, pvc GT) → BLOQUEADO [invariante país]
+SELECT set_config('request.jwt.claims', json_build_object('sub',current_setting('probe.cat_inv',true),'role','authenticated')::text,true);
+SELECT set_config('role','authenticated',true);
+DO $$ BEGIN
+  IF current_setting('probe.c3_ready',true)<>'1' THEN PERFORM set_config('probe.p323','N/A',false);
+  ELSE BEGIN
+    INSERT INTO public.visitas_agendadas (empresa_id,medico_id,cuenta_proveedor_id,fecha_visita,hora_inicio,hora_fin,tipo_visita,estado)
+      VALUES (current_setting('probe.pa_ea',true)::uuid, current_setting('probe.vg1_medhn',true)::uuid, current_setting('probe.cat_inv',true)::uuid, CURRENT_DATE+21,'09:00','10:00','presencial','pendiente');
+    PERFORM set_config('probe.p323','ROJO (agendó médico de otro país — invariante país roto)',false);
+  EXCEPTION WHEN others THEN PERFORM set_config('probe.p323','BLOQUEADO ('||SQLSTATE||')',false); END; END IF;
+END $$;
+
+-- P324 — dentro de bolsa + país ok → PERMITE (1ª, llena cap=1)
+DO $$ DECLARE v_id uuid; BEGIN
+  IF current_setting('probe.c3_ready',true)<>'1' THEN PERFORM set_config('probe.p324','N/A',false);
+  ELSE BEGIN
+    INSERT INTO public.visitas_agendadas (empresa_id,medico_id,cuenta_proveedor_id,fecha_visita,hora_inicio,hora_fin,tipo_visita,estado)
+      VALUES (current_setting('probe.pa_ea',true)::uuid, current_setting('probe.fm_medgt',true)::uuid, current_setting('probe.cat_inv',true)::uuid, CURRENT_DATE+22,'09:00','10:00','presencial','pendiente') RETURNING id INTO v_id;
+    PERFORM set_config('probe.c3_v1', v_id::text, false);
+    PERFORM set_config('probe.p324','OK (agenda dentro de bolsa + país)',false);
+  EXCEPTION WHEN others THEN PERFORM set_config('probe.p324','FALLO ('||SQLERRM||')',false); END; END IF;
+END $$;
+
+-- P325 — estampado país: visita de P324 con pais_id = país del médico (PRE 🔴 null, POST GT)
+SELECT set_config('role','none',true);
+DO $$ DECLARE v_pais uuid; BEGIN
+  IF NULLIF(current_setting('probe.c3_v1',true),'') IS NULL THEN PERFORM set_config('probe.p325','N/A (sin visita)',false);
+  ELSE SELECT pais_id INTO v_pais FROM public.visitas_agendadas WHERE id=current_setting('probe.c3_v1',true)::uuid;
+    PERFORM set_config('probe.p325', CASE WHEN v_pais=current_setting('probe.p0_gt',true)::uuid THEN 'OK (pais_id estampado = país del médico)' ELSE 'ROJO (pais_id no estampado: '||coalesce(v_pais::text,'NULL')||')' END, false);
+  END IF;
+END $$;
+
+-- P326 — bolsa agotada (cap=1 usada) → 2ª BLOQUEADA error DISTINTO (PRE 🔴 agenda, POST P0002)
+SELECT set_config('request.jwt.claims', json_build_object('sub',current_setting('probe.cat_inv',true),'role','authenticated')::text,true);
+SELECT set_config('role','authenticated',true);
+DO $$ BEGIN
+  IF current_setting('probe.c3_ready',true)<>'1' THEN PERFORM set_config('probe.p326','N/A',false);
+  ELSE BEGIN
+    INSERT INTO public.visitas_agendadas (empresa_id,medico_id,cuenta_proveedor_id,fecha_visita,hora_inicio,hora_fin,tipo_visita,estado)
+      VALUES (current_setting('probe.pa_ea',true)::uuid, current_setting('probe.fm_medgt',true)::uuid, current_setting('probe.cat_inv',true)::uuid, CURRENT_DATE+23,'09:00','10:00','presencial','pendiente');
+    PERFORM set_config('probe.p326','ROJO (agendó sobre bolsa agotada — sin bucket gate)',false);
+  EXCEPTION WHEN others THEN PERFORM set_config('probe.p326','BLOQUEADO ('||SQLSTATE||')',false); END; END IF;
+END $$;
+
+-- P327 — cancelar 1 libera bolsa → reintento PERMITE (conteo derivado) [POST]
+SELECT set_config('role','none',true);
+DO $$ BEGIN IF NULLIF(current_setting('probe.c3_v1',true),'')IS NOT NULL THEN
+  UPDATE public.visitas_agendadas SET estado='cancelada' WHERE id=current_setting('probe.c3_v1',true)::uuid;
+END IF; END $$;
+SELECT set_config('request.jwt.claims', json_build_object('sub',current_setting('probe.cat_inv',true),'role','authenticated')::text,true);
+SELECT set_config('role','authenticated',true);
+DO $$ BEGIN
+  IF current_setting('probe.c3_ready',true)<>'1' THEN PERFORM set_config('probe.p327','N/A',false);
+  ELSE BEGIN
+    INSERT INTO public.visitas_agendadas (empresa_id,medico_id,cuenta_proveedor_id,fecha_visita,hora_inicio,hora_fin,tipo_visita,estado)
+      VALUES (current_setting('probe.pa_ea',true)::uuid, current_setting('probe.fm_medgt',true)::uuid, current_setting('probe.cat_inv',true)::uuid, CURRENT_DATE+24,'09:00','10:00','presencial','pendiente');
+    PERFORM set_config('probe.p327','OK (cancelar liberó la bolsa, reintento permitido)',false);
+  EXCEPTION WHEN others THEN PERFORM set_config('probe.p327', CASE WHEN current_setting('probe.c3_post',true)='1' THEN 'FALLO (no liberó: '||SQLSTATE||')' ELSE 'N/A pre' END, false); END; END IF;
+END $$;
+
+-- P328 — médico-subs en planes_asignaciones INTACTAS (no-regresión del desacople)
+SELECT set_config('role','none',true);
+DO $$ DECLARE n int; BEGIN
+  SELECT count(*) INTO n FROM public.planes_asignaciones WHERE medico_id IS NOT NULL;
+  PERFORM set_config('probe.p328', CASE WHEN n>=1 THEN 'OK (médico-subs intactas: '||n||')' ELSE 'REGRESIÓN (médico-subs desaparecieron)' END, false);
+END $$;
+
+-- P329 — portal coherente: estado_plan_visitas expone restante por país (POST: forma nueva)
+DO $$ DECLARE v_has boolean; BEGIN
+  IF current_setting('probe.c3_post',true)<>'1' THEN PERFORM set_config('probe.p329','N/A pre (forma vieja)',false);
+  ELSE
+    SELECT EXISTS(SELECT 1 FROM information_schema.parameters WHERE specific_name IN (SELECT specific_name FROM information_schema.routines WHERE routine_name='estado_plan_visitas') AND parameter_name='restante') INTO v_has;
+    PERFORM set_config('probe.p329', CASE WHEN v_has THEN 'OK (estado_plan_visitas expone restante por país)' ELSE 'FALLO (forma nueva ausente)' END, false);
+  END IF;
+END $$;
+SELECT set_config('role','none',true);
+
 -- ===== Veredictos como result set =====
 SELECT 'P1_anon_insert_citas'              AS probe, current_setting('probe.p1', true)  AS verdict, 'BLOQUEADO' AS esperado_post_fix
 UNION ALL SELECT 'P2_medico_cancela_ajena_rpc',         current_setting('probe.p2', true),  'BLOQUEADO'
@@ -5443,6 +5580,16 @@ UNION ALL SELECT 'P315_c2_cross_empresa_intacto',       current_setting('probe.p
 UNION ALL SELECT 'P316_c2_anon_cerrado',                current_setting('probe.p316', true), 'OK'
 UNION ALL SELECT 'P317_c2_confinable_escribe_su_sucursal', current_setting('probe.p317', true), 'OK (no-regresión escritura propia)'
 UNION ALL SELECT 'P318_c2_exento_escribe_cualquiera',   current_setting('probe.p318', true), 'OK (no-regresión escritura exento)'
-UNION ALL SELECT 'P319_overload_7arg_dropeado',         current_setting('probe.p319', true), 'OK post-115 (ROJO pre)';
+UNION ALL SELECT 'P319_overload_7arg_dropeado',         current_setting('probe.p319', true), 'OK post-115 (ROJO pre)'
+UNION ALL SELECT 'P320_trg_limite_mensual_retirado',    current_setting('probe.p320', true), 'OK post-116 (ROJO pre)'
+UNION ALL SELECT 'P321_gate_for_update_toctou',         current_setting('probe.p321', true), 'OK post-116 (ROJO pre)'
+UNION ALL SELECT 'P322_sin_pvc_bloquea_pais',           current_setting('probe.p322', true), 'BLOQUEADO (invariante país)'
+UNION ALL SELECT 'P323_pais_distinto_bloquea',          current_setting('probe.p323', true), 'BLOQUEADO (invariante país)'
+UNION ALL SELECT 'P324_dentro_bolsa_permite',           current_setting('probe.p324', true), 'OK'
+UNION ALL SELECT 'P325_estampado_pais',                 current_setting('probe.p325', true), 'OK post-116 (ROJO pre)'
+UNION ALL SELECT 'P326_bolsa_agotada_bloquea',          current_setting('probe.p326', true), 'BLOQUEADO post-116 (ROJO pre)'
+UNION ALL SELECT 'P327_cancelar_libera_bolsa',          current_setting('probe.p327', true), 'OK (POST)'
+UNION ALL SELECT 'P328_medico_subs_intactas',           current_setting('probe.p328', true), 'OK (no-regresión)'
+UNION ALL SELECT 'P329_portal_restante_por_pais',       current_setting('probe.p329', true), 'OK (POST)';
 
 ROLLBACK;  -- nada de lo anterior se persiste

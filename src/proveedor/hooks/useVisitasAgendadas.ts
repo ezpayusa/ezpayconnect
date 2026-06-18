@@ -20,17 +20,18 @@ export function useVisitasAgendadas() {
   // Cargar planes asignados (pool compartido de la empresa)
   const fetchPlanesAsignados = useCallback(async () => {
     if (!empresa?.id) return
-    const { data, error } = await supabase
-      .from('planes_asignaciones')
-      .select('*, plan_configuracion:plan_config_id(*, plan_base:plan_base_id(*))')
-      .eq('empresa_id', empresa.id)
-      .eq('estado', 'activo')
-
+    // pvc = única fuente de visitas (país + bolsa). Se mapea a la forma anidada legacy
+    // para no tocar la lógica downstream de planActivo. usadas/restante son DERIVADOS (gate real).
+    const { data, error } = await supabase.rpc('get_planes_visitador_proveedor', { p_empresa_id: empresa.id })
     if (error) {
       console.error('Error cargando planes asignados:', error)
       return
     }
-    setPlanesAsignados((data || []) as PlanAsignacion[])
+    setPlanesAsignados((data || []).map((r: any) => ({
+      fecha_fin: r.fecha_fin,
+      visitas_usadas: r.usadas,
+      plan_configuracion: { plan_base: { tipo: 'visitador', atributos: { visitas_incluidas: r.incluidas } } },
+    })) as unknown as PlanAsignacion[])
   }, [empresa?.id])
 
   const fetchVisitas = useCallback(async () => {

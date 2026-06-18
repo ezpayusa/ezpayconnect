@@ -57,11 +57,15 @@ export default function VisitadorAgendarPage() {
   const [tipoVisita, setTipoVisita] = useState<VisitaTipo>('presentacion_producto')
   const [notas, setNotas] = useState('')
   const [semanaOffset, setSemanaOffset] = useState(0)
-  const [planEstado, setPlanEstado] = useState<{ tiene_plan: boolean; cupo: number; ilimitado: boolean; usadas_mes: number } | null>(null)
+  // estado_plan_visitas ahora devuelve UNA fila por país (bolsa pvc); [] = sin plan activo
+  const [planEstado, setPlanEstado] = useState<Array<{
+    pais_id: string; pais_nombre: string; tiene_pvc: boolean;
+    incluidas: number | null; usadas: number; restante: number | null; ilimitado: boolean; fecha_fin: string
+  }> | null>(null)
 
   useEffect(() => {
     supabase.rpc('estado_plan_visitas').then(({ data }) => {
-      if (data && data[0]) setPlanEstado(data[0])
+      if (data) setPlanEstado(data as any)
     })
   }, [])
   const [slotsGenerados, setSlotsGenerados] = useState<SlotGenerado[]>([])
@@ -199,20 +203,9 @@ export default function VisitadorAgendarPage() {
         </div>
       </div>
 
-      {/* Estado del plan de visitas */}
+      {/* Estado de la bolsa de visitas — POR PAÍS, desde pvc (única fuente: país + bolsa restante) */}
       {planEstado && (
-        planEstado.tiene_plan ? (
-          !planEstado.ilimitado && (
-            <Card className={planEstado.usadas_mes >= planEstado.cupo ? 'border-red-300 bg-red-50' : 'bg-slate-50'}>
-              <CardContent className="p-3 text-sm flex items-center justify-between">
-                <span>Visitas de este mes: <strong>{planEstado.usadas_mes} / {planEstado.cupo}</strong></span>
-                {planEstado.usadas_mes >= planEstado.cupo && (
-                  <span className="text-red-600 font-medium">Límite alcanzado · mejora tu plan</span>
-                )}
-              </CardContent>
-            </Card>
-          )
-        ) : (
+        planEstado.length === 0 ? (
           <Card className="border-amber-300 bg-amber-50">
             <CardContent className="p-4 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
               <div className="text-sm text-amber-800">
@@ -224,6 +217,20 @@ export default function VisitadorAgendarPage() {
               </Button>
             </CardContent>
           </Card>
+        ) : (
+          <div className="space-y-2">
+            {planEstado.map((p) => {
+              const agotada = !p.ilimitado && (p.restante ?? 0) <= 0
+              return (
+                <Card key={p.pais_id} className={agotada ? 'border-red-300 bg-red-50' : 'bg-slate-50'}>
+                  <CardContent className="p-3 text-sm flex items-center justify-between">
+                    <span>Bolsa {p.pais_nombre}: <strong>{p.ilimitado ? 'ilimitada' : `${p.restante} / ${p.incluidas} disponibles`}</strong></span>
+                    {agotada && <span className="text-red-600 font-medium">Bolsa agotada · compra más visitas</span>}
+                  </CardContent>
+                </Card>
+              )
+            })}
+          </div>
         )
       )}
 

@@ -2,7 +2,21 @@ import { useState, useEffect, useCallback } from 'react'
 import { supabase } from '@/lib/supabase'
 import { useProveedorAuth } from './useProveedorAuth'
 import { toast } from 'sonner'
-import type { PlanBase, PlanConfiguracion, PlanAsignacion } from '@/types/planes'
+import type { PlanBase, PlanConfiguracion } from '@/types/planes'
+
+// Fila pvc (única fuente de visitas: país + bolsa). incluidas/restante NULL = ilimitado.
+interface PvcRow {
+  id: string
+  pais_id: string
+  pais_nombre: string
+  cantidad_visitas_incluidas: number | null
+  visitas_usadas: number
+  restante: number | null
+  ilimitado: boolean
+  fecha_inicio: string
+  fecha_fin: string
+  estado: string
+}
 
 export interface PlanProveedorDisponible {
   configId: string
@@ -18,7 +32,7 @@ export interface PlanProveedorDisponible {
 export function usePlanesVisitador() {
   const { empresa } = useProveedorAuth()
   const [planesDisponibles, setPlanesDisponibles] = useState<PlanProveedorDisponible[]>([])
-  const [planesAsignados, setPlanesAsignados] = useState<PlanAsignacion[]>([])
+  const [planesAsignados, setPlanesAsignados] = useState<PvcRow[]>([])
   const [loading, setLoading] = useState(false)
 
   // Cargar planes disponibles (del admin) para tipo 'visitador'
@@ -88,32 +102,18 @@ export function usePlanesVisitador() {
       if (error) throw error
 
       const rows = (data || []) as any[]
-      const asigs: PlanAsignacion[] = rows.map((row: any) => ({
-        id: row.asignacion_id,
-        plan_config_id: row.plan_config_id,
-        estado: row.estado,
-        fecha_inicio: row.fecha_inicio,
-        fecha_fin: row.fecha_fin,
-        visitas_usadas: row.visitas_usadas,
-        precio_aplicado: row.precio_aplicado,
-        moneda: row.moneda,
-        plan_configuracion: row.plan_config_id
-          ? {
-              id: row.plan_config_id,
-              plan_base: {
-                nombre: row.plan_nombre,
-                descripcion: row.plan_descripcion,
-                atributos: {
-                  visitas_incluidas: row.visitas_incluidas,
-                  duracion_dias: row.duracion_dias,
-                },
-                tipo: 'visitador',
-              } as any,
-            }
-          : undefined,
-      }))
-
-      setPlanesAsignados(asigs)
+      setPlanesAsignados(rows.map((r: any): PvcRow => ({
+        id: r.pvc_id,
+        pais_id: r.pais_id,
+        pais_nombre: r.pais_nombre,
+        cantidad_visitas_incluidas: r.incluidas,   // null = ilimitado
+        visitas_usadas: r.usadas,
+        restante: r.restante,                       // null = ilimitado
+        ilimitado: r.ilimitado,
+        fecha_inicio: r.fecha_inicio,
+        fecha_fin: r.fecha_fin,
+        estado: r.estado,
+      })))
     } catch (err: any) {
       toast.error('Error cargando planes asignados')
       console.error(err)
@@ -130,37 +130,30 @@ export function usePlanesVisitador() {
     cargarTodo()
   }, [cargarTodo])
 
-  // Calcular visitas disponibles desde planes_asignaciones activos de tipo visitador
+  // Bolsa restante = Σ restante de pvc activos (DERIVADO del gate real; ilimitado no suma número)
   const visitasDisponibles = planesAsignados
-    .filter((a) => {
-      if (a.estado !== 'activo') return false
-      if (a.fecha_fin && new Date(a.fecha_fin) < new Date()) return false
-      const tipoPlan = a.plan_configuracion?.plan_base?.tipo
-      return tipoPlan === 'visitador'
-    })
-    .reduce((acc, a) => {
-      const visitasIncluidas = a.plan_configuracion?.plan_base?.atributos?.visitas_incluidas || 0
-      const usadas = a.visitas_usadas || 0
-      return acc + Math.max(0, visitasIncluidas - usadas)
-    }, 0)
+    .filter((a) => a.estado === 'activo' && !a.ilimitado)
+    .reduce((acc, a) => acc + Math.max(0, a.restante ?? 0), 0)
+  const tieneIlimitado = planesAsignados.some((a) => a.estado === 'activo' && a.ilimitado)
 
-  // Para compatibilidad con componentes existentes que esperan planesContratados
-  const planesContratadosLegacy = planesAsignados
-    .filter((a) => a.plan_configuracion?.plan_base?.tipo === 'visitador')
-    .map((a) => ({
-      id: a.id,
-      empresa_id: a.empresa_id || '',
-      plan_visitador_id: 0,
-      pais_id: null as number | null,
-      cantidad_visitas_incluidas: a.plan_configuracion?.plan_base?.atributos?.visitas_incluidas || 0,
-      visitas_usadas: a.visitas_usadas || 0,
-      precio_pagado: a.precio_aplicado || 0,
-      fecha_inicio: a.fecha_inicio,
-      fecha_fin: a.fecha_fin || a.fecha_inicio,
-      estado: a.estado as any,
-      created_at: a.created_at || '',
-      updated_at: a.updated_at || '',
-    }))
+  // planesContratados (lo que VisitadorPlanesPage espera: cantidad_visitas_incluidas, fecha_fin, estado)
+  const planesContratadosLegacy = planesAsignados.map((a) => ({
+    id: a.id,
+    empresa_id: '',
+    plan_visitador_id: 0,
+    pais_id: a.pais_id as any,
+    cantidad_visitas_incluidas: a.cantidad_visitas_incluidas, // null = ilimitado
+    visitas_usadas: a.visitas_usadas,
+    precio_pagado: 0,
+    fecha_inicio: a.fecha_inicio,
+    fecha_fin: a.fecha_fin,
+    estado: a.estado as any,
+    pais_nombre: a.pais_nombre,
+    restante: a.restante,
+    ilimitado: a.ilimitado,
+    created_at: '',
+    updated_at: '',
+  }))
 
   return {
     // Nuevos datos dinámicos
@@ -178,6 +171,7 @@ export function usePlanesVisitador() {
     })),
     planesContratados: planesContratadosLegacy,
     visitasDisponibles,
+    tieneIlimitado,
     loading,
     recargar: cargarTodo,
     fetchPlanesContratados: fetchPlanesAsignados,

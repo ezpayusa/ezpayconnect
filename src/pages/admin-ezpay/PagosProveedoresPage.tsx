@@ -79,22 +79,25 @@ export default function PagosProveedoresPage() {
           const hoy = new Date()
           const fin = new Date()
           fin.setDate(hoy.getDate() + duracionDias)
+          const dia = (d: Date) => d.toISOString().split('T')[0] // pvc fechas son DATE
 
-          const { error: planError } = await supabase.from('planes_asignaciones').insert({
+          // Visitas = BOLSA por país en pvc (única fuente; super_admin la provisiona al verificar el pago).
+          // incluidas = atributos.visitas_incluidas; null/0-ausente → ilimitado (NULL).
+          const incluidas = atributos.visitas_incluidas ?? null
+          const { error: planError } = await supabase.from('planes_visitador_contratados').insert({
             empresa_id: pagoData.empresa_id,
-            plan_config_id: pagoData.referencia_id,
+            plan_visitador_id: 1,                 // catálogo sin FK; valor por defecto
+            pais_id: planConfig.pais_id,          // bolsa POR PAÍS (la config es por país)
+            cantidad_visitas_incluidas: incluidas,
+            visitas_usadas: 0,
+            precio_pagado: pagoData.monto,
+            fecha_inicio: dia(hoy),
+            fecha_fin: dia(fin),
             estado: 'activo',
-            fecha_inicio: hoy.toISOString(),
-            fecha_fin: fin.toISOString(),
-            precio_aplicado: pagoData.monto,
-            moneda: pagoData.moneda || 'GTQ',
-            tipo_ciclo: 'unico',
-            metodo_pago: 'transferencia',
-            auto_renovar: false,
           })
 
           if (planError) {
-            toast.error('Error activando plan')
+            toast.error('Error activando plan de visitas')
             console.error(planError)
             setProcesando(false)
             return
