@@ -4433,6 +4433,15 @@ DO $$ BEGIN
 END $$;
 SELECT set_config('role','none',true);
 
+-- P268 — estructural (red-first): mi_clinica_medico fija search_path '' (no 'public', no NULL)
+DO $$ DECLARE v_cfg text[]; v_ok boolean; BEGIN
+  SELECT proconfig INTO v_cfg FROM pg_proc WHERE oid='public.mi_clinica_medico()'::regprocedure;
+  v_ok := EXISTS (SELECT 1 FROM unnest(coalesce(v_cfg,'{}'::text[])) e WHERE e LIKE 'search_path=%' AND e <> 'search_path=public');
+  IF v_ok THEN PERFORM set_config('probe.p268','OK (mi_clinica_medico fija search_path vacío)',false);
+  ELSE PERFORM set_config('probe.p268','ROJO (search_path sin endurecer: '||coalesce(array_to_string(v_cfg,','),'NULL')||')',false); END IF;
+END $$;
+SELECT set_config('role','none',true);
+
 -- ===== Veredictos como result set =====
 SELECT 'P1_anon_insert_citas'              AS probe, current_setting('probe.p1', true)  AS verdict, 'BLOQUEADO' AS esperado_post_fix
 UNION ALL SELECT 'P2_medico_cancela_ajena_rpc',         current_setting('probe.p2', true),  'BLOQUEADO'
@@ -4693,6 +4702,7 @@ UNION ALL SELECT 'P263_citas_paciente_no_ve_otro_pais',  current_setting('probe.
 UNION ALL SELECT 'P264_citas_paciente_ve_su_pais',       current_setting('probe.p264', true), 'OK'
 UNION ALL SELECT 'P265_citas_paciente_no_agenda_otro_pais', current_setting('probe.p265', true), 'BLOQUEADO post-106 (ROJO pre)'
 UNION ALL SELECT 'P266_citas_pais_derivado_medico',      current_setting('probe.p266', true), 'OK post-106 (ROJO pre)'
-UNION ALL SELECT 'P267_citas_insert_directo_denegado',   current_setting('probe.p267', true), 'BLOQUEADO (invariante chokepoint)';
+UNION ALL SELECT 'P267_citas_insert_directo_denegado',   current_setting('probe.p267', true), 'BLOQUEADO (invariante chokepoint)'
+UNION ALL SELECT 'P268_mi_clinica_medico_searchpath',    current_setting('probe.p268', true), 'OK post-107 (ROJO pre)';
 
 ROLLBACK;  -- nada de lo anterior se persiste
