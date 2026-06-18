@@ -4338,6 +4338,101 @@ BEGIN
 END $$;
 SELECT set_config('role','none',true);
 
+-- ============================================================
+-- Deuda (c) · Aislamiento país agendamiento paciente↔médico (P263–P266). Red-first.
+-- Reusa: fm_medgt (médico GT, slot contexto='paciente' dia2), vg1_medhn (médico HN),
+-- p0_gt/p0_hn. Fixture: paciente real con país GT + slot contexto='paciente' del médico HN.
+-- guard cc_ready (depende de vg1_ready).
+-- ============================================================
+SELECT set_config('role','none',true);
+DO $$ DECLARE v_pac bigint; v_pacu uuid; BEGIN
+  IF current_setting('probe.vg1_ready',true)<>'1' THEN PERFORM set_config('probe.cc_ready','0',false); RETURN; END IF;
+  SELECT id, auth_user_id INTO v_pac, v_pacu FROM public.pacientes WHERE auth_user_id IS NOT NULL ORDER BY id LIMIT 1;
+  IF v_pac IS NULL THEN PERFORM set_config('probe.cc_ready','0',false); RETURN; END IF;
+  UPDATE public.pacientes SET pais_id = current_setting('probe.p0_gt',true)::uuid WHERE id = v_pac;   -- paciente GT
+  -- slot contexto='paciente' para el médico HN (vg1_medhn) — la "carnada" cross-país
+  INSERT INTO public.disponibilidad_medico (medico_id,dia_semana,hora_inicio,hora_fin,duracion_slot,activo,contexto)
+    VALUES (current_setting('probe.vg1_medhn',true)::uuid, 3,'09:00','10:00',30,true,'paciente');
+  PERFORM set_config('probe.cc_pac', v_pac::text, false);
+  PERFORM set_config('probe.cc_pacu', v_pacu::text, false);
+  PERFORM set_config('probe.cc_ready','1',false);
+EXCEPTION WHEN others THEN PERFORM set_config('probe.cc_ready','0',false); PERFORM set_config('probe.cc_err',SQLERRM,false); END $$;
+
+-- P263 — NEG (red-first): paciente GT NO debe VER disponibilidad de médico HN (hoy la ve)
+SELECT set_config('request.jwt.claims', json_build_object('sub', current_setting('probe.cc_pacu',true), 'role','authenticated')::text, true);
+SELECT set_config('role','authenticated',true);
+DO $$ DECLARE n int; BEGIN
+  IF current_setting('probe.cc_ready',true)<>'1' THEN PERFORM set_config('probe.p263','N/A',false);
+  ELSE SELECT count(*) INTO n FROM public.disponibilidad_medico
+       WHERE medico_id=current_setting('probe.vg1_medhn',true)::uuid AND contexto='paciente';
+    IF n=0 THEN PERFORM set_config('probe.p263','OK (paciente no ve disponibilidad de médico de otro país)',false);
+    ELSE PERFORM set_config('probe.p263','ROJO (paciente ve médico de otro país — leak vivo, n='||n||')',false); END IF;
+  END IF;
+EXCEPTION WHEN others THEN PERFORM set_config('probe.p263','FALLO ('||SQLERRM||')',false); END $$;
+
+-- P264 — POS (no-regresión): paciente GT SÍ ve disponibilidad de médico GT
+DO $$ DECLARE n int; BEGIN
+  IF current_setting('probe.cc_ready',true)<>'1' THEN PERFORM set_config('probe.p264','N/A',false);
+  ELSE SELECT count(*) INTO n FROM public.disponibilidad_medico
+       WHERE medico_id=current_setting('probe.fm_medgt',true)::uuid AND contexto='paciente';
+    IF n>0 THEN PERFORM set_config('probe.p264','OK (paciente ve disponibilidad de médico de su país)',false);
+    ELSE PERFORM set_config('probe.p264','FALLO (paciente no ve médico de su país — regresión)',false); END IF;
+  END IF;
+EXCEPTION WHEN others THEN PERFORM set_config('probe.p264','FALLO ('||SQLERRM||')',false); END $$;
+
+-- P265 — NEG write gate (red-first): paciente GT crear_cita con médico HN → BLOQ (hoy agenda)
+DO $$ DECLARE v_id bigint; BEGIN
+  IF current_setting('probe.cc_ready',true)<>'1' THEN PERFORM set_config('probe.p265','N/A',false);
+  ELSE
+    BEGIN
+      SELECT public.crear_cita(
+        p_paciente_id := current_setting('probe.cc_pac',true)::bigint,
+        p_medico_id   := current_setting('probe.vg1_medhn',true)::uuid,   -- médico HN
+        p_fecha       := CURRENT_DATE+7, p_hora_inicio := '09:00', p_hora_fin := '10:00',
+        p_pais_id     := current_setting('probe.p0_hn',true)::uuid) INTO v_id;
+      PERFORM set_config('probe.p265','ROJO (agendó con médico de otro país — leak vivo)',false);
+    EXCEPTION WHEN others THEN PERFORM set_config('probe.p265','BLOQUEADO ('||SQLSTATE||')',false); END;
+  END IF;
+END $$;
+
+-- P266 — POS write gate + DERIVACIÓN país (red-first / lección 8): paciente GT crea cita
+-- con médico GT pasando p_pais_id BOGUS (HN) → país de la cita debe quedar = país del médico (GT)
+DO $$ DECLARE v_id bigint; v_pais uuid; BEGIN
+  IF current_setting('probe.cc_ready',true)<>'1' THEN PERFORM set_config('probe.p266','N/A',false);
+  ELSE
+    BEGIN
+      SELECT public.crear_cita(
+        p_paciente_id := current_setting('probe.cc_pac',true)::bigint,
+        p_medico_id   := current_setting('probe.fm_medgt',true)::uuid,    -- médico GT
+        p_fecha       := CURRENT_DATE+8, p_hora_inicio := '11:00', p_hora_fin := '12:00',
+        p_pais_id     := current_setting('probe.p0_hn',true)::uuid) INTO v_id;   -- país BOGUS (HN)
+      SELECT pais_id INTO v_pais FROM public.citas WHERE id = v_id;
+      IF v_pais = current_setting('probe.p0_gt',true)::uuid THEN
+        PERFORM set_config('probe.p266','OK (país derivado del médico, ignoró p_pais_id del cliente)',false);
+      ELSE
+        PERFORM set_config('probe.p266','ROJO (país de la cita='||coalesce(v_pais::text,'NULL')||' ≠ país del médico — p_pais_id del cliente)',false);
+      END IF;
+    EXCEPTION WHEN others THEN PERFORM set_config('probe.p266','FALLO ('||SQLERRM||')',false); END;
+  END IF;
+END $$;
+
+-- P267 — CHOKEPOINT: paciente INSERT DIRECTO a citas (sin pasar por crear_cita) → DENEGADO
+-- (invariante: la única vía de escritura del paciente es el RPC; si no, el gate país se evade)
+SELECT set_config('request.jwt.claims', json_build_object('sub', current_setting('probe.cc_pacu',true), 'role','authenticated')::text, true);
+SELECT set_config('role','authenticated',true);
+DO $$ BEGIN
+  IF current_setting('probe.cc_ready',true)<>'1' THEN PERFORM set_config('probe.p267','N/A',false);
+  ELSE
+    BEGIN
+      INSERT INTO public.citas (paciente_id, medico_id, fecha, hora_inicio, hora_fin, estado)
+        VALUES (current_setting('probe.cc_pac',true)::bigint, current_setting('probe.vg1_medhn',true)::uuid,
+                CURRENT_DATE+9,'13:00','14:00','solicitada');
+      PERFORM set_config('probe.p267','ROJO (INSERT directo a citas permitido — evade crear_cita)',false);
+    EXCEPTION WHEN others THEN PERFORM set_config('probe.p267','BLOQUEADO ('||SQLSTATE||')',false); END;
+  END IF;
+END $$;
+SELECT set_config('role','none',true);
+
 -- ===== Veredictos como result set =====
 SELECT 'P1_anon_insert_citas'              AS probe, current_setting('probe.p1', true)  AS verdict, 'BLOQUEADO' AS esperado_post_fix
 UNION ALL SELECT 'P2_medico_cancela_ajena_rpc',         current_setting('probe.p2', true),  'BLOQUEADO'
@@ -4593,6 +4688,11 @@ UNION ALL SELECT 'P258_vg2_retargeting',                current_setting('probe.p
 UNION ALL SELECT 'P259_vg2_medico_estado_noregresion',  current_setting('probe.p259', true), 'OK'
 UNION ALL SELECT 'P260_vg2_cuota_intacta',              current_setting('probe.p260', true), 'OK'
 UNION ALL SELECT 'P261_searchpath_hijack_obtener_clinica', current_setting('probe.p261', true), 'OK post-105 (ROJO pre)'
-UNION ALL SELECT 'P262_searchpath_estructural',          current_setting('probe.p262', true), 'OK post-105 (ROJO pre)';
+UNION ALL SELECT 'P262_searchpath_estructural',          current_setting('probe.p262', true), 'OK post-105 (ROJO pre)'
+UNION ALL SELECT 'P263_citas_paciente_no_ve_otro_pais',  current_setting('probe.p263', true), 'OK post-106 (ROJO pre)'
+UNION ALL SELECT 'P264_citas_paciente_ve_su_pais',       current_setting('probe.p264', true), 'OK'
+UNION ALL SELECT 'P265_citas_paciente_no_agenda_otro_pais', current_setting('probe.p265', true), 'BLOQUEADO post-106 (ROJO pre)'
+UNION ALL SELECT 'P266_citas_pais_derivado_medico',      current_setting('probe.p266', true), 'OK post-106 (ROJO pre)'
+UNION ALL SELECT 'P267_citas_insert_directo_denegado',   current_setting('probe.p267', true), 'BLOQUEADO (invariante chokepoint)';
 
 ROLLBACK;  -- nada de lo anterior se persiste
