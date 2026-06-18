@@ -4748,9 +4748,90 @@ EXCEPTION WHEN others THEN
 END $$;
 SELECT set_config('role','none',true);
 
--- (P294 omitido: el overload 7-arg está shadoweado por el de 8-arg — toda llamada con ≤7 args
---  es ambigua porque p_pais_id tiene DEFAULT → el 7-arg es inalcanzable vía PostgREST/SQL. La
---  equivalencia del camino VIVO (8-arg, el del frontend) la cubre P291.)
+-- (overload 7-arg de registrar_campana_metrica omitido de probes: shadoweado por el de 8-arg
+--  — toda llamada con ≤7 args es ambigua porque p_pais_id tiene DEFAULT → inalcanzable vía
+--  PostgREST/SQL. La equivalencia del camino VIVO (8-arg, el del frontend) la cubre P291.)
+
+-- ============================================================
+-- Ola 2 · CHECK de dominio solicitudes_campana.estado (P294–P298). Red-first.
+-- Fixture: solicitud propia de af_emp (proveedor af_mkt con permiso publicidad), estado borrador.
+-- ============================================================
+SELECT set_config('role','none',true);
+DO $$ DECLARE v_sol uuid; v_pais uuid; BEGIN
+  IF NULLIF(current_setting('probe.af_emp',true),'')='' OR NULLIF(current_setting('probe.af_mkt',true),'')='' THEN
+    PERFORM set_config('probe.sec_ready','0',false); PERFORM set_config('probe.sec_err','sin af_emp/af_mkt',false); RETURN; END IF;
+  SELECT pais_id INTO v_pais FROM public.empresas_proveedoras WHERE id=current_setting('probe.af_emp',true)::uuid;
+  INSERT INTO public.solicitudes_campana (empresa_id, cuenta_proveedor_id, titulo, fecha_inicio, fecha_fin, estado, pais_id)
+    VALUES (current_setting('probe.af_emp',true)::uuid, current_setting('probe.af_mkt',true)::uuid, 'Probe estado-check', now(), now()+interval '7 days', 'borrador', v_pais)
+    RETURNING id INTO v_sol;
+  PERFORM set_config('probe.sec_sol', v_sol::text, false);
+  PERFORM set_config('probe.sec_pais', v_pais::text, false);
+  PERFORM set_config('probe.sec_ready','1',false);
+EXCEPTION WHEN others THEN PERFORM set_config('probe.sec_ready','0',false); PERFORM set_config('probe.sec_err',SQLERRM,false); END $$;
+
+-- P294 — NEG (red-first): INSERT con estado inválido (owner; aísla el CHECK de la RLS)
+DO $$ DECLARE v_id uuid; BEGIN
+  IF current_setting('probe.sec_ready',true)<>'1' THEN PERFORM set_config('probe.p294','N/A ('||coalesce(current_setting('probe.sec_err',true),'')||')',false);
+  ELSE
+    BEGIN
+      INSERT INTO public.solicitudes_campana (empresa_id, cuenta_proveedor_id, titulo, fecha_inicio, fecha_fin, estado, pais_id)
+        VALUES (current_setting('probe.af_emp',true)::uuid, current_setting('probe.af_mkt',true)::uuid, 'Probe estado INVALIDO', now(), now()+interval '7 days', 'xxx_invalido', current_setting('probe.sec_pais',true)::uuid)
+        RETURNING id INTO v_id;
+      PERFORM set_config('probe.p294','ROJO (aceptó estado inválido — sin CHECK)',false);
+      DELETE FROM public.solicitudes_campana WHERE id = v_id;  -- limpiar artefacto (no contaminar P298)
+    EXCEPTION WHEN check_violation THEN PERFORM set_config('probe.p294','BLOQUEADO (23514)',false);
+             WHEN others THEN PERFORM set_config('probe.p294','BLOQUEADO ('||SQLSTATE||')',false); END;
+  END IF;
+END $$;
+
+-- P295 — NEG (red-first): UPDATE de fila existente a estado inválido (owner)
+DO $$ BEGIN
+  IF current_setting('probe.sec_ready',true)<>'1' THEN PERFORM set_config('probe.p295','N/A',false);
+  ELSE
+    BEGIN
+      UPDATE public.solicitudes_campana SET estado='zzz_invalido' WHERE id=current_setting('probe.sec_sol',true)::uuid;
+      PERFORM set_config('probe.p295','ROJO (aceptó UPDATE a estado inválido — sin CHECK)',false);
+    EXCEPTION WHEN check_violation THEN PERFORM set_config('probe.p295','BLOQUEADO (23514)',false);
+             WHEN others THEN PERFORM set_config('probe.p295','BLOQUEADO ('||SQLSTATE||')',false); END;
+  END IF;
+END $$;
+
+-- P296 — POS (no-regresión): los 4 estados válidos siguen aceptados (owner UPDATE)
+DO $$ DECLARE st text; v_ok int := 0; BEGIN
+  IF current_setting('probe.sec_ready',true)<>'1' THEN PERFORM set_config('probe.p296','N/A',false);
+  ELSE
+    FOREACH st IN ARRAY ARRAY['borrador','enviada','publicada','rechazada'] LOOP
+      BEGIN UPDATE public.solicitudes_campana SET estado=st WHERE id=current_setting('probe.sec_sol',true)::uuid; v_ok:=v_ok+1;
+      EXCEPTION WHEN others THEN NULL; END;
+    END LOOP;
+    IF v_ok=4 THEN PERFORM set_config('probe.p296','OK (4/4 estados válidos aceptados)',false);
+    ELSE PERFORM set_config('probe.p296','REGRESIÓN (solo '||v_ok||'/4 estados válidos aceptados)',false); END IF;
+  END IF;
+END $$;
+
+-- P297 — GUARD authz (lección 10): proveedor NO puede UPDATE su solicitud a 'publicada' (RLS),
+-- independiente del CHECK ('publicada' SÍ está en dominio, pero la RLS lo rechaza primero).
+SELECT set_config('request.jwt.claims', json_build_object('sub', current_setting('probe.af_mkt',true), 'role','authenticated')::text, true);
+SELECT set_config('role','authenticated',true);
+DO $$ DECLARE v_n int; BEGIN
+  IF current_setting('probe.sec_ready',true)<>'1' THEN PERFORM set_config('probe.p297','N/A',false);
+  ELSE
+    BEGIN
+      UPDATE public.solicitudes_campana SET estado='publicada' WHERE id=current_setting('probe.sec_sol',true)::uuid;
+      GET DIAGNOSTICS v_n = ROW_COUNT;
+      IF v_n=0 THEN PERFORM set_config('probe.p297','BLOQUEADO (RLS: 0 filas — proveedor no auto-publica)',false);
+      ELSE PERFORM set_config('probe.p297','PERMITIDO (proveedor auto-publicó '||v_n||' — lección 10 rota)',false); END IF;
+    EXCEPTION WHEN others THEN PERFORM set_config('probe.p297','BLOQUEADO (RLS: '||SQLSTATE||')',false); END;
+  END IF;
+END $$;
+
+-- P298 — estructural: cero filas fuera de dominio (cero breakage), pre y post
+SELECT set_config('role','none',true);
+DO $$ DECLARE n int; BEGIN
+  SELECT count(*) INTO n FROM public.solicitudes_campana WHERE estado NOT IN ('borrador','enviada','publicada','rechazada');
+  PERFORM set_config('probe.p298', CASE WHEN n=0 THEN 'OK (0 filas fuera de dominio)' ELSE 'ROJO ('||n||' filas fuera de dominio — breakage)' END, false);
+END $$;
+SELECT set_config('role','none',true);
 
 -- ===== Veredictos como result set =====
 SELECT 'P1_anon_insert_citas'              AS probe, current_setting('probe.p1', true)  AS verdict, 'BLOQUEADO' AS esperado_post_fix
@@ -5038,6 +5119,11 @@ UNION ALL SELECT 'P289_writeleak_authenticated',        current_setting('probe.p
 UNION ALL SELECT 'P290_noregresion_paciente_vistas',    current_setting('probe.p290', true), 'OK'
 UNION ALL SELECT 'P291_logging_legitimo_rpc_definer',   current_setting('probe.p291', true), 'OK (no-regresión logging)'
 UNION ALL SELECT 'P292_searchpath_metricas_estructural', current_setting('probe.p292', true), 'OK post-110 (ROJO pre)'
-UNION ALL SELECT 'P293_searchpath_metricas_hijack',     current_setting('probe.p293', true), 'OK post-110 (ROJO pre)';
+UNION ALL SELECT 'P293_searchpath_metricas_hijack',     current_setting('probe.p293', true), 'OK post-110 (ROJO pre)'
+UNION ALL SELECT 'P294_estado_insert_invalido',         current_setting('probe.p294', true), 'BLOQUEADO post-111 (ROJO pre)'
+UNION ALL SELECT 'P295_estado_update_invalido',         current_setting('probe.p295', true), 'BLOQUEADO post-111 (ROJO pre)'
+UNION ALL SELECT 'P296_estados_validos_noregresion',    current_setting('probe.p296', true), 'OK'
+UNION ALL SELECT 'P297_leccion10_proveedor_no_publica', current_setting('probe.p297', true), 'BLOQUEADO (guard authz, RLS)'
+UNION ALL SELECT 'P298_cero_filas_fuera_dominio',       current_setting('probe.p298', true), 'OK (cero breakage)';
 
 ROLLBACK;  -- nada de lo anterior se persiste
