@@ -1,5 +1,6 @@
 import { useProveedorAuth } from '@/proveedor/hooks/useProveedorAuth'
 import { useProveedorStats } from '@/proveedor/hooks/useProveedorStats'
+import { etiquetaRol } from '@/proveedor/lib/permisos'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
@@ -36,7 +37,7 @@ export default function ProveedorDashboard() {
       color: 'bg-blue-50 text-blue-600',
     },
     {
-      title: 'Visitador Médico',
+      title: etiquetaRol('visitador_medico'),
       desc: 'Agenda visitas con médicos',
       icon: CalendarCheck,
       path: '/proveedor/visitador/planes',
@@ -89,7 +90,7 @@ export default function ProveedorDashboard() {
     },
   ]
 
-  // Empresa afín: su modelo no usa visitadores → oculta la tarjeta "Visitador Médico"
+  // Empresa afín: su modelo no usa visitadores → oculta la tarjeta del módulo de visitador
   // (quedan Productos y Publicidad como accesos principales, además de Pagos).
   const modulesAfin = modulesAdmin.filter((m) => !m.path.startsWith('/proveedor/visitador'))
   const modules = esVisitador ? modulesVisitador : esAfin ? modulesAfin : modulesAdmin

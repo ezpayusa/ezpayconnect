@@ -2,6 +2,7 @@ import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
 import { usePlanesVisitador } from '@/proveedor/hooks/usePlanesVisitador'
+import { etiquetaRol } from '@/proveedor/lib/permisos'
 import { CalendarCheck, CheckCircle, Loader2, ShoppingCart } from 'lucide-react'
 import { Link, useNavigate } from 'react-router-dom'
 
@@ -13,7 +14,7 @@ export default function VisitadorPlanesPage() {
     <div className="space-y-6">
       <div className="flex items-center justify-between">
         <div>
-          <h1 className="text-2xl font-bold text-gray-900">Planes de Visitador Médico</h1>
+          <h1 className="text-2xl font-bold text-gray-900">Planes de {etiquetaRol('visitador_medico')}</h1>
           <p className="text-sm text-muted-foreground">
             Contrata planes para agendar visitas con médicos
           </p>

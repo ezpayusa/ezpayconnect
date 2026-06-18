@@ -2,6 +2,7 @@ import { useState } from 'react'
 import { Link } from 'react-router-dom'
 import { useVisitadoresEmpresa } from '@/proveedor/hooks/useVisitadoresEmpresa'
 import { useProveedorAuth } from '@/proveedor/hooks/useProveedorAuth'
+import { etiquetaRol } from '@/proveedor/lib/permisos'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -48,7 +49,7 @@ export default function AdminVisitadoresPage() {
                     </div>
                     <div>
                       <h3 className="font-semibold">{v.nombre_completo}</h3>
-                      <Badge variant="outline" className="text-xs">Visitador Médico</Badge>
+                      <Badge variant="outline" className="text-xs">{etiquetaRol(v.rol_en_empresa)}</Badge>
                     </div>
                   </div>
                 </div>
