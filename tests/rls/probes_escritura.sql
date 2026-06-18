@@ -4707,6 +4707,51 @@ DO $$ DECLARE n int; BEGIN
 END $$;
 SELECT set_config('role','none',true);
 
+-- ============================================================
+-- Ola 2 · Endurecer search_path registrar_campana_metrica (P292–P294). Red-first.
+-- ============================================================
+-- P292 — estructural: AMBOS overloads fijan search_path '' (no null, no 'public')
+DO $$ DECLARE n_ok int; n_tot int; BEGIN
+  SELECT count(*) FILTER (WHERE EXISTS (SELECT 1 FROM unnest(coalesce(p.proconfig,'{}'::text[])) e WHERE e LIKE 'search_path=%' AND e<>'search_path=public')),
+         count(*)
+    INTO n_ok, n_tot
+  FROM pg_proc p JOIN pg_namespace n ON n.oid=p.pronamespace
+  WHERE n.nspname='public' AND p.proname='registrar_campana_metrica';
+  IF n_tot=2 AND n_ok=2 THEN PERFORM set_config('probe.p292','OK (ambos overloads fijan search_path vacío)',false);
+  ELSE PERFORM set_config('probe.p292','ROJO (search_path sin endurecer: '||n_ok||'/'||n_tot||' overloads)',false); END IF;
+END $$;
+SELECT set_config('role','none',true);
+
+-- P293 — HIJACK conductual: schema malicioso con campana_metricas falso prependido al path NO
+-- redirige el INSERT del DEFINER. PRE 🔴 (la fila no llega a public; va al evil), POST OK (a public).
+DO $$ DECLARE v_camp int; v_old text; n int; BEGIN
+  v_old := current_setting('search_path');
+  SELECT id INTO v_camp FROM public.campanas_publicitarias LIMIT 1;
+  IF v_camp IS NULL THEN PERFORM set_config('probe.p293','N/A (sin campaña)',false); RETURN; END IF;
+  DROP SCHEMA IF EXISTS probe_evil_m CASCADE;
+  CREATE SCHEMA probe_evil_m;
+  CREATE TABLE probe_evil_m.campana_metricas (
+    campana_id int, perfil_id uuid, paciente_id int, tipo_perfil text, sesion_id text,
+    clickeado boolean, contexto text, pais_id uuid);
+  PERFORM set_config('search_path','probe_evil_m, public, private', true);
+  PERFORM public.registrar_campana_metrica(
+    p_campana_id := v_camp, p_tipo_perfil := 'probe', p_sesion_id := 'probe-hijack-293',
+    p_clickeado := false, p_pais_id := NULL::uuid);
+  PERFORM set_config('search_path', v_old, true);
+  SELECT count(*) INTO n FROM public.campana_metricas WHERE sesion_id='probe-hijack-293';
+  DROP SCHEMA IF EXISTS probe_evil_m CASCADE;
+  IF n>=1 THEN PERFORM set_config('probe.p293','OK (INSERT a public.campana_metricas pese al schema malicioso)',false);
+  ELSE PERFORM set_config('probe.p293','ROJO (hijack: INSERT redirigido al schema malicioso; tabla real no recibió)',false); END IF;
+EXCEPTION WHEN others THEN
+  PERFORM set_config('search_path', coalesce(v_old,'public, private'), true);
+  PERFORM set_config('probe.p293','FALLO ('||SQLERRM||')',false);
+END $$;
+SELECT set_config('role','none',true);
+
+-- (P294 omitido: el overload 7-arg está shadoweado por el de 8-arg — toda llamada con ≤7 args
+--  es ambigua porque p_pais_id tiene DEFAULT → el 7-arg es inalcanzable vía PostgREST/SQL. La
+--  equivalencia del camino VIVO (8-arg, el del frontend) la cubre P291.)
+
 -- ===== Veredictos como result set =====
 SELECT 'P1_anon_insert_citas'              AS probe, current_setting('probe.p1', true)  AS verdict, 'BLOQUEADO' AS esperado_post_fix
 UNION ALL SELECT 'P2_medico_cancela_ajena_rpc',         current_setting('probe.p2', true),  'BLOQUEADO'
@@ -4991,6 +5036,8 @@ UNION ALL SELECT 'P287_noregresion_superadmin',         current_setting('probe.p
 UNION ALL SELECT 'P288_noadmin_tabla_base_0',           current_setting('probe.p288', true), 'OK'
 UNION ALL SELECT 'P289_writeleak_authenticated',        current_setting('probe.p289', true), 'BLOQUEADO post-109 (ROJO pre)'
 UNION ALL SELECT 'P290_noregresion_paciente_vistas',    current_setting('probe.p290', true), 'OK'
-UNION ALL SELECT 'P291_logging_legitimo_rpc_definer',   current_setting('probe.p291', true), 'OK (no-regresión logging)';
+UNION ALL SELECT 'P291_logging_legitimo_rpc_definer',   current_setting('probe.p291', true), 'OK (no-regresión logging)'
+UNION ALL SELECT 'P292_searchpath_metricas_estructural', current_setting('probe.p292', true), 'OK post-110 (ROJO pre)'
+UNION ALL SELECT 'P293_searchpath_metricas_hijack',     current_setting('probe.p293', true), 'OK post-110 (ROJO pre)';
 
 ROLLBACK;  -- nada de lo anterior se persiste
