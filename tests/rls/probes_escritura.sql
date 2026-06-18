@@ -4289,6 +4289,55 @@ DO $$ DECLARE v_ok boolean; BEGIN
 END $$;
 SELECT set_config('role','none',true);
 
+-- ============================================================
+-- Deuda (d) · Endurecer search_path SECURITY DEFINER (P261–P262). Red-first.
+-- P261: HIJACK behavioral — un schema con `medico_clinicas` falsa en el search_path del
+--       caller secuestra obtener_clinica_principal_medico (pre-fix: lee la tabla del
+--       atacante → ROJO; post-fix: search_path='' la ignora → OK).
+-- P262: estructural — ambas funciones fijan search_path (no NULL, no 'public').
+-- ============================================================
+SELECT set_config('role','none',true);
+DO $$
+DECLARE v_clin uuid; v_old text;
+BEGIN
+  v_old := current_setting('search_path');
+  DROP SCHEMA IF EXISTS probe_evil CASCADE;
+  CREATE SCHEMA probe_evil;
+  CREATE TABLE probe_evil.medico_clinicas (clinica_id uuid, es_principal boolean, medico_id uuid);
+  INSERT INTO probe_evil.medico_clinicas
+    VALUES ('eeeeeeee-eeee-eeee-eeee-eeeeeeeeeeee', true, 'dddddddd-dddd-dddd-dddd-dddddddddddd');
+  -- prepender el schema malicioso al search_path del caller
+  PERFORM set_config('search_path','probe_evil, public, private', true);
+  -- llamar la función DEFINER para un médico SIN clínica principal real
+  SELECT clinica_id INTO v_clin
+  FROM public.obtener_clinica_principal_medico('dddddddd-dddd-dddd-dddd-dddddddddddd') LIMIT 1;
+  -- restaurar search_path y limpiar antes de los veredictos
+  PERFORM set_config('search_path', v_old, true);
+  DROP SCHEMA IF EXISTS probe_evil CASCADE;
+  IF v_clin = 'eeeeeeee-eeee-eeee-eeee-eeeeeeeeeeee' THEN
+    PERFORM set_config('probe.p261','ROJO (hijack: leyó medico_clinicas del atacante)',false);
+  ELSE
+    PERFORM set_config('probe.p261','OK (ignoró schema malicioso; search_path fijado)',false);
+  END IF;
+EXCEPTION WHEN others THEN
+  PERFORM set_config('search_path', coalesce(v_old,'public, private'), true);
+  PERFORM set_config('probe.p261','FALLO ('||SQLERRM||')',false);
+END $$;
+SELECT set_config('role','none',true);
+
+-- P262 — estructural: ambas funciones fijan search_path (no NULL, no 'public')
+DO $$
+DECLARE v_obt text[]; v_lab text[]; v_ok boolean;
+BEGIN
+  SELECT proconfig INTO v_obt FROM pg_proc WHERE oid='public.obtener_clinica_principal_medico(uuid)'::regprocedure;
+  SELECT proconfig INTO v_lab FROM pg_proc WHERE oid='public.laboratorios_para_medico()'::regprocedure;
+  v_ok := EXISTS (SELECT 1 FROM unnest(coalesce(v_obt,'{}'::text[])) e WHERE e LIKE 'search_path=%' AND e <> 'search_path=public')
+      AND EXISTS (SELECT 1 FROM unnest(coalesce(v_lab,'{}'::text[])) e WHERE e LIKE 'search_path=%' AND e <> 'search_path=public');
+  IF v_ok THEN PERFORM set_config('probe.p262','OK (ambas fijan search_path vacío)',false);
+  ELSE PERFORM set_config('probe.p262','ROJO (search_path sin endurecer: obt='||coalesce(array_to_string(v_obt,','),'NULL')||' lab='||coalesce(array_to_string(v_lab,','),'NULL')||')',false); END IF;
+END $$;
+SELECT set_config('role','none',true);
+
 -- ===== Veredictos como result set =====
 SELECT 'P1_anon_insert_citas'              AS probe, current_setting('probe.p1', true)  AS verdict, 'BLOQUEADO' AS esperado_post_fix
 UNION ALL SELECT 'P2_medico_cancela_ajena_rpc',         current_setting('probe.p2', true),  'BLOQUEADO'
@@ -4542,6 +4591,8 @@ UNION ALL SELECT 'P256_vg2_medico_otro_pais',           current_setting('probe.p
 UNION ALL SELECT 'P257_vg2_plan_vencido',               current_setting('probe.p257', true), 'BLOQUEADO post-104 (ROJO pre)'
 UNION ALL SELECT 'P258_vg2_retargeting',                current_setting('probe.p258', true), 'BLOQUEADO post-104 (ROJO pre)'
 UNION ALL SELECT 'P259_vg2_medico_estado_noregresion',  current_setting('probe.p259', true), 'OK'
-UNION ALL SELECT 'P260_vg2_cuota_intacta',              current_setting('probe.p260', true), 'OK';
+UNION ALL SELECT 'P260_vg2_cuota_intacta',              current_setting('probe.p260', true), 'OK'
+UNION ALL SELECT 'P261_searchpath_hijack_obtener_clinica', current_setting('probe.p261', true), 'OK post-105 (ROJO pre)'
+UNION ALL SELECT 'P262_searchpath_estructural',          current_setting('probe.p262', true), 'OK post-105 (ROJO pre)';
 
 ROLLBACK;  -- nada de lo anterior se persiste
