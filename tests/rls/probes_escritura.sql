@@ -4907,6 +4907,77 @@ DO $$ DECLARE n int; BEGIN
 END $$;
 SELECT set_config('role','none',true);
 
+-- ============================================================
+-- Ola 2 · LEAK-FIX v_medicamentos_bajo_stock (P304–P308). Red-first.
+-- Fixture: fila bajo-stock sembrada en farmacia de empresa A (marker); staff A (no-regresión),
+-- staff B de OTRA empresa (cross-empresa leak guard), super_admin (no-regresión).
+-- ============================================================
+SELECT set_config('role','none',true);
+DO $$ DECLARE v_farmA int; v_empA uuid; v_staffA uuid; v_staffB uuid; v_sa uuid; BEGIN
+  SELECT f.id, f.empresa_id INTO v_farmA, v_empA FROM public.farmacias f WHERE f.empresa_id IS NOT NULL LIMIT 1;
+  IF v_farmA IS NULL THEN PERFORM set_config('probe.bs_ready','0',false); RETURN; END IF;
+  INSERT INTO public.farmacia_medicamentos (farmacia_id, nombre_medicamento, stock_actual, stock_minimo, activo)
+    VALUES (v_farmA, 'PROBE BajoStock C2', 0, 10, true);
+  SELECT id INTO v_staffA FROM public.cuentas_proveedor WHERE empresa_id=v_empA AND activo LIMIT 1;
+  IF v_staffA IS NULL THEN SELECT id INTO v_staffA FROM public.cuentas_proveedor WHERE activo LIMIT 1; UPDATE public.cuentas_proveedor SET empresa_id=v_empA, activo=true WHERE id=v_staffA; END IF;
+  SELECT id INTO v_staffB FROM public.cuentas_proveedor WHERE empresa_id IS NOT NULL AND empresa_id<>v_empA AND activo AND id<>v_staffA LIMIT 1;
+  SELECT id INTO v_sa FROM public.perfiles WHERE rol='super_admin' LIMIT 1;
+  PERFORM set_config('probe.bs_staffA',v_staffA::text,false); PERFORM set_config('probe.bs_staffB',COALESCE(v_staffB::text,''),false);
+  PERFORM set_config('probe.bs_sa',COALESCE(v_sa::text,''),false); PERFORM set_config('probe.bs_ready','1',false);
+EXCEPTION WHEN others THEN PERFORM set_config('probe.bs_ready','0',false); PERFORM set_config('probe.bs_err',SQLERRM,false); END $$;
+
+-- P304 — LEAK guard: anon NO ve la vista (PRE 🔴 ve la fila sembrada, POST 0)
+SELECT set_config('request.jwt.claims', json_build_object('role','anon')::text, true);
+SELECT set_config('role','anon',true);
+DO $$ DECLARE n int; BEGIN
+  IF current_setting('probe.bs_ready',true)<>'1' THEN PERFORM set_config('probe.p304','N/A',false);
+  ELSE BEGIN SELECT count(*) INTO n FROM public.v_medicamentos_bajo_stock WHERE nombre_medicamento='PROBE BajoStock C2';
+    PERFORM set_config('probe.p304', CASE WHEN n=0 THEN 'OK (anon no ve bajo-stock)' ELSE 'ROJO (anon ve bajo-stock cross-empresa: '||n||')' END, false);
+  EXCEPTION WHEN others THEN PERFORM set_config('probe.p304','OK (anon sin acceso: '||SQLSTATE||')',false); END; END IF;
+END $$;
+
+-- P305 — NO-REGRESIÓN: staff de A sigue viendo el bajo-stock de SU empresa
+SELECT set_config('request.jwt.claims', json_build_object('sub',current_setting('probe.bs_staffA',true),'role','authenticated')::text, true);
+SELECT set_config('role','authenticated',true);
+DO $$ DECLARE n int; BEGIN
+  IF current_setting('probe.bs_ready',true)<>'1' THEN PERFORM set_config('probe.p305','N/A',false);
+  ELSE SELECT count(*) INTO n FROM public.v_medicamentos_bajo_stock WHERE nombre_medicamento='PROBE BajoStock C2';
+    PERFORM set_config('probe.p305', CASE WHEN n>=1 THEN 'OK (staff ve bajo-stock de su empresa: '||n||')' ELSE 'REGRESIÓN (staff no ve bajo-stock de su empresa)' END, false);
+  END IF;
+EXCEPTION WHEN others THEN PERFORM set_config('probe.p305','REGRESIÓN ('||SQLERRM||')',false); END $$;
+
+-- P306 — LEAK guard cross-empresa: staff de OTRA empresa B NO ve el bajo-stock de A (PRE 🔴, POST 0)
+DO $$ DECLARE n int; BEGIN
+  IF current_setting('probe.bs_ready',true)<>'1' OR NULLIF(current_setting('probe.bs_staffB',true),'')='' THEN PERFORM set_config('probe.p306','N/A (sin staff de otra empresa)',false);
+  ELSE
+    PERFORM set_config('request.jwt.claims', json_build_object('sub',current_setting('probe.bs_staffB',true),'role','authenticated')::text, true);
+    PERFORM set_config('role','authenticated',true);
+    SELECT count(*) INTO n FROM public.v_medicamentos_bajo_stock WHERE nombre_medicamento='PROBE BajoStock C2';
+    PERFORM set_config('probe.p306', CASE WHEN n=0 THEN 'OK (otra empresa no ve bajo-stock de A)' ELSE 'ROJO (cross-empresa: otra empresa ve bajo-stock de A: '||n||')' END, false);
+  END IF;
+EXCEPTION WHEN others THEN PERFORM set_config('probe.p306','FALLO ('||SQLERRM||')',false); END $$;
+
+-- P307 — NO-REGRESIÓN: super_admin sigue viendo el bajo-stock
+SELECT set_config('role','none',true);
+DO $$ DECLARE n int; BEGIN
+  IF current_setting('probe.bs_ready',true)<>'1' OR NULLIF(current_setting('probe.bs_sa',true),'')='' THEN PERFORM set_config('probe.p307','N/A',false);
+  ELSE
+    PERFORM set_config('request.jwt.claims', json_build_object('sub',current_setting('probe.bs_sa',true),'role','authenticated')::text, true);
+    PERFORM set_config('role','authenticated',true);
+    SELECT count(*) INTO n FROM public.v_medicamentos_bajo_stock WHERE nombre_medicamento='PROBE BajoStock C2';
+    PERFORM set_config('probe.p307', CASE WHEN n>=1 THEN 'OK (super_admin ve bajo-stock: '||n||')' ELSE 'REGRESIÓN (super_admin no ve)' END, false);
+  END IF;
+EXCEPTION WHEN others THEN PERFORM set_config('probe.p307','REGRESIÓN ('||SQLERRM||')',false); END $$;
+
+-- P308 — estructural: la vista fija security_invoker=on
+SELECT set_config('role','none',true);
+DO $$ DECLARE v_inv text; BEGIN
+  SELECT COALESCE((SELECT option_value FROM pg_options_to_table(c.reloptions) WHERE option_name='security_invoker'),'OFF')
+    INTO v_inv FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace WHERE n.nspname='public' AND c.relname='v_medicamentos_bajo_stock';
+  PERFORM set_config('probe.p308', CASE WHEN lower(v_inv)='on' OR v_inv='true' THEN 'OK (security_invoker=on)' ELSE 'ROJO (vista NO-invoker: '||v_inv||')' END, false);
+END $$;
+SELECT set_config('role','none',true);
+
 -- ===== Veredictos como result set =====
 SELECT 'P1_anon_insert_citas'              AS probe, current_setting('probe.p1', true)  AS verdict, 'BLOQUEADO' AS esperado_post_fix
 UNION ALL SELECT 'P2_medico_cancela_ajena_rpc',         current_setting('probe.p2', true),  'BLOQUEADO'
@@ -5203,6 +5274,11 @@ UNION ALL SELECT 'P299_gerente_ve_invitaciones_A',      current_setting('probe.p
 UNION ALL SELECT 'P300_guard_cross_tenant_invitaciones', current_setting('probe.p300', true), 'OK (guard: 0 pre y post)'
 UNION ALL SELECT 'P301_noregresion_admin_invitaciones', current_setting('probe.p301', true), 'OK'
 UNION ALL SELECT 'P302_guard_gerente_no_crea',          current_setting('probe.p302', true), 'BLOQUEADO (INSERT intacto)'
-UNION ALL SELECT 'P303_anon_invitaciones_cerrado',      current_setting('probe.p303', true), 'OK';
+UNION ALL SELECT 'P303_anon_invitaciones_cerrado',      current_setting('probe.p303', true), 'OK'
+UNION ALL SELECT 'P304_bajostock_anon_leak',            current_setting('probe.p304', true), 'OK post-113 (ROJO pre)'
+UNION ALL SELECT 'P305_bajostock_staff_noregresion',    current_setting('probe.p305', true), 'OK'
+UNION ALL SELECT 'P306_bajostock_cross_empresa',        current_setting('probe.p306', true), 'OK post-113 (ROJO pre)'
+UNION ALL SELECT 'P307_bajostock_superadmin_noregres',  current_setting('probe.p307', true), 'OK'
+UNION ALL SELECT 'P308_bajostock_invoker_estructural',  current_setting('probe.p308', true), 'OK post-113 (ROJO pre)';
 
 ROLLBACK;  -- nada de lo anterior se persiste
