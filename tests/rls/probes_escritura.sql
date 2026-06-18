@@ -4833,6 +4833,80 @@ DO $$ DECLARE n int; BEGIN
 END $$;
 SELECT set_config('role','none',true);
 
+-- ============================================================
+-- Ola 2 · invitaciones_visitador: Gerente ve pendientes (P299–P303). Red-first.
+-- Fixture: empresa A (farmacia con invitación pendiente) + cuenta gerente_farmacia (viewer) +
+-- cuenta admin (no-regresión) ancladas a A; empresa B con invitación (guard cross-tenant).
+-- Cardinalidad 1:1 → probe multi-empresa N/A.
+-- ============================================================
+SELECT set_config('role','none',true);
+DO $$ DECLARE v_empA uuid; v_empB uuid; v_ger uuid; v_adm uuid; BEGIN
+  SELECT empresa_id INTO v_empA FROM public.invitaciones_visitador WHERE estado='pendiente' LIMIT 1;
+  IF v_empA IS NULL THEN PERFORM set_config('probe.inv_ready','0',false); PERFORM set_config('probe.inv_err','sin invitación pendiente',false); RETURN; END IF;
+  SELECT id INTO v_empB FROM public.empresas_proveedoras WHERE id<>v_empA ORDER BY id LIMIT 1;
+  INSERT INTO public.invitaciones_visitador (empresa_id, email, nombre_completo, estado)
+    VALUES (v_empB, 'probe-b@inv.test', 'Probe Inv B', 'pendiente');   -- invitación de B (guard)
+  -- dos cuentas distintas ancladas a A: gerente_farmacia (viewer) + admin (no-regresión)
+  SELECT id INTO v_ger FROM public.cuentas_proveedor ORDER BY id LIMIT 1;
+  SELECT id INTO v_adm FROM public.cuentas_proveedor WHERE id<>v_ger ORDER BY id LIMIT 1;
+  IF v_ger IS NULL OR v_adm IS NULL OR v_empB IS NULL THEN PERFORM set_config('probe.inv_ready','0',false); RETURN; END IF;
+  UPDATE public.cuentas_proveedor SET empresa_id=v_empA, rol_en_empresa='gerente_farmacia', activo=true, equipo_id=NULL WHERE id=v_ger;
+  UPDATE public.cuentas_proveedor SET empresa_id=v_empA, rol_en_empresa='admin',           activo=true, equipo_id=NULL WHERE id=v_adm;
+  PERFORM set_config('probe.inv_empA',v_empA::text,false); PERFORM set_config('probe.inv_empB',v_empB::text,false);
+  PERFORM set_config('probe.inv_ger',v_ger::text,false);   PERFORM set_config('probe.inv_adm',v_adm::text,false);
+  PERFORM set_config('probe.inv_ready','1',false);
+EXCEPTION WHEN others THEN PERFORM set_config('probe.inv_ready','0',false); PERFORM set_config('probe.inv_err',SQLERRM,false); END $$;
+
+-- P299 — POS (red-first): gerente_farmacia de A ve invitaciones pendientes de A (hoy 0)
+SELECT set_config('request.jwt.claims', json_build_object('sub',current_setting('probe.inv_ger',true),'role','authenticated')::text, true);
+SELECT set_config('role','authenticated',true);
+DO $$ DECLARE n int; BEGIN
+  IF current_setting('probe.inv_ready',true)<>'1' THEN PERFORM set_config('probe.p299','N/A ('||coalesce(current_setting('probe.inv_err',true),'')||')',false);
+  ELSE SELECT count(*) INTO n FROM public.invitaciones_visitador WHERE empresa_id=current_setting('probe.inv_empA',true)::uuid AND estado='pendiente';
+    PERFORM set_config('probe.p299', CASE WHEN n>=1 THEN 'OK (gerente_farmacia ve invitaciones de su empresa: '||n||')' ELSE 'ROJO (gerente_farmacia no ve invitaciones de su empresa — excluido)' END, false);
+  END IF;
+EXCEPTION WHEN others THEN PERFORM set_config('probe.p299','FALLO ('||SQLERRM||')',false); END $$;
+
+-- P300 — GUARD cross-tenant: gerente_farmacia de A NO ve invitaciones de B (0 pre y post)
+DO $$ DECLARE n int; BEGIN
+  IF current_setting('probe.inv_ready',true)<>'1' THEN PERFORM set_config('probe.p300','N/A',false);
+  ELSE SELECT count(*) INTO n FROM public.invitaciones_visitador WHERE empresa_id=current_setting('probe.inv_empB',true)::uuid;
+    PERFORM set_config('probe.p300', CASE WHEN n=0 THEN 'OK (no ve invitaciones de otra empresa)' ELSE 'ROJO (ve invitaciones cross-empresa: '||n||')' END, false);
+  END IF;
+END $$;
+
+-- P301 — NO-REGRESIÓN: admin de A sigue viendo invitaciones de A
+SELECT set_config('request.jwt.claims', json_build_object('sub',current_setting('probe.inv_adm',true),'role','authenticated')::text, true);
+DO $$ DECLARE n int; BEGIN
+  IF current_setting('probe.inv_ready',true)<>'1' THEN PERFORM set_config('probe.p301','N/A',false);
+  ELSE SELECT count(*) INTO n FROM public.invitaciones_visitador WHERE empresa_id=current_setting('probe.inv_empA',true)::uuid;
+    PERFORM set_config('probe.p301', CASE WHEN n>=1 THEN 'OK (admin sigue viendo invitaciones de su empresa: '||n||')' ELSE 'REGRESIÓN (admin no ve invitaciones)' END, false);
+  END IF;
+EXCEPTION WHEN others THEN PERFORM set_config('probe.p301','REGRESIÓN ('||SQLERRM||')',false); END $$;
+
+-- P302 — GUARD authz: gerente_farmacia NO puede INSERT (crear) invitación (INSERT policy intacta)
+SELECT set_config('request.jwt.claims', json_build_object('sub',current_setting('probe.inv_ger',true),'role','authenticated')::text, true);
+DO $$ BEGIN
+  IF current_setting('probe.inv_ready',true)<>'1' THEN PERFORM set_config('probe.p302','N/A',false);
+  ELSE
+    BEGIN
+      INSERT INTO public.invitaciones_visitador (empresa_id, email, nombre_completo, estado)
+        VALUES (current_setting('probe.inv_empA',true)::uuid, 'probe-ger-insert@inv.test', 'Probe Ger Insert', 'pendiente');
+      PERFORM set_config('probe.p302','PERMITIDO (gerente creó invitación — write-leak)',false);
+    EXCEPTION WHEN others THEN PERFORM set_config('probe.p302','BLOQUEADO ('||SQLSTATE||')',false); END;
+  END IF;
+END $$;
+
+-- P303 — anon = 0
+SELECT set_config('request.jwt.claims', json_build_object('role','anon')::text, true);
+SELECT set_config('role','anon',true);
+DO $$ DECLARE n int; BEGIN
+  BEGIN SELECT count(*) INTO n FROM public.invitaciones_visitador;
+    PERFORM set_config('probe.p303', CASE WHEN n=0 THEN 'OK (anon no ve invitaciones)' ELSE 'PERMITIDO (anon ve '||n||' invitaciones)' END, false);
+  EXCEPTION WHEN others THEN PERFORM set_config('probe.p303','OK (anon sin acceso: '||SQLSTATE||')',false); END;
+END $$;
+SELECT set_config('role','none',true);
+
 -- ===== Veredictos como result set =====
 SELECT 'P1_anon_insert_citas'              AS probe, current_setting('probe.p1', true)  AS verdict, 'BLOQUEADO' AS esperado_post_fix
 UNION ALL SELECT 'P2_medico_cancela_ajena_rpc',         current_setting('probe.p2', true),  'BLOQUEADO'
@@ -5124,6 +5198,11 @@ UNION ALL SELECT 'P294_estado_insert_invalido',         current_setting('probe.p
 UNION ALL SELECT 'P295_estado_update_invalido',         current_setting('probe.p295', true), 'BLOQUEADO post-111 (ROJO pre)'
 UNION ALL SELECT 'P296_estados_validos_noregresion',    current_setting('probe.p296', true), 'OK'
 UNION ALL SELECT 'P297_leccion10_proveedor_no_publica', current_setting('probe.p297', true), 'BLOQUEADO (guard authz, RLS)'
-UNION ALL SELECT 'P298_cero_filas_fuera_dominio',       current_setting('probe.p298', true), 'OK (cero breakage)';
+UNION ALL SELECT 'P298_cero_filas_fuera_dominio',       current_setting('probe.p298', true), 'OK (cero breakage)'
+UNION ALL SELECT 'P299_gerente_ve_invitaciones_A',      current_setting('probe.p299', true), 'OK post-112 (ROJO pre)'
+UNION ALL SELECT 'P300_guard_cross_tenant_invitaciones', current_setting('probe.p300', true), 'OK (guard: 0 pre y post)'
+UNION ALL SELECT 'P301_noregresion_admin_invitaciones', current_setting('probe.p301', true), 'OK'
+UNION ALL SELECT 'P302_guard_gerente_no_crea',          current_setting('probe.p302', true), 'BLOQUEADO (INSERT intacto)'
+UNION ALL SELECT 'P303_anon_invitaciones_cerrado',      current_setting('probe.p303', true), 'OK';
 
 ROLLBACK;  -- nada de lo anterior se persiste
