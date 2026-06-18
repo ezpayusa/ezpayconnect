@@ -3,17 +3,19 @@ import { useProveedorAuth } from '@/proveedor/hooks/useProveedorAuth'
 import { useFarmaciaPermisos } from '@/farmacia/hooks/useFarmaciaPermisos'
 import { useNotificaciones } from '@/hooks/useNotificaciones'
 import { Button } from '@/components/ui/button'
-import { LayoutDashboard, Pill, Package, Users, CreditCard, Bell, LogOut, Menu, X, Building2, ClipboardList } from 'lucide-react'
+import { LayoutDashboard, Pill, Package, Users, CreditCard, Bell, LogOut, Menu, X, Building2, ClipboardList, BarChart3 } from 'lucide-react'
 import { useState, useEffect } from 'react'
 
-interface NavItem { label: string; path: string; icon: React.ElementType; accion?: string; badge?: boolean }
+interface NavItem { label: string; path: string; icon: React.ElementType; accion?: string; accionAny?: string[]; badge?: boolean }
 
 // `accion` (si está) gatea el item por permiso data-driven — SOLO para mostrar/
-// ocultar. La barrera real es la RLS del Frente A.
+// ocultar. `accionAny` muestra el item si tiene CUALQUIERA de los permisos.
+// La barrera real es la RLS del Frente A.
 const NAV_ITEMS: NavItem[] = [
   { label: 'Dashboard', path: '/farmacia/dashboard', icon: LayoutDashboard },
   { label: 'Inventario', path: '/farmacia/inventario', icon: Package },
   { label: 'Recetas entrantes', path: '/farmacia/recetas', icon: ClipboardList, accion: 'recetas_dispensar' },
+  { label: 'Reportes', path: '/farmacia/reportes', icon: BarChart3, accionAny: ['finanzas_reportes', 'recetas_reportes'] },
   { label: 'Personal y Roles', path: '/farmacia/personal', icon: Users, accion: 'usuarios_roles' },
   { label: 'Pagos', path: '/farmacia/pagos', icon: CreditCard, accion: 'finanzas_reportes' },
   { label: 'Perfil', path: '/farmacia/perfil', icon: Building2 },
@@ -47,7 +49,9 @@ export default function FarmaciaLayout() {
     navigate('/farmacia/login')
   }
 
-  const items = NAV_ITEMS.filter((i) => !i.accion || tienePermiso(i.accion))
+  const items = NAV_ITEMS.filter((i) =>
+    i.accionAny ? i.accionAny.some((a) => tienePermiso(a)) : (!i.accion || tienePermiso(i.accion)),
+  )
 
   const renderNav = (onClick?: () => void) =>
     items.map((item) => {
