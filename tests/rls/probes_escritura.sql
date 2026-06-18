@@ -4442,6 +4442,150 @@ DO $$ DECLARE v_cfg text[]; v_ok boolean; BEGIN
 END $$;
 SELECT set_config('role','none',true);
 
+-- ============================================================
+-- Ola 2 · admin_clinica/gerente ven el PHI de SU clínica (P269–P281). Red-first.
+-- Fixture: clínica A (>=2 médicos), medA (autor del PHI), medA2 (colega, viewer anti-OR-trap),
+-- adminA (perfil SIN membresía → rol admin_clinica + clinicas.doctor_id=A → clinicas_del_usuario={A}),
+-- clínica B con medB (médico fuera de A) + PHI de B (guard). PHI autorado por medA en 8 tablas.
+-- ============================================================
+SELECT set_config('role','none',true);
+DO $$
+DECLARE v_clinA uuid; v_medA uuid; v_medA2 uuid; v_adminA uuid; v_clinB uuid; v_medB uuid;
+        v_pacA bigint; v_pacB bigint; v_recA bigint; v_catC uuid; v_medA2_rol text;
+BEGIN
+  -- médicos que son USUARIOS reales (medicos.id == perfiles.id == auth.uid()): los que autoran PHI
+  SELECT clinica_id INTO v_clinA FROM public.medico_clinicas mc
+    WHERE mc.medico_id IN (SELECT id FROM public.perfiles)
+    GROUP BY clinica_id HAVING count(*)>=2 ORDER BY count(*) DESC LIMIT 1;
+  IF v_clinA IS NULL THEN PERFORM set_config('probe.acp_ready','0',false); PERFORM set_config('probe.acp_err','sin clínica con >=2 médicos en perfiles',false); RETURN; END IF;
+  SELECT medico_id INTO v_medA  FROM public.medico_clinicas WHERE clinica_id=v_clinA AND medico_id IN (SELECT id FROM public.perfiles) ORDER BY medico_id LIMIT 1;
+  -- colega viewer del anti-OR-trap: médico PURO (rol='medico', sin admin_clinica/gerente)
+  SELECT medico_id INTO v_medA2 FROM public.medico_clinicas WHERE clinica_id=v_clinA AND medico_id IN (SELECT id FROM public.perfiles WHERE rol='medico') AND medico_id<>v_medA ORDER BY medico_id LIMIT 1;
+  SELECT mc.clinica_id, mc.medico_id INTO v_clinB, v_medB FROM public.medico_clinicas mc
+    WHERE mc.clinica_id<>v_clinA AND mc.medico_id IN (SELECT id FROM public.perfiles)
+      AND mc.medico_id NOT IN (SELECT medico_id FROM public.medico_clinicas WHERE clinica_id=v_clinA) LIMIT 1;
+  SELECT id INTO v_adminA FROM public.perfiles
+    WHERE id NOT IN (SELECT medico_id FROM public.medico_clinicas)
+      AND id <> COALESCE(v_medB,'00000000-0000-0000-0000-000000000000'::uuid)
+    ORDER BY id LIMIT 1;
+  IF v_medA2 IS NULL OR v_adminA IS NULL OR v_medB IS NULL THEN
+    PERFORM set_config('probe.acp_ready','0',false); PERFORM set_config('probe.acp_err','fixture incompleto medA2/adminA/medB',false); RETURN; END IF;
+  UPDATE public.perfiles SET rol='admin_clinica' WHERE id=v_adminA;
+  UPDATE public.clinicas SET doctor_id=v_adminA WHERE id=v_clinA;
+  INSERT INTO public.pacientes (nombre,apellido,activo,medico_id) VALUES ('PROBE','PacA',true,v_medA) RETURNING id INTO v_pacA;
+  INSERT INTO public.pacientes (nombre,apellido,activo,medico_id) VALUES ('PROBE','PacB',true,v_medB) RETURNING id INTO v_pacB;
+  INSERT INTO public.historial_medico (paciente_id,medico_id,tipo_evento,titulo) VALUES (v_pacA::text, v_medA::text, 'nota','probe A');
+  INSERT INTO public.recetas (medico_id,paciente_id) VALUES (v_medA, v_pacA) RETURNING id INTO v_recA;
+  INSERT INTO public.recetas_avanzadas (receta_base_id,paciente_id,medico_id) VALUES (v_recA, v_pacA::text, v_medA::text);
+  INSERT INTO public.receta_items (receta_id,nombre_medicamento,dosis,frecuencia) VALUES (v_recA,'Probe med','1','c/8h');
+  INSERT INTO public.expediente_notas (paciente_id,medico_id) VALUES (v_pacA::int, v_medA);
+  INSERT INTO public.signos_vitales (paciente_id,medico_id) VALUES (v_pacA::int, v_medA);
+  INSERT INTO public.examenes (tipo,medico_id,paciente_id) VALUES ('laboratorio', v_medA, v_pacA::int);
+  INSERT INTO public.citas (paciente_id,medico_id,clinica_id,fecha,hora_inicio,hora_fin,estado)
+    VALUES (v_pacA, v_medA, v_clinA, CURRENT_DATE+5,'09:00','10:00','agendada');
+  INSERT INTO public.historial_medico (paciente_id,medico_id,tipo_evento,titulo) VALUES (v_pacB::text, v_medB::text, 'nota','probe B');  -- PHI clínica B (guard)
+  -- DIVERGENCIA id-space (P282): médico de CATÁLOGO (medicos-only, NO en perfiles) DENTRO de la
+  -- clínica A, + PHI (recetas) autorado por identidad perfiles (medB) que NO es miembro de A →
+  -- el admin de A NO debe verlo (prueba que la divergencia de espacios no produce falso-positivo).
+  SELECT id INTO v_catC FROM public.medicos WHERE id NOT IN (SELECT id FROM public.perfiles) LIMIT 1;
+  IF v_catC IS NOT NULL THEN INSERT INTO public.medico_clinicas (medico_id, clinica_id) VALUES (v_catC, v_clinA); END IF;
+  INSERT INTO public.recetas (medico_id, paciente_id) VALUES (v_medB, v_pacB);   -- PHI autorado por perfiles fuera de A
+  SELECT rol INTO v_medA2_rol FROM public.perfiles WHERE id=v_medA2;
+  PERFORM set_config('probe.acp_medA2_rol', COALESCE(v_medA2_rol,'?'), false);
+  PERFORM set_config('probe.acp_medB',v_medB::text,false); PERFORM set_config('probe.acp_catC', COALESCE(v_catC::text,''), false);
+  PERFORM set_config('probe.acp_clinA',v_clinA::text,false); PERFORM set_config('probe.acp_medA',v_medA::text,false);
+  PERFORM set_config('probe.acp_medA2',v_medA2::text,false); PERFORM set_config('probe.acp_adminA',v_adminA::text,false);
+  PERFORM set_config('probe.acp_medB',v_medB::text,false); PERFORM set_config('probe.acp_pacA',v_pacA::text,false);
+  PERFORM set_config('probe.acp_recA',v_recA::text,false); PERFORM set_config('probe.acp_ready','1',false);
+EXCEPTION WHEN others THEN PERFORM set_config('probe.acp_ready','0',false); PERFORM set_config('probe.acp_err',SQLERRM,false); END $$;
+
+-- Positivos (admin A): ROJO pre (sin policy) → OK post (≥1)
+SELECT set_config('request.jwt.claims', json_build_object('sub', current_setting('probe.acp_adminA',true),'role','authenticated')::text, true);
+SELECT set_config('role','authenticated',true);
+DO $$ DECLARE n int; r boolean; BEGIN
+  IF current_setting('probe.acp_ready',true)<>'1' THEN
+    FOR n IN 269..276 LOOP PERFORM set_config('probe.p'||n,'N/A ('||coalesce(current_setting('probe.acp_err',true),'')||')',false); END LOOP; RETURN; END IF;
+  SELECT count(*) INTO n FROM public.historial_medico WHERE medico_id=current_setting('probe.acp_medA',true);
+  PERFORM set_config('probe.p269', CASE WHEN n>=1 THEN 'OK (admin ve historial de su clínica: '||n||')' ELSE 'ROJO (admin no ve historial de su clínica — feature ausente)' END, false);
+  SELECT count(*) INTO n FROM public.recetas WHERE medico_id=current_setting('probe.acp_medA',true)::uuid;
+  PERFORM set_config('probe.p270', CASE WHEN n>=1 THEN 'OK (admin ve recetas: '||n||')' ELSE 'ROJO (admin no ve recetas — feature ausente)' END, false);
+  SELECT count(*) INTO n FROM public.recetas_avanzadas WHERE medico_id=current_setting('probe.acp_medA',true);
+  PERFORM set_config('probe.p271', CASE WHEN n>=1 THEN 'OK (admin ve recetas_avanzadas: '||n||')' ELSE 'ROJO (admin no ve recetas_avanzadas — feature ausente)' END, false);
+  SELECT count(*) INTO n FROM public.receta_items WHERE receta_id=current_setting('probe.acp_recA',true)::bigint;
+  PERFORM set_config('probe.p272', CASE WHEN n>=1 THEN 'OK (admin ve receta_items: '||n||')' ELSE 'ROJO (admin no ve receta_items — feature ausente)' END, false);
+  SELECT count(*) INTO n FROM public.expediente_notas WHERE medico_id=current_setting('probe.acp_medA',true)::uuid;
+  PERFORM set_config('probe.p273', CASE WHEN n>=1 THEN 'OK (admin ve expediente_notas: '||n||')' ELSE 'ROJO (admin no ve expediente_notas — feature ausente)' END, false);
+  SELECT count(*) INTO n FROM public.signos_vitales WHERE medico_id=current_setting('probe.acp_medA',true)::uuid;
+  PERFORM set_config('probe.p274', CASE WHEN n>=1 THEN 'OK (admin ve signos_vitales: '||n||')' ELSE 'ROJO (admin no ve signos_vitales — feature ausente)' END, false);
+  SELECT count(*) INTO n FROM public.examenes WHERE medico_id=current_setting('probe.acp_medA',true)::uuid;
+  PERFORM set_config('probe.p275', CASE WHEN n>=1 THEN 'OK (admin ve examenes: '||n||')' ELSE 'ROJO (admin no ve examenes — feature ausente)' END, false);
+  SELECT count(*) INTO n FROM public.pacientes WHERE id=current_setting('probe.acp_pacA',true)::bigint;
+  PERFORM set_config('probe.p276', CASE WHEN n>=1 THEN 'OK (admin ve pacientes de su clínica: '||n||')' ELSE 'ROJO (admin no ve pacientes — feature ausente)' END, false);
+END $$;
+
+-- P277 — GUARD cross-clínica (admin A NO ve PHI de B): 0 PRE y 0 POST (no es red→green)
+DO $$ DECLARE n int; BEGIN
+  IF current_setting('probe.acp_ready',true)<>'1' THEN PERFORM set_config('probe.p277','N/A',false);
+  ELSE SELECT count(*) INTO n FROM public.historial_medico WHERE medico_id=current_setting('probe.acp_medB',true);
+    PERFORM set_config('probe.p277', CASE WHEN n=0 THEN 'OK (admin no ve PHI de otra clínica)' ELSE 'ROJO (admin ve PHI cross-clínica: '||n||')' END, false);
+  END IF;
+END $$;
+
+-- P278 — ANTI-OR-TRAP (médico colega medA2, rol medico): NO ve PHI de medA vía policy admin
+SELECT set_config('request.jwt.claims', json_build_object('sub', current_setting('probe.acp_medA2',true),'role','authenticated')::text, true);
+DO $$ DECLARE n int; BEGIN
+  IF current_setting('probe.acp_ready',true)<>'1' THEN PERFORM set_config('probe.p278','N/A',false);
+  ELSIF current_setting('probe.acp_medA2_rol',true)<>'medico' THEN
+    PERFORM set_config('probe.p278','N/A (actor no es médico puro: rol='||current_setting('probe.acp_medA2_rol',true)||')',false);
+  ELSE SELECT count(*) INTO n FROM public.historial_medico WHERE medico_id=current_setting('probe.acp_medA',true);
+    PERFORM set_config('probe.p278', CASE WHEN n=0 THEN 'OK (médico PURO no ve PHI de colega vía policy admin)' ELSE 'PERMITIDO (médico vio PHI de colega: '||n||')' END, false);
+  END IF;
+END $$;
+
+-- P279 — NO-REGRESIÓN paciente: paciente no ve recetas ajenas (las del fixture medA/pacA)
+SELECT set_config('request.jwt.claims', json_build_object('sub', current_setting('probe.paciente_u',true),'role','authenticated')::text, true);
+DO $$ DECLARE n int; BEGIN
+  IF current_setting('probe.acp_ready',true)<>'1' OR NULLIF(current_setting('probe.paciente_u',true),'') IS NULL THEN PERFORM set_config('probe.p279','N/A',false);
+  ELSE SELECT count(*) INTO n FROM public.recetas WHERE paciente_id=current_setting('probe.acp_pacA',true)::bigint;  -- receta de PacA (ajena a paciente_u)
+    PERFORM set_config('probe.p279', CASE WHEN n=0 THEN 'OK (paciente no ve receta de otro paciente)' ELSE 'PERMITIDO (paciente vio receta ajena: '||n||')' END, false);
+  END IF;
+END $$;
+
+-- P280 — NO-REGRESIÓN citas: admin A sigue viendo citas de su clínica (policy de citas intacta)
+SELECT set_config('request.jwt.claims', json_build_object('sub', current_setting('probe.acp_adminA',true),'role','authenticated')::text, true);
+DO $$ DECLARE n int; BEGIN
+  IF current_setting('probe.acp_ready',true)<>'1' THEN PERFORM set_config('probe.p280','N/A',false);
+  ELSE SELECT count(*) INTO n FROM public.citas WHERE clinica_id=current_setting('probe.acp_clinA',true)::uuid;
+    PERFORM set_config('probe.p280', CASE WHEN n>=1 THEN 'OK (admin ve citas de su clínica: '||n||')' ELSE 'REGRESIÓN (admin no ve citas de su clínica)' END, false);
+  END IF;
+END $$;
+
+-- P281 — anon cerrado en las tablas PHI nuevas
+SELECT set_config('request.jwt.claims', json_build_object('role','anon')::text, true);
+SELECT set_config('role','anon',true);
+DO $$ DECLARE n int; BEGIN
+  IF current_setting('probe.acp_ready',true)<>'1' THEN PERFORM set_config('probe.p281','N/A',false);
+  ELSE SELECT (SELECT count(*) FROM public.historial_medico WHERE medico_id=current_setting('probe.acp_medA',true))
+            + (SELECT count(*) FROM public.recetas WHERE medico_id=current_setting('probe.acp_medA',true)::uuid)
+            + (SELECT count(*) FROM public.pacientes WHERE id=current_setting('probe.acp_pacA',true)::bigint) INTO n;
+    PERFORM set_config('probe.p281', CASE WHEN n=0 THEN 'OK (anon cerrado)' ELSE 'PERMITIDO (anon vio '||n||' filas PHI)' END, false);
+  END IF;
+EXCEPTION WHEN others THEN PERFORM set_config('probe.p281','OK (anon error/cerrado: '||SQLSTATE||')',false); END $$;
+
+-- P282 — GUARD DIVERGENCIA id-space: con un médico de catálogo (medicos-only) DENTRO de la
+-- clínica A, el admin NO ve PHI autorado por una identidad perfiles que NO es miembro de A.
+SELECT set_config('request.jwt.claims', json_build_object('sub', current_setting('probe.acp_adminA',true),'role','authenticated')::text, true);
+SELECT set_config('role','authenticated',true);
+DO $$ DECLARE n int; BEGIN
+  IF current_setting('probe.acp_ready',true)<>'1' THEN PERFORM set_config('probe.p282','N/A',false);
+  ELSE SELECT count(*) INTO n FROM public.recetas WHERE medico_id=current_setting('probe.acp_medB',true)::uuid;
+    PERFORM set_config('probe.p282', CASE WHEN n=0
+      THEN 'OK (divergencia id-space no produce falso-positivo; catálogo C en A no filtra PHI de perfiles fuera de A)'
+      ELSE 'ROJO (leak por divergencia id-space: admin vio '||n||' recetas de perfiles fuera de su clínica)' END, false);
+  END IF;
+END $$;
+SELECT set_config('role','none',true);
+
 -- ===== Veredictos como result set =====
 SELECT 'P1_anon_insert_citas'              AS probe, current_setting('probe.p1', true)  AS verdict, 'BLOQUEADO' AS esperado_post_fix
 UNION ALL SELECT 'P2_medico_cancela_ajena_rpc',         current_setting('probe.p2', true),  'BLOQUEADO'
@@ -4703,6 +4847,20 @@ UNION ALL SELECT 'P264_citas_paciente_ve_su_pais',       current_setting('probe.
 UNION ALL SELECT 'P265_citas_paciente_no_agenda_otro_pais', current_setting('probe.p265', true), 'BLOQUEADO post-106 (ROJO pre)'
 UNION ALL SELECT 'P266_citas_pais_derivado_medico',      current_setting('probe.p266', true), 'OK post-106 (ROJO pre)'
 UNION ALL SELECT 'P267_citas_insert_directo_denegado',   current_setting('probe.p267', true), 'BLOQUEADO (invariante chokepoint)'
-UNION ALL SELECT 'P268_mi_clinica_medico_searchpath',    current_setting('probe.p268', true), 'OK post-107 (ROJO pre)';
+UNION ALL SELECT 'P268_mi_clinica_medico_searchpath',    current_setting('probe.p268', true), 'OK post-107 (ROJO pre)'
+UNION ALL SELECT 'P269_adminclin_historial',            current_setting('probe.p269', true), 'OK post-108 (ROJO pre)'
+UNION ALL SELECT 'P270_adminclin_recetas',              current_setting('probe.p270', true), 'OK post-108 (ROJO pre)'
+UNION ALL SELECT 'P271_adminclin_recetas_avanzadas',    current_setting('probe.p271', true), 'OK post-108 (ROJO pre)'
+UNION ALL SELECT 'P272_adminclin_receta_items',         current_setting('probe.p272', true), 'OK post-108 (ROJO pre)'
+UNION ALL SELECT 'P273_adminclin_expediente_notas',     current_setting('probe.p273', true), 'OK post-108 (ROJO pre)'
+UNION ALL SELECT 'P274_adminclin_signos_vitales',       current_setting('probe.p274', true), 'OK post-108 (ROJO pre)'
+UNION ALL SELECT 'P275_adminclin_examenes',             current_setting('probe.p275', true), 'OK post-108 (ROJO pre)'
+UNION ALL SELECT 'P276_adminclin_pacientes',            current_setting('probe.p276', true), 'OK post-108 (ROJO pre)'
+UNION ALL SELECT 'P277_guard_cross_clinica',            current_setting('probe.p277', true), 'OK (guard: 0 pre y post)'
+UNION ALL SELECT 'P278_antiORtrap_medico_colega',       current_setting('probe.p278', true), 'OK (guard anti-OR-trap)'
+UNION ALL SELECT 'P279_noregresion_paciente',           current_setting('probe.p279', true), 'OK'
+UNION ALL SELECT 'P280_noregresion_citas_admin',        current_setting('probe.p280', true), 'OK'
+UNION ALL SELECT 'P281_anon_cerrado_phi',               current_setting('probe.p281', true), 'OK'
+UNION ALL SELECT 'P282_guard_divergencia_idspace',      current_setting('probe.p282', true), 'OK (guard: 0 pre y post)';
 
 ROLLBACK;  -- nada de lo anterior se persiste
