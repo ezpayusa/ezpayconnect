@@ -5471,6 +5471,34 @@ DO $$ DECLARE v_has boolean; BEGIN
 END $$;
 SELECT set_config('role','none',true);
 
+-- ============================================================
+-- Seguridad · endurecer search_path mi_rol_proveedor (P343–P344). Red-first.
+-- ============================================================
+-- P343 — estructural: mi_rol_proveedor fija search_path '' (no 'public', no NULL)
+SELECT set_config('role','none',true);
+DO $$ DECLARE v_cfg text[]; v_ok boolean; BEGIN
+  SELECT proconfig INTO v_cfg FROM pg_proc WHERE oid='public.mi_rol_proveedor()'::regprocedure;
+  v_ok := EXISTS (SELECT 1 FROM unnest(coalesce(v_cfg,'{}'::text[])) e WHERE e LIKE 'search_path=%' AND e <> 'search_path=public');
+  IF v_ok THEN PERFORM set_config('probe.p343','OK (mi_rol_proveedor fija search_path vacío)',false);
+  ELSE PERFORM set_config('probe.p343','ROJO (search_path sin endurecer: '||coalesce(array_to_string(v_cfg,','),'NULL')||')',false); END IF;
+END $$;
+SELECT set_config('role','none',true);
+
+-- P344 — equivalencia conductual (no-regresión): mi_rol_proveedor(uid) == cuentas_proveedor.rol_en_empresa
+-- para todas las cuentas activas (0 mismatch). Owner: resuelve sin RLS; la fn lee el jwt.
+DO $$ DECLARE rec record; v_r text; v_mis int := 0; v_n int := 0; BEGIN
+  FOR rec IN SELECT id, rol_en_empresa FROM public.cuentas_proveedor WHERE activo LOOP
+    v_n := v_n+1;
+    PERFORM set_config('request.jwt.claims', json_build_object('sub',rec.id,'role','authenticated')::text, true);
+    SELECT public.mi_rol_proveedor() INTO v_r;
+    IF v_r IS DISTINCT FROM rec.rol_en_empresa THEN v_mis := v_mis+1; END IF;
+  END LOOP;
+  PERFORM set_config('request.jwt.claims', NULL, true);
+  IF v_mis=0 THEN PERFORM set_config('probe.p344','OK (mi_rol_proveedor==rol_en_empresa en '||v_n||' cuentas, 0 mismatch)',false);
+  ELSE PERFORM set_config('probe.p344','FALLO ('||v_mis||' mismatches mi_rol_proveedor vs rol_en_empresa)',false); END IF;
+END $$;
+SELECT set_config('role','none',true);
+
 -- ===== Veredictos como result set =====
 SELECT 'P1_anon_insert_citas'              AS probe, current_setting('probe.p1', true)  AS verdict, 'BLOQUEADO' AS esperado_post_fix
 UNION ALL SELECT 'P2_medico_cancela_ajena_rpc',         current_setting('probe.p2', true),  'BLOQUEADO'
@@ -5806,6 +5834,8 @@ UNION ALL SELECT 'P338_lee_solo_su_override',           current_setting('probe.p
 UNION ALL SELECT 'P339_write_directo_denegado',         current_setting('probe.p339', true), 'BLOQUEADO post-117'
 UNION ALL SELECT 'P340_rol_accion_invalido_PR003',      current_setting('probe.p340', true), 'OK post-117'
 UNION ALL SELECT 'P341_anon_cerrado_rbac',              current_setting('probe.p341', true), 'OK'
-UNION ALL SELECT 'P342_no_lockout_usuarios_roles',      current_setting('probe.p342', true), 'BLOQUEADO post-117';
+UNION ALL SELECT 'P342_no_lockout_usuarios_roles',      current_setting('probe.p342', true), 'BLOQUEADO post-117'
+UNION ALL SELECT 'P343_mi_rol_proveedor_searchpath',    current_setting('probe.p343', true), 'OK post-118 (ROJO pre)'
+UNION ALL SELECT 'P344_mi_rol_proveedor_equivalencia',  current_setting('probe.p344', true), 'OK (no-regresión)';
 
 ROLLBACK;  -- nada de lo anterior se persiste
