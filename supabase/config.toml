@@ -429,3 +429,7 @@ verify_jwt = false
 [functions.enviar-push-campana]
 enabled = true
 verify_jwt = true
+
+[functions.enviar-push-notificacion]
+enabled = true
+verify_jwt = false   # la llama pg_net (server-to-server), no un usuario; autz = secreto compartido x-push-secret

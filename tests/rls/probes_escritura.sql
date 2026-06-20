@@ -5687,6 +5687,88 @@ DO $$ DECLARE v_first int; v_second int; BEGIN
 END $$;
 SELECT set_config('role','none', true);
 
+-- ============================================================
+-- Fix push transaccional · fundación + EVENTO 1 (P359–P362). Red-first. Identidad real (l.5).
+-- ============================================================
+-- P359 — estructural: fundación presente (push_enviado, CHECK url, app_secrets, push_notificar, notificar_cita_paciente)
+SELECT set_config('role','none', true);
+DO $$ DECLARE v_ok boolean; BEGIN
+  v_ok := EXISTS(SELECT 1 FROM information_schema.columns WHERE table_name='notificaciones_pacientes' AND column_name='push_enviado')
+      AND EXISTS(SELECT 1 FROM information_schema.columns WHERE table_name='notificaciones' AND column_name='push_enviado')
+      AND EXISTS(SELECT 1 FROM pg_constraint WHERE conrelid='public.notificaciones_pacientes'::regclass AND conname='notif_pac_accion_url_interna')
+      AND to_regclass('private.app_secrets') IS NOT NULL
+      AND to_regprocedure('private.push_notificar(text,text)') IS NOT NULL
+      AND to_regprocedure('public.notificar_cita_paciente(bigint,text)') IS NOT NULL;
+  PERFORM set_config('probe.ptx_ready', CASE WHEN v_ok THEN '1' ELSE '0' END, false);
+  PERFORM set_config('probe.p359', CASE WHEN v_ok THEN 'OK (fundación push transaccional + evento1 presente)' ELSE 'ROJO (fundación ausente)' END, false);
+END $$;
+
+-- Fixtures: cita propia (médico dueño, paciente CON auth_user_id) + cita ajena para un médico no relacionado
+DO $$ DECLARE v_cp bigint; v_md uuid; v_otro uuid; v_cl uuid; v_pauth uuid; BEGIN
+  IF current_setting('probe.ptx_ready',true)<>'1' THEN RETURN; END IF;
+  SELECT c.id, c.medico_id, c.clinica_id, p.auth_user_id INTO v_cp, v_md, v_cl, v_pauth
+    FROM public.citas c JOIN public.pacientes p ON p.id=c.paciente_id
+    WHERE c.medico_id IS NOT NULL AND p.auth_user_id IS NOT NULL ORDER BY c.id LIMIT 1;
+  -- otro médico que NO es el de v_cp y cuya(s) clínica(s) no incluyen la de v_cp
+  SELECT pf.id INTO v_otro FROM public.perfiles pf WHERE pf.rol='medico' AND pf.id <> v_md
+    AND NOT EXISTS (SELECT 1 FROM public.medico_clinicas mc WHERE mc.medico_id=pf.id AND mc.clinica_id=v_cl) LIMIT 1;
+  PERFORM set_config('probe.ptx_cita', coalesce(v_cp::text,''), false);
+  PERFORM set_config('probe.ptx_medico', coalesce(v_md::text,''), false);
+  PERFORM set_config('probe.ptx_otro', coalesce(v_otro::text,''), false);
+  PERFORM set_config('probe.ptx_pauth', coalesce(v_pauth::text,''), false);
+END $$;
+
+-- P360 — targeting arbitrario BLOQUEADO: un médico NO relacionado no puede notificar la cita ajena (PT002)
+SELECT set_config('request.jwt.claims', json_build_object('sub', current_setting('probe.ptx_otro',true), 'role','authenticated')::text, true);
+SELECT set_config('role','authenticated', true);
+DO $$ BEGIN
+  IF current_setting('probe.ptx_ready',true)<>'1' OR current_setting('probe.ptx_otro',true)='' OR current_setting('probe.ptx_cita',true)='' THEN
+    PERFORM set_config('probe.p360','N/A',false); RETURN; END IF;
+  BEGIN
+    PERFORM public.notificar_cita_paciente(current_setting('probe.ptx_cita',true)::bigint, 'recordatorio');
+    PERFORM set_config('probe.p360','PERMITIDO (médico ajeno notificó cita)',false);
+  EXCEPTION WHEN others THEN PERFORM set_config('probe.p360','BLOQUEADO ('||SQLSTATE||')',false); END;
+END $$;
+SELECT set_config('role','none', true);
+
+-- P361 — accion_url externa RECHAZADA por el CHECK (phishing cerrado)
+DO $$ BEGIN
+  IF current_setting('probe.ptx_ready',true)<>'1' THEN PERFORM set_config('probe.p361','N/A',false); RETURN; END IF;
+  BEGIN
+    INSERT INTO public.notificaciones_pacientes (paciente_id, tipo, titulo, mensaje, accion_url, leida)
+      VALUES ((SELECT id FROM public.pacientes ORDER BY id LIMIT 1), 'cita', 'x', 'y', 'https://evil.example/login', false);
+    PERFORM set_config('probe.p361','PERMITIDO (url externa aceptada)',false);
+  EXCEPTION WHEN check_violation THEN PERFORM set_config('probe.p361','BLOQUEADO (23514 CHECK url interna)',false);
+           WHEN others THEN PERFORM set_config('probe.p361','BLOQUEADO ('||SQLSTATE||')',false); END;
+END $$;
+
+-- P362 — POSITIVO: médico dueño notifica su cita → AMBAS filas in-app (campanita + general) + push encolado,
+-- contenido/url server-compuestos. ACCIÓN bajo actor real (médico); VERIFICACIÓN bajo owner (la RLS ocultaría
+-- las filas del paciente al médico). (Riesgo de regresión: que falte la general → views/badges dependientes.)
+SELECT set_config('request.jwt.claims', json_build_object('sub', current_setting('probe.ptx_medico',true), 'role','authenticated')::text, true);
+SELECT set_config('role','authenticated', true);
+DO $$ DECLARE v_id int; BEGIN
+  IF current_setting('probe.ptx_ready',true)<>'1' OR current_setting('probe.ptx_medico',true)='' OR current_setting('probe.ptx_cita',true)=''
+     OR current_setting('probe.ptx_pauth',true)='' THEN PERFORM set_config('probe.ptx_nid','SKIP',false); RETURN; END IF;
+  BEGIN
+    v_id := public.notificar_cita_paciente(current_setting('probe.ptx_cita',true)::bigint, 'confirmada');
+    PERFORM set_config('probe.ptx_nid', v_id::text, false);
+  EXCEPTION WHEN others THEN PERFORM set_config('probe.ptx_nid','ERR:'||SQLSTATE, false); END;
+END $$;
+SELECT set_config('role','none', true);
+DO $$ DECLARE v_cam RECORD; v_gen boolean; v_nid text; BEGIN
+  v_nid := current_setting('probe.ptx_nid', true);
+  IF coalesce(v_nid,'')='' OR v_nid='SKIP' THEN PERFORM set_config('probe.p362','N/A',false); RETURN; END IF;
+  IF v_nid LIKE 'ERR:%' THEN PERFORM set_config('probe.p362','FALLO (RPC lanzó '||v_nid||')',false); RETURN; END IF;
+  SELECT tipo, titulo, accion_url, (push_enviado IS NULL) AS push_pend INTO v_cam FROM public.notificaciones_pacientes WHERE id=v_nid::int;
+  SELECT EXISTS(SELECT 1 FROM public.notificaciones
+                WHERE usuario_id=current_setting('probe.ptx_pauth',true)::uuid
+                  AND tipo='cita_confirmada' AND titulo='Cita confirmada' AND accion_url='/paciente/citas') INTO v_gen;
+  IF v_cam.tipo='cita' AND v_cam.titulo='Cita confirmada' AND v_cam.accion_url='/paciente/citas' AND v_cam.push_pend AND v_gen
+    THEN PERFORM set_config('probe.p362','OK (AMBAS filas in-app [campanita+general] + push encolado, contenido/url server)',false);
+    ELSE PERFORM set_config('probe.p362','FALLO (campanita tipo='||COALESCE(v_cam.tipo,'∅')||' url='||COALESCE(v_cam.accion_url,'∅')||' push_pend='||COALESCE(v_cam.push_pend::text,'∅')||' general='||COALESCE(v_gen::text,'∅')||')',false); END IF;
+END $$;
+
 -- ===== Veredictos como result set =====
 SELECT 'P1_anon_insert_citas'              AS probe, current_setting('probe.p1', true)  AS verdict, 'BLOQUEADO' AS esperado_post_fix
 UNION ALL SELECT 'P2_medico_cancela_ajena_rpc',         current_setting('probe.p2', true),  'BLOQUEADO'
@@ -6036,6 +6118,10 @@ UNION ALL SELECT 'P354_push_drain_vigente',             current_setting('probe.p
 UNION ALL SELECT 'P355_push_paciente_failclosed',       current_setting('probe.p355', true), 'OK'
 UNION ALL SELECT 'P356_push_paciente_optin',            current_setting('probe.p356', true), 'OK'
 UNION ALL SELECT 'P357_push_paciente_optout_fresco',    current_setting('probe.p357', true), 'OK'
-UNION ALL SELECT 'P358_push_drain_atomico_concurrente', current_setting('probe.p358', true), 'OK';
+UNION ALL SELECT 'P358_push_drain_atomico_concurrente', current_setting('probe.p358', true), 'OK'
+UNION ALL SELECT 'P359_pushtx_fundacion',               current_setting('probe.p359', true), 'OK post-121 (ROJO pre)'
+UNION ALL SELECT 'P360_pushtx_targeting_arbitrario',    current_setting('probe.p360', true), 'BLOQUEADO'
+UNION ALL SELECT 'P361_pushtx_url_externa_check',       current_setting('probe.p361', true), 'BLOQUEADO'
+UNION ALL SELECT 'P362_pushtx_evento1_legitimo',        current_setting('probe.p362', true), 'OK';
 
 ROLLBACK;  -- nada de lo anterior se persiste
