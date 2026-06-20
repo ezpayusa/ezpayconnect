@@ -5462,6 +5462,231 @@ DO $$ DECLARE rec record; v_r text; v_mis int := 0; v_n int := 0; BEGIN
 END $$;
 SELECT set_config('role','none',true);
 
+-- ============================================================
+-- Push promocional masivo v1 AMBAS audiencias: PACIENTES + STAFF (P345–P357). Red-first. Identidad real (l.5).
+-- ============================================================
+-- P345 — estructural (red-first): maquinaria push v1 presente
+SELECT set_config('role','none', true);
+DO $$ DECLARE v_ok boolean; v_chk boolean; BEGIN
+  v_chk := EXISTS (SELECT 1 FROM pg_constraint WHERE conrelid='public.notificaciones_pacientes'::regclass AND contype='c' AND pg_get_constraintdef(oid) ILIKE '%promocion%');
+  v_ok := to_regclass('public.solicitudes_push') IS NOT NULL
+      AND to_regclass('public.envios_push_cola') IS NOT NULL
+      AND to_regclass('public.preferencias_notificacion') IS NOT NULL
+      AND to_regprocedure('public.publicar_push(uuid)') IS NOT NULL
+      AND to_regprocedure('public.crear_solicitud_push(text,text,text,text,text,uuid,boolean)') IS NOT NULL
+      AND to_regprocedure('public.targets_push_vigentes(uuid)') IS NOT NULL
+      AND to_regprocedure('public.set_preferencia_notificacion(boolean)') IS NOT NULL
+      AND v_chk;
+  PERFORM set_config('probe.psh_ready', CASE WHEN v_ok THEN '1' ELSE '0' END, false);
+  PERFORM set_config('probe.p345', CASE WHEN v_ok THEN 'OK (maquinaria push ambas audiencias + CHECK admite promocion)' ELSE 'ROJO (maquinaria push ausente)' END, false);
+END $$;
+
+-- Fixtures: sa, staffA+paisA, staffB+paisB, pacA(opt-in en paisA, con auth), pacB(en paisA, sin pref)
+DO $$ DECLARE v_sa uuid; v_a uuid; v_b uuid; v_pa uuid; v_pb uuid; v_pca int; v_pcau uuid; v_pcb int; v_emp_c uuid;
+  c_staff text[] := ARRAY['admin_clinica','medico','gerente','soporte','vendedor']; BEGIN
+  IF current_setting('probe.psh_ready',true)<>'1' THEN RETURN; END IF;
+  SELECT id INTO v_sa FROM public.perfiles WHERE rol='super_admin' LIMIT 1;
+  -- cuenta proveedor (no-sa) con publicidad_gestionar = actor empresa para P349/P350
+  SELECT cp.id INTO v_emp_c FROM public.cuentas_proveedor cp JOIN public.empresas_proveedoras e ON e.id=cp.empresa_id
+    WHERE cp.activo AND EXISTS(SELECT 1 FROM public.permisos_empresa_rol per WHERE per.tipo_empresa=e.tipo AND per.rol=cp.rol_en_empresa AND per.accion='publicidad_gestionar') LIMIT 1;
+  PERFORM set_config('probe.psh_emp', coalesce(v_emp_c::text,''), false);
+  SELECT id, pais_id INTO v_a, v_pa FROM public.perfiles WHERE activo AND rol = ANY(c_staff) AND pais_id IS NOT NULL ORDER BY id LIMIT 1;
+  SELECT id, pais_id INTO v_b, v_pb FROM public.perfiles WHERE activo AND rol = ANY(c_staff) AND pais_id IS NOT NULL AND pais_id <> v_pa ORDER BY id LIMIT 1;
+  SELECT id, auth_user_id INTO v_pca, v_pcau FROM public.pacientes WHERE pais_id = v_pa AND auth_user_id IS NOT NULL ORDER BY id LIMIT 1;
+  SELECT id INTO v_pcb FROM public.pacientes WHERE pais_id = v_pa AND id <> COALESCE(v_pca,-1) ORDER BY id LIMIT 1;
+  PERFORM set_config('probe.psh_sa', coalesce(v_sa::text,''), false);
+  PERFORM set_config('probe.psh_a',  coalesce(v_a::text,''),  false);
+  PERFORM set_config('probe.psh_b',  coalesce(v_b::text,''),  false);
+  PERFORM set_config('probe.psh_pa', coalesce(v_pa::text,''), false);
+  PERFORM set_config('probe.psh_pb', coalesce(v_pb::text,''), false);
+  PERFORM set_config('probe.psh_pca',  coalesce(v_pca::text,''),  false);
+  PERFORM set_config('probe.psh_pcau', coalesce(v_pcau::text,''), false);
+  PERFORM set_config('probe.psh_pcb',  coalesce(v_pcb::text,''),  false);
+END $$;
+
+-- Seed: pacA hace opt-IN explícito (sin esto NO entraría — fail-closed) bajo SU auth
+SELECT set_config('request.jwt.claims', json_build_object('sub', current_setting('probe.psh_pcau',true), 'role','authenticated')::text, true);
+SELECT set_config('role','authenticated', true);
+DO $$ BEGIN
+  IF current_setting('probe.psh_ready',true)<>'1' OR current_setting('probe.psh_pcau',true)='' THEN RETURN; END IF;
+  PERFORM public.set_preferencia_notificacion(true);
+END $$;
+SELECT set_config('role','none', true);
+
+-- PUBLICACIÓN positiva 'ambas' (sa real) → P353 (conteo/cola/0 fuera de país). Reusa psh_sid.
+SELECT set_config('request.jwt.claims', json_build_object('sub', current_setting('probe.psh_sa',true), 'role','authenticated')::text, true);
+SELECT set_config('role','authenticated', true);
+DO $$ DECLARE v_sid uuid; v_n int; v_cola int; v_fuera int; BEGIN
+  IF current_setting('probe.psh_ready',true)<>'1' OR current_setting('probe.psh_sa',true)='' OR current_setting('probe.psh_pa',true)='' THEN
+    PERFORM set_config('probe.p353','N/A',false); RETURN; END IF;
+  v_sid := public.crear_solicitud_push('promo v1','mensaje promo', NULL, 'ambas', NULL, current_setting('probe.psh_pa',true)::uuid, false);
+  v_n   := public.publicar_push(v_sid);
+  PERFORM set_config('probe.psh_sid', v_sid::text, false);
+  SELECT count(*) INTO v_cola FROM public.envios_push_cola WHERE solicitud_id=v_sid;
+  SELECT count(*) INTO v_fuera FROM public.envios_push_cola c
+    LEFT JOIN public.perfiles  pf  ON c.audiencia='staff'    AND pf.id  = c.usuario_id
+    LEFT JOIN public.pacientes pac ON c.audiencia='paciente' AND pac.id = c.paciente_id
+    WHERE c.solicitud_id=v_sid AND COALESCE(pf.pais_id, pac.pais_id) IS DISTINCT FROM current_setting('probe.psh_pa',true)::uuid;
+  IF v_n>0 AND v_cola=v_n AND v_fuera=0
+    THEN PERFORM set_config('probe.p353','OK (conteo='||v_n||', cola='||v_cola||', 0 fuera de país)',false);
+    ELSE PERFORM set_config('probe.p353','FALLO (conteo='||v_n||' cola='||v_cola||' fuera='||v_fuera||')',false); END IF;
+EXCEPTION WHEN others THEN PERFORM set_config('probe.p353','FALLO ('||SQLSTATE||')',false);
+END $$;
+SELECT set_config('role','none', true);
+
+-- P356 — paciente opt-IN explícito SÍ entra en la cola
+DO $$ DECLARE v_in int; BEGIN
+  IF current_setting('probe.psh_ready',true)<>'1' OR coalesce(current_setting('probe.psh_sid',true),'')='' OR current_setting('probe.psh_pca',true)='' THEN
+    PERFORM set_config('probe.p356','N/A',false); RETURN; END IF;
+  SELECT count(*) INTO v_in FROM public.envios_push_cola WHERE solicitud_id=current_setting('probe.psh_sid',true)::uuid AND audiencia='paciente' AND paciente_id=current_setting('probe.psh_pca',true)::int;
+  PERFORM set_config('probe.p356', CASE WHEN v_in=1 THEN 'OK (paciente opt-in incluido)' ELSE 'FALLO (paciente opt-in no entró)' END, false);
+END $$;
+
+-- P355 — FAIL-CLOSED pacientes: pacB sin preferencia (NULL) EXCLUIDO de la cola
+DO $$ DECLARE v_in int; BEGIN
+  IF current_setting('probe.psh_ready',true)<>'1' OR coalesce(current_setting('probe.psh_sid',true),'')='' OR current_setting('probe.psh_pcb',true)='' THEN
+    PERFORM set_config('probe.p355','N/A',false); RETURN; END IF;
+  SELECT count(*) INTO v_in FROM public.envios_push_cola WHERE solicitud_id=current_setting('probe.psh_sid',true)::uuid AND audiencia='paciente' AND paciente_id=current_setting('probe.psh_pcb',true)::int;
+  PERFORM set_config('probe.p355', CASE WHEN v_in=0 THEN 'OK (paciente sin opt-in excluido: fail-closed)' ELSE 'FALLO (paciente NULL incluido — grandfather)' END, false);
+END $$;
+
+-- P349 — cross-país FAIL-CLOSED EN CREACIÓN: empresa apuntando a país foráneo → RECHAZADO (l.35)
+-- (la cola scopeada por país ya la verifica P353 '0 fuera de país'; aquí el bloqueo está EN crear_solicitud_push)
+SELECT set_config('request.jwt.claims', json_build_object('sub', current_setting('probe.psh_emp',true), 'role','authenticated')::text, true);
+SELECT set_config('role','authenticated', true);
+DO $$ BEGIN
+  IF current_setting('probe.psh_ready',true)<>'1' OR current_setting('probe.psh_emp',true)='' THEN PERFORM set_config('probe.p349','N/A',false); RETURN; END IF;
+  BEGIN
+    PERFORM public.crear_solicitud_push('x','y', NULL, 'staff', NULL, '00000000-0000-0000-0000-0000000000fe'::uuid, false);  -- país que la empresa NO opera
+    PERFORM set_config('probe.p349','PERMITIDO (empresa creó para país foráneo)',false);
+  EXCEPTION WHEN others THEN PERFORM set_config('probe.p349','BLOQUEADO ('||SQLSTATE||')',false); END;
+END $$;
+SELECT set_config('role','none', true);
+
+-- P350 — es_plataforma SÓLO super_admin: empresa intentando es_plataforma=true → RECHAZADO (l.35)
+SELECT set_config('request.jwt.claims', json_build_object('sub', current_setting('probe.psh_emp',true), 'role','authenticated')::text, true);
+SELECT set_config('role','authenticated', true);
+DO $$ BEGIN
+  IF current_setting('probe.psh_ready',true)<>'1' OR current_setting('probe.psh_emp',true)='' THEN PERFORM set_config('probe.p350','N/A',false); RETURN; END IF;
+  BEGIN
+    PERFORM public.crear_solicitud_push('x','y', NULL, 'staff', NULL, NULL, true);  -- bypass de scope reservado a super_admin
+    PERFORM set_config('probe.p350','PERMITIDO (empresa puso es_plataforma)',false);
+  EXCEPTION WHEN others THEN PERFORM set_config('probe.p350','BLOQUEADO ('||SQLSTATE||')',false); END;
+END $$;
+SELECT set_config('role','none', true);
+
+-- P348 — frescura de consentimiento: staffA opt-out POST-congelado → excluido de targets vigentes
+SELECT set_config('request.jwt.claims', json_build_object('sub', current_setting('probe.psh_a',true), 'role','authenticated')::text, true);
+SELECT set_config('role','authenticated', true);
+DO $$ BEGIN
+  IF current_setting('probe.psh_ready',true)<>'1' OR coalesce(current_setting('probe.psh_sid',true),'')='' OR current_setting('probe.psh_a',true)='' THEN RETURN; END IF;
+  PERFORM public.set_preferencia_notificacion(false);   -- staffA se da de baja AHORA (estaba en la cola congelada)
+END $$;
+SELECT set_config('role','none', true);
+DO $$ DECLARE v_in_cola int; v_in_vig int; BEGIN
+  IF current_setting('probe.psh_ready',true)<>'1' OR coalesce(current_setting('probe.psh_sid',true),'')='' OR current_setting('probe.psh_a',true)='' THEN
+    PERFORM set_config('probe.p348','N/A',false); RETURN; END IF;
+  SELECT count(*) INTO v_in_cola FROM public.envios_push_cola WHERE solicitud_id=current_setting('probe.psh_sid',true)::uuid AND usuario_id=current_setting('probe.psh_a',true)::uuid AND estado='pendiente';
+  SELECT count(*) INTO v_in_vig  FROM public.targets_push_vigentes(current_setting('probe.psh_sid',true)::uuid) WHERE usuario_id=current_setting('probe.psh_a',true)::uuid;
+  IF v_in_cola=1 AND v_in_vig=0
+    THEN PERFORM set_config('probe.p348','OK (staff congelado pero excluido al drenar por opt-out fresco)',false);
+    ELSE PERFORM set_config('probe.p348','FALLO (cola='||v_in_cola||' vigente='||v_in_vig||')',false); END IF;
+END $$;
+
+-- P357 — frescura consent PACIENTE: pacA opt-out POST-congelado → excluido de vigentes
+SELECT set_config('request.jwt.claims', json_build_object('sub', current_setting('probe.psh_pcau',true), 'role','authenticated')::text, true);
+SELECT set_config('role','authenticated', true);
+DO $$ BEGIN
+  IF current_setting('probe.psh_ready',true)<>'1' OR coalesce(current_setting('probe.psh_sid',true),'')='' OR current_setting('probe.psh_pcau',true)='' THEN RETURN; END IF;
+  PERFORM public.set_preferencia_notificacion(false);   -- pacA se da de baja AHORA (estaba congelado)
+END $$;
+SELECT set_config('role','none', true);
+DO $$ DECLARE v_in_cola int; v_in_vig int; BEGIN
+  IF current_setting('probe.psh_ready',true)<>'1' OR coalesce(current_setting('probe.psh_sid',true),'')='' OR current_setting('probe.psh_pca',true)='' THEN
+    PERFORM set_config('probe.p357','N/A',false); RETURN; END IF;
+  SELECT count(*) INTO v_in_cola FROM public.envios_push_cola WHERE solicitud_id=current_setting('probe.psh_sid',true)::uuid AND paciente_id=current_setting('probe.psh_pca',true)::int AND estado='pendiente';
+  SELECT count(*) INTO v_in_vig  FROM public.targets_push_vigentes(current_setting('probe.psh_sid',true)::uuid) WHERE paciente_id=current_setting('probe.psh_pca',true)::int;
+  IF v_in_cola=1 AND v_in_vig=0
+    THEN PERFORM set_config('probe.p357','OK (paciente congelado pero excluido al drenar por opt-out fresco)',false);
+    ELSE PERFORM set_config('probe.p357','FALLO (cola='||v_in_cola||' vigente='||v_in_vig||')',false); END IF;
+END $$;
+
+-- P354 — drain vigente == cola pendientes − opt-out actuales (ambas audiencias)
+DO $$ DECLARE v_pend int; v_vig int; v_opt int; BEGIN
+  IF current_setting('probe.psh_ready',true)<>'1' OR coalesce(current_setting('probe.psh_sid',true),'')='' THEN
+    PERFORM set_config('probe.p354','N/A',false); RETURN; END IF;
+  SELECT count(*) INTO v_pend FROM public.envios_push_cola WHERE solicitud_id=current_setting('probe.psh_sid',true)::uuid AND estado='pendiente';
+  SELECT count(*) INTO v_vig  FROM public.targets_push_vigentes(current_setting('probe.psh_sid',true)::uuid);
+  SELECT count(*) INTO v_opt FROM public.envios_push_cola c
+    LEFT JOIN public.preferencias_notificacion ps ON c.audiencia='staff'    AND ps.usuario_id=c.usuario_id
+    LEFT JOIN public.preferencias_notificacion pp ON c.audiencia='paciente' AND pp.paciente_id=c.paciente_id
+    WHERE c.solicitud_id=current_setting('probe.psh_sid',true)::uuid AND c.estado='pendiente'
+      AND NOT (CASE c.audiencia WHEN 'staff' THEN COALESCE(ps.acepta_promociones,true) WHEN 'paciente' THEN COALESCE(pp.acepta_promociones,false) ELSE false END);
+  PERFORM set_config('probe.p354', CASE WHEN v_vig = v_pend - v_opt THEN 'OK (vigentes='||v_vig||' = pendientes='||v_pend||' − optout='||v_opt||')' ELSE 'FALLO (vig='||v_vig||' pend='||v_pend||' opt='||v_opt||')' END, false);
+END $$;
+
+-- P346 — solicitud sin aprobar → cola vacía (el pendiente NO dispara nada)
+SELECT set_config('request.jwt.claims', json_build_object('sub', current_setting('probe.psh_sa',true), 'role','authenticated')::text, true);
+SELECT set_config('role','authenticated', true);
+DO $$ DECLARE v_sid2 uuid; v_cola int; BEGIN
+  IF current_setting('probe.psh_ready',true)<>'1' OR current_setting('probe.psh_sa',true)='' OR current_setting('probe.psh_pa',true)='' THEN
+    PERFORM set_config('probe.p346','N/A',false); RETURN; END IF;
+  v_sid2 := public.crear_solicitud_push('promo pendiente','msg', NULL, 'ambas', NULL, current_setting('probe.psh_pa',true)::uuid, false);
+  PERFORM set_config('probe.psh_sid2', v_sid2::text, false);
+  SELECT count(*) INTO v_cola FROM public.envios_push_cola WHERE solicitud_id=v_sid2;
+  PERFORM set_config('probe.p346', CASE WHEN v_cola=0 THEN 'OK (solicitud enviada no publicada → cola vacía)' ELSE 'FALLO (cola poblada sin aprobación)' END, false);
+EXCEPTION WHEN others THEN PERFORM set_config('probe.p346','FALLO ('||SQLSTATE||')',false);
+END $$;
+SELECT set_config('role','none', true);
+
+-- P347 — no-super_admin NO ejecuta publicar_push (sobre la solicitud pendiente de P346)
+SELECT set_config('request.jwt.claims', json_build_object('sub', current_setting('probe.psh_a',true), 'role','authenticated')::text, true);
+SELECT set_config('role','authenticated', true);
+DO $$ BEGIN
+  IF current_setting('probe.psh_ready',true)<>'1' OR current_setting('probe.psh_a',true)='' OR coalesce(current_setting('probe.psh_sid2',true),'')='' THEN
+    PERFORM set_config('probe.p347','N/A',false); RETURN; END IF;
+  BEGIN
+    PERFORM public.publicar_push(current_setting('probe.psh_sid2',true)::uuid);
+    PERFORM set_config('probe.p347','PERMITIDO (no-sa publicó)',false);
+  EXCEPTION WHEN others THEN PERFORM set_config('probe.p347','BLOQUEADO ('||SQLSTATE||')',false); END;
+END $$;
+SELECT set_config('role','none', true);
+
+-- P351 — único camino DB de entrega (l.7): drenar/targets sólo service_role (revocado authenticated/anon) + firma sólo uuid (sin lista)
+SELECT set_config('role','none', true);
+DO $$ DECLARE v_drn_auth boolean; v_tgt_auth boolean; v_drn_args text; v_tgt_args text; BEGIN
+  IF current_setting('probe.psh_ready',true)<>'1' THEN PERFORM set_config('probe.p351','N/A',false); RETURN; END IF;
+  v_drn_auth := has_function_privilege('authenticated','public.drenar_targets_push(uuid)','EXECUTE') OR has_function_privilege('anon','public.drenar_targets_push(uuid)','EXECUTE');
+  v_tgt_auth := has_function_privilege('authenticated','public.targets_push_vigentes(uuid)','EXECUTE') OR has_function_privilege('anon','public.targets_push_vigentes(uuid)','EXECUTE');
+  SELECT pg_get_function_identity_arguments('public.drenar_targets_push(uuid)'::regprocedure) INTO v_drn_args;
+  SELECT pg_get_function_identity_arguments('public.targets_push_vigentes(uuid)'::regprocedure) INTO v_tgt_args;
+  -- un solo arg uuid, sin array/lista (sin coma, sin '[]')
+  IF NOT v_drn_auth AND NOT v_tgt_auth
+     AND v_drn_args LIKE '%uuid' AND v_drn_args NOT LIKE '%,%' AND v_drn_args NOT LIKE '%[]%'
+     AND v_tgt_args LIKE '%uuid' AND v_tgt_args NOT LIKE '%,%' AND v_tgt_args NOT LIKE '%[]%'
+    THEN PERFORM set_config('probe.p351','OK (drenar/targets service_role-only, un solo arg uuid: sin otro camino ni lista del caller)',false);
+    ELSE PERFORM set_config('probe.p351','FALLO (drn_auth='||v_drn_auth||' tgt_auth='||v_tgt_auth||' drn_args='||v_drn_args||' tgt_args='||v_tgt_args||')',false); END IF;
+END $$;
+
+-- P352 — cola NO escribible directo (authenticated/anon): write sólo RPC/service_role. (Borde de autz de la edge = deno test 4/4, fuera del harness SQL.)
+DO $$ DECLARE v_w boolean; BEGIN
+  IF current_setting('probe.psh_ready',true)<>'1' THEN PERFORM set_config('probe.p352','N/A',false); RETURN; END IF;
+  v_w := has_table_privilege('authenticated','public.envios_push_cola','INSERT')
+      OR has_table_privilege('authenticated','public.envios_push_cola','UPDATE')
+      OR has_table_privilege('authenticated','public.envios_push_cola','DELETE')
+      OR has_table_privilege('anon','public.envios_push_cola','INSERT');
+  PERFORM set_config('probe.p352', CASE WHEN NOT v_w THEN 'OK (cola sin write directo authenticated/anon; edge-authz cubierto por deno test)' ELSE 'FALLO (cola escribible directo)' END, false);
+END $$;
+
+-- P358 — claim ATÓMICO anti doble-envío concurrente (l.47): 2do drenado de la misma solicitud reclama 0
+DO $$ DECLARE v_first int; v_second int; BEGIN
+  IF current_setting('probe.psh_ready',true)<>'1' OR coalesce(current_setting('probe.psh_sid',true),'')='' THEN PERFORM set_config('probe.p358','N/A',false); RETURN; END IF;
+  SELECT count(*) INTO v_first  FROM public.drenar_targets_push(current_setting('probe.psh_sid',true)::uuid);
+  SELECT count(*) INTO v_second FROM public.drenar_targets_push(current_setting('probe.psh_sid',true)::uuid);
+  PERFORM set_config('probe.p358', CASE WHEN v_second=0 THEN 'OK (1er drenado reclamó '||v_first||', 2do reclamó 0 → cada target una sola vez)' ELSE 'FALLO (2do reclamó '||v_second||' → doble-envío)' END, false);
+END $$;
+SELECT set_config('role','none', true);
+
 -- ===== Veredictos como result set =====
 SELECT 'P1_anon_insert_citas'              AS probe, current_setting('probe.p1', true)  AS verdict, 'BLOQUEADO' AS esperado_post_fix
 UNION ALL SELECT 'P2_medico_cancela_ajena_rpc',         current_setting('probe.p2', true),  'BLOQUEADO'
@@ -5797,6 +6022,20 @@ UNION ALL SELECT 'P340_rol_accion_invalido_PR003',      current_setting('probe.p
 UNION ALL SELECT 'P341_anon_cerrado_rbac',              current_setting('probe.p341', true), 'OK'
 UNION ALL SELECT 'P342_no_lockout_usuarios_roles',      current_setting('probe.p342', true), 'BLOQUEADO post-117'
 UNION ALL SELECT 'P343_mi_rol_proveedor_searchpath',    current_setting('probe.p343', true), 'OK post-118 (ROJO pre)'
-UNION ALL SELECT 'P344_mi_rol_proveedor_equivalencia',  current_setting('probe.p344', true), 'OK (no-regresión)';
+UNION ALL SELECT 'P344_mi_rol_proveedor_equivalencia',  current_setting('probe.p344', true), 'OK (no-regresión)'
+UNION ALL SELECT 'P345_push_maquinaria',                current_setting('probe.p345', true), 'OK post-120 (ROJO pre)'
+UNION ALL SELECT 'P346_push_pendiente_cola_vacia',      current_setting('probe.p346', true), 'OK'
+UNION ALL SELECT 'P347_push_no_sa_no_publica',          current_setting('probe.p347', true), 'BLOQUEADO'
+UNION ALL SELECT 'P348_push_staff_optout_fresco',       current_setting('probe.p348', true), 'OK'
+UNION ALL SELECT 'P349_push_empresa_pais_foraneo',      current_setting('probe.p349', true), 'BLOQUEADO'
+UNION ALL SELECT 'P350_push_empresa_es_plataforma',     current_setting('probe.p350', true), 'BLOQUEADO'
+UNION ALL SELECT 'P351_push_unica_via_entrega',         current_setting('probe.p351', true), 'OK'
+UNION ALL SELECT 'P352_push_cola_sin_write_directo',    current_setting('probe.p352', true), 'OK'
+UNION ALL SELECT 'P353_push_publicacion_scopeada',      current_setting('probe.p353', true), 'OK'
+UNION ALL SELECT 'P354_push_drain_vigente',             current_setting('probe.p354', true), 'OK'
+UNION ALL SELECT 'P355_push_paciente_failclosed',       current_setting('probe.p355', true), 'OK'
+UNION ALL SELECT 'P356_push_paciente_optin',            current_setting('probe.p356', true), 'OK'
+UNION ALL SELECT 'P357_push_paciente_optout_fresco',    current_setting('probe.p357', true), 'OK'
+UNION ALL SELECT 'P358_push_drain_atomico_concurrente', current_setting('probe.p358', true), 'OK';
 
 ROLLBACK;  -- nada de lo anterior se persiste

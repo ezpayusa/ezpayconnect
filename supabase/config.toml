@@ -425,3 +425,7 @@ verify_jwt = true
 [functions.procesar-recordatorios]
 enabled = true
 verify_jwt = false
+
+[functions.enviar-push-campana]
+enabled = true
+verify_jwt = true
