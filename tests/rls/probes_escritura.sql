@@ -16,6 +16,209 @@
 
 BEGIN;
 
+-- ============================================================
+-- Ola 3 · RBAC override per-empresa (P330–P342). Red-first. Maquinaria inerte día-0.
+-- POST detector: existe public.set_permiso_override + public.acciones_techo (mig 117).
+-- Fixtures: editor gerente_farmacia (tiene usuarios_roles) + su empresa A; empresa B; no-editor.
+-- ============================================================
+SELECT set_config('role','none',true);
+DO $$ DECLARE v_ed uuid; v_empA uuid; v_empB uuid; v_noed uuid; BEGIN
+  SELECT cp.id, cp.empresa_id INTO v_ed, v_empA FROM public.cuentas_proveedor cp
+    WHERE cp.rol_en_empresa='gerente_farmacia' AND cp.activo LIMIT 1;
+  SELECT id INTO v_empB FROM public.empresas_proveedoras WHERE id<>COALESCE(v_empA,'00000000-0000-0000-0000-000000000000') LIMIT 1;
+  SELECT id INTO v_noed FROM public.cuentas_proveedor WHERE rol_en_empresa='visitador_medico' AND activo LIMIT 1;
+  PERFORM set_config('probe.rb_ed',COALESCE(v_ed::text,''),false);
+  PERFORM set_config('probe.rb_empA',COALESCE(v_empA::text,''),false);
+  PERFORM set_config('probe.rb_empB',COALESCE(v_empB::text,''),false);
+  PERFORM set_config('probe.rb_noed',COALESCE(v_noed::text,''),false);
+  PERFORM set_config('probe.rb_post', CASE WHEN to_regprocedure('public.set_permiso_override(text,text,boolean)') IS NOT NULL AND to_regclass('public.acciones_techo') IS NOT NULL THEN '1' ELSE '0' END, false);
+  PERFORM set_config('probe.rb_ready', CASE WHEN v_ed IS NOT NULL AND v_empB IS NOT NULL THEN '1' ELSE '0' END, false);
+END $$;
+
+-- P330 — estructural: maquinaria existe (acciones_techo 4 filas + override + RPC + tiene_permiso lee techo)
+DO $$ DECLARE v_techo int; v_tbl boolean; v_rpc boolean; v_tp boolean; BEGIN
+  IF to_regclass('public.acciones_techo') IS NULL THEN PERFORM set_config('probe.p330','ROJO (maquinaria RBAC ausente)',false); RETURN; END IF;
+  SELECT count(*) INTO v_techo FROM public.acciones_techo WHERE accion IN ('pagos_ezpay','publicidad_gestionar','usuarios_roles','sucursales_gestionar');
+  v_tbl := to_regclass('public.permisos_empresa_rol_override') IS NOT NULL;
+  v_rpc := to_regprocedure('public.set_permiso_override(text,text,boolean)') IS NOT NULL;
+  v_tp  := pg_get_functiondef('private.tiene_permiso(text)'::regprocedure) ILIKE '%acciones_techo%';
+  IF v_techo=4 AND v_tbl AND v_rpc AND v_tp THEN PERFORM set_config('probe.p330','OK (techo 4 + override + RPC + tiene_permiso techo-aware)',false);
+  ELSE PERFORM set_config('probe.p330','ROJO (incompleto: techo='||v_techo||' tbl='||v_tbl||' rpc='||v_rpc||' tp='||v_tp||')',false); END IF;
+END $$;
+SELECT set_config('role','none',true);
+
+-- P331 — EQUIVALENCIA día-0 por (tipo,rol): tiene_permiso == catálogo para los 8 pares × 12 acciones (0 mismatch)
+-- Corre como OWNER (role none): resuelve usuarios sin RLS; tiene_permiso (DEFINER) lee el jwt igual.
+SELECT set_config('role','none',true);
+DO $$
+DECLARE rec record;
+  acc text[] := ARRAY['config_empresa','delivery','finanzas_reportes','inventario_editar','pagos_ezpay','productos_editar','publicidad_gestionar','recetas_dispensar','recetas_reportes','sucursales_gestionar','usuarios_roles','ventas_caja'];
+  a text; v_tp boolean; v_cat boolean; v_mis int := 0; v_pairs int := 0;
+BEGIN
+  -- iterar TODOS los pares (tipo,rol) con usuario activo presentes (dinámico; el harness mutó cuentas).
+  -- Los 8 pares reales de prod se validan en el smoke read-only post-apply.
+  FOR rec IN
+    SELECT e.tipo AS tipo, cp.rol_en_empresa AS rol, min(cp.id::text) AS uid
+    FROM public.cuentas_proveedor cp JOIN public.empresas_proveedoras e ON e.id=cp.empresa_id
+    WHERE cp.activo GROUP BY e.tipo, cp.rol_en_empresa
+  LOOP
+    v_pairs := v_pairs+1;
+    PERFORM set_config('request.jwt.claims', json_build_object('sub',rec.uid,'role','authenticated')::text, true);
+    FOREACH a IN ARRAY acc LOOP
+      SELECT private.tiene_permiso(a) INTO v_tp;
+      SELECT EXISTS(SELECT 1 FROM public.permisos_empresa_rol WHERE tipo_empresa=rec.tipo AND rol=rec.rol AND accion=a) INTO v_cat;
+      IF COALESCE(v_tp,false) <> v_cat THEN v_mis := v_mis+1; END IF;
+    END LOOP;
+  END LOOP;
+  IF v_mis=0 THEN PERFORM set_config('probe.p331','OK (tiene_permiso==catálogo en '||v_pairs||' pares (tipo,rol), 0 mismatch)',false);
+  ELSE PERFORM set_config('probe.p331','FALLO ('||v_mis||' mismatches tiene_permiso vs catálogo)',false); END IF;
+END $$;
+SELECT set_config('role','none',true);
+
+-- P332 — TECHO honrado EN RESOLUCIÓN: override directo (simula super_admin) sobre techo → IGNORADO
+DO $$ DECLARE v_tp boolean; BEGIN
+  IF current_setting('probe.rb_post',true)<>'1' OR current_setting('probe.rb_ready',true)<>'1' THEN PERFORM set_config('probe.p332','N/A (pre / maquinaria ausente)',false); RETURN; END IF;
+  -- insertar override concedido=true sobre 'pagos_ezpay' (techo) para (empA, gerente_farmacia) como owner
+  INSERT INTO public.permisos_empresa_rol_override (empresa_id,rol,accion,concedido) VALUES (current_setting('probe.rb_empA',true)::uuid,'gerente_farmacia','pagos_ezpay',true)
+    ON CONFLICT (empresa_id,rol,accion) DO UPDATE SET concedido=true;
+  PERFORM set_config('request.jwt.claims', json_build_object('sub',current_setting('probe.rb_ed',true),'role','authenticated')::text, true);
+  PERFORM set_config('role','authenticated',true);
+  SELECT private.tiene_permiso('pagos_ezpay') INTO v_tp;  -- catálogo gerente_farmacia NO tiene pagos_ezpay → debe seguir false
+  PERFORM set_config('role','none',true);
+  PERFORM set_config('probe.p332', CASE WHEN COALESCE(v_tp,false)=false THEN 'OK (techo ignora override; resolución=catálogo=false)' ELSE 'ROJO (override sobre techo CONCEDIÓ — no honrado en resolución)' END, false);
+END $$;
+SELECT set_config('role','none',true);
+
+-- P333 — WRITE POSITIVO vía RPC por editor no-admin (gerente_farmacia): concede acción no-techo válida → ACEPTA + scoped
+DO $$ DECLARE v_ret boolean; v_row int; BEGIN
+  IF current_setting('probe.rb_post',true)<>'1' OR current_setting('probe.rb_ready',true)<>'1' THEN PERFORM set_config('probe.p333','N/A',false); RETURN; END IF;
+  PERFORM set_config('request.jwt.claims', json_build_object('sub',current_setting('probe.rb_ed',true),'role','authenticated')::text, true);
+  PERFORM set_config('role','authenticated',true);
+  BEGIN
+    SELECT public.set_permiso_override('cajero','inventario_editar',true) INTO v_ret;  -- cajero no tiene inventario_editar en catálogo
+  EXCEPTION WHEN others THEN PERFORM set_config('probe.p333','FALLO (RPC rechazó lo legítimo: '||SQLSTATE||')',false); PERFORM set_config('role','none',true); RETURN; END;
+  PERFORM set_config('role','none',true);
+  SELECT count(*) INTO v_row FROM public.permisos_empresa_rol_override WHERE empresa_id=current_setting('probe.rb_empA',true)::uuid AND rol='cajero' AND accion='inventario_editar' AND concedido=true;
+  PERFORM set_config('probe.p333', CASE WHEN v_ret AND v_row=1 THEN 'OK (RPC aceptó write legítimo, scoped a empresa A)' ELSE 'FALLO (ret='||v_ret||' row='||v_row||')' END, false);
+END $$;
+SELECT set_config('role','none',true);
+
+-- P334 — A no edita B: el RPC escribe SOLO en mi_empresa (no hay param de empresa) → fila en A, nunca B
+DO $$ DECLARE v_b int; BEGIN
+  IF current_setting('probe.rb_post',true)<>'1' OR current_setting('probe.rb_ready',true)<>'1' THEN PERFORM set_config('probe.p334','N/A',false); RETURN; END IF;
+  SELECT count(*) INTO v_b FROM public.permisos_empresa_rol_override WHERE empresa_id=current_setting('probe.rb_empB',true)::uuid;
+  PERFORM set_config('probe.p334', CASE WHEN v_b=0 THEN 'OK (editor de A no escribió override en B)' ELSE 'ROJO (override en B: '||v_b||')' END, false);
+END $$;
+
+-- P335 — auto-otorgar techo vía RPC → PR002
+DO $$ BEGIN
+  IF current_setting('probe.rb_post',true)<>'1' OR current_setting('probe.rb_ready',true)<>'1' THEN PERFORM set_config('probe.p335','N/A',false); RETURN; END IF;
+  PERFORM set_config('request.jwt.claims', json_build_object('sub',current_setting('probe.rb_ed',true),'role','authenticated')::text, true);
+  PERFORM set_config('role','authenticated',true);
+  BEGIN PERFORM public.set_permiso_override('gerente_farmacia','pagos_ezpay',true);
+    PERFORM set_config('probe.p335','ROJO (RPC permitió override de techo)',false);
+  EXCEPTION WHEN others THEN PERFORM set_config('probe.p335','BLOQUEADO ('||SQLSTATE||')',false); END;
+  PERFORM set_config('role','none',true);
+END $$;
+SELECT set_config('role','none',true);
+
+-- P336 — rol sin usuarios_roles (visitador_medico) llama RPC → PR001
+DO $$ BEGIN
+  IF current_setting('probe.rb_post',true)<>'1' OR NULLIF(current_setting('probe.rb_noed',true),'')='' THEN PERFORM set_config('probe.p336','N/A',false); RETURN; END IF;
+  PERFORM set_config('request.jwt.claims', json_build_object('sub',current_setting('probe.rb_noed',true),'role','authenticated')::text, true);
+  PERFORM set_config('role','authenticated',true);
+  BEGIN PERFORM public.set_permiso_override('cajero','ventas_caja',true);
+    PERFORM set_config('probe.p336','ROJO (no-editor pudo editar)',false);
+  EXCEPTION WHEN others THEN PERFORM set_config('probe.p336','BLOQUEADO ('||SQLSTATE||')',false); END;
+  PERFORM set_config('role','none',true);
+END $$;
+SELECT set_config('role','none',true);
+
+-- P337 — CONCEDE/REVOCA correcto vía tiene_permiso (sobre el propio rol del editor, acción no-techo 'delivery')
+DO $$ DECLARE v_before boolean; v_rev boolean; v_con boolean; BEGIN
+  IF current_setting('probe.rb_post',true)<>'1' OR current_setting('probe.rb_ready',true)<>'1' THEN PERFORM set_config('probe.p337','N/A',false); RETURN; END IF;
+  PERFORM set_config('request.jwt.claims', json_build_object('sub',current_setting('probe.rb_ed',true),'role','authenticated')::text, true);
+  PERFORM set_config('role','authenticated',true);
+  SELECT private.tiene_permiso('delivery') INTO v_before;                 -- catálogo gerente_farmacia: delivery=true
+  PERFORM public.set_permiso_override('gerente_farmacia','delivery',false);  -- REVOCA
+  SELECT private.tiene_permiso('delivery') INTO v_rev;
+  PERFORM public.set_permiso_override('gerente_farmacia','delivery',true);   -- RE-CONCEDE
+  SELECT private.tiene_permiso('delivery') INTO v_con;
+  PERFORM set_config('role','none',true);
+  PERFORM set_config('probe.p337', CASE WHEN v_before AND v_rev=false AND v_con THEN 'OK (true→revoca→false→concede→true)' ELSE 'FALLO (b='||v_before||' rev='||v_rev||' con='||v_con||')' END, false);
+END $$;
+SELECT set_config('role','none',true);
+
+-- P338 — empresa solo lee su propio override (RLS SELECT scoped): editor A no ve override de B
+DO $$ DECLARE v_b int; BEGIN
+  IF current_setting('probe.rb_post',true)<>'1' OR current_setting('probe.rb_ready',true)<>'1' THEN PERFORM set_config('probe.p338','N/A',false); RETURN; END IF;
+  -- sembrar override en B (owner)
+  INSERT INTO public.permisos_empresa_rol_override (empresa_id,rol,accion,concedido) VALUES (current_setting('probe.rb_empB',true)::uuid,'admin','config_empresa',true) ON CONFLICT DO NOTHING;
+  PERFORM set_config('request.jwt.claims', json_build_object('sub',current_setting('probe.rb_ed',true),'role','authenticated')::text, true);
+  PERFORM set_config('role','authenticated',true);
+  SELECT count(*) INTO v_b FROM public.permisos_empresa_rol_override WHERE empresa_id=current_setting('probe.rb_empB',true)::uuid;
+  PERFORM set_config('role','none',true);
+  PERFORM set_config('probe.p338', CASE WHEN v_b=0 THEN 'OK (A no lee override de B)' ELSE 'ROJO (A ve '||v_b||' overrides de B)' END, false);
+END $$;
+SELECT set_config('role','none',true);
+
+-- P339 — write DIRECTO sin RPC denegado
+DO $$ BEGIN
+  IF current_setting('probe.rb_post',true)<>'1' OR current_setting('probe.rb_ready',true)<>'1' THEN PERFORM set_config('probe.p339','N/A',false); RETURN; END IF;
+  PERFORM set_config('request.jwt.claims', json_build_object('sub',current_setting('probe.rb_ed',true),'role','authenticated')::text, true);
+  PERFORM set_config('role','authenticated',true);
+  BEGIN INSERT INTO public.permisos_empresa_rol_override (empresa_id,rol,accion,concedido) VALUES (current_setting('probe.rb_empA',true)::uuid,'cajero','delivery',true);
+    PERFORM set_config('probe.p339','ROJO (INSERT directo permitido — bypassa RPC)',false);
+  EXCEPTION WHEN others THEN PERFORM set_config('probe.p339','BLOQUEADO ('||SQLSTATE||')',false); END;
+  PERFORM set_config('role','none',true);
+END $$;
+SELECT set_config('role','none',true);
+
+-- P340 — rol/accion inválido para el tipo → PR003
+DO $$ DECLARE v1 text:='?'; v2 text:='?'; BEGIN
+  IF current_setting('probe.rb_post',true)<>'1' OR current_setting('probe.rb_ready',true)<>'1' THEN PERFORM set_config('probe.p340','N/A',false); RETURN; END IF;
+  PERFORM set_config('request.jwt.claims', json_build_object('sub',current_setting('probe.rb_ed',true),'role','authenticated')::text, true);
+  PERFORM set_config('role','authenticated',true);
+  BEGIN PERFORM public.set_permiso_override('rol_inexistente','delivery',true); EXCEPTION WHEN others THEN v1:=SQLSTATE; END;
+  BEGIN PERFORM public.set_permiso_override('cajero','accion_inexistente',true); EXCEPTION WHEN others THEN v2:=SQLSTATE; END;
+  PERFORM set_config('role','none',true);
+  PERFORM set_config('probe.p340', CASE WHEN v1='PR003' AND v2='PR003' THEN 'OK (rol y accion inválidos → PR003)' ELSE 'FALLO (rol='||v1||' accion='||v2||')' END, false);
+END $$;
+SELECT set_config('role','none',true);
+
+-- P341 — anon cerrado en override + acciones_techo
+SELECT set_config('request.jwt.claims', json_build_object('role','anon')::text, true);
+SELECT set_config('role','anon',true);
+DO $$ DECLARE n int; BEGIN
+  IF current_setting('probe.rb_post',true)<>'1' THEN PERFORM set_config('probe.p341','N/A',false); RETURN; END IF;
+  BEGIN SELECT (SELECT count(*) FROM public.permisos_empresa_rol_override)+(SELECT count(*) FROM public.acciones_techo) INTO n;
+    PERFORM set_config('probe.p341', CASE WHEN n=0 THEN 'OK (anon no ve override ni techo)' ELSE 'PERMITIDO (anon ve '||n||')' END, false);
+  EXCEPTION WHEN others THEN PERFORM set_config('probe.p341','OK (anon sin acceso: '||SQLSTATE||')',false); END;
+END $$;
+SELECT set_config('role','none',true);
+
+-- P342 — no-lockout: revocar usuarios_roles vía RPC → PR002 (techo) → imposible dejar empresa sin gestor
+DO $$ BEGIN
+  IF current_setting('probe.rb_post',true)<>'1' OR current_setting('probe.rb_ready',true)<>'1' THEN PERFORM set_config('probe.p342','N/A',false); RETURN; END IF;
+  PERFORM set_config('request.jwt.claims', json_build_object('sub',current_setting('probe.rb_ed',true),'role','authenticated')::text, true);
+  PERFORM set_config('role','authenticated',true);
+  BEGIN PERFORM public.set_permiso_override('gerente_farmacia','usuarios_roles',false);
+    PERFORM set_config('probe.p342','ROJO (pudo revocar usuarios_roles — lockout posible)',false);
+  EXCEPTION WHEN others THEN PERFORM set_config('probe.p342','BLOQUEADO ('||SQLSTATE||') — usuarios_roles es techo',false); END;
+  PERFORM set_config('role','none',true);
+END $$;
+SELECT set_config('role','none',true);
+
+-- Cleanup RBAC: borrar overrides sembrados por P332/P333/P337/P338 (no contaminar fixtures posteriores)
+DO $$ BEGIN
+  IF to_regclass('public.permisos_empresa_rol_override') IS NOT NULL THEN
+    DELETE FROM public.permisos_empresa_rol_override
+     WHERE empresa_id IN (NULLIF(current_setting('probe.rb_empA',true),'')::uuid, NULLIF(current_setting('probe.rb_empB',true),'')::uuid);
+  END IF;
+END $$;
+SELECT set_config('request.jwt.claims', NULL, true);
+SELECT set_config('role','none',true);
+
 -- ===== P1 + P4/P5/P6 — anon NO debe insertar (citas/notificaciones/cuentas/empresas) =====
 SELECT set_config('request.jwt.claims', NULL, true);
 SELECT set_config('role', 'anon', true);
@@ -5590,6 +5793,19 @@ UNION ALL SELECT 'P325_estampado_pais',                 current_setting('probe.p
 UNION ALL SELECT 'P326_bolsa_agotada_bloquea',          current_setting('probe.p326', true), 'BLOQUEADO post-116 (ROJO pre)'
 UNION ALL SELECT 'P327_cancelar_libera_bolsa',          current_setting('probe.p327', true), 'OK (POST)'
 UNION ALL SELECT 'P328_medico_subs_intactas',           current_setting('probe.p328', true), 'OK (no-regresión)'
-UNION ALL SELECT 'P329_portal_restante_por_pais',       current_setting('probe.p329', true), 'OK (POST)';
+UNION ALL SELECT 'P329_portal_restante_por_pais',       current_setting('probe.p329', true), 'OK (POST)'
+UNION ALL SELECT 'P330_rbac_maquinaria',                current_setting('probe.p330', true), 'OK post-117 (ROJO pre)'
+UNION ALL SELECT 'P331_equivalencia_dia0_8pares',       current_setting('probe.p331', true), 'OK (no-regresión pre y post)'
+UNION ALL SELECT 'P332_techo_honrado_resolucion',       current_setting('probe.p332', true), 'OK post-117'
+UNION ALL SELECT 'P333_write_positivo_rpc_no_admin',    current_setting('probe.p333', true), 'OK post-117'
+UNION ALL SELECT 'P334_A_no_edita_B',                   current_setting('probe.p334', true), 'OK post-117'
+UNION ALL SELECT 'P335_auto_otorgar_techo_PR002',       current_setting('probe.p335', true), 'BLOQUEADO post-117'
+UNION ALL SELECT 'P336_sin_usuarios_roles_PR001',       current_setting('probe.p336', true), 'BLOQUEADO post-117'
+UNION ALL SELECT 'P337_concede_revoca_correcto',        current_setting('probe.p337', true), 'OK post-117'
+UNION ALL SELECT 'P338_lee_solo_su_override',           current_setting('probe.p338', true), 'OK post-117'
+UNION ALL SELECT 'P339_write_directo_denegado',         current_setting('probe.p339', true), 'BLOQUEADO post-117'
+UNION ALL SELECT 'P340_rol_accion_invalido_PR003',      current_setting('probe.p340', true), 'OK post-117'
+UNION ALL SELECT 'P341_anon_cerrado_rbac',              current_setting('probe.p341', true), 'OK'
+UNION ALL SELECT 'P342_no_lockout_usuarios_roles',      current_setting('probe.p342', true), 'BLOQUEADO post-117';
 
 ROLLBACK;  -- nada de lo anterior se persiste
