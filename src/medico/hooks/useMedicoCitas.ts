@@ -92,90 +92,14 @@ export function useMedicoCitas() {
     cita: CitaConPaciente,
     tipo: 'confirmada' | 'cancelada' | 'en_curso' | 'completada' | 'recordatorio'
   ) => {
-    const pacienteAuthId = (cita.paciente as any)?.auth_user_id
-
-    const fechaStr = new Date(cita.fecha).toLocaleDateString('es-GT', {
-      weekday: 'long', month: 'long', day: 'numeric',
-    })
-    const horaStr = cita.hora_inicio?.slice(0, 5)
-
-    let titulo = ''
-    let mensaje = ''
-    const url = '/paciente/citas'
-    // tipo para la tabla general 'notificaciones' (otros paneles)
-    let tipoGeneral = 'recordatorio_cita'
-
-    if (tipo === 'confirmada') {
-      titulo = 'Cita confirmada'
-      mensaje = `Tu cita para el ${fechaStr} a las ${horaStr} ha sido confirmada por el médico.`
-      tipoGeneral = 'cita_confirmada'
-    } else if (tipo === 'cancelada') {
-      titulo = 'Cita cancelada'
-      mensaje = `Tu cita para el ${fechaStr} a las ${horaStr} ha sido cancelada. Por favor agenda una nueva cita.`
-      tipoGeneral = 'cita_cancelada'
-    } else if (tipo === 'en_curso') {
-      titulo = 'Tu consulta ha comenzado'
-      mensaje = `El médico te ha llamado a consulta para tu cita del ${fechaStr} a las ${horaStr}.`
-      tipoGeneral = 'cita_en_curso'
-    } else if (tipo === 'completada') {
-      titulo = 'Consulta completada'
-      mensaje = `Tu consulta del ${fechaStr} a las ${horaStr} ha finalizado. Revisa tus recetas y órdenes de examen si aplica.`
-      tipoGeneral = 'cita_completada'
-    } else {
-      titulo = 'Recordatorio de cita'
-      mensaje = `Recordatorio: tienes una cita el ${fechaStr} a las ${horaStr}.`
-      tipoGeneral = 'recordatorio_cita'
-    }
-
-    // Campanita del webapp del paciente (tabla notificaciones_pacientes).
-    // Vía RPC SECURITY DEFINER porque el RLS solo permite al propio paciente.
-    // El hook useWebAppNotificaciones tiene realtime, así que aparece al instante.
+    // Camino ÚNICO server-side gateado: notificar_cita_paciente verifica la relación médico/clínica→cita,
+    // compone el contenido server-side, crea AMBAS notificaciones in-app (campanita + general) y dispara
+    // el web-push (pg_net→edge). Reemplaza notificar_paciente + enviar-notificacion + enviar-push
+    // (cierra los dos huecos de confused-deputy para el evento cita). Contenido/target ya NO los pasa el cliente.
     try {
-      await supabase.rpc('notificar_paciente', {
-        p_paciente_id: cita.paciente_id,
-        p_tipo: 'cita',
-        p_titulo: titulo,
-        p_mensaje: mensaje,
-        p_accion_url: url,
-      })
+      await supabase.rpc('notificar_cita_paciente', { p_cita_id: cita.id, p_evento: tipo })
     } catch (e) {
-      console.error('Error notificación campanita:', e)
-    }
-
-    if (!pacienteAuthId) {
-      console.warn('Paciente sin auth_user_id, no se envían in-app/push')
-      return
-    }
-
-    // Notificación in-app (tabla general 'notificaciones')
-    try {
-      await supabase.functions.invoke('enviar-notificacion', {
-        body: {
-          usuario_id: pacienteAuthId,
-          tipo: tipoGeneral,
-          titulo,
-          mensaje,
-          accion_url: url,
-          metadata: { cita_id: cita.id, paciente_id: cita.paciente_id },
-        },
-      })
-    } catch (e) {
-      console.error('Error notificación in-app:', e)
-    }
-
-    // Push notification
-    try {
-      await supabase.functions.invoke('enviar-push', {
-        body: {
-          usuario_ids: [pacienteAuthId],
-          titulo,
-          mensaje,
-          url,
-          tag: `cita-${cita.id}`,
-        },
-      })
-    } catch (e) {
-      console.error('Error push notification:', e)
+      console.error('Error notificar_cita_paciente:', e)
     }
   }
 
