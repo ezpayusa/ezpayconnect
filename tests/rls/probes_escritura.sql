@@ -869,51 +869,14 @@ SELECT set_config('probe.av_emp_member', -- miembro proveedor de la empresa de l
 -- (no es miembro del lab nl_lab ni parte de la visita av_visita).
 SELECT set_config('probe.ajeno', current_setting('probe.np_medico', true), false);
 
--- P37 — promo: anon NO dispara broadcast masivo
-SELECT set_config('request.jwt.claims', NULL, true);
-SELECT set_config('role', 'anon', true);
+-- P37 — RETIRO de feature (red-first): enviar_notificacion_promocion (rota-latente) ya NO existe.
+-- (Era broadcast masivo con DEFAULT 'promocion' que viola el CHECK de notificaciones_pacientes;
+--  retirada en mig 119. P38/P39 — su autorización — eliminados con la feature.)
+SELECT set_config('role','none', true);
 DO $$ BEGIN
-  PERFORM public.enviar_notificacion_promocion('__probe_promo','__probe_promo','general');
-  PERFORM set_config('probe.p37','PERMITIDO (anon disparó broadcast)',false);
-EXCEPTION
-  WHEN insufficient_privilege THEN PERFORM set_config('probe.p37','BLOQUEADO (42501)',false);
-  WHEN others THEN PERFORM set_config('probe.p37','BLOQUEADO ('||SQLSTATE||')',false);
-END $$;
-
--- P38 — promo: un médico (authenticated, no super_admin) NO dispara broadcast
-SELECT set_config('role', 'none', true);
-SELECT set_config('request.jwt.claims',
-  json_build_object('sub', current_setting('probe.np_medico', true), 'role','authenticated')::text, true);
-SELECT set_config('role', 'authenticated', true);
-DO $$ BEGIN
-  PERFORM public.enviar_notificacion_promocion('__probe_promo2','__probe_promo2','general');
-  PERFORM set_config('probe.p38','PERMITIDO (médico disparó broadcast)',false);
-EXCEPTION
-  WHEN others THEN PERFORM set_config('probe.p38','BLOQUEADO ('||SQLSTATE||')',false);
-END $$;
-
--- P39 — promo POSITIVO: super_admin SÍ dispara el broadcast
-SELECT set_config('role', 'none', true);
-SELECT set_config('request.jwt.claims',
-  json_build_object('sub', current_setting('probe.sa', true), 'role','authenticated')::text, true);
-SELECT set_config('role', 'authenticated', true);
-DO $$ BEGIN
-  PERFORM public.enviar_notificacion_promocion('__probe_promo_sa','__probe_promo_sa','general');
-  PERFORM set_config('probe.p39_err','',false);
-EXCEPTION
-  WHEN others THEN PERFORM set_config('probe.p39_err', SQLSTATE, false);
-END $$;
--- Verificación del efecto en rol ELEVADO (la RLS de notificaciones_pacientes
--- ocultaría las filas si se contara como el propio super_admin authenticated).
-SELECT set_config('role', 'none', true);
-DO $$ DECLARE n INT; BEGIN
-  IF NULLIF(current_setting('probe.p39_err', true),'') IS NOT NULL THEN
-    PERFORM set_config('probe.p39','REGRESIÓN (lanzó '||current_setting('probe.p39_err', true)||')',false);
-  ELSE
-    SELECT count(*) INTO n FROM public.notificaciones_pacientes WHERE titulo='__probe_promo_sa';
-    IF n > 0 THEN PERFORM set_config('probe.p39','OK (broadcast a '||n||' pacientes)',false);
-    ELSE PERFORM set_config('probe.p39','REGRESIÓN (no insertó)',false); END IF;
-  END IF;
+  IF to_regprocedure('public.enviar_notificacion_promocion(text,text,text)') IS NULL
+    THEN PERFORM set_config('probe.p37','OK (feature retirada: función ausente)',false);
+    ELSE PERFORM set_config('probe.p37','ROJO (enviar_notificacion_promocion todavía existe)',false); END IF;
 END $$;
 
 -- P40 — notificar_paciente: médico AJENO (sin cita con el paciente) NO notifica
@@ -5536,9 +5499,7 @@ UNION ALL SELECT 'P33_proveedor_ajeno_escribe_comprob',  current_setting('probe.
 UNION ALL SELECT 'P34_proveedor_dueno_escribe_comprob',  current_setting('probe.p34', true), 'OK'
 UNION ALL SELECT 'P35_ajeno_escribe_resultado_lab',      current_setting('probe.p35', true), 'BLOQUEADO'
 UNION ALL SELECT 'P36_lab_dueno_escribe_resultado',      current_setting('probe.p36', true), 'OK'
-UNION ALL SELECT 'P37_anon_broadcast_promo',             current_setting('probe.p37', true), 'BLOQUEADO'
-UNION ALL SELECT 'P38_medico_broadcast_promo',           current_setting('probe.p38', true), 'BLOQUEADO'
-UNION ALL SELECT 'P39_superadmin_broadcast_promo',       current_setting('probe.p39', true), 'OK (>0)'
+UNION ALL SELECT 'P37_promo_feature_retirada',           current_setting('probe.p37', true), 'OK post-119 (ROJO pre)'
 UNION ALL SELECT 'P40_medico_ajeno_notifica_paciente',   current_setting('probe.p40', true), 'BLOQUEADO'
 UNION ALL SELECT 'P41_medico_atiende_notifica_paciente', current_setting('probe.p41', true), 'OK'
 UNION ALL SELECT 'P42_ajeno_notifica_laboratorio',       current_setting('probe.p42', true), 'BLOQUEADO'

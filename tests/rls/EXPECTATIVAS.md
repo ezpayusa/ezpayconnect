@@ -120,9 +120,7 @@ Todas terminan en **ROLLBACK**: nunca persisten, aunque la operación sea permit
 | P34 `proveedor_dueno_escribe_comprob` | (positivo) proveedor sube a SU folder | 🟢 OK | OK | Fase 5 | ✅ **VERDE** (OK) |
 | P35 `ajeno_escribe_resultado_lab` | un ajeno sube un resultado en el folder de otro lab | 🔴 PERMITIDO | BLOQUEADO | Fase 5 | ✅ **VERDE** (42501) |
 | P36 `lab_dueno_escribe_resultado` | (positivo) el lab sube a SU folder (upload legítimo) | 🟢 OK | OK | Fase 5 | ✅ **VERDE** (OK) |
-| P37 `anon_broadcast_promo` | anon dispara broadcast masivo a TODOS los pacientes | 🔴 PERMITIDO | BLOQUEADO | Definer | ✅ **VERDE** (42501) |
-| P38 `medico_broadcast_promo` | médico común (no super_admin) dispara broadcast | 🔴 PERMITIDO | BLOQUEADO | Definer | ✅ **VERDE** (P0001) |
-| P39 `superadmin_broadcast_promo` | (positivo) super_admin sí dispara el broadcast | 🟢 OK (14) | OK (>0) | Definer | ✅ **VERDE** (14) |
+| P37 `promo_feature_retirada` | enviar_notificacion_promocion (rota-latente: default 'promocion' viola CHECK) retirada en mig 119 — función ausente | 🔴 existe | ausente | Limpieza | ✅ **VERDE** (post-119) |
 | P40 `medico_ajeno_notifica_paciente` | médico sin cita con el paciente lo notifica | 🔴 PERMITIDO | BLOQUEADO | Definer | ✅ **VERDE** (P0001) |
 | P41 `medico_atiende_notifica_paciente` | (positivo) el médico que lo atiende notifica | 🟢 OK | OK | Definer | ✅ **VERDE** (OK) |
 | P42 `ajeno_notifica_laboratorio` | un ajeno (no ordenó, no es el lab) notifica al lab | 🔴 PERMITIDO | BLOQUEADO | Definer | ✅ **VERDE** (P0001)† |
