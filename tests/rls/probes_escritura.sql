@@ -6167,6 +6167,46 @@ DO $$ DECLARE v_n int; BEGIN
 END $$;
 SELECT set_config('role','none', true);
 
+-- P384 resiliencia médico-huérfano (regression-protege el guard auth.users del apply, l.49): cita con
+-- medico_id que NO está en auth.users (médico seed sin login) → el RPC NO aborta, fila médico AUSENTE
+-- (saltada por el guard), filas admins PRESENTES. Si el guard se quita, esto FALLA (RPC abortaría por FK).
+SELECT set_config('role','none', true);
+DO $$ DECLARE v_cita bigint; v_med uuid; v_cli uuid; v_pac bigint; v_pauth uuid; BEGIN
+  SELECT c.id, c.medico_id, c.clinica_id, c.paciente_id INTO v_cita, v_med, v_cli, v_pac
+    FROM public.citas c
+    WHERE c.medico_id IS NOT NULL AND NOT EXISTS(SELECT 1 FROM auth.users u WHERE u.id=c.medico_id)   -- médico huérfano
+      AND c.clinica_id IS NOT NULL AND EXISTS(SELECT 1 FROM public.obtener_admins_clinica(c.clinica_id))
+      AND c.paciente_id IS NOT NULL AND EXISTS(SELECT 1 FROM public.pacientes p WHERE p.id=c.paciente_id AND p.auth_user_id IS NOT NULL)
+    ORDER BY c.id LIMIT 1;
+  IF v_cita IS NOT NULL THEN
+    UPDATE public.citas SET estado='solicitada' WHERE id=v_cita;
+    SELECT auth_user_id INTO v_pauth FROM public.pacientes WHERE id=v_pac;
+  END IF;
+  PERFORM set_config('probe.h_ready', CASE WHEN v_cita IS NOT NULL AND v_pauth IS NOT NULL THEN '1' ELSE '0' END, false);
+  PERFORM set_config('probe.h_cita', coalesce(v_cita::text,''), false);
+  PERFORM set_config('probe.h_med', coalesce(v_med::text,''), false);
+  PERFORM set_config('probe.h_cli', coalesce(v_cli::text,''), false);
+  PERFORM set_config('probe.h_pauth', coalesce(v_pauth::text,''), false);
+END $$;
+SELECT set_config('request.jwt.claims', json_build_object('sub', current_setting('probe.h_pauth',true), 'role','authenticated')::text, true);
+SELECT set_config('role','authenticated', true);
+DO $$ BEGIN
+  IF current_setting('probe.h_ready',true)<>'1' OR to_regprocedure('public.notificar_cita_solicitada(bigint)') IS NULL THEN PERFORM set_config('probe.h_done','SKIP',false); RETURN; END IF;
+  BEGIN PERFORM public.notificar_cita_solicitada(current_setting('probe.h_cita',true)::bigint); PERFORM set_config('probe.h_done','OK',false);
+  EXCEPTION WHEN others THEN PERFORM set_config('probe.h_done','ERR:'||SQLSTATE,false); END;
+END $$;
+SELECT set_config('role','none', true);
+DO $$ DECLARE v_med_n int; v_adm_n int; v_d text; BEGIN
+  v_d := current_setting('probe.h_done',true);
+  IF coalesce(v_d,'')='' OR v_d='SKIP' THEN PERFORM set_config('probe.p384','N/A (sin cita médico-huérfano apta)',false); RETURN; END IF;
+  IF v_d LIKE 'ERR:%' THEN PERFORM set_config('probe.p384','FALLO (RPC abortó '||v_d||' — guard auth.users removido/roto)',false); RETURN; END IF;
+  SELECT count(*) INTO v_med_n FROM public.notificaciones WHERE usuario_id=current_setting('probe.h_med',true)::uuid AND titulo='Nueva cita solicitada' AND created_at > now()-interval '2 minutes';
+  SELECT count(*) INTO v_adm_n FROM public.notificaciones WHERE usuario_id IN (SELECT user_id FROM public.obtener_admins_clinica(current_setting('probe.h_cli',true)::uuid)) AND titulo='Nueva solicitud de cita' AND created_at > now()-interval '2 minutes';
+  IF v_med_n=0 AND v_adm_n>0 THEN PERFORM set_config('probe.p384','OK (médico huérfano saltado, admins notificados '||v_adm_n||' — RPC resiliente)',false);
+  ELSE PERFORM set_config('probe.p384','FALLO (med_n='||v_med_n||' adm_n='||v_adm_n||')',false); END IF;
+END $$;
+SELECT set_config('role','none', true);
+
 -- ===== Veredictos como result set =====
 SELECT 'P1_anon_insert_citas'              AS probe, current_setting('probe.p1', true)  AS verdict, 'BLOQUEADO' AS esperado_post_fix
 UNION ALL SELECT 'P2_medico_cancela_ajena_rpc',         current_setting('probe.p2', true),  'BLOQUEADO'
@@ -6541,6 +6581,7 @@ UNION ALL SELECT 'P379_evt5_medico_derivado',            current_setting('probe.
 UNION ALL SELECT 'P380_evt5_medico_visibilidad',         current_setting('probe.p380', true), 'OK post-125'
 UNION ALL SELECT 'P381_evt5_admins_derivados',           current_setting('probe.p381', true), 'OK post-125'
 UNION ALL SELECT 'P382_evt5_phi_sin_motivo',             current_setting('probe.p382', true), 'OK post-125'
-UNION ALL SELECT 'P383_evt5_admin_visibilidad',          current_setting('probe.p383', true), 'OK post-125';
+UNION ALL SELECT 'P383_evt5_admin_visibilidad',          current_setting('probe.p383', true), 'OK post-125'
+UNION ALL SELECT 'P384_evt5_medico_huerfano_resiliente', current_setting('probe.p384', true), 'OK (médico skip, admins reciben)';
 
 ROLLBACK;  -- nada de lo anterior se persiste
