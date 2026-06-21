@@ -367,66 +367,15 @@ export default function AgendarCitaModal({ pacienteId, pacienteNombre, paisIdPro
           .eq('id', pacienteId)
       }
 
-      // Notificación in-app al médico si fue seleccionado
-      if (medicoId && citaCreada?.id) {
+      // Camino ÚNICO server-side gateado: notificar_cita_solicitada(cita.id) UNA vez al crear la cita.
+      // Deriva destinatarios de la cita (médico + admins de la clínica), compone contenido server-side
+      // (PHI mínimo, sin motivo) y crea las notif in-app + web-push. Reemplaza los 2 enviar-notificacion
+      // (médico + loop admins) + enviar-push (gate = paciente dueño; cero recipient/contenido del caller).
+      if (citaCreada?.id) {
         try {
-          const nombrePaciente = pacienteNombre || 'Un paciente'
-          const fechaStr = new Date(form.fecha).toLocaleDateString('es-GT', {
-            weekday: 'long', month: 'long', day: 'numeric'
-          })
-
-          await supabase.functions.invoke('enviar-notificacion', {
-            body: {
-              usuario_id: medicoId,
-              tipo: 'cita_nueva',
-              titulo: 'Nueva cita solicitada',
-              mensaje: `${nombrePaciente} ha solicitado una cita para el ${fechaStr} a las ${form.hora_inicio.slice(0, 5)}. Motivo: ${form.motivo || 'Consulta general'}`,
-              accion_url: '/medico/citas',
-              metadata: { cita_id: citaCreada.id, paciente_id: pacienteId },
-            },
-          })
-
-          // Notificación push al médico
-          await supabase.functions.invoke('enviar-push', {
-            body: {
-              usuario_ids: [medicoId],
-              titulo: 'Nueva cita solicitada',
-              mensaje: `${nombrePaciente} ha solicitado una cita para el ${fechaStr}.`,
-              url: '/medico/citas',
-              tag: `cita-${citaCreada.id}`,
-            },
-          })
+          await supabase.rpc('notificar_cita_solicitada', { p_cita_id: citaCreada.id })
         } catch (notifErr) {
-          console.error('Error enviando notificación al médico:', notifErr)
-          // No fallar la cita si la notificación falla
-        }
-      }
-
-      // Notificación in-app a los admins de la clínica (campanita del panel)
-      if (clinicaIdFinal && citaCreada?.id) {
-        try {
-          const nombrePaciente = pacienteNombre || 'Un paciente'
-          const fechaStr = new Date(form.fecha).toLocaleDateString('es-GT', {
-            weekday: 'long', month: 'long', day: 'numeric'
-          })
-
-          const { data: admins } = await supabase
-            .rpc('obtener_admins_clinica', { p_clinica_id: clinicaIdFinal })
-
-          for (const admin of (admins || []) as { user_id: string }[]) {
-            await supabase.functions.invoke('enviar-notificacion', {
-              body: {
-                usuario_id: admin.user_id,
-                tipo: 'in-app',
-                titulo: 'Nueva solicitud de cita',
-                mensaje: `${nombrePaciente} solicitó una cita para el ${fechaStr} a las ${form.hora_inicio.slice(0, 5)}. Pendiente de aprobación.`,
-                accion_url: '/clinica/citas',
-                metadata: { cita_id: citaCreada.id, paciente_id: pacienteId },
-              },
-            })
-          }
-        } catch (notifErr) {
-          console.error('Error notificando a la clínica:', notifErr)
+          console.error('Error notificar_cita_solicitada:', notifErr)
           // No fallar la cita si la notificación falla
         }
       }
