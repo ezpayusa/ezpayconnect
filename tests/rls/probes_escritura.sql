@@ -6399,6 +6399,230 @@ DO $$ DECLARE v_n int; v_flag boolean; BEGIN
 END $$;
 SELECT set_config('role','none', true);
 
+-- ============================================================
+-- Fix push transaccional · EVENTO 7 (cancelación → médico + admins) (P395–P403). Red-first.
+-- ============================================================
+-- Fixtures: cita cancelada (médico auth + clínica con admins + paciente auth, motivo sentinel); cita médico-huérfano cancelada; cita NO-cancelada
+SELECT set_config('role','none', true);
+DO $$ DECLARE v_cita bigint; v_med uuid; v_cli uuid; v_pac bigint; v_pauth uuid; v_admin uuid; v_otherpauth uuid;
+  v_ocita bigint; v_opauth uuid; v_ocli uuid; v_omed uuid; v_nc bigint; v_ncpauth uuid; BEGIN
+  -- main (positivos): cita con médico(auth)+clínica(admins)+paciente(auth) → cancelada, motivo sentinel
+  SELECT c.id,c.medico_id,c.clinica_id,c.paciente_id INTO v_cita,v_med,v_cli,v_pac
+    FROM public.citas c WHERE c.medico_id IS NOT NULL AND c.clinica_id IS NOT NULL AND c.paciente_id IS NOT NULL
+      AND EXISTS(SELECT 1 FROM public.perfiles p WHERE p.id=c.medico_id)
+      AND EXISTS(SELECT 1 FROM public.pacientes pa WHERE pa.id=c.paciente_id AND pa.auth_user_id IS NOT NULL)
+      AND EXISTS(SELECT 1 FROM public.obtener_admins_clinica(c.clinica_id)) ORDER BY c.id LIMIT 1;
+  IF v_cita IS NOT NULL THEN
+    UPDATE public.citas SET estado='cancelada', motivo_cancelacion='PHIMOTIVO7SECRETO' WHERE id=v_cita;  -- notificado_cancelacion queda en su DEFAULT false
+    SELECT auth_user_id INTO v_pauth FROM public.pacientes WHERE id=v_pac;
+    SELECT user_id INTO v_admin FROM public.obtener_admins_clinica(v_cli) ORDER BY user_id LIMIT 1;
+  END IF;
+  SELECT auth_user_id INTO v_otherpauth FROM public.pacientes WHERE id<>v_pac AND auth_user_id IS NOT NULL ORDER BY id LIMIT 1;
+  -- médico-huérfano: cita con medico_id NO en auth.users + admins + paciente auth → cancelada
+  SELECT c.id,c.medico_id,c.clinica_id INTO v_ocita,v_omed,v_ocli FROM public.citas c
+    WHERE c.medico_id IS NOT NULL AND NOT EXISTS(SELECT 1 FROM auth.users u WHERE u.id=c.medico_id)
+      AND c.clinica_id IS NOT NULL AND EXISTS(SELECT 1 FROM public.obtener_admins_clinica(c.clinica_id))
+      AND c.paciente_id IS NOT NULL AND EXISTS(SELECT 1 FROM public.pacientes pa WHERE pa.id=c.paciente_id AND pa.auth_user_id IS NOT NULL) ORDER BY c.id LIMIT 1;
+  IF v_ocita IS NOT NULL THEN
+    UPDATE public.citas SET estado='cancelada' WHERE id=v_ocita;
+    SELECT auth_user_id INTO v_opauth FROM public.pacientes WHERE id=(SELECT paciente_id FROM public.citas WHERE id=v_ocita);
+  END IF;
+  -- no-cancelada (P397): cita estado≠cancelada owned by paciente auth
+  SELECT c.id, pa.auth_user_id INTO v_nc, v_ncpauth FROM public.citas c JOIN public.pacientes pa ON pa.id=c.paciente_id
+    WHERE c.estado NOT IN ('cancelada') AND pa.auth_user_id IS NOT NULL ORDER BY c.id LIMIT 1;
+  PERFORM set_config('probe.c7_ready', CASE WHEN v_cita IS NOT NULL AND v_pauth IS NOT NULL THEN '1' ELSE '0' END, false);
+  PERFORM set_config('probe.c7_cita', coalesce(v_cita::text,''), false);
+  PERFORM set_config('probe.c7_med', coalesce(v_med::text,''), false);
+  PERFORM set_config('probe.c7_cli', coalesce(v_cli::text,''), false);
+  PERFORM set_config('probe.c7_pauth', coalesce(v_pauth::text,''), false);
+  PERFORM set_config('probe.c7_admin', coalesce(v_admin::text,''), false);
+  PERFORM set_config('probe.c7_otherpauth', coalesce(v_otherpauth::text,''), false);
+  PERFORM set_config('probe.c7_ocita', coalesce(v_ocita::text,''), false);
+  PERFORM set_config('probe.c7_opauth', coalesce(v_opauth::text,''), false);
+  PERFORM set_config('probe.c7_ocli', coalesce(v_ocli::text,''), false);
+  PERFORM set_config('probe.c7_omed', coalesce(v_omed::text,''), false);
+  PERFORM set_config('probe.c7_nc', coalesce(v_nc::text,''), false);
+  PERFORM set_config('probe.c7_ncpauth', coalesce(v_ncpauth::text,''), false);
+END $$;
+
+-- P395 estructural
+DO $$ DECLARE v_def boolean; v_cfg text[]; v_sp boolean; v_anon boolean; v_auth boolean; v_args text; v_col boolean; BEGIN
+  IF to_regprocedure('public.notificar_cancelacion(bigint)') IS NULL THEN PERFORM set_config('probe.p395','ROJO (ausente)',false); RETURN; END IF;
+  SELECT prosecdef, proconfig INTO v_def, v_cfg FROM pg_proc WHERE oid='public.notificar_cancelacion(bigint)'::regprocedure;
+  v_sp := EXISTS(SELECT 1 FROM unnest(coalesce(v_cfg,'{}'::text[])) e WHERE e LIKE 'search_path=%' AND e <> 'search_path=public');
+  v_anon := has_function_privilege('anon','public.notificar_cancelacion(bigint)','EXECUTE');
+  v_auth := has_function_privilege('authenticated','public.notificar_cancelacion(bigint)','EXECUTE');
+  SELECT pg_get_function_identity_arguments('public.notificar_cancelacion(bigint)'::regprocedure) INTO v_args;
+  v_col := EXISTS(SELECT 1 FROM information_schema.columns WHERE table_name='citas' AND column_name='notificado_cancelacion');
+  IF v_def AND v_sp AND NOT v_anon AND v_auth AND v_args LIKE '%bigint%' AND v_args NOT LIKE '%text%' AND v_col
+    THEN PERFORM set_config('probe.p395','OK (DEFINER+sp'', anon✗/auth✓, firma bigint, columna notificado_cancelacion)',false);
+    ELSE PERFORM set_config('probe.p395','ROJO (def='||v_def||' sp='||v_sp||' anon='||v_anon||' auth='||v_auth||' args='||v_args||' col='||v_col||')',false); END IF;
+END $$;
+
+-- P396 spoof: otro paciente → PT002 ; no-paciente (médico) → PT002
+SELECT set_config('request.jwt.claims', json_build_object('sub', current_setting('probe.c7_otherpauth',true), 'role','authenticated')::text, true);
+SELECT set_config('role','authenticated', true);
+DO $$ DECLARE v_a text; BEGIN
+  IF current_setting('probe.c7_ready',true)<>'1' OR to_regprocedure('public.notificar_cancelacion(bigint)') IS NULL OR current_setting('probe.c7_otherpauth',true)='' THEN PERFORM set_config('probe.c7_spoof','SKIP',false); RETURN; END IF;
+  BEGIN PERFORM public.notificar_cancelacion(current_setting('probe.c7_cita',true)::bigint); v_a:='PERMITIDO'; EXCEPTION WHEN others THEN v_a:=SQLSTATE; END;
+  PERFORM set_config('probe.c7_spoof', v_a, false);
+END $$;
+SELECT set_config('request.jwt.claims', json_build_object('sub', current_setting('probe.c7_med',true), 'role','authenticated')::text, true);
+DO $$ DECLARE v_b text; BEGIN
+  IF current_setting('probe.c7_ready',true)<>'1' OR to_regprocedure('public.notificar_cancelacion(bigint)') IS NULL THEN PERFORM set_config('probe.p396','N/A',false); RETURN; END IF;
+  BEGIN PERFORM public.notificar_cancelacion(current_setting('probe.c7_cita',true)::bigint); v_b:='PERMITIDO'; EXCEPTION WHEN others THEN v_b:=SQLSTATE; END;
+  PERFORM set_config('probe.p396', CASE WHEN current_setting('probe.c7_spoof',true)='PT002' AND v_b='PT002' THEN 'BLOQUEADO (otro-paciente + no-paciente PT002)' ELSE 'FALLO (otro='||current_setting('probe.c7_spoof',true)||' no-pac='||v_b||')' END, false);
+END $$;
+SELECT set_config('role','none', true);
+
+-- P397 estado≠cancelada → PT004
+SELECT set_config('request.jwt.claims', json_build_object('sub', current_setting('probe.c7_ncpauth',true), 'role','authenticated')::text, true);
+SELECT set_config('role','authenticated', true);
+DO $$ BEGIN
+  IF current_setting('probe.c7_ready',true)<>'1' OR to_regprocedure('public.notificar_cancelacion(bigint)') IS NULL OR coalesce(current_setting('probe.c7_nc',true),'')='' THEN PERFORM set_config('probe.p397','N/A',false); RETURN; END IF;
+  BEGIN PERFORM public.notificar_cancelacion(current_setting('probe.c7_nc',true)::bigint); PERFORM set_config('probe.p397','PERMITIDO (notificó cita no-cancelada)',false);
+  EXCEPTION WHEN others THEN PERFORM set_config('probe.p397','BLOQUEADO ('||SQLSTATE||')',false); END;
+END $$;
+SELECT set_config('role','none', true);
+
+-- P398 gate-antes-claim: no-remitente → PT002 + notificado_cancelacion SIGUE false; luego legítimo → notifica
+SELECT set_config('request.jwt.claims', json_build_object('sub', current_setting('probe.c7_otherpauth',true), 'role','authenticated')::text, true);
+SELECT set_config('role','authenticated', true);
+DO $$ DECLARE v_e text; BEGIN
+  IF current_setting('probe.c7_ready',true)<>'1' OR to_regprocedure('public.notificar_cancelacion(bigint)') IS NULL THEN PERFORM set_config('probe.c7_denied','SKIP',false); RETURN; END IF;
+  BEGIN PERFORM public.notificar_cancelacion(current_setting('probe.c7_cita',true)::bigint); v_e:='PERMITIDO'; EXCEPTION WHEN others THEN v_e:=SQLSTATE; END;
+  PERFORM set_config('probe.c7_denied', v_e, false);
+END $$;
+SELECT set_config('role','none', true);
+DO $$ DECLARE v_flag boolean; BEGIN
+  IF to_regprocedure('public.notificar_cancelacion(bigint)') IS NULL OR NOT EXISTS(SELECT 1 FROM information_schema.columns WHERE table_name='citas' AND column_name='notificado_cancelacion') OR coalesce(current_setting('probe.c7_cita',true),'')='' THEN PERFORM set_config('probe.c7_flag','∅',false); RETURN; END IF;
+  SELECT notificado_cancelacion INTO v_flag FROM public.citas WHERE id=current_setting('probe.c7_cita',true)::bigint;
+  PERFORM set_config('probe.c7_flag', coalesce(v_flag::text,'∅'), false);
+END $$;
+SELECT set_config('request.jwt.claims', json_build_object('sub', current_setting('probe.c7_pauth',true), 'role','authenticated')::text, true);
+SELECT set_config('role','authenticated', true);
+DO $$ BEGIN
+  IF current_setting('probe.c7_ready',true)<>'1' OR current_setting('probe.c7_pauth',true)='' THEN PERFORM set_config('probe.c7_legit','SKIP',false); RETURN; END IF;
+  BEGIN PERFORM public.notificar_cancelacion(current_setting('probe.c7_cita',true)::bigint); PERFORM set_config('probe.c7_legit','OK',false);
+  EXCEPTION WHEN others THEN PERFORM set_config('probe.c7_legit','ERR:'||SQLSTATE,false); END;
+END $$;
+SELECT set_config('role','none', true);
+DO $$ DECLARE v_med_ok boolean; BEGIN
+  IF coalesce(current_setting('probe.c7_denied',true),'')='' OR current_setting('probe.c7_denied',true)='SKIP' THEN PERFORM set_config('probe.p398','N/A',false); RETURN; END IF;
+  SELECT EXISTS(SELECT 1 FROM public.notificaciones WHERE usuario_id=current_setting('probe.c7_med',true)::uuid AND tipo='cita_cancelada' AND accion_url='/medico/citas' AND created_at>now()-interval '2 minutes') INTO v_med_ok;
+  IF current_setting('probe.c7_denied',true)='PT002' AND current_setting('probe.c7_flag',true)='false' AND current_setting('probe.c7_legit',true)='OK' AND v_med_ok
+    THEN PERFORM set_config('probe.p398','OK (denegado PT002 sin quemar flag; legítimo notifica)',false);
+    ELSE PERFORM set_config('probe.p398','FALLO (denied='||current_setting('probe.c7_denied',true)||' flag='||current_setting('probe.c7_flag',true)||' legit='||current_setting('probe.c7_legit',true)||' med='||COALESCE(v_med_ok::text,'∅')||')',false); END IF;
+END $$;
+
+-- P399 médico derivado + visibilidad RLS
+DO $$ DECLARE v_ok boolean; BEGIN
+  IF current_setting('probe.c7_legit',true) IS DISTINCT FROM 'OK' THEN PERFORM set_config('probe.p399','N/A',false); RETURN; END IF;
+  SELECT EXISTS(SELECT 1 FROM public.notificaciones WHERE usuario_id=current_setting('probe.c7_med',true)::uuid AND tipo='cita_cancelada' AND titulo='Cita cancelada por el paciente' AND accion_url='/medico/citas' AND created_at>now()-interval '2 minutes') INTO v_ok;
+  PERFORM set_config('probe.p399', CASE WHEN v_ok THEN 'OK (fila médico derivada, /medico/citas)' ELSE 'FALLO (sin fila médico)' END, false);
+END $$;
+SELECT set_config('request.jwt.claims', json_build_object('sub', current_setting('probe.c7_med',true), 'role','authenticated')::text, true);
+SELECT set_config('role','authenticated', true);
+DO $$ DECLARE v_n int; BEGIN
+  IF current_setting('probe.c7_legit',true) IS DISTINCT FROM 'OK' THEN RETURN; END IF;
+  SELECT count(*) INTO v_n FROM public.notificaciones WHERE usuario_id=current_setting('probe.c7_med',true)::uuid AND tipo='cita_cancelada' AND created_at>now()-interval '2 minutes';
+  PERFORM set_config('probe.p399', CASE WHEN v_n>0 AND current_setting('probe.p399',true) LIKE 'OK%' THEN current_setting('probe.p399',true)||' + médico lee (RLS)' ELSE 'FALLO (visibilidad médico n='||v_n||')' END, false);
+END $$;
+SELECT set_config('role','none', true);
+
+-- P400 admins derivados (0 ajenos) + visibilidad RLS
+DO $$ DECLARE v_n int; v_esp int; v_fuera int; BEGIN
+  IF current_setting('probe.c7_legit',true) IS DISTINCT FROM 'OK' THEN PERFORM set_config('probe.p400','N/A',false); RETURN; END IF;
+  SELECT count(*) INTO v_n FROM public.notificaciones WHERE usuario_id IN (SELECT user_id FROM public.obtener_admins_clinica(current_setting('probe.c7_cli',true)::uuid)) AND tipo='cita_cancelada' AND accion_url='/clinica/citas' AND created_at>now()-interval '2 minutes';
+  SELECT count(*) INTO v_esp FROM public.obtener_admins_clinica(current_setting('probe.c7_cli',true)::uuid);
+  SELECT count(*) INTO v_fuera FROM public.notificaciones WHERE tipo='cita_cancelada' AND accion_url='/clinica/citas' AND created_at>now()-interval '2 minutes' AND usuario_id NOT IN (SELECT user_id FROM public.obtener_admins_clinica(current_setting('probe.c7_cli',true)::uuid));
+  PERFORM set_config('probe.p400', CASE WHEN v_n=v_esp AND v_n>0 AND v_fuera=0 THEN 'OK (admins '||v_n||'/'||v_esp||', 0 ajenos)' ELSE 'FALLO (n='||v_n||' esp='||v_esp||' fuera='||v_fuera||')' END, false);
+END $$;
+SELECT set_config('request.jwt.claims', json_build_object('sub', current_setting('probe.c7_admin',true), 'role','authenticated')::text, true);
+SELECT set_config('role','authenticated', true);
+DO $$ DECLARE v_n int; BEGIN
+  IF current_setting('probe.c7_legit',true) IS DISTINCT FROM 'OK' OR current_setting('probe.c7_admin',true)='' THEN RETURN; END IF;
+  SELECT count(*) INTO v_n FROM public.notificaciones WHERE usuario_id=current_setting('probe.c7_admin',true)::uuid AND tipo='cita_cancelada' AND created_at>now()-interval '2 minutes';
+  IF NOT (v_n>0) THEN PERFORM set_config('probe.p400','FALLO (admin no lee su fila RLS)',false);
+  ELSIF current_setting('probe.p400',true) LIKE 'OK%' THEN PERFORM set_config('probe.p400', current_setting('probe.p400',true)||' + admin lee (RLS)', false); END IF;
+END $$;
+SELECT set_config('role','none', true);
+
+-- P401 médico-huérfano: cancelación con medico_id NO en auth.users → fila médico AUSENTE, sin abortar.
+-- CALL bajo paciente (jwt); CONTEO bajo OWNER (role none) — RLS le oculta al paciente las filas de médico/admin (eco P391).
+SELECT set_config('request.jwt.claims', json_build_object('sub', current_setting('probe.c7_opauth',true), 'role','authenticated')::text, true);
+SELECT set_config('role','authenticated', true);
+DO $$ DECLARE v_e text; BEGIN
+  IF current_setting('probe.c7_ready',true)<>'1' OR to_regprocedure('public.notificar_cancelacion(bigint)') IS NULL OR coalesce(current_setting('probe.c7_ocita',true),'')='' OR current_setting('probe.c7_opauth',true)='' THEN PERFORM set_config('probe.c7_ocall','SKIP',false); RETURN; END IF;
+  BEGIN PERFORM public.notificar_cancelacion(current_setting('probe.c7_ocita',true)::bigint); v_e:='OK'; EXCEPTION WHEN others THEN v_e:='ERR:'||SQLSTATE; END;
+  PERFORM set_config('probe.c7_ocall', v_e, false);
+END $$;
+SELECT set_config('role','none', true);
+DO $$ DECLARE v_med_n int; v_adm_n int; BEGIN
+  IF coalesce(current_setting('probe.c7_ocall',true),'')='' OR current_setting('probe.c7_ocall',true)='SKIP' THEN PERFORM set_config('probe.p401','N/A (sin cita médico-huérfano)',false); RETURN; END IF;
+  IF current_setting('probe.c7_ocall',true) LIKE 'ERR:%' THEN PERFORM set_config('probe.p401','FALLO (RPC abortó '||current_setting('probe.c7_ocall',true)||')',false); RETURN; END IF;
+  SELECT count(*) INTO v_med_n FROM public.notificaciones WHERE usuario_id=current_setting('probe.c7_omed',true)::uuid AND tipo='cita_cancelada' AND created_at>now()-interval '2 minutes';
+  SELECT count(*) INTO v_adm_n FROM public.notificaciones WHERE usuario_id IN (SELECT user_id FROM public.obtener_admins_clinica(current_setting('probe.c7_ocli',true)::uuid)) AND tipo='cita_cancelada' AND created_at>now()-interval '2 minutes';
+  PERFORM set_config('probe.p401', CASE WHEN v_med_n=0 AND v_adm_n>0 THEN 'OK (médico huérfano saltado, admins notificados '||v_adm_n||')' ELSE 'FALLO (med_n='||v_med_n||' adm_n='||v_adm_n||')' END, false);
+END $$;
+SELECT set_config('role','none', true);
+
+-- P402 PHI: el motivo NO está en el contenido
+DO $$ DECLARE v_leak int; BEGIN
+  IF current_setting('probe.c7_legit',true) IS DISTINCT FROM 'OK' THEN PERFORM set_config('probe.p402','N/A',false); RETURN; END IF;
+  SELECT count(*) INTO v_leak FROM public.notificaciones WHERE titulo='Cita cancelada por el paciente' AND mensaje LIKE '%PHIMOTIVO7SECRETO%' AND created_at>now()-interval '2 minutes';
+  PERFORM set_config('probe.p402', CASE WHEN v_leak=0 THEN 'OK (motivo NO en el contenido)' ELSE 'FALLO (motivo filtrado en '||v_leak||' filas)' END, false);
+END $$;
+
+-- P403 idempotencia: 2º call → 0 fila nueva (conteo owner)
+SELECT set_config('role','none', true);
+DO $$ BEGIN
+  IF current_setting('probe.c7_legit',true) IS DISTINCT FROM 'OK' THEN PERFORM set_config('probe.c7_before','',false); RETURN; END IF;
+  PERFORM set_config('probe.c7_before', (SELECT count(*)::text FROM public.notificaciones WHERE usuario_id=current_setting('probe.c7_med',true)::uuid AND tipo='cita_cancelada' AND created_at>now()-interval '3 minutes'), false);
+END $$;
+SELECT set_config('request.jwt.claims', json_build_object('sub', current_setting('probe.c7_pauth',true), 'role','authenticated')::text, true);
+SELECT set_config('role','authenticated', true);
+DO $$ BEGIN
+  IF coalesce(current_setting('probe.c7_before',true),'')='' THEN RETURN; END IF;
+  PERFORM public.notificar_cancelacion(current_setting('probe.c7_cita',true)::bigint);  -- 2º call (ya notificado → no-op)
+END $$;
+SELECT set_config('role','none', true);
+DO $$ DECLARE v_after int; v_before int; BEGIN
+  IF coalesce(current_setting('probe.c7_before',true),'')='' THEN PERFORM set_config('probe.p403','N/A',false); RETURN; END IF;
+  v_before := current_setting('probe.c7_before',true)::int;
+  SELECT count(*) INTO v_after FROM public.notificaciones WHERE usuario_id=current_setting('probe.c7_med',true)::uuid AND tipo='cita_cancelada' AND created_at>now()-interval '3 minutes';
+  PERFORM set_config('probe.p403', CASE WHEN v_after=v_before AND v_before>0 THEN 'OK (2º call sin fila nueva: '||v_after||'='||v_before||')' ELSE 'FALLO (before='||v_before||' after='||v_after||')' END, false);
+END $$;
+SELECT set_config('role','none', true);
+
+-- P404 reactivación: cancelada→agendada resetea notificado_cancelacion (trigger) → re-cancelar RE-notifica.
+-- (Tras P403, c7_cita está cancelada + flag=true. Reactivo, verifico reset, re-cancelo, re-notifico.)
+SELECT set_config('role','none', true);
+DO $$ DECLARE v_flag boolean; BEGIN
+  IF current_setting('probe.c7_legit',true) IS DISTINCT FROM 'OK' OR to_regprocedure('public.notificar_cancelacion(bigint)') IS NULL OR NOT EXISTS(SELECT 1 FROM information_schema.columns WHERE table_name='citas' AND column_name='notificado_cancelacion') THEN PERFORM set_config('probe.c7_react','SKIP',false); RETURN; END IF;
+  UPDATE public.citas SET estado='agendada' WHERE id=current_setting('probe.c7_cita',true)::bigint;   -- reactivación (trigger debe resetear)
+  SELECT notificado_cancelacion INTO v_flag FROM public.citas WHERE id=current_setting('probe.c7_cita',true)::bigint;
+  PERFORM set_config('probe.c7_flag_react', coalesce(v_flag::text,'∅'), false);
+  UPDATE public.citas SET estado='cancelada' WHERE id=current_setting('probe.c7_cita',true)::bigint;   -- re-cancelación
+  PERFORM set_config('probe.c7_react','READY',false);
+END $$;
+SELECT set_config('request.jwt.claims', json_build_object('sub', current_setting('probe.c7_pauth',true), 'role','authenticated')::text, true);
+SELECT set_config('role','authenticated', true);
+DO $$ BEGIN
+  IF current_setting('probe.c7_react',true) IS DISTINCT FROM 'READY' THEN PERFORM set_config('probe.c7_react','SKIP2',false); RETURN; END IF;
+  PERFORM public.notificar_cancelacion(current_setting('probe.c7_cita',true)::bigint);  -- re-notif (flag reseteado → debe pasar)
+  PERFORM set_config('probe.c7_react','DONE',false);
+END $$;
+SELECT set_config('role','none', true);
+DO $$ DECLARE v_n int; BEGIN
+  IF current_setting('probe.c7_react',true) IS DISTINCT FROM 'DONE' THEN PERFORM set_config('probe.p404', CASE WHEN current_setting('probe.c7_react',true)='SKIP' THEN 'N/A' ELSE 'FALLO (re-notif no corrió: '||current_setting('probe.c7_react',true)||')' END, false); RETURN; END IF;
+  SELECT count(*) INTO v_n FROM public.notificaciones WHERE usuario_id=current_setting('probe.c7_med',true)::uuid AND tipo='cita_cancelada' AND created_at>now()-interval '5 minutes';
+  IF current_setting('probe.c7_flag_react',true)='false' AND v_n>=2
+    THEN PERFORM set_config('probe.p404','OK (reactivación reseteó flag; re-cancelación re-notificó, filas médico='||v_n||')',false);
+    ELSE PERFORM set_config('probe.p404','FALLO (flag_post_react='||current_setting('probe.c7_flag_react',true)||' filas='||v_n||')',false); END IF;
+END $$;
+SELECT set_config('role','none', true);
+
 -- ===== Veredictos como result set =====
 SELECT 'P1_anon_insert_citas'              AS probe, current_setting('probe.p1', true)  AS verdict, 'BLOQUEADO' AS esperado_post_fix
 UNION ALL SELECT 'P2_medico_cancela_ajena_rpc',         current_setting('probe.p2', true),  'BLOQUEADO'
@@ -6784,6 +7008,16 @@ UNION ALL SELECT 'P390_evt6_phi_sin_texto',              current_setting('probe.
 UNION ALL SELECT 'P391_evt6_idempotencia',               current_setting('probe.p391', true), 'OK post-126'
 UNION ALL SELECT 'P392_evt6_medico_visibilidad',         current_setting('probe.p392', true), 'OK post-126'
 UNION ALL SELECT 'P393_evt6_paciente_visibilidad',       current_setting('probe.p393', true), 'OK post-126'
-UNION ALL SELECT 'P394_evt6_gate_relacion',              current_setting('probe.p394', true), 'OK post-126 (targeting arbitrario bloqueado)';
+UNION ALL SELECT 'P394_evt6_gate_relacion',              current_setting('probe.p394', true), 'OK post-126 (targeting arbitrario bloqueado)'
+UNION ALL SELECT 'P395_evt7_estructural',                current_setting('probe.p395', true), 'OK post-127 (ROJO pre)'
+UNION ALL SELECT 'P396_evt7_spoof_denegado',             current_setting('probe.p396', true), 'BLOQUEADO (PT002 x2)'
+UNION ALL SELECT 'P397_evt7_estado_no_cancelada',        current_setting('probe.p397', true), 'BLOQUEADO (PT004)'
+UNION ALL SELECT 'P398_evt7_gate_antes_claim',           current_setting('probe.p398', true), 'OK post-127'
+UNION ALL SELECT 'P399_evt7_medico_derivado',            current_setting('probe.p399', true), 'OK post-127'
+UNION ALL SELECT 'P400_evt7_admins_derivados',           current_setting('probe.p400', true), 'OK post-127'
+UNION ALL SELECT 'P401_evt7_medico_huerfano',            current_setting('probe.p401', true), 'OK post-127'
+UNION ALL SELECT 'P402_evt7_phi_sin_motivo',             current_setting('probe.p402', true), 'OK post-127'
+UNION ALL SELECT 'P403_evt7_idempotencia',               current_setting('probe.p403', true), 'OK post-127'
+UNION ALL SELECT 'P404_evt7_reactivacion_resetea_flag',  current_setting('probe.p404', true), 'OK post-127 (re-cancelación re-notifica)';
 
 ROLLBACK;  -- nada de lo anterior se persiste
