@@ -6767,6 +6767,68 @@ DO $$ DECLARE v_after int; v_before int; BEGIN
 END $$;
 SELECT set_config('role','none', true);
 
+-- ============================================================
+-- Fix push transaccional · EVENTO 4 FOLD (push server-side en notificar_resultado_examen) (P411–P413). Red-first.
+-- ============================================================
+-- Reusa el fixture evt4 (lx_ex/lx_owner/lx_pac/lx_med/lx_lab). P411 estructural (push x2 + DEFINER + sp '').
+-- P412 no-regresión (tipos + 2 filas + gateado). P413 PHI (resultado crudo ausente + accion_url interna).
+
+-- P411 estructural: push_notificar para AMBAS tablas + DEFINER + sp '' (l.50: CREATE OR REPLACE no preserva)
+DO $$ DECLARE v_def text; v_secdef boolean; v_cfg text[]; v_sp boolean; v_pac boolean; v_med boolean; BEGIN
+  IF to_regprocedure('public.notificar_resultado_examen(integer)') IS NULL THEN PERFORM set_config('probe.p411','ROJO (ausente)',false); RETURN; END IF;
+  SELECT pg_get_functiondef(oid), prosecdef, proconfig INTO v_def, v_secdef, v_cfg FROM pg_proc WHERE oid='public.notificar_resultado_examen(integer)'::regprocedure;
+  v_sp  := EXISTS(SELECT 1 FROM unnest(coalesce(v_cfg,'{}'::text[])) e WHERE e LIKE 'search_path=%' AND e <> 'search_path=public');
+  v_pac := v_def ILIKE '%push_notificar(''notificaciones_pacientes''%';
+  v_med := v_def ILIKE '%push_notificar(''notificaciones'',%';
+  IF v_secdef AND v_sp AND v_pac AND v_med
+    THEN PERFORM set_config('probe.p411','OK (push_notificar x2 [pac+med] + DEFINER + sp'''')',false);
+    ELSE PERFORM set_config('probe.p411','ROJO (secdef='||v_secdef||' sp='||v_sp||' pac='||v_pac||' med='||v_med||')',false); END IF;
+END $$;
+
+-- Setup P412/P413: re-afirmar lx_ex como del lab dueño + resultado sentinel; llamar como lx_owner.
+SELECT set_config('role','none', true);
+DO $$ BEGIN
+  IF current_setting('probe.lx_ready',true)='1' AND coalesce(current_setting('probe.lx_ex',true),'')<>'' AND coalesce(current_setting('probe.lx_lab',true),'')<>'' THEN
+    -- sentinels: resultado crudo + TIPO de examen + NOMBRE de paciente → ninguno debe llegar al cuerpo (lock screen)
+    UPDATE public.examenes SET laboratorio_id=current_setting('probe.lx_lab',true)::uuid,
+      resultados='PHISENTINEL_EVT4', tipo='TIPOSENTINEL_EVT4', paciente_nombre='NOMBRESENTINEL_EVT4'
+      WHERE id=current_setting('probe.lx_ex',true)::int;
+  END IF;
+END $$;
+SELECT set_config('request.jwt.claims', json_build_object('sub', current_setting('probe.lx_owner',true),'role','authenticated')::text, true);
+SELECT set_config('role','authenticated', true);
+DO $$ BEGIN
+  IF current_setting('probe.lx_ready',true)<>'1' OR coalesce(current_setting('probe.lx_owner',true),'')='' OR to_regprocedure('public.notificar_resultado_examen(integer)') IS NULL THEN PERFORM set_config('probe.fold4_call','SKIP',false); RETURN; END IF;
+  BEGIN PERFORM public.notificar_resultado_examen(current_setting('probe.lx_ex',true)::int); PERFORM set_config('probe.fold4_call','OK',false);
+  EXCEPTION WHEN others THEN PERFORM set_config('probe.fold4_call','ERR:'||SQLSTATE,false); END;
+END $$;
+SELECT set_config('role','none', true);
+
+-- P412 no-regresión: tipos 'examen'/'examen_resultado' + 2 filas + RPC gateado (DEFINER)
+DO $$ DECLARE v_pac boolean; v_med boolean; v_gated boolean; BEGIN
+  IF current_setting('probe.fold4_call',true) IS DISTINCT FROM 'OK' THEN PERFORM set_config('probe.p412', CASE WHEN current_setting('probe.fold4_call',true)='SKIP' THEN 'N/A' ELSE 'FALLO ('||current_setting('probe.fold4_call',true)||')' END, false); RETURN; END IF;
+  SELECT EXISTS(SELECT 1 FROM public.notificaciones_pacientes WHERE paciente_id=current_setting('probe.lx_pac',true)::int AND tipo='examen' AND titulo='Resultado de examen listo') INTO v_pac;
+  SELECT EXISTS(SELECT 1 FROM public.notificaciones WHERE usuario_id=current_setting('probe.lx_med',true)::uuid AND tipo='examen_resultado' AND titulo='Resultado de examen listo' AND accion_url='/medico/citas') INTO v_med;
+  SELECT prosecdef INTO v_gated FROM pg_proc WHERE oid='public.notificar_resultado_examen(integer)'::regprocedure;
+  PERFORM set_config('probe.p412', CASE WHEN v_pac AND v_med AND v_gated THEN 'OK (tipos examen/examen_resultado + 2 filas + DEFINER)' ELSE 'FALLO (pac='||COALESCE(v_pac::text,'∅')||' med='||COALESCE(v_med::text,'∅')||' definer='||COALESCE(v_gated::text,'∅')||')' END, false);
+END $$;
+
+-- P413 PHI ENDURECIDO: ni resultado crudo NI tipo de examen NI nombre de paciente en titulo/mensaje de NINGUNA
+-- fila (3 sentinels ausentes) + accion_url interna (^/). El detalle vive in-app tras la accion_url.
+DO $$ DECLARE v_leak int; v_url_ok boolean; BEGIN
+  IF current_setting('probe.fold4_call',true) IS DISTINCT FROM 'OK' THEN PERFORM set_config('probe.p413','N/A',false); RETURN; END IF;
+  SELECT (SELECT count(*) FROM public.notificaciones_pacientes WHERE paciente_id=current_setting('probe.lx_pac',true)::int AND titulo='Resultado de examen listo'
+            AND (titulo ~ 'PHISENTINEL_EVT4|TIPOSENTINEL_EVT4|NOMBRESENTINEL_EVT4' OR mensaje ~ 'PHISENTINEL_EVT4|TIPOSENTINEL_EVT4|NOMBRESENTINEL_EVT4'))
+       + (SELECT count(*) FROM public.notificaciones WHERE usuario_id=current_setting('probe.lx_med',true)::uuid AND titulo='Resultado de examen listo'
+            AND (titulo ~ 'PHISENTINEL_EVT4|TIPOSENTINEL_EVT4|NOMBRESENTINEL_EVT4' OR mensaje ~ 'PHISENTINEL_EVT4|TIPOSENTINEL_EVT4|NOMBRESENTINEL_EVT4')) INTO v_leak;
+  SELECT bool_and(accion_url ~ '^/') INTO v_url_ok FROM (
+    SELECT accion_url FROM public.notificaciones_pacientes WHERE paciente_id=current_setting('probe.lx_pac',true)::int AND titulo='Resultado de examen listo'
+    UNION ALL
+    SELECT accion_url FROM public.notificaciones WHERE usuario_id=current_setting('probe.lx_med',true)::uuid AND titulo='Resultado de examen listo') t;
+  PERFORM set_config('probe.p413', CASE WHEN v_leak=0 AND COALESCE(v_url_ok,false) THEN 'OK (resultado+tipo+nombre ausentes en ambas + accion_url interna)' ELSE 'FALLO (leak='||v_leak||' url_ok='||COALESCE(v_url_ok::text,'∅')||')' END, false);
+END $$;
+SELECT set_config('role','none', true);
+
 -- ===== Veredictos como result set =====
 SELECT 'P1_anon_insert_citas'              AS probe, current_setting('probe.p1', true)  AS verdict, 'BLOQUEADO' AS esperado_post_fix
 UNION ALL SELECT 'P2_medico_cancela_ajena_rpc',         current_setting('probe.p2', true),  'BLOQUEADO'
@@ -7168,6 +7230,9 @@ UNION ALL SELECT 'P406_evt8_spoof_denegado',             current_setting('probe.
 UNION ALL SELECT 'P407_evt8_gate_antes_claim',           current_setting('probe.p407', true), 'OK post-128'
 UNION ALL SELECT 'P408_evt8_recipients_derivados',       current_setting('probe.p408', true), 'OK post-128 (0 ajenos, 0 otra-empresa)'
 UNION ALL SELECT 'P409_evt8_phi_sin_cuerpo',             current_setting('probe.p409', true), 'OK post-128'
-UNION ALL SELECT 'P410_evt8_idempotencia',               current_setting('probe.p410', true), 'OK post-128';
+UNION ALL SELECT 'P410_evt8_idempotencia',               current_setting('probe.p410', true), 'OK post-128'
+UNION ALL SELECT 'P411_evt4fold_push_x2',                current_setting('probe.p411', true), 'OK post-129 (ROJO pre; push_notificar pac+med)'
+UNION ALL SELECT 'P412_evt4fold_no_regresion',           current_setting('probe.p412', true), 'OK post-129 (tipos + 2 filas + DEFINER)'
+UNION ALL SELECT 'P413_evt4fold_phi_generico',           current_setting('probe.p413', true), 'OK post-130 (resultado+tipo+nombre ausentes; ROJO pre-130)';
 
 ROLLBACK;  -- nada de lo anterior se persiste
