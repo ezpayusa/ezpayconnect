@@ -6049,6 +6049,124 @@ DO $$ BEGIN IF current_setting('probe.lx_mut',true)<>'1' THEN PERFORM set_config
 SELECT set_config('role','none', true);
 DO $$ BEGIN IF current_setting('probe.lx_mut',true)='1' THEN UPDATE public.examenes SET paciente_id=current_setting('probe.lx_pac',true)::int WHERE id=current_setting('probe.lx_ex',true)::int; END IF; END $$;
 
+-- ============================================================
+-- Fix push transaccional · EVENTO 5 (cita solicitada → médico + admins clínica) (P377–P382). Red-first.
+-- ============================================================
+SELECT set_config('role','none', true);
+DO $$ DECLARE v_cita bigint; v_med uuid; v_cli uuid; v_pac bigint; v_pauth uuid; v_otherpauth uuid; v_othercli uuid; v_motivo text; v_admin uuid; BEGIN
+  SELECT c.id, c.medico_id, c.clinica_id, c.paciente_id, c.motivo INTO v_cita, v_med, v_cli, v_pac, v_motivo
+    FROM public.citas c WHERE c.medico_id IS NOT NULL AND c.clinica_id IS NOT NULL AND c.paciente_id IS NOT NULL
+      AND EXISTS(SELECT 1 FROM public.perfiles p WHERE p.id=c.medico_id)            -- médico válido (auth.users; FK notificaciones)
+      AND EXISTS(SELECT 1 FROM public.pacientes pa WHERE pa.id=c.paciente_id AND pa.auth_user_id IS NOT NULL)
+      AND EXISTS(SELECT 1 FROM public.obtener_admins_clinica(c.clinica_id))         -- clínica con ≥1 admin (para P381/P383)
+    ORDER BY c.id LIMIT 1;
+  IF v_cita IS NOT NULL THEN
+    UPDATE public.citas SET estado='solicitada' WHERE id=v_cita;          -- in-txn (rolled back), para el gate de estado
+    SELECT auth_user_id INTO v_pauth FROM public.pacientes WHERE id=v_pac;
+    SELECT auth_user_id INTO v_otherpauth FROM public.pacientes WHERE id<>v_pac AND auth_user_id IS NOT NULL ORDER BY id LIMIT 1;
+    SELECT clinica_id INTO v_othercli FROM public.medico_clinicas WHERE clinica_id<>v_cli ORDER BY clinica_id LIMIT 1;
+    SELECT user_id INTO v_admin FROM public.obtener_admins_clinica(v_cli) ORDER BY user_id LIMIT 1;
+  END IF;
+  PERFORM set_config('probe.c5_admin', coalesce(v_admin::text,''), false);
+  PERFORM set_config('probe.c5_ready', CASE WHEN v_cita IS NOT NULL AND v_pauth IS NOT NULL THEN '1' ELSE '0' END, false);
+  PERFORM set_config('probe.c5_cita', coalesce(v_cita::text,''), false);
+  PERFORM set_config('probe.c5_med', coalesce(v_med::text,''), false);
+  PERFORM set_config('probe.c5_cli', coalesce(v_cli::text,''), false);
+  PERFORM set_config('probe.c5_pauth', coalesce(v_pauth::text,''), false);
+  PERFORM set_config('probe.c5_otherpauth', coalesce(v_otherpauth::text,''), false);
+  PERFORM set_config('probe.c5_othercli', coalesce(v_othercli::text,''), false);
+  PERFORM set_config('probe.c5_motivo', coalesce(v_motivo,''), false);
+END $$;
+
+-- P377 estructural: existe + DEFINER + sp'' + grant-state (anon✗/auth✓) + firma SOLO (bigint)
+DO $$ DECLARE v_def boolean; v_cfg text[]; v_sp boolean; v_anon boolean; v_auth boolean; v_args text; BEGIN
+  IF to_regprocedure('public.notificar_cita_solicitada(bigint)') IS NULL THEN PERFORM set_config('probe.p377','ROJO (ausente)',false); RETURN; END IF;
+  SELECT prosecdef, proconfig INTO v_def, v_cfg FROM pg_proc WHERE oid='public.notificar_cita_solicitada(bigint)'::regprocedure;
+  v_sp := EXISTS(SELECT 1 FROM unnest(coalesce(v_cfg,'{}'::text[])) e WHERE e LIKE 'search_path=%' AND e <> 'search_path=public');
+  v_anon := has_function_privilege('anon','public.notificar_cita_solicitada(bigint)','EXECUTE');
+  v_auth := has_function_privilege('authenticated','public.notificar_cita_solicitada(bigint)','EXECUTE');
+  SELECT pg_get_function_identity_arguments('public.notificar_cita_solicitada(bigint)'::regprocedure) INTO v_args;
+  IF v_def AND v_sp AND NOT v_anon AND v_auth AND v_args LIKE '%bigint%' AND v_args NOT LIKE '%text%' AND v_args NOT LIKE '%uuid%'
+    THEN PERFORM set_config('probe.p377','OK (DEFINER+sp'''', anon sin EXECUTE/auth con EXECUTE, firma solo bigint)',false);
+    ELSE PERFORM set_config('probe.p377','ROJO (def='||v_def||' sp='||v_sp||' anon='||v_anon||' auth='||v_auth||' args='||v_args||')',false); END IF;
+END $$;
+
+-- P378 spoof: OTRO paciente → PT002 ; no-paciente (médico) → PT002
+SELECT set_config('request.jwt.claims', json_build_object('sub', current_setting('probe.c5_otherpauth',true), 'role','authenticated')::text, true);
+SELECT set_config('role','authenticated', true);
+DO $$ DECLARE v_a text; BEGIN
+  IF current_setting('probe.c5_ready',true)<>'1' OR to_regprocedure('public.notificar_cita_solicitada(bigint)') IS NULL OR current_setting('probe.c5_otherpauth',true)='' THEN PERFORM set_config('probe.c5_spoof_other','SKIP',false); RETURN; END IF;
+  BEGIN PERFORM public.notificar_cita_solicitada(current_setting('probe.c5_cita',true)::bigint); v_a:='PERMITIDO'; EXCEPTION WHEN others THEN v_a:=SQLSTATE; END;
+  PERFORM set_config('probe.c5_spoof_other', v_a, false);
+END $$;
+SELECT set_config('request.jwt.claims', json_build_object('sub', current_setting('probe.c5_med',true), 'role','authenticated')::text, true);
+DO $$ DECLARE v_b text; BEGIN
+  IF current_setting('probe.c5_ready',true)<>'1' OR to_regprocedure('public.notificar_cita_solicitada(bigint)') IS NULL THEN PERFORM set_config('probe.p378','N/A',false); RETURN; END IF;
+  BEGIN PERFORM public.notificar_cita_solicitada(current_setting('probe.c5_cita',true)::bigint); v_b:='PERMITIDO'; EXCEPTION WHEN others THEN v_b:=SQLSTATE; END;
+  PERFORM set_config('probe.p378', CASE WHEN current_setting('probe.c5_spoof_other',true)='PT002' AND v_b='PT002' THEN 'BLOQUEADO (otro-paciente PT002 + no-paciente PT002)' ELSE 'FALLO (otro='||current_setting('probe.c5_spoof_other',true)||' no-pac='||v_b||')' END, false);
+END $$;
+SELECT set_config('role','none', true);
+
+-- Positivo: paciente dueño solicita → notifica médico + admins (acción real; verif owner)
+SELECT set_config('request.jwt.claims', json_build_object('sub', current_setting('probe.c5_pauth',true), 'role','authenticated')::text, true);
+SELECT set_config('role','authenticated', true);
+DO $$ BEGIN
+  IF current_setting('probe.c5_ready',true)<>'1' OR to_regprocedure('public.notificar_cita_solicitada(bigint)') IS NULL OR current_setting('probe.c5_pauth',true)='' THEN PERFORM set_config('probe.c5_done','SKIP',false); RETURN; END IF;
+  BEGIN PERFORM public.notificar_cita_solicitada(current_setting('probe.c5_cita',true)::bigint); PERFORM set_config('probe.c5_done','OK',false);
+  EXCEPTION WHEN others THEN PERFORM set_config('probe.c5_done','ERR:'||SQLSTATE,false); END;
+END $$;
+SELECT set_config('role','none', true);
+
+-- P379 positivo médico: fila derivada (usuario_id=cita.medico_id), tipo/url server
+DO $$ DECLARE v_ok boolean; v_d text; BEGIN
+  v_d := current_setting('probe.c5_done',true);
+  IF coalesce(v_d,'')='' OR v_d='SKIP' THEN PERFORM set_config('probe.p379','N/A',false); RETURN; END IF;
+  IF v_d LIKE 'ERR:%' THEN PERFORM set_config('probe.p379','FALLO (RPC '||v_d||')',false); RETURN; END IF;
+  SELECT EXISTS(SELECT 1 FROM public.notificaciones WHERE usuario_id=current_setting('probe.c5_med',true)::uuid AND tipo='cita_nueva' AND titulo='Nueva cita solicitada' AND accion_url='/medico/citas' AND created_at > now()-interval '2 minutes') INTO v_ok;
+  PERFORM set_config('probe.p379', CASE WHEN v_ok THEN 'OK (fila médico derivada, tipo/url server)' ELSE 'FALLO (sin fila médico)' END, false);
+END $$;
+
+-- P380 visibilidad médico: el médico LEE su propia fila (RLS, bajo su jwt)
+SELECT set_config('request.jwt.claims', json_build_object('sub', current_setting('probe.c5_med',true), 'role','authenticated')::text, true);
+SELECT set_config('role','authenticated', true);
+DO $$ DECLARE v_n int; BEGIN
+  IF current_setting('probe.c5_done',true) IS DISTINCT FROM 'OK' THEN PERFORM set_config('probe.p380','N/A',false); RETURN; END IF;
+  SELECT count(*) INTO v_n FROM public.notificaciones WHERE usuario_id=current_setting('probe.c5_med',true)::uuid AND titulo='Nueva cita solicitada' AND created_at > now()-interval '2 minutes';
+  PERFORM set_config('probe.p380', CASE WHEN v_n>0 THEN 'OK (médico lee su propia fila vía RLS)' ELSE 'FALLO (RLS oculta la fila al médico)' END, false);
+END $$;
+SELECT set_config('role','none', true);
+
+-- P381 positivo admins: filas = admins de la clínica derivados; 0 ajenos
+DO $$ DECLARE v_n int; v_esp int; v_fuera int; BEGIN
+  IF current_setting('probe.c5_done',true) IS DISTINCT FROM 'OK' THEN PERFORM set_config('probe.p381','N/A',false); RETURN; END IF;
+  SELECT count(*) INTO v_n FROM public.notificaciones WHERE usuario_id IN (SELECT user_id FROM public.obtener_admins_clinica(current_setting('probe.c5_cli',true)::uuid))
+    AND titulo='Nueva solicitud de cita' AND accion_url='/clinica/citas' AND created_at > now()-interval '2 minutes';
+  SELECT count(*) INTO v_esp FROM public.obtener_admins_clinica(current_setting('probe.c5_cli',true)::uuid);
+  SELECT count(*) INTO v_fuera FROM public.notificaciones WHERE titulo='Nueva solicitud de cita' AND created_at > now()-interval '2 minutes'
+    AND usuario_id NOT IN (SELECT user_id FROM public.obtener_admins_clinica(current_setting('probe.c5_cli',true)::uuid));
+  PERFORM set_config('probe.p381', CASE WHEN v_n=v_esp AND v_fuera=0 THEN 'OK (admins derivados '||v_n||'/'||v_esp||', 0 ajenos)' ELSE 'FALLO (n='||v_n||' esp='||v_esp||' fuera='||v_fuera||')' END, false);
+END $$;
+
+-- P382 PHI: el contenido NO contiene el motivo de la cita
+DO $$ DECLARE v_leak int; BEGIN
+  IF current_setting('probe.c5_done',true) IS DISTINCT FROM 'OK' OR coalesce(current_setting('probe.c5_motivo',true),'')='' THEN PERFORM set_config('probe.p382','N/A (sin motivo que filtrar)',false); RETURN; END IF;
+  SELECT count(*) INTO v_leak FROM public.notificaciones WHERE titulo IN ('Nueva cita solicitada','Nueva solicitud de cita') AND created_at > now()-interval '2 minutes'
+    AND mensaje LIKE '%'||current_setting('probe.c5_motivo',true)||'%';
+  PERFORM set_config('probe.p382', CASE WHEN v_leak=0 THEN 'OK (motivo NO en el contenido)' ELSE 'FALLO (motivo en '||v_leak||' filas — PHI lock screen)' END, false);
+END $$;
+SELECT set_config('role','none', true);
+
+-- P383 visibilidad ADMIN: un admin de la clínica LEE su propia fila vía RLS (paralelo a P380; clase de
+-- destinatario nueva. notificaciones_select_propia = auth.uid()=usuario_id → no country-gated → debe verla).
+SELECT set_config('request.jwt.claims', json_build_object('sub', current_setting('probe.c5_admin',true), 'role','authenticated')::text, true);
+SELECT set_config('role','authenticated', true);
+DO $$ DECLARE v_n int; BEGIN
+  IF current_setting('probe.c5_done',true) IS DISTINCT FROM 'OK' OR current_setting('probe.c5_admin',true)='' THEN PERFORM set_config('probe.p383','N/A',false); RETURN; END IF;
+  SELECT count(*) INTO v_n FROM public.notificaciones WHERE usuario_id=current_setting('probe.c5_admin',true)::uuid AND titulo='Nueva solicitud de cita' AND created_at > now()-interval '2 minutes';
+  PERFORM set_config('probe.p383', CASE WHEN v_n>0 THEN 'OK (admin lee su propia fila vía RLS)' ELSE 'FALLO (RLS oculta la fila al admin — gap funcional)' END, false);
+END $$;
+SELECT set_config('role','none', true);
+
 -- ===== Veredictos como result set =====
 SELECT 'P1_anon_insert_citas'              AS probe, current_setting('probe.p1', true)  AS verdict, 'BLOQUEADO' AS esperado_post_fix
 UNION ALL SELECT 'P2_medico_cancela_ajena_rpc',         current_setting('probe.p2', true),  'BLOQUEADO'
@@ -6416,6 +6534,13 @@ UNION ALL SELECT 'P372_evt3_sin_contenido_caller',       current_setting('probe.
 UNION ALL SELECT 'P373_evt3_multilab_denegado',          current_setting('probe.p373', true), 'BLOQUEADO (PT003)'
 UNION ALL SELECT 'P374_evt3_multipaciente_denegado',     current_setting('probe.p374', true), 'BLOQUEADO (PT003)'
 UNION ALL SELECT 'P375_evt3_multimedico_denegado',       current_setting('probe.p375', true), 'BLOQUEADO (PT003)'
-UNION ALL SELECT 'P376_evt3_paciente_null_denegado',     current_setting('probe.p376', true), 'BLOQUEADO (PT003)';
+UNION ALL SELECT 'P376_evt3_paciente_null_denegado',     current_setting('probe.p376', true), 'BLOQUEADO (PT003)'
+UNION ALL SELECT 'P377_evt5_estructural',                current_setting('probe.p377', true), 'OK post-125 (ROJO pre)'
+UNION ALL SELECT 'P378_evt5_spoof_denegado',             current_setting('probe.p378', true), 'BLOQUEADO (PT002 x2)'
+UNION ALL SELECT 'P379_evt5_medico_derivado',            current_setting('probe.p379', true), 'OK post-125'
+UNION ALL SELECT 'P380_evt5_medico_visibilidad',         current_setting('probe.p380', true), 'OK post-125'
+UNION ALL SELECT 'P381_evt5_admins_derivados',           current_setting('probe.p381', true), 'OK post-125'
+UNION ALL SELECT 'P382_evt5_phi_sin_motivo',             current_setting('probe.p382', true), 'OK post-125'
+UNION ALL SELECT 'P383_evt5_admin_visibilidad',          current_setting('probe.p383', true), 'OK post-125';
 
 ROLLBACK;  -- nada de lo anterior se persiste
