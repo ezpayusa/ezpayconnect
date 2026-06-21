@@ -6623,6 +6623,150 @@ DO $$ DECLARE v_n int; BEGIN
 END $$;
 SELECT set_config('role','none', true);
 
+-- ============================================================
+-- Fix push transaccional · EVENTO 8 (chat interno proveedor → miembros conv) (P405–P410). Red-first.
+-- ============================================================
+-- Fixtures: conv 'administracion' real + mensaje del autor (cuerpo sentinel). autor + 2 recipients + 1 cuenta otra empresa.
+SELECT set_config('role','none', true);
+DO $$ DECLARE v_conv uuid := '1584377f-1ad7-4233-b1a9-8d7c98e3f6a9'; v_autor uuid := '9ca0b977-3c91-48dc-aa04-2f1fab766963';
+  v_recip uuid := 'd50e7efd-d0c6-4f14-a47b-f6b4845b25e9'; v_recip2 uuid := 'b38847e5-e52a-4c11-9aec-487fb558532f';
+  v_other uuid := 'e7935069-fd08-4ac5-a094-9c481313f4d3'; v_msg uuid; v_ok boolean; v_hascol boolean; BEGIN
+  v_ok := to_regclass('public.chat_mensajes_internos') IS NOT NULL
+      AND EXISTS(SELECT 1 FROM public.chat_conversaciones WHERE id=v_conv AND tipo='administracion')
+      AND EXISTS(SELECT 1 FROM public.cuentas_proveedor WHERE id=v_autor)
+      AND EXISTS(SELECT 1 FROM public.cuentas_proveedor WHERE id=v_recip);
+  -- RE-AFIRMAR estado: probes previos de roles-proveedor (dinámicos) reasignan empresa/rol de cuentas en la MISMA
+  -- txn → restaurar autor+2 recipients como miembros admin-ish de la empresa de la conv (411d6f8c), y la cuenta
+  -- de control en OTRA empresa (cc17afe8). Determinístico, corre al final del harness.
+  IF v_ok THEN
+    UPDATE public.cuentas_proveedor SET empresa_id='411d6f8c-a405-49d6-9ed6-fbeb0db05133', rol_en_empresa='admin',      activo=true, equipo_id=NULL WHERE id=v_autor;
+    UPDATE public.cuentas_proveedor SET empresa_id='411d6f8c-a405-49d6-9ed6-fbeb0db05133', rol_en_empresa='supervisor', activo=true, equipo_id=NULL WHERE id=v_recip;
+    UPDATE public.cuentas_proveedor SET empresa_id='411d6f8c-a405-49d6-9ed6-fbeb0db05133', rol_en_empresa='supervisor', activo=true, equipo_id=NULL WHERE id=v_recip2;
+    UPDATE public.cuentas_proveedor SET empresa_id='cc17afe8-fcd5-4ab0-84c4-08ba919d8481', rol_en_empresa='admin',      activo=true, equipo_id=NULL WHERE id=v_other;
+    v_hascol := EXISTS(SELECT 1 FROM information_schema.columns WHERE table_name='chat_mensajes_internos' AND column_name='notificado');
+    IF v_hascol THEN
+      INSERT INTO public.chat_mensajes_internos (conversacion_id, autor_id, cuerpo, notificado) VALUES (v_conv, v_autor, 'CUERPO8SECRETO_evt8', false) RETURNING id INTO v_msg;
+    ELSE
+      INSERT INTO public.chat_mensajes_internos (conversacion_id, autor_id, cuerpo) VALUES (v_conv, v_autor, 'CUERPO8SECRETO_evt8') RETURNING id INTO v_msg;
+    END IF;
+  END IF;
+  PERFORM set_config('probe.c8_ready', CASE WHEN v_msg IS NOT NULL THEN '1' ELSE '0' END, false);
+  PERFORM set_config('probe.c8_msg', coalesce(v_msg::text,''), false);
+  PERFORM set_config('probe.c8_conv', v_conv::text, false);
+  PERFORM set_config('probe.c8_autor', v_autor::text, false);
+  PERFORM set_config('probe.c8_recip', v_recip::text, false);
+  PERFORM set_config('probe.c8_recip2', v_recip2::text, false);
+  PERFORM set_config('probe.c8_other', v_other::text, false);
+END $$;
+
+-- P405 estructural (RPC + 2 inners con search_path + grants + firma uuid + columna notificado)
+DO $$ DECLARE v_def boolean; v_cfg text[]; v_sp boolean; v_anon boolean; v_auth boolean; v_args text; v_col boolean; v_in1 boolean; v_in2 boolean; BEGIN
+  IF to_regprocedure('public.notificar_chat_interno(uuid)') IS NULL THEN PERFORM set_config('probe.p405','ROJO (ausente)',false); RETURN; END IF;
+  SELECT prosecdef, proconfig INTO v_def, v_cfg FROM pg_proc WHERE oid='public.notificar_chat_interno(uuid)'::regprocedure;
+  v_sp := EXISTS(SELECT 1 FROM unnest(coalesce(v_cfg,'{}'::text[])) e WHERE e LIKE 'search_path=%' AND e<>'search_path=public');
+  v_anon := has_function_privilege('anon','public.notificar_chat_interno(uuid)','EXECUTE');
+  v_auth := has_function_privilege('authenticated','public.notificar_chat_interno(uuid)','EXECUTE');
+  SELECT pg_get_function_identity_arguments('public.notificar_chat_interno(uuid)'::regprocedure) INTO v_args;
+  v_col := EXISTS(SELECT 1 FROM information_schema.columns WHERE table_name='chat_mensajes_internos' AND column_name='notificado');
+  v_in1 := EXISTS(SELECT 1 FROM pg_proc WHERE proname='destinatarios_conversacion' AND array_to_string(coalesce(proconfig,'{}'::text[]),',') LIKE '%search_path=%');
+  v_in2 := EXISTS(SELECT 1 FROM pg_proc WHERE proname='es_miembro_conversacion' AND array_to_string(coalesce(proconfig,'{}'::text[]),',') LIKE '%search_path=%');
+  IF v_def AND v_sp AND NOT v_anon AND v_auth AND v_args LIKE '%uuid%' AND v_col AND v_in1 AND v_in2
+    THEN PERFORM set_config('probe.p405','OK (DEFINER+sp'', grants, firma uuid, columna notificado, inners con search_path)',false);
+    ELSE PERFORM set_config('probe.p405','ROJO (def='||v_def||' sp='||v_sp||' anon='||v_anon||' auth='||v_auth||' args='||v_args||' col='||v_col||' in1='||v_in1||' in2='||v_in2||')',false); END IF;
+END $$;
+
+-- P406 spoof: miembro NO-autor → PT002 ; no-miembro (otra empresa) → PT002
+SELECT set_config('request.jwt.claims', json_build_object('sub', current_setting('probe.c8_recip',true),'role','authenticated')::text, true);
+SELECT set_config('role','authenticated', true);
+DO $$ DECLARE v_a text; BEGIN
+  IF current_setting('probe.c8_ready',true)<>'1' OR to_regprocedure('public.notificar_chat_interno(uuid)') IS NULL THEN PERFORM set_config('probe.c8_spoof','SKIP',false); RETURN; END IF;
+  BEGIN PERFORM public.notificar_chat_interno(current_setting('probe.c8_msg',true)::uuid); v_a:='PERMITIDO'; EXCEPTION WHEN others THEN v_a:=SQLSTATE; END;
+  PERFORM set_config('probe.c8_spoof', v_a, false);
+END $$;
+SELECT set_config('request.jwt.claims', json_build_object('sub', current_setting('probe.c8_other',true),'role','authenticated')::text, true);
+DO $$ DECLARE v_b text; BEGIN
+  IF current_setting('probe.c8_ready',true)<>'1' OR to_regprocedure('public.notificar_chat_interno(uuid)') IS NULL THEN PERFORM set_config('probe.p406','N/A',false); RETURN; END IF;
+  BEGIN PERFORM public.notificar_chat_interno(current_setting('probe.c8_msg',true)::uuid); v_b:='PERMITIDO'; EXCEPTION WHEN others THEN v_b:=SQLSTATE; END;
+  PERFORM set_config('probe.p406', CASE WHEN current_setting('probe.c8_spoof',true)='PT002' AND v_b='PT002' THEN 'BLOQUEADO (no-autor + no-miembro PT002)' ELSE 'FALLO (recip='||current_setting('probe.c8_spoof',true)||' other='||v_b||')' END, false);
+END $$;
+SELECT set_config('role','none', true);
+
+-- P407 gate-antes-claim: no-autor → PT002 + notificado SIGUE false; autor posterior → notifica
+SELECT set_config('request.jwt.claims', json_build_object('sub', current_setting('probe.c8_recip',true),'role','authenticated')::text, true);
+SELECT set_config('role','authenticated', true);
+DO $$ DECLARE v_e text; BEGIN
+  IF current_setting('probe.c8_ready',true)<>'1' OR to_regprocedure('public.notificar_chat_interno(uuid)') IS NULL THEN PERFORM set_config('probe.c8_denied','SKIP',false); RETURN; END IF;
+  BEGIN PERFORM public.notificar_chat_interno(current_setting('probe.c8_msg',true)::uuid); v_e:='PERMITIDO'; EXCEPTION WHEN others THEN v_e:=SQLSTATE; END;
+  PERFORM set_config('probe.c8_denied', v_e, false);
+END $$;
+SELECT set_config('role','none', true);
+DO $$ DECLARE v_flag boolean; BEGIN
+  IF to_regprocedure('public.notificar_chat_interno(uuid)') IS NULL OR NOT EXISTS(SELECT 1 FROM information_schema.columns WHERE table_name='chat_mensajes_internos' AND column_name='notificado') OR coalesce(current_setting('probe.c8_msg',true),'')='' THEN PERFORM set_config('probe.c8_flag','∅',false); RETURN; END IF;
+  SELECT notificado INTO v_flag FROM public.chat_mensajes_internos WHERE id=current_setting('probe.c8_msg',true)::uuid;
+  PERFORM set_config('probe.c8_flag', coalesce(v_flag::text,'∅'), false);
+END $$;
+SELECT set_config('request.jwt.claims', json_build_object('sub', current_setting('probe.c8_autor',true),'role','authenticated')::text, true);
+SELECT set_config('role','authenticated', true);
+DO $$ BEGIN
+  IF current_setting('probe.c8_ready',true)<>'1' THEN PERFORM set_config('probe.c8_legit','SKIP',false); RETURN; END IF;
+  BEGIN PERFORM public.notificar_chat_interno(current_setting('probe.c8_msg',true)::uuid); PERFORM set_config('probe.c8_legit','OK',false);
+  EXCEPTION WHEN others THEN PERFORM set_config('probe.c8_legit','ERR:'||SQLSTATE,false); END;
+END $$;
+SELECT set_config('role','none', true);
+DO $$ DECLARE v_recipok boolean; BEGIN
+  IF coalesce(current_setting('probe.c8_denied',true),'')='' OR current_setting('probe.c8_denied',true)='SKIP' THEN PERFORM set_config('probe.p407','N/A',false); RETURN; END IF;
+  SELECT EXISTS(SELECT 1 FROM public.notificaciones WHERE usuario_id=current_setting('probe.c8_recip',true)::uuid AND tipo='mensaje_interno' AND created_at>now()-interval '2 minutes') INTO v_recipok;
+  IF current_setting('probe.c8_denied',true)='PT002' AND current_setting('probe.c8_flag',true)='false' AND current_setting('probe.c8_legit',true)='OK' AND v_recipok
+    THEN PERFORM set_config('probe.p407','OK (no-autor PT002 sin quemar flag; autor notifica)',false);
+    ELSE PERFORM set_config('probe.p407','FALLO (denied='||current_setting('probe.c8_denied',true)||' flag='||current_setting('probe.c8_flag',true)||' legit='||current_setting('probe.c8_legit',true)||' recip='||COALESCE(v_recipok::text,'∅')||')',false); END IF;
+END $$;
+
+-- P408 recipients derivados (2 miembros menos autor; 0 ajenos incl. otra empresa) + visibilidad RLS
+DO $$ DECLARE v_in int; v_autor_n int; v_other_n int; BEGIN
+  IF current_setting('probe.c8_legit',true) IS DISTINCT FROM 'OK' THEN PERFORM set_config('probe.p408','N/A',false); RETURN; END IF;
+  SELECT count(*) INTO v_in FROM public.notificaciones WHERE usuario_id IN (current_setting('probe.c8_recip',true)::uuid, current_setting('probe.c8_recip2',true)::uuid) AND tipo='mensaje_interno' AND accion_url='/proveedor/mensajes' AND created_at>now()-interval '2 minutes';
+  SELECT count(*) INTO v_autor_n FROM public.notificaciones WHERE usuario_id=current_setting('probe.c8_autor',true)::uuid AND tipo='mensaje_interno' AND created_at>now()-interval '2 minutes';
+  SELECT count(*) INTO v_other_n FROM public.notificaciones WHERE usuario_id=current_setting('probe.c8_other',true)::uuid AND tipo='mensaje_interno' AND created_at>now()-interval '2 minutes';
+  PERFORM set_config('probe.p408', CASE WHEN v_in=2 AND v_autor_n=0 AND v_other_n=0 THEN 'OK (2 recipients, autor 0, otra-empresa 0)' ELSE 'FALLO (in='||v_in||' autor='||v_autor_n||' other='||v_other_n||')' END, false);
+END $$;
+SELECT set_config('request.jwt.claims', json_build_object('sub', current_setting('probe.c8_recip',true),'role','authenticated')::text, true);
+SELECT set_config('role','authenticated', true);
+DO $$ DECLARE v_n int; BEGIN
+  IF current_setting('probe.c8_legit',true) IS DISTINCT FROM 'OK' THEN RETURN; END IF;
+  SELECT count(*) INTO v_n FROM public.notificaciones WHERE usuario_id=current_setting('probe.c8_recip',true)::uuid AND tipo='mensaje_interno' AND created_at>now()-interval '2 minutes';
+  IF NOT (v_n>0) THEN PERFORM set_config('probe.p408','FALLO (recipient no lee su fila RLS)',false);
+  ELSIF current_setting('probe.p408',true) LIKE 'OK%' THEN PERFORM set_config('probe.p408', current_setting('probe.p408',true)||' + recipient lee (RLS)', false); END IF;
+END $$;
+SELECT set_config('role','none', true);
+
+-- P409 PHI: cuerpo crudo NO en contenido
+DO $$ DECLARE v_leak int; BEGIN
+  IF current_setting('probe.c8_legit',true) IS DISTINCT FROM 'OK' THEN PERFORM set_config('probe.p409','N/A',false); RETURN; END IF;
+  SELECT count(*) INTO v_leak FROM public.notificaciones WHERE tipo='mensaje_interno' AND created_at>now()-interval '2 minutes' AND (mensaje LIKE '%CUERPO8SECRETO%' OR titulo LIKE '%CUERPO8SECRETO%');
+  PERFORM set_config('probe.p409', CASE WHEN v_leak=0 THEN 'OK (cuerpo NO en contenido)' ELSE 'FALLO (cuerpo filtrado en '||v_leak||')' END, false);
+END $$;
+
+-- P410 idempotencia: 2º call → 0 fila nueva (conteo owner)
+SELECT set_config('role','none', true);
+DO $$ BEGIN
+  IF current_setting('probe.c8_legit',true) IS DISTINCT FROM 'OK' THEN PERFORM set_config('probe.c8_before','',false); RETURN; END IF;
+  PERFORM set_config('probe.c8_before', (SELECT count(*)::text FROM public.notificaciones WHERE tipo='mensaje_interno' AND created_at>now()-interval '3 minutes'), false);
+END $$;
+SELECT set_config('request.jwt.claims', json_build_object('sub', current_setting('probe.c8_autor',true),'role','authenticated')::text, true);
+SELECT set_config('role','authenticated', true);
+DO $$ BEGIN
+  IF coalesce(current_setting('probe.c8_before',true),'')='' THEN RETURN; END IF;
+  PERFORM public.notificar_chat_interno(current_setting('probe.c8_msg',true)::uuid);  -- 2º call (ya notificado → no-op)
+END $$;
+SELECT set_config('role','none', true);
+DO $$ DECLARE v_after int; v_before int; BEGIN
+  IF coalesce(current_setting('probe.c8_before',true),'')='' THEN PERFORM set_config('probe.p410','N/A',false); RETURN; END IF;
+  v_before := current_setting('probe.c8_before',true)::int;
+  SELECT count(*) INTO v_after FROM public.notificaciones WHERE tipo='mensaje_interno' AND created_at>now()-interval '3 minutes';
+  PERFORM set_config('probe.p410', CASE WHEN v_after=v_before AND v_before>0 THEN 'OK (2º call sin fila nueva: '||v_after||'='||v_before||')' ELSE 'FALLO (before='||v_before||' after='||v_after||')' END, false);
+END $$;
+SELECT set_config('role','none', true);
+
 -- ===== Veredictos como result set =====
 SELECT 'P1_anon_insert_citas'              AS probe, current_setting('probe.p1', true)  AS verdict, 'BLOQUEADO' AS esperado_post_fix
 UNION ALL SELECT 'P2_medico_cancela_ajena_rpc',         current_setting('probe.p2', true),  'BLOQUEADO'
@@ -7018,6 +7162,12 @@ UNION ALL SELECT 'P400_evt7_admins_derivados',           current_setting('probe.
 UNION ALL SELECT 'P401_evt7_medico_huerfano',            current_setting('probe.p401', true), 'OK post-127'
 UNION ALL SELECT 'P402_evt7_phi_sin_motivo',             current_setting('probe.p402', true), 'OK post-127'
 UNION ALL SELECT 'P403_evt7_idempotencia',               current_setting('probe.p403', true), 'OK post-127'
-UNION ALL SELECT 'P404_evt7_reactivacion_resetea_flag',  current_setting('probe.p404', true), 'OK post-127 (re-cancelación re-notifica)';
+UNION ALL SELECT 'P404_evt7_reactivacion_resetea_flag',  current_setting('probe.p404', true), 'OK post-127 (re-cancelación re-notifica)'
+UNION ALL SELECT 'P405_evt8_estructural',                current_setting('probe.p405', true), 'OK post-128 (ROJO pre; inners con search_path)'
+UNION ALL SELECT 'P406_evt8_spoof_denegado',             current_setting('probe.p406', true), 'BLOQUEADO (no-autor + no-miembro PT002)'
+UNION ALL SELECT 'P407_evt8_gate_antes_claim',           current_setting('probe.p407', true), 'OK post-128'
+UNION ALL SELECT 'P408_evt8_recipients_derivados',       current_setting('probe.p408', true), 'OK post-128 (0 ajenos, 0 otra-empresa)'
+UNION ALL SELECT 'P409_evt8_phi_sin_cuerpo',             current_setting('probe.p409', true), 'OK post-128'
+UNION ALL SELECT 'P410_evt8_idempotencia',               current_setting('probe.p410', true), 'OK post-128';
 
 ROLLBACK;  -- nada de lo anterior se persiste
