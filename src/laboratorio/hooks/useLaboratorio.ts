@@ -153,17 +153,11 @@ export function useLaboratorio() {
       fecha_resultado: new Date().toISOString().slice(0, 10),
     }).eq('id', ordenId)
     if (error) { toast.error('No se pudo guardar el resultado: ' + error.message); return false }
-    // Avisar al médico y al paciente: in-app (RPC) + push web dirigido
+    // Avisar al médico y al paciente: in-app + push server-side y gateado. notificar_resultado_examen
+    // empuja vía push_notificar (edge gateado, contenido mínimo) — reemplaza el enviar-push del caller
+    // (ids+contenido del cliente). Best-effort: no falla el guardado del resultado.
     try {
-      const { data: dest } = await supabase.rpc('notificar_resultado_examen', { p_examen_id: ordenId })
-      const titulo = 'Resultado de examen listo'
-      const detalle = tipo ? `Resultado de ${tipo} disponible.` : 'Un resultado de examen está disponible.'
-      const enviarPush = (ids: string[], url: string) =>
-        supabase.functions.invoke('enviar-push', {
-          body: { usuario_ids: ids, titulo, mensaje: detalle, url, tag: `resultado-${ordenId}` },
-        })
-      if (dest?.medico) await enviarPush([dest.medico], '/medico/citas')
-      if (dest?.paciente) await enviarPush([dest.paciente], '/paciente/examenes')
+      await supabase.rpc('notificar_resultado_examen', { p_examen_id: ordenId })
     } catch (e) { console.error(e) }
     toast.success('Resultado enviado')
     fetchOrdenes()
