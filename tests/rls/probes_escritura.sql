@@ -6207,6 +6207,198 @@ DO $$ DECLARE v_med_n int; v_adm_n int; v_d text; BEGIN
 END $$;
 SELECT set_config('role','none', true);
 
+-- ============================================================
+-- Fix push transaccional · EVENTO 6 (chat paciente↔médico) (P385–P393). Red-first.
+-- ============================================================
+-- Fixtures: siembra in-txn de mensajes chat (paciente→médico, médico→paciente, médico-huérfano si construible)
+SELECT set_config('role','none', true);
+DO $$ DECLARE v_pac int := 23; v_pauth uuid; v_med uuid; v_otherpauth uuid; v_orphan uuid; v_unrel uuid; v_mp int; v_mm int; v_mo int; v_mu int; BEGIN
+  SELECT auth_user_id INTO v_pauth FROM public.pacientes WHERE id=v_pac;
+  -- médico real (perfil+auth) cualquiera; la relación se SIEMBRA in-txn para no depender de estado previo
+  SELECT p.id INTO v_med FROM public.perfiles p WHERE p.rol='medico' AND EXISTS(SELECT 1 FROM auth.users u WHERE u.id=p.id) ORDER BY p.id LIMIT 1;
+  IF v_med IS NOT NULL THEN
+    UPDATE public.pacientes SET medico_primario_id = v_med WHERE id = v_pac;   -- in-txn (rolled back): garantiza relación pac↔v_med
+  END IF;
+  -- médico SIN relación con pac — para P394 (≠ primario sembrado, sin cita)
+  SELECT p.id INTO v_unrel FROM public.perfiles p WHERE p.rol='medico' AND EXISTS(SELECT 1 FROM auth.users u WHERE u.id=p.id) AND p.id<>v_med
+    AND NOT EXISTS(SELECT 1 FROM public.citas c WHERE c.paciente_id=v_pac AND c.medico_id=p.id)
+    AND NOT EXISTS(SELECT 1 FROM public.pacientes pp WHERE pp.id=v_pac AND pp.medico_id=p.id) ORDER BY p.id LIMIT 1;
+  SELECT auth_user_id INTO v_otherpauth FROM public.pacientes WHERE id<>v_pac AND auth_user_id IS NOT NULL ORDER BY id LIMIT 1;
+  SELECT p.id INTO v_orphan FROM public.perfiles p WHERE NOT EXISTS(SELECT 1 FROM auth.users u WHERE u.id=p.id) LIMIT 1;  -- perfil sin auth (huérfano)
+  IF v_pauth IS NOT NULL AND v_med IS NOT NULL THEN
+    INSERT INTO public.chat_mensajes (paciente_id, medico_id, remitente, mensaje) VALUES (v_pac, v_med, 'paciente', 'PHISENTINEL6XYZ texto secreto') RETURNING id INTO v_mp;
+    INSERT INTO public.chat_mensajes (paciente_id, medico_id, remitente, mensaje) VALUES (v_pac, v_med, 'medico', 'RESP-PHISENTINEL6 secreto') RETURNING id INTO v_mm;
+    IF v_orphan IS NOT NULL THEN
+      INSERT INTO public.chat_mensajes (paciente_id, medico_id, remitente, mensaje) VALUES (v_pac, v_orphan, 'paciente', 'msg huerfano') RETURNING id INTO v_mo;
+    END IF;
+    IF v_unrel IS NOT NULL THEN
+      INSERT INTO public.chat_mensajes (paciente_id, medico_id, remitente, mensaje) VALUES (v_pac, v_unrel, 'paciente', 'msg sin relacion') RETURNING id INTO v_mu;
+    END IF;
+  END IF;
+  PERFORM set_config('probe.ch6_ready', CASE WHEN v_mp IS NOT NULL THEN '1' ELSE '0' END, false);
+  PERFORM set_config('probe.ch6_pauth', coalesce(v_pauth::text,''), false);
+  PERFORM set_config('probe.ch6_med', coalesce(v_med::text,''), false);
+  PERFORM set_config('probe.ch6_otherpauth', coalesce(v_otherpauth::text,''), false);
+  PERFORM set_config('probe.ch6_unrel', coalesce(v_unrel::text,''), false);
+  PERFORM set_config('probe.ch6_mp', coalesce(v_mp::text,''), false);
+  PERFORM set_config('probe.ch6_mm', coalesce(v_mm::text,''), false);
+  PERFORM set_config('probe.ch6_mo', coalesce(v_mo::text,''), false);
+  PERFORM set_config('probe.ch6_mu', coalesce(v_mu::text,''), false);
+END $$;
+
+-- P385 estructural: existe + DEFINER + sp'' + grants (anon✗/auth✓) + firma (integer) + columna notificado + CHECK remitente
+DO $$ DECLARE v_def boolean; v_cfg text[]; v_sp boolean; v_anon boolean; v_auth boolean; v_args text; v_col boolean; v_chk boolean; BEGIN
+  IF to_regprocedure('public.notificar_chat(integer)') IS NULL THEN PERFORM set_config('probe.p385','ROJO (ausente)',false); RETURN; END IF;
+  SELECT prosecdef, proconfig INTO v_def, v_cfg FROM pg_proc WHERE oid='public.notificar_chat(integer)'::regprocedure;
+  v_sp := EXISTS(SELECT 1 FROM unnest(coalesce(v_cfg,'{}'::text[])) e WHERE e LIKE 'search_path=%' AND e <> 'search_path=public');
+  v_anon := has_function_privilege('anon','public.notificar_chat(integer)','EXECUTE');
+  v_auth := has_function_privilege('authenticated','public.notificar_chat(integer)','EXECUTE');
+  SELECT pg_get_function_identity_arguments('public.notificar_chat(integer)'::regprocedure) INTO v_args;
+  v_col := EXISTS(SELECT 1 FROM information_schema.columns WHERE table_name='chat_mensajes' AND column_name='notificado');
+  v_chk := EXISTS(SELECT 1 FROM pg_constraint WHERE conrelid='public.chat_mensajes'::regclass AND contype='c' AND pg_get_constraintdef(oid) ILIKE '%remitente%');  -- remitente CHECK → ELSE es defensa
+  IF v_def AND v_sp AND NOT v_anon AND v_auth AND v_args LIKE '%integer%' AND v_args NOT LIKE '%text%' AND v_args NOT LIKE '%uuid%' AND v_args NOT LIKE '%,%' AND v_col AND v_chk
+    THEN PERFORM set_config('probe.p385','OK (DEFINER+sp'', anon✗/auth✓, firma solo integer, notificado+CHECK remitente)',false);
+    ELSE PERFORM set_config('probe.p385','ROJO (def='||v_def||' sp='||v_sp||' anon='||v_anon||' auth='||v_auth||' args='||v_args||' col='||v_col||' chk='||v_chk||')',false); END IF;
+END $$;
+
+-- P386 spoof: otro paciente notifica un mensaje del MÉDICO (no es el remitente) → PT002
+SELECT set_config('request.jwt.claims', json_build_object('sub', current_setting('probe.ch6_otherpauth',true), 'role','authenticated')::text, true);
+SELECT set_config('role','authenticated', true);
+DO $$ BEGIN
+  IF current_setting('probe.ch6_ready',true)<>'1' OR to_regprocedure('public.notificar_chat(integer)') IS NULL OR current_setting('probe.ch6_otherpauth',true)='' OR coalesce(current_setting('probe.ch6_mm',true),'')='' THEN PERFORM set_config('probe.p386','N/A',false); RETURN; END IF;
+  BEGIN PERFORM public.notificar_chat(current_setting('probe.ch6_mm',true)::int); PERFORM set_config('probe.p386','PERMITIDO (no-remitente notificó)',false);
+  EXCEPTION WHEN others THEN PERFORM set_config('probe.p386','BLOQUEADO ('||SQLSTATE||')',false); END;
+END $$;
+SELECT set_config('role','none', true);
+
+-- P387 GATE-ANTES-DEL-CLAIM (crítico): no-remitente → PT002 + notificado SIGUE false; luego remitente legítimo → notifica
+SELECT set_config('request.jwt.claims', json_build_object('sub', current_setting('probe.ch6_otherpauth',true), 'role','authenticated')::text, true);
+SELECT set_config('role','authenticated', true);
+DO $$ DECLARE v_e text; BEGIN
+  IF current_setting('probe.ch6_ready',true)<>'1' OR to_regprocedure('public.notificar_chat(integer)') IS NULL OR coalesce(current_setting('probe.ch6_mp',true),'')='' THEN PERFORM set_config('probe.ch6_denied','SKIP',false); RETURN; END IF;
+  BEGIN PERFORM public.notificar_chat(current_setting('probe.ch6_mp',true)::int); v_e:='PERMITIDO'; EXCEPTION WHEN others THEN v_e:=SQLSTATE; END;
+  PERFORM set_config('probe.ch6_denied', v_e, false);
+END $$;
+SELECT set_config('role','none', true);
+DO $$ DECLARE v_flag boolean; BEGIN  -- flag NO quemado por el denegado
+  IF to_regprocedure('public.notificar_chat(integer)') IS NULL OR NOT EXISTS(SELECT 1 FROM information_schema.columns WHERE table_name='chat_mensajes' AND column_name='notificado') OR coalesce(current_setting('probe.ch6_mp',true),'')='' THEN
+    PERFORM set_config('probe.ch6_flag_post_denied','∅',false); RETURN; END IF;
+  SELECT notificado INTO v_flag FROM public.chat_mensajes WHERE id=current_setting('probe.ch6_mp',true)::int;
+  PERFORM set_config('probe.ch6_flag_post_denied', coalesce(v_flag::text,'∅'), false);
+END $$;
+SELECT set_config('request.jwt.claims', json_build_object('sub', current_setting('probe.ch6_pauth',true), 'role','authenticated')::text, true);
+SELECT set_config('role','authenticated', true);
+DO $$ BEGIN
+  IF current_setting('probe.ch6_ready',true)<>'1' OR to_regprocedure('public.notificar_chat(integer)') IS NULL OR current_setting('probe.ch6_pauth',true)='' THEN PERFORM set_config('probe.ch6_legit','SKIP',false); RETURN; END IF;
+  BEGIN PERFORM public.notificar_chat(current_setting('probe.ch6_mp',true)::int); PERFORM set_config('probe.ch6_legit','OK',false);
+  EXCEPTION WHEN others THEN PERFORM set_config('probe.ch6_legit','ERR:'||SQLSTATE,false); END;
+END $$;
+SELECT set_config('role','none', true);
+DO $$ DECLARE v_med_ok boolean; BEGIN
+  IF coalesce(current_setting('probe.ch6_denied',true),'')='' OR current_setting('probe.ch6_denied',true)='SKIP' THEN PERFORM set_config('probe.p387','N/A',false); RETURN; END IF;
+  SELECT EXISTS(SELECT 1 FROM public.notificaciones WHERE usuario_id=current_setting('probe.ch6_med',true)::uuid AND tipo='mensaje' AND titulo='Nuevo mensaje' AND accion_url='/medico/chat' AND created_at>now()-interval '2 minutes') INTO v_med_ok;
+  IF current_setting('probe.ch6_denied',true)='PT002' AND current_setting('probe.ch6_flag_post_denied',true)='false' AND current_setting('probe.ch6_legit',true)='OK' AND v_med_ok
+    THEN PERFORM set_config('probe.p387','OK (denegado PT002 sin quemar flag; legítimo notifica al médico)',false);
+    ELSE PERFORM set_config('probe.p387','FALLO (denied='||current_setting('probe.ch6_denied',true)||' flag='||current_setting('probe.ch6_flag_post_denied',true)||' legit='||current_setting('probe.ch6_legit',true)||' med='||COALESCE(v_med_ok::text,'∅')||')',false); END IF;
+END $$;
+
+-- P388 positivo médico→paciente: médico envía → fila paciente (notificaciones_pacientes), contenido server
+SELECT set_config('request.jwt.claims', json_build_object('sub', current_setting('probe.ch6_med',true), 'role','authenticated')::text, true);
+SELECT set_config('role','authenticated', true);
+DO $$ BEGIN
+  IF current_setting('probe.ch6_ready',true)<>'1' OR to_regprocedure('public.notificar_chat(integer)') IS NULL OR coalesce(current_setting('probe.ch6_mm',true),'')='' THEN PERFORM set_config('probe.ch6_md','SKIP',false); RETURN; END IF;
+  BEGIN PERFORM public.notificar_chat(current_setting('probe.ch6_mm',true)::int); PERFORM set_config('probe.ch6_md','OK',false);
+  EXCEPTION WHEN others THEN PERFORM set_config('probe.ch6_md','ERR:'||SQLSTATE,false); END;
+END $$;
+SELECT set_config('role','none', true);
+DO $$ DECLARE v_ok boolean; BEGIN
+  IF coalesce(current_setting('probe.ch6_md',true),'')='' OR current_setting('probe.ch6_md',true)='SKIP' THEN PERFORM set_config('probe.p388','N/A',false); RETURN; END IF;
+  IF current_setting('probe.ch6_md',true) LIKE 'ERR:%' THEN PERFORM set_config('probe.p388','FALLO (RPC '||current_setting('probe.ch6_md',true)||')',false); RETURN; END IF;
+  SELECT EXISTS(SELECT 1 FROM public.notificaciones_pacientes WHERE paciente_id=23 AND tipo='mensaje' AND titulo='Nuevo mensaje' AND accion_url='/paciente/chat' AND created_at>now()-interval '2 minutes') INTO v_ok;
+  PERFORM set_config('probe.p388', CASE WHEN v_ok THEN 'OK (fila paciente derivada, contenido server)' ELSE 'FALLO (sin fila paciente)' END, false);
+END $$;
+
+-- P389 médico-huérfano: paciente→médico con medico_id NO en auth.users → fila médico AUSENTE, sin abortar
+SELECT set_config('request.jwt.claims', json_build_object('sub', current_setting('probe.ch6_pauth',true), 'role','authenticated')::text, true);
+SELECT set_config('role','authenticated', true);
+DO $$ DECLARE v_e text; v_n int; BEGIN
+  IF current_setting('probe.ch6_ready',true)<>'1' OR to_regprocedure('public.notificar_chat(integer)') IS NULL OR coalesce(current_setting('probe.ch6_mo',true),'')='' THEN PERFORM set_config('probe.p389','N/A (sin perfil huérfano construible)',false); RETURN; END IF;
+  BEGIN PERFORM public.notificar_chat(current_setting('probe.ch6_mo',true)::int); v_e:='OK'; EXCEPTION WHEN others THEN v_e:='ERR:'||SQLSTATE; END;
+  IF v_e LIKE 'ERR:%' THEN PERFORM set_config('probe.p389','FALLO (RPC abortó '||v_e||')',false); RETURN; END IF;
+  SELECT count(*) INTO v_n FROM public.notificaciones WHERE usuario_id IN (SELECT id FROM public.perfiles WHERE NOT EXISTS(SELECT 1 FROM auth.users u WHERE u.id=perfiles.id)) AND titulo='Nuevo mensaje' AND created_at>now()-interval '2 minutes';
+  PERFORM set_config('probe.p389', CASE WHEN v_n=0 THEN 'OK (médico huérfano saltado, sin abortar)' ELSE 'FALLO (fila médico huérfano creada: '||v_n||')' END, false);
+END $$;
+SELECT set_config('role','none', true);
+
+-- P390 PHI: el texto crudo del mensaje NO está en ninguna fila de notif
+DO $$ DECLARE v_leak int; BEGIN
+  IF current_setting('probe.ch6_ready',true)<>'1' THEN PERFORM set_config('probe.p390','N/A',false); RETURN; END IF;
+  SELECT (SELECT count(*) FROM public.notificaciones WHERE mensaje LIKE '%PHISENTINEL6%' AND created_at>now()-interval '3 minutes')
+       + (SELECT count(*) FROM public.notificaciones_pacientes WHERE mensaje LIKE '%PHISENTINEL6%' AND created_at>now()-interval '3 minutes') INTO v_leak;
+  PERFORM set_config('probe.p390', CASE WHEN v_leak=0 THEN 'OK (texto del mensaje NO en notif)' ELSE 'FALLO (texto filtrado en '||v_leak||' filas)' END, false);
+END $$;
+
+-- P391 idempotencia: 2º notificar_chat(mp) → 0 fila nueva. Conteo bajo OWNER (RLS oculta al paciente las filas del médico).
+SELECT set_config('role','none', true);
+DO $$ BEGIN  -- baseline (owner)
+  IF current_setting('probe.ch6_ready',true)<>'1' OR current_setting('probe.ch6_legit',true) IS DISTINCT FROM 'OK' THEN PERFORM set_config('probe.ch6_before','',false); RETURN; END IF;
+  PERFORM set_config('probe.ch6_before', (SELECT count(*)::text FROM public.notificaciones WHERE usuario_id=current_setting('probe.ch6_med',true)::uuid AND titulo='Nuevo mensaje' AND created_at>now()-interval '3 minutes'), false);
+END $$;
+SELECT set_config('request.jwt.claims', json_build_object('sub', current_setting('probe.ch6_pauth',true), 'role','authenticated')::text, true);
+SELECT set_config('role','authenticated', true);
+DO $$ BEGIN  -- 2º call como remitente (ya notificado → no-op)
+  IF coalesce(current_setting('probe.ch6_before',true),'')='' THEN RETURN; END IF;
+  PERFORM public.notificar_chat(current_setting('probe.ch6_mp',true)::int);
+END $$;
+SELECT set_config('role','none', true);
+DO $$ DECLARE v_after int; v_before int; BEGIN  -- conteo final (owner)
+  IF coalesce(current_setting('probe.ch6_before',true),'')='' THEN PERFORM set_config('probe.p391','N/A',false); RETURN; END IF;
+  v_before := current_setting('probe.ch6_before',true)::int;
+  SELECT count(*) INTO v_after FROM public.notificaciones WHERE usuario_id=current_setting('probe.ch6_med',true)::uuid AND titulo='Nuevo mensaje' AND created_at>now()-interval '3 minutes';
+  PERFORM set_config('probe.p391', CASE WHEN v_after=v_before AND v_before>0 THEN 'OK (2º call sin fila nueva: '||v_after||'='||v_before||')' ELSE 'FALLO (before='||v_before||' after='||v_after||')' END, false);
+END $$;
+
+-- P392 visibilidad médico: el médico LEE su fila (RLS)
+SELECT set_config('request.jwt.claims', json_build_object('sub', current_setting('probe.ch6_med',true), 'role','authenticated')::text, true);
+SELECT set_config('role','authenticated', true);
+DO $$ DECLARE v_n int; BEGIN
+  IF current_setting('probe.ch6_legit',true) IS DISTINCT FROM 'OK' THEN PERFORM set_config('probe.p392','N/A',false); RETURN; END IF;
+  SELECT count(*) INTO v_n FROM public.notificaciones WHERE usuario_id=current_setting('probe.ch6_med',true)::uuid AND titulo='Nuevo mensaje' AND created_at>now()-interval '3 minutes';
+  PERFORM set_config('probe.p392', CASE WHEN v_n>0 THEN 'OK (médico lee su fila vía RLS)' ELSE 'FALLO (RLS oculta)' END, false);
+END $$;
+SELECT set_config('role','none', true);
+
+-- P393 visibilidad paciente: el paciente LEE su fila (médico→paciente, RLS)
+SELECT set_config('request.jwt.claims', json_build_object('sub', current_setting('probe.ch6_pauth',true), 'role','authenticated')::text, true);
+SELECT set_config('role','authenticated', true);
+DO $$ DECLARE v_n int; BEGIN
+  IF current_setting('probe.ch6_md',true) IS DISTINCT FROM 'OK' THEN PERFORM set_config('probe.p393','N/A',false); RETURN; END IF;
+  SELECT count(*) INTO v_n FROM public.notificaciones_pacientes WHERE paciente_id=23 AND titulo='Nuevo mensaje' AND created_at>now()-interval '3 minutes';
+  PERFORM set_config('probe.p393', CASE WHEN v_n>0 THEN 'OK (paciente lee su fila vía RLS)' ELSE 'FALLO (RLS oculta)' END, false);
+END $$;
+SELECT set_config('role','none', true);
+
+-- P394 GATE RELACIÓN: caller=remitente (paciente dueño del mensaje) PERO medico_id SIN relación con él →
+-- el RPC NO notifica al médico ajeno (0 fila) y NO reclama el flag (skip antes del claim). Cierra el targeting
+-- arbitrario que el INSERT RLS de chat_mensajes (medico_id libre) permitía.
+SELECT set_config('request.jwt.claims', json_build_object('sub', current_setting('probe.ch6_pauth',true), 'role','authenticated')::text, true);
+SELECT set_config('role','authenticated', true);
+DO $$ BEGIN
+  IF current_setting('probe.ch6_ready',true)<>'1' OR to_regprocedure('public.notificar_chat(integer)') IS NULL OR coalesce(current_setting('probe.ch6_mu',true),'')='' THEN PERFORM set_config('probe.ch6_unrel_done','SKIP',false); RETURN; END IF;
+  BEGIN PERFORM public.notificar_chat(current_setting('probe.ch6_mu',true)::int); PERFORM set_config('probe.ch6_unrel_done','OK',false);
+  EXCEPTION WHEN others THEN PERFORM set_config('probe.ch6_unrel_done','ERR:'||SQLSTATE,false); END;
+END $$;
+SELECT set_config('role','none', true);
+DO $$ DECLARE v_n int; v_flag boolean; BEGIN
+  IF coalesce(current_setting('probe.ch6_unrel_done',true),'')='' OR current_setting('probe.ch6_unrel_done',true)='SKIP' THEN PERFORM set_config('probe.p394','N/A (sin médico no-relacionado construible)',false); RETURN; END IF;
+  IF current_setting('probe.ch6_unrel_done',true) LIKE 'ERR:%' THEN PERFORM set_config('probe.p394','FALLO (RPC abortó '||current_setting('probe.ch6_unrel_done',true)||')',false); RETURN; END IF;
+  SELECT count(*) INTO v_n FROM public.notificaciones WHERE usuario_id=current_setting('probe.ch6_unrel',true)::uuid AND titulo='Nuevo mensaje' AND created_at>now()-interval '2 minutes';
+  SELECT notificado INTO v_flag FROM public.chat_mensajes WHERE id=current_setting('probe.ch6_mu',true)::int;
+  IF v_n=0 AND v_flag IS NOT TRUE THEN PERFORM set_config('probe.p394','OK (médico no-relacionado NO notificado, flag no reclamado — targeting arbitrario bloqueado)',false);
+  ELSE PERFORM set_config('probe.p394','FALLO (notif='||v_n||' flag='||COALESCE(v_flag::text,'∅')||')',false); END IF;
+END $$;
+SELECT set_config('role','none', true);
+
 -- ===== Veredictos como result set =====
 SELECT 'P1_anon_insert_citas'              AS probe, current_setting('probe.p1', true)  AS verdict, 'BLOQUEADO' AS esperado_post_fix
 UNION ALL SELECT 'P2_medico_cancela_ajena_rpc',         current_setting('probe.p2', true),  'BLOQUEADO'
@@ -6582,6 +6774,16 @@ UNION ALL SELECT 'P380_evt5_medico_visibilidad',         current_setting('probe.
 UNION ALL SELECT 'P381_evt5_admins_derivados',           current_setting('probe.p381', true), 'OK post-125'
 UNION ALL SELECT 'P382_evt5_phi_sin_motivo',             current_setting('probe.p382', true), 'OK post-125'
 UNION ALL SELECT 'P383_evt5_admin_visibilidad',          current_setting('probe.p383', true), 'OK post-125'
-UNION ALL SELECT 'P384_evt5_medico_huerfano_resiliente', current_setting('probe.p384', true), 'OK (médico skip, admins reciben)';
+UNION ALL SELECT 'P384_evt5_medico_huerfano_resiliente', current_setting('probe.p384', true), 'OK (médico skip, admins reciben)'
+UNION ALL SELECT 'P385_evt6_estructural',                current_setting('probe.p385', true), 'OK post-126 (ROJO pre)'
+UNION ALL SELECT 'P386_evt6_spoof_denegado',             current_setting('probe.p386', true), 'BLOQUEADO (PT002)'
+UNION ALL SELECT 'P387_evt6_gate_antes_claim',           current_setting('probe.p387', true), 'OK post-126'
+UNION ALL SELECT 'P388_evt6_medico_a_paciente',          current_setting('probe.p388', true), 'OK post-126'
+UNION ALL SELECT 'P389_evt6_medico_huerfano',            current_setting('probe.p389', true), 'OK post-126'
+UNION ALL SELECT 'P390_evt6_phi_sin_texto',              current_setting('probe.p390', true), 'OK post-126'
+UNION ALL SELECT 'P391_evt6_idempotencia',               current_setting('probe.p391', true), 'OK post-126'
+UNION ALL SELECT 'P392_evt6_medico_visibilidad',         current_setting('probe.p392', true), 'OK post-126'
+UNION ALL SELECT 'P393_evt6_paciente_visibilidad',       current_setting('probe.p393', true), 'OK post-126'
+UNION ALL SELECT 'P394_evt6_gate_relacion',              current_setting('probe.p394', true), 'OK post-126 (targeting arbitrario bloqueado)';
 
 ROLLBACK;  -- nada de lo anterior se persiste
