@@ -222,37 +222,13 @@ export default function ConsultaPage() {
       return
     }
 
-    const resumen = lista.length === 1 ? lista[0] : `${lista.length} exámenes`
-    // Notificar al paciente
+    // Camino ÚNICO server-side gateado: notificar_orden_lab(orden.id) UNA vez al finalizar la orden.
+    // Deriva lab + paciente + count de los exámenes de la orden, compone el resumen ('N exámenes')
+    // server-side y crea 1 notif paciente + fan-out al lab + web-push. Reemplaza notificar_paciente +
+    // notificar_laboratorio + enviar-push (gate = médico de la orden; cero target/contenido del caller).
     try {
-      await supabase.rpc('notificar_paciente', {
-        p_paciente_id: paciente.id,
-        p_tipo: 'examen',
-        p_titulo: 'Nueva orden de examen',
-        p_mensaje: `Tu médico te ordenó: ${resumen}.`,
-        p_accion_url: '/paciente/examenes',
-      })
-    } catch (e) { console.error('Error notificando examen al paciente:', e) }
-    // Notificar al laboratorio asignado (in-app + push)
-    if (labSel) {
-      const tituloLab = 'Nueva orden de examen'
-      const mensajeLab = `${perfil?.nombre_completo || 'Un médico'} ordenó ${resumen} para ${pacienteNombre}.`
-      try {
-        const { data: idsLab } = await supabase.rpc('notificar_laboratorio', {
-          p_laboratorio_id: labSel,
-          p_tipo: 'orden_examen',
-          p_titulo: tituloLab,
-          p_mensaje: mensajeLab,
-          p_accion_url: '/laboratorio/ordenes',
-        })
-        // Push web a las cuentas del laboratorio (degrada si no hay suscripción)
-        if (Array.isArray(idsLab) && idsLab.length > 0) {
-          await supabase.functions.invoke('enviar-push', {
-            body: { usuario_ids: idsLab, titulo: tituloLab, mensaje: mensajeLab, url: '/laboratorio/ordenes', tag: `orden-${orden.id}` },
-          })
-        }
-      } catch (e) { console.error('Error notificando al laboratorio:', e) }
-    }
+      await supabase.rpc('notificar_orden_lab', { p_orden_id: orden.id })
+    } catch (e) { console.error('Error notificar_orden_lab:', e) }
     toast.success(
       labElegido
         ? `Orden (${lista.length}) enviada a ${labElegido.nombre_empresa}. El paciente también la verá en su portal.`
