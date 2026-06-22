@@ -7245,6 +7245,94 @@ SELECT set_config('role','none', true);
 ALTER TABLE public.visitas_agendadas ENABLE TRIGGER trg_gate_visita_pais;
 ALTER TABLE public.visitas_agendadas ENABLE TRIGGER trigger_forzar_estado_propuesta;
 
+-- ============================================================
+-- Hardening INSERT (opción-2) · chat_mensajes relación + remitente (P427–P430). Red-first.
+-- ============================================================
+-- pac.qa = pac 23 (auth 5bfb5b4c). médico relacionado (primario/cita) vs médico real ∉ relación. WITH CHECK = RLS
+-- bajo jwt authenticated; chat_mensajes no tiene gate de país → sin DISABLE TRIGGER. Rolled-back.
+SELECT set_config('role','none', true);
+DO $$ DECLARE v_pac integer:=23; v_pauth uuid:='5bfb5b4c-dc91-4714-93cb-a292faa6717d';
+  v_prim uuid; v_cita uuid; v_ajeno uuid; v_ok boolean; BEGIN
+  SELECT medico_primario_id INTO v_prim FROM public.pacientes WHERE id=v_pac;
+  SELECT medico_id INTO v_cita FROM public.citas WHERE paciente_id=v_pac AND medico_id IS NOT NULL ORDER BY id LIMIT 1;
+  -- médico real SIN relación con pac 23 (raw EXISTS, no el helper — pre-apply no existe)
+  SELECT p.id INTO v_ajeno FROM public.perfiles p WHERE p.rol='medico'
+    AND NOT EXISTS(SELECT 1 FROM public.citas c WHERE c.paciente_id=v_pac AND c.medico_id=p.id)
+    AND NOT EXISTS(SELECT 1 FROM public.pacientes pa WHERE pa.id=v_pac AND (pa.medico_primario_id=p.id OR pa.medico_id=p.id))
+    ORDER BY p.id LIMIT 1;
+  v_ok := COALESCE(v_prim,v_cita) IS NOT NULL AND v_ajeno IS NOT NULL AND EXISTS(SELECT 1 FROM public.pacientes WHERE id=v_pac AND auth_user_id=v_pauth);
+  PERFORM set_config('probe.ch_ready', CASE WHEN v_ok THEN '1' ELSE '0' END, false);
+  PERFORM set_config('probe.ch_pac', v_pac::text, false);  PERFORM set_config('probe.ch_pauth', v_pauth::text, false);
+  PERFORM set_config('probe.ch_prim', coalesce(v_prim::text,''), false); PERFORM set_config('probe.ch_cita', coalesce(v_cita::text,''), false);
+  PERFORM set_config('probe.ch_rel', coalesce(v_prim,v_cita)::text, false); PERFORM set_config('probe.ch_ajeno', coalesce(v_ajeno::text,''), false);
+END $$;
+
+-- P427 estructural: helper DEFINER+sp''+grants + WITH CHECK con los 3 términos conjuntivos
+DO $$ DECLARE v_def boolean; v_cfg text[]; v_sp boolean; v_anon boolean; v_pub boolean; v_auth boolean; v_chk text; BEGIN
+  IF to_regprocedure('private.paciente_relacion_medico(integer,uuid)') IS NULL THEN PERFORM set_config('probe.p427','ROJO (helper ausente)',false); RETURN; END IF;
+  SELECT prosecdef,proconfig INTO v_def,v_cfg FROM pg_proc WHERE oid='private.paciente_relacion_medico(integer,uuid)'::regprocedure;
+  v_sp := EXISTS(SELECT 1 FROM unnest(coalesce(v_cfg,'{}'::text[])) e WHERE e LIKE 'search_path=%' AND e<>'search_path=public');
+  v_anon := has_function_privilege('anon','private.paciente_relacion_medico(integer,uuid)','EXECUTE');
+  v_pub  := has_function_privilege('public','private.paciente_relacion_medico(integer,uuid)','EXECUTE');
+  v_auth := has_function_privilege('authenticated','private.paciente_relacion_medico(integer,uuid)','EXECUTE');
+  SELECT pg_get_expr(polwithcheck,polrelid) INTO v_chk FROM pg_policy WHERE polrelid='public.chat_mensajes'::regclass AND polname='Paciente envía mensajes';
+  PERFORM set_config('probe.p427', CASE
+    WHEN v_def AND v_sp AND NOT v_anon AND NOT v_pub AND v_auth
+      AND v_chk ILIKE '%auth_user_id = auth.uid()%' AND v_chk ILIKE '%remitente = ''paciente''%'
+      AND v_chk ILIKE '%medico_id IS NULL%' AND v_chk ILIKE '%paciente_relacion_medico%'
+    THEN 'OK (helper DEFINER+sp''+grants; WITH CHECK self EXACTO + remitente + medico_id IS NULL OR relación)'
+    ELSE 'ROJO (def='||v_def||' sp='||v_sp||' anon='||v_anon||' pub='||v_pub||' auth='||v_auth||' rem='||(v_chk ILIKE '%remitente = ''paciente''%')||' rel='||(v_chk ILIKE '%paciente_relacion_medico%')||')' END, false);
+END $$;
+
+-- P428 NEG médico-ajeno (médico uuid real SIN relación) → PRE permitido (rojo) / POST rechazado
+SELECT set_config('request.jwt.claims', json_build_object('sub', current_setting('probe.ch_pauth',true),'role','authenticated')::text, true);
+SELECT set_config('role','authenticated', true);
+DO $$ DECLARE v text; BEGIN
+  IF current_setting('probe.ch_ready',true)<>'1' THEN PERFORM set_config('probe.p428','N/A',false); RETURN; END IF;
+  BEGIN INSERT INTO public.chat_mensajes (paciente_id, medico_id, remitente, mensaje, leido)
+    VALUES (current_setting('probe.ch_pac',true)::int, current_setting('probe.ch_ajeno',true)::uuid, 'paciente', 'probe ajeno', false);
+    v:='PERMITIDO'; EXCEPTION WHEN others THEN v:='BLOQUEADO('||SQLSTATE||')'; END;
+  PERFORM set_config('probe.p428', CASE WHEN v LIKE 'BLOQUEADO%' THEN 'OK ('||v||' médico sin relación rechazado)' ELSE 'ROJO (PERMITIDO — médico ajeno atribuido)' END, false);
+END $$;
+SELECT set_config('role','none', true);
+
+-- P429 NEG spoof remitente: self válido + médico relacionado pero remitente='medico' → aísla el término remitente
+SELECT set_config('request.jwt.claims', json_build_object('sub', current_setting('probe.ch_pauth',true),'role','authenticated')::text, true);
+SELECT set_config('role','authenticated', true);
+DO $$ DECLARE v text; BEGIN
+  IF current_setting('probe.ch_ready',true)<>'1' THEN PERFORM set_config('probe.p429','N/A',false); RETURN; END IF;
+  BEGIN INSERT INTO public.chat_mensajes (paciente_id, medico_id, remitente, mensaje, leido)
+    VALUES (current_setting('probe.ch_pac',true)::int, current_setting('probe.ch_rel',true)::uuid, 'medico', 'probe spoof', false);
+    v:='PERMITIDO'; EXCEPTION WHEN others THEN v:='BLOQUEADO('||SQLSTATE||')'; END;
+  PERFORM set_config('probe.p429', CASE WHEN v LIKE 'BLOQUEADO%' THEN 'OK ('||v||' spoof remitente=medico rechazado)' ELSE 'ROJO (PERMITIDO — spoof remitente)' END, false);
+END $$;
+SELECT set_config('role','none', true);
+
+-- P430 POS no-regresión × 3: (a) médico de cita + (b) primario + (c) NULL → TODOS pasan pre y post
+SELECT set_config('request.jwt.claims', json_build_object('sub', current_setting('probe.ch_pauth',true),'role','authenticated')::text, true);
+SELECT set_config('role','authenticated', true);
+DO $$ DECLARE a text; b text; c text; BEGIN
+  IF current_setting('probe.ch_ready',true)<>'1' THEN PERFORM set_config('probe.p430','N/A',false); RETURN; END IF;
+  -- (a) médico de cita real (si existe)
+  IF coalesce(current_setting('probe.ch_cita',true),'')<>'' THEN
+    BEGIN INSERT INTO public.chat_mensajes (paciente_id, medico_id, remitente, mensaje, leido)
+      VALUES (current_setting('probe.ch_pac',true)::int, current_setting('probe.ch_cita',true)::uuid, 'paciente', 'pos cita', false); a:='OK';
+      EXCEPTION WHEN others THEN a:='ERR('||SQLSTATE||')'; END;
+  ELSE a:='OK'; END IF;  -- sin cita → no aplica, no es regresión
+  -- (b) primario / pacientes.medico_id (si existe)
+  IF coalesce(current_setting('probe.ch_prim',true),'')<>'' THEN
+    BEGIN INSERT INTO public.chat_mensajes (paciente_id, medico_id, remitente, mensaje, leido)
+      VALUES (current_setting('probe.ch_pac',true)::int, current_setting('probe.ch_prim',true)::uuid, 'paciente', 'pos primario', false); b:='OK';
+      EXCEPTION WHEN others THEN b:='ERR('||SQLSTATE||')'; END;
+  ELSE b:='OK'; END IF;
+  -- (c) medico_id NULL (grandfather)
+  BEGIN INSERT INTO public.chat_mensajes (paciente_id, medico_id, remitente, mensaje, leido)
+    VALUES (current_setting('probe.ch_pac',true)::int, NULL, 'paciente', 'pos null', false); c:='OK';
+    EXCEPTION WHEN others THEN c:='ERR('||SQLSTATE||')'; END;
+  PERFORM set_config('probe.p430', CASE WHEN a='OK' AND b='OK' AND c='OK' THEN 'OK (cita + primario + NULL pasan, sin regresión)' ELSE 'FALLO (cita='||a||' prim='||b||' null='||c||')' END, false);
+END $$;
+SELECT set_config('role','none', true);
+
 -- ===== Veredictos como result set =====
 SELECT 'P1_anon_insert_citas'              AS probe, current_setting('probe.p1', true)  AS verdict, 'BLOQUEADO' AS esperado_post_fix
 UNION ALL SELECT 'P2_medico_cancela_ajena_rpc',         current_setting('probe.p2', true),  'BLOQUEADO'
@@ -7663,6 +7751,10 @@ UNION ALL SELECT 'P422_receta_idempotencia',             current_setting('probe.
 UNION ALL SELECT 'P423_receta_phi_generico',             current_setting('probe.p423', true), 'OK post-133 (med+dosis+diag ausentes)'
 UNION ALL SELECT 'P424_visitas_hardening_estructural',   current_setting('probe.p424', true), 'OK post-134 (ROJO pre; helper + WITH CHECK cuenta_en_empresa)'
 UNION ALL SELECT 'P425_visitas_cuenta_ajena_rechazada',  current_setting('probe.p425', true), 'OK post-134 (ROJO/PERMITIDO pre; cuenta∉empresa rechazada)'
-UNION ALL SELECT 'P426_visitas_no_regresion',            current_setting('probe.p426', true), 'OK (self + colega∈empresa pasan)';
+UNION ALL SELECT 'P426_visitas_no_regresion',            current_setting('probe.p426', true), 'OK (self + colega∈empresa pasan)'
+UNION ALL SELECT 'P427_chat_hardening_estructural',      current_setting('probe.p427', true), 'OK post-135 (ROJO pre; helper + 3 términos)'
+UNION ALL SELECT 'P428_chat_medico_ajeno_rechazado',     current_setting('probe.p428', true), 'OK post-135 (PERMITIDO pre; médico sin relación rechazado)'
+UNION ALL SELECT 'P429_chat_spoof_remitente',            current_setting('probe.p429', true), 'OK post-135 (PERMITIDO pre; remitente=medico rechazado)'
+UNION ALL SELECT 'P430_chat_no_regresion',               current_setting('probe.p430', true), 'OK (cita + primario + NULL pasan)';
 
 ROLLBACK;  -- nada de lo anterior se persiste
