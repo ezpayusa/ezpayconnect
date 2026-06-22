@@ -7062,6 +7062,114 @@ DO $$ DECLARE v_n int; BEGIN
 END $$;
 SELECT set_config('role','none', true);
 
+-- ============================================================
+-- Fix push transaccional · EVENTO RECETA (notificar_receta) (P419–P423). Red-first.
+-- ============================================================
+-- Fixture: 2 recetas QA (pac 23, médico 09d243d5 que ATIENDE; sentinels medicamento/dosis/diagnóstico).
+-- med.qa atiende pac23 (positivo) · pac.qa (5bfb5b4c) NO atiende (spoof) · super_admin e56879c0.
+SELECT set_config('role','none', true);
+DO $$ DECLARE v_pac bigint := 23; v_med uuid := '09d243d5-b222-482a-9762-94a582e9e752';
+  v_spoof uuid := '5bfb5b4c-dc91-4714-93cb-a292faa6717d'; v_sa uuid := 'e56879c0-4025-4f1f-832d-2753d9ab63e1';
+  v_r1 bigint; v_r2 bigint; v_ok boolean; BEGIN
+  v_ok := EXISTS(SELECT 1 FROM public.pacientes WHERE id=v_pac) AND to_regclass('public.recetas') IS NOT NULL
+       AND EXISTS(SELECT 1 FROM public.perfiles WHERE id=v_sa AND rol IN ('ezpay_admin','super_admin','admin_finanzas'));
+  IF v_ok THEN
+    INSERT INTO public.recetas (medico_id, paciente_id, estado, diagnostico, medicamentos, dosis)
+      VALUES (v_med, v_pac, 'activa', 'DIAGSENT_RX', '["MEDSENT_RX"]'::jsonb, 'DOSISSENT_RX') RETURNING id INTO v_r1;
+    INSERT INTO public.recetas (medico_id, paciente_id, estado, diagnostico, medicamentos, dosis)
+      VALUES (v_med, v_pac, 'activa', 'DIAGSENT_RX', '["MEDSENT_RX"]'::jsonb, 'DOSISSENT_RX') RETURNING id INTO v_r2;
+  END IF;
+  PERFORM set_config('probe.rx_ready', CASE WHEN v_r1 IS NOT NULL THEN '1' ELSE '0' END, false);
+  PERFORM set_config('probe.rx_pac', v_pac::text, false);  PERFORM set_config('probe.rx_med', v_med::text, false);
+  PERFORM set_config('probe.rx_spoof', v_spoof::text, false); PERFORM set_config('probe.rx_sa', v_sa::text, false);
+  PERFORM set_config('probe.rx_r1', coalesce(v_r1::text,''), false); PERFORM set_config('probe.rx_r2', coalesce(v_r2::text,''), false);
+END $$;
+
+-- P419 estructural: firma 1 arg bigint sin vector de contenido + DEFINER + sp'' + grants + push_notificar + accion_url interna
+DO $$ DECLARE v_def boolean; v_cfg text[]; v_sp boolean; v_anon boolean; v_auth boolean; v_args text; v_src text; BEGIN
+  IF to_regprocedure('public.notificar_receta(bigint)') IS NULL THEN PERFORM set_config('probe.p419','ROJO (ausente)',false); RETURN; END IF;
+  SELECT prosecdef, proconfig, prosrc INTO v_def, v_cfg, v_src FROM pg_proc WHERE oid='public.notificar_receta(bigint)'::regprocedure;
+  v_sp := EXISTS(SELECT 1 FROM unnest(coalesce(v_cfg,'{}'::text[])) e WHERE e LIKE 'search_path=%' AND e<>'search_path=public');
+  v_anon := has_function_privilege('anon','public.notificar_receta(bigint)','EXECUTE');
+  v_auth := has_function_privilege('authenticated','public.notificar_receta(bigint)','EXECUTE');
+  v_args := pg_get_function_identity_arguments('public.notificar_receta(bigint)'::regprocedure);
+  PERFORM set_config('probe.p419', CASE
+    WHEN v_def AND v_sp AND NOT v_anon AND v_auth
+      AND position(',' in v_args)=0 AND v_args LIKE '%bigint%'
+      AND v_args !~* 'titulo|mensaje|tipo|url|paciente|contenido|nota'
+      AND v_src ILIKE '%push_notificar%' AND v_src ILIKE '%/paciente/recetas%'
+      AND v_src ILIKE '%COALESCE(private.medico_atiende_paciente%'   -- gate con COALESCE explícito (anti fail-open trivaluado, P360)
+    THEN 'OK (firma bigint-only sin contenido; DEFINER+sp''+grants; push_notificar; accion_url interna; gate COALESCE)'
+    ELSE 'ROJO (def='||v_def||' sp='||v_sp||' anon='||v_anon||' auth='||v_auth||' args='||v_args||' push='||(v_src ILIKE '%push_notificar%')||' coalesce='||(v_src ILIKE '%COALESCE(private.medico_atiende_paciente%')||')' END, false);
+END $$;
+
+-- P420 spoof gate-antes-claim: pac.qa (no atiende) → PT002 + notificado SIGUE false; med.qa → notifica; super_admin (r2) → notifica
+SELECT set_config('request.jwt.claims', json_build_object('sub', current_setting('probe.rx_spoof',true),'role','authenticated')::text, true);
+SELECT set_config('role','authenticated', true);
+DO $$ DECLARE a text; BEGIN
+  IF current_setting('probe.rx_ready',true)<>'1' OR to_regprocedure('public.notificar_receta(bigint)') IS NULL THEN PERFORM set_config('probe.rx_denied','SKIP',false); RETURN; END IF;
+  BEGIN PERFORM public.notificar_receta(current_setting('probe.rx_r1',true)::bigint); a:='PERM'; EXCEPTION WHEN others THEN a:=SQLSTATE; END;
+  PERFORM set_config('probe.rx_denied', a, false);
+END $$;
+SELECT set_config('role','none', true);
+DO $$ DECLARE v_flag boolean; BEGIN
+  IF coalesce(current_setting('probe.rx_r1',true),'')='' OR NOT EXISTS(SELECT 1 FROM information_schema.columns WHERE table_name='recetas' AND column_name='notificado') THEN PERFORM set_config('probe.rx_flag','∅',false); RETURN; END IF;
+  SELECT notificado INTO v_flag FROM public.recetas WHERE id=current_setting('probe.rx_r1',true)::bigint;
+  PERFORM set_config('probe.rx_flag', coalesce(v_flag::text,'∅'), false);
+END $$;
+SELECT set_config('request.jwt.claims', json_build_object('sub', current_setting('probe.rx_med',true),'role','authenticated')::text, true);
+SELECT set_config('role','authenticated', true);
+DO $$ BEGIN
+  IF current_setting('probe.rx_ready',true)<>'1' OR to_regprocedure('public.notificar_receta(bigint)') IS NULL THEN PERFORM set_config('probe.rx_legit','SKIP',false); RETURN; END IF;
+  BEGIN PERFORM public.notificar_receta(current_setting('probe.rx_r1',true)::bigint); PERFORM set_config('probe.rx_legit','OK',false);
+  EXCEPTION WHEN others THEN PERFORM set_config('probe.rx_legit','ERR:'||SQLSTATE,false); END;
+  PERFORM public.notificar_receta(current_setting('probe.rx_r1',true)::bigint);  -- 2º call idempotente
+END $$;
+SELECT set_config('request.jwt.claims', json_build_object('sub', current_setting('probe.rx_sa',true),'role','authenticated')::text, true);
+DO $$ DECLARE s text; BEGIN
+  IF current_setting('probe.rx_ready',true)<>'1' OR coalesce(current_setting('probe.rx_r2',true),'')='' THEN PERFORM set_config('probe.rx_sa_res','SKIP',false); RETURN; END IF;
+  BEGIN PERFORM public.notificar_receta(current_setting('probe.rx_r2',true)::bigint); s:='OK'; EXCEPTION WHEN others THEN s:='ERR:'||SQLSTATE; END;
+  PERFORM set_config('probe.rx_sa_res', s, false);
+END $$;
+SELECT set_config('role','none', true);
+DO $$ DECLARE v_med_notif boolean; BEGIN
+  IF coalesce(current_setting('probe.rx_denied',true),'')='' OR current_setting('probe.rx_denied',true)='SKIP' THEN PERFORM set_config('probe.p420','N/A',false); RETURN; END IF;
+  SELECT EXISTS(SELECT 1 FROM public.notificaciones_pacientes WHERE paciente_id=current_setting('probe.rx_pac',true)::bigint AND tipo='receta' AND created_at>now()-interval '3 minutes') INTO v_med_notif;
+  PERFORM set_config('probe.p420', CASE
+    WHEN current_setting('probe.rx_denied',true)='PT002' AND current_setting('probe.rx_flag',true)='false'
+      AND current_setting('probe.rx_legit',true)='OK' AND v_med_notif AND current_setting('probe.rx_sa_res',true)='OK'
+    THEN 'OK (spoof PT002 sin quemar flag; med.qa notifica; super_admin notifica)'
+    ELSE 'FALLO (denied='||current_setting('probe.rx_denied',true)||' flag='||current_setting('probe.rx_flag',true)||' legit='||current_setting('probe.rx_legit',true)||' med='||COALESCE(v_med_notif::text,'∅')||' sa='||current_setting('probe.rx_sa_res',true)||')' END, false);
+END $$;
+
+-- P421 recipient derivado: recipient = receta.paciente_id (pac 23); 0 ajenos (ningún otro paciente con esta receta r1)
+DO $$ DECLARE v_pac int; v_aj int; BEGIN
+  IF current_setting('probe.rx_legit',true) IS DISTINCT FROM 'OK' THEN PERFORM set_config('probe.p421','N/A',false); RETURN; END IF;
+  SELECT count(*) INTO v_pac FROM public.notificaciones_pacientes WHERE paciente_id=current_setting('probe.rx_pac',true)::bigint AND tipo='receta' AND titulo='Nueva receta' AND created_at>now()-interval '3 minutes';
+  SELECT count(*) INTO v_aj FROM public.notificaciones_pacientes WHERE paciente_id<>current_setting('probe.rx_pac',true)::bigint AND tipo='receta' AND titulo='Nueva receta' AND created_at>now()-interval '3 minutes';
+  PERFORM set_config('probe.p421', CASE WHEN v_pac>=1 AND v_aj=0 THEN 'OK (recipient=pac del ref '||v_pac||'; 0 ajenos)' ELSE 'FALLO (pac='||v_pac||' ajenos='||v_aj||')' END, false);
+END $$;
+
+-- P422 idempotencia: el 2º call de med.qa (ya con notificado=true) NO insertó fila extra para r1
+SELECT set_config('role','none', true);
+DO $$ DECLARE v_n int; BEGIN
+  IF current_setting('probe.rx_legit',true) IS DISTINCT FROM 'OK' THEN PERFORM set_config('probe.p422','N/A',false); RETURN; END IF;
+  -- r1 generó EXACTAMENTE 1 fila pese a 2 llamadas de med.qa (la 2ª claim=0)
+  SELECT count(*) INTO v_n FROM public.notificaciones_pacientes WHERE paciente_id=current_setting('probe.rx_pac',true)::bigint AND tipo='receta' AND titulo='Nueva receta' AND created_at>now()-interval '3 minutes';
+  -- r1 (med.qa) + r2 (super_admin) = 2 filas esperadas para pac 23; si hubiera doble por r1 → 3
+  PERFORM set_config('probe.p422', CASE WHEN v_n=2 THEN 'OK (2 filas: r1 1x pese a 2 calls + r2; sin doble)' ELSE 'FALLO (filas pac='||v_n||' esp 2)' END, false);
+END $$;
+
+-- P423 PHI: el cuerpo NO contiene medicamento NI dosis NI diagnóstico (los 3 sentinels)
+DO $$ DECLARE v_leak int; BEGIN
+  IF current_setting('probe.rx_legit',true) IS DISTINCT FROM 'OK' THEN PERFORM set_config('probe.p423','N/A',false); RETURN; END IF;
+  SELECT count(*) INTO v_leak FROM public.notificaciones_pacientes
+    WHERE tipo='receta' AND titulo='Nueva receta' AND created_at>now()-interval '3 minutes'
+      AND (titulo ~ 'MEDSENT_RX|DOSISSENT_RX|DIAGSENT_RX' OR mensaje ~ 'MEDSENT_RX|DOSISSENT_RX|DIAGSENT_RX');
+  PERFORM set_config('probe.p423', CASE WHEN v_leak=0 THEN 'OK (medicamento+dosis+diagnóstico ausentes del cuerpo)' ELSE 'FALLO (leak en '||v_leak||' filas)' END, false);
+END $$;
+SELECT set_config('role','none', true);
+
 -- ===== Veredictos como result set =====
 SELECT 'P1_anon_insert_citas'              AS probe, current_setting('probe.p1', true)  AS verdict, 'BLOQUEADO' AS esperado_post_fix
 UNION ALL SELECT 'P2_medico_cancela_ajena_rpc',         current_setting('probe.p2', true),  'BLOQUEADO'
@@ -7472,6 +7580,11 @@ UNION ALL SELECT 'P415_helper_grupoA_admin_empresa',     current_setting('probe.
 UNION ALL SELECT 'P416_helper_grupoB_campana_enviada',   current_setting('probe.p416', true), 'OK post-131 (gate-claim+idempotencia)'
 UNION ALL SELECT 'P417_helper_grupoC_visita_propuesta',  current_setting('probe.p417', true), 'OK post-131 (spoof; recipients derivados)'
 UNION ALL SELECT 'P417b_helper_resubmission_reset',      current_setting('probe.p417b', true), 'OK post-131 (re-enviada resetea flag)'
-UNION ALL SELECT 'P418_helper_grupoC_visita_resultado',  current_setting('probe.p418', true), 'OK post-131 (spoof; gate relación; visibilidad)';
+UNION ALL SELECT 'P418_helper_grupoC_visita_resultado',  current_setting('probe.p418', true), 'OK post-131 (spoof; gate relación; visibilidad)'
+UNION ALL SELECT 'P419_receta_estructural',              current_setting('probe.p419', true), 'OK post-133 (ROJO pre; firma bigint-only + push)'
+UNION ALL SELECT 'P420_receta_spoof_gate_claim',         current_setting('probe.p420', true), 'OK post-133 (PT002 sin quemar flag; med+sa notifican)'
+UNION ALL SELECT 'P421_receta_recipient_derivado',       current_setting('probe.p421', true), 'OK post-133 (recipient del ref, 0 ajenos)'
+UNION ALL SELECT 'P422_receta_idempotencia',             current_setting('probe.p422', true), 'OK post-133 (2º call sin doble)'
+UNION ALL SELECT 'P423_receta_phi_generico',             current_setting('probe.p423', true), 'OK post-133 (med+dosis+diag ausentes)';
 
 ROLLBACK;  -- nada de lo anterior se persiste
