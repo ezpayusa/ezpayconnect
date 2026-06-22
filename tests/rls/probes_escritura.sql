@@ -6865,7 +6865,7 @@ DO $$ DECLARE v_A uuid:='411d6f8c-a405-49d6-9ed6-fbeb0db05133'; v_B uuid:='cc17a
     INSERT INTO public.visitas_agendadas (empresa_id, medico_id, cuenta_proveedor_id, fecha_visita, hora_inicio, hora_fin, estado)
       VALUES (v_A, v_med, v_edi, CURRENT_DATE+1, '10:00','10:30', 'confirmada') RETURNING id INTO v_vok;   -- cuenta∈A, rama aprobada
     INSERT INTO public.visitas_agendadas (empresa_id, medico_id, cuenta_proveedor_id, fecha_visita, hora_inicio, hora_fin, estado)
-      VALUES (v_A, v_med, v_vis, CURRENT_DATE+1, '12:00','12:30', 'cancelada') RETURNING id INTO v_vcanc;  -- cuenta∈A, rama rechazada
+      VALUES (v_A, v_med, v_vis, CURRENT_DATE+1, '12:00','12:30', 'rechazada') RETURNING id INTO v_vcanc;  -- cuenta∈A, rama rechazada (estado REAL que deja rechazar())
     INSERT INTO public.visitas_agendadas (empresa_id, medico_id, cuenta_proveedor_id, fecha_visita, hora_inicio, hora_fin, estado)
       VALUES (v_A, v_med, v_ext, CURRENT_DATE+1, '11:00','11:30', 'confirmada') RETURNING id INTO v_vbad;  -- cuenta de empresa B → relación FAIL
   END IF;
