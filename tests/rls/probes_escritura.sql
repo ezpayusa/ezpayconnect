@@ -6829,6 +6829,239 @@ DO $$ DECLARE v_leak int; v_url_ok boolean; BEGIN
 END $$;
 SELECT set_config('role','none', true);
 
+-- ============================================================
+-- Fix confused-deputy · HELPER enviar-notificacion → 6 RPCs gateados (P414–P418). Red-first.
+-- ============================================================
+-- Fixture: empresa A=411d6f8c (9ca0b977=admin, d50e7efd=editor, b38847e5=visitador_medico) + empresa B=cc17afe8
+-- (e7935069=admin) + admin EzPay e56879c0. Inserta pago/solicitudes/visitas (owner, bypassa RLS).
+-- triggers de visita OFF para sembrar estados exactos (rolled back en la txn del harness; postgres = dueño).
+SELECT set_config('role','none', true);
+ALTER TABLE public.visitas_agendadas DISABLE TRIGGER trg_gate_visita_pais;
+ALTER TABLE public.visitas_agendadas DISABLE TRIGGER trigger_forzar_estado_propuesta;
+DO $$ DECLARE v_A uuid:='411d6f8c-a405-49d6-9ed6-fbeb0db05133'; v_B uuid:='cc17afe8-fcd5-4ab0-84c4-08ba919d8481';
+  v_adm uuid:='9ca0b977-3c91-48dc-aa04-2f1fab766963'; v_edi uuid:='d50e7efd-d0c6-4f14-a47b-f6b4845b25e9';
+  v_vis uuid:='b38847e5-e52a-4c11-9aec-487fb558532f'; v_ext uuid:='e7935069-fd08-4ac5-a094-9c481313f4d3';
+  v_ez uuid:='e56879c0-4025-4f1f-832d-2753d9ab63e1'; v_med uuid:='5f638655-f21f-4b81-8138-db76a183de67';
+  v_pais uuid; v_pago uuid; v_solpub uuid; v_solrech uuid; v_solenv uuid; v_vprop uuid; v_vok uuid; v_vcanc uuid; v_vbad uuid; v_ok boolean; BEGIN
+  v_ok := EXISTS(SELECT 1 FROM public.cuentas_proveedor WHERE id=v_adm) AND EXISTS(SELECT 1 FROM public.empresas_proveedoras WHERE id=v_A)
+       AND EXISTS(SELECT 1 FROM public.perfiles WHERE id=v_ez AND rol IN ('ezpay_admin','super_admin','admin_finanzas'));
+  IF v_ok THEN
+    -- re-afirmar roles (probes previos reasignan cuentas en la misma txn)
+    UPDATE public.cuentas_proveedor SET empresa_id=v_A, rol_en_empresa='admin',            activo=true, equipo_id=NULL WHERE id=v_adm;
+    UPDATE public.cuentas_proveedor SET empresa_id=v_A, rol_en_empresa='editor',           activo=true, equipo_id=NULL WHERE id=v_edi;
+    UPDATE public.cuentas_proveedor SET empresa_id=v_A, rol_en_empresa='visitador_medico', activo=true, equipo_id=NULL WHERE id=v_vis;
+    UPDATE public.cuentas_proveedor SET empresa_id=v_B, rol_en_empresa='admin',            activo=true, equipo_id=NULL WHERE id=v_ext;
+    SELECT id INTO v_pais FROM public.configuracion_pais ORDER BY id LIMIT 1;
+    INSERT INTO public.pagos_proveedor (empresa_id, tipo, monto, moneda, estado) VALUES (v_A,'campana',100,'GTQ','verificado') RETURNING id INTO v_pago;
+    INSERT INTO public.solicitudes_campana (empresa_id, cuenta_proveedor_id, titulo, fecha_inicio, fecha_fin, pais_id, estado, notas_admin)
+      VALUES (v_A, v_adm, 'CAMP_QA_PUB', CURRENT_DATE, CURRENT_DATE+30, v_pais, 'publicada', 'NOTASQA_SECRETO') RETURNING id INTO v_solpub;
+    INSERT INTO public.solicitudes_campana (empresa_id, cuenta_proveedor_id, titulo, fecha_inicio, fecha_fin, pais_id, estado, notas_admin)
+      VALUES (v_A, v_adm, 'CAMP_QA_RECH', CURRENT_DATE, CURRENT_DATE+30, v_pais, 'rechazada', 'NOTASQA_SECRETO') RETURNING id INTO v_solrech;
+    INSERT INTO public.solicitudes_campana (empresa_id, cuenta_proveedor_id, titulo, fecha_inicio, fecha_fin, pais_id, estado, monto_pagado)
+      VALUES (v_A, v_adm, 'CAMP_QA_ENV', CURRENT_DATE, CURRENT_DATE+30, v_pais, 'enviada', 250) RETURNING id INTO v_solenv;
+    -- triggers de visita deshabilitados afuera (gate_visita_pais exige plan país + mi_empresa; forzar_estado forzaría 'pendiente')
+    INSERT INTO public.visitas_agendadas (empresa_id, medico_id, cuenta_proveedor_id, fecha_visita, hora_inicio, hora_fin, propuesta_por, estado)
+      VALUES (v_A, v_med, v_vis, CURRENT_DATE+1, '09:00','09:30', v_vis, 'pendiente') RETURNING id INTO v_vprop;
+    INSERT INTO public.visitas_agendadas (empresa_id, medico_id, cuenta_proveedor_id, fecha_visita, hora_inicio, hora_fin, estado)
+      VALUES (v_A, v_med, v_edi, CURRENT_DATE+1, '10:00','10:30', 'confirmada') RETURNING id INTO v_vok;   -- cuenta∈A, rama aprobada
+    INSERT INTO public.visitas_agendadas (empresa_id, medico_id, cuenta_proveedor_id, fecha_visita, hora_inicio, hora_fin, estado)
+      VALUES (v_A, v_med, v_vis, CURRENT_DATE+1, '12:00','12:30', 'cancelada') RETURNING id INTO v_vcanc;  -- cuenta∈A, rama rechazada
+    INSERT INTO public.visitas_agendadas (empresa_id, medico_id, cuenta_proveedor_id, fecha_visita, hora_inicio, hora_fin, estado)
+      VALUES (v_A, v_med, v_ext, CURRENT_DATE+1, '11:00','11:30', 'confirmada') RETURNING id INTO v_vbad;  -- cuenta de empresa B → relación FAIL
+  END IF;
+  PERFORM set_config('probe.h_ready', CASE WHEN v_ok THEN '1' ELSE '0' END, false);
+  PERFORM set_config('probe.h_A', v_A::text, false);        PERFORM set_config('probe.h_adm', v_adm::text, false);
+  PERFORM set_config('probe.h_edi', v_edi::text, false);    PERFORM set_config('probe.h_vis', v_vis::text, false);
+  PERFORM set_config('probe.h_ext', v_ext::text, false);    PERFORM set_config('probe.h_ez', v_ez::text, false);
+  PERFORM set_config('probe.h_pago', coalesce(v_pago::text,''), false);   PERFORM set_config('probe.h_solpub', coalesce(v_solpub::text,''), false);
+  PERFORM set_config('probe.h_solenv', coalesce(v_solenv::text,''), false); PERFORM set_config('probe.h_vprop', coalesce(v_vprop::text,''), false);
+  PERFORM set_config('probe.h_vok', coalesce(v_vok::text,''), false);     PERFORM set_config('probe.h_vbad', coalesce(v_vbad::text,''), false);
+  PERFORM set_config('probe.h_solrech', coalesce(v_solrech::text,''), false); PERFORM set_config('probe.h_vcanc', coalesce(v_vcanc::text,''), false);
+END $$;
+ALTER TABLE public.visitas_agendadas ENABLE TRIGGER trg_gate_visita_pais;
+ALTER TABLE public.visitas_agendadas ENABLE TRIGGER trigger_forzar_estado_propuesta;
+
+-- P414 estructural ENDURECIDO: 6 RPCs DEFINER+sp''+grants + FIRMA uuid-only (sin params de contenido/target, l.55)
+-- + prosrc SIN push_notificar/net.http (in-app ONLY) + columna notificado_envio + helpers sp-safe.
+DO $$ DECLARE r record; v_bad text:=''; v_def boolean; v_cfg text[]; v_sp boolean; v_anon boolean; v_auth boolean; v_args text; v_src text; BEGIN
+  FOR r IN SELECT unnest(ARRAY['notificar_empresa_estado','notificar_pago_resultado','notificar_campana_resultado','notificar_campana_enviada','notificar_visita_propuesta','notificar_visita_resultado']) AS fn LOOP
+    IF to_regprocedure('public.'||r.fn||'(uuid)') IS NULL THEN v_bad:=v_bad||r.fn||':ausente '; CONTINUE; END IF;
+    SELECT prosecdef, proconfig, prosrc INTO v_def, v_cfg, v_src FROM pg_proc WHERE oid=('public.'||r.fn||'(uuid)')::regprocedure;
+    v_sp := EXISTS(SELECT 1 FROM unnest(coalesce(v_cfg,'{}'::text[])) e WHERE e LIKE 'search_path=%' AND e<>'search_path=public');
+    v_anon := has_function_privilege('anon','public.'||r.fn||'(uuid)','EXECUTE');
+    v_auth := has_function_privilege('authenticated','public.'||r.fn||'(uuid)','EXECUTE');
+    v_args := pg_get_function_identity_arguments(('public.'||r.fn||'(uuid)')::regprocedure);
+    -- firma: exactamente 1 arg (sin coma) uuid + nombre del param NO es de contenido/target (l.55)
+    IF position(',' in v_args)>0 OR v_args NOT LIKE '%uuid%'
+       OR v_args ~* 'tipo|mensaje|target|user|contenido|nota|estado|url|titulo|usuario_id'
+       THEN v_bad:=v_bad||r.fn||':firma['||v_args||'] '; END IF;
+    -- in-app ONLY: el cuerpo NO debe empujar push ni hacer http
+    IF v_src ILIKE '%push_notificar%' OR v_src ILIKE '%net.http%' OR v_src ILIKE '%http_post%'
+       THEN v_bad:=v_bad||r.fn||':push '; END IF;
+    IF NOT (v_def AND v_sp AND NOT v_anon AND v_auth) THEN v_bad:=v_bad||r.fn||'(def='||v_def||' sp='||v_sp||' anon='||v_anon||' auth='||v_auth||') '; END IF;
+  END LOOP;
+  IF NOT EXISTS(SELECT 1 FROM information_schema.columns WHERE table_name='solicitudes_campana' AND column_name='notificado_envio') THEN v_bad:=v_bad||'col_notificado_envio '; END IF;
+  IF NOT EXISTS(SELECT 1 FROM pg_proc WHERE proname='tiene_rol' AND pronamespace='private'::regnamespace AND array_to_string(coalesce(proconfig,'{}'::text[]),',') LIKE '%search_path=%') THEN v_bad:=v_bad||'tiene_rol_sp '; END IF;
+  IF (SELECT count(*) FROM pg_proc WHERE proname IN ('obtener_usuarios_empresa','obtener_admins_ezpay','mi_empresa_proveedor') AND array_to_string(coalesce(proconfig,'{}'::text[]),',') LIKE '%search_path=%') < 3 THEN v_bad:=v_bad||'helper_sp '; END IF;
+  PERFORM set_config('probe.p414', CASE WHEN v_bad='' THEN 'OK (6 RPCs DEFINER+sp''+grants + firma uuid-only + in-app-only + columna + helpers sp-safe)' ELSE 'ROJO ('||v_bad||')' END, false);
+END $$;
+
+-- P415 Grupo A: spoof (no-admin EzPay → PT002 x3) + recipients (admin EzPay → users empresa A, 0 ajenos) + content (campana del ref)
+SELECT set_config('request.jwt.claims', json_build_object('sub', current_setting('probe.h_adm',true),'role','authenticated')::text, true);  -- proveedor, NO admin EzPay
+SELECT set_config('role','authenticated', true);
+DO $$ DECLARE a text; b text; c text; BEGIN
+  IF current_setting('probe.h_ready',true)<>'1' OR to_regprocedure('public.notificar_empresa_estado(uuid)') IS NULL THEN PERFORM set_config('probe.ha_spoof','SKIP',false); RETURN; END IF;
+  BEGIN PERFORM public.notificar_empresa_estado(current_setting('probe.h_A',true)::uuid); a:='PERM'; EXCEPTION WHEN others THEN a:=SQLSTATE; END;
+  BEGIN PERFORM public.notificar_pago_resultado(current_setting('probe.h_pago',true)::uuid); b:='PERM'; EXCEPTION WHEN others THEN b:=SQLSTATE; END;
+  BEGIN PERFORM public.notificar_campana_resultado(current_setting('probe.h_solpub',true)::uuid); c:='PERM'; EXCEPTION WHEN others THEN c:=SQLSTATE; END;
+  PERFORM set_config('probe.ha_spoof', a||'/'||b||'/'||c, false);
+END $$;
+SELECT set_config('request.jwt.claims', json_build_object('sub', current_setting('probe.h_ez',true),'role','authenticated')::text, true);  -- admin EzPay
+DO $$ BEGIN
+  IF current_setting('probe.h_ready',true)<>'1' OR to_regprocedure('public.notificar_empresa_estado(uuid)') IS NULL THEN PERFORM set_config('probe.ha_call','SKIP',false); RETURN; END IF;
+  PERFORM public.notificar_empresa_estado(current_setting('probe.h_A',true)::uuid);
+  PERFORM public.notificar_pago_resultado(current_setting('probe.h_pago',true)::uuid);
+  PERFORM public.notificar_campana_resultado(current_setting('probe.h_solpub',true)::uuid);   -- publicada → sin notas
+  PERFORM public.notificar_campana_resultado(current_setting('probe.h_solrech',true)::uuid);  -- rechazada → notas DEL REF
+  PERFORM set_config('probe.ha_call','OK',false);
+END $$;
+SELECT set_config('role','none', true);
+DO $$ DECLARE v_emp int; v_pag int; v_cam int; v_aj int; v_content boolean; v_notas boolean; v_nonotas boolean; BEGIN
+  IF current_setting('probe.ha_call',true) IS DISTINCT FROM 'OK' THEN PERFORM set_config('probe.p415', CASE WHEN current_setting('probe.ha_call',true)='SKIP' THEN 'N/A' ELSE 'FALLO (call)' END,false); RETURN; END IF;
+  SELECT count(*) INTO v_emp FROM public.notificaciones WHERE tipo='empresa' AND usuario_id IN (current_setting('probe.h_adm',true)::uuid,current_setting('probe.h_edi',true)::uuid,current_setting('probe.h_vis',true)::uuid) AND created_at>now()-interval '3 minutes';
+  SELECT count(*) INTO v_pag FROM public.notificaciones WHERE tipo='pago' AND usuario_id IN (current_setting('probe.h_adm',true)::uuid,current_setting('probe.h_edi',true)::uuid,current_setting('probe.h_vis',true)::uuid) AND created_at>now()-interval '3 minutes';
+  SELECT count(*) INTO v_cam FROM public.notificaciones WHERE tipo='campana' AND usuario_id IN (current_setting('probe.h_adm',true)::uuid,current_setting('probe.h_edi',true)::uuid,current_setting('probe.h_vis',true)::uuid) AND created_at>now()-interval '3 minutes';
+  SELECT count(*) INTO v_aj FROM public.notificaciones WHERE tipo IN ('empresa','pago','campana') AND usuario_id=current_setting('probe.h_ext',true)::uuid AND created_at>now()-interval '3 minutes';
+  SELECT EXISTS(SELECT 1 FROM public.notificaciones WHERE tipo='campana' AND mensaje LIKE '%CAMP_QA_PUB%' AND created_at>now()-interval '3 minutes') INTO v_content;
+  -- rama rechazada: el cuerpo contiene las notas_admin PERSISTIDAS del ref (no compuesto por el caller)
+  SELECT EXISTS(SELECT 1 FROM public.notificaciones WHERE tipo='campana' AND mensaje LIKE '%CAMP_QA_RECH%' AND mensaje LIKE '%NOTASQA_SECRETO%' AND created_at>now()-interval '3 minutes') INTO v_notas;
+  -- rama publicada: NO lleva notas aunque el ref las tenga
+  SELECT NOT EXISTS(SELECT 1 FROM public.notificaciones WHERE tipo='campana' AND mensaje LIKE '%CAMP_QA_PUB%' AND mensaje LIKE '%NOTASQA_SECRETO%' AND created_at>now()-interval '3 minutes') INTO v_nonotas;
+  -- v_cam ahora cuenta 2 campañas (pub+rech) por usuario → 6
+  PERFORM set_config('probe.p415', CASE WHEN current_setting('probe.ha_spoof',true)='PT002/PT002/PT002' AND v_emp=3 AND v_pag=3 AND v_cam=6 AND v_aj=0 AND v_content AND v_notas AND v_nonotas
+    THEN 'OK (spoof PT002x3; recipients 3/tipo; 0 ajenos; notas rechazada=del ref; publicada sin notas)'
+    ELSE 'FALLO (spoof='||current_setting('probe.ha_spoof',true)||' emp='||v_emp||' pag='||v_pag||' cam='||v_cam||' ajeno='||v_aj||' content='||v_content||' notas='||v_notas||' nonotas='||v_nonotas||')' END, false);
+END $$;
+SELECT set_config('role','none', true);
+
+-- P416 Grupo B (campana_enviada): spoof + gate-antes-claim + recipients admins EzPay + idempotencia + re-submission
+-- spoof: otra empresa (h_ext) sobre sol_env → PT002 ; dueño sobre estado≠enviada (sol_pub publicada) → PT002
+SELECT set_config('request.jwt.claims', json_build_object('sub', current_setting('probe.h_ext',true),'role','authenticated')::text, true);
+SELECT set_config('role','authenticated', true);
+DO $$ DECLARE a text; BEGIN
+  IF current_setting('probe.h_ready',true)<>'1' OR to_regprocedure('public.notificar_campana_enviada(uuid)') IS NULL THEN PERFORM set_config('probe.hb_spoof','SKIP',false); RETURN; END IF;
+  BEGIN PERFORM public.notificar_campana_enviada(current_setting('probe.h_solenv',true)::uuid); a:='PERM'; EXCEPTION WHEN others THEN a:=SQLSTATE; END;
+  PERFORM set_config('probe.hb_denied', a, false);  -- gate-antes-claim: este denegado NO debe quemar el flag
+END $$;
+SELECT set_config('request.jwt.claims', json_build_object('sub', current_setting('probe.h_adm',true),'role','authenticated')::text, true);
+DO $$ DECLARE b text; BEGIN
+  IF current_setting('probe.h_ready',true)<>'1' OR to_regprocedure('public.notificar_campana_enviada(uuid)') IS NULL THEN PERFORM set_config('probe.hb_estado','SKIP',false); RETURN; END IF;
+  BEGIN PERFORM public.notificar_campana_enviada(current_setting('probe.h_solpub',true)::uuid); b:='PERM'; EXCEPTION WHEN others THEN b:=SQLSTATE; END;  -- publicada≠enviada
+  PERFORM set_config('probe.hb_estado', b, false);
+END $$;
+SELECT set_config('role','none', true);
+DO $$ DECLARE v_flag boolean; BEGIN
+  IF coalesce(current_setting('probe.h_solenv',true),'')='' OR NOT EXISTS(SELECT 1 FROM information_schema.columns WHERE table_name='solicitudes_campana' AND column_name='notificado_envio') THEN PERFORM set_config('probe.hb_flag','∅',false); RETURN; END IF;
+  SELECT notificado_envio INTO v_flag FROM public.solicitudes_campana WHERE id=current_setting('probe.h_solenv',true)::uuid;
+  PERFORM set_config('probe.hb_flag', coalesce(v_flag::text,'∅'), false);
+END $$;
+-- legítimo: dueño (h_adm) sobre sol_env (enviada) → notifica admins EzPay
+SELECT set_config('request.jwt.claims', json_build_object('sub', current_setting('probe.h_adm',true),'role','authenticated')::text, true);
+SELECT set_config('role','authenticated', true);
+DO $$ BEGIN
+  IF current_setting('probe.h_ready',true)<>'1' OR to_regprocedure('public.notificar_campana_enviada(uuid)') IS NULL THEN PERFORM set_config('probe.hb_legit','SKIP',false); RETURN; END IF;
+  BEGIN PERFORM public.notificar_campana_enviada(current_setting('probe.h_solenv',true)::uuid); PERFORM set_config('probe.hb_legit','OK',false);
+  EXCEPTION WHEN others THEN PERFORM set_config('probe.hb_legit','ERR:'||SQLSTATE,false); END;
+  PERFORM public.notificar_campana_enviada(current_setting('probe.h_solenv',true)::uuid);  -- 2º call (idempotente)
+END $$;
+SELECT set_config('role','none', true);
+DO $$ DECLARE v_adm_n int; BEGIN
+  IF current_setting('probe.hb_legit',true) IS DISTINCT FROM 'OK' THEN PERFORM set_config('probe.p416', CASE WHEN current_setting('probe.hb_legit',true)='SKIP' THEN 'N/A' ELSE 'FALLO (legit='||current_setting('probe.hb_legit',true)||')' END,false); RETURN; END IF;
+  SELECT count(*) INTO v_adm_n FROM public.notificaciones WHERE tipo='campana' AND titulo='Nueva solicitud de publicidad' AND usuario_id IN (SELECT user_id FROM public.obtener_admins_ezpay()) AND created_at>now()-interval '3 minutes';
+  -- idempotencia: 1 fila por admin (2º call no sumó). gate-antes-claim: denegado=PT002 + flag seguía false antes del legítimo.
+  PERFORM set_config('probe.p416', CASE
+    WHEN current_setting('probe.hb_denied',true)='PT002' AND current_setting('probe.hb_estado',true)='PT002' AND current_setting('probe.hb_flag',true)='false'
+         AND v_adm_n=(SELECT count(*) FROM public.obtener_admins_ezpay())
+    THEN 'OK (spoof+estado PT002; flag intacto pre-claim; admins notificados '||v_adm_n||'; idempotente)'
+    ELSE 'FALLO (denied='||current_setting('probe.hb_denied',true)||' estado='||current_setting('probe.hb_estado',true)||' flag_pre='||current_setting('probe.hb_flag',true)||' adm_n='||v_adm_n||' esp='||(SELECT count(*) FROM public.obtener_admins_ezpay())||')' END, false);
+END $$;
+-- re-submission: rechazada→enviada resetea el flag (trigger) → re-notifica
+SELECT set_config('role','none', true);
+DO $$ DECLARE v_flag_post boolean; BEGIN
+  IF current_setting('probe.hb_legit',true) IS DISTINCT FROM 'OK' THEN PERFORM set_config('probe.p417b','N/A',false); RETURN; END IF;
+  UPDATE public.solicitudes_campana SET estado='rechazada' WHERE id=current_setting('probe.h_solenv',true)::uuid;
+  UPDATE public.solicitudes_campana SET estado='enviada' WHERE id=current_setting('probe.h_solenv',true)::uuid;  -- trigger resetea
+  SELECT notificado_envio INTO v_flag_post FROM public.solicitudes_campana WHERE id=current_setting('probe.h_solenv',true)::uuid;
+  PERFORM set_config('probe.p417b', CASE WHEN v_flag_post=false THEN 'OK (re-submission reseteó notificado_envio)' ELSE 'FALLO (flag_post='||coalesce(v_flag_post::text,'∅')||')' END,false);
+END $$;
+SELECT set_config('role','none', true);
+
+-- P417 Grupo C propuesta: spoof (no-creador → PT002) + recipients (admins/editores de A, 0 proponente, 0 ajeno)
+SELECT set_config('request.jwt.claims', json_build_object('sub', current_setting('probe.h_adm',true),'role','authenticated')::text, true);  -- admin, NO el proponente (h_vis)
+SELECT set_config('role','authenticated', true);
+DO $$ DECLARE a text; BEGIN
+  IF current_setting('probe.h_ready',true)<>'1' OR to_regprocedure('public.notificar_visita_propuesta(uuid)') IS NULL OR coalesce(current_setting('probe.h_vprop',true),'')='' THEN PERFORM set_config('probe.hc_spoof','SKIP',false); RETURN; END IF;
+  BEGIN PERFORM public.notificar_visita_propuesta(current_setting('probe.h_vprop',true)::uuid); a:='PERM'; EXCEPTION WHEN others THEN a:=SQLSTATE; END;
+  PERFORM set_config('probe.hc_spoof', a, false);
+END $$;
+SELECT set_config('request.jwt.claims', json_build_object('sub', current_setting('probe.h_vis',true),'role','authenticated')::text, true);  -- proponente
+DO $$ BEGIN
+  IF current_setting('probe.h_ready',true)<>'1' OR to_regprocedure('public.notificar_visita_propuesta(uuid)') IS NULL OR coalesce(current_setting('probe.h_vprop',true),'')='' THEN PERFORM set_config('probe.hc_call','SKIP',false); RETURN; END IF;
+  BEGIN PERFORM public.notificar_visita_propuesta(current_setting('probe.h_vprop',true)::uuid); PERFORM set_config('probe.hc_call','OK',false);
+  EXCEPTION WHEN others THEN PERFORM set_config('probe.hc_call','ERR:'||SQLSTATE,false); END;
+END $$;
+SELECT set_config('role','none', true);
+DO $$ DECLARE v_rec int; v_prop int; v_aj int; BEGIN
+  IF current_setting('probe.hc_call',true) IS DISTINCT FROM 'OK' THEN PERFORM set_config('probe.p417', CASE WHEN current_setting('probe.hc_call',true)='SKIP' THEN 'N/A' ELSE 'FALLO (call='||current_setting('probe.hc_call',true)||')' END,false); RETURN; END IF;
+  SELECT count(*) INTO v_rec FROM public.notificaciones WHERE tipo='visita_propuesta' AND usuario_id IN (current_setting('probe.h_adm',true)::uuid,current_setting('probe.h_edi',true)::uuid) AND created_at>now()-interval '3 minutes';
+  SELECT count(*) INTO v_prop FROM public.notificaciones WHERE tipo='visita_propuesta' AND usuario_id=current_setting('probe.h_vis',true)::uuid AND created_at>now()-interval '3 minutes';
+  SELECT count(*) INTO v_aj FROM public.notificaciones WHERE tipo='visita_propuesta' AND usuario_id=current_setting('probe.h_ext',true)::uuid AND created_at>now()-interval '3 minutes';
+  PERFORM set_config('probe.p417', CASE WHEN current_setting('probe.hc_spoof',true)='PT002' AND v_rec=2 AND v_prop=0 AND v_aj=0
+    THEN 'OK (spoof PT002; 2 admins/editores; proponente 0; ajeno 0)'
+    ELSE 'FALLO (spoof='||current_setting('probe.hc_spoof',true)||' rec='||v_rec||' prop='||v_prop||' ajeno='||v_aj||')' END, false);
+END $$;
+SELECT set_config('role','none', true);
+
+-- P418 Grupo C resultado: spoof (no-admin → PT002) + recipient (cuenta∈empresa) + GATE RELACIÓN (cuenta∉empresa → 0) + visibilidad
+SELECT set_config('request.jwt.claims', json_build_object('sub', current_setting('probe.h_vis',true),'role','authenticated')::text, true);  -- visitador, NO admin/editor
+SELECT set_config('role','authenticated', true);
+DO $$ DECLARE a text; BEGIN
+  IF current_setting('probe.h_ready',true)<>'1' OR to_regprocedure('public.notificar_visita_resultado(uuid)') IS NULL OR coalesce(current_setting('probe.h_vok',true),'')='' THEN PERFORM set_config('probe.hd_spoof','SKIP',false); RETURN; END IF;
+  BEGIN PERFORM public.notificar_visita_resultado(current_setting('probe.h_vok',true)::uuid); a:='PERM'; EXCEPTION WHEN others THEN a:=SQLSTATE; END;
+  PERFORM set_config('probe.hd_spoof', a, false);
+END $$;
+SELECT set_config('request.jwt.claims', json_build_object('sub', current_setting('probe.h_adm',true),'role','authenticated')::text, true);  -- admin de A
+DO $$ BEGIN
+  IF current_setting('probe.h_ready',true)<>'1' OR to_regprocedure('public.notificar_visita_resultado(uuid)') IS NULL THEN PERFORM set_config('probe.hd_call','SKIP',false); RETURN; END IF;
+  BEGIN PERFORM public.notificar_visita_resultado(current_setting('probe.h_vok',true)::uuid);    -- estado=confirmada, cuenta∈A → rama aprobada
+        PERFORM public.notificar_visita_resultado(current_setting('probe.h_vcanc',true)::uuid);  -- estado=cancelada, cuenta∈A → rama rechazada
+        PERFORM public.notificar_visita_resultado(current_setting('probe.h_vbad',true)::uuid);   -- cuenta=ext (∈ B) → SKIP (gate relación)
+        PERFORM set_config('probe.hd_call','OK',false);
+  EXCEPTION WHEN others THEN PERFORM set_config('probe.hd_call','ERR:'||SQLSTATE,false); END;
+END $$;
+SELECT set_config('role','none', true);
+DO $$ DECLARE v_apr int; v_rech int; v_bad int; BEGIN
+  IF current_setting('probe.hd_call',true) IS DISTINCT FROM 'OK' THEN PERFORM set_config('probe.p418', CASE WHEN current_setting('probe.hd_call',true)='SKIP' THEN 'N/A' ELSE 'FALLO (call='||current_setting('probe.hd_call',true)||')' END,false); RETURN; END IF;
+  -- rama aprobada (confirmada→tipo visita_aprobada, recipient=editor∈A)
+  SELECT count(*) INTO v_apr  FROM public.notificaciones WHERE tipo='visita_aprobada'  AND usuario_id=current_setting('probe.h_edi',true)::uuid AND titulo='Visita aprobada'  AND created_at>now()-interval '3 minutes';
+  -- rama rechazada (cancelada→tipo visita_rechazada, recipient=visitador∈A)
+  SELECT count(*) INTO v_rech FROM public.notificaciones WHERE tipo='visita_rechazada' AND usuario_id=current_setting('probe.h_vis',true)::uuid AND titulo='Visita rechazada' AND created_at>now()-interval '3 minutes';
+  -- gate relación: cuenta REAL ∉ empresa (e7935069 ∈ B) → 0 (no apoyado en la ruta del trigger deshabilitado)
+  SELECT count(*) INTO v_bad  FROM public.notificaciones WHERE tipo IN ('visita_aprobada','visita_rechazada') AND usuario_id=current_setting('probe.h_ext',true)::uuid AND created_at>now()-interval '3 minutes';
+  PERFORM set_config('probe.p418', CASE WHEN current_setting('probe.hd_spoof',true)='PT002' AND v_apr=1 AND v_rech=1 AND v_bad=0
+    THEN 'OK (spoof PT002; ramas aprobada+rechazada por estado del ref; relación∉empresa SKIP 0)'
+    ELSE 'FALLO (spoof='||current_setting('probe.hd_spoof',true)||' apr='||v_apr||' rech='||v_rech||' bad='||v_bad||')' END, false);
+END $$;
+SELECT set_config('request.jwt.claims', json_build_object('sub', current_setting('probe.h_edi',true),'role','authenticated')::text, true);  -- recipient lee su fila
+SELECT set_config('role','authenticated', true);
+DO $$ DECLARE v_n int; BEGIN
+  IF current_setting('probe.hd_call',true) IS DISTINCT FROM 'OK' THEN RETURN; END IF;
+  SELECT count(*) INTO v_n FROM public.notificaciones WHERE usuario_id=current_setting('probe.h_edi',true)::uuid AND tipo='visita_aprobada' AND created_at>now()-interval '3 minutes';
+  IF NOT (v_n>0) THEN PERFORM set_config('probe.p418','FALLO (recipient no lee su fila RLS)',false);
+  ELSIF current_setting('probe.p418',true) LIKE 'OK%' THEN PERFORM set_config('probe.p418', current_setting('probe.p418',true)||' + recipient lee (RLS)', false); END IF;
+END $$;
+SELECT set_config('role','none', true);
+
 -- ===== Veredictos como result set =====
 SELECT 'P1_anon_insert_citas'              AS probe, current_setting('probe.p1', true)  AS verdict, 'BLOQUEADO' AS esperado_post_fix
 UNION ALL SELECT 'P2_medico_cancela_ajena_rpc',         current_setting('probe.p2', true),  'BLOQUEADO'
@@ -7233,6 +7466,12 @@ UNION ALL SELECT 'P409_evt8_phi_sin_cuerpo',             current_setting('probe.
 UNION ALL SELECT 'P410_evt8_idempotencia',               current_setting('probe.p410', true), 'OK post-128'
 UNION ALL SELECT 'P411_evt4fold_push_x2',                current_setting('probe.p411', true), 'OK post-129 (ROJO pre; push_notificar pac+med)'
 UNION ALL SELECT 'P412_evt4fold_no_regresion',           current_setting('probe.p412', true), 'OK post-129 (tipos + 2 filas + DEFINER)'
-UNION ALL SELECT 'P413_evt4fold_phi_generico',           current_setting('probe.p413', true), 'OK post-130 (resultado+tipo+nombre ausentes; ROJO pre-130)';
+UNION ALL SELECT 'P413_evt4fold_phi_generico',           current_setting('probe.p413', true), 'OK post-130 (resultado+tipo+nombre ausentes; ROJO pre-130)'
+UNION ALL SELECT 'P414_helper_estructural_6rpc',         current_setting('probe.p414', true), 'OK post-131 (ROJO pre; 6 RPCs DEFINER+sp+grants)'
+UNION ALL SELECT 'P415_helper_grupoA_admin_empresa',     current_setting('probe.p415', true), 'OK post-131 (spoof PT002x3; recipients; 0 ajenos)'
+UNION ALL SELECT 'P416_helper_grupoB_campana_enviada',   current_setting('probe.p416', true), 'OK post-131 (gate-claim+idempotencia)'
+UNION ALL SELECT 'P417_helper_grupoC_visita_propuesta',  current_setting('probe.p417', true), 'OK post-131 (spoof; recipients derivados)'
+UNION ALL SELECT 'P417b_helper_resubmission_reset',      current_setting('probe.p417b', true), 'OK post-131 (re-enviada resetea flag)'
+UNION ALL SELECT 'P418_helper_grupoC_visita_resultado',  current_setting('probe.p418', true), 'OK post-131 (spoof; gate relación; visibilidad)';
 
 ROLLBACK;  -- nada de lo anterior se persiste
