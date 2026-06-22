@@ -7170,6 +7170,81 @@ DO $$ DECLARE v_leak int; BEGIN
 END $$;
 SELECT set_config('role','none', true);
 
+-- ============================================================
+-- Hardening INSERT (opción-2) · visitas_agendadas cuenta∈empresa (P424–P426). Red-first.
+-- ============================================================
+-- WITH CHECK es RLS (NO trigger) → se evalúa aunque se deshabiliten los triggers de visita. Deshabilito
+-- gate_visita_pais/forzar_estado SOLO para aislar el WITH CHECK del ruido país/bolsa; el WITH CHECK sigue VIVO.
+-- empresa A=411d6f8c (9ca0b977 admin∈A; d50e7efd colega∈A) · e7935069 ∈ empresa B (cross) · médico 5f638655.
+SELECT set_config('role','none', true);
+DO $$ DECLARE v_A uuid:='411d6f8c-a405-49d6-9ed6-fbeb0db05133'; v_B uuid:='cc17afe8-fcd5-4ab0-84c4-08ba919d8481';
+  v_adm uuid:='9ca0b977-3c91-48dc-aa04-2f1fab766963'; v_col uuid:='d50e7efd-d0c6-4f14-a47b-f6b4845b25e9';
+  v_ext uuid:='e7935069-fd08-4ac5-a094-9c481313f4d3'; v_med uuid:='5f638655-f21f-4b81-8138-db76a183de67'; v_ok boolean; BEGIN
+  v_ok := EXISTS(SELECT 1 FROM public.cuentas_proveedor WHERE id=v_adm) AND EXISTS(SELECT 1 FROM public.visitas_agendadas LIMIT 1);
+  IF v_ok THEN
+    UPDATE public.cuentas_proveedor SET empresa_id=v_A, rol_en_empresa='admin', activo=true, equipo_id=NULL WHERE id=v_adm;
+    UPDATE public.cuentas_proveedor SET empresa_id=v_A, activo=true WHERE id=v_col;     -- colega ∈ A (rol indistinto)
+    UPDATE public.cuentas_proveedor SET empresa_id=v_B, activo=true WHERE id=v_ext;     -- ∈ B (cross)
+  END IF;
+  PERFORM set_config('probe.v8_ready', CASE WHEN v_ok THEN '1' ELSE '0' END, false);
+  PERFORM set_config('probe.v8_A', v_A::text, false);   PERFORM set_config('probe.v8_adm', v_adm::text, false);
+  PERFORM set_config('probe.v8_col', v_col::text, false); PERFORM set_config('probe.v8_ext', v_ext::text, false);
+  PERFORM set_config('probe.v8_med', v_med::text, false);
+END $$;
+
+-- P424 estructural: helper DEFINER+sp''+grants + policy WITH CHECK referencia cuenta_en_empresa
+DO $$ DECLARE v_def boolean; v_cfg text[]; v_sp boolean; v_anon boolean; v_auth boolean; v_chk text; BEGIN
+  IF to_regprocedure('private.cuenta_en_empresa(uuid,uuid)') IS NULL THEN PERFORM set_config('probe.p424','ROJO (helper ausente)',false); RETURN; END IF;
+  SELECT prosecdef, proconfig INTO v_def, v_cfg FROM pg_proc WHERE oid='private.cuenta_en_empresa(uuid,uuid)'::regprocedure;
+  v_sp := EXISTS(SELECT 1 FROM unnest(coalesce(v_cfg,'{}'::text[])) e WHERE e LIKE 'search_path=%' AND e<>'search_path=public');
+  v_anon := has_function_privilege('anon','private.cuenta_en_empresa(uuid,uuid)','EXECUTE');
+  v_auth := has_function_privilege('authenticated','private.cuenta_en_empresa(uuid,uuid)','EXECUTE');
+  SELECT pg_get_expr(polwithcheck,polrelid) INTO v_chk FROM pg_policy WHERE polrelid='public.visitas_agendadas'::regclass AND polname='Proveedor crea visitas de su empresa';
+  PERFORM set_config('probe.p424', CASE
+    WHEN v_def AND v_sp AND NOT v_anon AND v_auth AND v_chk ILIKE '%cuenta_en_empresa%' AND v_chk ILIKE '%empresa_id IN%'
+    THEN 'OK (helper DEFINER+sp''+grants; WITH CHECK conjuntivo con cuenta_en_empresa)'
+    ELSE 'ROJO (def='||v_def||' sp='||v_sp||' anon='||v_anon||' auth='||v_auth||' chk_cuenta='||(v_chk ILIKE '%cuenta_en_empresa%')||')' END, false);
+END $$;
+
+-- aislar el WITH CHECK del gate país/bolsa (RLS sigue activa; rolled-back; postgres dueño)
+ALTER TABLE public.visitas_agendadas DISABLE TRIGGER trg_gate_visita_pais;
+ALTER TABLE public.visitas_agendadas DISABLE TRIGGER trigger_forzar_estado_propuesta;
+
+-- P425 NEG: admin∈A inserta visita empresa_id=A con cuenta_proveedor_id ∈ empresa B → PRE permitido (rojo) / POST rechazado
+SELECT set_config('request.jwt.claims', json_build_object('sub', current_setting('probe.v8_adm',true),'role','authenticated')::text, true);
+SELECT set_config('role','authenticated', true);
+DO $$ DECLARE v text; BEGIN
+  IF current_setting('probe.v8_ready',true)<>'1' THEN PERFORM set_config('probe.p425','N/A',false); RETURN; END IF;
+  BEGIN
+    INSERT INTO public.visitas_agendadas (empresa_id, medico_id, cuenta_proveedor_id, fecha_visita, hora_inicio, hora_fin, estado)
+      VALUES (current_setting('probe.v8_A',true)::uuid, current_setting('probe.v8_med',true)::uuid, current_setting('probe.v8_ext',true)::uuid, CURRENT_DATE+3, '08:00','08:30','pendiente');
+    v:='PERMITIDO';
+  EXCEPTION WHEN others THEN v:='BLOQUEADO('||SQLSTATE||')'; END;
+  PERFORM set_config('probe.p425', CASE WHEN v LIKE 'BLOQUEADO%' THEN 'OK ('||v||' cuenta∉empresa rechazada)' ELSE 'ROJO (PERMITIDO — cuenta de otra empresa atribuida)' END, false);
+END $$;
+SELECT set_config('role','none', true);
+
+-- P426 POS no-regresión: (a) admin self ∈A + (b) admin asigna a colega ∈A → AMBOS deben pasar (POST)
+SELECT set_config('request.jwt.claims', json_build_object('sub', current_setting('probe.v8_adm',true),'role','authenticated')::text, true);
+SELECT set_config('role','authenticated', true);
+DO $$ DECLARE a text; b text; BEGIN
+  IF current_setting('probe.v8_ready',true)<>'1' THEN PERFORM set_config('probe.p426','N/A',false); RETURN; END IF;
+  BEGIN
+    INSERT INTO public.visitas_agendadas (empresa_id, medico_id, cuenta_proveedor_id, fecha_visita, hora_inicio, hora_fin, estado)
+      VALUES (current_setting('probe.v8_A',true)::uuid, current_setting('probe.v8_med',true)::uuid, current_setting('probe.v8_adm',true)::uuid, CURRENT_DATE+3, '09:00','09:30','pendiente');
+    a:='OK';
+  EXCEPTION WHEN others THEN a:='ERR('||SQLSTATE||')'; END;
+  BEGIN
+    INSERT INTO public.visitas_agendadas (empresa_id, medico_id, cuenta_proveedor_id, fecha_visita, hora_inicio, hora_fin, estado)
+      VALUES (current_setting('probe.v8_A',true)::uuid, current_setting('probe.v8_med',true)::uuid, current_setting('probe.v8_col',true)::uuid, CURRENT_DATE+3, '10:00','10:30','pendiente');
+    b:='OK';
+  EXCEPTION WHEN others THEN b:='ERR('||SQLSTATE||')'; END;
+  PERFORM set_config('probe.p426', CASE WHEN a='OK' AND b='OK' THEN 'OK (self + colega∈empresa pasan, sin regresión)' ELSE 'FALLO (self='||a||' colega='||b||')' END, false);
+END $$;
+SELECT set_config('role','none', true);
+ALTER TABLE public.visitas_agendadas ENABLE TRIGGER trg_gate_visita_pais;
+ALTER TABLE public.visitas_agendadas ENABLE TRIGGER trigger_forzar_estado_propuesta;
+
 -- ===== Veredictos como result set =====
 SELECT 'P1_anon_insert_citas'              AS probe, current_setting('probe.p1', true)  AS verdict, 'BLOQUEADO' AS esperado_post_fix
 UNION ALL SELECT 'P2_medico_cancela_ajena_rpc',         current_setting('probe.p2', true),  'BLOQUEADO'
@@ -7585,6 +7660,9 @@ UNION ALL SELECT 'P419_receta_estructural',              current_setting('probe.
 UNION ALL SELECT 'P420_receta_spoof_gate_claim',         current_setting('probe.p420', true), 'OK post-133 (PT002 sin quemar flag; med+sa notifican)'
 UNION ALL SELECT 'P421_receta_recipient_derivado',       current_setting('probe.p421', true), 'OK post-133 (recipient del ref, 0 ajenos)'
 UNION ALL SELECT 'P422_receta_idempotencia',             current_setting('probe.p422', true), 'OK post-133 (2º call sin doble)'
-UNION ALL SELECT 'P423_receta_phi_generico',             current_setting('probe.p423', true), 'OK post-133 (med+dosis+diag ausentes)';
+UNION ALL SELECT 'P423_receta_phi_generico',             current_setting('probe.p423', true), 'OK post-133 (med+dosis+diag ausentes)'
+UNION ALL SELECT 'P424_visitas_hardening_estructural',   current_setting('probe.p424', true), 'OK post-134 (ROJO pre; helper + WITH CHECK cuenta_en_empresa)'
+UNION ALL SELECT 'P425_visitas_cuenta_ajena_rechazada',  current_setting('probe.p425', true), 'OK post-134 (ROJO/PERMITIDO pre; cuenta∉empresa rechazada)'
+UNION ALL SELECT 'P426_visitas_no_regresion',            current_setting('probe.p426', true), 'OK (self + colega∈empresa pasan)';
 
 ROLLBACK;  -- nada de lo anterior se persiste
