@@ -6,7 +6,6 @@ import { Input } from '@/components/ui/input'
 import { Card, CardContent } from '@/components/ui/card'
 import { Badge } from '@/components/ui/badge'
 import { toast } from 'sonner'
-import { crearNotificacionInApp } from '@/proveedor/lib/notificaciones'
 import { CreditCard, CheckCircle, XCircle, Loader2, Filter, Eye } from 'lucide-react'
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 
@@ -165,24 +164,9 @@ export default function PagosProveedoresPage() {
     } else {
       toast.success(estado === 'verificado' ? 'Pago verificado y servicio activado' : 'Pago rechazado')
 
-      // Notificar al proveedor
+      // Notificar al proveedor (RPC gateado: deriva empresa + destinatarios + contenido del ref del pago; estado leído de la BD)
       try {
-        const { data: pagoInfo } = await supabase.from('pagos_proveedor').select('empresa_id').eq('id', id).single()
-        if (pagoInfo?.empresa_id) {
-          const { data: usuarios } = await supabase.rpc('obtener_usuarios_empresa', { p_empresa_id: pagoInfo.empresa_id })
-          for (const u of (usuarios || []) as { user_id: string }[]) {
-            await crearNotificacionInApp({
-              usuario_id: u.user_id,
-              tipo: 'pago',
-              titulo: estado === 'verificado' ? 'Pago verificado' : 'Pago rechazado',
-              mensaje: estado === 'verificado'
-                ? 'Tu pago fue verificado y el servicio quedó activo.'
-                : 'Tu pago fue rechazado. Revisa el comprobante o contacta a EzPayConnect.',
-              accion_url: '/proveedor/pagos',
-              metadata: { pago_id: id },
-            })
-          }
-        }
+        await supabase.rpc('notificar_pago_resultado', { p_pago_id: id })
       } catch (e) {
         console.error('Error notificando pago al proveedor:', e)
       }

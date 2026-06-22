@@ -2,7 +2,6 @@ import { useState, useEffect } from 'react'
 import { supabase } from '@/lib/supabase'
 import { openSignedUrl } from '@/lib/signedUrl'
 import { usePaisFiltro } from '@/hooks/usePaisFiltro'
-import { crearNotificacionInApp } from '@/proveedor/lib/notificaciones'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Card, CardContent } from '@/components/ui/card'
@@ -109,26 +108,11 @@ export default function SolicitudesCampanaPage() {
     fetchSolicitudes()
   }, [estadoFiltro])
 
-  // Avisar a los usuarios de la empresa proveedora (campanita del portal)
-  const notificarProveedor = async (solicitud: SolicitudConEmpresa, resultado: 'aprobada' | 'rechazada') => {
-    const empresaId = (solicitud as any).empresa_id
-    if (!empresaId) return
-    const { data: usuarios } = await supabase.rpc('obtener_usuarios_empresa', { p_empresa_id: empresaId })
-    const titulo = resultado === 'aprobada' ? 'Campaña aprobada' : 'Campaña rechazada'
-    const mensaje =
-      resultado === 'aprobada'
-        ? `Tu campaña "${solicitud.titulo}" fue aprobada y publicada.`
-        : `Tu campaña "${solicitud.titulo}" fue rechazada.${notasAdmin ? ' Motivo: ' + notasAdmin : ''}`
-    for (const u of (usuarios || []) as { user_id: string }[]) {
-      await crearNotificacionInApp({
-        usuario_id: u.user_id,
-        tipo: 'campana',
-        titulo,
-        mensaje,
-        accion_url: '/proveedor/publicidad/campanas',
-        metadata: { solicitud_id: solicitud.id },
-      })
-    }
+  // Avisar a los usuarios de la empresa proveedora (campanita del portal).
+  // RPC gateado: deriva destinatarios + contenido (incl. notas_admin YA persistidas en el ref) del estado de la
+  // solicitud; aprobar/rechazar persisten estado+notas ANTES de llamar (ver aprobar()/rechazar()).
+  const notificarProveedor = async (solicitud: SolicitudConEmpresa, _resultado: 'aprobada' | 'rechazada') => {
+    await supabase.rpc('notificar_campana_resultado', { p_solicitud_id: solicitud.id })
   }
 
   const aprobar = async (solicitud: SolicitudConEmpresa) => {
