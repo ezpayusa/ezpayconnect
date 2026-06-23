@@ -90,15 +90,9 @@ export function useRecetas() {
         return { data: null, error: `Error al guardar medicamentos: ${itemsError.message}` }
       }
     }
-    // Notificar al paciente (campanita del webapp)
+    // Notificar al paciente (RPC gateado: deriva recipient + contenido genérico del ref ya insertado; in-app + push). Best-effort.
     try {
-      await supabase.rpc('notificar_paciente', {
-        p_paciente_id: receta.paciente_id,
-        p_tipo: 'receta',
-        p_titulo: 'Nueva receta',
-        p_mensaje: 'Tu médico te emitió una nueva receta. Revísala en la app.',
-        p_accion_url: '/paciente/recetas',
-      })
+      await supabase.rpc('notificar_receta', { p_receta_id: recetaData.id })
     } catch (e) {
       console.error('Error notificando receta al paciente:', e)
     }
