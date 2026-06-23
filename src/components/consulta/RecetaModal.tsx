@@ -20,6 +20,7 @@ import {
   FlaskConical,
   CheckCircle2,
   AlertCircle,
+  Building2,
 } from 'lucide-react'
 
 interface RecetaModalProps {
@@ -150,6 +151,14 @@ export default function RecetaModal({ open, onOpenChange, pacienteIdPreseleccion
     setBusquedaProveedor('')
   }
 
+  // 3.3 auto-pick: si la búsqueda de farmacia devuelve UNA sola sucursal ruteable, seleccionarla sola.
+  useEffect(() => {
+    if (!showFarmaciaModal || loadingBusqueda || itemIdxBuscando === null) return
+    const rutables = resultadosBusqueda.filter((r: any) => r.farmacia && (r.farmacia.tipo === 'farmacia' || r.farmacia.tipo == null))
+    if (rutables.length === 1) seleccionarProveedor(rutables[0])
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [resultadosBusqueda, showFarmaciaModal, loadingBusqueda, itemIdxBuscando])
+
   const renderResultadosBusqueda = (tipoFiltro: 'farmacia' | 'laboratorio') => {
     const filtrados = resultadosBusqueda.filter((r: any) => {
       if (!r.farmacia) return false
@@ -165,37 +174,51 @@ export default function RecetaModal({ open, onOpenChange, pacienteIdPreseleccion
       )
     }
 
+    // Estado vacío del path de RUTEO: el filtro 3.3 excluye el catálogo general (no ruteable).
     if (!loadingBusqueda && busquedaProveedor.trim().length > 0 && filtrados.length === 0) {
       return (
         <p className="text-sm text-[#8a9aaa] text-center py-4">
-          No se encontraron resultados en {tipoFiltro === 'farmacia' ? 'farmacias' : 'laboratorios'}
+          No hay {tipoFiltro === 'farmacia' ? 'farmacias' : 'laboratorios'} con stock de «{busquedaProveedor}» en tu país.
+          <br /><span className="text-xs">El catálogo general no es ruteable.</span>
         </p>
       )
     }
 
+    // 3.3 (modelo A, per-ítem): agrupar por CADENA (empresa_id → nombre_empresa); dentro, las SUCURSALES con direccion.
+    const grupos = new Map<string, { nombre: string; sucursales: any[] }>()
+    for (const r of filtrados) {
+      const key = String(r.farmacia?.empresa_id ?? 'sin-empresa')
+      const nombre = r.farmacia?.empresa?.nombre_empresa ?? r.farmacia?.nombre ?? 'Farmacia'
+      if (!grupos.has(key)) grupos.set(key, { nombre, sucursales: [] })
+      grupos.get(key)!.sucursales.push(r)
+    }
+
     return (
-      <div className="space-y-2 max-h-96 overflow-y-auto">
-        {filtrados.map((r: any) => (
-          <Card key={r.id} className="border-l-4 border-l-[#1E5C8E] hover:bg-[#e8f0f8] transition-colors">
-            <CardContent className="p-3 flex justify-between items-center gap-3">
-              <div className="flex-1 min-w-0">
-                <p className="font-medium text-sm text-[#1a2a3a] truncate">{r.nombre_medicamento}</p>
-                <p className="text-xs text-[#8a9aaa] mt-0.5">
-                  <span className="font-medium text-[#1E5C8E]">{r.farmacia?.nombre || 'Sin proveedor'}</span>
-                  {r.farmacia?.direccion && <span> · {r.farmacia.direccion}</span>}
-                </p>
-                <p className="text-xs text-[#8a9aaa] mt-0.5">
-                  Stock: <span className="font-medium">{r.stock_actual}</span>
-                  {' · '}
-                  Precio: <span className="font-medium">Q{r.precio_unitario}</span>
-                  {r.farmacia?.telefono && <span> · Tel: {r.farmacia.telefono}</span>}
-                </p>
-              </div>
-              <Button type="button" size="sm" className="bg-[#1E5C8E] hover:bg-[#3A8ABF] shrink-0" onClick={() => seleccionarProveedor(r)}>
-                Seleccionar
-              </Button>
-            </CardContent>
-          </Card>
+      <div className="space-y-3 max-h-96 overflow-y-auto">
+        {[...grupos.values()].map((g, gi) => (
+          <div key={gi} className="space-y-1.5">
+            <p className="text-xs font-semibold text-[#1E5C8E] uppercase tracking-wide flex items-center gap-1">
+              <Building2 className="h-3 w-3" /> {g.nombre}
+            </p>
+            {g.sucursales.map((r: any) => (
+              <Card key={r.id} className="border-l-4 border-l-[#1E5C8E] hover:bg-[#e8f0f8] transition-colors">
+                <CardContent className="p-3 flex justify-between items-center gap-3">
+                  <div className="flex-1 min-w-0">
+                    <p className="font-medium text-sm text-[#1a2a3a] truncate">{r.farmacia?.nombre || 'Sucursal'}</p>
+                    {r.farmacia?.direccion && <p className="text-xs text-[#8a9aaa] mt-0.5 truncate">{r.farmacia.direccion}</p>}
+                    <p className="text-xs text-[#8a9aaa] mt-0.5">
+                      Stock: <span className="font-medium">{r.stock_actual}</span>
+                      {' · '}Precio: <span className="font-medium">Q{r.precio_unitario}</span>
+                      {r.farmacia?.telefono && <span> · Tel: {r.farmacia.telefono}</span>}
+                    </p>
+                  </div>
+                  <Button type="button" size="sm" className="bg-[#1E5C8E] hover:bg-[#3A8ABF] shrink-0" onClick={() => seleccionarProveedor(r)}>
+                    Seleccionar
+                  </Button>
+                </CardContent>
+              </Card>
+            ))}
+          </div>
         ))}
       </div>
     )

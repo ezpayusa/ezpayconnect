@@ -7685,6 +7685,54 @@ BEGIN
 END $$;
 SELECT set_config('role','none', true);
 
+-- ===== Pruta (Spine sucursales 3.3, filtro de ruteo — SIN migración, frontend+query): replica el filtro =====
+-- bajo JWT de médico QA. El filtro de ruteo = empresa_id NOT NULL + activo + stock>0, stackeado sobre la RLS
+-- farm_med_disp_medico (que aplica país). Setup-guard: médico QA y la 3337 en el MISMO país (si no → N/A, no falso-rojo).
+DO $$
+DECLARE v_med uuid := '09d243d5-b222-482a-9762-94a582e9e752'; v_pais_med uuid; v_3337_pais uuid; v_med_global text;
+        v_glob int; v_inact int; v_otropais int; v_global_med_rows int; v_3337_rows int; v_3337_dir text; v_pais_leak int;
+BEGIN
+  SELECT pais_id INTO v_pais_med FROM public.perfiles WHERE id=v_med;
+  SELECT pais_id INTO v_3337_pais FROM public.farmacias WHERE id=3337;
+  IF v_pais_med IS NULL OR v_3337_pais IS NULL OR v_pais_med IS DISTINCT FROM v_3337_pais THEN
+    PERFORM set_config('probe.pruta_filtro','N/A (médico/3337 sin país o distinto)',false);
+    PERFORM set_config('probe.pruta_global','N/A',false); PERFORM set_config('probe.pruta_3337','N/A',false);
+    PERFORM set_config('probe.pruta_pais','N/A',false); RETURN;
+  END IF;
+  SELECT nombre_medicamento INTO v_med_global FROM public.farmacia_medicamentos fm JOIN public.farmacias f ON f.id=fm.farmacia_id
+   WHERE f.empresa_id IS NULL AND fm.stock_actual>0 AND fm.nombre_medicamento NOT ILIKE '%MED 3337%' LIMIT 1;
+
+  -- médico JWT
+  PERFORM set_config('request.jwt.claims', json_build_object('sub',v_med,'role','authenticated')::text, true);
+  PERFORM set_config('role','authenticated', true);
+
+  -- (1) El FILTRO de ruteo (empresa_id NOT NULL + activo) no deja entrar globales/inactivas; RLS conserva país.
+  SELECT count(*) FILTER (WHERE f.empresa_id IS NULL), count(*) FILTER (WHERE f.activo=false), count(*) FILTER (WHERE f.pais_id IS DISTINCT FROM v_pais_med)
+    INTO v_glob, v_inact, v_otropais
+    FROM public.farmacia_medicamentos fm JOIN public.farmacias f ON f.id=fm.farmacia_id
+    WHERE fm.stock_actual>0 AND f.empresa_id IS NOT NULL AND f.activo=true;
+  PERFORM set_config('probe.pruta_filtro', CASE WHEN v_glob=0 AND v_inact=0 AND v_otropais=0 THEN 'OK (filtro excluye global/inactiva; país conservado)' ELSE 'FALLO (glob='||v_glob||' inact='||v_inact||' otropais='||v_otropais||')' END, false);
+
+  -- (2) Un med solo-en-global NO aparece bajo el filtro de ruteo.
+  IF v_med_global IS NULL THEN PERFORM set_config('probe.pruta_global','N/A (sin med global)',false);
+  ELSE
+    SELECT count(*) INTO v_global_med_rows FROM public.farmacia_medicamentos fm JOIN public.farmacias f ON f.id=fm.farmacia_id
+      WHERE fm.nombre_medicamento=v_med_global AND fm.stock_actual>0 AND f.empresa_id IS NOT NULL AND f.activo=true;
+    PERFORM set_config('probe.pruta_global', CASE WHEN v_global_med_rows=0 THEN 'OK (med solo-en-global no aparece en ruteo)' ELSE 'FALLO ('||v_global_med_rows||' filas)' END, false);
+  END IF;
+
+  -- (3) El med de la 3337 (real-empresa, activa) SÍ aparece, con su direccion.
+  SELECT count(*), max(f.direccion) INTO v_3337_rows, v_3337_dir FROM public.farmacia_medicamentos fm JOIN public.farmacias f ON f.id=fm.farmacia_id
+    WHERE fm.nombre_medicamento ILIKE '%MED 3337%' AND fm.stock_actual>0 AND f.empresa_id IS NOT NULL AND f.activo=true AND f.id=3337;
+  PERFORM set_config('probe.pruta_3337', CASE WHEN v_3337_rows>=1 AND v_3337_dir IS NOT NULL THEN 'OK (3337 aparece con direccion: '||left(v_3337_dir,24)||'…)' ELSE 'FALLO (rows='||v_3337_rows||' dir='||COALESCE(v_3337_dir,'∅')||')' END, false);
+
+  -- (4) No-regresión país (RLS): el médico NO ve NINGÚN farmacia_medicamentos de otro país (ni con/ni sin filtro).
+  SELECT count(*) INTO v_pais_leak FROM public.farmacia_medicamentos fm JOIN public.farmacias f ON f.id=fm.farmacia_id
+    WHERE f.pais_id IS DISTINCT FROM v_pais_med;
+  PERFORM set_config('probe.pruta_pais', CASE WHEN v_pais_leak=0 THEN 'OK (RLS aísla país: 0 filas de otro país)' ELSE 'FALLO/LEAK ('||v_pais_leak||' filas de otro país)' END, false);
+END $$;
+SELECT set_config('role','none', true);
+
 -- ===== Veredictos como result set =====
 SELECT 'P1_anon_insert_citas'              AS probe, current_setting('probe.p1', true)  AS verdict, 'BLOQUEADO' AS esperado_post_fix
 UNION ALL SELECT 'P2_medico_cancela_ajena_rpc',         current_setting('probe.p2', true),  'BLOQUEADO'
@@ -8128,6 +8176,10 @@ UNION ALL SELECT 'Pasign_xempresa_global_inactiva',       current_setting('probe
 UNION ALL SELECT 'Pasign_C2_activacion',                  current_setting('probe.pasign_c2', true),       'OK (confinable solo X; exento/grandfather/revert X+Y)'
 UNION ALL SELECT 'Pasign_desasignar_null',               current_setting('probe.pasign_desasignar', true),'OK (NULL → grandfather)'
 UNION ALL SELECT 'Pasign_noregresion_null',               current_setting('probe.pasign_noregr', true),   'OK (miembros NULL existentes intactos)'
-UNION ALL SELECT 'Pasign_138_alta_con_sucursal',          current_setting('probe.pasign_138alta', true),  'OK (alta setea sucursal; global rechazada)';
+UNION ALL SELECT 'Pasign_138_alta_con_sucursal',          current_setting('probe.pasign_138alta', true),  'OK (alta setea sucursal; global rechazada)'
+UNION ALL SELECT 'Pruta_filtro_excluye_conserva_pais',    current_setting('probe.pruta_filtro', true),     'OK (filtro excluye global/inactiva; país)'
+UNION ALL SELECT 'Pruta_med_global_no_rutea',             current_setting('probe.pruta_global', true),     'OK (med solo-global no aparece en ruteo)'
+UNION ALL SELECT 'Pruta_3337_aparece_con_direccion',      current_setting('probe.pruta_3337', true),       'OK (sucursal real aparece con direccion)'
+UNION ALL SELECT 'Pruta_noregresion_pais',                current_setting('probe.pruta_pais', true),       'OK (RLS aísla país)';
 
 ROLLBACK;  -- nada de lo anterior se persiste

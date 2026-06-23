@@ -23,6 +23,8 @@ export interface FarmaciaMedicamento {
     encargado: string;
     horario: string;
     tipo?: string; // 'farmacia' | 'laboratorio'
+    empresa_id?: string | null;          // cadena (NULL = catálogo global, no ruteable)
+    empresa?: { nombre_empresa: string } | null;  // nombre de la cadena
   };
 }
 
@@ -37,8 +39,11 @@ interface UseBusquedaMedicamentosReturn {
   resultadosProveedores: ProductoEmpresa[];
   buscarEnProveedores: (query: string) => Promise<void>;
   // General
+  resultados: FarmaciaMedicamento[];
   loading: boolean;
-  buscar: (query: string) => Promise<void>;
+  // 3.3: filtro de ruteo ON por default (solo sucursales ruteables: empresa_id NOT NULL + activas).
+  // incluirCatalogoGlobal=true es opt-out SOLO para discovery (BuscarMedicamentosPage).
+  buscar: (query: string, incluirCatalogoGlobal?: boolean) => Promise<void>;
   buscarPorFarmacia: (farmaciaId: number) => Promise<void>;
 }
 
@@ -49,8 +54,11 @@ export function useBusquedaMedicamentos(): UseBusquedaMedicamentosReturn {
   const [resultados, setResultados] = useState<FarmaciaMedicamento[]>([]);
   const [loading, setLoading] = useState(false);
 
-  // ─── Búsqueda general (sin filtro de tipo, para compatibilidad) ───
-  const buscar = useCallback(async (query: string) => {
+  // ─── Búsqueda general ───
+  // 3.3: por DEFAULT filtra a sucursales RUTEABLES (farmacia.empresa_id NOT NULL + activa), stackeado sobre
+  // stock>0; NO toca el término país de la RLS farm_med_disp_medico. !inner = el filtro del embed EXCLUYE la
+  // fila padre (no la nullea → el catálogo global no se cuela). incluirCatalogoGlobal=true (solo discovery) opt-out.
+  const buscar = useCallback(async (query: string, incluirCatalogoGlobal = false) => {
     if (!query.trim()) {
       setResultados([]);
       setResultadosProveedores([]);
@@ -58,16 +66,20 @@ export function useBusquedaMedicamentos(): UseBusquedaMedicamentosReturn {
     }
     setLoading(true);
     try {
-      // Buscar en farmacias
-      const { data: farmaciaData, error: farmaciaError } = await supabase
+      // Buscar en farmacias. Embed con !inner + cadena (empresa_id → nombre_empresa) para agrupar por cadena.
+      let q = supabase
         .from('farmacia_medicamentos')
         .select(`
           *,
-          farmacia:farmacia_id(id, nombre, direccion, telefono, email, encargado, horario, tipo)
+          farmacia:farmacia_id!inner(id, nombre, direccion, telefono, email, encargado, horario, tipo, activo, empresa_id, empresa:empresa_id(nombre_empresa))
         `)
         .ilike('nombre_medicamento', `%${query.trim()}%`)
-        .gt('stock_actual', 0)
-        .order('precio_unitario', { ascending: true });
+        .gt('stock_actual', 0);
+      if (!incluirCatalogoGlobal) {
+        // RUTEO: excluye catálogo global (empresa_id NULL) Y sucursales desactivadas (3.1). Sobre filas padre (!inner).
+        q = q.not('farmacia.empresa_id', 'is', null).eq('farmacia.activo', true);
+      }
+      const { data: farmaciaData, error: farmaciaError } = await q.order('precio_unitario', { ascending: true });
 
       if (farmaciaError) throw farmaciaError;
       setResultados(farmaciaData || []);

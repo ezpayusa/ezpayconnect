@@ -19,7 +19,8 @@ export default function BuscarMedicamentosPage() {
 
   const handleBuscar = (e: React.FormEvent) => {
     e.preventDefault();
-    buscar(query);
+    // Discovery (no ruteo): opt-out del filtro 3.3 → ve también el catálogo global.
+    buscar(query, true);
   };
 
   const handleCopiarInfo = (item: any) => {
