@@ -137,24 +137,18 @@ export function useWebAppChat(pacienteId: number | undefined) {
         insertData.medico_id = medicoId
       }
 
-      const { error: err } = await supabase.from('chat_mensajes').insert(insertData)
+      const { data: nuevoMsg, error: err } = await supabase.from('chat_mensajes').insert(insertData).select('id').single()
 
       if (err) throw err
 
-      // Notificación push al médico
-      if (medicoId) {
+      // Camino ÚNICO server-side gateado: notificar_chat(mensaje_id). Verifica remitente + relación
+      // paciente↔médico, compone contenido server ("Nuevo mensaje de X", SIN texto crudo → cierra el leak
+      // del push anterior) y dispara in-app + web-push al médico. Reemplaza el enviar-push con texto crudo.
+      if (nuevoMsg?.id) {
         try {
-          await supabase.functions.invoke('enviar-push', {
-            body: {
-              usuario_ids: [medicoId],
-              titulo: 'Nuevo mensaje de paciente',
-              mensaje: texto.trim().slice(0, 100),
-              url: '/paciente/chat',
-              tag: `chat-${pacienteId}`,
-            },
-          })
-        } catch (pushErr) {
-          console.error('Error enviando push de chat:', pushErr)
+          await supabase.rpc('notificar_chat', { p_mensaje_id: nuevoMsg.id })
+        } catch (notifErr) {
+          console.error('Error notificar_chat:', notifErr)
         }
       }
     } catch (err: any) {

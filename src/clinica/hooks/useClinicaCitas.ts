@@ -193,83 +193,20 @@ export function useClinicaCitas() {
   }
 
   const enviarNotificacionPaciente = async (
-    pacienteAuthId: string,
+    _pacienteAuthId: string,
     cita: CitaConPaciente,
     tipo: 'cita_asignada' | 'cita_confirmada' | 'cita_cancelada',
-    medicoNombre?: string
+    _medicoNombre?: string
   ) => {
-    const fechaStr = new Date(cita.fecha).toLocaleDateString('es-GT', {
-      weekday: 'long', month: 'long', day: 'numeric',
-    })
-
-    let titulo: string
-    let mensaje: string
-
-    switch (tipo) {
-      case 'cita_confirmada':
-        titulo = 'Tu cita ha sido confirmada'
-        mensaje = `Tu cita para el ${fechaStr} a las ${cita.hora_inicio?.slice(0, 5)} ha sido confirmada.`
-        break
-      case 'cita_cancelada':
-        titulo = 'Tu cita ha sido cancelada'
-        mensaje = `Tu cita para el ${fechaStr} a las ${cita.hora_inicio?.slice(0, 5)} ha sido cancelada.`
-        break
-      default:
-        titulo = 'Médico asignado a tu cita'
-        mensaje = `Tu cita para el ${fechaStr} a las ${cita.hora_inicio?.slice(0, 5)} ha sido asignada al Dr. ${medicoNombre || 'tu médico'}.`
-    }
-
-    const url = '/paciente/citas'
-
-    console.log('[useClinicaCitas] Enviando notificación a:', pacienteAuthId)
-
-    // Campanita del webapp del paciente (tabla notificaciones_pacientes).
-    // Vía RPC SECURITY DEFINER porque el RLS solo permite al propio paciente.
-    // El hook useWebAppNotificaciones tiene realtime, así que aparece al instante.
+    // Camino ÚNICO server-side gateado: notificar_cita_paciente verifica la relación clínica→cita
+    // (clinicas_del_usuario), compone el contenido server-side (incluye nombre del médico para 'asignada')
+    // y crea AMBAS notificaciones in-app (campanita + general) + web-push. Reemplaza notificar_paciente
+    // + enviar-notificacion + enviar-push (cierra los dos huecos de confused-deputy para el evento cita).
+    const evento = tipo === 'cita_asignada' ? 'asignada' : tipo === 'cita_confirmada' ? 'confirmada' : 'cancelada'
     try {
-      await supabase.rpc('notificar_paciente', {
-        p_paciente_id: cita.paciente_id,
-        p_tipo: 'cita',
-        p_titulo: titulo,
-        p_mensaje: mensaje,
-        p_accion_url: url,
-      })
-      console.log('[useClinicaCitas] Notificación campanita creada')
+      await supabase.rpc('notificar_cita_paciente', { p_cita_id: cita.id, p_evento: evento })
     } catch (e) {
-      console.error('Error notificación campanita:', e)
-    }
-
-    // Notificación in-app (tabla general 'notificaciones', otros paneles)
-    try {
-      await supabase.functions.invoke('enviar-notificacion', {
-        body: {
-          usuario_id: pacienteAuthId,
-          tipo,
-          titulo,
-          mensaje,
-          accion_url: url,
-          metadata: { cita_id: cita.id, paciente_id: cita.paciente_id },
-        },
-      })
-      console.log('[useClinicaCitas] Notificación in-app enviada')
-    } catch (e) {
-      console.error('Error notificación in-app:', e)
-    }
-
-    // Push notification
-    try {
-      await supabase.functions.invoke('enviar-push', {
-        body: {
-          usuario_ids: [pacienteAuthId],
-          titulo,
-          mensaje,
-          url,
-          tag: `cita-${cita.id}`,
-        },
-      })
-      console.log('[useClinicaCitas] Push notification enviada')
-    } catch (e) {
-      console.error('Error push notification:', e)
+      console.error('Error notificar_cita_paciente:', e)
     }
   }
 

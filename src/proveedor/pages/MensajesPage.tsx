@@ -90,21 +90,16 @@ export default function MensajesPage() {
     setEnviando(true)
     const cuerpo = texto.trim()
     setTexto('')
-    const { error } = await supabase.rpc('enviar_mensaje_chat', { p_conv: activa.id, p_cuerpo: cuerpo })
+    const { data: msgId, error } = await supabase.rpc('enviar_mensaje_chat', { p_conv: activa.id, p_cuerpo: cuerpo })
     setEnviando(false)
     if (error) { toast.error(error.message || 'No se pudo enviar'); setTexto(cuerpo); return }
     cargarMensajes(activa.id)
     cargarConvs()
-    // Push a los destinatarios (best-effort; solo llega a quien activó notificaciones)
-    const conv = activa
-    supabase.rpc('destinatarios_conversacion', { p_conv: conv.id }).then(({ data }) => {
-      const ids = (data || []).map((d: any) => d.cuenta_id)
-      if (ids.length) {
-        supabase.functions.invoke('enviar-push', {
-          body: { usuario_ids: ids, titulo: `Mensaje · ${tipoLabel(conv)}`, mensaje: cuerpo.slice(0, 120), url: '/proveedor/mensajes', tag: `chat-${conv.id}` },
-        }).catch(() => {})
-      }
-    }).catch(() => {})
+    // Notificación push server-side y gateada: notificar_chat_interno deriva destinatarios + contenido
+    // (sin cuerpo crudo). Reemplaza destinatarios_conversacion + enviar-push. Best-effort.
+    if (msgId) {
+      supabase.rpc('notificar_chat_interno', { p_mensaje_id: msgId }).then(() => {}, () => {})
+    }
   }
 
   const iniciarDirecto = async (c: Contacto) => {
