@@ -879,61 +879,10 @@ DO $$ BEGIN
     ELSE PERFORM set_config('probe.p37','ROJO (enviar_notificacion_promocion todavía existe)',false); END IF;
 END $$;
 
--- P40 — notificar_paciente: médico AJENO (sin cita con el paciente) NO notifica
-SELECT set_config('role', 'none', true);
-SELECT set_config('request.jwt.claims',
-  json_build_object('sub', current_setting('probe.np_ajeno', true), 'role','authenticated')::text, true);
-SELECT set_config('role', 'authenticated', true);
-DO $$ BEGIN
-  IF NULLIF(current_setting('probe.np_ajeno', true),'') IS NULL THEN PERFORM set_config('probe.p40','N/A',false);
-  ELSE
-    PERFORM public.notificar_paciente(NULLIF(current_setting('probe.np_pac', true),'')::int,'cita','__p','m','/x');
-    PERFORM set_config('probe.p40','PERMITIDO (notificó a paciente ajeno)',false);
-  END IF;
-EXCEPTION
-  WHEN others THEN PERFORM set_config('probe.p40','BLOQUEADO ('||SQLSTATE||')',false);
-END $$;
-
--- P41 — notificar_paciente POSITIVO: el médico que lo atiende SÍ notifica
-SELECT set_config('role', 'none', true);
-SELECT set_config('request.jwt.claims',
-  json_build_object('sub', current_setting('probe.np_medico', true), 'role','authenticated')::text, true);
-SELECT set_config('role', 'authenticated', true);
-DO $$ DECLARE v INT; BEGIN
-  v := public.notificar_paciente(NULLIF(current_setting('probe.np_pac', true),'')::int,'cita','__p_ok','m','/x');
-  IF v IS NOT NULL THEN PERFORM set_config('probe.p41','OK (notificó id '||v||')',false);
-  ELSE PERFORM set_config('probe.p41','REGRESIÓN (no devolvió id)',false); END IF;
-EXCEPTION
-  WHEN others THEN PERFORM set_config('probe.p41','REGRESIÓN ('||SQLSTATE||')',false);
-END $$;
-
--- P42 — notificar_laboratorio: un médico AJENO al lab (no le ordenó) NO notifica
-SELECT set_config('role', 'none', true);
-SELECT set_config('request.jwt.claims',
-  json_build_object('sub', current_setting('probe.ajeno', true), 'role','authenticated')::text, true);
-SELECT set_config('role', 'authenticated', true);
-DO $$ BEGIN
-  IF NULLIF(current_setting('probe.nl_lab', true),'') IS NULL THEN PERFORM set_config('probe.p42','N/A',false);
-  ELSE
-    PERFORM public.notificar_laboratorio(current_setting('probe.nl_lab', true)::uuid,'orden_examen','__l','m','/x');
-    PERFORM set_config('probe.p42','PERMITIDO (notificó a lab ajeno)',false);
-  END IF;
-EXCEPTION
-  WHEN others THEN PERFORM set_config('probe.p42','BLOQUEADO ('||SQLSTATE||')',false);
-END $$;
-
--- P43 — notificar_laboratorio POSITIVO: el médico que ordenó a ese lab SÍ notifica
-SELECT set_config('role', 'none', true);
-SELECT set_config('request.jwt.claims',
-  json_build_object('sub', current_setting('probe.nl_medico', true), 'role','authenticated')::text, true);
-SELECT set_config('role', 'authenticated', true);
-DO $$ DECLARE arr uuid[]; BEGIN
-  arr := public.notificar_laboratorio(current_setting('probe.nl_lab', true)::uuid,'orden_examen','__l_ok','m','/x');
-  IF array_length(arr,1) >= 1 THEN PERFORM set_config('probe.p43','OK (notificó '||array_length(arr,1)||' cuenta(s))',false);
-  ELSE PERFORM set_config('probe.p43','OK (lab sin cuentas activas, pero autorizó)',false); END IF;
-EXCEPTION
-  WHEN others THEN PERFORM set_config('probe.p43','REGRESIÓN ('||SQLSTATE||')',false);
-END $$;
+-- P40/P41 RETIRADOS (CIERRE FINAL mig 136): notificar_paciente con EXECUTE REVOCADO (0 callers; citas/examen→RPCs
+-- propios, receta→notificar_receta). l.49: revocar la fn = retirar sus probes. El revoke lo cubre P431.
+-- P42/P43 RETIRADOS (CIERRE FINAL mig 136): notificar_laboratorio DROPEADO (0 callers; ConsultaPage→notificar_orden_lab).
+-- l.49: retirar la fn = retirar sus probes. Su drop lo cubre P432.
 
 -- P44 — administrar_visita: un ajeno (ni médico de la visita ni su empresa) NO la administra
 SELECT set_config('role', 'none', true);
@@ -967,35 +916,8 @@ EXCEPTION
   WHEN others THEN PERFORM set_config('probe.p45','REGRESIÓN ('||SQLSTATE||')',false);
 END $$;
 
--- P46 — notificar_paciente POSITIVO: STAFF de clínica (rama "clínica" de la regla,
---   cubre useClinicaCitas). Staff miembro de una clínica con cita del paciente,
---   que NO es el médico de la cita ni lo atiende → solo pasa por la rama staff.
-SELECT set_config('role', 'none', true);
-SELECT set_config('probe.cs_pac', (
-  SELECT c.paciente_id::text FROM public.citas c
-  JOIN public.medico_clinicas staff ON staff.clinica_id = c.clinica_id
-  WHERE c.clinica_id IS NOT NULL AND staff.medico_id <> c.medico_id
-    AND NOT EXISTS (SELECT 1 FROM public.citas c2 WHERE c2.medico_id=staff.medico_id AND c2.paciente_id=c.paciente_id)
-  ORDER BY c.id LIMIT 1), false);
-SELECT set_config('probe.cs_staff', (
-  SELECT staff.medico_id::text FROM public.citas c
-  JOIN public.medico_clinicas staff ON staff.clinica_id = c.clinica_id
-  WHERE c.clinica_id IS NOT NULL AND staff.medico_id <> c.medico_id
-    AND NOT EXISTS (SELECT 1 FROM public.citas c2 WHERE c2.medico_id=staff.medico_id AND c2.paciente_id=c.paciente_id)
-  ORDER BY c.id LIMIT 1), false);
-SELECT set_config('request.jwt.claims',
-  json_build_object('sub', current_setting('probe.cs_staff', true), 'role','authenticated')::text, true);
-SELECT set_config('role', 'authenticated', true);
-DO $$ DECLARE v INT; BEGIN
-  IF NULLIF(current_setting('probe.cs_staff', true),'') IS NULL THEN PERFORM set_config('probe.p46','N/A (sin staff candidato)',false);
-  ELSE
-    v := public.notificar_paciente(NULLIF(current_setting('probe.cs_pac', true),'')::int,'cita','__p_staff','m','/x');
-    IF v IS NOT NULL THEN PERFORM set_config('probe.p46','OK (staff notificó id '||v||')',false);
-    ELSE PERFORM set_config('probe.p46','REGRESIÓN (no devolvió id)',false); END IF;
-  END IF;
-EXCEPTION
-  WHEN others THEN PERFORM set_config('probe.p46','REGRESIÓN ('||SQLSTATE||')',false);
-END $$;
+-- P46 RETIRADO (CIERRE FINAL mig 136): notificar_paciente con EXECUTE REVOCADO (la rama staff-clínica ahora va por
+-- notificar_cita_paciente, evt2). l.49: revocar la fn = retirar su probe. El revoke lo cubre P431.
 
 -- ============================================================
 -- FASE 6 · roles alineados al catálogo + FK anti fail-open
@@ -5963,9 +5885,10 @@ DO $$ DECLARE v_err text; v_partial int; BEGIN
   v_err := current_setting('probe.p370_err',true);
   IF coalesce(v_err,'')='' OR v_err='SKIP' THEN PERFORM set_config('probe.p370','N/A',false); RETURN; END IF;
   IF v_err='PERMITIDO' THEN PERFORM set_config('probe.p370','PERMITIDO (lab ajeno notificó)',false); RETURN; END IF;
-  -- 0 fila parcial del intento ajeno (ni paciente ni médico con 'Resultado de examen listo')
-  SELECT (SELECT count(*) FROM public.notificaciones_pacientes WHERE paciente_id=current_setting('probe.lx_pac',true)::int AND titulo='Resultado de examen listo')
-       + (SELECT count(*) FROM public.notificaciones WHERE usuario_id=current_setting('probe.lx_med',true)::uuid AND titulo='Resultado de examen listo') INTO v_partial;
+  -- 0 fila parcial del intento ajeno (ni paciente ni médico con 'Resultado de examen listo').
+  -- created_at>now()-2min: acota a ESTA corrida (now()=inicio de la txn), ignora filas committeadas históricas (pruebas QA preview).
+  SELECT (SELECT count(*) FROM public.notificaciones_pacientes WHERE paciente_id=current_setting('probe.lx_pac',true)::int AND titulo='Resultado de examen listo' AND created_at>now()-interval '2 minutes')
+       + (SELECT count(*) FROM public.notificaciones WHERE usuario_id=current_setting('probe.lx_med',true)::uuid AND titulo='Resultado de examen listo' AND created_at>now()-interval '2 minutes') INTO v_partial;
   PERFORM set_config('probe.p370', CASE
     WHEN v_partial>0 THEN 'FALLO (fila parcial del no-dueño: '||v_partial||')'
     WHEN v_err='PT002' THEN 'BLOQUEADO (PT002 gate propio, 0 fila parcial)'
@@ -7333,6 +7256,58 @@ DO $$ DECLARE a text; b text; c text; BEGIN
 END $$;
 SELECT set_config('role','none', true);
 
+-- ============================================================
+-- CIERRE FINAL bloque 1 (P431–P434). Red-first (ROJO pre-136, verde post).
+-- ============================================================
+SELECT set_config('role','none', true);
+
+-- P431: REVOKE EXECUTE notificar_paciente → anon/public/authenticated SIN execute (función aún existe)
+DO $$ DECLARE v_anon boolean; v_pub boolean; v_auth boolean; BEGIN
+  IF to_regprocedure('public.notificar_paciente(integer,text,text,text,text)') IS NULL THEN PERFORM set_config('probe.p431','N/A (función ausente)',false); RETURN; END IF;
+  v_anon := has_function_privilege('anon','public.notificar_paciente(integer,text,text,text,text)','EXECUTE');
+  v_pub  := has_function_privilege('public','public.notificar_paciente(integer,text,text,text,text)','EXECUTE');
+  v_auth := has_function_privilege('authenticated','public.notificar_paciente(integer,text,text,text,text)','EXECUTE');
+  PERFORM set_config('probe.p431', CASE WHEN NOT v_anon AND NOT v_pub AND NOT v_auth THEN 'OK (EXECUTE revocado anon/public/auth)' ELSE 'ROJO (anon='||v_anon||' pub='||v_pub||' auth='||v_auth||')' END, false);
+END $$;
+
+-- P432: notificar_laboratorio DROPEADO
+DO $$ BEGIN
+  PERFORM set_config('probe.p432', CASE WHEN to_regprocedure('public.notificar_laboratorio(uuid,text,text,text,text)') IS NULL THEN 'OK (dropeado)' ELSE 'ROJO (aún existe)' END, false);
+END $$;
+
+-- P433: REVOKE INSERT directo en ambas tablas (anon✗ auth✗); DEFINER no usa el grant (se valida en los probes de RPC existentes)
+DO $$ DECLARE v_n_anon boolean; v_n_auth boolean; v_np_anon boolean; v_np_auth boolean; BEGIN
+  v_n_anon := has_table_privilege('anon','public.notificaciones','INSERT');
+  v_n_auth := has_table_privilege('authenticated','public.notificaciones','INSERT');
+  v_np_anon := has_table_privilege('anon','public.notificaciones_pacientes','INSERT');
+  v_np_auth := has_table_privilege('authenticated','public.notificaciones_pacientes','INSERT');
+  PERFORM set_config('probe.p433', CASE WHEN NOT v_n_anon AND NOT v_n_auth AND NOT v_np_anon AND NOT v_np_auth
+    THEN 'OK (INSERT directo revocado en ambas tablas, anon+auth)'
+    ELSE 'ROJO (notif anon='||v_n_anon||'/auth='||v_n_auth||' notif_pac anon='||v_np_anon||'/auth='||v_np_auth||')' END, false);
+END $$;
+
+-- P434: split policies — sin ALL dual-use; super_admin SELECT+UPDATE (preserva archivar seguimientos); paciente
+-- SELECT+UPDATE-leída; SIN INSERT-policy directa en ninguna (INSERT/DELETE solo por RPC DEFINER).
+DO $$ DECLARE v_all_notif int; v_all_np int; v_sa_sel boolean; v_sa_upd boolean; v_np_sel boolean; v_np_upd boolean; v_notif_ins int; v_np_ins int; BEGIN
+  SELECT count(*) INTO v_all_notif FROM pg_policy WHERE polrelid='public.notificaciones'::regclass AND polcmd='*';
+  SELECT count(*) INTO v_all_np FROM pg_policy WHERE polrelid='public.notificaciones_pacientes'::regclass AND polcmd='*';
+  v_sa_sel := EXISTS(SELECT 1 FROM pg_policy WHERE polrelid='public.notificaciones'::regclass AND polcmd='r' AND pg_get_expr(polqual,polrelid) ILIKE '%super_admin%');
+  v_sa_upd := EXISTS(SELECT 1 FROM pg_policy WHERE polrelid='public.notificaciones'::regclass AND polcmd='w' AND pg_get_expr(polqual,polrelid) ILIKE '%super_admin%');
+  v_np_sel := EXISTS(SELECT 1 FROM pg_policy WHERE polrelid='public.notificaciones_pacientes'::regclass AND polcmd='r' AND pg_get_expr(polqual,polrelid) ILIKE '%auth_user_id = auth.uid()%');
+  v_np_upd := EXISTS(SELECT 1 FROM pg_policy WHERE polrelid='public.notificaciones_pacientes'::regclass AND polcmd='w' AND pg_get_expr(polqual,polrelid) ILIKE '%auth_user_id = auth.uid()%');
+  SELECT count(*) INTO v_notif_ins FROM pg_policy WHERE polrelid='public.notificaciones'::regclass AND polcmd='a';            -- INSERT-policy directa: 0
+  SELECT count(*) INTO v_np_ins FROM pg_policy WHERE polrelid='public.notificaciones_pacientes'::regclass AND polcmd='a';     -- INSERT-policy directa: 0
+  -- column-scope: authenticated puede UPDATE(leida) pero NO UPDATE(mensaje) en notificaciones_pacientes
+  DECLARE v_col_leida boolean; v_col_msg boolean; BEGIN
+    v_col_leida := has_column_privilege('authenticated','public.notificaciones_pacientes','leida','UPDATE');
+    v_col_msg   := has_column_privilege('authenticated','public.notificaciones_pacientes','mensaje','UPDATE');
+    PERFORM set_config('probe.p434', CASE WHEN v_all_notif=0 AND v_all_np=0 AND v_sa_sel AND v_sa_upd AND v_np_sel AND v_np_upd AND v_notif_ins=0 AND v_np_ins=0 AND v_col_leida AND NOT v_col_msg
+      THEN 'OK (sin ALL; super_admin SELECT+UPDATE; paciente SELECT+UPDATE-leída col-scoped; 0 INSERT-policy directa)'
+      ELSE 'ROJO (all_n='||v_all_notif||' all_np='||v_all_np||' sa_sel='||v_sa_sel||' sa_upd='||v_sa_upd||' np_sel='||v_np_sel||' np_upd='||v_np_upd||' n_ins='||v_notif_ins||' np_ins='||v_np_ins||' col_leida='||v_col_leida||' col_msg='||v_col_msg||')' END, false);
+  END;
+END $$;
+SELECT set_config('role','none', true);
+
 -- ===== Veredictos como result set =====
 SELECT 'P1_anon_insert_citas'              AS probe, current_setting('probe.p1', true)  AS verdict, 'BLOQUEADO' AS esperado_post_fix
 UNION ALL SELECT 'P2_medico_cancela_ajena_rpc',         current_setting('probe.p2', true),  'BLOQUEADO'
@@ -7371,13 +7346,8 @@ UNION ALL SELECT 'P34_proveedor_dueno_escribe_comprob',  current_setting('probe.
 UNION ALL SELECT 'P35_ajeno_escribe_resultado_lab',      current_setting('probe.p35', true), 'BLOQUEADO'
 UNION ALL SELECT 'P36_lab_dueno_escribe_resultado',      current_setting('probe.p36', true), 'OK'
 UNION ALL SELECT 'P37_promo_feature_retirada',           current_setting('probe.p37', true), 'OK post-119 (ROJO pre)'
-UNION ALL SELECT 'P40_medico_ajeno_notifica_paciente',   current_setting('probe.p40', true), 'BLOQUEADO'
-UNION ALL SELECT 'P41_medico_atiende_notifica_paciente', current_setting('probe.p41', true), 'OK'
-UNION ALL SELECT 'P42_ajeno_notifica_laboratorio',       current_setting('probe.p42', true), 'BLOQUEADO'
-UNION ALL SELECT 'P43_medico_orden_notifica_lab',        current_setting('probe.p43', true), 'OK'
 UNION ALL SELECT 'P44_ajeno_administra_visita',          current_setting('probe.p44', true), 'BLOQUEADO'
 UNION ALL SELECT 'P45_proveedor_visita_administra',      current_setting('probe.p45', true), 'OK'
-UNION ALL SELECT 'P46_staff_clinica_notifica_paciente',  current_setting('probe.p46', true), 'OK'
 UNION ALL SELECT 'P47_superadmin_ve_admin_gated',        current_setting('probe.p47', true), 'OK'
 UNION ALL SELECT 'P48_rol_fuera_catalogo_rechazado',     current_setting('probe.p48', true), 'BLOQUEADO'
 UNION ALL SELECT 'P49_rol_valido_asignado',              current_setting('probe.p49', true), 'OK'
@@ -7755,6 +7725,10 @@ UNION ALL SELECT 'P426_visitas_no_regresion',            current_setting('probe.
 UNION ALL SELECT 'P427_chat_hardening_estructural',      current_setting('probe.p427', true), 'OK post-135 (ROJO pre; helper + 3 términos)'
 UNION ALL SELECT 'P428_chat_medico_ajeno_rechazado',     current_setting('probe.p428', true), 'OK post-135 (PERMITIDO pre; médico sin relación rechazado)'
 UNION ALL SELECT 'P429_chat_spoof_remitente',            current_setting('probe.p429', true), 'OK post-135 (PERMITIDO pre; remitente=medico rechazado)'
-UNION ALL SELECT 'P430_chat_no_regresion',               current_setting('probe.p430', true), 'OK (cita + primario + NULL pasan)';
+UNION ALL SELECT 'P430_chat_no_regresion',               current_setting('probe.p430', true), 'OK (cita + primario + NULL pasan)'
+UNION ALL SELECT 'P431_cierre_revoke_notificar_paciente', current_setting('probe.p431', true), 'OK post-136 (ROJO pre)'
+UNION ALL SELECT 'P432_cierre_drop_notificar_laboratorio',current_setting('probe.p432', true), 'OK post-136 (ROJO pre)'
+UNION ALL SELECT 'P433_cierre_revoke_insert_directo',     current_setting('probe.p433', true), 'OK post-136 (ROJO pre)'
+UNION ALL SELECT 'P434_cierre_split_policies',            current_setting('probe.p434', true), 'OK post-136 (ROJO pre)';
 
 ROLLBACK;  -- nada de lo anterior se persiste
