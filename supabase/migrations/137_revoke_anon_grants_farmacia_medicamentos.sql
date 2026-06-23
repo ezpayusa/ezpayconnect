@@ -1,0 +1,16 @@
+-- ============================================================
+-- 137 · REVOKE grants directos de anon en farmacia_medicamentos — DOCUMENTA-CAMBIO-YA-APLICADO
+-- ------------------------------------------------------------
+-- ⚠️ YA APLICADO en prod el 2026-06-23 (apply directo por SQL, OK Oscar). Este archivo existe para
+-- trazabilidad/consistencia con el patrón 067-136 (los archivos describen objetos; el ledger
+-- schema_migrations está vacío; el estado real se verifica por objetos). El REVOKE es IDEMPOTENTE
+-- (revocar lo ya revocado es no-op) → re-ejecutarlo es seguro, pero NO es necesario.
+--
+-- Motivo: anon tenía grants amplios de tabla (INSERT,SELECT,UPDATE,DELETE,TRUNCATE,REFERENCES,TRIGGER).
+-- INSERT/UPDATE/DELETE ya eran inertes bajo RLS (RLS on + 0 policy con anon/public → denegados), PERO
+-- TRUNCATE y TRIGGER NO son RLS-gated en ninguna tabla (la RLS solo cubre SELECT/INSERT/UPDATE/DELETE)
+-- → hueco latente real. Se retira todo salvo SELECT (posible storefront futuro con policy dedicada).
+-- Post-apply verificado en vivo: anon = solo SELECT; authenticated intacto (7 verbos). Harness 424/0 ROJO.
+-- (Censo sistémico de grants a anon en todo public = ítem encolado aparte.)
+-- ============================================================
+REVOKE INSERT, UPDATE, DELETE, TRUNCATE, REFERENCES, TRIGGER ON public.farmacia_medicamentos FROM anon;

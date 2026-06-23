@@ -7364,6 +7364,82 @@ BEGIN
 END $$;
 SELECT set_config('role','none', true);
 
+-- ===== Pinvit (Invitación Opción B, mig 138 DORMANT): pre-gate + vincular_membresia_proveedor =====
+-- Guardados con to_regprocedure → N/A si 138 no está aplicada (red-first: verdes en dry-run con 138 inyectada).
+-- Invitador = admin de empresa-con-farmacia (rol mutado in-txn para no-admin; restaurado). Identidad por EMAIL
+-- (138 ya NO acepta uid). target_libre = auth.users SIN membresía (rama ii); ocupado = ya tiene (rama iii).
+DO $$
+DECLARE v_admin uuid; v_emp uuid; v_orig_rol text; v_tgt_libre uuid; v_mail_libre text; v_mail_ocup text;
+        v_emp_ins uuid; v_pwd_pre text; v_pwd_post text; v_sig text;
+BEGIN
+  IF to_regprocedure('public.vincular_membresia_proveedor(text,text,text,text)') IS NULL
+     OR to_regprocedure('public.autorizar_invitacion_staff(text)') IS NULL THEN
+    PERFORM set_config('probe.pinvit_pregate','N/A (138 no aplicada)',false);
+    PERFORM set_config('probe.pinvit_rolcat','N/A',false); PERFORM set_config('probe.pinvit_409','N/A',false);
+    PERFORM set_config('probe.pinvit_pos','N/A',false); PERFORM set_config('probe.pinvit_xempresa','N/A',false); RETURN;
+  END IF;
+  SELECT cp.id, cp.empresa_id, cp.rol_en_empresa INTO v_admin, v_emp, v_orig_rol
+    FROM public.cuentas_proveedor cp JOIN public.empresas_proveedoras e ON e.id=cp.empresa_id
+   WHERE e.tipo='farmacia' AND cp.activo ORDER BY cp.id LIMIT 1;
+  SELECT u.id, u.email INTO v_tgt_libre, v_mail_libre FROM auth.users u
+   WHERE NOT EXISTS (SELECT 1 FROM public.cuentas_proveedor c WHERE c.id=u.id) AND u.email IS NOT NULL LIMIT 1;
+  SELECT email INTO v_mail_ocup FROM public.cuentas_proveedor WHERE email IS NOT NULL LIMIT 1;
+  IF v_admin IS NULL OR v_tgt_libre IS NULL THEN
+    PERFORM set_config('probe.pinvit_pregate','N/A (sin fixture)',false); PERFORM set_config('probe.pinvit_rolcat','N/A',false);
+    PERFORM set_config('probe.pinvit_409','N/A',false); PERFORM set_config('probe.pinvit_pos','N/A',false); PERFORM set_config('probe.pinvit_xempresa','N/A',false); RETURN;
+  END IF;
+
+  -- (estructural) cross-empresa imposible: la firma de vincular NO tiene parámetro de empresa
+  v_sig := pg_get_function_identity_arguments('public.vincular_membresia_proveedor(text,text,text,text)'::regprocedure);
+  PERFORM set_config('probe.pinvit_xempresa', CASE WHEN v_sig NOT ILIKE '%empresa%' THEN 'OK (sin param empresa → empresa=invitador, cross-empresa estructuralmente imposible)' ELSE 'FALLO (firma expone empresa: '||v_sig||')' END, false);
+
+  -- PRE-GATE no-admin: autorizar_invitacion_staff como cajero → 42501 ANTES de cualquier createUser (orden #1)
+  UPDATE public.cuentas_proveedor SET rol_en_empresa='cajero' WHERE id=v_admin;
+  PERFORM set_config('request.jwt.claims', json_build_object('sub',v_admin,'role','authenticated')::text, true);
+  PERFORM set_config('role','authenticated', true);
+  BEGIN PERFORM public.autorizar_invitacion_staff('cajero');
+    PERFORM set_config('probe.pinvit_pregate','PERMITIDO (pre-gate dejó pasar no-admin)',false);
+  EXCEPTION WHEN others THEN PERFORM set_config('probe.pinvit_pregate', CASE WHEN SQLSTATE='42501' THEN 'OK (pre-gate BLOQUEA no-admin 42501, antes de createUser)' ELSE 'OK? ('||SQLSTATE||')' END, false); END;
+
+  -- restaurar admin
+  PERFORM set_config('role','none',true);
+  UPDATE public.cuentas_proveedor SET rol_en_empresa='admin' WHERE id=v_admin;
+  PERFORM set_config('request.jwt.claims', json_build_object('sub',v_admin,'role','authenticated')::text, true);
+  PERFORM set_config('role','authenticated', true);
+
+  -- NEG rol fuera de catálogo del tipo (visitador_medico no es de farmacia) → 22023
+  BEGIN PERFORM public.vincular_membresia_proveedor(v_mail_libre,'visitador_medico',NULL,NULL);
+    PERFORM set_config('probe.pinvit_rolcat','PERMITIDO (rol fuera de catálogo)',false);
+  EXCEPTION WHEN others THEN PERFORM set_config('probe.pinvit_rolcat', CASE WHEN SQLSTATE='22023' THEN 'OK (rol fuera de catálogo BLOQUEADO 22023)' ELSE 'OK? ('||SQLSTATE||')' END, false); END;
+
+  -- NEG rama (iii): email de usuario que YA tiene membresía → 23505 (→409)
+  BEGIN PERFORM public.vincular_membresia_proveedor(v_mail_ocup,'cajero',NULL,NULL);
+    PERFORM set_config('probe.pinvit_409','PERMITIDO (segunda membresía)',false);
+  EXCEPTION WHEN others THEN PERFORM set_config('probe.pinvit_409', CASE WHEN SQLSTATE='23505' THEN 'OK (1:1 guard 23505→409)' ELSE 'OK? ('||SQLSTATE||')' END, false); END;
+
+  -- POS rama (ii): usuario existente SIN membresía → crea membresía (empresa=invitador) SIN tocar su credencial.
+  -- (auth.users solo lo lee el owner → captura pre/post bajo rol 'none'; el vincular corre como admin.)
+  PERFORM set_config('role','none',true);
+  SELECT encrypted_password INTO v_pwd_pre FROM auth.users WHERE id=v_tgt_libre;
+  PERFORM set_config('request.jwt.claims', json_build_object('sub',v_admin,'role','authenticated')::text, true);
+  PERFORM set_config('role','authenticated', true);
+  BEGIN
+    PERFORM public.vincular_membresia_proveedor(v_mail_libre,'cajero','QA Vinculado',NULL);
+    PERFORM set_config('role','none',true);
+    SELECT empresa_id INTO v_emp_ins FROM public.cuentas_proveedor WHERE id=v_tgt_libre;
+    SELECT encrypted_password INTO v_pwd_post FROM auth.users WHERE id=v_tgt_libre;
+    PERFORM set_config('probe.pinvit_pos', CASE
+      WHEN v_emp_ins = v_emp AND v_pwd_post IS NOT DISTINCT FROM v_pwd_pre
+        THEN 'OK (vinculado: membresía empresa=invitador, credencial intacta)'
+      WHEN v_emp_ins IS DISTINCT FROM v_emp THEN 'FALLO (empresa '||COALESCE(v_emp_ins::text,'∅')||' ≠ invitador '||v_emp||')'
+      ELSE 'FALLO (credencial del usuario existente cambió)' END, false);
+  EXCEPTION WHEN others THEN PERFORM set_config('role','none',true); PERFORM set_config('probe.pinvit_pos','FALLO ('||SQLSTATE||')',false); END;
+
+  PERFORM set_config('role','none',true);
+  UPDATE public.cuentas_proveedor SET rol_en_empresa=v_orig_rol WHERE id=v_admin;
+END $$;
+SELECT set_config('role','none', true);
+
 -- ===== Veredictos como result set =====
 SELECT 'P1_anon_insert_citas'              AS probe, current_setting('probe.p1', true)  AS verdict, 'BLOQUEADO' AS esperado_post_fix
 UNION ALL SELECT 'P2_medico_cancela_ajena_rpc',         current_setting('probe.p2', true),  'BLOQUEADO'
@@ -7788,6 +7864,11 @@ UNION ALL SELECT 'P433_cierre_revoke_insert_directo',     current_setting('probe
 UNION ALL SELECT 'P434_cierre_split_policies',            current_setting('probe.p434', true), 'OK post-136 (ROJO pre)'
 UNION ALL SELECT 'Pinv_NEG_cajero_escritura_denegada',    current_setting('probe.pinv_neg', true),     'OK (R11 candado: sin inventario_editar no escribe)'
 UNION ALL SELECT 'Pinv_POS_inventario_editar_escribe',    current_setting('probe.pinv_pos_w', true),   'OK (con inventario_editar escribe)'
-UNION ALL SELECT 'Pinv_POS_cajero_SELECT_intacto',        current_setting('probe.pinv_pos_sel', true), 'OK (guard: lectura del cajero no se rompe)';
+UNION ALL SELECT 'Pinv_POS_cajero_SELECT_intacto',        current_setting('probe.pinv_pos_sel', true), 'OK (guard: lectura del cajero no se rompe)'
+UNION ALL SELECT 'Pinvit_NEG_pregate_noadmin',            current_setting('probe.pinvit_pregate', true), 'OK (pre-gate 42501 ANTES de createUser)'
+UNION ALL SELECT 'Pinvit_NEG_rol_fuera_catalogo',         current_setting('probe.pinvit_rolcat', true),  'OK (rol fuera del tipo → 22023)'
+UNION ALL SELECT 'Pinvit_NEG_1a1_segunda_membresia',      current_setting('probe.pinvit_409', true),     'OK (1:1 guard → 23505/409)'
+UNION ALL SELECT 'Pinvit_POS_vincular_ii_cred_intacta',   current_setting('probe.pinvit_pos', true),     'OK (vinculado, empresa=invitador, credencial intacta)'
+UNION ALL SELECT 'Pinvit_cross_empresa_estructural',      current_setting('probe.pinvit_xempresa', true),'OK (sin param empresa)';
 
 ROLLBACK;  -- nada de lo anterior se persiste

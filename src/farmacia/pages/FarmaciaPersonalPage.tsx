@@ -7,7 +7,7 @@ import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { toast } from 'sonner'
-import { ShieldCheck, Loader2, AlertTriangle, Users, UserPlus, Copy } from 'lucide-react'
+import { ShieldCheck, Loader2, AlertTriangle, Users, UserPlus } from 'lucide-react'
 
 interface Miembro {
   id: string
@@ -23,12 +23,11 @@ export default function FarmaciaPersonalPage() {
   const [miembros, setMiembros] = useState<Miembro[]>([])
   const [loading, setLoading] = useState(true)
   const [guardando, setGuardando] = useState<string | null>(null)
-  // Invitar (alta): crea la invitación; el invitado la acepta tras confirmar email + login.
+  // Invitar (alta, Opción B): la edge crea/encuentra el usuario y envía credenciales por email.
   const [invNombre, setInvNombre] = useState('')
   const [invEmail, setInvEmail] = useState('')
   const [invRol, setInvRol] = useState('')
   const [invitando, setInvitando] = useState(false)
-  const [linkInvitacion, setLinkInvitacion] = useState<string | null>(null)
 
   const etiqueta = (rol: string) => roles.find((r) => r.rol === rol)?.label ?? rol
 
@@ -63,25 +62,36 @@ export default function FarmaciaPersonalPage() {
     cargar()
   }
 
-  // === CABLEADO DE SEGURIDAD: alta vía invitación (invitar_miembro_farmacia) ===
-  // El RPC fija empresa (la del invitador) y rol, e impone la jerarquía. El alta
-  // efectiva la hace el invitado al aceptar autenticado (aceptar_invitacion_proveedor).
+  // === CABLEADO DE SEGURIDAD: alta vía invitación Opción B (edge invitar-staff-proveedor) ===
+  // La edge crea/encuentra el auth user y delega la autz al RPC DEFINER vincular_membresia_proveedor
+  // (gate invitador=usuarios_roles, empresa/rol forzados server-side, guard 1:1). Reemplaza el viejo
+  // path de link+self-signup (bug del éxito-falso). Ramas: nuevo (credencial por email) / vinculado
+  // (usuario existente sin membresía → usa su credencial) / 409 (ya tiene cuenta proveedor).
   const invitar = async () => {
     if (!invNombre.trim() || !invEmail.trim() || !invRol) {
       toast.error('Completa nombre, email y rol'); return
     }
     setInvitando(true)
-    const { data, error } = await supabase.rpc('invitar_miembro_farmacia', {
-      p_email: invEmail.trim(),
-      p_nombre: invNombre.trim(),
-      p_nuevo_rol: invRol,
-      p_telefono: null,
+    const { data, error } = await supabase.functions.invoke('invitar-staff-proveedor', {
+      body: { email: invEmail.trim(), nombre_completo: invNombre.trim(), rol: invRol, telefono: null },
     })
+    // supabase-js: en respuesta no-2xx el cuerpo viene en error.context; lo parseamos para leer code/error.
+    let payload: any = data
+    if (error && (error as any).context) { try { payload = await (error as any).context.json() } catch { /* noop */ } }
     setInvitando(false)
-    if (error) { toast.error(error.message || 'No se pudo crear la invitación'); return }
-    setLinkInvitacion(`${window.location.origin}/proveedor/registro-visitador?token=${data}`)
-    toast.success('Invitación creada. Comparte el link con la persona.')
+    if (error || payload?.error) {
+      const code = payload?.code
+      if (code === '23505') toast.error('Ese email ya tiene una cuenta de proveedor (no puede estar en 2 empresas).')
+      else if (code === '22023') toast.error('Rol fuera del catálogo de tu empresa.')
+      else if (code === '42501' || code === '28000') toast.error('No autorizado para invitar.')
+      else toast.error(payload?.error || (error as any)?.message || 'No se pudo invitar')
+      return
+    }
+    toast.success(payload?.branch === 'vinculado'
+      ? 'Usuario existente agregado a la empresa (usa su credencial actual).'
+      : 'Invitación enviada: el nuevo miembro recibió sus credenciales por email.')
     setInvNombre(''); setInvEmail(''); setInvRol('')
+    cargar()
   }
 
   if (!permLoading && !tienePermiso('usuarios_roles')) {
@@ -176,21 +186,13 @@ export default function FarmaciaPersonalPage() {
           </div>
           <Button onClick={invitar} disabled={invitando} className="bg-[#B45309] hover:bg-[#92400e]">
             {invitando ? <Loader2 className="h-4 w-4 animate-spin mr-2" /> : <UserPlus className="h-4 w-4 mr-2" />}
-            Generar link de invitación
+            Enviar invitación
           </Button>
           <p className="text-xs text-muted-foreground">
-            La persona abre el link, crea su cuenta con ESE email, lo confirma e inicia sesión: ahí se
-            activa con el rol asignado. El rol y la empresa quedan fijados; no los puede cambiar.
+            Se crea la cuenta y se envían las credenciales por email. Si la persona ya tiene cuenta en
+            EzPayConnect, se la agrega a la empresa con su credencial actual. El rol y la empresa quedan
+            fijados; no los puede cambiar.
           </p>
-          {linkInvitacion && (
-            <div className="bg-amber-50 border border-amber-200 rounded-lg p-3 space-y-2">
-              <p className="text-sm font-medium text-amber-900">¡Invitación creada! Comparte este link:</p>
-              <p className="text-xs break-all bg-white rounded p-2 border">{linkInvitacion}</p>
-              <Button size="sm" variant="outline" onClick={() => { navigator.clipboard.writeText(linkInvitacion); toast.success('Link copiado') }}>
-                <Copy className="h-3.5 w-3.5 mr-1" /> Copiar link
-              </Button>
-            </div>
-          )}
         </CardContent>
       </Card>
     </div>
