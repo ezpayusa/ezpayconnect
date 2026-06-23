@@ -1,9 +1,6 @@
 import { useState, useCallback } from "react";
 import { supabase } from "@/lib/supabase";
 
-const SUPABASE_URL = "https://fqnsmvkxsuujahhmpzuk.supabase.co";
-const ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImZxbnNtdmt4c3V1amFoaG1wenVrIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NDE1ODU5NjQsImV4cCI6MjA1NzE2MTk2NH0.5_8_ZH_1X4zYX_qXz7ZzZzZzZzZzZzZzZzZzZzZzZz";
-
 export interface Notificacion {
   id: string;
   usuario_id: string | null;
@@ -94,39 +91,8 @@ export function useNotificaciones() {
     }
   }, []);
 
-  // Crear notificación vía Edge Function
-  const crearNotificacion = useCallback(
-    async (data: {
-      usuario_id?: string;
-      tipo: string;
-      titulo: string;
-      mensaje: string;
-      accion_url?: string;
-      metadata?: any;
-    }) => {
-      try {
-        const response = await fetch(
-          `${SUPABASE_URL}/functions/v1/enviar-notificacion`,
-          {
-            method: "POST",
-            headers: {
-              "Content-Type": "application/json",
-              Authorization: `Bearer ${ANON_KEY}`,
-            },
-            body: JSON.stringify(data),
-          }
-        );
-
-        const result = await response.json();
-        if (!response.ok) throw new Error(result.error || "Error al crear notificacion");
-        return result;
-      } catch (err: any) {
-        console.error("Error creando notificacion:", err);
-        return null;
-      }
-    },
-    []
-  );
+  // crearNotificacion eliminado (CIERRE FINAL push-tx, bloque 3): helper muerto que hacía fetch a la edge
+  // enviar-notificacion (ahora stub-410). Las notifs in-app se crean por RPCs DEFINER gateados.
 
   return {
     notificaciones,
@@ -135,6 +101,5 @@ export function useNotificaciones() {
     listarNotificaciones,
     marcarLeida,
     marcarTodasLeidas,
-    crearNotificacion,
   };
 }

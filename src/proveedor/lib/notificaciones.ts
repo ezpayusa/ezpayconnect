@@ -1,33 +1,7 @@
 import { supabase } from '@/lib/supabase'
 
-export async function crearNotificacionInApp(params: {
-  usuario_id: string
-  tipo: string
-  titulo: string
-  mensaje: string
-  accion_url?: string
-  metadata?: Record<string, any>
-}): Promise<boolean> {
-  try {
-    // Usar supabase.functions.invoke (URL hardcodeada en lib/supabase + auth + apikey).
-    // Antes esto usaba fetch con import.meta.env.VITE_SUPABASE_URL, que en el build de
-    // producción llega undefined -> POST a "undefined/functions/v1/..." (URL relativa)
-    // que pegaba en Vercel y devolvía 405, por eso las campanitas de campañas/pagos no salían.
-    const { error } = await supabase.functions.invoke('enviar-notificacion', {
-      body: params,
-    })
-
-    if (error) {
-      console.error('[crearNotificacionInApp] Error:', error)
-      return false
-    }
-
-    return true
-  } catch (err) {
-    console.error('[crearNotificacionInApp] Excepción:', err)
-    return false
-  }
-}
+// crearNotificacionInApp eliminado (CIERRE FINAL push-tx, bloque 3): helper muerto que invocaba la edge
+// enviar-notificacion (ahora stub-410). Las notifs de campañas/pagos/visitas van por RPCs DEFINER gateados.
 
 export async function enviarEmail(params: {
   to: string
