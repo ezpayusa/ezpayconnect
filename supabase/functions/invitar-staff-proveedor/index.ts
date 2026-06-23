@@ -51,6 +51,9 @@ Deno.serve(async (req) => {
     const nombre = (body?.nombre_completo ?? '').toString().trim() || null
     const rol = body?.rol
     const telefono = body?.telefono ?? null
+    // 3.2: sucursal opcional al invitar (aditivo; null = sin sucursal = empresa-wide/grandfather)
+    const sucursalId = (body?.sucursal_id === undefined || body?.sucursal_id === null || body?.sucursal_id === '')
+      ? null : Number(body.sucursal_id)
     if (!email || !rol) return json({ error: 'Faltan campos: email, rol' }, 400)
 
     // (1) PRE-GATE (ANTES de createUser): autz del invitador. No-admin / rol fuera de catálogo → corta YA,
@@ -82,7 +85,7 @@ Deno.serve(async (req) => {
 
     // (3) Vínculo de membresía: re-gatea + resuelve uid POR EMAIL (sin uid caller-supplied) + 1:1 + insert.
     const { data: vinc, error: rpcErr } = await asCaller.rpc('vincular_membresia_proveedor', {
-      p_email: email, p_rol: rol, p_nombre: nombre, p_telefono: telefono,
+      p_email: email, p_rol: rol, p_nombre: nombre, p_telefono: telefono, p_sucursal_id: sucursalId,
     })
     if (rpcErr) {
       if (creado && targetUid) await admin.auth.admin.deleteUser(targetUid).catch(() => {})  // rollback rama (i)

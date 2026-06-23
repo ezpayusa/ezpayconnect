@@ -7,7 +7,7 @@ import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { toast } from 'sonner'
-import { ShieldCheck, Loader2, AlertTriangle, Users, UserPlus } from 'lucide-react'
+import { ShieldCheck, Loader2, AlertTriangle, Users, UserPlus, Building2 } from 'lucide-react'
 
 interface Miembro {
   id: string
@@ -15,7 +15,14 @@ interface Miembro {
   email: string
   rol_en_empresa: string
   activo: boolean
+  sucursal_id: number | null
 }
+
+interface SucursalOpt { id: number; nombre: string }
+
+// Roles EXENTOS de la confinación por sucursal (mig 114): ven todas las sucursales; asignarles
+// una sucursal es informativo (sucursal_visible los exime igual). Se permite, con nota en la UI.
+const ROLES_EXENTOS = new Set(['admin', 'gerente_farmacia', 'finanzas', 'pagador'])
 
 export default function FarmaciaPersonalPage() {
   const { empresa, cuenta } = useProveedorAuth()
@@ -27,16 +34,19 @@ export default function FarmaciaPersonalPage() {
   const [invNombre, setInvNombre] = useState('')
   const [invEmail, setInvEmail] = useState('')
   const [invRol, setInvRol] = useState('')
+  const [invSucursal, setInvSucursal] = useState('')      // '' = sin sucursal (empresa-wide)
   const [invitando, setInvitando] = useState(false)
+  const [sucursales, setSucursales] = useState<SucursalOpt[]>([])
 
   const etiqueta = (rol: string) => roles.find((r) => r.rol === rol)?.label ?? rol
+  const nombreSucursal = (id: number | null) => id == null ? 'Todas (empresa)' : (sucursales.find((s) => s.id === id)?.nombre ?? `#${id}`)
 
   const cargar = useCallback(async () => {
     if (!empresa?.id) return
     setLoading(true)
     const { data, error } = await supabase
       .from('cuentas_proveedor')
-      .select('id, nombre_completo, email, rol_en_empresa, activo')
+      .select('id, nombre_completo, email, rol_en_empresa, activo, sucursal_id')
       .eq('empresa_id', empresa.id)
       .order('nombre_completo')
     if (error) { toast.error('Error cargando el equipo'); console.error(error) }
@@ -44,7 +54,14 @@ export default function FarmaciaPersonalPage() {
     setLoading(false)
   }, [empresa?.id])
 
-  useEffect(() => { cargar() }, [cargar])
+  // Sucursales ACTIVAS de mi empresa (para los selectores). Si el rol no gestiona sucursales el RPC
+  // deniega → dejamos la lista vacía (solo afecta el selector, no rompe la página).
+  const cargarSucursales = useCallback(async () => {
+    const { data, error } = await supabase.rpc('listar_sucursales')
+    if (!error && data) setSucursales((data as any[]).filter((s) => s.activo).map((s) => ({ id: s.id, nombre: s.nombre })))
+  }, [])
+
+  useEffect(() => { cargar(); cargarSucursales() }, [cargar, cargarSucursales])
 
   // === CABLEADO DE SEGURIDAD: cambio de rol vía asignar_rol_miembro ===
   // La autorización (jerarquía, mismo-empresa, no-tocar-Admin, último-Admin) la
@@ -62,6 +79,23 @@ export default function FarmaciaPersonalPage() {
     cargar()
   }
 
+  // === 3.2: reasignar (o desasignar) la sucursal de un miembro vía asignar_sucursal_a_miembro ===
+  // '' = NULL = "Todas (empresa)" (desasigna → grandfather). El RPC valida empresa/actividad y gate.
+  const reasignarSucursal = async (cuentaId: string, valor: string) => {
+    setGuardando(cuentaId)
+    const { error } = await supabase.rpc('asignar_sucursal_a_miembro', {
+      p_target_id: cuentaId,
+      p_sucursal_id: valor === '' ? null : Number(valor),
+    })
+    setGuardando(null)
+    if (error) {
+      toast.error((error as any).code === '42501' ? 'No autorizado o sucursal inválida.' : (error.message || 'No se pudo reasignar'))
+      return
+    }
+    toast.success('Sucursal actualizada')
+    cargar()
+  }
+
   // === CABLEADO DE SEGURIDAD: alta vía invitación Opción B (edge invitar-staff-proveedor) ===
   // La edge crea/encuentra el auth user y delega la autz al RPC DEFINER vincular_membresia_proveedor
   // (gate invitador=usuarios_roles, empresa/rol forzados server-side, guard 1:1). Reemplaza el viejo
@@ -73,7 +107,7 @@ export default function FarmaciaPersonalPage() {
     }
     setInvitando(true)
     const { data, error } = await supabase.functions.invoke('invitar-staff-proveedor', {
-      body: { email: invEmail.trim(), nombre_completo: invNombre.trim(), rol: invRol, telefono: null },
+      body: { email: invEmail.trim(), nombre_completo: invNombre.trim(), rol: invRol, telefono: null, sucursal_id: invSucursal || null },
     })
     // supabase-js: en respuesta no-2xx el cuerpo viene en error.context; lo parseamos para leer code/error.
     let payload: any = data
@@ -90,7 +124,7 @@ export default function FarmaciaPersonalPage() {
     toast.success(payload?.branch === 'vinculado'
       ? 'Usuario existente agregado a la empresa (usa su credencial actual).'
       : 'Invitación enviada: el nuevo miembro recibió sus credenciales por email.')
-    setInvNombre(''); setInvEmail(''); setInvRol('')
+    setInvNombre(''); setInvEmail(''); setInvRol(''); setInvSucursal('')
     cargar()
   }
 
@@ -144,21 +178,43 @@ export default function FarmaciaPersonalPage() {
                       {m.nombre_completo || '(sin nombre)'} {esYo && <span className="text-xs text-muted-foreground">(tú)</span>}
                     </p>
                     <p className="text-sm text-muted-foreground truncate">{m.email}</p>
+                    <p className="text-xs text-muted-foreground mt-0.5 flex items-center gap-1">
+                      <Building2 className="h-3 w-3" /> {nombreSucursal(m.sucursal_id)}
+                      {ROLES_EXENTOS.has(m.rol_en_empresa) && <span className="italic">· ve todas (rol exento)</span>}
+                    </p>
                   </div>
-                  <div className="flex items-center gap-2 shrink-0">
-                    <span className="text-xs text-muted-foreground hidden sm:inline">Rol: <strong>{etiqueta(m.rol_en_empresa)}</strong></span>
-                    <select
-                      className="h-9 rounded-md border border-input bg-background px-3 text-sm disabled:opacity-50"
-                      value={m.rol_en_empresa}
-                      disabled={guardando === m.id}
-                      onChange={(e) => { if (e.target.value && e.target.value !== m.rol_en_empresa) cambiarRol(m.id, e.target.value) }}
-                    >
-                      {!opciones.some((r) => r.rol === m.rol_en_empresa) && (
-                        <option value={m.rol_en_empresa}>{etiqueta(m.rol_en_empresa)}</option>
-                      )}
-                      {opciones.map((r) => <option key={r.rol} value={r.rol}>{r.label ?? r.rol}</option>)}
-                    </select>
-                    {guardando === m.id && <Loader2 className="h-4 w-4 animate-spin" />}
+                  <div className="flex flex-col sm:items-end gap-1.5 shrink-0">
+                    <div className="flex items-center gap-2">
+                      <span className="text-xs text-muted-foreground hidden sm:inline">Rol</span>
+                      <select
+                        className="h-9 rounded-md border border-input bg-background px-3 text-sm disabled:opacity-50"
+                        value={m.rol_en_empresa}
+                        disabled={guardando === m.id}
+                        onChange={(e) => { if (e.target.value && e.target.value !== m.rol_en_empresa) cambiarRol(m.id, e.target.value) }}
+                      >
+                        {!opciones.some((r) => r.rol === m.rol_en_empresa) && (
+                          <option value={m.rol_en_empresa}>{etiqueta(m.rol_en_empresa)}</option>
+                        )}
+                        {opciones.map((r) => <option key={r.rol} value={r.rol}>{r.label ?? r.rol}</option>)}
+                      </select>
+                      {guardando === m.id && <Loader2 className="h-4 w-4 animate-spin" />}
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <span className="text-xs text-muted-foreground hidden sm:inline">Sucursal</span>
+                      <select
+                        className="h-9 rounded-md border border-input bg-background px-3 text-sm disabled:opacity-50"
+                        value={m.sucursal_id == null ? '' : String(m.sucursal_id)}
+                        disabled={guardando === m.id}
+                        title={ROLES_EXENTOS.has(m.rol_en_empresa) ? 'Rol exento: ve todas las sucursales; la asignación es informativa' : undefined}
+                        onChange={(e) => reasignarSucursal(m.id, e.target.value)}
+                      >
+                        <option value="">Todas (empresa)</option>
+                        {sucursales.map((s) => <option key={s.id} value={s.id}>{s.nombre}</option>)}
+                        {m.sucursal_id != null && !sucursales.some((s) => s.id === m.sucursal_id) && (
+                          <option value={String(m.sucursal_id)}>{nombreSucursal(m.sucursal_id)} (inactiva)</option>
+                        )}
+                      </select>
+                    </div>
                   </div>
                 </CardContent>
               </Card>
@@ -176,14 +232,21 @@ export default function FarmaciaPersonalPage() {
       <Card>
         <CardContent className="p-4 space-y-3">
           <p className="text-sm font-semibold flex items-center gap-2"><UserPlus className="w-4 h-4" /> Invitar personal</p>
-          <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
             <Input placeholder="Nombre completo" value={invNombre} onChange={(e) => setInvNombre(e.target.value)} />
             <Input type="email" placeholder="Email" value={invEmail} onChange={(e) => setInvEmail(e.target.value)} />
             <select className="h-10 rounded-md border border-input bg-background px-3 text-sm" value={invRol} onChange={(e) => setInvRol(e.target.value)}>
               <option value="">Rol…</option>
               {rolesAsignables.map((r) => <option key={r.rol} value={r.rol}>{r.label ?? r.rol}</option>)}
             </select>
+            <select className="h-10 rounded-md border border-input bg-background px-3 text-sm" value={invSucursal} onChange={(e) => setInvSucursal(e.target.value)}>
+              <option value="">Sucursal: todas (empresa)</option>
+              {sucursales.map((s) => <option key={s.id} value={s.id}>{s.nombre}</option>)}
+            </select>
           </div>
+          {invRol && ROLES_EXENTOS.has(invRol) && invSucursal && (
+            <p className="text-xs text-amber-700">Nota: ese rol ve todas las sucursales; la asignación de sucursal es informativa.</p>
+          )}
           <Button onClick={invitar} disabled={invitando} className="bg-[#B45309] hover:bg-[#92400e]">
             {invitando ? <Loader2 className="h-4 w-4 animate-spin mr-2" /> : <UserPlus className="h-4 w-4 mr-2" />}
             Enviar invitación

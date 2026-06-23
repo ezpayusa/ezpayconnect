@@ -7372,7 +7372,7 @@ DO $$
 DECLARE v_admin uuid; v_emp uuid; v_orig_rol text; v_tgt_libre uuid; v_mail_libre text; v_mail_ocup text;
         v_emp_ins uuid; v_pwd_pre text; v_pwd_post text; v_sig text;
 BEGIN
-  IF to_regprocedure('public.vincular_membresia_proveedor(text,text,text,text)') IS NULL
+  IF to_regprocedure('public.vincular_membresia_proveedor(text,text,text,text,integer)') IS NULL
      OR to_regprocedure('public.autorizar_invitacion_staff(text)') IS NULL THEN
     PERFORM set_config('probe.pinvit_pregate','N/A (138 no aplicada)',false);
     PERFORM set_config('probe.pinvit_rolcat','N/A',false); PERFORM set_config('probe.pinvit_409','N/A',false);
@@ -7390,7 +7390,7 @@ BEGIN
   END IF;
 
   -- (estructural) cross-empresa imposible: la firma de vincular NO tiene parámetro de empresa
-  v_sig := pg_get_function_identity_arguments('public.vincular_membresia_proveedor(text,text,text,text)'::regprocedure);
+  v_sig := pg_get_function_identity_arguments('public.vincular_membresia_proveedor(text,text,text,text,integer)'::regprocedure);
   PERFORM set_config('probe.pinvit_xempresa', CASE WHEN v_sig NOT ILIKE '%empresa%' THEN 'OK (sin param empresa → empresa=invitador, cross-empresa estructuralmente imposible)' ELSE 'FALLO (firma expone empresa: '||v_sig||')' END, false);
 
   -- PRE-GATE no-admin: autorizar_invitacion_staff como cajero → 42501 ANTES de cualquier createUser (orden #1)
@@ -7573,6 +7573,115 @@ BEGIN
 
   PERFORM set_config('role','none',true);
   UPDATE public.cuentas_proveedor SET rol_en_empresa=v_orig_rol WHERE id=v_admin;
+END $$;
+SELECT set_config('role','none', true);
+
+-- ===== Pasign (Spine sucursales 3.2, mig 140 DORMANT): asignación personal→sucursal + ACTIVACIÓN C.2 =====
+-- Guardado con to_regprocedure. Siembra cuentas (cajero/finanzas/null) en empresa-farmacia + 2 sucursales X/Y
+-- con inventario en cada una → primera vez que se ejerce farmacia_id=mi_sucursal() con dato real.
+DO $$
+DECLARE v_admin uuid; v_emp uuid; v_x int; v_y int; v_inact int; v_global int; v_target_b uuid;
+        v_u uuid[]; v_cajero uuid; v_fin uuid; v_nullc uuid; v_mail4 text;
+        v_xcnt int; v_ycnt int; v_pos int; v_exe int; v_grand int; v_rev int;
+        v_gate text; v_xt text; v_xg text; v_xi text; v_suc_caj int; v_admin_suc int; v_admin_suc_pre int;
+        v_alta_global text; v_alta_suc int;
+BEGIN
+  IF to_regprocedure('public.asignar_sucursal_a_miembro(uuid,integer)') IS NULL THEN
+    PERFORM set_config('probe.pasign_gate','N/A (140 no aplicada)',false); PERFORM set_config('probe.pasign_xempresa','N/A',false);
+    PERFORM set_config('probe.pasign_c2','N/A',false); PERFORM set_config('probe.pasign_desasignar','N/A',false);
+    PERFORM set_config('probe.pasign_noregr','N/A',false); PERFORM set_config('probe.pasign_138alta','N/A',false); RETURN;
+  END IF;
+  SELECT cp.id, cp.empresa_id INTO v_admin, v_emp FROM public.cuentas_proveedor cp JOIN public.empresas_proveedoras e ON e.id=cp.empresa_id
+   WHERE e.tipo='farmacia' AND cp.activo AND cp.rol_en_empresa='admin' ORDER BY cp.id LIMIT 1;
+  SELECT id INTO v_x FROM public.farmacias WHERE empresa_id=v_emp AND activo=true ORDER BY id LIMIT 1;
+  SELECT id INTO v_global FROM public.farmacias WHERE empresa_id IS NULL LIMIT 1;
+  SELECT id INTO v_target_b FROM public.cuentas_proveedor WHERE empresa_id IS DISTINCT FROM v_emp LIMIT 1;
+  SELECT array_agg(id) INTO v_u FROM (SELECT u.id FROM auth.users u WHERE NOT EXISTS (SELECT 1 FROM public.cuentas_proveedor c WHERE c.id=u.id) AND u.email IS NOT NULL ORDER BY u.id LIMIT 4) t;
+  IF v_admin IS NULL OR v_x IS NULL OR v_u IS NULL OR array_length(v_u,1) < 3 THEN
+    PERFORM set_config('probe.pasign_gate','N/A (sin fixture/auth libres)',false); PERFORM set_config('probe.pasign_xempresa','N/A',false);
+    PERFORM set_config('probe.pasign_c2','N/A',false); PERFORM set_config('probe.pasign_desasignar','N/A',false);
+    PERFORM set_config('probe.pasign_noregr','N/A',false); PERFORM set_config('probe.pasign_138alta','N/A',false); RETURN;
+  END IF;
+  v_cajero:=v_u[1]; v_fin:=v_u[2]; v_nullc:=v_u[3];
+  SELECT sucursal_id INTO v_admin_suc_pre FROM public.cuentas_proveedor WHERE id=v_admin;  -- baseline (puede no ser NULL por ruido de probes C.2 previos en el txn)
+
+  -- admin crea Y (+ inactiva) y siembra inventario en Y; siembra las 3 cuentas
+  PERFORM set_config('request.jwt.claims', json_build_object('sub',v_admin,'role','authenticated')::text, true);
+  PERFORM set_config('role','authenticated', true);
+  v_y := public.crear_sucursal('PASIGN Y'); v_inact := public.crear_sucursal('PASIGN INACT'); PERFORM public.desactivar_sucursal(v_inact,false);
+  PERFORM set_config('role','none',true);
+  INSERT INTO public.farmacia_medicamentos (farmacia_id,nombre_medicamento,stock_actual,precio_unitario) VALUES (v_y,'PASIGN MED Y',5,1);
+  INSERT INTO public.cuentas_proveedor (id,empresa_id,email,nombre_completo,rol_en_empresa,activo,sucursal_id) VALUES
+    (v_cajero,v_emp,'pasign-caj@x.test','C','cajero',true,NULL),
+    (v_fin,v_emp,'pasign-fin@x.test','F','finanzas',true,NULL),
+    (v_nullc,v_emp,'pasign-null@x.test','N','cajero',true,NULL);
+  SELECT count(*) INTO v_xcnt FROM public.farmacia_medicamentos WHERE farmacia_id=v_x;
+  SELECT count(*) INTO v_ycnt FROM public.farmacia_medicamentos WHERE farmacia_id=v_y;
+
+  -- GATE: como cajero (sin usuarios_roles) → asignar → 42501
+  PERFORM set_config('request.jwt.claims', json_build_object('sub',v_cajero,'role','authenticated')::text, true);
+  PERFORM set_config('role','authenticated', true);
+  BEGIN PERFORM public.asignar_sucursal_a_miembro(v_nullc, v_x); v_gate:='PERMITIDO'; EXCEPTION WHEN others THEN v_gate:=SQLSTATE; END;
+  PERFORM set_config('probe.pasign_gate', CASE WHEN v_gate='42501' THEN 'OK (no-admin no asigna → 42501)' ELSE 'PERMITIDO/FALLO ('||v_gate||')' END, false);
+
+  -- admin de nuevo
+  PERFORM set_config('role','none',true);
+  PERFORM set_config('request.jwt.claims', json_build_object('sub',v_admin,'role','authenticated')::text, true);
+  PERFORM set_config('role','authenticated', true);
+
+  -- X-EMPRESA: target de otra empresa / sucursal global / sucursal inactiva → 42501
+  BEGIN PERFORM public.asignar_sucursal_a_miembro(v_target_b, v_x); v_xt:='PERMITIDO'; EXCEPTION WHEN others THEN v_xt:=SQLSTATE; END;
+  BEGIN PERFORM public.asignar_sucursal_a_miembro(v_cajero, v_global); v_xg:='PERMITIDO'; EXCEPTION WHEN others THEN v_xg:=SQLSTATE; END;
+  BEGIN PERFORM public.asignar_sucursal_a_miembro(v_cajero, v_inact); v_xi:='PERMITIDO'; EXCEPTION WHEN others THEN v_xi:=SQLSTATE; END;
+  PERFORM set_config('probe.pasign_xempresa', CASE WHEN COALESCE(v_target_b::text,'')<>'' AND v_xt='42501' AND v_xg='42501' AND v_xi='42501'
+    THEN 'OK (target-B/global/inactiva → 42501)' ELSE 'FALLO (t='||v_xt||' g='||v_xg||' i='||v_xi||')' END, false);
+
+  -- ACTIVACIÓN C.2: cajero→X (confinable), finanzas→X (exento), nullc queda NULL (grandfather)
+  PERFORM public.asignar_sucursal_a_miembro(v_cajero, v_x);
+  PERFORM public.asignar_sucursal_a_miembro(v_fin, v_x);
+  PERFORM set_config('request.jwt.claims', json_build_object('sub',v_cajero,'role','authenticated')::text, true); PERFORM set_config('role','authenticated', true);
+  SELECT count(*) INTO v_pos FROM public.farmacia_medicamentos WHERE farmacia_id IN (v_x,v_y);   -- confinable: solo X
+  PERFORM set_config('request.jwt.claims', json_build_object('sub',v_fin,'role','authenticated')::text, true); PERFORM set_config('role','authenticated', true);
+  SELECT count(*) INTO v_exe FROM public.farmacia_medicamentos WHERE farmacia_id IN (v_x,v_y);    -- exento: X+Y
+  PERFORM set_config('request.jwt.claims', json_build_object('sub',v_nullc,'role','authenticated')::text, true); PERFORM set_config('role','authenticated', true);
+  SELECT count(*) INTO v_grand FROM public.farmacia_medicamentos WHERE farmacia_id IN (v_x,v_y);  -- grandfather: X+Y
+  PERFORM set_config('role','none',true);
+  PERFORM set_config('request.jwt.claims', json_build_object('sub',v_admin,'role','authenticated')::text, true); PERFORM set_config('role','authenticated', true);
+  PERFORM public.asignar_sucursal_a_miembro(v_cajero, NULL);  -- desasignar
+  PERFORM set_config('request.jwt.claims', json_build_object('sub',v_cajero,'role','authenticated')::text, true); PERFORM set_config('role','authenticated', true);
+  SELECT count(*) INTO v_rev FROM public.farmacia_medicamentos WHERE farmacia_id IN (v_x,v_y);    -- revertido: X+Y
+  PERFORM set_config('probe.pasign_c2', CASE
+    WHEN v_ycnt>=1 AND v_pos=v_xcnt AND v_exe=v_xcnt+v_ycnt AND v_grand=v_xcnt+v_ycnt AND v_rev=v_xcnt+v_ycnt
+      THEN 'OK (confinable ve solo X='||v_pos||'; exento/grandfather/revert ven X+Y='||v_exe||')'
+    ELSE 'FALLO (pos='||v_pos||' exe='||v_exe||' grand='||v_grand||' rev='||v_rev||' xcnt='||v_xcnt||' ycnt='||v_ycnt||')' END, false);
+
+  -- DESASIGNAR explícito: asignar X luego NULL → sucursal_id NULL
+  PERFORM set_config('role','none',true);
+  PERFORM set_config('request.jwt.claims', json_build_object('sub',v_admin,'role','authenticated')::text, true); PERFORM set_config('role','authenticated', true);
+  PERFORM public.asignar_sucursal_a_miembro(v_cajero, v_x); PERFORM public.asignar_sucursal_a_miembro(v_cajero, NULL);
+  PERFORM set_config('role','none',true);
+  SELECT sucursal_id INTO v_suc_caj FROM public.cuentas_proveedor WHERE id=v_cajero;
+  PERFORM set_config('probe.pasign_desasignar', CASE WHEN v_suc_caj IS NULL THEN 'OK (NULL → grandfather)' ELSE 'FALLO (quedó '||v_suc_caj||')' END, false);
+
+  -- NO-REGRESIÓN: nuestras asignaciones NO tocan al admin pre-existente (su sucursal_id queda igual al baseline)
+  SELECT sucursal_id INTO v_admin_suc FROM public.cuentas_proveedor WHERE id=v_admin;
+  PERFORM set_config('probe.pasign_noregr', CASE WHEN v_admin_suc IS NOT DISTINCT FROM v_admin_suc_pre THEN 'OK (miembro existente intacto: sucursal sin cambios)' ELSE 'FALLO (admin cambió de '||COALESCE(v_admin_suc_pre::text,'∅')||' a '||COALESCE(v_admin_suc::text,'∅')||')' END, false);
+
+  -- 138-EXTENDIDO: alta con sucursal (rama i/ii setea) + sucursal global en alta → 42501
+  IF array_length(v_u,1) >= 4 THEN
+    SELECT email INTO v_mail4 FROM auth.users WHERE id=v_u[4];
+    PERFORM set_config('request.jwt.claims', json_build_object('sub',v_admin,'role','authenticated')::text, true); PERFORM set_config('role','authenticated', true);
+    BEGIN PERFORM public.vincular_membresia_proveedor(v_mail4,'cajero',NULL,NULL,v_global); v_alta_global:='PERMITIDO'; EXCEPTION WHEN others THEN v_alta_global:=SQLSTATE; END;  -- global → 42501
+    BEGIN PERFORM public.vincular_membresia_proveedor(v_mail4,'cajero','QA',NULL,v_x);
+      PERFORM set_config('role','none',true); SELECT sucursal_id INTO v_alta_suc FROM public.cuentas_proveedor WHERE id=v_u[4];
+      PERFORM set_config('request.jwt.claims', json_build_object('sub',v_admin,'role','authenticated')::text, true); PERFORM set_config('role','authenticated', true);
+    EXCEPTION WHEN others THEN v_alta_suc:=-1; END;
+    PERFORM set_config('probe.pasign_138alta', CASE WHEN v_alta_global='42501' AND v_alta_suc=v_x THEN 'OK (alta global rechazada 42501; alta con sucursal válida la setea)' ELSE 'FALLO (global='||v_alta_global||' suc='||COALESCE(v_alta_suc::text,'∅')||')' END, false);
+  ELSE PERFORM set_config('probe.pasign_138alta','N/A (sin 4º auth libre)',false); END IF;
+
+  -- cleanup seeds
+  PERFORM set_config('role','none',true);
+  DELETE FROM public.cuentas_proveedor WHERE id = ANY(v_u);
 END $$;
 SELECT set_config('role','none', true);
 
@@ -8013,6 +8122,12 @@ UNION ALL SELECT 'Pgest_no_geo_estructural',              current_setting('probe
 UNION ALL SELECT 'Pgest_softdelete_fk',                   current_setting('probe.pgest_softdelete', true),'OK (activo=false, FK intacta, reactiva)'
 UNION ALL SELECT 'Pgest_staff_block',                     current_setting('probe.pgest_staffblock', true),'OK (activo bloquea P0001; inactivo no)'
 UNION ALL SELECT 'Pgest_unicidad_nombre',                 current_setting('probe.pgest_unicidad', true),  'OK (crear/editar/reactivar dup → 23505)'
-UNION ALL SELECT 'Pgest_POS_e2e_propia',                  current_setting('probe.pgest_pos', true),       'OK (CRUD propia end-to-end)';
+UNION ALL SELECT 'Pgest_POS_e2e_propia',                  current_setting('probe.pgest_pos', true),       'OK (CRUD propia end-to-end)'
+UNION ALL SELECT 'Pasign_gate_noadmin',                   current_setting('probe.pasign_gate', true),     'OK (no-admin no asigna → 42501)'
+UNION ALL SELECT 'Pasign_xempresa_global_inactiva',       current_setting('probe.pasign_xempresa', true), 'OK (target-B/global/inactiva → 42501)'
+UNION ALL SELECT 'Pasign_C2_activacion',                  current_setting('probe.pasign_c2', true),       'OK (confinable solo X; exento/grandfather/revert X+Y)'
+UNION ALL SELECT 'Pasign_desasignar_null',               current_setting('probe.pasign_desasignar', true),'OK (NULL → grandfather)'
+UNION ALL SELECT 'Pasign_noregresion_null',               current_setting('probe.pasign_noregr', true),   'OK (miembros NULL existentes intactos)'
+UNION ALL SELECT 'Pasign_138_alta_con_sucursal',          current_setting('probe.pasign_138alta', true),  'OK (alta setea sucursal; global rechazada)';
 
 ROLLBACK;  -- nada de lo anterior se persiste
