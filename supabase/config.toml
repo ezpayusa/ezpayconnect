@@ -433,3 +433,11 @@ verify_jwt = true
 [functions.enviar-push-notificacion]
 enabled = true
 verify_jwt = false   # la llama pg_net (server-to-server), no un usuario; autz = secreto compartido x-push-secret
+
+[functions.enviar-push]
+enabled = true
+verify_jwt = false   # STUB 410 retirado (CIERRE FINAL push-tx, bloque 2): no toca service_role/VAPID/BD, abrir solo expone el 410 Gone (observable para cualquier caller residual)
+
+[functions.enviar-notificacion]
+enabled = true
+verify_jwt = false   # STUB 410 retirado (CIERRE FINAL push-tx, bloque 2): idem, solo devuelve 410 Gone
