@@ -7692,13 +7692,17 @@ DO $$
 DECLARE v_med uuid := '09d243d5-b222-482a-9762-94a582e9e752'; v_pais_med uuid; v_3337_pais uuid; v_med_global text;
         v_glob int; v_inact int; v_otropais int; v_global_med_rows int; v_3337_rows int; v_3337_dir text; v_pais_leak int;
 BEGIN
-  SELECT pais_id INTO v_pais_med FROM public.perfiles WHERE id=v_med;
   SELECT pais_id INTO v_3337_pais FROM public.farmacias WHERE id=3337;
-  IF v_pais_med IS NULL OR v_3337_pais IS NULL OR v_pais_med IS DISTINCT FROM v_3337_pais THEN
-    PERFORM set_config('probe.pruta_filtro','N/A (médico/3337 sin país o distinto)',false);
+  IF v_3337_pais IS NULL THEN
+    PERFORM set_config('probe.pruta_filtro','N/A (sin 3337)',false);
     PERFORM set_config('probe.pruta_global','N/A',false); PERFORM set_config('probe.pruta_3337','N/A',false);
     PERFORM set_config('probe.pruta_pais','N/A',false); RETURN;
   END IF;
+  -- Determinismo: neutralizar mutaciones de probes previos en la MISMA txn (rolled-back igual): fijar el
+  -- país del médico QA = país de la 3337 Y restaurar rol='medico' (la RLS farm_med_disp_medico exige rol médico;
+  -- probes previos mutan rol/país de fixtures que resuelven al QA). Sin esto, falso-rojo por estado heredado.
+  UPDATE public.perfiles SET pais_id = v_3337_pais, rol = 'medico' WHERE id = v_med;
+  v_pais_med := v_3337_pais;
   SELECT nombre_medicamento INTO v_med_global FROM public.farmacia_medicamentos fm JOIN public.farmacias f ON f.id=fm.farmacia_id
    WHERE f.empresa_id IS NULL AND fm.stock_actual>0 AND fm.nombre_medicamento NOT ILIKE '%MED 3337%' LIMIT 1;
 
