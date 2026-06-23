@@ -7440,6 +7440,142 @@ BEGIN
 END $$;
 SELECT set_config('role','none', true);
 
+-- ===== Pgest (Spine sucursales 3.1, mig 139 DORMANT): CRUD de sucursales =====
+-- Guardados con to_regprocedure → N/A si 139 no aplicada. Admin = farmacia.qa (empresa con farmacia 147).
+DO $$
+DECLARE v_admin uuid; v_emp uuid; v_orig_rol text; v_suc int; v_global int; v_libre uuid;
+        v_new int; v_act boolean; v_invcount int; r record; v_g42 boolean; v_e42 boolean;
+        v_gate_listar text; v_gate_crear text; v_gate_edit text; v_gate_desact text; v_sig text; v_haslatlng int;
+BEGIN
+  IF to_regprocedure('public.listar_sucursales()') IS NULL THEN
+    PERFORM set_config('probe.pgest_gate','N/A (139 no aplicada)',false);
+    PERFORM set_config('probe.pgest_xempresa','N/A',false); PERFORM set_config('probe.pgest_scope','N/A',false);
+    PERFORM set_config('probe.pgest_nogeo','N/A',false); PERFORM set_config('probe.pgest_softdelete','N/A',false);
+    PERFORM set_config('probe.pgest_staffblock','N/A',false); PERFORM set_config('probe.pgest_unicidad','N/A',false);
+    PERFORM set_config('probe.pgest_pos','N/A',false); RETURN;
+  END IF;
+  SELECT cp.id, cp.empresa_id, cp.rol_en_empresa INTO v_admin, v_emp, v_orig_rol
+    FROM public.cuentas_proveedor cp JOIN public.empresas_proveedoras e ON e.id=cp.empresa_id
+   WHERE e.tipo='farmacia' AND cp.activo ORDER BY cp.id LIMIT 1;
+  SELECT id INTO v_suc FROM public.farmacias WHERE empresa_id=v_emp LIMIT 1;
+  SELECT id INTO v_global FROM public.farmacias WHERE empresa_id IS NULL LIMIT 1;
+  SELECT u.id INTO v_libre FROM auth.users u WHERE NOT EXISTS (SELECT 1 FROM public.cuentas_proveedor c WHERE c.id=u.id) LIMIT 1;
+  IF v_admin IS NULL OR v_suc IS NULL THEN
+    PERFORM set_config('probe.pgest_gate','N/A (sin fixture)',false); PERFORM set_config('probe.pgest_xempresa','N/A',false);
+    PERFORM set_config('probe.pgest_scope','N/A',false); PERFORM set_config('probe.pgest_nogeo','N/A',false);
+    PERFORM set_config('probe.pgest_softdelete','N/A',false); PERFORM set_config('probe.pgest_staffblock','N/A',false);
+    PERFORM set_config('probe.pgest_unicidad','N/A',false); PERFORM set_config('probe.pgest_pos','N/A',false); RETURN;
+  END IF;
+
+  -- (estructural) no-geo: tabla sin lat/lng + firmas sin coord
+  SELECT count(*) INTO v_haslatlng FROM information_schema.columns WHERE table_name='farmacias' AND (column_name ILIKE '%lat%' OR column_name ILIKE '%lng%' OR column_name ILIKE '%lon%');
+  v_sig := pg_get_function_identity_arguments('public.crear_sucursal(text,text,text,text,text)'::regprocedure)||' '||pg_get_function_identity_arguments('public.editar_sucursal(integer,text,text,text,text,text)'::regprocedure);
+  PERFORM set_config('probe.pgest_nogeo', CASE WHEN v_haslatlng=0 AND v_sig NOT ILIKE '%lat%' AND v_sig NOT ILIKE '%lng%' THEN 'OK (sin lat/lng en tabla ni firmas)' ELSE 'FALLO (geo presente)' END, false);
+
+  -- GATE: rol sin sucursales_gestionar (cajero) denegado en los 4 RPCs
+  UPDATE public.cuentas_proveedor SET rol_en_empresa='cajero' WHERE id=v_admin;
+  PERFORM set_config('request.jwt.claims', json_build_object('sub',v_admin,'role','authenticated')::text, true);
+  PERFORM set_config('role','authenticated', true);
+  BEGIN PERFORM count(*) FROM public.listar_sucursales(); v_gate_listar:='PERMITIDO'; EXCEPTION WHEN others THEN v_gate_listar:=SQLSTATE; END;
+  BEGIN PERFORM public.crear_sucursal('PGEST GATE'); v_gate_crear:='PERMITIDO'; EXCEPTION WHEN others THEN v_gate_crear:=SQLSTATE; END;
+  BEGIN PERFORM public.editar_sucursal(v_suc,'PGEST GATE'); v_gate_edit:='PERMITIDO'; EXCEPTION WHEN others THEN v_gate_edit:=SQLSTATE; END;
+  BEGIN PERFORM public.desactivar_sucursal(v_suc,false); v_gate_desact:='PERMITIDO'; EXCEPTION WHEN others THEN v_gate_desact:=SQLSTATE; END;
+  PERFORM set_config('probe.pgest_gate', CASE WHEN v_gate_listar<>'PERMITIDO' AND v_gate_crear<>'PERMITIDO' AND v_gate_edit<>'PERMITIDO' AND v_gate_desact<>'PERMITIDO'
+    THEN 'OK (4 RPCs denegados sin sucursales_gestionar)' ELSE 'PERMITIDO/FALLO (l='||v_gate_listar||' c='||v_gate_crear||' e='||v_gate_edit||' d='||v_gate_desact||')' END, false);
+
+  -- restaurar admin
+  PERFORM set_config('role','none',true);
+  UPDATE public.cuentas_proveedor SET rol_en_empresa='admin' WHERE id=v_admin;
+  PERFORM set_config('request.jwt.claims', json_build_object('sub',v_admin,'role','authenticated')::text, true);
+  PERFORM set_config('role','authenticated', true);
+
+  -- X-EMPRESA / GLOBALES: editar/desactivar una sucursal NO de mi empresa (global empresa_id NULL) → 42501
+  v_g42:=false; v_e42:=false;
+  IF v_global IS NOT NULL THEN
+    BEGIN PERFORM public.editar_sucursal(v_global,'HACK'); EXCEPTION WHEN others THEN v_e42:=(SQLSTATE='42501'); END;
+    BEGIN PERFORM public.desactivar_sucursal(v_global,false); EXCEPTION WHEN others THEN v_g42:=(SQLSTATE='42501'); END;
+    PERFORM set_config('probe.pgest_xempresa', CASE WHEN v_e42 AND v_g42 THEN 'OK (editar/desactivar global/ajena → 42501)' ELSE 'FALLO (e42='||v_e42||' d42='||v_g42||')' END, false);
+  ELSE PERFORM set_config('probe.pgest_xempresa','N/A (sin global)',false); END IF;
+
+  -- SCOPE: listar NO incluye la global + todo lo que devuelve es de mi empresa
+  IF v_global IS NOT NULL THEN
+    SELECT bool_or(s.id=v_global) INTO v_act FROM public.listar_sucursales() s;
+  ELSE v_act:=false; END IF;
+  SELECT count(*) INTO v_new FROM public.listar_sucursales() s WHERE NOT EXISTS (SELECT 1 FROM public.farmacias f WHERE f.id=s.id AND f.empresa_id=v_emp);
+  PERFORM set_config('probe.pgest_scope', CASE WHEN COALESCE(v_act,false)=false AND v_new=0 THEN 'OK (listar solo mi empresa, excluye globales)' ELSE 'FALLO (global_en_lista='||COALESCE(v_act::text,'∅')||' ajenas='||v_new||')' END, false);
+
+  -- UNICIDAD: crear dup (case-insensitive), editar a nombre activo, reactivar que choca → 23505
+  DECLARE v_u1 text; v_u2 text; v_u3 text; v_id2 int; v_a int; v_b int; BEGIN
+    PERFORM public.crear_sucursal('PGEST UNICA');                                    -- activa
+    BEGIN PERFORM public.crear_sucursal('pgest unica'); v_u1:='PERMITIDO'; EXCEPTION WHEN others THEN v_u1:=SQLSTATE; END;  -- dup activa (ci)
+    v_id2 := public.crear_sucursal('PGEST OTRA');
+    BEGIN PERFORM public.editar_sucursal(v_id2,'PGEST UNICA'); v_u2:='PERMITIDO'; EXCEPTION WHEN others THEN v_u2:=SQLSTATE; END;  -- editar→nombre activo
+    -- reactivar-colisión: A inactiva 'PGEST DUP', B activa 'PGEST DUP' (permitida pq A inactiva), reactivar A → 23505
+    v_a := public.crear_sucursal('PGEST DUP'); PERFORM public.desactivar_sucursal(v_a,false);
+    v_b := public.crear_sucursal('PGEST DUP');
+    BEGIN PERFORM public.desactivar_sucursal(v_a,true); v_u3:='PERMITIDO'; EXCEPTION WHEN others THEN v_u3:=SQLSTATE; END;
+    PERFORM set_config('probe.pgest_unicidad', CASE WHEN v_u1='23505' AND v_u2='23505' AND v_u3='23505' THEN 'OK (crear/editar/reactivar dup → 23505)' ELSE 'FALLO (c='||v_u1||' e='||v_u2||' r='||v_u3||')' END, false);
+  END;
+
+  -- STAFF-BLOCK: sucursal DEDICADA (no contamina v_suc/softdelete). Staff activo → P0001; inactivo no bloquea.
+  DECLARE v_sb int; v_block text; v_noblock text; BEGIN
+    IF v_libre IS NULL THEN PERFORM set_config('probe.pgest_staffblock','N/A (sin auth user libre)',false);
+    ELSE
+      v_sb := public.crear_sucursal('PGEST STAFFBLOCK');   -- admin (authenticated)
+      PERFORM set_config('role','none',true);
+      INSERT INTO public.cuentas_proveedor (id,empresa_id,email,nombre_completo,rol_en_empresa,activo,sucursal_id)
+        VALUES (v_libre, v_emp, 'pgest-staff@x.test','PGEST Staff','cajero',true,v_sb);
+      PERFORM set_config('request.jwt.claims', json_build_object('sub',v_admin,'role','authenticated')::text, true);
+      PERFORM set_config('role','authenticated', true);
+      BEGIN PERFORM public.desactivar_sucursal(v_sb,false); v_block:='PERMITIDO'; EXCEPTION WHEN others THEN v_block:=SQLSTATE; END;  -- esperado P0001
+      PERFORM set_config('role','none',true);
+      UPDATE public.cuentas_proveedor SET activo=false WHERE id=v_libre;       -- ahora inactivo
+      PERFORM set_config('request.jwt.claims', json_build_object('sub',v_admin,'role','authenticated')::text, true);
+      PERFORM set_config('role','authenticated', true);
+      BEGIN PERFORM public.desactivar_sucursal(v_sb,false); v_noblock:='OK-no-bloquea'; EXCEPTION WHEN others THEN v_noblock:=SQLSTATE; END;
+      PERFORM set_config('probe.pgest_staffblock', CASE WHEN v_block='P0001' AND v_noblock='OK-no-bloquea' THEN 'OK (staff activo bloquea P0001; inactivo no bloquea)' ELSE 'FALLO (activo='||v_block||' inactivo='||v_noblock||')' END, false);
+      PERFORM set_config('role','none',true); DELETE FROM public.cuentas_proveedor WHERE id=v_libre;
+      PERFORM set_config('request.jwt.claims', json_build_object('sub',v_admin,'role','authenticated')::text, true);
+      PERFORM set_config('role','authenticated', true);
+    END IF;
+  END;
+
+  -- SOFT-DELETE preserva FK + reactivación. Sucursal DEDICADA + 1 fila de inventario sembrada (aísla del
+  -- ruido de C.2 que siembra sucursal_id en cuentas dentro del harness). desactivar → activo=false + FK intacta → reactivar.
+  DECLARE v_sd int; BEGIN
+    v_sd := public.crear_sucursal('PGEST SOFTDEL');                 -- admin (authenticated), sin staff
+    PERFORM set_config('role','none',true);
+    INSERT INTO public.farmacia_medicamentos (farmacia_id, nombre_medicamento, stock_actual, precio_unitario)
+      VALUES (v_sd, 'PGEST MED', 5, 1);
+    PERFORM set_config('request.jwt.claims', json_build_object('sub',v_admin,'role','authenticated')::text, true);
+    PERFORM set_config('role','authenticated', true);
+    SELECT count(*) INTO v_invcount FROM public.farmacia_medicamentos WHERE farmacia_id=v_sd;  -- =1
+    BEGIN
+      PERFORM public.desactivar_sucursal(v_sd,false);
+      SELECT activo INTO v_act FROM public.farmacias WHERE id=v_sd;
+      PERFORM public.desactivar_sucursal(v_sd,true);
+      PERFORM set_config('probe.pgest_softdelete', CASE
+        WHEN v_act=false AND (SELECT count(*) FROM public.farmacia_medicamentos WHERE farmacia_id=v_sd)=v_invcount AND (SELECT activo FROM public.farmacias WHERE id=v_sd)=true
+          THEN 'OK (soft-delete activo=false, FK inventario intacta, reactiva)'
+        ELSE 'FALLO (act='||COALESCE(v_act::text,'∅')||' inv='||v_invcount||')' END, false);
+    EXCEPTION WHEN others THEN PERFORM set_config('probe.pgest_softdelete','FALLO ('||SQLSTATE||': '||SQLERRM||')',false); END;
+  END;
+
+  -- POS e2e: crear → aparece en listar → editar → desactivar → reactivar
+  BEGIN
+    v_new := public.crear_sucursal('PGEST POS E2E','Dir POS');
+    SELECT bool_or(s.id=v_new) INTO v_act FROM public.listar_sucursales() s;
+    PERFORM public.editar_sucursal(v_new,'PGEST POS E2E v2','Dir POS 2');
+    PERFORM public.desactivar_sucursal(v_new,false);
+    PERFORM public.desactivar_sucursal(v_new,true);
+    PERFORM set_config('probe.pgest_pos', CASE WHEN COALESCE(v_act,false) THEN 'OK (crear/listar/editar/desactivar/reactivar propia e2e)' ELSE 'FALLO (no apareció en listar)' END, false);
+  EXCEPTION WHEN others THEN PERFORM set_config('probe.pgest_pos','FALLO ('||SQLSTATE||')',false); END;
+
+  PERFORM set_config('role','none',true);
+  UPDATE public.cuentas_proveedor SET rol_en_empresa=v_orig_rol WHERE id=v_admin;
+END $$;
+SELECT set_config('role','none', true);
+
 -- ===== Veredictos como result set =====
 SELECT 'P1_anon_insert_citas'              AS probe, current_setting('probe.p1', true)  AS verdict, 'BLOQUEADO' AS esperado_post_fix
 UNION ALL SELECT 'P2_medico_cancela_ajena_rpc',         current_setting('probe.p2', true),  'BLOQUEADO'
@@ -7869,6 +8005,14 @@ UNION ALL SELECT 'Pinvit_NEG_pregate_noadmin',            current_setting('probe
 UNION ALL SELECT 'Pinvit_NEG_rol_fuera_catalogo',         current_setting('probe.pinvit_rolcat', true),  'OK (rol fuera del tipo → 22023)'
 UNION ALL SELECT 'Pinvit_NEG_1a1_segunda_membresia',      current_setting('probe.pinvit_409', true),     'OK (1:1 guard → 23505/409)'
 UNION ALL SELECT 'Pinvit_POS_vincular_ii_cred_intacta',   current_setting('probe.pinvit_pos', true),     'OK (vinculado, empresa=invitador, credencial intacta)'
-UNION ALL SELECT 'Pinvit_cross_empresa_estructural',      current_setting('probe.pinvit_xempresa', true),'OK (sin param empresa)';
+UNION ALL SELECT 'Pinvit_cross_empresa_estructural',      current_setting('probe.pinvit_xempresa', true),'OK (sin param empresa)'
+UNION ALL SELECT 'Pgest_gate_4rpcs',                      current_setting('probe.pgest_gate', true),      'OK (sin sucursales_gestionar → denegado)'
+UNION ALL SELECT 'Pgest_xempresa_globales',               current_setting('probe.pgest_xempresa', true),  'OK (editar/desactivar ajena/global → 42501)'
+UNION ALL SELECT 'Pgest_listar_scope',                    current_setting('probe.pgest_scope', true),     'OK (solo mi empresa, excluye globales)'
+UNION ALL SELECT 'Pgest_no_geo_estructural',              current_setting('probe.pgest_nogeo', true),     'OK (sin lat/lng)'
+UNION ALL SELECT 'Pgest_softdelete_fk',                   current_setting('probe.pgest_softdelete', true),'OK (activo=false, FK intacta, reactiva)'
+UNION ALL SELECT 'Pgest_staff_block',                     current_setting('probe.pgest_staffblock', true),'OK (activo bloquea P0001; inactivo no)'
+UNION ALL SELECT 'Pgest_unicidad_nombre',                 current_setting('probe.pgest_unicidad', true),  'OK (crear/editar/reactivar dup → 23505)'
+UNION ALL SELECT 'Pgest_POS_e2e_propia',                  current_setting('probe.pgest_pos', true),       'OK (CRUD propia end-to-end)';
 
 ROLLBACK;  -- nada de lo anterior se persiste
