@@ -7308,6 +7308,62 @@ DO $$ DECLARE v_all_notif int; v_all_np int; v_sa_sel boolean; v_sa_upd boolean;
 END $$;
 SELECT set_config('role','none', true);
 
+-- ===== P-inv (R11 candado anti-regresión): farm_med_tenant_all exige inventario_editar en escritura, SELECT intacto =====
+-- R11 fue FALSO POSITIVO (la policy ya gatea por inventario_editar desde mig 079, reforzado en 114). Estos probes
+-- BLINDAN ese estado: si un futuro cambio quita el término permiso de la escritura, o lo mete en la lectura, vira a ROJO.
+-- Actor = cuenta admin de una empresa-con-farmacia, rol mutado in-txn a cajero (SIN inventario_editar) con sucursal_id
+-- NULL (rama grandfather → término sucursal PASA → único factor bajo prueba = permiso). Restaura rol/sucursal al final.
+DO $$
+DECLARE v_uid uuid; v_fm uuid; v_farm int; v_orig_rol text; v_orig_suc int; v_n int; v_ins text; v_upd text; v_del text;
+BEGIN
+  SELECT cp.id, cp.rol_en_empresa, cp.sucursal_id, f.id
+    INTO v_uid, v_orig_rol, v_orig_suc, v_farm
+    FROM public.cuentas_proveedor cp
+    JOIN public.farmacias f ON f.empresa_id = cp.empresa_id
+   WHERE cp.empresa_id IS NOT NULL AND cp.activo = true
+   ORDER BY cp.id LIMIT 1;
+  SELECT fm.id INTO v_fm FROM public.farmacia_medicamentos fm WHERE fm.farmacia_id = v_farm LIMIT 1;
+  IF v_uid IS NULL OR v_fm IS NULL THEN
+    PERFORM set_config('probe.pinv_neg','N/A (sin fixture farmacia-empresa)',false);
+    PERFORM set_config('probe.pinv_pos_w','N/A',false); PERFORM set_config('probe.pinv_pos_sel','N/A',false); RETURN;
+  END IF;
+
+  -- ACTOR cajero (sin inventario_editar), sucursal NULL
+  UPDATE public.cuentas_proveedor SET rol_en_empresa='cajero', sucursal_id=NULL WHERE id=v_uid;
+  PERFORM set_config('request.jwt.claims', json_build_object('sub',v_uid,'role','authenticated')::text, true);
+  PERFORM set_config('role','authenticated', true);
+  -- GUARD: la lectura del cajero NO se rompe (cubierta por farm_med_propia_empresa, SELECT sin permiso)
+  SELECT count(*) INTO v_n FROM public.farmacia_medicamentos WHERE id=v_fm;
+  PERFORM set_config('probe.pinv_pos_sel', CASE WHEN v_n>=1 THEN 'OK (cajero lee stock; guard SELECT intacto)' ELSE 'ROJO (cajero no lee stock)' END, false);
+  -- NEG: escritura denegada (sin inventario_editar)
+  BEGIN UPDATE public.farmacia_medicamentos SET stock_actual=stock_actual WHERE id=v_fm; GET DIAGNOSTICS v_n=ROW_COUNT;
+    v_upd := CASE WHEN v_n>0 THEN 'U-PERMITIDO' ELSE 'U-deneg' END;
+  EXCEPTION WHEN others THEN v_upd := 'U-deneg('||SQLSTATE||')'; END;
+  BEGIN INSERT INTO public.farmacia_medicamentos (farmacia_id,nombre_medicamento,stock_actual,precio_unitario) VALUES (v_farm,'__PROBE_PINV',1,1);
+    v_ins := 'I-PERMITIDO';
+  EXCEPTION WHEN others THEN v_ins := 'I-deneg('||SQLSTATE||')'; END;
+  BEGIN DELETE FROM public.farmacia_medicamentos WHERE id=v_fm; GET DIAGNOSTICS v_n=ROW_COUNT;
+    v_del := CASE WHEN v_n>0 THEN 'D-PERMITIDO' ELSE 'D-deneg' END;
+  EXCEPTION WHEN others THEN v_del := 'D-deneg('||SQLSTATE||')'; END;
+  PERFORM set_config('probe.pinv_neg', CASE WHEN v_ins LIKE 'I-deneg%' AND v_upd LIKE 'U-deneg%' AND v_del LIKE 'D-deneg%'
+    THEN 'OK (cajero INSERT/UPDATE/DELETE denegados sin inventario_editar)'
+    ELSE 'REGRESION ('||v_ins||' '||v_upd||' '||v_del||')' END, false);
+
+  -- POS escritura: actor con inventario_editar (rol inventario) escribe OK
+  PERFORM set_config('role','none',true);
+  UPDATE public.cuentas_proveedor SET rol_en_empresa='inventario', sucursal_id=NULL WHERE id=v_uid;
+  PERFORM set_config('request.jwt.claims', json_build_object('sub',v_uid,'role','authenticated')::text, true);
+  PERFORM set_config('role','authenticated', true);
+  BEGIN UPDATE public.farmacia_medicamentos SET stock_actual=stock_actual WHERE id=v_fm; GET DIAGNOSTICS v_n=ROW_COUNT;
+    PERFORM set_config('probe.pinv_pos_w', CASE WHEN v_n=1 THEN 'OK (inventario_editar escribe)' ELSE 'ROJO ('||v_n||' filas)' END, false);
+  EXCEPTION WHEN others THEN PERFORM set_config('probe.pinv_pos_w','ROJO ('||SQLSTATE||')',false); END;
+
+  -- restaurar fixture (no contamina probes posteriores; el ROLLBACK final igual revierte)
+  PERFORM set_config('role','none',true);
+  UPDATE public.cuentas_proveedor SET rol_en_empresa=v_orig_rol, sucursal_id=v_orig_suc WHERE id=v_uid;
+END $$;
+SELECT set_config('role','none', true);
+
 -- ===== Veredictos como result set =====
 SELECT 'P1_anon_insert_citas'              AS probe, current_setting('probe.p1', true)  AS verdict, 'BLOQUEADO' AS esperado_post_fix
 UNION ALL SELECT 'P2_medico_cancela_ajena_rpc',         current_setting('probe.p2', true),  'BLOQUEADO'
@@ -7729,6 +7785,9 @@ UNION ALL SELECT 'P430_chat_no_regresion',               current_setting('probe.
 UNION ALL SELECT 'P431_cierre_revoke_notificar_paciente', current_setting('probe.p431', true), 'OK post-136 (ROJO pre)'
 UNION ALL SELECT 'P432_cierre_drop_notificar_laboratorio',current_setting('probe.p432', true), 'OK post-136 (ROJO pre)'
 UNION ALL SELECT 'P433_cierre_revoke_insert_directo',     current_setting('probe.p433', true), 'OK post-136 (ROJO pre)'
-UNION ALL SELECT 'P434_cierre_split_policies',            current_setting('probe.p434', true), 'OK post-136 (ROJO pre)';
+UNION ALL SELECT 'P434_cierre_split_policies',            current_setting('probe.p434', true), 'OK post-136 (ROJO pre)'
+UNION ALL SELECT 'Pinv_NEG_cajero_escritura_denegada',    current_setting('probe.pinv_neg', true),     'OK (R11 candado: sin inventario_editar no escribe)'
+UNION ALL SELECT 'Pinv_POS_inventario_editar_escribe',    current_setting('probe.pinv_pos_w', true),   'OK (con inventario_editar escribe)'
+UNION ALL SELECT 'Pinv_POS_cajero_SELECT_intacto',        current_setting('probe.pinv_pos_sel', true), 'OK (guard: lectura del cajero no se rompe)';
 
 ROLLBACK;  -- nada de lo anterior se persiste
