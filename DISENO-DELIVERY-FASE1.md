@@ -243,6 +243,15 @@ La tabla deja la estructura lista; C la llena:
 
 ## 4 · OLA C — RPCs de ciclo + auto-create (TOCA 141/143)
 
+### 4.0 · Censo EXACTO de puntos de inserción (equivalente al "único escritor")
+Verificado en vivo (`pg_proc` que insertan en `dispensaciones` + grants):
+- **SOLO DOS escritores de `dispensaciones`, ambos DEFINER:**
+  1. **`registrar_dispensacion(p_token text, p_item_ids bigint[], p_farmaceutico text)`** — **walk-in Y QR** (misma RPC; el token viene del QR del paciente). Loop verificado: `FOR r IN SELECT ri... WHERE ri.receta_id=v_receta_id AND f.empresa_id=v_emp AND sucursal_visible(ri.farmacia_id) AND ri.id=ANY(p_item_ids) AND dispensado=false LOOP UPDATE dispensado + INSERT dispensaciones END LOOP`.
+  2. **`registrar_dispensacion_dirigida(p_receta_id bigint, p_item_ids bigint[], p_farmaceutico text)`** — **bandeja** (sin token, por `receta_id`). Mismo loop/gate.
+- **`authenticated` NO tiene INSERT sobre `dispensaciones`** (solo `service_role`/`postgres`/owner) → las 2 RPCs DEFINER son el **único camino** de escritura. **No hay un 3er escritor** que quede sin el hook → consistencia garantizada. (Las "3 vías" del spine colapsan en **2 RPCs**: `registrar_dispensacion` sirve walk-in **y** QR.)
+- Otros que mencionan `dispensaciones`: `stats_finanzas_sucursal`, `stats_recetas_sucursal` (solo LEEN, reportes; no escriben).
+- **Conclusión:** el bloque auto-create va en **2 lugares idénticos** (tras el loop de cada RPC). El monto se deriva de `dispensaciones` (recién insertadas en el loop), así que el bloque debe ir **después** del loop.
+
 ### Máquina de estados (validada en cada RPC, gate-antes-de-efecto)
 `pendiente →(gestionar) asignada →(actualizar_estado) en_camino →(actualizar_estado) entregada | fallida(motivo)`; `asignada→fallida` ok; `asignada/en_camino →(gestionar) asignada` (reasignar); **`fallida →(gestionar) asignada` (reabrir, con salvaguardas)**; `entregada` terminal. Idempotente: estado==actual → no-op.
 - **[D-9] `fallida(motivo: rechazada|ausente|direccion_mala)` = terminal-REABRIBLE-vía-gestión, SIN reversión** de dispensación/stock (no reabre `dispensado`, no restock; inmutabilidad regulatoria A6). El retorno físico del med es **nota operativa**, fuera del sistema.
@@ -291,31 +300,67 @@ BEGIN
   RETURN (SELECT to_jsonb(e) FROM public.entregas e WHERE e.id=p_entrega_id);
 END $$;
 ```
+Cuerpo de `asignar_entrega` (valida que el delivery sea de la MISMA sucursal de la entrega — scope #8):
+```sql
+CREATE FUNCTION public.asignar_entrega(p_entrega_id bigint, p_delivery_id uuid)
+RETURNS jsonb LANGUAGE plpgsql SECURITY DEFINER SET search_path='' AS $$
+DECLARE v_e public.entregas; v_del public.cuentas_proveedor;
+BEGIN
+  IF NOT COALESCE(private.tiene_permiso('entregas_gestionar'),false) THEN RAISE EXCEPTION 'No autorizado'; END IF;
+  SELECT * INTO v_e FROM public.entregas WHERE id=p_entrega_id
+    AND COALESCE(empresa_id=public.mi_empresa_proveedor(),false)
+    AND COALESCE(private.sucursal_visible(farmacia_id),false);
+  IF NOT FOUND THEN RAISE EXCEPTION 'Entrega no visible/no existe'; END IF;
+  IF v_e.estado <> 'pendiente' THEN RAISE EXCEPTION 'Solo se asigna desde pendiente (estado=%)', v_e.estado; END IF;
+  SELECT * INTO v_del FROM public.cuentas_proveedor
+    WHERE id=p_delivery_id AND empresa_id=v_e.empresa_id AND rol_en_empresa='delivery' AND activo=true;
+  IF NOT FOUND THEN RAISE EXCEPTION 'Delivery inválido (no es delivery activo de la empresa)'; END IF;
+  -- #8: el delivery debe ser de la MISMA sucursal de la entrega (o exento sin sucursal → no aplica a delivery)
+  IF v_del.sucursal_id IS DISTINCT FROM v_e.farmacia_id THEN
+    RAISE EXCEPTION 'El delivery no pertenece a la sucursal de la entrega'; END IF;
+  UPDATE public.entregas SET estado='asignada', delivery_id=p_delivery_id,
+    asignado_por=auth.uid(), asignado_at=now(), updated_at=now() WHERE id=p_entrega_id;
+  RETURN (SELECT to_jsonb(e) FROM public.entregas e WHERE e.id=p_entrega_id);
+END $$;
+```
 
 ### Auto-create dentro de `registrar_dispensacion(_dirigida)` — bloque ADITIVO grandfather-inerte
 Tras el `LOOP` que marca dispensado + inserta `dispensaciones` (validado en vivo: el loop ya filtra `sucursal_visible`), agregar **antes del `RETURN`**:
 ```sql
--- AUTO-CREATE entregas: una por (receta, farmacia) cuyo grupo sea modalidad=delivery y que este actor despachó.
--- Agrupa por farmacia_id (un EXENTO puede despachar varias sucursales en una llamada). Idempotente.
-INSERT INTO public.entregas (receta_base_id, farmacia_id, empresa_id, paciente_id,
-                             direccion_entrega, telefono_contacto, monto, created_by)
-SELECT v_receta_id, ri.farmacia_id, v_emp, r.paciente_id, pac.direccion, pac.telefono,  -- paciente_id de RECETAS (bigint), no de recetas_avanzadas (text)
-       (SELECT SUM(d.total_dispensado) FROM public.dispensaciones d
-          WHERE d.receta_avanzada_id = v_ra.id AND d.farmacia_id = ri.farmacia_id),
-       NULL                                                          -- created_by NULL = auto
-FROM public.receta_items ri
-JOIN public.recetas   r   ON r.id  = v_receta_id                     -- r.paciente_id : bigint
-JOIN public.pacientes pac ON pac.id = r.paciente_id
-WHERE ri.receta_id = v_receta_id
-  AND ri.farmacia_id IS NOT NULL
-  AND ri.modalidad = 'delivery'                                      -- grandfather: default pickup → 0 filas
-  AND COALESCE(private.sucursal_visible(ri.farmacia_id), false)      -- solo sucursales que este actor despachó
-  AND EXISTS (SELECT 1 FROM public.dispensaciones d
-               WHERE d.receta_avanzada_id = v_ra.id AND d.farmacia_id = ri.farmacia_id)  -- ya despachada
-GROUP BY ri.farmacia_id, r.paciente_id, pac.direccion, pac.telefono
-ON CONFLICT (receta_base_id, farmacia_id) DO UPDATE                  -- [D-1=B] recálculo del monto por tanda
-  SET monto = excluded.monto, updated_at = now()
-  WHERE entregas.estado = 'pendiente';                              -- guard: ya asignada/en_camino/cobrada → NO recalcula
+-- AUTO-CREATE (best-effort, #4-B): NUNCA aborta el despacho. Corre TRAS el loop, envuelto en BEGIN…EXCEPTION.
+-- Kill-switch con DEFAULT FAIL-SAFE: ausencia de fila/tabla → OFF (ante duda, no auto-crear; el despacho no se afecta).
+IF COALESCE((SELECT habilitado FROM private.delivery_flags WHERE clave='autocreate_entregas'), false) THEN
+  BEGIN
+    -- una entrega por (receta, farmacia) delivery que este actor despachó. Agrupa por farmacia_id (multi-sucursal). Idempotente.
+    INSERT INTO public.entregas (receta_base_id, farmacia_id, empresa_id, paciente_id,
+                                 direccion_entrega, telefono_contacto, monto, created_by)
+    SELECT v_receta_id, ri.farmacia_id, v_emp, r.paciente_id, pac.direccion, pac.telefono,  -- paciente_id de RECETAS (bigint)
+           (SELECT SUM(d.total_dispensado) FROM public.dispensaciones d
+              WHERE d.receta_avanzada_id = v_ra.id AND d.farmacia_id = ri.farmacia_id),
+           NULL                                                          -- created_by NULL = auto
+    FROM public.receta_items ri
+    JOIN public.recetas   r   ON r.id  = v_receta_id
+    JOIN public.pacientes pac ON pac.id = r.paciente_id
+    WHERE ri.receta_id = v_receta_id
+      AND ri.farmacia_id IS NOT NULL
+      AND ri.modalidad = 'delivery'                                     -- grandfather: default pickup → 0 filas
+      AND COALESCE(private.sucursal_visible(ri.farmacia_id), false)     -- hereda el confinamiento del loop
+      AND EXISTS (SELECT 1 FROM public.dispensaciones d
+                   WHERE d.receta_avanzada_id = v_ra.id AND d.farmacia_id = ri.farmacia_id)  -- ya despachada
+    GROUP BY ri.farmacia_id, r.paciente_id, pac.direccion, pac.telefono
+    ON CONFLICT (receta_base_id, farmacia_id) DO UPDATE                 -- [D-1=B] recálculo del monto por tanda
+      SET monto = excluded.monto, updated_at = now()
+      WHERE entregas.estado = 'pendiente';                             -- ya asignada/en_camino/cobrada → NO recalcula
+  EXCEPTION WHEN OTHERS THEN
+    -- best-effort: el despacho YA está comprometido y NO se revierte. NO se traga en silencio → rastro para E.
+    RAISE WARNING 'auto-create entrega falló (receta %, empresa %): %', v_receta_id, v_emp, SQLERRM;
+    BEGIN
+      INSERT INTO private.delivery_autocreate_fallos (receta_base_id, empresa_id, error, ocurrido_at)
+      VALUES (v_receta_id, v_emp, SQLERRM, now());
+    EXCEPTION WHEN OTHERS THEN NULL;   -- el log también es best-effort; jamás afecta el despacho
+    END;
+  END;
+END IF;
 ```
 **[D-1 = opción B, CERRADO] Recálculo del monto en despacho parcial:** el `excluded.monto` es el `SUM(dispensaciones.total_dispensado)` recomputado de ese `(receta, farmacia)` en **esta** tanda (incluye todo lo despachado hasta ahora). El `ON CONFLICT DO UPDATE ... WHERE estado='pendiente'` lo aplica:
 - **1ª tanda:** INSERT con monto = SUM parcial; estado `pendiente`.
@@ -324,13 +369,74 @@ ON CONFLICT (receta_base_id, farmacia_id) DO UPDATE                  -- [D-1=B] 
 - **Grandfather-inerte:** con default `pickup` y 0 escrituras de modalidad → `ri.modalidad='delivery'` nunca matchea → 0 inserts → `registrar_dispensacion*` se comporta **idéntico a hoy**.
 - **Manual** (`crear_entrega`): mismo INSERT con `ON CONFLICT DO UPDATE` de snapshots; `created_by=auth.uid()`.
 
-### Verificación Ola C (la más crítica)
-- **Dry-run + probes:** Pent_ciclo: crear→asignar→en_camino→entregada feliz; transición ilegal → RAISE; fallida sin motivo → RAISE; idempotencia (mismo estado → no-op); delivery ajeno (delivery_id≠caller) → RAISE; cola `listar_entregas_delivery` solo las propias.
-- **Reapertura (Pent_reabrir):** `fallida →(entregas_gestionar) asignada` → `intentos+1` + `reabierta_at/por` + `motivo_fallo=NULL`; reapertura intentada por **rol delivery** → RAISE (no gestor); reapertura de entrega **cobrada** → RAISE; verificar que la dispensación **no** se toca tras reabrir.
-- **Auto-create:** Pent_auto: (a) grupo delivery despachado → 1 entrega con monto=SUM correcto; (b) **default pickup → 0 entregas (NO-REGRESIÓN del despacho)**; (c) 2º despacho parcial → ON CONFLICT, no duplica; (d) exento despacha 2 sucursales delivery → 2 entregas (agrupación por farmacia_id); (e) cross-empresa: el auto-create solo ve farmacias de `v_emp` (el loop ya lo confina).
-- **No-regresión 141/143:** smoke confinado/exento/cross-empresa del despacho **sin** modalidad delivery → comportamiento idéntico (dispensaciones + estados igual); harness 141/143 sigue verde.
-- **Feature-flag NO aplica aquí** (es server-side puro), pero el cutover = grandfather-inerte + dry-run + smoke en vivo de un despacho pickup (0 entregas) antes de declarar OK. Backout: el bloque es aditivo; si algo falla, se revierte el CREATE OR REPLACE a la versión 143.
-- **Front:** gerente crea/asigna (panel); PWA delivery: cola + estados.
+### Fuentes de los campos + coords nullables
+- **`empresa_id = v_emp`** = `public.mi_empresa_proveedor()`, ya calculado al inicio del RPC de despacho. El loop **solo** despacha ítems con `f.empresa_id = v_emp` → la entrega creada tiene `empresa_id = v_emp` = empresa de la farmacia (consistente con el FK y la RLS). No se re-deriva de `farmacias` (ya está garantizado por el loop).
+- **`paciente_id`** = `recetas.paciente_id` (**bigint**, vía `JOIN recetas r ON r.id=v_receta_id`) — NO `v_ra.paciente_id` (text de `recetas_avanzadas`). Evita cast.
+- **`monto`** = `SUM(dispensaciones.total_dispensado)` del grupo en esta tanda (las filas recién insertadas por el loop).
+- **`direccion_entrega`/`telefono_contacto`** = snapshot de `pacientes` al crear. **`lat`/`lng` = NULL** en el auto-create → **la entrega es VÁLIDA sin coords** (no hay CHECK que las exija; el mapa la muestra sin-pin). La geocodificación es **async** (Ola D / edge `geocodificar`, vía `actualizar_direccion_entrega`). Confirmado: ninguna restricción bloquea la entrega por coords faltantes.
+- **`estado='pendiente'` (default), `intentos=0` (default), `created_by=NULL`** (auto).
+
+### Kill-switch (backout sin redeploy) — gate del bloque
+El bloque auto-create se envuelve en un guard leído de una mini-config, para **apagarlo en vivo** sin redeploy. **Default FAIL-SAFE = `false`** (ausencia = APAGADO; semántica cerrada detallada abajo en "Kill-switch — semántica cerrada"):
+```sql
+IF COALESCE((SELECT habilitado FROM private.delivery_flags WHERE clave='autocreate_entregas'), false) THEN
+   BEGIN ... INSERT INTO public.entregas (...) ... EXCEPTION WHEN OTHERS THEN ...rastro... END;   -- best-effort #4-B
+END IF;
+```
+- **Tablas nuevas (Ola C):**
+  - `private.delivery_flags(clave text PRIMARY KEY, habilitado boolean NOT NULL DEFAULT true)`, **seed `('autocreate_entregas', true)`** (habilita la feature; absence ⇒ off por el COALESCE).
+  - `private.delivery_autocreate_fallos(id bigint IDENTITY PK, receta_base_id bigint, empresa_id uuid, error text, ocurrido_at timestamptz DEFAULT now())` — rastro de fallos del best-effort (lo lee E).
+- Un `UPDATE private.delivery_flags SET habilitado=false WHERE clave='autocreate_entregas'` (admin plataforma) **desactiva el auto-create al instante**; el despacho vuelve a pre-C. El read es 1 fila por PK (despreciable).
+- **Backout en 2 niveles:** (1) flag off (instantáneo, sin redeploy); (2) `CREATE OR REPLACE` de los 2 RPCs a la versión 143 (sin el bloque). El flag es la 1ª línea de defensa.
+
+### [#4 — DECISIÓN OSCAR] Transaccionalidad del auto-create
+El bloque corre **dentro de la transacción del RPC de despacho**. Qué pasa si el INSERT de entrega falla:
+| Opción | Comportamiento | Trade-off |
+|---|---|---|
+| **(A) Atómico (misma tx, sin guard de excepción)** | un fallo del auto-create **aborta el despacho** (rollback de dispensaciones + dispensado) | consistencia total (nunca despacho-sin-entrega); **PERO acopla el path caliente**: un bug/constraint en entregas **pierde el despacho** — inaceptable para el requisito "el despacho no debe perderse" |
+| **(B) Best-effort (sub-bloque `BEGIN…EXCEPTION` dentro del RPC)** | si el auto-create falla, se hace rollback **solo del savepoint** (no de la entrega) y el **despacho COMMITEA igual**; se registra la falla | **el despacho nunca se pierde**; queda una entrega **faltante** (NO huérfana — huérfano sería entrega sin despacho; acá es despacho sin entrega, **reconciliable**). El monitoreo E detecta "grupos delivery despachados sin entrega" → el gerente la crea con `crear_entrega`. |
+| **(C) Desacoplado (trigger AFTER INSERT en dispensaciones, o job)** | el auto-create no vive en el RPC | desacopla, pero agrega un trigger en el path caliente o un job de reconciliación; más superficie |
+**[#4 = (B) best-effort, CERRADO Oscar] Patrón exacto:**
+- El bloque va en un **sub-bloque `BEGIN … EXCEPTION WHEN OTHERS THEN … END` DENTRO de cada RPC, TRAS el loop** de dispensación. Si el INSERT/UPDATE de entrega falla, el savepoint del sub-bloque se revierte (deshace la entrega parcial) pero **el despacho —ya comprometido— NO se revierte**; la transacción del RPC **commitea igual**.
+- **NO se traga en silencio:** el handler hace **`RAISE WARNING`** (a los logs del servidor) **+** inserta una fila en **`private.delivery_autocreate_fallos (receta_base_id, empresa_id, error, ocurrido_at)`** (best-effort anidado; si ese insert también falla, `NULL` → jamás afecta el despacho). Ese es el **rastro que E lee** para la reconciliación.
+- **Huérfana imposible / residual = FALTANTE:** el bloque corre **después** del loop y exige `EXISTS dispensaciones` del grupo → **nunca** hay entrega sin despacho (huérfana). El único riesgo residual es **entrega FALTANTE** (despacho sin entrega) — exactamente el caso que **E reconcilia** (discrepancia #2).
+- **Pickup byte-idéntico:** la rama `delivery` + su `EXCEPTION` es el **único** código nuevo en caliente. Con `pickup` (default) el `IF flag AND modalidad='delivery'` no entra (y con flag off ni se evalúa) → el despacho es **idéntico** al de 143. (A) habría arriesgado el path crítico; (C) era sobre-ingeniería.
+
+**Doble savepoint anidado (confirmaciones explícitas):**
+1. **El handler externo NO re-lanza** (no hay `RAISE` al final del `EXCEPTION WHEN OTHERS` externo) → la excepción del auto-create **nunca sube** a la transacción del despacho. El despacho commitea.
+2. **El handler interno traga su propio fallo** (`EXCEPTION WHEN OTHERS THEN NULL`) → la cadena *auto-create-falla → log-falla* termina en `NULL`; ni el INSERT del log puede romper el despacho.
+3. **Ambos `BEGIN…EXCEPTION` crean savepoints implícitos de PL/pgSQL:** un error que abortó la sub-transacción del auto-create se **revierte al savepoint** (la sub-tx queda limpia) → la **sesión queda usable** para el INSERT del log y para el COMMIT del despacho (PL/pgSQL no deja la transacción en estado abortado tras capturar en un bloque).
+4. **`RAISE WARNING` antes del INSERT del log es seguro:** el `WARNING` ya se **emitió** (va a los logs) antes de intentar el INSERT; si el INSERT del log falla, el WARNING ya quedó registrado y el handler interno lo traga — sin efecto sobre el despacho.
+
+### Kill-switch `private.delivery_flags` — semántica cerrada
+- **Default FAIL-SAFE:** `COALESCE((SELECT habilitado FROM private.delivery_flags WHERE clave='autocreate_entregas'), false)` → **ausencia de fila/tabla = APAGADO**. Ante cualquier duda (fila borrada, tabla ausente, SELECT vacío) **no se auto-crea**, y el despacho **nunca** se ve afectado (el flag-read y el bloque están fuera del camino del despacho). La migración C **siembra la fila en `true`** para habilitar la feature; quitarla/ponerla `false` la apaga.
+- **Apagado a mitad de grupo (entre tanda 1 y tanda 2):** comportamiento **esperado, NO bug** — tanda 1 (flag on) creó la entrega `pendiente` con su `monto` parcial; tanda 2 (flag off) **no entra al bloque** → el `monto` **no se recalcula** y queda en el de la tanda 1 (**subcontado**). Resultado: **estado consistente** (la entrega existe, `pendiente`), solo el **`monto` desactualizado** (`monto < SUM(dispensaciones)`), **reconciliable** y **señalable en E** (discrepancia #1). No produce estado inconsistente ni entrega rota.
+
+### Interacción con 141/143 (lo más delicado — confirmaciones explícitas)
+- **Hereda el gate del loop:** el auto-create corre en el **mismo contexto DEFINER** del RPC, **después** del loop que ya filtró `f.empresa_id=v_emp AND sucursal_visible(ri.farmacia_id)`. El `INSERT...SELECT` **repite** `sucursal_visible(ri.farmacia_id)` + `EXISTS dispensaciones del grupo` → solo crea entregas de farmacias que **este actor efectivamente despachó**. Un **confinable** que despacha su sucursal crea entrega **SOLO de su sucursal** (las demás no pasan `sucursal_visible`).
+- **NO abre ningún path nuevo de lectura/escritura** que 141/143 cierren: no lee `recetas`/`receta_items` fuera del confinamiento del loop; no expone PII (la dirección entra a `entregas`, cuya RLS es espejo de 141/143); no crea entregas cross-empresa (el loop ya limita a `v_emp`).
+- **Pickup intacto:** la **única** rama de código nuevo en caliente es `IF flag AND modalidad='delivery'`. Con `pickup` (default) el `INSERT...SELECT` rinde **0 filas** (y el kill-switch lo puede saltar entero) → el despacho es **byte-idéntico** al de hoy. Verificado por diseño + smoke de no-regresión abajo.
+
+### Verificación / Cutover Ola C (la más crítica)
+1. **Dry-run de inercia sobre el histórico:** `SELECT count(*) FROM receta_items WHERE modalidad='delivery'` → **debe ser 0** (modalidad nació pickup en A; nadie llamó `fijar_modalidad_grupo` en prod aún). → el auto-create es inerte sobre todo lo existente.
+2. **NO-REGRESIÓN del despacho pickup (las 2 vías), ANTES y DESPUÉS, idénticas** (BEGIN/ROLLBACK): despachar un grupo pickup vía `registrar_dispensacion` (token) y vía `registrar_dispensacion_dirigida` → mismas filas en `dispensaciones`, mismos `dispensado=true`, mismo `RETURN`, **0 entregas creadas**. Confinable/exento/cross-empresa → idéntico a pre-C.
+3. **Smoke delivery (BEGIN/ROLLBACK):** marcar un grupo `delivery` (vía `fijar_modalidad_grupo` de A) → despachar → **nace 1 entrega `pendiente` con `monto`=SUM correcto**; **despacho parcial** (2ª tanda) → `monto` recalculado (D-1, estado pendiente); **multi-sucursal** (exento despacha 3337+147 ambos delivery) → **2 entregas, una por sucursal**; **confinable** solo crea la de su sucursal; **cross-empresa** → entregas separadas por empresa.
+4. **Ciclo RPCs (Pent_ciclo/Pent_reabrir):** crear→asignar(same-sucursal)→en_camino→entregada feliz; transición ilegal → RAISE; fallida sin motivo → RAISE; idempotencia; delivery ajeno → RAISE; cola `listar_entregas_delivery` solo las propias; reapertura `fallida→asignada` por gestor (`intentos+1`, `reabierta_*`), por delivery → RAISE, de cobrada → RAISE; asignar delivery de otra sucursal → RAISE (#8).
+5. **Best-effort (#4-B):** simular fallo del INSERT de entrega (p.ej. forzar un error en el bloque) → el **despacho COMMITEA** igual (dispensaciones + dispensado presentes) **Y** queda **1 fila en `private.delivery_autocreate_fallos`** + `WARNING` en logs → E detecta "delivery despachado sin entrega". Entrega faltante reconciliable con `crear_entrega`.
+6. **Kill-switch encendiendo/apagando EN VIVO:**
+   - `habilitado=false` → despacho delivery **NO** crea entrega (vuelve a pre-C); `=true` → vuelve a crear. **Backout sin redeploy.**
+   - **Ausencia de fila** (borrarla) → COALESCE→`false` → **APAGADO** (fail-safe verificado).
+   - **Apagado a mitad de grupo:** tanda 1 (on) crea entrega `pendiente`; `UPDATE ...false`; tanda 2 (off) → **no recalcula `monto`** → entrega intacta `pendiente`, `monto` subcontado (`monto < SUM`) → discrepancia #1 señalable en E. **Estado consistente, no bug.**
+7. **Harness 141/143:** 459 filas, 0 ROJO, scan limpio (post-apply).
+- **Cutover:** server-side puro (sin deploy front para los RPCs). **Apply (una migración):** tablas `private.delivery_flags` (seed `autocreate_entregas=true`) + `private.delivery_autocreate_fallos`; RPCs nuevos (`crear/asignar/reasignar/actualizar_estado_entrega`, `listar_entregas_delivery`); `CREATE OR REPLACE` de **`registrar_dispensacion` + `registrar_dispensacion_dirigida`** con el bloque best-effort. Grandfather-inerte (flag on pero 0 grupos delivery hoy → 0 efecto) → dry-run → smoke no-regresión pickup (2 vías) → smoke delivery → kill-switch on/off → harness → commit. Front de Ola C (panel gerente + PWA delivery) se marca aparte.
+
+### Dependencias hacia D / E / F (anotadas)
+- **D (cobro):** `registrar_cobro_entrega` consumirá la entrega `pendiente/asignada/en_camino` → setea `cobrado/at/por/metodo_cobro` (techo `entregas_cobrar`); + bucket evidencia (`evidencia_path`) + `actualizar_direccion_entrega` (geocodificar → lat/lng).
+- **E (monitoreo):** `listar_entregas_monitoreo` (confinable ve su sucursal; exento toda la empresa) + `stats_entregas_sucursal`; **hereda 2 discrepancias de C a reconciliar:**
+  - **Discrepancia #1 — `monto` subcontado:** `monto < SUM(dispensaciones.total_dispensado)` del grupo, en entregas no-pendientes (D-1 caso borde) o por kill-switch a mitad de grupo. Derivable por query; señal para el gerente (no se auto-corrige en Fase 1).
+  - **Discrepancia #2 — entrega FALTANTE:** grupo `delivery` con `dispensaciones` pero **sin** fila en `entregas` (best-effort #4-B falló). E la detecta (a) **estructuralmente** (delivery group despachado sin entrega) y (b) leyendo **`private.delivery_autocreate_fallos`** (el rastro del EXCEPTION). Reconciliable con `crear_entrega`.
+- **F (sin-QR):** `buscar_recetas_pendientes_paciente` (ortogonal, no crea entrega) — independiente de C.
+- **Front Ola C:** panel gerente (crear/asignar/reasignar/estado) + PWA delivery (cola `listar_entregas_delivery` + actualizar_estado). Marcado, no implementado.
 
 ---
 
