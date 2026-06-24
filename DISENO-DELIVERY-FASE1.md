@@ -1,0 +1,425 @@
+# DISEÑO DEFINITIVO — Módulo DELIVERY Fase 1 (+ despacho sin-QR)
+
+> Doc de diseño para revisión. **NO es migración.** Nada aplicado, nada commiteado. Cada ola pasa por revisor + OK de Oscar paso a paso.
+> Convenciones del spine: RPCs DEFINER `search_path=''` schema-qualified; escritura SOLO por RPC; RLS `empresa_id=mi_empresa_proveedor() AND COALESCE(private.sucursal_visible(farmacia_id),false)`; gate-antes-de-efecto (l.54); RPC-vivo grandfather-inerte (l.51); CREATE OR REPLACE re-declara DEFINER/sp''/grants (l.50); validación en PREVIEW antes de main (l.25).
+
+---
+
+## 0 · VALIDACIÓN EN VIVO vs decisiones cerradas (2026-06-24)
+
+| Supuesto del diseño | Verificado en vivo | Estado |
+|---|---|---|
+| `entregas` no existe | 0 tablas | ✅ |
+| `receta_items.modalidad` no existe | 0 columnas | ✅ a crear |
+| 4 permisos `entregas_*` no existen | `count=0` | ✅ a crear |
+| Helpers `sucursal_visible/mi_sucursal/mi_empresa_proveedor/tiene_permiso` | existen | ✅ |
+| `dispensaciones` tiene `receta_avanzada_id, farmacia_id, paciente_id, total_dispensado` | sí | ✅ (monto) |
+| Bucket evidencia: NO reusar `evidencias-visitas` | `public=true` (confirmado riesgo) | ✅ bucket nuevo privado |
+| `geocodificar` vivo | es **EDGE** (`supabase/functions/geocodificar`), no pg_proc | ✅ (orquesta el front) |
+| **Ancla `receta_base_id` FK→`recetas(id)`** | ⚠️ **`recetas` PK es COMPUESTO `(id, paciente_id)`** — pero `id` es **independientemente referenciable** (`recetas_avanzadas.receta_base_id` YA hace `FK → recetas(id)`) | ✅ viable (FK a `recetas(id)` OK) |
+| Vínculo auth↔paciente para gate del paciente | ⚠️ **NO es `user_id`** → es **`pacientes.auth_user_id`**; además existe helper **`private.paciente_es_mio(paciente_id)`** | ✅ usar el helper |
+| `receta_items.receta_id` FK a recetas | ⚠️ **NO tiene FK** (columna suelta, igual que `medicamento_id`) | ⚠️ `entregas` ancla a `recetas(id)` directo, no vía receta_items |
+| Punto de auto-create | los RPCs `registrar_dispensacion(_dirigida)` exponen `v_emp`, `v_ra.{paciente_id,medico_id}`, `v_receta_id`; el loop ya filtra `sucursal_visible` (141/143) | ✅ insertar **tras el loop**, reusando el gate |
+
+**Contradicciones marcadas explícitas (no asumidas):**
+1. **`recetas` PK compuesto** — la decisión dijo `UNIQUE(receta_base_id, farmacia_id)` sobre `entregas` (correcto, no afecta) y FK a `recetas`. El FK funciona porque `recetas(id)` es único por sí solo (lo prueba `recetas_avanzadas`). **No** se puede asumir `recetas(id)` como PK simple, pero **sí** como destino de FK.
+2. **`pacientes.auth_user_id`** (no `user_id`) — la decisión de gate del paciente se implementa con `private.paciente_es_mio()`, no con un `user_id` inexistente.
+3. **Un despacho de un EXENTO** (mi_sucursal NULL) puede tocar ítems de **varias** farmacias de la empresa en una sola llamada → el auto-create debe **agrupar por `farmacia_id`** (no asumir una sola sucursal por llamada).
+
+---
+
+## 1 · PLAN DE OLAS DEFINITIVO
+
+| Ola | Contenido | Front | Riesgo | Estado tras aplicar |
+|---|---|---|---|---|
+| **A** | `receta_items.modalidad` + trigger uniformidad + `fijar_modalidad_grupo` | **SÍ** (RecetaModal pre-marca, WebAppRecetas selector) | bajo (aditivo, default pickup) | INERTE: todo pickup, nada crea entregas |
+| **B** | tabla `entregas` + RLS + 4 permisos (catálogo) | no | bajo (tabla sin RPC de write) | inerte |
+| **C** | RPCs `crear/asignar/reasignar/actualizar_estado_entrega` + `listar_entregas_delivery` + **auto-create dentro de `registrar_dispensacion(_dirigida)`** | **SÍ** (gerente crea/asigna, PWA delivery estados) | **ALTO** (toca RPCs vivos 141/143) | delivery vive SOLO si modalidad=delivery (grandfather-inerte) |
+| **D** | `registrar_cobro_entrega` + bucket privado `entregas-evidencia` + `actualizar_direccion_entrega` + wiring geocodificar | **SÍ** (PWA cobro + foto/firma) | medio | cobro + evidencia + coords |
+| **E** | `listar_entregas_monitoreo` + `stats_entregas_sucursal` | **SÍ** (admin/gerente) | bajo (solo lectura) | monitoreo |
+| **F** | `buscar_recetas_pendientes_paciente` (sin-QR) | **SÍ** (bandeja búsqueda) | bajo (**ortogonal**, no toca entregas) | despacho sin-QR |
+
+**Orden que minimiza regresión sobre el spine:**
+- **A, B** son puramente aditivas/inertes → primero, sin riesgo.
+- **C es el único toque a RPCs vivos (141/143)** → grandfather-inerte obligatorio + dry-run + preview. Va después de A+B.
+- **F es independiente** de toda la cadena de entregas (es pickup) → puede ir en cualquier momento, incluso primero (valor inmediato, riesgo mínimo).
+- `listar_entregas_delivery` se mueve a **C** (el delivery necesita su cola para actuar sobre estados). Cadena crítica: **B→C→D→E**.
+
+---
+
+## 2 · OLA A — Modalidad
+
+### DDL
+```sql
+ALTER TABLE public.receta_items
+  ADD COLUMN modalidad text NOT NULL DEFAULT 'pickup'
+  CHECK (modalidad IN ('pickup','delivery'));     -- default pickup = NO-REGRESIVO
+```
+**CHECK adicional (delivery exige sucursal) + uniformidad por (receta_id, farmacia_id) — trigger STATEMENT-level:**
+```sql
+-- delivery⇒sucursal: un ítem no ruteado (farmacia_id NULL) no puede ser delivery
+ALTER TABLE public.receta_items
+  ADD CONSTRAINT chk_modalidad_delivery_farmacia CHECK (modalidad <> 'delivery' OR farmacia_id IS NOT NULL);
+
+-- uniformidad: todos los ítems de (receta, farmacia) comparten modalidad. STATEMENT-level (estado FINAL).
+CREATE FUNCTION private.receta_items_modalidad_uniforme() RETURNS trigger
+LANGUAGE plpgsql SET search_path='' AS $$
+BEGIN
+  IF EXISTS (
+    SELECT 1
+    FROM (SELECT DISTINCT receta_id, farmacia_id FROM newtab WHERE farmacia_id IS NOT NULL) g
+    JOIN public.receta_items ri ON ri.receta_id=g.receta_id AND ri.farmacia_id=g.farmacia_id
+    GROUP BY g.receta_id, g.farmacia_id HAVING count(DISTINCT ri.modalidad) > 1
+  ) THEN RAISE EXCEPTION 'modalidad no uniforme en grupo (receta, farmacia)'; END IF;
+  RETURN NULL;
+END $$;
+-- Postgres prohíbe transition tables con multi-evento Y con lista de columnas → DOS triggers, sin `UPDATE OF`:
+CREATE TRIGGER trg_modalidad_uniforme_ins AFTER INSERT ON public.receta_items
+  REFERENCING NEW TABLE AS newtab FOR EACH STATEMENT EXECUTE FUNCTION private.receta_items_modalidad_uniforme();
+CREATE TRIGGER trg_modalidad_uniforme_upd AFTER UPDATE ON public.receta_items
+  REFERENCING NEW TABLE AS newtab FOR EACH STATEMENT EXECUTE FUNCTION private.receta_items_modalidad_uniforme();
+```
+> **[CORRECCIÓN #4 — el trigger ROW era el defecto, detectado por el smoke de 144]** Un trigger `FOR EACH ROW` se auto-rechaza a mitad del UPDATE de grupo de `fijar_modalidad_grupo` (al cambiar la 1ª fila, las hermanas siguen con la modalidad vieja → divergencia transitoria → RAISE). La versión correcta es **`FOR EACH STATEMENT` con transition table** (evalúa el estado final). Postgres no admite transition tables con multi-evento ni con `UPDATE OF col` → **dos triggers** (INSERT y UPDATE), el de UPDATE sin lista de columnas (dispara en todo UPDATE de `receta_items`; **nunca rechaza** grupos uniformes → costo despreciable, sin cambio de semántica del despacho). Aplicado en **mig 145**.
+> - **Caso #1 (re-ruteo, cambio de `farmacia_id`):** `NEW TABLE` basta — quitar un ítem del grupo ORIGEN no lo vuelve no-uniforme (subconjunto de uniforme es uniforme); el único grupo que puede romperse es el DESTINO, que está en `newtab`. No se requiere `OLD TABLE`. Fase 1 no prohíbe re-rutear un ítem ya delivery; si el re-ruteo crea destino mixto, el trigger lo rechaza.
+> - **Caso #2 (`delivery` con `farmacia_id` NULL):** lo impide el `CHECK chk_modalidad_delivery_farmacia` (delivery exige sucursal).
+
+### RPC `fijar_modalidad_grupo` (médico Y paciente; última escritura gana; congela tras despacho)
+```sql
+CREATE FUNCTION public.fijar_modalidad_grupo(p_receta_id bigint, p_farmacia_id integer, p_modalidad text)
+RETURNS jsonb LANGUAGE plpgsql SECURITY DEFINER SET search_path='' AS $$
+DECLARE v_uid uuid := auth.uid(); v_es_medico bool; v_es_paciente bool; v_n int;
+BEGIN
+  IF v_uid IS NULL THEN RAISE EXCEPTION 'No autorizado'; END IF;
+  IF p_modalidad NOT IN ('pickup','delivery') THEN RAISE EXCEPTION 'Modalidad inválida'; END IF;
+  -- gate: el médico de la receta O el paciente dueño
+  SELECT EXISTS (SELECT 1 FROM public.recetas r WHERE r.id=p_receta_id AND r.medico_id=v_uid) INTO v_es_medico;
+  SELECT EXISTS (SELECT 1 FROM public.recetas r WHERE r.id=p_receta_id
+                 AND COALESCE(private.paciente_es_mio(r.paciente_id),false)) INTO v_es_paciente;
+  IF NOT (v_es_medico OR v_es_paciente) THEN RAISE EXCEPTION 'No autorizado para esta receta'; END IF;
+  -- guard GATE-ANTES-DE-EFECTO: editable solo hasta que la sucursal despache el grupo
+  IF EXISTS (SELECT 1 FROM public.receta_items
+             WHERE receta_id=p_receta_id AND farmacia_id=p_farmacia_id AND dispensado=true) THEN
+    RAISE EXCEPTION 'Modalidad congelada: la sucursal ya despachó este grupo';
+  END IF;
+  UPDATE public.receta_items SET modalidad=p_modalidad
+    WHERE receta_id=p_receta_id AND farmacia_id=p_farmacia_id;
+  GET DIAGNOSTICS v_n = ROW_COUNT;
+  RETURN jsonb_build_object('receta_id',p_receta_id,'farmacia_id',p_farmacia_id,'modalidad',p_modalidad,'items',v_n);
+END $$;
+REVOKE EXECUTE ON FUNCTION public.fijar_modalidad_grupo(bigint,integer,text) FROM PUBLIC, anon;
+GRANT  EXECUTE ON FUNCTION public.fijar_modalidad_grupo(bigint,integer,text) TO authenticated;
+```
+- **Un solo RPC** compartido (gate por OR médico/paciente). "Última escritura gana" (sin lock). El UPDATE del grupo entero = uniformidad por construcción; el trigger es backstop.
+- **Front:** RecetaModal (médico pre-marca por grupo al rutear); WebAppRecetas (paciente cambia). Ambos llaman este RPC.
+
+### Front que toca la Ola A (marcar, sin implementar)
+- **Pre-marca del MÉDICO — [RecetaModal.tsx](src/components/consulta/RecetaModal.tsx):** la agrupación por cadena/sucursal ya existe ([:187-198](src/components/consulta/RecetaModal.tsx#L187)) y el ruteo per-ítem en [:370](src/components/consulta/RecetaModal.tsx#L370) (`abrirModalFarmacia`). El control de modalidad va **por grupo de sucursal** (un toggle pickup/delivery por `(receta, farmacia)`), habilitado **después** de rutear (cuando `item.farmacia_id` está seteado) → llama `fijar_modalidad_grupo(receta_id, farmacia_id, modalidad)`. Al emitir aún por insert directo (pre-O1), la pre-marca se hace tras crear la receta (cuando ya hay `receta_id`+ítems con `farmacia_id`).
+- **Control del PACIENTE — [WebAppRecetas.tsx:97](src/webapp/pages/WebAppRecetas.tsx#L97)** (`r.items.map`) + [useWebAppRecetas.ts:51-55](src/webapp/hooks/useWebAppRecetas.ts#L51): agrupar los ítems por `farmacia_id` y ofrecer pickup/delivery **por sucursal**; cada cambio llama el **mismo** `fijar_modalidad_grupo`. (Requiere exponer `farmacia_id`/`modalidad` en el select del hook — hoy no los trae.)
+- Ambos paths → **un solo RPC**; la UI puede ocultar el control si está congelado, pero la autoridad es el guard del RPC.
+
+### Verificación Ola A
+- **No-regresión del default pickup (crítico):** el insert directo actual de `useRecetas` ([useRecetas.ts:63/87](src/hooks/useRecetas.ts#L63)) **NO se rompe** — los ítems entran sin `modalidad` (→ default `pickup`) y con `farmacia_id=NULL` → el trigger `EXISTS (... x.farmacia_id=NEW.farmacia_id ...)` con NULL no matchea → 0 rechazos. Probe Pmod_batch: insert batch de N ítems (varias farmacias, todas pickup) → 0 rechazos.
+- **Trigger batch vs ítem único:** (batch) mixto de farmacias, todas pickup → OK; (ítem único) `UPDATE modalidad` de un grupo que ya tiene otra modalidad → RAISE (correcto); cambio vía `fijar_modalidad_grupo` (todo el grupo a la vez) → nunca deja el grupo a medias → sin falso-rechazo ni deadlock.
+- **Freeze server-side:** fijar delivery → uniforme; tras `dispensado=true` en cualquier ítem del grupo → `fijar_modalidad_grupo` da **RAISE 'congelada'** (ambos paths). "Última escritura gana" solo mientras no congelado.
+- **Gate del paciente:** paciente dueño (`paciente_es_mio(recetas.paciente_id bigint)`) → OK; **otro paciente** → RAISE 'No autorizado'; tercero (ni médico ni paciente) → RAISE.
+- **Harness:** verde sin filas nuevas rojas; ninguna RPC de despacho cambia (nada lee `modalidad` hasta Ola C).
+
+### Inercia de la Ola A (explícito)
+- **A NO crea ninguna entrega.** La tabla `entregas` ni siquiera existe en A (es Ola B). `modalidad` por sí sola **no dispara nada**: el auto-create vive en Ola C, dentro de `registrar_dispensacion(_dirigida)`, y solo actúa si `modalidad='delivery'`.
+- **Inerte vs 141/143:** A no toca `registrar_dispensacion(_dirigida)` ni `verificar_receta_despacho` ni ninguna RLS de confinamiento → cero impacto sobre el spine de sucursales. El despacho se comporta idéntico.
+- **Inerte vs ruteo 3.3:** A agrega una columna ortogonal; el ruteo per-ítem (`farmacia_id`) no cambia. La uniformidad solo aplica una vez que un grupo tiene `farmacia_id` + `modalidad` seteados; en el alta (farmacia_id NULL, pickup) no interviene.
+
+### Dependencia anotada (O1 regulatorio)
+Cuando entre **O1 (`emitir_receta`, único escritor)**, deberá **setear `modalidad`** en su insert de `receta_items` (default `'pickup'` si `p_items` no la trae). Hasta entonces, el **`DEFAULT 'pickup'` lo cubre** y el insert directo de `useRecetas` sigue funcionando. Registrado también en [DISENO-REGULATORIO.md](DISENO-REGULATORIO.md) B8.
+
+---
+
+## 3 · OLA B — Tabla `entregas` + permisos + RLS
+
+### DDL
+```sql
+CREATE TABLE public.entregas (
+  id              bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+  receta_base_id  bigint  NOT NULL REFERENCES public.recetas(id),          -- recetas(id) es referenciable (ver §0)
+  farmacia_id     integer NOT NULL REFERENCES public.farmacias(id),         -- la SUCURSAL
+  empresa_id      uuid    NOT NULL REFERENCES public.empresas_proveedoras(id),  -- denormalizado p/ RLS (= farmacias.empresa_id)
+  paciente_id     bigint  NOT NULL REFERENCES public.pacientes(id),
+  delivery_id     uuid    REFERENCES public.cuentas_proveedor(id),          -- repartidor; NULL hasta asignar
+  estado          text    NOT NULL DEFAULT 'pendiente'
+                    CHECK (estado IN ('pendiente','asignada','en_camino','entregada','fallida')),
+  motivo_fallo    text    CHECK (motivo_fallo IN ('rechazada','ausente','direccion_mala')),
+  direccion_entrega text,                                                   -- snapshot de pacientes.direccion, editable
+  telefono_contacto text,                                                   -- snapshot de pacientes.telefono
+  lat             double precision, lng double precision,                   -- nullable; entrega válida sin coords
+  monto           numeric(12,2),                                            -- snapshot SUM(dispensaciones.total_dispensado)
+  metodo_cobro    text    CHECK (metodo_cobro IN ('efectivo','tarjeta','transferencia','sin_cobro')),
+  cobrado         boolean NOT NULL DEFAULT false,
+  cobrado_at      timestamptz, cobrado_por uuid REFERENCES public.cuentas_proveedor(id),
+  evidencia_path  text,                                                     -- PATH en bucket privado (no URL)
+  asignado_por    uuid, asignado_at timestamptz, entregado_at timestamptz, notas text,
+  intentos        integer NOT NULL DEFAULT 0,                              -- reaperturas vía reasignar_entrega (fallida→asignada)
+  reabierta_at    timestamptz, reabierta_por uuid REFERENCES public.cuentas_proveedor(id),  -- audita el último reintento (no es borrón)
+  created_by      uuid,                                                     -- NULL = auto-al-despachar
+  created_at      timestamptz NOT NULL DEFAULT now(), updated_at timestamptz NOT NULL DEFAULT now(),
+  CONSTRAINT uq_entrega_receta_sucursal UNIQUE (receta_base_id, farmacia_id),       -- UNA por sucursal
+  CONSTRAINT chk_motivo_si_fallida CHECK ((estado='fallida') = (motivo_fallo IS NOT NULL)),
+  CONSTRAINT chk_cobro_coherente   CHECK (cobrado=false OR (cobrado_at IS NOT NULL AND metodo_cobro IS NOT NULL))
+);
+CREATE INDEX idx_entregas_delivery_estado ON public.entregas (delivery_id, estado);
+CREATE INDEX idx_entregas_farmacia_estado ON public.entregas (farmacia_id, estado);
+CREATE INDEX idx_entregas_empresa         ON public.entregas (empresa_id);
+
+ALTER TABLE public.entregas ENABLE ROW LEVEL SECURITY;
+-- SELECT confinado (espejo 141/143). Sin policy de write → escritura SOLO por RPCs DEFINER.
+CREATE POLICY entregas_select ON public.entregas FOR SELECT TO authenticated
+  USING ( COALESCE(empresa_id = public.mi_empresa_proveedor(), false)
+          AND COALESCE(private.sucursal_visible(farmacia_id), false)
+        OR COALESCE(private.tiene_rol(ARRAY['super_admin']), false) );
+REVOKE INSERT, UPDATE, DELETE, TRUNCATE ON public.entregas FROM PUBLIC, anon, authenticated;
+GRANT  SELECT ON public.entregas TO authenticated;
+```
+> Nota: el delivery (confinable 114) ve por RLS su sucursal; la RPC de su cola además filtra `delivery_id=auth.uid()`. La RLS de SELECT habilita el monitoreo (E); la PII (direccion/telefono) igual sale solo por las RPCs de entregas, nunca por el flujo pickup.
+
+### Permisos (4 filas en `permisos_empresa_rol`, `tipo_empresa='farmacia'`)
+| accion | roles default |
+|---|---|
+| `entregas_ver` | delivery, supervisor, gerente_farmacia, admin, finanzas, pagador |
+| `entregas_gestionar` | supervisor, gerente_farmacia, admin |
+| `entregas_actualizar_estado` | delivery, supervisor, gerente_farmacia, admin |
+| `entregas_cobrar` | delivery, cajero, gerente_farmacia, admin, finanzas, pagador |
+- Editables per-empresa vía override 117 (NO techo — son operativas). Delivery CONFINABLE (114).
+
+### Verificación Ola B
+- **Dry-run:** crear tabla + policy + permisos; probe Pent_rls: (a) confinable@X ve solo entregas de X; (b) exento ve todas las de su empresa; (c) cross-empresa: actor de empresa A no ve entregas de B; (d) escritura directa `INSERT/UPDATE entregas` como authenticated → DENEGADA (sin grant).
+- **No-regresión:** tabla vacía, sin RPC de write → 0 entregas, sistema igual. Harness verde.
+
+---
+
+## 4 · OLA C — RPCs de ciclo + auto-create (TOCA 141/143)
+
+### Máquina de estados (validada en cada RPC, gate-antes-de-efecto)
+`pendiente →(gestionar) asignada →(actualizar_estado) en_camino →(actualizar_estado) entregada | fallida(motivo)`; `asignada→fallida` ok; `asignada/en_camino →(gestionar) asignada` (reasignar); **`fallida →(gestionar) asignada` (reabrir, con salvaguardas)**; `entregada` terminal. Idempotente: estado==actual → no-op.
+- **[D-9] `fallida(motivo: rechazada|ausente|direccion_mala)` = terminal-REABRIBLE-vía-gestión, SIN reversión** de dispensación/stock (no reabre `dispensado`, no restock; inmutabilidad regulatoria A6). El retorno físico del med es **nota operativa**, fuera del sistema.
+- **Reapertura `fallida → asignada` (vía `reasignar_entrega`), salvaguardas:**
+  - gateada **SOLO por `entregas_gestionar`** (NO el rol delivery — un delivery no reabre su propia falla);
+  - **SOLO si `cobrado=false`** → **RAISE si la entrega ya fue cobrada**;
+  - **`intentos = intentos + 1`** + set `reabierta_at=now()`, `reabierta_por=auth.uid()`, nuevo `delivery_id`, `motivo_fallo=NULL`, `estado='asignada'`. El contador **audita** el reintento (el monitoreo E lo muestra; **no es un borrón**);
+  - **NO toca la dispensación** (sigue válida — coherente con D-9 / A6);
+  - Fase 1: `rechazada`, `ausente` y `direccion_mala` usan la **misma** transición con el contador visible (no se trata `rechazada` distinto por ahora).
+
+### Firmas + gate (cuerpos resumidos; todos DEFINER sp'')
+| RPC | Firma | Gate | Confina |
+|---|---|---|---|
+| `crear_entrega` | `(p_receta_base_id bigint, p_farmacia_id int)→jsonb` | `entregas_gestionar` | empresa + `sucursal_visible(p_farmacia_id)`; UPSERT snapshot |
+| `asignar_entrega` | `(p_entrega_id bigint, p_delivery_id uuid)→jsonb` | `entregas_gestionar` | entrega visible; valida `p_delivery_id` = rol delivery de misma empresa+sucursal; `pendiente→asignada` |
+| `reasignar_entrega` | `(p_entrega_id bigint, p_delivery_id uuid)→jsonb` | `entregas_gestionar` | desde asignada/en_camino (reasignar) **y fallida (reabrir)**; **RAISE si `cobrado=true`**; en reapertura `fallida→asignada`: `intentos+1`, `reabierta_at/por`, `motivo_fallo=NULL`. NO toca dispensación |
+| `actualizar_estado_entrega` | `(p_entrega_id bigint, p_nuevo_estado text, p_motivo_fallo text DEFAULT NULL)→jsonb` | `entregas_actualizar_estado` | empresa+sucursal; **si rol delivery: AND `delivery_id=auth.uid()`**; valida transición; idempotente |
+| `listar_entregas_delivery` | `()→jsonb` | `entregas_ver` | empresa + sucursal_visible + **`delivery_id=auth.uid()`** (cola propia) |
+
+Ejemplo de cuerpo (`actualizar_estado_entrega`, patrón gate-antes-de-efecto):
+```sql
+CREATE FUNCTION public.actualizar_estado_entrega(p_entrega_id bigint, p_nuevo_estado text, p_motivo_fallo text DEFAULT NULL)
+RETURNS jsonb LANGUAGE plpgsql SECURITY DEFINER SET search_path='' AS $$
+DECLARE v_e public.entregas; v_es_delivery bool;
+BEGIN
+  IF NOT COALESCE(private.tiene_permiso('entregas_actualizar_estado'),false) THEN RAISE EXCEPTION 'No autorizado'; END IF;
+  SELECT * INTO v_e FROM public.entregas WHERE id=p_entrega_id
+    AND COALESCE(empresa_id=public.mi_empresa_proveedor(),false)
+    AND COALESCE(private.sucursal_visible(farmacia_id),false);
+  IF NOT FOUND THEN RAISE EXCEPTION 'Entrega no visible/no existe'; END IF;
+  -- delivery solo su propia entrega
+  v_es_delivery := (v_e.delivery_id = auth.uid());
+  IF private.mi_sucursal() IS NOT NULL AND NOT v_es_delivery
+     AND NOT COALESCE(private.tiene_permiso('entregas_gestionar'),false) THEN
+     RAISE EXCEPTION 'No autorizado: no es tu entrega'; END IF;
+  IF v_e.estado = p_nuevo_estado THEN RETURN to_jsonb(v_e); END IF;             -- idempotente
+  -- transición legal:
+  IF NOT ( (v_e.estado='asignada'  AND p_nuevo_estado IN ('en_camino','fallida'))
+        OR (v_e.estado='en_camino' AND p_nuevo_estado IN ('entregada','fallida')) ) THEN
+     RAISE EXCEPTION 'Transición ilegal % → %', v_e.estado, p_nuevo_estado; END IF;
+  IF p_nuevo_estado='fallida' AND p_motivo_fallo IS NULL THEN RAISE EXCEPTION 'Motivo requerido'; END IF;
+  UPDATE public.entregas SET estado=p_nuevo_estado, motivo_fallo=p_motivo_fallo,
+    entregado_at = CASE WHEN p_nuevo_estado='entregada' THEN now() ELSE entregado_at END, updated_at=now()
+    WHERE id=p_entrega_id;
+  -- HOOK push paciente (Fase 4): en_camino / entregada → punto de notificación (stub, sin efecto aquí)
+  RETURN (SELECT to_jsonb(e) FROM public.entregas e WHERE e.id=p_entrega_id);
+END $$;
+```
+
+### Auto-create dentro de `registrar_dispensacion(_dirigida)` — bloque ADITIVO grandfather-inerte
+Tras el `LOOP` que marca dispensado + inserta `dispensaciones` (validado en vivo: el loop ya filtra `sucursal_visible`), agregar **antes del `RETURN`**:
+```sql
+-- AUTO-CREATE entregas: una por (receta, farmacia) cuyo grupo sea modalidad=delivery y que este actor despachó.
+-- Agrupa por farmacia_id (un EXENTO puede despachar varias sucursales en una llamada). Idempotente.
+INSERT INTO public.entregas (receta_base_id, farmacia_id, empresa_id, paciente_id,
+                             direccion_entrega, telefono_contacto, monto, created_by)
+SELECT v_receta_id, ri.farmacia_id, v_emp, r.paciente_id, pac.direccion, pac.telefono,  -- paciente_id de RECETAS (bigint), no de recetas_avanzadas (text)
+       (SELECT SUM(d.total_dispensado) FROM public.dispensaciones d
+          WHERE d.receta_avanzada_id = v_ra.id AND d.farmacia_id = ri.farmacia_id),
+       NULL                                                          -- created_by NULL = auto
+FROM public.receta_items ri
+JOIN public.recetas   r   ON r.id  = v_receta_id                     -- r.paciente_id : bigint
+JOIN public.pacientes pac ON pac.id = r.paciente_id
+WHERE ri.receta_id = v_receta_id
+  AND ri.farmacia_id IS NOT NULL
+  AND ri.modalidad = 'delivery'                                      -- grandfather: default pickup → 0 filas
+  AND COALESCE(private.sucursal_visible(ri.farmacia_id), false)      -- solo sucursales que este actor despachó
+  AND EXISTS (SELECT 1 FROM public.dispensaciones d
+               WHERE d.receta_avanzada_id = v_ra.id AND d.farmacia_id = ri.farmacia_id)  -- ya despachada
+GROUP BY ri.farmacia_id, r.paciente_id, pac.direccion, pac.telefono
+ON CONFLICT (receta_base_id, farmacia_id) DO UPDATE                  -- [D-1=B] recálculo del monto por tanda
+  SET monto = excluded.monto, updated_at = now()
+  WHERE entregas.estado = 'pendiente';                              -- guard: ya asignada/en_camino/cobrada → NO recalcula
+```
+**[D-1 = opción B, CERRADO] Recálculo del monto en despacho parcial:** el `excluded.monto` es el `SUM(dispensaciones.total_dispensado)` recomputado de ese `(receta, farmacia)` en **esta** tanda (incluye todo lo despachado hasta ahora). El `ON CONFLICT DO UPDATE ... WHERE estado='pendiente'` lo aplica:
+- **1ª tanda:** INSERT con monto = SUM parcial; estado `pendiente`.
+- **2ª+ tanda, entrega aún `pendiente`:** UPDATE → monto = SUM acumulado (refleja TODO lo despachado). Idempotente.
+- **Caso borde — entrega ya NO-pendiente (asignada/en_camino/cobrada) y llega otra tanda:** el `WHERE estado='pendiente'` **no matchea → el monto NO se mueve** (no se pisa un cobro/asignación en curso). **Discrepancia a registrar** (nota): si tras asignar llega más despacho, el monto cobrado puede quedar por debajo de lo despachado → el monitoreo (E) debe poder **detectar `monto < SUM(dispensaciones)` en entregas no-pendientes** y señalarlo (no se auto-corrige en Fase 1; es señal operativa para el gerente).
+- **Grandfather-inerte:** con default `pickup` y 0 escrituras de modalidad → `ri.modalidad='delivery'` nunca matchea → 0 inserts → `registrar_dispensacion*` se comporta **idéntico a hoy**.
+- **Manual** (`crear_entrega`): mismo INSERT con `ON CONFLICT DO UPDATE` de snapshots; `created_by=auth.uid()`.
+
+### Verificación Ola C (la más crítica)
+- **Dry-run + probes:** Pent_ciclo: crear→asignar→en_camino→entregada feliz; transición ilegal → RAISE; fallida sin motivo → RAISE; idempotencia (mismo estado → no-op); delivery ajeno (delivery_id≠caller) → RAISE; cola `listar_entregas_delivery` solo las propias.
+- **Reapertura (Pent_reabrir):** `fallida →(entregas_gestionar) asignada` → `intentos+1` + `reabierta_at/por` + `motivo_fallo=NULL`; reapertura intentada por **rol delivery** → RAISE (no gestor); reapertura de entrega **cobrada** → RAISE; verificar que la dispensación **no** se toca tras reabrir.
+- **Auto-create:** Pent_auto: (a) grupo delivery despachado → 1 entrega con monto=SUM correcto; (b) **default pickup → 0 entregas (NO-REGRESIÓN del despacho)**; (c) 2º despacho parcial → ON CONFLICT, no duplica; (d) exento despacha 2 sucursales delivery → 2 entregas (agrupación por farmacia_id); (e) cross-empresa: el auto-create solo ve farmacias de `v_emp` (el loop ya lo confina).
+- **No-regresión 141/143:** smoke confinado/exento/cross-empresa del despacho **sin** modalidad delivery → comportamiento idéntico (dispensaciones + estados igual); harness 141/143 sigue verde.
+- **Feature-flag NO aplica aquí** (es server-side puro), pero el cutover = grandfather-inerte + dry-run + smoke en vivo de un despacho pickup (0 entregas) antes de declarar OK. Backout: el bloque es aditivo; si algo falla, se revierte el CREATE OR REPLACE a la versión 143.
+- **Front:** gerente crea/asigna (panel); PWA delivery: cola + estados.
+
+---
+
+## 5 · OLA D — Cobro + bucket evidencia + geocodificación
+
+### RPC `registrar_cobro_entrega`
+```sql
+(p_entrega_id bigint, p_metodo_cobro text, p_monto numeric DEFAULT NULL) → jsonb
+  gate: entregas_cobrar; empresa+sucursal_visible; si delivery: delivery_id=auth.uid()
+  set cobrado=true, cobrado_at=now(), cobrado_por=auth.uid(), metodo_cobro=p_metodo_cobro,
+      monto = COALESCE(p_monto, monto)   -- snapshot ya seteado al crear; p_monto solo override
+```
+### RPC `actualizar_direccion_entrega`
+```sql
+(p_entrega_id bigint, p_direccion text, p_lat double precision DEFAULT NULL, p_lng double precision DEFAULT NULL) → jsonb
+  gate: entregas_gestionar; empresa+sucursal_visible; persiste direccion/lat/lng
+```
+### Bucket evidencia (NUEVO PRIVADO)
+- `entregas-evidencia`, `public=false`. **NO reusar `evidencias-visitas`** (confirmado `public=true`, riesgo marcado).
+- **RLS `storage.objects`:** INSERT = `authenticated` con `tiene_permiso('entregas_actualizar_estado')`, path `{empresa_id}/{entrega_id}/...`, y la entrega es del caller (`delivery_id=auth.uid()`). SELECT directo: ninguno → lectura por **signed URL** server-side (gerente/admin con `entregas_ver`, confinado), TTL corto.
+- Front: `upload(path,file)` + se guarda `evidencia_path`; lectura `createSignedUrl`. **Nunca `getPublicUrl`.**
+### Geocodificación
+- El **front** (PWA/panel) llama al **edge `geocodificar`** (texto→lat/lng) y pasa el resultado a `actualizar_direccion_entrega`. Los RPCs no llaman edges.
+- **Fallback:** si falla → lat/lng NULL; entrega válida, mapa sin-pin, navega por texto.
+
+### Verificación Ola D
+- Probe Pent_cobro: cobrar como cobrador → cobrado=true coherente (CHECK); doble-cobro idempotente o bloqueado; delivery ajeno → RAISE. Bucket: subir a entrega propia OK; subir a entrega ajena → DENEGADO (RLS path/owner); lectura sin signed URL → DENEGADA. Geocode: dirección mala → lat/lng NULL, entrega usable.
+
+---
+
+## 6 · OLA E — Monitoreo
+
+| RPC | Firma | Gate | Confina |
+|---|---|---|---|
+| `listar_entregas_monitoreo` | `(p_estado text DEFAULT NULL, p_sucursal_id int DEFAULT NULL)→jsonb` | `entregas_ver` | empresa + sucursal_visible (gerente→su sucursal; admin/exento→todas). Expone paciente nombre+direccion+telefono (confinado) |
+| `stats_entregas_sucursal` | `(p_desde date, p_hasta date, p_sucursal_id int)→jsonb` | `entregas_ver`/`recetas_reportes` | espejo `stats_recetas_sucursal`; agregados por estado/sucursal |
+
+### Verificación Ola E
+- Probe Pent_mon: gerente@X ve solo entregas de X; admin ve todas las de su empresa; cross-empresa cerrado; stats coinciden con conteos. PII (direccion/telefono) sale solo aquí (confinado), nunca en bandeja pickup.
+
+---
+
+## 7 · OLA F — Despacho sin-QR (ORTOGONAL, NO crea entrega)
+
+### RPC `buscar_recetas_pendientes_paciente`
+```sql
+(p_nombre text, p_fecha_nac date) → jsonb     -- identidad mínima: nombre + fecha_nacimiento (pacientes los tiene)
+  gate: recetas_dispensar; confina empresa + sucursal_visible
+  devuelve: recetas con ítems pendientes (dispensado=false) ruteados a la SUCURSAL DEL CALLER para ese paciente
+  → el despacho posterior usa registrar_dispensacion_dirigida (ya existe). NO crea entrega (es pickup).
+```
+- Suplantación mitigada: 2 datos (nombre+fecha_nac) + `despachado_por` audita + acotado a la sucursal del caller.
+
+### Verificación Ola F
+- Probe Pbusca: identidad correcta → lista solo pendientes de la sucursal del caller; cross-empresa/otra sucursal → vacío; no expone dirección (solo lo necesario para despacho mostrador). Independiente de entregas (no crea ninguna).
+
+---
+
+## 8 · INTERACCIONES CON PROD (explícito)
+
+1. **141/143 (confinamiento por sucursal):** el auto-create (C) se inserta **dentro** de `registrar_dispensacion(_dirigida)`, **después** del gate `sucursal_visible` del loop → hereda el confinamiento; solo crea entregas para farmacias que el actor pudo despachar. La RLS de `entregas` (B) es **espejo** de 141/143 (empresa + sucursal_visible) → consistencia total. **Sin relajar** ningún filtro existente (AND conjuntivo).
+2. **Ruteo per-ítem 3.3:** `modalidad` es per-`(receta, farmacia)` = **per-sucursal**, coherente con el ruteo per-ítem (cada ítem ya tiene `farmacia_id`). La uniformidad garantiza que un grupo de sucursal tenga una sola modalidad → una sola entrega. `fijar_modalidad_grupo` actualiza todo el grupo.
+3. **RLS `farmacia_medicamentos`:** **sin interacción** — el surtido es free-text sin `medicamento_id` (verificado en el recon regulatorio) y el `monto` de la entrega viene de `dispensaciones`, no del surtido. Delivery no lee `farmacia_medicamentos`.
+4. **`recetas` PK compuesto:** `entregas.receta_base_id` FK→`recetas(id)` funciona (id referenciable); **no** se asume PK simple.
+5. **Despacho sin-QR (F)** reusa `registrar_dispensacion_dirigida` (141-gated) → mismo confinamiento; ortogonal a entregas.
+
+---
+
+## 9 · RESOLUCIONES PRE-APROBACIÓN (#1–#9)
+
+### 9.1 · [#1 = D-1, CERRADO opción B] Despacho PARCIAL × delivery — monto recalculado por tanda
+**Decisión Oscar:** el monto se **RECALCULA** como `SUM(dispensaciones.total_dispensado)` de ese `(receta, farmacia)` en **cada** tanda, con **guard `estado='pendiente'`** (una vez asignada/en_camino/cobrada → ya NO se recalcula). Implementación = `ON CONFLICT DO UPDATE SET monto=excluded.monto ... WHERE entregas.estado='pendiente'` (punto exacto: §4, dentro del bloque auto-create, **tras el loop** de `registrar_dispensacion(_dirigida)`). Caso borde "entrega no-pendiente + otra tanda" → monto NO se mueve, discrepancia señalable en monitoreo (E). Detalle completo en §4.
+
+### 9.2 · [#2 — RESUELTO en vivo] FK `entregas.receta_base_id → recetas(id)`
+Verificado: existe **`recetas_id_uniq: UNIQUE (id)`** standalone (además del PK compuesto `(id, paciente_id)`). → el FK es **válido**. **PRECONDICIÓN Ola B (check exacto antes de aplicar):**
+```sql
+SELECT 1 FROM pg_constraint WHERE conrelid='public.recetas'::regclass AND contype='u'
+  AND pg_get_constraintdef(oid)='UNIQUE (id)';   -- debe devolver 1 fila
+```
+Si esa UNIQUE **no existiera**, el `CREATE TABLE entregas ... REFERENCES recetas(id)` **fallaría** (`there is no unique constraint matching given keys`) → habría que (i) `ALTER TABLE recetas ADD CONSTRAINT recetas_id_uniq UNIQUE (id)` primero, o (ii) anclar a otra columna única. **Hoy existe → no se requiere acción**, pero el check va como gate de la migración B.
+
+### 9.3 · [#3 — CONFIRMADO] Freeze server-side, mismo RPC ambos paths
+`fijar_modalidad_grupo` es el **ÚNICO** punto de cambio de modalidad para **ambos** (médico pre-marca y paciente cambia): gate `v_es_medico OR v_es_paciente`, y el **mismo guard server-side** `IF EXISTS (dispensado=true para ese (receta,farmacia)) → RAISE 'congelada'`. **"Última escritura gana" aplica SOLO mientras no esté congelado**; tras la 1ª dispensación del grupo, ambos paths reciben el RAISE. El freeze **NO** vive en UI. (La UI puede ocultar el control, pero la autoridad es el RPC.)
+
+### 9.4 · [#4 — CORREGIDO: ROW era el defecto; STATEMENT-level es la versión correcta]
+**Mi análisis previo era ERRÓNEO.** Afirmé que el UPDATE de grupo de `fijar_modalidad_grupo` no dispararía el trigger ROW "porque actualiza todo el grupo a la vez". **Falso:** un UPDATE multi-fila procesa **fila por fila**; el trigger `BEFORE ROW` en la fila 1 (cambiada a delivery) ve a las hermanas **aún en pickup** → divergencia **transitoria** → RAISE. Lo detectó el **smoke de 144** (`P0001 modalidad no uniforme en (receta 2404, farmacia 3337)`).
+- **Fix (mig 145):** trigger `AFTER ... FOR EACH STATEMENT` con `REFERENCING NEW TABLE` → evalúa el **estado FINAL** del statement → el UPDATE de grupo uniforme pasa; un UPDATE divergente de 1 fila sigue rechazado (`count(DISTINCT modalidad)>1`).
+- **Restricciones Postgres:** transition tables **no** se permiten con multi-evento ni con `UPDATE OF col` → **dos triggers** (`_ins` AFTER INSERT, `_upd` AFTER UPDATE sin lista de columnas). El de UPDATE dispara en **todo** UPDATE de `receta_items` (incl. `dispensado` del despacho) pero **nunca rechaza** grupos uniformes → costo = un lookup indexado por UPDATE, **sin cambio de semántica** del despacho (141/143 verdes confirmado).
+- **Insert batch (`useRecetas`):** ítems entran pickup → grupo uniforme → 0 rechazos (no-regresión verificada).
+- **Caso #1 (re-ruteo):** `NEW TABLE` basta (origen no se rompe por remoción; destino sí está en newtab). Verificado en vivo: re-rutear un ítem pickup a un grupo delivery → RAISE destino mixto.
+- **Caso #2 (delivery+farmacia NULL):** `CHECK chk_modalidad_delivery_farmacia` lo rechaza. Verificado en vivo.
+- **Verificado en smoke completo post-145:** los 9 casos verdes.
+
+### 9.5 · [#5 — DEPENDENCIA marcada] Coordinación con el work item REGULATORIO (path de emisión)
+Ola A (delivery: `receta_items.modalidad` + pre-marca en RecetaModal) y Regulatorio O1 (`emitir_receta` como único escritor + acuse) tocan el **mismo flujo de alta** de RecetaModal y el insert de `receta_items`:
+- **(a) Antes de que O1 exista:** el `DEFAULT 'pickup'` + el trigger **NO rompen el insert directo actual del cliente** (§9.4: items entran pickup/farmacia_id null → trigger no-op). → **Ola A es segura sin O1.**
+- **(b) Cuando O1 entre:** `emitir_receta` (único escritor) **debe setear `modalidad`** al insertar `receta_items` (default 'pickup' si no se especifica; el médico la pre-marca por grupo tras rutear, vía `fijar_modalidad_grupo`). El acuse regulatorio (en `handleAddMedicamento`) y la pre-marca de modalidad (al rutear) son **puntos distintos del MISMO modal** → no colisionan, pero **ambos** deben sobrevivir el cutover de `emitir_receta`.
+- **Acoplamiento de orden:** Ola A puede ir **antes** de O1 (no depende de él). Pero **O1 debe conocer `modalidad`** (incluirla en su insert de items). → marcar en el doc regulatorio que **`emitir_receta` setea `modalidad` (default pickup)** como parte de su contrato. **Dependencia registrada en ambos docs.**
+
+### 9.6 · [#6 — RESUELTO en vivo] Consistencia de tipos `paciente_id`/`medico_id`
+| Columna | Tipo |
+|---|---|
+| `pacientes.id` | **bigint** |
+| `recetas.paciente_id` | **bigint** ✅ (coincide) |
+| `recetas_avanzadas.paciente_id` | **text** ⚠️ |
+| `dispensaciones.paciente_id` | **text** ⚠️ |
+| `recetas.medico_id` | uuid · `recetas_avanzadas.medico_id`/`dispensaciones.medico_id` | **text** ⚠️ |
+| `pacientes.auth_user_id` | uuid · `private.paciente_es_mio` | **sobrecargada (bigint + text)** |
+**Resoluciones aplicadas al diseño:**
+- `entregas.paciente_id` = **bigint** FK→`pacientes(id)`. El auto-create toma `paciente_id` de **`recetas` (bigint)**, NO de `recetas_avanzadas` (text) — **ya corregido** en el bloque §4 (`JOIN recetas r ON r.id=v_receta_id`, `r.paciente_id`). Evita cast text→bigint.
+- **Gate del paciente** (`fijar_modalidad_grupo`): `private.paciente_es_mio(r.paciente_id)` con `r.paciente_id` **bigint** → usa el overload bigint. ✅
+- **`buscar_recetas_pendientes_paciente`** une por `pacientes` (bigint) + `recetas.paciente_id` (bigint) → sin mismatch. NO usar `recetas_avanzadas.paciente_id` (text).
+- El **monto** (join `dispensaciones.receta_avanzada_id = v_ra.id`) **no** toca `paciente_id` → sin problema de tipo. Las columnas text de recetas_avanzadas/dispensaciones son una inconsistencia legacy preexistente; el diseño delivery **no la hereda** porque sourcea de `recetas`.
+
+### 9.7 · [#7 — ACLARADO] Acoplamiento a `recetas_avanzadas`
+**`entregas` NO ancla a `recetas_avanzadas`** — ancla a `recetas(id)`. El acoplamiento real es del **DESPACHO**, no de la entrega: `registrar_dispensacion` (QR) lee el token de `recetas_avanzadas`; `registrar_dispensacion_dirigida` **RAISE si no existe `recetas_avanzadas`** ('PDF no generado: no despachable'). → **todo despacho (delivery o pickup) ya requiere `recetas_avanzadas`**; es un hecho preexistente del spine, no introducido por delivery. El auto-create usa `v_ra.id` **solo** para el join del monto (`dispensaciones.receta_avanzada_id`). → **no hay dependencia nueva**: si hay despacho, hay `recetas_avanzadas`. La "dependencia" previa se reformula así y **no requiere acción**.
+
+### 9.8 · [#8 — CONFIRMADO] Scope de lectura/asignación del rol delivery = sucursal_visible + delivery_id
+- **`listar_entregas_delivery`** (DEFINER, bypassa RLS) replica **explícitamente**: `empresa_id=mi_empresa_proveedor() AND COALESCE(sucursal_visible(farmacia_id),false) AND delivery_id=auth.uid()`. → un delivery confinable **no ve entregas fuera de su sucursal**, ni de otros delivery.
+- **`asignar_entrega`** valida que `p_delivery_id` sea una `cuentas_proveedor` rol delivery de la **misma empresa Y cuya `sucursal_id` corresponda a la `farmacia_id` de la entrega** (o exento) → no se puede asignar una entrega de la sucursal X a un delivery confinado a Y. Gate-antes-de-efecto.
+- La **RLS de SELECT** (Ola B) ya confina por empresa+sucursal_visible; las RPCs DEFINER replican el mismo término (no se apoyan solo en delivery_id).
+
+### 9.9 · [#9 = D-9, CERRADO opción a] `fallida` terminal-REABRIBLE-vía-gestión — sin reversión
+**Decisión Oscar:** `fallida(motivo: rechazada|ausente|direccion_mala)` = estado de logística de delivery **SIN reversión** de dispensación ni restock (inmutabilidad A6: `dispensaciones` append-only, no se reabre `receta_items.dispensado`). **Ya NO es estrictamente terminal:** es **terminal-reabrible-vía-gestión**.
+- **Reapertura (arista FIJADA, `fallida → asignada` vía `reasignar_entrega`):** SOLO `entregas_gestionar` (no el rol delivery); SOLO si `cobrado=false` (**RAISE si cobrada**); `intentos+1` + `reabierta_at`/`reabierta_por` (audita, no borra); `motivo_fallo→NULL`, nuevo `delivery_id`. **NO toca la dispensación.** Las 3 causas (rechazada/ausente/direccion_mala) usan la misma transición con el contador visible en el monitoreo E.
+- **El med ya despachado (nota OPERATIVA, no lógica de sistema):** los medicamentos salieron de la sucursal; ante `fallida`, su retorno/descarte físico se maneja **fuera del sistema** (procedimiento de farmacia). Fase 1 **no** modela restock ni contra-asiento; el stock queda descontado; cualquier reposición es un alta de inventario operativa aparte.
+- (b) reversión con contra-asiento se **difiere** a fase posterior por su choque con la inmutabilidad regulatoria (A6).
+
+### Notas residuales (no bloquean)
+- **Hook push (Fase 4):** punto marcado en `actualizar_estado_entrega`; sin tabla/efecto en Fase 1.
+- **`pacientes.auth_user_id`** (uuid) es el vínculo auth↔paciente que usa `paciente_es_mio`; confirmado en vivo.
+
+---
+
+## DECISIONES YA CERRADAS RESPETADAS (checklist)
+✅ modalidad nueva default pickup, per-sucursal, híbrida médico/paciente, congela tras despacho · ✅ UNA entrega por sucursal (UNIQUE) · ✅ dirección propia snapshot + lat/lng nullable + geocodificar · ✅ creación híbrida auto-al-despachar(delivery)/manual, pickup nunca crea · ✅ cobro snapshot SUM(dispensaciones) + metodo/cobrado/at/por · ✅ estados pendiente→asignada→en_camino→entregada/fallida(motivo) · ✅ 4 permisos finos, delivery confinable, exentos ven todo · ✅ bucket nuevo privado + signed URLs · ✅ monitoreo admin-todo/gerente-sucursal · ✅ PII solo por RPCs de entregas confinadas; delivery solo las suyas; pickup nunca expone dirección · ✅ RLS empresa+sucursal_visible, escritura solo por RPC DEFINER sp'' · ✅ buscar_recetas_pendientes_paciente ortogonal (pickup, no crea entrega).
+```
+```
