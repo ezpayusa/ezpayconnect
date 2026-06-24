@@ -163,35 +163,81 @@ CREATE TABLE public.entregas (
   created_at      timestamptz NOT NULL DEFAULT now(), updated_at timestamptz NOT NULL DEFAULT now(),
   CONSTRAINT uq_entrega_receta_sucursal UNIQUE (receta_base_id, farmacia_id),       -- UNA por sucursal
   CONSTRAINT chk_motivo_si_fallida CHECK ((estado='fallida') = (motivo_fallo IS NOT NULL)),
-  CONSTRAINT chk_cobro_coherente   CHECK (cobrado=false OR (cobrado_at IS NOT NULL AND metodo_cobro IS NOT NULL))
+  CONSTRAINT chk_cobro_coherente   CHECK (cobrado=false OR (cobrado_at IS NOT NULL AND cobrado_por IS NOT NULL AND metodo_cobro IS NOT NULL)),
+  CONSTRAINT chk_monto_no_negativo CHECK (monto IS NULL OR monto >= 0)
 );
-CREATE INDEX idx_entregas_delivery_estado ON public.entregas (delivery_id, estado);
-CREATE INDEX idx_entregas_farmacia_estado ON public.entregas (farmacia_id, estado);
-CREATE INDEX idx_entregas_empresa         ON public.entregas (empresa_id);
+CREATE INDEX idx_entregas_delivery_estado ON public.entregas (delivery_id, estado);   -- cola del repartidor
+CREATE INDEX idx_entregas_farmacia_estado ON public.entregas (farmacia_id, estado);   -- monitoreo por sucursal
+CREATE INDEX idx_entregas_empresa_estado  ON public.entregas (empresa_id, estado);    -- monitoreo admin / RLS
 
 ALTER TABLE public.entregas ENABLE ROW LEVEL SECURITY;
--- SELECT confinado (espejo 141/143). Sin policy de write → escritura SOLO por RPCs DEFINER.
+-- SELECT: espejo EXACTO 141/143 (empresa + sucursal_visible) + slice del rol delivery (solo SUS entregas).
 CREATE POLICY entregas_select ON public.entregas FOR SELECT TO authenticated
-  USING ( COALESCE(empresa_id = public.mi_empresa_proveedor(), false)
-          AND COALESCE(private.sucursal_visible(farmacia_id), false)
-        OR COALESCE(private.tiene_rol(ARRAY['super_admin']), false) );
-REVOKE INSERT, UPDATE, DELETE, TRUNCATE ON public.entregas FROM PUBLIC, anon, authenticated;
-GRANT  SELECT ON public.entregas TO authenticated;
+  USING (
+    ( COALESCE(empresa_id = public.mi_empresa_proveedor(), false)
+      AND COALESCE(private.sucursal_visible(farmacia_id), false)
+      AND ( public.mi_rol_proveedor() <> 'delivery' OR delivery_id = auth.uid() ) )   -- delivery: solo las suyas
+    OR COALESCE(private.tiene_rol(ARRAY['super_admin']), false)
+  );
+-- Escritura DENEGADA a authenticated/anon: SIN policy de write + REVOKE de TODO lo no-RLS-gated
+-- (lección farmacia_medicamentos: TRUNCATE/TRIGGER/REFERENCES no respetan RLS → revocarlos explícito).
+REVOKE INSERT, UPDATE, DELETE, TRUNCATE, REFERENCES, TRIGGER ON public.entregas FROM PUBLIC, anon, authenticated;
+REVOKE ALL ON public.entregas FROM anon;
+GRANT  SELECT ON public.entregas TO authenticated;     -- lectura gateada por RLS; escritura solo owner/DEFINER (Ola C)
 ```
-> Nota: el delivery (confinable 114) ve por RLS su sucursal; la RPC de su cola además filtra `delivery_id=auth.uid()`. La RLS de SELECT habilita el monitoreo (E); la PII (direccion/telefono) igual sale solo por las RPCs de entregas, nunca por el flujo pickup.
+**Cómo conviven los tres niveles bajo la RLS (espejo 141/143):**
+- **EXENTOS** = `{admin, gerente_farmacia, finanzas, pagador}` (def. de `sucursal_visible`) → `sucursal_visible=true` siempre → ven **TODA la empresa**; `mi_rol_proveedor()<>'delivery'` → sin slice → ven todas.
+- **CONFINABLES** `{supervisor, inventario, cajero, dependiente}` con `sucursal_id` → ven solo su sucursal; sin slice de delivery.
+- **delivery** (confinable) → su sucursal **Y** `delivery_id=auth.uid()` → **solo SUS entregas**. La RPC `listar_entregas_delivery` (C) replica el mismo slice (defensa en profundidad).
+- **super_admin** → todo.
+> **[Q1 CERRADO — corrección de modelo, no parche] `gerente_farmacia` EXENTO = nivel EMPRESA, es correcto.** No hay discrepancia: `gerente_farmacia` es **exento = ve toda la cadena, igual que `admin`** — **no** es el "gerente de sucursal" del mockup. El **"gerente de sucursal" del mockup = un rol CONFINABLE** (no-exento, asignado a una sucursal vía 114), que el espejo `sucursal_visible` ya acota a su sucursal **sin predicado extra**.
+> **Invariante del SPINE que esto respeta (citado):** *el `sucursal_id` de un rol EXENTO es INFORMATIVO, NO un gate; está PROHIBIDO leerlo y tratarlo como confinamiento.* Por eso **NO** se agrega ningún predicado que confine a `gerente_farmacia` — ni en B ni en E. El "⚠️" previo se resuelve por **encuadre** (no estaba confinando a quien creía), no por código.
+> **Para Ola E (anotado):** el monitoreo "su sucursal" aplica al **rol confinable**, no a `gerente_farmacia`. Atar `gerente_farmacia` a una sucursal sería un **cambio deliberado al modelo de exentos del SPINE** (afectaría 140/141/143) — **fuera del alcance de delivery y NO recomendado.**
+> **PII:** la RLS habilita el monitoreo, pero `direccion/telefono` SOLO se exponen vía las RPCs de entregas (C/E); el flujo pickup/bandeja sigue mostrando solo nombre.
 
-### Permisos (4 filas en `permisos_empresa_rol`, `tipo_empresa='farmacia'`)
-| accion | roles default |
-|---|---|
-| `entregas_ver` | delivery, supervisor, gerente_farmacia, admin, finanzas, pagador |
-| `entregas_gestionar` | supervisor, gerente_farmacia, admin |
-| `entregas_actualizar_estado` | delivery, supervisor, gerente_farmacia, admin |
-| `entregas_cobrar` | delivery, cajero, gerente_farmacia, admin, finanzas, pagador |
-- Editables per-empresa vía override 117 (NO techo — son operativas). Delivery CONFINABLE (114).
+### Permisos (4 filas nuevas en `permisos_empresa_rol`, `tipo_empresa='farmacia'`)
+Registro: filas `(tipo_empresa='farmacia', rol, accion)` en el catálogo `permisos_empresa_rol`, resueltas por el chokepoint `private.tiene_permiso` (catálogo + override 117). DDL = `INSERT INTO public.permisos_empresa_rol (tipo_empresa,rol,accion) VALUES ... ON CONFLICT DO NOTHING`. **+ techo (Q2):** `INSERT INTO public.acciones_techo (accion) VALUES ('entregas_cobrar') ON CONFLICT DO NOTHING`.
 
-### Verificación Ola B
-- **Dry-run:** crear tabla + policy + permisos; probe Pent_rls: (a) confinable@X ve solo entregas de X; (b) exento ve todas las de su empresa; (c) cross-empresa: actor de empresa A no ve entregas de B; (d) escritura directa `INSERT/UPDATE entregas` como authenticated → DENEGADA (sin grant).
-- **No-regresión:** tabla vacía, sin RPC de write → 0 entregas, sistema igual. Harness verde.
+| accion | roles default | racional |
+|---|---|---|
+| `entregas_ver` | delivery, supervisor, gerente_farmacia, admin, finanzas, pagador | lectura; RLS confina (delivery→sus filas; confinable→su sucursal; exento→empresa) |
+| `entregas_gestionar` | supervisor, gerente_farmacia, admin | crear/asignar/reasignar (incl. reapertura) |
+| `entregas_actualizar_estado` | delivery, supervisor, gerente_farmacia, admin | el delivery mueve su entrega; gestión puede corregir |
+| `entregas_cobrar` | delivery, cajero, gerente_farmacia, admin, finanzas, pagador | cobro contra-entrega + conciliación |
+
+- **[Q2 CERRADO] Techo 117:**
+  - **`entregas_cobrar` = TECHO** (agregar a `public.acciones_techo`, mismo patrón que `registro_regulatorio`). Es la **única capacidad financiera** de las cuatro (snapshotea `monto`/`metodo_cobro`/`cobrado_*`). El techo **NO impide** que delivery/cajero la tengan; **controla que SOLO el admin de empresa pueda repartirla** (el override 117 no puede concederla/quitarla a otros roles fuera del default — `tiene_permiso` ignora el override para techo).
+  - **`entregas_ver`, `entregas_actualizar_estado`, `entregas_gestionar` = operativos**, editables per-empresa vía override 117 (gestión, no plata).
+- **Confinabilidad (114) confirmada:** `delivery` es **CONFINABLE** (no está en los EXENTOS de `sucursal_visible`; nivel 20) → con `sucursal_id` ve solo su sucursal, y la RLS le agrega el slice `delivery_id=auth.uid()`. En los defaults, **`delivery` NO recibe `entregas_gestionar`** (no crea/asigna/reabre — la reapertura `fallida→asignada` es solo gestión, §4). **SÍ recibe `entregas_cobrar`** (cobra contra-entrega), `entregas_actualizar_estado` (mueve su propia entrega) y `entregas_ver` (su cola).
+- **Flujo COD (contra-entrega) confirmado:** el **admin de empresa** asigna `entregas_cobrar` (techo → solo él lo reparte) a `delivery` y/o `cajero` de mostrador → al entregar, quien lo tiene marca `cobrado` vía **`registrar_cobro_entrega` (Ola D)**, que snapshotea **`monto` (SUM por tanda, D-1) + `metodo_cobro` + `cobrado/at/por` atómicamente**. El `delivery` sigue **SIN `entregas_gestionar`** (no crea/asigna/reabre).
+
+### empresa_id — por qué se desnormaliza (vs derivar de farmacia)
+`empresa_id` se persiste en `entregas` (no se deriva de `farmacias` en la policy) por: (1) **RLS performante** — la policy compara una columna directa (`empresa_id = mi_empresa_proveedor()`) en vez de un subquery correlacionado `(SELECT empresa_id FROM farmacias WHERE id=farmacia_id)` por fila; (2) **indexable** (`idx_entregas_empresa_estado`); (3) **point-in-time** — la entrega registra la empresa al momento de crearse. Lo **puebla el RPC de Ola C** = `farmacias.empresa_id` de la `farmacia_id` (en el auto-create, ya es `v_emp` del RPC de despacho). Riesgo (farmacia cambia de empresa) = remoto; el único escritor es el RPC → consistencia confiada al RPC (no se agrega trigger en Fase 1).
+
+### CHECKs de coherencia (lista)
+1. `estado IN ('pendiente','asignada','en_camino','entregada','fallida')` (inline).
+2. `motivo_fallo IN ('rechazada','ausente','direccion_mala')` (inline) **+** `chk_motivo_si_fallida`: `(estado='fallida') = (motivo_fallo IS NOT NULL)` (motivo obligatorio ⇔ fallida; prohibido fuera de fallida).
+3. `metodo_cobro IN ('efectivo','tarjeta','transferencia','sin_cobro')` (inline).
+4. `chk_cobro_coherente`: `cobrado=false OR (cobrado_at IS NOT NULL AND cobrado_por IS NOT NULL AND metodo_cobro IS NOT NULL)`.
+5. `chk_monto_no_negativo`: `monto IS NULL OR monto >= 0`.
+6. `UNIQUE(receta_base_id, farmacia_id)` — una entrega por grupo.
+
+### Verificación Ola B (para cuando se apruebe el apply)
+- **Estructural:** `\d entregas` (PK, FKs `recetas(id)`/`farmacias(id)`/`pacientes(id)`/`cuentas_proveedor(id)`, UNIQUE, 6 CHECKs, defaults), índices (UNIQUE + delivery/farmacia/empresa+estado), grants (`authenticated`=SELECT; anon=∅; INSERT/UPDATE/DELETE/TRUNCATE/TRIGGER/REFERENCES revocados), 4 permisos en catálogo, **`entregas_cobrar` en `acciones_techo`** (techo).
+- **Probe techo (Q2):** `entregas_cobrar` no-delegable → un override 117 que intente concederla a un rol fuera del default es **ignorado por `tiene_permiso`** (techo autoritativo en la resolución); los otros 3 sí son afectables por override.
+- **Probes RLS (tabla sembrada a mano en BEGIN/ROLLBACK):** sembrar entregas en empresa A (sucursales X,Y) + empresa B. (a) **exento** (admin A) → ve todas las de A, ninguna de B; (b) **confinable@X** (supervisor A, sucursal X) → solo entregas de X; (c) **delivery@X** → solo sus filas (`delivery_id=él`), no las de otro delivery de X; (d) **cross-empresa** (actor A) → 0 filas de B; (e) **anon** → 0; (f) **INSERT/UPDATE directo** por `authenticated` → **DENEGADO** (sin grant); (g) **gerente_farmacia A** → ve toda A (exento — documentar la discrepancia, no es bug de B).
+- **No-regresión:** tabla **vacía**, 0 callers, sin RPC de write → emisión / despacho 141/143 / ruteo 3.3 / Ola A **idénticos**. Harness 141/143 verde (459 filas, 0 ROJO).
+
+### Inercia / no-regresión de B (explícito)
+Crear tabla + 4 permisos + RLS **no afecta ningún path vivo**: no hay caller de `entregas` (los RPCs son Ola C); los 4 permisos nuevos no los exige ningún flujo existente; la RLS es de una tabla nueva vacía. Emisión, despacho (141/143), ruteo 3.3 y Ola A (`modalidad`/`fijar_modalidad_grupo`) no tocan `entregas`. **B nace 100% inerte.**
+
+### Dependencias hacia C (anotadas, NO implementadas en B)
+La tabla deja la estructura lista; C la llena:
+- **auto-create** (dentro de `registrar_dispensacion*`): setea `receta_base_id`, `farmacia_id`, `empresa_id=v_emp`, `paciente_id` de **`recetas` (bigint)**, `direccion_entrega`/`telefono_contacto` = snapshot de `pacientes`, `monto` = `SUM(dispensaciones.total_dispensado)` (recalculado por tanda, D-1), `created_by=NULL`. Requiere `modalidad='delivery'` (Ola A) + grupo despachado.
+- **cobro** (`registrar_cobro_entrega`): setea `metodo_cobro`, `cobrado=true`, `cobrado_at`, `cobrado_por`; respeta `chk_cobro_coherente`.
+- **dirección/geocodificar** (`actualizar_direccion_entrega`): el front llama al edge `geocodificar` → setea `direccion_entrega`, `lat`, `lng` (nullable; entrega válida sin coords).
+- **reapertura** (`reasignar_entrega`): `intentos+1`, `reabierta_at/por`, `motivo_fallo→NULL` (arista fallida→asignada, solo `entregas_gestionar`, `cobrado=false`).
+- **evidencia** (Ola D): `evidencia_path` = path en bucket privado (no URL).
 
 ---
 
