@@ -18,6 +18,7 @@ import RepartidorPrivateRoute from '@/repartidor/components/RepartidorPrivateRou
 import RepartidorLayout from '@/repartidor/layout/RepartidorLayout'
 import ColaPage from '@/repartidor/pages/ColaPage'
 import EntregaDetallePage from '@/repartidor/pages/EntregaDetallePage'
+import PerfilPage from '@/repartidor/pages/PerfilPage'
 import { MedicoLayout } from '@/medico/layout/MedicoLayout'
 import MedicoPrivateRoute from '@/medico/components/MedicoPrivateRoute'
 import { ClinicaLayout } from '@/clinica/layout/ClinicaLayout'
@@ -365,6 +366,7 @@ function App() {
         <Route path="/repartidor/*" element={<RepartidorPrivateRoute><RepartidorLayout /></RepartidorPrivateRoute>}>
           <Route index element={<ColaPage />} />
           <Route path="entrega/:id" element={<EntregaDetallePage />} />
+          <Route path="perfil" element={<PerfilPage />} />
         </Route>
 
         {/* === PORTAL FARMACIA (tenant; guard por tipo='farmacia') === */}

@@ -45,6 +45,7 @@ export function useEntregasRepartidor() {
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const [offline, setOffline] = useState(false)
+  const [lastUpdated, setLastUpdated] = useState<string | null>(null) // "Última actualización HH:MM" (mockup cola)
 
   /** Cola de SUS entregas vía RPC (confinado server-side a delivery_id=auth.uid()). */
   const recargar = useCallback(async (filtros?: FiltrosCola) => {
@@ -71,6 +72,7 @@ export function useEntregasRepartidor() {
     const lista = (data ?? []) as EntregaRepartidor[]
     setEntregas(lista)
     setOffline(false)
+    setLastUpdated(new Date().toLocaleTimeString('es-GT', { hour: '2-digit', minute: '2-digit' }))
     if (!filtros) guardarCache(lista)
     setLoading(false)
   }, [])
@@ -157,6 +159,7 @@ export function useEntregasRepartidor() {
     loading,
     error,
     offline,
+    lastUpdated,
     recargar,
     actualizarEstado,
     cobrar,

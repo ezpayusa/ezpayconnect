@@ -33,6 +33,7 @@ export interface CuentaProveedor {
   activo: boolean
   created_at: string
   updated_at: string
+  sucursal_id?: number | null
   empresa?: EmpresaProveedora
 }
 
