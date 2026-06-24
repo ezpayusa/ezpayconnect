@@ -21,12 +21,20 @@ export async function comprimirImagen(file: File, maxDim = 1600, quality = 0.8):
     fr.onerror = () => reject(new Error('No se pudo leer la imagen.'))
     fr.readAsDataURL(file)
   })
+  // Si el navegador no puede DECODIFICAR el archivo (p.ej. HEIC de iPhone en navegadores no-Safari, o archivo
+  // corrupto), `Image.onerror` dispara → rechazamos con mensaje claro. DECISIÓN: rechazar, no convertir (evita una
+  // dependencia pesada de conversión HEIC). Como la compresión corre SIEMPRE antes del upload, un archivo no
+  // decodificable NUNCA llega al bucket (no hay upload de 0 bytes).
   const img = await new Promise<HTMLImageElement>((resolve, reject) => {
     const im = new Image()
     im.onload = () => resolve(im)
-    im.onerror = () => reject(new Error('No se pudo procesar la imagen.'))
+    im.onerror = () =>
+      reject(new Error('No se pudo procesar la imagen (formato no soportado, p.ej. HEIC de iPhone). Probá con otra foto o cambiá el formato de cámara a "Más compatible".'))
     im.src = dataUrl
   })
+  if (img.width === 0 || img.height === 0) {
+    throw new Error('La imagen está vacía o dañada. Probá con otra foto.')
+  }
   const scale = Math.min(1, maxDim / Math.max(img.width, img.height))
   const w = Math.max(1, Math.round(img.width * scale))
   const h = Math.max(1, Math.round(img.height * scale))

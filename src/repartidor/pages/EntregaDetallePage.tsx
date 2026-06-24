@@ -2,7 +2,7 @@ import { useRef, useState } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
 import { toast } from 'sonner'
 import {
-  ArrowLeft, MapPin, Phone, Camera, PenLine, Eye, Loader2, MapPinned, Banknote,
+  ArrowLeft, MapPin, Phone, Camera, PenLine, Eye, Loader2, MapPinned, Banknote, Navigation,
 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import MapaInteractivo from '@/components/MapaInteractivo'
@@ -110,6 +110,9 @@ export default function EntregaDetallePage() {
   }
 
   const transiciones = transicionesValidas(entrega.estado)
+  // NOTA: el rol `delivery` SIEMPRE tiene `entregas_cobrar` por TECHO 117 (no removible por override), así que
+  // `puedeCobrar` es true en el caso vivo. El gate !tienePermiso NO es código muerto: es defensa-en-profundidad
+  // para roles futuros / no-delivery que pudieran abrir esta vista (el server igual hace RAISE). No borrar.
   const mostrarCobro = puedeCobrar && puedeCobrarDesde(entrega.estado) && !entrega.cobrado
 
   return (
@@ -138,13 +141,29 @@ export default function EntregaDetallePage() {
         {entrega.motivo_fallo && <p className="text-sm text-red-600">Motivo de fallo: {entrega.motivo_fallo}</p>}
       </div>
 
-      {/* Mapa */}
+      {/* Mapa — degrada limpio sin coords. El pin (lat/lng) lo puebla el GESTOR en F3
+          (actualizar_direccion_entrega + geocodificar); la PWA del repartidor NO geocodifica. */}
       <div className="rounded-lg bg-white border border-gray-100 shadow-sm p-4 space-y-2">
         <p className="text-sm font-medium text-gray-700 flex items-center gap-1"><MapPinned className="h-4 w-4" /> Ubicación</p>
         {entrega.lat != null && entrega.lng != null ? (
           <MapaInteractivo lat={entrega.lat} lng={entrega.lng} onChange={() => { /* solo lectura */ }} height="220px" />
         ) : (
-          <p className="text-sm text-gray-500">Sin coordenadas. Navegá por la dirección de arriba.</p>
+          <p className="text-sm text-gray-500">Sin ubicación en el mapa. Usá la dirección para llegar.</p>
+        )}
+        {/* "Cómo llegar" abre la app de mapas del teléfono con coords (si hay) o con la dirección en texto. */}
+        {(entrega.direccion_entrega || (entrega.lat != null && entrega.lng != null)) && (
+          <a
+            href={
+              entrega.lat != null && entrega.lng != null
+                ? `https://www.google.com/maps/dir/?api=1&destination=${entrega.lat},${entrega.lng}`
+                : `https://www.google.com/maps/dir/?api=1&destination=${encodeURIComponent(entrega.direccion_entrega ?? '')}`
+            }
+            target="_blank"
+            rel="noopener noreferrer"
+            className="inline-flex items-center gap-1 text-sm text-[#1E5C8E] font-medium"
+          >
+            <Navigation className="h-4 w-4" /> Cómo llegar
+          </a>
         )}
       </div>
 
