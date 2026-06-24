@@ -1,9 +1,9 @@
-import { useRef, useState } from 'react'
+import { useRef, useState, useEffect, useCallback } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
 import { toast } from 'sonner'
 import {
   ArrowLeft, MapPin, Phone, Camera, PenLine, Eye, Loader2, MapPinned, Banknote, Navigation,
-  CheckCircle2, ShieldCheck, ImageIcon, XCircle,
+  CheckCircle2, ShieldCheck, XCircle, Pill,
 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import MapaInteractivo from '@/components/MapaInteractivo'
@@ -14,7 +14,7 @@ import {
   transicionesValidas, puedeCobrarDesde, MOTIVOS_FALLO, LABEL_ESTADO, LABEL_TRANSICION, colorEstado,
 } from '@/repartidor/lib/estados'
 import { folioEntrega, refCobro } from '@/repartidor/lib/folio'
-import type { EstadoEntrega, MetodoCobro, MotivoFallo } from '@/repartidor/types'
+import type { EstadoEntrega, MetodoCobro, MotivoFallo, EntregaDetalle } from '@/repartidor/types'
 import FirmaPad from '@/repartidor/components/FirmaPad'
 
 const METODOS: { value: MetodoCobro; label: string }[] = [
@@ -37,7 +37,7 @@ export default function EntregaDetallePage() {
   const { id } = useParams<{ id: string }>()
   const navigate = useNavigate()
   const entregaId = Number(id)
-  const { entregas, loading, actualizarEstado, cobrar, subirEvidencia, verEvidencia } = useEntregasRepartidor()
+  const { entregas, loading, actualizarEstado, cobrar, subirEvidencia, obtenerDetalle, verEvidencia } = useEntregasRepartidor()
   const { tienePermiso } = useFarmaciaPermisos()
   const puedeCobrar = tienePermiso('entregas_cobrar')
 
@@ -50,11 +50,24 @@ export default function EntregaDetallePage() {
   const [firmaOpen, setFirmaOpen] = useState(false)
   const fotoRef = useRef<HTMLInputElement | null>(null)
 
+  // F1.5: detalle ampliado (ítems despachados + cobrado_at + evidencias por tipo) vía RPC separado.
+  const [detalle, setDetalle] = useState<EntregaDetalle | null>(null)
+  const cargarDetalle = useCallback(async () => {
+    try {
+      setDetalle(await obtenerDetalle(entregaId))
+    } catch {
+      setDetalle(null) // degrada limpio: la cabecera/acciones siguen con los datos de la cola
+    }
+  }, [entregaId, obtenerDetalle])
+
+  useEffect(() => { void cargarDetalle() }, [cargarDetalle])
+
   const conManejo = async (fn: () => Promise<unknown>, okMsg: string) => {
     setBusy(true)
     try {
       await fn()
       toast.success(okMsg)
+      void cargarDetalle() // refresca ítems/cobro/evidencias tras la acción
     } catch (e) {
       toast.error(e instanceof Error ? e.message : 'Error inesperado')
     } finally {
@@ -201,6 +214,34 @@ export default function EntregaDetallePage() {
         )}
       </div>
 
+      {/* Medicamentos despachados (F1.5 · detalle_entrega_delivery — SOLO producto, sin contexto clínico) */}
+      {detalle && detalle.items.length > 0 && (
+        <div className="rounded-2xl bg-white border border-gray-100 shadow-sm p-4 space-y-3">
+          <div className="flex items-center justify-between">
+            <p className="text-sm font-medium text-gray-700 flex items-center gap-1"><Pill className="h-4 w-4" /> Medicamentos</p>
+            <span className="text-xs text-gray-400">{detalle.items.length} {detalle.items.length === 1 ? 'ítem' : 'ítems'}</span>
+          </div>
+          <ul className="divide-y divide-gray-100">
+            {detalle.items.map((it, i) => (
+              <li key={i} className="py-2 flex items-center gap-3">
+                <div className="h-9 w-9 rounded-lg bg-[#1E5C8E]/10 grid place-items-center shrink-0">
+                  <Pill className="h-4 w-4 text-[#1E5C8E]" />
+                </div>
+                <div className="flex-1 min-w-0">
+                  <p className="text-sm font-medium text-gray-800 truncate">{it.nombre}</p>
+                  {(it.concentracion || it.presentacion) && (
+                    <p className="text-xs text-gray-500 truncate">
+                      {[it.concentracion, it.presentacion].filter(Boolean).join(' · ')}
+                    </p>
+                  )}
+                </div>
+                {it.cantidad != null && <span className="text-sm font-semibold text-gray-600 shrink-0">x{it.cantidad}</span>}
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+
       {/* Cobro registrado (cobrado) */}
       {entrega.cobrado && (
         <div className="rounded-2xl bg-white border border-emerald-200 shadow-sm p-4 space-y-2">
@@ -213,7 +254,10 @@ export default function EntregaDetallePage() {
           <p className="text-2xl font-bold text-gray-800">{montoFmt}</p>
           <div className="flex items-center justify-between text-xs text-gray-500">
             <span className="font-mono">{refCobro(entrega.entrega_id)}</span>
-            {entrega.metodo_cobro && <span className="capitalize">{entrega.metodo_cobro}</span>}
+            <span className="flex items-center gap-2">
+              {detalle?.cobrado_at && <span>{fechaHora(detalle.cobrado_at)}</span>}
+              {entrega.metodo_cobro && <span className="capitalize">{entrega.metodo_cobro}</span>}
+            </span>
           </div>
         </div>
       )}
@@ -244,24 +288,33 @@ export default function EntregaDetallePage() {
         </div>
       )}
 
-      {/* Evidencia (el backend guarda UNA evidencia_path; foto/firma comparten esa referencia) */}
+      {/* Evidencia (F1.5: foto y firma separadas, una fila por tipo en entrega_evidencias). */}
       <div className="rounded-2xl bg-white border border-gray-100 shadow-sm p-4 space-y-3">
         <p className="text-sm font-medium text-gray-700">Evidencia de entrega</p>
-        {entrega.evidencia_path && (
-          <button
-            type="button"
-            onClick={() => verEvidencia(entrega.evidencia_path)}
-            className="w-full flex items-center gap-3 rounded-xl border border-gray-100 bg-gray-50 p-3 text-left"
-          >
-            <div className="h-12 w-12 rounded-lg bg-white border border-gray-200 grid place-items-center shrink-0">
-              <ImageIcon className="h-5 w-5 text-gray-400" />
-            </div>
-            <div className="flex-1 min-w-0">
-              <p className="text-sm font-medium text-gray-700">Evidencia adjunta</p>
-              <p className="text-xs text-gray-400">Tocá para ver</p>
-            </div>
-            <Eye className="h-4 w-4 text-[#1E5C8E] shrink-0" />
-          </button>
+        {detalle && detalle.evidencias.length > 0 && (
+          <div className="grid grid-cols-2 gap-2">
+            {(['foto', 'firma'] as const).map((tipo) => {
+              const ev = detalle.evidencias.filter((e) => e.tipo === tipo).at(-1)
+              if (!ev) return null
+              const Icono = tipo === 'foto' ? Camera : PenLine
+              return (
+                <button
+                  key={tipo}
+                  type="button"
+                  onClick={() => verEvidencia(ev.path)}
+                  className="flex items-center gap-2 rounded-xl border border-gray-100 bg-gray-50 p-3 text-left"
+                >
+                  <div className="h-10 w-10 rounded-lg bg-white border border-gray-200 grid place-items-center shrink-0">
+                    <Icono className="h-5 w-5 text-gray-400" />
+                  </div>
+                  <div className="flex-1 min-w-0">
+                    <p className="text-sm font-medium text-gray-700">{tipo === 'foto' ? 'Ver foto' : 'Ver firma'}</p>
+                  </div>
+                  <Eye className="h-4 w-4 text-[#1E5C8E] shrink-0" />
+                </button>
+              )
+            })}
+          </div>
         )}
         <div className="grid grid-cols-2 gap-2">
           <Button type="button" variant="outline" onClick={() => fotoRef.current?.click()} disabled={busy}>
