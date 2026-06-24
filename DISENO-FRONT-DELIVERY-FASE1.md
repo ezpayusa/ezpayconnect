@@ -68,10 +68,13 @@ Superficie **móvil, instalable**, para el rol `delivery`. Es la única superfic
   `supabase.storage.from('entregas-evidencia').upload(path, blob)` → luego asociar:
   `supabase.rpc('registrar_evidencia_entrega',{p_entrega_id,p_path})`. **Leer** la evidencia con
   `openSignedUrl('entregas-evidencia', evidencia_path)` (TTL 120 s). **NUNCA `getPublicUrl`.**
-- **Dirección/mapa:** `MapaInteractivo({lat,lng})` para mostrar el pin. Si `lat/lng` NULL → geocodificar al abrir:
-  edge `geocodificar(direccion_entrega)` → `supabase.rpc('actualizar_direccion_entrega',{p_entrega_id,p_direccion,p_lat,p_lng})`
-  (best-effort; si falla, mapa sin-pin + dirección por texto). `direccion_entrega`/`telefono_contacto` se muestran
-  **solo aquí** (es la entrega del propio repartidor, confinada).
+- **Dirección/mapa:** `MapaInteractivo({lat,lng})` muestra el pin **solo lectura** si hay coords. **[CAMBIO DE ALCANCE]
+  la PWA del repartidor NO geocodifica** (no envía la dirección del paciente a un geocoder server-side). El `lat/lng`
+  lo puebla el **GESTOR en F3** (`actualizar_direccion_entrega` + edge `geocodificar`, al crear/asignar o desde el
+  monitoreo). Si `lat/lng` es NULL → **degrada limpio**: "Sin ubicación en el mapa", sin pin, sin crash + botón
+  **"Cómo llegar"** que abre la app de mapas del teléfono con **coords (si hay) o la dirección en texto** (navegación
+  estándar del dispositivo, no geocoding nuestro). `direccion_entrega`/`telefono_contacto` se muestran **solo aquí**
+  (entrega propia del repartidor, confinada).
 
 ## Permisos que gatean (UI)
 - Entrar a `/repartidor/*` → rol `delivery` (route guard) + RLS.
@@ -161,6 +164,11 @@ Monta en el **panel farmacia** (`FarmaciaLayout`, desktop). Lectura confinada po
   reintentos, conteos de discrepancia).
 - `reconciliar_entregas_faltantes(p_sucursal_id)` — **vista/alerta aparte** ("despachado delivery SIN entrega").
 - Evidencia: `openSignedUrl('entregas-evidencia', evidencia_path)` (120 s).
+- **[CAMBIO DE ALCANCE — geocode vive ACÁ, no en F1]:** el gestor geocodifica la dirección de una entrega delivery
+  desde el monitoreo (o al crear/asignar): front llama al edge `geocodificar(direccion)` → `actualizar_direccion_entrega`
+  (`p_lat`/`p_lng`). Best-effort (fallo no bloquea; la entrega es válida sin coords). Así la PWA del repartidor (F1)
+  recibe el pin ya poblado y **no** envía la dirección del paciente a un geocoder. (Si Oscar prefiere un job/automático,
+  es una variante; por defecto on-demand del gestor.)
 
 ## Q1 en la UI (respetar al pie de la letra)
 - `gerente_farmacia` es **EXENTO** → ve **toda la cadena, igual que admin**. La UI **NO** debe agregar ningún
@@ -216,7 +224,8 @@ aparece PII; ítem ya dispensado no aparece.
 # Resumen de archivos por sub-ola + independencia
 ═══════════════════════════════════════════════════════════════
 - **F1:** `src/repartidor/**` (layout, private-route, ColaPage, EntregaDetallePage, useEntregasRepartidor) + ruta en
-  `App.tsx` + redirect de login del rol delivery. (Reusa `signedUrl.ts`, `MapaInteractivo`, edge `geocodificar`.)
+  `App.tsx` + redirect de login del rol delivery. (Reusa `signedUrl.ts`, `MapaInteractivo`; **el edge `geocodificar`
+  ya NO es de F1 — pasó a F3/gestor**, ver cambio de alcance.)
 - **F2:** edita `RecetaModal.tsx`, `WebAppRecetas.tsx`, `useWebAppRecetas.ts` (+ `ModalidadToggle` opcional).
 - **F3:** `src/farmacia/pages/MonitoreoEntregasPage.tsx` + hook + nav item en `FarmaciaLayout.tsx`.
 - **F4:** `src/farmacia/pages/BuscarPacienteMostrador.tsx` + hook + entrada en la bandeja.
