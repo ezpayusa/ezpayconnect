@@ -7875,6 +7875,66 @@ BEGIN
 END $$;
 SELECT set_config('role','none', true);
 
+-- ===== Pqr (mig 143): preview del QR (verificar_receta_despacho) confinado por sucursal =====
+-- Guard por presencia del término → N/A sin 143. Receta repartida: iA→147(X), iB→3337(Y) empresa A; iC→3755 empresa B.
+DO $$
+DECLARE v_emp uuid := '548741e4-dc6d-4b8b-81db-c30f5ef5b142'; v_admin uuid := 'cb2fd5c6-e154-4ce5-b960-fb13c039d1d8';
+        v_med uuid := '09d243d5-b222-482a-9762-94a582e9e752'; v_pac bigint := 23; v_tok text := 'PQR-TOK-143'; v_est text;
+        v_rid bigint; v_iA bigint; v_iB bigint; v_iC bigint; v_u uuid[]; v_cajx uuid; v_gf uuid;
+        v_prev jsonb; v_caj text; v_adm text; v_gfv text; v_dispA text; v_dispB text;
+BEGIN
+  IF (SELECT prosrc FROM pg_proc WHERE proname='verificar_receta_despacho') NOT ILIKE '%sucursal_visible%' THEN
+    PERFORM set_config('probe.pqr_confinable','N/A (143 no aplicada)',false); PERFORM set_config('probe.pqr_exento','N/A',false);
+    PERFORM set_config('probe.pqr_grandfather','N/A',false); PERFORM set_config('probe.pqr_coherencia','N/A',false); RETURN;
+  END IF;
+  SELECT array_agg(id) INTO v_u FROM (SELECT u.id FROM auth.users u WHERE NOT EXISTS (SELECT 1 FROM public.cuentas_proveedor c WHERE c.id=u.id) ORDER BY u.id LIMIT 2) t;
+  IF v_u IS NULL OR array_length(v_u,1)<2 THEN
+    PERFORM set_config('probe.pqr_confinable','N/A (sin auth libres)',false); PERFORM set_config('probe.pqr_exento','N/A',false);
+    PERFORM set_config('probe.pqr_grandfather','N/A',false); PERFORM set_config('probe.pqr_coherencia','N/A',false); RETURN;
+  END IF;
+  v_cajx:=v_u[1]; v_gf:=v_u[2];
+  SELECT estado INTO v_est FROM public.recetas LIMIT 1;
+  -- seed (role none)
+  INSERT INTO public.recetas (medico_id,paciente_id,estado,notificado) VALUES (v_med,v_pac,v_est,true) RETURNING id INTO v_rid;
+  INSERT INTO public.receta_items (receta_id,nombre_medicamento,dosis,frecuencia,cantidad,dispensado,farmacia_id) VALUES (v_rid,'PQR MED A','1','c/8h',1,false,147) RETURNING id INTO v_iA;
+  INSERT INTO public.receta_items (receta_id,nombre_medicamento,dosis,frecuencia,cantidad,dispensado,farmacia_id) VALUES (v_rid,'PQR MED B','1','c/8h',1,false,3337) RETURNING id INTO v_iB;
+  INSERT INTO public.receta_items (receta_id,nombre_medicamento,dosis,frecuencia,cantidad,dispensado,farmacia_id) VALUES (v_rid,'PQR MED C','1','c/8h',1,false,3755) RETURNING id INTO v_iC;
+  INSERT INTO public.recetas_avanzadas (receta_base_id,paciente_id,medico_id,dispatch_token,dispatch_token_expira_at) VALUES (v_rid,v_pac,v_med,v_tok,now()+interval '1 day');
+  INSERT INTO public.cuentas_proveedor (id,empresa_id,email,nombre_completo,rol_en_empresa,activo,sucursal_id) VALUES
+    (v_cajx,v_emp,'pqr-cajx@x.test','CajX','cajero',true,147),
+    (v_gf,v_emp,'pqr-gf@x.test','GF','cajero',true,NULL);
+  -- pin del exento (cb2fd5c6): empresa A, admin, sucursal NULL (neutraliza mutaciones previas)
+  UPDATE public.cuentas_proveedor SET empresa_id=v_emp, rol_en_empresa='admin', sucursal_id=NULL, activo=true WHERE id=v_admin;
+
+  -- (a) confinable@X (147): preview SOLO PQR MED A (no B=otra sucursal, no C=otra empresa)
+  PERFORM set_config('request.jwt.claims', json_build_object('sub',v_cajx,'role','authenticated')::text, true); PERFORM set_config('role','authenticated', true);
+  v_prev := public.verificar_receta_despacho(v_tok);
+  SELECT string_agg(it->>'nombre_medicamento', ',' ORDER BY it->>'nombre_medicamento') INTO v_caj FROM jsonb_array_elements(COALESCE(v_prev->'items','[]'::jsonb)) it WHERE it->>'nombre_medicamento' LIKE 'PQR%';
+  PERFORM set_config('probe.pqr_confinable', CASE WHEN v_caj='PQR MED A' THEN 'OK (confinable@X ve solo su sucursal; no otra sucursal ni otra empresa)' ELSE 'FALLO/LEAK ('||COALESCE(v_caj,'∅')||')' END, false);
+
+  -- (b) exento (admin): preview A+B (empresa A, ambas sucursales); NO C (empresa B)
+  PERFORM set_config('request.jwt.claims', json_build_object('sub',v_admin,'role','authenticated')::text, true); PERFORM set_config('role','authenticated', true);
+  v_prev := public.verificar_receta_despacho(v_tok);
+  SELECT string_agg(it->>'nombre_medicamento', ',' ORDER BY it->>'nombre_medicamento') INTO v_adm FROM jsonb_array_elements(COALESCE(v_prev->'items','[]'::jsonb)) it WHERE it->>'nombre_medicamento' LIKE 'PQR%';
+  PERFORM set_config('probe.pqr_exento', CASE WHEN v_adm='PQR MED A,PQR MED B' THEN 'OK (exento ve toda su empresa A; cross-empresa C excluido)' ELSE 'FALLO ('||COALESCE(v_adm,'∅')||')' END, false);
+
+  -- (d) grandfather (cajero@NULL): preview A+B (no-regresión); NO C
+  PERFORM set_config('request.jwt.claims', json_build_object('sub',v_gf,'role','authenticated')::text, true); PERFORM set_config('role','authenticated', true);
+  v_prev := public.verificar_receta_despacho(v_tok);
+  SELECT string_agg(it->>'nombre_medicamento', ',' ORDER BY it->>'nombre_medicamento') INTO v_gfv FROM jsonb_array_elements(COALESCE(v_prev->'items','[]'::jsonb)) it WHERE it->>'nombre_medicamento' LIKE 'PQR%';
+  PERFORM set_config('probe.pqr_grandfather', CASE WHEN v_gfv='PQR MED A,PQR MED B' THEN 'OK (grandfather ve toda su empresa; cross-empresa C excluido)' ELSE 'FALLO ('||COALESCE(v_gfv,'∅')||')' END, false);
+
+  -- (e) coherencia despacho: confinable@X despacha lo que el preview mostró (A) OK; lo que NO mostró (B) DENEGADO
+  PERFORM set_config('request.jwt.claims', json_build_object('sub',v_cajx,'role','authenticated')::text, true); PERFORM set_config('role','authenticated', true);
+  BEGIN PERFORM public.registrar_dispensacion(v_tok, ARRAY[v_iB], 'Farm QA'); v_dispB:='PERMITIDO'; EXCEPTION WHEN others THEN v_dispB:='DENEGADO'; END;
+  BEGIN PERFORM public.registrar_dispensacion(v_tok, ARRAY[v_iA], 'Farm QA'); v_dispA:='OK'; EXCEPTION WHEN others THEN v_dispA:='FALLO('||SQLSTATE||')'; END;
+  PERFORM set_config('probe.pqr_coherencia', CASE WHEN v_dispA='OK' AND v_dispB='DENEGADO' THEN 'OK (despacha lo que el preview mostró [A]; lo oculto [B] DENEGADO)' ELSE 'FALLO (A='||v_dispA||' B='||v_dispB||')' END, false);
+
+  PERFORM set_config('role','none',true);
+  DELETE FROM public.cuentas_proveedor WHERE id = ANY(v_u);
+END $$;
+SELECT set_config('role','none', true);
+
 -- ===== Veredictos como result set =====
 SELECT 'P1_anon_insert_citas'              AS probe, current_setting('probe.p1', true)  AS verdict, 'BLOQUEADO' AS esperado_post_fix
 UNION ALL SELECT 'P2_medico_cancela_ajena_rpc',         current_setting('probe.p2', true),  'BLOQUEADO'
@@ -8330,6 +8390,10 @@ UNION ALL SELECT 'Pbuz_detalle_confinado',                current_setting('probe
 UNION ALL SELECT 'Pcad_medico_recibe_cadena',            current_setting('probe.pcad_medico', true),      'OK (médico recibe nombre_empresa)'
 UNION ALL SELECT 'Pcad_anon_denegado',                   current_setting('probe.pcad_anon', true),        'OK (anon no ejecuta)'
 UNION ALL SELECT 'Pcad_nomedico_failclosed',             current_setting('probe.pcad_nomedico', true),    'OK (no-médico → 0 filas)'
-UNION ALL SELECT 'Pcad_shape_sin_contacto',              current_setting('probe.pcad_shape', true),       'OK (solo farmacia_id+nombre_empresa)';
+UNION ALL SELECT 'Pcad_shape_sin_contacto',              current_setting('probe.pcad_shape', true),       'OK (solo farmacia_id+nombre_empresa)'
+UNION ALL SELECT 'Pqr_preview_confinable',               current_setting('probe.pqr_confinable', true),   'OK (preview QR: confinable solo su sucursal)'
+UNION ALL SELECT 'Pqr_preview_exento',                   current_setting('probe.pqr_exento', true),       'OK (exento ve su empresa; cross-empresa excluido)'
+UNION ALL SELECT 'Pqr_preview_grandfather',              current_setting('probe.pqr_grandfather', true),  'OK (grandfather ve su empresa; no-regresión)'
+UNION ALL SELECT 'Pqr_despacho_coherente',               current_setting('probe.pqr_coherencia', true),   'OK (despacha lo visible; oculto denegado)';
 
 ROLLBACK;  -- nada de lo anterior se persiste
