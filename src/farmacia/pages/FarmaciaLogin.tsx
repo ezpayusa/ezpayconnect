@@ -30,13 +30,16 @@ export default function FarmaciaLogin() {
     const { data: { user } } = await supabase.auth.getUser()
     const { data: cuenta } = await supabase
       .from('cuentas_proveedor')
-      .select('empresa:empresa_id(tipo)')
+      .select('rol_en_empresa, empresa:empresa_id(tipo)')
       .eq('id', user?.id)
       .maybeSingle()
     setLoading(false)
     const tipo = (cuenta as any)?.empresa?.tipo
+    const rol = (cuenta as any)?.rol_en_empresa
     toast.success('Bienvenido')
-    if (tipo === 'farmacia') navigate('/farmacia/dashboard')
+    // El repartidor (rol delivery) va a su PWA móvil, no al panel desktop de farmacia.
+    if (tipo === 'farmacia' && rol === 'delivery') navigate('/repartidor')
+    else if (tipo === 'farmacia') navigate('/farmacia/dashboard')
     else if (tipo === 'laboratorio_clinico') navigate('/laboratorio/dashboard')
     else navigate('/proveedor/dashboard')
   }

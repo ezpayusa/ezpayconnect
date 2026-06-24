@@ -14,6 +14,10 @@ import LaboratorioLayout from '@/laboratorio/layout/LaboratorioLayout'
 import LaboratorioPrivateRoute from '@/laboratorio/components/LaboratorioPrivateRoute'
 import FarmaciaLayout from '@/farmacia/layout/FarmaciaLayout'
 import FarmaciaPrivateRoute from '@/farmacia/components/FarmaciaPrivateRoute'
+import RepartidorPrivateRoute from '@/repartidor/components/RepartidorPrivateRoute'
+import RepartidorLayout from '@/repartidor/layout/RepartidorLayout'
+import ColaPage from '@/repartidor/pages/ColaPage'
+import EntregaDetallePage from '@/repartidor/pages/EntregaDetallePage'
 import { MedicoLayout } from '@/medico/layout/MedicoLayout'
 import MedicoPrivateRoute from '@/medico/components/MedicoPrivateRoute'
 import { ClinicaLayout } from '@/clinica/layout/ClinicaLayout'
@@ -355,6 +359,12 @@ function App() {
           <Route path="afiliaciones" element={<LabAfiliacionesPage />} />
           <Route path="perfil" element={<LabPerfilPage />} />
           <Route path="notificaciones" element={<ProveedorNotificacionesPage />} />
+        </Route>
+
+        {/* === PWA REPARTIDOR (delivery; guard por rol_en_empresa='delivery') === */}
+        <Route path="/repartidor/*" element={<RepartidorPrivateRoute><RepartidorLayout /></RepartidorPrivateRoute>}>
+          <Route index element={<ColaPage />} />
+          <Route path="entrega/:id" element={<EntregaDetallePage />} />
         </Route>
 
         {/* === PORTAL FARMACIA (tenant; guard por tipo='farmacia') === */}
