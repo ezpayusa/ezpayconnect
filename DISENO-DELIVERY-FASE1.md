@@ -441,29 +441,118 @@ El bloque corre **dentro de la transacción del RPC de despacho**. Qué pasa si 
 ---
 
 ## 5 · OLA D — Cobro + bucket evidencia + geocodificación
+> Toca **dinero** y **storage**. Least-privilege + lecciones de auditoría: **R6** (`evidencias-visitas` público — NO reusar) · **R9** (`resultados-examenes` privado pero con `getPublicUrl` + insert policy laxa). Patrón bueno a seguir: `comprobantes_scoped_*` (path `{empresa_id}/...` + `split_part(name,'/',1)=mi_empresa_proveedor()`).
 
-### RPC `registrar_cobro_entrega`
+### 5.1 · RPC `registrar_cobro_entrega` (DEFINER sp'', gate `entregas_cobrar` — TECHO 117)
 ```sql
-(p_entrega_id bigint, p_metodo_cobro text, p_monto numeric DEFAULT NULL) → jsonb
-  gate: entregas_cobrar; empresa+sucursal_visible; si delivery: delivery_id=auth.uid()
-  set cobrado=true, cobrado_at=now(), cobrado_por=auth.uid(), metodo_cobro=p_metodo_cobro,
-      monto = COALESCE(p_monto, monto)   -- snapshot ya seteado al crear; p_monto solo override
+CREATE FUNCTION public.registrar_cobro_entrega(p_entrega_id bigint, p_metodo_cobro text)
+RETURNS jsonb LANGUAGE plpgsql SECURITY DEFINER SET search_path='' AS $$
+DECLARE v_e public.entregas; v_ra_id uuid; v_monto numeric; v_es_delivery boolean;
+BEGIN
+  IF NOT COALESCE(private.tiene_permiso('entregas_cobrar'), false) THEN RAISE EXCEPTION 'No autorizado'; END IF;
+  IF p_metodo_cobro NOT IN ('efectivo','tarjeta','transferencia','sin_cobro') THEN RAISE EXCEPTION 'Método inválido'; END IF;
+  SELECT * INTO v_e FROM public.entregas WHERE id=p_entrega_id
+    AND COALESCE(empresa_id=public.mi_empresa_proveedor(), false)
+    AND COALESCE(private.sucursal_visible(farmacia_id), false);          -- confinamiento empresa + sucursal
+  IF NOT FOUND THEN RAISE EXCEPTION 'Entrega no visible/no existe'; END IF;
+  v_es_delivery := (v_e.delivery_id = auth.uid());
+  IF private.mi_sucursal() IS NOT NULL AND NOT v_es_delivery
+     AND NOT COALESCE(private.tiene_permiso('entregas_gestionar'), false) THEN
+    RAISE EXCEPTION 'No autorizado: no es tu entrega'; END IF;                -- el cobrador debe tener acceso
+  IF v_e.cobrado THEN RAISE EXCEPTION 'Entrega ya cobrada'; END IF;           -- no recobrar
+  IF v_e.estado NOT IN ('en_camino','entregada') THEN                         -- [DECISIÓN OSCAR (a)]
+    RAISE EXCEPTION 'Solo se cobra desde en_camino/entregada (estado=%)', v_e.estado; END IF;
+  -- monto RE-DERIVADO en el servidor (NO se confía en ningún parámetro del cliente)
+  SELECT ra.id INTO v_ra_id FROM public.recetas_avanzadas ra WHERE ra.receta_base_id=v_e.receta_base_id;
+  SELECT SUM(d.total_dispensado) INTO v_monto FROM public.dispensaciones d
+    WHERE d.receta_avanzada_id=v_ra_id AND d.farmacia_id=v_e.farmacia_id;
+  UPDATE public.entregas SET cobrado=true, cobrado_at=now(), cobrado_por=auth.uid(),
+    metodo_cobro=p_metodo_cobro, monto=COALESCE(v_monto, monto), updated_at=now()
+  WHERE id=p_entrega_id;     -- snapshot ATÓMICO: monto+metodo+cobrado_* en un solo UPDATE
+  RETURN (SELECT to_jsonb(e) FROM public.entregas e WHERE e.id=p_entrega_id);
+END $$;
+REVOKE EXECUTE ON FUNCTION public.registrar_cobro_entrega(bigint,text) FROM PUBLIC, anon;
+GRANT  EXECUTE ON FUNCTION public.registrar_cobro_entrega(bigint,text) TO authenticated;
 ```
-### RPC `actualizar_direccion_entrega`
+- **Sin `p_monto`:** el monto es **autoritativo del servidor** (`SUM(dispensaciones)` re-derivado al momento del cobro). No hay parámetro de monto del cliente que falsear.
+- **[DECISIÓN OSCAR (a), CERRADO] Estados desde los que se cobra: `{en_camino, entregada}`** — COD: el delivery cobra al llegar (en_camino) o al confirmar (entregada). `pendiente`/`asignada` = aún no entregado; `fallida` = no hubo entrega → ninguno cobra.
+- **`cobrado=true` ⇒ RAISE** (no recobro). El `chk_cobro_coherente` (B) ya exige `cobrado_at`+`cobrado_por`+`metodo_cobro` no nulos → el UPDATE los setea juntos.
+- **Interacción D-1:** cobrar requiere `estado≠pendiente` → el guard de D-1 (`recalcula solo si estado='pendiente'`) **ya no aplica** a una entrega cobrada → el `monto` queda **congelado** en el del cobro. **Tanda de despacho DESPUÉS del cobro** → `monto` cobrado `< SUM(dispensaciones)` final → **discrepancia #1 para E** (ya anotada; no se auto-corrige, señal operativa).
+- **[CASO BORDE — cobrada + fallida (cobro COD seguido de rechazo/reasignación)]:** se cobra en `en_camino` (`cobrado=true`) y luego la entrega pasa a `fallida` (rechazo post-pago, ausencia, etc.). Como **`fallida` NO revierte** (D-9 / inmutabilidad A6) y **`cobrado=true` persiste**, la entrega queda en **`estado='fallida' + cobrado=true`**. **Esto NO es un bug:** es realidad operativa COD (se pagó pero la entrega falló). La **devolución del dinero se maneja FUERA del sistema en Fase 1**. → **discrepancia VÁLIDA "cobrado+no-entregado" que E debe LISTAR** (`cobrado=true AND estado='fallida'`). Además, `reasignar_entrega` **bloquea la reapertura de una entrega cobrada** (RAISE si `cobrado=true`, ya en las salvaguardas) → una entrega **cobrada-y-fallida NO se reabre por RPC; queda terminal-cobrada** (su retorno/anulación es operativo).
+
+### 5.2 · Bucket de evidencia (foto/firma) — NUEVO PRIVADO
+- **Bucket `entregas-evidencia`, `public=false`.** NO reusar `evidencias-visitas` (R6 público). **NUNCA `getPublicUrl`** (R9) → solo **signed URLs**.
+- **Path-scoping:** `{empresa_id}/{entrega_id}/{firma|foto}_{ts}.{ext}`. El 1er segmento (empresa) + 2º (entrega) permiten que la policy confine por empresa y por pertenencia de la entrega.
+- **`entregas.evidencia_path`** = `text` nullable (ya existe, B). Guarda el **path**, NUNCA la URL firmada (se firma al leer).
+- **Storage policy INSERT (subida)** — evita el bug R9 (ni laxa ni rota): el **delivery asignado** sube a su entrega, dentro del scope:
+```sql
+CREATE POLICY entregas_evidencia_insert ON storage.objects FOR INSERT TO authenticated WITH CHECK (
+  bucket_id='entregas-evidencia'
+  AND split_part(name,'/',1) = public.mi_empresa_proveedor()::text          -- 1er segmento = su empresa
+  AND COALESCE(private.tiene_permiso('entregas_actualizar_estado'), false)
+  AND EXISTS (SELECT 1 FROM public.entregas e
+              WHERE e.id = NULLIF(split_part(name,'/',2),'')::bigint
+                AND e.empresa_id = public.mi_empresa_proveedor()
+                AND e.delivery_id = auth.uid())                              -- es SU entrega asignada
+);
+```
+- **Storage policy SELECT (para `createSignedUrl`)** — espejo de la RLS de `entregas` (empresa + sucursal_visible + slice delivery):
+```sql
+CREATE POLICY entregas_evidencia_select ON storage.objects FOR SELECT TO authenticated USING (
+  bucket_id='entregas-evidencia' AND (
+    EXISTS (SELECT 1 FROM public.entregas e
+            WHERE e.id = NULLIF(split_part(name,'/',2),'')::bigint
+              AND e.empresa_id = public.mi_empresa_proveedor()
+              AND COALESCE(private.sucursal_visible(e.farmacia_id), false)
+              AND (public.mi_rol_proveedor() <> 'delivery' OR e.delivery_id = auth.uid()))
+    OR COALESCE(private.tiene_rol(ARRAY['super_admin']), false)
+  )
+);
+-- sin policy de UPDATE/DELETE → inmutable salvo owner/service_role. REVOKE no aplica (storage.objects gestionado por RLS).
+```
+- **Quién genera la signed URL + TTL:** el **front** (gerente/admin/delivery con acceso) llama **`createSignedUrl(path, ttl)`** — la policy SELECT de arriba lo **confina** (solo si la entrega le es visible). **[DECISIÓN OSCAR (b), CERRADO] TTL = 120 s** (corto; la URL es de un solo uso visual; se re-firma al re-abrir). Nunca se persiste la URL firmada.
+- **Asociación SOLO vía RPC DEFINER** (no escritura directa a `evidencia_path`):
+```sql
+CREATE FUNCTION public.registrar_evidencia_entrega(p_entrega_id bigint, p_path text)
+RETURNS jsonb LANGUAGE plpgsql SECURITY DEFINER SET search_path='' AS $$
+DECLARE v_e public.entregas;
+BEGIN
+  IF NOT COALESCE(private.tiene_permiso('entregas_actualizar_estado'), false) THEN RAISE EXCEPTION 'No autorizado'; END IF;
+  SELECT * INTO v_e FROM public.entregas WHERE id=p_entrega_id
+    AND COALESCE(empresa_id=public.mi_empresa_proveedor(), false)
+    AND COALESCE(private.sucursal_visible(farmacia_id), false);
+  IF NOT FOUND THEN RAISE EXCEPTION 'Entrega no visible/no existe'; END IF;
+  IF v_e.delivery_id <> auth.uid() THEN RAISE EXCEPTION 'Solo el delivery asignado adjunta evidencia'; END IF;
+  IF p_path NOT LIKE (public.mi_empresa_proveedor()::text || '/' || p_entrega_id::text || '/%') THEN
+    RAISE EXCEPTION 'Path fuera de scope'; END IF;                          -- el path debe ser de SU entrega
+  UPDATE public.entregas SET evidencia_path=p_path, updated_at=now() WHERE id=p_entrega_id;
+  RETURN (SELECT to_jsonb(e) FROM public.entregas e WHERE e.id=p_entrega_id);
+END $$;
+REVOKE EXECUTE ON FUNCTION public.registrar_evidencia_entrega(bigint,text) FROM PUBLIC, anon;
+GRANT  EXECUTE ON FUNCTION public.registrar_evidencia_entrega(bigint,text) TO authenticated;
+```
+- **Flujo:** delivery sube el archivo (policy INSERT scope+ownership) → llama `registrar_evidencia_entrega(entrega, path)` (valida delivery asignado + path) → guarda `evidencia_path`. Gerente/admin abre la entrega → `createSignedUrl(evidencia_path, TTL)` (policy SELECT confina). **Doble defensa:** storage policies + RPC.
+
+### 5.3 · Geocodificación (best-effort, no bloquea)
+- **`actualizar_direccion_entrega`** (DEFINER sp''), gate `entregas_gestionar` **o** el delivery asignado de la entrega; persiste `direccion_entrega`/`lat`/`lng`; confinado empresa+sucursal_visible. El **front** llama al **edge `geocodificar`** (texto→lat/lng) y pasa el resultado a este RPC (los RPCs no llaman edges).
 ```sql
 (p_entrega_id bigint, p_direccion text, p_lat double precision DEFAULT NULL, p_lng double precision DEFAULT NULL) → jsonb
-  gate: entregas_gestionar; empresa+sucursal_visible; persiste direccion/lat/lng
 ```
-### Bucket evidencia (NUEVO PRIVADO)
-- `entregas-evidencia`, `public=false`. **NO reusar `evidencias-visitas`** (confirmado `public=true`, riesgo marcado).
-- **RLS `storage.objects`:** INSERT = `authenticated` con `tiene_permiso('entregas_actualizar_estado')`, path `{empresa_id}/{entrega_id}/...`, y la entrega es del caller (`delivery_id=auth.uid()`). SELECT directo: ninguno → lectura por **signed URL** server-side (gerente/admin con `entregas_ver`, confinado), TTL corto.
-- Front: `upload(path,file)` + se guarda `evidencia_path`; lectura `createSignedUrl`. **Nunca `getPublicUrl`.**
-### Geocodificación
-- El **front** (PWA/panel) llama al **edge `geocodificar`** (texto→lat/lng) y pasa el resultado a `actualizar_direccion_entrega`. Los RPCs no llaman edges.
-- **Fallback:** si falla → lat/lng NULL; entrega válida, mapa sin-pin, navega por texto.
+- **Cuándo corre (recomendado):** **on-demand al abrir el mapa** o **al asignar** (el front geocodifica y persiste). NO un job en Fase 1.
+- **Best-effort:** la entrega es **válida sin coords** (ya establecido en C); el fallo de geocode **NO bloquea cobro ni estado** — `lat/lng` quedan NULL, el mapa muestra sin-pin, se navega por texto. Mismo patrón que C.
+- **PII:** la dirección sigue saliendo **solo** por RPCs de entregas confinadas (el edge recibe el texto server-side; no se expone fuera del scope de entregas).
 
-### Verificación Ola D
-- Probe Pent_cobro: cobrar como cobrador → cobrado=true coherente (CHECK); doble-cobro idempotente o bloqueado; delivery ajeno → RAISE. Bucket: subir a entrega propia OK; subir a entrega ajena → DENEGADO (RLS path/owner); lectura sin signed URL → DENEGADA. Geocode: dirección mala → lat/lng NULL, entrega usable.
+### 5.4 · Interacción / no-regresión
+- D es **puramente aditiva** sobre `entregas` (Ola C): `registrar_cobro_entrega`, `registrar_evidencia_entrega`, `actualizar_direccion_entrega` + el bucket nuevo. **NO toca** `registrar_dispensacion(_dirigida)`, pickup, 141/143 ni emisión. **0 impacto** en el path de despacho. El bucket es nuevo (no toca `evidencias-visitas`/`resultados-examenes`).
+
+### 5.5 · Cutover Ola D
+- **Estructural:** RPC `registrar_cobro_entrega` (DEFINER sp'', gate techo, sin p_monto) + `registrar_evidencia_entrega` + `actualizar_direccion_entrega`; bucket `entregas-evidencia` (public=false) + 2 storage policies (INSERT scope+ownership, SELECT espejo entregas); columnas ya existen (B).
+- **Smoke (BEGIN/ROLLBACK):** cobro feliz (cobrado_* + monto re-derivado correcto) · **recobro → RAISE** · cobrar **sin permiso/techo → RAISE** · cobrar entrega de **otra sucursal → RAISE** · cobrar en estado no permitido (pendiente/asignada/fallida) → RAISE · **tanda post-cobro** → monto NO se mueve (discrepancia #1 registrada, sin recobro) · **subida fuera de scope** (otra empresa/otra entrega) → DENEGADA · **subida por no-asignado** → DENEGADA · `registrar_evidencia_entrega` por no-asignado/path-fuera-de-scope → RAISE · **signed URL** se genera para quien ve la entrega y **expira** (TTL); no-visible → no puede firmar · **geocode best-effort** (dirección mala → lat/lng NULL, cobro/estado siguen) · **harness 141/143 verde**.
+- **Backout:** D es aditiva → `DROP` de los 3 RPCs + bucket/policies revierte sin tocar el despacho (C intacto). No hay kill-switch necesario (no toca path caliente).
+
+### 5.6 · Dependencias hacia E / F
+- **E (monitoreo):** lee `cobrado/cobrado_at/cobrado_por/metodo_cobro` (estado de cobro), **3 discrepancias** (#1 `monto<SUM`; #2 entrega faltante; **#3 `cobrado=true AND estado='fallida'`** = cobrado-pero-no-entregado, COD), y la **evidencia** (genera signed URL TTL 120 s para mostrarla al gerente/admin, confinado). 
+- **F (sin-QR):** independiente.
 
 ---
 
