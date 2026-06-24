@@ -7835,6 +7835,46 @@ BEGIN
 END $$;
 SELECT set_config('role','none', true);
 
+-- ===== Pcadena (fix nombre-de-cadena, mig 142): RPC nombre_cadena_por_farmacias =====
+-- Guard por to_regprocedure → N/A sin 142. Determinismo: medico.qa rol='medico' (neutraliza mutaciones previas).
+DO $$
+DECLARE v_med uuid := '09d243d5-b222-482a-9762-94a582e9e752'; v_pac uuid := '5bfb5b4c-dc91-4714-93cb-a292faa6717d';
+        v_n int; v_distinct int; v_nulls int; v_nomed int; v_anon boolean; v_shape text;
+BEGIN
+  IF to_regprocedure('public.nombre_cadena_por_farmacias(integer[])') IS NULL THEN
+    PERFORM set_config('probe.pcad_medico','N/A (142 no aplicada)',false); PERFORM set_config('probe.pcad_anon','N/A',false);
+    PERFORM set_config('probe.pcad_nomedico','N/A',false); PERFORM set_config('probe.pcad_shape','N/A',false); RETURN;
+  END IF;
+  -- (b) estructural: anon NO ejecuta; (d) shape = solo (farmacia_id int, nombre_empresa text), sin contacto
+  v_anon := has_function_privilege('anon','public.nombre_cadena_por_farmacias(integer[])','EXECUTE');
+  v_shape := pg_get_function_result('public.nombre_cadena_por_farmacias(integer[])'::regprocedure);
+  PERFORM set_config('probe.pcad_anon', CASE WHEN v_anon=false THEN 'OK (anon NO ejecuta)' ELSE 'FALLO (anon ejecuta)' END, false);
+  PERFORM set_config('probe.pcad_shape', CASE WHEN v_shape ILIKE '%farmacia_id%' AND v_shape ILIKE '%nombre_empresa%'
+      AND v_shape NOT ILIKE '%ruc%' AND v_shape NOT ILIKE '%email%' AND v_shape NOT ILIKE '%telefono%' AND v_shape NOT ILIKE '%direccion%'
+    THEN 'OK (solo farmacia_id+nombre_empresa; sin contacto)' ELSE 'FALLO (shape='||v_shape||')' END, false);
+
+  -- determinismo del médico (rol mutable por probes previos en la txn; rolled-back igual)
+  UPDATE public.perfiles SET rol='medico' WHERE id=v_med;
+
+  -- (a) médico recibe nombre_empresa de sus farmacias (3337,147 → QA Farmacia ; 3755 → Farmacias del Norte SA)
+  PERFORM set_config('request.jwt.claims', json_build_object('sub',v_med,'role','authenticated')::text, true);
+  PERFORM set_config('role','authenticated', true);
+  SELECT count(*), count(DISTINCT nombre_empresa), count(*) FILTER (WHERE nombre_empresa IS NULL)
+    INTO v_n, v_distinct, v_nulls FROM public.nombre_cadena_por_farmacias(ARRAY[3337,147,3755]);
+  PERFORM set_config('probe.pcad_medico', CASE WHEN v_n>=2 AND v_distinct>=1 AND v_nulls=0
+    THEN 'OK (médico recibe nombre_empresa: '||v_n||' filas, '||v_distinct||' cadenas, 0 null)'
+    ELSE 'FALLO (n='||v_n||' distinct='||v_distinct||' nulls='||v_nulls||')' END, false);
+
+  -- (c) no-médico authenticated (paciente) → 0 filas (fail-closed)
+  PERFORM set_config('role','none',true);
+  PERFORM set_config('request.jwt.claims', json_build_object('sub',v_pac,'role','authenticated')::text, true);
+  PERFORM set_config('role','authenticated', true);
+  SELECT count(*) INTO v_nomed FROM public.nombre_cadena_por_farmacias(ARRAY[3337,147,3755]);
+  PERFORM set_config('probe.pcad_nomedico', CASE WHEN v_nomed=0 THEN 'OK (no-médico → 0 filas, fail-closed)' ELSE 'FALLO ('||v_nomed||' filas a no-médico)' END, false);
+  PERFORM set_config('role','none',true);
+END $$;
+SELECT set_config('role','none', true);
+
 -- ===== Veredictos como result set =====
 SELECT 'P1_anon_insert_citas'              AS probe, current_setting('probe.p1', true)  AS verdict, 'BLOQUEADO' AS esperado_post_fix
 UNION ALL SELECT 'P2_medico_cancela_ajena_rpc',         current_setting('probe.p2', true),  'BLOQUEADO'
@@ -8286,6 +8326,10 @@ UNION ALL SELECT 'Pruta_noregresion_pais',                current_setting('probe
 UNION ALL SELECT 'Pbuz_lista_confinada',                  current_setting('probe.pbuz_lista', true),       'OK (confinable solo su sucursal; exento/grandfather todo)'
 UNION ALL SELECT 'Pbuz_NEG_despacho_ajeno',               current_setting('probe.pbuz_neg', true),         'OK (dirigida+walkin de ítem ajeno DENEGADO; ítem intacto)'
 UNION ALL SELECT 'Pbuz_POS_despacho_propio',              current_setting('probe.pbuz_pos', true),         'OK (despacha sus ítems X)'
-UNION ALL SELECT 'Pbuz_detalle_confinado',                current_setting('probe.pbuz_detalle', true),     'OK (detalle no expone ítem de otra sucursal)';
+UNION ALL SELECT 'Pbuz_detalle_confinado',                current_setting('probe.pbuz_detalle', true),     'OK (detalle no expone ítem de otra sucursal)'
+UNION ALL SELECT 'Pcad_medico_recibe_cadena',            current_setting('probe.pcad_medico', true),      'OK (médico recibe nombre_empresa)'
+UNION ALL SELECT 'Pcad_anon_denegado',                   current_setting('probe.pcad_anon', true),        'OK (anon no ejecuta)'
+UNION ALL SELECT 'Pcad_nomedico_failclosed',             current_setting('probe.pcad_nomedico', true),    'OK (no-médico → 0 filas)'
+UNION ALL SELECT 'Pcad_shape_sin_contacto',              current_setting('probe.pcad_shape', true),       'OK (solo farmacia_id+nombre_empresa)';
 
 ROLLBACK;  -- nada de lo anterior se persiste

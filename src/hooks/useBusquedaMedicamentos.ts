@@ -82,7 +82,22 @@ export function useBusquedaMedicamentos(): UseBusquedaMedicamentosReturn {
       const { data: farmaciaData, error: farmaciaError } = await q.order('precio_unitario', { ascending: true });
 
       if (farmaciaError) throw farmaciaError;
-      setResultados(farmaciaData || []);
+      // 3.3-fix nombre-de-cadena: el médico no lee empresas_proveedoras (RLS) → el embed nombre_empresa viene
+      // null. Enriquecer con un RPC DEFINER acotado que devuelve SOLO (farmacia_id, nombre_empresa) de las
+      // farmacias ya visibles. Best-effort: si el RPC falla/no responde, queda el fallback (farmacia.nombre).
+      let enriquecidos = (farmaciaData || []) as any[];
+      const farmaciaIds = [...new Set(enriquecidos.map((r: any) => r.farmacia?.id).filter(Boolean))];
+      if (farmaciaIds.length) {
+        const { data: cadenas } = await supabase.rpc('nombre_cadena_por_farmacias', { p_farmacia_ids: farmaciaIds });
+        if (cadenas?.length) {
+          const mapa = new Map<number, string>(cadenas.map((c: any) => [c.farmacia_id, c.nombre_empresa]));
+          enriquecidos = enriquecidos.map((r: any) =>
+            r.farmacia && mapa.has(r.farmacia.id)
+              ? { ...r, farmacia: { ...r.farmacia, empresa: { ...(r.farmacia.empresa || {}), nombre_empresa: mapa.get(r.farmacia.id) } } }
+              : r);
+        }
+      }
+      setResultados(enriquecidos as FarmaciaMedicamento[]);
 
       // Buscar en proveedores
       const { data: proveedorData, error: proveedorError } = await supabase
