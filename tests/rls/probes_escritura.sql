@@ -2921,13 +2921,17 @@ DO $$ DECLARE v jsonb; BEGIN
   END IF;
 EXCEPTION WHEN others THEN PERFORM set_config('probe.p174','FALLO ('||SQLERRM||')',false); END $$;
 
--- P168 — PHI: el payload no contiene diagnóstico/teléfono/dirección
-DO $$ DECLARE v jsonb; BEGIN
+-- P168 — PHI: el payload no contiene diagnóstico/teléfono/dirección DEL PACIENTE.
+-- (3.4: el payload ahora incluye sucursal_nombre/sucursal_direccion = dirección de la FARMACIA, legítima
+--  para el admin-central — NO es PHI del paciente. Se neutralizan esas keys antes del chequeo de substring
+--  para no disparar falso-positivo; la protección real [tel/dir/diagnóstico del paciente] queda intacta.)
+DO $$ DECLARE v jsonb; v_t text; BEGIN
   IF current_setting('probe.rx_ready',true)<>'1' OR current_setting('probe.rx_rpc',true)<>'1' THEN PERFORM set_config('probe.p168','N/A (pendiente 090)',false);
   ELSE
     v := public.listar_recetas_entrantes();
-    IF v::text NOT ILIKE '%diagnostico%' AND v::text NOT ILIKE '%telefono%' AND v::text NOT ILIKE '%direccion%'
-      THEN PERFORM set_config('probe.p168','OK (sin diagnóstico/teléfono/dirección)',false);
+    v_t := replace(replace(v::text, 'sucursal_direccion', ''), 'sucursal_nombre', '');  -- keys legítimas de farmacia (3.4)
+    IF v_t NOT ILIKE '%diagnostico%' AND v_t NOT ILIKE '%telefono%' AND v_t NOT ILIKE '%direccion%'
+      THEN PERFORM set_config('probe.p168','OK (sin diagnóstico/teléfono/dirección del paciente; sucursal addr es de farmacia)',false);
       ELSE PERFORM set_config('probe.p168','FALLO (PHI sensible en payload)',false); END IF;
   END IF;
 EXCEPTION WHEN others THEN PERFORM set_config('probe.p168','FALLO ('||SQLERRM||')',false); END $$;
@@ -7737,6 +7741,100 @@ BEGIN
 END $$;
 SELECT set_config('role','none', true);
 
+-- ===== Pbuz (Spine sucursales 3.4, mig 141): buzón + despacho confinados por sucursal =====
+-- Guard por PRESENCIA del término (la función ya existe; solo el término es nuevo) → N/A sin 141.
+-- Siembra: receta + 3 ítems (A,C → X=147; B → Y=3337) + recetas_avanzadas (token) + cajero@X + cajero@NULL.
+-- Lista bajo 3 actores; NEG/POS de las 2 vías de despacho (dirigida + walk-in); detalle. Todo rolled-back.
+DO $$
+DECLARE v_x int; v_y int; v_emp uuid := '548741e4-dc6d-4b8b-81db-c30f5ef5b142'; v_med uuid := '09d243d5-b222-482a-9762-94a582e9e752';
+        v_admin uuid := 'cb2fd5c6-e154-4ce5-b960-fb13c039d1d8'; v_pac bigint := 23; v_estado text; v_tok text := 'PBUZ-TOKEN-3p4';
+        v_rid bigint; v_iA bigint; v_iB bigint; v_iC bigint; v_u uuid[]; v_cajx uuid; v_cajn uuid;
+        v_lst jsonb; v_caj_ve text; v_adm_ve text; v_gf_ve text; v_b_dispensado boolean;
+        v_neg_dir text; v_neg_wlk text; v_pos_dir text; v_pos_wlk text; v_det_ve text;
+BEGIN
+  IF (SELECT prosrc FROM pg_proc WHERE proname='listar_recetas_entrantes') NOT ILIKE '%sucursal_visible%' THEN
+    PERFORM set_config('probe.pbuz_lista','N/A (141 no aplicada)',false); PERFORM set_config('probe.pbuz_neg','N/A',false);
+    PERFORM set_config('probe.pbuz_pos','N/A',false); PERFORM set_config('probe.pbuz_detalle','N/A',false); RETURN;
+  END IF;
+  SELECT id INTO v_x FROM public.farmacias WHERE empresa_id=v_emp AND activo ORDER BY id LIMIT 1;     -- 147
+  SELECT id INTO v_y FROM public.farmacias WHERE empresa_id=v_emp AND activo AND id<>v_x ORDER BY id LIMIT 1;  -- 3337
+  SELECT array_agg(id) INTO v_u FROM (SELECT u.id FROM auth.users u WHERE NOT EXISTS (SELECT 1 FROM public.cuentas_proveedor c WHERE c.id=u.id) ORDER BY u.id LIMIT 2) t;
+  IF v_x IS NULL OR v_y IS NULL OR v_u IS NULL OR array_length(v_u,1)<2 THEN
+    PERFORM set_config('probe.pbuz_lista','N/A (sin fixture X/Y/auth)',false); PERFORM set_config('probe.pbuz_neg','N/A',false);
+    PERFORM set_config('probe.pbuz_pos','N/A',false); PERFORM set_config('probe.pbuz_detalle','N/A',false); RETURN;
+  END IF;
+  v_cajx:=v_u[1]; v_cajn:=v_u[2];
+  SELECT estado INTO v_estado FROM public.recetas LIMIT 1;  -- reusar un estado válido (evita CHECK)
+  -- Determinismo del actor EXENTO: neutralizar mutaciones de empresa/rol/sucursal/activo de cb2fd5c6 por
+  -- probes previos en la MISMA txn (rolled-back igual). empresa=QA Farmacia + admin + sucursal NULL + activo
+  -- → exento real de la empresa correcta → debe ver TODO el buzón (A,B,C).
+  UPDATE public.cuentas_proveedor SET empresa_id=v_emp, rol_en_empresa='admin', sucursal_id=NULL, activo=true WHERE id=v_admin;
+
+  -- SEED (role none): receta + 3 ítems (A,C→X ; B→Y) + recetas_avanzadas + cuentas confinable/grandfather
+  INSERT INTO public.recetas (medico_id, paciente_id, estado, notificado) VALUES (v_med, v_pac, v_estado, true) RETURNING id INTO v_rid;
+  INSERT INTO public.receta_items (receta_id, nombre_medicamento, dosis, frecuencia, cantidad, dispensado, farmacia_id)
+    VALUES (v_rid,'PBUZ MED A','1','c/8h',1,false,v_x) RETURNING id INTO v_iA;
+  INSERT INTO public.receta_items (receta_id, nombre_medicamento, dosis, frecuencia, cantidad, dispensado, farmacia_id)
+    VALUES (v_rid,'PBUZ MED B','1','c/8h',1,false,v_y) RETURNING id INTO v_iB;
+  INSERT INTO public.receta_items (receta_id, nombre_medicamento, dosis, frecuencia, cantidad, dispensado, farmacia_id)
+    VALUES (v_rid,'PBUZ MED C','1','c/8h',1,false,v_x) RETURNING id INTO v_iC;
+  INSERT INTO public.recetas_avanzadas (receta_base_id, paciente_id, medico_id, dispatch_token, dispatch_token_expira_at)
+    VALUES (v_rid, v_pac, v_med, v_tok, now()+interval '1 day');
+  INSERT INTO public.cuentas_proveedor (id,empresa_id,email,nombre_completo,rol_en_empresa,activo,sucursal_id) VALUES
+    (v_cajx,v_emp,'pbuz-cajx@x.test','CajX','cajero',true,v_x),
+    (v_cajn,v_emp,'pbuz-cajn@x.test','CajN','cajero',true,NULL);
+
+  -- helper inline: bajo el JWT actual, qué ítems PBUZ de v_rid ve el buzón
+  -- (1) LISTA confinable X
+  PERFORM set_config('request.jwt.claims', json_build_object('sub',v_cajx,'role','authenticated')::text, true); PERFORM set_config('role','authenticated', true);
+  v_lst := public.listar_recetas_entrantes();
+  SELECT string_agg(it->>'nombre_medicamento', ',' ORDER BY it->>'nombre_medicamento') INTO v_caj_ve
+    FROM jsonb_array_elements(v_lst) rec, jsonb_array_elements(COALESCE(rec->'items_pendientes','[]'::jsonb)) it
+    WHERE (rec->>'receta_id')::bigint=v_rid AND it->>'nombre_medicamento' LIKE 'PBUZ%';
+  -- (2) LISTA exento (admin)
+  PERFORM set_config('request.jwt.claims', json_build_object('sub',v_admin,'role','authenticated')::text, true); PERFORM set_config('role','authenticated', true);
+  v_lst := public.listar_recetas_entrantes();
+  SELECT string_agg(it->>'nombre_medicamento', ',' ORDER BY it->>'nombre_medicamento') INTO v_adm_ve
+    FROM jsonb_array_elements(v_lst) rec, jsonb_array_elements(COALESCE(rec->'items_pendientes','[]'::jsonb)) it
+    WHERE (rec->>'receta_id')::bigint=v_rid AND it->>'nombre_medicamento' LIKE 'PBUZ%';
+  -- (3) LISTA grandfather (cajero NULL)
+  PERFORM set_config('request.jwt.claims', json_build_object('sub',v_cajn,'role','authenticated')::text, true); PERFORM set_config('role','authenticated', true);
+  v_lst := public.listar_recetas_entrantes();
+  SELECT string_agg(it->>'nombre_medicamento', ',' ORDER BY it->>'nombre_medicamento') INTO v_gf_ve
+    FROM jsonb_array_elements(v_lst) rec, jsonb_array_elements(COALESCE(rec->'items_pendientes','[]'::jsonb)) it
+    WHERE (rec->>'receta_id')::bigint=v_rid AND it->>'nombre_medicamento' LIKE 'PBUZ%';
+  PERFORM set_config('probe.pbuz_lista', CASE
+    WHEN v_caj_ve='PBUZ MED A,PBUZ MED C' AND v_adm_ve='PBUZ MED A,PBUZ MED B,PBUZ MED C' AND v_gf_ve='PBUZ MED A,PBUZ MED B,PBUZ MED C'
+      THEN 'OK (confinable X: A,C / exento: A,B,C / grandfather: A,B,C)'
+    ELSE 'FALLO (cajx='||COALESCE(v_caj_ve,'∅')||' adm='||COALESCE(v_adm_ve,'∅')||' gf='||COALESCE(v_gf_ve,'∅')||')' END, false);
+
+  -- (4) NEG acción: cajero@X intenta despachar ítem B (Y) por dirigida y walk-in → DENEGADO + B intacto
+  PERFORM set_config('request.jwt.claims', json_build_object('sub',v_cajx,'role','authenticated')::text, true); PERFORM set_config('role','authenticated', true);
+  BEGIN PERFORM public.registrar_dispensacion_dirigida(v_rid, ARRAY[v_iB], 'Farm QA'); v_neg_dir:='PERMITIDO'; EXCEPTION WHEN others THEN v_neg_dir:='DENEGADO'; END;
+  BEGIN PERFORM public.registrar_dispensacion(v_tok, ARRAY[v_iB], 'Farm QA'); v_neg_wlk:='PERMITIDO'; EXCEPTION WHEN others THEN v_neg_wlk:='DENEGADO'; END;
+  PERFORM set_config('role','none',true);
+  SELECT dispensado INTO v_b_dispensado FROM public.receta_items WHERE id=v_iB;
+  PERFORM set_config('probe.pbuz_neg', CASE WHEN v_neg_dir='DENEGADO' AND v_neg_wlk='DENEGADO' AND v_b_dispensado=false
+    THEN 'OK (dirigida+walkin de ítem ajeno DENEGADOS; ítem Y intacto)' ELSE 'FALLO/LEAK (dir='||v_neg_dir||' wlk='||v_neg_wlk||' B_dispensado='||v_b_dispensado||')' END, false);
+
+  -- (5) POS acción: cajero@X despacha A (dirigida) y C (walk-in) → OK
+  PERFORM set_config('request.jwt.claims', json_build_object('sub',v_cajx,'role','authenticated')::text, true); PERFORM set_config('role','authenticated', true);
+  BEGIN PERFORM public.registrar_dispensacion_dirigida(v_rid, ARRAY[v_iA], 'Farm QA'); v_pos_dir:='OK'; EXCEPTION WHEN others THEN v_pos_dir:='FALLO('||SQLSTATE||')'; END;
+  BEGIN PERFORM public.registrar_dispensacion(v_tok, ARRAY[v_iC], 'Farm QA'); v_pos_wlk:='OK'; EXCEPTION WHEN others THEN v_pos_wlk:='FALLO('||SQLSTATE||')'; END;
+  PERFORM set_config('probe.pbuz_pos', CASE WHEN v_pos_dir='OK' AND v_pos_wlk='OK' THEN 'OK (confinable X despacha sus ítems X: dirigida+walkin)' ELSE 'FALLO (dir='||v_pos_dir||' wlk='||v_pos_wlk||')' END, false);
+
+  -- (6) detalle: cajero@X NO ve el ítem B (Y) en el detalle
+  v_lst := public.detalle_receta_entrante(v_rid);
+  SELECT string_agg(it->>'nombre_medicamento', ',' ORDER BY it->>'nombre_medicamento') INTO v_det_ve
+    FROM jsonb_array_elements(COALESCE(v_lst->'items','[]'::jsonb)) it WHERE it->>'nombre_medicamento' LIKE 'PBUZ%';
+  PERFORM set_config('probe.pbuz_detalle', CASE WHEN v_det_ve LIKE '%PBUZ MED A%' AND v_det_ve LIKE '%PBUZ MED C%' AND v_det_ve NOT LIKE '%PBUZ MED B%'
+    THEN 'OK (detalle confinable X: A,C sin B)' ELSE 'FALLO ('||COALESCE(v_det_ve,'∅')||')' END, false);
+
+  PERFORM set_config('role','none',true);
+  DELETE FROM public.cuentas_proveedor WHERE id = ANY(v_u);
+END $$;
+SELECT set_config('role','none', true);
+
 -- ===== Veredictos como result set =====
 SELECT 'P1_anon_insert_citas'              AS probe, current_setting('probe.p1', true)  AS verdict, 'BLOQUEADO' AS esperado_post_fix
 UNION ALL SELECT 'P2_medico_cancela_ajena_rpc',         current_setting('probe.p2', true),  'BLOQUEADO'
@@ -8184,6 +8282,10 @@ UNION ALL SELECT 'Pasign_138_alta_con_sucursal',          current_setting('probe
 UNION ALL SELECT 'Pruta_filtro_excluye_conserva_pais',    current_setting('probe.pruta_filtro', true),     'OK (filtro excluye global/inactiva; país)'
 UNION ALL SELECT 'Pruta_med_global_no_rutea',             current_setting('probe.pruta_global', true),     'OK (med solo-global no aparece en ruteo)'
 UNION ALL SELECT 'Pruta_3337_aparece_con_direccion',      current_setting('probe.pruta_3337', true),       'OK (sucursal real aparece con direccion)'
-UNION ALL SELECT 'Pruta_noregresion_pais',                current_setting('probe.pruta_pais', true),       'OK (RLS aísla país)';
+UNION ALL SELECT 'Pruta_noregresion_pais',                current_setting('probe.pruta_pais', true),       'OK (RLS aísla país)'
+UNION ALL SELECT 'Pbuz_lista_confinada',                  current_setting('probe.pbuz_lista', true),       'OK (confinable solo su sucursal; exento/grandfather todo)'
+UNION ALL SELECT 'Pbuz_NEG_despacho_ajeno',               current_setting('probe.pbuz_neg', true),         'OK (dirigida+walkin de ítem ajeno DENEGADO; ítem intacto)'
+UNION ALL SELECT 'Pbuz_POS_despacho_propio',              current_setting('probe.pbuz_pos', true),         'OK (despacha sus ítems X)'
+UNION ALL SELECT 'Pbuz_detalle_confinado',                current_setting('probe.pbuz_detalle', true),     'OK (detalle no expone ítem de otra sucursal)';
 
 ROLLBACK;  -- nada de lo anterior se persiste

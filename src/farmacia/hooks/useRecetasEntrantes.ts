@@ -13,6 +13,8 @@ export interface ItemEntrante {
   cantidad: number
   instrucciones?: string
   dispensado?: boolean
+  sucursal_nombre?: string | null      // 3.4: a qué sucursal está ruteado el ítem (informativo, admin-central)
+  sucursal_direccion?: string | null
 }
 
 export interface RecetaEntrante {

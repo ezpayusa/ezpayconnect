@@ -143,6 +143,9 @@ export default function FarmaciaRecetasPage() {
                           <div className="flex-1">
                             <p className="text-sm font-medium">{it.nombre_medicamento}</p>
                             <p className="text-xs text-gray-500">{it.dosis} · {it.frecuencia} · cant: {it.cantidad}{it.instrucciones ? ` · ${it.instrucciones}` : ''}</p>
+                            {it.sucursal_nombre && (
+                              <p className="text-xs text-[#B45309] mt-0.5">Sucursal: {it.sucursal_nombre}{it.sucursal_direccion ? ` · ${it.sucursal_direccion}` : ''}</p>
+                            )}
                           </div>
                         </label>
                       ))}
