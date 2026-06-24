@@ -556,15 +556,65 @@ GRANT  EXECUTE ON FUNCTION public.registrar_evidencia_entrega(bigint,text) TO au
 
 ---
 
-## 6 · OLA E — Monitoreo
+## 6 · OLA E — Monitoreo + reconciliación de discrepancias
+> Lectura PURA (0 escritura, riesgo bajo). Materializa el monitoreo respetando el **encuadre Q1 al pie de la letra**.
 
-| RPC | Firma | Gate | Confina |
-|---|---|---|---|
-| `listar_entregas_monitoreo` | `(p_estado text DEFAULT NULL, p_sucursal_id int DEFAULT NULL)→jsonb` | `entregas_ver` | empresa + sucursal_visible (gerente→su sucursal; admin/exento→todas). Expone paciente nombre+direccion+telefono (confinado) |
-| `stats_entregas_sucursal` | `(p_desde date, p_hasta date, p_sucursal_id int)→jsonb` | `entregas_ver`/`recetas_reportes` | espejo `stats_recetas_sucursal`; agregados por estado/sucursal |
+### 6.1 · Encuadre Q1 (NO se viola — es donde aplica)
+- **`gerente_farmacia` es EXENTO** (def. de `sucursal_visible`) = **nivel EMPRESA** → en monitoreo ve **TODA la cadena, igual que `admin`**. **NO** se le mete predicado de sucursal (PROHIBIDO leer el `sucursal_id` de un exento como gate — invariante del SPINE).
+- El **"gerente de sucursal" del mockup = rol CONFINABLE** (no-exento, asignado a sucursal vía 114) → ya acotado por `sucursal_visible`. El monitoreo confinado aplica a **ESE** rol, **sin filtro adicional**.
+- **No se reimplementa el confinamiento:** los 3 RPCs derivan la visibilidad del **MISMO término** que la RLS de `entregas` (B):
+  `empresa_id = public.mi_empresa_proveedor() AND COALESCE(private.sucursal_visible(farmacia_id),false) AND (public.mi_rol_proveedor()<>'delivery' OR delivery_id=auth.uid())` (+ super_admin).
+  → admin/gerente_farmacia (exentos) → **toda la empresa**; confinable (supervisor/inventario/cajero/dependiente) → **su sucursal**; delivery → **solo las suyas** — **automáticamente**, sin código de confinamiento nuevo.
 
-### Verificación Ola E
-- Probe Pent_mon: gerente@X ve solo entregas de X; admin ve todas las de su empresa; cross-empresa cerrado; stats coinciden con conteos. PII (direccion/telefono) sale solo aquí (confinado), nunca en bandeja pickup.
+### 6.2 · `listar_entregas_monitoreo` (DEFINER sp'', gate `entregas_ver`)
+```sql
+listar_entregas_monitoreo(
+  p_estado text DEFAULT NULL, p_sucursal_id int DEFAULT NULL, p_delivery_id uuid DEFAULT NULL,
+  p_desde date DEFAULT NULL, p_hasta date DEFAULT NULL) RETURNS jsonb
+  LANGUAGE plpgsql STABLE SECURITY DEFINER SET search_path=''  ·  gate: entregas_ver
+  WHERE <término espejo RLS entregas>  AND (p_estado IS NULL OR estado=p_estado)
+        AND (p_sucursal_id IS NULL OR farmacia_id=p_sucursal_id)
+        AND (p_delivery_id IS NULL OR delivery_id=p_delivery_id)
+        AND (p_desde IS NULL OR created_at::date >= p_desde) AND (p_hasta IS NULL OR created_at::date <= p_hasta)
+```
+- **`p_sucursal_id` es FILTRO, no confinamiento:** el **exento** que quiere mirar UNA sucursal lo pasa como filtro; se **AND-ea** sobre el término base (CONJUNTIVO) → **nunca relaja** el confinamiento del confinable. (Q1: el filtro no convierte el sucursal_id del exento en gate; es una elección de vista del exento.)
+- **Campos (monitoreo):** id, estado, farmacia_id+nombre, delivery_id+nombre, monto, cobrado/cobrado_at/cobrado_por/metodo_cobro, intentos, motivo_fallo, reabierta_*, asignado_*, entregado_at, created_at, **paciente nombre + direccion_entrega + telefono_contacto (PII)**, **evidencia_path** (no URL), lat/lng, **+ flags `disc_monto`, `disc_cobrada_fallida`** (§6.4).
+- **PII confinada:** `direccion`/`telefono`/nombre salen **solo** dentro del término (el WHERE filtra antes) → **NO se filtra PII fuera del scope del caller** (mismo confinamiento que la RLS; es el flujo delivery confinado donde la PII está permitida).
+- **Evidencia:** devuelve `evidencia_path`; el **front** genera la signed URL (TTL 120 s). **NUNCA** URL firmada persistida ni `getPublicUrl`.
+
+### 6.3 · `stats_entregas_sucursal` (DEFINER sp'', gate `entregas_ver`)
+```sql
+stats_entregas_sucursal(p_desde date, p_hasta date, p_sucursal_id int DEFAULT NULL) RETURNS jsonb
+  STABLE DEFINER sp''  ·  MISMO término confinado (espejo RLS)
+```
+Agregados **por sucursal** (dentro de lo visible; exento→todas, confinable→la suya): conteos por estado, **entregadas vs fallidas**, **% éxito** (entregadas/(entregadas+fallidas)), **monto cobrado** (SUM monto WHERE cobrado), **reintentos** (SUM intentos), **+ conteos de discrepancias #1/#2/#3**. (Sin k-anon: son operativos de la propia empresa, no datos agregados de pacientes; si Oscar quiere umbral se añade.)
+
+### 6.4 · Las 3 discrepancias — exposición
+- **#1 `monto < SUM`** (tanda post-cobro / flag-off): por fila, comparar `entregas.monto` vs `SUM(dispensaciones.total_dispensado)` EN VIVO del grupo (vía `recetas_avanzadas`). Flag `disc_monto` en el listado + **conteo** en stats.
+- **#3 `cobrado=true AND estado='fallida'`** (cobrado+no-entregado, COD): flag `disc_cobrada_fallida` por fila + conteo en stats. Alerta directa.
+- **#2 entrega FALTANTE** (delivery despachado sin entrega): **NO es una fila de `entregas`** → no puede ser flag → **RPC aparte de reconciliación**:
+```sql
+reconciliar_entregas_faltantes(p_sucursal_id int DEFAULT NULL) RETURNS jsonb  ·  STABLE DEFINER sp''  ·  gate entregas_ver
+  detección ESTRUCTURAL: grupos (receta_id, farmacia_id) con receta_items.modalidad='delivery'
+    AND EXISTS dispensaciones del grupo            -- despachado delivery
+    AND NOT EXISTS entregas(receta_base_id, farmacia_id)   -- sin entrega
+    confinado a empresa + sucursal_visible(farmacia_id)
+  + cruza private.delivery_autocreate_fallos (rastro del EXCEPTION best-effort de C)
+  → lista "despachado delivery SIN entrega" (reconciliable con crear_entrega)
+```
+- **[CERRADO Oscar = (a) discrepancias distribuidas donde es natural]:** **#1 `disc_monto` y #3 `disc_cobrada_fallida` = flags por fila en `listar_entregas_monitoreo` + conteos en `stats_entregas_sucursal`** (son sobre entregas existentes); **#2 = `reconciliar_entregas_faltantes`** (detección estructural; no puede ser flag porque la fila no existe). **SIN RPC unificado.**
+
+### 6.5 · No-regresión
+E es **solo lectura** (3 RPCs STABLE, 0 escritura, 0 DDL sobre datos) → **0 impacto** en despacho/cobro/emisión/141/143. Solo SELECT sobre `entregas`/`dispensaciones`/`delivery_autocreate_fallos`. Aditivo puro.
+
+### 6.6 · Cutover Ola E
+- **Estructural:** `listar_entregas_monitoreo` + `stats_entregas_sucursal` + `reconciliar_entregas_faltantes` (DEFINER sp'', STABLE, gate `entregas_ver`; REVOKE anon/PUBLIC + GRANT authenticated).
+- **Smoke (BEGIN/ROLLBACK):** sembrar entregas variadas (2 empresas / 2 sucursales / estados diversos; una cobrada; una **cobrada+fallida**; una con **monto<SUM**; un **grupo delivery despachado sin entrega**). Verificar: **exento (admin Y gerente_farmacia) ve TODAS las de su empresa** (Q1); **confinable@X solo las de X**; **cross-empresa 0**; filtros (estado/sucursal/delivery/fecha); **stats correctos** (conteos/%éxito/monto cobrado); **#1** flag+conteo; **#3** flag+conteo; **#2** vía `reconciliar_entregas_faltantes` (el grupo sembrado sin entrega aparece); **PII no se fuga** (confinable no ve direccion fuera de su sucursal; cross-empresa 0). **Harness 141/143 verde.**
+- **Backout:** `DROP` de los 3 RPCs (lectura pura) → 0 efecto sobre el resto.
+
+### 6.7 · Dependencias hacia F + front
+- **F (sin-QR):** independiente de E.
+- **Front de monitoreo (pendiente, junto al de C/D):** panel **admin/gerente** (lista confinada + stats + discrepancias + signed URL de evidencia TTL 120 s). Marcado, no implementado.
 
 ---
 
