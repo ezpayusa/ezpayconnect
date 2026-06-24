@@ -618,19 +618,56 @@ E es **solo lectura** (3 RPCs STABLE, 0 escritura, 0 DDL sobre datos) → **0 im
 
 ---
 
-## 7 · OLA F — Despacho sin-QR (ORTOGONAL, NO crea entrega)
+## 7 · OLA F — Despacho sin-QR (ORTOGONAL al delivery, NO crea entrega)
+> Vía **PICKUP** para paciente sin móvil: el dependiente identifica al paciente por nombre+fecha_nac, encuentra su receta pendiente y la despacha por el path vivo `registrar_dispensacion_dirigida`. **NO** toca el módulo delivery (no crea `entregas`, no marca modalidad). Centro de cuidado: **suplantación** (busca por datos no-secretos) + **PII**.
 
-### RPC `buscar_recetas_pendientes_paciente`
+### 7.1 · `buscar_recetas_pendientes_paciente` (DEFINER sp'', gate `recetas_dispensar`)
 ```sql
-(p_nombre text, p_fecha_nac date) → jsonb     -- identidad mínima: nombre + fecha_nacimiento (pacientes los tiene)
-  gate: recetas_dispensar; confina empresa + sucursal_visible
-  devuelve: recetas con ítems pendientes (dispensado=false) ruteados a la SUCURSAL DEL CALLER para ese paciente
-  → el despacho posterior usa registrar_dispensacion_dirigida (ya existe). NO crea entrega (es pickup).
+buscar_recetas_pendientes_paciente(p_nombre text, p_apellido text, p_fecha_nac date) RETURNS jsonb
+  LANGUAGE plpgsql VOLATILE SECURITY DEFINER SET search_path=''  ·  gate: recetas_dispensar  (VOLATILE por el log; ver §7.2)
 ```
-- Suplantación mitigada: 2 datos (nombre+fecha_nac) + `despachado_por` audita + acotado a la sucursal del caller.
+- **Identidad = nombre + apellido + fecha_nacimiento, match EXACTO** (normalizado solo case/espacios: `lower(btrim(...))`; **sin `LIKE`/fuzzy/parcial** → no permite fishing por prefijo). `pacientes` tiene `nombre`/`apellido`/`fecha_nacimiento` (verificado). **[Dep. futura]** el work item regulatorio agrega `pacientes.dpi` (su O4) → refuerzo/fallback de identidad; **NO se implementa aquí** (anotado).
+- **Confinamiento (clave anti-fishing):** devuelve recetas con **ítems pendientes** (`receta_items.dispensado=false`) **ruteados a una farmacia de la empresa del caller Y visible por su sucursal** — mismo gate que el despacho:
+  `f.empresa_id = mi_empresa_proveedor() AND COALESCE(sucursal_visible(ri.farmacia_id),false) AND ri.dispensado=false`.
+  → el dependiente **solo puede "encontrar" pacientes que ya tienen una receta pendiente ruteada a SU sucursal** (no es un buscador del padrón; el espacio de búsqueda está acotado a lo despachable por él). Cross-empresa → 0; confinable fuera de su sucursal → 0.
+- **NO despacha:** F es **lectura**. Devuelve `receta_base_id` + los `item_id` pendientes para que el dependiente llame **`registrar_dispensacion_dirigida(receta_id, item_ids, farmaceutico)`** (ya existe, 141-gated). F **no** escribe nada.
+- **Minimización del retorno (PII):** devuelve **SOLO** lo necesario para despachar — `receta_base_id`, ítems pendientes (`item_id`, `nombre_medicamento`, `dosis`, `frecuencia`, `cantidad`, `instrucciones`, `farmacia_id`), y el **nombre** del paciente (confirmación visual). **NO** devuelve `direccion`/`telefono`/email/expediente/diagnóstico. → el mostrador sigue viendo **solo nombre**, como hoy (la dirección/teléfono son del flujo delivery confinado, no del pickup).
 
-### Verificación Ola F
-- Probe Pbusca: identidad correcta → lista solo pendientes de la sucursal del caller; cross-empresa/otra sucursal → vacío; no expone dirección (solo lo necesario para despacho mostrador). Independiente de entregas (no crea ninguna).
+### 7.2 · Suplantación / minimización PII (lo crítico)
+- **Anti-enumeración:** match exacto de los 3 datos (sin parcial) + **confinamiento a lo despachable en su sucursal** (no se puede fishing arbitrario del padrón) + `despachado_por` ya audita el despacho posterior.
+- **[DECISIÓN OSCAR (a) = a1, CERRADO] Homónimos** (2+ pacientes con mismo nombre+apellido+fecha con receta pendiente en el scope): se devuelven **AMBOS**, cada uno con un **`paciente_ref` OPACO** (no el `paciente_id` crudo, no PII extra), que el front usa para **agrupar/seleccionar** cuál despachar.
+  - **`paciente_ref` = `md5(paciente_id::text || v_salt)`** donde **`v_salt` es aleatorio POR LLAMADA** (`v_salt := md5(clock_timestamp()::text || random()::text)`, generado 1 vez al inicio del RPC). Propiedades: **estable dentro de la respuesta** (mismo paciente → mismo ref → el front agrupa sus recetas), **opaco** (no revela `paciente_id`), **no-enumerable** (salt por-llamada → no se puede precomputar ni correlacionar entre búsquedas → no mapea de vuelta al id ni al padrón). El front **no** usa el ref para despachar (el despacho es por `receta_base_id`+`item_id`, ya expuestos y necesarios); el ref es **solo discriminador de display**.
+  - (a2 "bloquear y pedir refinar" descartada: hoy no hay 3er dato fuerte → bloquearía el despacho legítimo; vendrá con `pacientes.dpi`. a3 "solo si 1" descartada: degrada el caso sin-móvil.)
+- **[DECISIÓN OSCAR (b) = SÍ, CERRADO] Log de búsqueda (anti-fishing):** tabla **`private.busqueda_paciente_log(id, caller uuid, termino_nombre text, termino_apellido text, termino_fecha date, n_resultados int, ocurrido_at timestamptz)`** — `caller=auth.uid()`, términos buscados, nº resultados, timestamp → detecta patrones de fishing (muchas búsquedas sin resultado). **REVOKE anon/PUBLIC/authenticated; solo el RPC (DEFINER) escribe.**
+- **Transaccionalidad del log (no acopla la búsqueda):** el INSERT del log va en **sub-bloque best-effort anidado** dentro del RPC:
+  ```sql
+  BEGIN
+    INSERT INTO private.busqueda_paciente_log(caller, termino_nombre, termino_apellido, termino_fecha, n_resultados, ocurrido_at)
+    VALUES (auth.uid(), p_nombre, p_apellido, p_fecha_nac, v_n, now());
+  EXCEPTION WHEN OTHERS THEN NULL;   -- el log JAMÁS rompe la búsqueda
+  END;
+  ```
+- **Volatility = VOLATILE (no STABLE):** un RPC que hace **INSERT** (el log) **no es STABLE** → se declara **`VOLATILE`** (lo correcto: declarar STABLE sería mentir y podría romper bajo optimización). El log best-effort desacopla el RESULTADO (su fallo no afecta la búsqueda), pero la función **escribe** → volatility = VOLATILE. (Alternativa —log en una función DEFINER separada— igual dejaría al RPC con efecto de escritura; VOLATILE directo es lo simple y correcto.)
+
+### 7.3 · Consistencia de tipos
+- Joins **todos bigint**: `recetas.paciente_id (bigint) = pacientes.id (bigint)`, `receta_items.receta_id (bigint) = recetas.id (bigint)`. **NO** se tocan `recetas_avanzadas`/`dispensaciones` (cuyos `paciente_id`/`medico_id` son text) → sin mismatch. La búsqueda vive en `pacientes`/`recetas`/`receta_items`/`farmacias`.
+
+### 7.4 · Relación con lo existente
+- **Cierra el gap "despacho sin QR" (paciente sin móvil)** ya anotado en el recon QR.
+- **Ortogonal a la entrega:** F **no** crea fila en `entregas`, **no** marca `modalidad`, **no** toca el módulo delivery. Es pickup puro.
+- **No duplica `verificar_receta_despacho`:** esa es la vía **QR** (token); F es la vía **nombre+fecha**. El despacho real de ambas converge en `registrar_dispensacion_dirigida`/`registrar_dispensacion` (141/143-gated).
+
+### 7.5 · No-regresión
+F es **aditiva** (1 RPC nuevo de lectura, VOLATILE solo por el log best-effort) → **0 impacto** en despacho/QR/delivery/emisión/141/143. El único write es el INSERT al log (aislado, best-effort anidado, jamás afecta la búsqueda ni otro flujo).
+
+### 7.6 · Cutover Ola F
+- **Estructural:** `buscar_recetas_pendientes_paciente` (DEFINER sp'', STABLE, gate `recetas_dispensar`; REVOKE anon/PUBLIC + GRANT authenticated). (+ tabla `private.busqueda_paciente_log` si Oscar aprueba (b).)
+- **Smoke (BEGIN/ROLLBACK):** match exacto → encuentra recetas pendientes de SU sucursal; **nombre o fecha que no matchea → 0**; **homónimos → comportamiento (a) definido**; **cross-empresa → 0**; **confinable fuera de su sucursal → 0** (receta ruteada a otra sucursal no aparece); **sin `recetas_dispensar` → RAISE**; **PII minimizada** (no devuelve direccion/telefono/expediente; solo nombre + ítems pendientes); **el despacho posterior** (`registrar_dispensacion_dirigida` con el receta_id/item_ids devueltos) **sigue funcionando**; ítem ya dispensado → no aparece. **Harness 141/143 verde.**
+- **Backout:** DROP del RPC (lectura pura, aditivo) → 0 efecto.
+
+### 7.7 · Dependencias
+- **`pacientes.dpi`** (work item regulatorio O4): refuerzo/fallback futuro de identidad (desambiguar homónimos con un 3er dato fuerte). Anotado, no implementado en F.
+- **Front (pendiente, junto al resto del front delivery):** búsqueda por paciente en el **panel mostrador/bandeja farmacia** → despacho por `registrar_dispensacion_dirigida`. Marcado, no implementado.
 
 ---
 
