@@ -5,6 +5,7 @@ import { Label } from '@/components/ui/label'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
+import { supabase } from '@/lib/supabase'
 import { useAuth } from '@/hooks/useAuth'
 import { usePacientes } from '@/hooks/usePacientes'
 import { useRecetas, useMedicamentos } from '@/hooks/useRecetas'
@@ -21,7 +22,11 @@ import {
   CheckCircle2,
   AlertCircle,
   Building2,
+  Package,
+  Truck,
 } from 'lucide-react'
+
+type Modalidad = 'pickup' | 'delivery'
 
 interface RecetaModalProps {
   open: boolean
@@ -45,6 +50,10 @@ export default function RecetaModal({ open, onOpenChange, pacienteIdPreseleccion
 
   const [form, setForm] = useState({ paciente_id: pacienteIdPreseleccionado || '', instrucciones_generales: '' })
   const [items, setItems] = useState<Partial<RecetaItem>[]>([])
+  // F2: pre-marca de modalidad por GRUPO (farmacia). OPCIONAL, default pickup. Se aplica POST-create
+  // (el receta_id no existe antes) llamando fijar_modalidad_grupo SOLO para los grupos marcados delivery.
+  const [modalidades, setModalidades] = useState<Record<number, Modalidad>>({})
+  const [farmaciaNombres, setFarmaciaNombres] = useState<Record<number, string>>({})
   const [saving, setSaving] = useState(false)
   const [formError, setFormError] = useState('')
   const [searchMed, setSearchMed] = useState('')
@@ -68,6 +77,8 @@ export default function RecetaModal({ open, onOpenChange, pacienteIdPreseleccion
     if (!open) {
       setForm({ paciente_id: pacienteIdPreseleccionado || '', instrucciones_generales: '' })
       setItems([])
+      setModalidades({})
+      setFarmaciaNombres({})
       setFormError('')
       setSearchMed('')
     }
@@ -138,13 +149,19 @@ export default function RecetaModal({ open, onOpenChange, pacienteIdPreseleccion
   const seleccionarProveedor = (proveedor: any) => {
     if (itemIdxBuscando === null) return
     const newItems = [...items]
+    const fid = proveedor.farmacia?.id || null
     newItems[itemIdxBuscando] = {
       ...newItems[itemIdxBuscando],
-      farmacia_id: proveedor.farmacia?.id || null,
+      farmacia_id: fid,
       precio_unitario: proveedor.precio_unitario || null,
       stock_actual: proveedor.stock_actual || null
     }
     setItems(newItems)
+    // F2: registrar el nombre de la sucursal para rotular el control de modalidad por grupo.
+    if (fid != null) {
+      const nombre = proveedor.farmacia?.nombre || proveedor.farmacia?.empresa?.nombre_empresa || `Sucursal ${fid}`
+      setFarmaciaNombres(prev => ({ ...prev, [fid]: nombre }))
+    }
     setShowFarmaciaModal(false)
     setShowLaboratorioModal(false)
     setItemIdxBuscando(null)
@@ -258,6 +275,24 @@ export default function RecetaModal({ open, onOpenChange, pacienteIdPreseleccion
       toast.error(result.error)
     } else {
       toast.success('Receta creada exitosamente')
+      // F2: aplicar la pre-marca de modalidad POST-create, SOLO para grupos marcados delivery (pickup es el default
+      // del backend → 0 llamada). NO bloquea la emisión: la receta ya existe; si falla, queda pickup y se avisa.
+      const recetaId = (result.data as { id?: number } | null)?.id
+      const gruposDelivery = [...new Set(
+        items.map(it => it.farmacia_id).filter((f): f is number => f != null),
+      )].filter(fid => modalidades[fid] === 'delivery')
+      if (recetaId && gruposDelivery.length > 0) {
+        const fallidas: string[] = []
+        for (const fid of gruposDelivery) {
+          const { error } = await supabase.rpc('fijar_modalidad_grupo', {
+            p_receta_id: recetaId, p_farmacia_id: fid, p_modalidad: 'delivery',
+          })
+          if (error) fallidas.push(farmaciaNombres[fid] || `Sucursal ${fid}`)
+        }
+        if (fallidas.length > 0) {
+          toast.warning(`No se pudo fijar entrega a domicilio en: ${fallidas.join(', ')}. Queda retiro en farmacia; el paciente puede cambiarlo.`)
+        }
+      }
       setForm({ paciente_id: pacienteIdPreseleccionado || '', instrucciones_generales: '' })
       setItems([])
       onOpenChange(false)
@@ -382,6 +417,54 @@ export default function RecetaModal({ open, onOpenChange, pacienteIdPreseleccion
                 ))}
               </div>
             )}
+
+            {/* F2: Modalidad de entrega por GRUPO (sucursal). OPCIONAL, default retiro (pickup). */}
+            {(() => {
+              const grupos = [...new Set(items.map(it => it.farmacia_id).filter((f): f is number => f != null))]
+              if (grupos.length === 0) return null
+              return (
+                <Card className="border-[#1E5C8E]/30">
+                  <CardHeader>
+                    <CardTitle className="text-base flex items-center gap-2">
+                      <Truck className="h-4 w-4 text-[#1E5C8E]" /> Modalidad de entrega
+                      <span className="text-xs font-normal text-[#8a9aaa]">(opcional · por defecto retiro)</span>
+                    </CardTitle>
+                  </CardHeader>
+                  <CardContent className="space-y-3">
+                    {grupos.map(fid => {
+                      const m: Modalidad = modalidades[fid] ?? 'pickup'
+                      return (
+                        <div key={fid} className="flex items-center justify-between gap-3">
+                          <p className="text-sm font-medium text-[#1a2a3a] flex items-center gap-1 min-w-0">
+                            <Building2 className="h-3.5 w-3.5 text-[#1E5C8E] shrink-0" />
+                            <span className="truncate">{farmaciaNombres[fid] || `Sucursal ${fid}`}</span>
+                          </p>
+                          <div className="inline-flex rounded-md border border-[#1E5C8E]/30 overflow-hidden shrink-0">
+                            {(['pickup', 'delivery'] as Modalidad[]).map(opt => {
+                              const activo = m === opt
+                              const Icono = opt === 'pickup' ? Package : Truck
+                              return (
+                                <button
+                                  key={opt}
+                                  type="button"
+                                  disabled={saving}
+                                  onClick={() => setModalidades(prev => ({ ...prev, [fid]: opt }))}
+                                  className={`flex items-center gap-1 px-3 py-1.5 text-xs font-medium transition-colors ${
+                                    activo ? 'bg-[#1E5C8E] text-white' : 'bg-white text-[#1E5C8E] hover:bg-[#e8f0f8]'
+                                  }`}
+                                >
+                                  <Icono className="h-3.5 w-3.5" /> {opt === 'pickup' ? 'Retiro' : 'Domicilio'}
+                                </button>
+                              )
+                            })}
+                          </div>
+                        </div>
+                      )
+                    })}
+                  </CardContent>
+                </Card>
+              )
+            })()}
 
             {/* Instrucciones generales */}
             <div className="space-y-2">

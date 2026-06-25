@@ -60,6 +60,10 @@ export function useWebAppRecetas(pacienteId: number | undefined) {
           duracion: i.duracion,
           instrucciones: i.instrucciones,
           cantidad: i.cantidad,
+          // F2: campos para el control de modalidad por grupo (farmacia)
+          farmacia_id: i.farmacia_id ?? null,
+          modalidad: i.modalidad ?? null,
+          dispensado: i.dispensado ?? null,
         }))
 
         recetasConItems.push({
@@ -71,6 +75,27 @@ export function useWebAppRecetas(pacienteId: number | undefined) {
           codigo_qr: r.codigo_qr,
           created_at: r.created_at,
         })
+      }
+
+      // F2: nombre de la sucursal por farmacia_id (solo las farmacias a las que la receta del propio paciente
+      // está ruteada → no expone nada que el paciente no debiera ver). Si RLS lo bloquea, queda fallback "Sucursal {id}".
+      const farmaciaIds = [...new Set(
+        recetasConItems.flatMap(r => r.items.map(it => it.farmacia_id)).filter((f): f is number => f != null),
+      )]
+      if (farmaciaIds.length > 0) {
+        const { data: farmData } = await supabase
+          .from('farmacias')
+          .select('id, nombre')
+          .in('id', farmaciaIds)
+        const nombreMap: Record<number, string> = (farmData || []).reduce((acc: Record<number, string>, f: any) => {
+          acc[f.id] = f.nombre
+          return acc
+        }, {})
+        for (const r of recetasConItems) {
+          for (const it of r.items) {
+            if (it.farmacia_id != null) it.farmacia_nombre = nombreMap[it.farmacia_id] ?? `Sucursal ${it.farmacia_id}`
+          }
+        }
       }
 
       setRecetas(recetasConItems)
