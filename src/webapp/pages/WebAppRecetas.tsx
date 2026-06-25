@@ -3,12 +3,26 @@ import { useWebAppAuth } from '@/webapp/hooks/useWebAppAuth'
 import { useWebAppRecetas } from '@/webapp/hooks/useWebAppRecetas'
 import { Card, CardContent } from '@/components/ui/card'
 import { Badge } from '@/components/ui/badge'
-import { FileText, Pill, ChevronDown, ChevronUp, Loader2 } from 'lucide-react'
+import { FileText, Pill, ChevronDown, ChevronUp, Loader2, Truck } from 'lucide-react'
+import ModalidadGrupo from '@/webapp/components/ModalidadGrupo'
+import type { RecetaItemPaciente } from '@/webapp/types/webapp.types'
 
 export default function WebAppRecetas() {
   const { perfil } = useWebAppAuth()
-  const { recetas, loading, error } = useWebAppRecetas(perfil?.id)
+  const { recetas, loading, error, refetch } = useWebAppRecetas(perfil?.id)
   const [expandedId, setExpandedId] = useState<number | null>(null)
+
+  // F2: agrupar los ítems de una receta por farmacia (grupo = receta + farmacia) para el control de modalidad.
+  const gruposPorFarmacia = (items: RecetaItemPaciente[]) => {
+    const map = new Map<number, RecetaItemPaciente[]>()
+    for (const it of items) {
+      if (it.farmacia_id == null) continue
+      const arr = map.get(it.farmacia_id) ?? []
+      arr.push(it)
+      map.set(it.farmacia_id, arr)
+    }
+    return [...map.entries()]
+  }
 
   const getEstadoColor = (estado: string) => {
     switch (estado) {
@@ -112,6 +126,26 @@ export default function WebAppRecetas() {
                         </div>
                       ))}
                     </div>
+
+                    {/* F2: modalidad de entrega por grupo (farmacia). Solo si la receta tiene ítems ruteados. */}
+                    {gruposPorFarmacia(r.items).length > 0 && (
+                      <div className="space-y-2">
+                        <h4 className="text-sm font-medium text-slate-700 flex items-center gap-1">
+                          <Truck className="h-4 w-4" /> Modalidad de entrega
+                        </h4>
+                        {gruposPorFarmacia(r.items).map(([farmaciaId, grupoItems]) => (
+                          <ModalidadGrupo
+                            key={farmaciaId}
+                            recetaId={r.id}
+                            farmaciaId={farmaciaId}
+                            farmaciaNombre={grupoItems[0].farmacia_nombre || `Sucursal ${farmaciaId}`}
+                            modalidad={grupoItems[0].modalidad === 'delivery' ? 'delivery' : 'pickup'}
+                            despachado={grupoItems.some((it) => it.dispensado === true)}
+                            onChanged={refetch}
+                          />
+                        ))}
+                      </div>
+                    )}
                   </div>
                 )}
               </CardContent>

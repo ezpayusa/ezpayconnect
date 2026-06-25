@@ -52,9 +52,12 @@ export interface RecetaItemPaciente {
   duracion: string | null
   instrucciones: string | null
   cantidad: number
+  farmacia_id?: number | null
   farmacia_nombre?: string | null
   farmacia_direccion?: string | null
   precio_unitario?: number | null
+  modalidad?: 'pickup' | 'delivery' | null // F2
+  dispensado?: boolean | null              // F2: freeze (grupo ya en preparación/despacho)
 }
 
 export interface ExamenPaciente {
