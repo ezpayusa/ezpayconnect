@@ -1,9 +1,19 @@
 import { AlertTriangle, Building2, FileWarning } from 'lucide-react'
+import { Button } from '@/components/ui/button'
 import type { FaltanteReconciliacion } from '@/farmacia/hooks/useEntregasMonitoreo'
 
 // Panel/alerta SEPARADO (reconciliar_entregas_faltantes, discrepancia #2): grupos delivery despachados SIN entrega.
 // Separado de la lista porque la fila NO existe en `entregas` (no es una entrega editable).
-export default function ReconciliacionPanel({ faltantes }: { faltantes: FaltanteReconciliacion[] }) {
+export default function ReconciliacionPanel({ faltantes, error, onReintentar }: { faltantes: FaltanteReconciliacion[]; error?: string | null; onReintentar?: () => void }) {
+  // Error del RPC: NO mostrar el verde "todo reconciliado" (eso pintaría un fallo como éxito).
+  if (error) {
+    return (
+      <div className="rounded-xl border border-red-200 bg-red-50 p-4 text-sm text-red-700 flex items-center justify-between">
+        <span>No se pudo cargar la reconciliación.</span>
+        {onReintentar && <Button size="sm" variant="outline" onClick={onReintentar}>Reintentar</Button>}
+      </div>
+    )
+  }
   if (faltantes.length === 0) {
     return (
       <div className="rounded-xl border border-emerald-200 bg-emerald-50 p-4 text-sm text-emerald-700">

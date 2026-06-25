@@ -1,9 +1,19 @@
 import { Card, CardContent } from '@/components/ui/card'
+import { Button } from '@/components/ui/button'
 import { Building2, TrendingUp, Banknote, RefreshCw, AlertTriangle } from 'lucide-react'
 import type { StatsSucursal } from '@/farmacia/hooks/useEntregasMonitoreo'
 
 // Tarjetas por sucursal (stats_entregas_sucursal). Q1: el exento ve N filas (todas sus sucursales); el confinable, una.
-export default function StatsSucursales({ stats }: { stats: StatsSucursal[] }) {
+export default function StatsSucursales({ stats, error, onReintentar }: { stats: StatsSucursal[]; error?: string | null; onReintentar?: () => void }) {
+  // Error del RPC: NO mostrar "sin datos" (eso ocultaría un fallo como si fuera vacío legítimo).
+  if (error) {
+    return (
+      <div className="rounded-xl border border-red-200 bg-red-50 p-4 text-sm text-red-700 flex items-center justify-between">
+        <span>No se pudieron cargar las estadísticas.</span>
+        {onReintentar && <Button size="sm" variant="outline" onClick={onReintentar}>Reintentar</Button>}
+      </div>
+    )
+  }
   if (stats.length === 0) {
     return <p className="text-sm text-[#8a9aaa] text-center py-8">Sin datos en el rango seleccionado.</p>
   }

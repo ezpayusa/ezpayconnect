@@ -78,6 +78,8 @@ export function useEntregasMonitoreo() {
   const [faltantes, setFaltantes] = useState<FaltanteReconciliacion[]>([])
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const [statsError, setStatsError] = useState<string | null>(null)
+  const [reconError, setReconError] = useState<string | null>(null)
 
   const cargarLista = useCallback(async (f: FiltrosMonitoreo = {}) => {
     setLoading(true)
@@ -95,16 +97,20 @@ export function useEntregasMonitoreo() {
   }, [])
 
   const cargarStats = useCallback(async (desde: string | null, hasta: string | null, sucursalId: number | null) => {
+    setStatsError(null)
     const { data, error: e } = await supabase.rpc('stats_entregas_sucursal', {
       p_desde: desde, p_hasta: hasta, p_sucursal_id: sucursalId,
     })
-    if (!e) setStats((data ?? []) as StatsSucursal[])
+    if (e) setStatsError(e.message)
+    else setStats((data ?? []) as StatsSucursal[])
     return e?.message ?? null
   }, [])
 
   const cargarReconciliacion = useCallback(async (sucursalId: number | null) => {
+    setReconError(null)
     const { data, error: e } = await supabase.rpc('reconciliar_entregas_faltantes', { p_sucursal_id: sucursalId })
-    if (!e) setFaltantes((data ?? []) as FaltanteReconciliacion[])
+    if (e) setReconError(e.message) // NO tocar `faltantes`: el componente distingue "OK vacío" de "falló" por reconError
+    else setFaltantes((data ?? []) as FaltanteReconciliacion[])
     return e?.message ?? null
   }, [])
 
@@ -133,7 +139,7 @@ export function useEntregasMonitoreo() {
   }, [])
 
   return {
-    entregas, stats, faltantes, loading, error,
+    entregas, stats, faltantes, loading, error, statsError, reconError,
     cargarLista, cargarStats, cargarReconciliacion,
     geocodificar, guardarDireccion, verEvidencia,
   }

@@ -68,10 +68,6 @@ export default function EntregasMonitoreoPage() {
         {firma && (
           <button type="button" title="Ver firma" onClick={() => m.verEvidencia(firma.path)} className="text-[#1E5C8E] p-1"><PenLine className="h-4 w-4" /></button>
         )}
-        {/* Fallback legacy: si no hay array pero sí evidencia_path */}
-        {e.evidencias.length === 0 && e.evidencia_path && (
-          <button type="button" title="Ver evidencia" onClick={() => m.verEvidencia(e.evidencia_path!)} className="text-[#1E5C8E] p-1"><Camera className="h-4 w-4" /></button>
-        )}
       </div>
     )
   }
@@ -217,12 +213,12 @@ export default function EntregasMonitoreoPage() {
 
         {/* STATS */}
         <TabsContent value="stats" className="mt-3">
-          <StatsSucursales stats={m.stats} />
+          <StatsSucursales stats={m.stats} error={m.statsError} onReintentar={recargar} />
         </TabsContent>
 
         {/* RECONCILIACIÓN */}
         <TabsContent value="reconciliacion" className="mt-3">
-          <ReconciliacionPanel faltantes={m.faltantes} />
+          <ReconciliacionPanel faltantes={m.faltantes} error={m.reconError} onReintentar={recargar} />
         </TabsContent>
       </Tabs>
 
