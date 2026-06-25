@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 import { Package, Truck, Lock, Loader2 } from 'lucide-react'
 import { supabase } from '@/lib/supabase'
 import { toast } from 'sonner'
@@ -21,10 +21,14 @@ export default function ModalidadGrupo({ recetaId, farmaciaId, farmaciaNombre, m
   const [actual, setActual] = useState<Modalidad>(modalidad)
   const [saving, setSaving] = useState(false)
 
+  // La VERDAD es del server: cuando el padre re-fetchea (onChanged) y llega un nuevo `modalidad`, sincronizamos
+  // el estado local. Así el optimismo nunca queda pegado por encima del valor real.
+  useEffect(() => { setActual(modalidad) }, [modalidad])
+
   const cambiar = async (nueva: Modalidad) => {
     if (nueva === actual || saving || despachado) return
     const previo = actual
-    setActual(nueva) // optimista
+    setActual(nueva) // optimista (toggle de modalidad, no es dinero)
     setSaving(true)
     try {
       const { error } = await supabase.rpc('fijar_modalidad_grupo', {
@@ -34,12 +38,15 @@ export default function ModalidadGrupo({ recetaId, farmaciaId, farmaciaNombre, m
       })
       if (error) throw error
       toast.success(nueva === 'delivery' ? 'Cambiado a entrega a domicilio' : 'Cambiado a retiro en farmacia')
-      onChanged()
     } catch (e: any) {
-      setActual(previo) // revertir el optimismo
+      setActual(previo) // revertir el optimismo de inmediato
       toast.error(e?.message || 'No se pudo cambiar la modalidad')
     } finally {
       setSaving(false)
+      // Refetch en AMBOS caminos → trae la verdad del server (no el optimista). Si el RAISE fue por freeze
+      // (el grupo se despachó entre el render y el tap), el refetch trae dispensado=true → el control queda
+      // DISABLED (no en limbo). Si el server confirmó el cambio, el refetch lo ratifica.
+      onChanged()
     }
   }
 
