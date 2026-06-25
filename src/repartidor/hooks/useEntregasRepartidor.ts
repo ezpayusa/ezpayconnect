@@ -4,6 +4,7 @@ import { openSignedUrl } from '@/lib/signedUrl'
 import { useProveedorAuth } from '@/proveedor/hooks/useProveedorAuth'
 import type {
   EntregaRepartidor,
+  EntregaDetalle,
   EstadoEntrega,
   FiltrosCola,
   MetodoCobro,
@@ -45,6 +46,7 @@ export function useEntregasRepartidor() {
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const [offline, setOffline] = useState(false)
+  const [lastUpdated, setLastUpdated] = useState<string | null>(null) // "Última actualización HH:MM" (mockup cola)
 
   /** Cola de SUS entregas vía RPC (confinado server-side a delivery_id=auth.uid()). */
   const recargar = useCallback(async (filtros?: FiltrosCola) => {
@@ -71,6 +73,7 @@ export function useEntregasRepartidor() {
     const lista = (data ?? []) as EntregaRepartidor[]
     setEntregas(lista)
     setOffline(false)
+    setLastUpdated(new Date().toLocaleTimeString('es-GT', { hour: '2-digit', minute: '2-digit' }))
     if (!filtros) guardarCache(lista)
     setLoading(false)
   }, [])
@@ -138,6 +141,7 @@ export function useEntregasRepartidor() {
       const { data, error: rpcError } = await supabase.rpc('registrar_evidencia_entrega', {
         p_entrega_id: entregaId,
         p_path: path,
+        p_tipo: kind, // F1.5: tipo explícito → registra una fila por tipo en entrega_evidencias
       })
       if (rpcError) throw new Error(rpcError.message)
       const actualizada = data as EntregaRepartidor
@@ -146,6 +150,14 @@ export function useEntregasRepartidor() {
     },
     [empresaId],
   )
+
+  /** Detalle ampliado (F1.5): ítems despachados + cobrado_at + evidencias por tipo. Confinado server-side. */
+  const obtenerDetalle = useCallback(async (entregaId: number): Promise<EntregaDetalle> => {
+    requireOnline()
+    const { data, error: rpcError } = await supabase.rpc('detalle_entrega_delivery', { p_entrega_id: entregaId })
+    if (rpcError) throw new Error(rpcError.message)
+    return data as EntregaDetalle
+  }, [])
 
   /** Abre la evidencia con signed URL (TTL 120 s, helper vivo). Confinada por la policy SELECT del bucket. */
   const verEvidencia = useCallback(async (path: string | null): Promise<void> => {
@@ -157,10 +169,12 @@ export function useEntregasRepartidor() {
     loading,
     error,
     offline,
+    lastUpdated,
     recargar,
     actualizarEstado,
     cobrar,
     subirEvidencia,
+    obtenerDetalle,
     verEvidencia,
   }
 }
