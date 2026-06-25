@@ -3,7 +3,7 @@ import { useProveedorAuth } from '@/proveedor/hooks/useProveedorAuth'
 import { useFarmaciaPermisos } from '@/farmacia/hooks/useFarmaciaPermisos'
 import { useNotificaciones } from '@/hooks/useNotificaciones'
 import { Button } from '@/components/ui/button'
-import { LayoutDashboard, Pill, Package, Users, CreditCard, Bell, LogOut, Menu, X, Building2, ClipboardList, BarChart3 } from 'lucide-react'
+import { LayoutDashboard, Pill, Package, Users, CreditCard, Bell, LogOut, Menu, X, Building2, ClipboardList, BarChart3, Truck } from 'lucide-react'
 import { useState, useEffect } from 'react'
 
 interface NavItem { label: string; path: string; icon: React.ElementType; accion?: string; accionAny?: string[]; badge?: boolean }
@@ -15,6 +15,7 @@ const NAV_ITEMS: NavItem[] = [
   { label: 'Dashboard', path: '/farmacia/dashboard', icon: LayoutDashboard },
   { label: 'Inventario', path: '/farmacia/inventario', icon: Package },
   { label: 'Recetas entrantes', path: '/farmacia/recetas', icon: ClipboardList, accion: 'recetas_dispensar' },
+  { label: 'Entregas', path: '/farmacia/entregas', icon: Truck, accion: 'entregas_ver' },
   { label: 'Reportes', path: '/farmacia/reportes', icon: BarChart3, accionAny: ['finanzas_reportes', 'recetas_reportes'] },
   { label: 'Personal y Roles', path: '/farmacia/personal', icon: Users, accion: 'usuarios_roles' },
   { label: 'Sucursales', path: '/farmacia/sucursales', icon: Building2, accion: 'sucursales_gestionar' },
