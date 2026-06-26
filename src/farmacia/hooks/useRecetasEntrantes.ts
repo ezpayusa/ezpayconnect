@@ -37,8 +37,10 @@ export interface DetalleEntrante {
   items: ItemEntrante[]
 }
 
-// F4 (búsqueda de mostrador sin-QR): forma del RPC buscar_recetas_pendientes_paciente (mig 150).
-// `instrucciones` llega del RPC pero NO se renderiza en mostrador (decisión de alcance F4).
+// F4 + R1 (búsqueda de mostrador sin-QR, patrón de 2 pasos).
+// PASO 1 (buscar_recetas_pendientes_paciente con flag sinqr activo): devuelve CABECERA, SIN datos clínicos.
+// PASO 2 (revelar_items_receta, puerta 'sinqr'): devuelve los ítems con med y REGISTRA el reveal (mig 154).
+// `instrucciones` llega del RPC del paso 2 pero NO se renderiza en mostrador.
 export interface ItemEncontrado {
   item_id: number
   nombre_medicamento: string
@@ -49,15 +51,16 @@ export interface ItemEncontrado {
   farmacia_id: number
 }
 
-export interface RecetaEncontrada {
+// PASO 1 — cabecera por receta (sin clínico)
+export interface RecetaCabecera {
   receta_base_id: number
-  items: ItemEncontrado[]
+  n_items_pendientes: number
 }
 
-export interface PacienteEncontrado {
+export interface PacienteCabecera {
   paciente_ref: string        // opaco (md5+salt por-llamada); solo handle interno, NUNCA en URL/logs
   paciente_nombre: string
-  recetas: RecetaEncontrada[]
+  recetas: RecetaCabecera[]
 }
 
 export function useRecetasEntrantes() {
@@ -115,20 +118,33 @@ export function useRecetasEntrantes() {
     [],
   )
 
-  // F4: búsqueda de mostrador SIN-QR por identidad (3 campos, match exacto server-side; confina por empresa+sucursal).
-  // La UI NO filtra ni autocompleta: pasa los 3 campos y muestra lo que el RPC devuelva.
+  // PASO 1 — búsqueda por identidad (3 campos, match exacto server-side; confina por empresa+sucursal). Con el flag
+  // sinqr activo el RPC devuelve CABECERA (sin clínico). La UI NO filtra ni autocompleta.
   const buscarPaciente = useCallback(
-    async (nombre: string, apellido: string, fechaNac: string): Promise<PacienteEncontrado[]> => {
+    async (nombre: string, apellido: string, fechaNac: string): Promise<PacienteCabecera[]> => {
       const { data, error } = await supabase.rpc('buscar_recetas_pendientes_paciente', {
         p_nombre: nombre,
         p_apellido: apellido,
         p_fecha_nac: fechaNac,
       })
       if (error) throw new Error(error.message)
-      return (data as PacienteEncontrado[]) ?? []
+      return (data as PacienteCabecera[]) ?? []
     },
     [],
   )
 
-  return { loading, listar, detalle, despacharDirigido, verificarToken, despacharWalkin, buscarPaciente }
+  // PASO 2 — revelar los ítems con med de UNA receta (puerta 'sinqr'). El RPC registra el reveal (mig 154, bloqueante).
+  const revelarItems = useCallback(
+    async (recetaBaseId: number): Promise<ItemEncontrado[]> => {
+      const { data, error } = await supabase.rpc('revelar_items_receta', {
+        p_receta_base_id: recetaBaseId,
+        p_puerta: 'sinqr',
+      })
+      if (error) throw new Error(error.message)
+      return (data as ItemEncontrado[]) ?? []
+    },
+    [],
+  )
+
+  return { loading, listar, detalle, despacharDirigido, verificarToken, despacharWalkin, buscarPaciente, revelarItems }
 }
