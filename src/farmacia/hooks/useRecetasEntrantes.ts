@@ -37,6 +37,16 @@ export interface DetalleEntrante {
   items: ItemEntrante[]
 }
 
+// R2 (walk-in QR, patrón de 2 pasos): cabecera de verificar_receta_despacho con el flag walkin_qr activo.
+// SIN array de items ni datos clínicos — el med se obtiene en el paso 2 vía revelarItems (que registra el reveal).
+export interface CabeceraWalkin {
+  receta_id: number
+  dispatch_token?: string
+  estado_dispensacion?: string
+  paciente_nombre: string
+  n_pendientes: number
+}
+
 export function useRecetasEntrantes() {
   const [loading, setLoading] = useState(false)
 
@@ -72,12 +82,38 @@ export function useRecetasEntrantes() {
     [],
   )
 
-  // Walk-in: el token es secreto del paciente. Solo se pasa al RPC; nunca se guarda.
-  const verificarToken = useCallback(async (token: string): Promise<DetalleEntrante & { dispatch_token?: string }> => {
+  // Walk-in PASO 1: el token es secreto del paciente. Solo se pasa al RPC; nunca se guarda.
+  // Con flag walkin_qr=true el RPC devuelve CABECERA (sin med). En la transición (flag=false) el RPC trae items[]:
+  // en ese caso derivamos n_pendientes acá y NO exponemos los items (el med solo se ve en el paso 2 vía revelarItems).
+  const verificarToken = useCallback(async (token: string): Promise<CabeceraWalkin> => {
     const { data, error } = await supabase.rpc('verificar_receta_despacho', { p_token: token })
     if (error) throw error
-    return data
+    const d = data as any
+    const n_pendientes = typeof d?.n_pendientes === 'number'
+      ? d.n_pendientes
+      : ((d?.items as ItemEntrante[] | undefined)?.filter((i) => !i.dispensado).length ?? 0)
+    return {
+      receta_id: d.receta_id,
+      dispatch_token: d.dispatch_token,
+      estado_dispensacion: d.estado_dispensacion,
+      paciente_nombre: d.paciente_nombre,
+      n_pendientes,
+    }
   }, [])
+
+  // Walk-in / sin-QR PASO 2: revela los ítems pendientes con med de una receta y REGISTRA el reveal (mig 154,
+  // bloqueante). Reusa el RPC compartido; `puerta` etiqueta el origen ('walkin_qr' acá; 'sinqr' en F4).
+  const revelarItems = useCallback(
+    async (recetaBaseId: number, puerta: string): Promise<ItemEntrante[]> => {
+      const { data, error } = await supabase.rpc('revelar_items_receta', {
+        p_receta_base_id: recetaBaseId,
+        p_puerta: puerta,
+      })
+      if (error) throw error
+      return (data as ItemEntrante[]) ?? []
+    },
+    [],
+  )
 
   const despacharWalkin = useCallback(
     async (token: string, itemIds: number[], farmaceutico: string): Promise<{ despachados: number }> => {
@@ -92,5 +128,5 @@ export function useRecetasEntrantes() {
     [],
   )
 
-  return { loading, listar, detalle, despacharDirigido, verificarToken, despacharWalkin }
+  return { loading, listar, detalle, despacharDirigido, verificarToken, revelarItems, despacharWalkin }
 }
