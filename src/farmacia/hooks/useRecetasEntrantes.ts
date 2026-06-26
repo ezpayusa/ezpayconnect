@@ -37,6 +37,29 @@ export interface DetalleEntrante {
   items: ItemEntrante[]
 }
 
+// F4 (búsqueda de mostrador sin-QR): forma del RPC buscar_recetas_pendientes_paciente (mig 150).
+// `instrucciones` llega del RPC pero NO se renderiza en mostrador (decisión de alcance F4).
+export interface ItemEncontrado {
+  item_id: number
+  nombre_medicamento: string
+  dosis: string
+  frecuencia: string
+  cantidad: number
+  instrucciones?: string
+  farmacia_id: number
+}
+
+export interface RecetaEncontrada {
+  receta_base_id: number
+  items: ItemEncontrado[]
+}
+
+export interface PacienteEncontrado {
+  paciente_ref: string        // opaco (md5+salt por-llamada); solo handle interno, NUNCA en URL/logs
+  paciente_nombre: string
+  recetas: RecetaEncontrada[]
+}
+
 export function useRecetasEntrantes() {
   const [loading, setLoading] = useState(false)
 
@@ -92,5 +115,20 @@ export function useRecetasEntrantes() {
     [],
   )
 
-  return { loading, listar, detalle, despacharDirigido, verificarToken, despacharWalkin }
+  // F4: búsqueda de mostrador SIN-QR por identidad (3 campos, match exacto server-side; confina por empresa+sucursal).
+  // La UI NO filtra ni autocompleta: pasa los 3 campos y muestra lo que el RPC devuelva.
+  const buscarPaciente = useCallback(
+    async (nombre: string, apellido: string, fechaNac: string): Promise<PacienteEncontrado[]> => {
+      const { data, error } = await supabase.rpc('buscar_recetas_pendientes_paciente', {
+        p_nombre: nombre,
+        p_apellido: apellido,
+        p_fecha_nac: fechaNac,
+      })
+      if (error) throw new Error(error.message)
+      return (data as PacienteEncontrado[]) ?? []
+    },
+    [],
+  )
+
+  return { loading, listar, detalle, despacharDirigido, verificarToken, despacharWalkin, buscarPaciente }
 }

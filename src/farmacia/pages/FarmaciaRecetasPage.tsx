@@ -3,11 +3,12 @@
 // QR en modal aparte. La UI es solo gating por 'recetas_dispensar'; la barrera real es el RPC.
 import { useCallback, useEffect, useState } from 'react'
 import { toast } from 'sonner'
-import { ClipboardList, QrCode, Loader2, Package, ChevronDown, ChevronRight, Lock, RefreshCw } from 'lucide-react'
+import { ClipboardList, QrCode, UserSearch, Loader2, Package, ChevronDown, ChevronRight, Lock, RefreshCw } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { useFarmaciaPermisos } from '@/farmacia/hooks/useFarmaciaPermisos'
 import { useRecetasEntrantes, type RecetaEntrante } from '@/farmacia/hooks/useRecetasEntrantes'
 import EscanearQRModal from '@/farmacia/pages/EscanearQRModal'
+import BuscarPacienteModal from '@/farmacia/pages/BuscarPacienteModal'
 
 export default function FarmaciaRecetasPage() {
   const { tienePermiso, loading: permLoading } = useFarmaciaPermisos()
@@ -21,6 +22,7 @@ export default function FarmaciaRecetasPage() {
   const [farmaceutico, setFarmaceutico] = useState('')
   const [despachando, setDespachando] = useState(false)
   const [scanOpen, setScanOpen] = useState(false)
+  const [buscarOpen, setBuscarOpen] = useState(false)
 
   const recargar = useCallback(async () => {
     if (!puede) return
@@ -97,6 +99,9 @@ export default function FarmaciaRecetasPage() {
           <Button variant="outline" onClick={recargar} disabled={cargando}>
             <RefreshCw className={`h-4 w-4 mr-1 ${cargando ? 'animate-spin' : ''}`} /> Actualizar
           </Button>
+          <Button variant="outline" onClick={() => setBuscarOpen(true)} className="border-[#B45309] text-[#B45309] hover:bg-[#fdf6ee]">
+            <UserSearch className="h-4 w-4 mr-1" /> Buscar sin QR
+          </Button>
           <Button onClick={() => setScanOpen(true)} className="bg-[#B45309] hover:bg-[#92400e]">
             <QrCode className="h-4 w-4 mr-1" /> Escanear QR (walk-in)
           </Button>
@@ -172,6 +177,7 @@ export default function FarmaciaRecetasPage() {
       )}
 
       <EscanearQRModal open={scanOpen} onClose={() => setScanOpen(false)} />
+      <BuscarPacienteModal open={buscarOpen} onClose={() => setBuscarOpen(false)} onDespachado={recargar} />
     </div>
   )
 }
