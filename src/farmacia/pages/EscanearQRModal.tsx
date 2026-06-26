@@ -1,43 +1,50 @@
-// Walk-in QR (Frente B). El paciente presenta el QR/código del PDF; la farmacia verifica
-// y despacha por TOKEN vía RPC (verificar_receta_despacho / registrar_dispensacion).
+// Walk-in QR (Frente B) — R2: patrón de 2 PASOS (gate reveal-registrado, Puerta 2).
+// PASO 1 (verificar token): valida el token y muestra paciente + "N ítems pendientes". SIN medicamento.
+// PASO 2 ("Ver / despachar"): revelar_items_receta(receta_id,'walkin_qr') trae el med Y registra el reveal
+//         (server-side, actor=auth.uid; mig 154, bloqueante). Recién ahí se ven los ítems y se despacha.
+// El despacho sigue por TOKEN (registrar_dispensacion), no por receta_id.
 //
 // SEGURIDAD DEL TOKEN (secreto del paciente):
-//  · Vive solo en estado local de ESTE modal mientras dura el flujo.
+//  · Vive solo en estado local de ESTE modal; se mantiene desde el paso 1 hasta el despacho.
 //  · NUNCA se loguea (sin console.log), ni se persiste (storage/global/URL), ni autocomplete.
-//  · Decodificación QR 100% client-side (html5-qrcode); jamás se envía la imagen/token a
-//    una API de decodificación de terceros.
+//  · Decodificación QR 100% client-side (html5-qrcode); jamás se envía la imagen/token a un tercero.
 //  · Se limpia al cerrar/desmontar.
-// La UI es solo gating; la barrera real es el RPC.
 import { useEffect, useRef, useState } from 'react'
 import { Html5Qrcode } from 'html5-qrcode'
 import { toast } from 'sonner'
-import { X, Camera, Search, Loader2, CheckCircle, AlertCircle, Package } from 'lucide-react'
+import { X, Camera, Search, Loader2, CheckCircle, AlertCircle, Package, Eye } from 'lucide-react'
 import { Button } from '@/components/ui/button'
-import { useRecetasEntrantes, type DetalleEntrante } from '@/farmacia/hooks/useRecetasEntrantes'
+import { useRecetasEntrantes, type CabeceraWalkin, type ItemEntrante } from '@/farmacia/hooks/useRecetasEntrantes'
 
 interface Props { open: boolean; onClose: () => void }
 
 const READER_ID = 'qr-reader-walkin'
 
 export default function EscanearQRModal({ open, onClose }: Props) {
-  const { verificarToken, despacharWalkin } = useRecetasEntrantes()
-  // Token transitorio: en estado local; nunca sale de aquí salvo hacia el RPC.
+  const { verificarToken, revelarItems, despacharWalkin } = useRecetasEntrantes()
+  // Token transitorio: en estado local; se mantiene del paso 1 al despacho; nunca sale salvo hacia el RPC.
   const [token, setToken] = useState('')
   const [verificando, setVerificando] = useState(false)
-  const [verificada, setVerificada] = useState<DetalleEntrante | null>(null)
+  const [cabecera, setCabecera] = useState<CabeceraWalkin | null>(null)
+  // PASO 2: ítems revelados (con med), loading/error del reveal.
+  const [items, setItems] = useState<ItemEntrante[] | null>(null)
+  const [revelando, setRevelando] = useState(false)
+  const [errorRevelar, setErrorRevelar] = useState<string | null>(null)
   const [seleccion, setSeleccion] = useState<Set<number>>(new Set())
   const [farmaceutico, setFarmaceutico] = useState('')
   const [despachando, setDespachando] = useState(false)
   const [camActiva, setCamActiva] = useState(false)
   const scannerRef = useRef<Html5Qrcode | null>(null)
 
+  const resetReveal = () => { setItems(null); setRevelando(false); setErrorRevelar(null); setSeleccion(new Set()) }
+
   const limpiar = () => {
     setToken('')
-    setVerificada(null)
-    setSeleccion(new Set())
+    setCabecera(null)
     setFarmaceutico('')
     setVerificando(false)
     setDespachando(false)
+    resetReveal()
   }
 
   const detenerCamara = async () => {
@@ -53,24 +60,41 @@ export default function EscanearQRModal({ open, onClose }: Props) {
     onClose()
   }
 
+  // PASO 1: verifica el token → cabecera (sin med).
   const verificar = async (valor?: string) => {
     const t = (valor ?? token).trim()
     if (!t) { toast.error('Ingresa o escanea el código de la receta'); return }
     setVerificando(true)
-    setVerificada(null)
+    setCabecera(null)
+    resetReveal()
     try {
-      const rec = await verificarToken(t)
-      setVerificada(rec)
-      setSeleccion(new Set((rec.items || []).filter((i) => !i.dispensado).map((i) => i.item_id)))
+      const cab = await verificarToken(t)
+      setCabecera(cab)
     } catch (e: any) {
-      // Token EZP- viejo o vencido → mensaje claro, sin crash.
+      // Token EZP- viejo o vencido / inválido → mensaje claro, sin crash.
       toast.error(e?.message || 'Receta no válida o no autorizada')
     } finally {
       setVerificando(false)
     }
   }
 
-  // Cámara: decodifica client-side; al leer, verifica y se detiene.
+  // PASO 2: revela los ítems de la receta del token (registra el reveal server-side) y los muestra.
+  const verDespachar = async () => {
+    if (!cabecera) return
+    setRevelando(true)
+    setErrorRevelar(null)
+    try {
+      const its = await revelarItems(cabecera.receta_id, 'walkin_qr')
+      setItems(its)
+      setSeleccion(new Set(its.map((i) => i.item_id)))
+    } catch (e: any) {
+      setErrorRevelar(e?.message || 'No se pudo mostrar la receta')
+    } finally {
+      setRevelando(false)
+    }
+  }
+
+  // Cámara: decodifica client-side; al leer, verifica (paso 1) y se detiene.
   useEffect(() => {
     if (!camActiva) return
     let cancelado = false
@@ -100,28 +124,26 @@ export default function EscanearQRModal({ open, onClose }: Props) {
 
   if (!open) return null
 
-  const pendientes = (verificada?.items || []).filter((i) => !i.dispensado)
-  const yaTodo = !!verificada && pendientes.length === 0
+  const yaTodo = !!cabecera && cabecera.n_pendientes === 0
 
   const toggle = (id: number) =>
     setSeleccion((s) => { const n = new Set(s); n.has(id) ? n.delete(id) : n.add(id); return n })
 
+  // Despacho POR TOKEN (registrar_dispensacion). El token se mantiene en estado desde el paso 1.
   const despachar = async () => {
-    if (!verificada) return
+    if (!items) return
     if (!farmaceutico.trim()) { toast.error('Nombre del farmacéutico requerido'); return }
-    const ids = [...seleccion]
+    const ids = items.map((i) => i.item_id).filter((id) => seleccion.has(id))
     if (ids.length === 0) { toast.error('Selecciona al menos un ítem'); return }
     setDespachando(true)
     try {
       const res = await despacharWalkin(token, ids, farmaceutico.trim())
-      const ya = ids.length - (res?.despachados ?? 0)
-      if ((res?.despachados ?? 0) > 0 && ya > 0)
-        toast.warning(`${res.despachados} despachado(s); ${ya} ya estaban despachados (actualizado)`)
-      else toast.success(`${res?.despachados ?? 0} ítem(s) despachado(s)`)
-      await verificar(token)   // refresca estado (concurrencia)
+      toast.success(`${res?.despachados ?? 0} ítem(s) despachado(s)`)
+      resetReveal()
+      await verificar(token)   // vuelve al paso 1 con la cabecera actualizada (baja n_pendientes)
     } catch (e: any) {
       const msg = e?.message || 'No se pudo despachar'
-      if (/sin ítems despachables/i.test(msg)) { toast.warning('Esos ítems ya fueron despachados (actualizado)'); await verificar(token) }
+      if (/sin ítems despachables/i.test(msg)) { toast.warning('Esos ítems ya fueron despachados (actualizado)'); resetReveal(); await verificar(token) }
       else toast.error(msg)
     } finally {
       setDespachando(false)
@@ -167,19 +189,37 @@ export default function EscanearQRModal({ open, onClose }: Props) {
           </div>
 
           {/* Resultado */}
-          {verificada && (
+          {cabecera && (
             <div className="border rounded-lg overflow-hidden">
               <div className={`p-4 ${yaTodo ? 'bg-red-50' : 'bg-green-50'}`}>
                 <div className="flex items-center gap-2">
                   {yaTodo ? <AlertCircle className="h-5 w-5 text-red-500" /> : <CheckCircle className="h-5 w-5 text-green-600" />}
                   <div>
-                    <p className="font-medium text-sm">{verificada.paciente_nombre || 'Paciente'}</p>
-                    <p className="text-xs text-gray-500">Estado: {verificada.estado}</p>
+                    <p className="font-medium text-sm">{cabecera.paciente_nombre || 'Paciente'}</p>
+                    {cabecera.estado_dispensacion && <p className="text-xs text-gray-500">Estado: {cabecera.estado_dispensacion}</p>}
                   </div>
                 </div>
               </div>
 
-              {!yaTodo && (
+              {yaTodo ? (
+                <p className="p-4 text-sm text-gray-600">Todos los ítems de tu farmacia ya fueron despachados.</p>
+              ) : !items ? (
+                // PASO 1: conteo + acción de revelar (sin med). Si no hay pendientes, no se llega acá (yaTodo).
+                <div className="p-4 space-y-2">
+                  <p className="text-sm text-gray-600">{cabecera.n_pendientes} ítem(s) pendiente(s)</p>
+                  <Button onClick={verDespachar} disabled={revelando} className="w-full bg-[#B45309] hover:bg-[#92400e]">
+                    {revelando ? <Loader2 className="h-4 w-4 animate-spin mr-1" /> : <Eye className="h-4 w-4 mr-1" />}
+                    Ver / despachar
+                  </Button>
+                  {errorRevelar && (
+                    <div className="rounded-lg border border-red-200 bg-red-50 p-2 text-xs text-red-700 flex items-center justify-between">
+                      <span className="flex items-center gap-1"><AlertCircle className="h-3.5 w-3.5 shrink-0" /> No se pudo mostrar la receta.</span>
+                      <Button size="sm" variant="outline" onClick={verDespachar} disabled={revelando}>Reintentar</Button>
+                    </div>
+                  )}
+                </div>
+              ) : (
+                // PASO 2: ítems revelados (con med; sin instrucciones) + despacho por token.
                 <div className="p-4 space-y-3">
                   <div>
                     <label className="text-sm text-gray-600">Farmacéutico (requerido)</label>
@@ -190,7 +230,7 @@ export default function EscanearQRModal({ open, onClose }: Props) {
                     />
                   </div>
                   <div className="space-y-2">
-                    {pendientes.map((it) => (
+                    {items.map((it) => (
                       <label key={it.item_id} className="flex items-center gap-3 bg-gray-50 p-3 rounded-lg cursor-pointer">
                         <input type="checkbox" checked={seleccion.has(it.item_id)} onChange={() => toggle(it.item_id)} />
                         <Package className="h-4 w-4 text-[#B45309]" />
@@ -208,7 +248,6 @@ export default function EscanearQRModal({ open, onClose }: Props) {
                   </Button>
                 </div>
               )}
-              {yaTodo && <p className="p-4 text-sm text-gray-600">Todos los ítems de tu farmacia ya fueron despachados.</p>}
             </div>
           )}
         </div>
