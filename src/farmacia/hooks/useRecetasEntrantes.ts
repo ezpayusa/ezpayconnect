@@ -17,6 +17,13 @@ export interface ItemEntrante {
   sucursal_direccion?: string | null
 }
 
+// R3 (bandeja, patrón de 2 pasos): resumen de sucursal(es) en la cabecera (sin med).
+export interface SucursalResumen {
+  farmacia_id: number
+  sucursal_nombre: string | null
+  sucursal_direccion: string | null
+}
+
 export interface RecetaEntrante {
   receta_id: number
   created_at: string
@@ -24,7 +31,11 @@ export interface RecetaEntrante {
   paciente_nombre: string
   medico_nombre: string | null
   tiene_token: boolean              // = existe recetas_avanzadas (para el FK); NO implica token vigente
-  items_pendientes: ItemEntrante[] | null
+  // R3: con flag bandeja=true el RPC NO trae items_pendientes; trae n_pendientes + sucursales (cabecera, sin med).
+  // Con flag=false (transición) trae items_pendientes con med, pero el front NO los renderiza (med solo post-reveal).
+  items_pendientes?: ItemEntrante[] | null
+  n_pendientes?: number
+  sucursales?: SucursalResumen[]
 }
 
 export interface DetalleEntrante {
@@ -46,7 +57,12 @@ export function useRecetasEntrantes() {
     try {
       const { data, error } = await supabase.rpc('listar_recetas_entrantes')
       if (error) throw error
-      return (data as RecetaEntrante[]) ?? []
+      const rows = (data as RecetaEntrante[]) ?? []
+      // R3: normalizar n_pendientes (con flag off el RPC trae items_pendientes; el front NO los renderiza en la lista).
+      return rows.map((r) => ({
+        ...r,
+        n_pendientes: typeof r.n_pendientes === 'number' ? r.n_pendientes : (r.items_pendientes?.length ?? 0),
+      }))
     } finally {
       setLoading(false)
     }
@@ -79,6 +95,20 @@ export function useRecetasEntrantes() {
     return data
   }, [])
 
+  // Walk-in / sin-QR PASO 2: revela los ítems pendientes con med de una receta y REGISTRA el reveal (mig 154,
+  // bloqueante). Reusa el RPC compartido; `puerta` etiqueta el origen ('walkin_qr' acá; 'sinqr' en F4).
+  const revelarItems = useCallback(
+    async (recetaBaseId: number, puerta: string): Promise<ItemEntrante[]> => {
+      const { data, error } = await supabase.rpc('revelar_items_receta', {
+        p_receta_base_id: recetaBaseId,
+        p_puerta: puerta,
+      })
+      if (error) throw error
+      return (data as ItemEntrante[]) ?? []
+    },
+    [],
+  )
+
   const despacharWalkin = useCallback(
     async (token: string, itemIds: number[], farmaceutico: string): Promise<{ despachados: number }> => {
       const { data, error } = await supabase.rpc('registrar_dispensacion', {
@@ -92,5 +122,5 @@ export function useRecetasEntrantes() {
     [],
   )
 
-  return { loading, listar, detalle, despacharDirigido, verificarToken, despacharWalkin }
+  return { loading, listar, detalle, despacharDirigido, verificarToken, revelarItems, despacharWalkin }
 }
