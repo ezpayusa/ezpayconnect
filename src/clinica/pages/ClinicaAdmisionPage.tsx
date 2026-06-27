@@ -7,14 +7,14 @@ import { FormularioVitales, type VitalesValues, VITALES_VACIO } from '@/clinica/
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
-import { ClipboardList, RefreshCw, Clock, User, Stethoscope, X, Loader2, Activity } from 'lucide-react'
+import { ClipboardList, RefreshCw, Clock, User, Stethoscope, X, Loader2, Activity, Check } from 'lucide-react'
 
 const num = (v: string) => (v.trim() === '' ? null : Number(v))
 const horaCorta = (t: string | null) => (t ? t.slice(0, 5) : '—')
 
 export default function ClinicaAdmisionPage() {
   const { clinica } = useClinicaAuth()
-  const { citas, loading, error, recargar } = useAdmisionCitas()
+  const { citas, loading, error, recargar, tomasPorCita, recargarConteos } = useAdmisionCitas()
   const [citaSel, setCitaSel] = useState<CitaAdmision | null>(null)
 
   return (
@@ -62,7 +62,11 @@ export default function ClinicaAdmisionPage() {
                     <Stethoscope className="h-3 w-3" /> {c.medico_nombre || 'Sin médico'}
                   </span>
                   <Badge variant="secondary" className="text-xs">{c.estado}</Badge>
-                  {/* TODO ✓ tomas: indicador "ya tiene tomas" pendiente de mig 165 (contar_tomas_citas) */}
+                  {tomasPorCita[c.id] > 0 && (
+                    <Badge className="text-xs bg-emerald-100 text-emerald-700 flex items-center gap-1">
+                      <Check className="h-3 w-3" /> {tomasPorCita[c.id]}
+                    </Badge>
+                  )}
                 </button>
               ))}
             </div>
@@ -70,7 +74,7 @@ export default function ClinicaAdmisionPage() {
         </CardContent>
       </Card>
 
-      {citaSel && <ModalAdmision cita={citaSel} onClose={() => setCitaSel(null)} />}
+      {citaSel && <ModalAdmision cita={citaSel} onClose={() => setCitaSel(null)} onTomaGuardada={recargarConteos} />}
     </div>
   )
 }
@@ -78,7 +82,7 @@ export default function ClinicaAdmisionPage() {
 // ============================================================
 // Modal: serie de tomas (read-only) + agregar toma. La cola queda de fondo.
 // ============================================================
-function ModalAdmision({ cita, onClose }: { cita: CitaAdmision; onClose: () => void }) {
+function ModalAdmision({ cita, onClose, onTomaGuardada }: { cita: CitaAdmision; onClose: () => void; onTomaGuardada: () => void }) {
   const [serie, setSerie] = useState<any[]>([])
   const [cargandoSerie, setCargandoSerie] = useState(true)
   const [form, setForm] = useState<VitalesValues>(VITALES_VACIO)
@@ -118,7 +122,8 @@ function ModalAdmision({ cita, onClose }: { cita: CitaAdmision; onClose: () => v
     if (error) { toast.error(error.message); return }
     toast.success('Toma registrada')
     setForm(VITALES_VACIO)
-    cargarSerie() // refresca la serie; NO cierra el modal
+    cargarSerie()    // refresca la serie del modal
+    onTomaGuardada() // refresca el conteo de la cola (✓) sin recargar todo; NO cierra el modal
   }
 
   return (

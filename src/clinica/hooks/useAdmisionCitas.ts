@@ -29,6 +29,19 @@ export function useAdmisionCitas() {
   const [citas, setCitas] = useState<CitaAdmision[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
+  const [tomasPorCita, setTomasPorCita] = useState<Record<number, number>>({})
+
+  // Conteo de tomas por cita (✓ en la cola). UNA sola llamada para todas las citas de hoy (sin N+1).
+  // Degrada: si la RPC falla, NO rompe la cola — queda sin ✓ (es indicador, no bloqueante).
+  const cargarConteos = useCallback(async (ids: number[]) => {
+    if (!ids.length) { setTomasPorCita({}); return }
+    const { data, error: errConteo } = await supabase.rpc('contar_tomas_citas', { p_cita_ids: ids })
+    if (errConteo) {
+      console.warn('[useAdmisionCitas] conteo de tomas falló (degradado, sin ✓):', errConteo.message)
+      return
+    }
+    setTomasPorCita(Object.fromEntries((data || []).map((r: any) => [r.cita_id, r.n])))
+  }, [])
 
   const cargar = useCallback(async () => {
     if (!clinica) return
@@ -63,15 +76,19 @@ export function useAdmisionCitas() {
         .sort((a: CitaAdmision, b: CitaAdmision) => (a.hora_inicio || '').localeCompare(b.hora_inicio || ''))
 
       setCitas(mapped)
+      await cargarConteos(mapped.map((c) => c.id))
     } catch (e: any) {
       setError(e.message || 'Error cargando citas')
       setCitas([])
     } finally {
       setLoading(false)
     }
-  }, [clinica])
+  }, [clinica, cargarConteos])
 
   useEffect(() => { cargar() }, [cargar])
 
-  return { citas, loading, error, recargar: cargar }
+  // Refresca SOLO los conteos de las citas ya cargadas (post-captura), sin recargar la cola entera.
+  const recargarConteos = useCallback(() => cargarConteos(citas.map((c) => c.id)), [citas, cargarConteos])
+
+  return { citas, loading, error, recargar: cargar, tomasPorCita, recargarConteos }
 }
