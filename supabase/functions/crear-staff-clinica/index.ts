@@ -80,16 +80,18 @@ Deno.serve(async (req) => {
     }
     const userId = authData.user!.id;
 
-    // 2. Crear perfil
-    // El staff (secretaria/asistente) se persiste como 'gerente', el rol de
-    // staff clínico del catálogo (perfiles.rol tiene FK → roles_catalogo). Así
-    // además obtienen el acceso RLS de clínica (es_admin_clinica usa gerente).
+    // 2. Crear perfil con el ROL REAL del staff (mapeo UI → roles_catalogo, mig 160).
+    //    'asistente'  → 'asistente_medico' (captura signos vitales, Ola 1).
+    //    'secretaria' → 'secretaria'       (capa administrativa; NO captura vitales).
+    //    La UI valida arriba rol ∈ {secretaria, asistente}, así que el mapeo es total.
+    //    La pertenencia de clínica NO depende del rol: se otorga en el paso 3 (medico_clinicas).
+    const rolPersistido = rol === "asistente" ? "asistente_medico" : "secretaria";
     const { error: perfilError } = await supabase.from("perfiles").insert({
       id: userId,
       email,
       nombre_completo,
       telefono: telefono || null,
-      rol: "gerente",
+      rol: rolPersistido,
       pais_id: pais_id || null,
       activo: true,
     });

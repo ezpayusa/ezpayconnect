@@ -30,6 +30,32 @@ serve(async (req) => {
       )
     }
 
+    // Validar al SOLICITANTE: debe ser super_admin, o admin_clinica/gerente de ESA clínica.
+    // (Mismo patrón que crear-staff-clinica: el edge corre con service_role, así que el rol del
+    //  caller NO lo da el JWT del gateway → hay que derivarlo y validarlo acá. Antes: cualquier
+    //  authenticated invitaba.)
+    const authHeader = req.headers.get('Authorization')
+    if (!authHeader) {
+      return new Response(JSON.stringify({ error: 'Falta Authorization' }),
+        { status: 401, headers: { ...corsHeaders, 'Content-Type': 'application/json' } })
+    }
+    const token = authHeader.replace('Bearer ', '')
+    const { data: { user: solicitante } } = await supabase.auth.getUser(token)
+    if (!solicitante) {
+      return new Response(JSON.stringify({ error: 'No autenticado' }),
+        { status: 401, headers: { ...corsHeaders, 'Content-Type': 'application/json' } })
+    }
+    const { data: perfilReq } = await supabase.from('perfiles').select('rol').eq('id', solicitante.id).maybeSingle()
+    let autorizado = perfilReq?.rol === 'super_admin'
+    if (!autorizado && (perfilReq?.rol === 'admin_clinica' || perfilReq?.rol === 'gerente')) {
+      const { data: rel } = await supabase.rpc('obtener_clinica_usuario', { p_user_id: solicitante.id })
+      autorizado = Array.isArray(rel) && rel.some((r: any) => r.clinica_id === clinica_id)
+    }
+    if (!autorizado) {
+      return new Response(JSON.stringify({ error: 'No autorizado para invitar médicos a esta clínica' }),
+        { status: 403, headers: { ...corsHeaders, 'Content-Type': 'application/json' } })
+    }
+
     // Si no viene pais_id, intentar obtenerlo de la clinica
     let final_pais_id = pais_id
     if (!final_pais_id && clinica_id) {
