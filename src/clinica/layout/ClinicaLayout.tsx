@@ -3,8 +3,11 @@ import { useAuth } from '@/hooks/useAuth'
 import { ClinicaSidebar } from './ClinicaSidebar'
 import { Loader2 } from 'lucide-react'
 
-// Roles autorizados a entrar al panel de clínica.
-const ROLES_PERMITIDOS = ['admin_clinica', 'admin', 'super_admin']
+// Roles autorizados a ENTRAR al panel de clínica. Los de captura (asistente_medico/enfermeria)
+// entran pero quedan confinados a Admisión por el sidebar (filtro por rol) y el gate por página
+// <RequiereRolClinica> en App.tsx. El gate fino de cada superficie administrativa es defensa en
+// profundidad: el backend ya está cerrado por rol (mig 163).
+const ROLES_PERMITIDOS = ['admin_clinica', 'admin', 'super_admin', 'gerente', 'asistente_medico', 'enfermeria']
 
 export function ClinicaLayout() {
   const { user, perfil, loading } = useAuth()

@@ -13,6 +13,7 @@ import {
   CalendarDays,
   Clock,
   FlaskConical,
+  ClipboardList,
 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import ClinicaNotificacionesDropdown from '@/clinica/layout/ClinicaNotificacionesDropdown'
@@ -23,16 +24,23 @@ export function ClinicaSidebar() {
   const { logout, perfil } = useAuth()
   const { clinica } = useClinicaAuth()
 
+  // Roles administrativos (ven todo el panel). Los de captura solo ven Admisión.
+  const ROLES_ADMIN = ['admin_clinica', 'admin', 'super_admin', 'gerente']
+
+  // `roles` declara quién ve cada item. Item sin `roles` = visible a todos (compat hacia atrás).
   const navItems = [
-    { label: 'Dashboard', icon: LayoutDashboard, path: '/clinica' },
-    { label: 'Citas', icon: CalendarDays, path: '/clinica/citas' },
-    { label: 'Personal', icon: Users, path: '/clinica/personal' },
-    { label: 'Horarios Médicos', icon: Clock, path: '/clinica/horarios-medicos' },
-    { label: 'Invitar Médico', icon: Stethoscope, path: '/clinica/invitar-medico' },
-    { label: 'Invitar Laboratorio', icon: FlaskConical, path: '/clinica/invitar-laboratorio' },
-    { label: 'Invitar Staff', icon: UserPlus, path: '/clinica/invitar-staff' },
-    { label: 'Configuración', icon: Settings, path: '/clinica/configuracion' },
+    { label: 'Dashboard', icon: LayoutDashboard, path: '/clinica', roles: ROLES_ADMIN },
+    { label: 'Admisión', icon: ClipboardList, path: '/clinica/admision', roles: [...ROLES_ADMIN, 'asistente_medico', 'enfermeria'] },
+    { label: 'Citas', icon: CalendarDays, path: '/clinica/citas', roles: ROLES_ADMIN },
+    { label: 'Personal', icon: Users, path: '/clinica/personal', roles: ROLES_ADMIN },
+    { label: 'Horarios Médicos', icon: Clock, path: '/clinica/horarios-medicos', roles: ROLES_ADMIN },
+    { label: 'Invitar Médico', icon: Stethoscope, path: '/clinica/invitar-medico', roles: ROLES_ADMIN },
+    { label: 'Invitar Laboratorio', icon: FlaskConical, path: '/clinica/invitar-laboratorio', roles: ROLES_ADMIN },
+    { label: 'Invitar Staff', icon: UserPlus, path: '/clinica/invitar-staff', roles: ROLES_ADMIN },
+    { label: 'Configuración', icon: Settings, path: '/clinica/configuracion', roles: ROLES_ADMIN },
   ]
+
+  const visibleItems = navItems.filter((item) => !item.roles || item.roles.includes(perfil?.rol || ''))
 
   const isActive = (path: string) => location.pathname === path
 
@@ -58,7 +66,7 @@ export function ClinicaSidebar() {
       </div>
 
       <nav className="flex-1 overflow-y-auto py-4 px-3 space-y-1">
-        {navItems.map((item) => {
+        {visibleItems.map((item) => {
           const Icon = item.icon
           const active = isActive(item.path)
           return (

@@ -22,6 +22,7 @@ import PerfilPage from '@/repartidor/pages/PerfilPage'
 import { MedicoLayout } from '@/medico/layout/MedicoLayout'
 import MedicoPrivateRoute from '@/medico/components/MedicoPrivateRoute'
 import { ClinicaLayout } from '@/clinica/layout/ClinicaLayout'
+import { RequiereRolClinica } from '@/clinica/components/RequiereRolClinica'
 
 // === UI GLOBAL (eager) ===
 import { Toaster } from '@/components/ui/sonner'
@@ -155,6 +156,7 @@ const ClinicaInvitarStaffPage = lazy(() => import('@/clinica/pages/ClinicaInvita
 const ClinicaCitasPage = lazy(() => import('@/clinica/pages/ClinicaCitasPage'))
 const ClinicaConfiguracionPage = lazy(() => import('@/clinica/pages/ClinicaConfiguracionPage'))
 const ClinicaHorariosMedicosPage = lazy(() => import('@/clinica/pages/ClinicaHorariosMedicosPage'))
+const ClinicaAdmisionPage = lazy(() => import('@/clinica/pages/ClinicaAdmisionPage'))
 
 // === PORTAL MÉDICO ===
 const MedicoDashboardPage = lazy(() => import('@/medico/pages/MedicoDashboardPage'))
@@ -307,14 +309,22 @@ function App() {
 
         {/* === RUTAS CLÍNICA === */}
         <Route path="/clinica" element={<ClinicaLayout />}>
-          <Route index element={<ClinicaDashboardPage />} />
-          <Route path="citas" element={<ClinicaCitasPage />} />
-          <Route path="personal" element={<ClinicaPersonalPage />} />
-          <Route path="horarios-medicos" element={<ClinicaHorariosMedicosPage />} />
-          <Route path="invitar-medico" element={<ClinicaInvitarMedicoPage />} />
-          <Route path="invitar-laboratorio" element={<ClinicaInvitarLaboratorioPage />} />
-          <Route path="invitar-staff" element={<ClinicaInvitarStaffPage />} />
-          <Route path="configuracion" element={<ClinicaConfiguracionPage />} />
+          {/* Admisión: cola de citas de hoy + captura de vitales (serie). Roles de captura + admin. */}
+          <Route path="admision" element={
+            <RequiereRolClinica roles={['admin_clinica', 'admin', 'super_admin', 'gerente', 'asistente_medico', 'enfermeria']}>
+              <ClinicaAdmisionPage />
+            </RequiereRolClinica>
+          } />
+          {/* Superficies administrativas: gate por página (defensa vs URL directa). Un rol de captura
+              que entra por URL es redirigido a /clinica/admision. roles = los admin de clínica. */}
+          <Route index element={<RequiereRolClinica roles={['admin_clinica', 'admin', 'super_admin', 'gerente']}><ClinicaDashboardPage /></RequiereRolClinica>} />
+          <Route path="citas" element={<RequiereRolClinica roles={['admin_clinica', 'admin', 'super_admin', 'gerente']}><ClinicaCitasPage /></RequiereRolClinica>} />
+          <Route path="personal" element={<RequiereRolClinica roles={['admin_clinica', 'admin', 'super_admin', 'gerente']}><ClinicaPersonalPage /></RequiereRolClinica>} />
+          <Route path="horarios-medicos" element={<RequiereRolClinica roles={['admin_clinica', 'admin', 'super_admin', 'gerente']}><ClinicaHorariosMedicosPage /></RequiereRolClinica>} />
+          <Route path="invitar-medico" element={<RequiereRolClinica roles={['admin_clinica', 'admin', 'super_admin', 'gerente']}><ClinicaInvitarMedicoPage /></RequiereRolClinica>} />
+          <Route path="invitar-laboratorio" element={<RequiereRolClinica roles={['admin_clinica', 'admin', 'super_admin', 'gerente']}><ClinicaInvitarLaboratorioPage /></RequiereRolClinica>} />
+          <Route path="invitar-staff" element={<RequiereRolClinica roles={['admin_clinica', 'admin', 'super_admin', 'gerente']}><ClinicaInvitarStaffPage /></RequiereRolClinica>} />
+          <Route path="configuracion" element={<RequiereRolClinica roles={['admin_clinica', 'admin', 'super_admin', 'gerente']}><ClinicaConfiguracionPage /></RequiereRolClinica>} />
         </Route>
 
         {/* === RUTAS PORTAL PROVEEDORES === */}
