@@ -1,6 +1,6 @@
 import { useState, useCallback } from 'react'
 import { supabase } from '@/lib/supabase'
-import type { ExpedienteNota, SignosVitales } from '@/types'
+import type { ExpedienteNota } from '@/types'
 
 interface CrearConsultaData {
   cita_id?: number | null
@@ -11,20 +11,10 @@ interface CrearConsultaData {
   analisis?: string
   plan?: string
   diagnostico?: string
-  presion_arterial?: string
-  frecuencia_cardiaca?: number
-  frecuencia_respiratoria?: number
-  temperatura?: number
-  peso_kg?: number
-  talla_cm?: number
-  imc?: number
-  saturacion_o2?: number
-  glucosa?: number
 }
 
 export function useConsultas() {
   const [consultas, setConsultas] = useState<ExpedienteNota[]>([])
-  const [signosVitales, setSignosVitales] = useState<SignosVitales[]>([])
   const [loading, setLoading] = useState(false)
   const [saving, setSaving] = useState(false)
 
@@ -93,47 +83,12 @@ export function useConsultas() {
     }
   }, [])
 
-  const fetchSignosVitalesPorPaciente = useCallback(async (pacienteId: number) => {
-    setLoading(true)
-    const { data, error } = await supabase
-      .from('signos_vitales')
-      .select('*')
-      .eq('paciente_id', pacienteId)
-      .order('fecha_toma', { ascending: false })
-      .limit(50)
-
-    if (error) {
-      console.error('Error cargando signos vitales:', error)
-      setSignosVitales([])
-    } else {
-      setSignosVitales(data || [])
-    }
-    setLoading(false)
-  }, [])
-
-  const guardarSignosVitales = useCallback(async (sv: Omit<SignosVitales, 'id' | 'created_at'>) => {
-    // La RLS exige medico_id = auth.uid() al insertar; lo inyectamos siempre.
-    const { data: { user } } = await supabase.auth.getUser()
-    if (!user) return { data: null, error: 'Usuario no autenticado' }
-
-    const { data, error } = await supabase
-      .from('signos_vitales')
-      .insert({ ...sv, medico_id: user.id })
-      .select()
-      .single()
-
-    return { data: data as SignosVitales | null, error: error?.message || null }
-  }, [])
-
   return {
     consultas,
-    signosVitales,
     loading,
     saving,
     fetchConsultasPorPaciente,
     fetchConsultaPorCita,
     crearOActualizarConsulta,
-    fetchSignosVitalesPorPaciente,
-    guardarSignosVitales,
   }
 }

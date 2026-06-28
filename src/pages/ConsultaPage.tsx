@@ -5,6 +5,9 @@ import { openSignedUrl } from '@/lib/signedUrl'
 import { useAuth } from '@/hooks/useAuth'
 import { useConsultas } from '@/hooks/useConsultas'
 import { useCitas } from '@/hooks/useCitas'
+import { useSignosVitalesCita } from '@/hooks/useSignosVitalesCita'
+import { FormularioVitales, VITALES_VACIO } from '@/clinica/components/FormularioVitales'
+import type { VitalesValues } from '@/clinica/components/FormularioVitales'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
@@ -17,7 +20,7 @@ import BibliotecaMedica from '@/components/consulta/BibliotecaMedica'
 import AsistenteIA from '@/components/consulta/AsistenteIA'
 import RecetaModal from '@/components/consulta/RecetaModal'
 import { toast } from 'sonner'
-import type { Paciente, Cita, ExpedienteNota } from '@/types'
+import type { Paciente, Cita } from '@/types'
 import {
   ArrowLeft,
   User,
@@ -25,20 +28,12 @@ import {
   FileText,
   Pill,
   FlaskConical,
-  Upload,
   Clock,
   CheckCircle2,
+  Loader2,
   AlertTriangle,
   Save,
   Stethoscope,
-  HeartPulse,
-  Thermometer,
-  Scale,
-  Ruler,
-  Droplets,
-  Syringe,
-  Wind,
-  Gauge,
   ClipboardList,
   BookOpen,
   Brain,
@@ -77,18 +72,6 @@ export default function ConsultaPage() {
   const [consultaId, setConsultaId] = useState<number | undefined>()
   const [cargando, setCargando] = useState(true)
 
-  // Signos vitales
-  const [sv, setSv] = useState({
-    presion_arterial: '',
-    frecuencia_cardiaca: '',
-    frecuencia_respiratoria: '',
-    temperatura: '',
-    peso_kg: '',
-    talla_cm: '',
-    saturacion_o2: '',
-    glucosa: '',
-  })
-
   // Nota SOAP
   const [soap, setSoap] = useState({
     motivo_consulta: '',
@@ -98,6 +81,13 @@ export default function ConsultaPage() {
     plan: '',
     diagnostico: '',
   })
+
+  // Ola 3: signos vitales = SERIE de la cita (fuente única signos_vitales, vía RPC DEFINER).
+  // El médico ve la serie pre-capturada, valida cada toma y agrega la suya. Append-only.
+  const { serie, cargando: cargandoSerie, validarToma, agregarToma } = useSignosVitalesCita(cita?.id ?? 0)
+  const [formMedico, setFormMedico] = useState<VitalesValues>(VITALES_VACIO)
+  const [guardandoToma, setGuardandoToma] = useState(false)
+  const [validandoId, setValidandoId] = useState<number | null>(null)
 
   // Paneles desplegables
   const [mostrarBiblioteca, setMostrarBiblioteca] = useState(false)
@@ -241,15 +231,6 @@ export default function ConsultaPage() {
     setOtrosExamenes('')
   }
 
-  const calcularIMC = useCallback(() => {
-    const peso = parseFloat(sv.peso_kg)
-    const talla = parseFloat(sv.talla_cm)
-    if (peso > 0 && talla > 0) {
-      return (peso / ((talla / 100) ** 2)).toFixed(2)
-    }
-    return ''
-  }, [sv.peso_kg, sv.talla_cm])
-
   // Cargar cita, paciente y consulta existente
   useEffect(() => {
     const cargar = async () => {
@@ -330,16 +311,6 @@ export default function ConsultaPage() {
           plan: consultaExistente.plan || '',
           diagnostico: consultaExistente.diagnostico || '',
         })
-        setSv({
-          presion_arterial: consultaExistente.presion_arterial || '',
-          frecuencia_cardiaca: consultaExistente.frecuencia_cardiaca?.toString() || '',
-          frecuencia_respiratoria: consultaExistente.frecuencia_respiratoria?.toString() || '',
-          temperatura: consultaExistente.temperatura?.toString() || '',
-          peso_kg: consultaExistente.peso_kg?.toString() || '',
-          talla_cm: consultaExistente.talla_cm?.toString() || '',
-          saturacion_o2: consultaExistente.saturacion_o2?.toString() || '',
-          glucosa: consultaExistente.glucosa?.toString() || '',
-        })
       } else {
         // Pre-llenar motivo con el de la cita
         setSoap(prev => ({ ...prev, motivo_consulta: citaData.motivo || '' }))
@@ -359,14 +330,6 @@ export default function ConsultaPage() {
         cita_id: cita.id,
         paciente_id: paciente.id,
         ...soap,
-        presion_arterial: sv.presion_arterial || null,
-        frecuencia_cardiaca: sv.frecuencia_cardiaca ? parseInt(sv.frecuencia_cardiaca) : undefined,
-        frecuencia_respiratoria: sv.frecuencia_respiratoria ? parseInt(sv.frecuencia_respiratoria) : undefined,
-        temperatura: sv.temperatura ? parseFloat(sv.temperatura) : undefined,
-        peso_kg: sv.peso_kg ? parseFloat(sv.peso_kg) : undefined,
-        talla_cm: sv.talla_cm ? parseFloat(sv.talla_cm) : undefined,
-        saturacion_o2: sv.saturacion_o2 ? parseInt(sv.saturacion_o2) : undefined,
-        glucosa: sv.glucosa ? parseInt(sv.glucosa) : undefined,
       },
       consultaId
     )
@@ -390,8 +353,14 @@ export default function ConsultaPage() {
     }
   }
 
-  const handleSvChange = (field: string, value: string) => {
-    setSv(prev => ({ ...prev, [field]: value }))
+  const handleAgregarToma = async () => {
+    if (!cita || !paciente) return
+    const medicoId = perfil?.id
+    if (!medicoId) { toast.error('Sin médico en sesión'); return }
+    setGuardandoToma(true)
+    const ok = await agregarToma(formMedico, paciente.id, medicoId)
+    setGuardandoToma(false)
+    if (ok) setFormMedico(VITALES_VACIO)
   }
 
   if (cargando || loadingConsulta) {
@@ -414,7 +383,7 @@ export default function ConsultaPage() {
   }
 
   const edad = calcularEdad(paciente.fecha_nacimiento)
-  const imc = calcularIMC()
+  const ultimaToma = serie.length ? serie[serie.length - 1] : null
 
   const getEstadoColor = (estado: Cita['estado']) => {
     const map: Record<string, string> = {
@@ -510,55 +479,71 @@ export default function ConsultaPage() {
             </CardContent>
           </Card>
 
-          {/* Signos vitales */}
+          {/* Signos vitales de la cita (serie append-only; fuente única signos_vitales vía RPC) */}
           <Card>
             <CardHeader className="pb-3">
               <CardTitle className="text-sm flex items-center gap-2">
                 <Activity className="h-4 w-4 text-emerald-600" />
-                Signos Vitales
+                Signos vitales de la cita
               </CardTitle>
             </CardHeader>
-            <CardContent className="space-y-3">
-              <div className="grid grid-cols-2 gap-2">
-                <div>
-                  <Label className="text-xs flex items-center gap-1"><HeartPulse className="h-3 w-3" /> PA (mmHg)</Label>
-                  <Input placeholder="120/80" value={sv.presion_arterial} onChange={e => handleSvChange('presion_arterial', e.target.value)} className="h-8 text-sm" />
-                </div>
-                <div>
-                  <Label className="text-xs flex items-center gap-1"><HeartPulse className="h-3 w-3" /> FC (lpm)</Label>
-                  <Input type="number" placeholder="72" value={sv.frecuencia_cardiaca} onChange={e => handleSvChange('frecuencia_cardiaca', e.target.value)} className="h-8 text-sm" />
-                </div>
-                <div>
-                  <Label className="text-xs flex items-center gap-1"><Wind className="h-3 w-3" /> FR (rpm)</Label>
-                  <Input type="number" placeholder="16" value={sv.frecuencia_respiratoria} onChange={e => handleSvChange('frecuencia_respiratoria', e.target.value)} className="h-8 text-sm" />
-                </div>
-                <div>
-                  <Label className="text-xs flex items-center gap-1"><Thermometer className="h-3 w-3" /> Temp (°C)</Label>
-                  <Input type="number" step="0.1" placeholder="36.5" value={sv.temperatura} onChange={e => handleSvChange('temperatura', e.target.value)} className="h-8 text-sm" />
-                </div>
-                <div>
-                  <Label className="text-xs flex items-center gap-1"><Scale className="h-3 w-3" /> Peso (kg)</Label>
-                  <Input type="number" step="0.1" placeholder="70.0" value={sv.peso_kg} onChange={e => handleSvChange('peso_kg', e.target.value)} className="h-8 text-sm" />
-                </div>
-                <div>
-                  <Label className="text-xs flex items-center gap-1"><Ruler className="h-3 w-3" /> Talla (cm)</Label>
-                  <Input type="number" placeholder="170" value={sv.talla_cm} onChange={e => handleSvChange('talla_cm', e.target.value)} className="h-8 text-sm" />
-                </div>
-                <div>
-                  <Label className="text-xs flex items-center gap-1"><Gauge className="h-3 w-3" /> SpO2 (%)</Label>
-                  <Input type="number" placeholder="98" value={sv.saturacion_o2} onChange={e => handleSvChange('saturacion_o2', e.target.value)} className="h-8 text-sm" />
-                </div>
-                <div>
-                  <Label className="text-xs flex items-center gap-1"><Droplets className="h-3 w-3" /> Glucosa</Label>
-                  <Input type="number" placeholder="90" value={sv.glucosa} onChange={e => handleSvChange('glucosa', e.target.value)} className="h-8 text-sm" />
-                </div>
-              </div>
-              {imc && (
-                <div className="bg-slate-50 p-2 rounded text-center">
-                  <span className="text-xs text-muted-foreground">IMC calculado: </span>
-                  <span className="font-bold text-[#1E5C8E]">{imc}</span>
-                </div>
+            <CardContent className="space-y-2">
+              {cargandoSerie ? (
+                <div className="flex justify-center p-3"><Loader2 className="h-5 w-5 animate-spin text-[#1E5C8E]" /></div>
+              ) : serie.length === 0 ? (
+                <p className="text-sm text-gray-400 py-2">Sin tomas registradas</p>
+              ) : (
+                serie.map((t) => (
+                  <div key={t.id} className="border rounded p-2 text-xs bg-slate-50">
+                    <div className="flex justify-between items-center gap-2 mb-1">
+                      <span className="text-muted-foreground">
+                        {new Date(t.fecha_toma).toLocaleString('es-ES', { hour: '2-digit', minute: '2-digit', day: '2-digit', month: '2-digit' })}
+                        {' · tomado por '}{t.capturado_por_nombre || '—'}
+                      </span>
+                      {t.estado === 'capturado' && (
+                        <Button size="sm" variant="outline" className="h-6 text-xs shrink-0"
+                          disabled={validandoId === t.id}
+                          onClick={async () => { setValidandoId(t.id); await validarToma(t.id); setValidandoId(null) }}>
+                          {validandoId === t.id ? <Loader2 className="h-3 w-3 animate-spin" /> : 'Validar'}
+                        </Button>
+                      )}
+                      {t.estado === 'validado' && (
+                        <Badge className="h-6 text-xs bg-emerald-100 text-emerald-700 flex items-center gap-1 shrink-0">
+                          <CheckCircle2 className="h-3 w-3" /> Validado{t.validado_at ? ' · ' + new Date(t.validado_at).toLocaleDateString('es-ES') : ''}
+                        </Badge>
+                      )}
+                      {(t.estado === 'declarado' || t.estado === 'corregido') && (
+                        <Badge variant="secondary" className="h-6 text-xs shrink-0">{t.estado}</Badge>
+                      )}
+                    </div>
+                    <div className="flex flex-wrap gap-x-3 gap-y-1">
+                      {t.presion_arterial && <span>PA {t.presion_arterial}</span>}
+                      {t.frecuencia_cardiaca != null && <span>FC {t.frecuencia_cardiaca}</span>}
+                      {t.frecuencia_respiratoria != null && <span>FR {t.frecuencia_respiratoria}</span>}
+                      {t.temperatura != null && <span>T {t.temperatura}°</span>}
+                      {t.peso_kg != null && <span>{t.peso_kg}kg</span>}
+                      {t.talla_cm != null && <span>{t.talla_cm}cm</span>}
+                      {t.imc != null && <span>IMC {t.imc}</span>}
+                      {t.saturacion_o2 != null && <span>SpO2 {t.saturacion_o2}%</span>}
+                      {t.glucosa != null && <span>Gluc {t.glucosa}</span>}
+                      {t.notas && <span className="italic">{t.notas}</span>}
+                    </div>
+                  </div>
+                ))
               )}
+            </CardContent>
+          </Card>
+
+          {/* Agregar mi toma (médico) */}
+          <Card>
+            <CardHeader className="pb-3">
+              <CardTitle className="text-sm flex items-center gap-2">
+                <Activity className="h-4 w-4 text-[#1E5C8E]" />
+                Agregar mi toma
+              </CardTitle>
+            </CardHeader>
+            <CardContent>
+              <FormularioVitales values={formMedico} onChange={(c, v) => setFormMedico(f => ({ ...f, [c]: v }))} onSubmit={handleAgregarToma} loading={guardandoToma} />
             </CardContent>
           </Card>
         </div>
@@ -785,13 +770,13 @@ export default function ConsultaPage() {
                   contexto={{
                     edad,
                     genero: paciente?.genero,
-                    peso_kg: sv.peso_kg,
+                    peso_kg: ultimaToma?.peso_kg != null ? String(ultimaToma.peso_kg) : '',
                     motivo_consulta: soap.motivo_consulta,
                     subjetivo: soap.subjetivo,
                     objetivo: soap.objetivo,
-                    presion_arterial: sv.presion_arterial,
-                    temperatura: sv.temperatura,
-                    frecuencia_cardiaca: sv.frecuencia_cardiaca,
+                    presion_arterial: ultimaToma?.presion_arterial ?? '',
+                    temperatura: ultimaToma?.temperatura != null ? String(ultimaToma.temperatura) : '',
+                    frecuencia_cardiaca: ultimaToma?.frecuencia_cardiaca != null ? String(ultimaToma.frecuencia_cardiaca) : '',
                     alergias: paciente?.alergias,
                     medicamentos_en_uso: paciente?.medicamentos_en_uso,
                     antecedentes: paciente?.antecedentes_personales,
