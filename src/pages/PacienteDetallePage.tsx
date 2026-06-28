@@ -8,6 +8,7 @@ import { supabase } from '@/lib/supabase'
 import { openSignedUrl } from '@/lib/signedUrl'
 import { useAuth } from '@/hooks/useAuth'
 import { FotoPacienteAvatar } from '@/components/FotoPacienteAvatar'
+import { DocumentosPaciente } from '@/components/DocumentosPaciente'
 import {
   ArrowLeft,
   User,
@@ -407,6 +408,14 @@ export default function PacienteDetallePage() {
           </div>
         </div>
       )}
+
+      {/* === DOCUMENTOS DEL PACIENTE (plomería base — siempre visible para QA staff) === */}
+      <div className="bg-white rounded-xl shadow-sm p-6">
+        <h2 className="text-xl font-semibold text-[#1a2a3a] mb-4 flex items-center gap-2">
+          <FileText size={22} className="text-[#1E5C8E]" /> Documentos
+        </h2>
+        <DocumentosPaciente pacienteId={Number(paciente.id)} editable />
+      </div>
 
       {/* === TAB: HISTORIAL MEDICO === */}
       {activeTab === 'historial' && (
