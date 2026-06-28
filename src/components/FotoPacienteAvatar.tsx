@@ -24,6 +24,7 @@ export function FotoPacienteAvatar({
   const { subirFoto, urlFirmadaFoto, subiendo } = useFotoPaciente()
   const [src, setSrc] = useState<string | null>(null)
   const [pathActual, setPathActual] = useState<string | null>(fotoPath)
+  const [bust, setBust] = useState(0) // fuerza re-firma + remonte del <img> tras subir (mismo path = mismo perfil.jpg)
   const inputRef = useRef<HTMLInputElement>(null)
 
   useEffect(() => { setPathActual(fotoPath) }, [fotoPath])
@@ -32,7 +33,7 @@ export function FotoPacienteAvatar({
     let vivo = true
     urlFirmadaFoto(pathActual).then((u) => { if (vivo) setSrc(u) })
     return () => { vivo = false }
-  }, [pathActual, urlFirmadaFoto])
+  }, [pathActual, bust, urlFirmadaFoto])
 
   const dim = size === 'lg' ? 'h-24 w-24' : 'h-16 w-16'
   const iconSize = size === 'lg' ? 'h-10 w-10' : 'h-7 w-7'
@@ -42,14 +43,14 @@ export function FotoPacienteAvatar({
     e.target.value = ''
     if (!file) return
     const nuevo = await subirFoto(pacienteId, file)
-    if (nuevo) { setPathActual(nuevo); onUpdated?.(nuevo) }
+    if (nuevo) { setPathActual(nuevo); onUpdated?.(nuevo); setBust(Date.now()) }
   }
 
   return (
     <div className={`relative ${dim} shrink-0`}>
       <div className={`${dim} rounded-full overflow-hidden bg-slate-100 flex items-center justify-center border`}>
         {src ? (
-          <img src={src} alt="Foto del paciente" className="h-full w-full object-cover" />
+          <img key={`${pathActual}-${bust}`} src={src} alt="Foto del paciente" className="h-full w-full object-cover" />
         ) : (
           <User className={`${iconSize} text-slate-400`} />
         )}
