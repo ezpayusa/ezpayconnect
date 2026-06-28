@@ -7,8 +7,9 @@ import { FormularioVitales, type VitalesValues, VITALES_VACIO } from '@/clinica/
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
-import { ClipboardList, RefreshCw, Clock, User, Stethoscope, X, Loader2, Activity, Check } from 'lucide-react'
+import { ClipboardList, RefreshCw, Clock, User, Stethoscope, X, Loader2, Activity, Check, ShieldCheck } from 'lucide-react'
 import { FotoPacienteAvatar } from '@/components/FotoPacienteAvatar'
+import { ConsentimientoPresencial } from '@/components/ConsentimientoPresencial'
 
 const num = (v: string) => (v.trim() === '' ? null : Number(v))
 const horaCorta = (t: string | null) => (t ? t.slice(0, 5) : '—')
@@ -147,6 +148,12 @@ function ModalAdmision({ cita, onClose, onTomaGuardada }: { cita: CitaAdmision; 
           <div className="flex items-center gap-3">
             <FotoPacienteAvatar pacienteId={cita.paciente_id} fotoPath={null} editable size="lg" />
             <span className="text-sm text-muted-foreground">Foto del paciente</span>
+          </div>
+
+          {/* Consentimiento presencial (firma/papel por permiso) */}
+          <div>
+            <h3 className="text-sm font-semibold mb-2 flex items-center gap-2"><ShieldCheck className="h-4 w-4 text-[#1E5C8E]" /> Consentimiento</h3>
+            <ConsentimientoPresencial pacienteId={cita.paciente_id} />
           </div>
 
           {/* Tomas registradas (read-only) */}

@@ -9,9 +9,11 @@ import { openSignedUrl } from '@/lib/signedUrl'
 import { useAuth } from '@/hooks/useAuth'
 import { FotoPacienteAvatar } from '@/components/FotoPacienteAvatar'
 import { DocumentosPaciente } from '@/components/DocumentosPaciente'
+import { ConsentimientoPresencial } from '@/components/ConsentimientoPresencial'
 import {
   ArrowLeft,
   User,
+  ShieldCheck,
   Calendar,
   FileText,
   History,
@@ -415,6 +417,14 @@ export default function PacienteDetallePage() {
           <FileText size={22} className="text-[#1E5C8E]" /> Documentos
         </h2>
         <DocumentosPaciente pacienteId={Number(paciente.id)} editable />
+      </div>
+
+      {/* === CONSENTIMIENTO PRESENCIAL (staff captura firma/papel por permiso) === */}
+      <div className="bg-white rounded-xl shadow-sm p-6">
+        <h2 className="text-xl font-semibold text-[#1a2a3a] mb-4 flex items-center gap-2">
+          <ShieldCheck size={22} className="text-[#1E5C8E]" /> Consentimiento
+        </h2>
+        <ConsentimientoPresencial pacienteId={Number(paciente.id)} />
       </div>
 
       {/* === TAB: HISTORIAL MEDICO === */}
