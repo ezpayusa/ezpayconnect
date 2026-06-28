@@ -581,6 +581,7 @@ export default function ConsultaPage() {
                 <TabsContent value="motivo" className="flex-1 flex flex-col gap-2">
                   <Label>Motivo de consulta</Label>
                   <DictadoVoz
+                    pacienteId={paciente.id}
                     onTranscript={text => setSoap(p => ({ ...p, motivo_consulta: text }))}
                     placeholder="Dicta el motivo de consulta..."
                   />
@@ -595,6 +596,7 @@ export default function ConsultaPage() {
                 <TabsContent value="subjetivo" className="flex-1 flex flex-col gap-2">
                   <Label>Subjetivo — Lo que refiere el paciente</Label>
                   <DictadoVoz
+                    pacienteId={paciente.id}
                     onTranscript={text => setSoap(p => ({ ...p, subjetivo: text }))}
                     placeholder="Dicta lo que el paciente cuenta..."
                   />
@@ -609,6 +611,7 @@ export default function ConsultaPage() {
                 <TabsContent value="objetivo" className="flex-1 flex flex-col gap-2">
                   <Label>Objetivo — Hallazgos de exploración física</Label>
                   <DictadoVoz
+                    pacienteId={paciente.id}
                     onTranscript={text => setSoap(p => ({ ...p, objetivo: text }))}
                     placeholder="Dicta los hallazgos de la exploración..."
                   />
@@ -623,6 +626,7 @@ export default function ConsultaPage() {
                 <TabsContent value="analisis" className="flex-1 flex flex-col gap-2">
                   <Label>Análisis — Diagnóstico e interpretación</Label>
                   <DictadoVoz
+                    pacienteId={paciente.id}
                     onTranscript={text => setSoap(p => ({ ...p, analisis: text }))}
                     placeholder="Dicta tu análisis diagnóstico..."
                   />
@@ -637,6 +641,7 @@ export default function ConsultaPage() {
                 <TabsContent value="plan" className="flex-1 flex flex-col gap-2">
                   <Label>Plan — Tratamiento, estudios, indicaciones</Label>
                   <DictadoVoz
+                    pacienteId={paciente.id}
                     onTranscript={text => setSoap(p => ({ ...p, plan: text }))}
                     placeholder="Dicta el plan de tratamiento..."
                   />

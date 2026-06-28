@@ -1,15 +1,20 @@
 import { useState, useRef, useCallback, useEffect } from 'react'
-import { AlertTriangle, Loader2 } from 'lucide-react'
+import { AlertTriangle, Loader2, ShieldOff } from 'lucide-react'
 import { supabase } from '@/lib/supabase'
 import { toast } from 'sonner'
+import { useConsentimientoGate } from '@/hooks/useConsentimientoGate'
 
 interface DictadoVozProps {
   onTranscript: (text: string) => void
+  pacienteId: number
   placeholder?: string
   className?: string
 }
 
-export default function DictadoVoz({ onTranscript, placeholder = 'Dicta tu nota aqui...', className = '' }: DictadoVozProps) {
+export default function DictadoVoz({ onTranscript, pacienteId, placeholder = 'Dicta tu nota aqui...', className = '' }: DictadoVozProps) {
+  // Gate UX (no es la barrera real — esa la aplica el edge): evita el intento si está revocado.
+  const { permitido } = useConsentimientoGate(pacienteId)
+  const grabacionBloqueada = !permitido('grabacion_consulta')
   const [estado, setEstado] = useState<'idle' | 'grabando' | 'procesando'>('idle')
   const [errorMsg, setErrorMsg] = useState('')
   const [tiempoGrabacion, setTiempoGrabacion] = useState(0)
@@ -49,6 +54,7 @@ export default function DictadoVoz({ onTranscript, placeholder = 'Dicta tu nota 
     try {
       const formData = new FormData()
       formData.append('audio', audioBlob, 'audio.webm')
+      formData.append('paciente_id', String(pacienteId))
 
       const { data, error } = await supabase.functions.invoke('dictado-voz', {
         body: formData,
@@ -74,7 +80,7 @@ export default function DictadoVoz({ onTranscript, placeholder = 'Dicta tu nota 
       setEstado('idle')
       setTiempoGrabacion(0)
     }
-  }, [onTranscript])
+  }, [onTranscript, pacienteId])
 
   const iniciarGrabacion = useCallback(async () => {
     console.log('[DictadoVoz] iniciarGrabacion')
@@ -152,14 +158,21 @@ export default function DictadoVoz({ onTranscript, placeholder = 'Dicta tu nota 
     <div className={`flex flex-col gap-2 ${className}`}>
       {/* IDLE */}
       {estado === 'idle' && (
-        <button
-          type="button"
-          onClick={iniciarGrabacion}
-          className="inline-flex items-center gap-1.5 px-3 py-1.5 text-sm font-medium border border-gray-300 rounded-md bg-white hover:bg-gray-50 text-gray-700 w-fit"
-        >
-          <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3Z"/><path d="M19 10v2a7 7 0 0 1-14 0v-2"/><line x1="12" x2="12" y1="19" y2="22"/></svg>
-          Dictar
-        </button>
+        grabacionBloqueada ? (
+          <div className="inline-flex items-center gap-2 text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded-md px-2 py-1.5 w-fit">
+            <ShieldOff className="h-3.5 w-3.5 shrink-0" />
+            El paciente revocó la grabación. Captúrala en Consentimiento.
+          </div>
+        ) : (
+          <button
+            type="button"
+            onClick={iniciarGrabacion}
+            className="inline-flex items-center gap-1.5 px-3 py-1.5 text-sm font-medium border border-gray-300 rounded-md bg-white hover:bg-gray-50 text-gray-700 w-fit"
+          >
+            <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3Z"/><path d="M19 10v2a7 7 0 0 1-14 0v-2"/><line x1="12" x2="12" y1="19" y2="22"/></svg>
+            Dictar
+          </button>
+        )
       )}
 
       {/* GRABANDO */}

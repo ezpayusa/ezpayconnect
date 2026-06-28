@@ -441,3 +441,7 @@ verify_jwt = false   # STUB 410 retirado (CIERRE FINAL push-tx, bloque 2): no to
 [functions.enviar-notificacion]
 enabled = true
 verify_jwt = false   # STUB 410 retirado (CIERRE FINAL push-tx, bloque 2): idem, solo devuelve 410 Gone
+
+[functions.dictado-voz]
+enabled = true
+verify_jwt = true   # exige JWT del usuario en el gateway; el edge re-valida con gate_accion_phi (auth+pertenencia+consentimiento)
