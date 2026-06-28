@@ -33,3 +33,4 @@ docs/*
 !docs/PANELES_PROGRESO.md
 *.zip
 *.rar
+deno.lock
