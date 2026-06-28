@@ -4,6 +4,7 @@ import { Card, CardContent } from '@/components/ui/card'
 import { Badge } from '@/components/ui/badge'
 import { toast } from 'sonner'
 import { supabase } from '@/lib/supabase'
+import { useConsentimientoGate } from '@/hooks/useConsentimientoGate'
 import {
   Brain,
   Loader2,
@@ -14,6 +15,7 @@ import {
   BookOpen,
   Stethoscope,
   Copy,
+  ShieldOff,
 } from 'lucide-react'
 
 interface SugerenciasIA {
@@ -42,9 +44,13 @@ interface AsistenteIAProps {
     antecedentes?: string | null
   }
   onCopiarSugerencia?: (texto: string) => void
+  pacienteId: number
 }
 
-export default function AsistenteIA({ contexto, onCopiarSugerencia }: AsistenteIAProps) {
+export default function AsistenteIA({ contexto, onCopiarSugerencia, pacienteId }: AsistenteIAProps) {
+  // Gate UX (la barrera real la aplica el edge): evita el intento si el paciente revocó el uso de IA.
+  const { permitido } = useConsentimientoGate(pacienteId)
+  const iaBloqueada = !permitido('asistente_ia')
   const [sugerencias, setSugerencias] = useState<SugerenciasIA | null>(null)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
@@ -57,6 +63,7 @@ export default function AsistenteIA({ contexto, onCopiarSugerencia }: AsistenteI
     try {
       const { data, error } = await supabase.functions.invoke('asistente-ia', {
         body: {
+          paciente_id: pacienteId,
           contexto: {
             edad: contexto.edad,
             genero: contexto.genero || undefined,
@@ -123,18 +130,25 @@ ${sugerencias.referencias_guias.map(r => `- ${r}`).join('\n')}
         </div>
       </div>
 
-      <Button
-        onClick={analizar}
-        disabled={loading}
-        className="w-full bg-purple-600 hover:bg-purple-700"
-      >
-        {loading ? (
-          <Loader2 className="h-4 w-4 animate-spin mr-2" />
-        ) : (
-          <Brain className="h-4 w-4 mr-2" />
-        )}
-        {loading ? 'Analizando...' : 'Analizar consulta con IA'}
-      </Button>
+      {iaBloqueada ? (
+        <div className="flex items-center gap-2 text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded-md px-3 py-2">
+          <ShieldOff className="h-4 w-4 shrink-0" />
+          El paciente revocó el uso de IA. Captúralo en Consentimiento.
+        </div>
+      ) : (
+        <Button
+          onClick={analizar}
+          disabled={loading}
+          className="w-full bg-purple-600 hover:bg-purple-700"
+        >
+          {loading ? (
+            <Loader2 className="h-4 w-4 animate-spin mr-2" />
+          ) : (
+            <Brain className="h-4 w-4 mr-2" />
+          )}
+          {loading ? 'Analizando...' : 'Analizar consulta con IA'}
+        </Button>
+      )}
 
       {needsConfig && (
         <div className="bg-amber-50 border border-amber-200 rounded-lg p-3 text-sm text-amber-700">

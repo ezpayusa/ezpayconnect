@@ -1,8 +1,19 @@
 import { serve } from 'https://deno.land/std@0.168.0/http/server.ts'
+import { createClient } from 'https://esm.sh/@supabase/supabase-js@2'
 
-const corsHeaders = {
-  'Access-Control-Allow-Origin': '*',
-  'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
+// CORS acotado (mismo patrón que dictado-voz). Solo orígenes propios (+ DEV_ORIGIN por env solo en dev).
+const ALLOWED = ['https://ezpayconnect.vercel.app', 'https://med.ezpayconnect.com']
+const DEV_ORIGIN = Deno.env.get('DEV_ORIGIN') // p.ej. http://localhost:5173 — solo en dev; borrar la env antes de go-live
+const ALLOWLIST = DEV_ORIGIN ? [...ALLOWED, DEV_ORIGIN] : ALLOWED
+
+function buildCors(origin: string | null) {
+  const allow = origin && ALLOWLIST.includes(origin) ? origin : ALLOWED[0]
+  return {
+    'Access-Control-Allow-Origin': allow,
+    'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
+    'Access-Control-Allow-Methods': 'POST, OPTIONS',
+    'Vary': 'Origin',
+  }
 }
 
 const SYSTEM_PROMPT = `Eres un asistente medico de soporte. NO eres un medico. NO diagnostiques. NO prescribas medicamentos directamente.
@@ -91,36 +102,58 @@ function mockResponse(motivo: string) {
 }
 
 serve(async (req) => {
+  const corsHeaders = buildCors(req.headers.get('Origin'))
+  const json = (body: unknown, status = 200) =>
+    new Response(JSON.stringify(body), { status, headers: { ...corsHeaders, 'Content-Type': 'application/json' } })
+
   if (req.method === 'OPTIONS') {
     return new Response('ok', { headers: corsHeaders })
   }
 
+  // AUTH: exigir el JWT del caller (verify_jwt=true ya lo exige en el gateway; acá doble defensa).
+  const authHeader = req.headers.get('Authorization')
+  if (!authHeader) return json({ error: 'no_auth' }, 401)
+
   const apiKey = Deno.env.get('OPENAI_API_KEY')
   if (!apiKey) {
     console.error('OPENAI_API_KEY no configurada')
-    return new Response(JSON.stringify({
-      error: 'OPENAI_API_KEY no configurada. Contacte al administrador.',
-      needsConfig: true
-    }), {
-      status: 503,
-      headers: { ...corsHeaders, 'Content-Type': 'application/json' },
-    })
+    return json({ error: 'OPENAI_API_KEY no configurada. Contacte al administrador.', needsConfig: true }, 503)
   }
 
-  try {
-    const body = await req.json()
-    console.log('Request body:', JSON.stringify(body))
-    const { contexto, medico_id, paciente_id, consulta_id } = body
+  const supabaseUrl = Deno.env.get('SB_URL') || Deno.env.get('SUPABASE_URL')
+  const anonKey = Deno.env.get('SB_ANON_KEY') || Deno.env.get('SUPABASE_ANON_KEY')
+  if (!supabaseUrl || !anonKey) return json({ error: 'config_supabase' }, 503)
 
-    if (!contexto) {
-      return new Response(JSON.stringify({ error: 'Contexto medico requerido' }), {
-        status: 400,
-        headers: { ...corsHeaders, 'Content-Type': 'application/json' },
-      })
+  // Client con el JWT del caller (NO service_role) → para getUser + gate_accion_phi.
+  const supa = createClient(supabaseUrl, anonKey, { global: { headers: { Authorization: authHeader } } })
+
+  // IDENTIDAD REAL: el medico_id de la auditoría sale del auth server (getUser), NO del body (no falsificable).
+  const { data: userData, error: uErr } = await supa.auth.getUser()
+  if (uErr || !userData?.user) return json({ error: 'no_auth' }, 401)
+  const medicoIdReal = userData.user.id
+
+  try {
+    const { contexto, paciente_id, consulta_id } = await req.json() // medico_id del body se IGNORA a propósito
+    if (!contexto) return json({ error: 'Contexto medico requerido' }, 400)
+    const pacienteId = Number(paciente_id)
+    if (!pacienteId) return json({ error: 'paciente_id requerido' }, 400)
+
+    // GATE PHI: auth + pertenencia + consentimiento 'asistente_ia' (grandfather). Antes del prompt y de OpenAI.
+    const { data: gate, error: gErr } = await supa.rpc('gate_accion_phi', {
+      p_paciente_id: pacienteId,
+      p_permiso_codigo: 'asistente_ia',
+    })
+    if (gErr) {
+      const m = gErr.message || ''
+      const code = /consentimiento_revocado/.test(m) ? 'consentimiento_revocado'
+        : /no_pertenencia/.test(m) ? 'no_pertenencia'
+        : 'no_auth'
+      const status = code === 'no_auth' ? 401 : 403
+      return json({ error: code }, status)
     }
+    if (!gate?.ok) return json({ error: 'gate_denegado' }, 403)
 
     const userPrompt = buildPrompt(contexto)
-    console.log('Llamando a OpenAI...')
 
     const openaiRes = await fetch('https://api.openai.com/v1/chat/completions', {
       method: 'POST',
@@ -140,8 +173,6 @@ serve(async (req) => {
       }),
     })
 
-    console.log('OpenAI status:', openaiRes.status)
-
     let respuestaEstructurada: any
     let fromOpenAI = false
 
@@ -157,7 +188,6 @@ serve(async (req) => {
 
       // Si es error de cuota, usar respuesta mock para no romper la app
       if (errMsg.includes('quota') || errMsg.includes('billing') || errMsg.includes('exceeded')) {
-        console.log('Usando respuesta mock por limite de cuota de OpenAI')
         respuestaEstructurada = mockResponse(contexto.motivo_consulta)
       } else {
         throw new Error(errMsg)
@@ -165,7 +195,6 @@ serve(async (req) => {
     } else {
       const openaiData = await openaiRes.json()
       const respuestaTexto = openaiData.choices?.[0]?.message?.content || ''
-      console.log('OpenAI respuesta recibida, length:', respuestaTexto.length)
       fromOpenAI = true
 
       try {
@@ -188,47 +217,40 @@ serve(async (req) => {
       }
     }
 
-    // Guardar auditoria via fetch directo
+    // Auditoria via fetch directo con SERVICE_ROLE (SOLO para esto; NUNCA para el gate).
+    // medico_id = identidad verificada (getUser); paciente_id = ya validado por el gate (pertenencia).
     try {
-      const supabaseUrl = Deno.env.get('SB_URL') || Deno.env.get('SUPABASE_URL')
-      const supabaseServiceKey = Deno.env.get('SB_SERVICE_ROLE_KEY') || Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')
-      if (supabaseUrl && supabaseServiceKey) {
-        const auditRes = await fetch(`${supabaseUrl}/rest/v1/auditoria_ia`, {
+      const serviceKey = Deno.env.get('SB_SERVICE_ROLE_KEY') || Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')
+      if (supabaseUrl && serviceKey) {
+        await fetch(`${supabaseUrl}/rest/v1/auditoria_ia`, {
           method: 'POST',
           headers: {
-            'Authorization': `Bearer ${supabaseServiceKey}`,
-            'apikey': supabaseServiceKey,
+            'Authorization': `Bearer ${serviceKey}`,
+            'apikey': serviceKey,
             'Content-Type': 'application/json',
             'Prefer': 'return=minimal',
           },
           body: JSON.stringify({
-            medico_id: medico_id || null,
-            paciente_id: paciente_id || null,
+            medico_id: medicoIdReal,
+            paciente_id: pacienteId,
             consulta_id: consulta_id || null,
             prompt: userPrompt,
             respuesta_ia: fromOpenAI ? JSON.stringify(respuestaEstructurada) : '[MOCK - OpenAI quota exceeded]',
             modelo_ia: fromOpenAI ? 'gpt-4o-mini' : 'mock-quota',
           }),
         })
-        console.log('Auditoria insert status:', auditRes.status)
       }
     } catch (auditErr: any) {
       console.error('Auditoria error (no critico):', auditErr?.message || auditErr)
     }
 
-    console.log('Respondiendo OK')
-    return new Response(JSON.stringify({
+    return json({
       sugerencias: respuestaEstructurada,
       modelo: fromOpenAI ? 'gpt-4o-mini' : 'mock-mode',
-    }), {
-      headers: { ...corsHeaders, 'Content-Type': 'application/json' },
     })
 
   } catch (error: any) {
     console.error('Error asistente-ia:', error?.message || error)
-    return new Response(JSON.stringify({ error: error?.message || 'Error interno del servidor' }), {
-      status: 500,
-      headers: { ...corsHeaders, 'Content-Type': 'application/json' },
-    })
+    return json({ error: error?.message || 'Error interno del servidor' }, 500)
   }
 })

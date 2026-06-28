@@ -783,6 +783,7 @@ export default function ConsultaPage() {
             {mostrarAsistenteIA && (
               <CardContent>
                 <AsistenteIA
+                  pacienteId={paciente.id}
                   contexto={{
                     edad,
                     genero: paciente?.genero,
