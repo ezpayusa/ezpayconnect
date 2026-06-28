@@ -1,7 +1,8 @@
 import { useEffect, useRef, useState } from 'react'
 import type { ChangeEvent } from 'react'
 import { useFotoPaciente } from '@/hooks/useFotoPaciente'
-import { User, Camera, Loader2 } from 'lucide-react'
+import { useConsentimientoGate } from '@/hooks/useConsentimientoGate'
+import { User, Camera, Loader2, ShieldOff } from 'lucide-react'
 
 /**
  * Avatar circular de la foto del paciente (bucket privado → signed URL).
@@ -22,6 +23,10 @@ export function FotoPacienteAvatar({
   onUpdated?: (nuevoPath: string) => void
 }) {
   const { subirFoto, urlFirmadaFoto, subiendo } = useFotoPaciente()
+  // Gate de consentimiento solo cuando editable (con undefined el hook no dispara RPC). Grandfather: solo
+  // bloquea si foto_perfil está revocado (concedido=false vigente); sin fila o concedido=true → permite.
+  const { permitido } = useConsentimientoGate(editable ? pacienteId : undefined)
+  const fotoBloqueada = editable && !permitido('foto_perfil')
   const [src, setSrc] = useState<string | null>(null)
   const [pathActual, setPathActual] = useState<string | null>(fotoPath)
   const [bust, setBust] = useState(0) // fuerza re-firma + remonte del <img> tras subir (mismo path = mismo perfil.jpg)
@@ -47,27 +52,44 @@ export function FotoPacienteAvatar({
   }
 
   return (
-    <div className={`relative ${dim} shrink-0`}>
-      <div className={`${dim} rounded-full overflow-hidden bg-slate-100 flex items-center justify-center border`}>
-        {src ? (
-          <img key={`${pathActual}-${bust}`} src={src} alt="Foto del paciente" className="h-full w-full object-cover" />
-        ) : (
-          <User className={`${iconSize} text-slate-400`} />
+    <div className="flex flex-col items-start gap-1 shrink-0">
+      <div className={`relative ${dim}`}>
+        <div className={`${dim} rounded-full overflow-hidden bg-slate-100 flex items-center justify-center border`}>
+          {src ? (
+            <img key={`${pathActual}-${bust}`} src={src} alt="Foto del paciente" className="h-full w-full object-cover" />
+          ) : (
+            <User className={`${iconSize} text-slate-400`} />
+          )}
+        </div>
+        {/* Control de subida: solo si editable y NO bloqueado por consentimiento revocado. */}
+        {editable && !fotoBloqueada && (
+          <>
+            <button
+              type="button"
+              onClick={() => inputRef.current?.click()}
+              disabled={subiendo}
+              aria-label="Subir o reemplazar foto"
+              className="absolute -bottom-1 -right-1 h-7 w-7 rounded-full bg-[#1E5C8E] text-white flex items-center justify-center shadow hover:bg-[#164a70] disabled:opacity-60"
+            >
+              {subiendo ? <Loader2 className="h-4 w-4 animate-spin" /> : <Camera className="h-4 w-4" />}
+            </button>
+            <input ref={inputRef} type="file" accept="image/*" className="hidden" onChange={onFile} />
+          </>
+        )}
+        {/* Bloqueado: badge ShieldOff en lugar del botón (el avatar sigue mostrando la foto si la hay). */}
+        {fotoBloqueada && (
+          <span
+            className="absolute -bottom-1 -right-1 h-7 w-7 rounded-full bg-amber-100 text-amber-600 flex items-center justify-center border border-amber-200"
+            aria-label="Subida bloqueada por consentimiento revocado"
+          >
+            <ShieldOff className="h-4 w-4" />
+          </span>
         )}
       </div>
-      {editable && (
-        <>
-          <button
-            type="button"
-            onClick={() => inputRef.current?.click()}
-            disabled={subiendo}
-            aria-label="Subir o reemplazar foto"
-            className="absolute -bottom-1 -right-1 h-7 w-7 rounded-full bg-[#1E5C8E] text-white flex items-center justify-center shadow hover:bg-[#164a70] disabled:opacity-60"
-          >
-            {subiendo ? <Loader2 className="h-4 w-4 animate-spin" /> : <Camera className="h-4 w-4" />}
-          </button>
-          <input ref={inputRef} type="file" accept="image/*" className="hidden" onChange={onFile} />
-        </>
+      {fotoBloqueada && (
+        <p className="text-[11px] leading-tight text-amber-700 max-w-[12rem]">
+          El paciente revocó la autorización de foto. Captúrala de nuevo en la sección Consentimiento.
+        </p>
       )}
     </div>
   )
