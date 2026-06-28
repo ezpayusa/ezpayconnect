@@ -4,7 +4,7 @@ import { supabase } from '@/lib/supabase'
  * Extrae el path del objeto desde una URL pública almacenada (o devuelve el path
  * tal cual si ya es un path). Soporta filas viejas que guardaron la URL pública.
  */
-function extractPath(bucket: string, stored: string): string {
+export function extractPath(bucket: string, stored: string): string {
   const marker = `/${bucket}/`
   const i = stored.indexOf(marker)
   return i !== -1 ? stored.slice(i + marker.length) : stored

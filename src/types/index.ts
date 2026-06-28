@@ -29,6 +29,7 @@ export interface Paciente {
   antecedentes_personales: string | null
   antecedentes_familiares: string | null
   medicamentos_en_uso: string | null
+  foto_path: string | null
   activo: boolean
   created_at: string
 }
