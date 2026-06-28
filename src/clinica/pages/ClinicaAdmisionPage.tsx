@@ -8,6 +8,7 @@ import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { ClipboardList, RefreshCw, Clock, User, Stethoscope, X, Loader2, Activity, Check } from 'lucide-react'
+import { FotoPacienteAvatar } from '@/components/FotoPacienteAvatar'
 
 const num = (v: string) => (v.trim() === '' ? null : Number(v))
 const horaCorta = (t: string | null) => (t ? t.slice(0, 5) : '—')
@@ -141,6 +142,13 @@ function ModalAdmision({ cita, onClose, onTomaGuardada }: { cita: CitaAdmision; 
         </div>
 
         <div className="p-4 space-y-5">
+          {/* Foto del paciente (subir/reemplazar). v1: sin foto PREVIA en Admisión (la cola no trae foto_path);
+              tras subir, el preview se refresca. Deuda menor anotada. */}
+          <div className="flex items-center gap-3">
+            <FotoPacienteAvatar pacienteId={cita.paciente_id} fotoPath={null} editable size="lg" />
+            <span className="text-sm text-muted-foreground">Foto del paciente</span>
+          </div>
+
           {/* Tomas registradas (read-only) */}
           <div>
             <h3 className="text-sm font-semibold mb-2 flex items-center gap-2"><Activity className="h-4 w-4 text-emerald-600" /> Tomas registradas</h3>

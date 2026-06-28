@@ -19,6 +19,7 @@ import DictadoVoz from '@/components/consulta/DictadoVoz'
 import BibliotecaMedica from '@/components/consulta/BibliotecaMedica'
 import AsistenteIA from '@/components/consulta/AsistenteIA'
 import RecetaModal from '@/components/consulta/RecetaModal'
+import { FotoPacienteAvatar } from '@/components/FotoPacienteAvatar'
 import { toast } from 'sonner'
 import type { Paciente, Cita } from '@/types'
 import {
@@ -291,6 +292,7 @@ export default function ConsultaPage() {
           antecedentes_personales: null,
           antecedentes_familiares: null,
           medicamentos_en_uso: null,
+          foto_path: null,
           activo: true,
           created_at: citaData.created_at,
         } as Paciente)
@@ -458,7 +460,16 @@ export default function ConsultaPage() {
               </CardTitle>
             </CardHeader>
             <CardContent className="space-y-2 text-sm">
-              <p className="font-bold text-lg">{paciente.nombre} {paciente.apellido}</p>
+              <div className="flex items-center gap-3">
+                <FotoPacienteAvatar
+                  pacienteId={paciente.id}
+                  fotoPath={paciente.foto_path}
+                  editable
+                  size="lg"
+                  onUpdated={(p) => setPaciente(prev => prev ? { ...prev, foto_path: p } : prev)}
+                />
+                <p className="font-bold text-lg">{paciente.nombre} {paciente.apellido}</p>
+              </div>
               <div className="grid grid-cols-2 gap-2 text-muted-foreground">
                 <div>Edad: <span className="text-slate-700 font-medium">{edad ?? '—'} años</span></div>
                 <div>Género: <span className="text-slate-700 font-medium">{paciente.genero || '—'}</span></div>

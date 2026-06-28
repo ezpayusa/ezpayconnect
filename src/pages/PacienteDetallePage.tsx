@@ -7,6 +7,7 @@ import { useParams, useNavigate, useLocation } from 'react-router-dom'
 import { supabase } from '@/lib/supabase'
 import { openSignedUrl } from '@/lib/signedUrl'
 import { useAuth } from '@/hooks/useAuth'
+import { FotoPacienteAvatar } from '@/components/FotoPacienteAvatar'
 import {
   ArrowLeft,
   User,
@@ -40,6 +41,7 @@ interface Paciente {
   email?: string
   fecha_nacimiento?: string
   created_at: string
+  foto_path?: string | null
 }
 
 interface HistorialEvento {
@@ -290,6 +292,7 @@ export default function PacienteDetallePage() {
         >
           <ArrowLeft size={24} className="text-[#1E5C8E]" />
         </button>
+        <FotoPacienteAvatar pacienteId={Number(paciente.id)} fotoPath={paciente.foto_path ?? null} size="lg" />
         <div className="flex-1">
           <h1 className="text-3xl font-bold text-[#1a2a3a] flex items-center gap-3">
             <User size={32} className="text-[#1E5C8E]" />
