@@ -59,6 +59,7 @@ const WebAppExamenes = lazy(() => import('@/webapp/pages/WebAppExamenes'))
 const WebAppHistorial = lazy(() => import('@/webapp/pages/WebAppHistorial'))
 const WebAppChat = lazy(() => import('@/webapp/pages/WebAppChat'))
 const WebAppPerfil = lazy(() => import('@/webapp/pages/WebAppPerfil'))
+const WebAppAutorizaciones = lazy(() => import('@/webapp/pages/WebAppAutorizaciones'))
 
 // === ADMIN EZPAY ===
 const AdminEzPayPage = lazy(() => import('@/pages/admin-ezpay/AdminEzPayPage'))
@@ -243,6 +244,7 @@ function App() {
           <Route path="historial" element={<WebAppHistorial />} />
           <Route path="chat" element={<WebAppChat />} />
           <Route path="perfil" element={<WebAppPerfil />} />
+          <Route path="autorizaciones" element={<WebAppAutorizaciones />} />
         </Route>
 
         {/* === RUTAS PLANES (PÚBLICAS / LANDING) === */}

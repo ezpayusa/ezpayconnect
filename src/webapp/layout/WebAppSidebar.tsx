@@ -7,6 +7,7 @@ import {
   Clock,
   MessageCircle,
   User,
+  ShieldCheck,
   LogOut,
   Bell
 } from 'lucide-react'
@@ -20,6 +21,7 @@ const navItems = [
   { to: '/paciente/historial', icon: Clock, label: 'Historial' },
   { to: '/paciente/chat', icon: MessageCircle, label: 'Chat' },
   { to: '/paciente/perfil', icon: User, label: 'Perfil' },
+  { to: '/paciente/autorizaciones', icon: ShieldCheck, label: 'Autorizaciones' },
 ]
 
 export default function WebAppSidebar() {
