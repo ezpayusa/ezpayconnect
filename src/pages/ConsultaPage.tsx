@@ -786,7 +786,7 @@ export default function ConsultaPage() {
                   motivoConsulta={soap.motivo_consulta}
                   subjetivo={soap.subjetivo}
                   objetivo={soap.objetivo}
-                  consultaId={consultaId ?? cita.id}
+                  consultaId={consultaId}
                   onCopiarSugerencia={texto => setSoap(p => ({ ...p, analisis: p.analisis + '\n\n[Sugerencia IA]\n' + texto }))}
                 />
               </CardContent>
