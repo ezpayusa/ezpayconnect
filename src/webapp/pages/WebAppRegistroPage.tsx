@@ -7,10 +7,12 @@ import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Mail, Lock, User, Loader2, Globe } from 'lucide-react'
 import { toast } from 'sonner'
+import { useCapturarReferido } from '@/webapp/hooks/useReferidoAmigo'
 
 export default function WebAppRegistroPage() {
   const navigate = useNavigate()
   const { register } = useWebAppAuth()
+  useCapturarReferido() // por si el ref llega directo al registro
   const { paises, error: paisesError } = usePaisesRegistro()
   const [form, setForm] = useState({
     nombre: '', apellido: '', email: '', password: '', telefono: '', pais_id: ''

@@ -1,12 +1,14 @@
 import { Outlet } from 'react-router-dom'
 import WebAppSidebar from './WebAppSidebar'
 import { useWebAppAuth } from '@/webapp/hooks/useWebAppAuth'
+import { useAtribuirReferido } from '@/webapp/hooks/useReferidoAmigo'
 import NotificacionesDropdown from '@/webapp/components/NotificacionesDropdown'
 import { Menu } from 'lucide-react'
 import { useState } from 'react'
 
 export default function WebAppLayout() {
   const { perfil, notificacionesNoLeidas } = useWebAppAuth()
+  useAtribuirReferido(!!perfil) // dispara atribución best-effort post-login (perfil cargado)
   const [menuOpen, setMenuOpen] = useState(false)
 
   return (

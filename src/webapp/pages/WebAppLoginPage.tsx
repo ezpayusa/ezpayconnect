@@ -6,10 +6,12 @@ import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Mail, Lock, Loader2 } from 'lucide-react'
 import { toast } from 'sonner'
+import { useCapturarReferido } from '@/webapp/hooks/useReferidoAmigo'
 
 export default function WebAppLoginPage() {
   const navigate = useNavigate()
   const { login } = useWebAppAuth()
+  useCapturarReferido() // por si el ref llega directo al login
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
   const [loading, setLoading] = useState(false)

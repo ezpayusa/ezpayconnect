@@ -12,9 +12,11 @@ import { usePaisFiltro } from '@/hooks/usePaisFiltro';
 import type { PlanConfiguracion } from '@/types/planes';
 import { getBanderaPais } from '@/lib/planes-utils';
 import { Zap, Shield, Globe, CheckCircle2 } from 'lucide-react';
+import { useCapturarReferido } from '@/webapp/hooks/useReferidoAmigo';
 
 export default function PlanesPage() {
   const navigate = useNavigate();
+  useCapturarReferido(); // captura ?ref= del link de invitación (landing pública)
   const { user } = useAuth();
   const { paisId } = usePaisFiltro();
   const { planesConfig, paises, loading, crearAsignacionCheckout } = usePlanes({ pais_id: paisId || undefined });
