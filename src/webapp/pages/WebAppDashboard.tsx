@@ -6,13 +6,14 @@ import { useWebAppExamenes } from '@/webapp/hooks/useWebAppExamenes'
 import { usePushNotifications } from '@/webapp/hooks/usePushNotifications'
 import AgendarCitaModal from '@/webapp/components/AgendarCitaModal'
 import BannerPublicidad from '@/webapp/components/BannerPublicidad'
+import InvitarAmigoButton from '@/webapp/components/InvitarAmigoButton'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
 import { useNavigate } from 'react-router-dom'
 import {
   CalendarDays, FileText, FlaskConical, MessageCircle, Plus, Clock, Pill,
-  MapPin, Loader2, Bell, BellOff
+  MapPin, Loader2, Bell, BellOff, Gift
 } from 'lucide-react'
 
 export default function WebAppDashboard() {
@@ -219,6 +220,22 @@ export default function WebAppDashboard() {
           </CardContent>
         </Card>
       )}
+
+      {/* Invitá a un amigo */}
+      <Card className="bg-white border-slate-100">
+        <CardContent className="p-6 flex items-center justify-between gap-4">
+          <div className="flex items-center gap-3">
+            <div className="w-10 h-10 rounded-full bg-pink-50 flex items-center justify-center shrink-0">
+              <Gift className="h-5 w-5 text-pink-500" />
+            </div>
+            <div>
+              <h3 className="font-semibold text-slate-800">Invitá a un amigo</h3>
+              <p className="text-slate-500 text-sm">Compartí EzPayConnect con quien quieras.</p>
+            </div>
+          </div>
+          <InvitarAmigoButton variant="outline" />
+        </CardContent>
+      </Card>
 
       {/* Banner de publicidad */}
       <div className="mt-6">

@@ -8,9 +8,10 @@ import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import {
   User, Mail, Phone, Calendar, AlertTriangle, MapPin, Heart, Users,
-  Pencil, Save, X, Loader2, Bell, BellOff
+  Pencil, Save, X, Loader2, Bell, BellOff, Gift
 } from 'lucide-react'
 import { toast } from 'sonner'
+import InvitarAmigoButton from '@/webapp/components/InvitarAmigoButton'
 
 // Componente de campo de formulario (definido FUERA para evitar re-renders)
 function CampoPerfil({ icon: Icon, label, value, editando, editValue, onChange, type = 'text' }: any) {
@@ -320,6 +321,22 @@ export default function WebAppPerfil() {
               </div>
             </div>
           </div>
+        </CardContent>
+      </Card>
+
+      {/* Invitá a un amigo */}
+      <Card className="bg-white border-slate-100">
+        <CardContent className="p-6 flex items-center justify-between gap-4">
+          <div className="flex items-center gap-3">
+            <div className="w-10 h-10 rounded-full bg-pink-50 flex items-center justify-center shrink-0">
+              <Gift className="h-5 w-5 text-pink-500" />
+            </div>
+            <div>
+              <h3 className="font-semibold text-slate-800">Invitá a un amigo</h3>
+              <p className="text-slate-500 text-sm">Compartí EzPayConnect con quien quieras.</p>
+            </div>
+          </div>
+          <InvitarAmigoButton variant="outline" />
         </CardContent>
       </Card>
     </div>
