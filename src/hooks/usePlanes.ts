@@ -154,7 +154,10 @@ export function usePlanes(filtros?: FiltrosPlanes): UsePlanesReturn {
     } finally {
       setLoading(false);
     }
-  }, [filtros]);
+    // Dep en PRIMITIVAS (no en el objeto `filtros`): PlanesPage pasa `{ pais_id }` como literal nuevo
+    // en cada render → con [filtros] cargarDatos se recreaba siempre → useEffect([cargarDatos]) re-fetcheaba
+    // en loop infinito. Con primitivas, cargarDatos solo cambia cuando cambian los valores reales.
+  }, [filtros?.pais_id, filtros?.tipo, filtros?.estado]);
 
   useEffect(() => { cargarDatos(); }, [cargarDatos]);
 
