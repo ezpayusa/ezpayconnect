@@ -29,25 +29,16 @@ interface SugerenciasIA {
 }
 
 interface AsistenteIAProps {
-  contexto: {
-    edad?: number
-    genero?: string | null
-    peso_kg?: string
-    motivo_consulta?: string
-    subjetivo?: string
-    objetivo?: string
-    presion_arterial?: string
-    temperatura?: string
-    frecuencia_cardiaca?: string
-    alergias?: string | null
-    medicamentos_en_uso?: string | null
-    antecedentes?: string | null
-  }
-  onCopiarSugerencia?: (texto: string) => void
   pacienteId: number
+  // SOAP EN VIVO (lo único que el front aún manda; el histórico lo arma el RPC server-side).
+  motivoConsulta?: string
+  subjetivo?: string
+  objetivo?: string
+  consultaId?: number
+  onCopiarSugerencia?: (texto: string) => void
 }
 
-export default function AsistenteIA({ contexto, onCopiarSugerencia, pacienteId }: AsistenteIAProps) {
+export default function AsistenteIA({ pacienteId, motivoConsulta, subjetivo, objetivo, consultaId, onCopiarSugerencia }: AsistenteIAProps) {
   // Gate UX (la barrera real la aplica el edge): evita el intento si el paciente revocó el uso de IA.
   const { permitido } = useConsentimientoGate(pacienteId)
   const iaBloqueada = !permitido('asistente_ia')
@@ -64,22 +55,13 @@ export default function AsistenteIA({ contexto, onCopiarSugerencia, pacienteId }
       const { data, error } = await supabase.functions.invoke('asistente-ia', {
         body: {
           paciente_id: pacienteId,
-          contexto: {
-            edad: contexto.edad,
-            genero: contexto.genero || undefined,
-            peso_kg: contexto.peso_kg ? parseFloat(contexto.peso_kg) : undefined,
-            motivo_consulta: contexto.motivo_consulta,
-            subjetivo: contexto.subjetivo,
-            objetivo: contexto.objetivo,
-            signos_vitales: {
-              presion_arterial: contexto.presion_arterial,
-              temperatura: contexto.temperatura ? parseFloat(contexto.temperatura) : undefined,
-              frecuencia_cardiaca: contexto.frecuencia_cardiaca ? parseInt(contexto.frecuencia_cardiaca) : undefined,
-            },
-            alergias: contexto.alergias || undefined,
-            medicamentos_actuales: contexto.medicamentos_en_uso || undefined,
-            antecedentes: contexto.antecedentes || undefined,
-          }
+          // Solo SOAP en vivo; el edge arma el histórico server-side vía contexto_ia_paciente.
+          soap: {
+            motivo_consulta: motivoConsulta,
+            subjetivo,
+            objetivo,
+          },
+          consulta_id: consultaId,
         }
       })
 

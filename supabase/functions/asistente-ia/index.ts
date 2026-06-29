@@ -38,30 +38,97 @@ Responde UNICAMENTE con este JSON (sin markdown, sin texto adicional):
   "notas_adicionales": "string"
 }`
 
-function buildPrompt(ctx: any) {
+// Fusiona contexto histórico server-side (ctxHist, del RPC contexto_ia_paciente) + SOAP en vivo (del body).
+// NO aplana vitales: itera la serie ≤5. Cada sección vacía/null → 'No registrados'.
+function buildPrompt(ctxHist: any, soap: any) {
+  const h = ctxHist || {}
+  const demo = h.demografia || {}
+  const ant = h.antecedentes || {}
+  const sp = soap || {}
+
+  const fmtFecha = (f: any) => {
+    if (!f) return 's/f'
+    const s = String(f)
+    return s.length >= 10 ? s.slice(0, 10) : s
+  }
+
+  // SIGNOS VITALES RECIENTES (serie/tendencia)
+  const vit = Array.isArray(h.signos_vitales_recientes) ? h.signos_vitales_recientes : []
+  const vitalesTxt = vit.length
+    ? vit.map((v: any) => {
+        const partes: string[] = []
+        if (v.presion_arterial != null) partes.push(`PA ${v.presion_arterial}`)
+        if (v.frecuencia_cardiaca != null) partes.push(`FC ${v.frecuencia_cardiaca} lpm`)
+        if (v.frecuencia_respiratoria != null) partes.push(`FR ${v.frecuencia_respiratoria}`)
+        if (v.temperatura != null) partes.push(`T ${v.temperatura} C`)
+        if (v.saturacion_o2 != null) partes.push(`SpO2 ${v.saturacion_o2}%`)
+        if (v.glucosa != null) partes.push(`Glu ${v.glucosa}`)
+        if (v.peso_kg != null) partes.push(`Peso ${v.peso_kg} kg`)
+        if (v.talla_cm != null) partes.push(`Talla ${v.talla_cm} cm`)
+        if (v.imc != null) partes.push(`IMC ${v.imc}`)
+        return `- ${fmtFecha(v.fecha_toma)}: ${partes.length ? partes.join(', ') : 'sin valores'}`
+      }).join('\n')
+    : 'No registrados'
+
+  // DIAGNÓSTICOS PREVIOS
+  const dx = Array.isArray(h.diagnosticos_recientes) ? h.diagnosticos_recientes : []
+  const dxTxt = dx.length
+    ? dx.map((d: any) =>
+        `- ${fmtFecha(d.fecha)}: Dx: ${d.diagnostico || 's/d'} | Motivo: ${d.motivo_consulta || 's/d'} | Plan: ${d.plan || 's/d'}`
+      ).join('\n')
+    : 'No registrados'
+
+  // MEDICACIÓN RECETADA ACTIVA (por receta → items)
+  const meds = Array.isArray(h.medicacion_recetada_activa) ? h.medicacion_recetada_activa : []
+  const medsTxt = meds.length
+    ? meds.map((r: any) => {
+        const items = Array.isArray(r.items) ? r.items : []
+        const itemsTxt = items.length
+          ? items.map((it: any) =>
+              `    · ${it.medicamento || 's/n'}${it.dosis ? ` ${it.dosis}` : ''}${it.frecuencia ? ` c/${it.frecuencia}` : ''}${it.duracion ? ` x${it.duracion}` : ''}`
+            ).join('\n')
+          : '    · (sin items detallados)'
+        return `- Receta ${fmtFecha(r.fecha)}:\n${itemsTxt}`
+      }).join('\n')
+    : 'No registrados'
+
+  // EXÁMENES RECIENTES
+  const exa = Array.isArray(h.examenes_recientes) ? h.examenes_recientes : []
+  const exaTxt = exa.length
+    ? exa.map((e: any) =>
+        `- ${fmtFecha(e.fecha_resultado)}: ${e.tipo || 's/t'}${e.descripcion ? ` (${e.descripcion})` : ''} → ${e.resultados || 'sin resultado'}`
+      ).join('\n')
+    : 'No registrados'
+
   return `PACIENTE:
-- Edad: ${ctx.edad || 'No especificada'} años
-- Genero: ${ctx.genero || 'No especificado'}
-- Peso: ${ctx.peso_kg || 'No especificado'} kg
-- Alergias: ${ctx.alergias || 'Ninguna conocida'}
-- Medicacion actual: ${ctx.medicamentos_actuales || 'Ninguna'}
-- Antecedentes: ${ctx.antecedentes || 'No especificados'}
+- Edad: ${demo.edad != null ? demo.edad : 'No especificada'} años
+- Genero: ${demo.genero || 'No especificado'}
+- Tipo de sangre: ${demo.tipo_sangre || 'No especificado'}
+- Alergias: ${h.alergias || 'Ninguna conocida'}
+- Medicacion en uso (declarada en ficha): ${h.medicacion_en_uso || 'Ninguna'}
+- Antecedentes personales: ${ant.personales || 'No especificados'}
+- Antecedentes familiares: ${ant.familiares || 'No especificados'}
 
-MOTIVO DE CONSULTA:
-${ctx.motivo_consulta || 'No especificado'}
+MOTIVO DE CONSULTA (EN VIVO):
+${sp.motivo_consulta || 'No especificado'}
 
-SUBJETIVO (lo que refiere el paciente):
-${ctx.subjetivo || 'No especificado'}
+SUBJETIVO (EN VIVO, lo que refiere el paciente):
+${sp.subjetivo || 'No especificado'}
 
-OBJETIVO (hallazgos de exploracion):
-${ctx.objetivo || 'No especificado'}
+OBJETIVO (EN VIVO, hallazgos de exploracion):
+${sp.objetivo || 'No especificado'}
 
-SIGNOS VITALES:
-${ctx.signos_vitales ? `
-- Presion arterial: ${ctx.signos_vitales.presion_arterial || 'No tomada'}
-- Temperatura: ${ctx.signos_vitales.temperatura || 'No tomada'} C
-- Frecuencia cardiaca: ${ctx.signos_vitales.frecuencia_cardiaca || 'No tomada'} lpm
-` : 'No registrados'}
+SIGNOS VITALES RECIENTES (serie/tendencia, mas reciente primero):
+${vitalesTxt}
+
+DIAGNOSTICOS PREVIOS:
+${dxTxt}
+
+MEDICACION RECETADA ACTIVA:
+${medsTxt}
+
+EXAMENES RECIENTES:
+${exaTxt}
 
 Proporciona tu analisis de soporte segun las reglas establecidas.`
 }
@@ -133,27 +200,30 @@ serve(async (req) => {
   const medicoIdReal = userData.user.id
 
   try {
-    const { contexto, paciente_id, consulta_id } = await req.json() // medico_id del body se IGNORA a propósito
-    if (!contexto) return json({ error: 'Contexto medico requerido' }, 400)
+    const { soap, paciente_id, consulta_id } = await req.json() // medico_id del body se IGNORA a propósito
     const pacienteId = Number(paciente_id)
     if (!pacienteId) return json({ error: 'paciente_id requerido' }, 400)
 
-    // GATE PHI: auth + pertenencia + consentimiento 'asistente_ia' (grandfather). Antes del prompt y de OpenAI.
-    const { data: gate, error: gErr } = await supa.rpc('gate_accion_phi', {
-      p_paciente_id: pacienteId,
-      p_permiso_codigo: 'asistente_ia',
-    })
-    if (gErr) {
-      const m = gErr.message || ''
-      const code = /consentimiento_revocado/.test(m) ? 'consentimiento_revocado'
-        : /no_pertenencia/.test(m) ? 'no_pertenencia'
-        : 'no_auth'
-      const status = code === 'no_auth' ? 401 : 403
-      return json({ error: code }, status)
+    // GUARD DE VENTANA (deploy coordinado edge→front): si el front viejo aún manda 'contexto' y no 'soap',
+    // fallar ruidoso. NO opinar sin SOAP en vivo.
+    if (!soap || typeof soap !== 'object' || Array.isArray(soap)) {
+      return json({ error: 'app_desactualizada', message: 'Recarga la página para actualizar el asistente.' }, 400)
     }
-    if (!gate?.ok) return json({ error: 'gate_denegado' }, 403)
 
-    const userPrompt = buildPrompt(contexto)
+    // GATE ÚNICO: contexto_ia_paciente gatea internamente con gate_accion_phi('asistente_ia') ANTES de leer.
+    // Se llama con el client anon+JWT del caller (NO service_role). Nada llega a OpenAI antes de esto;
+    // el SOAP del body solo se usa DESPUÉS de que el RPC devolvió OK (su gate protege también el camino del SOAP).
+    const { data: ctxHist, error: ctxErr } = await supa.rpc('contexto_ia_paciente', { p_paciente_id: pacienteId })
+    if (ctxErr) {
+      const m = ctxErr.message || ''
+      if (/no_pertenencia/.test(m)) return json({ error: 'no_pertenencia' }, 403)
+      if (/consentimiento_revocado/.test(m)) return json({ error: 'consentimiento_revocado' }, 403)
+      if (/no_auth/.test(m)) return json({ error: 'no_auth' }, 401)
+      console.error('contexto_ia_paciente error:', m)
+      return json({ error: 'error_contexto' }, 500)
+    }
+
+    const userPrompt = buildPrompt(ctxHist, soap)
 
     const openaiRes = await fetch('https://api.openai.com/v1/chat/completions', {
       method: 'POST',
@@ -188,7 +258,7 @@ serve(async (req) => {
 
       // Si es error de cuota, usar respuesta mock para no romper la app
       if (errMsg.includes('quota') || errMsg.includes('billing') || errMsg.includes('exceeded')) {
-        respuestaEstructurada = mockResponse(contexto.motivo_consulta)
+        respuestaEstructurada = mockResponse(soap.motivo_consulta)
       } else {
         throw new Error(errMsg)
       }

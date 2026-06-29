@@ -385,7 +385,6 @@ export default function ConsultaPage() {
   }
 
   const edad = calcularEdad(paciente.fecha_nacimiento)
-  const ultimaToma = serie.length ? serie[serie.length - 1] : null
 
   const getEstadoColor = (estado: Cita['estado']) => {
     const map: Record<string, string> = {
@@ -784,20 +783,10 @@ export default function ConsultaPage() {
               <CardContent>
                 <AsistenteIA
                   pacienteId={paciente.id}
-                  contexto={{
-                    edad,
-                    genero: paciente?.genero,
-                    peso_kg: ultimaToma?.peso_kg != null ? String(ultimaToma.peso_kg) : '',
-                    motivo_consulta: soap.motivo_consulta,
-                    subjetivo: soap.subjetivo,
-                    objetivo: soap.objetivo,
-                    presion_arterial: ultimaToma?.presion_arterial ?? '',
-                    temperatura: ultimaToma?.temperatura != null ? String(ultimaToma.temperatura) : '',
-                    frecuencia_cardiaca: ultimaToma?.frecuencia_cardiaca != null ? String(ultimaToma.frecuencia_cardiaca) : '',
-                    alergias: paciente?.alergias,
-                    medicamentos_en_uso: paciente?.medicamentos_en_uso,
-                    antecedentes: paciente?.antecedentes_personales,
-                  }}
+                  motivoConsulta={soap.motivo_consulta}
+                  subjetivo={soap.subjetivo}
+                  objetivo={soap.objetivo}
+                  consultaId={consultaId ?? cita.id}
                   onCopiarSugerencia={texto => setSoap(p => ({ ...p, analisis: p.analisis + '\n\n[Sugerencia IA]\n' + texto }))}
                 />
               </CardContent>
