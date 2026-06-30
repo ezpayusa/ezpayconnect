@@ -13,7 +13,7 @@ import { Badge } from '@/components/ui/badge'
 import { useNavigate } from 'react-router-dom'
 import {
   CalendarDays, FileText, FlaskConical, MessageCircle, Plus, Clock, Pill,
-  MapPin, Loader2, Bell, BellOff, Gift
+  MapPin, Loader2, Bell, BellOff, Gift, Star
 } from 'lucide-react'
 
 export default function WebAppDashboard() {
@@ -220,6 +220,24 @@ export default function WebAppDashboard() {
           </CardContent>
         </Card>
       )}
+
+      {/* Mis Puntos */}
+      <Card className="bg-white border-slate-100 hover:shadow-md transition-shadow cursor-pointer" onClick={() => navigate('/paciente/premios')}>
+        <CardContent className="p-6 flex items-center justify-between gap-4">
+          <div className="flex items-center gap-3">
+            <div className="w-10 h-10 rounded-full bg-amber-50 flex items-center justify-center shrink-0">
+              <Star className="h-5 w-5 text-amber-500" />
+            </div>
+            <div>
+              <h3 className="font-semibold text-slate-800">Mis Puntos</h3>
+              <p className="text-slate-500 text-sm">Canjeá tus puntos por premios.</p>
+            </div>
+          </div>
+          <Button variant="outline" size="sm" onClick={(e) => { e.stopPropagation(); navigate('/paciente/premios') }}>
+            <Gift className="h-4 w-4 mr-1" /> Ver premios
+          </Button>
+        </CardContent>
+      </Card>
 
       {/* Invitá a un amigo */}
       <Card className="bg-white border-slate-100">

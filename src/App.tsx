@@ -60,6 +60,7 @@ const WebAppHistorial = lazy(() => import('@/webapp/pages/WebAppHistorial'))
 const WebAppChat = lazy(() => import('@/webapp/pages/WebAppChat'))
 const WebAppPerfil = lazy(() => import('@/webapp/pages/WebAppPerfil'))
 const WebAppAutorizaciones = lazy(() => import('@/webapp/pages/WebAppAutorizaciones'))
+const WebAppPremios = lazy(() => import('@/webapp/pages/WebAppPremios'))
 
 // === ADMIN EZPAY ===
 const AdminEzPayPage = lazy(() => import('@/pages/admin-ezpay/AdminEzPayPage'))
@@ -83,6 +84,7 @@ const EmpresasProveedorasPage = lazy(() => import('@/pages/admin-ezpay/EmpresasP
 const ReportesPage = lazy(() => import('@/pages/admin-ezpay/ReportesPage'))
 const ReportesEzPayPage = lazy(() => import('@/pages/admin-ezpay/ReportesEzPayPage'))
 const ReportesEzPayPageV2 = lazy(() => import('@/pages/admin-ezpay/ReportesEzPayPageV2'))
+const CanjesPendientesPage = lazy(() => import('@/pages/admin-ezpay/CanjesPendientesPage'))
 
 // === PROVEEDORES ===
 const ProveedorLogin = lazy(() => import('@/proveedor/pages/ProveedorLogin'))
@@ -245,6 +247,7 @@ function App() {
           <Route path="chat" element={<WebAppChat />} />
           <Route path="perfil" element={<WebAppPerfil />} />
           <Route path="autorizaciones" element={<WebAppAutorizaciones />} />
+          <Route path="premios" element={<WebAppPremios />} />
         </Route>
 
         {/* === RUTAS PLANES (PÚBLICAS / LANDING) === */}
@@ -294,6 +297,7 @@ function App() {
           <Route path="pagos-proveedores" element={<PagosProveedoresPage />} />
           <Route path="visitas-proveedores" element={<AdminVisitasProveedoresPage />} />
           <Route path="empresas-proveedoras" element={<EmpresasProveedorasPage />} />
+          <Route path="canjes" element={<CanjesPendientesPage />} />
         </Route>
 
         {/* === RUTAS MÉDICO === */}

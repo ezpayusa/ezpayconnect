@@ -9,7 +9,8 @@ import {
   User,
   ShieldCheck,
   LogOut,
-  Bell
+  Bell,
+  Gift
 } from 'lucide-react'
 import { useWebAppAuth } from '@/webapp/hooks/useWebAppAuth'
 
@@ -20,6 +21,7 @@ const navItems = [
   { to: '/paciente/examenes', icon: FlaskConical, label: 'Exámenes' },
   { to: '/paciente/historial', icon: Clock, label: 'Historial' },
   { to: '/paciente/chat', icon: MessageCircle, label: 'Chat' },
+  { to: '/paciente/premios', icon: Gift, label: 'Premios' },
   { to: '/paciente/perfil', icon: User, label: 'Perfil' },
   { to: '/paciente/autorizaciones', icon: ShieldCheck, label: 'Autorizaciones' },
 ]
