@@ -10,6 +10,7 @@ export interface Premio {
   tipo: string
   stock: number
   imagen_path: string | null
+  ya_canjeado: boolean  // true si el paciente ya tiene un canje vigente (no rechazado) de este premio
 }
 
 export interface MiCanje {

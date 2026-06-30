@@ -76,14 +76,17 @@ export default function WebAppPremios() {
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
             {premios.map((p) => {
               const url = imagenUrl(p.imagen_path)
-              const puede = saldo >= p.costo_puntos && p.stock > 0
+              const puede = saldo >= p.costo_puntos && p.stock > 0 && !p.ya_canjeado
               return (
-                <Card key={p.id} className="bg-white border-slate-100 overflow-hidden flex flex-col">
-                  <div className="h-32 bg-slate-100 flex items-center justify-center overflow-hidden">
+                <Card key={p.id} className={`bg-white border-slate-100 overflow-hidden flex flex-col ${p.ya_canjeado ? 'opacity-70' : ''}`}>
+                  <div className="h-32 bg-slate-100 flex items-center justify-center overflow-hidden relative">
                     {url ? (
                       <img src={url} alt={p.nombre} className="w-full h-full object-cover" />
                     ) : (
                       <Gift className="h-10 w-10 text-slate-300" />
+                    )}
+                    {p.ya_canjeado && (
+                      <Badge variant="outline" className="absolute top-2 right-2 text-[10px] bg-amber-50 text-amber-700 border-amber-200">En proceso</Badge>
                     )}
                   </div>
                   <CardContent className="p-4 flex flex-col flex-1">
@@ -104,7 +107,7 @@ export default function WebAppPremios() {
                       disabled={!puede}
                       onClick={() => setSeleccionado(p)}
                     >
-                      {p.stock <= 0 ? 'Sin stock' : saldo < p.costo_puntos ? 'Puntos insuficientes' : 'Canjear'}
+                      {p.ya_canjeado ? 'Ya canjeado' : p.stock <= 0 ? 'Sin stock' : saldo < p.costo_puntos ? 'Puntos insuficientes' : 'Canjear'}
                     </Button>
                   </CardContent>
                 </Card>
