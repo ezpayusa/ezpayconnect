@@ -73,24 +73,28 @@ export function useClinicas() {
       // Si es la primera clínica, activarla automáticamente
       const esPrimera = clinicas.length === 0
 
-      const nuevaClinica = {
-        doctor_id: user.id,
-        nombre: clinica.nombre || 'Nueva Clínica',
-        direccion: clinica.direccion || '',
-        telefono: clinica.telefono || '',
-        email: clinica.email || '',
-        horarios: clinica.horarios || defaultHorarios,
-        activa: esPrimera,
-        pais_id: paisId,
-      }
+      // Crear vía RPC canónica: clínica (dueño=doctor_id) + membresía (es_principal) ATÓMICAS.
+      // Reemplaza el insert directo a clinicas, que dejaba al dueño SIN membresía (modelo inconsistente).
+      const { data: nuevaId, error: rpcError } = await supabase.rpc('crear_clinica_con_dueno', {
+        p_doctor_id: user.id,
+        p_nombre: clinica.nombre || 'Nueva Clínica',
+        p_pais_id: paisId,
+        p_direccion: clinica.direccion || '',
+        p_telefono: clinica.telefono || '',
+        p_email: clinica.email || '',
+      })
+      if (rpcError) throw rpcError
 
-      const { data, error: dbError } = await supabase
+      // La RPC no maneja horarios ni el flag activa; preservamos el comportamiento previo del hook.
+      const { data, error: updError } = await supabase
         .from('clinicas')
-        .insert(nuevaClinica)
+        .update({ horarios: clinica.horarios || defaultHorarios, activa: esPrimera })
+        .eq('id', nuevaId)
+        .eq('doctor_id', user.id)
         .select()
         .single()
 
-      if (dbError) throw dbError
+      if (updError) throw updError
       if (data) {
         setClinicas(prev => [...prev, data])
       }
@@ -102,7 +106,7 @@ export function useClinicas() {
     } finally {
       setSaving(false)
     }
-  }, [clinicas.length])
+  }, [clinicas.length, paisId])
 
   const actualizarClinica = useCallback(async (id: string, cambios: Partial<Clinica>) => {
     setSaving(true)
