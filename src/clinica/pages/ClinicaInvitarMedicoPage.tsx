@@ -1,9 +1,10 @@
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { useClinicaAuth } from '@/clinica/hooks/useClinicaAuth'
 import { supabase } from '@/lib/supabase'
 import { toast } from 'sonner'
@@ -16,9 +17,16 @@ export default function ClinicaInvitarMedicoPage() {
     email: '',
     nombre_completo: '',
     telefono: '',
-    especialidad: '',
+    especialidad_id: '',   // '' = "sin especialidad" (la define el médico)
   })
+  const [especialidades, setEspecialidades] = useState<{ id: string; nombre: string }[]>([])
   const [enviando, setEnviando] = useState(false)
+
+  // Catálogo de especialidades activas (RLS mig 181 permite SELECT a authenticated; sin RPC nueva).
+  useEffect(() => {
+    supabase.from('especialidades').select('id, nombre').eq('activo', true).order('nombre')
+      .then(({ data }) => setEspecialidades(data || []))
+  }, [])
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
@@ -30,6 +38,7 @@ export default function ClinicaInvitarMedicoPage() {
 
     setEnviando(true)
     try {
+      const espSel = especialidades.find((e) => e.id === form.especialidad_id)
       const { error } = await supabase.functions.invoke('crear-invitacion-medico', {
         body: {
           pais_id: clinica?.pais_id,
@@ -37,7 +46,8 @@ export default function ClinicaInvitarMedicoPage() {
           email: form.email,
           nombre_completo: form.nombre_completo,
           telefono: form.telefono || null,
-          especialidad: form.especialidad || null,
+          especialidad: espSel?.nombre || null,       // texto legacy en paralelo (nombre del catálogo)
+          especialidad_id: form.especialidad_id || null,
         },
       })
 
@@ -104,11 +114,20 @@ export default function ClinicaInvitarMedicoPage() {
             </div>
             <div>
               <Label>Especialidad</Label>
-              <Input
-                value={form.especialidad}
-                onChange={(e) => setForm({ ...form, especialidad: e.target.value })}
-                placeholder="Cardiología"
-              />
+              <Select
+                value={form.especialidad_id || '__none__'}
+                onValueChange={(val) => setForm({ ...form, especialidad_id: val === '__none__' ? '' : val })}
+              >
+                <SelectTrigger>
+                  <SelectValue placeholder="Sin especialidad (la define el médico)" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="__none__">Sin especialidad (la define el médico)</SelectItem>
+                  {especialidades.map((e) => (
+                    <SelectItem key={e.id} value={e.id}>{e.nombre}</SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
             </div>
             <Button
               type="submit"

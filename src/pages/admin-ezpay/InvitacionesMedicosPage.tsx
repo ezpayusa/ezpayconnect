@@ -5,6 +5,7 @@ import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog'
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { useAdminAuth } from '@/hooks/admin/useAdminAuth'
 import { usePaisActivo } from '@/hooks/usePaisActivo'
 import { supabase } from '@/lib/supabase'
@@ -46,11 +47,18 @@ export default function InvitacionesMedicosPage() {
     email: '',
     nombre_completo: '',
     telefono: '',
-    especialidad: '',
+    especialidad_id: '',   // '' = "sin especialidad" (la define el médico)
   })
+  const [especialidades, setEspecialidades] = useState<{ id: string; nombre: string }[]>([])
   const [enviando, setEnviando] = useState(false)
 
   const pais_id = paisId || paisActivo?.id
+
+  // Catálogo de especialidades activas (RLS mig 181 permite SELECT a authenticated; sin RPC nueva).
+  useEffect(() => {
+    supabase.from('especialidades').select('id, nombre').eq('activo', true).order('nombre')
+      .then(({ data }) => setEspecialidades(data || []))
+  }, [])
 
   useEffect(() => {
     if (!adminLoading && !isAdmin) {
@@ -87,13 +95,15 @@ export default function InvitacionesMedicosPage() {
 
     setEnviando(true)
     try {
+      const espSel = especialidades.find((e) => e.id === nuevaInvitacion.especialidad_id)
       const { error } = await supabase.functions.invoke('crear-invitacion-medico', {
         body: {
           pais_id,
           email: nuevaInvitacion.email,
           nombre_completo: nuevaInvitacion.nombre_completo,
           telefono: nuevaInvitacion.telefono || null,
-          especialidad: nuevaInvitacion.especialidad || null,
+          especialidad: espSel?.nombre || null,       // texto legacy en paralelo (nombre del catálogo)
+          especialidad_id: nuevaInvitacion.especialidad_id || null,
         },
       })
 
@@ -102,7 +112,7 @@ export default function InvitacionesMedicosPage() {
       } else {
         toast.success('Invitación enviada a ' + nuevaInvitacion.email)
         setDialogoNuevo(false)
-        setNuevaInvitacion({ email: '', nombre_completo: '', telefono: '', especialidad: '' })
+        setNuevaInvitacion({ email: '', nombre_completo: '', telefono: '', especialidad_id: '' })
         cargarInvitaciones()
       }
     } catch (err: any) {
@@ -250,11 +260,20 @@ export default function InvitacionesMedicosPage() {
             </div>
             <div>
               <Label>Especialidad</Label>
-              <Input
-                value={nuevaInvitacion.especialidad}
-                onChange={(e) => setNuevaInvitacion({ ...nuevaInvitacion, especialidad: e.target.value })}
-                placeholder="Cardiología"
-              />
+              <Select
+                value={nuevaInvitacion.especialidad_id || '__none__'}
+                onValueChange={(val) => setNuevaInvitacion({ ...nuevaInvitacion, especialidad_id: val === '__none__' ? '' : val })}
+              >
+                <SelectTrigger>
+                  <SelectValue placeholder="Sin especialidad (la define el médico)" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="__none__">Sin especialidad (la define el médico)</SelectItem>
+                  {especialidades.map((e) => (
+                    <SelectItem key={e.id} value={e.id}>{e.nombre}</SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
             </div>
             <div className="flex justify-end gap-2">
               <Button variant="outline" onClick={() => setDialogoNuevo(false)}>Cancelar</Button>
