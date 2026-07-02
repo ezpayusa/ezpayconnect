@@ -25,6 +25,7 @@ export function SidebarAdmin() {
     { path: '/admin-ezpay', icon: LayoutDashboard, label: 'Dashboard' },
     { path: '/admin-ezpay/paises', icon: Globe, label: 'Países' },
     { path: '/admin-ezpay/canjes', icon: Gift, label: 'Canjes' },
+    { path: '/admin-ezpay/especialidades', icon: Stethoscope, label: 'Especialidades' },
   ];
 
   const menuItemsPais = paisIdActual ? [
