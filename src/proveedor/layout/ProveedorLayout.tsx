@@ -1,5 +1,6 @@
 import { Link, useLocation, useNavigate, Outlet } from 'react-router-dom'
 import { useProveedorAuth } from '@/proveedor/hooks/useProveedorAuth'
+import { useCapacidades } from '@/proveedor/hooks/useCapacidades'
 import { useNotificaciones } from '@/hooks/useNotificaciones'
 import { usePushNotifications } from '@/webapp/hooks/usePushNotifications'
 import { Button } from '@/components/ui/button'
@@ -13,6 +14,7 @@ interface NavItem {
   icon: React.ElementType
   badge?: boolean
   permiso?: PermisoProveedor // sin permiso => siempre visible
+  capacidad?: string // módulo contratado (mis_capacidades); sin capacidad => no gateado por módulo. Solo visibilidad de UI, NO seguridad.
 }
 
 // Secciones específicas del flujo de VISITADOR. Las empresas afines no las usan:
@@ -28,22 +30,26 @@ const PERMISOS_VISITADOR: PermisoProveedor[] = [
 const RUTAS_VISITADOR = ['/proveedor/visitador', '/proveedor/visitadores', '/proveedor/equipos']
 
 // Menú único dirigido por permisos. Cada usuario ve solo lo que su rol permite.
+// Campo `capacidad`: oculta el item si la empresa no tiene ese módulo contratado (mis_capacidades).
+// OJO: "Planes Visitador" NO lleva capacidad — es la puerta de CONTRATACIÓN del módulo visitadores,
+// debe seguir visible para que un lab sin el módulo pueda llegar a contratarlo.
 const NAV_ITEMS: NavItem[] = [
   { label: 'Dashboard', path: '/proveedor/dashboard', icon: LayoutDashboard },
-  // Trabajo del visitador (su propia agenda)
-  { label: 'Mis Visitas', path: '/proveedor/visitador/mis-visitas', icon: CalendarCheck, permiso: 'visitas.propias' },
-  { label: 'Agendar Visita', path: '/proveedor/visitador/agendar', icon: CalendarCheck, permiso: 'visitas.propias' },
-  { label: 'Mi Ruta', path: '/proveedor/visitador/ruta', icon: MapPin, permiso: 'visitas.propias' },
-  { label: 'Mi Reporte', path: '/proveedor/visitador/reporte', icon: BarChart3, permiso: 'visitas.propias' },
+  // Trabajo del visitador (su propia agenda) — gateado por el módulo 'visitadores'
+  { label: 'Mis Visitas', path: '/proveedor/visitador/mis-visitas', icon: CalendarCheck, permiso: 'visitas.propias', capacidad: 'visitadores' },
+  { label: 'Agendar Visita', path: '/proveedor/visitador/agendar', icon: CalendarCheck, permiso: 'visitas.propias', capacidad: 'visitadores' },
+  { label: 'Mi Ruta', path: '/proveedor/visitador/ruta', icon: MapPin, permiso: 'visitas.propias', capacidad: 'visitadores' },
+  { label: 'Mi Reporte', path: '/proveedor/visitador/reporte', icon: BarChart3, permiso: 'visitas.propias', capacidad: 'visitadores' },
   // Gestión (según rol)
-  { label: 'Productos', path: '/proveedor/productos', icon: Package, permiso: 'productos.ver' },
+  { label: 'Productos', path: '/proveedor/productos', icon: Package, permiso: 'productos.ver', capacidad: 'productos' },
+  // Puerta de contratación del módulo visitadores → SIEMPRE visible (sin capacidad).
   { label: 'Planes Visitador', path: '/proveedor/visitador/planes', icon: CalendarCheck, permiso: 'planes.contratar' },
-  { label: 'Aprobar Visitas', path: '/proveedor/visitador/aprobar', icon: CheckCircle, permiso: 'visitas.aprobar' },
-  { label: 'Visitadores', path: '/proveedor/visitadores', icon: Users, permiso: 'visitadores.gestionar' },
-  { label: 'Equipos', path: '/proveedor/equipos', icon: Users, permiso: 'visitadores.gestionar' },
+  { label: 'Aprobar Visitas', path: '/proveedor/visitador/aprobar', icon: CheckCircle, permiso: 'visitas.aprobar', capacidad: 'visitadores' },
+  { label: 'Visitadores', path: '/proveedor/visitadores', icon: Users, permiso: 'visitadores.gestionar', capacidad: 'visitadores' },
+  { label: 'Equipos', path: '/proveedor/equipos', icon: Users, permiso: 'visitadores.gestionar', capacidad: 'visitadores' },
   { label: 'Mensajes', path: '/proveedor/mensajes', icon: MessageSquare },
-  { label: 'Ubicaciones Médicos', path: '/proveedor/visitador/ubicaciones-medicos', icon: MapPin, permiso: 'ubicaciones.gestionar' },
-  { label: 'Publicidad', path: '/proveedor/publicidad/planes', icon: Megaphone, permiso: 'publicidad.ver' },
+  { label: 'Ubicaciones Médicos', path: '/proveedor/visitador/ubicaciones-medicos', icon: MapPin, permiso: 'ubicaciones.gestionar', capacidad: 'visitadores' },
+  { label: 'Publicidad', path: '/proveedor/publicidad/planes', icon: Megaphone, permiso: 'publicidad.ver', capacidad: 'publicidad' },
   { label: 'Personal y Roles', path: '/proveedor/equipo', icon: ShieldCheck, permiso: 'usuarios.gestionar' },
   { label: 'Pagos', path: '/proveedor/pagos', icon: CreditCard, permiso: 'pagos.ver' },
   // Siempre visibles
@@ -53,6 +59,7 @@ const NAV_ITEMS: NavItem[] = [
 
 export default function ProveedorLayout() {
   const { empresa, logout, loading, cuenta, puede } = useProveedorAuth()
+  const { tieneCapacidad, loading: loadingCapacidades } = useCapacidades()
   usePushNotifications() // registra la suscripción push del proveedor (auto, si acepta permiso)
   const { noLeidas, listarNotificaciones } = useNotificaciones()
   const location = useLocation()
@@ -63,8 +70,13 @@ export default function ProveedorLayout() {
   const esAfin = empresa?.tipo === 'empresa_afin'
   const navItems = NAV_ITEMS.filter((item) => {
     if (item.permiso && !puede(item.permiso)) return false
-    // Empresa afín: oculta las secciones de visitador (no aplican a su modelo)
+    // Empresa afín: oculta las secciones de visitador (no aplican a su modelo).
+    // NOTA: el gate de capacidad 'visitadores' (abajo) ahora cubre un caso similar (una afín sin ese
+    // módulo también queda oculta por esa vía). Se mantienen AMBAS por seguridad; revisar si esta
+    // excepción esAfin queda redundante en un bloque futuro antes de eliminarla.
     if (esAfin && item.permiso && PERMISOS_VISITADOR.includes(item.permiso)) return false
+    // Módulo contratado: oculta el item si la empresa no tiene esa capacidad vigente (solo visibilidad UI).
+    if (item.capacidad && !tieneCapacidad(item.capacidad)) return false
     return true
   })
 
@@ -83,7 +95,8 @@ export default function ProveedorLayout() {
     }
   }, [loading, esAfin, location.pathname, navigate])
 
-  if (loading) {
+  // Esperar también las capacidades para no parpadear items operativos antes de saber los módulos.
+  if (loading || loadingCapacidades) {
     return (
       <div className="min-h-screen flex items-center justify-center bg-gray-50">
         <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-[#1E5C8E]" />
