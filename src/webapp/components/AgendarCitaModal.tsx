@@ -6,17 +6,39 @@ import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { CalendarDays, Clock, FileText, StickyNote, X, Loader2, User, MapPin, ChevronLeft, ChevronRight, Stethoscope, Search, Star, Check } from 'lucide-react'
 import { toast } from 'sonner'
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
+import { format, parseISO } from 'date-fns'
+import { es } from 'date-fns/locale'
 
 interface MedicoOption {
   id: string
   nombre_completo: string
   especialidad: string | null
+  especialidad_id: string | null
+  proximo_turno: string | null   // timestamptz ISO string (o null si no hay turno próximo)
   foto_url: string | null
 }
 
 interface ClinicaOption {
   id: string
   nombre: string
+}
+
+interface EspecialidadOption {
+  id: string
+  nombre: string
+}
+
+// Formatea el próximo turno mostrando SOLO la fecha (ej: "6 jul"), nunca la hora.
+// Work item de zona horaria pendiente: la hora tendría corrimiento para países no-UTC,
+// así que tomamos solo la parte de fecha del ISO (YYYY-MM-DD) para evitar cualquier shift de TZ.
+function formatProximoTurno(iso: string | null): string | null {
+  if (!iso) return null
+  try {
+    return format(parseISO(iso.slice(0, 10)), 'd MMM', { locale: es })
+  } catch {
+    return null
+  }
 }
 
 interface Props {
@@ -76,6 +98,11 @@ export default function AgendarCitaModal({ pacienteId, pacienteNombre, paisIdPro
   const [clinicasFiltradas, setClinicasFiltradas] = useState<ClinicaOption[]>([])
   const [cargandoOpciones, setCargandoOpciones] = useState(false)
 
+  // Filtro server-side por especialidad (Select). '' = todas las especialidades.
+  const [especialidades, setEspecialidades] = useState<EspecialidadOption[]>([])
+  const [especialidadSel, setEspecialidadSel] = useState('')
+  const [cargandoMedicos, setCargandoMedicos] = useState(false)
+
   const [medicoId, setMedicoId] = useState<string | null>(null)
   const [clinicaId, setClinicaId] = useState<string | null>(null)
 
@@ -124,31 +151,46 @@ export default function AgendarCitaModal({ pacienteId, pacienteNombre, paisIdPro
       return medicos.slice(0, 5)
     }
 
+    // La búsqueda por especialidad ahora la maneja el Select (filtro duro server-side).
+    // El buscador de texto filtra SOLO por nombre del médico.
     const terminos = buscarSinonimos(busquedaDebounced)
 
     return medicos.filter((m) => {
       const nombre = normalizarTexto(m.nombre_completo)
-      const especialidad = normalizarTexto(m.especialidad || '')
-
-      return terminos.some(term =>
-        nombre.includes(term) || especialidad.includes(term)
-      )
+      return terminos.some(term => nombre.includes(term))
     }).slice(0, 7)
   }, [busquedaDebounced, medicos, medicoPrimarioId])
 
-  // Cargar médicos, clínicas y preferencias del paciente al abrir
+  // Cargar médicos vía buscar_medicos_paciente (país derivado server-side del auth.uid();
+  // NO recibe p_pais_id). p_especialidad_id = filtro duro opcional (null = sin filtro).
+  const cargarMedicos = useCallback(async (espId: string | null) => {
+    setCargandoMedicos(true)
+    try {
+      const { data, error } = await supabase
+        .rpc('buscar_medicos_paciente', { p_especialidad_id: espId })
+      if (error) console.error('Error cargando médicos via RPC:', error)
+      setMedicos(data || [])
+    } finally {
+      setCargandoMedicos(false)
+    }
+  }, [])
+
+  // Cargar médicos, clínicas, especialidades y preferencias del paciente al abrir
   useEffect(() => {
     if (!open || !paisId || !pacienteId) return
 
     const cargarDatos = async () => {
       setCargandoOpciones(true)
       try {
-        // Cargar médicos via RPC (bypass PostgREST schema cache)
-        const { data: medsData, error: medsError } = await supabase
-          .rpc('listar_medicos_por_pais', { p_pais_id: paisId })
+        // Médicos: carga inicial sin filtro de especialidad
+        await cargarMedicos(null)
 
-        if (medsError) {
-          console.error('Error cargando médicos via RPC:', medsError)
+        // Especialidades activas del país (para el Select) — deriva país server-side
+        const { data: espData, error: espError } = await supabase
+          .rpc('listar_especialidades_activas')
+
+        if (espError) {
+          console.error('Error cargando especialidades via RPC:', espError)
         }
 
         // Cargar clínicas via RPC (bypass PostgREST schema cache)
@@ -166,10 +208,9 @@ export default function AgendarCitaModal({ pacienteId, pacienteNombre, paisIdPro
           .eq('id', pacienteId)
           .single()
 
-        const medicosData = medsData || []
         const clinicasData = clinicsData || []
 
-        setMedicos(medicosData)
+        setEspecialidades(espData || [])
         setClinicas(clinicasData)
         setClinicasFiltradas(clinicasData)
 
@@ -190,7 +231,7 @@ export default function AgendarCitaModal({ pacienteId, pacienteNombre, paisIdPro
     }
 
     cargarDatos()
-  }, [open, paisId, pacienteId])
+  }, [open, paisId, pacienteId, cargarMedicos])
 
   // Filtrar clínicas según médico seleccionado
   useEffect(() => {
@@ -296,6 +337,8 @@ export default function AgendarCitaModal({ pacienteId, pacienteNombre, paisIdPro
       setRecordarPreferencia(false)
       setMedicoPrimarioId(null)
       setClinicaPrimariaId(null)
+      setEspecialidadSel('')
+      setEspecialidades([])
     }
   }, [open])
 
@@ -463,11 +506,31 @@ export default function AgendarCitaModal({ pacienteId, pacienteNombre, paisIdPro
                   <Label className="text-sm font-medium text-slate-700">Médico (opcional)</Label>
                 </div>
 
-                {/* Input de búsqueda */}
+                {/* Select de especialidad (filtro duro server-side) */}
+                <Select
+                  value={especialidadSel || '__all__'}
+                  onValueChange={(val) => {
+                    const esp = val === '__all__' ? null : val
+                    setEspecialidadSel(esp || '')
+                    cargarMedicos(esp)
+                  }}
+                >
+                  <SelectTrigger className="w-full">
+                    <SelectValue placeholder="Todas las especialidades" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="__all__">Todas las especialidades</SelectItem>
+                    {especialidades.map((e) => (
+                      <SelectItem key={e.id} value={e.id}>{e.nombre}</SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+
+                {/* Input de búsqueda (solo por nombre) */}
                 <div className="relative">
                   <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
                   <Input
-                    placeholder="Buscar por nombre o especialidad (ej: cardiología, niños)..."
+                    placeholder="Buscar por nombre del médico..."
                     value={busquedaMedico}
                     onChange={(e) => setBusquedaMedico(e.target.value)}
                     onFocus={() => setBusquedaFocus(true)}
@@ -476,7 +539,7 @@ export default function AgendarCitaModal({ pacienteId, pacienteNombre, paisIdPro
                   />
                 </div>
 
-                {cargandoOpciones ? (
+                {cargandoOpciones || cargandoMedicos ? (
                   <div className="flex items-center justify-center py-4">
                     <Loader2 className="h-5 w-5 animate-spin text-sky-500" />
                   </div>
@@ -502,7 +565,9 @@ export default function AgendarCitaModal({ pacienteId, pacienteNombre, paisIdPro
                     </button>
 
                     {/* Resultados de búsqueda */}
-                    {medicosFiltrados.map((med) => (
+                    {medicosFiltrados.map((med) => {
+                      const proximoTurno = formatProximoTurno(med.proximo_turno)
+                      return (
                       <button
                         key={med.id}
                         type="button"
@@ -528,12 +593,21 @@ export default function AgendarCitaModal({ pacienteId, pacienteNombre, paisIdPro
                             )}
                           </p>
                           <p className="text-xs text-slate-500">{med.especialidad || 'Médico general'}</p>
+                          {proximoTurno ? (
+                            <p className="text-xs font-medium text-emerald-600 flex items-center gap-1">
+                              <CalendarDays className="h-3 w-3" />
+                              Próximo turno: {proximoTurno}
+                            </p>
+                          ) : (
+                            <p className="text-xs text-slate-400">Sin turnos próximos</p>
+                          )}
                         </div>
                         {medicoId === med.id && (
                           <Check className="h-5 w-5 text-sky-500 shrink-0" />
                         )}
                       </button>
-                    ))}
+                      )
+                    })}
 
                     {medicosFiltrados.length === 0 && busquedaDebounced && (
                       <p className="text-sm text-muted-foreground text-center py-2">
