@@ -21,7 +21,7 @@ serve(async (req) => {
     })
 
     const body = await req.json()
-    const { pais_id, email, nombre_completo, telefono, especialidad, clinica_id } = body
+    const { pais_id, email, nombre_completo, telefono, especialidad, especialidad_id, clinica_id } = body
 
     if (!email || !nombre_completo) {
       return new Response(
@@ -93,7 +93,8 @@ serve(async (req) => {
         email: email.toLowerCase(),
         nombre_completo,
         telefono: telefono || null,
-        especialidad: especialidad || null,
+        especialidad: especialidad || null,          // texto legacy (en paralelo)
+        especialidad_id: especialidad_id || null,     // id del catálogo elegido en el Select (NULL = "sin especialidad")
         clinica_id: clinica_id || null,
         estado: 'pendiente',
         expires_at: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString(),
