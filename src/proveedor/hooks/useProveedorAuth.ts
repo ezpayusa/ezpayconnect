@@ -142,9 +142,13 @@ export function useProveedorAuth() {
       toast.error('No hay empresa vinculada')
       return false
     }
+    // logo_url y colores NO se editan por acá: viven en el flujo de personalización
+    // (solicitar_personalizacion / aprobar_personalizacion). El guard de BD (mig 205) bloquea
+    // su UPDATE directo, así que se excluyen del payload de este hook.
+    const { logo_url: _omitLogo, color_primario: _omitC1, color_secundario: _omitC2, color_fondo: _omitC3, ...datosEmpresa } = data as Partial<EmpresaProveedora> & Record<string, unknown>
     const { error } = await supabase
       .from('empresas_proveedoras')
-      .update(data)
+      .update(datosEmpresa)
       .eq('id', empresa.id)
 
     if (error) {
@@ -153,7 +157,7 @@ export function useProveedorAuth() {
       return false
     }
 
-    setEmpresa((prev) => (prev ? { ...prev, ...data } : null))
+    setEmpresa((prev) => (prev ? { ...prev, ...datosEmpresa } : null))
     toast.success('Empresa actualizada')
     return true
   }, [empresa?.id])
