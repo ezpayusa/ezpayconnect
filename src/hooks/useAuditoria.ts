@@ -1,7 +1,5 @@
 import { useState, useCallback } from "react";
 import { supabase } from "@/lib/supabase";
-const SUPABASE_URL = "https://fqnsmvkxsuujahhmpzuk.supabase.co";
-const ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImZxbnNtdmt4c3V1amFoaG1wenVrIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NDE1ODU5NjQsImV4cCI6MjA1NzE2MTk2NH0.5_8_ZH_1X4zYX_qXz7ZzZzZzZzZzZzZzZzZzZzZzZz";
 
 export interface AuditoriaLog {
   id: string;
@@ -30,13 +28,8 @@ export function useAuditoria() {
       detalle?: any;
     }) => {
       try {
-        const { data: sessionData } = await supabase.auth.getSession();
-        const user = sessionData.session?.user;
-
+        // Identidad NO se manda: la deriva el backend del JWT de sesión (functions.invoke lo adjunta).
         const payload = {
-          usuario_id: user?.id || null,
-          usuario_email: user?.email || "sistema",
-          usuario_nombre: user?.user_metadata?.nombre || user?.email || "sistema",
           accion: data.accion,
           entidad: data.entidad,
           entidad_id: data.entidad_id || null,
@@ -45,20 +38,11 @@ export function useAuditoria() {
           user_agent: navigator.userAgent,
         };
 
-        const response = await fetch(
-          `${SUPABASE_URL}/functions/v1/registrar-auditoria`,
-          {
-            method: "POST",
-            headers: {
-              "Content-Type": "application/json",
-              Authorization: `Bearer ${ANON_KEY}`,
-            },
-            body: JSON.stringify(payload),
-          }
+        const { data: result, error: fnError } = await supabase.functions.invoke(
+          "registrar-auditoria",
+          { body: payload }
         );
-
-        const result = await response.json();
-        if (!response.ok) throw new Error(result.error || "Error al registrar log");
+        if (fnError) throw fnError;
         return result;
       } catch (err: any) {
         console.error("Error registrando auditoria:", err);

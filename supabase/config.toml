@@ -485,3 +485,7 @@ verify_jwt = true   # JWT en gateway; ownership-vía-RLS: el edge lee la cita/vi
 [functions.enviar-recordatorio]
 enabled = true
 verify_jwt = true   # JWT en gateway; ownership-vía-RLS: el edge lee la cita con cliente anon+JWT del caller (RLS por-actor) → 403 si no es suya. NO es super_admin (auth amplio médico/paciente/clínica).
+
+[functions.registrar-auditoria]
+enabled = true
+verify_jwt = true   # JWT en gateway; authenticated (cualquier rol) + identidad DERIVADA del JWT (getUser+perfiles), NO del body → cierra la forja. Distinto del patrón super_admin-exclusivo.
