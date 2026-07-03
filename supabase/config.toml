@@ -489,3 +489,7 @@ verify_jwt = true   # JWT en gateway; ownership-vía-RLS: el edge lee la cita co
 [functions.registrar-auditoria]
 enabled = true
 verify_jwt = true   # JWT en gateway; authenticated (cualquier rol) + identidad DERIVADA del JWT (getUser+perfiles), NO del body → cierra la forja. Distinto del patrón super_admin-exclusivo.
+
+[functions.notificar-email]
+enabled = true
+verify_jwt = false   # la llaman las RPCs de visita vía pg_net (server-to-server), no un usuario; autz = secreto compartido x-email-secret. Recibe {visita_id,tipo}, re-deriva to/contenido (mig 224).
