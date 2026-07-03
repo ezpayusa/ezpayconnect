@@ -8,7 +8,6 @@ import {
   UserPlus,
   Settings,
   LogOut,
-  MapPin,
   ChevronLeft,
   CalendarDays,
   Clock,
@@ -17,12 +16,14 @@ import {
 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import ClinicaNotificacionesDropdown from '@/clinica/layout/ClinicaNotificacionesDropdown'
+import { useTema } from '@/components/theme/TenantThemeContext'
 
 export function ClinicaSidebar() {
   const navigate = useNavigate()
   const location = useLocation()
   const { logout, perfil } = useAuth()
   const { clinica } = useClinicaAuth()
+  const { logoUrl } = useTema()  // logo del tenant (o fallback oficial); item activo usa var(--tenant-primario)
 
   // Roles administrativos (ven todo el panel). Los de captura solo ven Admisión.
   const ROLES_ADMIN = ['admin_clinica', 'admin', 'super_admin', 'gerente']
@@ -48,7 +49,7 @@ export function ClinicaSidebar() {
     <aside className="w-64 bg-[#1a2a3a] text-white flex flex-col h-screen sticky top-0">
       <div className="p-6 border-b border-white/10">
         <div className="flex items-center gap-3">
-          <MapPin className="h-8 w-8 text-[#5BA8D1]" />
+          <img src={logoUrl} alt="" className="h-8 w-8 rounded object-contain shrink-0" />
           <div className="flex-1 min-w-0">
             <h1 className="text-lg font-bold tracking-wide truncate">{clinica?.nombre || 'Clínica'}</h1>
             <p className="text-xs text-[#8a9aaa]">Panel Administrativo</p>
@@ -75,7 +76,7 @@ export function ClinicaSidebar() {
               onClick={() => navigate(item.path)}
               className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-medium transition-all ${
                 active
-                  ? 'bg-[#5BA8D1] text-white shadow-sm'
+                  ? 'bg-[var(--tenant-primario)] text-white shadow-sm'
                   : 'text-white/80 hover:bg-white/10 hover:text-white'
               }`}
             >

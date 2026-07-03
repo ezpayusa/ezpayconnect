@@ -2,6 +2,7 @@ import { Link, useLocation, useNavigate, Outlet } from 'react-router-dom'
 import { useProveedorAuth } from '@/proveedor/hooks/useProveedorAuth'
 import { useCapacidades } from '@/proveedor/hooks/useCapacidades'
 import { TenantThemeProvider } from '@/components/theme/TenantThemeProvider'
+import { useTema } from '@/components/theme/TenantThemeContext'
 import { useNotificaciones } from '@/hooks/useNotificaciones'
 import { usePushNotifications } from '@/webapp/hooks/usePushNotifications'
 import { Button } from '@/components/ui/button'
@@ -57,6 +58,13 @@ const NAV_ITEMS: NavItem[] = [
   { label: 'Perfil', path: '/proveedor/perfil', icon: MapPin },
   { label: 'Notificaciones', path: '/proveedor/notificaciones', icon: Bell, badge: true },
 ]
+
+// Se renderiza DENTRO de <TenantThemeProvider> (el layout está por encima del provider y no puede
+// llamar useTema() directo). Muestra el logo del tenant con fallback oficial, igual que ClinicaSidebar.
+function TenantLogo({ className }: { className?: string }) {
+  const { logoUrl } = useTema()
+  return <img src={logoUrl} alt="" className={className} />
+}
 
 export default function ProveedorLayout() {
   const { empresa, logout, loading, cuenta, puede } = useProveedorAuth()
@@ -117,8 +125,8 @@ export default function ProveedorLayout() {
       <aside className="hidden md:flex w-64 flex-col bg-[#1a2a3a] text-white fixed h-full z-20">
         <div className="p-6 border-b border-white/10">
           <Link to="/proveedor/dashboard" className="flex items-center gap-3">
-            <div className="w-10 h-10 rounded-lg bg-[#1E5C8E] flex items-center justify-center">
-              <MapPin className="h-5 w-5 text-white" />
+            <div className="w-10 h-10 rounded-lg bg-[#1E5C8E] flex items-center justify-center overflow-hidden">
+              <TenantLogo className="h-6 w-6 object-contain" />
             </div>
             <div className="min-w-0">
               <h1 className="font-bold text-sm truncate">EzPayConnect</h1>
@@ -199,7 +207,7 @@ export default function ProveedorLayout() {
                   onClick={() => setMobileOpen(false)}
                   className={`flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm transition-colors ${
                     active
-                      ? 'bg-[#1E5C8E] text-white'
+                      ? 'bg-[var(--tenant-primario)] text-white'
                       : 'text-white/70 hover:bg-white/5 hover:text-white'
                   }`}
                 >
