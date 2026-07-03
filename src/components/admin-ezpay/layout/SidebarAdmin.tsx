@@ -4,7 +4,7 @@ import { ClipboardCheck } from 'lucide-react';
 import { useNavigate, useLocation } from 'react-router-dom';
 import { useAdminAuth } from '@/hooks/admin/useAdminAuth';
 import { usePaisActivo } from '@/hooks/usePaisActivo';
-import { LayoutDashboard, Globe, Layers, Stethoscope, MapPin, FlaskConical, Car, Pill, Store, Megaphone, Handshake, AlertCircle, DollarSign, BarChart3, Shield, ChevronLeft, LogOut, Activity, BarChart4, ArrowLeftRight, Landmark, Gift } from 'lucide-react';
+import { LayoutDashboard, Globe, Layers, Stethoscope, MapPin, FlaskConical, Car, Pill, Store, Megaphone, Handshake, AlertCircle, DollarSign, BarChart3, Shield, ChevronLeft, LogOut, Activity, BarChart4, ArrowLeftRight, Landmark, Gift, Palette } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { supabase } from '@/lib/supabase';
 
@@ -26,6 +26,7 @@ export function SidebarAdmin() {
     { path: '/admin-ezpay/paises', icon: Globe, label: 'Países' },
     { path: '/admin-ezpay/canjes', icon: Gift, label: 'Canjes' },
     { path: '/admin-ezpay/especialidades', icon: Stethoscope, label: 'Especialidades' },
+    { path: '/admin-ezpay/solicitudes-personalizacion', icon: Palette, label: 'Personalización' },
   ];
 
   const menuItemsPais = paisIdActual ? [

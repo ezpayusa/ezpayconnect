@@ -86,6 +86,7 @@ const ReportesEzPayPage = lazy(() => import('@/pages/admin-ezpay/ReportesEzPayPa
 const ReportesEzPayPageV2 = lazy(() => import('@/pages/admin-ezpay/ReportesEzPayPageV2'))
 const CanjesPendientesPage = lazy(() => import('@/pages/admin-ezpay/CanjesPendientesPage'))
 const EspecialidadesPropuestasPage = lazy(() => import('@/pages/admin-ezpay/EspecialidadesPropuestasPage'))
+const SolicitudesPersonalizacionPage = lazy(() => import('@/pages/admin-ezpay/SolicitudesPersonalizacionPage'))
 
 // === PROVEEDORES ===
 const ProveedorLogin = lazy(() => import('@/proveedor/pages/ProveedorLogin'))
@@ -300,6 +301,7 @@ function App() {
           <Route path="empresas-proveedoras" element={<EmpresasProveedorasPage />} />
           <Route path="canjes" element={<CanjesPendientesPage />} />
           <Route path="especialidades" element={<EspecialidadesPropuestasPage />} />
+          <Route path="solicitudes-personalizacion" element={<SolicitudesPersonalizacionPage />} />
         </Route>
 
         {/* === RUTAS MÉDICO === */}
