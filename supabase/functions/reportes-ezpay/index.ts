@@ -18,7 +18,30 @@ serve(async (req) => {
   try {
     const supabaseUrl = Deno.env.get('SB_URL') || Deno.env.get('SUPABASE_URL')!
     const supabaseServiceKey = Deno.env.get('SB_SERVICE_ROLE_KEY') || Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!
+    const supabaseAnonKey = Deno.env.get('SB_ANON_KEY') || Deno.env.get('SUPABASE_ANON_KEY')!
     const supabase = createClient(supabaseUrl, supabaseServiceKey)
+
+    // GATE DE AUTORIZACIÓN — cierra el gap: esta función usa service_role (bypass RLS) a propósito
+    // para poder AGREGAR transacciones across países en un reporte, pero NO validaba al caller →
+    // cualquiera que invocara la función veía TODAS las transacciones de TODOS los países. Ahora se
+    // exige super_admin verificado server-side con el JWT del caller (patrón enviar-push-campana):
+    // se valida el JWT con un cliente anon (NO service_role) y recién ahí se lee perfiles.rol.
+    const authHeader = req.headers.get('Authorization') || ''
+    if (!authHeader) {
+      return new Response(JSON.stringify({ error: 'Falta Authorization' }), { headers: { ...corsHeaders, 'Content-Type': 'application/json' }, status: 401 })
+    }
+    const userClient = createClient(supabaseUrl, supabaseAnonKey, {
+      global: { headers: { Authorization: authHeader } },
+      auth: { persistSession: false },
+    })
+    const { data: { user }, error: userErr } = await userClient.auth.getUser()
+    if (userErr || !user) {
+      return new Response(JSON.stringify({ error: 'JWT inválido' }), { headers: { ...corsHeaders, 'Content-Type': 'application/json' }, status: 401 })
+    }
+    const { data: perfil } = await supabase.from('perfiles').select('rol').eq('id', user.id).maybeSingle()
+    if (!perfil || perfil.rol !== 'super_admin') {
+      return new Response(JSON.stringify({ error: 'No autorizado: sólo super_admin' }), { headers: { ...corsHeaders, 'Content-Type': 'application/json' }, status: 403 })
+    }
 
     const { periodo, tabActiva, fechaInicio } = await req.json()
 
