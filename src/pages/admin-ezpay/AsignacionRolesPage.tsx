@@ -10,6 +10,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@
 import { Label } from '@/components/ui/label';
 import { useAdminAuth } from '@/hooks/admin/useAdminAuth';
 import { useRoles } from '@/hooks/useRoles';
+import { usePaises } from '@/hooks/admin/usePaises';
 import { supabase } from '@/lib/supabase';
 import { 
   ArrowLeft, 
@@ -41,6 +42,7 @@ export default function AsignacionRolesPage() {
   const navigate = useNavigate();
   const { isAdmin, loading: adminLoading } = useAdminAuth();
   const { roles, empleados, loading, fetchRoles, fetchEmpleados } = useRoles();
+  const { paises } = usePaises();
   const [search, setSearch] = useState('');
   const [dialogoAsignar, setDialogoAsignar] = useState<string | null>(null);
   const [dialogoNuevoEmpleado, setDialogoNuevoEmpleado] = useState(false);
@@ -52,6 +54,7 @@ export default function AsignacionRolesPage() {
     nombre_completo: '',
     nombre: '',
     rol: 'cliente',
+    pais_id: '',
   });
 
   useEffect(() => {
@@ -115,6 +118,12 @@ export default function AsignacionRolesPage() {
         return;
       }
 
+      // admin_pais requiere país (no depender solo del backend/CHECK; bloquear el submit acá).
+      if (nuevoEmpleado.rol === 'admin_pais' && !nuevoEmpleado.pais_id) {
+        alert('Un admin_pais requiere seleccionar un país.');
+        return;
+      }
+
       const { data, error } = await supabase.functions.invoke('crear-empleado', {
         body: {
           email: nuevoEmpleado.email,
@@ -123,6 +132,7 @@ export default function AsignacionRolesPage() {
           nombre: nuevoEmpleado.nombre || nuevoEmpleado.nombre_completo,
           rol_id: rolSeleccionadoObj.id,
           asignado_por: adminUserId,
+          pais_id: nuevoEmpleado.rol === 'admin_pais' ? nuevoEmpleado.pais_id : null,
         },
       });
 
@@ -137,7 +147,7 @@ export default function AsignacionRolesPage() {
       }
 
       setDialogoNuevoEmpleado(false);
-      setNuevoEmpleado({ email: '', password: '', nombre_completo: '', nombre: '', rol: 'cliente' });
+      setNuevoEmpleado({ email: '', password: '', nombre_completo: '', nombre: '', rol: 'cliente', pais_id: '' });
       fetchEmpleados();
       alert('Empleado creado exitosamente: ' + data.data.nombre_completo);
 
@@ -400,11 +410,25 @@ export default function AsignacionRolesPage() {
                 </SelectContent>
               </Select>
             </div>
+            {/* Selector de país: solo para admin_pais (rol acotado a un país). Mismo patrón que CuentasBancariasPage. */}
+            {nuevoEmpleado.rol === 'admin_pais' && (
+              <div>
+                <Label htmlFor="emp_pais">País *</Label>
+                <Select value={nuevoEmpleado.pais_id} onValueChange={(v) => setNuevoEmpleado({...nuevoEmpleado, pais_id: v})}>
+                  <SelectTrigger><SelectValue placeholder="Seleccionar país" /></SelectTrigger>
+                  <SelectContent>
+                    {paises.map((p) => (
+                      <SelectItem key={p.id} value={p.id}>{p.nombre}</SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+            )}
             <div className="flex justify-end gap-2">
               <Button variant="outline" onClick={() => setDialogoNuevoEmpleado(false)}>Cancelar</Button>
-              <Button 
-                onClick={handleCrearEmpleado} 
-                disabled={!nuevoEmpleado.email || !nuevoEmpleado.password || !nuevoEmpleado.nombre_completo}
+              <Button
+                onClick={handleCrearEmpleado}
+                disabled={!nuevoEmpleado.email || !nuevoEmpleado.password || !nuevoEmpleado.nombre_completo || (nuevoEmpleado.rol === 'admin_pais' && !nuevoEmpleado.pais_id)}
                 className="bg-green-600 hover:bg-green-700"
               >
                 <UserPlus className="h-4 w-4 mr-2" /> Crear Empleado
