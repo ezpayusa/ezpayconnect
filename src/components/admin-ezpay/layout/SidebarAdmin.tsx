@@ -26,6 +26,10 @@ export function SidebarAdmin() {
     { path: `/admin-ezpay/pais/${paisIdPropio}`, icon: LayoutDashboard, label: 'Dashboard País' },
     { path: `/admin-ezpay/pais/${paisIdPropio}/invitaciones-medicos`, icon: Stethoscope, label: 'Invitaciones Médicos' },
     { path: `/admin-ezpay/pais/${paisIdPropio}/invitaciones-clinicas`, icon: MapPin, label: 'Invitaciones Clínicas' },
+    { path: `/admin-ezpay/pais/${paisIdPropio}/canjes`, icon: Gift, label: 'Canjes' },
+    { path: `/admin-ezpay/pais/${paisIdPropio}/especialidades`, icon: Stethoscope, label: 'Especialidades' },
+    { path: `/admin-ezpay/pais/${paisIdPropio}/solicitudes-personalizacion`, icon: Palette, label: 'Personalización' },
+    { path: `/admin-ezpay/pais/${paisIdPropio}/reportes-ezpay-v2`, icon: BarChart4, label: 'Reportes' },
   ] : [];
 
   const menuItemsBase = [

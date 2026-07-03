@@ -285,6 +285,11 @@ function App() {
           <Route path="pais/:paisId" element={<PaisDashboardPage />} />
           <Route path="pais/:paisId/invitaciones-medicos" element={<InvitacionesMedicosPage />} />
           <Route path="pais/:paisId/invitaciones-clinicas" element={<InvitacionesClinicasPage />} />
+          {/* Dual-mount de 4 páginas globales bajo /pais/:paisId (mismo componente lazy; páginas agnósticas de URL). */}
+          <Route path="pais/:paisId/canjes" element={<CanjesPendientesPage />} />
+          <Route path="pais/:paisId/especialidades" element={<EspecialidadesPropuestasPage />} />
+          <Route path="pais/:paisId/solicitudes-personalizacion" element={<SolicitudesPersonalizacionPage />} />
+          <Route path="pais/:paisId/reportes-ezpay-v2" element={<ReportesEzPayPageV2 />} />
           <Route path="usuarios" element={<UsuariosAdminPage />} />
           <Route path="asignacion-roles" element={<AsignacionRolesPage />} />
           <Route path="planes-todos" element={<PlanesTodosPage />} />

@@ -60,7 +60,7 @@ const formatNumber = (num: number, decimals: number = 2): string => {
 
 export default function ReportesEzPayPageV2() {
   const navigate = useNavigate();
-  const { isAdmin, loading: adminLoading } = useAdminAuth();
+  const { isAdmin, isAdminPais, adminUser, loading: adminLoading } = useAdminAuth();
   const [tabActiva, setTabActiva] = useState('todos');
   const [periodo, setPeriodo] = useState('todos');
   const [reportePaises, setReportePaises] = useState<ReportePais[]>([]);
@@ -222,7 +222,7 @@ export default function ReportesEzPayPageV2() {
     <div className="container mx-auto px-4 py-6 max-w-7xl">
       <div className="flex items-center justify-between mb-6">
         <div className="flex items-center gap-4">
-          <Button variant="ghost" size="icon" onClick={() => navigate('/admin-ezpay')}>
+          <Button variant="ghost" size="icon" onClick={() => navigate(isAdminPais && adminUser?.pais_id ? `/admin-ezpay/pais/${adminUser.pais_id}` : '/admin-ezpay')}>
             <ArrowLeft className="h-5 w-5" />
           </Button>
           <div>
