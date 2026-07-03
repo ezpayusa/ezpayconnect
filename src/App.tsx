@@ -1,5 +1,5 @@
 import { lazy, Suspense, useEffect } from 'react'
-import { BrowserRouter, Routes, Route, Navigate, useNavigate } from 'react-router-dom'
+import { BrowserRouter, Routes, Route, Navigate, useNavigate, useLocation } from 'react-router-dom'
 import { useAuth } from '@/hooks/useAuth'
 import { useAdminAuth } from '@/hooks/admin/useAdminAuth'
 
@@ -188,8 +188,9 @@ function PrivateLayout({ children }: { children: React.ReactNode }) {
 }
 
 function AdminRoute({ children }: { children: React.ReactNode }) {
-  const { isAdmin, loading } = useAdminAuth()
+  const { isAdmin, isSuperAdmin, isAdminPais, adminUser, loading } = useAdminAuth()
   const navigate = useNavigate()
+  const location = useLocation()
 
   useEffect(() => {
     if (!loading && !isAdmin) {
@@ -206,6 +207,18 @@ function AdminRoute({ children }: { children: React.ReactNode }) {
   if (!isAdmin) {
     console.log('[AdminRoute] isAdmin=false, mostrando null')
     return null
+  }
+
+  // ENFORCEMENT "modo país" (deny-by-default, solo navegación/UX — la seguridad real de datos es la
+  // RLS de la pieza siguiente). Un admin_pais (no super) solo puede estar bajo su propio
+  // /admin-ezpay/pais/{su pais_id}: cualquier otra ruta (país ajeno O ruta global) redirige a su
+  // dashboard. super_admin queda igual que hoy. Si pais_id fuese null (imposible: el CHECK de mig 216
+  // lo impide) la cuenta está rota → deny total a /dashboard (fail-closed), no al panel global.
+  if (isAdminPais && !isSuperAdmin) {
+    if (!adminUser?.pais_id) return <Navigate to="/dashboard" replace />
+    const propio = `/admin-ezpay/pais/${adminUser.pais_id}`
+    const enPropio = location.pathname === propio || location.pathname.startsWith(propio + '/')
+    if (!enPropio) return <Navigate to={propio} replace />
   }
 
   console.log('[AdminRoute] isAdmin=true, renderizando children')

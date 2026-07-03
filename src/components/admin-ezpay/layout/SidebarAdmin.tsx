@@ -11,13 +11,22 @@ import { supabase } from '@/lib/supabase';
 export function SidebarAdmin() {
   const navigate = useNavigate();
   const location = useLocation();
-  const { adminUser } = useAdminAuth();
+  const { adminUser, isAdminPais } = useAdminAuth();
   const { paisActivo, clearPaisActivo } = usePaisActivo();
 
   // Detectar si estamos en modo "país activo"
   const enModoPais = location.pathname.startsWith('/admin-ezpay/pais/');
   const paisIdMatch = location.pathname.match(/^\/admin-ezpay\/pais\/([^/]+)/);
   const paisIdActual = paisIdMatch ? paisIdMatch[1] : null;
+
+  // Un admin_pais está confinado a su propio país (AdminRoute lo garantiza): menú acotado a las 3
+  // rutas país-scoped, fijas a SU pais_id (no al de la URL), sin el menú maestro ni "Cambiar País".
+  const paisIdPropio = adminUser?.pais_id;
+  const menuItemsAdminPais = paisIdPropio ? [
+    { path: `/admin-ezpay/pais/${paisIdPropio}`, icon: LayoutDashboard, label: 'Dashboard País' },
+    { path: `/admin-ezpay/pais/${paisIdPropio}/invitaciones-medicos`, icon: Stethoscope, label: 'Invitaciones Médicos' },
+    { path: `/admin-ezpay/pais/${paisIdPropio}/invitaciones-clinicas`, icon: MapPin, label: 'Invitaciones Clínicas' },
+  ] : [];
 
   const menuItemsBase = [
     { path: '/admin-ezpay/asignacion-roles', icon: UserCheck, label: 'Asignar Roles' },
@@ -52,7 +61,7 @@ export function SidebarAdmin() {
     { path: '/admin-ezpay/auditoria', icon: Activity, label: 'Auditoría' },
   ] : [];
 
-  const menuItems = enModoPais ? menuItemsPais : menuItemsBase;
+  const menuItems = isAdminPais ? menuItemsAdminPais : (enModoPais ? menuItemsPais : menuItemsBase);
 
   const isActive = (path: string) => {
     if (path === '/admin-ezpay') {
@@ -89,15 +98,18 @@ export function SidebarAdmin() {
           </div>
           <p className="text-sm font-bold">{paisActivo.nombre}</p>
           <p className="text-xs text-white/60">{paisActivo.codigo} · {paisActivo.moneda}</p>
-          <Button
-            variant="ghost"
-            size="sm"
-            className="w-full mt-2 justify-start text-white/70 hover:text-white hover:bg-white/10 px-2 h-7 text-xs"
-            onClick={handleCambiarPais}
-          >
-            <ArrowLeftRight className="w-3 h-3 mr-1" />
-            Cambiar País
-          </Button>
+          {/* admin_pais no tiene otro país al que cambiar → se oculta el botón. */}
+          {!isAdminPais && (
+            <Button
+              variant="ghost"
+              size="sm"
+              className="w-full mt-2 justify-start text-white/70 hover:text-white hover:bg-white/10 px-2 h-7 text-xs"
+              onClick={handleCambiarPais}
+            >
+              <ArrowLeftRight className="w-3 h-3 mr-1" />
+              Cambiar País
+            </Button>
+          )}
         </div>
       )}
 

@@ -54,14 +54,20 @@ export default function LoginPage() {
         if (user) {
           const { data: profile } = await supabase
             .from('perfiles')
-            .select('rol')
+            .select('rol, pais_id')
             .eq('id', user.id)
             .single()
           const adminRoles = ['super_admin', 'admin_pais']  // admins de sistema del catálogo (admin_pais reintroducido mig 216)
           if (profile?.rol === 'medico') {
             navigate('/medico')
           } else if (profile?.rol && adminRoles.includes(profile.rol)) {
-            navigate('/admin-ezpay')
+            // admin_pais entra directo al dashboard de su país; super_admin al índice global.
+            // pais_id null es imposible (CHECK mig 216); defensivo → /admin-ezpay y AdminRoute decide.
+            if (profile.rol === 'admin_pais' && profile.pais_id) {
+              navigate(`/admin-ezpay/pais/${profile.pais_id}`)
+            } else {
+              navigate('/admin-ezpay')
+            }
           } else {
             navigate('/dashboard')
           }
