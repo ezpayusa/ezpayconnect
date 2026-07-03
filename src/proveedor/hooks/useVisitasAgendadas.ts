@@ -401,71 +401,89 @@ export function useVisitasAgendadas() {
 
   const checkinVisita = async (id: string, evidenciaFile?: File): Promise<boolean> => {
     setSaving(true)
-    let evidenciaUrl: string | null = null
-
-    if (evidenciaFile) {
-      const fileExt = evidenciaFile.name.split('.').pop()
-      const filePath = `${empresa?.id}/${id}/checkin_${Date.now()}.${fileExt}`
-      const { error: upError } = await supabase.storage
-        .from('evidencias-visitas')
-        .upload(filePath, evidenciaFile, { upsert: true })
-      if (upError) {
-        toast.error('Error subiendo evidencia')
-        console.error(upError)
-      } else {
-        const { data } = supabase.storage.from('evidencias-visitas').getPublicUrl(filePath)
-        evidenciaUrl = data.publicUrl
-      }
-    }
-
-    let lat: number | null = null
-    let lng: number | null = null
     try {
-      const pos = await new Promise<GeolocationPosition>((resolve, reject) => {
-        navigator.geolocation.getCurrentPosition(resolve, reject, { timeout: 5000 })
+      // 1) Subir la evidencia (opcional) directo al bucket privado — el INSERT ya está acotado por
+      //    mig 209 (ownership + path scoping). Guardamos el PATH (no getPublicUrl: bucket privado
+      //    desde mig 212). Si el upload falla, seguimos sin evidencia (mismo comportamiento previo).
+      let filePath: string | null = null
+      if (evidenciaFile) {
+        const fileExt = evidenciaFile.name.split('.').pop()
+        const path = `${empresa?.id}/${id}/checkin_${Date.now()}.${fileExt}`
+        const { error: upError } = await supabase.storage
+          .from('evidencias-visitas')
+          .upload(path, evidenciaFile, { upsert: true })
+        if (upError) {
+          toast.error('Error subiendo evidencia')
+          console.error(upError)
+        } else {
+          filePath = path
+        }
+      }
+
+      // 2) Geolocalización (opcional).
+      let lat: number | null = null
+      let lng: number | null = null
+      try {
+        const pos = await new Promise<GeolocationPosition>((resolve, reject) => {
+          navigator.geolocation.getCurrentPosition(resolve, reject, { timeout: 5000 })
+        })
+        lat = pos.coords.latitude
+        lng = pos.coords.longitude
+      } catch {
+        // Geolocalización opcional
+      }
+
+      // 3) Registrar el check-in vía RPC hardeneada (mig 213): valida ownership, estado, fecha=hoy,
+      //    doble check-in y que el path de evidencia corresponda a la visita. Guarda el PATH.
+      const { data, error } = await supabase.rpc('checkin_visita', {
+        p_visita_id: id,
+        p_evidencia_path: filePath,
+        p_lat: lat,
+        p_lng: lng,
       })
-      lat = pos.coords.latitude
-      lng = pos.coords.longitude
-    } catch {
-      // Geolocalización opcional
-    }
+      if (error) throw error                     // RAISE server-side (ej. 'No autorizado...')
+      if (data?.error) { toast.error(data.error); return false }
 
-    const { error } = await supabase.from('visitas_agendadas').update({
-      checkin_fecha: new Date().toISOString(),
-      checkin_lat: lat,
-      checkin_lng: lng,
-      checkin_evidencia_url: evidenciaUrl,
-      estado: 'confirmada',
-    }).eq('id', id)
-
-    setSaving(false)
-    if (error) {
-      toast.error('Error registrando check-in')
-      console.error(error)
+      toast.success('Check-in registrado')
+      fetchVisitas()
+      return true
+    } catch (err: any) {
+      const msg = typeof err?.message === 'string' && err.message.includes('No autorizado')
+        ? 'No tenés permiso para hacer check-in de esta visita.'
+        : 'Error registrando check-in'
+      toast.error(msg)
+      console.error(err)
       return false
+    } finally {
+      setSaving(false)
     }
-    toast.success('Check-in registrado')
-    fetchVisitas()
-    return true
   }
 
   const checkoutVisita = async (id: string, notas: string): Promise<boolean> => {
     setSaving(true)
-    const { error } = await supabase.from('visitas_agendadas').update({
-      checkout_fecha: new Date().toISOString(),
-      checkout_notas: notas,
-      visita_concretada: true,
-      estado: 'completada',
-    }).eq('id', id)
-    setSaving(false)
-    if (error) {
-      toast.error('Error registrando check-out')
-      console.error(error)
+    try {
+      // Check-out vía RPC hardeneada (mig 213): valida ownership, estado, check-in previo y doble
+      // check-out. Reemplaza el UPDATE directo previo.
+      const { data, error } = await supabase.rpc('checkout_visita', {
+        p_visita_id: id,
+        p_notas: notas,
+      })
+      if (error) throw error                     // RAISE server-side (ej. 'No autorizado...')
+      if (data?.error) { toast.error(data.error); return false }
+
+      toast.success('Check-out registrado')
+      fetchVisitas()
+      return true
+    } catch (err: any) {
+      const msg = typeof err?.message === 'string' && err.message.includes('No autorizado')
+        ? 'No tenés permiso para hacer check-out de esta visita.'
+        : 'Error registrando check-out'
+      toast.error(msg)
+      console.error(err)
       return false
+    } finally {
+      setSaving(false)
     }
-    toast.success('Check-out registrado')
-    fetchVisitas()
-    return true
   }
 
   const fetchSlotsOcupados = async (medicoId: string, fechaInicio: string, fechaFin: string) => {

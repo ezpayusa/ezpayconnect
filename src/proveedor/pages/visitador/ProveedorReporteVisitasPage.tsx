@@ -7,7 +7,8 @@ import { Input } from '@/components/ui/input'
 import { supabase } from '@/lib/supabase'
 import { useProveedorAuth } from '@/proveedor/hooks/useProveedorAuth'
 import { toast } from 'sonner'
-import { ArrowLeft, CalendarDays, MapPin, CheckCircle, Loader2, Search, User } from 'lucide-react'
+import { ArrowLeft, CalendarDays, MapPin, CheckCircle, Loader2, Search, User, Image as ImageIcon } from 'lucide-react'
+import { openSignedUrl } from '@/lib/signedUrl'
 
 interface VisitaReporte {
   id: string
@@ -181,9 +182,15 @@ export default function ProveedorReporteVisitasPage() {
                     )}
                   </div>
                   {v.checkin_evidencia_url && (
-                    <a href={v.checkin_evidencia_url} target="_blank" rel="noopener noreferrer" className="shrink-0">
-                      <img src={v.checkin_evidencia_url} alt="Evidencia" className="h-20 w-20 object-cover rounded-lg border" />
-                    </a>
+                    // Bucket privado (mig 212): checkin_evidencia_url guarda un PATH. Firmamos al click
+                    // con openSignedUrl (TTL 120s; extractPath tolera filas legacy con URL pública).
+                    <button
+                      type="button"
+                      onClick={() => openSignedUrl('evidencias-visitas', v.checkin_evidencia_url)}
+                      className="shrink-0 inline-flex items-center gap-1 text-sm text-blue-600 hover:underline"
+                    >
+                      <ImageIcon className="h-4 w-4" /> Ver evidencia
+                    </button>
                   )}
                 </div>
               </CardContent>
