@@ -5,7 +5,6 @@ import type { VisitaAgendada } from '@/proveedor/types/proveedor.types'
 import type { PlanAsignacion } from '@/types/planes'
 import type { UbicacionVisita } from './useRutaVisitador'
 import { toast } from 'sonner'
-import { enviarEmail, buildHtmlVisitaPropuesta, buildHtmlVisitaAprobada, buildHtmlVisitaRechazada } from '@/proveedor/lib/notificaciones'
 
 export function useVisitasAgendadas() {
   const { empresa, cuenta, puede } = useProveedorAuth()
@@ -225,27 +224,8 @@ export function useVisitasAgendadas() {
     // Notificar al admin si fue propuesta por visitador
     if (!esAdmin && estadoFinal === 'propuesta' && empresa?.email_contacto && insertData) {
       try {
-        const { data: medicoData } = await supabase
-          .from('perfiles')
-          .select('nombre_completo')
-          .eq('id', visita.medico_id)
-          .single()
-
-        await enviarEmail({
-          to: empresa.email_contacto,
-          subject: `Nueva visita propuesta - ${medicoData?.nombre_completo || 'Médico'}`,
-          html: buildHtmlVisitaPropuesta({
-            medicoNombre: medicoData?.nombre_completo || 'Médico',
-            visitadorNombre: cuenta.nombre_completo,
-            fecha: visita.fecha_visita || '',
-            hora: `${visita.hora_inicio} - ${visita.hora_fin}`,
-            tipo: visita.tipo_visita || 'presentacion_producto',
-            notas: visita.notas_empresa,
-          }),
-          tipo: 'visita_propuesta',
-        })
-
-        // Notificación in-app a admins/editores (RPC gateado: gate propuesta_por=auth.uid, deriva destinatarios del ref)
+        // Notificación in-app a admins/editores (RPC gateado: gate propuesta_por=auth.uid, deriva destinatarios del ref).
+        // El email de "visita propuesta" ahora lo dispara ESTA RPC server-side (mig 224), no el front.
         await supabase.rpc('notificar_visita_propuesta', { p_visita_id: insertData.id })
       } catch (e) {
         console.error('Error notificando propuesta:', e)
@@ -335,19 +315,8 @@ export function useVisitasAgendadas() {
       if (visita?.visitador?.email) {
         try {
           if (accion === 'aprobar' || accion === 'modificar') {
-            await enviarEmail({
-              to: visita.visitador.email,
-              subject: `Visita aprobada - ${visita.medico?.nombre_completo || 'Médico'}`,
-              html: buildHtmlVisitaAprobada({
-                medicoNombre: visita.medico?.nombre_completo || 'Médico',
-                fecha: visita.fecha_visita,
-                hora: `${visita.hora_inicio} - ${visita.hora_fin}`,
-                comentario: cambios?.comentario || visita.comentario_admin,
-              }),
-              tipo: 'visita_aprobada',
-            })
-
-            // Notificación in-app al visitador (RPC gateado: rama por visita.estado del ref ya commiteado; gate relación cuenta∈empresa)
+            // Notificación in-app al visitador (RPC gateado: rama por visita.estado del ref; gate relación cuenta∈empresa).
+            // El email "visita aprobada" ahora lo dispara ESTA RPC server-side (mig 224), no el front.
             await supabase.rpc('notificar_visita_resultado', { p_visita_id: id })
 
             // Programar recordatorio 24h antes
@@ -363,18 +332,8 @@ export function useVisitasAgendadas() {
               console.error('Error programando recordatorio de visita:', recErr)
             }
           } else if (accion === 'rechazar') {
-            await enviarEmail({
-              to: visita.visitador.email,
-              subject: `Visita rechazada - ${visita.medico?.nombre_completo || 'Médico'}`,
-              html: buildHtmlVisitaRechazada({
-                medicoNombre: visita.medico?.nombre_completo || 'Médico',
-                fecha: visita.fecha_visita,
-                comentario: cambios?.comentario || visita.comentario_admin,
-              }),
-              tipo: 'visita_rechazada',
-            })
-
-            // Notificación in-app al visitador (RPC gateado: rama por visita.estado del ref ya commiteado; gate relación cuenta∈empresa)
+            // Notificación in-app al visitador (RPC gateado). El email "visita rechazada" ahora lo dispara
+            // ESTA RPC server-side (mig 224), no el front.
             await supabase.rpc('notificar_visita_resultado', { p_visita_id: id })
           }
         } catch (e) {
