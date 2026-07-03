@@ -449,3 +449,7 @@ verify_jwt = true   # exige JWT del usuario en el gateway; el edge re-valida con
 [functions.asistente-ia]
 enabled = true
 verify_jwt = true   # idem dictado-voz: JWT en gateway + gate_accion_phi('asistente_ia') + auditoría con identidad real (getUser)
+
+[functions.reportes-ezpay]
+enabled = true
+verify_jwt = true   # JWT en gateway; el edge re-valida super_admin con getUser (usa service_role para agregar across países)
