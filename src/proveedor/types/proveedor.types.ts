@@ -19,6 +19,10 @@ export interface EmpresaProveedora {
   email_contacto: string
   telefono: string | null
   logo_url: string | null
+  // Tema por tenant (mig 205). El empresa:empresa_id(*) ya las trae; solo faltaba tiparlas.
+  color_primario: string | null
+  color_secundario: string | null
+  color_fondo: string | null
   estado: EmpresaEstado
   created_at: string
   updated_at: string

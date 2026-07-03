@@ -3,6 +3,7 @@ import * as SelectPrimitive from "@radix-ui/react-select"
 import { CheckIcon, ChevronDownIcon, ChevronUpIcon } from "lucide-react"
 
 import { cn } from "@/lib/utils"
+import { TenantThemeContext } from "@/components/theme/TenantThemeContext"
 
 function Select({
   ...props
@@ -55,8 +56,11 @@ function SelectContent({
   align = "center",
   ...props
 }: React.ComponentProps<typeof SelectPrimitive.Content>) {
+  // Mismo tratamiento que Dialog: dentro de un panel tematizado el dropdown hereda las CSS vars;
+  // en Admin/Paciente el context es null → document.body (comportamiento sin cambios).
+  const tema = React.useContext(TenantThemeContext)
   return (
-    <SelectPrimitive.Portal>
+    <SelectPrimitive.Portal container={tema?.portalContainer ?? undefined}>
       <SelectPrimitive.Content
         data-slot="select-content"
         className={cn(

@@ -1,6 +1,7 @@
 import { Link, useLocation, useNavigate, Outlet } from 'react-router-dom'
 import { useProveedorAuth } from '@/proveedor/hooks/useProveedorAuth'
 import { useCapacidades } from '@/proveedor/hooks/useCapacidades'
+import { TenantThemeProvider } from '@/components/theme/TenantThemeProvider'
 import { useNotificaciones } from '@/hooks/useNotificaciones'
 import { usePushNotifications } from '@/webapp/hooks/usePushNotifications'
 import { Button } from '@/components/ui/button'
@@ -110,6 +111,7 @@ export default function ProveedorLayout() {
   }
 
   return (
+    <TenantThemeProvider tipo="proveedor">
     <div className="min-h-screen bg-gray-50 flex">
       {/* Sidebar Desktop */}
       <aside className="hidden md:flex w-64 flex-col bg-[#1a2a3a] text-white fixed h-full z-20">
@@ -232,5 +234,6 @@ export default function ProveedorLayout() {
         </div>
       </main>
     </div>
+    </TenantThemeProvider>
   )
 }

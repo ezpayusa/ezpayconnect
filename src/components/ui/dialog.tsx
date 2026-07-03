@@ -3,6 +3,7 @@ import * as DialogPrimitive from "@radix-ui/react-dialog"
 import { XIcon } from "lucide-react"
 
 import { cn } from "@/lib/utils"
+import { TenantThemeContext } from "@/components/theme/TenantThemeContext"
 
 function Dialog({
   ...props
@@ -52,8 +53,11 @@ function DialogContent({
 }: React.ComponentProps<typeof DialogPrimitive.Content> & {
   showCloseButton?: boolean
 }) {
+  // Dentro de Clínica/Proveedor el portal monta en el wrapper tematizado → hereda las CSS vars del tenant.
+  // En Admin/Paciente no hay TenantThemeContext → container undefined → Radix usa document.body (sin cambios).
+  const tema = React.useContext(TenantThemeContext)
   return (
-    <DialogPortal data-slot="dialog-portal">
+    <DialogPortal data-slot="dialog-portal" container={tema?.portalContainer ?? undefined}>
       <DialogOverlay />
       <DialogPrimitive.Content
         data-slot="dialog-content"

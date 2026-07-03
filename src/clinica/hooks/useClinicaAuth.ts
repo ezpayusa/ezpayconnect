@@ -9,6 +9,11 @@ interface ClinicaData {
   email: string | null
   activa: boolean
   pais_id: string | null
+  // Tema por tenant (mig 205). El select('*') ya las trae; solo faltaba tiparlas.
+  logo_url: string | null
+  color_primario: string | null
+  color_secundario: string | null
+  color_fondo: string | null
 }
 
 interface ClinicaUser {

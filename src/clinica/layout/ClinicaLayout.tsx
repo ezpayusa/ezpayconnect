@@ -1,6 +1,7 @@
 import { Navigate, Outlet } from 'react-router-dom'
 import { useAuth } from '@/hooks/useAuth'
 import { ClinicaSidebar } from './ClinicaSidebar'
+import { TenantThemeProvider } from '@/components/theme/TenantThemeProvider'
 import { Loader2 } from 'lucide-react'
 
 // Roles autorizados a ENTRAR al panel de clínica. Los de captura (asistente_medico/enfermeria)
@@ -29,9 +30,11 @@ export function ClinicaLayout() {
   }
 
   return (
-    <div className="flex min-h-screen bg-gray-50">
-      <ClinicaSidebar />
-      <main className="flex-1 overflow-auto p-6"><Outlet /></main>
-    </div>
+    <TenantThemeProvider tipo="clinica">
+      <div className="flex min-h-screen bg-gray-50">
+        <ClinicaSidebar />
+        <main className="flex-1 overflow-auto p-6"><Outlet /></main>
+      </div>
+    </TenantThemeProvider>
   )
 }
