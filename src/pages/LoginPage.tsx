@@ -57,7 +57,7 @@ export default function LoginPage() {
             .select('rol')
             .eq('id', user.id)
             .single()
-          const adminRoles = ['super_admin']  // único admin de sistema real del catálogo
+          const adminRoles = ['super_admin', 'admin_pais']  // admins de sistema del catálogo (admin_pais reintroducido mig 216)
           if (profile?.rol === 'medico') {
             navigate('/medico')
           } else if (profile?.rol && adminRoles.includes(profile.rol)) {
