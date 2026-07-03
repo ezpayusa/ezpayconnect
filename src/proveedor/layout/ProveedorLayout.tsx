@@ -39,9 +39,9 @@ const RUTAS_VISITADOR = ['/proveedor/visitador', '/proveedor/visitadores', '/pro
 const NAV_ITEMS: NavItem[] = [
   { label: 'Dashboard', path: '/proveedor/dashboard', icon: LayoutDashboard },
   // Trabajo del visitador (su propia agenda) — gateado por el módulo 'visitadores'
-  { label: 'Mis Visitas', path: '/proveedor/visitador/mis-visitas', icon: CalendarCheck, permiso: 'visitas.propias', capacidad: 'visitadores' },
-  { label: 'Agendar Visita', path: '/proveedor/visitador/agendar', icon: CalendarCheck, permiso: 'visitas.propias', capacidad: 'visitadores' },
-  { label: 'Mi Ruta', path: '/proveedor/visitador/ruta', icon: MapPin, permiso: 'visitas.propias', capacidad: 'visitadores' },
+  { label: 'Mis Visitas', path: '/visitador/mis-visitas', icon: CalendarCheck, permiso: 'visitas.propias', capacidad: 'visitadores' },
+  { label: 'Agendar Visita', path: '/visitador/agendar', icon: CalendarCheck, permiso: 'visitas.propias', capacidad: 'visitadores' },
+  { label: 'Mi Ruta', path: '/visitador/ruta', icon: MapPin, permiso: 'visitas.propias', capacidad: 'visitadores' },
   { label: 'Mi Reporte', path: '/proveedor/visitador/reporte', icon: BarChart3, permiso: 'visitas.propias', capacidad: 'visitadores' },
   // Gestión (según rol)
   { label: 'Productos', path: '/proveedor/productos', icon: Package, permiso: 'productos.ver', capacidad: 'productos' },

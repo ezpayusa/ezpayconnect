@@ -165,7 +165,7 @@ export default function VisitadorAgendarPage() {
 
     if (ok) {
       toast.success('Visita propuesta. Tu administrador la revisará pronto.')
-      navigate('/proveedor/visitador/mis-visitas')
+      navigate('/visitador/mis-visitas')
     } else {
       // Pudo haber sido tomado por otro proveedor: limpiar selección y refrescar slots.
       setSlotSeleccionado(null)
@@ -194,7 +194,7 @@ export default function VisitadorAgendarPage() {
   return (
     <div className="space-y-6 max-w-5xl mx-auto">
       <div className="flex items-center gap-4">
-        <Button variant="ghost" size="icon" onClick={() => navigate('/proveedor/visitador/planes')}>
+        <Button variant="ghost" size="icon" onClick={() => navigate('/visitador/planes')}>
           <ArrowLeft className="h-5 w-5" />
         </Button>
         <div>
@@ -212,7 +212,7 @@ export default function VisitadorAgendarPage() {
                 <p className="font-semibold">Tu empresa no tiene un plan de visitas activo.</p>
                 <p>Contrata un plan para poder agendar visitas con médicos.</p>
               </div>
-              <Button className="bg-[#1E5C8E] hover:bg-[#164a70]" onClick={() => navigate('/proveedor/visitador/planes')}>
+              <Button className="bg-[#1E5C8E] hover:bg-[#164a70]" onClick={() => navigate('/visitador/planes')}>
                 Ver planes
               </Button>
             </CardContent>

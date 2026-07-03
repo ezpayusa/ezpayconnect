@@ -81,7 +81,7 @@ export default function VisitadorMisVisitasPage() {
   return (
     <div className="space-y-6 max-w-4xl mx-auto">
       <div className="flex items-center gap-4">
-        <Button variant="ghost" size="icon" onClick={() => navigate('/proveedor/visitador/planes')}>
+        <Button variant="ghost" size="icon" onClick={() => navigate('/visitador/planes')}>
           <ArrowLeft className="h-5 w-5" />
         </Button>
         <div>
@@ -89,7 +89,7 @@ export default function VisitadorMisVisitasPage() {
           <p className="text-sm text-muted-foreground">Calendario y estado de tus visitas agendadas</p>
         </div>
         <div className="flex gap-2">
-          <Button variant="outline" size="sm" onClick={() => navigate('/proveedor/visitador/ruta')}>
+          <Button variant="outline" size="sm" onClick={() => navigate('/visitador/ruta')}>
             Mi ruta
           </Button>
           <Button variant="outline" size="sm" onClick={() => navigate('/proveedor/visitador/reporte')}>
@@ -107,7 +107,7 @@ export default function VisitadorMisVisitasPage() {
           <CardContent className="p-8 text-center">
             <CalendarDays className="h-10 w-10 text-gray-300 mx-auto mb-3" />
             <h3 className="text-lg font-semibold text-gray-700">Sin visitas agendadas</h3>
-            <Button className="mt-4 bg-[#1E5C8E] hover:bg-[#164a70]" onClick={() => navigate('/proveedor/visitador/agendar')}>
+            <Button className="mt-4 bg-[#1E5C8E] hover:bg-[#164a70]" onClick={() => navigate('/visitador/agendar')}>
               Agendar primera visita
             </Button>
           </CardContent>

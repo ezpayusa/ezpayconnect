@@ -53,7 +53,7 @@ export default function VisitadorPlanesPage() {
                         {plan.estado}
                       </Badge>
                       {plan.estado === 'activo' && (
-                        <Link to="/proveedor/visitador/agendar">
+                        <Link to="/visitador/agendar">
                           <Button size="sm" className="bg-[#1E5C8E] hover:bg-[#164a70]">
                             <CalendarCheck className="h-4 w-4 mr-1" />
                             Agendar visita

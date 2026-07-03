@@ -19,6 +19,8 @@ import RepartidorLayout from '@/repartidor/layout/RepartidorLayout'
 import ColaPage from '@/repartidor/pages/ColaPage'
 import EntregaDetallePage from '@/repartidor/pages/EntregaDetallePage'
 import PerfilPage from '@/repartidor/pages/PerfilPage'
+import VisitadorPrivateRoute from '@/visitador/components/VisitadorPrivateRoute'
+import VisitadorLayout from '@/visitador/layout/VisitadorLayout'
 import { MedicoLayout } from '@/medico/layout/MedicoLayout'
 import MedicoPrivateRoute from '@/medico/components/MedicoPrivateRoute'
 import { ClinicaLayout } from '@/clinica/layout/ClinicaLayout'
@@ -347,10 +349,11 @@ function App() {
           <Route path="productos" element={<ProductosListPage />} />
           <Route path="productos/nuevo" element={<ProductoFormPage />} />
           <Route path="productos/:id/editar" element={<ProductoFormPage />} />
+          {/* Contratación del módulo (audiencia admin/supervisor). Las 3 páginas de campo del
+              visitador (agendar/mis-visitas/ruta) se mudaron al PWA /visitador/*. planes queda
+              dual-mount acá para que admin/supervisor (permiso planes.contratar, no son
+              visitador_medico) puedan seguir contratando. */}
           <Route path="visitador/planes" element={<VisitadorPlanesPage />} />
-          <Route path="visitador/agendar" element={<VisitadorAgendarPage />} />
-          <Route path="visitador/mis-visitas" element={<VisitadorMisVisitasPage />} />
-          <Route path="visitador/ruta" element={<VisitadorRutaPage />} />
           <Route path="visitador/reporte" element={<ProveedorReporteVisitasPage />} />
           <Route path="visitador/aprobar" element={<AdminAprobarVisitasPage />} />
           <Route path="visitador/ubicaciones-medicos" element={<AdminUbicacionesMedicosPage />} />
@@ -388,6 +391,15 @@ function App() {
           <Route index element={<ColaPage />} />
           <Route path="entrega/:id" element={<EntregaDetallePage />} />
           <Route path="perfil" element={<PerfilPage />} />
+        </Route>
+
+        {/* === PWA VISITADOR (guard por rol_en_empresa='visitador_medico') === */}
+        <Route path="/visitador/*" element={<VisitadorPrivateRoute><VisitadorLayout /></VisitadorPrivateRoute>}>
+          <Route index element={<Navigate to="/visitador/agendar" replace />} />
+          <Route path="agendar" element={<VisitadorAgendarPage />} />
+          <Route path="mis-visitas" element={<VisitadorMisVisitasPage />} />
+          <Route path="ruta" element={<VisitadorRutaPage />} />
+          <Route path="planes" element={<VisitadorPlanesPage />} />
         </Route>
 
         {/* === PORTAL FARMACIA (tenant; guard por tipo='farmacia') === */}
