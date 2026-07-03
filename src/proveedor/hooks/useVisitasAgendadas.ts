@@ -216,18 +216,10 @@ export function useVisitasAgendadas() {
       return false
     }
 
-    // Solo consumir visita si es confirmada directamente por admin
+    // Agendar-confirmada consume una visita: refrescar el saldo DERIVADO (get_planes_visitador_proveedor
+    // / private.pvc_usadas). Ya NO se incrementa planes_asignaciones.visitas_usadas (contador legacy muerto).
     if (estadoFinal === 'confirmada') {
-      const planActivo = planesAsignados.find((a) => {
-        if (a.fecha_fin && new Date(a.fecha_fin) < new Date()) return false
-        return a.plan_configuracion?.plan_base?.tipo === 'visitador'
-      })
-      if (planActivo?.id) {
-        await supabase.from('planes_asignaciones')
-          .update({ visitas_usadas: (planActivo.visitas_usadas || 0) + 1 })
-          .eq('id', planActivo.id)
-        fetchPlanesAsignados()
-      }
+      fetchPlanesAsignados()
     }
 
     // Notificar al admin si fue propuesta por visitador
@@ -267,49 +259,37 @@ export function useVisitasAgendadas() {
 
   // Cancelar visita
   const cancelarVisita = async (id: string): Promise<boolean> => {
-    const visita = visitas.find((v) => v.id === id)
-    if (!visita) {
-      toast.error('Visita no encontrada')
-      return false
-    }
+    if (!confirm('¿Cancelar esta visita?')) return false
 
-    // Si es propuesta, se puede cancelar libremente
-    // Si es confirmada, aplica regla de 3 días hábiles
-    if (visita.estado === 'confirmada') {
-      const hoy = new Date()
-      hoy.setHours(0, 0, 0, 0)
-      const limite = visita.fecha_limite_cancelacion ? new Date(visita.fecha_limite_cancelacion) : null
-      if (limite && hoy > limite) {
-        toast.error('No puedes cancelar esta visita. El plazo de 3 días hábiles ya venció.')
+    setSaving(true)
+    try {
+      // Ownership + máquina de estados + ventana ahora server-side (RPC cancelar_visita, mig 211):
+      // valida que seas el dueño (o super_admin), que el estado sea cancelable y que estés dentro de la
+      // ventana de fecha_limite_cancelacion. La ventana ya NO se chequea client-side: la fuente única del
+      // texto de error es data.error de la RPC. Ya NO se decrementa visitas_usadas (contador legacy muerto);
+      // el saldo real es derivado por get_planes_visitador_proveedor (private.pvc_usadas).
+      const { data, error } = await supabase.rpc('cancelar_visita', { p_visita_id: id })
+      if (error) throw error                    // RAISE EXCEPTION server-side (ej. 'No autorizado...')
+      if (data?.error) {                         // jsonb {error:'Visita no encontrada'|'...fecha límite'|'...estado actual'}
+        toast.error(data.error)
         return false
       }
-    }
 
-    if (!confirm('¿Cancelar esta visita?')) return false
-    
-    const { error } = await supabase.from('visitas_agendadas').update({ estado: 'cancelada' }).eq('id', id)
-    if (error) {
-      toast.error('Error cancelando visita')
+      toast.success('Visita cancelada')
+      fetchVisitas()
+      fetchPlanesAsignados()                     // refrescar saldo DERIVADO (cancelar libera slot en pvc_usadas)
+      return true
+    } catch (err: any) {
+      // La RPC lanza RAISE EXCEPTION si no sos el dueño ni super_admin (mig 211).
+      const msg = typeof err?.message === 'string' && err.message.includes('No autorizado')
+        ? 'No tenés permiso para cancelar esta visita.'
+        : 'Error cancelando visita'
+      toast.error(msg)
+      console.error(err)
       return false
+    } finally {
+      setSaving(false)
     }
-
-    // Liberar visita_usada solo si era confirmada
-    if (visita.estado === 'confirmada') {
-      const planActivo = planesAsignados.find((a) => {
-        if (a.fecha_fin && new Date(a.fecha_fin) < new Date()) return false
-        return a.plan_configuracion?.plan_base?.tipo === 'visitador'
-      })
-      if (planActivo?.id && (planActivo.visitas_usadas || 0) > 0) {
-        await supabase.from('planes_asignaciones')
-          .update({ visitas_usadas: (planActivo.visitas_usadas || 0) - 1 })
-          .eq('id', planActivo.id)
-        fetchPlanesAsignados()
-      }
-    }
-
-    toast.success('Visita cancelada')
-    fetchVisitas()
-    return true
   }
 
   // Admin: aprobar, rechazar o modificar visita
