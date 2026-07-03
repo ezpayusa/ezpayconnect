@@ -17,6 +17,7 @@ import {
 import { Button } from '@/components/ui/button'
 import ClinicaNotificacionesDropdown from '@/clinica/layout/ClinicaNotificacionesDropdown'
 import { useTema } from '@/components/theme/TenantThemeContext'
+import { PoweredBy } from '@/components/branding/PoweredBy'
 
 export function ClinicaSidebar() {
   const navigate = useNavigate()
@@ -113,6 +114,7 @@ export function ClinicaSidebar() {
           <LogOut className="w-4 h-4 mr-2" />
           Cerrar Sesión
         </Button>
+        <PoweredBy className="pt-1" />
       </div>
     </aside>
   )
