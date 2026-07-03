@@ -32,13 +32,17 @@ export default function ProveedorLogin() {
     const { data: { user } } = await supabase.auth.getUser()
     const { data: cuenta } = await supabase
       .from('cuentas_proveedor')
-      .select('empresa:empresa_id(tipo)')
+      .select('rol_en_empresa, empresa:empresa_id(tipo)')
       .eq('id', user?.id)
       .maybeSingle()
     setLoading(false)
     toast.success('Bienvenido')
     const tipo = (cuenta as any)?.empresa?.tipo
-    if (tipo === 'laboratorio_clinico') {
+    const rol = (cuenta as any)?.rol_en_empresa
+    // El visitador de campo va a su PWA móvil (/visitador redirige a /visitador/agendar), no al panel desktop.
+    if (rol === 'visitador_medico') {
+      navigate('/visitador')
+    } else if (tipo === 'laboratorio_clinico') {
       navigate('/laboratorio/dashboard')
     } else if (tipo === 'farmacia') {
       navigate('/farmacia/dashboard')

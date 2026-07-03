@@ -1,13 +1,20 @@
 import { Outlet, useNavigate, useLocation } from 'react-router-dom'
-import { Stethoscope, WifiOff, CalendarPlus, ListChecks, Route as RouteIcon, Wallet } from 'lucide-react'
+import { Stethoscope, WifiOff, CalendarPlus, ListChecks, Route as RouteIcon, Wallet, LogOut } from 'lucide-react'
 import { useEffect, useState } from 'react'
+import { useProveedorAuth } from '@/proveedor/hooks/useProveedorAuth'
 
 // Shell móvil del visitador (PWA de campo): header compacto + outlet + nav inferior de 4 tabs
 // (Agendar / Visitas / Ruta / Planes). Molde: RepartidorLayout.
 export default function VisitadorLayout() {
   const navigate = useNavigate()
   const location = useLocation()
+  const { logout } = useProveedorAuth()
   const [online, setOnline] = useState(typeof navigator !== 'undefined' ? navigator.onLine : true)
+
+  const handleLogout = async () => {
+    await logout()
+    navigate('/proveedor/login', { replace: true })
+  }
 
   useEffect(() => {
     const on = () => setOnline(true)
@@ -42,11 +49,21 @@ export default function VisitadorLayout() {
         <div className="mx-auto w-full max-w-md px-4 py-3 flex items-center gap-2">
           <Stethoscope className="h-5 w-5" />
           <span className="font-semibold">Visitador</span>
-          {!online && (
-            <span className="ml-auto flex items-center gap-1 text-xs text-amber-200" title="Sin conexión">
-              <WifiOff className="h-4 w-4" /> Offline
-            </span>
-          )}
+          <div className="ml-auto flex items-center gap-3">
+            {!online && (
+              <span className="flex items-center gap-1 text-xs text-amber-200" title="Sin conexión">
+                <WifiOff className="h-4 w-4" /> Offline
+              </span>
+            )}
+            <button
+              type="button"
+              onClick={handleLogout}
+              className="flex items-center gap-1 text-xs text-white/80 hover:text-white"
+              title="Cerrar sesión"
+            >
+              <LogOut className="h-4 w-4" /> Salir
+            </button>
+          </div>
         </div>
       </header>
 
