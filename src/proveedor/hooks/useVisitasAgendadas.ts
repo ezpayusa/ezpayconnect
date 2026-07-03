@@ -325,36 +325,29 @@ export function useVisitasAgendadas() {
 
     setSaving(true)
     try {
-      let updateData: any = { comentario_admin: cambios?.comentario || null }
-      
-      if (accion === 'aprobar') {
-        updateData.estado = 'confirmada'
-        updateData.fecha_aprobacion = new Date().toISOString()
-      } else if (accion === 'rechazar') {
-        updateData.estado = 'rechazada'
-      } else if (accion === 'modificar') {
-        if (cambios?.fecha_visita) updateData.fecha_visita = cambios.fecha_visita
-        if (cambios?.hora_inicio) updateData.hora_inicio = cambios.hora_inicio
-        if (cambios?.hora_fin) updateData.hora_fin = cambios.hora_fin
-        updateData.estado = 'confirmada'
-        updateData.fecha_aprobacion = new Date().toISOString()
+      // Autorización + cambio de estado ahora server-side vía la RPC hardeneada (migs 075+210):
+      // revalida super_admin / (miembro de la empresa AND private.puede_aprobar_visitas) y aplica
+      // aprobar/rechazar/modificar atómicamente. Reemplaza el UPDATE directo previo. comentario_admin
+      // lo maneja la RPC con COALESCE (si p_comentario es null, preserva el previo en vez de borrarlo).
+      // Ya NO se incrementa planes_asignaciones.visitas_usadas (contador legacy roto): el saldo real
+      // es derivado por get_planes_visitador_proveedor (private.pvc_usadas).
+      const { data, error } = await supabase.rpc('administrar_visita', {
+        p_visita_id: id,
+        p_accion: accion,
+        p_nueva_fecha: cambios?.fecha_visita ?? null,
+        p_nueva_hora_inicio: cambios?.hora_inicio ?? null,
+        p_nueva_hora_fin: cambios?.hora_fin ?? null,
+        p_comentario: cambios?.comentario || null,
+      })
+      if (error) throw error                    // RAISE EXCEPTION server-side (ej. 'No autorizado...')
+      if (data?.error) {                         // jsonb {error:'Visita no encontrada'|'Acción no válida'}
+        toast.error(data.error)
+        return false
       }
 
-      const { error } = await supabase.from('visitas_agendadas').update(updateData).eq('id', id)
-      if (error) throw error
-
-      // Si aprueba o modifica, consumir visita del plan
+      // Refrescar el saldo DERIVADO de visitas tras aprobar/modificar (aprobar cambia pvc_usadas).
       if (accion === 'aprobar' || accion === 'modificar') {
-        const planActivo = planesAsignados.find((a) => {
-          if (a.fecha_fin && new Date(a.fecha_fin) < new Date()) return false
-          return a.plan_configuracion?.plan_base?.tipo === 'visitador'
-        })
-        if (planActivo?.id) {
-          await supabase.from('planes_asignaciones')
-            .update({ visitas_usadas: (planActivo.visitas_usadas || 0) + 1 })
-            .eq('id', planActivo.id)
-          fetchPlanesAsignados()
-        }
+        fetchPlanesAsignados()
       }
 
       // Notificar al visitador
@@ -413,7 +406,12 @@ export function useVisitasAgendadas() {
       fetchVisitas()
       return true
     } catch (err: any) {
-      toast.error('Error administrando visita')
+      // La RPC lanza RAISE EXCEPTION en el gate de autorización (mig 210): p.ej. un visitador
+      // sin permiso de aprobar que intente llegar acá queda bloqueado server-side.
+      const msg = typeof err?.message === 'string' && err.message.includes('No autorizado')
+        ? 'No tenés permiso para administrar esta visita.'
+        : 'Error administrando visita'
+      toast.error(msg)
       console.error(err)
       return false
     } finally {
