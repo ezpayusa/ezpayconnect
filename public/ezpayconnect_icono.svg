@@ -1,0 +1,23 @@
+<svg viewBox="0 0 240 240" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <linearGradient id="ezpayGradient" x1="0" y1="0" x2="240" y2="240" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#1857D6"/>
+      <stop offset="100%" stop-color="#12B7A0"/>
+    </linearGradient>
+  </defs>
+
+  <!-- Cruz redondeada (barra horizontal + vertical, mismo gradiente userSpaceOnUse para que no haya costura) -->
+  <rect x="20" y="90" width="200" height="60" rx="24" ry="24" fill="url(#ezpayGradient)"/>
+  <rect x="90" y="20" width="60" height="200" rx="24" ry="24" fill="url(#ezpayGradient)"/>
+
+  <!-- Pulso ECG en blanco, centrado en la barra horizontal -->
+  <polyline points="30,120 65,120 80,95 100,148 120,92 140,120 210,120"
+            fill="none" stroke="#ffffff" stroke-width="9"
+            stroke-linecap="round" stroke-linejoin="round"/>
+
+  <!-- Cuadritos decorativos, esquina superior derecha -->
+  <rect x="196" y="14" width="18" height="18" rx="4" fill="#1857D6"/>
+  <rect x="217" y="34" width="14" height="14" rx="3" fill="#2C6FE0"/>
+  <rect x="179" y="40" width="12" height="12" rx="3" fill="#1DBFA8"/>
+  <rect x="200" y="58" width="16" height="16" rx="4" fill="#12B7A0"/>
+</svg>
