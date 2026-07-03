@@ -477,3 +477,11 @@ verify_jwt = true   # JWT en gateway; el edge re-valida super_admin con getUser 
 [functions.exportar-csv]
 enabled = true
 verify_jwt = true   # JWT en gateway; el edge re-valida super_admin con getUser (exporta transacciones/audit_logs/perfiles)
+
+[functions.programar-recordatorio]
+enabled = true
+verify_jwt = true   # JWT en gateway; ownership-vía-RLS: el edge lee la cita/visita con cliente anon+JWT del caller (RLS por-actor) → 403 si no es suya. NO es super_admin (auth amplio: paciente/médico/clínica/proveedor).
+
+[functions.enviar-recordatorio]
+enabled = true
+verify_jwt = true   # JWT en gateway; ownership-vía-RLS: el edge lee la cita con cliente anon+JWT del caller (RLS por-actor) → 403 si no es suya. NO es super_admin (auth amplio médico/paciente/clínica).

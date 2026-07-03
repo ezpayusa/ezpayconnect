@@ -27,6 +27,36 @@ serve(async (req) => {
       throw new Error('Faltan campos requeridos: cita_id, tipo_recordatorio')
     }
 
+    // GATE DE OWNERSHIP — auth amplio (médico/paciente/clínica), NO super_admin. Se lee la cita con un
+    // cliente ANON + JWT del caller: la RLS por-actor de citas ya resuelve "¿es suya?". Si no devuelve
+    // fila (RLS la bloqueó o no existe) → 403. Después se usa el service_role (arriba) para derivar e insertar.
+    const supabaseAnonKey = Deno.env.get('SB_ANON_KEY') || Deno.env.get('SUPABASE_ANON_KEY') || ''
+    const authHeader = req.headers.get('Authorization') || ''
+    if (!authHeader) {
+      return new Response(
+        JSON.stringify({ success: false, error: 'Falta Authorization' }),
+        { headers: { ...corsHeaders, 'Content-Type': 'application/json' }, status: 401 }
+      )
+    }
+    const userClient = createClient(supabaseUrl, supabaseAnonKey, {
+      global: { headers: { Authorization: authHeader } },
+      auth: { persistSession: false },
+    })
+    const { data: { user }, error: userErr } = await userClient.auth.getUser()
+    if (userErr || !user) {
+      return new Response(
+        JSON.stringify({ success: false, error: 'JWT inválido' }),
+        { headers: { ...corsHeaders, 'Content-Type': 'application/json' }, status: 401 }
+      )
+    }
+    const { data: citaOwn } = await userClient.from('citas').select('id').eq('id', cita_id).maybeSingle()
+    if (!citaOwn) {
+      return new Response(
+        JSON.stringify({ success: false, error: 'No autorizado sobre esta cita' }),
+        { headers: { ...corsHeaders, 'Content-Type': 'application/json' }, status: 403 }
+      )
+    }
+
     const { data: cita, error: citaError } = await supabase
       .from('citas')
       .select('*, paciente:pacientes(nombre, telefono, email), medico:perfiles(nombre)')

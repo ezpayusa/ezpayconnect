@@ -22,7 +22,9 @@ serve(async (req) => {
     const body = await req.json()
     console.log('[programar-recordatorio] Body recibido:', JSON.stringify(body))
     
-    const { tipo, referencia_id, horas_antes = 24, destinatario_email } = body
+    // destinatario_email del body se IGNORA a propósito: el email SIEMPRE se deriva server-side de la
+    // fila (paciente/visitador). Evita que un caller mande el recordatorio a un email arbitrario.
+    const { tipo, referencia_id, horas_antes = 24 } = body
 
     if (!tipo || !referencia_id) {
       console.error('[programar-recordatorio] Faltan campos:', { tipo, referencia_id })
@@ -39,11 +41,43 @@ serve(async (req) => {
       )
     }
 
+    // GATE DE OWNERSHIP — auth amplio (paciente/médico/clínica/proveedor), NO super_admin. En vez de un
+    // helper nuevo, se lee la fila referenciada con un cliente ANON + JWT del caller: la RLS por-actor de
+    // citas/visitas_agendadas ya resuelve "¿es suya?". Si la lectura no devuelve fila (RLS la bloqueó o no
+    // existe) → 403. Recién después se usa el service_role (arriba) para derivar datos e insertar.
+    const supabaseAnonKey = Deno.env.get('SB_ANON_KEY') || Deno.env.get('SUPABASE_ANON_KEY') || ''
+    const authHeader = req.headers.get('Authorization') || ''
+    if (!authHeader) {
+      return new Response(
+        JSON.stringify({ error: 'Falta Authorization' }),
+        { status: 401, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+      )
+    }
+    const userClient = createClient(supabaseUrl, supabaseAnonKey, {
+      global: { headers: { Authorization: authHeader } },
+      auth: { persistSession: false },
+    })
+    const { data: { user }, error: userErr } = await userClient.auth.getUser()
+    if (userErr || !user) {
+      return new Response(
+        JSON.stringify({ error: 'JWT inválido' }),
+        { status: 401, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+      )
+    }
+    const tablaRef = tipo === 'cita' ? 'citas' : 'visitas_agendadas'
+    const { data: filaOwn } = await userClient.from(tablaRef).select('id').eq('id', referencia_id).maybeSingle()
+    if (!filaOwn) {
+      return new Response(
+        JSON.stringify({ error: 'No autorizado sobre esta cita/visita' }),
+        { status: 403, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+      )
+    }
+
     let cita_id: number | null = null
     let visita_id: string | null = null
     let fecha_envio_programada: string
     let mensaje: string
-    let emailDestinatario: string | null = destinatario_email || null
+    let emailDestinatario: string | null = null
     let telefonoDestinatario: string | null = null
 
     if (tipo === 'cita') {
