@@ -33,7 +33,7 @@ function convertToCSV(data: any[], tipo: string): string {
       rows = data.map(r => [
         r.id,
         r.fecha,
-        r.hora,
+        r.hora_inicio,
         r.paciente?.nombre || 'N/A',
         r.paciente?.telefono || 'N/A',
         r.medico?.nombre || 'N/A',
@@ -212,7 +212,9 @@ serve(async (req) => {
         titulo = 'Reporte de Citas'
         query = supabase
           .from('citas')
-          .select('*, paciente:pacientes(nombre, telefono), medico:perfiles!citas_medico_id_fkey(nombre)')
+          // citas NO tiene FK a pacientes (embed imposible → se adjunta por query separada abajo).
+          // medico_id → medicos (FK fk_citas_medico), NO perfiles; alias nombre:nombre_completo para el CSV.
+          .select('*, medico:medicos!fk_citas_medico(nombre:nombre_completo)')
           .order('fecha', { ascending: false })
           .limit(1000)
         break
@@ -310,6 +312,17 @@ serve(async (req) => {
     const { data: result, error } = await query
     if (error) throw error
     data = result || []
+
+    // FIX embed roto: citas no tiene FK a pacientes → se derivan por query separada y se adjuntan como
+    // r.paciente (nombre/telefono) para el CSV. medico ya viene por el embed a medicos (alias nombre).
+    if (tipo === 'citas' && data.length) {
+      const pacIds = [...new Set(data.map((c: any) => c.paciente_id).filter(Boolean))]
+      if (pacIds.length) {
+        const { data: pacs } = await supabase.from('pacientes').select('id, nombre, telefono').in('id', pacIds)
+        const pacMap = new Map((pacs || []).map((p: any) => [p.id, p]))
+        data = data.map((c: any) => ({ ...c, paciente: pacMap.get(c.paciente_id) || null }))
+      }
+    }
 
     const csv = convertToCSV(data, tipo)
 

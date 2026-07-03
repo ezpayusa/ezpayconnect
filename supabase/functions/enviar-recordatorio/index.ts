@@ -59,18 +59,19 @@ serve(async (req) => {
 
     const { data: cita, error: citaError } = await supabase
       .from('citas')
-      .select('*, paciente:pacientes(nombre, telefono, email), medico:perfiles(nombre)')
+      // FIX embed roto: medico_id → medicos (FK fk_citas_medico), NO perfiles. pacientes no tiene FK → se busca aparte.
+      .select('*, medico:medicos(nombre_completo)')
       .eq('id', cita_id)
       .single()
 
     if (citaError || !cita) throw new Error('Cita no encontrada')
 
-    const paciente = cita.paciente
+    const { data: paciente } = await supabase.from('pacientes').select('nombre, telefono, email').eq('id', cita.paciente_id).maybeSingle()
     const medico = cita.medico
-    const mensajeDefault = `Hola ${paciente?.nombre || 'Paciente'}, le recordamos su cita medica el ${cita.fecha} a las ${cita.hora} con el Dr. ${medico?.nombre || 'Medico'}. EzPayConnect`
+    const mensajeDefault = `Hola ${paciente?.nombre || 'Paciente'}, le recordamos su cita medica el ${cita.fecha} a las ${cita.hora_inicio} con el Dr. ${medico?.nombre_completo || 'Medico'}. EzPayConnect`
     const mensaje = mensaje_personalizado || mensajeDefault
 
-    const fechaCita = new Date(`${cita.fecha}T${cita.hora || '00:00:00'}`)
+    const fechaCita = new Date(`${cita.fecha}T${cita.hora_inicio || '00:00:00'}`)
     const fechaEnvio = new Date(fechaCita.getTime() - 24 * 60 * 60 * 1000)
 
     const { data: recordatorio, error: recordatorioError } = await supabase
