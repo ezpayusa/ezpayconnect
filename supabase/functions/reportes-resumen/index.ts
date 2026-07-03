@@ -21,6 +21,24 @@ serve(async (req) => {
 
     const supabase = createClient(supabaseUrl, supabaseServiceKey)
 
+    // GATE DE AUTORIZACIÓN — solo super_admin. Esta función usa service_role (bypass RLS) sin validar
+    // al caller (mismo patrón que reportes-ezpay): se valida el JWT con un cliente anon (getUser) y el
+    // rol se lee con el admin client.
+    const supabaseAnonKey = Deno.env.get('SB_ANON_KEY') || Deno.env.get('SUPABASE_ANON_KEY') || ''
+    const authHeader = req.headers.get('Authorization') || ''
+    if (!authHeader) {
+      return new Response(JSON.stringify({ success: false, error: 'Falta Authorization' }), { headers: { ...corsHeaders, 'Content-Type': 'application/json' }, status: 401 })
+    }
+    const userClient = createClient(supabaseUrl, supabaseAnonKey, { global: { headers: { Authorization: authHeader } }, auth: { persistSession: false } })
+    const { data: { user }, error: userErr } = await userClient.auth.getUser()
+    if (userErr || !user) {
+      return new Response(JSON.stringify({ success: false, error: 'JWT inválido' }), { headers: { ...corsHeaders, 'Content-Type': 'application/json' }, status: 401 })
+    }
+    const { data: perfilCaller } = await supabase.from('perfiles').select('rol').eq('id', user.id).maybeSingle()
+    if (!perfilCaller || perfilCaller.rol !== 'super_admin') {
+      return new Response(JSON.stringify({ success: false, error: 'No autorizado: sólo super_admin' }), { headers: { ...corsHeaders, 'Content-Type': 'application/json' }, status: 403 })
+    }
+
     const url = new URL(req.url)
     const mes = url.searchParams.get('mes') // YYYY-MM o 'current'
     const medicoId = url.searchParams.get('medico_id')

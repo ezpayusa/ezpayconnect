@@ -461,3 +461,19 @@ verify_jwt = true   # JWT en gateway; el edge re-valida super_admin con getUser 
 [functions.listar-empleados]
 enabled = true
 verify_jwt = true   # JWT en gateway; el edge re-valida super_admin con getUser (usa service_role, bypass RLS)
+
+[functions.actualizar-configuracion]
+enabled = true
+verify_jwt = true   # JWT en gateway; el edge re-valida super_admin con getUser (usa service_role para escribir config)
+
+[functions.reportes-resumen]
+enabled = true
+verify_jwt = true   # JWT en gateway; el edge re-valida super_admin con getUser (usa service_role, bypass RLS)
+
+[functions.reportes-detalle]
+enabled = true
+verify_jwt = true   # JWT en gateway; el edge re-valida super_admin con getUser (usa service_role, bypass RLS)
+
+[functions.exportar-csv]
+enabled = true
+verify_jwt = true   # JWT en gateway; el edge re-valida super_admin con getUser (exporta transacciones/audit_logs/perfiles)
