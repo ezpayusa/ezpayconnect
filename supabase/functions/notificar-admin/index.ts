@@ -58,6 +58,44 @@ serve(async (req) => {
   try {
     const supabase = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY);
 
+    // GATE DUAL — esta función usa service_role (bypass RLS) sin validar al caller. Dos caminos de autz:
+    //  (1) INTERNO server-to-server (crear-empleado edge→edge): secreto compartido x-internal-secret.
+    //  (2) FRONT (useVentas, super_admin): JWT del caller (getUser) + rol super_admin (molde reportes-ezpay).
+    // Se prueba PRIMERO el secreto; si no matchea, se exige el JWT. verify_jwt=false en el gateway (el
+    // camino interno no lleva JWT válido) → la función hace toda la autz. Sin secreto configurado, el
+    // camino interno nunca matchea y solo pasa el front super_admin (safe-default).
+    const internalSecret = Deno.env.get("INTERNAL_NOTIF_SECRET");
+    const esLlamadaInterna = !!internalSecret && req.headers.get("x-internal-secret") === internalSecret;
+
+    if (!esLlamadaInterna) {
+      const anonKey = Deno.env.get("SB_ANON_KEY") || Deno.env.get("SUPABASE_ANON_KEY") || "";
+      const authHeader = req.headers.get("Authorization") || "";
+      if (!authHeader) {
+        return new Response(
+          JSON.stringify({ error: "Falta Authorization" }),
+          { status: 401, headers: { "Content-Type": "application/json", "Access-Control-Allow-Origin": "*" } }
+        );
+      }
+      const userClient = createClient(SUPABASE_URL, anonKey, {
+        global: { headers: { Authorization: authHeader } },
+        auth: { persistSession: false },
+      });
+      const { data: { user }, error: userErr } = await userClient.auth.getUser();
+      if (userErr || !user) {
+        return new Response(
+          JSON.stringify({ error: "JWT inválido" }),
+          { status: 401, headers: { "Content-Type": "application/json", "Access-Control-Allow-Origin": "*" } }
+        );
+      }
+      const { data: perfilCaller } = await supabase.from("perfiles").select("rol").eq("id", user.id).maybeSingle();
+      if (!perfilCaller || perfilCaller.rol !== "super_admin") {
+        return new Response(
+          JSON.stringify({ error: "No autorizado: sólo super_admin" }),
+          { status: 403, headers: { "Content-Type": "application/json", "Access-Control-Allow-Origin": "*" } }
+        );
+      }
+    }
+
     const body = await req.json();
     const { tipo, titulo, mensaje, metadata = {}, accion_url = null } = body;
 

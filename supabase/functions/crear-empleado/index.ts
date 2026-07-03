@@ -165,13 +165,15 @@ serve(async (req) => {
     // 9. NOTIFICAR ADMIN - Nuevo empleado registrado
     try {
       const supabaseUrl = (Deno.env.get('SB_URL') || Deno.env.get('SUPABASE_URL')) ?? ''
-      const serviceRoleKey = (Deno.env.get('SB_SERVICE_ROLE_KEY') || Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')) ?? ''
-      
+      // Llamada edge→edge autorizada por secreto compartido (x-internal-secret), NO por bearer service_role
+      // (notificar-admin ahora es verify_jwt=false + gate dual: secreto interno O JWT super_admin del front).
+      const internalSecret = (Deno.env.get('INTERNAL_NOTIF_SECRET')) ?? ''
+
       await fetch(`${supabaseUrl}/functions/v1/notificar-admin`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
-          'Authorization': `Bearer ${serviceRoleKey}`,
+          'x-internal-secret': internalSecret,
         },
         body: JSON.stringify({
           tipo: 'empleado',

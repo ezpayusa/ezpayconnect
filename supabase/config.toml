@@ -493,3 +493,7 @@ verify_jwt = true   # JWT en gateway; authenticated (cualquier rol) + identidad 
 [functions.notificar-email]
 enabled = true
 verify_jwt = false   # la llaman las RPCs de visita vía pg_net (server-to-server), no un usuario; autz = secreto compartido x-email-secret. Recibe {visita_id,tipo}, re-deriva to/contenido (mig 224).
+
+[functions.notificar-admin]
+enabled = true
+verify_jwt = false   # gate DUAL en la función: x-internal-secret (edge→edge crear-empleado) O JWT+super_admin (front useVentas). verify_jwt=false porque el camino interno no lleva JWT válido → la función hace toda la autz.
