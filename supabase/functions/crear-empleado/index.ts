@@ -51,7 +51,7 @@ serve(async (req) => {
     }
 
     // 2. Get request body
-    const { email, password, nombre_completo, nombre, rol_id, asignado_por } = await req.json()
+    const { email, password, nombre_completo, nombre, rol_id, asignado_por, pais_id } = await req.json()
 
     // 3. Validate required fields
     if (!email || !password || !nombre_completo || !rol_id) {
@@ -61,7 +61,32 @@ serve(async (req) => {
       )
     }
 
-    // 4. Create user in Auth with admin privileges (bypasses email confirmation)
+    // 4. Resolve role name FIRST — antes de crear el auth user, para poder validar sin rollback.
+    //    (Antes esto ocurría después de createUser y requería deleteUser; moverlo acá lo elimina.)
+    const { data: rolData, error: rolError } = await supabaseAdmin
+      .from('roles')
+      .select('nombre')
+      .eq('id', rol_id)
+      .single()
+
+    if (rolError) {
+      // Nada creado aún → sin rollback.
+      return new Response(
+        JSON.stringify({ success: false, error: 'Rol no encontrado.' }),
+        { headers: { ...corsHeaders, 'Content-Type': 'application/json' }, status: 400 }
+      )
+    }
+
+    // 4b. admin_pais EXIGE pais_id — validado ANTES de auth.createUser para no tener que revertir.
+    //     El CHECK admin_pais_requiere_pais (mig 216) lo exige a nivel BD; acá se corta antes.
+    if (rolData.nombre === 'admin_pais' && !pais_id) {
+      return new Response(
+        JSON.stringify({ success: false, error: 'admin_pais requiere pais_id' }),
+        { headers: { ...corsHeaders, 'Content-Type': 'application/json' }, status: 400 }
+      )
+    }
+
+    // 5. Create user in Auth with admin privileges (bypasses email confirmation)
     const { data: authData, error: authError } = await supabaseAdmin.auth.admin.createUser({
       email,
       password,
@@ -80,23 +105,8 @@ serve(async (req) => {
 
     const userId = authData.user.id
 
-    // 5. Get role name
-    const { data: rolData, error: rolError } = await supabaseAdmin
-      .from('roles')
-      .select('nombre')
-      .eq('id', rol_id)
-      .single()
-
-    if (rolError) {
-      // Rollback: delete auth user if role not found
-      await supabaseAdmin.auth.admin.deleteUser(userId)
-      return new Response(
-        JSON.stringify({ success: false, error: 'Rol no encontrado. Usuario revertido.' }),
-        { headers: { ...corsHeaders, 'Content-Type': 'application/json' }, status: 400 }
-      )
-    }
-
-    // 6. Insert profile in perfiles table
+    // 6. Insert profile in perfiles table. Solo admin_pais recibe pais_id (los demás roles → null,
+    //    como hasta hoy: evita scopear a un admin/gerente a un país sin querer).
     const { error: perfilError } = await supabaseAdmin
       .from('perfiles')
       .insert({
@@ -105,6 +115,7 @@ serve(async (req) => {
         nombre_completo,
         nombre: nombre || nombre_completo,
         rol: rolData.nombre,
+        pais_id: rolData.nombre === 'admin_pais' ? pais_id : null,
         activo: true,
       })
 
