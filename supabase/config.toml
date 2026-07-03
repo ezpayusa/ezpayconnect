@@ -424,7 +424,7 @@ verify_jwt = true
 
 [functions.procesar-recordatorios]
 enabled = true
-verify_jwt = false
+verify_jwt = false   # la dispara un cron/scheduler (server-to-server), no un usuario; autz = secreto compartido x-cron-secret (env CRON_SECRET), mismo molde que enviar-push-notificacion/notificar-email.
 
 [functions.enviar-push-campana]
 enabled = true
