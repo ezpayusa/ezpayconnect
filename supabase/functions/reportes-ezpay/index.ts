@@ -38,9 +38,22 @@ serve(async (req) => {
     if (userErr || !user) {
       return new Response(JSON.stringify({ error: 'JWT inválido' }), { headers: { ...corsHeaders, 'Content-Type': 'application/json' }, status: 401 })
     }
-    const { data: perfil } = await supabase.from('perfiles').select('rol').eq('id', user.id).maybeSingle()
-    if (!perfil || perfil.rol !== 'super_admin') {
-      return new Response(JSON.stringify({ error: 'No autorizado: sólo super_admin' }), { headers: { ...corsHeaders, 'Content-Type': 'application/json' }, status: 403 })
+    const { data: perfil } = await supabase.from('perfiles').select('rol, pais_id').eq('id', user.id).maybeSingle()
+    // Autorización POR PAÍS: super_admin ve TODO (global, comportamiento intacto); admin_pais ve SOLO
+    // su país (filtro aplicado abajo en la query de transacciones). Cualquier otro rol → 403. Un
+    // admin_pais sin pais_id es imposible (CHECK admin_pais_requiere_pais, mig 216) pero se rechaza
+    // defensivo (fail-closed: no dejamos pasar sin país, evitaría ver todo).
+    const esSuperAdmin = perfil?.rol === 'super_admin'
+    const esAdminPais = perfil?.rol === 'admin_pais'
+    if (!esSuperAdmin && !esAdminPais) {
+      return new Response(JSON.stringify({ error: 'No autorizado: sólo super_admin o admin_pais' }), { headers: { ...corsHeaders, 'Content-Type': 'application/json' }, status: 403 })
+    }
+    let paisIdCaller: string | null = null
+    if (esAdminPais) {
+      paisIdCaller = perfil?.pais_id ?? null
+      if (!paisIdCaller) {
+        return new Response(JSON.stringify({ error: 'admin_pais sin país asignado' }), { headers: { ...corsHeaders, 'Content-Type': 'application/json' }, status: 403 })
+      }
     }
 
     const { periodo, tabActiva, fechaInicio } = await req.json()
@@ -105,6 +118,13 @@ serve(async (req) => {
 
     if (planIdsFiltrados) {
       query = query.in('plan_id', planIdsFiltrados)
+    }
+
+    // admin_pais: acota las transacciones a su propio país. super_admin: paisIdCaller es null → sin
+    // filtro, ve todos los países (comportamiento actual intacto). El resto de la agregación no cambia:
+    // como paisesReporte se arma iterando transData, un admin_pais termina con un solo país.
+    if (paisIdCaller) {
+      query = query.eq('pais_id', paisIdCaller)
     }
 
     const { data: transData, error: errTrans } = await query
