@@ -4,7 +4,8 @@ import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
-import { MapPin, Mail, Phone, Briefcase, User, Save, X, Pencil } from 'lucide-react'
+import { MapPin, Mail, Phone, Briefcase, User, Save, X, Pencil, Palette } from 'lucide-react'
+import { FormPersonalizacion } from '@/components/personalizacion/FormPersonalizacion'
 
 export default function ProveedorPerfilPage() {
   const { empresa, cuenta, actualizarEmpresa, actualizarCuenta, isEditor } = useProveedorAuth()
@@ -235,6 +236,18 @@ export default function ProveedorPerfilPage() {
               </div>
             </>
           )}
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardHeader className="pb-3">
+          <CardTitle className="text-lg flex items-center gap-2">
+            <Palette className="h-5 w-5 text-[#1E5C8E]" /> Personalización
+          </CardTitle>
+          <p className="text-sm text-muted-foreground">Logo y colores del panel. Se aplican tras la aprobación de un administrador.</p>
+        </CardHeader>
+        <CardContent>
+          <FormPersonalizacion tenantTipo="empresa_proveedora" tenantId={empresa?.id} actual={empresa ?? null} />
         </CardContent>
       </Card>
     </div>
