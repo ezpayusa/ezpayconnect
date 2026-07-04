@@ -8,6 +8,11 @@
   /* Token faltante: sin él, bg-destructive quedaba transparente → botones/badges "destructive"
      (variant bg-destructive text-white) salían texto blanco sobre fondo blanco = invisibles. */
   --color-destructive: hsl(0 72% 51%);
+  /* Mismo bug: primary/input tampoco estaban definidos → Switch (track), botones/tabs/badges bg-primary,
+     y bordes de form controls (border-input) salían transparentes/degradados. Valores de marca. */
+  --color-primary: #1E5C8E;
+  --color-primary-foreground: #ffffff;
+  --color-input: hsl(214 32% 91%);
 }
 
 @layer base {
