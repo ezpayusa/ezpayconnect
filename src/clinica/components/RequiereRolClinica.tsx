@@ -25,7 +25,9 @@ export function RequiereRolClinica({ roles, children }: { roles: string[]; child
   }
 
   if (!roles.includes(perfil?.rol || '')) {
-    return <Navigate to="/clinica/admision" replace />
+    // Fallback UNIVERSAL: el calendario lo pueden ver los 7 roles del panel (incl. secretaria),
+    // así evita el loop de un rol que cae en una página administrativa que no le corresponde.
+    return <Navigate to="/clinica/calendario" replace />
   }
 
   return <>{children}</>

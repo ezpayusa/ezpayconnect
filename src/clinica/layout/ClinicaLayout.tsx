@@ -8,7 +8,7 @@ import { Loader2 } from 'lucide-react'
 // entran pero quedan confinados a Admisión por el sidebar (filtro por rol) y el gate por página
 // <RequiereRolClinica> en App.tsx. El gate fino de cada superficie administrativa es defensa en
 // profundidad: el backend ya está cerrado por rol (mig 163).
-const ROLES_PERMITIDOS = ['admin_clinica', 'admin', 'super_admin', 'gerente', 'asistente_medico', 'enfermeria']
+const ROLES_PERMITIDOS = ['admin_clinica', 'admin', 'super_admin', 'gerente', 'asistente_medico', 'enfermeria', 'secretaria']
 
 export function ClinicaLayout() {
   const { user, perfil, loading } = useAuth()

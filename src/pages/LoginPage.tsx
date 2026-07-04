@@ -68,6 +68,9 @@ export default function LoginPage() {
             } else {
               navigate('/admin-ezpay')
             }
+          } else if (profile?.rol === 'secretaria') {
+            // La secretaria solo opera el calendario → entra directo (su única superficie).
+            navigate('/clinica/calendario')
           } else {
             navigate('/dashboard')
           }

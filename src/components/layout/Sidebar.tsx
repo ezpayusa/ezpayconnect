@@ -32,6 +32,7 @@ export function Sidebar() {
     if (userRol === 'admin_clinica') {
       return [
         { label: 'Mi Clínica', icon: LayoutDashboard, path: '/clinica', roles: ['admin_clinica'] },
+        { label: 'Calendario', icon: CalendarDays, path: '/clinica/calendario', roles: ['admin_clinica'] },
         { label: 'Personal', icon: Users, path: '/clinica/personal', roles: ['admin_clinica'] },
       ]
     }
