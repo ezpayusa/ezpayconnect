@@ -13,6 +13,21 @@
   --color-primary: #1E5C8E;
   --color-primary-foreground: #ffffff;
   --color-input: hsl(214 32% 91%);
+  /* Resto de tokens del design system (misma clase de bug: sin definir → utilities degradados).
+     ring = azul de marca (los utilities aplican /50 → foco suave). Grises neutros para muted/accent/
+     secondary; blanco para popover/card; hsl(222 47% 11%) = "foreground oscuro" consistente.
+     Los 5 sidebar-* NO se definen: ui/sidebar.tsx no tiene importadores (código muerto). */
+  --color-ring: #1E5C8E;
+  --color-muted: hsl(210 20% 96%);
+  --color-muted-foreground: hsl(215 16% 47%);
+  --color-accent: hsl(210 20% 94%);
+  --color-accent-foreground: hsl(222 47% 11%);
+  --color-secondary: hsl(214 20% 93%);
+  --color-secondary-foreground: hsl(222 47% 11%);
+  --color-popover: #ffffff;
+  --color-popover-foreground: hsl(222 47% 11%);
+  --color-card: #ffffff;
+  --color-card-foreground: hsl(222 47% 11%);
 }
 
 @layer base {
