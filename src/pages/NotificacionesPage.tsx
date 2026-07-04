@@ -36,7 +36,7 @@ export default function NotificacionesPage() {
     listarNotificaciones,
     marcarLeida,
     marcarTodasLeidas,
-  } = useNotificaciones();
+  } = useNotificaciones({ realtime: true });
 
   const [filtroTipo, setFiltroTipo] = useState("");
 

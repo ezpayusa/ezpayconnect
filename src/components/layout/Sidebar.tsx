@@ -21,7 +21,7 @@ export function Sidebar() {
   const navigate = useNavigate()
   const location = useLocation()
   const { logout, perfil, isAdmin, isMedico, isAsistente } = useAuth()
-  const { noLeidas } = useNotificaciones()
+  const { noLeidas } = useNotificaciones({ realtime: true })
 
   // Normalizar rol para comparación
   const userRol = (perfil?.rol || '').toLowerCase().trim()

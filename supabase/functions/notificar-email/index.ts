@@ -15,7 +15,7 @@ const corsHeaders = {
 }
 const json = (b: unknown, s = 200) => new Response(JSON.stringify(b), { status: s, headers: { ...corsHeaders, 'Content-Type': 'application/json' } })
 
-const TIPOS = new Set(['propuesta', 'aprobada', 'rechazada'])
+const TIPOS = new Set(['propuesta', 'aprobada', 'rechazada', 'aprobada_clinica', 'cancelada_clinica'])
 
 // --- Plantillas portadas TAL CUAL de src/proveedor/lib/notificaciones.ts (misma interpolación).
 //     Única adaptación: VITE_APP_URL (var de build del front) → APP_URL (env de la function). ---
@@ -63,6 +63,29 @@ function buildHtmlVisitaRechazada(props: { medicoNombre: string; fecha: string; 
   `
 }
 
+// --- Notificación al lado CLÍNICA/MÉDICO (destinatario del médico visitado). PHI mínimo: sin datos de paciente. ---
+function buildHtmlVisitaClinicaAprobada(props: { medicoNombre: string; empresaNom: string; fecha: string; hora: string }): string {
+  return `
+    <div style="font-family:sans-serif;max-width:480px;margin:0 auto;padding:24px;border:1px solid #e5e7eb;border-radius:8px;">
+      <h2 style="color:#16a34a;margin-top:0;">Visita de laboratorio aprobada</h2>
+      <p>Se aprobó una visita de <strong>${props.empresaNom}</strong> con <strong>${props.medicoNombre}</strong>.</p>
+      <p><strong>Fecha:</strong> ${props.fecha}</p>
+      <p><strong>Hora:</strong> ${props.hora}</p>
+    </div>
+  `
+}
+
+function buildHtmlVisitaClinicaCancelada(props: { medicoNombre: string; empresaNom: string; fecha: string; hora: string }): string {
+  return `
+    <div style="font-family:sans-serif;max-width:480px;margin:0 auto;padding:24px;border:1px solid #e5e7eb;border-radius:8px;">
+      <h2 style="color:#dc2626;margin-top:0;">Visita de laboratorio cancelada</h2>
+      <p>Se canceló la visita de <strong>${props.empresaNom}</strong> con <strong>${props.medicoNombre}</strong>.</p>
+      <p><strong>Fecha:</strong> ${props.fecha}</p>
+      <p><strong>Hora:</strong> ${props.hora}</p>
+    </div>
+  `
+}
+
 serve(async (req) => {
   if (req.method === 'OPTIONS') return new Response('ok', { headers: corsHeaders })
 
@@ -93,6 +116,41 @@ serve(async (req) => {
     const { data: medico } = await supabase.from('perfiles').select('nombre_completo').eq('id', visita.medico_id).maybeSingle()
     const medicoNombre = medico?.nombre_completo || 'Médico'
     const hora = `${visita.hora_inicio} - ${visita.hora_fin}`
+
+    // (3b) NOTIF A CLÍNICA/MÉDICO — fan-out. Destinatarios = fuente ÚNICA public.destinatarios_visita_clinica
+    //      (staff secretaria/asistente_medico de la clínica principal, o el médico como fallback). Re-derivado
+    //      server-side del visita_id; el caller no aporta destinatarios. Retorna acá (no toca el flujo de abajo).
+    if (tipo === 'aprobada_clinica' || tipo === 'cancelada_clinica') {
+      const { data: dests } = await supabase.rpc('destinatarios_visita_clinica', { p_visita_id: visitaId })
+      const recipients = (dests || []).filter((d: any) => d?.email)
+      if (!recipients.length) return json({ success: true, enviados: 0, motivo: 'sin destinatarios con email' })
+      const { data: empresa } = await supabase.from('empresas_proveedoras').select('nombre_empresa').eq('id', visita.empresa_id).maybeSingle()
+      const empresaNom = empresa?.nombre_empresa || 'un laboratorio'
+      const esAprob = tipo === 'aprobada_clinica'
+      const subject = `${esAprob ? 'Visita de laboratorio aprobada' : 'Visita de laboratorio cancelada'} - ${medicoNombre}`
+      const html = esAprob
+        ? buildHtmlVisitaClinicaAprobada({ medicoNombre, empresaNom, fecha: visita.fecha_visita || '', hora })
+        : buildHtmlVisitaClinicaCancelada({ medicoNombre, empresaNom, fecha: visita.fecha_visita || '', hora })
+      const resendKey = Deno.env.get('RESEND_API_KEY')
+      if (!resendKey) return json({ error: 'Servicio de email no configurado' }, 500)
+      let enviados = 0, fallidos = 0
+      for (const r of recipients) {
+        const res = await fetch('https://api.resend.com/emails', {
+          method: 'POST',
+          headers: { 'Authorization': `Bearer ${resendKey}`, 'Content-Type': 'application/json' },
+          body: JSON.stringify({ from: 'EzPayConnect <no-reply@ezpayconnect.com>', to: r.email, subject, html }),
+        })
+        const rdata = await res.json()
+        await supabase.from('notificaciones_email').insert({
+          destinatario: r.email, asunto: subject, tipo: `visita_${tipo}`,
+          estado: res.ok ? 'enviado' : 'fallido', error: res.ok ? null : (rdata?.message || JSON.stringify(rdata)),
+          proveedor_id: null, visita_id: visitaId,
+        })
+        if (res.ok) enviados++; else fallidos++
+      }
+      console.log(`[notificar-email] ${tipo} | enviados ${enviados} | fallidos ${fallidos}`)
+      return json({ success: true, enviados, fallidos })
+    }
 
     // (4) Destinatario + subject + html, mismo mapeo que hacía el front.
     let to: string | null = null

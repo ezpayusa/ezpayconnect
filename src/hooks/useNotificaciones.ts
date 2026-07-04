@@ -1,5 +1,8 @@
-import { useState, useCallback } from "react";
+import { useState, useCallback, useEffect } from "react";
 import { supabase } from "@/lib/supabase";
+
+// Topic único por instancia para no colisionar si el hook se monta más de una vez.
+let channelSeq = 0;
 
 export interface Notificacion {
   id: string;
@@ -13,7 +16,7 @@ export interface Notificacion {
   created_at: string;
 }
 
-export function useNotificaciones() {
+export function useNotificaciones(opts?: { realtime?: boolean }) {
   const [notificaciones, setNotificaciones] = useState<Notificacion[]>([]);
   const [noLeidas, setNoLeidas] = useState(0);
   const [loading, setLoading] = useState(false);
@@ -93,6 +96,36 @@ export function useNotificaciones() {
 
   // crearNotificacion eliminado (CIERRE FINAL push-tx, bloque 3): helper muerto que hacía fetch a la edge
   // enviar-notificacion (ahora stub-410). Las notifs in-app se crean por RPCs DEFINER gateados.
+
+  // Realtime OPT-IN (default OFF). Solo se suscribe si opts.realtime === true → paneles que llaman
+  // useNotificaciones() sin flag (farmacia/lab/proveedor) NO cambian de comportamiento. Mismo patrón que
+  // useClinicaNotificaciones: nueva notificación (INSERT filtrado por usuario_id) aparece sin recargar.
+  useEffect(() => {
+    if (!opts?.realtime) return;
+    let cancelled = false;
+    let channel: ReturnType<typeof supabase.channel> | null = null;
+    (async () => {
+      const { data: { user } } = await supabase.auth.getUser();
+      if (!user || cancelled) return;
+      const topic = `notif_rt_${user.id}_${++channelSeq}`;
+      channel = supabase
+        .channel(topic)
+        .on(
+          "postgres_changes",
+          { event: "INSERT", schema: "public", table: "notificaciones", filter: `usuario_id=eq.${user.id}` },
+          (payload) => {
+            const nuevo = payload.new as Notificacion;
+            setNotificaciones((prev) => (prev.some((n) => n.id === nuevo.id) ? prev : [nuevo, ...prev]));
+            setNoLeidas((prev) => prev + 1);
+          }
+        )
+        .subscribe();
+    })();
+    return () => {
+      cancelled = true;
+      if (channel) supabase.removeChannel(channel).catch(() => {});
+    };
+  }, [opts?.realtime]);
 
   return {
     notificaciones,
