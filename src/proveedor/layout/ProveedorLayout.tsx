@@ -3,7 +3,7 @@ import { useProveedorAuth } from '@/proveedor/hooks/useProveedorAuth'
 import { useCapacidades } from '@/proveedor/hooks/useCapacidades'
 import { TenantThemeProvider } from '@/components/theme/TenantThemeProvider'
 import { useTema } from '@/components/theme/TenantThemeContext'
-import { useNotificaciones } from '@/hooks/useNotificaciones'
+import { ProveedorNotificacionesProvider, useProveedorNotificaciones } from '@/proveedor/context/ProveedorNotificacionesContext'
 import { usePushNotifications } from '@/webapp/hooks/usePushNotifications'
 import { Button } from '@/components/ui/button'
 import { LayoutDashboard, Package, CalendarCheck, Megaphone, MapPin, CreditCard, LogOut, Menu, X, CheckCircle, Users, BarChart3, Bell, ShieldCheck, MessageSquare } from 'lucide-react'
@@ -68,10 +68,19 @@ function TenantLogo({ className }: { className?: string }) {
 }
 
 export default function ProveedorLayout() {
+  // Provee UNA instancia de notificaciones al layout (badge) y a la página (Outlet) → mismo estado.
+  return (
+    <ProveedorNotificacionesProvider>
+      <ProveedorLayoutContent />
+    </ProveedorNotificacionesProvider>
+  )
+}
+
+function ProveedorLayoutContent() {
   const { empresa, logout, loading, cuenta, puede } = useProveedorAuth()
   const { tieneCapacidad, loading: loadingCapacidades } = useCapacidades()
   usePushNotifications() // registra la suscripción push del proveedor (auto, si acepta permiso)
-  const { noLeidas, listarNotificaciones } = useNotificaciones()
+  const { noLeidas } = useProveedorNotificaciones()
   const location = useLocation()
   const navigate = useNavigate()
   const [mobileOpen, setMobileOpen] = useState(false)
@@ -89,12 +98,6 @@ export default function ProveedorLayout() {
     if (item.capacidad && !tieneCapacidad(item.capacidad)) return false
     return true
   })
-
-  useEffect(() => {
-    listarNotificaciones()
-    const interval = setInterval(listarNotificaciones, 60000)
-    return () => clearInterval(interval)
-  }, [listarNotificaciones])
 
   // Gating de routing: un afín que llegue por URL directa a una ruta de visitador
   // se redirige al dashboard (la RLS ya devuelve vacío; esto evita una pantalla rota).

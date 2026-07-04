@@ -1,5 +1,6 @@
 import { useEffect } from 'react'
-import { useNotificaciones } from '@/hooks/useNotificaciones'
+import { useNavigate } from 'react-router-dom'
+import { useProveedorNotificaciones } from '@/proveedor/context/ProveedorNotificacionesContext'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
@@ -18,7 +19,9 @@ function tiempoRelativo(fecha: string) {
 }
 
 export default function ProveedorNotificacionesPage() {
-  const { notificaciones, noLeidas, loading, listarNotificaciones, marcarLeida, marcarTodasLeidas } = useNotificaciones()
+  // Instancia COMPARTIDA con el badge del sidebar (contexto): marcar leída baja el badge al instante.
+  const { notificaciones, noLeidas, loading, listarNotificaciones, marcarLeida, marcarTodasLeidas } = useProveedorNotificaciones()
+  const navigate = useNavigate()
 
   useEffect(() => {
     listarNotificaciones()
@@ -89,8 +92,13 @@ export default function ProveedorNotificacionesPage() {
                         </Button>
                       )}
                       {n.accion_url && (
-                        <Button variant="link" size="sm" className="h-7 text-xs p-0" asChild>
-                          <a href={n.accion_url}>Ver detalle</a>
+                        <Button
+                          variant="link"
+                          size="sm"
+                          className="h-7 text-xs p-0"
+                          onClick={() => { if (!n.leida) marcarLeida(n.id); navigate(n.accion_url!) }}
+                        >
+                          Ver detalle
                         </Button>
                       )}
                     </div>

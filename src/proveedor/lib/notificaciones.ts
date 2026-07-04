@@ -44,7 +44,7 @@ export function buildHtmlVisitaPropuesta(props: {
       <p><strong>Tipo:</strong> ${props.tipo}</p>
       ${props.notas ? `<p><strong>Notas:</strong> ${props.notas}</p>` : ''}
       <div style="margin-top:24px;text-align:center;">
-        <a href="${import.meta.env.VITE_APP_URL || ''}/proveedor/visitador/admin-aprobar" 
+        <a href="${import.meta.env.VITE_APP_URL || ''}/proveedor/visitador/aprobar"
            style="background:#1E5C8E;color:#fff;padding:12px 24px;text-decoration:none;border-radius:6px;display:inline-block;">
           Revisar visitas
         </a>
