@@ -10,7 +10,7 @@ export interface ReferidoData {
 /**
  * Hook del lado del REFERIDOR (paciente logueado). Llama el RPC DEFINER `generar_codigo_referido`
  * de forma LAZY (solo al invocar `generar`, no en cada render) y memoiza el código (idempotente).
- * El link apunta a la landing pública /planes con el ?ref= (capturado en Ola 3). Origin dinámico.
+ * El link apunta a /paciente/registro con el ?ref= (capturado ahí por useCapturarReferido). Origin dinámico.
  */
 export function useReferido() {
   const [codigo, setCodigo] = useState<string | null>(null)
@@ -33,12 +33,12 @@ export function useReferido() {
     return c
   }, [codigo])
 
-  const link = codigo ? `${window.location.origin}/planes?ref=${codigo}` : null
+  const link = codigo ? `${window.location.origin}/paciente/registro?ref=${codigo}` : null
 
   return { codigo, link, loading, error, generar }
 }
 
 // Helper puro para armar el link desde un código (mismo formato/origin dinámico).
 export function buildReferidoLink(codigo: string): string {
-  return `${window.location.origin}/planes?ref=${codigo}`
+  return `${window.location.origin}/paciente/registro?ref=${codigo}`
 }
