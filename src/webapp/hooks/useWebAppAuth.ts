@@ -72,21 +72,34 @@ export function useWebAppAuth() {
   }
 
   const register = async (email: string, password: string, datos: Partial<PacientePerfil> & { pais_id?: string }) => {
-    const { data, error } = await supabase.auth.signUp({ email, password })
-    if (error || !data.user) return { error }
-
-    // Crear perfil de paciente
-    await supabase.from('pacientes').insert({
-      auth_user_id: data.user.id,
-      nombre: datos.nombre || '',
-      apellido: datos.apellido || '',
+    // La fila de `pacientes` la crea el trigger server-side handle_new_paciente (mig 230),
+    // leyendo esta metadata desde raw_user_meta_data. El marcador tipo:'paciente' gatea el
+    // trigger (los signups de médico/proveedor/visitador NO lo setean → no crean paciente).
+    // Se pasa aquí porque con email-confirm ON no hay sesión y el insert client-side quedaba
+    // bloqueado por RLS (auth.uid() null). Se eliminó ese insert; el trigger es el único camino.
+    const { data, error } = await supabase.auth.signUp({
       email,
-      telefono: datos.telefono || null,
-      fecha_nacimiento: datos.fecha_nacimiento || null,
-      genero: datos.genero || null,
-      activo: true,
-      pais_id: datos.pais_id || PAIS_DEFAULT,
+      password,
+      options: {
+        data: {
+          tipo: 'paciente',
+          nombre: datos.nombre || '',
+          apellido: datos.apellido || '',
+          telefono: datos.telefono || null,
+          fecha_nacimiento: datos.fecha_nacimiento || null,
+          genero: datos.genero || null,
+          pais_id: datos.pais_id || PAIS_DEFAULT,
+        },
+      },
     })
+    if (error) {
+      console.error('[WebApp register] signUp falló:', error)
+      return { error }
+    }
+    if (!data.user) {
+      console.error('[WebApp register] signUp no devolvió user')
+      return { error: { message: 'No se pudo crear el usuario. Intenta de nuevo.' } }
+    }
 
     return { error: null }
   }
