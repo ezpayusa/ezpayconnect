@@ -8,6 +8,8 @@ import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Label } from '@/components/ui/label';
+import { Tabs, TabsList, TabsTrigger, TabsContent } from '@/components/ui/tabs';
+import { CapacidadesTiersPais } from '@/pages/admin-ezpay/CapacidadesTiersPais';
 import { useAdminAuth } from '@/hooks/admin/useAdminAuth';
 import { usePaisFiltro } from '@/hooks/usePaisFiltro';
 import { supabase } from '@/lib/supabase';
@@ -56,7 +58,7 @@ function getEstadoBadge(estado: EmpresaEstado) {
 
 export default function EmpresasProveedorasPage() {
   const navigate = useNavigate();
-  const { isAdmin, loading: adminLoading } = useAdminAuth();
+  const { isAdmin, isSuperAdmin, loading: adminLoading } = useAdminAuth();
   const [empresas, setEmpresas] = useState<EmpresaConConteos[]>([]);
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState('');
@@ -186,6 +188,13 @@ export default function EmpresasProveedorasPage() {
           <RefreshCw className="h-4 w-4 mr-2" /> Recargar
         </Button>
       </div>
+
+      <Tabs defaultValue="empresas">
+        <TabsList className="mb-4">
+          <TabsTrigger value="empresas">Empresas</TabsTrigger>
+          <TabsTrigger value="capacidades">Capacidades y Tiers</TabsTrigger>
+        </TabsList>
+        <TabsContent value="empresas">
 
       {/* Stats */}
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4 mb-6">
@@ -570,6 +579,12 @@ export default function EmpresasProveedorasPage() {
           </div>
         </DialogContent>
       </Dialog>
+
+        </TabsContent>
+        <TabsContent value="capacidades">
+          <CapacidadesTiersPais paisId={paisId} esSuper={isSuperAdmin} />
+        </TabsContent>
+      </Tabs>
     </div>
   );
 }

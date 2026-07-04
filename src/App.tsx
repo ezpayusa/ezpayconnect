@@ -290,6 +290,7 @@ function App() {
           <Route path="pais/:paisId/especialidades" element={<EspecialidadesPropuestasPage />} />
           <Route path="pais/:paisId/solicitudes-personalizacion" element={<SolicitudesPersonalizacionPage />} />
           <Route path="pais/:paisId/reportes-ezpay-v2" element={<ReportesEzPayPageV2 />} />
+          <Route path="pais/:paisId/empresas-proveedoras" element={<EmpresasProveedorasPage />} />
           <Route path="usuarios" element={<UsuariosAdminPage />} />
           <Route path="asignacion-roles" element={<AsignacionRolesPage />} />
           <Route path="planes-todos" element={<PlanesTodosPage />} />

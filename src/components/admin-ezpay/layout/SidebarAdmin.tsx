@@ -30,6 +30,7 @@ export function SidebarAdmin() {
     { path: `/admin-ezpay/pais/${paisIdPropio}/especialidades`, icon: Stethoscope, label: 'Especialidades' },
     { path: `/admin-ezpay/pais/${paisIdPropio}/solicitudes-personalizacion`, icon: Palette, label: 'Personalización' },
     { path: `/admin-ezpay/pais/${paisIdPropio}/reportes-ezpay-v2`, icon: BarChart4, label: 'Reportes' },
+    { path: `/admin-ezpay/pais/${paisIdPropio}/empresas-proveedoras`, icon: Store, label: 'Empresas' },
   ] : [];
 
   const menuItemsBase = [
