@@ -161,6 +161,7 @@ const ClinicaInvitarMedicoPage = lazy(() => import('@/clinica/pages/ClinicaInvit
 const ClinicaInvitarLaboratorioPage = lazy(() => import('@/clinica/pages/ClinicaInvitarLaboratorioPage'))
 const ClinicaInvitarStaffPage = lazy(() => import('@/clinica/pages/ClinicaInvitarStaffPage'))
 const ClinicaCitasPage = lazy(() => import('@/clinica/pages/ClinicaCitasPage'))
+const ClinicaCalendarioPage = lazy(() => import('@/clinica/pages/ClinicaCalendarioPage'))
 const ClinicaConfiguracionPage = lazy(() => import('@/clinica/pages/ClinicaConfiguracionPage'))
 const ClinicaHorariosMedicosPage = lazy(() => import('@/clinica/pages/ClinicaHorariosMedicosPage'))
 const ClinicaAdmisionPage = lazy(() => import('@/clinica/pages/ClinicaAdmisionPage'))
@@ -350,6 +351,7 @@ function App() {
               que entra por URL es redirigido a /clinica/admision. roles = los admin de clínica. */}
           <Route index element={<RequiereRolClinica roles={['admin_clinica', 'admin', 'super_admin', 'gerente']}><ClinicaDashboardPage /></RequiereRolClinica>} />
           <Route path="citas" element={<RequiereRolClinica roles={['admin_clinica', 'admin', 'super_admin', 'gerente']}><ClinicaCitasPage /></RequiereRolClinica>} />
+          <Route path="calendario" element={<RequiereRolClinica roles={['admin_clinica', 'admin', 'super_admin', 'gerente', 'asistente_medico', 'enfermeria', 'secretaria']}><ClinicaCalendarioPage /></RequiereRolClinica>} />
           <Route path="personal" element={<RequiereRolClinica roles={['admin_clinica', 'admin', 'super_admin', 'gerente']}><ClinicaPersonalPage /></RequiereRolClinica>} />
           <Route path="horarios-medicos" element={<RequiereRolClinica roles={['admin_clinica', 'admin', 'super_admin', 'gerente']}><ClinicaHorariosMedicosPage /></RequiereRolClinica>} />
           <Route path="invitar-medico" element={<RequiereRolClinica roles={['admin_clinica', 'admin', 'super_admin', 'gerente']}><ClinicaInvitarMedicoPage /></RequiereRolClinica>} />

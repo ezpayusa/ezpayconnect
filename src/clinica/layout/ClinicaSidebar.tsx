@@ -34,6 +34,7 @@ export function ClinicaSidebar() {
     { label: 'Dashboard', icon: LayoutDashboard, path: '/clinica', roles: ROLES_ADMIN },
     { label: 'Admisión', icon: ClipboardList, path: '/clinica/admision', roles: [...ROLES_ADMIN, 'asistente_medico', 'enfermeria'] },
     { label: 'Citas', icon: CalendarDays, path: '/clinica/citas', roles: ROLES_ADMIN },
+    { label: 'Calendario', icon: CalendarDays, path: '/clinica/calendario', roles: [...ROLES_ADMIN, 'asistente_medico', 'enfermeria', 'secretaria'] },
     { label: 'Personal', icon: Users, path: '/clinica/personal', roles: ROLES_ADMIN },
     { label: 'Horarios Médicos', icon: Clock, path: '/clinica/horarios-medicos', roles: ROLES_ADMIN },
     { label: 'Invitar Médico', icon: Stethoscope, path: '/clinica/invitar-medico', roles: ROLES_ADMIN },

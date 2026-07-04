@@ -1,0 +1,61 @@
+/* Theming del calendario de clínica sobre react-big-calendar.
+   Solo aplica al CONTENIDO del calendario; el shell/sidebar de clínica queda intacto. */
+
+.cal-clinica .rbc-calendar { background: #fff; }
+
+/* Header de recurso (columna de médico): lo rinde nuestro componente; acá solo el contenedor. */
+.cal-clinica .rbc-time-header-content > .rbc-row.rbc-row-resource {
+  min-height: 64px;
+}
+.cal-clinica .rbc-header {
+  border-bottom: 1px solid #e8eef3;
+  padding: 0;
+  font-weight: 500;
+}
+.cal-clinica .rbc-time-header-cell { min-height: 0; }
+.cal-clinica .rbc-allday-cell { display: none; } /* sin fila all-day */
+
+/* Gutter de horas */
+.cal-clinica .rbc-time-gutter .rbc-timeslot-group { font-size: 11px; color: #8a9aaa; }
+.cal-clinica .rbc-time-view { border: 1px solid #e8eef3; border-radius: 12px; overflow: hidden; }
+.cal-clinica .rbc-time-content { border-top: 1px solid #e8eef3; }
+.cal-clinica .rbc-timeslot-group { min-height: 56px; border-bottom: 1px solid #f1f5f8; }
+.cal-clinica .rbc-time-slot { border-top: none; }
+.cal-clinica .rbc-day-slot .rbc-time-slot { border-top: 1px dotted #f1f5f8; }
+
+/* Línea roja de "hora actual" (RBC la trae; la estilizamos como la referencia) */
+.cal-clinica .rbc-current-time-indicator {
+  background-color: #ef4444;
+  height: 2px;
+}
+.cal-clinica .rbc-current-time-indicator::before {
+  content: '';
+  position: absolute;
+  left: -5px;
+  top: -4px;
+  width: 10px;
+  height: 10px;
+  border-radius: 9999px;
+  background-color: #ef4444;
+}
+
+/* Evento: tarjeta pastel + barra lateral de color (color inline por estado desde el componente) */
+.cal-clinica .rbc-event {
+  border: none;
+  border-radius: 8px;
+  padding: 0;
+  box-shadow: 0 1px 2px rgba(16, 42, 67, 0.06);
+}
+.cal-clinica .rbc-event.rbc-selected { box-shadow: 0 0 0 2px #1E5C8E; }
+.cal-clinica .rbc-event-label { display: none; } /* ocultamos la hora default; la ponemos en el card */
+.cal-clinica .rbc-event-content { height: 100%; }
+
+/* Columnas de médico: separadores suaves */
+.cal-clinica .rbc-day-slot { border-left: 1px solid #f1f5f8; }
+.cal-clinica .rbc-time-header-content { border-left: 1px solid #f1f5f8; }
+
+/* Mobile: una sola columna, más aire */
+@media (max-width: 767px) {
+  .cal-clinica .rbc-timeslot-group { min-height: 64px; }
+  .cal-clinica .rbc-time-gutter .rbc-timeslot-group { font-size: 10px; }
+}
