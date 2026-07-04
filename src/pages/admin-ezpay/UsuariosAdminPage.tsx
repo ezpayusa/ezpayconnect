@@ -17,8 +17,7 @@ import {
   Plus, 
   Search, 
   RefreshCw, 
-  Edit, 
-  Trash2, 
+  Edit,
   Users,
   UserCheck,
   UserX,
@@ -55,7 +54,7 @@ export default function UsuariosAdminPage() {
   const [filtroRol, setFiltroRol] = useState('todos');
   const [dialogoCrear, setDialogoCrear] = useState(false);
   const [dialogoEditar, setDialogoEditar] = useState<UsuarioAdmin | null>(null);
-  const [dialogoEliminar, setDialogoEliminar] = useState<string | null>(null);
+  const [dialogoDesactivar, setDialogoDesactivar] = useState<string | null>(null);
   const { paisId } = usePaisFiltro();
 
   const [nuevoUsuario, setNuevoUsuario] = useState({
@@ -135,16 +134,18 @@ export default function UsuariosAdminPage() {
     }
   };
 
-  const handleEliminarUsuario = async (id: string) => {
+  // Soft-delete: NUNCA DELETE físico (rompe FKs clínicas/auditoría: signos_vitales, auditoria_ia,
+  // expediente_notas, pagos_proveedor son RESTRICT). Desactivar = activo=false, reversible (mismo que el Switch).
+  const handleDesactivarUsuario = async (id: string) => {
     const { error } = await supabase
       .from('perfiles')
-      .delete()
+      .update({ activo: false })
       .eq('id', id);
 
     if (error) {
-      alert('Error eliminando: ' + error.message);
+      alert('Error desactivando: ' + error.message);
     } else {
-      setDialogoEliminar(null);
+      setDialogoDesactivar(null);
       cargarUsuarios();
     }
   };
@@ -346,9 +347,11 @@ export default function UsuariosAdminPage() {
                       <Button variant="ghost" size="icon" onClick={() => setDialogoEditar(usuario)}>
                         <Edit className="h-4 w-4" />
                       </Button>
-                      <Button variant="ghost" size="icon" className="text-red-500" onClick={() => setDialogoEliminar(usuario.id)}>
-                        <Trash2 className="h-4 w-4" />
-                      </Button>
+                      {usuario.activo && (
+                        <Button variant="ghost" size="icon" className="text-amber-600" title="Desactivar usuario" onClick={() => setDialogoDesactivar(usuario.id)}>
+                          <UserX className="h-4 w-4" />
+                        </Button>
+                      )}
                     </TableCell>
                   </TableRow>
                 ))}
@@ -461,18 +464,18 @@ export default function UsuariosAdminPage() {
         </DialogContent>
       </Dialog>
 
-      {/* Modal Confirmar Eliminacion */}
-      <Dialog open={!!dialogoEliminar} onOpenChange={() => setDialogoEliminar(null)}>
+      {/* Modal Confirmar Desactivacion (soft-delete: activo=false, reversible — nunca DELETE físico) */}
+      <Dialog open={!!dialogoDesactivar} onOpenChange={() => setDialogoDesactivar(null)}>
         <DialogContent className="max-w-sm">
           <DialogHeader>
-            <DialogTitle className="text-center">Eliminar Usuario</DialogTitle>
+            <DialogTitle className="text-center">Desactivar Usuario</DialogTitle>
           </DialogHeader>
           <div className="text-center py-4">
-            <p className="text-muted-foreground mb-4">Esta accion no se puede deshacer.</p>
+            <p className="text-muted-foreground mb-4">El usuario quedará inactivo y no podrá iniciar sesión. Podés reactivarlo cuando quieras.</p>
             <div className="flex justify-center gap-2">
-              <Button variant="outline" onClick={() => setDialogoEliminar(null)}>Cancelar</Button>
-              <Button variant="destructive" onClick={() => dialogoEliminar && handleEliminarUsuario(dialogoEliminar)}>
-                <Trash2 className="h-4 w-4 mr-2" /> Eliminar
+              <Button variant="outline" onClick={() => setDialogoDesactivar(null)}>Cancelar</Button>
+              <Button className="bg-[#1E5C8E] hover:bg-[#164a70]" onClick={() => dialogoDesactivar && handleDesactivarUsuario(dialogoDesactivar)}>
+                <UserX className="h-4 w-4 mr-2" /> Desactivar
               </Button>
             </div>
           </div>
