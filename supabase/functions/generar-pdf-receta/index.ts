@@ -24,11 +24,65 @@ serve(async (req) => {
 
     const supabase = createClient(supabaseUrl, supabaseServiceKey)
 
-    const { receta_id, paciente_id, medico_id, medicamentos, diagnostico, indicaciones } = await req.json()
+    // El body ya NO es fuente de verdad para medico_id/paciente_id: se derivan de
+    // la receta en BD (anti-forja). Del body sólo se usan campos de presentación.
+    const { receta_id, medicamentos, diagnostico, indicaciones } = await req.json()
 
-    if (!receta_id || !paciente_id || !medico_id) {
-      throw new Error('Faltan campos requeridos: receta_id, paciente_id, medico_id')
+    if (!receta_id) {
+      return new Response(
+        JSON.stringify({ success: false, error: 'Falta campo requerido: receta_id' }),
+        { headers: { ...corsHeaders, 'Content-Type': 'application/json' }, status: 400 }
+      )
     }
+
+    // --- Autenticación del caller (el edge corre con service_role, así que el rol
+    //     NO lo da el gateway: hay que derivarlo del JWT y validar ownership). ---
+    const authHeader = req.headers.get('Authorization')
+    if (!authHeader) {
+      return new Response(JSON.stringify({ success: false, error: 'No autenticado' }),
+        { status: 401, headers: { ...corsHeaders, 'Content-Type': 'application/json' } })
+    }
+    const { data: { user: caller } } = await supabase.auth.getUser(authHeader.replace('Bearer ', ''))
+    if (!caller) {
+      return new Response(JSON.stringify({ success: false, error: 'No autenticado' }),
+        { status: 401, headers: { ...corsHeaders, 'Content-Type': 'application/json' } })
+    }
+
+    // Cargar la receta base: su medico_id/paciente_id REALES gobiernan todo.
+    const { data: receta } = await supabase
+      .from('recetas')
+      .select('id, medico_id, paciente_id')
+      .eq('id', receta_id)
+      .maybeSingle()
+    if (!receta) {
+      return new Response(JSON.stringify({ success: false, error: 'Receta no encontrada' }),
+        { status: 404, headers: { ...corsHeaders, 'Content-Type': 'application/json' } })
+    }
+
+    // --- Autorización: médico dueño, o super_admin, o admin_clinica/gerente que
+    //     comparte clínica con el médico de la receta. ---
+    let autorizado = receta.medico_id === caller.id
+    if (!autorizado) {
+      const { data: perfilCaller } = await supabase
+        .from('perfiles').select('rol').eq('id', caller.id).maybeSingle()
+      const rol = perfilCaller?.rol
+      if (rol === 'super_admin') {
+        autorizado = true
+      } else if (rol === 'admin_clinica' || rol === 'gerente') {
+        const { data: callerCl } = await supabase.rpc('obtener_clinica_usuario', { p_user_id: caller.id })
+        const { data: medicoCl } = await supabase.rpc('obtener_clinica_usuario', { p_user_id: receta.medico_id })
+        const setCaller = new Set((Array.isArray(callerCl) ? callerCl : []).map((r: any) => r.clinica_id))
+        autorizado = Array.isArray(medicoCl) && medicoCl.some((r: any) => setCaller.has(r.clinica_id))
+      }
+    }
+    if (!autorizado) {
+      return new Response(JSON.stringify({ success: false, error: 'No autorizado para esta receta' }),
+        { status: 403, headers: { ...corsHeaders, 'Content-Type': 'application/json' } })
+    }
+
+    // A partir de acá se usan SIEMPRE los ids reales de la receta (no los del body).
+    const medico_id = receta.medico_id
+    const paciente_id = receta.paciente_id
 
     const { data: paciente } = await supabase
       .from('pacientes')

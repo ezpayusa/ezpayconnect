@@ -1,12 +1,43 @@
 import { Resend } from 'resend';
+import { createClient } from '@supabase/supabase-js';
 import type { VercelRequest, VercelResponse } from '@vercel/node';
 
 const resend = new Resend(process.env.RESEND_API_KEY);
+
+// Roles clínicos autorizados a enviar recetas por email.
+const ROLES_AUTORIZADOS = ['medico', 'super_admin', 'admin_clinica', 'gerente'];
 
 export default async function handler(req: VercelRequest, res: VercelResponse) {
   // Solo permitir POST
   if (req.method !== 'POST') {
     return res.status(405).json({ error: 'Method not allowed' });
+  }
+
+  // --- Autenticación + rol (cierra el open-relay de emails). Fail-closed. ---
+  const supabaseUrl = process.env.SUPABASE_URL || process.env.VITE_SUPABASE_URL;
+  const supabaseAnonKey = process.env.SUPABASE_ANON_KEY || process.env.VITE_SUPABASE_ANON_KEY;
+  if (!supabaseUrl || !supabaseAnonKey) {
+    console.error('send-receta: faltan SUPABASE_URL/SUPABASE_ANON_KEY en env');
+    return res.status(500).json({ error: 'Autenticación no configurada' });
+  }
+  const authHeader = req.headers.authorization;
+  if (!authHeader) {
+    return res.status(401).json({ error: 'No autenticado' });
+  }
+  // Cliente con el token del caller: getUser lo valida y la RLS de perfiles
+  // (auth.uid()=id) permite leer el propio rol sin service_role.
+  const supabase = createClient(supabaseUrl, supabaseAnonKey, {
+    global: { headers: { Authorization: authHeader } },
+    auth: { persistSession: false, autoRefreshToken: false },
+  });
+  const { data: { user }, error: authError } = await supabase.auth.getUser();
+  if (authError || !user) {
+    return res.status(401).json({ error: 'No autenticado' });
+  }
+  const { data: perfil } = await supabase
+    .from('perfiles').select('rol').eq('id', user.id).maybeSingle();
+  if (!perfil || !ROLES_AUTORIZADOS.includes(perfil.rol)) {
+    return res.status(403).json({ error: 'No autorizado para enviar recetas' });
   }
 
   try {
