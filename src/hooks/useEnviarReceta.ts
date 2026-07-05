@@ -1,4 +1,5 @@
 import { useState, useCallback } from 'react'
+import { supabase } from '@/lib/supabase'
 
 export function useEnviarReceta() {
   const [enviando, setEnviando] = useState(false)
@@ -18,10 +19,18 @@ export function useEnviarReceta() {
     setExito(false)
 
     try {
+      // Adjuntar el JWT de sesión: el endpoint /api/send-receta exige caller
+      // autenticado con rol clínico (cierra el open-relay de emails).
+      const { data: { session } } = await supabase.auth.getSession()
+      if (!session?.access_token) {
+        setError('Sesión no válida. Iniciá sesión de nuevo.')
+        return { success: false, error: 'No autenticado' }
+      }
       const response = await fetch('/api/send-receta', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
+          Authorization: `Bearer ${session.access_token}`,
         },
         body: JSON.stringify(datos),
       })
