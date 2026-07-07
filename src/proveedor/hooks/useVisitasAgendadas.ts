@@ -57,8 +57,12 @@ export function useVisitasAgendadas() {
       let medicosMap: Record<string, { nombre_completo: string; email: string }> = {}
       
       if (medicoIds.length > 0) {
-        const { data: medicosData } = await supabase.rpc('buscar_medicos_proveedor', { p_query: null })
-        if (medicosData) {
+        const { data: medicosData, error: medicosError } = await supabase.rpc('buscar_medicos_proveedor', { p_query: null })
+        if (medicosError) {
+          // Antes se ignoraba en silencio; ahora se reporta igual que useMedicosDisponibles.
+          toast.error('Error buscando médicos')
+          console.error(medicosError)
+        } else if (medicosData) {
           medicosMap = (medicosData as any[]).reduce((acc, m) => {
             acc[m.id] = { nombre_completo: m.nombre_completo, email: m.email }
             return acc
