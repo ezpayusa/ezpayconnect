@@ -224,3 +224,7 @@ export interface PlanConConfiguracion extends PlanBase {
 export interface ConfiguracionConPlan extends PlanConfiguracion {
   plan?: PlanBase;
 }
+
+// Re-export de tipos que viven en planes_adapted.ts pero que el código consume
+// desde este barrel (@/types/planes). Antes: TS2305 (no exportados acá).
+export type { PaisCodigo, TipoSoporte } from './planes_adapted';

@@ -5,7 +5,7 @@
 
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import { Check, X, Minus } from 'lucide-react';
-import { PlanConfiguracion } from '@/types/planes';
+import type { PlanConfiguracion } from '@/types/planes';
 import { formatearPrecio, getColorPlan, getNombrePais, getBanderaPais } from '@/lib/planes-utils';
 
 interface PlanComparisonProps {

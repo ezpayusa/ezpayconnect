@@ -131,3 +131,10 @@ export interface SignosVitales {
   fecha_toma: string
   created_at: string
 }
+
+// Re-export de tipos que viven en types-con-factura.ts pero que el código consume
+// desde este barrel (@/types). Antes: TS2305 (no exportados acá).
+// Nota: HistorialMedico también está definido, IDÉNTICO campo por campo, en
+// types-index.ts; se re-exporta el de types-con-factura.ts (mismo archivo que
+// Factura) y se descarta el duplicado de types-index.ts para evitar ambigüedad.
+export type { Factura, HistorialMedico } from './types-con-factura';

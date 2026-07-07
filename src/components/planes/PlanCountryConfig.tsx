@@ -12,7 +12,7 @@ import { Switch } from '@/components/ui/switch';
 import { Badge } from '@/components/ui/badge';
 import { Separator } from '@/components/ui/separator';
 import { Save, RotateCcw, DollarSign, Users, UserCheck, Calendar, Globe } from 'lucide-react';
-import { PlanConfiguracion, PaisCodigo, TipoSoporte } from '@/types/planes';
+import type { PlanConfiguracion, PaisCodigo, TipoSoporte } from '@/types/planes';
 import { getNombrePais, getBanderaPais, formatearPrecio } from '@/lib/planes-utils';
 
 interface PlanCountryConfigProps {

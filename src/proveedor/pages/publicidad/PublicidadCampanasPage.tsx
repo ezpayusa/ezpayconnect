@@ -6,6 +6,7 @@ import { useSolicitudesCampana } from '@/proveedor/hooks/useSolicitudesCampana'
 import { usePlanesPublicidad } from '@/proveedor/hooks/usePlanesPublicidad'
 import { useProveedorAuth } from '@/proveedor/hooks/useProveedorAuth'
 import { Megaphone, Plus, Trash2, Pencil, Loader2, CreditCard, BarChart3 } from 'lucide-react'
+import { toast } from 'sonner'
 
 const estadoColor: Record<string, string> = {
   borrador: 'bg-slate-100 text-slate-700',

@@ -4,7 +4,7 @@
 // ═══════════════════════════════════════════════════════════════
 
 import { Check, X, Users, UserCheck, Calendar, FileText, Receipt, Pill, BarChart3, MessageCircle, Code, Headphones, Infinity } from 'lucide-react';
-import { PlanConfiguracion, PlanFeature } from '@/types/planes';
+import type { PlanConfiguracion, PlanFeature } from '@/types/planes';
 import { generarFeaturesPlan } from '@/lib/planes-utils';
 
 interface PlanFeatureListProps {
