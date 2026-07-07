@@ -30,6 +30,33 @@ serve(async (req) => {
       )
     }
 
+    // Validar al SOLICITANTE antes de generar la invitación. (Mismo patrón que crear-invitacion-medico
+    //  y reportes-ezpay: el edge corre con service_role, así que el rol del caller NO lo da el JWT del
+    //  gateway → hay que derivarlo y validarlo acá. Antes: cualquier authenticated invitaba clínicas.)
+    //  A diferencia de médico, acá se ONBOARDEA una clínica NUEVA (no hay clinica_id / ownership que medir):
+    //  autorizado = super_admin (global) o admin_pais acotado al pais_id de la invitación (fail-closed).
+    const authHeader = req.headers.get('Authorization')
+    if (!authHeader) {
+      return new Response(JSON.stringify({ error: 'Falta Authorization' }),
+        { status: 401, headers: { ...corsHeaders, 'Content-Type': 'application/json' } })
+    }
+    const token = authHeader.replace('Bearer ', '')
+    const { data: { user: solicitante } } = await supabase.auth.getUser(token)
+    if (!solicitante) {
+      return new Response(JSON.stringify({ error: 'No autenticado' }),
+        { status: 401, headers: { ...corsHeaders, 'Content-Type': 'application/json' } })
+    }
+    const { data: perfilReq } = await supabase.from('perfiles').select('rol, pais_id').eq('id', solicitante.id).maybeSingle()
+    let autorizado = perfilReq?.rol === 'super_admin'
+    if (!autorizado && perfilReq?.rol === 'admin_pais') {
+      // admin_pais sin país es imposible (CHECK admin_pais_requiere_pais, mig 216) pero se corta defensivo.
+      autorizado = !!perfilReq?.pais_id && perfilReq.pais_id === pais_id
+    }
+    if (!autorizado) {
+      return new Response(JSON.stringify({ error: 'No autorizado para invitar clínicas' }),
+        { status: 403, headers: { ...corsHeaders, 'Content-Type': 'application/json' } })
+    }
+
     // Verificar que el email no tenga una invitación pendiente
     const { data: existente } = await supabase
       .from('invitaciones_clinica')
