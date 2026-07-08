@@ -136,8 +136,9 @@ export function useLaboratorio() {
     const path = `${labId}/${ordenId}-${Date.now()}.${ext}`
     const { error } = await supabase.storage.from('resultados-examenes').upload(path, file, { upsert: true })
     if (error) { toast.error('No se pudo subir el archivo: ' + error.message); return null }
-    const { data } = supabase.storage.from('resultados-examenes').getPublicUrl(path)
-    return data.publicUrl
+    // Bucket privado (resultados-examenes.public=false): guardar el PATH, NO una URL pública (daría
+    // 403 al paciente). Los lectores lo firman con openSignedUrl('resultados-examenes', path).
+    return path
   }
 
   const subirResultado = async (ordenId: number, resultados: string, archivo?: File | null, tipo?: string) => {
