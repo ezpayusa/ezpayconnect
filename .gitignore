@@ -34,3 +34,10 @@ docs/*
 *.zip
 *.rar
 deno.lock
+
+# artefactos y basura sacados del tracking (chore limpieza)
+build/
+dev-dist/
+fixes/
+estructura.txt
+Kimi_Agent_Refactorización Arquitectónica/
