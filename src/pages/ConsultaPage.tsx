@@ -322,7 +322,7 @@ export default function ConsultaPage() {
     }
 
     cargar()
-  }, [citaId, fetchConsultaPorCita, navigate])
+  }, [citaId, fetchConsultaPorCita, navigate, base])
 
   const guardarNotaSOAP = async () => {
     if (!cita || !paciente) return

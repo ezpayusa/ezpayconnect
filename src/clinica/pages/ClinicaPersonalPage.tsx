@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useState, useCallback } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
@@ -31,8 +31,10 @@ export default function ClinicaPersonalPage() {
   const [personal, setPersonal] = useState<PersonalItem[]>([])
   const [loading, setLoading] = useState(true)
 
-  const cargarPersonal = async () => {
-    if (!clinica) return
+  const clinicaId = clinica?.id
+
+  const cargarPersonal = useCallback(async () => {
+    if (!clinicaId) return
     setLoading(true)
 
     try {
@@ -40,7 +42,7 @@ export default function ClinicaPersonalPage() {
       // el caller pertenece a ella. (perfiles SELECT está restringido a "propio";
       // por eso NO se lee perfiles directo, que solo devolvería al propio admin.)
       const { data, error } = await supabase
-        .rpc('obtener_personal_clinica', { p_clinica_id: clinica.id })
+        .rpc('obtener_personal_clinica', { p_clinica_id: clinicaId })
 
       if (error) {
         console.error('Error cargando personal:', error)
@@ -67,11 +69,11 @@ export default function ClinicaPersonalPage() {
     } finally {
       setLoading(false)
     }
-  }
+  }, [clinicaId])
 
   useEffect(() => {
     cargarPersonal()
-  }, [clinica])
+  }, [cargarPersonal])
 
   const getRolBadge = (rol: string) => {
     switch (rol) {
