@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useState, useCallback } from 'react'
 import { supabase } from '@/lib/supabase'
 import { usePaisFiltro } from '@/hooks/usePaisFiltro'
 import { Button } from '@/components/ui/button'
@@ -51,7 +51,7 @@ export default function CampanasPublicitariasContent() {
     edad_max: '',
   })
 
-  const fetchCampanas = async () => {
+  const fetchCampanas = useCallback(async () => {
     setLoading(true)
     let query = supabase
       .from('campanas_publicitarias')
@@ -66,11 +66,11 @@ export default function CampanasPublicitariasContent() {
       setCampanas(data || [])
     }
     setLoading(false)
-  }
+  }, [paisId])
 
   useEffect(() => {
     fetchCampanas()
-  }, [])
+  }, [fetchCampanas])
 
   const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0]

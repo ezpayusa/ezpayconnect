@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -71,7 +71,7 @@ export default function EmpresasProveedorasPage() {
   const [procesando, setProcesando] = useState(false);
   const { paisId } = usePaisFiltro();
 
-  const cargarEmpresas = async () => {
+  const cargarEmpresas = useCallback(async () => {
     setLoading(true);
     let query = supabase
       .from('empresas_proveedoras')
@@ -99,13 +99,13 @@ export default function EmpresasProveedorasPage() {
       setEmpresas(formateadas);
     }
     setLoading(false);
-  };
+  }, [paisId]);
 
   useEffect(() => {
     if (!adminLoading && isAdmin) {
       cargarEmpresas();
     }
-  }, [adminLoading, isAdmin]);
+  }, [adminLoading, isAdmin, cargarEmpresas]);
 
   const cambiarEstado = async (empresaId: string, nuevoEstado: EmpresaEstado) => {
     setProcesando(true);
