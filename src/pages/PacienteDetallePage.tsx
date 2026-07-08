@@ -2,7 +2,7 @@
 // Dia 17: Paciente Detalle Avanzado - Usa supabase.functions.invoke (evita CORS)
 // EzPayConnect
 
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useCallback } from 'react'
 import { useParams, useNavigate, useLocation } from 'react-router-dom'
 import { supabase } from '@/lib/supabase'
 import { openSignedUrl } from '@/lib/signedUrl'
@@ -93,28 +93,16 @@ export default function PacienteDetallePage() {
   const [recetaData, setRecetaData] = useState<any>(null)
   const [generandoReceta, setGenerandoReceta] = useState(false)
 
-  useEffect(() => {
-    if (id) {
-      cargarPaciente()
-      cargarHistorial()
-      cargarRecetas()
-      cargarCitas()
-      cargarConsultas()
-      cargarSignosVitales()
-      cargarExamenes()
-    }
-  }, [id])
-
-  const cargarExamenes = async () => {
+  const cargarExamenes = useCallback(async () => {
     const { data } = await supabase
       .from('examenes')
       .select('id, tipo, descripcion, estado, resultados, archivo_url, fecha_solicitud, fecha_resultado, orden_id, laboratorio_id')
       .eq('paciente_id', id)
       .order('created_at', { ascending: false })
     setExamenes(data || [])
-  }
+  }, [id])
 
-  const cargarPaciente = async () => {
+  const cargarPaciente = useCallback(async () => {
     setLoading(true)
     const { data, error } = await supabase
       .from('pacientes')
@@ -129,18 +117,18 @@ export default function PacienteDetallePage() {
       setPaciente(data)
     }
     setLoading(false)
-  }
+  }, [id])
 
-  const cargarHistorial = async () => {
+  const cargarHistorial = useCallback(async () => {
     const { data } = await supabase
       .from('historial_medico')
       .select('*')
       .eq('paciente_id', id)
       .order('fecha_evento', { ascending: false })
     setHistorial(data || [])
-  }
+  }, [id])
 
-  const cargarRecetas = async () => {
+  const cargarRecetas = useCallback(async () => {
     // NO traer dispatch_token / dispatch_token_expira_at al cliente médico (es el secreto
     // del QR del paciente; no se muestra ni se usa aquí). Lista explícita en vez de '*'.
     const { data } = await supabase
@@ -149,27 +137,27 @@ export default function PacienteDetallePage() {
       .eq('paciente_id', id)
       .order('created_at', { ascending: false })
     setRecetas(data || [])
-  }
+  }, [id])
 
-  const cargarCitas = async () => {
+  const cargarCitas = useCallback(async () => {
     const { data } = await supabase
       .from('citas')
       .select('*')
       .eq('paciente_id', id)
       .order('fecha', { ascending: false })
     setCitas(data || [])
-  }
+  }, [id])
 
-  const cargarConsultas = async () => {
+  const cargarConsultas = useCallback(async () => {
     const { data } = await supabase
       .from('expediente_notas')
       .select('*, perfiles(nombre_completo)')
       .eq('paciente_id', id)
       .order('created_at', { ascending: false })
     setConsultas(data || [])
-  }
+  }, [id])
 
-  const cargarSignosVitales = async () => {
+  const cargarSignosVitales = useCallback(async () => {
     const { data } = await supabase
       .from('signos_vitales')
       .select('*')
@@ -177,7 +165,13 @@ export default function PacienteDetallePage() {
       .order('fecha_toma', { ascending: false })
       .limit(20)
     setSignosVitales(data || [])
-  }
+  }, [id])
+
+  useEffect(() => {
+    if (!id) return
+    cargarPaciente(); cargarHistorial(); cargarRecetas(); cargarCitas()
+    cargarConsultas(); cargarSignosVitales(); cargarExamenes()
+  }, [id, cargarPaciente, cargarHistorial, cargarRecetas, cargarCitas, cargarConsultas, cargarSignosVitales, cargarExamenes])
 
   const generarRecetaAvanzada = async () => {
     if (!paciente || !user) return
