@@ -64,7 +64,7 @@ export function useLaboratorio() {
         .eq('laboratorio_id', labId)
         .order('created_at', { ascending: false }),
     ])
-    if (itemsRes.error) console.error('[lab] items:', itemsRes.error)
+    if (itemsRes.error) console.error('[lab] items:', itemsRes.error?.message ?? itemsRes.error?.code)
     const items = (itemsRes.data || []) as OrdenExamen[]
     const headers = (headersRes.data || []) as any[]
 
@@ -159,7 +159,7 @@ export function useLaboratorio() {
     // (ids+contenido del cliente). Best-effort: no falla el guardado del resultado.
     try {
       await supabase.rpc('notificar_resultado_examen', { p_examen_id: ordenId })
-    } catch (e) { console.error(e) }
+    } catch (e) { console.error('Error notificar_resultado_examen:', e?.message ?? e?.code) }
     toast.success('Resultado enviado')
     fetchOrdenes()
     return true

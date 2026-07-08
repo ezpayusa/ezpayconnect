@@ -124,7 +124,7 @@ export function useHistorialCompleto(pacienteId?: number) {
 
       setEventos(eventosCombinados)
     } catch (err: any) {
-      console.error('Error cargando historial:', err)
+      console.error('Error cargando historial:', err?.message ?? err?.code)
     } finally {
       setLoading(false)
     }

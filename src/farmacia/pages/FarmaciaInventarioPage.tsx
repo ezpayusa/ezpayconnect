@@ -48,7 +48,7 @@ export default function FarmaciaInventarioPage() {
       .select('id, farmacia_id, nombre_medicamento, presentacion, stock_actual, stock_minimo, precio_unitario, activo')
       .in('farmacia_id', ids)
       .order('nombre_medicamento')
-    if (error) { toast.error('Error cargando inventario'); console.error(error) }
+    if (error) { toast.error('Error cargando inventario'); console.error('Error cargando inventario:', error?.message ?? error?.code) }
     else setMeds((data || []) as Med[])
     setLoading(false)
   }, [empresa?.id])

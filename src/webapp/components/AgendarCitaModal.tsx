@@ -168,7 +168,7 @@ export default function AgendarCitaModal({ pacienteId, pacienteNombre, paisIdPro
     try {
       const { data, error } = await supabase
         .rpc('buscar_medicos_paciente', { p_especialidad_id: espId })
-      if (error) console.error('Error cargando médicos via RPC:', error)
+      if (error) console.error('Error cargando médicos via RPC:', error?.message ?? error?.code)
       setMedicos(data || [])
     } finally {
       setCargandoMedicos(false)
@@ -190,7 +190,7 @@ export default function AgendarCitaModal({ pacienteId, pacienteNombre, paisIdPro
           .rpc('listar_especialidades_activas')
 
         if (espError) {
-          console.error('Error cargando especialidades via RPC:', espError)
+          console.error('Error cargando especialidades via RPC:', espError?.message ?? espError?.code)
         }
 
         // Cargar clínicas via RPC (bypass PostgREST schema cache)
@@ -198,7 +198,7 @@ export default function AgendarCitaModal({ pacienteId, pacienteNombre, paisIdPro
           .rpc('listar_clinicas_por_pais', { p_pais_id: paisId })
 
         if (clinicsError) {
-          console.error('Error cargando clínicas via RPC:', clinicsError)
+          console.error('Error cargando clínicas via RPC:', clinicsError?.message ?? clinicsError?.code)
         }
 
         // Cargar preferencias del paciente
@@ -224,7 +224,7 @@ export default function AgendarCitaModal({ pacienteId, pacienteNombre, paisIdPro
           setClinicaId(pacienteData.clinica_primaria_id)
         }
       } catch (err) {
-        console.error('Error cargando datos:', err)
+        console.error('Error cargando datos:', err?.message ?? err?.code)
       } finally {
         setCargandoOpciones(false)
       }
@@ -418,7 +418,7 @@ export default function AgendarCitaModal({ pacienteId, pacienteNombre, paisIdPro
         try {
           await supabase.rpc('notificar_cita_solicitada', { p_cita_id: citaCreada.id })
         } catch (notifErr) {
-          console.error('Error notificar_cita_solicitada:', notifErr)
+          console.error('Error notificar_cita_solicitada:', notifErr?.message ?? notifErr?.code)
           // No fallar la cita si la notificación falla
         }
       }
@@ -434,7 +434,7 @@ export default function AgendarCitaModal({ pacienteId, pacienteNombre, paisIdPro
             },
           })
         } catch (recErr) {
-          console.error('Error programando recordatorio:', recErr)
+          console.error('Error programando recordatorio:', recErr?.message ?? recErr?.code)
         }
       }
 
@@ -442,7 +442,7 @@ export default function AgendarCitaModal({ pacienteId, pacienteNombre, paisIdPro
       onClose()
       onSuccess?.()
     } catch (err: any) {
-      console.error('Error agendando cita:', err)
+      console.error('Error agendando cita:', err?.message ?? err?.code)
       toast.error('Error: ' + (err.message || 'No se pudo agendar la cita'))
     } finally {
       setGuardando(false)

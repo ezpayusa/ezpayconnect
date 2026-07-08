@@ -67,7 +67,7 @@ export default function MedicoRecetasPage() {
       }))
       setRecetas(formateadas)
     } catch (err) {
-      console.error('Error cargando recetas:', err)
+      console.error('Error cargando recetas:', err?.message ?? err?.code)
     } finally {
       setLoading(false)
     }
@@ -94,7 +94,7 @@ export default function MedicoRecetasPage() {
       })
       doc.output('dataurlnewwindow')
     } catch (e) {
-      console.error('Error imprimiendo:', e)
+      console.error('Error imprimiendo:', e?.message ?? e?.code)
     } finally {
       setImprimiendo(null)
     }

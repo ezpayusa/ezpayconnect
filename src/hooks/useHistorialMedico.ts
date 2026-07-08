@@ -21,7 +21,7 @@ export function useHistorialMedico(pacienteId?: number) {
       .order('fecha', { ascending: false })
 
     if (error) {
-      console.error('Error fetching historial:', error)
+      console.error('Error fetching historial:', error?.message ?? error?.code)
     } else {
       setHistorial(data || [])
     }

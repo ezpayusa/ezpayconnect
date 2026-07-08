@@ -219,7 +219,7 @@ serve(async (req) => {
       if (/no_pertenencia/.test(m)) return json({ error: 'no_pertenencia' }, 403)
       if (/consentimiento_revocado/.test(m)) return json({ error: 'consentimiento_revocado' }, 403)
       if (/no_auth/.test(m)) return json({ error: 'no_auth' }, 401)
-      console.error('contexto_ia_paciente error:', m)
+      console.error('contexto_ia_paciente error:', ctxErr?.message ?? ctxErr?.code)
       return json({ error: 'error_contexto' }, 500)
     }
 
@@ -254,7 +254,7 @@ serve(async (req) => {
       } catch {
         errMsg = `OpenAI HTTP ${openaiRes.status}: ${await openaiRes.text()}`
       }
-      console.error('OpenAI error:', errMsg)
+      console.error('OpenAI error, status:', openaiRes.status)
 
       // Si es error de cuota, usar respuesta mock para no romper la app
       if (errMsg.includes('quota') || errMsg.includes('billing') || errMsg.includes('exceeded')) {
@@ -311,7 +311,7 @@ serve(async (req) => {
         })
       }
     } catch (auditErr: any) {
-      console.error('Auditoria error (no critico):', auditErr?.message || auditErr)
+      console.error('Auditoria error (no critico):', auditErr?.message ?? auditErr?.code)
     }
 
     return json({
@@ -320,7 +320,7 @@ serve(async (req) => {
     })
 
   } catch (error: any) {
-    console.error('Error asistente-ia:', error?.message || error)
+    console.error('Error asistente-ia:', error?.message ?? error?.code)
     return json({ error: error?.message || 'Error interno del servidor' }, 500)
   }
 })

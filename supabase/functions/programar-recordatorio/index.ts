@@ -89,7 +89,7 @@ serve(async (req) => {
         .single()
 
       if (citaError || !cita) {
-        console.error('[programar-recordatorio] Error buscando cita:', citaError)
+        console.error('[programar-recordatorio] Error buscando cita:', citaError?.message ?? citaError?.code)
         return new Response(
           JSON.stringify({ error: 'Cita no encontrada' }),
           { status: 404, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
@@ -134,7 +134,7 @@ serve(async (req) => {
         .single()
 
       if (visitaError || !visita) {
-        console.error('[programar-recordatorio] Error buscando visita:', visitaError)
+        console.error('[programar-recordatorio] Error buscando visita:', visitaError?.message ?? visitaError?.code)
         return new Response(
           JSON.stringify({ error: 'Visita no encontrada' }),
           { status: 404, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
@@ -187,7 +187,7 @@ serve(async (req) => {
       .single()
 
     if (recError) {
-      console.error('[programar-recordatorio] Error insertando:', recError)
+      console.error('[programar-recordatorio] Error insertando:', recError?.message ?? recError?.code)
       return new Response(
         JSON.stringify({ error: 'Error guardando recordatorio', details: recError }),
         { status: 500, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
@@ -210,7 +210,7 @@ serve(async (req) => {
       { headers: { ...corsHeaders, 'Content-Type': 'application/json' }, status: 200 }
     )
   } catch (error: any) {
-    console.error('[programar-recordatorio] Error:', error)
+    console.error('[programar-recordatorio] Error:', error?.message ?? error?.code)
     return new Response(
       JSON.stringify({ error: error.message || 'Error interno' }),
       { status: 500, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }

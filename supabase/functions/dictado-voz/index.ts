@@ -79,7 +79,7 @@ serve(async (req) => {
     if (!whisperRes.ok) {
       const err = await whisperRes.json().catch(() => ({}))
       const errMsg = err.error?.message || `Whisper HTTP ${whisperRes.status}`
-      console.error('Whisper error:', errMsg)
+      console.error('Whisper error, status:', whisperRes.status)
       throw new Error(errMsg)
     }
 
@@ -89,7 +89,7 @@ serve(async (req) => {
     return json({ texto: texto.trim(), modelo: 'whisper-1' })
 
   } catch (error: any) {
-    console.error('Error dictado-voz:', error?.message || error)
+    console.error('Error dictado-voz:', error?.message ?? error?.code)
     return json({ error: error?.message || 'Error interno del servidor' }, 500)
   }
 })
