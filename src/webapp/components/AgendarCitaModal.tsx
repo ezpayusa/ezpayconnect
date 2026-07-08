@@ -255,7 +255,7 @@ export default function AgendarCitaModal({ pacienteId, pacienteNombre, paisIdPro
 
         // Si hay clínicas disponibles, asegurar que haya una seleccionada
         if (filtradas.length === 1) {
-          setClinicaId(filtradas[0].id)
+          if (clinicaId !== filtradas[0].id) { setClinicaId(filtradas[0].id) }
         } else if (filtradas.length > 1) {
           // Si la clínica seleccionada no está en la lista, preseleccionar la primera
           if (!clinicaId || !filtradas.find(c => c.id === clinicaId)) {
@@ -266,7 +266,7 @@ export default function AgendarCitaModal({ pacienteId, pacienteNombre, paisIdPro
     }
 
     filtrar()
-  }, [medicoId, clinicas])
+  }, [medicoId, clinicas, clinicaId])
 
   // Cargar disponibilidad (contexto paciente) + slots ocupados al elegir médico
   useEffect(() => {
