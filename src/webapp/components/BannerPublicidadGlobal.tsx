@@ -44,7 +44,7 @@ export default function BannerPublicidadGlobal() {
       setLoading(false)
     }
     fetchCampanas()
-  }, [])
+  }, [paisId])
 
   const campanas = expandirCampanasPorPeso(campanasRaw)
 

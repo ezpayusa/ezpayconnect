@@ -35,7 +35,7 @@ export function useFacturas(pacienteId?: number) {
       setFacturas(mapped)
     }
     setLoading(false)
-  }, [pacienteId])
+  }, [pacienteId, paisId])
 
   useEffect(() => { fetchFacturas() }, [fetchFacturas])
 
