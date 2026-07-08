@@ -1,7 +1,7 @@
 // src/types/planes.ts
 // Tipos para el módulo de Planes Médicos y Clínicas
 
-export type TipoPlan = 'medico' | 'clinica' | 'visitador' | 'publicidad' | 'farmacia' | 'farmaceutico' | 'empresas_afines';
+export type TipoPlan = 'medico' | 'clinica' | 'visitador' | 'publicidad' | 'farmacia' | 'farmaceutico' | 'empresas_afines' | 'lab' | 'otros';
 export type EstadoPlan = 'activo' | 'inactivo' | 'pendiente' | 'suspendido' | 'cancelado';
 export type CicloFacturacion = 'mensual' | 'anual';
 export type MetodoPago = 'tarjeta' | 'transferencia' | 'movil';
@@ -12,6 +12,8 @@ export interface PlanBase {
   descripcion: string;
   tipo: TipoPlan;
   precio_base: number; // Siempre en USD
+  moneda: string;
+  periodicidad: string;
   caracteristicas: string[];
   limite_pacientes?: number;
   limite_medicos?: number;
@@ -154,6 +156,9 @@ export interface CrearPlanBaseDTO {
   descripcion: string;
   tipo: TipoPlan;
   precio_base: number;
+  moneda: string;
+  periodicidad: string;
+  activo?: boolean;
   caracteristicas?: string[];
   limite_pacientes?: number;
   limite_medicos?: number;
@@ -169,7 +174,7 @@ export interface CrearPlanBaseDTO {
 export interface CrearPlanConfigDTO {
   plan_base_id: string;
   pais_id: string;
-  moneda_local: string;
+  moneda_local?: string;
   precio_local: number;
   precio_anual?: number;
   impuesto_incluido?: boolean;
