@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
@@ -62,20 +62,19 @@ export default function ReportesEzPayPage() {
     comisionesEstimadas: 0,
   });
 
-  const getFechaInicio = () => {
-    const hoy = new Date();
-    switch (periodo) {
-      case 'hoy': return new Date(hoy.getFullYear(), hoy.getMonth(), hoy.getDate());
-      case 'semana': { const d = new Date(hoy); d.setDate(d.getDate() - 7); return d; }
-      case 'mes': return new Date(hoy.getFullYear(), hoy.getMonth(), 1);
-      case 'trimestre': return new Date(hoy.getFullYear(), Math.floor(hoy.getMonth() / 3) * 3, 1);
-      case 'anio': return new Date(hoy.getFullYear(), 0, 1);
-      default: return new Date(hoy.getFullYear(), hoy.getMonth(), 1);
-    }
-  };
-
-  const cargarDatos = async () => {
+  const cargarDatos = useCallback(async () => {
     setLoading(true);
+    const getFechaInicio = () => {
+      const hoy = new Date();
+      switch (periodo) {
+        case 'hoy': return new Date(hoy.getFullYear(), hoy.getMonth(), hoy.getDate());
+        case 'semana': { const d = new Date(hoy); d.setDate(d.getDate() - 7); return d; }
+        case 'mes': return new Date(hoy.getFullYear(), hoy.getMonth(), 1);
+        case 'trimestre': return new Date(hoy.getFullYear(), Math.floor(hoy.getMonth() / 3) * 3, 1);
+        case 'anio': return new Date(hoy.getFullYear(), 0, 1);
+        default: return new Date(hoy.getFullYear(), hoy.getMonth(), 1);
+      }
+    };
     const fechaInicio = getFechaInicio();
 
     // Cargar países
@@ -200,7 +199,7 @@ export default function ReportesEzPayPage() {
     });
 
     setLoading(false);
-  };
+  }, [tabActiva, periodo]);
 
   useEffect(() => {
     if (!adminLoading && !isAdmin) {
@@ -208,7 +207,7 @@ export default function ReportesEzPayPage() {
       return;
     }
     cargarDatos();
-  }, [adminLoading, isAdmin, navigate, tabActiva, periodo]);
+  }, [adminLoading, isAdmin, navigate, cargarDatos]);
 
   const getBandera = (codigo: string) => {
     const banderas: Record<string, string> = { GT: '🇬🇹', SV: '🇸🇻', HN: '🇭🇳', CR: '🇨🇷', PA: '🇵🇦', NI: '🇳🇮', MX: '🇲🇽' };

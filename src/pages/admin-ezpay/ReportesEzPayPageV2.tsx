@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
@@ -77,30 +77,29 @@ export default function ReportesEzPayPageV2() {
     comisionesEstimadas: 0,
   });
 
-  const getFechaInicio = () => {
-    const hoy = new Date();
-    switch (periodo) {
-      case 'hoy': return new Date(hoy.getFullYear(), hoy.getMonth(), hoy.getDate());
-      case 'semana': { const d = new Date(hoy); d.setDate(d.getDate() - 7); return d; }
-      case 'mes': return new Date(hoy.getFullYear(), hoy.getMonth(), 1);
-      case 'trimestre': return new Date(hoy.getFullYear(), Math.floor(hoy.getMonth() / 3) * 3, 1);
-      case 'anio': return new Date(hoy.getFullYear(), 0, 1);
-      case 'todos': return new Date(2000, 0, 1);
-      default: return new Date(hoy.getFullYear(), hoy.getMonth(), 1);
-    }
-  };
-
-  const formatFechaSupabase = (fecha: Date): string => {
-    const year = fecha.getFullYear();
-    const month = String(fecha.getMonth() + 1).padStart(2, '0');
-    const day = String(fecha.getDate()).padStart(2, '0');
-    return `${year}-${month}-${day}`;
-  };
-
-  const cargarDatos = async () => {
+  const cargarDatos = useCallback(async () => {
     setLoading(true);
     setErrorMsg(null);
     setDebugInfo('Cargando...');
+
+    const getFechaInicio = () => {
+      const hoy = new Date();
+      switch (periodo) {
+        case 'hoy': return new Date(hoy.getFullYear(), hoy.getMonth(), hoy.getDate());
+        case 'semana': { const d = new Date(hoy); d.setDate(d.getDate() - 7); return d; }
+        case 'mes': return new Date(hoy.getFullYear(), hoy.getMonth(), 1);
+        case 'trimestre': return new Date(hoy.getFullYear(), Math.floor(hoy.getMonth() / 3) * 3, 1);
+        case 'anio': return new Date(hoy.getFullYear(), 0, 1);
+        case 'todos': return new Date(2000, 0, 1);
+        default: return new Date(hoy.getFullYear(), hoy.getMonth(), 1);
+      }
+    };
+    const formatFechaSupabase = (fecha: Date): string => {
+      const year = fecha.getFullYear();
+      const month = String(fecha.getMonth() + 1).padStart(2, '0');
+      const day = String(fecha.getDate()).padStart(2, '0');
+      return `${year}-${month}-${day}`;
+    };
 
     const fechaInicio = getFechaInicio();
     const fechaStr = formatFechaSupabase(fechaInicio);
@@ -157,7 +156,7 @@ export default function ReportesEzPayPageV2() {
     } finally {
       setLoading(false);
     }
-  };
+  }, [periodo, tabActiva]);
 
   useEffect(() => {
     if (!adminLoading && !isAdmin) {
@@ -168,7 +167,7 @@ export default function ReportesEzPayPageV2() {
       console.log('🚀 Iniciando carga de reportes...');
       cargarDatos();
     }
-  }, [adminLoading, isAdmin, navigate, tabActiva, periodo]);
+  }, [adminLoading, isAdmin, navigate, cargarDatos]);
 
   const getBandera = (codigo: string) => {
     const banderas: Record<string, string> = { GT: '🇬🇹', SV: '🇸🇻', HN: '🇭🇳', CR: '🇨🇷', PA: '🇵🇦', NI: '🇳🇮', MX: '🇲🇽' };
