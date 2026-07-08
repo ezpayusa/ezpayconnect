@@ -52,9 +52,12 @@ interface Medico {
 
 interface Recordatorio {
   id: string
-  cita_id: string
+  cita_id: number | string
+  // recordatorios.estado real: 'pendiente' | 'enviado' | 'fallido'. Se deja `string` para
+  // no convertir el branch muerto 'confirmado' del render (L~373) en un TS2367 (retiro aparte).
   estado: string
-  tipo_recordatorio: string
+  fecha_envio_programada?: string
+  fecha_envio_real?: string | null
 }
 
 export default function CitasPage() {
@@ -161,10 +164,13 @@ export default function CitasPage() {
 
   const cargarRecordatorios = useCallback(async () => {
     if (citas.length === 0) { setRecordatorios([]); return }
+    const citaIds = citas.map(c => Number(c.id)).filter(Number.isFinite)
+    if (citaIds.length === 0) { setRecordatorios([]); return }
     const { data } = await supabase
-      .from('recordatorios_programados')
-      .select('*')
-      .in('cita_id', citas.map(c => c.id))
+      .from('recordatorios')
+      .select('id, cita_id, estado, fecha_envio_programada, fecha_envio_real')
+      .eq('tipo', 'cita')
+      .in('cita_id', citaIds)
     setRecordatorios(data || [])
   }, [citas])
 
@@ -274,7 +280,7 @@ export default function CitasPage() {
   }
 
   const getRecordatoriosCita = (citaId: string) => {
-    return recordatorios.filter(r => r.cita_id === citaId)
+    return recordatorios.filter(r => String(r.cita_id) === String(citaId))
   }
 
   const getIconoEstado = (estado: string) => {
