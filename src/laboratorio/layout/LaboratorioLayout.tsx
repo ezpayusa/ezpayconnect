@@ -1,9 +1,9 @@
 import { Link, useLocation, useNavigate, Outlet } from 'react-router-dom'
 import { useProveedorAuth } from '@/proveedor/hooks/useProveedorAuth'
-import { useNotificaciones } from '@/hooks/useNotificaciones'
+import { ProveedorNotificacionesProvider, useProveedorNotificaciones } from '@/proveedor/context/ProveedorNotificacionesContext'
 import { Button } from '@/components/ui/button'
 import { LayoutDashboard, FlaskConical, ClipboardList, UserPlus, Building2, Bell, LogOut, Menu, X, ListChecks } from 'lucide-react'
-import { useState, useEffect } from 'react'
+import { useState } from 'react'
 
 interface NavItem { label: string; path: string; icon: React.ElementType; badge?: boolean }
 
@@ -17,18 +17,23 @@ const NAV_ITEMS: NavItem[] = [
   { label: 'Notificaciones', path: '/laboratorio/notificaciones', icon: Bell, badge: true },
 ]
 
+// Monta UNA instancia de notificaciones (badge del layout + página compartida vía Outlet) → mismo
+// estado y un solo polling (el provider hace init + polling de 60s). La página compartida
+// ProveedorNotificacionesPage hace throw si falta este provider.
 export default function LaboratorioLayout() {
+  return (
+    <ProveedorNotificacionesProvider>
+      <LaboratorioLayoutContent />
+    </ProveedorNotificacionesProvider>
+  )
+}
+
+function LaboratorioLayoutContent() {
   const { empresa, logout, loading } = useProveedorAuth()
-  const { noLeidas, listarNotificaciones } = useNotificaciones()
+  const { noLeidas } = useProveedorNotificaciones()
   const location = useLocation()
   const navigate = useNavigate()
   const [mobileOpen, setMobileOpen] = useState(false)
-
-  useEffect(() => {
-    listarNotificaciones()
-    const interval = setInterval(listarNotificaciones, 60000)
-    return () => clearInterval(interval)
-  }, [listarNotificaciones])
 
   if (loading) {
     return (
