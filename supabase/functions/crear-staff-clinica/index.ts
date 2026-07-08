@@ -33,9 +33,9 @@ Deno.serve(async (req) => {
         { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } }
       );
     }
-    if (!["secretaria", "asistente"].includes(rol)) {
+    if (!["secretaria", "asistente", "asistente_medico"].includes(rol)) {
       return new Response(
-        JSON.stringify({ error: "rol inválido (secretaria|asistente)" }),
+        JSON.stringify({ error: "rol inválido (secretaria|asistente_medico)" }),
         { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } }
       );
     }
@@ -85,7 +85,7 @@ Deno.serve(async (req) => {
     //    'secretaria' → 'secretaria'       (capa administrativa; NO captura vitales).
     //    La UI valida arriba rol ∈ {secretaria, asistente}, así que el mapeo es total.
     //    La pertenencia de clínica NO depende del rol: se otorga en el paso 3 (medico_clinicas).
-    const rolPersistido = rol === "asistente" ? "asistente_medico" : "secretaria";
+    const rolPersistido = (rol === "asistente" || rol === "asistente_medico") ? "asistente_medico" : "secretaria";
     const { error: perfilError } = await supabase.from("perfiles").insert({
       id: userId,
       email,

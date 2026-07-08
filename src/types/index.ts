@@ -1,6 +1,6 @@
 export interface Perfil {
   id: string
-  rol: 'medico' | 'secretaria' | 'admin_clinica' | 'paciente' | 'ezpay_admin'
+  rol: 'super_admin' | 'admin' | 'admin_pais' | 'admin_clinica' | 'gerente' | 'medico' | 'asistente_medico' | 'enfermeria' | 'secretaria' | 'soporte' | 'vendedor' | 'cliente' | 'paciente' | 'ezpay_admin'
   nombre_completo: string
   email: string
   telefono: string | null

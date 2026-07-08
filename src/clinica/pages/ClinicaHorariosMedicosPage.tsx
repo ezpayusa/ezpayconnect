@@ -30,11 +30,13 @@ export default function ClinicaHorariosMedicosPage() {
     if (!clinica?.id) return
     ;(async () => {
       const { data: { user } } = await supabase.auth.getUser()
-      const { data: rel } = await supabase.rpc('obtener_medicos_clinica', { p_clinica_id: clinica.id })
-      const ids = (rel || []).map((r: any) => r.medico_id).filter((id: string) => id !== user?.id)
-      if (ids.length === 0) { setMedicos([]); return }
-      const { data: meds } = await supabase.rpc('obtener_medicos_por_ids', { p_medico_ids: ids })
-      setMedicos((meds || []).map((m: any) => ({ id: m.id, nombre_completo: m.nombre_completo, especialidad: m.especialidad || '' })))
+      // listar_medicos_clinica ya filtra perfiles.rol='medico' (excluye staff secretaria/
+      // asistente_medico, que también viven en medicos/medico_clinicas por crear-staff-clinica).
+      // Gate es_staff_calendario_clinica cubre super_admin/admin_clinica/admin/gerente (roles de esta ruta).
+      const { data: meds } = await supabase.rpc('listar_medicos_clinica', { p_clinica_id: clinica.id })
+      setMedicos((meds || [])
+        .filter((m: any) => m.medico_id !== user?.id)
+        .map((m: any) => ({ id: m.medico_id, nombre_completo: m.nombre_completo, especialidad: '' })))
     })()
   }, [clinica?.id])
 

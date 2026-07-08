@@ -118,7 +118,7 @@ export default function ClinicaInvitarStaffPage() {
                 </SelectTrigger>
                 <SelectContent>
                   <SelectItem value="secretaria">Secretaria</SelectItem>
-                  <SelectItem value="asistente">Asistente</SelectItem>
+                  <SelectItem value="asistente_medico">Asistente médico</SelectItem>
                 </SelectContent>
               </Select>
             </div>
