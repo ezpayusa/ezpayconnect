@@ -5,7 +5,7 @@ export interface Perfil {
   email: string
   telefono: string | null
   avatar_url: string | null
-  pais_id: number | null
+  pais_id: string | null
   activo: boolean
   created_at: string
 }
