@@ -65,6 +65,16 @@ export function useWebAppChat(pacienteId: number | undefined) {
     }
   }, [pacienteId])
 
+  const marcarComoLeidos = useCallback(async () => {
+    if (!pacienteId) return
+    await supabase
+      .from('chat_mensajes')
+      .update({ leido: true })
+      .eq('paciente_id', pacienteId)
+      .eq('remitente', 'medico')
+      .eq('leido', false)
+  }, [pacienteId])
+
   const fetchMensajes = useCallback(async () => {
     if (!pacienteId) {
       setMensajes([])
@@ -108,17 +118,7 @@ export function useWebAppChat(pacienteId: number | undefined) {
     } finally {
       setLoading(false)
     }
-  }, [pacienteId])
-
-  const marcarComoLeidos = useCallback(async () => {
-    if (!pacienteId) return
-    await supabase
-      .from('chat_mensajes')
-      .update({ leido: true })
-      .eq('paciente_id', pacienteId)
-      .eq('remitente', 'medico')
-      .eq('leido', false)
-  }, [pacienteId])
+  }, [pacienteId, marcarComoLeidos])
 
   const enviarMensaje = useCallback(async (texto: string) => {
     if (!pacienteId || !texto.trim()) return
