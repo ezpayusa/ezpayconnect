@@ -2,7 +2,7 @@
 // Dia 18: Farmacias V2 - Formularios controlados + selector de horario
 // EzPayConnect
 
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useCallback } from 'react'
 import { supabase } from '@/lib/supabase'
 import { useAuth } from '@/hooks/useAuth'
 import {
@@ -85,11 +85,7 @@ export default function FarmaciasPage() {
     laboratorio: ''
   })
 
-  useEffect(() => {
-    cargarDatos()
-  }, [activeTab])
-
-  const cargarDatos = async () => {
+  const cargarDatos = useCallback(async () => {
     setLoading(true)
     if (activeTab === 'farmacias') {
       const { data } = await supabase.from('farmacias').select('*').order('nombre')
@@ -106,7 +102,9 @@ export default function FarmaciasPage() {
       setAlertas(data || [])
     }
     setLoading(false)
-  }
+  }, [activeTab])
+
+  useEffect(() => { cargarDatos() }, [cargarDatos])
 
   const guardarFarmacia = async (e: React.FormEvent) => {
     e.preventDefault()
