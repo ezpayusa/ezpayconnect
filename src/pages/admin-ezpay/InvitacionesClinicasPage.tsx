@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useCallback } from 'react'
 import { useNavigate, useParams } from 'react-router-dom'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -58,7 +58,7 @@ export default function InvitacionesClinicasPage() {
     }
   }, [adminLoading, isAdmin, navigate])
 
-  const cargarInvitaciones = async () => {
+  const cargarInvitaciones = useCallback(async () => {
     if (!pais_id) return
     setLoading(true)
     const { data, error } = await supabase
@@ -73,11 +73,11 @@ export default function InvitacionesClinicasPage() {
       setInvitaciones(data || [])
     }
     setLoading(false)
-  }
+  }, [pais_id])
 
   useEffect(() => {
     cargarInvitaciones()
-  }, [pais_id])
+  }, [cargarInvitaciones])
 
   const handleCrearInvitacion = async () => {
     if (!nuevaInvitacion.email || !nuevaInvitacion.nombre_clinica || !pais_id) {

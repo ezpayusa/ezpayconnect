@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
@@ -54,7 +54,7 @@ export default function FinanzasPage() {
   const [filtroPais, setFiltroPais] = useState('todos');
   const [paises, setPaises] = useState<any[]>([]);
 
-  const cargarDatos = async () => {
+  const cargarDatos = useCallback(async () => {
     setLoading(true);
 
     // Cargar países
@@ -111,7 +111,7 @@ export default function FinanzasPage() {
       });
     }
     setLoading(false);
-  };
+  }, [filtroEstado, filtroPais]);
 
   useEffect(() => {
     if (!adminLoading && !isAdmin) {
@@ -119,7 +119,7 @@ export default function FinanzasPage() {
       return;
     }
     cargarDatos();
-  }, [adminLoading, isAdmin, navigate, filtroEstado, filtroPais]);
+  }, [adminLoading, isAdmin, navigate, cargarDatos]);
 
   const getEstadoBadge = (estado: string) => {
     switch (estado) {
