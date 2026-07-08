@@ -56,7 +56,6 @@ export default function RecetaDetallePage() {
         console.log('[RecetaDetalle] Cargando receta ID:', recetaId)
 
         const data = await getRecetaCompleta(recetaId)
-        console.log('[RecetaDetalle] Respuesta:', data)
 
         if (data?.receta) {
           // Normalizar estructura: el render espera receta plana con items, paciente

@@ -139,7 +139,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     });
 
     if (error) {
-      console.error('Error enviando email:', error);
+      console.error('Error enviando receta por email:', error?.name, error?.statusCode);
       return res.status(500).json({ error: 'Error al enviar email', details: error });
     }
 

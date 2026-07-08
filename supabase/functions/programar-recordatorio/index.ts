@@ -20,7 +20,7 @@ serve(async (req) => {
     })
 
     const body = await req.json()
-    console.log('[programar-recordatorio] Body recibido:', JSON.stringify(body))
+    console.log('[programar-recordatorio] recordatorio solicitado:', { tipo: body?.tipo, hasReferencia: !!body?.referencia_id })
     
     // destinatario_email del body se IGNORA a propósito: el email SIEMPRE se deriva server-side de la
     // fila (paciente/visitador). Evita que un caller mande el recordatorio a un email arbitrario.

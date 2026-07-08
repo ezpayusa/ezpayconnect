@@ -64,7 +64,6 @@ export default function DictadoVoz({ onTranscript, pacienteId, placeholder = 'Di
       if (data?.error) throw new Error(data.error)
 
       const texto = data?.texto || ''
-      console.log('[DictadoVoz] Texto recibido:', texto)
       if (texto) {
         onTranscript(texto)
         toast.success('Dictado transcrito')
