@@ -127,6 +127,7 @@ export default function PagosProveedoresPage() {
             fecha_inicio: campana.fecha_inicio,
             fecha_fin: campana.fecha_fin,
             activa: true,
+            pais_id: campana.pais_id,   // NOT NULL en campanas_publicitarias (mig 099); se propaga de la solicitud
             condicion_filtro: campana.condicion_filtro,
             genero_filtro: campana.genero_filtro,
             edad_min: campana.edad_min,
@@ -134,14 +135,23 @@ export default function PagosProveedoresPage() {
             peso: pesoPlan,
           })
 
+          // Solo marcar la solicitud como 'publicada' si el INSERT de la campaña fue exitoso.
+          // Antes se marcaba antes de chequear el error -> solicitud "publicada" sin campaña.
+          if (pubError) {
+            toast.error('Error publicando campaña')
+            console.error(pubError?.message ?? pubError?.code)
+            setProcesando(false)
+            return
+          }
+
           const { error: updError } = await supabase
             .from('solicitudes_campana')
             .update({ estado: 'publicada' })
             .eq('id', pagoData.referencia_id)
 
-          if (pubError || updError) {
+          if (updError) {
             toast.error('Error publicando campaña')
-            console.error(pubError, updError)
+            console.error(updError?.message ?? updError?.code)
             setProcesando(false)
             return
           }
