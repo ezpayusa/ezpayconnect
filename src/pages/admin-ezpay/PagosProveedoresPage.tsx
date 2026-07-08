@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useCallback } from 'react'
 import { supabase } from '@/lib/supabase'
 import { openSignedUrl } from '@/lib/signedUrl'
 import { Button } from '@/components/ui/button'
@@ -32,7 +32,7 @@ export default function PagosProveedoresPage() {
   const [pagoActivo, setPagoActivo] = useState<PagoConEmpresa | null>(null)
   const [procesando, setProcesando] = useState(false)
 
-  const fetchPagos = async () => {
+  const fetchPagos = useCallback(async () => {
     setLoading(true)
     let q = supabase
       .from('pagos_proveedor')
@@ -50,11 +50,11 @@ export default function PagosProveedoresPage() {
       setPagos((data || []) as PagoConEmpresa[])
     }
     setLoading(false)
-  }
+  }, [estadoFiltro])
 
   useEffect(() => {
     fetchPagos()
-  }, [estadoFiltro])
+  }, [fetchPagos])
 
   const verificar = async (id: string, estado: 'verificado' | 'rechazado') => {
     setProcesando(true)

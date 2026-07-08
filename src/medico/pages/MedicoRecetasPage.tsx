@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useCallback } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { supabase } from '@/lib/supabase'
 import { useAuth } from '@/hooks/useAuth'
@@ -39,7 +39,7 @@ export default function MedicoRecetasPage() {
   const [busqueda, setBusqueda] = useState('')
   const [imprimiendo, setImprimiendo] = useState<number | null>(null)
 
-  const cargarRecetas = async () => {
+  const cargarRecetas = useCallback(async () => {
     if (!perfil?.id) return
     setLoading(true)
     try {
@@ -71,11 +71,11 @@ export default function MedicoRecetasPage() {
     } finally {
       setLoading(false)
     }
-  }
+  }, [perfil?.id])
 
   useEffect(() => {
     cargarRecetas()
-  }, [perfil?.id])
+  }, [cargarRecetas])
 
   const handleImprimir = async (receta: RecetaConPaciente) => {
     setImprimiendo(receta.id)
