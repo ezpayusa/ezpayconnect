@@ -214,7 +214,7 @@ serve(async (req) => {
       return json({ error: 'Error enviando email', details: data }, 500)
     }
 
-    console.log(`[notificar-email] Enviado a ${to} | tipo: visita_${tipo} | id: ${data.id}`)
+    console.log('[notificar-email] Email enviado, tipo:', tipo)
     return json({ success: true, id: data.id })
   } catch (err: any) {
     console.error('[notificar-email] Error:', err)

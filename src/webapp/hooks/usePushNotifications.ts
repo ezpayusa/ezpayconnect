@@ -129,13 +129,6 @@ export function usePushNotifications() {
       const p256dh = btoa(String.fromCharCode(...new Uint8Array(p256dhKey)))
       const auth = btoa(String.fromCharCode(...new Uint8Array(authKey)))
 
-      console.log('[Push] Guardando suscripción:', {
-        user_id: user.id,
-        endpoint: subscription.endpoint.slice(0, 60) + '...',
-        p256dh_len: p256dh.length,
-        auth_len: auth.length,
-      })
-
       // Eliminar suscripciones previas del usuario e insertar nueva
       const { error: delError } = await supabase
         .from('push_subscriptions')

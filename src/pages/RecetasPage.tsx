@@ -694,7 +694,6 @@ export default function RecetasPage() {
                         telefono: ''
                       }
                       if (selectedReceta.receta && selectedReceta.paciente) {
-                       console.log('Items para PDF:', selectedReceta.items) 
                        generarPDFReceta(selectedReceta.receta, selectedReceta.items, selectedReceta.paciente, medicoPerfil)
                       } else {
                         alert('Faltan datos para generar el PDF')

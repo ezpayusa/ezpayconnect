@@ -48,8 +48,6 @@ export function useAdminAuth() {
         return;
       }
 
-      console.log('[useAdminAuth] Usuario autenticado:', user.email, 'ID:', user.id);
-
       // 2. Obtener perfil de la tabla perfiles
       const { data: profile, error: profileError } = await supabase
         .from('perfiles')
@@ -67,13 +65,6 @@ export function useAdminAuth() {
         console.log('[useAdminAuth] No se encontró perfil para el usuario');
         return;
       }
-
-      console.log('[useAdminAuth] Perfil encontrado:', {
-        email: profile.email,
-        rol: profile.rol,
-        nombre: profile.nombre_completo,
-        activo: profile.activo
-      });
 
       // 3. Verificar si el rol es admin
       const adminRoles = ['super_admin', 'admin_pais'];

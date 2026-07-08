@@ -183,7 +183,6 @@ export function useWebAppChat(pacienteId: number | undefined) {
           table: 'chat_mensajes',
         },
         (payload) => {
-          console.log('[Chat] Evento realtime recibido:', payload)
           const nuevo = payload.new as any
           // Filtrar solo mensajes de este paciente
           if (nuevo.paciente_id !== pacienteId) return
