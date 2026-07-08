@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useCallback } from 'react'
 import { supabase } from '@/lib/supabase'
 import { openSignedUrl } from '@/lib/signedUrl'
 import { usePaisFiltro } from '@/hooks/usePaisFiltro'
@@ -68,7 +68,7 @@ export default function SolicitudesCampanaPage() {
   const [procesando, setProcesando] = useState(false)
   const { paisId } = usePaisFiltro()
 
-  const fetchSolicitudes = async () => {
+  const fetchSolicitudes = useCallback(async () => {
     setLoading(true)
     let q = supabase
       .from('solicitudes_campana')
@@ -102,11 +102,11 @@ export default function SolicitudesCampanaPage() {
     setPagosMap(map)
 
     setLoading(false)
-  }
+  }, [estadoFiltro, paisId])
 
   useEffect(() => {
     fetchSolicitudes()
-  }, [estadoFiltro])
+  }, [fetchSolicitudes])
 
   // Avisar a los usuarios de la empresa proveedora (campanita del portal).
   // RPC gateado: deriva destinatarios + contenido (incl. notas_admin YA persistidas en el ref) del estado de la

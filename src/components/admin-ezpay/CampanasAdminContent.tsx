@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useCallback } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { supabase } from '@/lib/supabase'
 import { usePaisFiltro } from '@/hooks/usePaisFiltro'
@@ -46,7 +46,7 @@ export default function CampanasAdminContent() {
   const [search, setSearch] = useState('')
   const [filtroActiva, setFiltroActiva] = useState<'todas' | 'activas' | 'inactivas'>('todas')
 
-  const cargarCampanas = async () => {
+  const cargarCampanas = useCallback(async () => {
     setLoading(true)
     let query = supabase
       .from('campanas_publicitarias')
@@ -63,12 +63,12 @@ export default function CampanasAdminContent() {
       setCampanas(data || [])
     }
     setLoading(false)
-  }
+  }, [paisId])
 
   useEffect(() => {
     cargarCampanas()
     if (paisId) fetchMetricasPorPais(paisId)
-  }, [paisId])
+  }, [cargarCampanas, fetchMetricasPorPais, paisId])
 
   const toggleActiva = async (id: number, nuevaActiva: boolean) => {
     const { error } = await supabase

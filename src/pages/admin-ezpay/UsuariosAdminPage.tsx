@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -65,7 +65,7 @@ export default function UsuariosAdminPage() {
     activo: true,
   });
 
-  const cargarUsuarios = async () => {
+  const cargarUsuarios = useCallback(async () => {
     setLoading(true);
     let query = supabase
       .from('perfiles')
@@ -79,13 +79,13 @@ export default function UsuariosAdminPage() {
       setUsuarios(data || []);
     }
     setLoading(false);
-  };
+  }, [paisId]);
 
   useEffect(() => {
     if (!adminLoading && isAdmin) {
       cargarUsuarios();
     }
-  }, [adminLoading, isAdmin]);
+  }, [adminLoading, isAdmin, cargarUsuarios]);
 
   const handleCrearUsuario = async () => {
     if (!nuevoUsuario.email || !nuevoUsuario.nombre_completo) {
