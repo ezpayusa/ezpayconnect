@@ -33,7 +33,7 @@ export function useMedicoCitas() {
       const { data: citasData, error: citasError } = await query
 
       if (citasError) {
-        console.error('Error cargando citas:', citasError)
+        console.error('Error cargando citas:', citasError?.message ?? citasError?.code)
         toast.error('Error cargando citas')
         setCitas([])
         setLoading(false)
@@ -77,7 +77,7 @@ export function useMedicoCitas() {
 
       setCitas(citasConPaciente)
     } catch (err) {
-      console.error('Error:', err)
+      console.error('Error:', err?.message ?? err?.code)
       setCitas([])
     } finally {
       setLoading(false)
@@ -99,7 +99,7 @@ export function useMedicoCitas() {
     try {
       await supabase.rpc('notificar_cita_paciente', { p_cita_id: cita.id, p_evento: tipo })
     } catch (e) {
-      console.error('Error notificar_cita_paciente:', e)
+      console.error('Error notificar_cita_paciente:', e?.message ?? e?.code)
     }
   }
 

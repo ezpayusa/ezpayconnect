@@ -19,7 +19,7 @@ export function useRecetas() {
     const { data: recetasData, error: recetasError } = await recetasQuery
     
     if (recetasError) {
-      console.error('Error fetching recetas:', recetasError)
+      console.error('Error fetching recetas:', recetasError?.message ?? recetasError?.code)
       setRecetas([])
       setLoading(false)
       return
@@ -94,7 +94,7 @@ export function useRecetas() {
     try {
       await supabase.rpc('notificar_receta', { p_receta_id: recetaData.id })
     } catch (e) {
-      console.error('Error notificando receta al paciente:', e)
+      console.error('Error notificando receta al paciente:', e?.message ?? e?.code)
     }
 
     const { data: pacienteData } = await supabase.from('pacientes').select('nombre, apellido').eq('id', receta.paciente_id).single()
@@ -115,7 +115,7 @@ export function useRecetas() {
       .maybeSingle()
 
     if (recetaError || !receta) {
-      console.error('Error fetching receta:', recetaError)
+      console.error('Error fetching receta:', recetaError?.message ?? recetaError?.code)
       return { receta: null, items: [], paciente: null }
     }
 
@@ -125,7 +125,7 @@ export function useRecetas() {
   .eq('receta_id', id)
 
 if (itemsError) {
-  console.error('Error fetching receta items:', itemsError)
+  console.error('Error fetching receta items:', itemsError?.message ?? itemsError?.code)
 }
 
 // Traer nombres de farmacias si hay farmacia_id

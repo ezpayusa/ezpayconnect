@@ -61,7 +61,7 @@ export function useRoles() {
       });
 
       if (error) {
-        console.error("Error en Edge Function:", error);
+        console.error("Error en Edge Function:", error?.message ?? error?.code);
         throw new Error(error.message || "Error al cargar empleados");
       }
 
@@ -96,7 +96,7 @@ export function useRoles() {
       });
 
       if (error) {
-        console.error("Error en Edge Function:", error);
+        console.error("Error en Edge Function:", error?.message ?? error?.code);
         throw new Error(error.message || "Error al crear empleado");
       }
 

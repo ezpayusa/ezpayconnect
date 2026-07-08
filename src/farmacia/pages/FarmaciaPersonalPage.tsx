@@ -49,7 +49,7 @@ export default function FarmaciaPersonalPage() {
       .select('id, nombre_completo, email, rol_en_empresa, activo, sucursal_id')
       .eq('empresa_id', empresa.id)
       .order('nombre_completo')
-    if (error) { toast.error('Error cargando el equipo'); console.error(error) }
+    if (error) { toast.error('Error cargando el equipo'); console.error('Error cargando el equipo:', error?.message ?? error?.code) }
     else setMiembros((data || []) as Miembro[])
     setLoading(false)
   }, [empresa?.id])

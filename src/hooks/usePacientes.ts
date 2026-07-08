@@ -51,7 +51,7 @@ export function usePacientes() {
     }).select().single()
     
     if (error) {
-      console.error('Error creating paciente:', error)
+      console.error('Error creating paciente:', error?.message ?? error?.code)
       return { data: null, error: `Error: ${error.message} (${error.code})` }
     }
     

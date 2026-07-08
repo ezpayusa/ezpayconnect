@@ -24,13 +24,13 @@ export function useMedicoPacientes() {
         .order('created_at', { ascending: false })
 
       if (error) {
-        console.error('Error cargando pacientes:', error)
+        console.error('Error cargando pacientes:', error?.message ?? error?.code)
         setPacientes([])
       } else {
         setPacientes(data || [])
       }
     } catch (err) {
-      console.error('Error:', err)
+      console.error('Error:', err?.message ?? err?.code)
       setPacientes([])
     } finally {
       setLoading(false)

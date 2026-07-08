@@ -219,7 +219,7 @@ export default function ConsultaPage() {
     // notificar_laboratorio + enviar-push (gate = médico de la orden; cero target/contenido del caller).
     try {
       await supabase.rpc('notificar_orden_lab', { p_orden_id: orden.id })
-    } catch (e) { console.error('Error notificar_orden_lab:', e) }
+    } catch (e) { console.error('Error notificar_orden_lab:', e?.message ?? e?.code) }
     toast.success(
       labElegido
         ? `Orden (${lista.length}) enviada a ${labElegido.nombre_empresa}. El paciente también la verá en su portal.`
@@ -248,7 +248,7 @@ export default function ConsultaPage() {
         .single()
 
       if (citaError) {
-        console.error('Error cargando cita:', citaError)
+        console.error('Error cargando cita:', citaError?.message ?? citaError?.code)
       }
 
       if (!citaData) {
@@ -267,7 +267,7 @@ export default function ConsultaPage() {
         .single()
 
       if (pacienteError) {
-        console.error('Error cargando paciente:', pacienteError)
+        console.error('Error cargando paciente:', pacienteError?.message ?? pacienteError?.code)
       }
 
       if (!pacienteData) {

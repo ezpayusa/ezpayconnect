@@ -99,7 +99,7 @@ export default function CitasPage() {
     const { data: citasData, error: citasError } = await citasQuery.order('hora_inicio')
 
     if (citasError) {
-      console.error('Error cargando citas:', citasError)
+      console.error('Error cargando citas:', citasError?.message ?? citasError?.code)
       setCitas([])
       setLoading(false)
       return
@@ -229,7 +229,7 @@ export default function CitasPage() {
             },
           })
         } catch (recErr) {
-          console.error('Error programando recordatorio:', recErr)
+          console.error('Error programando recordatorio:', recErr?.message ?? recErr?.code)
         }
       }
 

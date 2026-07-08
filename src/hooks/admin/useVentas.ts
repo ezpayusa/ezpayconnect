@@ -122,7 +122,7 @@ export function useVentas() {
         return;
       }
 
-      console.log("Configuraciones encontradas:", data?.length || 0, data);
+      console.log("Configuraciones encontradas:", data?.length ?? 0);
       setPlanesConfig(data || []);
     } catch (err) {
       console.error("Error cargando configuraciones:", err);

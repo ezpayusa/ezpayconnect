@@ -59,7 +59,7 @@ export function useWebAppExamenes(pacienteId: number | undefined) {
 
       setExamenes(mapped)
     } catch (err: any) {
-      console.error('Error cargando examenes:', err)
+      console.error('Error cargando examenes:', err?.message ?? err?.code)
       setError(err.message || 'Error al cargar exámenes')
     } finally {
       setLoading(false)

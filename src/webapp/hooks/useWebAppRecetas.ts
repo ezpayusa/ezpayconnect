@@ -100,7 +100,7 @@ export function useWebAppRecetas(pacienteId: number | undefined) {
 
       setRecetas(recetasConItems)
     } catch (err: any) {
-      console.error('Error cargando recetas:', err)
+      console.error('Error cargando recetas:', err?.message ?? err?.code)
       setError(err.message || 'Error al cargar recetas')
     } finally {
       setLoading(false)

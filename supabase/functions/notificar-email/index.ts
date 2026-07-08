@@ -207,17 +207,17 @@ serve(async (req) => {
       proveedor_id: null,
       visita_id: visitaId,
     })
-    if (logError) console.error('[notificar-email] Error logueando en BD:', logError)
+    if (logError) console.error('[notificar-email] Error logueando en BD:', logError?.message ?? logError?.code)
 
     if (!res.ok) {
-      console.error('[notificar-email] Error Resend:', data)
+      console.error('[notificar-email] Error Resend:', data?.message ?? data?.name)
       return json({ error: 'Error enviando email', details: data }, 500)
     }
 
     console.log('[notificar-email] Email enviado, tipo:', tipo)
     return json({ success: true, id: data.id })
   } catch (err: any) {
-    console.error('[notificar-email] Error:', err)
+    console.error('[notificar-email] Error:', err?.message ?? err?.code)
     return json({ error: err.message || 'Error interno' }, 500)
   }
 })

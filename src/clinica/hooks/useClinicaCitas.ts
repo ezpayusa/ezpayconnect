@@ -32,7 +32,7 @@ export function useClinicaCitas() {
         .rpc('obtener_clinica_usuario', { p_user_id: user.id })
 
       if (clinicasError) {
-        console.error('Error cargando clínicas:', clinicasError)
+        console.error('Error cargando clínicas:', clinicasError?.message ?? clinicasError?.code)
         toast.error('Error cargando clínicas')
         setLoading(false)
         return
@@ -86,7 +86,7 @@ export function useClinicaCitas() {
         .rpc('obtener_citas_clinica', { p_clinica_id: currentClinicaId })
 
       if (citasError) {
-        console.error('Error cargando citas:', citasError)
+        console.error('Error cargando citas:', citasError?.message ?? citasError?.code)
         toast.error('Error cargando citas')
         setCitas([])
         setLoading(false)
@@ -124,7 +124,7 @@ export function useClinicaCitas() {
 
       setCitas(citasConPaciente)
     } catch (err) {
-      console.error('Error:', err)
+      console.error('Error:', err?.message ?? err?.code)
       setCitas([])
     } finally {
       setLoading(false)
@@ -183,7 +183,7 @@ export function useClinicaCitas() {
       try {
         await enviarNotificacionPaciente(pacienteAuthId, cita, 'cita_asignada', medicoNombre)
       } catch (err) {
-        console.error('[useClinicaCitas] Error notificando paciente:', err)
+        console.error('[useClinicaCitas] Error notificando paciente:', err?.message ?? err?.code)
       }
     } else {
       console.warn('[useClinicaCitas] Paciente sin auth_user_id, no se puede notificar. paciente_id:', cita.paciente_id)
@@ -206,7 +206,7 @@ export function useClinicaCitas() {
     try {
       await supabase.rpc('notificar_cita_paciente', { p_cita_id: cita.id, p_evento: evento })
     } catch (e) {
-      console.error('Error notificar_cita_paciente:', e)
+      console.error('Error notificar_cita_paciente:', e?.message ?? e?.code)
     }
   }
 
@@ -218,7 +218,7 @@ export function useClinicaCitas() {
         try {
           await enviarNotificacionPaciente(pacienteAuthId, cita, 'cita_confirmada')
         } catch (err) {
-          console.error('[useClinicaCitas] Error notificando paciente:', err)
+          console.error('[useClinicaCitas] Error notificando paciente:', err?.message ?? err?.code)
         }
       } else {
         console.warn('[useClinicaCitas] Paciente sin auth_user_id, no se puede notificar confirmación. paciente_id:', cita.paciente_id)
@@ -235,7 +235,7 @@ export function useClinicaCitas() {
         try {
           await enviarNotificacionPaciente(pacienteAuthId, cita, 'cita_cancelada')
         } catch (err) {
-          console.error('[useClinicaCitas] Error notificando paciente:', err)
+          console.error('[useClinicaCitas] Error notificando paciente:', err?.message ?? err?.code)
         }
       }
     }

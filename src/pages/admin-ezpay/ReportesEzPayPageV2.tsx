@@ -123,7 +123,7 @@ export default function ReportesEzPayPageV2() {
         return;
       }
 
-      console.log('✅ Respuesta edge function:', data);
+      console.log('Respuesta edge function, success:', data?.success);
 
       if (!data.success) {
         setErrorMsg(data.error || 'Error desconocido');

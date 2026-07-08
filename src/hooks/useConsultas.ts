@@ -27,7 +27,7 @@ export function useConsultas() {
       .order('created_at', { ascending: false })
 
     if (error) {
-      console.error('Error cargando consultas:', error)
+      console.error('Error cargando consultas:', error?.message ?? error?.code)
       setConsultas([])
     } else {
       setConsultas(data || [])
@@ -44,7 +44,7 @@ export function useConsultas() {
       .maybeSingle()
 
     if (error) {
-      console.error('Error cargando consulta:', error)
+      console.error('Error cargando consulta:', error?.message ?? error?.code)
       setLoading(false)
       return null
     }

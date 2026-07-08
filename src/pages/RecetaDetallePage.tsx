@@ -69,7 +69,7 @@ export default function RecetaDetallePage() {
         }
         recetaCargadaRef.current = recetaId
       } catch (err: any) {
-        console.error('[RecetaDetalle] Error:', err)
+        console.error('[RecetaDetalle] Error:', err?.message ?? err?.code)
         setError(err?.message || 'Error al cargar la receta')
         recetaCargadaRef.current = recetaId
       } finally {

@@ -74,7 +74,7 @@ export default function UsuariosAdminPage() {
     const { data, error } = await query.order('created_at', { ascending: false });
 
     if (error) {
-      console.error('Error cargando usuarios:', error);
+      console.error('Error cargando usuarios:', error?.message ?? error?.code);
     } else {
       setUsuarios(data || []);
     }

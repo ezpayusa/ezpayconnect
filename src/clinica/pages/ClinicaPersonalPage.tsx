@@ -45,7 +45,7 @@ export default function ClinicaPersonalPage() {
         .rpc('obtener_personal_clinica', { p_clinica_id: clinicaId })
 
       if (error) {
-        console.error('Error cargando personal:', error)
+        console.error('Error cargando personal:', error?.message ?? error?.code)
         toast.error('Error cargando personal')
         setPersonal([])
         setLoading(false)
@@ -64,7 +64,7 @@ export default function ClinicaPersonalPage() {
 
       setPersonal(combined)
     } catch (error) {
-      console.error('Error cargando personal:', error)
+      console.error('Error cargando personal:', error?.message ?? error?.code)
       toast.error('Error cargando personal')
     } finally {
       setLoading(false)

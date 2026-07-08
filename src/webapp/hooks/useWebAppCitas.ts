@@ -87,7 +87,7 @@ export function useWebAppCitas(pacienteId: number | undefined) {
 
       setCitas(mapped)
     } catch (err: any) {
-      console.error('Error cargando citas:', err)
+      console.error('Error cargando citas:', err?.message ?? err?.code)
       setError(err.message || 'Error al cargar citas')
     } finally {
       setLoading(false)
@@ -108,7 +108,7 @@ export function useWebAppCitas(pacienteId: number | undefined) {
         p_motivo: motivo,
       })
       if (err) {
-        console.error('Error cancelando cita:', err)
+        console.error('Error cancelando cita:', err?.message ?? err?.code)
         return { ok: false as const, error: err.message }
       }
 
@@ -118,7 +118,7 @@ export function useWebAppCitas(pacienteId: number | undefined) {
       try {
         await supabase.rpc('notificar_cancelacion', { p_cita_id: citaId })
       } catch (e) {
-        console.error('Error notificar_cancelacion:', e)
+        console.error('Error notificar_cancelacion:', e?.message ?? e?.code)
       }
 
       await fetchCitas()

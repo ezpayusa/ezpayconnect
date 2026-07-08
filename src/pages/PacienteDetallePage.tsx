@@ -112,7 +112,7 @@ export default function PacienteDetallePage() {
 
     if (error) {
       setError('Error cargando paciente')
-      console.error(error)
+      console.error('Error cargando paciente:', error?.message ?? error?.code)
     } else {
       setPaciente(data)
     }
@@ -210,7 +210,7 @@ export default function PacienteDetallePage() {
         alert('Error: ' + (result?.error || 'Error desconocido'))
       }
     } catch (err: any) {
-      console.error('Error generando receta:', err)
+      console.error('Error generando receta:', err?.message ?? err?.code)
       alert('Error: ' + (err.message || 'Error de conexion'))
     } finally {
       setGenerandoReceta(false)
@@ -234,7 +234,7 @@ export default function PacienteDetallePage() {
         alert('Error: ' + (result?.error || 'Error desconocido'))
       }
     } catch (err: any) {
-      console.error('Error enviando recordatorio:', err)
+      console.error('Error enviando recordatorio:', err?.message ?? err?.code)
       alert('Error: ' + (err.message || 'Error de conexion'))
     }
   }
