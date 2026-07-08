@@ -3,7 +3,7 @@
 // Muestra citas existentes (medicos de perfiles) + Crea citas nuevas (medicos de tabla medicos)
 // EzPayConnect
 
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useCallback } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { supabase } from '@/lib/supabase'
 import { useAuth } from '@/hooks/useAuth'
@@ -83,14 +83,8 @@ export default function CitasPage() {
     notas: ''
   })
 
-  useEffect(() => {
-    cargarCitas()
-    cargarRecordatorios()
-    cargarPacientesYMedicos()
-  }, [fechaSeleccionada])
-
   // CARGAR CITAS - Version hibrida: busca medicos en AMBAS tablas
-  const cargarCitas = async () => {
+  const cargarCitas = useCallback(async () => {
     setLoading(true)
 
     // 1. Cargar citas sin join
@@ -163,19 +157,19 @@ export default function CitasPage() {
 
     setCitas(citasCompletas)
     setLoading(false)
-  }
+  }, [fechaSeleccionada, paisId])
 
-  const cargarRecordatorios = async () => {
-    if (citas.length === 0) return
+  const cargarRecordatorios = useCallback(async () => {
+    if (citas.length === 0) { setRecordatorios([]); return }
     const { data } = await supabase
       .from('recordatorios_programados')
       .select('*')
       .in('cita_id', citas.map(c => c.id))
     setRecordatorios(data || [])
-  }
+  }, [citas])
 
   // Cargar pacientes y medicos para el MODAL (solo tabla medicos)
-  const cargarPacientesYMedicos = async () => {
+  const cargarPacientesYMedicos = useCallback(async () => {
     let pacsQuery = supabase
       .from('pacientes')
       .select('id, nombre, telefono')
@@ -188,7 +182,11 @@ export default function CitasPage() {
 
     setPacientes(pacs || [])
     setMedicos(meds || [])
-  }
+  }, [paisId])
+
+  useEffect(() => { cargarCitas() }, [cargarCitas])
+  useEffect(() => { cargarPacientesYMedicos() }, [cargarPacientesYMedicos])
+  useEffect(() => { cargarRecordatorios() }, [cargarRecordatorios])
 
   const guardarCita = async (e: React.FormEvent) => {
     e.preventDefault()
