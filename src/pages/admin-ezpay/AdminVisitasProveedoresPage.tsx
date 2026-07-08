@@ -79,7 +79,7 @@ export default function AdminVisitasProveedoresPage() {
       setVisitas(mapped)
     }
     setLoading(false)
-  }, [])
+  }, [paisId])
 
   useEffect(() => { cargar() }, [cargar])
 

@@ -45,7 +45,7 @@ export function useRecetas() {
 
     setRecetas(recetasConFarmacia)
     setLoading(false)
-  }, [])
+  }, [paisId])
 
   useEffect(() => { fetchRecetas() }, [fetchRecetas])
 
