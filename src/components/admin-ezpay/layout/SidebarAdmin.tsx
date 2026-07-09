@@ -7,6 +7,7 @@ import { usePaisActivo } from '@/hooks/usePaisActivo';
 import { LayoutDashboard, Globe, Layers, Stethoscope, MapPin, FlaskConical, Car, Pill, Store, Megaphone, Handshake, AlertCircle, DollarSign, BarChart3, Shield, ChevronLeft, LogOut, Activity, BarChart4, ArrowLeftRight, Landmark, Gift, Palette } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { supabase } from '@/lib/supabase';
+import { rutaHomePorRol } from '@/lib/rutas';
 
 export function SidebarAdmin() {
   const navigate = useNavigate();
@@ -149,7 +150,7 @@ export function SidebarAdmin() {
         <Button
           variant="ghost"
           className="w-full justify-start text-white/80 hover:text-white hover:bg-white/10"
-          onClick={() => navigate('/dashboard')}
+          onClick={() => navigate(rutaHomePorRol(adminUser))}
         >
           <ChevronLeft className="w-4 h-4 mr-2" />
           Volver al Dashboard
