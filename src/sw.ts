@@ -7,7 +7,7 @@ import {
   matchPrecache,
 } from 'workbox-precaching'
 import { registerRoute, NavigationRoute } from 'workbox-routing'
-import { NetworkFirst } from 'workbox-strategies'
+import { NetworkFirst, NetworkOnly } from 'workbox-strategies'
 import { ExpirationPlugin } from 'workbox-expiration'
 import { clientsClaim } from 'workbox-core'
 
@@ -21,19 +21,19 @@ precacheAndRoute(self.__WB_MANIFEST)
 cleanupOutdatedCaches()
 
 // ============================================
-// Navigation: NetworkFirst sobre el shell HTML
+// Navigation: NetworkOnly sobre el shell HTML (SIN cache runtime intermedia)
 // Online -> siempre el index.html del último deploy (apunta al JS más reciente).
-// Offline / red lenta -> cae al cache y, en última instancia, al precache.
+// Timeout (>3s) / offline / error -> matchPrecache('/index.html'), que pertenece a
+//   la MISMA versión del SW que precacheó los chunks -> coherente por construcción.
+//
+// POR QUÉ se sacó la cache 'html-shell': era una cache RUNTIME que SOBREVIVE a los
+// deploys (cleanupOutdatedCaches() solo limpia PRECACHES, no runtime caches). Si la red
+// tardaba >3s, el SW servía un index.html de hasta 24h de antigüedad que referenciaba
+// chunks de un deploy viejo ya inexistentes -> 404 -> import() falla -> pantalla en blanco.
+// NetworkOnly no cachea nada: o red fresca, o el precache coherente del deploy actual.
 // ============================================
-const htmlStrategy = new NetworkFirst({
-  cacheName: 'html-shell',
+const htmlStrategy = new NetworkOnly({
   networkTimeoutSeconds: 3,
-  plugins: [
-    new ExpirationPlugin({
-      maxEntries: 1,
-      maxAgeSeconds: 86400,
-    }),
-  ],
 })
 
 const navigationRoute = new NavigationRoute(
