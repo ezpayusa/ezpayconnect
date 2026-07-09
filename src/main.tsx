@@ -2,6 +2,8 @@ import { StrictMode } from 'react'
 import { createRoot } from 'react-dom/client'
 import './index.css'
 import App from './App'
+import { ErrorBoundary } from '@/components/ErrorBoundary'
+import { esChunkError, recargarPorChunkObsoleto } from '@/lib/chunk-reload'
 
 console.log('[BUILD] EzPayConnect v3.6 - 2026-06-10 (stubs core: config clinica, examenes, reportes)')
 
@@ -25,26 +27,21 @@ registerSW({
   },
 })
 
-// Si un chunk lazy falla al cargar (deploy nuevo + Service Worker con un index
-// viejo que apunta a chunks que ya no existen), recargar UNA vez para traer el
-// bundle consistente. Evita las pantallas en blanco al navegar a una ruta lazy.
-function recargarPorChunkObsoleto() {
-  const ultima = Number(sessionStorage.getItem('chunk_reload_ts') || 0)
-  if (Date.now() - ultima > 10_000) {
-    sessionStorage.setItem('chunk_reload_ts', String(Date.now()))
-    window.location.reload()
-  }
-}
+// Listeners globales de chunk obsoleto (lógica única en @/lib/chunk-reload). Un import() que falla
+// RECHAZA una promesa: si nadie la captura, el listener de 'error' NO se dispara → por eso además
+// escuchamos 'unhandledrejection'. El ErrorBoundary usa la misma lógica/contador.
 window.addEventListener('vite:preloadError', recargarPorChunkObsoleto)
 window.addEventListener('error', (e) => {
-  const msg = (e?.message || '') + ''
-  if (/dynamically imported module|Importing a module script failed|ChunkLoadError/i.test(msg)) {
-    recargarPorChunkObsoleto()
-  }
+  if (esChunkError(e?.message)) recargarPorChunkObsoleto()
+})
+window.addEventListener('unhandledrejection', (e) => {
+  if (esChunkError(e?.reason?.message ?? e?.reason)) recargarPorChunkObsoleto()
 })
 
 createRoot(document.getElementById('root')!).render(
   <StrictMode>
-    <App />
+    <ErrorBoundary>
+      <App />
+    </ErrorBoundary>
   </StrictMode>,
 )
