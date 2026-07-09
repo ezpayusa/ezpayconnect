@@ -2,6 +2,8 @@ import { StrictMode } from 'react'
 import { createRoot } from 'react-dom/client'
 import './index.css'
 import App from './App'
+import { ErrorBoundary } from '@/components/ErrorBoundary'
+import { esChunkError, recargarPorChunkObsoleto } from '@/lib/chunk-reload'
 
 console.log('[BUILD] EzPayConnect v3.6 - 2026-06-10 (stubs core: config clinica, examenes, reportes)')
 
@@ -25,36 +27,21 @@ registerSW({
   },
 })
 
-// Si un chunk lazy falla al cargar (deploy nuevo + un index/SW que apunta a chunks que ya no
-// existen -> 404; o la variante MIME "text/html" del index servido como .js), recargar para
-// traer el bundle consistente. Evita las pantallas en blanco al navegar a una ruta lazy.
-const ES_CHUNK_ERROR = /dynamically imported module|Importing a module script failed|ChunkLoadError|Failed to load module script/i
-function recargarPorChunkObsoleto() {
-  // Contador (no throttle temporal): máximo 2 recargas por sesión. Si tras 2 recargas el chunk
-  // sigue fallando, no recargar más → evita el loop infinito (blanco → reload → blanco).
-  const KEY = 'chunk_reload_count'
-  const n = Number(sessionStorage.getItem(KEY) || 0)
-  if (n >= 2) {
-    console.error('[PWA] chunk obsoleto persistente tras', n, 'recargas — no se recarga más (evita loop)')
-    return
-  }
-  sessionStorage.setItem(KEY, String(n + 1))
-  window.location.reload()
-}
+// Listeners globales de chunk obsoleto (lógica única en @/lib/chunk-reload). Un import() que falla
+// RECHAZA una promesa: si nadie la captura, el listener de 'error' NO se dispara → por eso además
+// escuchamos 'unhandledrejection'. El ErrorBoundary usa la misma lógica/contador.
 window.addEventListener('vite:preloadError', recargarPorChunkObsoleto)
 window.addEventListener('error', (e) => {
-  const msg = (e?.message || '') + ''
-  if (ES_CHUNK_ERROR.test(msg)) recargarPorChunkObsoleto()
+  if (esChunkError(e?.message)) recargarPorChunkObsoleto()
 })
-// Hueco real: un import() que falla RECHAZA una promesa; si nadie la captura, el listener de
-// 'error' NO se dispara. Por eso escuchamos también 'unhandledrejection'.
 window.addEventListener('unhandledrejection', (e) => {
-  const msg = (e?.reason?.message || String(e?.reason) || '') + ''
-  if (ES_CHUNK_ERROR.test(msg)) recargarPorChunkObsoleto()
+  if (esChunkError(e?.reason?.message ?? e?.reason)) recargarPorChunkObsoleto()
 })
 
 createRoot(document.getElementById('root')!).render(
   <StrictMode>
-    <App />
+    <ErrorBoundary>
+      <App />
+    </ErrorBoundary>
   </StrictMode>,
 )
