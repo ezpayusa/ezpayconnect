@@ -17,7 +17,7 @@ import {
   Printer,
   ArrowLeft,
 } from 'lucide-react'
-import { generarPDFReceta } from '@/lib/pdfReceta'
+import { imprimirPDFReceta } from '@/lib/pdfReceta'
 
 interface RecetaConPaciente {
   id: number
@@ -78,22 +78,21 @@ export default function MedicoRecetasPage() {
   }, [cargarRecetas])
 
   const handleImprimir = async (receta: RecetaConPaciente) => {
+    if (!perfil) return
     setImprimiendo(receta.id)
     try {
-      // Obtener items de la receta
-      const { data: items } = await supabase
-        .from('receta_items')
-        .select('*')
-        .eq('receta_id', receta.id)
+      const [{ data: items }, { data: pacienteCompleto }] = await Promise.all([
+        supabase.from('receta_items').select('*').eq('receta_id', receta.id),
+        supabase.from('pacientes').select('*').eq('id', receta.paciente_id).single(),
+      ])
 
-      const doc = generarPDFReceta({
-        receta: receta as any,
-        items: items || [],
-        paciente: receta.paciente as any,
-        medico: perfil,
-      })
-      doc.output('dataurlnewwindow')
-    } catch (e) {
+      if (!pacienteCompleto) {
+        console.error('Error imprimiendo: paciente no encontrado')
+        return
+      }
+
+      imprimirPDFReceta(receta as any, items || [], pacienteCompleto as any, perfil)
+    } catch (e: any) {
       console.error('Error imprimiendo:', e?.message ?? e?.code)
     } finally {
       setImprimiendo(null)
