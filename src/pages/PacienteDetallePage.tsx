@@ -187,15 +187,15 @@ export default function PacienteDetallePage() {
         .limit(1)
         .single()
 
+      if (!recetaBase?.id) {
+        alert('Este paciente no tiene recetas. Emiti una receta primero.')
+        return
+      }
+
       // Usar supabase.functions.invoke en lugar de fetch (evita CORS)
       const { data: result, error: fnError } = await supabase.functions.invoke('generar-pdf-receta', {
         body: {
-          receta_id: recetaBase?.id || 'nueva',
-          paciente_id: id,
-          medico_id: user.id,
-          medicamentos: recetaBase?.medicamentos || ['Paracetamol 500mg'],
-          diagnostico: recetaBase?.diagnostico || 'Consulta general',
-          indicaciones: recetaBase?.indicaciones || 'Tomar cada 8 horas'
+          receta_id: recetaBase?.id
         }
       })
 
