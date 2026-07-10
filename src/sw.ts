@@ -23,18 +23,17 @@ cleanupOutdatedCaches()
 // ============================================
 // Navigation: NetworkOnly sobre el shell HTML (SIN cache runtime intermedia)
 // Online -> siempre el index.html del último deploy (apunta al JS más reciente).
-// Timeout (>3s) / offline / error -> matchPrecache('/index.html'), que pertenece a
-//   la MISMA versión del SW que precacheó los chunks -> coherente por construcción.
+// Sin red / error -> NetworkOnly LANZA (no tiene cache a la que caer); el catch del
+//   handler cae a matchPrecache('/index.html'), que pertenece a la MISMA versión del
+//   SW que precacheó los chunks -> coherente por construcción.
 //
 // POR QUÉ se sacó la cache 'html-shell': era una cache RUNTIME que SOBREVIVE a los
-// deploys (cleanupOutdatedCaches() solo limpia PRECACHES, no runtime caches). Si la red
-// tardaba >3s, el SW servía un index.html de hasta 24h de antigüedad que referenciaba
-// chunks de un deploy viejo ya inexistentes -> 404 -> import() falla -> pantalla en blanco.
+// deploys (cleanupOutdatedCaches() solo limpia PRECACHES, no runtime caches). El SW
+// podía servir un index.html rancio (de hasta 24h) que referenciaba chunks de un
+// deploy viejo ya inexistentes -> 404 -> import() falla -> pantalla en blanco.
 // NetworkOnly no cachea nada: o red fresca, o el precache coherente del deploy actual.
 // ============================================
-const htmlStrategy = new NetworkOnly({
-  networkTimeoutSeconds: 3,
-})
+const htmlStrategy = new NetworkOnly()
 
 const navigationRoute = new NavigationRoute(
   async (options) => {
