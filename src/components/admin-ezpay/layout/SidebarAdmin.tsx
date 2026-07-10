@@ -41,6 +41,7 @@ export function SidebarAdmin() {
     { path: '/admin-ezpay/paises', icon: Globe, label: 'Países' },
     { path: '/admin-ezpay/canjes', icon: Gift, label: 'Canjes' },
     { path: '/admin-ezpay/especialidades', icon: Stethoscope, label: 'Especialidades' },
+    { path: '/admin-ezpay/medicamentos', icon: Pill, label: 'Medicamentos' },
     { path: '/admin-ezpay/solicitudes-personalizacion', icon: Palette, label: 'Personalización' },
   ];
 
