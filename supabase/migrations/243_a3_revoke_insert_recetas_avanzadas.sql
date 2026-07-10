@@ -1,0 +1,41 @@
+-- ============================================================
+-- A3 · Cerrar los huecos de authz de recetas_avanzadas.
+--
+-- HUECO 1 — INSERT (verificado en prod, NO explotado):
+--   policy recadv_insert_medico: WITH CHECK = (medico_id = auth.uid()::text)
+--   AND private.medico_atiende_paciente(paciente_id).
+--   Valida el par (medico, paciente) pero NUNCA ata receta_base_id.
+--   dispatch_token y dispatch_token_expira_at son DEFAULT de columna -> se disparan
+--   en un INSERT directo. verificar_receta_despacho solo exige expira_at > now().
+--   => un medico con >=1 cita puede POST /rest/v1/recetas_avanzadas con el
+--      receta_base_id de una receta AJENA y mintear un token valido 30 dias.
+--
+-- HUECO 2 — UPDATE/DELETE (hallazgo del recon 2026-07-10):
+--   authenticated tiene grants de UPDATE y DELETE sobre la tabla, SIN NINGUNA
+--   policy que los habilite. Hoy son inertes (RLS on + 0 policies = deny).
+--   Pero el grant es una bomba: la primera policy de UPDATE que alguien agregue
+--   abre la puerta sin que nadie revise el grant.
+--   Un UPDATE de dispatch_token_expira_at extiende un token indefinidamente.
+--   Un DELETE borra la evidencia de una receta despachada.
+--   super_admin conserva ambos via recadv_superadmin_all (polcmd='*').
+--
+-- POR QUE SE CIERRA LA PUERTA Y NO SE ANGOSTA (verificado en prod):
+--   - La edge generar-pdf-receta crea el cliente con SERVICE_ROLE (index.ts:25):
+--     bypassa RLS, no necesita grants de authenticated.
+--   - emitir_receta (mig 242) es SECURITY DEFINER: tampoco los necesita.
+--   - registrar_dispensacion / verificar_receta_despacho / revelar_items_receta
+--     son DEFINER: tampoco.
+--   - Censo de escritores (Codex, 2026-07-10): 0 clientes autenticados escriben
+--     en recetas_avanzadas en todo src/.
+--   - Las 3 filas de prod tienen firma_digital con el formato que SOLO produce
+--     la edge -> nadie uso nunca este camino.
+--
+-- SELECT se conserva: recadv_select_medico, recadv_select_paciente y
+-- "Admin clinica ve recetas avanzadas de su clinica" son lecturas legitimas.
+--
+-- Mismo patron que las migs 238/239: REVOKE + policy fuera.
+-- ============================================================
+
+REVOKE INSERT, UPDATE, DELETE ON public.recetas_avanzadas FROM authenticated;
+
+DROP POLICY IF EXISTS recadv_insert_medico ON public.recetas_avanzadas;
