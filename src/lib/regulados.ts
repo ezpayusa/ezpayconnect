@@ -1,10 +1,16 @@
 import type { RecetaItem } from '@/types'
 
-// Fuente unica de verdad del front sobre que categorias exigen acuse.
-// Debe coincidir con el gate server-side de public.emitir_receta (mig 242),
-// que lanza PR007 si falta el acuse. El servidor es la barrera real; esto es UX.
+// UX del front: que categorias muestran el recuadro de acuse en la receta.
+// La barrera REAL es server-side: public.emitir_receta (mig 249) lee
+// medicamentos_categorias.requiere_acuse y lanza PR007. Esto solo decide si
+// se PIDE el acuse en pantalla; si el front se equivoca, el server rechaza igual.
 // categoria NULL = sin clasificar = NO regulado (fail-safe, decision A1).
-export const CATEGORIAS_REGULADAS = ['psicotropico', 'estupefaciente', 'recetario_especial'] as const
+//
+// 'recetario_especial' YA NO es una categoria (mig 248): paso a ser la columna
+// requiere_recetario_especial. Las categorias que exigen acuse hoy son
+// psicotropico y estupefaciente. Si el abogado agrega una categoria con
+// requiere_acuse=true, hay que sumarla aca O—mejor—leer la tabla (pendiente).
+export const CATEGORIAS_REGULADAS = ['psicotropico', 'estupefaciente'] as const
 
 export function esRegulado(categoria?: string | null): boolean {
   return !!categoria && (CATEGORIAS_REGULADAS as readonly string[]).includes(categoria)
@@ -14,7 +20,6 @@ export function etiquetaCategoria(categoria?: string | null): string {
   switch (categoria) {
     case 'psicotropico': return 'psicotrópico'
     case 'estupefaciente': return 'estupefaciente'
-    case 'recetario_especial': return 'de recetario especial'
     default: return 'regulado'
   }
 }
