@@ -12,7 +12,7 @@ import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
 import { useNavigate } from 'react-router-dom'
 import {
-  CalendarDays, FileText, FlaskConical, MessageCircle, Plus, Clock, Pill,
+  CalendarDays, FileText, FlaskConical, Plus, Clock, Pill,
   MapPin, Loader2, Bell, BellOff, Gift, Star
 } from 'lucide-react'
 
@@ -80,15 +80,6 @@ export default function WebAppDashboard() {
               {loadingExamenes ? <Loader2 className="h-5 w-5 animate-spin mx-auto" /> : examenesPendientes.length}
             </p>
             <p className="text-xs text-slate-500">Exámenes pendientes</p>
-          </CardContent>
-        </Card>
-        <Card className="bg-white border-slate-100 hover:shadow-md transition-shadow cursor-pointer" onClick={() => navigate('/paciente/chat')}>
-          <CardContent className="p-4 flex flex-col items-center text-center">
-            <div className="w-10 h-10 rounded-full bg-indigo-50 flex items-center justify-center mb-2">
-              <MessageCircle className="h-5 w-5 text-indigo-500" />
-            </div>
-            <p className="text-2xl font-bold text-slate-800">--</p>
-            <p className="text-xs text-slate-500">Mensajes</p>
           </CardContent>
         </Card>
       </div>
