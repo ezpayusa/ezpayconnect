@@ -14,6 +14,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@
 import { Badge } from '@/components/ui/badge'
 import { FileText, Plus, Trash2, Search, Printer, Eye, Loader2, X, Download, Mail, ArrowLeft, MapPin, FlaskConical, CheckCircle2, Building2, AlertCircle } from 'lucide-react'
 import type { RecetaItem } from '@/types'
+import { esRegulado, etiquetaCategoria, type ItemRecetaUI } from '@/lib/regulados'
 import EnviarRecetaEmail from '@/components/recetas/EnviarRecetaEmail'
 import { useNavigate } from 'react-router-dom'
 
@@ -54,12 +55,14 @@ export default function RecetasPage() {
   const [form, setForm] = useState({
     paciente_id: '', instrucciones_generales: ''
   })
-  const [items, setItems] = useState<Partial<RecetaItem>[]>([])
+  const [items, setItems] = useState<ItemRecetaUI[]>([])
   const [formError, setFormError] = useState('')
 
   const handleAddMedicamento = (med: typeof medicamentos[0]) => {
     setItems([...items, {
       medicamento_id: med.id,
+      categoria_regulatoria: med.categoria_regulatoria ?? null,
+      acuse_iniciales: '',
       nombre_medicamento: med.nombre_generico + (med.nombre_comercial ? ` (${med.nombre_comercial})` : ''),
       dosis: '', frecuencia: '', duracion: '', instrucciones: '', cantidad: 1,
       farmacia_id: null
@@ -210,6 +213,15 @@ export default function RecetasPage() {
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
     if (items.length === 0) return
+
+    const sinAcuse = items.find(
+      (it) => esRegulado(it.categoria_regulatoria) && !it.acuse_iniciales?.trim()
+    )
+    if (sinAcuse) {
+      setFormError(`"${sinAcuse.nombre_medicamento}" es ${etiquetaCategoria(sinAcuse.categoria_regulatoria)} y requiere tus iniciales antes de emitir.`)
+      return
+    }
+
     setSaving(true)
     setFormError('')
     const { error } = await createReceta(
@@ -515,6 +527,23 @@ export default function RecetasPage() {
                         <div className="space-y-1"><Label className="text-xs">Cantidad</Label><Input type="number" className="h-8 text-sm" value={item.cantidad} onChange={e => updateItem(idx, 'cantidad', parseInt(e.target.value) || 1)} min={1} /></div>
                       </div>
                       <div className="space-y-1"><Label className="text-xs">Instrucciones especiales</Label><Input className="h-8 text-sm" value={item.instrucciones || ''} onChange={e => updateItem(idx, 'instrucciones', e.target.value)} placeholder="Tomar después de las comidas" /></div>
+
+                {esRegulado(item.categoria_regulatoria) && (
+                  <div className="mt-2 p-3 bg-red-50 border border-red-200 rounded-lg">
+                    <label className="block text-sm font-medium text-red-800 mb-1">
+                      Este medicamento es {etiquetaCategoria(item.categoria_regulatoria)}. Tus iniciales *
+                    </label>
+                    <input
+                      type="text"
+                      maxLength={10}
+                      value={item.acuse_iniciales ?? ''}
+                      onChange={(e) => updateItem(idx, 'acuse_iniciales', e.target.value)}
+                      placeholder="Ej. OG"
+                      className="w-32 px-3 py-2 border border-red-300 rounded-lg focus:ring-2 focus:ring-red-400"
+                    />
+                    <p className="text-xs text-red-600 mt-1">Quedará registrado junto a la receta.</p>
+                  </div>
+                )}
 
                       {/* ============================================ */}
                       {/* NUEVO: Botones Farmacia / Laboratorio */}

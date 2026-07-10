@@ -59,6 +59,7 @@ export interface Medicamento {
   precio_referencia: number | null
   requiere_receta: boolean
   activo: boolean
+  categoria_regulatoria?: string | null
 }
 
 export interface Receta {
@@ -87,6 +88,7 @@ export interface RecetaItem {
   farmacia_id: number | null
   precio_unitario: number | null
   stock_actual: number | null
+  acuse_iniciales?: string | null
 }
 export interface ExpedienteNota {
   id: number
