@@ -81,6 +81,7 @@ export function useRecetas() {
         instrucciones: i.instrucciones || null,
         cantidad: i.cantidad || 1,
         farmacia_id: i.farmacia_id || null,
+        acuse_iniciales: i.acuse_iniciales ?? null,
         precio_unitario: i.precio_unitario || null,
         stock_actual: i.stock_actual || null
       }))

@@ -6,6 +6,7 @@ import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { supabase } from '@/lib/supabase'
+import { esRegulado, etiquetaCategoria, type ItemRecetaUI } from '@/lib/regulados'
 import { useAuth } from '@/hooks/useAuth'
 import { usePacientes } from '@/hooks/usePacientes'
 import { useRecetas, useMedicamentos } from '@/hooks/useRecetas'
@@ -49,7 +50,7 @@ export default function RecetaModal({ open, onOpenChange, pacienteIdPreseleccion
   const { resultados: resultadosBusqueda, loading: loadingBusqueda, buscar: buscarEnProveedor } = useBusquedaMedicamentos()
 
   const [form, setForm] = useState({ paciente_id: pacienteIdPreseleccionado || '', instrucciones_generales: '' })
-  const [items, setItems] = useState<Partial<RecetaItem>[]>([])
+  const [items, setItems] = useState<ItemRecetaUI[]>([])
   // F2: pre-marca de modalidad por GRUPO (farmacia). OPCIONAL, default pickup. Se aplica POST-create
   // (el receta_id no existe antes) llamando fijar_modalidad_grupo SOLO para los grupos marcados delivery.
   const [modalidades, setModalidades] = useState<Record<number, Modalidad>>({})
@@ -111,6 +112,8 @@ export default function RecetaModal({ open, onOpenChange, pacienteIdPreseleccion
   const handleAddMedicamento = (med: typeof medicamentos[0]) => {
     const nuevoItem = {
       medicamento_id: med.id,
+      categoria_regulatoria: med.categoria_regulatoria ?? null,
+      acuse_iniciales: '',
       nombre_medicamento: med.nombre_generico + (med.nombre_comercial ? ` (${med.nombre_comercial})` : ''),
       dosis: '', frecuencia: '', duracion: '', instrucciones: '', cantidad: 1,
       farmacia_id: null
@@ -258,6 +261,14 @@ export default function RecetaModal({ open, onOpenChange, pacienteIdPreseleccion
       }
     }
 
+    const sinAcuse = items.find(
+      (it) => esRegulado(it.categoria_regulatoria) && !it.acuse_iniciales?.trim()
+    )
+    if (sinAcuse) {
+      alert(`"${sinAcuse.nombre_medicamento}" es ${etiquetaCategoria(sinAcuse.categoria_regulatoria)} y requiere tus iniciales antes de emitir.`)
+      return
+    }
+
     setSaving(true)
     setFormError('')
 
@@ -267,7 +278,10 @@ export default function RecetaModal({ open, onOpenChange, pacienteIdPreseleccion
         instrucciones_generales: form.instrucciones_generales || null,
         cita_id: citaId || null,
       },
-      items as RecetaItem[]
+      items.map((it: any) => ({
+        ...it,
+        acuse_iniciales: it.acuse_iniciales?.trim() || null,
+      })) as RecetaItem[]
     )
 
     if (result.error) {
@@ -401,6 +415,22 @@ export default function RecetaModal({ open, onOpenChange, pacienteIdPreseleccion
                         <div className="space-y-1"><Label className="text-xs">Cantidad</Label><Input type="number" className="h-8 text-sm" value={item.cantidad} onChange={e => updateItem(idx, 'cantidad', parseInt(e.target.value) || 1)} min={1} /></div>
                       </div>
                       <div className="space-y-1"><Label className="text-xs">Instrucciones especiales</Label><Input className="h-8 text-sm" value={item.instrucciones || ''} onChange={e => updateItem(idx, 'instrucciones', e.target.value)} placeholder="Tomar después de las comidas" /></div>
+                      {esRegulado(item.categoria_regulatoria) && (
+                        <div className="col-span-full mt-2 p-3 bg-red-50 border border-red-200 rounded-lg">
+                          <label className="block text-sm font-medium text-red-800 mb-1">
+                            Este medicamento es {etiquetaCategoria(item.categoria_regulatoria)}. Tus iniciales *
+                          </label>
+                          <input
+                            type="text"
+                            maxLength={10}
+                            value={item.acuse_iniciales ?? ''}
+                            onChange={(e) => updateItem(idx, 'acuse_iniciales', e.target.value)}
+                            placeholder="Ej. OG"
+                            className="w-32 px-3 py-2 border border-red-300 rounded-lg focus:ring-2 focus:ring-red-400"
+                          />
+                          <p className="text-xs text-red-600 mt-1">Quedará registrado junto a la receta.</p>
+                        </div>
+                      )}
                       <div className="flex items-center gap-2 pt-2 border-t border-[#1E5C8E]/10">
                         <Button type="button" size="sm" variant="outline" onClick={() => abrirModalFarmacia(idx)} className={item.farmacia_id ? 'border-green-500 text-green-700 hover:bg-green-50' : 'border-[#1E5C8E] text-[#1E5C8E] hover:bg-white'}>
                           {item.farmacia_id ? <CheckCircle2 className="h-3 w-3 mr-1" /> : <MapPin className="h-3 w-3 mr-1" />}
