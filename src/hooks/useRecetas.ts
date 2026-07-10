@@ -58,37 +58,104 @@ export function useRecetas() {
         return { error: 'Todos los medicamentos deben tener dosis y frecuencia' }
       }
     }
-    // El token de despacho (QR) lo genera la BD en recetas_avanzadas (DEFAULT fuerte,
-    // 256 bits) al generar el PDF; el cliente ya NO genera ningún código.
-    const { data: recetaData, error } = await supabase.from('recetas').insert({
-      paciente_id: receta.paciente_id,
-      instrucciones_generales: receta.instrucciones_generales || null,
-      medico_id: user.id,
-      estado: 'activa',
-      pais_id: paisId,
-    }).select().single()
-    if (error || !recetaData) {
-      return { data: null, error: `Error al crear receta: ${error?.message || 'Error desconocido'}` }
+    // ─────────────────────────────────────────────────────────────
+    // CUTOVER O1. El flag vive en private.emision_flags y se lee por RPC
+    // (private.* no es alcanzable desde PostgREST). Fail-safe: si la lectura
+    // falla, `usarRPC` queda false y se emite por el camino directo de siempre.
+    // Apagar el flag = un UPDATE de una linea. Sin build, sin deploy.
+    // ─────────────────────────────────────────────────────────────
+    let usarRPC = false
+    try {
+      const { data: flag } = await supabase.rpc('emision_flag', { p_clave: 'emitir_receta_rpc' })
+      usarRPC = flag === true
+    } catch {
+      usarRPC = false
     }
-    if (items.length > 0) {
-      const itemsConReceta = items.map(i => ({
-        receta_id: recetaData.id,
-        medicamento_id: i.medicamento_id || null,
-        nombre_medicamento: i.nombre_medicamento,
-        dosis: i.dosis,
-        frecuencia: i.frecuencia,
-        duracion: i.duracion || null,
-        instrucciones: i.instrucciones || null,
-        cantidad: i.cantidad || 1,
-        farmacia_id: i.farmacia_id || null,
-        acuse_iniciales: i.acuse_iniciales ?? null,
-        precio_unitario: i.precio_unitario || null,
-        stock_actual: i.stock_actual || null
-      }))
-      const { error: itemsError } = await supabase.from('receta_items').insert(itemsConReceta)
-      if (itemsError) {
-        await supabase.from('recetas').delete().eq('id', recetaData.id)
-        return { data: null, error: `Error al guardar medicamentos: ${itemsError.message}` }
+
+    let recetaData: Receta | null = null
+
+    if (usarRPC) {
+      // Los errores PRxxx son RAISE deliberados de emitir_receta, con mensaje
+      // redactado para el medico. Cualquier otro codigo es un error de Postgres:
+      // su texto expone internals del esquema y no le sirve a nadie.
+      const { data: res, error: rpcError } = await supabase.rpc('emitir_receta', {
+        p_paciente_id: receta.paciente_id,
+        p_instrucciones_generales: receta.instrucciones_generales ?? null,
+        p_items: items.map(i => ({
+          medicamento_id: i.medicamento_id ?? null,
+          nombre_medicamento: i.nombre_medicamento,
+          dosis: i.dosis,
+          frecuencia: i.frecuencia,
+          duracion: i.duracion ?? null,
+          instrucciones: i.instrucciones ?? null,
+          cantidad: i.cantidad ?? 1,
+          farmacia_id: i.farmacia_id ?? null,
+          precio_unitario: i.precio_unitario ?? null,
+          stock_actual: i.stock_actual ?? null,
+          acuse_iniciales: i.acuse_iniciales ?? null,
+        })),
+      })
+
+      if (rpcError) {
+        const esErrorDeNegocio = typeof rpcError.code === 'string' && rpcError.code.startsWith('PR')
+        if (esErrorDeNegocio) {
+          return { data: null, error: rpcError.message }
+        }
+        console.error('emitir_receta:', rpcError.code, rpcError.message)
+        return { data: null, error: 'No se pudo emitir la receta. Intenta de nuevo.' }
+      }
+
+      const recetaId = (res as { receta_id?: number } | null)?.receta_id
+      if (!recetaId) {
+        console.error('emitir_receta: respuesta sin receta_id', res)
+        return { data: null, error: 'No se pudo emitir la receta. Intenta de nuevo.' }
+      }
+
+      // La RPC devuelve {receta_id, numero_correlativo, numero_formateado}.
+      // Los callers esperan la FILA (RecetaModal:294 usa result.data.id).
+      const { data: fila, error: selError } = await supabase
+        .from('recetas').select('*').eq('id', recetaId).single()
+      if (selError || !fila) {
+        console.error('emitir_receta: receta creada pero no legible', selError?.message)
+        return { data: null, error: 'No se pudo emitir la receta. Intenta de nuevo.' }
+      }
+      recetaData = fila
+
+    } else {
+      // ── Camino directo (pre-cutover). Sin correlativo, sin dispatch_token:
+      //    la receta NO nace despachable. Se conserva como backout del flag.
+      const { data: filaDirecta, error } = await supabase.from('recetas').insert({
+        paciente_id: receta.paciente_id,
+        instrucciones_generales: receta.instrucciones_generales || null,
+        medico_id: user.id,
+        estado: 'activa',
+        pais_id: paisId,
+      }).select().single()
+      if (error || !filaDirecta) {
+        return { data: null, error: `Error al crear receta: ${error?.message || 'Error desconocido'}` }
+      }
+      recetaData = filaDirecta
+
+      if (items.length > 0) {
+        const itemsConReceta = items.map(i => ({
+          receta_id: filaDirecta.id,
+          medicamento_id: i.medicamento_id || null,
+          nombre_medicamento: i.nombre_medicamento,
+          dosis: i.dosis,
+          frecuencia: i.frecuencia,
+          duracion: i.duracion || null,
+          instrucciones: i.instrucciones || null,
+          cantidad: i.cantidad || 1,
+          farmacia_id: i.farmacia_id || null,
+          acuse_iniciales: i.acuse_iniciales ?? null,
+          precio_unitario: i.precio_unitario || null,
+          stock_actual: i.stock_actual || null,
+        }))
+        const { error: itemsError } = await supabase.from('receta_items').insert(itemsConReceta)
+        if (itemsError) {
+          await supabase.from('recetas').delete().eq('id', filaDirecta.id)
+          return { data: null, error: `Error al guardar medicamentos: ${itemsError.message}` }
+        }
       }
     }
     // Notificar al paciente (RPC gateado: deriva recipient + contenido genérico del ref ya insertado; in-app + push). Best-effort.
