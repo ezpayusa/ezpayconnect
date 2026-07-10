@@ -41,6 +41,7 @@ const PacientesPage = lazy(() => import('@/pages/PacientesPage'))
 const PacienteDetallePage = lazy(() => import('@/pages/PacienteDetallePage'))
 const CitasPage = lazy(() => import('@/pages/CitasPage'))
 const RecetasPage = lazy(() => import('@/pages/RecetasPage'))
+const RedirectRecetas = lazy(() => import('@/components/RedirectRecetas'))
 const RecetaDetallePage = lazy(() => import('@/pages/RecetaDetallePage'))
 const FarmaciasPage = lazy(() => import('@/pages/FarmaciasPage'))
 const DispensarRecetaPage = lazy(() => import('@/pages/DispensarRecetaPage'))
@@ -243,7 +244,7 @@ function App() {
         <Route path="/pacientes/:id/detalle" element={<PrivateLayout><PacienteDetallePage /></PrivateLayout>} />
         <Route path="/pacientes/:id" element={<PrivateLayout><PacientesPage /></PrivateLayout>} />
         <Route path="/citas" element={<PrivateLayout><CitasPage /></PrivateLayout>} />
-        <Route path="/recetas" element={<PrivateLayout><RecetasPage /></PrivateLayout>} />
+        <Route path="/recetas" element={<RedirectRecetas />} />
         <Route path="/recetas/:id" element={<PrivateLayout><RecetaDetallePage /></PrivateLayout>} />
         <Route path="/facturas" element={<PrivateLayout><FacturasPage /></PrivateLayout>} />
         <Route path="/farmacias" element={<PrivateLayout><FarmaciasPage /></PrivateLayout>} />

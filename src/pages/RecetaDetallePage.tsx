@@ -110,7 +110,7 @@ export default function RecetaDetallePage() {
     return (
       <div className="min-h-screen bg-gray-50 p-6">
         <div className="max-w-2xl mx-auto">
-          <Button variant="outline" onClick={() => navigate('/recetas')} className="mb-6 gap-2">
+          <Button variant="outline" onClick={() => navigate('/medico/recetas')} className="mb-6 gap-2">
             <ArrowLeft className="h-4 w-4" />
             Volver a Recetas
           </Button>
@@ -160,7 +160,7 @@ export default function RecetaDetallePage() {
         {/* === HEADER === */}
         <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
           <div className="flex items-center gap-3">
-            <Button variant="outline" size="icon" onClick={() => navigate('/recetas')}>
+            <Button variant="outline" size="icon" onClick={() => navigate('/medico/recetas')}>
               <ArrowLeft className="h-4 w-4" />
             </Button>
             <div>

@@ -18,6 +18,7 @@ import {
   ArrowLeft,
 } from 'lucide-react'
 import { imprimirPDFReceta } from '@/lib/pdfReceta'
+import RecetaModal from '@/components/consulta/RecetaModal'
 
 interface RecetaConPaciente {
   id: number
@@ -38,6 +39,7 @@ export default function MedicoRecetasPage() {
   const [loading, setLoading] = useState(true)
   const [busqueda, setBusqueda] = useState('')
   const [imprimiendo, setImprimiendo] = useState<number | null>(null)
+  const [showNueva, setShowNueva] = useState(false)
 
   const cargarRecetas = useCallback(async () => {
     if (!perfil?.id) return
@@ -141,6 +143,10 @@ export default function MedicoRecetasPage() {
             {recetas.length} recetas emitidas
           </p>
         </div>
+        <Button size="sm" onClick={() => setShowNueva(true)} className="mr-2">
+          <FileText className="h-4 w-4 mr-1" />
+          Nueva Receta
+        </Button>
         <Button variant="outline" size="sm" onClick={cargarRecetas}>
           <RefreshCw className="h-4 w-4 mr-1" />
           Recargar
@@ -223,6 +229,11 @@ export default function MedicoRecetasPage() {
           ))
         )}
       </div>
+      <RecetaModal
+        open={showNueva}
+        onOpenChange={setShowNueva}
+        onSuccess={cargarRecetas}
+      />
     </div>
   )
 }

@@ -75,7 +75,6 @@ export default function DashboardPage() {
         navigate('/citas')
       }
     }, color: 'bg-[#5BA8D1]' },
-    { label: 'Nueva Receta', icon: FileText, action: () => navigate('/recetas?nuevo=true'), color: 'bg-[#1a2a3a]' },
   ]
 
   const proximasCitas = (citas || [])
