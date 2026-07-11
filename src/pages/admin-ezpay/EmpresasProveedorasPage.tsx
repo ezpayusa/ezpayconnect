@@ -11,6 +11,7 @@ import { Label } from '@/components/ui/label';
 import { Tabs, TabsList, TabsTrigger, TabsContent } from '@/components/ui/tabs';
 import { CapacidadesTiersPais } from '@/pages/admin-ezpay/CapacidadesTiersPais';
 import { ContratosComisionPais } from '@/pages/admin-ezpay/ContratosComisionPais';
+import { EstadoCuentaComisionPais } from '@/pages/admin-ezpay/EstadoCuentaComisionPais';
 import { useAdminAuth } from '@/hooks/admin/useAdminAuth';
 import { usePaisFiltro } from '@/hooks/usePaisFiltro';
 import { supabase } from '@/lib/supabase';
@@ -195,6 +196,7 @@ export default function EmpresasProveedorasPage() {
           <TabsTrigger value="empresas">Empresas</TabsTrigger>
           <TabsTrigger value="capacidades">Capacidades y Tiers</TabsTrigger>
           <TabsTrigger value="comision">Contratos de Comisión</TabsTrigger>
+          <TabsTrigger value="estado-cuenta">Estado de Cuenta</TabsTrigger>
         </TabsList>
         <TabsContent value="empresas">
 
@@ -588,6 +590,9 @@ export default function EmpresasProveedorasPage() {
         </TabsContent>
         <TabsContent value="comision">
           <ContratosComisionPais paisId={paisId} esSuper={isSuperAdmin} />
+        </TabsContent>
+        <TabsContent value="estado-cuenta">
+          <EstadoCuentaComisionPais paisId={paisId} esSuper={isSuperAdmin} />
         </TabsContent>
       </Tabs>
     </div>
