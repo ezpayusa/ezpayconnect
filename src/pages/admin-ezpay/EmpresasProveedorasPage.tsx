@@ -587,7 +587,7 @@ export default function EmpresasProveedorasPage() {
           <CapacidadesTiersPais paisId={paisId} esSuper={isSuperAdmin} />
         </TabsContent>
         <TabsContent value="comision">
-          <ContratosComisionPais paisId={paisId} esSuper={isSuperAdmin} farmacias={empresas} />
+          <ContratosComisionPais paisId={paisId} esSuper={isSuperAdmin} />
         </TabsContent>
       </Tabs>
     </div>
