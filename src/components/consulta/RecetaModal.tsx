@@ -37,17 +37,12 @@ interface RecetaModalProps {
   onSuccess?: () => void
 }
 
-function limpiarNombreParaBusqueda(nombre: string): string {
-  if (!nombre) return ''
-  return nombre.replace(/\s*\(.*?\)/g, '').trim()
-}
-
 export default function RecetaModal({ open, onOpenChange, pacienteIdPreseleccionado, citaId, onSuccess }: RecetaModalProps) {
   const { perfil } = useAuth()
   const { pacientes } = usePacientes()
   const { createReceta } = useRecetas()
   const { medicamentos, loading: loadingMeds, error: errorMeds, fetchMedicamentos } = useMedicamentos()
-  const { resultados: resultadosBusqueda, loading: loadingBusqueda, buscar: buscarEnProveedor } = useBusquedaMedicamentos()
+  const { resultados: resultadosBusqueda, loading: loadingBusqueda, buscarPorMedicamento } = useBusquedaMedicamentos()
 
   const [form, setForm] = useState({ paciente_id: pacienteIdPreseleccionado || '', instrucciones_generales: '' })
   const [items, setItems] = useState<ItemRecetaUI[]>([])
@@ -135,17 +130,17 @@ export default function RecetaModal({ open, onOpenChange, pacienteIdPreseleccion
 
   const abrirModalFarmacia = (idx: number) => {
     setItemIdxBuscando(idx)
-    const nombre = limpiarNombreParaBusqueda(items[idx]?.nombre_medicamento || '')
-    setBusquedaProveedor(nombre)
-    if (nombre.trim()) buscarEnProveedor(nombre)
+    const item = items[idx]
+    setBusquedaProveedor(item?.nombre_medicamento || '')
+    if (item?.medicamento_id) buscarPorMedicamento(item.medicamento_id)
     setShowFarmaciaModal(true)
   }
 
   const abrirModalLaboratorio = (idx: number) => {
     setItemIdxBuscando(idx)
-    const nombre = limpiarNombreParaBusqueda(items[idx]?.nombre_medicamento || '')
-    setBusquedaProveedor(nombre)
-    if (nombre.trim()) buscarEnProveedor(nombre)
+    const item = items[idx]
+    setBusquedaProveedor(item?.nombre_medicamento || '')
+    if (item?.medicamento_id) buscarPorMedicamento(item.medicamento_id)
     setShowLaboratorioModal(true)
   }
 
@@ -533,15 +528,6 @@ export default function RecetaModal({ open, onOpenChange, pacienteIdPreseleccion
             <p className="text-sm text-[#8a9aaa]">
               Medicamento: <span className="font-medium text-[#1a2a3a]">{items[itemIdxBuscando ?? 0]?.nombre_medicamento}</span>
             </p>
-            <div className="relative">
-              <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-[#8a9aaa]" />
-              <Input
-                value={busquedaProveedor}
-                onChange={e => { setBusquedaProveedor(e.target.value); buscarEnProveedor(e.target.value) }}
-                placeholder="Buscar farmacia..."
-                className="pl-10"
-              />
-            </div>
             {renderResultadosBusqueda('farmacia')}
           </div>
         </DialogContent>
@@ -560,15 +546,6 @@ export default function RecetaModal({ open, onOpenChange, pacienteIdPreseleccion
             <p className="text-sm text-[#8a9aaa]">
               Medicamento: <span className="font-medium text-[#1a2a3a]">{items[itemIdxBuscando ?? 0]?.nombre_medicamento}</span>
             </p>
-            <div className="relative">
-              <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-[#8a9aaa]" />
-              <Input
-                value={busquedaProveedor}
-                onChange={e => { setBusquedaProveedor(e.target.value); buscarEnProveedor(e.target.value) }}
-                placeholder="Buscar laboratorio..."
-                className="pl-10"
-              />
-            </div>
             {renderResultadosBusqueda('laboratorio')}
           </div>
         </DialogContent>
