@@ -22,8 +22,9 @@ interface Contrato {
   solicitado_por: string; solicitante: string | null; nota_revision: string | null
   resuelto_por: string | null; resuelto_at: string | null; created_at: string
 }
-// Farmacias del país (las provee el padre desde su listado ya cargado; el hijo no toca PostgREST).
-interface FarmaciaOpt { id: string; nombre_empresa: string; tipo: string }
+// Farmacias del país para el selector. Se cargan por RPC DEFINER (listar_farmacias_pais):
+// empresas_proveedoras no da SELECT a admin_pais por RLS → RPC acotada por rol/país.
+interface FarmaciaOpt { id: string; nombre_empresa: string }
 
 const estadoBadge = (e: string) =>
   e === 'aprobada' ? 'bg-emerald-100 text-emerald-700'
@@ -32,8 +33,9 @@ const estadoBadge = (e: string) =>
 
 const vigenciaTexto = (desde: string, hasta: string | null) => `${desde} → ${hasta ?? '(abierta)'}`
 
-export function ContratosComisionPais({ paisId, esSuper, farmacias }: { paisId: string | null; esSuper: boolean; farmacias: FarmaciaOpt[] }) {
+export function ContratosComisionPais({ paisId, esSuper }: { paisId: string | null; esSuper: boolean }) {
   const [contratos, setContratos] = useState<Contrato[]>([])
+  const [farmacias, setFarmacias] = useState<FarmaciaOpt[]>([])
   const [loading, setLoading] = useState(true)
 
   // admin_pais: formulario de solicitud
@@ -48,13 +50,14 @@ export function ContratosComisionPais({ paisId, esSuper, farmacias }: { paisId: 
   const [nota, setNota] = useState('')
   const [resolviendo, setResolviendo] = useState(false)
 
-  const soloFarmacias = farmacias.filter((f) => f.tipo === 'farmacia')
-
   const cargar = useCallback(async () => {
     setLoading(true)
     try {
       const { data } = await supabase.rpc('listar_contratos_comision', { p_pais_id: paisId })
       setContratos((data as Contrato[]) || [])
+      // Selector de farmacias: RPC DEFINER acotada por rol/país (no PostgREST directo).
+      const { data: farm } = await supabase.rpc('listar_farmacias_pais', { p_pais_id: paisId })
+      setFarmacias((farm as FarmaciaOpt[]) || [])
     } catch (e: any) {
       toast.error('Error cargando contratos: ' + (e.message || ''))
     } finally {
@@ -128,8 +131,8 @@ export function ContratosComisionPais({ paisId, esSuper, farmacias }: { paisId: 
                 <Select value={form.empresa_id} onValueChange={(v) => setForm({ ...form, empresa_id: v })}>
                   <SelectTrigger><SelectValue placeholder="Selecciona una farmacia" /></SelectTrigger>
                   <SelectContent>
-                    {soloFarmacias.length === 0 && <div className="px-2 py-1.5 text-xs text-muted-foreground">No hay farmacias en este país.</div>}
-                    {soloFarmacias.map((f) => <SelectItem key={f.id} value={f.id}>{f.nombre_empresa}</SelectItem>)}
+                    {farmacias.length === 0 && <div className="px-2 py-1.5 text-xs text-muted-foreground">No hay farmacias en este país.</div>}
+                    {farmacias.map((f) => <SelectItem key={f.id} value={f.id}>{f.nombre_empresa}</SelectItem>)}
                   </SelectContent>
                 </Select>
               </div>
