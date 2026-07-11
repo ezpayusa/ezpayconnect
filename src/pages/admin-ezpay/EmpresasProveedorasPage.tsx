@@ -10,6 +10,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@
 import { Label } from '@/components/ui/label';
 import { Tabs, TabsList, TabsTrigger, TabsContent } from '@/components/ui/tabs';
 import { CapacidadesTiersPais } from '@/pages/admin-ezpay/CapacidadesTiersPais';
+import { ContratosComisionPais } from '@/pages/admin-ezpay/ContratosComisionPais';
 import { useAdminAuth } from '@/hooks/admin/useAdminAuth';
 import { usePaisFiltro } from '@/hooks/usePaisFiltro';
 import { supabase } from '@/lib/supabase';
@@ -193,6 +194,7 @@ export default function EmpresasProveedorasPage() {
         <TabsList className="mb-4">
           <TabsTrigger value="empresas">Empresas</TabsTrigger>
           <TabsTrigger value="capacidades">Capacidades y Tiers</TabsTrigger>
+          <TabsTrigger value="comision">Contratos de Comisión</TabsTrigger>
         </TabsList>
         <TabsContent value="empresas">
 
@@ -583,6 +585,9 @@ export default function EmpresasProveedorasPage() {
         </TabsContent>
         <TabsContent value="capacidades">
           <CapacidadesTiersPais paisId={paisId} esSuper={isSuperAdmin} />
+        </TabsContent>
+        <TabsContent value="comision">
+          <ContratosComisionPais paisId={paisId} esSuper={isSuperAdmin} farmacias={empresas} />
         </TabsContent>
       </Tabs>
     </div>
