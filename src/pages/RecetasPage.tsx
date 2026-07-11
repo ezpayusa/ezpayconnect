@@ -27,7 +27,7 @@ export default function RecetasPage() {
   const { perfil } = useAuth()
 
   // Hook de busqueda de medicamentos en farmacias/laboratorios
-  const { resultados: resultadosBusqueda, loading: loadingBusqueda, buscar: buscarEnProveedor } = useBusquedaMedicamentos()
+  const { resultados: resultadosBusqueda, loading: loadingBusqueda, buscarPorMedicamento } = useBusquedaMedicamentos()
 
   const [showForm, setShowForm] = useState(searchParams.get('nuevo') === 'true')
   const [showDetail, setShowDetail] = useState(false)
@@ -83,23 +83,14 @@ export default function RecetasPage() {
   // NUEVO: Abrir modal de Farmacia para un medicamento dado
   // ============================================================
   // ============================================================
-  // NUEVO: Helper para limpiar nombre antes de buscar en proveedores
-  // Quita "(Aspirina)" y similar para que el ILIKE matchee.
-  // Ej: "Acido Acetilsalicilico (Aspirina)" -> "Acido Acetilsalicilico"
-  // ============================================================
-  const limpiarNombreParaBusqueda = (nombre: string): string => {
-    if (!nombre) return ''
-    return nombre.replace(/\s*\(.*?\)/g, '').trim()
-  }
-
   // ============================================================
   // NUEVO: Abrir modal de Farmacia para un medicamento dado
   // ============================================================
   const abrirModalFarmacia = (idx: number) => {
     setItemIdxBuscando(idx)
-    const nombre = limpiarNombreParaBusqueda(items[idx]?.nombre_medicamento || '')
-    setBusquedaProveedor(nombre)
-    if (nombre.trim()) buscarEnProveedor(nombre)
+    const item = items[idx]
+    setBusquedaProveedor(item?.nombre_medicamento || '')
+    if (item?.medicamento_id) buscarPorMedicamento(item.medicamento_id)
     setShowFarmaciaModal(true)
   }
 
@@ -108,9 +99,9 @@ export default function RecetasPage() {
   // ============================================================
   const abrirModalLaboratorio = (idx: number) => {
     setItemIdxBuscando(idx)
-    const nombre = limpiarNombreParaBusqueda(items[idx]?.nombre_medicamento || '')
-    setBusquedaProveedor(nombre)
-    if (nombre.trim()) buscarEnProveedor(nombre)
+    const item = items[idx]
+    setBusquedaProveedor(item?.nombre_medicamento || '')
+    if (item?.medicamento_id) buscarPorMedicamento(item.medicamento_id)
     setShowLaboratorioModal(true)
   }
 
@@ -792,19 +783,6 @@ export default function RecetasPage() {
               </div>
             )}
 
-            <div className="relative">
-              <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-[#8a9aaa]" />
-              <Input
-                placeholder="Buscar medicamento en farmacias..."
-                value={busquedaProveedor}
-                onChange={(e) => {
-                  setBusquedaProveedor(e.target.value)
-                  buscarEnProveedor(e.target.value)
-                }}
-                className="pl-10"
-              />
-            </div>
-
             {renderResultadosBusqueda('farmacia')}
 
             <div className="flex justify-end pt-2 border-t">
@@ -843,19 +821,6 @@ export default function RecetasPage() {
                 <p className="font-medium text-[#3A8ABF]">{items[itemIdxBuscando].nombre_medicamento}</p>
               </div>
             )}
-
-            <div className="relative">
-              <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-[#8a9aaa]" />
-              <Input
-                placeholder="Buscar medicamento en laboratorios..."
-                value={busquedaProveedor}
-                onChange={(e) => {
-                  setBusquedaProveedor(e.target.value)
-                  buscarEnProveedor(e.target.value)
-                }}
-                className="pl-10"
-              />
-            </div>
 
             {renderResultadosBusqueda('laboratorio')}
 

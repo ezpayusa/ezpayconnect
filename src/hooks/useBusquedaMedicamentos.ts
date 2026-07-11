@@ -6,6 +6,7 @@ import type { ProductoEmpresa } from '@/proveedor/types/proveedor.types';
 export interface FarmaciaMedicamento {
   id: string;
   farmacia_id: number;
+  medicamento_id: number | null;
   nombre_medicamento: string;
   descripcion: string;
   presentacion: string;
@@ -44,6 +45,8 @@ interface UseBusquedaMedicamentosReturn {
   // 3.3: filtro de ruteo ON por default (solo sucursales ruteables: empresa_id NOT NULL + activas).
   // incluirCatalogoGlobal=true es opt-out SOLO para discovery (BuscarMedicamentosPage).
   buscar: (query: string, incluirCatalogoGlobal?: boolean) => Promise<void>;
+  // Camino MÉDICO: matchea por medicamento_id (FK al catálogo global), NO por texto.
+  buscarPorMedicamento: (medicamentoId: number, incluirCatalogoGlobal?: boolean) => Promise<void>;
   buscarPorFarmacia: (farmaciaId: number) => Promise<void>;
 }
 
@@ -117,6 +120,54 @@ export function useBusquedaMedicamentos(): UseBusquedaMedicamentosReturn {
       toast.error('Error al buscar medicamentos', { description: err.message });
       setResultados([]);
       setResultadosProveedores([]);
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  // ─── Búsqueda por medicamento_id (camino MÉDICO) ───
+  // Idéntica a buscar() en embed/filtro/orden/enriquecimiento, PERO matchea por
+  // medicamento_id (FK al catálogo global) en vez de ilike sobre el texto libre del
+  // inventario → no falla por acento/variación de nombre. Solo farmacias (los médicos
+  // no leen resultadosProveedores). Deposita en el MISMO estado `resultados`.
+  const buscarPorMedicamento = useCallback(async (medicamentoId: number, incluirCatalogoGlobal = false) => {
+    if (!medicamentoId) {
+      setResultados([]);
+      return;
+    }
+    setLoading(true);
+    try {
+      let q = supabase
+        .from('farmacia_medicamentos')
+        .select(`
+          *,
+          farmacia:farmacia_id!inner(id, nombre, direccion, telefono, email, encargado, horario, tipo, activo, empresa_id, empresa:empresa_id(nombre_empresa))
+        `)
+        .eq('medicamento_id', medicamentoId)
+        .gt('stock_actual', 0);
+      if (!incluirCatalogoGlobal) {
+        q = q.not('farmacia.empresa_id', 'is', null).eq('farmacia.activo', true);
+      }
+      const { data: farmaciaData, error: farmaciaError } = await q.order('precio_unitario', { ascending: true });
+      if (farmaciaError) throw farmaciaError;
+
+      let enriquecidos = (farmaciaData || []) as any[];
+      const farmaciaIds = [...new Set(enriquecidos.map((r: any) => r.farmacia?.id).filter(Boolean))];
+      if (farmaciaIds.length) {
+        const { data: cadenas } = await supabase.rpc('nombre_cadena_por_farmacias', { p_farmacia_ids: farmaciaIds });
+        if (cadenas?.length) {
+          const mapa = new Map<number, string>(cadenas.map((c: any) => [c.farmacia_id, c.nombre_empresa]));
+          enriquecidos = enriquecidos.map((r: any) =>
+            r.farmacia && mapa.has(r.farmacia.id)
+              ? { ...r, farmacia: { ...r.farmacia, empresa: { ...(r.farmacia.empresa || {}), nombre_empresa: mapa.get(r.farmacia.id) } } }
+              : r);
+        }
+      }
+      setResultados(enriquecidos as FarmaciaMedicamento[]);
+    } catch (err: any) {
+      console.error('Error buscando medicamentos:', err);
+      toast.error('Error al buscar medicamentos', { description: err.message });
+      setResultados([]);
     } finally {
       setLoading(false);
     }
@@ -238,6 +289,7 @@ export function useBusquedaMedicamentos(): UseBusquedaMedicamentosReturn {
     resultados,
     loading,
     buscar,
+    buscarPorMedicamento,
     buscarPorFarmacia,
     resultadosFarmacias,
     buscarEnFarmacias,
