@@ -2,8 +2,6 @@ import { Resend } from 'resend';
 import { createClient } from '@supabase/supabase-js';
 import type { VercelRequest, VercelResponse } from '@vercel/node';
 
-const resend = new Resend(process.env.RESEND_API_KEY);
-
 // Roles clínicos autorizados a enviar recetas por email.
 const ROLES_AUTORIZADOS = ['medico', 'super_admin', 'admin_clinica', 'gerente'];
 
@@ -13,35 +11,53 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     return res.status(405).json({ error: 'Method not allowed' });
   }
 
-  // --- Autenticación + rol (cierra el open-relay de emails). Fail-closed. ---
-  const supabaseUrl = process.env.SUPABASE_URL || process.env.VITE_SUPABASE_URL;
-  const supabaseAnonKey = process.env.SUPABASE_ANON_KEY || process.env.VITE_SUPABASE_ANON_KEY;
-  if (!supabaseUrl || !supabaseAnonKey) {
-    console.error('send-receta: faltan SUPABASE_URL/SUPABASE_ANON_KEY en env');
-    return res.status(500).json({ error: 'Autenticación no configurada' });
-  }
-  const authHeader = req.headers.authorization;
-  if (!authHeader) {
-    return res.status(401).json({ error: 'No autenticado' });
-  }
-  // Cliente con el token del caller: getUser lo valida y la RLS de perfiles
-  // (auth.uid()=id) permite leer el propio rol sin service_role.
-  const supabase = createClient(supabaseUrl, supabaseAnonKey, {
-    global: { headers: { Authorization: authHeader } },
-    auth: { persistSession: false, autoRefreshToken: false },
-  });
-  const { data: { user }, error: authError } = await supabase.auth.getUser();
-  if (authError || !user) {
-    return res.status(401).json({ error: 'No autenticado' });
-  }
-  const { data: perfil } = await supabase
-    .from('perfiles').select('rol').eq('id', user.id).maybeSingle();
-  if (!perfil || !ROLES_AUTORIZADOS.includes(perfil.rol)) {
-    return res.status(403).json({ error: 'No autorizado para enviar recetas' });
-  }
-
+  // TODO el cuerpo va dentro del try: cualquier rechazo async (createClient/getUser/query/
+  // Resend) debe salir como JSON legible, NUNCA como el 500 opaco genérico de Vercel.
   try {
-    const { 
+    // --- Autenticación + rol (cierra el open-relay de emails). Fail-closed. ---
+    const supabaseUrl = process.env.SUPABASE_URL || process.env.VITE_SUPABASE_URL;
+    const supabaseAnonKey = process.env.SUPABASE_ANON_KEY || process.env.VITE_SUPABASE_ANON_KEY;
+    if (!supabaseUrl || !supabaseAnonKey) {
+      console.error('[send-receta] faltan SUPABASE_URL/SUPABASE_ANON_KEY en env');
+      return res.status(500).json({ error: 'Autenticación no configurada' });
+    }
+    const authHeader = req.headers.authorization;
+    if (!authHeader) {
+      return res.status(401).json({ error: 'No autenticado' });
+    }
+    // Cliente con el token del caller: getUser lo valida y la RLS de perfiles
+    // (auth.uid()=id) permite leer el propio rol sin service_role.
+    const supabase = createClient(supabaseUrl, supabaseAnonKey, {
+      global: { headers: { Authorization: authHeader } },
+      auth: { persistSession: false, autoRefreshToken: false },
+    });
+
+    // getUser: captura tanto un throw async (.catch→null→500) como authError (→401).
+    const userResult = await supabase.auth.getUser().catch((e: any) => {
+      console.error('[send-receta] getUser lanzó:', e?.message ?? e);
+      return null;
+    });
+    if (!userResult) {
+      return res.status(500).json({ error: 'No se pudo verificar el usuario' });
+    }
+    const { data: { user }, error: authError } = userResult;
+    if (authError || !user) {
+      console.error('[send-receta] getUser sin usuario:', authError?.message ?? authError);
+      return res.status(401).json({ error: 'No se pudo verificar el usuario' });
+    }
+
+    // Query de perfil: ya NO se descarta el error (antes se perdía y escapaba como 500 opaco).
+    const { data: perfil, error: perfilError } = await supabase
+      .from('perfiles').select('rol').eq('id', user.id).maybeSingle();
+    if (perfilError) {
+      console.error('[send-receta] error consultando perfil:', perfilError?.message ?? perfilError);
+      return res.status(500).json({ error: 'No se pudo consultar el perfil' });
+    }
+    if (!perfil || !ROLES_AUTORIZADOS.includes(perfil.rol)) {
+      return res.status(403).json({ error: 'No autorizado para enviar recetas' });
+    }
+
+    const {
       to, 
       pacienteNombre, 
       medicoNombre, 
@@ -130,7 +146,9 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       </html>
     `;
 
-    // Enviar email
+    // Enviar email. Resend se instancia acá (dentro del try): un problema con la lib/API key
+    // no puede matar el módulo antes de que el handler responda JSON.
+    const resend = new Resend(process.env.RESEND_API_KEY);
     const { data, error } = await resend.emails.send({
       from: process.env.FROM_EMAIL || 'no-reply@ezpayconnect.com',
       to: [to],
@@ -139,7 +157,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     });
 
     if (error) {
-      console.error('Error enviando receta por email:', error?.name, error?.statusCode);
+      console.error('Error enviando receta por email:', error?.name, (error as any)?.statusCode);
       return res.status(500).json({ error: 'Error al enviar email', details: error });
     }
 
@@ -150,7 +168,9 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     });
 
   } catch (error) {
-    console.error('Error en API:', error?.message ?? error?.code);
+    // Red de seguridad final: SIEMPRE loguea el error real y responde JSON (nunca deja
+    // escapar la excepción como el 500 opaco de Vercel).
+    console.error('[send-receta] error no controlado:', error);
     return res.status(500).json({ error: 'Error interno del servidor' });
   }
 }
