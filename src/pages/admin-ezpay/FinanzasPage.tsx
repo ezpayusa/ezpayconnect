@@ -77,20 +77,14 @@ export default function FinanzasPage() {
     });
     setPlanesMap(planesMapTemp);
 
-    // Cargar transacciones (sin joins, solo datos crudos)
-    let query = supabase
-      .from('transacciones')
-      .select('*')
-      .order('fecha_pago', { ascending: false });
-
-    if (filtroEstado !== 'todos') {
-      query = query.eq('estado', filtroEstado);
-    }
-    if (filtroPais !== 'todos') {
-      query = query.eq('pais_id', filtroPais);
-    }
-
-    const { data: transData, error } = await query.limit(50);
+    // Cargar transacciones vía RPC país-scoped (transacciones tiene RLS ON + 0 policies →
+    // PostgREST directo devuelve 0). La RPC ya ordena fecha_pago DESC y capa por p_limit;
+    // devuelve las mismas columnas que la tabla, así que el resto del flujo no cambia.
+    const { data: transData, error } = await supabase.rpc('listar_transacciones_pais', {
+      p_estado: filtroEstado !== 'todos' ? filtroEstado : null,
+      p_pais_id: filtroPais !== 'todos' ? filtroPais : null,
+      p_limit: 50,
+    });
 
     if (error) {
       console.error('Error:', error.message);
