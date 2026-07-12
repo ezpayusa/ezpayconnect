@@ -5,6 +5,7 @@ import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { useAdminAuth } from '@/hooks/admin/useAdminAuth';
 import { supabase } from '@/lib/supabase';
+import { formatearPrecio } from '@/lib/planes-utils';
 import { ArrowLeft, RefreshCw, DollarSign, BarChart3, TrendingUp, Globe, Calendar, Stethoscope, MapPin, FlaskConical, Truck, Layers, CreditCard, Users, Pill, Store, Megaphone, Briefcase, AlertTriangle } from 'lucide-react';
 
 interface ReportePais {
@@ -202,16 +203,6 @@ export default function ReportesEzPayPageV2() {
     }
   };
 
-  const getMonedaSymbol = (moneda: string) => {
-    switch (moneda) {
-      case 'GTQ': return 'Q';
-      case 'HNL': return 'L';
-      case 'CRC': return '₡';
-      case 'USD': return '$';
-      default: return '$';
-    }
-  };
-
   const tabInfo = tabs.find(t => t.id === tabActiva) || tabs[0];
 
   if (adminLoading) return <div className="flex justify-center p-8">Verificando permisos...</div>;
@@ -373,7 +364,7 @@ export default function ReportesEzPayPageV2() {
                           </div>
                           <div className="text-right">
                             <span className="font-bold">
-                              {getMonedaSymbol(pais.moneda)}{formatNumber(pais.ingresos)}
+                              {formatearPrecio(pais.ingresos, pais.moneda)}
                             </span>
                             <span className="text-sm text-muted-foreground ml-1">({pais.transacciones} ventas)</span>
                           </div>
@@ -504,13 +495,13 @@ export default function ReportesEzPayPageV2() {
                         </td>
                         <td className="py-3 px-4 text-center">{pais.transacciones}</td>
                         <td className="py-3 px-4 text-right font-semibold">
-                          {getMonedaSymbol(pais.moneda)}{formatNumber(pais.ingresos)}
+                          {formatearPrecio(pais.ingresos, pais.moneda)}
                         </td>
                         <td className="py-3 px-4 text-right text-muted-foreground">
-                          {pais.transacciones > 0 ? formatNumber(pais.ingresos / pais.transacciones) : '0.00'}
+                          {pais.transacciones > 0 ? formatearPrecio(pais.ingresos / pais.transacciones, pais.moneda) : formatearPrecio(0, pais.moneda)}
                         </td>
                         <td className="py-3 px-4 text-right text-muted-foreground">
-                          {formatNumber(pais.ingresos * 0.05)}
+                          {formatearPrecio(pais.ingresos * 0.05, pais.moneda)}
                         </td>
                       </tr>
                     ))}
