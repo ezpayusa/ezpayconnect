@@ -136,6 +136,7 @@ const FarmaciaInventarioPage = lazy(() => import('@/farmacia/pages/FarmaciaInven
 const FarmaciaRecetasPage = lazy(() => import('@/farmacia/pages/FarmaciaRecetasPage'))
 const EntregasMonitoreoPage = lazy(() => import('@/farmacia/pages/EntregasMonitoreoPage'))
 const FarmaciaReportesPage = lazy(() => import('@/farmacia/pages/FarmaciaReportesPage'))
+const FarmaciaComisionesPage = lazy(() => import('@/farmacia/pages/FarmaciaComisionesPage'))
 const FarmaciaPersonalPage = lazy(() => import('@/farmacia/pages/FarmaciaPersonalPage'))
 const FarmaciaSucursalesPage = lazy(() => import('@/farmacia/pages/FarmaciaSucursalesPage'))
 
@@ -436,6 +437,7 @@ function App() {
           <Route path="recetas" element={<FarmaciaRecetasPage />} />
           <Route path="entregas" element={<EntregasMonitoreoPage />} />
           <Route path="reportes" element={<FarmaciaReportesPage />} />
+          <Route path="comisiones" element={<FarmaciaComisionesPage />} />
           <Route path="personal" element={<FarmaciaPersonalPage />} />
           <Route path="sucursales" element={<FarmaciaSucursalesPage />} />
           <Route path="pagos" element={<ProveedorPagosPage />} />
