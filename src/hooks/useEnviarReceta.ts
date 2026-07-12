@@ -35,17 +35,44 @@ export function useEnviarReceta() {
         body: JSON.stringify(datos),
       })
 
-      const data = await response.json()
-
       if (!response.ok) {
-        throw new Error(data.error || 'Error al enviar receta')
+        // Leer el body UNA sola vez como texto: el backend puede responder JSON de error
+        // o texto plano (ej. el genérico de Vercel "A server error has occurred"), que
+        // rompería el parseo JSON directo con un SyntaxError crudo para el médico.
+        const raw = await response.text()
+        let mensaje = 'No se pudo procesar el envío. Intentá de nuevo en unos minutos.'
+        try {
+          const parsed = JSON.parse(raw)
+          if (parsed?.error) mensaje = String(parsed.error)
+          // details es para el log, NO para el usuario (puede ser un objeto).
+          if (parsed?.details) console.error('[useEnviarReceta] detalle del error:', parsed.details)
+        } catch {
+          // Respuesta no-JSON (texto plano): mensaje genérico limpio + crudo a consola.
+          console.error('[useEnviarReceta] respuesta no-JSON del servidor:', raw)
+        }
+        setError(mensaje)
+        return { success: false, error: mensaje }
       }
 
+      // Éxito: el backend puede responder ok con body vacío (204/sin cuerpo) o con JSON.
+      // Leemos el body como texto UNA sola vez y no asumimos que haya JSON: un body vacío
+      // o no-JSON NO debe romper el éxito (síntoma: "Unexpected end of JSON input").
+      const raw = await response.text()
+      let data: any = null
+      if (raw.trim()) {
+        try {
+          data = JSON.parse(raw)
+        } catch {
+          console.warn('[useEnviarReceta] éxito con body no-JSON:', raw)
+        }
+      }
       setExito(true)
       return { success: true, data }
     } catch (err: any) {
-      setError(err.message || 'Error desconocido')
-      return { success: false, error: err.message }
+      // Con el manejo de arriba, acá solo caen errores de RED (fetch rechazado).
+      const mensaje = 'No se pudo conectar. Revisá tu conexión.'
+      setError(mensaje)
+      return { success: false, error: err?.message || mensaje }
     } finally {
       setEnviando(false)
     }
