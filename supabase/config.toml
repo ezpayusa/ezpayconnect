@@ -497,3 +497,7 @@ verify_jwt = false   # la llaman las RPCs de visita vía pg_net (server-to-serve
 [functions.notificar-admin]
 enabled = true
 verify_jwt = false   # gate DUAL en la función: x-internal-secret (edge→edge crear-empleado) O JWT+super_admin (front useVentas). verify_jwt=false porque el camino interno no lleva JWT válido → la función hace toda la autz.
+
+[functions.confirmar-recepcion-receta]
+enabled = true
+verify_jwt = false   # el paciente confirma la recepción SIN sesión desde el link del email; autz = confirmacion_token (256 bits) en querystring. La lógica vive en la RPC confirmar_recepcion_receta (DEFINER).

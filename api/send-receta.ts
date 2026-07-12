@@ -58,12 +58,13 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     }
 
     const {
-      to, 
-      pacienteNombre, 
-      medicoNombre, 
-      medicamentos, 
+      to,
+      recetaId,
+      pacienteNombre,
+      medicoNombre,
+      medicamentos,
       instruccionesGenerales,
-      solicitarConfirmacion 
+      solicitarConfirmacion
     } = req.body;
 
     if (!to || !pacienteNombre || !medicamentos) {
@@ -86,10 +87,27 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       </tr>
     `).join('');
 
-    const confirmacionHTML = solicitarConfirmacion ? `
+    // Resolver el token de confirmación SOLO si el médico lo pidió. El link apunta al SPA
+    // (/confirmar-receta) que llama la edge pública. Si la receta no tiene avanzada (sin token),
+    // el email se manda igual, solo sin el botón. Usa el mismo cliente (JWT del médico, RLS).
+    let confirmacionToken: string | null = null;
+    if (solicitarConfirmacion && recetaId) {
+      const { data: raRow, error: raErr } = await supabase
+        .from('recetas_avanzadas')
+        .select('confirmacion_token')
+        .eq('receta_base_id', recetaId)
+        .maybeSingle();
+      if (raErr) {
+        console.error('send-receta: no se pudo resolver confirmacion_token', raErr.message);
+      } else {
+        confirmacionToken = raRow?.confirmacion_token ?? null;
+      }
+    }
+
+    const confirmacionHTML = (solicitarConfirmacion && confirmacionToken) ? `
       <div style="margin-top: 30px; padding: 20px; background: #e8f0f8; border-radius: 8px; text-align: center;">
         <p style="margin: 0 0 15px 0; color: #1a2a3a;">Por favor, confirma que recibiste esta receta:</p>
-        <a href="https://ezpayconnect.vercel.app/confirmar-receta?email=${encodeURIComponent(to)}" 
+        <a href="https://med.ezpayconnect.com/confirmar-receta?token=${encodeURIComponent(confirmacionToken)}"
            style="display: inline-block; padding: 12px 30px; background: #1E5C8E; color: white; text-decoration: none; border-radius: 6px; font-weight: bold;">
           Confirmar Recepción
         </a>

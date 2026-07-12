@@ -8,6 +8,7 @@ export function useEnviarReceta() {
 
   const enviarReceta = useCallback(async (datos: {
     to: string
+    recetaId?: number
     pacienteNombre: string
     medicoNombre?: string
     medicamentos: any[]
