@@ -31,6 +31,19 @@ interface PaisConfig {
   activo: boolean;
 }
 
+// Deriva el emoji de bandera desde el código ISO de 2 letras (regional indicator symbols).
+// Sirve para los 19 países sin hardcodear cada uno. Fallback 🌐 si el código no es válido.
+function codigoABandera(codigo?: string): string {
+  if (!codigo || codigo.length < 2) return '🌐'
+  const cc = codigo.trim().slice(0, 2).toUpperCase()
+  if (!/^[A-Z]{2}$/.test(cc)) return '🌐'
+  const base = 0x1f1e6 // 'A' regional indicator
+  return String.fromCodePoint(
+    base + (cc.charCodeAt(0) - 65),
+    base + (cc.charCodeAt(1) - 65),
+  )
+}
+
 export default function AdminEzPayPage() {
   const [stats, setStats] = useState<AdminStats>({
     total_medicos: 0,
@@ -212,7 +225,7 @@ export default function AdminEzPayPage() {
                 className="p-4 rounded-xl bg-gradient-to-br from-white to-gray-50 border border-gray-100 hover:border-[#87CEEB] transition-all cursor-pointer"
               >
                 <div className="flex items-center justify-between mb-3">
-                  <span className="text-2xl">{pais.codigo === 'GT' ? '🇬🇹' : pais.codigo === 'SV' ? '🇸🇻' : '🇭🇳'}</span>
+                  <span className="text-2xl">{codigoABandera(pais.codigo)}</span>
                   <span className={`px-2 py-1 rounded-full text-xs font-medium ${pais.comisiones_activas ? 'bg-emerald-100 text-emerald-700' : 'bg-gray-100 text-gray-600'}`}>
                     {pais.comisiones_activas ? 'Comisiones ON' : 'Sin comisiones'}
                   </span>
