@@ -3,7 +3,7 @@ import { useProveedorAuth } from '@/proveedor/hooks/useProveedorAuth'
 import { useFarmaciaPermisos } from '@/farmacia/hooks/useFarmaciaPermisos'
 import { useNotificaciones } from '@/hooks/useNotificaciones'
 import { Button } from '@/components/ui/button'
-import { LayoutDashboard, Pill, Package, Users, CreditCard, Bell, LogOut, Menu, X, Building2, ClipboardList, BarChart3, Truck } from 'lucide-react'
+import { LayoutDashboard, Pill, Package, Users, CreditCard, Bell, LogOut, Menu, X, Building2, ClipboardList, BarChart3, Truck, Receipt } from 'lucide-react'
 import { useState, useEffect } from 'react'
 
 interface NavItem { label: string; path: string; icon: React.ElementType; accion?: string; accionAny?: string[]; badge?: boolean }
@@ -20,6 +20,7 @@ const NAV_ITEMS: NavItem[] = [
   { label: 'Personal y Roles', path: '/farmacia/personal', icon: Users, accion: 'usuarios_roles' },
   { label: 'Sucursales', path: '/farmacia/sucursales', icon: Building2, accion: 'sucursales_gestionar' },
   { label: 'Pagos', path: '/farmacia/pagos', icon: CreditCard, accion: 'finanzas_reportes' },
+  { label: 'Comisiones', path: '/farmacia/comisiones', icon: Receipt, accion: 'finanzas_reportes' },
   { label: 'Perfil', path: '/farmacia/perfil', icon: Building2 },
   { label: 'Notificaciones', path: '/farmacia/notificaciones', icon: Bell, badge: true },
 ]
