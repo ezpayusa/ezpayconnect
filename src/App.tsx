@@ -36,6 +36,7 @@ import { PaisProvider } from '@/contexts/PaisContext'
 const BuscarMedicamentosPage = lazy(() => import('@/pages/BuscarMedicamentosPage'))
 const NotificacionesPage = lazy(() => import('@/pages/NotificacionesPage'))
 const LoginPage = lazy(() => import('@/pages/LoginPage'))
+const ConfirmarRecetaPage = lazy(() => import('@/pages/ConfirmarRecetaPage'))
 const DashboardPage = lazy(() => import('@/pages/DashboardPage'))
 const PacientesPage = lazy(() => import('@/pages/PacientesPage'))
 const PacienteDetallePage = lazy(() => import('@/pages/PacienteDetallePage'))
@@ -239,6 +240,7 @@ function App() {
         <Route path="/registro-medico" element={<RegistroMedicoPage />} />
         <Route path="/registro-clinica" element={<RegistroClinicaPage />} />
         <Route path="/login" element={<LoginPage />} />
+        <Route path="/confirmar-receta" element={<ConfirmarRecetaPage />} />
         <Route path="/" element={<Navigate to="/dashboard" replace />} />
         <Route path="/dashboard" element={<PrivateLayout><DashboardPage /></PrivateLayout>} />
         <Route path="/pacientes" element={<PrivateLayout><PacientesPage /></PrivateLayout>} />
