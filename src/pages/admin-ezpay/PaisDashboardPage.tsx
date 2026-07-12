@@ -20,6 +20,7 @@ import {
   CreditCard,
   Eye,
   MousePointerClick,
+  CheckCircle2,
 } from 'lucide-react'
 
 interface PaisStats {
@@ -32,6 +33,7 @@ interface PaisStats {
   total_campanas: number
   total_proveedores: number
   total_facturas: number
+  total_confirmaciones: number
 }
 
 interface CampanaMetrics {
@@ -60,6 +62,7 @@ export default function PaisDashboardPage() {
     total_campanas: 0,
     total_proveedores: 0,
     total_facturas: 0,
+    total_confirmaciones: 0,
   })
   const [paisInfo, setPaisInfo] = useState<any>(null)
   const [loading, setLoading] = useState(true)
@@ -156,6 +159,19 @@ export default function PaisDashboardPage() {
 
         setCampanaMetrics({ impresiones, clicks, ctr })
 
+        // Confirmaciones de recepción de receta (acumulado histórico → hoy), país-scoped.
+        const hoyStr = new Date().toISOString().slice(0, 10) // YYYY-MM-DD
+        const { data: confData } = await supabase
+          .rpc('reporte_confirmaciones_pais', {
+            p_desde: '2020-01-01',
+            p_hasta: hoyStr,
+            p_pais_id: paisId,
+          })
+        // la RPC devuelve filas por país; para este dashboard (un país fijo) sumamos el conteo (0 filas → 0)
+        const confirmacionesCount = (confData ?? []).reduce(
+          (acc: number, r: any) => acc + Number(r.confirmaciones ?? 0), 0
+        )
+
         setStats({
           total_medicos: medicosCount || 0,
           total_clinicas: clinicasCount || 0,
@@ -166,6 +182,7 @@ export default function PaisDashboardPage() {
           total_campanas: campanasCount || 0,
           total_proveedores: proveedoresCount || 0,
           total_facturas: facturasCount || 0,
+          total_confirmaciones: confirmacionesCount,
         })
       } catch (error) {
         console.error('Error cargando stats:', error)
@@ -223,6 +240,12 @@ export default function PaisDashboardPage() {
       value: stats.total_recetas,
       icon: FileText,
       color: 'bg-cyan-50 text-cyan-600',
+    },
+    {
+      title: 'Confirmaciones',
+      value: stats.total_confirmaciones,
+      icon: CheckCircle2,
+      color: 'bg-teal-50 text-teal-600',
     },
     {
       title: 'Consultas IA',
