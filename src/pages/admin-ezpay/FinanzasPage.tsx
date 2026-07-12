@@ -160,7 +160,7 @@ export default function FinanzasPage() {
               <DollarSign className="h-5 w-5 text-green-600" />
               <p className="text-sm text-muted-foreground">Ingresos Totales</p>
             </div>
-            <p className="text-2xl font-bold">${stats.total_ingresos.toFixed(2)}</p>
+            <p className="text-2xl font-bold">${stats.total_ingresos.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</p>
           </CardContent>
         </Card>
         <Card>
@@ -196,7 +196,7 @@ export default function FinanzasPage() {
               <Globe className="h-5 w-5 text-purple-600" />
               <p className="text-sm text-muted-foreground">Comisiones</p>
             </div>
-            <p className="text-2xl font-bold">${stats.comisiones_total.toFixed(2)}</p>
+            <p className="text-2xl font-bold">${stats.comisiones_total.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</p>
           </CardContent>
         </Card>
       </div>
