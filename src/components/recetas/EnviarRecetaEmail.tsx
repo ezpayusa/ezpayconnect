@@ -37,6 +37,7 @@ export default function EnviarRecetaEmail({
 
     const result = await enviarReceta({
       to: email,
+      recetaId: receta.id,
       pacienteNombre: receta.paciente_nombre || `Paciente #${receta.paciente_id}`,
       medicoNombre: medicoNombre || 'Doctor',
       medicamentos: medicamentos,
