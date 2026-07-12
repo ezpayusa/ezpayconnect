@@ -6,6 +6,7 @@ import { Badge } from '@/components/ui/badge';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { useAdminAuth } from '@/hooks/admin/useAdminAuth';
 import { supabase } from '@/lib/supabase';
+import { formatearPrecio } from '@/lib/planes-utils';
 import { 
   ArrowLeft, 
   RefreshCw, 
@@ -272,8 +273,7 @@ export default function FinanzasPage() {
                         <td className="py-3 px-4 font-medium">{planNombre}</td>
                         <td className="py-3 px-4">{paisInfo.nombre}</td>
                         <td className="py-3 px-4 text-right font-semibold">
-                          {paisInfo.moneda === 'GTQ' ? 'Q' : paisInfo.moneda === 'HNL' ? 'L' : '$'}
-                          {t.monto.toFixed(2)}
+                          {formatearPrecio(t.monto, paisInfo.moneda)}
                         </td>
                         <td className="py-3 px-4 text-center">
                           <Badge className={getEstadoBadge(t.estado)}>
