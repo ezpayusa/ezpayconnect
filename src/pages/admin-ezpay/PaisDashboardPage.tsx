@@ -16,7 +16,6 @@ import {
   Handshake,
   TrendingUp,
   FileText,
-  BrainCircuit,
   CreditCard,
   Eye,
   MousePointerClick,
@@ -29,7 +28,6 @@ interface PaisStats {
   total_pacientes: number
   total_citas: number
   total_recetas: number
-  total_consultas_ia: number
   total_campanas: number
   total_proveedores: number
   total_facturas: number
@@ -58,7 +56,6 @@ export default function PaisDashboardPage() {
     total_pacientes: 0,
     total_citas: 0,
     total_recetas: 0,
-    total_consultas_ia: 0,
     total_campanas: 0,
     total_proveedores: 0,
     total_facturas: 0,
@@ -140,13 +137,6 @@ export default function PaisDashboardPage() {
           .select('*', { count: 'exact', head: true })
           .eq('pais_id', paisId)
 
-        // Consultas IA: por ahora usamos notificaciones o un contador futuro
-        // Placeholder: contaremos consultas_profesional como proxy
-        const { count: consultasCount } = await supabase
-          .from('consultas_profesional')
-          .select('*', { count: 'exact', head: true })
-          .eq('pais_id', paisId)
-
         // Métricas de campañas
         const { data: metricasData } = await supabase
           .from('campana_metricas')
@@ -178,7 +168,6 @@ export default function PaisDashboardPage() {
           total_pacientes: pacientesCount || 0,
           total_citas: citasCount || 0,
           total_recetas: recetasCount || 0,
-          total_consultas_ia: consultasCount || 0,
           total_campanas: campanasCount || 0,
           total_proveedores: proveedoresCount || 0,
           total_facturas: facturasCount || 0,
@@ -246,12 +235,6 @@ export default function PaisDashboardPage() {
       value: stats.total_confirmaciones,
       icon: CheckCircle2,
       color: 'bg-teal-50 text-teal-600',
-    },
-    {
-      title: 'Consultas IA',
-      value: stats.total_consultas_ia,
-      icon: BrainCircuit,
-      color: 'bg-violet-50 text-violet-600',
     },
     {
       title: 'Facturas Emitidas',
