@@ -85,7 +85,7 @@ export default function ConsultaPage() {
 
   // Ola 3: signos vitales = SERIE de la cita (fuente única signos_vitales, vía RPC DEFINER).
   // El médico ve la serie pre-capturada, valida cada toma y agrega la suya. Append-only.
-  const { serie, cargando: cargandoSerie, validarToma, agregarToma } = useSignosVitalesCita(cita?.id ?? 0)
+  const { serie, cargando: cargandoSerie, error: errorSignos, cargarSerie, validarToma, agregarToma } = useSignosVitalesCita(cita?.id ?? 0)
   const [formMedico, setFormMedico] = useState<VitalesValues>(VITALES_VACIO)
   const [guardandoToma, setGuardandoToma] = useState(false)
   const [validandoId, setValidandoId] = useState<number | null>(null)
@@ -500,6 +500,13 @@ export default function ConsultaPage() {
             <CardContent className="space-y-2">
               {cargandoSerie ? (
                 <div className="flex justify-center p-3"><Loader2 className="h-5 w-5 animate-spin text-[#1E5C8E]" /></div>
+              ) : errorSignos ? (
+                <div className="flex items-center justify-between gap-2 rounded-md border border-red-200 bg-red-50 p-3">
+                  <span className="flex items-center gap-2 text-sm text-red-700">
+                    <AlertTriangle className="h-4 w-4 shrink-0" /> No se pudieron cargar los signos vitales
+                  </span>
+                  <Button variant="outline" size="sm" onClick={() => cargarSerie()}>Reintentar</Button>
+                </div>
               ) : serie.length === 0 ? (
                 <p className="text-sm text-gray-400 py-2">Sin tomas registradas</p>
               ) : (

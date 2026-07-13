@@ -34,12 +34,22 @@ const num = (v: string) => (v.trim() === '' ? null : Number(v))
 export function useSignosVitalesCita(citaId: number) {
   const [serie, setSerie] = useState<SignoVitalToma[]>([])
   const [cargando, setCargando] = useState(true)
+  const [error, setError] = useState(false)
 
   const cargarSerie = useCallback(async () => {
-    if (!citaId) { setSerie([]); setCargando(false); return }
+    if (!citaId) { setSerie([]); setError(false); setCargando(false); return }
     setCargando(true)
-    const { data, error } = await supabase.rpc('listar_signos_vitales_cita', { p_cita_id: citaId })
-    if (error) toast.error(error.message)
+    setError(false)
+    const { data, error: rpcError } = await supabase.rpc('listar_signos_vitales_cita', { p_cita_id: citaId })
+    if (rpcError) {
+      // NO toast crudo (mostraba 'No autorizado: pertenencia' mintiendo sobre la causa).
+      // El error se muestra inline en la UI (flag `error`); acá solo log para debug.
+      console.error('listar_signos_vitales_cita:', rpcError.message)
+      setError(true)
+      setSerie([])       // no dejar data vieja
+      setCargando(false)
+      return
+    }
     setSerie(Array.isArray(data) ? data : [])
     setCargando(false)
   }, [citaId])
@@ -78,5 +88,5 @@ export function useSignosVitalesCita(citaId: number) {
     [citaId, cargarSerie],
   )
 
-  return { serie, cargando, cargarSerie, validarToma, agregarToma }
+  return { serie, cargando, error, cargarSerie, validarToma, agregarToma }
 }
