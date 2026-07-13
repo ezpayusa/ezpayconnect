@@ -2,7 +2,8 @@ import { useEffect, useRef, useState } from 'react'
 import type { ChangeEvent } from 'react'
 import { useFotoPaciente } from '@/hooks/useFotoPaciente'
 import { useConsentimientoGate } from '@/hooks/useConsentimientoGate'
-import { User, Camera, Loader2, ShieldOff } from 'lucide-react'
+import { Button } from '@/components/ui/button'
+import { User, Camera, Loader2, ShieldOff, AlertTriangle } from 'lucide-react'
 
 /**
  * Avatar circular de la foto del paciente (bucket privado → signed URL).
@@ -25,7 +26,7 @@ export function FotoPacienteAvatar({
   const { subirFoto, urlFirmadaFoto, subiendo } = useFotoPaciente()
   // Gate de consentimiento solo cuando editable (con undefined el hook no dispara RPC). Grandfather: solo
   // bloquea si foto_perfil está revocado (concedido=false vigente); sin fila o concedido=true → permite.
-  const { permitido } = useConsentimientoGate(editable ? pacienteId : undefined)
+  const { permitido, error: errorConsent, recargar } = useConsentimientoGate(editable ? pacienteId : undefined)
   const fotoBloqueada = editable && !permitido('foto_perfil')
   const [src, setSrc] = useState<string | null>(null)
   const [pathActual, setPathActual] = useState<string | null>(fotoPath)
@@ -61,8 +62,8 @@ export function FotoPacienteAvatar({
             <User className={`${iconSize} text-slate-400`} />
           )}
         </div>
-        {/* Control de subida: solo si editable y NO bloqueado por consentimiento revocado. */}
-        {editable && !fotoBloqueada && (
+        {/* Control de subida: solo si editable, NO bloqueado por consentimiento revocado y sin error de verificación. */}
+        {editable && !fotoBloqueada && !errorConsent && (
           <>
             <button
               type="button"
@@ -90,6 +91,15 @@ export function FotoPacienteAvatar({
         <p className="text-[11px] leading-tight text-amber-700 max-w-[12rem]">
           El paciente revocó la autorización de foto. Captúrala de nuevo en la sección Consentimiento.
         </p>
+      )}
+      {/* FAIL-CLOSED: si no se pudo verificar el consentimiento, NO se ofrece subir; alerta + reintentar. */}
+      {editable && errorConsent && (
+        <div className="flex items-center gap-2 rounded-md border border-red-200 bg-red-50 p-2 max-w-[14rem]">
+          <span className="flex items-center gap-1 text-[11px] leading-tight text-red-700">
+            <AlertTriangle className="h-3.5 w-3.5 shrink-0" /> No se pudo verificar el consentimiento de foto
+          </span>
+          <Button variant="outline" size="sm" onClick={() => recargar()}>Reintentar</Button>
+        </div>
       )}
     </div>
   )

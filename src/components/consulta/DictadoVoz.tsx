@@ -2,6 +2,7 @@ import { useState, useRef, useCallback, useEffect } from 'react'
 import { AlertTriangle, Loader2, ShieldOff } from 'lucide-react'
 import { supabase } from '@/lib/supabase'
 import { toast } from 'sonner'
+import { Button } from '@/components/ui/button'
 import { useConsentimientoGate } from '@/hooks/useConsentimientoGate'
 
 interface DictadoVozProps {
@@ -13,7 +14,7 @@ interface DictadoVozProps {
 
 export default function DictadoVoz({ onTranscript, pacienteId, placeholder = 'Dicta tu nota aqui...', className = '' }: DictadoVozProps) {
   // Gate UX (no es la barrera real — esa la aplica el edge): evita el intento si está revocado.
-  const { permitido } = useConsentimientoGate(pacienteId)
+  const { permitido, error: errorConsent, recargar } = useConsentimientoGate(pacienteId)
   const grabacionBloqueada = !permitido('grabacion_consulta')
   const [estado, setEstado] = useState<'idle' | 'grabando' | 'procesando'>('idle')
   const [errorMsg, setErrorMsg] = useState('')
@@ -157,7 +158,14 @@ export default function DictadoVoz({ onTranscript, pacienteId, placeholder = 'Di
     <div className={`flex flex-col gap-2 ${className}`}>
       {/* IDLE */}
       {estado === 'idle' && (
-        grabacionBloqueada ? (
+        errorConsent ? (
+          <div className="inline-flex items-center gap-2 rounded-md border border-red-200 bg-red-50 px-2 py-1.5 w-fit">
+            <span className="inline-flex items-center gap-2 text-sm text-red-700">
+              <AlertTriangle className="h-3.5 w-3.5 shrink-0" /> No se pudo verificar el consentimiento de grabación
+            </span>
+            <Button variant="outline" size="sm" onClick={() => recargar()}>Reintentar</Button>
+          </div>
+        ) : grabacionBloqueada ? (
           <div className="inline-flex items-center gap-2 text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded-md px-2 py-1.5 w-fit">
             <ShieldOff className="h-3.5 w-3.5 shrink-0" />
             El paciente revocó la grabación. Captúrala en Consentimiento.

@@ -40,7 +40,7 @@ interface AsistenteIAProps {
 
 export default function AsistenteIA({ pacienteId, motivoConsulta, subjetivo, objetivo, consultaId, onCopiarSugerencia }: AsistenteIAProps) {
   // Gate UX (la barrera real la aplica el edge): evita el intento si el paciente revocó el uso de IA.
-  const { permitido } = useConsentimientoGate(pacienteId)
+  const { permitido, error: errorConsent, recargar } = useConsentimientoGate(pacienteId)
   const iaBloqueada = !permitido('asistente_ia')
   const [sugerencias, setSugerencias] = useState<SugerenciasIA | null>(null)
   const [loading, setLoading] = useState(false)
@@ -112,7 +112,14 @@ ${sugerencias.referencias_guias.map(r => `- ${r}`).join('\n')}
         </div>
       </div>
 
-      {iaBloqueada ? (
+      {errorConsent ? (
+        <div className="flex items-center justify-between gap-2 rounded-md border border-red-200 bg-red-50 p-3">
+          <span className="flex items-center gap-2 text-sm text-red-700">
+            <AlertTriangle className="h-4 w-4 shrink-0" /> No se pudo verificar el consentimiento de IA
+          </span>
+          <Button variant="outline" size="sm" onClick={() => recargar()}>Reintentar</Button>
+        </div>
+      ) : iaBloqueada ? (
         <div className="flex items-center gap-2 text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded-md px-3 py-2">
           <ShieldOff className="h-4 w-4 shrink-0" />
           El paciente revocó el uso de IA. Captúralo en Consentimiento.
