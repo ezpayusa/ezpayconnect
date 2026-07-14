@@ -22,7 +22,7 @@ export function MedicoSidebar() {
   const navigate = useNavigate()
   const location = useLocation()
   const { logout, perfil } = useAuth()
-  const { pendientesCount } = useMedicoStats()
+  const { stats } = useMedicoStats()
 
   // Badge de mensajes sin leer: suma de no_leidos de todos los hilos (patrón liviano, como pendientesCount)
   const [mensajesNoLeidos, setMensajesNoLeidos] = useState(0)
@@ -41,7 +41,7 @@ export function MedicoSidebar() {
       label: 'Mis Citas',
       icon: CalendarDays,
       path: '/medico/citas',
-      badge: pendientesCount > 0 ? pendientesCount : undefined,
+      badge: stats.pendientesCount > 0 ? stats.pendientesCount : undefined,
     },
     { label: 'Mis Pacientes', icon: Users, path: '/medico/pacientes' },
     {
