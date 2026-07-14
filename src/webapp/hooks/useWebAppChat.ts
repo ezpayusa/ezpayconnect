@@ -15,15 +15,15 @@ export function useWebAppChat(pacienteId: number | undefined, medicoId: string |
   const channelRef = useRef<any>(null)
 
   // Marca leídos SOLO los mensajes del médico de ESTE hilo.
+  // Vía RPC DEFINER (mig 259): el paciente NO tiene policy UPDATE en chat_mensajes → un .update()
+  // directo afecta 0 filas silenciosamente. La RPC gatea relación y marca leído server-side.
   const marcarComoLeidos = useCallback(async () => {
     if (!pacienteId || !medicoId) return
-    await supabase
-      .from('chat_mensajes')
-      .update({ leido: true })
-      .eq('paciente_id', pacienteId)
-      .eq('medico_id', medicoId)
-      .eq('remitente', 'medico')
-      .eq('leido', false)
+    try {
+      await supabase.rpc('marcar_leido_chat_paciente', { p_medico_id: medicoId })
+    } catch (err) {
+      console.error('Error marcando leído:', err)
+    }
   }, [pacienteId, medicoId])
 
   const fetchMensajes = useCallback(async () => {
