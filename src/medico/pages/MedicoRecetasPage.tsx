@@ -130,11 +130,11 @@ export default function MedicoRecetasPage() {
   return (
     <div className="p-6 max-w-5xl mx-auto space-y-6">
       {/* Header */}
-      <div className="flex items-center gap-4">
+      <div className="flex items-center flex-wrap gap-4">
         <Button variant="ghost" size="icon" onClick={() => navigate('/medico')}>
           <ArrowLeft className="h-5 w-5" />
         </Button>
-        <div className="flex-1">
+        <div className="flex-1 min-w-0">
           <h1 className="text-2xl font-bold text-[#1a2a3a] flex items-center gap-2">
             <FileText className="h-7 w-7 text-[#1E5C8E]" />
             Mis Recetas
@@ -143,14 +143,16 @@ export default function MedicoRecetasPage() {
             {recetas.length} recetas emitidas
           </p>
         </div>
-        <Button size="sm" onClick={() => setShowNueva(true)} className="mr-2">
-          <FileText className="h-4 w-4 mr-1" />
-          Nueva Receta
-        </Button>
-        <Button variant="outline" size="sm" onClick={cargarRecetas}>
-          <RefreshCw className="h-4 w-4 mr-1" />
-          Recargar
-        </Button>
+        <div className="flex gap-2 w-full sm:w-auto sm:ml-auto">
+          <Button size="sm" onClick={() => setShowNueva(true)}>
+            <FileText className="h-4 w-4 mr-1" />
+            Nueva Receta
+          </Button>
+          <Button variant="outline" size="sm" onClick={cargarRecetas}>
+            <RefreshCw className="h-4 w-4 mr-1" />
+            Recargar
+          </Button>
+        </div>
       </div>
 
       {/* Búsqueda */}

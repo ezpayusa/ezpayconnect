@@ -282,7 +282,7 @@ export default function PacienteDetallePage() {
   return (
     <div className="min-h-screen bg-gray-50 p-8">
       {/* Header */}
-      <div className="flex items-center gap-4 mb-8">
+      <div className="flex items-center flex-wrap gap-4 mb-8">
         <button
           onClick={() => navigate(`${base}/pacientes`)}
           className="p-2 bg-white rounded-lg hover:bg-gray-100 transition-colors shadow-sm"
@@ -290,7 +290,7 @@ export default function PacienteDetallePage() {
           <ArrowLeft size={24} className="text-[#1E5C8E]" />
         </button>
         <FotoPacienteAvatar pacienteId={Number(paciente.id)} fotoPath={paciente.foto_path ?? null} size="lg" />
-        <div className="flex-1">
+        <div className="flex-1 min-w-0">
           <h1 className="text-3xl font-bold text-[#1a2a3a] flex items-center gap-3">
             <User size={32} className="text-[#1E5C8E]" />
             {paciente.nombre} {paciente.apellido}
@@ -300,7 +300,7 @@ export default function PacienteDetallePage() {
         {citaActiva && (
           <button
             onClick={() => navigate(`${base}/consulta/${citaActiva.id}`)}
-            className="flex items-center gap-2 px-5 py-3 bg-[#1E5C8E] hover:bg-[#164a70] text-white rounded-lg font-medium shadow-sm transition-colors"
+            className="flex items-center justify-center gap-2 w-full sm:w-auto px-5 py-3 bg-[#1E5C8E] hover:bg-[#164a70] text-white rounded-lg font-medium shadow-sm transition-colors"
           >
             <Stethoscope size={20} />
             {citaActiva.estado === 'en_curso' ? 'Continuar consulta' : 'Iniciar consulta'}
