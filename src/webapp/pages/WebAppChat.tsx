@@ -34,6 +34,13 @@ export default function WebAppChat() {
     if (scrollRef.current) scrollRef.current.scrollTop = scrollRef.current.scrollHeight
   }, [mensajes])
 
+  // Tras abrir un hilo (marca leído en la base), re-contar la bandeja para bajar el badge sin recargar.
+  // refetchMedicos es estable (useCallback) → NO va en deps para evitar re-fetch infinito.
+  useEffect(() => {
+    if (medicoSel != null && !loadingMsgs) refetchMedicos()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [medicoSel, mensajes.length, loadingMsgs])
+
   const handleEnviar = async (e?: React.FormEvent) => {
     e?.preventDefault()
     const t = texto.trim()

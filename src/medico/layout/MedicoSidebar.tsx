@@ -1,5 +1,5 @@
 import { useNavigate, useLocation } from 'react-router-dom'
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useCallback } from 'react'
 import { useAuth } from '@/hooks/useAuth'
 import { useMedicoStats } from '@/medico/hooks/useMedicoStats'
 import { supabase } from '@/lib/supabase'
@@ -26,14 +26,18 @@ export function MedicoSidebar() {
 
   // Badge de mensajes sin leer: suma de no_leidos de todos los hilos (patrón liviano, como pendientesCount)
   const [mensajesNoLeidos, setMensajesNoLeidos] = useState(0)
+  const recount = useCallback(async () => {
+    const { data, error } = await supabase.rpc('listar_hilos_chat_medico')
+    if (error || !data) return
+    setMensajesNoLeidos((data as any[]).reduce((acc, h) => acc + Number(h.no_leidos ?? 0), 0))
+  }, [])
+  // Re-cuenta al cambiar de ruta Y al volver el foco a la ventana (cubre marcar-leído dentro de /medico/chat,
+  // misma ruta → el pathname no cambia). focus listener es más barato que polling.
   useEffect(() => {
-    let cancelado = false
-    supabase.rpc('listar_hilos_chat_medico').then(({ data, error }) => {
-      if (cancelado || error || !data) return
-      setMensajesNoLeidos((data as any[]).reduce((acc, h) => acc + Number(h.no_leidos ?? 0), 0))
-    })
-    return () => { cancelado = true }
-  }, [location.pathname])
+    recount()
+    window.addEventListener('focus', recount)
+    return () => window.removeEventListener('focus', recount)
+  }, [recount, location.pathname])
 
   const navItems = [
     { label: 'Dashboard', icon: LayoutDashboard, path: '/medico' },
