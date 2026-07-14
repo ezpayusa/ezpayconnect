@@ -1,6 +1,8 @@
 import { useNavigate, useLocation } from 'react-router-dom'
+import { useState, useEffect } from 'react'
 import { useAuth } from '@/hooks/useAuth'
 import { useMedicoStats } from '@/medico/hooks/useMedicoStats'
+import { supabase } from '@/lib/supabase'
 import {
   LayoutDashboard,
   CalendarDays,
@@ -9,6 +11,7 @@ import {
   Clock,
   Stethoscope,
   Pill,
+  MessageCircle,
   LogOut,
   ChevronLeft,
   Bell,
@@ -21,6 +24,17 @@ export function MedicoSidebar() {
   const { logout, perfil } = useAuth()
   const { pendientesCount } = useMedicoStats()
 
+  // Badge de mensajes sin leer: suma de no_leidos de todos los hilos (patrón liviano, como pendientesCount)
+  const [mensajesNoLeidos, setMensajesNoLeidos] = useState(0)
+  useEffect(() => {
+    let cancelado = false
+    supabase.rpc('listar_hilos_chat_medico').then(({ data, error }) => {
+      if (cancelado || error || !data) return
+      setMensajesNoLeidos((data as any[]).reduce((acc, h) => acc + Number(h.no_leidos ?? 0), 0))
+    })
+    return () => { cancelado = true }
+  }, [location.pathname])
+
   const navItems = [
     { label: 'Dashboard', icon: LayoutDashboard, path: '/medico' },
     {
@@ -30,6 +44,12 @@ export function MedicoSidebar() {
       badge: pendientesCount > 0 ? pendientesCount : undefined,
     },
     { label: 'Mis Pacientes', icon: Users, path: '/medico/pacientes' },
+    {
+      label: 'Mensajes',
+      icon: MessageCircle,
+      path: '/medico/chat',
+      badge: mensajesNoLeidos > 0 ? mensajesNoLeidos : undefined,
+    },
     { label: 'Mis Recetas', icon: FileText, path: '/medico/recetas' },
     { label: 'Buscar Medicamentos', icon: Pill, path: '/medico/buscar-medicamentos' },
     { label: 'Mi Disponibilidad', icon: Clock, path: '/medico/disponibilidad' },
