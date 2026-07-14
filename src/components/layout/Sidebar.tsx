@@ -1,4 +1,5 @@
 import { useNavigate, useLocation } from 'react-router-dom'
+import { useState } from 'react'
 import { useAuth } from '@/hooks/useAuth'
 import { useNotificaciones } from '@/hooks/useNotificaciones'
 import {
@@ -14,14 +15,17 @@ import {
   Bell,
   Shield,
   BarChart3,
+  Menu,
 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
+import { Sheet, SheetContent, SheetTrigger } from '@/components/ui/sheet'
 
 export function Sidebar() {
   const navigate = useNavigate()
   const location = useLocation()
-  const { logout, perfil, isAdmin, isMedico, isAsistente } = useAuth()
+  const { logout, perfil } = useAuth()
   const { noLeidas } = useNotificaciones({ realtime: true })
+  const [open, setOpen] = useState(false) // drawer móvil
 
   // Normalizar rol para comparación
   const userRol = (perfil?.rol || '').toLowerCase().trim()
@@ -72,8 +76,12 @@ export function Sidebar() {
 
   const navItems = getNavItems()
 
-  return (
-    <aside className="w-64 bg-[#1a2a3a] text-white flex flex-col h-screen sticky top-0">
+  // Navega y cierra el drawer móvil (inocuo en desktop).
+  const go = (path: string) => { navigate(path); setOpen(false) }
+
+  // Contenido compartido por el aside desktop y el drawer móvil.
+  const body = (
+    <>
       <div className="p-6 border-b border-white/10">
         <div className="flex items-center gap-3">
           <Stethoscope className="h-8 w-8 text-[#5BA8D1]" />
@@ -97,7 +105,7 @@ export function Sidebar() {
       {/* Campanita de notificaciones */}
       <div className="px-4 pt-2">
         <button
-          onClick={() => navigate('/notificaciones')}
+          onClick={() => go('/notificaciones')}
           className="w-full flex items-center justify-between px-4 py-3 rounded-lg text-sm transition-all text-[#8a9aaa] hover:bg-white/5 hover:text-white"
         >
           <div className="flex items-center gap-3">
@@ -112,13 +120,13 @@ export function Sidebar() {
         </button>
       </div>
 
-      <nav className="flex-1 p-4 space-y-1">
+      <nav className="flex-1 overflow-y-auto p-4 space-y-1">
         {navItems.map((item) => {
           const active = location.pathname === item.path
           return (
             <button
               key={item.path}
-              onClick={() => navigate(item.path)}
+              onClick={() => go(item.path)}
               className={`w-full flex items-center gap-3 px-4 py-3 rounded-lg text-sm transition-all ${
                 active
                   ? 'bg-[#1E5C8E] text-white'
@@ -140,12 +148,42 @@ export function Sidebar() {
         <Button
           variant="ghost"
           className="w-full flex items-center gap-3 text-[#8a9aaa] hover:text-white hover:bg-white/5"
-          onClick={logout}
+          onClick={() => { setOpen(false); logout() }}
         >
           <LogOut className="h-4 w-4" />
           Cerrar Sesion
         </Button>
       </div>
-    </aside>
+    </>
+  )
+
+  return (
+    <>
+      {/* Desktop: aside fijo w-64 (sin cambios visuales) */}
+      <aside className="hidden md:flex w-64 bg-[#1a2a3a] text-white flex-col h-screen sticky top-0">
+        {body}
+      </aside>
+
+      {/* Móvil: topbar fijo con hamburguesa → drawer (Sheet). El aside no ocupa espacio en el flujo. */}
+      <header className="md:hidden fixed top-0 inset-x-0 h-14 z-40 bg-[#1a2a3a] text-white flex items-center gap-3 px-4">
+        <Sheet open={open} onOpenChange={setOpen}>
+          <SheetTrigger asChild>
+            <button aria-label="Abrir menú" className="p-1 -ml-1 text-white">
+              <Menu className="h-6 w-6" />
+            </button>
+          </SheetTrigger>
+          <SheetContent
+            side="left"
+            className="w-64 max-w-[80%] bg-[#1a2a3a] text-white border-0 p-0 gap-0 [&>button]:text-white"
+          >
+            <div className="flex flex-col h-full overflow-y-auto">{body}</div>
+          </SheetContent>
+        </Sheet>
+        <div className="flex items-center gap-2">
+          <Stethoscope className="h-6 w-6 text-[#5BA8D1]" />
+          <span className="font-bold tracking-wide">EzPayConnect</span>
+        </div>
+      </header>
+    </>
   )
 }

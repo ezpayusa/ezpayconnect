@@ -190,7 +190,7 @@ function PrivateLayout({ children }: { children: React.ReactNode }) {
   const { user, loading } = useAuth()
   if (loading) return <Spinner />
   if (!user) return <Navigate to="/login" replace />
-  return <div className="flex min-h-screen bg-gray-50"><Sidebar /><main className="flex-1 ml-0 overflow-auto">{children}</main></div>
+  return <div className="flex min-h-screen bg-gray-50"><Sidebar /><main className="flex-1 ml-0 overflow-auto pt-14 md:pt-0">{children}</main></div>
 }
 
 function AdminRoute({ children }: { children: React.ReactNode }) {

@@ -15,14 +15,17 @@ import {
   LogOut,
   ChevronLeft,
   Bell,
+  Menu,
 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
+import { Sheet, SheetContent, SheetTrigger } from '@/components/ui/sheet'
 
 export function MedicoSidebar() {
   const navigate = useNavigate()
   const location = useLocation()
   const { logout, perfil } = useAuth()
   const { stats } = useMedicoStats()
+  const [open, setOpen] = useState(false) // drawer móvil
 
   // Badge de mensajes sin leer: suma de no_leidos de todos los hilos (patrón liviano, como pendientesCount)
   const [mensajesNoLeidos, setMensajesNoLeidos] = useState(0)
@@ -64,8 +67,12 @@ export function MedicoSidebar() {
     return location.pathname.startsWith(path)
   }
 
-  return (
-    <aside className="w-64 bg-[#1a2a3a] text-white flex flex-col h-screen sticky top-0">
+  // Navega y cierra el drawer móvil (inocuo en desktop).
+  const go = (path: string) => { navigate(path); setOpen(false) }
+
+  // Contenido compartido por el aside desktop y el drawer móvil.
+  const body = (
+    <>
       {/* Header */}
       <div className="p-6 border-b border-white/10">
         <div className="flex items-center gap-3">
@@ -89,7 +96,7 @@ export function MedicoSidebar() {
       {/* Notificaciones */}
       <div className="px-4 pt-2">
         <button
-          onClick={() => navigate('/medico/notificaciones')}
+          onClick={() => go('/medico/notificaciones')}
           className="w-full flex items-center justify-between px-4 py-3 rounded-lg text-sm transition-all text-[#8a9aaa] hover:bg-white/5 hover:text-white"
         >
           <div className="flex items-center gap-3">
@@ -107,7 +114,7 @@ export function MedicoSidebar() {
           return (
             <button
               key={item.path}
-              onClick={() => navigate(item.path)}
+              onClick={() => go(item.path)}
               className={`w-full flex items-center justify-between px-3 py-2.5 rounded-lg text-sm font-medium transition-all ${
                 active
                   ? 'bg-[#5BA8D1] text-white shadow-sm'
@@ -139,7 +146,7 @@ export function MedicoSidebar() {
         <Button
           variant="ghost"
           className="w-full justify-start text-white/80 hover:text-white hover:bg-white/10"
-          onClick={() => navigate('/dashboard')}
+          onClick={() => go('/dashboard')}
         >
           <ChevronLeft className="w-4 h-4 mr-2" />
           Volver al Sistema
@@ -148,6 +155,7 @@ export function MedicoSidebar() {
           variant="ghost"
           className="w-full justify-start text-white/80 hover:text-white hover:bg-white/10"
           onClick={async () => {
+            setOpen(false)
             await logout()
             navigate('/login')
           }}
@@ -156,6 +164,36 @@ export function MedicoSidebar() {
           Cerrar Sesión
         </Button>
       </div>
-    </aside>
+    </>
+  )
+
+  return (
+    <>
+      {/* Desktop: aside fijo w-64 (sin cambios visuales) */}
+      <aside className="hidden md:flex w-64 bg-[#1a2a3a] text-white flex-col h-screen sticky top-0">
+        {body}
+      </aside>
+
+      {/* Móvil: topbar fijo con hamburguesa → drawer (Sheet). El aside no ocupa espacio en el flujo. */}
+      <header className="md:hidden fixed top-0 inset-x-0 h-14 z-40 bg-[#1a2a3a] text-white flex items-center gap-3 px-4">
+        <Sheet open={open} onOpenChange={setOpen}>
+          <SheetTrigger asChild>
+            <button aria-label="Abrir menú" className="p-1 -ml-1 text-white">
+              <Menu className="h-6 w-6" />
+            </button>
+          </SheetTrigger>
+          <SheetContent
+            side="left"
+            className="w-64 max-w-[80%] bg-[#1a2a3a] text-white border-0 p-0 gap-0 [&>button]:text-white"
+          >
+            <div className="flex flex-col h-full overflow-y-auto">{body}</div>
+          </SheetContent>
+        </Sheet>
+        <div className="flex items-center gap-2">
+          <Stethoscope className="h-6 w-6 text-[#5BA8D1]" />
+          <span className="font-bold tracking-wide">EzPayConnect</span>
+        </div>
+      </header>
+    </>
   )
 }
