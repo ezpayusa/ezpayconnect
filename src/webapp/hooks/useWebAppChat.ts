@@ -2,81 +2,33 @@ import { useState, useEffect, useCallback, useRef } from 'react'
 import { supabase } from '@/lib/supabase'
 import type { ChatMensaje } from '@/webapp/types/webapp.types'
 
-export function useWebAppChat(pacienteId: number | undefined) {
+/**
+ * Chat del paciente con UN médico ELEGIDO. El hilo es el par (pacienteId, medicoId).
+ * El médico ya no se resuelve adentro: el padre pasa el medicoId seleccionado (bandeja
+ * mis_medicos_chat). Si medicoId es null → no hay hilo abierto (mensajes vacíos).
+ */
+export function useWebAppChat(pacienteId: number | undefined, medicoId: string | null) {
   const [mensajes, setMensajes] = useState<ChatMensaje[]>([])
-  const [medicoId, setMedicoId] = useState<string | null>(null)
-  const [medicoNombre, setMedicoNombre] = useState<string>('Tu médico')
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const [enviando, setEnviando] = useState(false)
   const channelRef = useRef<any>(null)
 
-  // Obtener el medico_id del paciente (del perfil o de la última cita)
-  const fetchMedico = useCallback(async () => {
-    if (!pacienteId) return
-
-    // 1. Intentar obtener medico_id del perfil del paciente
-    const { data: pacienteData } = await supabase
-      .from('pacientes')
-      .select('medico_id')
-      .eq('id', pacienteId)
-      .single()
-
-    let mid = pacienteData?.medico_id
-
-    // 2. Si no tiene, buscar el médico de la última cita
-    if (!mid) {
-      const { data: citaData } = await supabase
-        .from('citas')
-        .select('medico_id')
-        .eq('paciente_id', pacienteId)
-        .order('fecha', { ascending: false })
-        .limit(1)
-        .single()
-
-      mid = citaData?.medico_id
-    }
-
-    if (mid) {
-      // 1. Buscar en perfiles primero (médicos con login)
-      const { data: perfilData } = await supabase
-        .from('perfiles')
-        .select('nombre_completo')
-        .eq('id', mid)
-        .maybeSingle()
-
-      if (perfilData) {
-        setMedicoId(mid)
-        setMedicoNombre(perfilData.nombre_completo || 'Tu médico')
-        return
-      }
-
-      // 2. Fallback: buscar en medicos (entidades sin login / seed)
-      const { data: medicoData } = await supabase
-        .from('medicos')
-        .select('nombre_completo')
-        .eq('id', mid)
-        .maybeSingle()
-
-      if (medicoData) {
-        setMedicoId(mid)
-        setMedicoNombre(medicoData.nombre_completo || 'Tu médico')
-      }
-    }
-  }, [pacienteId])
-
+  // Marca leídos SOLO los mensajes del médico de ESTE hilo.
+  // Vía RPC DEFINER (mig 259): el paciente NO tiene policy UPDATE en chat_mensajes → un .update()
+  // directo afecta 0 filas silenciosamente. La RPC gatea relación y marca leído server-side.
   const marcarComoLeidos = useCallback(async () => {
-    if (!pacienteId) return
-    await supabase
-      .from('chat_mensajes')
-      .update({ leido: true })
-      .eq('paciente_id', pacienteId)
-      .eq('remitente', 'medico')
-      .eq('leido', false)
-  }, [pacienteId])
+    if (!pacienteId || !medicoId) return
+    try {
+      await supabase.rpc('marcar_leido_chat_paciente', { p_medico_id: medicoId })
+    } catch (err) {
+      console.error('Error marcando leído:', err)
+    }
+  }, [pacienteId, medicoId])
 
   const fetchMensajes = useCallback(async () => {
-    if (!pacienteId) {
+    // Sin paciente o sin médico elegido → no hay hilo que cargar.
+    if (!pacienteId || !medicoId) {
       setMensajes([])
       setLoading(false)
       return
@@ -90,6 +42,7 @@ export function useWebAppChat(pacienteId: number | undefined) {
         .from('chat_mensajes')
         .select('*')
         .eq('paciente_id', pacienteId)
+        .eq('medico_id', medicoId)
         .order('created_at', { ascending: true })
 
       if (err) {
@@ -109,8 +62,6 @@ export function useWebAppChat(pacienteId: number | undefined) {
       }))
 
       setMensajes(mapped)
-
-      // Marcar mensajes del médico como leídos
       await marcarComoLeidos()
     } catch (err: any) {
       console.error('Error cargando mensajes:', err)
@@ -118,32 +69,31 @@ export function useWebAppChat(pacienteId: number | undefined) {
     } finally {
       setLoading(false)
     }
-  }, [pacienteId, marcarComoLeidos])
+  }, [pacienteId, medicoId, marcarComoLeidos])
 
   const enviarMensaje = useCallback(async (texto: string) => {
-    if (!pacienteId || !texto.trim()) return
+    if (!pacienteId || !medicoId || !texto.trim()) return
 
     try {
       setEnviando(true)
       setError(null)
-      const insertData: any = {
-        paciente_id: pacienteId,
-        remitente: 'paciente',
-        mensaje: texto.trim(),
-        leido: false,
-      }
-      // Solo incluir medico_id si existe y es válido
-      if (medicoId) {
-        insertData.medico_id = medicoId
-      }
 
-      const { data: nuevoMsg, error: err } = await supabase.from('chat_mensajes').insert(insertData).select('id').single()
+      // El paciente inserta DIRECTO: la policy INSERT (mig 135) gatea remitente='paciente' + relación.
+      const { data: nuevoMsg, error: err } = await supabase
+        .from('chat_mensajes')
+        .insert({
+          paciente_id: pacienteId,
+          medico_id: medicoId,
+          remitente: 'paciente',
+          mensaje: texto.trim(),
+          leido: false,
+        })
+        .select('id')
+        .single()
 
       if (err) throw err
 
-      // Camino ÚNICO server-side gateado: notificar_chat(mensaje_id). Verifica remitente + relación
-      // paciente↔médico, compone contenido server ("Nuevo mensaje de X", SIN texto crudo → cierra el leak
-      // del push anterior) y dispara in-app + web-push al médico. Reemplaza el enviar-push con texto crudo.
+      // Notificación server-side gateada (in-app + web-push al médico), sin texto crudo. Best-effort.
       if (nuevoMsg?.id) {
         try {
           await supabase.rpc('notificar_chat', { p_mensaje_id: nuevoMsg.id })
@@ -160,35 +110,24 @@ export function useWebAppChat(pacienteId: number | undefined) {
   }, [pacienteId, medicoId])
 
   useEffect(() => {
-    fetchMedico()
-  }, [fetchMedico])
-
-  useEffect(() => {
     fetchMensajes()
   }, [fetchMensajes])
 
-  // Suscripción en tiempo real a nuevos mensajes
+  // Realtime: nuevos mensajes de ESTE hilo (paciente + médico elegido).
   useEffect(() => {
-    if (!pacienteId) return
-
-    console.log('[Chat] Suscribiendo a realtime para paciente:', pacienteId)
+    if (!pacienteId || !medicoId) return
 
     const channel = supabase
-      .channel(`chat_paciente_${pacienteId}`)
+      .channel(`chat_paciente_${pacienteId}_${medicoId}`)
       .on(
         'postgres_changes',
-        {
-          event: 'INSERT',
-          schema: 'public',
-          table: 'chat_mensajes',
-        },
+        { event: 'INSERT', schema: 'public', table: 'chat_mensajes' },
         (payload) => {
           const nuevo = payload.new as any
-          // Filtrar solo mensajes de este paciente
-          if (nuevo.paciente_id !== pacienteId) return
+          // Solo mensajes de este hilo (paciente + médico elegido).
+          if (nuevo.paciente_id !== pacienteId || nuevo.medico_id !== medicoId) return
 
           setMensajes((prev) => {
-            // Evitar duplicados
             if (prev.some((m) => m.id === nuevo.id)) return prev
             return [
               ...prev,
@@ -201,28 +140,22 @@ export function useWebAppChat(pacienteId: number | undefined) {
               },
             ]
           })
-          // Marcar como leído si es del médico
           if (nuevo.remitente === 'medico') {
             marcarComoLeidos()
           }
         }
       )
-      .subscribe((status) => {
-        console.log('[Chat] Estado de suscripción:', status)
-      })
+      .subscribe()
 
     channelRef.current = channel
 
     return () => {
-      console.log('[Chat] Desuscribiendo...')
       channel.unsubscribe()
     }
-  }, [pacienteId, marcarComoLeidos])
+  }, [pacienteId, medicoId, marcarComoLeidos])
 
   return {
     mensajes,
-    medicoId,
-    medicoNombre,
     loading,
     error,
     enviando,
