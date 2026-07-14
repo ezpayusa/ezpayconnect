@@ -422,16 +422,16 @@ export default function ConsultaPage() {
           </Badge>
           {cita.estado === 'confirmada' && (
             <Button size="sm" variant="outline" onClick={() => cambiarEstadoCita('en_curso')}>
-              <Clock className="h-4 w-4 mr-1" /> En Sala
+              <Clock className="h-4 w-4 sm:mr-1" /> <span className="hidden sm:inline">En Sala</span>
             </Button>
           )}
           {cita.estado === 'en_curso' && (
             <Button size="sm" className="bg-green-600 hover:bg-green-700" onClick={() => cambiarEstadoCita('completada')}>
-              <CheckCircle2 className="h-4 w-4 mr-1" /> Finalizar
+              <CheckCircle2 className="h-4 w-4 sm:mr-1" /> <span className="hidden sm:inline">Finalizar</span>
             </Button>
           )}
           <Button size="sm" onClick={guardarNotaSOAP} disabled={saving} className="bg-[#1E5C8E]">
-            <Save className="h-4 w-4 mr-1" /> {saving ? 'Guardando...' : 'Guardar'}
+            <Save className="h-4 w-4 sm:mr-1" /> <span className="hidden sm:inline">{saving ? 'Guardando...' : 'Guardar'}</span>
           </Button>
         </div>
       </div>

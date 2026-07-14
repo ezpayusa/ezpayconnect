@@ -65,19 +65,21 @@ export default function MedicoDisponibilidadPage() {
       </div>
 
       {/* Selector de agenda */}
-      <div className="inline-flex rounded-lg border p-1 bg-muted/30">
-        <button
-          onClick={() => cambiarTab('visitador')}
-          className={`px-4 py-2 rounded-md text-sm font-medium flex items-center gap-2 ${esVisitador ? 'bg-white shadow text-[#1E5C8E]' : 'text-muted-foreground'}`}
-        >
-          <Briefcase className="h-4 w-4" /> Visitadores médicos
-        </button>
-        <button
-          onClick={() => cambiarTab('paciente')}
-          className={`px-4 py-2 rounded-md text-sm font-medium flex items-center gap-2 ${!esVisitador ? 'bg-white shadow text-[#1E5C8E]' : 'text-muted-foreground'}`}
-        >
-          <Stethoscope className="h-4 w-4" /> Pacientes
-        </button>
+      <div className="overflow-x-auto">
+        <div className="inline-flex rounded-lg border p-1 bg-muted/30">
+          <button
+            onClick={() => cambiarTab('visitador')}
+            className={`px-4 py-2 rounded-md text-sm font-medium flex items-center gap-2 whitespace-nowrap ${esVisitador ? 'bg-white shadow text-[#1E5C8E]' : 'text-muted-foreground'}`}
+          >
+            <Briefcase className="h-4 w-4" /> Visitadores médicos
+          </button>
+          <button
+            onClick={() => cambiarTab('paciente')}
+            className={`px-4 py-2 rounded-md text-sm font-medium flex items-center gap-2 whitespace-nowrap ${!esVisitador ? 'bg-white shadow text-[#1E5C8E]' : 'text-muted-foreground'}`}
+          >
+            <Stethoscope className="h-4 w-4" /> Pacientes
+          </button>
+        </div>
       </div>
 
       <p className="text-sm text-muted-foreground">
