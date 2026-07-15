@@ -87,21 +87,31 @@ function beforeBreadcrumb(breadcrumb: Sentry.Breadcrumb): Sentry.Breadcrumb | nu
 }
 
 export function initSentry(): void {
-  const dsn = import.meta.env.VITE_SENTRY_DSN
-  // Sin DSN (dev local / preview sin configurar) → no se inicializa nada.
-  if (!dsn) return
+  // Logs PERMANENTES (no debug): el modo de falla de este frente es fallar en SILENCIO.
+  // Se quedan a propósito para que la próxima vez el problema hable en la consola.
+  try {
+    const dsn = import.meta.env.VITE_SENTRY_DSN
+    // Sin DSN (dev local / preview sin configurar) → no se inicializa nada.
+    if (!dsn) {
+      console.warn('[sentry] SIN DSN, no inicializa')
+      return
+    }
 
-  // environment: preferir la señal de Vercel si existe; si no, el modo de Vite.
-  const environment = import.meta.env.VITE_VERCEL_ENV || import.meta.env.MODE
+    // environment: preferir la señal de Vercel si existe; si no, el modo de Vite.
+    const environment = import.meta.env.VITE_VERCEL_ENV || import.meta.env.MODE
 
-  Sentry.init({
-    dsn,
-    environment,
-    sendDefaultPii: false,
-    // integrations EXPLÍCITO: solo breadcrumbs con console:false. NO browserTracing, NO replay.
-    // Al pasar breadcrumbsIntegration por nombre, reemplaza la default (que trae console:true).
-    integrations: [Sentry.breadcrumbsIntegration({ console: false })],
-    beforeSend,
-    beforeBreadcrumb,
-  })
+    Sentry.init({
+      dsn,
+      environment,
+      sendDefaultPii: false,
+      // integrations EXPLÍCITO: solo breadcrumbs con console:false. NO browserTracing, NO replay.
+      // Al pasar breadcrumbsIntegration por nombre, reemplaza la default (que trae console:true).
+      integrations: [Sentry.breadcrumbsIntegration({ console: false })],
+      beforeSend,
+      beforeBreadcrumb,
+    })
+    console.info('[sentry] init OK, env=', environment)
+  } catch (e) {
+    console.error('[sentry] init FALLÓ:', e)
+  }
 }
