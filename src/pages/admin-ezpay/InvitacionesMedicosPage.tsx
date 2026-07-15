@@ -9,6 +9,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@
 import { useAdminAuth } from '@/hooks/admin/useAdminAuth'
 import { usePaisActivo } from '@/hooks/usePaisActivo'
 import { supabase } from '@/lib/supabase'
+import { APP_URL } from '@/lib/app-url'
 import { toast } from 'sonner'
 import {
   Stethoscope,
@@ -123,7 +124,7 @@ export default function InvitacionesMedicosPage() {
   }
 
   const copiarLink = (token: string) => {
-    const url = `https://ezpayconnect.vercel.app/registro-medico?token=${token}`
+    const url = `${APP_URL}/registro-medico?token=${token}`
     navigator.clipboard.writeText(url)
     toast.success('Link copiado al portapapeles')
   }

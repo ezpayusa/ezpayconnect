@@ -7,6 +7,10 @@ const corsHeaders = {
   'Access-Control-Allow-Methods': 'POST, OPTIONS',
 }
 
+// URL canónica de la app en producción (constante, NO env var: evita links rotos en silencio).
+// Las edges no pueden importar de src/lib/app-url.ts, así que se define aquí.
+const APP_URL = 'https://med.ezpayconnect.com'
+
 serve(async (req) => {
   if (req.method === 'OPTIONS') {
     return new Response('ok', { headers: corsHeaders })
@@ -101,7 +105,7 @@ serve(async (req) => {
 
     // Enviar email con link de registro
     if (resendApiKey) {
-      const registroUrl = `https://ezpayconnect.vercel.app/registro-clinica?token=${invitacion.token}`
+      const registroUrl = `${APP_URL}/registro-clinica?token=${invitacion.token}`
       
       await fetch('https://api.resend.com/emails', {
         method: 'POST',

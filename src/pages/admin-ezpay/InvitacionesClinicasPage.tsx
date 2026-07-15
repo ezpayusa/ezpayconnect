@@ -8,6 +8,7 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/u
 import { useAdminAuth } from '@/hooks/admin/useAdminAuth'
 import { usePaisActivo } from '@/hooks/usePaisActivo'
 import { supabase } from '@/lib/supabase'
+import { APP_URL } from '@/lib/app-url'
 import { toast } from 'sonner'
 import {
   MapPin,
@@ -114,7 +115,7 @@ export default function InvitacionesClinicasPage() {
   }
 
   const copiarLink = (token: string) => {
-    const url = `https://ezpayconnect.vercel.app/registro-clinica?token=${token}`
+    const url = `${APP_URL}/registro-clinica?token=${token}`
     navigator.clipboard.writeText(url)
     toast.success('Link copiado al portapapeles')
   }
