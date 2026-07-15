@@ -71,8 +71,14 @@ function beforeSend(event: Sentry.ErrorEvent): Sentry.ErrorEvent | null {
 
   if (event.request?.url) event.request.url = scrubUrl(event.request.url)
 
-  // Nunca enviar identidad del usuario.
-  delete event.user
+  // Geolocalización del usuario: `delete event.user` NO alcanza. El toggle de panel
+  // "Prevent Storing of IP Addresses" descarta la IP pero CONSERVA la geo derivada, y el
+  // server (Relay) infiere IP→geo salvo que el evento traiga user.ip_address EXPLÍCITAMENTE
+  // en null. Borrar user lo deja `undefined` → el SDK/servidor lo tratan como "auto" e infieren
+  // igual (la guarda del SDK es `=== undefined`: null nunca se repuebla a '{{auto}}').
+  // Por eso NO borramos: reemplazamos user por SOLO { ip_address: null } → cero identidad
+  // (sin id/email) + señal explícita de "no infieras geo". Este cabo nos costó media sesión.
+  event.user = { ip_address: null }
 
   event.breadcrumbs?.forEach((bc) => scrubBreadcrumbUrls(bc.data))
 
