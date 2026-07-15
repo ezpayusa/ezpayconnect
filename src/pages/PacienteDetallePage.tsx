@@ -34,6 +34,7 @@ import {
   Droplets,
   Gauge,
   Wind,
+  FolderOpen,
 } from 'lucide-react'
 
 interface Paciente {
@@ -78,7 +79,7 @@ export default function PacienteDetallePage() {
   const location = useLocation()
   const base = location.pathname.startsWith('/medico') ? '/medico' : ''
   const { user } = useAuth()
-  const [activeTab, setActiveTab] = useState<'info' | 'historial' | 'consultas' | 'signos_vitales' | 'recetas' | 'citas' | 'examenes'>('info')
+  const [activeTab, setActiveTab] = useState<'info' | 'historial' | 'consultas' | 'signos_vitales' | 'recetas' | 'citas' | 'examenes' | 'documentos'>('info')
   const [paciente, setPaciente] = useState<Paciente | null>(null)
   const [historial, setHistorial] = useState<HistorialEvento[]>([])
   const [recetas, setRecetas] = useState<RecetaAvanzada[]>([])
@@ -318,6 +319,7 @@ export default function PacienteDetallePage() {
           { key: 'recetas', label: 'Recetas Avanzadas', icon: FileText },
           { key: 'examenes', label: 'Exámenes', icon: FlaskConical },
           { key: 'citas', label: 'Citas', icon: Calendar },
+          { key: 'documentos', label: 'Documentos', icon: FolderOpen },
         ].map(tab => (
           <button
             key={tab.key}
@@ -405,21 +407,26 @@ export default function PacienteDetallePage() {
         </div>
       )}
 
-      {/* === DOCUMENTOS DEL PACIENTE (plomería base — siempre visible para QA staff) === */}
-      <div className="bg-white rounded-xl shadow-sm p-6">
-        <h2 className="text-xl font-semibold text-[#1a2a3a] mb-4 flex items-center gap-2">
-          <FileText size={22} className="text-[#1E5C8E]" /> Documentos
-        </h2>
-        <DocumentosPaciente pacienteId={Number(paciente.id)} editable />
-      </div>
+      {/* === TAB: DOCUMENTOS (Documentos del paciente + Consentimiento presencial) === */}
+      {activeTab === 'documentos' && (
+        <>
+          {/* === DOCUMENTOS DEL PACIENTE === */}
+          <div className="bg-white rounded-xl shadow-sm p-6">
+            <h2 className="text-xl font-semibold text-[#1a2a3a] mb-4 flex items-center gap-2">
+              <FileText size={22} className="text-[#1E5C8E]" /> Documentos
+            </h2>
+            <DocumentosPaciente pacienteId={Number(paciente.id)} editable />
+          </div>
 
-      {/* === CONSENTIMIENTO PRESENCIAL (staff captura firma/papel por permiso) === */}
-      <div className="bg-white rounded-xl shadow-sm p-6">
-        <h2 className="text-xl font-semibold text-[#1a2a3a] mb-4 flex items-center gap-2">
-          <ShieldCheck size={22} className="text-[#1E5C8E]" /> Consentimiento
-        </h2>
-        <ConsentimientoPresencial pacienteId={Number(paciente.id)} />
-      </div>
+          {/* === CONSENTIMIENTO PRESENCIAL (staff captura firma/papel por permiso) === */}
+          <div className="bg-white rounded-xl shadow-sm p-6">
+            <h2 className="text-xl font-semibold text-[#1a2a3a] mb-4 flex items-center gap-2">
+              <ShieldCheck size={22} className="text-[#1E5C8E]" /> Consentimiento
+            </h2>
+            <ConsentimientoPresencial pacienteId={Number(paciente.id)} />
+          </div>
+        </>
+      )}
 
       {/* === TAB: HISTORIAL MEDICO === */}
       {activeTab === 'historial' && (
