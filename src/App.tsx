@@ -352,7 +352,7 @@ function App() {
         <Route path="/clinica" element={<ClinicaLayout />}>
           {/* Admisión: cola de citas de hoy + captura de vitales (serie). Roles de captura + admin. */}
           <Route path="admision" element={
-            <RequiereRolClinica roles={['admin_clinica', 'admin', 'super_admin', 'gerente', 'asistente_medico', 'enfermeria']}>
+            <RequiereRolClinica roles={['admin_clinica', 'admin', 'super_admin', 'gerente', 'asistente_medico', 'enfermeria', 'secretaria']}>
               <ClinicaAdmisionPage />
             </RequiereRolClinica>
           } />

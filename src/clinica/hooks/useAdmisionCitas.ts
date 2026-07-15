@@ -11,6 +11,7 @@ export interface CitaAdmision {
   medico_nombre: string | null
   hora_inicio: string | null
   estado: string
+  llegada_at: string | null
 }
 
 // Fecha local YYYY-MM-DD (obtener_citas_clinica devuelve `fecha` como date 'YYYY-MM-DD').
@@ -24,7 +25,10 @@ function hoyISO(): string {
  * obtener_citas_clinica (gate por pertenencia, mig 159) → filtra fecha===hoy en cliente →
  * resuelve nombres de médicos con obtener_medicos_por_ids (sin N+1). Ordena por hora_inicio.
  */
-export function useAdmisionCitas() {
+// opts.conteos=false NO llama contar_tomas_citas (esa RPC gatea rol de captura → para
+// secretaria daría error). Default true (comportamiento previo intacto).
+export function useAdmisionCitas(opts?: { conteos?: boolean }) {
+  const conteosHabilitado = opts?.conteos ?? true
   const { clinica } = useClinicaAuth()
   const [citas, setCitas] = useState<CitaAdmision[]>([])
   const [loading, setLoading] = useState(true)
@@ -34,6 +38,7 @@ export function useAdmisionCitas() {
   // Conteo de tomas por cita (✓ en la cola). UNA sola llamada para todas las citas de hoy (sin N+1).
   // Degrada: si la RPC falla, NO rompe la cola — queda sin ✓ (es indicador, no bloqueante).
   const cargarConteos = useCallback(async (ids: number[]) => {
+    if (!conteosHabilitado) { setTomasPorCita({}); return }  // rol sin acceso a tomas → no llamar la RPC
     if (!ids.length) { setTomasPorCita({}); return }
     const { data, error: errConteo } = await supabase.rpc('contar_tomas_citas', { p_cita_ids: ids })
     if (errConteo) {
@@ -41,7 +46,7 @@ export function useAdmisionCitas() {
       return
     }
     setTomasPorCita(Object.fromEntries((data || []).map((r: any) => [r.cita_id, r.n])))
-  }, [])
+  }, [conteosHabilitado])
 
   const cargar = useCallback(async () => {
     if (!clinica) return
@@ -72,6 +77,7 @@ export function useAdmisionCitas() {
           medico_nombre: c.medico_id ? (nombres[c.medico_id] || null) : null,
           hora_inicio: c.hora_inicio,
           estado: c.estado,
+          llegada_at: c.llegada_at ?? null,
         }))
         .sort((a: CitaAdmision, b: CitaAdmision) => (a.hora_inicio || '').localeCompare(b.hora_inicio || ''))
 

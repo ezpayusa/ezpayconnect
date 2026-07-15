@@ -1,22 +1,29 @@
 import { useState, useEffect, useCallback } from 'react'
 import { supabase } from '@/lib/supabase'
 import { toast } from 'sonner'
+import { useAuth } from '@/hooks/useAuth'
 import { useClinicaAuth } from '@/clinica/hooks/useClinicaAuth'
 import { useAdmisionCitas, type CitaAdmision } from '@/clinica/hooks/useAdmisionCitas'
 import { FormularioVitales, type VitalesValues, VITALES_VACIO } from '@/clinica/components/FormularioVitales'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
-import { ClipboardList, RefreshCw, Clock, User, Stethoscope, X, Loader2, Activity, Check, ShieldCheck } from 'lucide-react'
+import { ClipboardList, RefreshCw, Clock, User, Stethoscope, X, Loader2, Activity, Check, ShieldCheck, UserCheck } from 'lucide-react'
 import { FotoPacienteAvatar } from '@/components/FotoPacienteAvatar'
 import { ConsentimientoPresencial } from '@/components/ConsentimientoPresencial'
 
 const num = (v: string) => (v.trim() === '' ? null : Number(v))
 const horaCorta = (t: string | null) => (t ? t.slice(0, 5) : '—')
+const estadoLabel = (e: string) => (e === 'en_espera' ? 'En espera' : e)
+
+// Roles que SÍ pueden ver/capturar PHI en Admisión (todos los de admisión MENOS secretaria).
+const ROLES_PHI = ['admin_clinica', 'gerente', 'asistente_medico', 'enfermeria', 'super_admin', 'admin']
 
 export default function ClinicaAdmisionPage() {
   const { clinica } = useClinicaAuth()
-  const { citas, loading, error, recargar, tomasPorCita, recargarConteos } = useAdmisionCitas()
+  const rol = useAuth().perfil?.rol
+  const puedePHI = ROLES_PHI.includes(rol ?? '')
+  const { citas, loading, error, recargar, tomasPorCita, recargarConteos } = useAdmisionCitas({ conteos: puedePHI })
   const [citaSel, setCitaSel] = useState<CitaAdmision | null>(null)
 
   return (
@@ -63,7 +70,11 @@ export default function ClinicaAdmisionPage() {
                   <span className="flex items-center gap-1 text-xs text-muted-foreground">
                     <Stethoscope className="h-3 w-3" /> {c.medico_nombre || 'Sin médico'}
                   </span>
-                  <Badge variant="secondary" className="text-xs">{c.estado}</Badge>
+                  {c.estado === 'en_espera' ? (
+                    <Badge className="text-xs bg-amber-100 text-amber-700">En espera</Badge>
+                  ) : (
+                    <Badge variant="secondary" className="text-xs">{estadoLabel(c.estado)}</Badge>
+                  )}
                   {tomasPorCita[c.id] > 0 && (
                     <Badge className="text-xs bg-emerald-100 text-emerald-700 flex items-center gap-1">
                       <Check className="h-3 w-3" /> {tomasPorCita[c.id]}
@@ -76,7 +87,15 @@ export default function ClinicaAdmisionPage() {
         </CardContent>
       </Card>
 
-      {citaSel && <ModalAdmision cita={citaSel} onClose={() => setCitaSel(null)} onTomaGuardada={recargarConteos} />}
+      {citaSel && (
+        <ModalAdmision
+          cita={citaSel}
+          puedePHI={puedePHI}
+          onClose={() => setCitaSel(null)}
+          onTomaGuardada={recargarConteos}
+          onLlegada={() => { recargar(); setCitaSel(null) }}
+        />
+      )}
     </div>
   )
 }
@@ -84,11 +103,12 @@ export default function ClinicaAdmisionPage() {
 // ============================================================
 // Modal: serie de tomas (read-only) + agregar toma. La cola queda de fondo.
 // ============================================================
-function ModalAdmision({ cita, onClose, onTomaGuardada }: { cita: CitaAdmision; onClose: () => void; onTomaGuardada: () => void }) {
+function ModalAdmision({ cita, puedePHI, onClose, onTomaGuardada, onLlegada }: { cita: CitaAdmision; puedePHI: boolean; onClose: () => void; onTomaGuardada: () => void; onLlegada: () => void }) {
   const [serie, setSerie] = useState<any[]>([])
   const [cargandoSerie, setCargandoSerie] = useState(true)
   const [form, setForm] = useState<VitalesValues>(VITALES_VACIO)
   const [guardando, setGuardando] = useState(false)
+  const [marcandoLlegada, setMarcandoLlegada] = useState(false)
 
   const cargarSerie = useCallback(async () => {
     setCargandoSerie(true)
@@ -98,7 +118,17 @@ function ModalAdmision({ cita, onClose, onTomaGuardada }: { cita: CitaAdmision; 
     setCargandoSerie(false)
   }, [cita.id])
 
-  useEffect(() => { cargarSerie() }, [cargarSerie])
+  // La serie es PHI (listar_signos_vitales_cita gatea rol de captura): no la pidas si el rol no puede.
+  useEffect(() => { if (puedePHI) cargarSerie() }, [cargarSerie, puedePHI])
+
+  const marcarLlegada = async () => {
+    setMarcandoLlegada(true)
+    const { error } = await supabase.rpc('marcar_llegada_cita', { p_cita_id: cita.id })
+    setMarcandoLlegada(false)
+    if (error) { toast.error(error.message); return }  // PT040-PT044 traen texto claro
+    toast.success('Llegada registrada')
+    onLlegada()
+  }
 
   const onChange = (campo: keyof VitalesValues, valor: string) =>
     setForm((f) => ({ ...f, [campo]: valor }))
@@ -143,6 +173,27 @@ function ModalAdmision({ cita, onClose, onTomaGuardada }: { cita: CitaAdmision; 
         </div>
 
         <div className="p-4 space-y-5">
+          {/* Check-in de recepción (visible para TODOS los roles de admisión, incl. secretaria) */}
+          {cita.estado === 'en_espera' ? (
+            <div className="flex items-center gap-2 text-sm text-amber-700 bg-amber-50 border border-amber-200 rounded-md px-3 py-2">
+              <UserCheck className="h-4 w-4 shrink-0" />
+              {cita.llegada_at
+                ? `Llegó a las ${new Date(cita.llegada_at).toLocaleTimeString('es-ES', { hour: '2-digit', minute: '2-digit' })}`
+                : 'En espera'}
+            </div>
+          ) : (cita.estado === 'confirmada' || cita.estado === 'agendada') ? (
+            <Button
+              onClick={marcarLlegada}
+              disabled={marcandoLlegada}
+              className="w-full sm:w-auto bg-[#1E5C8E] hover:bg-[#164a70]"
+            >
+              {marcandoLlegada ? <Loader2 className="h-4 w-4 mr-2 animate-spin" /> : <UserCheck className="h-4 w-4 mr-2" />}
+              Marcar llegada
+            </Button>
+          ) : null}
+
+          {puedePHI && (
+          <>
           {/* Foto del paciente (subir/reemplazar). v1: sin foto PREVIA en Admisión (la cola no trae foto_path);
               tras subir, el preview se refresca. Deuda menor anotada. */}
           <div className="flex items-center gap-3">
@@ -194,6 +245,8 @@ function ModalAdmision({ cita, onClose, onTomaGuardada }: { cita: CitaAdmision; 
             <h3 className="text-sm font-semibold mb-2">Agregar toma</h3>
             <FormularioVitales values={form} onChange={onChange} onSubmit={guardar} loading={guardando} />
           </div>
+          </>
+          )}
         </div>
       </div>
     </div>

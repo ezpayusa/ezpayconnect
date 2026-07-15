@@ -32,7 +32,7 @@ export function ClinicaSidebar() {
   // `roles` declara quién ve cada item. Item sin `roles` = visible a todos (compat hacia atrás).
   const navItems = [
     { label: 'Dashboard', icon: LayoutDashboard, path: '/clinica', roles: ROLES_ADMIN },
-    { label: 'Admisión', icon: ClipboardList, path: '/clinica/admision', roles: [...ROLES_ADMIN, 'asistente_medico', 'enfermeria'] },
+    { label: 'Admisión', icon: ClipboardList, path: '/clinica/admision', roles: [...ROLES_ADMIN, 'asistente_medico', 'enfermeria', 'secretaria'] },
     { label: 'Citas', icon: CalendarDays, path: '/clinica/citas', roles: ROLES_ADMIN },
     { label: 'Calendario', icon: CalendarDays, path: '/clinica/calendario', roles: [...ROLES_ADMIN, 'asistente_medico', 'enfermeria', 'secretaria'] },
     { label: 'Personal', icon: Users, path: '/clinica/personal', roles: ROLES_ADMIN },
