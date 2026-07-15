@@ -52,6 +52,7 @@ const DisponibilidadVisitasPage = lazy(() => import('@/pages/DisponibilidadVisit
 const ConsultaPage = lazy(() => import('@/pages/ConsultaPage'))
 const RegistroMedicoPage = lazy(() => import('@/pages/RegistroMedicoPage'))
 const RegistroClinicaPage = lazy(() => import('@/pages/RegistroClinicaPage'))
+const NotFoundPage = lazy(() => import('@/pages/NotFoundPage'))
 
 // === PORTAL PACIENTE ===
 const WebAppLoginPage = lazy(() => import('@/webapp/pages/WebAppLoginPage'))
@@ -462,6 +463,9 @@ function App() {
           <Route path="publicidad" element={<PlanesPublicidadConfigPage />} />
           <Route path="empresas-afines" element={<PlanesEmpresasAfinesConfigPage />} />
         </Route>
+
+        {/* Catch-all 404: cualquier URL no matcheada (ej. /medico/paciente/23/detalle mal tipeada) */}
+        <Route path="*" element={<NotFoundPage />} />
       </Routes>
       </Suspense>
       <Toaster richColors position="top-right" />
