@@ -41,6 +41,7 @@ function iniciales(nombre: string): string {
 function colorCita(estado: string): { bar: string; bg: string; text: string } {
   switch (estado) {
     case 'confirmada': case 'agendada': return { bar: '#10b981', bg: '#ecfdf5', text: '#065f46' }
+    case 'en_espera': return { bar: '#f97316', bg: '#fff7ed', text: '#9a3412' }
     case 'solicitada': case 'pendiente': return { bar: '#f59e0b', bg: '#fffbeb', text: '#92400e' }
     case 'cancelada': return { bar: '#ef4444', bg: '#fef2f2', text: '#991b1b' }
     case 'completada': case 'atendida': return { bar: '#0ea5e9', bg: '#f0f9ff', text: '#075985' }
@@ -163,7 +164,9 @@ function Popup({ children, onClose }: { children: React.ReactNode; onClose: () =
 
 function BadgeEstado({ estado, tipo }: { estado: string; tipo: ModoCalendario }) {
   const c = tipo === 'cita' ? colorCita(estado) : colorVisita(estado)
-  return <span className="px-2 py-0.5 rounded-full text-xs font-medium capitalize" style={{ backgroundColor: c.bg, color: c.text }}>{estado}</span>
+  // Solo en_espera necesita label (evita "En_espera" del capitalize sobre el crudo); el resto queda igual.
+  const label = estado === 'en_espera' ? 'En espera' : estado
+  return <span className="px-2 py-0.5 rounded-full text-xs font-medium capitalize" style={{ backgroundColor: c.bg, color: c.text }}>{label}</span>
 }
 
 export default function ClinicaCalendarioPage() {

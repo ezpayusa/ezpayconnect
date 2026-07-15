@@ -42,6 +42,7 @@ export default function CitaCard({
     solicitada: { label: 'Solicitada', color: 'bg-slate-100 text-slate-700', border: 'border-slate-400', icon: AlertTriangle },
     agendada: { label: 'Agendada', color: 'bg-amber-100 text-amber-700', border: 'border-amber-400', icon: Clock },
     confirmada: { label: 'Confirmada', color: 'bg-blue-100 text-blue-700', border: 'border-blue-400', icon: CheckCircle2 },
+    en_espera: { label: 'En espera', color: 'bg-orange-100 text-orange-700', border: 'border-orange-400', icon: Clock },
     en_curso: { label: 'En curso', color: 'bg-purple-100 text-purple-700', border: 'border-purple-400', icon: Play },
     completada: { label: 'Completada', color: 'bg-green-100 text-green-700', border: 'border-green-400', icon: CheckCircle2 },
     cancelada: { label: 'Cancelada', color: 'bg-red-100 text-red-700', border: 'border-red-400', icon: XCircle },

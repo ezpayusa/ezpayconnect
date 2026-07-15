@@ -11,6 +11,7 @@ const filtros: { key: FiltroCitaEstado; label: string }[] = [
   { key: 'solicitada', label: 'Solicitadas' },
   { key: 'agendada', label: 'Agendadas' },
   { key: 'confirmada', label: 'Confirmadas' },
+  { key: 'en_espera', label: 'En espera' },
   { key: 'en_curso', label: 'En curso' },
   { key: 'completada', label: 'Completadas' },
   { key: 'cancelada', label: 'Canceladas' },
