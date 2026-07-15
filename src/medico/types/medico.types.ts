@@ -18,4 +18,4 @@ export interface MedicoStats {
   proximaCita: CitaConPaciente | null
 }
 
-export type FiltroCitaEstado = 'todos' | 'solicitada' | 'agendada' | 'confirmada' | 'en_curso' | 'completada' | 'cancelada'
+export type FiltroCitaEstado = 'todos' | 'solicitada' | 'agendada' | 'confirmada' | 'en_espera' | 'en_curso' | 'completada' | 'cancelada'
