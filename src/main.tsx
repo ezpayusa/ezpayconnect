@@ -5,6 +5,10 @@ import App from './App'
 import { ErrorBoundary } from '@/components/ErrorBoundary'
 import { AuthProvider } from '@/hooks/AuthContext'
 import { esChunkError, recargarPorChunkObsoleto } from '@/lib/chunk-reload'
+import { initSentry } from '@/lib/sentry'
+
+// Observabilidad: inicializar lo más arriba posible, antes de crear el árbol React.
+initSentry()
 
 console.log('[BUILD] EzPayConnect v3.6 - 2026-06-10 (stubs core: config clinica, examenes, reportes)')
 

@@ -1,4 +1,5 @@
-import { Component, type ReactNode } from 'react'
+import { Component, type ErrorInfo, type ReactNode } from 'react'
+import * as Sentry from '@sentry/react'
 import { esChunkError, recargarPorChunkObsoleto } from '@/lib/chunk-reload'
 
 interface Props {
@@ -19,13 +20,17 @@ export class ErrorBoundary extends Component<Props, State> {
     return { hasError: true }
   }
 
-  componentDidCatch(error: unknown): void {
+  componentDidCatch(error: unknown, errorInfo: ErrorInfo): void {
     const msg = (error as { message?: unknown })?.message ?? error
     if (esChunkError(msg)) {
       // Chunk obsoleto: recarga controlada (bajo el tope) o no-op (sobre el tope → queda el fallback).
+      // NO es un bug: no se reporta a Sentry.
       recargarPorChunkObsoleto()
       return
     }
+    Sentry.captureException(error, {
+      contexts: { react: { componentStack: errorInfo.componentStack } },
+    })
     console.error('[ErrorBoundary] error de render no recuperable:', msg)
   }
 
