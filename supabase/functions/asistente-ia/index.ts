@@ -2,7 +2,7 @@ import { serve } from 'https://deno.land/std@0.168.0/http/server.ts'
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2'
 
 // CORS acotado (mismo patrón que dictado-voz). Solo orígenes propios (+ DEV_ORIGIN por env solo en dev).
-const ALLOWED = ['https://ezpayconnect.vercel.app', 'https://med.ezpayconnect.com']
+const ALLOWED = ['https://med.ezpayconnect.com']
 const DEV_ORIGIN = Deno.env.get('DEV_ORIGIN') // p.ej. http://localhost:5173 — solo en dev; borrar la env antes de go-live
 const ALLOWLIST = DEV_ORIGIN ? [...ALLOWED, DEV_ORIGIN] : ALLOWED
 
