@@ -1,5 +1,6 @@
 import { useState } from 'react'
 import { useWebAppAuth } from '@/webapp/hooks/useWebAppAuth'
+import { parseFechaLocal } from '@/lib/fecha'
 import { useWebAppCitas } from '@/webapp/hooks/useWebAppCitas'
 import { useWebAppRecetas } from '@/webapp/hooks/useWebAppRecetas'
 import { useWebAppExamenes } from '@/webapp/hooks/useWebAppExamenes'
@@ -114,7 +115,7 @@ export default function WebAppDashboard() {
                 <div className="flex items-center gap-2 text-slate-500 text-sm">
                   <CalendarDays className="h-4 w-4" />
                   <span>
-                    {new Date(proximaCita.fecha).toLocaleDateString('es-GT', {
+                    {parseFechaLocal(proximaCita.fecha).toLocaleDateString('es-GT', {
                       weekday: 'long', year: 'numeric', month: 'long', day: 'numeric'
                     })}
                   </span>

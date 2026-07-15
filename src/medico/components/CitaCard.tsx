@@ -3,6 +3,7 @@ import { Card, CardContent } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
 import type { CitaConPaciente } from '@/medico/types/medico.types'
+import { parseFechaLocal } from '@/lib/fecha'
 import {
   User,
   Clock,
@@ -71,7 +72,7 @@ export default function CitaCard({
               </Badge>
               <Badge variant="outline" className="text-xs">
                 <CalendarDays className="h-3 w-3 mr-1" />
-                {new Date(cita.fecha).toLocaleDateString('es-GT', {
+                {parseFechaLocal(cita.fecha).toLocaleDateString('es-GT', {
                   weekday: 'short', day: 'numeric', month: 'short',
                 })}
               </Badge>

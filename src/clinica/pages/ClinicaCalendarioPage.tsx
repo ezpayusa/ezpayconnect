@@ -7,6 +7,7 @@ import { ChevronLeft, ChevronRight, Plus, X, CheckCircle2, Phone, FileText, Buil
 import { useClinicaAuth } from '@/clinica/hooks/useClinicaAuth'
 import { useAuth } from '@/hooks/useAuth'
 import { useCalendarioClinica, type ModoCalendario, type MedicoColumna, type CitaCalendario, type VisitaCalendario } from '@/clinica/hooks/useCalendarioClinica'
+import { combinar } from '@/lib/fecha'
 import NuevaCitaModal from '@/clinica/components/NuevaCitaModal'
 import { FotoPacienteAvatar } from '@/components/FotoPacienteAvatar'
 import { Button } from '@/components/ui/button'
@@ -16,17 +17,7 @@ import './clinica-calendario.css'
 
 const localizer = dateFnsLocalizer({ format, parse, startOfWeek, getDay, locales: { es } })
 
-// ── helpers de fecha/hora en LOCAL ──
-function parseFechaLocal(iso: string): Date {
-  const [y, m, d] = iso.split('-').map(Number)
-  return new Date(y, m - 1, d)
-}
-function combinar(fechaISO: string, hora: string | null): Date {
-  const base = parseFechaLocal(fechaISO)
-  const [h, mi] = (hora || '00:00').split(':').map(Number)
-  base.setHours(h || 0, mi || 0, 0, 0)
-  return base
-}
+// ── helpers de fecha/hora en LOCAL ── (parseFechaLocal/combinar movidos a @/lib/fecha)
 function horaCorta(hora: string | null): string {
   if (!hora) return ''
   const [h, m] = hora.split(':')

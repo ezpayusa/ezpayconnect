@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback } from 'react'
 import { supabase } from '@/lib/supabase'
 import { useClinicaAuth } from './useClinicaAuth'
+import { hoyISO } from '@/lib/fecha'
 
 export interface CitaAdmision {
   id: number
@@ -14,11 +15,8 @@ export interface CitaAdmision {
   llegada_at: string | null
 }
 
-// Fecha local YYYY-MM-DD (obtener_citas_clinica devuelve `fecha` como date 'YYYY-MM-DD').
-function hoyISO(): string {
-  const d = new Date()
-  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
-}
+// hoyISO movida a @/lib/fecha (fuente única). obtener_citas_clinica devuelve `fecha` como
+// date 'YYYY-MM-DD', por eso se compara contra hoyISO() (local), no contra UTC.
 
 /**
  * Cola de citas de HOY de la clínica del usuario, para el panel de Admisión.

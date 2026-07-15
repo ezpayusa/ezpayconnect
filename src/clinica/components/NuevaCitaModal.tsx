@@ -4,7 +4,8 @@ import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { usePaisesRegistro } from '@/hooks/usePaisesRegistro'
-import { fechaLocalISO, type MedicoColumna, type PacienteBusqueda, type NuevoPacienteDatos, type NuevaCitaDatos } from '@/clinica/hooks/useCalendarioClinica'
+import { type MedicoColumna, type PacienteBusqueda, type NuevoPacienteDatos, type NuevaCitaDatos } from '@/clinica/hooks/useCalendarioClinica'
+import { fechaLocalISO } from '@/lib/fecha'
 import { toast } from 'sonner'
 
 interface PacienteSel { id: number; nombre: string }

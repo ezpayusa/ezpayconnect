@@ -2,6 +2,7 @@ import { useState, useEffect, useCallback } from 'react'
 import { useParams, useNavigate, useLocation } from 'react-router-dom'
 import { supabase } from '@/lib/supabase'
 import { openSignedUrl } from '@/lib/signedUrl'
+import { parseFechaLocal } from '@/lib/fecha'
 import { useAuth } from '@/hooks/useAuth'
 import { useConsultas } from '@/hooks/useConsultas'
 import { useCitas } from '@/hooks/useCitas'
@@ -412,7 +413,7 @@ export default function ConsultaPage() {
               Consulta Médica
             </h1>
             <p className="text-xs text-muted-foreground">
-              {new Date(cita.fecha).toLocaleDateString('es-ES')} · {cita.hora_inicio} — {paciente.nombre} {paciente.apellido}
+              {parseFechaLocal(cita.fecha).toLocaleDateString('es-ES')} · {cita.hora_inicio} — {paciente.nombre} {paciente.apellido}
             </p>
           </div>
         </div>
