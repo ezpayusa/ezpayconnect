@@ -1,5 +1,6 @@
 import { useState, useEffect, useCallback } from 'react'
 import { supabase } from '@/lib/supabase'
+import { fechaLocalISO } from '@/lib/fecha'
 
 // Columnas del calendario: médicos de la clínica, en tiempo real desde listar_medicos_clinica (RPC DEFINER).
 export interface MedicoColumna {
@@ -69,13 +70,7 @@ export interface NuevaCitaDatos {
 
 export type ModoCalendario = 'citas' | 'visitas'
 
-// yyyy-mm-dd en hora LOCAL (no UTC → evita corrimiento de día en TZ negativas).
-export function fechaLocalISO(d: Date): string {
-  const y = d.getFullYear()
-  const m = String(d.getMonth() + 1).padStart(2, '0')
-  const dd = String(d.getDate()).padStart(2, '0')
-  return `${y}-${m}-${dd}`
-}
+// fechaLocalISO movida a @/lib/fecha (fuente única). Se importa arriba para uso interno.
 
 /**
  * Datos del calendario de clínica. Toda la lectura pasa por RPCs DEFINER (mig 232):

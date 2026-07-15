@@ -8,6 +8,7 @@ import { useNavigate } from 'react-router-dom'
 import { supabase } from '@/lib/supabase'
 import { useAuth } from '@/hooks/useAuth'
 import { usePaisFiltro } from '@/hooks/usePaisFiltro'
+import { parseFechaLocal, fechaLocalISO, hoyISO } from '@/lib/fecha'
 import {
   Calendar,
   Clock,
@@ -67,7 +68,7 @@ export default function CitasPage() {
   const [citas, setCitas] = useState<Cita[]>([])
   const [recordatorios, setRecordatorios] = useState<Recordatorio[]>([])
   const [loading, setLoading] = useState(true)
-  const [fechaSeleccionada, setFechaSeleccionada] = useState(new Date().toISOString().split('T')[0])
+  const [fechaSeleccionada, setFechaSeleccionada] = useState(hoyISO())
   const [vista, setVista] = useState<'dia' | 'semana' | 'mes'>('dia')
   const [programando, setProgramando] = useState<string | null>(null)
 
@@ -79,7 +80,7 @@ export default function CitasPage() {
   const [nuevaCita, setNuevaCita] = useState({
     paciente_id: '',
     medico_id: '',
-    fecha: new Date().toISOString().split('T')[0],
+    fecha: hoyISO(),
     hora_inicio: '09:00',
     hora_fin: '10:00',
     motivo: '',
@@ -236,7 +237,7 @@ export default function CitasPage() {
       alert('Cita creada exitosamente')
       setShowModal(false)
       setNuevaCita({
-        paciente_id: '', medico_id: '', fecha: new Date().toISOString().split('T')[0],
+        paciente_id: '', medico_id: '', fecha: hoyISO(),
         hora_inicio: '09:00', hora_fin: '10:00', motivo: '', notas: ''
       })
       cargarCitas()
@@ -274,9 +275,12 @@ export default function CitasPage() {
   }
 
   const cambiarFecha = (dias: number) => {
-    const fecha = new Date(fechaSeleccionada)
+    // Parseo LOCAL (parseFechaLocal) + formateo LOCAL (fechaLocalISO). Antes usaba
+    // new Date(iso)+toISOString(): funcionaba SOLO porque los dos corrimientos UTC se
+    // cancelaban. Con los helpers locales cada paso es correcto por sí mismo.
+    const fecha = parseFechaLocal(fechaSeleccionada)
     fecha.setDate(fecha.getDate() + dias)
-    setFechaSeleccionada(fecha.toISOString().split('T')[0])
+    setFechaSeleccionada(fechaLocalISO(fecha))
   }
 
   const getRecordatoriosCita = (citaId: string) => {
@@ -318,7 +322,7 @@ export default function CitasPage() {
           <div className="text-center">
             <p className="text-sm text-gray-500">Fecha seleccionada</p>
             <p className="text-lg font-semibold text-[#1a2a3a]">
-              {new Date(fechaSeleccionada).toLocaleDateString('es-ES', { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' })}
+              {parseFechaLocal(fechaSeleccionada).toLocaleDateString('es-ES', { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' })}
             </p>
           </div>
           <button onClick={() => cambiarFecha(1)} className="p-2 hover:bg-gray-100 rounded-lg">
@@ -327,7 +331,7 @@ export default function CitasPage() {
         </div>
         <div className="flex gap-2">
           <button
-            onClick={() => setFechaSeleccionada(new Date().toISOString().split('T')[0])}
+            onClick={() => setFechaSeleccionada(hoyISO())}
             className="px-4 py-2 bg-gray-100 hover:bg-gray-200 rounded-lg text-sm font-medium"
           >
             Hoy

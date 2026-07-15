@@ -1,5 +1,6 @@
 import { useNavigate } from 'react-router-dom'
 import { useMedicoStats } from '@/medico/hooks/useMedicoStats'
+import { parseFechaLocal } from '@/lib/fecha'
 import BannerPublicidadProfesional from '@/components/BannerPublicidadProfesional'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
@@ -117,7 +118,7 @@ export default function MedicoDashboardPage() {
                 <div className="space-y-2">
                   <div className="flex items-center gap-3">
                     <Badge className="bg-blue-100 text-blue-700">
-                      {new Date(stats.proximaCita.fecha).toLocaleDateString('es-GT', {
+                      {parseFechaLocal(stats.proximaCita.fecha).toLocaleDateString('es-GT', {
                         weekday: 'long', day: 'numeric', month: 'long',
                       })}
                     </Badge>

@@ -3,6 +3,7 @@ import { toast } from 'sonner'
 import { useWebAppAuth } from '@/webapp/hooks/useWebAppAuth'
 import { useWebAppCitas } from '@/webapp/hooks/useWebAppCitas'
 import type { CitaPaciente } from '@/webapp/types/webapp.types'
+import { parseFechaLocal } from '@/lib/fecha'
 import AgendarCitaModal from '@/webapp/components/AgendarCitaModal'
 import { Card, CardContent } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
@@ -140,7 +141,7 @@ export default function WebAppCitas() {
                       <div className="flex items-center gap-1">
                         <CalendarDays className="h-4 w-4" />
                         <span>
-                          {new Date(cita.fecha).toLocaleDateString('es-GT', {
+                          {parseFechaLocal(cita.fecha).toLocaleDateString('es-GT', {
                             weekday: 'short', month: 'short', day: 'numeric'
                           })}
                         </span>
@@ -211,7 +212,7 @@ export default function WebAppCitas() {
               <p className="text-sm text-slate-600">
                 Vas a cancelar tu cita
                 {citaACancelar.fecha && (
-                  <> del <strong>{new Date(citaACancelar.fecha).toLocaleDateString('es-GT', { weekday: 'long', month: 'long', day: 'numeric' })}</strong></>
+                  <> del <strong>{parseFechaLocal(citaACancelar.fecha).toLocaleDateString('es-GT', { weekday: 'long', month: 'long', day: 'numeric' })}</strong></>
                 )}
                 {citaACancelar.hora_inicio && <> a las <strong>{citaACancelar.hora_inicio.slice(0, 5)}</strong></>}.
                 La clínica será notificada con tu explicación.
