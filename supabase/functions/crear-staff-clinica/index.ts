@@ -5,6 +5,10 @@ const corsHeaders = {
   "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
 };
 
+// URL canónica de la app en producción (constante, NO env var: evita links rotos en silencio).
+// Las edges no pueden importar de src/lib/app-url.ts, así que se define aquí.
+const APP_URL = "https://med.ezpayconnect.com";
+
 Deno.serve(async (req) => {
   if (req.method === "OPTIONS") {
     return new Response("ok", { headers: corsHeaders });
@@ -158,7 +162,7 @@ Deno.serve(async (req) => {
                 <p><strong>Email:</strong> ${email}</p>
                 <p><strong>Contraseña temporal:</strong> ${password}</p>
               </div>
-              <p><a href="https://ezpayconnect.vercel.app/login" style="color:#1E5C8E;">Iniciar sesión</a></p>
+              <p><a href="${APP_URL}/login" style="color:#1E5C8E;">Iniciar sesión</a></p>
               <p style="color:#6b7280;font-size:12px;">Te recomendamos cambiar tu contraseña al iniciar sesión.</p>
             </div>`,
           }),

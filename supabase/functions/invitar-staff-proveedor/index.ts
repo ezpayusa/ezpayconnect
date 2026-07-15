@@ -25,6 +25,10 @@ const cors = {
 }
 const json = (b: unknown, s = 200) => new Response(JSON.stringify(b), { status: s, headers: { ...cors, 'Content-Type': 'application/json' } })
 
+// URL canónica de la app en producción (constante, NO env var: evita links rotos en silencio).
+// Las edges no pueden importar de src/lib/app-url.ts, así que se define aquí.
+const APP_URL = 'https://med.ezpayconnect.com'
+
 Deno.serve(async (req) => {
   if (req.method === 'OPTIONS') return new Response('ok', { headers: cors })
   try {
@@ -107,14 +111,14 @@ Deno.serve(async (req) => {
                <p><strong>Email:</strong> ${email}</p>
                <p><strong>Contraseña temporal:</strong> ${tempPassword}</p>
              </div>
-             <p><a href="https://ezpayconnect.vercel.app/proveedor/login" style="color:#1E5C8E;">Iniciar sesión</a></p>
+             <p><a href="${APP_URL}/proveedor/login" style="color:#1E5C8E;">Iniciar sesión</a></p>
              <p style="color:#6b7280;font-size:12px;">Cámbiala apenas ingreses.</p>
            </div>`
         : `<div style="font-family:sans-serif;max-width:480px;margin:0 auto;padding:24px;border:1px solid #e5e7eb;border-radius:8px;">
              <h2 style="color:#1E5C8E;margin-top:0;">Fuiste agregado a una empresa</h2>
              <p>Hola${nombre ? ` <strong>${nombre}</strong>` : ''}, ya tienes acceso como <strong>${rol}</strong>.</p>
              <p>Ingresá con tu <strong>cuenta existente</strong> (tu contraseña no cambió).</p>
-             <p><a href="https://ezpayconnect.vercel.app/proveedor/login" style="color:#1E5C8E;">Iniciar sesión</a></p>
+             <p><a href="${APP_URL}/proveedor/login" style="color:#1E5C8E;">Iniciar sesión</a></p>
            </div>`
       try {
         const r = await fetch('https://api.resend.com/emails', {
