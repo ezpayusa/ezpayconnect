@@ -70,21 +70,21 @@ export function ConsentimientoPresencial({ pacienteId }: { pacienteId: number })
         const busy = ocupado === permiso.codigo || subiendo
         return (
           <div key={permiso.codigo} className="border rounded-lg p-3 space-y-2">
-            <div className="flex items-start justify-between gap-3">
-              <div className="min-w-0">
+            <div className="flex flex-wrap items-start justify-between gap-3">
+              <div className="min-w-0 flex-1">
                 <h3 className="font-semibold text-slate-800">{permiso.etiqueta}</h3>
                 <p className={`text-xs mt-0.5 font-medium ${concedido ? 'text-emerald-600' : 'text-slate-400'}`}>
                   {concedido ? `Autorizado${vigente?.via ? ` (${vigente.via})` : ''}` : 'No autorizado'}
                 </p>
               </div>
-              <div className="flex items-center gap-2 shrink-0">
+              <div className="flex items-center gap-2 shrink-0 w-full sm:w-auto">
                 {busy && <Loader2 className="h-4 w-4 animate-spin text-slate-400" />}
                 {concedido ? (
                   <button
                     type="button"
                     onClick={() => onRevocar(permiso.codigo)}
                     disabled={busy}
-                    className="px-3 py-1.5 rounded-md text-sm font-medium border border-red-300 text-red-600 hover:bg-red-50 disabled:opacity-50"
+                    className="flex-1 sm:flex-none justify-center px-3 py-1.5 rounded-md text-sm font-medium border border-red-300 text-red-600 hover:bg-red-50 disabled:opacity-50"
                   >
                     Revocar
                   </button>
@@ -94,7 +94,7 @@ export function ConsentimientoPresencial({ pacienteId }: { pacienteId: number })
                       type="button"
                       onClick={() => setFirmandoCodigo(permiso.codigo)}
                       disabled={busy}
-                      className="inline-flex items-center gap-1 px-3 py-1.5 rounded-md text-sm font-medium bg-[#1E5C8E] text-white hover:bg-[#164a70] disabled:opacity-50"
+                      className="flex-1 sm:flex-none justify-center inline-flex items-center gap-1 px-3 py-1.5 rounded-md text-sm font-medium bg-[#1E5C8E] text-white hover:bg-[#164a70] disabled:opacity-50"
                     >
                       <PenLine className="h-4 w-4" /> Firmar
                     </button>
@@ -102,7 +102,7 @@ export function ConsentimientoPresencial({ pacienteId }: { pacienteId: number })
                       type="button"
                       onClick={() => pedirScan(permiso.codigo)}
                       disabled={busy}
-                      className="inline-flex items-center gap-1 px-3 py-1.5 rounded-md text-sm font-medium border border-slate-300 text-slate-700 hover:bg-slate-50 disabled:opacity-50"
+                      className="flex-1 sm:flex-none justify-center inline-flex items-center gap-1 px-3 py-1.5 rounded-md text-sm font-medium border border-slate-300 text-slate-700 hover:bg-slate-50 disabled:opacity-50"
                     >
                       <Upload className="h-4 w-4" /> Subir papel
                     </button>
