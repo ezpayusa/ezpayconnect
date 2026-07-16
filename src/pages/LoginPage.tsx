@@ -4,6 +4,8 @@ import { useAuth } from '@/hooks/useAuth'
 import { usePaisesRegistro } from '@/hooks/usePaisesRegistro'
 import { supabase } from '@/lib/supabase'
 import { rutaHomePorRol } from '@/lib/rutas'
+import { enviarReset } from '@/lib/enviarReset'
+import { toast } from 'sonner'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
@@ -22,6 +24,7 @@ export default function LoginPage() {
   const [paisId, setPaisId] = useState('')
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
+  const [enviandoReset, setEnviandoReset] = useState(false)
   const { paises } = usePaisesRegistro()
 
   const handleSubmit = async (e: React.FormEvent) => {
@@ -76,6 +79,15 @@ export default function LoginPage() {
     setNombre('')
     setRol('medico')
     setPaisId('')
+  }
+
+  const handleReset = async () => {
+    if (!email.trim()) { toast.error('Ingresá tu correo para restablecer la contraseña'); return }
+    setEnviandoReset(true)
+    const { error } = await enviarReset(email.trim(), '/dashboard')
+    setEnviandoReset(false)
+    if (error) { toast.error('No se pudo enviar el enlace', { description: error.message }); return }
+    toast.success('Si el correo existe, te enviamos un enlace para restablecer tu contraseña')
   }
 
   const roles = [
@@ -194,6 +206,13 @@ export default function LoginPage() {
                 {isRegister ? 'Registrarse' : 'Iniciar Sesión'}
               </Button>
             </form>
+
+            <div className="mt-4 text-center">
+              <button type="button" onClick={handleReset} disabled={enviandoReset}
+                className="text-sm text-[#1E5C8E] hover:underline disabled:opacity-50">
+                ¿Olvidaste tu contraseña?
+              </button>
+            </div>
 
             <p className="text-center mt-4 text-sm text-muted-foreground">
               {isRegister ? '¿Ya tienes cuenta?' : '¿No tienes cuenta?'}{' '}

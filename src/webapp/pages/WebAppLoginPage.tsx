@@ -6,6 +6,7 @@ import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Mail, Lock, Loader2 } from 'lucide-react'
 import { toast } from 'sonner'
+import { enviarReset } from '@/lib/enviarReset'
 import { useCapturarReferido } from '@/webapp/hooks/useReferidoAmigo'
 
 export default function WebAppLoginPage() {
@@ -15,6 +16,16 @@ export default function WebAppLoginPage() {
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
   const [loading, setLoading] = useState(false)
+  const [enviandoReset, setEnviandoReset] = useState(false)
+
+  const handleReset = async () => {
+    if (!email.trim()) { toast.error('Ingresá tu correo para restablecer la contraseña'); return }
+    setEnviandoReset(true)
+    const { error } = await enviarReset(email.trim(), '/paciente/dashboard')
+    setEnviandoReset(false)
+    if (error) { toast.error('No se pudo enviar el enlace', { description: error.message }); return }
+    toast.success('Si el correo existe, te enviamos un enlace para restablecer tu contraseña')
+  }
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
@@ -86,6 +97,13 @@ export default function WebAppLoginPage() {
             Iniciar Sesión
           </Button>
         </form>
+
+        <div className="mt-4 text-center">
+          <button type="button" onClick={handleReset} disabled={enviandoReset}
+            className="text-sm text-sky-600 hover:underline disabled:opacity-50">
+            ¿Olvidaste tu contraseña?
+          </button>
+        </div>
 
         <p className="text-center text-sm text-slate-500">
           ¿No tienes cuenta?{' '}
