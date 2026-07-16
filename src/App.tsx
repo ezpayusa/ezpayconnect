@@ -25,6 +25,7 @@ import { MedicoLayout } from '@/medico/layout/MedicoLayout'
 import MedicoPrivateRoute from '@/medico/components/MedicoPrivateRoute'
 import { ClinicaLayout } from '@/clinica/layout/ClinicaLayout'
 import { RequiereRolClinica } from '@/clinica/components/RequiereRolClinica'
+import MustChangePasswordGuard from '@/components/MustChangePasswordGuard'
 
 // === UI GLOBAL (eager) ===
 import { Toaster } from '@/components/ui/sonner'
@@ -36,6 +37,7 @@ import { PaisProvider } from '@/contexts/PaisContext'
 const BuscarMedicamentosPage = lazy(() => import('@/pages/BuscarMedicamentosPage'))
 const NotificacionesPage = lazy(() => import('@/pages/NotificacionesPage'))
 const LoginPage = lazy(() => import('@/pages/LoginPage'))
+const SetPasswordPage = lazy(() => import('@/pages/SetPasswordPage'))
 const ConfirmarRecetaPage = lazy(() => import('@/pages/ConfirmarRecetaPage'))
 const DashboardPage = lazy(() => import('@/pages/DashboardPage'))
 const PacientesPage = lazy(() => import('@/pages/PacientesPage'))
@@ -238,11 +240,13 @@ function App() {
     <PaisProvider>
     <BrowserRouter>
       <Suspense fallback={<Spinner />}>
+      <MustChangePasswordGuard />
       <Routes>
         <Route path="/notificaciones" element={<PrivateLayout><NotificacionesPage /></PrivateLayout>} />
         <Route path="/registro-medico" element={<RegistroMedicoPage />} />
         <Route path="/registro-clinica" element={<RegistroClinicaPage />} />
         <Route path="/login" element={<LoginPage />} />
+        <Route path="/set-password" element={<SetPasswordPage />} />
         <Route path="/confirmar-receta" element={<ConfirmarRecetaPage />} />
         <Route path="/" element={<Navigate to="/dashboard" replace />} />
         <Route path="/dashboard" element={<PrivateLayout><DashboardPage /></PrivateLayout>} />

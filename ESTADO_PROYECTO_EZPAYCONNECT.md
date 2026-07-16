@@ -60,8 +60,19 @@ EzPayConnect es una **plataforma SaaS médica multitenant por país** con 3 port
   estado 'revision' del mapa esta sin uso; (6) 'completado' sin archivo (hoy: texto obligatorio, archivo opcional -> valido).
 
 ### DEUDA NUEVA detectada hoy (para agendar)
-- El reset de password no tiene pagina de destino: el link de recovery deja al usuario en el dashboard en vez de un
-  form para setear la clave nueva. Fix pendiente.
+### FRENTE PENDIENTE — Reset / Set-password (gap TRANSVERSAL + seguridad)
+Recon (solo lectura) confirmó que NINGUN modulo (medico, paciente, proveedor, farmacia, laboratorio, repartidor,
+clinica, admin) tiene: (a) link "olvidaste tu contrasena?"/resetPasswordForEmail, (b) pagina/handler que reciba el
+recovery y setee la clave (no updateUser({password}), no evento PASSWORD_RECOVERY, no ruta reset), (c) consumo de
+user_metadata.must_change_password. El link de recovery cae en / -> /dashboard.
+SEGURIDAD: el edge invitar-staff-proveedor crea staff con password temporal en texto plano de larga duracion +
+flag must_change_password que HOY NADIE lee (la propia edge lo documenta como "DEUDA INTERINA Ola-4"). Prioridad antes del go-live.
+Alcance (una sola pagina resuelve los 8 modulos):
+  1. Ruta compartida /set-password (o /restablecer): detecta sesion de recovery o must_change_password -> form -> supabase.auth.updateUser({password}).
+  2. Link "Olvidaste tu contrasena?" en cada login -> resetPasswordForEmail(email, {redirectTo:<set-password>}).
+  3. Guard global: al loguear, si user_metadata.must_change_password -> forzar /set-password.
+  4. Edge invitar-staff-proveedor: reemplazar temp-password por generateLink(type:'recovery', redirectTo=<set-password>) (cierre Ola-4 que el propio comentario propone).
+  5. Config Supabase: agregar la ruta a additional_redirect_urls (allowlist) + confirmar Site URL de prod.
 - Una cuenta puede ser medico (perfiles) y staff de proveedor (cuentas_proveedor) a la vez (caso OG) — comportamiento ok, tenerlo presente.
 
 ---

@@ -6,13 +6,10 @@
 //
 // D1 (3 ramas): (i) email nuevo → createUser + RPC; (ii) auth user existe SIN membresía → solo RPC (sin
 //   createUser, sin tocar su credencial); (iii) auth user CON membresía → RPC raise 23505 → 409.
-// D2: usuario NUEVO recibe password temporal SOLO por email (NUNCA en el JSON) + flag must_change_password.
-//   Usuario EXISTENTE (ii) NO recibe credencial: solo aviso "fuiste agregado a una empresa".
-//   ⚠️ DEUDA INTERINA (Ola-4): HOY NADIE lee must_change_password (no hay página set-password ni gate de
-//   login que lo fuerce) → el password temporal es una credencial en texto plano viva y de larga duración.
-//   Aceptable SOLO como interino porque es dev/datos ficticios y el gate de datos reales precede al go-live.
-//   Cierre Ola-4: generateLink(type:'recovery', redirectTo=<set-password en allowlist>) en lugar del temporal.
-//   Mitigación interina: temporal de ALTA ENTROPÍA + copy "cambiala de inmediato".
+// D2 (Fase D — cierra la deuda Ola-4): usuario NUEVO se crea SIN password usable y recibe un link de RECOVERY
+//   al /set-password (el redirectTo debe estar en additional_redirect_urls de Supabase Auth). Usuario EXISTENTE (ii)
+//   NO recibe credencial: solo aviso "fuiste agregado". El flag must_change_password se conserva como belt: el guard
+//   MustChangePasswordGuard fuerza el cambio si el usuario ingresa sin clave propia, y SetPasswordPage lo limpia al setear.
 //
 // ORDEN (fix de seguridad): el PRE-GATE (autorizar_invitacion_staff, con el JWT del invitador) corre ANTES
 // de createUser → un caller no-admin se rechaza SIN crear auth user ni enviar email (no timing-enum).
@@ -62,20 +59,22 @@ Deno.serve(async (req) => {
 
     // (1) PRE-GATE (ANTES de createUser): autz del invitador. No-admin / rol fuera de catálogo → corta YA,
     //     sin crear auth user ni enviar email. Corre con el JWT del invitador (auth.uid()=solicitante).
-    const { error: gateErr } = await asCaller.rpc('autorizar_invitacion_staff', { p_rol: rol })
+    const { data: gateData, error: gateErr } = await asCaller.rpc('autorizar_invitacion_staff', { p_rol: rol })
     if (gateErr) {
       const code = (gateErr as any).code
       const status = (code === '22023' || code === '42501') ? 403 : code === '28000' ? 401 : 400
       return json({ error: gateErr.message, code }, status)
     }
+    const tipoEmpresa = (gateData as any)?.tipo as string | undefined
+    const portalPath = tipoEmpresa === 'farmacia' ? '/farmacia'
+      : tipoEmpresa === 'laboratorio_clinico' ? '/laboratorio' : '/proveedor'
 
     // (2) Resolver/crear el auth user (solo tras pasar el pre-gate). Temp pwd SOLO si es usuario nuevo (rama i).
-    const tempPassword = crypto.randomUUID() + crypto.randomUUID().slice(0, 8) + 'A1!'   // alta entropía (deuda interina)
     let targetUid: string | null = null
     let creado = false
+    // Fase D: sin password usable. El usuario nuevo setea su clave via el link de recovery (email de abajo).
     const { data: created, error: createErr } = await admin.auth.admin.createUser({
       email,
-      password: tempPassword,
       email_confirm: true,
       user_metadata: { must_change_password: true },
     })
@@ -98,6 +97,18 @@ Deno.serve(async (req) => {
       return json({ error: rpcErr.message, code }, status)
     }
 
+    // Fase D: link de recovery -> /set-password (reemplaza el password temporal en texto plano).
+    let setPasswordLink: string | null = null
+    if (creado) {
+      const { data: linkData, error: linkErr } = await admin.auth.admin.generateLink({
+        type: 'recovery',
+        email,
+        options: { redirectTo: `${APP_URL}/set-password?next=${encodeURIComponent(portalPath)}` },
+      })
+      if (linkErr) console.error('[invitar-staff-proveedor] generateLink:', linkErr)
+      else setPasswordLink = (linkData as any)?.properties?.action_link ?? null
+    }
+
     // (4) Entrega: NUEVO → credencial temporal por email (jamás en el JSON); EXISTENTE → solo aviso.
     let emailEnviado = false
     const resendKey = Deno.env.get('RESEND_API_KEY')
@@ -107,12 +118,10 @@ Deno.serve(async (req) => {
         ? `<div style="font-family:sans-serif;max-width:480px;margin:0 auto;padding:24px;border:1px solid #e5e7eb;border-radius:8px;">
              <h2 style="color:#1E5C8E;margin-top:0;">Bienvenido a EzPayConnect</h2>
              <p>Hola${nombre ? ` <strong>${nombre}</strong>` : ''}, fuiste agregado como <strong>${rol}</strong>.</p>
-             <div style="background:#f3f4f6;padding:12px;border-radius:6px;margin:12px 0;">
-               <p><strong>Email:</strong> ${email}</p>
-               <p><strong>Contraseña temporal:</strong> ${tempPassword}</p>
-             </div>
-             <p><a href="${APP_URL}/proveedor/login" style="color:#1E5C8E;">Iniciar sesión</a></p>
-             <p style="color:#6b7280;font-size:12px;">Cámbiala apenas ingreses.</p>
+             <p>Para ingresar, establecé tu contraseña:</p>
+             <p><a href="${setPasswordLink ?? APP_URL + '/login'}" style="display:inline-block;background:#1E5C8E;color:#fff;padding:10px 16px;border-radius:6px;text-decoration:none;">Establecer contraseña</a></p>
+             <p style="color:#6b7280;font-size:12px;">Email de acceso: ${email}</p>
+             ${setPasswordLink ? `<p style="color:#6b7280;font-size:12px;word-break:break-all;">O copiá este enlace: ${setPasswordLink}</p>` : ''}
            </div>`
         : `<div style="font-family:sans-serif;max-width:480px;margin:0 auto;padding:24px;border:1px solid #e5e7eb;border-radius:8px;">
              <h2 style="color:#1E5C8E;margin-top:0;">Fuiste agregado a una empresa</h2>
