@@ -17,6 +17,31 @@ EzPayConnect es una **plataforma SaaS médica multitenant por país** con 3 port
 
 ---
 
+## 2026-07-16 — Circuito laboratorio: storage cerrado + gate liberación al paciente
+- O1 flag: 0 (15-16 jul).
+- BUG STORAGE (lab no podía subir archivo): CERRADO en prod. Causa = read-back de storage.objects: la policy
+  SELECT resultados_scoped_select exigía que un examen ya referenciara el objeto, imposible al momento del upload.
+  Fix: ALTER POLICY + rama "dueño del prefijo" split_part(name,'/',1)=mi_empresa_proveedor().
+  Archivo: supabase/fixes/fix_resultados_select_readback.sql. Validado end-to-end.
+- GATE "LIBERADO AL PACIENTE": construido + validado en local; DB viva en prod; FRONTEND PENDIENTE DEPLOY
+  (va con consolidación Vercel). examenes +liberado_al_paciente/fecha_liberacion/liberado_por; policies de
+  enforcement (storage rama paciente AND liberado; examenes paciente AND (liberado OR estado<>completado));
+  RPCs liberar_examen_al_paciente / liberar_orden_al_paciente / paciente_examenes (enmascara "en revisión");
+  split de notificar_resultado_examen (al subir avisa solo al médico). Archivos: supabase/fixes/fase4_01_*.sql,
+  fase4_02_*.sql. Frontend: PacienteDetallePage.tsx, useWebAppExamenes.ts, WebAppExamenes.tsx, webapp.types.ts.
+  Typecheck 88 (baseline), sin regresión.
+- FRENTE 2 (hallazgos de la corrida) — en diagnóstico (recon Codex hecho):
+  (1) flujo de estados permite saltar en_proceso (recibida→completado); estado 'revision' sin uso — a definir.
+  (2) por-examen vs por-orden: solo cosmético (param 'ordenId' es examenes.id; toast "Orden actualizada" engañoso).
+  (3) BUG FECHAS confirmado: WebAppExamenes usa new Date(iso) (UTC→día -1) y useLaboratorio setea fecha_resultado
+      con toISOString().slice(0,10) (UTC). Ya existe src/lib/fecha.ts (parseFechaLocal/hoyISO) que lo evita → fix = usarlo.
+  (4) archivo_url pisado con NULL: FALSO POSITIVO, spread condicional lo evita. Sin acción.
+  (5) examen id=1 tiene archivo_url público en bucket privado (data vieja, 1 fila) → normalizar a path con -f.
+  (6) estado='completado' sin archivo: texto obligatorio, archivo opcional → decisión de producto pendiente.
+- Deuda: schema_migrations en 047 → NUNCA db push; aplicar con -f; NUNCA functions deploy sin nombre.
+
+---
+
 ## ✅ LO QUE YA ESTÁ IMPLEMENTADO
 
 ### 1. Panel Médico Profesional (`src/pages/`)

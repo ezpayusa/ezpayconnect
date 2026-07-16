@@ -4,6 +4,27 @@
 
 ---
 
+## ▶️ RESUME AQUÍ (2026-07-16) — Circuito laboratorio
+
+- **Bug storage (lab no podía subir archivo): CERRADO en prod.** Read-back de `storage.objects`; fix = rama
+  "dueño del prefijo" en `resultados_scoped_select`. Archivo `supabase/fixes/fix_resultados_select_readback.sql`.
+- **Gate "liberado al paciente": CONSTRUIDO + VALIDADO EN LOCAL; DB viva en prod; frontend PENDIENTE DE DEPLOY**
+  (va con la consolidación Vercel). Columnas en `examenes` + 2 policies de enforcement + 3 RPCs
+  (`liberar_examen_al_paciente`, `liberar_orden_al_paciente`, `paciente_examenes`) + split de
+  `notificar_resultado_examen`. Frontend: `PacienteDetallePage.tsx`, `useWebAppExamenes.ts`,
+  `WebAppExamenes.tsx`, `webapp.types.ts`. Typecheck 88 (baseline). Detalle completo en `DISENO-FASE4-LAB.md`.
+- **Frente 2: en diagnóstico** (recon Codex hecho, 6 hallazgos en `DISENO-FASE4-LAB.md` / `ESTADO_PROYECTO`).
+
+**Próximos fixes, en orden:**
+1. **(3) Fechas** — off-by-one por parseo/seteo en UTC; usar `src/lib/fecha.ts` (`parseFechaLocal`/`hoyISO`).
+2. **(5) Fila examen `id=1`** — `archivo_url` público en bucket privado; normalizar a path con `-f`.
+3. **(2) Rename cosmético** — `ordenId` es en realidad `examenes.id`; corregir toast/nombres.
+4. **Consolidación Vercel** — deployar todo el frontend acumulado (incluye el gate de liberación).
+
+> Deuda vigente: `schema_migrations` en 047 → **NUNCA `db push`**; aplicar con `-f`; **NUNCA `functions deploy` sin nombre**.
+
+---
+
 ## 🔴 CRÍTICO — Flujo de Citas Clínica NO Funciona
 
 ### Problema: Citas aparecen como "Agendada" en vez de "Solicitada" para aprobación
