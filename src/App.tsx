@@ -130,6 +130,7 @@ const LabOrdenesPage = lazy(() => import('@/laboratorio/pages/LabOrdenesPage'))
 const LabCatalogoPage = lazy(() => import('@/laboratorio/pages/LabCatalogoPage'))
 const LabWalkInPage = lazy(() => import('@/laboratorio/pages/LabWalkInPage'))
 const LabAfiliacionesPage = lazy(() => import('@/laboratorio/pages/LabAfiliacionesPage'))
+const LabPersonalPage = lazy(() => import('@/laboratorio/pages/LabPersonalPage'))
 const LabPerfilPage = lazy(() => import('@/laboratorio/pages/LabPerfilPage'))
 const FarmaciaLogin = lazy(() => import('@/farmacia/pages/FarmaciaLogin'))
 const FarmaciaRegistro = lazy(() => import('@/farmacia/pages/FarmaciaRegistro'))
@@ -412,6 +413,7 @@ function App() {
           <Route path="catalogo" element={<LabCatalogoPage />} />
           <Route path="walk-in" element={<LabWalkInPage />} />
           <Route path="afiliaciones" element={<LabAfiliacionesPage />} />
+          <Route path="personal" element={<LabPersonalPage />} />
           <Route path="perfil" element={<LabPerfilPage />} />
           <Route path="notificaciones" element={<ProveedorNotificacionesPage />} />
         </Route>

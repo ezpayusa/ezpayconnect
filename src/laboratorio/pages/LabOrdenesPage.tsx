@@ -1,6 +1,7 @@
 import { useState, useMemo } from 'react'
 import { openSignedUrl } from '@/lib/signedUrl'
 import { useLaboratorio, type OrdenExamen, type OrdenAgrupada } from '@/laboratorio/hooks/useLaboratorio'
+import { useLaboratorioPermisos } from '@/laboratorio/hooks/useLaboratorioPermisos'
 import { Card, CardContent } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
@@ -26,6 +27,8 @@ const ordenCompletada = (o: OrdenAgrupada) => o.items.every((i) => i.estado === 
 
 export default function LabOrdenesPage() {
   const { ordenes, loading, fetchOrdenes, cambiarEstado, subirResultado } = useLaboratorio()
+  const { tienePermiso } = useLaboratorioPermisos()
+  const puedeCargar = tienePermiso('resultados_cargar')
   const [filtro, setFiltro] = useState('activas')
   const [modal, setModal] = useState<OrdenExamen | null>(null)
   const [resultado, setResultado] = useState('')
@@ -135,16 +138,20 @@ export default function LabOrdenesPage() {
                           <Badge className={`ml-2 ${est.color}`}>{est.label}</Badge>
                         </div>
                         <div className="flex items-center gap-2 shrink-0">
-                          {i.estado === 'pendiente' && (
-                            <Button size="sm" variant="outline" onClick={() => cambiarEstado(i.id, 'recibida')}>Recibir</Button>
-                          )}
-                          {i.estado === 'recibida' && (
-                            <Button size="sm" variant="outline" onClick={() => cambiarEstado(i.id, 'en_proceso')}>En proceso</Button>
-                          )}
-                          {(i.estado === 'recibida' || i.estado === 'en_proceso') && (
-                            <Button size="sm" className="bg-[#0E7C6B] hover:bg-[#0a5e51]" onClick={() => abrirResultado(i)}>
-                              <FileText className="h-4 w-4 mr-1" /> Resultado
-                            </Button>
+                          {puedeCargar && (
+                            <>
+                              {i.estado === 'pendiente' && (
+                                <Button size="sm" variant="outline" onClick={() => cambiarEstado(i.id, 'recibida')}>Recibir</Button>
+                              )}
+                              {i.estado === 'recibida' && (
+                                <Button size="sm" variant="outline" onClick={() => cambiarEstado(i.id, 'en_proceso')}>En proceso</Button>
+                              )}
+                              {(i.estado === 'recibida' || i.estado === 'en_proceso') && (
+                                <Button size="sm" className="bg-[#0E7C6B] hover:bg-[#0a5e51]" onClick={() => abrirResultado(i)}>
+                                  <FileText className="h-4 w-4 mr-1" /> Resultado
+                                </Button>
+                              )}
+                            </>
                           )}
                           {i.estado === 'completado' && (
                             <Button size="sm" variant="ghost" onClick={() => abrirResultado(i)}>Ver</Button>

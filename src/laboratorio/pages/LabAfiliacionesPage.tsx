@@ -1,11 +1,13 @@
 import { useEffect, useState } from 'react'
 import { useLaboratorio } from '@/laboratorio/hooks/useLaboratorio'
+import { useLaboratorioPermisos } from '@/laboratorio/hooks/useLaboratorioPermisos'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
-import { Building2, Check, X, Loader2, Inbox } from 'lucide-react'
+import { Building2, Check, X, Loader2, Inbox, AlertTriangle } from 'lucide-react'
 
 export default function LabAfiliacionesPage() {
   const { afiliaciones, invitaciones, fetchAfiliaciones, fetchInvitaciones, responderInvitacion } = useLaboratorio()
+  const { tienePermiso, loading: permLoading } = useLaboratorioPermisos()
   const [loading, setLoading] = useState(true)
   const [accion, setAccion] = useState<string | null>(null)
 
@@ -17,6 +19,16 @@ export default function LabAfiliacionesPage() {
     setAccion(token + aceptar)
     await responderInvitacion(token, aceptar)
     setAccion(null)
+  }
+
+  if (!permLoading && !tienePermiso('afiliaciones_gestionar')) {
+    return (
+      <div className="p-8 text-center">
+        <AlertTriangle className="mx-auto h-12 w-12 text-amber-500 mb-4" />
+        <h2 className="text-xl font-semibold">Acceso restringido</h2>
+        <p className="text-muted-foreground mt-2">No tienes permiso para gestionar las afiliaciones del laboratorio.</p>
+      </div>
+    )
   }
 
   return (

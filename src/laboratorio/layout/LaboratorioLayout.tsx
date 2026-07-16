@@ -1,18 +1,20 @@
 import { Link, useLocation, useNavigate, Outlet } from 'react-router-dom'
 import { useProveedorAuth } from '@/proveedor/hooks/useProveedorAuth'
+import { useLaboratorioPermisos } from '@/laboratorio/hooks/useLaboratorioPermisos'
 import { ProveedorNotificacionesProvider, useProveedorNotificaciones } from '@/proveedor/context/ProveedorNotificacionesContext'
 import { Button } from '@/components/ui/button'
-import { LayoutDashboard, FlaskConical, ClipboardList, UserPlus, Building2, Bell, LogOut, Menu, X, ListChecks } from 'lucide-react'
+import { LayoutDashboard, FlaskConical, ClipboardList, UserPlus, Building2, Bell, LogOut, Menu, X, ListChecks, Users } from 'lucide-react'
 import { useState } from 'react'
 
-interface NavItem { label: string; path: string; icon: React.ElementType; badge?: boolean }
+interface NavItem { label: string; path: string; icon: React.ElementType; badge?: boolean; accion?: string }
 
 const NAV_ITEMS: NavItem[] = [
   { label: 'Dashboard', path: '/laboratorio/dashboard', icon: LayoutDashboard },
   { label: 'Órdenes de examen', path: '/laboratorio/ordenes', icon: ClipboardList },
   { label: 'Catálogo de exámenes', path: '/laboratorio/catalogo', icon: ListChecks },
-  { label: 'Paciente walk-in', path: '/laboratorio/walk-in', icon: UserPlus },
-  { label: 'Afiliaciones', path: '/laboratorio/afiliaciones', icon: Building2 },
+  { label: 'Paciente walk-in', path: '/laboratorio/walk-in', icon: UserPlus, accion: 'walkin_registrar' },
+  { label: 'Afiliaciones', path: '/laboratorio/afiliaciones', icon: Building2, accion: 'afiliaciones_gestionar' },
+  { label: 'Personal y Roles', path: '/laboratorio/personal', icon: Users, accion: 'usuarios_roles' },
   { label: 'Perfil', path: '/laboratorio/perfil', icon: FlaskConical },
   { label: 'Notificaciones', path: '/laboratorio/notificaciones', icon: Bell, badge: true },
 ]
@@ -30,10 +32,14 @@ export default function LaboratorioLayout() {
 
 function LaboratorioLayoutContent() {
   const { empresa, logout, loading } = useProveedorAuth()
+  const { tienePermiso } = useLaboratorioPermisos()
   const { noLeidas } = useProveedorNotificaciones()
   const location = useLocation()
   const navigate = useNavigate()
   const [mobileOpen, setMobileOpen] = useState(false)
+
+  // Los ítems sin `accion` son visibles para todos; los que la declaran requieren el permiso.
+  const items = NAV_ITEMS.filter((i) => !i.accion || tienePermiso(i.accion))
 
   if (loading) {
     return (
@@ -49,7 +55,7 @@ function LaboratorioLayoutContent() {
   }
 
   const renderNav = (onClick?: () => void) =>
-    NAV_ITEMS.map((item) => {
+    items.map((item) => {
       const active = location.pathname === item.path || location.pathname.startsWith(item.path + '/')
       return (
         <Link

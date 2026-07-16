@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react'
 import { useProveedorAuth } from '@/proveedor/hooks/useProveedorAuth'
+import { useLaboratorioPermisos } from '@/laboratorio/hooks/useLaboratorioPermisos'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -8,6 +9,8 @@ import { FlaskConical, Loader2 } from 'lucide-react'
 
 export default function LabPerfilPage() {
   const { empresa, actualizarEmpresa } = useProveedorAuth()
+  const { tienePermiso } = useLaboratorioPermisos()
+  const puedeEditar = tienePermiso('config_empresa')
   const [form, setForm] = useState({ nombre_empresa: '', email_contacto: '', telefono: '', ciudad: '', direccion: '', ruc_nit: '' })
   const [saving, setSaving] = useState(false)
 
@@ -37,7 +40,8 @@ export default function LabPerfilPage() {
       <Card>
         <CardHeader><CardTitle className="text-lg">Datos del laboratorio</CardTitle></CardHeader>
         <CardContent>
-          <form onSubmit={guardar} className="space-y-4">
+          <form onSubmit={guardar}>
+            <fieldset disabled={!puedeEditar} className="space-y-4 min-w-0 border-0 p-0 m-0">
             <div className="space-y-1">
               <Label>Nombre del laboratorio</Label>
               <Input value={form.nombre_empresa} onChange={(e) => setForm({ ...form, nombre_empresa: e.target.value })} />
@@ -64,11 +68,14 @@ export default function LabPerfilPage() {
                 <Input value={form.direccion} onChange={(e) => setForm({ ...form, direccion: e.target.value })} />
               </div>
             </div>
-            <div className="flex justify-end">
-              <Button type="submit" className="bg-[#0E7C6B] hover:bg-[#0a5e51]" disabled={saving}>
-                {saving ? <Loader2 className="h-4 w-4 animate-spin mr-1" /> : null} Guardar
-              </Button>
-            </div>
+            {puedeEditar && (
+              <div className="flex justify-end">
+                <Button type="submit" className="bg-[#0E7C6B] hover:bg-[#0a5e51]" disabled={saving}>
+                  {saving ? <Loader2 className="h-4 w-4 animate-spin mr-1" /> : null} Guardar
+                </Button>
+              </div>
+            )}
+            </fieldset>
           </form>
         </CardContent>
       </Card>

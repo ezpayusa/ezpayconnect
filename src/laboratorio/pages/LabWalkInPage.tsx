@@ -1,15 +1,17 @@
 import { useEffect, useMemo, useState } from 'react'
 import { useNavigate, Link } from 'react-router-dom'
 import { useLaboratorio } from '@/laboratorio/hooks/useLaboratorio'
+import { useLaboratorioPermisos } from '@/laboratorio/hooks/useLaboratorioPermisos'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Textarea } from '@/components/ui/textarea'
-import { UserPlus, Loader2 } from 'lucide-react'
+import { UserPlus, Loader2, AlertTriangle } from 'lucide-react'
 
 export default function LabWalkInPage() {
   const { crearWalkIn, catalogo, fetchCatalogo } = useLaboratorio()
+  const { tienePermiso, loading: permLoading } = useLaboratorioPermisos()
   const navigate = useNavigate()
   const [sel, setSel] = useState<Set<string>>(new Set())
   const [otros, setOtros] = useState('')
@@ -48,6 +50,16 @@ export default function LabWalkInPage() {
   }
 
   const total = sel.size + otros.split('\n').map((s) => s.trim()).filter(Boolean).length
+
+  if (!permLoading && !tienePermiso('walkin_registrar')) {
+    return (
+      <div className="p-8 text-center">
+        <AlertTriangle className="mx-auto h-12 w-12 text-amber-500 mb-4" />
+        <h2 className="text-xl font-semibold">Acceso restringido</h2>
+        <p className="text-muted-foreground mt-2">No tienes permiso para registrar pacientes walk-in.</p>
+      </div>
+    )
+  }
 
   return (
     <div className="max-w-2xl mx-auto space-y-6">

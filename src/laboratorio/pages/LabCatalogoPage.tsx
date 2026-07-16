@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from 'react'
 import { useLaboratorio } from '@/laboratorio/hooks/useLaboratorio'
+import { useLaboratorioPermisos } from '@/laboratorio/hooks/useLaboratorioPermisos'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -9,6 +10,8 @@ import { ListChecks, Plus, Trash2, Loader2 } from 'lucide-react'
 
 export default function LabCatalogoPage() {
   const { catalogo, fetchCatalogo, crearCatalogo, toggleCatalogo, eliminarCatalogo } = useLaboratorio()
+  const { tienePermiso } = useLaboratorioPermisos()
+  const puedeEditar = tienePermiso('catalogo_examenes_editar')
   const [loading, setLoading] = useState(true)
   const [form, setForm] = useState({ nombre: '', categoria: '' })
   const [saving, setSaving] = useState(false)
@@ -49,6 +52,7 @@ export default function LabCatalogoPage() {
         </p>
       </div>
 
+      {puedeEditar && (
       <Card>
         <CardHeader><CardTitle className="text-lg flex items-center gap-2"><Plus className="h-4 w-4" /> Agregar examen</CardTitle></CardHeader>
         <CardContent>
@@ -73,6 +77,7 @@ export default function LabCatalogoPage() {
           </form>
         </CardContent>
       </Card>
+      )}
 
       {loading ? (
         <div className="flex justify-center py-10"><Loader2 className="h-7 w-7 animate-spin text-[#0E7C6B]" /></div>
@@ -95,14 +100,16 @@ export default function LabCatalogoPage() {
                       <span className={c.activo ? '' : 'line-through text-muted-foreground'}>{c.nombre}</span>
                       {!c.activo && <Badge variant="outline" className="text-xs">Inactivo</Badge>}
                     </div>
-                    <div className="flex items-center gap-2">
-                      <Button size="sm" variant="ghost" onClick={() => toggleCatalogo(c.id, !c.activo)}>
-                        {c.activo ? 'Desactivar' : 'Activar'}
-                      </Button>
-                      <Button size="sm" variant="ghost" className="text-red-600 hover:bg-red-50" onClick={() => eliminarCatalogo(c.id)}>
-                        <Trash2 className="h-4 w-4" />
-                      </Button>
-                    </div>
+                    {puedeEditar && (
+                      <div className="flex items-center gap-2">
+                        <Button size="sm" variant="ghost" onClick={() => toggleCatalogo(c.id, !c.activo)}>
+                          {c.activo ? 'Desactivar' : 'Activar'}
+                        </Button>
+                        <Button size="sm" variant="ghost" className="text-red-600 hover:bg-red-50" onClick={() => eliminarCatalogo(c.id)}>
+                          <Trash2 className="h-4 w-4" />
+                        </Button>
+                      </div>
+                    )}
                   </div>
                 ))}
               </CardContent>
