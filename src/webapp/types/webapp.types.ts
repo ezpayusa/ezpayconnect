@@ -70,6 +70,7 @@ export interface ExamenPaciente {
   medico_nombre?: string
   notas: string | null
   created_at: string
+  en_revision?: boolean
 }
 
 export interface HistorialItem {
