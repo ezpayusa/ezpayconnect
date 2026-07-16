@@ -20,7 +20,12 @@
 **Pendientes = DECISIONES DE PRODUCTO del frente 2 + deuda nueva:**
 1. **(1) Flujo de estados** — permite saltar `en_proceso` (recibida→completado) y el estado `'revision'` del mapa está sin uso: definir si se fuerza el flujo o se limpia el estado muerto.
 2. **(6) `completado` sin archivo** — hoy texto obligatorio + archivo opcional (válido): confirmar si se deja así o se exige adjunto.
-3. **Reset de password sin página de destino** — el link de recovery deja al usuario en el dashboard en vez de un form para setear la clave nueva. Fix pendiente (agendar).
+3. **Reset / Set-password (gap TRANSVERSAL + seguridad, PRIORIDAD pre go-live)** — recon confirmó que ningún módulo (8: médico, paciente, proveedor, farmacia, laboratorio, repartidor, clínica, admin) tiene link "olvidaste tu contraseña?", ni página que reciba el recovery y setee la clave, ni consumo de `must_change_password`; el link de recovery cae en `/`→`/dashboard`. Seguridad: `invitar-staff-proveedor` crea staff con password temporal en texto plano de larga duración + flag `must_change_password` que hoy nadie lee ("DEUDA INTERINA Ola-4"). Alcance (una sola página resuelve los 8 módulos):
+   1. Ruta compartida `/set-password` (o `/restablecer`): detecta sesión de recovery o `must_change_password` → form → `supabase.auth.updateUser({password})`.
+   2. Link "¿Olvidaste tu contraseña?" en cada login → `resetPasswordForEmail(email, {redirectTo:<set-password>})`.
+   3. Guard global: al loguear, si `user_metadata.must_change_password` → forzar `/set-password`.
+   4. Edge `invitar-staff-proveedor`: reemplazar temp-password por `generateLink(type:'recovery', redirectTo=<set-password>)` (cierre Ola-4 que el propio comentario propone).
+   5. Config Supabase: agregar la ruta a `additional_redirect_urls` (allowlist) + confirmar Site URL de prod.
 
 **Frentes del día aún NO tocados:**
 - **CHECK-IN** (visitador/proveedor — pendiente de arrancar).
