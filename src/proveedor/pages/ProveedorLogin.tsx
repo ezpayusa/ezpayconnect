@@ -7,6 +7,7 @@ import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { useProveedorAuth } from '@/proveedor/hooks/useProveedorAuth'
 import { supabase } from '@/lib/supabase'
 import { aceptarInvitacionPendiente } from '@/lib/invitacionProveedor'
+import { enviarReset } from '@/lib/enviarReset'
 import { MapPin, Loader2 } from 'lucide-react'
 import { toast } from 'sonner'
 
@@ -16,6 +17,16 @@ export default function ProveedorLogin() {
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
   const [loading, setLoading] = useState(false)
+  const [enviandoReset, setEnviandoReset] = useState(false)
+
+  const handleReset = async () => {
+    if (!email.trim()) { toast.error('Ingresá tu correo para restablecer la contraseña'); return }
+    setEnviandoReset(true)
+    const { error } = await enviarReset(email.trim(), '/proveedor/dashboard')
+    setEnviandoReset(false)
+    if (error) { toast.error('No se pudo enviar el enlace', { description: error.message }); return }
+    toast.success('Si el correo existe, te enviamos un enlace para restablecer tu contraseña')
+  }
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
@@ -90,6 +101,12 @@ export default function ProveedorLogin() {
               Iniciar sesión
             </Button>
           </form>
+          <div className="mt-4 text-center">
+            <button type="button" onClick={handleReset} disabled={enviandoReset}
+              className="text-sm text-[#1E5C8E] hover:underline disabled:opacity-50">
+              ¿Olvidaste tu contraseña?
+            </button>
+          </div>
           <div className="mt-6 text-center text-sm">
             <span className="text-muted-foreground">¿No tienes cuenta? </span>
             <Link to="/proveedor/registro" className="text-[#1E5C8E] hover:underline font-medium">
