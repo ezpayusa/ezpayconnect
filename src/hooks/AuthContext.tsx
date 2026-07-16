@@ -41,7 +41,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       .from('perfiles')
       .select('*')
       .eq('id', userId)
-      .single()
+      .maybeSingle()
     setPerfil(data)
     loadedForUserId.current = userId
   }, [])
