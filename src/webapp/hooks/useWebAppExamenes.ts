@@ -18,33 +18,8 @@ export function useWebAppExamenes(pacienteId: number | undefined) {
       setLoading(true)
       setError(null)
 
-      const { data, error: err } = await supabase
-        .from('examenes')
-        .select(`
-          id,
-          tipo,
-          descripcion,
-          fecha_solicitud,
-          fecha_resultado,
-          estado,
-          resultados,
-          archivo_url,
-          notas,
-          created_at,
-          perfiles!examenes_medico_id_fkey(nombre_completo)
-        `)
-        .eq('paciente_id', pacienteId)
-        .order('fecha_solicitud', { ascending: false })
-
-      if (err) {
-        // Si la tabla no existe (error 42P01), no es fatal
-        if (err.code === '42P01') {
-          setExamenes([])
-          return
-        }
-        throw err
-      }
-
+      const { data, error: err } = await supabase.rpc('paciente_examenes')
+      if (err) throw err
       const mapped: ExamenPaciente[] = (data || []).map((e: any) => ({
         id: e.id,
         tipo: e.tipo,
@@ -52,11 +27,11 @@ export function useWebAppExamenes(pacienteId: number | undefined) {
         estado: e.estado,
         resultados: e.resultados,
         archivo_url: e.archivo_url,
-        medico_nombre: e.perfiles?.nombre_completo || 'Médico asignado',
+        medico_nombre: e.medico_nombre || 'Médico asignado',
         notas: e.notas,
         created_at: e.created_at,
+        en_revision: e.en_revision,
       }))
-
       setExamenes(mapped)
     } catch (err: any) {
       console.error('Error cargando examenes:', err?.message ?? err?.code)

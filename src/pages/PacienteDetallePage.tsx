@@ -4,6 +4,7 @@
 
 import { useState, useEffect, useCallback } from 'react'
 import { useParams, useNavigate, useLocation } from 'react-router-dom'
+import { toast } from 'sonner'
 import { supabase } from '@/lib/supabase'
 import { openSignedUrl } from '@/lib/signedUrl'
 import { useAuth } from '@/hooks/useAuth'
@@ -23,6 +24,7 @@ import {
   QrCode,
   Download,
   FlaskConical,
+  CheckCircle2,
   Bell,
   X,
   Activity,
@@ -97,11 +99,40 @@ export default function PacienteDetallePage() {
   const cargarExamenes = useCallback(async () => {
     const { data } = await supabase
       .from('examenes')
-      .select('id, tipo, descripcion, estado, resultados, archivo_url, fecha_solicitud, fecha_resultado, orden_id, laboratorio_id')
+      .select('id, tipo, descripcion, estado, resultados, archivo_url, fecha_solicitud, fecha_resultado, orden_id, laboratorio_id, liberado_al_paciente, fecha_liberacion')
       .eq('paciente_id', id)
       .order('created_at', { ascending: false })
     setExamenes(data || [])
   }, [id])
+
+  const liberarExamen = async (examenId: number) => {
+    const { error } = await supabase.rpc('liberar_examen_al_paciente', { p_examen_id: examenId })
+    if (error) { toast.error('No se pudo liberar: ' + error.message); return }
+    toast.success('Resultado liberado al paciente')
+    cargarExamenes()
+  }
+
+  const liberarTodosListos = async () => {
+    const listos = examenes.filter((e: any) => e.estado === 'completado' && !e.liberado_al_paciente)
+    if (listos.length === 0) { toast.info('No hay resultados listos sin liberar'); return }
+    const ordenes = Array.from(new Set(listos.map((e: any) => e.orden_id).filter(Boolean)))
+    const sueltos = listos.filter((e: any) => !e.orden_id)
+    try {
+      for (const oid of ordenes) {
+        const { error } = await supabase.rpc('liberar_orden_al_paciente', { p_orden_id: oid })
+        if (error) throw error
+      }
+      for (const ex of sueltos) {
+        const { error } = await supabase.rpc('liberar_examen_al_paciente', { p_examen_id: ex.id })
+        if (error) throw error
+      }
+      toast.success('Resultados liberados al paciente')
+      cargarExamenes()
+    } catch (e: any) {
+      toast.error('No se pudieron liberar todos: ' + (e?.message ?? ''))
+      cargarExamenes()
+    }
+  }
 
   const cargarPaciente = useCallback(async () => {
     setLoading(true)
@@ -646,10 +677,14 @@ export default function PacienteDetallePage() {
       {/* === TAB: EXÁMENES === */}
       {activeTab === 'examenes' && (
         <div className="bg-white rounded-xl shadow-sm overflow-hidden">
-          <div className="p-6 border-b border-gray-100">
+          <div className="p-6 border-b border-gray-100 flex items-center justify-between gap-3 flex-wrap">
             <h2 className="text-xl font-semibold text-[#1a2a3a] flex items-center gap-2">
               <FlaskConical size={22} className="text-[#1E5C8E]" /> Exámenes de laboratorio
             </h2>
+            <button type="button" onClick={liberarTodosListos}
+              className="text-sm px-3 py-1.5 rounded-md border border-[#1E5C8E] text-[#1E5C8E] hover:bg-[#1E5C8E]/5">
+              Liberar resultados listos
+            </button>
           </div>
           <div className="p-6">
             {examenes.length === 0 ? (
@@ -694,6 +729,21 @@ export default function PacienteDetallePage() {
                             <Download size={16} /> Descargar
                           </button>
                         </div>
+                      )}
+                      {completado && (
+                        ex.liberado_al_paciente ? (
+                          <div className="mt-2 inline-flex items-center gap-1 text-xs text-green-700">
+                            <CheckCircle2 size={14} /> Liberado al paciente
+                            {ex.fecha_liberacion ? ` · ${new Date(ex.fecha_liberacion).toLocaleDateString()}` : ''}
+                          </div>
+                        ) : (
+                          <div className="mt-2">
+                            <button type="button" onClick={() => liberarExamen(ex.id)}
+                              className="inline-flex items-center gap-1 text-sm px-3 py-1.5 rounded-md bg-[#1E5C8E] text-white hover:bg-[#164a72]">
+                              Liberar al paciente
+                            </button>
+                          </div>
+                        )
                       )}
                     </div>
                   )

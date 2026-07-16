@@ -1,9 +1,10 @@
 import { useWebAppAuth } from '@/webapp/hooks/useWebAppAuth'
 import { openSignedUrl } from '@/lib/signedUrl'
+import { parseFechaLocal } from '@/lib/fecha'
 import { useWebAppExamenes } from '@/webapp/hooks/useWebAppExamenes'
 import { Card, CardContent } from '@/components/ui/card'
 import { Badge } from '@/components/ui/badge'
-import { FlaskConical, Calendar, FileText, Loader2 } from 'lucide-react'
+import { FlaskConical, Calendar, FileText, Clock, Loader2 } from 'lucide-react'
 
 export default function WebAppExamenes() {
   const { perfil } = useWebAppAuth()
@@ -64,7 +65,7 @@ export default function WebAppExamenes() {
                       <div className="flex items-center gap-1">
                         <Calendar className="h-4 w-4" />
                         <span>
-                          {new Date(ex.fecha).toLocaleDateString('es-GT', {
+                          {parseFechaLocal(ex.fecha).toLocaleDateString('es-GT', {
                             year: 'numeric', month: 'long', day: 'numeric'
                           })}
                         </span>
@@ -75,6 +76,15 @@ export default function WebAppExamenes() {
                     </p>
                   </div>
                 </div>
+
+                {ex.en_revision && (
+                  <div className="mt-3 pt-3 border-t border-slate-100">
+                    <p className="text-sm text-amber-600 flex items-start gap-2">
+                      <Clock className="h-4 w-4 mt-0.5 shrink-0" />
+                      <span>Resultado en revisión por tu médico. Estará disponible cuando lo libere.</span>
+                    </p>
+                  </div>
+                )}
 
                 {ex.resultados && (
                   <div className="mt-3 pt-3 border-t border-slate-100">

@@ -2,6 +2,7 @@ import { useState, useEffect, useCallback } from 'react'
 import { supabase } from '@/lib/supabase'
 import { useProveedorAuth } from '@/proveedor/hooks/useProveedorAuth'
 import { toast } from 'sonner'
+import { hoyISO } from '@/lib/fecha'
 
 export interface OrdenExamen {
   id: number
@@ -120,20 +121,20 @@ export function useLaboratorio() {
     return () => { supabase.removeChannel(channel) }
   }, [labId, fetchOrdenes])
 
-  const cambiarEstado = async (ordenId: number, estado: string) => {
+  const cambiarEstado = async (examenId: number, estado: string) => {
     const patch: any = { estado }
-    if (estado === 'completado') patch.fecha_resultado = new Date().toISOString().slice(0, 10)
-    const { error } = await supabase.from('examenes').update(patch).eq('id', ordenId)
+    if (estado === 'completado') patch.fecha_resultado = hoyISO()
+    const { error } = await supabase.from('examenes').update(patch).eq('id', examenId)
     if (error) { toast.error('No se pudo actualizar: ' + error.message); return false }
-    toast.success('Orden actualizada')
+    toast.success('Examen actualizado')
     fetchOrdenes()
     return true
   }
 
-  const subirArchivo = async (ordenId: number, file: File): Promise<string | null> => {
+  const subirArchivo = async (examenId: number, file: File): Promise<string | null> => {
     if (!labId) return null
     const ext = file.name.split('.').pop() || 'pdf'
-    const path = `${labId}/${ordenId}-${Date.now()}.${ext}`
+    const path = `${labId}/${examenId}-${Date.now()}.${ext}`
     const { error } = await supabase.storage.from('resultados-examenes').upload(path, file, { upsert: true })
     if (error) { toast.error('No se pudo subir el archivo: ' + error.message); return null }
     // Bucket privado (resultados-examenes.public=false): guardar el PATH, NO una URL pública (daría
@@ -141,24 +142,24 @@ export function useLaboratorio() {
     return path
   }
 
-  const subirResultado = async (ordenId: number, resultados: string, archivo?: File | null, tipo?: string) => {
+  const subirResultado = async (examenId: number, resultados: string, archivo?: File | null, tipo?: string) => {
     let archivo_url: string | null = null
     if (archivo) {
-      archivo_url = await subirArchivo(ordenId, archivo)
+      archivo_url = await subirArchivo(examenId, archivo)
       if (!archivo_url) return false // el toast ya se mostró
     }
     const { error } = await supabase.from('examenes').update({
       resultados,
       ...(archivo_url ? { archivo_url } : {}),
       estado: 'completado',
-      fecha_resultado: new Date().toISOString().slice(0, 10),
-    }).eq('id', ordenId)
+      fecha_resultado: hoyISO(),
+    }).eq('id', examenId)
     if (error) { toast.error('No se pudo guardar el resultado: ' + error.message); return false }
     // Avisar al médico y al paciente: in-app + push server-side y gateado. notificar_resultado_examen
     // empuja vía push_notificar (edge gateado, contenido mínimo) — reemplaza el enviar-push del caller
     // (ids+contenido del cliente). Best-effort: no falla el guardado del resultado.
     try {
-      await supabase.rpc('notificar_resultado_examen', { p_examen_id: ordenId })
+      await supabase.rpc('notificar_resultado_examen', { p_examen_id: examenId })
     } catch (e) { console.error('Error notificar_resultado_examen:', e?.message ?? e?.code) }
     toast.success('Resultado enviado')
     fetchOrdenes()
