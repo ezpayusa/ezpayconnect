@@ -8,18 +8,24 @@
 
 - **Bug storage (lab no podía subir archivo): CERRADO en prod.** Read-back de `storage.objects`; fix = rama
   "dueño del prefijo" en `resultados_scoped_select`. Archivo `supabase/fixes/fix_resultados_select_readback.sql`.
-- **Gate "liberado al paciente": CONSTRUIDO + VALIDADO EN LOCAL; DB viva en prod; frontend PENDIENTE DE DEPLOY**
-  (va con la consolidación Vercel). Columnas en `examenes` + 2 policies de enforcement + 3 RPCs
-  (`liberar_examen_al_paciente`, `liberar_orden_al_paciente`, `paciente_examenes`) + split de
+- **Gate "liberado al paciente": DEPLOYADO en prod (merge d0e64a3).** Columnas en `examenes` + 2 policies de
+  enforcement + 3 RPCs (`liberar_examen_al_paciente`, `liberar_orden_al_paciente`, `paciente_examenes`) + split de
   `notificar_resultado_examen`. Frontend: `PacienteDetallePage.tsx`, `useWebAppExamenes.ts`,
-  `WebAppExamenes.tsx`, `webapp.types.ts`. Typecheck 88 (baseline). Detalle completo en `DISENO-FASE4-LAB.md`.
-- **Frente 2: en diagnóstico** (recon Codex hecho, 6 hallazgos en `DISENO-FASE4-LAB.md` / `ESTADO_PROYECTO`).
+  `WebAppExamenes.tsx`, `webapp.types.ts`. Detalle completo en `DISENO-FASE4-LAB.md`.
+- **Personal y Roles del lab: DEPLOYADO en prod (merge e72d976).** Modelo data-driven de farmacia reusado
+  (seed 3 roles + 9 permisos, ya vivo) + `LabPersonalPage` + gates por rol en todo el portal. Detalle en
+  `DISENO-FASE3-PERSONAL-ROLES.md`.
+- **Frente 2:** cerrados y en prod (2) rename, (3) fechas locales, (5) normalizar archivo_url; (4) falso positivo.
 
-**Próximos fixes, en orden:**
-1. **(3) Fechas** — off-by-one por parseo/seteo en UTC; usar `src/lib/fecha.ts` (`parseFechaLocal`/`hoyISO`).
-2. **(5) Fila examen `id=1`** — `archivo_url` público en bucket privado; normalizar a path con `-f`.
-3. **(2) Rename cosmético** — `ordenId` es en realidad `examenes.id`; corregir toast/nombres.
-4. **Consolidación Vercel** — deployar todo el frontend acumulado (incluye el gate de liberación).
+**Pendientes = DECISIONES DE PRODUCTO del frente 2 + deuda nueva:**
+1. **(1) Flujo de estados** — permite saltar `en_proceso` (recibida→completado) y el estado `'revision'` del mapa está sin uso: definir si se fuerza el flujo o se limpia el estado muerto.
+2. **(6) `completado` sin archivo** — hoy texto obligatorio + archivo opcional (válido): confirmar si se deja así o se exige adjunto.
+3. **Reset de password sin página de destino** — el link de recovery deja al usuario en el dashboard en vez de un form para setear la clave nueva. Fix pendiente (agendar).
+
+**Frentes del día aún NO tocados:**
+- **CHECK-IN** (visitador/proveedor — pendiente de arrancar).
+- **SENTRY** (observabilidad — pendiente de arrancar).
+- **IMPRIMIR** (resultado/orden — pendiente de arrancar).
 
 > Deuda vigente: `schema_migrations` en 047 → **NUNCA `db push`**; aplicar con `-f`; **NUNCA `functions deploy` sin nombre**.
 

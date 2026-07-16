@@ -23,8 +23,8 @@ EzPayConnect es una **plataforma SaaS médica multitenant por país** con 3 port
   SELECT resultados_scoped_select exigía que un examen ya referenciara el objeto, imposible al momento del upload.
   Fix: ALTER POLICY + rama "dueño del prefijo" split_part(name,'/',1)=mi_empresa_proveedor().
   Archivo: supabase/fixes/fix_resultados_select_readback.sql. Validado end-to-end.
-- GATE "LIBERADO AL PACIENTE": construido + validado en local; DB viva en prod; FRONTEND PENDIENTE DEPLOY
-  (va con consolidación Vercel). examenes +liberado_al_paciente/fecha_liberacion/liberado_por; policies de
+- GATE "LIBERADO AL PACIENTE": construido + validado en local; DB viva en prod; FRONTEND DEPLOYADO en prod (merge d0e64a3).
+  examenes +liberado_al_paciente/fecha_liberacion/liberado_por; policies de
   enforcement (storage rama paciente AND liberado; examenes paciente AND (liberado OR estado<>completado));
   RPCs liberar_examen_al_paciente / liberar_orden_al_paciente / paciente_examenes (enmascara "en revisión");
   split de notificar_resultado_examen (al subir avisa solo al médico). Archivos: supabase/fixes/fase4_01_*.sql,
@@ -39,6 +39,30 @@ EzPayConnect es una **plataforma SaaS médica multitenant por país** con 3 port
   (5) examen id=1 tiene archivo_url público en bucket privado (data vieja, 1 fila) → normalizar a path con -f.
   (6) estado='completado' sin archivo: texto obligatorio, archivo opcional → decisión de producto pendiente.
 - Deuda: schema_migrations en 047 → NUNCA db push; aplicar con -f; NUNCA functions deploy sin nombre.
+
+### FRENTE 3 — Personal y Roles del lab: CERRADO + DEPLOYADO (merge e72d976)
+- Reuso del modelo data-driven de farmacia (cero backend nuevo salvo seed).
+- Seed: 3 roles (admin niv100 es_admin / tecnico niv40 / recepcion niv40) + 9 filas de permisos en
+  roles_empresa_catalogo y permisos_empresa_rol para laboratorio_clinico. Acciones: usuarios_roles, config_empresa,
+  catalogo_examenes_editar, resultados_cargar, walkin_registrar, afiliaciones_gestionar.
+  Archivo: supabase/fixes/fase3_01_seed_roles_laboratorio.sql (ya vivo en prod).
+- Frontend: useLaboratorioPermisos (copia del hook data-driven de farmacia), LabPersonalPage (espejo de
+  FarmaciaPersonalPage, sin sucursales, con toggle activar/desactivar), ruta /laboratorio/personal, ítem en sidebar.
+- Gates: sidebar por accion; internos en LabOrdenes (resultados_cargar), LabCatalogo (catalogo_examenes_editar),
+  LabWalkIn (walkin_registrar, gate de pagina), LabAfiliaciones (afiliaciones_gestionar, gate de pagina),
+  LabPerfil (config_empresa). Alta vía edge invitar-staff-proveedor (ya deployado, tipo-agnostico). typecheck 88.
+- Matriz: Admin=todo; Tecnico=resultados_cargar; Recepcion=walkin_registrar+afiliaciones_gestionar.
+
+### FRENTE 2 (hallazgos de la corrida)
+- Cerrados y en prod: (2) rename ordenId->examenId, (3) fechas locales (src/lib/fecha.ts), (5) normalizar archivo_url examen 1.
+- (4) archivo_url pisado con NULL = falso positivo, sin accion.
+- PENDIENTES DE DECISION DE PRODUCTO: (1) el flujo de estados permite saltar en_proceso (recibida->completado) y el
+  estado 'revision' del mapa esta sin uso; (6) 'completado' sin archivo (hoy: texto obligatorio, archivo opcional -> valido).
+
+### DEUDA NUEVA detectada hoy (para agendar)
+- El reset de password no tiene pagina de destino: el link de recovery deja al usuario en el dashboard en vez de un
+  form para setear la clave nueva. Fix pendiente.
+- Una cuenta puede ser medico (perfiles) y staff de proveedor (cuentas_proveedor) a la vez (caso OG) — comportamiento ok, tenerlo presente.
 
 ---
 
