@@ -33,6 +33,7 @@ export interface PlanBase {
 export interface PlanConfiguracion {
   id: string;
   plan_id: string;
+  plan_base_id: string;
   pais_id: string;
   pais_codigo?: string;
   moneda_local: string;
