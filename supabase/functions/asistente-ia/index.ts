@@ -133,41 +133,6 @@ ${exaTxt}
 Proporciona tu analisis de soporte segun las reglas establecidas.`
 }
 
-function mockResponse(motivo: string) {
-  const lower = (motivo || '').toLowerCase()
-  if (lower.includes('cefalea') || lower.includes('cabeza') || lower.includes('dolor de cabeza')) {
-    return {
-      disclaimer: "Sugerencia de IA generada automaticamente. NO es un diagnostico medico. El medico tratante debe verificar toda la informacion antes de prescribir.",
-      diagnosticos_diferenciales: [
-        { nombre: "Cefalea tensional", probabilidad: "Alta", justificacion: "Dolor frontal, paciente joven sin signos de alarma" },
-        { nombre: "Cefalea migrañosa", probabilidad: "Media", justificacion: "Cefalea frontal puede ser compatible, faltan datos de aura o fotofobia" },
-        { nombre: "Sinusitis", probabilidad: "Baja", justificacion: "Sin datos de congestion nasal o secrecion" }
-      ],
-      examenes_recomendados: ["Examen fisico neurologico completo", "Signos vitales serializados", "Evaluacion de fondo de ojo"],
-      opciones_farmacologicas: [
-        { nombre: "Paracetamol", nota: "Analgesico de primera linea. Consultar guia clinica para dosis." },
-        { nombre: "Ibuprofeno", nota: "AINS alternativo. Contraindicado si hay alergia o alteracion renal." }
-      ],
-      contraindicaciones: ["Verificar alergias a AINES antes de prescribir", "Descartar embarazo si aplica"],
-      referencias_guias: ["Guia NICE NG150: Headaches in over 12s", "American Headache Society 2023"],
-      notas_adicionales: "Solicitar historia completa de sueño, estres y patron del dolor. Considerar imagen si hay signos de alarma."
-    }
-  }
-  return {
-    disclaimer: "Sugerencia de IA generada automaticamente. NO es un diagnostico medico. El medico tratante debe verificar toda la informacion antes de prescribir.",
-    diagnosticos_diferenciales: [
-      { nombre: "Diagnostico diferencial A", probabilidad: "Media", justificacion: "Basado en la informacion limitada proporcionada" }
-    ],
-    examenes_recomendados: ["Examen fisico completo", "Laboratorios basicos (CBC, quimica sanguinea)"],
-    opciones_farmacologicas: [
-      { nombre: "Consultar guia clinica", nota: "Se requiere mas informacion para sugerencias farmacologicas especificas." }
-    ],
-    contraindicaciones: ["Verificar alergias conocidas del paciente antes de cualquier prescripcion"],
-    referencias_guias: ["Guia clinica nacional del pais de practica"],
-    notas_adicionales: "La informacion proporcionada es insuficiente para un analisis completo. Se recomienda completar la historia clinica."
-  }
-}
-
 serve(async (req) => {
   const corsHeaders = buildCors(req.headers.get('Origin'))
   const json = (body: unknown, status = 200) =>
@@ -225,23 +190,41 @@ serve(async (req) => {
 
     const userPrompt = buildPrompt(ctxHist, soap)
 
-    const openaiRes = await fetch('https://api.openai.com/v1/chat/completions', {
-      method: 'POST',
-      headers: {
-        'Authorization': `Bearer ${apiKey}`,
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({
-        model: 'gpt-4o-mini',
-        messages: [
-          { role: 'system', content: SYSTEM_PROMPT },
-          { role: 'user', content: userPrompt }
-        ],
-        temperature: 0.3,
-        max_tokens: 1500,
-        response_format: { type: 'json_object' },
-      }),
-    })
+    // Timeout duro: abortar si OpenAI tarda demasiado (no colgar la edge hasta su wall-clock).
+    const ac = new AbortController()
+    const timeoutId = setTimeout(() => ac.abort(), 25000)
+    let openaiRes: Response
+    try {
+      openaiRes = await fetch('https://api.openai.com/v1/chat/completions', {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${apiKey}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          model: 'gpt-4o-mini',
+          messages: [
+            { role: 'system', content: SYSTEM_PROMPT },
+            { role: 'user', content: userPrompt }
+          ],
+          temperature: 0.3,
+          max_tokens: 1500,
+          response_format: { type: 'json_object' },
+        }),
+        signal: ac.signal,
+      })
+    } catch (e: any) {
+      clearTimeout(timeoutId)
+      const abortado = e?.name === 'AbortError'
+      console.error('OpenAI fetch error:', abortado ? 'timeout' : (e?.message ?? e))
+      return json({
+        error: abortado ? 'asistente_timeout' : 'error_openai',
+        message: abortado
+          ? 'El asistente de IA tardó demasiado en responder. Intentá de nuevo.'
+          : 'No se pudo contactar al asistente de IA. Intentá de nuevo en unos minutos.',
+      }, 504)
+    }
+    clearTimeout(timeoutId)
 
     let respuestaEstructurada: any
     let fromOpenAI = false
@@ -252,16 +235,18 @@ serve(async (req) => {
         const err = await openaiRes.json()
         errMsg = err.error?.message || `OpenAI HTTP ${openaiRes.status}`
       } catch {
-        errMsg = `OpenAI HTTP ${openaiRes.status}: ${await openaiRes.text()}`
+        errMsg = `OpenAI HTTP ${openaiRes.status}`
       }
       console.error('OpenAI error, status:', openaiRes.status)
-
-      // Si es error de cuota, usar respuesta mock para no romper la app
-      if (errMsg.includes('quota') || errMsg.includes('billing') || errMsg.includes('exceeded')) {
-        respuestaEstructurada = mockResponse(soap.motivo_consulta)
-      } else {
-        throw new Error(errMsg)
-      }
+      // FAIL-CLOSED: NUNCA devolver una sugerencia clínica falsa. Ante cualquier error de OpenAI
+      // (cuota, billing, rate-limit 429...) se responde error honesto -> el front muestra el estado de error.
+      const esCuota = openaiRes.status === 429 || /quota|billing|exceeded|rate limit/i.test(errMsg)
+      return json({
+        error: esCuota ? 'asistente_no_disponible' : 'error_openai',
+        message: esCuota
+          ? 'El asistente de IA no está disponible en este momento (límite de uso). Intentá más tarde.'
+          : 'El asistente de IA tuvo un error. Intentá de nuevo en unos minutos.',
+      }, 503)
     } else {
       const openaiData = await openaiRes.json()
       const respuestaTexto = openaiData.choices?.[0]?.message?.content || ''
