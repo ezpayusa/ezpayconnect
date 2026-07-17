@@ -43,6 +43,15 @@ export function FormularioVitales({ values, onChange, onSubmit, loading }: {
   }, [cargandoUnidad, unidadPais, unidadTocada])
   const cambiarUnidad = (u: UnidadPeso) => { setUnidadTocada(true); setUnidadPeso(u) }
 
+  // Buffer local del input de peso: muestra lo que el usuario tipea (sin re-derivar del kg en cada tecla).
+  // Se re-sincroniza desde el kg canónico solo cuando cambia por fuera (reset/carga) o cambia la unidad.
+  const [pesoBuf, setPesoBuf] = useState('')
+  useEffect(() => {
+    if (inputAKg(pesoBuf, unidadPeso) !== (values.peso_kg || '')) {
+      setPesoBuf(kgAInput(values.peso_kg, unidadPeso))
+    }
+  }, [values.peso_kg, unidadPeso, pesoBuf])
+
   const imc = useMemo(() => {
     const peso = parseFloat(values.peso_kg)
     const talla = parseFloat(values.talla_cm)
@@ -78,7 +87,7 @@ export function FormularioVitales({ values, onChange, onSubmit, loading }: {
               <button type="button" onClick={() => cambiarUnidad('lb')} className={unidadPeso === 'lb' ? 'px-1.5 bg-[#1E5C8E] text-white' : 'px-1.5 bg-white text-slate-500'}>lb</button>
             </div>
           </div>
-          <Input type="number" step="0.1" placeholder={unidadPeso === 'lb' ? '154.0' : '70.0'} value={kgAInput(values.peso_kg, unidadPeso)} onChange={e => onChange('peso_kg', inputAKg(e.target.value, unidadPeso))} className="h-8 text-sm" />
+          <Input type="number" step="0.1" placeholder={unidadPeso === 'lb' ? '154.0' : '70.0'} value={pesoBuf} onChange={e => { setPesoBuf(e.target.value); onChange('peso_kg', inputAKg(e.target.value, unidadPeso)) }} className="h-8 text-sm" />
         </div>
         <div>
           <Label className="text-xs flex items-center gap-1"><Ruler className="h-3 w-3" /> Talla (cm)</Label>
