@@ -182,6 +182,7 @@ const MedicoPacientesPage = lazy(() => import('@/medico/pages/MedicoPacientesPag
 const MedicoRecetasPage = lazy(() => import('@/medico/pages/MedicoRecetasPage'))
 const MedicoDisponibilidadPage = lazy(() => import('@/medico/pages/MedicoDisponibilidadPage'))
 const MedicoChatPage = lazy(() => import('@/medico/pages/MedicoChatPage'))
+const MedicoPerfilPage = lazy(() => import('@/medico/pages/MedicoPerfilPage'))
 
 function Spinner() {
   return (
@@ -357,6 +358,7 @@ function App() {
           <Route path="consulta/:citaId" element={<ConsultaPage />} />
           <Route path="buscar-medicamentos" element={<BuscarMedicamentosPage />} />
           <Route path="chat" element={<MedicoChatPage />} />
+          <Route path="perfil" element={<MedicoPerfilPage />} />
           <Route path="pacientes/:id/detalle" element={<PacienteDetallePage />} />
           <Route path="notificaciones" element={<NotificacionesPage />} />
         </Route>
