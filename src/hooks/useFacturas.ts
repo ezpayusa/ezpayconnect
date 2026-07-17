@@ -13,7 +13,7 @@ export function useFacturas(pacienteId?: number) {
 
     let query = supabase
       .from('facturas')
-      .select(`*, pacientes(nombre, apellido)`)
+      .select(`*, pacientes(nombre, apellido, email)`)
       .order('fecha_emision', { ascending: false })
       .limit(500)
 

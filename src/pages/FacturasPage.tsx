@@ -2,6 +2,8 @@ import { useState } from 'react'
 import { useSearchParams } from 'react-router'
 import { usePacientes } from '@/hooks/usePacientes'
 import { useFacturas } from '@/hooks/useFacturas'
+import { useEnviarFactura } from '@/hooks/useEnviarFactura'
+import { toast } from 'sonner'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
@@ -29,6 +31,9 @@ export default function FacturasPage() {
   const [searchParams] = useSearchParams()
   const { pacientes } = usePacientes()
   const { facturas, loading, createFactura, updateFactura } = useFacturas()
+  const { enviarFactura, enviando: enviandoEmail } = useEnviarFactura()
+  const [showEmail, setShowEmail] = useState(false)
+  const [emailTo, setEmailTo] = useState('')
 
   const [showForm, setShowForm] = useState(searchParams.get('nuevo') === 'true')
   const [showPreview, setShowPreview] = useState(false)
@@ -138,9 +143,35 @@ export default function FacturasPage() {
   }
 
   const handleSendEmail = () => {
-    // Simulación - en producción conectarías con tu backend
-    alert(`Factura #${selectedFactura?.id} enviada por email al paciente.`)
-    setShowPreview(false)
+    if (!selectedFactura) return
+    setEmailTo(selectedFactura.pacientes?.email || '')
+    setShowEmail(true)
+  }
+
+  const confirmarEnvioEmail = async () => {
+    if (!selectedFactura || !emailTo) return
+    const result = await enviarFactura({
+      to: emailTo,
+      facturaId: selectedFactura.id,
+      pacienteNombre: selectedFactura.paciente_nombre || 'Paciente #' + selectedFactura.paciente_id,
+      concepto: selectedFactura.concepto,
+      cantidad: Number(selectedFactura.cantidad),
+      precioUnitario: Number(selectedFactura.precio_unitario),
+      descuento: Number(selectedFactura.descuento || 0),
+      total: Number(selectedFactura.total),
+      moneda: 'Q',
+      fecha: selectedFactura.fecha_emision,
+      estado: selectedFactura.estado,
+      metodoPago: selectedFactura.metodo_pago || undefined,
+      notas: selectedFactura.notas || undefined,
+    })
+    if (result.success) {
+      toast.success('Factura enviada a ' + emailTo)
+      setShowEmail(false)
+      setShowPreview(false)
+    } else {
+      toast.error(result.error || 'No se pudo enviar la factura')
+    }
   }
 
   return (
@@ -476,6 +507,28 @@ export default function FacturasPage() {
               </div>
             </div>
           )}
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={showEmail} onOpenChange={setShowEmail}>
+        <DialogContent className="max-w-md">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2">
+              <Mail className="h-5 w-5 text-[#1E5C8E]" /> Enviar factura por email
+            </DialogTitle>
+          </DialogHeader>
+          <div className="space-y-4">
+            <div className="space-y-2">
+              <Label htmlFor="email-factura">Email del paciente</Label>
+              <Input id="email-factura" type="email" placeholder="paciente@email.com" value={emailTo} onChange={e => setEmailTo(e.target.value)} disabled={enviandoEmail} />
+            </div>
+            <div className="flex justify-end gap-3">
+              <Button variant="outline" onClick={() => setShowEmail(false)} disabled={enviandoEmail}>Cancelar</Button>
+              <Button onClick={confirmarEnvioEmail} disabled={!emailTo || enviandoEmail} className="bg-[#1E5C8E] hover:bg-[#3A8ABF]">
+                {enviandoEmail ? <><Loader2 className="h-4 w-4 mr-2 animate-spin" /> Enviando...</> : <><Mail className="h-4 w-4 mr-2" /> Enviar</>}
+              </Button>
+            </div>
+          </div>
         </DialogContent>
       </Dialog>
     </div>
