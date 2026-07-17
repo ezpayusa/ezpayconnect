@@ -157,6 +157,40 @@ export default function PagosProveedoresPage() {
           }
         }
       }
+
+      if ((pagoData?.tipo === 'plan_laboratorio' || pagoData?.tipo === 'plan_farmacia') && pagoData.referencia_id) {
+        // Capacidad de módulo (lab/farmacia): leer duración del plan y otorgar la capacidad a la empresa.
+        const { data: planConfig } = await supabase
+          .from('planes_configuracion')
+          .select('*, plan_base:plan_base_id(*)')
+          .eq('id', pagoData.referencia_id)
+          .single()
+
+        if (!planConfig) {
+          toast.error('No se encontró la configuración del plan')
+          setProcesando(false)
+          return
+        }
+
+        const atributos = (planConfig.plan_base as any)?.atributos || {}
+        const duracionDias = atributos.duracion_dias || 30
+        const fin = new Date()
+        fin.setDate(fin.getDate() + duracionDias)
+        const codigo = pagoData.tipo === 'plan_laboratorio' ? 'laboratorio' : 'farmacia'
+
+        const { error: capError } = await supabase.rpc('otorgar_capacidad_empresa', {
+          p_empresa_id: pagoData.empresa_id,
+          p_codigo: codigo,
+          p_hasta: fin.toISOString(),
+        })
+
+        if (capError) {
+          toast.error('Error activando el plan (capacidad)')
+          console.error(capError)
+          setProcesando(false)
+          return
+        }
+      }
     }
 
     const { error } = await supabase
