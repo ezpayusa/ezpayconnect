@@ -17,6 +17,35 @@ EzPayConnect es una **plataforma SaaS médica multitenant por país** con 3 port
 
 ---
 
+## 2026-07-17 (noche) — Email de facturas real + peso en libras (prod)
+- EMAIL DE FACTURAS (merge fe065bc): el "enviar por email" de FacturasPage era un alert() simulado → ahora envío real.
+  Nueva Vercel function api/send-factura.ts (espejo de api/send-receta.ts: gate de rol clínico/admin vía JWT,
+  HTML de factura, Resend con el RESEND_API_KEY ya configurado) + hook useEnviarFactura + diálogo con el email del
+  paciente pre-cargado (useFacturas ahora trae pacientes(...,email)). Cierra el [D] "FacturasPage email falso".
+- PESO EN LIBRAS: src/lib/unidades.ts (kg<->lb + PAISES_LB={'GT'}, extensible) + useUnidadPeso() (resuelve el codigo
+  del pais vía configuracion_pais) + toggle kg/lb en FormularioVitales (usa useUnidadPeso INTERNO → aplica a TODOS los
+  forms de vitales: consulta médica + admisión clínica) + display de tomas en ConsultaPage. CANÓNICO SIEMPRE kg (el
+  trigger trg_calcular_imc y el histórico intactos); lb es solo input/display, con buffer local en el input para no
+  jitterear al convertir. Default lb en GT, toggle para overridear. Extensible: agregar código a PAISES_LB.
+- Sin bloqueantes de código pre-piloto. Resta: infra Pro (compute + Realtime, dashboard) + limpieza QA (~38 filas).
+
+## 2026-07-17 (tarde) — Auditoría de escalabilidad para piloto de 5,000 médicos (código en prod)
+- Veredicto: SÍ aguanta el piloto, pendiente solo de config de infra. Bloqueantes de código CERRADOS:
+  - ÍNDICES: 10 en rutas calientes (supabase/fixes/indices_piloto_01.sql, -f + git add -f). commit 564f058.
+  - asistente-ia: sacado el mock fail-open (devolvía sugerencia clínica FALSA ante error de cuota) → error honesto
+    503/504 + timeout 25s AbortController. Edge deployada. commit 92b74ca.
+  - N+1 + dumps frontend (rama perf/hooks-piloto, merge e698240): colapsado N+1 de receta_items vía embed PostgREST
+    (useRecetas/useHistorialCompleto/useWebAppRecetas); autoFetch:false en ConsultaPage/RecetaModal (no pagan dumps
+    de lista para mutar); limit(500) en recetas/facturas. Clave: la RLS ya scopea por rol → NO agregar filtro
+    medico_id explícito (rompería staff/admin).
+- ÚNICO restante = INFRA (Oscar, dashboard): proyecto en plan FREE (compute Nano, max_connections=60, Realtime ~200
+  concurrentes, 50k MAU, auto-pausa) → NO aguanta 5k. Subir a Pro + compute Small/Medium + verificar cap de Realtime,
+  2-3 días antes del piloto.
+- Follow-ups perf no bloqueantes: picker de pacientes con búsqueda server-side; limit en useCitas/usePacientes;
+  poda de RecetasPage huérfana. Medios: procesar-recordatorios lock (emails duplicados), enviar-push-campana LIMIT,
+  Realtime chat filtro server-side, WebAppDashboard counts.
+- tsc baseline = 82 (bajó de 88 al arreglar el drift de PlanConfiguracion.plan_base_id).
+
 ## 2026-07-17 — Ramas ordenadas + foto-médico + foto-calendario + planes lab/farmacia (TODO en prod)
 - O1 flag: 0. GitHub recuperado de la caída del 16-17 jul (All Systems Operational).
 - RAMAS: PR #4 fix/root-redirect-por-rol (root redirect por rol + AuthContext maybeSingle) mergeado.

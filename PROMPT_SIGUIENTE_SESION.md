@@ -37,21 +37,33 @@
 - **B4 (gate):** `LaboratorioLayout`/`FarmaciaLayout` leen `useCapacidades()` (`mis_capacidades()`) → sin capacidad activa muestran "Plan inactivo" (CTA a planes + logout). Es **visibilidad UI**; el gate server-side real (`empresa_tiene_capacidad` en RPCs clave) queda post-piloto. `mis_capacidades()` verificado: `(hasta IS NULL OR hasta > now())` → los 4 grandfathered pasan, nadie existente lockeado.
 - **NOTA periodicidad:** el checkout manda `monto` pero NO mensual/anual; la capacidad se otorga por `atributos.duracion_dias` (default 30), igual que visitador. Si se quiere que un pago anual extienda 1 año, hay que cablear la periodicidad (checkout → pago → verify). Diferido.
 
-**Sesiones previas (16-17 jul):** reset/set-password COMPLETO, Sentry vivo + scrubbing, imprimir cubierto, decisiones Frente 2. (Historial en ESTADO.)
+**READINESS / ESCALABILIDAD (auditoría del piloto, 17 jul — código en prod):** Auditoría "¿aguanta 5,000 médicos?" → veredicto **SÍ, pendiente solo de config de infra**. Bloqueantes de código, CERRADOS:
+- **Índices en rutas calientes** (10, `supabase/fixes/indices_piloto_01.sql`): citas(medico_id,fecha)/(clinica_id,fecha)/(paciente_id,medico_id), recetas(paciente_id), receta_items(farmacia_id), pagos_proveedor(empresa_id), medico_clinicas(clinica_id), examenes/facturas(medico_id), disponibilidad_medico. Plain `CREATE INDEX IF NOT EXISTS` (tablas chicas).
+- **asistente-ia fail-closed** (edge deployada): sacado el mock que devolvía sugerencia clínica FALSA ante error de cuota → ahora error honesto 503/504 + timeout 25s (AbortController). El front (`AsistenteIA.tsx`) ya falla seguro.
+- **N+1 + dumps de frontend** (`perf/hooks-piloto` mergeada): colapsado el N+1 de `receta_items` vía embed PostgREST (`useRecetas`/`useHistorialCompleto`/`useWebAppRecetas`); `autoFetch:false` en `ConsultaPage`/`RecetaModal` (ya no pagan dumps de lista solo para mutar); `.limit(500)` en recetas/facturas. RLS ya scopea por rol (NO agregar filtro `medico_id` explícito: rompería staff/admin).
+
+**EMAIL DE FACTURAS REAL (17 jul, prod, merge `fe065bc`):** reemplazado el `alert()` simulado de `FacturasPage` por envío real: nueva Vercel function `api/send-factura.ts` (espejo de `api/send-receta.ts`, gate de rol clínico/admin, mismo `RESEND_API_KEY`) + hook `useEnviarFactura` + diálogo con email del paciente pre-cargado (`useFacturas` ahora trae `pacientes(...,email)`). Cierra el [D] "FacturasPage email falso".
+
+**PESO EN LIBRAS (17 jul, prod):** `src/lib/unidades.ts` (conversiones + `PAISES_LB = {'GT'}`, extensible) + `useUnidadPeso()` (resuelve código vía `configuracion_pais`) + toggle kg/lb en `FormularioVitales` (usa `useUnidadPeso` **interno** → aplica a TODOS los forms de vitales) + display en `ConsultaPage`. **Canónico SIEMPRE kg** (el trigger `trg_calcular_imc` y el histórico intactos); lb es solo capa de input/display, con buffer local en el input para no jitterear. Default lb en GT, toggle para overridear.
+
+**Sesiones previas (16-17 jul):** reset/set-password COMPLETO (allowlist YA configurada, el flag de fable fue falso positivo — NO es bloqueante), Sentry vivo + scrubbing, imprimir cubierto, decisiones Frente 2. (Historial en ESTADO.)
 
 ---
 
 ## 📋 PENDIENTES (orden sugerido)
 
-**1. EMAIL DE FACTURAS:** `FacturasPage.tsx:140` `handleSendEmail` es `alert()` SIMULADO (verificado) → cablear al backend de email real (reusar patrón recetas / edge `notificar-email`) para que mande la factura al paciente de verdad.
+**0. INFRA PRE-PILOTO (acción de Oscar, dashboard Supabase — bloqueante #3 de la auditoría):** el proyecto está en plan **FREE** (compute Nano, `max_connections=60`, Realtime ~200 concurrentes, 50k MAU, auto-pausa). NO aguanta 5k médicos + pacientes. **Subir a Pro** (Billing→Subscription, ~$25/mes: 100k MAU, sin auto-pausa) + **compute Small/Medium** (Compute and Disk) + verificar/subir el **límite de Realtime concurrente** (Pro ~500 default; pico estimado 1,500-2,500 con chat). Hacerlo **2-3 días antes** del piloto (no el día 1) para smoke-test. Costo del piloto ≈ $30-250/mes según compute + MAU de pacientes que se logueen.
 
-**2. LIMPIEZA DATOS QA** (DB, `-f`, se puede sin GitHub): ~38 filas QA/prueba contaminan reportes del piloto. Recon Codex que enumere filas exactas → bloque reversible. **OJO:** los super_admin/QA que Oscar DEJA: `admin.qa@`, `doctor@prueba.com`, y las cuentas grandfathered `laboratorio.qa@` / `farmacia.qa@` (más las empresas backfilleadas).
+**1. LIMPIEZA DATOS QA** (DB, `-f`, se puede sin GitHub): ~38 filas QA/prueba contaminan reportes del piloto. Recon Codex que enumere filas exactas → bloque reversible. **OJO:** los super_admin/QA que Oscar DEJA: `admin.qa@`, `doctor@prueba.com`, y las cuentas grandfathered `laboratorio.qa@` / `farmacia.qa@` (más las empresas backfilleadas).
 
-**3. CHICOS / CLEANUP:**
+**2. CHICOS / CLEANUP:**
 - `PlanesVisitadorPage.tsx` (la pública, `src/pages/planes/`) tiene el mismo `alert()` muerto que tenía PlanesLab → cablear a `/proveedor/checkout?tipo=plan_visitador` (cierra el hallazgo [D] de la auditoría). Mismo patrón que el fix de lab (referencia_id = config.id).
 - Foto del médico en **Personal de clínica** (hoy icono por rol; la RPC `obtener_personal_clinica` ya joinea `medicos`, faltaría que devuelva `foto_url` + avatar en la fila). Add-on del frente foto.
+- **Follow-ups de perf (auditoría, no bloqueantes):** picker de pacientes con búsqueda server-side (hoy `usePacientes` baja la lista completa para el selector de `RecetaModal`); `.limit()` en `useCitas`/`usePacientes` y en el dropdown país-wide de `CitasPage:179`; poda de `RecetasPage` (importada sin `<Route>`, huérfana).
 
-**4. DIFERIDOS post-piloto:** check-in offline (IndexedDB+sync), imprimir resultado solo-texto (PDF generado), gate SERVER-SIDE de lab/farmacia con `empresa_tiene_capacidad` en RPCs clave, periodicidad anual real en checkout de planes, cosmético (dashboard admin con mocks Math.random, buscador navbar decorativo, ingresos ×250, rutas huérfanas V1, hooks/lib muertos).
+**MEDIOS de la auditoría (aguantan el piloto, hacer antes de escalar más):** `procesar-recordatorios` sin lock anti-doble-corrida → emails duplicados a pacientes (corrección real); `enviar-push-campana` sin LIMIT → una campaña grande muere a mitad; Realtime chat sin filtro server-side en 3 canales (mayor win de escala, esperar a definir cap de Realtime en Pro); `WebAppDashboard` a `count head:true`; Resend con backoff; `consultar-biblioteca` con api_key NCBI.
+
+**3. DIFERIDOS post-piloto:** check-in offline (IndexedDB+sync), imprimir resultado solo-texto (PDF generado), gate SERVER-SIDE de lab/farmacia con `empresa_tiene_capacidad` en RPCs clave, periodicidad anual real en checkout de planes, cosmético (dashboard admin con mocks Math.random, buscador navbar decorativo, ingresos ×250, rutas huérfanas V1, hooks/lib muertos).
 
 ---
 
