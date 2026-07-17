@@ -87,17 +87,13 @@ export function useHistorialCompleto(pacienteId?: number) {
       // 3. Cargar recetas
       const { data: recetas, error: errRecetas } = await supabase
         .from('recetas')
-        .select('*')
+        .select('*, receta_items(*)')
         .eq('paciente_id', pacienteId)
         .order('created_at', { ascending: false })
 
       if (!errRecetas && recetas) {
         for (const r of recetas) {
-          // Obtener items de la receta
-          const { data: items } = await supabase
-            .from('receta_items')
-            .select('*')
-            .eq('receta_id', r.id)
+          const items = ((r as any).receta_items as any[]) || []
 
           const medicamentos = items?.map(i => i.nombre_medicamento).join(', ') || 'Sin medicamentos'
 

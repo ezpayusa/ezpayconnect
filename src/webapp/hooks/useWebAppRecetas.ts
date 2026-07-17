@@ -21,7 +21,7 @@ export function useWebAppRecetas(pacienteId: number | undefined) {
       // 1. Obtener recetas del paciente (sin join)
       const { data: recetasData, error: recetasErr } = await supabase
         .from('recetas')
-        .select('id, estado, instrucciones_generales, codigo_qr, created_at, medico_id')
+        .select('id, estado, instrucciones_generales, codigo_qr, created_at, medico_id, receta_items(*)')
         .eq('paciente_id', pacienteId)
         .order('created_at', { ascending: false })
 
@@ -46,11 +46,7 @@ export function useWebAppRecetas(pacienteId: number | undefined) {
       const recetasConItems: RecetaPaciente[] = []
 
       for (const r of recetasData || []) {
-        // Obtener items de cada receta
-        const { data: itemsData } = await supabase
-          .from('receta_items')
-          .select('*')
-          .eq('receta_id', r.id)
+        const itemsData = (r as any).receta_items || []
 
         const items: RecetaItemPaciente[] = (itemsData || []).map((i: any) => ({
           id: i.id,
