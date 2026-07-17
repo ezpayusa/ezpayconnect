@@ -16,6 +16,7 @@ import {
   ChevronLeft,
   Bell,
   Menu,
+  UserCircle,
 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Sheet, SheetContent, SheetTrigger } from '@/components/ui/sheet'
@@ -60,6 +61,7 @@ export function MedicoSidebar() {
     { label: 'Mis Recetas', icon: FileText, path: '/medico/recetas' },
     { label: 'Buscar Medicamentos', icon: Pill, path: '/medico/buscar-medicamentos' },
     { label: 'Mi Disponibilidad', icon: Clock, path: '/medico/disponibilidad' },
+    { label: 'Mi Perfil', icon: UserCircle, path: '/medico/perfil' },
   ]
 
   const isActive = (path: string) => {
