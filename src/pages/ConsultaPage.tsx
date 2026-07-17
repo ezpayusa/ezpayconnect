@@ -61,7 +61,7 @@ export default function ConsultaPage() {
   // toda la navegación interna se queda dentro de /medico (no saca al médico de su panel).
   const base = location.pathname.startsWith('/medico') ? '/medico' : ''
   const { perfil } = useAuth()
-  const { updateCita } = useCitas()
+  const { updateCita } = useCitas({ autoFetch: false })
   const {
     loading: loadingConsulta,
     saving,

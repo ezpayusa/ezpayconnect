@@ -3,7 +3,8 @@ import { supabase } from '@/lib/supabase'
 import { usePaisFiltro } from './usePaisFiltro'
 import type { Receta, RecetaItem, Medicamento } from '@/types'
 
-export function useRecetas() {
+export function useRecetas(opts?: { autoFetch?: boolean }) {
+  const autoFetch = opts?.autoFetch ?? true
   const [recetas, setRecetas] = useState<Receta[]>([])
   const [loading, setLoading] = useState(true)
   const { paisId } = usePaisFiltro()
@@ -13,8 +14,9 @@ export function useRecetas() {
     
     let recetasQuery = supabase
       .from('recetas')
-      .select(`*, pacientes(nombre, apellido)`)
+      .select(`*, pacientes(nombre, apellido), receta_items(farmacia_id)`)
       .order('created_at', { ascending: false })
+      .limit(500)
     if (paisId) recetasQuery = recetasQuery.eq('pais_id', paisId)
     const { data: recetasData, error: recetasError } = await recetasQuery
     
@@ -25,29 +27,17 @@ export function useRecetas() {
       return
     }
 
-    // Para cada receta, verificar si tiene al menos un item con farmacia_id
-    const recetasConFarmacia = await Promise.all(
-      (recetasData || []).map(async (r: any) => {
-        const { data: itemsData } = await supabase
-          .from('receta_items')
-          .select('farmacia_id')
-          .eq('receta_id', r.id)
-          .not('farmacia_id', 'is', null)
-          .limit(1)
-        
-        return {
-          ...r,
-          paciente_nombre: r.pacientes?.nombre + ' ' + r.pacientes?.apellido,
-          tiene_farmacia_asignada: (itemsData && itemsData.length > 0) || false
-        }
-      })
-    )
+    const recetasConFarmacia = (recetasData || []).map((r: any) => ({
+      ...r,
+      paciente_nombre: r.pacientes?.nombre + ' ' + r.pacientes?.apellido,
+      tiene_farmacia_asignada: Array.isArray(r.receta_items) && r.receta_items.some((it: any) => it.farmacia_id != null),
+    }))
 
     setRecetas(recetasConFarmacia)
     setLoading(false)
   }, [paisId])
 
-  useEffect(() => { fetchRecetas() }, [fetchRecetas])
+  useEffect(() => { if (autoFetch) fetchRecetas() }, [fetchRecetas, autoFetch])
 
     const createReceta = async (receta: Partial<Receta>, items: Partial<RecetaItem>[]) => {
     const { data: { user } } = await supabase.auth.getUser()

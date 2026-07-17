@@ -40,7 +40,7 @@ interface RecetaModalProps {
 export default function RecetaModal({ open, onOpenChange, pacienteIdPreseleccionado, citaId, onSuccess }: RecetaModalProps) {
   const { perfil } = useAuth()
   const { pacientes } = usePacientes()
-  const { createReceta } = useRecetas()
+  const { createReceta } = useRecetas({ autoFetch: false })
   const { medicamentos, loading: loadingMeds, error: errorMeds, fetchMedicamentos } = useMedicamentos()
   const { resultados: resultadosBusqueda, loading: loadingBusqueda, buscarPorMedicamento } = useBusquedaMedicamentos()
 
