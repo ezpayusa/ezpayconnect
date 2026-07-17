@@ -7,6 +7,7 @@ export interface MedicoColumna {
   medico_id: string
   nombre_completo: string
   es_principal: boolean
+  foto_url: string | null
 }
 
 export interface CitaCalendario {
