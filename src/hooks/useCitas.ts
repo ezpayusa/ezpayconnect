@@ -3,7 +3,8 @@ import { supabase } from '@/lib/supabase'
 import { usePaisFiltro } from './usePaisFiltro'
 import type { Cita } from '@/types'
 
-export function useCitas() {
+export function useCitas(opts?: { autoFetch?: boolean }) {
+  const autoFetch = opts?.autoFetch ?? true
   const [citas, setCitas] = useState<Cita[]>([])
   const [loading, setLoading] = useState(true)
   const { paisId } = usePaisFiltro()
@@ -20,7 +21,7 @@ export function useCitas() {
     setLoading(false)
   }, [paisId])
 
-  useEffect(() => { fetchCitas() }, [fetchCitas])
+  useEffect(() => { if (autoFetch) fetchCitas() }, [fetchCitas, autoFetch])
 
   const createCita = async (cita: Partial<Cita>) => {
     const { data: { user } } = await supabase.auth.getUser()

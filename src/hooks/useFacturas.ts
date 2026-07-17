@@ -15,6 +15,7 @@ export function useFacturas(pacienteId?: number) {
       .from('facturas')
       .select(`*, pacientes(nombre, apellido)`)
       .order('fecha_emision', { ascending: false })
+      .limit(500)
 
     if (pacienteId) {
       query = query.eq('paciente_id', pacienteId)

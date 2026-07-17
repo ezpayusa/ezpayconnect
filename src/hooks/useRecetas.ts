@@ -3,7 +3,8 @@ import { supabase } from '@/lib/supabase'
 import { usePaisFiltro } from './usePaisFiltro'
 import type { Receta, RecetaItem, Medicamento } from '@/types'
 
-export function useRecetas() {
+export function useRecetas(opts?: { autoFetch?: boolean }) {
+  const autoFetch = opts?.autoFetch ?? true
   const [recetas, setRecetas] = useState<Receta[]>([])
   const [loading, setLoading] = useState(true)
   const { paisId } = usePaisFiltro()
@@ -15,6 +16,7 @@ export function useRecetas() {
       .from('recetas')
       .select(`*, pacientes(nombre, apellido), receta_items(farmacia_id)`)
       .order('created_at', { ascending: false })
+      .limit(500)
     if (paisId) recetasQuery = recetasQuery.eq('pais_id', paisId)
     const { data: recetasData, error: recetasError } = await recetasQuery
     
@@ -35,7 +37,7 @@ export function useRecetas() {
     setLoading(false)
   }, [paisId])
 
-  useEffect(() => { fetchRecetas() }, [fetchRecetas])
+  useEffect(() => { if (autoFetch) fetchRecetas() }, [fetchRecetas, autoFetch])
 
     const createReceta = async (receta: Partial<Receta>, items: Partial<RecetaItem>[]) => {
     const { data: { user } } = await supabase.auth.getUser()
