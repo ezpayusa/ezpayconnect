@@ -9,6 +9,8 @@ import { useCitas } from '@/hooks/useCitas'
 import { useSignosVitalesCita } from '@/hooks/useSignosVitalesCita'
 import { FormularioVitales, VITALES_VACIO } from '@/clinica/components/FormularioVitales'
 import type { VitalesValues } from '@/clinica/components/FormularioVitales'
+import { useUnidadPeso } from '@/hooks/useUnidadPeso'
+import { formatPeso } from '@/lib/unidades'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
@@ -88,6 +90,7 @@ export default function ConsultaPage() {
   // El médico ve la serie pre-capturada, valida cada toma y agrega la suya. Append-only.
   const { serie, cargando: cargandoSerie, error: errorSignos, cargarSerie, validarToma, agregarToma } = useSignosVitalesCita(cita?.id ?? 0)
   const [formMedico, setFormMedico] = useState<VitalesValues>(VITALES_VACIO)
+  const { unidad: unidadPeso } = useUnidadPeso()
   const [guardandoToma, setGuardandoToma] = useState(false)
   const [validandoId, setValidandoId] = useState<number | null>(null)
 
@@ -539,7 +542,7 @@ export default function ConsultaPage() {
                       {t.frecuencia_cardiaca != null && <span>FC {t.frecuencia_cardiaca}</span>}
                       {t.frecuencia_respiratoria != null && <span>FR {t.frecuencia_respiratoria}</span>}
                       {t.temperatura != null && <span>T {t.temperatura}°</span>}
-                      {t.peso_kg != null && <span>{t.peso_kg}kg</span>}
+                      {t.peso_kg != null && <span>{formatPeso(t.peso_kg, unidadPeso)}</span>}
                       {t.talla_cm != null && <span>{t.talla_cm}cm</span>}
                       {t.imc != null && <span>IMC {t.imc}</span>}
                       {t.saturacion_o2 != null && <span>SpO2 {t.saturacion_o2}%</span>}
