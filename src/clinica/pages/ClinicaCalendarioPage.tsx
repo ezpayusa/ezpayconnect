@@ -111,9 +111,13 @@ function MiniMes({ fecha, onPick }: { fecha: Date; onPick: (d: Date) => void }) 
 function HeaderMedico({ resource }: { resource: MedicoColumna }) {
   return (
     <div className="flex items-center gap-2 px-2 py-2">
-      <div className="h-9 w-9 rounded-full bg-[#1E5C8E]/10 text-[#1E5C8E] flex items-center justify-center text-xs font-bold shrink-0">
-        {iniciales(resource.nombre_completo)}
-      </div>
+      {resource.foto_url ? (
+        <img src={resource.foto_url} alt="" className="h-9 w-9 rounded-full object-cover shrink-0" />
+      ) : (
+        <div className="h-9 w-9 rounded-full bg-[#1E5C8E]/10 text-[#1E5C8E] flex items-center justify-center text-xs font-bold shrink-0">
+          {iniciales(resource.nombre_completo)}
+        </div>
+      )}
       <div className="min-w-0 text-left">
         <p className="text-sm font-semibold text-slate-800 truncate">{resource.nombre_completo}</p>
         <p className="text-[11px] text-emerald-600 flex items-center gap-1">
@@ -288,7 +292,11 @@ export default function ClinicaCalendarioPage() {
                 onClick={() => setMedicoSel(m.medico_id)}
                 className={`flex items-center gap-2 shrink-0 rounded-full pl-1 pr-3 py-1 border ${sel ? 'border-[#1E5C8E] bg-[#1E5C8E]/10' : 'border-slate-200 bg-white'}`}
               >
-                <span className="h-7 w-7 rounded-full bg-[#1E5C8E]/10 text-[#1E5C8E] flex items-center justify-center text-[10px] font-bold">{iniciales(m.nombre_completo)}</span>
+                {m.foto_url ? (
+                  <img src={m.foto_url} alt="" className="h-7 w-7 rounded-full object-cover shrink-0" />
+                ) : (
+                  <span className="h-7 w-7 rounded-full bg-[#1E5C8E]/10 text-[#1E5C8E] flex items-center justify-center text-[10px] font-bold">{iniciales(m.nombre_completo)}</span>
+                )}
                 <span className={`text-xs font-medium truncate max-w-[7rem] ${sel ? 'text-[#1E5C8E]' : 'text-slate-600'}`}>{m.nombre_completo}</span>
               </button>
             )
