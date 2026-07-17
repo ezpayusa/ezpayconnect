@@ -1,251 +1,60 @@
 # 📋 PROMPT PARA SIGUIENTE SESIÓN — EzPayConnect
 
-**Objetivo:** Resolver todos los bugs pendientes para iniciar operaciones de citas en producción.
+> Última actualización: 2026-07-17 (cierre de jornada: ramas ordenadas + foto-médico + foto-calendario + planes lab/farmacia completos, todo en prod)
+
+**Reglas de siempre:** Claude = revisor/prompts · CC = ejecuta · Codex = recon solo-lectura · Oscar aprueba cada paso · prompts en bloque copiable · un bloque por vez · no guardar memoria hasta que lo pida.
 
 ---
 
-## ▶️ RESUME AQUÍ (2026-07-16) — Circuito laboratorio
+## ▶️ ANTES DE NADA
 
-- **Bug storage (lab no podía subir archivo): CERRADO en prod.** Read-back de `storage.objects`; fix = rama
-  "dueño del prefijo" en `resultados_scoped_select`. Archivo `supabase/fixes/fix_resultados_select_readback.sql`.
-- **Gate "liberado al paciente": DEPLOYADO en prod (merge d0e64a3).** Columnas en `examenes` + 2 policies de
-  enforcement + 3 RPCs (`liberar_examen_al_paciente`, `liberar_orden_al_paciente`, `paciente_examenes`) + split de
-  `notificar_resultado_examen`. Frontend: `PacienteDetallePage.tsx`, `useWebAppExamenes.ts`,
-  `WebAppExamenes.tsx`, `webapp.types.ts`. Detalle completo en `DISENO-FASE4-LAB.md`.
-- **Personal y Roles del lab: DEPLOYADO en prod (merge e72d976).** Modelo data-driven de farmacia reusado
-  (seed 3 roles + 9 permisos, ya vivo) + `LabPersonalPage` + gates por rol en todo el portal. Detalle en
-  `DISENO-FASE3-PERSONAL-ROLES.md`.
-- **Frente 2:** cerrados y en prod (2) rename, (3) fechas locales, (5) normalizar archivo_url; (4) falso positivo.
+1. Leé en la RAÍZ del repo `C:\dev\ezpayconnect`: este archivo, `ESTADO_PROYECTO_EZPAYCONNECT.md`, y `DISENO-PLANES-LAB-FARMACIA.md`.
+2. **Chequeo diario O1** (pegáselo a CC):
+   ```
+   supabase db query --linked "select count(*) as nacidas_sin_correlativo from recetas where id > 2725 and numero_correlativo is null;"
+   ```
+   (debe dar 0)
+3. GitHub ya se recuperó de la caída del 16-17 jul (All Systems Operational). Deploys/merges normales.
 
-**Pendientes = DECISIONES DE PRODUCTO del frente 2 + deuda nueva:**
-1. **(1) Flujo de estados** — permite saltar `en_proceso` (recibida→completado) y el estado `'revision'` del mapa está sin uso: definir si se fuerza el flujo o se limpia el estado muerto.
-2. **(6) `completado` sin archivo** — hoy texto obligatorio + archivo opcional (válido): confirmar si se deja así o se exige adjunto.
-3. **Reset / Set-password (gap TRANSVERSAL + seguridad, PRIORIDAD pre go-live)** — recon confirmó que ningún módulo (8: médico, paciente, proveedor, farmacia, laboratorio, repartidor, clínica, admin) tiene link "olvidaste tu contraseña?", ni página que reciba el recovery y setee la clave, ni consumo de `must_change_password`; el link de recovery cae en `/`→`/dashboard`. Seguridad: `invitar-staff-proveedor` crea staff con password temporal en texto plano de larga duración + flag `must_change_password` que hoy nadie lee ("DEUDA INTERINA Ola-4"). Alcance (una sola página resuelve los 8 módulos):
-   1. Ruta compartida `/set-password` (o `/restablecer`): detecta sesión de recovery o `must_change_password` → form → `supabase.auth.updateUser({password})`.
-   2. Link "¿Olvidaste tu contraseña?" en cada login → `resetPasswordForEmail(email, {redirectTo:<set-password>})`.
-   3. Guard global: al loguear, si `user_metadata.must_change_password` → forzar `/set-password`.
-   4. Edge `invitar-staff-proveedor`: reemplazar temp-password por `generateLink(type:'recovery', redirectTo=<set-password>)` (cierre Ola-4 que el propio comentario propone).
-   5. Config Supabase: agregar la ruta a `additional_redirect_urls` (allowlist) + confirmar Site URL de prod.
-
-**Frentes del día aún NO tocados:**
-- **CHECK-IN** (visitador/proveedor — pendiente de arrancar).
-- **SENTRY** (observabilidad — pendiente de arrancar).
-- **IMPRIMIR** (resultado/orden — pendiente de arrancar).
-
-> Deuda vigente: `schema_migrations` en 047 → **NUNCA `db push`**; aplicar con `-f`; **NUNCA `functions deploy` sin nombre**.
+**DEUDAS QUE MUERDEN:** `schema_migrations` en 047 → NUNCA `db push`, aplicar SIEMPRE con `-f`. NUNCA `functions deploy` sin nombre. Build = `vite build` (sin tsc previo). Deploy = git push a `main` → Vercel (proyecto único, med.ezpayconnect.com). **tsc baseline = 82** (bajó de 88 al arreglar el drift real de `PlanConfiguracion.plan_base_id`; NO subirlo). Convención: los `supabase/fixes/*.sql` se commitean con `git add -f` (la carpeta `fixes/` está gitignoreada a propósito).
 
 ---
 
-## 🔴 CRÍTICO — Flujo de Citas Clínica NO Funciona
+## ✅ CERRADO Y EN PROD (17 jul)
 
-### Problema: Citas aparecen como "Agendada" en vez de "Solicitada" para aprobación
-**Reportado por usuario:** "citas no pasa en el panel de clinica citas para ser aprobada, aparece asignada"
+**Ordenamiento de ramas (post-caída GitHub):** PR #4 `fix/root-redirect-por-rol` (root redirect por rol + `AuthContext` `.single()`→`.maybeSingle()` sin 406) mergeado. Ramas `feat/foto-medico`, `feat/foto-medico-calendario`, `feat/planes-lab-farmacia` creadas, mergeadas y en prod. Sin ramas pendientes.
 
-- Cuando paciente agenda cita SIN médico → debería crear `estado = 'solicitada'`
-- En panel de clínica, la cita debería aparecer como **"Solicitada"** con opción de **asignar médico + confirmar**
-- Actualmente aparece como **"Agendada"** y no permite el flujo de aprobación correcto
+**Foto del médico (frente COMPLETO, en prod):**
+- Backend: bucket público `fotos-medicos` + 4 policies + RPC `guardar_foto_medico` (escribe `medicos.foto_url` Y `perfiles.avatar_url`). `supabase/fixes/foto_medico_01.sql`.
+- Perfil: `/medico/perfil` (`MedicoPerfilPage`) subir/ver foto + ítem en `MedicoSidebar`.
+- Calendario clínica: `listar_medicos_clinica` ahora devuelve `foto_url = COALESCE(medicos.foto_url, perfiles.avatar_url)` (`supabase/fixes/foto_calendario_clinica_01.sql`; fue DROP+CREATE porque cambió el `RETURNS TABLE`, preservando gate `es_staff_calendario_clinica` + GRANTs). Avatares en header de columna y chips móviles con fallback a iniciales.
+- Superficies cara-al-paciente (agendar `buscar_medicos_paciente`, chat `mis_medicos_chat`) YA mostraban la foto de antes — no se tocaron.
 
-**Archivos a revisar:**
-- `src/webapp/components/AgendarCitaModal.tsx` — lógica de `estado` al crear cita
-- `src/clinica/hooks/useClinicaCitas.ts` — `asignarMedico()`, `confirmarCita()`, `rechazarCita()`
-- `src/clinica/pages/ClinicaCitasPage.tsx` — UI de citas, botones de acción por estado
-- `src/medico/hooks/useMedicoCitas.ts` — flujo del médico para confirmar/rechazar
-- Supabase RPC `obtener_citas_clinica` — verificar que retorna citas con estado correcto
-- Supabase RPC `crear_cita` — verificar que el estado se guarda correctamente
+**Planes lab/farmacia (frente COMPLETO, Bloques 1-4, en prod):**
+- **B1 (DB):** capacidades `laboratorio`/`farmacia` en `capacidades_catalogo` + RPC `otorgar_capacidad_empresa(empresa_id,codigo,hasta)` DEFINER (gate super_admin/admin_pais) + BACKFILL (lab 1, farmacia 3, `hasta=NULL` grandfathered). `supabase/fixes/planes_lab_farmacia_01.sql`. Modelo = capacidad (`empresa_capacidades`), NO tabla contratados.
+- **B2 (checkout):** `PlanesLabPage` cablea `navigate('/proveedor/checkout?tipo=plan_laboratorio&referencia_id=<config.id>&monto=<precio>&descripcion=<enc>')`. Nueva página pública `/planes-farmacia` (`PlanesFarmaciaPage`, espejo, `tipo=plan_farmacia`). Confirmado: lab/farmacia reusan `cuentas_proveedor` (ver `LaboratorioPrivateRoute`) → el checkout `/proveedor/checkout` los acepta sin rebote.
+- **B3 (verify):** `PagosProveedoresPage` — al verificar pago `plan_laboratorio`/`plan_farmacia` → `otorgar_capacidad_empresa(empresa_id, 'laboratorio'|'farmacia', hoy + atributos.duracion_dias||30)`. Fail-closed (si la capacidad falla, el pago NO queda verificado, igual patrón que campaña).
+- **B4 (gate):** `LaboratorioLayout`/`FarmaciaLayout` leen `useCapacidades()` (`mis_capacidades()`) → sin capacidad activa muestran "Plan inactivo" (CTA a planes + logout). Es **visibilidad UI**; el gate server-side real (`empresa_tiene_capacidad` en RPCs clave) queda post-piloto. `mis_capacidades()` verificado: `(hasta IS NULL OR hasta > now())` → los 4 grandfathered pasan, nadie existente lockeado.
+- **NOTA periodicidad:** el checkout manda `monto` pero NO mensual/anual; la capacidad se otorga por `atributos.duracion_dias` (default 30), igual que visitador. Si se quiere que un pago anual extienda 1 año, hay que cablear la periodicidad (checkout → pago → verify). Diferido.
 
-**Escenarios a testear:**
-1. Paciente agenda cita SIN médico → `estado = 'solicitada'`
-2. Clínica ve cita "Solicitada" → puede asignar médico → cambia a "Agendada"
-3. Clínica confirma cita "Agendada" → cambia a "Confirmada"
-4. Clínica rechaza cita → cambia a "Cancelada"
-5. Paciente agenda cita CON médico → `estado = 'agendada'` directamente
-6. Notificaciones push llegan en cada cambio de estado
+**Sesiones previas (16-17 jul):** reset/set-password COMPLETO, Sentry vivo + scrubbing, imprimir cubierto, decisiones Frente 2. (Historial en ESTADO.)
 
 ---
 
-## 🔴 CRÍTICO — Vercel Sirve Bundle Viejo (Service Worker Cache)
+## 📋 PENDIENTES (orden sugerido)
 
-### Problema: El navegador carga `index-BdDRygo3.js` en vez del bundle más reciente
+**1. EMAIL DE FACTURAS:** `FacturasPage.tsx:140` `handleSendEmail` es `alert()` SIMULADO (verificado) → cablear al backend de email real (reusar patrón recetas / edge `notificar-email`) para que mande la factura al paciente de verdad.
 
-- Vercel deploya correctamente pero el SW precachea bundles antiguos
-- Los usuarios ven código viejo incluso después de deploy exitoso
-- Causa errores de íconos (`MapPin is not defined`, etc.) porque el bundle viejo no tiene los fixes
+**2. LIMPIEZA DATOS QA** (DB, `-f`, se puede sin GitHub): ~38 filas QA/prueba contaminan reportes del piloto. Recon Codex que enumere filas exactas → bloque reversible. **OJO:** los super_admin/QA que Oscar DEJA: `admin.qa@`, `doctor@prueba.com`, y las cuentas grandfathered `laboratorio.qa@` / `farmacia.qa@` (más las empresas backfilleadas).
 
-**Archivos a revisar:**
-- `src/sw.ts` — Service Worker, `skipWaiting()`, limpieza de caches
-- `vite.config.ts` — Configuración de `vite-plugin-pwa`
-- `src/main.tsx` — Posible listener de mensajes del SW para recarga forzada
+**3. CHICOS / CLEANUP:**
+- `PlanesVisitadorPage.tsx` (la pública, `src/pages/planes/`) tiene el mismo `alert()` muerto que tenía PlanesLab → cablear a `/proveedor/checkout?tipo=plan_visitador` (cierra el hallazgo [D] de la auditoría). Mismo patrón que el fix de lab (referencia_id = config.id).
+- Foto del médico en **Personal de clínica** (hoy icono por rol; la RPC `obtener_personal_clinica` ya joinea `medicos`, faltaría que devuelva `foto_url` + avatar en la fila). Add-on del frente foto.
 
-**Soluciones posibles:**
-1. Desactivar temporalmente el precaching de workbox (modo desarrollo)
-2. Agregar un hash de versión en `index.html` para forzar cache-busting
-3. Implementar recarga automática cuando el SW detecta nueva versión
-4. O: Eliminar PWA temporalmente hasta que el flujo de citas esté estable
-
-**Verificación:**
-- Abrir DevTools → Network → verificar hash del bundle `index-XXXXX.js`
-- Comparar con hash del build local (`npm run build` → `dist/assets/`)
+**4. DIFERIDOS post-piloto:** check-in offline (IndexedDB+sync), imprimir resultado solo-texto (PDF generado), gate SERVER-SIDE de lab/farmacia con `empresa_tiene_capacidad` en RPCs clave, periodicidad anual real en checkout de planes, cosmético (dashboard admin con mocks Math.random, buscador navbar decorativo, ingresos ×250, rutas huérfanas V1, hooks/lib muertos).
 
 ---
 
-## 🟠 ALTO — Íconos de lucide-react Fallan en Producción
+## 🧭 CONTEXTO
 
-### Patrón identificado:
-| Ícono | Local | Producción (Vercel) |
-|-------|-------|---------------------|
-| `Building2` | ✅ | ❌ `not defined` |
-| `Building` | ✅ | ❌ `not defined` |
-| `Home` | ✅ | ❌ `not defined` |
-| `MapPin` | ✅ | ❌ `not defined` (en bundle viejo) |
-
-**Hipótesis:** El tree-shaking de Vite/Rollup elimina íconos que no detecta como usados, o la versión de lucide-react tiene problemas con ciertos íconos en build de producción.
-
-**Investigar:**
-- Probar importar íconos individualmente: `import { MapPin } from 'lucide-react/dist/esm/icons/map-pin'`
-- O usar `import MapPin from 'lucide-react/dist/esm/icons/map-pin'`
-- O considerar cambiar a `@heroicons/react` o `react-icons` si el problema persiste
-- Verificar configuración de `treeshake` en `vite.config.ts`
-
----
-
-## 🟡 MEDIO — Notificaciones Push No Testeadas en Producción
-
-### Estado actual:
-- ✅ Tabla `push_subscriptions` creada con índice único en `endpoint`
-- ✅ Edge Function `enviar-push` implementada con `webpush-webcrypto`
-- ✅ VAPID keys configuradas en Supabase secrets
-- ✅ Hook `usePushNotifications.ts` con auto-suscripción
-- ✅ Service Worker con handler de push events
-- ❌ **NO TESTEADO** end-to-end en producción
-
-**Tareas pendientes:**
-1. Verificar que `enviar-push` edge function se deployó correctamente (`supabase functions list`)
-2. Verificar VAPID keys en Supabase (`supabase secrets list`)
-3. Testear: paciente agenda cita → llega push
-4. Testear: clínica confirma cita → paciente recibe push
-5. Testear: clínica cancela cita → paciente recibe push
-6. Verificar que la suscripción se guarda correctamente en `push_subscriptions`
-
-**Debug:**
-```javascript
-// En DevTools Console del paciente
-navigator.serviceWorker.ready.then(reg => {
-  reg.pushManager.getSubscription().then(sub => {
-    console.log('Subscription:', sub);
-  });
-});
-```
-
----
-
-## 🟡 MEDIO — Estados de Citas Inconsistentes en TypeScript vs PostgreSQL
-
-### Ya parcialmente corregido pero verificar:
-- `src/types/index.ts` — tipo `Cita` ahora tiene estados correctos
-- `src/types/types-con-factura.ts` — corregido
-- `src/types/types-index.ts` — corregido
-- `src/webapp/types/webapp.types.ts` — corregido
-- `src/pages/CitasPage.tsx` — corregido `'pendiente'` → `'agendada'`
-
-**Verificar que NO quede `'pendiente'` en ningún lugar para citas:**
-```bash
-grep -rn "estado.*pendiente\|'pendiente'" src/ --include="*.ts" --include="*.tsx" | grep -v "notif\|WhatsApp\|PlanStatus\|admin-ezpay\|Factura\|Receta\|Examen\|Proveedor\|Visita\|Pago"
-```
-
-**Verificar consistencia con ENUM PostgreSQL:**
-```sql
-SELECT enumlabel FROM pg_enum WHERE enumtypid = 'cita_estado'::regtype;
--- Esperado: agendada, confirmada, en_curso, completada, cancelada, no_show, solicitada
-```
-
----
-
-## 🟢 BAJO — Testing End-to-End Completo
-
-### Documento ya creado: `TESTING_CITAS.md`
-
-**Flujos a testear manualmente antes de iniciar operaciones:**
-1. ✅ Paciente agenda cita CON doctor → `estado = 'agendada'`
-2. ❓ Paciente agenda cita SIN doctor → `estado = 'solicitada'` (VERIFICAR)
-3. ❓ Clínica ve cita "Solicitada" y asigna médico (VERIFICAR)
-4. ❓ Clínica confirma cita → notificación push al paciente (VERIFICAR)
-5. ❓ Clínica cancela cita → notificación push al paciente (VERIFICAR)
-6. ✅ Multi-clínica: selector funciona
-7. ❓ Service Worker actualiza correctamente (VERIFICAR)
-8. ❓ Push notifications funcionan en producción (VERIFICAR)
-
----
-
-## 🔧 TAREAS TÉCNICAS ADICIONALES
-
-### 1. Verificar deploy de Edge Functions
-```bash
-supabase functions list
-# Deben estar las 30 funciones incluyendo:
-# - enviar-push
-# - enviar-notificacion
-# - crear_cita (RPC)
-# - obtener_citas_clinica (RPC)
-# - obtener_clinica_usuario (RPC)
-```
-
-### 2. Verificar migraciones aplicadas en producción
-```sql
--- En Supabase SQL Editor
-SELECT * FROM schema_migrations ORDER BY version DESC LIMIT 10;
--- Verificar que 039_fix_clinica_id_uuid.sql está aplicada
-```
-
-### 3. Verificar datos de prueba
-- ¿Existen médicos vinculados a clínicas en `medico_clinicas`?
-- ¿Los médicos de `perfiles` están sincronizados con `medicos`?
-- ¿El usuario `doctor@prueba.com` tiene acceso a clínicas en `obtener_clinica_usuario`?
-
-### 4. Limpieza de builds fallidos en Vercel
-- Cancelar builds en cola si los hay
-- Verificar que el deploy más reciente es el que está activo
-
----
-
-## 📊 ESTADO ACTUAL DEL PROYECTO
-
-### ✅ Funciona:
-- Paciente puede agendar cita desde portal webapp
-- Clínica puede cambiar entre múltiples clínicas
-- Multi-clínica: selector de clínica funciona
-- Edge Functions deployadas (30 funciones)
-- Schema de BD corregido (UUID para clinica_id)
-- Auto-suscripción push notifications implementada
-
-### ❌ No funciona / Pendiente:
-- Flujo de citas clínica (asignar médico + confirmar)
-- Service Worker cachea bundles viejos
-- Íconos de lucide-react en bundle de producción
-- Notificaciones push no testeadas end-to-end
-- Build de Vercel puede servir código stale
-
----
-
-## 🎯 PRIORIDADES PARA MAÑANA
-
-1. **🔴 CRÍTICO:** Arreglar flujo de citas en panel de clínica (asignar médico + confirmar)
-2. **🔴 CRÍTICO:** Resolver caching del Service Worker o desactivar PWA temporalmente
-3. **🟠 ALTO:** Testear notificaciones push end-to-end
-4. **🟡 MEDIO:** Resolver problema de íconos de lucide-react en producción
-5. **🟢 BAJO:** Testing manual completo del flujo de citas
-
----
-
-## 📝 NOTAS TÉCNICAS
-
-- **Stack:** React 19 + TypeScript + Vite 6 + Tailwind CSS v4 + shadcn/ui + lucide-react 0.507.0
-- **Backend:** Supabase Auth + PostgreSQL + Edge Functions (Deno)
-- **Deploy:** Vercel Pro (`https://ezpayconnect.vercel.app`)
-- **PWA:** vite-plugin-pwa con custom `src/sw.ts`
-- **Push:** `webpush-webcrypto` con VAPID keys
-- **Secrets:** `SB_URL`, `SB_SERVICE_ROLE_KEY`, `VAPID_PRIVATE_KEY`, `VAPID_PUBLIC_KEY`
-
-- **Build local exitoso:** Sí (commit `95e445e`)
-- **Build en Vercel:** Verificar estado en dashboard
-- **Bundle hash local:** `index-MZQ8pohj.js`
-- **Bundle hash en producción:** `index-BdDRygo3.js` (¡DIFERENTE!)
+Oscar viaja a Guatemala el sábado; sigue trabajando por Escritorio Remoto (Chrome Remote Desktop "PC Casa", 24/7, sin suspensión). Todo el código en GitHub (`github.com/ezpayusa/ezpayconnect`). Auditoría pre-piloto (fable5): veredicto LISTO condicionado — 0 RPCs rotos, 0 catch silenciosos, 8/8 módulos con backend real. Working tree con untracked de Oscar que se dejan **floating a propósito**: manuales PDF + `scripts/*.mjs` (generadores de manuales, prueba en Codex), y los 3 de siempre (`AUDITORIA-*`, `CODEX_*`, `_recon_*`).

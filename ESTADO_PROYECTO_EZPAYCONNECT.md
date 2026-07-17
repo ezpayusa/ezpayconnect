@@ -17,6 +17,26 @@ EzPayConnect es una **plataforma SaaS médica multitenant por país** con 3 port
 
 ---
 
+## 2026-07-17 — Ramas ordenadas + foto-médico + foto-calendario + planes lab/farmacia (TODO en prod)
+- O1 flag: 0. GitHub recuperado de la caída del 16-17 jul (All Systems Operational).
+- RAMAS: PR #4 fix/root-redirect-por-rol (root redirect por rol + AuthContext maybeSingle) mergeado.
+  feat/foto-medico, feat/foto-medico-calendario, feat/planes-lab-farmacia creadas → mergeadas a main. Sin ramas pendientes.
+  Convención confirmada: supabase/fixes/*.sql se commitean con `git add -f` (carpeta fixes/ gitignoreada a propósito).
+- FOTO-MÉDICO (completo): backend (bucket fotos-medicos + 4 policies + RPC guardar_foto_medico escribe medicos.foto_url
+  Y perfiles.avatar_url) + /medico/perfil (MedicoPerfilPage) + calendario clínica (listar_medicos_clinica ahora
+  devuelve foto_url=COALESCE(medicos.foto_url,perfiles.avatar_url); DROP+CREATE por cambio de RETURNS TABLE).
+  Cara-al-paciente (agendar/chat) ya la mostraba, sin tocar. Archivos: foto_medico_01.sql, foto_calendario_clinica_01.sql.
+- PLANES LAB/FARMACIA (completo, Bloques 1-4): B1 DB (capacidades + otorgar_capacidad_empresa + backfill grandfathered
+  lab 1/farmacia 3 hasta=NULL, verificado) → B2 checkout (PlanesLabPage cablea /proveedor/checkout tipo=plan_laboratorio;
+  nueva PlanesFarmaciaPage pública /planes-farmacia tipo=plan_farmacia; lab/farmacia reusan cuentas_proveedor) →
+  B3 verify (PagosProveedoresPage: al verificar plan_laboratorio/plan_farmacia → otorgar_capacidad_empresa con
+  hasta=hoy+duracion_dias; fail-closed) → B4 gate (LaboratorioLayout/FarmaciaLayout leen mis_capacidades → "Plan inactivo"
+  sin capacidad; UI-only, gate server-side post-piloto). mis_capacidades: (hasta IS NULL OR hasta>now()) confirmado.
+  Periodicidad anual real = diferida (checkout no manda mensual/anual; usa duracion_dias como visitador).
+- tsc baseline BAJÓ 88→82 (fix PlanConfiguracion.plan_base_id, drift real que contaba 7 errores).
+- Pendientes vivos: (1) email facturas FacturasPage:140 alert simulado; (2) limpieza ~38 filas QA; (3) chicos:
+  PlanesVisitadorPage pública alert gemelo [D] + foto en Personal de clínica; (4) diferidos post-piloto.
+
 ## 2026-07-16 — Circuito laboratorio: storage cerrado + gate liberación al paciente
 - O1 flag: 0 (15-16 jul).
 - BUG STORAGE (lab no podía subir archivo): CERRADO en prod. Causa = read-back de storage.objects: la policy

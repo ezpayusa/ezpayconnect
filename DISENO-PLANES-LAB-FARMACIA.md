@@ -1,7 +1,7 @@
 # 🧪💊 DISEÑO — Planes reales de Laboratorio y Farmacia
 
 > Fecha: 2026-07-17
-> Estado: **Bloque 1 (backend) APLICADO en prod.** Bloques 2/3/4 (frontend) pendientes (esperan GitHub).
+> Estado: **COMPLETO en prod (Bloques 1-4).** Backend + checkout (lab `PlanesLabPage` / farmacia `PlanesFarmaciaPage` nueva) + verify admin→`otorgar_capacidad_empresa` + gate de visibilidad en `LaboratorioLayout`/`FarmaciaLayout`. Mergeado a main el 17 jul.
 > Contexto de seguridad: `schema_migrations` en 047 → NUNCA `db push`, aplicar con `-f`; NUNCA `functions deploy`.
 
 ---
@@ -58,7 +58,8 @@ Se usa `empresa_capacidades`, **no** una tabla dedicada como `planes_visitador_c
 ## Orden de ejecución (el orden IMPORTA)
 
 - **Bloque 1 (DB):** ✅ HECHO — catálogo + RPC + backfill. El backfill dejó a los existentes cubiertos **antes** de que exista ningún gate → cero lockout.
-- **Bloque 2/3 (checkout + admin verify):** frontend, esperan GitHub.
-- **Bloque 4 (gate):** frontend, **último**, después de que el backfill ya esté (ya está).
+- **Bloque 2 (checkout):** ✅ HECHO — `PlanesLabPage` cablea `/proveedor/checkout?tipo=plan_laboratorio`; nueva `PlanesFarmaciaPage` pública `/planes-farmacia` (`tipo=plan_farmacia`). `referencia_id = config.id` (planes_configuracion).
+- **Bloque 3 (admin verify):** ✅ HECHO — `PagosProveedoresPage` verifica `plan_laboratorio`/`plan_farmacia` → `otorgar_capacidad_empresa(empresa_id, codigo, hoy + atributos.duracion_dias||30)`, fail-closed.
+- **Bloque 4 (gate):** ✅ HECHO — `LaboratorioLayout`/`FarmaciaLayout` leen `mis_capacidades()` → "Plan inactivo" sin capacidad (UI-only). Backfill ya cubría a los existentes → cero lockout (verificado).
 
 **Regla de oro:** backfill (Bloque 1, ya aplicado) SIEMPRE antes del gate (Bloque 4).
