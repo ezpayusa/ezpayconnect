@@ -154,6 +154,7 @@ const PlanesExcepcionesPage = lazy(() => import('@/pages/planes/PlanesExcepcione
 const PlanesClinicaPage = lazy(() => import('@/pages/planes/PlanesClinicaPage'))
 const PlanesClinicaConfigPage = lazy(() => import('@/pages/planes/PlanesClinicaConfigPage'))
 const PlanesLabPage = lazy(() => import('@/pages/planes/PlanesLabPage'))
+const PlanesFarmaciaPage = lazy(() => import('@/pages/planes/PlanesFarmaciaPage'))
 const PlanesLabConfigPage = lazy(() => import('@/pages/planes/PlanesLabConfigPage'))
 const PlanesVisitadorPage = lazy(() => import('@/pages/planes/PlanesVisitadorPage'))
 const PlanesVisitadorConfigPage = lazy(() => import('@/pages/planes/PlanesVisitadorConfigPage'))
@@ -293,6 +294,7 @@ function App() {
         <Route path="/planes" element={<PlanesPage />} />
         <Route path="/planes-clinica" element={<PlanesClinicaPage />} />
         <Route path="/planes-lab" element={<PlanesLabPage />} />
+        <Route path="/planes-farmacia" element={<PlanesFarmaciaPage />} />
         <Route path="/planes-visitador" element={<PlanesVisitadorPage />} />
         <Route path="/planes-todos" element={<Navigate to="/admin-ezpay/planes-todos" replace />} />
 
