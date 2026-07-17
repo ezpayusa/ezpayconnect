@@ -1,6 +1,7 @@
 import { lazy, Suspense, useEffect } from 'react'
 import { BrowserRouter, Routes, Route, Navigate, useNavigate, useLocation } from 'react-router-dom'
 import { useAuth } from '@/hooks/useAuth'
+import { rutaHomePorRol } from '@/lib/rutas'
 import { useAdminAuth } from '@/hooks/admin/useAdminAuth'
 
 // === LAYOUTS / GUARDS (eager: shells compartidos y lógica de routing) ===
@@ -197,6 +198,13 @@ function PrivateLayout({ children }: { children: React.ReactNode }) {
   return <div className="flex min-h-screen bg-gray-50"><Sidebar /><main className="flex-1 ml-0 overflow-auto pt-14 md:pt-0">{children}</main></div>
 }
 
+function RootRedirect() {
+  const { user, perfil, loading } = useAuth()
+  if (loading) return <Spinner />
+  if (!user) return <Navigate to="/login" replace />
+  return <Navigate to={rutaHomePorRol(perfil)} replace />
+}
+
 function AdminRoute({ children }: { children: React.ReactNode }) {
   const { isAdmin, isSuperAdmin, isAdminPais, adminUser, loading } = useAdminAuth()
   const navigate = useNavigate()
@@ -248,7 +256,7 @@ function App() {
         <Route path="/login" element={<LoginPage />} />
         <Route path="/set-password" element={<SetPasswordPage />} />
         <Route path="/confirmar-receta" element={<ConfirmarRecetaPage />} />
-        <Route path="/" element={<Navigate to="/dashboard" replace />} />
+        <Route path="/" element={<RootRedirect />} />
         <Route path="/dashboard" element={<PrivateLayout><DashboardPage /></PrivateLayout>} />
         <Route path="/pacientes" element={<PrivateLayout><PacientesPage /></PrivateLayout>} />
         <Route path="/pacientes/:id/detalle" element={<PrivateLayout><PacienteDetallePage /></PrivateLayout>} />
