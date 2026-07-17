@@ -1,6 +1,7 @@
 import { Link, useLocation, useNavigate, Outlet } from 'react-router-dom'
 import { useProveedorAuth } from '@/proveedor/hooks/useProveedorAuth'
 import { useFarmaciaPermisos } from '@/farmacia/hooks/useFarmaciaPermisos'
+import { useCapacidades } from '@/proveedor/hooks/useCapacidades'
 import { useNotificaciones } from '@/hooks/useNotificaciones'
 import { Button } from '@/components/ui/button'
 import { LayoutDashboard, Pill, Package, Users, CreditCard, Bell, LogOut, Menu, X, Building2, ClipboardList, BarChart3, Truck, Receipt } from 'lucide-react'
@@ -28,6 +29,7 @@ const NAV_ITEMS: NavItem[] = [
 export default function FarmaciaLayout() {
   const { empresa, logout, loading } = useProveedorAuth()
   const { tienePermiso, loading: permLoading } = useFarmaciaPermisos()
+  const { tieneCapacidad, loading: capsLoading } = useCapacidades()
   const { noLeidas, listarNotificaciones } = useNotificaciones()
   const location = useLocation()
   const navigate = useNavigate()
@@ -39,7 +41,7 @@ export default function FarmaciaLayout() {
     return () => clearInterval(interval)
   }, [listarNotificaciones])
 
-  if (loading || permLoading) {
+  if (loading || permLoading || capsLoading) {
     return (
       <div className="min-h-screen flex items-center justify-center bg-gray-50">
         <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-[#B45309]" />
@@ -50,6 +52,30 @@ export default function FarmaciaLayout() {
   const handleLogout = async () => {
     await logout()
     navigate('/farmacia/login')
+  }
+
+  if (!tieneCapacidad('farmacia')) {
+    return (
+      <div className="min-h-screen flex items-center justify-center bg-gray-50 p-4">
+        <div className="max-w-md w-full bg-white rounded-xl border border-slate-200 p-8 text-center space-y-4">
+          <div className="w-14 h-14 rounded-full bg-amber-100 flex items-center justify-center mx-auto">
+            <Pill className="h-7 w-7 text-amber-600" />
+          </div>
+          <h1 className="text-xl font-bold text-slate-800">Plan de farmacia inactivo</h1>
+          <p className="text-sm text-slate-500">
+            Tu farmacia no tiene un plan activo. Adquirí un plan o contactá al administrador para acceder al portal.
+          </p>
+          <div className="flex flex-col gap-2 pt-2">
+            <Link to="/planes-farmacia">
+              <Button className="w-full bg-[#B45309] hover:bg-[#92400e] text-white">Ver planes de farmacia</Button>
+            </Link>
+            <Button variant="ghost" className="w-full" onClick={handleLogout}>
+              <LogOut className="h-4 w-4 mr-2" /> Cerrar sesión
+            </Button>
+          </div>
+        </div>
+      </div>
+    )
   }
 
   const items = NAV_ITEMS.filter((i) =>

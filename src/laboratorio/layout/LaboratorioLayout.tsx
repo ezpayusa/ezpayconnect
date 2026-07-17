@@ -1,6 +1,7 @@
 import { Link, useLocation, useNavigate, Outlet } from 'react-router-dom'
 import { useProveedorAuth } from '@/proveedor/hooks/useProveedorAuth'
 import { useLaboratorioPermisos } from '@/laboratorio/hooks/useLaboratorioPermisos'
+import { useCapacidades } from '@/proveedor/hooks/useCapacidades'
 import { ProveedorNotificacionesProvider, useProveedorNotificaciones } from '@/proveedor/context/ProveedorNotificacionesContext'
 import { Button } from '@/components/ui/button'
 import { LayoutDashboard, FlaskConical, ClipboardList, UserPlus, Building2, Bell, LogOut, Menu, X, ListChecks, Users } from 'lucide-react'
@@ -33,6 +34,7 @@ export default function LaboratorioLayout() {
 function LaboratorioLayoutContent() {
   const { empresa, logout, loading } = useProveedorAuth()
   const { tienePermiso } = useLaboratorioPermisos()
+  const { tieneCapacidad, loading: capsLoading } = useCapacidades()
   const { noLeidas } = useProveedorNotificaciones()
   const location = useLocation()
   const navigate = useNavigate()
@@ -41,7 +43,7 @@ function LaboratorioLayoutContent() {
   // Los ítems sin `accion` son visibles para todos; los que la declaran requieren el permiso.
   const items = NAV_ITEMS.filter((i) => !i.accion || tienePermiso(i.accion))
 
-  if (loading) {
+  if (loading || capsLoading) {
     return (
       <div className="min-h-screen flex items-center justify-center bg-gray-50">
         <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-[#1E5C8E]" />
@@ -52,6 +54,30 @@ function LaboratorioLayoutContent() {
   const handleLogout = async () => {
     await logout()
     navigate('/laboratorio/login')
+  }
+
+  if (!tieneCapacidad('laboratorio')) {
+    return (
+      <div className="min-h-screen flex items-center justify-center bg-gray-50 p-4">
+        <div className="max-w-md w-full bg-white rounded-xl border border-slate-200 p-8 text-center space-y-4">
+          <div className="w-14 h-14 rounded-full bg-amber-100 flex items-center justify-center mx-auto">
+            <FlaskConical className="h-7 w-7 text-amber-600" />
+          </div>
+          <h1 className="text-xl font-bold text-slate-800">Plan de laboratorio inactivo</h1>
+          <p className="text-sm text-slate-500">
+            Tu laboratorio no tiene un plan activo. Adquirí un plan o contactá al administrador para acceder al portal.
+          </p>
+          <div className="flex flex-col gap-2 pt-2">
+            <Link to="/planes-lab">
+              <Button className="w-full bg-[#0E7C6B] hover:bg-[#0c6a5b] text-white">Ver planes de laboratorio</Button>
+            </Link>
+            <Button variant="ghost" className="w-full" onClick={handleLogout}>
+              <LogOut className="h-4 w-4 mr-2" /> Cerrar sesión
+            </Button>
+          </div>
+        </div>
+      </div>
+    )
   }
 
   const renderNav = (onClick?: () => void) =>
