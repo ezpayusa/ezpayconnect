@@ -1,4 +1,6 @@
 import { useState } from 'react';
+import { useNavigate } from 'react-router-dom';
+import { toast } from 'sonner';
 import { MapPin, Check, ArrowRight, Navigation, Route, Users, BarChart3, Truck } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader } from '@/components/ui/card';
@@ -15,6 +17,7 @@ export default function PlanesVisitadorPage() {
   const { paisId } = usePaisFiltro();
   const { planesBase, planesConfig, paises, loading } = usePlanes({ pais_id: paisId || undefined });
   const { user } = useAuth();
+  const navigate = useNavigate();
   const [esAnual, setEsAnual] = useState(false);
   const [paisSeleccionado, setPaisSeleccionado] = useState(paisId || 'GT');
   const [planCheckout, setPlanCheckout] = useState<any>(null);
@@ -44,6 +47,7 @@ export default function PlanesVisitadorPage() {
 
     setPlanCheckout({
       ...plan,
+      config_id: config?.id,
       precio_local: precio,
       precio_anual: config?.precio_anual || plan.precio_base * 12 * 0.8,
       moneda: moneda,
@@ -242,7 +246,12 @@ export default function PlanesVisitadorPage() {
                 <Button 
                   className="flex-1 bg-orange-600 hover:bg-orange-700"
                   onClick={() => {
-                    alert('Redirigiendo a checkout... (integrar con pasarela de pago)');
+                    if (!planCheckout.config_id) {
+                      toast.error('Este plan no está configurado para el país seleccionado.');
+                      return;
+                    }
+                    const monto = esAnual ? planCheckout.precio_anual : planCheckout.precio_local;
+                    navigate(`/proveedor/checkout?tipo=plan_visitador&referencia_id=${planCheckout.config_id}&monto=${monto}&descripcion=${encodeURIComponent(planCheckout.nombre)}`);
                     setPlanCheckout(null);
                   }}
                 >
