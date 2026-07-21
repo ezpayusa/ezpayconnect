@@ -166,13 +166,8 @@ export default function RecetaModal({ open, onOpenChange, pacienteIdPreseleccion
     setBusquedaProveedor('')
   }
 
-  // 3.3 auto-pick: si la búsqueda de farmacia devuelve UNA sola sucursal ruteable, seleccionarla sola.
-  useEffect(() => {
-    if (!showFarmaciaModal || loadingBusqueda || itemIdxBuscando === null) return
-    const rutables = resultadosBusqueda.filter((r: any) => r.farmacia && (r.farmacia.tipo === 'farmacia' || r.farmacia.tipo == null))
-    if (rutables.length === 1) seleccionarProveedor(rutables[0])
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [resultadosBusqueda, showFarmaciaModal, loadingBusqueda, itemIdxBuscando])
+  // (Auto-pick 3.3 removido: el modal SIEMPRE queda abierto mostrando la lista, aunque haya una sola
+  // farmacia, para que el médico vea precio + dirección y elija. Antes auto-seleccionaba y cerraba.)
 
   const renderResultadosBusqueda = (tipoFiltro: 'farmacia' | 'laboratorio') => {
     const filtrados = resultadosBusqueda.filter((r: any) => {
@@ -529,6 +524,12 @@ export default function RecetaModal({ open, onOpenChange, pacienteIdPreseleccion
               Medicamento: <span className="font-medium text-[#1a2a3a]">{items[itemIdxBuscando ?? 0]?.nombre_medicamento}</span>
             </p>
             {renderResultadosBusqueda('farmacia')}
+            {/* Cerrar sin asignar: el ítem queda con farmacia_id null; el paciente elige la farmacia después. */}
+            <div className="flex justify-end border-t pt-3">
+              <Button type="button" variant="outline" className="w-full" onClick={() => setShowFarmaciaModal(false)}>
+                Cerrar sin asignar
+              </Button>
+            </div>
           </div>
         </DialogContent>
       </Dialog>
