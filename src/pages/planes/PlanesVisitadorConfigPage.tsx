@@ -365,6 +365,8 @@ console.log('configsVisitador.length:', configsVisitador.length);
                   <TableHead>Periodicidad</TableHead>
                   <TableHead>Límite Médicos</TableHead>
                   <TableHead>Límite Pacientes</TableHead>
+                  <TableHead>Vigencia</TableHead>
+                  <TableHead>Visitas</TableHead>
                   <TableHead>Estado</TableHead>
                   <TableHead className="text-right">Acciones</TableHead>
                 </TableRow>
@@ -379,6 +381,8 @@ console.log('configsVisitador.length:', configsVisitador.length);
                     <TableCell className="capitalize">{plan.periodicidad}</TableCell>
                     <TableCell>{plan.limite_medicos ?? 'Ilimitado'}</TableCell>
                     <TableCell>{plan.limite_pacientes ?? 'Ilimitado'}</TableCell>
+                    <TableCell>{plan.atributos?.duracion_dias ? `${plan.atributos.duracion_dias} días` : '—'}</TableCell>
+                    <TableCell>{plan.atributos?.visitas_incluidas ?? 'Ilimitado'}</TableCell>
                     <TableCell>
                       <Badge className={plan.activo ? 'bg-green-100 text-green-700' : 'bg-gray-100 text-gray-700'}>
                         {plan.activo ? 'Activo' : 'Inactivo'}
