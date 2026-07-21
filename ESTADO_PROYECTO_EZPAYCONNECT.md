@@ -17,6 +17,17 @@ EzPayConnect es una **plataforma SaaS médica multitenant por país** con 3 port
 
 ---
 
+## 2026-07-21 (tarde) — Fix RecetaModal + drift expediente_notas + diagnostico consulta/IA
+- O1 flag: 0. En prod:
+  - RecetaModal (consulta): quitado el auto-pick que auto-seleccionaba la unica farmacia con stock y cerraba el modal (riesgo: asignar farmacia fuera de jurisdiccion -> problemas de entrega). Ahora el modal SIEMPRE muestra la lista (precio asc + sucursales con direccion) + boton "Cerrar sin asignar"; la receta se guarda sin farmacia y el paciente elige despues. Validacion de handleSubmit NO exige farmacia_id.
+  - 4d400ce fix(db): versionado el DEFAULT '' de expediente_notas.nota (drift no versionado; mig 001 lo creo NOT NULL sin default, prod tiene DEFAULT ''::text). supabase/fixes/expediente_notas_nota_default_01.sql (aplicado -f no-op, git add -f).
+- DIAGNOSTICO consulta/expediente + IA (recon Codex):
+  - GUARDAR consulta -> expediente_notas (SOAP: motivo/subjetivo/objetivo/analisis/plan/diagnostico; INSERT primera vez por cita, UPDATE despues; historial por paciente). Vitales -> signos_vitales (append-only, IMC por trigger trg_calcular_imc_expediente). Recetas -> recetas+receta_items. Examenes -> ordenes_examen+examenes.
+  - IA (edge asistente-ia + RPC contexto_ia_paciente mig 174, con gate_accion_phi + auditoria en auditoria_ia): SI accede a info guardada, curada: ficha paciente, 5 vitales, 5 consultas (SOLO motivo/diagnostico/plan), 5 recetas activas, 5 examenes.
+  - 3 HALLAZGOS: #1 la IA lee columna `diagnostico` (casi vacia) y NO ve el `analisis` que el medico escribe (la pestaña Analisis guarda en columna analisis; la RPC lee diagnostico). Tampoco ve subjetivo/objetivo historico. #2 (CERRADO) drift nota. #3 fragmentacion: recetas pierden cita_id (los 2 caminos de useRecetas descartan el cita_id que manda RecetaModal), examenes/vitales no setean consulta_id.
+- EN CURSO: #1 = expandir la RPC contexto_ia_paciente para que el contexto historico de la IA incluya analisis + subjetivo + objetivo (SOAP historico mas completo, decision de Oscar). Opcion A backend-only (.sql versionado que reemplaza la funcion). Ojo PHI/tokens. Pendiente: recon del body completo de la funcion + escribir el .sql.
+- PENDIENTE: #3 (linkage cita_id en recetas + consulta_id en examenes/vitales).
+
 ## 2026-07-20/21 — Frente planes-visitador cerrado + diseño enrolamiento visitador→médico
 - O1 flag: 0. 3 commits en prod:
   - 65d0d80: checkout real en PlanesVisitadorPage (cae ultimo alert() falso, cierra [D]).

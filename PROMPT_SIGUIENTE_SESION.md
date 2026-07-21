@@ -16,6 +16,8 @@
 - **4d56c9d** columnas Vigencia/Visitas en la tabla de planes visitador.
 - **Diagnóstico:** la "vigencia de 1 año" y la "notificación faltante" NO eran bugs. Vigencia real = 30 días (default por `atributos={}`); notificación = solo polling de 60s (se creó bien). Único gap = dato: "Plan Plus" con `atributos={}`.
 - **limite_medicos: CONFIRMADO INERTE** para visitador (la mig 116 borró el `trg_limite_visitas` de la 061). Campo muerto en el config, candidato a limpiar.
+- **RecetaModal (consulta):** el modal de farmacias ahora SIEMPRE muestra la lista (quitado el auto-pick que asignaba sola la unica farmacia) + boton "Cerrar sin asignar". Evita asignar farmacia fuera de jurisdiccion.
+- **4d400ce** fix(db): versionado el `DEFAULT ''` de `expediente_notas.nota` (drift: mig 001 lo tenia NOT NULL sin default, prod tiene default). `supabase/fixes/expediente_notas_nota_default_01.sql`.
 
 **PENDIENTE DE DATOS (no código):** rellenar `atributos` de los planes visitador viejos en `{}` (Plan Oro, Plata, Plus) desde la UI (Editar→días/visitas→Guardar) o seed `-f`. El contrato de prueba `2db5f85a` (bolsa NULL) no se corrige solo.
 
@@ -25,6 +27,11 @@ Objetivo: visitador invita/registra un médico en su clínica → el médico nac
 **80% ya construido y VIVO en prod** (migs 193-201): `lab_enrolador_id`, RPC `enrolar_medico`, capacidad booleana `'enrolamiento'`, `prioridad_activa`, y el gate `trg_gate_head_start_lab` (mig 196) que YA enforcea el head-start. Falta el "combustible" (nada setea `lab_enrolador_id` desde UI) + el form del visitador.
 Plan (backend primero): **B1 DB** (-f, aditivo): `empresa_enroladora_id` en `invitaciones_medico` + `registrar_medico_desde_invitacion` setea `lab_enrolador_id` cuando la invitación traiga empresa (backward-compatible). **B2 Edge**: rama visitador con capacidad `'enrolamiento'` en `crear-invitacion-medico` (deploy CON NOMBRE). **B3 Frontend**: form del visitador (superficie a decidir) + handler de `PV002` en agendar.
 Decisiones de Oscar: (1) superficie del form (PWA visitador `/visitador/*` es la natural, ¿o portal/ambas?); (2) admin EzPay activa la capacidad `'enrolamiento'` por empresa (pantalla `CapacidadesTiersPais`); (3) defaults del head-start (5d/8v/18m) o ajustar.
+
+## 🔬 FRENTE CONSULTA/IA (recon hecho, #1 en curso)
+Guardar consulta -> `expediente_notas` (SOAP). La IA (asistente-ia + RPC `contexto_ia_paciente` mig 174) SI arma contexto del expediente (curado: ficha, 5 vitales, 5 consultas motivo/diagnostico/plan, 5 recetas, 5 examenes), con gate PHI + `auditoria_ia`.
+- **#1 (EN CURSO):** la IA lee la columna `diagnostico` (casi vacia) y NO ve el `analisis` del medico. Fix decidido: expandir `contexto_ia_paciente` para incluir **analisis + subjetivo + objetivo** historicos (SOAP mas completo). Opcion A backend-only: `.sql` que reemplaza la funcion. Falta recon del body completo + escribir el `.sql`. Ojo PHI/tokens.
+- **#3 (PENDIENTE):** fragmentacion del expediente — recetas pierden `cita_id` (useRecetas lo descarta), examenes/vitales no setean `consulta_id`.
 
 ## 📋 OTROS PENDIENTES DEL PILOTO
 0. **INFRA (Oscar, dashboard):** Supabase FREE→Pro + compute Small/Medium + verificar cap de Realtime. Único bloqueante de infra, 2-3 días antes del piloto.
