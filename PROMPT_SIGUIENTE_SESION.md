@@ -28,9 +28,9 @@ Objetivo: visitador invita/registra un médico en su clínica → el médico nac
 Plan (backend primero): **B1 DB** (-f, aditivo): `empresa_enroladora_id` en `invitaciones_medico` + `registrar_medico_desde_invitacion` setea `lab_enrolador_id` cuando la invitación traiga empresa (backward-compatible). **B2 Edge**: rama visitador con capacidad `'enrolamiento'` en `crear-invitacion-medico` (deploy CON NOMBRE). **B3 Frontend**: form del visitador (superficie a decidir) + handler de `PV002` en agendar.
 Decisiones de Oscar: (1) superficie del form (PWA visitador `/visitador/*` es la natural, ¿o portal/ambas?); (2) admin EzPay activa la capacidad `'enrolamiento'` por empresa (pantalla `CapacidadesTiersPais`); (3) defaults del head-start (5d/8v/18m) o ajustar.
 
-## 🔬 FRENTE CONSULTA/IA (recon hecho, #1 en curso)
+## 🔬 FRENTE CONSULTA/IA (recon hecho, #1 cerrado, #3 pendiente)
 Guardar consulta -> `expediente_notas` (SOAP). La IA (asistente-ia + RPC `contexto_ia_paciente` mig 174) SI arma contexto del expediente (curado: ficha, 5 vitales, 5 consultas motivo/diagnostico/plan, 5 recetas, 5 examenes), con gate PHI + `auditoria_ia`.
-- **#1 (EN CURSO):** la IA lee la columna `diagnostico` (casi vacia) y NO ve el `analisis` del medico. Fix decidido: expandir `contexto_ia_paciente` para incluir **analisis + subjetivo + objetivo** historicos (SOAP mas completo). Opcion A backend-only: `.sql` que reemplaza la funcion. Falta recon del body completo + escribir el `.sql`. Ojo PHI/tokens.
+- **#1 (CERRADO):** la IA ya ve el SOAP historico. `contexto_ia_paciente` devuelve subjetivo/objetivo/analisis (trunc 500) — `supabase/fixes/contexto_ia_paciente_soap_hist_01.sql` (b2d6e99); edge `asistente-ia` renderiza S/O/A + seccion "CONSULTAS PREVIAS (SOAP)" (a7f63aa). Smoke en prod (consulta con historial).
 - **#3 (PENDIENTE):** fragmentacion del expediente — recetas pierden `cita_id` (useRecetas lo descarta), examenes/vitales no setean `consulta_id`.
 
 ## 📋 OTROS PENDIENTES DEL PILOTO
