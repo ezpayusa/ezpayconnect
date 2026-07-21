@@ -170,6 +170,7 @@ export interface CrearPlanBaseDTO {
   api_acceso?: boolean;
   popular?: boolean;
   orden?: number;
+  atributos?: Record<string, any>;
 }
 
 export interface CrearPlanConfigDTO {

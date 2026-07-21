@@ -149,9 +149,11 @@ export default function PlanesVisitadorConfigPage() {
     periodicidad: 'mensual',
     limite_medicos: '',
     limite_pacientes: '',
+    duracion_dias: '30',
+    visitas_incluidas: '',
     caracteristicas: '',
   });
-  
+
   const [nuevaConfig, setNuevaConfig] = useState({
     plan_base_id: '',
     pais_id: '',
@@ -201,6 +203,13 @@ console.log('configsVisitador.length:', configsVisitador.length);
       return;
     }
 
+    const ddCrear = parseInt(nuevoPlan.duracion_dias);
+    const viCrear = parseInt(nuevoPlan.visitas_incluidas);
+    const atributosCrear: Record<string, any> = {
+      duracion_dias: (!isNaN(ddCrear) && ddCrear > 0) ? ddCrear : 30,
+    };
+    if (!isNaN(viCrear) && viCrear > 0) atributosCrear.visitas_incluidas = viCrear;
+
     await crearPlanBase({
       nombre: nuevoPlan.nombre.trim(),
       descripcion: nuevoPlan.descripcion.trim(),
@@ -212,9 +221,10 @@ console.log('configsVisitador.length:', configsVisitador.length);
       limite_pacientes: nuevoPlan.limite_pacientes ? parseInt(nuevoPlan.limite_pacientes) : undefined,
       caracteristicas: nuevoPlan.caracteristicas.split(',').map(c => c.trim()).filter(Boolean),
       activo: true,
+      atributos: atributosCrear,
     });
     setDialogoCrear(false);
-    setNuevoPlan({ nombre: '', descripcion: '', precio_base: '', moneda: 'USD', periodicidad: 'mensual', limite_medicos: '', limite_pacientes: '', caracteristicas: '' });
+    setNuevoPlan({ nombre: '', descripcion: '', precio_base: '', moneda: 'USD', periodicidad: 'mensual', limite_medicos: '', limite_pacientes: '', duracion_dias: '30', visitas_incluidas: '', caracteristicas: '' });
     recargar();
   };
 
@@ -232,6 +242,13 @@ console.log('configsVisitador.length:', configsVisitador.length);
     caracteristicasArray = dialogoEditar.caracteristicas;
   }
   
+  const ddEdit = parseInt(dialogoEditar?.atributos?.duracion_dias);
+  const viEdit = parseInt(dialogoEditar?.atributos?.visitas_incluidas);
+  const atributosEdit: Record<string, any> = { ...(dialogoEditar.atributos || {}) };
+  atributosEdit.duracion_dias = (!isNaN(ddEdit) && ddEdit > 0) ? ddEdit : 30;
+  if (!isNaN(viEdit) && viEdit > 0) atributosEdit.visitas_incluidas = viEdit;
+  else delete atributosEdit.visitas_incluidas;
+
   await actualizarPlanBase(dialogoEditar.id, {
     nombre: dialogoEditar.nombre,
     descripcion: dialogoEditar.descripcion,
@@ -242,6 +259,7 @@ console.log('configsVisitador.length:', configsVisitador.length);
     limite_pacientes: dialogoEditar.limite_pacientes ? parseInt(dialogoEditar.limite_pacientes) : undefined,
     caracteristicas: caracteristicasArray,
     activo: dialogoEditar.activo,
+    atributos: atributosEdit,
   });
   setDialogoEditar(null);
   recargar();
@@ -500,6 +518,16 @@ console.log('configsVisitador.length:', configsVisitador.length);
               <Input id="limite_pacientes" type="number" value={nuevoPlan.limite_pacientes} onChange={(e) => setNuevoPlan({...nuevoPlan, limite_pacientes: e.target.value})} placeholder="Ilimitado" />
             </div>
           </div>
+          <div className="grid grid-cols-2 gap-4">
+            <div>
+              <Label htmlFor="duracion_dias">Dias de vigencia</Label>
+              <Input id="duracion_dias" type="number" value={nuevoPlan.duracion_dias} onChange={(e) => setNuevoPlan({...nuevoPlan, duracion_dias: e.target.value})} placeholder="30" />
+            </div>
+            <div>
+              <Label htmlFor="visitas_incluidas">Visitas incluidas</Label>
+              <Input id="visitas_incluidas" type="number" value={nuevoPlan.visitas_incluidas} onChange={(e) => setNuevoPlan({...nuevoPlan, visitas_incluidas: e.target.value})} placeholder="Ilimitado" />
+            </div>
+          </div>
           <div>
             <Label htmlFor="caracteristicas">Características (separadas por coma)</Label>
             <Input id="caracteristicas" value={nuevoPlan.caracteristicas} onChange={(e) => setNuevoPlan({...nuevoPlan, caracteristicas: e.target.value})} placeholder="Ej: Recetas ilimitadas, Soporte 24/7, API access" />
@@ -571,6 +599,16 @@ console.log('configsVisitador.length:', configsVisitador.length);
               <div>
                 <Label>Límite Pacientes</Label>
                 <Input type="number" value={dialogoEditar.limite_pacientes || ''} onChange={(e) => setDialogoEditar({...dialogoEditar, limite_pacientes: e.target.value})} placeholder="Ilimitado" />
+              </div>
+            </div>
+            <div className="grid grid-cols-2 gap-4">
+              <div>
+                <Label>Dias de vigencia</Label>
+                <Input type="number" value={dialogoEditar.atributos?.duracion_dias ?? ''} onChange={(e) => setDialogoEditar({...dialogoEditar, atributos: {...(dialogoEditar.atributos || {}), duracion_dias: e.target.value === '' ? undefined : parseInt(e.target.value)}})} placeholder="30" />
+              </div>
+              <div>
+                <Label>Visitas incluidas</Label>
+                <Input type="number" value={dialogoEditar.atributos?.visitas_incluidas ?? ''} onChange={(e) => setDialogoEditar({...dialogoEditar, atributos: {...(dialogoEditar.atributos || {}), visitas_incluidas: e.target.value === '' ? undefined : parseInt(e.target.value)}})} placeholder="Ilimitado" />
               </div>
             </div>
             <div>
