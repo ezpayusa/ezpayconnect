@@ -137,14 +137,11 @@ export default function PaisDashboardPage() {
           .select('*', { count: 'exact', head: true })
           .eq('pais_id', paisId)
 
-        // Métricas de campañas
-        const { data: metricasData } = await supabase
-          .from('campana_metricas')
-          .select('clickeado')
-          .eq('pais_id', paisId)
+        // Métricas de campañas (RPC país SECURITY DEFINER; gate super_admin / admin_pais-de-este-país).
+        const { data: metricasData } = await supabase.rpc('metricas_campana_pais', { p_pais_id: paisId })
 
-        const impresiones = (metricasData || []).filter((m: any) => !m.clickeado).length
-        const clicks = (metricasData || []).filter((m: any) => m.clickeado).length
+        const impresiones = (metricasData || []).reduce((a: number, r: any) => a + (Number(r.impresiones) || 0), 0)
+        const clicks = (metricasData || []).reduce((a: number, r: any) => a + (Number(r.clicks) || 0), 0)
         const ctr = impresiones > 0 ? Math.round((clicks / impresiones) * 100 * 100) / 100 : 0
 
         setCampanaMetrics({ impresiones, clicks, ctr })

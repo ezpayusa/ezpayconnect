@@ -67,12 +67,8 @@ export function useMetricasCampanaAdmin() {
       return
     }
 
-    // 2. Obtener métricas de esas campañas
-    const campanaIds = campanas.map((c) => c.id)
-    const { data: metricas, error: metError } = await supabase
-      .from('campana_metricas')
-      .select('campana_id, clickeado')
-      .in('campana_id', campanaIds)
+    // 2. Obtener métricas por campaña vía RPC país (SECURITY DEFINER; gate super_admin / admin_pais-de-este-país).
+    const { data: metricas, error: metError } = await supabase.rpc('metricas_campana_pais', { p_pais_id: paisId })
 
     if (metError) {
       console.error('Error cargando métricas:', metError)
@@ -80,22 +76,19 @@ export function useMetricasCampanaAdmin() {
       return
     }
 
-    // 3. Agrupar métricas por campaña
-    const statsMap: Record<number, { impresiones: number; clicks: number }> = {}
+    // 3. Agrupar métricas por campaña (la RPC ya devuelve agregado por campaña)
+    const statsMap: Record<number, { impresiones: number; clicks: number; usuarios_unicos: number }> = {}
     ;(metricas || []).forEach((m: any) => {
-      if (!statsMap[m.campana_id]) {
-        statsMap[m.campana_id] = { impresiones: 0, clicks: 0 }
-      }
-      if (m.clickeado) {
-        statsMap[m.campana_id].clicks++
-      } else {
-        statsMap[m.campana_id].impresiones++
+      statsMap[m.campana_id] = {
+        impresiones: Number(m.impresiones) || 0,
+        clicks: Number(m.clicks) || 0,
+        usuarios_unicos: Number(m.usuarios_unicos) || 0,
       }
     })
 
     // 4. Combinar
     const detalle: MetricasCampanaDetalle[] = campanas.map((c: any) => {
-      const s = statsMap[c.id] || { impresiones: 0, clicks: 0 }
+      const s = statsMap[c.id] || { impresiones: 0, clicks: 0, usuarios_unicos: 0 }
       const ctr = s.impresiones > 0 ? Math.round((s.clicks / s.impresiones) * 100 * 100) / 100 : 0
       return {
         campana_id: c.id,
@@ -105,7 +98,7 @@ export function useMetricasCampanaAdmin() {
         fecha_fin: c.fecha_fin,
         impresiones: s.impresiones,
         clicks: s.clicks,
-        usuarios_unicos: 0, // requeriría query separada por perfil
+        usuarios_unicos: s.usuarios_unicos,
         ctr,
       }
     })
