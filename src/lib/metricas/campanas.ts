@@ -59,20 +59,13 @@ export async function filtrarCampanasPorFrequencyCap<T extends { id: number }>(
     const { data: { user } } = await supabase.auth.getUser()
     if (!user) return campanas
 
-    const desde = new Date()
-    desde.setDate(desde.getDate() - 1)
-
-    const { data } = await supabase
-      .from('campana_metricas')
-      .select('campana_id')
-      .eq('perfil_id', user.id)
-      .gte('visto_at', desde.toISOString())
-      .eq('clickeado', false)
-      .in('campana_id', [...new Set(campanas.map((c) => c.id))])
+    // RPC SECURITY DEFINER: impresiones (24h) del propio usuario por campaña. El .from directo antes
+    // caía en la RLS super_admin-only → [] → el cap nunca se aplicaba.
+    const { data } = await supabase.rpc('mis_impresiones_campana_recientes')
 
     const conteo: Record<number, number> = {}
     ;(data || []).forEach((row: any) => {
-      conteo[row.campana_id] = (conteo[row.campana_id] || 0) + 1
+      conteo[row.campana_id] = Number(row.impresiones) || 0
     })
 
     return campanas.filter((c) => (conteo[c.id] || 0) < MAX_IMPRESIONES_POR_DIA)
