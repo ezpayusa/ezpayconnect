@@ -74,7 +74,7 @@ function buildPrompt(ctxHist: any, soap: any) {
   const dx = Array.isArray(h.diagnosticos_recientes) ? h.diagnosticos_recientes : []
   const dxTxt = dx.length
     ? dx.map((d: any) =>
-        `- ${fmtFecha(d.fecha)}: Dx: ${d.diagnostico || 's/d'} | Motivo: ${d.motivo_consulta || 's/d'} | Plan: ${d.plan || 's/d'}`
+        `- ${fmtFecha(d.fecha)} | Motivo: ${d.motivo_consulta || 's/d'} | S: ${d.subjetivo || 's/d'} | O: ${d.objetivo || 's/d'} | A: ${d.analisis || 's/d'} | Dx: ${d.diagnostico || 's/d'} | Plan: ${d.plan || 's/d'}`
       ).join('\n')
     : 'No registrados'
 
@@ -121,7 +121,7 @@ ${sp.objetivo || 'No especificado'}
 SIGNOS VITALES RECIENTES (serie/tendencia, mas reciente primero):
 ${vitalesTxt}
 
-DIAGNOSTICOS PREVIOS:
+CONSULTAS PREVIAS (SOAP):
 ${dxTxt}
 
 MEDICACION RECETADA ACTIVA:
