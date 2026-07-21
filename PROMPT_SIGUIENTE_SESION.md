@@ -18,6 +18,7 @@
 - **limite_medicos: CONFIRMADO INERTE** para visitador (la mig 116 borró el `trg_limite_visitas` de la 061). Campo muerto en el config, candidato a limpiar.
 - **RecetaModal (consulta):** el modal de farmacias ahora SIEMPRE muestra la lista (quitado el auto-pick que asignaba sola la unica farmacia) + boton "Cerrar sin asignar". Evita asignar farmacia fuera de jurisdiccion.
 - **4d400ce** fix(db): versionado el `DEFAULT ''` de `expediente_notas.nota` (drift: mig 001 lo tenia NOT NULL sin default, prod tiene default). `supabase/fixes/expediente_notas_nota_default_01.sql`.
+- **ef42bde** fix(db): FK `receta_items.receta_id -> recetas(id)` (el embed PostgREST de la webapp de recetas fallaba con "Could not find a relationship"). `supabase/fixes/receta_items_fk_recetas_01.sql`.
 
 **PENDIENTE DE DATOS (no código):** rellenar `atributos` de los planes visitador viejos en `{}` (Plan Oro, Plata, Plus) desde la UI (Editar→días/visitas→Guardar) o seed `-f`. El contrato de prueba `2db5f85a` (bolsa NULL) no se corrige solo.
 
