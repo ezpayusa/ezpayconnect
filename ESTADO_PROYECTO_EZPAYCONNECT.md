@@ -17,6 +17,16 @@ EzPayConnect es una **plataforma SaaS médica multitenant por país** con 3 port
 
 ---
 
+## 2026-07-20/21 — Frente planes-visitador cerrado + diseño enrolamiento visitador→médico
+- O1 flag: 0. 3 commits en prod:
+  - 65d0d80: checkout real en PlanesVisitadorPage (cae ultimo alert() falso, cierra [D]).
+  - c56ca65: UI para editar duracion_dias/visitas_incluidas del plan visitador (atributos en CrearPlanBaseDTO; el hook usePlanes ya pasaba el objeto sin whitelist).
+  - 4d56c9d: columnas Vigencia/Visitas en la tabla de planes visitador.
+- DIAGNOSTICO: "vigencia 1 año" y "notificacion faltante" NO eran bugs. Vigencia real=30d (default por atributos={}); notificacion=polling 60s (se creo bien). Gap = dato: Plan Plus con atributos={}. Fix = UI de edicion (arriba) + rellenar planes viejos (Oro/Plata/Plus) por UI o seed.
+- limite_medicos CONFIRMADO INERTE para visitador (la 116 borro trg_limite_visitas de la 061). Candidato a limpiar del config.
+- FRENTE NUEVO para el piloto: ENROLAMIENTO visitador->medico. 80% ya vivo en prod (migs 193-201: lab_enrolador_id, enrolar_medico, capacidad 'enrolamiento', prioridad_activa, gate head-start trg_gate_head_start_lab mig 196 que YA enforcea 5d exclusivos/18m/8visitas). Falta: B1 DB (empresa_enroladora_id en invitaciones_medico + registrar_medico_desde_invitacion setea lab_enrolador_id), B2 edge (rama visitador con capacidad en crear-invitacion-medico), B3 front (form del visitador + handler PV002). Diseño completo en DISENO-ENROLAMIENTO-VISITADOR-MEDICO.md.
+- tsc baseline sigue en 82.
+
 ## 2026-07-17 (noche) — Email de facturas real + peso en libras (prod)
 - EMAIL DE FACTURAS (merge fe065bc): el "enviar por email" de FacturasPage era un alert() simulado → ahora envío real.
   Nueva Vercel function api/send-factura.ts (espejo de api/send-receta.ts: gate de rol clínico/admin vía JWT,
