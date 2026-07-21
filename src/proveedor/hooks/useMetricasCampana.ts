@@ -25,72 +25,23 @@ export function useMetricasCampana() {
     setLoading(true)
 
     try {
-      // 1. Traer campañas publicadas de esta empresa
-      const { data: solicitudes, error: solError } = await supabase
-        .from('solicitudes_campana')
-        .select('id, titulo, imagen_url, fecha_inicio, fecha_fin')
-        .eq('empresa_id', empresa.id)
-        .eq('estado', 'publicada')
-        .order('fecha_inicio', { ascending: false })
+      // RPC SECURITY DEFINER: agrega campana_metricas (RLS super_admin-only) scoped a mi_empresa_proveedor()
+      // vía el link real campanas_publicitarias.empresa_id. Reemplaza el match-por-titulo + la vista rota.
+      const { data, error } = await supabase.rpc('metricas_campana_proveedor')
+      if (error) throw error
 
-      if (solError) throw solError
-      if (!solicitudes || solicitudes.length === 0) {
-        setMetricas([])
-        setLoading(false)
-        return
-      }
-
-      // 2. Buscar campanas_publicitarias que correspondan a estas solicitudes
-      // Usamos título+descripción como clave de matching (no hay FK directa)
-      const titulos = solicitudes.map((s: any) => s.titulo)
-      const { data: campanasPublicadas, error: campError } = await supabase
-        .from('campanas_publicitarias')
-        .select('id, titulo')
-        .in('titulo', titulos)
-        .eq('activa', true)
-
-      if (campError) throw campError
-
-      const campanaMap: Record<string, number> = {}
-      ;(campanasPublicadas || []).forEach((c: any) => {
-        campanaMap[c.titulo] = c.id
-      })
-
-      // 3. Traer métricas de la vista
-      const campanaIds = Object.values(campanaMap)
-      if (campanaIds.length === 0) {
-        setMetricas([])
-        setLoading(false)
-        return
-      }
-
-      const { data: resumen, error: metError } = await supabase
-        .from('v_metricas_campana_resumen')
-        .select('*')
-        .in('campana_id', campanaIds)
-
-      if (metError) throw metError
-
-      const resumenMap: Record<number, any> = {}
-      ;(resumen || []).forEach((r: any) => {
-        resumenMap[r.campana_id] = r
-      })
-
-      // 4. Combinar todo
-      const resultado: MetricaCampana[] = solicitudes.map((s: any) => {
-        const campanaId = campanaMap[s.titulo]
-        const r = resumenMap[campanaId] || {}
-        const impresiones = r.impresiones || 0
-        const clicks = r.clicks || 0
+      const resultado: MetricaCampana[] = (data || []).map((r: any) => {
+        const impresiones = Number(r.impresiones) || 0
+        const clicks = Number(r.clicks) || 0
         return {
-          campana_id: campanaId || 0,
-          titulo: s.titulo,
-          imagen_url: s.imagen_url,
-          fecha_inicio: s.fecha_inicio,
-          fecha_fin: s.fecha_fin,
+          campana_id: r.campana_id,
+          titulo: r.titulo,
+          imagen_url: r.imagen_url,
+          fecha_inicio: r.fecha_inicio,
+          fecha_fin: r.fecha_fin,
           impresiones,
           clicks,
-          usuarios_unicos: r.usuarios_unicos || 0,
+          usuarios_unicos: Number(r.usuarios_unicos) || 0,
           ctr: impresiones > 0 ? (clicks / impresiones) * 100 : 0,
         }
       })
