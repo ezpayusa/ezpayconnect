@@ -133,6 +133,8 @@ export default function PagosProveedoresPage() {
             edad_min: campana.edad_min,
             edad_max: campana.edad_max,
             peso: pesoPlan,
+            empresa_id: campana.empresa_id,          // dueño real: las métricas del proveedor dependen de esto
+            solicitud_campana_id: pagoData.referencia_id,
           })
 
           // Solo marcar la solicitud como 'publicada' si el INSERT de la campaña fue exitoso.
