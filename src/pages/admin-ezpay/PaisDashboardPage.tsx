@@ -50,6 +50,7 @@ export default function PaisDashboardPage() {
     clicks: 0,
     ctr: 0,
   })
+  const [desgloseCampanas, setDesgloseCampanas] = useState<any[]>([])
   const [stats, setStats] = useState<PaisStats>({
     total_medicos: 0,
     total_clinicas: 0,
@@ -145,6 +146,7 @@ export default function PaisDashboardPage() {
         const ctr = impresiones > 0 ? Math.round((clicks / impresiones) * 100 * 100) / 100 : 0
 
         setCampanaMetrics({ impresiones, clicks, ctr })
+        setDesgloseCampanas((metricasData || []) as any[])
 
         // Confirmaciones de recepción de receta (acumulado histórico → hoy), país-scoped.
         const hoyStr = new Date().toISOString().slice(0, 10) // YYYY-MM-DD
@@ -348,6 +350,68 @@ export default function PaisDashboardPage() {
               </div>
             </div>
           </div>
+
+          {/* Desglose por empresa (para mostrar a clientes) */}
+          {(() => {
+            const grupos = new Map<string, { nombre: string; tipo: string | null; campanas: any[]; imp: number; clk: number; usu: number }>()
+            for (const c of desgloseCampanas) {
+              const key = c.empresa_id || '__ezpay__'
+              if (!grupos.has(key)) {
+                grupos.set(key, {
+                  nombre: c.empresa_nombre || 'EzPay / anuncios propios',
+                  tipo: c.empresa_id ? (c.empresa_tipo || null) : null,
+                  campanas: [], imp: 0, clk: 0, usu: 0,
+                })
+              }
+              const g = grupos.get(key)!
+              g.campanas.push(c)
+              g.imp += Number(c.impresiones) || 0
+              g.clk += Number(c.clicks) || 0
+              g.usu += Number(c.usuarios_unicos) || 0
+            }
+            const secciones = [...grupos.values()].sort((a, b) => b.imp - a.imp)
+            if (secciones.length === 0) {
+              return <p className="text-sm text-gray-400 mt-6">Sin campañas en este país.</p>
+            }
+            return (
+              <div className="mt-6 space-y-4">
+                <p className="text-sm font-semibold text-gray-700">Desglose por empresa</p>
+                {secciones.map((g, i) => (
+                  <div key={i} className="border rounded-lg overflow-hidden">
+                    <div className="flex items-center justify-between bg-gray-50 px-4 py-2 border-b">
+                      <div className="flex items-center gap-2">
+                        <span className="font-semibold text-gray-800">{g.nombre}</span>
+                        {g.tipo && <span className="text-xs px-2 py-0.5 rounded-full bg-blue-100 text-blue-700">{g.tipo}</span>}
+                      </div>
+                      <div className="text-xs text-gray-600">
+                        {g.imp.toLocaleString()} impr · {g.clk.toLocaleString()} clics · {g.usu.toLocaleString()} usuarios
+                      </div>
+                    </div>
+                    <table className="w-full text-sm">
+                      <thead>
+                        <tr className="text-left text-gray-500 border-b">
+                          <th className="px-4 py-2 font-medium">Campaña</th>
+                          <th className="px-3 py-2 font-medium text-right">Impresiones</th>
+                          <th className="px-3 py-2 font-medium text-right">Clics</th>
+                          <th className="px-3 py-2 font-medium text-right">Usuarios únicos</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {g.campanas.map((c: any) => (
+                          <tr key={c.campana_id} className="border-b last:border-0">
+                            <td className="px-4 py-2 text-gray-800">{c.titulo}</td>
+                            <td className="px-3 py-2 text-right">{(Number(c.impresiones) || 0).toLocaleString()}</td>
+                            <td className="px-3 py-2 text-right">{(Number(c.clicks) || 0).toLocaleString()}</td>
+                            <td className="px-3 py-2 text-right">{(Number(c.usuarios_unicos) || 0).toLocaleString()}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                ))}
+              </div>
+            )
+          })()}
         </CardContent>
       </Card>
 
