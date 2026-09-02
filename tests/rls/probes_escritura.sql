@@ -8487,6 +8487,694 @@ DO $$ DECLARE v_err text; v_msg text; v_t bigint := 0; v_p bigint := 0; BEGIN
 END $$;
 SELECT set_config('role','none', true);
 
+
+
+-- ===== Bloque 264 · módulo comercial: estructura y lectura (P457–P479) =====
+-- Mismo contrato que el harness de escritura: TODO adentro de una transacción que termina en
+-- ROLLBACK; el veredicto de cada probe viaja en un setting de sesión y se devuelve como result set.
+--
+--   BLOQUEADO  → falló por RLS / GRANT / constraint / guard   (VERDE cuando se espera bloqueo)
+--   PERMITIDO  → se ejecutó sin bloqueo                        (ROJO cuando se espera bloqueo)
+--   OK         → la operación legítima funcionó                (VERDE)
+--   ROJO       → el probe encontró algo distinto de lo esperado
+--
+-- RED-FIRST: cada probe abre con un guard `to_regclass` / `to_regprocedure`. Si la 264 NO está
+-- aplicada, el probe reporta 'ROJO (mig 264 sin aplicar)' y sigue — no aborta el harness. Eso hace
+-- que el archivo se pueda correr ANTES de aplicar (para capturar el rojo) y DESPUÉS (para el verde).
+--
+-- NINGUNA SENTENCIA FUERA DE UN HANDLER: cada bloque es un DO con BEGIN…EXCEPTION. Lo único a nivel
+-- top-level son los `SELECT set_config('role','none',true)` de saneo entre probes y el result set
+-- final. Las fixtures se deshacen con el centinela RAISE 'PROBE_UNDO', que revierte la
+-- subtransacción y no deja residuo para los probes siguientes.
+--
+-- ORIGEN DEL CORTE: 42501 lo comparten la RLS y los GRANT; 23505 el UNIQUE; 23503 la FK; 23514 el
+-- CHECK; PA001–PA005 y PA007 el guard de jerarquía; PA006 el guard de coherencia de país del
+-- prospecto (trg_prospectos_guard_pais). Cuando dos controles pueden disparar, los probes
+-- asertan sobre el MENSAJE además del SQLSTATE — el que corre primero enmascara al otro (lección
+-- del bloque 262, P445).
+--
+-- FIXTURES (namespace propio, todas revertidas):
+--   00000000-0000-4264-0462-0000000000NN → suite de normalización
+--   00000000-0000-4264-0464-0000000000NN → suite del trigger de jerarquía
+--   00000000-0000-4264-0470-0000000000NN → suite de visibilidad
+-- PAÍSES REALES usados: GT = cbbbbe6d-59fe-4cf2-91ee-3e31ba1d5909
+--                       SV = f2c75b8e-ef54-4a05-b2ff-7363e448f680
+-- USUARIOS REALES usados: super_admin 41904e2c-5ef3-4fee-bd48-9ea58e0c8c37
+--                         medico      09d243d5-b222-482a-9762-94a582e9e752 (rol NO comercial)
+
+SELECT set_config('role','none', true);
+
+-- ============================================================================
+-- ESTRUCTURA (P457–P461)
+-- ============================================================================
+
+-- P457 — las 3 tablas existen y tienen RLS habilitada (relrowsecurity).
+DO $$
+DECLARE v_faltan text; v_sin_rls text;
+BEGIN
+  SELECT string_agg(t, ', ') INTO v_faltan
+    FROM unnest(ARRAY['public.asesores_perfil','public.prospectos','public.prospecto_contactos']) t
+   WHERE to_regclass(t) IS NULL;
+  IF v_faltan IS NOT NULL THEN
+    PERFORM set_config('probe.p457','ROJO (mig 264 sin aplicar; faltan: '||v_faltan||')', false);
+    RETURN;
+  END IF;
+  BEGIN
+  SELECT string_agg(c.relname, ', ') INTO v_sin_rls
+    FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
+   WHERE n.nspname = 'public'
+     AND c.relname IN ('asesores_perfil','prospectos','prospecto_contactos')
+     AND NOT c.relrowsecurity;
+  PERFORM set_config('probe.p457', CASE WHEN v_sin_rls IS NULL
+    THEN 'OK (3 tablas presentes, las 3 con RLS habilitada)'
+    ELSE 'ROJO (sin RLS: '||v_sin_rls||')' END, false);
+  EXCEPTION WHEN OTHERS THEN
+    PERFORM set_config('probe.p457','ROJO (fatal: '||SQLSTATE||' '||SQLERRM||')', false);
+  END;
+END $$;
+SELECT set_config('role','none', true);
+
+-- P458 — higiene de privilegios: authenticated SOLO con SELECT; anon sin NINGÚN privilegio.
+-- Los default privileges de Supabase dan ALL a authenticated al crear la tabla: sin el REVOKE de la
+-- 264 este probe sale ROJO aunque las policies estén perfectas.
+DO $$
+DECLARE r record; v_mal text := ''; v_ok_sel int := 0;
+BEGIN
+  IF to_regclass('public.asesores_perfil') IS NULL THEN
+    PERFORM set_config('probe.p458','ROJO (mig 264 sin aplicar)', false); RETURN;
+  END IF;
+  BEGIN
+  FOR r IN SELECT unnest(ARRAY['public.asesores_perfil','public.prospectos','public.prospecto_contactos']) AS t
+  LOOP
+    IF has_table_privilege('authenticated', r.t, 'SELECT') THEN v_ok_sel := v_ok_sel + 1;
+    ELSE v_mal := v_mal || r.t || ':authenticated_sin_SELECT '; END IF;
+    IF has_table_privilege('authenticated', r.t, 'INSERT') THEN v_mal := v_mal || r.t || ':authenticated_INSERT '; END IF;
+    IF has_table_privilege('authenticated', r.t, 'UPDATE') THEN v_mal := v_mal || r.t || ':authenticated_UPDATE '; END IF;
+    IF has_table_privilege('authenticated', r.t, 'DELETE') THEN v_mal := v_mal || r.t || ':authenticated_DELETE '; END IF;
+    IF has_table_privilege('anon', r.t, 'SELECT') THEN v_mal := v_mal || r.t || ':anon_SELECT '; END IF;
+    IF has_table_privilege('anon', r.t, 'INSERT') THEN v_mal := v_mal || r.t || ':anon_INSERT '; END IF;
+    IF has_table_privilege('anon', r.t, 'UPDATE') THEN v_mal := v_mal || r.t || ':anon_UPDATE '; END IF;
+    IF has_table_privilege('anon', r.t, 'DELETE') THEN v_mal := v_mal || r.t || ':anon_DELETE '; END IF;
+  END LOOP;
+  PERFORM set_config('probe.p458', CASE WHEN v_mal = '' AND v_ok_sel = 3
+    THEN 'OK (authenticated: SELECT en las 3 y nada más; anon: sin privilegios)'
+    ELSE 'ROJO (privilegios de más/de menos: '||v_mal||')' END, false);
+  EXCEPTION WHEN OTHERS THEN
+    PERFORM set_config('probe.p458','ROJO (fatal: '||SQLSTATE||' '||SQLERRM||')', false);
+  END;
+END $$;
+SELECT set_config('role','none', true);
+
+-- P459 — CERO policies de escritura. La escritura llega en la 265 por RPC DEFINER; si acá apareciera
+-- una policy de INSERT/UPDATE/DELETE/ALL, la superficie de escritura se habría abierto sin diseño.
+DO $$
+DECLARE v_sel int; v_esc int; v_det text;
+BEGIN
+  IF to_regclass('public.asesores_perfil') IS NULL THEN
+    PERFORM set_config('probe.p459','ROJO (mig 264 sin aplicar)', false); RETURN;
+  END IF;
+  BEGIN
+  SELECT count(*) FILTER (WHERE cmd = 'SELECT'),
+         count(*) FILTER (WHERE cmd <> 'SELECT'),
+         string_agg(policyname||'['||cmd||']', ', ' ORDER BY tablename, policyname)
+    INTO v_sel, v_esc, v_det
+    FROM pg_policies
+   WHERE schemaname = 'public'
+     AND tablename IN ('asesores_perfil','prospectos','prospecto_contactos');
+  PERFORM set_config('probe.p459', CASE WHEN v_esc = 0 AND v_sel = 3
+    THEN 'OK (3 policies, todas SELECT, cero de escritura: '||v_det||')'
+    ELSE 'ROJO (select='||v_sel||' escritura='||v_esc||': '||COALESCE(v_det,'ninguna')||')' END, false);
+  EXCEPTION WHEN OTHERS THEN
+    PERFORM set_config('probe.p459','ROJO (fatal: '||SQLSTATE||' '||SQLERRM||')', false);
+  END;
+END $$;
+SELECT set_config('role','none', true);
+
+-- P460 — FKs con ON DELETE RESTRICT (confdeltype='r') en TODO eje de aislamiento, y los 2 UNIQUE.
+-- Una FK en CASCADE acá sería borrado de evidencia comercial y una forma silenciosa de mover filas.
+DO $$
+DECLARE v_fk_total int; v_fk_norestrict text; v_uniq int; v_det text;
+BEGIN
+  IF to_regclass('public.prospectos') IS NULL THEN
+    PERFORM set_config('probe.p460','ROJO (mig 264 sin aplicar)', false); RETURN;
+  END IF;
+  BEGIN
+  SELECT count(*), string_agg(conname||'->'||confdeltype::text, ', ') FILTER (WHERE confdeltype <> 'r')
+    INTO v_fk_total, v_fk_norestrict
+    FROM pg_constraint
+   WHERE contype = 'f'
+     AND conrelid IN ('public.asesores_perfil'::regclass,'public.prospectos'::regclass,'public.prospecto_contactos'::regclass);
+  SELECT count(*), string_agg(conname, ', ' ORDER BY conname) INTO v_uniq, v_det
+    FROM pg_constraint
+   WHERE contype = 'u'
+     AND conname IN ('asesores_perfil_pais_codigo_uniq','prospectos_pais_nombrenorm_uniq');
+  -- 10 FKs esperadas: asesores_perfil 3 (id, pais_id, supervisor_id) + prospectos 6 (pais_id,
+  -- asesor_id, tipo, estado_pipeline, empresa_proveedora_id, creado_por) + contactos 1 (prospecto_id).
+  PERFORM set_config('probe.p460', CASE WHEN v_fk_norestrict IS NULL AND v_fk_total = 10 AND v_uniq = 2
+    THEN 'OK ('||v_fk_total||' FKs, todas ON DELETE RESTRICT; 2 UNIQUE: '||v_det||')'
+    ELSE 'ROJO (fks='||v_fk_total||' sin_restrict=['||COALESCE(v_fk_norestrict,'ninguna')||'] uniques='||v_uniq||' ['||COALESCE(v_det,'∅')||'])' END, false);
+  EXCEPTION WHEN OTHERS THEN
+    PERFORM set_config('probe.p460','ROJO (fatal: '||SQLSTATE||' '||SQLERRM||')', false);
+  END;
+END $$;
+SELECT set_config('role','none', true);
+
+-- P461 — nombre_norm es GENERATED STORED (attgenerated='s') y la función que la alimenta es IMMUTABLE
+-- (provolatile='i'). Si la función no fuera IMMUTABLE, Postgres ni habría dejado crear la columna:
+-- el probe existe para detectar el caso en que alguien la reemplace por una STABLE y re-arme la
+-- columna a mano, que es como se rompe el significado del UNIQUE.
+DO $$
+DECLARE v_gen char; v_vol char; v_def text;
+BEGIN
+  IF to_regclass('public.prospectos') IS NULL OR to_regprocedure('private.norm_prospecto_nombre(text)') IS NULL THEN
+    PERFORM set_config('probe.p461','ROJO (mig 264 sin aplicar)', false); RETURN;
+  END IF;
+  BEGIN
+  SELECT a.attgenerated INTO v_gen
+    FROM pg_attribute a WHERE a.attrelid = 'public.prospectos'::regclass AND a.attname = 'nombre_norm';
+  SELECT p.provolatile INTO v_vol FROM pg_proc p WHERE p.oid = 'private.norm_prospecto_nombre(text)'::regprocedure;
+  SELECT pg_get_expr(d.adbin, d.adrelid) INTO v_def
+    FROM pg_attrdef d JOIN pg_attribute a ON a.attrelid = d.adrelid AND a.attnum = d.adnum
+   WHERE d.adrelid = 'public.prospectos'::regclass AND a.attname = 'nombre_norm';
+  PERFORM set_config('probe.p461', CASE
+    WHEN v_gen = 's' AND v_vol = 'i' THEN 'OK (nombre_norm GENERATED STORED sobre función IMMUTABLE: '||COALESCE(v_def,'?')||')'
+    WHEN v_gen IS DISTINCT FROM 's' THEN 'ROJO (nombre_norm no es GENERATED STORED: attgenerated='||COALESCE(v_gen::text,'∅')||')'
+    ELSE 'ROJO (norm_prospecto_nombre no es IMMUTABLE: provolatile='||COALESCE(v_vol::text,'∅')||')' END, false);
+  EXCEPTION WHEN OTHERS THEN
+    PERFORM set_config('probe.p461','ROJO (fatal: '||SQLSTATE||' '||SQLERRM||')', false);
+  END;
+END $$;
+SELECT set_config('role','none', true);
+
+
+-- ============================================================================
+-- NORMALIZACIÓN Y DEDUP (P462–P463)
+-- Fixture compartida: DOS asesores, uno por país, CADA UNO CON FICHA en asesores_perfil.
+-- Las fichas ya no son opcionales: desde PA006 un prospecto solo puede existir si su pais_id coincide
+-- con el país de la ficha de su asesor, así que el prospecto de SV necesita un asesor de SV con ficha
+-- (con un solo asesor de GT, el insert de P463 moriría en PA006 y no llegaría a medir el UNIQUE).
+-- Se revierte con PROBE_UNDO.
+-- ============================================================================
+DO $$
+DECLARE
+  v_asGT uuid := '00000000-0000-4264-0462-000000000001';
+  v_asSV uuid := '00000000-0000-4264-0462-000000000002';
+  v_gt   uuid := 'cbbbbe6d-59fe-4cf2-91ee-3e31ba1d5909';
+  v_sv   uuid := 'f2c75b8e-ef54-4a05-b2ff-7363e448f680';
+  v_err text; v_msg text; v_n bigint;
+  v_462 text; v_463 text; v_fatal text := NULL;
+  v_norm1 text; v_norm2 text;
+BEGIN
+  IF to_regclass('public.prospectos') IS NULL THEN
+    PERFORM set_config('probe.p462','ROJO (mig 264 sin aplicar)', false);
+    PERFORM set_config('probe.p463','ROJO (mig 264 sin aplicar)', false);
+    RETURN;
+  END IF;
+  BEGIN
+    INSERT INTO auth.users (id) VALUES (v_asGT),(v_asSV);
+    INSERT INTO public.perfiles (id, email, nombre_completo, rol, pais_id, activo) VALUES
+      (v_asGT, 'probe264_462gt@example.invalid', 'Probe 462 GT', 'asesor_comercial', v_gt, true),
+      (v_asSV, 'probe264_462sv@example.invalid', 'Probe 462 SV', 'asesor_comercial', v_sv, true);
+    INSERT INTO public.asesores_perfil (id, pais_id, codigo_asesor) VALUES
+      (v_asGT, v_gt, 'P264-462GT'),
+      (v_asSV, v_sv, 'P264-462SV');
+
+    -- P462 — dos grafías del mismo nombre colisionan en el UNIQUE dentro del MISMO país.
+    INSERT INTO public.prospectos (pais_id, asesor_id, tipo, nombre, creado_por)
+      VALUES (v_gt, v_asGT, 'laboratorio_farmaceutico', 'Laboratorios  Fármaco, S.A.', v_asGT);
+    SELECT nombre_norm INTO v_norm1 FROM public.prospectos WHERE pais_id = v_gt AND asesor_id = v_asGT;
+
+    v_err := NULL; v_msg := NULL; v_n := 0;
+    BEGIN
+      INSERT INTO public.prospectos (pais_id, asesor_id, tipo, nombre, creado_por)
+        VALUES (v_gt, v_asGT, 'laboratorio_farmaceutico', 'laboratorios farmaco sa', v_asGT);
+      GET DIAGNOSTICS v_n = ROW_COUNT;
+    EXCEPTION WHEN OTHERS THEN v_err := SQLSTATE; v_msg := SQLERRM; v_n := 0; END;
+    v_462 := CASE
+      WHEN v_err = '23505' AND v_msg LIKE '%prospectos_pais_nombrenorm_uniq%'
+        THEN 'BLOQUEADO (UNIQUE pais+nombre_norm; ambas normalizan a "'||COALESCE(v_norm1,'?')||'")'
+      WHEN v_err = '23505' THEN 'ROJO (23505 pero de otro constraint: '||v_msg||')'
+      WHEN v_err IS NOT NULL THEN 'ROJO ('||v_err||': '||v_msg||')'
+      ELSE 'PERMITIDO (el duplicado entró, filas='||v_n||'; norm="'||COALESCE(v_norm1,'?')||'")' END;
+
+    -- P463 — el MISMO nombre en OTRO país NO colisiona: el dedup es por país, no global.
+    -- Usa el asesor de SV (con ficha de SV): el par (prospecto SV, asesor SV) es coherente para PA006.
+    v_err := NULL; v_msg := NULL; v_n := 0;
+    BEGIN
+      INSERT INTO public.prospectos (pais_id, asesor_id, tipo, nombre, creado_por)
+        VALUES (v_sv, v_asSV, 'laboratorio_farmaceutico', 'Laboratorios Fármaco S.A.', v_asSV);
+      GET DIAGNOSTICS v_n = ROW_COUNT;
+    EXCEPTION WHEN OTHERS THEN v_err := SQLSTATE; v_msg := SQLERRM; v_n := 0; END;
+    SELECT nombre_norm INTO v_norm2 FROM public.prospectos WHERE pais_id = v_sv;
+    v_463 := CASE
+      WHEN v_err IS NULL AND v_n = 1 AND v_norm2 = v_norm1
+        THEN 'OK (mismo nombre_norm "'||v_norm2||'" en 2 países, sin colisión: el UNIQUE es por país)'
+      WHEN v_err = '23505' THEN 'ROJO (colisionó entre países: el UNIQUE no incluye pais_id)'
+      WHEN v_err = 'PA006' THEN 'ROJO (PA006: la fixture quedó incoherente, no es un fallo del UNIQUE)'
+      WHEN v_err IS NOT NULL THEN 'ROJO ('||v_err||': '||v_msg||')'
+      ELSE 'ROJO (filas='||v_n||' norm_gt="'||COALESCE(v_norm1,'?')||'" norm_sv="'||COALESCE(v_norm2,'?')||'")' END;
+
+    RAISE EXCEPTION 'PROBE_UNDO';
+  EXCEPTION WHEN OTHERS THEN
+    IF SQLERRM <> 'PROBE_UNDO' THEN v_fatal := SQLSTATE||' '||SQLERRM; END IF;
+  END;
+  PERFORM set_config('probe.p462', COALESCE('ROJO (fatal: '||v_fatal||')', v_462, 'ROJO (sin resultado)'), false);
+  PERFORM set_config('probe.p463', COALESCE('ROJO (fatal: '||v_fatal||')', v_463, 'ROJO (sin resultado)'), false);
+END $$;
+SELECT set_config('role','none', true);
+
+
+-- ============================================================================
+-- TRIGGER DE JERARQUÍA (P464–P469) — un caso negativo por ERRCODE + un positivo.
+-- Fixture compartida. Recordar el orden documentado en la 264: PA005 se evalúa ANTES del corte por
+-- supervisor_id IS NULL, así que enmascara a PA001–PA004 cuando el propio rol es supervisor.
+-- ============================================================================
+DO $$
+DECLARE
+  v_gt uuid := 'cbbbbe6d-59fe-4cf2-91ee-3e31ba1d5909';
+  v_sv uuid := 'f2c75b8e-ef54-4a05-b2ff-7363e448f680';
+  v_medico uuid := '09d243d5-b222-482a-9762-94a582e9e752';   -- rol 'medico' real: NO es supervisor
+  -- fixtures
+  v_supOK   uuid := '00000000-0000-4264-0464-000000000001';  -- supervisor GT válido (ficha activa, sin jefe)
+  v_supSinF uuid := '00000000-0000-4264-0464-000000000002';  -- supervisor GT SIN ficha
+  v_supOff  uuid := '00000000-0000-4264-0464-000000000003';  -- supervisor GT con ficha INACTIVA
+  v_supSV   uuid := '00000000-0000-4264-0464-000000000004';  -- supervisor SV (otro país)
+  v_supEnc  uuid := '00000000-0000-4264-0464-000000000005';  -- supervisor GT que cuelga de otro (encadenado)
+  v_as      uuid := '00000000-0000-4264-0464-000000000010';  -- el asesor bajo prueba
+  v_asSup   uuid := '00000000-0000-4264-0464-000000000011';  -- perfil con rol supervisor (para PA005)
+  v_err text; v_msg text; v_n bigint;
+  v_464 text; v_465a text; v_465b text; v_466 text; v_467 text; v_468 text; v_469 text;
+  v_478 text; v_479 text;
+  v_fatal text := NULL;
+BEGIN
+  IF to_regclass('public.asesores_perfil') IS NULL THEN
+    PERFORM set_config('probe.p464','ROJO (mig 264 sin aplicar)', false);
+    PERFORM set_config('probe.p465a','ROJO (mig 264 sin aplicar)', false);
+    PERFORM set_config('probe.p465b','ROJO (mig 264 sin aplicar)', false);
+    PERFORM set_config('probe.p466','ROJO (mig 264 sin aplicar)', false);
+    PERFORM set_config('probe.p467','ROJO (mig 264 sin aplicar)', false);
+    PERFORM set_config('probe.p468','ROJO (mig 264 sin aplicar)', false);
+    PERFORM set_config('probe.p469','ROJO (mig 264 sin aplicar)', false);
+    PERFORM set_config('probe.p478','ROJO (mig 264 sin aplicar)', false);
+    PERFORM set_config('probe.p479','ROJO (mig 264 sin aplicar)', false);
+    RETURN;
+  END IF;
+  BEGIN
+    -- ---------- fixture: perfiles ----------
+    INSERT INTO auth.users (id) VALUES (v_supOK),(v_supSinF),(v_supOff),(v_supSV),(v_supEnc),(v_as),(v_asSup);
+    INSERT INTO public.perfiles (id, email, nombre_completo, rol, pais_id, activo) VALUES
+      (v_supOK,  'probe264_sup_ok@example.invalid',   'Sup OK GT',      'supervisor_comercial', v_gt, true),
+      (v_supSinF,'probe264_sup_sinf@example.invalid', 'Sup sin ficha',  'supervisor_comercial', v_gt, true),
+      (v_supOff, 'probe264_sup_off@example.invalid',  'Sup inactivo',   'supervisor_comercial', v_gt, true),
+      (v_supSV,  'probe264_sup_sv@example.invalid',   'Sup SV',         'supervisor_comercial', v_sv, true),
+      (v_supEnc, 'probe264_sup_enc@example.invalid',  'Sup encadenado', 'supervisor_comercial', v_gt, true),
+      (v_as,     'probe264_asesor@example.invalid',   'Asesor prueba',  'asesor_comercial',     v_gt, true),
+      (v_asSup,  'probe264_selfsup@example.invalid',  'Self supervisor','supervisor_comercial', v_gt, true);
+
+    -- ---------- fixture: fichas ----------
+    INSERT INTO public.asesores_perfil (id, pais_id, codigo_asesor, activo) VALUES
+      (v_supOK,  v_gt, 'P264-SUPOK',  true),
+      (v_supOff, v_gt, 'P264-SUPOFF', false),
+      (v_supSV,  v_sv, 'P264-SUPSV',  true);
+    -- El supervisor "encadenado" es imposible de crear con el trigger puesto (daría PA005): se lo
+    -- siembra deshabilitando el trigger como owner. Es exactamente el escenario que PA004 vigila
+    -- cuando el dato llega por una vía que no pasa por el guard.
+    ALTER TABLE public.asesores_perfil DISABLE TRIGGER trg_asesores_perfil_guard_supervisor;
+    INSERT INTO public.asesores_perfil (id, pais_id, codigo_asesor, activo, supervisor_id)
+      VALUES (v_supEnc, v_gt, 'P264-SUPENC', true, v_supOK);
+    ALTER TABLE public.asesores_perfil ENABLE TRIGGER trg_asesores_perfil_guard_supervisor;
+
+    -- ---------- P464: PA001 — el supervisor no tiene rol supervisor_comercial ----------
+    v_err := NULL; v_msg := NULL;
+    BEGIN
+      INSERT INTO public.asesores_perfil (id, pais_id, codigo_asesor, supervisor_id)
+        VALUES (v_as, v_gt, 'P264-A1', v_medico);
+    EXCEPTION WHEN OTHERS THEN v_err := SQLSTATE; v_msg := SQLERRM; END;
+    v_464 := CASE WHEN v_err = 'PA001' THEN 'BLOQUEADO (PA001: '||v_msg||')'
+                  WHEN v_err IS NOT NULL THEN 'ROJO ('||v_err||': '||v_msg||')'
+                  ELSE 'PERMITIDO (aceptó un supervisor con rol medico)' END;
+
+    -- ---------- P465a: PA002 — supervisor sin ficha en asesores_perfil ----------
+    v_err := NULL; v_msg := NULL;
+    BEGIN
+      INSERT INTO public.asesores_perfil (id, pais_id, codigo_asesor, supervisor_id)
+        VALUES (v_as, v_gt, 'P264-A2', v_supSinF);
+    EXCEPTION WHEN OTHERS THEN v_err := SQLSTATE; v_msg := SQLERRM; END;
+    v_465a := CASE WHEN v_err = 'PA002' THEN 'BLOQUEADO (PA002 sin ficha: '||v_msg||')'
+                   WHEN v_err IS NOT NULL THEN 'ROJO ('||v_err||': '||v_msg||')'
+                   ELSE 'PERMITIDO (aceptó un supervisor sin ficha)' END;
+
+    -- ---------- P465b: PA002 — supervisor con ficha INACTIVA ----------
+    v_err := NULL; v_msg := NULL;
+    BEGIN
+      INSERT INTO public.asesores_perfil (id, pais_id, codigo_asesor, supervisor_id)
+        VALUES (v_as, v_gt, 'P264-A3', v_supOff);
+    EXCEPTION WHEN OTHERS THEN v_err := SQLSTATE; v_msg := SQLERRM; END;
+    v_465b := CASE WHEN v_err = 'PA002' THEN 'BLOQUEADO (PA002 ficha inactiva: '||v_msg||')'
+                   WHEN v_err IS NOT NULL THEN 'ROJO ('||v_err||': '||v_msg||')'
+                   ELSE 'PERMITIDO (aceptó un supervisor con ficha inactiva)' END;
+
+    -- ---------- P466: PA003 — supervisor de OTRO país (el vector de fuga) ----------
+    v_err := NULL; v_msg := NULL;
+    BEGIN
+      INSERT INTO public.asesores_perfil (id, pais_id, codigo_asesor, supervisor_id)
+        VALUES (v_as, v_gt, 'P264-A4', v_supSV);
+    EXCEPTION WHEN OTHERS THEN v_err := SQLSTATE; v_msg := SQLERRM; END;
+    v_466 := CASE WHEN v_err = 'PA003' THEN 'BLOQUEADO (PA003 cross-país: '||v_msg||')'
+                  WHEN v_err IS NOT NULL THEN 'ROJO ('||v_err||': '||v_msg||')'
+                  ELSE 'PERMITIDO (la jerarquía cruzó países — ES EL VECTOR DE FUGA)' END;
+
+    -- ---------- P467: PA004 — el supervisor cuelga a su vez de otro ----------
+    v_err := NULL; v_msg := NULL;
+    BEGIN
+      INSERT INTO public.asesores_perfil (id, pais_id, codigo_asesor, supervisor_id)
+        VALUES (v_as, v_gt, 'P264-A5', v_supEnc);
+    EXCEPTION WHEN OTHERS THEN v_err := SQLSTATE; v_msg := SQLERRM; END;
+    v_467 := CASE WHEN v_err = 'PA004' THEN 'BLOQUEADO (PA004 cadena de 3 niveles: '||v_msg||')'
+                  WHEN v_err IS NOT NULL THEN 'ROJO ('||v_err||': '||v_msg||')'
+                  ELSE 'PERMITIDO (armó una cadena de 3 niveles)' END;
+
+    -- ---------- P468: PA005 — el propio perfil es supervisor y trae supervisor_id ----------
+    -- Nota de orden: acá el supervisor apuntado es VÁLIDO; lo único mal es que el titular de la ficha
+    -- es supervisor_comercial. Si saliera PA001..PA004 en vez de PA005, el orden documentado cambió.
+    v_err := NULL; v_msg := NULL;
+    BEGIN
+      INSERT INTO public.asesores_perfil (id, pais_id, codigo_asesor, supervisor_id)
+        VALUES (v_asSup, v_gt, 'P264-A6', v_supOK);
+    EXCEPTION WHEN OTHERS THEN v_err := SQLSTATE; v_msg := SQLERRM; END;
+    v_468 := CASE WHEN v_err = 'PA005' THEN 'BLOQUEADO (PA005 supervisor no cuelga de nadie: '||v_msg||')'
+                  WHEN v_err IS NOT NULL THEN 'ROJO ('||v_err||': '||v_msg||')'
+                  ELSE 'PERMITIDO (un supervisor_comercial quedó colgado de otro)' END;
+
+    -- ---------- P469: POSITIVO — supervisor válido del mismo país, activo, sin jefe propio ----------
+    v_err := NULL; v_msg := NULL;
+    BEGIN
+      INSERT INTO public.asesores_perfil (id, pais_id, codigo_asesor, supervisor_id)
+        VALUES (v_as, v_gt, 'P264-A7', v_supOK);
+    EXCEPTION WHEN OTHERS THEN v_err := SQLSTATE; v_msg := SQLERRM; END;
+    v_469 := CASE WHEN v_err IS NULL THEN 'OK (alta legítima con supervisor válido del mismo país)'
+                  ELSE 'ROJO (el guard bloqueó un alta legítima: '||v_err||' '||v_msg||')' END;
+
+    -- ---------- P478: PA007 — no se mueve de país a un supervisor CON asesores a cargo ----------
+    -- ESTE ES EL AGUJERO SIMÉTRICO DE PA003. Tras P469, v_supOK tiene un subordinado (v_as), los dos
+    -- en GT. Sin PA007, este UPDATE pasaba: el trigger dispara sobre la fila del supervisor, que no
+    -- tiene supervisor_id, y salía por el corte por NULL sin validar nada — dejando a v_as apuntando
+    -- a un supervisor de SV. O sea: el estado que PA003 prohíbe, alcanzado por la puerta de al lado.
+    v_err := NULL; v_msg := NULL; v_n := 0;
+    BEGIN
+      UPDATE public.asesores_perfil SET pais_id = v_sv WHERE id = v_supOK;
+      GET DIAGNOSTICS v_n = ROW_COUNT;
+    EXCEPTION WHEN OTHERS THEN v_err := SQLSTATE; v_msg := SQLERRM; v_n := 0; END;
+    v_478 := CASE WHEN v_err = 'PA007' THEN 'BLOQUEADO (PA007: '||v_msg||')'
+                  WHEN v_err IS NOT NULL THEN 'ROJO ('||v_err||': '||v_msg||')'
+                  ELSE 'PERMITIDO — FAIL-OPEN (movió de país a un supervisor con equipo, filas='||v_n||'; sus asesores quedaron cross-país)' END;
+
+    -- ---------- P479: POSITIVO de PA007 — SIN subordinados, el cambio de país sí procede ----------
+    -- Control de que PA007 no se pasó de rosca: v_supSV no tiene a nadie a cargo, así que moverlo de
+    -- país es una operación legítima y tiene que pasar. Si esto se pone rojo, PA007 quedó demasiado
+    -- ancho y bloquea altas/correcciones normales.
+    v_err := NULL; v_msg := NULL; v_n := 0;
+    BEGIN
+      UPDATE public.asesores_perfil SET pais_id = v_gt WHERE id = v_supSV;
+      GET DIAGNOSTICS v_n = ROW_COUNT;
+    EXCEPTION WHEN OTHERS THEN v_err := SQLSTATE; v_msg := SQLERRM; v_n := 0; END;
+    v_479 := CASE WHEN v_err IS NULL AND v_n = 1 THEN 'OK (ficha sin subordinados cambia de país, filas=1)'
+                  WHEN v_err = 'PA007' THEN 'ROJO (PA007 demasiado ancho: bloqueó una ficha SIN subordinados)'
+                  WHEN v_err IS NOT NULL THEN 'ROJO ('||v_err||': '||v_msg||')'
+                  ELSE 'ROJO (filas='||v_n||')' END;
+
+    RAISE EXCEPTION 'PROBE_UNDO';
+  EXCEPTION WHEN OTHERS THEN
+    IF SQLERRM <> 'PROBE_UNDO' THEN v_fatal := SQLSTATE||' '||SQLERRM; END IF;
+  END;
+  PERFORM set_config('probe.p464',  COALESCE('ROJO (fatal: '||v_fatal||')', v_464,  'ROJO (sin resultado)'), false);
+  PERFORM set_config('probe.p465a', COALESCE('ROJO (fatal: '||v_fatal||')', v_465a, 'ROJO (sin resultado)'), false);
+  PERFORM set_config('probe.p465b', COALESCE('ROJO (fatal: '||v_fatal||')', v_465b, 'ROJO (sin resultado)'), false);
+  PERFORM set_config('probe.p466',  COALESCE('ROJO (fatal: '||v_fatal||')', v_466,  'ROJO (sin resultado)'), false);
+  PERFORM set_config('probe.p467',  COALESCE('ROJO (fatal: '||v_fatal||')', v_467,  'ROJO (sin resultado)'), false);
+  PERFORM set_config('probe.p468',  COALESCE('ROJO (fatal: '||v_fatal||')', v_468,  'ROJO (sin resultado)'), false);
+  PERFORM set_config('probe.p469',  COALESCE('ROJO (fatal: '||v_fatal||')', v_469,  'ROJO (sin resultado)'), false);
+  PERFORM set_config('probe.p478',  COALESCE('ROJO (fatal: '||v_fatal||')', v_478,  'ROJO (sin resultado)'), false);
+  PERFORM set_config('probe.p479',  COALESCE('ROJO (fatal: '||v_fatal||')', v_479,  'ROJO (sin resultado)'), false);
+END $$;
+SELECT set_config('role','none', true);
+
+
+-- ============================================================================
+-- VISIBILIDAD (P470–P477) — el núcleo del bloque.
+--
+-- FIXTURE: 2 países (GT / SV), 2 supervisores en GT + 1 en SV, 4 asesores, 1 asesor "rogue"
+-- sembrado saltando el trigger, y 6 prospectos repartidos.
+--
+--   GT: supA ── asA1, asA2          (+ cartera propia de supA)
+--       supA2 ── asA3
+--       rogue  (país GT, supervisor_id = supB de SV — sembrado con el trigger deshabilitado)
+--   SV: supB ── asB1
+--
+-- Prospectos: pA1(asA1) pA2(asA2) pA3(asA3) pSupA(supA) pRogue(rogue) → todos GT
+--             pB1(asB1) → SV
+-- El prospecto incoherente YA NO SE SIEMBRA: desde PA006 no se puede escribir, y P477 pasó a ser el
+-- negativo que lo comprueba (intenta insertarlo y espera PA006) en vez de un conteo de fuga.
+--
+-- Todas las mediciones se hacen con `role=authenticated` + jwt del viewer, que es la única forma de
+-- que la RLS realmente se evalúe (como owner, RLS no aplica y todo probe daría verde falso).
+-- ============================================================================
+DO $$
+DECLARE
+  v_gt uuid := 'cbbbbe6d-59fe-4cf2-91ee-3e31ba1d5909';
+  v_sv uuid := 'f2c75b8e-ef54-4a05-b2ff-7363e448f680';
+  v_sa uuid := '41904e2c-5ef3-4fee-bd48-9ea58e0c8c37';        -- super_admin real
+  v_med uuid := '09d243d5-b222-482a-9762-94a582e9e752';        -- medico real (rol NO comercial)
+  v_supA   uuid := '00000000-0000-4264-0470-000000000001';
+  v_supA2  uuid := '00000000-0000-4264-0470-000000000002';
+  v_supB   uuid := '00000000-0000-4264-0470-000000000003';
+  v_asA1   uuid := '00000000-0000-4264-0470-000000000011';
+  v_asA2   uuid := '00000000-0000-4264-0470-000000000012';
+  v_asA3   uuid := '00000000-0000-4264-0470-000000000013';
+  v_asB1   uuid := '00000000-0000-4264-0470-000000000014';
+  v_rogue  uuid := '00000000-0000-4264-0470-000000000099';
+  v_admA   uuid := '00000000-0000-4264-0470-0000000000a1';
+  v_admB   uuid := '00000000-0000-4264-0470-0000000000b1';
+  v_pA1 uuid; v_pRogue uuid;
+  r record;
+  v_res jsonb := '{}'::jsonb;
+  v_pros bigint; v_ases bigint; v_cont bigint; v_cargo bigint; v_nom text;
+  v_err text; v_msg text; v_n bigint;
+  v_fatal text := NULL;
+  v_ok boolean;
+  -- Los veredictos van a VARIABLES y se publican con set_config DESPUES del bloque: un
+  -- set_config dentro de la subtransaccion lo revierte el RAISE 'PROBE_UNDO' junto con las fixtures.
+  v_470 text; v_471 text; v_472 text; v_473 text; v_474 text; v_475 text; v_476 text; v_477 text;
+BEGIN
+  IF to_regclass('public.prospectos') IS NULL OR to_regprocedure('private.asesores_a_cargo()') IS NULL THEN
+    PERFORM set_config('probe.p470','ROJO (mig 264 sin aplicar)', false);
+    PERFORM set_config('probe.p471','ROJO (mig 264 sin aplicar)', false);
+    PERFORM set_config('probe.p472','ROJO (mig 264 sin aplicar)', false);
+    PERFORM set_config('probe.p473','ROJO (mig 264 sin aplicar)', false);
+    PERFORM set_config('probe.p474','ROJO (mig 264 sin aplicar)', false);
+    PERFORM set_config('probe.p475','ROJO (mig 264 sin aplicar)', false);
+    PERFORM set_config('probe.p476','ROJO (mig 264 sin aplicar)', false);
+    PERFORM set_config('probe.p477','ROJO (mig 264 sin aplicar)', false);
+    RETURN;
+  END IF;
+  BEGIN
+    -- ---------- perfiles ----------
+    INSERT INTO auth.users (id) VALUES
+      (v_supA),(v_supA2),(v_supB),(v_asA1),(v_asA2),(v_asA3),(v_asB1),(v_rogue),(v_admA),(v_admB);
+    INSERT INTO public.perfiles (id, email, nombre_completo, rol, pais_id, activo) VALUES
+      (v_supA, 'p264_supA@example.invalid',  'Sup A GT',   'supervisor_comercial', v_gt, true),
+      (v_supA2,'p264_supA2@example.invalid', 'Sup A2 GT',  'supervisor_comercial', v_gt, true),
+      (v_supB, 'p264_supB@example.invalid',  'Sup B SV',   'supervisor_comercial', v_sv, true),
+      (v_asA1, 'p264_asA1@example.invalid',  'Asesor A1',  'asesor_comercial',     v_gt, true),
+      (v_asA2, 'p264_asA2@example.invalid',  'Asesor A2',  'asesor_comercial',     v_gt, true),
+      (v_asA3, 'p264_asA3@example.invalid',  'Asesor A3',  'asesor_comercial',     v_gt, true),
+      (v_asB1, 'p264_asB1@example.invalid',  'Asesor B1',  'asesor_comercial',     v_sv, true),
+      (v_rogue,'p264_rogue@example.invalid', 'Asesor rogue','asesor_comercial',    v_gt, true),
+      (v_admA, 'p264_admA@example.invalid',  'Admin GT',   'admin_pais',           v_gt, true),
+      (v_admB, 'p264_admB@example.invalid',  'Admin SV',   'admin_pais',           v_sv, true);
+
+    -- ---------- fichas ----------
+    INSERT INTO public.asesores_perfil (id, pais_id, codigo_asesor, supervisor_id) VALUES
+      (v_supA,  v_gt, 'P264-SUPA',  NULL),
+      (v_supA2, v_gt, 'P264-SUPA2', NULL),
+      (v_supB,  v_sv, 'P264-SUPB',  NULL);
+    INSERT INTO public.asesores_perfil (id, pais_id, codigo_asesor, supervisor_id) VALUES
+      (v_asA1, v_gt, 'P264-ASA1', v_supA),
+      (v_asA2, v_gt, 'P264-ASA2', v_supA),
+      (v_asA3, v_gt, 'P264-ASA3', v_supA2),
+      (v_asB1, v_sv, 'P264-ASB1', v_supB);
+    -- ROGUE: asesor de GT colgado de un supervisor de SV. El trigger lo prohíbe (PA003), así que se
+    -- siembra por SQL directo con el trigger deshabilitado — que es justo el escenario que el
+    -- centinela P475 tiene que sobrevivir: dato corrupto en la jerarquía, y el país cortando igual.
+    -- (Con PA007 puesto, la otra vía para llegar a este estado —crear la jerarquía en GT y después
+    --  mover de país al supervisor— quedó cerrada, así que el DISABLE TRIGGER es la única forma de
+    --  sembrarlo. Ver P478.)
+    --
+    -- ⚠️ CAVEAT DEL DISABLE TRIGGER: `ALTER TABLE ... DISABLE TRIGGER` toma un lock ACCESS EXCLUSIVE
+    -- sobre asesores_perfil que se sostiene hasta el final de la transacción del harness. HOY es
+    -- inocuo porque la tabla está vacía y sin tráfico (maquinaria inerte). El día que tenga datos y
+    -- lectores reales, este probe hay que revisarlo: bloquearía la tabla entera mientras corre el
+    -- harness. Alternativas para ese momento: sembrar el rogue con una función DEFINER que haga el
+    -- INSERT sin pasar por el trigger, o mover este probe a un entorno de staging.
+    ALTER TABLE public.asesores_perfil DISABLE TRIGGER trg_asesores_perfil_guard_supervisor;
+    INSERT INTO public.asesores_perfil (id, pais_id, codigo_asesor, supervisor_id)
+      VALUES (v_rogue, v_gt, 'P264-ROGUE', v_supB);
+    ALTER TABLE public.asesores_perfil ENABLE TRIGGER trg_asesores_perfil_guard_supervisor;
+
+    -- ---------- prospectos ----------
+    INSERT INTO public.prospectos (pais_id, asesor_id, tipo, nombre, creado_por) VALUES
+      (v_gt, v_asA1,  'laboratorio_farmaceutico', 'P264 Prospecto A1',    v_asA1),
+      (v_gt, v_asA2,  'farmacia',                 'P264 Prospecto A2',    v_asA2),
+      (v_gt, v_asA3,  'clinica',                  'P264 Prospecto A3',    v_asA3),
+      (v_gt, v_supA,  'empresa_afin',             'P264 Prospecto SupA',  v_supA),
+      (v_gt, v_rogue, 'farmacia',                 'P264 Prospecto Rogue', v_rogue),
+      (v_sv, v_asB1,  'laboratorio_clinico',      'P264 Prospecto B1',    v_asB1);
+
+    SELECT id INTO v_pA1    FROM public.prospectos WHERE nombre = 'P264 Prospecto A1';
+    SELECT id INTO v_pRogue FROM public.prospectos WHERE nombre = 'P264 Prospecto Rogue';
+
+    -- ---------- contactos ----------
+    INSERT INTO public.prospecto_contactos (prospecto_id, nombre, es_decisor)
+      VALUES (v_pA1, 'Contacto de A1', true), (v_pRogue, 'Contacto de Rogue', false);
+
+    -- ---------- MEDICIONES: un pase por cada viewer, cada uno en su propio handler ----------
+    FOR r IN
+      SELECT * FROM (VALUES
+        ('asA1', v_asA1), ('supA', v_supA), ('supA2', v_supA2), ('supB', v_supB),
+        ('admA', v_admA), ('admB', v_admB), ('super', v_sa),   ('medico', v_med)
+      ) t(etq, uid)
+    LOOP
+      v_pros := -1; v_ases := -1; v_cont := -1; v_cargo := -1; v_nom := NULL;
+      BEGIN
+        PERFORM set_config('request.jwt.claims',
+                 json_build_object('sub', r.uid::text, 'role','authenticated')::text, true);
+        PERFORM set_config('role','authenticated', true);
+        SELECT count(*) INTO v_cargo FROM private.asesores_a_cargo();
+        SELECT count(*) INTO v_ases  FROM public.asesores_perfil;
+        SELECT count(*) INTO v_cont  FROM public.prospecto_contactos;
+        SELECT count(*), string_agg(replace(nombre,'P264 Prospecto ',''), ',' ORDER BY nombre)
+          INTO v_pros, v_nom FROM public.prospectos;
+        PERFORM set_config('role','none', true);
+      EXCEPTION WHEN OTHERS THEN
+        PERFORM set_config('role','none', true);
+        v_nom := 'ERROR '||SQLSTATE||' '||SQLERRM;
+      END;
+      v_res := v_res || jsonb_build_object(r.etq, jsonb_build_object(
+        'pros', v_pros, 'ases', v_ases, 'cont', v_cont, 'cargo', v_cargo,
+        'nombres', COALESCE(v_nom,'∅')));
+    END LOOP;
+    PERFORM set_config('role','none', true);
+
+    -- ---------- P470: el asesor ve SOLO sus prospectos ----------
+    v_ok := (v_res#>>'{asA1,pros}')::bigint = 1 AND (v_res#>>'{asA1,nombres}') = 'A1'
+        AND (v_res#>>'{asA1,cargo}')::bigint = 1;
+    v_470 := CASE WHEN v_ok
+      THEN 'OK (asesor ve 1 prospecto, el propio; cargo=1)'
+      ELSE 'ROJO (asA1 pros='||(v_res#>>'{asA1,pros}')||' cargo='||(v_res#>>'{asA1,cargo}')||' ve=['||(v_res#>>'{asA1,nombres}')||'])' END;
+
+    -- ---------- P471: el supervisor ve los de SUS asesores + los propios, y NO los del otro ----------
+    -- supA ve A1,A2,SupA (3) y NO A3 (que es de supA2). supA2 ve A3 + nada propio (1).
+    v_ok := (v_res#>>'{supA,pros}')::bigint = 3
+        AND (v_res#>>'{supA,nombres}') = 'A1,A2,SupA'
+        AND (v_res#>>'{supA2,pros}')::bigint = 1
+        AND (v_res#>>'{supA2,nombres}') = 'A3';
+    v_471 := CASE WHEN v_ok
+      THEN 'OK (supA ve [A1,A2,SupA] y NO A3; supA2 ve [A3] — carteras de supervisores aisladas)'
+      ELSE 'ROJO (supA='||(v_res#>>'{supA,pros}')||' ['||(v_res#>>'{supA,nombres}')||'] supA2='||(v_res#>>'{supA2,pros}')||' ['||(v_res#>>'{supA2,nombres}')||'])' END;
+
+    -- ---------- P472: admin_pais ve TODOS los de su país y NINGUNO del otro ----------
+    -- admA (GT) ve A1,A2,A3,Rogue,SupA = 5 y nada de SV. admB (SV) ve solo B1.
+    v_ok := (v_res#>>'{admA,pros}')::bigint = 5
+        AND (v_res#>>'{admA,nombres}') = 'A1,A2,A3,Rogue,SupA'
+        AND (v_res#>>'{admB,nombres}') NOT LIKE '%A1%'
+        AND (v_res#>>'{admB,nombres}') NOT LIKE '%A3%';
+    v_472 := CASE WHEN v_ok
+      THEN 'OK (admin GT ve los 5 de GT; admin SV no ve ninguno de GT — ve ['||(v_res#>>'{admB,nombres}')||'])'
+      ELSE 'ROJO (admA='||(v_res#>>'{admA,pros}')||' ['||(v_res#>>'{admA,nombres}')||'] admB='||(v_res#>>'{admB,pros}')||' ['||(v_res#>>'{admB,nombres}')||'])' END;
+
+    -- ---------- P473: super_admin ve todos (6) ----------
+    v_ok := (v_res#>>'{super,pros}')::bigint = 6;
+    v_473 := CASE WHEN v_ok
+      THEN 'OK (super_admin ve los 6 sin término de país)'
+      ELSE 'ROJO (super_admin ve '||(v_res#>>'{super,pros}')||': ['||(v_res#>>'{super,nombres}')||'])' END;
+
+    -- ---------- P474: un rol NO comercial ve CERO y su asesores_a_cargo() es vacío ----------
+    v_ok := (v_res#>>'{medico,pros}')::bigint = 0
+        AND (v_res#>>'{medico,ases}')::bigint = 0
+        AND (v_res#>>'{medico,cont}')::bigint = 0
+        AND (v_res#>>'{medico,cargo}')::bigint = 0;
+    v_474 := CASE WHEN v_ok
+      THEN 'OK (medico: 0 prospectos, 0 fichas, 0 contactos, asesores_a_cargo() vacío — fail-closed)'
+      ELSE 'ROJO (medico pros='||(v_res#>>'{medico,pros}')||' ases='||(v_res#>>'{medico,ases}')||' cont='||(v_res#>>'{medico,cont}')||' cargo='||(v_res#>>'{medico,cargo}')||')' END;
+
+    -- ---------- P475: CENTINELA DE FAIL-OPEN — el doble candado ----------
+    -- supB (SV) tiene al rogue (GT) dentro de asesores_a_cargo() por el supervisor_id corrupto.
+    -- El término de país tiene que cortarlo igual: ni la ficha ni el prospecto del rogue deben
+    -- aparecer. Si este probe se pone rojo, el país dejó de ser conjuntivo y la jerarquía volvió a
+    -- ser el vector de fuga.
+    v_ok := (v_res#>>'{supB,nombres}') NOT LIKE '%Rogue%'
+        AND (v_res#>>'{supB,ases}')::bigint = 2          -- solo supB + asB1 (NO el rogue de GT)
+        AND (v_res#>>'{supB,cargo}')::bigint = 3;        -- el chokepoint SÍ lo incluye: 3
+    v_475 := CASE WHEN v_ok
+      THEN 'BLOQUEADO (doble candado: asesores_a_cargo()=3 incluye al rogue, pero el país lo corta — fichas visibles=2, prospectos=['||(v_res#>>'{supB,nombres}')||'] sin Rogue)'
+      ELSE 'ROJO — FAIL-OPEN (supB cargo='||(v_res#>>'{supB,cargo}')||' fichas='||(v_res#>>'{supB,ases}')||' ve=['||(v_res#>>'{supB,nombres}')||'])' END;
+
+    -- ---------- P476: los contactos heredan el gate del prospecto ----------
+    -- asA1 ve 1 contacto (el de su prospecto) y no el del rogue; medico ve 0; super_admin ve los 2.
+    v_ok := (v_res#>>'{asA1,cont}')::bigint = 1
+        AND (v_res#>>'{medico,cont}')::bigint = 0
+        AND (v_res#>>'{super,cont}')::bigint = 2;
+    v_476 := CASE WHEN v_ok
+      THEN 'OK (contactos heredan el gate vía prospecto_visible(): asesor 1, medico 0, super_admin 2)'
+      ELSE 'ROJO (asA1='||(v_res#>>'{asA1,cont}')||' medico='||(v_res#>>'{medico,cont}')||' super='||(v_res#>>'{super,cont}')||')' END;
+
+    -- ---------- P477: PA006 — el prospecto con país incoherente NO SE PUEDE ESCRIBIR ----------
+    -- Escenario exacto que sin PA006 filtraba: prospecto marcado en SV cuyo asesor (rogue) es de GT
+    -- pero cuelga de supB (SV). Para supB los DOS términos de la policy pasarían — país SV = su país,
+    -- y rogue ∈ asesores_a_cargo() — y vería el prospecto desde el país equivocado.
+    -- Se corre como OWNER a propósito: es la vía que NO pasa por la RPC de la 265 (owner,
+    -- service_role, fix manual por SQL). Si el control viviera solo en la RPC, este INSERT entraría.
+    v_err := NULL; v_msg := NULL; v_n := 0;
+    BEGIN
+      INSERT INTO public.prospectos (pais_id, asesor_id, tipo, nombre, creado_por)
+        VALUES (v_sv, v_rogue, 'farmacia', 'P264 Prospecto Incoherente', v_rogue);
+      GET DIAGNOSTICS v_n = ROW_COUNT;
+    EXCEPTION WHEN OTHERS THEN v_err := SQLSTATE; v_msg := SQLERRM; v_n := 0; END;
+    v_477 := CASE
+      WHEN v_err = 'PA006' THEN 'BLOQUEADO (PA006: '||v_msg||')'
+      WHEN v_err IS NOT NULL THEN 'ROJO ('||v_err||': '||v_msg||')'
+      ELSE 'PERMITIDO — FAIL-OPEN (entró un prospecto SV con asesor de GT, filas='||v_n||'; supB lo vería desde el país equivocado)' END;
+
+    RAISE EXCEPTION 'PROBE_UNDO';
+  EXCEPTION WHEN OTHERS THEN
+    PERFORM set_config('role','none', true);
+    IF SQLERRM <> 'PROBE_UNDO' THEN
+      v_fatal := SQLSTATE||' '||SQLERRM;
+      PERFORM set_config('probe.p470','ROJO (fatal: '||v_fatal||')', false);
+      PERFORM set_config('probe.p471','ROJO (fatal: '||v_fatal||')', false);
+      PERFORM set_config('probe.p472','ROJO (fatal: '||v_fatal||')', false);
+      PERFORM set_config('probe.p473','ROJO (fatal: '||v_fatal||')', false);
+      PERFORM set_config('probe.p474','ROJO (fatal: '||v_fatal||')', false);
+      PERFORM set_config('probe.p475','ROJO (fatal: '||v_fatal||')', false);
+      PERFORM set_config('probe.p476','ROJO (fatal: '||v_fatal||')', false);
+      PERFORM set_config('probe.p477','ROJO (fatal: '||v_fatal||')', false);
+    END IF;
+  END;
+  -- Publicacion FUERA de la subtransaccion revertida (ver nota en el DECLARE).
+  IF v_fatal IS NULL THEN
+    PERFORM set_config('probe.p470', COALESCE(v_470,'ROJO (sin resultado)'), false);
+    PERFORM set_config('probe.p471', COALESCE(v_471,'ROJO (sin resultado)'), false);
+    PERFORM set_config('probe.p472', COALESCE(v_472,'ROJO (sin resultado)'), false);
+    PERFORM set_config('probe.p473', COALESCE(v_473,'ROJO (sin resultado)'), false);
+    PERFORM set_config('probe.p474', COALESCE(v_474,'ROJO (sin resultado)'), false);
+    PERFORM set_config('probe.p475', COALESCE(v_475,'ROJO (sin resultado)'), false);
+    PERFORM set_config('probe.p476', COALESCE(v_476,'ROJO (sin resultado)'), false);
+    PERFORM set_config('probe.p477', COALESCE(v_477,'ROJO (sin resultado)'), false);
+  END IF;
+END $$;
+SELECT set_config('role','none', true);
+
+
 -- ===== Veredictos como result set =====
 SELECT 'P1_anon_insert_citas'              AS probe, current_setting('probe.p1', true)  AS verdict, 'BLOQUEADO' AS esperado_post_fix
 UNION ALL SELECT 'P2_medico_cancela_ajena_rpc',         current_setting('probe.p2', true),  'BLOQUEADO'
@@ -8969,6 +9657,182 @@ UNION ALL SELECT 'P452_contrato_tipos_vs_check',         current_setting('probe.
 UNION ALL SELECT 'P453_pipeline_shape',                  current_setting('probe.p453', true),             'OK (6 filas, 2 terminales, órdenes únicos)'
 UNION ALL SELECT 'P454_NEG_auth_insert_catalogo',        current_setting('probe.p454', true),             'BLOQUEADO (GRANT: REVOKE, no RLS)'
 UNION ALL SELECT 'P455_POS_auth_select_catalogos',       current_setting('probe.p455', true),             'OK (authenticated lee ambos: 6 y 6)'
-UNION ALL SELECT 'P456_NEG_anon_select_catalogos',       current_setting('probe.p456', true),             'BLOQUEADO (anon sin privilegios)';
+UNION ALL SELECT 'P456_NEG_anon_select_catalogos',       current_setting('probe.p456', true),             'BLOQUEADO (anon sin privilegios)'
+UNION ALL SELECT 'P457_estructura_3_tablas_rls'       , current_setting('probe.p457', true) , 'OK (3 tablas con RLS)'
+UNION ALL SELECT 'P458_higiene_grants',        current_setting('probe.p458', true),  'OK (authenticated solo SELECT; anon nada)'
+UNION ALL SELECT 'P459_cero_policies_escritura',current_setting('probe.p459', true), 'OK (3 policies, todas SELECT)'
+UNION ALL SELECT 'P460_fks_restrict_y_uniques',current_setting('probe.p460', true),  'OK (10 FKs RESTRICT + 2 UNIQUE)'
+UNION ALL SELECT 'P461_nombre_norm_generated', current_setting('probe.p461', true),  'OK (GENERATED STORED sobre función IMMUTABLE)'
+UNION ALL SELECT 'P462_NEG_dedup_mismo_pais',  current_setting('probe.p462', true),  'BLOQUEADO (23505 prospectos_pais_nombrenorm_uniq)'
+UNION ALL SELECT 'P463_POS_mismo_nombre_2_paises',current_setting('probe.p463', true),'OK (sin colisión: el UNIQUE es por país)'
+UNION ALL SELECT 'P464_NEG_PA001_rol_supervisor',current_setting('probe.p464', true),'BLOQUEADO (PA001)'
+UNION ALL SELECT 'P465a_NEG_PA002_sin_ficha',  current_setting('probe.p465a', true), 'BLOQUEADO (PA002)'
+UNION ALL SELECT 'P465b_NEG_PA002_ficha_inactiva',current_setting('probe.p465b', true),'BLOQUEADO (PA002)'
+UNION ALL SELECT 'P466_NEG_PA003_cross_pais',  current_setting('probe.p466', true),  'BLOQUEADO (PA003 — el vector de fuga)'
+UNION ALL SELECT 'P467_NEG_PA004_cadena',      current_setting('probe.p467', true),  'BLOQUEADO (PA004)'
+UNION ALL SELECT 'P468_NEG_PA005_self_supervisor',current_setting('probe.p468', true),'BLOQUEADO (PA005; enmascara a PA001-PA004 por orden)'
+UNION ALL SELECT 'P469_POS_supervisor_valido', current_setting('probe.p469', true),  'OK (alta legítima pasa)'
+UNION ALL SELECT 'P478_NEG_PA007_mover_pais_supervisor_con_equipo', current_setting('probe.p478', true), 'BLOQUEADO (PA007 — agujero simétrico de PA003)'
+UNION ALL SELECT 'P479_POS_PA007_sin_subordinados',current_setting('probe.p479', true),'OK (ficha sin equipo cambia de país)'
+UNION ALL SELECT 'P470_asesor_solo_los_suyos', current_setting('probe.p470', true),  'OK (1 prospecto, cargo=1)'
+UNION ALL SELECT 'P471_supervisor_equipo_y_propios',current_setting('probe.p471', true),'OK (supA=[A1,A2,SupA]; supA2=[A3])'
+UNION ALL SELECT 'P472_admin_pais_scope',      current_setting('probe.p472', true),  'OK (5 de su país, 0 del otro)'
+UNION ALL SELECT 'P473_super_admin_ve_todos',  current_setting('probe.p473', true),  'OK (6)'
+UNION ALL SELECT 'P474_rol_no_comercial_cero', current_setting('probe.p474', true),  'OK (0/0/0, asesores_a_cargo() vacío)'
+UNION ALL SELECT 'P475_CENTINELA_fail_open_pais',current_setting('probe.p475', true),'BLOQUEADO (doble candado: cargo=3 pero país corta)'
+UNION ALL SELECT 'P476_contactos_heredan_gate',current_setting('probe.p476', true),  'OK (1 / 0 / 2)'
+UNION ALL SELECT 'P477_NEG_PA006_pais_incoherente',current_setting('probe.p477', true),'BLOQUEADO (PA006, escrito como owner)'
+-- ===== CENTINELA ANTI-NULL — SIEMPRE LA ÚLTIMA FILA =====
+-- POR QUÉ EXISTE: un probe que NO llegó a publicar su veredicto devuelve NULL, no 'ROJO'. En el
+-- result set eso sale como celda vacía, que de un vistazo se lee igual que un verde. Y contar las
+-- filas del result set NO lo detecta: la fila existe igual, porque la produce el UNION ALL con
+-- verdict = NULL. Este centinela hace imposible confundirlos.
+--
+-- CÓMO SE LLEGA A UN VEREDICTO NULL (pasó de verdad con P470–P477 del bloque 264): un `set_config`
+-- ejecutado DENTRO de una subtransacción que después se revierte se pierde igual que las filas —
+-- SET es transaccional en Postgres, y el `RAISE 'PROBE_UNDO'` que deshace las fixtures revierte
+-- también los settings escritos adentro. REGLA: el veredicto se guarda en una VARIABLE plpgsql y se
+-- publica con set_config DESPUÉS de cerrar el bloque, NUNCA adentro. El patrón correcto está en
+-- P449/P450 (bloque 262) y en las tres suites del bloque 264.
+--
+-- La lista es explícita a propósito: pg_settings solo conoce los settings que ALGUIEN seteó, así que
+-- un probe que nunca publicó no aparecería ahí — que es justo el caso a detectar.
+UNION ALL SELECT 'P000_CENTINELA_veredictos_no_nulos',
+  (SELECT CASE WHEN count(*) FILTER (WHERE v IS NULL OR btrim(v) = '') = 0
+            THEN 'OK ('||count(*)::text||' veredictos, ninguno vacío)'
+            ELSE 'ROJO ('||(count(*) FILTER (WHERE v IS NULL OR btrim(v) = ''))::text||' veredictos vacíos: '
+                 ||string_agg(n, ', ') FILTER (WHERE v IS NULL OR btrim(v) = '')||')'
+          END
+     FROM (SELECT n, current_setting(n, true) AS v
+             FROM unnest(ARRAY[
+       'probe.p1', 'probe.p2', 'probe.p3', 'probe.p4',
+       'probe.p5', 'probe.p6', 'probe.p7', 'probe.p8',
+       'probe.p11', 'probe.p9', 'probe.p10', 'probe.p12',
+       'probe.p13', 'probe.p14', 'probe.p15', 'probe.p16',
+       'probe.p17', 'probe.p18', 'probe.p19', 'probe.p20',
+       'probe.p21', 'probe.p22', 'probe.p23', 'probe.p25',
+       'probe.p24', 'probe.p26', 'probe.p27', 'probe.p28',
+       'probe.p29', 'probe.p30', 'probe.p31', 'probe.p32',
+       'probe.p33', 'probe.p34', 'probe.p35', 'probe.p36',
+       'probe.p37', 'probe.p44', 'probe.p45', 'probe.p47',
+       'probe.p48', 'probe.p49', 'probe.p50', 'probe.p51',
+       'probe.p52', 'probe.p53', 'probe.p54', 'probe.p55',
+       'probe.p56', 'probe.p57', 'probe.p58', 'probe.p59',
+       'probe.p60', 'probe.p61', 'probe.p62', 'probe.p63',
+       'probe.p64', 'probe.p65', 'probe.p66', 'probe.p67',
+       'probe.p68', 'probe.p69', 'probe.p70', 'probe.p71',
+       'probe.p72', 'probe.p73', 'probe.p74', 'probe.p75',
+       'probe.p76', 'probe.p77', 'probe.p78', 'probe.p79',
+       'probe.p80', 'probe.p81', 'probe.p82', 'probe.p83',
+       'probe.p84', 'probe.p85', 'probe.p86', 'probe.p87',
+       'probe.p88', 'probe.p89', 'probe.p90', 'probe.p91',
+       'probe.p92', 'probe.p93', 'probe.p94', 'probe.p95',
+       'probe.p96', 'probe.p97', 'probe.p98', 'probe.p99',
+       'probe.p100', 'probe.p101', 'probe.p102', 'probe.p110',
+       'probe.p111', 'probe.p112', 'probe.p113', 'probe.p114',
+       'probe.p115', 'probe.p116', 'probe.p117', 'probe.p118',
+       'probe.p119', 'probe.p120', 'probe.p121', 'probe.p122',
+       'probe.p123', 'probe.p124', 'probe.p125', 'probe.p126',
+       'probe.p127', 'probe.p128', 'probe.p129', 'probe.p130',
+       'probe.p131', 'probe.p132', 'probe.p133', 'probe.p134',
+       'probe.p135', 'probe.p136', 'probe.p137', 'probe.p138',
+       'probe.p139', 'probe.p140', 'probe.p141', 'probe.p142',
+       'probe.p143', 'probe.p144', 'probe.p145', 'probe.p146',
+       'probe.p147', 'probe.p148', 'probe.p149', 'probe.p150',
+       'probe.p151', 'probe.p152', 'probe.p153', 'probe.p154',
+       'probe.p155', 'probe.p156', 'probe.p157', 'probe.p158',
+       'probe.p159', 'probe.p160', 'probe.p161', 'probe.p162',
+       'probe.p163', 'probe.p164', 'probe.p165', 'probe.p166',
+       'probe.p167', 'probe.p168', 'probe.p169', 'probe.p170',
+       'probe.p171', 'probe.p172', 'probe.p173', 'probe.p174',
+       'probe.p175', 'probe.p176', 'probe.p177', 'probe.p178',
+       'probe.p179', 'probe.p180', 'probe.p181', 'probe.p182',
+       'probe.p183', 'probe.p184', 'probe.p185', 'probe.p186',
+       'probe.p187', 'probe.p188', 'probe.p189', 'probe.p190',
+       'probe.p191', 'probe.p192', 'probe.p193', 'probe.p194',
+       'probe.p195', 'probe.p196', 'probe.p197', 'probe.p198',
+       'probe.p203', 'probe.p199', 'probe.p200', 'probe.p201',
+       'probe.p202', 'probe.p204', 'probe.p205', 'probe.p206',
+       'probe.p207', 'probe.p208', 'probe.p209', 'probe.p210',
+       'probe.p211', 'probe.p212', 'probe.p213', 'probe.p214',
+       'probe.p215', 'probe.p216', 'probe.p217', 'probe.p218',
+       'probe.p219', 'probe.p220', 'probe.p221', 'probe.p222',
+       'probe.p223', 'probe.p224', 'probe.p225', 'probe.p226',
+       'probe.p227', 'probe.p228', 'probe.p229', 'probe.p230',
+       'probe.p231', 'probe.p232', 'probe.p233', 'probe.p234',
+       'probe.p235', 'probe.p236', 'probe.p237', 'probe.p238',
+       'probe.p239', 'probe.p240', 'probe.p241', 'probe.p242',
+       'probe.p243', 'probe.p244', 'probe.p245', 'probe.p246',
+       'probe.p247', 'probe.p248', 'probe.p249', 'probe.p250',
+       'probe.p251', 'probe.p252', 'probe.p253', 'probe.p254',
+       'probe.p255', 'probe.p256', 'probe.p257', 'probe.p258',
+       'probe.p259', 'probe.p260', 'probe.p261', 'probe.p262',
+       'probe.p263', 'probe.p264', 'probe.p265', 'probe.p266',
+       'probe.p267', 'probe.p268', 'probe.p269', 'probe.p270',
+       'probe.p271', 'probe.p272', 'probe.p273', 'probe.p274',
+       'probe.p275', 'probe.p276', 'probe.p277', 'probe.p278',
+       'probe.p279', 'probe.p280', 'probe.p281', 'probe.p282',
+       'probe.p283', 'probe.p284', 'probe.p285', 'probe.p286',
+       'probe.p287', 'probe.p288', 'probe.p289', 'probe.p290',
+       'probe.p291', 'probe.p292', 'probe.p293', 'probe.p294',
+       'probe.p295', 'probe.p296', 'probe.p297', 'probe.p298',
+       'probe.p299', 'probe.p300', 'probe.p301', 'probe.p302',
+       'probe.p303', 'probe.p304', 'probe.p305', 'probe.p306',
+       'probe.p307', 'probe.p308', 'probe.p309', 'probe.p310',
+       'probe.p311', 'probe.p312', 'probe.p313', 'probe.p314',
+       'probe.p315', 'probe.p316', 'probe.p317', 'probe.p318',
+       'probe.p319', 'probe.p320', 'probe.p321', 'probe.p322',
+       'probe.p323', 'probe.p324', 'probe.p325', 'probe.p326',
+       'probe.p327', 'probe.p328', 'probe.p329', 'probe.p330',
+       'probe.p331', 'probe.p332', 'probe.p333', 'probe.p334',
+       'probe.p335', 'probe.p336', 'probe.p337', 'probe.p338',
+       'probe.p339', 'probe.p340', 'probe.p341', 'probe.p342',
+       'probe.p343', 'probe.p344', 'probe.p345', 'probe.p346',
+       'probe.p347', 'probe.p348', 'probe.p349', 'probe.p350',
+       'probe.p351', 'probe.p352', 'probe.p353', 'probe.p354',
+       'probe.p355', 'probe.p356', 'probe.p357', 'probe.p358',
+       'probe.p359', 'probe.p360', 'probe.p361', 'probe.p362',
+       'probe.p363', 'probe.p364', 'probe.p365', 'probe.p366',
+       'probe.p367', 'probe.p368', 'probe.p369', 'probe.p370',
+       'probe.p371', 'probe.p372', 'probe.p373', 'probe.p374',
+       'probe.p375', 'probe.p376', 'probe.p377', 'probe.p378',
+       'probe.p379', 'probe.p380', 'probe.p381', 'probe.p382',
+       'probe.p383', 'probe.p384', 'probe.p385', 'probe.p386',
+       'probe.p387', 'probe.p388', 'probe.p389', 'probe.p390',
+       'probe.p391', 'probe.p392', 'probe.p393', 'probe.p394',
+       'probe.p395', 'probe.p396', 'probe.p397', 'probe.p398',
+       'probe.p399', 'probe.p400', 'probe.p401', 'probe.p402',
+       'probe.p403', 'probe.p404', 'probe.p405', 'probe.p406',
+       'probe.p407', 'probe.p408', 'probe.p409', 'probe.p410',
+       'probe.p411', 'probe.p412', 'probe.p413', 'probe.p414',
+       'probe.p415', 'probe.p416', 'probe.p417', 'probe.p417b',
+       'probe.p418', 'probe.p419', 'probe.p420', 'probe.p421',
+       'probe.p422', 'probe.p423', 'probe.p424', 'probe.p425',
+       'probe.p426', 'probe.p427', 'probe.p428', 'probe.p429',
+       'probe.p430', 'probe.p431', 'probe.p432', 'probe.p433',
+       'probe.p434', 'probe.pinv_neg', 'probe.pinv_pos_w', 'probe.pinv_pos_sel',
+       'probe.pinvit_pregate', 'probe.pinvit_rolcat', 'probe.pinvit_409', 'probe.pinvit_pos',
+       'probe.pinvit_xempresa', 'probe.pgest_gate', 'probe.pgest_xempresa', 'probe.pgest_scope',
+       'probe.pgest_nogeo', 'probe.pgest_softdelete', 'probe.pgest_staffblock', 'probe.pgest_unicidad',
+       'probe.pgest_pos', 'probe.pasign_gate', 'probe.pasign_xempresa', 'probe.pasign_c2',
+       'probe.pasign_desasignar', 'probe.pasign_noregr', 'probe.pasign_138alta', 'probe.pruta_filtro',
+       'probe.pruta_global', 'probe.pruta_3337', 'probe.pruta_pais', 'probe.pbuz_lista',
+       'probe.pbuz_neg', 'probe.pbuz_pos', 'probe.pbuz_detalle', 'probe.pcad_medico',
+       'probe.pcad_anon', 'probe.pcad_nomedico', 'probe.pcad_shape', 'probe.pqr_confinable',
+       'probe.pqr_exento', 'probe.pqr_grandfather', 'probe.pqr_coherencia', 'probe.p435',
+       'probe.p436', 'probe.p437', 'probe.p438', 'probe.p439',
+       'probe.p445', 'probe.p440', 'probe.p441', 'probe.p442',
+       'probe.p443', 'probe.p444', 'probe.p446', 'probe.p447',
+       'probe.p448', 'probe.p449a', 'probe.p449b', 'probe.p450',
+       'probe.p451', 'probe.p452', 'probe.p453', 'probe.p454',
+       'probe.p455', 'probe.p456', 'probe.p457', 'probe.p458',
+       'probe.p459', 'probe.p460', 'probe.p461', 'probe.p462',
+       'probe.p463', 'probe.p464', 'probe.p465a', 'probe.p465b',
+       'probe.p466', 'probe.p467', 'probe.p468', 'probe.p469',
+       'probe.p478', 'probe.p479', 'probe.p470', 'probe.p471',
+       'probe.p472', 'probe.p473', 'probe.p474', 'probe.p475',
+       'probe.p476', 'probe.p477'
+             ]) AS n) s),
+  'OK (todos los veredictos publicados)';
 
 ROLLBACK;  -- nada de lo anterior se persiste
