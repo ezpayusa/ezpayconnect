@@ -8202,6 +8202,291 @@ DO $$ DECLARE v_n bigint := -1; v_err text := NULL; v_msg text := NULL;
 END $$;
 SELECT set_config('role','none', true);
 
+-- ===== Bloque 263 · roles comerciales + catálogos de prospección (P447–P456) =====
+-- Maquinaria INERTE: ningún frontend ni edge function consume esto todavía. Los probes verifican
+-- que el andamiaje quedó bien puesto y con la higiene de privilegios correcta.
+--
+-- ORIGEN DEL CORTE: la RLS, el guard de perfiles, un CHECK y un REVOKE comparten SQLSTATE en
+-- distintas combinaciones (42501 lo usan RLS y GRANT; 23514 el CHECK; 23503 la FK), así que cada
+-- probe aserta sobre el MENSAJE, no sobre el código pelado. Ver la lección del bloque 262 (P445):
+-- cuando dos controles comparten SQLSTATE, el que corre primero enmascara al de atrás.
+--
+-- P449/P450 y el orden FK-antes-que-CHECK: perfiles.rol tiene FK a roles_catalogo(codigo). Si la 263
+-- NO estuviera aplicada, el INSERT lo cortaría perfiles_rol_fkey (23503) y no el CHECK — por eso los
+-- verdicts distinguen ese caso explícitamente en vez de reportar un ROJO mudo.
+--
+-- Cada probe con fixtures deshace lo suyo con un RAISE centinela ('PROBE_UNDO'): la subtransacción se
+-- revierte y no deja residuo para los siguientes dentro de la transacción única del harness.
+-- Fixtures: 00000000-0000-4263-8449/8450/8451-0000000004xx. GT = cbbbbe6d-59fe-4cf2-91ee-3e31ba1d5909.
+SELECT set_config('role','none', true);
+
+-- P447 — roles_catalogo (autoridad real, FK de perfiles.rol): los 2 roles con orden 16/17,
+-- ámbito sistema, no super, no staff de clínica, activos.
+DO $$ DECLARE v_ok boolean; v_det text; v_n bigint := 0; BEGIN
+  SELECT count(*), string_agg(codigo||' orden='||orden||' activo='||activo||' ambito='||ambito, ' | ' ORDER BY orden)
+    INTO v_n, v_det
+    FROM public.roles_catalogo WHERE codigo IN ('asesor_comercial','supervisor_comercial');
+  v_ok := EXISTS (SELECT 1 FROM public.roles_catalogo WHERE codigo='asesor_comercial'
+                   AND activo AND orden=16 AND ambito='sistema' AND NOT es_super AND NOT es_staff_clinica)
+      AND EXISTS (SELECT 1 FROM public.roles_catalogo WHERE codigo='supervisor_comercial'
+                   AND activo AND orden=17 AND ambito='sistema' AND NOT es_super AND NOT es_staff_clinica);
+  PERFORM set_config('probe.p447', CASE WHEN v_ok
+    THEN 'OK (2 roles en roles_catalogo: '||v_det||')'
+    ELSE 'ROJO (n='||v_n||': '||COALESCE(v_det,'ninguno presente')||')' END, false);
+END $$;
+SELECT set_config('role','none', true);
+
+-- P448 — public.roles (RBAC legacy que consume crear-empleado / AsignacionRolesPage): los 2 roles
+-- con nivel=1. nivel=1 los deja FUERA de la escalada de notificar-admin, que no filtra por país.
+DO $$ DECLARE v_n bigint := 0; v_mal bigint := 0; v_det text; BEGIN
+  SELECT count(*), count(*) FILTER (WHERE nivel <> 1),
+         string_agg(nombre||' nivel='||nivel||' permisos='||permisos::text, ' | ' ORDER BY nombre)
+    INTO v_n, v_mal, v_det
+    FROM public.roles WHERE nombre IN ('asesor_comercial','supervisor_comercial');
+  PERFORM set_config('probe.p448', CASE WHEN v_n = 2 AND v_mal = 0
+    THEN 'OK (2 roles en public.roles: '||v_det||')'
+    ELSE 'ROJO (n='||v_n||' con_nivel_distinto_de_1='||v_mal||': '||COALESCE(v_det,'ninguno presente')||')' END, false);
+END $$;
+SELECT set_config('role','none', true);
+
+-- P449 — NEG: un perfil comercial SIN pais_id es imposible, por INSERT (a) y por UPDATE (b).
+-- Corre como postgres, así que el guard de perfiles (mig 262) queda exento y lo único bajo prueba
+-- es el CHECK comercial_requiere_pais. El seeding de (b) tiene su propio handler: sin la 263 aplicada
+-- falla por la FK y sin handler abortaría la transacción entera del harness.
+DO $$
+DECLARE v_uid uuid := '00000000-0000-4263-8449-000000000449';
+        v_err text; v_msg text; v_n bigint; v_sembrado boolean;
+        v_a text; v_b text; v_fatal text := NULL;
+BEGIN
+  BEGIN
+    INSERT INTO auth.users (id) VALUES (v_uid);
+
+    -- (a) INSERT directo con pais_id NULL
+    v_err := NULL; v_msg := NULL; v_n := 0;
+    BEGIN
+      INSERT INTO public.perfiles (id, email, nombre_completo, rol, pais_id, activo)
+        VALUES (v_uid, 'probe449@example.invalid', 'Probe 449', 'asesor_comercial', NULL, true);
+      GET DIAGNOSTICS v_n = ROW_COUNT;
+    EXCEPTION WHEN OTHERS THEN v_err := SQLSTATE; v_msg := SQLERRM; v_n := 0; END;
+    v_a := CASE
+      WHEN v_err = '23514' AND v_msg LIKE '%comercial_requiere_pais%' THEN 'BLOQUEADO (CHECK comercial_requiere_pais)'
+      WHEN v_err = '23503' THEN 'ROJO (cortó la FK perfiles_rol_fkey: el rol no está en roles_catalogo → mig 263 sin aplicar)'
+      WHEN v_err IS NOT NULL THEN 'ROJO ('||v_err||': '||v_msg||')'
+      ELSE 'PERMITIDO (comercial sin país, filas='||v_n||')' END;
+
+    -- (b) sembrar válido (país GT) y después intentar borrarle el país
+    v_err := NULL; v_msg := NULL; v_n := 0; v_sembrado := true;
+    BEGIN
+      INSERT INTO public.perfiles (id, email, nombre_completo, rol, pais_id, activo)
+        VALUES (v_uid, 'probe449@example.invalid', 'Probe 449', 'asesor_comercial',
+                'cbbbbe6d-59fe-4cf2-91ee-3e31ba1d5909', true);
+    EXCEPTION WHEN OTHERS THEN v_sembrado := false; v_err := SQLSTATE; v_msg := SQLERRM; END;
+
+    IF NOT v_sembrado THEN
+      v_b := 'ROJO (no se pudo sembrar la fila base: '||v_err||' '||v_msg||')';
+    ELSE
+      v_err := NULL; v_msg := NULL; v_n := 0;
+      BEGIN
+        UPDATE public.perfiles SET pais_id = NULL WHERE id = v_uid;
+        GET DIAGNOSTICS v_n = ROW_COUNT;
+      EXCEPTION WHEN OTHERS THEN v_err := SQLSTATE; v_msg := SQLERRM; v_n := 0; END;
+      v_b := CASE
+        WHEN v_err = '23514' AND v_msg LIKE '%comercial_requiere_pais%' THEN 'BLOQUEADO (CHECK comercial_requiere_pais)'
+        WHEN v_err IS NOT NULL THEN 'ROJO ('||v_err||': '||v_msg||')'
+        ELSE 'PERMITIDO (le borró el país a un comercial, filas='||v_n||')' END;
+    END IF;
+
+    RAISE EXCEPTION 'PROBE_UNDO';
+  EXCEPTION WHEN OTHERS THEN
+    IF SQLERRM <> 'PROBE_UNDO' THEN v_fatal := SQLSTATE||' '||SQLERRM; END IF;
+  END;
+  PERFORM set_config('probe.p449a', COALESCE('ROJO (fatal: '||v_fatal||')', v_a, 'ROJO (sin resultado)'), false);
+  PERFORM set_config('probe.p449b', COALESCE('ROJO (fatal: '||v_fatal||')', v_b, 'ROJO (sin resultado)'), false);
+END $$;
+SELECT set_config('role','none', true);
+
+-- P450 — POS: el mismo perfil con pais_id = GT entra sin problema. Control de que el CHECK no
+-- bloquea el alta legítima.
+DO $$
+DECLARE v_uid uuid := '00000000-0000-4263-8450-000000000450';
+        v_err text; v_msg text; v_n bigint := 0; v_res text; v_fatal text := NULL;
+BEGIN
+  BEGIN
+    INSERT INTO auth.users (id) VALUES (v_uid);
+    BEGIN
+      INSERT INTO public.perfiles (id, email, nombre_completo, rol, pais_id, activo)
+        VALUES (v_uid, 'probe450@example.invalid', 'Probe 450', 'asesor_comercial',
+                'cbbbbe6d-59fe-4cf2-91ee-3e31ba1d5909', true);
+      GET DIAGNOSTICS v_n = ROW_COUNT;
+    EXCEPTION WHEN OTHERS THEN v_err := SQLSTATE; v_msg := SQLERRM; v_n := 0; END;
+    v_res := CASE
+      WHEN v_err IS NULL AND v_n = 1 THEN 'OK (alta de comercial con país, filas=1)'
+      WHEN v_err = '23503' THEN 'ROJO (cortó la FK perfiles_rol_fkey: el rol no está en roles_catalogo → mig 263 sin aplicar)'
+      WHEN v_err IS NOT NULL THEN 'ROJO ('||v_err||': '||v_msg||')'
+      ELSE 'ROJO (filas='||v_n||')' END;
+    RAISE EXCEPTION 'PROBE_UNDO';
+  EXCEPTION WHEN OTHERS THEN
+    IF SQLERRM <> 'PROBE_UNDO' THEN v_fatal := SQLSTATE||' '||SQLERRM; END IF;
+  END;
+  PERFORM set_config('probe.p450', COALESCE('ROJO (fatal: '||v_fatal||')', v_res, 'ROJO (sin resultado)'), false);
+END $$;
+SELECT set_config('role','none', true);
+
+-- P451 — NEG de no-regresión: admin_pais_requiere_pais (mig 216) sigue vivo e INDEPENDIENTE del
+-- constraint nuevo. Dos aserciones: sigue cortando (23514) y los dos constraints coexisten separados.
+DO $$
+DECLARE v_uid uuid := '00000000-0000-4263-8451-000000000451';
+        v_err text; v_msg text; v_n bigint := 0; v_res text; v_fatal text := NULL;
+        v_viejo boolean; v_nuevo boolean;
+BEGIN
+  v_viejo := EXISTS (SELECT 1 FROM pg_constraint WHERE conrelid='public.perfiles'::regclass AND conname='admin_pais_requiere_pais');
+  v_nuevo := EXISTS (SELECT 1 FROM pg_constraint WHERE conrelid='public.perfiles'::regclass AND conname='comercial_requiere_pais');
+  BEGIN
+    INSERT INTO auth.users (id) VALUES (v_uid);
+    BEGIN
+      INSERT INTO public.perfiles (id, email, nombre_completo, rol, pais_id, activo)
+        VALUES (v_uid, 'probe451@example.invalid', 'Probe 451', 'admin_pais', NULL, true);
+      GET DIAGNOSTICS v_n = ROW_COUNT;
+    EXCEPTION WHEN OTHERS THEN v_err := SQLSTATE; v_msg := SQLERRM; v_n := 0; END;
+    v_res := CASE
+      WHEN v_err = '23514' AND v_msg LIKE '%admin_pais_requiere_pais%' AND v_viejo AND v_nuevo
+        THEN 'BLOQUEADO (CHECK admin_pais_requiere_pais; los 2 constraints coexisten separados)'
+      WHEN v_err = '23514' AND NOT (v_viejo AND v_nuevo)
+        THEN 'ROJO (cortó un CHECK pero faltan constraints: viejo='||v_viejo||' nuevo='||v_nuevo||')'
+      WHEN v_err IS NOT NULL THEN 'ROJO ('||v_err||': '||v_msg||' viejo='||v_viejo||' nuevo='||v_nuevo||')'
+      ELSE 'PERMITIDO (admin_pais sin país, filas='||v_n||')' END;
+    RAISE EXCEPTION 'PROBE_UNDO';
+  EXCEPTION WHEN OTHERS THEN
+    IF SQLERRM <> 'PROBE_UNDO' THEN v_fatal := SQLSTATE||' '||SQLERRM; END IF;
+  END;
+  PERFORM set_config('probe.p451', COALESCE('ROJO (fatal: '||v_fatal||')', v_res, 'ROJO (sin resultado)'), false);
+END $$;
+SELECT set_config('role','none', true);
+
+-- P452 — CONTRATO: los códigos de catalogo_prospecto_tipo que se solapan con empresas_proveedoras.tipo
+-- coinciden EXACTAMENTE. La lista de tipos NO está escrita a mano: sale del CHECK vivo por regexp, así
+-- que si alguien agrega un tipo de empresa y no lo replica en el catálogo, esto vira a ROJO solo.
+-- De esa coincidencia depende la conversión prospecto -> empresa (el tipo se copia tal cual).
+DO $$ DECLARE v_tipos text; v_faltan text; v_extra text; v_n bigint := 0; BEGIN
+  IF to_regclass('public.catalogo_prospecto_tipo') IS NULL THEN
+    PERFORM set_config('probe.p452','ROJO (objeto ausente: public.catalogo_prospecto_tipo)', false); RETURN;
+  END IF;
+  SELECT count(*), string_agg(t, ', ' ORDER BY t) INTO v_n, v_tipos FROM (
+    SELECT DISTINCT m[1] AS t FROM pg_constraint c,
+      LATERAL regexp_matches(pg_get_constraintdef(c.oid), '''([a-z_]+)''::text', 'g') AS m
+    WHERE c.conrelid='public.empresas_proveedoras'::regclass AND c.conname='empresas_proveedoras_tipo_check') s;
+  SELECT string_agg(t, ', ' ORDER BY t) INTO v_faltan FROM (
+    SELECT DISTINCT m[1] AS t FROM pg_constraint c,
+      LATERAL regexp_matches(pg_get_constraintdef(c.oid), '''([a-z_]+)''::text', 'g') AS m
+    WHERE c.conrelid='public.empresas_proveedoras'::regclass AND c.conname='empresas_proveedoras_tipo_check'
+    EXCEPT SELECT codigo FROM public.catalogo_prospecto_tipo WHERE activo) s;
+  SELECT string_agg(t, ', ' ORDER BY t) INTO v_extra FROM (
+    SELECT codigo AS t FROM public.catalogo_prospecto_tipo WHERE activo
+    EXCEPT SELECT DISTINCT m[1] FROM pg_constraint c,
+      LATERAL regexp_matches(pg_get_constraintdef(c.oid), '''([a-z_]+)''::text', 'g') AS m
+    WHERE c.conrelid='public.empresas_proveedoras'::regclass AND c.conname='empresas_proveedoras_tipo_check') s;
+  PERFORM set_config('probe.p452', CASE WHEN v_n > 0 AND v_faltan IS NULL
+    THEN 'OK (CHECK vivo ['||v_n||']: '||v_tipos||' | solo-prospección: '||COALESCE(v_extra,'ninguno')||')'
+    ELSE 'ROJO (faltan en catálogo: '||COALESCE(v_faltan,'?')||' | CHECK vivo: '||COALESCE(v_tipos,'∅')||')' END, false);
+END $$;
+SELECT set_config('role','none', true);
+
+-- P453 — catalogo_pipeline_estado: 6 filas, exactamente 2 terminales y órdenes sin duplicados
+-- (el orden define la secuencia del pipeline; un duplicado la vuelve ambigua).
+DO $$ DECLARE v_n bigint := 0; v_term bigint := 0; v_ord bigint := 0; v_det text; BEGIN
+  IF to_regclass('public.catalogo_pipeline_estado') IS NULL THEN
+    PERFORM set_config('probe.p453','ROJO (objeto ausente: public.catalogo_pipeline_estado)', false); RETURN;
+  END IF;
+  SELECT count(*), count(*) FILTER (WHERE es_terminal), count(DISTINCT orden),
+         string_agg(codigo||'('||orden||CASE WHEN es_terminal THEN ',T' ELSE '' END||')', ' -> ' ORDER BY orden)
+    INTO v_n, v_term, v_ord, v_det FROM public.catalogo_pipeline_estado;
+  PERFORM set_config('probe.p453', CASE WHEN v_n = 6 AND v_term = 2 AND v_ord = v_n
+    THEN 'OK ('||v_det||')'
+    ELSE 'ROJO (filas='||v_n||' terminales='||v_term||' ordenes_distintos='||v_ord||': '||COALESCE(v_det,'∅')||')' END, false);
+END $$;
+SELECT set_config('role','none', true);
+
+-- P454 — NEG de higiene: como authenticated, INSERT en catalogo_prospecto_tipo denegado.
+-- Los default privileges de Supabase dan ALL a authenticated al crear la tabla; sin el REVOKE de la
+-- 263 este INSERT pasaría. Se exige que corte el GRANT (permission denied), no la RLS: si cortara la
+-- RLS significaría que el REVOKE no se aplicó y solo salva la ausencia de policy de INSERT.
+DO $$ DECLARE v_err text; v_msg text; v_n bigint := 0; v_res text; v_fatal text := NULL; BEGIN
+  IF to_regclass('public.catalogo_prospecto_tipo') IS NULL THEN
+    PERFORM set_config('probe.p454','ROJO (objeto ausente: public.catalogo_prospecto_tipo)', false); RETURN;
+  END IF;
+  BEGIN
+    PERFORM set_config('request.jwt.claims','{"sub":"09d243d5-b222-482a-9762-94a582e9e752","role":"authenticated"}', true);
+    BEGIN
+      PERFORM set_config('role','authenticated', true);
+      INSERT INTO public.catalogo_prospecto_tipo (codigo, etiqueta, orden, activo)
+        VALUES ('probe454_intruso', 'Intruso probe 454', 999, true);
+      GET DIAGNOSTICS v_n = ROW_COUNT;
+      PERFORM set_config('role','none', true);
+    EXCEPTION WHEN OTHERS THEN
+      PERFORM set_config('role','none', true);
+      v_err := SQLSTATE; v_msg := SQLERRM; v_n := 0;
+    END;
+    v_res := CASE
+      WHEN v_msg LIKE '%permission denied%' THEN 'BLOQUEADO (GRANT: '||v_msg||')'
+      WHEN v_msg LIKE '%row-level security policy%' THEN 'ROJO (lo frenó la RLS, no el REVOKE: falta el REVOKE de la mig 263)'
+      WHEN v_err IS NOT NULL THEN 'ROJO ('||v_err||': '||v_msg||')'
+      ELSE 'PERMITIDO (authenticated escribió el catálogo, filas='||v_n||')' END;
+    RAISE EXCEPTION 'PROBE_UNDO';
+  EXCEPTION WHEN OTHERS THEN
+    PERFORM set_config('role','none', true);
+    IF SQLERRM <> 'PROBE_UNDO' THEN v_fatal := SQLSTATE||' '||SQLERRM; END IF;
+  END;
+  PERFORM set_config('probe.p454', COALESCE('ROJO (fatal: '||v_fatal||')', v_res, 'ROJO (sin resultado)'), false);
+END $$;
+SELECT set_config('role','none', true);
+
+-- P455 — POS de higiene: como authenticated, SELECT en los DOS catálogos devuelve las 6 filas activas.
+-- Control de que el REVOKE de P454 no se pasó de rosca y dejó los catálogos ilegibles para la app.
+DO $$ DECLARE v_err text; v_msg text; v_t bigint := -1; v_p bigint := -1; BEGIN
+  IF to_regclass('public.catalogo_prospecto_tipo') IS NULL OR to_regclass('public.catalogo_pipeline_estado') IS NULL THEN
+    PERFORM set_config('probe.p455','ROJO (objeto ausente: falta alguno de los dos catálogos)', false); RETURN;
+  END IF;
+  PERFORM set_config('request.jwt.claims','{"sub":"09d243d5-b222-482a-9762-94a582e9e752","role":"authenticated"}', true);
+  BEGIN
+    PERFORM set_config('role','authenticated', true);
+    SELECT count(*) INTO v_t FROM public.catalogo_prospecto_tipo;
+    SELECT count(*) INTO v_p FROM public.catalogo_pipeline_estado;
+    PERFORM set_config('role','none', true);
+  EXCEPTION WHEN OTHERS THEN
+    PERFORM set_config('role','none', true);
+    v_err := SQLSTATE; v_msg := SQLERRM;
+  END;
+  PERFORM set_config('probe.p455', CASE
+    WHEN v_err IS NULL AND v_t = 6 AND v_p = 6 THEN 'OK (authenticated lee ambos catálogos: 6 y 6)'
+    WHEN v_err IS NOT NULL THEN 'ROJO ('||v_err||': '||v_msg||')'
+    ELSE 'ROJO (prospecto_tipo='||v_t||' pipeline_estado='||v_p||')' END, false);
+END $$;
+SELECT set_config('role','none', true);
+
+-- P456 — NEG: como anon los catálogos no se leen (REVOKE ALL FROM anon). Verde = permission denied;
+-- se acepta 0 filas sin excepción. Cualquier lectura con filas > 0 es ROJO.
+DO $$ DECLARE v_err text; v_msg text; v_t bigint := 0; v_p bigint := 0; BEGIN
+  IF to_regclass('public.catalogo_prospecto_tipo') IS NULL OR to_regclass('public.catalogo_pipeline_estado') IS NULL THEN
+    PERFORM set_config('probe.p456','ROJO (objeto ausente: falta alguno de los dos catálogos)', false); RETURN;
+  END IF;
+  PERFORM set_config('request.jwt.claims','{"role":"anon"}', true);
+  BEGIN
+    PERFORM set_config('role','anon', true);
+    SELECT count(*) INTO v_t FROM public.catalogo_prospecto_tipo;
+    SELECT count(*) INTO v_p FROM public.catalogo_pipeline_estado;
+    PERFORM set_config('role','none', true);
+  EXCEPTION WHEN OTHERS THEN
+    PERFORM set_config('role','none', true);
+    v_err := SQLSTATE; v_msg := SQLERRM; v_t := 0; v_p := 0;
+  END;
+  PERFORM set_config('probe.p456', CASE
+    WHEN v_msg LIKE '%permission denied%' THEN 'BLOQUEADO (GRANT: anon sin privilegios)'
+    WHEN v_err IS NULL AND v_t = 0 AND v_p = 0 THEN 'BLOQUEADO (0 filas para anon)'
+    WHEN v_err IS NOT NULL THEN 'ROJO ('||v_err||': '||v_msg||')'
+    ELSE 'PERMITIDO (anon leyó los catálogos: '||v_t||' y '||v_p||')' END, false);
+END $$;
+SELECT set_config('role','none', true);
+
 -- ===== Veredictos como result set =====
 SELECT 'P1_anon_insert_citas'              AS probe, current_setting('probe.p1', true)  AS verdict, 'BLOQUEADO' AS esperado_post_fix
 UNION ALL SELECT 'P2_medico_cancela_ajena_rpc',         current_setting('probe.p2', true),  'BLOQUEADO'
@@ -8673,6 +8958,17 @@ UNION ALL SELECT 'P441_POS_medico_lab_preferido',        current_setting('probe.
 UNION ALL SELECT 'P442_POS_superadmin_activo_rol',       current_setting('probe.p442', true),             'OK (super_admin exento, filas=1)'
 UNION ALL SELECT 'P443_POS_superadmin_pais_id',          current_setting('probe.p443', true),             'OK (super_admin exento, filas=1)'
 UNION ALL SELECT 'P444_POS_definer_rol_pais',            current_setting('probe.p444', true),             'OK (exención current_user: RPCs DEFINER intactas, filas=1)'
-UNION ALL SELECT 'P446_centinela_aislamiento_pais',      current_setting('probe.p446', true),             'BLOQUEADO (USING aisló: 0 filas, sin excepción)';
+UNION ALL SELECT 'P446_centinela_aislamiento_pais',      current_setting('probe.p446', true),             'BLOQUEADO (USING aisló: 0 filas, sin excepción)'
+UNION ALL SELECT 'P447_roles_catalogo_comerciales',      current_setting('probe.p447', true),             'OK (2 roles en roles_catalogo, orden 16/17)'
+UNION ALL SELECT 'P448_roles_legacy_nivel1',             current_setting('probe.p448', true),             'OK (2 roles en public.roles con nivel=1)'
+UNION ALL SELECT 'P449a_NEG_insert_sin_pais',            current_setting('probe.p449a', true),            'BLOQUEADO (CHECK comercial_requiere_pais)'
+UNION ALL SELECT 'P449b_NEG_update_borra_pais',          current_setting('probe.p449b', true),            'BLOQUEADO (CHECK comercial_requiere_pais)'
+UNION ALL SELECT 'P450_POS_alta_con_pais',               current_setting('probe.p450', true),             'OK (alta de comercial con país, filas=1)'
+UNION ALL SELECT 'P451_NEG_admin_pais_sin_pais',         current_setting('probe.p451', true),             'BLOQUEADO (CHECK admin_pais_requiere_pais; 2 constraints separados)'
+UNION ALL SELECT 'P452_contrato_tipos_vs_check',         current_setting('probe.p452', true),             'OK (códigos solapados == CHECK vivo de empresas_proveedoras.tipo)'
+UNION ALL SELECT 'P453_pipeline_shape',                  current_setting('probe.p453', true),             'OK (6 filas, 2 terminales, órdenes únicos)'
+UNION ALL SELECT 'P454_NEG_auth_insert_catalogo',        current_setting('probe.p454', true),             'BLOQUEADO (GRANT: REVOKE, no RLS)'
+UNION ALL SELECT 'P455_POS_auth_select_catalogos',       current_setting('probe.p455', true),             'OK (authenticated lee ambos: 6 y 6)'
+UNION ALL SELECT 'P456_NEG_anon_select_catalogos',       current_setting('probe.p456', true),             'BLOQUEADO (anon sin privilegios)';
 
 ROLLBACK;  -- nada de lo anterior se persiste
