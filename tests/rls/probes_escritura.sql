@@ -7935,6 +7935,273 @@ BEGIN
 END $$;
 SELECT set_config('role','none', true);
 
+-- ===== Bloque 262 · guard de perfiles: rol + pais_id + rol_id + activo (P435–P446) =====
+-- Cierra P435: la policy "Actualizar propio perfil" (FOR UPDATE USING auth.uid()=id, with_check NULL
+-- → WITH CHECK efectivo = el propio USING) valida QUIÉN es la fila, no QUÉ columnas cambian; y las
+-- policies permisivas se combinan con OR, así que habilita el self-update aunque la policy de admin
+-- lo rechace. El trigger BEFORE UPDATE trg_perfiles_guard_rol_update es el único control real.
+-- LECCIÓN: cuando dos controles comparten SQLSTATE (RLS y guard usan 42501), el que corre primero
+-- enmascara al otro. Orden de un UPDATE con RLS: (1) USING filtra filas → (2) triggers BEFORE ROW →
+-- (3) WITH CHECK sobre la fila NEW. Por eso P445 pasó de cortarlo la RLS a cortarlo el guard, y por eso
+-- el centinela de aislamiento (P446) se apoya en el USING (paso 1) y no en el WITH CHECK (paso 3).
+-- Cada probe deshace su propio UPDATE con un RAISE centinela ('PROBE_UNDO'): la subtransacción se
+-- revierte y el probe no deja residuo para los siguientes dentro de esta transacción.
+-- Actores: admin_pais QA 8f391caf / super_admin 41904e2c / medico 09d243d5 / tercero GT 66168f15.
+SELECT set_config('role','none', true);
+
+-- P435 — admin_pais NO puede cambiarse su propio pais_id (era el hueco; mig 262)
+DO $$ DECLARE v_n bigint := 0; v_err text := NULL; v_msg text := NULL; BEGIN
+  PERFORM set_config('request.jwt.claims','{"sub":"8f391caf-85bc-4413-af8a-4006452ae09f","role":"authenticated"}', true);
+  BEGIN
+    PERFORM set_config('role','authenticated', true);
+    UPDATE public.perfiles SET pais_id='f2c75b8e-ef54-4a05-b2ff-7363e448f680' WHERE id='8f391caf-85bc-4413-af8a-4006452ae09f';
+    GET DIAGNOSTICS v_n = ROW_COUNT;
+    RAISE EXCEPTION 'PROBE_UNDO';
+  EXCEPTION WHEN OTHERS THEN
+    IF SQLERRM <> 'PROBE_UNDO' THEN v_err := SQLSTATE; v_msg := SQLERRM; v_n := 0; END IF;
+  END;
+  PERFORM set_config('role','none', true);
+  PERFORM set_config('probe.p435', CASE
+    WHEN v_msg LIKE 'No autorizado a modificar el pais%' THEN 'BLOQUEADO (GUARD: '||v_msg||')'
+    WHEN v_msg IS NOT NULL THEN 'ROJO (cortó otro control '||COALESCE(v_err,'?')||': '||v_msg||')'
+    ELSE 'PERMITIDO (HUECO ABIERTO, filas='||v_n||')' END, false);
+END $$;
+SELECT set_config('role','none', true);
+
+-- P436 — admin_pais NO escala su propio rol (ya bloqueado antes de 262; no debe regresionar)
+DO $$ DECLARE v_n bigint := 0; v_err text := NULL; v_msg text := NULL; BEGIN
+  PERFORM set_config('request.jwt.claims','{"sub":"8f391caf-85bc-4413-af8a-4006452ae09f","role":"authenticated"}', true);
+  BEGIN
+    PERFORM set_config('role','authenticated', true);
+    UPDATE public.perfiles SET rol='super_admin' WHERE id='8f391caf-85bc-4413-af8a-4006452ae09f';
+    GET DIAGNOSTICS v_n = ROW_COUNT;
+    RAISE EXCEPTION 'PROBE_UNDO';
+  EXCEPTION WHEN OTHERS THEN
+    IF SQLERRM <> 'PROBE_UNDO' THEN v_err := SQLSTATE; v_msg := SQLERRM; v_n := 0; END IF;
+  END;
+  PERFORM set_config('role','none', true);
+  PERFORM set_config('probe.p436', CASE
+    WHEN v_msg LIKE 'No autorizado a modificar el rol del perfil%' THEN 'BLOQUEADO (GUARD: '||v_msg||')'
+    WHEN v_msg IS NOT NULL THEN 'ROJO (cortó otro control '||COALESCE(v_err,'?')||': '||v_msg||')'
+    ELSE 'PERMITIDO (ESCALADA DE ROL, filas='||v_n||')' END, false);
+END $$;
+SELECT set_config('role','none', true);
+
+-- P437 — medico NO puede cambiarse su propio pais_id (cruzaría el aislamiento por país)
+DO $$ DECLARE v_n bigint := 0; v_err text := NULL; v_msg text := NULL; BEGIN
+  PERFORM set_config('request.jwt.claims','{"sub":"09d243d5-b222-482a-9762-94a582e9e752","role":"authenticated"}', true);
+  BEGIN
+    PERFORM set_config('role','authenticated', true);
+    UPDATE public.perfiles SET pais_id='f2c75b8e-ef54-4a05-b2ff-7363e448f680' WHERE id='09d243d5-b222-482a-9762-94a582e9e752';
+    GET DIAGNOSTICS v_n = ROW_COUNT;
+    RAISE EXCEPTION 'PROBE_UNDO';
+  EXCEPTION WHEN OTHERS THEN
+    IF SQLERRM <> 'PROBE_UNDO' THEN v_err := SQLSTATE; v_msg := SQLERRM; v_n := 0; END IF;
+  END;
+  PERFORM set_config('role','none', true);
+  PERFORM set_config('probe.p437', CASE
+    WHEN v_msg LIKE 'No autorizado a modificar el pais%' THEN 'BLOQUEADO (GUARD: '||v_msg||')'
+    WHEN v_msg IS NOT NULL THEN 'ROJO (cortó otro control '||COALESCE(v_err,'?')||': '||v_msg||')'
+    ELSE 'PERMITIDO (HUECO ABIERTO, filas='||v_n||')' END, false);
+END $$;
+SELECT set_config('role','none', true);
+
+-- P438 — medico NO puede auto-desactivarse ni cambiarse el rol_id
+-- (el guard evalúa rol → pais_id → rol_id → activo, así que corta en rol_id)
+DO $$ DECLARE v_n bigint := 0; v_err text := NULL; v_msg text := NULL; BEGIN
+  PERFORM set_config('request.jwt.claims','{"sub":"09d243d5-b222-482a-9762-94a582e9e752","role":"authenticated"}', true);
+  BEGIN
+    PERFORM set_config('role','authenticated', true);
+    UPDATE public.perfiles SET activo=false, rol_id='f212c596-6143-4739-b99b-78a28ccd99bb' WHERE id='09d243d5-b222-482a-9762-94a582e9e752';
+    GET DIAGNOSTICS v_n = ROW_COUNT;
+    RAISE EXCEPTION 'PROBE_UNDO';
+  EXCEPTION WHEN OTHERS THEN
+    IF SQLERRM <> 'PROBE_UNDO' THEN v_err := SQLSTATE; v_msg := SQLERRM; v_n := 0; END IF;
+  END;
+  PERFORM set_config('role','none', true);
+  PERFORM set_config('probe.p438', CASE
+    WHEN v_msg LIKE 'No autorizado a modificar el rol_id%' THEN 'BLOQUEADO (GUARD: '||v_msg||')'
+    WHEN v_msg LIKE 'No autorizado a modificar%' THEN 'BLOQUEADO (GUARD, otra columna: '||v_msg||')'
+    WHEN v_msg IS NOT NULL THEN 'ROJO (cortó otro control '||COALESCE(v_err,'?')||': '||v_msg||')'
+    ELSE 'PERMITIDO (HUECO ABIERTO, filas='||v_n||')' END, false);
+END $$;
+SELECT set_config('role','none', true);
+
+-- P439 — admin_pais NO cambia el activo de OTRO perfil de su mismo país.
+-- REGRESIÓN DE SUPERFICIE ACEPTADA: hoy ninguna UI ejerce este camino (UsuariosAdminPage/RolesPage/
+-- AsignacionRolesPage cuelgan de rutas globales de /admin-ezpay y AdminRoute redirige a todo admin_pais
+-- a su propio /pais/:paisId ⇒ sólo lo dispara un super_admin, que queda exento). Cuando haga falta un
+-- panel de usuarios por país se resuelve con RPC SECURITY DEFINER con gate de país, NO aflojando el guard.
+DO $$ DECLARE v_n bigint := 0; v_err text := NULL; v_msg text := NULL; BEGIN
+  PERFORM set_config('request.jwt.claims','{"sub":"8f391caf-85bc-4413-af8a-4006452ae09f","role":"authenticated"}', true);
+  BEGIN
+    PERFORM set_config('role','authenticated', true);
+    UPDATE public.perfiles SET activo=false WHERE id='66168f15-8f2d-456f-a610-c899346505d9';
+    GET DIAGNOSTICS v_n = ROW_COUNT;
+    RAISE EXCEPTION 'PROBE_UNDO';
+  EXCEPTION WHEN OTHERS THEN
+    IF SQLERRM <> 'PROBE_UNDO' THEN v_err := SQLSTATE; v_msg := SQLERRM; v_n := 0; END IF;
+  END;
+  PERFORM set_config('role','none', true);
+  PERFORM set_config('probe.p439', CASE
+    WHEN v_msg LIKE 'No autorizado a modificar el estado activo%' THEN 'BLOQUEADO (GUARD: '||v_msg||')'
+    WHEN v_msg IS NOT NULL THEN 'ROJO (cortó otro control '||COALESCE(v_err,'?')||': '||v_msg||')'
+    ELSE 'PERMITIDO (guard roto, filas='||v_n||')' END, false);
+END $$;
+SELECT set_config('role','none', true);
+
+-- P445 — admin_pais NO cambia el pais_id de OTRO perfil de su país. ANTES de la 262 lo cortaba el
+-- WITH CHECK de "Admin ve perfiles de su pais" (mensaje de RLS); AHORA lo corta el guard en el paso 2
+-- y la RLS ya ni se evalúa. Cambió el ORDEN, no la cobertura. Este probe YA NO observa la RLS: el
+-- centinela del aislamiento por país es P446.
+DO $$ DECLARE v_n bigint := 0; v_err text := NULL; v_msg text := NULL; BEGIN
+  PERFORM set_config('request.jwt.claims','{"sub":"8f391caf-85bc-4413-af8a-4006452ae09f","role":"authenticated"}', true);
+  BEGIN
+    PERFORM set_config('role','authenticated', true);
+    UPDATE public.perfiles SET pais_id='f2c75b8e-ef54-4a05-b2ff-7363e448f680' WHERE id='66168f15-8f2d-456f-a610-c899346505d9';
+    GET DIAGNOSTICS v_n = ROW_COUNT;
+    RAISE EXCEPTION 'PROBE_UNDO';
+  EXCEPTION WHEN OTHERS THEN
+    IF SQLERRM <> 'PROBE_UNDO' THEN v_err := SQLSTATE; v_msg := SQLERRM; v_n := 0; END IF;
+  END;
+  PERFORM set_config('role','none', true);
+  PERFORM set_config('probe.p445', CASE
+    WHEN v_msg LIKE 'No autorizado a modificar el pais%' THEN 'BLOQUEADO (GUARD, corta antes que la RLS: '||v_msg||')'
+    WHEN v_msg LIKE '%row-level security policy%' THEN 'BLOQUEADO (RLS — el guard no cubrió pais_id: revisar mig 262)'
+    WHEN v_msg IS NOT NULL THEN 'ROJO (cortó otro control '||COALESCE(v_err,'?')||': '||v_msg||')'
+    ELSE 'PERMITIDO (ningún control cortó, filas='||v_n||')' END, false);
+END $$;
+SELECT set_config('role','none', true);
+
+-- P440 — POS no-regresión: cualquiera actualiza su propio avatar_url + nombre_completo
+-- (ninguna columna vigilada cambia ⇒ el guard ni se evalúa)
+DO $$ DECLARE v_n bigint := 0; v_err text := NULL; v_msg text := NULL; BEGIN
+  PERFORM set_config('request.jwt.claims','{"sub":"09d243d5-b222-482a-9762-94a582e9e752","role":"authenticated"}', true);
+  BEGIN
+    PERFORM set_config('role','authenticated', true);
+    UPDATE public.perfiles SET avatar_url='https://example.invalid/probe-262.png', nombre_completo=nombre_completo||' (probe262)'
+      WHERE id='09d243d5-b222-482a-9762-94a582e9e752';
+    GET DIAGNOSTICS v_n = ROW_COUNT;
+    RAISE EXCEPTION 'PROBE_UNDO';
+  EXCEPTION WHEN OTHERS THEN
+    IF SQLERRM <> 'PROBE_UNDO' THEN v_err := SQLSTATE; v_msg := SQLERRM; v_n := 0; END IF;
+  END;
+  PERFORM set_config('role','none', true);
+  PERFORM set_config('probe.p440', CASE
+    WHEN v_msg IS NULL AND v_n = 1 THEN 'OK (self-update de columnas no vigiladas, filas=1)'
+    WHEN v_msg IS NOT NULL THEN 'ROJO (REGRESIÓN '||COALESCE(v_err,'?')||': '||v_msg||')'
+    ELSE 'ROJO (filas='||v_n||')' END, false);
+END $$;
+SELECT set_config('role','none', true);
+
+-- P441 — POS no-regresión: medico set laboratorio_preferido_id (caller real de ConsultaPage.tsx:867)
+DO $$ DECLARE v_n bigint := 0; v_err text := NULL; v_msg text := NULL; v_lab uuid; BEGIN
+  SELECT ep.id INTO v_lab FROM public.empresas_proveedoras ep WHERE ep.tipo='laboratorio_clinico' ORDER BY ep.id LIMIT 1;
+  PERFORM set_config('request.jwt.claims','{"sub":"09d243d5-b222-482a-9762-94a582e9e752","role":"authenticated"}', true);
+  BEGIN
+    PERFORM set_config('role','authenticated', true);
+    UPDATE public.perfiles SET laboratorio_preferido_id=v_lab WHERE id='09d243d5-b222-482a-9762-94a582e9e752';
+    GET DIAGNOSTICS v_n = ROW_COUNT;
+    RAISE EXCEPTION 'PROBE_UNDO';
+  EXCEPTION WHEN OTHERS THEN
+    IF SQLERRM <> 'PROBE_UNDO' THEN v_err := SQLSTATE; v_msg := SQLERRM; v_n := 0; END IF;
+  END;
+  PERFORM set_config('role','none', true);
+  PERFORM set_config('probe.p441', CASE
+    WHEN v_msg IS NULL AND v_n = 1 THEN 'OK (laboratorio_preferido_id, filas=1, lab='||COALESCE(v_lab::text,'NULL')||')'
+    WHEN v_msg IS NOT NULL THEN 'ROJO (REGRESIÓN '||COALESCE(v_err,'?')||': '||v_msg||')'
+    ELSE 'ROJO (filas='||v_n||')' END, false);
+END $$;
+SELECT set_config('role','none', true);
+
+-- P442 — POS no-regresión: super_admin cambia activo + rol de un tercero (UsuariosAdminPage)
+DO $$ DECLARE v_n bigint := 0; v_err text := NULL; v_msg text := NULL; BEGIN
+  PERFORM set_config('request.jwt.claims','{"sub":"41904e2c-5ef3-4fee-bd48-9ea58e0c8c37","role":"authenticated"}', true);
+  BEGIN
+    PERFORM set_config('role','authenticated', true);
+    UPDATE public.perfiles SET activo=false, rol='soporte' WHERE id='66168f15-8f2d-456f-a610-c899346505d9';
+    GET DIAGNOSTICS v_n = ROW_COUNT;
+    RAISE EXCEPTION 'PROBE_UNDO';
+  EXCEPTION WHEN OTHERS THEN
+    IF SQLERRM <> 'PROBE_UNDO' THEN v_err := SQLSTATE; v_msg := SQLERRM; v_n := 0; END IF;
+  END;
+  PERFORM set_config('role','none', true);
+  PERFORM set_config('probe.p442', CASE
+    WHEN v_msg IS NULL AND v_n = 1 THEN 'OK (super_admin exento del guard, filas=1)'
+    WHEN v_msg IS NOT NULL THEN 'ROJO (REGRESIÓN '||COALESCE(v_err,'?')||': '||v_msg||')'
+    ELSE 'ROJO (filas='||v_n||')' END, false);
+END $$;
+SELECT set_config('role','none', true);
+
+-- P443 — POS no-regresión: super_admin cambia el pais_id de un tercero
+DO $$ DECLARE v_n bigint := 0; v_err text := NULL; v_msg text := NULL; BEGIN
+  PERFORM set_config('request.jwt.claims','{"sub":"41904e2c-5ef3-4fee-bd48-9ea58e0c8c37","role":"authenticated"}', true);
+  BEGIN
+    PERFORM set_config('role','authenticated', true);
+    UPDATE public.perfiles SET pais_id='f2c75b8e-ef54-4a05-b2ff-7363e448f680' WHERE id='66168f15-8f2d-456f-a610-c899346505d9';
+    GET DIAGNOSTICS v_n = ROW_COUNT;
+    RAISE EXCEPTION 'PROBE_UNDO';
+  EXCEPTION WHEN OTHERS THEN
+    IF SQLERRM <> 'PROBE_UNDO' THEN v_err := SQLSTATE; v_msg := SQLERRM; v_n := 0; END IF;
+  END;
+  PERFORM set_config('role','none', true);
+  PERFORM set_config('probe.p443', CASE
+    WHEN v_msg IS NULL AND v_n = 1 THEN 'OK (super_admin exento del guard, filas=1)'
+    WHEN v_msg IS NOT NULL THEN 'ROJO (REGRESIÓN '||COALESCE(v_err,'?')||': '||v_msg||')'
+    ELSE 'ROJO (filas='||v_n||')' END, false);
+END $$;
+SELECT set_config('role','none', true);
+
+-- P444 — POS no-regresión: simula registrar_medico_desde_invitacion (SECURITY DEFINER owner=postgres):
+-- UPDATE perfiles SET rol='medico', pais_id=<GT> sin JWT. Debe pasar por la exención de current_user.
+DO $$ DECLARE v_n bigint := 0; v_err text := NULL; v_msg text := NULL; v_cu text := current_user; BEGIN
+  PERFORM set_config('role','none', true);
+  PERFORM set_config('request.jwt.claims','{}', true);   -- sin sub: get_auth_user_rol() → NULL
+  BEGIN
+    UPDATE public.perfiles SET rol='medico', pais_id='cbbbbe6d-59fe-4cf2-91ee-3e31ba1d5909' WHERE id='8f391caf-85bc-4413-af8a-4006452ae09f';
+    GET DIAGNOSTICS v_n = ROW_COUNT;
+    RAISE EXCEPTION 'PROBE_UNDO';
+  EXCEPTION WHEN OTHERS THEN
+    IF SQLERRM <> 'PROBE_UNDO' THEN v_err := SQLSTATE; v_msg := SQLERRM; v_n := 0; END IF;
+  END;
+  PERFORM set_config('probe.p444', CASE
+    WHEN v_msg IS NULL AND v_n = 1 THEN 'OK (exención current_user='||v_cu||', filas=1)'
+    WHEN v_msg IS NOT NULL THEN 'ROJO (RPCs DEFINER ROTAS '||COALESCE(v_err,'?')||' con current_user='||v_cu||': '||v_msg||')'
+    ELSE 'ROJO (filas='||v_n||' current_user='||v_cu||')' END, false);
+END $$;
+SELECT set_config('role','none', true);
+
+-- P446 — CENTINELA del aislamiento por país. Se apoya en el USING (paso 1), no en el WITH CHECK (paso 3):
+-- admin_pais de GT toca un perfil de SV en una columna NO vigilada (nombre_completo). Si el aislamiento
+-- funciona el USING filtra la fila ⇒ filas_afectadas = 0 SIN excepción. VERDE = 0 filas, no 1.
+-- Fixture propia (hoy los perfiles de prod están todos en GT): crea su sujeto y lo revierte con el
+-- RAISE centinela. El INSERT en auth.users no dispara on_auth_user_created_paciente (ese trigger sale
+-- por RETURN NEW salvo raw_user_meta_data->>'tipo' = 'paciente').
+DO $$ DECLARE v_n bigint := -1; v_err text := NULL; v_msg text := NULL;
+             v_uid uuid := '00000000-0000-4446-8446-000000000446'; BEGIN
+  BEGIN
+    INSERT INTO auth.users (id) VALUES (v_uid);
+    INSERT INTO public.perfiles (id, email, nombre_completo, rol, pais_id, activo)
+      VALUES (v_uid, 'probe446@example.invalid', 'Sujeto Probe 446', 'cliente', 'f2c75b8e-ef54-4a05-b2ff-7363e448f680', true)
+      ON CONFLICT (id) DO UPDATE SET rol='cliente', pais_id='f2c75b8e-ef54-4a05-b2ff-7363e448f680', activo=true;
+    PERFORM set_config('request.jwt.claims','{"sub":"8f391caf-85bc-4413-af8a-4006452ae09f","role":"authenticated"}', true);
+    PERFORM set_config('role','authenticated', true);
+    UPDATE public.perfiles SET nombre_completo = nombre_completo||' (probe446)' WHERE id = v_uid;
+    GET DIAGNOSTICS v_n = ROW_COUNT;
+    PERFORM set_config('role','none', true);
+    RAISE EXCEPTION 'PROBE_UNDO';   -- revierte fixture + UPDATE
+  EXCEPTION WHEN OTHERS THEN
+    IF SQLERRM <> 'PROBE_UNDO' THEN v_err := SQLSTATE; v_msg := SQLERRM; END IF;
+  END;
+  PERFORM set_config('role','none', true);
+  PERFORM set_config('probe.p446', CASE
+    WHEN v_msg IS NULL AND v_n = 0 THEN 'BLOQUEADO (USING aisló el país: 0 filas, sin excepción)'
+    WHEN v_msg IS NULL AND v_n = 1 THEN 'ROJO (AISLAMIENTO POR PAÍS ROTO: admin_pais GT tocó un perfil de SV)'
+    WHEN v_msg LIKE 'No autorizado a modificar%' THEN 'ROJO (probe mal escrito: eligió una columna vigilada por el guard)'
+    ELSE 'ROJO (excepción inesperada '||COALESCE(v_err,'?')||': '||COALESCE(v_msg,'?')||')' END, false);
+END $$;
+SELECT set_config('role','none', true);
+
 -- ===== Veredictos como result set =====
 SELECT 'P1_anon_insert_citas'              AS probe, current_setting('probe.p1', true)  AS verdict, 'BLOQUEADO' AS esperado_post_fix
 UNION ALL SELECT 'P2_medico_cancela_ajena_rpc',         current_setting('probe.p2', true),  'BLOQUEADO'
@@ -8394,6 +8661,18 @@ UNION ALL SELECT 'Pcad_shape_sin_contacto',              current_setting('probe.
 UNION ALL SELECT 'Pqr_preview_confinable',               current_setting('probe.pqr_confinable', true),   'OK (preview QR: confinable solo su sucursal)'
 UNION ALL SELECT 'Pqr_preview_exento',                   current_setting('probe.pqr_exento', true),       'OK (exento ve su empresa; cross-empresa excluido)'
 UNION ALL SELECT 'Pqr_preview_grandfather',              current_setting('probe.pqr_grandfather', true),  'OK (grandfather ve su empresa; no-regresión)'
-UNION ALL SELECT 'Pqr_despacho_coherente',               current_setting('probe.pqr_coherencia', true),   'OK (despacha lo visible; oculto denegado)';
+UNION ALL SELECT 'Pqr_despacho_coherente',               current_setting('probe.pqr_coherencia', true),   'OK (despacha lo visible; oculto denegado)'
+UNION ALL SELECT 'P435_admin_pais_self_pais_id',         current_setting('probe.p435', true),             'BLOQUEADO (GUARD: pais del perfil)'
+UNION ALL SELECT 'P436_admin_pais_self_escalada_rol',    current_setting('probe.p436', true),             'BLOQUEADO (GUARD: rol del perfil)'
+UNION ALL SELECT 'P437_medico_self_pais_id',             current_setting('probe.p437', true),             'BLOQUEADO (GUARD: pais del perfil)'
+UNION ALL SELECT 'P438_medico_self_activo_rol_id',       current_setting('probe.p438', true),             'BLOQUEADO (GUARD: rol_id del perfil)'
+UNION ALL SELECT 'P439_admin_pais_activo_de_tercero',    current_setting('probe.p439', true),             'BLOQUEADO (GUARD: estado activo — regresión de superficie aceptada)'
+UNION ALL SELECT 'P445_admin_pais_pais_id_de_tercero',   current_setting('probe.p445', true),             'BLOQUEADO (GUARD corta antes que la RLS)'
+UNION ALL SELECT 'P440_POS_self_avatar_nombre',          current_setting('probe.p440', true),             'OK (columnas no vigiladas, filas=1)'
+UNION ALL SELECT 'P441_POS_medico_lab_preferido',        current_setting('probe.p441', true),             'OK (ConsultaPage sigue funcionando, filas=1)'
+UNION ALL SELECT 'P442_POS_superadmin_activo_rol',       current_setting('probe.p442', true),             'OK (super_admin exento, filas=1)'
+UNION ALL SELECT 'P443_POS_superadmin_pais_id',          current_setting('probe.p443', true),             'OK (super_admin exento, filas=1)'
+UNION ALL SELECT 'P444_POS_definer_rol_pais',            current_setting('probe.p444', true),             'OK (exención current_user: RPCs DEFINER intactas, filas=1)'
+UNION ALL SELECT 'P446_centinela_aislamiento_pais',      current_setting('probe.p446', true),             'BLOQUEADO (USING aisló: 0 filas, sin excepción)';
 
 ROLLBACK;  -- nada de lo anterior se persiste
