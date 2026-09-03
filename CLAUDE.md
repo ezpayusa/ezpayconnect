@@ -19,11 +19,13 @@ Stack: React + Vite + TypeScript, Supabase / Postgres, deploy en Vercel, repo en
   filas y cero veredictos vacíos. **Por qué**: el 2026-09-03 una corrida devolvió *exit 0 con la
   salida vacía* por un corte del cliente — indistinguible de un harness verde para quien lea el
   exit code. `npm run harness:selftest` prueba que esas cinco verificaciones disparan.
+  Está enganchado al pre-commit junto al test del detector: los tres gates del hook son offline.
   **Por qué**: el harness corre en UNA transacción — una sentencia que revienta fuera de un handler
   no da rojo, MATA la transacción y la salida queda vacía, que se lee como "todavía no lo corrí".
   Pasó dos veces (18cf819 y el lote 1 de PA-FAILOPEN) y una de ellas tardó dos meses en detectarse.
-  Baselines vivos: `top_level_dml_ddl=0` (excluye `pg_temp`), `cast_directo=0`, `do_sin_handler=157`
-  (la fase 2.2 cerró 54 de los 55 bloques que escriben: 211→193→175→157; falta sólo el de P481). El señalizador P516 del harness los publica, pero NO mide:
+  Baselines vivos: `top_level_dml_ddl=0` (excluye `pg_temp`), `cast_directo=0`, `do_sin_handler=156`
+  (fase 2.2 CERRADA: los 55 bloques que escriben están envueltos, 211→193→175→157→156; los 156
+  restantes sólo leen y publican, así que ya no son deuda). El señalizador P516 del harness los publica, pero NO mide:
   el gate es el script. **El detector del guard tiene test propio (`tests/rls/b2_guard_test.py`,
   `npm run harness:guard:test`) y el hook lo corre ANTES del guard**: se equivocó tres veces en un día
   y llegó a tener un baseline inflado en 108, o sea permisivo. Un gate con el detector sin probar es

@@ -63,13 +63,13 @@ import sys
 # que la baja. Un baseline que se actualiza "despues" es un baseline que alguien olvida.
 BASELINE_TOP_LEVEL = 0            # fase 1 de B2 (2026-09-03), CERRADO
 BASELINE_CAST_DIRECTO = 0         # fase 2.1 CERRADA (155 -> 103 -> 51 -> 0, tres tandas)
-BASELINE_DO_SIN_HANDLER = 157     # fase 2.2 tandas 1-3: 211 -> 193 -> 175 -> 157 (54 de los 55 que
-                                  # ESCRIBEN). Los 157 que quedan LEEN y publican; no mutan nada.
+BASELINE_DO_SIN_HANDLER = 156     # fase 2.2 CERRADA: 211 -> 193 -> 175 -> 157 -> 156. Los 55 bloques
+                                  # que ESCRIBEN estan envueltos, P481 incluido. Los 156 que quedan
+                                  # solo LEEN y publican: una caida suya no arrastra estado ajeno, asi
+                                  # que este numero deja de ser deuda y pasa a ser el normal.
                                   # El 319 previo estaba inflado en 108 por tres fallas del detector,
                                   # corregidas en aac4562 y fijadas por b2_guard_test.py.
-                                  # Queda 1 de los 55: el bloque de P481, que va SOLO y en su propio
-                                  # commit — es el probe cuyo trabajo es fallar si el instrumento se
-                                  # rompe, y mezclarlo con otros confunde la senal.
+
 # ===============================================================================
 #
 # POR QUE ~125 VA A SER UN NUMERO ACEPTABLE Y NO "FALTA TERMINAR"

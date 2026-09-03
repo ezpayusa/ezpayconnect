@@ -1,13 +1,25 @@
 #!/bin/sh
-# Gate de estructura del harness (frente B2). Corre SOLO si el harness esta en el commit.
+# Gates del frente B2. Corren SOLO si algo del harness esta en el commit.
 # Activar en un clone nuevo:  git config core.hooksPath .githooks
-if git diff --cached --name-only | grep -q '^tests/rls/probes_escritura\.sql$'; then
-  echo "[pre-commit] harness modificado -> probando el detector y corriendo el guard"
+#
+# Los tres son OFFLINE y deterministas — ninguno toca la base. La corrida real del harness
+# (`npm run harness`) NO va aca a proposito: necesita red, y un hook que depende de la red
+# falla por motivos ajenos al commit y termina desactivado por todos.
+if git diff --cached --name-only | grep -qE '^tests/rls/(probes_escritura\.sql|b2_guard\.py|harness_run\.py)$'; then
+  echo "[pre-commit] harness tocado -> probando los detectores y corriendo el guard"
+
   python tests/rls/b2_guard_test.py || {
     echo "[pre-commit] BLOQUEADO: el DETECTOR del guard esta roto. Los numeros del guard no valen"
     echo "[pre-commit] nada hasta arreglarlo (ya paso: baseline 319 cuando el real era 211)."
     exit 1
   }
+
+  python tests/rls/harness_run.py --self-test || {
+    echo "[pre-commit] BLOQUEADO: las verificaciones del RUNNER no disparan. Sin ellas, una corrida"
+    echo "[pre-commit] vacia con exit 0 vuelve a leerse como un harness verde (ya paso)."
+    exit 1
+  }
+
   python tests/rls/b2_guard.py || {
     echo "[pre-commit] BLOQUEADO: la estructura del harness empeoro. Ver el detalle arriba."
     echo "[pre-commit] Si es deliberado y ya actualizaste el baseline, volve a commitear."
