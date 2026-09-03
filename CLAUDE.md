@@ -17,8 +17,8 @@ Stack: React + Vite + TypeScript, Supabase / Postgres, deploy en Vercel, repo en
   **Por qué**: el harness corre en UNA transacción — una sentencia que revienta fuera de un handler
   no da rojo, MATA la transacción y la salida queda vacía, que se lee como "todavía no lo corrí".
   Pasó dos veces (18cf819 y el lote 1 de PA-FAILOPEN) y una de ellas tardó dos meses en detectarse.
-  Baselines vivos: `top_level_dml_ddl=0` (excluye `pg_temp`), `cast_directo=0`, `do_sin_handler=211`
-  (deuda con fecha, la ataca la fase 2.2). El señalizador P516 del harness los publica, pero NO mide:
+  Baselines vivos: `top_level_dml_ddl=0` (excluye `pg_temp`), `cast_directo=0`, `do_sin_handler=175`
+  (deuda con fecha; la fase 2.2 va 36 de 55 bloques que escriben: 211→193→175). El señalizador P516 del harness los publica, pero NO mide:
   el gate es el script. **El detector del guard tiene test propio (`tests/rls/b2_guard_test.py`,
   `npm run harness:guard:test`) y el hook lo corre ANTES del guard**: se equivocó tres veces en un día
   y llegó a tener un baseline inflado en 108, o sea permisivo. Un gate con el detector sin probar es
