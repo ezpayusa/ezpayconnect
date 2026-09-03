@@ -1266,8 +1266,28 @@ SELECT set_config('probe.farm_ajeno_emp',
      WHERE cp.id = NULLIF(current_setting('probe.farm_ajeno', true),'')::uuid), false);
 -- Aislamiento ENTRE tenants: convertir la empresa del ajeno en OTRA empresa-farmacia
 -- (así P65/P66 prueban tenant-vs-tenant, no usuario-sin-empresa). Dentro del ROLLBACK.
-UPDATE public.empresas_proveedoras SET tipo='farmacia'
-  WHERE id = NULLIF(current_setting('probe.farm_ajeno_emp', true),'')::uuid;
+-- B2 fase 1 (FX12): envuelto. ANTES era un UPDATE top-level y su WHERE, si el ajeno no resolvia,
+-- NO MATCHEABA NINGUNA FILA Y SEGUIA EN SILENCIO. Ese silencio es lo que hizo que el incidente del
+-- lote 1 apareciera 300 lineas despues y pareciera otra cosa: el ajeno resolvio a la unica
+-- empresa_afin de la base, esta linea la convirtio en farmacia, y el INCREMENTO 3 se quedo sin afin.
+-- Ahora la premisa se verifica ANTES y el resultado se PUBLICA, matcheara o no.
+DO $$
+DECLARE v_emp uuid; v_n int;
+BEGIN
+  v_emp := NULLIF(current_setting('probe.farm_ajeno_emp', true),'')::uuid;
+  IF v_emp IS NULL THEN
+    PERFORM set_config('probe.fx_ajeno',
+      'ROJO (el ajeno NO resolvio: probe.farm_ajeno_emp vacio. P65/P66 no miden tenant-vs-tenant)', false);
+  ELSE
+    UPDATE public.empresas_proveedoras SET tipo='farmacia' WHERE id = v_emp;
+    GET DIAGNOSTICS v_n = ROW_COUNT;
+    PERFORM set_config('probe.fx_ajeno', CASE WHEN v_n = 1
+      THEN 'OK (empresa del ajeno '||left(v_emp::text,8)||' convertida a farmacia para P65/P66)'
+      ELSE 'ROJO (el WHERE no matcheo: '||v_n||' filas para '||left(v_emp::text,8)||')' END, false);
+  END IF;
+EXCEPTION WHEN OTHERS THEN
+  PERFORM set_config('probe.fx_ajeno','ROJO ('||SQLSTATE||' '||SQLERRM||')', false);
+END $$;
 
 -- P67 — NEG: un no-super_admin NO promueve una farmacia (vía RPC)
 SELECT set_config('request.jwt.claims',
@@ -1402,10 +1422,34 @@ SELECT set_config('probe.fa_target',
 SELECT set_config('probe.alta_user',
   (SELECT id::text FROM auth.users WHERE id NOT IN (SELECT id FROM public.cuentas_proveedor) ORDER BY id LIMIT 1), false);
 -- Reasignación del reparto a la empresa-farmacia con sus roles (ROLLBACK)
-UPDATE public.cuentas_proveedor SET empresa_id=current_setting('probe.farm_emp',true)::uuid, rol_en_empresa='gerente_farmacia', activo=true, equipo_id=NULL WHERE id=NULLIF(current_setting('probe.fa_gerente',true),'')::uuid;
-UPDATE public.cuentas_proveedor SET empresa_id=current_setting('probe.farm_emp',true)::uuid, rol_en_empresa='cajero',           activo=true, equipo_id=NULL WHERE id=NULLIF(current_setting('probe.fa_cajero',true),'')::uuid;
-UPDATE public.cuentas_proveedor SET empresa_id=current_setting('probe.farm_emp',true)::uuid, rol_en_empresa='inventario',       activo=true, equipo_id=NULL WHERE id=NULLIF(current_setting('probe.fa_inv',true),'')::uuid;
-UPDATE public.cuentas_proveedor SET empresa_id=current_setting('probe.farm_emp',true)::uuid, rol_en_empresa='dependiente',      activo=true, equipo_id=NULL WHERE id=NULLIF(current_setting('probe.fa_target',true),'')::uuid;
+-- B2 fase 1 (FX13): envuelto Y con NULLIF en el cast. Eran CUATRO UPDATE top-level con
+-- `current_setting('probe.farm_emp',true)::uuid` SIN NULLIF: con el setting vacio eso es ''::uuid,
+-- o sea 22P02, o sea MUERTE DE LA TRANSACCION ENTERA sin una sola fila de salida. El handler evita
+-- que mate; el NULLIF evita que el fixture se rompa en silencio. Hacen falta LOS DOS: el handler
+-- solo convertiria el 22P02 en un ROJO, pero el reparto quedaria sin sembrar igual.
+DO $$
+DECLARE v_emp uuid; v_n int; v_tot int := 0;
+BEGIN
+  v_emp := NULLIF(current_setting('probe.farm_emp', true),'')::uuid;
+  IF v_emp IS NULL THEN
+    PERFORM set_config('probe.fx_farmroles',
+      'ROJO (probe.farm_emp vacio: el reparto de roles de farmacia NO se sembro; los probes de RBAC de farmacia miden sobre cuentas sin reasignar)', false);
+  ELSE
+    UPDATE public.cuentas_proveedor SET empresa_id=v_emp, rol_en_empresa='gerente_farmacia', activo=true, equipo_id=NULL WHERE id=NULLIF(current_setting('probe.fa_gerente',true),'')::uuid;
+    GET DIAGNOSTICS v_n = ROW_COUNT; v_tot := v_tot + v_n;
+    UPDATE public.cuentas_proveedor SET empresa_id=v_emp, rol_en_empresa='cajero',           activo=true, equipo_id=NULL WHERE id=NULLIF(current_setting('probe.fa_cajero',true),'')::uuid;
+    GET DIAGNOSTICS v_n = ROW_COUNT; v_tot := v_tot + v_n;
+    UPDATE public.cuentas_proveedor SET empresa_id=v_emp, rol_en_empresa='inventario',       activo=true, equipo_id=NULL WHERE id=NULLIF(current_setting('probe.fa_inv',true),'')::uuid;
+    GET DIAGNOSTICS v_n = ROW_COUNT; v_tot := v_tot + v_n;
+    UPDATE public.cuentas_proveedor SET empresa_id=v_emp, rol_en_empresa='dependiente',      activo=true, equipo_id=NULL WHERE id=NULLIF(current_setting('probe.fa_target',true),'')::uuid;
+    GET DIAGNOSTICS v_n = ROW_COUNT; v_tot := v_tot + v_n;
+    PERFORM set_config('probe.fx_farmroles', CASE WHEN v_tot = 4
+      THEN 'OK (4 cuentas reasignadas a la empresa-farmacia '||left(v_emp::text,8)||')'
+      ELSE 'ROJO (solo '||v_tot||'/4 cuentas reasignadas: algun probe.fa_* no resolvio)' END, false);
+  END IF;
+EXCEPTION WHEN OTHERS THEN
+  PERFORM set_config('probe.fx_farmroles','ROJO ('||SQLSTATE||' '||SQLERRM||')', false);
+END $$;
 
 -- ---- RLS por PERMISO (tenant farmacia) ----
 -- P72 — NEG: rol sin inventario_editar (cajero) NO edita inventario
@@ -1998,7 +2042,32 @@ EXCEPTION WHEN OTHERS THEN
   PERFORM set_config('probe.fx_afinb','ROJO (no se pudo sembrar la precondicion: '||SQLSTATE||' '||SQLERRM||')',false);
 END $$;
 SELECT set_config('probe.af_b_member', (SELECT id::text FROM public.cuentas_proveedor ORDER BY id LIMIT 1 OFFSET 4), false);
-UPDATE public.cuentas_proveedor SET empresa_id=NULLIF(current_setting('probe.af_emp_b',true),'')::uuid, rol_en_empresa='admin', activo=true, equipo_id=NULL WHERE id=NULLIF(current_setting('probe.af_b_member',true),'')::uuid;
+-- B2 fase 1 (FX14): envuelto CON VERIFICACION DE PREMISA. Este es, literalmente, el modo de falla
+-- del incidente del lote 1 en su ultima instancia sin envolver: el NULLIF evita el 22P02 del cast,
+-- pero si af_emp_b no se sembro el UPDATE escribe empresa_id=NULL -> 23502 NOT NULL -> muerte de la
+-- transaccion entera. La regla que sale de ese incidente: NUNCA ESCRIBIR UN VALOR DERIVADO SIN
+-- VERIFICAR LA PREMISA ANTES. Aca se verifica y se publica ROJO; no se escribe NULL nunca.
+DO $$
+DECLARE v_emp uuid; v_member uuid; v_n int;
+BEGIN
+  v_emp    := NULLIF(current_setting('probe.af_emp_b',   true),'')::uuid;
+  v_member := NULLIF(current_setting('probe.af_b_member',true),'')::uuid;
+  IF v_emp IS NULL OR v_member IS NULL THEN
+    PERFORM set_config('probe.fx_afb_member',
+      'ROJO (premisa incumplida: af_emp_b='||COALESCE(left(v_emp::text,8),'NULL')||
+      ' af_b_member='||COALESCE(left(v_member::text,8),'NULL')||' -> NO se escribe empresa_id NULL)', false);
+  ELSE
+    UPDATE public.cuentas_proveedor
+       SET empresa_id=v_emp, rol_en_empresa='admin', activo=true, equipo_id=NULL
+     WHERE id = v_member;
+    GET DIAGNOSTICS v_n = ROW_COUNT;
+    PERFORM set_config('probe.fx_afb_member', CASE WHEN v_n = 1
+      THEN 'OK (miembro '||left(v_member::text,8)||' asignado a la afin B '||left(v_emp::text,8)||')'
+      ELSE 'ROJO (el WHERE no matcheo: '||v_n||' filas)' END, false);
+  END IF;
+EXCEPTION WHEN OTHERS THEN
+  PERFORM set_config('probe.fx_afb_member','ROJO ('||SQLSTATE||' '||SQLERRM||')', false);
+END $$;
 DO $$ DECLARE v_id uuid; BEGIN
   IF NULLIF(current_setting('probe.af_b_member',true),'') IS NOT NULL THEN
     INSERT INTO public.solicitudes_campana (empresa_id, cuenta_proveedor_id, titulo, fecha_inicio, fecha_fin, estado, pais_id)
@@ -6861,8 +6930,21 @@ SELECT set_config('role','none', true);
 -- (e7935069=admin) + admin EzPay e56879c0. Inserta pago/solicitudes/visitas (owner, bypassa RLS).
 -- triggers de visita OFF para sembrar estados exactos (rolled back en la txn del harness; postgres = dueño).
 SELECT set_config('role','none', true);
-ALTER TABLE public.visitas_agendadas DISABLE TRIGGER trg_gate_visita_pais;
-ALTER TABLE public.visitas_agendadas DISABLE TRIGGER trigger_forzar_estado_propuesta;
+-- B2 fase 1 (FX15): par 1 de DISABLE, envuelto. Sostiene el fixture del helper
+-- enviar-notificacion (P414-P418), que necesita sembrar visitas en estados exactos.
+-- ⚠️ CAVEAT DEL LOCK (el mismo que quedo escrito en P475): `ALTER TABLE ... DISABLE TRIGGER` toma
+-- un ACCESS EXCLUSIVE sobre visitas_agendadas que se sostiene HASTA EL FINAL de la transaccion del
+-- harness, no hasta el ENABLE. Con la tabla en uso real, correr el harness bloquearia a los lectores
+-- durante toda la corrida. Alternativas para ese dia: sembrar con una funcion DEFINER que no dispare
+-- el trigger, o mover estos probes a staging.
+DO $$
+BEGIN
+  ALTER TABLE public.visitas_agendadas DISABLE TRIGGER trg_gate_visita_pais;
+  ALTER TABLE public.visitas_agendadas DISABLE TRIGGER trigger_forzar_estado_propuesta;
+  PERFORM set_config('probe.fx_trg1_off','OK (2 triggers de visitas_agendadas OFF para el fixture P414-P418)', false);
+EXCEPTION WHEN OTHERS THEN
+  PERFORM set_config('probe.fx_trg1_off','ROJO ('||SQLSTATE||' '||SQLERRM||')', false);
+END $$;
 DO $$ DECLARE v_A uuid:='411d6f8c-a405-49d6-9ed6-fbeb0db05133'; v_B uuid:='cc17afe8-fcd5-4ab0-84c4-08ba919d8481';
   v_adm uuid:='9ca0b977-3c91-48dc-aa04-2f1fab766963'; v_edi uuid:='d50e7efd-d0c6-4f14-a47b-f6b4845b25e9';
   v_vis uuid:='b38847e5-e52a-4c11-9aec-487fb558532f'; v_ext uuid:='e7935069-fd08-4ac5-a094-9c481313f4d3';
@@ -6903,8 +6985,24 @@ DO $$ DECLARE v_A uuid:='411d6f8c-a405-49d6-9ed6-fbeb0db05133'; v_B uuid:='cc17a
   PERFORM set_config('probe.h_vok', coalesce(v_vok::text,''), false);     PERFORM set_config('probe.h_vbad', coalesce(v_vbad::text,''), false);
   PERFORM set_config('probe.h_solrech', coalesce(v_solrech::text,''), false); PERFORM set_config('probe.h_vcanc', coalesce(v_vcanc::text,''), false);
 END $$;
-ALTER TABLE public.visitas_agendadas ENABLE TRIGGER trg_gate_visita_pais;
-ALTER TABLE public.visitas_agendadas ENABLE TRIGGER trigger_forzar_estado_propuesta;
+-- B2 fase 1 (FX16): par 1 de ENABLE, envuelto Y VERIFICADO. Si el harness muriera entre el DISABLE
+-- y este ENABLE, el ROLLBACK restauraria los triggers igual — pero nadie se enteraria de que la
+-- ventana existio. Este probe lo DICE: cuenta cuantos quedaron deshabilitados (tgenabled='D').
+DO $$
+DECLARE v_off int;
+BEGIN
+  ALTER TABLE public.visitas_agendadas ENABLE TRIGGER trg_gate_visita_pais;
+  ALTER TABLE public.visitas_agendadas ENABLE TRIGGER trigger_forzar_estado_propuesta;
+  SELECT count(*) INTO v_off FROM pg_trigger t
+   WHERE t.tgrelid = 'public.visitas_agendadas'::regclass
+     AND t.tgname IN ('trg_gate_visita_pais','trigger_forzar_estado_propuesta')
+     AND t.tgenabled = 'D';
+  PERFORM set_config('probe.fx_trg1_on', CASE WHEN v_off = 0
+    THEN 'OK (el ENABLE corrio: 0 triggers de visitas quedaron deshabilitados)'
+    ELSE 'ROJO ('||v_off||' triggers quedaron OFF tras el ENABLE)' END, false);
+EXCEPTION WHEN OTHERS THEN
+  PERFORM set_config('probe.fx_trg1_on','ROJO ('||SQLSTATE||' '||SQLERRM||')', false);
+END $$;
 
 -- P414 estructural ENDURECIDO: 6 RPCs DEFINER+sp''+grants + FIRMA uuid-only (sin params de contenido/target, l.55)
 -- + prosrc SIN push_notificar/net.http (in-app ONLY) + columna notificado_envio + helpers sp-safe.
@@ -7232,8 +7330,20 @@ DO $$ DECLARE v_def boolean; v_cfg text[]; v_sp boolean; v_anon boolean; v_auth 
 END $$;
 
 -- aislar el WITH CHECK del gate país/bolsa (RLS sigue activa; rolled-back; postgres dueño)
-ALTER TABLE public.visitas_agendadas DISABLE TRIGGER trg_gate_visita_pais;
-ALTER TABLE public.visitas_agendadas DISABLE TRIGGER trigger_forzar_estado_propuesta;
+-- B2 fase 1 (FX17): par 2 de DISABLE, envuelto. Sostiene P424-P426 (WITH CHECK de visitas).
+-- ⚠️ CAVEAT DEL LOCK (el mismo que quedo escrito en P475): `ALTER TABLE ... DISABLE TRIGGER` toma
+-- un ACCESS EXCLUSIVE sobre visitas_agendadas que se sostiene HASTA EL FINAL de la transaccion del
+-- harness, no hasta el ENABLE. Con la tabla en uso real, correr el harness bloquearia a los lectores
+-- durante toda la corrida. Alternativas para ese dia: sembrar con una funcion DEFINER que no dispare
+-- el trigger, o mover estos probes a staging.
+DO $$
+BEGIN
+  ALTER TABLE public.visitas_agendadas DISABLE TRIGGER trg_gate_visita_pais;
+  ALTER TABLE public.visitas_agendadas DISABLE TRIGGER trigger_forzar_estado_propuesta;
+  PERFORM set_config('probe.fx_trg2_off','OK (2 triggers de visitas_agendadas OFF para el fixture P424-P426)', false);
+EXCEPTION WHEN OTHERS THEN
+  PERFORM set_config('probe.fx_trg2_off','ROJO ('||SQLSTATE||' '||SQLERRM||')', false);
+END $$;
 
 -- P425 NEG: admin∈A inserta visita empresa_id=A con cuenta_proveedor_id ∈ empresa B → PRE permitido (rojo) / POST rechazado
 SELECT set_config('request.jwt.claims', json_build_object('sub', current_setting('probe.v8_adm',true),'role','authenticated')::text, true);
@@ -7267,8 +7377,22 @@ DO $$ DECLARE a text; b text; BEGIN
   PERFORM set_config('probe.p426', CASE WHEN a='OK' AND b='OK' THEN 'OK (self + colega∈empresa pasan, sin regresión)' ELSE 'FALLO (self='||a||' colega='||b||')' END, false);
 END $$;
 SELECT set_config('role','none', true);
-ALTER TABLE public.visitas_agendadas ENABLE TRIGGER trg_gate_visita_pais;
-ALTER TABLE public.visitas_agendadas ENABLE TRIGGER trigger_forzar_estado_propuesta;
+-- B2 fase 1 (FX18): par 2 de ENABLE, envuelto y verificado (ver FX16 para el porque).
+DO $$
+DECLARE v_off int;
+BEGIN
+  ALTER TABLE public.visitas_agendadas ENABLE TRIGGER trg_gate_visita_pais;
+  ALTER TABLE public.visitas_agendadas ENABLE TRIGGER trigger_forzar_estado_propuesta;
+  SELECT count(*) INTO v_off FROM pg_trigger t
+   WHERE t.tgrelid = 'public.visitas_agendadas'::regclass
+     AND t.tgname IN ('trg_gate_visita_pais','trigger_forzar_estado_propuesta')
+     AND t.tgenabled = 'D';
+  PERFORM set_config('probe.fx_trg2_on', CASE WHEN v_off = 0
+    THEN 'OK (el ENABLE corrio: 0 triggers de visitas quedaron deshabilitados)'
+    ELSE 'ROJO ('||v_off||' triggers quedaron OFF tras el ENABLE)' END, false);
+EXCEPTION WHEN OTHERS THEN
+  PERFORM set_config('probe.fx_trg2_on','ROJO ('||SQLSTATE||' '||SQLERRM||')', false);
+END $$;
 
 -- ============================================================
 -- Hardening INSERT (opción-2) · chat_mensajes relación + remitente (P427–P430). Red-first.
@@ -11082,6 +11206,45 @@ BEGIN
 END $$;
 SELECT set_config('role','none', true);
 
+-- ############################################################################################
+-- B2 FASE 1 - P516: SENALIZADOR DEL GATE DE ESTRUCTURA (NO MIDE NADA)
+-- ############################################################################################
+-- ESTE PROBE NO ES UN CONTROL. No puede serlo: para medir la estructura del harness habria que leer
+-- ESTE ARCHIVO desde SQL, y no se puede — pg_read_file() lee del SERVIDOR y exige superusuario o
+-- pg_read_server_files, mientras que este archivo vive en la maquina del cliente y viaja por la
+-- Management API. Un probe no puede autoexaminarse el fuente.
+--
+-- El gate REAL vive en `tests/rls/b2_guard.py`, que parsea el archivo y sale con codigo != 0 si
+-- alguno de los dos numeros CRECE. Este probe solo PUBLICA el baseline declarado, para que quien lea
+-- la salida del harness sepa que ese gate existe y cuales son los numeros que hay que sostener.
+-- Si el baseline de aca y el del script divergen, el que manda es el script: es el unico que cuenta.
+--
+--   top_level_dml_ddl = 0    Sentencias DML/DDL fuera de todo bloque DO. La fase 1 las llevo a CERO:
+--                            14 envueltas (FX12-FX18). Se EXCLUYE `CREATE ... pg_temp.*`, que es DDL
+--                            transaccional sobre un schema temporal, no puede corromper ningun
+--                            fixture y desaparece con el ROLLBACK.
+--
+--   do_sin_handler = 319     Bloques DO sin `EXCEPTION WHEN`. DEUDA CON FECHA, igual que la allowlist
+--                            del P480: la ataca la FASE 2. La regla es ESTRICTA — un `RAISE EXCEPTION`
+--                            NO cuenta como handler, es lo contrario de un handler. Contarlo daria
+--                            298 y estaria mal.
+--
+-- POR QUE IMPORTA: cuatro de las sentencias top-level ya mataron la transaccion entera una vez
+-- (incidente del lote 1: empresa_id=NULL -> 23502, sin una sola fila de salida). Un harness que
+-- muere no da rojo: no da NADA, y eso se lee como "todavia no lo corri".
+-- ############################################################################################
+DO $$
+BEGIN
+  PERFORM set_config('probe.p516',
+    'OK-SENAL (baseline declarado: top_level_dml_ddl=0 excluyendo pg_temp, do_sin_handler=319 deuda con fecha). '||
+    'El gate real es tests/rls/b2_guard.py — este probe NO mide, senaliza.', false);
+EXCEPTION WHEN OTHERS THEN
+  -- handler puesto por coherencia: el propio b2_guard.py conto este bloque como deuda nueva cuando
+  -- se escribio sin el. Subir el baseline para acomodar el codigo del gate habria sido exactamente
+  -- lo que el gate existe para impedir.
+  PERFORM set_config('probe.p516','ROJO ('||SQLSTATE||' '||SQLERRM||')', false);
+END $$;
+
 -- ===== Veredictos como result set =====
 SELECT 'P1_anon_insert_citas'              AS probe, current_setting('probe.p1', true)  AS verdict, 'BLOQUEADO' AS esperado_post_fix
 UNION ALL SELECT 'P2_medico_cancela_ajena_rpc',         current_setting('probe.p2', true),  'BLOQUEADO'
@@ -11637,6 +11800,14 @@ UNION ALL SELECT 'FX08_lote3_fixtures',             current_setting('probe.fx_l3
 UNION ALL SELECT 'FX09_lote4_fixtures',             current_setting('probe.fx_l4', true),         'OK (precondicion sembrada)'
 UNION ALL SELECT 'FX10_lote5_fixtures',             current_setting('probe.fx_l5', true),         'OK (precondicion sembrada)'
 UNION ALL SELECT 'FX11_lote6_fixtures',             current_setting('probe.fx_l6', true),         'OK (precondicion sembrada)'
+UNION ALL SELECT 'FX12_ajeno_a_farmacia',          current_setting('probe.fx_ajeno', true),      'OK (el ajeno resolvio y se convirtio)'
+UNION ALL SELECT 'FX13_reparto_roles_farmacia',    current_setting('probe.fx_farmroles', true),  'OK (4/4 cuentas reasignadas)'
+UNION ALL SELECT 'FX14_miembro_afin_B',            current_setting('probe.fx_afb_member', true), 'OK (premisa verificada antes de escribir)'
+UNION ALL SELECT 'FX15_triggers_visitas_OFF_1',    current_setting('probe.fx_trg1_off', true),   'OK (2 triggers OFF)'
+UNION ALL SELECT 'FX16_triggers_visitas_ON_1',     current_setting('probe.fx_trg1_on', true),    'OK (el ENABLE corrio)'
+UNION ALL SELECT 'FX17_triggers_visitas_OFF_2',    current_setting('probe.fx_trg2_off', true),   'OK (2 triggers OFF)'
+UNION ALL SELECT 'FX18_triggers_visitas_ON_2',     current_setting('probe.fx_trg2_on', true),    'OK (el ENABLE corrio)'
+UNION ALL SELECT 'P516_SENAL_estructura_harness',  current_setting('probe.p516', true),          'OK-SENAL (no mide; el gate es b2_guard.py)'
 -- Las filas FX* son SALUD DE FIXTURE, no probes de seguridad: dicen si la precondicion que una
 -- migracion posterior empezo a exigir se pudo sembrar. Si una sale ROJO, los probes que dependen de
 -- ese fixture reportan N/A (su flag de ready se pierde con el rollback de la subtransaccion) en vez
@@ -11803,7 +11974,10 @@ UNION ALL SELECT 'P000_CENTINELA_veredictos_no_nulos',
        'probe.p505', 'probe.p506',
        'probe.p507', 'probe.p508', 'probe.p509', 'probe.p510',
        'probe.fx_l6', 'probe.p511', 'probe.p512', 'probe.p513',
-       'probe.p514', 'probe.p515'
+       'probe.p514', 'probe.p515',
+       'probe.fx_ajeno', 'probe.fx_farmroles', 'probe.fx_afb_member',
+       'probe.fx_trg1_off', 'probe.fx_trg1_on', 'probe.fx_trg2_off', 'probe.fx_trg2_on',
+       'probe.p516'
              ]) AS n) s),
   'OK (todos los veredictos publicados)';
 
