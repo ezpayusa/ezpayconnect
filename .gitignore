@@ -41,3 +41,7 @@ dev-dist/
 fixes/
 estructura.txt
 Kimi_Agent_Refactorización Arquitectónica/
+
+# Python (tests/rls/*.py del guard de B2)
+__pycache__/
+*.py[cod]

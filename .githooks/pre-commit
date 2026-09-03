@@ -2,7 +2,12 @@
 # Gate de estructura del harness (frente B2). Corre SOLO si el harness esta en el commit.
 # Activar en un clone nuevo:  git config core.hooksPath .githooks
 if git diff --cached --name-only | grep -q '^tests/rls/probes_escritura\.sql$'; then
-  echo "[pre-commit] harness modificado -> corriendo tests/rls/b2_guard.py"
+  echo "[pre-commit] harness modificado -> probando el detector y corriendo el guard"
+  python tests/rls/b2_guard_test.py || {
+    echo "[pre-commit] BLOQUEADO: el DETECTOR del guard esta roto. Los numeros del guard no valen"
+    echo "[pre-commit] nada hasta arreglarlo (ya paso: baseline 319 cuando el real era 211)."
+    exit 1
+  }
   python tests/rls/b2_guard.py || {
     echo "[pre-commit] BLOQUEADO: la estructura del harness empeoro. Ver el detalle arriba."
     echo "[pre-commit] Si es deliberado y ya actualizaste el baseline, volve a commitear."
