@@ -1,0 +1,12 @@
+#!/bin/sh
+# Gate de estructura del harness (frente B2). Corre SOLO si el harness esta en el commit.
+# Activar en un clone nuevo:  git config core.hooksPath .githooks
+if git diff --cached --name-only | grep -q '^tests/rls/probes_escritura\.sql$'; then
+  echo "[pre-commit] harness modificado -> corriendo tests/rls/b2_guard.py"
+  python tests/rls/b2_guard.py || {
+    echo "[pre-commit] BLOQUEADO: la estructura del harness empeoro. Ver el detalle arriba."
+    echo "[pre-commit] Si es deliberado y ya actualizaste el baseline, volve a commitear."
+    exit 1
+  }
+fi
+exit 0

@@ -9,6 +9,16 @@ Stack: React + Vite + TypeScript, Supabase / Postgres, deploy en Vercel, repo en
 - Verificar en cada cambio: tsc -p tsconfig.app.json (baseline actual = 82 errores; objetivo = 0 nuevos) + vite build verde + prueba por rol en prod.
 - NUNCA ampliar policies de RLS sobre tablas adyacentes a datos médicos (p. ej. campana_metricas). Para dar acceso, usar RPCs SECURITY DEFINER con search_path='', fail-closed (si el scope es NULL → 0 filas) y gate interno.
 - Probar aislamiento por rol impersonando request.jwt.claims en prod: cada rol ve lo suyo y no lo ajeno.
+- **Harness de RLS (`tests/rls/probes_escritura.sql`): OBLIGATORIO correr `python tests/rls/b2_guard.py`
+  (o `npm run harness:guard`) al tocarlo.** Es el gate de estructura del frente B2: falla si aparece
+  una sentencia DML/DDL fuera de un bloque `DO` con `EXCEPTION` handler, o si crecen los bloques `DO`
+  sin handler. Está enganchado como hook de pre-commit en `.githooks/pre-commit`; en un clone nuevo
+  hay que activarlo una vez con `git config core.hooksPath .githooks`.
+  **Por qué**: el harness corre en UNA transacción — una sentencia que revienta fuera de un handler
+  no da rojo, MATA la transacción y la salida queda vacía, que se lee como "todavía no lo corrí".
+  Pasó dos veces (18cf819 y el lote 1 de PA-FAILOPEN) y una de ellas tardó dos meses en detectarse.
+  Baselines vivos: `top_level_dml_ddl=0` (excluye `pg_temp`), `do_sin_handler=319` (deuda con fecha,
+  la ataca la fase 2 de B2). El señalizador P516 del harness los publica, pero NO mide: el gate es el script.
 
 ## Modelo de identidad / helpers
 - mi_empresa_proveedor() → empresa_id del proveedor logueado desde cuentas_proveedor (tipo-agnóstica; cubre los 4 tipos: farmacia, laboratorio_clinico, laboratorio_farmaceutico, empresa_afin).
