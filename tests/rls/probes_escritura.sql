@@ -1251,9 +1251,16 @@ SELECT set_config('probe.farm_owner',  -- ADMIN de la empresa promovida (con per
   (SELECT cp.id::text FROM public.cuentas_proveedor cp
      WHERE cp.empresa_id = current_setting('probe.farm_emp', true)::uuid
        AND cp.rol_en_empresa='admin' AND cp.activo ORDER BY cp.id LIMIT 1), false);
+-- El "ajeno" es una cuenta de OTRO tenant cuya empresa se convierte en una 2a farmacia (abajo).
+-- EXCLUIR empresa_afin NO es cosmetico: en prod hay UNA sola empresa afin, y el INCREMENTO 3
+-- (P114-P121) la necesita viva como afin. Cuando este fixture la elegia, la convertia en farmacia y
+-- 300 lineas mas abajo `probe.af_emp` no encontraba ninguna -> NULL -> el UPDATE top-level de
+-- af_admin ponia empresa_id=NULL -> 23502 -> MORIA LA TRANSACCION ENTERA del harness.
+-- Paso el 2026-09-03 al crear las 11 cuentas QA de proveedor: 5 cayeron en la afin con uuids bajos
+-- y el ORDER BY cp.id las puso primeras. El fixture no debe depender del orden de los uuids.
 SELECT set_config('probe.farm_ajeno',
   (SELECT cp.id::text FROM public.cuentas_proveedor cp JOIN public.empresas_proveedoras e ON e.id=cp.empresa_id
-     WHERE e.tipo <> 'farmacia' AND cp.activo ORDER BY cp.id LIMIT 1), false);
+     WHERE e.tipo NOT IN ('farmacia','empresa_afin') AND cp.activo ORDER BY cp.id LIMIT 1), false);
 SELECT set_config('probe.farm_ajeno_emp',
   (SELECT cp.empresa_id::text FROM public.cuentas_proveedor cp
      WHERE cp.id = NULLIF(current_setting('probe.farm_ajeno', true),'')::uuid), false);
@@ -1939,10 +1946,22 @@ SELECT set_config('probe.af_lectura', (SELECT id::text FROM public.cuentas_prove
 SELECT set_config('probe.af_gerente', (SELECT id::text FROM public.cuentas_proveedor ORDER BY id LIMIT 1 OFFSET 3), false);
 SELECT set_config('probe.af_alta_user',
   (SELECT id::text FROM auth.users WHERE id NOT IN (SELECT id FROM public.cuentas_proveedor) ORDER BY id LIMIT 1), false);
-UPDATE public.cuentas_proveedor SET empresa_id=NULLIF(current_setting('probe.af_emp',true),'')::uuid, rol_en_empresa='admin',     activo=true, equipo_id=NULL WHERE id=NULLIF(current_setting('probe.af_admin',true),'')::uuid;
-UPDATE public.cuentas_proveedor SET empresa_id=NULLIF(current_setting('probe.af_emp',true),'')::uuid, rol_en_empresa='marketing', activo=true, equipo_id=NULL WHERE id=NULLIF(current_setting('probe.af_mkt',true),'')::uuid;
-UPDATE public.cuentas_proveedor SET empresa_id=NULLIF(current_setting('probe.af_emp',true),'')::uuid, rol_en_empresa='lectura',   activo=true, equipo_id=NULL WHERE id=NULLIF(current_setting('probe.af_lectura',true),'')::uuid;
-UPDATE public.cuentas_proveedor SET empresa_id=NULLIF(current_setting('probe.af_emp',true),'')::uuid, rol_en_empresa='gerente',   activo=true, equipo_id=NULL WHERE id=NULLIF(current_setting('probe.af_gerente',true),'')::uuid;
+-- Estos 4 UPDATE eran TOP-LEVEL y sin guard: con af_emp ausente ponian empresa_id=NULL, violaban el
+-- NOT NULL y MATABAN LA TRANSACCION ENTERA -- sin veredicto, sin rojo, sin ninguna fila de salida.
+-- Es el mismo modo de falla que dejo el harness ciego un mes (ver commit 18cf819). Ahora van dentro
+-- de un DO con guard: si la precondicion falta, se publica un ROJO VISIBLE y el harness sigue.
+DO $$ BEGIN
+  IF NULLIF(current_setting('probe.af_emp',true),'') IS NULL THEN
+    PERFORM set_config('probe.fx_afin_emp',
+      'ROJO (no hay ninguna empresa_afin al llegar aca: los probes P114-P121 van a reportar N/A)', false);
+    RETURN;
+  END IF;
+  UPDATE public.cuentas_proveedor SET empresa_id=current_setting('probe.af_emp',true)::uuid, rol_en_empresa='admin',     activo=true, equipo_id=NULL WHERE id=NULLIF(current_setting('probe.af_admin',true),'')::uuid;
+  UPDATE public.cuentas_proveedor SET empresa_id=current_setting('probe.af_emp',true)::uuid, rol_en_empresa='marketing', activo=true, equipo_id=NULL WHERE id=NULLIF(current_setting('probe.af_mkt',true),'')::uuid;
+  UPDATE public.cuentas_proveedor SET empresa_id=current_setting('probe.af_emp',true)::uuid, rol_en_empresa='lectura',   activo=true, equipo_id=NULL WHERE id=NULLIF(current_setting('probe.af_lectura',true),'')::uuid;
+  UPDATE public.cuentas_proveedor SET empresa_id=current_setting('probe.af_emp',true)::uuid, rol_en_empresa='gerente',   activo=true, equipo_id=NULL WHERE id=NULLIF(current_setting('probe.af_gerente',true),'')::uuid;
+  PERFORM set_config('probe.fx_afin_emp','OK (empresa afin viva + 4 cuentas prestadas re-asignadas)', false);
+END $$;
 -- Producto afín activo ficticio (para el test de visibilidad del médico)
 DO $$ DECLARE v_id uuid; BEGIN
   IF NULLIF(current_setting('probe.af_emp',true),'') IS NOT NULL THEN
@@ -9413,7 +9432,9 @@ DECLARE
     'public.listar_solicitudes_personalizacion',  -- lote N (gate sin pais -> es_admin_pais)
     'public.listar_tiers_pais',                   -- lote N
     'public.marcar_liquidacion_cobrada',          -- lote 2 (DINERO: marca cobrada)
-    'public.metricas_campana_pais',               -- lote 1 (ademas: EXECUTE a anon)
+    -- SALDADA por la mig 266 (lote 1, 2026-09-03): gate -> private.puede_admin_pais + REVOKE de
+    -- anon. PRIMERA de las 27 que se vacia. El centinela debe quedar VERDE con 26, no con 27.
+    -- 'public.metricas_campana_pais',
     'public.notificar_campana_resultado',         -- lote N
     'public.notificar_empresa_estado',            -- lote N
     'public.notificar_pago_resultado',            -- lote N
@@ -9460,19 +9481,22 @@ END $$;
 -- el detector la marque como nueva. Si P481 no diera exactamente 1, el centinela P480 estaria
 -- verde por no estar midiendo nada (censo vacio, regex que no matchea, walker que siempre dice
 -- false) y no nos enterariamos nunca.
--- La entrada sacada es metricas_campana_pais a proposito: es la que el lote 1 va a migrar, asi que
--- cuando se saque de verdad este probe hay que apuntarlo a otra (o, cuando la allowlist quede
--- vacia, invertirlo: sembrar una funcion fail-open de fixture y esperar que la cace).
+-- LA ENTRADA APUNTADA CAMBIA CADA LOTE, POR DISENO. Empezo siendo metricas_campana_pais; el lote 1
+-- la migro de verdad, con lo cual dejo de estar en rojo y este probe se habria puesto ROJO por su
+-- propia premisa (esperaba verla aparecer y ya no aparece). Ahora apunta a cerrar_liquidacion, del
+-- lote 2. REGLA: cada lote que salda entradas DEBE re-apuntar este probe a una que siga en rojo.
+-- Cuando la allowlist quede vacia hay que invertirlo: sembrar una funcion fail-open de fixture
+-- dentro del ROLLBACK y esperar que el centinela la cace.
 -- ============================================================================================
 DO $$
 DECLARE
   v_allow_sin1 text[] := ARRAY[
     'public.activar_capacidad_suelta','public.aprobar_personalizacion','public.aprobar_solicitud_campana',
-    'public.asignar_tier','public.cerrar_liquidacion','public.crear_capacidad_pais','public.crear_tier_pais',
+    'public.asignar_tier','public.crear_capacidad_pais','public.crear_tier_pais',
+    -- 'public.cerrar_liquidacion'  <-- ENTRADA QUITADA A PROPOSITO (lote 2, sigue en rojo)
     'public.liquidar_comision','public.listar_canjes_pendientes','public.listar_capacidades_pais',
     'public.listar_propuestas_especialidad','public.listar_solicitudes_personalizacion','public.listar_tiers_pais',
     'public.marcar_liquidacion_cobrada',
-    -- 'public.metricas_campana_pais'  <-- ENTRADA QUITADA A PROPOSITO
     'public.notificar_campana_resultado','public.notificar_empresa_estado','public.notificar_pago_resultado',
     'public.notificar_resultado_examen','public.obtener_resumen_pais','public.rechazar_personalizacion',
     'public.registrar_evidencia_entrega','public.resolver_canje','public.resolver_propuesta_especialidad',
@@ -9483,12 +9507,12 @@ BEGIN
   SELECT COALESCE(array_agg(func ORDER BY func), ARRAY[]::text[]) INTO v_nuevas
     FROM pg_temp.censo_fail_open() WHERE func <> ALL (v_allow_sin1);
 
-  IF v_nuevas = ARRAY['public.metricas_campana_pais'] THEN
+  IF v_nuevas = ARRAY['public.cerrar_liquidacion'] THEN
     PERFORM set_config('probe.p481',
-      'OK (sacando 1 entrada de la allowlist el centinela la detecta: [public.metricas_campana_pais] — P480 mide algo real)', false);
+      'OK (sacando 1 entrada de la allowlist el centinela la detecta: [public.cerrar_liquidacion] — P480 mide algo real)', false);
   ELSE
     PERFORM set_config('probe.p481',
-      'ROJO — EL CENTINELA NO MIDE (esperaba exactamente [public.metricas_campana_pais], obtuvo ['||
+      'ROJO — EL CENTINELA NO MIDE (esperaba exactamente [public.cerrar_liquidacion], obtuvo ['||
       array_to_string(v_nuevas,', ')||'])', false);
   END IF;
 END $$;
@@ -9663,6 +9687,175 @@ BEGIN
 END $$;
 SELECT set_config('role','none',true);
 
+
+-- ############################################################################################
+-- PAQUETE PA-FAILOPEN - LOTE 1 - P485-P489 (metricas_campana_pais: REVOKE anon + gate migrado)
+-- ############################################################################################
+-- ============================================================================================
+-- P485 — SIN SESION: anon no puede ni invocarla
+-- --------------------------------------------------------------------------------------------
+-- Es EL probe del lote: antes de la mig 266 esta misma llamada devolvia 14 filas por PostgREST con
+-- la anon key (verificado en vivo, HTTP 200). Ahora debe cortar. Distingue cual control corto.
+-- ============================================================================================
+SELECT set_config('role','none',true);
+DO $$
+DECLARE v_gt uuid := 'cbbbbe6d-59fe-4cf2-91ee-3e31ba1d5909'; v_n bigint; v_msg text;
+BEGIN
+  BEGIN
+    PERFORM set_config('request.jwt.claims', NULL, true);
+    PERFORM set_config('role','anon', true);
+    SELECT count(*) INTO v_n FROM public.metricas_campana_pais(v_gt);
+    PERFORM set_config('role','none', true);
+    PERFORM set_config('probe.p485',
+      'ROJO — PERMITIDO SIN SESION ('||v_n||' filas devueltas a anon)', false);
+  EXCEPTION WHEN OTHERS THEN
+    PERFORM set_config('role','none', true);
+    v_msg := SQLERRM;
+    IF v_msg ILIKE '%permission denied%' THEN
+      PERFORM set_config('probe.p485',
+        'BLOQUEADO por GRANT ('||SQLSTATE||': '||left(v_msg,60)||') — anon sin EXECUTE, no llega ni a evaluar el gate', false);
+    ELSIF v_msg ILIKE '%no_autorizado%' THEN
+      PERFORM set_config('probe.p485',
+        'BLOQUEADO por el RAISE del gate ('||SQLSTATE||' no_autorizado) — OJO: el GRANT de anon sigue puesto, lo corto el gate', false);
+    ELSE
+      PERFORM set_config('probe.p485','BLOQUEADO por otra causa ('||SQLSTATE||': '||left(v_msg,70)||')', false);
+    END IF;
+  END;
+END $$;
+SELECT set_config('role','none',true);
+
+-- ============================================================================================
+-- P486 — AUTENTICADO SIN FILA EN perfiles: 42501 'no_autorizado' del gate, y CERO filas
+-- --------------------------------------------------------------------------------------------
+-- El corazon del paquete. Con el gate viejo este caller pasaba: get_auth_user_rol() = NULL y el
+-- IF NOT (NULL) no ejecutaba el RAISE. Ahora private.puede_admin_pais devuelve false y corta.
+-- Se exige ADEMAS que el mensaje sea 'no_autorizado' y no 'permission denied': este caller SI tiene
+-- EXECUTE (es authenticated), asi que quien tiene que cortar es el GATE. Si cortara el grant,
+-- estariamos verdes por el control equivocado y no lo sabriamos.
+-- ============================================================================================
+DO $$
+DECLARE
+  v_gt  uuid := 'cbbbbe6d-59fe-4cf2-91ee-3e31ba1d5909';
+  v_sin uuid;   -- farmacia.qa: cuentas_proveedor SI, perfiles NO
+  v_n bigint; v_msg text;
+BEGIN
+  SELECT id INTO v_sin FROM auth.users WHERE email = 'farmacia.qa@ezpayconnect.com';
+  IF v_sin IS NULL THEN PERFORM set_config('probe.p486','ROJO (fixture ausente: farmacia.qa)', false); RETURN; END IF;
+  BEGIN
+    PERFORM set_config('request.jwt.claims',
+      json_build_object('sub', v_sin::text, 'role','authenticated')::text, true);
+    PERFORM set_config('role','authenticated', true);
+    SELECT count(*) INTO v_n FROM public.metricas_campana_pais(v_gt);
+    PERFORM set_config('role','none', true);
+    PERFORM set_config('probe.p486',
+      'ROJO — FAIL-OPEN VIVO (caller sin perfil obtuvo '||v_n||' filas)', false);
+  EXCEPTION WHEN OTHERS THEN
+    PERFORM set_config('role','none', true);
+    v_msg := SQLERRM;
+    IF SQLSTATE = '42501' AND v_msg ILIKE '%no_autorizado%' THEN
+      PERFORM set_config('probe.p486',
+        'BLOQUEADO (42501 no_autorizado del GATE, 0 filas — el caller tiene EXECUTE, corto el gate)', false);
+    ELSE
+      PERFORM set_config('probe.p486',
+        'ROJO (corto el control equivocado o falla distinta: '||SQLSTATE||' '||left(v_msg,70)||')', false);
+    END IF;
+  END;
+END $$;
+SELECT set_config('role','none',true);
+
+-- ============================================================================================
+-- P487 — POSITIVO: admin_pais legitimo sobre SU pais devuelve filas
+-- --------------------------------------------------------------------------------------------
+-- No-regresion: cerrar el agujero no puede romper al usuario legitimo. Exige filas > 0, no solo
+-- "no exploto": una funcion que devuelve 0 filas por un gate mal migrado tambien "no explota".
+-- ============================================================================================
+DO $$
+DECLARE v_gt uuid := 'cbbbbe6d-59fe-4cf2-91ee-3e31ba1d5909'; v_adm uuid; v_n bigint;
+BEGIN
+  SELECT id INTO v_adm FROM auth.users WHERE email = 'adminpais.qa@ezpayconnect.com';
+  IF v_adm IS NULL THEN PERFORM set_config('probe.p487','ROJO (fixture ausente: adminpais.qa)', false); RETURN; END IF;
+  BEGIN
+    PERFORM set_config('request.jwt.claims',
+      json_build_object('sub', v_adm::text, 'role','authenticated')::text, true);
+    PERFORM set_config('role','authenticated', true);
+    SELECT count(*) INTO v_n FROM public.metricas_campana_pais(v_gt);
+    PERFORM set_config('role','none', true);
+    IF v_n > 0 THEN
+      PERFORM set_config('probe.p487','OK (admin_pais GT ve '||v_n||' campanas de SU pais)', false);
+    ELSE
+      PERFORM set_config('probe.p487','ROJO (admin_pais legitimo obtuvo 0 filas: el gate quedo cerrado de mas)', false);
+    END IF;
+  EXCEPTION WHEN OTHERS THEN
+    PERFORM set_config('role','none', true);
+    PERFORM set_config('probe.p487','ROJO (admin_pais legitimo RECHAZADO: '||SQLSTATE||' '||left(SQLERRM,60)||')', false);
+  END;
+END $$;
+SELECT set_config('role','none',true);
+
+-- ============================================================================================
+-- P488 — NEGATIVO CROSS-PAIS: admin_pais de GT sobre El Salvador
+-- --------------------------------------------------------------------------------------------
+-- El aislamiento por pais, que es la razon de ser del rol. Mismo caller que P487, otro p_pais_id.
+-- ============================================================================================
+DO $$
+DECLARE v_sv uuid := 'f2c75b8e-ef54-4a05-b2ff-7363e448f680'; v_adm uuid; v_n bigint;
+BEGIN
+  SELECT id INTO v_adm FROM auth.users WHERE email = 'adminpais.qa@ezpayconnect.com';
+  IF v_adm IS NULL THEN PERFORM set_config('probe.p488','ROJO (fixture ausente: adminpais.qa)', false); RETURN; END IF;
+  BEGIN
+    PERFORM set_config('request.jwt.claims',
+      json_build_object('sub', v_adm::text, 'role','authenticated')::text, true);
+    PERFORM set_config('role','authenticated', true);
+    SELECT count(*) INTO v_n FROM public.metricas_campana_pais(v_sv);
+    PERFORM set_config('role','none', true);
+    PERFORM set_config('probe.p488',
+      'ROJO — FUGA CROSS-PAIS (admin de GT obtuvo '||v_n||' filas de SV)', false);
+  EXCEPTION WHEN OTHERS THEN
+    PERFORM set_config('role','none', true);
+    IF SQLSTATE = '42501' AND SQLERRM ILIKE '%no_autorizado%' THEN
+      PERFORM set_config('probe.p488','BLOQUEADO (42501 no_autorizado — admin de GT no ve SV, 0 filas)', false);
+    ELSE
+      PERFORM set_config('probe.p488','ROJO (falla distinta: '||SQLSTATE||' '||left(SQLERRM,70)||')', false);
+    END IF;
+  END;
+END $$;
+SELECT set_config('role','none',true);
+
+-- ============================================================================================
+-- P489 — POSITIVO super_admin: autoridad global, cualquier pais
+-- --------------------------------------------------------------------------------------------
+-- La rama super_admin del helper llega por private.tiene_rol(p_roles) con el default
+-- ARRAY['super_admin']. Se prueba sobre GT y sobre SV: si el helper hubiera perdido esa rama, un
+-- solo pais podria dar verde por casualidad (si el super_admin tuviera pais_id = ese).
+-- ============================================================================================
+DO $$
+DECLARE
+  v_gt uuid := 'cbbbbe6d-59fe-4cf2-91ee-3e31ba1d5909';
+  v_sv uuid := 'f2c75b8e-ef54-4a05-b2ff-7363e448f680';
+  v_sa uuid; v_ngt bigint; v_nsv bigint;
+BEGIN
+  SELECT id INTO v_sa FROM auth.users WHERE email = 'admin.qa@ezpayconnect.com';
+  IF v_sa IS NULL THEN PERFORM set_config('probe.p489','ROJO (fixture ausente: admin.qa)', false); RETURN; END IF;
+  BEGIN
+    PERFORM set_config('request.jwt.claims',
+      json_build_object('sub', v_sa::text, 'role','authenticated')::text, true);
+    PERFORM set_config('role','authenticated', true);
+    SELECT count(*) INTO v_ngt FROM public.metricas_campana_pais(v_gt);
+    SELECT count(*) INTO v_nsv FROM public.metricas_campana_pais(v_sv);
+    PERFORM set_config('role','none', true);
+    IF v_ngt > 0 THEN
+      PERFORM set_config('probe.p489',
+        'OK (super_admin global: GT='||v_ngt||' filas, SV='||v_nsv||' filas, sin excepcion en ninguno)', false);
+    ELSE
+      PERFORM set_config('probe.p489',
+        'ROJO (super_admin obtuvo 0 filas en GT: perdio la autoridad global)', false);
+    END IF;
+  EXCEPTION WHEN OTHERS THEN
+    PERFORM set_config('role','none', true);
+    PERFORM set_config('probe.p489','ROJO (super_admin RECHAZADO: '||SQLSTATE||' '||left(SQLERRM,60)||')', false);
+  END;
+END $$;
+SELECT set_config('role','none',true);
 
 -- ===== Veredictos como result set =====
 SELECT 'P1_anon_insert_citas'              AS probe, current_setting('probe.p1', true)  AS verdict, 'BLOQUEADO' AS esperado_post_fix
@@ -10176,12 +10369,18 @@ UNION ALL SELECT 'P481_centinela_mide_algo',        current_setting('probe.p481'
 UNION ALL SELECT 'P482_helpers_265_estructura',     current_setting('probe.p482', true), 'OK (firma, flags y grants)'
 UNION ALL SELECT 'P483_helpers_sin_perfil_false',   current_setting('probe.p483', true), 'OK (false, no NULL; control: la vieja da NULL)'
 UNION ALL SELECT 'P484_helpers_scope_admin_pais',   current_setting('probe.p484', true), 'OK (su pais si, otro no; super_admin ambos)'
+UNION ALL SELECT 'P485_NEG_anon_sin_sesion',        current_setting('probe.p485', true), 'BLOQUEADO por GRANT'
+UNION ALL SELECT 'P486_NEG_authn_sin_perfil',       current_setting('probe.p486', true), 'BLOQUEADO (42501 no_autorizado del gate)'
+UNION ALL SELECT 'P487_POS_admin_pais_su_pais',     current_setting('probe.p487', true), 'OK (filas > 0)'
+UNION ALL SELECT 'P488_NEG_admin_pais_cross',       current_setting('probe.p488', true), 'BLOQUEADO (42501)'
+UNION ALL SELECT 'P489_POS_super_admin_global',     current_setting('probe.p489', true), 'OK (GT y SV sin excepcion)'
 UNION ALL SELECT 'FX00_catalogo_global_medicamentos', current_setting('probe.fx_medsglobal', true),'OK (precondicion sembrada)'
 UNION ALL SELECT 'FX01_afinb_capacidad_productos',   current_setting('probe.fx_afinb', true),      'OK (precondicion sembrada)'
 UNION ALL SELECT 'FX02_cat_medicamentos_catalogo',   current_setting('probe.fx_catmeds', true),    'OK (precondicion sembrada)'
 UNION ALL SELECT 'FX03_pgest_med_catalogo',          current_setting('probe.fx_pgest_med', true),  'OK (precondicion sembrada)'
 UNION ALL SELECT 'FX04_pasign_med_catalogo',         current_setting('probe.fx_pasign_med', true), 'OK (precondicion sembrada)'
 UNION ALL SELECT 'FX05_puba_capacidad_publicidad',   current_setting('probe.fx_publicidad', true), 'OK (precondicion sembrada)'
+UNION ALL SELECT 'FX06_afin_empresa_viva',          current_setting('probe.fx_afin_emp', true),   'OK (precondicion sembrada)'
 -- Las filas FX* son SALUD DE FIXTURE, no probes de seguridad: dicen si la precondicion que una
 -- migracion posterior empezo a exigir se pudo sembrar. Si una sale ROJO, los probes que dependen de
 -- ese fixture reportan N/A (su flag de ready se pierde con el rollback de la subtransaccion) en vez
@@ -10336,8 +10535,11 @@ UNION ALL SELECT 'P000_CENTINELA_veredictos_no_nulos',
        'probe.p478', 'probe.p479', 'probe.p470', 'probe.p471',
        'probe.p472', 'probe.p473', 'probe.p474', 'probe.p475',
        'probe.p476', 'probe.p477', 'probe.p480', 'probe.p481',
-       'probe.p482', 'probe.p483', 'probe.p484', 'probe.fx_medsglobal', 'probe.fx_afinb',
-       'probe.fx_catmeds', 'probe.fx_pgest_med', 'probe.fx_pasign_med', 'probe.fx_publicidad'
+       'probe.p482', 'probe.p483', 'probe.p484', 'probe.p485',
+       'probe.p486', 'probe.p487', 'probe.p488', 'probe.p489',
+       'probe.fx_medsglobal', 'probe.fx_afinb',
+       'probe.fx_catmeds', 'probe.fx_pgest_med', 'probe.fx_pasign_med', 'probe.fx_publicidad',
+       'probe.fx_afin_emp'
              ]) AS n) s),
   'OK (todos los veredictos publicados)';
 
