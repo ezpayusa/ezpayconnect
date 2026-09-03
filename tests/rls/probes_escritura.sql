@@ -6115,6 +6115,12 @@ SELECT set_config('role','none', true);
 
 -- P373 multi-LAB
 SELECT set_config('role','none', true);
+-- B2: limpia lx_mut ANTES de mutar, en una sentencia TOP-LEVEL — fuera del savepoint del bloque.
+-- Si el bloque cae, su propio set_config se revierte y la variable heredaria el valor del par
+-- anterior; el probe siguiente NO se declararia N/A y publicaria un veredicto sobre datos sin
+-- mutar. Medido: sin esta linea, P374 publicaba 'PERMITIDO (multi-paciente — LEAK PHI)', una
+-- alarma de fuga de PHI fabricada. Esta sentencia es lo unico que sobrevive a esa caida.
+SELECT set_config('probe.lx_mut','',false);
 DO $$ BEGIN IF current_setting('probe.lx_ready',true)<>'1' OR to_regprocedure('public.notificar_orden_lab(uuid)') IS NULL OR current_setting('probe.lx_otherlab',true)='' OR current_setting('probe.lx_ex',true)='' THEN PERFORM set_config('probe.lx_mut','0',false); RETURN; END IF;
   UPDATE public.examenes SET laboratorio_id=NULLIF(current_setting('probe.lx_otherlab',true), '')::uuid WHERE id=NULLIF(current_setting('probe.lx_ex',true), '')::int;
   PERFORM set_config('probe.lx_mut','1',false); EXCEPTION WHEN OTHERS THEN PERFORM set_config('probe.b2_fallos', coalesce(current_setting('probe.b2_fallos', true),'')||'L6114('||SQLSTATE||') ', false); END $$;
@@ -6128,6 +6134,12 @@ DO $$ BEGIN IF current_setting('probe.lx_mut',true)='1' THEN UPDATE public.exame
 
 -- P374 multi-PACIENTE (cross-leak de PHI, el más sensible)
 SELECT set_config('role','none', true);
+-- B2: limpia lx_mut ANTES de mutar, en una sentencia TOP-LEVEL — fuera del savepoint del bloque.
+-- Si el bloque cae, su propio set_config se revierte y la variable heredaria el valor del par
+-- anterior; el probe siguiente NO se declararia N/A y publicaria un veredicto sobre datos sin
+-- mutar. Medido: sin esta linea, P374 publicaba 'PERMITIDO (multi-paciente — LEAK PHI)', una
+-- alarma de fuga de PHI fabricada. Esta sentencia es lo unico que sobrevive a esa caida.
+SELECT set_config('probe.lx_mut','',false);
 DO $$ BEGIN IF current_setting('probe.lx_ready',true)<>'1' OR to_regprocedure('public.notificar_orden_lab(uuid)') IS NULL OR current_setting('probe.lx_otherpac',true)='' OR current_setting('probe.lx_ex',true)='' THEN PERFORM set_config('probe.lx_mut','0',false); RETURN; END IF;
   UPDATE public.examenes SET paciente_id=NULLIF(current_setting('probe.lx_otherpac',true), '')::int WHERE id=NULLIF(current_setting('probe.lx_ex',true), '')::int;
   PERFORM set_config('probe.lx_mut','1',false); EXCEPTION WHEN OTHERS THEN PERFORM set_config('probe.b2_fallos', coalesce(current_setting('probe.b2_fallos', true),'')||'L6127('||SQLSTATE||') ', false); END $$;
@@ -6141,6 +6153,12 @@ DO $$ BEGIN IF current_setting('probe.lx_mut',true)='1' THEN UPDATE public.exame
 
 -- P375 multi-MÉDICO
 SELECT set_config('role','none', true);
+-- B2: limpia lx_mut ANTES de mutar, en una sentencia TOP-LEVEL — fuera del savepoint del bloque.
+-- Si el bloque cae, su propio set_config se revierte y la variable heredaria el valor del par
+-- anterior; el probe siguiente NO se declararia N/A y publicaria un veredicto sobre datos sin
+-- mutar. Medido: sin esta linea, P374 publicaba 'PERMITIDO (multi-paciente — LEAK PHI)', una
+-- alarma de fuga de PHI fabricada. Esta sentencia es lo unico que sobrevive a esa caida.
+SELECT set_config('probe.lx_mut','',false);
 DO $$ BEGIN IF current_setting('probe.lx_ready',true)<>'1' OR to_regprocedure('public.notificar_orden_lab(uuid)') IS NULL OR current_setting('probe.lx_ajeno',true)='' OR current_setting('probe.lx_ex',true)='' THEN PERFORM set_config('probe.lx_mut','0',false); RETURN; END IF;
   UPDATE public.examenes SET medico_id=NULLIF(current_setting('probe.lx_ajeno',true), '')::uuid WHERE id=NULLIF(current_setting('probe.lx_ex',true), '')::int;
   PERFORM set_config('probe.lx_mut','1',false); EXCEPTION WHEN OTHERS THEN PERFORM set_config('probe.b2_fallos', coalesce(current_setting('probe.b2_fallos', true),'')||'L6140('||SQLSTATE||') ', false); END $$;
@@ -6154,6 +6172,12 @@ DO $$ BEGIN IF current_setting('probe.lx_mut',true)='1' THEN UPDATE public.exame
 
 -- P376 paciente NULL (derivado NULL → DENEGADO, no insert malformado)
 SELECT set_config('role','none', true);
+-- B2: limpia lx_mut ANTES de mutar, en una sentencia TOP-LEVEL — fuera del savepoint del bloque.
+-- Si el bloque cae, su propio set_config se revierte y la variable heredaria el valor del par
+-- anterior; el probe siguiente NO se declararia N/A y publicaria un veredicto sobre datos sin
+-- mutar. Medido: sin esta linea, P374 publicaba 'PERMITIDO (multi-paciente — LEAK PHI)', una
+-- alarma de fuga de PHI fabricada. Esta sentencia es lo unico que sobrevive a esa caida.
+SELECT set_config('probe.lx_mut','',false);
 DO $$ BEGIN IF current_setting('probe.lx_ready',true)<>'1' OR to_regprocedure('public.notificar_orden_lab(uuid)') IS NULL OR current_setting('probe.lx_ex',true)='' THEN PERFORM set_config('probe.lx_mut','0',false); RETURN; END IF;
   UPDATE public.examenes SET paciente_id=NULL WHERE id=NULLIF(current_setting('probe.lx_ex',true), '')::int;
   PERFORM set_config('probe.lx_mut','1',false); EXCEPTION WHEN OTHERS THEN PERFORM set_config('probe.b2_fallos', coalesce(current_setting('probe.b2_fallos', true),'')||'L6153('||SQLSTATE||') ', false); END $$;
@@ -7213,6 +7237,12 @@ SELECT set_config('role','none', true);
 -- Fixture: 2 recetas QA (pac 23, médico 09d243d5 que ATIENDE; sentinels medicamento/dosis/diagnóstico).
 -- med.qa atiende pac23 (positivo) · pac.qa (5bfb5b4c) NO atiende (spoof) · super_admin e56879c0.
 SELECT set_config('role','none', true);
+-- B2: limpia rx_ready ANTES de mutar, en una sentencia TOP-LEVEL — fuera del savepoint del bloque.
+-- Si el bloque cae, su propio set_config se revierte y la variable heredaria el valor del par
+-- anterior; el probe siguiente NO se declararia N/A y publicaria un veredicto sobre datos sin
+-- mutar. Medido: sin esta linea, P374 publicaba 'PERMITIDO (multi-paciente — LEAK PHI)', una
+-- alarma de fuga de PHI fabricada. Esta sentencia es lo unico que sobrevive a esa caida.
+SELECT set_config('probe.rx_ready','',false);
 DO $$ DECLARE v_pac bigint := 23; v_med uuid := '09d243d5-b222-482a-9762-94a582e9e752';
   v_spoof uuid := '5bfb5b4c-dc91-4714-93cb-a292faa6717d'; v_sa uuid := 'e56879c0-4025-4f1f-832d-2753d9ab63e1';
   v_r1 bigint; v_r2 bigint; v_ok boolean; BEGIN
