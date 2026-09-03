@@ -102,6 +102,7 @@ BEGIN
   END LOOP;
   IF v_mis=0 THEN PERFORM set_config('probe.p331','OK (tiene_permiso==catálogo en '||v_pairs||' pares (tipo,rol), 0 mismatch)',false);
   ELSE PERFORM set_config('probe.p331','FALLO ('||v_mis||' mismatches tiene_permiso vs catálogo)',false); END IF;
+EXCEPTION WHEN OTHERS THEN PERFORM set_config('probe.b2_fallos', coalesce(current_setting('probe.b2_fallos', true),'')||'L83('||SQLSTATE||') ', false);
 END $$;
 SELECT set_config('role','none',true);
 
@@ -116,6 +117,7 @@ DO $$ DECLARE v_tp boolean; BEGIN
   SELECT private.tiene_permiso('pagos_ezpay') INTO v_tp;  -- catálogo gerente_farmacia NO tiene pagos_ezpay → debe seguir false
   PERFORM set_config('role','none',true);
   PERFORM set_config('probe.p332', CASE WHEN COALESCE(v_tp,false)=false THEN 'OK (techo ignora override; resolución=catálogo=false)' ELSE 'ROJO (override sobre techo CONCEDIÓ — no honrado en resolución)' END, false);
+EXCEPTION WHEN OTHERS THEN PERFORM set_config('probe.b2_fallos', coalesce(current_setting('probe.b2_fallos', true),'')||'L109('||SQLSTATE||') ', false);
 END $$;
 SELECT set_config('role','none',true);
 
@@ -176,6 +178,7 @@ DO $$ DECLARE v_before boolean; v_rev boolean; v_con boolean; BEGIN
   SELECT private.tiene_permiso('delivery') INTO v_con;
   PERFORM set_config('role','none',true);
   PERFORM set_config('probe.p337', CASE WHEN v_before AND v_rev=false AND v_con THEN 'OK (true→revoca→false→concede→true)' ELSE 'FALLO (b='||v_before||' rev='||v_rev||' con='||v_con||')' END, false);
+EXCEPTION WHEN OTHERS THEN PERFORM set_config('probe.b2_fallos', coalesce(current_setting('probe.b2_fallos', true),'')||'L168('||SQLSTATE||') ', false);
 END $$;
 SELECT set_config('role','none',true);
 
@@ -189,6 +192,7 @@ DO $$ DECLARE v_b int; BEGIN
   SELECT count(*) INTO v_b FROM public.permisos_empresa_rol_override WHERE empresa_id=NULLIF(current_setting('probe.rb_empB',true), '')::uuid;
   PERFORM set_config('role','none',true);
   PERFORM set_config('probe.p338', CASE WHEN v_b=0 THEN 'OK (A no lee override de B)' ELSE 'ROJO (A ve '||v_b||' overrides de B)' END, false);
+EXCEPTION WHEN OTHERS THEN PERFORM set_config('probe.b2_fallos', coalesce(current_setting('probe.b2_fallos', true),'')||'L183('||SQLSTATE||') ', false);
 END $$;
 SELECT set_config('role','none',true);
 
@@ -245,6 +249,7 @@ DO $$ BEGIN
     DELETE FROM public.permisos_empresa_rol_override
      WHERE empresa_id IN (NULLIF(current_setting('probe.rb_empA',true),'')::uuid, NULLIF(current_setting('probe.rb_empB',true),'')::uuid);
   END IF;
+EXCEPTION WHEN OTHERS THEN PERFORM set_config('probe.b2_fallos', coalesce(current_setting('probe.b2_fallos', true),'')||'L243('||SQLSTATE||') ', false);
 END $$;
 SELECT set_config('request.jwt.claims', NULL, true);
 SELECT set_config('role','none',true);
@@ -1074,6 +1079,7 @@ DO $$ DECLARE v_emp uuid; BEGIN
   IF v_emp IS NOT NULL THEN
     INSERT INTO public.planes_asignaciones (empresa_id, estado) VALUES (v_emp, 'activo');
   END IF;
+EXCEPTION WHEN OTHERS THEN PERFORM set_config('probe.b2_fallos', coalesce(current_setting('probe.b2_fallos', true),'')||'L1071('||SQLSTATE||') ', false);
 END $$;
 SELECT set_config('probe.asig_emp',
   (SELECT id::text FROM public.planes_asignaciones WHERE empresa_id IS NOT NULL ORDER BY id LIMIT 1), false);
@@ -1699,12 +1705,14 @@ DO $$ DECLARE t uuid; BEGIN  -- token EXPIRADO (farmacia)
   VALUES (NULLIF(current_setting('probe.farm_emp', true), '')::uuid, current_setting('probe.invitee_email', true), 'Exp', 'cajero', 'pendiente', now() - interval '1 day')
   RETURNING token INTO t;
   PERFORM set_config('probe.exp_token', t::text, false);
+EXCEPTION WHEN OTHERS THEN PERFORM set_config('probe.b2_fallos', coalesce(current_setting('probe.b2_fallos', true),'')||'L1697('||SQLSTATE||') ', false);
 END $$;
 DO $$ DECLARE t uuid; BEGIN  -- token VISITADOR/LAB (empresa no-farmacia), email = invitee2 real
   INSERT INTO public.invitaciones_visitador (empresa_id, email, nombre_completo, rol, estado, expires_at)
   VALUES (NULLIF(current_setting('probe.lab_emp', true), '')::uuid, current_setting('probe.invitee2_email', true), 'Lab Inv', 'visitador_medico', 'pendiente', now() + interval '7 days')
   RETURNING token INTO t;
   PERFORM set_config('probe.lab_token', t::text, false);
+EXCEPTION WHEN OTHERS THEN PERFORM set_config('probe.b2_fallos', coalesce(current_setting('probe.b2_fallos', true),'')||'L1703('||SQLSTATE||') ', false);
 END $$;
 
 -- P91 — NEG: Gerente invita ADMIN → BLOQUEADO (nivel)
@@ -2005,6 +2013,7 @@ DO $$ BEGIN
   UPDATE public.cuentas_proveedor SET empresa_id=NULLIF(current_setting('probe.af_emp',true), '')::uuid, rol_en_empresa='lectura',   activo=true, equipo_id=NULL WHERE id=NULLIF(current_setting('probe.af_lectura',true),'')::uuid;
   UPDATE public.cuentas_proveedor SET empresa_id=NULLIF(current_setting('probe.af_emp',true), '')::uuid, rol_en_empresa='gerente',   activo=true, equipo_id=NULL WHERE id=NULLIF(current_setting('probe.af_gerente',true),'')::uuid;
   PERFORM set_config('probe.fx_afin_emp','OK (empresa afin viva + 4 cuentas prestadas re-asignadas)', false);
+EXCEPTION WHEN OTHERS THEN PERFORM set_config('probe.b2_fallos', coalesce(current_setting('probe.b2_fallos', true),'')||'L1997('||SQLSTATE||') ', false);
 END $$;
 -- Producto afín activo ficticio (para el test de visibilidad del médico)
 DO $$ DECLARE v_id uuid; BEGIN
@@ -2014,6 +2023,7 @@ DO $$ DECLARE v_id uuid; BEGIN
       RETURNING id INTO v_id;
     PERFORM set_config('probe.af_prod', v_id::text, false);
   END IF;
+EXCEPTION WHEN OTHERS THEN PERFORM set_config('probe.b2_fallos', coalesce(current_setting('probe.b2_fallos', true),'')||'L2010('||SQLSTATE||') ', false);
 END $$;
 -- afín B (2ª empresa afín) + producto + miembro admin + solicitud → aislamiento afín↔afín (ROLLBACK)
 -- PRECONDICION (invalidado por la mig 202 del 2026-07-02): productos_empresa lleva el gate
@@ -2076,6 +2086,7 @@ DO $$ DECLARE v_id uuid; BEGIN
       RETURNING id INTO v_id;
     PERFORM set_config('probe.af_b_solic', v_id::text, false);
   END IF;
+EXCEPTION WHEN OTHERS THEN PERFORM set_config('probe.b2_fallos', coalesce(current_setting('probe.b2_fallos', true),'')||'L2071('||SQLSTATE||') ', false);
 END $$;
 -- solicitud PROPIA de afín A (de af_mkt) para tests de auto-aprobación/edición de contenido
 DO $$ DECLARE v_id uuid; BEGIN
@@ -2084,6 +2095,7 @@ DO $$ DECLARE v_id uuid; BEGIN
             (SELECT pais_id FROM public.empresas_proveedoras WHERE id=NULLIF(current_setting('probe.af_emp',true), '')::uuid))
     RETURNING id INTO v_id;
   PERFORM set_config('probe.af_a_solic', v_id::text, false);
+EXCEPTION WHEN OTHERS THEN PERFORM set_config('probe.b2_fallos', coalesce(current_setting('probe.b2_fallos', true),'')||'L2081('||SQLSTATE||') ', false);
 END $$;
 -- producto activo de una empresa NO-afín (para confirmar que el médico la SIGUE viendo tras el fix)
 DO $$ DECLARE v_e uuid; BEGIN
@@ -2093,6 +2105,7 @@ DO $$ DECLARE v_e uuid; BEGIN
     INSERT INTO public.productos_empresa (empresa_id, nombre_producto, precio_unitario, estado)
       VALUES (v_e, 'Probe NoAfin Visible', 10, 'activo');
   END IF;
+EXCEPTION WHEN OTHERS THEN PERFORM set_config('probe.b2_fallos', coalesce(current_setting('probe.b2_fallos', true),'')||'L2089('||SQLSTATE||') ', false);
 END $$;
 
 -- P114 — BARRERA: el MÉDICO NO ve productos de empresa_afin en su búsqueda
@@ -2353,6 +2366,7 @@ DO $$ DECLARE v_emp uuid; v_admin uuid; v_pais uuid; BEGIN
     UPDATE public.cuentas_proveedor SET empresa_id=v_emp, rol_en_empresa='admin', activo=true, equipo_id=NULL WHERE id=v_admin;
     PERFORM set_config('probe.p132_admin', v_admin::text, false);
   END IF;
+EXCEPTION WHEN OTHERS THEN PERFORM set_config('probe.b2_fallos', coalesce(current_setting('probe.b2_fallos', true),'')||'L2339('||SQLSTATE||') ', false);
 END $$;
 SELECT set_config('role','none',true);
 SELECT set_config('request.jwt.claims', json_build_object('sub', current_setting('probe.p132_admin', true), 'role','authenticated')::text, true);
@@ -2476,6 +2490,7 @@ BEGIN
   PERFORM set_config('probe.qr_iB', v_iB::text, false);
   PERFORM set_config('probe.qr_iY1', v_iY1::text, false);
   PERFORM set_config('probe.qr_tokY', v_tokY, false);
+EXCEPTION WHEN OTHERS THEN PERFORM set_config('probe.b2_fallos', coalesce(current_setting('probe.b2_fallos', true),'')||'L2406('||SQLSTATE||') ', false);
 END $$;
 
 -- Helper de aserción: cada probe corre como un actor (jwt) y captura el veredicto.
@@ -3029,6 +3044,7 @@ BEGIN
   PERFORM set_config('probe.rx_itA',v_itA::text,false);
   PERFORM set_config('probe.rx_itB',v_itB::text,false);
   PERFORM set_config('probe.rx_norx',v_norx::text,false);
+EXCEPTION WHEN OTHERS THEN PERFORM set_config('probe.b2_fallos', coalesce(current_setting('probe.b2_fallos', true),'')||'L2988('||SQLSTATE||') ', false);
 END $$;
 
 -- Helper: ¿existen las RPC de Frente B? (guarda rojo-primero)
@@ -3515,6 +3531,7 @@ DO $$ DECLARE v_gt uuid; v_hn uuid; v_fgt int; v_fhn int; v_lgt uuid; v_lhn uuid
   PERFORM set_config('probe.p0_lgt',v_lgt::text,false); PERFORM set_config('probe.p0_lhn',v_lhn::text,false);
   PERFORM set_config('probe.p0_mednull',v_mednull::text,false);
   PERFORM set_config('probe.p0_gt',v_gt::text,false);   PERFORM set_config('probe.p0_hn',v_hn::text,false);
+EXCEPTION WHEN OTHERS THEN PERFORM set_config('probe.b2_fallos', coalesce(current_setting('probe.b2_fallos', true),'')||'L3500('||SQLSTATE||') ', false);
 END $$;
 
 DO $$ BEGIN
@@ -4355,6 +4372,7 @@ DO $$ BEGIN
     INSERT INTO public.planes_visitador_contratados (empresa_id,plan_visitador_id,pais_id,cantidad_visitas_incluidas,visitas_usadas,precio_pagado,fecha_inicio,fecha_fin,estado)
       VALUES (NULLIF(current_setting('probe.pa_ea',true), '')::uuid, 1, NULLIF(current_setting('probe.p0_gt',true), '')::uuid, 10,0,100,CURRENT_DATE-1,CURRENT_DATE+30,'activo');
   END IF;
+EXCEPTION WHEN OTHERS THEN PERFORM set_config('probe.b2_fallos', coalesce(current_setting('probe.b2_fallos', true),'')||'L4353('||SQLSTATE||') ', false);
 END $$;
 
 -- P250 — POS: visitador con plan GT activo → ve slots contexto='visitador' del médico GT
@@ -11229,10 +11247,13 @@ SELECT set_config('role','none', true);
 --                            de set_config) y ''::uuid es 22P02: mata la transaccion igual que un
 --                            NOT NULL. Fase 2.1 CERRADA: 155 -> 0 en tres tandas.
 --
---   do_sin_handler = 211     Bloques DO sin `EXCEPTION WHEN`. DEUDA CON FECHA, igual que la allowlist
+--   do_sin_handler = 193     Bloques DO sin `EXCEPTION WHEN`. DEUDA CON FECHA, igual que la allowlist
 --                            del P480: la ataca la FASE 2. La regla es ESTRICTA — un `RAISE EXCEPTION`
---                            NO cuenta como handler, es lo contrario de un handler. Contarlo daria
---                            298 y estaria mal.
+--                            NO cuenta como handler, es lo contrario de un handler; el detector ademas
+--                            quita los literales SQL antes de buscar (b2_guard_test.py fija las dos
+--                            direcciones del error). Fase 2.2 tanda 1: 211 -> 193, envolviendo los 18
+--                            primeros de los 55 bloques que ESCRIBEN. Cuando uno envuelto cae, su
+--                            veredicto queda vacio (lo caza P000) y FX19 dice cual y con que SQLSTATE.
 --
 -- POR QUE IMPORTA: cuatro de las sentencias top-level ya mataron la transaccion entera una vez
 -- (incidente del lote 1: empresa_id=NULL -> 23502, sin una sola fila de salida). Un harness que
@@ -11241,13 +11262,35 @@ SELECT set_config('role','none', true);
 DO $$
 BEGIN
   PERFORM set_config('probe.p516',
-    'OK-SENAL (baseline declarado: top_level_dml_ddl=0 excluyendo pg_temp, cast_directo=0 CERRADO, do_sin_handler=211 deuda con fecha). '||
+    'OK-SENAL (baseline declarado: top_level_dml_ddl=0 excluyendo pg_temp, cast_directo=0 CERRADO, do_sin_handler=193 deuda con fecha, fase 2.2 tanda 1 de 3). '||
     'El gate real es tests/rls/b2_guard.py — este probe NO mide, senaliza.', false);
 EXCEPTION WHEN OTHERS THEN
   -- handler puesto por coherencia: el propio b2_guard.py conto este bloque como deuda nueva cuando
   -- se escribio sin el. Subir el baseline para acomodar el codigo del gate habria sido exactamente
   -- lo que el gate existe para impedir.
   PERFORM set_config('probe.p516','ROJO ('||SQLSTATE||' '||SQLERRM||')', false);
+END $$;
+
+-- ############################################################################################
+-- B2 FASE 2.2 - FX19: REPORTE DE CAIDAS DE LOS BLOQUES ENVUELTOS
+-- ############################################################################################
+-- Los handlers de la fase 2.2 NO publican el veredicto de su bloque, a proposito: si lo hicieran
+-- inventarian un texto que podria leerse como verde. Cuando un bloque envuelto cae pasan DOS cosas,
+-- las dos VISIBLES, y entre las dos distinguen "paso" de "exploto":
+--   1) el bloque se revierte hasta su savepoint implicito, asi que su propio veredicto queda SIN
+--      publicar -> el centinela anti-null P000 lo caza como VACIO;
+--   2) FX19 dice CUAL cayo (linea de inicio) y con que SQLSTATE.
+-- El set_config del handler SI persiste: corre DESPUES del rollback al savepoint, en el contexto
+-- que sobrevive. Antes de la fase 2.2 esa misma caida mataba la transaccion entera y no habia NADA.
+-- ############################################################################################
+DO $$
+DECLARE v text := coalesce(current_setting('probe.b2_fallos', true), '');
+BEGIN
+  PERFORM set_config('probe.fx_b2fallos', CASE WHEN v = ''
+    THEN 'OK (ningun bloque envuelto por la fase 2.2 cayo)'
+    ELSE 'ROJO - bloques caidos, el harness sobrevivio gracias al handler: '||v END, false);
+EXCEPTION WHEN OTHERS THEN
+  PERFORM set_config('probe.fx_b2fallos','ROJO ('||SQLSTATE||' '||SQLERRM||')', false);
 END $$;
 
 -- ===== Veredictos como result set =====
@@ -11812,6 +11855,7 @@ UNION ALL SELECT 'FX15_triggers_visitas_OFF_1',    current_setting('probe.fx_trg
 UNION ALL SELECT 'FX16_triggers_visitas_ON_1',     current_setting('probe.fx_trg1_on', true),    'OK (el ENABLE corrio)'
 UNION ALL SELECT 'FX17_triggers_visitas_OFF_2',    current_setting('probe.fx_trg2_off', true),   'OK (2 triggers OFF)'
 UNION ALL SELECT 'FX18_triggers_visitas_ON_2',     current_setting('probe.fx_trg2_on', true),    'OK (el ENABLE corrio)'
+UNION ALL SELECT 'FX19_b2_bloques_caidos',        current_setting('probe.fx_b2fallos', true),   'OK (ningun bloque envuelto cayo)'
 UNION ALL SELECT 'P516_SENAL_estructura_harness',  current_setting('probe.p516', true),          'OK-SENAL (no mide; el gate es b2_guard.py)'
 -- Las filas FX* son SALUD DE FIXTURE, no probes de seguridad: dicen si la precondicion que una
 -- migracion posterior empezo a exigir se pudo sembrar. Si una sale ROJO, los probes que dependen de
@@ -11982,7 +12026,7 @@ UNION ALL SELECT 'P000_CENTINELA_veredictos_no_nulos',
        'probe.p514', 'probe.p515',
        'probe.fx_ajeno', 'probe.fx_farmroles', 'probe.fx_afb_member',
        'probe.fx_trg1_off', 'probe.fx_trg1_on', 'probe.fx_trg2_off', 'probe.fx_trg2_on',
-       'probe.p516'
+       'probe.p516', 'probe.fx_b2fallos'
              ]) AS n) s),
   'OK (todos los veredictos publicados)';
 
