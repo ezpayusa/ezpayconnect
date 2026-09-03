@@ -6991,6 +6991,11 @@ BEGIN
 EXCEPTION WHEN OTHERS THEN
   PERFORM set_config('probe.fx_trg1_off','ROJO ('||SQLSTATE||' '||SQLERRM||')', false);
 END $$;
+-- B2: limpia h_ready ANTES del fixture, en una sentencia TOP-LEVEL — fuera del savepoint.
+-- probe.h_ready lo escriben DOS frentes que no se conocen: el de citas/medico-huerfano (L6325) y
+-- este (P414-P418). Si este bloque cae, h_ready vuelve al '1' del otro frente y P414-P418 corren
+-- contra un fixture inexistente en vez de declararse SKIP. Colision de nombre, no de intencion.
+SELECT set_config('probe.h_ready','',false);
 DO $$ DECLARE v_A uuid:='411d6f8c-a405-49d6-9ed6-fbeb0db05133'; v_B uuid:='cc17afe8-fcd5-4ab0-84c4-08ba919d8481';
   v_adm uuid:='9ca0b977-3c91-48dc-aa04-2f1fab766963'; v_edi uuid:='d50e7efd-d0c6-4f14-a47b-f6b4845b25e9';
   v_vis uuid:='b38847e5-e52a-4c11-9aec-487fb558532f'; v_ext uuid:='e7935069-fd08-4ac5-a094-9c481313f4d3';
