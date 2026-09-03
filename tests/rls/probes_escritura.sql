@@ -11305,12 +11305,13 @@ SELECT set_config('role','none', true);
 --                            de set_config) y ''::uuid es 22P02: mata la transaccion igual que un
 --                            NOT NULL. Fase 2.1 CERRADA: 155 -> 0 en tres tandas.
 --
---   do_sin_handler = 156     Bloques DO sin `EXCEPTION WHEN`. DEUDA CON FECHA, igual que la allowlist
---                            del P480: la ataca la FASE 2. La regla es ESTRICTA — un `RAISE EXCEPTION`
---                            NO cuenta como handler, es lo contrario de un handler; el detector ademas
---                            quita los literales SQL antes de buscar (b2_guard_test.py fija las dos
---                            direcciones del error). Fase 2.2 CERRADA: 211 -> 193 -> 175 -> 157 -> 156, los 55
---                            de los 55 bloques que ESCRIBEN. Cuando uno envuelto cae, su veredicto queda
+--   do_sin_handler = 156     Bloques DO sin `EXCEPTION WHEN`. YA NO ES DEUDA: la fase 2.2 cerro los
+--                            55 bloques que ESCRIBEN (211 -> 193 -> 175 -> 157 -> 156, P481 incluido)
+--                            y los 156 que quedan solo LEEN y publican — si uno cae no arrastra estado
+--                            ajeno. Este numero es el normal del archivo; sube si alguien agrega un
+--                            bloque sin handler. La regla es ESTRICTA — un `RAISE EXCEPTION` NO cuenta
+--                            como handler, es lo contrario; el detector ademas quita los literales SQL
+--                            antes de buscar (b2_guard_test.py fija las dos direcciones del error). Cuando uno envuelto cae, su veredicto queda
 --                            vacio (lo caza P000) y FX19 dice cual y con que SQLSTATE — las tres senales
 --                            se PROBARON en rojo a proposito, no se asumieron (ver el commit de la tanda 2).
 --                            Para los bloques que no publican veredicto propio, FX19 es el UNICO delator.
