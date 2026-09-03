@@ -9419,12 +9419,12 @@ DECLARE
   -- ALLOWLIST — censo 2026-09-02, paquete PA-FAILOPEN. Se vacia lote por lote.
   v_allow text[] := ARRAY[
     'public.activar_capacidad_suelta',            -- lote N (rama positiva de scope; gate real ya COALESCE-ado)
-    'public.aprobar_personalizacion',             -- lote N
+    -- SALDADA por la mig 268 (lote 3): 'public.aprobar_personalizacion'
     'public.aprobar_solicitud_campana',           -- lote N
     'public.asignar_tier',                        -- lote N (rama positiva de scope; gate real ya COALESCE-ado)
     -- SALDADA por la mig 267 (lote 2): 'public.cerrar_liquidacion'
-    'public.crear_capacidad_pais',                -- lote N
-    'public.crear_tier_pais',                     -- lote N
+    -- SALDADA por la mig 268 (lote 3): 'public.crear_capacidad_pais'
+    -- SALDADA por la mig 268 (lote 3): 'public.crear_tier_pais'
     -- SALDADA por la mig 267 (lote 2): 'public.liquidar_comision'
     'public.listar_canjes_pendientes',            -- lote N (gate sin pais -> es_admin_pais)
     'public.listar_capacidades_pais',             -- lote N
@@ -9440,13 +9440,13 @@ DECLARE
     'public.notificar_pago_resultado',            -- lote N
     'public.notificar_resultado_examen',          -- lote N (IS DISTINCT FROM: NULL-safe, no explotable)
     'public.obtener_resumen_pais',                -- lote N
-    'public.rechazar_personalizacion',            -- lote N
+    -- SALDADA por la mig 268 (lote 3): 'public.rechazar_personalizacion'
     'public.registrar_evidencia_entrega',         -- lote N (NOT LIKE contra mi_empresa_proveedor())
-    'public.resolver_canje',                      -- lote N
-    'public.resolver_propuesta_especialidad',     -- lote N
-    'public.solicitar_capacidad_pais',            -- lote N
+    'public.resolver_canje'  -- lote N
+    -- SALDADA por la mig 268 (lote 3): 'public.resolver_propuesta_especialidad'
+    -- SALDADA por la mig 268 (lote 3): 'public.solicitar_capacidad_pais'
     -- SALDADA por la mig 267 (lote 2): 'public.solicitar_contrato_comision'
-    'public.solicitar_tier_pais'                  -- lote N
+    -- SALDADA por la mig 268 (lote 3): 'public.solicitar_tier_pais'
   ];
   v_rojas    text[];
   v_nuevas   text[];
@@ -10169,6 +10169,302 @@ BEGIN
 END $$;
 SELECT set_config('role','none',true);
 
+-- ############################################################################################
+-- PAQUETE PA-FAILOPEN - LOTE 3 - P497-P500 + FX08 (las 7 de config y aprobacion, mig 268)
+-- ############################################################################################
+DO $$
+DECLARE
+  v_gt  uuid := 'cbbbbe6d-59fe-4cf2-91ee-3e31ba1d5909';
+  v_sv  uuid := 'f2c75b8e-ef54-4a05-b2ff-7363e448f680';
+  v_sinperfil uuid;   -- cuenta de proveedor: existe en auth.users, NO en perfiles
+  v_super     uuid;
+  v_adminpais uuid;
+  v_emp_gt uuid; v_emp_sv uuid;
+  v_med_gt uuid; v_med_sv uuid; v_clin_gt uuid;
+  -- solicitudes de personalizacion: una por actor (la moderacion consume el registro)
+  v_sp_np uuid := '00000000-0000-4268-0497-000000000001';
+  v_sp_sa uuid := '00000000-0000-4268-0497-000000000002';
+  v_sp_ap uuid := '00000000-0000-4268-0497-000000000003';
+  v_sp_r  uuid := '00000000-0000-4268-0497-000000000004';   -- para rechazar_personalizacion
+  v_sp_sv uuid := '00000000-0000-4268-0497-000000000005';   -- tenant de SV (cross-pais)
+  -- propuestas de especialidad
+  v_pe_np uuid := '00000000-0000-4268-0497-00000000000a';
+  v_pe_sa uuid := '00000000-0000-4268-0497-00000000000b';
+  v_pe_ap uuid := '00000000-0000-4268-0497-00000000000c';
+  v_pe_sv uuid := '00000000-0000-4268-0497-00000000000d';
+  v_users_sv uuid := '00000000-0000-4268-0497-0000000000f1';
+
+  -- conteos para medir EFECTO
+  v_cap0 bigint; v_cap1 bigint;
+  v_tier0 bigint; v_tier1 bigint;
+  v_sol0 bigint; v_sol1 bigint;
+  v_est_sp text; v_est_pe text;
+
+  v_err text; v_state text; v_msg text;
+  v_det text := '';
+  v_ok boolean;
+  v_497 text; v_498 text; v_499 text; v_500 text; v_fx text;
+  v_fatal text := NULL;
+BEGIN
+  IF to_regprocedure('private.puede_admin_pais(uuid,text[])') IS NULL THEN
+    PERFORM set_config('probe.p497','ROJO (mig 265 sin aplicar)', false);
+    PERFORM set_config('probe.p498','ROJO (mig 265 sin aplicar)', false);
+    PERFORM set_config('probe.p499','ROJO (mig 265 sin aplicar)', false);
+    PERFORM set_config('probe.p500','ROJO (mig 265 sin aplicar)', false);
+    PERFORM set_config('probe.fx_l3','ROJO (mig 265 sin aplicar)', false);
+    RETURN;
+  END IF;
+
+  BEGIN
+    -- ================= FIXTURES =================
+    SELECT u.id INTO v_sinperfil FROM auth.users u
+      WHERE u.email='farmacia.qa@ezpayconnect.com'
+        AND NOT EXISTS (SELECT 1 FROM public.perfiles p WHERE p.id=u.id);
+    SELECT id INTO v_super     FROM public.perfiles WHERE email='admin.qa@ezpayconnect.com';
+    SELECT id INTO v_adminpais FROM public.perfiles WHERE email='adminpais.qa@ezpayconnect.com';
+    SELECT id INTO v_emp_gt    FROM public.empresas_proveedoras WHERE pais_id=v_gt LIMIT 1;
+    SELECT id INTO v_clin_gt   FROM public.clinicas WHERE pais_id=v_gt LIMIT 1;
+    SELECT id INTO v_med_gt    FROM public.medicos WHERE pais_id=v_gt LIMIT 1;
+
+    IF v_sinperfil IS NULL OR v_super IS NULL OR v_adminpais IS NULL
+       OR v_emp_gt IS NULL OR v_med_gt IS NULL THEN
+      v_fatal := 'faltan actores base (sinperfil/super/adminpais/empresa GT/medico GT)';
+      RAISE EXCEPTION 'PROBE_UNDO';
+    END IF;
+
+    -- empresa de SV: no existe ninguna en prod (las 7 son GT) -> sin esto P500 daria verde vacio
+    INSERT INTO public.empresas_proveedoras (nombre_empresa, tipo, estado, pais_id, email_contacto)
+      VALUES ('P268 Empresa SV', 'farmacia', 'activa', v_sv, 'p268.sv@example.invalid')
+      RETURNING id INTO v_emp_sv;
+
+    -- medico de SV: idem, para la propuesta de especialidad cross-pais.
+    -- medicos.id tiene FK a perfiles (medicos_id_perfiles_fkey), no solo a auth.users: hace falta
+    -- la cadena completa auth.users -> perfiles -> medicos.
+    INSERT INTO auth.users (id) VALUES (v_users_sv);
+    INSERT INTO public.perfiles (id, email, nombre_completo, rol, pais_id, activo)
+      VALUES (v_users_sv, 'p268_medico_sv@example.invalid', 'P268 Medico SV', 'medico', v_sv, true);
+    INSERT INTO public.medicos (id, clinica_id, nombre_completo, pais_id)
+      VALUES (v_users_sv, v_clin_gt, 'P268 Medico SV', v_sv);
+    v_med_sv := v_users_sv;
+
+    -- solicitudes de personalizacion PENDIENTES: una por actor
+    INSERT INTO public.solicitudes_personalizacion (id, tenant_tipo, tenant_id, estado, solicitado_por) VALUES
+      (v_sp_np,'empresa_proveedora', v_emp_gt,'pendiente', v_super),
+      (v_sp_sa,'empresa_proveedora', v_emp_gt,'pendiente', v_super),
+      (v_sp_ap,'empresa_proveedora', v_emp_gt,'pendiente', v_super),
+      (v_sp_r ,'empresa_proveedora', v_emp_gt,'pendiente', v_super),
+      (v_sp_sv,'empresa_proveedora', v_emp_sv,'pendiente', v_super);
+
+    -- propuestas de especialidad PENDIENTES
+    INSERT INTO public.especialidades_propuestas (id, medico_id, nombre_propuesto, estado) VALUES
+      (v_pe_np, v_med_gt, 'P268 Esp NP', 'pendiente'),
+      (v_pe_sa, v_med_gt, 'P268 Esp SA', 'pendiente'),
+      (v_pe_ap, v_med_gt, 'P268 Esp AP', 'pendiente'),
+      (v_pe_sv, v_med_sv, 'P268 Esp SV', 'pendiente');
+
+    v_fx := 'OK (empresa SV + medico SV + 5 solicitudes + 4 propuestas sembradas)';
+
+    -- ================= P497: SIN PERFIL, MIDIENDO EFECTO =================
+    SELECT count(*) INTO v_cap0  FROM public.capacidades_catalogo;
+    SELECT count(*) INTO v_tier0 FROM public.tiers_catalogo;
+    SELECT count(*) INTO v_sol0  FROM public.solicitudes_capacidad_pais;
+
+    PERFORM set_config('request.jwt.claims',
+      json_build_object('sub', v_sinperfil::text,'role','authenticated')::text, true);
+    PERFORM set_config('role','authenticated', true);
+    v_det := '';
+
+    BEGIN PERFORM public.crear_capacidad_pais('P268CAP','P268 Cap',NULL,v_gt,900);
+      v_det := v_det||'crear_capacidad=PASO! ';
+    EXCEPTION WHEN OTHERS THEN
+      v_det := v_det||'crear_capacidad='||CASE WHEN SQLSTATE='P0001' AND SQLERRM LIKE 'No autorizado%'
+               THEN 'BLOQ' ELSE 'otro('||SQLSTATE||')' END||' '; END;
+
+    BEGIN PERFORM public.crear_tier_pais('P268TIER','P268 Tier',NULL,v_gt,900,NULL);
+      v_det := v_det||'crear_tier=PASO! ';
+    EXCEPTION WHEN OTHERS THEN
+      v_det := v_det||'crear_tier='||CASE WHEN SQLSTATE='P0001' AND SQLERRM LIKE 'No autorizado%'
+               THEN 'BLOQ' ELSE 'otro('||SQLSTATE||')' END||' '; END;
+
+    BEGIN PERFORM public.solicitar_capacidad_pais(v_gt,'P268SCAP','P268 SCap',NULL,900);
+      v_det := v_det||'solicitar_capacidad=PASO! ';
+    EXCEPTION WHEN OTHERS THEN
+      v_det := v_det||'solicitar_capacidad='||CASE WHEN SQLSTATE='PC019' THEN 'BLOQ'
+               ELSE 'otro('||SQLSTATE||')' END||' '; END;
+
+    BEGIN PERFORM public.solicitar_tier_pais(v_gt,'P268STIER','P268 STier',NULL,900,NULL);
+      v_det := v_det||'solicitar_tier=PASO! ';
+    EXCEPTION WHEN OTHERS THEN
+      v_det := v_det||'solicitar_tier='||CASE WHEN SQLSTATE='PC019' THEN 'BLOQ'
+               ELSE 'otro('||SQLSTATE||')' END||' '; END;
+
+    BEGIN PERFORM public.aprobar_personalizacion(v_sp_np);
+      v_det := v_det||'aprobar_pers=PASO! ';
+    EXCEPTION WHEN OTHERS THEN
+      v_det := v_det||'aprobar_pers='||CASE WHEN SQLSTATE='PT001' THEN 'BLOQ'
+               ELSE 'otro('||SQLSTATE||')' END||' '; END;
+
+    BEGIN PERFORM public.rechazar_personalizacion(v_sp_r,'motivo');
+      v_det := v_det||'rechazar_pers=PASO! ';
+    EXCEPTION WHEN OTHERS THEN
+      v_det := v_det||'rechazar_pers='||CASE WHEN SQLSTATE='PT001' THEN 'BLOQ'
+               ELSE 'otro('||SQLSTATE||')' END||' '; END;
+
+    BEGIN PERFORM public.resolver_propuesta_especialidad(v_pe_np, true);
+      v_det := v_det||'resolver_prop=PASO! ';
+    EXCEPTION WHEN OTHERS THEN
+      v_det := v_det||'resolver_prop='||CASE WHEN SQLSTATE='P0001' AND SQLERRM='no_autorizado'
+               THEN 'BLOQ' ELSE 'otro('||SQLSTATE||')' END||' '; END;
+
+    PERFORM set_config('role','none', true);
+
+    -- EFECTO: nada escrito, y los dos registros de moderacion siguen pendientes
+    SELECT count(*) INTO v_cap1  FROM public.capacidades_catalogo;
+    SELECT count(*) INTO v_tier1 FROM public.tiers_catalogo;
+    SELECT count(*) INTO v_sol1  FROM public.solicitudes_capacidad_pais;
+    SELECT estado INTO v_est_sp FROM public.solicitudes_personalizacion WHERE id=v_sp_np;
+    SELECT estado INTO v_est_pe FROM public.especialidades_propuestas   WHERE id=v_pe_np;
+
+    v_ok := v_det NOT LIKE '%PASO!%' AND v_det NOT LIKE '%otro(%'
+        AND v_cap1=v_cap0 AND v_tier1=v_tier0 AND v_sol1=v_sol0
+        AND v_est_sp='pendiente' AND v_est_pe='pendiente';
+    v_497 := CASE WHEN v_ok
+      THEN 'BLOQUEADO en las 7 con la señal de autz correcta, Y SIN EFECTO: capacidades '||v_cap0||'='||v_cap1
+           ||', tiers '||v_tier0||'='||v_tier1||', solicitudes '||v_sol0||'='||v_sol1
+           ||', solicitud_personalizacion sigue '||v_est_sp||', propuesta sigue '||v_est_pe
+      ELSE 'ROJO ('||v_det||'| capacidades '||v_cap0||'->'||v_cap1||' tiers '||v_tier0||'->'||v_tier1
+           ||' solicitudes '||v_sol0||'->'||v_sol1||' sp='||COALESCE(v_est_sp,'?')||' pe='||COALESCE(v_est_pe,'?')||')' END;
+
+    -- ================= P498 / P499: NO REGRESION (super_admin y admin_pais GT) =================
+    FOR v_state IN SELECT unnest(ARRAY['super','adminpais']) LOOP
+      PERFORM set_config('request.jwt.claims',
+        json_build_object('sub', CASE WHEN v_state='super' THEN v_super ELSE v_adminpais END::text,
+                          'role','authenticated')::text, true);
+      PERFORM set_config('role','authenticated', true);
+      v_det := '';
+
+      BEGIN PERFORM public.crear_capacidad_pais('P268CAP_'||v_state,'P268 Cap',NULL,v_gt,900);
+        v_det := v_det||'crear_capacidad=paso ';
+      EXCEPTION WHEN OTHERS THEN
+        v_det := v_det||'crear_capacidad='||CASE WHEN SQLSTATE='P0001' AND SQLERRM LIKE 'No autorizado%'
+                 THEN 'RECHAZO_AUTZ!' ELSE 'paso('||SQLSTATE||')' END||' '; END;
+
+      BEGIN PERFORM public.crear_tier_pais('P268TIER_'||v_state,'P268 Tier',NULL,v_gt,900,NULL);
+        v_det := v_det||'crear_tier=paso ';
+      EXCEPTION WHEN OTHERS THEN
+        v_det := v_det||'crear_tier='||CASE WHEN SQLSTATE='P0001' AND SQLERRM LIKE 'No autorizado%'
+                 THEN 'RECHAZO_AUTZ!' ELSE 'paso('||SQLSTATE||')' END||' '; END;
+
+      BEGIN PERFORM public.solicitar_capacidad_pais(v_gt,'P268SCAP_'||v_state,'P268 SCap',NULL,900);
+        v_det := v_det||'solicitar_capacidad=paso ';
+      EXCEPTION WHEN OTHERS THEN
+        v_det := v_det||'solicitar_capacidad='||CASE WHEN SQLSTATE='PC019' THEN 'RECHAZO_AUTZ!'
+                 ELSE 'paso('||SQLSTATE||')' END||' '; END;
+
+      BEGIN PERFORM public.solicitar_tier_pais(v_gt,'P268STIER_'||v_state,'P268 STier',NULL,900,NULL);
+        v_det := v_det||'solicitar_tier=paso ';
+      EXCEPTION WHEN OTHERS THEN
+        v_det := v_det||'solicitar_tier='||CASE WHEN SQLSTATE='PC019' THEN 'RECHAZO_AUTZ!'
+                 ELSE 'paso('||SQLSTATE||')' END||' '; END;
+
+      BEGIN PERFORM public.aprobar_personalizacion(CASE WHEN v_state='super' THEN v_sp_sa ELSE v_sp_ap END);
+        v_det := v_det||'aprobar_pers=paso ';
+      EXCEPTION WHEN OTHERS THEN
+        v_det := v_det||'aprobar_pers='||CASE WHEN SQLSTATE='PT001' THEN 'RECHAZO_AUTZ!'
+                 ELSE 'paso('||SQLSTATE||')' END||' '; END;
+
+      BEGIN PERFORM public.resolver_propuesta_especialidad(
+               CASE WHEN v_state='super' THEN v_pe_sa ELSE v_pe_ap END, true);
+        v_det := v_det||'resolver_prop=paso ';
+      EXCEPTION WHEN OTHERS THEN
+        v_det := v_det||'resolver_prop='||CASE WHEN SQLSTATE='P0001' AND SQLERRM='no_autorizado'
+                 THEN 'RECHAZO_AUTZ!' ELSE 'paso('||SQLSTATE||')' END||' '; END;
+
+      PERFORM set_config('role','none', true);
+
+      IF v_state='super' THEN
+        v_498 := CASE WHEN v_det NOT LIKE '%RECHAZO_AUTZ!%'
+          THEN 'OK (super_admin sin rechazo de autz en las 7: '||v_det||')'
+          ELSE 'ROJO — GATE CERRADO DE MAS para super_admin ('||v_det||')' END;
+      ELSE
+        v_499 := CASE WHEN v_det NOT LIKE '%RECHAZO_AUTZ!%'
+          THEN 'OK (admin_pais GT sin rechazo de autz en las 7 sobre SU pais: '||v_det||')'
+          ELSE 'ROJO — GATE CERRADO DE MAS para admin_pais ('||v_det||')' END;
+      END IF;
+    END LOOP;
+
+    -- ================= P500: CROSS-PAIS (admin de GT contra recursos de SV) =================
+    PERFORM set_config('request.jwt.claims',
+      json_build_object('sub', v_adminpais::text,'role','authenticated')::text, true);
+    PERFORM set_config('role','authenticated', true);
+    v_det := '';
+
+    BEGIN PERFORM public.crear_capacidad_pais('P268CAPX','P268 CapX',NULL,v_sv,900);
+      v_det := v_det||'crear_capacidad=PASO! ';
+    EXCEPTION WHEN OTHERS THEN
+      v_det := v_det||'crear_capacidad='||CASE WHEN SQLSTATE='P0001' AND SQLERRM LIKE 'No autorizado%'
+               THEN 'BLOQ' ELSE 'otro('||SQLSTATE||')' END||' '; END;
+
+    BEGIN PERFORM public.crear_tier_pais('P268TIERX','P268 TierX',NULL,v_sv,900,NULL);
+      v_det := v_det||'crear_tier=PASO! ';
+    EXCEPTION WHEN OTHERS THEN
+      v_det := v_det||'crear_tier='||CASE WHEN SQLSTATE='P0001' AND SQLERRM LIKE 'No autorizado%'
+               THEN 'BLOQ' ELSE 'otro('||SQLSTATE||')' END||' '; END;
+
+    BEGIN PERFORM public.solicitar_capacidad_pais(v_sv,'P268SCAPX','P268 SCapX',NULL,900);
+      v_det := v_det||'solicitar_capacidad=PASO! ';
+    EXCEPTION WHEN OTHERS THEN
+      v_det := v_det||'solicitar_capacidad='||CASE WHEN SQLSTATE='PC019' THEN 'BLOQ'
+               ELSE 'otro('||SQLSTATE||')' END||' '; END;
+
+    BEGIN PERFORM public.solicitar_tier_pais(v_sv,'P268STIERX','P268 STierX',NULL,900,NULL);
+      v_det := v_det||'solicitar_tier=PASO! ';
+    EXCEPTION WHEN OTHERS THEN
+      v_det := v_det||'solicitar_tier='||CASE WHEN SQLSTATE='PC019' THEN 'BLOQ'
+               ELSE 'otro('||SQLSTATE||')' END||' '; END;
+
+    BEGIN PERFORM public.aprobar_personalizacion(v_sp_sv);
+      v_det := v_det||'aprobar_pers=PASO! ';
+    EXCEPTION WHEN OTHERS THEN
+      v_det := v_det||'aprobar_pers='||CASE WHEN SQLSTATE='PT001' THEN 'BLOQ'
+               ELSE 'otro('||SQLSTATE||')' END||' '; END;
+
+    BEGIN PERFORM public.rechazar_personalizacion(v_sp_sv,'motivo');
+      v_det := v_det||'rechazar_pers=PASO! ';
+    EXCEPTION WHEN OTHERS THEN
+      v_det := v_det||'rechazar_pers='||CASE WHEN SQLSTATE='PT001' THEN 'BLOQ'
+               ELSE 'otro('||SQLSTATE||')' END||' '; END;
+
+    BEGIN PERFORM public.resolver_propuesta_especialidad(v_pe_sv, true);
+      v_det := v_det||'resolver_prop=PASO! ';
+    EXCEPTION WHEN OTHERS THEN
+      v_det := v_det||'resolver_prop='||CASE WHEN SQLSTATE='P0001' AND SQLERRM='no_autorizado'
+               THEN 'BLOQ' ELSE 'otro('||SQLSTATE||')' END||' '; END;
+
+    PERFORM set_config('role','none', true);
+
+    SELECT estado INTO v_est_sp FROM public.solicitudes_personalizacion WHERE id=v_sp_sv;
+    SELECT estado INTO v_est_pe FROM public.especialidades_propuestas   WHERE id=v_pe_sv;
+    v_ok := v_det NOT LIKE '%PASO!%' AND v_det NOT LIKE '%otro(%'
+        AND v_est_sp='pendiente' AND v_est_pe='pendiente';
+    v_500 := CASE WHEN v_ok
+      THEN 'BLOQUEADO (admin de GT no toca config ni moderacion de SV en las 7; el registro de SV sigue '||v_est_sp||'/'||v_est_pe||')'
+      ELSE 'ROJO — FUGA CROSS-PAIS ('||v_det||'| sp='||COALESCE(v_est_sp,'?')||' pe='||COALESCE(v_est_pe,'?')||')' END;
+
+    RAISE EXCEPTION 'PROBE_UNDO';
+  EXCEPTION WHEN OTHERS THEN
+    PERFORM set_config('role','none', true);
+    IF SQLERRM <> 'PROBE_UNDO' THEN v_fatal := COALESCE(v_fatal, SQLSTATE||' '||SQLERRM); END IF;
+  END;
+
+  PERFORM set_config('probe.fx_l3', COALESCE('ROJO (fixtures: '||v_fatal||')', v_fx, 'ROJO (sin resultado)'), false);
+  PERFORM set_config('probe.p497',  COALESCE('ROJO (fatal: '||v_fatal||')', v_497, 'ROJO (sin resultado)'), false);
+  PERFORM set_config('probe.p498',  COALESCE('ROJO (fatal: '||v_fatal||')', v_498, 'ROJO (sin resultado)'), false);
+  PERFORM set_config('probe.p499',  COALESCE('ROJO (fatal: '||v_fatal||')', v_499, 'ROJO (sin resultado)'), false);
+  PERFORM set_config('probe.p500',  COALESCE('ROJO (fatal: '||v_fatal||')', v_500, 'ROJO (sin resultado)'), false);
+END $$;
+SELECT set_config('role','none', true);
+
 -- ===== Veredictos como result set =====
 SELECT 'P1_anon_insert_citas'              AS probe, current_setting('probe.p1', true)  AS verdict, 'BLOQUEADO' AS esperado_post_fix
 UNION ALL SELECT 'P2_medico_cancela_ajena_rpc',         current_setting('probe.p2', true),  'BLOQUEADO'
@@ -10693,6 +10989,10 @@ UNION ALL SELECT 'P493_NEG_sin_perfil_contrato',   current_setting('probe.p493',
 UNION ALL SELECT 'P494_POS_super_admin_4fn',       current_setting('probe.p494', true), 'OK (pasa el gate en las 4)'
 UNION ALL SELECT 'P495_POS_admin_pais_4fn',        current_setting('probe.p495', true), 'OK (pasa el gate en las 4)'
 UNION ALL SELECT 'P496_NEG_cross_pais_4fn',        current_setting('probe.p496', true), 'BLOQUEADO (PC019 en las 4)'
+UNION ALL SELECT 'P497_NEG_sin_perfil_7fn',       current_setting('probe.p497', true), 'BLOQUEADO en las 7 + sin efecto'
+UNION ALL SELECT 'P498_POS_super_admin_7fn',      current_setting('probe.p498', true), 'OK (sin rechazo de autz)'
+UNION ALL SELECT 'P499_POS_admin_pais_7fn',       current_setting('probe.p499', true), 'OK (sin rechazo de autz)'
+UNION ALL SELECT 'P500_NEG_cross_pais_7fn',       current_setting('probe.p500', true), 'BLOQUEADO en las 7'
 UNION ALL SELECT 'FX00_catalogo_global_medicamentos', current_setting('probe.fx_medsglobal', true),'OK (precondicion sembrada)'
 UNION ALL SELECT 'FX01_afinb_capacidad_productos',   current_setting('probe.fx_afinb', true),      'OK (precondicion sembrada)'
 UNION ALL SELECT 'FX02_cat_medicamentos_catalogo',   current_setting('probe.fx_catmeds', true),    'OK (precondicion sembrada)'
@@ -10701,6 +11001,7 @@ UNION ALL SELECT 'FX04_pasign_med_catalogo',         current_setting('probe.fx_p
 UNION ALL SELECT 'FX05_puba_capacidad_publicidad',   current_setting('probe.fx_publicidad', true), 'OK (precondicion sembrada)'
 UNION ALL SELECT 'FX06_afin_empresa_viva',          current_setting('probe.fx_afin_emp', true),   'OK (precondicion sembrada)'
 UNION ALL SELECT 'FX07_lote2_fixtures',             current_setting('probe.fx_l2', true),         'OK (precondicion sembrada)'
+UNION ALL SELECT 'FX08_lote3_fixtures',             current_setting('probe.fx_l3', true),         'OK (precondicion sembrada)'
 -- Las filas FX* son SALUD DE FIXTURE, no probes de seguridad: dicen si la precondicion que una
 -- migracion posterior empezo a exigir se pudo sembrar. Si una sale ROJO, los probes que dependen de
 -- ese fixture reportan N/A (su flag de ready se pierde con el rollback de la subtransaccion) en vez
@@ -10859,9 +11160,10 @@ UNION ALL SELECT 'P000_CENTINELA_veredictos_no_nulos',
        'probe.p486', 'probe.p487', 'probe.p488', 'probe.p489',
        'probe.fx_medsglobal', 'probe.fx_afinb',
        'probe.fx_catmeds', 'probe.fx_pgest_med', 'probe.fx_pasign_med', 'probe.fx_publicidad',
-       'probe.fx_afin_emp', 'probe.fx_l2',
+       'probe.fx_afin_emp', 'probe.fx_l2', 'probe.fx_l3',
        'probe.p490', 'probe.p491', 'probe.p492', 'probe.p493',
-       'probe.p494', 'probe.p495', 'probe.p496'
+       'probe.p494', 'probe.p495', 'probe.p496',
+       'probe.p497', 'probe.p498', 'probe.p499', 'probe.p500'
              ]) AS n) s),
   'OK (todos los veredictos publicados)';
 
