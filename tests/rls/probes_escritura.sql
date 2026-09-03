@@ -9273,6 +9273,397 @@ END $$;
 SELECT set_config('role','none', true);
 
 
+-- ############################################################################################
+-- PAQUETE PA-FAILOPEN - LOTE 0 - P480-P484 (centinela de fail-open + helpers de la mig 265)
+-- ############################################################################################
+-- ============================================================================================
+-- HERRAMIENTA DEL CENTINELA (pg_temp: vive y muere con la transaccion)
+-- --------------------------------------------------------------------------------------------
+-- pg_temp.gate_fail_open(gate) — walker de parentesis. Devuelve TRUE si en el gate hay alguna
+-- llamada a los 5 helpers de identidad que NO este lexicamente encerrada por un COALESCE(...).
+--
+-- POR QUE UN WALKER Y NO UN REGEX: "COALESCE envolvente" es una propiedad de anidamiento, no de
+-- texto. `IF NOT (COALESCE(tiene_rol(...),false) OR (get_auth_user_rol()='admin_pais' AND ...))`
+-- CONTIENE la palabra COALESCE y sigue siendo fail-open — el COALESCE cubre el otro termino. Un
+-- regex que busque "COALESCE" da verde falso justo en el patron que estamos cazando (es el de la
+-- mig 222). El walker mantiene una pila de parentesis y marca cual de ellos abrio un COALESCE.
+--
+-- POR QUE ALCANZA CON DETECTAR LA LLAMADA (y no la comparacion): ninguno de los 5 helpers devuelve
+-- boolean — get_auth_user_rol() y mi_rol_proveedor() devuelven text; get_auth_user_pais_id(),
+-- mi_pais() y mi_empresa_proveedor() devuelven uuid. Dentro de una expresion booleana de gate NO
+-- pueden aparecer sueltos: siempre son operando de una comparacion. Detectar la llamada ES detectar
+-- la comparacion directa, sin tener que adivinar de que lado del `=` cayo el helper.
+-- ============================================================================================
+CREATE OR REPLACE FUNCTION pg_temp.gate_fail_open(p_gate text) RETURNS boolean AS $fn$
+DECLARE
+  i int := 1; n int := length(p_gate); ch text; prev text;
+  st boolean[] := ARRAY[]::boolean[];   -- pila: TRUE si ese '(' lo abrio un COALESCE
+  in_str boolean := false;
+  cubierto boolean;
+BEGIN
+  WHILE i <= n LOOP
+    ch := substr(p_gate, i, 1);
+    -- literales de cadena: no se parsean (sus parentesis no cuentan)
+    IF in_str THEN
+      IF ch = '''' THEN in_str := false; END IF;
+      i := i + 1; CONTINUE;
+    END IF;
+    IF ch = '''' THEN in_str := true; i := i + 1; CONTINUE; END IF;
+
+    -- arranca aca una llamada a uno de los 5 helpers de identidad?
+    IF substr(p_gate, i, 40) ~* '^(public\.|private\.)?(get_auth_user_rol|get_auth_user_pais_id|mi_pais|mi_empresa_proveedor|mi_rol_proveedor)\s*\(' THEN
+      cubierto := false;
+      IF array_length(st,1) IS NOT NULL THEN
+        SELECT bool_or(x) INTO cubierto FROM unnest(st) AS t(x);
+      END IF;
+      IF NOT COALESCE(cubierto, false) THEN RETURN true; END IF;
+    END IF;
+
+    IF ch = '(' THEN
+      prev := regexp_replace(substr(p_gate, 1, i-1), '\s+$', '');
+      st := st || (prev ~* 'coalesce$');
+    ELSIF ch = ')' THEN
+      IF array_length(st,1) IS NOT NULL THEN st := st[1:array_length(st,1)-1]; END IF;
+    END IF;
+    i := i + 1;
+  END LOOP;
+  RETURN false;
+END;
+$fn$ LANGUAGE plpgsql IMMUTABLE;
+
+-- pg_temp.censo_fail_open() — LA consulta del censo, encapsulada. P480 y P481 consumen ESTA, para
+-- que el probe y el probe-del-probe no puedan divergir.
+--
+-- EXTRACCION DEL GATE: `\m(IF|ELSIF)\s+([^;]*?)\s+THEN[^;]{0,250}?\mRAISE`.
+--   - `[^;]*?` para el gate: una expresion booleana no lleva `;`. Sin esta restriccion el motor
+--     backtrackea hasta un THEN lejano y se traga statements enteros (paso: daba 39 funciones, 12
+--     de ellas artefacto del propio regex).
+--   - `[^;]{0,250}?` entre el THEN y el RAISE: exige que el RAISE sea el PRIMER statement de la
+--     rama. Eso es un GATE. Si hay un `;` en el medio es una rama de logica, no un gate.
+--     (250 y no mas: el limite de repeticion acotada de Postgres es 255.)
+CREATE OR REPLACE FUNCTION pg_temp.censo_fail_open()
+RETURNS TABLE(func text, gates_n bigint, gates text) LANGUAGE sql STABLE AS $fn$
+  WITH candidatas AS (
+    SELECT p.oid, n.nspname, p.proname, p.prosrc
+    FROM pg_proc p
+    JOIN pg_namespace n ON n.oid = p.pronamespace
+    JOIN pg_language  l ON l.oid = p.prolang
+    WHERE p.prosecdef
+      AND n.nspname IN ('public','private')
+      AND l.lanname = 'plpgsql'
+  ),
+  gates AS (
+    SELECT c.nspname, c.proname, g.m[1] AS gate
+    FROM candidatas c
+    CROSS JOIN LATERAL regexp_matches(
+      c.prosrc, '\m(?:IF|ELSIF)\s+([^;]*?)\s+THEN[^;]{0,250}?\mRAISE', 'gi') AS g(m)
+  )
+  SELECT nspname||'.'||proname,
+         count(*),
+         string_agg(regexp_replace(gate, '\s+', ' ', 'g'), ' ||| ')
+  FROM gates
+  WHERE gate ~* '(get_auth_user_rol|get_auth_user_pais_id|mi_pais|mi_empresa_proveedor|mi_rol_proveedor)\s*\('
+    AND pg_temp.gate_fail_open(gate)
+  GROUP BY 1
+  ORDER BY 1;
+$fn$;
+
+
+-- ============================================================================================
+-- P480 — CENTINELA DE GATE FAIL-OPEN
+-- --------------------------------------------------------------------------------------------
+-- ⚠️ LA ALLOWLIST ES DEUDA CON FECHA, NO UNA EXCEPCION PERMANENTE.
+--
+-- Estas 27 funciones son el censo del 2026-09-02 contra el proyecto vivo: TODAS tienen hoy el gate
+-- trivaluado de la mig 222 y TODAS se van a migrar a private.puede_admin_pais / es_admin_pais
+-- (mig 265) en los lotes 1..N del paquete PA-FAILOPEN. Cada lote que migra un grupo BORRA sus
+-- entradas de esta lista en el mismo commit. Cuando la lista llegue a cero, el ARRAY queda vacio y
+-- el probe pasa a ser un guardian permanente: cualquier funcion nueva que compare a mano contra los
+-- helpers de identidad lo pone ROJO.
+--
+-- Una entrada aca NO dice "esto esta bien". Dice "esto esta roto, ya esta contado, y tiene lote
+-- asignado". Agregar una entrada nueva para hacer pasar el harness es exactamente lo que este probe
+-- existe para impedir: si aparece una funcion nueva en rojo, se arregla la funcion, no la lista.
+--
+-- Dos entradas estan en la lista aunque NO sean explotables, porque el criterio del centinela es
+-- sintactico a proposito (mas ancho que el riesgo, para que no haya que juzgar caso por caso):
+--   - notificar_resultado_examen: usa `IS DISTINCT FROM`, que es NULL-safe.
+--   - activar_capacidad_suelta / asignar_tier: el termino directo esta en una rama POSITIVA de
+--     scope de catalogo (`IF get_auth_user_rol()='admin_pais' THEN ... RAISE`), y el gate real de
+--     la funcion ya es private.admin_puede_gestionar_empresa, que si esta COALESCE-ado. Con rol
+--     NULL la rama se saltea, pero el gate de arriba ya bloqueo.
+-- Igual se migran: la comparacion a mano se va, y con ella la duda.
+-- ============================================================================================
+SELECT set_config('role','none',true);
+DO $$
+DECLARE
+  -- ALLOWLIST — censo 2026-09-02, paquete PA-FAILOPEN. Se vacia lote por lote.
+  v_allow text[] := ARRAY[
+    'public.activar_capacidad_suelta',            -- lote N (rama positiva de scope; gate real ya COALESCE-ado)
+    'public.aprobar_personalizacion',             -- lote N
+    'public.aprobar_solicitud_campana',           -- lote N
+    'public.asignar_tier',                        -- lote N (rama positiva de scope; gate real ya COALESCE-ado)
+    'public.cerrar_liquidacion',                  -- lote 2 (DINERO: crea la liquidacion)
+    'public.crear_capacidad_pais',                -- lote N
+    'public.crear_tier_pais',                     -- lote N
+    'public.liquidar_comision',                   -- lote 2 (DINERO: agregado de comision)
+    'public.listar_canjes_pendientes',            -- lote N (gate sin pais -> es_admin_pais)
+    'public.listar_capacidades_pais',             -- lote N
+    'public.listar_propuestas_especialidad',      -- lote N (gate sin pais -> es_admin_pais)
+    'public.listar_solicitudes_personalizacion',  -- lote N (gate sin pais -> es_admin_pais)
+    'public.listar_tiers_pais',                   -- lote N
+    'public.marcar_liquidacion_cobrada',          -- lote 2 (DINERO: marca cobrada)
+    'public.metricas_campana_pais',               -- lote 1 (ademas: EXECUTE a anon)
+    'public.notificar_campana_resultado',         -- lote N
+    'public.notificar_empresa_estado',            -- lote N
+    'public.notificar_pago_resultado',            -- lote N
+    'public.notificar_resultado_examen',          -- lote N (IS DISTINCT FROM: NULL-safe, no explotable)
+    'public.obtener_resumen_pais',                -- lote N
+    'public.rechazar_personalizacion',            -- lote N
+    'public.registrar_evidencia_entrega',         -- lote N (NOT LIKE contra mi_empresa_proveedor())
+    'public.resolver_canje',                      -- lote N
+    'public.resolver_propuesta_especialidad',     -- lote N
+    'public.solicitar_capacidad_pais',            -- lote N
+    'public.solicitar_contrato_comision',         -- lote 2 (DINERO: inserta el contrato)
+    'public.solicitar_tier_pais'                  -- lote N
+  ];
+  v_rojas    text[];
+  v_nuevas   text[];
+  v_saldadas text[];
+BEGIN
+  SELECT COALESCE(array_agg(func ORDER BY func), ARRAY[]::text[]) INTO v_rojas
+    FROM pg_temp.censo_fail_open();
+
+  SELECT COALESCE(array_agg(x ORDER BY x), ARRAY[]::text[]) INTO v_nuevas
+    FROM unnest(v_rojas) x WHERE x <> ALL (v_allow);
+
+  SELECT COALESCE(array_agg(x ORDER BY x), ARRAY[]::text[]) INTO v_saldadas
+    FROM unnest(v_allow) x WHERE x <> ALL (v_rojas);
+
+  IF array_length(v_nuevas,1) IS NOT NULL THEN
+    PERFORM set_config('probe.p480',
+      'ROJO — GATE FAIL-OPEN NUEVO ('||array_length(v_nuevas,1)||'): '||array_to_string(v_nuevas,', ')||
+      '. Arreglar la funcion (consumir private.puede_admin_pais / es_admin_pais), NO agregarla a la allowlist.', false);
+  ELSE
+    PERFORM set_config('probe.p480',
+      'OK ('||COALESCE(array_length(v_rojas,1),0)||' con gate fail-open, todas en la allowlist; 0 nuevas'||
+      CASE WHEN array_length(v_saldadas,1) IS NOT NULL
+           THEN '. DEUDA SALDADA, quitar de la allowlist: '||array_to_string(v_saldadas,', ')
+           ELSE '' END||')', false);
+  END IF;
+END $$;
+
+-- ============================================================================================
+-- P481 — EL PROBE DEL PROBE
+-- --------------------------------------------------------------------------------------------
+-- Corre EL MISMO censo con una allowlist a la que se le quito UNA entrada conocida y verifica que
+-- el detector la marque como nueva. Si P481 no diera exactamente 1, el centinela P480 estaria
+-- verde por no estar midiendo nada (censo vacio, regex que no matchea, walker que siempre dice
+-- false) y no nos enterariamos nunca.
+-- La entrada sacada es metricas_campana_pais a proposito: es la que el lote 1 va a migrar, asi que
+-- cuando se saque de verdad este probe hay que apuntarlo a otra (o, cuando la allowlist quede
+-- vacia, invertirlo: sembrar una funcion fail-open de fixture y esperar que la cace).
+-- ============================================================================================
+DO $$
+DECLARE
+  v_allow_sin1 text[] := ARRAY[
+    'public.activar_capacidad_suelta','public.aprobar_personalizacion','public.aprobar_solicitud_campana',
+    'public.asignar_tier','public.cerrar_liquidacion','public.crear_capacidad_pais','public.crear_tier_pais',
+    'public.liquidar_comision','public.listar_canjes_pendientes','public.listar_capacidades_pais',
+    'public.listar_propuestas_especialidad','public.listar_solicitudes_personalizacion','public.listar_tiers_pais',
+    'public.marcar_liquidacion_cobrada',
+    -- 'public.metricas_campana_pais'  <-- ENTRADA QUITADA A PROPOSITO
+    'public.notificar_campana_resultado','public.notificar_empresa_estado','public.notificar_pago_resultado',
+    'public.notificar_resultado_examen','public.obtener_resumen_pais','public.rechazar_personalizacion',
+    'public.registrar_evidencia_entrega','public.resolver_canje','public.resolver_propuesta_especialidad',
+    'public.solicitar_capacidad_pais','public.solicitar_contrato_comision','public.solicitar_tier_pais'
+  ];
+  v_nuevas text[];
+BEGIN
+  SELECT COALESCE(array_agg(func ORDER BY func), ARRAY[]::text[]) INTO v_nuevas
+    FROM pg_temp.censo_fail_open() WHERE func <> ALL (v_allow_sin1);
+
+  IF v_nuevas = ARRAY['public.metricas_campana_pais'] THEN
+    PERFORM set_config('probe.p481',
+      'OK (sacando 1 entrada de la allowlist el centinela la detecta: [public.metricas_campana_pais] — P480 mide algo real)', false);
+  ELSE
+    PERFORM set_config('probe.p481',
+      'ROJO — EL CENTINELA NO MIDE (esperaba exactamente [public.metricas_campana_pais], obtuvo ['||
+      array_to_string(v_nuevas,', ')||'])', false);
+  END IF;
+END $$;
+
+-- ============================================================================================
+-- P482 — los 2 helpers de la mig 265 existen con la firma y los flags correctos
+-- --------------------------------------------------------------------------------------------
+-- Firma exacta (incluido el DEFAULT de p_roles), SECURITY DEFINER, STABLE, search_path='', y los
+-- grants: authenticated SI, anon NO, PUBLIC NO. El chequeo de PUBLIC es aparte del de anon: anon
+-- hereda de PUBLIC, asi que un GRANT a PUBLIC olvidado se veria como "anon puede" — pero al reves
+-- no, y el REVOKE de la migracion nombra a los dos.
+-- ============================================================================================
+DO $$
+DECLARE
+  v_p oid; v_e oid; v_txt text; v_ok boolean;
+  v_det text := '';
+BEGIN
+  v_p := to_regprocedure('private.puede_admin_pais(uuid,text[])');
+  v_e := to_regprocedure('private.es_admin_pais()');
+  IF v_p IS NULL OR v_e IS NULL THEN
+    PERFORM set_config('probe.p482','ROJO (mig 265 sin aplicar: puede_admin_pais='||
+      COALESCE(v_p::text,'AUSENTE')||' es_admin_pais='||COALESCE(v_e::text,'AUSENTE')||')', false);
+    RETURN;
+  END IF;
+
+  SELECT bool_and(x) INTO v_ok FROM (
+    -- OJO con proconfig: `SET search_path = ''` NO se guarda como 'search_path=' sino como
+    -- 'search_path=""' — pg_proc conserva las comillas del literal vacio. Comparar contra
+    -- 'search_path=' da ROJO con la migracion perfectamente aplicada (pasó en la primera corrida
+    -- de este probe). Se compara contra el array exacto para que no haya duda de que hay UN solo
+    -- elemento en proconfig y es ese.
+    SELECT p.prosecdef AND p.provolatile = 's'
+       AND p.proconfig = ARRAY['search_path=""']
+       AND has_function_privilege('authenticated', p.oid, 'EXECUTE')
+       AND NOT has_function_privilege('anon', p.oid, 'EXECUTE')
+       AND NOT EXISTS (SELECT 1 FROM aclexplode(p.proacl) a
+                        WHERE a.grantee = 0 AND a.privilege_type = 'EXECUTE')  -- PUBLIC
+      AS x
+    FROM pg_proc p WHERE p.oid IN (v_p, v_e)
+  ) s;
+
+  v_txt := pg_get_function_arguments(v_p);
+  IF v_ok AND v_txt ILIKE '%p_roles text[] DEFAULT ARRAY[%super_admin%' THEN
+    PERFORM set_config('probe.p482',
+      'OK (ambos DEFINER+STABLE+search_path="", EXECUTE solo authenticated (anon y PUBLIC sin), default p_roles=[super_admin])', false);
+  ELSE
+    SELECT string_agg(format('%s: secdef=%s vol=%s cfg=%s auth=%s anon=%s public=%s',
+             p.proname, p.prosecdef, p.provolatile, COALESCE(array_to_string(p.proconfig,','),'(null)'),
+             has_function_privilege('authenticated', p.oid, 'EXECUTE'),
+             has_function_privilege('anon', p.oid, 'EXECUTE'),
+             EXISTS (SELECT 1 FROM aclexplode(p.proacl) a WHERE a.grantee=0 AND a.privilege_type='EXECUTE')), ' | ')
+      INTO v_det FROM pg_proc p WHERE p.oid IN (v_p, v_e);
+    PERFORM set_config('probe.p482','ROJO ('||v_det||' | args='||v_txt||')', false);
+  END IF;
+END $$;
+SELECT set_config('role','none',true);
+
+-- ============================================================================================
+-- P483 — FAIL-CLOSED: caller SIN fila en perfiles obtiene false, NO NULL
+-- --------------------------------------------------------------------------------------------
+-- Es el corazon del paquete. El caller es un uuid que no esta en perfiles — el caso real de toda
+-- cuenta de proveedor (viven en cuentas_proveedor) y de anon donde haya GRANT.
+--
+-- CONTROL NEGATIVO EN EL MISMO PROBE: se evalua tambien la expresion VIEJA (la de la mig 222) para
+-- ese mismo caller y se exige que de NULL. Sin el control, un helper que devolviera false por una
+-- razon equivocada (o un caller que si tuviera perfil) daria verde igual. El control demuestra que
+-- el escenario es el correcto: la expresion vieja falla abierta aca, la nueva no.
+-- ============================================================================================
+DO $$
+DECLARE
+  v_nadie uuid := '00000000-0000-4265-0480-0000000000ff';   -- sin fila en perfiles, a proposito
+  v_gt    uuid := 'cbbbbe6d-59fe-4cf2-91ee-3e31ba1d5909';
+  v_a boolean; v_b boolean; v_viejo boolean; v_err text := NULL;
+BEGIN
+  IF to_regprocedure('private.puede_admin_pais(uuid,text[])') IS NULL THEN
+    PERFORM set_config('probe.p483','ROJO (mig 265 sin aplicar)', false); RETURN;
+  END IF;
+  BEGIN
+    PERFORM set_config('request.jwt.claims',
+      json_build_object('sub', v_nadie::text, 'role','authenticated')::text, true);
+    PERFORM set_config('role','authenticated', true);
+
+    SELECT private.puede_admin_pais(v_gt) INTO v_a;
+    SELECT private.es_admin_pais()        INTO v_b;
+    -- expresion VIEJA, tal cual vive hoy en metricas_campana_pais (control negativo)
+    SELECT NOT ( public.get_auth_user_rol() = 'super_admin'
+                 OR ( public.get_auth_user_rol() = 'admin_pais'
+                      AND public.get_auth_user_pais_id() = v_gt ) ) INTO v_viejo;
+
+    PERFORM set_config('role','none', true);
+  EXCEPTION WHEN OTHERS THEN
+    PERFORM set_config('role','none', true);
+    v_err := SQLSTATE||' '||SQLERRM;
+  END;
+
+  IF v_err IS NOT NULL THEN
+    PERFORM set_config('probe.p483','ROJO (excepcion: '||v_err||')', false);
+  ELSIF v_a IS NOT NULL AND v_a = false AND v_b IS NOT NULL AND v_b = false AND v_viejo IS NULL THEN
+    PERFORM set_config('probe.p483',
+      'OK (sin perfil: puede_admin_pais=false y es_admin_pais=false, ninguno NULL; y el control negativo confirma que la expresion vieja da NULL = RAISE saltado)', false);
+  ELSE
+    PERFORM set_config('probe.p483',
+      'ROJO (puede='||COALESCE(v_a::text,'NULL')||' es_admin='||COALESCE(v_b::text,'NULL')||
+      ' control_expresion_vieja='||COALESCE(v_viejo::text,'NULL')||
+      CASE WHEN v_viejo IS NOT NULL THEN ' <- el control NO dio NULL: el escenario no es el que se cree' ELSE '' END||')', false);
+  END IF;
+END $$;
+SELECT set_config('role','none',true);
+
+-- ============================================================================================
+-- P484 — SCOPE: admin_pais legitimo true en SU pais / false en el otro; super_admin true en ambos
+-- --------------------------------------------------------------------------------------------
+-- Fixtures propias (no reusa las de la 264: este bloque tiene que poder correr solo). Se siembran
+-- dentro de una subtransaccion que termina en RAISE 'PROBE_UNDO', y los veredictos se publican
+-- DESPUES del bloque: un set_config adentro lo revierte el RAISE junto con las fixtures.
+-- super_admin va como control POSITIVO cruzado: si diera false en algun pais, el helper estaria
+-- roto del otro lado (cerrado de mas) y el probe de aislamiento solo no lo detectaria.
+-- ============================================================================================
+DO $$
+DECLARE
+  v_gt   uuid := 'cbbbbe6d-59fe-4cf2-91ee-3e31ba1d5909';
+  v_sv   uuid := 'f2c75b8e-ef54-4a05-b2ff-7363e448f680';
+  v_sa   uuid := '41904e2c-5ef3-4fee-bd48-9ea58e0c8c37';   -- super_admin real
+  v_admGT uuid := '00000000-0000-4265-0484-0000000000a1';
+  v_admSV uuid := '00000000-0000-4265-0484-0000000000b1';
+  v_gt_gt boolean; v_gt_sv boolean; v_gt_es boolean;
+  v_sa_gt boolean; v_sa_sv boolean; v_sa_es boolean;
+  v_484 text; v_err text := NULL;
+BEGIN
+  IF to_regprocedure('private.puede_admin_pais(uuid,text[])') IS NULL THEN
+    PERFORM set_config('probe.p484','ROJO (mig 265 sin aplicar)', false); RETURN;
+  END IF;
+  BEGIN
+    INSERT INTO auth.users (id) VALUES (v_admGT), (v_admSV);
+    INSERT INTO public.perfiles (id, email, nombre_completo, rol, pais_id, activo) VALUES
+      (v_admGT, 'p265_admGT@example.invalid', 'Admin GT 265', 'admin_pais', v_gt, true),
+      (v_admSV, 'p265_admSV@example.invalid', 'Admin SV 265', 'admin_pais', v_sv, true);
+
+    -- admin_pais de GT
+    PERFORM set_config('request.jwt.claims',
+      json_build_object('sub', v_admGT::text, 'role','authenticated')::text, true);
+    PERFORM set_config('role','authenticated', true);
+    SELECT private.puede_admin_pais(v_gt) INTO v_gt_gt;
+    SELECT private.puede_admin_pais(v_sv) INTO v_gt_sv;
+    SELECT private.es_admin_pais()        INTO v_gt_es;
+    PERFORM set_config('role','none', true);
+
+    -- super_admin (control positivo cruzado)
+    PERFORM set_config('request.jwt.claims',
+      json_build_object('sub', v_sa::text, 'role','authenticated')::text, true);
+    PERFORM set_config('role','authenticated', true);
+    SELECT private.puede_admin_pais(v_gt) INTO v_sa_gt;
+    SELECT private.puede_admin_pais(v_sv) INTO v_sa_sv;
+    SELECT private.es_admin_pais()        INTO v_sa_es;
+    PERFORM set_config('role','none', true);
+
+    IF v_gt_gt AND NOT v_gt_sv AND v_gt_es AND v_sa_gt AND v_sa_sv AND NOT v_sa_es THEN
+      v_484 := 'OK (admin GT: su pais=true, otro pais=false, es_admin_pais=true; super_admin: true en ambos paises y es_admin_pais=false)';
+    ELSE
+      v_484 := 'ROJO (admGT[gt='||COALESCE(v_gt_gt::text,'NULL')||' sv='||COALESCE(v_gt_sv::text,'NULL')||
+               ' es='||COALESCE(v_gt_es::text,'NULL')||'] super[gt='||COALESCE(v_sa_gt::text,'NULL')||
+               ' sv='||COALESCE(v_sa_sv::text,'NULL')||' es='||COALESCE(v_sa_es::text,'NULL')||'])';
+    END IF;
+
+    RAISE EXCEPTION 'PROBE_UNDO';
+  EXCEPTION
+    WHEN OTHERS THEN
+      PERFORM set_config('role','none', true);
+      IF SQLERRM <> 'PROBE_UNDO' THEN v_err := SQLSTATE||' '||SQLERRM; END IF;
+  END;
+  PERFORM set_config('probe.p484', COALESCE('ROJO (excepcion sembrando/midiendo: '||v_err||')', v_484), false);
+END $$;
+SELECT set_config('role','none',true);
+
+
 -- ===== Veredictos como result set =====
 SELECT 'P1_anon_insert_citas'              AS probe, current_setting('probe.p1', true)  AS verdict, 'BLOQUEADO' AS esperado_post_fix
 UNION ALL SELECT 'P2_medico_cancela_ajena_rpc',         current_setting('probe.p2', true),  'BLOQUEADO'
@@ -9780,6 +10171,11 @@ UNION ALL SELECT 'P474_rol_no_comercial_cero', current_setting('probe.p474', tru
 UNION ALL SELECT 'P475_CENTINELA_fail_open_pais',current_setting('probe.p475', true),'BLOQUEADO (doble candado: cargo=3 pero país corta)'
 UNION ALL SELECT 'P476_contactos_heredan_gate',current_setting('probe.p476', true),  'OK (1 / 0 / 2)'
 UNION ALL SELECT 'P477_NEG_PA006_pais_incoherente',current_setting('probe.p477', true),'BLOQUEADO (PA006, escrito como owner)'
+UNION ALL SELECT 'P480_CENTINELA_gate_fail_open',   current_setting('probe.p480', true), 'OK (27 en allowlist, 0 nuevas)'
+UNION ALL SELECT 'P481_centinela_mide_algo',        current_setting('probe.p481', true), 'OK (quitando 1 entrada, la detecta)'
+UNION ALL SELECT 'P482_helpers_265_estructura',     current_setting('probe.p482', true), 'OK (firma, flags y grants)'
+UNION ALL SELECT 'P483_helpers_sin_perfil_false',   current_setting('probe.p483', true), 'OK (false, no NULL; control: la vieja da NULL)'
+UNION ALL SELECT 'P484_helpers_scope_admin_pais',   current_setting('probe.p484', true), 'OK (su pais si, otro no; super_admin ambos)'
 UNION ALL SELECT 'FX00_catalogo_global_medicamentos', current_setting('probe.fx_medsglobal', true),'OK (precondicion sembrada)'
 UNION ALL SELECT 'FX01_afinb_capacidad_productos',   current_setting('probe.fx_afinb', true),      'OK (precondicion sembrada)'
 UNION ALL SELECT 'FX02_cat_medicamentos_catalogo',   current_setting('probe.fx_catmeds', true),    'OK (precondicion sembrada)'
@@ -9939,7 +10335,8 @@ UNION ALL SELECT 'P000_CENTINELA_veredictos_no_nulos',
        'probe.p466', 'probe.p467', 'probe.p468', 'probe.p469',
        'probe.p478', 'probe.p479', 'probe.p470', 'probe.p471',
        'probe.p472', 'probe.p473', 'probe.p474', 'probe.p475',
-       'probe.p476', 'probe.p477', 'probe.fx_medsglobal', 'probe.fx_afinb',
+       'probe.p476', 'probe.p477', 'probe.p480', 'probe.p481',
+       'probe.p482', 'probe.p483', 'probe.p484', 'probe.fx_medsglobal', 'probe.fx_afinb',
        'probe.fx_catmeds', 'probe.fx_pgest_med', 'probe.fx_pasign_med', 'probe.fx_publicidad'
              ]) AS n) s),
   'OK (todos los veredictos publicados)';
