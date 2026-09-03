@@ -6216,6 +6216,7 @@ DO $$ DECLARE v_cita bigint; v_med uuid; v_cli uuid; v_pac bigint; v_pauth uuid;
   PERFORM set_config('probe.c5_otherpauth', coalesce(v_otherpauth::text,''), false);
   PERFORM set_config('probe.c5_othercli', coalesce(v_othercli::text,''), false);
   PERFORM set_config('probe.c5_motivo', coalesce(v_motivo,''), false);
+EXCEPTION WHEN OTHERS THEN PERFORM set_config('probe.b2_fallos', coalesce(current_setting('probe.b2_fallos', true),'')||'L6196('||SQLSTATE||') ', false);
 END $$;
 
 -- P377 estructural: existe + DEFINER + sp'' + grant-state (anon✗/auth✓) + firma SOLO (bigint)
@@ -6327,6 +6328,7 @@ DO $$ DECLARE v_cita bigint; v_med uuid; v_cli uuid; v_pac bigint; v_pauth uuid;
   PERFORM set_config('probe.h_med', coalesce(v_med::text,''), false);
   PERFORM set_config('probe.h_cli', coalesce(v_cli::text,''), false);
   PERFORM set_config('probe.h_pauth', coalesce(v_pauth::text,''), false);
+EXCEPTION WHEN OTHERS THEN PERFORM set_config('probe.b2_fallos', coalesce(current_setting('probe.b2_fallos', true),'')||'L6314('||SQLSTATE||') ', false);
 END $$;
 SELECT set_config('request.jwt.claims', json_build_object('sub', current_setting('probe.h_pauth',true), 'role','authenticated')::text, true);
 SELECT set_config('role','authenticated', true);
@@ -6384,6 +6386,7 @@ DO $$ DECLARE v_pac int := 23; v_pauth uuid; v_med uuid; v_otherpauth uuid; v_or
   PERFORM set_config('probe.ch6_mm', coalesce(v_mm::text,''), false);
   PERFORM set_config('probe.ch6_mo', coalesce(v_mo::text,''), false);
   PERFORM set_config('probe.ch6_mu', coalesce(v_mu::text,''), false);
+EXCEPTION WHEN OTHERS THEN PERFORM set_config('probe.b2_fallos', coalesce(current_setting('probe.b2_fallos', true),'')||'L6355('||SQLSTATE||') ', false);
 END $$;
 
 -- P385 estructural: existe + DEFINER + sp'' + grants (anon✗/auth✓) + firma (integer) + columna notificado + CHECK remitente
@@ -6489,6 +6492,7 @@ SELECT set_config('role','authenticated', true);
 DO $$ BEGIN  -- 2º call como remitente (ya notificado → no-op)
   IF coalesce(current_setting('probe.ch6_before',true),'')='' THEN RETURN; END IF;
   PERFORM public.notificar_chat(NULLIF(current_setting('probe.ch6_mp',true), '')::int);
+EXCEPTION WHEN OTHERS THEN PERFORM set_config('probe.b2_fallos', coalesce(current_setting('probe.b2_fallos', true),'')||'L6489('||SQLSTATE||') ', false);
 END $$;
 SELECT set_config('role','none', true);
 DO $$ DECLARE v_after int; v_before int; BEGIN  -- conteo final (owner)
@@ -6583,6 +6587,7 @@ DO $$ DECLARE v_cita bigint; v_med uuid; v_cli uuid; v_pac bigint; v_pauth uuid;
   PERFORM set_config('probe.c7_omed', coalesce(v_omed::text,''), false);
   PERFORM set_config('probe.c7_nc', coalesce(v_nc::text,''), false);
   PERFORM set_config('probe.c7_ncpauth', coalesce(v_ncpauth::text,''), false);
+EXCEPTION WHEN OTHERS THEN PERFORM set_config('probe.b2_fallos', coalesce(current_setting('probe.b2_fallos', true),'')||'L6547('||SQLSTATE||') ', false);
 END $$;
 
 -- P395 estructural
@@ -6725,6 +6730,7 @@ SELECT set_config('role','authenticated', true);
 DO $$ BEGIN
   IF coalesce(current_setting('probe.c7_before',true),'')='' THEN RETURN; END IF;
   PERFORM public.notificar_cancelacion(NULLIF(current_setting('probe.c7_cita',true), '')::bigint);  -- 2º call (ya notificado → no-op)
+EXCEPTION WHEN OTHERS THEN PERFORM set_config('probe.b2_fallos', coalesce(current_setting('probe.b2_fallos', true),'')||'L6725('||SQLSTATE||') ', false);
 END $$;
 SELECT set_config('role','none', true);
 DO $$ DECLARE v_after int; v_before int; BEGIN
@@ -6745,6 +6751,7 @@ DO $$ DECLARE v_flag boolean; BEGIN
   PERFORM set_config('probe.c7_flag_react', coalesce(v_flag::text,'∅'), false);
   UPDATE public.citas SET estado='cancelada' WHERE id=NULLIF(current_setting('probe.c7_cita',true), '')::bigint;   -- re-cancelación
   PERFORM set_config('probe.c7_react','READY',false);
+EXCEPTION WHEN OTHERS THEN PERFORM set_config('probe.b2_fallos', coalesce(current_setting('probe.b2_fallos', true),'')||'L6741('||SQLSTATE||') ', false);
 END $$;
 SELECT set_config('request.jwt.claims', json_build_object('sub', current_setting('probe.c7_pauth',true), 'role','authenticated')::text, true);
 SELECT set_config('role','authenticated', true);
@@ -6752,6 +6759,7 @@ DO $$ BEGIN
   IF current_setting('probe.c7_react',true) IS DISTINCT FROM 'READY' THEN PERFORM set_config('probe.c7_react','SKIP2',false); RETURN; END IF;
   PERFORM public.notificar_cancelacion(NULLIF(current_setting('probe.c7_cita',true), '')::bigint);  -- re-notif (flag reseteado → debe pasar)
   PERFORM set_config('probe.c7_react','DONE',false);
+EXCEPTION WHEN OTHERS THEN PERFORM set_config('probe.b2_fallos', coalesce(current_setting('probe.b2_fallos', true),'')||'L6751('||SQLSTATE||') ', false);
 END $$;
 SELECT set_config('role','none', true);
 DO $$ DECLARE v_n int; BEGIN
@@ -6797,6 +6805,7 @@ DO $$ DECLARE v_conv uuid := '1584377f-1ad7-4233-b1a9-8d7c98e3f6a9'; v_autor uui
   PERFORM set_config('probe.c8_recip', v_recip::text, false);
   PERFORM set_config('probe.c8_recip2', v_recip2::text, false);
   PERFORM set_config('probe.c8_other', v_other::text, false);
+EXCEPTION WHEN OTHERS THEN PERFORM set_config('probe.b2_fallos', coalesce(current_setting('probe.b2_fallos', true),'')||'L6771('||SQLSTATE||') ', false);
 END $$;
 
 -- P405 estructural (RPC + 2 inners con search_path + grants + firma uuid + columna notificado)
@@ -6897,6 +6906,7 @@ SELECT set_config('role','authenticated', true);
 DO $$ BEGIN
   IF coalesce(current_setting('probe.c8_before',true),'')='' THEN RETURN; END IF;
   PERFORM public.notificar_chat_interno(NULLIF(current_setting('probe.c8_msg',true), '')::uuid);  -- 2º call (ya notificado → no-op)
+EXCEPTION WHEN OTHERS THEN PERFORM set_config('probe.b2_fallos', coalesce(current_setting('probe.b2_fallos', true),'')||'L6897('||SQLSTATE||') ', false);
 END $$;
 SELECT set_config('role','none', true);
 DO $$ DECLARE v_after int; v_before int; BEGIN
@@ -6934,6 +6944,7 @@ DO $$ BEGIN
       resultados='PHISENTINEL_EVT4', tipo='TIPOSENTINEL_EVT4', paciente_nombre='NOMBRESENTINEL_EVT4'
       WHERE id=NULLIF(current_setting('probe.lx_ex',true), '')::int;
   END IF;
+EXCEPTION WHEN OTHERS THEN PERFORM set_config('probe.b2_fallos', coalesce(current_setting('probe.b2_fallos', true),'')||'L6930('||SQLSTATE||') ', false);
 END $$;
 SELECT set_config('request.jwt.claims', json_build_object('sub', current_setting('probe.lx_owner',true),'role','authenticated')::text, true);
 SELECT set_config('role','authenticated', true);
@@ -7035,6 +7046,7 @@ DO $$ DECLARE v_A uuid:='411d6f8c-a405-49d6-9ed6-fbeb0db05133'; v_B uuid:='cc17a
   PERFORM set_config('probe.h_solenv', coalesce(v_solenv::text,''), false); PERFORM set_config('probe.h_vprop', coalesce(v_vprop::text,''), false);
   PERFORM set_config('probe.h_vok', coalesce(v_vok::text,''), false);     PERFORM set_config('probe.h_vbad', coalesce(v_vbad::text,''), false);
   PERFORM set_config('probe.h_solrech', coalesce(v_solrech::text,''), false); PERFORM set_config('probe.h_vcanc', coalesce(v_vcanc::text,''), false);
+EXCEPTION WHEN OTHERS THEN PERFORM set_config('probe.b2_fallos', coalesce(current_setting('probe.b2_fallos', true),'')||'L6999('||SQLSTATE||') ', false);
 END $$;
 -- B2 fase 1 (FX16): par 1 de ENABLE, envuelto Y VERIFICADO. Si el harness muriera entre el DISABLE
 -- y este ENABLE, el ROLLBACK restauraria los triggers igual — pero nadie se enteraria de que la
@@ -7098,6 +7110,7 @@ DO $$ BEGIN
   PERFORM public.notificar_campana_resultado(NULLIF(current_setting('probe.h_solpub',true), '')::uuid);   -- publicada → sin notas
   PERFORM public.notificar_campana_resultado(NULLIF(current_setting('probe.h_solrech',true), '')::uuid);  -- rechazada → notas DEL REF
   PERFORM set_config('probe.ha_call','OK',false);
+EXCEPTION WHEN OTHERS THEN PERFORM set_config('probe.b2_fallos', coalesce(current_setting('probe.b2_fallos', true),'')||'L7094('||SQLSTATE||') ', false);
 END $$;
 SELECT set_config('role','none', true);
 DO $$ DECLARE v_emp int; v_pag int; v_cam int; v_aj int; v_content boolean; v_notas boolean; v_nonotas boolean; BEGIN
@@ -7167,6 +7180,7 @@ DO $$ DECLARE v_flag_post boolean; BEGIN
   UPDATE public.solicitudes_campana SET estado='enviada' WHERE id=NULLIF(current_setting('probe.h_solenv',true), '')::uuid;  -- trigger resetea
   SELECT notificado_envio INTO v_flag_post FROM public.solicitudes_campana WHERE id=NULLIF(current_setting('probe.h_solenv',true), '')::uuid;
   PERFORM set_config('probe.p417b', CASE WHEN v_flag_post=false THEN 'OK (re-submission reseteó notificado_envio)' ELSE 'FALLO (flag_post='||coalesce(v_flag_post::text,'∅')||')' END,false);
+EXCEPTION WHEN OTHERS THEN PERFORM set_config('probe.b2_fallos', coalesce(current_setting('probe.b2_fallos', true),'')||'L7164('||SQLSTATE||') ', false);
 END $$;
 SELECT set_config('role','none', true);
 
@@ -7263,6 +7277,7 @@ DO $$ DECLARE v_pac bigint := 23; v_med uuid := '09d243d5-b222-482a-9762-94a582e
   PERFORM set_config('probe.rx_pac', v_pac::text, false);  PERFORM set_config('probe.rx_med', v_med::text, false);
   PERFORM set_config('probe.rx_spoof', v_spoof::text, false); PERFORM set_config('probe.rx_sa', v_sa::text, false);
   PERFORM set_config('probe.rx_r1', coalesce(v_r1::text,''), false); PERFORM set_config('probe.rx_r2', coalesce(v_r2::text,''), false);
+EXCEPTION WHEN OTHERS THEN PERFORM set_config('probe.b2_fallos', coalesce(current_setting('probe.b2_fallos', true),'')||'L7251('||SQLSTATE||') ', false);
 END $$;
 
 -- P419 estructural: firma 1 arg bigint sin vector de contenido + DEFINER + sp'' + grants + push_notificar + accion_url interna
@@ -7370,6 +7385,7 @@ DO $$ DECLARE v_A uuid:='411d6f8c-a405-49d6-9ed6-fbeb0db05133'; v_B uuid:='cc17a
   PERFORM set_config('probe.v8_A', v_A::text, false);   PERFORM set_config('probe.v8_adm', v_adm::text, false);
   PERFORM set_config('probe.v8_col', v_col::text, false); PERFORM set_config('probe.v8_ext', v_ext::text, false);
   PERFORM set_config('probe.v8_med', v_med::text, false);
+EXCEPTION WHEN OTHERS THEN PERFORM set_config('probe.b2_fallos', coalesce(current_setting('probe.b2_fallos', true),'')||'L7360('||SQLSTATE||') ', false);
 END $$;
 
 -- P424 estructural: helper DEFINER+sp''+grants + policy WITH CHECK referencia cuenta_en_empresa
@@ -8036,6 +8052,7 @@ BEGIN
   SELECT count(*) INTO v_pais_leak FROM public.farmacia_medicamentos fm JOIN public.farmacias f ON f.id=fm.farmacia_id
     WHERE f.pais_id IS DISTINCT FROM v_pais_med;
   PERFORM set_config('probe.pruta_pais', CASE WHEN v_pais_leak=0 THEN 'OK (RLS aísla país: 0 filas de otro país)' ELSE 'FALLO/LEAK ('||v_pais_leak||' filas de otro país)' END, false);
+EXCEPTION WHEN OTHERS THEN PERFORM set_config('probe.b2_fallos', coalesce(current_setting('probe.b2_fallos', true),'')||'L7986('||SQLSTATE||') ', false);
 END $$;
 SELECT set_config('role','none', true);
 
@@ -8170,6 +8187,7 @@ BEGIN
   SELECT count(*) INTO v_nomed FROM public.nombre_cadena_por_farmacias(ARRAY[3337,147,3755]);
   PERFORM set_config('probe.pcad_nomedico', CASE WHEN v_nomed=0 THEN 'OK (no-médico → 0 filas, fail-closed)' ELSE 'FALLO ('||v_nomed||' filas a no-médico)' END, false);
   PERFORM set_config('role','none',true);
+EXCEPTION WHEN OTHERS THEN PERFORM set_config('probe.b2_fallos', coalesce(current_setting('probe.b2_fallos', true),'')||'L8138('||SQLSTATE||') ', false);
 END $$;
 SELECT set_config('role','none', true);
 
@@ -11286,11 +11304,11 @@ SELECT set_config('role','none', true);
 --                            de set_config) y ''::uuid es 22P02: mata la transaccion igual que un
 --                            NOT NULL. Fase 2.1 CERRADA: 155 -> 0 en tres tandas.
 --
---   do_sin_handler = 175     Bloques DO sin `EXCEPTION WHEN`. DEUDA CON FECHA, igual que la allowlist
+--   do_sin_handler = 157     Bloques DO sin `EXCEPTION WHEN`. DEUDA CON FECHA, igual que la allowlist
 --                            del P480: la ataca la FASE 2. La regla es ESTRICTA — un `RAISE EXCEPTION`
 --                            NO cuenta como handler, es lo contrario de un handler; el detector ademas
 --                            quita los literales SQL antes de buscar (b2_guard_test.py fija las dos
---                            direcciones del error). Fase 2.2 tandas 1 y 2: 211 -> 193 -> 175, sobre 36
+--                            direcciones del error). Fase 2.2 tandas 1-3: 211 -> 193 -> 175 -> 157, sobre 54
 --                            de los 55 bloques que ESCRIBEN. Cuando uno envuelto cae, su veredicto queda
 --                            vacio (lo caza P000) y FX19 dice cual y con que SQLSTATE — las tres senales
 --                            se PROBARON en rojo a proposito, no se asumieron (ver el commit de la tanda 2).
@@ -11303,7 +11321,7 @@ SELECT set_config('role','none', true);
 DO $$
 BEGIN
   PERFORM set_config('probe.p516',
-    'OK-SENAL (baseline declarado: top_level_dml_ddl=0 excluyendo pg_temp, cast_directo=0 CERRADO, do_sin_handler=175 deuda con fecha, fase 2.2 tandas 1-2 de 3). '||
+    'OK-SENAL (baseline declarado: top_level_dml_ddl=0 excluyendo pg_temp, cast_directo=0 CERRADO, do_sin_handler=157 deuda con fecha, fase 2.2 COMPLETA salvo P481). '||
     'El gate real es tests/rls/b2_guard.py — este probe NO mide, senaliza.', false);
 EXCEPTION WHEN OTHERS THEN
   -- handler puesto por coherencia: el propio b2_guard.py conto este bloque como deuda nueva cuando
