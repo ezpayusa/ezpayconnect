@@ -16,6 +16,36 @@
 
 BEGIN;
 
+-- ============================================================================
+-- PRECONDICION GLOBAL: catalogo de medicamentos de los fixtures
+-- ----------------------------------------------------------------------------
+-- private.trg_farmed_resolver_medid (PW001) exige que TODO nombre escrito en
+-- farmacia_medicamentos resuelva a EXACTAMENTE UN medicamento activo de public.medicamentos.
+-- Los nombres de fixture nunca estuvieron en ese catalogo: el trigger no existia cuando se
+-- escribieron los probes. Se siembran aca, una vez, dentro del ROLLBACK.
+--
+-- Se siembra la precondicion en vez de capturar el PW001 a proposito: capturarlo dejaria a los
+-- probes "pasando" sin ejercitar su asercion (P51 llego a reportar 'RLS dejo pasar' cuando la RLS
+-- ni se evaluaba, porque el trigger BEFORE corta antes). Un probe que pasa porque su fixture ya no
+-- existe es un falso verde.
+--
+-- Nombres largos y unicos a proposito: el resolver tambien matchea por PREFIJO
+-- (q LIKE norm(generico)||' %') y DOS hits resuelven a NULL, que es el mismo PW001.
+-- 'NORMTEST 500 MG' cubre tambien 'normtest 500mg': norm_med_nombre pega el digito con la unidad.
+DO $$ BEGIN
+  INSERT INTO public.medicamentos (nombre_generico, activo) VALUES
+    ('MED PROPIO A', true), ('MED AJENO B', true),
+    ('PGEST MED', true), ('PASIGN MED Y', true),
+    ('CAT IDEM', true), ('CAT POS', true), ('CAT VALIDO', true), ('CAT X', true),
+    ('DUP TEST', true), ('NORMTEST 500 MG', true),
+    ('PROBE C2 X', true), ('PROBE C2 Y', true),
+    ('PROBE C2 WRITE X', true), ('PROBE C2 WRITE Y ADMIN', true),
+    ('PROBE RLS MED', true);
+  PERFORM set_config('probe.fx_medsglobal','OK (13 medicamentos de fixture en el catalogo global)',false);
+EXCEPTION WHEN OTHERS THEN
+  PERFORM set_config('probe.fx_medsglobal','ROJO (no se pudo sembrar la precondicion: '||SQLSTATE||' '||SQLERRM||')',false);
+END $$;
+
 -- ============================================================
 -- Ola 3 · RBAC override per-empresa (P330–P342). Red-first. Maquinaria inerte día-0.
 -- POST detector: existe public.set_permiso_override + public.acciones_techo (mig 117).
@@ -961,12 +991,18 @@ SELECT set_config('role', 'none', true);
 SELECT set_config('request.jwt.claims',
   json_build_object('sub', current_setting('probe.sa', true), 'role','authenticated')::text, true);
 SELECT set_config('role', 'authenticated', true);
-DO $$ BEGIN
-  INSERT INTO public.farmacia_medicamentos DEFAULT VALUES;
-  PERFORM set_config('probe.p50','OK (RLS permitió el INSERT)',false);
-EXCEPTION
-  WHEN insufficient_privilege THEN PERFORM set_config('probe.p50','REGRESIÓN (RLS bloqueó a super_admin: 42501)',false);
-  WHEN others THEN PERFORM set_config('probe.p50','OK (RLS permitió; faltó dato: '||SQLSTATE||')',false);
+DO $$ DECLARE v_res text; BEGIN
+  BEGIN
+    INSERT INTO public.farmacia_medicamentos (farmacia_id, nombre_medicamento, stock_actual, precio_unitario)
+      VALUES ((SELECT id FROM public.farmacias ORDER BY id LIMIT 1), 'PROBE RLS MED', 1, 1);
+    v_res := 'OK (RLS permitió el INSERT)';
+    RAISE EXCEPTION 'PROBE_UNDO';
+  EXCEPTION
+    WHEN insufficient_privilege THEN v_res := 'REGRESIÓN (RLS bloqueó a super_admin: 42501)';
+    WHEN others THEN IF SQLERRM <> 'PROBE_UNDO' THEN
+      v_res := 'ROJO (cortó algo antes que la RLS: '||SQLSTATE||' '||SQLERRM||')'; END IF;
+  END;
+  PERFORM set_config('probe.p50', COALESCE(v_res,'ROJO (sin resultado)'), false);
 END $$;
 
 -- P51 — un no-super_admin (médico) NO edita farmacia_medicamentos
@@ -974,12 +1010,18 @@ SELECT set_config('role', 'none', true);
 SELECT set_config('request.jwt.claims',
   json_build_object('sub', current_setting('probe.np_medico', true), 'role','authenticated')::text, true);
 SELECT set_config('role', 'authenticated', true);
-DO $$ BEGIN
-  INSERT INTO public.farmacia_medicamentos DEFAULT VALUES;
-  PERFORM set_config('probe.p51','PERMITIDO (médico editó farmacia!)',false);
-EXCEPTION
-  WHEN insufficient_privilege THEN PERFORM set_config('probe.p51','BLOQUEADO (RLS: 42501)',false);
-  WHEN others THEN PERFORM set_config('probe.p51','PERMITIDO? (RLS dejó pasar: '||SQLSTATE||')',false);
+DO $$ DECLARE v_res text; BEGIN
+  BEGIN
+    INSERT INTO public.farmacia_medicamentos (farmacia_id, nombre_medicamento, stock_actual, precio_unitario)
+      VALUES ((SELECT id FROM public.farmacias ORDER BY id LIMIT 1), 'PROBE RLS MED', 1, 1);
+    v_res := 'PERMITIDO (médico editó farmacia!)';
+    RAISE EXCEPTION 'PROBE_UNDO';
+  EXCEPTION
+    WHEN insufficient_privilege THEN v_res := 'BLOQUEADO (RLS: 42501)';
+    WHEN others THEN IF SQLERRM <> 'PROBE_UNDO' THEN
+      v_res := 'ROJO (cortó algo antes que la RLS: '||SQLSTATE||' '||SQLERRM||')'; END IF;
+  END;
+  PERFORM set_config('probe.p51', COALESCE(v_res,'ROJO (sin resultado)'), false);
 END $$;
 
 -- P52 — super_admin SÍ crea reportes_guardados
@@ -1911,13 +1953,30 @@ DO $$ DECLARE v_id uuid; BEGIN
   END IF;
 END $$;
 -- afín B (2ª empresa afín) + producto + miembro admin + solicitud → aislamiento afín↔afín (ROLLBACK)
-DO $$ DECLARE v_b uuid; v_pais uuid; BEGIN
+-- PRECONDICION (invalidado por la mig 202 del 2026-07-02): productos_empresa lleva el gate
+-- trigger_gate_capacidad_productos, que exige la capacidad 'productos' de la empresa DUENA (PC010).
+-- Las empresas de prod ya la tienen por la activacion masiva de la mig 200 PARTE 3, pero
+-- "Probe Afin B" se CREA aca dentro del ROLLBACK y nace sin ninguna capacidad.
+-- Se siembra por el CAMINO CANONICO -- la RPC activar_capacidad_suelta, gateada a super_admin --
+-- y no por INSERT directo en empresa_capacidades: si manana cambian las reglas de activacion, el
+-- fixture se entera en vez de seguir funcionando por un atajo que la app real no usa.
+DO $$ DECLARE v_b uuid; v_pais uuid; v_sa uuid; BEGIN
   SELECT pais_id INTO v_pais FROM public.empresas_proveedoras WHERE id = current_setting('probe.af_emp',true)::uuid;
   INSERT INTO public.empresas_proveedoras (nombre_empresa, email_contacto, tipo, pais_id)
     VALUES ('Probe Afin B', 'afinb@probe.test', 'empresa_afin', v_pais) RETURNING id INTO v_b;
   PERFORM set_config('probe.af_emp_b', v_b::text, false);
+  SELECT id INTO v_sa FROM public.perfiles WHERE rol='super_admin' ORDER BY id LIMIT 1;
+  PERFORM set_config('request.jwt.claims', json_build_object('sub', v_sa::text, 'role','authenticated')::text, true);
+  PERFORM set_config('role','authenticated', true);
+  PERFORM public.activar_capacidad_suelta(v_b, 'productos');
+  PERFORM set_config('role','none', true);
+  PERFORM set_config('request.jwt.claims', NULL, true);
   INSERT INTO public.productos_empresa (empresa_id, nombre_producto, precio_unitario, estado)
     VALUES (v_b, 'Probe Afin B Producto', 10, 'activo');
+  PERFORM set_config('probe.fx_afinb','OK (empresa + capacidad productos + producto sembrados)',false);
+EXCEPTION WHEN OTHERS THEN
+  PERFORM set_config('role','none', true);
+  PERFORM set_config('probe.fx_afinb','ROJO (no se pudo sembrar la precondicion: '||SQLSTATE||' '||SQLERRM||')',false);
 END $$;
 SELECT set_config('probe.af_b_member', (SELECT id::text FROM public.cuentas_proveedor ORDER BY id LIMIT 1 OFFSET 4), false);
 UPDATE public.cuentas_proveedor SET empresa_id=NULLIF(current_setting('probe.af_emp_b',true),'')::uuid, rol_en_empresa='admin', activo=true, equipo_id=NULL WHERE id=NULLIF(current_setting('probe.af_b_member',true),'')::uuid;
@@ -2585,6 +2644,9 @@ BEGIN
   PERFORM set_config('probe.cat_fA',v_fA::text,false);   PERFORM set_config('probe.cat_fB',v_fB::text,false);
   PERFORM set_config('probe.cat_mA',v_mA::text,false);   PERFORM set_config('probe.cat_mB',v_mB::text,false);
   PERFORM set_config('probe.cat_clinico', COALESCE(v_clin::text,''), false);
+  PERFORM set_config('probe.fx_catmeds','OK (fixture CAT completo: empresas, sucursales e inventario sembrados)',false);
+EXCEPTION WHEN OTHERS THEN
+  PERFORM set_config('probe.fx_catmeds','ROJO (no se pudo sembrar la precondicion: '||SQLSTATE||' '||SQLERRM||')',false);
 END $$;
 
 -- P149 — NEG: cuenta SIN inventario_editar (cajero) edita inventario → BLOQUEADO
@@ -3839,6 +3901,23 @@ DO $$ DECLARE v_ea uuid; v_sid uuid; BEGIN
   -- solicitud HN sembrada como owner (para el probe de aprobar; bypass del WITH CHECK)
   INSERT INTO public.solicitudes_campana (empresa_id,cuenta_proveedor_id,titulo,tipo,fecha_inicio,fecha_fin,estado,pais_id)
     VALUES (v_ea, current_setting('probe.cat_inv',true)::uuid, 'PA SOL HN','banner',CURRENT_DATE,CURRENT_DATE+30,'enviada', current_setting('probe.p0_hn',true)::uuid) RETURNING id INTO v_sid;
+  -- PRECONDICION (invalidado por la mig 204 del 2026-07-02): solicitudes_campana lleva el gate
+  -- trigger_gate_capacidad_publicidad, que aplica cuando escribe el PROVEEDOR dueno (PC014). La
+  -- empresa eA viene del fixture CAT, creada dentro del harness, asi que nace sin capacidades.
+  -- La solicitud HN de arriba entra igual porque la escribe el owner (el gate exime al admin); la
+  -- que rompia era P225, que escribe como proveedor. Mismo camino canonico que E1.
+  DECLARE v_sa uuid; BEGIN
+    SELECT id INTO v_sa FROM public.perfiles WHERE rol='super_admin' ORDER BY id LIMIT 1;
+    PERFORM set_config('request.jwt.claims', json_build_object('sub', v_sa::text, 'role','authenticated')::text, true);
+    PERFORM set_config('role','authenticated', true);
+    PERFORM public.activar_capacidad_suelta(v_ea, 'publicidad');
+    PERFORM set_config('role','none', true);
+    PERFORM set_config('request.jwt.claims', NULL, true);
+    PERFORM set_config('probe.fx_publicidad','OK (capacidad publicidad activada en la empresa del fixture PUB-A)',false);
+  EXCEPTION WHEN OTHERS THEN
+    PERFORM set_config('role','none', true);
+    PERFORM set_config('probe.fx_publicidad','ROJO (no se pudo sembrar la precondicion: '||SQLSTATE||' '||SQLERRM||')',false);
+  END;
   PERFORM set_config('probe.pa_ea', v_ea::text, false);
   PERFORM set_config('probe.pa_sol_hn', v_sid::text, false);
   PERFORM set_config('probe.pa_ready','1',false);
@@ -7549,8 +7628,14 @@ BEGIN
   DECLARE v_sd int; BEGIN
     v_sd := public.crear_sucursal('PGEST SOFTDEL');                 -- admin (authenticated), sin staff
     PERFORM set_config('role','none',true);
-    INSERT INTO public.farmacia_medicamentos (farmacia_id, nombre_medicamento, stock_actual, precio_unitario)
-      VALUES (v_sd, 'PGEST MED', 5, 1);
+    -- 'PGEST MED' se siembra en el catalogo global al inicio del archivo (PW001). Handler = red.
+    BEGIN
+      INSERT INTO public.farmacia_medicamentos (farmacia_id, nombre_medicamento, stock_actual, precio_unitario)
+        VALUES (v_sd, 'PGEST MED', 5, 1);
+      PERFORM set_config('probe.fx_pgest_med','OK (PGEST MED en catalogo global + inventario sembrado)',false);
+    EXCEPTION WHEN OTHERS THEN
+      PERFORM set_config('probe.fx_pgest_med','ROJO (no se pudo sembrar la precondicion: '||SQLSTATE||' '||SQLERRM||')',false);
+    END;
     PERFORM set_config('request.jwt.claims', json_build_object('sub',v_admin,'role','authenticated')::text, true);
     PERFORM set_config('role','authenticated', true);
     SELECT count(*) INTO v_invcount FROM public.farmacia_medicamentos WHERE farmacia_id=v_sd;  -- =1
@@ -7614,7 +7699,13 @@ BEGIN
   PERFORM set_config('role','authenticated', true);
   v_y := public.crear_sucursal('PASIGN Y'); v_inact := public.crear_sucursal('PASIGN INACT'); PERFORM public.desactivar_sucursal(v_inact,false);
   PERFORM set_config('role','none',true);
-  INSERT INTO public.farmacia_medicamentos (farmacia_id,nombre_medicamento,stock_actual,precio_unitario) VALUES (v_y,'PASIGN MED Y',5,1);
+  -- 'PASIGN MED Y' se siembra en el catalogo global al inicio del archivo (PW001). Handler = red.
+  BEGIN
+    INSERT INTO public.farmacia_medicamentos (farmacia_id,nombre_medicamento,stock_actual,precio_unitario) VALUES (v_y,'PASIGN MED Y',5,1);
+    PERFORM set_config('probe.fx_pasign_med','OK (PASIGN MED Y en catalogo global + inventario sembrado)',false);
+  EXCEPTION WHEN OTHERS THEN
+    PERFORM set_config('probe.fx_pasign_med','ROJO (no se pudo sembrar la precondicion: '||SQLSTATE||' '||SQLERRM||')',false);
+  END;
   INSERT INTO public.cuentas_proveedor (id,empresa_id,email,nombre_completo,rol_en_empresa,activo,sucursal_id) VALUES
     (v_cajero,v_emp,'pasign-caj@x.test','C','cajero',true,NULL),
     (v_fin,v_emp,'pasign-fin@x.test','F','finanzas',true,NULL),
@@ -7707,8 +7798,15 @@ BEGIN
   -- probes previos mutan rol/país de fixtures que resuelven al QA). Sin esto, falso-rojo por estado heredado.
   UPDATE public.perfiles SET pais_id = v_3337_pais, rol = 'medico' WHERE id = v_med;
   v_pais_med := v_3337_pais;
-  SELECT nombre_medicamento INTO v_med_global FROM public.farmacia_medicamentos fm JOIN public.farmacias f ON f.id=fm.farmacia_id
-   WHERE f.empresa_id IS NULL AND fm.stock_actual>0 AND fm.nombre_medicamento NOT ILIKE '%MED 3337%' LIMIT 1;
+  SELECT fm.nombre_medicamento INTO v_med_global FROM public.farmacia_medicamentos fm JOIN public.farmacias f ON f.id=fm.farmacia_id
+   WHERE f.empresa_id IS NULL AND fm.stock_actual>0 AND fm.nombre_medicamento NOT ILIKE '%MED 3337%'
+     -- La premisa del probe es "solo-en-global": se exige por construccion, no se asume. Sin esto,
+     -- un nombre que ademas exista en una farmacia CON empresa aparece legitimamente en el ruteo y
+     -- el probe reporta FALLO sin que nada de la RLS haya cambiado.
+     AND NOT EXISTS (SELECT 1 FROM public.farmacia_medicamentos fm2
+                       JOIN public.farmacias f2 ON f2.id = fm2.farmacia_id
+                      WHERE f2.empresa_id IS NOT NULL AND fm2.nombre_medicamento = fm.nombre_medicamento)
+   ORDER BY fm.nombre_medicamento LIMIT 1;   -- ORDER BY: sin el, el pick depende del orden fisico
 
   -- médico JWT
   PERFORM set_config('request.jwt.claims', json_build_object('sub',v_med,'role','authenticated')::text, true);
@@ -9682,6 +9780,16 @@ UNION ALL SELECT 'P474_rol_no_comercial_cero', current_setting('probe.p474', tru
 UNION ALL SELECT 'P475_CENTINELA_fail_open_pais',current_setting('probe.p475', true),'BLOQUEADO (doble candado: cargo=3 pero país corta)'
 UNION ALL SELECT 'P476_contactos_heredan_gate',current_setting('probe.p476', true),  'OK (1 / 0 / 2)'
 UNION ALL SELECT 'P477_NEG_PA006_pais_incoherente',current_setting('probe.p477', true),'BLOQUEADO (PA006, escrito como owner)'
+UNION ALL SELECT 'FX00_catalogo_global_medicamentos', current_setting('probe.fx_medsglobal', true),'OK (precondicion sembrada)'
+UNION ALL SELECT 'FX01_afinb_capacidad_productos',   current_setting('probe.fx_afinb', true),      'OK (precondicion sembrada)'
+UNION ALL SELECT 'FX02_cat_medicamentos_catalogo',   current_setting('probe.fx_catmeds', true),    'OK (precondicion sembrada)'
+UNION ALL SELECT 'FX03_pgest_med_catalogo',          current_setting('probe.fx_pgest_med', true),  'OK (precondicion sembrada)'
+UNION ALL SELECT 'FX04_pasign_med_catalogo',         current_setting('probe.fx_pasign_med', true), 'OK (precondicion sembrada)'
+UNION ALL SELECT 'FX05_puba_capacidad_publicidad',   current_setting('probe.fx_publicidad', true), 'OK (precondicion sembrada)'
+-- Las filas FX* son SALUD DE FIXTURE, no probes de seguridad: dicen si la precondicion que una
+-- migracion posterior empezo a exigir se pudo sembrar. Si una sale ROJO, los probes que dependen de
+-- ese fixture reportan N/A (su flag de ready se pierde con el rollback de la subtransaccion) en vez
+-- de pasar en silencio. Ver el commit de este bloque para el porque de sembrar en vez de capturar.
 -- ===== CENTINELA ANTI-NULL — SIEMPRE LA ÚLTIMA FILA =====
 -- POR QUÉ EXISTE: un probe que NO llegó a publicar su veredicto devuelve NULL, no 'ROJO'. En el
 -- result set eso sale como celda vacía, que de un vistazo se lee igual que un verde. Y contar las
@@ -9831,7 +9939,8 @@ UNION ALL SELECT 'P000_CENTINELA_veredictos_no_nulos',
        'probe.p466', 'probe.p467', 'probe.p468', 'probe.p469',
        'probe.p478', 'probe.p479', 'probe.p470', 'probe.p471',
        'probe.p472', 'probe.p473', 'probe.p474', 'probe.p475',
-       'probe.p476', 'probe.p477'
+       'probe.p476', 'probe.p477', 'probe.fx_medsglobal', 'probe.fx_afinb',
+       'probe.fx_catmeds', 'probe.fx_pgest_med', 'probe.fx_pasign_med', 'probe.fx_publicidad'
              ]) AS n) s),
   'OK (todos los veredictos publicados)';
 
