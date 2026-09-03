@@ -56,7 +56,7 @@ import sys
 # Al bajar una metrica, actualizar ACA y en el comentario de P516 del harness, EN EL MISMO COMMIT
 # que la baja. Un baseline que se actualiza "despues" es un baseline que alguien olvida.
 BASELINE_TOP_LEVEL = 0            # fase 1 de B2 (2026-09-03), CERRADO
-BASELINE_CAST_DIRECTO = 103       # fase 2.1 en curso: 155 -> 103 (tanda 1 de 3) -> objetivo 0
+BASELINE_CAST_DIRECTO = 51        # fase 2.1 en curso: 155 -> 103 -> 51 (tanda 2 de 3) -> objetivo 0
 BASELINE_DO_SIN_HANDLER = 319     # fase 2.2: 319 -> ~125 (deuda con fecha, ver abajo)
 # ===============================================================================
 #
