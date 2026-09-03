@@ -14,6 +14,11 @@ Stack: React + Vite + TypeScript, Supabase / Postgres, deploy en Vercel, repo en
   una sentencia DML/DDL fuera de un bloque `DO` con `EXCEPTION` handler, o si crecen los bloques `DO`
   sin handler. Está enganchado como hook de pre-commit en `.githooks/pre-commit`; en un clone nuevo
   hay que activarlo una vez con `git config core.hooksPath .githooks`.
+- **Correr el harness SIEMPRE con `npm run harness`, nunca a mano.** El runner
+  (`tests/rls/harness_run.py`) verifica exit code, salida no vacía, JSON parseable, piso de 550
+  filas y cero veredictos vacíos. **Por qué**: el 2026-09-03 una corrida devolvió *exit 0 con la
+  salida vacía* por un corte del cliente — indistinguible de un harness verde para quien lea el
+  exit code. `npm run harness:selftest` prueba que esas cinco verificaciones disparan.
   **Por qué**: el harness corre en UNA transacción — una sentencia que revienta fuera de un handler
   no da rojo, MATA la transacción y la salida queda vacía, que se lee como "todavía no lo corrí".
   Pasó dos veces (18cf819 y el lote 1 de PA-FAILOPEN) y una de ellas tardó dos meses en detectarse.

@@ -9,6 +9,8 @@
     "test": "vitest run",
     "lint": "eslint .",
     "preview": "vite preview",
+    "harness": "python tests/rls/harness_run.py",
+    "harness:selftest": "python tests/rls/harness_run.py --self-test",
     "harness:guard": "python tests/rls/b2_guard.py",
     "harness:guard:test": "python tests/rls/b2_guard_test.py"
   },
