@@ -63,10 +63,11 @@ import sys
 # que la baja. Un baseline que se actualiza "despues" es un baseline que alguien olvida.
 BASELINE_TOP_LEVEL = 0            # fase 1 de B2 (2026-09-03), CERRADO
 BASELINE_CAST_DIRECTO = 0         # fase 2.1 CERRADA (155 -> 103 -> 51 -> 0, tres tandas)
-BASELINE_DO_SIN_HANDLER = 193     # fase 2.2 tanda 1: 211 -> 193 (18 bloques que ESCRIBEN, envueltos).
+BASELINE_DO_SIN_HANDLER = 175     # fase 2.2 tandas 1 y 2: 211 -> 193 -> 175 (36 bloques que ESCRIBEN).
                                   # El 319 previo estaba inflado en 108 por tres fallas del detector,
                                   # corregidas en aac4562 y fijadas por b2_guard_test.py.
-                                  # Quedan 37 de los 55 que escriben (tandas 2 y 3).
+                                  # Quedan 19 de los 55: 18 de la tanda 3 + el bloque de P481, que va
+                                  # SOLO y al final (es el probe cuyo trabajo es fallar).
 # ===============================================================================
 #
 # POR QUE ~125 VA A SER UN NUMERO ACEPTABLE Y NO "FALTA TERMINAR"
