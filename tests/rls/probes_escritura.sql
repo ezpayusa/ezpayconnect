@@ -9426,11 +9426,11 @@ DECLARE
     -- SALDADA por la mig 268 (lote 3): 'public.crear_capacidad_pais'
     -- SALDADA por la mig 268 (lote 3): 'public.crear_tier_pais'
     -- SALDADA por la mig 267 (lote 2): 'public.liquidar_comision'
-    'public.listar_canjes_pendientes',            -- lote N (gate sin pais -> es_admin_pais)
-    'public.listar_capacidades_pais',             -- lote N
-    'public.listar_propuestas_especialidad',      -- lote N (gate sin pais -> es_admin_pais)
-    'public.listar_solicitudes_personalizacion',  -- lote N (gate sin pais -> es_admin_pais)
-    'public.listar_tiers_pais',                   -- lote N
+    -- SALDADA por la mig 269 (lote 4): 'public.listar_canjes_pendientes'
+    -- SALDADA por la mig 269 (lote 4): 'public.listar_capacidades_pais'
+    -- SALDADA por la mig 269 (lote 4): 'public.listar_propuestas_especialidad'
+    -- SALDADA por la mig 269 (lote 4): 'public.listar_solicitudes_personalizacion'
+    -- SALDADA por la mig 269 (lote 4): 'public.listar_tiers_pais'
     -- SALDADA por la mig 267 (lote 2): 'public.marcar_liquidacion_cobrada'
     -- SALDADA por la mig 266 (lote 1, 2026-09-03): gate -> private.puede_admin_pais + REVOKE de
     -- anon. PRIMERA de las 27 que se vacia. El centinela debe quedar VERDE con 26, no con 27.
@@ -9439,7 +9439,7 @@ DECLARE
     'public.notificar_empresa_estado',            -- lote N
     'public.notificar_pago_resultado',            -- lote N
     'public.notificar_resultado_examen',          -- lote N (IS DISTINCT FROM: NULL-safe, no explotable)
-    'public.obtener_resumen_pais',                -- lote N
+    -- SALDADA por la mig 269 (lote 4): 'public.obtener_resumen_pais'
     -- SALDADA por la mig 268 (lote 3): 'public.rechazar_personalizacion'
     'public.registrar_evidencia_entrega',         -- lote N (NOT LIKE contra mi_empresa_proveedor())
     'public.resolver_canje'  -- lote N
@@ -10465,6 +10465,234 @@ BEGIN
 END $$;
 SELECT set_config('role','none', true);
 
+-- ############################################################################################
+-- PAQUETE PA-FAILOPEN - LOTE 4 - P501-P506 + FX09 (las 6 de LECTURA, mig 269)
+-- ############################################################################################
+DO $$
+DECLARE
+  v_gt uuid := 'cbbbbe6d-59fe-4cf2-91ee-3e31ba1d5909';
+  v_sv uuid := 'f2c75b8e-ef54-4a05-b2ff-7363e448f680';
+  v_sinperfil uuid; v_super uuid; v_adminpais uuid;
+  v_pac bigint; v_clin_gt uuid; v_emp_gt uuid; v_emp_sv uuid;
+  v_med_gt uuid; v_med_sv uuid := '00000000-0000-4269-0501-0000000000f1';
+  v_premio_gt bigint; v_premio_sv bigint;
+  v_sp_gt uuid := '00000000-0000-4269-0501-000000000001';
+  v_sp_sv uuid := '00000000-0000-4269-0501-000000000002';
+  v_pe_gt uuid := '00000000-0000-4269-0501-00000000000a';
+  v_pe_sv uuid := '00000000-0000-4269-0501-00000000000b';
+  v_j jsonb; v_n bigint; v_txt text;
+  v_det text := ''; v_ok boolean;
+  v_501 text; v_502 text; v_503 text; v_504 text; v_505 text; v_506 text; v_fx text;
+  v_fatal text := NULL;
+  r record;
+BEGIN
+  IF to_regprocedure('private.puede_admin_pais(uuid,text[])') IS NULL
+     OR to_regprocedure('private.es_admin_pais()') IS NULL THEN
+    PERFORM set_config('probe.p501','ROJO (mig 265 sin aplicar)', false);
+    PERFORM set_config('probe.p502','ROJO (mig 265 sin aplicar)', false);
+    PERFORM set_config('probe.p503','ROJO (mig 265 sin aplicar)', false);
+    PERFORM set_config('probe.p504','ROJO (mig 265 sin aplicar)', false);
+    PERFORM set_config('probe.p505','ROJO (mig 265 sin aplicar)', false);
+    PERFORM set_config('probe.p506','ROJO (mig 265 sin aplicar)', false);
+    PERFORM set_config('probe.fx_l4','ROJO (mig 265 sin aplicar)', false);
+    RETURN;
+  END IF;
+
+  BEGIN
+    -- ===================== FIXTURES: filas en DOS paises =====================
+    SELECT u.id INTO v_sinperfil FROM auth.users u
+      WHERE u.email='farmacia.qa@ezpayconnect.com'
+        AND NOT EXISTS (SELECT 1 FROM public.perfiles p WHERE p.id=u.id);
+    SELECT id INTO v_super     FROM public.perfiles WHERE email='admin.qa@ezpayconnect.com';
+    SELECT id INTO v_adminpais FROM public.perfiles WHERE email='adminpais.qa@ezpayconnect.com';
+    SELECT id INTO v_pac       FROM public.pacientes WHERE auth_user_id IS NOT NULL LIMIT 1;
+    SELECT id INTO v_clin_gt   FROM public.clinicas WHERE pais_id=v_gt LIMIT 1;
+    SELECT id INTO v_emp_gt    FROM public.empresas_proveedoras WHERE pais_id=v_gt LIMIT 1;
+    SELECT id INTO v_med_gt    FROM public.medicos WHERE pais_id=v_gt LIMIT 1;
+    IF v_sinperfil IS NULL OR v_super IS NULL OR v_adminpais IS NULL OR v_pac IS NULL
+       OR v_emp_gt IS NULL OR v_med_gt IS NULL THEN
+      v_fatal := 'faltan actores base'; RAISE EXCEPTION 'PROBE_UNDO';
+    END IF;
+
+    -- empresa y medico de SV (prod es 100% GT: sin esto, P504/P505/P506 dan verde vacio)
+    INSERT INTO public.empresas_proveedoras (nombre_empresa, tipo, estado, pais_id, email_contacto)
+      VALUES ('P269 Empresa SV','farmacia','activa', v_sv, 'p269.sv@example.invalid')
+      RETURNING id INTO v_emp_sv;
+    INSERT INTO auth.users (id) VALUES (v_med_sv);
+    INSERT INTO public.perfiles (id, email, nombre_completo, rol, pais_id, activo)
+      VALUES (v_med_sv,'p269_medico_sv@example.invalid','P269 Medico SV','medico', v_sv, true);
+    INSERT INTO public.medicos (id, clinica_id, nombre_completo, pais_id)
+      VALUES (v_med_sv, v_clin_gt, 'P269 Medico SV', v_sv);
+
+    -- canjes pendientes en ambos paises (el pais del canje sale de premios.pais_id)
+    INSERT INTO public.premios (nombre, costo_puntos, pais_id, tipo, activo)
+      VALUES ('P269 Premio GT', 10, v_gt, 'fisico', true) RETURNING id INTO v_premio_gt;
+    INSERT INTO public.premios (nombre, costo_puntos, pais_id, tipo, activo)
+      VALUES ('P269 Premio SV', 10, v_sv, 'fisico', true) RETURNING id INTO v_premio_sv;
+    INSERT INTO public.canjes (paciente_id, premio_id, costo_puntos, estado)
+      VALUES (v_pac, v_premio_gt, 10, 'pendiente'), (v_pac, v_premio_sv, 10, 'pendiente');
+
+    -- propuestas de especialidad en ambos paises (pais = del medico)
+    INSERT INTO public.especialidades_propuestas (id, medico_id, nombre_propuesto, estado) VALUES
+      (v_pe_gt, v_med_gt, 'P269 Esp GT', 'pendiente'),
+      (v_pe_sv, v_med_sv, 'P269 Esp SV', 'pendiente');
+
+    -- solicitudes de personalizacion en ambos paises (pais = del tenant)
+    INSERT INTO public.solicitudes_personalizacion (id, tenant_tipo, tenant_id, estado, solicitado_por) VALUES
+      (v_sp_gt,'empresa_proveedora', v_emp_gt,'pendiente', v_super),
+      (v_sp_sv,'empresa_proveedora', v_emp_sv,'pendiente', v_super);
+
+    -- catalogos en ambos paises
+    INSERT INTO public.capacidades_catalogo (codigo,nombre,pais_id,orden,activo) VALUES
+      ('P269CAPGT','P269 Cap GT', v_gt, 900, true), ('P269CAPSV','P269 Cap SV', v_sv, 900, true);
+    INSERT INTO public.tiers_catalogo (codigo,nombre,pais_id,orden,activo) VALUES
+      ('P269TIERGT','P269 Tier GT', v_gt, 900, true), ('P269TIERSV','P269 Tier SV', v_sv, 900, true);
+
+    v_fx := 'OK (empresa+medico SV, 2 premios, 2 canjes, 2 propuestas, 2 solicitudes, 2 capacidades, 2 tiers)';
+
+    -- ===================== P501: SIN PERFIL contra las 6 =====================
+    PERFORM set_config('request.jwt.claims',
+      json_build_object('sub', v_sinperfil::text,'role','authenticated')::text, true);
+    PERFORM set_config('role','authenticated', true);
+    v_det := '';
+
+    BEGIN SELECT public.listar_canjes_pendientes() INTO v_j;
+      v_det := v_det||'canjes=DEVOLVIO('||jsonb_array_length(v_j)||') ';
+    EXCEPTION WHEN OTHERS THEN v_det := v_det||'canjes=BLOQ('||SQLSTATE||') '; END;
+
+    BEGIN SELECT public.listar_propuestas_especialidad(NULL) INTO v_j;
+      v_det := v_det||'propuestas=DEVOLVIO('||jsonb_array_length(v_j)||') ';
+    EXCEPTION WHEN OTHERS THEN v_det := v_det||'propuestas=BLOQ('||SQLSTATE||') '; END;
+
+    BEGIN SELECT count(*) INTO v_n FROM public.listar_solicitudes_personalizacion(NULL);
+      v_det := v_det||'solicitudes=DEVOLVIO('||v_n||') ';
+    EXCEPTION WHEN OTHERS THEN v_det := v_det||'solicitudes=BLOQ('||SQLSTATE||') '; END;
+
+    BEGIN SELECT count(*) INTO v_n FROM public.listar_capacidades_pais(v_sv);
+      v_det := v_det||'capacidades_SV=FUGA('||v_n||') ';
+    EXCEPTION WHEN OTHERS THEN v_det := v_det||'capacidades_SV=BLOQ('||SQLSTATE||') '; END;
+
+    BEGIN SELECT count(*) INTO v_n FROM public.listar_tiers_pais(v_sv);
+      v_det := v_det||'tiers_SV=FUGA('||v_n||') ';
+    EXCEPTION WHEN OTHERS THEN v_det := v_det||'tiers_SV=BLOQ('||SQLSTATE||') '; END;
+
+    BEGIN SELECT public.obtener_resumen_pais(v_sv) INTO v_j;
+      v_det := v_det||'resumen_SV=FUGA('||COALESCE(v_j->>'nombre','?')||') ';
+    EXCEPTION WHEN OTHERS THEN v_det := v_det||'resumen_SV=BLOQ('||SQLSTATE||') '; END;
+
+    PERFORM set_config('role','none', true);
+    v_ok := v_det NOT LIKE '%DEVOLVIO%' AND v_det NOT LIKE '%FUGA%';
+    v_501 := CASE WHEN v_ok
+      THEN 'BLOQUEADO en las 6, sin devolver nada: '||v_det
+      ELSE 'ROJO ('||v_det||')' END;
+
+    -- ===================== P502 / P503: NO REGRESION =====================
+    FOR r IN SELECT * FROM (VALUES ('super', v_super), ('adminpais', v_adminpais)) t(etq, uid) LOOP
+      PERFORM set_config('request.jwt.claims',
+        json_build_object('sub', r.uid::text,'role','authenticated')::text, true);
+      PERFORM set_config('role','authenticated', true);
+      v_det := '';
+      BEGIN PERFORM public.listar_canjes_pendientes(); v_det := v_det||'canjes=paso ';
+      EXCEPTION WHEN OTHERS THEN v_det := v_det||'canjes=RECHAZO('||SQLSTATE||') '; END;
+      BEGIN PERFORM public.listar_propuestas_especialidad(NULL); v_det := v_det||'propuestas=paso ';
+      EXCEPTION WHEN OTHERS THEN v_det := v_det||'propuestas=RECHAZO('||SQLSTATE||') '; END;
+      BEGIN PERFORM count(*) FROM public.listar_solicitudes_personalizacion(NULL); v_det := v_det||'solicitudes=paso ';
+      EXCEPTION WHEN OTHERS THEN v_det := v_det||'solicitudes=RECHAZO('||SQLSTATE||') '; END;
+      BEGIN PERFORM count(*) FROM public.listar_capacidades_pais(v_gt); v_det := v_det||'capacidades=paso ';
+      EXCEPTION WHEN OTHERS THEN v_det := v_det||'capacidades=RECHAZO('||SQLSTATE||') '; END;
+      BEGIN PERFORM count(*) FROM public.listar_tiers_pais(v_gt); v_det := v_det||'tiers=paso ';
+      EXCEPTION WHEN OTHERS THEN v_det := v_det||'tiers=RECHAZO('||SQLSTATE||') '; END;
+      BEGIN PERFORM public.obtener_resumen_pais(v_gt); v_det := v_det||'resumen=paso ';
+      EXCEPTION WHEN OTHERS THEN v_det := v_det||'resumen=RECHAZO('||SQLSTATE||') '; END;
+      PERFORM set_config('role','none', true);
+      IF r.etq='super' THEN
+        v_502 := CASE WHEN v_det NOT LIKE '%RECHAZO%' THEN 'OK (super_admin sin rechazo en las 6: '||v_det||')'
+                      ELSE 'ROJO — GATE CERRADO DE MAS para super_admin ('||v_det||')' END;
+      ELSE
+        v_503 := CASE WHEN v_det NOT LIKE '%RECHAZO%' THEN 'OK (admin_pais GT sin rechazo en las 6 sobre SU pais: '||v_det||')'
+                      ELSE 'ROJO — GATE CERRADO DE MAS para admin_pais ('||v_det||')' END;
+      END IF;
+    END LOOP;
+
+    -- ===================== P504: CROSS-PAIS en las 3 parametrizadas =====================
+    PERFORM set_config('request.jwt.claims',
+      json_build_object('sub', v_adminpais::text,'role','authenticated')::text, true);
+    PERFORM set_config('role','authenticated', true);
+    v_det := '';
+    BEGIN SELECT count(*) INTO v_n FROM public.listar_capacidades_pais(v_sv);
+      v_det := v_det||'capacidades_SV=FUGA('||v_n||') ';
+    EXCEPTION WHEN OTHERS THEN v_det := v_det||'capacidades_SV='||CASE WHEN SQLSTATE='PC019' THEN 'BLOQ' ELSE 'otro('||SQLSTATE||')' END||' '; END;
+    BEGIN SELECT count(*) INTO v_n FROM public.listar_tiers_pais(v_sv);
+      v_det := v_det||'tiers_SV=FUGA('||v_n||') ';
+    EXCEPTION WHEN OTHERS THEN v_det := v_det||'tiers_SV='||CASE WHEN SQLSTATE='PC019' THEN 'BLOQ' ELSE 'otro('||SQLSTATE||')' END||' '; END;
+    BEGIN SELECT public.obtener_resumen_pais(v_sv) INTO v_j;
+      v_det := v_det||'resumen_SV=FUGA('||COALESCE(v_j->>'nombre','?')||') ';
+    EXCEPTION WHEN OTHERS THEN v_det := v_det||'resumen_SV='||CASE WHEN SQLSTATE='PC019' THEN 'BLOQ' ELSE 'otro('||SQLSTATE||')' END||' '; END;
+    PERFORM set_config('role','none', true);
+    v_504 := CASE WHEN v_det NOT LIKE '%FUGA%' AND v_det NOT LIKE '%otro(%'
+      THEN 'BLOQUEADO (PC019 en las 3 parametrizadas: admin de GT no lee config de SV)'
+      ELSE 'ROJO ('||v_det||')' END;
+
+    -- ===================== P505: CONFINAMIENTO por CONTENIDO (admin_pais GT) =====================
+    PERFORM set_config('request.jwt.claims',
+      json_build_object('sub', v_adminpais::text,'role','authenticated')::text, true);
+    PERFORM set_config('role','authenticated', true);
+    v_det := '';
+    SELECT public.listar_canjes_pendientes() INTO v_j;
+    v_det := v_det||'canjes[GT='||(v_j::text LIKE '%P269 Premio GT%')::text
+                  ||' SV='||(v_j::text LIKE '%P269 Premio SV%')::text||'] ';
+    SELECT public.listar_propuestas_especialidad(NULL) INTO v_j;
+    v_det := v_det||'propuestas[GT='||(v_j::text LIKE '%P269 Esp GT%')::text
+                  ||' SV='||(v_j::text LIKE '%P269 Esp SV%')::text||'] ';
+    SELECT string_agg(tenant_id::text, ',') INTO v_txt FROM public.listar_solicitudes_personalizacion(NULL);
+    v_det := v_det||'solicitudes[GT='||(COALESCE(v_txt,'') LIKE '%'||v_emp_gt::text||'%')::text
+                  ||' SV='||(COALESCE(v_txt,'') LIKE '%'||v_emp_sv::text||'%')::text||']';
+    PERFORM set_config('role','none', true);
+    v_ok := v_det LIKE '%canjes[GT=true SV=false]%'
+        AND v_det LIKE '%propuestas[GT=true SV=false]%'
+        AND v_det LIKE '%solicitudes[GT=true SV=false]%';
+    v_505 := CASE WHEN v_ok
+      THEN 'BLOQUEADO (admin_pais GT ve SOLO contenido de GT en los 3 listar_*: '||v_det||')'
+      ELSE 'ROJO — FUGA CROSS-PAIS EN EL CONTENIDO ('||v_det||')' END;
+
+    -- ===================== P506: ANTI-FILTRO-DE-MAS (super_admin ve ambos) =====================
+    PERFORM set_config('request.jwt.claims',
+      json_build_object('sub', v_super::text,'role','authenticated')::text, true);
+    PERFORM set_config('role','authenticated', true);
+    v_det := '';
+    SELECT public.listar_canjes_pendientes() INTO v_j;
+    v_det := v_det||'canjes[GT='||(v_j::text LIKE '%P269 Premio GT%')::text
+                  ||' SV='||(v_j::text LIKE '%P269 Premio SV%')::text||'] ';
+    SELECT public.listar_propuestas_especialidad(NULL) INTO v_j;
+    v_det := v_det||'propuestas[GT='||(v_j::text LIKE '%P269 Esp GT%')::text
+                  ||' SV='||(v_j::text LIKE '%P269 Esp SV%')::text||'] ';
+    SELECT string_agg(tenant_id::text, ',') INTO v_txt FROM public.listar_solicitudes_personalizacion(NULL);
+    v_det := v_det||'solicitudes[GT='||(COALESCE(v_txt,'') LIKE '%'||v_emp_gt::text||'%')::text
+                  ||' SV='||(COALESCE(v_txt,'') LIKE '%'||v_emp_sv::text||'%')::text||']';
+    PERFORM set_config('role','none', true);
+    v_ok := v_det LIKE '%canjes[GT=true SV=true]%'
+        AND v_det LIKE '%propuestas[GT=true SV=true]%'
+        AND v_det LIKE '%solicitudes[GT=true SV=true]%';
+    v_506 := CASE WHEN v_ok
+      THEN 'OK (super_admin sigue viendo AMBOS paises en los 3 listar_*: '||v_det||')'
+      ELSE 'ROJO — FILTRO DE MAS: el panel maestro perdio filas ('||v_det||')' END;
+
+    RAISE EXCEPTION 'PROBE_UNDO';
+  EXCEPTION WHEN OTHERS THEN
+    PERFORM set_config('role','none', true);
+    IF SQLERRM <> 'PROBE_UNDO' THEN v_fatal := COALESCE(v_fatal, SQLSTATE||' '||SQLERRM); END IF;
+  END;
+
+  PERFORM set_config('probe.fx_l4', COALESCE('ROJO (fixtures: '||v_fatal||')', v_fx, 'ROJO (sin resultado)'), false);
+  PERFORM set_config('probe.p501',  COALESCE('ROJO (fatal: '||v_fatal||')', v_501, 'ROJO (sin resultado)'), false);
+  PERFORM set_config('probe.p502',  COALESCE('ROJO (fatal: '||v_fatal||')', v_502, 'ROJO (sin resultado)'), false);
+  PERFORM set_config('probe.p503',  COALESCE('ROJO (fatal: '||v_fatal||')', v_503, 'ROJO (sin resultado)'), false);
+  PERFORM set_config('probe.p504',  COALESCE('ROJO (fatal: '||v_fatal||')', v_504, 'ROJO (sin resultado)'), false);
+  PERFORM set_config('probe.p505',  COALESCE('ROJO (fatal: '||v_fatal||')', v_505, 'ROJO (sin resultado)'), false);
+  PERFORM set_config('probe.p506',  COALESCE('ROJO (fatal: '||v_fatal||')', v_506, 'ROJO (sin resultado)'), false);
+END $$;
+SELECT set_config('role','none', true);
+
 -- ===== Veredictos como result set =====
 SELECT 'P1_anon_insert_citas'              AS probe, current_setting('probe.p1', true)  AS verdict, 'BLOQUEADO' AS esperado_post_fix
 UNION ALL SELECT 'P2_medico_cancela_ajena_rpc',         current_setting('probe.p2', true),  'BLOQUEADO'
@@ -10993,6 +11221,12 @@ UNION ALL SELECT 'P497_NEG_sin_perfil_7fn',       current_setting('probe.p497', 
 UNION ALL SELECT 'P498_POS_super_admin_7fn',      current_setting('probe.p498', true), 'OK (sin rechazo de autz)'
 UNION ALL SELECT 'P499_POS_admin_pais_7fn',       current_setting('probe.p499', true), 'OK (sin rechazo de autz)'
 UNION ALL SELECT 'P500_NEG_cross_pais_7fn',       current_setting('probe.p500', true), 'BLOQUEADO en las 7'
+UNION ALL SELECT 'P501_NEG_sin_perfil_6fn',       current_setting('probe.p501', true), 'BLOQUEADO en las 6, sin devolver nada'
+UNION ALL SELECT 'P502_POS_super_admin_6fn',      current_setting('probe.p502', true), 'OK (sin rechazo)'
+UNION ALL SELECT 'P503_POS_admin_pais_6fn',       current_setting('probe.p503', true), 'OK (sin rechazo)'
+UNION ALL SELECT 'P504_NEG_cross_pais_3param',    current_setting('probe.p504', true), 'BLOQUEADO (PC019 en las 3)'
+UNION ALL SELECT 'P505_confinamiento_listar',     current_setting('probe.p505', true), 'BLOQUEADO (GT si, SV no)'
+UNION ALL SELECT 'P506_super_admin_ve_ambos',     current_setting('probe.p506', true), 'OK (GT y SV)'
 UNION ALL SELECT 'FX00_catalogo_global_medicamentos', current_setting('probe.fx_medsglobal', true),'OK (precondicion sembrada)'
 UNION ALL SELECT 'FX01_afinb_capacidad_productos',   current_setting('probe.fx_afinb', true),      'OK (precondicion sembrada)'
 UNION ALL SELECT 'FX02_cat_medicamentos_catalogo',   current_setting('probe.fx_catmeds', true),    'OK (precondicion sembrada)'
@@ -11002,6 +11236,7 @@ UNION ALL SELECT 'FX05_puba_capacidad_publicidad',   current_setting('probe.fx_p
 UNION ALL SELECT 'FX06_afin_empresa_viva',          current_setting('probe.fx_afin_emp', true),   'OK (precondicion sembrada)'
 UNION ALL SELECT 'FX07_lote2_fixtures',             current_setting('probe.fx_l2', true),         'OK (precondicion sembrada)'
 UNION ALL SELECT 'FX08_lote3_fixtures',             current_setting('probe.fx_l3', true),         'OK (precondicion sembrada)'
+UNION ALL SELECT 'FX09_lote4_fixtures',             current_setting('probe.fx_l4', true),         'OK (precondicion sembrada)'
 -- Las filas FX* son SALUD DE FIXTURE, no probes de seguridad: dicen si la precondicion que una
 -- migracion posterior empezo a exigir se pudo sembrar. Si una sale ROJO, los probes que dependen de
 -- ese fixture reportan N/A (su flag de ready se pierde con el rollback de la subtransaccion) en vez
@@ -11160,10 +11395,12 @@ UNION ALL SELECT 'P000_CENTINELA_veredictos_no_nulos',
        'probe.p486', 'probe.p487', 'probe.p488', 'probe.p489',
        'probe.fx_medsglobal', 'probe.fx_afinb',
        'probe.fx_catmeds', 'probe.fx_pgest_med', 'probe.fx_pasign_med', 'probe.fx_publicidad',
-       'probe.fx_afin_emp', 'probe.fx_l2', 'probe.fx_l3',
+       'probe.fx_afin_emp', 'probe.fx_l2', 'probe.fx_l3', 'probe.fx_l4',
        'probe.p490', 'probe.p491', 'probe.p492', 'probe.p493',
        'probe.p494', 'probe.p495', 'probe.p496',
-       'probe.p497', 'probe.p498', 'probe.p499', 'probe.p500'
+       'probe.p497', 'probe.p498', 'probe.p499', 'probe.p500',
+       'probe.p501', 'probe.p502', 'probe.p503', 'probe.p504',
+       'probe.p505', 'probe.p506'
              ]) AS n) s),
   'OK (todos los veredictos publicados)';
 
