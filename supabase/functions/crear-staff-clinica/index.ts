@@ -37,9 +37,9 @@ Deno.serve(async (req) => {
         { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } }
       );
     }
-    if (!["secretaria", "asistente", "asistente_medico"].includes(rol)) {
+    if (!["secretaria", "asistente", "asistente_medico", "enfermeria", "gerente"].includes(rol)) {
       return new Response(
-        JSON.stringify({ error: "rol inválido (secretaria|asistente_medico)" }),
+        JSON.stringify({ error: "rol inválido (secretaria|asistente_medico|enfermeria|gerente)" }),
         { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } }
       );
     }
@@ -87,9 +87,31 @@ Deno.serve(async (req) => {
     // 2. Crear perfil con el ROL REAL del staff (mapeo UI → roles_catalogo, mig 160).
     //    'asistente'  → 'asistente_medico' (captura signos vitales, Ola 1).
     //    'secretaria' → 'secretaria'       (capa administrativa; NO captura vitales).
-    //    La UI valida arriba rol ∈ {secretaria, asistente}, así que el mapeo es total.
+    //    'enfermeria' → 'enfermeria'       (captura vitales igual que asistente_medico, pero NO crea
+    //                                       citas — ver ClinicaCalendarioPage: puedeCrearCita).
+    //    'gerente'    → 'gerente'          (LATERAL a admin_clinica, nunca superior: censo del objeto
+    //                                       vivo — en las 11 funciones y 4 policies de clínica que lo
+    //                                       nombran aparece SIEMPRE pareado con admin_clinica en el
+    //                                       mismo array. Que un admin_clinica lo cree es movimiento
+    //                                       lateral, no escalada. El 'gerente' de la policy
+    //                                       invitaciones_visitador es OTRO rol: vive en
+    //                                       cuentas_proveedor.rol_en_empresa, otro id-space).
     //    La pertenencia de clínica NO depende del rol: se otorga en el paso 3 (medico_clinicas).
-    const rolPersistido = (rol === "asistente" || rol === "asistente_medico") ? "asistente_medico" : "secretaria";
+    //
+    //    MAPEO EXPLÍCITO, SIN RAMA `else`: la forma anterior era un ternario cuyo else mandaba TODO
+    //    lo que no fuera asistente a "secretaria". Con el allowlist de arriba ampliado, un
+    //    'enfermeria' habría entrado por ese else y se habría persistido como secretaria — un rol
+    //    equivocado, en silencio, sin error. Un mapa cerrado hace imposible ese modo de falla: si
+    //    mañana se agrega un rol al allowlist y no acá, el `?? null` lo hace explotar en el INSERT
+    //    (FK perfiles.rol → roles_catalogo) en vez de degradar callado.
+    const MAPA_ROL: Record<string, string> = {
+      secretaria: "secretaria",
+      asistente: "asistente_medico",
+      asistente_medico: "asistente_medico",
+      enfermeria: "enfermeria",
+      gerente: "gerente",
+    };
+    const rolPersistido = MAPA_ROL[rol] ?? null;
     const { error: perfilError } = await supabase.from("perfiles").insert({
       id: userId,
       email,

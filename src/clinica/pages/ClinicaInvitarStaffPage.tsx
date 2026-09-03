@@ -119,6 +119,8 @@ export default function ClinicaInvitarStaffPage() {
                 <SelectContent>
                   <SelectItem value="secretaria">Secretaria</SelectItem>
                   <SelectItem value="asistente_medico">Asistente médico</SelectItem>
+                  <SelectItem value="enfermeria">Enfermería</SelectItem>
+                  <SelectItem value="gerente">Gerente</SelectItem>
                 </SelectContent>
               </Select>
             </div>
