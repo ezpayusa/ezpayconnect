@@ -11354,6 +11354,395 @@ EXCEPTION WHEN OTHERS THEN
   PERFORM set_config('probe.fx_b2fallos','ROJO ('||SQLSTATE||' '||SQLERRM||')', false);
 END $$;
 
+
+-- ############################################################################################
+-- MODULO COMERCIAL · RPCs de escritura (P517-P534). RED-FIRST: las 7 RPCs no existen todavia.
+-- --------------------------------------------------------------------------------------------
+-- Cada probe distingue TRES estados, y esa distincion es lo que la vuelve un gate y no un adorno:
+--   'ROJO — RPC AUSENTE'   la funcion no existe             <- rojo legitimo de la fase red-first
+--   'ROJO (PERMITIDO...)'  existe y NO rechazo              <- el bug que se busca
+--   'OK (...)'             rechazo con el errcode esperado, o permitio donde D1 manda permitir
+-- Sin esa distincion "rojo porque no existe" y "rojo porque no autorizo" se leen igual, y una
+-- probe que no los separa no cierra nada.
+--
+-- LOS SUJETOS DE OTRO PAIS NO EXISTEN EN LA BASE: hoy los dos admin_pais son GT y los tres
+-- asesores tambien. Se siembran aca dentro y mueren con el ROLLBACK. Los tres perfiles que se
+-- mutan (df452940, 85a3faf8, 55aaa118) se verificaron sin uso en el resto del harness.
+-- nombre_norm NO se setea: es GENERATED ALWAYS AS (private.norm_prospecto_nombre(nombre)).
+-- ############################################################################################
+SELECT set_config('role','none', true);
+DO $$
+DECLARE v_gt uuid := 'cbbbbe6d-59fe-4cf2-91ee-3e31ba1d5909'; v_hn uuid := '704aecfa-65c2-47f9-9a98-7a9bdfeba583';
+        v_admgt uuid := '8f391caf-85bc-4413-af8a-4006452ae09f';   -- admin_pais GT (real, no se toca)
+        v_admhn uuid := 'df452940-cc30-48b7-80e5-09e637bf97de';   -- se convierte en admin_pais HN
+        v_sup   uuid := '3d843fd1-695a-4958-9b57-b840b23994b3';   -- supervisor_comercial GT
+        v_ase1  uuid := '97c5d673-bd6c-416b-8970-921a78c92887';   -- asesor GT, EN la cartera del sup
+        v_ase2  uuid := '97896ac3-1bd4-4e24-a9e0-e6c97ce07893';   -- asesor GT, FUERA de esa cartera
+        v_asehn uuid := '85a3faf8-9986-4c8e-821b-4351473a91f0';   -- se convierte en asesor HN
+        v_medf  uuid := '55aaa118-1b02-44ed-b2b7-dcd2b8741cd7';   -- medico GT + ficha (para PA009)
+        v_p1 uuid; v_p2 uuid; v_pt uuid; v_c2 uuid; v_ok boolean;
+BEGIN
+  v_ok := EXISTS(SELECT 1 FROM public.asesores_perfil WHERE id=v_ase1 AND supervisor_id=v_sup)
+      AND EXISTS(SELECT 1 FROM public.asesores_perfil WHERE id=v_ase2 AND supervisor_id IS NULL)
+      AND EXISTS(SELECT 1 FROM public.asesores_perfil WHERE id=v_sup)
+      AND EXISTS(SELECT 1 FROM public.perfiles WHERE id=v_admhn)
+      AND EXISTS(SELECT 1 FROM public.perfiles WHERE id=v_asehn)
+      AND EXISTS(SELECT 1 FROM public.perfiles WHERE id=v_medf);
+  IF NOT v_ok THEN PERFORM set_config('probe.co_ready','0',false); RETURN; END IF;
+
+  -- admin_pais de OTRO pais
+  UPDATE public.perfiles SET pais_id = v_hn, rol = 'admin_pais' WHERE id = v_admhn;
+  -- asesor de OTRO pais, con ficha propia en HN
+  -- supervisor_comercial, no asesor: P529 mide PA003 (pais de la jerarquia) y si fuera
+  -- asesor el guard cortaria antes en PA001 (rol) y la probe mediria otra cosa.
+  UPDATE public.perfiles SET pais_id = v_hn, rol = 'supervisor_comercial' WHERE id = v_asehn;
+  INSERT INTO public.asesores_perfil (id, codigo_asesor, pais_id, activo)
+    VALUES (v_asehn, 'QA-SUP-HN-COM', v_hn, true)
+    ON CONFLICT (id) DO UPDATE SET pais_id = EXCLUDED.pais_id, activo = true;
+  -- ficha para un MEDICO: hoy nada en la DB lo impide, y es exactamente lo que viene a cerrar PA009
+  INSERT INTO public.asesores_perfil (id, codigo_asesor, pais_id, activo)
+    VALUES (v_medf, 'QA-MED-FICHA-COM', v_gt, true)
+    ON CONFLICT (id) DO UPDATE SET pais_id = EXCLUDED.pais_id, activo = true;
+
+  -- prospectos: uno de ase1 (cartera del supervisor), uno de ase2 (fuera), uno TERMINAL
+  INSERT INTO public.prospectos (nombre, tipo, pais_id, asesor_id, creado_por, estado_pipeline)
+    VALUES ('QA COM fixture ASE1','farmacia',v_gt,v_ase1,v_admgt,'nuevo') RETURNING id INTO v_p1;
+  INSERT INTO public.prospectos (nombre, tipo, pais_id, asesor_id, creado_por, estado_pipeline)
+    VALUES ('QA COM fixture ASE2','farmacia',v_gt,v_ase2,v_admgt,'nuevo') RETURNING id INTO v_p2;
+  INSERT INTO public.prospectos (nombre, tipo, pais_id, asesor_id, creado_por, estado_pipeline)
+    VALUES ('QA COM fixture TERMINAL','farmacia',v_gt,v_ase1,v_admgt,'ganado') RETURNING id INTO v_pt;
+  INSERT INTO public.prospecto_contactos (prospecto_id, nombre) VALUES (v_p2,'QA COM contacto de ASE2') RETURNING id INTO v_c2;
+
+  PERFORM set_config('probe.co_gt',     v_gt::text,     false);
+  PERFORM set_config('probe.co_hn',     v_hn::text,     false);
+  PERFORM set_config('probe.co_admgt',  v_admgt::text,  false);
+  PERFORM set_config('probe.co_admhn',  v_admhn::text,  false);
+  PERFORM set_config('probe.co_sup',    v_sup::text,    false);
+  PERFORM set_config('probe.co_ase1',   v_ase1::text,   false);
+  PERFORM set_config('probe.co_ase2',   v_ase2::text,   false);
+  PERFORM set_config('probe.co_asehn',  v_asehn::text,  false);
+  PERFORM set_config('probe.co_medf',   v_medf::text,   false);
+  PERFORM set_config('probe.co_p_ase1', v_p1::text,     false);
+  PERFORM set_config('probe.co_p_ase2', v_p2::text,     false);
+  PERFORM set_config('probe.co_p_term', v_pt::text,     false);
+  PERFORM set_config('probe.co_c_ase2', v_c2::text,     false);
+  PERFORM set_config('probe.co_ready',  '1', false);
+EXCEPTION WHEN OTHERS THEN
+  PERFORM set_config('probe.co_ready','0',false);
+  PERFORM set_config('probe.co_fx','ROJO ('||SQLSTATE||' '||SQLERRM||')',false);
+END $$;
+
+DO $$ BEGIN
+  PERFORM set_config('probe.co_fx', coalesce(NULLIF(current_setting('probe.co_fx',true),''),
+    CASE WHEN current_setting('probe.co_ready',true)='1'
+         THEN 'OK (fixture comercial: admin HN, asesor HN, ficha de medico, 3 prospectos, 1 contacto)'
+         ELSE 'ROJO (fixture comercial NO sembrado y sin error capturado)' END), false);
+EXCEPTION WHEN OTHERS THEN PERFORM set_config('probe.co_fx','ROJO ('||SQLSTATE||')',false); END $$;
+
+-- P517 — crear_prospecto con asesor de OTRO pais -> OK (42501 no_autorizado)
+--   por que: el pais NO es parametro: sale de la ficha. Admin GT + comercial HN => el gate cae sobre HN
+SELECT set_config('request.jwt.claims', json_build_object('sub', current_setting('probe.co_admgt',true), 'role','authenticated')::text, true);
+SELECT set_config('role','authenticated', true);
+DO $$ BEGIN
+  IF current_setting('probe.co_ready',true)<>'1' THEN PERFORM set_config('probe.p517','N/A (fixture comercial ausente)',false); RETURN; END IF;
+  IF to_regprocedure('public.crear_prospecto(text,text,uuid,text,numeric,numeric,text,uuid)') IS NULL THEN
+    PERFORM set_config('probe.p517','ROJO — RPC AUSENTE (todavia no existe; esto NO es un rechazo)',false); RETURN; END IF;
+  BEGIN
+    PERFORM public.crear_prospecto('QA COM P517 asesor ajeno','farmacia',NULLIF(current_setting('probe.co_asehn',true),'')::uuid);
+    PERFORM set_config('probe.p517','ROJO (PERMITIDO — tenia que rechazar con 42501)',false);
+  EXCEPTION WHEN insufficient_privilege THEN PERFORM set_config('probe.p517','OK (42501 no_autorizado)',false);
+            WHEN others THEN PERFORM set_config('probe.p517','FALLO (esperaba 42501, vino '||SQLSTATE||': '||SQLERRM||')',false);
+  END;
+EXCEPTION WHEN OTHERS THEN PERFORM set_config('probe.p517','FALLO ('||SQLSTATE||' '||SQLERRM||')',false); END $$;
+SELECT set_config('role','none', true);
+
+-- P518 — crear_prospecto con asesor que es medico -> OK (PA009)
+--   por que: tiene ficha GT (el gate pasa) pero su rol es medico: nada en la DB lo impide, solo la RPC
+SELECT set_config('request.jwt.claims', json_build_object('sub', current_setting('probe.co_admgt',true), 'role','authenticated')::text, true);
+SELECT set_config('role','authenticated', true);
+DO $$ BEGIN
+  IF current_setting('probe.co_ready',true)<>'1' THEN PERFORM set_config('probe.p518','N/A (fixture comercial ausente)',false); RETURN; END IF;
+  IF to_regprocedure('public.crear_prospecto(text,text,uuid,text,numeric,numeric,text,uuid)') IS NULL THEN
+    PERFORM set_config('probe.p518','ROJO — RPC AUSENTE (todavia no existe; esto NO es un rechazo)',false); RETURN; END IF;
+  BEGIN
+    PERFORM public.crear_prospecto('QA COM P518 rol malo','farmacia',NULLIF(current_setting('probe.co_medf',true),'')::uuid);
+    PERFORM set_config('probe.p518','ROJO (PERMITIDO — tenia que rechazar con PA009)',false);
+  EXCEPTION WHEN sqlstate 'PA009' THEN PERFORM set_config('probe.p518','OK (PA009)',false);
+            WHEN others THEN PERFORM set_config('probe.p518','FALLO (esperaba PA009, vino '||SQLSTATE||': '||SQLERRM||')',false);
+  END;
+EXCEPTION WHEN OTHERS THEN PERFORM set_config('probe.p518','FALLO ('||SQLSTATE||' '||SQLERRM||')',false); END $$;
+SELECT set_config('role','none', true);
+
+-- P519 — crear_prospecto llamada por el ASESOR -> OK (42501 no_autorizado)
+--   por que: regla fija de Oscar: solo el admin pais carga prospectos
+SELECT set_config('request.jwt.claims', json_build_object('sub', current_setting('probe.co_ase1',true), 'role','authenticated')::text, true);
+SELECT set_config('role','authenticated', true);
+DO $$ BEGIN
+  IF current_setting('probe.co_ready',true)<>'1' THEN PERFORM set_config('probe.p519','N/A (fixture comercial ausente)',false); RETURN; END IF;
+  IF to_regprocedure('public.crear_prospecto(text,text,uuid,text,numeric,numeric,text,uuid)') IS NULL THEN
+    PERFORM set_config('probe.p519','ROJO — RPC AUSENTE (todavia no existe; esto NO es un rechazo)',false); RETURN; END IF;
+  BEGIN
+    PERFORM public.crear_prospecto('QA COM P519 asesor crea','farmacia',NULLIF(current_setting('probe.co_ase1',true),'')::uuid);
+    PERFORM set_config('probe.p519','ROJO (PERMITIDO — tenia que rechazar con 42501)',false);
+  EXCEPTION WHEN insufficient_privilege THEN PERFORM set_config('probe.p519','OK (42501 no_autorizado)',false);
+            WHEN others THEN PERFORM set_config('probe.p519','FALLO (esperaba 42501, vino '||SQLSTATE||': '||SQLERRM||')',false);
+  END;
+EXCEPTION WHEN OTHERS THEN PERFORM set_config('probe.p519','FALLO ('||SQLSTATE||' '||SQLERRM||')',false); END $$;
+SELECT set_config('role','none', true);
+
+-- P520 — actualizar_prospecto sobre prospecto AJENO -> OK (42501 no_autorizado)
+--   por que: ase2 no es dueno ni admin: el scope sale de la fila, no del parametro
+SELECT set_config('request.jwt.claims', json_build_object('sub', current_setting('probe.co_ase2',true), 'role','authenticated')::text, true);
+SELECT set_config('role','authenticated', true);
+DO $$ BEGIN
+  IF current_setting('probe.co_ready',true)<>'1' THEN PERFORM set_config('probe.p520','N/A (fixture comercial ausente)',false); RETURN; END IF;
+  IF to_regprocedure('public.actualizar_prospecto(uuid,text,text,text,numeric,numeric,text,uuid)') IS NULL THEN
+    PERFORM set_config('probe.p520','ROJO — RPC AUSENTE (todavia no existe; esto NO es un rechazo)',false); RETURN; END IF;
+  BEGIN
+    PERFORM public.actualizar_prospecto(NULLIF(current_setting('probe.co_p_ase1',true),'')::uuid,'QA COM robo','farmacia',NULL,NULL,NULL,NULL,NULL);
+    PERFORM set_config('probe.p520','ROJO (PERMITIDO — tenia que rechazar con 42501)',false);
+  EXCEPTION WHEN insufficient_privilege THEN PERFORM set_config('probe.p520','OK (42501 no_autorizado)',false);
+            WHEN others THEN PERFORM set_config('probe.p520','FALLO (esperaba 42501, vino '||SQLSTATE||': '||SQLERRM||')',false);
+  END;
+EXCEPTION WHEN OTHERS THEN PERFORM set_config('probe.p520','FALLO ('||SQLSTATE||' '||SQLERRM||')',false); END $$;
+SELECT set_config('role','none', true);
+
+-- P521 — actualizar_prospecto con id INEXISTENTE -> OK (42501 no_autorizado)
+--   por que: no filtrar existencia: "existe y no podes" y "no existe" tienen que ser indistinguibles
+SELECT set_config('request.jwt.claims', json_build_object('sub', current_setting('probe.co_ase2',true), 'role','authenticated')::text, true);
+SELECT set_config('role','authenticated', true);
+DO $$ BEGIN
+  IF current_setting('probe.co_ready',true)<>'1' THEN PERFORM set_config('probe.p521','N/A (fixture comercial ausente)',false); RETURN; END IF;
+  IF to_regprocedure('public.actualizar_prospecto(uuid,text,text,text,numeric,numeric,text,uuid)') IS NULL THEN
+    PERFORM set_config('probe.p521','ROJO — RPC AUSENTE (todavia no existe; esto NO es un rechazo)',false); RETURN; END IF;
+  BEGIN
+    PERFORM public.actualizar_prospecto('00000000-0000-0000-0000-000000000009'::uuid,'QA COM fantasma','farmacia',NULL,NULL,NULL,NULL,NULL);
+    PERFORM set_config('probe.p521','ROJO (PERMITIDO — tenia que rechazar con 42501)',false);
+  EXCEPTION WHEN insufficient_privilege THEN PERFORM set_config('probe.p521','OK (42501 no_autorizado)',false);
+            WHEN others THEN PERFORM set_config('probe.p521','FALLO (esperaba 42501, vino '||SQLSTATE||': '||SQLERRM||')',false);
+  END;
+EXCEPTION WHEN OTHERS THEN PERFORM set_config('probe.p521','FALLO ('||SQLSTATE||' '||SQLERRM||')',false); END $$;
+SELECT set_config('role','none', true);
+
+-- P522 — cambiar_estado sobre prospecto AJENO -> OK (42501 no_autorizado)
+--   por que: misma atadura derivada de la fila
+SELECT set_config('request.jwt.claims', json_build_object('sub', current_setting('probe.co_ase2',true), 'role','authenticated')::text, true);
+SELECT set_config('role','authenticated', true);
+DO $$ BEGIN
+  IF current_setting('probe.co_ready',true)<>'1' THEN PERFORM set_config('probe.p522','N/A (fixture comercial ausente)',false); RETURN; END IF;
+  IF to_regprocedure('public.cambiar_estado_prospecto(uuid,text,text)') IS NULL THEN
+    PERFORM set_config('probe.p522','ROJO — RPC AUSENTE (todavia no existe; esto NO es un rechazo)',false); RETURN; END IF;
+  BEGIN
+    PERFORM public.cambiar_estado_prospecto(NULLIF(current_setting('probe.co_p_ase1',true),'')::uuid,'contactado');
+    PERFORM set_config('probe.p522','ROJO (PERMITIDO — tenia que rechazar con 42501)',false);
+  EXCEPTION WHEN insufficient_privilege THEN PERFORM set_config('probe.p522','OK (42501 no_autorizado)',false);
+            WHEN others THEN PERFORM set_config('probe.p522','FALLO (esperaba 42501, vino '||SQLSTATE||': '||SQLERRM||')',false);
+  END;
+EXCEPTION WHEN OTHERS THEN PERFORM set_config('probe.p522','FALLO ('||SQLSTATE||' '||SQLERRM||')',false); END $$;
+SELECT set_config('role','none', true);
+
+-- P523 — reasignar por el SUPERVISOR de la cartera -> OK (42501 no_autorizado)
+--   por que: D1 le da estado y contactos, NO reasignacion
+SELECT set_config('request.jwt.claims', json_build_object('sub', current_setting('probe.co_sup',true), 'role','authenticated')::text, true);
+SELECT set_config('role','authenticated', true);
+DO $$ BEGIN
+  IF current_setting('probe.co_ready',true)<>'1' THEN PERFORM set_config('probe.p523','N/A (fixture comercial ausente)',false); RETURN; END IF;
+  IF to_regprocedure('public.reasignar_prospecto(uuid,uuid)') IS NULL THEN
+    PERFORM set_config('probe.p523','ROJO — RPC AUSENTE (todavia no existe; esto NO es un rechazo)',false); RETURN; END IF;
+  BEGIN
+    PERFORM public.reasignar_prospecto(NULLIF(current_setting('probe.co_p_ase1',true),'')::uuid,NULLIF(current_setting('probe.co_ase2',true),'')::uuid);
+    PERFORM set_config('probe.p523','ROJO (PERMITIDO — tenia que rechazar con 42501)',false);
+  EXCEPTION WHEN insufficient_privilege THEN PERFORM set_config('probe.p523','OK (42501 no_autorizado)',false);
+            WHEN others THEN PERFORM set_config('probe.p523','FALLO (esperaba 42501, vino '||SQLSTATE||': '||SQLERRM||')',false);
+  END;
+EXCEPTION WHEN OTHERS THEN PERFORM set_config('probe.p523','FALLO ('||SQLSTATE||' '||SQLERRM||')',false); END $$;
+SELECT set_config('role','none', true);
+
+-- P524 — reasignar por el ASESOR dueno -> OK (42501 no_autorizado)
+--   por que: el dueno edita y mueve estado; no se pasa el prospecto a otro
+SELECT set_config('request.jwt.claims', json_build_object('sub', current_setting('probe.co_ase1',true), 'role','authenticated')::text, true);
+SELECT set_config('role','authenticated', true);
+DO $$ BEGIN
+  IF current_setting('probe.co_ready',true)<>'1' THEN PERFORM set_config('probe.p524','N/A (fixture comercial ausente)',false); RETURN; END IF;
+  IF to_regprocedure('public.reasignar_prospecto(uuid,uuid)') IS NULL THEN
+    PERFORM set_config('probe.p524','ROJO — RPC AUSENTE (todavia no existe; esto NO es un rechazo)',false); RETURN; END IF;
+  BEGIN
+    PERFORM public.reasignar_prospecto(NULLIF(current_setting('probe.co_p_ase1',true),'')::uuid,NULLIF(current_setting('probe.co_ase2',true),'')::uuid);
+    PERFORM set_config('probe.p524','ROJO (PERMITIDO — tenia que rechazar con 42501)',false);
+  EXCEPTION WHEN insufficient_privilege THEN PERFORM set_config('probe.p524','OK (42501 no_autorizado)',false);
+            WHEN others THEN PERFORM set_config('probe.p524','FALLO (esperaba 42501, vino '||SQLSTATE||': '||SQLERRM||')',false);
+  END;
+EXCEPTION WHEN OTHERS THEN PERFORM set_config('probe.p524','FALLO ('||SQLSTATE||' '||SQLERRM||')',false); END $$;
+SELECT set_config('role','none', true);
+
+-- P525 — upsert_contacto con p_id AJENO y prospecto propio -> OK (PA013)
+--   por que: dos claves y el llamante controla el emparejamiento: la RPC lo re-deriva de la DB
+SELECT set_config('request.jwt.claims', json_build_object('sub', current_setting('probe.co_ase1',true), 'role','authenticated')::text, true);
+SELECT set_config('role','authenticated', true);
+DO $$ BEGIN
+  IF current_setting('probe.co_ready',true)<>'1' THEN PERFORM set_config('probe.p525','N/A (fixture comercial ausente)',false); RETURN; END IF;
+  IF to_regprocedure('public.upsert_contacto_prospecto(uuid,text,uuid,text,text,text,text,boolean,text,boolean)') IS NULL THEN
+    PERFORM set_config('probe.p525','ROJO — RPC AUSENTE (todavia no existe; esto NO es un rechazo)',false); RETURN; END IF;
+  BEGIN
+    PERFORM public.upsert_contacto_prospecto(NULLIF(current_setting('probe.co_p_ase1',true),'')::uuid,'QA COM P525',NULLIF(current_setting('probe.co_c_ase2',true),'')::uuid);
+    PERFORM set_config('probe.p525','ROJO (PERMITIDO — tenia que rechazar con PA013)',false);
+  EXCEPTION WHEN sqlstate 'PA013' THEN PERFORM set_config('probe.p525','OK (PA013)',false);
+            WHEN others THEN PERFORM set_config('probe.p525','FALLO (esperaba PA013, vino '||SQLSTATE||': '||SQLERRM||')',false);
+  END;
+EXCEPTION WHEN OTHERS THEN PERFORM set_config('probe.p525','FALLO ('||SQLSTATE||' '||SQLERRM||')',false); END $$;
+SELECT set_config('role','none', true);
+
+-- P526 — guardar_asesor_perfil INSERT en pais AJENO -> OK (42501 no_autorizado)
+--   por que: sujeto SIN ficha (si tuviera, seria UPDATE y daria PA014): INSERT puro. Gate ANTES que el rol
+SELECT set_config('request.jwt.claims', json_build_object('sub', current_setting('probe.co_admgt',true), 'role','authenticated')::text, true);
+SELECT set_config('role','authenticated', true);
+DO $$ BEGIN
+  IF current_setting('probe.co_ready',true)<>'1' THEN PERFORM set_config('probe.p526','N/A (fixture comercial ausente)',false); RETURN; END IF;
+  IF to_regprocedure('public.guardar_asesor_perfil(uuid,text,uuid,text,text,text,text,date,text,boolean)') IS NULL THEN
+    PERFORM set_config('probe.p526','ROJO — RPC AUSENTE (todavia no existe; esto NO es un rechazo)',false); RETURN; END IF;
+  BEGIN
+    PERFORM public.guardar_asesor_perfil(NULLIF(current_setting('probe.co_admhn',true),'')::uuid,'QA-X-526','704aecfa-65c2-47f9-9a98-7a9bdfeba583'::uuid);
+    PERFORM set_config('probe.p526','ROJO (PERMITIDO — tenia que rechazar con 42501)',false);
+  EXCEPTION WHEN insufficient_privilege THEN PERFORM set_config('probe.p526','OK (42501 no_autorizado)',false);
+            WHEN others THEN PERFORM set_config('probe.p526','FALLO (esperaba 42501, vino '||SQLSTATE||': '||SQLERRM||')',false);
+  END;
+EXCEPTION WHEN OTHERS THEN PERFORM set_config('probe.p526','FALLO ('||SQLSTATE||' '||SQLERRM||')',false); END $$;
+SELECT set_config('role','none', true);
+
+-- P527 — mover ficha GT->HN con autoridad solo sobre GT -> OK (PA014)
+--   por que: direccion 1: manda sobre el pais viejo y no sobre el nuevo => EXPORTA una ficha
+SELECT set_config('request.jwt.claims', json_build_object('sub', current_setting('probe.co_admgt',true), 'role','authenticated')::text, true);
+SELECT set_config('role','authenticated', true);
+DO $$ BEGIN
+  IF current_setting('probe.co_ready',true)<>'1' THEN PERFORM set_config('probe.p527','N/A (fixture comercial ausente)',false); RETURN; END IF;
+  IF to_regprocedure('public.guardar_asesor_perfil(uuid,text,uuid,text,text,text,text,date,text,boolean)') IS NULL THEN
+    PERFORM set_config('probe.p527','ROJO — RPC AUSENTE (todavia no existe; esto NO es un rechazo)',false); RETURN; END IF;
+  BEGIN
+    PERFORM public.guardar_asesor_perfil(NULLIF(current_setting('probe.co_ase2',true),'')::uuid,'QA-ASE-02','704aecfa-65c2-47f9-9a98-7a9bdfeba583'::uuid);
+    PERFORM set_config('probe.p527','ROJO (PERMITIDO — tenia que rechazar con PA014)',false);
+  EXCEPTION WHEN sqlstate 'PA014' THEN PERFORM set_config('probe.p527','OK (PA014)',false);
+            WHEN others THEN PERFORM set_config('probe.p527','FALLO (esperaba PA014, vino '||SQLSTATE||': '||SQLERRM||')',false);
+  END;
+EXCEPTION WHEN OTHERS THEN PERFORM set_config('probe.p527','FALLO ('||SQLSTATE||' '||SQLERRM||')',false); END $$;
+SELECT set_config('role','none', true);
+
+-- P528 — mover ficha GT->HN con autoridad solo sobre HN -> OK (PA014)
+--   por que: direccion 2: manda sobre el pais nuevo y no sobre el viejo => SE ROBA una ficha
+SELECT set_config('request.jwt.claims', json_build_object('sub', current_setting('probe.co_admhn',true), 'role','authenticated')::text, true);
+SELECT set_config('role','authenticated', true);
+DO $$ BEGIN
+  IF current_setting('probe.co_ready',true)<>'1' THEN PERFORM set_config('probe.p528','N/A (fixture comercial ausente)',false); RETURN; END IF;
+  IF to_regprocedure('public.guardar_asesor_perfil(uuid,text,uuid,text,text,text,text,date,text,boolean)') IS NULL THEN
+    PERFORM set_config('probe.p528','ROJO — RPC AUSENTE (todavia no existe; esto NO es un rechazo)',false); RETURN; END IF;
+  BEGIN
+    PERFORM public.guardar_asesor_perfil(NULLIF(current_setting('probe.co_ase2',true),'')::uuid,'QA-ASE-02','704aecfa-65c2-47f9-9a98-7a9bdfeba583'::uuid);
+    PERFORM set_config('probe.p528','ROJO (PERMITIDO — tenia que rechazar con PA014)',false);
+  EXCEPTION WHEN sqlstate 'PA014' THEN PERFORM set_config('probe.p528','OK (PA014)',false);
+            WHEN others THEN PERFORM set_config('probe.p528','FALLO (esperaba PA014, vino '||SQLSTATE||': '||SQLERRM||')',false);
+  END;
+EXCEPTION WHEN OTHERS THEN PERFORM set_config('probe.p528','FALLO ('||SQLSTATE||' '||SQLERRM||')',false); END $$;
+SELECT set_config('role','none', true);
+
+-- P529 — asignar_supervisor con supervisor de OTRO pais -> OK (PA003)
+--   por que: la RPC NO revalida el pais de la jerarquia: lo delega al guard de la 264
+SELECT set_config('request.jwt.claims', json_build_object('sub', current_setting('probe.co_admgt',true), 'role','authenticated')::text, true);
+SELECT set_config('role','authenticated', true);
+DO $$ BEGIN
+  IF current_setting('probe.co_ready',true)<>'1' THEN PERFORM set_config('probe.p529','N/A (fixture comercial ausente)',false); RETURN; END IF;
+  IF to_regprocedure('public.asignar_supervisor(uuid,uuid)') IS NULL THEN
+    PERFORM set_config('probe.p529','ROJO — RPC AUSENTE (todavia no existe; esto NO es un rechazo)',false); RETURN; END IF;
+  BEGIN
+    PERFORM public.asignar_supervisor(NULLIF(current_setting('probe.co_ase2',true),'')::uuid,NULLIF(current_setting('probe.co_asehn',true),'')::uuid);
+    PERFORM set_config('probe.p529','ROJO (PERMITIDO — tenia que rechazar con PA003)',false);
+  EXCEPTION WHEN sqlstate 'PA003' THEN PERFORM set_config('probe.p529','OK (PA003)',false);
+            WHEN others THEN PERFORM set_config('probe.p529','FALLO (esperaba PA003, vino '||SQLSTATE||': '||SQLERRM||')',false);
+  END;
+EXCEPTION WHEN OTHERS THEN PERFORM set_config('probe.p529','FALLO ('||SQLSTATE||' '||SQLERRM||')',false); END $$;
+SELECT set_config('role','none', true);
+
+-- P530 — D1: SUPERVISOR cambia estado de SU cartera -> OK (PERMITIDO como manda D1)
+--   por que: D1 suma al supervisor via el chokepoint asesores_a_cargo(), no con una regla escrita a mano
+SELECT set_config('request.jwt.claims', json_build_object('sub', current_setting('probe.co_sup',true), 'role','authenticated')::text, true);
+SELECT set_config('role','authenticated', true);
+DO $$ BEGIN
+  IF current_setting('probe.co_ready',true)<>'1' THEN PERFORM set_config('probe.p530','N/A (fixture comercial ausente)',false); RETURN; END IF;
+  IF to_regprocedure('public.cambiar_estado_prospecto(uuid,text,text)') IS NULL THEN
+    PERFORM set_config('probe.p530','ROJO — RPC AUSENTE (todavia no existe; esto NO es un rechazo)',false); RETURN; END IF;
+  BEGIN
+    PERFORM public.cambiar_estado_prospecto(NULLIF(current_setting('probe.co_p_ase1',true),'')::uuid,'contactado');
+    PERFORM set_config('probe.p530','OK (PERMITIDO como manda D1)',false);
+  EXCEPTION WHEN others THEN PERFORM set_config('probe.p530','FALLO (esperaba PERMITIDO, vino '||SQLSTATE||': '||SQLERRM||')',false);
+  END;
+EXCEPTION WHEN OTHERS THEN PERFORM set_config('probe.p530','FALLO ('||SQLSTATE||' '||SQLERRM||')',false); END $$;
+SELECT set_config('role','none', true);
+
+-- P531 — D1: SUPERVISOR edita DATOS del prospecto -> OK (42501 no_autorizado)
+--   por que: D1 lo excluye de #2 a proposito: esta probe es la que demuestra que no se solapo
+SELECT set_config('request.jwt.claims', json_build_object('sub', current_setting('probe.co_sup',true), 'role','authenticated')::text, true);
+SELECT set_config('role','authenticated', true);
+DO $$ BEGIN
+  IF current_setting('probe.co_ready',true)<>'1' THEN PERFORM set_config('probe.p531','N/A (fixture comercial ausente)',false); RETURN; END IF;
+  IF to_regprocedure('public.actualizar_prospecto(uuid,text,text,text,numeric,numeric,text,uuid)') IS NULL THEN
+    PERFORM set_config('probe.p531','ROJO — RPC AUSENTE (todavia no existe; esto NO es un rechazo)',false); RETURN; END IF;
+  BEGIN
+    PERFORM public.actualizar_prospecto(NULLIF(current_setting('probe.co_p_ase1',true),'')::uuid,'QA COM sup edita','farmacia',NULL,NULL,NULL,NULL,NULL);
+    PERFORM set_config('probe.p531','ROJO (PERMITIDO — tenia que rechazar con 42501)',false);
+  EXCEPTION WHEN insufficient_privilege THEN PERFORM set_config('probe.p531','OK (42501 no_autorizado)',false);
+            WHEN others THEN PERFORM set_config('probe.p531','FALLO (esperaba 42501, vino '||SQLSTATE||': '||SQLERRM||')',false);
+  END;
+EXCEPTION WHEN OTHERS THEN PERFORM set_config('probe.p531','FALLO ('||SQLSTATE||' '||SQLERRM||')',false); END $$;
+SELECT set_config('role','none', true);
+
+-- P532 — D1: SUPERVISOR da de alta un contacto de SU cartera -> OK (PERMITIDO como manda D1)
+--   por que: D1 suma al supervisor a la RPC de contactos
+SELECT set_config('request.jwt.claims', json_build_object('sub', current_setting('probe.co_sup',true), 'role','authenticated')::text, true);
+SELECT set_config('role','authenticated', true);
+DO $$ BEGIN
+  IF current_setting('probe.co_ready',true)<>'1' THEN PERFORM set_config('probe.p532','N/A (fixture comercial ausente)',false); RETURN; END IF;
+  IF to_regprocedure('public.upsert_contacto_prospecto(uuid,text,uuid,text,text,text,text,boolean,text,boolean)') IS NULL THEN
+    PERFORM set_config('probe.p532','ROJO — RPC AUSENTE (todavia no existe; esto NO es un rechazo)',false); RETURN; END IF;
+  BEGIN
+    PERFORM public.upsert_contacto_prospecto(NULLIF(current_setting('probe.co_p_ase1',true),'')::uuid,'QA COM P532');
+    PERFORM set_config('probe.p532','OK (PERMITIDO como manda D1)',false);
+  EXCEPTION WHEN others THEN PERFORM set_config('probe.p532','FALLO (esperaba PERMITIDO, vino '||SQLSTATE||': '||SQLERRM||')',false);
+  END;
+EXCEPTION WHEN OTHERS THEN PERFORM set_config('probe.p532','FALLO ('||SQLSTATE||' '||SQLERRM||')',false); END $$;
+SELECT set_config('role','none', true);
+
+-- P533 — D3: SUPERVISOR reabre un estado TERMINAL -> OK (PA012)
+--   por que: D1 y D3 son DOS condiciones distintas en la MISMA rpc: entra al cambio de estado, no a la reapertura
+SELECT set_config('request.jwt.claims', json_build_object('sub', current_setting('probe.co_sup',true), 'role','authenticated')::text, true);
+SELECT set_config('role','authenticated', true);
+DO $$ BEGIN
+  IF current_setting('probe.co_ready',true)<>'1' THEN PERFORM set_config('probe.p533','N/A (fixture comercial ausente)',false); RETURN; END IF;
+  IF to_regprocedure('public.cambiar_estado_prospecto(uuid,text,text)') IS NULL THEN
+    PERFORM set_config('probe.p533','ROJO — RPC AUSENTE (todavia no existe; esto NO es un rechazo)',false); RETURN; END IF;
+  BEGIN
+    PERFORM public.cambiar_estado_prospecto(NULLIF(current_setting('probe.co_p_term',true),'')::uuid,'contactado');
+    PERFORM set_config('probe.p533','ROJO (PERMITIDO — tenia que rechazar con PA012)',false);
+  EXCEPTION WHEN sqlstate 'PA012' THEN PERFORM set_config('probe.p533','OK (PA012)',false);
+            WHEN others THEN PERFORM set_config('probe.p533','FALLO (esperaba PA012, vino '||SQLSTATE||': '||SQLERRM||')',false);
+  END;
+EXCEPTION WHEN OTHERS THEN PERFORM set_config('probe.p533','FALLO ('||SQLSTATE||' '||SQLERRM||')',false); END $$;
+SELECT set_config('role','none', true);
+
+-- P534 — SUPERVISOR sobre un asesor que NO es suyo -> OK (42501 no_autorizado)
+--   por que: asesores_a_cargo() no incluye a ase2 (no cuelga del sup): el chokepoint es el que corta
+SELECT set_config('request.jwt.claims', json_build_object('sub', current_setting('probe.co_sup',true), 'role','authenticated')::text, true);
+SELECT set_config('role','authenticated', true);
+DO $$ BEGIN
+  IF current_setting('probe.co_ready',true)<>'1' THEN PERFORM set_config('probe.p534','N/A (fixture comercial ausente)',false); RETURN; END IF;
+  IF to_regprocedure('public.cambiar_estado_prospecto(uuid,text,text)') IS NULL THEN
+    PERFORM set_config('probe.p534','ROJO — RPC AUSENTE (todavia no existe; esto NO es un rechazo)',false); RETURN; END IF;
+  BEGIN
+    PERFORM public.cambiar_estado_prospecto(NULLIF(current_setting('probe.co_p_ase2',true),'')::uuid,'contactado');
+    PERFORM set_config('probe.p534','ROJO (PERMITIDO — tenia que rechazar con 42501)',false);
+  EXCEPTION WHEN insufficient_privilege THEN PERFORM set_config('probe.p534','OK (42501 no_autorizado)',false);
+            WHEN others THEN PERFORM set_config('probe.p534','FALLO (esperaba 42501, vino '||SQLSTATE||': '||SQLERRM||')',false);
+  END;
+EXCEPTION WHEN OTHERS THEN PERFORM set_config('probe.p534','FALLO ('||SQLSTATE||' '||SQLERRM||')',false); END $$;
+SELECT set_config('role','none', true);
+
 -- ===== Veredictos como result set =====
 SELECT 'P1_anon_insert_citas'              AS probe, current_setting('probe.p1', true)  AS verdict, 'BLOQUEADO' AS esperado_post_fix
 UNION ALL SELECT 'P2_medico_cancela_ajena_rpc',         current_setting('probe.p2', true),  'BLOQUEADO'
@@ -11917,6 +12306,25 @@ UNION ALL SELECT 'FX16_triggers_visitas_ON_1',     current_setting('probe.fx_trg
 UNION ALL SELECT 'FX17_triggers_visitas_OFF_2',    current_setting('probe.fx_trg2_off', true),   'OK (2 triggers OFF)'
 UNION ALL SELECT 'FX18_triggers_visitas_ON_2',     current_setting('probe.fx_trg2_on', true),    'OK (el ENABLE corrio)'
 UNION ALL SELECT 'FX19_b2_bloques_caidos',        current_setting('probe.fx_b2fallos', true),   'OK (ningun bloque envuelto cayo)'
+UNION ALL SELECT 'CO_FX_fixture_comercial',          current_setting('probe.co_fx', true),         'OK'
+UNION ALL SELECT 'P517_com_crear_asesor_de_otro_pais',   current_setting('probe.p517', true),         'OK (42501 no_autorizado)'
+UNION ALL SELECT 'P518_com_crear_asesor_es_medico',      current_setting('probe.p518', true),         'OK (PA009)'
+UNION ALL SELECT 'P519_com_crear_por_el_asesor',         current_setting('probe.p519', true),         'OK (42501 no_autorizado)'
+UNION ALL SELECT 'P520_com_actualizar_prospecto_ajeno',  current_setting('probe.p520', true),         'OK (42501 no_autorizado)'
+UNION ALL SELECT 'P521_com_actualizar_id_inexistente',   current_setting('probe.p521', true),         'OK (42501 no_autorizado)'
+UNION ALL SELECT 'P522_com_estado_prospecto_ajeno',      current_setting('probe.p522', true),         'OK (42501 no_autorizado)'
+UNION ALL SELECT 'P523_com_reasignar_por_supervisor',    current_setting('probe.p523', true),         'OK (42501 no_autorizado)'
+UNION ALL SELECT 'P524_com_reasignar_por_el_dueno',      current_setting('probe.p524', true),         'OK (42501 no_autorizado)'
+UNION ALL SELECT 'P525_com_contacto_id_ajeno',           current_setting('probe.p525', true),         'OK (PA013)'
+UNION ALL SELECT 'P526_com_ficha_insert_pais_ajeno',     current_setting('probe.p526', true),         'OK (42501 no_autorizado)'
+UNION ALL SELECT 'P527_com_ficha_mueve_autoridad_solo_origen',  current_setting('probe.p527', true),         'OK (PA014)'
+UNION ALL SELECT 'P528_com_ficha_mueve_autoridad_solo_destino',  current_setting('probe.p528', true),         'OK (PA014)'
+UNION ALL SELECT 'P529_com_supervisor_de_otro_pais',     current_setting('probe.p529', true),         'OK (PA003)'
+UNION ALL SELECT 'P530_com_D1_supervisor_cambia_estado',  current_setting('probe.p530', true),         'OK (PERMITIDO como manda D1)'
+UNION ALL SELECT 'P531_com_D1_supervisor_NO_edita_datos',  current_setting('probe.p531', true),         'OK (42501 no_autorizado)'
+UNION ALL SELECT 'P532_com_D1_supervisor_alta_contacto',  current_setting('probe.p532', true),         'OK (PERMITIDO como manda D1)'
+UNION ALL SELECT 'P533_com_D3_supervisor_NO_reabre_terminal',  current_setting('probe.p533', true),         'OK (PA012)'
+UNION ALL SELECT 'P534_com_supervisor_fuera_de_su_cartera',  current_setting('probe.p534', true),         'OK (42501 no_autorizado)'
 UNION ALL SELECT 'P516_SENAL_estructura_harness',  current_setting('probe.p516', true),          'OK-SENAL (no mide; el gate es b2_guard.py)'
 -- Las filas FX* son SALUD DE FIXTURE, no probes de seguridad: dicen si la precondicion que una
 -- migracion posterior empezo a exigir se pudo sembrar. Si una sale ROJO, los probes que dependen de
@@ -12087,7 +12495,8 @@ UNION ALL SELECT 'P000_CENTINELA_veredictos_no_nulos',
        'probe.p514', 'probe.p515',
        'probe.fx_ajeno', 'probe.fx_farmroles', 'probe.fx_afb_member',
        'probe.fx_trg1_off', 'probe.fx_trg1_on', 'probe.fx_trg2_off', 'probe.fx_trg2_on',
-       'probe.p516', 'probe.fx_b2fallos'
+       'probe.p516', 'probe.fx_b2fallos',
+       'probe.p517', 'probe.p518', 'probe.p519', 'probe.p520', 'probe.p521', 'probe.p522', 'probe.p523', 'probe.p524', 'probe.p525', 'probe.p526', 'probe.p527', 'probe.p528', 'probe.p529', 'probe.p530', 'probe.p531', 'probe.p532', 'probe.p533', 'probe.p534', 'probe.co_fx'
              ]) AS n) s),
   'OK (todos los veredictos publicados)';
 
