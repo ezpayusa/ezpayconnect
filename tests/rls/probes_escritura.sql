@@ -9422,16 +9422,16 @@ DECLARE
     'public.aprobar_personalizacion',             -- lote N
     'public.aprobar_solicitud_campana',           -- lote N
     'public.asignar_tier',                        -- lote N (rama positiva de scope; gate real ya COALESCE-ado)
-    'public.cerrar_liquidacion',                  -- lote 2 (DINERO: crea la liquidacion)
+    -- SALDADA por la mig 267 (lote 2): 'public.cerrar_liquidacion'
     'public.crear_capacidad_pais',                -- lote N
     'public.crear_tier_pais',                     -- lote N
-    'public.liquidar_comision',                   -- lote 2 (DINERO: agregado de comision)
+    -- SALDADA por la mig 267 (lote 2): 'public.liquidar_comision'
     'public.listar_canjes_pendientes',            -- lote N (gate sin pais -> es_admin_pais)
     'public.listar_capacidades_pais',             -- lote N
     'public.listar_propuestas_especialidad',      -- lote N (gate sin pais -> es_admin_pais)
     'public.listar_solicitudes_personalizacion',  -- lote N (gate sin pais -> es_admin_pais)
     'public.listar_tiers_pais',                   -- lote N
-    'public.marcar_liquidacion_cobrada',          -- lote 2 (DINERO: marca cobrada)
+    -- SALDADA por la mig 267 (lote 2): 'public.marcar_liquidacion_cobrada'
     -- SALDADA por la mig 266 (lote 1, 2026-09-03): gate -> private.puede_admin_pais + REVOKE de
     -- anon. PRIMERA de las 27 que se vacia. El centinela debe quedar VERDE con 26, no con 27.
     -- 'public.metricas_campana_pais',
@@ -9445,7 +9445,7 @@ DECLARE
     'public.resolver_canje',                      -- lote N
     'public.resolver_propuesta_especialidad',     -- lote N
     'public.solicitar_capacidad_pais',            -- lote N
-    'public.solicitar_contrato_comision',         -- lote 2 (DINERO: inserta el contrato)
+    -- SALDADA por la mig 267 (lote 2): 'public.solicitar_contrato_comision'
     'public.solicitar_tier_pais'                  -- lote N
   ];
   v_rojas    text[];
@@ -9481,38 +9481,39 @@ END $$;
 -- el detector la marque como nueva. Si P481 no diera exactamente 1, el centinela P480 estaria
 -- verde por no estar midiendo nada (censo vacio, regex que no matchea, walker que siempre dice
 -- false) y no nos enterariamos nunca.
--- LA ENTRADA APUNTADA CAMBIA CADA LOTE, POR DISENO. Empezo siendo metricas_campana_pais; el lote 1
--- la migro de verdad, con lo cual dejo de estar en rojo y este probe se habria puesto ROJO por su
--- propia premisa (esperaba verla aparecer y ya no aparece). Ahora apunta a cerrar_liquidacion, del
--- lote 2. REGLA: cada lote que salda entradas DEBE re-apuntar este probe a una que siga en rojo.
+-- LA ENTRADA APUNTADA CAMBIA CADA LOTE, POR DISENO, Y YA SE CUMPLIO DOS VECES:
+--   lote 1 -> apuntaba a metricas_campana_pais, que el lote 1 migro de verdad;
+--   lote 2 -> apuntaba a cerrar_liquidacion, que el lote 2 acaba de saldar.
+-- En ambos casos el probe se habria puesto ROJO por su propia premisa (espera ver aparecer una
+-- entrada que ya no esta en rojo). Ahora apunta a aprobar_solicitud_campana, del lote N.
+-- REGLA: cada lote que salda entradas DEBE re-apuntar este probe a una que siga en rojo.
 -- Cuando la allowlist quede vacia hay que invertirlo: sembrar una funcion fail-open de fixture
 -- dentro del ROLLBACK y esperar que el centinela la cace.
 -- ============================================================================================
 DO $$
 DECLARE
   v_allow_sin1 text[] := ARRAY[
-    'public.activar_capacidad_suelta','public.aprobar_personalizacion','public.aprobar_solicitud_campana',
+    'public.activar_capacidad_suelta','public.aprobar_personalizacion',
+    -- 'public.aprobar_solicitud_campana'  <-- ENTRADA QUITADA A PROPOSITO (lote N, sigue en rojo)
     'public.asignar_tier','public.crear_capacidad_pais','public.crear_tier_pais',
-    -- 'public.cerrar_liquidacion'  <-- ENTRADA QUITADA A PROPOSITO (lote 2, sigue en rojo)
-    'public.liquidar_comision','public.listar_canjes_pendientes','public.listar_capacidades_pais',
+    'public.listar_canjes_pendientes','public.listar_capacidades_pais',
     'public.listar_propuestas_especialidad','public.listar_solicitudes_personalizacion','public.listar_tiers_pais',
-    'public.marcar_liquidacion_cobrada',
     'public.notificar_campana_resultado','public.notificar_empresa_estado','public.notificar_pago_resultado',
     'public.notificar_resultado_examen','public.obtener_resumen_pais','public.rechazar_personalizacion',
     'public.registrar_evidencia_entrega','public.resolver_canje','public.resolver_propuesta_especialidad',
-    'public.solicitar_capacidad_pais','public.solicitar_contrato_comision','public.solicitar_tier_pais'
+    'public.solicitar_capacidad_pais','public.solicitar_tier_pais'
   ];
   v_nuevas text[];
 BEGIN
   SELECT COALESCE(array_agg(func ORDER BY func), ARRAY[]::text[]) INTO v_nuevas
     FROM pg_temp.censo_fail_open() WHERE func <> ALL (v_allow_sin1);
 
-  IF v_nuevas = ARRAY['public.cerrar_liquidacion'] THEN
+  IF v_nuevas = ARRAY['public.aprobar_solicitud_campana'] THEN
     PERFORM set_config('probe.p481',
-      'OK (sacando 1 entrada de la allowlist el centinela la detecta: [public.cerrar_liquidacion] — P480 mide algo real)', false);
+      'OK (sacando 1 entrada de la allowlist el centinela la detecta: [public.aprobar_solicitud_campana] — P480 mide algo real)', false);
   ELSE
     PERFORM set_config('probe.p481',
-      'ROJO — EL CENTINELA NO MIDE (esperaba exactamente [public.cerrar_liquidacion], obtuvo ['||
+      'ROJO — EL CENTINELA NO MIDE (esperaba exactamente [public.aprobar_solicitud_campana], obtuvo ['||
       array_to_string(v_nuevas,', ')||'])', false);
   END IF;
 END $$;
@@ -9854,6 +9855,317 @@ BEGIN
     PERFORM set_config('role','none', true);
     PERFORM set_config('probe.p489','ROJO (super_admin RECHAZADO: '||SQLSTATE||' '||left(SQLERRM,60)||')', false);
   END;
+END $$;
+SELECT set_config('role','none',true);
+
+-- ############################################################################################
+-- PAQUETE PA-FAILOPEN - LOTE 2 - P490-P496 + FX07 (las 4 funciones de DINERO)
+-- ############################################################################################
+-- ============================================================================================
+-- FIXTURES DEL LOTE 2
+-- ============================================================================================
+SELECT set_config('role','none',true);
+DO $$
+DECLARE
+  v_gt   uuid := 'cbbbbe6d-59fe-4cf2-91ee-3e31ba1d5909';
+  v_sv   uuid := 'f2c75b8e-ef54-4a05-b2ff-7363e448f680';
+  v_sa   uuid;
+  v_emp_gt uuid; v_emp_sv uuid; v_liq_gt uuid; v_liq_sv uuid;
+BEGIN
+  SELECT id INTO v_sa FROM public.perfiles WHERE email='admin.qa@ezpayconnect.com';
+  SELECT id INTO v_emp_gt FROM public.empresas_proveedoras
+    WHERE tipo='farmacia' AND pais_id=v_gt ORDER BY id LIMIT 1;
+
+  -- (b) empresa farmacia en El Salvador (no existe ninguna no-GT en prod)
+  INSERT INTO public.empresas_proveedoras (nombre_empresa, email_contacto, tipo, pais_id, estado)
+    VALUES ('Probe SV Farmacia', 'svfarm@probe.test', 'farmacia', v_sv, 'activa')
+    RETURNING id INTO v_emp_sv;
+
+  -- (a) una liquidacion PENDIENTE en cada pais. anio=2020 (el CHECK exige anio>=2020) y un mes que
+  --     no choca con el indice unico (empresa, anio, mes) ni con la liquidacion QA de jul-2026 cobrada.
+  INSERT INTO public.liquidaciones_comision
+    (empresa_id, pais_id, anio, mes, total_dispensado, comision_total, n_dispensaciones,
+     monto_sin_contrato, estado, cerrada_por)
+    VALUES (v_emp_gt, v_gt, 2020, 1, 1000, 50, 3, 0, 'pendiente', v_sa)
+    RETURNING id INTO v_liq_gt;
+  INSERT INTO public.liquidaciones_comision
+    (empresa_id, pais_id, anio, mes, total_dispensado, comision_total, n_dispensaciones,
+     monto_sin_contrato, estado, cerrada_por)
+    VALUES (v_emp_sv, v_sv, 2020, 1, 2000, 80, 4, 0, 'pendiente', v_sa)
+    RETURNING id INTO v_liq_sv;
+
+  PERFORM set_config('probe.l2_emp_gt', v_emp_gt::text, false);
+  PERFORM set_config('probe.l2_emp_sv', v_emp_sv::text, false);
+  PERFORM set_config('probe.l2_liq_gt', v_liq_gt::text, false);
+  PERFORM set_config('probe.l2_liq_sv', v_liq_sv::text, false);
+  PERFORM set_config('probe.fx_l2',
+    'OK (empresa SV + 2 liquidaciones pendientes sembradas)', false);
+EXCEPTION WHEN OTHERS THEN
+  PERFORM set_config('probe.fx_l2','ROJO (no se pudo sembrar: '||SQLSTATE||' '||SQLERRM||')', false);
+END $$;
+
+-- ============================================================================================
+-- P490 — EL PROBE QUE IMPORTA: caller SIN PERFIL no puede cobrar una liquidacion
+-- --------------------------------------------------------------------------------------------
+-- Reproduce el escenario exacto del censo. ANTES de la mig 267 este caller llevaba la liquidacion de
+-- 'pendiente' a 'cobrada' SIN EXCEPCION: mutacion de dinero por parte de un empleado de farmacia.
+--
+-- SE MIDE EL ESTADO DE LA FILA, no solo la excepcion. Una excepcion sin verificar el estado deja
+-- pasar el caso en que la funcion muta y DESPUES falla por otra cosa; y un estado sin verificar la
+-- excepcion no distingue "bloqueado" de "no hizo nada por otro motivo". Hacen falta los dos.
+-- ============================================================================================
+SELECT set_config('role','none',true);
+DO $$
+DECLARE
+  v_sin uuid; v_liq uuid; v_estado_antes text; v_estado_despues text;
+  v_msg text; v_state text; v_excepcion boolean := false;
+BEGIN
+  SELECT id INTO v_sin FROM auth.users WHERE email='farmacia.qa@ezpayconnect.com';
+  v_liq := NULLIF(current_setting('probe.l2_liq_gt', true),'')::uuid;
+  IF v_sin IS NULL OR v_liq IS NULL THEN
+    PERFORM set_config('probe.p490','ROJO (fixture ausente)', false); RETURN; END IF;
+
+  SELECT estado INTO v_estado_antes FROM public.liquidaciones_comision WHERE id = v_liq;
+
+  BEGIN
+    PERFORM set_config('request.jwt.claims',
+      json_build_object('sub', v_sin::text, 'role','authenticated')::text, true);
+    PERFORM set_config('role','authenticated', true);
+    PERFORM public.marcar_liquidacion_cobrada(v_liq, 'transferencia', 'PROBE-490');
+    PERFORM set_config('role','none', true);
+  EXCEPTION WHEN OTHERS THEN
+    PERFORM set_config('role','none', true);
+    v_excepcion := true; v_state := SQLSTATE; v_msg := SQLERRM;
+  END;
+
+  SELECT estado INTO v_estado_despues FROM public.liquidaciones_comision WHERE id = v_liq;
+
+  IF NOT v_excepcion THEN
+    PERFORM set_config('probe.p490',
+      'ROJO — MUTACION DE DINERO SIN AUTORIZACION (sin excepcion; estado '||v_estado_antes||' -> '||v_estado_despues||')', false);
+  ELSIF v_state = 'PC019' AND v_estado_despues = 'pendiente' AND v_estado_antes = 'pendiente' THEN
+    PERFORM set_config('probe.p490',
+      'BLOQUEADO (PC019 no autorizado, y el estado NO cambio: sigue pendiente)', false);
+  ELSIF v_estado_despues <> v_estado_antes THEN
+    PERFORM set_config('probe.p490',
+      'ROJO — MUTO IGUAL pese a la excepcion ('||v_state||'): estado '||v_estado_antes||' -> '||v_estado_despues, false);
+  ELSE
+    PERFORM set_config('probe.p490',
+      'ROJO (bloqueo por el codigo equivocado: esperaba PC019, obtuvo '||v_state||' '||left(v_msg,60)||')', false);
+  END IF;
+END $$;
+SELECT set_config('role','none',true);
+
+-- ============================================================================================
+-- P491-P493 — el mismo caller SIN PERFIL contra las otras 3
+-- --------------------------------------------------------------------------------------------
+-- P493 (solicitar_contrato_comision) ademas CUENTA las filas de contratos_comision antes y despues:
+-- es un INSERT, y una excepcion posterior al INSERT dentro de la misma llamada dejaria la fila.
+-- ============================================================================================
+DO $$
+DECLARE
+  v_sin uuid; v_emp uuid; v_n bigint;
+  v_491 text; v_492 text; v_493 text;
+  v_ct_antes bigint; v_ct_despues bigint; v_state text;
+BEGIN
+  SELECT id INTO v_sin FROM auth.users WHERE email='farmacia.qa@ezpayconnect.com';
+  v_emp := NULLIF(current_setting('probe.l2_emp_gt', true),'')::uuid;
+  IF v_sin IS NULL OR v_emp IS NULL THEN
+    PERFORM set_config('probe.p491','ROJO (fixture ausente)', false);
+    PERFORM set_config('probe.p492','ROJO (fixture ausente)', false);
+    PERFORM set_config('probe.p493','ROJO (fixture ausente)', false); RETURN; END IF;
+
+  PERFORM set_config('request.jwt.claims',
+    json_build_object('sub', v_sin::text, 'role','authenticated')::text, true);
+
+  -- P491: cerrar_liquidacion (INSERT de liquidacion)
+  BEGIN
+    PERFORM set_config('role','authenticated', true);
+    PERFORM public.cerrar_liquidacion(v_emp, 2020, 2);
+    PERFORM set_config('role','none', true);
+    v_491 := 'ROJO — PERMITIDO (creo una liquidacion sin autorizacion)';
+  EXCEPTION WHEN OTHERS THEN
+    PERFORM set_config('role','none', true);
+    -- Cualquier SQLSTATE que no sea PC019 significa que EL GATE NO BLOQUEO: la llamada lo paso y
+    -- murio despues, en logica de negocio (p.ej. PC021 'nada que liquidar'). Para una funcion de
+    -- dinero eso NO es un bloqueo, es un permiso que se salvo por no haber datos ese mes.
+    v_491 := CASE WHEN SQLSTATE='PC019' THEN 'BLOQUEADO (PC019)'
+                  ELSE 'ROJO — EL GATE NO BLOQUEO (paso el gate y murio despues en '||SQLSTATE||': '||left(SQLERRM,45)||')' END;
+  END;
+
+  -- P492: liquidar_comision (lectura del agregado de dinero)
+  BEGIN
+    PERFORM set_config('role','authenticated', true);
+    SELECT count(*) INTO v_n FROM public.liquidar_comision(v_emp, '2020-01-01'::date, '2020-12-31'::date);
+    PERFORM set_config('role','none', true);
+    v_492 := 'ROJO — PERMITIDO (leyo el agregado de comisiones: '||v_n||' filas)';
+  EXCEPTION WHEN OTHERS THEN
+    PERFORM set_config('role','none', true);
+    v_492 := CASE WHEN SQLSTATE='PC019' THEN 'BLOQUEADO (PC019, 0 filas)'
+                  ELSE 'ROJO (codigo equivocado: '||SQLSTATE||' '||left(SQLERRM,50)||')' END;
+  END;
+
+  -- P493: solicitar_contrato_comision (INSERT de contrato) + conteo antes/despues
+  SELECT count(*) INTO v_ct_antes FROM public.contratos_comision;
+  BEGIN
+    PERFORM set_config('role','authenticated', true);
+    PERFORM public.solicitar_contrato_comision(v_emp, 7.5, '2020-01-01'::date, NULL);
+    PERFORM set_config('role','none', true);
+    v_state := NULL;
+  EXCEPTION WHEN OTHERS THEN
+    PERFORM set_config('role','none', true);
+    v_state := SQLSTATE;
+  END;
+  SELECT count(*) INTO v_ct_despues FROM public.contratos_comision;
+  v_493 := CASE
+    WHEN v_state IS NULL THEN 'ROJO — PERMITIDO (inserto contrato sin autorizacion)'
+    WHEN v_state='PC019' AND v_ct_despues = v_ct_antes THEN 'BLOQUEADO (PC019, y contratos_comision sin filas nuevas: '||v_ct_antes||'='||v_ct_despues||')'
+    WHEN v_ct_despues <> v_ct_antes THEN 'ROJO — INSERTO IGUAL pese a '||v_state||' ('||v_ct_antes||' -> '||v_ct_despues||')'
+    ELSE 'ROJO (codigo equivocado: '||v_state||')' END;
+
+  PERFORM set_config('probe.p491', v_491, false);
+  PERFORM set_config('probe.p492', v_492, false);
+  PERFORM set_config('probe.p493', v_493, false);
+END $$;
+SELECT set_config('role','none',true);
+
+-- ============================================================================================
+-- P494 / P495 — NO REGRESION: super_admin y admin_pais legitimo siguen pasando el gate en las 4
+-- --------------------------------------------------------------------------------------------
+-- ES EL PROBE MAS IMPORTANTE DESPUES DEL P490. Son funciones de dinero: un gate cerrado de mas
+-- rompe produccion, y "no explota" no alcanza como criterio.
+--
+-- CRITERIO: lo que se afirma es que el caller PASA EL GATE, no que la operacion termine bien. Estas
+-- funciones pueden fallar legitimamente DESPUES del gate por razones de negocio (PC020 ya existe
+-- liquidacion, PC021 nada que liquidar, 'Empresa no encontrada'). Por eso la asercion es
+-- "NO devuelve PC019", que es el unico error que emite el gate. Confundir "no explota" con "paso el
+-- gate" haria que un gate cerrado de mas pasara desapercibido si la funcion fallara por otra causa.
+-- ============================================================================================
+DO $$
+DECLARE
+  r record; v_emp uuid; v_liq uuid; v_res text; v_out text; v_probe text;
+  v_pc019 int;
+BEGIN
+  v_emp := NULLIF(current_setting('probe.l2_emp_gt', true),'')::uuid;
+  v_liq := NULLIF(current_setting('probe.l2_liq_gt', true),'')::uuid;
+
+  FOR r IN
+    SELECT 'p494' AS pr, 'super_admin' AS etq, id AS uid FROM public.perfiles WHERE email='admin.qa@ezpayconnect.com'
+    UNION ALL
+    SELECT 'p495', 'admin_pais GT', id FROM public.perfiles WHERE email='adminpais.qa@ezpayconnect.com'
+  LOOP
+    v_out := ''; v_pc019 := 0;
+    PERFORM set_config('request.jwt.claims',
+      json_build_object('sub', r.uid::text, 'role','authenticated')::text, true);
+
+    -- 1) cerrar_liquidacion
+    BEGIN
+      PERFORM set_config('role','authenticated', true);
+      PERFORM public.cerrar_liquidacion(v_emp, 2020, 3);
+      PERFORM set_config('role','none', true);
+      v_out := v_out || 'cerrar=paso(ok) ';
+    EXCEPTION WHEN OTHERS THEN
+      PERFORM set_config('role','none', true);
+      IF SQLSTATE='PC019' THEN v_pc019 := v_pc019+1; v_out := v_out || 'cerrar=PC019! ';
+      ELSE v_out := v_out || 'cerrar=paso('||SQLSTATE||') '; END IF;
+    END;
+
+    -- 2) marcar_liquidacion_cobrada
+    BEGIN
+      PERFORM set_config('role','authenticated', true);
+      PERFORM public.marcar_liquidacion_cobrada(v_liq, 'transferencia', 'PROBE-NOREG');
+      PERFORM set_config('role','none', true);
+      v_out := v_out || 'cobrar=paso(ok) ';
+    EXCEPTION WHEN OTHERS THEN
+      PERFORM set_config('role','none', true);
+      IF SQLSTATE='PC019' THEN v_pc019 := v_pc019+1; v_out := v_out || 'cobrar=PC019! ';
+      ELSE v_out := v_out || 'cobrar=paso('||SQLSTATE||') '; END IF;
+    END;
+
+    -- 3) liquidar_comision
+    BEGIN
+      PERFORM set_config('role','authenticated', true);
+      PERFORM count(*) FROM public.liquidar_comision(v_emp, '2020-01-01'::date, '2020-12-31'::date);
+      PERFORM set_config('role','none', true);
+      v_out := v_out || 'liquidar=paso(ok) ';
+    EXCEPTION WHEN OTHERS THEN
+      PERFORM set_config('role','none', true);
+      IF SQLSTATE='PC019' THEN v_pc019 := v_pc019+1; v_out := v_out || 'liquidar=PC019! ';
+      ELSE v_out := v_out || 'liquidar=paso('||SQLSTATE||') '; END IF;
+    END;
+
+    -- 4) solicitar_contrato_comision
+    BEGIN
+      PERFORM set_config('role','authenticated', true);
+      PERFORM public.solicitar_contrato_comision(v_emp, 6.25, '2020-06-01'::date, NULL);
+      PERFORM set_config('role','none', true);
+      v_out := v_out || 'contrato=paso(ok)';
+    EXCEPTION WHEN OTHERS THEN
+      PERFORM set_config('role','none', true);
+      IF SQLSTATE='PC019' THEN v_pc019 := v_pc019+1; v_out := v_out || 'contrato=PC019!';
+      ELSE v_out := v_out || 'contrato=paso('||SQLSTATE||')'; END IF;
+    END;
+
+    v_res := CASE WHEN v_pc019 = 0
+      THEN 'OK ('||r.etq||' pasa el gate en las 4: '||v_out||')'
+      ELSE 'ROJO — REGRESION ('||r.etq||' rechazado por PC019 en '||v_pc019||' de 4: '||v_out||')' END;
+    PERFORM set_config('probe.'||r.pr, v_res, false);
+  END LOOP;
+END $$;
+SELECT set_config('role','none',true);
+
+-- ============================================================================================
+-- P496 — NEGATIVO CROSS-PAIS: admin_pais de GT contra la empresa/liquidacion de El Salvador
+-- --------------------------------------------------------------------------------------------
+-- El aislamiento por pais sobre dinero. Exige PC019 en las 4. Sin la empresa SV sembrada arriba este
+-- probe no tendria nada que cruzar (las 7 empresas de prod son de Guatemala) y daria verde vacio.
+-- ============================================================================================
+DO $$
+DECLARE
+  v_adm uuid; v_emp_sv uuid; v_liq_sv uuid; v_out text := ''; v_ok int := 0;
+BEGIN
+  SELECT id INTO v_adm FROM public.perfiles WHERE email='adminpais.qa@ezpayconnect.com';
+  v_emp_sv := NULLIF(current_setting('probe.l2_emp_sv', true),'')::uuid;
+  v_liq_sv := NULLIF(current_setting('probe.l2_liq_sv', true),'')::uuid;
+  IF v_adm IS NULL OR v_emp_sv IS NULL OR v_liq_sv IS NULL THEN
+    PERFORM set_config('probe.p496','ROJO (fixture ausente)', false); RETURN; END IF;
+
+  PERFORM set_config('request.jwt.claims',
+    json_build_object('sub', v_adm::text, 'role','authenticated')::text, true);
+
+  BEGIN PERFORM set_config('role','authenticated', true);
+    PERFORM public.cerrar_liquidacion(v_emp_sv, 2020, 4);
+    PERFORM set_config('role','none', true); v_out := v_out || 'cerrar=PERMITIDO! ';
+  EXCEPTION WHEN OTHERS THEN PERFORM set_config('role','none', true);
+    IF SQLSTATE='PC019' THEN v_ok := v_ok+1; v_out := v_out || 'cerrar=PC019 ';
+    ELSE v_out := v_out || 'cerrar='||SQLSTATE||'! '; END IF; END;
+
+  BEGIN PERFORM set_config('role','authenticated', true);
+    PERFORM public.marcar_liquidacion_cobrada(v_liq_sv, 'transferencia', 'PROBE-496');
+    PERFORM set_config('role','none', true); v_out := v_out || 'cobrar=PERMITIDO! ';
+  EXCEPTION WHEN OTHERS THEN PERFORM set_config('role','none', true);
+    IF SQLSTATE='PC019' THEN v_ok := v_ok+1; v_out := v_out || 'cobrar=PC019 ';
+    ELSE v_out := v_out || 'cobrar='||SQLSTATE||'! '; END IF; END;
+
+  BEGIN PERFORM set_config('role','authenticated', true);
+    PERFORM count(*) FROM public.liquidar_comision(v_emp_sv, '2020-01-01'::date, '2020-12-31'::date);
+    PERFORM set_config('role','none', true); v_out := v_out || 'liquidar=PERMITIDO! ';
+  EXCEPTION WHEN OTHERS THEN PERFORM set_config('role','none', true);
+    IF SQLSTATE='PC019' THEN v_ok := v_ok+1; v_out := v_out || 'liquidar=PC019 ';
+    ELSE v_out := v_out || 'liquidar='||SQLSTATE||'! '; END IF; END;
+
+  BEGIN PERFORM set_config('role','authenticated', true);
+    PERFORM public.solicitar_contrato_comision(v_emp_sv, 5.0, '2020-01-01'::date, NULL);
+    PERFORM set_config('role','none', true); v_out := v_out || 'contrato=PERMITIDO!';
+  EXCEPTION WHEN OTHERS THEN PERFORM set_config('role','none', true);
+    IF SQLSTATE='PC019' THEN v_ok := v_ok+1; v_out := v_out || 'contrato=PC019';
+    ELSE v_out := v_out || 'contrato='||SQLSTATE||'!'; END IF; END;
+
+  IF v_ok = 4 THEN
+    PERFORM set_config('probe.p496','BLOQUEADO (PC019 en las 4: admin de GT no toca dinero de SV)', false);
+  ELSE
+    PERFORM set_config('probe.p496','ROJO — FUGA CROSS-PAIS ('||v_ok||'/4 bloqueadas: '||v_out||')', false);
+  END IF;
 END $$;
 SELECT set_config('role','none',true);
 
@@ -10374,6 +10686,13 @@ UNION ALL SELECT 'P486_NEG_authn_sin_perfil',       current_setting('probe.p486'
 UNION ALL SELECT 'P487_POS_admin_pais_su_pais',     current_setting('probe.p487', true), 'OK (filas > 0)'
 UNION ALL SELECT 'P488_NEG_admin_pais_cross',       current_setting('probe.p488', true), 'BLOQUEADO (42501)'
 UNION ALL SELECT 'P489_POS_super_admin_global',     current_setting('probe.p489', true), 'OK (GT y SV sin excepcion)'
+UNION ALL SELECT 'P490_NEG_sin_perfil_cobrar',     current_setting('probe.p490', true), 'BLOQUEADO (PC019 + estado sin cambiar)'
+UNION ALL SELECT 'P491_NEG_sin_perfil_cerrar',     current_setting('probe.p491', true), 'BLOQUEADO (PC019)'
+UNION ALL SELECT 'P492_NEG_sin_perfil_liquidar',   current_setting('probe.p492', true), 'BLOQUEADO (PC019)'
+UNION ALL SELECT 'P493_NEG_sin_perfil_contrato',   current_setting('probe.p493', true), 'BLOQUEADO (PC019 + 0 filas nuevas)'
+UNION ALL SELECT 'P494_POS_super_admin_4fn',       current_setting('probe.p494', true), 'OK (pasa el gate en las 4)'
+UNION ALL SELECT 'P495_POS_admin_pais_4fn',        current_setting('probe.p495', true), 'OK (pasa el gate en las 4)'
+UNION ALL SELECT 'P496_NEG_cross_pais_4fn',        current_setting('probe.p496', true), 'BLOQUEADO (PC019 en las 4)'
 UNION ALL SELECT 'FX00_catalogo_global_medicamentos', current_setting('probe.fx_medsglobal', true),'OK (precondicion sembrada)'
 UNION ALL SELECT 'FX01_afinb_capacidad_productos',   current_setting('probe.fx_afinb', true),      'OK (precondicion sembrada)'
 UNION ALL SELECT 'FX02_cat_medicamentos_catalogo',   current_setting('probe.fx_catmeds', true),    'OK (precondicion sembrada)'
@@ -10381,6 +10700,7 @@ UNION ALL SELECT 'FX03_pgest_med_catalogo',          current_setting('probe.fx_p
 UNION ALL SELECT 'FX04_pasign_med_catalogo',         current_setting('probe.fx_pasign_med', true), 'OK (precondicion sembrada)'
 UNION ALL SELECT 'FX05_puba_capacidad_publicidad',   current_setting('probe.fx_publicidad', true), 'OK (precondicion sembrada)'
 UNION ALL SELECT 'FX06_afin_empresa_viva',          current_setting('probe.fx_afin_emp', true),   'OK (precondicion sembrada)'
+UNION ALL SELECT 'FX07_lote2_fixtures',             current_setting('probe.fx_l2', true),         'OK (precondicion sembrada)'
 -- Las filas FX* son SALUD DE FIXTURE, no probes de seguridad: dicen si la precondicion que una
 -- migracion posterior empezo a exigir se pudo sembrar. Si una sale ROJO, los probes que dependen de
 -- ese fixture reportan N/A (su flag de ready se pierde con el rollback de la subtransaccion) en vez
@@ -10539,7 +10859,9 @@ UNION ALL SELECT 'P000_CENTINELA_veredictos_no_nulos',
        'probe.p486', 'probe.p487', 'probe.p488', 'probe.p489',
        'probe.fx_medsglobal', 'probe.fx_afinb',
        'probe.fx_catmeds', 'probe.fx_pgest_med', 'probe.fx_pasign_med', 'probe.fx_publicidad',
-       'probe.fx_afin_emp'
+       'probe.fx_afin_emp', 'probe.fx_l2',
+       'probe.p490', 'probe.p491', 'probe.p492', 'probe.p493',
+       'probe.p494', 'probe.p495', 'probe.p496'
              ]) AS n) s),
   'OK (todos los veredictos publicados)';
 
