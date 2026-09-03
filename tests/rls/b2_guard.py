@@ -14,7 +14,7 @@ SELECT de veredictos nunca llega a ejecutarse. La salida es vacia, y una salida 
   * 2026-09-03 (lote 1 del paquete PA-FAILOPEN): cuatro UPDATE top-level escribieron empresa_id=NULL
     -> 23502 -> muerte de la transaccion, otra vez sin una sola fila de salida.
 
-Este script cuenta dos cosas sobre el propio archivo y falla (exit 1) si alguna CRECE.
+Este script cuenta tres cosas sobre el propio archivo y falla (exit 1) si alguna CRECE.
 
 POR QUE ES UN SCRIPT Y NO UN PROBE
 -----------------------------------
@@ -22,7 +22,7 @@ Un probe no puede leer su propio fuente: pg_read_file() lee del SERVIDOR y exige
 pg_read_server_files, y este archivo vive en la maquina del cliente. P516 dentro del harness solo
 PUBLICA el baseline para que quien lea la salida sepa que este gate existe; el que cuenta es este.
 
-LAS DOS METRICAS
+LAS TRES METRICAS
 ----------------
 1) top_level_dml_ddl — sentencias DML/DDL fuera de todo bloque DO.
    Baseline 0. La fase 1 de B2 envolvio las 14 que quedaban (FX12-FX18).
@@ -30,7 +30,12 @@ LAS DOS METRICAS
    puede corromper ningun fixture y desaparece con el ROLLBACK. Hoy hay exactamente una: la funcion
    del censo que consumen P480/P481.
 
-2) do_sin_handler — bloques DO sin `EXCEPTION WHEN`.
+2) cast_directo — bloques DO SIN handler que castean current_setting sin NULLIF.
+   Baseline 0. La fase 2.1 lo llevo de 155 a 0 en tres tandas (52+52+51 bloques, 287 ocurrencias).
+   Quedan 133 bloques CON handler que tienen el mismo cast y NO se tocaron a proposito: su handler
+   puede estar aseverando ese SQLSTATE deliberadamente, y cambiarlo le cambiaria el veredicto.
+
+3) do_sin_handler — bloques DO sin `EXCEPTION WHEN`.
    Baseline 319. DEUDA CON FECHA, igual que la allowlist del centinela P480: la ataca la FASE 2 de
    B2. Que este en el baseline no dice "esta bien", dice "esta contado y tiene fase asignada".
    REGLA ESTRICTA: `RAISE EXCEPTION` NO cuenta como handler — es lo contrario de un handler. Contarlo
@@ -56,7 +61,7 @@ import sys
 # Al bajar una metrica, actualizar ACA y en el comentario de P516 del harness, EN EL MISMO COMMIT
 # que la baja. Un baseline que se actualiza "despues" es un baseline que alguien olvida.
 BASELINE_TOP_LEVEL = 0            # fase 1 de B2 (2026-09-03), CERRADO
-BASELINE_CAST_DIRECTO = 51        # fase 2.1 en curso: 155 -> 103 -> 51 (tanda 2 de 3) -> objetivo 0
+BASELINE_CAST_DIRECTO = 0         # fase 2.1 CERRADA (155 -> 103 -> 51 -> 0, tres tandas)
 BASELINE_DO_SIN_HANDLER = 319     # fase 2.2: 319 -> ~125 (deuda con fecha, ver abajo)
 # ===============================================================================
 #

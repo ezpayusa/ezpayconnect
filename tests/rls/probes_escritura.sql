@@ -6120,28 +6120,28 @@ DO $$ BEGIN IF current_setting('probe.lx_mut',true)='1' THEN UPDATE public.exame
 -- P375 multi-MÉDICO
 SELECT set_config('role','none', true);
 DO $$ BEGIN IF current_setting('probe.lx_ready',true)<>'1' OR to_regprocedure('public.notificar_orden_lab(uuid)') IS NULL OR current_setting('probe.lx_ajeno',true)='' OR current_setting('probe.lx_ex',true)='' THEN PERFORM set_config('probe.lx_mut','0',false); RETURN; END IF;
-  UPDATE public.examenes SET medico_id=current_setting('probe.lx_ajeno',true)::uuid WHERE id=current_setting('probe.lx_ex',true)::int;
+  UPDATE public.examenes SET medico_id=NULLIF(current_setting('probe.lx_ajeno',true), '')::uuid WHERE id=NULLIF(current_setting('probe.lx_ex',true), '')::int;
   PERFORM set_config('probe.lx_mut','1',false); END $$;
 SELECT set_config('request.jwt.claims', json_build_object('sub', current_setting('probe.lx_med',true), 'role','authenticated')::text, true);
 SELECT set_config('role','authenticated', true);
 DO $$ BEGIN IF current_setting('probe.lx_mut',true)<>'1' THEN PERFORM set_config('probe.p375','N/A',false); RETURN; END IF;
-  BEGIN PERFORM public.notificar_orden_lab(current_setting('probe.lx_orden',true)::uuid); PERFORM set_config('probe.p375','PERMITIDO (multi-médico notificado)',false);
+  BEGIN PERFORM public.notificar_orden_lab(NULLIF(current_setting('probe.lx_orden',true), '')::uuid); PERFORM set_config('probe.p375','PERMITIDO (multi-médico notificado)',false);
   EXCEPTION WHEN others THEN PERFORM set_config('probe.p375','BLOQUEADO ('||SQLSTATE||')',false); END; END $$;
 SELECT set_config('role','none', true);
-DO $$ BEGIN IF current_setting('probe.lx_mut',true)='1' THEN UPDATE public.examenes SET medico_id=current_setting('probe.lx_med',true)::uuid WHERE id=current_setting('probe.lx_ex',true)::int; END IF; END $$;
+DO $$ BEGIN IF current_setting('probe.lx_mut',true)='1' THEN UPDATE public.examenes SET medico_id=NULLIF(current_setting('probe.lx_med',true), '')::uuid WHERE id=NULLIF(current_setting('probe.lx_ex',true), '')::int; END IF; END $$;
 
 -- P376 paciente NULL (derivado NULL → DENEGADO, no insert malformado)
 SELECT set_config('role','none', true);
 DO $$ BEGIN IF current_setting('probe.lx_ready',true)<>'1' OR to_regprocedure('public.notificar_orden_lab(uuid)') IS NULL OR current_setting('probe.lx_ex',true)='' THEN PERFORM set_config('probe.lx_mut','0',false); RETURN; END IF;
-  UPDATE public.examenes SET paciente_id=NULL WHERE id=current_setting('probe.lx_ex',true)::int;
+  UPDATE public.examenes SET paciente_id=NULL WHERE id=NULLIF(current_setting('probe.lx_ex',true), '')::int;
   PERFORM set_config('probe.lx_mut','1',false); END $$;
 SELECT set_config('request.jwt.claims', json_build_object('sub', current_setting('probe.lx_med',true), 'role','authenticated')::text, true);
 SELECT set_config('role','authenticated', true);
 DO $$ BEGIN IF current_setting('probe.lx_mut',true)<>'1' THEN PERFORM set_config('probe.p376','N/A',false); RETURN; END IF;
-  BEGIN PERFORM public.notificar_orden_lab(current_setting('probe.lx_orden',true)::uuid); PERFORM set_config('probe.p376','PERMITIDO (paciente NULL notificado — malformado)',false);
+  BEGIN PERFORM public.notificar_orden_lab(NULLIF(current_setting('probe.lx_orden',true), '')::uuid); PERFORM set_config('probe.p376','PERMITIDO (paciente NULL notificado — malformado)',false);
   EXCEPTION WHEN others THEN PERFORM set_config('probe.p376','BLOQUEADO ('||SQLSTATE||')',false); END; END $$;
 SELECT set_config('role','none', true);
-DO $$ BEGIN IF current_setting('probe.lx_mut',true)='1' THEN UPDATE public.examenes SET paciente_id=current_setting('probe.lx_pac',true)::int WHERE id=current_setting('probe.lx_ex',true)::int; END IF; END $$;
+DO $$ BEGIN IF current_setting('probe.lx_mut',true)='1' THEN UPDATE public.examenes SET paciente_id=NULLIF(current_setting('probe.lx_pac',true), '')::int WHERE id=NULLIF(current_setting('probe.lx_ex',true), '')::int; END IF; END $$;
 
 -- ============================================================
 -- Fix push transaccional · EVENTO 5 (cita solicitada → médico + admins clínica) (P377–P382). Red-first.
@@ -6216,7 +6216,7 @@ DO $$ DECLARE v_ok boolean; v_d text; BEGIN
   v_d := current_setting('probe.c5_done',true);
   IF coalesce(v_d,'')='' OR v_d='SKIP' THEN PERFORM set_config('probe.p379','N/A',false); RETURN; END IF;
   IF v_d LIKE 'ERR:%' THEN PERFORM set_config('probe.p379','FALLO (RPC '||v_d||')',false); RETURN; END IF;
-  SELECT EXISTS(SELECT 1 FROM public.notificaciones WHERE usuario_id=current_setting('probe.c5_med',true)::uuid AND tipo='cita_nueva' AND titulo='Nueva cita solicitada' AND accion_url='/medico/citas' AND created_at > now()-interval '2 minutes') INTO v_ok;
+  SELECT EXISTS(SELECT 1 FROM public.notificaciones WHERE usuario_id=NULLIF(current_setting('probe.c5_med',true), '')::uuid AND tipo='cita_nueva' AND titulo='Nueva cita solicitada' AND accion_url='/medico/citas' AND created_at > now()-interval '2 minutes') INTO v_ok;
   PERFORM set_config('probe.p379', CASE WHEN v_ok THEN 'OK (fila médico derivada, tipo/url server)' ELSE 'FALLO (sin fila médico)' END, false);
 END $$;
 
@@ -6225,7 +6225,7 @@ SELECT set_config('request.jwt.claims', json_build_object('sub', current_setting
 SELECT set_config('role','authenticated', true);
 DO $$ DECLARE v_n int; BEGIN
   IF current_setting('probe.c5_done',true) IS DISTINCT FROM 'OK' THEN PERFORM set_config('probe.p380','N/A',false); RETURN; END IF;
-  SELECT count(*) INTO v_n FROM public.notificaciones WHERE usuario_id=current_setting('probe.c5_med',true)::uuid AND titulo='Nueva cita solicitada' AND created_at > now()-interval '2 minutes';
+  SELECT count(*) INTO v_n FROM public.notificaciones WHERE usuario_id=NULLIF(current_setting('probe.c5_med',true), '')::uuid AND titulo='Nueva cita solicitada' AND created_at > now()-interval '2 minutes';
   PERFORM set_config('probe.p380', CASE WHEN v_n>0 THEN 'OK (médico lee su propia fila vía RLS)' ELSE 'FALLO (RLS oculta la fila al médico)' END, false);
 END $$;
 SELECT set_config('role','none', true);
@@ -6233,11 +6233,11 @@ SELECT set_config('role','none', true);
 -- P381 positivo admins: filas = admins de la clínica derivados; 0 ajenos
 DO $$ DECLARE v_n int; v_esp int; v_fuera int; BEGIN
   IF current_setting('probe.c5_done',true) IS DISTINCT FROM 'OK' THEN PERFORM set_config('probe.p381','N/A',false); RETURN; END IF;
-  SELECT count(*) INTO v_n FROM public.notificaciones WHERE usuario_id IN (SELECT user_id FROM public.obtener_admins_clinica(current_setting('probe.c5_cli',true)::uuid))
+  SELECT count(*) INTO v_n FROM public.notificaciones WHERE usuario_id IN (SELECT user_id FROM public.obtener_admins_clinica(NULLIF(current_setting('probe.c5_cli',true), '')::uuid))
     AND titulo='Nueva solicitud de cita' AND accion_url='/clinica/citas' AND created_at > now()-interval '2 minutes';
-  SELECT count(*) INTO v_esp FROM public.obtener_admins_clinica(current_setting('probe.c5_cli',true)::uuid);
+  SELECT count(*) INTO v_esp FROM public.obtener_admins_clinica(NULLIF(current_setting('probe.c5_cli',true), '')::uuid);
   SELECT count(*) INTO v_fuera FROM public.notificaciones WHERE titulo='Nueva solicitud de cita' AND created_at > now()-interval '2 minutes'
-    AND usuario_id NOT IN (SELECT user_id FROM public.obtener_admins_clinica(current_setting('probe.c5_cli',true)::uuid));
+    AND usuario_id NOT IN (SELECT user_id FROM public.obtener_admins_clinica(NULLIF(current_setting('probe.c5_cli',true), '')::uuid));
   PERFORM set_config('probe.p381', CASE WHEN v_n=v_esp AND v_fuera=0 THEN 'OK (admins derivados '||v_n||'/'||v_esp||', 0 ajenos)' ELSE 'FALLO (n='||v_n||' esp='||v_esp||' fuera='||v_fuera||')' END, false);
 END $$;
 
@@ -6256,7 +6256,7 @@ SELECT set_config('request.jwt.claims', json_build_object('sub', current_setting
 SELECT set_config('role','authenticated', true);
 DO $$ DECLARE v_n int; BEGIN
   IF current_setting('probe.c5_done',true) IS DISTINCT FROM 'OK' OR current_setting('probe.c5_admin',true)='' THEN PERFORM set_config('probe.p383','N/A',false); RETURN; END IF;
-  SELECT count(*) INTO v_n FROM public.notificaciones WHERE usuario_id=current_setting('probe.c5_admin',true)::uuid AND titulo='Nueva solicitud de cita' AND created_at > now()-interval '2 minutes';
+  SELECT count(*) INTO v_n FROM public.notificaciones WHERE usuario_id=NULLIF(current_setting('probe.c5_admin',true), '')::uuid AND titulo='Nueva solicitud de cita' AND created_at > now()-interval '2 minutes';
   PERFORM set_config('probe.p383', CASE WHEN v_n>0 THEN 'OK (admin lee su propia fila vía RLS)' ELSE 'FALLO (RLS oculta la fila al admin — gap funcional)' END, false);
 END $$;
 SELECT set_config('role','none', true);
@@ -6294,8 +6294,8 @@ DO $$ DECLARE v_med_n int; v_adm_n int; v_d text; BEGIN
   v_d := current_setting('probe.h_done',true);
   IF coalesce(v_d,'')='' OR v_d='SKIP' THEN PERFORM set_config('probe.p384','N/A (sin cita médico-huérfano apta)',false); RETURN; END IF;
   IF v_d LIKE 'ERR:%' THEN PERFORM set_config('probe.p384','FALLO (RPC abortó '||v_d||' — guard auth.users removido/roto)',false); RETURN; END IF;
-  SELECT count(*) INTO v_med_n FROM public.notificaciones WHERE usuario_id=current_setting('probe.h_med',true)::uuid AND titulo='Nueva cita solicitada' AND created_at > now()-interval '2 minutes';
-  SELECT count(*) INTO v_adm_n FROM public.notificaciones WHERE usuario_id IN (SELECT user_id FROM public.obtener_admins_clinica(current_setting('probe.h_cli',true)::uuid)) AND titulo='Nueva solicitud de cita' AND created_at > now()-interval '2 minutes';
+  SELECT count(*) INTO v_med_n FROM public.notificaciones WHERE usuario_id=NULLIF(current_setting('probe.h_med',true), '')::uuid AND titulo='Nueva cita solicitada' AND created_at > now()-interval '2 minutes';
+  SELECT count(*) INTO v_adm_n FROM public.notificaciones WHERE usuario_id IN (SELECT user_id FROM public.obtener_admins_clinica(NULLIF(current_setting('probe.h_cli',true), '')::uuid)) AND titulo='Nueva solicitud de cita' AND created_at > now()-interval '2 minutes';
   IF v_med_n=0 AND v_adm_n>0 THEN PERFORM set_config('probe.p384','OK (médico huérfano saltado, admins notificados '||v_adm_n||' — RPC resiliente)',false);
   ELSE PERFORM set_config('probe.p384','FALLO (med_n='||v_med_n||' adm_n='||v_adm_n||')',false); END IF;
 END $$;
@@ -6377,7 +6377,7 @@ SELECT set_config('role','none', true);
 DO $$ DECLARE v_flag boolean; BEGIN  -- flag NO quemado por el denegado
   IF to_regprocedure('public.notificar_chat(integer)') IS NULL OR NOT EXISTS(SELECT 1 FROM information_schema.columns WHERE table_name='chat_mensajes' AND column_name='notificado') OR coalesce(current_setting('probe.ch6_mp',true),'')='' THEN
     PERFORM set_config('probe.ch6_flag_post_denied','∅',false); RETURN; END IF;
-  SELECT notificado INTO v_flag FROM public.chat_mensajes WHERE id=current_setting('probe.ch6_mp',true)::int;
+  SELECT notificado INTO v_flag FROM public.chat_mensajes WHERE id=NULLIF(current_setting('probe.ch6_mp',true), '')::int;
   PERFORM set_config('probe.ch6_flag_post_denied', coalesce(v_flag::text,'∅'), false);
 END $$;
 SELECT set_config('request.jwt.claims', json_build_object('sub', current_setting('probe.ch6_pauth',true), 'role','authenticated')::text, true);
@@ -6390,7 +6390,7 @@ END $$;
 SELECT set_config('role','none', true);
 DO $$ DECLARE v_med_ok boolean; BEGIN
   IF coalesce(current_setting('probe.ch6_denied',true),'')='' OR current_setting('probe.ch6_denied',true)='SKIP' THEN PERFORM set_config('probe.p387','N/A',false); RETURN; END IF;
-  SELECT EXISTS(SELECT 1 FROM public.notificaciones WHERE usuario_id=current_setting('probe.ch6_med',true)::uuid AND tipo='mensaje' AND titulo='Nuevo mensaje' AND accion_url='/medico/chat' AND created_at>now()-interval '2 minutes') INTO v_med_ok;
+  SELECT EXISTS(SELECT 1 FROM public.notificaciones WHERE usuario_id=NULLIF(current_setting('probe.ch6_med',true), '')::uuid AND tipo='mensaje' AND titulo='Nuevo mensaje' AND accion_url='/medico/chat' AND created_at>now()-interval '2 minutes') INTO v_med_ok;
   IF current_setting('probe.ch6_denied',true)='PT002' AND current_setting('probe.ch6_flag_post_denied',true)='false' AND current_setting('probe.ch6_legit',true)='OK' AND v_med_ok
     THEN PERFORM set_config('probe.p387','OK (denegado PT002 sin quemar flag; legítimo notifica al médico)',false);
     ELSE PERFORM set_config('probe.p387','FALLO (denied='||current_setting('probe.ch6_denied',true)||' flag='||current_setting('probe.ch6_flag_post_denied',true)||' legit='||current_setting('probe.ch6_legit',true)||' med='||COALESCE(v_med_ok::text,'∅')||')',false); END IF;
@@ -6436,19 +6436,19 @@ END $$;
 SELECT set_config('role','none', true);
 DO $$ BEGIN  -- baseline (owner)
   IF current_setting('probe.ch6_ready',true)<>'1' OR current_setting('probe.ch6_legit',true) IS DISTINCT FROM 'OK' THEN PERFORM set_config('probe.ch6_before','',false); RETURN; END IF;
-  PERFORM set_config('probe.ch6_before', (SELECT count(*)::text FROM public.notificaciones WHERE usuario_id=current_setting('probe.ch6_med',true)::uuid AND titulo='Nuevo mensaje' AND created_at>now()-interval '3 minutes'), false);
+  PERFORM set_config('probe.ch6_before', (SELECT count(*)::text FROM public.notificaciones WHERE usuario_id=NULLIF(current_setting('probe.ch6_med',true), '')::uuid AND titulo='Nuevo mensaje' AND created_at>now()-interval '3 minutes'), false);
 END $$;
 SELECT set_config('request.jwt.claims', json_build_object('sub', current_setting('probe.ch6_pauth',true), 'role','authenticated')::text, true);
 SELECT set_config('role','authenticated', true);
 DO $$ BEGIN  -- 2º call como remitente (ya notificado → no-op)
   IF coalesce(current_setting('probe.ch6_before',true),'')='' THEN RETURN; END IF;
-  PERFORM public.notificar_chat(current_setting('probe.ch6_mp',true)::int);
+  PERFORM public.notificar_chat(NULLIF(current_setting('probe.ch6_mp',true), '')::int);
 END $$;
 SELECT set_config('role','none', true);
 DO $$ DECLARE v_after int; v_before int; BEGIN  -- conteo final (owner)
   IF coalesce(current_setting('probe.ch6_before',true),'')='' THEN PERFORM set_config('probe.p391','N/A',false); RETURN; END IF;
-  v_before := current_setting('probe.ch6_before',true)::int;
-  SELECT count(*) INTO v_after FROM public.notificaciones WHERE usuario_id=current_setting('probe.ch6_med',true)::uuid AND titulo='Nuevo mensaje' AND created_at>now()-interval '3 minutes';
+  v_before := NULLIF(current_setting('probe.ch6_before',true), '')::int;
+  SELECT count(*) INTO v_after FROM public.notificaciones WHERE usuario_id=NULLIF(current_setting('probe.ch6_med',true), '')::uuid AND titulo='Nuevo mensaje' AND created_at>now()-interval '3 minutes';
   PERFORM set_config('probe.p391', CASE WHEN v_after=v_before AND v_before>0 THEN 'OK (2º call sin fila nueva: '||v_after||'='||v_before||')' ELSE 'FALLO (before='||v_before||' after='||v_after||')' END, false);
 END $$;
 
@@ -6457,7 +6457,7 @@ SELECT set_config('request.jwt.claims', json_build_object('sub', current_setting
 SELECT set_config('role','authenticated', true);
 DO $$ DECLARE v_n int; BEGIN
   IF current_setting('probe.ch6_legit',true) IS DISTINCT FROM 'OK' THEN PERFORM set_config('probe.p392','N/A',false); RETURN; END IF;
-  SELECT count(*) INTO v_n FROM public.notificaciones WHERE usuario_id=current_setting('probe.ch6_med',true)::uuid AND titulo='Nuevo mensaje' AND created_at>now()-interval '3 minutes';
+  SELECT count(*) INTO v_n FROM public.notificaciones WHERE usuario_id=NULLIF(current_setting('probe.ch6_med',true), '')::uuid AND titulo='Nuevo mensaje' AND created_at>now()-interval '3 minutes';
   PERFORM set_config('probe.p392', CASE WHEN v_n>0 THEN 'OK (médico lee su fila vía RLS)' ELSE 'FALLO (RLS oculta)' END, false);
 END $$;
 SELECT set_config('role','none', true);
@@ -6486,8 +6486,8 @@ SELECT set_config('role','none', true);
 DO $$ DECLARE v_n int; v_flag boolean; BEGIN
   IF coalesce(current_setting('probe.ch6_unrel_done',true),'')='' OR current_setting('probe.ch6_unrel_done',true)='SKIP' THEN PERFORM set_config('probe.p394','N/A (sin médico no-relacionado construible)',false); RETURN; END IF;
   IF current_setting('probe.ch6_unrel_done',true) LIKE 'ERR:%' THEN PERFORM set_config('probe.p394','FALLO (RPC abortó '||current_setting('probe.ch6_unrel_done',true)||')',false); RETURN; END IF;
-  SELECT count(*) INTO v_n FROM public.notificaciones WHERE usuario_id=current_setting('probe.ch6_unrel',true)::uuid AND titulo='Nuevo mensaje' AND created_at>now()-interval '2 minutes';
-  SELECT notificado INTO v_flag FROM public.chat_mensajes WHERE id=current_setting('probe.ch6_mu',true)::int;
+  SELECT count(*) INTO v_n FROM public.notificaciones WHERE usuario_id=NULLIF(current_setting('probe.ch6_unrel',true), '')::uuid AND titulo='Nuevo mensaje' AND created_at>now()-interval '2 minutes';
+  SELECT notificado INTO v_flag FROM public.chat_mensajes WHERE id=NULLIF(current_setting('probe.ch6_mu',true), '')::int;
   IF v_n=0 AND v_flag IS NOT TRUE THEN PERFORM set_config('probe.p394','OK (médico no-relacionado NO notificado, flag no reclamado — targeting arbitrario bloqueado)',false);
   ELSE PERFORM set_config('probe.p394','FALLO (notif='||v_n||' flag='||COALESCE(v_flag::text,'∅')||')',false); END IF;
 END $$;
@@ -6590,7 +6590,7 @@ END $$;
 SELECT set_config('role','none', true);
 DO $$ DECLARE v_flag boolean; BEGIN
   IF to_regprocedure('public.notificar_cancelacion(bigint)') IS NULL OR NOT EXISTS(SELECT 1 FROM information_schema.columns WHERE table_name='citas' AND column_name='notificado_cancelacion') OR coalesce(current_setting('probe.c7_cita',true),'')='' THEN PERFORM set_config('probe.c7_flag','∅',false); RETURN; END IF;
-  SELECT notificado_cancelacion INTO v_flag FROM public.citas WHERE id=current_setting('probe.c7_cita',true)::bigint;
+  SELECT notificado_cancelacion INTO v_flag FROM public.citas WHERE id=NULLIF(current_setting('probe.c7_cita',true), '')::bigint;
   PERFORM set_config('probe.c7_flag', coalesce(v_flag::text,'∅'), false);
 END $$;
 SELECT set_config('request.jwt.claims', json_build_object('sub', current_setting('probe.c7_pauth',true), 'role','authenticated')::text, true);
@@ -6603,7 +6603,7 @@ END $$;
 SELECT set_config('role','none', true);
 DO $$ DECLARE v_med_ok boolean; BEGIN
   IF coalesce(current_setting('probe.c7_denied',true),'')='' OR current_setting('probe.c7_denied',true)='SKIP' THEN PERFORM set_config('probe.p398','N/A',false); RETURN; END IF;
-  SELECT EXISTS(SELECT 1 FROM public.notificaciones WHERE usuario_id=current_setting('probe.c7_med',true)::uuid AND tipo='cita_cancelada' AND accion_url='/medico/citas' AND created_at>now()-interval '2 minutes') INTO v_med_ok;
+  SELECT EXISTS(SELECT 1 FROM public.notificaciones WHERE usuario_id=NULLIF(current_setting('probe.c7_med',true), '')::uuid AND tipo='cita_cancelada' AND accion_url='/medico/citas' AND created_at>now()-interval '2 minutes') INTO v_med_ok;
   IF current_setting('probe.c7_denied',true)='PT002' AND current_setting('probe.c7_flag',true)='false' AND current_setting('probe.c7_legit',true)='OK' AND v_med_ok
     THEN PERFORM set_config('probe.p398','OK (denegado PT002 sin quemar flag; legítimo notifica)',false);
     ELSE PERFORM set_config('probe.p398','FALLO (denied='||current_setting('probe.c7_denied',true)||' flag='||current_setting('probe.c7_flag',true)||' legit='||current_setting('probe.c7_legit',true)||' med='||COALESCE(v_med_ok::text,'∅')||')',false); END IF;
@@ -6612,14 +6612,14 @@ END $$;
 -- P399 médico derivado + visibilidad RLS
 DO $$ DECLARE v_ok boolean; BEGIN
   IF current_setting('probe.c7_legit',true) IS DISTINCT FROM 'OK' THEN PERFORM set_config('probe.p399','N/A',false); RETURN; END IF;
-  SELECT EXISTS(SELECT 1 FROM public.notificaciones WHERE usuario_id=current_setting('probe.c7_med',true)::uuid AND tipo='cita_cancelada' AND titulo='Cita cancelada por el paciente' AND accion_url='/medico/citas' AND created_at>now()-interval '2 minutes') INTO v_ok;
+  SELECT EXISTS(SELECT 1 FROM public.notificaciones WHERE usuario_id=NULLIF(current_setting('probe.c7_med',true), '')::uuid AND tipo='cita_cancelada' AND titulo='Cita cancelada por el paciente' AND accion_url='/medico/citas' AND created_at>now()-interval '2 minutes') INTO v_ok;
   PERFORM set_config('probe.p399', CASE WHEN v_ok THEN 'OK (fila médico derivada, /medico/citas)' ELSE 'FALLO (sin fila médico)' END, false);
 END $$;
 SELECT set_config('request.jwt.claims', json_build_object('sub', current_setting('probe.c7_med',true), 'role','authenticated')::text, true);
 SELECT set_config('role','authenticated', true);
 DO $$ DECLARE v_n int; BEGIN
   IF current_setting('probe.c7_legit',true) IS DISTINCT FROM 'OK' THEN RETURN; END IF;
-  SELECT count(*) INTO v_n FROM public.notificaciones WHERE usuario_id=current_setting('probe.c7_med',true)::uuid AND tipo='cita_cancelada' AND created_at>now()-interval '2 minutes';
+  SELECT count(*) INTO v_n FROM public.notificaciones WHERE usuario_id=NULLIF(current_setting('probe.c7_med',true), '')::uuid AND tipo='cita_cancelada' AND created_at>now()-interval '2 minutes';
   PERFORM set_config('probe.p399', CASE WHEN v_n>0 AND current_setting('probe.p399',true) LIKE 'OK%' THEN current_setting('probe.p399',true)||' + médico lee (RLS)' ELSE 'FALLO (visibilidad médico n='||v_n||')' END, false);
 END $$;
 SELECT set_config('role','none', true);
@@ -6627,16 +6627,16 @@ SELECT set_config('role','none', true);
 -- P400 admins derivados (0 ajenos) + visibilidad RLS
 DO $$ DECLARE v_n int; v_esp int; v_fuera int; BEGIN
   IF current_setting('probe.c7_legit',true) IS DISTINCT FROM 'OK' THEN PERFORM set_config('probe.p400','N/A',false); RETURN; END IF;
-  SELECT count(*) INTO v_n FROM public.notificaciones WHERE usuario_id IN (SELECT user_id FROM public.obtener_admins_clinica(current_setting('probe.c7_cli',true)::uuid)) AND tipo='cita_cancelada' AND accion_url='/clinica/citas' AND created_at>now()-interval '2 minutes';
-  SELECT count(*) INTO v_esp FROM public.obtener_admins_clinica(current_setting('probe.c7_cli',true)::uuid);
-  SELECT count(*) INTO v_fuera FROM public.notificaciones WHERE tipo='cita_cancelada' AND accion_url='/clinica/citas' AND created_at>now()-interval '2 minutes' AND usuario_id NOT IN (SELECT user_id FROM public.obtener_admins_clinica(current_setting('probe.c7_cli',true)::uuid));
+  SELECT count(*) INTO v_n FROM public.notificaciones WHERE usuario_id IN (SELECT user_id FROM public.obtener_admins_clinica(NULLIF(current_setting('probe.c7_cli',true), '')::uuid)) AND tipo='cita_cancelada' AND accion_url='/clinica/citas' AND created_at>now()-interval '2 minutes';
+  SELECT count(*) INTO v_esp FROM public.obtener_admins_clinica(NULLIF(current_setting('probe.c7_cli',true), '')::uuid);
+  SELECT count(*) INTO v_fuera FROM public.notificaciones WHERE tipo='cita_cancelada' AND accion_url='/clinica/citas' AND created_at>now()-interval '2 minutes' AND usuario_id NOT IN (SELECT user_id FROM public.obtener_admins_clinica(NULLIF(current_setting('probe.c7_cli',true), '')::uuid));
   PERFORM set_config('probe.p400', CASE WHEN v_n=v_esp AND v_n>0 AND v_fuera=0 THEN 'OK (admins '||v_n||'/'||v_esp||', 0 ajenos)' ELSE 'FALLO (n='||v_n||' esp='||v_esp||' fuera='||v_fuera||')' END, false);
 END $$;
 SELECT set_config('request.jwt.claims', json_build_object('sub', current_setting('probe.c7_admin',true), 'role','authenticated')::text, true);
 SELECT set_config('role','authenticated', true);
 DO $$ DECLARE v_n int; BEGIN
   IF current_setting('probe.c7_legit',true) IS DISTINCT FROM 'OK' OR current_setting('probe.c7_admin',true)='' THEN RETURN; END IF;
-  SELECT count(*) INTO v_n FROM public.notificaciones WHERE usuario_id=current_setting('probe.c7_admin',true)::uuid AND tipo='cita_cancelada' AND created_at>now()-interval '2 minutes';
+  SELECT count(*) INTO v_n FROM public.notificaciones WHERE usuario_id=NULLIF(current_setting('probe.c7_admin',true), '')::uuid AND tipo='cita_cancelada' AND created_at>now()-interval '2 minutes';
   IF NOT (v_n>0) THEN PERFORM set_config('probe.p400','FALLO (admin no lee su fila RLS)',false);
   ELSIF current_setting('probe.p400',true) LIKE 'OK%' THEN PERFORM set_config('probe.p400', current_setting('probe.p400',true)||' + admin lee (RLS)', false); END IF;
 END $$;
@@ -6655,8 +6655,8 @@ SELECT set_config('role','none', true);
 DO $$ DECLARE v_med_n int; v_adm_n int; BEGIN
   IF coalesce(current_setting('probe.c7_ocall',true),'')='' OR current_setting('probe.c7_ocall',true)='SKIP' THEN PERFORM set_config('probe.p401','N/A (sin cita médico-huérfano)',false); RETURN; END IF;
   IF current_setting('probe.c7_ocall',true) LIKE 'ERR:%' THEN PERFORM set_config('probe.p401','FALLO (RPC abortó '||current_setting('probe.c7_ocall',true)||')',false); RETURN; END IF;
-  SELECT count(*) INTO v_med_n FROM public.notificaciones WHERE usuario_id=current_setting('probe.c7_omed',true)::uuid AND tipo='cita_cancelada' AND created_at>now()-interval '2 minutes';
-  SELECT count(*) INTO v_adm_n FROM public.notificaciones WHERE usuario_id IN (SELECT user_id FROM public.obtener_admins_clinica(current_setting('probe.c7_ocli',true)::uuid)) AND tipo='cita_cancelada' AND created_at>now()-interval '2 minutes';
+  SELECT count(*) INTO v_med_n FROM public.notificaciones WHERE usuario_id=NULLIF(current_setting('probe.c7_omed',true), '')::uuid AND tipo='cita_cancelada' AND created_at>now()-interval '2 minutes';
+  SELECT count(*) INTO v_adm_n FROM public.notificaciones WHERE usuario_id IN (SELECT user_id FROM public.obtener_admins_clinica(NULLIF(current_setting('probe.c7_ocli',true), '')::uuid)) AND tipo='cita_cancelada' AND created_at>now()-interval '2 minutes';
   PERFORM set_config('probe.p401', CASE WHEN v_med_n=0 AND v_adm_n>0 THEN 'OK (médico huérfano saltado, admins notificados '||v_adm_n||')' ELSE 'FALLO (med_n='||v_med_n||' adm_n='||v_adm_n||')' END, false);
 END $$;
 SELECT set_config('role','none', true);
@@ -6672,19 +6672,19 @@ END $$;
 SELECT set_config('role','none', true);
 DO $$ BEGIN
   IF current_setting('probe.c7_legit',true) IS DISTINCT FROM 'OK' THEN PERFORM set_config('probe.c7_before','',false); RETURN; END IF;
-  PERFORM set_config('probe.c7_before', (SELECT count(*)::text FROM public.notificaciones WHERE usuario_id=current_setting('probe.c7_med',true)::uuid AND tipo='cita_cancelada' AND created_at>now()-interval '3 minutes'), false);
+  PERFORM set_config('probe.c7_before', (SELECT count(*)::text FROM public.notificaciones WHERE usuario_id=NULLIF(current_setting('probe.c7_med',true), '')::uuid AND tipo='cita_cancelada' AND created_at>now()-interval '3 minutes'), false);
 END $$;
 SELECT set_config('request.jwt.claims', json_build_object('sub', current_setting('probe.c7_pauth',true), 'role','authenticated')::text, true);
 SELECT set_config('role','authenticated', true);
 DO $$ BEGIN
   IF coalesce(current_setting('probe.c7_before',true),'')='' THEN RETURN; END IF;
-  PERFORM public.notificar_cancelacion(current_setting('probe.c7_cita',true)::bigint);  -- 2º call (ya notificado → no-op)
+  PERFORM public.notificar_cancelacion(NULLIF(current_setting('probe.c7_cita',true), '')::bigint);  -- 2º call (ya notificado → no-op)
 END $$;
 SELECT set_config('role','none', true);
 DO $$ DECLARE v_after int; v_before int; BEGIN
   IF coalesce(current_setting('probe.c7_before',true),'')='' THEN PERFORM set_config('probe.p403','N/A',false); RETURN; END IF;
-  v_before := current_setting('probe.c7_before',true)::int;
-  SELECT count(*) INTO v_after FROM public.notificaciones WHERE usuario_id=current_setting('probe.c7_med',true)::uuid AND tipo='cita_cancelada' AND created_at>now()-interval '3 minutes';
+  v_before := NULLIF(current_setting('probe.c7_before',true), '')::int;
+  SELECT count(*) INTO v_after FROM public.notificaciones WHERE usuario_id=NULLIF(current_setting('probe.c7_med',true), '')::uuid AND tipo='cita_cancelada' AND created_at>now()-interval '3 minutes';
   PERFORM set_config('probe.p403', CASE WHEN v_after=v_before AND v_before>0 THEN 'OK (2º call sin fila nueva: '||v_after||'='||v_before||')' ELSE 'FALLO (before='||v_before||' after='||v_after||')' END, false);
 END $$;
 SELECT set_config('role','none', true);
@@ -6694,23 +6694,23 @@ SELECT set_config('role','none', true);
 SELECT set_config('role','none', true);
 DO $$ DECLARE v_flag boolean; BEGIN
   IF current_setting('probe.c7_legit',true) IS DISTINCT FROM 'OK' OR to_regprocedure('public.notificar_cancelacion(bigint)') IS NULL OR NOT EXISTS(SELECT 1 FROM information_schema.columns WHERE table_name='citas' AND column_name='notificado_cancelacion') THEN PERFORM set_config('probe.c7_react','SKIP',false); RETURN; END IF;
-  UPDATE public.citas SET estado='agendada' WHERE id=current_setting('probe.c7_cita',true)::bigint;   -- reactivación (trigger debe resetear)
-  SELECT notificado_cancelacion INTO v_flag FROM public.citas WHERE id=current_setting('probe.c7_cita',true)::bigint;
+  UPDATE public.citas SET estado='agendada' WHERE id=NULLIF(current_setting('probe.c7_cita',true), '')::bigint;   -- reactivación (trigger debe resetear)
+  SELECT notificado_cancelacion INTO v_flag FROM public.citas WHERE id=NULLIF(current_setting('probe.c7_cita',true), '')::bigint;
   PERFORM set_config('probe.c7_flag_react', coalesce(v_flag::text,'∅'), false);
-  UPDATE public.citas SET estado='cancelada' WHERE id=current_setting('probe.c7_cita',true)::bigint;   -- re-cancelación
+  UPDATE public.citas SET estado='cancelada' WHERE id=NULLIF(current_setting('probe.c7_cita',true), '')::bigint;   -- re-cancelación
   PERFORM set_config('probe.c7_react','READY',false);
 END $$;
 SELECT set_config('request.jwt.claims', json_build_object('sub', current_setting('probe.c7_pauth',true), 'role','authenticated')::text, true);
 SELECT set_config('role','authenticated', true);
 DO $$ BEGIN
   IF current_setting('probe.c7_react',true) IS DISTINCT FROM 'READY' THEN PERFORM set_config('probe.c7_react','SKIP2',false); RETURN; END IF;
-  PERFORM public.notificar_cancelacion(current_setting('probe.c7_cita',true)::bigint);  -- re-notif (flag reseteado → debe pasar)
+  PERFORM public.notificar_cancelacion(NULLIF(current_setting('probe.c7_cita',true), '')::bigint);  -- re-notif (flag reseteado → debe pasar)
   PERFORM set_config('probe.c7_react','DONE',false);
 END $$;
 SELECT set_config('role','none', true);
 DO $$ DECLARE v_n int; BEGIN
   IF current_setting('probe.c7_react',true) IS DISTINCT FROM 'DONE' THEN PERFORM set_config('probe.p404', CASE WHEN current_setting('probe.c7_react',true)='SKIP' THEN 'N/A' ELSE 'FALLO (re-notif no corrió: '||current_setting('probe.c7_react',true)||')' END, false); RETURN; END IF;
-  SELECT count(*) INTO v_n FROM public.notificaciones WHERE usuario_id=current_setting('probe.c7_med',true)::uuid AND tipo='cita_cancelada' AND created_at>now()-interval '5 minutes';
+  SELECT count(*) INTO v_n FROM public.notificaciones WHERE usuario_id=NULLIF(current_setting('probe.c7_med',true), '')::uuid AND tipo='cita_cancelada' AND created_at>now()-interval '5 minutes';
   IF current_setting('probe.c7_flag_react',true)='false' AND v_n>=2
     THEN PERFORM set_config('probe.p404','OK (reactivación reseteó flag; re-cancelación re-notificó, filas médico='||v_n||')',false);
     ELSE PERFORM set_config('probe.p404','FALLO (flag_post_react='||current_setting('probe.c7_flag_react',true)||' filas='||v_n||')',false); END IF;
@@ -6796,7 +6796,7 @@ END $$;
 SELECT set_config('role','none', true);
 DO $$ DECLARE v_flag boolean; BEGIN
   IF to_regprocedure('public.notificar_chat_interno(uuid)') IS NULL OR NOT EXISTS(SELECT 1 FROM information_schema.columns WHERE table_name='chat_mensajes_internos' AND column_name='notificado') OR coalesce(current_setting('probe.c8_msg',true),'')='' THEN PERFORM set_config('probe.c8_flag','∅',false); RETURN; END IF;
-  SELECT notificado INTO v_flag FROM public.chat_mensajes_internos WHERE id=current_setting('probe.c8_msg',true)::uuid;
+  SELECT notificado INTO v_flag FROM public.chat_mensajes_internos WHERE id=NULLIF(current_setting('probe.c8_msg',true), '')::uuid;
   PERFORM set_config('probe.c8_flag', coalesce(v_flag::text,'∅'), false);
 END $$;
 SELECT set_config('request.jwt.claims', json_build_object('sub', current_setting('probe.c8_autor',true),'role','authenticated')::text, true);
@@ -6809,7 +6809,7 @@ END $$;
 SELECT set_config('role','none', true);
 DO $$ DECLARE v_recipok boolean; BEGIN
   IF coalesce(current_setting('probe.c8_denied',true),'')='' OR current_setting('probe.c8_denied',true)='SKIP' THEN PERFORM set_config('probe.p407','N/A',false); RETURN; END IF;
-  SELECT EXISTS(SELECT 1 FROM public.notificaciones WHERE usuario_id=current_setting('probe.c8_recip',true)::uuid AND tipo='mensaje_interno' AND created_at>now()-interval '2 minutes') INTO v_recipok;
+  SELECT EXISTS(SELECT 1 FROM public.notificaciones WHERE usuario_id=NULLIF(current_setting('probe.c8_recip',true), '')::uuid AND tipo='mensaje_interno' AND created_at>now()-interval '2 minutes') INTO v_recipok;
   IF current_setting('probe.c8_denied',true)='PT002' AND current_setting('probe.c8_flag',true)='false' AND current_setting('probe.c8_legit',true)='OK' AND v_recipok
     THEN PERFORM set_config('probe.p407','OK (no-autor PT002 sin quemar flag; autor notifica)',false);
     ELSE PERFORM set_config('probe.p407','FALLO (denied='||current_setting('probe.c8_denied',true)||' flag='||current_setting('probe.c8_flag',true)||' legit='||current_setting('probe.c8_legit',true)||' recip='||COALESCE(v_recipok::text,'∅')||')',false); END IF;
@@ -6818,16 +6818,16 @@ END $$;
 -- P408 recipients derivados (2 miembros menos autor; 0 ajenos incl. otra empresa) + visibilidad RLS
 DO $$ DECLARE v_in int; v_autor_n int; v_other_n int; BEGIN
   IF current_setting('probe.c8_legit',true) IS DISTINCT FROM 'OK' THEN PERFORM set_config('probe.p408','N/A',false); RETURN; END IF;
-  SELECT count(*) INTO v_in FROM public.notificaciones WHERE usuario_id IN (current_setting('probe.c8_recip',true)::uuid, current_setting('probe.c8_recip2',true)::uuid) AND tipo='mensaje_interno' AND accion_url='/proveedor/mensajes' AND created_at>now()-interval '2 minutes';
-  SELECT count(*) INTO v_autor_n FROM public.notificaciones WHERE usuario_id=current_setting('probe.c8_autor',true)::uuid AND tipo='mensaje_interno' AND created_at>now()-interval '2 minutes';
-  SELECT count(*) INTO v_other_n FROM public.notificaciones WHERE usuario_id=current_setting('probe.c8_other',true)::uuid AND tipo='mensaje_interno' AND created_at>now()-interval '2 minutes';
+  SELECT count(*) INTO v_in FROM public.notificaciones WHERE usuario_id IN (NULLIF(current_setting('probe.c8_recip',true), '')::uuid, NULLIF(current_setting('probe.c8_recip2',true), '')::uuid) AND tipo='mensaje_interno' AND accion_url='/proveedor/mensajes' AND created_at>now()-interval '2 minutes';
+  SELECT count(*) INTO v_autor_n FROM public.notificaciones WHERE usuario_id=NULLIF(current_setting('probe.c8_autor',true), '')::uuid AND tipo='mensaje_interno' AND created_at>now()-interval '2 minutes';
+  SELECT count(*) INTO v_other_n FROM public.notificaciones WHERE usuario_id=NULLIF(current_setting('probe.c8_other',true), '')::uuid AND tipo='mensaje_interno' AND created_at>now()-interval '2 minutes';
   PERFORM set_config('probe.p408', CASE WHEN v_in=2 AND v_autor_n=0 AND v_other_n=0 THEN 'OK (2 recipients, autor 0, otra-empresa 0)' ELSE 'FALLO (in='||v_in||' autor='||v_autor_n||' other='||v_other_n||')' END, false);
 END $$;
 SELECT set_config('request.jwt.claims', json_build_object('sub', current_setting('probe.c8_recip',true),'role','authenticated')::text, true);
 SELECT set_config('role','authenticated', true);
 DO $$ DECLARE v_n int; BEGIN
   IF current_setting('probe.c8_legit',true) IS DISTINCT FROM 'OK' THEN RETURN; END IF;
-  SELECT count(*) INTO v_n FROM public.notificaciones WHERE usuario_id=current_setting('probe.c8_recip',true)::uuid AND tipo='mensaje_interno' AND created_at>now()-interval '2 minutes';
+  SELECT count(*) INTO v_n FROM public.notificaciones WHERE usuario_id=NULLIF(current_setting('probe.c8_recip',true), '')::uuid AND tipo='mensaje_interno' AND created_at>now()-interval '2 minutes';
   IF NOT (v_n>0) THEN PERFORM set_config('probe.p408','FALLO (recipient no lee su fila RLS)',false);
   ELSIF current_setting('probe.p408',true) LIKE 'OK%' THEN PERFORM set_config('probe.p408', current_setting('probe.p408',true)||' + recipient lee (RLS)', false); END IF;
 END $$;
@@ -6850,12 +6850,12 @@ SELECT set_config('request.jwt.claims', json_build_object('sub', current_setting
 SELECT set_config('role','authenticated', true);
 DO $$ BEGIN
   IF coalesce(current_setting('probe.c8_before',true),'')='' THEN RETURN; END IF;
-  PERFORM public.notificar_chat_interno(current_setting('probe.c8_msg',true)::uuid);  -- 2º call (ya notificado → no-op)
+  PERFORM public.notificar_chat_interno(NULLIF(current_setting('probe.c8_msg',true), '')::uuid);  -- 2º call (ya notificado → no-op)
 END $$;
 SELECT set_config('role','none', true);
 DO $$ DECLARE v_after int; v_before int; BEGIN
   IF coalesce(current_setting('probe.c8_before',true),'')='' THEN PERFORM set_config('probe.p410','N/A',false); RETURN; END IF;
-  v_before := current_setting('probe.c8_before',true)::int;
+  v_before := NULLIF(current_setting('probe.c8_before',true), '')::int;
   SELECT count(*) INTO v_after FROM public.notificaciones WHERE tipo='mensaje_interno' AND created_at>now()-interval '3 minutes';
   PERFORM set_config('probe.p410', CASE WHEN v_after=v_before AND v_before>0 THEN 'OK (2º call sin fila nueva: '||v_after||'='||v_before||')' ELSE 'FALLO (before='||v_before||' after='||v_after||')' END, false);
 END $$;
@@ -6884,9 +6884,9 @@ SELECT set_config('role','none', true);
 DO $$ BEGIN
   IF current_setting('probe.lx_ready',true)='1' AND coalesce(current_setting('probe.lx_ex',true),'')<>'' AND coalesce(current_setting('probe.lx_lab',true),'')<>'' THEN
     -- sentinels: resultado crudo + TIPO de examen + NOMBRE de paciente → ninguno debe llegar al cuerpo (lock screen)
-    UPDATE public.examenes SET laboratorio_id=current_setting('probe.lx_lab',true)::uuid,
+    UPDATE public.examenes SET laboratorio_id=NULLIF(current_setting('probe.lx_lab',true), '')::uuid,
       resultados='PHISENTINEL_EVT4', tipo='TIPOSENTINEL_EVT4', paciente_nombre='NOMBRESENTINEL_EVT4'
-      WHERE id=current_setting('probe.lx_ex',true)::int;
+      WHERE id=NULLIF(current_setting('probe.lx_ex',true), '')::int;
   END IF;
 END $$;
 SELECT set_config('request.jwt.claims', json_build_object('sub', current_setting('probe.lx_owner',true),'role','authenticated')::text, true);
@@ -6901,8 +6901,8 @@ SELECT set_config('role','none', true);
 -- P412 no-regresión: tipos 'examen'/'examen_resultado' + 2 filas + RPC gateado (DEFINER)
 DO $$ DECLARE v_pac boolean; v_med boolean; v_gated boolean; BEGIN
   IF current_setting('probe.fold4_call',true) IS DISTINCT FROM 'OK' THEN PERFORM set_config('probe.p412', CASE WHEN current_setting('probe.fold4_call',true)='SKIP' THEN 'N/A' ELSE 'FALLO ('||current_setting('probe.fold4_call',true)||')' END, false); RETURN; END IF;
-  SELECT EXISTS(SELECT 1 FROM public.notificaciones_pacientes WHERE paciente_id=current_setting('probe.lx_pac',true)::int AND tipo='examen' AND titulo='Resultado de examen listo') INTO v_pac;
-  SELECT EXISTS(SELECT 1 FROM public.notificaciones WHERE usuario_id=current_setting('probe.lx_med',true)::uuid AND tipo='examen_resultado' AND titulo='Resultado de examen listo' AND accion_url='/medico/citas') INTO v_med;
+  SELECT EXISTS(SELECT 1 FROM public.notificaciones_pacientes WHERE paciente_id=NULLIF(current_setting('probe.lx_pac',true), '')::int AND tipo='examen' AND titulo='Resultado de examen listo') INTO v_pac;
+  SELECT EXISTS(SELECT 1 FROM public.notificaciones WHERE usuario_id=NULLIF(current_setting('probe.lx_med',true), '')::uuid AND tipo='examen_resultado' AND titulo='Resultado de examen listo' AND accion_url='/medico/citas') INTO v_med;
   SELECT prosecdef INTO v_gated FROM pg_proc WHERE oid='public.notificar_resultado_examen(integer)'::regprocedure;
   PERFORM set_config('probe.p412', CASE WHEN v_pac AND v_med AND v_gated THEN 'OK (tipos examen/examen_resultado + 2 filas + DEFINER)' ELSE 'FALLO (pac='||COALESCE(v_pac::text,'∅')||' med='||COALESCE(v_med::text,'∅')||' definer='||COALESCE(v_gated::text,'∅')||')' END, false);
 END $$;
@@ -6911,14 +6911,14 @@ END $$;
 -- fila (3 sentinels ausentes) + accion_url interna (^/). El detalle vive in-app tras la accion_url.
 DO $$ DECLARE v_leak int; v_url_ok boolean; BEGIN
   IF current_setting('probe.fold4_call',true) IS DISTINCT FROM 'OK' THEN PERFORM set_config('probe.p413','N/A',false); RETURN; END IF;
-  SELECT (SELECT count(*) FROM public.notificaciones_pacientes WHERE paciente_id=current_setting('probe.lx_pac',true)::int AND titulo='Resultado de examen listo'
+  SELECT (SELECT count(*) FROM public.notificaciones_pacientes WHERE paciente_id=NULLIF(current_setting('probe.lx_pac',true), '')::int AND titulo='Resultado de examen listo'
             AND (titulo ~ 'PHISENTINEL_EVT4|TIPOSENTINEL_EVT4|NOMBRESENTINEL_EVT4' OR mensaje ~ 'PHISENTINEL_EVT4|TIPOSENTINEL_EVT4|NOMBRESENTINEL_EVT4'))
-       + (SELECT count(*) FROM public.notificaciones WHERE usuario_id=current_setting('probe.lx_med',true)::uuid AND titulo='Resultado de examen listo'
+       + (SELECT count(*) FROM public.notificaciones WHERE usuario_id=NULLIF(current_setting('probe.lx_med',true), '')::uuid AND titulo='Resultado de examen listo'
             AND (titulo ~ 'PHISENTINEL_EVT4|TIPOSENTINEL_EVT4|NOMBRESENTINEL_EVT4' OR mensaje ~ 'PHISENTINEL_EVT4|TIPOSENTINEL_EVT4|NOMBRESENTINEL_EVT4')) INTO v_leak;
   SELECT bool_and(accion_url ~ '^/') INTO v_url_ok FROM (
-    SELECT accion_url FROM public.notificaciones_pacientes WHERE paciente_id=current_setting('probe.lx_pac',true)::int AND titulo='Resultado de examen listo'
+    SELECT accion_url FROM public.notificaciones_pacientes WHERE paciente_id=NULLIF(current_setting('probe.lx_pac',true), '')::int AND titulo='Resultado de examen listo'
     UNION ALL
-    SELECT accion_url FROM public.notificaciones WHERE usuario_id=current_setting('probe.lx_med',true)::uuid AND titulo='Resultado de examen listo') t;
+    SELECT accion_url FROM public.notificaciones WHERE usuario_id=NULLIF(current_setting('probe.lx_med',true), '')::uuid AND titulo='Resultado de examen listo') t;
   PERFORM set_config('probe.p413', CASE WHEN v_leak=0 AND COALESCE(v_url_ok,false) THEN 'OK (resultado+tipo+nombre ausentes en ambas + accion_url interna)' ELSE 'FALLO (leak='||v_leak||' url_ok='||COALESCE(v_url_ok::text,'∅')||')' END, false);
 END $$;
 SELECT set_config('role','none', true);
@@ -7042,19 +7042,19 @@ END $$;
 SELECT set_config('request.jwt.claims', json_build_object('sub', current_setting('probe.h_ez',true),'role','authenticated')::text, true);  -- admin EzPay
 DO $$ BEGIN
   IF current_setting('probe.h_ready',true)<>'1' OR to_regprocedure('public.notificar_empresa_estado(uuid)') IS NULL THEN PERFORM set_config('probe.ha_call','SKIP',false); RETURN; END IF;
-  PERFORM public.notificar_empresa_estado(current_setting('probe.h_A',true)::uuid);
-  PERFORM public.notificar_pago_resultado(current_setting('probe.h_pago',true)::uuid);
-  PERFORM public.notificar_campana_resultado(current_setting('probe.h_solpub',true)::uuid);   -- publicada → sin notas
-  PERFORM public.notificar_campana_resultado(current_setting('probe.h_solrech',true)::uuid);  -- rechazada → notas DEL REF
+  PERFORM public.notificar_empresa_estado(NULLIF(current_setting('probe.h_A',true), '')::uuid);
+  PERFORM public.notificar_pago_resultado(NULLIF(current_setting('probe.h_pago',true), '')::uuid);
+  PERFORM public.notificar_campana_resultado(NULLIF(current_setting('probe.h_solpub',true), '')::uuid);   -- publicada → sin notas
+  PERFORM public.notificar_campana_resultado(NULLIF(current_setting('probe.h_solrech',true), '')::uuid);  -- rechazada → notas DEL REF
   PERFORM set_config('probe.ha_call','OK',false);
 END $$;
 SELECT set_config('role','none', true);
 DO $$ DECLARE v_emp int; v_pag int; v_cam int; v_aj int; v_content boolean; v_notas boolean; v_nonotas boolean; BEGIN
   IF current_setting('probe.ha_call',true) IS DISTINCT FROM 'OK' THEN PERFORM set_config('probe.p415', CASE WHEN current_setting('probe.ha_call',true)='SKIP' THEN 'N/A' ELSE 'FALLO (call)' END,false); RETURN; END IF;
-  SELECT count(*) INTO v_emp FROM public.notificaciones WHERE tipo='empresa' AND usuario_id IN (current_setting('probe.h_adm',true)::uuid,current_setting('probe.h_edi',true)::uuid,current_setting('probe.h_vis',true)::uuid) AND created_at>now()-interval '3 minutes';
-  SELECT count(*) INTO v_pag FROM public.notificaciones WHERE tipo='pago' AND usuario_id IN (current_setting('probe.h_adm',true)::uuid,current_setting('probe.h_edi',true)::uuid,current_setting('probe.h_vis',true)::uuid) AND created_at>now()-interval '3 minutes';
-  SELECT count(*) INTO v_cam FROM public.notificaciones WHERE tipo='campana' AND usuario_id IN (current_setting('probe.h_adm',true)::uuid,current_setting('probe.h_edi',true)::uuid,current_setting('probe.h_vis',true)::uuid) AND created_at>now()-interval '3 minutes';
-  SELECT count(*) INTO v_aj FROM public.notificaciones WHERE tipo IN ('empresa','pago','campana') AND usuario_id=current_setting('probe.h_ext',true)::uuid AND created_at>now()-interval '3 minutes';
+  SELECT count(*) INTO v_emp FROM public.notificaciones WHERE tipo='empresa' AND usuario_id IN (NULLIF(current_setting('probe.h_adm',true), '')::uuid,NULLIF(current_setting('probe.h_edi',true), '')::uuid,NULLIF(current_setting('probe.h_vis',true), '')::uuid) AND created_at>now()-interval '3 minutes';
+  SELECT count(*) INTO v_pag FROM public.notificaciones WHERE tipo='pago' AND usuario_id IN (NULLIF(current_setting('probe.h_adm',true), '')::uuid,NULLIF(current_setting('probe.h_edi',true), '')::uuid,NULLIF(current_setting('probe.h_vis',true), '')::uuid) AND created_at>now()-interval '3 minutes';
+  SELECT count(*) INTO v_cam FROM public.notificaciones WHERE tipo='campana' AND usuario_id IN (NULLIF(current_setting('probe.h_adm',true), '')::uuid,NULLIF(current_setting('probe.h_edi',true), '')::uuid,NULLIF(current_setting('probe.h_vis',true), '')::uuid) AND created_at>now()-interval '3 minutes';
+  SELECT count(*) INTO v_aj FROM public.notificaciones WHERE tipo IN ('empresa','pago','campana') AND usuario_id=NULLIF(current_setting('probe.h_ext',true), '')::uuid AND created_at>now()-interval '3 minutes';
   SELECT EXISTS(SELECT 1 FROM public.notificaciones WHERE tipo='campana' AND mensaje LIKE '%CAMP_QA_PUB%' AND created_at>now()-interval '3 minutes') INTO v_content;
   -- rama rechazada: el cuerpo contiene las notas_admin PERSISTIDAS del ref (no compuesto por el caller)
   SELECT EXISTS(SELECT 1 FROM public.notificaciones WHERE tipo='campana' AND mensaje LIKE '%CAMP_QA_RECH%' AND mensaje LIKE '%NOTASQA_SECRETO%' AND created_at>now()-interval '3 minutes') INTO v_notas;
@@ -7085,7 +7085,7 @@ END $$;
 SELECT set_config('role','none', true);
 DO $$ DECLARE v_flag boolean; BEGIN
   IF coalesce(current_setting('probe.h_solenv',true),'')='' OR NOT EXISTS(SELECT 1 FROM information_schema.columns WHERE table_name='solicitudes_campana' AND column_name='notificado_envio') THEN PERFORM set_config('probe.hb_flag','∅',false); RETURN; END IF;
-  SELECT notificado_envio INTO v_flag FROM public.solicitudes_campana WHERE id=current_setting('probe.h_solenv',true)::uuid;
+  SELECT notificado_envio INTO v_flag FROM public.solicitudes_campana WHERE id=NULLIF(current_setting('probe.h_solenv',true), '')::uuid;
   PERFORM set_config('probe.hb_flag', coalesce(v_flag::text,'∅'), false);
 END $$;
 -- legítimo: dueño (h_adm) sobre sol_env (enviada) → notifica admins EzPay
@@ -7112,9 +7112,9 @@ END $$;
 SELECT set_config('role','none', true);
 DO $$ DECLARE v_flag_post boolean; BEGIN
   IF current_setting('probe.hb_legit',true) IS DISTINCT FROM 'OK' THEN PERFORM set_config('probe.p417b','N/A',false); RETURN; END IF;
-  UPDATE public.solicitudes_campana SET estado='rechazada' WHERE id=current_setting('probe.h_solenv',true)::uuid;
-  UPDATE public.solicitudes_campana SET estado='enviada' WHERE id=current_setting('probe.h_solenv',true)::uuid;  -- trigger resetea
-  SELECT notificado_envio INTO v_flag_post FROM public.solicitudes_campana WHERE id=current_setting('probe.h_solenv',true)::uuid;
+  UPDATE public.solicitudes_campana SET estado='rechazada' WHERE id=NULLIF(current_setting('probe.h_solenv',true), '')::uuid;
+  UPDATE public.solicitudes_campana SET estado='enviada' WHERE id=NULLIF(current_setting('probe.h_solenv',true), '')::uuid;  -- trigger resetea
+  SELECT notificado_envio INTO v_flag_post FROM public.solicitudes_campana WHERE id=NULLIF(current_setting('probe.h_solenv',true), '')::uuid;
   PERFORM set_config('probe.p417b', CASE WHEN v_flag_post=false THEN 'OK (re-submission reseteó notificado_envio)' ELSE 'FALLO (flag_post='||coalesce(v_flag_post::text,'∅')||')' END,false);
 END $$;
 SELECT set_config('role','none', true);
@@ -7136,9 +7136,9 @@ END $$;
 SELECT set_config('role','none', true);
 DO $$ DECLARE v_rec int; v_prop int; v_aj int; BEGIN
   IF current_setting('probe.hc_call',true) IS DISTINCT FROM 'OK' THEN PERFORM set_config('probe.p417', CASE WHEN current_setting('probe.hc_call',true)='SKIP' THEN 'N/A' ELSE 'FALLO (call='||current_setting('probe.hc_call',true)||')' END,false); RETURN; END IF;
-  SELECT count(*) INTO v_rec FROM public.notificaciones WHERE tipo='visita_propuesta' AND usuario_id IN (current_setting('probe.h_adm',true)::uuid,current_setting('probe.h_edi',true)::uuid) AND created_at>now()-interval '3 minutes';
-  SELECT count(*) INTO v_prop FROM public.notificaciones WHERE tipo='visita_propuesta' AND usuario_id=current_setting('probe.h_vis',true)::uuid AND created_at>now()-interval '3 minutes';
-  SELECT count(*) INTO v_aj FROM public.notificaciones WHERE tipo='visita_propuesta' AND usuario_id=current_setting('probe.h_ext',true)::uuid AND created_at>now()-interval '3 minutes';
+  SELECT count(*) INTO v_rec FROM public.notificaciones WHERE tipo='visita_propuesta' AND usuario_id IN (NULLIF(current_setting('probe.h_adm',true), '')::uuid,NULLIF(current_setting('probe.h_edi',true), '')::uuid) AND created_at>now()-interval '3 minutes';
+  SELECT count(*) INTO v_prop FROM public.notificaciones WHERE tipo='visita_propuesta' AND usuario_id=NULLIF(current_setting('probe.h_vis',true), '')::uuid AND created_at>now()-interval '3 minutes';
+  SELECT count(*) INTO v_aj FROM public.notificaciones WHERE tipo='visita_propuesta' AND usuario_id=NULLIF(current_setting('probe.h_ext',true), '')::uuid AND created_at>now()-interval '3 minutes';
   PERFORM set_config('probe.p417', CASE WHEN current_setting('probe.hc_spoof',true)='PT002' AND v_rec=2 AND v_prop=0 AND v_aj=0
     THEN 'OK (spoof PT002; 2 admins/editores; proponente 0; ajeno 0)'
     ELSE 'FALLO (spoof='||current_setting('probe.hc_spoof',true)||' rec='||v_rec||' prop='||v_prop||' ajeno='||v_aj||')' END, false);
@@ -7166,11 +7166,11 @@ SELECT set_config('role','none', true);
 DO $$ DECLARE v_apr int; v_rech int; v_bad int; BEGIN
   IF current_setting('probe.hd_call',true) IS DISTINCT FROM 'OK' THEN PERFORM set_config('probe.p418', CASE WHEN current_setting('probe.hd_call',true)='SKIP' THEN 'N/A' ELSE 'FALLO (call='||current_setting('probe.hd_call',true)||')' END,false); RETURN; END IF;
   -- rama aprobada (confirmada→tipo visita_aprobada, recipient=editor∈A)
-  SELECT count(*) INTO v_apr  FROM public.notificaciones WHERE tipo='visita_aprobada'  AND usuario_id=current_setting('probe.h_edi',true)::uuid AND titulo='Visita aprobada'  AND created_at>now()-interval '3 minutes';
+  SELECT count(*) INTO v_apr  FROM public.notificaciones WHERE tipo='visita_aprobada'  AND usuario_id=NULLIF(current_setting('probe.h_edi',true), '')::uuid AND titulo='Visita aprobada'  AND created_at>now()-interval '3 minutes';
   -- rama rechazada (cancelada→tipo visita_rechazada, recipient=visitador∈A)
-  SELECT count(*) INTO v_rech FROM public.notificaciones WHERE tipo='visita_rechazada' AND usuario_id=current_setting('probe.h_vis',true)::uuid AND titulo='Visita rechazada' AND created_at>now()-interval '3 minutes';
+  SELECT count(*) INTO v_rech FROM public.notificaciones WHERE tipo='visita_rechazada' AND usuario_id=NULLIF(current_setting('probe.h_vis',true), '')::uuid AND titulo='Visita rechazada' AND created_at>now()-interval '3 minutes';
   -- gate relación: cuenta REAL ∉ empresa (e7935069 ∈ B) → 0 (no apoyado en la ruta del trigger deshabilitado)
-  SELECT count(*) INTO v_bad  FROM public.notificaciones WHERE tipo IN ('visita_aprobada','visita_rechazada') AND usuario_id=current_setting('probe.h_ext',true)::uuid AND created_at>now()-interval '3 minutes';
+  SELECT count(*) INTO v_bad  FROM public.notificaciones WHERE tipo IN ('visita_aprobada','visita_rechazada') AND usuario_id=NULLIF(current_setting('probe.h_ext',true), '')::uuid AND created_at>now()-interval '3 minutes';
   PERFORM set_config('probe.p418', CASE WHEN current_setting('probe.hd_spoof',true)='PT002' AND v_apr=1 AND v_rech=1 AND v_bad=0
     THEN 'OK (spoof PT002; ramas aprobada+rechazada por estado del ref; relación∉empresa SKIP 0)'
     ELSE 'FALLO (spoof='||current_setting('probe.hd_spoof',true)||' apr='||v_apr||' rech='||v_rech||' bad='||v_bad||')' END, false);
@@ -7179,7 +7179,7 @@ SELECT set_config('request.jwt.claims', json_build_object('sub', current_setting
 SELECT set_config('role','authenticated', true);
 DO $$ DECLARE v_n int; BEGIN
   IF current_setting('probe.hd_call',true) IS DISTINCT FROM 'OK' THEN RETURN; END IF;
-  SELECT count(*) INTO v_n FROM public.notificaciones WHERE usuario_id=current_setting('probe.h_edi',true)::uuid AND tipo='visita_aprobada' AND created_at>now()-interval '3 minutes';
+  SELECT count(*) INTO v_n FROM public.notificaciones WHERE usuario_id=NULLIF(current_setting('probe.h_edi',true), '')::uuid AND tipo='visita_aprobada' AND created_at>now()-interval '3 minutes';
   IF NOT (v_n>0) THEN PERFORM set_config('probe.p418','FALLO (recipient no lee su fila RLS)',false);
   ELSIF current_setting('probe.p418',true) LIKE 'OK%' THEN PERFORM set_config('probe.p418', current_setting('probe.p418',true)||' + recipient lee (RLS)', false); END IF;
 END $$;
@@ -7237,7 +7237,7 @@ END $$;
 SELECT set_config('role','none', true);
 DO $$ DECLARE v_flag boolean; BEGIN
   IF coalesce(current_setting('probe.rx_r1',true),'')='' OR NOT EXISTS(SELECT 1 FROM information_schema.columns WHERE table_name='recetas' AND column_name='notificado') THEN PERFORM set_config('probe.rx_flag','∅',false); RETURN; END IF;
-  SELECT notificado INTO v_flag FROM public.recetas WHERE id=current_setting('probe.rx_r1',true)::bigint;
+  SELECT notificado INTO v_flag FROM public.recetas WHERE id=NULLIF(current_setting('probe.rx_r1',true), '')::bigint;
   PERFORM set_config('probe.rx_flag', coalesce(v_flag::text,'∅'), false);
 END $$;
 SELECT set_config('request.jwt.claims', json_build_object('sub', current_setting('probe.rx_med',true),'role','authenticated')::text, true);
@@ -7257,7 +7257,7 @@ END $$;
 SELECT set_config('role','none', true);
 DO $$ DECLARE v_med_notif boolean; BEGIN
   IF coalesce(current_setting('probe.rx_denied',true),'')='' OR current_setting('probe.rx_denied',true)='SKIP' THEN PERFORM set_config('probe.p420','N/A',false); RETURN; END IF;
-  SELECT EXISTS(SELECT 1 FROM public.notificaciones_pacientes WHERE paciente_id=current_setting('probe.rx_pac',true)::bigint AND tipo='receta' AND created_at>now()-interval '3 minutes') INTO v_med_notif;
+  SELECT EXISTS(SELECT 1 FROM public.notificaciones_pacientes WHERE paciente_id=NULLIF(current_setting('probe.rx_pac',true), '')::bigint AND tipo='receta' AND created_at>now()-interval '3 minutes') INTO v_med_notif;
   PERFORM set_config('probe.p420', CASE
     WHEN current_setting('probe.rx_denied',true)='PT002' AND current_setting('probe.rx_flag',true)='false'
       AND current_setting('probe.rx_legit',true)='OK' AND v_med_notif AND current_setting('probe.rx_sa_res',true)='OK'
@@ -7268,8 +7268,8 @@ END $$;
 -- P421 recipient derivado: recipient = receta.paciente_id (pac 23); 0 ajenos (ningún otro paciente con esta receta r1)
 DO $$ DECLARE v_pac int; v_aj int; BEGIN
   IF current_setting('probe.rx_legit',true) IS DISTINCT FROM 'OK' THEN PERFORM set_config('probe.p421','N/A',false); RETURN; END IF;
-  SELECT count(*) INTO v_pac FROM public.notificaciones_pacientes WHERE paciente_id=current_setting('probe.rx_pac',true)::bigint AND tipo='receta' AND titulo='Nueva receta' AND created_at>now()-interval '3 minutes';
-  SELECT count(*) INTO v_aj FROM public.notificaciones_pacientes WHERE paciente_id<>current_setting('probe.rx_pac',true)::bigint AND tipo='receta' AND titulo='Nueva receta' AND created_at>now()-interval '3 minutes';
+  SELECT count(*) INTO v_pac FROM public.notificaciones_pacientes WHERE paciente_id=NULLIF(current_setting('probe.rx_pac',true), '')::bigint AND tipo='receta' AND titulo='Nueva receta' AND created_at>now()-interval '3 minutes';
+  SELECT count(*) INTO v_aj FROM public.notificaciones_pacientes WHERE paciente_id<>NULLIF(current_setting('probe.rx_pac',true), '')::bigint AND tipo='receta' AND titulo='Nueva receta' AND created_at>now()-interval '3 minutes';
   PERFORM set_config('probe.p421', CASE WHEN v_pac>=1 AND v_aj=0 THEN 'OK (recipient=pac del ref '||v_pac||'; 0 ajenos)' ELSE 'FALLO (pac='||v_pac||' ajenos='||v_aj||')' END, false);
 END $$;
 
@@ -7278,7 +7278,7 @@ SELECT set_config('role','none', true);
 DO $$ DECLARE v_n int; BEGIN
   IF current_setting('probe.rx_legit',true) IS DISTINCT FROM 'OK' THEN PERFORM set_config('probe.p422','N/A',false); RETURN; END IF;
   -- r1 generó EXACTAMENTE 1 fila pese a 2 llamadas de med.qa (la 2ª claim=0)
-  SELECT count(*) INTO v_n FROM public.notificaciones_pacientes WHERE paciente_id=current_setting('probe.rx_pac',true)::bigint AND tipo='receta' AND titulo='Nueva receta' AND created_at>now()-interval '3 minutes';
+  SELECT count(*) INTO v_n FROM public.notificaciones_pacientes WHERE paciente_id=NULLIF(current_setting('probe.rx_pac',true), '')::bigint AND tipo='receta' AND titulo='Nueva receta' AND created_at>now()-interval '3 minutes';
   -- r1 (med.qa) + r2 (super_admin) = 2 filas esperadas para pac 23; si hubiera doble por r1 → 3
   PERFORM set_config('probe.p422', CASE WHEN v_n=2 THEN 'OK (2 filas: r1 1x pese a 2 calls + r2; sin doble)' ELSE 'FALLO (filas pac='||v_n||' esp 2)' END, false);
 END $$;
@@ -11224,10 +11224,10 @@ SELECT set_config('role','none', true);
 --                            transaccional sobre un schema temporal, no puede corromper ningun
 --                            fixture y desaparece con el ROLLBACK.
 --
---   cast_directo = 51        Bloques DO sin handler con `current_setting('x',true)::T` SIN NULLIF.
+--   cast_directo = 0         Bloques DO sin handler con `current_setting('x',true)::T` SIN NULLIF.
 --                            El harness setea CADENAS VACIAS a proposito (88 coalesce(...,'') dentro
 --                            de set_config) y ''::uuid es 22P02: mata la transaccion igual que un
---                            NOT NULL. Fase 2.1: 155 -> 103 -> 51 (tanda 2 de 3) -> objetivo 0.
+--                            NOT NULL. Fase 2.1 CERRADA: 155 -> 0 en tres tandas.
 --
 --   do_sin_handler = 319     Bloques DO sin `EXCEPTION WHEN`. DEUDA CON FECHA, igual que la allowlist
 --                            del P480: la ataca la FASE 2. La regla es ESTRICTA — un `RAISE EXCEPTION`
@@ -11241,7 +11241,7 @@ SELECT set_config('role','none', true);
 DO $$
 BEGIN
   PERFORM set_config('probe.p516',
-    'OK-SENAL (baseline declarado: top_level_dml_ddl=0 excluyendo pg_temp, cast_directo=51 en baja, do_sin_handler=319 deuda con fecha). '||
+    'OK-SENAL (baseline declarado: top_level_dml_ddl=0 excluyendo pg_temp, cast_directo=0 CERRADO, do_sin_handler=319 deuda con fecha). '||
     'El gate real es tests/rls/b2_guard.py — este probe NO mide, senaliza.', false);
 EXCEPTION WHEN OTHERS THEN
   -- handler puesto por coherencia: el propio b2_guard.py conto este bloque como deuda nueva cuando
