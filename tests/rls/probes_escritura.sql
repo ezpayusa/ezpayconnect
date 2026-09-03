@@ -9417,11 +9417,12 @@ SELECT set_config('role','none',true);
 DO $$
 DECLARE
   -- ALLOWLIST — censo 2026-09-02, paquete PA-FAILOPEN. Se vacia lote por lote.
-  v_allow text[] := ARRAY[
-    'public.activar_capacidad_suelta',            -- lote N (rama positiva de scope; gate real ya COALESCE-ado)
+  v_allow text[] := ARRAY[]::text[];  -- VACIA: el paquete PA-FAILOPEN termino. Ver P481.
+  v_allow_historico text[] := ARRAY[
+    -- SALDADA por la mig 271 (lote 6): 'public.activar_capacidad_suelta'
     -- SALDADA por la mig 268 (lote 3): 'public.aprobar_personalizacion'
     -- SALDADA por la mig 270 (lote 5): 'public.aprobar_solicitud_campana'
-    'public.asignar_tier',                        -- lote N (rama positiva de scope; gate real ya COALESCE-ado)
+    -- SALDADA por la mig 271 (lote 6): 'public.asignar_tier'
     -- SALDADA por la mig 267 (lote 2): 'public.cerrar_liquidacion'
     -- SALDADA por la mig 268 (lote 3): 'public.crear_capacidad_pais'
     -- SALDADA por la mig 268 (lote 3): 'public.crear_tier_pais'
@@ -9436,17 +9437,18 @@ DECLARE
     -- anon. PRIMERA de las 27 que se vacia. El centinela debe quedar VERDE con 26, no con 27.
     -- 'public.metricas_campana_pais',
     -- SALDADA por la mig 270 (lote 5): 'public.notificar_campana_resultado'
-    'public.notificar_empresa_estado',            -- lote N
+    -- SALDADA por la mig 271 (lote 6): 'public.notificar_empresa_estado'
     -- SALDADA por la mig 270 (lote 5): 'public.notificar_pago_resultado'
-    'public.notificar_resultado_examen',          -- lote N (IS DISTINCT FROM: NULL-safe, no explotable)
+    -- SALDADA por la mig 271 (lote 6): 'public.notificar_resultado_examen'
     -- SALDADA por la mig 269 (lote 4): 'public.obtener_resumen_pais'
     -- SALDADA por la mig 268 (lote 3): 'public.rechazar_personalizacion'
-    'public.registrar_evidencia_entrega'  -- lote N (NOT LIKE contra mi_empresa_proveedor())
+    -- SALDADA por la mig 271 (lote 6): 'public.registrar_evidencia_entrega'
     -- SALDADA por la mig 270 (lote 5): 'public.resolver_canje'
     -- SALDADA por la mig 268 (lote 3): 'public.resolver_propuesta_especialidad'
     -- SALDADA por la mig 268 (lote 3): 'public.solicitar_capacidad_pais'
     -- SALDADA por la mig 267 (lote 2): 'public.solicitar_contrato_comision'
     -- SALDADA por la mig 268 (lote 3): 'public.solicitar_tier_pais'
+    NULL::text   -- relleno: el array historico esta VACIO de entradas vivas, es solo el registro
   ];
   v_rojas    text[];
   v_nuevas   text[];
@@ -9475,42 +9477,81 @@ BEGIN
 END $$;
 
 -- ============================================================================================
--- P481 — EL PROBE DEL PROBE
+-- P481 — EL PROBE DEL PROBE (FORMA INVERTIDA, desde el lote 6)
 -- --------------------------------------------------------------------------------------------
--- Corre EL MISMO censo con una allowlist a la que se le quito UNA entrada conocida y verifica que
--- el detector la marque como nueva. Si P481 no diera exactamente 1, el centinela P480 estaria
--- verde por no estar midiendo nada (censo vacio, regex que no matchea, walker que siempre dice
--- false) y no nos enterariamos nunca.
--- LA ENTRADA APUNTADA CAMBIA CADA LOTE, POR DISENO, Y YA SE CUMPLIO DOS VECES:
---   lote 1 -> apuntaba a metricas_campana_pais, que el lote 1 migro de verdad;
---   lote 2 -> apuntaba a cerrar_liquidacion, que el lote 2 acaba de saldar.
--- En ambos casos el probe se habria puesto ROJO por su propia premisa (espera ver aparecer una
--- entrada que ya no esta en rojo). Ahora apunta a aprobar_solicitud_campana, del lote N.
--- REGLA: cada lote que salda entradas DEBE re-apuntar este probe a una que siga en rojo.
--- Cuando la allowlist quede vacia hay que invertirlo: sembrar una funcion fail-open de fixture
--- dentro del ROLLBACK y esperar que el centinela la cace.
+-- ESTE ES EL UNICO PROBE DEL HARNESS CUYO TRABAJO ES FALLAR SI EL INSTRUMENTO SE ROMPE.
+-- No verifica ninguna funcion de produccion: verifica que P480 siga siendo capaz de ver.
+--
+-- POR QUE CAMBIO DE FORMA. Hasta el lote 5 este probe le sacaba UNA entrada a la allowlist y exigia
+-- que el centinela la marcara como nueva. Esa forma dependia de que quedara algo roto en la lista, y
+-- hubo que re-apuntarlo TRES veces (lote 1: metricas_campana_pais; lote 2: cerrar_liquidacion;
+-- lote 5: aprobar_solicitud_campana), cada vez que el lote saldaba la entrada apuntada.
+-- Con el lote 6 la allowlist quedo en CERO: la forma vieja se quedaria sin entradas que sacar y
+-- pasaria a dar VERDE POR VACIO — exactamente el falso verde que este paquete persigue.
+--
+-- FORMA NUEVA: se SIEMBRAN dos funciones de fixture dentro del ROLLBACK y se exige que el detector
+-- distinga entre ellas.
+--   (a) POSITIVA: patron EXACTO del bug (SECURITY DEFINER + gate con RAISE + comparacion directa
+--       sobre get_auth_user_pais_id() sin COALESCE envolvente). El centinela DEBE marcarla.
+--   (b) NEGATIVA: el MISMO patron pero CON el COALESCE envolvente correcto. El centinela NO debe
+--       marcarla. Sin esta mitad, un detector que marcara TODO tambien pasaria el probe — y un
+--       detector que marca todo es tan inutil como uno que no marca nada, porque obliga a
+--       allowlistear el mundo y nadie vuelve a mirarlo.
+--
+-- Las dos funciones se crean por DDL dentro de la transaccion del harness y desaparecen con el
+-- ROLLBACK (el DDL en Postgres es transaccional). Nunca tocan produccion.
 -- ============================================================================================
 DO $$
 DECLARE
-  v_allow_sin1 text[] := ARRAY[
-    'public.activar_capacidad_suelta',
-    'public.asignar_tier',
-    -- 'public.notificar_empresa_estado'  <-- ENTRADA QUITADA A PROPOSITO (lote 6, sigue en rojo)
-    'public.notificar_resultado_examen',
-    'public.registrar_evidencia_entrega'
-  ];
-  v_nuevas text[];
+  v_rojas text[];
+  v_pos boolean; v_neg boolean;
 BEGIN
-  SELECT COALESCE(array_agg(func ORDER BY func), ARRAY[]::text[]) INTO v_nuevas
-    FROM pg_temp.censo_fail_open() WHERE func <> ALL (v_allow_sin1);
+  -- (a) TRAMPA: el patron exacto de la mig 222, fail-open
+  EXECUTE $ddl$
+    CREATE FUNCTION public.p481_fixture_fail_open(p_pais_id uuid) RETURNS void
+    LANGUAGE plpgsql SECURITY DEFINER SET search_path = '' AS $fx$
+    BEGIN
+      IF NOT ( public.get_auth_user_rol() = 'super_admin'
+               OR ( public.get_auth_user_rol() = 'admin_pais'
+                    AND public.get_auth_user_pais_id() = p_pais_id ) ) THEN
+        RAISE EXCEPTION 'no_autorizado' USING ERRCODE = '42501';
+      END IF;
+    END $fx$;
+  $ddl$;
 
-  IF v_nuevas = ARRAY['public.notificar_empresa_estado'] THEN
+  -- (b) CONTROL: mismo patron, con el COALESCE envolvente correcto -> NO debe marcarse
+  EXECUTE $ddl$
+    CREATE FUNCTION public.p481_fixture_ok(p_pais_id uuid) RETURNS void
+    LANGUAGE plpgsql SECURITY DEFINER SET search_path = '' AS $fx$
+    BEGIN
+      IF NOT COALESCE( public.get_auth_user_rol() = 'super_admin'
+                       OR ( public.get_auth_user_rol() = 'admin_pais'
+                            AND public.get_auth_user_pais_id() = p_pais_id ), false ) THEN
+        RAISE EXCEPTION 'no_autorizado' USING ERRCODE = '42501';
+      END IF;
+    END $fx$;
+  $ddl$;
+
+  SELECT COALESCE(array_agg(func ORDER BY func), ARRAY[]::text[]) INTO v_rojas
+    FROM pg_temp.censo_fail_open();
+
+  v_pos := 'public.p481_fixture_fail_open' = ANY (v_rojas);
+  v_neg := 'public.p481_fixture_ok'        = ANY (v_rojas);
+
+  -- se borran explicitamente ademas del ROLLBACK: si algun dia este bloque se corriera fuera de una
+  -- transaccion, no debe dejar funciones colgadas en public.
+  EXECUTE 'DROP FUNCTION IF EXISTS public.p481_fixture_fail_open(uuid)';
+  EXECUTE 'DROP FUNCTION IF EXISTS public.p481_fixture_ok(uuid)';
+
+  IF v_pos AND NOT v_neg THEN
     PERFORM set_config('probe.p481',
-      'OK (sacando 1 entrada de la allowlist el centinela la detecta: [public.notificar_empresa_estado] — P480 mide algo real)', false);
+      'OK (el detector VE: caza la funcion sembrada con el patron del bug y NO marca la que tiene el COALESCE envolvente — P480 mide algo real con la allowlist vacia)', false);
+  ELSIF NOT v_pos THEN
+    PERFORM set_config('probe.p481',
+      'ROJO — EL CENTINELA ESTA CIEGO: sembre una funcion con el patron exacto del bug y P480 NO la detecto. El detector se rompio; todo verde de P480 es falso hasta arreglarlo.', false);
   ELSE
     PERFORM set_config('probe.p481',
-      'ROJO — EL CENTINELA NO MIDE (esperaba exactamente [public.notificar_empresa_estado], obtuvo ['||
-      array_to_string(v_nuevas,', ')||'])', false);
+      'ROJO — EL CENTINELA MARCA TODO: tambien marco la funcion CORRECTA (con COALESCE envolvente). Un detector que marca todo obliga a allowlistear el mundo y deja de servir.', false);
   END IF;
 END $$;
 
@@ -10888,6 +10929,159 @@ BEGIN
 END $$;
 SELECT set_config('role','none', true);
 
+-- ############################################################################################
+-- PAQUETE PA-FAILOPEN - LOTE 6 - P511-P515 + FX11 (las 5 fragiles, mig 271). CIERRA EL PAQUETE.
+-- ############################################################################################
+DO $$
+DECLARE
+  v_gt uuid := 'cbbbbe6d-59fe-4cf2-91ee-3e31ba1d5909';
+  v_sv uuid := 'f2c75b8e-ef54-4a05-b2ff-7363e448f680';
+  -- caller SIN NADA: ni perfiles ni cuentas_proveedor -> get_auth_user_rol() y
+  -- mi_empresa_proveedor() son ambos NULL. farmacia.qa NO sirve para esto: tiene cuentas_proveedor.
+  v_nadie uuid := '00000000-0000-4271-0511-0000000000ff';
+  v_super uuid; v_adminpais uuid;
+  v_emp_gt uuid; v_emp_sv uuid;
+  v_tier_gt uuid; v_tier_sv uuid;
+  v_examen_sinlab integer;
+  v_notif0 bigint; v_notif1 bigint; v_cap0 bigint; v_cap1 bigint;
+  v_det text := ''; v_ok boolean;
+  v_511 text; v_512 text; v_513 text; v_514 text; v_515 text; v_fx text;
+  v_fatal text := NULL; r record;
+BEGIN
+  IF to_regprocedure('private.puede_admin_pais(uuid,text[])') IS NULL THEN
+    PERFORM set_config('probe.p511','ROJO (mig 265 sin aplicar)', false);
+    PERFORM set_config('probe.p512','ROJO (mig 265 sin aplicar)', false);
+    PERFORM set_config('probe.p513','ROJO (mig 265 sin aplicar)', false);
+    PERFORM set_config('probe.p514','ROJO (mig 265 sin aplicar)', false);
+    PERFORM set_config('probe.p515','ROJO (mig 265 sin aplicar)', false);
+    PERFORM set_config('probe.fx_l6','ROJO (mig 265 sin aplicar)', false);
+    RETURN;
+  END IF;
+
+  BEGIN
+    SELECT id INTO v_super     FROM public.perfiles WHERE email='admin.qa@ezpayconnect.com';
+    SELECT id INTO v_adminpais FROM public.perfiles WHERE email='adminpais.qa@ezpayconnect.com';
+    SELECT id INTO v_emp_gt    FROM public.empresas_proveedoras WHERE pais_id=v_gt LIMIT 1;
+    IF v_super IS NULL OR v_adminpais IS NULL OR v_emp_gt IS NULL THEN
+      v_fatal := 'faltan actores base'; RAISE EXCEPTION 'PROBE_UNDO';
+    END IF;
+
+    INSERT INTO public.empresas_proveedoras (nombre_empresa, tipo, estado, pais_id, email_contacto)
+      VALUES ('P271 Empresa SV','farmacia','activa', v_sv,'p271.sv@example.invalid') RETURNING id INTO v_emp_sv;
+
+    -- catalogos: una GLOBAL (pais_id NULL), una de GT, una de SV
+    INSERT INTO public.capacidades_catalogo (codigo,nombre,pais_id,orden,activo) VALUES
+      ('P271CAPGLOB','P271 Cap global', NULL, 900, true),
+      ('P271CAPGT',  'P271 Cap GT',     v_gt, 900, true),
+      ('P271CAPSV',  'P271 Cap SV',     v_sv, 900, true);
+    INSERT INTO public.tiers_catalogo (codigo,nombre,pais_id,orden,activo)
+      VALUES ('P271TIERGT','P271 Tier GT', v_gt, 900, true) RETURNING id INTO v_tier_gt;
+    INSERT INTO public.tiers_catalogo (codigo,nombre,pais_id,orden,activo)
+      VALUES ('P271TIERSV','P271 Tier SV', v_sv, 900, true) RETURNING id INTO v_tier_sv;
+
+    -- examen SIN laboratorio: el caso 'ambos NULL' de notificar_resultado_examen
+    INSERT INTO public.examenes (tipo, fecha_solicitud, estado, laboratorio_id, origen, prioridad)
+      VALUES ('P271 examen sin lab', CURRENT_DATE, 'completado', NULL, 'clinica', 'normal')
+      RETURNING id INTO v_examen_sinlab;
+
+    v_fx := 'OK (empresa SV, 3 capacidades incl. GLOBAL, 2 tiers, 1 examen sin laboratorio)';
+
+    -- ===================== P511: CALLER SIN IDENTIDAD contra las 5 =====================
+    SELECT count(*) INTO v_cap0   FROM public.empresa_capacidades;
+    SELECT count(*) INTO v_notif0 FROM public.notificaciones;
+    PERFORM set_config('request.jwt.claims',
+      json_build_object('sub', v_nadie::text,'role','authenticated')::text, true);
+    PERFORM set_config('role','authenticated', true);
+    v_det := '';
+    BEGIN PERFORM public.activar_capacidad_suelta(v_emp_gt,'P271CAPGT',NULL); v_det := v_det||'activar_cap=PASO! ';
+    EXCEPTION WHEN OTHERS THEN v_det := v_det||'activar_cap='||CASE WHEN SQLSTATE='PC001' THEN 'BLOQ' ELSE 'otro('||SQLSTATE||')' END||' '; END;
+    BEGIN PERFORM public.asignar_tier(v_emp_gt, v_tier_gt, NULL); v_det := v_det||'asignar_tier=PASO! ';
+    EXCEPTION WHEN OTHERS THEN v_det := v_det||'asignar_tier='||CASE WHEN SQLSTATE='PC001' THEN 'BLOQ' ELSE 'otro('||SQLSTATE||')' END||' '; END;
+    BEGIN PERFORM public.notificar_empresa_estado(v_emp_gt); v_det := v_det||'notif_empresa=PASO! ';
+    EXCEPTION WHEN OTHERS THEN v_det := v_det||'notif_empresa='||CASE WHEN SQLSTATE='PT002' THEN 'BLOQ' ELSE 'otro('||SQLSTATE||')' END||' '; END;
+    BEGIN PERFORM public.registrar_evidencia_entrega(1,'x/1/foto.png','foto'); v_det := v_det||'evidencia=PASO! ';
+    EXCEPTION WHEN OTHERS THEN v_det := v_det||'evidencia=BLOQ '; END;
+    PERFORM set_config('role','none', true);
+    SELECT count(*) INTO v_cap1   FROM public.empresa_capacidades;
+    SELECT count(*) INTO v_notif1 FROM public.notificaciones;
+    v_ok := v_det NOT LIKE '%PASO!%' AND v_det NOT LIKE '%otro(%' AND v_cap1=v_cap0 AND v_notif1=v_notif0;
+    v_511 := CASE WHEN v_ok
+      THEN 'BLOQUEADO (candado: sigue bloqueando, capacidades '||v_cap0||'='||v_cap1||', notificaciones '||v_notif0||'='||v_notif1||') '||v_det
+      ELSE 'ROJO ('||v_det||'| capacidades '||v_cap0||'->'||v_cap1||' notificaciones '||v_notif0||'->'||v_notif1||')' END;
+
+    -- ===================== P512 / P513: NO REGRESION =====================
+    FOR r IN SELECT * FROM (VALUES ('super', v_super), ('adminpais', v_adminpais)) t(etq,uid) LOOP
+      PERFORM set_config('request.jwt.claims',
+        json_build_object('sub', r.uid::text,'role','authenticated')::text, true);
+      PERFORM set_config('role','authenticated', true);
+      v_det := '';
+      -- capacidad de SU pais
+      BEGIN PERFORM public.activar_capacidad_suelta(v_emp_gt,'P271CAPGT',NULL); v_det := v_det||'cap_GT=paso ';
+      EXCEPTION WHEN OTHERS THEN v_det := v_det||'cap_GT=RECHAZO('||SQLSTATE||') '; END;
+      -- capacidad GLOBAL (pais_id NULL): el termino load-bearing
+      BEGIN PERFORM public.activar_capacidad_suelta(v_emp_gt,'P271CAPGLOB',NULL); v_det := v_det||'cap_GLOBAL=paso ';
+      EXCEPTION WHEN OTHERS THEN v_det := v_det||'cap_GLOBAL=RECHAZO('||SQLSTATE||') '; END;
+      BEGIN PERFORM public.asignar_tier(v_emp_gt, v_tier_gt, NULL); v_det := v_det||'tier_GT=paso ';
+      EXCEPTION WHEN OTHERS THEN v_det := v_det||'tier_GT=RECHAZO('||SQLSTATE||') '; END;
+      BEGIN PERFORM public.notificar_empresa_estado(v_emp_gt); v_det := v_det||'notif_empresa=paso ';
+      EXCEPTION WHEN OTHERS THEN v_det := v_det||'notif_empresa='||CASE WHEN SQLSTATE='PT002' THEN 'RECHAZO_AUTZ!' ELSE 'paso('||SQLSTATE||')' END||' '; END;
+      PERFORM set_config('role','none', true);
+      IF r.etq='super' THEN
+        v_512 := CASE WHEN v_det NOT LIKE '%RECHAZO%' THEN 'OK (super_admin sin rechazo: '||v_det||')'
+                      ELSE 'ROJO — GATE CERRADO DE MAS para super_admin ('||v_det||')' END;
+      ELSE
+        v_513 := CASE WHEN v_det NOT LIKE '%RECHAZO%'
+                      THEN 'OK (admin_pais GT sin rechazo, INCLUIDA la capacidad GLOBAL: '||v_det||')'
+                      ELSE 'ROJO — GATE CERRADO DE MAS para admin_pais ('||v_det||')' END;
+      END IF;
+    END LOOP;
+
+    -- ===================== P514: CROSS-PAIS (PC015 / PC016) =====================
+    PERFORM set_config('request.jwt.claims',
+      json_build_object('sub', v_adminpais::text,'role','authenticated')::text, true);
+    PERFORM set_config('role','authenticated', true);
+    v_det := '';
+    BEGIN PERFORM public.activar_capacidad_suelta(v_emp_gt,'P271CAPSV',NULL); v_det := v_det||'cap_SV=PASO! ';
+    EXCEPTION WHEN OTHERS THEN v_det := v_det||'cap_SV='||CASE WHEN SQLSTATE='PC015' THEN 'BLOQ' ELSE 'otro('||SQLSTATE||')' END||' '; END;
+    BEGIN PERFORM public.asignar_tier(v_emp_gt, v_tier_sv, NULL); v_det := v_det||'tier_SV=PASO! ';
+    EXCEPTION WHEN OTHERS THEN v_det := v_det||'tier_SV='||CASE WHEN SQLSTATE='PC016' THEN 'BLOQ' ELSE 'otro('||SQLSTATE||')' END||' '; END;
+    PERFORM set_config('role','none', true);
+    v_514 := CASE WHEN v_det NOT LIKE '%PASO!%' AND v_det NOT LIKE '%otro(%'
+      THEN 'BLOQUEADO (PC015/PC016: admin de GT no asigna catalogo de SV) '||v_det
+      ELSE 'ROJO ('||v_det||')' END;
+
+    -- ===================== P515: EL CAMBIO DE COMPORTAMIENTO DECLARADO =====================
+    -- notificar_resultado_examen sobre un examen con laboratorio_id NULL, llamada por un caller
+    -- cuyo mi_empresa_proveedor() tambien es NULL. ANTES: IS DISTINCT FROM (NULL,NULL) = false ->
+    -- no levantaba -> pasaba y notificaba. AHORA: NOT COALESCE(NULL = NULL, false) = true -> PT002.
+    SELECT count(*) INTO v_notif0 FROM public.notificaciones;
+    PERFORM set_config('request.jwt.claims',
+      json_build_object('sub', v_nadie::text,'role','authenticated')::text, true);
+    PERFORM set_config('role','authenticated', true);
+    v_det := '';
+    BEGIN PERFORM public.notificar_resultado_examen(v_examen_sinlab); v_det := 'PASO (ambos NULL colaban)';
+    EXCEPTION WHEN OTHERS THEN v_det := CASE WHEN SQLSTATE='PT002' THEN 'BLOQ(PT002)' ELSE 'otro('||SQLSTATE||')' END; END;
+    PERFORM set_config('role','none', true);
+    SELECT count(*) INTO v_notif1 FROM public.notificaciones;
+    v_515 := CASE WHEN v_det='BLOQ(PT002)' AND v_notif1=v_notif0
+      THEN 'BLOQUEADO (el caso ambos-NULL ya no pasa; notificaciones '||v_notif0||'='||v_notif1||')'
+      ELSE 'ROJO/PREVIO ('||v_det||'; notificaciones '||v_notif0||'->'||v_notif1||')' END;
+
+    RAISE EXCEPTION 'PROBE_UNDO';
+  EXCEPTION WHEN OTHERS THEN
+    PERFORM set_config('role','none', true);
+    IF SQLERRM <> 'PROBE_UNDO' THEN v_fatal := COALESCE(v_fatal, SQLSTATE||' '||SQLERRM); END IF;
+  END;
+
+  PERFORM set_config('probe.fx_l6', COALESCE('ROJO (fixtures: '||v_fatal||')', v_fx, 'ROJO (sin resultado)'), false);
+  PERFORM set_config('probe.p511',  COALESCE('ROJO (fatal: '||v_fatal||')', v_511, 'ROJO (sin resultado)'), false);
+  PERFORM set_config('probe.p512',  COALESCE('ROJO (fatal: '||v_fatal||')', v_512, 'ROJO (sin resultado)'), false);
+  PERFORM set_config('probe.p513',  COALESCE('ROJO (fatal: '||v_fatal||')', v_513, 'ROJO (sin resultado)'), false);
+  PERFORM set_config('probe.p514',  COALESCE('ROJO (fatal: '||v_fatal||')', v_514, 'ROJO (sin resultado)'), false);
+  PERFORM set_config('probe.p515',  COALESCE('ROJO (fatal: '||v_fatal||')', v_515, 'ROJO (sin resultado)'), false);
+END $$;
+SELECT set_config('role','none', true);
+
 -- ===== Veredictos como result set =====
 SELECT 'P1_anon_insert_citas'              AS probe, current_setting('probe.p1', true)  AS verdict, 'BLOQUEADO' AS esperado_post_fix
 UNION ALL SELECT 'P2_medico_cancela_ajena_rpc',         current_setting('probe.p2', true),  'BLOQUEADO'
@@ -11396,7 +11590,7 @@ UNION ALL SELECT 'P475_CENTINELA_fail_open_pais',current_setting('probe.p475', t
 UNION ALL SELECT 'P476_contactos_heredan_gate',current_setting('probe.p476', true),  'OK (1 / 0 / 2)'
 UNION ALL SELECT 'P477_NEG_PA006_pais_incoherente',current_setting('probe.p477', true),'BLOQUEADO (PA006, escrito como owner)'
 UNION ALL SELECT 'P480_CENTINELA_gate_fail_open',   current_setting('probe.p480', true), 'OK (27 en allowlist, 0 nuevas)'
-UNION ALL SELECT 'P481_centinela_mide_algo',        current_setting('probe.p481', true), 'OK (quitando 1 entrada, la detecta)'
+UNION ALL SELECT 'P481_centinela_mide_algo',        current_setting('probe.p481', true), 'OK (caza la trampa, ignora la correcta)'
 UNION ALL SELECT 'P482_helpers_265_estructura',     current_setting('probe.p482', true), 'OK (firma, flags y grants)'
 UNION ALL SELECT 'P483_helpers_sin_perfil_false',   current_setting('probe.p483', true), 'OK (false, no NULL; control: la vieja da NULL)'
 UNION ALL SELECT 'P484_helpers_scope_admin_pais',   current_setting('probe.p484', true), 'OK (su pais si, otro no; super_admin ambos)'
@@ -11426,6 +11620,11 @@ UNION ALL SELECT 'P507_NEG_sin_perfil_4fn',       current_setting('probe.p507', 
 UNION ALL SELECT 'P508_POS_super_admin_4fn',      current_setting('probe.p508', true), 'OK (sin rechazo de autz)'
 UNION ALL SELECT 'P509_POS_admin_pais_4fn',       current_setting('probe.p509', true), 'OK (sin rechazo de autz)'
 UNION ALL SELECT 'P510_NEG_cross_pais_4fn',       current_setting('probe.p510', true), 'BLOQUEADO en las 4'
+UNION ALL SELECT 'P511_NEG_sin_identidad_5fn',    current_setting('probe.p511', true), 'BLOQUEADO (candado)'
+UNION ALL SELECT 'P512_POS_super_admin_5fn',      current_setting('probe.p512', true), 'OK (sin rechazo)'
+UNION ALL SELECT 'P513_POS_admin_pais_global',    current_setting('probe.p513', true), 'OK (incl. capacidad GLOBAL)'
+UNION ALL SELECT 'P514_NEG_cross_pais_cat',       current_setting('probe.p514', true), 'BLOQUEADO (PC015/PC016)'
+UNION ALL SELECT 'P515_cambio_ambos_null',        current_setting('probe.p515', true), 'BLOQUEADO (PT002)'
 UNION ALL SELECT 'FX00_catalogo_global_medicamentos', current_setting('probe.fx_medsglobal', true),'OK (precondicion sembrada)'
 UNION ALL SELECT 'FX01_afinb_capacidad_productos',   current_setting('probe.fx_afinb', true),      'OK (precondicion sembrada)'
 UNION ALL SELECT 'FX02_cat_medicamentos_catalogo',   current_setting('probe.fx_catmeds', true),    'OK (precondicion sembrada)'
@@ -11437,6 +11636,7 @@ UNION ALL SELECT 'FX07_lote2_fixtures',             current_setting('probe.fx_l2
 UNION ALL SELECT 'FX08_lote3_fixtures',             current_setting('probe.fx_l3', true),         'OK (precondicion sembrada)'
 UNION ALL SELECT 'FX09_lote4_fixtures',             current_setting('probe.fx_l4', true),         'OK (precondicion sembrada)'
 UNION ALL SELECT 'FX10_lote5_fixtures',             current_setting('probe.fx_l5', true),         'OK (precondicion sembrada)'
+UNION ALL SELECT 'FX11_lote6_fixtures',             current_setting('probe.fx_l6', true),         'OK (precondicion sembrada)'
 -- Las filas FX* son SALUD DE FIXTURE, no probes de seguridad: dicen si la precondicion que una
 -- migracion posterior empezo a exigir se pudo sembrar. Si una sale ROJO, los probes que dependen de
 -- ese fixture reportan N/A (su flag de ready se pierde con el rollback de la subtransaccion) en vez
@@ -11601,7 +11801,9 @@ UNION ALL SELECT 'P000_CENTINELA_veredictos_no_nulos',
        'probe.p497', 'probe.p498', 'probe.p499', 'probe.p500',
        'probe.p501', 'probe.p502', 'probe.p503', 'probe.p504',
        'probe.p505', 'probe.p506',
-       'probe.p507', 'probe.p508', 'probe.p509', 'probe.p510'
+       'probe.p507', 'probe.p508', 'probe.p509', 'probe.p510',
+       'probe.fx_l6', 'probe.p511', 'probe.p512', 'probe.p513',
+       'probe.p514', 'probe.p515'
              ]) AS n) s),
   'OK (todos los veredictos publicados)';
 
