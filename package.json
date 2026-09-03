@@ -9,7 +9,8 @@
     "test": "vitest run",
     "lint": "eslint .",
     "preview": "vite preview",
-    "harness:guard": "python tests/rls/b2_guard.py"
+    "harness:guard": "python tests/rls/b2_guard.py",
+    "harness:guard:test": "python tests/rls/b2_guard_test.py"
   },
   "dependencies": {
     "@hookform/resolvers": "^5.2.2",

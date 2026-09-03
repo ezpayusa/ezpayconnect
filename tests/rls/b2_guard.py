@@ -35,14 +35,15 @@ LAS TRES METRICAS
    Quedan 133 bloques CON handler que tienen el mismo cast y NO se tocaron a proposito: su handler
    puede estar aseverando ese SQLSTATE deliberadamente, y cambiarlo le cambiaria el veredicto.
 
-3) do_sin_handler — bloques DO sin `EXCEPTION WHEN`.
-   Baseline 319. DEUDA CON FECHA, igual que la allowlist del centinela P480: la ataca la FASE 2 de
-   B2. Que este en el baseline no dice "esta bien", dice "esta contado y tiene fase asignada".
-   REGLA ESTRICTA: `RAISE EXCEPTION` NO cuenta como handler — es lo contrario de un handler. Contarlo
-   daria 298 y estaria mal. Esta distincion importa: el 209 que figuraba en el diagnostico de la
-   fase A no se pudo reproducir con ninguna regla, asi que el baseline se re-fundo aca, con la regla
-   escrita y un parser que reproduce exactamente las 18 sentencias top-level del archivo previo al
-   paquete (commit 2386d75). Un baseline que nadie puede recomputar no sirve de gate.
+3) do_sin_handler — bloques DO sin EXCEPTION handler.
+   Baseline 211. DEUDA CON FECHA, igual que la allowlist del centinela P480: la ataca la FASE 2.2.
+   Que este en el baseline no dice "esta bien", dice "esta contado y tiene fase asignada".
+   REGLA: ver tiene_handler(). Se evalua el cuerpo completo (no linea a linea) y `RAISE EXCEPTION`
+   NO cuenta como handler.
+   El baseline 319 que estuvo committeado entre ea671cb y cf16351 estaba INFLADO EN 108 y por lo
+   tanto era PERMISIVO: no habria disparado hasta que alguien agregara 108 bloques sin handler.
+   El detector tiene test propio en tests/rls/b2_guard_test.py, con los casos positivos Y el
+   negativo (RAISE EXCEPTION), que es el error simetrico e invisible.
 
 USO
 ---
@@ -62,7 +63,8 @@ import sys
 # que la baja. Un baseline que se actualiza "despues" es un baseline que alguien olvida.
 BASELINE_TOP_LEVEL = 0            # fase 1 de B2 (2026-09-03), CERRADO
 BASELINE_CAST_DIRECTO = 0         # fase 2.1 CERRADA (155 -> 103 -> 51 -> 0, tres tandas)
-BASELINE_DO_SIN_HANDLER = 319     # fase 2.2: 319 -> ~125 (deuda con fecha, ver abajo)
+BASELINE_DO_SIN_HANDLER = 211     # CORREGIDO 2026-09-03: el 319 anterior estaba inflado en 108
+                                  # por tres fallas del detector. fase 2.2: 211 -> ~156
 # ===============================================================================
 #
 # POR QUE ~125 VA A SER UN NUMERO ACEPTABLE Y NO "FALTA TERMINAR"
@@ -91,6 +93,34 @@ PGTEMP = re.compile(r'\bpg_temp\.', re.I)
 # aseverando ese SQLSTATE a proposito, asi que esos quedan fuera del alcance.
 CAST_DIRECTO = re.compile(
     r'current_setting\s*\([^()]*\)\s*::\s*(uuid|int|integer|bigint|numeric|date|timestamp)', re.I)
+HANDLER = re.compile(r'\bEXCEPTION\b\s+\bWHEN\b', re.I)
+LITERAL = re.compile(r"'(?:[^']|'')*'")   # cadena SQL, con '' como comilla escapada
+
+
+def tiene_handler(cuerpo):
+    """True si el bloque tiene un EXCEPTION handler.
+
+    DETECCION CORREGIDA (2026-09-03). La version anterior miraba linea por linea con
+    `EXCEPTION\\s+WHEN` mientras el bloque estaba abierto, y fallaba de TRES formas, las tres
+    INFLANDO el conteo de "sin handler" y volviendo el gate PERMISIVO:
+      1. `EXCEPTION` y `WHEN` en LINEAS DISTINTAS (forma real en el archivo, p.ej. el bloque de P33).
+      2. El handler en la LINEA DE CIERRE: el flag ya se habia apagado al procesar el tag de cierre.
+      3. Bloques DO de UNA SOLA LINEA: nunca se llegaba a chequear.
+    Ahora se evalua el CUERPO COMPLETO (slice de lineas) y `\\s` cruza saltos de linea.
+
+    EL ERROR SIMETRICO — el que falla en la direccion INVISIBLE, subcontando los sin-handler y
+    volviendo el gate mas estricto de la cuenta sin que nadie lo note: contar como handler algo que
+    contiene las palabras pero no lo es. El caso real es `EXCEPTION WHEN` DENTRO DE UNA CADENA
+    (p.ej. un texto de veredicto que las mencione). Por eso se quitan los literales SQL antes de
+    buscar. Hoy no hay ninguno en el archivo, pero el dia que alguien escriba un veredicto que las
+    mencione, el detector no se lo tiene que comer.
+
+    NO se excluye `RAISE EXCEPTION`: se probo y es CODIGO MUERTO. En `RAISE EXCEPTION 'msg'` lo que
+    sigue a EXCEPTION es un literal, no WHEN, asi que el regex no matchea nunca ahi — y
+    `RAISE EXCEPTION WHEN` no es sintaxis valida de plpgsql (0 ocurrencias en el archivo). Una
+    exclusion que ningun test puede disparar es peor que no tenerla: parece cubierta y no lo esta.
+    """
+    return bool(HANDLER.search(LITERAL.sub("''", cuerpo)))
 
 
 def analizar(path):
@@ -112,20 +142,19 @@ def analizar(path):
                 if not pila and re.search(r'\bDO\s*$|\bDO\s*' + re.escape(tag), s[:t.end()], re.I):
                     do = [i, False, None]
                 pila.append(tag)
-        if pila and do is not None and re.search(r'\bEXCEPTION\s+WHEN\b', s, re.I):
-            do[1] = True
         if not pila and DML.search(s) and not PGTEMP.search(s):
             top.append((i, l.strip()[:120]))
-    # El cuerpo se toma por SLICE: un bloque DO de UNA SOLA LINEA abre y cierra en el mismo renglon,
-    # y acumular linea a linea lo dejaria vacio. Cuatro de esos eran UPDATE con cast directo.
-    cast = []
-    for ini, handler, fin in blocks:
-        if handler:
-            continue
+    # El handler y el cast se evaluan sobre el CUERPO COMPLETO (slice de lineas), NO linea a linea
+    # mientras el bloque esta abierto: esa forma se perdia el handler de la linea de cierre y el de
+    # los bloques de una sola linea. Ver tiene_handler() para las tres fallas y el caso simetrico.
+    cast, resueltos = [], []
+    for ini, _, fin in blocks:
         cuerpo = '\n'.join(re.sub(r'--.*$', '', x) for x in lineas[ini - 1:fin])
-        if CAST_DIRECTO.search(cuerpo):
+        h = tiene_handler(cuerpo)
+        resueltos.append((ini, h, fin))
+        if not h and CAST_DIRECTO.search(cuerpo):
             cast.append((ini, fin))
-    return top, blocks, cast
+    return top, resueltos, cast
 
 
 def main():
