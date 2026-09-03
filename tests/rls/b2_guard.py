@@ -53,9 +53,24 @@ import re
 import sys
 
 # ============================== BASELINE DECLARADO ==============================
-# Al bajar una metrica, actualizar ACA y en el comentario de P516 del harness.
-BASELINE_TOP_LEVEL = 0      # fase 1 de B2 (2026-09-03)
-BASELINE_DO_SIN_HANDLER = 319    # deuda con fecha: la ataca la fase 2
+# Al bajar una metrica, actualizar ACA y en el comentario de P516 del harness, EN EL MISMO COMMIT
+# que la baja. Un baseline que se actualiza "despues" es un baseline que alguien olvida.
+BASELINE_TOP_LEVEL = 0            # fase 1 de B2 (2026-09-03), CERRADO
+BASELINE_CAST_DIRECTO = 103       # fase 2.1 en curso: 155 -> 103 (tanda 1 de 3) -> objetivo 0
+BASELINE_DO_SIN_HANDLER = 319     # fase 2.2: 319 -> ~125 (deuda con fecha, ver abajo)
+# ===============================================================================
+#
+# POR QUE ~125 VA A SER UN NUMERO ACEPTABLE Y NO "FALTA TERMINAR"
+# ---------------------------------------------------------------
+# Al cerrar la fase 2 quedan ~125 bloques DO sin handler, y eso es un punto de llegada, no una
+# obra a medias. Son bloques de LECTURA PURA: hacen SELECT y publican un veredicto con set_config,
+# sin escribir nada ni directa ni indirectamente. Con la fase 2.1 cerrada tampoco pueden morir por
+# el cast (el NULLIF convierte el caso '' en NULL en vez de 22P02).
+# Lo unico que podria matarlos es un cambio de esquema debajo — una columna que desaparece, un tipo
+# que cambia — y ese es un riesgo DISTINTO: no lo arregla un handler, lo arregla actualizar el probe.
+# Envolverlos igual seria 125 oportunidades de alterar en silencio lo que mide cada uno, a cambio de
+# proteger contra algo que un handler no protege. El guard los vigila para que no CREZCAN, que es
+# la garantia que sirve.
 # ===============================================================================
 
 DEFAULT = 'tests/rls/probes_escritura.sql'
@@ -64,6 +79,13 @@ DML = re.compile(
     r'^\s*(UPDATE|INSERT|DELETE|ALTER\s+TABLE|CREATE\s+(?:OR\s+REPLACE\s+)?'
     r'(?:FUNCTION|TABLE|INDEX)|DROP|TRUNCATE|GRANT|REVOKE)\b', re.I)
 PGTEMP = re.compile(r'\bpg_temp\.', re.I)
+# 3a metrica: cast DIRECTO sobre current_setting, sin NULLIF. `current_setting('x',true)` devuelve
+# NULL si nunca se seteo, pero el harness setea CADENAS VACIAS a proposito (88 coalesce(...,'')
+# dentro de set_config + 7 literales), y ''::uuid es 22P02 -> mata la transaccion igual que un
+# NOT NULL. Se cuenta por BLOQUE sin handler, no por ocurrencia: un bloque con handler puede estar
+# aseverando ese SQLSTATE a proposito, asi que esos quedan fuera del alcance.
+CAST_DIRECTO = re.compile(
+    r'current_setting\s*\([^()]*\)\s*::\s*(uuid|int|integer|bigint|numeric|date|timestamp)', re.I)
 
 
 def analizar(path):
@@ -78,30 +100,51 @@ def analizar(path):
             if pila and pila[-1] == tag:
                 pila.pop()
                 if not pila and do is not None:
+                    do[2] = i
                     blocks.append(tuple(do))
                     do = None
             else:
                 if not pila and re.search(r'\bDO\s*$|\bDO\s*' + re.escape(tag), s[:t.end()], re.I):
-                    do = [i, False]
+                    do = [i, False, None]
                 pila.append(tag)
         if pila and do is not None and re.search(r'\bEXCEPTION\s+WHEN\b', s, re.I):
             do[1] = True
         if not pila and DML.search(s) and not PGTEMP.search(s):
             top.append((i, l.strip()[:120]))
-    return top, blocks
+    # El cuerpo se toma por SLICE: un bloque DO de UNA SOLA LINEA abre y cierra en el mismo renglon,
+    # y acumular linea a linea lo dejaria vacio. Cuatro de esos eran UPDATE con cast directo.
+    cast = []
+    for ini, handler, fin in blocks:
+        if handler:
+            continue
+        cuerpo = '\n'.join(re.sub(r'--.*$', '', x) for x in lineas[ini - 1:fin])
+        if CAST_DIRECTO.search(cuerpo):
+            cast.append((ini, fin))
+    return top, blocks, cast
 
 
 def main():
     path = sys.argv[1] if len(sys.argv) > 1 else DEFAULT
-    top, blocks = analizar(path)
+    top, blocks, cast = analizar(path)
     sin_h = [b for b in blocks if not b[1]]
 
     print('b2_guard — %s' % path)
     print('  top_level_dml_ddl : %d   (baseline %d)' % (len(top), BASELINE_TOP_LEVEL))
+    print('  cast_directo      : %d   (baseline %d)  [bloques sin handler con current_setting()::T]'
+          % (len(cast), BASELINE_CAST_DIRECTO))
     print('  do_sin_handler    : %d   (baseline %d)  [%d bloques DO en total]'
           % (len(sin_h), BASELINE_DO_SIN_HANDLER, len(blocks)))
 
     fallo = False
+    if len(cast) > BASELINE_CAST_DIRECTO:
+        fallo = True
+        print()
+        print('  *** ROJO: %d bloque(s) nuevos con cast directo sobre current_setting ***'
+              % (len(cast) - BASELINE_CAST_DIRECTO))
+        print('  El harness setea cadenas vacias a proposito y \'\'::uuid es 22P02: mata la')
+        print('  transaccion entera. Usa NULLIF(current_setting(\'x\', true), \'\')::T.')
+        for ini, fin in cast[:10]:
+            print('     bloque DO L%d-%d' % (ini, fin))
     if len(top) > BASELINE_TOP_LEVEL:
         fallo = True
         print()
@@ -124,6 +167,8 @@ def main():
         bajo = []
         if len(top) < BASELINE_TOP_LEVEL:
             bajo.append('top_level_dml_ddl -> %d' % len(top))
+        if len(cast) < BASELINE_CAST_DIRECTO:
+            bajo.append('cast_directo -> %d' % len(cast))
         if len(sin_h) < BASELINE_DO_SIN_HANDLER:
             bajo.append('do_sin_handler -> %d' % len(sin_h))
         if bajo:

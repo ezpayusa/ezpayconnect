@@ -109,7 +109,7 @@ SELECT set_config('role','none',true);
 DO $$ DECLARE v_tp boolean; BEGIN
   IF current_setting('probe.rb_post',true)<>'1' OR current_setting('probe.rb_ready',true)<>'1' THEN PERFORM set_config('probe.p332','N/A (pre / maquinaria ausente)',false); RETURN; END IF;
   -- insertar override concedido=true sobre 'pagos_ezpay' (techo) para (empA, gerente_farmacia) como owner
-  INSERT INTO public.permisos_empresa_rol_override (empresa_id,rol,accion,concedido) VALUES (current_setting('probe.rb_empA',true)::uuid,'gerente_farmacia','pagos_ezpay',true)
+  INSERT INTO public.permisos_empresa_rol_override (empresa_id,rol,accion,concedido) VALUES (NULLIF(current_setting('probe.rb_empA',true), '')::uuid,'gerente_farmacia','pagos_ezpay',true)
     ON CONFLICT (empresa_id,rol,accion) DO UPDATE SET concedido=true;
   PERFORM set_config('request.jwt.claims', json_build_object('sub',current_setting('probe.rb_ed',true),'role','authenticated')::text, true);
   PERFORM set_config('role','authenticated',true);
@@ -136,7 +136,7 @@ SELECT set_config('role','none',true);
 -- P334 — A no edita B: el RPC escribe SOLO en mi_empresa (no hay param de empresa) → fila en A, nunca B
 DO $$ DECLARE v_b int; BEGIN
   IF current_setting('probe.rb_post',true)<>'1' OR current_setting('probe.rb_ready',true)<>'1' THEN PERFORM set_config('probe.p334','N/A',false); RETURN; END IF;
-  SELECT count(*) INTO v_b FROM public.permisos_empresa_rol_override WHERE empresa_id=current_setting('probe.rb_empB',true)::uuid;
+  SELECT count(*) INTO v_b FROM public.permisos_empresa_rol_override WHERE empresa_id=NULLIF(current_setting('probe.rb_empB',true), '')::uuid;
   PERFORM set_config('probe.p334', CASE WHEN v_b=0 THEN 'OK (editor de A no escribió override en B)' ELSE 'ROJO (override en B: '||v_b||')' END, false);
 END $$;
 
@@ -183,10 +183,10 @@ SELECT set_config('role','none',true);
 DO $$ DECLARE v_b int; BEGIN
   IF current_setting('probe.rb_post',true)<>'1' OR current_setting('probe.rb_ready',true)<>'1' THEN PERFORM set_config('probe.p338','N/A',false); RETURN; END IF;
   -- sembrar override en B (owner)
-  INSERT INTO public.permisos_empresa_rol_override (empresa_id,rol,accion,concedido) VALUES (current_setting('probe.rb_empB',true)::uuid,'admin','config_empresa',true) ON CONFLICT DO NOTHING;
+  INSERT INTO public.permisos_empresa_rol_override (empresa_id,rol,accion,concedido) VALUES (NULLIF(current_setting('probe.rb_empB',true), '')::uuid,'admin','config_empresa',true) ON CONFLICT DO NOTHING;
   PERFORM set_config('request.jwt.claims', json_build_object('sub',current_setting('probe.rb_ed',true),'role','authenticated')::text, true);
   PERFORM set_config('role','authenticated',true);
-  SELECT count(*) INTO v_b FROM public.permisos_empresa_rol_override WHERE empresa_id=current_setting('probe.rb_empB',true)::uuid;
+  SELECT count(*) INTO v_b FROM public.permisos_empresa_rol_override WHERE empresa_id=NULLIF(current_setting('probe.rb_empB',true), '')::uuid;
   PERFORM set_config('role','none',true);
   PERFORM set_config('probe.p338', CASE WHEN v_b=0 THEN 'OK (A no lee override de B)' ELSE 'ROJO (A ve '||v_b||' overrides de B)' END, false);
 END $$;
@@ -806,7 +806,7 @@ DO $$
 BEGIN
   INSERT INTO storage.objects(bucket_id, name, owner)
     VALUES ('comprobantes', split_part(current_setting('probe.comp_obj', true),'/',1)||'/__probe_ajeno.txt',
-            current_setting('probe.comp_ajeno', true)::uuid);
+            NULLIF(current_setting('probe.comp_ajeno', true), '')::uuid);
   PERFORM set_config('probe.p33','PERMITIDO (escribió en folder ajeno!)',false);
 EXCEPTION
   WHEN insufficient_privilege THEN PERFORM set_config('probe.p33','BLOQUEADO (RLS rechazó: 42501)',false);
@@ -822,7 +822,7 @@ DO $$
 BEGIN
   INSERT INTO storage.objects(bucket_id, name, owner)
     VALUES ('comprobantes', split_part(current_setting('probe.comp_obj', true),'/',1)||'/__probe_dueno.txt',
-            current_setting('probe.comp_dueno', true)::uuid);
+            NULLIF(current_setting('probe.comp_dueno', true), '')::uuid);
   PERFORM set_config('probe.p34','OK (subió a su propio folder)',false);
 EXCEPTION
   WHEN insufficient_privilege THEN PERFORM set_config('probe.p34','REGRESIÓN (no pudo subir a su folder: 42501)',false);
@@ -840,7 +840,7 @@ BEGIN
   ELSE
     INSERT INTO storage.objects(bucket_id, name, owner)
       VALUES ('resultados-examenes', current_setting('probe.res_lab_emp', true)||'/__probe_ajeno.txt',
-              current_setting('probe.comp_ajeno', true)::uuid);
+              NULLIF(current_setting('probe.comp_ajeno', true), '')::uuid);
     PERFORM set_config('probe.p35','PERMITIDO (escribió resultado en folder de lab ajeno!)',false);
   END IF;
 EXCEPTION
@@ -859,7 +859,7 @@ BEGIN
   ELSE
     INSERT INTO storage.objects(bucket_id, name, owner)
       VALUES ('resultados-examenes', current_setting('probe.res_lab_emp', true)||'/__probe_lab.txt',
-              current_setting('probe.res_lab_uid', true)::uuid);
+              NULLIF(current_setting('probe.res_lab_uid', true), '')::uuid);
     PERFORM set_config('probe.p36','OK (lab subió a su propio folder)',false);
   END IF;
 EXCEPTION
@@ -922,7 +922,7 @@ SELECT set_config('role', 'authenticated', true);
 DO $$ DECLARE r jsonb; BEGIN
   IF NULLIF(current_setting('probe.av_visita', true),'') IS NULL THEN PERFORM set_config('probe.p44','N/A (sin visitas)',false);
   ELSE
-    r := public.administrar_visita(current_setting('probe.av_visita', true)::uuid,'rechazar',NULL,NULL,NULL,'__probe');
+    r := public.administrar_visita(NULLIF(current_setting('probe.av_visita', true), '')::uuid,'rechazar',NULL,NULL,NULL,'__probe');
     IF r ? 'success' THEN PERFORM set_config('probe.p44','PERMITIDO (administró visita ajena)',false);
     ELSE PERFORM set_config('probe.p44','BLOQUEADO? (devolvió: '||r::text||')',false); END IF;
   END IF;
@@ -938,7 +938,7 @@ SELECT set_config('role', 'authenticated', true);
 DO $$ DECLARE r jsonb; BEGIN
   IF NULLIF(current_setting('probe.av_emp_member', true),'') IS NULL THEN PERFORM set_config('probe.p45','N/A (empresa sin proveedor activo)',false);
   ELSE
-    r := public.administrar_visita(current_setting('probe.av_visita', true)::uuid,'rechazar',NULL,NULL,NULL,'__probe_ok');
+    r := public.administrar_visita(NULLIF(current_setting('probe.av_visita', true), '')::uuid,'rechazar',NULL,NULL,NULL,'__probe_ok');
     IF r ? 'success' THEN PERFORM set_config('probe.p45','OK (proveedor administró su visita)',false);
     ELSE PERFORM set_config('probe.p45','REGRESIÓN (devolvió: '||r::text||')',false); END IF;
   END IF;
@@ -968,7 +968,7 @@ END $$;
 SELECT set_config('role', 'none', true);
 SELECT set_config('probe.fk_target', (SELECT id::text FROM public.perfiles ORDER BY id LIMIT 1), false);
 DO $$ BEGIN
-  UPDATE public.perfiles SET rol='admin' WHERE id = current_setting('probe.fk_target', true)::uuid;
+  UPDATE public.perfiles SET rol='admin' WHERE id = NULLIF(current_setting('probe.fk_target', true), '')::uuid;
   PERFORM set_config('probe.p48','PERMITIDO (asignó rol fuera del catálogo)',false);
 EXCEPTION
   WHEN foreign_key_violation THEN PERFORM set_config('probe.p48','BLOQUEADO (FK rechazó: 23503)',false);
@@ -1103,7 +1103,7 @@ SELECT set_config('request.jwt.claims',
   json_build_object('sub', current_setting('probe.asig_emp_ajeno', true), 'role','authenticated')::text, true);
 SELECT set_config('role', 'authenticated', true);
 DO $$ DECLARE n INT; BEGIN
-  SELECT count(*) INTO n FROM public.planes_asignaciones WHERE id = current_setting('probe.asig_emp', true)::uuid;
+  SELECT count(*) INTO n FROM public.planes_asignaciones WHERE id = NULLIF(current_setting('probe.asig_emp', true), '')::uuid;
   IF n > 0 THEN PERFORM set_config('probe.p55','PERMITIDO (ve asignación ajena)',false);
   ELSE PERFORM set_config('probe.p55','BLOQUEADO (0)',false); END IF;
 END $$;
@@ -1187,7 +1187,7 @@ SELECT set_config('request.jwt.claims',
 SELECT set_config('role', 'authenticated', true);
 DO $$ BEGIN
   INSERT INTO public.planes_asignaciones (medico_id, empresa_id, estado)
-  VALUES (current_setting('probe.np_medico', true)::uuid, NULL, 'activo');
+  VALUES (NULLIF(current_setting('probe.np_medico', true), '')::uuid, NULL, 'activo');
   PERFORM set_config('probe.p61','OK (RLS permite su fila de médico)',false);
 EXCEPTION
   WHEN insufficient_privilege THEN PERFORM set_config('probe.p61','REGRESIÓN (RLS bloqueó su fila: 42501)',false);
@@ -1200,7 +1200,7 @@ SELECT set_config('request.jwt.claims',
   json_build_object('sub', current_setting('probe.sa', true), 'role','authenticated')::text, true);
 SELECT set_config('role', 'authenticated', true);
 DO $$ DECLARE v INT; BEGIN
-  v := public.aprobar_solicitud_campana(current_setting('probe.solicitud', true)::uuid, '__probe');
+  v := public.aprobar_solicitud_campana(NULLIF(current_setting('probe.solicitud', true), '')::uuid, '__probe');
   IF v IS NOT NULL THEN PERFORM set_config('probe.p62','OK (publicó campaña id '||v||')',false);
   ELSE PERFORM set_config('probe.p62','REGRESIÓN (no devolvió id)',false); END IF;
 EXCEPTION
@@ -1214,7 +1214,7 @@ SELECT set_config('request.jwt.claims',
   json_build_object('sub', current_setting('probe.np_medico', true), 'role','authenticated')::text, true);
 SELECT set_config('role', 'authenticated', true);
 DO $$ DECLARE v INT; BEGIN
-  v := public.aprobar_solicitud_campana(current_setting('probe.solicitud', true)::uuid, '__probe');
+  v := public.aprobar_solicitud_campana(NULLIF(current_setting('probe.solicitud', true), '')::uuid, '__probe');
   PERFORM set_config('probe.p63','PERMITIDO (no-super aprobó!)',false);
 EXCEPTION
   WHEN undefined_function THEN PERFORM set_config('probe.p63','N/A (RPC no existe aún)',false);
@@ -1230,7 +1230,7 @@ SELECT set_config('request.jwt.claims',
 SELECT set_config('role', 'authenticated', true);
 DO $$ BEGIN
   INSERT INTO public.planes_asignaciones (medico_id, empresa_id, estado)
-  VALUES (current_setting('probe.np_medico', true)::uuid, current_setting('probe.forge_emp', true)::uuid, 'activo');
+  VALUES (NULLIF(current_setting('probe.np_medico', true), '')::uuid, NULLIF(current_setting('probe.forge_emp', true), '')::uuid, 'activo');
   PERFORM set_config('probe.p64','PERMITIDO (médico forjó empresa_id ajeno)',false);
 EXCEPTION
   WHEN insufficient_privilege THEN PERFORM set_config('probe.p64','BLOQUEADO (42501)',false);
@@ -1294,7 +1294,7 @@ SELECT set_config('request.jwt.claims',
   json_build_object('sub', current_setting('probe.np_medico', true), 'role','authenticated')::text, true);
 SELECT set_config('role', 'authenticated', true);
 DO $$ BEGIN
-  PERFORM public.promover_farmacia_a_tenant(current_setting('probe.farm', true)::int, current_setting('probe.farm_emp', true)::uuid);
+  PERFORM public.promover_farmacia_a_tenant(NULLIF(current_setting('probe.farm', true), '')::int, NULLIF(current_setting('probe.farm_emp', true), '')::uuid);
   PERFORM set_config('probe.p67','PERMITIDO (no-super promovió)',false);
 EXCEPTION
   WHEN undefined_function THEN PERFORM set_config('probe.p67','N/A (RPC no existe aún)',false);
@@ -1307,7 +1307,7 @@ SELECT set_config('request.jwt.claims',
   json_build_object('sub', current_setting('probe.sa', true), 'role','authenticated')::text, true);
 SELECT set_config('role', 'authenticated', true);
 DO $$ BEGIN
-  PERFORM public.promover_farmacia_a_tenant(current_setting('probe.farm', true)::int, current_setting('probe.farm_emp', true)::uuid);
+  PERFORM public.promover_farmacia_a_tenant(NULLIF(current_setting('probe.farm', true), '')::int, NULLIF(current_setting('probe.farm_emp', true), '')::uuid);
   PERFORM set_config('probe.p68','OK (super_admin promovió la farmacia)',false);
 EXCEPTION
   WHEN undefined_function THEN PERFORM set_config('probe.p68','N/A (RPC no existe aún)',false);
@@ -1382,7 +1382,7 @@ SELECT set_config('request.jwt.claims',
   json_build_object('sub', current_setting('probe.sa', true), 'role','authenticated')::text, true);
 SELECT set_config('role', 'authenticated', true);
 DO $$ BEGIN
-  PERFORM public.promover_farmacia_a_tenant(current_setting('probe.farm', true)::int, current_setting('probe.farm_emp', true)::uuid);
+  PERFORM public.promover_farmacia_a_tenant(NULLIF(current_setting('probe.farm', true), '')::int, NULLIF(current_setting('probe.farm_emp', true), '')::uuid);
   PERFORM set_config('probe.p71','PERMITIDO (reapropió una farmacia ya tenant!)',false);
 EXCEPTION
   WHEN undefined_function THEN PERFORM set_config('probe.p71','N/A (RPC no existe aún)',false);
@@ -1696,13 +1696,13 @@ SELECT set_config('probe.lab_emp',
   (SELECT id::text FROM public.empresas_proveedoras WHERE tipo <> 'farmacia' ORDER BY id LIMIT 1), false);
 DO $$ DECLARE t uuid; BEGIN  -- token EXPIRADO (farmacia)
   INSERT INTO public.invitaciones_visitador (empresa_id, email, nombre_completo, rol, estado, expires_at)
-  VALUES (current_setting('probe.farm_emp', true)::uuid, current_setting('probe.invitee_email', true), 'Exp', 'cajero', 'pendiente', now() - interval '1 day')
+  VALUES (NULLIF(current_setting('probe.farm_emp', true), '')::uuid, current_setting('probe.invitee_email', true), 'Exp', 'cajero', 'pendiente', now() - interval '1 day')
   RETURNING token INTO t;
   PERFORM set_config('probe.exp_token', t::text, false);
 END $$;
 DO $$ DECLARE t uuid; BEGIN  -- token VISITADOR/LAB (empresa no-farmacia), email = invitee2 real
   INSERT INTO public.invitaciones_visitador (empresa_id, email, nombre_completo, rol, estado, expires_at)
-  VALUES (current_setting('probe.lab_emp', true)::uuid, current_setting('probe.invitee2_email', true), 'Lab Inv', 'visitador_medico', 'pendiente', now() + interval '7 days')
+  VALUES (NULLIF(current_setting('probe.lab_emp', true), '')::uuid, current_setting('probe.invitee2_email', true), 'Lab Inv', 'visitador_medico', 'pendiente', now() + interval '7 days')
   RETURNING token INTO t;
   PERFORM set_config('probe.lab_token', t::text, false);
 END $$;
@@ -1793,8 +1793,8 @@ SELECT set_config('role', 'none', true);
 DO $$ DECLARE v_rol text; v_emp uuid; BEGIN
   IF current_setting('probe.p97_done', true) = '1' THEN
     SELECT rol_en_empresa, empresa_id INTO v_rol, v_emp FROM public.cuentas_proveedor
-      WHERE id = current_setting('probe.invitee', true)::uuid;
-    IF v_rol = 'cajero' AND v_emp = current_setting('probe.farm_emp', true)::uuid THEN
+      WHERE id = NULLIF(current_setting('probe.invitee', true), '')::uuid;
+    IF v_rol = 'cajero' AND v_emp = NULLIF(current_setting('probe.farm_emp', true), '')::uuid THEN
       PERFORM set_config('probe.p97','OK (alta con rol FIJADO cajero en empresa del token)',false);
     ELSE PERFORM set_config('probe.p97','REGRESIÓN (rol/empresa efectivos: '||COALESCE(v_rol,'?')||'/'||COALESCE(v_emp::text,'?')||')',false); END IF;
   ELSIF NULLIF(current_setting('probe.p97', true),'') IS NULL THEN PERFORM set_config('probe.p97','REGRESIÓN (no consumió)',false);
@@ -1866,8 +1866,8 @@ SELECT set_config('role', 'none', true);
 DO $$ DECLARE v_emp uuid; v_rol text; BEGIN
   IF current_setting('probe.p101_done', true) = '1' THEN
     SELECT empresa_id, rol_en_empresa INTO v_emp, v_rol FROM public.cuentas_proveedor
-      WHERE id = current_setting('probe.invitee2', true)::uuid;
-    IF v_emp = current_setting('probe.lab_emp', true)::uuid AND v_rol = 'visitador_medico'
+      WHERE id = NULLIF(current_setting('probe.invitee2', true), '')::uuid;
+    IF v_emp = NULLIF(current_setting('probe.lab_emp', true), '')::uuid AND v_rol = 'visitador_medico'
       THEN PERFORM set_config('probe.p101','OK (consumo visitador/lab e2e: empresa+rol del token)',false);
       ELSE PERFORM set_config('probe.p101','REGRESIÓN (efectivo '||COALESCE(v_emp::text,'?')||'/'||COALESCE(v_rol,'?')||')',false); END IF;
   ELSIF NULLIF(current_setting('probe.p101', true),'') IS NULL THEN PERFORM set_config('probe.p101','REGRESIÓN (no consumió)',false);
@@ -1881,7 +1881,7 @@ SELECT set_config('request.jwt.claims', NULL, true);
 SELECT set_config('role', 'anon', true);
 DO $$ BEGIN
   PERFORM public.registrar_visitador_desde_invitacion(
-    current_setting('probe.exp_token', true)::uuid, current_setting('probe.invitee', true)::uuid, 'z@probe.test','Z',NULL);
+    NULLIF(current_setting('probe.exp_token', true), '')::uuid, NULLIF(current_setting('probe.invitee', true), '')::uuid, 'z@probe.test','Z',NULL);
   PERFORM set_config('probe.p102','PERMITIDO (camino viejo reachable por anon!)',false);
 EXCEPTION
   WHEN undefined_function THEN PERFORM set_config('probe.p102','BLOQUEADO (función inexistente)',false);
@@ -2000,17 +2000,17 @@ DO $$ BEGIN
       'ROJO (no hay ninguna empresa_afin al llegar aca: los probes P114-P121 van a reportar N/A)', false);
     RETURN;
   END IF;
-  UPDATE public.cuentas_proveedor SET empresa_id=current_setting('probe.af_emp',true)::uuid, rol_en_empresa='admin',     activo=true, equipo_id=NULL WHERE id=NULLIF(current_setting('probe.af_admin',true),'')::uuid;
-  UPDATE public.cuentas_proveedor SET empresa_id=current_setting('probe.af_emp',true)::uuid, rol_en_empresa='marketing', activo=true, equipo_id=NULL WHERE id=NULLIF(current_setting('probe.af_mkt',true),'')::uuid;
-  UPDATE public.cuentas_proveedor SET empresa_id=current_setting('probe.af_emp',true)::uuid, rol_en_empresa='lectura',   activo=true, equipo_id=NULL WHERE id=NULLIF(current_setting('probe.af_lectura',true),'')::uuid;
-  UPDATE public.cuentas_proveedor SET empresa_id=current_setting('probe.af_emp',true)::uuid, rol_en_empresa='gerente',   activo=true, equipo_id=NULL WHERE id=NULLIF(current_setting('probe.af_gerente',true),'')::uuid;
+  UPDATE public.cuentas_proveedor SET empresa_id=NULLIF(current_setting('probe.af_emp',true), '')::uuid, rol_en_empresa='admin',     activo=true, equipo_id=NULL WHERE id=NULLIF(current_setting('probe.af_admin',true),'')::uuid;
+  UPDATE public.cuentas_proveedor SET empresa_id=NULLIF(current_setting('probe.af_emp',true), '')::uuid, rol_en_empresa='marketing', activo=true, equipo_id=NULL WHERE id=NULLIF(current_setting('probe.af_mkt',true),'')::uuid;
+  UPDATE public.cuentas_proveedor SET empresa_id=NULLIF(current_setting('probe.af_emp',true), '')::uuid, rol_en_empresa='lectura',   activo=true, equipo_id=NULL WHERE id=NULLIF(current_setting('probe.af_lectura',true),'')::uuid;
+  UPDATE public.cuentas_proveedor SET empresa_id=NULLIF(current_setting('probe.af_emp',true), '')::uuid, rol_en_empresa='gerente',   activo=true, equipo_id=NULL WHERE id=NULLIF(current_setting('probe.af_gerente',true),'')::uuid;
   PERFORM set_config('probe.fx_afin_emp','OK (empresa afin viva + 4 cuentas prestadas re-asignadas)', false);
 END $$;
 -- Producto afín activo ficticio (para el test de visibilidad del médico)
 DO $$ DECLARE v_id uuid; BEGIN
   IF NULLIF(current_setting('probe.af_emp',true),'') IS NOT NULL THEN
     INSERT INTO public.productos_empresa (empresa_id, nombre_producto, precio_unitario, estado)
-      VALUES (current_setting('probe.af_emp',true)::uuid, 'Probe Afin Visible', 10, 'activo')
+      VALUES (NULLIF(current_setting('probe.af_emp',true), '')::uuid, 'Probe Afin Visible', 10, 'activo')
       RETURNING id INTO v_id;
     PERFORM set_config('probe.af_prod', v_id::text, false);
   END IF;
@@ -2071,8 +2071,8 @@ END $$;
 DO $$ DECLARE v_id uuid; BEGIN
   IF NULLIF(current_setting('probe.af_b_member',true),'') IS NOT NULL THEN
     INSERT INTO public.solicitudes_campana (empresa_id, cuenta_proveedor_id, titulo, fecha_inicio, fecha_fin, estado, pais_id)
-      VALUES (current_setting('probe.af_emp_b',true)::uuid, current_setting('probe.af_b_member',true)::uuid, 'Solic Afin B', now(), now()+interval '7 days', 'borrador',
-              (SELECT pais_id FROM public.empresas_proveedoras WHERE id=current_setting('probe.af_emp_b',true)::uuid))
+      VALUES (NULLIF(current_setting('probe.af_emp_b',true), '')::uuid, NULLIF(current_setting('probe.af_b_member',true), '')::uuid, 'Solic Afin B', now(), now()+interval '7 days', 'borrador',
+              (SELECT pais_id FROM public.empresas_proveedoras WHERE id=NULLIF(current_setting('probe.af_emp_b',true), '')::uuid))
       RETURNING id INTO v_id;
     PERFORM set_config('probe.af_b_solic', v_id::text, false);
   END IF;
@@ -2080,8 +2080,8 @@ END $$;
 -- solicitud PROPIA de afín A (de af_mkt) para tests de auto-aprobación/edición de contenido
 DO $$ DECLARE v_id uuid; BEGIN
   INSERT INTO public.solicitudes_campana (empresa_id, cuenta_proveedor_id, titulo, fecha_inicio, fecha_fin, estado, pais_id)
-    VALUES (current_setting('probe.af_emp',true)::uuid, current_setting('probe.af_mkt',true)::uuid, 'Solic Afin A', now(), now()+interval '7 days', 'borrador',
-            (SELECT pais_id FROM public.empresas_proveedoras WHERE id=current_setting('probe.af_emp',true)::uuid))
+    VALUES (NULLIF(current_setting('probe.af_emp',true), '')::uuid, NULLIF(current_setting('probe.af_mkt',true), '')::uuid, 'Solic Afin A', now(), now()+interval '7 days', 'borrador',
+            (SELECT pais_id FROM public.empresas_proveedoras WHERE id=NULLIF(current_setting('probe.af_emp',true), '')::uuid))
     RETURNING id INTO v_id;
   PERFORM set_config('probe.af_a_solic', v_id::text, false);
 END $$;
@@ -2337,7 +2337,7 @@ END $$;
 --   ÚNICO admin de la empresa aislada.
 SELECT set_config('role','none',true);
 DO $$ DECLARE v_emp uuid; v_admin uuid; v_pais uuid; BEGIN
-  SELECT pais_id INTO v_pais FROM public.empresas_proveedoras WHERE id = current_setting('probe.af_emp',true)::uuid;
+  SELECT pais_id INTO v_pais FROM public.empresas_proveedoras WHERE id = NULLIF(current_setting('probe.af_emp',true), '')::uuid;
   INSERT INTO public.empresas_proveedoras (nombre_empresa, email_contacto, tipo, pais_id, estado)
     VALUES ('Probe Afin UltimoAdmin', 'p132@probe.test', 'empresa_afin', v_pais, 'activa')
     RETURNING id INTO v_emp;
@@ -3263,7 +3263,7 @@ SELECT set_config('role','none',true);
 DO $$ DECLARE v_emp uuid; v_a uuid; v_b uuid; BEGIN
   IF NULLIF(current_setting('probe.p177_id',true),'') IS NULL OR current_setting('probe.p177_id',true)='err' THEN PERFORM set_config('probe.p177','N/A (pendiente 091)',false);
   ELSE
-    SELECT empresa_id INTO v_emp FROM public.farmacias WHERE id = current_setting('probe.p177_id',true)::int;
+    SELECT empresa_id INTO v_emp FROM public.farmacias WHERE id = NULLIF(current_setting('probe.p177_id',true), '')::int;
     SELECT empresa_id INTO v_a FROM public.farmacias WHERE id = NULLIF(current_setting('probe.cat_fA',true),'')::int;
     SELECT empresa_id INTO v_b FROM public.farmacias WHERE id = NULLIF(current_setting('probe.cat_fB',true),'')::int;
     IF v_emp = v_a AND v_emp <> v_b THEN PERFORM set_config('probe.p177','OK (empresa = A, NUNCA B; sin parámetro de empresa)',false);
@@ -3580,9 +3580,9 @@ SELECT set_config('role','none',true);
 DO $$ BEGIN
   IF current_setting('probe.p0_ready',true)<>'1' THEN PERFORM set_config('probe.pe_ready','0',false); RETURN; END IF;
   INSERT INTO public.productos_empresa (nombre_producto,empresa_id,precio_unitario,moneda,stock_disponible,requiere_receta,estado,pais_id)
-    VALUES ('PE GT', current_setting('probe.p0_lgt',true)::uuid, 10,'GTQ',5,false,'activo', current_setting('probe.p0_gt',true)::uuid);
+    VALUES ('PE GT', NULLIF(current_setting('probe.p0_lgt',true), '')::uuid, 10,'GTQ',5,false,'activo', NULLIF(current_setting('probe.p0_gt',true), '')::uuid);
   INSERT INTO public.productos_empresa (nombre_producto,empresa_id,precio_unitario,moneda,stock_disponible,requiere_receta,estado,pais_id)
-    VALUES ('PE HN', current_setting('probe.p0_lhn',true)::uuid, 10,'HNL',5,false,'activo', current_setting('probe.p0_hn',true)::uuid);
+    VALUES ('PE HN', NULLIF(current_setting('probe.p0_lhn',true), '')::uuid, 10,'HNL',5,false,'activo', NULLIF(current_setting('probe.p0_hn',true), '')::uuid);
   PERFORM set_config('probe.pe_ready','1',false);
 EXCEPTION WHEN others THEN PERFORM set_config('probe.pe_ready','0',false); END $$;
 
@@ -3592,7 +3592,7 @@ SELECT set_config('role','authenticated',true);
 DO $$ DECLARE n int; BEGIN
   IF current_setting('probe.pe_ready',true)<>'1' THEN PERFORM set_config('probe.p195','N/A',false);
   ELSE
-    SELECT count(*) INTO n FROM public.productos_empresa WHERE empresa_id = current_setting('probe.p0_lhn',true)::uuid;
+    SELECT count(*) INTO n FROM public.productos_empresa WHERE empresa_id = NULLIF(current_setting('probe.p0_lhn',true), '')::uuid;
     IF n=0 THEN PERFORM set_config('probe.p195','OK (médico GT no ve producto HN)',false);
     ELSE PERFORM set_config('probe.p195','ROJO (médico GT ve producto HN — leak vivo, n='||n||')',false); END IF;
   END IF;
@@ -3602,7 +3602,7 @@ EXCEPTION WHEN others THEN PERFORM set_config('probe.p195','FALLO ('||SQLERRM||'
 DO $$ DECLARE n int; BEGIN
   IF current_setting('probe.pe_ready',true)<>'1' THEN PERFORM set_config('probe.p196','N/A',false);
   ELSE
-    SELECT count(*) INTO n FROM public.productos_empresa WHERE empresa_id = current_setting('probe.p0_lgt',true)::uuid;
+    SELECT count(*) INTO n FROM public.productos_empresa WHERE empresa_id = NULLIF(current_setting('probe.p0_lgt',true), '')::uuid;
     IF n>0 THEN PERFORM set_config('probe.p196','OK (médico GT ve su producto GT)',false);
     ELSE PERFORM set_config('probe.p196','FALLO (médico GT NO ve su producto GT)',false); END IF;
   END IF;
@@ -3613,7 +3613,7 @@ SELECT set_config('request.jwt.claims', json_build_object('sub', current_setting
 DO $$ DECLARE n int; BEGIN
   IF current_setting('probe.pe_ready',true)<>'1' THEN PERFORM set_config('probe.p197','N/A',false);
   ELSE
-    SELECT count(*) INTO n FROM public.productos_empresa WHERE empresa_id IN (current_setting('probe.p0_lgt',true)::uuid, current_setting('probe.p0_lhn',true)::uuid);
+    SELECT count(*) INTO n FROM public.productos_empresa WHERE empresa_id IN (NULLIF(current_setting('probe.p0_lgt',true), '')::uuid, NULLIF(current_setting('probe.p0_lhn',true), '')::uuid);
     IF n=0 THEN PERFORM set_config('probe.p197','OK (país-NULL no ve productos)',false);
     ELSE PERFORM set_config('probe.p197','ROJO (país-NULL ve productos — fail-open, n='||n||')',false); END IF;
   END IF;
@@ -3634,10 +3634,10 @@ DO $$ DECLARE v_pais uuid; v_esperado uuid; v_old uuid; BEGIN
   IF current_setting('probe.pe_ready',true)<>'1' THEN PERFORM set_config('probe.p203','N/A',false);
   ELSE
     SELECT pais_id INTO v_old FROM public.productos_empresa WHERE nombre_producto='PE GT' LIMIT 1;  -- GT antes
-    UPDATE public.productos_empresa SET empresa_id = current_setting('probe.p0_lhn',true)::uuid
-      WHERE nombre_producto='PE GT' AND empresa_id = current_setting('probe.p0_lgt',true)::uuid;
+    UPDATE public.productos_empresa SET empresa_id = NULLIF(current_setting('probe.p0_lhn',true), '')::uuid
+      WHERE nombre_producto='PE GT' AND empresa_id = NULLIF(current_setting('probe.p0_lgt',true), '')::uuid;
     SELECT pais_id INTO v_pais FROM public.productos_empresa WHERE nombre_producto='PE GT' LIMIT 1;  -- ¿re-derivado?
-    SELECT pais_id INTO v_esperado FROM public.empresas_proveedoras WHERE id = current_setting('probe.p0_lhn',true)::uuid;  -- país real de la nueva empresa
+    SELECT pais_id INTO v_esperado FROM public.empresas_proveedoras WHERE id = NULLIF(current_setting('probe.p0_lhn',true), '')::uuid;  -- país real de la nueva empresa
     IF v_pais = v_esperado AND v_pais <> v_old THEN PERFORM set_config('probe.p203','OK (re-asignar empresa re-deriva país = país de la nueva empresa, cambió desde GT)',false);
     ELSE PERFORM set_config('probe.p203','ROJO (país='||COALESCE(v_pais::text,'NULL')||' esperado='||COALESCE(v_esperado::text,'NULL')||' old='||COALESCE(v_old::text,'NULL')||')',false); END IF;
   END IF;
@@ -3647,7 +3647,7 @@ EXCEPTION WHEN others THEN PERFORM set_config('probe.p203','FALLO ('||SQLERRM||'
 DO $$ BEGIN
   IF current_setting('probe.p0_ready',true)<>'1' OR to_regclass('public.empresa_paises_operacion') IS NULL THEN PERFORM set_config('probe.g1_ready','0',false); RETURN; END IF;
   INSERT INTO public.empresa_paises_operacion (empresa_id,pais_id,activo)
-    VALUES (current_setting('probe.p0_lgt',true)::uuid, current_setting('probe.p0_gt',true)::uuid, true) ON CONFLICT DO NOTHING;
+    VALUES (NULLIF(current_setting('probe.p0_lgt',true), '')::uuid, NULLIF(current_setting('probe.p0_gt',true), '')::uuid, true) ON CONFLICT DO NOTHING;
   PERFORM set_config('probe.g1_ready','1',false);
 EXCEPTION WHEN others THEN PERFORM set_config('probe.g1_ready','0',false); PERFORM set_config('probe.g1_err', SQLERRM, false); END $$;
 
@@ -3655,12 +3655,12 @@ EXCEPTION WHEN others THEN PERFORM set_config('probe.g1_ready','0',false); PERFO
 DO $$ DECLARE a boolean; b boolean; c boolean; d boolean; BEGIN
   IF current_setting('probe.g1_ready',true)<>'1' THEN PERFORM set_config('probe.p199','N/A (pendiente 095)',false);
   ELSE
-    a := private.empresa_opera_en_pais(current_setting('probe.p0_lgt',true)::uuid, current_setting('probe.p0_gt',true)::uuid);
-    b := private.empresa_opera_en_pais(current_setting('probe.p0_lgt',true)::uuid, current_setting('probe.p0_hn',true)::uuid);
-    UPDATE public.empresa_paises_operacion SET activo=false WHERE empresa_id=current_setting('probe.p0_lgt',true)::uuid AND pais_id=current_setting('probe.p0_gt',true)::uuid;
-    c := private.empresa_opera_en_pais(current_setting('probe.p0_lgt',true)::uuid, current_setting('probe.p0_gt',true)::uuid);
-    d := private.empresa_opera_en_pais(NULL, current_setting('probe.p0_gt',true)::uuid);
-    UPDATE public.empresa_paises_operacion SET activo=true WHERE empresa_id=current_setting('probe.p0_lgt',true)::uuid AND pais_id=current_setting('probe.p0_gt',true)::uuid;
+    a := private.empresa_opera_en_pais(NULLIF(current_setting('probe.p0_lgt',true), '')::uuid, NULLIF(current_setting('probe.p0_gt',true), '')::uuid);
+    b := private.empresa_opera_en_pais(NULLIF(current_setting('probe.p0_lgt',true), '')::uuid, NULLIF(current_setting('probe.p0_hn',true), '')::uuid);
+    UPDATE public.empresa_paises_operacion SET activo=false WHERE empresa_id=NULLIF(current_setting('probe.p0_lgt',true), '')::uuid AND pais_id=NULLIF(current_setting('probe.p0_gt',true), '')::uuid;
+    c := private.empresa_opera_en_pais(NULLIF(current_setting('probe.p0_lgt',true), '')::uuid, NULLIF(current_setting('probe.p0_gt',true), '')::uuid);
+    d := private.empresa_opera_en_pais(NULL, NULLIF(current_setting('probe.p0_gt',true), '')::uuid);
+    UPDATE public.empresa_paises_operacion SET activo=true WHERE empresa_id=NULLIF(current_setting('probe.p0_lgt',true), '')::uuid AND pais_id=NULLIF(current_setting('probe.p0_gt',true), '')::uuid;
     IF a AND (b IS FALSE) AND (c IS FALSE) AND (d IS FALSE) THEN PERFORM set_config('probe.p199','OK (opera-GT true; no-HN/inactivo/NULL false)',false);
     ELSE PERFORM set_config('probe.p199','FALLO (a='||a||' b='||b||' c='||c||' d='||d||')',false); END IF;
   END IF;
@@ -3715,13 +3715,13 @@ SELECT set_config('role','none',true);
 DO $$ DECLARE v_medgt uuid; BEGIN
   -- médico-GT REAL (rol='medico', país no-NULL = GT; distinto del país-NULL p0_mednull)
   SELECT id INTO v_medgt FROM public.perfiles WHERE rol='medico' AND pais_id IS NOT NULL
-    AND id <> current_setting('probe.p0_mednull',true)::uuid LIMIT 1;
+    AND id <> NULLIF(current_setting('probe.p0_mednull',true), '')::uuid LIMIT 1;
   IF current_setting('probe.p0_ready',true)<>'1' OR NULLIF(current_setting('probe.cat_clinico',true),'') IS NULL OR v_medgt IS NULL THEN PERFORM set_config('probe.fm_ready','0',false); RETURN; END IF;
   INSERT INTO public.farmacia_medicamentos (farmacia_id,nombre_medicamento,stock_actual,stock_minimo,precio_unitario,activo)
-    VALUES (current_setting('probe.p0_fgt',true)::int,'FM GT PAIS',10,1,5.0,true);
+    VALUES (NULLIF(current_setting('probe.p0_fgt',true), '')::int,'FM GT PAIS',10,1,5.0,true);
   INSERT INTO public.farmacia_medicamentos (farmacia_id,nombre_medicamento,stock_actual,stock_minimo,precio_unitario,activo)
-    VALUES (current_setting('probe.p0_fhn',true)::int,'FM HN PAIS',10,1,5.0,true);
-  UPDATE public.perfiles SET pais_id = current_setting('probe.p0_gt',true)::uuid WHERE id = current_setting('probe.cat_clinico',true)::uuid;  -- clínico GT
+    VALUES (NULLIF(current_setting('probe.p0_fhn',true), '')::int,'FM HN PAIS',10,1,5.0,true);
+  UPDATE public.perfiles SET pais_id = NULLIF(current_setting('probe.p0_gt',true), '')::uuid WHERE id = NULLIF(current_setting('probe.cat_clinico',true), '')::uuid;  -- clínico GT
   PERFORM set_config('probe.fm_medgt', v_medgt::text, false);
   PERFORM set_config('probe.fm_ready','1',false);
 EXCEPTION WHEN others THEN PERFORM set_config('probe.fm_ready','0',false); END $$;
@@ -3732,7 +3732,7 @@ SELECT set_config('role','authenticated',true);
 DO $$ DECLARE n int; BEGIN
   IF current_setting('probe.fm_ready',true)<>'1' THEN PERFORM set_config('probe.p204','N/A',false);
   ELSE
-    SELECT count(*) INTO n FROM public.farmacia_medicamentos WHERE farmacia_id=current_setting('probe.p0_fhn',true)::int;
+    SELECT count(*) INTO n FROM public.farmacia_medicamentos WHERE farmacia_id=NULLIF(current_setting('probe.p0_fhn',true), '')::int;
     IF n=0 THEN PERFORM set_config('probe.p204','OK (médico GT no ve stock HN)',false);
     ELSE PERFORM set_config('probe.p204','ROJO (médico GT ve stock HN — leak vivo, n='||n||')',false); END IF;
   END IF;
@@ -3742,7 +3742,7 @@ EXCEPTION WHEN others THEN PERFORM set_config('probe.p204','FALLO ('||SQLERRM||'
 DO $$ DECLARE n int; BEGIN
   IF current_setting('probe.fm_ready',true)<>'1' THEN PERFORM set_config('probe.p205','N/A',false);
   ELSE
-    SELECT count(*) INTO n FROM public.farmacia_medicamentos WHERE farmacia_id=current_setting('probe.p0_fgt',true)::int;
+    SELECT count(*) INTO n FROM public.farmacia_medicamentos WHERE farmacia_id=NULLIF(current_setting('probe.p0_fgt',true), '')::int;
     IF n>0 THEN PERFORM set_config('probe.p205','OK (médico GT ve stock GT)',false);
     ELSE PERFORM set_config('probe.p205','FALLO (médico GT NO ve stock GT)',false); END IF;
   END IF;
@@ -3753,7 +3753,7 @@ SELECT set_config('request.jwt.claims', json_build_object('sub', current_setting
 DO $$ DECLARE n int; BEGIN
   IF current_setting('probe.fm_ready',true)<>'1' THEN PERFORM set_config('probe.p206','N/A',false);
   ELSE
-    SELECT count(*) INTO n FROM public.farmacia_medicamentos WHERE farmacia_id=current_setting('probe.p0_fhn',true)::int;
+    SELECT count(*) INTO n FROM public.farmacia_medicamentos WHERE farmacia_id=NULLIF(current_setting('probe.p0_fhn',true), '')::int;
     IF n=0 THEN PERFORM set_config('probe.p206','OK (clínico GT no ve stock HN)',false);
     ELSE PERFORM set_config('probe.p206','ROJO (clínico GT ve stock HN — leak vivo, n='||n||')',false); END IF;
   END IF;
@@ -3763,7 +3763,7 @@ EXCEPTION WHEN others THEN PERFORM set_config('probe.p206','FALLO ('||SQLERRM||'
 DO $$ DECLARE n int; BEGIN
   IF current_setting('probe.fm_ready',true)<>'1' THEN PERFORM set_config('probe.p207','N/A',false);
   ELSE
-    SELECT count(*) INTO n FROM public.farmacia_medicamentos WHERE farmacia_id=current_setting('probe.p0_fgt',true)::int;
+    SELECT count(*) INTO n FROM public.farmacia_medicamentos WHERE farmacia_id=NULLIF(current_setting('probe.p0_fgt',true), '')::int;
     IF n>0 THEN PERFORM set_config('probe.p207','OK (clínico GT ve stock GT)',false);
     ELSE PERFORM set_config('probe.p207','FALLO (clínico GT NO ve stock GT)',false); END IF;
   END IF;
@@ -3774,7 +3774,7 @@ SELECT set_config('request.jwt.claims', json_build_object('sub', current_setting
 DO $$ DECLARE n int; BEGIN
   IF current_setting('probe.fm_ready',true)<>'1' THEN PERFORM set_config('probe.p208','N/A',false);
   ELSE
-    SELECT count(*) INTO n FROM public.farmacia_medicamentos WHERE farmacia_id IN (current_setting('probe.p0_fgt',true)::int, current_setting('probe.p0_fhn',true)::int);
+    SELECT count(*) INTO n FROM public.farmacia_medicamentos WHERE farmacia_id IN (NULLIF(current_setting('probe.p0_fgt',true), '')::int, NULLIF(current_setting('probe.p0_fhn',true), '')::int);
     IF n=0 THEN PERFORM set_config('probe.p208','OK (país-NULL no ve stock)',false);
     ELSE PERFORM set_config('probe.p208','ROJO (país-NULL ve stock — fail-open, n='||n||')',false); END IF;
   END IF;
@@ -3806,9 +3806,9 @@ SELECT set_config('role','none',true);
 DO $$ BEGIN
   IF current_setting('probe.fm_ready',true)<>'1' THEN PERFORM set_config('probe.ex_ready','0',false); RETURN; END IF;
   INSERT INTO public.examenes_catalogo (laboratorio_id,nombre,categoria,activo)
-    VALUES (current_setting('probe.p0_lgt',true)::uuid,'EX GT PAIS','cat',true);
+    VALUES (NULLIF(current_setting('probe.p0_lgt',true), '')::uuid,'EX GT PAIS','cat',true);
   INSERT INTO public.examenes_catalogo (laboratorio_id,nombre,categoria,activo)
-    VALUES (current_setting('probe.p0_lhn',true)::uuid,'EX HN PAIS','cat',true);
+    VALUES (NULLIF(current_setting('probe.p0_lhn',true), '')::uuid,'EX HN PAIS','cat',true);
   PERFORM set_config('probe.ex_ready','1',false);
 EXCEPTION WHEN others THEN PERFORM set_config('probe.ex_ready','0',false); END $$;
 
@@ -3818,7 +3818,7 @@ SELECT set_config('role','authenticated',true);
 DO $$ DECLARE n int; BEGIN
   IF current_setting('probe.ex_ready',true)<>'1' THEN PERFORM set_config('probe.p210','N/A',false);
   ELSE
-    SELECT count(*) INTO n FROM public.examenes_catalogo WHERE laboratorio_id=current_setting('probe.p0_lhn',true)::uuid;
+    SELECT count(*) INTO n FROM public.examenes_catalogo WHERE laboratorio_id=NULLIF(current_setting('probe.p0_lhn',true), '')::uuid;
     IF n=0 THEN PERFORM set_config('probe.p210','OK (médico GT no ve examen lab HN)',false);
     ELSE PERFORM set_config('probe.p210','ROJO (médico GT ve examen lab HN — leak vivo, n='||n||')',false); END IF;
   END IF;
@@ -3828,7 +3828,7 @@ EXCEPTION WHEN others THEN PERFORM set_config('probe.p210','FALLO ('||SQLERRM||'
 DO $$ DECLARE n int; BEGIN
   IF current_setting('probe.ex_ready',true)<>'1' THEN PERFORM set_config('probe.p211','N/A',false);
   ELSE
-    SELECT count(*) INTO n FROM public.examenes_catalogo WHERE laboratorio_id=current_setting('probe.p0_lgt',true)::uuid;
+    SELECT count(*) INTO n FROM public.examenes_catalogo WHERE laboratorio_id=NULLIF(current_setting('probe.p0_lgt',true), '')::uuid;
     IF n>0 THEN PERFORM set_config('probe.p211','OK (médico GT ve examen lab GT)',false);
     ELSE PERFORM set_config('probe.p211','FALLO (médico GT NO ve examen lab GT)',false); END IF;
   END IF;
@@ -3839,7 +3839,7 @@ SELECT set_config('request.jwt.claims', json_build_object('sub', current_setting
 DO $$ DECLARE n int; BEGIN
   IF current_setting('probe.ex_ready',true)<>'1' THEN PERFORM set_config('probe.p212','N/A',false);
   ELSE
-    SELECT count(*) INTO n FROM public.examenes_catalogo WHERE laboratorio_id IN (current_setting('probe.p0_lgt',true)::uuid, current_setting('probe.p0_lhn',true)::uuid);
+    SELECT count(*) INTO n FROM public.examenes_catalogo WHERE laboratorio_id IN (NULLIF(current_setting('probe.p0_lgt',true), '')::uuid, NULLIF(current_setting('probe.p0_lhn',true), '')::uuid);
     IF n=0 THEN PERFORM set_config('probe.p212','OK (país-NULL no ve exámenes)',false);
     ELSE PERFORM set_config('probe.p212','ROJO (país-NULL ve exámenes — fail-open, n='||n||')',false); END IF;
   END IF;
@@ -3850,8 +3850,8 @@ SELECT set_config('request.jwt.claims', json_build_object('sub', current_setting
 DO $$ DECLARE g int; h int; BEGIN
   IF current_setting('probe.ex_ready',true)<>'1' OR to_regprocedure('public.laboratorios_para_medico()') IS NULL THEN PERFORM set_config('probe.p213','N/A',false);
   ELSE
-    SELECT count(*) INTO g FROM public.laboratorios_para_medico() WHERE id=current_setting('probe.p0_lgt',true)::uuid;
-    SELECT count(*) INTO h FROM public.laboratorios_para_medico() WHERE id=current_setting('probe.p0_lhn',true)::uuid;
+    SELECT count(*) INTO g FROM public.laboratorios_para_medico() WHERE id=NULLIF(current_setting('probe.p0_lgt',true), '')::uuid;
+    SELECT count(*) INTO h FROM public.laboratorios_para_medico() WHERE id=NULLIF(current_setting('probe.p0_lhn',true), '')::uuid;
     IF g>0 AND h=0 THEN PERFORM set_config('probe.p213','OK (RPC médico GT: lab GT sí, lab HN no)',false);
     ELSE PERFORM set_config('probe.p213','FALLO (gt='||g||' hn='||h||')',false); END IF;
   END IF;
@@ -3863,7 +3863,7 @@ DO $$ DECLARE h int; tot int; BEGIN
   IF current_setting('probe.ex_ready',true)<>'1' OR to_regprocedure('public.laboratorios_para_medico()') IS NULL THEN PERFORM set_config('probe.p214','N/A',false);
   ELSE
     SELECT count(*) INTO tot FROM public.laboratorios_para_medico();
-    SELECT count(*) INTO h FROM public.laboratorios_para_medico() WHERE id=current_setting('probe.p0_lhn',true)::uuid;
+    SELECT count(*) INTO h FROM public.laboratorios_para_medico() WHERE id=NULLIF(current_setting('probe.p0_lhn',true), '')::uuid;
     IF tot=0 AND h=0 THEN PERFORM set_config('probe.p214','OK (país-NULL → 0 labs, fail-closed)',false);
     ELSE PERFORM set_config('probe.p214','ROJO (país-NULL obtiene labs — fail-open, tot='||tot||' hn='||h||')',false); END IF;
   END IF;
@@ -3895,7 +3895,7 @@ SELECT set_config('role','authenticated',true);
 DO $$ DECLARE n int; BEGIN
   IF current_setting('probe.cat_ready',true)<>'1' THEN PERFORM set_config('probe.p216','N/A',false);
   ELSE
-    SELECT count(*) INTO n FROM public.farmacias WHERE id=current_setting('probe.cat_fB',true)::int;
+    SELECT count(*) INTO n FROM public.farmacias WHERE id=NULLIF(current_setting('probe.cat_fB',true), '')::int;
     IF n=0 THEN PERFORM set_config('probe.p216','OK (proveedor no ve farmacia de otra empresa del mismo país)',false);
     ELSE PERFORM set_config('probe.p216','ROJO (proveedor ve farmacia de otra empresa GT — leak cross-tenant, n='||n||')',false); END IF;
   END IF;
@@ -3905,7 +3905,7 @@ EXCEPTION WHEN others THEN PERFORM set_config('probe.p216','FALLO ('||SQLERRM||'
 DO $$ DECLARE n int; BEGIN
   IF current_setting('probe.cat_ready',true)<>'1' THEN PERFORM set_config('probe.p217','N/A',false);
   ELSE
-    SELECT count(*) INTO n FROM public.farmacias WHERE id=current_setting('probe.cat_fA',true)::int;
+    SELECT count(*) INTO n FROM public.farmacias WHERE id=NULLIF(current_setting('probe.cat_fA',true), '')::int;
     IF n>0 THEN PERFORM set_config('probe.p217','OK (proveedor ve su empresa)',false);
     ELSE PERFORM set_config('probe.p217','FALLO (proveedor NO ve su empresa)',false); END IF;
   END IF;
@@ -3916,7 +3916,7 @@ SELECT set_config('request.jwt.claims', json_build_object('sub', current_setting
 DO $$ DECLARE n int; BEGIN
   IF current_setting('probe.fm_ready',true)<>'1' THEN PERFORM set_config('probe.p218','N/A',false);
   ELSE
-    SELECT count(*) INTO n FROM public.farmacias WHERE id=current_setting('probe.p0_fhn',true)::int;
+    SELECT count(*) INTO n FROM public.farmacias WHERE id=NULLIF(current_setting('probe.p0_fhn',true), '')::int;
     IF n=0 THEN PERFORM set_config('probe.p218','OK (médico GT no ve farmacia HN)',false);
     ELSE PERFORM set_config('probe.p218','ROJO (médico GT ve farmacia HN — leak vivo, n='||n||')',false); END IF;
   END IF;
@@ -3926,7 +3926,7 @@ EXCEPTION WHEN others THEN PERFORM set_config('probe.p218','FALLO ('||SQLERRM||'
 DO $$ DECLARE n int; BEGIN
   IF current_setting('probe.fm_ready',true)<>'1' THEN PERFORM set_config('probe.p219','N/A',false);
   ELSE
-    SELECT count(*) INTO n FROM public.farmacias WHERE id=current_setting('probe.p0_fgt',true)::int;
+    SELECT count(*) INTO n FROM public.farmacias WHERE id=NULLIF(current_setting('probe.p0_fgt',true), '')::int;
     IF n>0 THEN PERFORM set_config('probe.p219','OK (médico GT ve farmacia GT)',false);
     ELSE PERFORM set_config('probe.p219','FALLO (médico GT NO ve farmacia GT)',false); END IF;
   END IF;
@@ -11224,6 +11224,11 @@ SELECT set_config('role','none', true);
 --                            transaccional sobre un schema temporal, no puede corromper ningun
 --                            fixture y desaparece con el ROLLBACK.
 --
+--   cast_directo = 103       Bloques DO sin handler con `current_setting('x',true)::T` SIN NULLIF.
+--                            El harness setea CADENAS VACIAS a proposito (88 coalesce(...,'') dentro
+--                            de set_config) y ''::uuid es 22P02: mata la transaccion igual que un
+--                            NOT NULL. Fase 2.1: 155 -> 103 (tanda 1 de 3) -> objetivo 0.
+--
 --   do_sin_handler = 319     Bloques DO sin `EXCEPTION WHEN`. DEUDA CON FECHA, igual que la allowlist
 --                            del P480: la ataca la FASE 2. La regla es ESTRICTA — un `RAISE EXCEPTION`
 --                            NO cuenta como handler, es lo contrario de un handler. Contarlo daria
@@ -11236,7 +11241,7 @@ SELECT set_config('role','none', true);
 DO $$
 BEGIN
   PERFORM set_config('probe.p516',
-    'OK-SENAL (baseline declarado: top_level_dml_ddl=0 excluyendo pg_temp, do_sin_handler=319 deuda con fecha). '||
+    'OK-SENAL (baseline declarado: top_level_dml_ddl=0 excluyendo pg_temp, cast_directo=103 en baja, do_sin_handler=319 deuda con fecha). '||
     'El gate real es tests/rls/b2_guard.py — este probe NO mide, senaliza.', false);
 EXCEPTION WHEN OTHERS THEN
   -- handler puesto por coherencia: el propio b2_guard.py conto este bloque como deuda nueva cuando
