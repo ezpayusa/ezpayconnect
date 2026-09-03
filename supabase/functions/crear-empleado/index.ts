@@ -6,6 +6,16 @@ const corsHeaders = {
   'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
 }
 
+// Roles cuyo perfil EXIGE pais_id a nivel BD. UNA sola fuente de verdad, consumida por el pre-gate
+// (rechaza ANTES de auth.createUser) y por el INSERT en perfiles. Estaban duplicados como dos
+// comparaciones sueltas contra 'admin_pais' y ese desfase fue justamente el bug: la mig 263 agregó
+// el CHECK comercial_requiere_pais (asesor_comercial / supervisor_comercial exigen pais_id NOT NULL),
+// nadie tocó esta edge, el INSERT mandaba null, reventaba el CHECK y la función hacía rollback del
+// auth user → el módulo comercial se quedó SIN vía de alta por UI.
+// CHECKs vivos que cubre: admin_pais_requiere_pais (mig 216) + comercial_requiere_pais (mig 263).
+// Al agregar un rol con constraint de país, agregarlo ACÁ y en ningún otro lado.
+const ROLES_QUE_EXIGEN_PAIS = ['admin_pais', 'asesor_comercial', 'supervisor_comercial']
+
 serve(async (req) => {
   // Handle CORS preflight
   if (req.method === 'OPTIONS') {
@@ -77,11 +87,12 @@ serve(async (req) => {
       )
     }
 
-    // 4b. admin_pais EXIGE pais_id — validado ANTES de auth.createUser para no tener que revertir.
-    //     El CHECK admin_pais_requiere_pais (mig 216) lo exige a nivel BD; acá se corta antes.
-    if (rolData.nombre === 'admin_pais' && !pais_id) {
+    // 4b. Los roles con constraint de país EXIGEN pais_id — validado ANTES de auth.createUser para
+    //     no tener que revertir. Los CHECKs (admin_pais_requiere_pais mig 216,
+    //     comercial_requiere_pais mig 263) lo exigen a nivel BD; acá se corta antes.
+    if (ROLES_QUE_EXIGEN_PAIS.includes(rolData.nombre) && !pais_id) {
       return new Response(
-        JSON.stringify({ success: false, error: 'admin_pais requiere pais_id' }),
+        JSON.stringify({ success: false, error: `${rolData.nombre} requiere pais_id` }),
         { headers: { ...corsHeaders, 'Content-Type': 'application/json' }, status: 400 }
       )
     }
@@ -105,8 +116,8 @@ serve(async (req) => {
 
     const userId = authData.user.id
 
-    // 6. Insert profile in perfiles table. Solo admin_pais recibe pais_id (los demás roles → null,
-    //    como hasta hoy: evita scopear a un admin/gerente a un país sin querer).
+    // 6. Insert profile in perfiles table. Solo los roles con constraint de país reciben pais_id
+    //    (los demás → null, como hasta hoy: evita scopear a un admin/gerente a un país sin querer).
     const { error: perfilError } = await supabaseAdmin
       .from('perfiles')
       .insert({
@@ -115,7 +126,7 @@ serve(async (req) => {
         nombre_completo,
         nombre: nombre || nombre_completo,
         rol: rolData.nombre,
-        pais_id: rolData.nombre === 'admin_pais' ? pais_id : null,
+        pais_id: ROLES_QUE_EXIGEN_PAIS.includes(rolData.nombre) ? pais_id : null,
         activo: true,
       })
 
