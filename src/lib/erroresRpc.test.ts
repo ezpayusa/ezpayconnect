@@ -133,6 +133,43 @@ describe('frente visitas — PA015 a PA025', () => {
   })
 })
 
+describe('storage — el MISMO mapa, con el código normalizado', () => {
+  // Storage devuelve StorageApiError: sin `code`, con `statusCode` o `status` HTTP.
+  const st = (statusCode: string, message = 'algo en inglés') => ({ statusCode, message, name: 'StorageApiError' })
+
+  it('normaliza statusCode a STORAGE_<n> y lo resuelve en el mapa único', () => {
+    const r = mapearErrorRpc(st('403'))
+    expect(r.code).toBe('STORAGE_403')
+    expect(r.mensaje).toBe('No tenés permiso para subir a esta visita.')
+    expect(r.mensaje).not.toMatch(/inglés/)
+  })
+
+  it('acepta también `status` (la otra forma que usa supabase-js)', () => {
+    expect(mapearErrorRpc({ status: 401, message: 'JWT expired' }).code).toBe('STORAGE_401')
+  })
+
+  it('413 y 415 se reportan: si llegan es que la validación del cliente quedó desalineada', () => {
+    expect(mapearErrorRpc(st('413')).reportar).toBe(true)
+    expect(mapearErrorRpc(st('415')).reportar).toBe(true)
+    expect(mapearErrorRpc(st('413')).campo).toBe('adjunto')
+  })
+
+  it('un status que no está en el mapa NO inventa nada: va al genérico', () => {
+    const r = mapearErrorRpc(st('502'))
+    expect(r.code).toBe('STORAGE_502')
+    expect(r.mensaje).toBe('No se pudo completar la operación. Intentá de nuevo.')
+    expect(r.reportar).toBe(true)
+  })
+
+  it('un statusCode que no es un HTTP de tres dígitos se ignora (no se fabrica un código)', () => {
+    expect(mapearErrorRpc({ statusCode: 'boom', message: 'x' }).code).toBe(null)
+  })
+
+  it('`code` de PostgREST gana sobre `statusCode`: un PA0xx no se confunde con un HTTP', () => {
+    expect(mapearErrorRpc({ code: 'PA023', statusCode: '400', message: 'PA023: path' }).code).toBe('PA023')
+  })
+})
+
 describe('los tres negativos — que el mapa envejezca bien y no rompa', () => {
   // EL IMPORTANTE. Usa el PRÓXIMO ERRCODE LIBRE, que hoy es PA026 (PA001-PA025 están tomados por
   // las migs 264/272/273/274). Este test ya se rompió una vez, al mapear PA015-PA025: es

@@ -95,6 +95,19 @@ const MAPA: Record<string, Entrada> = {
   // Escribir una columna GENERATED. Si aparece es bug nuestro, no del usuario.
   '428C9': { texto: GENERICO, destino: 'toast', reportar: true },
 
+  // --- Storage (mismo mapa, códigos normalizados a STORAGE_<status>) -------------------------
+  // El texto crudo de storage viene en inglés y a veces es un JSON: nunca se muestra tal cual.
+  STORAGE_400: { texto: 'El archivo no se pudo subir. Revisá que no esté dañado y probá de nuevo.', destino: 'toast', reportar: true },
+  STORAGE_401: { texto: 'Tu sesión venció. Volvé a entrar y reintentá la subida.', destino: 'toast', reportar: false },
+  STORAGE_403: { texto: 'No tenés permiso para subir a esta visita.', destino: 'toast', reportar: false },
+  STORAGE_404: { texto: 'No encontramos el archivo en el servidor.', destino: 'toast', reportar: true },
+  STORAGE_409: { texto: 'Ya existe un archivo con ese nombre. Probá de nuevo.', destino: 'toast', reportar: true },
+  // 413 y 415 los ataja el cliente ANTES de subir; si llegan acá es que la validación local
+  // quedó desalineada con el bucket, y eso es bug nuestro.
+  STORAGE_413: { texto: 'El archivo supera el máximo permitido.', destino: 'inline', campo: 'adjunto', reportar: true },
+  STORAGE_415: { texto: 'Ese tipo de archivo no está permitido.', destino: 'inline', campo: 'adjunto', reportar: true },
+  STORAGE_0:   { texto: 'Se cortó la subida. No quedó nada guardado: reintentá.', destino: 'inline', campo: 'adjunto', reportar: false },
+
   // --- Frente visitas (migs 273/274) --------------------------------------------------------
   // Los guards de país y de jerarquía traen su propio texto explicando qué no coincide.
   PA015: { destino: 'toast', reportar: false },
@@ -124,6 +137,20 @@ function sinPrefijo(mensaje: string): string {
   return mensaje.replace(/^PA\d{3}:\s*/, '').trim()
 }
 
+// Storage NO devuelve SQLSTATE: devuelve un StorageApiError con `statusCode`/`status` HTTP. Para
+// que "qué significa este error" siga decidiéndose EN UN SOLO LUGAR, el código se normaliza acá
+// mismo a `STORAGE_<status>` y entra al MISMO mapa. La alternativa —un módulo aparte que traduzca
+// errores de storage— sería un segundo sitio donde se decide qué se le muestra al usuario, y esos
+// dos sitios se desincronizan siempre.
+function codigoStorage(error: unknown): string | null {
+  if (!error || typeof error !== 'object') return null
+  const e = error as Record<string, unknown>
+  const raw = e.statusCode ?? e.status
+  if (raw == null) return null
+  const n = String(raw).trim()
+  return /^\d{3}$/.test(n) ? `STORAGE_${n}` : null
+}
+
 function leerCampo(error: unknown, campo: string): string | null {
   if (!error || typeof error !== 'object') return null
   const v = (error as Record<string, unknown>)[campo]
@@ -135,7 +162,7 @@ function leerCampo(error: unknown, campo: string): string | null {
  * Acepta cualquier cosa: null, un Error de red sin `.code`, o un PostgrestError.
  */
 export function mapearErrorRpc(error: unknown): ErrorRpcMapeado {
-  const code = leerCampo(error, 'code')
+  const code = leerCampo(error, 'code') ?? codigoStorage(error)
   const mensajeBase = leerCampo(error, 'message')
 
   // Sin código: fallo de red, timeout, o un throw que no viene de PostgREST. Genérico y a Sentry.

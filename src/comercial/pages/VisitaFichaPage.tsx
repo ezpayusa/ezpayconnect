@@ -4,7 +4,8 @@ import { toast } from 'sonner'
 import { ArrowLeft, MapPin, MapPinOff, CheckCircle2, AlertTriangle, Paperclip } from 'lucide-react'
 import {
   obtenerVisita, reporteDeVisita, adjuntosDeVisita, listarResultados, configVisitasEfectiva,
-  checkinVisita, checkoutVisita, guardarReporte, subirAdjunto,
+  checkinVisita, checkoutVisita, guardarReporte,
+  subirAdjuntoVisita, urlFirmada, validarAdjunto, ACCEPT_ADJUNTO,
   type VisitaComercial, type ItemCatalogo, type ResultadoCheckin,
 } from '../lib/api'
 import { reportarError, type ErrorInline } from '../lib/reportarError'
@@ -20,6 +21,9 @@ export default function VisitaFichaPage() {
   const [v, setV] = useState<VisitaComercial | null>(null)
   const [reporte, setReporte] = useState<{ id: string; resultado: string; resumen: string; compromisos: string | null } | null>(null)
   const [adjuntos, setAdjuntos] = useState<{ id: string; storage_path: string }[]>([])
+  const [progreso, setProgreso] = useState<number | null>(null)
+  const [errAdjunto, setErrAdjunto] = useState<ErrorInline>(null)
+  const [huerfano, setHuerfano] = useState<string | null>(null)
   const [resultados, setResultados] = useState<ItemCatalogo[]>([])
   const [precisionMax, setPrecisionMax] = useState<number | null>(null)
   const [radio, setRadio] = useState<number | null>(null)
@@ -89,12 +93,31 @@ export default function VisitaFichaPage() {
 
   const onAdjuntar = async (archivo: File | null) => {
     if (!archivo || !v) return
-    setTrabajando(true)
-    const { error } = await subirAdjunto({ id: v.id, pais_id: v.pais_id }, archivo)
-    setTrabajando(false)
-    if (error) { reportarError(error, { onRecargar: () => void cargar() }); return }
+    setErrAdjunto(null); setHuerfano(null)
+
+    // Validación ANTES de tocar la red. No es el control (el bucket lo impone igual): es que
+    // nadie suba 40 MB en 3G para que lo rechacen al final.
+    const motivo = validarAdjunto(archivo)
+    if (motivo) { setErrAdjunto({ campo: 'adjunto', mensaje: motivo }); return }
+
+    setTrabajando(true); setProgreso(0)
+    const { error, huerfano: h } = await subirAdjuntoVisita(
+      { id: v.id, pais_id: v.pais_id }, archivo, setProgreso)
+    setTrabajando(false); setProgreso(null)
+    if (error) {
+      reportarError(error, { setInline: setErrAdjunto, onRecargar: () => void cargar() })
+      if (h) setHuerfano(h)   // el borrado compensatorio también falló: se dice, no se esconde
+      return
+    }
     toast.success('Adjunto guardado')
     void cargar()
+  }
+
+  const verAdjunto = async (path: string) => {
+    const { data, error } = await urlFirmada(path)
+    if (error || !data?.signedUrl) { reportarError(error ?? { message: 'sin url' }); return }
+    // La URL sólo existe en esta variable y en la pestaña que se abre: no se guarda en ningún lado.
+    window.open(data.signedUrl, '_blank', 'noopener')
   }
 
   if (cargando) return <p className="text-sm text-gray-500">Cargando…</p>
@@ -227,10 +250,41 @@ export default function VisitaFichaPage() {
         </h2>
         {adjuntos.length === 0
           ? <p className="mt-1 text-sm text-gray-500">Sin fotos ni videos todavía.</p>
-          : <ul className="mt-1 text-xs text-gray-600">{adjuntos.map(a => <li key={a.id} className="truncate">{a.storage_path.split('/').pop()}</li>)}</ul>}
-        <input type="file" id="adjunto" accept="image/*,video/mp4,video/quicktime" disabled={trabajando}
-          onChange={(e) => void onAdjuntar(e.target.files?.[0] ?? null)}
-          className="mt-2 block w-full text-xs" />
+          : <ul className="mt-1 space-y-1">{adjuntos.map(a => (
+              <li key={a.id}>
+                <button type="button" onClick={() => void verAdjunto(a.storage_path)}
+                  className="truncate text-xs text-[#1E5C8E] underline">
+                  {a.storage_path.split('/').pop()}
+                </button>
+              </li>))}</ul>}
+
+        {!v.checkin_at ? (
+          <p className="mt-2 rounded bg-gray-50 p-2 text-xs text-gray-600">
+            Los adjuntos se suben después del check-in.
+          </p>
+        ) : (
+          <>
+            <input type="file" id="adjunto" accept={ACCEPT_ADJUNTO} disabled={trabajando}
+              onChange={(e) => void onAdjuntar(e.target.files?.[0] ?? null)}
+              className="mt-2 block w-full text-xs" />
+            {progreso != null && (
+              <div className="mt-2">
+                <div className="h-1.5 w-full overflow-hidden rounded bg-gray-200">
+                  <div id="barra-progreso" className="h-full bg-[#1E5C8E] transition-all"
+                    style={{ width: `${progreso}%` }} />
+                </div>
+                <p className="mt-1 text-xs text-gray-600">Subiendo… {progreso}%</p>
+              </div>
+            )}
+            {errAdjunto && <p id="err-adjunto" className="mt-2 text-xs text-red-600">{errAdjunto.mensaje}</p>}
+            {huerfano && (
+              <p className="mt-1 text-xs text-amber-800">
+                No se pudo limpiar el archivo a medio subir. Avisale a soporte con este dato:
+                <span className="font-mono"> {huerfano}</span>
+              </p>
+            )}
+          </>
+        )}
       </section>
     </div>
   )

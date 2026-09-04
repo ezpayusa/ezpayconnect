@@ -12398,6 +12398,46 @@ DO $$ DECLARE v_n int; v_o int; BEGIN
 EXCEPTION WHEN OTHERS THEN PERFORM set_config('probe.p563','FALLO ('||SQLSTATE||' '||SQLERRM||')',false); END $$;
 SELECT set_config('role','none', true);
 
+
+-- ############################################################################################
+-- P569-P571 — la config del bucket PINEADA, y el DELETE acotado de la mig 276
+-- ############################################################################################
+-- P569 existe porque `src/comercial/lib/adjuntos.ts` REPLICA los 50 MB y la lista de mime del
+-- bucket: el cliente no puede leer storage.buckets (no es legible por authenticated, medido), asi
+-- que la duplicacion es inevitable. Esta probe la vuelve VERIFICADA en vez de documentada: si
+-- alguien cambia el bucket, el harness se pone rojo y apunta al archivo del front.
+SELECT set_config('role','none', true);
+DO $$ DECLARE b record; v_mime text; BEGIN
+  SELECT * INTO b FROM storage.buckets WHERE id = 'visitas-comerciales';
+  IF b.id IS NULL THEN PERFORM set_config('probe.p569','ROJO (el bucket no existe)',false); RETURN; END IF;
+  v_mime := array_to_string(b.allowed_mime_types, ',');
+  PERFORM set_config('probe.p569', CASE
+    WHEN b.public THEN 'ROJO (el bucket quedo PUBLICO)'
+    WHEN b.file_size_limit IS DISTINCT FROM 52428800
+      THEN 'ROJO (limite='||coalesce(b.file_size_limit::text,'nulo')||', el front asume 52428800 en MAX_BYTES_ADJUNTO)'
+    WHEN v_mime IS DISTINCT FROM 'image/jpeg,image/png,image/webp,video/mp4,video/quicktime'
+      THEN 'ROJO (mime='||coalesce(v_mime,'nulo')||', el front asume otra lista en MIME_ADJUNTO)'
+    ELSE 'OK (bucket privado, 50 MB y 5 mime — coincide con adjuntos.ts)' END, false);
+EXCEPTION WHEN OTHERS THEN PERFORM set_config('probe.p569','FALLO ('||SQLSTATE||' '||SQLERRM||')',false); END $$;
+
+-- P570 — la policy de DELETE de la mig 276 es ESTRUCTURALMENTE acotada a huerfanos.
+-- POR QUE ESTA PROBE ES ESTRUCTURAL Y NO DE COMPORTAMIENTO: Supabase PROHIBE el DELETE directo
+-- sobre storage.objects ("Direct deletion from storage tables is not allowed. Use the Storage
+-- API"), asi que desde SQL no se puede ejercitar. Lo que se puede verificar aca es que la policy
+-- exista y lleve el NOT EXISTS contra visita_adjuntos, que es lo que hace imposible borrar
+-- evidencia registrada. El comportamiento se verifica en el navegador, por la Storage API.
+DO $$ DECLARE v_qual text; BEGIN
+  SELECT qual INTO v_qual FROM pg_policies
+   WHERE schemaname='storage' AND tablename='objects' AND policyname='visitas_com_storage_delete';
+  PERFORM set_config('probe.p570', CASE
+    WHEN v_qual IS NULL THEN 'ROJO (no hay policy de DELETE: la compensacion del front no puede funcionar)'
+    WHEN v_qual NOT LIKE '%visita_adjuntos%'
+      THEN 'ROJO (la policy de DELETE NO exige que el objeto este sin registrar: puede borrar evidencia)'
+    WHEN v_qual NOT LIKE '%asesor_id%'
+      THEN 'ROJO (la policy de DELETE no se acota al asesor duenio)'
+    ELSE 'OK (DELETE acotado a objetos propios Y sin registrar — la evidencia no se puede borrar)' END, false);
+EXCEPTION WHEN OTHERS THEN PERFORM set_config('probe.p570','FALLO ('||SQLSTATE||' '||SQLERRM||')',false); END $$;
+
 -- ===== Veredictos como result set =====
 SELECT 'P1_anon_insert_citas'              AS probe, current_setting('probe.p1', true)  AS verdict, 'BLOQUEADO' AS esperado_post_fix
 UNION ALL SELECT 'P2_medico_cancela_ajena_rpc',         current_setting('probe.p2', true),  'BLOQUEADO'
@@ -13017,6 +13057,8 @@ UNION ALL SELECT 'P565_rv_STORAGE_a_sube_a_su_path',             current_setting
 UNION ALL SELECT 'P566_rv_STORAGE_b_sube_a_path_ajeno',          current_setting('probe.p566', true),    'OK (denegado)'
 UNION ALL SELECT 'P567_rv_STORAGE_c_lee_lo_propio',              current_setting('probe.p567', true),    'OK (PERMITIDO)'
 UNION ALL SELECT 'P568_rv_STORAGE_d_no_lee_lo_ajeno',            current_setting('probe.p568', true),    'OK (0 filas)'
+UNION ALL SELECT 'P569_adj_bucket_pineado',                current_setting('probe.p569', true),   'OK (50 MB y 5 mime)'
+UNION ALL SELECT 'P570_adj_DELETE_acotado_a_huerfanos',     current_setting('probe.p570', true),   'OK (estructural)'
 UNION ALL SELECT 'P516_SENAL_estructura_harness',  current_setting('probe.p516', true),          'OK-SENAL (no mide; el gate es b2_guard.py)'
 -- Las filas FX* son SALUD DE FIXTURE, no probes de seguridad: dicen si la precondicion que una
 -- migracion posterior empezo a exigir se pudo sembrar. Si una sale ROJO, los probes que dependen de
@@ -13190,7 +13232,8 @@ UNION ALL SELECT 'P000_CENTINELA_veredictos_no_nulos',
        'probe.p516', 'probe.fx_b2fallos',
        'probe.p517', 'probe.p518', 'probe.p519', 'probe.p520', 'probe.p521', 'probe.p522', 'probe.p523', 'probe.p524', 'probe.p525', 'probe.p526', 'probe.p527', 'probe.p528', 'probe.p529', 'probe.p530', 'probe.p531', 'probe.p532', 'probe.p533', 'probe.p534', 'probe.co_fx',
        'probe.p535', 'probe.p536', 'probe.p537', 'probe.p538', 'probe.p539', 'probe.p540', 'probe.p541', 'probe.p542', 'probe.p543', 'probe.p544', 'probe.p545', 'probe.p546', 'probe.p547', 'probe.p548', 'probe.p549', 'probe.p550', 'probe.p551', 'probe.p552', 'probe.p553', 'probe.vj_fx', 'probe.vj_fx2',
-       'probe.p554', 'probe.p555', 'probe.p556', 'probe.p557', 'probe.p558', 'probe.p559', 'probe.p560', 'probe.p561', 'probe.p562', 'probe.p563', 'probe.p564', 'probe.p565', 'probe.p566', 'probe.p567', 'probe.p568', 'probe.rv_fx'
+       'probe.p554', 'probe.p555', 'probe.p556', 'probe.p557', 'probe.p558', 'probe.p559', 'probe.p560', 'probe.p561', 'probe.p562', 'probe.p563', 'probe.p564', 'probe.p565', 'probe.p566', 'probe.p567', 'probe.p568', 'probe.rv_fx',
+       'probe.p569', 'probe.p570'
              ]) AS n) s),
   'OK (todos los veredictos publicados)';
 

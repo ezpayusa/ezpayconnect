@@ -265,17 +265,7 @@ export async function guardarReporte(p: {
   })
 }
 
-/**
- * Sube el archivo al bucket y RECIÉN DESPUÉS registra la fila. El path lo arma esta función con la
- * convención de la 274 ({pais_id}/{visita_id}/{archivo}); si se desviara, `registrar_adjunto_visita`
- * lo rechaza con PA023 — que en el mapa de errores se reporta como bug NUESTRO, porque lo es.
- */
-export async function subirAdjunto(v: { id: string; pais_id: string }, archivo: File) {
-  const ext = (archivo.name.split('.').pop() || 'bin').toLowerCase()
-  const path = `${v.pais_id}/${v.id}/${crypto.randomUUID()}.${ext}`
-  const up = await supabase.storage.from('visitas-comerciales').upload(path, archivo)
-  if (up.error) return { data: null, error: up.error }
-  return supabase.rpc('registrar_adjunto_visita', {
-    p_visita_id: v.id, p_storage_path: path, p_mime: archivo.type || null, p_bytes: archivo.size,
-  })
-}
+// La subida de adjuntos vive en ./adjuntos.ts: necesita progreso real (XHR), validación previa y
+// la compensación del huérfano, y todo eso junto no es "una llamada más" como el resto de este
+// archivo. Se re-exporta para que las pantallas tengan un solo import.
+export { subirAdjuntoVisita, urlFirmada, validarAdjunto, ACCEPT_ADJUNTO, MAX_BYTES_ADJUNTO } from './adjuntos'
