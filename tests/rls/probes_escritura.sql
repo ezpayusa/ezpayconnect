@@ -12438,6 +12438,49 @@ DO $$ DECLARE v_qual text; BEGIN
     ELSE 'OK (DELETE acotado a objetos propios Y sin registrar — la evidencia no se puede borrar)' END, false);
 EXCEPTION WHEN OTHERS THEN PERFORM set_config('probe.p570','FALLO ('||SQLSTATE||' '||SQLERRM||')',false); END $$;
 
+
+-- ############################################################################################
+-- P572-P574 — las COORDENADAS no son legibles por `authenticated` (mig 277)
+-- ############################################################################################
+-- El diseno decia que el supervisor ve distancia y veredicto, NO lat/lng. Nunca se habia
+-- implementado: RLS es por FILA y la policy le daba la fila entera. Medido antes de la 277:
+-- "el SUPERVISOR ve 2 filas con checkin_lat, y el valor es 14.67982". Que el front no las pinte
+-- no arregla nada — viajan en el payload. Se arreglo con privilegio por COLUMNA.
+SELECT set_config('request.jwt.claims', json_build_object('sub', current_setting('probe.co_sup',true), 'role','authenticated')::text, true);
+SELECT set_config('role','authenticated', true);
+DO $$ DECLARE v_lat numeric; v_n int; BEGIN
+  IF to_regclass('public.visitas_comerciales') IS NULL THEN
+    PERFORM set_config('probe.p572','N/A',false); PERFORM set_config('probe.p573','N/A',false); RETURN; END IF;
+  -- P572: pedir la coordenada EXPLICITAMENTE tiene que fallar
+  BEGIN
+    SELECT max(checkin_lat) INTO v_lat FROM public.visitas_comerciales;
+    PERFORM set_config('probe.p572','ROJO (el supervisor LEE checkin_lat: '||coalesce(v_lat::text,'nula')||')',false);
+  EXCEPTION WHEN insufficient_privilege THEN PERFORM set_config('probe.p572','OK (42501 al pedir checkin_lat)',false);
+            WHEN others THEN PERFORM set_config('probe.p572','OK (denegado con '||SQLSTATE||')',false);
+  END;
+  -- P573: pero lo que SI necesita para supervisar lo sigue leyendo
+  BEGIN
+    SELECT count(*) INTO v_n FROM public.visitas_comerciales WHERE checkin_verificado IS NOT NULL;
+    PERFORM set_config('probe.p573','OK (sigue leyendo distancia/veredicto: '||v_n||' filas)',false);
+  EXCEPTION WHEN others THEN
+    PERFORM set_config('probe.p573','ROJO (se rompio la lectura legitima: '||SQLSTATE||')',false);
+  END;
+EXCEPTION WHEN OTHERS THEN PERFORM set_config('probe.p572','FALLO ('||SQLSTATE||' '||SQLERRM||')',false); END $$;
+SELECT set_config('role','none', true);
+
+-- P574 — CENSO: ninguna columna de coordenada queda con SELECT para authenticated. Es censo y no
+-- un caso, porque manana alguien agrega una columna de geo y el caso puntual no la ve.
+DO $$ DECLARE v_malas text; BEGIN
+  SELECT string_agg(table_name||'.'||column_name, ', ') INTO v_malas
+    FROM information_schema.column_privileges
+   WHERE table_schema='public' AND grantee='authenticated' AND privilege_type='SELECT'
+     AND table_name IN ('visitas_comerciales','jornadas_comerciales')
+     AND (column_name LIKE '%_lat' OR column_name LIKE '%_lng');
+  PERFORM set_config('probe.p574', CASE WHEN v_malas IS NULL
+    THEN 'OK (ninguna columna _lat/_lng legible por authenticated)'
+    ELSE 'ROJO (authenticated lee: '||v_malas||')' END, false);
+EXCEPTION WHEN OTHERS THEN PERFORM set_config('probe.p574','FALLO ('||SQLSTATE||')',false); END $$;
+
 -- ===== Veredictos como result set =====
 SELECT 'P1_anon_insert_citas'              AS probe, current_setting('probe.p1', true)  AS verdict, 'BLOQUEADO' AS esperado_post_fix
 UNION ALL SELECT 'P2_medico_cancela_ajena_rpc',         current_setting('probe.p2', true),  'BLOQUEADO'
@@ -13059,6 +13102,9 @@ UNION ALL SELECT 'P567_rv_STORAGE_c_lee_lo_propio',              current_setting
 UNION ALL SELECT 'P568_rv_STORAGE_d_no_lee_lo_ajeno',            current_setting('probe.p568', true),    'OK (0 filas)'
 UNION ALL SELECT 'P569_adj_bucket_pineado',                current_setting('probe.p569', true),   'OK (50 MB y 5 mime)'
 UNION ALL SELECT 'P570_adj_DELETE_acotado_a_huerfanos',     current_setting('probe.p570', true),   'OK (estructural)'
+UNION ALL SELECT 'P572_sup_NO_lee_coordenadas',            current_setting('probe.p572', true),   'OK (42501)'
+UNION ALL SELECT 'P573_sup_SI_lee_distancia_veredicto',    current_setting('probe.p573', true),   'OK'
+UNION ALL SELECT 'P574_censo_columnas_geo_revocadas',      current_setting('probe.p574', true),   'OK (0 columnas)'
 UNION ALL SELECT 'P516_SENAL_estructura_harness',  current_setting('probe.p516', true),          'OK-SENAL (no mide; el gate es b2_guard.py)'
 -- Las filas FX* son SALUD DE FIXTURE, no probes de seguridad: dicen si la precondicion que una
 -- migracion posterior empezo a exigir se pudo sembrar. Si una sale ROJO, los probes que dependen de
@@ -13233,7 +13279,7 @@ UNION ALL SELECT 'P000_CENTINELA_veredictos_no_nulos',
        'probe.p517', 'probe.p518', 'probe.p519', 'probe.p520', 'probe.p521', 'probe.p522', 'probe.p523', 'probe.p524', 'probe.p525', 'probe.p526', 'probe.p527', 'probe.p528', 'probe.p529', 'probe.p530', 'probe.p531', 'probe.p532', 'probe.p533', 'probe.p534', 'probe.co_fx',
        'probe.p535', 'probe.p536', 'probe.p537', 'probe.p538', 'probe.p539', 'probe.p540', 'probe.p541', 'probe.p542', 'probe.p543', 'probe.p544', 'probe.p545', 'probe.p546', 'probe.p547', 'probe.p548', 'probe.p549', 'probe.p550', 'probe.p551', 'probe.p552', 'probe.p553', 'probe.vj_fx', 'probe.vj_fx2',
        'probe.p554', 'probe.p555', 'probe.p556', 'probe.p557', 'probe.p558', 'probe.p559', 'probe.p560', 'probe.p561', 'probe.p562', 'probe.p563', 'probe.p564', 'probe.p565', 'probe.p566', 'probe.p567', 'probe.p568', 'probe.rv_fx',
-       'probe.p569', 'probe.p570'
+       'probe.p569', 'probe.p570', 'probe.p572', 'probe.p573', 'probe.p574'
              ]) AS n) s),
   'OK (todos los veredictos publicados)';
 
