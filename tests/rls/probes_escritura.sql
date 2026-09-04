@@ -11743,6 +11743,394 @@ DO $$ BEGIN
 EXCEPTION WHEN OTHERS THEN PERFORM set_config('probe.p534','FALLO ('||SQLSTATE||' '||SQLERRM||')',false); END $$;
 SELECT set_config('role','none', true);
 
+
+-- ############################################################################################
+-- MODULO COMERCIAL · FRENTE VISITAS, mig 273 (P535-P553). RED-FIRST.
+-- --------------------------------------------------------------------------------------------
+-- Mismo texto de tres estados que la 272:
+--   'ROJO — AUSENTE'       la funcion/tabla no existe          <- rojo legitimo de la fase red
+--   'ROJO (PERMITIO...)'   existe y NO rechazo                 <- el bug que se busca
+--   'OK (...)'             rechazo con el errcode esperado, o el valor correcto
+--
+-- LA PROBE MAS IMPORTANTE DE ESTE LOTE ES P551: config de pais AUSENTE y el check-in a 5 km
+-- sigue dando verificado=false. Un radio NULL que valide todo seria el mismo fail-open
+-- trivaluado que costo siete migraciones en PA-FAILOPEN.
+-- ############################################################################################
+SELECT set_config('role','none', true);
+DO $$
+DECLARE v_gt uuid; v_ase1 uuid; v_ase2 uuid; v_sup uuid; v_admgt uuid; v_asehn uuid;
+        v_pgeo uuid; v_pnogeo uuid; v_pajeno uuid; v_ok boolean;
+        -- Ciudad de Guatemala. 1 grado de latitud ~ 111320 m.
+        v_lat numeric := 14.6349; v_lng numeric := -90.5069;
+BEGIN
+  IF current_setting('probe.co_ready',true)<>'1' THEN PERFORM set_config('probe.vj_ready','0',false); RETURN; END IF;
+  IF to_regclass('public.visitas_comerciales') IS NULL THEN
+    PERFORM set_config('probe.vj_ready','0',false);
+    PERFORM set_config('probe.vj_fx','ROJO — TABLAS AUSENTES (la mig 273 no esta aplicada; esto NO es un rechazo)',false);
+    RETURN;
+  END IF;
+  v_gt := NULLIF(current_setting('probe.co_gt',true),'')::uuid;
+  v_ase1 := NULLIF(current_setting('probe.co_ase1',true),'')::uuid;
+  v_ase2 := NULLIF(current_setting('probe.co_ase2',true),'')::uuid;
+  v_sup := NULLIF(current_setting('probe.co_sup',true),'')::uuid;
+  v_admgt := NULLIF(current_setting('probe.co_admgt',true),'')::uuid;
+  v_asehn := NULLIF(current_setting('probe.co_asehn',true),'')::uuid;
+
+  -- D5 fail-closed: NO se siembra config para GT. La ausencia es el estado inicial normal y es
+  -- justo lo que P551 mide.
+  DELETE FROM public.config_visitas_pais WHERE pais_id = v_gt;
+
+  -- prospecto CON coordenada, prospecto SIN coordenada, prospecto de OTRO asesor
+  INSERT INTO public.prospectos (nombre, tipo, pais_id, asesor_id, creado_por, estado_pipeline, lat, lng)
+    VALUES ('QA VJ prospecto con geo','farmacia',v_gt,v_ase1,v_admgt,'nuevo',v_lat,v_lng) RETURNING id INTO v_pgeo;
+  INSERT INTO public.prospectos (nombre, tipo, pais_id, asesor_id, creado_por, estado_pipeline)
+    VALUES ('QA VJ prospecto sin geo','farmacia',v_gt,v_ase1,v_admgt,'nuevo') RETURNING id INTO v_pnogeo;
+  INSERT INTO public.prospectos (nombre, tipo, pais_id, asesor_id, creado_por, estado_pipeline)
+    VALUES ('QA VJ prospecto de ase2','farmacia',v_gt,v_ase2,v_admgt,'nuevo') RETURNING id INTO v_pajeno;
+
+  -- la ficha de co_asehn se desactiva: es el sujeto de PA008 (comercial con ficha inactiva)
+  UPDATE public.asesores_perfil SET activo = false WHERE id = v_asehn;
+
+  PERFORM set_config('probe.vj_lat',   v_lat::text, false);
+  PERFORM set_config('probe.vj_lng',   v_lng::text, false);
+  PERFORM set_config('probe.vj_pgeo',  v_pgeo::text, false);
+  PERFORM set_config('probe.vj_pnogeo',v_pnogeo::text, false);
+  PERFORM set_config('probe.vj_pajeno',v_pajeno::text, false);
+  PERFORM set_config('probe.vj_ready','1', false);
+  PERFORM set_config('probe.vj_fx','OK (fixture visitas: 3 prospectos, config GT ausente a proposito, ficha HN inactivada)', false);
+EXCEPTION WHEN OTHERS THEN
+  PERFORM set_config('probe.vj_ready','0',false);
+  PERFORM set_config('probe.vj_fx','ROJO ('||SQLSTATE||' '||SQLERRM||')',false);
+END $$;
+
+-- P535 — abrir_jornada por un MEDICO -> 42501
+SELECT set_config('request.jwt.claims', json_build_object('sub', current_setting('probe.co_medf',true), 'role','authenticated')::text, true);
+SELECT set_config('role','authenticated', true);
+DO $$ BEGIN
+  IF coalesce(current_setting('probe.vj_ready',true),'')<>'1' THEN PERFORM set_config('probe.p535','N/A (fixture visitas ausente)',false); RETURN; END IF;
+  IF to_regprocedure('public.abrir_jornada(numeric,numeric,numeric)') IS NULL THEN
+    PERFORM set_config('probe.p535','ROJO — RPC AUSENTE (todavia no existe; esto NO es un rechazo)',false); RETURN; END IF;
+  BEGIN
+    PERFORM public.abrir_jornada(NULL,NULL,NULL);
+    PERFORM set_config('probe.p535','ROJO (PERMITIO — un medico abrio jornada comercial)',false);
+  EXCEPTION WHEN insufficient_privilege THEN PERFORM set_config('probe.p535','OK (42501 no_autorizado)',false);
+            WHEN others THEN PERFORM set_config('probe.p535','FALLO (esperaba 42501, vino '||SQLSTATE||': '||SQLERRM||')',false);
+  END;
+EXCEPTION WHEN OTHERS THEN PERFORM set_config('probe.p535','FALLO ('||SQLSTATE||' '||SQLERRM||')',false); END $$;
+SELECT set_config('role','none', true);
+
+-- P536 — abrir_jornada por un comercial con la ficha INACTIVA -> PA008
+SELECT set_config('request.jwt.claims', json_build_object('sub', current_setting('probe.co_asehn',true), 'role','authenticated')::text, true);
+SELECT set_config('role','authenticated', true);
+DO $$ BEGIN
+  IF coalesce(current_setting('probe.vj_ready',true),'')<>'1' THEN PERFORM set_config('probe.p536','N/A',false); RETURN; END IF;
+  IF to_regprocedure('public.abrir_jornada(numeric,numeric,numeric)') IS NULL THEN
+    PERFORM set_config('probe.p536','ROJO — RPC AUSENTE',false); RETURN; END IF;
+  BEGIN
+    PERFORM public.abrir_jornada(NULL,NULL,NULL);
+    PERFORM set_config('probe.p536','ROJO (PERMITIO — ficha inactiva abrio jornada)',false);
+  EXCEPTION WHEN sqlstate 'PA008' THEN PERFORM set_config('probe.p536','OK (PA008)',false);
+            WHEN others THEN PERFORM set_config('probe.p536','FALLO (esperaba PA008, vino '||SQLSTATE||': '||SQLERRM||')',false);
+  END;
+EXCEPTION WHEN OTHERS THEN PERFORM set_config('probe.p536','FALLO ('||SQLSTATE||' '||SQLERRM||')',false); END $$;
+SELECT set_config('role','none', true);
+
+-- P537 — asesor1 abre jornada (queda abierta para el resto del lote) y la segunda choca con el UNIQUE
+SELECT set_config('request.jwt.claims', json_build_object('sub', current_setting('probe.co_ase1',true), 'role','authenticated')::text, true);
+SELECT set_config('role','authenticated', true);
+DO $$ DECLARE v_j uuid; BEGIN
+  IF coalesce(current_setting('probe.vj_ready',true),'')<>'1' THEN PERFORM set_config('probe.p537','N/A',false); RETURN; END IF;
+  IF to_regprocedure('public.abrir_jornada(numeric,numeric,numeric)') IS NULL THEN
+    PERFORM set_config('probe.p537','ROJO — RPC AUSENTE',false); RETURN; END IF;
+  BEGIN
+    SELECT public.abrir_jornada(NULL,NULL,NULL) INTO v_j;
+    PERFORM set_config('probe.vj_jornada', coalesce(v_j::text,''), false);
+  EXCEPTION WHEN others THEN
+    PERFORM set_config('probe.p537','FALLO (la PRIMERA jornada no abrio: '||SQLSTATE||' '||SQLERRM||')',false); RETURN;
+  END;
+  BEGIN
+    PERFORM public.abrir_jornada(NULL,NULL,NULL);
+    PERFORM set_config('probe.p537','ROJO (PERMITIO dos jornadas el mismo dia)',false);
+  EXCEPTION WHEN unique_violation THEN PERFORM set_config('probe.p537','OK (23505 UNIQUE por dia)',false);
+            WHEN sqlstate 'PA020' THEN PERFORM set_config('probe.p537','OK (PA020 jornada ya abierta)',false);
+            WHEN others THEN PERFORM set_config('probe.p537','FALLO (esperaba 23505/PA020, vino '||SQLSTATE||': '||SQLERRM||')',false);
+  END;
+EXCEPTION WHEN OTHERS THEN PERFORM set_config('probe.p537','FALLO ('||SQLSTATE||' '||SQLERRM||')',false); END $$;
+SELECT set_config('role','none', true);
+
+-- P538 — planificar_visita sobre un prospecto FUERA de la cartera -> 42501
+SELECT set_config('request.jwt.claims', json_build_object('sub', current_setting('probe.co_ase1',true), 'role','authenticated')::text, true);
+SELECT set_config('role','authenticated', true);
+DO $$ BEGIN
+  IF coalesce(current_setting('probe.vj_ready',true),'')<>'1' THEN PERFORM set_config('probe.p538','N/A',false); RETURN; END IF;
+  IF to_regprocedure('public.planificar_visita(uuid,date)') IS NULL THEN
+    PERFORM set_config('probe.p538','ROJO — RPC AUSENTE',false); RETURN; END IF;
+  BEGIN
+    PERFORM public.planificar_visita(NULLIF(current_setting('probe.vj_pajeno',true),'')::uuid, CURRENT_DATE);
+    PERFORM set_config('probe.p538','ROJO (PERMITIO planificar sobre prospecto ajeno)',false);
+  EXCEPTION WHEN insufficient_privilege THEN PERFORM set_config('probe.p538','OK (42501 no_autorizado)',false);
+            WHEN others THEN PERFORM set_config('probe.p538','FALLO (esperaba 42501, vino '||SQLSTATE||': '||SQLERRM||')',false);
+  END;
+EXCEPTION WHEN OTHERS THEN PERFORM set_config('probe.p538','FALLO ('||SQLSTATE||' '||SQLERRM||')',false); END $$;
+SELECT set_config('role','none', true);
+
+-- P539 — el SUPERVISOR planifica sobre un prospecto de SU asesor -> PERMITIDO
+SELECT set_config('request.jwt.claims', json_build_object('sub', current_setting('probe.co_sup',true), 'role','authenticated')::text, true);
+SELECT set_config('role','authenticated', true);
+DO $$ DECLARE v_v uuid; BEGIN
+  IF coalesce(current_setting('probe.vj_ready',true),'')<>'1' THEN PERFORM set_config('probe.p539','N/A',false); RETURN; END IF;
+  IF to_regprocedure('public.planificar_visita(uuid,date)') IS NULL THEN
+    PERFORM set_config('probe.p539','ROJO — RPC AUSENTE',false); PERFORM set_config('probe.p540','ROJO — RPC AUSENTE',false); RETURN; END IF;
+  BEGIN
+    SELECT public.planificar_visita(NULLIF(current_setting('probe.vj_pgeo',true),'')::uuid, CURRENT_DATE) INTO v_v;
+    PERFORM set_config('probe.vj_v_sup', coalesce(v_v::text,''), false);
+    PERFORM set_config('probe.p539','OK (PERMITIDO: el supervisor planifica sobre la cartera de su asesor)',false);
+  EXCEPTION WHEN others THEN
+    PERFORM set_config('probe.p539','FALLO (esperaba PERMITIDO, vino '||SQLSTATE||': '||SQLERRM||')',false);
+  END;
+EXCEPTION WHEN OTHERS THEN PERFORM set_config('probe.p539','FALLO ('||SQLSTATE||' '||SQLERRM||')',false); END $$;
+SELECT set_config('role','none', true);
+
+-- P540 — VERIFICA LA FILA, no que "no exploto": el asesor_id tiene que ser el del ASESOR
+DO $$ DECLARE v_ase uuid; BEGIN
+  IF coalesce(current_setting('probe.vj_ready',true),'')<>'1' THEN PERFORM set_config('probe.p540','N/A',false); RETURN; END IF;
+  IF coalesce(current_setting('probe.vj_v_sup',true),'')='' THEN
+    PERFORM set_config('probe.p540','N/A (no se creo la visita en P539)',false); RETURN; END IF;
+  SELECT asesor_id INTO v_ase FROM public.visitas_comerciales WHERE id = NULLIF(current_setting('probe.vj_v_sup',true),'')::uuid;
+  IF v_ase = NULLIF(current_setting('probe.co_ase1',true),'')::uuid THEN
+    PERFORM set_config('probe.p540','OK (la fila quedo con asesor_id del ASESOR, no del supervisor)',false);
+  ELSIF v_ase = NULLIF(current_setting('probe.co_sup',true),'')::uuid THEN
+    PERFORM set_config('probe.p540','ROJO (la visita quedo a nombre del SUPERVISOR — se apropio de la visita)',false);
+  ELSE
+    PERFORM set_config('probe.p540','FALLO (asesor_id inesperado: '||coalesce(v_ase::text,'nulo')||')',false);
+  END IF;
+EXCEPTION WHEN OTHERS THEN PERFORM set_config('probe.p540','FALLO ('||SQLSTATE||' '||SQLERRM||')',false); END $$;
+
+-- Fixture de visitas para los check-ins.
+-- UN PROSPECTO POR VISITA: la tabla tiene UNIQUE (prospecto_id, asesor_id, fecha_planificada), o
+-- sea que nueve visitas del mismo asesor al mismo prospecto el mismo dia chocan entre si. La
+-- primera version de este fixture hacia justo eso y las 12 probes de check-in salieron N/A.
+DO $$
+DECLARE v_gt uuid := NULLIF(current_setting('probe.co_gt',true),'')::uuid;
+        v_ase1 uuid := NULLIF(current_setting('probe.co_ase1',true),'')::uuid;
+        v_ase2 uuid := NULLIF(current_setting('probe.co_ase2',true),'')::uuid;
+        v_admgt uuid := NULLIF(current_setting('probe.co_admgt',true),'')::uuid;
+        v_pajeno uuid := NULLIF(current_setting('probe.vj_pajeno',true),'')::uuid;
+        v_j uuid := NULLIF(current_setting('probe.vj_jornada',true),'')::uuid;
+        v_lat numeric := NULLIF(current_setting('probe.vj_lat',true),'')::numeric;
+        v_lng numeric := NULLIF(current_setting('probe.vj_lng',true),'')::numeric;
+        r record; v_p uuid; v_id uuid;
+BEGIN
+  IF coalesce(current_setting('probe.vj_ready',true),'')<>'1' THEN RETURN; END IF;
+  FOR r IN SELECT * FROM (VALUES
+      ('vj_v_doble','geo'), ('vj_v_nogeo','nogeo'), ('vj_v_lejos','geo'), ('vj_v_prec','geo'),
+      ('vj_v_dif','geo'), ('vj_v_cli1','geo'), ('vj_v_cli2','geo'), ('vj_v_cli3','geo'),
+      ('vj_v_cerca','geo')
+    ) AS t(clave, cual) LOOP
+    INSERT INTO public.prospectos (nombre, tipo, pais_id, asesor_id, creado_por, estado_pipeline, lat, lng)
+      VALUES ('QA VJ '||r.clave, 'farmacia', v_gt, v_ase1, v_admgt, 'nuevo',
+              CASE WHEN r.cual='geo' THEN v_lat END, CASE WHEN r.cual='geo' THEN v_lng END)
+      RETURNING id INTO v_p;
+    INSERT INTO public.visitas_comerciales (prospecto_id, asesor_id, pais_id, jornada_id, fecha_planificada)
+      VALUES (v_p, v_ase1, v_gt, v_j, CURRENT_DATE) RETURNING id INTO v_id;
+    PERFORM set_config('probe.'||r.clave, v_id::text, false);
+  END LOOP;
+  -- visita de ase2, que NO tiene jornada abierta
+  INSERT INTO public.visitas_comerciales (prospecto_id, asesor_id, pais_id, fecha_planificada)
+    VALUES (v_pajeno, v_ase2, v_gt, CURRENT_DATE) RETURNING id INTO v_id;
+  PERFORM set_config('probe.vj_v_ase2', v_id::text, false);
+  PERFORM set_config('probe.vj_visitas','1', false);
+  PERFORM set_config('probe.vj_fx2','OK (10 visitas sembradas, una por prospecto)', false);
+EXCEPTION WHEN OTHERS THEN
+  PERFORM set_config('probe.vj_visitas','0', false);
+  PERFORM set_config('probe.vj_fx2','ROJO ('||SQLSTATE||' '||SQLERRM||')', false);
+END $$;
+
+-- P541 — check-in hecho por el SUPERVISOR sobre la visita de su asesor -> 42501
+-- El supervisor gestiona la cartera, pero un check-in ajeno no es un dato: es una falsificacion.
+SELECT set_config('request.jwt.claims', json_build_object('sub', current_setting('probe.co_sup',true), 'role','authenticated')::text, true);
+SELECT set_config('role','authenticated', true);
+DO $$ BEGIN
+  IF coalesce(current_setting('probe.vj_visitas',true),'')<>'1' THEN PERFORM set_config('probe.p541','N/A',false); RETURN; END IF;
+  IF to_regprocedure('public.checkin_visita_comercial(uuid,numeric,numeric,numeric,timestamp with time zone)') IS NULL THEN
+    PERFORM set_config('probe.p541','ROJO — RPC AUSENTE',false); RETURN; END IF;
+  BEGIN
+    PERFORM public.checkin_visita_comercial(NULLIF(current_setting('probe.vj_v_cerca',true),'')::uuid, 14.6349, -90.5069, 15, NULL);
+    PERFORM set_config('probe.p541','ROJO (PERMITIO — el supervisor hizo el check-in de otro)',false);
+  EXCEPTION WHEN insufficient_privilege THEN PERFORM set_config('probe.p541','OK (42501 no_autorizado)',false);
+            WHEN others THEN PERFORM set_config('probe.p541','FALLO (esperaba 42501, vino '||SQLSTATE||': '||SQLERRM||')',false);
+  END;
+EXCEPTION WHEN OTHERS THEN PERFORM set_config('probe.p541','FALLO ('||SQLSTATE||' '||SQLERRM||')',false); END $$;
+SELECT set_config('role','none', true);
+
+-- P542 — check-in SIN jornada abierta (asesor2 nunca abrio) -> PA022
+SELECT set_config('request.jwt.claims', json_build_object('sub', current_setting('probe.co_ase2',true), 'role','authenticated')::text, true);
+SELECT set_config('role','authenticated', true);
+DO $$ BEGIN
+  IF coalesce(current_setting('probe.vj_visitas',true),'')<>'1' THEN PERFORM set_config('probe.p542','N/A',false); RETURN; END IF;
+  IF to_regprocedure('public.checkin_visita_comercial(uuid,numeric,numeric,numeric,timestamp with time zone)') IS NULL THEN
+    PERFORM set_config('probe.p542','ROJO — RPC AUSENTE',false); RETURN; END IF;
+  BEGIN
+    PERFORM public.checkin_visita_comercial(NULLIF(current_setting('probe.vj_v_ase2',true),'')::uuid, 14.6349, -90.5069, 15, NULL);
+    PERFORM set_config('probe.p542','ROJO (PERMITIO check-in sin jornada abierta)',false);
+  EXCEPTION WHEN sqlstate 'PA022' THEN PERFORM set_config('probe.p542','OK (PA022 sin jornada abierta)',false);
+            WHEN others THEN PERFORM set_config('probe.p542','FALLO (esperaba PA022, vino '||SQLSTATE||': '||SQLERRM||')',false);
+  END;
+EXCEPTION WHEN OTHERS THEN PERFORM set_config('probe.p542','FALLO ('||SQLSTATE||' '||SQLERRM||')',false); END $$;
+SELECT set_config('role','none', true);
+
+-- ============================================================================================
+-- Los check-ins del asesor1. Cada uno consume su propia visita.
+-- ============================================================================================
+SELECT set_config('request.jwt.claims', json_build_object('sub', current_setting('probe.co_ase1',true), 'role','authenticated')::text, true);
+SELECT set_config('role','authenticated', true);
+
+-- P543 — doble check-in sobre la misma visita
+DO $$ BEGIN
+  IF coalesce(current_setting('probe.vj_visitas',true),'')<>'1' THEN PERFORM set_config('probe.p543','N/A',false); RETURN; END IF;
+  IF to_regprocedure('public.checkin_visita_comercial(uuid,numeric,numeric,numeric,timestamp with time zone)') IS NULL THEN
+    PERFORM set_config('probe.p543','ROJO — RPC AUSENTE',false); RETURN; END IF;
+  BEGIN
+    PERFORM public.checkin_visita_comercial(NULLIF(current_setting('probe.vj_v_doble',true),'')::uuid, 14.6349, -90.5069, 15, NULL);
+  EXCEPTION WHEN others THEN
+    PERFORM set_config('probe.p543','FALLO (el PRIMER check-in no paso: '||SQLSTATE||' '||SQLERRM||')',false); RETURN;
+  END;
+  BEGIN
+    PERFORM public.checkin_visita_comercial(NULLIF(current_setting('probe.vj_v_doble',true),'')::uuid, 14.6349, -90.5069, 15, NULL);
+    PERFORM set_config('probe.p543','ROJO (PERMITIO un segundo check-in sobre la misma visita)',false);
+  EXCEPTION WHEN sqlstate 'PA025' THEN PERFORM set_config('probe.p543','OK (PA025 doble check-in rechazado)',false);
+            WHEN others THEN PERFORM set_config('probe.p543','FALLO (esperaba PA025, vino '||SQLSTATE||': '||SQLERRM||')',false);
+  END;
+EXCEPTION WHEN OTHERS THEN PERFORM set_config('probe.p543','FALLO ('||SQLSTATE||' '||SQLERRM||')',false); END $$;
+
+-- P544/P545/P546/P547/P553 — se hacen los check-ins y DESPUES se leen las filas como owner.
+DO $$ BEGIN
+  IF coalesce(current_setting('probe.vj_visitas',true),'')<>'1' THEN RETURN; END IF;
+  IF to_regprocedure('public.checkin_visita_comercial(uuid,numeric,numeric,numeric,timestamp with time zone)') IS NULL THEN RETURN; END IF;
+  -- prospecto SIN coordenada
+  BEGIN PERFORM public.checkin_visita_comercial(NULLIF(current_setting('probe.vj_v_nogeo',true),'')::uuid, 14.6349, -90.5069, 15, NULL);
+  EXCEPTION WHEN others THEN PERFORM set_config('probe.vj_e_nogeo', SQLSTATE||' '||SQLERRM, false); END;
+  -- a ~5 km (0.04492 grados de latitud)
+  BEGIN PERFORM public.checkin_visita_comercial(NULLIF(current_setting('probe.vj_v_lejos',true),'')::uuid, 14.67982, -90.5069, 15, NULL);
+  EXCEPTION WHEN others THEN PERFORM set_config('probe.vj_e_lejos', SQLSTATE||' '||SQLERRM, false); END;
+  -- precision malisima
+  BEGIN PERFORM public.checkin_visita_comercial(NULLIF(current_setting('probe.vj_v_prec',true),'')::uuid, 14.6349, -90.5069, 900, NULL);
+  EXCEPTION WHEN others THEN PERFORM set_config('probe.vj_e_prec', SQLSTATE||' '||SQLERRM, false); END;
+  -- DIFERIDO con hora de cliente VALIDA. Se usa now() exacto y no "now() menos dos minutos"
+  -- porque el harness corre en UNA transaccion: now() esta congelado y la jornada se abrio en ese
+  -- mismo instante, asi que cualquier resta cae ANTES de la apertura y dispara PA024 con razon.
+  -- El artefacto es del harness, no de la RPC — por eso se ajusta la probe y no la funcion.
+  BEGIN PERFORM public.checkin_visita_comercial(NULLIF(current_setting('probe.vj_v_dif',true),'')::uuid, 14.6349, -90.5069, 15, now());
+  EXCEPTION WHEN others THEN PERFORM set_config('probe.vj_e_dif', SQLSTATE||' '||SQLERRM, false); END;
+  -- CONTROL POSITIVO: a ~20 m con buena precision. Sin esto, un verificado que nunca puede ser
+  -- true pasaria todas las probes negativas y no serviria para nada.
+  BEGIN PERFORM public.checkin_visita_comercial(NULLIF(current_setting('probe.vj_v_cerca',true),'')::uuid, 14.63508, -90.5069, 15, NULL);
+  EXCEPTION WHEN others THEN PERFORM set_config('probe.vj_e_cerca', SQLSTATE||' '||SQLERRM, false); END;
+END $$;
+
+-- P548/P549/P550 — cliente_at inconsistente -> PA024 (otro dia / futuro / anterior a la jornada)
+DO $$ BEGIN
+  IF coalesce(current_setting('probe.vj_visitas',true),'')<>'1' THEN
+    PERFORM set_config('probe.p548','N/A',false); PERFORM set_config('probe.p549','N/A',false); PERFORM set_config('probe.p550','N/A',false); RETURN; END IF;
+  IF to_regprocedure('public.checkin_visita_comercial(uuid,numeric,numeric,numeric,timestamp with time zone)') IS NULL THEN
+    PERFORM set_config('probe.p548','ROJO — RPC AUSENTE',false); PERFORM set_config('probe.p549','ROJO — RPC AUSENTE',false); PERFORM set_config('probe.p550','ROJO — RPC AUSENTE',false); RETURN; END IF;
+  BEGIN PERFORM public.checkin_visita_comercial(NULLIF(current_setting('probe.vj_v_cli1',true),'')::uuid, 14.6349, -90.5069, 15, now() - interval '2 days');
+        PERFORM set_config('probe.p548','ROJO (PERMITIO un cliente_at de OTRO DIA)',false);
+  EXCEPTION WHEN sqlstate 'PA024' THEN PERFORM set_config('probe.p548','OK (PA024 otro dia)',false);
+            WHEN others THEN PERFORM set_config('probe.p548','FALLO (esperaba PA024, vino '||SQLSTATE||': '||SQLERRM||')',false); END;
+  BEGIN PERFORM public.checkin_visita_comercial(NULLIF(current_setting('probe.vj_v_cli2',true),'')::uuid, 14.6349, -90.5069, 15, now() + interval '3 hours');
+        PERFORM set_config('probe.p549','ROJO (PERMITIO un cliente_at FUTURO)',false);
+  EXCEPTION WHEN sqlstate 'PA024' THEN PERFORM set_config('probe.p549','OK (PA024 futuro)',false);
+            WHEN others THEN PERFORM set_config('probe.p549','FALLO (esperaba PA024, vino '||SQLSTATE||': '||SQLERRM||')',false); END;
+  BEGIN PERFORM public.checkin_visita_comercial(NULLIF(current_setting('probe.vj_v_cli3',true),'')::uuid, 14.6349, -90.5069, 15, now() - interval '20 hours');
+        PERFORM set_config('probe.p550','ROJO (PERMITIO un cliente_at ANTERIOR a la apertura de la jornada)',false);
+  EXCEPTION WHEN sqlstate 'PA024' THEN PERFORM set_config('probe.p550','OK (PA024 anterior a la jornada)',false);
+            WHEN others THEN PERFORM set_config('probe.p550','FALLO (esperaba PA024, vino '||SQLSTATE||': '||SQLERRM||')',false); END;
+END $$;
+SELECT set_config('role','none', true);
+
+-- ============================================================================================
+-- Lectura de las filas como owner: lo que quedo ESCRITO, no lo que devolvio la llamada.
+-- ============================================================================================
+DO $$
+DECLARE r record; v_dist numeric;
+BEGIN
+  IF coalesce(current_setting('probe.vj_visitas',true),'')<>'1' OR to_regclass('public.visitas_comerciales') IS NULL THEN
+    PERFORM set_config('probe.p544','N/A',false); PERFORM set_config('probe.p545','N/A',false);
+    PERFORM set_config('probe.p546','N/A',false); PERFORM set_config('probe.p547','N/A',false);
+    PERFORM set_config('probe.p551','N/A',false); PERFORM set_config('probe.p553','N/A',false); RETURN; END IF;
+
+  -- P544 prospecto SIN coordenada: se registra igual, pero verificado=false CON motivo
+  SELECT * INTO r FROM public.visitas_comerciales WHERE id = NULLIF(current_setting('probe.vj_v_nogeo',true),'')::uuid;
+  PERFORM set_config('probe.p544', CASE
+    WHEN r.checkin_at IS NULL THEN 'FALLO (no se registro el check-in: '||coalesce(current_setting('probe.vj_e_nogeo',true),'sin error')||')'
+    WHEN COALESCE(r.checkin_verificado,true) THEN 'ROJO (verificado=true sin coordenada del prospecto — fail-open)'
+    WHEN coalesce(r.checkin_motivo,'')='' THEN 'FALLO (verificado=false pero SIN motivo)'
+    ELSE 'OK (registrado, verificado=false, motivo='||r.checkin_motivo||')' END, false);
+
+  -- P545 a 5 km: verificado=false y la distancia la calculo la RPC (no llego por parametro)
+  SELECT * INTO r FROM public.visitas_comerciales WHERE id = NULLIF(current_setting('probe.vj_v_lejos',true),'')::uuid;
+  PERFORM set_config('probe.p545', CASE
+    WHEN r.checkin_at IS NULL THEN 'FALLO (no se registro: '||coalesce(current_setting('probe.vj_e_lejos',true),'sin error')||')'
+    WHEN COALESCE(r.checkin_verificado,true) THEN 'ROJO (verificado=true a 5 km)'
+    WHEN r.checkin_distancia_m IS NULL THEN 'FALLO (verificado=false pero la RPC no calculo la distancia)'
+    WHEN r.checkin_distancia_m < 4000 OR r.checkin_distancia_m > 6000 THEN 'FALLO (distancia calculada fuera de rango: '||round(r.checkin_distancia_m)||' m, se esperaban ~5000)'
+    ELSE 'OK (verificado=false, distancia calculada por la RPC = '||round(r.checkin_distancia_m)||' m)' END, false);
+
+  -- P551 — LA IMPORTANTE. Sin fila de config para GT, el default fail-closed igual rechaza.
+  SELECT * INTO r FROM public.visitas_comerciales WHERE id = NULLIF(current_setting('probe.vj_v_lejos',true),'')::uuid;
+  PERFORM set_config('probe.p551', CASE
+    WHEN EXISTS (SELECT 1 FROM public.config_visitas_pais WHERE pais_id = NULLIF(current_setting('probe.co_gt',true),'')::uuid)
+      THEN 'FALLO (la probe no mide nada: HAY fila de config para GT)'
+    WHEN r.checkin_at IS NULL THEN 'FALLO (no se registro el check-in)'
+    WHEN COALESCE(r.checkin_verificado,true)
+      THEN 'ROJO (SIN config de pais el radio quedo abierto y valido un check-in a 5 km — fail-OPEN)'
+    ELSE 'OK (config de GT AUSENTE y el default fail-closed igual rechazo los 5 km)' END, false);
+
+  -- P546 precision malisima
+  SELECT * INTO r FROM public.visitas_comerciales WHERE id = NULLIF(current_setting('probe.vj_v_prec',true),'')::uuid;
+  PERFORM set_config('probe.p546', CASE
+    WHEN r.checkin_at IS NULL THEN 'FALLO (no se registro: '||coalesce(current_setting('probe.vj_e_prec',true),'sin error')||')'
+    WHEN COALESCE(r.checkin_verificado,true) THEN 'ROJO (verificado=true con precision de 900 m)'
+    ELSE 'OK (verificado=false por precision, motivo='||coalesce(r.checkin_motivo,'(vacio)')||')' END, false);
+
+  -- P547 diferido: NUNCA verificado, y origen marcado
+  SELECT * INTO r FROM public.visitas_comerciales WHERE id = NULLIF(current_setting('probe.vj_v_dif',true),'')::uuid;
+  PERFORM set_config('probe.p547', CASE
+    WHEN r.checkin_at IS NULL THEN 'FALLO (no se registro: '||coalesce(current_setting('probe.vj_e_dif',true),'sin error')||')'
+    WHEN COALESCE(r.checkin_verificado,true) THEN 'ROJO (un check-in DIFERIDO quedo verificado=true)'
+    WHEN COALESCE(r.checkin_origen,'') <> 'diferido' THEN 'FALLO (origen='||coalesce(r.checkin_origen,'nulo')||', se esperaba diferido)'
+    WHEN r.checkin_cliente_at IS NULL THEN 'FALLO (diferido sin checkin_cliente_at guardado)'
+    ELSE 'OK (diferido: verificado=false SIEMPRE, origen=diferido, con las DOS marcas de tiempo)' END, false);
+
+  -- P553 CONTROL POSITIVO: a 20 m con buena precision -> verificado=true
+  SELECT * INTO r FROM public.visitas_comerciales WHERE id = NULLIF(current_setting('probe.vj_v_cerca',true),'')::uuid;
+  PERFORM set_config('probe.p553', CASE
+    WHEN r.checkin_at IS NULL THEN 'FALLO (no se registro: '||coalesce(current_setting('probe.vj_e_cerca',true),'sin error')||')'
+    WHEN NOT COALESCE(r.checkin_verificado,false)
+      THEN 'ROJO (a 20 m con precision 15 NO verifico: el booleano no puede ser true nunca, no mide nada. distancia='||coalesce(round(r.checkin_distancia_m)::text,'nula')||' motivo='||coalesce(r.checkin_motivo,'-')||')'
+    ELSE 'OK (verificado=true a '||coalesce(round(r.checkin_distancia_m)::text,'?')||' m — el booleano SI puede ser true)' END, false);
+EXCEPTION WHEN OTHERS THEN
+  PERFORM set_config('probe.p544','FALLO ('||SQLSTATE||' '||SQLERRM||')',false);
+END $$;
+
+-- P552 — guard PA015: visita de un pais con asesor de otro. Se prueba con INSERT directo como
+-- owner, que es el unico camino que llega al trigger sin pasar por la RPC.
+DO $$ BEGIN
+  IF coalesce(current_setting('probe.vj_ready',true),'')<>'1' OR to_regclass('public.visitas_comerciales') IS NULL THEN
+    PERFORM set_config('probe.p552','N/A',false); RETURN; END IF;
+  BEGIN
+    INSERT INTO public.visitas_comerciales (prospecto_id, asesor_id, pais_id, fecha_planificada)
+    VALUES (NULLIF(current_setting('probe.vj_pgeo',true),'')::uuid,
+            NULLIF(current_setting('probe.co_ase1',true),'')::uuid,
+            NULLIF(current_setting('probe.co_hn',true),'')::uuid, CURRENT_DATE);
+    PERFORM set_config('probe.p552','ROJO (PERMITIO una visita en HN con prospecto y asesor de GT)',false);
+  EXCEPTION WHEN sqlstate 'PA015' THEN PERFORM set_config('probe.p552','OK (PA015)',false);
+            WHEN others THEN PERFORM set_config('probe.p552','FALLO (esperaba PA015, vino '||SQLSTATE||': '||SQLERRM||')',false);
+  END;
+EXCEPTION WHEN OTHERS THEN PERFORM set_config('probe.p552','FALLO ('||SQLSTATE||' '||SQLERRM||')',false); END $$;
+SELECT set_config('role','none', true);
+
 -- ===== Veredictos como result set =====
 SELECT 'P1_anon_insert_citas'              AS probe, current_setting('probe.p1', true)  AS verdict, 'BLOQUEADO' AS esperado_post_fix
 UNION ALL SELECT 'P2_medico_cancela_ajena_rpc',         current_setting('probe.p2', true),  'BLOQUEADO'
@@ -12325,6 +12713,27 @@ UNION ALL SELECT 'P531_com_D1_supervisor_NO_edita_datos',  current_setting('prob
 UNION ALL SELECT 'P532_com_D1_supervisor_alta_contacto',  current_setting('probe.p532', true),         'OK (PERMITIDO como manda D1)'
 UNION ALL SELECT 'P533_com_D3_supervisor_NO_reabre_terminal',  current_setting('probe.p533', true),         'OK (PA012)'
 UNION ALL SELECT 'P534_com_supervisor_fuera_de_su_cartera',  current_setting('probe.p534', true),         'OK (42501 no_autorizado)'
+UNION ALL SELECT 'VJ_FX_fixture_visitas',             current_setting('probe.vj_fx', true),          'OK'
+UNION ALL SELECT 'VJ_FX2_fixture_visitas_filas',      current_setting('probe.vj_fx2', true),         'OK'
+UNION ALL SELECT 'P535_vj_jornada_por_medico',           current_setting('probe.p535', true),          'OK (42501 no_autorizado)'
+UNION ALL SELECT 'P536_vj_jornada_ficha_inactiva',       current_setting('probe.p536', true),          'OK (PA008)'
+UNION ALL SELECT 'P537_vj_dos_jornadas_mismo_dia',       current_setting('probe.p537', true),          'OK (23505 o PA020)'
+UNION ALL SELECT 'P538_vj_planificar_fuera_de_cartera',  current_setting('probe.p538', true),          'OK (42501 no_autorizado)'
+UNION ALL SELECT 'P539_vj_supervisor_planifica_permitido',  current_setting('probe.p539', true),          'OK (PERMITIDO)'
+UNION ALL SELECT 'P540_vj_la_fila_queda_del_ASESOR',     current_setting('probe.p540', true),          'OK (asesor_id del asesor)'
+UNION ALL SELECT 'P541_vj_checkin_por_el_supervisor',    current_setting('probe.p541', true),          'OK (42501 no_autorizado)'
+UNION ALL SELECT 'P542_vj_checkin_sin_jornada',          current_setting('probe.p542', true),          'OK (PA022)'
+UNION ALL SELECT 'P543_vj_doble_checkin',                current_setting('probe.p543', true),          'OK (PA025)'
+UNION ALL SELECT 'P544_vj_checkin_prospecto_sin_geo',    current_setting('probe.p544', true),          'OK (verificado=false con motivo)'
+UNION ALL SELECT 'P545_vj_checkin_a_5km',                current_setting('probe.p545', true),          'OK (verificado=false, distancia calculada)'
+UNION ALL SELECT 'P546_vj_checkin_precision_mala',       current_setting('probe.p546', true),          'OK (verificado=false)'
+UNION ALL SELECT 'P547_vj_checkin_diferido',             current_setting('probe.p547', true),          'OK (verificado=false SIEMPRE, origen=diferido)'
+UNION ALL SELECT 'P548_vj_cliente_at_otro_dia',          current_setting('probe.p548', true),          'OK (PA024)'
+UNION ALL SELECT 'P549_vj_cliente_at_futuro',            current_setting('probe.p549', true),          'OK (PA024)'
+UNION ALL SELECT 'P550_vj_cliente_at_previo_jornada',    current_setting('probe.p550', true),          'OK (PA024)'
+UNION ALL SELECT 'P551_vj_FAILCLOSED_config_pais_ausente',  current_setting('probe.p551', true),          'OK (default fail-closed sin config)'
+UNION ALL SELECT 'P552_vj_guard_pais_visita',            current_setting('probe.p552', true),          'OK (PA015)'
+UNION ALL SELECT 'P553_vj_CONTROL_POSITIVO_verifica_ok',  current_setting('probe.p553', true),          'OK (verificado=true a 20 m)'
 UNION ALL SELECT 'P516_SENAL_estructura_harness',  current_setting('probe.p516', true),          'OK-SENAL (no mide; el gate es b2_guard.py)'
 -- Las filas FX* son SALUD DE FIXTURE, no probes de seguridad: dicen si la precondicion que una
 -- migracion posterior empezo a exigir se pudo sembrar. Si una sale ROJO, los probes que dependen de
@@ -12496,7 +12905,8 @@ UNION ALL SELECT 'P000_CENTINELA_veredictos_no_nulos',
        'probe.fx_ajeno', 'probe.fx_farmroles', 'probe.fx_afb_member',
        'probe.fx_trg1_off', 'probe.fx_trg1_on', 'probe.fx_trg2_off', 'probe.fx_trg2_on',
        'probe.p516', 'probe.fx_b2fallos',
-       'probe.p517', 'probe.p518', 'probe.p519', 'probe.p520', 'probe.p521', 'probe.p522', 'probe.p523', 'probe.p524', 'probe.p525', 'probe.p526', 'probe.p527', 'probe.p528', 'probe.p529', 'probe.p530', 'probe.p531', 'probe.p532', 'probe.p533', 'probe.p534', 'probe.co_fx'
+       'probe.p517', 'probe.p518', 'probe.p519', 'probe.p520', 'probe.p521', 'probe.p522', 'probe.p523', 'probe.p524', 'probe.p525', 'probe.p526', 'probe.p527', 'probe.p528', 'probe.p529', 'probe.p530', 'probe.p531', 'probe.p532', 'probe.p533', 'probe.p534', 'probe.co_fx',
+       'probe.p535', 'probe.p536', 'probe.p537', 'probe.p538', 'probe.p539', 'probe.p540', 'probe.p541', 'probe.p542', 'probe.p543', 'probe.p544', 'probe.p545', 'probe.p546', 'probe.p547', 'probe.p548', 'probe.p549', 'probe.p550', 'probe.p551', 'probe.p552', 'probe.p553', 'probe.vj_fx', 'probe.vj_fx2'
              ]) AS n) s),
   'OK (todos los veredictos publicados)';
 
