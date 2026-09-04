@@ -1,5 +1,5 @@
 import { Outlet, useNavigate, useLocation } from 'react-router-dom'
-import { Briefcase, WifiOff, Users, CalendarCheck, LogOut } from 'lucide-react'
+import { Briefcase, WifiOff, Users, CalendarCheck, UsersRound, LogOut } from 'lucide-react'
 import { useEffect, useState } from 'react'
 import { useAuth } from '@/hooks/useAuth'
 
@@ -34,6 +34,7 @@ export default function ComercialLayout() {
 
   const enProspectos = location.pathname.startsWith('/comercial/prospectos')
   const enHoy = location.pathname.startsWith('/comercial/hoy') || location.pathname.startsWith('/comercial/visitas')
+  const enEquipo = location.pathname.startsWith('/comercial/equipo')
   const esSupervisor = perfil?.rol === 'supervisor_comercial'
 
   return (
@@ -86,6 +87,18 @@ export default function ComercialLayout() {
             <Users className="h-5 w-5" />
             Prospectos
           </button>
+          {esSupervisor && (
+            <button
+              type="button"
+              onClick={() => navigate('/comercial/equipo')}
+              className={`flex-1 flex flex-col items-center gap-0.5 py-2 text-xs ${
+                enEquipo ? 'text-[#1E5C8E]' : 'text-gray-400'
+              }`}
+            >
+              <UsersRound className="h-5 w-5" />
+              Equipo
+            </button>
+          )}
         </div>
       </nav>
     </div>

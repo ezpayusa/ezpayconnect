@@ -28,7 +28,7 @@ export default function HoyPage() {
   const cargar = useCallback(async () => {
     setCargando(true)
     const [j, v, cfg] = await Promise.all([jornadaDeHoy(), visitasDelDia(HOY()), configVisitasEfectiva()])
-    if (j.error) reportarError(j.error); else setJornada((j.data ?? null) as Jornada | null)
+    if (j.error) reportarError(j.error); else setJornada((j.data ?? null) as unknown as Jornada | null)
     if (v.error) reportarError(v.error); else setVisitas((v.data ?? []) as unknown as VisitaComercial[])
     if (cfg.data && Array.isArray(cfg.data) && cfg.data[0]) setPrecisionMax(Number(cfg.data[0].precision_max_m))
     setCargando(false)
@@ -115,7 +115,7 @@ export default function HoyPage() {
           <div className="mt-3 space-y-2">
             <p className="text-xs text-gray-600">
               Abierta a las {new Date(jornada!.inicio_at).toLocaleTimeString()}
-              {jornada!.inicio_lat == null && ' · sin ubicación registrada'}
+              {!jornada!.inicio_con_ubicacion && ' · sin ubicación registrada'}
             </p>
             <input value={notas} onChange={(e) => setNotas(e.target.value)} id="notas_cierre"
               placeholder="Notas de cierre (opcional)" className="w-full rounded border px-2 py-1.5 text-sm" />

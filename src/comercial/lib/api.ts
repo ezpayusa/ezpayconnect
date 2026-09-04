@@ -144,13 +144,16 @@ export async function guardarContacto(p: {
 
 export type Jornada = {
   id: string
+  asesor_id: string
   fecha: string
   inicio_at: string
-  inicio_lat: number | null
-  inicio_lng: number | null
   inicio_precision_m: number | null
+  inicio_con_ubicacion: boolean
   fin_at: string | null
+  fin_precision_m: number | null
+  fin_con_ubicacion: boolean
   notas_cierre: string | null
+  asesor?: { nombre_completo: string | null } | null
 }
 
 export type VisitaComercial = {
@@ -164,8 +167,7 @@ export type VisitaComercial = {
   checkin_at: string | null
   checkin_cliente_at: string | null
   checkin_origen: string
-  checkin_lat: number | null
-  checkin_lng: number | null
+  checkin_con_ubicacion: boolean
   checkin_precision_m: number | null
   checkin_distancia_m: number | null
   checkin_verificado: boolean
@@ -183,14 +185,35 @@ export type ResultadoCheckin = {
 
 const COLS_VISITA =
   'id,prospecto_id,asesor_id,pais_id,jornada_id,fecha_planificada,estado,checkin_at,' +
-  'checkin_cliente_at,checkin_origen,checkin_lat,checkin_lng,checkin_precision_m,' +
+  'checkin_cliente_at,checkin_origen,checkin_con_ubicacion,checkin_precision_m,' +
   'checkin_distancia_m,checkin_verificado,checkin_motivo,checkout_at,' +
   'prospecto:prospectos!visitas_comerciales_prospecto_id_fkey(nombre,lat,lng)'
+
+// Lista EXPLÍCITA de columnas, sin las de coordenada: desde la mig 277 `authenticated` no tiene
+// SELECT sobre lat/lng, así que un `select('*')` falla con permiso denegado. Es a propósito — el
+// que supervisa necesita saber si alguien estuvo donde dijo, no dónde estuvo.
+const COLS_JORNADA =
+  'id,asesor_id,pais_id,fecha,inicio_at,inicio_precision_m,inicio_con_ubicacion,' +
+  'fin_at,fin_precision_m,fin_con_ubicacion,notas_cierre'
 
 /** La jornada de hoy, si existe. La RLS ya la acota al llamante. */
 export async function jornadaDeHoy() {
   const hoy = new Date().toISOString().slice(0, 10)
-  return supabase.from('jornadas_comerciales').select('*').eq('fecha', hoy).maybeSingle()
+  return supabase.from('jornadas_comerciales').select(COLS_JORNADA).eq('fecha', hoy).maybeSingle()
+}
+
+/** Jornadas de una fecha. Sin filtro de asesor: el chokepoint de la policy arma el equipo. */
+export async function jornadasDelDia(fecha: string) {
+  return supabase.from('jornadas_comerciales')
+    .select(`${COLS_JORNADA},asesor:perfiles!jornadas_comerciales_asesor_id_fkey(nombre_completo)`)
+    .eq('fecha', fecha)
+}
+
+/** Las fichas del equipo visible. La policy de asesores_perfil ya la acota a la cartera. */
+export async function asesoresVisibles() {
+  return supabase.from('asesores_perfil')
+    .select('id,codigo_asesor,activo,supervisor_id,perfil:perfiles!asesores_perfil_id_fkey(nombre_completo,rol)')
+    .eq('activo', true).order('codigo_asesor')
 }
 
 /** Visitas de una fecha. Sin .eq de asesor: lo pone la policy. */

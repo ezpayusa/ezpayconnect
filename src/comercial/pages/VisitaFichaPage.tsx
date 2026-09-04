@@ -1,5 +1,6 @@
 import { useEffect, useState, useCallback } from 'react'
 import { useParams, Link } from 'react-router-dom'
+import { useAuth } from '@/hooks/useAuth'
 import { toast } from 'sonner'
 import { ArrowLeft, MapPin, MapPinOff, CheckCircle2, AlertTriangle, Paperclip } from 'lucide-react'
 import {
@@ -18,6 +19,7 @@ import { pedirUbicacion, coordsDe, avisoPrevio, type EstadoGeo } from '../lib/ge
 // verificado o no le enseña al asesor que da lo mismo, y entonces el dato no vale nada.
 export default function VisitaFichaPage() {
   const { id = '' } = useParams()
+  const { perfil } = useAuth()
   const [v, setV] = useState<VisitaComercial | null>(null)
   const [reporte, setReporte] = useState<{ id: string; resultado: string; resumen: string; compromisos: string | null } | null>(null)
   const [adjuntos, setAdjuntos] = useState<{ id: string; storage_path: string }[]>([])
@@ -132,6 +134,10 @@ export default function VisitaFichaPage() {
 
   const aviso = avisoPrevio(geo, precisionMax)
   const motivo = ultimoCheckin?.motivo ?? v.checkin_motivo
+  // MODO LECTURA. Si la visita no es de quien mira —el supervisor viendo la de su asesor— no se
+  // pinta NINGÚN control de escritura. Es comodidad: la barrera real es que checkin, checkout,
+  // guardar_reporte y registrar_adjunto están atadas a `asesor_id = auth.uid()` y contestan 42501.
+  const esMio = v.asesor_id === perfil?.id
 
   return (
     <div className="space-y-4">
@@ -141,6 +147,16 @@ export default function VisitaFichaPage() {
 
       <section className="rounded-lg border bg-white p-4">
         <h1 className="font-semibold text-gray-900">{v.prospecto?.nombre ?? 'Visita'}</h1>
+        {!esMio && (
+          <p className="mt-1 inline-block rounded bg-gray-100 px-2 py-0.5 text-xs text-gray-700">
+            Solo lectura — esta visita es de otro asesor
+          </p>
+        )}
+        {v.checkin_origen === 'diferido' && (
+          <p className="mt-1 inline-block rounded bg-slate-100 px-2 py-0.5 text-xs text-slate-700">
+            Check-in diferido: se registró sin conexión y se sincronizó después
+          </p>
+        )}
         <p className="mt-0.5 text-xs text-gray-500">
           {v.fecha_planificada} · estado {v.estado}
           {v.prospecto?.lat == null && ' · el prospecto NO tiene coordenada cargada'}
@@ -150,7 +166,7 @@ export default function VisitaFichaPage() {
       <section className="rounded-lg border bg-white p-4">
         <h2 className="font-semibold text-gray-900">Check-in</h2>
 
-        {!v.checkin_at ? (
+        {!v.checkin_at && esMio ? (
           <>
             <div className="mt-3 rounded border bg-gray-50 p-3 text-sm">
               <div className="flex items-center gap-2">
@@ -205,7 +221,7 @@ export default function VisitaFichaPage() {
                 )}
               </div>
             </div>
-            {!v.checkout_at && (
+            {!v.checkout_at && esMio && (
               <button type="button" id="btn-checkout" onClick={onCheckout} disabled={trabajando}
                 className="rounded-md border border-[#1E5C8E] px-4 py-2 text-sm text-[#1E5C8E] hover:bg-blue-50 disabled:opacity-50">
                 Hacer check-out
@@ -225,6 +241,8 @@ export default function VisitaFichaPage() {
             {reporte.compromisos && <p className="text-gray-700"><span className="text-gray-500">Pendientes:</span> {reporte.compromisos}</p>}
             <p className="pt-1 text-xs text-gray-500">Hay un solo informe por visita.</p>
           </div>
+        ) : !esMio ? (
+          <p className="mt-2 text-sm text-gray-500">Todavía no hay informe.</p>
         ) : (
           <div className="mt-3 space-y-2">
             <select id="resultado" value={resultado} onChange={(e) => setResultado(e.target.value)}
@@ -258,7 +276,7 @@ export default function VisitaFichaPage() {
                 </button>
               </li>))}</ul>}
 
-        {!v.checkin_at ? (
+        {!esMio ? null : !v.checkin_at ? (
           <p className="mt-2 rounded bg-gray-50 p-2 text-xs text-gray-600">
             Los adjuntos se suben después del check-in.
           </p>
