@@ -12146,6 +12146,258 @@ DO $$ BEGIN
 EXCEPTION WHEN OTHERS THEN PERFORM set_config('probe.p552','FALLO ('||SQLSTATE||' '||SQLERRM||')',false); END $$;
 SELECT set_config('role','none', true);
 
+
+-- ############################################################################################
+-- MODULO COMERCIAL · mig 274: reportes, adjuntos, material y los DOS BUCKETS (P554-P568).
+-- --------------------------------------------------------------------------------------------
+-- Las cuatro ultimas (P565-P568) ejercitan las POLICIES DE STORAGE insertando y leyendo en
+-- storage.objects bajo impersonacion. Es lo que faltaba en FASE 4: el circuito estaba entero y la
+-- policy mal scopeada. Que la policy exista no prueba nada; que rechace, si.
+-- ############################################################################################
+SELECT set_config('role','none', true);
+DO $$
+DECLARE v_gt uuid := NULLIF(current_setting('probe.co_gt',true),'')::uuid;
+        v_ase1 uuid := NULLIF(current_setting('probe.co_ase1',true),'')::uuid;
+        v_admgt uuid := NULLIF(current_setting('probe.co_admgt',true),'')::uuid;
+        v_j uuid := NULLIF(current_setting('probe.vj_jornada',true),'')::uuid;
+        v_p uuid; v_id uuid;
+BEGIN
+  IF coalesce(current_setting('probe.vj_visitas',true),'')<>'1' THEN
+    PERFORM set_config('probe.rv_ready','0',false); RETURN; END IF;
+  IF to_regclass('public.reportes_visita') IS NULL THEN
+    PERFORM set_config('probe.rv_ready','0',false);
+    PERFORM set_config('probe.rv_fx','ROJO — TABLAS AUSENTES (la mig 274 no esta aplicada; esto NO es un rechazo)',false);
+    RETURN; END IF;
+  -- una visita mas, SIN check-in: es el sujeto de PA018
+  INSERT INTO public.prospectos (nombre, tipo, pais_id, asesor_id, creado_por, estado_pipeline)
+    VALUES ('QA RV prospecto sin checkin','farmacia',v_gt,v_ase1,v_admgt,'nuevo') RETURNING id INTO v_p;
+  INSERT INTO public.visitas_comerciales (prospecto_id, asesor_id, pais_id, jornada_id, fecha_planificada)
+    VALUES (v_p, v_ase1, v_gt, v_j, CURRENT_DATE) RETURNING id INTO v_id;
+  PERFORM set_config('probe.rv_v_sinci', v_id::text, false);
+  PERFORM set_config('probe.rv_ready','1', false);
+  -- La existencia del bucket se resuelve ACA, como owner: storage.buckets NO es legible por
+  -- `authenticated`, asi que preguntarlo desde una probe impersonada devuelve false aunque el
+  -- bucket exista — y la probe reportaria "BUCKET AUSENTE" con el bucket creado.
+  PERFORM set_config('probe.rv_bucket',
+    CASE WHEN (SELECT count(*) FROM storage.buckets WHERE id IN ('visitas-comerciales','material-comercial')) = 2
+         THEN '1' ELSE '0' END, false);
+  PERFORM set_config('probe.rv_fx','OK (fixture reportes: 1 visita extra sin check-in para PA018; buckets='||current_setting('probe.rv_bucket',true)||')', false);
+EXCEPTION WHEN OTHERS THEN
+  PERFORM set_config('probe.rv_ready','0',false);
+  PERFORM set_config('probe.rv_fx','ROJO ('||SQLSTATE||' '||SQLERRM||')',false);
+END $$;
+
+-- P554 — guardar_reporte_visita por el SUPERVISOR -> 42501 (D4: lee, no escribe)
+SELECT set_config('request.jwt.claims', json_build_object('sub', current_setting('probe.co_sup',true), 'role','authenticated')::text, true);
+SELECT set_config('role','authenticated', true);
+DO $$ BEGIN
+  IF coalesce(current_setting('probe.rv_ready',true),'')<>'1' THEN PERFORM set_config('probe.p554','N/A',false); RETURN; END IF;
+  IF to_regprocedure('public.guardar_reporte_visita(uuid,text,text,text,date)') IS NULL THEN
+    PERFORM set_config('probe.p554','ROJO — RPC AUSENTE',false); RETURN; END IF;
+  BEGIN
+    PERFORM public.guardar_reporte_visita(NULLIF(current_setting('probe.vj_v_cerca',true),'')::uuid,'interesado','El supervisor escribiendo el informe de otro');
+    PERFORM set_config('probe.p554','ROJO (PERMITIO — el supervisor escribio el informe de su asesor)',false);
+  EXCEPTION WHEN insufficient_privilege THEN PERFORM set_config('probe.p554','OK (42501 no_autorizado)',false);
+            WHEN others THEN PERFORM set_config('probe.p554','FALLO (esperaba 42501, vino '||SQLSTATE||': '||SQLERRM||')',false);
+  END;
+EXCEPTION WHEN OTHERS THEN PERFORM set_config('probe.p554','FALLO ('||SQLSTATE||' '||SQLERRM||')',false); END $$;
+
+-- P559 — registrar_adjunto por el SUPERVISOR -> 42501
+DO $$ BEGIN
+  IF coalesce(current_setting('probe.rv_ready',true),'')<>'1' THEN PERFORM set_config('probe.p559','N/A',false); RETURN; END IF;
+  IF to_regprocedure('public.registrar_adjunto_visita(uuid,text,text,bigint)') IS NULL THEN
+    PERFORM set_config('probe.p559','ROJO — RPC AUSENTE',false); RETURN; END IF;
+  BEGIN
+    PERFORM public.registrar_adjunto_visita(NULLIF(current_setting('probe.vj_v_cerca',true),'')::uuid,
+      current_setting('probe.co_gt',true)||'/'||current_setting('probe.vj_v_cerca',true)||'/foto.jpg','image/jpeg',1000);
+    PERFORM set_config('probe.p559','ROJO (PERMITIO — el supervisor adjunto a la visita de otro)',false);
+  EXCEPTION WHEN insufficient_privilege THEN PERFORM set_config('probe.p559','OK (42501 no_autorizado)',false);
+            WHEN others THEN PERFORM set_config('probe.p559','FALLO (esperaba 42501, vino '||SQLSTATE||': '||SQLERRM||')',false);
+  END;
+EXCEPTION WHEN OTHERS THEN PERFORM set_config('probe.p559','FALLO ('||SQLSTATE||' '||SQLERRM||')',false); END $$;
+
+-- P560 — guardar_material_comercial por un ASESOR -> 42501
+SELECT set_config('request.jwt.claims', json_build_object('sub', current_setting('probe.co_ase1',true), 'role','authenticated')::text, true);
+DO $$ BEGIN
+  IF coalesce(current_setting('probe.rv_ready',true),'')<>'1' THEN PERFORM set_config('probe.p560','N/A',false); RETURN; END IF;
+  IF to_regprocedure('public.guardar_material_comercial(text,uuid,text,text,text,bigint)') IS NULL THEN
+    PERFORM set_config('probe.p560','ROJO — RPC AUSENTE',false); RETURN; END IF;
+  BEGIN
+    PERFORM public.guardar_material_comercial('QA material de un asesor',
+      NULLIF(current_setting('probe.co_gt',true),'')::uuid,
+      current_setting('probe.co_gt',true)||'/x/folleto.pdf', NULL,'application/pdf',1000);
+    PERFORM set_config('probe.p560','ROJO (PERMITIO — un asesor publico material)',false);
+  EXCEPTION WHEN insufficient_privilege THEN PERFORM set_config('probe.p560','OK (42501 no_autorizado)',false);
+            WHEN others THEN PERFORM set_config('probe.p560','FALLO (esperaba 42501, vino '||SQLSTATE||': '||SQLERRM||')',false);
+  END;
+EXCEPTION WHEN OTHERS THEN PERFORM set_config('probe.p560','FALLO ('||SQLSTATE||' '||SQLERRM||')',false); END $$;
+
+-- ============================================================================================
+-- Como el ASESOR1: PA018, PA023, el UNIQUE, el control positivo y las 3 de storage propias.
+-- ============================================================================================
+-- P555 — reporte SIN check-in -> PA018
+DO $$ BEGIN
+  IF coalesce(current_setting('probe.rv_ready',true),'')<>'1' THEN PERFORM set_config('probe.p555','N/A',false); RETURN; END IF;
+  IF to_regprocedure('public.guardar_reporte_visita(uuid,text,text,text,date)') IS NULL THEN
+    PERFORM set_config('probe.p555','ROJO — RPC AUSENTE',false); RETURN; END IF;
+  BEGIN
+    PERFORM public.guardar_reporte_visita(NULLIF(current_setting('probe.rv_v_sinci',true),'')::uuid,'interesado','Informe de una visita a la que nunca llegue');
+    PERFORM set_config('probe.p555','ROJO (PERMITIO un informe sin check-in)',false);
+  EXCEPTION WHEN sqlstate 'PA018' THEN PERFORM set_config('probe.p555','OK (PA018)',false);
+            WHEN others THEN PERFORM set_config('probe.p555','FALLO (esperaba PA018, vino '||SQLSTATE||': '||SQLERRM||')',false);
+  END;
+EXCEPTION WHEN OTHERS THEN PERFORM set_config('probe.p555','FALLO ('||SQLSTATE||' '||SQLERRM||')',false); END $$;
+
+-- P564 CONTROL POSITIVO — el asesor guarda su informe y lo RELEE. Sin el positivo, las negativas
+-- no prueban que el camino existe (la leccion de P553).
+-- P556 — el segundo informe de la misma visita choca con el UNIQUE 1:1
+DO $$ DECLARE v_r uuid; v_n int; BEGIN
+  IF coalesce(current_setting('probe.rv_ready',true),'')<>'1' THEN
+    PERFORM set_config('probe.p564','N/A',false); PERFORM set_config('probe.p556','N/A',false); RETURN; END IF;
+  IF to_regprocedure('public.guardar_reporte_visita(uuid,text,text,text,date)') IS NULL THEN
+    PERFORM set_config('probe.p564','ROJO — RPC AUSENTE',false); PERFORM set_config('probe.p556','ROJO — RPC AUSENTE',false); RETURN; END IF;
+  BEGIN
+    SELECT public.guardar_reporte_visita(NULLIF(current_setting('probe.vj_v_cerca',true),'')::uuid,
+      'requiere_seguimiento','QA informe del asesor','Mandar cotizacion el lunes', CURRENT_DATE + 7) INTO v_r;
+    PERFORM set_config('probe.rv_reporte', coalesce(v_r::text,''), false);
+    SELECT count(*) INTO v_n FROM public.reportes_visita WHERE id = v_r;
+    PERFORM set_config('probe.p564', CASE WHEN v_n = 1
+      THEN 'OK (PERMITIDO: el asesor guardo su informe y lo releyo)'
+      ELSE 'ROJO (lo guardo pero NO puede releerlo: la policy de SELECT le cierra su propio dato)' END, false);
+  EXCEPTION WHEN others THEN
+    PERFORM set_config('probe.p564','FALLO (esperaba PERMITIDO, vino '||SQLSTATE||': '||SQLERRM||')',false);
+    PERFORM set_config('probe.p556','N/A (no se pudo crear el primer informe)',false); RETURN;
+  END;
+  BEGIN
+    PERFORM public.guardar_reporte_visita(NULLIF(current_setting('probe.vj_v_cerca',true),'')::uuid,'interesado','Segundo informe de la misma visita');
+    PERFORM set_config('probe.p556','ROJO (PERMITIO dos informes de la misma visita)',false);
+  EXCEPTION WHEN unique_violation THEN PERFORM set_config('probe.p556','OK (23505: la relacion visita-informe es 1:1)',false);
+            WHEN others THEN PERFORM set_config('probe.p556','FALLO (esperaba 23505, vino '||SQLSTATE||': '||SQLERRM||')',false);
+  END;
+EXCEPTION WHEN OTHERS THEN PERFORM set_config('probe.p564','FALLO ('||SQLSTATE||' '||SQLERRM||')',false); END $$;
+
+-- P557 — adjunto cuyo segmento 2 NO es esta visita -> PA023
+-- P558 — adjunto cuyo segmento 1 es OTRO pais -> rechazo
+DO $$ BEGIN
+  IF coalesce(current_setting('probe.rv_ready',true),'')<>'1' THEN
+    PERFORM set_config('probe.p557','N/A',false); PERFORM set_config('probe.p558','N/A',false); RETURN; END IF;
+  IF to_regprocedure('public.registrar_adjunto_visita(uuid,text,text,bigint)') IS NULL THEN
+    PERFORM set_config('probe.p557','ROJO — RPC AUSENTE',false); PERFORM set_config('probe.p558','ROJO — RPC AUSENTE',false); RETURN; END IF;
+  BEGIN
+    PERFORM public.registrar_adjunto_visita(NULLIF(current_setting('probe.vj_v_cerca',true),'')::uuid,
+      current_setting('probe.co_gt',true)||'/'||current_setting('probe.vj_v_lejos',true)||'/foto.jpg','image/jpeg',1000);
+    PERFORM set_config('probe.p557','ROJO (PERMITIO un path cuyo segmento 2 es OTRA visita)',false);
+  EXCEPTION WHEN sqlstate 'PA023' THEN PERFORM set_config('probe.p557','OK (PA023 el path no corresponde a esta visita)',false);
+            WHEN others THEN PERFORM set_config('probe.p557','FALLO (esperaba PA023, vino '||SQLSTATE||': '||SQLERRM||')',false);
+  END;
+  BEGIN
+    PERFORM public.registrar_adjunto_visita(NULLIF(current_setting('probe.vj_v_cerca',true),'')::uuid,
+      current_setting('probe.co_hn',true)||'/'||current_setting('probe.vj_v_cerca',true)||'/foto.jpg','image/jpeg',1000);
+    PERFORM set_config('probe.p558','ROJO (PERMITIO un path con el pais de OTRO en el segmento 1)',false);
+  EXCEPTION WHEN sqlstate 'PA023' THEN PERFORM set_config('probe.p558','OK (PA023 pais del path distinto al de la visita)',false);
+            WHEN others THEN PERFORM set_config('probe.p558','FALLO (esperaba PA023, vino '||SQLSTATE||': '||SQLERRM||')',false);
+  END;
+EXCEPTION WHEN OTHERS THEN PERFORM set_config('probe.p557','FALLO ('||SQLSTATE||' '||SQLERRM||')',false); END $$;
+
+-- ============================================================================================
+-- STORAGE. Se ejercita la POLICY escribiendo/leyendo storage.objects bajo impersonacion.
+-- P565 (a) el asesor SUBE a un path valido de SU visita          -> permitido
+-- P566 (b) el asesor sube al path de la visita de OTRO           -> denegado
+-- P567 (c) el asesor LEE lo que subio                            -> permitido
+-- ============================================================================================
+DO $$ DECLARE v_n int; BEGIN
+  IF coalesce(current_setting('probe.rv_ready',true),'')<>'1' THEN
+    PERFORM set_config('probe.p565','N/A',false); PERFORM set_config('probe.p566','N/A',false);
+    PERFORM set_config('probe.p567','N/A',false); RETURN; END IF;
+  IF coalesce(current_setting('probe.rv_bucket',true),'')<>'1' THEN
+    PERFORM set_config('probe.p565','ROJO — BUCKET AUSENTE (la mig 274 no lo creo; esto NO es un rechazo)',false);
+    PERFORM set_config('probe.p566','ROJO — BUCKET AUSENTE',false);
+    PERFORM set_config('probe.p567','ROJO — BUCKET AUSENTE',false); RETURN; END IF;
+  -- (a) path valido: {pais_id}/{visita_id}/archivo
+  BEGIN
+    INSERT INTO storage.objects (bucket_id, name, owner)
+    VALUES ('visitas-comerciales',
+            current_setting('probe.co_gt',true)||'/'||current_setting('probe.vj_v_cerca',true)||'/qa-ok.jpg',
+            NULLIF(current_setting('probe.co_ase1',true),'')::uuid);
+    PERFORM set_config('probe.p565','OK (PERMITIDO: el asesor sube al path de SU visita)',false);
+  EXCEPTION WHEN others THEN
+    PERFORM set_config('probe.p565','ROJO (la policy DENEGO una subida legitima: '||SQLSTATE||' '||SQLERRM||')',false);
+  END;
+  -- (b) path de la visita de OTRO (la de asesor2)
+  BEGIN
+    INSERT INTO storage.objects (bucket_id, name, owner)
+    VALUES ('visitas-comerciales',
+            current_setting('probe.co_gt',true)||'/'||current_setting('probe.vj_v_ase2',true)||'/qa-robo.jpg',
+            NULLIF(current_setting('probe.co_ase1',true),'')::uuid);
+    PERFORM set_config('probe.p566','ROJO (PERMITIO subir al path de la visita de OTRO asesor)',false);
+  EXCEPTION WHEN insufficient_privilege THEN PERFORM set_config('probe.p566','OK (42501: la policy scopeo el path a la visita propia)',false);
+            WHEN others THEN PERFORM set_config('probe.p566','OK (denegado con '||SQLSTATE||')',false);
+  END;
+  -- (c) leer lo propio
+  SELECT count(*) INTO v_n FROM storage.objects
+   WHERE bucket_id='visitas-comerciales'
+     AND name = current_setting('probe.co_gt',true)||'/'||current_setting('probe.vj_v_cerca',true)||'/qa-ok.jpg';
+  PERFORM set_config('probe.p567', CASE WHEN v_n=1
+    THEN 'OK (PERMITIDO: el asesor lee el objeto que subio)'
+    ELSE 'ROJO (subio el objeto y NO puede leerlo: '||v_n||' filas)' END, false);
+EXCEPTION WHEN OTHERS THEN PERFORM set_config('probe.p565','FALLO ('||SQLSTATE||' '||SQLERRM||')',false); END $$;
+SELECT set_config('role','none', true);
+
+-- P561 — guardar_material_comercial por un admin de OTRO pais -> 42501
+SELECT set_config('request.jwt.claims', json_build_object('sub', current_setting('probe.co_admhn',true), 'role','authenticated')::text, true);
+SELECT set_config('role','authenticated', true);
+DO $$ BEGIN
+  IF coalesce(current_setting('probe.rv_ready',true),'')<>'1' THEN PERFORM set_config('probe.p561','N/A',false); RETURN; END IF;
+  IF to_regprocedure('public.guardar_material_comercial(text,uuid,text,text,text,bigint)') IS NULL THEN
+    PERFORM set_config('probe.p561','ROJO — RPC AUSENTE',false); RETURN; END IF;
+  BEGIN
+    PERFORM public.guardar_material_comercial('QA material de admin ajeno',
+      NULLIF(current_setting('probe.co_gt',true),'')::uuid,
+      current_setting('probe.co_gt',true)||'/x/folleto.pdf', NULL,'application/pdf',1000);
+    PERFORM set_config('probe.p561','ROJO (PERMITIO — un admin de HN publico material en GT)',false);
+  EXCEPTION WHEN insufficient_privilege THEN PERFORM set_config('probe.p561','OK (42501 no_autorizado)',false);
+            WHEN others THEN PERFORM set_config('probe.p561','FALLO (esperaba 42501, vino '||SQLSTATE||': '||SQLERRM||')',false);
+  END;
+EXCEPTION WHEN OTHERS THEN PERFORM set_config('probe.p561','FALLO ('||SQLSTATE||' '||SQLERRM||')',false); END $$;
+SELECT set_config('role','none', true);
+
+-- P562 — el SUPERVISOR LEE el informe de su asesor (D4: lee, no escribe) -> PERMITIDO
+SELECT set_config('request.jwt.claims', json_build_object('sub', current_setting('probe.co_sup',true), 'role','authenticated')::text, true);
+SELECT set_config('role','authenticated', true);
+DO $$ DECLARE v_n int; BEGIN
+  IF coalesce(current_setting('probe.rv_ready',true),'')<>'1' OR to_regclass('public.reportes_visita') IS NULL THEN
+    PERFORM set_config('probe.p562','N/A',false); RETURN; END IF;
+  IF coalesce(current_setting('probe.rv_reporte',true),'')='' THEN
+    PERFORM set_config('probe.p562','N/A (no se creo el informe en P564)',false); RETURN; END IF;
+  SELECT count(*) INTO v_n FROM public.reportes_visita WHERE id = NULLIF(current_setting('probe.rv_reporte',true),'')::uuid;
+  PERFORM set_config('probe.p562', CASE WHEN v_n=1
+    THEN 'OK (PERMITIDO: el supervisor LEE el informe de su asesor — D4 es leer, no escribir)'
+    ELSE 'ROJO (el supervisor NO ve el informe de su cartera: '||v_n||' filas)' END, false);
+EXCEPTION WHEN OTHERS THEN PERFORM set_config('probe.p562','FALLO ('||SQLSTATE||' '||SQLERRM||')',false); END $$;
+SELECT set_config('role','none', true);
+
+-- P563 — asesor2 NO ve el informe de asesor1 -> 0 filas
+-- P568 (d) — asesor2 NO lee el objeto de storage de asesor1 -> 0 filas
+SELECT set_config('request.jwt.claims', json_build_object('sub', current_setting('probe.co_ase2',true), 'role','authenticated')::text, true);
+SELECT set_config('role','authenticated', true);
+DO $$ DECLARE v_n int; v_o int; BEGIN
+  IF coalesce(current_setting('probe.rv_ready',true),'')<>'1' OR to_regclass('public.reportes_visita') IS NULL THEN
+    PERFORM set_config('probe.p563','N/A',false); PERFORM set_config('probe.p568','N/A',false); RETURN; END IF;
+  SELECT count(*) INTO v_n FROM public.reportes_visita WHERE id = NULLIF(current_setting('probe.rv_reporte',true),'')::uuid;
+  PERFORM set_config('probe.p563', CASE WHEN v_n=0
+    THEN 'OK (asesor2 no ve el informe de asesor1)'
+    ELSE 'ROJO (asesor2 VE el informe de otro asesor: '||v_n||' filas)' END, false);
+  IF coalesce(current_setting('probe.rv_bucket',true),'')<>'1' THEN
+    PERFORM set_config('probe.p568','ROJO — BUCKET AUSENTE',false); RETURN; END IF;
+  SELECT count(*) INTO v_o FROM storage.objects
+   WHERE bucket_id='visitas-comerciales'
+     AND name = current_setting('probe.co_gt',true)||'/'||current_setting('probe.vj_v_cerca',true)||'/qa-ok.jpg';
+  PERFORM set_config('probe.p568', CASE WHEN v_o=0
+    THEN 'OK (asesor2 no lee el objeto de asesor1)'
+    ELSE 'ROJO (asesor2 LEE el objeto de storage de otro asesor: '||v_o||' filas — policy mal scopeada)' END, false);
+EXCEPTION WHEN OTHERS THEN PERFORM set_config('probe.p563','FALLO ('||SQLSTATE||' '||SQLERRM||')',false); END $$;
+SELECT set_config('role','none', true);
+
 -- ===== Veredictos como result set =====
 SELECT 'P1_anon_insert_citas'              AS probe, current_setting('probe.p1', true)  AS verdict, 'BLOQUEADO' AS esperado_post_fix
 UNION ALL SELECT 'P2_medico_cancela_ajena_rpc',         current_setting('probe.p2', true),  'BLOQUEADO'
@@ -12749,6 +13001,22 @@ UNION ALL SELECT 'P550_vj_cliente_at_previo_jornada',    current_setting('probe.
 UNION ALL SELECT 'P551_vj_FAILCLOSED_config_pais_ausente',  current_setting('probe.p551', true),          'OK (default fail-closed sin config)'
 UNION ALL SELECT 'P552_vj_guard_pais_visita',            current_setting('probe.p552', true),          'OK (PA015)'
 UNION ALL SELECT 'P553_vj_CONTROL_POSITIVO_verifica_ok',  current_setting('probe.p553', true),          'OK (verificado=true a 20 m)'
+UNION ALL SELECT 'RV_FX_fixture_reportes',            current_setting('probe.rv_fx', true),          'OK'
+UNION ALL SELECT 'P554_rv_reporte_por_supervisor',               current_setting('probe.p554', true),    'OK (42501 no_autorizado)'
+UNION ALL SELECT 'P555_rv_reporte_sin_checkin',                  current_setting('probe.p555', true),    'OK (PA018)'
+UNION ALL SELECT 'P556_rv_dos_reportes_misma_visita',            current_setting('probe.p556', true),    'OK (23505 1:1)'
+UNION ALL SELECT 'P557_rv_adjunto_segmento2_ajeno',              current_setting('probe.p557', true),    'OK (PA023)'
+UNION ALL SELECT 'P558_rv_adjunto_pais_ajeno',                   current_setting('probe.p558', true),    'OK (PA023)'
+UNION ALL SELECT 'P559_rv_adjunto_por_supervisor',               current_setting('probe.p559', true),    'OK (42501 no_autorizado)'
+UNION ALL SELECT 'P560_rv_material_por_asesor',                  current_setting('probe.p560', true),    'OK (42501 no_autorizado)'
+UNION ALL SELECT 'P561_rv_material_admin_otro_pais',             current_setting('probe.p561', true),    'OK (42501 no_autorizado)'
+UNION ALL SELECT 'P562_rv_supervisor_LEE_el_informe',            current_setting('probe.p562', true),    'OK (PERMITIDO — D4 lee)'
+UNION ALL SELECT 'P563_rv_asesor2_no_ve_el_informe',             current_setting('probe.p563', true),    'OK (0 filas)'
+UNION ALL SELECT 'P564_rv_CONTROL_POSITIVO_asesor_guarda_y_relee',  current_setting('probe.p564', true),    'OK (PERMITIDO)'
+UNION ALL SELECT 'P565_rv_STORAGE_a_sube_a_su_path',             current_setting('probe.p565', true),    'OK (PERMITIDO)'
+UNION ALL SELECT 'P566_rv_STORAGE_b_sube_a_path_ajeno',          current_setting('probe.p566', true),    'OK (denegado)'
+UNION ALL SELECT 'P567_rv_STORAGE_c_lee_lo_propio',              current_setting('probe.p567', true),    'OK (PERMITIDO)'
+UNION ALL SELECT 'P568_rv_STORAGE_d_no_lee_lo_ajeno',            current_setting('probe.p568', true),    'OK (0 filas)'
 UNION ALL SELECT 'P516_SENAL_estructura_harness',  current_setting('probe.p516', true),          'OK-SENAL (no mide; el gate es b2_guard.py)'
 -- Las filas FX* son SALUD DE FIXTURE, no probes de seguridad: dicen si la precondicion que una
 -- migracion posterior empezo a exigir se pudo sembrar. Si una sale ROJO, los probes que dependen de
@@ -12921,7 +13189,8 @@ UNION ALL SELECT 'P000_CENTINELA_veredictos_no_nulos',
        'probe.fx_trg1_off', 'probe.fx_trg1_on', 'probe.fx_trg2_off', 'probe.fx_trg2_on',
        'probe.p516', 'probe.fx_b2fallos',
        'probe.p517', 'probe.p518', 'probe.p519', 'probe.p520', 'probe.p521', 'probe.p522', 'probe.p523', 'probe.p524', 'probe.p525', 'probe.p526', 'probe.p527', 'probe.p528', 'probe.p529', 'probe.p530', 'probe.p531', 'probe.p532', 'probe.p533', 'probe.p534', 'probe.co_fx',
-       'probe.p535', 'probe.p536', 'probe.p537', 'probe.p538', 'probe.p539', 'probe.p540', 'probe.p541', 'probe.p542', 'probe.p543', 'probe.p544', 'probe.p545', 'probe.p546', 'probe.p547', 'probe.p548', 'probe.p549', 'probe.p550', 'probe.p551', 'probe.p552', 'probe.p553', 'probe.vj_fx', 'probe.vj_fx2'
+       'probe.p535', 'probe.p536', 'probe.p537', 'probe.p538', 'probe.p539', 'probe.p540', 'probe.p541', 'probe.p542', 'probe.p543', 'probe.p544', 'probe.p545', 'probe.p546', 'probe.p547', 'probe.p548', 'probe.p549', 'probe.p550', 'probe.p551', 'probe.p552', 'probe.p553', 'probe.vj_fx', 'probe.vj_fx2',
+       'probe.p554', 'probe.p555', 'probe.p556', 'probe.p557', 'probe.p558', 'probe.p559', 'probe.p560', 'probe.p561', 'probe.p562', 'probe.p563', 'probe.p564', 'probe.p565', 'probe.p566', 'probe.p567', 'probe.p568', 'probe.rv_fx'
              ]) AS n) s),
   'OK (todos los veredictos publicados)';
 
