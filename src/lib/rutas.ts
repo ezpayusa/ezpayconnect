@@ -9,7 +9,12 @@
 // y DashboardPage lee expediente_notas. O sea que el rol desconocido no quedaba "sin ruta": quedaba
 // en una pantalla ajena, vacía y sin salida. Eso no es un vacío, es un callejón — y se lee como app
 // rota. Ahora /dashboard es un destino que hay que MERECER estando en la lista.
-export const ROLES_DASHBOARD_CLINICO = ['admin_clinica'] as const
+// `asistente_medico` está acá por MEDICIÓN, no por diseño: es el único de los seis roles que el
+// default mandaba a /dashboard y que tiene una cuenta real y activa (login 2026-07-21). Mandarla
+// a /sin-panel le cambiaba el aterrizaje a una persona de verdad, y eso es decisión de producto.
+// Los otros cinco (cliente, enfermeria, gerente, soporte, vendedor) sólo tienen cuentas de prueba
+// y quedan en /sin-panel; su destino real es un frente abierto.
+export const ROLES_DASHBOARD_CLINICO = ['admin_clinica', 'asistente_medico'] as const
 
 // Destinos:
 //   medico                       -> /medico

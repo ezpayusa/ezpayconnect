@@ -109,6 +109,8 @@ const ProductoFormPage = lazy(() => import('@/proveedor/pages/productos/Producto
 const EquipoRolesPage = lazy(() => import('@/proveedor/pages/EquipoRolesPage'))
 const VisitadorPlanesPage = lazy(() => import('@/proveedor/pages/visitador/VisitadorPlanesPage'))
 const ComercialProspectosPage = lazy(() => import('@/comercial/pages/ProspectosPage'))
+const ComercialFichaPage = lazy(() => import('@/comercial/pages/ProspectoFichaPage'))
+const ProspectosPaisPage = lazy(() => import('@/pages/admin-ezpay/ProspectosPaisPage'))
 const SinPanelPage = lazy(() => import('@/pages/SinPanelPage'))
 const VisitadorAgendarPage = lazy(() => import('@/proveedor/pages/visitador/VisitadorAgendarPage'))
 const VisitadorMisVisitasPage = lazy(() => import('@/proveedor/pages/visitador/VisitadorMisVisitasPage'))
@@ -283,6 +285,7 @@ function App() {
         <Route path="/comercial" element={<ComercialPrivateRoute><ComercialLayout /></ComercialPrivateRoute>}>
           <Route index element={<Navigate to="/comercial/prospectos" replace />} />
           <Route path="prospectos" element={<ComercialProspectosPage />} />
+          <Route path="prospectos/:id" element={<ComercialFichaPage />} />
         </Route>
 
         <Route path="/pacientes" element={<PrivateLayout><PacientesPage /></PrivateLayout>} />
@@ -340,6 +343,7 @@ function App() {
           <Route path="pais/:paisId/solicitudes-personalizacion" element={<SolicitudesPersonalizacionPage />} />
           <Route path="pais/:paisId/reportes-ezpay-v2" element={<ReportesEzPayPageV2 />} />
           <Route path="pais/:paisId/empresas-proveedoras" element={<EmpresasProveedorasPage />} />
+          <Route path="pais/:paisId/prospectos" element={<ProspectosPaisPage />} />
           <Route path="usuarios" element={<UsuariosAdminPage />} />
           <Route path="asignacion-roles" element={<AsignacionRolesPage />} />
           <Route path="planes-todos" element={<PlanesTodosPage />} />
