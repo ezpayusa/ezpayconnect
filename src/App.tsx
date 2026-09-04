@@ -110,6 +110,8 @@ const EquipoRolesPage = lazy(() => import('@/proveedor/pages/EquipoRolesPage'))
 const VisitadorPlanesPage = lazy(() => import('@/proveedor/pages/visitador/VisitadorPlanesPage'))
 const ComercialProspectosPage = lazy(() => import('@/comercial/pages/ProspectosPage'))
 const ComercialFichaPage = lazy(() => import('@/comercial/pages/ProspectoFichaPage'))
+const ComercialHoyPage = lazy(() => import('@/comercial/pages/HoyPage'))
+const ComercialVisitaPage = lazy(() => import('@/comercial/pages/VisitaFichaPage'))
 const ProspectosPaisPage = lazy(() => import('@/pages/admin-ezpay/ProspectosPaisPage'))
 const SinPanelPage = lazy(() => import('@/pages/SinPanelPage'))
 const VisitadorAgendarPage = lazy(() => import('@/proveedor/pages/visitador/VisitadorAgendarPage'))
@@ -286,6 +288,8 @@ function App() {
           <Route index element={<Navigate to="/comercial/prospectos" replace />} />
           <Route path="prospectos" element={<ComercialProspectosPage />} />
           <Route path="prospectos/:id" element={<ComercialFichaPage />} />
+          <Route path="hoy" element={<ComercialHoyPage />} />
+          <Route path="visitas/:id" element={<ComercialVisitaPage />} />
         </Route>
 
         <Route path="/pacientes" element={<PrivateLayout><PacientesPage /></PrivateLayout>} />

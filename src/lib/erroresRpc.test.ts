@@ -70,6 +70,15 @@ describe('mapearErrorRpc — una fila del contrato por caso', () => {
     expect(r.destino).toBe('inline')
     expect(r.mensaje).toMatch(/Ya existe un registro/)
     expect(r.mensaje).not.toMatch(/constraint/)
+    expect(r.recargar).toBe('visita')   // el caso típico es una pantalla vieja
+  })
+
+  it('23505 NO nombra una constraint concreta: el mismo código sale de tres UNIQUE distintos', () => {
+    // Salía del nombre de prospecto duplicado, del código de asesor y del segundo informe de una
+    // visita. Enumerar las dos primeras hacía que el mensaje fuera FALSO en la tercera.
+    const r = mapearErrorRpc(pg('23505', 'duplicate key value violates unique constraint "reportes_visita_visita_id_key"'))
+    expect(r.mensaje).not.toMatch(/nombre del prospecto/)
+    expect(r.mensaje).not.toMatch(/código de asesor/)
   })
 
   it('23514 -> texto propio, inline', () => {
@@ -89,13 +98,51 @@ describe('mapearErrorRpc — una fila del contrato por caso', () => {
   })
 })
 
+describe('frente visitas — PA015 a PA025', () => {
+  it.each(['PA015', 'PA016', 'PA017', 'PA024'])(
+    '%s -> toast con el mensaje de la base, sin reportar (es del usuario, no bug nuestro)',
+    (code) => {
+      const r = mapearErrorRpc(pg(code, `${code}: los países no coinciden`))
+      expect(r.destino).toBe('toast')
+      expect(r.mensaje).toBe('los países no coinciden')
+      expect(r.reportar).toBe(false)
+      expect(r.sinMapear).toBeUndefined()
+    },
+  )
+
+  it.each([['PA019', 'jornada'], ['PA020', 'jornada'], ['PA021', 'jornada'],
+           ['PA022', 'jornada'], ['PA018', 'visita'], ['PA025', 'visita']] as const)(
+    '%s deja al cliente desincronizado -> pide recargar %s',
+    (code, que) => {
+      expect(mapearErrorRpc(pg(code, `${code}: x`)).recargar).toBe(que)
+    },
+  )
+
+  it('PA023 (path armado por el cliente) es el único del lote que SE REPORTA: el bug es nuestro', () => {
+    const r = mapearErrorRpc(pg('PA023', 'PA023: el path no corresponde a la visita'))
+    expect(r.reportar).toBe(true)
+    // y no se le muestra al usuario el path crudo, que no significa nada para él
+    expect(r.mensaje).toBe('No se pudo completar la operación. Intentá de nuevo.')
+  })
+
+  it('ninguno de los once cae en "sin mapear"', () => {
+    for (const n of [15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25]) {
+      const r = mapearErrorRpc(pg('PA0' + String(n).padStart(2, '0'), 'texto'))
+      expect(r.sinMapear, 'PA0' + n + ' quedó sin mapear').toBeUndefined()
+    }
+  })
+})
+
 describe('los tres negativos — que el mapa envejezca bien y no rompa', () => {
-  // EL IMPORTANTE. Hoy PA015+ no existe; el día que exista, tiene que doler un poco.
+  // EL IMPORTANTE. Usa el PRÓXIMO ERRCODE LIBRE, que hoy es PA026 (PA001-PA025 están tomados por
+  // las migs 264/272/273/274). Este test ya se rompió una vez, al mapear PA015-PA025: es
+  // exactamente lo que tiene que hacer. Cuando alguien reserve PA026, moverlo al siguiente libre
+  // es parte de reservarlo.
   it('un PA0xx que NO está en el mapa NO cae en el genérico silencioso', () => {
-    const r = mapearErrorRpc(pg('PA015', 'PA015: una regla que todavia no mapeamos'))
+    const r = mapearErrorRpc(pg('PA026', 'PA026: una regla que todavia no mapeamos'))
     expect(r.sinMapear).toBe(true)
-    expect(r.code).toBe('PA015')
-    expect(r.mensaje).toContain('PA015')          // el código queda A LA VISTA
+    expect(r.code).toBe('PA026')
+    expect(r.mensaje).toContain('PA026')          // el código queda A LA VISTA
     expect(r.mensaje).toContain('una regla que todavia no mapeamos')
     expect(r.reportar).toBe(true)                 // y llega a Sentry
     expect(r.mensaje).not.toBe('No se pudo completar la operación. Intentá de nuevo.')
@@ -121,7 +168,9 @@ describe('los tres negativos — que el mapa envejezca bien y no rompa', () => {
   it('.code presente pero .message vacío -> NUNCA un toast en blanco', () => {
     // Todos los códigos del mapa, con el mensaje vacío y con el campo ausente del todo.
     const codigos = ['42501', 'PA001', 'PA005', 'PA008', 'PA009', 'PA010', 'PA011',
-                     'PA012', 'PA013', 'PA014', '23505', '23514', '428C9', 'XX000']
+                     'PA012', 'PA013', 'PA014', 'PA015', 'PA016', 'PA017', 'PA018',
+                     'PA019', 'PA020', 'PA021', 'PA022', 'PA023', 'PA024', 'PA025',
+                     '23505', '23514', '428C9', 'XX000']
     for (const code of codigos) {
       for (const err of [pg(code, ''), pg(code, '   '), { code }]) {
         const r = mapearErrorRpc(err)
