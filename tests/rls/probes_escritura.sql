@@ -12481,6 +12481,86 @@ DO $$ DECLARE v_malas text; BEGIN
     ELSE 'ROJO (authenticated lee: '||v_malas||')' END, false);
 EXCEPTION WHEN OTHERS THEN PERFORM set_config('probe.p574','FALLO ('||SQLSTATE||')',false); END $$;
 
+
+-- ############################################################################################
+-- P575-P578 — material comercial: bucket pineado, aislamiento por pais y filtro por `activo`
+-- ############################################################################################
+-- P575 es el equivalente de P569 para el OTRO bucket: `src/comercial/lib/material.ts` replica los
+-- 50 MB y SU lista de mime (que incluye PDF, a diferencia de la de evidencia de visita). Como el
+-- cliente no puede leer storage.buckets, la duplicacion es inevitable — pero queda VERIFICADA.
+SELECT set_config('role','none', true);
+DO $$ DECLARE b record; v_mime text; BEGIN
+  SELECT * INTO b FROM storage.buckets WHERE id = 'material-comercial';
+  IF b.id IS NULL THEN PERFORM set_config('probe.p575','ROJO (el bucket no existe)',false); RETURN; END IF;
+  v_mime := array_to_string(b.allowed_mime_types, ',');
+  PERFORM set_config('probe.p575', CASE
+    WHEN b.public THEN 'ROJO (el bucket quedo PUBLICO)'
+    WHEN b.file_size_limit IS DISTINCT FROM 52428800
+      THEN 'ROJO (limite='||coalesce(b.file_size_limit::text,'nulo')||', material.ts asume 52428800)'
+    WHEN v_mime IS DISTINCT FROM 'image/jpeg,image/png,image/webp,video/mp4,video/quicktime,application/pdf'
+      THEN 'ROJO (mime='||coalesce(v_mime,'nulo')||', material.ts asume otra lista en MIME_MATERIAL)'
+    ELSE 'OK (privado, 50 MB y 6 mime con PDF — coincide con material.ts)' END, false);
+EXCEPTION WHEN OTHERS THEN PERFORM set_config('probe.p575','FALLO ('||SQLSTATE||' '||SQLERRM||')',false); END $$;
+
+-- Fixture: material de DOS paises, y uno de GT desactivado.
+DO $$ DECLARE v_gt uuid := NULLIF(current_setting('probe.co_gt',true),'')::uuid;
+             v_hn uuid := NULLIF(current_setting('probe.co_hn',true),'')::uuid;
+             v_adm uuid := NULLIF(current_setting('probe.co_admgt',true),'')::uuid; BEGIN
+  IF to_regclass('public.material_comercial') IS NULL OR coalesce(current_setting('probe.co_ready',true),'')<>'1' THEN
+    PERFORM set_config('probe.mat_ready','0',false); RETURN; END IF;
+  INSERT INTO public.material_comercial (pais_id, titulo, storage_path, mime, activo, subido_por) VALUES
+    (v_gt, 'QA MAT GT activo',   v_gt::text||'/qa-gt-activo.pdf',   'application/pdf', true,  v_adm),
+    (v_gt, 'QA MAT GT inactivo', v_gt::text||'/qa-gt-inactivo.pdf', 'application/pdf', false, v_adm),
+    (v_hn, 'QA MAT HN activo',   v_hn::text||'/qa-hn-activo.pdf',   'application/pdf', true,  v_adm);
+  PERFORM set_config('probe.mat_ready','1',false);
+EXCEPTION WHEN OTHERS THEN
+  PERFORM set_config('probe.mat_ready','0',false);
+  PERFORM set_config('probe.p576','FALLO en el fixture ('||SQLSTATE||' '||SQLERRM||')',false);
+END $$;
+
+-- P576 — el ASESOR de GT ve SOLO el de GT y SOLO el activo (1 de 3)
+SELECT set_config('request.jwt.claims', json_build_object('sub', current_setting('probe.co_ase1',true), 'role','authenticated')::text, true);
+SELECT set_config('role','authenticated', true);
+DO $$ DECLARE v_n int; v_hn int; v_inact int; BEGIN
+  IF coalesce(current_setting('probe.mat_ready',true),'')<>'1' THEN PERFORM set_config('probe.p576','N/A',false); RETURN; END IF;
+  SELECT count(*) INTO v_n     FROM public.material_comercial WHERE titulo LIKE 'QA MAT %';
+  SELECT count(*) INTO v_hn    FROM public.material_comercial WHERE titulo = 'QA MAT HN activo';
+  SELECT count(*) INTO v_inact FROM public.material_comercial WHERE titulo = 'QA MAT GT inactivo';
+  PERFORM set_config('probe.p576', CASE
+    WHEN v_hn > 0    THEN 'ROJO (el asesor de GT RECIBE el material de HN — cruce de pais)'
+    WHEN v_inact > 0 THEN 'ROJO (el asesor RECIBE el material DESACTIVADO: el filtro no esta en la DB)'
+    WHEN v_n <> 1    THEN 'FALLO (ve '||v_n||' de 3, se esperaba 1)'
+    ELSE 'OK (ve 1 de 3: solo el de SU pais y solo el activo)' END, false);
+EXCEPTION WHEN OTHERS THEN PERFORM set_config('probe.p576','FALLO ('||SQLSTATE||' '||SQLERRM||')',false); END $$;
+
+-- P577 — el ADMIN de GT ve los DOS de GT (necesita ver lo desactivado para reactivarlo) y ninguno de HN
+SELECT set_config('request.jwt.claims', json_build_object('sub', current_setting('probe.co_admgt',true), 'role','authenticated')::text, true);
+DO $$ DECLARE v_n int; v_hn int; BEGIN
+  IF coalesce(current_setting('probe.mat_ready',true),'')<>'1' THEN PERFORM set_config('probe.p577','N/A',false); RETURN; END IF;
+  SELECT count(*) INTO v_n  FROM public.material_comercial WHERE titulo LIKE 'QA MAT GT%';
+  SELECT count(*) INTO v_hn FROM public.material_comercial WHERE titulo = 'QA MAT HN activo';
+  PERFORM set_config('probe.p577', CASE
+    WHEN v_hn > 0 THEN 'ROJO (el admin de GT ve material de HN)'
+    WHEN v_n <> 2 THEN 'ROJO (ve '||v_n||' de los 2 de GT: no puede reactivar lo que no ve)'
+    ELSE 'OK (ve los 2 de GT, activo e inactivo, y ninguno de HN)' END, false);
+EXCEPTION WHEN OTHERS THEN PERFORM set_config('probe.p577','FALLO ('||SQLSTATE||' '||SQLERRM||')',false); END $$;
+
+-- P578 — activar_material_comercial: el ASESOR no puede desactivar nada
+DO $$ DECLARE v_id uuid; BEGIN
+  IF coalesce(current_setting('probe.mat_ready',true),'')<>'1' THEN PERFORM set_config('probe.p578','N/A',false); RETURN; END IF;
+  IF to_regprocedure('public.activar_material_comercial(uuid,boolean)') IS NULL THEN
+    PERFORM set_config('probe.p578','ROJO — RPC AUSENTE',false); RETURN; END IF;
+  SELECT id INTO v_id FROM public.material_comercial WHERE titulo='QA MAT GT activo';
+  PERFORM set_config('request.jwt.claims', json_build_object('sub', current_setting('probe.co_ase1',true), 'role','authenticated')::text, true);
+  BEGIN
+    PERFORM public.activar_material_comercial(v_id, false);
+    PERFORM set_config('probe.p578','ROJO (PERMITIO — un asesor desactivo material)',false);
+  EXCEPTION WHEN insufficient_privilege THEN PERFORM set_config('probe.p578','OK (42501 no_autorizado)',false);
+            WHEN others THEN PERFORM set_config('probe.p578','FALLO (esperaba 42501, vino '||SQLSTATE||')',false);
+  END;
+EXCEPTION WHEN OTHERS THEN PERFORM set_config('probe.p578','FALLO ('||SQLSTATE||' '||SQLERRM||')',false); END $$;
+SELECT set_config('role','none', true);
+
 -- ===== Veredictos como result set =====
 SELECT 'P1_anon_insert_citas'              AS probe, current_setting('probe.p1', true)  AS verdict, 'BLOQUEADO' AS esperado_post_fix
 UNION ALL SELECT 'P2_medico_cancela_ajena_rpc',         current_setting('probe.p2', true),  'BLOQUEADO'
@@ -13105,6 +13185,10 @@ UNION ALL SELECT 'P570_adj_DELETE_acotado_a_huerfanos',     current_setting('pro
 UNION ALL SELECT 'P572_sup_NO_lee_coordenadas',            current_setting('probe.p572', true),   'OK (42501)'
 UNION ALL SELECT 'P573_sup_SI_lee_distancia_veredicto',    current_setting('probe.p573', true),   'OK'
 UNION ALL SELECT 'P574_censo_columnas_geo_revocadas',      current_setting('probe.p574', true),   'OK (0 columnas)'
+UNION ALL SELECT 'P575_mat_bucket_pineado',                current_setting('probe.p575', true),   'OK (50 MB, 6 mime con PDF)'
+UNION ALL SELECT 'P576_mat_asesor_su_pais_y_activo',      current_setting('probe.p576', true),   'OK (1 de 3)'
+UNION ALL SELECT 'P577_mat_admin_ve_inactivo_de_su_pais', current_setting('probe.p577', true),   'OK (2 de GT)'
+UNION ALL SELECT 'P578_mat_asesor_no_desactiva',          current_setting('probe.p578', true),   'OK (42501)'
 UNION ALL SELECT 'P516_SENAL_estructura_harness',  current_setting('probe.p516', true),          'OK-SENAL (no mide; el gate es b2_guard.py)'
 -- Las filas FX* son SALUD DE FIXTURE, no probes de seguridad: dicen si la precondicion que una
 -- migracion posterior empezo a exigir se pudo sembrar. Si una sale ROJO, los probes que dependen de
@@ -13279,7 +13363,8 @@ UNION ALL SELECT 'P000_CENTINELA_veredictos_no_nulos',
        'probe.p517', 'probe.p518', 'probe.p519', 'probe.p520', 'probe.p521', 'probe.p522', 'probe.p523', 'probe.p524', 'probe.p525', 'probe.p526', 'probe.p527', 'probe.p528', 'probe.p529', 'probe.p530', 'probe.p531', 'probe.p532', 'probe.p533', 'probe.p534', 'probe.co_fx',
        'probe.p535', 'probe.p536', 'probe.p537', 'probe.p538', 'probe.p539', 'probe.p540', 'probe.p541', 'probe.p542', 'probe.p543', 'probe.p544', 'probe.p545', 'probe.p546', 'probe.p547', 'probe.p548', 'probe.p549', 'probe.p550', 'probe.p551', 'probe.p552', 'probe.p553', 'probe.vj_fx', 'probe.vj_fx2',
        'probe.p554', 'probe.p555', 'probe.p556', 'probe.p557', 'probe.p558', 'probe.p559', 'probe.p560', 'probe.p561', 'probe.p562', 'probe.p563', 'probe.p564', 'probe.p565', 'probe.p566', 'probe.p567', 'probe.p568', 'probe.rv_fx',
-       'probe.p569', 'probe.p570', 'probe.p572', 'probe.p573', 'probe.p574'
+       'probe.p569', 'probe.p570', 'probe.p572', 'probe.p573', 'probe.p574',
+       'probe.p575', 'probe.p576', 'probe.p577', 'probe.p578'
              ]) AS n) s),
   'OK (todos los veredictos publicados)';
 
