@@ -11940,7 +11940,16 @@ BEGIN
     VALUES (v_pajeno, v_ase2, v_gt, CURRENT_DATE) RETURNING id INTO v_id;
   PERFORM set_config('probe.vj_v_ase2', v_id::text, false);
   PERFORM set_config('probe.vj_visitas','1', false);
-  PERFORM set_config('probe.vj_fx2','OK (10 visitas sembradas, una por prospecto)', false);
+  -- LA VENTANA TEMPORAL DE PA024, PROBADA DE VERDAD. El harness corre en UNA transaccion, asi que
+  -- now() esta congelado y la jornada nace en ese mismo instante: la ventana valida
+  -- [inicio_at, now()] es un unico punto y no se puede ejercitar. Se retrasa la apertura 3 horas
+  -- (con clamp al dia para no cruzar la medianoche) y la ventana pasa a existir.
+  UPDATE public.jornadas_comerciales
+     SET inicio_at = greatest(now() - interval '3 hours', date_trunc('day', now()))
+   WHERE id = v_j;
+  PERFORM set_config('probe.vj_jornada_inicio',
+    (SELECT inicio_at::text FROM public.jornadas_comerciales WHERE id = v_j), false);
+  PERFORM set_config('probe.vj_fx2','OK (10 visitas sembradas, una por prospecto; jornada retrasada 3 h para abrir la ventana de PA024)', false);
 EXCEPTION WHEN OTHERS THEN
   PERFORM set_config('probe.vj_visitas','0', false);
   PERFORM set_config('probe.vj_fx2','ROJO ('||SQLSTATE||' '||SQLERRM||')', false);
@@ -12016,11 +12025,11 @@ DO $$ BEGIN
   -- precision malisima
   BEGIN PERFORM public.checkin_visita_comercial(NULLIF(current_setting('probe.vj_v_prec',true),'')::uuid, 14.6349, -90.5069, 900, NULL);
   EXCEPTION WHEN others THEN PERFORM set_config('probe.vj_e_prec', SQLSTATE||' '||SQLERRM, false); END;
-  -- DIFERIDO con hora de cliente VALIDA. Se usa now() exacto y no "now() menos dos minutos"
-  -- porque el harness corre en UNA transaccion: now() esta congelado y la jornada se abrio en ese
-  -- mismo instante, asi que cualquier resta cae ANTES de la apertura y dispara PA024 con razon.
-  -- El artefacto es del harness, no de la RPC — por eso se ajusta la probe y no la funcion.
-  BEGIN PERFORM public.checkin_visita_comercial(NULLIF(current_setting('probe.vj_v_dif',true),'')::uuid, 14.6349, -90.5069, 15, now());
+  -- DIFERIDO con hora de cliente VALIDA y GENUINAMENTE PASADA. El fixture retraso la apertura de
+  -- la jornada 3 h, asi que este instante cae DENTRO de la ventana [inicio_at, now()] en vez de
+  -- coincidir con sus dos extremos: la validacion temporal de PA024 se ejercita de verdad.
+  BEGIN PERFORM public.checkin_visita_comercial(NULLIF(current_setting('probe.vj_v_dif',true),'')::uuid, 14.6349, -90.5069, 15,
+          greatest(now() - interval '1 hour', date_trunc('day', now())));
   EXCEPTION WHEN others THEN PERFORM set_config('probe.vj_e_dif', SQLSTATE||' '||SQLERRM, false); END;
   -- CONTROL POSITIVO: a ~20 m con buena precision. Sin esto, un verificado que nunca puede ser
   -- true pasaria todas las probes negativas y no serviria para nada.
@@ -12042,8 +12051,14 @@ DO $$ BEGIN
         PERFORM set_config('probe.p549','ROJO (PERMITIO un cliente_at FUTURO)',false);
   EXCEPTION WHEN sqlstate 'PA024' THEN PERFORM set_config('probe.p549','OK (PA024 futuro)',false);
             WHEN others THEN PERFORM set_config('probe.p549','FALLO (esperaba PA024, vino '||SQLSTATE||': '||SQLERRM||')',false); END;
-  BEGIN PERFORM public.checkin_visita_comercial(NULLIF(current_setting('probe.vj_v_cli3',true),'')::uuid, 14.6349, -90.5069, 15, now() - interval '20 hours');
+  BEGIN PERFORM public.checkin_visita_comercial(NULLIF(current_setting('probe.vj_v_cli3',true),'')::uuid, 14.6349, -90.5069, 15,
+          NULLIF(current_setting('probe.vj_jornada_inicio',true),'')::timestamptz - interval '1 second');
         PERFORM set_config('probe.p550','ROJO (PERMITIO un cliente_at ANTERIOR a la apertura de la jornada)',false);
+        -- COBERTURA de P550: mide la regla de VENTANA (cliente_at < inicio_at), porque el instante
+        -- que manda es un segundo anterior a la apertura REAL de la jornada. RESIDUAL DECLARADO: si
+        -- el harness corriera entre las 00:00 y las 03:00 del servidor, el clamp al dia haria que
+        -- ese instante caiga en el dia anterior y el rechazo vendria de la regla de FECHA en vez de
+        -- la de ventana. Mismo PA024, distinta razon.
   EXCEPTION WHEN sqlstate 'PA024' THEN PERFORM set_config('probe.p550','OK (PA024 anterior a la jornada)',false);
             WHEN others THEN PERFORM set_config('probe.p550','FALLO (esperaba PA024, vino '||SQLSTATE||': '||SQLERRM||')',false); END;
 END $$;
