@@ -5,7 +5,7 @@ import { ArrowLeft } from 'lucide-react'
 import { useAuth } from '@/hooks/useAuth'
 import {
   obtenerProspecto, listarContactos, listarEstados, listarTipos,
-  cambiarEstado, guardarContacto, actualizarProspecto,
+  cambiarEstado, guardarContacto, actualizarProspecto, planificarVisita,
   type Prospecto, type Contacto, type ItemCatalogo,
 } from '../lib/api'
 import { reportarError, type ErrorInline } from '../lib/reportarError'
@@ -45,6 +45,7 @@ export default function ProspectoFichaPage() {
   const [cPuesto, setCPuesto] = useState('')
   const [cEmail, setCEmail] = useState('')
   const [errContacto, setErrContacto] = useState<ErrorInline>(null)
+  const [planificando, setPlanificando] = useState(false)
 
   const cargar = async () => {
     setCargando(true)
@@ -113,6 +114,14 @@ export default function ProspectoFichaPage() {
     toast.success('Contacto agregado')
     setCNombre(''); setCPuesto(''); setCEmail('')
     void cargar()
+  }
+
+  const onPlanificar = async () => {
+    setPlanificando(true)
+    const { error } = await planificarVisita(id, new Date().toISOString().slice(0, 10))
+    setPlanificando(false)
+    if (error) { reportarError(error, { onRecargar: () => void cargar() }); return }
+    toast.success('Visita planificada para hoy')
   }
 
   if (cargando) return <p className="text-sm text-gray-500">Cargando…</p>
@@ -187,6 +196,19 @@ export default function ProspectoFichaPage() {
             </button>
           )}
         </div>
+      </section>
+
+      {/* ---- visita ---- */}
+      <section className="rounded-lg border bg-white p-4">
+        <h2 className="font-semibold text-gray-900">Visita</h2>
+        <p className="mt-1 text-xs text-gray-600">
+          Se planifica para hoy y aparece en tu jornada. El check-in se hace desde ahí.
+        </p>
+        <button type="button" id="btn-planificar" onClick={onPlanificar} disabled={planificando}
+          className="mt-2 rounded-md border border-[#1E5C8E] px-3 py-1.5 text-sm text-[#1E5C8E] hover:bg-blue-50 disabled:opacity-50">
+          Planificar visita para hoy
+        </button>
+        <Link to="/comercial/hoy" className="ml-3 text-sm text-[#1E5C8E]">Ir a mi jornada →</Link>
       </section>
 
       {/* ---- estado ---- */}

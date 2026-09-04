@@ -30,7 +30,7 @@ export interface ErrorRpcMapeado {
   /** Para `inline`: qué campo del formulario señalar. */
   campo?: string
   /** El cliente quedó desincronizado con la base y conviene recargar esa colección. */
-  recargar?: 'catalogo' | 'contactos'
+  recargar?: 'catalogo' | 'contactos' | 'jornada' | 'visita'
   /** El control debe volver al valor anterior (el cambio no se aplicó). */
   revertir?: boolean
   /** Mandarlo a Sentry: es un bug nuestro o algo que no previmos, no un error del usuario. */
@@ -78,9 +78,15 @@ const MAPA: Record<string, Entrada> = {
 
   // --- Constraints de la base ----------------------------------------------------------------
   // El texto de Postgres nombra el índice; no sirve para mostrar.
+  // El texto de Postgres nombra el ÍNDICE, que no le dice nada al usuario. Pero tampoco se puede
+  // nombrar la constraint desde acá: el mismo 23505 sale del nombre duplicado de un prospecto, del
+  // código de asesor repetido y del segundo informe de una visita. La primera versión de este
+  // mensaje enumeraba las dos primeras y se filtró al contexto del informe, donde era falso.
+  // El texto describe la SITUACIÓN —alguien ya guardó eso— y pide recargar, que es lo accionable
+  // en los tres casos. Cada pantalla puede agregar contexto propio si lo necesita.
   '23505': {
-    texto: 'Ya existe un registro con ese valor (el nombre del prospecto en el país, o el código de asesor).',
-    destino: 'inline', campo: 'nombre', reportar: false,
+    texto: 'Ya existe un registro con esos datos. Puede que se haya guardado desde otra pantalla: actualizá y volvé a mirar.',
+    destino: 'inline', campo: 'nombre', recargar: 'visita', reportar: false,
   },
   '23514': {
     texto: 'Hay un campo obligatorio vacío o con un valor no permitido.',
@@ -88,6 +94,27 @@ const MAPA: Record<string, Entrada> = {
   },
   // Escribir una columna GENERATED. Si aparece es bug nuestro, no del usuario.
   '428C9': { texto: GENERICO, destino: 'toast', reportar: true },
+
+  // --- Frente visitas (migs 273/274) --------------------------------------------------------
+  // Los guards de país y de jerarquía traen su propio texto explicando qué no coincide.
+  PA015: { destino: 'toast', reportar: false },
+  PA016: { destino: 'toast', reportar: false },
+  PA017: { destino: 'toast', reportar: false },
+  // Sin check-in no hay informe: la UI tiene que volver a mirar la visita, porque si el usuario
+  // llegó a este formulario es que la creía con check-in hecho.
+  PA018: { destino: 'toast', recargar: 'visita', reportar: false },
+  PA019: { destino: 'toast', recargar: 'jornada', reportar: false },
+  // Las tres de jornada dejan al cliente desincronizado: cree que hay una y no, o al revés.
+  PA020: { destino: 'toast', recargar: 'jornada', reportar: false },
+  PA021: { destino: 'toast', recargar: 'jornada', reportar: false },
+  PA022: { destino: 'toast', recargar: 'jornada', reportar: false },
+  // El path de storage lo arma el CLIENTE. Si la base lo rechaza, el bug es nuestro, no del
+  // usuario — por eso es el único PA de este lote que se reporta.
+  PA023: { texto: GENERICO, destino: 'toast', reportar: true },
+  // La hora del dispositivo no cuadra. Es del usuario (reloj mal puesto), no un bug.
+  PA024: { destino: 'toast', reportar: false },
+  // Ya había check-in: la ficha que el usuario está viendo está vieja.
+  PA025: { destino: 'toast', recargar: 'visita', reportar: false },
 }
 
 const ES_PA = /^PA\d{3}$/

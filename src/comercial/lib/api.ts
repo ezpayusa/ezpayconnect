@@ -135,3 +135,147 @@ export async function guardarContacto(p: {
     p_notas: p.notas ?? null, p_activo: p.activo ?? true,
   })
 }
+
+// ============================================================================================
+// FRENTE VISITAS (migs 273/274/275)
+// ============================================================================================
+// Igual que arriba: ningún filtro de ownership en el cliente. Las policies de la 273/274 ya
+// resuelven qué ve cada uno — el asesor lo suyo, el supervisor su cartera, el admin su país.
+
+export type Jornada = {
+  id: string
+  fecha: string
+  inicio_at: string
+  inicio_lat: number | null
+  inicio_lng: number | null
+  inicio_precision_m: number | null
+  fin_at: string | null
+  notas_cierre: string | null
+}
+
+export type VisitaComercial = {
+  id: string
+  prospecto_id: string
+  asesor_id: string
+  pais_id: string
+  jornada_id: string | null
+  fecha_planificada: string
+  estado: string
+  checkin_at: string | null
+  checkin_cliente_at: string | null
+  checkin_origen: string
+  checkin_lat: number | null
+  checkin_lng: number | null
+  checkin_precision_m: number | null
+  checkin_distancia_m: number | null
+  checkin_verificado: boolean
+  checkin_motivo: string | null
+  checkout_at: string | null
+  prospecto?: { nombre: string; lat: number | null; lng: number | null } | null
+}
+
+export type ResultadoCheckin = {
+  verificado: boolean
+  distancia_m: number | null
+  origen: string
+  motivo: string | null
+}
+
+const COLS_VISITA =
+  'id,prospecto_id,asesor_id,pais_id,jornada_id,fecha_planificada,estado,checkin_at,' +
+  'checkin_cliente_at,checkin_origen,checkin_lat,checkin_lng,checkin_precision_m,' +
+  'checkin_distancia_m,checkin_verificado,checkin_motivo,checkout_at,' +
+  'prospecto:prospectos!visitas_comerciales_prospecto_id_fkey(nombre,lat,lng)'
+
+/** La jornada de hoy, si existe. La RLS ya la acota al llamante. */
+export async function jornadaDeHoy() {
+  const hoy = new Date().toISOString().slice(0, 10)
+  return supabase.from('jornadas_comerciales').select('*').eq('fecha', hoy).maybeSingle()
+}
+
+/** Visitas de una fecha. Sin .eq de asesor: lo pone la policy. */
+export async function visitasDelDia(fecha: string) {
+  return supabase.from('visitas_comerciales').select(COLS_VISITA)
+    .eq('fecha_planificada', fecha).order('created_at', { ascending: true })
+}
+
+export async function obtenerVisita(id: string) {
+  return supabase.from('visitas_comerciales').select(COLS_VISITA).eq('id', id).maybeSingle()
+}
+
+export async function reporteDeVisita(visitaId: string) {
+  return supabase.from('reportes_visita').select('*').eq('visita_id', visitaId).maybeSingle()
+}
+
+export async function adjuntosDeVisita(visitaId: string) {
+  return supabase.from('visita_adjuntos').select('*').eq('visita_id', visitaId)
+    .order('created_at', { ascending: true })
+}
+
+export async function listarResultados() {
+  return supabase.from('catalogo_resultado_visita').select('codigo,etiqueta,orden')
+    .eq('activo', true).order('orden')
+}
+
+/** Umbrales EFECTIVOS: los mismos que aplica la RPC (mig 275), no una copia en el cliente. */
+export async function configVisitasEfectiva() {
+  return supabase.rpc('config_visitas_efectiva')
+}
+
+export async function abrirJornada(g: { lat: number | null; lng: number | null; precision_m: number | null }) {
+  return supabase.rpc('abrir_jornada', { p_lat: g.lat, p_lng: g.lng, p_precision_m: g.precision_m })
+}
+
+export async function cerrarJornada(
+  g: { lat: number | null; lng: number | null; precision_m: number | null }, notas: string | null) {
+  return supabase.rpc('cerrar_jornada', {
+    p_lat: g.lat, p_lng: g.lng, p_precision_m: g.precision_m, p_notas: notas,
+  })
+}
+
+export async function planificarVisita(prospectoId: string, fecha: string) {
+  return supabase.rpc('planificar_visita', { p_prospecto_id: prospectoId, p_fecha: fecha })
+}
+
+/**
+ * Check-in. `p_cliente_at` va SIEMPRE en null: la cola diferida es su propio frente y mezclarla
+ * acá escondería bugs de las dos. Sin red, esto falla — con un mensaje que lo dice.
+ */
+export async function checkinVisita(
+  visitaId: string, g: { lat: number | null; lng: number | null; precision_m: number | null }) {
+  return supabase.rpc('checkin_visita_comercial', {
+    p_visita_id: visitaId, p_lat: g.lat, p_lng: g.lng,
+    p_precision_m: g.precision_m, p_cliente_at: null,
+  })
+}
+
+export async function checkoutVisita(visitaId: string, g: { lat: number | null; lng: number | null }) {
+  return supabase.rpc('checkout_visita_comercial', {
+    p_visita_id: visitaId, p_lat: g.lat, p_lng: g.lng,
+  })
+}
+
+export async function guardarReporte(p: {
+  visitaId: string; resultado: string; resumen: string
+  compromisos?: string | null; proximaAccionFecha?: string | null
+}) {
+  return supabase.rpc('guardar_reporte_visita', {
+    p_visita_id: p.visitaId, p_resultado: p.resultado, p_resumen: p.resumen,
+    p_compromisos: p.compromisos ?? null, p_proxima_accion_fecha: p.proximaAccionFecha ?? null,
+  })
+}
+
+/**
+ * Sube el archivo al bucket y RECIÉN DESPUÉS registra la fila. El path lo arma esta función con la
+ * convención de la 274 ({pais_id}/{visita_id}/{archivo}); si se desviara, `registrar_adjunto_visita`
+ * lo rechaza con PA023 — que en el mapa de errores se reporta como bug NUESTRO, porque lo es.
+ */
+export async function subirAdjunto(v: { id: string; pais_id: string }, archivo: File) {
+  const ext = (archivo.name.split('.').pop() || 'bin').toLowerCase()
+  const path = `${v.pais_id}/${v.id}/${crypto.randomUUID()}.${ext}`
+  const up = await supabase.storage.from('visitas-comerciales').upload(path, archivo)
+  if (up.error) return { data: null, error: up.error }
+  return supabase.rpc('registrar_adjunto_visita', {
+    p_visita_id: v.id, p_storage_path: path, p_mime: archivo.type || null, p_bytes: archivo.size,
+  })
+}
