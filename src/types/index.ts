@@ -1,6 +1,10 @@
 export interface Perfil {
   id: string
-  rol: 'super_admin' | 'admin' | 'admin_pais' | 'admin_clinica' | 'gerente' | 'medico' | 'asistente_medico' | 'enfermeria' | 'secretaria' | 'soporte' | 'vendedor' | 'cliente' | 'paciente' | 'ezpay_admin'
+  // Los roles comerciales entran con la mig 263. OJO: esta unión está DRIFTEADA respecto de
+  // roles_catalogo en las dos direcciones — 'admin', 'paciente' y 'ezpay_admin' no existen en la
+  // tabla, y faltaban los dos comerciales. Se agregan los que faltan; sacar los que sobran es
+  // otro frente (hay código que los compara).
+  rol: 'super_admin' | 'admin' | 'admin_pais' | 'admin_clinica' | 'gerente' | 'medico' | 'asistente_medico' | 'enfermeria' | 'secretaria' | 'soporte' | 'vendedor' | 'cliente' | 'paciente' | 'ezpay_admin' | 'asesor_comercial' | 'supervisor_comercial'
   nombre_completo: string
   email: string
   telefono: string | null

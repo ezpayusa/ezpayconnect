@@ -21,6 +21,8 @@ import ColaPage from '@/repartidor/pages/ColaPage'
 import EntregaDetallePage from '@/repartidor/pages/EntregaDetallePage'
 import PerfilPage from '@/repartidor/pages/PerfilPage'
 import VisitadorPrivateRoute from '@/visitador/components/VisitadorPrivateRoute'
+import ComercialPrivateRoute from '@/comercial/components/ComercialPrivateRoute'
+import ComercialLayout from '@/comercial/layout/ComercialLayout'
 import VisitadorLayout from '@/visitador/layout/VisitadorLayout'
 import { MedicoLayout } from '@/medico/layout/MedicoLayout'
 import MedicoPrivateRoute from '@/medico/components/MedicoPrivateRoute'
@@ -106,6 +108,8 @@ const ProductosListPage = lazy(() => import('@/proveedor/pages/productos/Product
 const ProductoFormPage = lazy(() => import('@/proveedor/pages/productos/ProductoFormPage'))
 const EquipoRolesPage = lazy(() => import('@/proveedor/pages/EquipoRolesPage'))
 const VisitadorPlanesPage = lazy(() => import('@/proveedor/pages/visitador/VisitadorPlanesPage'))
+const ComercialProspectosPage = lazy(() => import('@/comercial/pages/ProspectosPage'))
+const SinPanelPage = lazy(() => import('@/pages/SinPanelPage'))
 const VisitadorAgendarPage = lazy(() => import('@/proveedor/pages/visitador/VisitadorAgendarPage'))
 const VisitadorMisVisitasPage = lazy(() => import('@/proveedor/pages/visitador/VisitadorMisVisitasPage'))
 const VisitadorRutaPage = lazy(() => import('@/proveedor/pages/visitador/VisitadorRutaPage'))
@@ -194,9 +198,15 @@ function Spinner() {
 }
 
 function PrivateLayout({ children }: { children: React.ReactNode }) {
-  const { user, loading } = useAuth()
+  const { user, perfil, loading } = useAuth()
   if (loading) return <Spinner />
   if (!user) return <Navigate to="/login" replace />
+  // PrivateLayout no chequea rol: cualquier autenticado entra al panel clínico. Arreglar eso en
+  // general es otro frente (lo usan varios roles). Acá sólo se saca a los DOS roles de este módulo,
+  // cuyo destino ya conocemos — alcance del módulo, sin radio de acción sobre los demás.
+  if (perfil?.rol === 'asesor_comercial' || perfil?.rol === 'supervisor_comercial') {
+    return <Navigate to="/comercial/prospectos" replace />
+  }
   return <div className="flex min-h-screen bg-gray-50"><Sidebar /><main className="flex-1 ml-0 overflow-auto pt-14 md:pt-0">{children}</main></div>
 }
 
@@ -209,15 +219,20 @@ function RootRedirect() {
 
 function AdminRoute({ children }: { children: React.ReactNode }) {
   const { isAdmin, isSuperAdmin, isAdminPais, adminUser, loading } = useAdminAuth()
+  const { perfil } = useAuth()
   const navigate = useNavigate()
   const location = useLocation()
 
+  // Rechazar NO es lo mismo que abandonar en una pantalla ajena: antes esto mandaba a /dashboard
+  // fijo, así que un comercial que forzaba /admin-ezpay terminaba en el panel médico vacío. Ahora
+  // vuelve a SU casa según rutaHomePorRol (y a /sin-panel si no tiene ninguna).
   useEffect(() => {
     if (!loading && !isAdmin) {
-      console.log('[AdminRoute] No es admin, redirigiendo a /dashboard')
-      navigate('/dashboard')
+      const destino = rutaHomePorRol(perfil)
+      console.log('[AdminRoute] No es admin, redirigiendo a', destino)
+      navigate(destino, { replace: true })
     }
-  }, [loading, isAdmin, navigate])
+  }, [loading, isAdmin, perfil, navigate])
 
   if (loading) {
     console.log('[AdminRoute] Cargando...')
@@ -235,7 +250,7 @@ function AdminRoute({ children }: { children: React.ReactNode }) {
   // dashboard. super_admin queda igual que hoy. Si pais_id fuese null (imposible: el CHECK de mig 216
   // lo impide) la cuenta está rota → deny total a /dashboard (fail-closed), no al panel global.
   if (isAdminPais && !isSuperAdmin) {
-    if (!adminUser?.pais_id) return <Navigate to="/dashboard" replace />
+    if (!adminUser?.pais_id) return <Navigate to="/sin-panel" replace />
     const propio = `/admin-ezpay/pais/${adminUser.pais_id}`
     const enPropio = location.pathname === propio || location.pathname.startsWith(propio + '/')
     if (!enPropio) return <Navigate to={propio} replace />
@@ -260,6 +275,16 @@ function App() {
         <Route path="/confirmar-receta" element={<ConfirmarRecetaPage />} />
         <Route path="/" element={<RootRedirect />} />
         <Route path="/dashboard" element={<PrivateLayout><DashboardPage /></PrivateLayout>} />
+        {/* Destino de los roles sin superficie propia. NO usa PrivateLayout: ese shell monta el
+            Sidebar clínico, que es justamente de lo que esta pantalla saca a la gente. */}
+        <Route path="/sin-panel" element={<SinPanelPage />} />
+
+        {/* === MODULO COMERCIAL (asesor / supervisor) === */}
+        <Route path="/comercial" element={<ComercialPrivateRoute><ComercialLayout /></ComercialPrivateRoute>}>
+          <Route index element={<Navigate to="/comercial/prospectos" replace />} />
+          <Route path="prospectos" element={<ComercialProspectosPage />} />
+        </Route>
+
         <Route path="/pacientes" element={<PrivateLayout><PacientesPage /></PrivateLayout>} />
         <Route path="/pacientes/:id/detalle" element={<PrivateLayout><PacienteDetallePage /></PrivateLayout>} />
         <Route path="/pacientes/:id" element={<PrivateLayout><PacientesPage /></PrivateLayout>} />
