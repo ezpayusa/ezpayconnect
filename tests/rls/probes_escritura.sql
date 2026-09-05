@@ -13046,6 +13046,104 @@ DO $$ DECLARE v_malas text; BEGIN
     ELSE 'ROJO (privilegios mal en: '||v_malas||')' END, false);
 EXCEPTION WHEN OTHERS THEN PERFORM set_config('probe.p598','FALLO ('||SQLSTATE||' '||SQLERRM||')',false); END $$;
 
+-- ############################################################################################
+-- P599-P601 — privilegio POR COLUMNA sobre visitas_comerciales (mig 281)
+-- ############################################################################################
+-- CONTEXTO. Desde la 277 `authenticated` no tiene SELECT de TABLA sobre visitas_comerciales: tiene
+-- SELECT columna por columna, para dejar afuera las 4 de coordenada. La 280 agrego 3 columnas y no
+-- las incluyo en ningun GRANT, y como el front pide una lista EXPLICITA de columnas, se rompio TODA
+-- la lectura de visitas con 42501/403. Un ALTER TABLE ADD COLUMN sobre una tabla con grants por
+-- columna es un cambio de privilegios disfrazado de cambio de esquema, y nada lo estaba mirando.
+--
+-- P599 es el CASO: reproduce el SELECT que rompio en el navegador.
+-- P600 es el CENSO: la forma de P574 pero invertida. P574 pregunta "ninguna coordenada es legible";
+--   P600 pregunta "toda columna que NO es coordenada SI lo es". Es censo y no caso porque manana
+--   alguien agrega otra columna y el caso puntual no la ve — que es exactamente como paso esta vez.
+-- P601 es el CONTROL POSITIVO de P600: sin el, alguien "arregla" el 403 con un GRANT de tabla
+--   entera, P600 queda verde y las coordenadas vuelven a ser legibles.
+--
+-- Los tres usan has_column_privilege() y no information_schema.column_privileges, que es lo que usa
+-- P574: information_schema solo lista los grants por columna EXPLICITOS, asi que un GRANT de tabla
+-- entera lo dejaria pasar. has_column_privilege() responde la pregunta real —"puede leer esto?"— y
+-- cubre las dos formas. Y la enumeracion sale de pg_attribute y no de information_schema.columns,
+-- que esta FILTRADA POR PRIVILEGIO: leida como authenticated, una columna sin grant no aparece, y el
+-- probe reportaria "la columna no existe" en vez de "no la puede leer".
+
+-- P599 — como el ASESOR, SELECT explicito de las 3 columnas que agrego la 280
+SELECT set_config('request.jwt.claims', json_build_object('sub', current_setting('probe.co_ase1',true), 'role','authenticated')::text, true);
+SELECT set_config('role','authenticated', true);
+DO $$ DECLARE v_n int; v_faltan text; v_msg text; BEGIN
+  IF to_regclass('public.visitas_comerciales') IS NULL THEN
+    PERFORM set_config('probe.p599','ROJO — TABLA AUSENTE (esto NO es un rechazo)',false); RETURN; END IF;
+  -- pg_attribute y no information_schema.columns: la segunda esta filtrada por privilegio y sin el
+  -- GRANT las columnas no aparecerian, disfrazando el 403 de "columna inexistente".
+  SELECT string_agg(c, ', ') INTO v_faltan
+    FROM unnest(ARRAY['hora_planificada','planificada_por','cancelacion_motivo']) c
+   WHERE NOT EXISTS (SELECT 1 FROM pg_catalog.pg_attribute a
+                      WHERE a.attrelid='public.visitas_comerciales'::regclass
+                        AND a.attname=c AND a.attnum>0 AND NOT a.attisdropped);
+  IF v_faltan IS NOT NULL THEN
+    PERFORM set_config('probe.p599','ROJO — MIG 280 AUSENTE (faltan las columnas: '||v_faltan||'; esto NO es un rechazo)',false); RETURN; END IF;
+  BEGIN
+    SELECT count(*) INTO v_n
+      FROM (SELECT hora_planificada, planificada_por, cancelacion_motivo
+              FROM public.visitas_comerciales) q;
+    -- el privilegio se verifica al planear, no al devolver filas: 0 filas visibles bajo RLS sigue
+    -- siendo prueba de que el GRANT esta. Se dice el conteo igual, para no leer un 0 como un verde.
+    PERFORM set_config('probe.p599','OK (el asesor LEE las 3 columnas de la 280; '||v_n||' filas visibles bajo RLS)',false);
+  EXCEPTION WHEN insufficient_privilege THEN
+    GET STACKED DIAGNOSTICS v_msg = MESSAGE_TEXT;
+    PERFORM set_config('probe.p599','ROJO — SIN GRANT (42501: '||v_msg||'). El front pide estas columnas: TODA lectura de visitas falla',false);
+  WHEN others THEN
+    PERFORM set_config('probe.p599','FALLO (esperaba leer, vino '||SQLSTATE||': '||SQLERRM||')',false);
+  END;
+EXCEPTION WHEN OTHERS THEN PERFORM set_config('probe.p599','FALLO ('||SQLSTATE||' '||SQLERRM||')',false); END $$;
+SELECT set_config('role','none', true);
+
+-- P600 — CENSO INVERTIDO: toda columna que NO es de coordenada tiene que ser legible por
+-- authenticated. Esta es la que hace que el proximo ALTER TABLE ADD COLUMN se ponga rojo solo.
+DO $$ DECLARE v_faltan text; v_total int; BEGIN
+  IF to_regclass('public.visitas_comerciales') IS NULL THEN
+    PERFORM set_config('probe.p600','ROJO — TABLAS AUSENTES (esto NO es un rechazo)',false); RETURN; END IF;
+  SELECT count(*), string_agg(t||'.'||c, ', ') FILTER (WHERE NOT lee) INTO v_total, v_faltan FROM (
+    SELECT cl.relname::text AS t, a.attname::text AS c,
+           has_column_privilege('authenticated', cl.oid, a.attnum, 'SELECT') AS lee
+      FROM pg_catalog.pg_attribute a
+      JOIN pg_catalog.pg_class cl ON cl.oid = a.attrelid
+      JOIN pg_catalog.pg_namespace n ON n.oid = cl.relnamespace
+     WHERE n.nspname='public'
+       AND cl.relname IN ('visitas_comerciales','jornadas_comerciales')
+       AND a.attnum > 0 AND NOT a.attisdropped
+       AND a.attname NOT LIKE '%\_lat' AND a.attname NOT LIKE '%\_lng'
+     ORDER BY cl.relname, a.attnum) s;
+  PERFORM set_config('probe.p600', CASE
+    WHEN v_total = 0 THEN 'ROJO — CENSO VACIO (no censo ninguna columna; no esta midiendo nada)'
+    WHEN v_faltan IS NULL THEN 'OK ('||v_total||' columnas no-coordenada de visitas y jornadas, todas legibles por authenticated)'
+    ELSE 'ROJO — SIN GRANT: '||v_faltan||'  (de '||v_total||' censadas; un ADD COLUMN sobre una tabla con grants por columna es un cambio de privilegios)' END, false);
+EXCEPTION WHEN OTHERS THEN PERFORM set_config('probe.p600','FALLO ('||SQLSTATE||' '||SQLERRM||')',false); END $$;
+
+-- P601 — CONTROL POSITIVO de P600: las columnas de coordenada siguen SIN poder leerse. Cuenta
+-- cuantas censo, porque un censo de cero columnas pasa la negativa sin medir nada (leccion de P553).
+DO $$ DECLARE v_coord text; v_total int; BEGIN
+  IF to_regclass('public.visitas_comerciales') IS NULL THEN
+    PERFORM set_config('probe.p601','ROJO — TABLAS AUSENTES (esto NO es un rechazo)',false); RETURN; END IF;
+  SELECT count(*), string_agg(t||'.'||c, ', ') FILTER (WHERE lee) INTO v_total, v_coord FROM (
+    SELECT cl.relname::text AS t, a.attname::text AS c,
+           has_column_privilege('authenticated', cl.oid, a.attnum, 'SELECT') AS lee
+      FROM pg_catalog.pg_attribute a
+      JOIN pg_catalog.pg_class cl ON cl.oid = a.attrelid
+      JOIN pg_catalog.pg_namespace n ON n.oid = cl.relnamespace
+     WHERE n.nspname='public'
+       AND cl.relname IN ('visitas_comerciales','jornadas_comerciales')
+       AND a.attnum > 0 AND NOT a.attisdropped
+       AND (a.attname LIKE '%\_lat' OR a.attname LIKE '%\_lng')
+     ORDER BY cl.relname, a.attnum) s;
+  PERFORM set_config('probe.p601', CASE
+    WHEN v_total = 0 THEN 'ROJO — NO HAY COLUMNAS DE COORDENADA que controlar (el control no mide nada)'
+    WHEN v_coord IS NOT NULL THEN 'ROJO (authenticated LEE coordenadas: '||v_coord||'; de '||v_total||' censadas)'
+    ELSE 'OK (las '||v_total||' columnas de coordenada siguen ilegibles para authenticated)' END, false);
+EXCEPTION WHEN OTHERS THEN PERFORM set_config('probe.p601','FALLO ('||SQLSTATE||' '||SQLERRM||')',false); END $$;
+
 -- ===== Veredictos como result set =====
 SELECT 'P1_anon_insert_citas'              AS probe, current_setting('probe.p1', true)  AS verdict, 'BLOQUEADO' AS esperado_post_fix
 UNION ALL SELECT 'P2_medico_cancela_ajena_rpc',         current_setting('probe.p2', true),  'BLOQUEADO'
@@ -13696,6 +13794,9 @@ UNION ALL SELECT 'P595_ag_cancelar_con_motivo',        current_setting('probe.p5
 UNION ALL SELECT 'P596_ag_cancelar_ya_cancelada',      current_setting('probe.p596', true),   'OK (PA027)'
 UNION ALL SELECT 'P597_ag_CONTROL_POSITIVO_adopcion',  current_setting('probe.p597', true),   'OK (jornada_id = la nueva)'
 UNION ALL SELECT 'P598_ag_anon_sin_execute',           current_setting('probe.p598', true),   'OK (anon=false x4)'
+UNION ALL SELECT 'P599_grant_3_columnas_280',         current_setting('probe.p599', true),   'OK (el asesor lee las 3)'
+UNION ALL SELECT 'P600_CENSO_columnas_sin_grant',     current_setting('probe.p600', true),   'OK (ninguna sin grant)'
+UNION ALL SELECT 'P601_CONTROL_coordenadas_ilegibles',current_setting('probe.p601', true),   'OK (8 coordenadas ilegibles)'
 UNION ALL SELECT 'P516_SENAL_estructura_harness',  current_setting('probe.p516', true),          'OK-SENAL (no mide; el gate es b2_guard.py)'
 -- Las filas FX* son SALUD DE FIXTURE, no probes de seguridad: dicen si la precondicion que una
 -- migracion posterior empezo a exigir se pudo sembrar. Si una sale ROJO, los probes que dependen de
@@ -13876,7 +13977,8 @@ UNION ALL SELECT 'P000_CENTINELA_veredictos_no_nulos',
        'probe.p583', 'probe.p584', 'probe.p585', 'probe.bm_fx',
        'probe.p586', 'probe.p587', 'probe.p588', 'probe.p589', 'probe.p590', 'probe.p591',
        'probe.p592', 'probe.p593', 'probe.p594', 'probe.p595', 'probe.p596', 'probe.p597',
-       'probe.p598', 'probe.ag_fx'
+       'probe.p598', 'probe.ag_fx',
+       'probe.p599', 'probe.p600', 'probe.p601'
              ]) AS n) s),
   'OK (todos los veredictos publicados)';
 
