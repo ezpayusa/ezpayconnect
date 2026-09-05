@@ -11863,7 +11863,8 @@ SELECT set_config('request.jwt.claims', json_build_object('sub', current_setting
 SELECT set_config('role','authenticated', true);
 DO $$ BEGIN
   IF coalesce(current_setting('probe.vj_ready',true),'')<>'1' THEN PERFORM set_config('probe.p538','N/A',false); RETURN; END IF;
-  IF to_regprocedure('public.planificar_visita(uuid,date)') IS NULL THEN
+  IF to_regprocedure('public.planificar_visita(uuid,date)') IS NULL
+     AND to_regprocedure('public.planificar_visita(uuid,date,time without time zone)') IS NULL THEN
     PERFORM set_config('probe.p538','ROJO — RPC AUSENTE',false); RETURN; END IF;
   BEGIN
     PERFORM public.planificar_visita(NULLIF(current_setting('probe.vj_pajeno',true),'')::uuid, CURRENT_DATE);
@@ -11879,7 +11880,8 @@ SELECT set_config('request.jwt.claims', json_build_object('sub', current_setting
 SELECT set_config('role','authenticated', true);
 DO $$ DECLARE v_v uuid; BEGIN
   IF coalesce(current_setting('probe.vj_ready',true),'')<>'1' THEN PERFORM set_config('probe.p539','N/A',false); RETURN; END IF;
-  IF to_regprocedure('public.planificar_visita(uuid,date)') IS NULL THEN
+  IF to_regprocedure('public.planificar_visita(uuid,date)') IS NULL
+     AND to_regprocedure('public.planificar_visita(uuid,date,time without time zone)') IS NULL THEN
     PERFORM set_config('probe.p539','ROJO — RPC AUSENTE',false); PERFORM set_config('probe.p540','ROJO — RPC AUSENTE',false); RETURN; END IF;
   BEGIN
     SELECT public.planificar_visita(NULLIF(current_setting('probe.vj_pgeo',true),'')::uuid, CURRENT_DATE) INTO v_v;
@@ -11931,13 +11933,13 @@ BEGIN
       VALUES ('QA VJ '||r.clave, 'farmacia', v_gt, v_ase1, v_admgt, 'nuevo',
               CASE WHEN r.cual='geo' THEN v_lat END, CASE WHEN r.cual='geo' THEN v_lng END)
       RETURNING id INTO v_p;
-    INSERT INTO public.visitas_comerciales (prospecto_id, asesor_id, pais_id, jornada_id, fecha_planificada)
-      VALUES (v_p, v_ase1, v_gt, v_j, CURRENT_DATE) RETURNING id INTO v_id;
+    INSERT INTO public.visitas_comerciales (prospecto_id, asesor_id, pais_id, jornada_id, fecha_planificada, planificada_por)
+      VALUES (v_p, v_ase1, v_gt, v_j, CURRENT_DATE, v_ase1) RETURNING id INTO v_id;
     PERFORM set_config('probe.'||r.clave, v_id::text, false);
   END LOOP;
   -- visita de ase2, que NO tiene jornada abierta
-  INSERT INTO public.visitas_comerciales (prospecto_id, asesor_id, pais_id, fecha_planificada)
-    VALUES (v_pajeno, v_ase2, v_gt, CURRENT_DATE) RETURNING id INTO v_id;
+  INSERT INTO public.visitas_comerciales (prospecto_id, asesor_id, pais_id, fecha_planificada, planificada_por)
+    VALUES (v_pajeno, v_ase2, v_gt, CURRENT_DATE, v_ase2) RETURNING id INTO v_id;
   PERFORM set_config('probe.vj_v_ase2', v_id::text, false);
   PERFORM set_config('probe.vj_visitas','1', false);
   -- LA VENTANA TEMPORAL DE PA024, PROBADA DE VERDAD. El harness corre en UNA transaccion, asi que
@@ -12135,10 +12137,11 @@ DO $$ BEGIN
   IF coalesce(current_setting('probe.vj_ready',true),'')<>'1' OR to_regclass('public.visitas_comerciales') IS NULL THEN
     PERFORM set_config('probe.p552','N/A',false); RETURN; END IF;
   BEGIN
-    INSERT INTO public.visitas_comerciales (prospecto_id, asesor_id, pais_id, fecha_planificada)
+    INSERT INTO public.visitas_comerciales (prospecto_id, asesor_id, pais_id, fecha_planificada, planificada_por)
     VALUES (NULLIF(current_setting('probe.vj_pgeo',true),'')::uuid,
             NULLIF(current_setting('probe.co_ase1',true),'')::uuid,
-            NULLIF(current_setting('probe.co_hn',true),'')::uuid, CURRENT_DATE);
+            NULLIF(current_setting('probe.co_hn',true),'')::uuid, CURRENT_DATE,
+            NULLIF(current_setting('probe.co_ase1',true),'')::uuid);
     PERFORM set_config('probe.p552','ROJO (PERMITIO una visita en HN con prospecto y asesor de GT)',false);
   EXCEPTION WHEN sqlstate 'PA015' THEN PERFORM set_config('probe.p552','OK (PA015)',false);
             WHEN others THEN PERFORM set_config('probe.p552','FALLO (esperaba PA015, vino '||SQLSTATE||': '||SQLERRM||')',false);
@@ -12163,7 +12166,8 @@ DECLARE v_gt uuid := NULLIF(current_setting('probe.co_gt',true),'')::uuid;
         v_p uuid; v_id uuid;
 BEGIN
   IF coalesce(current_setting('probe.vj_visitas',true),'')<>'1' THEN
-    PERFORM set_config('probe.rv_ready','0',false); RETURN; END IF;
+    PERFORM set_config('probe.rv_ready','0',false);
+    PERFORM set_config('probe.rv_fx','N/A (el fixture de visitas del bloque 273 no quedo listo)',false); RETURN; END IF;
   IF to_regclass('public.reportes_visita') IS NULL THEN
     PERFORM set_config('probe.rv_ready','0',false);
     PERFORM set_config('probe.rv_fx','ROJO — TABLAS AUSENTES (la mig 274 no esta aplicada; esto NO es un rechazo)',false);
@@ -12171,8 +12175,8 @@ BEGIN
   -- una visita mas, SIN check-in: es el sujeto de PA018
   INSERT INTO public.prospectos (nombre, tipo, pais_id, asesor_id, creado_por, estado_pipeline)
     VALUES ('QA RV prospecto sin checkin','farmacia',v_gt,v_ase1,v_admgt,'nuevo') RETURNING id INTO v_p;
-  INSERT INTO public.visitas_comerciales (prospecto_id, asesor_id, pais_id, jornada_id, fecha_planificada)
-    VALUES (v_p, v_ase1, v_gt, v_j, CURRENT_DATE) RETURNING id INTO v_id;
+  INSERT INTO public.visitas_comerciales (prospecto_id, asesor_id, pais_id, jornada_id, fecha_planificada, planificada_por)
+    VALUES (v_p, v_ase1, v_gt, v_j, CURRENT_DATE, v_ase1) RETURNING id INTO v_id;
   PERFORM set_config('probe.rv_v_sinci', v_id::text, false);
   PERFORM set_config('probe.rv_ready','1', false);
   -- La existencia del bucket se resuelve ACA, como owner: storage.buckets NO es legible por
@@ -12753,6 +12757,294 @@ DO $$ DECLARE v_qual text; BEGIN
       THEN 'ROJO (la policy de DELETE no se acota al admin del pais)'
     ELSE 'OK (DELETE acotado al admin del pais Y a objetos sin fila que los nombre)' END, false);
 EXCEPTION WHEN OTHERS THEN PERFORM set_config('probe.p585','FALLO ('||SQLSTATE||' '||SQLERRM||')',false); END $$;
+
+
+-- ############################################################################################
+-- P586-P598 — agenda de visitas (mig 280): hora, autoria, reprogramar, cancelar, adopcion
+-- ############################################################################################
+-- Mismo texto de tres estados que P517-P585:
+--   'ROJO — RPC AUSENTE'   la funcion (o su firma nueva) no existe   <- rojo legitimo red-first
+--   'ROJO (PERMITIO...)'   existe y NO rechazo                       <- el bug que se busca
+--   'OK (...)'             rechazo con el errcode esperado, o el efecto correcto, LEIDO DE LA FILA
+--
+-- Fixture propio: prospectos `QA AG *` de ase1 y de ase2 (frescos, para no chocar con el UNIQUE
+-- por dia de las visitas que ya sembraron los bloques anteriores). Todo muere con el ROLLBACK.
+SELECT set_config('role','none', true);
+DO $$
+DECLARE v_gt uuid := NULLIF(current_setting('probe.co_gt',true),'')::uuid;
+        v_ase1 uuid := NULLIF(current_setting('probe.co_ase1',true),'')::uuid;
+        v_ase2 uuid := NULLIF(current_setting('probe.co_ase2',true),'')::uuid;
+        v_adm uuid := NULLIF(current_setting('probe.co_admgt',true),'')::uuid;
+        r record; v_id uuid;
+BEGIN
+  IF coalesce(current_setting('probe.co_ready',true),'')<>'1' OR to_regclass('public.visitas_comerciales') IS NULL THEN
+    PERFORM set_config('probe.ag_ready','0',false);
+    PERFORM set_config('probe.ag_fx','ROJO — TABLAS AUSENTES (esto NO es un rechazo)',false); RETURN; END IF;
+  -- la firma NUEVA es el indicador de que la 280 esta aplicada
+  IF to_regprocedure('public.planificar_visita(uuid,date,time without time zone)') IS NULL THEN
+    PERFORM set_config('probe.ag_ready','0',false);
+    PERFORM set_config('probe.ag_fx','ROJO — MIG 280 AUSENTE (planificar_visita sigue con la firma (uuid,date); esto NO es un rechazo)',false); RETURN; END IF;
+
+  FOR r IN SELECT * FROM (VALUES
+      ('ag_p_a1','QA AG ase1 futuro'), ('ag_p_a2','QA AG ase1 supervisor'), ('ag_p_a3','QA AG ase1 dup'),
+      ('ag_p_a4','QA AG ase1 reprog'),  ('ag_p_a5','QA AG ase1 cancel'),
+      ('ag_p_b1','QA AG ase2 ajeno'),   ('ag_p_b2','QA AG ase2 adopcion')
+    ) AS t(clave, nombre) LOOP
+    INSERT INTO public.prospectos (nombre, tipo, pais_id, asesor_id, creado_por, estado_pipeline)
+      VALUES (r.nombre, 'farmacia', v_gt, CASE WHEN r.clave LIKE 'ag_p_a%' THEN v_ase1 ELSE v_ase2 END, v_adm, 'nuevo')
+      RETURNING id INTO v_id;
+    PERFORM set_config('probe.'||r.clave, v_id::text, false);
+  END LOOP;
+  PERFORM set_config('probe.ag_ready','1', false);
+  PERFORM set_config('probe.ag_fx','OK (fixture agenda: 7 prospectos frescos, 5 de ase1 y 2 de ase2)', false);
+EXCEPTION WHEN OTHERS THEN
+  PERFORM set_config('probe.ag_ready','0',false);
+  PERFORM set_config('probe.ag_fx','ROJO ('||SQLSTATE||' '||SQLERRM||')',false);
+END $$;
+
+-- ============================================================================================
+-- Como ASESOR1
+-- ============================================================================================
+SELECT set_config('request.jwt.claims', json_build_object('sub', current_setting('probe.co_ase1',true), 'role','authenticated')::text, true);
+SELECT set_config('role','authenticated', true);
+
+-- P586 — asesor planifica a FUTURO sobre prospecto PROPIO, con hora -> OK; la FILA dice quien y a que hora
+DO $$ DECLARE v_id uuid; BEGIN
+  IF coalesce(current_setting('probe.ag_ready',true),'')<>'1' THEN PERFORM set_config('probe.p586','N/A',false); RETURN; END IF;
+  BEGIN
+    SELECT public.planificar_visita(NULLIF(current_setting('probe.ag_p_a1',true),'')::uuid, CURRENT_DATE + 1, '10:30'::time) INTO v_id;
+    PERFORM set_config('probe.ag_v_a1', v_id::text, false);
+    PERFORM set_config('probe.p586','PENDIENTE', false);   -- se lee la fila como owner mas abajo
+  EXCEPTION WHEN others THEN
+    PERFORM set_config('probe.p586','FALLO (esperaba PERMITIDO, vino '||SQLSTATE||': '||SQLERRM||')',false);
+  END;
+EXCEPTION WHEN OTHERS THEN PERFORM set_config('probe.p586','FALLO ('||SQLSTATE||' '||SQLERRM||')',false); END $$;
+
+-- P588 — asesor planifica sobre prospecto AJENO -> 42501, y el texto dice no_autorizado
+DO $$ DECLARE v_msg text; BEGIN
+  IF coalesce(current_setting('probe.ag_ready',true),'')<>'1' THEN PERFORM set_config('probe.p588','N/A',false); RETURN; END IF;
+  BEGIN
+    PERFORM public.planificar_visita(NULLIF(current_setting('probe.ag_p_b1',true),'')::uuid, CURRENT_DATE + 1, NULL);
+    PERFORM set_config('probe.p588','ROJO (PERMITIO planificar sobre prospecto ajeno)',false);
+  EXCEPTION WHEN insufficient_privilege THEN
+    GET STACKED DIAGNOSTICS v_msg = MESSAGE_TEXT;
+    PERFORM set_config('probe.p588', CASE
+      WHEN v_msg ILIKE '%no_autorizado%' AND v_msg NOT ILIKE '%no existe%' THEN 'OK (42501 no_autorizado; no revela existencia)'
+      ELSE 'FALLO (42501 pero el mensaje dice: '||v_msg||')' END, false);
+  WHEN others THEN PERFORM set_config('probe.p588','FALLO (esperaba 42501, vino '||SQLSTATE||': '||SQLERRM||')',false);
+  END;
+EXCEPTION WHEN OTHERS THEN PERFORM set_config('probe.p588','FALLO ('||SQLSTATE||' '||SQLERRM||')',false); END $$;
+
+-- P589 — fecha de AYER -> PA026
+DO $$ BEGIN
+  IF coalesce(current_setting('probe.ag_ready',true),'')<>'1' THEN PERFORM set_config('probe.p589','N/A',false); RETURN; END IF;
+  BEGIN
+    PERFORM public.planificar_visita(NULLIF(current_setting('probe.ag_p_a3',true),'')::uuid, CURRENT_DATE - 1, NULL);
+    PERFORM set_config('probe.p589','ROJO (PERMITIO planificar en el PASADO)',false);
+  EXCEPTION WHEN sqlstate 'PA026' THEN PERFORM set_config('probe.p589','OK (PA026 fecha_pasada)',false);
+            WHEN others THEN PERFORM set_config('probe.p589','FALLO (esperaba PA026, vino '||SQLSTATE||': '||SQLERRM||')',false);
+  END;
+EXCEPTION WHEN OTHERS THEN PERFORM set_config('probe.p589','FALLO ('||SQLSTATE||' '||SQLERRM||')',false); END $$;
+
+-- P590 — misma fecha DOS VECES -> 23505, tal cual (sin ON CONFLICT que lo tape)
+DO $$ BEGIN
+  IF coalesce(current_setting('probe.ag_ready',true),'')<>'1' THEN PERFORM set_config('probe.p590','N/A',false); RETURN; END IF;
+  BEGIN PERFORM public.planificar_visita(NULLIF(current_setting('probe.ag_p_a3',true),'')::uuid, CURRENT_DATE + 2, NULL);
+  EXCEPTION WHEN others THEN PERFORM set_config('probe.p590','FALLO (la PRIMERA no paso: '||SQLSTATE||' '||SQLERRM||')',false); RETURN; END;
+  BEGIN
+    PERFORM public.planificar_visita(NULLIF(current_setting('probe.ag_p_a3',true),'')::uuid, CURRENT_DATE + 2, '15:00'::time);
+    PERFORM set_config('probe.p590','ROJO (PERMITIO dos visitas al mismo prospecto el mismo dia)',false);
+  EXCEPTION WHEN unique_violation THEN PERFORM set_config('probe.p590','OK (23505 sube tal cual: una visita por prospecto y dia)',false);
+            WHEN others THEN PERFORM set_config('probe.p590','FALLO (esperaba 23505, vino '||SQLSTATE||': '||SQLERRM||')',false);
+  END;
+EXCEPTION WHEN OTHERS THEN PERFORM set_config('probe.p590','FALLO ('||SQLSTATE||' '||SQLERRM||')',false); END $$;
+
+-- P591 — reprogramar visita planificada PROPIA a HOY (donde ase1 SI tiene jornada abierta) -> OK,
+--        y jornada_id queda RECALCULADO a la jornada de hoy (antes era NULL: se planifico a futuro)
+DO $$ DECLARE v_id uuid; BEGIN
+  IF coalesce(current_setting('probe.ag_ready',true),'')<>'1' THEN PERFORM set_config('probe.p591','N/A',false); RETURN; END IF;
+  IF to_regprocedure('public.reprogramar_visita_comercial(uuid,date,time without time zone)') IS NULL THEN
+    PERFORM set_config('probe.p591','ROJO — RPC AUSENTE',false); RETURN; END IF;
+  BEGIN
+    SELECT public.planificar_visita(NULLIF(current_setting('probe.ag_p_a4',true),'')::uuid, CURRENT_DATE + 3, '09:00'::time) INTO v_id;
+    PERFORM set_config('probe.ag_v_a4', v_id::text, false);
+  EXCEPTION WHEN others THEN PERFORM set_config('probe.p591','FALLO (no se pudo planificar la base: '||SQLSTATE||' '||SQLERRM||')',false); RETURN; END;
+  BEGIN
+    PERFORM public.reprogramar_visita_comercial(v_id, CURRENT_DATE, '11:00'::time);
+    PERFORM set_config('probe.p591','PENDIENTE', false);   -- la fila se lee como owner mas abajo
+  EXCEPTION WHEN others THEN
+    PERFORM set_config('probe.p591','FALLO (esperaba PERMITIDO, vino '||SQLSTATE||': '||SQLERRM||')',false);
+  END;
+EXCEPTION WHEN OTHERS THEN PERFORM set_config('probe.p591','FALLO ('||SQLSTATE||' '||SQLERRM||')',false); END $$;
+
+-- P592 — reprogramar una visita CON CHECK-IN -> PA027 (mover la fecha seria reescribir un hecho)
+DO $$ BEGIN
+  IF coalesce(current_setting('probe.ag_ready',true),'')<>'1' OR coalesce(current_setting('probe.vj_v_cerca',true),'')='' THEN
+    PERFORM set_config('probe.p592','N/A (falta la visita con check-in del bloque 273)',false); RETURN; END IF;
+  IF to_regprocedure('public.reprogramar_visita_comercial(uuid,date,time without time zone)') IS NULL THEN
+    PERFORM set_config('probe.p592','ROJO — RPC AUSENTE',false); RETURN; END IF;
+  BEGIN
+    PERFORM public.reprogramar_visita_comercial(NULLIF(current_setting('probe.vj_v_cerca',true),'')::uuid, CURRENT_DATE + 1, NULL);
+    PERFORM set_config('probe.p592','ROJO (PERMITIO reprogramar una visita que YA tiene check-in)',false);
+  EXCEPTION WHEN sqlstate 'PA027' THEN PERFORM set_config('probe.p592','OK (PA027 visita_no_planificada)',false);
+            WHEN others THEN PERFORM set_config('probe.p592','FALLO (esperaba PA027, vino '||SQLSTATE||': '||SQLERRM||')',false);
+  END;
+EXCEPTION WHEN OTHERS THEN PERFORM set_config('probe.p592','FALLO ('||SQLSTATE||' '||SQLERRM||')',false); END $$;
+
+-- P594 — cancelar SIN motivo -> PA027   ·   P595 — cancelar CON motivo -> OK, estado=cancelada
+-- P596 — cancelar la YA cancelada -> PA027
+DO $$ DECLARE v_id uuid; v_estado text; v_motivo text; BEGIN
+  IF coalesce(current_setting('probe.ag_ready',true),'')<>'1' THEN
+    PERFORM set_config('probe.p594','N/A',false); PERFORM set_config('probe.p595','N/A',false); PERFORM set_config('probe.p596','N/A',false); RETURN; END IF;
+  IF to_regprocedure('public.cancelar_visita_comercial(uuid,text)') IS NULL THEN
+    PERFORM set_config('probe.p594','ROJO — RPC AUSENTE',false); PERFORM set_config('probe.p595','ROJO — RPC AUSENTE',false);
+    PERFORM set_config('probe.p596','ROJO — RPC AUSENTE',false); RETURN; END IF;
+  BEGIN
+    SELECT public.planificar_visita(NULLIF(current_setting('probe.ag_p_a5',true),'')::uuid, CURRENT_DATE + 4, NULL) INTO v_id;
+    PERFORM set_config('probe.ag_v_a5', v_id::text, false);
+  EXCEPTION WHEN others THEN PERFORM set_config('probe.p594','FALLO (no se pudo planificar la base: '||SQLSTATE||')',false); RETURN; END;
+
+  BEGIN PERFORM public.cancelar_visita_comercial(v_id, '   ');
+        PERFORM set_config('probe.p594','ROJO (PERMITIO cancelar sin motivo)',false);
+  EXCEPTION WHEN sqlstate 'PA027' THEN PERFORM set_config('probe.p594','OK (PA027 motivo_requerido)',false);
+            WHEN others THEN PERFORM set_config('probe.p594','FALLO (esperaba PA027, vino '||SQLSTATE||': '||SQLERRM||')',false); END;
+
+  BEGIN PERFORM public.cancelar_visita_comercial(v_id, 'El cliente pidio moverla');
+        PERFORM set_config('probe.p595','PENDIENTE', false);   -- fila leida como owner mas abajo
+  EXCEPTION WHEN others THEN PERFORM set_config('probe.p595','FALLO (esperaba PERMITIDO, vino '||SQLSTATE||': '||SQLERRM||')',false); END;
+
+  BEGIN PERFORM public.cancelar_visita_comercial(v_id, 'Otra vez');
+        PERFORM set_config('probe.p596','ROJO (PERMITIO cancelar dos veces la misma visita)',false);
+  EXCEPTION WHEN sqlstate 'PA027' THEN PERFORM set_config('probe.p596','OK (PA027: ya estaba cancelada)',false);
+            WHEN others THEN PERFORM set_config('probe.p596','FALLO (esperaba PA027, vino '||SQLSTATE||': '||SQLERRM||')',false); END;
+EXCEPTION WHEN OTHERS THEN PERFORM set_config('probe.p594','FALLO ('||SQLSTATE||' '||SQLERRM||')',false); END $$;
+SELECT set_config('role','none', true);
+
+-- ============================================================================================
+-- Como SUPERVISOR: P587 planifica para su asesor
+-- ============================================================================================
+SELECT set_config('request.jwt.claims', json_build_object('sub', current_setting('probe.co_sup',true), 'role','authenticated')::text, true);
+SELECT set_config('role','authenticated', true);
+DO $$ DECLARE v_id uuid; BEGIN
+  IF coalesce(current_setting('probe.ag_ready',true),'')<>'1' THEN PERFORM set_config('probe.p587','N/A',false); RETURN; END IF;
+  BEGIN
+    SELECT public.planificar_visita(NULLIF(current_setting('probe.ag_p_a2',true),'')::uuid, CURRENT_DATE + 1, '16:15'::time) INTO v_id;
+    PERFORM set_config('probe.ag_v_a2', v_id::text, false);
+    PERFORM set_config('probe.p587','PENDIENTE', false);
+  EXCEPTION WHEN others THEN
+    PERFORM set_config('probe.p587','FALLO (esperaba PERMITIDO, vino '||SQLSTATE||': '||SQLERRM||')',false);
+  END;
+EXCEPTION WHEN OTHERS THEN PERFORM set_config('probe.p587','FALLO ('||SQLSTATE||' '||SQLERRM||')',false); END $$;
+SELECT set_config('role','none', true);
+
+-- ============================================================================================
+-- Como ASESOR2: P593 reprogramar visita AJENA -> 42501 · P597 adopcion (ase2 no tiene jornada)
+-- ============================================================================================
+SELECT set_config('request.jwt.claims', json_build_object('sub', current_setting('probe.co_ase2',true), 'role','authenticated')::text, true);
+SELECT set_config('role','authenticated', true);
+DO $$ DECLARE v_msg text; BEGIN
+  IF coalesce(current_setting('probe.ag_ready',true),'')<>'1' OR coalesce(current_setting('probe.ag_v_a1',true),'')='' THEN
+    PERFORM set_config('probe.p593','N/A',false); RETURN; END IF;
+  IF to_regprocedure('public.reprogramar_visita_comercial(uuid,date,time without time zone)') IS NULL THEN
+    PERFORM set_config('probe.p593','ROJO — RPC AUSENTE',false); RETURN; END IF;
+  BEGIN
+    PERFORM public.reprogramar_visita_comercial(NULLIF(current_setting('probe.ag_v_a1',true),'')::uuid, CURRENT_DATE + 5, NULL);
+    PERFORM set_config('probe.p593','ROJO (PERMITIO reprogramar la visita de OTRO asesor)',false);
+  EXCEPTION WHEN insufficient_privilege THEN
+    GET STACKED DIAGNOSTICS v_msg = MESSAGE_TEXT;
+    PERFORM set_config('probe.p593', CASE WHEN v_msg ILIKE '%no_autorizado%' THEN 'OK (42501 no_autorizado)'
+                                          ELSE 'FALLO (42501 con otro mensaje: '||v_msg||')' END, false);
+  WHEN others THEN PERFORM set_config('probe.p593','FALLO (esperaba 42501, vino '||SQLSTATE||': '||SQLERRM||')',false);
+  END;
+EXCEPTION WHEN OTHERS THEN PERFORM set_config('probe.p593','FALLO ('||SQLSTATE||' '||SQLERRM||')',false); END $$;
+
+-- P597 — CONTROL POSITIVO de adopcion: ase2 planifica para HOY sin jornada -> jornada_id NULL;
+--        abre la jornada -> la visita queda con jornada_id = la nueva. Se lee la fila en cada paso.
+DO $$ DECLARE v_id uuid; v_j_antes uuid; v_j uuid; v_j_despues uuid; BEGIN
+  IF coalesce(current_setting('probe.ag_ready',true),'')<>'1' THEN PERFORM set_config('probe.p597','N/A',false); RETURN; END IF;
+  BEGIN
+    SELECT public.planificar_visita(NULLIF(current_setting('probe.ag_p_b2',true),'')::uuid, CURRENT_DATE, NULL) INTO v_id;
+  EXCEPTION WHEN others THEN PERFORM set_config('probe.p597','FALLO (no se pudo planificar: '||SQLSTATE||' '||SQLERRM||')',false); RETURN; END;
+  SELECT jornada_id INTO v_j_antes FROM public.visitas_comerciales WHERE id = v_id;
+  IF v_j_antes IS NOT NULL THEN
+    PERFORM set_config('probe.p597','FALLO (la visita nacio con jornada_id, el fixture no es huerfano: ase2 ya tenia jornada)',false); RETURN; END IF;
+  BEGIN
+    SELECT public.abrir_jornada(NULL,NULL,NULL) INTO v_j;
+  EXCEPTION WHEN others THEN PERFORM set_config('probe.p597','FALLO (ase2 no pudo abrir jornada: '||SQLSTATE||' '||SQLERRM||')',false); RETURN; END;
+  SELECT jornada_id INTO v_j_despues FROM public.visitas_comerciales WHERE id = v_id;
+  PERFORM set_config('probe.p597', CASE
+    WHEN v_j_despues = v_j THEN 'OK (nacio huerfana con jornada_id NULL y abrir_jornada la ADOPTO: jornada_id = la nueva)'
+    WHEN v_j_despues IS NULL THEN 'ROJO (abrir_jornada NO adopto la visita huerfana: sigue con jornada_id NULL)'
+    ELSE 'FALLO (jornada_id apunta a otra jornada: '||v_j_despues||' vs '||v_j||')' END, false);
+EXCEPTION WHEN OTHERS THEN PERFORM set_config('probe.p597','FALLO ('||SQLSTATE||' '||SQLERRM||')',false); END $$;
+SELECT set_config('role','none', true);
+
+-- ============================================================================================
+-- Lectura de las FILAS como owner: P586, P587, P591, P595 se resuelven con lo que quedo escrito
+-- ============================================================================================
+DO $$ DECLARE r record; v_ase1 uuid; v_sup uuid; v_jhoy uuid; BEGIN
+  IF coalesce(current_setting('probe.ag_ready',true),'')<>'1' THEN RETURN; END IF;
+  v_ase1 := NULLIF(current_setting('probe.co_ase1',true),'')::uuid;
+  v_sup  := NULLIF(current_setting('probe.co_sup',true),'')::uuid;
+  v_jhoy := NULLIF(current_setting('probe.vj_jornada',true),'')::uuid;
+
+  IF current_setting('probe.p586',true) = 'PENDIENTE' THEN
+    SELECT * INTO r FROM public.visitas_comerciales WHERE id = NULLIF(current_setting('probe.ag_v_a1',true),'')::uuid;
+    PERFORM set_config('probe.p586', CASE
+      WHEN r.id IS NULL THEN 'FALLO (la RPC devolvio id pero no hay fila)'
+      WHEN r.planificada_por IS DISTINCT FROM v_ase1 THEN 'ROJO (planificada_por='||coalesce(r.planificada_por::text,'NULL')||', se esperaba el asesor)'
+      WHEN r.hora_planificada IS DISTINCT FROM '10:30'::time THEN 'ROJO (hora_planificada='||coalesce(r.hora_planificada::text,'NULL')||', se envio 10:30)'
+      WHEN r.fecha_planificada <> CURRENT_DATE + 1 THEN 'ROJO (fecha='||r.fecha_planificada||')'
+      ELSE 'OK (fila: planificada_por = asesor, hora = 10:30, fecha = manana, estado = '||r.estado||')' END, false);
+  END IF;
+
+  IF current_setting('probe.p587',true) = 'PENDIENTE' THEN
+    SELECT * INTO r FROM public.visitas_comerciales WHERE id = NULLIF(current_setting('probe.ag_v_a2',true),'')::uuid;
+    PERFORM set_config('probe.p587', CASE
+      WHEN r.id IS NULL THEN 'FALLO (sin fila)'
+      WHEN r.asesor_id IS DISTINCT FROM v_ase1 THEN 'ROJO (asesor_id='||coalesce(r.asesor_id::text,'NULL')||': el supervisor se apropio de la visita)'
+      WHEN r.planificada_por IS DISTINCT FROM v_sup THEN 'ROJO (planificada_por='||coalesce(r.planificada_por::text,'NULL')||', se esperaba el supervisor)'
+      WHEN r.hora_planificada IS DISTINCT FROM '16:15'::time THEN 'ROJO (hora='||coalesce(r.hora_planificada::text,'NULL')||')'
+      ELSE 'OK (fila: asesor_id = asesor, planificada_por = SUPERVISOR — la autoria quedo, la visita no cambio de dueno)' END, false);
+  END IF;
+
+  IF current_setting('probe.p591',true) = 'PENDIENTE' THEN
+    SELECT * INTO r FROM public.visitas_comerciales WHERE id = NULLIF(current_setting('probe.ag_v_a4',true),'')::uuid;
+    PERFORM set_config('probe.p591', CASE
+      WHEN r.id IS NULL THEN 'FALLO (sin fila)'
+      WHEN r.fecha_planificada <> CURRENT_DATE THEN 'ROJO (fecha no cambio: '||r.fecha_planificada||')'
+      WHEN r.hora_planificada IS DISTINCT FROM '11:00'::time THEN 'ROJO (hora='||coalesce(r.hora_planificada::text,'NULL')||', se envio 11:00)'
+      WHEN r.jornada_id IS NULL THEN 'ROJO (reprogramada a HOY pero jornada_id sigue NULL: no se recalculo)'
+      WHEN r.jornada_id IS DISTINCT FROM v_jhoy THEN 'FALLO (jornada_id='||r.jornada_id||' no es la jornada de hoy de ase1 '||coalesce(v_jhoy::text,'?')||')'
+      ELSE 'OK (fecha y hora cambiaron; jornada_id RECALCULADO: de NULL a la jornada de hoy)' END, false);
+  END IF;
+
+  IF current_setting('probe.p595',true) = 'PENDIENTE' THEN
+    SELECT * INTO r FROM public.visitas_comerciales WHERE id = NULLIF(current_setting('probe.ag_v_a5',true),'')::uuid;
+    PERFORM set_config('probe.p595', CASE
+      WHEN r.id IS NULL THEN 'FALLO (sin fila)'
+      WHEN r.estado <> 'cancelada' THEN 'ROJO (estado='||r.estado||', se esperaba cancelada)'
+      WHEN coalesce(r.cancelacion_motivo,'') = '' THEN 'ROJO (cancelada SIN motivo guardado: el CHECK no deberia haberlo permitido)'
+      ELSE 'OK (estado = cancelada, motivo = "'||r.cancelacion_motivo||'")' END, false);
+  END IF;
+EXCEPTION WHEN OTHERS THEN
+  PERFORM set_config('probe.p586','FALLO al leer filas ('||SQLSTATE||' '||SQLERRM||')',false);
+END $$;
+
+-- P598 — anon SIN EXECUTE sobre las 3 RPCs (y abrir_jornada, que se recreo)
+DO $$ DECLARE v_malas text; BEGIN
+  IF to_regprocedure('public.planificar_visita(uuid,date,time without time zone)') IS NULL THEN
+    PERFORM set_config('probe.p598','ROJO — MIG 280 AUSENTE',false); RETURN; END IF;
+  SELECT string_agg(f, ', ') INTO v_malas FROM (
+    SELECT p.oid::regprocedure::text AS f FROM pg_proc p JOIN pg_namespace n ON n.oid=p.pronamespace
+     WHERE n.nspname='public'
+       AND p.proname IN ('planificar_visita','reprogramar_visita_comercial','cancelar_visita_comercial','abrir_jornada')
+       AND (has_function_privilege('anon', p.oid, 'EXECUTE') OR NOT has_function_privilege('authenticated', p.oid, 'EXECUTE'))
+  ) s;
+  PERFORM set_config('probe.p598', CASE WHEN v_malas IS NULL
+    THEN 'OK (anon=false y authenticated=true en las 4 funciones)'
+    ELSE 'ROJO (privilegios mal en: '||v_malas||')' END, false);
+EXCEPTION WHEN OTHERS THEN PERFORM set_config('probe.p598','FALLO ('||SQLSTATE||' '||SQLERRM||')',false); END $$;
 
 -- ===== Veredictos como result set =====
 SELECT 'P1_anon_insert_citas'              AS probe, current_setting('probe.p1', true)  AS verdict, 'BLOQUEADO' AS esperado_post_fix
@@ -13390,6 +13682,20 @@ UNION ALL SELECT 'P582_bm_CONTROL_POSITIVO_borra',    current_setting('probe.p58
 UNION ALL SELECT 'P583_bm_storage_con_fila_viva',     current_setting('probe.p583', true),   'OK (denegado)'
 UNION ALL SELECT 'P584_bm_storage_huerfano',          current_setting('probe.p584', true),   'OK (permitido)'
 UNION ALL SELECT 'P585_bm_policy_delete_estructural', current_setting('probe.p585', true),   'OK (estructural)'
+UNION ALL SELECT 'AG_FX_fixture_agenda',               current_setting('probe.ag_fx', true),  'OK'
+UNION ALL SELECT 'P586_ag_asesor_planifica_futuro',    current_setting('probe.p586', true),   'OK (fila: planificada_por=asesor, hora)'
+UNION ALL SELECT 'P587_ag_supervisor_planifica',       current_setting('probe.p587', true),   'OK (asesor_id=asesor, planificada_por=sup)'
+UNION ALL SELECT 'P588_ag_prospecto_ajeno',            current_setting('probe.p588', true),   'OK (42501 no autorizado)'
+UNION ALL SELECT 'P589_ag_fecha_ayer',                 current_setting('probe.p589', true),   'OK (PA026)'
+UNION ALL SELECT 'P590_ag_misma_fecha_dos_veces',      current_setting('probe.p590', true),   'OK (23505)'
+UNION ALL SELECT 'P591_ag_reprogramar_propia',         current_setting('probe.p591', true),   'OK (jornada_id recalculado)'
+UNION ALL SELECT 'P592_ag_reprogramar_con_checkin',    current_setting('probe.p592', true),   'OK (PA027)'
+UNION ALL SELECT 'P593_ag_reprogramar_ajena',          current_setting('probe.p593', true),   'OK (42501 no autorizado)'
+UNION ALL SELECT 'P594_ag_cancelar_sin_motivo',        current_setting('probe.p594', true),   'OK (PA027)'
+UNION ALL SELECT 'P595_ag_cancelar_con_motivo',        current_setting('probe.p595', true),   'OK (estado cancelada)'
+UNION ALL SELECT 'P596_ag_cancelar_ya_cancelada',      current_setting('probe.p596', true),   'OK (PA027)'
+UNION ALL SELECT 'P597_ag_CONTROL_POSITIVO_adopcion',  current_setting('probe.p597', true),   'OK (jornada_id = la nueva)'
+UNION ALL SELECT 'P598_ag_anon_sin_execute',           current_setting('probe.p598', true),   'OK (anon=false x4)'
 UNION ALL SELECT 'P516_SENAL_estructura_harness',  current_setting('probe.p516', true),          'OK-SENAL (no mide; el gate es b2_guard.py)'
 -- Las filas FX* son SALUD DE FIXTURE, no probes de seguridad: dicen si la precondicion que una
 -- migracion posterior empezo a exigir se pudo sembrar. Si una sale ROJO, los probes que dependen de
@@ -13567,7 +13873,10 @@ UNION ALL SELECT 'P000_CENTINELA_veredictos_no_nulos',
        'probe.p569', 'probe.p570', 'probe.p572', 'probe.p573', 'probe.p574',
        'probe.p575', 'probe.p576', 'probe.p577', 'probe.p578',
        'probe.p579', 'probe.p580', 'probe.p581', 'probe.p582',
-       'probe.p583', 'probe.p584', 'probe.p585', 'probe.bm_fx'
+       'probe.p583', 'probe.p584', 'probe.p585', 'probe.bm_fx',
+       'probe.p586', 'probe.p587', 'probe.p588', 'probe.p589', 'probe.p590', 'probe.p591',
+       'probe.p592', 'probe.p593', 'probe.p594', 'probe.p595', 'probe.p596', 'probe.p597',
+       'probe.p598', 'probe.ag_fx'
              ]) AS n) s),
   'OK (todos los veredictos publicados)';
 
