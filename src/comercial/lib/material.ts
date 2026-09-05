@@ -95,6 +95,35 @@ export async function activarMaterial(id: string, activo: boolean) {
   return supabase.rpc('activar_material_comercial', { p_material_id: id, p_activo: activo })
 }
 
+/** En qué paso se cayó un borrado. `null` = salió todo bien. */
+export type FaseBorrado = null | 'rpc' | 'storage'
+
+/**
+ * Borra material: primero la FILA por RPC, y sólo si eso salió bien, el objeto del bucket.
+ *
+ * EL ORDEN NO ES ARBITRARIO — es el que impone la policy de la mig 279: el DELETE de storage sólo
+ * alcanza a objetos que NO figuran en `material_comercial`. Mientras la fila viva, el objeto es
+ * intocable. Al revés (borrar el objeto primero) el remove sería rechazado y quedaría una fila
+ * apuntando a un archivo que quizá ya no está.
+ *
+ * Los dos fallos son DISTINTOS y se devuelven distintos, porque el estado que dejan es distinto:
+ *   'rpc'     -> no pasó nada. La fila sigue, el objeto sigue.
+ *   'storage' -> la fila YA NO EXISTE y el objeto quedó huérfano. Eso no se puede pintar como
+ *                éxito: el registro se fue y el archivo no. La policy permite reintentar el
+ *                borrado del objeto justamente porque ahora es huérfano.
+ */
+export async function borrarMaterial(
+  m: { id: string; storage_path: string },
+): Promise<{ fase: FaseBorrado; error: unknown | null }> {
+  const rpc = await supabase.rpc('borrar_material_comercial', { p_material_id: m.id })
+  if (rpc.error) return { fase: 'rpc', error: rpc.error }
+
+  const del = await supabase.storage.from('material-comercial').remove([m.storage_path])
+  if (del.error) return { fase: 'storage', error: del.error }
+
+  return { fase: null, error: null }
+}
+
 /** Mismo TTL y misma regla que los adjuntos: se pide al hacer clic y no se persiste en ningún lado. */
 export const TTL_FIRMA_MATERIAL_S = 300
 
