@@ -75,6 +75,9 @@ export function FormFechaHora(props: {
  * Botón "Agendar visita" + su formulario. Llama a planificar_visita.
  * El 23505 (ya hay una visita ese día) se muestra con TEXTO DE CONTEXTO acá: el mapa de errores
  * sigue genérico a propósito, porque desde el mapa no se puede saber qué UNIQUE fue.
+ * Dice "visita ACTIVA" y no "una visita": desde la mig 282 el índice `visitas_com_una_por_dia` es
+ * parcial (`WHERE estado <> 'cancelada'`), así que un día con una visita cancelada SÍ se puede
+ * volver a agendar. Sin esa palabra el aviso mentiría en el caso más común de todos.
  */
 export function AgendarVisita(props: { prospectoId: string; label?: string; onAgendada?: () => void }) {
   const { prospectoId, label = 'Agendar visita', onAgendada } = props
@@ -89,7 +92,7 @@ export function AgendarVisita(props: { prospectoId: string; label?: string; onAg
     if (e) {
       const m = reportarError(e, { setInline: setError })
       if (m.code === '23505') {
-        setError({ campo: 'nombre', mensaje: 'Ya hay una visita para este prospecto ese día.' })
+        setError({ campo: 'nombre', mensaje: 'Ya hay una visita activa para este prospecto ese día.' })
       }
       return
     }
@@ -134,7 +137,7 @@ export function AccionesVisitaPlanificada(props: { visita: VisitaComercial; onCa
     setBusy(false)
     if (e) {
       const m = reportarError(e, { setInline: setError })
-      if (m.code === '23505') setError({ campo: 'nombre', mensaje: 'Ya hay una visita para este prospecto ese día.' })
+      if (m.code === '23505') setError({ campo: 'nombre', mensaje: 'Ya hay una visita activa para este prospecto ese día.' })
       return
     }
     toast.success(`Visita reprogramada para ${fmtFecha(fecha)}${hora ? ' ' + fmtHora(hora) : ''}`)

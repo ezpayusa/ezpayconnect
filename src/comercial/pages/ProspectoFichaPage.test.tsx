@@ -44,7 +44,7 @@ const pintar = () => render(
 beforeEach(() => { rpcError = null; rpcs.length = 0 })
 
 describe('ProspectoFichaPage — el 23505 al agendar lleva el contexto de la pantalla', () => {
-  it('muestra "Ya hay una visita para este prospecto ese día", no el genérico del mapa', async () => {
+  it('muestra "Ya hay una visita activa para este prospecto ese día", no el genérico del mapa', async () => {
     rpcError = { code: '23505', message: 'duplicate key value violates unique constraint "visitas_com_una_por_dia"' }
     pintar()
 
@@ -53,7 +53,7 @@ describe('ProspectoFichaPage — el 23505 al agendar lleva el contexto de la pan
     fireEvent.click(await screen.findByRole('button', { name: /^agendar$/i }))
 
     await waitFor(() => {
-      expect(screen.getByText('Ya hay una visita para este prospecto ese día.')).toBeInTheDocument()
+      expect(screen.getByText('Ya hay una visita activa para este prospecto ese día.')).toBeInTheDocument()
     })
     // el texto genérico del mapa NO se muestra en este contexto
     expect(screen.queryByText(/Ya existe un registro con esos datos/)).not.toBeInTheDocument()
