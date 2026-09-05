@@ -13144,6 +13144,253 @@ DO $$ DECLARE v_coord text; v_total int; BEGIN
     ELSE 'OK (las '||v_total||' columnas de coordenada siguen ilegibles para authenticated)' END, false);
 EXCEPTION WHEN OTHERS THEN PERFORM set_config('probe.p601','FALLO ('||SQLSTATE||' '||SQLERRM||')',false); END $$;
 
+-- ############################################################################################
+-- P602-P606 — el UNIQUE por dia NO debe contar las canceladas (mig 282)
+-- ############################################################################################
+-- EL CASO: cancelar una visita no liberaba el dia. `visitas_com_una_por_dia` es TOTAL, asi que la
+-- fila cancelada seguia ocupando la terna (prospecto, asesor, fecha) y re-agendar daba 23505/409.
+-- Oscar lo reprodujo en el navegador.
+--
+-- P602 es el caso exacto que reprodujo. P603 y P604 son las NEGATIVAS que se conservan: aflojar el
+-- UNIQUE tiene que aflojarlo SOLO para la cancelacion. P605 es el control positivo. P606 es
+-- estructural: mira el indexdef, porque las cuatro anteriores tambien pasarian si alguien
+-- directamente BORRARA el indice, que seria "arreglar" el 409 abriendo el duplicado.
+--
+-- Fixture propio, 4 prospectos frescos de ase1 y una fecha distinta por probe: cada caso tiene que
+-- poder fallar sin arrastrar a los otros. Todo muere con el ROLLBACK.
+SELECT set_config('role','none', true);
+DO $$
+DECLARE v_gt uuid := NULLIF(current_setting('probe.co_gt',true),'')::uuid;
+        v_ase1 uuid := NULLIF(current_setting('probe.co_ase1',true),'')::uuid;
+        v_adm uuid := NULLIF(current_setting('probe.co_admgt',true),'')::uuid;
+        r record; v_id uuid;
+BEGIN
+  IF coalesce(current_setting('probe.co_ready',true),'')<>'1' OR to_regclass('public.visitas_comerciales') IS NULL THEN
+    PERFORM set_config('probe.un_ready','0',false);
+    PERFORM set_config('probe.un_fx','ROJO — TABLAS AUSENTES (esto NO es un rechazo)',false); RETURN; END IF;
+  IF to_regprocedure('public.cancelar_visita_comercial(uuid,text)') IS NULL THEN
+    PERFORM set_config('probe.un_ready','0',false);
+    PERFORM set_config('probe.un_fx','ROJO — MIG 280 AUSENTE (sin cancelar_visita_comercial no hay caso que probar)',false); RETURN; END IF;
+
+  FOR r IN SELECT * FROM (VALUES
+      ('un_p_recicla','QA UN recicla dia'), ('un_p_viva','QA UN visita viva'),
+      ('un_p_real','QA UN realizada'),      ('un_p_doscancel','QA UN dos canceladas'),
+      ('un_p_reprog','QA UN reprogramar a dia con cancelada')
+    ) AS t(clave, nombre) LOOP
+    INSERT INTO public.prospectos (nombre, tipo, pais_id, asesor_id, creado_por, estado_pipeline)
+      VALUES (r.nombre, 'farmacia', v_gt, v_ase1, v_adm, 'nuevo') RETURNING id INTO v_id;
+    PERFORM set_config('probe.'||r.clave, v_id::text, false);
+  END LOOP;
+
+  -- La 'realizada' de P604 se siembra como OWNER y no por checkin+checkout: la via canonica exige
+  -- config geo del pais (que en GT esta AUSENTE a proposito, fail-closed) y jornada abierta. Lo que
+  -- P604 mide es el PREDICADO DEL INDICE, no el camino del check-in — ese ya lo cubre el bloque 273.
+  -- checkin_at va poblado porque visitas_com_checkout_exige_checkin lo obliga: la fila representa
+  -- una visita realmente ocurrida, con entrada y salida.
+  INSERT INTO public.visitas_comerciales
+    (prospecto_id, asesor_id, pais_id, fecha_planificada, estado, planificada_por,
+     checkin_at, checkin_origen, checkout_at)
+  VALUES (NULLIF(current_setting('probe.un_p_real',true),'')::uuid, v_ase1, v_gt,
+          CURRENT_DATE + 7, 'realizada', v_adm, now() - interval '3 hours', 'en_linea', now());
+
+  PERFORM set_config('probe.un_ready','1', false);
+  PERFORM set_config('probe.un_fx','OK (fixture unique: 5 prospectos frescos de ase1 + 1 visita realizada con checkin y checkout)', false);
+EXCEPTION WHEN OTHERS THEN
+  PERFORM set_config('probe.un_ready','0',false);
+  PERFORM set_config('probe.un_fx','ROJO ('||SQLSTATE||' '||SQLERRM||')',false);
+END $$;
+
+-- ============================================================================================
+-- Como ASESOR1
+-- ============================================================================================
+SELECT set_config('request.jwt.claims', json_build_object('sub', current_setting('probe.co_ase1',true), 'role','authenticated')::text, true);
+SELECT set_config('role','authenticated', true);
+
+-- P602 — EL CASO DE OSCAR: planificar -> cancelar -> planificar la MISMA fecha y prospecto.
+-- Hoy 23505 (el dia quedo quemado). Con la 282, permitido.
+DO $$ DECLARE v_pros uuid; v_v1 uuid; v_v2 uuid; BEGIN
+  IF coalesce(current_setting('probe.un_ready',true),'')<>'1' THEN PERFORM set_config('probe.p602','N/A',false); RETURN; END IF;
+  v_pros := NULLIF(current_setting('probe.un_p_recicla',true),'')::uuid;
+  BEGIN
+    SELECT public.planificar_visita(v_pros, CURRENT_DATE + 5, '09:00'::time) INTO v_v1;
+    PERFORM public.cancelar_visita_comercial(v_v1, 'El cliente pidio moverla');
+  EXCEPTION WHEN others THEN
+    PERFORM set_config('probe.p602','FALLO (no se pudo armar el caso: '||SQLSTATE||' '||SQLERRM||')',false); RETURN; END;
+  BEGIN
+    SELECT public.planificar_visita(v_pros, CURRENT_DATE + 5, '14:00'::time) INTO v_v2;
+    PERFORM set_config('probe.un_v2', v_v2::text, false);
+    PERFORM set_config('probe.p602','PENDIENTE', false);   -- las FILAS se leen como owner mas abajo
+  EXCEPTION WHEN unique_violation THEN
+    PERFORM set_config('probe.p602','ROJO — DIA QUEMADO (23505: el UNIQUE cuenta la cancelada, re-agendar es imposible)',false);
+  WHEN others THEN
+    PERFORM set_config('probe.p602','FALLO (esperaba PERMITIDO, vino '||SQLSTATE||': '||SQLERRM||')',false);
+  END;
+EXCEPTION WHEN OTHERS THEN PERFORM set_config('probe.p602','FALLO ('||SQLSTATE||' '||SQLERRM||')',false); END $$;
+
+-- P603 — NEGATIVA QUE SE CONSERVA: con una visita PLANIFICADA viva, la misma fecha sigue dando 23505
+DO $$ DECLARE v_pros uuid; BEGIN
+  IF coalesce(current_setting('probe.un_ready',true),'')<>'1' THEN PERFORM set_config('probe.p603','N/A',false); RETURN; END IF;
+  v_pros := NULLIF(current_setting('probe.un_p_viva',true),'')::uuid;
+  BEGIN PERFORM public.planificar_visita(v_pros, CURRENT_DATE + 6, NULL);
+  EXCEPTION WHEN others THEN
+    PERFORM set_config('probe.p603','FALLO (la PRIMERA no paso: '||SQLSTATE||' '||SQLERRM||')',false); RETURN; END;
+  BEGIN
+    PERFORM public.planificar_visita(v_pros, CURRENT_DATE + 6, '16:00'::time);
+    PERFORM set_config('probe.p603','ROJO (PERMITIO DOS visitas vivas al mismo prospecto el mismo dia: la 282 aflojo de mas)',false);
+  EXCEPTION WHEN unique_violation THEN
+    PERFORM set_config('probe.p603','OK (23505: una visita viva por prospecto y dia, sin cambios)',false);
+  WHEN others THEN
+    PERFORM set_config('probe.p603','FALLO (esperaba 23505, vino '||SQLSTATE||': '||SQLERRM||')',false);
+  END;
+EXCEPTION WHEN OTHERS THEN PERFORM set_config('probe.p603','FALLO ('||SQLSTATE||' '||SQLERRM||')',false); END $$;
+
+-- P604 — NEGATIVA: una visita REALIZADA (con check-in y checkout) sigue bloqueando el dia. El
+-- predicado del indice es `<> 'cancelada'`, NO "estados vivos": un hecho ocurrido no se recicla.
+DO $$ DECLARE v_pros uuid; BEGIN
+  IF coalesce(current_setting('probe.un_ready',true),'')<>'1' THEN PERFORM set_config('probe.p604','N/A',false); RETURN; END IF;
+  v_pros := NULLIF(current_setting('probe.un_p_real',true),'')::uuid;
+  -- control del control: la fila sembrada TIENE que estar realizada y con checkout, si no P604 no
+  -- estaria midiendo lo que dice medir.
+  IF NOT EXISTS (SELECT 1 FROM public.visitas_comerciales v
+                  WHERE v.prospecto_id=v_pros AND v.fecha_planificada=CURRENT_DATE + 7
+                    AND v.estado='realizada' AND v.checkin_at IS NOT NULL AND v.checkout_at IS NOT NULL) THEN
+    PERFORM set_config('probe.p604','FALLO (el fixture no quedo realizada+checkout: no mide nada)',false); RETURN; END IF;
+  BEGIN
+    PERFORM public.planificar_visita(v_pros, CURRENT_DATE + 7, NULL);
+    PERFORM set_config('probe.p604','ROJO (PERMITIO re-agendar sobre una visita YA REALIZADA: el predicado excluye de mas)',false);
+  EXCEPTION WHEN unique_violation THEN
+    PERFORM set_config('probe.p604','OK (23505: las terminales NO canceladas siguen bloqueando el dia)',false);
+  WHEN others THEN
+    PERFORM set_config('probe.p604','FALLO (esperaba 23505, vino '||SQLSTATE||': '||SQLERRM||')',false);
+  END;
+EXCEPTION WHEN OTHERS THEN PERFORM set_config('probe.p604','FALLO ('||SQLSTATE||' '||SQLERRM||')',false); END $$;
+
+-- P605 — CONTROL POSITIVO: DOS canceladas de la misma terna pueden coexistir (cancelar, re-agendar,
+-- cancelar otra vez). Hoy es imposible: la segunda planificacion muere antes de poder cancelarse.
+DO $$ DECLARE v_pros uuid; v_v1 uuid; v_v2 uuid; BEGIN
+  IF coalesce(current_setting('probe.un_ready',true),'')<>'1' THEN PERFORM set_config('probe.p605','N/A',false); RETURN; END IF;
+  v_pros := NULLIF(current_setting('probe.un_p_doscancel',true),'')::uuid;
+  BEGIN
+    SELECT public.planificar_visita(v_pros, CURRENT_DATE + 8, NULL) INTO v_v1;
+    PERFORM public.cancelar_visita_comercial(v_v1, 'Primera cancelacion');
+  EXCEPTION WHEN others THEN
+    PERFORM set_config('probe.p605','FALLO (no se pudo armar el caso: '||SQLSTATE||' '||SQLERRM||')',false); RETURN; END;
+  BEGIN
+    SELECT public.planificar_visita(v_pros, CURRENT_DATE + 8, NULL) INTO v_v2;
+    PERFORM public.cancelar_visita_comercial(v_v2, 'Segunda cancelacion');
+    PERFORM set_config('probe.p605','PENDIENTE', false);   -- las FILAS se cuentan como owner mas abajo
+  EXCEPTION WHEN unique_violation THEN
+    PERFORM set_config('probe.p605','ROJO — DIA QUEMADO (23505: no se puede cancelar dos veces el mismo dia)',false);
+  WHEN others THEN
+    PERFORM set_config('probe.p605','FALLO (esperaba PERMITIDO, vino '||SQLSTATE||': '||SQLERRM||')',false);
+  END;
+EXCEPTION WHEN OTHERS THEN PERFORM set_config('probe.p605','FALLO ('||SQLSTATE||' '||SQLERRM||')',false); END $$;
+
+-- P607 — EL MISMO BUG POR EL CAMINO DEL UPDATE, que es el que P602 no toca. reprogramar_visita_comercial
+-- mueve fecha_planificada, asi que mover una visita HACIA un dia que tiene una cancelada del mismo
+-- prospecto choca contra el mismo UNIQUE total. Un indice que ignora canceladas lo arregla en los dos
+-- caminos a la vez; una solucion que solo arreglara el INSERT dejaria este 409 vivo.
+-- Veredicto COMPUESTO a proposito: el caso y su negativa viajan juntos y ninguno puede perderse.
+--   (a) reprogramar HACIA un dia con una CANCELADA  -> hoy 23505, con la 282 permitido
+--   (b) reprogramar HACIA un dia con una visita VIVA -> 23505 en los dos mundos, sin cambios
+DO $$ DECLARE v_pros uuid; v_vb uuid; v_va uuid; v_vc uuid;
+        v_a date; v_b date; v_c date; v_mueve text; v_bloquea text; v_fecha date; v_estado text;
+BEGIN
+  IF coalesce(current_setting('probe.un_ready',true),'')<>'1' THEN PERFORM set_config('probe.p607','N/A',false); RETURN; END IF;
+  IF to_regprocedure('public.reprogramar_visita_comercial(uuid,date,time without time zone)') IS NULL THEN
+    PERFORM set_config('probe.p607','ROJO — RPC AUSENTE',false); RETURN; END IF;
+  v_pros := NULLIF(current_setting('probe.un_p_reprog',true),'')::uuid;
+  v_a := CURRENT_DATE + 9; v_b := CURRENT_DATE + 10; v_c := CURRENT_DATE + 11;
+
+  -- Siembra: B queda con una CANCELADA, A con la visita viva a mover, C con una visita VIVA.
+  BEGIN
+    SELECT public.planificar_visita(v_pros, v_b, NULL) INTO v_vb;
+    PERFORM public.cancelar_visita_comercial(v_vb, 'Libero el dia B');
+    SELECT public.planificar_visita(v_pros, v_a, '08:00'::time) INTO v_va;
+    SELECT public.planificar_visita(v_pros, v_c, NULL) INTO v_vc;
+  EXCEPTION WHEN others THEN
+    PERFORM set_config('probe.p607','FALLO (no se pudo armar el caso: '||SQLSTATE||' '||SQLERRM||')',false); RETURN; END;
+
+  -- control del control: si B no quedo con exactamente una cancelada, (a) no mide lo que dice.
+  IF (SELECT count(*) FROM public.visitas_comerciales
+       WHERE prospecto_id=v_pros AND fecha_planificada=v_b AND estado='cancelada') <> 1 THEN
+    PERFORM set_config('probe.p607','FALLO (el dia B no quedo con una cancelada: no mide nada)',false); RETURN; END IF;
+
+  -- (a) mover A -> B, el dia que solo tiene una cancelada
+  BEGIN
+    PERFORM public.reprogramar_visita_comercial(v_va, v_b, NULL);
+    SELECT v.fecha_planificada, v.estado INTO v_fecha, v_estado
+      FROM public.visitas_comerciales v WHERE v.id = v_va;   -- se lee LA FILA, no el retorno
+    v_mueve := CASE WHEN v_fecha = v_b AND v_estado = 'planificada'
+                    THEN 'OK' ELSE 'FALLO (la RPC paso pero la fila quedo en '||v_fecha||'/'||v_estado||')' END;
+  EXCEPTION WHEN unique_violation THEN v_mueve := 'ROJO (23505: no se puede mover a un dia que solo tiene una CANCELADA)';
+            WHEN others THEN v_mueve := 'FALLO ('||SQLSTATE||' '||SQLERRM||')';
+  END;
+
+  -- (b) NEGATIVA: mover hacia C, que tiene una visita VIVA -> tiene que seguir rebotando
+  BEGIN
+    PERFORM public.reprogramar_visita_comercial(v_va, v_c, NULL);
+    v_bloquea := 'ROJO (PERMITIO mover sobre una visita VIVA: la 282 aflojo de mas)';
+  EXCEPTION WHEN unique_violation THEN v_bloquea := 'OK';
+            WHEN others THEN v_bloquea := 'FALLO (esperaba 23505, vino '||SQLSTATE||': '||SQLERRM||')';
+  END;
+
+  PERFORM set_config('probe.p607', CASE WHEN v_mueve='OK' AND v_bloquea='OK'
+    THEN 'OK (reprograma sobre dia con cancelada; sigue rebotando contra visita viva)'
+    ELSE 'a_dia_cancelado='||v_mueve||' | b_dia_con_visita_viva='||v_bloquea END, false);
+EXCEPTION WHEN OTHERS THEN PERFORM set_config('probe.p607','FALLO ('||SQLSTATE||' '||SQLERRM||')',false); END $$;
+
+SELECT set_config('role','none', true);
+
+-- Lectura de las FILAS de P602 y P605 como owner: el veredicto no puede depender de que la RPC no
+-- haya tirado, tiene que mirar lo que quedo en la tabla.
+DO $$ DECLARE v_tot int; v_can int; v_plan int; BEGIN
+  IF coalesce(current_setting('probe.p602',true),'')<>'PENDIENTE' THEN RETURN; END IF;
+  SELECT count(*), count(*) FILTER (WHERE estado='cancelada'), count(*) FILTER (WHERE estado='planificada')
+    INTO v_tot, v_can, v_plan
+    FROM public.visitas_comerciales
+   WHERE prospecto_id = NULLIF(current_setting('probe.un_p_recicla',true),'')::uuid
+     AND fecha_planificada = CURRENT_DATE + 5;
+  PERFORM set_config('probe.p602', CASE
+    WHEN v_tot=2 AND v_can=1 AND v_plan=1 THEN 'OK (el dia se reciclo: 1 cancelada + 1 planificada nueva conviven)'
+    ELSE 'FALLO (esperaba 1 cancelada + 1 planificada, hay total='||v_tot||' cancel='||v_can||' plan='||v_plan||')' END, false);
+EXCEPTION WHEN OTHERS THEN PERFORM set_config('probe.p602','FALLO ('||SQLSTATE||' '||SQLERRM||')',false); END $$;
+
+DO $$ DECLARE v_tot int; v_can int; BEGIN
+  IF coalesce(current_setting('probe.p605',true),'')<>'PENDIENTE' THEN RETURN; END IF;
+  SELECT count(*), count(*) FILTER (WHERE estado='cancelada') INTO v_tot, v_can
+    FROM public.visitas_comerciales
+   WHERE prospecto_id = NULLIF(current_setting('probe.un_p_doscancel',true),'')::uuid
+     AND fecha_planificada = CURRENT_DATE + 8;
+  PERFORM set_config('probe.p605', CASE
+    WHEN v_tot=2 AND v_can=2 THEN 'OK (dos canceladas de la misma terna coexisten)'
+    ELSE 'FALLO (esperaba 2 canceladas, hay total='||v_tot||' cancel='||v_can||')' END, false);
+EXCEPTION WHEN OTHERS THEN PERFORM set_config('probe.p605','FALLO ('||SQLSTATE||' '||SQLERRM||')',false); END $$;
+
+-- P606 — ESTRUCTURAL: el indice existe, es UNIQUE, es PARCIAL y su predicado excluye 'cancelada'.
+-- Sin esta, borrar el indice entero pondria P602 y P605 en verde y solo P603/P604 en rojo: la mitad
+-- de la evidencia diria "arreglado". Ademas mira que ya NO sea una CONSTRAINT, porque una
+-- constraint UNIQUE no puede ser parcial — si volvio a serlo, el dia cancelado sigue quemado.
+DO $$ DECLARE v_def text; v_unico boolean; v_parcial boolean; v_pred text; v_con boolean; BEGIN
+  IF to_regclass('public.visitas_comerciales') IS NULL THEN
+    PERFORM set_config('probe.p606','ROJO — TABLA AUSENTE (esto NO es un rechazo)',false); RETURN; END IF;
+  IF to_regclass('public.visitas_com_una_por_dia') IS NULL THEN
+    PERFORM set_config('probe.p606','ROJO — EL INDICE NO EXISTE (nada impide dos visitas al mismo prospecto el mismo dia)',false); RETURN; END IF;
+  SELECT pg_get_indexdef(i.indexrelid), i.indisunique, i.indpred IS NOT NULL,
+         pg_get_expr(i.indpred, i.indrelid)
+    INTO v_def, v_unico, v_parcial, v_pred
+    FROM pg_index i WHERE i.indexrelid='public.visitas_com_una_por_dia'::regclass;
+  SELECT EXISTS (SELECT 1 FROM pg_constraint
+                  WHERE conrelid='public.visitas_comerciales'::regclass
+                    AND conname='visitas_com_una_por_dia') INTO v_con;
+  PERFORM set_config('probe.p606', CASE
+    WHEN NOT v_unico       THEN 'ROJO (el indice NO es UNIQUE: '||v_def||')'
+    WHEN v_con             THEN 'ROJO (sigue siendo CONSTRAINT: una constraint UNIQUE no puede ser parcial, el dia cancelado sigue quemado)'
+    WHEN NOT v_parcial     THEN 'ROJO — INDICE TOTAL (sin WHERE: cuenta las canceladas y quema el dia)'
+    WHEN v_pred NOT ILIKE '%cancelada%' THEN 'ROJO (parcial pero con OTRO predicado: '||v_pred||')'
+    ELSE 'OK (UNIQUE parcial, no constraint, predicado: '||v_pred||')' END, false);
+EXCEPTION WHEN OTHERS THEN PERFORM set_config('probe.p606','FALLO ('||SQLSTATE||' '||SQLERRM||')',false); END $$;
+
 -- ===== Veredictos como result set =====
 SELECT 'P1_anon_insert_citas'              AS probe, current_setting('probe.p1', true)  AS verdict, 'BLOQUEADO' AS esperado_post_fix
 UNION ALL SELECT 'P2_medico_cancela_ajena_rpc',         current_setting('probe.p2', true),  'BLOQUEADO'
@@ -13797,6 +14044,13 @@ UNION ALL SELECT 'P598_ag_anon_sin_execute',           current_setting('probe.p5
 UNION ALL SELECT 'P599_grant_3_columnas_280',         current_setting('probe.p599', true),   'OK (el asesor lee las 3)'
 UNION ALL SELECT 'P600_CENSO_columnas_sin_grant',     current_setting('probe.p600', true),   'OK (ninguna sin grant)'
 UNION ALL SELECT 'P601_CONTROL_coordenadas_ilegibles',current_setting('probe.p601', true),   'OK (8 coordenadas ilegibles)'
+UNION ALL SELECT 'UN_FX_fixture_unique',              current_setting('probe.un_fx', true),   'OK (4 prospectos + 1 realizada)'
+UNION ALL SELECT 'P602_dia_cancelado_se_recicla',     current_setting('probe.p602', true),   'OK (cancelada + planificada conviven)'
+UNION ALL SELECT 'P603_NEG_visita_viva_bloquea',      current_setting('probe.p603', true),   'OK (23505)'
+UNION ALL SELECT 'P604_NEG_realizada_bloquea',        current_setting('probe.p604', true),   'OK (23505)'
+UNION ALL SELECT 'P605_CONTROL_dos_canceladas',       current_setting('probe.p605', true),   'OK (2 canceladas coexisten)'
+UNION ALL SELECT 'P606_ESTRUCT_indice_parcial',       current_setting('probe.p606', true),   'OK (UNIQUE parcial <> cancelada)'
+UNION ALL SELECT 'P607_reprogramar_a_dia_cancelado',  current_setting('probe.p607', true),   'OK (mueve; y sigue rebotando)'
 UNION ALL SELECT 'P516_SENAL_estructura_harness',  current_setting('probe.p516', true),          'OK-SENAL (no mide; el gate es b2_guard.py)'
 -- Las filas FX* son SALUD DE FIXTURE, no probes de seguridad: dicen si la precondicion que una
 -- migracion posterior empezo a exigir se pudo sembrar. Si una sale ROJO, los probes que dependen de
@@ -13978,7 +14232,9 @@ UNION ALL SELECT 'P000_CENTINELA_veredictos_no_nulos',
        'probe.p586', 'probe.p587', 'probe.p588', 'probe.p589', 'probe.p590', 'probe.p591',
        'probe.p592', 'probe.p593', 'probe.p594', 'probe.p595', 'probe.p596', 'probe.p597',
        'probe.p598', 'probe.ag_fx',
-       'probe.p599', 'probe.p600', 'probe.p601'
+       'probe.p599', 'probe.p600', 'probe.p601',
+       'probe.p602', 'probe.p603', 'probe.p604', 'probe.p605', 'probe.p606',
+       'probe.p607', 'probe.un_fx'
              ]) AS n) s),
   'OK (todos los veredictos publicados)';
 
