@@ -12561,6 +12561,199 @@ DO $$ DECLARE v_id uuid; BEGIN
 EXCEPTION WHEN OTHERS THEN PERFORM set_config('probe.p578','FALLO ('||SQLSTATE||' '||SQLERRM||')',false); END $$;
 SELECT set_config('role','none', true);
 
+
+-- ############################################################################################
+-- P579-P584 — borrado de material comercial (mig 279)
+-- ############################################################################################
+-- Mismo texto de tres estados que P517-P578:
+--   'ROJO — RPC AUSENTE'   la funcion no existe todavia   <- rojo legitimo de la fase red-first
+--   'ROJO (PERMITIO...)'   existe y NO rechazo            <- el bug que se busca
+--   'OK (...)'             rechazo con el errcode esperado, o el efecto correcto
+--
+-- Fixture propio: NO se tocan las filas de material que ya viven en prod. Se siembran dos filas
+-- marcadas (`QA BM GT` y `QA BM HN`) y un objeto de storage para la de GT, todo dentro del
+-- BEGIN...ROLLBACK del harness.
+SELECT set_config('role','none', true);
+DO $$
+DECLARE v_gt uuid := NULLIF(current_setting('probe.co_gt',true),'')::uuid;
+        v_hn uuid := NULLIF(current_setting('probe.co_hn',true),'')::uuid;
+        v_adm uuid := NULLIF(current_setting('probe.co_admgt',true),'')::uuid;
+        v_path text; v_id_gt uuid; v_id_hn uuid;
+BEGIN
+  IF to_regclass('public.material_comercial') IS NULL OR coalesce(current_setting('probe.co_ready',true),'')<>'1' THEN
+    PERFORM set_config('probe.bm_ready','0',false);
+    PERFORM set_config('probe.bm_fx','ROJO — TABLAS AUSENTES (esto NO es un rechazo)',false);
+    RETURN;
+  END IF;
+  v_path := v_gt::text||'/qa-borrado-material.pdf';
+  INSERT INTO public.material_comercial (pais_id, titulo, storage_path, mime, activo, subido_por)
+    VALUES (v_gt,'QA BM GT', v_path, 'application/pdf', true, v_adm) RETURNING id INTO v_id_gt;
+  INSERT INTO public.material_comercial (pais_id, titulo, storage_path, mime, activo, subido_por)
+    VALUES (v_hn,'QA BM HN', v_hn::text||'/qa-borrado-material-hn.pdf','application/pdf', true, v_adm) RETURNING id INTO v_id_hn;
+  -- objeto real en el bucket, para poder ejercitar la policy de DELETE
+  INSERT INTO storage.objects (bucket_id, name, owner) VALUES ('material-comercial', v_path, v_adm);
+
+  PERFORM set_config('probe.bm_gt',   v_id_gt::text, false);
+  PERFORM set_config('probe.bm_hn',   v_id_hn::text, false);
+  PERFORM set_config('probe.bm_path', v_path, false);
+  PERFORM set_config('probe.bm_ready','1', false);
+  PERFORM set_config('probe.bm_fx','OK (fixture borrado: QA BM GT + QA BM HN + 1 objeto en el bucket)', false);
+EXCEPTION WHEN OTHERS THEN
+  PERFORM set_config('probe.bm_ready','0',false);
+  PERFORM set_config('probe.bm_fx','ROJO ('||SQLSTATE||' '||SQLERRM||')',false);
+END $$;
+
+-- ============================================================================================
+-- (a) (b) (e) como ADMIN DE GT — antes de que exista el borrado real
+-- ============================================================================================
+SELECT set_config('request.jwt.claims', json_build_object('sub', current_setting('probe.co_admgt',true), 'role','authenticated')::text, true);
+SELECT set_config('role','authenticated', true);
+
+-- P579 (a) — admin de GT intenta borrar material de HN -> 42501, y el texto dice NO AUTORIZADO
+DO $$ DECLARE v_msg text; BEGIN
+  IF coalesce(current_setting('probe.bm_ready',true),'')<>'1' THEN PERFORM set_config('probe.p579','N/A',false); RETURN; END IF;
+  IF to_regprocedure('public.borrar_material_comercial(uuid)') IS NULL THEN
+    PERFORM set_config('probe.p579','ROJO — RPC AUSENTE (todavia no existe; esto NO es un rechazo)',false); RETURN; END IF;
+  BEGIN
+    PERFORM public.borrar_material_comercial(NULLIF(current_setting('probe.bm_hn',true),'')::uuid);
+    PERFORM set_config('probe.p579','ROJO (PERMITIO — el admin de GT borro material de HN)',false);
+  EXCEPTION WHEN insufficient_privilege THEN
+    GET STACKED DIAGNOSTICS v_msg = MESSAGE_TEXT;
+    -- El assert mira el TEXTO, no solo el codigo: tiene que decir "no autorizado" y NO "no existe".
+    PERFORM set_config('probe.p579', CASE
+      WHEN v_msg ILIKE '%no_autorizado%' AND v_msg NOT ILIKE '%no existe%' AND v_msg NOT ILIKE '%not found%'
+        THEN 'OK (42501 no_autorizado; el mensaje NO revela existencia)'
+      ELSE 'FALLO (42501 pero el mensaje dice: '||v_msg||')' END, false);
+  WHEN others THEN PERFORM set_config('probe.p579','FALLO (esperaba 42501, vino '||SQLSTATE||': '||SQLERRM||')',false);
+  END;
+EXCEPTION WHEN OTHERS THEN PERFORM set_config('probe.p579','FALLO ('||SQLSTATE||' '||SQLERRM||')',false); END $$;
+
+-- P580 (b) — id INEXISTENTE -> el MISMO 42501 'no_autorizado'.
+-- TRADE-OFF ACEPTADO, NO UN BUG: la fila no existe, v_pais queda NULL, puede_admin_pais(NULL) da
+-- false y sale por el mismo camino. Devolver "no existe" seria filtrar existencia: le diria a
+-- cualquiera si un uuid corresponde o no a material de otro pais. Es la misma decision que ya
+-- toman actualizar_prospecto (P521) y checkin_visita_comercial.
+DO $$ DECLARE v_msg text; BEGIN
+  IF coalesce(current_setting('probe.bm_ready',true),'')<>'1' THEN PERFORM set_config('probe.p580','N/A',false); RETURN; END IF;
+  IF to_regprocedure('public.borrar_material_comercial(uuid)') IS NULL THEN
+    PERFORM set_config('probe.p580','ROJO — RPC AUSENTE',false); RETURN; END IF;
+  BEGIN
+    PERFORM public.borrar_material_comercial('00000000-0000-0000-0000-000000000279'::uuid);
+    PERFORM set_config('probe.p580','ROJO (PERMITIO borrar un id inexistente sin rechazar)',false);
+  EXCEPTION WHEN insufficient_privilege THEN
+    GET STACKED DIAGNOSTICS v_msg = MESSAGE_TEXT;
+    PERFORM set_config('probe.p580', CASE
+      WHEN v_msg ILIKE '%no_autorizado%'
+        THEN 'OK (42501 no_autorizado — mismo error que el ajeno: no se filtra existencia)'
+      ELSE 'FALLO (42501 con otro mensaje: '||v_msg||')' END, false);
+  WHEN others THEN PERFORM set_config('probe.p580','FALLO (esperaba 42501, vino '||SQLSTATE||': '||SQLERRM||')',false);
+  END;
+EXCEPTION WHEN OTHERS THEN PERFORM set_config('probe.p580','FALLO ('||SQLSTATE||' '||SQLERRM||')',false); END $$;
+
+-- P583 (e) — el objeto NO se puede borrar mientras la fila exista (todavia no es huerfano).
+-- OJO: Supabase bloquea el DELETE DIRECTO sobre storage.objects ("Direct deletion from storage
+-- tables is not allowed. Use the Storage API"), asi que desde SQL no se puede distinguir
+-- "denegado por la policy" de "denegado por ese bloqueo". La probe lo dice explicitamente en vez
+-- de cantar un verde que no midio nada; el comportamiento se verifica por la Storage API.
+DO $$ DECLARE v_n int; v_msg text; BEGIN
+  IF coalesce(current_setting('probe.bm_ready',true),'')<>'1' THEN PERFORM set_config('probe.p583','N/A',false); RETURN; END IF;
+  BEGIN
+    DELETE FROM storage.objects
+     WHERE bucket_id='material-comercial' AND name = current_setting('probe.bm_path',true);
+    GET DIAGNOSTICS v_n = ROW_COUNT;
+    PERFORM set_config('probe.p583', CASE WHEN v_n = 0
+      THEN 'OK (0 filas: la policy no alcanza al objeto mientras la fila exista)'
+      ELSE 'ROJO (BORRO el objeto con la fila de material todavia viva)' END, false);
+  EXCEPTION WHEN OTHERS THEN
+    GET STACKED DIAGNOSTICS v_msg = MESSAGE_TEXT;
+    PERFORM set_config('probe.p583', CASE
+      WHEN v_msg ILIKE '%Direct deletion%'
+        THEN 'OK-PARCIAL (Supabase bloquea el DELETE directo sobre storage.objects: no ejercitable desde SQL, se verifica por la Storage API)'
+      ELSE 'OK (denegado con '||SQLSTATE||': '||v_msg||')' END, false);
+  END;
+EXCEPTION WHEN OTHERS THEN PERFORM set_config('probe.p583','FALLO ('||SQLSTATE||' '||SQLERRM||')',false); END $$;
+SELECT set_config('role','none', true);
+
+-- P581 (c) — un ASESOR de GT intenta borrar material de SU PROPIO pais -> 42501
+SELECT set_config('request.jwt.claims', json_build_object('sub', current_setting('probe.co_ase1',true), 'role','authenticated')::text, true);
+SELECT set_config('role','authenticated', true);
+DO $$ BEGIN
+  IF coalesce(current_setting('probe.bm_ready',true),'')<>'1' THEN PERFORM set_config('probe.p581','N/A',false); RETURN; END IF;
+  IF to_regprocedure('public.borrar_material_comercial(uuid)') IS NULL THEN
+    PERFORM set_config('probe.p581','ROJO — RPC AUSENTE',false); RETURN; END IF;
+  BEGIN
+    PERFORM public.borrar_material_comercial(NULLIF(current_setting('probe.bm_gt',true),'')::uuid);
+    PERFORM set_config('probe.p581','ROJO (PERMITIO — un asesor borro material de su pais)',false);
+  EXCEPTION WHEN insufficient_privilege THEN PERFORM set_config('probe.p581','OK (42501 no_autorizado)',false);
+            WHEN others THEN PERFORM set_config('probe.p581','FALLO (esperaba 42501, vino '||SQLSTATE||': '||SQLERRM||')',false);
+  END;
+EXCEPTION WHEN OTHERS THEN PERFORM set_config('probe.p581','FALLO ('||SQLSTATE||' '||SQLERRM||')',false); END $$;
+SELECT set_config('role','none', true);
+
+-- ============================================================================================
+-- (d) CONTROL POSITIVO y (f), como ADMIN DE GT. Sin el positivo, las cuatro negativas de arriba
+-- las pasaria igual una RPC que rechace SIEMPRE — y no mediria nada. Es la leccion de P553.
+-- ============================================================================================
+SELECT set_config('request.jwt.claims', json_build_object('sub', current_setting('probe.co_admgt',true), 'role','authenticated')::text, true);
+SELECT set_config('role','authenticated', true);
+
+-- P582 (d) — admin de GT borra material de GT: la fila DESAPARECE
+DO $$ DECLARE v_antes int; v_despues int; BEGIN
+  IF coalesce(current_setting('probe.bm_ready',true),'')<>'1' THEN PERFORM set_config('probe.p582','N/A',false); RETURN; END IF;
+  IF to_regprocedure('public.borrar_material_comercial(uuid)') IS NULL THEN
+    PERFORM set_config('probe.p582','ROJO — RPC AUSENTE',false); PERFORM set_config('probe.p584','ROJO — RPC AUSENTE',false); RETURN; END IF;
+  SELECT count(*) INTO v_antes FROM public.material_comercial WHERE titulo = 'QA BM GT';
+  BEGIN
+    PERFORM public.borrar_material_comercial(NULLIF(current_setting('probe.bm_gt',true),'')::uuid);
+  EXCEPTION WHEN others THEN
+    PERFORM set_config('probe.p582','FALLO (esperaba PERMITIDO, vino '||SQLSTATE||': '||SQLERRM||')',false); RETURN;
+  END;
+  SELECT count(*) INTO v_despues FROM public.material_comercial WHERE titulo = 'QA BM GT';
+  PERFORM set_config('probe.p582', CASE
+    WHEN v_antes = 1 AND v_despues = 0 THEN 'OK (PERMITIDO: la fila QA BM GT desaparecio de material_comercial)'
+    WHEN v_antes <> 1 THEN 'FALLO (el fixture no dejo la fila: antes='||v_antes||')'
+    ELSE 'ROJO (la RPC no reventó pero la fila SIGUE ahi: despues='||v_despues||')' END, false);
+EXCEPTION WHEN OTHERS THEN PERFORM set_config('probe.p582','FALLO ('||SQLSTATE||' '||SQLERRM||')',false); END $$;
+
+-- P584 (f) — ya sin fila, el MISMO objeto pasa a ser borrable por ese admin. Mismo bloqueo de
+-- Supabase que en P583: se declara lo que se pudo medir y lo que no.
+DO $$ DECLARE v_n int; v_msg text; v_hay_fila int; BEGIN
+  IF coalesce(current_setting('probe.bm_ready',true),'')<>'1' THEN PERFORM set_config('probe.p584','N/A',false); RETURN; END IF;
+  SELECT count(*) INTO v_hay_fila FROM public.material_comercial WHERE storage_path = current_setting('probe.bm_path',true);
+  IF v_hay_fila <> 0 THEN
+    PERFORM set_config('probe.p584','N/A (la fila no se borro en P582: el objeto todavia no es huerfano)',false); RETURN; END IF;
+  BEGIN
+    DELETE FROM storage.objects
+     WHERE bucket_id='material-comercial' AND name = current_setting('probe.bm_path',true);
+    GET DIAGNOSTICS v_n = ROW_COUNT;
+    PERFORM set_config('probe.p584', CASE WHEN v_n = 1
+      THEN 'OK (el objeto quedo huerfano y el admin lo borro)'
+      ELSE 'ROJO (el objeto es huerfano y la policy NO lo deja borrar: quedaria basura para siempre)' END, false);
+  EXCEPTION WHEN OTHERS THEN
+    GET STACKED DIAGNOSTICS v_msg = MESSAGE_TEXT;
+    PERFORM set_config('probe.p584', CASE
+      WHEN v_msg ILIKE '%Direct deletion%'
+        THEN 'OK-PARCIAL (Supabase bloquea el DELETE directo sobre storage.objects: no ejercitable desde SQL, se verifica por la Storage API)'
+      ELSE 'ROJO (el huerfano NO se pudo borrar: '||SQLSTATE||' '||v_msg||')' END, false);
+  END;
+EXCEPTION WHEN OTHERS THEN PERFORM set_config('probe.p584','FALLO ('||SQLSTATE||' '||SQLERRM||')',false); END $$;
+SELECT set_config('role','none', true);
+
+-- P585 — respaldo ESTRUCTURAL de (e)/(f): lo que P583/P584 no pueden ejercitar desde SQL, se
+-- verifica leyendo la policy. Que exista y lleve el NOT EXISTS contra material_comercial es lo
+-- que hace imposible borrar un objeto cuya fila sigue viva.
+DO $$ DECLARE v_qual text; BEGIN
+  SELECT qual INTO v_qual FROM pg_policies
+   WHERE schemaname='storage' AND tablename='objects' AND policyname='material_com_storage_delete';
+  PERFORM set_config('probe.p585', CASE
+    WHEN v_qual IS NULL THEN 'ROJO — POLICY AUSENTE (la mig 279 no esta aplicada; esto NO es un rechazo)'
+    WHEN v_qual NOT LIKE '%material_comercial%'
+      THEN 'ROJO (la policy de DELETE NO exige que el objeto sea huerfano: puede borrar material vivo)'
+    WHEN v_qual NOT LIKE '%puede_admin_pais%'
+      THEN 'ROJO (la policy de DELETE no se acota al admin del pais)'
+    ELSE 'OK (DELETE acotado al admin del pais Y a objetos sin fila que los nombre)' END, false);
+EXCEPTION WHEN OTHERS THEN PERFORM set_config('probe.p585','FALLO ('||SQLSTATE||' '||SQLERRM||')',false); END $$;
+
 -- ===== Veredictos como result set =====
 SELECT 'P1_anon_insert_citas'              AS probe, current_setting('probe.p1', true)  AS verdict, 'BLOQUEADO' AS esperado_post_fix
 UNION ALL SELECT 'P2_medico_cancela_ajena_rpc',         current_setting('probe.p2', true),  'BLOQUEADO'
@@ -13189,6 +13382,14 @@ UNION ALL SELECT 'P575_mat_bucket_pineado',                current_setting('prob
 UNION ALL SELECT 'P576_mat_asesor_su_pais_y_activo',      current_setting('probe.p576', true),   'OK (1 de 3)'
 UNION ALL SELECT 'P577_mat_admin_ve_inactivo_de_su_pais', current_setting('probe.p577', true),   'OK (2 de GT)'
 UNION ALL SELECT 'P578_mat_asesor_no_desactiva',          current_setting('probe.p578', true),   'OK (42501)'
+UNION ALL SELECT 'BM_FX_fixture_borrado_material',    current_setting('probe.bm_fx', true),  'OK'
+UNION ALL SELECT 'P579_bm_admin_otro_pais',           current_setting('probe.p579', true),   'OK (42501 no autorizado)'
+UNION ALL SELECT 'P580_bm_id_inexistente',            current_setting('probe.p580', true),   'OK (42501, mismo error)'
+UNION ALL SELECT 'P581_bm_asesor_su_pais',            current_setting('probe.p581', true),   'OK (42501 no autorizado)'
+UNION ALL SELECT 'P582_bm_CONTROL_POSITIVO_borra',    current_setting('probe.p582', true),   'OK (PERMITIDO, la fila desaparece)'
+UNION ALL SELECT 'P583_bm_storage_con_fila_viva',     current_setting('probe.p583', true),   'OK (denegado)'
+UNION ALL SELECT 'P584_bm_storage_huerfano',          current_setting('probe.p584', true),   'OK (permitido)'
+UNION ALL SELECT 'P585_bm_policy_delete_estructural', current_setting('probe.p585', true),   'OK (estructural)'
 UNION ALL SELECT 'P516_SENAL_estructura_harness',  current_setting('probe.p516', true),          'OK-SENAL (no mide; el gate es b2_guard.py)'
 -- Las filas FX* son SALUD DE FIXTURE, no probes de seguridad: dicen si la precondicion que una
 -- migracion posterior empezo a exigir se pudo sembrar. Si una sale ROJO, los probes que dependen de
@@ -13364,7 +13565,9 @@ UNION ALL SELECT 'P000_CENTINELA_veredictos_no_nulos',
        'probe.p535', 'probe.p536', 'probe.p537', 'probe.p538', 'probe.p539', 'probe.p540', 'probe.p541', 'probe.p542', 'probe.p543', 'probe.p544', 'probe.p545', 'probe.p546', 'probe.p547', 'probe.p548', 'probe.p549', 'probe.p550', 'probe.p551', 'probe.p552', 'probe.p553', 'probe.vj_fx', 'probe.vj_fx2',
        'probe.p554', 'probe.p555', 'probe.p556', 'probe.p557', 'probe.p558', 'probe.p559', 'probe.p560', 'probe.p561', 'probe.p562', 'probe.p563', 'probe.p564', 'probe.p565', 'probe.p566', 'probe.p567', 'probe.p568', 'probe.rv_fx',
        'probe.p569', 'probe.p570', 'probe.p572', 'probe.p573', 'probe.p574',
-       'probe.p575', 'probe.p576', 'probe.p577', 'probe.p578'
+       'probe.p575', 'probe.p576', 'probe.p577', 'probe.p578',
+       'probe.p579', 'probe.p580', 'probe.p581', 'probe.p582',
+       'probe.p583', 'probe.p584', 'probe.p585', 'probe.bm_fx'
              ]) AS n) s),
   'OK (todos los veredictos publicados)';
 
