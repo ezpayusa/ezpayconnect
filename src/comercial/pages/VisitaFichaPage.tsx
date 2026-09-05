@@ -7,7 +7,7 @@ import {
   obtenerVisita, reporteDeVisita, adjuntosDeVisita, listarResultados, configVisitasEfectiva,
   checkinVisita, checkoutVisita, guardarReporte,
   subirAdjuntoVisita, urlFirmada, validarAdjunto, ACCEPT_ADJUNTO,
-  type VisitaComercial, type ItemCatalogo, type ResultadoCheckin,
+  type VisitaComercialGeo, type ItemCatalogo, type ResultadoCheckin,
 } from '../lib/api'
 import { reportarError, type ErrorInline } from '../lib/reportarError'
 import { AgendarVisita, AccionesVisitaPlanificada } from '../components/AgendaVisita'
@@ -22,7 +22,7 @@ import { pedirUbicacion, coordsDe, avisoPrevio, type EstadoGeo } from '../lib/ge
 export default function VisitaFichaPage() {
   const { id = '' } = useParams()
   const { perfil } = useAuth()
-  const [v, setV] = useState<VisitaComercial | null>(null)
+  const [v, setV] = useState<VisitaComercialGeo | null>(null)
   const [reporte, setReporte] = useState<{ id: string; resultado: string; resumen: string; compromisos: string | null } | null>(null)
   const [adjuntos, setAdjuntos] = useState<{ id: string; storage_path: string }[]>([])
   const [progreso, setProgreso] = useState<number | null>(null)
@@ -47,7 +47,7 @@ export default function VisitaFichaPage() {
       obtenerVisita(id), reporteDeVisita(id), adjuntosDeVisita(id), listarResultados(), configVisitasEfectiva(),
     ])
     if (vi.error) reportarError(vi.error)
-    setV((vi.data ?? null) as unknown as VisitaComercial | null)
+    setV((vi.data ?? null) as unknown as VisitaComercialGeo | null)
     setReporte((re.data ?? null) as never)
     if (ad.data) setAdjuntos(ad.data as never)
     if (cat.data) { setResultados(cat.data as ItemCatalogo[]); if (!resultado) setResultado((cat.data[0] as ItemCatalogo)?.codigo ?? '') }

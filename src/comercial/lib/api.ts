@@ -177,6 +177,18 @@ export type VisitaComercial = {
   hora_planificada: string | null       // 'HH:MM:SS' tal como lo devuelve Postgres
   planificada_por: string               // quien LLAMO a planificar_visita (puede ser el supervisor)
   cancelacion_motivo: string | null
+  prospecto?: { nombre: string } | null
+}
+
+/**
+ * Lo que devuelve `obtenerVisita`, y NADA MAS. La ficha de la visita necesita saber si el prospecto
+ * tiene coordenada cargada para poder explicar un check-in sin verificar: sin ese dato, "no
+ * verificado" se lee como "el asesor mintio" cuando la causa puede ser que el prospecto nunca tuvo
+ * direccion georreferenciada. Es la unica pantalla que lo usa, y lo usa como un booleano
+ * (`lat == null`), no para calcular nada — la distancia la calcula la RPC y llega en
+ * `checkin_distancia_m`.
+ */
+export type VisitaComercialGeo = Omit<VisitaComercial, 'prospecto'> & {
   prospecto?: { nombre: string; lat: number | null; lng: number | null } | null
 }
 
@@ -192,11 +204,22 @@ const COLS_VISITA =
   'checkin_cliente_at,checkin_origen,checkin_con_ubicacion,checkin_precision_m,' +
   'checkin_distancia_m,checkin_verificado,checkin_motivo,checkout_at,checkout_con_ubicacion,' +
   'hora_planificada,planificada_por,cancelacion_motivo,' +
-  'prospecto:prospectos!visitas_comerciales_prospecto_id_fkey(nombre,lat,lng)'
+  'prospecto:prospectos!visitas_comerciales_prospecto_id_fkey(nombre)'
 
 // Lista EXPLÍCITA de columnas, sin las de coordenada: desde la mig 277 `authenticated` no tiene
-// SELECT sobre lat/lng, así que un `select('*')` falla con permiso denegado. Es a propósito — el
-// que supervisa necesita saber si alguien estuvo donde dijo, no dónde estuvo.
+// SELECT sobre visitas_comerciales.checkin_lat/lng, así que un `select('*')` falla con permiso
+// denegado. Es a propósito — el que supervisa necesita saber si alguien estuvo donde dijo, no dónde
+// estuvo.
+//
+// El embed del prospecto sigue el MISMO criterio, y por eso está partido en dos. `prospectos.lat/lng`
+// sí son legibles para `authenticated` (son la dirección del negocio, no el rastro de una persona),
+// pero eso no es razón para mandarlas a toda pantalla que liste visitas: Equipo, Próximas y la lista
+// de la ficha del prospecto no las usan, y bajaban las coordenadas de la cartera entera a cada
+// carga. Sólo la ficha de UNA visita las pide, y sólo para saber si son null.
+const COLS_VISITA_GEO =
+  COLS_VISITA.replace(
+    'prospecto:prospectos!visitas_comerciales_prospecto_id_fkey(nombre)',
+    'prospecto:prospectos!visitas_comerciales_prospecto_id_fkey(nombre,lat,lng)')
 const COLS_JORNADA =
   'id,asesor_id,pais_id,fecha,inicio_at,inicio_precision_m,inicio_con_ubicacion,' +
   'fin_at,fin_precision_m,fin_con_ubicacion,notas_cierre'
@@ -227,8 +250,9 @@ export async function visitasDelDia(fecha: string) {
     .eq('fecha_planificada', fecha).order('created_at', { ascending: true })
 }
 
+/** La ÚNICA consulta con el embed geo: la ficha de la visita, que es donde se hace el check-in. */
 export async function obtenerVisita(id: string) {
-  return supabase.from('visitas_comerciales').select(COLS_VISITA).eq('id', id).maybeSingle()
+  return supabase.from('visitas_comerciales').select(COLS_VISITA_GEO).eq('id', id).maybeSingle()
 }
 
 export async function reporteDeVisita(visitaId: string) {
