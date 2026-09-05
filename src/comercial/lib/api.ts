@@ -173,6 +173,10 @@ export type VisitaComercial = {
   checkin_verificado: boolean
   checkin_motivo: string | null
   checkout_at: string | null
+  checkout_con_ubicacion: boolean | null
+  hora_planificada: string | null       // 'HH:MM:SS' tal como lo devuelve Postgres
+  planificada_por: string               // quien LLAMO a planificar_visita (puede ser el supervisor)
+  cancelacion_motivo: string | null
   prospecto?: { nombre: string; lat: number | null; lng: number | null } | null
 }
 
@@ -186,7 +190,8 @@ export type ResultadoCheckin = {
 const COLS_VISITA =
   'id,prospecto_id,asesor_id,pais_id,jornada_id,fecha_planificada,estado,checkin_at,' +
   'checkin_cliente_at,checkin_origen,checkin_con_ubicacion,checkin_precision_m,' +
-  'checkin_distancia_m,checkin_verificado,checkin_motivo,checkout_at,' +
+  'checkin_distancia_m,checkin_verificado,checkin_motivo,checkout_at,checkout_con_ubicacion,' +
+  'hora_planificada,planificada_por,cancelacion_motivo,' +
   'prospecto:prospectos!visitas_comerciales_prospecto_id_fkey(nombre,lat,lng)'
 
 // Lista EXPLÍCITA de columnas, sin las de coordenada: desde la mig 277 `authenticated` no tiene
@@ -256,8 +261,36 @@ export async function cerrarJornada(
   })
 }
 
-export async function planificarVisita(prospectoId: string, fecha: string) {
-  return supabase.rpc('planificar_visita', { p_prospecto_id: prospectoId, p_fecha: fecha })
+/** p_hora va SIEMPRE en el payload, null si no se envia: el contrato de la RPC es (uuid, date, time). */
+export async function planificarVisita(prospectoId: string, fecha: string, hora?: string | null) {
+  return supabase.rpc('planificar_visita', { p_prospecto_id: prospectoId, p_fecha: fecha, p_hora: hora ?? null })
+}
+
+export async function reprogramarVisita(visitaId: string, fecha: string, hora?: string | null) {
+  return supabase.rpc('reprogramar_visita_comercial', { p_visita_id: visitaId, p_fecha: fecha, p_hora: hora ?? null })
+}
+
+export async function cancelarVisita(visitaId: string, motivo: string) {
+  return supabase.rpc('cancelar_visita_comercial', { p_visita_id: visitaId, p_motivo: motivo })
+}
+
+/**
+ * Proximas visitas: planificadas y posteriores a `desde`. Sin .eq de asesor: la policy arma el
+ * conjunto (el asesor lo suyo, el supervisor su cartera). El orden pone la hora NULL al final.
+ */
+export async function visitasProximas(desde: string = new Date().toISOString().slice(0, 10)) {
+  return supabase.from('visitas_comerciales').select(COLS_VISITA)
+    .eq('estado', 'planificada').gt('fecha_planificada', desde)
+    .order('fecha_planificada', { ascending: true })
+    .order('hora_planificada', { ascending: true, nullsFirst: false })
+}
+
+/** Todas las visitas de un prospecto, la mas reciente primero. El .eq es la clave del join. */
+export async function visitasDelProspecto(prospectoId: string) {
+  return supabase.from('visitas_comerciales').select(COLS_VISITA)
+    .eq('prospecto_id', prospectoId)
+    .order('fecha_planificada', { ascending: false })
+    .order('hora_planificada', { ascending: false, nullsFirst: false })
 }
 
 /**

@@ -1,13 +1,15 @@
 import { useEffect, useState } from 'react'
 import { useParams, Link } from 'react-router-dom'
 import { toast } from 'sonner'
-import { ArrowLeft } from 'lucide-react'
+import { ArrowLeft, CheckCircle2, AlertTriangle, MapPinOff } from 'lucide-react'
 import { useAuth } from '@/hooks/useAuth'
 import {
   obtenerProspecto, listarContactos, listarEstados, listarTipos,
-  cambiarEstado, guardarContacto, actualizarProspecto, planificarVisita,
-  type Prospecto, type Contacto, type ItemCatalogo,
+  cambiarEstado, guardarContacto, actualizarProspecto, visitasDelProspecto,
+  type Prospecto, type Contacto, type ItemCatalogo, type VisitaComercial,
 } from '../lib/api'
+import { AgendarVisita, AccionesVisitaPlanificada } from '../components/AgendaVisita'
+import { fmtFecha, fmtHora } from '../lib/agenda'
 import { reportarError, type ErrorInline } from '../lib/reportarError'
 
 // Ficha: datos + estado + contactos. Misma ruta para asesor y supervisor.
@@ -45,12 +47,12 @@ export default function ProspectoFichaPage() {
   const [cPuesto, setCPuesto] = useState('')
   const [cEmail, setCEmail] = useState('')
   const [errContacto, setErrContacto] = useState<ErrorInline>(null)
-  const [planificando, setPlanificando] = useState(false)
+  const [visitas, setVisitas] = useState<VisitaComercial[]>([])
 
   const cargar = async () => {
     setCargando(true)
-    const [pr, co, es, ti] = await Promise.all([
-      obtenerProspecto(id), listarContactos(id), listarEstados(), listarTipos(),
+    const [pr, co, es, ti, vs] = await Promise.all([
+      obtenerProspecto(id), listarContactos(id), listarEstados(), listarTipos(), visitasDelProspecto(id),
     ])
     if (pr.error) reportarError(pr.error)
     const fila = (pr.data ?? null) as unknown as Prospecto | null
@@ -64,6 +66,7 @@ export default function ProspectoFichaPage() {
     if (co.data) setContactos(co.data as Contacto[])
     if (es.data) setEstados(es.data as ItemCatalogo[])
     if (ti.data) setTipos(ti.data as ItemCatalogo[])
+    if (vs.data) setVisitas(vs.data as unknown as VisitaComercial[])
     setCargando(false)
   }
 
@@ -114,14 +117,6 @@ export default function ProspectoFichaPage() {
     toast.success('Contacto agregado')
     setCNombre(''); setCPuesto(''); setCEmail('')
     void cargar()
-  }
-
-  const onPlanificar = async () => {
-    setPlanificando(true)
-    const { error } = await planificarVisita(id, new Date().toISOString().slice(0, 10))
-    setPlanificando(false)
-    if (error) { reportarError(error, { onRecargar: () => void cargar() }); return }
-    toast.success('Visita planificada para hoy')
   }
 
   if (cargando) return <p className="text-sm text-gray-500">Cargando…</p>
@@ -198,17 +193,45 @@ export default function ProspectoFichaPage() {
         </div>
       </section>
 
-      {/* ---- visita ---- */}
+      {/* ---- visitas ---- */}
       <section className="rounded-lg border bg-white p-4">
-        <h2 className="font-semibold text-gray-900">Visita</h2>
-        <p className="mt-1 text-xs text-gray-600">
-          Se planifica para hoy y aparece en tu jornada. El check-in se hace desde ahí.
-        </p>
-        <button type="button" id="btn-planificar" onClick={onPlanificar} disabled={planificando}
-          className="mt-2 rounded-md border border-[#1E5C8E] px-3 py-1.5 text-sm text-[#1E5C8E] hover:bg-blue-50 disabled:opacity-50">
-          Planificar visita para hoy
-        </button>
-        <Link to="/comercial/hoy" className="ml-3 text-sm text-[#1E5C8E]">Ir a mi jornada →</Link>
+        <div className="flex items-baseline justify-between">
+          <h2 className="font-semibold text-gray-900">Visitas</h2>
+          <span className="text-xs text-gray-500">{visitas.length}</span>
+        </div>
+        {/* Visible para asesor y supervisor: quien puede agendar lo decide la RPC (42501). */}
+        <div className="mt-2">
+          <AgendarVisita prospectoId={id} onAgendada={() => void cargar()} />
+        </div>
+        {visitas.length === 0 ? (
+          <p className="mt-3 text-sm text-gray-500">Sin visitas todavía.</p>
+        ) : (
+          <ul className="mt-3 divide-y">
+            {visitas.map(vi => (
+              <li key={vi.id} className="py-2" data-testid={`visita-${vi.id}`}>
+                <div className="flex items-start justify-between gap-3">
+                  <Link to={`/comercial/visitas/${vi.id}`} className="min-w-0 text-sm hover:text-[#1E5C8E]">
+                    <span className="font-medium text-gray-900">{fmtFecha(vi.fecha_planificada)}</span>
+                    <span className="text-gray-600"> · {fmtHora(vi.hora_planificada)}</span>
+                  </Link>
+                  <div className="flex shrink-0 items-center gap-2 text-xs">
+                    {vi.checkin_at && (vi.checkin_verificado
+                      ? <span className="flex items-center gap-1 text-green-700"><CheckCircle2 className="h-3.5 w-3.5" />verificada</span>
+                      : !vi.checkin_con_ubicacion
+                        ? <span className="flex items-center gap-1 text-gray-500"><MapPinOff className="h-3.5 w-3.5" />sin ubicación</span>
+                        : <span className="flex items-center gap-1 text-amber-700"><AlertTriangle className="h-3.5 w-3.5" />sin verificar</span>)}
+                    <span className="rounded-full bg-gray-100 px-2 py-0.5 text-gray-700">{vi.estado}</span>
+                  </div>
+                </div>
+                {vi.estado === 'cancelada' && vi.cancelacion_motivo && (
+                  <p className="mt-1 text-xs text-gray-500">Cancelada: {vi.cancelacion_motivo}</p>
+                )}
+                <AccionesVisitaPlanificada visita={vi} onCambio={() => void cargar()} />
+              </li>
+            ))}
+          </ul>
+        )}
+        <Link to="/comercial/hoy" className="mt-3 inline-block text-sm text-[#1E5C8E]">Ir a mi jornada →</Link>
       </section>
 
       {/* ---- estado ---- */}

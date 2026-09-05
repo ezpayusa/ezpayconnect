@@ -125,8 +125,8 @@ describe('frente visitas — PA015 a PA025', () => {
     expect(r.mensaje).toBe('No se pudo completar la operación. Intentá de nuevo.')
   })
 
-  it('ninguno de los once cae en "sin mapear"', () => {
-    for (const n of [15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25]) {
+  it('ninguno de los trece cae en "sin mapear"', () => {
+    for (const n of [15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27]) {
       const r = mapearErrorRpc(pg('PA0' + String(n).padStart(2, '0'), 'texto'))
       expect(r.sinMapear, 'PA0' + n + ' quedó sin mapear').toBeUndefined()
     }
@@ -170,16 +170,38 @@ describe('storage — el MISMO mapa, con el código normalizado', () => {
   })
 })
 
+describe('agenda (mig 280) — PA026 y PA027', () => {
+  it('PA026 (fecha pasada) -> inline en el campo fecha, con texto propio', () => {
+    const r = mapearErrorRpc(pg('PA026', 'fecha_pasada'))
+    expect(r.destino).toBe('inline')
+    expect(r.campo).toBe('fecha')
+    expect(r.mensaje).toBe('La fecha ya pasó. Elegí hoy o una fecha futura.')
+    expect(r.reportar).toBe(false)
+  })
+  it('PA027 (no planificada / sin motivo) -> inline en "visita", con texto propio', () => {
+    const r = mapearErrorRpc(pg('PA027', 'visita_no_planificada'))
+    expect(r.destino).toBe('inline')
+    expect(r.campo).toBe('visita')
+    expect(r.mensaje).toMatch(/ya no está planificada/)
+    expect(r.mensaje).toMatch(/falta el motivo/)
+    expect(r.sinMapear).toBeUndefined()
+  })
+  it('el texto de la base (fecha_pasada / motivo_requerido) NO se muestra: son identificadores, no frases', () => {
+    expect(mapearErrorRpc(pg('PA026', 'fecha_pasada')).mensaje).not.toMatch(/fecha_pasada/)
+    expect(mapearErrorRpc(pg('PA027', 'motivo_requerido')).mensaje).not.toMatch(/motivo_requerido/)
+  })
+})
+
 describe('los tres negativos — que el mapa envejezca bien y no rompa', () => {
-  // EL IMPORTANTE. Usa el PRÓXIMO ERRCODE LIBRE, que hoy es PA026 (PA001-PA025 están tomados por
-  // las migs 264/272/273/274). Este test ya se rompió una vez, al mapear PA015-PA025: es
-  // exactamente lo que tiene que hacer. Cuando alguien reserve PA026, moverlo al siguiente libre
+  // EL IMPORTANTE. Usa el PRÓXIMO ERRCODE LIBRE, que hoy es PA028 (PA001-PA027 están tomados por
+  // las migs 264/272/273/274/280). Este test ya se rompió una vez, al mapear PA015-PA025 y otra vez al mapear PA026-PA027: es
+  // exactamente lo que tiene que hacer. Cuando alguien reserve PA028, moverlo al siguiente libre
   // es parte de reservarlo.
   it('un PA0xx que NO está en el mapa NO cae en el genérico silencioso', () => {
-    const r = mapearErrorRpc(pg('PA026', 'PA026: una regla que todavia no mapeamos'))
+    const r = mapearErrorRpc(pg('PA028', 'PA028: una regla que todavia no mapeamos'))
     expect(r.sinMapear).toBe(true)
-    expect(r.code).toBe('PA026')
-    expect(r.mensaje).toContain('PA026')          // el código queda A LA VISTA
+    expect(r.code).toBe('PA028')
+    expect(r.mensaje).toContain('PA028')          // el código queda A LA VISTA
     expect(r.mensaje).toContain('una regla que todavia no mapeamos')
     expect(r.reportar).toBe(true)                 // y llega a Sentry
     expect(r.mensaje).not.toBe('No se pudo completar la operación. Intentá de nuevo.')

@@ -2,7 +2,8 @@ import { useEffect, useState } from 'react'
 import { useParams, Link, Navigate } from 'react-router-dom'
 import { ArrowLeft, CheckCircle2, AlertTriangle, CloudOff } from 'lucide-react'
 import { useAuth } from '@/hooks/useAuth'
-import { jornadasDelDia, visitasDelDia, asesoresVisibles, type Jornada, type VisitaComercial } from '../lib/api'
+import { jornadasDelDia, visitasDelDia, visitasProximas, asesoresVisibles, type Jornada, type VisitaComercial } from '../lib/api'
+import { fmtFecha, fmtHora } from '../lib/agenda'
 import { reportarError } from '../lib/reportarError'
 
 const HOY = () => new Date().toISOString().slice(0, 10)
@@ -14,12 +15,13 @@ export default function EquipoAsesorPage() {
   const [nombre, setNombre] = useState<string>('')
   const [jornada, setJornada] = useState<Jornada | null>(null)
   const [visitas, setVisitas] = useState<VisitaComercial[]>([])
+  const [proximas, setProximas] = useState<VisitaComercial[]>([])
   const [cargando, setCargando] = useState(true)
 
   useEffect(() => {
     void (async () => {
       setCargando(true)
-      const [a, j, v] = await Promise.all([asesoresVisibles(), jornadasDelDia(HOY()), visitasDelDia(HOY())])
+      const [a, j, v, px] = await Promise.all([asesoresVisibles(), jornadasDelDia(HOY()), visitasDelDia(HOY()), visitasProximas(HOY())])
       if (a.data) {
         const f = (a.data as unknown as { id: string; codigo_asesor: string; perfil?: { nombre_completo: string | null } | null }[])
           .find(x => x.id === asesorId)
@@ -29,6 +31,8 @@ export default function EquipoAsesorPage() {
       else setJornada(((j.data ?? []) as unknown as Jornada[]).find(x => x.asesor_id === asesorId) ?? null)
       if (v.error) reportarError(v.error)
       else setVisitas(((v.data ?? []) as unknown as VisitaComercial[]).filter(x => x.asesor_id === asesorId))
+      if (px.error) reportarError(px.error)
+      else setProximas(((px.data ?? []) as unknown as VisitaComercial[]).filter(x => x.asesor_id === asesorId))
       setCargando(false)
     })()
   }, [asesorId])
@@ -104,6 +108,27 @@ export default function EquipoAsesorPage() {
                     <p className="mt-1 text-xs text-gray-500">Por qué no verificó: {v.checkin_motivo}</p>
                   )}
                 </Link>
+              </li>
+            ))}
+          </ul>
+        )}
+      </section>
+
+      <section className="rounded-lg border bg-white p-4">
+        <div className="flex items-baseline justify-between">
+          <h2 className="font-semibold text-gray-900">Próximas</h2>
+          <span className="text-xs text-gray-500">{proximas.length}</span>
+        </div>
+        {/* Sin acciones: el supervisor reprograma o cancela desde la ficha del prospecto. */}
+        {proximas.length === 0 ? (
+          <p className="mt-2 text-sm text-gray-500">Sin visitas agendadas a futuro.</p>
+        ) : (
+          <ul className="mt-2 divide-y">
+            {proximas.slice(0, 3).map(p => (
+              <li key={p.id} className="flex items-center gap-2 py-2 text-sm">
+                <span className="shrink-0 font-medium text-gray-900">{fmtFecha(p.fecha_planificada)}</span>
+                <span className="shrink-0 text-gray-500">{fmtHora(p.hora_planificada)}</span>
+                <span className="flex-1 truncate">{p.prospecto?.nombre ?? 'prospecto'}</span>
               </li>
             ))}
           </ul>

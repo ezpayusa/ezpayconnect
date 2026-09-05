@@ -2,7 +2,8 @@ import { useEffect, useState } from 'react'
 import { Link, Navigate } from 'react-router-dom'
 import { CheckCircle2, AlertTriangle, Clock } from 'lucide-react'
 import { useAuth } from '@/hooks/useAuth'
-import { jornadasDelDia, visitasDelDia, asesoresVisibles, type Jornada, type VisitaComercial } from '../lib/api'
+import { jornadasDelDia, visitasDelDia, visitasProximas, asesoresVisibles, type Jornada, type VisitaComercial } from '../lib/api'
+import { fmtFecha, fmtHora } from '../lib/agenda'
 import { reportarError } from '../lib/reportarError'
 
 const HOY = () => new Date().toISOString().slice(0, 10)
@@ -22,15 +23,17 @@ export default function EquipoPage() {
   const [asesores, setAsesores] = useState<Asesor[]>([])
   const [jornadas, setJornadas] = useState<Jornada[]>([])
   const [visitas, setVisitas] = useState<VisitaComercial[]>([])
+  const [proximas, setProximas] = useState<VisitaComercial[]>([])
   const [cargando, setCargando] = useState(true)
 
   useEffect(() => {
     void (async () => {
       setCargando(true)
-      const [a, j, v] = await Promise.all([asesoresVisibles(), jornadasDelDia(HOY()), visitasDelDia(HOY())])
+      const [a, j, v, px] = await Promise.all([asesoresVisibles(), jornadasDelDia(HOY()), visitasDelDia(HOY()), visitasProximas(HOY())])
       if (a.error) reportarError(a.error); else setAsesores((a.data ?? []) as unknown as Asesor[])
       if (j.error) reportarError(j.error); else setJornadas((j.data ?? []) as unknown as Jornada[])
       if (v.error) reportarError(v.error); else setVisitas((v.data ?? []) as unknown as VisitaComercial[])
+      if (px.error) reportarError(px.error); else setProximas((px.data ?? []) as unknown as VisitaComercial[])
       setCargando(false)
     })()
   }, [])
@@ -60,6 +63,8 @@ export default function EquipoPage() {
             const mias = visitas.filter(x => x.asesor_id === a.id)
             const hechas = mias.filter(x => x.checkin_at != null)
             const sinVerificar = hechas.filter(x => !x.checkin_verificado)
+            // agrupado en memoria por asesor, igual que las de hoy: la policy ya trajo la cartera entera
+            const prox = proximas.filter(x => x.asesor_id === a.id)
             return (
               <li key={a.id}>
                 <Link to={`/comercial/equipo/${a.id}`} className="block rounded-lg border bg-white p-3 hover:border-[#1E5C8E]">
@@ -81,6 +86,10 @@ export default function EquipoPage() {
                     </div>
                     <div className="shrink-0 text-right text-xs">
                       <p className="text-gray-700">{hechas.length}/{mias.length} visitas</p>
+                      <p className="text-gray-500">Próximas: {prox.length}</p>
+                      {prox.slice(0, 3).map(p => (
+                        <p key={p.id} className="truncate text-gray-500">{fmtFecha(p.fecha_planificada)} {fmtHora(p.hora_planificada)} · {p.prospecto?.nombre ?? ''}</p>
+                      ))}
                       {sinVerificar.length > 0 && (
                         <p className="mt-0.5 flex items-center justify-end gap-1 text-amber-700">
                           <AlertTriangle className="h-3 w-3" />{sinVerificar.length} sin verificar

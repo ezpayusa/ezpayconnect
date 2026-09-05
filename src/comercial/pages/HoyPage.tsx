@@ -3,11 +3,12 @@ import { Link } from 'react-router-dom'
 import { toast } from 'sonner'
 import { MapPin, MapPinOff, CheckCircle2, AlertTriangle } from 'lucide-react'
 import {
-  jornadaDeHoy, visitasDelDia, abrirJornada, cerrarJornada, configVisitasEfectiva,
+  jornadaDeHoy, visitasDelDia, visitasProximas, abrirJornada, cerrarJornada, configVisitasEfectiva,
   type Jornada, type VisitaComercial,
 } from '../lib/api'
 import { reportarError } from '../lib/reportarError'
 import { pedirUbicacion, coordsDe, avisoPrevio, type EstadoGeo } from '../lib/geo'
+import { fmtFecha, fmtHora } from '../lib/agenda'
 
 const HOY = () => new Date().toISOString().slice(0, 10)
 
@@ -19,6 +20,7 @@ const HOY = () => new Date().toISOString().slice(0, 10)
 export default function HoyPage() {
   const [jornada, setJornada] = useState<Jornada | null>(null)
   const [visitas, setVisitas] = useState<VisitaComercial[]>([])
+  const [proximas, setProximas] = useState<VisitaComercial[]>([])
   const [geo, setGeo] = useState<EstadoGeo>({ estado: 'inicial' })
   const [precisionMax, setPrecisionMax] = useState<number | null>(null)
   const [cargando, setCargando] = useState(true)
@@ -27,10 +29,11 @@ export default function HoyPage() {
 
   const cargar = useCallback(async () => {
     setCargando(true)
-    const [j, v, cfg] = await Promise.all([jornadaDeHoy(), visitasDelDia(HOY()), configVisitasEfectiva()])
+    const [j, v, cfg, px] = await Promise.all([jornadaDeHoy(), visitasDelDia(HOY()), configVisitasEfectiva(), visitasProximas(HOY())])
     if (j.error) reportarError(j.error); else setJornada((j.data ?? null) as unknown as Jornada | null)
     if (v.error) reportarError(v.error); else setVisitas((v.data ?? []) as unknown as VisitaComercial[])
     if (cfg.data && Array.isArray(cfg.data) && cfg.data[0]) setPrecisionMax(Number(cfg.data[0].precision_max_m))
+    if (px.error) reportarError(px.error); else setProximas((px.data ?? []) as unknown as VisitaComercial[])
     setCargando(false)
   }, [])
 
@@ -148,6 +151,28 @@ export default function HoyPage() {
                       : <span className="flex items-center gap-1 text-xs text-amber-700"><AlertTriangle className="h-3.5 w-3.5" />sin verificar</span>
                   )}
                   <span className="rounded-full bg-gray-100 px-2 py-0.5 text-xs text-gray-700">{v.estado}</span>
+                </Link>
+              </li>
+            ))}
+          </ul>
+        )}
+      </section>
+
+      <section className="rounded-lg border bg-white p-4">
+        <div className="flex items-baseline justify-between">
+          <h2 className="font-semibold text-gray-900">Próximas visitas</h2>
+          <span className="text-xs text-gray-500">{proximas.length}</span>
+        </div>
+        {proximas.length === 0 ? (
+          <p className="mt-2 text-sm text-gray-500">No tenés visitas agendadas a futuro.</p>
+        ) : (
+          <ul className="mt-2 divide-y">
+            {proximas.map(p => (
+              <li key={p.id}>
+                <Link to={`/comercial/visitas/${p.id}`} className="flex items-center gap-2 py-2 text-sm hover:text-[#1E5C8E]">
+                  <span className="shrink-0 font-medium text-gray-900">{fmtFecha(p.fecha_planificada)}</span>
+                  <span className="shrink-0 text-gray-500">{fmtHora(p.hora_planificada)}</span>
+                  <span className="flex-1 truncate">{p.prospecto?.nombre ?? 'prospecto'}</span>
                 </Link>
               </li>
             ))}

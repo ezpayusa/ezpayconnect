@@ -10,6 +10,8 @@ import {
   type VisitaComercial, type ItemCatalogo, type ResultadoCheckin,
 } from '../lib/api'
 import { reportarError, type ErrorInline } from '../lib/reportarError'
+import { AgendarVisita, AccionesVisitaPlanificada } from '../components/AgendaVisita'
+import { fmtFecha, fmtHora } from '../lib/agenda'
 import { pedirUbicacion, coordsDe, avisoPrevio, type EstadoGeo } from '../lib/geo'
 
 // Ficha de visita: check-in, check-out, informe y adjuntos.
@@ -158,9 +160,23 @@ export default function VisitaFichaPage() {
           </p>
         )}
         <p className="mt-0.5 text-xs text-gray-500">
-          {v.fecha_planificada} · estado {v.estado}
+          {fmtFecha(v.fecha_planificada)} · {fmtHora(v.hora_planificada)} · estado {v.estado}
           {v.prospecto?.lat == null && ' · el prospecto NO tiene coordenada cargada'}
         </p>
+        {v.estado === 'cancelada' && (
+          <p className="mt-1 text-xs text-red-800">Cancelada{v.cancelacion_motivo ? `: ${v.cancelacion_motivo}` : ''}</p>
+        )}
+      </section>
+
+      {/* ---- agenda ---- */}
+      <section className="rounded-lg border bg-white p-4">
+        <h2 className="font-semibold text-gray-900">Agenda</h2>
+        {/* "Agendar seguimiento" siempre que la visita cargue; reprogramar/cancelar solo si esta
+            planificada (el componente no renderiza nada en otro estado). La RPC decide quien puede. */}
+        <div className="mt-2">
+          <AgendarVisita prospectoId={v.prospecto_id} label="Agendar seguimiento" onAgendada={() => void cargar()} />
+        </div>
+        <AccionesVisitaPlanificada visita={v} onCambio={() => void cargar()} />
       </section>
 
       <section className="rounded-lg border bg-white p-4">

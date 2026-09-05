@@ -128,6 +128,10 @@ const MAPA: Record<string, Entrada> = {
   PA024: { destino: 'toast', reportar: false },
   // Ya había check-in: la ficha que el usuario está viendo está vieja.
   PA025: { destino: 'toast', recargar: 'visita', reportar: false },
+  // --- Agenda (mig 280) ----------------------------------------------------------------------
+  PA026: { texto: 'La fecha ya pasó. Elegí hoy o una fecha futura.', destino: 'inline', campo: 'fecha', reportar: false },
+  PA027: { texto: 'Esta visita ya no está planificada (tiene check-in, se realizó o se canceló), o falta el motivo.',
+           destino: 'inline', campo: 'visita', reportar: false },
 }
 
 const ES_PA = /^PA\d{3}$/
