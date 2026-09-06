@@ -37,6 +37,9 @@
 -- QUE LO MIDE
 -- -----------
 --   P631 — censo: anon sin los 6 de escritura/DDL, CON el SELECT (vino ROJO con los 7).
+--   P635 — EJERCITA a anon contra 3 tablas dependientes: 0 filas y SIN 42501. Es la que habria
+--          estado roja ANTES de aplicar la primera version, y la que el dry-run de catalogo no ve.
+--   P636 — contraprueba de P635: revoca el SELECT de verdad dentro de un savepoint y lo deshace.
 --   P632 — authenticated: los 4 de DML si, los otros 3 no (vino ROJO con 3 de mas).
 --   P633 — CONTROL POSITIVO: un usuario real lee su propio perfil por SELECT. Verde ANTES y
 --          DESPUES: es lo que prueba que la revocacion no se paso de la raya.
@@ -46,12 +49,15 @@
 -- POR QUE **NO** SE REVOCA EL SELECT DE anon. MEDIDO, Y APRENDIDO A LOS GOLPES.
 -- ----------------------------------------------------------------------------
 -- La primera version de esta migracion hacia `REVOKE ALL ... FROM anon` y **rompio produccion**.
--- Causa: 22 tablas donde anon tiene SELECT tienen policies cuyo USING consulta `perfiles`
--- (`auditoria_logs`, `campana_metricas`, `clinicas`, `configuracion_sistema`,
--- `cuentas_bancarias_pais`, `cuentas_proveedor`, `disponibilidad_medico`, `empresas_proveedoras`,
--- `invitaciones_clinica`, `invitaciones_medico`, `notificaciones_email`, `pagos_proveedor`,
--- `planes_publicidad_config`, `productos_empresa`, `signos_vitales`, `solicitudes_campana`,
--- `usuario_roles`, `visitas_agendadas`, entre otras).
+-- Causa: **toda policy que consulta `perfiles` en su USING** deja de poder evaluarse.
+-- Son **36 policies en 29 tablas** (medido 6-sep-2026 con
+--   SELECT count(*), count(DISTINCT tablename) FROM pg_policies WHERE schemaname='public'
+--    AND (coalesce(qual,'') ILIKE '%perfiles%' OR coalesce(with_check,'') ILIKE '%perfiles%')
+-- ). Entre ellas `clinicas`, `medicos`, `empresas_proveedoras`, `productos_empresa`,
+-- `cuentas_proveedor`, `signos_vitales`, `usuario_roles` y `visitas_agendadas`.
+-- La cifra lleva fecha porque es un estado de la base, no una constante: volver a medirla antes de
+-- citarla. (La primera version de este comentario decia "22" — un subconjunto de otro query,
+-- escrito de memoria. No repetir eso.)
 --
 -- **Una policy se evalua con los privilegios del LLAMANTE, no del dueno de la tabla.** Antes, un
 -- `EXISTS (SELECT 1 FROM perfiles WHERE id = auth.uid() ...)` daba `false` en silencio para anon

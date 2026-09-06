@@ -7,6 +7,12 @@ Stack: React + Vite + TypeScript, Supabase / Postgres, deploy en Vercel, repo en
 - Diagnosticar antes de tocar nada. Rastrear el flujo de datos de punta a punta y confirmar la causa raíz (idealmente contra la DB viva) antes de escribir código.
 - Un commit por bloque, con mensaje claro. Nada de un commit gigante al final.
 - Verificar en cada cambio: tsc -p tsconfig.app.json (baseline actual = 82 errores; objetivo = 0 nuevos) + vite build verde + prueba por rol en prod.
+- **Una policy se evalúa con los privilegios del LLAMANTE.** Revocar SELECT a un rol sobre una
+  tabla que otras policies consultan en su `USING` **no niega en silencio: lanza 42501** y rompe
+  esas tablas para ese rol. Toda migración de privilegios lleva una probe que **EJERCITE** al rol
+  afectado contra una tabla dependiente (0 filas, sin error) — el dry-run de catálogo no lo ve,
+  porque mira quién tiene qué y no qué pasa cuando se usa. **Mig 284, 6-sep: rompió prod unos
+  minutos por esto** (P635 es la probe que faltaba, P636 su contraprueba).
 - NUNCA ampliar policies de RLS sobre tablas adyacentes a datos médicos (p. ej. campana_metricas). Para dar acceso, usar RPCs SECURITY DEFINER con search_path='', fail-closed (si el scope es NULL → 0 filas) y gate interno.
 - Probar aislamiento por rol impersonando request.jwt.claims en prod: cada rol ve lo suyo y no lo ajeno.
 - **Harness de RLS (`tests/rls/probes_escritura.sql`): OBLIGATORIO correr `python tests/rls/b2_guard.py`

@@ -14133,8 +14133,9 @@ EXCEPTION WHEN OTHERS THEN PERFORM set_config('probe.p630','FALLO ('||SQLSTATE||
 
 -- P631 — CENSO: anon sin los 6 privilegios de escritura/DDL sobre perfiles, y CON el SELECT.
 -- El SELECT se conserva a proposito y NO es una fuga —la RLS deja a anon en cero filas—: es el
--- permiso que necesitan las 22 policies que consultan `perfiles` en su USING para poder evaluarse
--- y DECIR QUE NO. Una policy corre con los privilegios del LLAMANTE: sin SELECT, ese EXISTS lanza
+-- permiso que necesita TODA policy que consulte `perfiles` en su USING para poder evaluarse y
+-- DECIR QUE NO —36 policies en 29 tablas, medido 6-sep-2026; la cifra lleva fecha porque es estado
+-- de la base, no una constante—. Una policy corre con los privilegios del LLAMANTE: sin SELECT, ese EXISTS lanza
 -- 42501 antes de decidir nada y la tabla entera deja de responderle a anon. Medido: revocarlo
 -- rompio produccion y el harness entero. Por eso el SELECT se mide como REQUISITO, no como sobra.
 SELECT set_config('role','none', true);
@@ -14146,7 +14147,7 @@ DO $$ DECLARE v_tiene text; BEGIN
    WHERE has_table_privilege('anon', 'public.perfiles', p);
   PERFORM set_config('probe.p631', CASE
     WHEN NOT has_table_privilege('anon','public.perfiles','SELECT')
-      THEN 'ROJO — SIN SELECT: las 22 policies que consultan perfiles lanzan 42501 a anon en vez de negar en silencio'
+      THEN 'ROJO — SIN SELECT: toda policy que consulta perfiles lanza 42501 a anon en vez de negar en silencio (ver P635)'
     WHEN v_tiene IS NULL
       THEN 'OK (anon sin los 6 de escritura/DDL; conserva SELECT, que las policies necesitan para evaluarse)'
     ELSE 'ROJO (anon conserva sobre perfiles: '||v_tiene||
@@ -14217,6 +14218,107 @@ DO $$ DECLARE v_malas text; v_n int; BEGIN
     WHEN v_malas IS NULL THEN 'OK (las 9 tablas del frente comercial, 7 privilegios cada una: anon en cero)'
     ELSE 'ROJO (anon tiene: '||v_malas||')' END, false);
 EXCEPTION WHEN OTHERS THEN PERFORM set_config('probe.p634','FALLO ('||SQLSTATE||' '||SQLERRM||')',false); END $$;
+
+-- ############################################################################################
+-- P635 / P636 — la clase de probe que le faltaba a toda migracion de privilegios
+-- ############################################################################################
+-- LA LECCION, del 6-sep-2026: la primera version de la mig 284 hizo `REVOKE ALL ON perfiles FROM
+-- anon` y ROMPIO PRODUCCION. El dry-run no lo vio, porque un dry-run de privilegios mira el
+-- CATALOGO —quien tiene que— y no EJERCITA al rol contra las tablas que dependen de el.
+--
+-- Una policy se evalua con los privilegios del LLAMANTE. Toda policy que consulta `perfiles` en su
+-- USING (36 policies en 29 tablas, medido 6-sep-2026) dejaba de poder evaluarse: en vez de negar en
+-- silencio —EXISTS sobre perfiles con auth.uid() NULL da false— lanzaba 42501 duro, y la tabla
+-- entera dejaba de responderle a anon.
+--
+-- P635 es esa probe: como anon, contra tres tablas dependientes. Habria estado ROJA antes de
+-- aplicar. P636 es su contraprueba: revoca el SELECT DE VERDAD dentro de un savepoint que despues
+-- deshace, y confirma que P635 se pondria roja si el privilegio faltara.
+
+-- P635 — Como ANON, sin claims: tres tablas cuyas policies consultan `perfiles`.
+-- TRES veredictos distintos, que son tres cosas distintas y no se pueden confundir:
+--   42501  -> a anon le falta un privilegio que el USING de la policy necesita. La tabla esta ROTA
+--             para anon: no niega, revienta.
+--   N > 0  -> FUGA. La policy dejo pasar filas a un anonimo.
+--   0 filas sin error -> lo correcto: la policy pudo evaluarse y dijo que no.
+SELECT set_config('role','none',true);
+SELECT set_config('request.jwt.claims', NULL, true);
+SELECT set_config('role','anon',true);
+DO $$
+DECLARE r record; v_roto text := ''; v_fuga text := ''; v_ok int := 0; v_n int; v_faltan text := '';
+BEGIN
+  FOR r IN SELECT unnest(ARRAY['public.clinicas','public.empresas_proveedoras',
+                               'public.visitas_agendadas']) AS t
+  LOOP
+    IF to_regclass(r.t) IS NULL THEN v_faltan := v_faltan||r.t||' '; CONTINUE; END IF;
+    BEGIN
+      EXECUTE 'SELECT count(*) FROM '||r.t INTO v_n;
+      IF v_n > 0 THEN v_fuga := v_fuga||r.t||'='||v_n||' ';
+      ELSE v_ok := v_ok + 1; END IF;
+    EXCEPTION WHEN insufficient_privilege THEN
+      v_roto := v_roto||r.t||' ';
+    WHEN others THEN
+      v_fuga := v_fuga||r.t||':'||SQLSTATE||' ';
+    END;
+  END LOOP;
+  PERFORM set_config('probe.p635', CASE
+    WHEN v_faltan <> '' THEN 'ROJO — TABLAS AUSENTES: '||v_faltan||'(esto NO es un rechazo)'
+    WHEN v_roto <> ''   THEN 'ROJO (42501 — la policy no pudo evaluarse: anon perdio un privilegio que el USING necesita; tablas rotas: '||v_roto||')'
+    WHEN v_fuga <> ''   THEN 'ROJO (anon ve filas — fuga: '||v_fuga||')'
+    WHEN v_ok = 3       THEN 'OK (0 filas, sin error, en las 3: la policy pudo evaluarse y dijo que no)'
+    ELSE 'FALLO (solo '||v_ok||' de 3 tablas medidas)' END, false);
+EXCEPTION WHEN OTHERS THEN PERFORM set_config('probe.p635','FALLO ('||SQLSTATE||' '||SQLERRM||')',false); END $$;
+SELECT set_config('role','none',true);
+
+-- P636 — CONTRAPRUEBA DE P635, sin tocar prod. Revoca el SELECT de anon sobre perfiles DE VERDAD,
+-- comprueba que `clinicas` pasa a dar 42501, y deshace el REVOKE con un RAISE propio (PX001) que
+-- revierte el savepoint del bloque interno. Sin esto, P635 es una promesa: pasaria en verde aunque
+-- fuera incapaz de detectar el 42501 que dice detectar.
+--
+-- El veredicto vive en una VARIABLE plpgsql y se publica DESPUES de cerrar el bloque: un set_config
+-- hecho adentro se revierte junto con el savepoint (leccion de P470-P477).
+DO $$
+DECLARE v_n int; v_caso text; v_volvio boolean;
+BEGIN
+  IF to_regclass('public.clinicas') IS NULL OR to_regclass('public.perfiles') IS NULL THEN
+    PERFORM set_config('probe.p636','ROJO — TABLAS AUSENTES (esto NO es un rechazo)',false); RETURN; END IF;
+  IF NOT has_table_privilege('anon','public.perfiles','SELECT') THEN
+    PERFORM set_config('probe.p636','N/A (anon ya esta sin SELECT: no hay nada que revocar y devolver)',false); RETURN; END IF;
+
+  BEGIN
+    REVOKE SELECT ON public.perfiles FROM anon;
+    PERFORM set_config('role','anon', true);
+    BEGIN
+      SELECT count(*) INTO v_n FROM public.clinicas;
+      v_caso := 'ROJO — CONTRAPRUEBA CAIDA (sin el SELECT sobre perfiles, anon igual leyo clinicas: '
+                ||v_n||' filas; P635 no puede detectar lo que dice detectar)';
+    EXCEPTION WHEN insufficient_privilege THEN
+      v_caso := 'OK';
+    WHEN others THEN
+      v_caso := 'FALLO (esperaba 42501, vino '||SQLSTATE||': '||SQLERRM||')';
+    END;
+    PERFORM set_config('role','none', true);
+    -- deshace el REVOKE: el savepoint del bloque revierte la DDL
+    RAISE EXCEPTION 'PROBE_UNDO' USING ERRCODE = 'PX001';
+  EXCEPTION
+    WHEN sqlstate 'PX001' THEN NULL;
+    WHEN OTHERS THEN v_caso := coalesce(v_caso, 'FALLO fuera del caso ('||SQLSTATE||' '||SQLERRM||')');
+  END;
+
+  PERFORM set_config('role','none', true);
+  -- y lo que hace que esta probe sea segura: que el privilegio VOLVIO.
+  v_volvio := has_table_privilege('anon','public.perfiles','SELECT');
+  PERFORM set_config('probe.p636', CASE
+    WHEN NOT v_volvio THEN 'ROJO — EL REVOKE NO SE DESHIZO: anon quedo sin SELECT sobre perfiles. '
+                           'Es dentro de la transaccion del harness, asi que el ROLLBACK final lo cubre, '
+                           'pero el savepoint no funciono y esta probe no se puede usar asi.'
+    WHEN v_caso = 'OK' THEN 'OK (sin el SELECT, clinicas da 42501 a anon; el REVOKE se deshizo y el privilegio volvio)'
+    ELSE coalesce(v_caso,'FALLO (sin veredicto)') END, false);
+EXCEPTION WHEN OTHERS THEN
+  PERFORM set_config('role','none', true);
+  PERFORM set_config('probe.p636','FALLO ('||SQLSTATE||' '||SQLERRM||')',false);
+END $$;
+SELECT set_config('role','none',true);
 
 -- ===== Veredictos como result set =====
 SELECT 'P1_anon_insert_citas'              AS probe, current_setting('probe.p1', true)  AS verdict, 'BLOQUEADO' AS esperado_post_fix
@@ -14909,6 +15011,8 @@ UNION ALL SELECT 'P631_CENSO_anon_perfiles',           current_setting('probe.p6
 UNION ALL SELECT 'P632_authenticated_perfiles',        current_setting('probe.p632', true), 'OK (4 DML si, 3 no)'
 UNION ALL SELECT 'P633_CONTROL_lee_propio_perfil',     current_setting('probe.p633', true), 'OK (1 fila, antes y despues)'
 UNION ALL SELECT 'P634_CENSO_anon_9_tablas_comercial', current_setting('probe.p634', true), 'OK (63 pares, anon en cero)'
+UNION ALL SELECT 'P635_anon_tablas_dependientes',       current_setting('probe.p635', true), 'OK (0 filas, sin 42501, x3)'
+UNION ALL SELECT 'P636_CONTRAPRUEBA_de_P635',           current_setting('probe.p636', true), 'OK (42501 sin el grant, y vuelve)'
 UNION ALL SELECT 'P516_SENAL_estructura_harness',  current_setting('probe.p516', true),          'OK-SENAL (no mide; el gate es b2_guard.py)'
 -- Las filas FX* son SALUD DE FIXTURE, no probes de seguridad: dicen si la precondicion que una
 -- migracion posterior empezo a exigir se pudo sembrar. Si una sale ROJO, los probes que dependen de
@@ -15100,7 +15204,8 @@ UNION ALL SELECT 'P000_CENTINELA_veredictos_no_nulos',
        'probe.p620', 'probe.p621', 'probe.p622',
        'probe.p623', 'probe.p624', 'probe.p625', 'probe.p626',
        'probe.p627', 'probe.p628', 'probe.p629', 'probe.p630',
-       'probe.p631', 'probe.p632', 'probe.p633', 'probe.p634'
+       'probe.p631', 'probe.p632', 'probe.p633', 'probe.p634',
+       'probe.p635', 'probe.p636'
              ]) AS n) s),
   'OK (todos los veredictos publicados)';
 
