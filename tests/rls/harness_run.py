@@ -96,6 +96,12 @@ def verificar(rc, salida):
                 '      El harness corre en UNA transaccion: esto es una corrida MUERTA o CORTADA,\n'
                 '      NO un harness verde. Volve a correrlo; si se repite, el problema es el SQL.' % rc,
                 None)
+    if salida.lstrip()[:1] in ('\u250c', '\u2502', '\u251c', '\u2514'):
+        # Diagnostico propio: "no es JSON valido" mandaba a buscar un corte de stream que no existia.
+        return (False,
+                'ROJO: el cliente devolvio una TABLA, no JSON. El runner pide --output json; si esto\n'
+                '      aparece, el flag se perdio o el CLI lo ignora. NO es un corte de stream.',
+                None)
     try:
         datos = json.loads(salida)
     except ValueError as e:
@@ -147,6 +153,8 @@ def self_test():
         ('salida vacia con exit 0 (el caso real del 2026-09-03)', 0, '', False),
         ('exit distinto de cero', 1, '{"rows":[]}', False),
         ('JSON truncado a mitad de stream', 0, '{"rows":[{"probe":"P1",', False),
+        ('salida en formato tabla (sin --output json)', 0,
+         '\u250c\u2500\u2500\u2500\u2510\n\u2502 x \u2502\n\u251c\u2500\u2500\u2500\u2524\n\u2502 1 \u2502\n\u2514\u2500\u2500\u2500\u2518', False),
         ('menos filas que el piso', 0, json.dumps({'rows': [{'probe': 'P%d' % i, 'verdict': 'OK'} for i in range(10)]}), False),
         ('un veredicto vacio', 0, json.dumps({'rows': [{'probe': 'P%d' % i, 'verdict': 'OK'} for i in range(PISO_FILAS)] + [{'probe': 'PX', 'verdict': ''}]}), False),
         ('corrida sana', 0, json.dumps({'rows': _sana()}), True),
@@ -198,7 +206,11 @@ def main():
     # sandboxes sin escritura fuera del repo: la corrida no ocurria y parecia un fallo de SQL.
     # Estas dos variables lo apagan, y van en el env del SUBPROCESO, no en el del runner.
     entorno = dict(os.environ, SUPABASE_TELEMETRY_DISABLED='1', DO_NOT_TRACK='1')
-    p = subprocess.run([exe, '--workdir', REPO, 'db', 'query', '--linked', '-f', a.file],
+    # --output json EXPLICITO: sin el flag el CLI 2.100 decide el formato por entorno (detecta si
+    # lo corre un agente) y en una shell limpia imprime una TABLA con bordes que este runner
+    # rechazaba como "no es JSON valido".
+    p = subprocess.run([exe, '--workdir', REPO, 'db', 'query', '--output', 'json',
+                        '--linked', '-f', a.file],
                        stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=entorno)
     salida = p.stdout.decode('utf-8', 'replace')
     ok, msg, filas = verificar(p.returncode, salida)
