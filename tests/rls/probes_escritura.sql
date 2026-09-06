@@ -14114,6 +14114,110 @@ DO $$ DECLARE v_oid oid; v_cols text[]; v_malas text; BEGIN
     ELSE 'OK (4 columnas: pais_id, radio_checkin_m, precision_max_m, hay_fila)' END, false);
 EXCEPTION WHEN OTHERS THEN PERFORM set_config('probe.p630','FALLO ('||SQLSTATE||' '||SQLERRM||')',false); END $$;
 
+-- ############################################################################################
+-- P631-P634 — privilegios de tabla sobre perfiles y sobre el modulo comercial (mig 284)
+-- ############################################################################################
+-- `public.perfiles` es la tabla con mas datos personales del sistema: email, telefono, direccion
+-- del consultorio, lat/lng, avatar. Nacio con el ACL default de Supabase —ALL para anon y para
+-- authenticated— y NUNCA se reboco: no hay un solo GRANT sobre perfiles en todo git.
+--
+-- Hasta hoy eso no era explotable: las cinco policies de la tabla dependen de auth.uid(), que para
+-- anon es NULL, asi que la RLS lo frena. Pero **TRUNCATE NO PASA POR RLS**. Un privilegio de
+-- TRUNCATE en manos de anon es la capacidad de vaciar la tabla entera, y la unica barrera que hubo
+-- durante toda la vida del proyecto fue que nadie lo intentara.
+--
+-- P631 mide anon (los 7, tiene que quedar en 0). P632 mide authenticated, que SI necesita
+-- SELECT/INSERT/UPDATE/DELETE —la RLS los filtra fila por fila— pero no tiene nada que hacer con
+-- TRUNCATE/REFERENCES/TRIGGER. P633 es el control positivo: que la lectura normal siga viva.
+-- P634 es el censo del modulo comercial, que hoy ya esta limpio y tiene que seguir estandolo.
+
+-- P631 — CENSO: anon sin los 6 privilegios de escritura/DDL sobre perfiles, y CON el SELECT.
+-- El SELECT se conserva a proposito y NO es una fuga —la RLS deja a anon en cero filas—: es el
+-- permiso que necesitan las 22 policies que consultan `perfiles` en su USING para poder evaluarse
+-- y DECIR QUE NO. Una policy corre con los privilegios del LLAMANTE: sin SELECT, ese EXISTS lanza
+-- 42501 antes de decidir nada y la tabla entera deja de responderle a anon. Medido: revocarlo
+-- rompio produccion y el harness entero. Por eso el SELECT se mide como REQUISITO, no como sobra.
+SELECT set_config('role','none', true);
+DO $$ DECLARE v_tiene text; BEGIN
+  IF to_regclass('public.perfiles') IS NULL THEN
+    PERFORM set_config('probe.p631','ROJO — TABLA AUSENTE (esto NO es un rechazo)',false); RETURN; END IF;
+  SELECT string_agg(p, ', ' ORDER BY p) INTO v_tiene
+    FROM unnest(ARRAY['INSERT','UPDATE','DELETE','TRUNCATE','REFERENCES','TRIGGER']) p
+   WHERE has_table_privilege('anon', 'public.perfiles', p);
+  PERFORM set_config('probe.p631', CASE
+    WHEN NOT has_table_privilege('anon','public.perfiles','SELECT')
+      THEN 'ROJO — SIN SELECT: las 22 policies que consultan perfiles lanzan 42501 a anon en vez de negar en silencio'
+    WHEN v_tiene IS NULL
+      THEN 'OK (anon sin los 6 de escritura/DDL; conserva SELECT, que las policies necesitan para evaluarse)'
+    ELSE 'ROJO (anon conserva sobre perfiles: '||v_tiene||
+         CASE WHEN has_table_privilege('anon','public.perfiles','TRUNCATE')
+              THEN ' — TRUNCATE NO PASA POR RLS: es vaciar la tabla' ELSE '' END||')' END, false);
+EXCEPTION WHEN OTHERS THEN PERFORM set_config('probe.p631','FALLO ('||SQLSTATE||' '||SQLERRM||')',false); END $$;
+
+-- P632 — authenticated sobre perfiles: los 4 de DML SI (la RLS los acota fila por fila), los otros
+-- 3 NO. Se reportan las dos direcciones por separado: un privilegio DE MENOS rompe la app, uno DE
+-- MAS la expone, y confundir los dos casos en un solo "ROJO" hace perder el diagnostico.
+DO $$ DECLARE v_falta text; v_sobra text; BEGIN
+  IF to_regclass('public.perfiles') IS NULL THEN
+    PERFORM set_config('probe.p632','ROJO — TABLA AUSENTE (esto NO es un rechazo)',false); RETURN; END IF;
+  SELECT string_agg(p, ', ' ORDER BY p) INTO v_falta
+    FROM unnest(ARRAY['SELECT','INSERT','UPDATE','DELETE']) p
+   WHERE NOT has_table_privilege('authenticated', 'public.perfiles', p);
+  SELECT string_agg(p, ', ' ORDER BY p) INTO v_sobra
+    FROM unnest(ARRAY['TRUNCATE','REFERENCES','TRIGGER']) p
+   WHERE has_table_privilege('authenticated', 'public.perfiles', p);
+  PERFORM set_config('probe.p632', CASE
+    WHEN v_falta IS NOT NULL AND v_sobra IS NOT NULL
+      THEN 'ROJO (de MENOS: '||v_falta||' | de MAS: '||v_sobra||')'
+    WHEN v_falta IS NOT NULL THEN 'ROJO — DE MENOS: '||v_falta||' (la RLS los necesita; sin ellos la app se rompe)'
+    WHEN v_sobra IS NOT NULL THEN 'ROJO — DE MAS: '||v_sobra
+    ELSE 'OK (authenticated con los 4 de DML y sin TRUNCATE/REFERENCES/TRIGGER)' END, false);
+EXCEPTION WHEN OTHERS THEN PERFORM set_config('probe.p632','FALLO ('||SQLSTATE||' '||SQLERRM||')',false); END $$;
+
+-- P633 — CONTROL POSITIVO. Un usuario real leyendo SU PROPIO perfil por SELECT normal. Tiene que
+-- estar VERDE antes y despues de la 284: si la revocacion se pasa de la raya y le saca el SELECT a
+-- authenticated, P632 lo dice por catalogo y esta lo dice por el camino real. Las dos hacen falta:
+-- el catalogo no prueba que la policy `Ver propio perfil` siga funcionando.
+SELECT set_config('request.jwt.claims', json_build_object('sub', current_setting('probe.co_medf',true), 'role','authenticated')::text, true);
+SELECT set_config('role','authenticated', true);
+DO $$ DECLARE v_n int; v_yo uuid; BEGIN
+  IF coalesce(current_setting('probe.co_ready',true),'')<>'1' THEN PERFORM set_config('probe.p633','N/A',false); RETURN; END IF;
+  v_yo := NULLIF(current_setting('probe.co_medf',true),'')::uuid;
+  BEGIN
+    SELECT count(*) INTO v_n FROM public.perfiles p WHERE p.id = v_yo;
+    PERFORM set_config('probe.p633', CASE
+      WHEN v_n = 1 THEN 'OK (el usuario lee su propio perfil: 1 fila; la 284 no rompio la lectura normal)'
+      WHEN v_n = 0 THEN 'ROJO (el usuario NO puede leer su propio perfil: se reboco de mas o la policy se rompio)'
+      ELSE 'FALLO (esperaba 1 fila, vinieron '||v_n||')' END, false);
+  EXCEPTION WHEN insufficient_privilege THEN
+    PERFORM set_config('probe.p633','ROJO (42501 al leer el propio perfil: se le saco el SELECT a authenticated)',false);
+  WHEN others THEN PERFORM set_config('probe.p633','FALLO ('||SQLSTATE||' '||SQLERRM||')',false);
+  END;
+EXCEPTION WHEN OTHERS THEN PERFORM set_config('probe.p633','FALLO ('||SQLSTATE||' '||SQLERRM||')',false); END $$;
+SELECT set_config('role','none', true);
+
+-- P634 — CENSO del modulo comercial: anon sin NINGUNO de los 7 sobre las 9 tablas del frente.
+-- P458 (bloque 264) ya cubre 3 de estas con una regla MAS estricta —authenticated solo con SELECT—
+-- y se deja como esta: extenderlo a las 9 le cambiaria la semantica, porque no todas las tablas del
+-- frente tienen por que limitarse a SELECT. Este censo pregunta otra cosa y la pregunta para todas.
+-- Hoy nace VERDE (medido: las 9 con anon en cero). Existe para que siga estandolo: la proxima tabla
+-- del frente nace con el ACL default de Supabase, igual que nacio perfiles.
+DO $$ DECLARE v_malas text; v_n int; BEGIN
+  SELECT count(*), string_agg(t||':'||p, ', ' ORDER BY t, p) FILTER (WHERE tiene) INTO v_n, v_malas
+    FROM (
+      SELECT t, p, has_table_privilege('anon', t, p) AS tiene
+        FROM unnest(ARRAY['public.asesores_perfil','public.prospectos','public.prospecto_contactos',
+                          'public.jornadas_comerciales','public.visitas_comerciales',
+                          'public.reportes_visita','public.visita_adjuntos',
+                          'public.material_comercial','public.config_visitas_pais']) t
+       CROSS JOIN unnest(ARRAY['SELECT','INSERT','UPDATE','DELETE','TRUNCATE','REFERENCES','TRIGGER']) p
+       WHERE to_regclass(t) IS NOT NULL) s;
+  PERFORM set_config('probe.p634', CASE
+    WHEN v_n < 63 THEN 'ROJO — CENSO INCOMPLETO ('||v_n||' de 63 pares tabla/privilegio: falta alguna de las 9 tablas)'
+    WHEN v_malas IS NULL THEN 'OK (las 9 tablas del frente comercial, 7 privilegios cada una: anon en cero)'
+    ELSE 'ROJO (anon tiene: '||v_malas||')' END, false);
+EXCEPTION WHEN OTHERS THEN PERFORM set_config('probe.p634','FALLO ('||SQLSTATE||' '||SQLERRM||')',false); END $$;
+
 -- ===== Veredictos como result set =====
 SELECT 'P1_anon_insert_citas'              AS probe, current_setting('probe.p1', true)  AS verdict, 'BLOQUEADO' AS esperado_post_fix
 UNION ALL SELECT 'P2_medico_cancela_ajena_rpc',         current_setting('probe.p2', true),  'BLOQUEADO'
@@ -14801,6 +14905,10 @@ UNION ALL SELECT 'P627_cfg_POSITIVO_asesor',             current_setting('probe.
 UNION ALL SELECT 'P628_cfg_D5_default_failclosed',       current_setting('probe.p628', true),         'OK (hay_fila=false y 150/100)'
 UNION ALL SELECT 'P629_cfg_rol_no_comercial_doc',        current_setting('probe.p629', true),         'OK (no rechaza, por diseno)'
 UNION ALL SELECT 'P630_cfg_CENSO_retorno',               current_setting('probe.p630', true),         'OK (4 columnas exactas)'
+UNION ALL SELECT 'P631_CENSO_anon_perfiles',           current_setting('probe.p631', true), 'OK (anon en cero, los 7)'
+UNION ALL SELECT 'P632_authenticated_perfiles',        current_setting('probe.p632', true), 'OK (4 DML si, 3 no)'
+UNION ALL SELECT 'P633_CONTROL_lee_propio_perfil',     current_setting('probe.p633', true), 'OK (1 fila, antes y despues)'
+UNION ALL SELECT 'P634_CENSO_anon_9_tablas_comercial', current_setting('probe.p634', true), 'OK (63 pares, anon en cero)'
 UNION ALL SELECT 'P516_SENAL_estructura_harness',  current_setting('probe.p516', true),          'OK-SENAL (no mide; el gate es b2_guard.py)'
 -- Las filas FX* son SALUD DE FIXTURE, no probes de seguridad: dicen si la precondicion que una
 -- migracion posterior empezo a exigir se pudo sembrar. Si una sale ROJO, los probes que dependen de
@@ -14991,7 +15099,8 @@ UNION ALL SELECT 'P000_CENTINELA_veredictos_no_nulos',
        'probe.p615', 'probe.p616', 'probe.p617', 'probe.p618', 'probe.p619',
        'probe.p620', 'probe.p621', 'probe.p622',
        'probe.p623', 'probe.p624', 'probe.p625', 'probe.p626',
-       'probe.p627', 'probe.p628', 'probe.p629', 'probe.p630'
+       'probe.p627', 'probe.p628', 'probe.p629', 'probe.p630',
+       'probe.p631', 'probe.p632', 'probe.p633', 'probe.p634'
              ]) AS n) s),
   'OK (todos los veredictos publicados)';
 
