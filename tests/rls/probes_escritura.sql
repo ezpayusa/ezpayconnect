@@ -13391,6 +13391,188 @@ DO $$ DECLARE v_def text; v_unico boolean; v_parcial boolean; v_pred text; v_con
     ELSE 'OK (UNIQUE parcial, no constraint, predicado: '||v_pred||')' END, false);
 EXCEPTION WHEN OTHERS THEN PERFORM set_config('probe.p606','FALLO ('||SQLSTATE||' '||SQLERRM||')',false); END $$;
 
+-- ############################################################################################
+-- P608-P614 — comercial_asesores_visibles() (mig 283)
+-- ############################################################################################
+-- La RPC lee perfiles SIN RLS (SECURITY DEFINER, owner postgres con bypassrls, tablas sin FORCE),
+-- asi que su WHERE es la unica barrera. Estas probes miden esa barrera desde los cuatro roles y
+-- desde el catalogo, y la ultima —P614— mide lo que NO cambio: que perfiles siga cerrada.
+--
+-- P608 supervisor · P609 asesor · P610 admin_pais GT · P611 super_admin
+-- P612 CENSO del tipo de retorno · P613 anon sin EXECUTE · P614 perfiles sigue cerrada
+--
+-- Fixture: se apoya en el comercial (co_*), que ya siembra un asesor de HN (QA-SUP-HN-COM) y una
+-- ficha de medico en GT. Lo unico propio es el id de un super_admin.
+SELECT set_config('role','none', true);
+DO $$ DECLARE v_sa uuid; v_n int; BEGIN
+  IF coalesce(current_setting('probe.co_ready',true),'')<>'1' THEN
+    PERFORM set_config('probe.av_ready','0',false);
+    PERFORM set_config('probe.av_fx','ROJO — FIXTURE COMERCIAL AUSENTE (esto NO es un rechazo)',false); RETURN; END IF;
+  SELECT id INTO v_sa FROM public.perfiles WHERE rol='super_admin' ORDER BY id LIMIT 1;
+  IF v_sa IS NULL THEN
+    PERFORM set_config('probe.av_ready','0',false);
+    PERFORM set_config('probe.av_fx','ROJO — NO HAY SUPER_ADMIN en perfiles (P611 no podria medir)',false); RETURN; END IF;
+  PERFORM set_config('probe.av_sa', v_sa::text, false);
+  -- control del fixture: tiene que haber fichas en LOS DOS paises, si no P610 y P611 pasan vacias
+  SELECT count(DISTINCT pais_id) INTO v_n FROM public.asesores_perfil;
+  IF v_n < 2 THEN
+    PERFORM set_config('probe.av_ready','0',false);
+    PERFORM set_config('probe.av_fx','ROJO — asesores_perfil tiene fichas de UN solo pais ('||v_n||'): el aislamiento no se puede medir',false); RETURN; END IF;
+  PERFORM set_config('probe.av_ready','1', false);
+  PERFORM set_config('probe.av_fx','OK (fixture asesores visibles: super_admin identificado, fichas en '||v_n||' paises)', false);
+EXCEPTION WHEN OTHERS THEN
+  PERFORM set_config('probe.av_ready','0',false);
+  PERFORM set_config('probe.av_fx','ROJO ('||SQLSTATE||' '||SQLERRM||')',false);
+END $$;
+
+-- P608 — SUPERVISOR: ve a su asesor a cargo CON nombre_completo, y a si mismo.
+SELECT set_config('request.jwt.claims', json_build_object('sub', current_setting('probe.co_sup',true), 'role','authenticated')::text, true);
+SELECT set_config('role','authenticated', true);
+DO $$ DECLARE v_ase1 uuid; v_sup uuid; v_n int; v_nom text; v_yo int; v_sinnom int; BEGIN
+  IF coalesce(current_setting('probe.av_ready',true),'')<>'1' THEN PERFORM set_config('probe.p608','N/A',false); RETURN; END IF;
+  IF to_regprocedure('public.comercial_asesores_visibles()') IS NULL THEN
+    PERFORM set_config('probe.p608','ROJO — RPC AUSENTE',false); RETURN; END IF;
+  v_ase1 := NULLIF(current_setting('probe.co_ase1',true),'')::uuid;
+  v_sup  := NULLIF(current_setting('probe.co_sup',true),'')::uuid;
+  SELECT count(*), count(*) FILTER (WHERE r.id = v_sup),
+         count(*) FILTER (WHERE r.nombre_completo IS NULL),
+         max(r.nombre_completo) FILTER (WHERE r.id = v_ase1)
+    INTO v_n, v_yo, v_sinnom, v_nom
+    FROM public.comercial_asesores_visibles() r;
+  PERFORM set_config('probe.p608', CASE
+    WHEN v_nom IS NULL AND v_n = 0 THEN 'ROJO (la RPC no devolvio NADA: el supervisor no ve ni a su asesor ni a si mismo)'
+    WHEN v_nom IS NULL THEN 'ROJO (ve '||v_n||' filas pero el nombre de su asesor sigue sin llegar)'
+    WHEN v_yo = 0 THEN 'FALLO (ve el nombre del asesor pero NO se ve a si mismo: '||v_n||' filas)'
+    WHEN v_sinnom > 0 THEN 'FALLO ('||v_sinnom||' filas con nombre_completo NULL)'
+    ELSE 'OK (ve '||v_n||' fichas, incluida la propia; su asesor llega con nombre: '||v_nom||')' END, false);
+EXCEPTION WHEN OTHERS THEN PERFORM set_config('probe.p608','FALLO ('||SQLSTATE||' '||SQLERRM||')',false); END $$;
+
+-- P609 — ASESOR: se ve a si mismo y NO ve a otros asesores del MISMO pais.
+-- El control positivo esta adentro: si no se viera ni a si mismo, "no ve a ase2" seria trivial.
+SELECT set_config('request.jwt.claims', json_build_object('sub', current_setting('probe.co_ase1',true), 'role','authenticated')::text, true);
+SELECT set_config('role','authenticated', true);
+DO $$ DECLARE v_ase1 uuid; v_ase2 uuid; v_n int; v_yo int; v_otro int; BEGIN
+  IF coalesce(current_setting('probe.av_ready',true),'')<>'1' THEN PERFORM set_config('probe.p609','N/A',false); RETURN; END IF;
+  IF to_regprocedure('public.comercial_asesores_visibles()') IS NULL THEN
+    PERFORM set_config('probe.p609','ROJO — RPC AUSENTE',false); RETURN; END IF;
+  v_ase1 := NULLIF(current_setting('probe.co_ase1',true),'')::uuid;
+  v_ase2 := NULLIF(current_setting('probe.co_ase2',true),'')::uuid;
+  SELECT count(*), count(*) FILTER (WHERE r.id=v_ase1), count(*) FILTER (WHERE r.id=v_ase2)
+    INTO v_n, v_yo, v_otro FROM public.comercial_asesores_visibles() r;
+  PERFORM set_config('probe.p609', CASE
+    WHEN v_otro > 0 THEN 'ROJO (el asesor ve la ficha de OTRO asesor del pais: '||v_n||' filas)'
+    WHEN v_yo = 0   THEN 'ROJO — CONTROL POSITIVO CAIDO (no se ve ni a si mismo: la negativa no mide nada)'
+    ELSE 'OK (se ve a si mismo y a nadie mas: '||v_n||' fila(s), ase2 ausente)' END, false);
+EXCEPTION WHEN OTHERS THEN PERFORM set_config('probe.p609','FALLO ('||SQLSTATE||' '||SQLERRM||')',false); END $$;
+
+-- P610 — ADMIN_PAIS de GT: ve los de GT, NO los de HN.
+-- CONTROL POSITIVO explicito: la lista de GT no puede venir vacia (leccion P553). Un admin_pais que
+-- no viera NADA pasaria la negativa "no ve HN" sin medir absolutamente nada.
+SELECT set_config('request.jwt.claims', json_build_object('sub', current_setting('probe.co_admgt',true), 'role','authenticated')::text, true);
+SELECT set_config('role','authenticated', true);
+DO $$ DECLARE v_hn uuid; v_gt int; v_hn_n int; BEGIN
+  IF coalesce(current_setting('probe.av_ready',true),'')<>'1' THEN PERFORM set_config('probe.p610','N/A',false); RETURN; END IF;
+  IF to_regprocedure('public.comercial_asesores_visibles()') IS NULL THEN
+    PERFORM set_config('probe.p610','ROJO — RPC AUSENTE',false); RETURN; END IF;
+  v_hn := NULLIF(current_setting('probe.co_hn',true),'')::uuid;
+  SELECT count(*) FILTER (WHERE ap.pais_id <> v_hn), count(*) FILTER (WHERE ap.pais_id = v_hn)
+    INTO v_gt, v_hn_n
+    FROM public.comercial_asesores_visibles() r
+    JOIN public.asesores_perfil ap ON ap.id = r.id;
+  PERFORM set_config('probe.p610', CASE
+    WHEN v_hn_n > 0 THEN 'ROJO (el admin de GT ve '||v_hn_n||' ficha(s) de HN)'
+    -- OJO: el admin_pais NO es supervisor de nadie, asi que asesores_a_cargo() le da vacio y la
+    -- rama de pais no lo alcanza. Cero filas aca NO es un aislamiento correcto: es una RPC que no
+    -- le sirve al rol. Se reporta distinto de un verde para que no se lea como exito.
+    WHEN v_gt = 0 THEN 'ROJO — CONTROL POSITIVO CAIDO (admin de GT ve CERO fichas de GT: la negativa no mide nada)'
+    ELSE 'OK (ve '||v_gt||' de GT y 0 de HN)' END, false);
+EXCEPTION WHEN OTHERS THEN PERFORM set_config('probe.p610','FALLO ('||SQLSTATE||' '||SQLERRM||')',false); END $$;
+
+-- P611 — SUPER_ADMIN: ve fichas de LOS DOS paises (la rama sin restriccion de pais).
+SELECT set_config('role','none', true);
+DO $$ DECLARE v_sa text; BEGIN
+  v_sa := coalesce(current_setting('probe.av_sa',true),'');
+  IF v_sa <> '' THEN
+    PERFORM set_config('request.jwt.claims', json_build_object('sub', v_sa, 'role','authenticated')::text, true);
+  END IF;
+EXCEPTION WHEN OTHERS THEN NULL; END $$;
+SELECT set_config('role','authenticated', true);
+DO $$ DECLARE v_n int; v_paises int; BEGIN
+  IF coalesce(current_setting('probe.av_ready',true),'')<>'1' THEN PERFORM set_config('probe.p611','N/A',false); RETURN; END IF;
+  IF to_regprocedure('public.comercial_asesores_visibles()') IS NULL THEN
+    PERFORM set_config('probe.p611','ROJO — RPC AUSENTE',false); RETURN; END IF;
+  SELECT count(*), count(DISTINCT ap.pais_id) INTO v_n, v_paises
+    FROM public.comercial_asesores_visibles() r
+    JOIN public.asesores_perfil ap ON ap.id = r.id;
+  PERFORM set_config('probe.p611', CASE
+    WHEN v_n = 0      THEN 'ROJO (el super_admin no ve NADA: la rama super_admin del gate no funciona)'
+    WHEN v_paises < 2 THEN 'ROJO (el super_admin ve '||v_n||' fichas de UN solo pais: no cruza paises)'
+    ELSE 'OK (ve '||v_n||' fichas de '||v_paises||' paises)' END, false);
+EXCEPTION WHEN OTHERS THEN PERFORM set_config('probe.p611','FALLO ('||SQLSTATE||' '||SQLERRM||')',false); END $$;
+SELECT set_config('role','none', true);
+
+-- P612 — CENSO del tipo de retorno, por CATALOGO y no por una llamada: manana alguien agrega una
+-- columna al RETURNS TABLE y ninguna de las probes de arriba se entera, porque todas cuentan filas.
+DO $$ DECLARE v_oid oid; v_cols text[]; v_malas text; BEGIN
+  v_oid := to_regprocedure('public.comercial_asesores_visibles()');
+  IF v_oid IS NULL THEN PERFORM set_config('probe.p612','ROJO — RPC AUSENTE',false); RETURN; END IF;
+  SELECT array_agg(a.name ORDER BY a.ord) INTO v_cols
+    FROM unnest((SELECT proargnames FROM pg_proc WHERE oid=v_oid),
+                (SELECT proargmodes FROM pg_proc WHERE oid=v_oid)) WITH ORDINALITY AS a(name, mode, ord)
+   WHERE a.mode IN ('t','o');
+  SELECT string_agg(c, ', ') INTO v_malas FROM unnest(coalesce(v_cols,'{}')) c
+   WHERE c IN ('email','telefono','celular','avatar_url','lat','lng','bio')
+      OR c LIKE 'direccion%' OR c LIKE 'foto%';
+  PERFORM set_config('probe.p612', CASE
+    WHEN v_malas IS NOT NULL THEN 'ROJO — COLUMNAS SENSIBLES en el retorno: '||v_malas
+    WHEN v_cols IS DISTINCT FROM ARRAY['id','codigo_asesor','nombre_completo','activo','supervisor_id']
+      THEN 'ROJO (el retorno no es el contratado: '||coalesce(array_to_string(v_cols,', '),'(vacio)')||')'
+    ELSE 'OK (exactamente 5 columnas: id, codigo_asesor, nombre_completo, activo, supervisor_id)' END, false);
+EXCEPTION WHEN OTHERS THEN PERFORM set_config('probe.p612','FALLO ('||SQLSTATE||' '||SQLERRM||')',false); END $$;
+
+-- P613 — anon SIN EXECUTE (y authenticated CON), que es el par que hace util al primero.
+DO $$ DECLARE v_oid oid; v_anon boolean; v_auth boolean; BEGIN
+  v_oid := to_regprocedure('public.comercial_asesores_visibles()');
+  IF v_oid IS NULL THEN PERFORM set_config('probe.p613','ROJO — RPC AUSENTE',false); RETURN; END IF;
+  v_anon := has_function_privilege('anon', v_oid, 'EXECUTE');
+  v_auth := has_function_privilege('authenticated', v_oid, 'EXECUTE');
+  PERFORM set_config('probe.p613', CASE
+    WHEN v_anon      THEN 'ROJO (anon puede ejecutar la RPC)'
+    WHEN NOT v_auth  THEN 'ROJO (authenticated NO puede ejecutarla: la RPC no le sirve a nadie)'
+    ELSE 'OK (anon=false, authenticated=true)' END, false);
+EXCEPTION WHEN OTHERS THEN PERFORM set_config('probe.p613','FALLO ('||SQLSTATE||' '||SQLERRM||')',false); END $$;
+
+-- P614 — LA NEGATIVA QUE NO DEBE CAMBIAR: perfiles sigue cerrada. Esta es la que prueba que la 283
+-- no abrio la tabla. Dos mitades: por CATALOGO (siguen siendo las 5 policies de siempre, ninguna
+-- nueva de SELECT) y por CAMINO REAL (el supervisor lee perfiles como lo haria PostgREST y NO
+-- encuentra la fila de su asesor). El catalogo solo no alcanza: una policy podria cambiar de
+-- contenido sin cambiar de nombre ni de cuenta.
+SELECT set_config('request.jwt.claims', json_build_object('sub', current_setting('probe.co_sup',true), 'role','authenticated')::text, true);
+SELECT set_config('role','authenticated', true);
+DO $$ DECLARE v_ve int; v_yo int; BEGIN
+  IF coalesce(current_setting('probe.av_ready',true),'')<>'1' THEN PERFORM set_config('probe.p614','N/A',false); RETURN; END IF;
+  SELECT count(*) FILTER (WHERE p.id = NULLIF(current_setting('probe.co_ase1',true),'')::uuid),
+         count(*) FILTER (WHERE p.id = NULLIF(current_setting('probe.co_sup',true),'')::uuid)
+    INTO v_ve, v_yo FROM public.perfiles p;
+  PERFORM set_config('probe.p614_directo', CASE
+    WHEN v_ve > 0 THEN 'ABIERTA'
+    WHEN v_yo = 0 THEN 'CIEGA'
+    ELSE 'CERRADA' END, false);
+EXCEPTION WHEN OTHERS THEN PERFORM set_config('probe.p614_directo','FALLO('||SQLSTATE||')',false); END $$;
+SELECT set_config('role','none', true);
+DO $$ DECLARE v_pol int; v_sel int; v_dir text; BEGIN
+  IF coalesce(current_setting('probe.av_ready',true),'')<>'1' THEN PERFORM set_config('probe.p614','N/A',false); RETURN; END IF;
+  SELECT count(*), count(*) FILTER (WHERE cmd IN ('SELECT','ALL')) INTO v_pol, v_sel
+    FROM pg_policies WHERE schemaname='public' AND tablename='perfiles';
+  v_dir := coalesce(current_setting('probe.p614_directo',true),'');
+  PERFORM set_config('probe.p614', CASE
+    WHEN v_dir = 'ABIERTA' THEN 'ROJO — SE ABRIO perfiles (el supervisor ahora LEE la fila de su asesor por camino directo)'
+    WHEN v_dir = 'CIEGA'   THEN 'FALLO (el supervisor no ve ni su propio perfil: la mitad directa no mide nada)'
+    WHEN v_dir <> 'CERRADA' THEN 'FALLO (mitad directa: '||v_dir||')'
+    WHEN v_pol <> 5 OR v_sel <> 2 THEN 'ROJO (perfiles quedo con '||v_pol||' policies y '||v_sel||' que dan SELECT; esperaba 5 y 2)'
+    ELSE 'OK (perfiles intacta: 5 policies, 2 dan SELECT, y el supervisor sigue sin leer la fila de su asesor)' END, false);
+EXCEPTION WHEN OTHERS THEN PERFORM set_config('probe.p614','FALLO ('||SQLSTATE||' '||SQLERRM||')',false); END $$;
+
 -- ===== Veredictos como result set =====
 SELECT 'P1_anon_insert_citas'              AS probe, current_setting('probe.p1', true)  AS verdict, 'BLOQUEADO' AS esperado_post_fix
 UNION ALL SELECT 'P2_medico_cancela_ajena_rpc',         current_setting('probe.p2', true),  'BLOQUEADO'
@@ -14051,6 +14233,14 @@ UNION ALL SELECT 'P604_NEG_realizada_bloquea',        current_setting('probe.p60
 UNION ALL SELECT 'P605_CONTROL_dos_canceladas',       current_setting('probe.p605', true),   'OK (2 canceladas coexisten)'
 UNION ALL SELECT 'P606_ESTRUCT_indice_parcial',       current_setting('probe.p606', true),   'OK (UNIQUE parcial <> cancelada)'
 UNION ALL SELECT 'P607_reprogramar_a_dia_cancelado',  current_setting('probe.p607', true),   'OK (mueve; y sigue rebotando)'
+UNION ALL SELECT 'AV_FX_fixture_asesores_visibles',  current_setting('probe.av_fx', true),   'OK (super_admin + 2 paises)'
+UNION ALL SELECT 'P608_av_supervisor_ve_nombre',     current_setting('probe.p608', true),   'OK (asesor con nombre + el propio)'
+UNION ALL SELECT 'P609_av_asesor_solo_a_si_mismo',   current_setting('probe.p609', true),   'OK (se ve solo a si mismo)'
+UNION ALL SELECT 'P610_av_admin_pais_no_cruza',      current_setting('probe.p610', true),   'OK (GT>0 y HN=0)'
+UNION ALL SELECT 'P611_av_super_admin_dos_paises',   current_setting('probe.p611', true),   'OK (2 paises)'
+UNION ALL SELECT 'P612_av_CENSO_sin_columnas_pii',   current_setting('probe.p612', true),   'OK (5 columnas exactas)'
+UNION ALL SELECT 'P613_av_anon_sin_execute',         current_setting('probe.p613', true),   'OK (anon=false)'
+UNION ALL SELECT 'P614_av_perfiles_SIGUE_cerrada',   current_setting('probe.p614', true),   'OK (5 policies, sigue cerrada)'
 UNION ALL SELECT 'P516_SENAL_estructura_harness',  current_setting('probe.p516', true),          'OK-SENAL (no mide; el gate es b2_guard.py)'
 -- Las filas FX* son SALUD DE FIXTURE, no probes de seguridad: dicen si la precondicion que una
 -- migracion posterior empezo a exigir se pudo sembrar. Si una sale ROJO, los probes que dependen de
@@ -14234,7 +14424,9 @@ UNION ALL SELECT 'P000_CENTINELA_veredictos_no_nulos',
        'probe.p598', 'probe.ag_fx',
        'probe.p599', 'probe.p600', 'probe.p601',
        'probe.p602', 'probe.p603', 'probe.p604', 'probe.p605', 'probe.p606',
-       'probe.p607', 'probe.un_fx'
+       'probe.p607', 'probe.un_fx',
+       'probe.p608', 'probe.p609', 'probe.p610', 'probe.p611',
+       'probe.p612', 'probe.p613', 'probe.p614', 'probe.av_fx'
              ]) AS n) s),
   'OK (todos los veredictos publicados)';
 
