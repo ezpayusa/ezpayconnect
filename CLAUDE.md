@@ -15,11 +15,27 @@ Stack: React + Vite + TypeScript, Supabase / Postgres, deploy en Vercel, repo en
   sin handler. Está enganchado como hook de pre-commit en `.githooks/pre-commit`; en un clone nuevo
   hay que activarlo una vez con `git config core.hooksPath .githooks`.
 - **Correr el harness SIEMPRE con `npm run harness`, nunca a mano.** El runner
-  (`tests/rls/harness_run.py`) verifica exit code, salida no vacía, JSON parseable, piso de 550
+  (`tests/rls/harness_run.py`) verifica exit code, salida no vacía, JSON parseable, piso de 680
   filas y cero veredictos vacíos. **Por qué**: el 2026-09-03 una corrida devolvió *exit 0 con la
   salida vacía* por un corte del cliente — indistinguible de un harness verde para quien lea el
   exit code. `npm run harness:selftest` prueba que esas cinco verificaciones disparan.
   Está enganchado al pre-commit junto al test del detector: los tres gates del hook son offline.
+  **El runner CLASIFICA las rojas** (roja = el `verdict` empieza con `ROJO` o `FALLO`) contra la
+  lista `DEUDA` que vive en el código, hoy con **14 entradas**: una roja FUERA de la deuda es exit 1,
+  y una entrada de la deuda que sale VERDE también (se arregló y hay que sacarla, o alguien la
+  anestesió) — actualizar la lista es un acto deliberado, no un efecto colateral.
+  **El CLI de supabase decide el formato Y la forma del JSON por DETECCIÓN DE AGENTE**: a CC le da
+  `{"rows":[...]}`, a una PowerShell interactiva le da una TABLA con bordes, y con `--agent no
+  --output json` da un array plano. El runner pide **`--output json` explícito**; nunca asumir el
+  default. Una corrida que devolvió tabla NO midió nada.
+  **`SUPABASE_TELEMETRY_DISABLED=1` y `DO_NOT_TRACK=1` van en el env del SUBPROCESO**: sin eso el
+  CLI 2.100 escribe `~/.supabase/telemetry.json` antes de hacer nada y muere con EPERM en sandboxes
+  sin escritura fuera del repo — la corrida no ocurre y parece un fallo de SQL.
+  **Codex NO puede correr el harness** (sin egress a `api.supabase.com`). La verificación
+  independiente de una corrida la hace Oscar en su terminal.
+  **"Salida cruda" = lo que imprime el programa, copiado tal cual.** Nada de resúmenes propios
+  presentados con formato de salida de programa. Todo cálculo propio va aparte y rotulado
+  **"cálculo mío"**.
   **Por qué**: el harness corre en UNA transacción — una sentencia que revienta fuera de un handler
   no da rojo, MATA la transacción y la salida queda vacía, que se lee como "todavía no lo corrí".
   Pasó dos veces (18cf819 y el lote 1 de PA-FAILOPEN) y una de ellas tardó dos meses en detectarse.

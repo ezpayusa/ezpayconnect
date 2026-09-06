@@ -1,6 +1,6 @@
 # Estado del módulo comercial — 6 de septiembre de 2026
 
-`main` = **`af61e4d18fd3910370c21bbf1e27caed4cefcd5f`** (`af61e4d`), sincronizada con `origin/main`
+`main` = **`96abc11`** (más este commit de docs), sincronizada con `origin/main`
 en las dos direcciones. Nada sin commitear salvo los untracked de siempre (manuales PDF y sus
 scripts, `AUDITORIA-PROFUNDA-2026-07-05.md`, `CODEX_VALIDACION_AUDITORIA.md`, `tmp/`).
 
@@ -123,64 +123,118 @@ envuelto entero en `COALESCE(..., false)`.
 
 | | |
 |---|---|
-| filas | **669** |
-| rojas | **13** — exactamente las 13 de deuda ajena, **ninguna fuera de esa lista** |
-| resto | 656 |
+| filas | **688** |
+| rojas | **14** — todas en la lista de deuda que el runner sostiene en codigo |
+| resto | 674 |
 | `b2_guard` | VERDE — `do_sin_handler` 156, `top_level_dml_ddl` 0, `cast_directo` 0 |
-| centinela P000 | OK (668 veredictos, ninguno vacío) |
+| centinela P000 | OK (687 veredictos, ninguno vacío) |
 
 Probes nuevas del día, las 16 en verde: **P599–P601** (mig 281), **P602–P607** (mig 282),
-**P608–P614** (mig 283). Próximo número libre: **P615**.
+**P608–P614** (mig 283). Más **P615–P630** del cierre del 6-sep (las 4 RPCs que estaban sin
+cobertura). Próximo número libre: **P631**.
 
-Las 13 rojas de deuda: P163, P209, P222, P411, P414, P472, P473, P476, Pbuz×2, Pqr×3. Se comparan
-texto a texto en cada corrida para probar que no cambiaron.
+Las 14 rojas: las 13 de deuda ajena —P163, P209, P222, P411, P414, P472, P473, P476, Pbuz×2,
+Pqr×3— más **P625**, que es deuda PROPIA del módulo (doble checkout sin guard, punto 3 del
+backlog). Ya no se comparan a mano: `harness_run.py` tiene la lista `DEUDA` en código y falla si
+aparece una roja fuera de ella **o** si una de la lista sale verde.
 
 ---
 
-## Lo que queda
+## Lo que queda — backlog acordado
 
-> Nota: el pedido de este cierre remitía a "la lista del punto siguiente", que no llegó. Lo que
-> sigue es lo acumulado y verificado durante la sesión. **Confirmar con Oscar antes de tomarlo como
-> el backlog acordado.**
+### 1. CERRADO 6-sep (`96abc11`)
 
-### Aprobado y pendiente de escribir
+Probes **P615–P630** de las cuatro RPCs que estaban sin cobertura (`coordenadas_visita`,
+`cerrar_jornada`, `checkout_visita_comercial`, `config_visitas_efectiva`), limpieza de jornadas QA,
+guarda anti-NULL en P547–P550, runner con clasificación de rojas y lista de deuda, `--output json`
+explícito y telemetría del CLI apagada en el subproceso.
 
-- **Mig 284 — grants de `anon` sobre `perfiles`.** `anon` tiene SELECT, INSERT, UPDATE, DELETE y
-  TRUNCATE **de tabla entera** sobre la tabla con más datos personales del sistema. Hoy no es
-  explotable —las cinco policies dependen de `auth.uid()`, que para anon es NULL— pero la única
-  protección es la RLS. Misma clase que P222 (`anon ve farmacias — policy anon vestigial`).
+### 2. Mig 284 — revocar a `anon` sobre `perfiles`
 
-### Deuda técnica del harness
+Revocar **INSERT, UPDATE, DELETE y TRUNCATE**. `TRUNCATE` es el que urge: **no pasa por RLS**, así
+que hoy la única barrera contra vaciar la tabla con más datos personales del sistema es que nadie lo
+intente. INSERT/UPDATE/DELETE sí los tapa la RLS —las cinco policies dependen de `auth.uid()`, NULL
+para anon— pero son grants vestigiales. Misma clase que P222 (`anon ve farmacias`).
 
-- **Fixtures de jornada acoplados a datos vivos de prod.** Una jornada QA real abierta en prod puso
-  en rojo a **P537, P547, P550 y P591** durante toda la tarde del 5-sep, y volvieron a verde solas
-  al cambiar `CURRENT_DATE`. Causa: `abrir_jornada` **adopta** la jornada real del día en vez de
-  sembrar una limpia. La más grave es **P550**, cuyo modo de falla fue `ROJO (PERMITIÓ …)` — una
-  probe de seguridad que reporta permisividad falsa por contaminación de fixture es peor que una que
-  falla, porque invita a "arreglar" una RPC que está bien.
+**El SELECT de `anon` se mide ANTES de tocarlo**: hay superficies públicas que podrían depender de
+él, y revocarlo a ciegas es cambiar el comportamiento sin saber de qué.
+
+### 3. Endurecer check-in y checkout
+
+- `checkin_visita_comercial` **no exige `estado = 'planificada'`**: acepta hacer check-in sobre una
+  visita **cancelada**.
+- `checkout_visita_comercial` **no rechaza un checkout previo**: la segunda llamada pasa y reescribe
+  un hecho. **P625 está ROJO en la lista de `DEUDA`** exactamente por esto.
+
+**Al arreglarlo hay que sacar `P625_co_DOBLE_checkout_doc` de `DEUDA` en `harness_run.py`** — si no,
+el runner falla con *"deuda que salio VERDE"*, que es el aviso funcionando como corresponde.
+
+### 4. Pantalla de fichas de asesor (D12) — ANTES del seed
+
+`guardar_asesor_perfil` y `asignar_supervisor` existen y **no tienen UI**. Va antes del seed porque
+sin ella las fichas del seed habría que sembrarlas a mano.
+
+### 5. Tarjeta pública del asesor (D11)
+
+**Única superficie `anon` del módulo.** Token propio, bucket público separado del de evidencia, y
+consentimiento **revocable**.
+
+### 6. Seed DEMO (D9/D10)
+
+País DEMO propio y cuentas `*.demo` creadas por la vía canónica (`crear-empleado`), no sembradas a
+mano.
+
+### 7. Limpieza de datos QA en prod
+
+- Jornada `db1ad4f2-6894-4452-a01c-7b8e315a6310` — asesor1, fecha 2026-09-05, **abierta sin cerrar**.
+- Jornada `a4c9a69f-4364-43f4-9afd-22f2ec6a06fc` — asesor2, fecha 2026-09-04, **abierta sin cerrar**.
+- Prospectos `QA CICLO 16:29` / `16:30`, `QA GEO cerca` / `lejos`, `QA ADJ sin checkin`.
+- Visita `39866a82-20c2-4994-95d3-900034333ab7` (2026-09-08 15:15, planificada) — la creó Oscar
+  verificando la agenda.
+- El inventario completo de cuentas y basura borrable está en la memoria de proyecto, no en el repo.
+
+### 8. Higiene
+
+- `COLS_JORNADA` trae `pais_id` y las dos columnas de precisión que **ninguna pantalla pinta**.
+- Las rutas `/admin-ezpay/pais/:id/prospectos` y `/material` **no tienen entrada de navegación**: se
+  llega sólo escribiendo la URL.
+- `FormFechaHora` tiene `<label>` sin `htmlFor` — label huérfano para lectores de pantalla.
+
+### Decisión abierta
+
+**¿El supervisor puede abrir su propia jornada?** `/comercial/hoy` es la pantalla del asesor y desde
+`af61e4d` pide la jornada propia; un supervisor que entre verá la suya, que probablemente no exista.
+Antes veía *alguna* del equipo, por accidente — no es una regresión, era un bug mostrando datos
+ajenos como propios. Pero si el supervisor debe poder abrir jornada, no está decidido.
+
+### Deuda técnica del harness (contexto de los puntos 1 y 3)
+
+- **CERRADO 6-sep.** Los fixtures de jornada estaban acoplados a datos vivos de prod: una jornada
+  QA real abierta puso en rojo a **P537, P547, P550 y P591** toda la tarde del 5-sep, y volvieron a
+  verde solas al cambiar `CURRENT_DATE`.
+  El mecanismo real: `abrir_jornada` **no adopta jornadas** — lanza **PA020** si existe *cualquier*
+  jornada del asesor con `fecha = CURRENT_DATE`, abierta o cerrada, porque su `EXISTS` **no mira
+  `fin_at`**. Lo que sí adopta son las **visitas huérfanas planificadas** del día.
+  La cadena fue: jornada real → P537 recibe PA020 → `vj_jornada` queda vacío → el fixture no publica
+  `vj_jornada_inicio` → P550 arma su `p_cliente_at` como `NULL - 1 second` = NULL → un check-in con
+  `p_cliente_at` NULL **no es diferido** y PA024 no tiene por qué rechazarlo → `ROJO (PERMITIÓ …)`.
+  Una probe de seguridad que reporta permisividad falsa por contaminación de fixture es peor que una
+  que falla, porque invita a "arreglar" una RPC que está bien.
+  Cerrado con dos defensas: la limpieza de jornadas QA (que la causa no ocurra) y la guarda
+  anti-NULL de P547–P550 (que si vuelve a ocurrir digan `N/A`, no `PERMITIÓ`).
 - **5 probes no determinísticas** que sólo cambian un id entre corridas: P175, P62, P441, FX14, P515.
-- P547 ya tiene anotada su cobertura parcial en el archivo ("la ventana temporal de PA024 no se
-  verifica dentro de la transacción").
+  Verificado sobre 88 corridas completas: ninguna empezó jamás con `ROJO`/`FALLO`, por eso no están
+  en la lista de deuda del runner.
+- P547 **sí** verifica la ventana temporal de PA024: el fixture retrasa `inicio_at` 3 horas para que
+  la ventana exista dentro de la transacción, donde `now()` está congelado. El residual real es el
+  de P550 entre 00:00 y 03:00, por el clamp al día, y ya está escrito en la propia probe.
 
-### Producto / decisiones sin tomar
+### Sin dueño en el backlog, sin perder
 
-- **El supervisor no tiene "mi jornada".** `/comercial/hoy` es la pantalla del asesor y ahora pide
-  la jornada propia; un supervisor que entre verá la suya, que probablemente no exista. Antes veía
-  *alguna* del equipo, por accidente. No es una regresión —era un bug mostrando datos ajenos como
-  propios— pero si el supervisor debe poder abrir jornada, eso no está decidido.
 - **La hora prefijada del `<input type="time">`** que Oscar reportó: medido, el componente arranca
   vacío al agendar y con el valor real al reprogramar; los 8 tests de comportamiento pasaron contra
   el código sin tocarlo. La hipótesis es el picker nativo de Chrome, que precarga la hora actual
   como punto de partida sin escribirla. Falta verificarlo por CDP en un navegador real.
-- **`FormFechaHora` tiene `<label>` sin `htmlFor`** — label huérfano para lectores de pantalla.
-
-### Datos QA vivos en prod, para limpiar
-
-- Jornada `db1ad4f2-6894-4452-a01c-7b8e315a6310` (asesor1, fecha 2026-09-05) **abierta sin cerrar**.
-- Prospectos `QA CICLO 16:29` / `16:30`, `QA GEO cerca` / `lejos`, `QA ADJ sin checkin`.
-- Visita `39866a82-20c2-4994-95d3-900034333ab7` (2026-09-08 15:15, planificada) — la que Oscar creó
-  verificando la agenda.
-- El inventario completo de cuentas y basura borrable está en la memoria de proyecto, no en el repo.
 
 ### Residuos de cierres anteriores, sin tocar
 
@@ -193,4 +247,5 @@ texto a texto en cada corrida para probar que no cambiaron.
 ## Vercel
 
 No verificable desde esta sesión: el CLI responde `The specified token is not valid`.
-**Comparar en el dashboard contra `af61e4d`.**
+**Comparar en el dashboard contra `af61e4d`.** Los commits posteriores son `tests/rls` y docs; el
+front desplegado no cambió.
