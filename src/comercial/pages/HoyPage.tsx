@@ -6,6 +6,7 @@ import {
   jornadaDeHoy, visitasDelDia, visitasProximas, abrirJornada, cerrarJornada, configVisitasEfectiva,
   type Jornada, type VisitaComercial,
 } from '../lib/api'
+import { useAuth } from '@/hooks/useAuth'
 import { reportarError } from '../lib/reportarError'
 import { pedirUbicacion, coordsDe, avisoPrevio, type EstadoGeo } from '../lib/geo'
 import { fmtFecha, fmtHora } from '../lib/agenda'
@@ -18,6 +19,7 @@ const HOY = () => new Date().toISOString().slice(0, 10)
 // jornada se abre igual y el registro queda marcado como sin coordenada. Un asesor que no puede
 // trabajar por un permiso de navegador es un módulo muerto.
 export default function HoyPage() {
+  const { perfil } = useAuth()
   const [jornada, setJornada] = useState<Jornada | null>(null)
   const [visitas, setVisitas] = useState<VisitaComercial[]>([])
   const [proximas, setProximas] = useState<VisitaComercial[]>([])
@@ -29,13 +31,15 @@ export default function HoyPage() {
 
   const cargar = useCallback(async () => {
     setCargando(true)
-    const [j, v, cfg, px] = await Promise.all([jornadaDeHoy(), visitasDelDia(HOY()), configVisitasEfectiva(), visitasProximas(HOY())])
+    const [j, v, cfg, px] = await Promise.all([jornadaDeHoy(perfil?.id), visitasDelDia(HOY()), configVisitasEfectiva(), visitasProximas(HOY())])
     if (j.error) reportarError(j.error); else setJornada((j.data ?? null) as unknown as Jornada | null)
     if (v.error) reportarError(v.error); else setVisitas((v.data ?? []) as unknown as VisitaComercial[])
     if (cfg.data && Array.isArray(cfg.data) && cfg.data[0]) setPrecisionMax(Number(cfg.data[0].precision_max_m))
     if (px.error) reportarError(px.error); else setProximas((px.data ?? []) as unknown as VisitaComercial[])
     setCargando(false)
-  }, [])
+    // `perfil?.id` en las deps: la primera pasada puede correr sin perfil y jornadaDeHoy devuelve
+    // vacío; cuando el perfil llega, se vuelve a cargar.
+  }, [perfil?.id])
 
   useEffect(() => { void cargar() }, [cargar])
 

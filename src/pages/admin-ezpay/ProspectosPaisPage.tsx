@@ -46,7 +46,12 @@ export default function ProspectosPaisPage() {
     if (nom.error) reportarError(nom.error); else setNombres(mapaAsesores(nom.data as AsesorConNombre[] | null))
     if (pr.error) reportarError(pr.error)
     else setFilas((pr.data ?? []) as unknown as Prospecto[])
-    if (as.data) setAsesores(as.data as unknown as Asesor[])
+    if (as.data) {
+      const fichas = as.data as unknown as Asesor[]
+      setAsesores(fichas)
+      // el país de la URL cambió y el asesor elegido era del anterior: se suelta en vez de viajar
+      setAsesorId(prev => (prev && fichas.some(a => a.id === prev && a.pais_id === paisId) ? prev : ''))
+    }
     if (ti.data) { setTipos(ti.data as ItemCatalogo[]); if (!tipo) setTipo((ti.data[0] as ItemCatalogo)?.codigo ?? '') }
     if (es.data) setEstados(es.data as ItemCatalogo[])
     setCargando(false)
@@ -57,6 +62,13 @@ export default function ProspectosPaisPage() {
   const etiquetaEstado = (c: string) => estados.find(e => e.codigo === c)?.etiqueta ?? c
   // El codigo va SIEMPRE entre parentesis, como dato secundario: nunca ocupa el lugar del nombre.
   const etiquetaAsesor = (a: Asesor) => `${nombreAsesor(a.id, nombres, a.codigo_asesor)} (${a.codigo_asesor})`
+
+  // Los asesores que la policy deja ver pueden ser de VARIOS países: un super_admin los ve todos.
+  // Esta ruta está parametrizada por :paisId, así que ofrecer los de otro país es invitar a un
+  // error que la RPC después rechaza con PA008/PA009 — un rechazo evitable no es una validación,
+  // es una pantalla que dejó elegir mal. Igual que el .eq de listarProspectosDePais, el filtro es
+  // SELECTOR DE VISTA y no un permiso: sólo achica lo que la policy ya permitió.
+  const asesoresDelPais = asesores.filter(a => a.pais_id === paisId)
 
   const onCrear = async () => {
     setErrAlta(null); setCreando(true)
@@ -108,8 +120,12 @@ export default function ProspectosPaisPage() {
             <select id="asesor_id" value={asesorId} onChange={(e) => setAsesorId(e.target.value)}
               className="mt-1 w-full rounded border px-2 py-1.5 text-sm">
               <option value="">— elegir —</option>
-              {asesores.map(a => <option key={a.id} value={a.id}>{etiquetaAsesor(a)}</option>)}
+              {asesoresDelPais.map(a => <option key={a.id} value={a.id}>{etiquetaAsesor(a)}</option>)}
             </select>
+            {/* Un selector vacío sin explicación se lee como un error de carga. Esto dice qué pasa. */}
+            {!cargando && asesoresDelPais.length === 0 && (
+              <p className="mt-1 text-xs text-amber-700">No hay asesores activos en este país.</p>
+            )}
             {err('asesor_id')}
           </div>
         </div>
@@ -151,7 +167,7 @@ export default function ProspectosPaisPage() {
                       onChange={(e) => void onReasignar(p.id, e.target.value)}
                       className="rounded border px-1.5 py-1 text-xs"
                     >
-                      {asesores.map(a => <option key={a.id} value={a.id}>{etiquetaAsesor(a)}</option>)}
+                      {asesoresDelPais.map(a => <option key={a.id} value={a.id}>{etiquetaAsesor(a)}</option>)}
                     </select>
                   </td>
                 </tr>

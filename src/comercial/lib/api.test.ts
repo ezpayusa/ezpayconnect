@@ -167,7 +167,7 @@ const LECTURAS: [string, () => Promise<unknown>][] = [
   ['listarTipos', () => api.listarTipos()],
   ['listarEstados', () => api.listarEstados()],
   ['listarAsesores', () => api.listarAsesores()],
-  ['jornadaDeHoy', () => api.jornadaDeHoy()],
+  ['jornadaDeHoy', () => api.jornadaDeHoy('ase-1')],
   ['jornadasDelDia', () => api.jornadasDelDia('2026-09-06')],
   ['asesoresVisibles', () => api.asesoresVisibles()],
   ['visitasDelDia', () => api.visitasDelDia('2026-09-06')],
@@ -275,5 +275,58 @@ describe('asesoresConNombre llama a la RPC de la mig 283', () => {
   it('usa comercial_asesores_visibles', async () => {
     await api.asesoresConNombre()
     expect(rpcs[0].nombre).toBe('comercial_asesores_visibles')
+  })
+})
+
+
+// ############################################################################################
+// jornadaDeHoy: "la mía" no es "las del equipo"
+// ############################################################################################
+// El `.eq('asesor_id', ...)` de jornadaDeHoy NO es un gate de ownership —de esos el módulo no
+// tiene— sino la diferencia entre dos preguntas. Sin él, para el ASESOR la consulta andaba de
+// casualidad (la RLS le muestra una sola jornada, así que maybeSingle recibía una fila), pero al
+// SUPERVISOR la policy le muestra las de TODO su equipo y con dos jornadas abiertas revienta.
+describe('jornadaDeHoy filtra por asesor: el supervisor ve varias y quiere UNA', () => {
+  it('pide fecha Y asesor_id, y cierra con maybeSingle', async () => {
+    await api.jornadaDeHoy('ase-1')
+    const ops = consultas[0].ops.join(' ')
+    expect(consultas[0].tabla).toBe('jornadas_comerciales')
+    expect(ops).toContain('eq("asesor_id","ase-1")')
+    expect(ops).toMatch(/eq\("fecha","\d{4}-\d{2}-\d{2}"\)/)
+    expect(ops).toContain('maybeSingle()')
+  })
+
+  it('sin asesorId NO consulta: no vuelve al bug mientras el perfil carga', async () => {
+    const r = await api.jornadaDeHoy(null)
+    expect(consultas).toHaveLength(0)
+    expect(r).toEqual({ data: null, error: null })
+    await api.jornadaDeHoy(undefined)
+    await api.jornadaDeHoy('')
+    expect(consultas).toHaveLength(0)
+  })
+
+  it('el filtro deja UNA jornada donde la consulta sin filtrar traía dos', () => {
+    // Reproduce lo que la RLS le entrega a un supervisor con dos asesores con jornada abierta:
+    // sin el .eq, maybeSingle recibe 2 filas y falla. Con el filtro, queda exactamente una.
+    const loQueVeElSupervisor = [
+      { id: 'j1', asesor_id: 'ase-1', fecha: '2026-09-06' },
+      { id: 'j2', asesor_id: 'ase-2', fecha: '2026-09-06' },
+    ]
+    const mias = loQueVeElSupervisor.filter(j => j.asesor_id === 'ase-1')
+    expect(loQueVeElSupervisor).toHaveLength(2)
+    expect(mias).toHaveLength(1)
+    expect(mias[0].id).toBe('j1')
+  })
+
+  it('jornadasDelDia (las del equipo) sigue SIN filtro de asesor', async () => {
+    await api.jornadasDelDia('2026-09-06')
+    const ops = consultas[0].ops.join(' ')
+    expect(ops).toContain('eq("fecha","2026-09-06")')
+    expect(ops).not.toContain('maybeSingle')
+    // Se miran SOLO las ops de FILTRO: `asesor_id` está en el select y debe estarlo —las pantallas
+    // agrupan por esa columna—; lo que no debe haber es un .eq sobre ella.
+    const filtros = consultas[0].ops.filter(o => /^(eq|gt|gte|lt|lte|in|is)\(/.test(o)).join(' ')
+    expect(filtros).not.toContain('asesor_id')
+    expect(filtros).toBe('eq("fecha","2026-09-06")')
   })
 })

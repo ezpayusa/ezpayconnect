@@ -229,16 +229,38 @@ const COLS_JORNADA =
   'id,asesor_id,pais_id,fecha,inicio_at,inicio_precision_m,inicio_con_ubicacion,' +
   'fin_at,fin_precision_m,fin_con_ubicacion,notas_cierre'
 
-/** La jornada de hoy, si existe. La RLS ya la acota al llamante. */
-export async function jornadaDeHoy() {
+/**
+ * MI jornada de hoy, si existe.
+ *
+ * ESTE `.eq('asesor_id', ...)` NO ES UN GATE DE PERTENENCIA — no confundirlo con los `.eq` de
+ * ownership que este módulo saca a propósito. Acá la RLS ya decidió QUÉ jornadas puede ver el
+ * llamante; el filtro elige CUÁL de esas quiere esta pantalla. Son dos preguntas distintas:
+ * "las del equipo" (jornadasDelDia) y "la mía" (esta). Sacarlo no abre nada: rompe.
+ *
+ * Y rompía. Sin el filtro, para el ASESOR la consulta andaba de casualidad —es el único cuya
+ * jornada la RLS le deja ver, así que `maybeSingle()` recibía una fila—, pero al SUPERVISOR la
+ * policy le muestra las jornadas de TODO su equipo: con dos asesores con jornada abierta el mismo
+ * día, `maybeSingle()` falla. No se veía porque en QA hay un solo asesor con jornada.
+ *
+ * `asesorId` vacío devuelve vacío SIN ir a la red. Eso no es fail-closed de seguridad: es "todavía
+ * no sé quién soy" — el perfil aún no cargó. Consultar sin filtro en ese hueco reintroduce el bug.
+ */
+export async function jornadaDeHoy(asesorId: string | null | undefined) {
   const hoy = new Date().toISOString().slice(0, 10)
-  return supabase.from('jornadas_comerciales').select(COLS_JORNADA).eq('fecha', hoy).maybeSingle()
+  if (!asesorId) return { data: null, error: null }
+  return supabase.from('jornadas_comerciales').select(COLS_JORNADA)
+    .eq('fecha', hoy).eq('asesor_id', asesorId).maybeSingle()
 }
 
 /**
  * Jornadas de una fecha. Sin filtro de asesor: el chokepoint de la policy arma el equipo.
  * El embed `asesor:perfiles(...)` que había acá no lo consumía NINGUNA pantalla —las dos que la
  * usan agrupan por `asesor_id`—, así que se fue sin reemplazo.
+ *
+ * Acá NO existe el problema inverso de jornadaDeHoy. Las dos pantallas resuelven la jornada de un
+ * asesor con `.find(x => x.asesor_id === a.id)`, que se quedaría con la primera de varias — pero
+ * `jornadas_una_por_dia UNIQUE (asesor_id, fecha)` (mig 273) garantiza a lo sumo una. El `.find()`
+ * es correcto porque la DB lo sostiene, no porque la pantalla tenga suerte.
  */
 export async function jornadasDelDia(fecha: string) {
   return supabase.from('jornadas_comerciales').select(COLS_JORNADA).eq('fecha', fecha)
