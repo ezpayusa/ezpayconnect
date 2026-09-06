@@ -2,14 +2,15 @@ import { useEffect, useState } from 'react'
 import { Link, Navigate } from 'react-router-dom'
 import { CheckCircle2, AlertTriangle, Clock } from 'lucide-react'
 import { useAuth } from '@/hooks/useAuth'
-import { jornadasDelDia, visitasDelDia, visitasProximas, asesoresVisibles, type Jornada, type VisitaComercial } from '../lib/api'
+import { jornadasDelDia, visitasDelDia, visitasProximas, asesoresVisibles, asesoresConNombre,
+  mapaAsesores, nombreAsesor, type Jornada, type VisitaComercial, type AsesorConNombre } from '../lib/api'
 import { fmtFecha, fmtHora } from '../lib/agenda'
 import { reportarError } from '../lib/reportarError'
 
 const HOY = () => new Date().toISOString().slice(0, 10)
 
-type Asesor = { id: string; codigo_asesor: string; supervisor_id: string | null
-                perfil?: { nombre_completo: string | null; rol: string | null } | null }
+// Sin embed a perfiles: el nombre llega por la RPC de la mig 283 y se cruza en memoria.
+type Asesor = { id: string; codigo_asesor: string; supervisor_id: string | null }
 
 // Qué está pasando HOY con el equipo. No es analítica: no hay rangos de fechas ni agregados.
 //
@@ -24,13 +25,15 @@ export default function EquipoPage() {
   const [jornadas, setJornadas] = useState<Jornada[]>([])
   const [visitas, setVisitas] = useState<VisitaComercial[]>([])
   const [proximas, setProximas] = useState<VisitaComercial[]>([])
+  const [nombres, setNombres] = useState<Map<string, AsesorConNombre>>(new Map())
   const [cargando, setCargando] = useState(true)
 
   useEffect(() => {
     void (async () => {
       setCargando(true)
-      const [a, j, v, px] = await Promise.all([asesoresVisibles(), jornadasDelDia(HOY()), visitasDelDia(HOY()), visitasProximas(HOY())])
+      const [a, j, v, px, nom] = await Promise.all([asesoresVisibles(), jornadasDelDia(HOY()), visitasDelDia(HOY()), visitasProximas(HOY()), asesoresConNombre()])
       if (a.error) reportarError(a.error); else setAsesores((a.data ?? []) as unknown as Asesor[])
+      if (nom.error) reportarError(nom.error); else setNombres(mapaAsesores(nom.data as AsesorConNombre[] | null))
       if (j.error) reportarError(j.error); else setJornadas((j.data ?? []) as unknown as Jornada[])
       if (v.error) reportarError(v.error); else setVisitas((v.data ?? []) as unknown as VisitaComercial[])
       if (px.error) reportarError(px.error); else setProximas((px.data ?? []) as unknown as VisitaComercial[])
@@ -71,8 +74,11 @@ export default function EquipoPage() {
                   <div className="flex items-start justify-between gap-3">
                     <div className="min-w-0">
                       <p className="truncate font-medium text-gray-900">
-                        {a.perfil?.nombre_completo ?? a.codigo_asesor}
+                        {nombreAsesor(a.id, nombres, a.codigo_asesor)}
                       </p>
+                      {/* el codigo es dato SECUNDARIO, no el fallback del nombre: verlo al lado del
+                          nombre es informacion; verlo EN LUGAR del nombre era el sintoma del bug. */}
+                      <p className="text-xs text-gray-400">{a.codigo_asesor}</p>
                       {/* LENGUAJE: informa un hecho, no emite un juicio. "Sin jornada abierta" es
                           lo que quedó registrado; por qué, esta pantalla no lo sabe. */}
                       <p className="mt-0.5 text-xs text-gray-600">

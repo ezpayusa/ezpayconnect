@@ -148,3 +148,132 @@ describe('el embed geo del prospecto viaja SOLO en la ficha de la visita', () =>
     }
   })
 })
+
+// ############################################################################################
+// CENSO: ninguna consulta de este modulo vuelve a nombrar `perfiles` (mig 283)
+// ############################################################################################
+// `perfiles` tiene UNA sola policy de SELECT util (`auth.uid() = id`), asi que todo embed a ella
+// devolvia NULL para cualquier asesor que no fuera uno mismo — y el supervisor veia "sin asesor"
+// en su propia cartera. El nombre ahora sale de comercial_asesores_visibles().
+//
+// Es CENSO y no cuatro casos: manana alguien agrega una consulta con un embed a perfiles y un test
+// por funcion no se entera. La segunda mitad —que la lista cubra TODOS los .from() del archivo— es
+// lo que impide que el censo se quede corto en silencio.
+const LECTURAS: [string, () => Promise<unknown>][] = [
+  ['listarProspectos', () => api.listarProspectos()],
+  ['listarProspectosDePais', () => api.listarProspectosDePais('gt')],
+  ['obtenerProspecto', () => api.obtenerProspecto('pros-1')],
+  ['listarContactos', () => api.listarContactos('pros-1')],
+  ['listarTipos', () => api.listarTipos()],
+  ['listarEstados', () => api.listarEstados()],
+  ['listarAsesores', () => api.listarAsesores()],
+  ['jornadaDeHoy', () => api.jornadaDeHoy()],
+  ['jornadasDelDia', () => api.jornadasDelDia('2026-09-06')],
+  ['asesoresVisibles', () => api.asesoresVisibles()],
+  ['visitasDelDia', () => api.visitasDelDia('2026-09-06')],
+  ['obtenerVisita', () => api.obtenerVisita('vis-1')],
+  ['reporteDeVisita', () => api.reporteDeVisita('vis-1')],
+  ['adjuntosDeVisita', () => api.adjuntosDeVisita('vis-1')],
+  ['listarResultados', () => api.listarResultados()],
+  ['visitasProximas', () => api.visitasProximas('2026-09-06')],
+  ['visitasDelProspecto', () => api.visitasDelProspecto('pros-1')],
+]
+
+describe('ninguna consulta del modulo comercial nombra `perfiles`', () => {
+  for (const [nombre, correr] of LECTURAS) {
+    it(nombre + ' no embebe perfiles', async () => {
+      await correr()
+      const sel = consultas[0].ops.find(o => o.startsWith('select(')) ?? ''
+      expect(sel, nombre + ' sigue embebiendo perfiles').not.toContain('perfiles')
+      expect(sel).not.toContain('nombre_completo')
+    })
+  }
+
+  it('el censo cubre TODAS las consultas del archivo, no una lista escrita de memoria', async () => {
+    // Sin esto el censo se queda corto solo: se agrega una funcion nueva con un embed y ningun
+    // test la ejercita. Se cuenta contra el fuente.
+    // ruta desde la raiz del repo: en jsdom `import.meta.url` no es un file:// URL
+    const fs = await import('node:fs')
+    const src = fs.readFileSync('src/comercial/lib/api.ts', 'utf8')
+    const froms = (src.match(/supabase\.from\(/g) ?? []).length
+    expect(LECTURAS.length).toBe(froms)
+    // y de paso: el fuente no tiene ni un embed a perfiles fuera de los comentarios
+    const codigo = src.split('\n').filter(l => !l.trim().startsWith('//') && !l.trim().startsWith('*')).join('\n')
+    expect(codigo).not.toContain('perfiles!')
+  })
+})
+
+// ############################################################################################
+// Los tres select('*') que quedaban, ahora explicitos
+// ############################################################################################
+describe('sin select(*): se piden SOLO las columnas que la pantalla pinta', () => {
+  it('listarContactos pide id,nombre,puesto,email y nada mas', async () => {
+    await api.listarContactos('pros-1')
+    const sel = consultas[0].ops.find(o => o.startsWith('select(')) ?? ''
+    expect(sel).toContain('id,nombre,puesto,email')
+    // telefono, celular y notas existen en la tabla y la ficha NO los muestra
+    for (const c of ['telefono', 'celular', 'notas', '*']) expect(sel).not.toContain(c)
+  })
+
+  it('reporteDeVisita pide id,resultado,resumen,compromisos', async () => {
+    await api.reporteDeVisita('vis-1')
+    const sel = consultas[0].ops.find(o => o.startsWith('select(')) ?? ''
+    expect(sel).toContain('id,resultado,resumen,compromisos')
+    expect(sel).not.toContain('*')
+  })
+
+  it('adjuntosDeVisita pide id,storage_path', async () => {
+    await api.adjuntosDeVisita('vis-1')
+    const sel = consultas[0].ops.find(o => o.startsWith('select(')) ?? ''
+    expect(sel).toContain('id,storage_path')
+    expect(sel).not.toContain('*')
+  })
+})
+
+// ############################################################################################
+// nombreAsesor: las TRES situaciones no se confunden nunca mas
+// ############################################################################################
+// Antes las tres caian en "sin asesor", y por eso un bug de RLS se leyo durante semanas como un
+// dato faltante. Este test existe para que esa fusion no vuelva.
+describe('nombreAsesor — sin asesor, no visible y el nombre son tres cosas distintas', () => {
+  const mapa = api.mapaAsesores([
+    { id: 'ase-1', codigo_asesor: 'QA-ASE-01', nombre_completo: 'Asesor Comercial 1 QA', activo: true, supervisor_id: 'sup-1' },
+    { id: 'ase-3', codigo_asesor: 'QA-ASE-03', nombre_completo: null, activo: true, supervisor_id: null },
+  ])
+
+  it('id en el mapa da el nombre real', () => {
+    expect(api.nombreAsesor('ase-1', mapa)).toBe('Asesor Comercial 1 QA')
+  })
+
+  it('asesor_id NULL da "sin asesor", y SOLO en ese caso', () => {
+    expect(api.nombreAsesor(null, mapa)).toBe('sin asesor')
+    expect(api.nombreAsesor(undefined, mapa)).toBe('sin asesor')
+    expect(api.nombreAsesor('', mapa)).toBe('sin asesor')
+  })
+
+  it('id fuera del alcance y sin codigo conocido da "asesor no visible", NUNCA "sin asesor"', () => {
+    expect(api.nombreAsesor('ase-fuera', mapa)).toBe('asesor no visible')
+    expect(api.nombreAsesor('ase-fuera', mapa)).not.toBe('sin asesor')
+  })
+
+  it('id fuera del alcance pero con codigo conocido da el codigo', () => {
+    expect(api.nombreAsesor('ase-fuera', mapa, 'QA-ASE-09')).toBe('QA-ASE-09')
+  })
+
+  it('en el mapa pero con nombre_completo NULL cae al codigo de la ficha', () => {
+    expect(api.nombreAsesor('ase-3', mapa)).toBe('QA-ASE-03')
+  })
+
+  it('mapaAsesores tolera null y undefined', () => {
+    expect(api.mapaAsesores(null).size).toBe(0)
+    expect(api.mapaAsesores(undefined).size).toBe(0)
+    expect(api.nombreAsesor('ase-1', api.mapaAsesores(null))).toBe('asesor no visible')
+  })
+})
+
+describe('asesoresConNombre llama a la RPC de la mig 283', () => {
+  it('usa comercial_asesores_visibles', async () => {
+    await api.asesoresConNombre()
+    expect(rpcs[0].nombre).toBe('comercial_asesores_visibles')
+  })
+})

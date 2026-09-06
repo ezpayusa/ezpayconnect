@@ -29,7 +29,6 @@ export type Prospecto = {
   motivo_perdida: string | null
   empresa_proveedora_id: string | null
   updated_at: string
-  asesor?: { nombre_completo: string | null } | null
 }
 
 export type Contacto = {
@@ -49,7 +48,7 @@ export type ItemCatalogo = { codigo: string; etiqueta: string; orden: number; es
 
 const COLS =
   'id,nombre,tipo,estado_pipeline,asesor_id,pais_id,direccion,lat,lng,notas,motivo_perdida,' +
-  'empresa_proveedora_id,updated_at,asesor:perfiles!prospectos_asesor_id_fkey(nombre_completo)'
+  'empresa_proveedora_id,updated_at'
 
 /** Cartera del usuario. Sin filtro de asesor: lo pone la RLS. */
 export async function listarProspectos() {
@@ -68,8 +67,10 @@ export async function obtenerProspecto(id: string) {
 
 /** El .eq es la clave del join; la visibilidad la impone prospecto_visible() en la policy. */
 export async function listarContactos(prospectoId: string) {
-  return supabase.from('prospecto_contactos').select('*').eq('prospecto_id', prospectoId)
-    .order('created_at', { ascending: true })
+  // Columnas explícitas: sólo las que la ficha pinta hoy. Un `select('*')` sobre una tabla de
+  // contactos baja telefono, celular y notas a cada carga sin que nada los muestre.
+  return supabase.from('prospecto_contactos').select('id,nombre,puesto,email')
+    .eq('prospecto_id', prospectoId).order('created_at', { ascending: true })
 }
 
 export async function listarTipos() {
@@ -82,10 +83,14 @@ export async function listarEstados() {
     .eq('activo', true).order('orden')
 }
 
-/** Asesores elegibles. La policy de asesores_perfil ya la acota al país / a la cartera. */
+/**
+ * Asesores elegibles. La policy de asesores_perfil ya la acota al país / a la cartera.
+ * SIN embed a perfiles: el nombre sale de `asesoresConNombre()`. Esta consulta se queda porque es
+ * la única que trae `pais_id` y `activo`, que la RPC no devuelve.
+ */
 export async function listarAsesores() {
   return supabase.from('asesores_perfil')
-    .select('id,codigo_asesor,activo,pais_id,perfil:perfiles!asesores_perfil_id_fkey(nombre_completo,rol)')
+    .select('id,codigo_asesor,activo,pais_id')
     .eq('activo', true).order('codigo_asesor')
 }
 
@@ -230,18 +235,69 @@ export async function jornadaDeHoy() {
   return supabase.from('jornadas_comerciales').select(COLS_JORNADA).eq('fecha', hoy).maybeSingle()
 }
 
-/** Jornadas de una fecha. Sin filtro de asesor: el chokepoint de la policy arma el equipo. */
+/**
+ * Jornadas de una fecha. Sin filtro de asesor: el chokepoint de la policy arma el equipo.
+ * El embed `asesor:perfiles(...)` que había acá no lo consumía NINGUNA pantalla —las dos que la
+ * usan agrupan por `asesor_id`—, así que se fue sin reemplazo.
+ */
 export async function jornadasDelDia(fecha: string) {
-  return supabase.from('jornadas_comerciales')
-    .select(`${COLS_JORNADA},asesor:perfiles!jornadas_comerciales_asesor_id_fkey(nombre_completo)`)
-    .eq('fecha', fecha)
+  return supabase.from('jornadas_comerciales').select(COLS_JORNADA).eq('fecha', fecha)
 }
 
 /** Las fichas del equipo visible. La policy de asesores_perfil ya la acota a la cartera. */
 export async function asesoresVisibles() {
   return supabase.from('asesores_perfil')
-    .select('id,codigo_asesor,activo,supervisor_id,perfil:perfiles!asesores_perfil_id_fkey(nombre_completo,rol)')
+    .select('id,codigo_asesor,activo,supervisor_id')
     .eq('activo', true).order('codigo_asesor')
+}
+
+/**
+ * El NOMBRE del asesor, por RPC (mig 283). Ninguna consulta de este módulo vuelve a nombrar
+ * `perfiles`: la tabla tiene UNA sola policy de SELECT util —`auth.uid() = id`—, asi que todo embed
+ * a ella devolvía NULL para cualquier asesor que no fuera uno mismo, y el supervisor veía
+ * "sin asesor" en su propia cartera. Una policy nueva habría expuesto las 16 columnas de perfiles
+ * (email, teléfono, dirección del consultorio, lat/lng, avatar) a cambio de un solo campo; la RPC
+ * devuelve 5 y ninguna sensible, con el mismo gate que `asesores_perfil_select`.
+ *
+ * El cruce se hace en memoria con `mapaNombres`, no con un embed: el conjunto de la RPC y el de la
+ * consulta que se está pintando los arma la MISMA regla, pero son dos viajes distintos.
+ */
+export type AsesorConNombre = {
+  id: string
+  codigo_asesor: string
+  nombre_completo: string | null
+  activo: boolean
+  supervisor_id: string | null
+}
+
+export async function asesoresConNombre() {
+  return supabase.rpc('comercial_asesores_visibles')
+}
+
+/** id -> ficha, para resolver nombres sin volver a la red. */
+export function mapaAsesores(filas: AsesorConNombre[] | null | undefined) {
+  return new Map((filas ?? []).map(a => [a.id, a]))
+}
+
+/**
+ * El nombre que se muestra para un `asesor_id`. Las TRES situaciones son distintas y no se
+ * confunden nunca más:
+ *   - `asesor_id` NULL          -> "sin asesor"        (nadie lo tiene asignado)
+ *   - id fuera del alcance      -> codigo, o "asesor no visible"  (existe, no lo podés ver)
+ *   - id en el mapa             -> el nombre real
+ * Antes las tres caían en "sin asesor", que es la razón por la que un bug de RLS se leyó durante
+ * semanas como un dato faltante.
+ */
+export function nombreAsesor(
+  asesorId: string | null | undefined,
+  mapa: Map<string, AsesorConNombre>,
+  codigoConocido?: string | null,
+): string {
+  if (!asesorId) return 'sin asesor'
+  const a = mapa.get(asesorId)
+  if (a?.nombre_completo) return a.nombre_completo
+  const codigo = a?.codigo_asesor ?? codigoConocido
+  return codigo ?? 'asesor no visible'
 }
 
 /** Visitas de una fecha. Sin .eq de asesor: lo pone la policy. */
@@ -256,12 +312,13 @@ export async function obtenerVisita(id: string) {
 }
 
 export async function reporteDeVisita(visitaId: string) {
-  return supabase.from('reportes_visita').select('*').eq('visita_id', visitaId).maybeSingle()
+  return supabase.from('reportes_visita').select('id,resultado,resumen,compromisos')
+    .eq('visita_id', visitaId).maybeSingle()
 }
 
 export async function adjuntosDeVisita(visitaId: string) {
-  return supabase.from('visita_adjuntos').select('*').eq('visita_id', visitaId)
-    .order('created_at', { ascending: true })
+  return supabase.from('visita_adjuntos').select('id,storage_path')
+    .eq('visita_id', visitaId).order('created_at', { ascending: true })
 }
 
 export async function listarResultados() {

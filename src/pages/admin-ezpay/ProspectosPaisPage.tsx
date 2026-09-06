@@ -3,16 +3,16 @@ import { useParams } from 'react-router-dom'
 import { toast } from 'sonner'
 import {
   listarProspectosDePais, listarAsesores, listarTipos, listarEstados,
-  crearProspecto, reasignarProspecto,
-  type Prospecto, type ItemCatalogo,
+  crearProspecto, reasignarProspecto, asesoresConNombre, mapaAsesores, nombreAsesor,
+  type Prospecto, type ItemCatalogo, type AsesorConNombre,
 } from '@/comercial/lib/api'
 import { reportarError, type ErrorInline } from '@/comercial/lib/reportarError'
 
+// Sin embed a perfiles: la ficha da codigo/pais y la RPC de la mig 283 da el nombre.
 type Asesor = {
   id: string
   codigo_asesor: string
   pais_id: string
-  perfil?: { nombre_completo: string | null; rol: string | null } | null
 }
 
 // Prospectos del país: lista + alta + reasignación. Cuelga del AdminLayout existente y usa el
@@ -28,6 +28,7 @@ export default function ProspectosPaisPage() {
   const [asesores, setAsesores] = useState<Asesor[]>([])
   const [tipos, setTipos] = useState<ItemCatalogo[]>([])
   const [estados, setEstados] = useState<ItemCatalogo[]>([])
+  const [nombres, setNombres] = useState<Map<string, AsesorConNombre>>(new Map())
   const [cargando, setCargando] = useState(true)
 
   // alta
@@ -39,9 +40,10 @@ export default function ProspectosPaisPage() {
 
   const cargar = async () => {
     setCargando(true)
-    const [pr, as, ti, es] = await Promise.all([
-      listarProspectosDePais(paisId), listarAsesores(), listarTipos(), listarEstados(),
+    const [pr, as, ti, es, nom] = await Promise.all([
+      listarProspectosDePais(paisId), listarAsesores(), listarTipos(), listarEstados(), asesoresConNombre(),
     ])
+    if (nom.error) reportarError(nom.error); else setNombres(mapaAsesores(nom.data as AsesorConNombre[] | null))
     if (pr.error) reportarError(pr.error)
     else setFilas((pr.data ?? []) as unknown as Prospecto[])
     if (as.data) setAsesores(as.data as unknown as Asesor[])
@@ -53,7 +55,8 @@ export default function ProspectosPaisPage() {
   useEffect(() => { void cargar() }, [paisId])
 
   const etiquetaEstado = (c: string) => estados.find(e => e.codigo === c)?.etiqueta ?? c
-  const nombreAsesor = (a: Asesor) => `${a.perfil?.nombre_completo ?? a.codigo_asesor} (${a.codigo_asesor})`
+  // El codigo va SIEMPRE entre parentesis, como dato secundario: nunca ocupa el lugar del nombre.
+  const etiquetaAsesor = (a: Asesor) => `${nombreAsesor(a.id, nombres, a.codigo_asesor)} (${a.codigo_asesor})`
 
   const onCrear = async () => {
     setErrAlta(null); setCreando(true)
@@ -105,7 +108,7 @@ export default function ProspectosPaisPage() {
             <select id="asesor_id" value={asesorId} onChange={(e) => setAsesorId(e.target.value)}
               className="mt-1 w-full rounded border px-2 py-1.5 text-sm">
               <option value="">— elegir —</option>
-              {asesores.map(a => <option key={a.id} value={a.id}>{nombreAsesor(a)}</option>)}
+              {asesores.map(a => <option key={a.id} value={a.id}>{etiquetaAsesor(a)}</option>)}
             </select>
             {err('asesor_id')}
           </div>
@@ -148,7 +151,7 @@ export default function ProspectosPaisPage() {
                       onChange={(e) => void onReasignar(p.id, e.target.value)}
                       className="rounded border px-1.5 py-1 text-xs"
                     >
-                      {asesores.map(a => <option key={a.id} value={a.id}>{nombreAsesor(a)}</option>)}
+                      {asesores.map(a => <option key={a.id} value={a.id}>{etiquetaAsesor(a)}</option>)}
                     </select>
                   </td>
                 </tr>

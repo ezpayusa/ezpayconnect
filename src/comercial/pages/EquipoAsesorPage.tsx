@@ -2,7 +2,8 @@ import { useEffect, useState } from 'react'
 import { useParams, Link, Navigate } from 'react-router-dom'
 import { ArrowLeft, CheckCircle2, AlertTriangle, CloudOff } from 'lucide-react'
 import { useAuth } from '@/hooks/useAuth'
-import { jornadasDelDia, visitasDelDia, visitasProximas, asesoresVisibles, type Jornada, type VisitaComercial } from '../lib/api'
+import { jornadasDelDia, visitasDelDia, visitasProximas, asesoresVisibles, asesoresConNombre,
+  mapaAsesores, nombreAsesor, type Jornada, type VisitaComercial, type AsesorConNombre } from '../lib/api'
 import { fmtFecha, fmtHora } from '../lib/agenda'
 import { reportarError } from '../lib/reportarError'
 
@@ -21,12 +22,13 @@ export default function EquipoAsesorPage() {
   useEffect(() => {
     void (async () => {
       setCargando(true)
-      const [a, j, v, px] = await Promise.all([asesoresVisibles(), jornadasDelDia(HOY()), visitasDelDia(HOY()), visitasProximas(HOY())])
-      if (a.data) {
-        const f = (a.data as unknown as { id: string; codigo_asesor: string; perfil?: { nombre_completo: string | null } | null }[])
-          .find(x => x.id === asesorId)
-        setNombre(f?.perfil?.nombre_completo ?? f?.codigo_asesor ?? 'Asesor')
-      }
+      const [a, j, v, px, nom] = await Promise.all([asesoresVisibles(), jornadasDelDia(HOY()), visitasDelDia(HOY()), visitasProximas(HOY()), asesoresConNombre()])
+      // El nombre sale de la RPC (mig 283) y el codigo de la ficha; si el asesor no esta en
+      // ninguno de los dos, `nombreAsesor` dice "asesor no visible" y no un generico.
+      if (nom.error) reportarError(nom.error)
+      const codigo = (a.data as unknown as { id: string; codigo_asesor: string }[] | null)
+        ?.find(x => x.id === asesorId)?.codigo_asesor
+      setNombre(nombreAsesor(asesorId, mapaAsesores(nom.data as AsesorConNombre[] | null), codigo))
       if (j.error) reportarError(j.error)
       else setJornada(((j.data ?? []) as unknown as Jornada[]).find(x => x.asesor_id === asesorId) ?? null)
       if (v.error) reportarError(v.error)

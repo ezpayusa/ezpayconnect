@@ -1,7 +1,8 @@
 import { useEffect, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { useAuth } from '@/hooks/useAuth'
-import { listarProspectos, listarEstados, type Prospecto, type ItemCatalogo } from '../lib/api'
+import { listarProspectos, listarEstados, asesoresConNombre, mapaAsesores, nombreAsesor,
+  type Prospecto, type ItemCatalogo, type AsesorConNombre } from '../lib/api'
 import { reportarError } from '../lib/reportarError'
 
 // Cartera. MISMA pantalla para asesor y supervisor: el conjunto lo ensancha la RLS
@@ -15,14 +16,16 @@ export default function ProspectosPage() {
   const esSupervisor = perfil?.rol === 'supervisor_comercial'
   const [filas, setFilas] = useState<Prospecto[]>([])
   const [estados, setEstados] = useState<ItemCatalogo[]>([])
+  const [nombres, setNombres] = useState<Map<string, AsesorConNombre>>(new Map())
   const [cargando, setCargando] = useState(true)
 
   const cargar = async () => {
     setCargando(true)
-    const [{ data, error }, cat] = await Promise.all([listarProspectos(), listarEstados()])
+    const [{ data, error }, cat, nom] = await Promise.all([listarProspectos(), listarEstados(), asesoresConNombre()])
     if (error) reportarError(error)
     else setFilas((data ?? []) as unknown as Prospecto[])
     if (cat.data) setEstados(cat.data as ItemCatalogo[])
+    if (nom.error) reportarError(nom.error); else setNombres(mapaAsesores(nom.data as AsesorConNombre[] | null))
     setCargando(false)
   }
 
@@ -58,8 +61,11 @@ export default function ProspectosPage() {
                     <p className="truncate font-medium text-gray-900">{p.nombre}</p>
                     <p className="mt-0.5 text-xs text-gray-500">
                       {p.tipo.replace(/_/g, ' ')}
+                      {/* "sin asesor" queda SOLO para asesor_id NULL de verdad. Un asesor fuera del
+                          alcance del llamante dice "asesor no visible": son dos cosas distintas y
+                          confundirlas fue lo que escondio el bug de RLS de perfiles. */}
                       {esSupervisor && (
-                        <> · <span className="text-gray-700">{p.asesor?.nombre_completo ?? 'sin asesor'}</span></>
+                        <> · <span className="text-gray-700">{nombreAsesor(p.asesor_id, nombres)}</span></>
                       )}
                     </p>
                   </div>
