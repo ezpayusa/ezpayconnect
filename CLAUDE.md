@@ -22,6 +22,23 @@ Stack: React + Vite + TypeScript, Supabase / Postgres, deploy en Vercel, repo en
   42501. Mig 288, 7-sep: tarjeta pública del asesor, PA030 = sin ficha, P649–P661. La resolutora
   `tarjeta_publica_por_token` la ejecuta **sólo `service_role`** — ni `anon` ni `authenticated`:
   la llama una edge pública, `anon` nunca toca la base.)
+- **El gateway de `*.supabase.co` REESCRIBE el `Content-Type` del HTML. Medido 7-sep-2026 contra el
+  deploy real.** Toda respuesta `text/html` de una edge sale por el gateway como **`text/plain`** y
+  con **`Content-Security-Policy: default-src 'none'; sandbox`** agregado. Es su defensa
+  anti-phishing sobre el dominio compartido y no se apaga desde el código. **Sólo interviene sobre
+  `text/html`**: la contraprueba del mismo lote es que un `text/vcard` llegó intacto y sin CSP.
+  Consecuencias medidas, las tres:
+  - **Vercel NO lo repara**: proxea la respuesta de un rewrite externo arrastrando el `Content-Type`
+    y el CSP del upstream tal cual.
+  - **Vercel NO manda `x-forwarded-host`** a un destino de rewrite EXTERNO, y el gateway entrega el
+    path como `/<nombre-funcion>` (sin `/functions/v1`). O sea que una edge no puede reconstruir su
+    URL pública: ni el host ni el path le llegan.
+  - **Un header PROPIO sí atraviesa el gateway intacto.** Por eso el tipo real viaja en
+    `X-Tarjeta-Content-Type` y el proxy lo aplica como `Content-Type`.
+  **Servir HTML público desde una edge de Supabase exige un proxy propio que corrija headers**
+  (acá: `api/tarjeta.ts` en Vercel, que no decide nada — transporta y arregla headers; la lógica y
+  el `service_role` se quedan en la edge). Con `text/plain` el navegador muestra el código fuente y
+  el crawler de WhatsApp no lee los `og:`, que suele ser la única razón para servir HTML server-side.
 - **Harness de RLS (`tests/rls/probes_escritura.sql`): OBLIGATORIO correr `python tests/rls/b2_guard.py`
   (o `npm run harness:guard`) al tocarlo.** Es el gate de estructura del frente B2: falla si aparece
   una sentencia DML/DDL fuera de un bloque `DO` con `EXCEPTION` handler, o si crecen los bloques `DO`

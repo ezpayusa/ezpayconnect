@@ -217,10 +217,24 @@ cálculo cuando se construya. El arreglo tiene dos mitades y las dos hacen falta
 tabla (o un guard en la RPC) y un `max` en el input — el front solo no alcanza, porque la RPC es
 llamable sin pasar por la pantalla.
 
-### 5. Tarjeta pública del asesor (D11)
+### 5. Tarjeta pública del asesor (D11) — piezas 1 y 2 CERRADAS 7-sep
 
 **Única superficie `anon` del módulo.** Token propio, bucket público separado del de evidencia, y
 consentimiento **revocable**.
+
+- **Pieza 1 — backend (mig 288, `96ebd09`).** Cuatro columnas en `asesores_perfil`, cuatro RPCs,
+  PA030, probes P649–P661. `tarjeta_publica_por_token` la ejecuta **sólo `service_role`**.
+- **Pieza 2 — superficie pública (`fcb9404` + `832cd56`).** Edge `tarjeta-asesor` + ruta `/t/:token`.
+  Verificada en prod contra `med.ezpayconnect.com`: `text/html`, sin CSP, `og:url` con el dominio y
+  el path correctos, vCard con su `text/vcard`, y **la revocación mata la URL** (apagada → 404,
+  encendida → 200). 22 tests de deno.
+  **La primera versión estaba rota y no se veía sin desplegar**: el gateway de Supabase reescribe el
+  `text/html` a `text/plain` y Vercel no lo repara. Se arregló con un proxy propio en
+  `api/tarjeta.ts` que corrige headers y no decide nada. La lección medida está en CLAUDE.md.
+- **Pieza 3 — pendiente.** Bucket público para `foto_publica_path`. Hoy el campo viaja en el JSON de
+  la RPC y **no se usa**: un `og:image` que 404ea es peor que no tenerlo.
+- **Pieza 4 — pendiente.** Pantalla del asesor para encender/apagar la tarjeta y rotar el token.
+  Hasta que exista, el consentimiento sólo se puede tocar por SQL.
 
 ### 6. Seed DEMO (D9/D10)
 
@@ -237,10 +251,24 @@ mano.
 - **Fichas de asesor con datos de prueba** cargados al verificar la pantalla del punto 4:
   `QA-SUP-01` quedó con cargo `supervidor` (sic), territorio `centro`, bio `nada` y
   `fecha_ingreso 2227-01-01`. No estorban a nadie, pero son datos inventados en una tabla real.
+- **`QA-ASE-01` tiene la TARJETA PÚBLICA ENCENDIDA** (`tarjeta_publica = true`) y datos de contacto
+  inventados cargados por SQL el 7-sep para verificar la pieza 2: cargo `Asesor Comercial Senior`,
+  territorio `Zona 10 y Zona 14, Ciudad de Guatemala`, teléfono `2378-4500`, celular
+  `+502 5512-3456`. **Esta es la única fila del inventario QA que está publicada en internet**: el
+  link `/t/<token>` responde a cualquiera que lo tenga. Al limpiar, apagarla es lo primero —
+  `tarjeta_publica = false` la mata en el request siguiente, sin ventana.
 - El inventario completo de cuentas y basura borrable está en la memoria de proyecto, no en el repo.
 
 ### 8. Higiene
 
+- **`api/` no está en el `include` de NINGÚN tsconfig**, así que las funciones serverless de Vercel
+  **nunca se typechequean** — ni la nueva `api/tarjeta.ts` ni las dos viejas `api/send-receta.ts` y
+  `api/send-factura.ts`, que están vivas en prod. Medido 7-sep: `tsconfig.app.json` incluye `["src"]`
+  y `tsconfig.node.json` incluye `["vite.config.ts"]`; no hay un tercero. O sea que el gate de
+  `tsc -p tsconfig.app.json` que corremos en cada bloque **no mira ese directorio**, y Vercel tampoco
+  typechequea al construir funciones. Las tres se verificaron a mano con una invocación suelta de
+  `tsc` y salieron limpias, pero eso no es un gate: hay que meter `api` en un tsconfig (probablemente
+  `tsconfig.node.json`, que ya tiene `types: ["node"]`) y ver qué baseline aparece antes de exigir 0.
 - `COLS_JORNADA` trae `pais_id` y las dos columnas de precisión que **ninguna pantalla pinta**.
 - Las rutas `/admin-ezpay/pais/:id/prospectos` y `/material` **no tienen entrada de navegación**: se
   llega sólo escribiendo la URL.
