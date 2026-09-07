@@ -49,10 +49,20 @@ const navigationRoute = new NavigationRoute(
     return (await matchPrecache('/index.html')) || Response.error()
   },
   {
+    // Rutas que NO sirve la SPA: el SW no tiene que opinar sobre ellas y las deja pasar a la red.
     denylist: [
       /^\/api\//,
       /^\/.well-known/,
       /^\/supabase\/functions/,
+      // Tarjeta pública del asesor (/t/<token>). La sirve el SERVIDOR —proxy /api/tarjeta hacia la
+      // edge— y el HTML viene renderizado de allá. Sin esta línea la navegación caía en el fallback
+      // de arriba y el visitante recibía el index.html precacheado: veía el NotFoundPage de React
+      // en vez de la tarjeta.
+      // Le pasaba SÓLO a quien ya tenía el SW instalado —todo el equipo de EZPay, y cualquier
+      // asesor que abriera el link de un colega—; en incógnito funcionaba, que es lo que hacía al
+      // bug difícil de ver. La preview de WhatsApp nunca estuvo afectada porque el crawler no
+      // corre service workers.
+      /^\/t\//,
     ],
   }
 )
