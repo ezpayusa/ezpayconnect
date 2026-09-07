@@ -1,5 +1,5 @@
 import { Outlet, useNavigate, useLocation } from 'react-router-dom'
-import { Briefcase, WifiOff, Users, CalendarCheck, UsersRound, BookOpen, LogOut } from 'lucide-react'
+import { Briefcase, WifiOff, Users, CalendarCheck, UsersRound, BookOpen, IdCard, LogOut } from 'lucide-react'
 import { useEffect, useState } from 'react'
 import { useAuth } from '@/hooks/useAuth'
 
@@ -36,6 +36,7 @@ export default function ComercialLayout() {
   const enHoy = location.pathname.startsWith('/comercial/hoy') || location.pathname.startsWith('/comercial/visitas')
   const enEquipo = location.pathname.startsWith('/comercial/equipo')
   const enMaterial = location.pathname.startsWith('/comercial/material')
+  const enTarjeta = location.pathname.startsWith('/comercial/mi-tarjeta')
   const esSupervisor = perfil?.rol === 'supervisor_comercial'
 
   return (
@@ -71,43 +72,53 @@ export default function ComercialLayout() {
           <button
             type="button"
             onClick={() => navigate('/comercial/hoy')}
-            className={`flex-1 flex flex-col items-center gap-0.5 py-2 text-xs ${
+            className={`flex-1 min-w-0 flex flex-col items-center gap-0.5 py-2 text-[11px] ${
               enHoy ? 'text-[#1E5C8E]' : 'text-gray-400'
             }`}
           >
             <CalendarCheck className="h-5 w-5" />
-            Hoy
+            <span className="max-w-full truncate px-0.5">Hoy</span>
           </button>
           <button
             type="button"
             onClick={() => navigate('/comercial/prospectos')}
-            className={`flex-1 flex flex-col items-center gap-0.5 py-2 text-xs ${
+            className={`flex-1 min-w-0 flex flex-col items-center gap-0.5 py-2 text-[11px] ${
               enProspectos ? 'text-[#1E5C8E]' : 'text-gray-400'
             }`}
           >
             <Users className="h-5 w-5" />
-            Prospectos
+            <span className="max-w-full truncate px-0.5">Prospectos</span>
           </button>
           <button
             type="button"
             onClick={() => navigate('/comercial/material')}
-            className={`flex-1 flex flex-col items-center gap-0.5 py-2 text-xs ${
+            className={`flex-1 min-w-0 flex flex-col items-center gap-0.5 py-2 text-[11px] ${
               enMaterial ? 'text-[#1E5C8E]' : 'text-gray-400'
             }`}
           >
             <BookOpen className="h-5 w-5" />
-            Material
+            <span className="max-w-full truncate px-0.5">Material</span>
+          </button>
+          <button
+            type="button"
+            onClick={() => navigate('/comercial/mi-tarjeta')}
+            className={`flex-1 min-w-0 flex flex-col items-center gap-0.5 py-2 text-[11px] ${
+              enTarjeta ? 'text-[#1E5C8E]' : 'text-gray-400'
+            }`}
+          >
+            <IdCard className="h-5 w-5" />
+            <span className="max-w-full truncate px-0.5">Mi tarjeta</span>
           </button>
           {esSupervisor && (
             <button
               type="button"
               onClick={() => navigate('/comercial/equipo')}
-              className={`flex-1 flex flex-col items-center gap-0.5 py-2 text-xs ${
+              className={`flex-1 min-w-0 flex flex-col items-center gap-0.5 py-2 text-[11px] ${
                 enEquipo ? 'text-[#1E5C8E]' : 'text-gray-400'
               }`}
             >
               <UsersRound className="h-5 w-5" />
-              Equipo
+              <span className="max-w-full truncate px-0.5">Equipo</span>
             </button>
           )}
         </div>

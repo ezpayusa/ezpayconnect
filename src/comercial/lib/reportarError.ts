@@ -7,7 +7,7 @@ type Opciones = {
   /** Dónde dejar el error cuando va inline (pegado a un campo del formulario). */
   setInline?: (v: ErrorInline) => void
   /** El cliente quedó desincronizado: recargar esa colección. */
-  onRecargar?: (que: 'catalogo' | 'contactos' | 'jornada' | 'visita') => void
+  onRecargar?: (que: 'catalogo' | 'contactos' | 'jornada' | 'visita' | 'tarjeta') => void
   /** El cambio no se aplicó: devolver el control a su valor anterior. */
   onRevertir?: () => void
 }

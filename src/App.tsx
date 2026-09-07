@@ -115,6 +115,7 @@ const ComercialVisitaPage = lazy(() => import('@/comercial/pages/VisitaFichaPage
 const ComercialEquipoPage = lazy(() => import('@/comercial/pages/EquipoPage'))
 const ComercialEquipoAsesorPage = lazy(() => import('@/comercial/pages/EquipoAsesorPage'))
 const ComercialMaterialPage = lazy(() => import('@/comercial/pages/MaterialPage'))
+const ComercialMiTarjetaPage = lazy(() => import('@/comercial/pages/MiTarjetaPage'))
 const MaterialPaisPage = lazy(() => import('@/pages/admin-ezpay/MaterialPaisPage'))
 const AsesoresPaisPage = lazy(() => import('@/pages/admin-ezpay/AsesoresPaisPage'))
 const ProspectosPaisPage = lazy(() => import('@/pages/admin-ezpay/ProspectosPaisPage'))
@@ -298,6 +299,7 @@ function App() {
           <Route path="equipo" element={<ComercialEquipoPage />} />
           <Route path="equipo/:asesorId" element={<ComercialEquipoAsesorPage />} />
           <Route path="material" element={<ComercialMaterialPage />} />
+          <Route path="mi-tarjeta" element={<ComercialMiTarjetaPage />} />
         </Route>
 
         <Route path="/pacientes" element={<PrivateLayout><PacientesPage /></PrivateLayout>} />

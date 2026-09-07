@@ -30,7 +30,7 @@ export interface ErrorRpcMapeado {
   /** Para `inline`: qué campo del formulario señalar. */
   campo?: string
   /** El cliente quedó desincronizado con la base y conviene recargar esa colección. */
-  recargar?: 'catalogo' | 'contactos' | 'jornada' | 'visita'
+  recargar?: 'catalogo' | 'contactos' | 'jornada' | 'visita' | 'tarjeta'
   /** El control debe volver al valor anterior (el cambio no se aplicó). */
   revertir?: boolean
   /** Mandarlo a Sentry: es un bug nuestro o algo que no previmos, no un error del usuario. */
@@ -143,6 +143,26 @@ const MAPA: Record<string, Entrada> = {
            destino: 'toast', recargar: 'visita', reportar: false },
   PA029: { texto: 'Esta visita ya tiene un checkout registrado.',
            destino: 'toast', recargar: 'visita', reportar: false },
+  // --- Tarjeta publica del asesor (migs 288 y 289) --------------------------------------------
+  // PA030 y PA031 son EL MISMO hecho —quien llama no tiene ficha de asesor— desde dos migraciones
+  // distintas: la 288 lo numero para las RPCs de consentimiento y rotacion, la 289 para la de la
+  // foto. Se mapean igual porque al usuario le pasa lo mismo, y NO se unifican en la base porque
+  // renumerar un errcode ya reservado rompe cualquier cliente viejo que lo conozca.
+  //
+  // No es culpa del usuario y no es un bug nuestro: su cuenta existe pero el admin de pais todavia
+  // no le creo la ficha. La pantalla ya lo contempla y no muestra controles; si aun asi llega uno
+  // de estos codigos es que la pantalla quedo vieja —la ficha se borro mientras la tenia abierta—,
+  // asi que pide RECARGAR para que los controles desaparezcan en vez de seguir invitando a fallar.
+  PA030: { texto: 'Todavia no tenes ficha de asesor, asi que no podes publicar una tarjeta. '
+                + 'La crea el administrador de tu pais.',
+           destino: 'toast', recargar: 'tarjeta', reportar: false },
+  PA031: { texto: 'Todavia no tenes ficha de asesor, asi que no podes guardar una foto. '
+                + 'La crea el administrador de tu pais.',
+           destino: 'toast', recargar: 'tarjeta', reportar: false },
+  // El path de storage lo arma el CLIENTE, igual que en PA023: si la base lo rechaza el bug es
+  // nuestro y no del usuario. Por eso es el unico de este lote que se reporta, y lleva el texto
+  // generico — el de la base nombra el path crudo, que no le dice nada a quien lo lee.
+  PA032: { texto: GENERICO, destino: 'toast', reportar: true },
 }
 
 const ES_PA = /^PA\d{3}$/
