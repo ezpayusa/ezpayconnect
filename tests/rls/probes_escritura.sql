@@ -14736,6 +14736,307 @@ EXCEPTION WHEN OTHERS THEN
 END $$;
 SELECT set_config('role','none',true);
 
+-- ############################################################################################
+-- P649-P661 — tarjeta publica del asesor (mig 288)
+-- ############################################################################################
+-- La UNICA superficie anonima del modulo. No la sirve PostgREST: la resuelve una edge con
+-- service_role, y `anon` no tiene EXECUTE sobre ninguna de las cuatro RPCs.
+--
+-- El nucleo de estas probes es que los CUATRO motivos de no-respuesta —token inexistente,
+-- consentimiento apagado, ficha inactiva, perfil inactivo— devuelven EXACTAMENTE lo mismo. Si
+-- alguno se distinguiera, la resolutora seria un oraculo que le confirma a un anonimo que cierto
+-- token existe pero esta apagado.
+--
+-- Fixture propio con tres pares perfil+ficha frescos: el caso feliz, uno con ficha inactiva y uno
+-- con PERFIL inactivo. Los tres nacen con la tarjeta apagada, que es el default.
+SELECT set_config('role','none', true);
+DO $$
+DECLARE v_gt uuid := NULLIF(current_setting('probe.co_gt',true),'')::uuid;
+        v_a uuid; v_b uuid; v_c uuid;
+BEGIN
+  IF coalesce(current_setting('probe.co_ready',true),'')<>'1' THEN
+    PERFORM set_config('probe.tj_ready','0',false);
+    PERFORM set_config('probe.tj_fx','ROJO — FIXTURE COMERCIAL AUSENTE (esto NO es un rechazo)',false); RETURN; END IF;
+  IF to_regprocedure('public.tarjeta_publica_por_token(text)') IS NULL THEN
+    PERFORM set_config('probe.tj_ready','0',false);
+    PERFORM set_config('probe.tj_fx','ROJO — MIG 288 AUSENTE (esto NO es un rechazo)',false); RETURN; END IF;
+
+  v_a := gen_random_uuid(); v_b := gen_random_uuid(); v_c := gen_random_uuid();
+
+  -- (A) el caso feliz: perfil activo, ficha activa
+  INSERT INTO auth.users (id) VALUES (v_a);
+  INSERT INTO public.perfiles (id, email, nombre_completo, rol, pais_id, activo)
+    VALUES (v_a, 'p649.a@example.invalid', 'QA TJ Asesor Feliz', 'asesor_comercial', v_gt, true);
+  INSERT INTO public.asesores_perfil (id, codigo_asesor, pais_id, activo, cargo, territorio, telefono, celular)
+    VALUES (v_a, 'QA-TJ-A', v_gt, true, 'Ejecutivo', 'Zona 1', '2222-0001', '5555-0001');
+
+  -- (B) FICHA inactiva
+  INSERT INTO auth.users (id) VALUES (v_b);
+  INSERT INTO public.perfiles (id, email, nombre_completo, rol, pais_id, activo)
+    VALUES (v_b, 'p649.b@example.invalid', 'QA TJ Ficha Inactiva', 'asesor_comercial', v_gt, true);
+  INSERT INTO public.asesores_perfil (id, codigo_asesor, pais_id, activo)
+    VALUES (v_b, 'QA-TJ-B', v_gt, false);
+
+  -- (C) PERFIL inactivo, ficha activa: los dos flags se miran por separado
+  INSERT INTO auth.users (id) VALUES (v_c);
+  INSERT INTO public.perfiles (id, email, nombre_completo, rol, pais_id, activo)
+    VALUES (v_c, 'p649.c@example.invalid', 'QA TJ Perfil Inactivo', 'asesor_comercial', v_gt, false);
+  INSERT INTO public.asesores_perfil (id, codigo_asesor, pais_id, activo)
+    VALUES (v_c, 'QA-TJ-C', v_gt, true);
+
+  PERFORM set_config('probe.tj_a', v_a::text, false);
+  PERFORM set_config('probe.tj_b', v_b::text, false);
+  PERFORM set_config('probe.tj_c', v_c::text, false);
+  PERFORM set_config('probe.tj_tok_a', (SELECT tarjeta_token FROM public.asesores_perfil WHERE id=v_a), false);
+  PERFORM set_config('probe.tj_tok_b', (SELECT tarjeta_token FROM public.asesores_perfil WHERE id=v_b), false);
+  PERFORM set_config('probe.tj_tok_c', (SELECT tarjeta_token FROM public.asesores_perfil WHERE id=v_c), false);
+  PERFORM set_config('probe.tj_ready','1', false);
+  PERFORM set_config('probe.tj_fx','OK (fixture tarjeta: 3 pares perfil+ficha — feliz, ficha inactiva, perfil inactivo)', false);
+EXCEPTION WHEN OTHERS THEN
+  PERFORM set_config('probe.tj_ready','0',false);
+  PERFORM set_config('probe.tj_fx','ROJO ('||SQLSTATE||' '||SQLERRM||')',false);
+END $$;
+
+-- P649 — EL DEFAULT: una ficha nueva nace APAGADA y con token propio. Que el default sea false no
+-- es cosmetico: una tarjeta que naciera encendida publicaria el telefono de alguien que nunca lo
+-- pidio. Y los tokens tienen que ser DISTINTOS entre si — si el DEFAULT se evaluara una sola vez
+-- en vez de por fila, el UNIQUE lo cazaria, pero la probe lo dice explicito.
+DO $$ DECLARE v_pub int; v_vacio int; v_dist int; v_tot int; BEGIN
+  IF coalesce(current_setting('probe.tj_ready',true),'')<>'1' THEN PERFORM set_config('probe.p649','N/A',false); RETURN; END IF;
+  SELECT count(*) FILTER (WHERE ap.tarjeta_publica),
+         count(*) FILTER (WHERE coalesce(ap.tarjeta_token,'') = ''),
+         count(DISTINCT ap.tarjeta_token), count(*)
+    INTO v_pub, v_vacio, v_dist, v_tot
+    FROM public.asesores_perfil ap
+   WHERE ap.id IN (NULLIF(current_setting('probe.tj_a',true),'')::uuid,
+                   NULLIF(current_setting('probe.tj_b',true),'')::uuid,
+                   NULLIF(current_setting('probe.tj_c',true),'')::uuid);
+  PERFORM set_config('probe.p649', CASE
+    WHEN v_tot <> 3      THEN 'FALLO (el fixture no sembro 3 fichas, sembro '||v_tot||')'
+    WHEN v_pub > 0       THEN 'ROJO — NACE ENCENDIDA ('||v_pub||' de 3 con tarjeta_publica=true sin que nadie consintiera)'
+    WHEN v_vacio > 0     THEN 'ROJO ('||v_vacio||' ficha(s) con tarjeta_token nulo o vacio)'
+    WHEN v_dist <> v_tot THEN 'ROJO (tokens repetidos: '||v_dist||' distintos para '||v_tot||' fichas — el DEFAULT no se evalua por fila)'
+    ELSE 'OK (3 fichas nuevas: apagadas, con token propio y distinto cada una)' END, false);
+EXCEPTION WHEN OTHERS THEN PERFORM set_config('probe.p649','FALLO ('||SQLSTATE||' '||SQLERRM||')',false); END $$;
+
+-- P650 — token VALIDO pero consentimiento APAGADO -> no responde.
+DO $$ DECLARE v_r jsonb; BEGIN
+  IF coalesce(current_setting('probe.tj_ready',true),'')<>'1' THEN PERFORM set_config('probe.p650','N/A',false); RETURN; END IF;
+  v_r := public.tarjeta_publica_por_token(current_setting('probe.tj_tok_a',true));
+  PERFORM set_config('probe.p650', CASE WHEN v_r IS NULL
+    THEN 'OK (consentimiento apagado: no devuelve nada)'
+    ELSE 'ROJO — PUBLICA SIN CONSENTIMIENTO: '||v_r::text END, false);
+EXCEPTION WHEN OTHERS THEN PERFORM set_config('probe.p650','FALLO ('||SQLSTATE||' '||SQLERRM||')',false); END $$;
+
+-- P654 — token INEXISTENTE -> exactamente lo mismo que P650. Los dos NULL: indistinguibles.
+DO $$ DECLARE v_r jsonb; BEGIN
+  IF coalesce(current_setting('probe.tj_ready',true),'')<>'1' THEN PERFORM set_config('probe.p654','N/A',false); RETURN; END IF;
+  v_r := public.tarjeta_publica_por_token('token-que-no-existe-en-ninguna-parte-0000');
+  PERFORM set_config('probe.p654', CASE WHEN v_r IS NULL
+    THEN 'OK (token inexistente: mismo NULL que el consentimiento apagado, no se distinguen)'
+    ELSE 'ROJO (un token inexistente devolvio algo: '||v_r::text||')' END, false);
+EXCEPTION WHEN OTHERS THEN PERFORM set_config('probe.p654','FALLO ('||SQLSTATE||' '||SQLERRM||')',false); END $$;
+
+-- P657 — tarjeta_set_consentimiento: el asesor enciende LA PROPIA. La RPC no toma id, asi que lo
+-- que hay que probar es que el sujeto es auth.uid(): se enciende como el asesor A y se verifica que
+-- la que quedo encendida es la de A y NINGUNA otra.
+SELECT set_config('role','none', true);
+DO $$ DECLARE v_a text; BEGIN
+  v_a := coalesce(current_setting('probe.tj_a',true),'');
+  IF v_a <> '' THEN
+    PERFORM set_config('request.jwt.claims', json_build_object('sub', v_a, 'role','authenticated')::text, true);
+  END IF;
+EXCEPTION WHEN OTHERS THEN NULL; END $$;
+SELECT set_config('role','authenticated', true);
+DO $$ DECLARE v_a uuid; v_mias int; v_ajenas int; v_sello timestamptz; BEGIN
+  IF coalesce(current_setting('probe.tj_ready',true),'')<>'1' THEN PERFORM set_config('probe.p657','N/A',false); RETURN; END IF;
+  IF to_regprocedure('public.tarjeta_set_consentimiento(boolean)') IS NULL THEN
+    PERFORM set_config('probe.p657','ROJO — RPC AUSENTE',false); RETURN; END IF;
+  v_a := NULLIF(current_setting('probe.tj_a',true),'')::uuid;
+  BEGIN
+    PERFORM public.tarjeta_set_consentimiento(true);
+  EXCEPTION WHEN others THEN
+    PERFORM set_config('probe.p657','FALLO (el asesor no pudo encender la propia: '||SQLSTATE||' '||SQLERRM||')',false); RETURN; END;
+  PERFORM set_config('role','none', true);
+  SELECT count(*) FILTER (WHERE ap.id = v_a), count(*) FILTER (WHERE ap.id <> v_a),
+         max(ap.tarjeta_consentimiento_at) FILTER (WHERE ap.id = v_a)
+    INTO v_mias, v_ajenas, v_sello
+    FROM public.asesores_perfil ap WHERE ap.tarjeta_publica;
+  PERFORM set_config('probe.p657', CASE
+    WHEN v_mias = 0     THEN 'ROJO (encendio pero la ficha del asesor NO quedo publicada)'
+    WHEN v_ajenas > 0   THEN 'ROJO — TOCO FICHAS AJENAS ('||v_ajenas||' de otros quedaron publicadas)'
+    WHEN v_sello IS NULL THEN 'FALLO (quedo publicada pero sin tarjeta_consentimiento_at)'
+    ELSE 'OK (encendio SOLO la propia, con el sello de consentimiento puesto)' END, false);
+EXCEPTION WHEN OTHERS THEN PERFORM set_config('probe.p657','FALLO ('||SQLSTATE||' '||SQLERRM||')',false); END $$;
+SELECT set_config('role','none', true);
+
+-- P651 — CENSO DEL RETORNO. Con consentimiento encendido devuelve EXACTAMENTE seis claves. Es censo
+-- y no un caso: manana alguien agrega `email` o `codigo_asesor` "para el QR" y un test que solo
+-- mirara `nombre_completo` no se enteraria.
+DO $$ DECLARE v_r jsonb; v_claves text[]; v_malas text; BEGIN
+  IF coalesce(current_setting('probe.tj_ready',true),'')<>'1' THEN PERFORM set_config('probe.p651','N/A',false); RETURN; END IF;
+  v_r := public.tarjeta_publica_por_token(current_setting('probe.tj_tok_a',true));
+  IF v_r IS NULL THEN
+    PERFORM set_config('probe.p651','ROJO (con consentimiento ENCENDIDO no devolvio nada)',false); RETURN; END IF;
+  SELECT array_agg(k ORDER BY k) INTO v_claves FROM jsonb_object_keys(v_r) k;
+  SELECT string_agg(k, ', ') INTO v_malas FROM unnest(v_claves) k
+   WHERE k IN ('id','email','pais_id','codigo_asesor','bio','supervisor_id','tarjeta_token',
+               'foto_path','activo','fecha_ingreso');
+  PERFORM set_config('probe.p651', CASE
+    WHEN v_malas IS NOT NULL THEN 'ROJO — CAMPOS PROHIBIDOS en la tarjeta publica: '||v_malas
+    WHEN v_claves IS DISTINCT FROM ARRAY['cargo','celular','foto_publica_path','nombre_completo','telefono','territorio']
+      THEN 'ROJO (el retorno no es el contratado: '||array_to_string(v_claves,', ')||')'
+    WHEN v_r->>'nombre_completo' IS NULL THEN 'FALLO (las 6 claves estan pero nombre_completo vino nulo)'
+    ELSE 'OK (exactamente 6 claves: cargo, celular, foto_publica_path, nombre_completo, telefono, territorio)' END, false);
+EXCEPTION WHEN OTHERS THEN PERFORM set_config('probe.p651','FALLO ('||SQLSTATE||' '||SQLERRM||')',false); END $$;
+
+-- P652 / P653 — ficha inactiva y PERFIL inactivo. Los dos flags se miran por separado: con uno solo
+-- en el WHERE, uno de los dos casos publicaria. Se les enciende el consentimiento a proposito para
+-- que lo unico que los frene sea el flag de actividad.
+DO $$ DECLARE v_rb jsonb; v_rc jsonb; BEGIN
+  IF coalesce(current_setting('probe.tj_ready',true),'')<>'1' THEN
+    PERFORM set_config('probe.p652','N/A',false); PERFORM set_config('probe.p653','N/A',false); RETURN; END IF;
+  UPDATE public.asesores_perfil SET tarjeta_publica = true, tarjeta_consentimiento_at = now()
+   WHERE id IN (NULLIF(current_setting('probe.tj_b',true),'')::uuid,
+                NULLIF(current_setting('probe.tj_c',true),'')::uuid);
+  v_rb := public.tarjeta_publica_por_token(current_setting('probe.tj_tok_b',true));
+  v_rc := public.tarjeta_publica_por_token(current_setting('probe.tj_tok_c',true));
+  PERFORM set_config('probe.p652', CASE WHEN v_rb IS NULL
+    THEN 'OK (ficha activo=false: no responde aunque el consentimiento este encendido)'
+    ELSE 'ROJO (ficha INACTIVA publicada: '||v_rb::text||')' END, false);
+  PERFORM set_config('probe.p653', CASE WHEN v_rc IS NULL
+    THEN 'OK (perfil activo=false: no responde aunque la ficha este activa y consentida)'
+    ELSE 'ROJO (perfil INACTIVO publicado: '||v_rc::text||')' END, false);
+EXCEPTION WHEN OTHERS THEN
+  PERFORM set_config('probe.p652','FALLO ('||SQLSTATE||' '||SQLERRM||')',false);
+  PERFORM set_config('probe.p653','FALLO ('||SQLSTATE||' '||SQLERRM||')',false); END $$;
+
+-- P655 / P656 — anon y authenticated NO pueden llamar a la resolutora. EJERCITADO, no leido del
+-- catalogo: la leccion de la 284 es que el catalogo dice quien tiene el privilegio y no que pasa
+-- cuando se usa. Aca lo que se mide es el 42501 real.
+SELECT set_config('role','none',true);
+SELECT set_config('request.jwt.claims', NULL, true);
+SELECT set_config('role','anon',true);
+DO $$ DECLARE v_r jsonb; BEGIN
+  IF coalesce(current_setting('probe.tj_ready',true),'')<>'1' THEN PERFORM set_config('probe.p655','N/A',false); RETURN; END IF;
+  BEGIN
+    v_r := public.tarjeta_publica_por_token(current_setting('probe.tj_tok_a',true));
+    PERFORM set_config('probe.p655','ROJO — ANON EJECUTO LA RESOLUTORA (devolvio: '||coalesce(v_r::text,'NULL')||')',false);
+  EXCEPTION WHEN insufficient_privilege THEN
+    PERFORM set_config('probe.p655','OK (42501: anon no puede ejecutarla; la llama la edge con service_role)',false);
+  WHEN others THEN PERFORM set_config('probe.p655','FALLO (esperaba 42501, vino '||SQLSTATE||': '||SQLERRM||')',false);
+  END;
+EXCEPTION WHEN OTHERS THEN PERFORM set_config('probe.p655','FALLO ('||SQLSTATE||' '||SQLERRM||')',false); END $$;
+SELECT set_config('role','none',true);
+SELECT set_config('request.jwt.claims', json_build_object('sub', current_setting('probe.co_ase1',true), 'role','authenticated')::text, true);
+SELECT set_config('role','authenticated',true);
+DO $$ DECLARE v_r jsonb; BEGIN
+  IF coalesce(current_setting('probe.tj_ready',true),'')<>'1' THEN PERFORM set_config('probe.p656','N/A',false); RETURN; END IF;
+  BEGIN
+    v_r := public.tarjeta_publica_por_token(current_setting('probe.tj_tok_a',true));
+    PERFORM set_config('probe.p656','ROJO — AUTHENTICATED EJECUTO LA RESOLUTORA (devolvio: '||coalesce(v_r::text,'NULL')||')',false);
+  EXCEPTION WHEN insufficient_privilege THEN
+    PERFORM set_config('probe.p656','OK (42501: ni authenticated; solo service_role)',false);
+  WHEN others THEN PERFORM set_config('probe.p656','FALLO (esperaba 42501, vino '||SQLSTATE||': '||SQLERRM||')',false);
+  END;
+EXCEPTION WHEN OTHERS THEN PERFORM set_config('probe.p656','FALLO ('||SQLSTATE||' '||SQLERRM||')',false); END $$;
+SELECT set_config('role','none',true);
+
+-- P658 — tarjeta_apagar_de_asesor: el admin del pais SI apaga. Control positivo de P659/P660: sin
+-- el, los dos 42501 tambien los cumpliria una RPC que rechaza a todo el mundo.
+SELECT set_config('request.jwt.claims', json_build_object('sub', current_setting('probe.co_admgt',true), 'role','authenticated')::text, true);
+SELECT set_config('role','authenticated', true);
+DO $$ DECLARE v_a uuid; v_pub boolean; BEGIN
+  IF coalesce(current_setting('probe.tj_ready',true),'')<>'1' THEN PERFORM set_config('probe.p658','N/A',false); RETURN; END IF;
+  IF to_regprocedure('public.tarjeta_apagar_de_asesor(uuid)') IS NULL THEN
+    PERFORM set_config('probe.p658','ROJO — RPC AUSENTE',false); RETURN; END IF;
+  v_a := NULLIF(current_setting('probe.tj_a',true),'')::uuid;
+  -- control del control: tiene que estar ENCENDIDA antes, si no apagar no prueba nada.
+  PERFORM set_config('role','none', true);
+  SELECT tarjeta_publica INTO v_pub FROM public.asesores_perfil WHERE id = v_a;
+  PERFORM set_config('role','authenticated', true);
+  IF NOT COALESCE(v_pub, false) THEN
+    PERFORM set_config('probe.p658','FALLO (la tarjeta no estaba encendida: apagarla no mide nada)',false); RETURN; END IF;
+  BEGIN
+    PERFORM public.tarjeta_apagar_de_asesor(v_a);
+  EXCEPTION WHEN others THEN
+    PERFORM set_config('probe.p658','FALLO (el admin del pais no pudo apagar: '||SQLSTATE||' '||SQLERRM||')',false); RETURN; END;
+  PERFORM set_config('role','none', true);
+  SELECT tarjeta_publica INTO v_pub FROM public.asesores_perfil WHERE id = v_a;
+  PERFORM set_config('probe.p658', CASE WHEN COALESCE(v_pub,true)
+    THEN 'ROJO (la RPC paso pero la tarjeta sigue publicada)'
+    ELSE 'OK (el admin del pais apago la tarjeta; se verifico la FILA)' END, false);
+EXCEPTION WHEN OTHERS THEN PERFORM set_config('probe.p658','FALLO ('||SQLSTATE||' '||SQLERRM||')',false); END $$;
+SELECT set_config('role','none', true);
+
+-- P659 — admin de OTRO pais -> 42501. El pais sale de la FICHA, no de un parametro.
+SELECT set_config('request.jwt.claims', json_build_object('sub', current_setting('probe.co_admhn',true), 'role','authenticated')::text, true);
+SELECT set_config('role','authenticated', true);
+DO $$ BEGIN
+  IF coalesce(current_setting('probe.tj_ready',true),'')<>'1' THEN PERFORM set_config('probe.p659','N/A',false); RETURN; END IF;
+  IF to_regprocedure('public.tarjeta_apagar_de_asesor(uuid)') IS NULL THEN
+    PERFORM set_config('probe.p659','ROJO — RPC AUSENTE',false); RETURN; END IF;
+  BEGIN
+    PERFORM public.tarjeta_apagar_de_asesor(NULLIF(current_setting('probe.tj_a',true),'')::uuid);
+    PERFORM set_config('probe.p659','ROJO (PERMITIO — el admin de HN apago una tarjeta de GT)',false);
+  EXCEPTION WHEN insufficient_privilege THEN
+    PERFORM set_config('probe.p659','OK (42501 no_autorizado al admin de otro pais)',false);
+  WHEN others THEN PERFORM set_config('probe.p659','FALLO (esperaba 42501, vino '||SQLSTATE||': '||SQLERRM||')',false);
+  END;
+EXCEPTION WHEN OTHERS THEN PERFORM set_config('probe.p659','FALLO ('||SQLSTATE||' '||SQLERRM||')',false); END $$;
+SELECT set_config('role','none', true);
+
+-- P660 — un ASESOR cualquiera tampoco apaga la de otro: apagar es del admin, no de un par.
+SELECT set_config('request.jwt.claims', json_build_object('sub', current_setting('probe.co_ase1',true), 'role','authenticated')::text, true);
+SELECT set_config('role','authenticated', true);
+DO $$ BEGIN
+  IF coalesce(current_setting('probe.tj_ready',true),'')<>'1' THEN PERFORM set_config('probe.p660','N/A',false); RETURN; END IF;
+  IF to_regprocedure('public.tarjeta_apagar_de_asesor(uuid)') IS NULL THEN
+    PERFORM set_config('probe.p660','ROJO — RPC AUSENTE',false); RETURN; END IF;
+  BEGIN
+    PERFORM public.tarjeta_apagar_de_asesor(NULLIF(current_setting('probe.tj_a',true),'')::uuid);
+    PERFORM set_config('probe.p660','ROJO (PERMITIO — un asesor apago la tarjeta de otro)',false);
+  EXCEPTION WHEN insufficient_privilege THEN
+    PERFORM set_config('probe.p660','OK (42501 no_autorizado a un asesor sin autoridad de pais)',false);
+  WHEN others THEN PERFORM set_config('probe.p660','FALLO (esperaba 42501, vino '||SQLSTATE||': '||SQLERRM||')',false);
+  END;
+EXCEPTION WHEN OTHERS THEN PERFORM set_config('probe.p660','FALLO ('||SQLSTATE||' '||SQLERRM||')',false); END $$;
+SELECT set_config('role','none', true);
+
+-- P661 — rotar el token: el link que el asesor ya repartio deja de resolver. Se enciende de nuevo
+-- (P658 la apago) para que lo unico que cambie entre las dos consultas sea el token.
+DO $$ DECLARE v_a text; BEGIN
+  v_a := coalesce(current_setting('probe.tj_a',true),'');
+  IF v_a <> '' THEN
+    PERFORM set_config('request.jwt.claims', json_build_object('sub', v_a, 'role','authenticated')::text, true);
+  END IF;
+EXCEPTION WHEN OTHERS THEN NULL; END $$;
+SELECT set_config('role','authenticated', true);
+DO $$ DECLARE v_a uuid; v_viejo text; v_nuevo text; v_r_viejo jsonb; v_r_nuevo jsonb; v_rot timestamptz; BEGIN
+  IF coalesce(current_setting('probe.tj_ready',true),'')<>'1' THEN PERFORM set_config('probe.p661','N/A',false); RETURN; END IF;
+  IF to_regprocedure('public.tarjeta_rotar_token()') IS NULL THEN
+    PERFORM set_config('probe.p661','ROJO — RPC AUSENTE',false); RETURN; END IF;
+  v_a := NULLIF(current_setting('probe.tj_a',true),'')::uuid;
+  v_viejo := current_setting('probe.tj_tok_a',true);
+  BEGIN
+    PERFORM public.tarjeta_set_consentimiento(true);   -- P658 la habia apagado
+    PERFORM public.tarjeta_rotar_token();
+  EXCEPTION WHEN others THEN
+    PERFORM set_config('probe.p661','FALLO (no se pudo rotar: '||SQLSTATE||' '||SQLERRM||')',false); RETURN; END;
+  PERFORM set_config('role','none', true);
+  SELECT ap.tarjeta_token, ap.tarjeta_token_rotado_at INTO v_nuevo, v_rot
+    FROM public.asesores_perfil ap WHERE ap.id = v_a;
+  v_r_viejo := public.tarjeta_publica_por_token(v_viejo);
+  v_r_nuevo := public.tarjeta_publica_por_token(v_nuevo);
+  PERFORM set_config('probe.p661', CASE
+    WHEN v_nuevo IS NOT DISTINCT FROM v_viejo THEN 'ROJO (el token no cambio)'
+    WHEN v_rot IS NULL          THEN 'FALLO (roto pero sin tarjeta_token_rotado_at)'
+    WHEN v_r_viejo IS NOT NULL  THEN 'ROJO — EL TOKEN VIEJO SIGUE RESOLVIENDO: '||v_r_viejo::text
+    WHEN v_r_nuevo IS NULL      THEN 'ROJO (el token NUEVO tampoco resuelve: la rotacion rompio la tarjeta)'
+    ELSE 'OK (token nuevo resuelve, el viejo dejo de hacerlo, y quedo el sello de rotacion)' END, false);
+EXCEPTION WHEN OTHERS THEN PERFORM set_config('probe.p661','FALLO ('||SQLSTATE||' '||SQLERRM||')',false); END $$;
+SELECT set_config('role','none', true);
+
 -- ===== Veredictos como result set =====
 SELECT 'P1_anon_insert_citas'              AS probe, current_setting('probe.p1', true)  AS verdict, 'BLOQUEADO' AS esperado_post_fix
 UNION ALL SELECT 'P2_medico_cancela_ajena_rpc',         current_setting('probe.p2', true),  'BLOQUEADO'
@@ -15437,6 +15738,20 @@ UNION ALL SELECT 'P645_sv_admin_otro_pais_0_filas',   current_setting('probe.p64
 UNION ALL SELECT 'P646_sv_CENSO_rol',                 current_setting('probe.p646', true),   'OK (solo supervisor_comercial)'
 UNION ALL SELECT 'P647_sv_CENSO_activo',              current_setting('probe.p647', true),   'OK (inactivo fuera, activo dentro)'
 UNION ALL SELECT 'P648_sv_POSITIVO_super_admin',      current_setting('probe.p648', true),   'OK (mismo conjunto)'
+UNION ALL SELECT 'TJ_FX_fixture_tarjeta',              current_setting('probe.tj_fx', true),  'OK (3 pares perfil+ficha)'
+UNION ALL SELECT 'P649_tj_DEFAULT_apagada',            current_setting('probe.p649', true),   'OK (apagada, token propio)'
+UNION ALL SELECT 'P650_tj_sin_consentimiento',         current_setting('probe.p650', true),   'OK (no responde)'
+UNION ALL SELECT 'P651_tj_CENSO_retorno_6_campos',     current_setting('probe.p651', true),   'OK (6 claves exactas)'
+UNION ALL SELECT 'P652_tj_ficha_inactiva',             current_setting('probe.p652', true),   'OK (no responde)'
+UNION ALL SELECT 'P653_tj_perfil_inactivo',            current_setting('probe.p653', true),   'OK (no responde)'
+UNION ALL SELECT 'P654_tj_token_inexistente',          current_setting('probe.p654', true),   'OK (mismo NULL)'
+UNION ALL SELECT 'P655_tj_anon_NO_ejecuta',            current_setting('probe.p655', true),   'OK (42501)'
+UNION ALL SELECT 'P656_tj_authenticated_NO_ejecuta',   current_setting('probe.p656', true),   'OK (42501)'
+UNION ALL SELECT 'P657_tj_enciende_SOLO_la_propia',    current_setting('probe.p657', true),   'OK (ninguna ajena)'
+UNION ALL SELECT 'P658_tj_admin_pais_apaga',           current_setting('probe.p658', true),   'OK (la FILA quedo apagada)'
+UNION ALL SELECT 'P659_tj_admin_otro_pais_42501',      current_setting('probe.p659', true),   'OK (42501)'
+UNION ALL SELECT 'P660_tj_asesor_no_apaga_ajena',      current_setting('probe.p660', true),   'OK (42501)'
+UNION ALL SELECT 'P661_tj_rotar_invalida_el_viejo',    current_setting('probe.p661', true),   'OK (viejo deja de resolver)'
 UNION ALL SELECT 'P631_CENSO_anon_perfiles',           current_setting('probe.p631', true), 'OK (anon en cero, los 7)'
 UNION ALL SELECT 'P632_authenticated_perfiles',        current_setting('probe.p632', true), 'OK (4 DML si, 3 no)'
 UNION ALL SELECT 'P633_CONTROL_lee_propio_perfil',     current_setting('probe.p633', true), 'OK (1 fila, antes y despues)'
@@ -15637,7 +15952,10 @@ UNION ALL SELECT 'P000_CENTINELA_veredictos_no_nulos',
        'probe.p631', 'probe.p632', 'probe.p633', 'probe.p634',
        'probe.p635', 'probe.p636', 'probe.p637', 'probe.p638',
        'probe.sf_fx', 'probe.p639', 'probe.p640', 'probe.p641', 'probe.p642', 'probe.p643',
-       'probe.sv_fx', 'probe.p644', 'probe.p645', 'probe.p646', 'probe.p647', 'probe.p648'
+       'probe.sv_fx', 'probe.p644', 'probe.p645', 'probe.p646', 'probe.p647', 'probe.p648',
+       'probe.tj_fx', 'probe.p649', 'probe.p650', 'probe.p651', 'probe.p652', 'probe.p653',
+       'probe.p654', 'probe.p655', 'probe.p656', 'probe.p657', 'probe.p658', 'probe.p659',
+       'probe.p660', 'probe.p661'
              ]) AS n) s),
   'OK (todos los veredictos publicados)';
 
