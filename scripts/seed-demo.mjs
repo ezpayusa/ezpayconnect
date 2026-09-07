@@ -29,6 +29,18 @@
 //   SEED_DEMO_PASSWORD                      → la clave común de las tres cuentas demo
 //   VITE_SUPABASE_URL / VITE_SUPABASE_ANON_KEY (o SUPABASE_URL / SUPABASE_ANON_KEY)
 //
+// DÓNDE QUEDA EL REPORTE, Y QUÉ IMPLICA
+// --------------------------------------
+// En `.claude/QA_CUENTAS_PILOTO.md`, que es una carpeta LOCAL e ignorada por git. O sea:
+//   * el archivo vive SÓLO en la máquina donde se corrió el script;
+//   * NO se commitea, NO se sincroniza y NO se respalda con el repo;
+//   * si esa máquina se cambia o se formatea, el archivo se pierde.
+// Perder el archivo NO es perder el acceso: la clave demo la elige quien corre el script en
+// `SEED_DEMO_PASSWORD`, así que se puede volver a poner. Lo que se pierde son los ids y el detalle
+// de lo sembrado, que se puede regenerar corriendo el script de nuevo (es idempotente).
+// Es a propósito: un archivo con contraseñas es más seguro en un solo disco que en cualquier lugar
+// sincronizado. La alternativa cómoda —subirlo al repo o a una nube— es justo la que no queremos.
+//
 // Uso:
 //   node scripts/seed-demo.mjs                            # DRY-RUN: dice qué haría
 //   node scripts/seed-demo.mjs --ejecutar-en-produccion   # escribe
@@ -119,7 +131,17 @@ const PRECISION_OK = 25
 const CERCA = 0.0008
 const LEJOS = 0.0100
 
-const SUF = '.demo@ezpayconnect.com'
+// DOMINIO @demo.invalid, NO @ezpayconnect.com. `.invalid` es un TLD RESERVADO por el RFC 2606:
+// no existe, no se puede registrar y ningún resolver lo devuelve. Eso importa porque estas cuentas
+// son de datos de prueba y el sistema manda correos de verdad —notificaciones de visita, avisos de
+// clínica, reset de contraseña—. Con un dominio productivo, cada uno de esos correos sale hacia
+// ezpayconnect.com y termina en un buzón real o rebotando contra el dominio de la empresa: ruido
+// en una bandeja que alguien lee, y rebotes que ensucian la reputación de envío del dominio que SÍ
+// se usa para clientes. Con `.invalid` el envío falla en la resolución DNS, antes de salir.
+//
+// Las cuentas `.qa` existentes usan @ezpayconnect.com. No se siguió ese precedente a propósito:
+// era un riesgo evitable que nadie había mirado, no una decisión.
+const SUF = '@demo.invalid'
 
 // Nombres inequívocamente ficticios y con "(DEMO)" pegado: si alguna vez aparecen en una pantalla
 // que no es la demo, se ve al instante que son datos sembrados.
@@ -528,6 +550,17 @@ function reporte(pais) {
     '',
     '> **Este archivo tiene contraseñas y NO va al repo.** `.claude/` está en `.gitignore`.',
     '> Generado por `scripts/seed-demo.mjs`.',
+    '',
+    '> ### Dónde vive esto',
+    '> Sólo en **esta máquina**. No se commitea, no se sincroniza y no se respalda con el repo.',
+    '> Si cambiás de computadora o la formateás, **este archivo se pierde**.',
+    '>',
+    '> Perderlo no es perder el acceso: la contraseña de las tres cuentas la elegiste vos en',
+    '> `SEED_DEMO_PASSWORD`, así que la podés volver a poner. Lo que se pierde son los ids y el',
+    '> detalle de lo sembrado — y eso se regenera corriendo el script otra vez, que es idempotente.',
+    '>',
+    '> Está así a propósito: un archivo con contraseñas es más seguro en un solo disco que en',
+    '> cualquier carpeta sincronizada.',
     '',
     `Generado: ${new Date().toISOString()}`,
     `País: **${pais.codigo}** · "${pais.nombre}" · \`${pais.id}\``,
