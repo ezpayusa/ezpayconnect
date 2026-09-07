@@ -15,8 +15,10 @@ Stack: React + Vite + TypeScript, Supabase / Postgres, deploy en Vercel, repo en
   minutos por esto** (P635 es la probe que faltaba, P636 su contraprueba).
 - NUNCA ampliar policies de RLS sobre tablas adyacentes a datos médicos (p. ej. campana_metricas). Para dar acceso, usar RPCs SECURITY DEFINER con search_path='', fail-closed (si el scope es NULL → 0 filas) y gate interno.
 - Probar aislamiento por rol impersonando request.jwt.claims en prod: cada rol ve lo suyo y no lo ajeno.
-- **Módulo comercial — próximos números libres: probe `P639`, errcode `PA030`.** (Mig 285, 6-sep:
-  PA028 = check-in sobre visita que no está `planificada`; PA029 = doble checkout.)
+- **Módulo comercial — próximos números libres: probe `P644`, errcode `PA030`.** (Mig 285, 6-sep:
+  PA028 = check-in sobre visita que no está `planificada`; PA029 = doble checkout. Mig 286, 7-sep:
+  `comercial_perfiles_sin_ficha(uuid)`, P639–P643 — es lectura y **no agrega errcode**: sin autoridad
+  devuelve 0 filas, no 42501.)
 - **Harness de RLS (`tests/rls/probes_escritura.sql`): OBLIGATORIO correr `python tests/rls/b2_guard.py`
   (o `npm run harness:guard`) al tocarlo.** Es el gate de estructura del frente B2: falla si aparece
   una sentencia DML/DDL fuera de un bloque `DO` con `EXCEPTION` handler, o si crecen los bloques `DO`

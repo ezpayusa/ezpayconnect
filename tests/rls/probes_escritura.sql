@@ -13755,6 +13755,171 @@ DO $$ DECLARE v_pol int; v_sel int; v_dir text; BEGIN
 EXCEPTION WHEN OTHERS THEN PERFORM set_config('probe.p614','FALLO ('||SQLSTATE||' '||SQLERRM||')',false); END $$;
 
 -- ############################################################################################
+-- P639-P643 — comercial_perfiles_sin_ficha(uuid) (mig 286)
+-- ############################################################################################
+-- La funcion contesta "a quien le falta la ficha de asesor en este pais". Es LECTURA: un llamante
+-- sin autoridad recibe CERO FILAS, no 42501 — por eso todas las negativas de abajo miden conjunto
+-- vacio y no un errcode.
+--
+-- Las cinco comparan el CONJUNTO EXACTO por id, no `count > 0`. La diferencia importa: una funcion
+-- que devolviera de mas pasaria todos los "count>0" del mundo. Se mide "esta el que tiene que
+-- estar" Y "no esta el que no tiene que estar", en la misma probe.
+--
+-- Fixture: TRES perfiles frescos, creados como owner con INSERT directo en auth.users + perfiles
+-- (mismo patron que P446/P449/P450). Ninguno recibe fila en asesores_perfil — ese es justamente el
+-- estado que la funcion busca.
+SELECT set_config('role','none', true);
+DO $$
+DECLARE v_gt uuid := NULLIF(current_setting('probe.co_gt',true),'')::uuid;
+        v_hn uuid := NULLIF(current_setting('probe.co_hn',true),'')::uuid;
+        v_ase uuid; v_sup uuid; v_med uuid; v_sa uuid;
+BEGIN
+  IF coalesce(current_setting('probe.co_ready',true),'')<>'1' THEN
+    PERFORM set_config('probe.sf_ready','0',false);
+    PERFORM set_config('probe.sf_fx','ROJO — FIXTURE COMERCIAL AUSENTE (esto NO es un rechazo)',false); RETURN; END IF;
+  IF v_gt IS NULL OR v_hn IS NULL THEN
+    PERFORM set_config('probe.sf_ready','0',false);
+    PERFORM set_config('probe.sf_fx','ROJO — faltan los ids de pais (GT/HN)',false); RETURN; END IF;
+
+  v_ase := gen_random_uuid(); v_sup := gen_random_uuid(); v_med := gen_random_uuid();
+
+  -- (1) asesor_comercial de GT SIN ficha -> tiene que APARECER
+  INSERT INTO auth.users (id) VALUES (v_ase);
+  INSERT INTO public.perfiles (id, email, nombre_completo, rol, pais_id, activo)
+    VALUES (v_ase, 'p639.ase@example.invalid', 'QA SF asesor sin ficha', 'asesor_comercial', v_gt, true);
+
+  -- (2) supervisor_comercial de GT SIN ficha -> tambien aparece: la funcion cubre los DOS roles,
+  --     y con uno solo no se distingue "filtra por rol" de "filtra por un rol".
+  INSERT INTO auth.users (id) VALUES (v_sup);
+  INSERT INTO public.perfiles (id, email, nombre_completo, rol, pais_id, activo)
+    VALUES (v_sup, 'p639.sup@example.invalid', 'QA SF supervisor sin ficha', 'supervisor_comercial', v_gt, true);
+
+  -- (3) MEDICO de GT sin ficha -> NO debe aparecer (censo de rol, P641)
+  INSERT INTO auth.users (id) VALUES (v_med);
+  INSERT INTO public.perfiles (id, email, nombre_completo, rol, pais_id, activo)
+    VALUES (v_med, 'p639.med@example.invalid', 'QA SF medico sin ficha', 'medico', v_gt, true);
+
+  SELECT id INTO v_sa FROM public.perfiles WHERE rol='super_admin' ORDER BY id LIMIT 1;
+
+  PERFORM set_config('probe.sf_ase', v_ase::text, false);
+  PERFORM set_config('probe.sf_sup', v_sup::text, false);
+  PERFORM set_config('probe.sf_med', v_med::text, false);
+  PERFORM set_config('probe.sf_sa',  coalesce(v_sa::text,''), false);
+  PERFORM set_config('probe.sf_ready','1', false);
+  PERFORM set_config('probe.sf_fx','OK (fixture sin-ficha: asesor + supervisor + medico de GT, ninguno con ficha)', false);
+EXCEPTION WHEN OTHERS THEN
+  PERFORM set_config('probe.sf_ready','0',false);
+  PERFORM set_config('probe.sf_fx','ROJO ('||SQLSTATE||' '||SQLERRM||')',false);
+END $$;
+
+-- P639 — POSITIVO: el admin_pais de GT ve a los DOS comerciales sin ficha de su pais.
+-- Se compara el conjunto EXACTO de ids, no el conteo.
+SELECT set_config('request.jwt.claims', json_build_object('sub', current_setting('probe.co_admgt',true), 'role','authenticated')::text, true);
+SELECT set_config('role','authenticated', true);
+DO $$ DECLARE v_ase uuid; v_sup uuid; v_hay_ase int; v_hay_sup int; v_n int; BEGIN
+  IF coalesce(current_setting('probe.sf_ready',true),'')<>'1' THEN PERFORM set_config('probe.p639','N/A',false); RETURN; END IF;
+  IF to_regprocedure('public.comercial_perfiles_sin_ficha(uuid)') IS NULL THEN
+    PERFORM set_config('probe.p639','ROJO — RPC AUSENTE',false); RETURN; END IF;
+  v_ase := NULLIF(current_setting('probe.sf_ase',true),'')::uuid;
+  v_sup := NULLIF(current_setting('probe.sf_sup',true),'')::uuid;
+  SELECT count(*), count(*) FILTER (WHERE r.id = v_ase), count(*) FILTER (WHERE r.id = v_sup)
+    INTO v_n, v_hay_ase, v_hay_sup
+    FROM public.comercial_perfiles_sin_ficha(NULLIF(current_setting('probe.co_gt',true),'')::uuid) r;
+  PERFORM set_config('probe.p639', CASE
+    WHEN v_n = 0                    THEN 'ROJO (el admin de GT no recibio NINGUNA fila)'
+    WHEN v_hay_ase = 0              THEN 'ROJO (el asesor_comercial de GT sin ficha NO aparece; '||v_n||' filas)'
+    WHEN v_hay_sup = 0              THEN 'ROJO (el supervisor_comercial de GT sin ficha NO aparece; '||v_n||' filas)'
+    ELSE 'OK (el admin de GT ve a los dos comerciales sin ficha; '||v_n||' filas en total)' END, false);
+EXCEPTION WHEN OTHERS THEN PERFORM set_config('probe.p639','FALLO ('||SQLSTATE||' '||SQLERRM||')',false); END $$;
+
+-- P641 — CENSO DE ROL: ningun perfil NO comercial entra en el resultado. El medico del fixture es
+-- el caso puntual; el censo mira TODO el conjunto, porque manana alguien afloja el IN y un caso
+-- suelto no se entera.
+DO $$ DECLARE v_med uuid; v_hay_med int; v_malos text; BEGIN
+  IF coalesce(current_setting('probe.sf_ready',true),'')<>'1' THEN PERFORM set_config('probe.p641','N/A',false); RETURN; END IF;
+  IF to_regprocedure('public.comercial_perfiles_sin_ficha(uuid)') IS NULL THEN
+    PERFORM set_config('probe.p641','ROJO — RPC AUSENTE',false); RETURN; END IF;
+  v_med := NULLIF(current_setting('probe.sf_med',true),'')::uuid;
+  SELECT count(*) FILTER (WHERE r.id = v_med),
+         string_agg(DISTINCT r.rol, ', ') FILTER (WHERE r.rol NOT IN ('asesor_comercial','supervisor_comercial'))
+    INTO v_hay_med, v_malos
+    FROM public.comercial_perfiles_sin_ficha(NULLIF(current_setting('probe.co_gt',true),'')::uuid) r;
+  PERFORM set_config('probe.p641', CASE
+    WHEN v_hay_med > 0   THEN 'ROJO (el MEDICO sin ficha aparece en la lista de fichas comerciales)'
+    WHEN v_malos IS NOT NULL THEN 'ROJO (roles no comerciales en el resultado: '||v_malos||')'
+    ELSE 'OK (ningun rol fuera de asesor_comercial/supervisor_comercial, y el medico del fixture no esta)' END, false);
+EXCEPTION WHEN OTHERS THEN PERFORM set_config('probe.p641','FALLO ('||SQLSTATE||' '||SQLERRM||')',false); END $$;
+
+-- P642 — CENSO DEL NOT EXISTS: quien YA tiene ficha no aparece, aunque cumpla rol y pais.
+-- Se usa QA-ASE-01 (ficha real, rol asesor_comercial, pais GT) y ademas se censa el conjunto
+-- entero contra asesores_perfil: si UNA sola fila del resultado ya tuviera ficha, el NOT EXISTS
+-- no esta haciendo nada.
+DO $$ DECLARE v_ase1 uuid; v_hay int; v_con_ficha int; BEGIN
+  IF coalesce(current_setting('probe.sf_ready',true),'')<>'1' THEN PERFORM set_config('probe.p642','N/A',false); RETURN; END IF;
+  IF to_regprocedure('public.comercial_perfiles_sin_ficha(uuid)') IS NULL THEN
+    PERFORM set_config('probe.p642','ROJO — RPC AUSENTE',false); RETURN; END IF;
+  v_ase1 := NULLIF(current_setting('probe.co_ase1',true),'')::uuid;
+  SELECT count(*) FILTER (WHERE r.id = v_ase1),
+         count(*) FILTER (WHERE EXISTS (SELECT 1 FROM public.asesores_perfil ap WHERE ap.id = r.id))
+    INTO v_hay, v_con_ficha
+    FROM public.comercial_perfiles_sin_ficha(NULLIF(current_setting('probe.co_gt',true),'')::uuid) r;
+  PERFORM set_config('probe.p642', CASE
+    WHEN v_hay > 0        THEN 'ROJO (QA-ASE-01 TIENE ficha y aparece igual: el NOT EXISTS no filtra)'
+    WHEN v_con_ficha > 0  THEN 'ROJO ('||v_con_ficha||' fila(s) del resultado YA tienen ficha en asesores_perfil)'
+    ELSE 'OK (ninguna fila del resultado tiene ficha; QA-ASE-01 excluido)' END, false);
+EXCEPTION WHEN OTHERS THEN PERFORM set_config('probe.p642','FALLO ('||SQLSTATE||' '||SQLERRM||')',false); END $$;
+SELECT set_config('role','none', true);
+
+-- P640 — NEGATIVA DE AISLAMIENTO: el admin_pais de HN pide la lista de GT y recibe CERO FILAS.
+-- Es lectura, asi que la negativa es un conjunto vacio y NO un 42501: si algun dia empieza a
+-- lanzar, esta probe lo dice en vez de leerlo como exito.
+SELECT set_config('request.jwt.claims', json_build_object('sub', current_setting('probe.co_admhn',true), 'role','authenticated')::text, true);
+SELECT set_config('role','authenticated', true);
+DO $$ DECLARE v_n int; v_ase int; BEGIN
+  IF coalesce(current_setting('probe.sf_ready',true),'')<>'1' THEN PERFORM set_config('probe.p640','N/A',false); RETURN; END IF;
+  IF to_regprocedure('public.comercial_perfiles_sin_ficha(uuid)') IS NULL THEN
+    PERFORM set_config('probe.p640','ROJO — RPC AUSENTE',false); RETURN; END IF;
+  BEGIN
+    SELECT count(*), count(*) FILTER (WHERE r.id = NULLIF(current_setting('probe.sf_ase',true),'')::uuid)
+      INTO v_n, v_ase
+      FROM public.comercial_perfiles_sin_ficha(NULLIF(current_setting('probe.co_gt',true),'')::uuid) r;
+    PERFORM set_config('probe.p640', CASE
+      WHEN v_ase > 0 THEN 'ROJO (el admin de HN VE al asesor sin ficha de GT)'
+      WHEN v_n > 0   THEN 'ROJO (el admin de HN recibio '||v_n||' fila(s) de la lista de GT)'
+      ELSE 'OK (0 filas: pide GT y no es admin de GT)' END, false);
+  EXCEPTION WHEN insufficient_privilege THEN
+    PERFORM set_config('probe.p640','FALLO (lanzo 42501; esta funcion es lectura y debe devolver 0 filas)',false);
+  WHEN others THEN PERFORM set_config('probe.p640','FALLO ('||SQLSTATE||' '||SQLERRM||')',false);
+  END;
+EXCEPTION WHEN OTHERS THEN PERFORM set_config('probe.p640','FALLO ('||SQLSTATE||' '||SQLERRM||')',false); END $$;
+SELECT set_config('role','none', true);
+
+-- P643 — POSITIVO super_admin: la otra rama del gate. Sin esto, el 0 filas de P640 tambien lo
+-- cumpliria una funcion que no le devuelve nada a nadie.
+DO $$ DECLARE v_sa text; BEGIN
+  v_sa := coalesce(current_setting('probe.sf_sa',true),'');
+  IF v_sa <> '' THEN
+    PERFORM set_config('request.jwt.claims', json_build_object('sub', v_sa, 'role','authenticated')::text, true);
+  END IF;
+EXCEPTION WHEN OTHERS THEN NULL; END $$;
+SELECT set_config('role','authenticated', true);
+DO $$ DECLARE v_n int; v_ase int; v_sup int; BEGIN
+  IF coalesce(current_setting('probe.sf_ready',true),'')<>'1' THEN PERFORM set_config('probe.p643','N/A',false); RETURN; END IF;
+  IF coalesce(current_setting('probe.sf_sa',true),'')='' THEN
+    PERFORM set_config('probe.p643','ROJO — NO HAY SUPER_ADMIN (la rama no se puede medir)',false); RETURN; END IF;
+  IF to_regprocedure('public.comercial_perfiles_sin_ficha(uuid)') IS NULL THEN
+    PERFORM set_config('probe.p643','ROJO — RPC AUSENTE',false); RETURN; END IF;
+  SELECT count(*), count(*) FILTER (WHERE r.id = NULLIF(current_setting('probe.sf_ase',true),'')::uuid),
+         count(*) FILTER (WHERE r.id = NULLIF(current_setting('probe.sf_sup',true),'')::uuid)
+    INTO v_n, v_ase, v_sup
+    FROM public.comercial_perfiles_sin_ficha(NULLIF(current_setting('probe.co_gt',true),'')::uuid) r;
+  PERFORM set_config('probe.p643', CASE
+    WHEN v_ase = 0 OR v_sup = 0 THEN 'ROJO (el super_admin NO ve los comerciales sin ficha de GT: '||v_n||' filas)'
+    ELSE 'OK (super_admin ve los dos sin ficha de GT pasando su pais_id; '||v_n||' filas)' END, false);
+EXCEPTION WHEN OTHERS THEN PERFORM set_config('probe.p643','FALLO ('||SQLSTATE||' '||SQLERRM||')',false); END $$;
+SELECT set_config('role','none', true);
+
+-- ############################################################################################
 -- P615-P630 — las cuatro RPCs del frente de visitas que estaban sin cobertura
 -- ############################################################################################
 -- LEIDAS DEL CUERPO REAL antes de escribir estas probes, no de la memoria del contrato. Tres cosas
@@ -15104,6 +15269,12 @@ UNION ALL SELECT 'P629_cfg_rol_no_comercial_doc',        current_setting('probe.
 UNION ALL SELECT 'P630_cfg_CENSO_retorno',               current_setting('probe.p630', true),         'OK (4 columnas exactas)'
 UNION ALL SELECT 'P637_ci_PA028_desde_cancelada',       current_setting('probe.p637', true), 'OK (PA028)'
 UNION ALL SELECT 'P638_ci_PA028_desde_no_realizada',    current_setting('probe.p638', true), 'OK (PA028)'
+UNION ALL SELECT 'SF_FX_fixture_sin_ficha',            current_setting('probe.sf_fx', true),  'OK (3 perfiles frescos)'
+UNION ALL SELECT 'P639_sf_POSITIVO_admin_pais',        current_setting('probe.p639', true),   'OK (ve asesor y supervisor)'
+UNION ALL SELECT 'P640_sf_admin_otro_pais_0_filas',    current_setting('probe.p640', true),   'OK (0 filas, sin 42501)'
+UNION ALL SELECT 'P641_sf_CENSO_rol',                  current_setting('probe.p641', true),   'OK (solo roles comerciales)'
+UNION ALL SELECT 'P642_sf_CENSO_not_exists',           current_setting('probe.p642', true),   'OK (ninguna con ficha)'
+UNION ALL SELECT 'P643_sf_POSITIVO_super_admin',       current_setting('probe.p643', true),   'OK (ve los dos)'
 UNION ALL SELECT 'P631_CENSO_anon_perfiles',           current_setting('probe.p631', true), 'OK (anon en cero, los 7)'
 UNION ALL SELECT 'P632_authenticated_perfiles',        current_setting('probe.p632', true), 'OK (4 DML si, 3 no)'
 UNION ALL SELECT 'P633_CONTROL_lee_propio_perfil',     current_setting('probe.p633', true), 'OK (1 fila, antes y despues)'
@@ -15302,7 +15473,8 @@ UNION ALL SELECT 'P000_CENTINELA_veredictos_no_nulos',
        'probe.p623', 'probe.p624', 'probe.p625', 'probe.p626',
        'probe.p627', 'probe.p628', 'probe.p629', 'probe.p630',
        'probe.p631', 'probe.p632', 'probe.p633', 'probe.p634',
-       'probe.p635', 'probe.p636', 'probe.p637', 'probe.p638'
+       'probe.p635', 'probe.p636', 'probe.p637', 'probe.p638',
+       'probe.sf_fx', 'probe.p639', 'probe.p640', 'probe.p641', 'probe.p642', 'probe.p643'
              ]) AS n) s),
   'OK (todos los veredictos publicados)';
 
