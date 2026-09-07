@@ -34,11 +34,62 @@
 //   node scripts/seed-demo.mjs --ejecutar-en-produccion   # escribe
 // ============================================================================================
 import { createClient } from '@supabase/supabase-js'
-import { writeFileSync, mkdirSync } from 'node:fs'
+import { writeFileSync, mkdirSync, readFileSync, existsSync } from 'node:fs'
 import { dirname, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 const RAIZ = resolve(dirname(fileURLToPath(import.meta.url)), '..')
+
+// ============================================================================================
+// .env.local — SÓLO la URL y la anon key
+// ============================================================================================
+// QUÉ SE LEE DEL ARCHIVO Y QUÉ NO, Y POR QUÉ NO ES LO MISMO
+// ---------------------------------------------------------
+// Del archivo salen ÚNICAMENTE las cuatro claves de `DEL_ARCHIVO`: la URL del proyecto y la anon
+// key. Las dos son públicas por diseño —viajan en cada request del navegador y están en el bundle
+// que sirve Vercel—, así que tenerlas en un archivo local no expone nada nuevo.
+//
+// LAS TRES CREDENCIALES DEL SEED NO SE LEEN DE NINGÚN ARCHIVO, NUNCA:
+//   SEED_ADMIN_EMAIL · SEED_ADMIN_PASSWORD · SEED_DEMO_PASSWORD
+// Ésas son la contraseña de un super_admin real y la de las cuentas demo. Si se pudieran leer de
+// un archivo, el camino cómodo sería escribirlas en `.env.local` — y `.env.local` está ignorado
+// HOY, por una línea (`*.local`) que alguien puede cambiar, en una máquina que se respalda, se
+// clona y se comparte. La incomodidad de tener que exportarlas a mano ES la medida de seguridad:
+// no hay ningún archivo donde "queden guardadas por si acaso".
+//
+// SI ALGUIEN VIENE A "SIMPLIFICAR" ESTO cargando el `.env.local` entero, está borrando esa
+// distinción. No es una lista blanca por prolijidad: es la única razón por la que las claves del
+// seed no terminan escritas en disco.
+//
+// EL ENTORNO GANA SOBRE EL ARCHIVO: así se puede apuntar a otro proyecto por una corrida sola,
+// sin editar nada.
+const DEL_ARCHIVO = ['VITE_SUPABASE_URL', 'SUPABASE_URL', 'VITE_SUPABASE_ANON_KEY', 'SUPABASE_ANON_KEY']
+
+function cargarEnvLocal() {
+  const archivo = resolve(RAIZ, '.env.local')
+  if (!existsSync(archivo)) return { archivo, cargadas: [] }
+  const cargadas = []
+  for (const linea of readFileSync(archivo, 'utf8').split(/\r?\n/)) {
+    const t = linea.trim()
+    if (!t || t.startsWith('#')) continue
+    const i = t.indexOf('=')
+    if (i <= 0) continue
+    const clave = t.slice(0, i).trim()
+    if (!DEL_ARCHIVO.includes(clave)) continue          // todo lo demas se ignora a proposito
+    if (process.env[clave]) continue                    // el entorno gana
+    // Se sacan las comillas envolventes si las hay; adentro no se interpreta nada.
+    let valor = t.slice(i + 1).trim()
+    const c = valor[0]
+    if ((c === '"' || c === "'") && valor.length > 1 && valor[valor.length - 1] === c) {
+      valor = valor.slice(1, -1)
+    }
+    process.env[clave] = valor
+    cargadas.push(clave)
+  }
+  return { archivo, cargadas }
+}
+
+const ENV_LOCAL = cargarEnvLocal()
 
 // ---------------------------------------------------------------------------- configuración
 const PAIS_CODIGO = 'ZZ'
@@ -172,11 +223,21 @@ async function rpc(cliente, nombre, args) {
 async function fase0() {
   paso('FASE 0 · Gate de seguridad')
 
+  if (ENV_LOCAL.cargadas.length) {
+    log(`   .env.local: se tomaron ${ENV_LOCAL.cargadas.join(', ')}`)
+  }
+
   // La URL y la anon key hacen falta SIEMPRE: sin ellas ni el gate se puede evaluar.
   for (const [k, v] of Object.entries({
     'VITE_SUPABASE_URL (o SUPABASE_URL)': URL,
     'VITE_SUPABASE_ANON_KEY (o SUPABASE_ANON_KEY)': ANON,
-  })) if (!v) abortar(`falta la variable de entorno ${k}`)
+  })) {
+    if (v) continue
+    abortar(`falta ${k}.\n`
+      + `  Puede salir del entorno (export ${k.split(' ')[0]}=...) o de ${ENV_LOCAL.archivo},\n`
+      + `  que ${existsSync(ENV_LOCAL.archivo) ? 'existe pero no la trae' : 'no existe en esta maquina'}.\n`
+      + '  El entorno gana sobre el archivo.')
+  }
 
   // Las credenciales SÓLO son obligatorias para escribir. En dry-run son opcionales: el gate se
   // puede evaluar con `anon` —`configuracion_pais` es legible sin sesión— y sin ellas igual se
@@ -185,7 +246,12 @@ async function fase0() {
   if (ESCRIBIR) {
     for (const [k, v] of Object.entries({
       SEED_ADMIN_EMAIL: ADMIN_EMAIL, SEED_ADMIN_PASSWORD: ADMIN_PASS, SEED_DEMO_PASSWORD: DEMO_PASS,
-    })) if (!v) abortar(`falta la variable de entorno ${k} (obligatoria para escribir)`)
+    })) {
+      if (v) continue
+      abortar(`falta ${k} (obligatoria para escribir).\n`
+        + '  Esta SOLO sale del entorno: las credenciales del seed no se leen de ningun archivo,\n'
+        + '  para que no terminen escritas en disco. Exportala en la sesion y volve a correr.')
+    }
   }
 
   let admin = null
