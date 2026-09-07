@@ -232,8 +232,29 @@ async function comoUsuario(email, password) {
   return { cliente: c, userId: data.user.id, token: data.session.access_token }
 }
 
-/** Lanza si la RPC falla: un seed que sigue después de un error deja datos a medias. */
+/**
+ * Lanza si la RPC falla: un seed que sigue después de un error deja datos a medias.
+ *
+ * Y ANTES DE LLAMAR, RECHAZA CUALQUIER ARGUMENTO `undefined`. Esto no es paranoia: es exactamente
+ * lo que rompió la corrida del 7-sep. `JSON.stringify` **borra** las claves con valor `undefined`,
+ * así que un id que no se pudo resolver no viaja como null — la clave DESAPARECE del cuerpo. Del
+ * otro lado, PostgREST recibe una llamada con menos parámetros, no encuentra ninguna función con
+ * esa firma y responde PGRST202 "no existe la función", que se lee como un error de FIRMA cuando
+ * en realidad era un error de VALOR.
+ *
+ * El censo de firmas (todas las llamadas del seed contra `pg_get_function_arguments`) dio limpio:
+ * el problema nunca estuvo en cómo estaban escritas las llamadas. Por eso el guard va acá, en el
+ * único lugar por donde pasan todas, y nombra la clave culpable en vez de dejar que la base
+ * conteste algo que apunta al lado equivocado.
+ */
 async function rpc(cliente, nombre, args) {
+  const sinValor = Object.entries(args ?? {}).filter(([, v]) => v === undefined).map(([k]) => k)
+  if (sinValor.length) {
+    throw new Error(
+      `${nombre}: ${sinValor.join(', ')} llegó como undefined. JSON.stringify borraría esas claves `
+      + 'y PostgREST respondería PGRST202 como si faltara la función. Se corta acá, donde se ve la causa.',
+    )
+  }
   const { data, error } = await cliente.rpc(nombre, args)
   if (error) throw new Error(`${nombre}: ${error.code ?? ''} ${error.message}`)
   return data
@@ -329,8 +350,23 @@ async function fase1(admin, pais) {
     body: '{}',
   })
   const cuerpo = await r.json().catch(() => ({}))
+  // ESTA ES LA RUTA QUE VA A CORRER LA PRÓXIMA VEZ. La corrida del 7-sep creó las tres cuentas y
+  // murió en la fase 2, así que de acá en más el camino normal es "ya existen": si esta lectura
+  // fallara en silencio, el script intentaría crearlas de nuevo, `crear-empleado` respondería
+  // "email ya registrado" y nunca llegaría a la fase 2 — que es justo la que hay que arreglar.
+  //
+  // La forma real es { success: true, data: [...perfiles], count }. Se verifica en vez de caer a
+  // `[]`: un array vacío por un cambio de forma se ve idéntico a "no hay nadie", y esa confusión
+  // es la que convierte un seed idempotente en uno que se planta.
+  if (!r.ok || cuerpo?.success !== true || !Array.isArray(cuerpo?.data)) {
+    throw new Error(`listar-empleados devolvió algo inesperado (HTTP ${r.status}): `
+      + `${JSON.stringify(cuerpo).slice(0, 300)}. Sin esta lista no se puede saber qué cuentas `
+      + 'ya existen, y crearlas de nuevo fallaría con "email ya registrado".')
+  }
   const existentes = new Map(
-    (cuerpo?.empleados ?? cuerpo?.data ?? []).map((e) => [String(e.email).toLowerCase(), e.id]),
+    cuerpo.data
+      .filter((e) => e?.email && e?.id)
+      .map((e) => [String(e.email).toLowerCase(), e.id]),
   )
   log(`   empleados existentes leídos: ${existentes.size}`)
 
@@ -352,11 +388,30 @@ async function fase1(admin, pais) {
         })
         const j = await res.json()
         if (!j?.success) throw new Error(`crear-empleado(${c.email}): ${j?.error ?? res.status}`)
-        return j.user_id ?? j.id ?? j.user?.id
+        // La forma REAL de la respuesta es { success: true, data: { id, email, nombre_completo, rol } }.
+        // Estaba leído como `j.user_id ?? j.id ?? j.user?.id` — ninguno de los tres existe, así que
+        // el id quedaba undefined, viajaba a la fase 2 y ahí desaparecía del cuerpo del RPC.
+        // Se verifica que sea un uuid: si mañana cambia la forma, se corta ACÁ y no tres fases
+        // después con un error que apunta a otro lado.
+        const id = j?.data?.id
+        if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(String(id ?? ''))) {
+          throw new Error(`crear-empleado(${c.email}): no devolvió un id usable. `
+            + `Se esperaba data.id (uuid) y vino: ${JSON.stringify(j).slice(0, 300)}`)
+        }
+        return id
       },
       `(id-de-${c.k})`,
     )
     hecho.push({ fase: 'F1', que: `cuenta ${c.email}`, id: ids[c.k], nuevo: true })
+  }
+
+  // PUERTA ENTRE FASES. Las tres claves tienen que existir antes de que nada las use: la fase 2
+  // reparte estos ids a `guardar_asesor_perfil` y `asignar_supervisor`, y un undefined acá se
+  // convierte allá en un parámetro que desaparece. Se corta en el borde, no tres llamadas después.
+  const faltantes = CUENTAS.filter((c) => !ids[c.k]).map((c) => c.email)
+  if (ESCRIBIR && faltantes.length) {
+    throw new Error(`la fase 1 terminó sin id para: ${faltantes.join(', ')}. `
+      + 'La fase 2 no puede seguir sin ellos.')
   }
   return ids
 }
