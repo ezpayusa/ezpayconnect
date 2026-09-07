@@ -1,11 +1,15 @@
 # Estado del módulo comercial — 6 de septiembre de 2026
 
-`main` = **`96abc11`** (más este commit de docs), sincronizada con `origin/main`
-en las dos direcciones. Nada sin commitear salvo los untracked de siempre (manuales PDF y sus
-scripts, `AUDITORIA-PROFUNDA-2026-07-05.md`, `CODEX_VALIDACION_AUDITORIA.md`, `tmp/`).
+`main` = **`ee7945c`** (más este commit de docs), sincronizada con `origin/main` en las dos
+direcciones. Nada sin commitear salvo los untracked de siempre (manuales PDF y sus scripts,
+`AUDITORIA-PROFUNDA-2026-07-05.md`, `CODEX_VALIDACION_AUDITORIA.md`, `tmp/`).
 
 Verificado contra la base viva: **los 15 objetos de las migraciones 279–283 están en prod y los 5
 archivos están trackeados en git. Cero drift.**
+
+> **Actualización 7-sep.** Este informe nació el 6-sep y se fue extendiendo con el trabajo del 7.
+> Cerrados desde entonces: **#3** (migs 285), **#4** (migs 286/287 + pantalla) y **#5** (migs
+> 288/289 + edge + proxy + dos pantallas). El backlog vivo empieza en el **punto 6**.
 
 ---
 
@@ -19,9 +23,10 @@ archivos están trackeados en git. Cero drift.**
 | **282** | `visitas_com_una_por_dia` deja de contar las canceladas: pasa de CONSTRAINT UNIQUE a **índice único parcial** `WHERE estado <> 'cancelada'`. Ver *Hallazgo 2*. |
 | **283** | `comercial_asesores_visibles()` — RPC SECURITY DEFINER que devuelve 5 columnas (`id`, `codigo_asesor`, `nombre_completo`, `activo`, `supervisor_id`) con el gate copiado literal de la policy `asesores_perfil_select`. Ver *Hallazgo 3*. |
 
-> **Números vivos (7-sep):** última migración aplicada **287** · próxima **288** · próximo errcode
-> libre **PA030** · próxima probe libre **P649**. Se actualizan acá y sólo acá: tenerlos repetidos
-> en cada sección fue justamente lo que los dejó contradiciéndose entre sí.
+> **Números vivos (7-sep, cierre del pendiente #5):** última migración aplicada **289** · próxima
+> **290** · próximo errcode libre **PA033** · próxima probe libre **P672** · harness **733 filas,
+> 13 rojas** (todas deuda ajena), piso 680. Se actualizan acá y sólo acá: tenerlos repetidos en
+> cada sección fue justamente lo que los dejó contradiciéndose entre sí.
 
 ---
 
@@ -125,7 +130,7 @@ envuelto entero en `COALESCE(..., false)`.
 
 | | |
 |---|---|
-| filas | **708** |
+| filas | **733** (708 → 722 con la mig 288 → 733 con la 289) |
 | rojas | **13** — todas deuda AJENA; `P625` salió de la lista al cerrarse el punto 3 |
 | resto | 695 |
 | `b2_guard` | VERDE — `do_sin_handler` 156, `top_level_dml_ddl` 0, `cast_directo` 0 |
@@ -217,24 +222,54 @@ cálculo cuando se construya. El arreglo tiene dos mitades y las dos hacen falta
 tabla (o un guard en la RPC) y un `max` en el input — el front solo no alcanza, porque la RPC es
 llamable sin pasar por la pantalla.
 
-### 5. Tarjeta pública del asesor (D11) — piezas 1 y 2 CERRADAS 7-sep
+### 5. ~~Tarjeta pública del asesor (D11)~~ — **CERRADO 7-sep** (migs 288/289 + edge + proxy + 2 pantallas)
 
-**Única superficie `anon` del módulo.** Token propio, bucket público separado del de evidencia, y
-consentimiento **revocable**.
+**Única superficie `anon` del módulo**, y la única del sistema que sirve HTML sin sesión. Token
+propio de 256 bits, bucket **privado**, y consentimiento **revocable de verdad**: apagarlo mata el
+enlace en el request siguiente, sin ventana ni caché ni trabajo diferido.
 
-- **Pieza 1 — backend (mig 288, `96ebd09`).** Cuatro columnas en `asesores_perfil`, cuatro RPCs,
-  PA030, probes P649–P661. `tarjeta_publica_por_token` la ejecuta **sólo `service_role`**.
-- **Pieza 2 — superficie pública (`fcb9404` + `832cd56`).** Edge `tarjeta-asesor` + ruta `/t/:token`.
-  Verificada en prod contra `med.ezpayconnect.com`: `text/html`, sin CSP, `og:url` con el dominio y
-  el path correctos, vCard con su `text/vcard`, y **la revocación mata la URL** (apagada → 404,
-  encendida → 200). 22 tests de deno.
-  **La primera versión estaba rota y no se veía sin desplegar**: el gateway de Supabase reescribe el
-  `text/html` a `text/plain` y Vercel no lo repara. Se arregló con un proxy propio en
-  `api/tarjeta.ts` que corrige headers y no decide nada. La lección medida está en CLAUDE.md.
-- **Pieza 3 — pendiente.** Bucket público para `foto_publica_path`. Hoy el campo viaja en el JSON de
-  la RPC y **no se usa**: un `og:image` que 404ea es peor que no tenerlo.
-- **Pieza 4 — pendiente.** Pantalla del asesor para encender/apagar la tarjeta y rotar el token.
-  Hasta que exista, el consentimiento sólo se puede tocar por SQL.
+- **Pieza 1 — backend del token y el consentimiento (mig 288, `96ebd09`).** Cuatro columnas en
+  `asesores_perfil`, cuatro RPCs, PA030, probes P649–P661. `tarjeta_publica_por_token` la ejecuta
+  **sólo `service_role`** — ni `anon` ni `authenticated`: `anon` nunca toca la base.
+  Dos RPCs de consentimiento y no una con parámetro opcional: encender es del dueño de la cara
+  (`auth.uid()`, sin id), apagar es potestad del admin de país (`tarjeta_apagar_de_asesor`).
+
+- **Pieza 2 — la superficie pública (`fcb9404`, `832cd56`, `605770c`).** Edge `tarjeta-asesor`,
+  proxy `api/tarjeta.ts` y ruta `/t/:token`. Verificada en prod: `text/html`, sin CSP, `og:url` con
+  dominio y path correctos, vCard con su `text/vcard`, y **la revocación mata la URL**.
+  **La primera versión estaba rota y no se podía ver sin desplegar**: el gateway de `*.supabase.co`
+  reescribe el `text/html` a `text/plain` y le agrega un CSP `sandbox`, y Vercel no lo repara. Se
+  resolvió con un proxy propio que corrige headers y **no decide nada** — el tipo real viaja en
+  `X-Tarjeta-Content-Type`. La lección medida está en CLAUDE.md.
+  **Un segundo bug igual de invisible**: el service worker de la PWA se comía `/t/` por el
+  navigation fallback y servía el `index.html` cacheado, así que quien tuviera la app instalada veía
+  el NotFoundPage de React. En incógnito funcionaba, que es lo que lo hacía difícil de ver. Se
+  arregló sumando `/^\/t\//` a la denylist que ya existía (`/api/`, `/.well-known/`,
+  `/supabase/functions`), sin tocar la política de actualización del SW.
+
+- **Pieza 3 — la foto (mig 289, `e63c6c4`; diseño en `8aef4c5`).** Bucket **`tarjetas-asesor`
+  PRIVADO**, 2 MB, sólo jpeg/png/webp — sin SVG, que es código. PA031/PA032, probes P662–P671.
+  **Por qué privado**: uno público entrega una URL de objeto que responde para siempre, así que
+  apagar el consentimiento mataría la tarjeta pero no la foto — la excepción silenciosa que este
+  frente vino a evitar. La sirve la edge por el **mismo gate** que la tarjeta.
+  El molde `fotos-medicos` **no se pudo usar** (su `fotos_medicos_public_select` es `SELECT` a
+  `{public}` con la sola condición del `bucket_id`).
+  Incluye el traslado de la maqueta aprobada (`docs/maqueta_tarjeta_1.html`) con el logo de la
+  empresa matriz inlineado, y el placeholder con iniciales cuando no hay foto.
+
+- **Pieza 4 — las dos superficies de control (`07fac23` + `ee7945c`).**
+  `/comercial/mi-tarjeta`: el asesor publica y despublica, sube/cambia/quita la foto y rota el
+  enlace. El texto del consentimiento va **antes** del interruptor y hay test que exige sus frases.
+  `AsesoresPaisPage`: el admin de país **sólo puede despublicar** — encender es del asesor y la RPC
+  ni acepta el caso —, con confirmación que dice que el enlace muere ya y que **no es permanente**.
+  PA030/PA031/PA032 mapeados en `erroresRpc.ts`: son alcanzables desde el front por primera vez.
+
+**Cabo abierto (menor).** En desarrollo, el enlace que muestra "Mi tarjeta" apunta a `localhost` y
+**esa ruta no existe fuera de Vercel**: el rewrite de `/t/` vive en `vercel.json`, así que el link
+copiado desde `npm run dev` no resuelve. Es consecuencia deliberada de armarlo con
+`window.location.origin` —un link copiado desde un preview que apuntara a producción sería peor,
+porque parecería que anduvo—, pero **la pantalla podría decirlo** en vez de dejar que se descubra
+copiando. No es un bug; es una advertencia que falta.
 
 ### 6. Seed DEMO (D9/D10)
 
@@ -257,6 +292,19 @@ mano.
   `+502 5512-3456`. **Esta es la única fila del inventario QA que está publicada en internet**: el
   link `/t/<token>` responde a cualquiera que lo tenga. Al limpiar, apagarla es lo primero —
   `tarjeta_publica = false` la mata en el request siguiente, sin ventana.
+- **`QA-ASE-01` — LA TARJETA ESTÁ PUBLICADA EN INTERNET.** Es la única fila del inventario QA
+  accesible sin sesión: el enlace `/t/<token>` le responde a cualquiera que lo tenga. Al limpiar,
+  **apagarla es lo primero** — `tarjeta_publica = false` la mata en el request siguiente. Tres cosas
+  para borrar, y son distintas entre sí:
+  1. el consentimiento (`tarjeta_publica`), que es lo que expone;
+  2. la **foto en el bucket `tarjetas-asesor`**, path
+     `97c5d673-bd6c-416b-8970-921a78c92887/b1a005b5-ebd9-4782-9d5d-cfcf1f5e6384.png` — es una imagen
+     de una persona (`docs/imagenes/reclutamiento/asesor-ejecutivo-b2b-hombre.png`, 1 893 773 bytes)
+     subida el 7-sep para verificar la edge; borrar el objeto **y** poner `foto_publica_path` en
+     NULL, porque son dos cosas y una sin la otra deja basura o un path roto;
+  3. los **datos de contacto inventados** cargados por SQL en esa ficha para que la tarjeta se viera
+     completa: cargo `Asesor Comercial Senior`, territorio `Zona 10 y Zona 14, Ciudad de Guatemala`,
+     teléfono `2378-4500`, celular `+502 5512-3456`.
 - El inventario completo de cuentas y basura borrable está en la memoria de proyecto, no en el repo.
 
 ### 8. Higiene
@@ -269,6 +317,16 @@ mano.
   typechequea al construir funciones. Las tres se verificaron a mano con una invocación suelta de
   `tsc` y salieron limpias, pero eso no es un gate: hay que meter `api` en un tsconfig (probablemente
   `tsconfig.node.json`, que ya tiene `types: ["node"]`) y ver qué baseline aparece antes de exigir 0.
+- **`public/ezpayconnect_logo_completo_med.svg` no lo referencia ningún componente.** Medido 7-sep:
+  la única mención fuera de sí mismo es un comentario dentro del otro SVG. El lockup del producto
+  médico está en `public/` sin consumidor; `ezpayconnect_icono.svg` sí lo usan `PoweredBy.tsx` y
+  `TenantThemeContext.ts`. Decidir si se pinta en algún lado o se saca.
+- **El ícono de la PWA no coincide con NINGUNA de las dos identidades de marca.** `public/icon.svg`
+  (y sus dos PNG, que declara el manifest) es un cuadrado redondeado `#0ea5e9` con una cruz blanca
+  simple: sin degradado, sin ECG, sin cuadraditos — no es el logo del producto médico
+  (`#1857D6`/`#12B7A0` + `#16324F`) ni el de la matriz (`#0168FB`/`#04BE67`). El `theme_color` del
+  manifest es el mismo `#0ea5e9`. O sea que la marca que ve quien instala la app no es ninguna de
+  las dos que usa el resto del sistema.
 - `COLS_JORNADA` trae `pais_id` y las dos columnas de precisión que **ninguna pantalla pinta**.
 - Las rutas `/admin-ezpay/pais/:id/prospectos` y `/material` **no tienen entrada de navegación**: se
   llega sólo escribiendo la URL.
