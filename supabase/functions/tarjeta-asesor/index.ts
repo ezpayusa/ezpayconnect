@@ -23,6 +23,29 @@ import { createClient } from 'https://esm.sh/@supabase/supabase-js@2'
 
 export type Deps = {
   resolver: (token: string) => Promise<{ data: Tarjeta | null; error: unknown }>
+  /**
+   * Baja el objeto del bucket PRIVADO `tarjetas-asesor` con service_role. Devuelve NULL si no está
+   * —path borrado, bucket vacío, error de red—: quien llama trata eso igual que "no hay foto", que
+   * es lo que ve el visitante de todos modos.
+   */
+  descargarFoto: (path: string) => Promise<{ bytes: Uint8Array; tipo: string } | null>
+}
+
+/**
+ * Los ÚNICOS tipos que se sirven. Es una lista blanca y no una validación del bucket, aunque el
+ * bucket ya restrinja el MIME al subir: esto sale por nuestro dominio, y el día que alguien
+ * afloje `allowed_mime_types` la edge no tiene por qué enterarse para seguir siendo segura.
+ * SIN `image/svg+xml`: un SVG es código, no una imagen.
+ */
+const TIPOS_FOTO = ['image/jpeg', 'image/png', 'image/webp']
+
+/** Último recurso cuando storage no informa el tipo. Sólo las tres extensiones aceptadas. */
+export function tipoPorExtension(path: string): string {
+  const ext = path.toLowerCase().split('.').pop() ?? ''
+  if (ext === 'jpg' || ext === 'jpeg') return 'image/jpeg'
+  if (ext === 'png') return 'image/png'
+  if (ext === 'webp') return 'image/webp'
+  return ''
 }
 
 export type Tarjeta = {
@@ -118,7 +141,7 @@ export const H_PATH = 'X-Tarjeta-Path'
  * lado de Vercel, habría dos lugares que opinan sobre lo mismo y un día dirían cosas distintas.
  */
 function respuesta(
-  body: string,
+  body: string | Uint8Array,
   contentType: string,
   status = 200,
   extra: Record<string, string> = {},
@@ -168,7 +191,13 @@ export function renderHtml(t: Tarjeta, urlPublica: string): string {
   const desc = t.territorio ? `Territorio: ${t.territorio}` : 'Asesor comercial de EzPayConnect'
   // Sin `+` no hay botón de WhatsApp. Ver esInternacional.
   const wa = esInternacional(t.celular) ? soloDigitos(t.celular) : ''
-  const vcardUrl = `${urlPublica}${urlPublica.includes('?') ? '&' : '?'}formato=vcard`
+  const sep = urlPublica.includes('?') ? '&' : '?'
+  const vcardUrl = `${urlPublica}${sep}formato=vcard`
+  // MISMA URL, MISMO TOKEN, otro formato. La foto no tiene una URL propia que se pueda repartir
+  // suelta: cuelga del token, así que apagar el consentimiento la mata igual que a la tarjeta.
+  // Sin foto NO se emite el tag: un og:image que 404ea le arruina la preview al link entero, y
+  // varios crawlers prefieren no mostrar nada antes que mostrar un hueco.
+  const fotoUrl = t.foto_publica_path ? `${urlPublica}${sep}formato=foto` : ''
 
   return `<!doctype html>
 <html lang="es"><head>
@@ -180,7 +209,8 @@ export function renderHtml(t: Tarjeta, urlPublica: string): string {
 <meta property="og:title" content="${esc(titulo)}">
 <meta property="og:description" content="${esc(desc)}">
 <meta property="og:url" content="${esc(urlPublica)}">
-<meta name="twitter:card" content="summary">
+${fotoUrl ? `<meta property="og:image" content="${esc(fotoUrl)}">
+<meta name="twitter:card" content="summary_large_image">` : `<meta name="twitter:card" content="summary">`}
 <style>
 :root{color-scheme:light}
 body{margin:0;min-height:100vh;display:grid;place-items:center;background:#f1f5f9;
@@ -200,9 +230,12 @@ border:1px solid transparent;cursor:pointer;font-family:inherit;width:100%}
 .b1{background:#1E5C8E;color:#fff}
 .b2{background:#25D366;color:#fff}
 .b3{background:#fff;color:#334155;border-color:#cbd5e1}
+.foto{width:7rem;height:7rem;border-radius:50%;object-fit:cover;display:block;margin:0 auto 1rem;
+background:#e2e8f0}
 </style></head>
 <body>
 <main class="card">
+  ${fotoUrl ? `<img class="foto" src="${esc(fotoUrl)}" alt="" width="112" height="112">` : ''}
   <h1>${esc(nombre)}</h1>
   ${t.cargo ? `<p class="cargo">${esc(t.cargo)}</p>` : ''}
   ${t.territorio ? `<p class="terr">${esc(t.territorio)}</p>` : ''}
@@ -308,10 +341,51 @@ export async function handle(req: Request, deps: Deps): Promise<Response> {
   // sigue a /t/ como token, que es opaco: agregarle segmentos o una extensión obligaría a parsearlo
   // y a distinguir "token con barra" de "token + sufijo". El query es ortogonal al token y no lo
   // toca.
-  if ((url.searchParams.get('formato') ?? '').toLowerCase() === 'vcard') {
+  const formato = (url.searchParams.get('formato') ?? '').toLowerCase()
+
+  if (formato === 'vcard') {
     return respuesta(renderVcard(data), 'text/vcard; charset=utf-8', 200, {
       'Content-Disposition': 'attachment; filename="contacto.vcf"',
     })
+  }
+
+  // FOTO. Llega acá SÓLO después de que `data` resolvió, o sea después del MISMO gate que la
+  // tarjeta: token, consentimiento, `activo` de la ficha y `activo` del perfil. No hay atajo que
+  // salte esas cuatro condiciones, y por eso el bucket puede ser privado — apagar el
+  // consentimiento deja la foto inalcanzable en el request siguiente, sin URL sobreviviente.
+  if (formato === 'foto') {
+    // Sin foto es 404 y NO un error distinto: "no tiene foto" y "no existe la tarjeta" se ven
+    // igual, por la misma razón por la que los cuatro motivos de no-respuesta se ven iguales.
+    if (!data.foto_publica_path) return paginaNoDisponible()
+
+    let foto: { bytes: Uint8Array; tipo: string } | null = null
+    try {
+      foto = await deps.descargarFoto(data.foto_publica_path)
+    } catch (e) {
+      console.error('[tarjeta-asesor] error bajando la foto:', e)
+      return paginaNoDisponible()
+    }
+    if (!foto) return paginaNoDisponible()
+
+    // El tipo REAL del objeto, contra la lista blanca. La extensión es el fallback para cuando
+    // storage NO INFORMA el tipo — y sólo para eso. Si storage informa uno que no aceptamos, se
+    // rechaza y no se lo "rescata" mirando la extensión: tratar un tipo prohibido como si fuera
+    // desconocido es la forma silenciosa de servir lo que dijimos que no íbamos a servir.
+    // Lo encontró este test: con tipo `image/svg+xml` y path `.png` el código anterior devolvía 200.
+    // El precio es que un objeto con un tipo raro no se muestra; el bucket ya restringe el MIME al
+    // subir (mig 289), así que eso sólo pasa si algo está mal, y entonces no mostrarlo es correcto.
+    const declarado = (foto.tipo ?? '').trim()
+    const tipo = declarado
+      ? (TIPOS_FOTO.includes(declarado) ? declarado : '')
+      : tipoPorExtension(data.foto_publica_path)
+    if (!TIPOS_FOTO.includes(tipo)) {
+      console.error('[tarjeta-asesor] foto con tipo no servible:', foto.tipo, data.foto_publica_path)
+      return paginaNoDisponible()
+    }
+
+    // no-store igual que todo lo demás: una foto cacheada por un intermediario sobreviviría a
+    // revocar el consentimiento, que es exactamente lo que el bucket privado vino a impedir.
+    return respuesta(foto.bytes, tipo)
   }
 
   return respuesta(renderHtml(data, urlPublicaDe(req, url, token)), 'text/html; charset=utf-8')
@@ -329,6 +403,17 @@ function depsReales(): Deps {
     resolver: async (token: string) => {
       const { data, error } = await supabase.rpc('tarjeta_publica_por_token', { p_token: token })
       return { data: (data ?? null) as Tarjeta | null, error }
+    },
+    // Bucket PRIVADO (mig 289): sin service_role esto no baja nada. No se firma una URL ni se
+    // redirige al visitante a storage — una URL firmada seguiría viva su tiempo de vida aunque
+    // el consentimiento se apague en el medio. Los bytes pasan por acá y por ningún otro lado.
+    descargarFoto: async (path: string) => {
+      const { data, error } = await supabase.storage.from('tarjetas-asesor').download(path)
+      if (error || !data) {
+        if (error) console.error('[tarjeta-asesor] storage.download:', error)
+        return null
+      }
+      return { bytes: new Uint8Array(await data.arrayBuffer()), tipo: data.type ?? '' }
     },
   }
 }

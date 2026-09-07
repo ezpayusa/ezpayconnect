@@ -15,13 +15,17 @@ Stack: React + Vite + TypeScript, Supabase / Postgres, deploy en Vercel, repo en
   minutos por esto** (P635 es la probe que faltaba, P636 su contraprueba).
 - NUNCA ampliar policies de RLS sobre tablas adyacentes a datos médicos (p. ej. campana_metricas). Para dar acceso, usar RPCs SECURITY DEFINER con search_path='', fail-closed (si el scope es NULL → 0 filas) y gate interno.
 - Probar aislamiento por rol impersonando request.jwt.claims en prod: cada rol ve lo suyo y no lo ajeno.
-- **Módulo comercial — próximos números libres: probe `P662`, errcode `PA031`.** (Mig 285, 6-sep:
+- **Módulo comercial — próximos números libres: probe `P672`, errcode `PA033`.** (Mig 285, 6-sep:
   PA028 = check-in sobre visita que no está `planificada`; PA029 = doble checkout. Mig 286, 7-sep:
   `comercial_perfiles_sin_ficha(uuid)`, P639–P643; mig 287: `comercial_supervisores_del_pais(uuid)`,
   P644–P648; las dos son lectura y **no agregan errcode**: sin autoridad devuelven 0 filas, no
   42501. Mig 288, 7-sep: tarjeta pública del asesor, PA030 = sin ficha, P649–P661. La resolutora
   `tarjeta_publica_por_token` la ejecuta **sólo `service_role`** — ni `anon` ni `authenticated`:
-  la llama una edge pública, `anon` nunca toca la base.)
+  la llama una edge pública, `anon` nunca toca la base. Mig 289, 7-sep: foto de la tarjeta,
+  PA031 = sin ficha, PA032 = el path no empieza con tu id, P662–P671. El bucket `tarjetas-asesor`
+  es **privado y lo sirve la edge**: uno público entregaría una URL de objeto que responde para
+  siempre, y apagar el consentimiento no la mataría. El molde `fotos-medicos` **no sirve** — su
+  `fotos_medicos_public_select` es `SELECT` a `{public}` con la sola condición del `bucket_id`.)
 - **El gateway de `*.supabase.co` REESCRIBE el `Content-Type` del HTML. Medido 7-sep-2026 contra el
   deploy real.** Toda respuesta `text/html` de una edge sale por el gateway como **`text/plain`** y
   con **`Content-Security-Policy: default-src 'none'; sandbox`** agregado. Es su defensa

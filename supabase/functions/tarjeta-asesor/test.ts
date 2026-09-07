@@ -6,7 +6,7 @@
 // sea React; (d) la vCard; (e) no-store, porque una tarjeta revocable no se cachea.
 import { assertEquals, assertStringIncludes, assertNotMatch } from 'https://deno.land/std@0.224.0/assert/mod.ts'
 import {
-  handle, esc, escVcard, soloDigitos, esInternacional, tokenDe,
+  handle, esc, escVcard, soloDigitos, esInternacional, tokenDe, tipoPorExtension,
   H_CONTENT_TYPE, H_HOST, H_PATH,
   type Deps, type Tarjeta,
 } from './index.ts'
@@ -26,7 +26,22 @@ const T_LOCAL: Tarjeta = { ...T_INTL, celular: '5555-0001' }   // como lo escrib
 const T_SIN_CEL: Tarjeta = { ...T_INTL, celular: null }
 // Alias para los tests que no dependen del formato del celular.
 const T = T_INTL
-const deps = (data: Tarjeta | null, error: unknown = null): Deps => ({ resolver: async () => ({ data, error }) })
+// Bytes que NO son UTF-8 válido (cabecera PNG + un JPEG + bytes altos sueltos): si algún día
+// alguien hace pasar la foto por un string, esto se rompe.
+const BYTES_FOTO = new Uint8Array([
+  0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a,
+  0xff, 0xd8, 0xff, 0xe0, 0xc3, 0x28, 0xa0, 0xf8,
+])
+const T_CON_FOTO: Tarjeta = { ...T_INTL, foto_publica_path: 'aaaa-bbbb/1234.png' }
+
+const deps = (
+  data: Tarjeta | null,
+  error: unknown = null,
+  foto: { bytes: Uint8Array; tipo: string } | null = { bytes: BYTES_FOTO, tipo: 'image/png' },
+): Deps => ({
+  resolver: async () => ({ data, error }),
+  descargarFoto: async () => foto,
+})
 const get = (u: string) => new Request(u, { method: 'GET' })
 const URL_T = 'https://med.ezpayconnect.com/t/abc123'
 
@@ -224,6 +239,80 @@ Deno.test('sin los headers del proxy, og:url cae en la URL por la que se pidió'
   const req = get('https://fqnsmvkxsuujahhmpzuk.supabase.co/tarjeta-asesor?token=abc123')
   const html = await (await handle(req, deps(T))).text()
   assertStringIncludes(html, 'og:url" content="https://fqnsmvkxsuujahhmpzuk.supabase.co/tarjeta-asesor"')
+})
+
+// ---------------------------------------------------------------- la foto (mig 289)
+// El bucket es PRIVADO y la foto la sirve esta edge bajo el MISMO gate que la tarjeta. Lo que se
+// mide acá es que no haya ningún camino a los bytes que se saltee ese gate.
+Deno.test('?formato=foto devuelve los BYTES con el tipo real del objeto', async () => {
+  const r = await handle(get(`${URL_T}?formato=foto`), deps(T_CON_FOTO))
+  assertEquals(r.status, 200)
+  assertEquals(r.headers.get('content-type'), 'image/png')
+  assertEquals(r.headers.get(H_CONTENT_TYPE), 'image/png')   // el proxy lo va a aplicar
+  const bytes = new Uint8Array(await r.arrayBuffer())
+  assertEquals(Array.from(bytes), Array.from(BYTES_FOTO))    // byte a byte, no longitud
+})
+
+Deno.test('la foto tampoco se cachea: revocar tiene que alcanzarla', async () => {
+  const r = await handle(get(`${URL_T}?formato=foto`), deps(T_CON_FOTO))
+  assertStringIncludes(r.headers.get('cache-control') ?? '', 'no-store')
+})
+
+Deno.test('tarjeta APAGADA: la foto da 404 igual que la tarjeta, no hay puerta de atrás', async () => {
+  // deps(null) = la RPC no resolvió, que es lo que pasa con el consentimiento apagado, la ficha
+  // inactiva, el perfil inactivo o un token que no existe. Los cuatro llegan acá igual.
+  const r = await handle(get(`${URL_T}?formato=foto`), deps(null))
+  assertEquals(r.status, 404)
+  assertStringIncludes(r.headers.get('content-type') ?? '', 'text/html')
+  assertStringIncludes(await r.text(), 'no está disponible')
+})
+
+Deno.test('tarjeta que resuelve pero SIN foto: 404, y se ve igual que si no existiera', async () => {
+  const sinFoto = await handle(get(`${URL_T}?formato=foto`), deps(T_INTL))       // foto_publica_path null
+  const inexistente = await handle(get(`${URL_T}?formato=foto`), deps(null))
+  assertEquals(sinFoto.status, 404)
+  assertEquals(await sinFoto.text(), await inexistente.text())   // mismo cuerpo: no es otro error
+})
+
+Deno.test('si storage no trae la foto, 404 y no un 200 vacío', async () => {
+  const r = await handle(get(`${URL_T}?formato=foto`), deps(T_CON_FOTO, null, null))
+  assertEquals(r.status, 404)
+})
+
+Deno.test('un tipo fuera de la lista blanca NO se sirve, ni siquiera si storage lo afirma', async () => {
+  // Un SVG es código. Si algún día alguien afloja el mime del bucket, la edge sigue sin servirlo.
+  const svg = await handle(get(`${URL_T}?formato=foto`),
+    deps(T_CON_FOTO, null, { bytes: BYTES_FOTO, tipo: 'image/svg+xml' }))
+  assertEquals(svg.status, 404)   // la extensión .png tampoco lo rescata: el tipo declarado manda
+})
+
+Deno.test('si storage no informa el tipo, se deduce de la extensión', async () => {
+  const r = await handle(get(`${URL_T}?formato=foto`),
+    deps({ ...T_INTL, foto_publica_path: 'aaaa/x.webp' }, null, { bytes: BYTES_FOTO, tipo: '' }))
+  assertEquals(r.status, 200)
+  assertEquals(r.headers.get('content-type'), 'image/webp')
+})
+
+Deno.test('tipoPorExtension: sólo los tres aceptados, y nunca svg', () => {
+  assertEquals(tipoPorExtension('a/b.jpg'), 'image/jpeg')
+  assertEquals(tipoPorExtension('a/b.JPEG'), 'image/jpeg')
+  assertEquals(tipoPorExtension('a/b.png'), 'image/png')
+  assertEquals(tipoPorExtension('a/b.webp'), 'image/webp')
+  assertEquals(tipoPorExtension('a/b.svg'), '')
+  assertEquals(tipoPorExtension('a/b'), '')
+})
+
+Deno.test('og:image y la <img> SÓLO si hay foto, y cuelgan del mismo token', async () => {
+  const con = await (await handle(get(URL_T), deps(T_CON_FOTO))).text()
+  assertStringIncludes(con, 'og:image" content="https://med.ezpayconnect.com/t/abc123?formato=foto"')
+  assertStringIncludes(con, 'twitter:card" content="summary_large_image"')
+  assertStringIncludes(con, '<img class="foto" src="https://med.ezpayconnect.com/t/abc123?formato=foto"')
+
+  const sin = await (await handle(get(URL_T), deps(T_INTL))).text()
+  // Un og:image que 404ea arruina la preview del link entero: sin foto, el tag no existe.
+  assertEquals(sin.includes('og:image'), false)
+  assertEquals(sin.includes('class="foto"'), false)
+  assertStringIncludes(sin, 'twitter:card" content="summary"')
 })
 
 Deno.test('un host inyectado no se escapa del atributo del meta', async () => {

@@ -14839,8 +14839,20 @@ EXCEPTION WHEN OTHERS THEN PERFORM set_config('probe.p654','FALLO ('||SQLSTATE||
 
 -- P657 — tarjeta_set_consentimiento: el asesor enciende LA PROPIA. La RPC no toma id, asi que lo
 -- que hay que probar es que el sujeto es auth.uid(): se enciende como el asesor A y se verifica que
--- la que quedo encendida es la de A y NINGUNA otra.
+-- la unica que quedo encendida POR ESTA LLAMADA es la de A.
+--
+-- SE MIDE EL DELTA Y NO EL TOTAL. La version original contaba TODAS las fichas con
+-- tarjeta_publica=true, o sea toda la tabla, y asumia que no habia ninguna encendida de antes. Eso
+-- fue cierto el dia que se escribio y dejo de serlo apenas la feature se uso: la probe se pone roja
+-- sola por un dato ajeno, sin que nada este mal. Paso el 7-sep-2026, con la ficha QA-ASE-01
+-- encendida para verificar la edge. La pregunta que la probe quiere responder es "a quien encendio
+-- ESTA llamada", no "cuantas tarjetas hay encendidas en el mundo".
 SELECT set_config('role','none', true);
+DO $$ BEGIN
+  PERFORM set_config('probe.tj_pub_antes',
+    coalesce((SELECT string_agg(ap.id::text, ',' ORDER BY ap.id)
+                FROM public.asesores_perfil ap WHERE ap.tarjeta_publica), ''), false);
+EXCEPTION WHEN OTHERS THEN PERFORM set_config('probe.tj_pub_antes','', false); END $$;
 DO $$ DECLARE v_a text; BEGIN
   v_a := coalesce(current_setting('probe.tj_a',true),'');
   IF v_a <> '' THEN
@@ -14858,13 +14870,19 @@ DO $$ DECLARE v_a uuid; v_mias int; v_ajenas int; v_sello timestamptz; BEGIN
   EXCEPTION WHEN others THEN
     PERFORM set_config('probe.p657','FALLO (el asesor no pudo encender la propia: '||SQLSTATE||' '||SQLERRM||')',false); RETURN; END;
   PERFORM set_config('role','none', true);
-  SELECT count(*) FILTER (WHERE ap.id = v_a), count(*) FILTER (WHERE ap.id <> v_a),
+  -- v_ajenas = las que quedaron publicadas y NO lo estaban antes de la llamada, sacando la de A.
+  -- string_to_array('', ',') da {""}, que no matchea ningun uuid: con la tabla vacia de tarjetas
+  -- encendidas el delta sigue siendo el total, que es lo correcto.
+  SELECT count(*) FILTER (WHERE ap.id = v_a),
+         count(*) FILTER (WHERE ap.id <> v_a
+                            AND NOT (ap.id::text = ANY (string_to_array(
+                                  coalesce(current_setting('probe.tj_pub_antes',true),''), ',')))),
          max(ap.tarjeta_consentimiento_at) FILTER (WHERE ap.id = v_a)
     INTO v_mias, v_ajenas, v_sello
     FROM public.asesores_perfil ap WHERE ap.tarjeta_publica;
   PERFORM set_config('probe.p657', CASE
     WHEN v_mias = 0     THEN 'ROJO (encendio pero la ficha del asesor NO quedo publicada)'
-    WHEN v_ajenas > 0   THEN 'ROJO — TOCO FICHAS AJENAS ('||v_ajenas||' de otros quedaron publicadas)'
+    WHEN v_ajenas > 0   THEN 'ROJO — TOCO FICHAS AJENAS ('||v_ajenas||' de otros se publicaron POR ESTA LLAMADA)'
     WHEN v_sello IS NULL THEN 'FALLO (quedo publicada pero sin tarjeta_consentimiento_at)'
     ELSE 'OK (encendio SOLO la propia, con el sello de consentimiento puesto)' END, false);
 EXCEPTION WHEN OTHERS THEN PERFORM set_config('probe.p657','FALLO ('||SQLSTATE||' '||SQLERRM||')',false); END $$;
@@ -15035,6 +15053,233 @@ DO $$ DECLARE v_a uuid; v_viejo text; v_nuevo text; v_r_viejo jsonb; v_r_nuevo j
     WHEN v_r_nuevo IS NULL      THEN 'ROJO (el token NUEVO tampoco resuelve: la rotacion rompio la tarjeta)'
     ELSE 'OK (token nuevo resuelve, el viejo dejo de hacerlo, y quedo el sello de rotacion)' END, false);
 EXCEPTION WHEN OTHERS THEN PERFORM set_config('probe.p661','FALLO ('||SQLSTATE||' '||SQLERRM||')',false); END $$;
+SELECT set_config('role','none', true);
+
+-- ############################################################################################
+-- P662-P671 — foto de la tarjeta publica (mig 289)
+-- ############################################################################################
+-- Dos cosas distintas se miden aca.
+--
+-- (1) LA RPC `guardar_foto_publica_asesor` Y SU GUARD DE PATH. La policy de storage ya impide
+-- SUBIR fuera del propio prefijo, pero la RPC escribe una COLUMNA de otra tabla: sin el guard, un
+-- asesor podria registrar como suya la foto de otro y publicar una cara ajena en su tarjeta. El
+-- path lo arma el cliente y no se confia en el (molde PA023 de la 274).
+--
+-- (2) QUE EL BUCKET SEA PRIVADO DE VERDAD. No se lee del catalogo que `public=false`: se INSERTA
+-- una fila en storage.objects y se intenta LEERLA con cada rol. La leccion de la 284 es que el
+-- catalogo dice quien tiene el permiso y no que pasa cuando se usa; y un bucket que se creyo
+-- privado es exactamente el modo de falla que esta migracion vino a evitar, porque una URL de
+-- objeto publico sobrevive a revocar el consentimiento.
+-- P671 es el control positivo: sin el, los ceros de P669 y P670 tambien los daria un bucket al que
+-- no puede entrar nadie, o una fila que nunca se inserto.
+SELECT set_config('role','none', true);
+DO $$
+DECLARE v_gt uuid := NULLIF(current_setting('probe.co_gt',true),'')::uuid;
+        v_d uuid; v_obj text;
+BEGIN
+  IF coalesce(current_setting('probe.tj_ready',true),'')<>'1' THEN
+    PERFORM set_config('probe.fo_ready','0',false);
+    PERFORM set_config('probe.fo_fx','ROJO — FIXTURE DE TARJETA AUSENTE (esto NO es un rechazo)',false); RETURN; END IF;
+  IF to_regprocedure('public.guardar_foto_publica_asesor(text)') IS NULL THEN
+    PERFORM set_config('probe.fo_ready','0',false);
+    PERFORM set_config('probe.fo_fx','ROJO — MIG 289 AUSENTE (esto NO es un rechazo)',false); RETURN; END IF;
+
+  -- (D) un perfil SIN ficha de asesor: es el sujeto de PA031, y no lo hay en el fixture de la 288.
+  v_d := gen_random_uuid();
+  INSERT INTO auth.users (id) VALUES (v_d);
+  INSERT INTO public.perfiles (id, email, nombre_completo, rol, pais_id, activo)
+    VALUES (v_d, 'p662.d@example.invalid', 'QA FOTO Sin Ficha', 'asesor_comercial', v_gt, true);
+
+  -- Un objeto REAL en el bucket, a nombre del asesor feliz del fixture de la 288.
+  v_obj := coalesce(current_setting('probe.tj_a',true),'') || '/qa-foto-p662.png';
+  INSERT INTO storage.objects (bucket_id, name, owner)
+    VALUES ('tarjetas-asesor', v_obj, NULLIF(current_setting('probe.tj_a',true),'')::uuid);
+
+  PERFORM set_config('probe.fo_d', v_d::text, false);
+  PERFORM set_config('probe.fo_obj', v_obj, false);
+  PERFORM set_config('probe.fo_ready','1', false);
+  PERFORM set_config('probe.fo_fx','OK (fixture foto: 1 perfil sin ficha + 1 objeto en tarjetas-asesor)', false);
+EXCEPTION WHEN OTHERS THEN
+  PERFORM set_config('probe.fo_ready','0',false);
+  PERFORM set_config('probe.fo_fx','ROJO ('||SQLSTATE||' '||SQLERRM||')',false);
+END $$;
+
+-- P662 — sin ficha de asesor -> PA031. No es 42501: no es un problema de autoridad sino de que el
+-- sujeto no existe como asesor.
+SELECT set_config('request.jwt.claims', json_build_object('sub', current_setting('probe.fo_d',true), 'role','authenticated')::text, true);
+SELECT set_config('role','authenticated', true);
+DO $$ BEGIN
+  IF coalesce(current_setting('probe.fo_ready',true),'')<>'1' THEN PERFORM set_config('probe.p662','N/A',false); RETURN; END IF;
+  BEGIN
+    PERFORM public.guardar_foto_publica_asesor(current_setting('probe.fo_d',true)||'/x.png');
+    PERFORM set_config('probe.p662','ROJO (PERMITIO — alguien sin ficha guardo una foto publica)',false);
+  EXCEPTION WHEN sqlstate 'PA031' THEN
+    PERFORM set_config('probe.p662','OK (PA031 sin ficha de asesor)',false);
+  WHEN others THEN PERFORM set_config('probe.p662','FALLO (esperaba PA031, vino '||SQLSTATE||': '||SQLERRM||')',false);
+  END;
+EXCEPTION WHEN OTHERS THEN PERFORM set_config('probe.p662','FALLO ('||SQLSTATE||' '||SQLERRM||')',false); END $$;
+SELECT set_config('role','none', true);
+
+-- P663 — CONTROL POSITIVO de P664/P665/P666: el asesor SI guarda un path que empieza con su id, y
+-- se verifica la FILA. Sin esto, los tres PA032 tambien los cumpliria una RPC que rechaza todo.
+SELECT set_config('request.jwt.claims', json_build_object('sub', current_setting('probe.tj_a',true), 'role','authenticated')::text, true);
+SELECT set_config('role','authenticated', true);
+DO $$ DECLARE v_p text; v_esp text; BEGIN
+  IF coalesce(current_setting('probe.fo_ready',true),'')<>'1' THEN PERFORM set_config('probe.p663','N/A',false); RETURN; END IF;
+  v_esp := current_setting('probe.tj_a',true)||'/qa-foto-p663.png';
+  BEGIN
+    PERFORM public.guardar_foto_publica_asesor(v_esp);
+  EXCEPTION WHEN others THEN
+    PERFORM set_config('probe.p663','FALLO (el dueno no pudo guardar su propia foto: '||SQLSTATE||' '||SQLERRM||')',false); RETURN; END;
+  PERFORM set_config('role','none', true);
+  SELECT foto_publica_path INTO v_p FROM public.asesores_perfil WHERE id = NULLIF(current_setting('probe.tj_a',true),'')::uuid;
+  PERFORM set_config('probe.p663', CASE WHEN v_p IS NOT DISTINCT FROM v_esp
+    THEN 'OK (el asesor guardo su propia foto; se verifico la FILA)'
+    ELSE 'ROJO (la RPC paso pero la columna quedo en '||COALESCE(v_p,'(nulo)')||')' END, false);
+EXCEPTION WHEN OTHERS THEN PERFORM set_config('probe.p663','FALLO ('||SQLSTATE||' '||SQLERRM||')',false); END $$;
+SELECT set_config('role','none', true);
+
+-- P664 — EL GUARD: un path con el prefijo de OTRO asesor -> PA032. Es la probe que impide publicar
+-- la cara ajena en la tarjeta propia.
+SELECT set_config('request.jwt.claims', json_build_object('sub', current_setting('probe.tj_a',true), 'role','authenticated')::text, true);
+SELECT set_config('role','authenticated', true);
+DO $$ BEGIN
+  IF coalesce(current_setting('probe.fo_ready',true),'')<>'1' THEN PERFORM set_config('probe.p664','N/A',false); RETURN; END IF;
+  BEGIN
+    PERFORM public.guardar_foto_publica_asesor(current_setting('probe.tj_b',true)||'/ajena.png');
+    PERFORM set_config('probe.p664','ROJO (PERMITIO — registro como suya la foto de OTRO asesor)',false);
+  EXCEPTION WHEN sqlstate 'PA032' THEN
+    PERFORM set_config('probe.p664','OK (PA032 el path no empieza con el propio id)',false);
+  WHEN others THEN PERFORM set_config('probe.p664','FALLO (esperaba PA032, vino '||SQLSTATE||': '||SQLERRM||')',false);
+  END;
+EXCEPTION WHEN OTHERS THEN PERFORM set_config('probe.p664','FALLO ('||SQLSTATE||' '||SQLERRM||')',false); END $$;
+SELECT set_config('role','none', true);
+
+-- P665 — el prefijo propio pero SIN archivo ({id}/) -> PA032. Un path a medias no es un objeto.
+SELECT set_config('request.jwt.claims', json_build_object('sub', current_setting('probe.tj_a',true), 'role','authenticated')::text, true);
+SELECT set_config('role','authenticated', true);
+DO $$ BEGIN
+  IF coalesce(current_setting('probe.fo_ready',true),'')<>'1' THEN PERFORM set_config('probe.p665','N/A',false); RETURN; END IF;
+  BEGIN
+    PERFORM public.guardar_foto_publica_asesor(current_setting('probe.tj_a',true)||'/');
+    PERFORM set_config('probe.p665','ROJO (PERMITIO — guardo un path sin archivo)',false);
+  EXCEPTION WHEN sqlstate 'PA032' THEN
+    PERFORM set_config('probe.p665','OK (PA032 path sin segundo segmento)',false);
+  WHEN others THEN PERFORM set_config('probe.p665','FALLO (esperaba PA032, vino '||SQLSTATE||': '||SQLERRM||')',false);
+  END;
+EXCEPTION WHEN OTHERS THEN PERFORM set_config('probe.p665','FALLO ('||SQLSTATE||' '||SQLERRM||')',false); END $$;
+SELECT set_config('role','none', true);
+
+-- P666 — prefijo propio pero con un TERCER segmento -> PA032. Ningun cliente nuestro produce eso.
+SELECT set_config('request.jwt.claims', json_build_object('sub', current_setting('probe.tj_a',true), 'role','authenticated')::text, true);
+SELECT set_config('role','authenticated', true);
+DO $$ BEGIN
+  IF coalesce(current_setting('probe.fo_ready',true),'')<>'1' THEN PERFORM set_config('probe.p666','N/A',false); RETURN; END IF;
+  BEGIN
+    PERFORM public.guardar_foto_publica_asesor(current_setting('probe.tj_a',true)||'/sub/dir.png');
+    PERFORM set_config('probe.p666','ROJO (PERMITIO — guardo un path de tres segmentos)',false);
+  EXCEPTION WHEN sqlstate 'PA032' THEN
+    PERFORM set_config('probe.p666','OK (PA032 path con tercer segmento)',false);
+  WHEN others THEN PERFORM set_config('probe.p666','FALLO (esperaba PA032, vino '||SQLSTATE||': '||SQLERRM||')',false);
+  END;
+EXCEPTION WHEN OTHERS THEN PERFORM set_config('probe.p666','FALLO ('||SQLSTATE||' '||SQLERRM||')',false); END $$;
+SELECT set_config('role','none', true);
+
+-- P667 — NULL BORRA la foto. Quien puede publicar su cara tiene que poder despublicarla sin
+-- depender de nadie: es el mismo derecho que enciende la tarjeta, no un caso de error.
+SELECT set_config('request.jwt.claims', json_build_object('sub', current_setting('probe.tj_a',true), 'role','authenticated')::text, true);
+SELECT set_config('role','authenticated', true);
+DO $$ DECLARE v_p text; BEGIN
+  IF coalesce(current_setting('probe.fo_ready',true),'')<>'1' THEN PERFORM set_config('probe.p667','N/A',false); RETURN; END IF;
+  -- control del control: tiene que haber foto antes, si no borrarla no mide nada (la puso P663).
+  PERFORM set_config('role','none', true);
+  SELECT foto_publica_path INTO v_p FROM public.asesores_perfil WHERE id = NULLIF(current_setting('probe.tj_a',true),'')::uuid;
+  PERFORM set_config('role','authenticated', true);
+  IF v_p IS NULL THEN
+    PERFORM set_config('probe.p667','FALLO (no habia foto que borrar: borrarla no mide nada)',false); RETURN; END IF;
+  BEGIN
+    PERFORM public.guardar_foto_publica_asesor(NULL);
+  EXCEPTION WHEN others THEN
+    PERFORM set_config('probe.p667','FALLO (no pudo borrar su foto: '||SQLSTATE||' '||SQLERRM||')',false); RETURN; END;
+  PERFORM set_config('role','none', true);
+  SELECT foto_publica_path INTO v_p FROM public.asesores_perfil WHERE id = NULLIF(current_setting('probe.tj_a',true),'')::uuid;
+  PERFORM set_config('probe.p667', CASE WHEN v_p IS NULL
+    THEN 'OK (NULL borro la foto; se verifico la FILA)'
+    ELSE 'ROJO (la RPC paso pero la columna quedo en '||v_p||')' END, false);
+EXCEPTION WHEN OTHERS THEN PERFORM set_config('probe.p667','FALLO ('||SQLSTATE||' '||SQLERRM||')',false); END $$;
+SELECT set_config('role','none', true);
+
+-- P668 — `anon` no ejecuta la RPC. EJERCITADO, no leido del catalogo: la leccion de la 284 es que
+-- tener el permiso y poder usarlo son dos preguntas distintas.
+SELECT set_config('request.jwt.claims', json_build_object('role','anon')::text, true);
+SELECT set_config('role','anon', true);
+DO $$ BEGIN
+  IF coalesce(current_setting('probe.fo_ready',true),'')<>'1' THEN PERFORM set_config('probe.p668','N/A',false); RETURN; END IF;
+  BEGIN
+    PERFORM public.guardar_foto_publica_asesor('x/y.png');
+    PERFORM set_config('probe.p668','ROJO (PERMITIO — anon ejecuto guardar_foto_publica_asesor)',false);
+  EXCEPTION WHEN insufficient_privilege THEN
+    PERFORM set_config('probe.p668','OK (42501 anon sin EXECUTE)',false);
+  WHEN others THEN PERFORM set_config('probe.p668','FALLO (esperaba 42501, vino '||SQLSTATE||': '||SQLERRM||')',false);
+  END;
+EXCEPTION WHEN OTHERS THEN PERFORM set_config('probe.p668','FALLO ('||SQLSTATE||' '||SQLERRM||')',false); END $$;
+SELECT set_config('role','none', true);
+
+-- P669 — EL BUCKET ES PRIVADO: `anon` NO ve el objeto. Es la probe que sostiene toda la decision de
+-- la 289 — con un bucket publico la URL del objeto responderia para siempre y apagar el
+-- consentimiento no la mataria.
+SELECT set_config('request.jwt.claims', json_build_object('role','anon')::text, true);
+SELECT set_config('role','anon', true);
+DO $$ DECLARE v_n int; BEGIN
+  IF coalesce(current_setting('probe.fo_ready',true),'')<>'1' THEN PERFORM set_config('probe.p669','N/A',false); RETURN; END IF;
+  BEGIN
+    SELECT count(*) INTO v_n FROM storage.objects
+     WHERE bucket_id='tarjetas-asesor' AND name = current_setting('probe.fo_obj',true);
+    PERFORM set_config('probe.p669', CASE WHEN COALESCE(v_n,0) = 0
+      THEN 'OK (anon no ve el objeto del bucket privado)'
+      ELSE 'ROJO (PERMITIO — anon leyo '||v_n||' objeto(s) de tarjetas-asesor)' END, false);
+  EXCEPTION WHEN insufficient_privilege THEN
+    PERFORM set_config('probe.p669','OK (42501 anon ni siquiera puede consultar storage.objects)',false);
+  WHEN others THEN PERFORM set_config('probe.p669','FALLO ('||SQLSTATE||': '||SQLERRM||')',false);
+  END;
+EXCEPTION WHEN OTHERS THEN PERFORM set_config('probe.p669','FALLO ('||SQLSTATE||' '||SQLERRM||')',false); END $$;
+SELECT set_config('role','none', true);
+
+-- P670 — otro ASESOR autenticado tampoco ve la foto ajena. El SELECT de authenticated existe SOLO
+-- para que cada uno vea la suya; si alcanzara al bucket entero seria el molde fotos-medicos otra vez.
+SELECT set_config('request.jwt.claims', json_build_object('sub', current_setting('probe.co_ase1',true), 'role','authenticated')::text, true);
+SELECT set_config('role','authenticated', true);
+DO $$ DECLARE v_n int; BEGIN
+  IF coalesce(current_setting('probe.fo_ready',true),'')<>'1' THEN PERFORM set_config('probe.p670','N/A',false); RETURN; END IF;
+  BEGIN
+    SELECT count(*) INTO v_n FROM storage.objects
+     WHERE bucket_id='tarjetas-asesor' AND name = current_setting('probe.fo_obj',true);
+    PERFORM set_config('probe.p670', CASE WHEN COALESCE(v_n,0) = 0
+      THEN 'OK (otro asesor no ve la foto ajena)'
+      ELSE 'ROJO (PERMITIO — un asesor leyo la foto de otro)' END, false);
+  EXCEPTION WHEN insufficient_privilege THEN
+    PERFORM set_config('probe.p670','OK (42501)',false);
+  WHEN others THEN PERFORM set_config('probe.p670','FALLO ('||SQLSTATE||': '||SQLERRM||')',false);
+  END;
+EXCEPTION WHEN OTHERS THEN PERFORM set_config('probe.p670','FALLO ('||SQLSTATE||' '||SQLERRM||')',false); END $$;
+SELECT set_config('role','none', true);
+
+-- P671 — CONTROL POSITIVO de P669/P670: el DUENO SI ve su objeto. Sin esta, los dos ceros de arriba
+-- los daria igual un bucket inaccesible para todos, o una fila que nunca se llego a insertar.
+SELECT set_config('request.jwt.claims', json_build_object('sub', current_setting('probe.tj_a',true), 'role','authenticated')::text, true);
+SELECT set_config('role','authenticated', true);
+DO $$ DECLARE v_n int; BEGIN
+  IF coalesce(current_setting('probe.fo_ready',true),'')<>'1' THEN PERFORM set_config('probe.p671','N/A',false); RETURN; END IF;
+  BEGIN
+    SELECT count(*) INTO v_n FROM storage.objects
+     WHERE bucket_id='tarjetas-asesor' AND name = current_setting('probe.fo_obj',true);
+    PERFORM set_config('probe.p671', CASE WHEN COALESCE(v_n,0) = 1
+      THEN 'OK (el dueno SI ve su foto: P669/P670 miden algo)'
+      ELSE 'ROJO (el dueno no ve su propia foto: los ceros de P669/P670 no prueban nada)' END, false);
+  EXCEPTION WHEN others THEN
+    PERFORM set_config('probe.p671','FALLO ('||SQLSTATE||': '||SQLERRM||')',false);
+  END;
+EXCEPTION WHEN OTHERS THEN PERFORM set_config('probe.p671','FALLO ('||SQLSTATE||' '||SQLERRM||')',false); END $$;
 SELECT set_config('role','none', true);
 
 -- ===== Veredictos como result set =====
@@ -15752,6 +15997,17 @@ UNION ALL SELECT 'P658_tj_admin_pais_apaga',           current_setting('probe.p6
 UNION ALL SELECT 'P659_tj_admin_otro_pais_42501',      current_setting('probe.p659', true),   'OK (42501)'
 UNION ALL SELECT 'P660_tj_asesor_no_apaga_ajena',      current_setting('probe.p660', true),   'OK (42501)'
 UNION ALL SELECT 'P661_tj_rotar_invalida_el_viejo',    current_setting('probe.p661', true),   'OK (viejo deja de resolver)'
+UNION ALL SELECT 'P662_fo_sin_ficha_PA031',            current_setting('probe.p662', true),   'OK (PA031)'
+UNION ALL SELECT 'P663_fo_dueno_guarda_ok',            current_setting('probe.p663', true),   'OK (control positivo)'
+UNION ALL SELECT 'P664_fo_path_ajeno_PA032',           current_setting('probe.p664', true),   'OK (PA032)'
+UNION ALL SELECT 'P665_fo_path_sin_archivo_PA032',     current_setting('probe.p665', true),   'OK (PA032)'
+UNION ALL SELECT 'P666_fo_path_tres_segmentos_PA032',  current_setting('probe.p666', true),   'OK (PA032)'
+UNION ALL SELECT 'P667_fo_null_borra_la_foto',         current_setting('probe.p667', true),   'OK (borra)'
+UNION ALL SELECT 'P668_fo_anon_sin_execute',           current_setting('probe.p668', true),   'OK (42501)'
+UNION ALL SELECT 'P669_fo_bucket_privado_anon',        current_setting('probe.p669', true),   'OK (anon no ve)'
+UNION ALL SELECT 'P670_fo_bucket_privado_otro_asesor', current_setting('probe.p670', true),   'OK (no ve ajena)'
+UNION ALL SELECT 'P671_fo_dueno_si_ve_control_pos',    current_setting('probe.p671', true),   'OK (control positivo)'
+UNION ALL SELECT 'FX20_fo_fixture',                    current_setting('probe.fo_fx', true),  'OK (fixture)'
 UNION ALL SELECT 'P631_CENSO_anon_perfiles',           current_setting('probe.p631', true), 'OK (anon en cero, los 7)'
 UNION ALL SELECT 'P632_authenticated_perfiles',        current_setting('probe.p632', true), 'OK (4 DML si, 3 no)'
 UNION ALL SELECT 'P633_CONTROL_lee_propio_perfil',     current_setting('probe.p633', true), 'OK (1 fila, antes y despues)'
@@ -15955,7 +16211,9 @@ UNION ALL SELECT 'P000_CENTINELA_veredictos_no_nulos',
        'probe.sv_fx', 'probe.p644', 'probe.p645', 'probe.p646', 'probe.p647', 'probe.p648',
        'probe.tj_fx', 'probe.p649', 'probe.p650', 'probe.p651', 'probe.p652', 'probe.p653',
        'probe.p654', 'probe.p655', 'probe.p656', 'probe.p657', 'probe.p658', 'probe.p659',
-       'probe.p660', 'probe.p661'
+       'probe.p660', 'probe.p661',
+       'probe.fo_fx', 'probe.p662', 'probe.p663', 'probe.p664', 'probe.p665', 'probe.p666',
+       'probe.p667', 'probe.p668', 'probe.p669', 'probe.p670', 'probe.p671'
              ]) AS n) s),
   'OK (todos los veredictos publicados)';
 

@@ -97,7 +97,14 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       },
     });
 
-    const body = await r.text();
+    // BYTES CRUDOS, NUNCA TEXTO. `await r.text()` decodifica como UTF-8, y una imagen no es UTF-8:
+    // cada secuencia inválida se reemplaza por U+FFFD y al re-serializar sale un archivo distinto
+    // del que mandó la edge. No falla ni avisa — entrega un JPEG roto. Con arrayBuffer + Buffer los
+    // bytes pasan tal cual.
+    // Es UN SOLO camino para todo, sin ramificar por tipo: el HTML y la vCard viajan igual de bien
+    // como bytes, y un `if (esImagen)` sería una segunda decisión sobre qué se está sirviendo, que
+    // es justo lo que este proxy no hace (el tipo lo dice la edge, ver más abajo).
+    const body = Buffer.from(await r.arrayBuffer());
 
     // El tipo lo DICE LA EDGE. Si el header no viene, es que allá quedó desplegada una versión
     // vieja: se registra y se cae al `Content-Type` que haya mandado el gateway. Preferible a
