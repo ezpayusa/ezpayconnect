@@ -8,8 +8,9 @@ Verificado contra la base viva: **los 15 objetos de las migraciones 279–283 es
 archivos están trackeados en git. Cero drift.**
 
 > **Actualización 7-sep.** Este informe nació el 6-sep y se fue extendiendo con el trabajo del 7.
-> Cerrados desde entonces: **#3** (migs 285), **#4** (migs 286/287 + pantalla) y **#5** (migs
-> 288/289 + edge + proxy + dos pantallas). El backlog vivo empieza en el **punto 6**.
+> Cerrados desde entonces: **#3** (mig 285), **#4** (migs 286/287 + pantalla), **#5** (migs 288/289 +
+> edge + proxy + dos pantallas) y **#6** (país DEMO sembrado). El backlog vivo empieza en el
+> **punto 7**.
 
 ---
 
@@ -271,10 +272,74 @@ copiado desde `npm run dev` no resuelve. Es consecuencia deliberada de armarlo c
 porque parecería que anduvo—, pero **la pantalla podría decirlo** en vez de dejar que se descubra
 copiando. No es un bug; es una advertencia que falta.
 
-### 6. Seed DEMO (D9/D10)
+### 6. ~~Seed DEMO (D9/D10)~~ — **CERRADO 7-sep** (`scripts/seed-demo.mjs`, aplicado)
 
-País DEMO propio y cuentas `*.demo` creadas por la vía canónica (`crear-empleado`), no sembradas a
-mano.
+País **ZZ · "DEMO - No operativo"** (`fb3fc165-5be8-41f2-8d67-c60a6de7ec88`), creado por Oscar desde
+`/admin-ezpay/paises`, y sembrado por `scripts/seed-demo.mjs`.
+
+**El gate, que es lo que hace seguro correr esto contra producción:**
+- El país se resuelve **por CÓDIGO**, nunca por un uuid pegado a mano — un dígito cambiado puede ser
+  Guatemala, y el error no se vería hasta tener nueve prospectos falsos en un país real.
+- **Aborta si el nombre no contiene "DEMO"**. Probado contra la base viva, no afirmado:
+  `ZZ → SIGUE` · `GT "Guatemala" → ABORTA` · `MX → ABORTA` · `AR → ABORTA` · `XX (inexistente) → ABORTA`.
+- **DRY-RUN por defecto**; escribe sólo con `--ejecutar-en-produccion`.
+- **Idempotente**: cuentas por email, fichas por asesor, prospectos por nombre.
+- Credenciales **sólo por variables de entorno**. Del `.env.local` se leen únicamente la URL y la
+  anon key, que son públicas por diseño; las tres del seed no salen de ningún archivo, a propósito.
+
+**Las tres cuentas van a `@demo.invalid`** — TLD reservado (RFC 2606) que no resuelve. Con un dominio
+productivo, cada notificación de visita saldría hacia `ezpayconnect.com`: ruido en un buzón real y
+rebotes contra la reputación de envío del dominio que sí se usa con clientes. Verificado antes de
+correr que Supabase Auth lo acepta (usuario descartable creado y borrado), que `crear-empleado` no
+valida el dominio y que `perfiles` no tiene CHECK sobre `email`. **Nota práctica: esas cuentas no
+pueden usar "olvidé mi contraseña"**, porque no reciben correo.
+
+**Qué siembra cada fase**, todo por el camino canónico —`crear-empleado` y las RPCs del módulo, ni
+un INSERT directo—: F1 tres cuentas (1 supervisora + 2 asesores) · F2 sus tres fichas y el vínculo
+de supervisión · F3 nueve prospectos con coordenadas, repartidos entre los dos asesores · F4 la
+jornada de cada asesor, con visitas, check-in, checkout e informes · F5 el pipeline.
+**La fase 4 se autentica como CADA asesor con su propia credencial**, porque
+`checkin_visita_comercial` exige `v.asesor_id = auth.uid()`: sembrarla de otro modo sería imposible
+o falso.
+
+**Los dos tipos de check-in están sembrados a propósito**: uno dentro del radio (150 m para ZZ, que
+no tiene fila en `config_visitas_pais` y cae en los defaults) que queda `verificado = true`, y uno a
+~1.1 km que queda en `false` con el motivo que arma la RPC. Se ven distinto en la UI y sembrar sólo
+el caso feliz escondería la mitad del producto — justo la mitad que el supervisor necesita mirar.
+Una jornada queda **abierta** y la otra **cerrada**, por lo mismo.
+
+#### El límite que descubrimos y que va a volver a aparecer
+
+**El camino canónico NO PUEDE PRODUCIR HISTORIA.** Las reglas que lo hacen confiable son las mismas
+que lo impiden: `planificar_visita` rechaza fechas pasadas (PA026), `abrir_jornada` y
+`cerrar_jornada` trabajan sobre `CURRENT_DATE`, y check-in/checkout escriben `now()`. **El seed
+siembra el día de hoy y nada más.** Un tablero con tendencias, un "visitas del mes pasado" o
+cualquier reporte con serie temporal no se puede armar con este script.
+
+Si algún día hace falta historial, **es un frente aparte con su propia decisión** —sembrar por
+INSERT directo saltando las reglas, o agregar un parámetro de fecha a las RPCs con su propio gate—,
+no un ajuste del script. Las dos opciones tienen costo y ninguna es obvia.
+
+#### El bug del `undefined`, y la lección de método
+
+La primera corrida creó las tres cuentas y murió en la fase 2 con `PGRST202` sobre
+`guardar_asesor_perfil`. El diagnóstico obvio —firma mal escrita— era **falso**: el censo de las 11
+llamadas del script contra `pg_get_function_arguments` vivo dio **todas coinciden**.
+
+La causa era un **valor**. `crear-empleado` devuelve el id en `data.id` y el script leía
+`j.user_id ?? j.id ?? j.user?.id`, así que quedaba `undefined` — y **`JSON.stringify` borra las
+claves con valor `undefined`**: la clave no viaja como `null`, **desaparece del cuerpo**. PostgREST
+recibió 9 parámetros, no encontró ninguna función con esa firma y contestó *"no existe la función"*,
+que apunta al lado equivocado del problema.
+
+Dos cosas quedaron de esto:
+- **Un guard en `rpc()`** que rechaza cualquier argumento `undefined` antes de llamar y nombra la
+  clave culpable. Está en el único lugar por donde pasan las once llamadas, así que cubre la clase
+  entera y no este caso. Deja pasar `null`, que sí es un valor.
+- **Un dry-run que no toca el camino real no es una verificación.** El dry-run pasaba ids
+  placeholder, así que la llamada que falló nunca se ejercitó. El censo de firmas contra la
+  definición viva es lo que cierra ese hueco sin escribir — aunque en este caso concreto habría dado
+  verde igual, porque el problema no estaba en la firma.
 
 ### 7. Limpieza de datos QA en prod
 
@@ -305,6 +370,33 @@ mano.
   3. los **datos de contacto inventados** cargados por SQL en esa ficha para que la tarjeta se viera
      completa: cargo `Asesor Comercial Senior`, territorio `Zona 10 y Zona 14, Ciudad de Guatemala`,
      teléfono `2378-4500`, celular `+502 5512-3456`.
+
+#### Inventario DEMO (país ZZ) — medido 7-sep tras el seed
+
+| qué | cuántas |
+|---|---|
+| cuentas en `auth.users` + `perfiles` | **3** (`@demo.invalid`) |
+| `asesores_perfil` | **3** |
+| `prospectos` | **9** (pipeline: 1 nuevo, 2 contactado, 1 demo, 2 negociación, 2 ganado, 1 perdido) |
+| `jornadas_comerciales` | **2** (`ZZ-ASE-01` abierta, `ZZ-ASE-02` cerrada) |
+| `visitas_comerciales` | **7** — 3 realizadas hoy + 4 planificadas a futuro |
+| `reportes_visita` | **3** |
+| `planes_configuracion` | **23** (los sembró la pantalla de países) |
+| `planes_publicidad_config` | **3** (los sembró el trigger `auto_configurar_planes_publicidad`) |
+
+**BORRAR ESTO NO ES UN `DELETE`.** Medido: `asesores_perfil.id → perfiles` es **ON DELETE RESTRICT**,
+y también lo son `prospectos.asesor_id`, `prospectos.creado_por`, `visitas_comerciales.asesor_id`,
+`visitas_comerciales.planificada_por`, `jornadas_comerciales.asesor_id`,
+`reportes_visita.creado_por`, `visita_adjuntos.subido_por`, `material_comercial.subido_por` y
+`asesores_perfil.supervisor_id`. O sea que borrar un perfil comercial exige **vaciar antes todo lo
+que cuelga de él, en orden**: informes → visitas → jornadas → prospectos → ficha → perfil.
+Y las **cuentas de Auth se borran aparte**: `auth.users` no se toca borrando `perfiles`, hace falta
+`auth.admin.deleteUser` con la clave de servicio. Un borrado a medias deja cuentas que pueden
+iniciar sesión sin perfil.
+
+Antes de nada, **desasignar el supervisor** de los dos asesores: `asesores_perfil.supervisor_id`
+también es RESTRICT y bloquea el borrado de la supervisora.
+
 - El inventario completo de cuentas y basura borrable está en la memoria de proyecto, no en el repo.
 
 ### 8. Higiene
@@ -317,6 +409,11 @@ mano.
   typechequea al construir funciones. Las tres se verificaron a mano con una invocación suelta de
   `tsc` y salieron limpias, pero eso no es un gate: hay que meter `api` en un tsconfig (probablemente
   `tsconfig.node.json`, que ya tiene `types: ["node"]`) y ver qué baseline aparece antes de exigir 0.
+- **`admin.qa@ezpayconnect.com` es un `super_admin` REAL sobre producción con credencial de estilo
+  QA.** No es una cuenta de prueba en un entorno de prueba: no hay otro entorno. Tiene el rol más
+  alto del sistema —crea empleados con cualquier rol, ve todos los países, todos los perfiles— y su
+  credencial se maneja como la de una cuenta descartable. Es la cuenta con la que se corrió el seed.
+  Decidir si se le rota la clave, se le pone segundo factor o se la reemplaza por una nominal.
 - **El catálogo `planes_base` tiene nombres de CLIENTES CONCRETOS, y se replica a cada país nuevo.**
   Medido al crear el país DEMO (7-sep): la pantalla de países sembró 23 filas en
   `planes_configuracion`, una por plan base, y entre ellas vinieron **`Dr. Oscar Gutierrez`** (tipo
