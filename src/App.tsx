@@ -116,6 +116,7 @@ const ComercialEquipoPage = lazy(() => import('@/comercial/pages/EquipoPage'))
 const ComercialEquipoAsesorPage = lazy(() => import('@/comercial/pages/EquipoAsesorPage'))
 const ComercialMaterialPage = lazy(() => import('@/comercial/pages/MaterialPage'))
 const MaterialPaisPage = lazy(() => import('@/pages/admin-ezpay/MaterialPaisPage'))
+const AsesoresPaisPage = lazy(() => import('@/pages/admin-ezpay/AsesoresPaisPage'))
 const ProspectosPaisPage = lazy(() => import('@/pages/admin-ezpay/ProspectosPaisPage'))
 const SinPanelPage = lazy(() => import('@/pages/SinPanelPage'))
 const VisitadorAgendarPage = lazy(() => import('@/proveedor/pages/visitador/VisitadorAgendarPage'))
@@ -356,6 +357,7 @@ function App() {
           <Route path="pais/:paisId/empresas-proveedoras" element={<EmpresasProveedorasPage />} />
           <Route path="pais/:paisId/prospectos" element={<ProspectosPaisPage />} />
           <Route path="pais/:paisId/material" element={<MaterialPaisPage />} />
+          <Route path="pais/:paisId/asesores" element={<AsesoresPaisPage />} />
           <Route path="usuarios" element={<UsuariosAdminPage />} />
           <Route path="asignacion-roles" element={<AsignacionRolesPage />} />
           <Route path="planes-todos" element={<PlanesTodosPage />} />

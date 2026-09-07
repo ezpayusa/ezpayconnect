@@ -177,6 +177,7 @@ const LECTURAS: [string, () => Promise<unknown>][] = [
   ['listarResultados', () => api.listarResultados()],
   ['visitasProximas', () => api.visitasProximas('2026-09-06')],
   ['visitasDelProspecto', () => api.visitasDelProspecto('pros-1')],
+  ['listarFichasDePais', () => api.listarFichasDePais('gt')],
 ]
 
 describe('ninguna consulta del modulo comercial nombra `perfiles`', () => {
@@ -328,5 +329,67 @@ describe('jornadaDeHoy filtra por asesor: el supervisor ve varias y quiere UNA',
     const filtros = consultas[0].ops.filter(o => /^(eq|gt|gte|lt|lte|in|is)\(/.test(o)).join(' ')
     expect(filtros).not.toContain('asesor_id')
     expect(filtros).toBe('eq("fecha","2026-09-06")')
+  })
+})
+
+// ############################################################################################
+// CENSO DE SIMETRÍA: lo que el formulario ENVÍA y lo que el select PRECARGA son el mismo conjunto
+// ############################################################################################
+// `guardar_asesor_perfil` hace UPSERT, y su `ON CONFLICT DO UPDATE` pisa las nueve columnas con lo
+// que venga en los parámetros. Así que TODO campo que el formulario mande pero el select no
+// precargue se guarda VACÍO al editar: el usuario abre una ficha, cambia el teléfono, guarda, y
+// pierde en silencio lo que no estaba en pantalla. Pasó con `bio`.
+//
+// Es el molde del censo invertido de la mig 281 traído al front: no verifica un campo puntual sino
+// la IGUALDAD de los dos conjuntos, así que agregar un campo al formulario sin agregarlo al select
+// —o al revés— se pone rojo solo, sin que nadie tenga que acordarse de este test.
+//
+// Los dos conjuntos salen de EJERCITAR las funciones, no de leer el fuente: se compara lo que de
+// verdad viaja.
+//
+// FUERA DEL CENSO A PROPÓSITO:
+//   - `p_asesor_id` / `p_pais_id` y `id` / `pais_id` / `supervisor_id`: identidad, no campos del
+//     formulario. El país es fijo de la ruta y el supervisor se cambia por `asignar_supervisor`.
+//   - `foto_path` y `foto_publica_path`: NO son parámetros de la RPC y el UPSERT no las lista, así
+//     que editar no las toca. NO agregarlas "por simetría" — hacerlo rompería este test sin que
+//     haya nada roto.
+const IDENT_PARAM = new Set(['p_asesor_id', 'p_pais_id'])
+const IDENT_COL = new Set(['id', 'pais_id', 'supervisor_id'])
+
+describe('ficha de asesor: el formulario y el select cubren las MISMAS columnas', () => {
+  const conjuntos = async () => {
+    await api.guardarAsesorPerfil({ asesorId: 'a', codigoAsesor: 'c', paisId: 'p' })
+    await api.listarFichasDePais('p')
+    const envia = Object.keys(rpcs[0].args)
+      .filter(k => !IDENT_PARAM.has(k)).map(k => k.replace(/^p_/, '')).sort()
+    const sel = consultas[0].ops.find(o => o.startsWith('select(')) ?? ''
+    const trae = (sel.match(/"([^"]+)"/)?.[1] ?? '').split(',')
+      .filter(c => !IDENT_COL.has(c)).sort()
+    return { envia, trae }
+  }
+
+  it('el conjunto que envía guardarAsesorPerfil es exactamente el que trae listarFichasDePais', async () => {
+    const { envia, trae } = await conjuntos()
+    expect(envia).toEqual(trae)
+  })
+
+  it('ningún campo del formulario se pierde al editar (envía pero no precarga)', async () => {
+    const { envia, trae } = await conjuntos()
+    const perdidos = envia.filter(c => !trae.includes(c))
+    expect(perdidos, 'se guardarían vacíos al editar: ' + perdidos.join(', ')).toEqual([])
+  })
+
+  it('el select no arrastra columnas que el formulario no maneja', async () => {
+    const { envia, trae } = await conjuntos()
+    const sobran = trae.filter(c => !envia.includes(c))
+    expect(sobran, 'columnas de más en el select: ' + sobran.join(', ')).toEqual([])
+  })
+
+  it('las dos de foto quedan fuera de los dos lados: no son parámetros de la RPC', async () => {
+    const { envia, trae } = await conjuntos()
+    for (const c of ['foto_path', 'foto_publica_path']) {
+      expect(envia).not.toContain(c)
+      expect(trae).not.toContain(c)
+    }
   })
 })

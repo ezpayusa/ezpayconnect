@@ -449,6 +449,15 @@ export default function PaisDashboardPage() {
             <Pill className="w-4 h-4 mr-2" />
             Solicitudes
           </Button>
+          {/* Fichas de asesor (D12). Nace CON link: prospectos y material siguen sin entrada de
+              navegación y eso es el pendiente #8, no se arregla acá. */}
+          <Button
+            variant="outline"
+            onClick={() => navigate(`/admin-ezpay/pais/${paisId}/asesores`)}
+          >
+            <MapPin className="w-4 h-4 mr-2" />
+            Fichas de asesor
+          </Button>
         </CardContent>
       </Card>
     </div>

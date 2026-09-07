@@ -266,6 +266,108 @@ export async function jornadasDelDia(fecha: string) {
   return supabase.from('jornadas_comerciales').select(COLS_JORNADA).eq('fecha', fecha)
 }
 
+/**
+ * ============================================================================================
+ * Fichas de asesor — el panel de país (D12, migs 286/287)
+ * ============================================================================================
+ * Las dos RPCs de lectura NIEGAN DEVOLVIENDO VACÍO, no con 42501: son `STABLE` y su gate vive en
+ * un `WHERE ... COALESCE(puede_admin_pais(...), false)`. Así que una lista vacía puede significar
+ * "no hay nadie" o "no sos admin de este país", y la pantalla no puede distinguirlas — por eso el
+ * texto del vacío explica el caso normal en vez de sugerir un error.
+ */
+
+/** Perfiles con rol comercial y SIN ficha: a quién le falta ficha en este país. */
+export async function perfilesSinFicha(paisId: string) {
+  return supabase.rpc('comercial_perfiles_sin_ficha', { p_pais_id: paisId })
+}
+
+/**
+ * Candidatos válidos para `asignar_supervisor`: rol supervisor_comercial, ficha activa, mismo país.
+ * OJO: la RPC cubre PA001/PA002/PA003 pero **no puede anticipar PA004** (máximo dos niveles), que
+ * depende de a quién supervisa ya el candidato y de cuál sea el asesor que se está editando. Un id
+ * de esta lista puede ser rechazado igual; el guard de la 264 es la autoridad.
+ */
+export async function supervisoresDelPais(paisId: string) {
+  return supabase.rpc('comercial_supervisores_del_pais', { p_pais_id: paisId })
+}
+
+// TIENE QUE TRAER TODA columna que el formulario le manda a `guardar_asesor_perfil`. La RPC hace
+// UPSERT y su ON CONFLICT DO UPDATE pisa las nueve columnas con lo que venga en los parámetros: un
+// campo que el form envía pero el select no precarga se guarda VACÍO al editar. Pasó con `bio`.
+// El censo de simetría en api.test.ts lo vigila; agregar un campo al form sin agregarlo acá se
+// pone rojo solo.
+// `foto_path` y `foto_publica_path` quedan fuera A PROPÓSITO: no son parámetros de la RPC y el
+// UPSERT no las lista, así que editar no las toca. No agregarlas "por simetría".
+const COLS_FICHA =
+  'id,codigo_asesor,pais_id,supervisor_id,cargo,territorio,telefono,celular,fecha_ingreso,bio,activo'
+
+/**
+ * Fichas del país, **incluidas las inactivas**. El `.eq('pais_id', paisId)` es SELECTOR DE VISTA
+ * —esta ruta está parametrizada por :paisId y un super_admin ve varios países—, no un permiso:
+ * sólo achica lo que la policy `asesores_perfil_select` ya permitió.
+ *
+ * Y NO se filtra por `activo`: el admin necesita ver las desactivadas para poder reactivarlas,
+ * igual que el material de la 278. Filtrar acá dejaría fichas inalcanzables desde la única
+ * pantalla que puede tocarlas.
+ *
+ * Las dos columnas de foto quedan fuera del select: esta pantalla no las pinta y la RPC no las
+ * escribe. `bio` SÍ va — el formulario la manda, así que el select tiene que precargarla.
+ */
+export async function listarFichasDePais(paisId: string) {
+  return supabase.from('asesores_perfil').select(COLS_FICHA)
+    .eq('pais_id', paisId).order('codigo_asesor')
+}
+
+export type FichaAsesor = {
+  id: string
+  codigo_asesor: string
+  pais_id: string
+  supervisor_id: string | null
+  cargo: string | null
+  territorio: string | null
+  telefono: string | null
+  celular: string | null
+  fecha_ingreso: string | null
+  bio: string | null
+  activo: boolean
+}
+
+export type PerfilSinFicha = { id: string; nombre_completo: string | null; rol: string }
+export type SupervisorCandidato = { id: string; nombre_completo: string | null }
+
+/**
+ * Alta y edición de la ficha, en la misma RPC (hace UPSERT por id).
+ * Los diez parámetros viajan SIEMPRE, en null cuando están vacíos: si alguno se omitiera,
+ * PostgREST resolvería por el DEFAULT hasta que alguien agregue otra sobrecarga y la resolución se
+ * vuelva ambigua.
+ */
+export async function guardarAsesorPerfil(p: {
+  asesorId: string; codigoAsesor: string; paisId: string
+  cargo?: string | null; territorio?: string | null; telefono?: string | null
+  celular?: string | null; fechaIngreso?: string | null; bio?: string | null; activo?: boolean
+}) {
+  return supabase.rpc('guardar_asesor_perfil', {
+    p_asesor_id: p.asesorId,
+    p_codigo_asesor: p.codigoAsesor,
+    p_pais_id: p.paisId,
+    p_cargo: p.cargo ?? null,
+    p_territorio: p.territorio ?? null,
+    p_telefono: p.telefono ?? null,
+    p_celular: p.celular ?? null,
+    p_fecha_ingreso: p.fechaIngreso ?? null,
+    p_bio: p.bio ?? null,
+    p_activo: p.activo ?? true,
+  })
+}
+
+/** `supervisorId` en null DESASIGNA, y es válido: un asesor sin supervisor es una regla fija. */
+export async function asignarSupervisor(asesorId: string, supervisorId: string | null) {
+  return supabase.rpc('asignar_supervisor', {
+    p_asesor_id: asesorId,
+    p_supervisor_id: supervisorId,
+  })
+}
+
 /** Las fichas del equipo visible. La policy de asesores_perfil ya la acota a la cartera. */
 export async function asesoresVisibles() {
   return supabase.from('asesores_perfil')

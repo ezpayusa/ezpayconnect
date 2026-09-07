@@ -1,0 +1,169 @@
+import { describe, it, expect, vi, beforeEach } from 'vitest'
+import { render, screen, fireEvent, waitFor } from '@testing-library/react'
+import { MemoryRouter, Routes, Route } from 'react-router-dom'
+
+// Cuatro cosas que esta pantalla tiene que hacer bien y que son fáciles de romper sin notarlo:
+//  1. Un vacío EXPLICADO, no mudo: la lista de pendientes vacía se lee como error de carga si no
+//     dice por qué está vacía. Las RPCs niegan devolviendo [] y no 42501, así que la pantalla no
+//     puede distinguir "no hay nadie" de "no sos admin": el texto cubre el caso normal.
+//  2. Las fichas INACTIVAS se listan. Filtrarlas las dejaría inalcanzables desde la única pantalla
+//     que puede reactivarlas.
+//  3. El 23505 lleva el contexto de ESTA pantalla (código repetido), no el genérico del mapa.
+//  4. PA004 se ve PEGADO A LA FILA. Llega como toast desde el mapa y puede aparecer con un
+//     candidato que SÍ está en el selector —la RPC de candidatos no anticipa la regla de dos
+//     niveles—, así que un toast que se va dejaría al usuario sin saber qué pasó.
+const rpcs: { nombre: string; args: Record<string, unknown> }[] = []
+let errorGuardar: unknown = null
+let errorAsignar: unknown = null
+let pendientes: unknown[] = []
+let fichas: unknown[] = []
+
+vi.mock('@/comercial/lib/api', () => ({
+  perfilesSinFicha: async () => ({ data: pendientes, error: null }),
+  listarFichasDePais: async () => ({ data: fichas, error: null }),
+  supervisoresDelPais: async () => ({
+    data: [{ id: 'sup-1', nombre_completo: 'Supervisor Uno' }], error: null,
+  }),
+  asesoresConNombre: async () => ({
+    data: [
+      { id: 'ase-1', codigo_asesor: 'GT-ASE-01', nombre_completo: 'Asesor Uno', activo: true, supervisor_id: null },
+      { id: 'ase-off', codigo_asesor: 'GT-ASE-09', nombre_completo: 'Asesor Inactivo', activo: false, supervisor_id: null },
+      { id: 'sup-1', codigo_asesor: 'GT-SUP-01', nombre_completo: 'Supervisor Uno', activo: true, supervisor_id: null },
+    ],
+    error: null,
+  }),
+  mapaAsesores: (f: { id: string }[] | null) => new Map((f ?? []).map(a => [a.id, a])),
+  nombreAsesor: (id: string | null, m: Map<string, { nombre_completo: string | null }>) =>
+    (id ? m.get(id)?.nombre_completo ?? 'asesor no visible' : 'sin asesor'),
+  guardarAsesorPerfil: async (args: Record<string, unknown>) => {
+    rpcs.push({ nombre: 'guardarAsesorPerfil', args }); return { data: null, error: errorGuardar }
+  },
+  asignarSupervisor: async (asesorId: string, supervisorId: string | null) => {
+    rpcs.push({ nombre: 'asignarSupervisor', args: { asesorId, supervisorId } })
+    return { data: null, error: errorAsignar }
+  },
+}))
+vi.mock('@/comercial/lib/reportarError', () => ({
+  reportarError: (e: { code?: string }, o?: { setInline?: (v: unknown) => void }) => {
+    // Doble mínimo del despacho real: inline va al setter, toast no.
+    const inline = e?.code === '23505'
+    if (inline) o?.setInline?.({ campo: 'nombre', mensaje: 'Ya existe un registro con esos datos.' })
+    return { code: e?.code ?? null, mensaje: e?.code === 'PA004'
+      ? 'PA004: el supervisor propuesto ya tiene supervisor (máximo dos niveles)'
+      : 'error', destino: inline ? 'inline' : 'toast', reportar: false }
+  },
+}))
+vi.mock('sonner', () => ({ toast: { success: vi.fn(), error: vi.fn(), warning: vi.fn() } }))
+
+const { default: AsesoresPaisPage } = await import('./AsesoresPaisPage')
+
+const pintar = () => render(
+  <MemoryRouter initialEntries={['/admin-ezpay/pais/gt/asesores']}>
+    <Routes><Route path="/admin-ezpay/pais/:paisId/asesores" element={<AsesoresPaisPage />} /></Routes>
+  </MemoryRouter>,
+)
+
+const FICHA_ACTIVA = {
+  id: 'ase-1', codigo_asesor: 'GT-ASE-01', pais_id: 'gt', supervisor_id: null,
+  cargo: 'Ejecutivo', territorio: 'Zona 1', telefono: null, celular: null,
+  fecha_ingreso: null, activo: true,
+}
+const FICHA_INACTIVA = {
+  id: 'ase-off', codigo_asesor: 'GT-ASE-09', pais_id: 'gt', supervisor_id: null,
+  cargo: null, territorio: null, telefono: null, celular: null, fecha_ingreso: null, activo: false,
+}
+
+beforeEach(() => {
+  rpcs.length = 0; errorGuardar = null; errorAsignar = null
+  pendientes = []; fichas = [FICHA_ACTIVA]
+})
+
+describe('AsesoresPaisPage — los vacíos se explican', () => {
+  it('sin perfiles pendientes, dice POR QUÉ está vacío y de dónde salen las cuentas', async () => {
+    pintar()
+    await waitFor(() => {
+      expect(screen.getByText(/No hay perfiles comerciales pendientes de ficha/)).toBeInTheDocument()
+    })
+    expect(screen.getByText(/Asignación de Roles/)).toBeInTheDocument()
+  })
+})
+
+describe('AsesoresPaisPage — las fichas inactivas se ven', () => {
+  it('lista la ficha inactiva y la marca como tal: si no, nadie podría reactivarla', async () => {
+    fichas = [FICHA_ACTIVA, FICHA_INACTIVA]
+    pintar()
+    await waitFor(() => expect(screen.getByTestId('editar-ase-off')).toBeInTheDocument())
+    expect(screen.getByText('inactiva')).toBeInTheDocument()
+    expect(screen.getByText('activa')).toBeInTheDocument()
+  })
+})
+
+describe('AsesoresPaisPage — alta de ficha', () => {
+  it('el país viaja SIEMPRE el de la ruta, no un campo del formulario', async () => {
+    pendientes = [{ id: 'p-nuevo', nombre_completo: 'Perfil Nuevo', rol: 'asesor_comercial' }]
+    pintar()
+    fireEvent.click(await screen.findByTestId('crear-ficha-p-nuevo'))
+    fireEvent.change(document.getElementById('codigo_asesor')!, { target: { value: 'GT-ASE-77' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Guardar ficha nueva' }))
+    await waitFor(() => expect(rpcs).toHaveLength(1))
+    expect(rpcs[0].nombre).toBe('guardarAsesorPerfil')
+    expect(rpcs[0].args).toMatchObject({ asesorId: 'p-nuevo', paisId: 'gt', codigoAsesor: 'GT-ASE-77' })
+    // no hay control de país en la UI: nada puede mandar otro
+    expect(document.getElementById('pais_id')).toBeNull()
+  })
+
+  it('el 23505 dice CÓDIGO REPETIDO, no el genérico del mapa', async () => {
+    pendientes = [{ id: 'p-nuevo', nombre_completo: 'Perfil Nuevo', rol: 'asesor_comercial' }]
+    errorGuardar = { code: '23505', message: 'duplicate key value violates unique constraint "asesores_perfil_pais_codigo_uniq"' }
+    pintar()
+    fireEvent.click(await screen.findByTestId('crear-ficha-p-nuevo'))
+    fireEvent.change(document.getElementById('codigo_asesor')!, { target: { value: 'GT-ASE-01' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Guardar ficha nueva' }))
+    await waitFor(() => {
+      expect(screen.getByText('Ya hay otra ficha con ese código en este país. Elegí otro.')).toBeInTheDocument()
+    })
+    expect(screen.queryByText('Ya existe un registro con esos datos.')).not.toBeInTheDocument()
+  })
+})
+
+describe('AsesoresPaisPage — etiquetas', () => {
+  it('el botón que ABRE y el que GUARDA no se llaman igual', async () => {
+    pendientes = [{ id: 'p-nuevo', nombre_completo: 'Perfil Nuevo', rol: 'asesor_comercial' }]
+    pintar()
+    fireEvent.click(await screen.findByTestId('crear-ficha-p-nuevo'))
+    // con el formulario abierto, "Crear ficha" tiene que seguir siendo UNO solo
+    expect(screen.getAllByRole('button', { name: 'Crear ficha' })).toHaveLength(1)
+    expect(screen.getByRole('button', { name: 'Guardar ficha nueva' })).toBeInTheDocument()
+  })
+})
+
+describe('AsesoresPaisPage — supervisor', () => {
+  it('"— sin supervisor —" manda null: desasignar es válido', async () => {
+    fichas = [{ ...FICHA_ACTIVA, supervisor_id: 'sup-1' }]
+    pintar()
+    const sel = await screen.findByTestId('supervisor-ase-1')
+    fireEvent.change(sel, { target: { value: '' } })
+    await waitFor(() => expect(rpcs).toHaveLength(1))
+    expect(rpcs[0].nombre).toBe('asignarSupervisor')
+    expect(rpcs[0].args).toEqual({ asesorId: 'ase-1', supervisorId: null })
+  })
+
+  it('PA004 se muestra PEGADO A LA FILA, aunque el mapa lo mande a toast', async () => {
+    errorAsignar = { code: 'PA004', message: 'PA004: máximo dos niveles' }
+    pintar()
+    const sel = await screen.findByTestId('supervisor-ase-1')
+    fireEvent.change(sel, { target: { value: 'sup-1' } })
+    await waitFor(() => {
+      expect(screen.getByText(/máximo dos niveles/)).toBeInTheDocument()
+    })
+  })
+
+  it('un asesor no se ofrece como supervisor de sí mismo', async () => {
+    fichas = [{ ...FICHA_ACTIVA, id: 'sup-1', codigo_asesor: 'GT-SUP-01' }]
+    pintar()
+    const sel = await screen.findByTestId('supervisor-sup-1') as HTMLSelectElement
+    const valores = Array.from(sel.options).map(o => o.value)
+    expect(valores).not.toContain('sup-1')
+    expect(valores).toContain('')
+  })
+})
