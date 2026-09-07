@@ -6,7 +6,7 @@
 // sea React; (d) la vCard; (e) no-store, porque una tarjeta revocable no se cachea.
 import { assertEquals, assertStringIncludes, assertNotMatch } from 'https://deno.land/std@0.224.0/assert/mod.ts'
 import {
-  handle, esc, escVcard, soloDigitos, esInternacional, tokenDe, tipoPorExtension,
+  handle, esc, escVcard, soloDigitos, esInternacional, tokenDe, tipoPorExtension, iniciales,
   H_CONTENT_TYPE, H_HOST, H_PATH,
   type Deps, type Tarjeta,
 } from './index.ts'
@@ -84,6 +84,9 @@ Deno.test('la tarjeta muestra los dos teléfonos y los botones', async () => {
   assertStringIncludes(html, 'https://wa.me/50255550001')   // wa.me sólo dígitos
   assertStringIncludes(html, 'formato=vcard')
   assertStringIncludes(html, 'id="compartir" hidden')       // nace oculto: se muestra si hay share
+  // Las dos filas de datos, con su rótulo
+  assertStringIncludes(html, '<div class="et">Oficina</div>')
+  assertStringIncludes(html, '<div class="et">Celular</div>')
 })
 
 // ---------------------------------------------------------------- el criterio del '+'
@@ -93,16 +96,21 @@ Deno.test('la tarjeta muestra los dos teléfonos y los botones', async () => {
 Deno.test('celular CON + : aparece el boton de WhatsApp y el numero sale completo', async () => {
   const html = await (await handle(get(URL_T), deps(T_INTL))).text()
   assertStringIncludes(html, 'https://wa.me/50255550001')
-  assertStringIncludes(html, '>WhatsApp</a>')
+  // Se afirma por la CLASE del boton (b2 = WhatsApp en la maqueta) mas el texto visible: desde el
+  // traslado de la maqueta el <svg> del icono va delante, asi que `>WhatsApp</a>` ya no matchea.
+  assertStringIncludes(html, 'class="b b2"')
+  assertStringIncludes(html, ' WhatsApp</a>')
   assertStringIncludes(html, 'tel:50255550001')            // y el de llamar tambien
 })
 
 Deno.test('celular SIN + : NO hay boton de WhatsApp, pero SI el de llamar', async () => {
   const html = await (await handle(get(URL_T), deps(T_LOCAL))).text()
   assertEquals(html.includes('wa.me'), false)              // ni el link
-  assertEquals(html.includes('>WhatsApp</a>'), false)      // ni el boton
+  assertEquals(html.includes('class="b b2"'), false)       // ni el boton: NO existe, no deshabilitado
+  assertEquals(html.includes('WhatsApp'), false)           // ni la palabra en ningun lado
   assertStringIncludes(html, 'tel:55550001')               // llamar SI: marca bien desde el pais
-  assertStringIncludes(html, '>Llamar</a>')
+  assertStringIncludes(html, 'class="b b1"')
+  assertStringIncludes(html, ' Llamar</a>')
   assertStringIncludes(html, '5555-0001')                  // y el numero se sigue mostrando
 })
 
@@ -111,10 +119,12 @@ Deno.test('celular null: ni WhatsApp ni Llamar, y la tarjeta no se rompe', async
   assertEquals(r.status, 200)
   const html = await r.text()
   assertEquals(html.includes('wa.me'), false)
-  assertEquals(html.includes('>Llamar</a>'), false)
+  assertEquals(html.includes('class="b b1"'), false)       // sin celular no hay boton de Llamar
+  assertEquals(html.includes('<div class="et">Celular</div>'), false)  // ni la fila de datos
   assertStringIncludes(html, 'Ana Pérez')                  // la tarjeta sigue en pie
   assertStringIncludes(html, 'tel:22220001')               // el de oficina sigue estando
-  assertStringIncludes(html, '>Guardar contacto</a>')
+  assertStringIncludes(html, '<div class="et">Oficina</div>')
+  assertStringIncludes(html, ' Guardar contacto</a>')
 })
 
 Deno.test('esInternacional: solo el + cuenta, no la longitud', () => {
@@ -306,13 +316,87 @@ Deno.test('og:image y la <img> SÓLO si hay foto, y cuelgan del mismo token', as
   const con = await (await handle(get(URL_T), deps(T_CON_FOTO))).text()
   assertStringIncludes(con, 'og:image" content="https://med.ezpayconnect.com/t/abc123?formato=foto"')
   assertStringIncludes(con, 'twitter:card" content="summary_large_image"')
-  assertStringIncludes(con, '<img class="foto" src="https://med.ezpayconnect.com/t/abc123?formato=foto"')
+  assertStringIncludes(con, '<img class="av" src="https://med.ezpayconnect.com/t/abc123?formato=foto"')
 
   const sin = await (await handle(get(URL_T), deps(T_INTL))).text()
   // Un og:image que 404ea arruina la preview del link entero: sin foto, el tag no existe.
   assertEquals(sin.includes('og:image'), false)
-  assertEquals(sin.includes('class="foto"'), false)
+  assertEquals(sin.includes('<img'), false)                // NINGUNA imagen, no solo la del avatar
   assertStringIncludes(sin, 'twitter:card" content="summary"')
+})
+
+// ---------------------------------------------------------------- la maqueta (pieza 3b)
+// Lo que se mide es la AUSENCIA del elemento, no que la pagina no explote: un <p class="cargo">
+// vacio ocupa su margen igual y descuadra el encabezado, y un boton de WhatsApp roto es peor que
+// no tenerlo.
+Deno.test('SIN foto: placeholder con las INICIALES, no un hueco ni un <img> roto', async () => {
+  const html = await (await handle(get(URL_T), deps(T_INTL))).text()   // foto_publica_path null
+  assertEquals(html.includes('<img'), false)
+  // mismo circulo, misma posicion: la tarjeta con y sin foto miden lo mismo
+  assertStringIncludes(html, '<div class="av av-ph" aria-hidden="true">AP</div>')
+})
+
+Deno.test('CON foto: el <img> y NADA de placeholder', async () => {
+  const html = await (await handle(get(URL_T), deps(T_CON_FOTO))).text()
+  assertStringIncludes(html, '<img class="av"')
+  // El ELEMENTO, no la cadena: `.av-ph` vive en el <style> siempre, porque la hoja es estatica.
+  assertEquals(html.includes('class="av av-ph"'), false)
+})
+
+Deno.test('iniciales: primera de la primera palabra y primera de la ultima', () => {
+  assertEquals(iniciales('Ana Pérez'), 'AP')
+  assertEquals(iniciales('Ana María Pérez Solís'), 'AS')   // primera y ULTIMA, no las dos primeras
+  assertEquals(iniciales('Madonna'), 'M')                  // una sola palabra: una sola letra
+  assertEquals(iniciales('  Ana   Pérez  '), 'AP')         // espacios de mas
+  assertEquals(iniciales('ana pérez'), 'AP')               // siempre mayuscula
+  assertEquals(iniciales(null), '')
+  assertEquals(iniciales('   '), '')
+})
+
+Deno.test('SIN cargo: el <p class="cargo"> no se emite vacio', async () => {
+  const html = await (await handle(get(URL_T), deps({ ...T_INTL, cargo: null }))).text()
+  assertEquals(html.includes('class="cargo"'), false)
+  assertStringIncludes(html, 'class="terr"')               // el territorio sigue
+  assertStringIncludes(html, '<title>Ana Pérez</title>')   // y el titulo pierde el guion
+})
+
+Deno.test('SIN territorio: el <p class="terr"> no se emite vacio', async () => {
+  const html = await (await handle(get(URL_T), deps({ ...T_INTL, territorio: null }))).text()
+  assertEquals(html.includes('class="terr"'), false)
+  assertStringIncludes(html, 'class="cargo"')              // el cargo sigue
+  // y el og:description cae en el texto generico, no en "Territorio: null"
+  assertStringIncludes(html, 'og:description" content="Asesor comercial de EzPayConnect"')
+})
+
+Deno.test('sin cargo NI territorio: el encabezado queda solo con el nombre', async () => {
+  const html = await (await handle(get(URL_T), deps({ ...T_INTL, cargo: null, territorio: null }))).text()
+  assertEquals(html.includes('class="cargo"'), false)
+  assertEquals(html.includes('class="terr"'), false)
+  assertStringIncludes(html, '<h1 class="nom">Ana Pérez</h1>')
+})
+
+Deno.test('sin NINGUN telefono: el bloque de filas entero desaparece', async () => {
+  // Un .tels vacio dejaria un separador flotando sobre la nada.
+  const html = await (await handle(get(URL_T),
+    deps({ ...T_INTL, telefono: null, celular: null }))).text()
+  assertEquals(html.includes('class="tels"'), false)
+  assertEquals(html.includes('class="fila"'), false)
+  assertStringIncludes(html, ' Guardar contacto</a>')      // la vCard sigue: es lo unico que queda
+})
+
+Deno.test('la marca de la matriz aparece DOS veces: banda y pie, del mismo SVG', async () => {
+  const html = await (await handle(get(URL_T), deps(T_INTL))).text()
+  assertStringIncludes(html, 'class="marca"')              // banda, en blanco via filter
+  assertStringIncludes(html, 'class="lg"')                 // pie, a color
+  assertEquals(html.split('viewBox="0 0 1102 623"').length - 1, 2)
+  assertStringIncludes(html, 'La solución SaaS que<br>necesitas para tu empresa')
+})
+
+Deno.test('un cargo hostil no se escapa del HTML aunque ahora viva en la maqueta', async () => {
+  const html = await (await handle(get(URL_T),
+    deps({ ...T_INTL, cargo: '</p><script>alert(1)</script>' }))).text()
+  assertEquals(html.includes('<script>alert(1)</script>'), false)
+  assertStringIncludes(html, '&lt;/p&gt;&lt;script&gt;')
 })
 
 Deno.test('un host inyectado no se escapa del atributo del meta', async () => {
