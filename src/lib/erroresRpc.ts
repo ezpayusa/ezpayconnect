@@ -132,6 +132,17 @@ const MAPA: Record<string, Entrada> = {
   PA026: { texto: 'La fecha ya pasó. Elegí hoy o una fecha futura.', destino: 'inline', campo: 'fecha', reportar: false },
   PA027: { texto: 'Esta visita ya no está planificada (tiene check-in, se realizó o se canceló), o falta el motivo.',
            destino: 'inline', campo: 'visita', reportar: false },
+  // --- Guards de check-in / checkout (mig 285) ------------------------------------------------
+  // Las dos son de la misma familia que PA025: el usuario está mirando una ficha vieja y aprieta un
+  // botón que ya no corresponde. No son bugs nuestros —el estado cambió y su pantalla no se
+  // enteró—, así que `reportar: false`; y las dos piden recargar la visita, porque si no el botón
+  // sigue ahí invitando a reintentar lo mismo.
+  // Llevan texto propio y no el de la base: el de PA028 trae el estado crudo entre paréntesis
+  // ('cancelada', 'no_realizada'), que es vocabulario de la tabla y no del usuario.
+  PA028: { texto: 'Esta visita no está en estado planificada: no se le puede hacer check-in.',
+           destino: 'toast', recargar: 'visita', reportar: false },
+  PA029: { texto: 'Esta visita ya tiene un checkout registrado.',
+           destino: 'toast', recargar: 'visita', reportar: false },
 }
 
 const ES_PA = /^PA\d{3}$/

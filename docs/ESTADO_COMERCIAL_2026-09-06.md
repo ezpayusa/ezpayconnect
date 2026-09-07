@@ -123,19 +123,20 @@ envuelto entero en `COALESCE(..., false)`.
 
 | | |
 |---|---|
-| filas | **688** |
-| rojas | **14** — todas en la lista de deuda que el runner sostiene en codigo |
-| resto | 674 |
+| filas | **696** |
+| rojas | **13** — todas deuda AJENA; `P625` salió de la lista al cerrarse el punto 3 |
+| resto | 683 |
 | `b2_guard` | VERDE — `do_sin_handler` 156, `top_level_dml_ddl` 0, `cast_directo` 0 |
 | centinela P000 | OK (687 veredictos, ninguno vacío) |
 
 Probes nuevas del día, las 16 en verde: **P599–P601** (mig 281), **P602–P607** (mig 282),
 **P608–P614** (mig 283). Más **P615–P630** del cierre del 6-sep (las 4 RPCs que estaban sin
-cobertura). Próximo número libre: **P631**.
+cobertura), **P631–P636** (mig 284: privilegios sobre `perfiles`; P635/P636 ejercitan a `anon` contra
+tablas dependientes) y **P637–P638** (mig 285: PA028). Próximo número libre: **P639**.
 
-Las 14 rojas: las 13 de deuda ajena —P163, P209, P222, P411, P414, P472, P473, P476, Pbuz×2,
-Pqr×3— más **P625**, que es deuda PROPIA del módulo (doble checkout sin guard, punto 3 del
-backlog). Ya no se comparan a mano: `harness_run.py` tiene la lista `DEUDA` en código y falla si
+Las 13 rojas son **todas deuda ajena** —P163, P209, P222, P411, P414, P472, P473, P476, Pbuz×2,
+Pqr×3—. El módulo comercial ya no aporta ninguna: **P625** era la única propia (doble checkout sin
+guard) y salió de la lista cuando la mig 285 la cerró. Ya no se comparan a mano: `harness_run.py` tiene la lista `DEUDA` en código y falla si
 aparece una roja fuera de ella **o** si una de la lista sale verde.
 
 ---
@@ -159,15 +160,21 @@ para anon— pero son grants vestigiales. Misma clase que P222 (`anon ve farmaci
 **El SELECT de `anon` se mide ANTES de tocarlo**: hay superficies públicas que podrían depender de
 él, y revocarlo a ciegas es cambiar el comportamiento sin saber de qué.
 
-### 3. Endurecer check-in y checkout
+### 3. ~~Endurecer check-in y checkout~~ — **CERRADO 6-sep (mig 285)**
 
-- `checkin_visita_comercial` **no exige `estado = 'planificada'`**: acepta hacer check-in sobre una
-  visita **cancelada**.
-- `checkout_visita_comercial` **no rechaza un checkout previo**: la segunda llamada pasa y reescribe
-  un hecho. **P625 está ROJO en la lista de `DEUDA`** exactamente por esto.
+Los dos huecos, vistos en rojo antes de cerrarlos:
 
-**Al arreglarlo hay que sacar `P625_co_DOBLE_checkout_doc` de `DEUDA` en `harness_run.py`** — si no,
-el runner falla con *"deuda que salio VERDE"*, que es el aviso funcionando como corresponde.
+- `checkin_visita_comercial` no exigía `estado = 'planificada'`: aceptaba check-in sobre una visita
+  **cancelada** o **no_realizada**, que volvía a `en_curso` sin que nadie la reabriera. El único
+  chequeo previo era `checkin_at IS NOT NULL` (PA025), que no dice nada del estado.
+  → **PA028**, medido por **P637** (desde `cancelada`) y **P638** (desde `no_realizada`).
+- `checkout_visita_comercial` no rechazaba un checkout previo: la segunda llamada pasaba y
+  reescribía `checkout_at`. → **PA029**, medido por **P625**, que pasó de roja aceptada a exigir el
+  rechazo.
+
+`P625_co_DOBLE_checkout_doc` **salió de `DEUDA`** en `harness_run.py`: ya no es deuda tolerada, es
+un guard real. El front mapea las dos en `erroresRpc.ts` (`recargar: 'visita'`, `reportar: false` —
+son fichas viejas, no bugs nuestros). Próximo errcode libre: **PA030**; próxima probe: **P639**.
 
 ### 4. Pantalla de fichas de asesor (D12) — ANTES del seed
 

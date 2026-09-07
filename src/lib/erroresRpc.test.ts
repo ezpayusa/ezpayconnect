@@ -125,8 +125,8 @@ describe('frente visitas — PA015 a PA025', () => {
     expect(r.mensaje).toBe('No se pudo completar la operación. Intentá de nuevo.')
   })
 
-  it('ninguno de los trece cae en "sin mapear"', () => {
-    for (const n of [15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27]) {
+  it('ninguno de los quince cae en "sin mapear"', () => {
+    for (const n of [15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29]) {
       const r = mapearErrorRpc(pg('PA0' + String(n).padStart(2, '0'), 'texto'))
       expect(r.sinMapear, 'PA0' + n + ' quedó sin mapear').toBeUndefined()
     }
@@ -193,15 +193,15 @@ describe('agenda (mig 280) — PA026 y PA027', () => {
 })
 
 describe('los tres negativos — que el mapa envejezca bien y no rompa', () => {
-  // EL IMPORTANTE. Usa el PRÓXIMO ERRCODE LIBRE, que hoy es PA028 (PA001-PA027 están tomados por
-  // las migs 264/272/273/274/280). Este test ya se rompió una vez, al mapear PA015-PA025 y otra vez al mapear PA026-PA027: es
-  // exactamente lo que tiene que hacer. Cuando alguien reserve PA028, moverlo al siguiente libre
-  // es parte de reservarlo.
+  // EL IMPORTANTE. Usa el PRÓXIMO ERRCODE LIBRE, que hoy es PA030 (PA001-PA029 están tomados por
+  // las migs 264/272/273/274/280/285). Este test ya se rompió tres veces: al mapear PA015-PA025, al
+  // mapear PA026-PA027 y al mapear PA028-PA029. Es exactamente lo que tiene que hacer. Cuando
+  // alguien reserve PA030, moverlo al siguiente libre es parte de reservarlo.
   it('un PA0xx que NO está en el mapa NO cae en el genérico silencioso', () => {
-    const r = mapearErrorRpc(pg('PA028', 'PA028: una regla que todavia no mapeamos'))
+    const r = mapearErrorRpc(pg('PA030', 'PA030: una regla que todavia no mapeamos'))
     expect(r.sinMapear).toBe(true)
-    expect(r.code).toBe('PA028')
-    expect(r.mensaje).toContain('PA028')          // el código queda A LA VISTA
+    expect(r.code).toBe('PA030')
+    expect(r.mensaje).toContain('PA030')          // el código queda A LA VISTA
     expect(r.mensaje).toContain('una regla que todavia no mapeamos')
     expect(r.reportar).toBe(true)                 // y llega a Sentry
     expect(r.mensaje).not.toBe('No se pudo completar la operación. Intentá de nuevo.')
