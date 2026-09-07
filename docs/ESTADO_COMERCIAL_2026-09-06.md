@@ -19,7 +19,9 @@ archivos están trackeados en git. Cero drift.**
 | **282** | `visitas_com_una_por_dia` deja de contar las canceladas: pasa de CONSTRAINT UNIQUE a **índice único parcial** `WHERE estado <> 'cancelada'`. Ver *Hallazgo 2*. |
 | **283** | `comercial_asesores_visibles()` — RPC SECURITY DEFINER que devuelve 5 columnas (`id`, `codigo_asesor`, `nombre_completo`, `activo`, `supervisor_id`) con el gate copiado literal de la policy `asesores_perfil_select`. Ver *Hallazgo 3*. |
 
-**Próximo errcode libre: PA028.** Próxima migración: **284** (ya aprobada, no escrita — ver pendientes).
+> **Números vivos (7-sep):** última migración aplicada **287** · próxima **288** · próximo errcode
+> libre **PA030** · próxima probe libre **P649**. Se actualizan acá y sólo acá: tenerlos repetidos
+> en cada sección fue justamente lo que los dejó contradiciéndose entre sí.
 
 ---
 
@@ -123,16 +125,17 @@ envuelto entero en `COALESCE(..., false)`.
 
 | | |
 |---|---|
-| filas | **696** |
+| filas | **708** |
 | rojas | **13** — todas deuda AJENA; `P625` salió de la lista al cerrarse el punto 3 |
-| resto | 683 |
+| resto | 695 |
 | `b2_guard` | VERDE — `do_sin_handler` 156, `top_level_dml_ddl` 0, `cast_directo` 0 |
 | centinela P000 | OK (687 veredictos, ninguno vacío) |
 
 Probes nuevas del día, las 16 en verde: **P599–P601** (mig 281), **P602–P607** (mig 282),
 **P608–P614** (mig 283). Más **P615–P630** del cierre del 6-sep (las 4 RPCs que estaban sin
 cobertura), **P631–P636** (mig 284: privilegios sobre `perfiles`; P635/P636 ejercitan a `anon` contra
-tablas dependientes) y **P637–P638** (mig 285: PA028). Próximo número libre: **P639**.
+tablas dependientes), **P637–P638** (mig 285: PA028) y **P639–P648** (migs 286/287: las dos RPCs de
+la pantalla de fichas). Próximo número libre: **P649**.
 
 Las 13 rojas son **todas deuda ajena** —P163, P209, P222, P411, P414, P472, P473, P476, Pbuz×2,
 Pqr×3—. El módulo comercial ya no aporta ninguna: **P625** era la única propia (doble checkout sin
@@ -174,12 +177,45 @@ Los dos huecos, vistos en rojo antes de cerrarlos:
 
 `P625_co_DOBLE_checkout_doc` **salió de `DEUDA`** en `harness_run.py`: ya no es deuda tolerada, es
 un guard real. El front mapea las dos en `erroresRpc.ts` (`recargar: 'visita'`, `reportar: false` —
-son fichas viejas, no bugs nuestros). Próximo errcode libre: **PA030**; próxima probe: **P639**.
+son fichas viejas, no bugs nuestros).
 
-### 4. Pantalla de fichas de asesor (D12) — ANTES del seed
+### 4. ~~Pantalla de fichas de asesor (D12)~~ — **CERRADO 7-sep (migs 286/287 + front)**
 
-`guardar_asesor_perfil` y `asignar_supervisor` existen y **no tienen UI**. Va antes del seed porque
-sin ella las fichas del seed habría que sembrarlas a mano.
+`guardar_asesor_perfil` y `asignar_supervisor` ya tienen UI: `/admin-ezpay/pais/:paisId/asesores`,
+**con entrada de navegación** desde el dashboard de país (a diferencia de prospectos y material, que
+siguen huérfanas — punto 8).
+
+Dos RPCs de lectura nuevas, las dos con gate por `WHERE ... COALESCE(...)` y **sin errcode**: sin
+autoridad devuelven 0 filas, no 42501.
+
+| mig | función | qué contesta | probes |
+|---|---|---|---|
+| **286** | `comercial_perfiles_sin_ficha(uuid)` | a quién le falta ficha en el país | P639–P643 |
+| **287** | `comercial_supervisores_del_pais(uuid)` | candidatos válidos para `asignar_supervisor` | P644–P648 |
+
+`comercial_supervisores_del_pais` cubre las tres condiciones del guard que se pueden anticipar —rol
+(PA001), ficha activa (PA002), mismo país (PA003)—. **PA004 (dos niveles) no se anticipa**: depende
+de a quién supervisa ya el candidato, así que el selector puede ofrecer uno que después sea
+rechazado. Por eso la pantalla pinta ese rechazo **pegado a la fila** y no en un toast que se va.
+
+**Un bug encontrado y cerrado en el mismo bloque:** `guardar_asesor_perfil` hace UPSERT y su
+`ON CONFLICT DO UPDATE` pisa las nueve columnas con lo que venga en los parámetros, así que todo
+campo que el formulario mandara y el select no precargara se guardaba **vacío** al editar. Medido
+ejercitando las dos funciones: faltaba `bio`, y sólo esa. Lo vigila un **censo de simetría** en
+`api.test.ts` que compara la igualdad de los dos conjuntos —molde del censo invertido de la mig 281
+traído al front—, así que agregar un campo al formulario sin agregarlo al select se pone rojo solo y
+nombra la columna.
+
+Verificado en navegador contra la base real (Admin País QA de Guatemala): `asesores_perfil` en 200
+con las 11 columnas incluida `bio` y sin `foto_path`/`foto_publica_path`, las tres RPC en 200, y el
+fix de `bio` probado end-to-end (editar, guardar sin tocar nada, recargar, los valores siguen).
+
+**Nuevo, sin dueño todavía: `fecha_ingreso` no tiene ninguna validación.** Se aceptó `2227-01-01`
+sin chistar, ni en el formulario ni en `guardar_asesor_perfil`. Hoy no lo consume nada, pero las
+comisiones incluyen bonos de actividad contados desde el ingreso, y una fecha absurda rompe ese
+cálculo cuando se construya. El arreglo tiene dos mitades y las dos hacen falta: un `CHECK` en la
+tabla (o un guard en la RPC) y un `max` en el input — el front solo no alcanza, porque la RPC es
+llamable sin pasar por la pantalla.
 
 ### 5. Tarjeta pública del asesor (D11)
 
@@ -198,6 +234,9 @@ mano.
 - Prospectos `QA CICLO 16:29` / `16:30`, `QA GEO cerca` / `lejos`, `QA ADJ sin checkin`.
 - Visita `39866a82-20c2-4994-95d3-900034333ab7` (2026-09-08 15:15, planificada) — la creó Oscar
   verificando la agenda.
+- **Fichas de asesor con datos de prueba** cargados al verificar la pantalla del punto 4:
+  `QA-SUP-01` quedó con cargo `supervidor` (sic), territorio `centro`, bio `nada` y
+  `fecha_ingreso 2227-01-01`. No estorban a nadie, pero son datos inventados en una tabla real.
 - El inventario completo de cuentas y basura borrable está en la memoria de proyecto, no en el repo.
 
 ### 8. Higiene
@@ -206,6 +245,13 @@ mano.
 - Las rutas `/admin-ezpay/pais/:id/prospectos` y `/material` **no tienen entrada de navegación**: se
   llega sólo escribiendo la URL.
 - `FormFechaHora` tiene `<label>` sin `htmlFor` — label huérfano para lectores de pantalla.
+- **Ruido de red transversal — NO es del módulo comercial.** En una sola carga se ven ~6 requests
+  repetidas a `perfiles?select=*` del propio usuario, y `notificaciones?select=*` haciendo polling,
+  las dos con `select('*')`. Es el mismo patrón que la 277 corrigió en `visitas_comerciales` —una
+  lista explícita de columnas en vez del asterisco— pero en otras dos tablas, y `perfiles` es
+  justamente la que más datos personales tiene. Las repeticiones son un problema aparte del
+  asterisco: hay que mirar quién dispara la consulta tantas veces antes de tocar el select.
+  **Toca fuera del módulo comercial, así que no entra en este frente sin decisión propia.**
 
 ### Decisión abierta
 
