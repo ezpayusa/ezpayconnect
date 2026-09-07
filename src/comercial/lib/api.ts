@@ -298,8 +298,12 @@ export async function supervisoresDelPais(paisId: string) {
 // pone rojo solo.
 // `foto_path` y `foto_publica_path` quedan fuera A PROPÓSITO: no son parámetros de la RPC y el
 // UPSERT no las lista, así que editar no las toca. No agregarlas "por simetría".
+// `tarjeta_publica` es de SOLO LECTURA acá: se muestra en la lista del admin de país y el
+// formulario de la ficha NO la escribe —la escriben `tarjeta_set_consentimiento` (el asesor) y
+// `tarjeta_apagar_de_asesor` (el admin)—. Está declarada como tal en el censo de simetría de
+// api.test.ts, que verifica que la declaración sea cierta en las dos direcciones.
 const COLS_FICHA =
-  'id,codigo_asesor,pais_id,supervisor_id,cargo,territorio,telefono,celular,fecha_ingreso,bio,activo'
+  'id,codigo_asesor,pais_id,supervisor_id,cargo,territorio,telefono,celular,fecha_ingreso,bio,activo,tarjeta_publica'
 
 /**
  * Fichas del país, **incluidas las inactivas**. El `.eq('pais_id', paisId)` es SELECTOR DE VISTA
@@ -330,6 +334,17 @@ export type FichaAsesor = {
   fecha_ingreso: string | null
   bio: string | null
   activo: boolean
+  /** Solo lectura desde esta capa: la escriben las RPCs de la tarjeta, no el UPSERT de la ficha. */
+  tarjeta_publica: boolean
+}
+
+/**
+ * Apagar la tarjeta pública de un asesor. SOLO APAGA: encenderla es del dueño de la cara y del
+ * teléfono, y `tarjeta_apagar_de_asesor` no tiene forma de hacerlo (mig 288). El país sale de la
+ * FICHA dentro de la RPC, nunca de un parámetro: acá se manda el id del asesor y nada más.
+ */
+export async function apagarTarjetaDeAsesor(asesorId: string) {
+  return supabase.rpc('tarjeta_apagar_de_asesor', { p_asesor_id: asesorId })
 }
 
 export type PerfilSinFicha = { id: string; nombre_completo: string | null; rol: string }

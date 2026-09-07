@@ -1,10 +1,10 @@
 import { useEffect, useState, useCallback } from 'react'
 import { useParams } from 'react-router-dom'
 import { toast } from 'sonner'
-import { UserPlus, Pencil, CheckCircle2, XCircle } from 'lucide-react'
+import { UserPlus, Pencil, CheckCircle2, XCircle, IdCard, EyeOff, AlertTriangle } from 'lucide-react'
 import {
   perfilesSinFicha, supervisoresDelPais, listarFichasDePais, guardarAsesorPerfil, asignarSupervisor,
-  asesoresConNombre, mapaAsesores, nombreAsesor,
+  asesoresConNombre, mapaAsesores, nombreAsesor, apagarTarjetaDeAsesor,
   type FichaAsesor, type PerfilSinFicha, type SupervisorCandidato, type AsesorConNombre,
 } from '@/comercial/lib/api'
 import { reportarError, type ErrorInline } from '@/comercial/lib/reportarError'
@@ -57,6 +57,9 @@ export default function AsesoresPaisPage() {
   // El error del selector de supervisor vive POR FILA: el `err` global es del formulario.
   const [errSup, setErrSup] = useState<{ id: string; mensaje: string } | null>(null)
   const [asignando, setAsignando] = useState<string | null>(null)
+  // Confirmación de apagado, una por vez: guarda el id de la ficha cuya tarjeta se está por bajar.
+  const [confirmandoApagar, setConfirmandoApagar] = useState<string | null>(null)
+  const [apagando, setApagando] = useState<string | null>(null)
 
   const cargar = useCallback(async () => {
     setCargando(true)
@@ -139,6 +142,19 @@ export default function AsesoresPaisPage() {
       return
     }
     toast.success(valor ? 'Supervisor asignado' : 'Supervisor desasignado')
+    void cargar()
+  }
+
+  // SOLO APAGA. Encender es del asesor —es su cara y su teléfono— y `tarjeta_apagar_de_asesor` ni
+  // siquiera acepta el caso: no hay un parámetro que lo permita. Esta pantalla no puede publicar la
+  // tarjeta de nadie aunque quisiera.
+  const onApagarTarjeta = async (f: FichaAsesor) => {
+    setApagando(f.id)
+    const { error } = await apagarTarjetaDeAsesor(f.id)
+    setApagando(null)
+    setConfirmandoApagar(null)
+    if (error) { reportarError(error); return }
+    toast.success('Tarjeta despublicada. El enlace de ese asesor dejó de responder.')
     void cargar()
   }
 
@@ -289,12 +305,57 @@ export default function AsesoresPaisPage() {
                       {f.activo ? <CheckCircle2 className="h-3 w-3" /> : <XCircle className="h-3 w-3" />}
                       {f.activo ? 'activa' : 'inactiva'}
                     </span>
+                    {/* Estado de la TARJETA PÚBLICA, distinto del `activo` de la ficha: una ficha
+                        activa puede tener la tarjeta apagada, que es el default. */}
+                    <span data-testid={`tarjeta-estado-${f.id}`}
+                      className={`inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-xs ${
+                        f.tarjeta_publica ? 'bg-blue-100 text-blue-800' : 'bg-gray-100 text-gray-600'}`}>
+                      <IdCard className="h-3 w-3" />
+                      {f.tarjeta_publica ? 'tarjeta publicada' : 'tarjeta no publicada'}
+                    </span>
+                    {f.tarjeta_publica && (
+                      <button type="button" data-testid={`apagar-tarjeta-${f.id}`}
+                        onClick={() => setConfirmandoApagar(f.id)} disabled={apagando === f.id}
+                        className="inline-flex items-center gap-1 rounded border border-amber-300 px-2 py-1 text-xs text-amber-800 hover:bg-amber-50 disabled:opacity-50">
+                        <EyeOff className="h-3.5 w-3.5" />Despublicar
+                      </button>
+                    )}
                     <button type="button" data-testid={`editar-${f.id}`} onClick={() => abrirEdicion(f)}
                       className="inline-flex items-center gap-1 rounded border border-gray-300 px-2 py-1 text-xs text-gray-700 hover:bg-gray-50">
                       <Pencil className="h-3.5 w-3.5" />Editar
                     </button>
                   </div>
                 </div>
+
+                {/* Confirmación explícita. Dice las DOS cosas: que el enlace muere ya, y que esto
+                    NO es permanente — el asesor puede volver a publicarla desde su propia pantalla.
+                    Apagar no es censura y la UI no tiene que sugerir que lo es. */}
+                {confirmandoApagar === f.id && (
+                  <div data-testid={`confirmar-apagar-${f.id}`}
+                    className="mt-2 rounded-md border border-amber-300 bg-amber-50 p-3">
+                    <p className="flex items-start gap-2 text-sm text-amber-900">
+                      <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />
+                      <span>
+                        El enlace público de <strong>{nombreDe(f.id)}</strong> deja de responder de
+                        inmediato: quien lo tenga va a ver "tarjeta no disponible", foto incluida.
+                        No es permanente — el asesor puede volver a publicarla cuando quiera desde
+                        su propia pantalla, con el mismo enlace.
+                      </span>
+                    </p>
+                    <div className="mt-3 flex gap-2">
+                      <button type="button" data-testid={`confirmar-apagar-si-${f.id}`}
+                        onClick={() => void onApagarTarjeta(f)} disabled={apagando === f.id}
+                        className="rounded-md bg-amber-600 px-3 py-1.5 text-sm font-semibold text-white disabled:opacity-50">
+                        Sí, despublicar
+                      </button>
+                      <button type="button" onClick={() => setConfirmandoApagar(null)}
+                        disabled={apagando === f.id}
+                        className="rounded-md border px-3 py-1.5 text-sm text-gray-700 disabled:opacity-50">
+                        Cancelar
+                      </button>
+                    </div>
+                  </div>
+                )}
 
                 <div className="mt-2">
                   <label className="text-xs text-gray-600">Supervisor</label>

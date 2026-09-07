@@ -347,27 +347,59 @@ describe('jornadaDeHoy filtra por asesor: el supervisor ve varias y quiere UNA',
 // Los dos conjuntos salen de EJERCITAR las funciones, no de leer el fuente: se compara lo que de
 // verdad viaja.
 //
-// FUERA DEL CENSO A PROPÓSITO:
-//   - `p_asesor_id` / `p_pais_id` y `id` / `pais_id` / `supervisor_id`: identidad, no campos del
-//     formulario. El país es fijo de la ruta y el supervisor se cambia por `asignar_supervisor`.
-//   - `foto_path` y `foto_publica_path`: NO son parámetros de la RPC y el UPSERT no las lista, así
-//     que editar no las toca. NO agregarlas "por simetría" — hacerlo rompería este test sin que
-//     haya nada roto.
+// TRES CATEGORÍAS, y cada una protege de algo distinto. Una columna que no caiga en ninguna de las
+// tres pone el censo en rojo, que es exactamente el punto: agregar algo al select sin decidir qué
+// es tiene que doler.
+//
+//   1. IDENTIDAD — `IDENT_PARAM` / `IDENT_COL`. No son campos del formulario: el `id` identifica la
+//      fila, el país es fijo de la ruta, y el supervisor se cambia con `asignar_supervisor`. Fuera
+//      de los dos lados.
+//
+//   2. FORMULARIO — todo lo demás. SIMETRÍA ESTRICTA: lo que `guardarAsesorPerfil` envía tiene que
+//      ser exactamente lo que `listarFichasDePais` precarga. Ésta es la categoría que protege del
+//      bug de `bio` —un campo que el formulario manda pero el select no precarga se guarda VACÍO al
+//      editar, y el usuario pierde en silencio lo que no estaba en pantalla—.
+//
+//   3. SOLO LECTURA — `SOLO_LECTURA`. Columnas que el select TRAE para mostrar y que el formulario
+//      NUNCA escribe, porque las escribe otra cosa. `tarjeta_publica` la escriben
+//      `tarjeta_set_consentimiento` (el asesor) y `tarjeta_apagar_de_asesor` (el admin de país), y
+//      el UPSERT de la ficha ni la lista.
+//
+// LA LISTA DE SOLO LECTURA NO ES UNA VÁLVULA DE ESCAPE, y por eso está verificada EN LAS DOS
+// DIRECCIONES (ver el describe de más abajo):
+//   * una columna declarada que NO esté en el select es una declaración muerta, y una declaración
+//     muerta absorbería en silencio a una columna futura que se llame igual;
+//   * una columna declarada que el formulario SÍ envíe sería el bug de `bio` con permiso escrito
+//     — declararla read-only es justo lo que lo escondería.
+// Aflojar el censo agregando acá lo que moleste es la única forma de romperlo, y esos dos tests son
+// los que lo impiden.
+//
+// FUERA DE LAS TRES A PROPÓSITO: `foto_path` y `foto_publica_path`. No son parámetros de la RPC y
+// el select tampoco las trae, así que no están en ningún lado y no hace falta declararlas. NO
+// agregarlas "por simetría" — rompería el censo sin que haya nada roto.
 const IDENT_PARAM = new Set(['p_asesor_id', 'p_pais_id'])
 const IDENT_COL = new Set(['id', 'pais_id', 'supervisor_id'])
+const SOLO_LECTURA = new Set(['tarjeta_publica'])
+
+/**
+ * Los conjuntos, EJERCITANDO las dos funciones: se compara lo que de verdad viaja, no lo que dice
+ * el fuente. Vive a nivel de módulo porque lo usan los dos describes de abajo y tienen que medir
+ * exactamente lo mismo.
+ */
+const conjuntos = async () => {
+  await api.guardarAsesorPerfil({ asesorId: 'a', codigoAsesor: 'c', paisId: 'p' })
+  await api.listarFichasDePais('p')
+  const envia = Object.keys(rpcs[0].args)
+    .filter(k => !IDENT_PARAM.has(k)).map(k => k.replace(/^p_/, '')).sort()
+  const sel = consultas[0].ops.find(o => o.startsWith('select(')) ?? ''
+  const cols = (sel.match(/"([^"]+)"/)?.[1] ?? '').split(',')
+  // `trae` es lo que queda tras sacar las DOS categorías declaradas. Lo que sobre tiene que ser
+  // exactamente el formulario.
+  const trae = cols.filter(c => !IDENT_COL.has(c) && !SOLO_LECTURA.has(c)).sort()
+  return { envia, trae, cols }
+}
 
 describe('ficha de asesor: el formulario y el select cubren las MISMAS columnas', () => {
-  const conjuntos = async () => {
-    await api.guardarAsesorPerfil({ asesorId: 'a', codigoAsesor: 'c', paisId: 'p' })
-    await api.listarFichasDePais('p')
-    const envia = Object.keys(rpcs[0].args)
-      .filter(k => !IDENT_PARAM.has(k)).map(k => k.replace(/^p_/, '')).sort()
-    const sel = consultas[0].ops.find(o => o.startsWith('select(')) ?? ''
-    const trae = (sel.match(/"([^"]+)"/)?.[1] ?? '').split(',')
-      .filter(c => !IDENT_COL.has(c)).sort()
-    return { envia, trae }
-  }
-
   it('el conjunto que envía guardarAsesorPerfil es exactamente el que trae listarFichasDePais', async () => {
     const { envia, trae } = await conjuntos()
     expect(envia).toEqual(trae)
@@ -391,5 +423,41 @@ describe('ficha de asesor: el formulario y el select cubren las MISMAS columnas'
       expect(envia).not.toContain(c)
       expect(trae).not.toContain(c)
     }
+  })
+})
+
+// La lista de SOLO LECTURA es la única forma de sacarle una columna al censo, así que ella misma
+// tiene que estar censada. Sin estos dos tests, `SOLO_LECTURA` sería una válvula de escape: bastaría
+// meter ahí lo que moleste para que el bug de `bio` volviera con permiso escrito.
+describe('la lista de SOLO LECTURA no es una válvula de escape', () => {
+  it('cada columna declarada de solo lectura ESTÁ de verdad en el select', async () => {
+    const { cols } = await conjuntos()
+    const muertas = [...SOLO_LECTURA].filter(c => !cols.includes(c))
+    expect(
+      muertas,
+      'declaradas de solo lectura pero ausentes del select: ' + muertas.join(', ')
+      + ' — una declaración muerta absorbe en silencio a una columna futura con ese nombre',
+    ).toEqual([])
+  })
+
+  it('NINGUNA columna de solo lectura es enviada por el formulario', async () => {
+    const { cols } = await conjuntos()
+    await api.guardarAsesorPerfil({ asesorId: 'a', codigoAsesor: 'c', paisId: 'p' })
+    const enviadas = Object.keys(rpcs[rpcs.length - 1].args).map(k => k.replace(/^p_/, ''))
+    const mentira = [...SOLO_LECTURA].filter(c => enviadas.includes(c))
+    expect(
+      mentira,
+      'declaradas de solo lectura pero el formulario SÍ las envía: ' + mentira.join(', ')
+      + ' — eso es el bug de bio con permiso escrito',
+    ).toEqual([])
+    expect(cols.length).toBeGreaterThan(0)   // que el select se haya ejercitado de verdad
+  })
+
+  it('una columna NUEVA en el select, sin declarar, pone el censo en rojo', async () => {
+    // Contraprueba del censo: se simula la columna sin declarar y se comprueba que la comparación
+    // falla. Sin esto, "los conjuntos son iguales" no distingue un censo que mide de uno que no.
+    const { envia, trae } = await conjuntos()
+    const conIntrusa = [...trae, 'columna_nueva_sin_declarar'].sort()
+    expect(conIntrusa).not.toEqual(envia)
   })
 })

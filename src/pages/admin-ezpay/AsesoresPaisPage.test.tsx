@@ -15,6 +15,7 @@ import { MemoryRouter, Routes, Route } from 'react-router-dom'
 const rpcs: { nombre: string; args: Record<string, unknown> }[] = []
 let errorGuardar: unknown = null
 let errorAsignar: unknown = null
+let errorApagar: unknown = null
 let pendientes: unknown[] = []
 let fichas: unknown[] = []
 
@@ -42,6 +43,10 @@ vi.mock('@/comercial/lib/api', () => ({
     rpcs.push({ nombre: 'asignarSupervisor', args: { asesorId, supervisorId } })
     return { data: null, error: errorAsignar }
   },
+  apagarTarjetaDeAsesor: async (asesorId: string) => {
+    rpcs.push({ nombre: 'apagarTarjetaDeAsesor', args: { asesorId } })
+    return { data: null, error: errorApagar }
+  },
 }))
 vi.mock('@/comercial/lib/reportarError', () => ({
   reportarError: (e: { code?: string }, o?: { setInline?: (v: unknown) => void }) => {
@@ -66,15 +71,16 @@ const pintar = () => render(
 const FICHA_ACTIVA = {
   id: 'ase-1', codigo_asesor: 'GT-ASE-01', pais_id: 'gt', supervisor_id: null,
   cargo: 'Ejecutivo', territorio: 'Zona 1', telefono: null, celular: null,
-  fecha_ingreso: null, activo: true,
+  fecha_ingreso: null, activo: true, tarjeta_publica: false,
 }
 const FICHA_INACTIVA = {
   id: 'ase-off', codigo_asesor: 'GT-ASE-09', pais_id: 'gt', supervisor_id: null,
   cargo: null, territorio: null, telefono: null, celular: null, fecha_ingreso: null, activo: false,
+  tarjeta_publica: false,
 }
 
 beforeEach(() => {
-  rpcs.length = 0; errorGuardar = null; errorAsignar = null
+  rpcs.length = 0; errorGuardar = null; errorAsignar = null; errorApagar = null
   pendientes = []; fichas = [FICHA_ACTIVA]
 })
 
@@ -165,5 +171,73 @@ describe('AsesoresPaisPage — supervisor', () => {
     const valores = Array.from(sel.options).map(o => o.value)
     expect(valores).not.toContain('sup-1')
     expect(valores).toContain('')
+  })
+})
+
+// ------------------------------------------------------------------ tarjeta pública (pieza 4b)
+// El admin de país SOLO PUEDE APAGAR. Encender es del dueño de la cara y del teléfono, y la RPC ni
+// siquiera acepta el caso. Lo que se mide acá es que la UI no sugiera lo contrario y que la
+// confirmación diga las dos cosas: que el enlace muere ya, y que esto NO es permanente.
+describe('tarjeta pública del asesor', () => {
+  it('con la tarjeta APAGADA muestra el estado y NO ofrece despublicar', async () => {
+    fichas = [{ ...FICHA_ACTIVA, tarjeta_publica: false }]
+    pintar()
+    await screen.findByTestId('tarjeta-estado-ase-1')
+    expect(screen.getByTestId('tarjeta-estado-ase-1').textContent).toContain('tarjeta no publicada')
+    expect(screen.queryByTestId('apagar-tarjeta-ase-1')).toBeNull()
+  })
+
+  it('NUNCA ofrece publicar: encender es del asesor, no del admin', async () => {
+    for (const pub of [true, false]) {
+      fichas = [{ ...FICHA_ACTIVA, tarjeta_publica: pub }]
+      const { unmount } = pintar()
+      await screen.findByTestId('tarjeta-estado-ase-1')
+      expect(screen.queryByRole('button', { name: /^publicar/i })).toBeNull()
+      unmount()
+    }
+  })
+
+  it('con la tarjeta PUBLICADA ofrece despublicar, pero no apaga al primer clic', async () => {
+    fichas = [{ ...FICHA_ACTIVA, tarjeta_publica: true }]
+    pintar()
+    fireEvent.click(await screen.findByTestId('apagar-tarjeta-ase-1'))
+
+    // La confirmación dice LAS DOS cosas
+    const caja = screen.getByTestId('confirmar-apagar-ase-1')
+    expect(caja.textContent).toContain('deja de responder de')
+    expect(caja.textContent).toContain('No es permanente')
+    expect(caja.textContent).toContain('volver a publicarla')
+    expect(rpcs.length).toBe(0)     // todavía no pasó nada
+  })
+
+  it('confirmar llama a la RPC con el id del asesor y nada más', async () => {
+    fichas = [{ ...FICHA_ACTIVA, tarjeta_publica: true }]
+    pintar()
+    fireEvent.click(await screen.findByTestId('apagar-tarjeta-ase-1'))
+    fireEvent.click(screen.getByTestId('confirmar-apagar-si-ase-1'))
+
+    await waitFor(() => expect(rpcs.length).toBe(1))
+    expect(rpcs[0].nombre).toBe('apagarTarjetaDeAsesor')
+    // El país NO viaja: sale de la ficha dentro de la RPC. Mandarlo sería un parámetro de scope.
+    expect(rpcs[0].args).toEqual({ asesorId: 'ase-1' })
+  })
+
+  it('cancelar no llama a nada y cierra la confirmación', async () => {
+    fichas = [{ ...FICHA_ACTIVA, tarjeta_publica: true }]
+    pintar()
+    fireEvent.click(await screen.findByTestId('apagar-tarjeta-ase-1'))
+    fireEvent.click(screen.getByRole('button', { name: /^cancelar$/i }))
+    expect(rpcs.length).toBe(0)
+    expect(screen.queryByTestId('confirmar-apagar-ase-1')).toBeNull()
+  })
+
+  it('el estado de la TARJETA es independiente del `activo` de la ficha', async () => {
+    // Una ficha activa con la tarjeta apagada es el DEFAULT, no una anomalía: son dos flags
+    // distintos y pintarlos como uno solo escondería el caso normal.
+    fichas = [{ ...FICHA_ACTIVA, activo: true, tarjeta_publica: false }]
+    pintar()
+    await screen.findByTestId('tarjeta-estado-ase-1')
+    expect(screen.getByText('activa')).toBeTruthy()
+    expect(screen.getByTestId('tarjeta-estado-ase-1').textContent).toContain('no publicada')
   })
 })
