@@ -45,3 +45,8 @@ Kimi_Agent_Refactorización Arquitectónica/
 # Python (tests/rls/*.py del guard de B2)
 __pycache__/
 *.py[cod]
+
+# Datos locales de trabajo. El seed del pais DEMO escribe aca
+# .claude/QA_CUENTAS_PILOTO.md, que lleva CONTRASENAS: no puede entrar al repo.
+# El ignore global del usuario solo cubria .claude/settings.local.json, no el directorio.
+.claude/

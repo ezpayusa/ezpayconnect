@@ -317,6 +317,15 @@ mano.
   typechequea al construir funciones. Las tres se verificaron a mano con una invocación suelta de
   `tsc` y salieron limpias, pero eso no es un gate: hay que meter `api` en un tsconfig (probablemente
   `tsconfig.node.json`, que ya tiene `types: ["node"]`) y ver qué baseline aparece antes de exigir 0.
+- **El catálogo `planes_base` tiene nombres de CLIENTES CONCRETOS, y se replica a cada país nuevo.**
+  Medido al crear el país DEMO (7-sep): la pantalla de países sembró 23 filas en
+  `planes_configuracion`, una por plan base, y entre ellas vinieron **`Dr. Oscar Gutierrez`** (tipo
+  `lab`, 120.00), **`Farmacia Moderna`** y **`Vitacoco`** (tipo `publicidad`, 200 y 100). Además hay
+  un **`Plan Bronce` DUPLICADO** en `visitador` (`d1a9917e…` y `d75955b5…`, los dos a 29.99), así que
+  todo país nuevo nace con un plan repetido. No es culpa de la pantalla —replicó fielmente el
+  catálogo—, pero significa que **cada país que se cree arrastra esos nombres**. Hay que decidir si
+  se limpian en `planes_base` o si esas filas eran configuraciones puntuales que no debían vivir en
+  el catálogo base. **No tocado.**
 - **`public/ezpayconnect_logo_completo_med.svg` no lo referencia ningún componente.** Medido 7-sep:
   la única mención fuera de sí mismo es un comentario dentro del otro SVG. El lockup del producto
   médico está en `public/` sin consumidor; `ezpayconnect_icono.svg` sí lo usan `PoweredBy.tsx` y
