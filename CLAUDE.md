@@ -15,6 +15,8 @@ Stack: React + Vite + TypeScript, Supabase / Postgres, deploy en Vercel, repo en
   minutos por esto** (P635 es la probe que faltaba, P636 su contraprueba).
 - NUNCA ampliar policies de RLS sobre tablas adyacentes a datos médicos (p. ej. campana_metricas). Para dar acceso, usar RPCs SECURITY DEFINER con search_path='', fail-closed (si el scope es NULL → 0 filas) y gate interno.
 - Probar aislamiento por rol impersonando request.jwt.claims en prod: cada rol ve lo suyo y no lo ajeno.
+- **Módulo comercial — próximos números libres: probe `P639`, errcode `PA030`.** (Mig 285, 6-sep:
+  PA028 = check-in sobre visita que no está `planificada`; PA029 = doble checkout.)
 - **Harness de RLS (`tests/rls/probes_escritura.sql`): OBLIGATORIO correr `python tests/rls/b2_guard.py`
   (o `npm run harness:guard`) al tocarlo.** Es el gate de estructura del frente B2: falla si aparece
   una sentencia DML/DDL fuera de un bloque `DO` con `EXCEPTION` handler, o si crecen los bloques `DO`
@@ -27,7 +29,7 @@ Stack: React + Vite + TypeScript, Supabase / Postgres, deploy en Vercel, repo en
   exit code. `npm run harness:selftest` prueba que esas cinco verificaciones disparan.
   Está enganchado al pre-commit junto al test del detector: los tres gates del hook son offline.
   **El runner CLASIFICA las rojas** (roja = el `verdict` empieza con `ROJO` o `FALLO`) contra la
-  lista `DEUDA` que vive en el código, hoy con **14 entradas**: una roja FUERA de la deuda es exit 1,
+  lista `DEUDA` que vive en el código, hoy con **13 entradas**: una roja FUERA de la deuda es exit 1,
   y una entrada de la deuda que sale VERDE también (se arregló y hay que sacarla, o alguien la
   anestesió) — actualizar la lista es un acto deliberado, no un efecto colateral.
   **El CLI de supabase decide el formato Y la forma del JSON por DETECCIÓN DE AGENTE**: a CC le da

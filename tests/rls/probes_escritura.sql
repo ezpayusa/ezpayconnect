@@ -12215,6 +12215,103 @@ EXCEPTION WHEN OTHERS THEN
   PERFORM set_config('probe.p544','FALLO ('||SQLSTATE||' '||SQLERRM||')',false);
 END $$;
 
+-- ============================================================================================
+-- P637 / P638 — PA028: solo se hace check-in sobre una visita PLANIFICADA (mig 285)
+-- ============================================================================================
+-- Antes de la 285, el unico chequeo previo al check-in era `checkin_at IS NOT NULL` (PA025), que
+-- no dice nada sobre el ESTADO. Una visita cancelada o no_realizada aceptaba check-in y volvia a
+-- 'en_curso' sin que nadie la hubiera reabierto: el estado terminal se perdia en silencio.
+--
+-- Dos probes y no una porque son dos caminos distintos hasta el mismo estado terminal: 'cancelada'
+-- la pone cancelar_visita_comercial (y arrastra el CHECK de motivo obligatorio), 'no_realizada' la
+-- pone el cierre de una visita que no ocurrio. Un guard que cubriera solo uno de los dos pasaria
+-- la mitad de esta pareja.
+--
+-- Fixture propio con INSERT directo como OWNER, igual que P626: es el unico camino que deja una
+-- visita en un estado terminal SIN pasar por las RPCs que lo impedirian.
+DO $$
+DECLARE v_gt uuid; v_ase1 uuid; v_admgt uuid; v_lat numeric; v_lng numeric;
+        v_p uuid; v_v uuid;
+BEGIN
+  IF coalesce(current_setting('probe.vj_ready',true),'')<>'1' THEN
+    PERFORM set_config('probe.p637_v','',false); RETURN; END IF;
+  v_gt    := NULLIF(current_setting('probe.co_gt',true),'')::uuid;
+  v_ase1  := NULLIF(current_setting('probe.co_ase1',true),'')::uuid;
+  v_admgt := NULLIF(current_setting('probe.co_admgt',true),'')::uuid;
+  v_lat   := NULLIF(current_setting('probe.vj_lat',true),'')::numeric;
+  v_lng   := NULLIF(current_setting('probe.vj_lng',true),'')::numeric;
+
+  -- P637: CANCELADA. cancelacion_motivo no vacio por el CHECK visitas_com_cancelada_con_motivo.
+  INSERT INTO public.prospectos (nombre, tipo, pais_id, asesor_id, creado_por, estado_pipeline, lat, lng)
+    VALUES ('QA P637 cancelada','farmacia',v_gt,v_ase1,v_admgt,'nuevo',v_lat,v_lng) RETURNING id INTO v_p;
+  INSERT INTO public.visitas_comerciales
+    (prospecto_id, asesor_id, pais_id, fecha_planificada, estado, planificada_por, cancelacion_motivo)
+    VALUES (v_p, v_ase1, v_gt, CURRENT_DATE, 'cancelada', v_admgt, 'QA motivo P637')
+    RETURNING id INTO v_v;
+  PERFORM set_config('probe.p637_v', v_v::text, false);
+
+  -- P638: NO_REALIZADA. Sin motivo: el CHECK solo lo exige para 'cancelada'.
+  INSERT INTO public.prospectos (nombre, tipo, pais_id, asesor_id, creado_por, estado_pipeline, lat, lng)
+    VALUES ('QA P638 no realizada','farmacia',v_gt,v_ase1,v_admgt,'nuevo',v_lat,v_lng) RETURNING id INTO v_p;
+  INSERT INTO public.visitas_comerciales
+    (prospecto_id, asesor_id, pais_id, fecha_planificada, estado, planificada_por)
+    VALUES (v_p, v_ase1, v_gt, CURRENT_DATE, 'no_realizada', v_admgt)
+    RETURNING id INTO v_v;
+  PERFORM set_config('probe.p638_v', v_v::text, false);
+EXCEPTION WHEN OTHERS THEN
+  PERFORM set_config('probe.p637_v','',false);
+  PERFORM set_config('probe.p638_v','',false);
+  PERFORM set_config('probe.p637','FALLO (no se pudo armar el fixture: '||SQLSTATE||' '||SQLERRM||')',false);
+  PERFORM set_config('probe.p638','FALLO (no se pudo armar el fixture: '||SQLSTATE||' '||SQLERRM||')',false);
+END $$;
+
+SELECT set_config('request.jwt.claims', json_build_object('sub', current_setting('probe.co_ase1',true), 'role','authenticated')::text, true);
+SELECT set_config('role','authenticated', true);
+
+-- P637 — check-in sobre una visita CANCELADA -> PA028.
+DO $$ DECLARE v_id uuid; v_estado text; BEGIN
+  IF coalesce(current_setting('probe.p637_v',true),'')='' THEN
+    IF coalesce(current_setting('probe.p637',true),'')='' THEN
+      PERFORM set_config('probe.p637','N/A (sin fixture)',false); END IF; RETURN; END IF;
+  IF to_regprocedure('public.checkin_visita_comercial(uuid,numeric,numeric,numeric,timestamp with time zone)') IS NULL THEN
+    PERFORM set_config('probe.p637','ROJO — RPC AUSENTE',false); RETURN; END IF;
+  v_id := NULLIF(current_setting('probe.p637_v',true),'')::uuid;
+  -- control del control: si el fixture no quedo en 'cancelada', esta probe no mide PA028.
+  SELECT estado INTO v_estado FROM public.visitas_comerciales WHERE id = v_id;
+  IF v_estado IS DISTINCT FROM 'cancelada' THEN
+    PERFORM set_config('probe.p637','FALLO (el fixture quedo en estado '||coalesce(v_estado,'nulo')||', no cancelada)',false); RETURN; END IF;
+  BEGIN
+    PERFORM public.checkin_visita_comercial(v_id, 14.6349, -90.5069, 15, NULL);
+    PERFORM set_config('probe.p637','ROJO (PERMITIO check-in sobre una visita CANCELADA)',false);
+  EXCEPTION WHEN sqlstate 'PA028' THEN
+    PERFORM set_config('probe.p637','OK (PA028 la visita no esta en estado planificada)',false);
+  WHEN others THEN
+    PERFORM set_config('probe.p637','FALLO (esperaba PA028, vino '||SQLSTATE||': '||SQLERRM||')',false);
+  END;
+EXCEPTION WHEN OTHERS THEN PERFORM set_config('probe.p637','FALLO ('||SQLSTATE||' '||SQLERRM||')',false); END $$;
+
+-- P638 — check-in sobre una visita NO_REALIZADA -> PA028.
+DO $$ DECLARE v_id uuid; v_estado text; BEGIN
+  IF coalesce(current_setting('probe.p638_v',true),'')='' THEN
+    IF coalesce(current_setting('probe.p638',true),'')='' THEN
+      PERFORM set_config('probe.p638','N/A (sin fixture)',false); END IF; RETURN; END IF;
+  IF to_regprocedure('public.checkin_visita_comercial(uuid,numeric,numeric,numeric,timestamp with time zone)') IS NULL THEN
+    PERFORM set_config('probe.p638','ROJO — RPC AUSENTE',false); RETURN; END IF;
+  v_id := NULLIF(current_setting('probe.p638_v',true),'')::uuid;
+  SELECT estado INTO v_estado FROM public.visitas_comerciales WHERE id = v_id;
+  IF v_estado IS DISTINCT FROM 'no_realizada' THEN
+    PERFORM set_config('probe.p638','FALLO (el fixture quedo en estado '||coalesce(v_estado,'nulo')||', no no_realizada)',false); RETURN; END IF;
+  BEGIN
+    PERFORM public.checkin_visita_comercial(v_id, 14.6349, -90.5069, 15, NULL);
+    PERFORM set_config('probe.p638','ROJO (PERMITIO check-in sobre una visita NO_REALIZADA)',false);
+  EXCEPTION WHEN sqlstate 'PA028' THEN
+    PERFORM set_config('probe.p638','OK (PA028 la visita no esta en estado planificada)',false);
+  WHEN others THEN
+    PERFORM set_config('probe.p638','FALLO (esperaba PA028, vino '||SQLSTATE||': '||SQLERRM||')',false);
+  END;
+EXCEPTION WHEN OTHERS THEN PERFORM set_config('probe.p638','FALLO ('||SQLSTATE||' '||SQLERRM||')',false); END $$;
+SELECT set_config('role','none', true);
+
 -- P552 — guard PA015: visita de un pais con asesor de otro. Se prueba con INSERT directo como
 -- owner, que es el unico camino que llega al trigger sin pasar por la RPC.
 DO $$ BEGIN
@@ -13667,7 +13764,7 @@ EXCEPTION WHEN OTHERS THEN PERFORM set_config('probe.p614','FALLO ('||SQLSTATE||
 --      jornada hoy" y "ya la cerraste". El SELECT filtra `fin_at IS NULL`, asi que la jornada ya
 --      cerrada simplemente no aparece. No se distinguen. P620/P621 lo fijan tal cual es.
 --   2. `checkout_visita_comercial` NO chequea `checkout_at IS NULL`: el doble checkout esta
---      PERMITIDO y pisa checkout_at. P625 lo documenta; NO es un rojo, es el pendiente #3.
+--      PERMITIDO y pisaba checkout_at. CERRADO por la mig 285 con PA029: P625 ahora lo EXIGE.
 --   3. `config_visitas_efectiva` no rechaza a nadie. Para un rol no comercial devuelve UNA fila
 --      con la config de SU PROPIO pais (mi_pais() lee perfiles.pais_id, sin mirar el rol). No es
 --      fuga —no revela config ajena— pero tampoco es un rechazo. P629 lo mide.
@@ -13934,11 +14031,11 @@ SELECT set_config('role','none', true);
 
 -- P623 — CONTROL POSITIVO: el asesor dueno cierra su visita con check-in previo. Se lee LA FILA:
 -- checkout_at poblado Y estado='realizada'.
--- P625 — DOBLE CHECKOUT. El cuerpo no chequea `checkout_at IS NULL`, asi que la segunda llamada
--- pasa. SI es un rojo: cerrar una visita dos veces reescribe un hecho. Se sostiene en la lista de
--- DEUDA de harness_run.py nombrando el pendiente #3 —que es donde vive una roja aceptada a
--- proposito—, no bajandole el tono al veredicto aca. Si un dia se arregla, el runner avisa que la
--- deuda salio VERDE y obliga a sacarla de la lista.
+-- P625 — DOBLE CHECKOUT, cerrado por la mig 285. `checkout_visita_comercial` chequea
+-- `checkout_at IS NOT NULL` y responde PA029: cerrar una visita dos veces es reescribir un hecho ya
+-- registrado, y ahora no se puede. Esta probe fue ROJA y vivio en la lista DEUDA del runner
+-- nombrando el pendiente #3; al aplicarse la 285 salio de esa lista. Si alguien quitara el guard,
+-- vuelve a rojo por si sola.
 SELECT set_config('request.jwt.claims', json_build_object('sub', current_setting('probe.co_ase1',true), 'role','authenticated')::text, true);
 SELECT set_config('role','authenticated', true);
 DO $$ DECLARE v_id uuid; v_out1 timestamptz; v_out2 timestamptz; v_estado text; v_seg text; BEGIN
@@ -13960,19 +14057,17 @@ DO $$ DECLARE v_id uuid; v_out1 timestamptz; v_out2 timestamptz; v_estado text; 
     WHEN v_out1 IS NULL THEN 'ROJO (la RPC paso pero checkout_at quedo NULL)'
     WHEN v_estado IS DISTINCT FROM 'realizada' THEN 'FALLO (checkout_at ok pero el estado quedo: '||coalesce(v_estado,'nulo')||')'
     ELSE 'OK (la FILA quedo con checkout_at y estado=realizada)' END, false);
-  -- SEGUNDO checkout sobre la misma visita.
-  -- OJO AL LEER EL VEREDICTO: si dice "checkout_at no cambio", eso NO prueba que la RPC no pise el
-  -- valor. El harness corre en UNA transaccion, asi que `now()` esta CONGELADO y el segundo UPDATE
-  -- escribe el mismo timestamp que el primero. Lo que esta probe mide de verdad es que la segunda
-  -- llamada NO es rechazada; el efecto sobre checkout_at no se puede observar desde aca.
+  -- SEGUNDO checkout sobre la misma visita -> PA029 (mig 285). Se mide el RECHAZO, no el efecto
+  -- sobre checkout_at: el harness corre en UNA transaccion con `now()` congelado, asi que un
+  -- segundo UPDATE escribiria el mismo timestamp y "no cambio" nunca probaria que no piso.
   BEGIN
     PERFORM public.checkout_visita_comercial(v_id, NULL, NULL);
     SELECT v.checkout_at INTO v_out2 FROM public.visitas_comerciales v WHERE v.id = v_id;
-    v_seg := CASE WHEN v_out2 IS DISTINCT FROM v_out1
-      THEN 'ROJO (SIN GUARD — permite doble checkout y PISA checkout_at; pendiente #3 del modulo comercial)'
-      ELSE 'ROJO (SIN GUARD — permite la segunda llamada sin rechazo; checkout_at no cambio, pero `now()` esta congelado en la transaccion y no se puede distinguir "no piso" de "piso con el mismo valor"; pendiente #3 del modulo comercial)' END;
-  EXCEPTION WHEN others THEN
-    v_seg := 'CAMBIO: ahora hay guard y rechaza el doble checkout con '||SQLSTATE||' ('||SQLERRM||') — revisar el pendiente #3, ya no aplica';
+    v_seg := 'ROJO (SIN GUARD — permitio el segundo checkout sin rechazo)';
+  EXCEPTION WHEN sqlstate 'PA029' THEN
+    v_seg := 'OK (PA029 rechaza el doble checkout)';
+  WHEN others THEN
+    v_seg := 'FALLO (esperaba PA029, vino '||SQLSTATE||': '||SQLERRM||')';
   END;
   PERFORM set_config('probe.p625', v_seg, false);
 EXCEPTION WHEN OTHERS THEN
@@ -15001,12 +15096,14 @@ UNION ALL SELECT 'CJ_LIMPIEZA_jornada_ase2',           current_setting('probe.cj
 UNION ALL SELECT 'P622_cj_sin_jornada_abierta',          current_setting('probe.p622', true),         'OK (PA021)'
 UNION ALL SELECT 'P623_co_POSITIVO_checkout_propio',     current_setting('probe.p623', true),         'OK (checkout_at + realizada)'
 UNION ALL SELECT 'P624_co_supervisor_ajena',             current_setting('probe.p624', true),         'OK (42501)'
-UNION ALL SELECT 'P625_co_DOBLE_checkout_doc',           current_setting('probe.p625', true),         'ROJO en la DEUDA (pendiente #3)'
+UNION ALL SELECT 'P625_co_DOBLE_checkout_doc',           current_setting('probe.p625', true),         'OK (PA029)'
 UNION ALL SELECT 'P626_co_jornada_cerrada',              current_setting('probe.p626', true),         'OK (PA019)'
 UNION ALL SELECT 'P627_cfg_POSITIVO_asesor',             current_setting('probe.p627', true),         'OK (1 fila de su pais)'
 UNION ALL SELECT 'P628_cfg_D5_default_failclosed',       current_setting('probe.p628', true),         'OK (hay_fila=false y 150/100)'
 UNION ALL SELECT 'P629_cfg_rol_no_comercial_doc',        current_setting('probe.p629', true),         'OK (no rechaza, por diseno)'
 UNION ALL SELECT 'P630_cfg_CENSO_retorno',               current_setting('probe.p630', true),         'OK (4 columnas exactas)'
+UNION ALL SELECT 'P637_ci_PA028_desde_cancelada',       current_setting('probe.p637', true), 'OK (PA028)'
+UNION ALL SELECT 'P638_ci_PA028_desde_no_realizada',    current_setting('probe.p638', true), 'OK (PA028)'
 UNION ALL SELECT 'P631_CENSO_anon_perfiles',           current_setting('probe.p631', true), 'OK (anon en cero, los 7)'
 UNION ALL SELECT 'P632_authenticated_perfiles',        current_setting('probe.p632', true), 'OK (4 DML si, 3 no)'
 UNION ALL SELECT 'P633_CONTROL_lee_propio_perfil',     current_setting('probe.p633', true), 'OK (1 fila, antes y despues)'
@@ -15205,7 +15302,7 @@ UNION ALL SELECT 'P000_CENTINELA_veredictos_no_nulos',
        'probe.p623', 'probe.p624', 'probe.p625', 'probe.p626',
        'probe.p627', 'probe.p628', 'probe.p629', 'probe.p630',
        'probe.p631', 'probe.p632', 'probe.p633', 'probe.p634',
-       'probe.p635', 'probe.p636'
+       'probe.p635', 'probe.p636', 'probe.p637', 'probe.p638'
              ]) AS n) s),
   'OK (todos los veredictos publicados)';
 

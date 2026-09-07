@@ -70,8 +70,6 @@ DEUDA = {
     'P472_admin_pais_scope':         'admin_pais ve prospectos de mas de los suyos',
     'P473_super_admin_ve_todos':     'super_admin ve todos los prospectos (contraparte de P472)',
     'P476_contactos_heredan_gate':   'los contactos no heredan el gate del prospecto',
-    # --- modulo comercial: pendiente conocido, NO un descubrimiento ---
-    'P625_co_DOBLE_checkout_doc':    'doble checkout sin guard — pendiente #3 del modulo comercial',
 }
 
 
