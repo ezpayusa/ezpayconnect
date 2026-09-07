@@ -15,6 +15,11 @@ import { createClient } from 'https://esm.sh/@supabase/supabase-js@2'
 // LOS CUATRO MOTIVOS DE NO-RESPUESTA SE VEN IGUAL: token inexistente, consentimiento apagado, ficha
 // inactiva y perfil inactivo devuelven el mismo 404 con la misma página. La RPC ya los devuelve
 // indistinguibles (NULL); acá no se los vuelve a separar.
+//
+// AL PÚBLICO NO LLEGA POR ACÁ DIRECTO: adelante hay un proxy en `api/tarjeta.ts` (función de Vercel)
+// que sirve `/t/<token>`. Existe SÓLO por los headers —el gateway de Supabase rompe el Content-Type
+// del HTML y esconde el host público—; ninguna decisión vive ahí. El contrato entre los dos son los
+// tres headers `X-Tarjeta-*` de más abajo.
 
 export type Deps = {
   resolver: (token: string) => Promise<{ data: Tarjeta | null; error: unknown }>
@@ -89,6 +94,41 @@ const NO_STORE = {
   'X-Robots-Tag': 'noindex, nofollow',
 }
 
+/**
+ * Los tres headers del contrato con el proxy de Vercel (`api/tarjeta.ts`).
+ *
+ * POR QUÉ EXISTE ESTE CONTRATO — medido el 7-sep-2026 contra el deploy real, no supuesto:
+ * el gateway de Supabase REESCRIBE el `Content-Type` de toda respuesta HTML a `text/plain` y le
+ * agrega `Content-Security-Policy: default-src 'none'; sandbox`. Es su defensa anti-phishing sobre
+ * `*.supabase.co` y no se puede apagar desde acá. La contraprueba está en el mismo lote: la vCard
+ * llegó intacta con su `text/vcard` y SIN CSP, o sea que el gateway interviene sólo sobre
+ * `text/html` y **no toca headers propios**. Por ahí viaja el tipo real.
+ *
+ * Vercel tampoco lo arregla: proxea la respuesta del rewrite externo sin tocar headers (medido
+ * también, contra med.ezpayconnect.com). De ahí el proxy en `/api`.
+ */
+export const H_CONTENT_TYPE = 'X-Tarjeta-Content-Type'
+export const H_HOST = 'X-Tarjeta-Host'
+export const H_PATH = 'X-Tarjeta-Path'
+
+/**
+ * TODA respuesta sale por acá. El `Content-Type` real y el header que lo transporta se emiten del
+ * MISMO valor, así que no pueden divergir: quién decide qué se está sirviendo es esta función y
+ * nadie más. El proxy sólo copia — si el tipo viviera también en un `if (formato === 'vcard')` del
+ * lado de Vercel, habría dos lugares que opinan sobre lo mismo y un día dirían cosas distintas.
+ */
+function respuesta(
+  body: string,
+  contentType: string,
+  status = 200,
+  extra: Record<string, string> = {},
+): Response {
+  return new Response(body, {
+    status,
+    headers: { ...NO_STORE, ...extra, 'Content-Type': contentType, [H_CONTENT_TYPE]: contentType },
+  })
+}
+
 const HTML_NO_DISPONIBLE = `<!doctype html>
 <html lang="es"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
@@ -103,10 +143,7 @@ font:16px/1.5 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;color:#334155
 </div></body></html>`
 
 function paginaNoDisponible(): Response {
-  return new Response(HTML_NO_DISPONIBLE, {
-    status: 404,
-    headers: { ...NO_STORE, 'Content-Type': 'text/html; charset=utf-8' },
-  })
+  return respuesta(HTML_NO_DISPONIBLE, 'text/html; charset=utf-8', 404)
 }
 
 export function renderVcard(t: Tarjeta): string {
@@ -211,10 +248,39 @@ export function tokenDe(url: URL): string {
   return decodeURIComponent(seg[1]).trim()
 }
 
+/**
+ * La URL PÚBLICA de la tarjeta, la que va en `og:url` porque el crawler la toma como canónica.
+ *
+ * LAS DOS INCÓGNITAS QUE ESTABAN ANOTADAS ACÁ YA ESTÁN MEDIDAS (7-sep-2026, deploy real contra
+ * med.ezpayconnect.com), y las dos salieron que NO:
+ *   1. Vercel **no manda `x-forwarded-host`** al proxear a un destino EXTERNO. El fallback
+ *      `url.host` daba `fqnsmvkxsuujahhmpzuk.supabase.co`.
+ *   2. El gateway de Supabase entrega el path como **`/tarjeta-asesor`** (se come `/functions/v1`),
+ *      así que tampoco llegaba `/` ni `/t/<token>`: `og:url` salía `.../tarjeta-asesor`.
+ * O sea que ninguno de los dos datos llegaba solo, y con el host correcto pero el path interno
+ * habría quedado mal igual. Por eso el proxy los manda EXPLÍCITOS en X-Tarjeta-Host y X-Tarjeta-Path,
+ * en vez de esperar que un intermediario los ponga.
+ *
+ * Los fallbacks quedan para cuando se llama a la edge directo, sin proxy (los smoke tests): ahí
+ * `og:url` apunta a supabase.co y está bien que así sea, es la URL por la que se pidió.
+ *
+ * ESTOS HEADERS NO SON UN DATO DE CONFIANZA y no hace falta que lo sean: la edge es pública, y
+ * cualquiera puede llamarla poniéndolos a mano. Lo único que alimentan es un `og:url` cosmético en
+ * una página que ese mismo llamante ya pidió; ninguna decisión de autorización los mira. Salen
+ * escapados igual, como todo lo demás (ver `esc`).
+ */
+export function urlPublicaDe(req: Request, url: URL, token: string): string {
+  const host = req.headers.get(H_HOST) ?? req.headers.get('x-forwarded-host') ?? url.host
+  const proto = req.headers.get('x-forwarded-proto') ?? 'https'
+  const path = req.headers.get(H_PATH)
+    ?? (url.pathname === '/' ? `/t/${encodeURIComponent(token)}` : url.pathname)
+  return `${proto}://${host}${path}`
+}
+
 export async function handle(req: Request, deps: Deps): Promise<Response> {
-  if (req.method === 'OPTIONS') return new Response('ok', { headers: NO_STORE })
+  if (req.method === 'OPTIONS') return respuesta('ok', 'text/plain; charset=utf-8')
   if (req.method !== 'GET' && req.method !== 'HEAD') {
-    return new Response('Method Not Allowed', { status: 405, headers: NO_STORE })
+    return respuesta('Method Not Allowed', 'text/plain; charset=utf-8', 405)
   }
 
   const url = new URL(req.url)
@@ -243,33 +309,12 @@ export async function handle(req: Request, deps: Deps): Promise<Response> {
   // y a distinguir "token con barra" de "token + sufijo". El query es ortogonal al token y no lo
   // toca.
   if ((url.searchParams.get('formato') ?? '').toLowerCase() === 'vcard') {
-    return new Response(renderVcard(data), {
-      headers: {
-        ...NO_STORE,
-        'Content-Type': 'text/vcard; charset=utf-8',
-        'Content-Disposition': 'attachment; filename="contacto.vcf"',
-      },
+    return respuesta(renderVcard(data), 'text/vcard; charset=utf-8', 200, {
+      'Content-Disposition': 'attachment; filename="contacto.vcf"',
     })
   }
 
-  // og:url tiene que ser la URL PÚBLICA (la de Vercel), no la de Supabase: el crawler la usa como
-  // canónica. Vercel la manda en x-forwarded-host al hacer proxy.
-  //
-  // AL DESPLEGAR, MIRAR ESTAS DOS COSAS — no se pueden verificar desde un test, porque el doble se
-  // inventa el request, y las dos hacen que og:url quede apuntando a la URL interna de la función:
-  //   1. Que Vercel MANDE `x-forwarded-host` al proxear a un destino EXTERNO (supabase.co). Si no
-  //      lo mandara, el fallback `url.host` da el host de Supabase.
-  //   2. Que `url.pathname` llegue como `/t/<token>` y NO como `/functions/v1/tarjeta-asesor`. Con
-  //      el host correcto pero el path interno, og:url igual queda mal.
-  // Se comprueba abriendo una tarjeta y leyendo el `og:url` del HTML, o pegando el link en WhatsApp
-  // y viendo a dónde apunta la preview.
-  const host = req.headers.get('x-forwarded-host') ?? url.host
-  const proto = req.headers.get('x-forwarded-proto') ?? 'https'
-  const publica = `${proto}://${host}${url.pathname === '/' ? `/t/${encodeURIComponent(token)}` : url.pathname}`
-
-  return new Response(renderHtml(data, publica), {
-    headers: { ...NO_STORE, 'Content-Type': 'text/html; charset=utf-8' },
-  })
+  return respuesta(renderHtml(data, urlPublicaDe(req, url, token)), 'text/html; charset=utf-8')
 }
 
 // Cliente con service_role: molde de las edges del repo (SB_* con fallback SUPABASE_*).

@@ -5,7 +5,11 @@
 // viene de la base; (c) los og: están en el HTML servido, que es la única razón de que esta ruta no
 // sea React; (d) la vCard; (e) no-store, porque una tarjeta revocable no se cachea.
 import { assertEquals, assertStringIncludes, assertNotMatch } from 'https://deno.land/std@0.224.0/assert/mod.ts'
-import { handle, esc, escVcard, soloDigitos, esInternacional, tokenDe, type Deps, type Tarjeta } from './index.ts'
+import {
+  handle, esc, escVcard, soloDigitos, esInternacional, tokenDe,
+  H_CONTENT_TYPE, H_HOST, H_PATH,
+  type Deps, type Tarjeta,
+} from './index.ts'
 
 // DOS fixtures a propósito: el prefijo internacional NO viene garantizado desde la base.
 // `asesores_perfil.celular` es text libre sin validación, así que un celular sin `+` es el caso
@@ -174,4 +178,59 @@ Deno.test('tokenDe: del query o del último segmento del path', () => {
 Deno.test('POST no se atiende: es una tarjeta de lectura', async () => {
   const r = await handle(new Request(URL_T, { method: 'POST' }), deps(T))
   assertEquals(r.status, 405)
+})
+
+// ------------------------------------------------- el contrato con el proxy (api/tarjeta.ts)
+// El gateway de Supabase reescribe el Content-Type del HTML a text/plain (medido 7-sep-2026) pero
+// no toca headers propios, así que el tipo real viaja en X-Tarjeta-Content-Type y el proxy lo
+// aplica. Si este header se cayera, la tarjeta se serviría como texto plano: el navegador mostraría
+// el código fuente y el crawler de WhatsApp no leería los og:.
+const conHeaders = (u: string, h: Record<string, string>) => new Request(u, { method: 'GET', headers: h })
+
+Deno.test(`${H_CONTENT_TYPE} viaja SIEMPRE y dice exactamente lo mismo que el Content-Type`, async () => {
+  const casos: Array<[string, Response]> = [
+    ['tarjeta', await handle(get(URL_T), deps(T))],
+    ['no disponible', await handle(get(URL_T), deps(null))],
+    ['vcard', await handle(get(`${URL_T}?formato=vcard`), deps(T))],
+    ['405', await handle(new Request(URL_T, { method: 'POST' }), deps(T))],
+  ]
+  for (const [nombre, r] of casos) {
+    const propio = r.headers.get(H_CONTENT_TYPE)
+    const real = r.headers.get('content-type')
+    // No basta con que exista: tiene que coincidir. Los dos salen del mismo valor justamente para
+    // que nadie pueda cambiar uno y olvidarse del otro.
+    assertEquals(propio, real, `${nombre}: ${H_CONTENT_TYPE} y Content-Type divergen`)
+  }
+  assertStringIncludes(casos[0][1].headers.get(H_CONTENT_TYPE) ?? '', 'text/html')
+  assertStringIncludes(casos[2][1].headers.get(H_CONTENT_TYPE) ?? '', 'text/vcard')
+})
+
+Deno.test('og:url se arma con el host y el path que manda el proxy, no con los de Supabase', async () => {
+  // Este es el request tal como llega en producción: la URL es la INTERNA de Supabase —el gateway
+  // entrega el path como /tarjeta-asesor— y lo público sólo está en los headers.
+  const req = conHeaders('https://fqnsmvkxsuujahhmpzuk.supabase.co/tarjeta-asesor?token=abc123', {
+    [H_HOST]: 'med.ezpayconnect.com',
+    [H_PATH]: '/t/abc123',
+  })
+  const html = await (await handle(req, deps(T))).text()
+  assertStringIncludes(html, 'og:url" content="https://med.ezpayconnect.com/t/abc123"')
+  assertEquals(html.includes('supabase.co'), false)
+  // y el link de la vCard cuelga de la URL pública, no de la interna
+  assertStringIncludes(html, 'href="https://med.ezpayconnect.com/t/abc123?formato=vcard"')
+})
+
+Deno.test('sin los headers del proxy, og:url cae en la URL por la que se pidió', async () => {
+  // Llamada DIRECTA a la edge (los smoke tests). Que og:url apunte a supabase.co acá es correcto.
+  const req = get('https://fqnsmvkxsuujahhmpzuk.supabase.co/tarjeta-asesor?token=abc123')
+  const html = await (await handle(req, deps(T))).text()
+  assertStringIncludes(html, 'og:url" content="https://fqnsmvkxsuujahhmpzuk.supabase.co/tarjeta-asesor"')
+})
+
+Deno.test('un host inyectado no se escapa del atributo del meta', async () => {
+  // Los headers del proxy NO son un dato de confianza: la edge es pública y cualquiera puede
+  // ponerlos a mano. Sólo alimentan un og:url cosmético, pero salen escapados igual.
+  const req = conHeaders(URL_T, { [H_HOST]: 'x"><script>alert(1)</script>', [H_PATH]: '/t/abc123' })
+  const html = await (await handle(req, deps(T))).text()
+  assertEquals(html.includes('<script>alert(1)</script>'), false)
+  assertStringIncludes(html, '&quot;&gt;&lt;script&gt;')
 })
