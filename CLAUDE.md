@@ -15,7 +15,7 @@ Stack: React + Vite + TypeScript, Supabase / Postgres, deploy en Vercel, repo en
   minutos por esto** (P635 es la probe que faltaba, P636 su contraprueba).
 - NUNCA ampliar policies de RLS sobre tablas adyacentes a datos médicos (p. ej. campana_metricas). Para dar acceso, usar RPCs SECURITY DEFINER con search_path='', fail-closed (si el scope es NULL → 0 filas) y gate interno.
 - Probar aislamiento por rol impersonando request.jwt.claims en prod: cada rol ve lo suyo y no lo ajeno.
-- **Módulo comercial — próximos números libres: probe `P672`, errcode `PA033`.** (Mig 285, 6-sep:
+- **Módulo comercial — próximos números libres: probe `P678`, errcode `PA035`.** (Mig 285, 6-sep:
   PA028 = check-in sobre visita que no está `planificada`; PA029 = doble checkout. Mig 286, 7-sep:
   `comercial_perfiles_sin_ficha(uuid)`, P639–P643; mig 287: `comercial_supervisores_del_pais(uuid)`,
   P644–P648; las dos son lectura y **no agregan errcode**: sin autoridad devuelven 0 filas, no
@@ -25,7 +25,12 @@ Stack: React + Vite + TypeScript, Supabase / Postgres, deploy en Vercel, repo en
   PA031 = sin ficha, PA032 = el path no empieza con tu id, P662–P671. El bucket `tarjetas-asesor`
   es **privado y lo sirve la edge**: uno público entregaría una URL de objeto que responde para
   siempre, y apagar el consentimiento no la mataría. El molde `fotos-medicos` **no sirve** — su
-  `fotos_medicos_public_select` es `SELECT` a `{public}` con la sola condición del `bucket_id`.)
+  `fotos_medicos_public_select` es `SELECT` a `{public}` con la sola condición del `bucket_id`.
+  Mig 290, 8-sep: validación de `fecha_ingreso` y `celular` en la ficha, PA033 = fecha fuera de
+  rango, PA034 = celular sin 7–15 dígitos, P672–P677. **El límite superior de la fecha NO puede ser
+  un CHECK**: depende de `CURRENT_DATE` y un CHECK exige expresión inmutable — por eso vive en la
+  RPC, igual que PA026. El celular sí tiene CHECK estructural *además* del guard: la RPC devuelve
+  el errcode que el front sabe pintar, y el CHECK ataja cualquier INSERT que no pase por la RPC.)
 - **El gateway de `*.supabase.co` REESCRIBE el `Content-Type` del HTML. Medido 7-sep-2026 contra el
   deploy real.** Toda respuesta `text/html` de una edge sale por el gateway como **`text/plain`** y
   con **`Content-Security-Policy: default-src 'none'; sandbox`** agregado. Es su defensa

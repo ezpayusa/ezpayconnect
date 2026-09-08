@@ -15297,6 +15297,145 @@ DO $$ DECLARE v_n int; BEGIN
 EXCEPTION WHEN OTHERS THEN PERFORM set_config('probe.p671','FALLO ('||SQLSTATE||' '||SQLERRM||')',false); END $$;
 SELECT set_config('role','none', true);
 
+-- ############################################################################################
+-- P672-P677 — validacion de fecha_ingreso y celular en guardar_asesor_perfil (mig 290)
+-- ############################################################################################
+-- QUE SE MIDE. Dos guards nuevos de la RPC, PA033 (fecha_ingreso fuera de rango) y PA034 (celular
+-- con menos de 7 o mas de 15 digitos). Se ejercita la RPC como el admin de pais, que es el unico
+-- camino real: el formulario valida lo mismo antes de llamar, pero el formulario no es la barrera
+-- —la escritura tambien llega por otras pantallas, scripts o la API directa— y es justo por eso
+-- que estos codigos son alcanzables.
+--
+-- POR QUE EL LIMITE SUPERIOR DE LA FECHA NO ES UN CHECK. Depende de CURRENT_DATE, y un CHECK con
+-- una expresion no inmutable no se puede crear. El celular SI tiene CHECK estructural
+-- (`asesores_perfil_celular_formato`) ADEMAS del guard: la RPC atrapa el caso con el errcode que el
+-- front sabe pintar, y el CHECK atrapa cualquier INSERT que no pase por la RPC. P677 mide eso.
+--
+-- LOS CONTROLES POSITIVOS NO SON DECORACION. Sin P674 y P676, los cinco rechazos de arriba tambien
+-- los daria una RPC que rechaza TODO — por ejemplo si el gate de pais fallara antes de llegar a la
+-- validacion. Que un valor bueno pase es lo que prueba que lo que se esta midiendo es el guard.
+--
+-- El sujeto es una ficha REAL de GT y todo lo que se escribe muere con el ROLLBACK del harness.
+SELECT set_config('role','none', true);
+DO $$
+DECLARE v_gt uuid := 'cbbbbe6d-59fe-4cf2-91ee-3e31ba1d5909';
+        v_adm uuid; v_ase uuid; v_cod text; v_err text;
+BEGIN
+  IF to_regprocedure('public.guardar_asesor_perfil(uuid,text,uuid,text,text,text,text,date,text,boolean)') IS NULL THEN
+    PERFORM set_config('probe.va_ready','0',false);
+    PERFORM set_config('probe.va_fx','ROJO — RPC AUSENTE (esto NO es un rechazo)',false); RETURN; END IF;
+
+  SELECT id INTO v_adm FROM public.perfiles WHERE email='adminpais.qa@ezpayconnect.com';
+  SELECT ap.id, ap.codigo_asesor INTO v_ase, v_cod
+    FROM public.asesores_perfil ap JOIN public.perfiles p ON p.id = ap.id
+   WHERE ap.pais_id = v_gt AND p.rol IN ('asesor_comercial','supervisor_comercial')
+   ORDER BY ap.id LIMIT 1;
+  IF v_adm IS NULL OR v_ase IS NULL THEN
+    PERFORM set_config('probe.va_ready','0',false);
+    PERFORM set_config('probe.va_fx','ROJO — FIXTURE AUSENTE (admin_pais GT o ficha de GT)',false); RETURN; END IF;
+
+  PERFORM set_config('probe.va_adm', v_adm::text, false);
+  PERFORM set_config('probe.va_ase', v_ase::text, false);
+  PERFORM set_config('probe.va_cod', v_cod, false);
+  PERFORM set_config('probe.va_ready','1', false);
+  PERFORM set_config('probe.va_fx','OK (fixture validacion: admin_pais GT + ficha real de GT '||v_cod||')', false);
+EXCEPTION WHEN OTHERS THEN
+  PERFORM set_config('probe.va_ready','0',false);
+  PERFORM set_config('probe.va_fx','ROJO ('||SQLSTATE||' '||SQLERRM||')',false);
+END $$;
+
+-- Un solo bloque para los seis casos: comparten sujeto y sesion, y separarlos obligaria a repetir
+-- la impersonacion seis veces. Cada caso tiene su propio handler, asi que uno que reviente no
+-- arrastra a los otros.
+DO $$
+DECLARE v_gt uuid := 'cbbbbe6d-59fe-4cf2-91ee-3e31ba1d5909';
+        v_ase uuid := NULLIF(current_setting('probe.va_ase',true),'')::uuid;
+        v_cod text := coalesce(current_setting('probe.va_cod',true),'QA-VA');
+        v_err text;
+BEGIN
+  IF coalesce(current_setting('probe.va_ready',true),'')<>'1' THEN
+    PERFORM set_config('probe.p672','N/A (fixture ausente)',false);
+    PERFORM set_config('probe.p673','N/A (fixture ausente)',false);
+    PERFORM set_config('probe.p674','N/A (fixture ausente)',false);
+    PERFORM set_config('probe.p675','N/A (fixture ausente)',false);
+    PERFORM set_config('probe.p676','N/A (fixture ausente)',false);
+    PERFORM set_config('probe.p677','N/A (fixture ausente)',false);
+    RETURN; END IF;
+
+  PERFORM set_config('request.jwt.claims',
+    json_build_object('sub', current_setting('probe.va_adm',true), 'role','authenticated')::text, true);
+  PERFORM set_config('role','authenticated', true);
+
+  -- P672 — fecha absurda hacia el FUTURO. Es el caso que Oscar metio a mano el 7-sep: la pantalla
+  -- acepto '2227-01-01' y quedo guardado.
+  BEGIN
+    PERFORM public.guardar_asesor_perfil(v_ase, v_cod, v_gt, NULL,NULL,NULL,NULL, DATE '2227-01-01');
+    v_err := NULL;
+  EXCEPTION WHEN OTHERS THEN v_err := SQLSTATE; END;
+  PERFORM set_config('probe.p672', CASE
+    WHEN v_err = 'PA033' THEN 'OK (PA033)'
+    WHEN v_err IS NULL   THEN 'ROJO (PERMITIO fecha_ingreso 2227-01-01)'
+    ELSE 'ROJO (rechazo con '||v_err||', se esperaba PA033)' END, false);
+
+  -- P673 — fecha absurda hacia el PASADO. La negativa por el otro extremo: un rango que solo corta
+  -- de un lado deja la mitad del agujero abierto.
+  BEGIN
+    PERFORM public.guardar_asesor_perfil(v_ase, v_cod, v_gt, NULL,NULL,NULL,NULL, DATE '1999-12-31');
+    v_err := NULL;
+  EXCEPTION WHEN OTHERS THEN v_err := SQLSTATE; END;
+  PERFORM set_config('probe.p673', CASE
+    WHEN v_err = 'PA033' THEN 'OK (PA033)'
+    WHEN v_err IS NULL   THEN 'ROJO (PERMITIO fecha_ingreso 1999-12-31)'
+    ELSE 'ROJO (rechazo con '||v_err||', se esperaba PA033)' END, false);
+
+  -- P674 — CONTROL POSITIVO de la fecha: hoy tiene que entrar.
+  BEGIN
+    PERFORM public.guardar_asesor_perfil(v_ase, v_cod, v_gt, NULL,NULL,NULL,NULL, CURRENT_DATE);
+    v_err := NULL;
+  EXCEPTION WHEN OTHERS THEN v_err := SQLSTATE||' '||SQLERRM; END;
+  PERFORM set_config('probe.p674', CASE WHEN v_err IS NULL
+    THEN 'OK (CURRENT_DATE entra: P672/P673 miden el rango y no un rechazo total)'
+    ELSE 'ROJO (rechazo una fecha VALIDA: '||v_err||')' END, false);
+
+  -- P675 — celular sin un solo digito.
+  BEGIN
+    PERFORM public.guardar_asesor_perfil(v_ase, v_cod, v_gt, NULL,NULL,NULL, 'abc', NULL);
+    v_err := NULL;
+  EXCEPTION WHEN OTHERS THEN v_err := SQLSTATE; END;
+  PERFORM set_config('probe.p675', CASE
+    WHEN v_err = 'PA034' THEN 'OK (PA034)'
+    WHEN v_err IS NULL   THEN 'ROJO (PERMITIO celular "abc")'
+    ELSE 'ROJO (rechazo con '||v_err||', se esperaba PA034)' END, false);
+
+  -- P676 — celular con digitos pero DEMASIADO CORTO. Distinto de P675: 'abc' tiene cero digitos y
+  -- lo cortaria hasta un `IS NOT NULL` mal hecho; '123' obliga a que el conteo exista de verdad.
+  BEGIN
+    PERFORM public.guardar_asesor_perfil(v_ase, v_cod, v_gt, NULL,NULL,NULL, '123', NULL);
+    v_err := NULL;
+  EXCEPTION WHEN OTHERS THEN v_err := SQLSTATE; END;
+  PERFORM set_config('probe.p676', CASE
+    WHEN v_err = 'PA034' THEN 'OK (PA034)'
+    WHEN v_err IS NULL   THEN 'ROJO (PERMITIO celular "123", 3 digitos)'
+    ELSE 'ROJO (rechazo con '||v_err||', se esperaba PA034)' END, false);
+
+  -- P677 — CONTROL POSITIVO del celular: el formato real que usa el modulo, con prefijo y guion,
+  -- son 11 digitos y tiene que entrar. Sin esta, los dos PA034 de arriba tambien los daria una
+  -- validacion que rechaza cualquier celular.
+  BEGIN
+    PERFORM public.guardar_asesor_perfil(v_ase, v_cod, v_gt, NULL,NULL,NULL, '+502 5500-0100', NULL);
+    v_err := NULL;
+  EXCEPTION WHEN OTHERS THEN v_err := SQLSTATE||' '||SQLERRM; END;
+  PERFORM set_config('probe.p677', CASE WHEN v_err IS NULL
+    THEN 'OK (+502 5500-0100 entra: 11 digitos, y el CHECK de la tabla tampoco lo bloquea)'
+    ELSE 'ROJO (rechazo un celular VALIDO: '||v_err||')' END, false);
+
+  PERFORM set_config('role','none', true);
+EXCEPTION WHEN OTHERS THEN
+  PERFORM set_config('role','none', true);
+  PERFORM set_config('probe.p672','FALLO ('||SQLSTATE||' '||SQLERRM||')',false);
+END $$;
+SELECT set_config('role','none', true);
+
 -- ===== Veredictos como result set =====
 SELECT 'P1_anon_insert_citas'              AS probe, current_setting('probe.p1', true)  AS verdict, 'BLOQUEADO' AS esperado_post_fix
 UNION ALL SELECT 'P2_medico_cancela_ajena_rpc',         current_setting('probe.p2', true),  'BLOQUEADO'
@@ -16022,6 +16161,13 @@ UNION ALL SELECT 'P668_fo_anon_sin_execute',           current_setting('probe.p6
 UNION ALL SELECT 'P669_fo_bucket_privado_anon',        current_setting('probe.p669', true),   'OK (anon no ve)'
 UNION ALL SELECT 'P670_fo_bucket_privado_otro_asesor', current_setting('probe.p670', true),   'OK (no ve ajena)'
 UNION ALL SELECT 'P671_fo_dueno_si_ve_control_pos',    current_setting('probe.p671', true),   'OK (control positivo)'
+UNION ALL SELECT 'VA_FX_fixture_validacion',           current_setting('probe.va_fx', true),   'OK (admin GT + ficha GT)'
+UNION ALL SELECT 'P672_va_fecha_futuro_absurdo',       current_setting('probe.p672', true),    'OK (PA033)'
+UNION ALL SELECT 'P673_va_fecha_pasado_absurdo',       current_setting('probe.p673', true),    'OK (PA033)'
+UNION ALL SELECT 'P674_va_fecha_hoy_control_pos',      current_setting('probe.p674', true),    'OK (control positivo)'
+UNION ALL SELECT 'P675_va_celular_sin_digitos',        current_setting('probe.p675', true),    'OK (PA034)'
+UNION ALL SELECT 'P676_va_celular_corto',              current_setting('probe.p676', true),    'OK (PA034)'
+UNION ALL SELECT 'P677_va_celular_valido_control_pos', current_setting('probe.p677', true),    'OK (control positivo)'
 UNION ALL SELECT 'FX20_fo_fixture',                    current_setting('probe.fo_fx', true),  'OK (fixture)'
 UNION ALL SELECT 'P631_CENSO_anon_perfiles',           current_setting('probe.p631', true), 'OK (anon en cero, los 7)'
 UNION ALL SELECT 'P632_authenticated_perfiles',        current_setting('probe.p632', true), 'OK (4 DML si, 3 no)'
@@ -16228,7 +16374,9 @@ UNION ALL SELECT 'P000_CENTINELA_veredictos_no_nulos',
        'probe.p654', 'probe.p655', 'probe.p656', 'probe.p657', 'probe.p658', 'probe.p659',
        'probe.p660', 'probe.p661',
        'probe.fo_fx', 'probe.p662', 'probe.p663', 'probe.p664', 'probe.p665', 'probe.p666',
-       'probe.p667', 'probe.p668', 'probe.p669', 'probe.p670', 'probe.p671'
+       'probe.p667', 'probe.p668', 'probe.p669', 'probe.p670', 'probe.p671',
+       'probe.va_fx', 'probe.p672', 'probe.p673', 'probe.p674', 'probe.p675', 'probe.p676',
+       'probe.p677'
              ]) AS n) s),
   'OK (todos los veredictos publicados)';
 

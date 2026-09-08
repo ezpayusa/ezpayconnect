@@ -34,6 +34,17 @@ const FORM_VACIO: Form = {
   telefono: '', celular: '', fecha_ingreso: '', bio: '', activo: true,
 }
 
+// Rango de `fecha_ingreso`. Los MISMOS valores que la RPC (PA033, mig 290) — duplicados a
+// propósito, porque el `min`/`max` del <input type="date"> y el mensaje del formulario no pueden
+// salir de la base. El límite superior se calcula en cada render y no se congela en una constante:
+// un valor fijo caducaría al día siguiente y el formulario empezaría a rechazar fechas válidas.
+const MIN_FECHA_INGRESO = '2000-01-01'
+const maxFechaIngreso = () => {
+  const d = new Date()
+  d.setFullYear(d.getFullYear() + 1)
+  return d.toISOString().slice(0, 10)
+}
+
 // Los campos que este formulario SÍ sabe pintar. Un error inline dirigido a cualquier otro campo
 // —PA014 apunta a `pais_id`, PA008/PA009 a `asesor_id`, y acá no hay ninguno de los dos— quedaría
 // invisible. Se pinta al pie en vez de perderse.
@@ -96,6 +107,28 @@ export default function AsesoresPaisPage() {
     setErr(null)
     if (!form.codigo_asesor.trim()) {
       setErr({ campo: 'codigo_asesor', mensaje: 'El código del asesor es obligatorio.' }); return
+    }
+    // Los dos controles de abajo son CORTESÍA, no la barrera. La barrera vive en
+    // `guardar_asesor_perfil` (PA033 y PA034, mig 290): la RPC es lo único que ve toda la escritura,
+    // incluida la que no pasa por esta pantalla. Acá se validan para que el usuario se entere antes
+    // del round-trip y con el error pegado al campo, no en un toast genérico.
+    if (form.fecha_ingreso) {
+      const f = new Date(`${form.fecha_ingreso}T00:00:00`)
+      if (Number.isNaN(f.getTime()) || form.fecha_ingreso < MIN_FECHA_INGRESO
+          || form.fecha_ingreso > maxFechaIngreso()) {
+        setErr({ campo: 'fecha_ingreso',
+          mensaje: `La fecha de ingreso tiene que estar entre ${MIN_FECHA_INGRESO} y ${maxFechaIngreso()}.` })
+        return
+      }
+    }
+    if (form.celular.trim()) {
+      // Se cuentan DÍGITOS, no caracteres: '+502 5500-0100' son 11 dígitos y es válido.
+      const digitos = form.celular.replace(/\D/g, '').length
+      if (digitos < 7 || digitos > 15) {
+        setErr({ campo: 'celular',
+          mensaje: `El celular tiene ${digitos} dígito${digitos === 1 ? '' : 's'} y tiene que tener entre 7 y 15.` })
+        return
+      }
     }
     setGuardando(true)
     const { error } = await guardarAsesorPerfil({
@@ -207,6 +240,7 @@ export default function AsesoresPaisPage() {
         <div>
           <label className="text-xs text-gray-600">Fecha de ingreso</label>
           <input type="date" id="fecha_ingreso" value={form.fecha_ingreso}
+            min={MIN_FECHA_INGRESO} max={maxFechaIngreso()}
             onChange={(e) => setForm({ ...form, fecha_ingreso: e.target.value })}
             className="mt-1 w-full rounded border px-2 py-1.5 text-sm" />
         </div>

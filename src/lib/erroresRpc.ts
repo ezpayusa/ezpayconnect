@@ -163,6 +163,18 @@ const MAPA: Record<string, Entrada> = {
   // nuestro y no del usuario. Por eso es el unico de este lote que se reporta, y lleva el texto
   // generico — el de la base nombra el path crudo, que no le dice nada a quien lo lee.
   PA032: { texto: GENERICO, destino: 'toast', reportar: true },
+  // --- Validacion de fecha_ingreso y celular en la ficha de asesor (mig 290) ------------------
+  // Mismo criterio que PA026: son datos que el usuario ESCRIBE mal y puede corregir en el campo,
+  // asi que van INLINE, con `campo`, y NO se reportan — no es un bug nuestro.
+  // Los dos campos estan en CAMPOS_DEL_FORM de AsesoresPaisPage, o sea que el inline se pinta
+  // pegado al input; si alguno no estuviera, el mensaje caeria al pie y se leeria como huerfano.
+  // La pantalla valida lo mismo ANTES de llamar, asi que llegar aca significa que la escritura
+  // vino por otro camino (otra pantalla, un script, la API directa). Que el guard viva en la RPC
+  // y no solo en el formulario es exactamente lo que hace que estos codigos sean alcanzables.
+  PA033: { texto: 'La fecha de ingreso está fuera de rango: tiene que estar entre 2000-01-01 y un año a futuro.',
+           destino: 'inline', campo: 'fecha_ingreso', reportar: false },
+  PA034: { texto: 'El celular tiene que tener entre 7 y 15 dígitos.',
+           destino: 'inline', campo: 'celular', reportar: false },
 }
 
 const ES_PA = /^PA\d{3}$/

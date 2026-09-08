@@ -24,8 +24,8 @@ archivos están trackeados en git. Cero drift.**
 | **282** | `visitas_com_una_por_dia` deja de contar las canceladas: pasa de CONSTRAINT UNIQUE a **índice único parcial** `WHERE estado <> 'cancelada'`. Ver *Hallazgo 2*. |
 | **283** | `comercial_asesores_visibles()` — RPC SECURITY DEFINER que devuelve 5 columnas (`id`, `codigo_asesor`, `nombre_completo`, `activo`, `supervisor_id`) con el gate copiado literal de la policy `asesores_perfil_select`. Ver *Hallazgo 3*. |
 
-> **Números vivos (7-sep, cierre del pendiente #5):** última migración aplicada **289** · próxima
-> **290** · próximo errcode libre **PA033** · próxima probe libre **P672** · harness **733 filas,
+> **Números vivos (8-sep, mig 290):** última migración aplicada **290** · próxima
+> **291** · próximo errcode libre **PA035** · próxima probe libre **P678** · harness **740 filas,
 > 11 rojas** (10 deuda ajena, 1 propia — P473, falso positivo de `count(*)` documentado en el
 > punto 7), piso 680. Se actualizan acá y sólo acá: tenerlos repetidos en cada sección fue
 > justamente lo que los dejó contradiciéndose entre sí.

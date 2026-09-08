@@ -193,20 +193,21 @@ describe('agenda (mig 280) — PA026 y PA027', () => {
 })
 
 describe('los tres negativos — que el mapa envejezca bien y no rompa', () => {
-  // EL IMPORTANTE. Usa el PRÓXIMO ERRCODE LIBRE, que hoy es PA033 (PA001-PA032 están tomados por
-  // las migs 264/272/273/274/280/285/288/289). Este test ya se rompió tres veces: al mapear
+  // EL IMPORTANTE. Usa el PRÓXIMO ERRCODE LIBRE, que hoy es PA035 (PA001-PA034 están tomados por
+  // las migs 264/272/273/274/280/285/288/289/290). Este test ya se rompió varias veces: al mapear
   // PA015-PA025, al mapear PA026-PA027 y al mapear PA028-PA029. Es exactamente lo que tiene que
-  // hacer. Cuando alguien reserve PA033, moverlo al siguiente libre es parte de reservarlo.
+  // hacer. Cuando alguien reserve PA035, moverlo al siguiente libre es parte de reservarlo.
   //
-  // Se movió de PA030 a PA033 el 7-sep-2026: la mig 288 reservó PA030 y la 289 reservó PA031 y
-  // PA032, y el centinela se quedó apuntando a un código ya tomado. Un centinela que usa un
-  // errcode reservado deja de probar lo que dice probar — mide "PA030 no está mapeado", que es
-  // cierto por ahora y por casualidad, en vez de "un código desconocido no desaparece".
+  // DOS MUDANZAS, la misma historia: de PA030 a PA033 el 7-sep (las migs 288 y 289 reservaron
+  // PA030, PA031 y PA032) y de PA033 a PA035 el 8-sep (la mig 290 reservó PA033 y PA034). Las dos
+  // veces el centinela se quedó apuntando a un código ya tomado. Un centinela que usa un errcode
+  // reservado deja de probar lo que dice probar — mide "PA0xx no está mapeado", que es cierto por
+  // casualidad, en vez de "un código desconocido no desaparece".
   it('un PA0xx que NO está en el mapa NO cae en el genérico silencioso', () => {
-    const r = mapearErrorRpc(pg('PA033', 'PA033: una regla que todavia no mapeamos'))
+    const r = mapearErrorRpc(pg('PA035', 'PA035: una regla que todavia no mapeamos'))
     expect(r.sinMapear).toBe(true)
-    expect(r.code).toBe('PA033')
-    expect(r.mensaje).toContain('PA033')          // el código queda A LA VISTA
+    expect(r.code).toBe('PA035')
+    expect(r.mensaje).toContain('PA035')          // el código queda A LA VISTA
     expect(r.mensaje).toContain('una regla que todavia no mapeamos')
     expect(r.reportar).toBe(true)                 // y llega a Sentry
     expect(r.mensaje).not.toBe('No se pudo completar la operación. Intentá de nuevo.')
