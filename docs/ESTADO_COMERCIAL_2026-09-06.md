@@ -384,7 +384,8 @@ Esas tres cuentas no eran datos QA descartables: eran **fixtures permanentes del
 estaba escrito en ningún lado.
 
 Arreglado en el mismo bloque de trabajo (`d880fa7`): los tres sujetos **se resuelven por email**, el
-mismo patrón que el archivo ya usaba para `admin.qa@ezpayconnect.com`, y
+mismo patrón que el archivo ya usaba para la cuenta de super_admin (entonces
+`admin.qa@ezpayconnect.com`, rotada el 8-sep a `superadmin@ezpayconnect.com` — ver punto 8), y
 `scripts/recrear-fixtures-harness-comercial.mjs` los recrea **por el camino real** (`crear-empleado`
 + `guardar_asesor_perfil` + `asignar_supervisor`) en **Guatemala, no en ZZ**: son el andamio del
 harness, no datos de demostración, y las probes miden aislamiento con datos de GT.
@@ -450,11 +451,23 @@ Los dos scripts del `f2809a0` sirven de molde para cuando le toque al DEMO — c
   typechequea al construir funciones. Las tres se verificaron a mano con una invocación suelta de
   `tsc` y salieron limpias, pero eso no es un gate: hay que meter `api` en un tsconfig (probablemente
   `tsconfig.node.json`, que ya tiene `types: ["node"]`) y ver qué baseline aparece antes de exigir 0.
-- **`admin.qa@ezpayconnect.com` es un `super_admin` REAL sobre producción con credencial de estilo
-  QA.** No es una cuenta de prueba en un entorno de prueba: no hay otro entorno. Tiene el rol más
-  alto del sistema —crea empleados con cualquier rol, ve todos los países, todos los perfiles— y su
-  credencial se maneja como la de una cuenta descartable. Es la cuenta con la que se corrió el seed.
-  Decidir si se le rota la clave, se le pone segundo factor o se la reemplaza por una nominal.
+- ~~**Un `super_admin` REAL sobre producción con credencial de estilo QA.**~~ — **RESUELTO 8-sep.**
+  `admin.qa@ezpayconnect.com` tenía el rol más alto del sistema —crea empleados con cualquier rol,
+  ve todos los países, todos los perfiles— con una credencial manejada como la de una cuenta
+  descartable, y sobre producción, porque no hay otro entorno. Era además la cuenta con la que se
+  corrió el seed DEMO.
+  Rotada a **`superadmin@ezpayconnect.com`** con contraseña aleatoria de 32 bytes, vía
+  `scripts/rotar-superadmin-2026-09-08.mjs` (script de un solo uso, dry-run por defecto, con
+  verificación previa del estado y posterior de las invariantes). **Las sesiones anteriores quedaron
+  cerradas**: las cerró el propio cambio de contraseña por la API admin de GoTrue, no el `DELETE`
+  —que corrió sobre una tabla ya vacía—, un detalle que importa si alguien reusa el patrón.
+  `rol`, `pais_id` y `activo` sin cambios. Las 8 referencias por email de
+  `tests/rls/probes_escritura.sql` se actualizaron en el mismo commit, para que el harness siga
+  resolviendo su fixture de super_admin.
+  Verificado independientemente por Oscar: login exitoso con las credenciales nuevas y harness en
+  **733 filas / 11 rojas**, sin cambios respecto del baseline.
+  **Queda abierto lo que la rotación no resuelve**: la cuenta sigue sin segundo factor y sigue sin
+  ser nominal.
 - **El catálogo `planes_base` tiene nombres de CLIENTES CONCRETOS, y se replica a cada país nuevo.**
   Medido al crear el país DEMO (7-sep): la pantalla de países sembró 23 filas en
   `planes_configuracion`, una por plan base, y entre ellas vinieron **`Dr. Oscar Gutierrez`** (tipo

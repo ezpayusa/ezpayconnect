@@ -10072,8 +10072,8 @@ DECLARE
   v_sv uuid := 'f2c75b8e-ef54-4a05-b2ff-7363e448f680';
   v_sa uuid; v_ngt bigint; v_nsv bigint;
 BEGIN
-  SELECT id INTO v_sa FROM auth.users WHERE email = 'admin.qa@ezpayconnect.com';
-  IF v_sa IS NULL THEN PERFORM set_config('probe.p489','ROJO (fixture ausente: admin.qa)', false); RETURN; END IF;
+  SELECT id INTO v_sa FROM auth.users WHERE email = 'superadmin@ezpayconnect.com';
+  IF v_sa IS NULL THEN PERFORM set_config('probe.p489','ROJO (fixture ausente: superadmin)', false); RETURN; END IF;
   BEGIN
     PERFORM set_config('request.jwt.claims',
       json_build_object('sub', v_sa::text, 'role','authenticated')::text, true);
@@ -10109,7 +10109,7 @@ DECLARE
   v_sa   uuid;
   v_emp_gt uuid; v_emp_sv uuid; v_liq_gt uuid; v_liq_sv uuid;
 BEGIN
-  SELECT id INTO v_sa FROM public.perfiles WHERE email='admin.qa@ezpayconnect.com';
+  SELECT id INTO v_sa FROM public.perfiles WHERE email='superadmin@ezpayconnect.com';
   SELECT id INTO v_emp_gt FROM public.empresas_proveedoras
     WHERE tipo='farmacia' AND pais_id=v_gt ORDER BY id LIMIT 1;
 
@@ -10287,7 +10287,7 @@ BEGIN
   v_liq := NULLIF(current_setting('probe.l2_liq_gt', true),'')::uuid;
 
   FOR r IN
-    SELECT 'p494' AS pr, 'super_admin' AS etq, id AS uid FROM public.perfiles WHERE email='admin.qa@ezpayconnect.com'
+    SELECT 'p494' AS pr, 'super_admin' AS etq, id AS uid FROM public.perfiles WHERE email='superadmin@ezpayconnect.com'
     UNION ALL
     SELECT 'p495', 'admin_pais GT', id FROM public.perfiles WHERE email='adminpais.qa@ezpayconnect.com'
   LOOP
@@ -10457,7 +10457,7 @@ BEGIN
     SELECT u.id INTO v_sinperfil FROM auth.users u
       WHERE u.email='farmacia.qa@ezpayconnect.com'
         AND NOT EXISTS (SELECT 1 FROM public.perfiles p WHERE p.id=u.id);
-    SELECT id INTO v_super     FROM public.perfiles WHERE email='admin.qa@ezpayconnect.com';
+    SELECT id INTO v_super     FROM public.perfiles WHERE email='superadmin@ezpayconnect.com';
     SELECT id INTO v_adminpais FROM public.perfiles WHERE email='adminpais.qa@ezpayconnect.com';
     SELECT id INTO v_emp_gt    FROM public.empresas_proveedoras WHERE pais_id=v_gt LIMIT 1;
     SELECT id INTO v_clin_gt   FROM public.clinicas WHERE pais_id=v_gt LIMIT 1;
@@ -10740,7 +10740,7 @@ BEGIN
     SELECT u.id INTO v_sinperfil FROM auth.users u
       WHERE u.email='farmacia.qa@ezpayconnect.com'
         AND NOT EXISTS (SELECT 1 FROM public.perfiles p WHERE p.id=u.id);
-    SELECT id INTO v_super     FROM public.perfiles WHERE email='admin.qa@ezpayconnect.com';
+    SELECT id INTO v_super     FROM public.perfiles WHERE email='superadmin@ezpayconnect.com';
     SELECT id INTO v_adminpais FROM public.perfiles WHERE email='adminpais.qa@ezpayconnect.com';
     SELECT id INTO v_pac       FROM public.pacientes WHERE auth_user_id IS NOT NULL LIMIT 1;
     SELECT id INTO v_clin_gt   FROM public.clinicas WHERE pais_id=v_gt LIMIT 1;
@@ -10963,7 +10963,7 @@ BEGIN
     SELECT u.id INTO v_sinperfil FROM auth.users u
       WHERE u.email='farmacia.qa@ezpayconnect.com'
         AND NOT EXISTS (SELECT 1 FROM public.perfiles p WHERE p.id=u.id);
-    SELECT id INTO v_super     FROM public.perfiles WHERE email='admin.qa@ezpayconnect.com';
+    SELECT id INTO v_super     FROM public.perfiles WHERE email='superadmin@ezpayconnect.com';
     SELECT id INTO v_adminpais FROM public.perfiles WHERE email='adminpais.qa@ezpayconnect.com';
     SELECT cp.empresa_id, cp.id INTO v_emp_gt, v_cta FROM public.cuentas_proveedor cp
       JOIN public.empresas_proveedoras e ON e.id=cp.empresa_id
@@ -11159,7 +11159,7 @@ BEGIN
   END IF;
 
   BEGIN
-    SELECT id INTO v_super     FROM public.perfiles WHERE email='admin.qa@ezpayconnect.com';
+    SELECT id INTO v_super     FROM public.perfiles WHERE email='superadmin@ezpayconnect.com';
     SELECT id INTO v_adminpais FROM public.perfiles WHERE email='adminpais.qa@ezpayconnect.com';
     SELECT id INTO v_emp_gt    FROM public.empresas_proveedoras WHERE pais_id=v_gt LIMIT 1;
     IF v_super IS NULL OR v_adminpais IS NULL OR v_emp_gt IS NULL THEN
@@ -11380,7 +11380,7 @@ DECLARE v_gt uuid := 'cbbbbe6d-59fe-4cf2-91ee-3e31ba1d5909'; v_hn uuid := '704ae
         -- filas: 23 probes se pusieron rojas de golpe, la mayoria diciendo "TABLAS AUSENTES", que
         -- apunta al lado equivocado. El email es estable y la fila se puede recrear; el uuid lo
         -- asigna Auth y cambia en cada alta. Mismo patron que ya usaba el archivo para
-        -- admin.qa@ezpayconnect.com y adminpais.qa@ezpayconnect.com.
+        -- superadmin@ezpayconnect.com y adminpais.qa@ezpayconnect.com.
         -- Las cuentas las recrea `scripts/recrear-fixtures-harness-comercial.mjs`.
         v_sup   uuid;   -- supervisor_comercial GT
         v_ase1  uuid;   -- asesor GT, EN la cartera del sup
