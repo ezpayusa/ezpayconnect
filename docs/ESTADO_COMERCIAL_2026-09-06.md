@@ -26,8 +26,9 @@ archivos están trackeados en git. Cero drift.**
 
 > **Números vivos (7-sep, cierre del pendiente #5):** última migración aplicada **289** · próxima
 > **290** · próximo errcode libre **PA033** · próxima probe libre **P672** · harness **733 filas,
-> 11 rojas** (todas deuda ajena), piso 680. Se actualizan acá y sólo acá: tenerlos repetidos en
-> cada sección fue justamente lo que los dejó contradiciéndose entre sí.
+> 11 rojas** (10 deuda ajena, 1 propia — P473, falso positivo de `count(*)` documentado en el
+> punto 7), piso 680. Se actualizan acá y sólo acá: tenerlos repetidos en cada sección fue
+> justamente lo que los dejó contradiciéndose entre sí.
 
 ---
 
