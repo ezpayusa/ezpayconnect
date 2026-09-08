@@ -1,6 +1,6 @@
 # Estado del módulo comercial — 6 de septiembre de 2026
 
-`main` = **`ee7945c`** (más este commit de docs), sincronizada con `origin/main` en las dos
+`main` = **`d880fa7`** (más este commit de docs), sincronizada con `origin/main` en las dos
 direcciones. Nada sin commitear salvo los untracked de siempre (manuales PDF y sus scripts,
 `AUDITORIA-PROFUNDA-2026-07-05.md`, `CODEX_VALIDACION_AUDITORIA.md`, `tmp/`).
 
@@ -26,7 +26,7 @@ archivos están trackeados en git. Cero drift.**
 
 > **Números vivos (7-sep, cierre del pendiente #5):** última migración aplicada **289** · próxima
 > **290** · próximo errcode libre **PA033** · próxima probe libre **P672** · harness **733 filas,
-> 13 rojas** (todas deuda ajena), piso 680. Se actualizan acá y sólo acá: tenerlos repetidos en
+> 11 rojas** (todas deuda ajena), piso 680. Se actualizan acá y sólo acá: tenerlos repetidos en
 > cada sección fue justamente lo que los dejó contradiciéndose entre sí.
 
 ---
@@ -341,37 +341,77 @@ Dos cosas quedaron de esto:
   definición viva es lo que cierra ese hueco sin escribir — aunque en este caso concreto habría dado
   verde igual, porque el problema no estaba en la firma.
 
-### 7. Limpieza de datos QA en prod
+### 7. ~~Limpieza de datos QA en prod~~ — **CERRADO 8-sep** (la parte QA; el inventario DEMO sigue vivo)
 
-- Jornada `db1ad4f2-6894-4452-a01c-7b8e315a6310` — asesor1, fecha 2026-09-05, **abierta sin cerrar**.
-- Jornada `a4c9a69f-4364-43f4-9afd-22f2ec6a06fc` — asesor2, fecha 2026-09-04, **abierta sin cerrar**.
-- Prospectos `QA CICLO 16:29` / `16:30`, `QA GEO cerca` / `lejos`, `QA ADJ sin checkin`.
-- Visita `39866a82-20c2-4994-95d3-900034333ab7` (2026-09-08 15:15, planificada) — la creó Oscar
-  verificando la agenda.
-- **Fichas de asesor con datos de prueba** cargados al verificar la pantalla del punto 4:
-  `QA-SUP-01` quedó con cargo `supervidor` (sic), territorio `centro`, bio `nada` y
-  `fecha_ingreso 2227-01-01`. No estorban a nadie, pero son datos inventados en una tabla real.
-- **`QA-ASE-01` tiene la TARJETA PÚBLICA ENCENDIDA** (`tarjeta_publica = true`) y datos de contacto
-  inventados cargados por SQL el 7-sep para verificar la pieza 2: cargo `Asesor Comercial Senior`,
-  territorio `Zona 10 y Zona 14, Ciudad de Guatemala`, teléfono `2378-4500`, celular
-  `+502 5512-3456`. **Esta es la única fila del inventario QA que está publicada en internet**: el
-  link `/t/<token>` responde a cualquiera que lo tenga. Al limpiar, apagarla es lo primero —
-  `tarjeta_publica = false` la mata en el request siguiente, sin ventana.
-- **`QA-ASE-01` — LA TARJETA ESTÁ PUBLICADA EN INTERNET.** Es la única fila del inventario QA
-  accesible sin sesión: el enlace `/t/<token>` le responde a cualquiera que lo tenga. Al limpiar,
-  **apagarla es lo primero** — `tarjeta_publica = false` la mata en el request siguiente. Tres cosas
-  para borrar, y son distintas entre sí:
-  1. el consentimiento (`tarjeta_publica`), que es lo que expone;
-  2. la **foto en el bucket `tarjetas-asesor`**, path
-     `97c5d673-bd6c-416b-8970-921a78c92887/b1a005b5-ebd9-4782-9d5d-cfcf1f5e6384.png` — es una imagen
-     de una persona (`docs/imagenes/reclutamiento/asesor-ejecutivo-b2b-hombre.png`, 1 893 773 bytes)
-     subida el 7-sep para verificar la edge; borrar el objeto **y** poner `foto_publica_path` en
-     NULL, porque son dos cosas y una sin la otra deja basura o un path roto;
-  3. los **datos de contacto inventados** cargados por SQL en esa ficha para que la tarjeta se viera
-     completa: cargo `Asesor Comercial Senior`, territorio `Zona 10 y Zona 14, Ciudad de Guatemala`,
-     teléfono `2378-4500`, celular `+502 5512-3456`.
+#### Lo que se borró (8-sep-2026)
 
-#### Inventario DEMO (país ZZ) — medido 7-sep tras el seed
+Las tres fichas QA del módulo comercial y **todo su rastro**, por id explícito — ni un `LIKE 'QA-%'`,
+ni un patrón: los ids salieron de dos recon de sólo lectura y quedaron escritos uno por uno.
+
+| qué | cuántas |
+|---|---|
+| `perfiles` + `asesores_perfil` | **3** (`QA-ASE-01`, `QA-ASE-02`, `QA-SUP-01`) |
+| `prospectos` | **5** |
+| `prospecto_contactos` | **1** |
+| `jornadas_comerciales` | **4** |
+| `visitas_comerciales` | **4** |
+| `reportes_visita` | **2** |
+| `visita_adjuntos` | **1** (+ su binario en `visitas-comerciales`) |
+| objetos de storage | **2** (`visitas-comerciales` y `tarjetas-asesor`) |
+| `usuario_roles` | **3** |
+| `auth.users` | **3** |
+
+**Dos entregables, en este orden y no al revés** (`f2809a0`):
+`scripts/sql/limpieza-qa-comercial-2026-09-08.sql` borra las filas de `public` en **una sola
+transacción**, con un **gate previo** que aborta si el estado no coincide con el recon y un **gate de
+salida** que aborta si alguno de los 9 conjuntos no quedó en 0 — los dos con `RAISE EXCEPTION`, no
+con un `SELECT` informativo, que en un archivo de una sola pasada no frena nada.
+`scripts/limpieza-qa-comercial-storage-auth.mjs` borra después los binarios y las cuentas de Auth:
+`storage.objects` tiene un trigger `protect_objects_delete` y borrar el registro sin el binario deja
+el archivo vivo en el bucket; y `auth.users` se borra con `auth.admin.deleteUser`, nunca por SQL,
+porque es la única vía que limpia también identidades, sesiones y refresh tokens.
+
+**Verificado en producción por Oscar, de forma independiente** — no por el reporte del agente: los 9
+conjuntos en 0 y los 2 buckets vacíos.
+
+#### El incidente: la limpieza rompió el harness
+
+Al terminar, **12 probes se pusieron rojas** y P000 cazó 2 veredictos vacíos. La causa:
+`CO_FX_fixture_comercial` (`tests/rls/probes_escritura.sql`) tenía **clavados como literales los
+mismos 3 uuid** que se acababan de borrar, y `VJ_LIMPIEZA` y `CJ_LIMPIEZA` dependían de ellos además.
+Esas tres cuentas no eran datos QA descartables: eran **fixtures permanentes del harness**, y eso no
+estaba escrito en ningún lado.
+
+Arreglado en el mismo bloque de trabajo (`d880fa7`): los tres sujetos **se resuelven por email**, el
+mismo patrón que el archivo ya usaba para `admin.qa@ezpayconnect.com`, y
+`scripts/recrear-fixtures-harness-comercial.mjs` los recrea **por el camino real** (`crear-empleado`
++ `guardar_asesor_perfil` + `asignar_supervisor`) en **Guatemala, no en ZZ**: son el andamio del
+harness, no datos de demostración, y las probes miden aislamiento con datos de GT.
+
+De paso salieron de la lista `DEUDA` **dos falsos positivos preexistentes**: `P472_admin_pais_scope`
+y `P476_contactos_heredan_gate` hacían `count(*)` **sin `WHERE`** sobre tablas compartidas con
+producción y exigían una cifra absoluta; las mismas filas QA inflaban esa cuenta. No se arregló nada
+—se limpió el ruido— y la propiedad de RLS que cada una mide se sigue probando igual.
+`P473_super_admin_ve_todos` sigue roja por el mismo defecto estructural, con la nota escrita al lado.
+
+**Harness verde: 733 filas, 11 rojas, todas en la deuda.**
+
+#### LECCIÓN, para el registro
+
+> **Una limpieza de "datos QA descartables" puede estar rompiendo fixtures permanentes de otro
+> sistema, y ningún recon de FK lo detecta** — porque la dependencia no vive en el catálogo de la
+> base sino en un archivo de test.
+>
+> El recon previo midió las FK con `ON DELETE RESTRICT` una por una y salió impecable; el borrado
+> corrió limpio y los dos gates pasaron. Nada de eso podía ver que un `.sql` de `tests/` tenía esos
+> uuid escritos a mano.
+>
+> **Antes de borrar cuentas con patrón QA/test: `grep -rn "<uuid>\|<email>" tests/rls/`.** Es una
+> línea y habría convertido dos horas de diagnóstico en una decisión de treinta segundos.
+
+#### Lo que NO se tocó: el inventario DEMO (país ZZ)
+
+**Sigue vivo y sin cambios** — no era parte de este pendiente. Medido el 7-sep tras el seed:
 
 | qué | cuántas |
 |---|---|
@@ -384,18 +424,18 @@ Dos cosas quedaron de esto:
 | `planes_configuracion` | **23** (los sembró la pantalla de países) |
 | `planes_publicidad_config` | **3** (los sembró el trigger `auto_configurar_planes_publicidad`) |
 
-**BORRAR ESTO NO ES UN `DELETE`.** Medido: `asesores_perfil.id → perfiles` es **ON DELETE RESTRICT**,
-y también lo son `prospectos.asesor_id`, `prospectos.creado_por`, `visitas_comerciales.asesor_id`,
-`visitas_comerciales.planificada_por`, `jornadas_comerciales.asesor_id`,
-`reportes_visita.creado_por`, `visita_adjuntos.subido_por`, `material_comercial.subido_por` y
-`asesores_perfil.supervisor_id`. O sea que borrar un perfil comercial exige **vaciar antes todo lo
-que cuelga de él, en orden**: informes → visitas → jornadas → prospectos → ficha → perfil.
-Y las **cuentas de Auth se borran aparte**: `auth.users` no se toca borrando `perfiles`, hace falta
-`auth.admin.deleteUser` con la clave de servicio. Un borrado a medias deja cuentas que pueden
-iniciar sesión sin perfil.
+**BORRAR ESTO NO ES UN `DELETE`**, y ahora está comprobado en la práctica. Medido:
+`asesores_perfil.id → perfiles` es **ON DELETE RESTRICT**, y también lo son `prospectos.asesor_id`,
+`prospectos.creado_por`, `visitas_comerciales.asesor_id`, `visitas_comerciales.planificada_por`,
+`jornadas_comerciales.asesor_id`, `reportes_visita.creado_por`, `visita_adjuntos.subido_por`,
+`material_comercial.subido_por` y `asesores_perfil.supervisor_id`. Borrar un perfil comercial exige
+**vaciar antes todo lo que cuelga de él, en orden**: informes → visitas → jornadas → prospectos →
+ficha → perfil. Antes de nada, **desasignar el supervisor** de los dos asesores.
+Y las **cuentas de Auth se borran aparte**: un borrado a medias deja cuentas que pueden iniciar
+sesión sin perfil.
 
-Antes de nada, **desasignar el supervisor** de los dos asesores: `asesores_perfil.supervisor_id`
-también es RESTRICT y bloquea el borrado de la supervisora.
+Los dos scripts del `f2809a0` sirven de molde para cuando le toque al DEMO — con sus ids, y con el
+`grep` de la lección hecho antes.
 
 - El inventario completo de cuentas y basura borrable está en la memoria de proyecto, no en el repo.
 
