@@ -241,3 +241,44 @@ describe('tarjeta pública del asesor', () => {
     expect(screen.getByTestId('tarjeta-estado-ase-1').textContent).toContain('no publicada')
   })
 })
+
+// ############################################################################################
+// El error inline necesita DOS mitades, y se mantienen a mano en lugares distintos
+// ############################################################################################
+// Pintar un error inline pegado a su input exige: (a) el `errDe('<campo>')` en el JSX, que es lo
+// único que dibuja, y (b) el campo en CAMPOS_DEL_FORM, que APAGA el fallback del pie para no
+// duplicarlo. Con sólo (b) el mensaje no sale por ningún lado: se setea, corta el guardado y no se
+// ve — así estuvieron PA033 y PA034 desde la mig 290 hasta el 8-sep, y ningún test lo notó porque
+// todos los inline anteriores apuntaban a `codigo_asesor`, que sí tenía las dos mitades.
+// Este test se cuenta contra el ARCHIVO, no contra una lista escrita acá: una lista de memoria
+// tendría el mismo defecto que está vigilando.
+describe('AsesoresPaisPage — el pie y los inputs cubren los mismos campos', () => {
+  it('CAMPOS_DEL_FORM y los errDe(...) del JSX son EXACTAMENTE el mismo conjunto', async () => {
+    // ruta desde la raiz del repo: en jsdom `import.meta.url` no es un file:// URL
+    const fs = await import('node:fs')
+    const src = fs.readFileSync('src/pages/admin-ezpay/AsesoresPaisPage.tsx', 'utf8')
+
+    const decl = src.match(/const CAMPOS_DEL_FORM = \[([^\]]*)\]/)
+    expect(decl, 'no se encontró la declaración de CAMPOS_DEL_FORM en el archivo').not.toBeNull()
+    const declarados = [...(decl?.[1] ?? '').matchAll(/'([^']+)'/g)].map(m => m[1])
+    expect(declarados.length, 'CAMPOS_DEL_FORM salió vacío: el regex dejó de calzar').toBeGreaterThan(0)
+
+    // Una mención en un COMENTARIO no dibuja nada. Sin sacarlas, un `// falta errDe('x')` haría
+    // pasar el test sobre un campo que sigue mudo.
+    const codigo = src.split('\n').filter(l => !l.trim().startsWith('//') && !l.trim().startsWith('*')).join('\n')
+    const pintados = [...codigo.matchAll(/errDe\('([^']+)'\)/g)].map(m => m[1])
+    expect(pintados.length, 'no se encontró ninguna llamada a errDe(...) en el JSX').toBeGreaterThan(0)
+
+    const mudos = declarados.filter(c => !pintados.includes(c))
+    const dobles = pintados.filter(c => !declarados.includes(c))
+
+    expect(mudos, 'MUDOS — están en CAMPOS_DEL_FORM (que apaga el fallback del pie) pero no tienen '
+      + "errDe(...) en el JSX, así que su mensaje no se ve en NINGÚN lado. Poné {errDe('<campo>')} "
+      + 'debajo de su input, o sacalos de la lista para que caigan al pie: ' + JSON.stringify(mudos))
+      .toEqual([])
+    expect(dobles, 'DUPLICADOS — tienen errDe(...) en el JSX pero no están en CAMPOS_DEL_FORM, así '
+      + 'que su mensaje se pinta dos veces, pegado al input y otra vez al pie. Agregalos a '
+      + 'CAMPOS_DEL_FORM: ' + JSON.stringify(dobles))
+      .toEqual([])
+  })
+})

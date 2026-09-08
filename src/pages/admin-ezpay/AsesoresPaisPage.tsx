@@ -45,11 +45,16 @@ const maxFechaIngreso = () => {
   return d.toISOString().slice(0, 10)
 }
 
-// Los campos que este formulario SÍ sabe pintar. Un error inline dirigido a cualquier otro campo
-// —PA014 apunta a `pais_id`, PA008/PA009 a `asesor_id`, y acá no hay ninguno de los dos— quedaría
-// invisible. Se pinta al pie en vez de perderse.
+// Los campos que este formulario pinta PEGADOS a su input, o sea los que tienen su `errDe(...)`
+// más abajo en el JSX. Estar en esta lista NO pinta nada: lo único que hace es APAGAR el fallback
+// del pie para ese campo. Un campo que entre acá sin su `errDe(...)` queda MUDO en los dos lados a
+// la vez — así estuvieron PA033 y PA034 desde la mig 290 hasta el 8-sep: el error bloqueaba el
+// guardado y no se veía en ningún lado. La igualdad entre esta lista y los `errDe(...)` del JSX la
+// vigila un test que lee este mismo archivo, porque son dos mitades que se mantienen a mano.
+// Un error dirigido a un campo que NO está acá —PA014 apunta a `pais_id`, PA008/PA009 a
+// `asesor_id`, y esta pantalla no tiene ninguno de los dos— cae al pie en vez de perderse.
 const CAMPOS_DEL_FORM = ['codigo_asesor', 'cargo', 'territorio', 'telefono', 'celular',
-                         'fecha_ingreso', 'bio', 'nombre']
+                         'fecha_ingreso', 'bio']
 
 export default function AsesoresPaisPage() {
   const { paisId = '' } = useParams()
@@ -230,12 +235,14 @@ export default function AsesoresPaisPage() {
           <input id="telefono" value={form.telefono}
             onChange={(e) => setForm({ ...form, telefono: e.target.value })}
             className="mt-1 w-full rounded border px-2 py-1.5 text-sm" />
+          {errDe('telefono')}
         </div>
         <div>
           <label className="text-xs text-gray-600">Celular</label>
           <input id="celular" value={form.celular}
             onChange={(e) => setForm({ ...form, celular: e.target.value })}
             className="mt-1 w-full rounded border px-2 py-1.5 text-sm" />
+          {errDe('celular')}
         </div>
         <div>
           <label className="text-xs text-gray-600">Fecha de ingreso</label>
@@ -243,12 +250,14 @@ export default function AsesoresPaisPage() {
             min={MIN_FECHA_INGRESO} max={maxFechaIngreso()}
             onChange={(e) => setForm({ ...form, fecha_ingreso: e.target.value })}
             className="mt-1 w-full rounded border px-2 py-1.5 text-sm" />
+          {errDe('fecha_ingreso')}
         </div>
       </div>
       <div className="mt-2">
         <label className="text-xs text-gray-600">Bio (opcional)</label>
         <textarea id="bio" value={form.bio} onChange={(e) => setForm({ ...form, bio: e.target.value })}
           rows={2} className="mt-1 w-full rounded border px-2 py-1.5 text-sm" />
+        {errDe('bio')}
       </div>
       <label className="mt-2 flex items-center gap-2 text-sm text-gray-700">
         <input type="checkbox" id="activo" checked={form.activo}

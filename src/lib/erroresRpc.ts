@@ -166,8 +166,12 @@ const MAPA: Record<string, Entrada> = {
   // --- Validacion de fecha_ingreso y celular en la ficha de asesor (mig 290) ------------------
   // Mismo criterio que PA026: son datos que el usuario ESCRIBE mal y puede corregir en el campo,
   // asi que van INLINE, con `campo`, y NO se reportan — no es un bug nuestro.
-  // Los dos campos estan en CAMPOS_DEL_FORM de AsesoresPaisPage, o sea que el inline se pinta
-  // pegado al input; si alguno no estuviera, el mensaje caeria al pie y se leeria como huerfano.
+  // Estar en CAMPOS_DEL_FORM de AsesoresPaisPage NO pinta el mensaje: lo unico que hace es APAGAR
+  // el fallback del pie para ese campo. Que se vea pegado al input depende de que exista el
+  // `errDe('<campo>')` correspondiente en el JSX, que es una mitad distinta y se mantiene aparte.
+  // Estos dos entraron a la lista SIN su mitad de render: el mensaje quedo silenciado en los dos
+  // lados a la vez y la pantalla bloqueaba el guardado sin decir por que. Hoy tienen las dos, y un
+  // test compara la lista contra los errDe del archivo para que no se vuelvan a separar.
   // La pantalla valida lo mismo ANTES de llamar, asi que llegar aca significa que la escritura
   // vino por otro camino (otra pantalla, un script, la API directa). Que el guard viva en la RPC
   // y no solo en el formulario es exactamente lo que hace que estos codigos sean alcanzables.
