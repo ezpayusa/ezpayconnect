@@ -55,7 +55,7 @@ Stack: React + Vite + TypeScript, Supabase / Postgres, deploy en Vercel, repo en
   exit code. `npm run harness:selftest` prueba que esas cinco verificaciones disparan.
   Está enganchado al pre-commit junto al test del detector: los tres gates del hook son offline.
   **El runner CLASIFICA las rojas** (roja = el `verdict` empieza con `ROJO` o `FALLO`) contra la
-  lista `DEUDA` que vive en el código, hoy con **13 entradas**: una roja FUERA de la deuda es exit 1,
+  lista `DEUDA` que vive en el código, hoy con **11 entradas**: una roja FUERA de la deuda es exit 1,
   y una entrada de la deuda que sale VERDE también (se arregló y hay que sacarla, o alguien la
   anestesió) — actualizar la lista es un acto deliberado, no un efecto colateral.
   **El CLI de supabase decide el formato Y la forma del JSON por DETECCIÓN DE AGENTE**: a CC le da

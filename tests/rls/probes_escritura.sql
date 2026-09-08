@@ -11375,13 +11375,26 @@ DO $$
 DECLARE v_gt uuid := 'cbbbbe6d-59fe-4cf2-91ee-3e31ba1d5909'; v_hn uuid := '704aecfa-65c2-47f9-9a98-7a9bdfeba583';
         v_admgt uuid := '8f391caf-85bc-4413-af8a-4006452ae09f';   -- admin_pais GT (real, no se toca)
         v_admhn uuid := 'df452940-cc30-48b7-80e5-09e637bf97de';   -- se convierte en admin_pais HN
-        v_sup   uuid := '3d843fd1-695a-4958-9b57-b840b23994b3';   -- supervisor_comercial GT
-        v_ase1  uuid := '97c5d673-bd6c-416b-8970-921a78c92887';   -- asesor GT, EN la cartera del sup
-        v_ase2  uuid := '97896ac3-1bd4-4e24-a9e0-e6c97ce07893';   -- asesor GT, FUERA de esa cartera
+        -- LOS TRES SUJETOS COMERCIALES SE RESUELVEN POR EMAIL, NO POR UUID LITERAL.
+        -- Estaban clavados como literales y el 8-sep-2026 la limpieza de datos QA borro esas tres
+        -- filas: 23 probes se pusieron rojas de golpe, la mayoria diciendo "TABLAS AUSENTES", que
+        -- apunta al lado equivocado. El email es estable y la fila se puede recrear; el uuid lo
+        -- asigna Auth y cambia en cada alta. Mismo patron que ya usaba el archivo para
+        -- admin.qa@ezpayconnect.com y adminpais.qa@ezpayconnect.com.
+        -- Las cuentas las recrea `scripts/recrear-fixtures-harness-comercial.mjs`.
+        v_sup   uuid;   -- supervisor_comercial GT
+        v_ase1  uuid;   -- asesor GT, EN la cartera del sup
+        v_ase2  uuid;   -- asesor GT, FUERA de esa cartera
         v_asehn uuid := '85a3faf8-9986-4c8e-821b-4351473a91f0';   -- se convierte en asesor HN
         v_medf  uuid := '55aaa118-1b02-44ed-b2b7-dcd2b8741cd7';   -- medico GT + ficha (para PA009)
         v_p1 uuid; v_p2 uuid; v_pt uuid; v_c2 uuid; v_ok boolean;
 BEGIN
+  -- Si alguno no existe queda NULL, los EXISTS de abajo dan false y v_ok cae solo: el fixture se
+  -- declara AUSENTE como ya hacia, sin guard extra y sin reventar.
+  SELECT id INTO v_sup  FROM public.perfiles WHERE email = 'supervisor.qa@ezpayconnect.com';
+  SELECT id INTO v_ase1 FROM public.perfiles WHERE email = 'asesor1.qa@ezpayconnect.com';
+  SELECT id INTO v_ase2 FROM public.perfiles WHERE email = 'asesor2.qa@ezpayconnect.com';
+
   v_ok := EXISTS(SELECT 1 FROM public.asesores_perfil WHERE id=v_ase1 AND supervisor_id=v_sup)
       AND EXISTS(SELECT 1 FROM public.asesores_perfil WHERE id=v_ase2 AND supervisor_id IS NULL)
       AND EXISTS(SELECT 1 FROM public.asesores_perfil WHERE id=v_sup)
@@ -11866,9 +11879,11 @@ SELECT set_config('role','none', true);
 -- Esto NO toca produccion: el harness corre entero dentro de un BEGIN ... ROLLBACK. Las filas
 -- vuelven al terminar. Lo que se borra es la copia que ve ESTA transaccion.
 --
--- Los ids son literales a proposito: son los dos asesores QA del fixture comercial, y ponerlos a
--- mano deja escrito EXACTAMENTE que filas se tocan. Un DELETE por `fecha = CURRENT_DATE` sin
--- filtrar por asesor borraria las jornadas de cualquier asesor real que hubiera.
+-- Los ids salen de `probe.co_ase1` / `probe.co_ase2`, que CO_FX ya publico: son los dos asesores
+-- QA del fixture comercial y no se vuelven a resolver aca. Antes eran literales; se cambiaron el
+-- 8-sep-2026 junto con CO_FX, porque un uuid clavado deja de existir el dia que la fila se recrea.
+-- Lo que NO cambia es que el filtro por asesor es obligatorio: un DELETE por `fecha = CURRENT_DATE`
+-- sin filtrar borraria las jornadas de cualquier asesor real que hubiera.
 DO $$
 DECLARE v_n int; v_det text;
 BEGIN
@@ -11880,21 +11895,21 @@ BEGIN
   -- limpieza pasa en verde sin haber ejecutado nada, y el dia que hiciera falta nadie sabria si
   -- funciona. La siembra usa ON CONFLICT para no chocar con una jornada real que ya exista.
   INSERT INTO public.jornadas_comerciales (asesor_id, pais_id, fecha, inicio_at)
-    SELECT '97c5d673-bd6c-416b-8970-921a78c92887'::uuid, pr.pais_id, CURRENT_DATE, now()
-      FROM public.perfiles pr WHERE pr.id = '97c5d673-bd6c-416b-8970-921a78c92887'::uuid
+    SELECT NULLIF(current_setting('probe.co_ase1',true),'')::uuid, pr.pais_id, CURRENT_DATE, now()
+      FROM public.perfiles pr WHERE pr.id = NULLIF(current_setting('probe.co_ase1',true),'')::uuid
     ON CONFLICT (asesor_id, fecha) DO NOTHING;
 
   SELECT count(*), string_agg(j.id::text||' ('||coalesce(j.fin_at::text,'abierta')||')', ', ')
     INTO v_n, v_det
     FROM public.jornadas_comerciales j
    WHERE j.fecha = CURRENT_DATE
-     AND j.asesor_id IN ('97c5d673-bd6c-416b-8970-921a78c92887'::uuid,   -- asesor1.qa
-                         '97896ac3-1bd4-4e24-a9e0-e6c97ce07893'::uuid);  -- asesor2.qa
+     AND j.asesor_id IN (NULLIF(current_setting('probe.co_ase1',true),'')::uuid,   -- asesor1.qa
+                         NULLIF(current_setting('probe.co_ase2',true),'')::uuid);  -- asesor2.qa
 
   DELETE FROM public.jornadas_comerciales j
    WHERE j.fecha = CURRENT_DATE
-     AND j.asesor_id IN ('97c5d673-bd6c-416b-8970-921a78c92887'::uuid,
-                         '97896ac3-1bd4-4e24-a9e0-e6c97ce07893'::uuid);
+     AND j.asesor_id IN (NULLIF(current_setting('probe.co_ase1',true),'')::uuid,
+                         NULLIF(current_setting('probe.co_ase2',true),'')::uuid);
 
   PERFORM set_config('probe.vj_limpieza', CASE WHEN v_n = 0
     THEN 'ROJO — LA LIMPIEZA NO BORRO NADA pese a la siembra: el DELETE no esta funcionando'
@@ -14246,7 +14261,7 @@ DO $$ DECLARE v_n int; BEGIN
   WITH borradas AS (
     DELETE FROM public.jornadas_comerciales j
      WHERE j.fecha = CURRENT_DATE
-       AND j.asesor_id = '97896ac3-1bd4-4e24-a9e0-e6c97ce07893'::uuid   -- asesor2.qa
+       AND j.asesor_id = NULLIF(current_setting('probe.co_ase2',true),'')::uuid   -- asesor2.qa
     RETURNING 1)
   SELECT count(*) INTO v_n FROM borradas;
   PERFORM set_config('probe.cj_limpieza','OK (jornadas de hoy de ase2 borradas antes del lote de cerrar_jornada: '||v_n||')',false);

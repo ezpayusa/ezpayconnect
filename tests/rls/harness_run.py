@@ -37,14 +37,15 @@ import sys
 REPO = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 HARNESS = os.path.join(REPO, 'tests', 'rls', 'probes_escritura.sql')
 
-# Piso declarado. Al 2026-09-06 el harness emite 688 filas. El piso no persigue el numero exacto
-# (agregar probes es normal); ataja la corrida TRUNCADA o VACIA, que es un salto a ~0, no de a una.
+# Piso declarado. Medido el 2026-09-07 (tras la mig 289): el harness emite 733 filas. El piso NO
+# persigue el numero exacto �agregar probes es normal y el numero sube solo�: ataja la corrida
+# TRUNCADA o VACIA, que es un salto a ~0, no de a una. Por eso se deja holgura y no se sube a 733.
 PISO_FILAS = 680
 
 # ----------------------------------------------------------------------------------------------
 # LA DEUDA: las rojas que HOY se aceptan, una por una y con su motivo.
 # ----------------------------------------------------------------------------------------------
-# Hasta ahora las 13 rojas de deuda se comparaban "texto a texto" a mano en cada corrida. Eso
+# Hasta ahora las rojas de deuda se comparaban "texto a texto" a mano en cada corrida. Eso
 # funciona mientras alguien lo haga, y deja de funcionar el dia que no. Aca la lista es dato del
 # programa: una roja NUEVA rompe la corrida, y una roja de la lista que se ponga VERDE tambien
 # —porque o se arreglo (y hay que sacarla) o alguien la anestesio (y hay que enterarse)—.
@@ -66,10 +67,28 @@ DEUDA = {
     'Pqr_preview_confinable':        'preview de receta por QR: confinamiento',
     'Pqr_preview_exento':            'preview de receta por QR: caso exento',
     'Pqr_preview_grandfather':       'preview de receta por QR: caso grandfather',
-    # --- modulo comercial: scope de admin_pais sobre prospectos ---
-    'P472_admin_pais_scope':         'admin_pais ve prospectos de mas de los suyos',
-    'P473_super_admin_ve_todos':     'super_admin ve todos los prospectos (contraparte de P472)',
-    'P476_contactos_heredan_gate':   'los contactos no heredan el gate del prospecto',
+    # --- modulo comercial: aserciones de count(*) contaminadas por datos de produccion ---
+    #
+    # P472 y P476 SALIERON DE ESTA LISTA el 8-sep-2026. No se arreglo nada: se limpio el ruido.
+    # Las dos hacian `count(*)` SIN WHERE sobre `prospectos` / `prospecto_contactos` �tablas que el
+    # harness comparte con PRODUCCION� y exigian una cifra absoluta exacta (P472: admA=5 y el
+    # string_agg literal 'A1,A2,A3,Rogue,SupA'; P476: super=2). Los 5 prospectos y 1 contacto QA
+    # que se borraron en la limpieza del 8-sep inflaban esa cuenta �admA=10 y super=3 en la ultima
+    # corrida roja�, asi que al borrarlos las aserciones se cumplen solas.
+    # La propiedad de RLS que cada una mide se sigue probando igual: el aislamiento por pais en
+    # P472 (las negativas sobre admB nunca dependieron de esas filas) y la herencia del gate del
+    # prospecto en P476 (los terminos asA1=1 y medico=0 ya estaban verdes). El defecto no
+    # desaparecio: desaparecio lo que lo tapaba.
+    #
+    # P473 SIGUE EN LA LISTA y comparte el MISMO defecto estructural que las otras dos: una
+    # asercion de `count(*)` exacto sobre una tabla compartida con produccion es fragil por diseno.
+    # Hoy esta roja porque el super_admin ve los 6 prospectos del fixture MAS los 9 del pais DEMO.
+    # NOTA PARA QUIEN LO ENCUENTRE DESPUES: esto se va a volver a romper solo. P472 vuelve a rojo
+    # el dia que exista un prospecto real en Guatemala; P476, el dia que exista un contacto real en
+    # cualquier pais; P473, con cualquier prospecto nuevo en cualquier lado. El arreglo de fondo es
+    # que las tres cuenten SOLO las filas del fixture (por nombre 'P264 %' o por los ids sembrados)
+    # en vez de la tabla entera. No es para ahora.
+    'P473_super_admin_ve_todos':     'cuenta TODOS los prospectos de la base, no solo los del fixture',
 }
 
 
