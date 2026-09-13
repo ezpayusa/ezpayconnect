@@ -328,8 +328,10 @@ export default function ConsultaPage() {
     cargar()
   }, [citaId, fetchConsultaPorCita, navigate, base])
 
-  const guardarNotaSOAP = async () => {
-    if (!cita || !paciente) return
+  // Devuelve SI la nota quedó guardada. El botón "Guardar" ignora el valor; "Finalizar" lo usa como
+  // condición, y para eso hacía falta que dejara de devolver void.
+  const guardarNotaSOAP = async (): Promise<boolean> => {
+    if (!cita || !paciente) return false
 
     const result = await crearOActualizarConsulta(
       {
@@ -342,10 +344,21 @@ export default function ConsultaPage() {
 
     if (result.error) {
       toast.error('Error al guardar: ' + result.error)
-    } else {
-      toast.success('Consulta guardada correctamente')
-      if (result.data) setConsultaId(result.data.id)
+      return false
     }
+    toast.success('Consulta guardada correctamente')
+    if (result.data) setConsultaId(result.data.id)
+    return true
+  }
+
+  // Guardar y completar, en ese orden, y lo segundo sólo si lo primero salió bien. Hasta hoy
+  // "Finalizar" llamaba únicamente a cambiarEstadoCita: la consulta se cerraba y el SOAP no se
+  // escribía nunca — medido el 13-sep, la única cita 'completada' de prod no tenía nota.
+  // La barrera REAL es el trigger trg_exigir_nota_al_completar (mig 291, PE001), que también corta
+  // el UPDATE directo y la RPC. Esto es lo que evita que el médico llegue a chocársela.
+  const finalizarConsulta = async () => {
+    if (!(await guardarNotaSOAP())) return
+    await cambiarEstadoCita('completada')
   }
 
   const cambiarEstadoCita = async (nuevoEstado: Cita['estado']) => {
@@ -430,7 +443,7 @@ export default function ConsultaPage() {
             </Button>
           )}
           {cita.estado === 'en_curso' && (
-            <Button size="sm" className="bg-green-600 hover:bg-green-700" onClick={() => cambiarEstadoCita('completada')}>
+            <Button size="sm" className="bg-green-600 hover:bg-green-700" onClick={() => void finalizarConsulta()}>
               <CheckCircle2 className="h-4 w-4 sm:mr-1" /> <span className="hidden sm:inline">Finalizar</span>
             </Button>
           )}
