@@ -15436,6 +15436,225 @@ EXCEPTION WHEN OTHERS THEN
 END $$;
 SELECT set_config('role','none', true);
 
+-- ============================================================
+-- MIG 291 · ninguna cita se completa sin nota + contexto de la visita (P678-P685)
+-- ============================================================
+-- Medido el 13-sep contra prod ANTES de la migracion: de 1 cita 'completada', 1 sin nota. El boton
+-- "Finalizar" de ConsultaPage solo cambiaba citas.estado y nunca guardaba el SOAP.
+--
+-- POR QUE P678 ES LA PROBE QUE IMPORTA. El pedido original ponia el gate dentro de
+-- actualizar_estado_cita, pero NINGUNA pantalla usa esa RPC: useCitas.updateCita y
+-- useMedicoCitas.updateCitaEstado hacen UPDATE DIRECTO a citas por PostgREST, y la policy
+-- citas_update_medico lo permite sin condicion. P679 (la RPC) habria dado verde con el agujero
+-- real intacto. Por eso el gate es un trigger y P678 ejercita el camino directo.
+--
+-- LOS TRES CONTROLES NEGATIVOS NO SON DECORACION. P680 (con nota pasa), P681 (cancelada pasa sin
+-- nota) y P682 (una cita ya completada no se re-bloquea) son lo que distingue un gate de un
+-- trigger que rompe toda escritura sobre citas. Sin ellos, P678/P679 tambien darian verde con un
+-- trigger que lanza siempre.
+--
+-- P685 mide la decision de alcance: auditoria_ia hoy la ve SOLO su autor (policy `medico_id =
+-- auth.uid()`). obtener_contexto_visita es SECURITY DEFINER, asi que si devolviera las sugerencias
+-- con el mismo scope que la nota estaria ampliando el acceso a texto de IA sobre datos medicos al
+-- super_admin y al admin de clinica. P685 prueba que NO lo hace.
+--
+-- Todo lo que se escribe acá muere con el ROLLBACK del harness.
+DO $$
+DECLARE v_pac bigint; v_med uuid; v_clin uuid; v_otro uuid; v_sa uuid;
+        v_sin bigint; v_con bigint; v_can bigint; v_ya bigint; v_nota integer;
+BEGIN
+  SELECT c.paciente_id, c.medico_id, c.clinica_id INTO v_pac, v_med, v_clin
+    FROM public.citas c WHERE c.medico_id IS NOT NULL ORDER BY c.id LIMIT 1;
+  SELECT id INTO v_sa FROM public.perfiles WHERE rol='super_admin' ORDER BY id LIMIT 1;
+  -- medico SIN cita con ese paciente: mismo idioma que probe.np_ajeno mas arriba
+  SELECT m.id INTO v_otro FROM public.perfiles m
+   WHERE m.rol='medico' AND m.id <> v_med
+     AND NOT EXISTS (SELECT 1 FROM public.citas c2 WHERE c2.medico_id=m.id AND c2.paciente_id=v_pac)
+   ORDER BY m.id LIMIT 1;
+
+  IF v_pac IS NULL OR v_med IS NULL OR v_sa IS NULL OR v_otro IS NULL THEN
+    PERFORM set_config('probe.nc_ready','0',false);
+    PERFORM set_config('probe.nc_fx','ROJO — FIXTURE AUSENTE (cita con medico, super_admin o medico ajeno)',false);
+    RETURN; END IF;
+
+  -- Cuatro citas nuevas: separadas a proposito, para que el veredicto de una no dependa del
+  -- estado en que la dejo la anterior.
+  INSERT INTO public.citas (paciente_id, medico_id, clinica_id, fecha, hora_inicio, hora_fin, estado)
+  VALUES (v_pac, v_med, v_clin, CURRENT_DATE, '09:00', '09:30', 'en_curso') RETURNING id INTO v_sin;
+  INSERT INTO public.citas (paciente_id, medico_id, clinica_id, fecha, hora_inicio, hora_fin, estado)
+  VALUES (v_pac, v_med, v_clin, CURRENT_DATE, '10:00', '10:30', 'en_curso') RETURNING id INTO v_con;
+  INSERT INTO public.citas (paciente_id, medico_id, clinica_id, fecha, hora_inicio, hora_fin, estado)
+  VALUES (v_pac, v_med, v_clin, CURRENT_DATE, '11:00', '11:30', 'en_curso') RETURNING id INTO v_can;
+  -- Esta nace completada por INSERT: el trigger es BEFORE UPDATE, asi que no dispara al crearla.
+  INSERT INTO public.citas (paciente_id, medico_id, clinica_id, fecha, hora_inicio, hora_fin, estado)
+  VALUES (v_pac, v_med, v_clin, CURRENT_DATE, '12:00', '12:30', 'completada') RETURNING id INTO v_ya;
+
+  -- La unica con nota, y con una sugerencia de IA colgada de esa nota.
+  INSERT INTO public.expediente_notas (cita_id, paciente_id, medico_id, subjetivo)
+  VALUES (v_con, v_pac, v_med, 'probe 291') RETURNING id INTO v_nota;
+  INSERT INTO public.auditoria_ia (medico_id, paciente_id, consulta_id, prompt, respuesta_ia)
+  VALUES (v_med, v_pac::int, v_nota, 'prompt de prueba', 'respuesta de prueba');
+
+  PERFORM set_config('probe.nc_med',  v_med::text,  false);
+  PERFORM set_config('probe.nc_otro', v_otro::text, false);
+  PERFORM set_config('probe.nc_sa',   v_sa::text,   false);
+  PERFORM set_config('probe.nc_sin',  v_sin::text,  false);
+  PERFORM set_config('probe.nc_con',  v_con::text,  false);
+  PERFORM set_config('probe.nc_can',  v_can::text,  false);
+  PERFORM set_config('probe.nc_ya',   v_ya::text,   false);
+  PERFORM set_config('probe.nc_ready','1', false);
+  PERFORM set_config('probe.nc_fx','OK (4 citas + 1 nota + 1 fila de IA sobre paciente '||v_pac||')', false);
+EXCEPTION WHEN OTHERS THEN
+  PERFORM set_config('probe.nc_ready','0',false);
+  PERFORM set_config('probe.nc_fx','ROJO ('||SQLSTATE||' '||SQLERRM||')',false);
+END $$;
+
+-- Bloque 1: lo que hace el MEDICO DUEÑO de la cita. Es el camino real de las dos pantallas.
+DO $$
+DECLARE v_sin bigint := NULLIF(current_setting('probe.nc_sin',true),'')::bigint;
+        v_con bigint := NULLIF(current_setting('probe.nc_con',true),'')::bigint;
+        v_can bigint := NULLIF(current_setting('probe.nc_can',true),'')::bigint;
+        v_ya  bigint := NULLIF(current_setting('probe.nc_ya', true),'')::bigint;
+        v_err text; v_j jsonb; v_n int;
+BEGIN
+  IF coalesce(current_setting('probe.nc_ready',true),'')<>'1' THEN
+    PERFORM set_config('probe.p678','N/A (fixture ausente)',false);
+    PERFORM set_config('probe.p679','N/A (fixture ausente)',false);
+    PERFORM set_config('probe.p680','N/A (fixture ausente)',false);
+    PERFORM set_config('probe.p681','N/A (fixture ausente)',false);
+    PERFORM set_config('probe.p682','N/A (fixture ausente)',false);
+    PERFORM set_config('probe.p683','N/A (fixture ausente)',false);
+    RETURN; END IF;
+
+  PERFORM set_config('request.jwt.claims',
+    json_build_object('sub', current_setting('probe.nc_med',true), 'role','authenticated')::text, true);
+  PERFORM set_config('role','authenticated', true);
+
+  -- P678 — UPDATE DIRECTO a 'completada' sin nota. El agujero que el pedido original no cubria.
+  BEGIN
+    UPDATE public.citas SET estado='completada' WHERE id = v_sin;
+    v_err := NULL;
+  EXCEPTION WHEN OTHERS THEN v_err := SQLSTATE; END;
+  PERFORM set_config('probe.p678', CASE
+    WHEN v_err = 'PE001' THEN 'OK (PE001)'
+    WHEN v_err IS NULL   THEN 'ROJO (COMPLETO por UPDATE directo una cita SIN nota)'
+    ELSE 'ROJO (rechazo con '||v_err||', se esperaba PE001)' END, false);
+
+  -- P679 — la misma negativa por la RPC. Hereda el gate del trigger, no lo repite.
+  BEGIN
+    PERFORM public.actualizar_estado_cita(v_sin, 'completada');
+    v_err := NULL;
+  EXCEPTION WHEN OTHERS THEN v_err := SQLSTATE; END;
+  PERFORM set_config('probe.p679', CASE
+    WHEN v_err = 'PE001' THEN 'OK (PE001)'
+    WHEN v_err IS NULL   THEN 'ROJO (la RPC COMPLETO una cita SIN nota)'
+    ELSE 'ROJO (rechazo con '||v_err||', se esperaba PE001)' END, false);
+
+  -- P680 — CONTROL POSITIVO: con nota, completar tiene que pasar.
+  BEGIN
+    UPDATE public.citas SET estado='completada' WHERE id = v_con;
+    v_err := NULL;
+  EXCEPTION WHEN OTHERS THEN v_err := SQLSTATE||' '||SQLERRM; END;
+  PERFORM set_config('probe.p680', CASE WHEN v_err IS NULL
+    THEN 'OK (con nota completa: P678/P679 miden la nota y no un bloqueo total)'
+    ELSE 'ROJO (bloqueo una cita CON nota: '||v_err||')' END, false);
+
+  -- P681 — CONTROL NEGATIVO: los otros estados no se tocan. Cancelar sin nota sigue siendo valido.
+  BEGIN
+    UPDATE public.citas SET estado='cancelada' WHERE id = v_can;
+    v_err := NULL;
+  EXCEPTION WHEN OTHERS THEN v_err := SQLSTATE||' '||SQLERRM; END;
+  PERFORM set_config('probe.p681', CASE WHEN v_err IS NULL
+    THEN 'OK (cancelar sin nota pasa: el gate es solo la transicion A completada)'
+    ELSE 'ROJO (el gate se comio otro estado: '||v_err||')' END, false);
+
+  -- P682 — una cita YA completada que se vuelve a tocar no se re-bloquea. Sin la mitad
+  -- `OLD.estado IS DISTINCT FROM` del WHEN, borrar la nota dejaria la fila congelada para siempre.
+  BEGIN
+    UPDATE public.citas SET estado='completada' WHERE id = v_ya;
+    v_err := NULL;
+  EXCEPTION WHEN OTHERS THEN v_err := SQLSTATE||' '||SQLERRM; END;
+  PERFORM set_config('probe.p682', CASE WHEN v_err IS NULL
+    THEN 'OK (re-tocar una completada no dispara el trigger)'
+    ELSE 'ROJO (bloqueo una cita que YA estaba completada: '||v_err||')' END, false);
+
+  -- P683 — el contexto de la visita para el medico AUTOR: nota + su sugerencia de IA.
+  IF to_regprocedure('public.obtener_contexto_visita(bigint)') IS NULL THEN
+    PERFORM set_config('probe.p683','ROJO — RPC AUSENTE (esto NO es un rechazo)',false);
+  ELSE
+    BEGIN
+      v_j := public.obtener_contexto_visita(v_con);
+      v_n := jsonb_array_length(v_j->'sugerencias_ia');
+      PERFORM set_config('probe.p683', CASE
+        WHEN v_j->'nota' IS NULL OR v_j->'nota' = 'null'::jsonb
+          THEN 'ROJO (devolvio la visita SIN la nota)'
+        WHEN v_n <> 1 THEN 'ROJO (sugerencias_ia='||v_n||', se esperaba 1)'
+        ELSE 'OK (nota + 1 sugerencia de IA en un solo jsonb)' END, false);
+    EXCEPTION WHEN OTHERS THEN
+      PERFORM set_config('probe.p683','ROJO ('||SQLSTATE||' '||SQLERRM||')',false);
+    END;
+  END IF;
+
+  PERFORM set_config('role','none', true);
+EXCEPTION WHEN OTHERS THEN
+  PERFORM set_config('role','none', true);
+  PERFORM set_config('probe.p678','FALLO ('||SQLSTATE||' '||SQLERRM||')',false);
+END $$;
+SELECT set_config('role','none', true);
+
+-- Bloque 2: un medico SIN relacion con el paciente. La negativa del gate de lectura.
+DO $$
+DECLARE v_con bigint := NULLIF(current_setting('probe.nc_con',true),'')::bigint; v_j jsonb; v_err text;
+BEGIN
+  IF coalesce(current_setting('probe.nc_ready',true),'')<>'1' THEN
+    PERFORM set_config('probe.p684','N/A (fixture ausente)',false); RETURN; END IF;
+  IF to_regprocedure('public.obtener_contexto_visita(bigint)') IS NULL THEN
+    PERFORM set_config('probe.p684','ROJO — RPC AUSENTE (esto NO es un rechazo)',false); RETURN; END IF;
+
+  PERFORM set_config('request.jwt.claims',
+    json_build_object('sub', current_setting('probe.nc_otro',true), 'role','authenticated')::text, true);
+  PERFORM set_config('role','authenticated', true);
+  BEGIN
+    v_j := public.obtener_contexto_visita(v_con);
+    v_err := NULL;
+  EXCEPTION WHEN OTHERS THEN v_err := SQLSTATE; END;
+  PERFORM set_config('probe.p684', CASE
+    WHEN v_err = '42501' THEN 'OK (42501 no_autorizado)'
+    WHEN v_err IS NULL   THEN 'ROJO (un medico ajeno LEYO la visita)'
+    ELSE 'ROJO (rechazo con '||v_err||', se esperaba 42501)' END, false);
+  PERFORM set_config('role','none', true);
+EXCEPTION WHEN OTHERS THEN
+  PERFORM set_config('role','none', true);
+  PERFORM set_config('probe.p684','FALLO ('||SQLSTATE||' '||SQLERRM||')',false);
+END $$;
+SELECT set_config('role','none', true);
+
+-- Bloque 3: el super_admin. Pasa el gate de la NOTA y aun asi no ve la IA ajena.
+DO $$
+DECLARE v_con bigint := NULLIF(current_setting('probe.nc_con',true),'')::bigint; v_j jsonb; v_n int;
+BEGIN
+  IF coalesce(current_setting('probe.nc_ready',true),'')<>'1' THEN
+    PERFORM set_config('probe.p685','N/A (fixture ausente)',false); RETURN; END IF;
+  IF to_regprocedure('public.obtener_contexto_visita(bigint)') IS NULL THEN
+    PERFORM set_config('probe.p685','ROJO — RPC AUSENTE (esto NO es un rechazo)',false); RETURN; END IF;
+
+  PERFORM set_config('request.jwt.claims',
+    json_build_object('sub', current_setting('probe.nc_sa',true), 'role','authenticated')::text, true);
+  PERFORM set_config('role','authenticated', true);
+  v_j := public.obtener_contexto_visita(v_con);
+  v_n := jsonb_array_length(v_j->'sugerencias_ia');
+  PERFORM set_config('probe.p685', CASE
+    WHEN v_j->'nota' IS NULL OR v_j->'nota' = 'null'::jsonb
+      THEN 'ROJO (el super_admin no vio la nota, que SI le corresponde)'
+    WHEN v_n <> 0 THEN 'ROJO (vio '||v_n||' sugerencia(s) de IA ajenas — la RPC AMPLIO el acceso)'
+    ELSE 'OK (ve la nota, sugerencias_ia vacio: la RPC no amplia auditoria_ia)' END, false);
+  PERFORM set_config('role','none', true);
+EXCEPTION WHEN OTHERS THEN
+  PERFORM set_config('role','none', true);
+  PERFORM set_config('probe.p685','FALLO ('||SQLSTATE||' '||SQLERRM||')',false);
+END $$;
+SELECT set_config('role','none', true);
+
 -- ===== Veredictos como result set =====
 SELECT 'P1_anon_insert_citas'              AS probe, current_setting('probe.p1', true)  AS verdict, 'BLOQUEADO' AS esperado_post_fix
 UNION ALL SELECT 'P2_medico_cancela_ajena_rpc',         current_setting('probe.p2', true),  'BLOQUEADO'
@@ -16168,6 +16387,15 @@ UNION ALL SELECT 'P674_va_fecha_hoy_control_pos',      current_setting('probe.p6
 UNION ALL SELECT 'P675_va_celular_sin_digitos',        current_setting('probe.p675', true),    'OK (PA034)'
 UNION ALL SELECT 'P676_va_celular_corto',              current_setting('probe.p676', true),    'OK (PA034)'
 UNION ALL SELECT 'P677_va_celular_valido_control_pos', current_setting('probe.p677', true),    'OK (control positivo)'
+UNION ALL SELECT 'NC_FX_fixture_contexto_visita',      current_setting('probe.nc_fx',  true),   'OK (4 citas + nota + IA)'
+UNION ALL SELECT 'P678_nc_update_directo_sin_nota',    current_setting('probe.p678', true),    'OK (PE001)'
+UNION ALL SELECT 'P679_nc_rpc_estado_sin_nota',        current_setting('probe.p679', true),    'OK (PE001)'
+UNION ALL SELECT 'P680_nc_con_nota_control_pos',       current_setting('probe.p680', true),    'OK (control positivo)'
+UNION ALL SELECT 'P681_nc_cancelada_no_gateada',       current_setting('probe.p681', true),    'OK (control negativo)'
+UNION ALL SELECT 'P682_nc_ya_completada_no_rebloquea', current_setting('probe.p682', true),    'OK (control negativo)'
+UNION ALL SELECT 'P683_nc_contexto_medico_autor',      current_setting('probe.p683', true),    'OK (nota + 1 IA)'
+UNION ALL SELECT 'P684_nc_contexto_medico_ajeno',      current_setting('probe.p684', true),    'OK (42501)'
+UNION ALL SELECT 'P685_nc_ia_no_se_amplia_a_sa',       current_setting('probe.p685', true),    'OK (nota si, IA no)'
 UNION ALL SELECT 'FX20_fo_fixture',                    current_setting('probe.fo_fx', true),  'OK (fixture)'
 UNION ALL SELECT 'P631_CENSO_anon_perfiles',           current_setting('probe.p631', true), 'OK (anon en cero, los 7)'
 UNION ALL SELECT 'P632_authenticated_perfiles',        current_setting('probe.p632', true), 'OK (4 DML si, 3 no)'
@@ -16376,7 +16604,9 @@ UNION ALL SELECT 'P000_CENTINELA_veredictos_no_nulos',
        'probe.fo_fx', 'probe.p662', 'probe.p663', 'probe.p664', 'probe.p665', 'probe.p666',
        'probe.p667', 'probe.p668', 'probe.p669', 'probe.p670', 'probe.p671',
        'probe.va_fx', 'probe.p672', 'probe.p673', 'probe.p674', 'probe.p675', 'probe.p676',
-       'probe.p677'
+       'probe.p677',
+       'probe.nc_fx', 'probe.p678', 'probe.p679', 'probe.p680', 'probe.p681', 'probe.p682',
+       'probe.p683', 'probe.p684', 'probe.p685'
              ]) AS n) s),
   'OK (todos los veredictos publicados)';
 

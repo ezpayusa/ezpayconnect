@@ -144,7 +144,24 @@ export function useMedicoCitas() {
     return updateCitaEstado(cita, 'en_curso', 'Paciente en sala de consulta')
   }
 
+  // El expediente antes que el estado. Esta pantalla escribe la tabla `citas` directo, igual que
+  // ConsultaPage, así que la barrera real no está acá: es el trigger trg_exigir_nota_al_completar
+  // (mig 291), que devuelve PE001 con este mismo texto. Este chequeo es cortesía — le ahorra al
+  // médico un error que viene de la base — y por eso no importa que sea evitable.
   const completarCita = async (cita: CitaConPaciente) => {
+    const { count, error } = await supabase
+      .from('expediente_notas')
+      .select('id', { count: 'exact', head: true })
+      .eq('cita_id', cita.id)
+
+    if (error) {
+      toast.error('No se pudo verificar la nota de la consulta: ' + error.message)
+      return false
+    }
+    if (!count) {
+      toast.error('Debe guardar la nota de la consulta antes de finalizar')
+      return false
+    }
     return updateCitaEstado(cita, 'completada', 'Cita completada')
   }
 
