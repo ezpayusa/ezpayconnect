@@ -136,7 +136,11 @@ export function useLaboratorio() {
     const ext = file.name.split('.').pop() || 'pdf'
     const path = `${labId}/${examenId}-${Date.now()}.${ext}`
     const { error } = await supabase.storage.from('resultados-examenes').upload(path, file, { upsert: true })
-    if (error) { toast.error('No se pudo subir el archivo: ' + error.message); return null }
+    if (error) {
+      console.error('[subirArchivo] upload falló', { bucket: 'resultados-examenes', path, labId, file: { name: file.name, type: file.type, size: file.size }, error })
+      toast.error(`No se pudo subir el archivo: ${error.message}${(error as any).statusCode ? ' [' + (error as any).statusCode + ']' : ''}`)
+      return null
+    }
     // Bucket privado (resultados-examenes.public=false): guardar el PATH, NO una URL pública (daría
     // 403 al paciente). Los lectores lo firman con openSignedUrl('resultados-examenes', path).
     return path
@@ -154,7 +158,11 @@ export function useLaboratorio() {
       estado: 'completado',
       fecha_resultado: hoyISO(),
     }).eq('id', examenId)
-    if (error) { toast.error('No se pudo guardar el resultado: ' + error.message); return false }
+    if (error) {
+      console.error('[subirResultado] UPDATE examenes falló', { examenId, error })
+      toast.error('No se pudo guardar el resultado: ' + error.message)
+      return false
+    }
     // Avisar al médico y al paciente: in-app + push server-side y gateado. notificar_resultado_examen
     // empuja vía push_notificar (edge gateado, contenido mínimo) — reemplaza el enviar-push del caller
     // (ids+contenido del cliente). Best-effort: no falla el guardado del resultado.
