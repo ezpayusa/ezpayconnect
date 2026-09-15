@@ -53,6 +53,16 @@ const MAPA: Record<string, Entrada> = {
   // "no encontrado" que revelaría existencia.
   '42501': { texto: 'No tenés permiso para esta acción.', destino: 'toast', reportar: false },
 
+  // PT002 lo usan DOS familias con significados distintos (medido 15-sep): las RPCs de push
+  // transaccional (migs 121-127, "No autorizado para notificar…") y liberar_examen_al_paciente
+  // (supabase/fixes/fase4_02), que además lo levanta para TRES casos: examen inexistente, sin
+  // autoridad, y examen todavía no completado. Como el código no distingue, este texto tiene que ser
+  // cierto para todos: no promete una causa. La pantalla que sabe de qué operación se trata agrega
+  // el contexto POR CÓDIGO (ver src/lib/liberacionExamenes.ts), nunca leyendo el mensaje.
+  // No se reporta: es un rechazo de negocio, no un bug nuestro.
+  PT002: { texto: 'No tenés permiso para esta acción o el registro no está en un estado que la permita.',
+           destino: 'toast', reportar: false },
+
   // --- Guards de la mig 264: la jerarquía comercial ------------------------------------------
   // Los cinco traen su propio texto explicando qué falla y con qué datos.
   PA001: { destino: 'toast', reportar: false },

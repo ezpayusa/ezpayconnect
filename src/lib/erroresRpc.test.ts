@@ -91,6 +91,13 @@ describe('mapearErrorRpc — una fila del contrato por caso', () => {
     expect(r.mensaje).toMatch(/No se pudo completar/)
   })
 
+  it('PT002 -> texto neutro, sin reportar: lo comparten push y liberar_examen_al_paciente con distintos sentidos', () => {
+    const m = mapearErrorRpc({ code: 'PT002', message: 'No autorizado para liberar este examen' })
+    expect(m.mensaje).toBe('No tenés permiso para esta acción o el registro no está en un estado que la permita.')
+    expect(m.reportar).toBe(false)
+    expect(m.destino).toBe('toast')
+  })
+
   it('esNoAutorizado sólo con 42501', () => {
     expect(esNoAutorizado(pg('42501'))).toBe(true)
     expect(esNoAutorizado(pg('PA009'))).toBe(false)

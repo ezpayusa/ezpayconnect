@@ -7,6 +7,8 @@ import { useParams, useNavigate, useLocation } from 'react-router-dom'
 import { toast } from 'sonner'
 import { supabase } from '@/lib/supabase'
 import { useVisor, archivoDeResultado, descargarResultado } from '@/components/visor/useVisor'
+import { liberarUnExamen, liberarExamenes, type ExamenLiberable } from '@/lib/liberacionExamenes'
+import { ConfirmarLiberacionDialog } from '@/components/examenes/ConfirmarLiberacionDialog'
 import { useAuth } from '@/hooks/useAuth'
 import { FotoPacienteAvatar } from '@/components/FotoPacienteAvatar'
 import { DocumentosPaciente } from '@/components/DocumentosPaciente'
@@ -106,33 +108,42 @@ export default function PacienteDetallePage() {
     setExamenes(data || [])
   }, [id])
 
+  // Liberación de resultados al paciente (Fase 4). Cada liberación es por EXAMEN y por id; "liberar
+  // los N listos" es la misma operación sobre una lista que el médico vio nombrada y confirmó.
+  // Detalle, y por qué no se libera por orden: src/lib/liberacionExamenes.ts.
+  const [liberandoId, setLiberandoId] = useState<number | null>(null)
+  const [aConfirmar, setAConfirmar] = useState<ExamenLiberable[] | null>(null)
+  const [liberandoVarios, setLiberandoVarios] = useState(false)
+
+  const listosParaLiberar: ExamenLiberable[] = examenes
+    .filter((e: any) => e.estado === 'completado' && !e.liberado_al_paciente)
+    .map((e: any) => ({ id: e.id, tipo: e.tipo, fecha_resultado: e.fecha_resultado }))
+
   const liberarExamen = async (examenId: number) => {
-    const { error } = await supabase.rpc('liberar_examen_al_paciente', { p_examen_id: examenId })
-    if (error) { toast.error('No se pudo liberar: ' + error.message); return }
-    toast.success('Resultado liberado al paciente')
+    setLiberandoId(examenId)
+    const r = await liberarUnExamen(examenId)
+    setLiberandoId(null)
+    if (r.estado === 'error') toast.error(r.mensaje)
+    else if (r.estado === 'ya_liberado') toast.info('Ese resultado ya estaba liberado al paciente')
+    else toast.success('Resultado liberado al paciente')
     cargarExamenes()
   }
 
-  const liberarTodosListos = async () => {
-    const listos = examenes.filter((e: any) => e.estado === 'completado' && !e.liberado_al_paciente)
-    if (listos.length === 0) { toast.info('No hay resultados listos sin liberar'); return }
-    const ordenes = Array.from(new Set(listos.map((e: any) => e.orden_id).filter(Boolean)))
-    const sueltos = listos.filter((e: any) => !e.orden_id)
-    try {
-      for (const oid of ordenes) {
-        const { error } = await supabase.rpc('liberar_orden_al_paciente', { p_orden_id: oid })
-        if (error) throw error
-      }
-      for (const ex of sueltos) {
-        const { error } = await supabase.rpc('liberar_examen_al_paciente', { p_examen_id: ex.id })
-        if (error) throw error
-      }
-      toast.success('Resultados liberados al paciente')
-      cargarExamenes()
-    } catch (e: any) {
-      toast.error('No se pudieron liberar todos: ' + (e?.message ?? ''))
-      cargarExamenes()
+  const confirmarLiberarListos = async () => {
+    if (!aConfirmar) return
+    setLiberandoVarios(true)
+    const r = await liberarExamenes(aConfirmar)
+    setLiberandoVarios(false)
+    setAConfirmar(null)
+    const hechos = r.liberados.length + r.yaLiberados.length
+    if (r.fallidos.length === 0) {
+      toast.success(hechos === 1 ? 'Resultado liberado al paciente' : `${hechos} resultados liberados al paciente`)
+    } else {
+      // Nombra cuál falló y por qué: "no se pudieron liberar todos" dejaba al médico sin saber qué quedó.
+      const detalle = r.fallidos.map((f) => `${f.examen.tipo}: ${f.mensaje}`).join(' · ')
+      toast.error(`Se liberaron ${hechos} de ${aConfirmar.length}. No se pudo: ${detalle}`)
     }
+    cargarExamenes()
   }
 
   const cargarPaciente = useCallback(async () => {
@@ -315,6 +326,8 @@ export default function PacienteDetallePage() {
   return (
     <div className="min-h-screen bg-gray-50 p-8">
       {visor}
+      <ConfirmarLiberacionDialog examenes={aConfirmar} liberando={liberandoVarios}
+        onConfirmar={() => void confirmarLiberarListos()} onCancelar={() => setAConfirmar(null)} />
       {/* Header */}
       <div className="flex items-center flex-wrap gap-4 mb-8">
         <button
@@ -683,9 +696,12 @@ export default function PacienteDetallePage() {
             <h2 className="text-xl font-semibold text-[#1a2a3a] flex items-center gap-2">
               <FlaskConical size={22} className="text-[#1E5C8E]" /> Exámenes de laboratorio
             </h2>
-            <button type="button" onClick={liberarTodosListos}
-              className="text-sm px-3 py-1.5 rounded-md border border-[#1E5C8E] text-[#1E5C8E] hover:bg-[#1E5C8E]/5">
-              Liberar resultados listos
+            <button type="button" onClick={() => setAConfirmar(listosParaLiberar)}
+              disabled={listosParaLiberar.length === 0 || liberandoVarios}
+              className="text-sm px-3 py-1.5 rounded-md border border-[#1E5C8E] text-[#1E5C8E] hover:bg-[#1E5C8E]/5 disabled:opacity-50 disabled:hover:bg-transparent">
+              {listosParaLiberar.length === 0
+                ? 'No hay resultados por liberar'
+                : `Liberar ${listosParaLiberar.length === 1 ? 'el listo' : `los ${listosParaLiberar.length} listos`}`}
             </button>
           </div>
           <div className="p-6">
@@ -741,8 +757,9 @@ export default function PacienteDetallePage() {
                         ) : (
                           <div className="mt-2">
                             <button type="button" onClick={() => liberarExamen(ex.id)}
-                              className="inline-flex items-center gap-1 text-sm px-3 py-1.5 rounded-md bg-[#1E5C8E] text-white hover:bg-[#164a72]">
-                              Liberar al paciente
+                              disabled={liberandoId !== null || liberandoVarios}
+                              className="inline-flex items-center gap-1 text-sm px-3 py-1.5 rounded-md bg-[#1E5C8E] text-white hover:bg-[#164a72] disabled:opacity-50">
+                              {liberandoId === ex.id ? 'Liberando…' : 'Liberar al paciente'}
                             </button>
                           </div>
                         )
