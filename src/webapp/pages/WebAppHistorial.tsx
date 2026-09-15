@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { openSignedUrl } from '@/lib/signedUrl'
+import { useVisor, archivoDeResultado } from '@/components/visor/useVisor'
 import { useWebAppAuth } from '@/webapp/hooks/useWebAppAuth'
 import { useWebAppHistorial } from '@/webapp/hooks/useWebAppHistorial'
 import { Badge } from '@/components/ui/badge'
@@ -12,6 +12,7 @@ import type { HistorialItem } from '@/webapp/types/webapp.types'
 
 export default function WebAppHistorial() {
   const { perfil } = useWebAppAuth()
+  const { abrir, visor } = useVisor()
   const { items, loading, error } = useWebAppHistorial(perfil?.id)
   const [expandedId, setExpandedId] = useState<number | null>(null)
 
@@ -72,6 +73,7 @@ export default function WebAppHistorial() {
 
   return (
     <div className="space-y-6 max-w-3xl">
+      {visor}
       <div>
         <h1 className="text-2xl font-bold text-slate-800">Historial Médico</h1>
         <p className="text-slate-500 mt-1">
@@ -196,7 +198,7 @@ export default function WebAppHistorial() {
                                   <button
                                     type="button"
                                     className="inline-flex items-center gap-1 text-xs text-sky-600 hover:underline"
-                                    onClick={(e) => { e.stopPropagation(); openSignedUrl('resultados-examenes', item.detalles.archivo_url) }}
+                                    onClick={(e) => { e.stopPropagation(); abrir([archivoDeResultado(item.detalles.archivo_url)]) }}
                                   >
                                     <Download className="h-3 w-3" />
                                     Ver archivo adjunto

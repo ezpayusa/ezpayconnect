@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback } from 'react'
 import { useParams, useNavigate, useLocation } from 'react-router-dom'
 import { supabase } from '@/lib/supabase'
-import { openSignedUrl } from '@/lib/signedUrl'
+import { useVisor, archivoDeResultado, descargarResultado } from '@/components/visor/useVisor'
 import { parseFechaLocal } from '@/lib/fecha'
 import { useAuth } from '@/hooks/useAuth'
 import { useConsultas } from '@/hooks/useConsultas'
@@ -57,6 +57,7 @@ function calcularEdad(fechaNacimiento: string | null): number | null {
 
 export default function ConsultaPage() {
   const { citaId } = useParams<{ citaId: string }>()
+  const { abrir, visor } = useVisor()
   const navigate = useNavigate()
   const location = useLocation()
   // Prefijo de panel: si la consulta se abre dentro del portal del médico,
@@ -417,6 +418,7 @@ export default function ConsultaPage() {
 
   return (
     <div className="min-h-screen bg-slate-50">
+      {visor}
       {/* Header */}
       <div className="bg-white border-b px-4 py-3 flex items-center justify-between sticky top-0 z-30">
         <div className="flex items-center gap-3">
@@ -762,8 +764,8 @@ export default function ConsultaPage() {
                         {ex.resultados && <p className="text-xs text-gray-600 mt-1 whitespace-pre-wrap line-clamp-4">{ex.resultados}</p>}
                         {ex.archivo_url && (
                           <div className="flex gap-3 mt-1">
-                            <button type="button" onClick={() => openSignedUrl('resultados-examenes', ex.archivo_url)} className="text-xs text-[#1E5C8E] hover:underline">Ver archivo</button>
-                            <button type="button" onClick={() => openSignedUrl('resultados-examenes', ex.archivo_url, { download: true })} className="text-xs text-gray-500 hover:underline">Descargar</button>
+                            <button type="button" onClick={() => abrir([archivoDeResultado(ex.archivo_url)])} className="text-xs text-[#1E5C8E] hover:underline">Ver archivo</button>
+                            <button type="button" onClick={() => void descargarResultado(ex.archivo_url)} className="text-xs text-gray-500 hover:underline">Descargar</button>
                           </div>
                         )}
                       </div>

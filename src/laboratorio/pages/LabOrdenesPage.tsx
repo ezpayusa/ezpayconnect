@@ -1,5 +1,5 @@
 import { useState, useMemo } from 'react'
-import { openSignedUrl } from '@/lib/signedUrl'
+import { useVisor, archivoDeResultado } from '@/components/visor/useVisor'
 import { useLaboratorio, type OrdenExamen, type OrdenAgrupada } from '@/laboratorio/hooks/useLaboratorio'
 import { useLaboratorioPermisos } from '@/laboratorio/hooks/useLaboratorioPermisos'
 import { Card, CardContent } from '@/components/ui/card'
@@ -27,6 +27,7 @@ const ordenCompletada = (o: OrdenAgrupada) => o.items.every((i) => i.estado === 
 
 export default function LabOrdenesPage() {
   const { ordenes, loading, fetchOrdenes, cambiarEstado, subirResultado } = useLaboratorio()
+  const { abrir, visor } = useVisor()
   const { tienePermiso } = useLaboratorioPermisos()
   const puedeCargar = tienePermiso('resultados_cargar')
   const [filtro, setFiltro] = useState('activas')
@@ -57,6 +58,7 @@ export default function LabOrdenesPage() {
 
   return (
     <div className="space-y-6">
+      {visor}
       <div className="flex items-center justify-between flex-wrap gap-3">
         <div>
           <h1 className="text-2xl font-bold flex items-center gap-2 text-[#0c2a26]">
@@ -186,7 +188,7 @@ export default function LabOrdenesPage() {
 
               {/* Archivo ya subido (si existe) */}
               {modal.archivo_url && (
-                <button type="button" onClick={() => openSignedUrl('resultados-examenes', modal.archivo_url)}
+                <button type="button" onClick={() => abrir([archivoDeResultado(modal.archivo_url)])}
                   className="flex items-center gap-2 text-sm text-[#0E7C6B] hover:underline">
                   <FileText className="h-4 w-4" /> Ver archivo adjunto actual
                 </button>

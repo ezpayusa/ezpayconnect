@@ -6,7 +6,7 @@ import { useState, useEffect, useCallback } from 'react'
 import { useParams, useNavigate, useLocation } from 'react-router-dom'
 import { toast } from 'sonner'
 import { supabase } from '@/lib/supabase'
-import { openSignedUrl } from '@/lib/signedUrl'
+import { useVisor, archivoDeResultado, descargarResultado } from '@/components/visor/useVisor'
 import { useAuth } from '@/hooks/useAuth'
 import { FotoPacienteAvatar } from '@/components/FotoPacienteAvatar'
 import { DocumentosPaciente } from '@/components/DocumentosPaciente'
@@ -77,6 +77,7 @@ interface Cita {
 
 export default function PacienteDetallePage() {
   const { id } = useParams<{ id: string }>()
+  const { abrir, visor } = useVisor()
   const navigate = useNavigate()
   const location = useLocation()
   const base = location.pathname.startsWith('/medico') ? '/medico' : ''
@@ -313,6 +314,7 @@ export default function PacienteDetallePage() {
 
   return (
     <div className="min-h-screen bg-gray-50 p-8">
+      {visor}
       {/* Header */}
       <div className="flex items-center flex-wrap gap-4 mb-8">
         <button
@@ -720,11 +722,11 @@ export default function PacienteDetallePage() {
                       )}
                       {ex.archivo_url && (
                         <div className="mt-3 flex gap-2">
-                          <button type="button" onClick={() => openSignedUrl('resultados-examenes', ex.archivo_url)}
+                          <button type="button" onClick={() => abrir([archivoDeResultado(ex.archivo_url)])}
                             className="inline-flex items-center gap-1 text-sm text-[#1E5C8E] hover:underline">
                             <FileText size={16} /> Ver archivo
                           </button>
-                          <button type="button" onClick={() => openSignedUrl('resultados-examenes', ex.archivo_url, { download: true })}
+                          <button type="button" onClick={() => void descargarResultado(ex.archivo_url)}
                             className="inline-flex items-center gap-1 text-sm text-gray-600 hover:underline">
                             <Download size={16} /> Descargar
                           </button>

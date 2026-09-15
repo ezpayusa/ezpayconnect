@@ -142,7 +142,7 @@ export function useLaboratorio() {
       return null
     }
     // Bucket privado (resultados-examenes.public=false): guardar el PATH, NO una URL pública (daría
-    // 403 al paciente). Los lectores lo firman con openSignedUrl('resultados-examenes', path).
+    // 403 al paciente). Los lectores lo abren con el visor compartido (useVisor), que lo firma a 60 s.
     return path
   }
 

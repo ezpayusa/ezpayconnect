@@ -1,5 +1,5 @@
 import { useWebAppAuth } from '@/webapp/hooks/useWebAppAuth'
-import { openSignedUrl } from '@/lib/signedUrl'
+import { useVisor, archivoDeResultado } from '@/components/visor/useVisor'
 import { parseFechaLocal } from '@/lib/fecha'
 import { useWebAppExamenes } from '@/webapp/hooks/useWebAppExamenes'
 import { Card, CardContent } from '@/components/ui/card'
@@ -8,6 +8,7 @@ import { FlaskConical, Calendar, FileText, Clock, Loader2 } from 'lucide-react'
 
 export default function WebAppExamenes() {
   const { perfil } = useWebAppAuth()
+  const { abrir, visor } = useVisor()
   const { examenes, loading, error } = useWebAppExamenes(perfil?.id)
 
   const getEstadoColor = (estado: string) => {
@@ -21,6 +22,7 @@ export default function WebAppExamenes() {
 
   return (
     <div className="space-y-6">
+      {visor}
       <div>
         <h1 className="text-2xl font-bold text-slate-800">Mis Exámenes</h1>
         <p className="text-slate-500 mt-1">Resultados de laboratorio y estudios</p>
@@ -99,7 +101,7 @@ export default function WebAppExamenes() {
                   <div className="mt-2">
                     <button
                       type="button"
-                      onClick={() => openSignedUrl('resultados-examenes', ex.archivo_url)}
+                      onClick={() => abrir([archivoDeResultado(ex.archivo_url)])}
                       className="text-sm text-sky-600 hover:underline"
                     >
                       Ver archivo adjunto →
