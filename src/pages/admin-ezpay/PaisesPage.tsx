@@ -93,10 +93,36 @@ export default function PaisesPage() {
       return;
     }
 
-    // Crear configuraciones de planes para el nuevo país
-    const { data: planesBase } = await supabase.from('planes_base').select('id, precio_base, moneda').eq('activo', true);
+    // Desde acá el país YA EXISTE en configuracion_pais: lo que sigue son requests aparte. Si fallan,
+    // hay que decirlo así, porque volver a apretar "Crear País" choca con el código repetido.
+    const cerrarConPaisCreado = (mensaje: string) => {
+      alert(mensaje);
+      setDialogoNuevo(false);
+      setNuevoPais({ codigo: '', nombre: '', moneda: '' });
+      cargarPaises();
+    };
 
-    for (const plan of planesBase || []) {
+    // Crear configuraciones de planes para el nuevo país.
+    // Sólo los planes marcados replicable_por_pais (mig 293). Antes se copiaba TODA fila activa de
+    // planes_base, y así llegaron a ZZ planes de prueba y un plan duplicado. El flag nace en false:
+    // un plan nuevo no se replica hasta que alguien lo marque.
+    const { data: planesBase, error: planesError } = await supabase
+      .from('planes_base')
+      .select('id, precio_base, moneda')
+      .eq('activo', true)
+      .eq('replicable_por_pais', true);
+
+    if (planesError) {
+      console.error('Error:', planesError.message);
+      cerrarConPaisCreado(
+        `El país ${nuevoPais.nombre} YA QUEDÓ CREADO, pero no se pudieron leer los planes para configurarlo:\n\n` +
+        `${planesError.message}\n\n` +
+        'NO se creó ninguna configuración de planes para este país. Hay que cargarlas desde la configuración de planes.'
+      );
+      return;
+    }
+
+    const configs = (planesBase || []).map((plan) => {
       let tasaCambio = 1;
       if (nuevoPais.moneda.toUpperCase() === 'GTQ') tasaCambio = 7.75;
       else if (nuevoPais.moneda.toUpperCase() === 'HNL') tasaCambio = 24.8;
@@ -106,7 +132,7 @@ export default function PaisesPage() {
 
       const precioLocal = Math.round(plan.precio_base * tasaCambio * 100) / 100;
 
-      await supabase.from('planes_configuracion').insert({
+      return {
         pais_id: paisData.id,
         plan_base_id: plan.id,
         precio_local: precioLocal,
@@ -114,13 +140,27 @@ export default function PaisesPage() {
         comision_aplicada: 0,
         descuento_porcentaje: 20,
         activo: true,
-      });
+      };
+    });
+
+    // UN solo INSERT en bloque: PostgREST lo manda como una sentencia, así que entran todas las
+    // configs o ninguna. El loop anterior insertaba de a una, ignoraba cada error, y el país podía
+    // quedar con la mitad de sus planes mientras la pantalla decía "creado".
+    if (configs.length > 0) {
+      const { error: configsError } = await supabase.from('planes_configuracion').insert(configs);
+      if (configsError) {
+        console.error('Error:', configsError.message);
+        cerrarConPaisCreado(
+          `El país ${nuevoPais.nombre} YA QUEDÓ CREADO, pero falló la creación de sus configuraciones de planes:\n\n` +
+          `${configsError.message}\n\n` +
+          `NO se creó ninguna de las ${configs.length} configuraciones (el insert es todo o nada). ` +
+          'Hay que cargarlas desde la configuración de planes.'
+        );
+        return;
+      }
     }
 
-    alert(`País ${nuevoPais.nombre} creado con configuraciones de planes`);
-    setDialogoNuevo(false);
-    setNuevoPais({ codigo: '', nombre: '', moneda: '' });
-    cargarPaises();
+    cerrarConPaisCreado(`País ${nuevoPais.nombre} creado con ${configs.length} configuraciones de planes`);
   };
 
   if (adminLoading) return <div className="flex justify-center p-8">Verificando permisos...</div>;
