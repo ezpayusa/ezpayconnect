@@ -15836,6 +15836,151 @@ BEGIN
 END $$;
 SELECT set_config('role','none', true);
 
+-- ============================================================
+-- MIG 295 · las 6 RPCs de medicos no las ejecuta anon (P694-P703)
+-- ============================================================
+-- La 294 cerro la TABLA. Estas seis funciones son SECURITY DEFINER con dueno postgres: no pasan por
+-- la RLS, asi que con EXECUTE abierto a anon el cierre quedaba puenteado — se listaban, buscaban y
+-- contaban medicos sin sesion llamando a la RPC en vez de a la tabla.
+--
+-- LAS CUATRO POSITIVAS (P700-P703) SON LA MITAD QUE IMPORTA. Revocar de mas aca no rompe una
+-- pantalla: rompe SEIS (CitasPage, useClinicaCitas, useAdmisionCitas, useWebAppCitas,
+-- PaisDashboardPage, ClinicaDashboardPage). Sin ellas, "anon da 42501" tambien lo daria un REVOKE a
+-- todo el mundo.
+--
+-- P699 distingue DOS cortes distintos de guardar_foto_medico: el del ACL (42501, que es el que esta
+-- migracion pone) y el del cuerpo ('no_auth', P0001, que ya existia). Si sale P0001, el ACL sigue
+-- abierto y lo unico que frena es la logica interna.
+SELECT set_config('role','none', true);
+DO $$
+DECLARE v_gt uuid := 'cbbbbe6d-59fe-4cf2-91ee-3e31ba1d5909';
+        v_med uuid; n bigint; v_err text;
+BEGIN
+  v_med := NULLIF(current_setting('probe.pm_med', true), '')::uuid;  -- del fixture PM_FX (mig 294)
+  IF v_med IS NULL THEN
+    PERFORM set_config('probe.p694','N/A (fixture PM_FX ausente)',false);
+    PERFORM set_config('probe.p695','N/A (fixture PM_FX ausente)',false);
+    PERFORM set_config('probe.p696','N/A (fixture PM_FX ausente)',false);
+    PERFORM set_config('probe.p697','N/A (fixture PM_FX ausente)',false);
+    PERFORM set_config('probe.p698','N/A (fixture PM_FX ausente)',false);
+    PERFORM set_config('probe.p699','N/A (fixture PM_FX ausente)',false);
+    RETURN; END IF;
+
+  PERFORM set_config('request.jwt.claims','{"role":"anon"}', true);
+  PERFORM set_config('role','anon', true);
+
+  -- P694 — listar_medicos_por_pais
+  BEGIN
+    SELECT count(*) INTO n FROM public.listar_medicos_por_pais(v_gt);
+    PERFORM set_config('probe.p694','ROJO (anon LISTO '||n||' medicos por RPC)',false);
+  EXCEPTION WHEN insufficient_privilege THEN PERFORM set_config('probe.p694','OK (42501)',false);
+    WHEN OTHERS THEN PERFORM set_config('probe.p694','FALLO ('||SQLSTATE||' '||SQLERRM||')',false);
+  END;
+
+  -- P695 — obtener_medicos_por_ids
+  BEGIN
+    SELECT count(*) INTO n FROM public.obtener_medicos_por_ids(ARRAY[v_med]::uuid[]);
+    PERFORM set_config('probe.p695','ROJO (anon OBTUVO '||n||' medicos por id)',false);
+  EXCEPTION WHEN insufficient_privilege THEN PERFORM set_config('probe.p695','OK (42501)',false);
+    WHEN OTHERS THEN PERFORM set_config('probe.p695','FALLO ('||SQLSTATE||' '||SQLERRM||')',false);
+  END;
+
+  -- P696 — contar_medicos_por_pais
+  BEGIN
+    SELECT public.contar_medicos_por_pais(v_gt) INTO n;
+    PERFORM set_config('probe.p696','ROJO (anon CONTO '||n||' medicos del pais)',false);
+  EXCEPTION WHEN insufficient_privilege THEN PERFORM set_config('probe.p696','OK (42501)',false);
+    WHEN OTHERS THEN PERFORM set_config('probe.p696','FALLO ('||SQLSTATE||' '||SQLERRM||')',false);
+  END;
+
+  -- P697 — contar_medicos_por_ids
+  BEGIN
+    SELECT public.contar_medicos_por_ids(ARRAY[v_med]::uuid[]) INTO n;
+    PERFORM set_config('probe.p697','ROJO (anon CONTO '||n||' medicos por id)',false);
+  EXCEPTION WHEN insufficient_privilege THEN PERFORM set_config('probe.p697','OK (42501)',false);
+    WHEN OTHERS THEN PERFORM set_config('probe.p697','FALLO ('||SQLSTATE||' '||SQLERRM||')',false);
+  END;
+
+  -- P698 — buscar_medicos: la unica de las seis SIN consumidor en el repo
+  BEGIN
+    SELECT count(*) INTO n FROM public.buscar_medicos('a', v_gt, 5);
+    PERFORM set_config('probe.p698','ROJO (anon BUSCO y obtuvo '||n||' medicos)',false);
+  EXCEPTION WHEN insufficient_privilege THEN PERFORM set_config('probe.p698','OK (42501)',false);
+    WHEN OTHERS THEN PERFORM set_config('probe.p698','FALLO ('||SQLSTATE||' '||SQLERRM||')',false);
+  END;
+
+  -- P699 — guardar_foto_medico: tiene que cortar el ACL (42501), NO el cuerpo ('no_auth', P0001)
+  BEGIN
+    PERFORM public.guardar_foto_medico('https://ejemplo.invalid/x.jpg');
+    PERFORM set_config('probe.p699','ROJO (anon EJECUTO guardar_foto_medico sin error)',false);
+  EXCEPTION WHEN insufficient_privilege THEN PERFORM set_config('probe.p699','OK (42501: corta el ACL)',false);
+    WHEN OTHERS THEN
+      v_err := SQLSTATE||' '||SQLERRM;
+      PERFORM set_config('probe.p699', CASE WHEN SQLERRM ILIKE '%no_auth%'
+        THEN 'ROJO (corto el CUERPO con no_auth, no el ACL: anon todavia puede ejecutarla)'
+        ELSE 'FALLO ('||v_err||')' END, false);
+  END;
+
+  PERFORM set_config('role','none', true);
+EXCEPTION WHEN OTHERS THEN
+  PERFORM set_config('role','none', true);
+  PERFORM set_config('probe.p694','FALLO ('||SQLSTATE||' '||SQLERRM||')',false);
+END $$;
+SELECT set_config('role','none', true);
+
+-- P700-P703 — NO-REGRESION. Las cuatro con consumidor real siguen respondiendo con un authenticated
+-- de verdad. Si esto se pone rojo, se rompieron seis pantallas con sesion.
+DO $$
+DECLARE v_gt uuid := 'cbbbbe6d-59fe-4cf2-91ee-3e31ba1d5909';
+        v_med uuid; n bigint;
+BEGIN
+  v_med := NULLIF(current_setting('probe.pm_med', true), '')::uuid;
+  IF v_med IS NULL OR coalesce(current_setting('probe.pm_ready',true),'')<>'1' THEN
+    PERFORM set_config('probe.p700','N/A (fixture PM_FX ausente)',false);
+    PERFORM set_config('probe.p701','N/A (fixture PM_FX ausente)',false);
+    PERFORM set_config('probe.p702','N/A (fixture PM_FX ausente)',false);
+    PERFORM set_config('probe.p703','N/A (fixture PM_FX ausente)',false);
+    RETURN; END IF;
+
+  PERFORM set_config('request.jwt.claims',
+    json_build_object('sub', current_setting('probe.pm_pac',true), 'role','authenticated')::text, true);
+  PERFORM set_config('role','authenticated', true);
+
+  BEGIN
+    SELECT count(*) INTO n FROM public.listar_medicos_por_pais(v_gt);
+    PERFORM set_config('probe.p700', CASE WHEN n > 0 THEN 'OK (listar devuelve '||n||')'
+      ELSE 'ROJO (listar_medicos_por_pais devolvio 0 con authenticated)' END, false);
+  EXCEPTION WHEN OTHERS THEN PERFORM set_config('probe.p700','ROJO ('||SQLSTATE||' '||SQLERRM||')',false);
+  END;
+
+  BEGIN
+    SELECT count(*) INTO n FROM public.obtener_medicos_por_ids(ARRAY[v_med]::uuid[]);
+    PERFORM set_config('probe.p701', CASE WHEN n = 1 THEN 'OK (obtener por ids devuelve 1)'
+      ELSE 'ROJO (obtener_medicos_por_ids devolvio '||n||' con authenticated)' END, false);
+  EXCEPTION WHEN OTHERS THEN PERFORM set_config('probe.p701','ROJO ('||SQLSTATE||' '||SQLERRM||')',false);
+  END;
+
+  BEGIN
+    SELECT public.contar_medicos_por_pais(v_gt) INTO n;
+    PERFORM set_config('probe.p702', CASE WHEN n > 0 THEN 'OK (contar por pais devuelve '||n||')'
+      ELSE 'ROJO (contar_medicos_por_pais devolvio 0 con authenticated)' END, false);
+  EXCEPTION WHEN OTHERS THEN PERFORM set_config('probe.p702','ROJO ('||SQLSTATE||' '||SQLERRM||')',false);
+  END;
+
+  BEGIN
+    SELECT public.contar_medicos_por_ids(ARRAY[v_med]::uuid[]) INTO n;
+    PERFORM set_config('probe.p703', CASE WHEN n = 1 THEN 'OK (contar por ids devuelve 1)'
+      ELSE 'ROJO (contar_medicos_por_ids devolvio '||n||' con authenticated)' END, false);
+  EXCEPTION WHEN OTHERS THEN PERFORM set_config('probe.p703','ROJO ('||SQLSTATE||' '||SQLERRM||')',false);
+  END;
+
+  PERFORM set_config('role','none', true);
+EXCEPTION WHEN OTHERS THEN
+  PERFORM set_config('role','none', true);
+  PERFORM set_config('probe.p700','FALLO ('||SQLSTATE||' '||SQLERRM||')',false);
+END $$;
+SELECT set_config('role','none', true);
+
 -- ===== Veredictos como result set =====
 SELECT 'P1_anon_insert_citas'              AS probe, current_setting('probe.p1', true)  AS verdict, 'BLOQUEADO' AS esperado_post_fix
 UNION ALL SELECT 'P2_medico_cancela_ajena_rpc',         current_setting('probe.p2', true),  'BLOQUEADO'
@@ -16586,6 +16731,16 @@ UNION ALL SELECT 'P690_pm_proveedor_no_ve_sin_pais',  current_setting('probe.p69
 UNION ALL SELECT 'P691_pm_regresion_paciente',        current_setting('probe.p691', true),    'OK (regresion)'
 UNION ALL SELECT 'P692_pm_regresion_medico_propio',   current_setting('probe.p692', true),    'OK (regresion)'
 UNION ALL SELECT 'P693_pm_regresion_admin_pais',      current_setting('probe.p693', true),    'OK (regresion)'
+UNION ALL SELECT 'P694_rp_anon_listar',               current_setting('probe.p694', true),    'OK (42501)'
+UNION ALL SELECT 'P695_rp_anon_obtener_por_ids',      current_setting('probe.p695', true),    'OK (42501)'
+UNION ALL SELECT 'P696_rp_anon_contar_por_pais',      current_setting('probe.p696', true),    'OK (42501)'
+UNION ALL SELECT 'P697_rp_anon_contar_por_ids',       current_setting('probe.p697', true),    'OK (42501)'
+UNION ALL SELECT 'P698_rp_anon_buscar_medicos',       current_setting('probe.p698', true),    'OK (42501)'
+UNION ALL SELECT 'P699_rp_anon_guardar_foto',         current_setting('probe.p699', true),    'OK (42501 del ACL)'
+UNION ALL SELECT 'P700_rp_auth_listar_control_pos',   current_setting('probe.p700', true),    'OK (control positivo)'
+UNION ALL SELECT 'P701_rp_auth_obtener_control_pos',  current_setting('probe.p701', true),    'OK (control positivo)'
+UNION ALL SELECT 'P702_rp_auth_contar_pais_ctrl_pos', current_setting('probe.p702', true),    'OK (control positivo)'
+UNION ALL SELECT 'P703_rp_auth_contar_ids_ctrl_pos',  current_setting('probe.p703', true),    'OK (control positivo)'
 UNION ALL SELECT 'FX20_fo_fixture',                    current_setting('probe.fo_fx', true),  'OK (fixture)'
 UNION ALL SELECT 'P631_CENSO_anon_perfiles',           current_setting('probe.p631', true), 'OK (anon en cero, los 7)'
 UNION ALL SELECT 'P632_authenticated_perfiles',        current_setting('probe.p632', true), 'OK (4 DML si, 3 no)'
@@ -16798,7 +16953,9 @@ UNION ALL SELECT 'P000_CENTINELA_veredictos_no_nulos',
        'probe.nc_fx', 'probe.p678', 'probe.p679', 'probe.p680', 'probe.p681', 'probe.p682',
        'probe.p683', 'probe.p684', 'probe.p685',
        'probe.pm_fx', 'probe.p686', 'probe.p687', 'probe.p688', 'probe.p689', 'probe.p690',
-       'probe.p691', 'probe.p692', 'probe.p693'
+       'probe.p691', 'probe.p692', 'probe.p693',
+       'probe.p694', 'probe.p695', 'probe.p696', 'probe.p697', 'probe.p698', 'probe.p699',
+       'probe.p700', 'probe.p701', 'probe.p702', 'probe.p703'
              ]) AS n) s),
   'OK (todos los veredictos publicados)';
 
