@@ -47,6 +47,8 @@ export function SidebarAdmin() {
 
   const menuItemsPais = paisIdActual ? [
     { path: `/admin-ezpay/pais/${paisIdActual}`, icon: LayoutDashboard, label: 'Dashboard País' },
+    { path: `/admin-ezpay/pais/${paisIdActual}/invitaciones-medicos`, icon: Stethoscope, label: 'Invitaciones Médicos' },
+    { path: `/admin-ezpay/pais/${paisIdActual}/invitaciones-clinicas`, icon: MapPin, label: 'Invitaciones Clínicas' },
     { path: '/admin-ezpay/planes-todos', icon: Layers, label: 'Todos los Planes' },
     { path: '/admin-ezpay/planes-medico', icon: Stethoscope, label: 'Planes Médico' },
     { path: '/admin-ezpay/planes-clinica', icon: MapPin, label: 'Planes Clínica' },
