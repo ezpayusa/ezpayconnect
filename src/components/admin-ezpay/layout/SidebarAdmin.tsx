@@ -4,7 +4,7 @@ import { ClipboardCheck } from 'lucide-react';
 import { useNavigate, useLocation } from 'react-router-dom';
 import { useAdminAuth } from '@/hooks/admin/useAdminAuth';
 import { usePaisActivo } from '@/hooks/usePaisActivo';
-import { LayoutDashboard, Globe, Layers, Stethoscope, MapPin, FlaskConical, Car, Pill, Store, Megaphone, Handshake, AlertCircle, DollarSign, BarChart3, Shield, ChevronLeft, LogOut, Activity, BarChart4, ArrowLeftRight, Landmark, Gift, Palette } from 'lucide-react';
+import { LayoutDashboard, Globe, Layers, Stethoscope, MapPin, FlaskConical, Car, Pill, Store, Megaphone, Handshake, AlertCircle, DollarSign, BarChart3, Shield, ChevronLeft, LogOut, Activity, BarChart4, ArrowLeftRight, Landmark, Gift, Palette, BookOpen, ShoppingCart, CalendarDays } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { supabase } from '@/lib/supabase';
 import { rutaHomePorRol } from '@/lib/rutas';
@@ -43,12 +43,16 @@ export function SidebarAdmin() {
     { path: '/admin-ezpay/especialidades', icon: Stethoscope, label: 'Especialidades' },
     { path: '/admin-ezpay/medicamentos', icon: Pill, label: 'Medicamentos' },
     { path: '/admin-ezpay/solicitudes-personalizacion', icon: Palette, label: 'Personalización' },
+    { path: '/admin-ezpay/ventas', icon: ShoppingCart, label: 'Ventas' },
+    { path: '/admin-ezpay/visitas-proveedores', icon: CalendarDays, label: 'Visitas Proveedores' },
   ];
 
   const menuItemsPais = paisIdActual ? [
     { path: `/admin-ezpay/pais/${paisIdActual}`, icon: LayoutDashboard, label: 'Dashboard País' },
     { path: `/admin-ezpay/pais/${paisIdActual}/invitaciones-medicos`, icon: Stethoscope, label: 'Invitaciones Médicos' },
     { path: `/admin-ezpay/pais/${paisIdActual}/invitaciones-clinicas`, icon: MapPin, label: 'Invitaciones Clínicas' },
+    { path: `/admin-ezpay/pais/${paisIdActual}/prospectos`, icon: Users, label: 'Prospectos' },
+    { path: `/admin-ezpay/pais/${paisIdActual}/material`, icon: BookOpen, label: 'Material' },
     { path: '/admin-ezpay/planes-todos', icon: Layers, label: 'Todos los Planes' },
     { path: '/admin-ezpay/planes-medico', icon: Stethoscope, label: 'Planes Médico' },
     { path: '/admin-ezpay/planes-clinica', icon: MapPin, label: 'Planes Clínica' },
