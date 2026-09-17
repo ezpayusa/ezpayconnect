@@ -15981,6 +15981,192 @@ EXCEPTION WHEN OTHERS THEN
 END $$;
 SELECT set_config('role','none', true);
 
+-- ============================================================
+-- MIG 296 · listar_clinicas_por_pais: anon afuera + gate de pais (LC_FX, P704-P710)
+-- ============================================================
+-- La funcion es SECURITY DEFINER: NO pasa por la RLS de public.clinicas. Por eso hacen falta las dos
+-- mitades — sacar a anon del ACL (P704) y, para el resto, un gate interno que replique esa RLS
+-- (P705-P710). Sin gate, cualquier `authenticated` pasaba el pais_id que quisiera.
+--
+-- POR QUE EL FIXTURE SIEMBRA UNA CLINICA EN OTRO PAIS. En prod hay 2 clinicas y las DOS son de
+-- Guatemala. Una probe "paciente de GT pide otro pais -> 0 filas" daria 0 TAMBIEN SIN GATE, porque
+-- ese pais no tiene clinicas: mediria cero. Con la clinica sembrada, el "0 filas" solo puede venir
+-- del gate — sin gate, P705 y P707 devuelven 1. Eso es lo que las hace rojas primero de verdad.
+--
+-- LOS CUATRO CONTROLES POSITIVOS (P706, P708, P709, P710) SON LA MITAD QUE IMPORTA. Un gate que
+-- cierra de mas da "0 filas" en todas las cruzadas igual que uno correcto. P706 es el mas filoso:
+-- los 11 pacientes de prod NO tienen fila en `perfiles`, asi que un gate armado solo sobre
+-- `perfiles`/`get_auth_user_pais_id()` los dejaria a todos afuera y rompería el agendado de citas.
+SELECT set_config('role','none', true);
+DO $$
+DECLARE v_gt uuid := 'cbbbbe6d-59fe-4cf2-91ee-3e31ba1d5909';
+        v_pac uuid; v_sa uuid; v_ap uuid; v_ap_pais uuid; v_otro uuid; v_doc uuid; v_seed uuid;
+BEGIN
+  -- Paciente con cuenta cuyo pais es GT (la rama `pacientes` de la policy).
+  SELECT pa.auth_user_id INTO v_pac FROM public.pacientes pa
+   WHERE pa.auth_user_id IS NOT NULL AND pa.pais_id = v_gt ORDER BY pa.auth_user_id LIMIT 1;
+  SELECT p.id INTO v_sa FROM public.perfiles p WHERE p.rol = 'super_admin' ORDER BY p.id LIMIT 1;
+  SELECT p.id, p.pais_id INTO v_ap, v_ap_pais FROM public.perfiles p
+   WHERE p.rol = 'admin_pais' AND p.pais_id IS NOT NULL ORDER BY p.id LIMIT 1;
+
+  -- "Otro pais" se elige CONTRA los dos paises que participan, no se hardcodea: si manana el
+  -- admin_pais que sale primero es de otro pais, la prueba cruzada tiene que seguir siendo cruzada.
+  SELECT cp.id INTO v_otro FROM public.configuracion_pais cp
+   WHERE cp.id <> v_gt AND cp.id IS DISTINCT FROM v_ap_pais ORDER BY cp.codigo LIMIT 1;
+
+  SELECT c.doctor_id INTO v_doc FROM public.clinicas c WHERE c.doctor_id IS NOT NULL LIMIT 1;
+
+  IF v_pac IS NULL OR v_sa IS NULL OR v_ap IS NULL OR v_otro IS NULL OR v_doc IS NULL THEN
+    PERFORM set_config('probe.lc_fx','ROJO (faltan fixtures: pac='||coalesce(v_pac::text,'-')
+      ||' sa='||coalesce(v_sa::text,'-')||' ap='||coalesce(v_ap::text,'-')
+      ||' otro='||coalesce(v_otro::text,'-')||' doc='||coalesce(v_doc::text,'-')||')', false);
+    RETURN;
+  END IF;
+
+  -- La clinica sembrada en v_otro. Se revierte con el ROLLBACK del harness, como todo lo demas.
+  INSERT INTO public.clinicas (doctor_id, nombre, pais_id)
+  VALUES (v_doc, 'LC_FX_clinica_semilla_otro_pais', v_otro)
+  RETURNING id INTO v_seed;
+
+  PERFORM set_config('probe.lc_pac',  v_pac::text,     false);
+  PERFORM set_config('probe.lc_sa',   v_sa::text,      false);
+  PERFORM set_config('probe.lc_ap',   v_ap::text,      false);
+  PERFORM set_config('probe.lc_appa', v_ap_pais::text, false);
+  PERFORM set_config('probe.lc_otro', v_otro::text,    false);
+  PERFORM set_config('probe.lc_ready','1',             false);
+  PERFORM set_config('probe.lc_fx','OK (paciente GT + super_admin + admin_pais + clinica semilla en otro pais)', false);
+EXCEPTION WHEN OTHERS THEN
+  PERFORM set_config('probe.lc_fx','ROJO ('||SQLSTATE||' '||SQLERRM||')', false);
+END $$;
+SELECT set_config('role','none', true);
+
+-- P704 — anon no puede ejecutarla. Es la mitad del ACL; el gate no la cubre.
+DO $$
+DECLARE v_gt uuid := 'cbbbbe6d-59fe-4cf2-91ee-3e31ba1d5909'; n bigint;
+BEGIN
+  IF coalesce(current_setting('probe.lc_ready', true),'') <> '1' THEN
+    PERFORM set_config('probe.p704','N/A (fixture LC_FX ausente)', false); RETURN; END IF;
+
+  PERFORM set_config('request.jwt.claims','{"role":"anon"}', true);
+  PERFORM set_config('role','anon', true);
+  BEGIN
+    SELECT count(*) INTO n FROM public.listar_clinicas_por_pais(v_gt);
+    PERFORM set_config('probe.p704','ROJO (anon LISTO '||n||' clinicas sin sesion)', false);
+  EXCEPTION WHEN insufficient_privilege THEN PERFORM set_config('probe.p704','OK (42501)', false);
+    WHEN OTHERS THEN PERFORM set_config('probe.p704','FALLO ('||SQLSTATE||' '||SQLERRM||')', false);
+  END;
+  PERFORM set_config('role','none', true);
+EXCEPTION WHEN OTHERS THEN
+  PERFORM set_config('role','none', true);
+  PERFORM set_config('probe.p704','FALLO ('||SQLSTATE||' '||SQLERRM||')', false);
+END $$;
+SELECT set_config('role','none', true);
+
+-- P705/P706 — el paciente. P705 es la roja-primero (pide otro pais, que SI tiene una clinica);
+-- P706 es el control positivo que prueba que el gate no lo dejo afuera de su propio pais.
+DO $$
+DECLARE v_gt uuid := 'cbbbbe6d-59fe-4cf2-91ee-3e31ba1d5909'; n bigint;
+BEGIN
+  IF coalesce(current_setting('probe.lc_ready', true),'') <> '1' THEN
+    PERFORM set_config('probe.p705','N/A (fixture LC_FX ausente)', false);
+    PERFORM set_config('probe.p706','N/A (fixture LC_FX ausente)', false); RETURN; END IF;
+
+  PERFORM set_config('request.jwt.claims',
+    json_build_object('sub', current_setting('probe.lc_pac', true), 'role','authenticated')::text, true);
+  PERFORM set_config('role','authenticated', true);
+
+  BEGIN
+    SELECT count(*) INTO n FROM public.listar_clinicas_por_pais(
+      current_setting('probe.lc_otro', true)::uuid);
+    PERFORM set_config('probe.p705', CASE WHEN n = 0 THEN 'OK (0 filas: el gate corta el cruce de pais)'
+      ELSE 'ROJO (paciente de GT leyo '||n||' clinicas de OTRO pais)' END, false);
+  EXCEPTION WHEN OTHERS THEN PERFORM set_config('probe.p705','FALLO ('||SQLSTATE||' '||SQLERRM||')', false);
+  END;
+
+  BEGIN
+    SELECT count(*) INTO n FROM public.listar_clinicas_por_pais(v_gt);
+    PERFORM set_config('probe.p706', CASE WHEN n > 0 THEN 'OK (control positivo: ve '||n||' de su pais)'
+      ELSE 'ROJO (el gate dejo al PACIENTE afuera de su propio pais: se rompe AgendarCitaModal)' END, false);
+  EXCEPTION WHEN OTHERS THEN PERFORM set_config('probe.p706','ROJO ('||SQLSTATE||' '||SQLERRM||')', false);
+  END;
+
+  PERFORM set_config('role','none', true);
+EXCEPTION WHEN OTHERS THEN
+  PERFORM set_config('role','none', true);
+  PERFORM set_config('probe.p705','FALLO ('||SQLSTATE||' '||SQLERRM||')', false);
+END $$;
+SELECT set_config('role','none', true);
+
+-- P707/P710 — el admin_pais. P707 cruzada (roja-primero), P710 su propio pais (control positivo).
+DO $$
+DECLARE n bigint;
+BEGIN
+  IF coalesce(current_setting('probe.lc_ready', true),'') <> '1' THEN
+    PERFORM set_config('probe.p707','N/A (fixture LC_FX ausente)', false);
+    PERFORM set_config('probe.p710','N/A (fixture LC_FX ausente)', false); RETURN; END IF;
+
+  PERFORM set_config('request.jwt.claims',
+    json_build_object('sub', current_setting('probe.lc_ap', true), 'role','authenticated')::text, true);
+  PERFORM set_config('role','authenticated', true);
+
+  BEGIN
+    SELECT count(*) INTO n FROM public.listar_clinicas_por_pais(
+      current_setting('probe.lc_otro', true)::uuid);
+    PERFORM set_config('probe.p707', CASE WHEN n = 0 THEN 'OK (0 filas: admin_pais no cruza de pais)'
+      ELSE 'ROJO (admin_pais leyo '||n||' clinicas de un pais ajeno)' END, false);
+  EXCEPTION WHEN OTHERS THEN PERFORM set_config('probe.p707','FALLO ('||SQLSTATE||' '||SQLERRM||')', false);
+  END;
+
+  BEGIN
+    SELECT count(*) INTO n FROM public.listar_clinicas_por_pais(
+      current_setting('probe.lc_appa', true)::uuid);
+    PERFORM set_config('probe.p710', CASE WHEN n > 0 THEN 'OK (control positivo: ve '||n||' de SU pais)'
+      ELSE 'ROJO (el gate dejo al admin_pais afuera de su propio pais)' END, false);
+  EXCEPTION WHEN OTHERS THEN PERFORM set_config('probe.p710','ROJO ('||SQLSTATE||' '||SQLERRM||')', false);
+  END;
+
+  PERFORM set_config('role','none', true);
+EXCEPTION WHEN OTHERS THEN
+  PERFORM set_config('role','none', true);
+  PERFORM set_config('probe.p707','FALLO ('||SQLSTATE||' '||SQLERRM||')', false);
+END $$;
+SELECT set_config('role','none', true);
+
+-- P708/P709 — super_admin. Los dos son CONTROL POSITIVO: sin ellos, "todas las cruzadas dan 0"
+-- tambien lo cumpliria un gate que cierra para todo el mundo.
+DO $$
+DECLARE v_gt uuid := 'cbbbbe6d-59fe-4cf2-91ee-3e31ba1d5909'; n bigint;
+BEGIN
+  IF coalesce(current_setting('probe.lc_ready', true),'') <> '1' THEN
+    PERFORM set_config('probe.p708','N/A (fixture LC_FX ausente)', false);
+    PERFORM set_config('probe.p709','N/A (fixture LC_FX ausente)', false); RETURN; END IF;
+
+  PERFORM set_config('request.jwt.claims',
+    json_build_object('sub', current_setting('probe.lc_sa', true), 'role','authenticated')::text, true);
+  PERFORM set_config('role','authenticated', true);
+
+  BEGIN
+    SELECT count(*) INTO n FROM public.listar_clinicas_por_pais(
+      current_setting('probe.lc_otro', true)::uuid);
+    PERFORM set_config('probe.p708', CASE WHEN n > 0 THEN 'OK (super_admin ve '||n||' en pais ajeno)'
+      ELSE 'ROJO (super_admin no ve la clinica semilla: el gate cierra de mas)' END, false);
+  EXCEPTION WHEN OTHERS THEN PERFORM set_config('probe.p708','ROJO ('||SQLSTATE||' '||SQLERRM||')', false);
+  END;
+
+  BEGIN
+    SELECT count(*) INTO n FROM public.listar_clinicas_por_pais(v_gt);
+    PERFORM set_config('probe.p709', CASE WHEN n > 0 THEN 'OK (super_admin ve '||n||' en GT)'
+      ELSE 'ROJO (super_admin no ve las clinicas de GT)' END, false);
+  EXCEPTION WHEN OTHERS THEN PERFORM set_config('probe.p709','ROJO ('||SQLSTATE||' '||SQLERRM||')', false);
+  END;
+
+  PERFORM set_config('role','none', true);
+EXCEPTION WHEN OTHERS THEN
+  PERFORM set_config('role','none', true);
+  PERFORM set_config('probe.p708','FALLO ('||SQLSTATE||' '||SQLERRM||')', false);
+END $$;
+SELECT set_config('role','none', true);
+
 -- ===== Veredictos como result set =====
 SELECT 'P1_anon_insert_citas'              AS probe, current_setting('probe.p1', true)  AS verdict, 'BLOQUEADO' AS esperado_post_fix
 UNION ALL SELECT 'P2_medico_cancela_ajena_rpc',         current_setting('probe.p2', true),  'BLOQUEADO'
@@ -16741,6 +16927,14 @@ UNION ALL SELECT 'P700_rp_auth_listar_control_pos',   current_setting('probe.p70
 UNION ALL SELECT 'P701_rp_auth_obtener_control_pos',  current_setting('probe.p701', true),    'OK (control positivo)'
 UNION ALL SELECT 'P702_rp_auth_contar_pais_ctrl_pos', current_setting('probe.p702', true),    'OK (control positivo)'
 UNION ALL SELECT 'P703_rp_auth_contar_ids_ctrl_pos',  current_setting('probe.p703', true),    'OK (control positivo)'
+UNION ALL SELECT 'LC_FX_fixture_clinicas',           current_setting('probe.lc_fx', true),   'OK (fixture)'
+UNION ALL SELECT 'P704_lc_anon_sin_execute',         current_setting('probe.p704', true),    'OK (42501)'
+UNION ALL SELECT 'P705_lc_paciente_cruza_pais',      current_setting('probe.p705', true),    'OK (0 filas)'
+UNION ALL SELECT 'P706_lc_paciente_su_pais_ctrl_pos',current_setting('probe.p706', true),    'OK (control positivo)'
+UNION ALL SELECT 'P707_lc_adminpais_cruza_pais',     current_setting('probe.p707', true),    'OK (0 filas)'
+UNION ALL SELECT 'P708_lc_super_pais_ajeno_ctrl_pos',current_setting('probe.p708', true),    'OK (control positivo)'
+UNION ALL SELECT 'P709_lc_super_gt_ctrl_pos',        current_setting('probe.p709', true),    'OK (control positivo)'
+UNION ALL SELECT 'P710_lc_adminpais_su_pais_ctrl_pos',current_setting('probe.p710', true),   'OK (control positivo)'
 UNION ALL SELECT 'FX20_fo_fixture',                    current_setting('probe.fo_fx', true),  'OK (fixture)'
 UNION ALL SELECT 'P631_CENSO_anon_perfiles',           current_setting('probe.p631', true), 'OK (anon en cero, los 7)'
 UNION ALL SELECT 'P632_authenticated_perfiles',        current_setting('probe.p632', true), 'OK (4 DML si, 3 no)'
@@ -16955,7 +17149,9 @@ UNION ALL SELECT 'P000_CENTINELA_veredictos_no_nulos',
        'probe.pm_fx', 'probe.p686', 'probe.p687', 'probe.p688', 'probe.p689', 'probe.p690',
        'probe.p691', 'probe.p692', 'probe.p693',
        'probe.p694', 'probe.p695', 'probe.p696', 'probe.p697', 'probe.p698', 'probe.p699',
-       'probe.p700', 'probe.p701', 'probe.p702', 'probe.p703'
+       'probe.p700', 'probe.p701', 'probe.p702', 'probe.p703',
+       'probe.lc_fx', 'probe.p704', 'probe.p705', 'probe.p706', 'probe.p707',
+       'probe.p708', 'probe.p709', 'probe.p710'
              ]) AS n) s),
   'OK (todos los veredictos publicados)';
 
