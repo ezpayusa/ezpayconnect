@@ -49,11 +49,35 @@ serve(async (req) => {
       return new Response(JSON.stringify({ error: 'No autenticado' }),
         { status: 401, headers: { ...corsHeaders, 'Content-Type': 'application/json' } })
     }
-    const { data: perfilReq } = await supabase.from('perfiles').select('rol').eq('id', solicitante.id).maybeSingle()
+    const { data: perfilReq } = await supabase.from('perfiles').select('rol, pais_id').eq('id', solicitante.id).maybeSingle()
     let autorizado = perfilReq?.rol === 'super_admin'
     if (!autorizado && (perfilReq?.rol === 'admin_clinica' || perfilReq?.rol === 'gerente')) {
       const { data: rel } = await supabase.rpc('obtener_clinica_usuario', { p_user_id: solicitante.id })
       autorizado = Array.isArray(rel) && rel.some((r: any) => r.clinica_id === clinica_id)
+    }
+    // admin_pais: autorizado dentro de SU pais. Faltaba — crear-invitacion-clinica ya lo contempla
+    // y esta no, asi que el admin_pais tenia el item en el sidebar y recibia 403 al invitar.
+    //
+    // HAY QUE CUBRIR LOS DOS CAMINOS, no solo la clinica. InvitacionesMedicosPage (admin-ezpay) manda
+    // `pais_id` y NO manda `clinica_id`; ClinicaInvitarMedicoPage manda `clinica_id`. Un gate armado
+    // solo sobre clinica_id nunca autorizaria justamente la pantalla de admin de pais.
+    //
+    // Y el pais que se compara es el MISMO que termina en la fila (la logica de `final_pais_id` de
+    // mas abajo: body.pais_id, y si no el de la clinica). Si el gate validara un pais y el INSERT
+    // guardara otro, el gate no estaria gateando nada.
+    if (!autorizado && perfilReq?.rol === 'admin_pais') {
+      let paisClinica: string | null = null
+      if (clinica_id) {
+        const { data: cl } = await supabase.from('clinicas').select('pais_id').eq('id', clinica_id).maybeSingle()
+        paisClinica = cl?.pais_id ?? null
+      }
+      const paisDestino = pais_id || paisClinica
+      // admin_pais sin pais es imposible (CHECK admin_pais_requiere_pais, mig 216) pero se corta
+      // defensivo: con los dos en null, `null === null` daria true y autorizaria a una cuenta rota.
+      autorizado = !!perfilReq?.pais_id && !!paisDestino && perfilReq.pais_id === paisDestino
+        // Si ademas viene una clinica, tiene que ser de SU pais. Sin esto un admin de GT podria
+        // colgar la invitacion de una clinica de SV mandando pais_id=GT en el body.
+        && (!clinica_id || paisClinica === perfilReq.pais_id)
     }
     if (!autorizado) {
       return new Response(JSON.stringify({ error: 'No autorizado para invitar médicos a esta clínica' }),

@@ -16167,6 +16167,246 @@ EXCEPTION WHEN OTHERS THEN
 END $$;
 SELECT set_config('role','none', true);
 
+-- ============================================================
+-- MIG 297 · invitaciones_*: policy propia para admin_pais (IN_FX, P711-P720)
+-- ============================================================
+-- Defecto INVERSO al de las migs 294/295/296: ahi sobraba acceso, aca faltaba. El admin_pais tenia
+-- los dos items en el sidebar y las dos tablas no tenian una sola policy que lo contemplara: lista
+-- VACIA, sin error. Y en clinicas era peor que inutil, porque crear-invitacion-clinica SI lo
+-- autoriza — creaba la invitacion y despues no la veia.
+--
+-- EL FIXTURE SIEMBRA UNA INVITACION DE MEDICO EN OTRO PAIS. En prod invitaciones_medico tiene 2
+-- filas y las dos son de GT: "el admin de GT no ve las de SV" daria 0 sin policy, con policy, y con
+-- una policy rota que no filtre nada. Con la semilla, el 0 solo puede venir del scoping.
+-- (invitaciones_clinica ya tiene 1 de GT y 1 de SV en prod, asi que ahi la distincion es real sin
+-- sembrar: P713 exige ver EXACTAMENTE la de GT.)
+--
+-- P716-P718 SON LA PARTE QUE NADIE MIRA. La policy es FOR ALL y va SIN `WITH CHECK` explicito, asi
+-- que el WITH CHECK hereda el USING. Que eso alcance para impedir que un admin_pais inserte en otro
+-- pais (P717) o mueva una fila suya de pais (P718) es una afirmacion sobre como se comporta esta
+-- base, no sobre lo que dice el manual: se mide.
+--
+-- P719/P720 son la leccion de la mig 284: una policy se evalua con los privilegios del LLAMANTE, y
+-- esta hace un EXISTS sobre `perfiles`. Si un rol no pudiera leer `perfiles`, la policy no negaria
+-- en silencio: lanzaria 42501 y romperia la tabla para ese rol. Se EJERCITA a anon en vez de mirar
+-- el catalogo.
+SELECT set_config('role','none', true);
+DO $$
+DECLARE v_gt uuid := 'cbbbbe6d-59fe-4cf2-91ee-3e31ba1d5909';
+        v_ap uuid; v_appa uuid; v_sa uuid; v_otro uuid; v_med uuid;
+BEGIN
+  SELECT p.id, p.pais_id INTO v_ap, v_appa FROM public.perfiles p
+   WHERE p.rol = 'admin_pais' AND p.pais_id IS NOT NULL ORDER BY p.id LIMIT 1;
+  SELECT p.id INTO v_sa  FROM public.perfiles p WHERE p.rol = 'super_admin' ORDER BY p.id LIMIT 1;
+  SELECT p.id INTO v_med FROM public.perfiles p WHERE p.rol = 'medico' ORDER BY p.id LIMIT 1;
+
+  -- "Otro pais" se elige CONTRA el pais del admin, no se hardcodea.
+  SELECT cp.id INTO v_otro FROM public.configuracion_pais cp
+   WHERE cp.id IS DISTINCT FROM v_appa ORDER BY cp.codigo LIMIT 1;
+
+  IF v_ap IS NULL OR v_sa IS NULL OR v_med IS NULL OR v_otro IS NULL THEN
+    PERFORM set_config('probe.in_fx','ROJO (faltan fixtures: ap='||coalesce(v_ap::text,'-')
+      ||' sa='||coalesce(v_sa::text,'-')||' med='||coalesce(v_med::text,'-')
+      ||' otro='||coalesce(v_otro::text,'-')||')', false);
+    RETURN; END IF;
+
+  INSERT INTO public.invitaciones_medico (pais_id, email, nombre_completo)
+  VALUES (v_otro, 'in_fx_semilla_otro_pais@ejemplo.invalid', 'IN_FX semilla otro pais');
+
+  PERFORM set_config('probe.in_ap',   v_ap::text,   false);
+  PERFORM set_config('probe.in_appa', v_appa::text, false);
+  PERFORM set_config('probe.in_sa',   v_sa::text,   false);
+  PERFORM set_config('probe.in_med',  v_med::text,  false);
+  PERFORM set_config('probe.in_otro', v_otro::text, false);
+  PERFORM set_config('probe.in_ready','1',          false);
+  PERFORM set_config('probe.in_fx','OK (admin_pais + super_admin + medico + semilla de medico en otro pais)', false);
+EXCEPTION WHEN OTHERS THEN
+  PERFORM set_config('probe.in_fx','ROJO ('||SQLSTATE||' '||SQLERRM||')', false);
+END $$;
+SELECT set_config('role','none', true);
+
+-- P711/P712/P713 — LECTURA del admin_pais. Rojas primero: sin la 297 ve 0 en las tres.
+DO $$
+DECLARE n bigint; n2 bigint; v_pais uuid;
+BEGIN
+  IF coalesce(current_setting('probe.in_ready', true),'') <> '1' THEN
+    PERFORM set_config('probe.p711','N/A (fixture IN_FX ausente)', false);
+    PERFORM set_config('probe.p712','N/A (fixture IN_FX ausente)', false);
+    PERFORM set_config('probe.p713','N/A (fixture IN_FX ausente)', false); RETURN; END IF;
+
+  PERFORM set_config('request.jwt.claims',
+    json_build_object('sub', current_setting('probe.in_ap', true), 'role','authenticated')::text, true);
+  PERFORM set_config('role','authenticated', true);
+
+  BEGIN
+    SELECT count(*) INTO n FROM public.invitaciones_medico
+     WHERE pais_id = current_setting('probe.in_appa', true)::uuid;
+    PERFORM set_config('probe.p711', CASE WHEN n > 0
+      THEN 'OK (admin_pais ve '||n||' invitaciones de medico de SU pais)'
+      ELSE 'ROJO (ve 0 invitaciones de medico de su propio pais)' END, false);
+  EXCEPTION WHEN OTHERS THEN PERFORM set_config('probe.p711','ROJO ('||SQLSTATE||' '||SQLERRM||')', false);
+  END;
+
+  BEGIN
+    SELECT count(*) INTO n FROM public.invitaciones_medico
+     WHERE pais_id = current_setting('probe.in_otro', true)::uuid;
+    PERFORM set_config('probe.p712', CASE WHEN n = 0
+      THEN 'OK (0 filas: no ve la semilla de otro pais)'
+      ELSE 'ROJO (admin_pais leyo '||n||' invitaciones de medico de OTRO pais)' END, false);
+  EXCEPTION WHEN OTHERS THEN PERFORM set_config('probe.p712','FALLO ('||SQLSTATE||' '||SQLERRM||')', false);
+  END;
+
+  -- invitaciones_clinica tiene 1 de GT y 1 de SV en prod: ve UNA y tiene que ser la suya.
+  BEGIN
+    SELECT count(*), count(*) FILTER (WHERE pais_id = current_setting('probe.in_appa', true)::uuid)
+      INTO n, n2 FROM public.invitaciones_clinica;
+    PERFORM set_config('probe.p713', CASE WHEN n > 0 AND n = n2
+      THEN 'OK (ve '||n||' invitaciones de clinica, todas de SU pais)'
+      WHEN n = 0 THEN 'ROJO (ve 0 invitaciones de clinica)'
+      ELSE 'ROJO (ve '||n||' invitaciones de clinica pero solo '||n2||' son de su pais)' END, false);
+  EXCEPTION WHEN OTHERS THEN PERFORM set_config('probe.p713','ROJO ('||SQLSTATE||' '||SQLERRM||')', false);
+  END;
+
+  PERFORM set_config('role','none', true);
+EXCEPTION WHEN OTHERS THEN
+  PERFORM set_config('role','none', true);
+  PERFORM set_config('probe.p711','FALLO ('||SQLSTATE||' '||SQLERRM||')', false);
+END $$;
+SELECT set_config('role','none', true);
+
+-- P714/P715 — CONTROLES. Sin ellos, "el admin_pais ve lo suyo" tambien lo cumpliria una policy
+-- USING(true), que es exactamente como nacio el hallazgo de `medicos` de la mig 294.
+DO $$
+DECLARE n bigint;
+BEGIN
+  IF coalesce(current_setting('probe.in_ready', true),'') <> '1' THEN
+    PERFORM set_config('probe.p714','N/A (fixture IN_FX ausente)', false);
+    PERFORM set_config('probe.p715','N/A (fixture IN_FX ausente)', false); RETURN; END IF;
+
+  PERFORM set_config('request.jwt.claims',
+    json_build_object('sub', current_setting('probe.in_sa', true), 'role','authenticated')::text, true);
+  PERFORM set_config('role','authenticated', true);
+  BEGIN
+    SELECT count(DISTINCT pais_id) INTO n FROM public.invitaciones_medico;
+    PERFORM set_config('probe.p714', CASE WHEN n >= 2
+      THEN 'OK (no-regresion: super_admin sigue viendo '||n||' paises)'
+      ELSE 'ROJO (super_admin ve invitaciones de '||n||' pais: se le achico el alcance)' END, false);
+  EXCEPTION WHEN OTHERS THEN PERFORM set_config('probe.p714','ROJO ('||SQLSTATE||' '||SQLERRM||')', false);
+  END;
+  PERFORM set_config('role','none', true);
+
+  PERFORM set_config('request.jwt.claims',
+    json_build_object('sub', current_setting('probe.in_med', true), 'role','authenticated')::text, true);
+  PERFORM set_config('role','authenticated', true);
+  BEGIN
+    SELECT count(*) INTO n FROM public.invitaciones_medico;
+    PERFORM set_config('probe.p715', CASE WHEN n = 0
+      THEN 'OK (un medico sigue viendo 0: la policy no abrio a todos)'
+      ELSE 'ROJO (un rol sin autoridad ve '||n||' invitaciones)' END, false);
+  EXCEPTION WHEN OTHERS THEN PERFORM set_config('probe.p715','FALLO ('||SQLSTATE||' '||SQLERRM||')', false);
+  END;
+  PERFORM set_config('role','none', true);
+EXCEPTION WHEN OTHERS THEN
+  PERFORM set_config('role','none', true);
+  PERFORM set_config('probe.p714','FALLO ('||SQLSTATE||' '||SQLERRM||')', false);
+END $$;
+SELECT set_config('role','none', true);
+
+-- P716/P717/P718 — ESCRITURA. La policy es FOR ALL sin WITH CHECK explicito: hereda el USING.
+-- P716 prueba que el alcance de escritura existe; P717 y P718 que el WITH CHECK heredado alcanza.
+DO $$
+DECLARE v_id uuid; n bigint;
+BEGIN
+  IF coalesce(current_setting('probe.in_ready', true),'') <> '1' THEN
+    PERFORM set_config('probe.p716','N/A (fixture IN_FX ausente)', false);
+    PERFORM set_config('probe.p717','N/A (fixture IN_FX ausente)', false);
+    PERFORM set_config('probe.p718','N/A (fixture IN_FX ausente)', false); RETURN; END IF;
+
+  PERFORM set_config('request.jwt.claims',
+    json_build_object('sub', current_setting('probe.in_ap', true), 'role','authenticated')::text, true);
+  PERFORM set_config('role','authenticated', true);
+
+  -- P716 — INSERT en SU pais: el alcance FOR ALL que decidio Oscar.
+  BEGIN
+    INSERT INTO public.invitaciones_medico (pais_id, email, nombre_completo)
+    VALUES (current_setting('probe.in_appa', true)::uuid, 'p716_propio@ejemplo.invalid', 'P716 propio')
+    RETURNING id INTO v_id;
+    PERFORM set_config('probe.p716','OK (admin_pais inserta en SU pais)', false);
+  EXCEPTION WHEN insufficient_privilege THEN
+    PERFORM set_config('probe.p716','ROJO (42501: no puede insertar ni en su propio pais)', false);
+    WHEN OTHERS THEN PERFORM set_config('probe.p716','FALLO ('||SQLSTATE||' '||SQLERRM||')', false);
+  END;
+
+  -- P717 — INSERT en OTRO pais: lo tiene que cortar el WITH CHECK heredado.
+  BEGIN
+    INSERT INTO public.invitaciones_medico (pais_id, email, nombre_completo)
+    VALUES (current_setting('probe.in_otro', true)::uuid, 'p717_ajeno@ejemplo.invalid', 'P717 ajeno');
+    PERFORM set_config('probe.p717','ROJO (inserto una invitacion en un pais AJENO)', false);
+  EXCEPTION WHEN insufficient_privilege THEN
+    PERFORM set_config('probe.p717','OK (42501: el WITH CHECK heredado corta el INSERT cruzado)', false);
+    WHEN OTHERS THEN PERFORM set_config('probe.p717','FALLO ('||SQLSTATE||' '||SQLERRM||')', false);
+  END;
+
+  -- P718 — UPDATE que MUEVE la fila a otro pais. USING mira la vieja y WITH CHECK la nueva: la
+  -- nueva ya no satisface el predicado, asi que tiene que fallar. Es la pregunta exacta de Oscar.
+  BEGIN
+    IF v_id IS NULL THEN
+      PERFORM set_config('probe.p718','N/A (P716 no dejo fila para mover)', false);
+    ELSE
+      UPDATE public.invitaciones_medico
+         SET pais_id = current_setting('probe.in_otro', true)::uuid
+       WHERE id = v_id;
+      GET DIAGNOSTICS n = ROW_COUNT;
+      PERFORM set_config('probe.p718', CASE WHEN n = 0
+        THEN 'OK (0 filas: el USING ya no alcanza la fila movida)'
+        ELSE 'ROJO (movio '||n||' fila(s) de invitacion a un pais AJENO)' END, false);
+    END IF;
+  EXCEPTION WHEN insufficient_privilege THEN
+    PERFORM set_config('probe.p718','OK (42501: el WITH CHECK heredado corta el cambio de pais)', false);
+    WHEN OTHERS THEN PERFORM set_config('probe.p718','FALLO ('||SQLSTATE||' '||SQLERRM||')', false);
+  END;
+
+  PERFORM set_config('role','none', true);
+EXCEPTION WHEN OTHERS THEN
+  PERFORM set_config('role','none', true);
+  PERFORM set_config('probe.p716','FALLO ('||SQLSTATE||' '||SQLERRM||')', false);
+END $$;
+SELECT set_config('role','none', true);
+
+-- P719/P720 — anon EJERCITADO (leccion mig 284). Tiene que dar 0 filas SIN error: la policy nueva
+-- es TO PUBLIC y hace un EXISTS sobre `perfiles`; si anon no pudiera leer `perfiles`, lanzaria
+-- 42501 en vez de negar en silencio, y romperia las dos tablas para ese rol.
+DO $$
+DECLARE n bigint;
+BEGIN
+  PERFORM set_config('request.jwt.claims','{"role":"anon"}', true);
+  PERFORM set_config('role','anon', true);
+
+  BEGIN
+    SELECT count(*) INTO n FROM public.invitaciones_medico;
+    PERFORM set_config('probe.p719', CASE WHEN n = 0 THEN 'OK (0 filas, sin 42501)'
+      ELSE 'ROJO (anon ve '||n||' invitaciones de medico)' END, false);
+  EXCEPTION WHEN insufficient_privilege THEN
+    PERFORM set_config('probe.p719','ROJO (42501: la policy ROMPE la tabla para anon en vez de negar)', false);
+    WHEN OTHERS THEN PERFORM set_config('probe.p719','FALLO ('||SQLSTATE||' '||SQLERRM||')', false);
+  END;
+
+  BEGIN
+    SELECT count(*) INTO n FROM public.invitaciones_clinica;
+    PERFORM set_config('probe.p720', CASE WHEN n = 0 THEN 'OK (0 filas, sin 42501)'
+      ELSE 'ROJO (anon ve '||n||' invitaciones de clinica)' END, false);
+  EXCEPTION WHEN insufficient_privilege THEN
+    PERFORM set_config('probe.p720','ROJO (42501: la policy ROMPE la tabla para anon en vez de negar)', false);
+    WHEN OTHERS THEN PERFORM set_config('probe.p720','FALLO ('||SQLSTATE||' '||SQLERRM||')', false);
+  END;
+
+  PERFORM set_config('role','none', true);
+EXCEPTION WHEN OTHERS THEN
+  PERFORM set_config('role','none', true);
+  PERFORM set_config('probe.p719','FALLO ('||SQLSTATE||' '||SQLERRM||')', false);
+END $$;
+SELECT set_config('role','none', true);
+
 -- ===== Veredictos como result set =====
 SELECT 'P1_anon_insert_citas'              AS probe, current_setting('probe.p1', true)  AS verdict, 'BLOQUEADO' AS esperado_post_fix
 UNION ALL SELECT 'P2_medico_cancela_ajena_rpc',         current_setting('probe.p2', true),  'BLOQUEADO'
@@ -16935,6 +17175,17 @@ UNION ALL SELECT 'P707_lc_adminpais_cruza_pais',     current_setting('probe.p707
 UNION ALL SELECT 'P708_lc_super_pais_ajeno_ctrl_pos',current_setting('probe.p708', true),    'OK (control positivo)'
 UNION ALL SELECT 'P709_lc_super_gt_ctrl_pos',        current_setting('probe.p709', true),    'OK (control positivo)'
 UNION ALL SELECT 'P710_lc_adminpais_su_pais_ctrl_pos',current_setting('probe.p710', true),   'OK (control positivo)'
+UNION ALL SELECT 'IN_FX_fixture_invitaciones',       current_setting('probe.in_fx', true),   'OK (fixture)'
+UNION ALL SELECT 'P711_in_adminpais_ve_medico_suyo', current_setting('probe.p711', true),    'OK (>0 de su pais)'
+UNION ALL SELECT 'P712_in_adminpais_no_cruza_medico',current_setting('probe.p712', true),    'OK (0 filas)'
+UNION ALL SELECT 'P713_in_adminpais_clinica_scoped', current_setting('probe.p713', true),    'OK (solo su pais)'
+UNION ALL SELECT 'P714_in_super_no_regresion',       current_setting('probe.p714', true),    'OK (control positivo)'
+UNION ALL SELECT 'P715_in_medico_sigue_en_cero',     current_setting('probe.p715', true),    'OK (0 filas)'
+UNION ALL SELECT 'P716_in_adminpais_insert_propio',  current_setting('probe.p716', true),    'OK (control positivo)'
+UNION ALL SELECT 'P717_in_adminpais_insert_ajeno',   current_setting('probe.p717', true),    'OK (42501)'
+UNION ALL SELECT 'P718_in_adminpais_mueve_pais',     current_setting('probe.p718', true),    'OK (42501 o 0 filas)'
+UNION ALL SELECT 'P719_in_anon_medico_sin_42501',    current_setting('probe.p719', true),    'OK (0 filas, sin 42501)'
+UNION ALL SELECT 'P720_in_anon_clinica_sin_42501',   current_setting('probe.p720', true),    'OK (0 filas, sin 42501)'
 UNION ALL SELECT 'FX20_fo_fixture',                    current_setting('probe.fo_fx', true),  'OK (fixture)'
 UNION ALL SELECT 'P631_CENSO_anon_perfiles',           current_setting('probe.p631', true), 'OK (anon en cero, los 7)'
 UNION ALL SELECT 'P632_authenticated_perfiles',        current_setting('probe.p632', true), 'OK (4 DML si, 3 no)'
@@ -17151,7 +17402,9 @@ UNION ALL SELECT 'P000_CENTINELA_veredictos_no_nulos',
        'probe.p694', 'probe.p695', 'probe.p696', 'probe.p697', 'probe.p698', 'probe.p699',
        'probe.p700', 'probe.p701', 'probe.p702', 'probe.p703',
        'probe.lc_fx', 'probe.p704', 'probe.p705', 'probe.p706', 'probe.p707',
-       'probe.p708', 'probe.p709', 'probe.p710'
+       'probe.p708', 'probe.p709', 'probe.p710',
+       'probe.in_fx', 'probe.p711', 'probe.p712', 'probe.p713', 'probe.p714',
+       'probe.p715', 'probe.p716', 'probe.p717', 'probe.p718', 'probe.p719', 'probe.p720'
              ]) AS n) s),
   'OK (todos los veredictos publicados)';
 
