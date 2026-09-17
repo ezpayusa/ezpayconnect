@@ -119,6 +119,7 @@ const ComercialMiTarjetaPage = lazy(() => import('@/comercial/pages/MiTarjetaPag
 const MaterialPaisPage = lazy(() => import('@/pages/admin-ezpay/MaterialPaisPage'))
 const AsesoresPaisPage = lazy(() => import('@/pages/admin-ezpay/AsesoresPaisPage'))
 const ProspectosPaisPage = lazy(() => import('@/pages/admin-ezpay/ProspectosPaisPage'))
+const ClinicasPaisPage = lazy(() => import('@/pages/admin-ezpay/ClinicasPaisPage'))
 const SinPanelPage = lazy(() => import('@/pages/SinPanelPage'))
 const VisitadorAgendarPage = lazy(() => import('@/proveedor/pages/visitador/VisitadorAgendarPage'))
 const VisitadorMisVisitasPage = lazy(() => import('@/proveedor/pages/visitador/VisitadorMisVisitasPage'))
@@ -351,6 +352,9 @@ function App() {
           <Route path="pais/:paisId" element={<PaisDashboardPage />} />
           <Route path="pais/:paisId/invitaciones-medicos" element={<InvitacionesMedicosPage />} />
           <Route path="pais/:paisId/invitaciones-clinicas" element={<InvitacionesClinicasPage />} />
+          {/* Destino del boton "Ver Clinicas" de PaisDashboardPage, que navegaba aca desde el
+              7-jun sin que la ruta existiera (caia en NotFoundPage). Solo lectura. */}
+          <Route path="pais/:paisId/clinicas" element={<ClinicasPaisPage />} />
           {/* Dual-mount de 4 páginas globales bajo /pais/:paisId (mismo componente lazy; páginas agnósticas de URL). */}
           <Route path="pais/:paisId/canjes" element={<CanjesPendientesPage />} />
           <Route path="pais/:paisId/especialidades" element={<EspecialidadesPropuestasPage />} />
