@@ -16407,6 +16407,133 @@ EXCEPTION WHEN OTHERS THEN
 END $$;
 SELECT set_config('role','none', true);
 
+-- ============================================================
+-- MIG 298 · anon sin escritura sobre public, y sin recibirla por default (P721-P724)
+-- ============================================================
+-- P721 es el molde de P635: EJERCITA al rol contra tablas de verdad en vez de mirar el catalogo.
+-- La leccion de la mig 284 es que un cambio de privilegios no se verifica preguntando quien tiene
+-- que, sino viendo QUE PASA CUANDO SE USA — revocar de mas no niega en silencio, lanza 42501.
+--
+-- LA MUESTRA NO ES CAPRICHOSA. Se midio antes que devuelve anon hoy en cada candidata:
+--   0 filas  -> pacientes, recetas, receta_items, expediente_notas, signos_vitales, examenes,
+--               citas, clinicas, invitaciones_medico, facturas, transacciones   <- van a P721
+--   42501    -> medicos, chat_mensajes (anon NO tiene SELECT ahi)               <- NO van
+--   21 filas -> configuracion_pais (catalogo publico legitimo, lo lee el registro de proveedor)
+--                                                                               <- NO va
+-- Meter una de las dos ultimas clases en una probe de "0 filas sin error" la pondria roja sin que
+-- hubiera nada roto, que es la forma mas rapida de que un harness deje de significar algo.
+SELECT set_config('role','none', true);
+DO $$
+DECLARE t text; n bigint; v_mal text := ''; v_ok int := 0;
+BEGIN
+  PERFORM set_config('request.jwt.claims','{"role":"anon"}', true);
+  PERFORM set_config('role','anon', true);
+  FOREACH t IN ARRAY ARRAY['pacientes','recetas','receta_items','expediente_notas','signos_vitales',
+                           'examenes','citas','clinicas','invitaciones_medico','facturas','transacciones'] LOOP
+    BEGIN
+      EXECUTE format('SELECT count(*) FROM public.%I', t) INTO n;
+      IF n = 0 THEN v_ok := v_ok + 1;
+      ELSE v_mal := v_mal || t || '=' || n || ' filas; '; END IF;
+    EXCEPTION WHEN insufficient_privilege THEN
+      v_mal := v_mal || t || '=42501 (la tabla quedo ROTA para anon); ';
+      WHEN OTHERS THEN v_mal := v_mal || t || '=' || SQLSTATE || '; ';
+    END;
+  END LOOP;
+  PERFORM set_config('role','none', true);
+  PERFORM set_config('probe.p721', CASE WHEN v_mal = ''
+    THEN 'OK (' || v_ok || '/11 tablas: 0 filas, sin 42501)'
+    ELSE 'ROJO (' || v_mal || ')' END, false);
+EXCEPTION WHEN OTHERS THEN
+  PERFORM set_config('role','none', true);
+  PERFORM set_config('probe.p721','FALLO ('||SQLSTATE||' '||SQLERRM||')', false);
+END $$;
+SELECT set_config('role','none', true);
+
+-- P722 — CONTRAPRUEBA de P721, molde de P636. Sin esto, P721 verde podria significar "todo bien"
+-- o "la probe no detecta nada". Se le quita el SELECT a anon sobre una tabla de la muestra dentro
+-- de un SAVEPOINT: el mismo codigo de P721 tiene que pasar de 0-filas a 42501, y despues vuelve.
+DO $$
+DECLARE n bigint; v_res text;
+BEGIN
+  PERFORM set_config('role','none', true);
+  BEGIN
+    EXECUTE 'REVOKE SELECT ON public.pacientes FROM anon';
+
+    PERFORM set_config('request.jwt.claims','{"role":"anon"}', true);
+    PERFORM set_config('role','anon', true);
+    BEGIN
+      SELECT count(*) INTO n FROM public.pacientes;
+      v_res := 'ROJO (sin el GRANT anon igual leyo ' || n || ': el detector de P721 no detecta)';
+    EXCEPTION WHEN insufficient_privilege THEN
+      v_res := 'OK (sin el GRANT da 42501: P721 distingue 0-filas de tabla-rota)';
+      WHEN OTHERS THEN v_res := 'FALLO (' || SQLSTATE || ' ' || SQLERRM || ')';
+    END;
+    PERFORM set_config('role','none', true);
+
+    -- Se revierte SIEMPRE, con o sin exito, levantando para deshacer el REVOKE de la subtransaccion.
+    RAISE EXCEPTION 'm298_rollback_contraprueba';
+  EXCEPTION WHEN OTHERS THEN
+    PERFORM set_config('role','none', true);
+    IF SQLERRM <> 'm298_rollback_contraprueba' THEN
+      v_res := coalesce(v_res, 'FALLO (' || SQLSTATE || ' ' || SQLERRM || ')');
+    END IF;
+  END;
+  PERFORM set_config('probe.p722', coalesce(v_res, 'FALLO (sin veredicto)'), false);
+EXCEPTION WHEN OTHERS THEN
+  PERFORM set_config('role','none', true);
+  PERFORM set_config('probe.p722','FALLO ('||SQLSTATE||' '||SQLERRM||')', false);
+END $$;
+SELECT set_config('role','none', true);
+
+-- P723 — CENSO GLOBAL del residuo. No mira "las 73" de aquel dia: mira TODA public, asi que una
+-- tabla nueva que naciera abierta tambien cae. Es el centinela que convierte "hay que acordarse de
+-- revisar" en "se pone rojo solo".
+DO $$
+DECLARE n_tab int; n_col int; v_lista text;
+BEGIN
+  SELECT count(DISTINCT table_name), coalesce(string_agg(DISTINCT table_name, ', '), '')
+    INTO n_tab, v_lista
+    FROM information_schema.role_table_grants
+   WHERE table_schema='public' AND grantee='anon'
+     AND privilege_type IN ('INSERT','UPDATE','DELETE','TRUNCATE','REFERENCES','TRIGGER');
+
+  SELECT count(*) INTO n_col FROM information_schema.column_privileges
+   WHERE table_schema='public' AND grantee='anon'
+     AND privilege_type IN ('INSERT','UPDATE','REFERENCES');
+
+  PERFORM set_config('probe.p723', CASE WHEN n_tab = 0 AND n_col = 0
+    THEN 'OK (0 relaciones y 0 columnas con escritura para anon en todo public)'
+    ELSE 'ROJO (' || n_tab || ' relacion(es) y ' || n_col || ' columna(s): ' || left(v_lista, 250) || ')' END, false);
+EXCEPTION WHEN OTHERS THEN
+  PERFORM set_config('probe.p723','FALLO ('||SQLSTATE||' '||SQLERRM||')', false);
+END $$;
+
+-- P724 — LA FABRICA. Crea una tabla y mira con que ACL nace. Es la unica probe que cubre el caso
+-- que la mig 298 NO pudo cerrar: la entrada de pg_default_acl de `supabase_admin`, intocable desde
+-- la conexion del CLI (42501). Hoy es inerte porque las 128 relaciones de public las crea
+-- `postgres`; si eso cambiara, esto se pone rojo sin que nadie tenga que sospecharlo.
+DO $$
+DECLARE v_acl text; v_mal text := '';
+BEGIN
+  BEGIN
+    EXECUTE 'CREATE TABLE public._p724_probe_defacl (id int)';
+    SELECT coalesce(array_to_string(c.relacl, ' '), '(NULL)') INTO v_acl
+      FROM pg_class c JOIN pg_namespace ns ON ns.oid=c.relnamespace
+     WHERE ns.nspname='public' AND c.relname='_p724_probe_defacl';
+    IF has_table_privilege('anon','public._p724_probe_defacl','INSERT')   THEN v_mal := v_mal||'INSERT '; END IF;
+    IF has_table_privilege('anon','public._p724_probe_defacl','UPDATE')   THEN v_mal := v_mal||'UPDATE '; END IF;
+    IF has_table_privilege('anon','public._p724_probe_defacl','DELETE')   THEN v_mal := v_mal||'DELETE '; END IF;
+    IF has_table_privilege('anon','public._p724_probe_defacl','TRUNCATE') THEN v_mal := v_mal||'TRUNCATE '; END IF;
+    IF has_table_privilege('anon','public._p724_probe_defacl','SELECT')   THEN v_mal := v_mal||'SELECT '; END IF;
+    EXECUTE 'DROP TABLE public._p724_probe_defacl';
+    PERFORM set_config('probe.p724', CASE WHEN v_mal = ''
+      THEN 'OK (una tabla nueva no le da nada a anon)'
+      ELSE 'ROJO (una tabla NUEVA nace con ' || v_mal || 'para anon: el default volvio)' END, false);
+  EXCEPTION WHEN OTHERS THEN
+    PERFORM set_config('probe.p724','FALLO ('||SQLSTATE||' '||SQLERRM||')', false);
+  END;
+END $$;
+
 -- ===== Veredictos como result set =====
 SELECT 'P1_anon_insert_citas'              AS probe, current_setting('probe.p1', true)  AS verdict, 'BLOQUEADO' AS esperado_post_fix
 UNION ALL SELECT 'P2_medico_cancela_ajena_rpc',         current_setting('probe.p2', true),  'BLOQUEADO'
@@ -17186,6 +17313,10 @@ UNION ALL SELECT 'P717_in_adminpais_insert_ajeno',   current_setting('probe.p717
 UNION ALL SELECT 'P718_in_adminpais_mueve_pais',     current_setting('probe.p718', true),    'OK (42501 o 0 filas)'
 UNION ALL SELECT 'P719_in_anon_medico_sin_42501',    current_setting('probe.p719', true),    'OK (0 filas, sin 42501)'
 UNION ALL SELECT 'P720_in_anon_clinica_sin_42501',   current_setting('probe.p720', true),    'OK (0 filas, sin 42501)'
+UNION ALL SELECT 'P721_an_anon_lee_11_tablas',       current_setting('probe.p721', true),    'OK (0 filas, sin 42501)'
+UNION ALL SELECT 'P722_an_CONTRAPRUEBA_de_P721',     current_setting('probe.p722', true),    'OK (42501 sin el grant, y vuelve)'
+UNION ALL SELECT 'P723_an_CENSO_escritura_anon',     current_setting('probe.p723', true),    'OK (0 relaciones, 0 columnas)'
+UNION ALL SELECT 'P724_an_default_privilege',        current_setting('probe.p724', true),    'OK (tabla nueva sin anon)'
 UNION ALL SELECT 'FX20_fo_fixture',                    current_setting('probe.fo_fx', true),  'OK (fixture)'
 UNION ALL SELECT 'P631_CENSO_anon_perfiles',           current_setting('probe.p631', true), 'OK (anon en cero, los 7)'
 UNION ALL SELECT 'P632_authenticated_perfiles',        current_setting('probe.p632', true), 'OK (4 DML si, 3 no)'
@@ -17404,7 +17535,8 @@ UNION ALL SELECT 'P000_CENTINELA_veredictos_no_nulos',
        'probe.lc_fx', 'probe.p704', 'probe.p705', 'probe.p706', 'probe.p707',
        'probe.p708', 'probe.p709', 'probe.p710',
        'probe.in_fx', 'probe.p711', 'probe.p712', 'probe.p713', 'probe.p714',
-       'probe.p715', 'probe.p716', 'probe.p717', 'probe.p718', 'probe.p719', 'probe.p720'
+       'probe.p715', 'probe.p716', 'probe.p717', 'probe.p718', 'probe.p719', 'probe.p720',
+       'probe.p721', 'probe.p722', 'probe.p723', 'probe.p724'
              ]) AS n) s),
   'OK (todos los veredictos publicados)';
 
