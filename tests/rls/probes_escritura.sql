@@ -16687,6 +16687,275 @@ EXCEPTION WHEN OTHERS THEN
 END $$;
 SELECT set_config('role','none', true);
 
+-- ============================================================
+-- MIG 300 · fail-open trivaluado + funciones sin gate (FO_FX, P728-P738)
+-- ============================================================
+-- LA LAGUNA QUE ESTO CIERRA NO ES SOLO anon. P683-P685 (mig 291) ya probaban
+-- obtener_contexto_visita, pero SIEMPRE con medicos autenticados, donde
+-- `v_cita.medico_id = auth.uid()` compara dos uuid no nulos y da false limpio. El agujero vivia en
+-- los dos casos que esas probes no tocaban: anon (auth.uid() NULL) y un authenticated cualquiera
+-- sobre una cita SIN medico asignado (medico_id NULL). Por eso cada fail-open se prueba con LOS DOS
+-- actores, y la cita del fixture es a proposito una sin medico.
+--
+-- LOS CONTROLES POSITIVOS SON LA MITAD QUE IMPORTA: "anon no puede" tambien lo cumple una funcion
+-- que no le sirve a nadie. P730 y P733 verifican que el medico duenio sigue trabajando.
+SELECT set_config('role','none', true);
+DO $$
+DECLARE v_pac constant uuid := '0dd0c68c-026c-4ebc-9475-e6791cc54933';
+        v_med constant uuid := '09d243d5-b222-482a-9762-94a582e9e752';
+        v_emp uuid; v_cnul bigint; v_cmed bigint; v_camp int;
+BEGIN
+  SELECT id INTO v_cnul FROM citas WHERE medico_id IS NULL ORDER BY id LIMIT 1;
+  SELECT id INTO v_cmed FROM citas WHERE medico_id = v_med ORDER BY id LIMIT 1;
+  SELECT empresa_id INTO v_emp FROM planes_visitador_contratados WHERE estado='activo' LIMIT 1;
+  SELECT id INTO v_camp FROM campanas_publicitarias ORDER BY id LIMIT 1;
+
+  IF v_cnul IS NULL OR v_cmed IS NULL OR v_emp IS NULL OR v_camp IS NULL THEN
+    PERFORM set_config('probe.fo_fx','ROJO (faltan fixtures: cita_sin_medico='||coalesce(v_cnul::text,'-')
+      ||' cita_del_medico='||coalesce(v_cmed::text,'-')||' empresa='||coalesce(v_emp::text,'-')
+      ||' campana='||coalesce(v_camp::text,'-')||')', false);
+    RETURN; END IF;
+
+  PERFORM set_config('probe.fo_pac',  v_pac::text,  false);
+  PERFORM set_config('probe.fo_med',  v_med::text,  false);
+  PERFORM set_config('probe.fo_cnul', v_cnul::text, false);
+  PERFORM set_config('probe.fo_cmed', v_cmed::text, false);
+  PERFORM set_config('probe.fo_emp',  v_emp::text,  false);
+  PERFORM set_config('probe.fo_camp', v_camp::text, false);
+  PERFORM set_config('probe.fo_est0', (SELECT estado FROM citas WHERE id = v_cmed), false);
+  PERFORM set_config('probe.fo_ready','1', false);
+  PERFORM set_config('probe.fo_fx','OK (cita SIN medico='||v_cnul||' | cita del medico='||v_cmed
+    ||' | empresa con planes | campana)', false);
+EXCEPTION WHEN OTHERS THEN
+  PERFORM set_config('probe.fo_fx','ROJO ('||SQLSTATE||' '||SQLERRM||')', false);
+END $$;
+SELECT set_config('role','none', true);
+
+-- P728/P729 — actualizar_estado_cita: ESCRITURA. No alcanza con "no lanzo": se mira si el estado
+-- cambio de verdad, porque una funcion puede correr sin error y no escribir (y al reves).
+DO $$
+DECLARE v_c bigint; v_e0 text; v_e1 text; v_err text;
+BEGIN
+  IF coalesce(current_setting('probe.fo_ready', true),'') <> '1' THEN
+    PERFORM set_config('probe.p728','N/A (fixture FO_FX ausente)', false);
+    PERFORM set_config('probe.p729','N/A (fixture FO_FX ausente)', false); RETURN; END IF;
+  v_c := current_setting('probe.fo_cnul', true)::bigint;
+
+  -- anon
+  SELECT estado INTO v_e0 FROM citas WHERE id = v_c;
+  PERFORM set_config('request.jwt.claims','{"role":"anon"}', true);
+  v_err := '(sin error)';
+  BEGIN PERFORM public.actualizar_estado_cita(v_c, 'no_show');
+  EXCEPTION WHEN OTHERS THEN v_err := SQLSTATE; END;
+  SELECT estado INTO v_e1 FROM citas WHERE id = v_c;
+  PERFORM set_config('probe.p728', CASE WHEN v_e1 = v_e0
+    THEN 'OK (anon no cambio el estado; err='||v_err||')'
+    ELSE 'ROJO (anon cambio el estado de '||v_e0||' a '||v_e1||')' END, false);
+
+  -- authenticated SIN rol
+  PERFORM set_config('request.jwt.claims',
+    json_build_object('sub', current_setting('probe.fo_pac', true), 'role','authenticated')::text, true);
+  v_err := '(sin error)';
+  BEGIN PERFORM public.actualizar_estado_cita(v_c, 'no_show');
+  EXCEPTION WHEN OTHERS THEN v_err := SQLSTATE; END;
+  SELECT estado INTO v_e1 FROM citas WHERE id = v_c;
+  PERFORM set_config('probe.p729', CASE WHEN v_e1 = v_e0
+    THEN 'OK (paciente sin rol no cambio el estado; err='||v_err||')'
+    ELSE 'ROJO (un paciente cambio el estado de una cita ajena: '||v_e0||' -> '||v_e1||')' END, false);
+  PERFORM set_config('request.jwt.claims','', true);
+EXCEPTION WHEN OTHERS THEN
+  PERFORM set_config('probe.p728','FALLO ('||SQLSTATE||' '||SQLERRM||')', false);
+END $$;
+SELECT set_config('role','none', true);
+
+-- P730 — CONTROL POSITIVO: el medico duenio SI puede sobre SU cita.
+DO $$
+DECLARE v_c bigint; v_e text;
+BEGIN
+  IF coalesce(current_setting('probe.fo_ready', true),'') <> '1' THEN
+    PERFORM set_config('probe.p730','N/A (fixture FO_FX ausente)', false); RETURN; END IF;
+  v_c := current_setting('probe.fo_cmed', true)::bigint;
+  PERFORM set_config('request.jwt.claims',
+    json_build_object('sub', current_setting('probe.fo_med', true), 'role','authenticated')::text, true);
+  BEGIN
+    PERFORM public.actualizar_estado_cita(v_c, 'confirmada');
+    SELECT estado INTO v_e FROM citas WHERE id = v_c;
+    PERFORM set_config('probe.p730', CASE WHEN v_e = 'confirmada'
+      THEN 'OK (control positivo: el medico cambio SU cita)'
+      ELSE 'ROJO (el medico no pudo: quedo en '||v_e||')' END, false);
+  EXCEPTION WHEN OTHERS THEN
+    PERFORM set_config('probe.p730','ROJO ('||SQLSTATE||' '||SQLERRM||': la RPC quedo rota)', false);
+  END;
+  UPDATE citas SET estado = current_setting('probe.fo_est0', true) WHERE id = v_c;
+  PERFORM set_config('request.jwt.claims','', true);
+EXCEPTION WHEN OTHERS THEN
+  PERFORM set_config('probe.p730','FALLO ('||SQLSTATE||' '||SQLERRM||')', false);
+END $$;
+SELECT set_config('role','none', true);
+
+-- P731/P732/P733 — obtener_contexto_visita. P732 es LA probe que faltaba: authenticated sin rol
+-- contra una cita SIN medico asignado.
+DO $$
+DECLARE j jsonb; v_cnul bigint; v_cmed bigint;
+BEGIN
+  IF coalesce(current_setting('probe.fo_ready', true),'') <> '1' THEN
+    PERFORM set_config('probe.p731','N/A (fixture FO_FX ausente)', false);
+    PERFORM set_config('probe.p732','N/A (fixture FO_FX ausente)', false);
+    PERFORM set_config('probe.p733','N/A (fixture FO_FX ausente)', false); RETURN; END IF;
+  v_cnul := current_setting('probe.fo_cnul', true)::bigint;
+  v_cmed := current_setting('probe.fo_cmed', true)::bigint;
+
+  PERFORM set_config('request.jwt.claims','{"role":"anon"}', true);
+  BEGIN SELECT public.obtener_contexto_visita(v_cnul) INTO j;
+        PERFORM set_config('probe.p731','ROJO (anon obtuvo la nota clinica de una cita ajena)', false);
+  EXCEPTION WHEN insufficient_privilege THEN PERFORM set_config('probe.p731','OK (42501)', false);
+    WHEN OTHERS THEN PERFORM set_config('probe.p731','OK ('||SQLSTATE||')', false); END;
+
+  PERFORM set_config('request.jwt.claims',
+    json_build_object('sub', current_setting('probe.fo_pac', true), 'role','authenticated')::text, true);
+  BEGIN SELECT public.obtener_contexto_visita(v_cnul) INTO j;
+        PERFORM set_config('probe.p732','ROJO (un paciente obtuvo la nota de una cita SIN medico)', false);
+  EXCEPTION WHEN insufficient_privilege THEN PERFORM set_config('probe.p732','OK (42501)', false);
+    WHEN OTHERS THEN PERFORM set_config('probe.p732','OK ('||SQLSTATE||')', false); END;
+
+  PERFORM set_config('request.jwt.claims',
+    json_build_object('sub', current_setting('probe.fo_med', true), 'role','authenticated')::text, true);
+  BEGIN SELECT public.obtener_contexto_visita(v_cmed) INTO j;
+        PERFORM set_config('probe.p733', CASE WHEN j IS NOT NULL
+          THEN 'OK (control positivo: el medico obtiene el contexto de SU cita)'
+          ELSE 'ROJO (devolvio NULL al medico duenio)' END, false);
+  EXCEPTION WHEN OTHERS THEN
+    PERFORM set_config('probe.p733','ROJO ('||SQLSTATE||': la RPC quedo rota para su duenio)', false); END;
+  PERFORM set_config('request.jwt.claims','', true);
+EXCEPTION WHEN OTHERS THEN
+  PERFORM set_config('probe.p731','FALLO ('||SQLSTATE||' '||SQLERRM||')', false);
+END $$;
+SELECT set_config('role','none', true);
+
+-- P734/P735 — get_planes_visitador_proveedor con una empresa AJENA que SI tiene planes activos.
+-- La empresa importa: con una sin planes, "0 filas" no distingue el gate del dato vacio.
+DO $$
+DECLARE n bigint; v_emp uuid;
+BEGIN
+  IF coalesce(current_setting('probe.fo_ready', true),'') <> '1' THEN
+    PERFORM set_config('probe.p734','N/A (fixture FO_FX ausente)', false);
+    PERFORM set_config('probe.p735','N/A (fixture FO_FX ausente)', false); RETURN; END IF;
+  v_emp := current_setting('probe.fo_emp', true)::uuid;
+
+  PERFORM set_config('request.jwt.claims','{"role":"anon"}', true);
+  BEGIN SELECT count(*) INTO n FROM public.get_planes_visitador_proveedor(v_emp);
+        PERFORM set_config('probe.p734', CASE WHEN n = 0 THEN 'OK (0 filas)'
+          ELSE 'ROJO (anon leyo '||n||' planes de una empresa ajena)' END, false);
+  EXCEPTION WHEN OTHERS THEN PERFORM set_config('probe.p734','OK ('||SQLSTATE||')', false); END;
+
+  PERFORM set_config('request.jwt.claims',
+    json_build_object('sub', current_setting('probe.fo_pac', true), 'role','authenticated')::text, true);
+  BEGIN SELECT count(*) INTO n FROM public.get_planes_visitador_proveedor(v_emp);
+        PERFORM set_config('probe.p735', CASE WHEN n = 0 THEN 'OK (0 filas)'
+          ELSE 'ROJO (un paciente leyo '||n||' planes de una empresa ajena)' END, false);
+  EXCEPTION WHEN OTHERS THEN PERFORM set_config('probe.p735','OK ('||SQLSTATE||')', false); END;
+  PERFORM set_config('request.jwt.claims','', true);
+EXCEPTION WHEN OTHERS THEN
+  PERFORM set_config('probe.p734','FALLO ('||SQLSTATE||' '||SQLERRM||')', false);
+END $$;
+SELECT set_config('role','none', true);
+
+-- P736 — registrar_campana_metrica: se mide el DELTA, no el error. Es la unica forma de distinguir
+-- "corto" de "corrio y escribio igual".
+DO $$
+DECLARE n0 bigint; n1 bigint; v_err text := '(sin error)';
+BEGIN
+  IF coalesce(current_setting('probe.fo_ready', true),'') <> '1' THEN
+    PERFORM set_config('probe.p736','N/A (fixture FO_FX ausente)', false); RETURN; END IF;
+  SELECT count(*) INTO n0 FROM campana_metricas;
+  PERFORM set_config('request.jwt.claims','{"role":"anon"}', true);
+  BEGIN
+    PERFORM public.registrar_campana_metrica(current_setting('probe.fo_camp', true)::int,
+              NULL, NULL, 'p736', 'p736', true, 'P736', NULL);
+  EXCEPTION WHEN OTHERS THEN v_err := SQLSTATE; END;
+  SELECT count(*) INTO n1 FROM campana_metricas;
+  PERFORM set_config('probe.p736', CASE WHEN n1 = n0
+    THEN 'OK (anon no escribio; err='||v_err||')'
+    ELSE 'ROJO (anon inserto '||(n1-n0)||' fila(s) en campana_metricas)' END, false);
+  PERFORM set_config('request.jwt.claims','', true);
+EXCEPTION WHEN OTHERS THEN
+  PERFORM set_config('probe.p736','FALLO ('||SQLSTATE||' '||SQLERRM||')', false);
+END $$;
+SELECT set_config('role','none', true);
+
+-- P737 — los dos de slots: anon cortado, y CONTROL POSITIVO con un authenticated real, porque los
+-- llaman AgendarCitaModal y useVisitasAgendadas y romperlos rompe el agendado de citas.
+DO $$
+DECLARE n bigint; v_med uuid; v_mal text := ''; v_ok text := '';
+BEGIN
+  IF coalesce(current_setting('probe.fo_ready', true),'') <> '1' THEN
+    PERFORM set_config('probe.p737','N/A (fixture FO_FX ausente)', false); RETURN; END IF;
+  v_med := current_setting('probe.fo_med', true)::uuid;
+
+  PERFORM set_config('request.jwt.claims','{"role":"anon"}', true);
+  BEGIN SELECT count(*) INTO n FROM public.slots_ocupados_cita(v_med, '2000-01-01','2035-01-01');
+        v_mal := v_mal || 'slots_ocupados_cita respondio a anon ('||n||' filas); ';
+  EXCEPTION WHEN OTHERS THEN v_ok := v_ok || 'slots_cita corta ('||SQLSTATE||'); '; END;
+  BEGIN SELECT count(*) INTO n FROM public.get_slots_ocupados(v_med, '2000-01-01','2035-01-01');
+        v_mal := v_mal || 'get_slots_ocupados respondio a anon ('||n||' filas); ';
+  EXCEPTION WHEN OTHERS THEN v_ok := v_ok || 'get_slots corta ('||SQLSTATE||'); '; END;
+
+  PERFORM set_config('request.jwt.claims',
+    json_build_object('sub', current_setting('probe.fo_pac', true), 'role','authenticated')::text, true);
+  BEGIN SELECT count(*) INTO n FROM public.slots_ocupados_cita(v_med, '2000-01-01','2035-01-01');
+        IF n = 0 THEN v_mal := v_mal || 'CONTROL+ slots_ocupados_cita devolvio 0 a un authenticated; ';
+        ELSE v_ok := v_ok || 'CONTROL+ authenticated ve '||n||' slots; '; END IF;
+  EXCEPTION WHEN OTHERS THEN v_mal := v_mal || 'CONTROL+ slots_ocupados_cita fallo ('||SQLSTATE||'); '; END;
+  BEGIN PERFORM count(*) FROM public.get_slots_ocupados(v_med, '2000-01-01','2035-01-01');
+        v_ok := v_ok || 'CONTROL+ get_slots responde; ';
+  EXCEPTION WHEN OTHERS THEN v_mal := v_mal || 'CONTROL+ get_slots_ocupados fallo ('||SQLSTATE||'); '; END;
+
+  PERFORM set_config('probe.p737', CASE WHEN v_mal = '' THEN 'OK ('||v_ok||')' ELSE 'ROJO ('||v_mal||')' END, false);
+  PERFORM set_config('request.jwt.claims','', true);
+EXCEPTION WHEN OTHERS THEN
+  PERFORM set_config('probe.p737','FALLO ('||SQLSTATE||' '||SQLERRM||')', false);
+END $$;
+SELECT set_config('role','none', true);
+
+-- P738 — las dos que pierden EXECUTE, y la contraparte que NO se puede romper: la llamada interna.
+-- Se ejercita con una SECDEF propia en vez de invocar notificar_campana_enviada, que manda
+-- notificaciones de verdad — un harness no puede tener efectos sobre datos de gente.
+DO $$
+DECLARE n bigint; v_mal text := '';
+BEGIN
+  IF has_function_privilege('anon','public.obtener_admins_ezpay()','EXECUTE')
+     OR has_function_privilege('authenticated','public.obtener_admins_ezpay()','EXECUTE') THEN
+    v_mal := v_mal || 'obtener_admins_ezpay sigue ejecutable; '; END IF;
+  IF has_function_privilege('anon','public.obtener_clinica_principal_medico(uuid)','EXECUTE')
+     OR has_function_privilege('authenticated','public.obtener_clinica_principal_medico(uuid)','EXECUTE') THEN
+    v_mal := v_mal || 'obtener_clinica_principal_medico sigue ejecutable; '; END IF;
+  IF EXISTS (SELECT 1 FROM pg_proc pr, unnest(coalesce(pr.proacl,'{}'::aclitem[])) a
+              WHERE pr.oid IN ('public.obtener_admins_ezpay()'::regprocedure,
+                               'public.obtener_clinica_principal_medico(uuid)'::regprocedure)
+                AND a::text LIKE '=%') THEN
+    v_mal := v_mal || 'PUBLIC conserva EXECUTE en alguna de las dos; '; END IF;
+
+  BEGIN
+    EXECUTE 'CREATE FUNCTION public._p738_interna() RETURNS bigint LANGUAGE sql SECURITY DEFINER '
+         || 'SET search_path TO ''public'' AS ''SELECT count(*) FROM public.obtener_admins_ezpay()''';
+    PERFORM set_config('request.jwt.claims',
+      json_build_object('sub', current_setting('probe.fo_pac', true), 'role','authenticated')::text, true);
+    SELECT public._p738_interna() INTO n;
+    IF coalesce(n,0) = 0 THEN v_mal := v_mal || 'la llamada INTERNA devolvio 0: se rompio la cadena; '; END IF;
+    PERFORM set_config('request.jwt.claims','', true);
+    EXECUTE 'DROP FUNCTION public._p738_interna()';
+  EXCEPTION WHEN OTHERS THEN
+    v_mal := v_mal || 'la llamada INTERNA fallo ('||SQLSTATE||'); ';
+  END;
+
+  PERFORM set_config('probe.p738', CASE WHEN v_mal = ''
+    THEN 'OK (sin EXECUTE para anon/authenticated/PUBLIC, y la llamada interna sigue viva)'
+    ELSE 'ROJO ('||v_mal||')' END, false);
+EXCEPTION WHEN OTHERS THEN
+  PERFORM set_config('probe.p738','FALLO ('||SQLSTATE||' '||SQLERRM||')', false);
+END $$;
+SELECT set_config('role','none', true);
+
 -- ===== Veredictos como result set =====
 SELECT 'P1_anon_insert_citas'              AS probe, current_setting('probe.p1', true)  AS verdict, 'BLOQUEADO' AS esperado_post_fix
 UNION ALL SELECT 'P2_medico_cancela_ajena_rpc',         current_setting('probe.p2', true),  'BLOQUEADO'
@@ -17474,6 +17743,18 @@ UNION ALL SELECT 'LS_FX_fixture_staff_medico',       current_setting('probe.ls_f
 UNION ALL SELECT 'P725_ls_staff_invisible',          current_setting('probe.p725', true),    'OK (0 en los 2 escenarios)'
 UNION ALL SELECT 'P726_ls_medico_real_ctrl_pos',     current_setting('probe.p726', true),    'OK (control positivo)'
 UNION ALL SELECT 'P727_ls_especialidad_solo_staff',  current_setting('probe.p727', true),    'OK (no aparece, catalogo no vacio)'
+UNION ALL SELECT 'FO_FX_fixture_failopen',           current_setting('probe.fo_fx', true),   'OK (fixture)'
+UNION ALL SELECT 'P728_fo_estado_cita_anon',         current_setting('probe.p728', true),    'OK (sin cambio)'
+UNION ALL SELECT 'P729_fo_estado_cita_paciente',     current_setting('probe.p729', true),    'OK (sin cambio)'
+UNION ALL SELECT 'P730_fo_estado_cita_medico_ctrl',  current_setting('probe.p730', true),    'OK (control positivo)'
+UNION ALL SELECT 'P731_fo_contexto_visita_anon',     current_setting('probe.p731', true),    'OK (42501)'
+UNION ALL SELECT 'P732_fo_contexto_visita_paciente', current_setting('probe.p732', true),    'OK (42501)'
+UNION ALL SELECT 'P733_fo_contexto_visita_med_ctrl', current_setting('probe.p733', true),    'OK (control positivo)'
+UNION ALL SELECT 'P734_fo_planes_anon',              current_setting('probe.p734', true),    'OK (0 filas)'
+UNION ALL SELECT 'P735_fo_planes_paciente',          current_setting('probe.p735', true),    'OK (0 filas)'
+UNION ALL SELECT 'P736_fo_metrica_anon_no_escribe',  current_setting('probe.p736', true),    'OK (delta 0)'
+UNION ALL SELECT 'P737_fo_slots_anon_y_ctrl_pos',    current_setting('probe.p737', true),    'OK (corta anon, responde auth)'
+UNION ALL SELECT 'P738_fo_sin_execute_y_interna',    current_setting('probe.p738', true),    'OK (revocada, interna viva)'
 UNION ALL SELECT 'FX20_fo_fixture',                    current_setting('probe.fo_fx', true),  'OK (fixture)'
 UNION ALL SELECT 'P631_CENSO_anon_perfiles',           current_setting('probe.p631', true), 'OK (anon en cero, los 7)'
 UNION ALL SELECT 'P632_authenticated_perfiles',        current_setting('probe.p632', true), 'OK (4 DML si, 3 no)'
@@ -17694,7 +17975,9 @@ UNION ALL SELECT 'P000_CENTINELA_veredictos_no_nulos',
        'probe.in_fx', 'probe.p711', 'probe.p712', 'probe.p713', 'probe.p714',
        'probe.p715', 'probe.p716', 'probe.p717', 'probe.p718', 'probe.p719', 'probe.p720',
        'probe.p721', 'probe.p722', 'probe.p723', 'probe.p724',
-       'probe.ls_fx', 'probe.p725', 'probe.p726', 'probe.p727'
+       'probe.ls_fx', 'probe.p725', 'probe.p726', 'probe.p727',
+       'probe.fo_fx', 'probe.p728', 'probe.p729', 'probe.p730', 'probe.p731', 'probe.p732',
+       'probe.p733', 'probe.p734', 'probe.p735', 'probe.p736', 'probe.p737', 'probe.p738'
              ]) AS n) s),
   'OK (todos los veredictos publicados)';
 
