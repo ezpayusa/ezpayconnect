@@ -16956,6 +16956,216 @@ EXCEPTION WHEN OTHERS THEN
 END $$;
 SELECT set_config('role','none', true);
 
+-- ============================================================
+-- MIG 301 · anon sin EXECUTE en 49 funciones + fabrica cerrada (P739-P744)
+-- ============================================================
+-- P739 es un CENSO, no una muestra: mide QUE conjunto de SECDEF de public le queda ejecutable a
+-- anon, no cuantas. Una probe que mirara 3 nombres fijos se volveria muda el dia que aparezca la
+-- cuarta; una que solo contara 11 se quedaria callada si se va una y entra otra. Por eso compara
+-- el CONJUNTO contra la lista esperada y publica lo que sobra y lo que falta.
+--
+-- Las 11 esperadas son dos grupos distintos, y la distincion importa:
+--   · `registrar_proveedor` — unica excepcion por PRODUCTO (unico flujo pre-login).
+--   · las otras 10 — excepcion TECNICA: viven dentro del USING de policies RLS sobre 30 tablas
+--     donde anon tiene SELECT. Una policy se evalua con los privilegios del LLAMANTE (mig 284),
+--     asi que revocarles el EXECUTE no le niega nada a anon: hace que esas 30 tablas le lancen
+--     42501. Quedan afuera del barrido a proposito. Sacarlas de verdad exige reescribir las
+--     policies para que no dependan de ellas — frente propio, pendiente.
+SELECT set_config('role','none', true);
+DO $$
+DECLARE v_sobran text; v_faltan text; v_n int;
+  esperadas constant text[] := ARRAY[
+    'registrar_proveedor',
+    'get_auth_user_rol','get_auth_user_pais_id','mi_empresa_proveedor','mi_rol_proveedor',
+    'mi_clinica_id','puede_ver_conversacion','supervisa_cuenta_proveedor',
+    'get_empresa_id_proveedor','get_empresa_id_session','admin_clinica_de_medico'];
+BEGIN
+  SELECT count(*) INTO v_n FROM pg_proc p JOIN pg_namespace n ON n.oid=p.pronamespace
+   WHERE n.nspname='public' AND p.prosecdef AND has_function_privilege('anon', p.oid,'EXECUTE');
+
+  SELECT string_agg(DISTINCT p.proname, ', ') INTO v_sobran
+    FROM pg_proc p JOIN pg_namespace n ON n.oid=p.pronamespace
+   WHERE n.nspname='public' AND p.prosecdef AND has_function_privilege('anon', p.oid,'EXECUTE')
+     AND NOT (p.proname = ANY(esperadas));
+
+  SELECT string_agg(e, ', ') INTO v_faltan FROM unnest(esperadas) e
+   WHERE NOT EXISTS (SELECT 1 FROM pg_proc p JOIN pg_namespace n ON n.oid=p.pronamespace
+                      WHERE n.nspname='public' AND p.proname = e
+                        AND has_function_privilege('anon', p.oid,'EXECUTE'));
+
+  PERFORM set_config('probe.p739', CASE
+    WHEN v_sobran IS NULL AND v_faltan IS NULL
+      THEN 'OK (quedan las 11 esperadas: registrar_proveedor + las 10 usadas en policies)'
+    WHEN v_faltan IS NOT NULL
+      THEN 'ROJO (el barrido se paso: perdieron anon '||v_faltan||')'
+    ELSE 'ROJO ('||v_n||' ejecutables por anon; sobran: '||left(v_sobran,200)||')'
+    END, false);
+EXCEPTION WHEN OTHERS THEN
+  PERFORM set_config('probe.p739','FALLO ('||SQLSTATE||' '||SQLERRM||')', false);
+END $$;
+
+-- P740 — anon EJERCITADO sobre una muestra de las REVOCADAS. El catalogo dice quien tiene que;
+-- esto dice que pasa cuando se usa (leccion de la mig 284). La muestra NO puede incluir ninguna
+-- de las 11 que quedan: seria un chequeo que pasa siempre y no mide nada.
+DO $$
+DECLARE v_mal text := ''; v_ok int := 0; t text;
+BEGIN
+  PERFORM set_config('request.jwt.claims','{"role":"anon"}', true);
+  PERFORM set_config('role','anon', true);
+  -- La muestra son EXPRESIONES DE LLAMADA, no nombres: dos de estas toman parametro y un
+  -- `%I()` pelado habria dado 42883 (funcion inexistente) en vez de 42501, o sea verde por el
+  -- motivo equivocado. El valor del argumento da igual: el ACL se chequea antes de ejecutar.
+  FOREACH t IN ARRAY ARRAY['paciente_examenes()','mis_conversaciones()','contactos_chat()',
+                           'afiliaciones_de_clinica()','estado_plan_visitas()',
+                           'puede_auditar_chat()','destinatarios_conversacion(NULL::uuid)',
+                           'mensajes_conversacion(NULL::uuid)'] LOOP
+    BEGIN
+      EXECUTE 'SELECT public.' || t;
+      v_mal := v_mal || t || ' respondio; ';
+    EXCEPTION WHEN insufficient_privilege THEN v_ok := v_ok + 1;
+      WHEN OTHERS THEN v_mal := v_mal || t || '=' || SQLSTATE || ' (se esperaba 42501); ';
+    END;
+  END LOOP;
+  PERFORM set_config('role','none', true);
+  PERFORM set_config('probe.p740', CASE WHEN v_mal = ''
+    THEN 'OK ('||v_ok||'/8 dan 42501 a anon)' ELSE 'ROJO ('||v_mal||')' END, false);
+EXCEPTION WHEN OTHERS THEN
+  PERFORM set_config('role','none', true);
+  PERFORM set_config('probe.p740','FALLO ('||SQLSTATE||' '||SQLERRM||')', false);
+END $$;
+SELECT set_config('role','none', true);
+
+-- P741 — CONTROL NEGATIVO, las dos excepciones. Sin esta, P739/P740 en verde tambien los cumpliria
+-- un REVOKE a todo el mundo, que romperia el alta de proveedores Y dejaria 30 tablas tirando 42501.
+-- Por eso no alcanza con mirar el ACL de las 10: se EJERCITA una muestra de las tablas que las
+-- llaman desde su USING, que es donde el sintoma aparece de verdad.
+DO $$
+DECLARE v_mal text := ''; t text; v_n int;
+BEGIN
+  IF NOT has_function_privilege('anon',
+    'public.registrar_proveedor(text,text,text,uuid,text,text,text,text,text,text)','EXECUTE') THEN
+    v_mal := v_mal || 'registrar_proveedor perdio anon: se rompe el alta de proveedores; ';
+  END IF;
+
+  FOREACH t IN ARRAY ARRAY['get_auth_user_rol','get_auth_user_pais_id','mi_empresa_proveedor',
+                           'mi_rol_proveedor','mi_clinica_id','puede_ver_conversacion',
+                           'supervisa_cuenta_proveedor','get_empresa_id_proveedor',
+                           'get_empresa_id_session','admin_clinica_de_medico'] LOOP
+    SELECT count(*) INTO v_n FROM pg_proc p JOIN pg_namespace n ON n.oid=p.pronamespace
+     WHERE n.nspname='public' AND p.proname=t AND has_function_privilege('anon', p.oid,'EXECUTE');
+    IF v_n = 0 THEN v_mal := v_mal || t || ' perdio anon (la usan policies); '; END IF;
+  END LOOP;
+
+  PERFORM set_config('request.jwt.claims','{"role":"anon"}', true);
+  PERFORM set_config('role','anon', true);
+  FOREACH t IN ARRAY ARRAY['perfiles','citas','cuentas_proveedor','pacientes','clinicas'] LOOP
+    BEGIN
+      EXECUTE format('SELECT count(*) FROM public.%I', t) INTO v_n;
+    EXCEPTION WHEN insufficient_privilege THEN
+      v_mal := v_mal || 'la tabla '||t||' lanza 42501 a anon (policy rota); ';
+      WHEN OTHERS THEN v_mal := v_mal || 'la tabla '||t||' dio '||SQLSTATE||' a anon; ';
+    END;
+  END LOOP;
+  PERFORM set_config('role','none', true);
+  PERFORM set_config('request.jwt.claims','', true);
+
+  PERFORM set_config('probe.p741', CASE WHEN v_mal = ''
+    THEN 'OK (registrar_proveedor + las 10 de policies intactas; 5 tablas sin 42501)'
+    ELSE 'ROJO ('||v_mal||')' END, false);
+EXCEPTION WHEN OTHERS THEN
+  PERFORM set_config('role','none', true);
+  PERFORM set_config('probe.p741','FALLO ('||SQLSTATE||' '||SQLERRM||')', false);
+END $$;
+SELECT set_config('role','none', true);
+
+-- P742 — CONTROL POSITIVO: la cadena interna sigue viva. Una SECDEF de dueno postgres llama a una
+-- de las REVOCADAS (no a una de las 11, que no probaria nada), invocada por un authenticated que
+-- ya NO tiene EXECUTE sobre la de adentro.
+DO $$
+DECLARE v_mal text := '';
+BEGIN
+  BEGIN
+    EXECUTE 'CREATE FUNCTION public._p742_cadena() RETURNS bigint LANGUAGE sql SECURITY DEFINER '
+         || 'SET search_path TO ''public'' AS ''SELECT count(*) FROM public.contactos_chat()''';
+    PERFORM set_config('request.jwt.claims',
+      '{"sub":"0dd0c68c-026c-4ebc-9475-e6791cc54933","role":"authenticated"}', true);
+    PERFORM set_config('role','authenticated', true);
+    PERFORM public._p742_cadena();
+    PERFORM set_config('role','none', true);
+    PERFORM set_config('request.jwt.claims','', true);
+    EXECUTE 'DROP FUNCTION public._p742_cadena()';
+  EXCEPTION WHEN OTHERS THEN
+    PERFORM set_config('role','none', true);
+    v_mal := 'la cadena interna fallo ('||SQLSTATE||')';
+  END;
+  PERFORM set_config('probe.p742', CASE WHEN v_mal = ''
+    THEN 'OK (una SECDEF de postgres sigue llamando a una revocada)' ELSE 'ROJO ('||v_mal||')' END, false);
+EXCEPTION WHEN OTHERS THEN
+  PERFORM set_config('probe.p742','FALLO ('||SQLSTATE||' '||SQLERRM||')', false);
+END $$;
+SELECT set_config('role','none', true);
+
+-- P743 — liberar_examen_al_paciente: el COALESCE. Se prueban los DOS actores contra un examen ajeno.
+DO $$
+DECLARE v_ex integer; j jsonb; v_mal text := '';
+BEGIN
+  SELECT id INTO v_ex FROM examenes ORDER BY id LIMIT 1;
+  IF v_ex IS NULL THEN
+    PERFORM set_config('probe.p743','N/A (no hay examenes)', false); RETURN; END IF;
+
+  PERFORM set_config('request.jwt.claims','{"role":"anon"}', true);
+  PERFORM set_config('role','anon', true);
+  BEGIN SELECT public.liberar_examen_al_paciente(v_ex) INTO j;
+        v_mal := v_mal || 'anon libero; ';
+  EXCEPTION WHEN OTHERS THEN NULL; END;
+  PERFORM set_config('role','none', true);
+
+  PERFORM set_config('request.jwt.claims',
+    '{"sub":"0dd0c68c-026c-4ebc-9475-e6791cc54933","role":"authenticated"}', true);
+  PERFORM set_config('role','authenticated', true);
+  BEGIN SELECT public.liberar_examen_al_paciente(v_ex) INTO j;
+        v_mal := v_mal || 'un authenticated sin relacion libero; ';
+  EXCEPTION WHEN OTHERS THEN NULL; END;
+  PERFORM set_config('role','none', true);
+  PERFORM set_config('request.jwt.claims','', true);
+
+  PERFORM set_config('probe.p743', CASE WHEN v_mal = ''
+    THEN 'OK (ni anon ni un authenticated ajeno liberan)' ELSE 'ROJO ('||v_mal||')' END, false);
+EXCEPTION WHEN OTHERS THEN
+  PERFORM set_config('role','none', true);
+  PERFORM set_config('probe.p743','FALLO ('||SQLSTATE||' '||SQLERRM||')', false);
+END $$;
+SELECT set_config('role','none', true);
+
+-- P744 — LA FABRICA, ejercitada: se crean una funcion y una secuencia y se mira con que nacen. Es
+-- la unica probe que cubre lo que la 301 NO pudo cerrar — la entrada de pg_default_acl de
+-- supabase_admin, intocable desde esta conexion (42501). Hoy es inerte porque todo lo crea
+-- `postgres`; si eso cambiara, esto se pone rojo sin que nadie tenga que sospecharlo.
+DO $$
+DECLARE v_mal text := '';
+BEGIN
+  BEGIN
+    EXECUTE 'CREATE FUNCTION public._p744_nueva() RETURNS int LANGUAGE sql AS ''SELECT 1''';
+    EXECUTE 'CREATE SEQUENCE public._p744_seq';
+    IF has_function_privilege('anon','public._p744_nueva()','EXECUTE') THEN
+      v_mal := v_mal || 'FUNCION nueva ejecutable por anon; '; END IF;
+    IF EXISTS (SELECT 1 FROM pg_proc pr, unnest(coalesce(pr.proacl,'{}'::aclitem[])) a
+                WHERE pr.oid='public._p744_nueva()'::regprocedure AND a::text LIKE '=%') THEN
+      v_mal := v_mal || 'FUNCION nueva ejecutable por PUBLIC; '; END IF;
+    IF has_sequence_privilege('anon','public._p744_seq','USAGE') THEN
+      v_mal := v_mal || 'SECUENCIA nueva con USAGE para anon; '; END IF;
+    EXECUTE 'DROP SEQUENCE public._p744_seq';
+    EXECUTE 'DROP FUNCTION public._p744_nueva()';
+  EXCEPTION WHEN OTHERS THEN v_mal := v_mal || 'no se pudo probar ('||SQLSTATE||'); ';
+  END;
+  PERFORM set_config('probe.p744', CASE WHEN v_mal = ''
+    THEN 'OK (funcion y secuencia nuevas no le dan nada a anon/PUBLIC)'
+    ELSE 'ROJO ('||v_mal||')' END, false);
+EXCEPTION WHEN OTHERS THEN
+  PERFORM set_config('probe.p744','FALLO ('||SQLSTATE||' '||SQLERRM||')', false);
+END $$;
+SELECT set_config('role','none', true);
+
 -- ===== Veredictos como result set =====
 SELECT 'P1_anon_insert_citas'              AS probe, current_setting('probe.p1', true)  AS verdict, 'BLOQUEADO' AS esperado_post_fix
 UNION ALL SELECT 'P2_medico_cancela_ajena_rpc',         current_setting('probe.p2', true),  'BLOQUEADO'
@@ -17755,6 +17965,12 @@ UNION ALL SELECT 'P735_fo_planes_paciente',          current_setting('probe.p735
 UNION ALL SELECT 'P736_fo_metrica_anon_no_escribe',  current_setting('probe.p736', true),    'OK (delta 0)'
 UNION ALL SELECT 'P737_fo_slots_anon_y_ctrl_pos',    current_setting('probe.p737', true),    'OK (corta anon, responde auth)'
 UNION ALL SELECT 'P738_fo_sin_execute_y_interna',    current_setting('probe.p738', true),    'OK (revocada, interna viva)'
+UNION ALL SELECT 'P739_rv_censo_anon_secdef',         current_setting('probe.p739', true),    'OK (quedan las 11 esperadas)'
+UNION ALL SELECT 'P740_rv_anon_ejercitado',           current_setting('probe.p740', true),    'OK (42501 en 8 revocadas)'
+UNION ALL SELECT 'P741_rv_excepciones_intactas',      current_setting('probe.p741', true),    'OK (11 + 5 tablas sin 42501)'
+UNION ALL SELECT 'P742_rv_cadena_interna_viva',       current_setting('probe.p742', true),    'OK (control positivo)'
+UNION ALL SELECT 'P743_rv_liberar_examen_coalesce',   current_setting('probe.p743', true),    'OK (los 2 actores cortados)'
+UNION ALL SELECT 'P744_rv_fabrica_cerrada',           current_setting('probe.p744', true),    'OK (funcion y secuencia nuevas)'
 UNION ALL SELECT 'FX20_fo_fixture',                    current_setting('probe.fo_fx', true),  'OK (fixture)'
 UNION ALL SELECT 'P631_CENSO_anon_perfiles',           current_setting('probe.p631', true), 'OK (anon en cero, los 7)'
 UNION ALL SELECT 'P632_authenticated_perfiles',        current_setting('probe.p632', true), 'OK (4 DML si, 3 no)'
@@ -17977,7 +18193,8 @@ UNION ALL SELECT 'P000_CENTINELA_veredictos_no_nulos',
        'probe.p721', 'probe.p722', 'probe.p723', 'probe.p724',
        'probe.ls_fx', 'probe.p725', 'probe.p726', 'probe.p727',
        'probe.fo_fx', 'probe.p728', 'probe.p729', 'probe.p730', 'probe.p731', 'probe.p732',
-       'probe.p733', 'probe.p734', 'probe.p735', 'probe.p736', 'probe.p737', 'probe.p738'
+       'probe.p733', 'probe.p734', 'probe.p735', 'probe.p736', 'probe.p737', 'probe.p738',
+       'probe.p739', 'probe.p740', 'probe.p741', 'probe.p742', 'probe.p743', 'probe.p744'
              ]) AS n) s),
   'OK (todos los veredictos publicados)';
 
