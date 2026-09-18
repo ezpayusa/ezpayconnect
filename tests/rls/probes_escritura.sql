@@ -16534,6 +16534,159 @@ BEGIN
   END;
 END $$;
 
+-- ============================================================
+-- MIG 299 · el paciente no ve staff como medico (LS_FX, P725-P727)
+-- ============================================================
+-- Una fila en `medicos` NO significa "es medico": crear-staff-clinica crea una para cualquier staff
+-- porque medico_clinicas.medico_id tiene FK a esa tabla. El rol real vive en perfiles.rol, y
+-- buscar_medicos_paciente (mig 184) nunca lo miraba. Medido el 18-sep contra prod: un paciente REAL
+-- de GT recibia 5 "medicos" y uno era un admin_clinica.
+--
+-- EL FIXTURE SIEMBRA SU PROPIO STAFF EN VEZ DE USAR LOS 9 QUE YA HAY EN PROD. Dos razones: los de
+-- prod pueden cambiar de rol o desactivarse y la probe se volveria muda sin avisar; y hacen falta
+-- dos escenarios que ningun dato real cubre — un staff con pais_id que COINCIDE con el del paciente
+-- (hoy hay 1 sola fila asi) y un paciente SIN pais_id (hoy hay 0). Sembrando, los dos son firmes.
+--
+-- P726 ES LA MITAD QUE IMPORTA. "El staff no aparece" tambien lo cumple una RPC que no devuelve
+-- nada: sin el control positivo, esta probe pasaria con la funcion rota.
+SELECT set_config('role','none', true);
+DO $$
+DECLARE v_gt constant uuid := 'cbbbbe6d-59fe-4cf2-91ee-3e31ba1d5909';
+        v_staff uuid := gen_random_uuid();
+        v_pac   uuid := gen_random_uuid();
+        v_esp   uuid;
+        v_real  uuid;
+BEGIN
+  -- Sin raw_user_meta_data->>'tipo'='paciente', on_auth_user_created_paciente no hace nada.
+  INSERT INTO auth.users (id) VALUES (v_staff), (v_pac);
+
+  INSERT INTO especialidades (nombre, activo)
+  VALUES ('LS_FX especialidad solo-staff', true) RETURNING id INTO v_esp;
+
+  INSERT INTO perfiles (id, email, nombre_completo, rol, activo, pais_id)
+  VALUES (v_staff, 'ls_fx_staff@ejemplo.invalid', 'LS_FX Staff Secretaria', 'secretaria', true, v_gt);
+
+  INSERT INTO medicos (id, nombre_completo, activo, pais_id, especialidad_id)
+  VALUES (v_staff, 'LS_FX Staff Secretaria', true, v_gt, v_esp);
+
+  INSERT INTO pacientes (auth_user_id, nombre, apellido, activo, pais_id)
+  VALUES (v_pac, 'LS_FX', 'Paciente', true, v_gt);
+
+  SELECT m.id INTO v_real FROM medicos m
+   WHERE m.activo AND m.pais_id = v_gt
+     AND EXISTS (SELECT 1 FROM perfiles p WHERE p.id = m.id AND p.rol = 'medico')
+   ORDER BY m.id LIMIT 1;
+
+  PERFORM set_config('probe.ls_staff', v_staff::text, false);
+  PERFORM set_config('probe.ls_pac',   v_pac::text,   false);
+  PERFORM set_config('probe.ls_esp',   v_esp::text,   false);
+  PERFORM set_config('probe.ls_real',  coalesce(v_real::text,''), false);
+  PERFORM set_config('probe.ls_ready', '1', false);
+  PERFORM set_config('probe.ls_fx',
+    'OK (staff secretaria + paciente + especialidad solo-staff'
+    || CASE WHEN v_real IS NULL THEN ' | SIN medico real para el control' ELSE ' + medico real' END || ')', false);
+EXCEPTION WHEN OTHERS THEN
+  PERFORM set_config('probe.ls_fx','ROJO ('||SQLSTATE||' '||SQLERRM||')', false);
+END $$;
+SELECT set_config('role','none', true);
+
+-- P725 — el staff no aparece, en los DOS escenarios de pais.
+DO $$
+DECLARE n1 bigint; n2 bigint; n3 bigint; v_staff uuid; v_pac uuid;
+BEGIN
+  IF coalesce(current_setting('probe.ls_ready', true),'') <> '1' THEN
+    PERFORM set_config('probe.p725','N/A (fixture LS_FX ausente)', false); RETURN; END IF;
+  v_staff := current_setting('probe.ls_staff', true)::uuid;
+  v_pac   := current_setting('probe.ls_pac',   true)::uuid;
+
+  PERFORM set_config('request.jwt.claims',
+    json_build_object('sub', v_pac, 'role','authenticated')::text, true);
+
+  -- escenario A: el paciente tiene pais_id y COINCIDE con el del staff.
+  SELECT count(*) INTO n1 FROM public.buscar_medicos_paciente() b WHERE b.id = v_staff;
+
+  -- escenario B: el paciente NO tiene pais_id -> antes de la 299 la condicion se volvia universal.
+  UPDATE pacientes SET pais_id = NULL WHERE auth_user_id = v_pac;
+  SELECT count(*) INTO n2 FROM public.buscar_medicos_paciente() b WHERE b.id = v_staff;
+  SELECT count(*) INTO n3 FROM public.buscar_medicos_paciente() b
+   WHERE NOT EXISTS (SELECT 1 FROM perfiles p WHERE p.id = b.id AND p.rol = 'medico');
+  UPDATE pacientes SET pais_id = 'cbbbbe6d-59fe-4cf2-91ee-3e31ba1d5909'::uuid WHERE auth_user_id = v_pac;
+
+  PERFORM set_config('probe.p725', CASE
+    WHEN n1 = 0 AND n2 = 0 AND n3 = 0 THEN 'OK (staff invisible con pais coincidente y con pais NULL; 0 no-medicos)'
+    WHEN n1 > 0 THEN 'ROJO (el staff aparece con pais_id coincidente)'
+    WHEN n2 > 0 THEN 'ROJO (el staff aparece con el paciente SIN pais_id: rama universal)'
+    ELSE 'ROJO (la RPC devuelve '||n3||' no-medico(s) con el paciente sin pais_id)' END, false);
+EXCEPTION WHEN OTHERS THEN
+  PERFORM set_config('probe.p725','FALLO ('||SQLSTATE||' '||SQLERRM||')', false);
+END $$;
+SELECT set_config('role','none', true);
+
+-- P726 — CONTRAPRUEBA / control positivo: un medico REAL del mismo pais SI aparece. Sin esto,
+-- P725 verde no distingue "cerre la fuga" de "rompi la busqueda".
+DO $$
+DECLARE n bigint; v_real uuid;
+BEGIN
+  IF coalesce(current_setting('probe.ls_ready', true),'') <> '1'
+     OR coalesce(current_setting('probe.ls_real', true),'') = '' THEN
+    PERFORM set_config('probe.p726','N/A (fixture LS_FX o medico real ausente)', false); RETURN; END IF;
+  v_real := current_setting('probe.ls_real', true)::uuid;
+
+  PERFORM set_config('request.jwt.claims',
+    json_build_object('sub', current_setting('probe.ls_pac', true), 'role','authenticated')::text, true);
+  SELECT count(*) INTO n FROM public.buscar_medicos_paciente() b WHERE b.id = v_real;
+  PERFORM set_config('probe.p726', CASE WHEN n = 1
+    THEN 'OK (control positivo: el medico real sigue apareciendo)'
+    ELSE 'ROJO (el medico real aparece '||n||' veces: la RPC quedo rota)' END, false);
+EXCEPTION WHEN OTHERS THEN
+  PERFORM set_config('probe.p726','ROJO ('||SQLSTATE||' '||SQLERRM||')', false);
+END $$;
+SELECT set_config('role','none', true);
+
+-- P727 — listar_especialidades_activas: la especialidad que SOLO tiene al staff no puede salir en
+-- el <select> del modal, y las que tienen medicos reales si. Cubre el cambio 2 de la mig 299, que
+-- de otro modo no tendria ninguna probe.
+DO $$
+DECLARE n_staff bigint; n_tot bigint;
+BEGIN
+  IF coalesce(current_setting('probe.ls_ready', true),'') <> '1' THEN
+    PERFORM set_config('probe.p727','N/A (fixture LS_FX ausente)', false); RETURN; END IF;
+
+  PERFORM set_config('request.jwt.claims',
+    json_build_object('sub', current_setting('probe.ls_pac', true), 'role','authenticated')::text, true);
+  SELECT count(*) INTO n_staff FROM public.listar_especialidades_activas() e
+   WHERE e.id = current_setting('probe.ls_esp', true)::uuid;
+  SELECT count(*) INTO n_tot FROM public.listar_especialidades_activas();
+
+  PERFORM set_config('probe.p727', CASE
+    WHEN n_staff > 0 THEN 'ROJO (la especialidad solo-staff aparece en el catalogo)'
+    WHEN n_tot = 0   THEN 'ROJO (el catalogo quedo VACIO: cerro de mas)'
+    ELSE 'OK (la solo-staff no aparece y quedan '||n_tot||' especialidades reales)' END, false);
+EXCEPTION WHEN OTHERS THEN
+  PERFORM set_config('probe.p727','FALLO ('||SQLSTATE||' '||SQLERRM||')', false);
+END $$;
+SELECT set_config('role','none', true);
+
+-- Limpieza del fixture. El harness entero termina en ROLLBACK, asi que esto es prolijidad: deja la
+-- transaccion sin filas de prueba por si alguien corre el archivo a mano sin el rollback.
+DO $$
+DECLARE v_staff uuid; v_pac uuid; v_esp uuid;
+BEGIN
+  IF coalesce(current_setting('probe.ls_ready', true),'') <> '1' THEN RETURN; END IF;
+  v_staff := current_setting('probe.ls_staff', true)::uuid;
+  v_pac   := current_setting('probe.ls_pac',   true)::uuid;
+  v_esp   := current_setting('probe.ls_esp',   true)::uuid;
+  DELETE FROM pacientes     WHERE auth_user_id = v_pac;
+  DELETE FROM medicos       WHERE id = v_staff;
+  DELETE FROM perfiles      WHERE id = v_staff;
+  DELETE FROM especialidades WHERE id = v_esp;
+  DELETE FROM auth.users    WHERE id IN (v_staff, v_pac);
+EXCEPTION WHEN OTHERS THEN
+  PERFORM set_config('probe.ls_fx',
+    coalesce(current_setting('probe.ls_fx', true),'') || ' | limpieza fallo ('||SQLSTATE||')', false);
+END $$;
+SELECT set_config('role','none', true);
+
 -- ===== Veredictos como result set =====
 SELECT 'P1_anon_insert_citas'              AS probe, current_setting('probe.p1', true)  AS verdict, 'BLOQUEADO' AS esperado_post_fix
 UNION ALL SELECT 'P2_medico_cancela_ajena_rpc',         current_setting('probe.p2', true),  'BLOQUEADO'
@@ -17317,6 +17470,10 @@ UNION ALL SELECT 'P721_an_anon_lee_11_tablas',       current_setting('probe.p721
 UNION ALL SELECT 'P722_an_CONTRAPRUEBA_de_P721',     current_setting('probe.p722', true),    'OK (42501 sin el grant, y vuelve)'
 UNION ALL SELECT 'P723_an_CENSO_escritura_anon',     current_setting('probe.p723', true),    'OK (0 relaciones, 0 columnas)'
 UNION ALL SELECT 'P724_an_default_privilege',        current_setting('probe.p724', true),    'OK (tabla nueva sin anon)'
+UNION ALL SELECT 'LS_FX_fixture_staff_medico',       current_setting('probe.ls_fx', true),   'OK (fixture)'
+UNION ALL SELECT 'P725_ls_staff_invisible',          current_setting('probe.p725', true),    'OK (0 en los 2 escenarios)'
+UNION ALL SELECT 'P726_ls_medico_real_ctrl_pos',     current_setting('probe.p726', true),    'OK (control positivo)'
+UNION ALL SELECT 'P727_ls_especialidad_solo_staff',  current_setting('probe.p727', true),    'OK (no aparece, catalogo no vacio)'
 UNION ALL SELECT 'FX20_fo_fixture',                    current_setting('probe.fo_fx', true),  'OK (fixture)'
 UNION ALL SELECT 'P631_CENSO_anon_perfiles',           current_setting('probe.p631', true), 'OK (anon en cero, los 7)'
 UNION ALL SELECT 'P632_authenticated_perfiles',        current_setting('probe.p632', true), 'OK (4 DML si, 3 no)'
@@ -17536,7 +17693,8 @@ UNION ALL SELECT 'P000_CENTINELA_veredictos_no_nulos',
        'probe.p708', 'probe.p709', 'probe.p710',
        'probe.in_fx', 'probe.p711', 'probe.p712', 'probe.p713', 'probe.p714',
        'probe.p715', 'probe.p716', 'probe.p717', 'probe.p718', 'probe.p719', 'probe.p720',
-       'probe.p721', 'probe.p722', 'probe.p723', 'probe.p724'
+       'probe.p721', 'probe.p722', 'probe.p723', 'probe.p724',
+       'probe.ls_fx', 'probe.p725', 'probe.p726', 'probe.p727'
              ]) AS n) s),
   'OK (todos los veredictos publicados)';
 

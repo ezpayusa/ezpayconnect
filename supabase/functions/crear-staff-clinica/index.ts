@@ -137,6 +137,11 @@ Deno.serve(async (req) => {
       id: userId,
       clinica_id,
       nombre_completo,
+      // pais_id venia en el body y no se persistia: la fila de staff nacia con pais_id NULL. Eso
+      // ocultaba a medias la fuga que cerro la mig 299 (buscar_medicos_paciente no miraba el rol),
+      // porque un NULL no matchea el pais del paciente. Ocultarla no es cerrarla, y ademas dejaba
+      // el dato mal: la fila existe y pertenece a un pais. El filtro por ROL es el que protege.
+      pais_id: pais_id || null,
     });
     if (medError) {
       await supabase.from("perfiles").delete().eq("id", userId);
