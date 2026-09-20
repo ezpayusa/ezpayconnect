@@ -19004,6 +19004,164 @@ EXCEPTION WHEN OTHERS THEN
 END $$;
 SELECT set_config('role','none', true);
 
+
+-- ============================================================
+-- MIG 312 · notificar_resultado_examen: ruta al paciente + metadata (NR_FX, P796-P799)
+-- ============================================================
+-- La notificacion que el laboratorio le manda al medico apuntaba a /medico/citas, una lista sin
+-- relacion con el examen, y salia con metadata en el default '{}'. Ahora apunta a la ficha del
+-- paciente y lleva {"examen_id": N, "paciente_id": M}.
+--
+-- P799 esta aca porque esto fue un CREATE OR REPLACE COMPLETO de la funcion: el gate no se toco
+-- en el diseno, pero reescribir el cuerpo entero es exactamente la forma en que un gate se pierde
+-- sin que nadie lo note.
+SELECT set_config('role','none', true);
+
+-- ---------------- NR_FX — fixture ----------------
+DO $$
+DECLARE
+  v_emp uuid; v_lab uuid; v_ajeno uuid; v_med uuid; v_pac int;
+  v_ex_con int; v_ex_sin int;
+BEGIN
+  SELECT cp.empresa_id, cp.id INTO v_emp, v_lab
+    FROM public.cuentas_proveedor cp WHERE cp.activo ORDER BY cp.id LIMIT 1;
+  SELECT cp.id INTO v_ajeno FROM public.cuentas_proveedor cp
+   WHERE cp.activo AND cp.empresa_id IS DISTINCT FROM v_emp ORDER BY cp.id LIMIT 1;
+  SELECT p.id INTO v_pac FROM public.pacientes p ORDER BY p.id LIMIT 1;
+  IF v_emp IS NULL OR v_lab IS NULL OR v_ajeno IS NULL OR v_pac IS NULL THEN
+    PERFORM set_config('probe.nr_ready','0', false);
+    PERFORM set_config('probe.nr_fx','ROJO (faltan 2 empresas proveedoras activas o un paciente)', false);
+    RETURN;
+  END IF;
+
+  -- El medico destinatario se siembra: notificaciones.usuario_id tiene FK a auth.users, y ademas
+  -- un medico propio garantiza que las notificaciones que lee la probe son SOLO las suyas, sin
+  -- mezclarse con las ~52 que ya tienen los medicos reales.
+  v_med := gen_random_uuid();
+  INSERT INTO auth.users (id) VALUES (v_med);
+  INSERT INTO public.perfiles (id, email, nombre_completo, rol, activo)
+    VALUES (v_med, 'nr.medico@example.invalid', 'QA NR medico destinatario', 'medico', true);
+
+  INSERT INTO public.examenes (tipo, paciente_id, medico_id, laboratorio_id, estado)
+       VALUES ('QA NR con paciente', v_pac, v_med, v_emp, 'completado'::public.examen_estado)
+  RETURNING id INTO v_ex_con;
+  -- paciente_id NULL = el examen walk-in que el laboratorio carga sin paciente registrado
+  INSERT INTO public.examenes (tipo, paciente_id, medico_id, laboratorio_id, estado)
+       VALUES ('QA NR walk-in', NULL, v_med, v_emp, 'completado'::public.examen_estado)
+  RETURNING id INTO v_ex_sin;
+
+  PERFORM set_config('probe.nr_lab',    v_lab::text, false);
+  PERFORM set_config('probe.nr_ajeno',  v_ajeno::text, false);
+  PERFORM set_config('probe.nr_med',    v_med::text, false);
+  PERFORM set_config('probe.nr_pac',    v_pac::text, false);
+  PERFORM set_config('probe.nr_excon',  v_ex_con::text, false);
+  PERFORM set_config('probe.nr_exsin',  v_ex_sin::text, false);
+  PERFORM set_config('probe.nr_ready','1', false);
+  PERFORM set_config('probe.nr_fx','OK (lab '||v_emp::text||'; examen con paciente '||v_ex_con
+    ||' (pac '||v_pac||'), walk-in '||v_ex_sin||'; medico destinatario sembrado)', false);
+EXCEPTION WHEN OTHERS THEN
+  PERFORM set_config('probe.nr_ready','0', false);
+  PERFORM set_config('probe.nr_fx','ROJO ('||SQLSTATE||' '||SQLERRM||')', false);
+END $$;
+SELECT set_config('role','none', true);
+
+-- ---------------- P796-P799 ----------------
+DO $$
+DECLARE
+  v_lab uuid; v_ajeno uuid; v_med uuid; v_pac int; v_excon int; v_exsin int;
+  u_con text; u_sin text; m_con jsonb; m_sin jsonb; v_r text; n bigint;
+BEGIN
+  IF coalesce(current_setting('probe.nr_ready', true),'0') <> '1' THEN
+    PERFORM set_config('probe.p796','N/A (fixture NR no sembro)', false);
+    PERFORM set_config('probe.p797','N/A', false); PERFORM set_config('probe.p798','N/A', false);
+    PERFORM set_config('probe.p799','N/A', false);
+    RETURN;
+  END IF;
+  v_lab   := current_setting('probe.nr_lab', true)::uuid;
+  v_ajeno := current_setting('probe.nr_ajeno', true)::uuid;
+  v_med   := current_setting('probe.nr_med', true)::uuid;
+  v_pac   := current_setting('probe.nr_pac', true)::int;
+  v_excon := current_setting('probe.nr_excon', true)::int;
+  v_exsin := current_setting('probe.nr_exsin', true)::int;
+
+  -- Una sola llamada por examen, con el rol del laboratorio duenio. P796/P797/P798 leen la misma
+  -- fila desde angulos distintos, asi que se dispara una vez y se mide tres veces.
+  BEGIN
+    PERFORM set_config('request.jwt.claims', json_build_object('sub',v_lab,'role','authenticated')::text, true);
+    PERFORM set_config('role','authenticated', true);
+    PERFORM public.notificar_resultado_examen(v_excon);
+    PERFORM public.notificar_resultado_examen(v_exsin);
+    PERFORM set_config('role','none', true);
+  EXCEPTION WHEN OTHERS THEN
+    PERFORM set_config('role','none', true);
+  END;
+
+  SELECT n2.accion_url, n2.metadata INTO u_con, m_con FROM public.notificaciones n2
+   WHERE n2.usuario_id = v_med AND n2.metadata->>'examen_id' = v_excon::text
+   ORDER BY n2.created_at DESC LIMIT 1;
+  SELECT n2.accion_url, n2.metadata INTO u_sin, m_sin FROM public.notificaciones n2
+   WHERE n2.usuario_id = v_med AND n2.metadata->>'examen_id' = v_exsin::text
+   ORDER BY n2.created_at DESC LIMIT 1;
+
+  -- P796 (a) — la ruta a la ficha del paciente, comparada contra la cadena exacta.
+  PERFORM set_config('probe.p796',
+    CASE WHEN u_con IS NULL THEN 'ROJO (no se creo la notificacion del examen con paciente)'
+         WHEN u_con = '/medico/pacientes/'||v_pac::text||'/detalle'
+           THEN 'OK (accion_url = '||u_con||')'
+         ELSE 'ROJO (accion_url = '||COALESCE(u_con,'NULL')
+              ||', se esperaba /medico/pacientes/'||v_pac::text||'/detalle)' END, false);
+
+  -- P797 (b) — el walk-in cae al destino historico. Sin esta probe, un `||` sobre un paciente_id
+  -- NULL daria la cadena entera en NULL y la notificacion quedaria SIN accion_url, que es peor
+  -- que el /medico/citas de antes.
+  PERFORM set_config('probe.p797',
+    CASE WHEN u_sin IS NULL THEN 'ROJO (walk-in: accion_url quedo NULL o no se creo la notificacion)'
+         WHEN u_sin = '/medico/citas' THEN 'OK (walk-in cae a /medico/citas)'
+         ELSE 'ROJO (walk-in apunta a '||u_sin||')' END, false);
+
+  -- P798 (c) — metadata en los dos casos. En el walk-in la clave paciente_id tiene que ESTAR y
+  -- valer null: un front que la lea distingue "sin paciente" de "notificacion vieja sin metadata".
+  PERFORM set_config('probe.p798',
+    CASE WHEN m_con IS NULL OR m_sin IS NULL THEN 'ROJO (falta alguna de las dos notificaciones)'
+         WHEN m_con->>'examen_id' <> v_excon::text OR m_con->>'paciente_id' <> v_pac::text
+           THEN 'ROJO (metadata con paciente = '||m_con::text||')'
+         WHEN m_sin->>'examen_id' <> v_exsin::text
+           THEN 'ROJO (metadata walk-in sin examen_id = '||m_sin::text||')'
+         WHEN NOT (m_sin ? 'paciente_id') OR m_sin->>'paciente_id' IS NOT NULL
+           THEN 'ROJO (metadata walk-in deberia traer paciente_id en null, trae '||m_sin::text||')'
+         ELSE 'OK (con paciente '||m_con::text||' · walk-in '||m_sin::text||')' END, false);
+
+  -- P799 (d) — EL GATE. No lo cambio el diseno, pero la 312 reescribio el cuerpo entero de la
+  -- funcion y asi es como un gate desaparece sin que nadie lo note. Un laboratorio de OTRA
+  -- empresa sobre el mismo examen tiene que seguir recibiendo PT002.
+  v_r := 'no se ejecuto';
+  BEGIN
+    PERFORM set_config('request.jwt.claims', json_build_object('sub',v_ajeno,'role','authenticated')::text, true);
+    PERFORM set_config('role','authenticated', true);
+    PERFORM public.notificar_resultado_examen(v_excon);
+    PERFORM set_config('role','none', true);
+    v_r := 'ROJO (un laboratorio AJENO pudo notificar el examen de otra empresa)';
+  EXCEPTION WHEN OTHERS THEN
+    PERFORM set_config('role','none', true);
+    v_r := CASE WHEN SQLSTATE = 'PT002' THEN 'PT002'
+                ELSE 'ROJO (corto con '||SQLSTATE||' en vez de PT002: '||SQLERRM||')' END;
+  END;
+  -- Contraprueba del contador: el lab ajeno no debe haber dejado NINGUNA fila extra.
+  SELECT count(*) INTO n FROM public.notificaciones n3
+   WHERE n3.usuario_id = v_med AND n3.metadata->>'examen_id' = v_excon::text;
+  PERFORM set_config('probe.p799',
+    CASE WHEN v_r <> 'PT002' THEN v_r
+         WHEN n <> 1 THEN 'ROJO (PT002 OK pero quedaron '||n||' notificaciones para ese examen, se esperaba 1)'
+         ELSE 'OK (PT002 al lab ajeno, y sigue habiendo 1 sola notificacion del examen)' END, false);
+
+  PERFORM set_config('request.jwt.claims','', true);
+EXCEPTION WHEN OTHERS THEN
+  PERFORM set_config('role','none', true);
+  PERFORM set_config('request.jwt.claims','', true);
+  PERFORM set_config('probe.p799','FALLO ('||SQLSTATE||' '||SQLERRM||')', false);
+END $$;
+SELECT set_config('role','none', true);
+
 -- ===== Veredictos como result set =====
 SELECT 'P1_anon_insert_citas'              AS probe, current_setting('probe.p1', true)  AS verdict, 'BLOQUEADO' AS esperado_post_fix
 UNION ALL SELECT 'P2_medico_cancela_ajena_rpc',         current_setting('probe.p2', true),  'BLOQUEADO'
@@ -19864,6 +20022,11 @@ UNION ALL SELECT 'P792_rv_lab_ve_pero_pe004',      current_setting('probe.p792',
 UNION ALL SELECT 'P793_rv_noop_ya_no_liberado',    current_setting('probe.p793', true),    'OK (sin excepcion)'
 UNION ALL SELECT 'P794_rv_paciente_pierde_todo',   current_setting('probe.p794', true),    'OK (examen y adjuntos)'
 UNION ALL SELECT 'P795_rv_auditoria_intacta',      current_setting('probe.p795', true),    'OK (no pisa liberado_por)'
+UNION ALL SELECT 'NR_FX_notif_resultado_fixture',  current_setting('probe.nr_fx', true),   'OK (fixture)'
+UNION ALL SELECT 'P796_nr_url_con_paciente',       current_setting('probe.p796', true),    'OK (ruta a la ficha)'
+UNION ALL SELECT 'P797_nr_url_walkin',             current_setting('probe.p797', true),    'OK (/medico/citas)'
+UNION ALL SELECT 'P798_nr_metadata_examen_id',     current_setting('probe.p798', true),    'OK (examen_id + paciente_id)'
+UNION ALL SELECT 'P799_nr_gate_intacto',           current_setting('probe.p799', true),    'OK (PT002 al lab ajeno)'
 UNION ALL SELECT 'FX20_fo_fixture',                    current_setting('probe.fo_fx', true),  'OK (fixture)'
 UNION ALL SELECT 'P631_CENSO_anon_perfiles',           current_setting('probe.p631', true), 'OK (anon en cero, los 7)'
 UNION ALL SELECT 'P632_authenticated_perfiles',        current_setting('probe.p632', true), 'OK (4 DML si, 3 no)'
@@ -20100,7 +20263,8 @@ UNION ALL SELECT 'P000_CENTINELA_veredictos_no_nulos',
        'probe.ea_fx', 'probe.p783', 'probe.p784', 'probe.p785', 'probe.p786',
        'probe.p787', 'probe.p788', 'probe.p789',
        'probe.rv_fx', 'probe.p790', 'probe.p791', 'probe.p792', 'probe.p793',
-       'probe.p794', 'probe.p795'
+       'probe.p794', 'probe.p795',
+       'probe.nr_fx', 'probe.p796', 'probe.p797', 'probe.p798', 'probe.p799'
              ]) AS n) s),
   'OK (todos los veredictos publicados)';
 

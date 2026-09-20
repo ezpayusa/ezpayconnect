@@ -19,7 +19,7 @@ Stack: React + Vite + TypeScript, Supabase / Postgres, deploy en Vercel, repo en
   minutos por esto** (P635 es la probe que faltaba, P636 su contraprueba).
 - NUNCA ampliar policies de RLS sobre tablas adyacentes a datos médicos (p. ej. campana_metricas). Para dar acceso, usar RPCs SECURITY DEFINER con search_path='', fail-closed (si el scope es NULL → 0 filas) y gate interno.
 - Probar aislamiento por rol impersonando request.jwt.claims en prod: cada rol ve lo suyo y no lo ajeno.
-- **Próximos números libres: probe `P796`** (global, no por módulo), **errcode `PA035`** (comercial)
+- **Próximos números libres: probe `P800`** (global, no por módulo), **errcode `PA035`** (comercial)
   y **`PE005`** (expediente: PE001 = mig 291; PE002 = adjuntar sobre examen liberado y PE003 =
   no autenticado, mig 310; PE004 = sin autoridad para revertir una liberación, mig 311).
   `revertir_liberacion_examen` sobre un examen ya no liberado es **no-op** (`{ya_no_liberado:true}`),
