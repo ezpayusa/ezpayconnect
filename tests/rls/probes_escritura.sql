@@ -17334,6 +17334,173 @@ EXCEPTION WHEN OTHERS THEN
 END $$;
 SELECT set_config('role','none', true);
 
+-- ============================================================
+-- MIG 303 · gate en crear_clinica_con_dueno + camino interno separado (P750-P754)
+-- ============================================================
+-- La RPC era SECDEF sin gate y la ejecuta `authenticated`: creaba clinicas y membresias a nombre
+-- de cualquier medico. El gate reproduce las dos policies de INSERT que la tabla `clinicas` ya
+-- tenia y que la RPC salteaba por ser SECURITY DEFINER.
+--
+-- Los 5 probes son los 5 caminos reales, y los positivos pesan tanto como los negativos:
+--   P750 el dueno legitimo                     -> funciona
+--   P751 un medico a nombre de OTRO            -> 42501
+--   P752 un actor sin relacion (paciente)      -> 42501
+--   P753 super_admin a nombre de un medico     -> funciona  (brazo puede_admin_pais)
+--   P754 RUTA B de punta a punta               -> funciona  (camino interno, auth.uid() NULL)
+--
+-- P754 es el que sostiene todo el diseno. La Ruta B (invitacion de admin EzPay sin clinica) corre
+-- por la edge `registrar-medico-invitacion` con service_role, ANTES de que exista sesion:
+-- auth.uid() es NULL. Un gate con COALESCE en la funcion publica la rechaza con 42501 — medido, y
+-- contraprobado por mutacion. Por eso el cuerpo vive en private y la Ruta B lo llama directo.
+-- Sin P754, alguien "simplifica" volviendo a enrutar la Ruta B por la publica y rompe el alta de
+-- medicos sin que ningun probe se entere.
+--
+-- Cada probe revierte sus propias escrituras con una subtransaccion (RAISE con marcador): si no,
+-- las clinicas que siembra uno contaminarian los conteos del siguiente.
+SELECT set_config('role','none', true);
+
+DO $$
+DECLARE
+  v_pais uuid; v_med uuid; v_med2 uuid; v_sa uuid; v_sint uuid; v_id uuid; v_n bigint;
+  v_pac constant uuid := '0dd0c68c-026c-4ebc-9475-e6791cc54933';
+  v_tok uuid; v_r text;
+BEGIN
+  SELECT id INTO v_pais FROM public.configuracion_pais WHERE activo LIMIT 1;
+  SELECT id INTO v_sa   FROM public.perfiles WHERE rol='super_admin' AND activo LIMIT 1;
+  -- medicos con fila REAL en `medicos`: medico_clinicas.medico_id tiene FK a medicos, asi que un
+  -- doctor_id que no este ahi fallaria por FK y no por el gate (mediria otra cosa).
+  SELECT m.id INTO v_med  FROM public.medicos m ORDER BY m.id LIMIT 1;
+  SELECT m.id INTO v_med2 FROM public.medicos m WHERE m.id <> v_med ORDER BY m.id LIMIT 1;
+  SELECT pf.id INTO v_sint FROM public.perfiles pf
+   WHERE NOT EXISTS (SELECT 1 FROM public.medicos m WHERE m.id = pf.id)
+     AND pf.id <> v_pac AND coalesce(pf.rol,'') <> 'super_admin' ORDER BY pf.id LIMIT 1;
+
+  IF v_pais IS NULL OR v_med IS NULL OR v_sa IS NULL THEN
+    PERFORM set_config('probe.p750','N/A (faltan actores)', false);
+    PERFORM set_config('probe.p751','N/A (faltan actores)', false);
+    PERFORM set_config('probe.p752','N/A (faltan actores)', false);
+    PERFORM set_config('probe.p753','N/A (faltan actores)', false);
+    PERFORM set_config('probe.p754','N/A (faltan actores)', false);
+    RETURN;
+  END IF;
+
+  -- ---------------------------------------------------------------- P750
+  v_r := 'no se ejecuto';
+  BEGIN
+    PERFORM set_config('request.jwt.claims', json_build_object('sub',v_med,'role','authenticated')::text, true);
+    PERFORM set_config('role','authenticated', true);
+    v_id := public.crear_clinica_con_dueno(v_med, 'PROBE P750', v_pais);
+    PERFORM set_config('role','none', true);
+    IF v_id IS NULL THEN v_r := 'ROJO (devolvio NULL)';
+    ELSIF NOT EXISTS (SELECT 1 FROM public.medico_clinicas mc
+                       WHERE mc.clinica_id=v_id AND mc.medico_id=v_med) THEN
+      v_r := 'ROJO (creo la clinica pero no la membresia: se perdio la atomicidad)';
+    ELSE v_r := 'OK (el dueno crea la suya, con membresia)'; END IF;
+    RAISE EXCEPTION 'P750_RB';
+  EXCEPTION WHEN OTHERS THEN
+    PERFORM set_config('role','none', true);
+    IF SQLERRM <> 'P750_RB' THEN v_r := 'ROJO (el dueno legitimo fue rechazado: '||SQLSTATE||')'; END IF;
+  END;
+  PERFORM set_config('probe.p750', v_r, false);
+
+  -- ---------------------------------------------------------------- P751
+  IF v_med2 IS NULL THEN
+    PERFORM set_config('probe.p751','N/A (hay un solo medico en la base)', false);
+  ELSE
+    v_r := 'ROJO (un medico creo una clinica a nombre de OTRO)';
+    BEGIN
+      PERFORM set_config('request.jwt.claims', json_build_object('sub',v_med,'role','authenticated')::text, true);
+      PERFORM set_config('role','authenticated', true);
+      PERFORM public.crear_clinica_con_dueno(v_med2, 'PROBE P751', v_pais);
+      PERFORM set_config('role','none', true);
+      RAISE EXCEPTION 'P751_RB';
+    EXCEPTION WHEN OTHERS THEN
+      PERFORM set_config('role','none', true);
+      IF SQLSTATE = '42501' THEN v_r := 'OK (42501)';
+      ELSIF SQLERRM <> 'P751_RB' THEN v_r := 'ROJO (corto con '||SQLSTATE||', se esperaba 42501)'; END IF;
+    END;
+    PERFORM set_config('probe.p751', v_r, false);
+  END IF;
+
+  -- ---------------------------------------------------------------- P752
+  v_r := 'ROJO (un paciente creo una clinica a nombre de un medico)';
+  BEGIN
+    PERFORM set_config('request.jwt.claims', json_build_object('sub',v_pac,'role','authenticated')::text, true);
+    PERFORM set_config('role','authenticated', true);
+    PERFORM public.crear_clinica_con_dueno(v_med, 'PROBE P752', v_pais);
+    PERFORM set_config('role','none', true);
+    RAISE EXCEPTION 'P752_RB';
+  EXCEPTION WHEN OTHERS THEN
+    PERFORM set_config('role','none', true);
+    IF SQLSTATE = '42501' THEN v_r := 'OK (42501)';
+    ELSIF SQLERRM <> 'P752_RB' THEN v_r := 'ROJO (corto con '||SQLSTATE||', se esperaba 42501)'; END IF;
+  END;
+  PERFORM set_config('probe.p752', v_r, false);
+
+  -- ---------------------------------------------------------------- P753
+  -- CONTROL POSITIVO del brazo puede_admin_pais: un gate que solo mirara auth.uid() daria verde en
+  -- P750-P752 y le romperia el alta administrativa a super_admin/admin_pais, que la tabla YA permite.
+  v_r := 'no se ejecuto';
+  BEGIN
+    PERFORM set_config('request.jwt.claims', json_build_object('sub',v_sa,'role','authenticated')::text, true);
+    PERFORM set_config('role','authenticated', true);
+    v_id := public.crear_clinica_con_dueno(v_med, 'PROBE P753', v_pais);
+    PERFORM set_config('role','none', true);
+    v_r := CASE WHEN v_id IS NULL THEN 'ROJO (devolvio NULL)'
+                ELSE 'OK (super_admin crea a nombre de un medico)' END;
+    RAISE EXCEPTION 'P753_RB';
+  EXCEPTION WHEN OTHERS THEN
+    PERFORM set_config('role','none', true);
+    IF SQLERRM <> 'P753_RB' THEN v_r := 'ROJO (el super_admin fue rechazado: '||SQLSTATE||')'; END IF;
+  END;
+  PERFORM set_config('probe.p753', v_r, false);
+
+  -- ---------------------------------------------------------------- P754
+  IF v_sint IS NULL THEN
+    PERFORM set_config('probe.p754','N/A (no hay perfil sin fila en medicos para el alta)', false);
+  ELSE
+    v_r := 'no se ejecuto';
+    BEGIN
+      v_tok := gen_random_uuid();
+      INSERT INTO public.invitaciones_medico
+        (id, token, pais_id, email, nombre_completo, clinica_id, estado, expires_at)
+      VALUES (gen_random_uuid(), v_tok, v_pais, 'probe754@ezpay.test', 'Probe 754',
+              NULL, 'pendiente', now() + interval '1 day');
+
+      PERFORM set_config('request.jwt.claims','{"role":"service_role"}', true);
+      PERFORM set_config('role','service_role', true);
+      PERFORM public.registrar_medico_desde_invitacion(
+        v_tok, v_sint, 'probe754@ezpay.test', 'Probe 754');
+      PERFORM set_config('role','none', true);
+      PERFORM set_config('request.jwt.claims','', true);
+
+      SELECT count(*) INTO v_n
+        FROM public.clinicas c
+        JOIN public.medico_clinicas mc ON mc.clinica_id=c.id AND mc.medico_id=v_sint
+       WHERE c.doctor_id=v_sint AND c.nombre='Consultorio Probe 754';
+      v_r := CASE WHEN v_n = 1
+                  THEN 'OK (la Ruta B crea el consultorio con auth.uid() NULL)'
+                  ELSE 'ROJO (la Ruta B no dejo el consultorio: '||v_n||')' END;
+      RAISE EXCEPTION 'P754_RB';
+    EXCEPTION WHEN OTHERS THEN
+      PERFORM set_config('role','none', true);
+      PERFORM set_config('request.jwt.claims','', true);
+      IF SQLERRM <> 'P754_RB' THEN
+        v_r := 'ROJO (la Ruta B se rompio: '||SQLSTATE||' '||SQLERRM||')';
+      END IF;
+    END;
+    PERFORM set_config('probe.p754', v_r, false);
+  END IF;
+
+  PERFORM set_config('request.jwt.claims','', true);
+EXCEPTION WHEN OTHERS THEN
+  PERFORM set_config('role','none', true);
+  PERFORM set_config('request.jwt.claims','', true);
+  PERFORM set_config('probe.p750', coalesce(current_setting('probe.p750', true),'FALLO ('||SQLSTATE||')'), false);
+  PERFORM set_config('probe.p754','FALLO ('||SQLSTATE||' '||SQLERRM||')', false);
+END $$;
+SELECT set_config('role','none', true);
+
 -- ===== Veredictos como result set =====
 SELECT 'P1_anon_insert_citas'              AS probe, current_setting('probe.p1', true)  AS verdict, 'BLOQUEADO' AS esperado_post_fix
 UNION ALL SELECT 'P2_medico_cancela_ajena_rpc',         current_setting('probe.p2', true),  'BLOQUEADO'
@@ -18144,6 +18311,11 @@ UNION ALL SELECT 'P746_iv_citas_hoy_anon',           current_setting('probe.p746
 UNION ALL SELECT 'P747_iv_estadisticas_resumen_anon',current_setting('probe.p747', true),    'OK (anon en cero en las dos)'
 UNION ALL SELECT 'P748_iv_paciente_ve_lo_suyo',      current_setting('probe.p748', true),    'OK (control positivo: 1 fila)'
 UNION ALL SELECT 'P749_iv_service_role_intacto',     current_setting('probe.p749', true),    'OK (control positivo: reportes)'
+UNION ALL SELECT 'P750_cc_dueno_crea_la_suya',       current_setting('probe.p750', true),    'OK (control positivo)'
+UNION ALL SELECT 'P751_cc_medico_a_nombre_de_otro',  current_setting('probe.p751', true),    'OK (42501)'
+UNION ALL SELECT 'P752_cc_paciente_a_nombre_medico', current_setting('probe.p752', true),    'OK (42501)'
+UNION ALL SELECT 'P753_cc_super_admin_alta',         current_setting('probe.p753', true),    'OK (control positivo)'
+UNION ALL SELECT 'P754_cc_ruta_b_intacta',           current_setting('probe.p754', true),    'OK (control positivo: Ruta B)'
 UNION ALL SELECT 'FX20_fo_fixture',                    current_setting('probe.fo_fx', true),  'OK (fixture)'
 UNION ALL SELECT 'P631_CENSO_anon_perfiles',           current_setting('probe.p631', true), 'OK (anon en cero, los 7)'
 UNION ALL SELECT 'P632_authenticated_perfiles',        current_setting('probe.p632', true), 'OK (4 DML si, 3 no)'
@@ -18368,7 +18540,8 @@ UNION ALL SELECT 'P000_CENTINELA_veredictos_no_nulos',
        'probe.fo_fx', 'probe.p728', 'probe.p729', 'probe.p730', 'probe.p731', 'probe.p732',
        'probe.p733', 'probe.p734', 'probe.p735', 'probe.p736', 'probe.p737', 'probe.p738',
        'probe.p739', 'probe.p740', 'probe.p741', 'probe.p742', 'probe.p743', 'probe.p744',
-       'probe.p745', 'probe.p746', 'probe.p747', 'probe.p748', 'probe.p749'
+       'probe.p745', 'probe.p746', 'probe.p747', 'probe.p748', 'probe.p749',
+       'probe.p750', 'probe.p751', 'probe.p752', 'probe.p753', 'probe.p754'
              ]) AS n) s),
   'OK (todos los veredictos publicados)';
 
