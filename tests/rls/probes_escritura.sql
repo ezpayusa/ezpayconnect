@@ -15901,12 +15901,21 @@ BEGIN
     WHEN OTHERS THEN PERFORM set_config('probe.p697','FALLO ('||SQLSTATE||' '||SQLERRM||')',false);
   END;
 
-  -- P698 — buscar_medicos: la unica de las seis SIN consumidor en el repo
+  -- P698 — buscar_medicos: BORRADA por la mig 308. Era la unica de las seis sin UN SOLO consumidor
+  -- en el repo, y SECURITY DEFINER sin search_path: codigo muerto con privilegio no se parchea, se
+  -- saca. Se conserva el NUMERO (son historial permanente, mismo criterio que la allowlist de
+  -- PA-FAILOPEN) y cambia lo que mide: antes "anon no puede ejecutarla", ahora "ya no existe para
+  -- nadie". Se mira pg_proc por NOMBRE y sin filtrar por firma, asi que tambien detecta que alguien
+  -- la recree con otra firma — y recrearla tal cual reintroduciria los dos defectos que cerro la
+  -- mig 307 en sus hermanas (sin search_path, y el `OR pais_id IS NULL` que cuela a los sin pais).
   BEGIN
-    SELECT count(*) INTO n FROM public.buscar_medicos('a', v_gt, 5);
-    PERFORM set_config('probe.p698','ROJO (anon BUSCO y obtuvo '||n||' medicos)',false);
-  EXCEPTION WHEN insufficient_privilege THEN PERFORM set_config('probe.p698','OK (42501)',false);
-    WHEN OTHERS THEN PERFORM set_config('probe.p698','FALLO ('||SQLSTATE||' '||SQLERRM||')',false);
+    SELECT count(*) INTO n FROM pg_proc pr JOIN pg_namespace ns ON ns.oid = pr.pronamespace
+     WHERE ns.nspname = 'public' AND pr.proname = 'buscar_medicos';
+    PERFORM set_config('probe.p698', CASE WHEN n = 0
+      THEN 'OK (borrada por la mig 308: 0 sobrecargas en pg_proc)'
+      ELSE 'ROJO (buscar_medicos volvio a existir: '||n||' sobrecarga(s))' END, false);
+  EXCEPTION WHEN OTHERS THEN
+    PERFORM set_config('probe.p698','FALLO ('||SQLSTATE||' '||SQLERRM||')',false);
   END;
 
   -- P699 — guardar_foto_medico: tiene que cortar el ACL (42501), NO el cuerpo ('no_auth', P0001)
@@ -18966,7 +18975,7 @@ UNION ALL SELECT 'P694_rp_anon_listar',               current_setting('probe.p69
 UNION ALL SELECT 'P695_rp_anon_obtener_por_ids',      current_setting('probe.p695', true),    'OK (42501)'
 UNION ALL SELECT 'P696_rp_anon_contar_por_pais',      current_setting('probe.p696', true),    'OK (42501)'
 UNION ALL SELECT 'P697_rp_anon_contar_por_ids',       current_setting('probe.p697', true),    'OK (42501)'
-UNION ALL SELECT 'P698_rp_anon_buscar_medicos',       current_setting('probe.p698', true),    'OK (42501)'
+UNION ALL SELECT 'P698_rp_buscar_medicos_borrada',   current_setting('probe.p698', true),    'OK (no existe, mig 308)'
 UNION ALL SELECT 'P699_rp_anon_guardar_foto',         current_setting('probe.p699', true),    'OK (42501 del ACL)'
 UNION ALL SELECT 'P700_rp_auth_listar_control_pos',   current_setting('probe.p700', true),    'OK (control positivo)'
 UNION ALL SELECT 'P701_rp_auth_obtener_control_pos',  current_setting('probe.p701', true),    'OK (control positivo)'
