@@ -43,6 +43,36 @@ export function MedicoSidebar() {
     return () => window.removeEventListener('focus', recount)
   }, [recount, location.pathname])
 
+  // Badge de notificaciones sin leer. Mismo patrón liviano que mensajesNoLeidos, y por la misma
+  // razón: re-cuento propio al cambiar de ruta y al recuperar el foco, sin realtime. El hook
+  // useNotificaciones tiene realtime opt-in, pero encenderlo acá es un cambio de comportamiento
+  // (una suscripción viva en cada pantalla del médico) que merece su propia medición de carga.
+  //
+  // NO se usa useNotificaciones() aunque ya calcule `noLeidas`: ese hook trae las 50 filas
+  // completas y cuenta las no leídas DE ESAS 50 (useNotificaciones.ts:34,45). Para un badge eso
+  // es traer todo el payload para mostrar un número, y encima queda topado: con más de 50
+  // notificaciones el contador miente hacia abajo. Un count exacto con head:true no trae filas.
+  //
+  // LÍMITE CONOCIDO, el mismo que ya tiene Mensajes: si marcás una leída y te quedás en
+  // /medico/notificaciones, el número no baja hasta que cambiás de ruta o la ventana recupera el
+  // foco. Salir de la pantalla ya lo corrige.
+  const [notifNoLeidas, setNotifNoLeidas] = useState(0)
+  const recontarNotificaciones = useCallback(async () => {
+    if (!perfil?.id) return
+    const { count, error } = await supabase
+      .from('notificaciones')
+      .select('id', { count: 'exact', head: true })
+      .eq('usuario_id', perfil.id)
+      .eq('leida', false)
+    if (error) return
+    setNotifNoLeidas(count ?? 0)
+  }, [perfil?.id])
+  useEffect(() => {
+    recontarNotificaciones()
+    window.addEventListener('focus', recontarNotificaciones)
+    return () => window.removeEventListener('focus', recontarNotificaciones)
+  }, [recontarNotificaciones, location.pathname])
+
   const navItems = [
     { label: 'Dashboard', icon: LayoutDashboard, path: '/medico' },
     {
@@ -105,6 +135,14 @@ export function MedicoSidebar() {
             <Bell className="h-5 w-5" />
             Notificaciones
           </div>
+          {/* Mismo pill que los badges de Mis Citas y Mensajes en el nav de abajo. Sin recorte a
+              "9+": los otros dos de este archivo muestran el número entero y el min-w-[20px] con
+              px-2 da para dos dígitos. */}
+          {notifNoLeidas > 0 && (
+            <span className="bg-red-500 text-white text-[10px] font-bold px-2 py-0.5 rounded-full min-w-[20px] text-center">
+              {notifNoLeidas}
+            </span>
+          )}
         </button>
       </div>
 
