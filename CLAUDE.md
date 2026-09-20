@@ -19,7 +19,7 @@ Stack: React + Vite + TypeScript, Supabase / Postgres, deploy en Vercel, repo en
   minutos por esto** (P635 es la probe que faltaba, P636 su contraprueba).
 - NUNCA ampliar policies de RLS sobre tablas adyacentes a datos médicos (p. ej. campana_metricas). Para dar acceso, usar RPCs SECURITY DEFINER con search_path='', fail-closed (si el scope es NULL → 0 filas) y gate interno.
 - Probar aislamiento por rol impersonando request.jwt.claims en prod: cada rol ve lo suyo y no lo ajeno.
-- **Módulo comercial — próximos números libres: probe `P759`, errcode `PA035`.** (Mig 285, 6-sep:
+- **Módulo comercial — próximos números libres: probe `P766`, errcode `PA035`.** (Mig 285, 6-sep:
   PA028 = check-in sobre visita que no está `planificada`; PA029 = doble checkout. Mig 286, 7-sep:
   `comercial_perfiles_sin_ficha(uuid)`, P639–P643; mig 287: `comercial_supervisores_del_pais(uuid)`,
   P644–P648; las dos son lectura y **no agregan errcode**: sin autoridad devuelven 0 filas, no

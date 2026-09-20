@@ -17215,8 +17215,14 @@ SELECT set_config('role','none', true);
 DO $$
 DECLARE n bigint; v_pid bigint; v_mid uuid; v_hay bigint;
 BEGIN
+  -- El medico se toma de `medicos`, NO de `perfiles WHERE rol='medico'`: citas.medico_id tiene
+  -- FK `fk_citas_medico -> medicos(id)`, y un perfil con rol='medico' NO implica fila en
+  -- `medicos`. Dos fixtures anteriores de este mismo harness (lineas ~10759 y ~13814) crean
+  -- perfiles medico con gen_random_uuid() y sin fila en medicos, asi que la version anterior
+  -- fallaba con 23503 cuando uno de esos uuid aleatorios ordenaba por debajo del primer medico
+  -- real (~7% de las corridas). Paso tres veces y fallo a la cuarta: era intermitente, no rota.
   SELECT id INTO v_pid FROM public.pacientes ORDER BY id LIMIT 1;
-  SELECT id INTO v_mid FROM public.perfiles WHERE rol = 'medico' AND activo ORDER BY id LIMIT 1;
+  SELECT m.id INTO v_mid FROM public.medicos m ORDER BY m.id LIMIT 1;
   IF v_pid IS NULL OR v_mid IS NULL THEN
     PERFORM set_config('probe.p746','N/A (no hay paciente o medico para sembrar)', false); RETURN;
   END IF;
@@ -17589,6 +17595,192 @@ EXCEPTION WHEN OTHERS THEN
   PERFORM set_config('role','none', true);
   PERFORM set_config('request.jwt.claims','', true);
   PERFORM set_config('probe.p755','FALLO ('||SQLSTATE||' '||SQLERRM||')', false);
+END $$;
+SELECT set_config('role','none', true);
+
+-- ============================================================
+-- MIG 305 · notificaciones: UPDATE por columna + broadcasts cerradas (P759-P765)
+-- ============================================================
+-- `authenticated` tenia UPDATE a nivel TABLA y la policy `notificaciones_update_propias` incluia
+-- `OR usuario_id IS NULL`: cualquier cuenta podia reescribir las 3 filas broadcast (titulo,
+-- mensaje, tipo, metadata, rol_destinatario) y APROPIARSELAS poniendose como usuario_id. El mismo
+-- brazo en la policy de SELECT hacia que anon las leyera. El fix: grant por COLUMNA (leida,
+-- estado), sin brazo de broadcast en UPDATE ni en SELECT, y DELETE revocado.
+--
+-- Siete probes. Los cuatro positivos no son relleno: sin ellos, un cierre de mas daria verde en
+-- los negativos y dejaria muda la campana de notificaciones, o rompería el panel de admin.
+--   P759 apropiacion bloqueada (42501 de COLUMNA, no de RLS)
+--   P760 el texto no es escribible (titulo)
+--   P761 broadcasts no escribibles, con y SIN WHERE  <- ver la nota de P761
+--   P762 anon y un authenticated ajeno no las LEEN
+--   P763 CONTROL: el dueno ve las suyas y marca leida
+--   P764 CONTROL: `estado` sigue escribible (el flujo del panel de admin)
+--   P765 CONTROL: service_role intacto + DELETE revocado + catalogo limpio
+SELECT set_config('role','none', true);
+
+DO $$
+DECLARE
+  v_med constant uuid := '09d243d5-b222-482a-9762-94a582e9e752';  -- medico real con notifs propias
+  v_pac constant uuid := '0dd0c68c-026c-4ebc-9475-e6791cc54933';  -- paciente real sin notifs
+  v_bc uuid; v_mia uuid; v_rc int; v_n bigint; v_err text; v_r text; v_mal text := '';
+BEGIN
+  SELECT id INTO v_bc  FROM public.notificaciones WHERE usuario_id IS NULL ORDER BY created_at LIMIT 1;
+  SELECT id INTO v_mia FROM public.notificaciones WHERE usuario_id = v_med ORDER BY created_at LIMIT 1;
+  IF v_bc IS NULL OR v_mia IS NULL THEN
+    PERFORM set_config('probe.p759','N/A (sin broadcast o sin notif propia)', false);
+    PERFORM set_config('probe.p760','N/A', false); PERFORM set_config('probe.p761','N/A', false);
+    PERFORM set_config('probe.p762','N/A', false); PERFORM set_config('probe.p763','N/A', false);
+    PERFORM set_config('probe.p764','N/A', false); PERFORM set_config('probe.p765','N/A', false);
+    RETURN;
+  END IF;
+
+  -- P759 — APROPIACION. Tiene que cortar el privilegio de COLUMNA, no la RLS: se distingue por el
+  -- mensaje, porque la RLS dice "row-level security policy". Si lo cortara la RLS seguiria estando
+  -- mal (usuario_id no deberia ser escribible en ninguna fila, ni en la propia).
+  v_r := 'ROJO (la apropiacion funciono)';
+  BEGIN
+    PERFORM set_config('request.jwt.claims', json_build_object('sub',v_pac,'role','authenticated')::text, true);
+    PERFORM set_config('role','authenticated', true);
+    UPDATE public.notificaciones SET usuario_id = v_pac WHERE id = v_bc;
+    PERFORM set_config('role','none', true);
+    RAISE EXCEPTION 'P759_RB';
+  EXCEPTION WHEN OTHERS THEN
+    PERFORM set_config('role','none', true);
+    v_err := SQLERRM;
+    IF v_err <> 'P759_RB' THEN
+      IF SQLSTATE <> '42501' THEN v_r := 'ROJO (corto con '||SQLSTATE||', se esperaba 42501)';
+      ELSIF v_err ILIKE '%row-level security%' THEN v_r := 'ROJO (lo corto la RLS, no el privilegio de columna)';
+      ELSE v_r := 'OK (42501 por privilegio de columna: usuario_id no es escribible)'; END IF;
+    END IF;
+  END;
+  PERFORM set_config('probe.p759', v_r, false);
+
+  -- P760 — el TEXTO. Sobre su PROPIA fila, para que el corte sea el grant y no la RLS.
+  v_r := 'ROJO (se pudo reescribir `titulo`)';
+  BEGIN
+    PERFORM set_config('request.jwt.claims', json_build_object('sub',v_med,'role','authenticated')::text, true);
+    PERFORM set_config('role','authenticated', true);
+    UPDATE public.notificaciones SET titulo = 'PROBE P760' WHERE id = v_mia;
+    PERFORM set_config('role','none', true);
+    RAISE EXCEPTION 'P760_RB';
+  EXCEPTION WHEN OTHERS THEN
+    PERFORM set_config('role','none', true);
+    v_err := SQLERRM;
+    IF v_err <> 'P760_RB' THEN
+      IF SQLSTATE <> '42501' THEN v_r := 'ROJO (corto con '||SQLSTATE||')';
+      ELSIF v_err ILIKE '%row-level security%' THEN v_r := 'ROJO (lo corto la RLS sobre su propia fila)';
+      ELSE v_r := 'OK (42501 por columna: el texto no es escribible ni en la fila propia)'; END IF;
+    END IF;
+  END;
+  PERFORM set_config('probe.p760', v_r, false);
+
+  -- P761 — BROADCASTS no escribibles. Van los DOS casos y no es redundancia: un UPDATE que lee
+  -- columnas (WHERE o RETURNING) aplica TAMBIEN las policies de SELECT, asi que la version con
+  -- WHERE la puede estar cortando el cierre de LECTURA y no el de escritura. La version sin WHERE
+  -- no necesita SELECT y ejercita el USING del UPDATE a solas. Se descubrio porque la contraprueba
+  -- por mutacion de esa pieza NO disparaba con la version con WHERE.
+  v_mal := '';
+  BEGIN
+    PERFORM set_config('request.jwt.claims', json_build_object('sub',v_pac,'role','authenticated')::text, true);
+    PERFORM set_config('role','authenticated', true);
+    UPDATE public.notificaciones SET leida = false WHERE id = v_bc;
+    GET DIAGNOSTICS v_rc = ROW_COUNT;
+    IF v_rc <> 0 THEN v_mal := v_mal || 'con WHERE toco '||v_rc||'; '; END IF;
+    UPDATE public.notificaciones SET leida = false;
+    GET DIAGNOSTICS v_rc = ROW_COUNT;
+    IF v_rc <> 0 THEN v_mal := v_mal || 'SIN WHERE toco '||v_rc||'; '; END IF;
+    PERFORM set_config('role','none', true);
+    RAISE EXCEPTION 'P761_RB';
+  EXCEPTION WHEN OTHERS THEN
+    PERFORM set_config('role','none', true);
+    IF SQLERRM <> 'P761_RB' AND SQLSTATE <> '42501' THEN
+      v_mal := v_mal || 'corto con '||SQLSTATE||'; ';
+    END IF;
+  END;
+  PERFORM set_config('probe.p761', CASE WHEN v_mal = ''
+    THEN 'OK (0 filas con WHERE y 0 sin WHERE)' ELSE 'ROJO ('||v_mal||')' END, false);
+
+  -- P762 — y tampoco las LEEN.
+  v_mal := '';
+  PERFORM set_config('request.jwt.claims','{"role":"anon"}', true);
+  PERFORM set_config('role','anon', true);
+  BEGIN
+    SELECT count(*) INTO v_n FROM public.notificaciones;
+    IF v_n <> 0 THEN v_mal := v_mal || 'anon ve '||v_n||'; '; END IF;
+  EXCEPTION WHEN OTHERS THEN v_mal := v_mal || 'anon='||SQLSTATE||'; '; END;
+  PERFORM set_config('role','none', true);
+  PERFORM set_config('request.jwt.claims', json_build_object('sub',v_pac,'role','authenticated')::text, true);
+  PERFORM set_config('role','authenticated', true);
+  BEGIN
+    SELECT count(*) INTO v_n FROM public.notificaciones;
+    IF v_n <> 0 THEN v_mal := v_mal || 'un authenticated ajeno ve '||v_n||'; '; END IF;
+  EXCEPTION WHEN OTHERS THEN v_mal := v_mal || 'ajeno='||SQLSTATE||'; '; END;
+  PERFORM set_config('role','none', true);
+  PERFORM set_config('request.jwt.claims','', true);
+  PERFORM set_config('probe.p762', CASE WHEN v_mal = ''
+    THEN 'OK (anon y un ajeno ven 0 broadcasts)' ELSE 'ROJO ('||v_mal||')' END, false);
+
+  -- P763 — CONTROL POSITIVO: el dueno sigue viendo y marcando las suyas.
+  v_r := 'no se ejecuto';
+  BEGIN
+    PERFORM set_config('request.jwt.claims', json_build_object('sub',v_med,'role','authenticated')::text, true);
+    PERFORM set_config('role','authenticated', true);
+    SELECT count(*) INTO v_n FROM public.notificaciones;
+    IF v_n = 0 THEN v_r := 'ROJO (el dueno dejo de ver las suyas: campana muda)';
+    ELSE
+      UPDATE public.notificaciones SET leida = true WHERE id = v_mia;
+      GET DIAGNOSTICS v_rc = ROW_COUNT;
+      v_r := CASE WHEN v_rc = 1 THEN 'OK (ve '||v_n||' y marca la suya)'
+                  ELSE 'ROJO (no pudo marcar la suya: '||v_rc||' filas)' END;
+    END IF;
+    PERFORM set_config('role','none', true);
+    RAISE EXCEPTION 'P763_RB';
+  EXCEPTION WHEN OTHERS THEN
+    PERFORM set_config('role','none', true);
+    IF SQLERRM <> 'P763_RB' THEN v_r := 'ROJO (el camino legitimo fallo: '||SQLSTATE||')'; END IF;
+  END;
+  PERFORM set_config('probe.p763', v_r, false);
+
+  -- P764 — CONTROL POSITIVO: `estado`. Es lo que mueve el panel de admin
+  -- (useNotificacionesAdmin: en_proceso / completada / archivada). El alcance original de la
+  -- migracion otorgaba solo `leida` y habria roto ese panel; este probe es el que lo vigila.
+  v_r := 'no se ejecuto';
+  BEGIN
+    PERFORM set_config('request.jwt.claims', json_build_object('sub',v_med,'role','authenticated')::text, true);
+    PERFORM set_config('role','authenticated', true);
+    UPDATE public.notificaciones SET estado = 'en_proceso', leida = true WHERE id = v_mia;
+    GET DIAGNOSTICS v_rc = ROW_COUNT;
+    PERFORM set_config('role','none', true);
+    v_r := CASE WHEN v_rc = 1 THEN 'OK (estado escribible: el panel de admin sigue vivo)'
+                ELSE 'ROJO (estado afecto '||v_rc||' filas)' END;
+    RAISE EXCEPTION 'P764_RB';
+  EXCEPTION WHEN OTHERS THEN
+    PERFORM set_config('role','none', true);
+    IF SQLERRM <> 'P764_RB' THEN v_r := 'ROJO (estado no es escribible: se rompe el panel de admin, '||SQLSTATE||')'; END IF;
+  END;
+  PERFORM set_config('probe.p764', v_r, false);
+  PERFORM set_config('request.jwt.claims','', true);
+
+  -- P765 — catalogo + service_role + DELETE.
+  v_mal := '';
+  IF has_table_privilege('authenticated','public.notificaciones','UPDATE') THEN v_mal := v_mal || 'auth conserva UPDATE de tabla; '; END IF;
+  IF has_table_privilege('authenticated','public.notificaciones','DELETE') THEN v_mal := v_mal || 'auth conserva DELETE; '; END IF;
+  IF NOT has_table_privilege('service_role','public.notificaciones','UPDATE') THEN v_mal := v_mal || 'service_role PERDIO UPDATE (rompe las edges); '; END IF;
+  IF NOT has_column_privilege('authenticated','public.notificaciones','leida','UPDATE')
+     OR NOT has_column_privilege('authenticated','public.notificaciones','estado','UPDATE') THEN
+    v_mal := v_mal || 'falta el grant sobre leida/estado; '; END IF;
+  SELECT count(*) INTO v_n FROM pg_policy pol JOIN pg_class c ON c.oid=pol.polrelid
+    JOIN pg_namespace ns ON ns.oid=c.relnamespace
+   WHERE ns.nspname='public' AND c.relname='notificaciones'
+     AND pol.polname IN ('notificaciones_update_propias','notificaciones_select_propias');
+  IF v_n <> 0 THEN v_mal := v_mal || 'sobrevivio una policy vieja; '; END IF;
+  PERFORM set_config('probe.p765', CASE WHEN v_mal = ''
+    THEN 'OK (grant por columna, sin DELETE, service_role intacto, catalogo limpio)'
+    ELSE 'ROJO ('||v_mal||')' END, false);
+EXCEPTION WHEN OTHERS THEN
+  PERFORM set_config('role','none', true);
+  PERFORM set_config('request.jwt.claims','', true);
+  PERFORM set_config('probe.p765','FALLO ('||SQLSTATE||' '||SQLERRM||')', false);
 END $$;
 SELECT set_config('role','none', true);
 
@@ -18411,6 +18603,13 @@ UNION ALL SELECT 'P755_cs_anon_sin_bancarios',       current_setting('probe.p755
 UNION ALL SELECT 'P756_cs_anon_ve_el_resto',         current_setting('probe.p756', true),    'OK (control positivo)'
 UNION ALL SELECT 'P757_cs_authenticated_ve_todo',    current_setting('probe.p757', true),    'OK (control positivo)'
 UNION ALL SELECT 'P758_cs_service_role_intacto',     current_setting('probe.p758', true),    'OK (control positivo: edge)'
+UNION ALL SELECT 'P759_nt_apropiacion_bloqueada',    current_setting('probe.p759', true),    'OK (42501 de columna)'
+UNION ALL SELECT 'P760_nt_texto_no_escribible',      current_setting('probe.p760', true),    'OK (42501 de columna)'
+UNION ALL SELECT 'P761_nt_broadcast_no_escribible',  current_setting('probe.p761', true),    'OK (0 con y sin WHERE)'
+UNION ALL SELECT 'P762_nt_broadcast_no_legible',     current_setting('probe.p762', true),    'OK (anon y ajeno en cero)'
+UNION ALL SELECT 'P763_nt_dueno_ve_y_marca',         current_setting('probe.p763', true),    'OK (control positivo)'
+UNION ALL SELECT 'P764_nt_estado_escribible',        current_setting('probe.p764', true),    'OK (control positivo: admin)'
+UNION ALL SELECT 'P765_nt_grants_y_catalogo',        current_setting('probe.p765', true),    'OK (control positivo)'
 UNION ALL SELECT 'FX20_fo_fixture',                    current_setting('probe.fo_fx', true),  'OK (fixture)'
 UNION ALL SELECT 'P631_CENSO_anon_perfiles',           current_setting('probe.p631', true), 'OK (anon en cero, los 7)'
 UNION ALL SELECT 'P632_authenticated_perfiles',        current_setting('probe.p632', true), 'OK (4 DML si, 3 no)'
@@ -18637,7 +18836,9 @@ UNION ALL SELECT 'P000_CENTINELA_veredictos_no_nulos',
        'probe.p739', 'probe.p740', 'probe.p741', 'probe.p742', 'probe.p743', 'probe.p744',
        'probe.p745', 'probe.p746', 'probe.p747', 'probe.p748', 'probe.p749',
        'probe.p750', 'probe.p751', 'probe.p752', 'probe.p753', 'probe.p754',
-       'probe.p755', 'probe.p756', 'probe.p757', 'probe.p758'
+       'probe.p755', 'probe.p756', 'probe.p757', 'probe.p758',
+       'probe.p759', 'probe.p760', 'probe.p761', 'probe.p762', 'probe.p763',
+       'probe.p764', 'probe.p765'
              ]) AS n) s),
   'OK (todos los veredictos publicados)';
 
