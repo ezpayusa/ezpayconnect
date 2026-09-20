@@ -1,13 +1,53 @@
 import { serve } from 'https://deno.land/std@0.168.0/http/server.ts'
+import { createClient } from 'https://esm.sh/@supabase/supabase-js@2'
 
 const corsHeaders = {
   'Access-Control-Allow-Origin': '*',
   'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
 }
 
+const json = (body: unknown, status: number) =>
+  new Response(JSON.stringify(body), {
+    headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+    status,
+  })
+
 serve(async (req) => {
   if (req.method === 'OPTIONS') {
     return new Response('ok', { headers: corsHeaders })
+  }
+
+  // ---------------------------------------------------------------------------------------
+  // GATE DE SESIÓN. `verify_jwt = true` en el gateway NO alcanza: medido el 20-sep contra el
+  // deploy real, esta función respondía 200 con sólo la key pública e incluso SIN header
+  // Authorization. O sea que cualquiera con la key que viaja en el bundle podía usarla como
+  // proxy de geocodificación y gastar GOOGLE_MAPS_API_KEY.
+  //
+  // El gate valida el JWT contra el auth server con un cliente anon + el token del caller
+  // (mismo patrón que dictado-voz / asistente-ia / invitar-visitador). La key pública NO es
+  // un usuario, así que getUser() la rechaza. Va ANTES de leer el body y antes de cualquier
+  // fetch saliente: el objetivo es no gastar la cuota, no sólo no devolver el resultado.
+  //
+  // Los dos callers (useUbicacionesMedico.ts:121 y useEntregasMonitoreo.ts:120) corren dentro
+  // de paneles con sesión de Supabase Auth (useProveedorAuth usa signInWithPassword), y
+  // `supabase.functions.invoke` manda el access_token de esa sesión. No se rompe ninguno.
+  // ---------------------------------------------------------------------------------------
+  const jwt = (req.headers.get('Authorization') || '').replace(/^Bearer\s+/i, '').trim()
+  if (!jwt) {
+    return json({ error: 'No autorizado' }, 401)
+  }
+
+  const supabaseUrl = Deno.env.get('SB_URL') || Deno.env.get('SUPABASE_URL')
+  const anonKey = Deno.env.get('SB_ANON_KEY') || Deno.env.get('SUPABASE_ANON_KEY')
+  if (!supabaseUrl || !anonKey) {
+    console.error('[geocodificar] faltan SB_URL/SB_ANON_KEY')
+    return json({ error: 'Configuración incompleta' }, 500)
+  }
+
+  const supa = createClient(supabaseUrl, anonKey, { auth: { persistSession: false } })
+  const { data: { user }, error: authError } = await supa.auth.getUser(jwt)
+  if (authError || !user) {
+    return json({ error: 'No autorizado' }, 401)
   }
 
   try {
