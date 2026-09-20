@@ -2,7 +2,9 @@
 -- 300 — cierra 8 funciones explotables HOY: 3 con gate fail-open y 5 sin gate ninguno
 -- ############################################################################################
 -- Todo lo de abajo esta MEDIDO contra prod (18-sep), ejercitando el rol, no leyendo el cuerpo.
--- Detalle completo en tmp/censo_failopen.md y tmp/censo_security_definer_anon.md.
+-- Detalle completo en docs/CENSO_FAILOPEN_2026-09-18.md y
+-- docs/CENSO_SECURITY_DEFINER_ANON_2026-09-18.md (vivieron en tmp/censo_failopen.md y
+-- tmp/censo_security_definer_anon.md hasta que se trackearon).
 --
 -- CAPA 1 — EL PATRON FAIL-OPEN TRIVALUADO (3)
 -- ------------------------------------------
