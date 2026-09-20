@@ -67,9 +67,21 @@ export function useClinicaCitas() {
 
       const medicoIds = relMedicos?.map((r: any) => r.medico_id) || []
 
-      // Cargar datos de todos los médicos disponibles para asignar
+      // País de la clínica SELECCIONADA, no el del usuario: este hook deja cambiar de clínica
+      // (currentClinicaId), y desde la mig 307 `listar_medicos_por_pais` filtra estricto por país.
+      // Tomarlo de `useClinicaAuth` no serviría: ese hook carga sólo la primera clínica y se
+      // desincronizaría del selector. La lectura está cubierta por la policy `clinicas_select_miembro`
+      // (`id IN (SELECT private.clinicas_del_usuario())`), verificada con un admin_clinica real.
+      const { data: clinicaPais } = await supabase
+        .from('clinicas')
+        .select('pais_id')
+        .eq('id', currentClinicaId)
+        .single()
+
+      // `clinicas.pais_id` es NULABLE (FK ON DELETE SET NULL). Si viniera NULL no se manda el
+      // argumento y el server deriva el país con mi_pais_viewer(), que es el comportamiento previo.
       const { data: todosMedicos } = await supabase
-        .rpc('listar_medicos_por_pais')
+        .rpc('listar_medicos_por_pais', { p_pais_id: clinicaPais?.pais_id || undefined })
 
       const todosMedicosList = (todosMedicos || []) as any[]
       const medicosFiltrados = todosMedicosList
