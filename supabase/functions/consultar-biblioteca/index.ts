@@ -1,9 +1,16 @@
 import { serve } from 'https://deno.land/std@0.168.0/http/server.ts'
+import { createClient } from 'https://esm.sh/@supabase/supabase-js@2'
 
 const corsHeaders = {
   'Access-Control-Allow-Origin': '*',
   'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
 }
+
+const json = (body: unknown, status: number) =>
+  new Response(JSON.stringify(body), {
+    headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+    status,
+  })
 
 interface BibliotecaQuery {
   query: string
@@ -79,6 +86,38 @@ async function buscarWikipedia(query: string) {
 serve(async (req) => {
   if (req.method === 'OPTIONS') {
     return new Response('ok', { headers: corsHeaders })
+  }
+
+  // ---------------------------------------------------------------------------------------
+  // GATE DE SESIÓN. `verify_jwt = true` en el gateway NO alcanza: medido el 20-sep contra el
+  // deploy real, esta función pasaba el gateway con la sola key pública (la que viaja en el
+  // bundle) y llegaba a su propia validación de body — o sea que cualquiera podía usarla como
+  // proxy a PubMed y Wikipedia. Sin costo directo, a diferencia de geocodificar, pero el mismo
+  // defecto: la IP que consulta esas APIs es la nuestra, y ellas aplican rate limit por IP.
+  //
+  // Mismo patrón que geocodificar / dictado-voz / asistente-ia: cliente anon + el JWT del
+  // caller y getUser(). Va ANTES de leer el body y antes de cualquier fetch saliente.
+  //
+  // Caller único: src/components/consulta/BibliotecaMedica.tsx:34, montado en ConsultaPage
+  // (rutas /consulta/:citaId bajo PrivateLayout y /medico/consulta/:citaId), o sea siempre con
+  // sesión de médico. `supabase.functions.invoke` manda el access_token de esa sesión.
+  // ---------------------------------------------------------------------------------------
+  const jwt = (req.headers.get('Authorization') || '').replace(/^Bearer\s+/i, '').trim()
+  if (!jwt) {
+    return json({ error: 'No autorizado' }, 401)
+  }
+
+  const supabaseUrl = Deno.env.get('SB_URL') || Deno.env.get('SUPABASE_URL')
+  const anonKey = Deno.env.get('SB_ANON_KEY') || Deno.env.get('SUPABASE_ANON_KEY')
+  if (!supabaseUrl || !anonKey) {
+    console.error('[consultar-biblioteca] faltan SB_URL/SB_ANON_KEY')
+    return json({ error: 'Configuración incompleta' }, 500)
+  }
+
+  const supa = createClient(supabaseUrl, anonKey, { auth: { persistSession: false } })
+  const { data: { user }, error: authError } = await supa.auth.getUser(jwt)
+  if (authError || !user) {
+    return json({ error: 'No autorizado' }, 401)
   }
 
   try {
