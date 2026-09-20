@@ -17501,6 +17501,97 @@ EXCEPTION WHEN OTHERS THEN
 END $$;
 SELECT set_config('role','none', true);
 
+-- ============================================================
+-- MIG 304 · configuracion_sistema oculta los datos bancarios a anon (P755-P758)
+-- ============================================================
+-- La policy "Cualquiera lee configuracion" era FOR SELECT TO public USING (true), y anon tiene
+-- SELECT sobre la tabla: las 21 filas se leian por REST sin sesion, incluidas 5 de cobro (banco,
+-- cuenta_bancaria, tipo_cuenta, titular_cuenta, email_pagos). Se reemplazo por dos policies con
+-- el rol nombrado — `TO public` no sirve para la excepcion porque public tambien alcanza a
+-- authenticated.
+--
+-- Los 4 probes cubren los tres lados, y los positivos pesan tanto como el negativo:
+--   P755 anon NO ve las 5           (la fuga, cerrada; se verifica por NOMBRE de clave)
+--   P756 anon SI ve las otras 16    (control positivo: no se cerro de mas)
+--   P757 authenticated ve las 21    (el camino que no debia tocarse)
+--   P758 service_role ve las 21     (la edge actualizar-configuracion)
+-- Sin P756/P757/P758, una policy que devolviera 0 filas a todo el mundo daria verde en P755 y
+-- romperia el branding del front publico y el panel de configuracion sin que nadie se entere.
+SELECT set_config('role','none', true);
+
+DO $$
+DECLARE
+  v_tot bigint; v_n bigint; v_l text;
+  bancarias constant text[] := ARRAY['banco','cuenta_bancaria','tipo_cuenta','titular_cuenta','email_pagos'];
+BEGIN
+  SELECT count(*) INTO v_tot FROM public.configuracion_sistema;
+
+  -- ---------------------------------------------------------------- P755 / P756 (anon)
+  PERFORM set_config('request.jwt.claims','{"role":"anon"}', true);
+  PERFORM set_config('role','anon', true);
+  BEGIN
+    SELECT count(*), string_agg(clave, ', ' ORDER BY clave) INTO v_n, v_l
+      FROM public.configuracion_sistema WHERE clave = ANY(bancarias);
+    PERFORM set_config('probe.p755', CASE WHEN v_n = 0
+      THEN 'OK (anon no ve ninguna de las 5 claves bancarias)'
+      ELSE 'ROJO (anon ve '||v_n||': '||coalesce(v_l,'')||')' END, false);
+  EXCEPTION WHEN OTHERS THEN
+    PERFORM set_config('probe.p755','FALLO ('||SQLSTATE||')', false);
+  END;
+
+  BEGIN
+    SELECT count(*) INTO v_n FROM public.configuracion_sistema;
+    SELECT count(*) INTO v_tot FROM (SELECT 1 FROM public.configuracion_sistema
+      WHERE clave IN ('app_nombre','color_primario','sistema_moneda','notif_email_activo')) s;
+    PERFORM set_config('probe.p756', CASE
+      WHEN v_n = 0 THEN 'ROJO (anon ve 0 filas: se cerro de mas, se rompe el branding publico)'
+      WHEN v_tot <> 4 THEN 'ROJO (anon solo ve '||v_tot||' de las 4 claves de branding/sistema)'
+      ELSE 'OK (anon ve '||v_n||' filas no bancarias, con las 4 de branding/sistema)' END, false);
+  EXCEPTION WHEN OTHERS THEN
+    PERFORM set_config('probe.p756','FALLO ('||SQLSTATE||')', false);
+  END;
+  PERFORM set_config('role','none', true);
+  PERFORM set_config('request.jwt.claims','', true);
+
+  -- ---------------------------------------------------------------- P757 (authenticated)
+  SELECT count(*) INTO v_tot FROM public.configuracion_sistema;   -- universo, como postgres
+  PERFORM set_config('request.jwt.claims',
+    '{"sub":"0dd0c68c-026c-4ebc-9475-e6791cc54933","role":"authenticated"}', true);
+  PERFORM set_config('role','authenticated', true);
+  BEGIN
+    SELECT count(*) INTO v_n FROM public.configuracion_sistema;
+    SELECT string_agg(b, ', ') INTO v_l FROM unnest(bancarias) b
+     WHERE NOT EXISTS (SELECT 1 FROM public.configuracion_sistema cs WHERE cs.clave = b);
+    PERFORM set_config('probe.p757', CASE
+      WHEN v_l IS NOT NULL THEN 'ROJO (un authenticated perdio: '||v_l||')'
+      WHEN v_n <> v_tot     THEN 'ROJO (un authenticated ve '||v_n||' de '||v_tot||')'
+      ELSE 'OK (un authenticated ve las '||v_n||', bancarias incluidas)' END, false);
+  EXCEPTION WHEN OTHERS THEN
+    PERFORM set_config('probe.p757','FALLO ('||SQLSTATE||')', false);
+  END;
+  PERFORM set_config('role','none', true);
+  PERFORM set_config('request.jwt.claims','', true);
+
+  -- ---------------------------------------------------------------- P758 (service_role / la edge)
+  PERFORM set_config('request.jwt.claims','{"role":"service_role"}', true);
+  PERFORM set_config('role','service_role', true);
+  BEGIN
+    SELECT count(*) INTO v_n FROM public.configuracion_sistema;
+    PERFORM set_config('probe.p758', CASE WHEN v_n = v_tot
+      THEN 'OK (service_role ve las '||v_n||': actualizar-configuracion intacta)'
+      ELSE 'ROJO (service_role ve '||v_n||' de '||v_tot||')' END, false);
+  EXCEPTION WHEN OTHERS THEN
+    PERFORM set_config('probe.p758','FALLO ('||SQLSTATE||')', false);
+  END;
+  PERFORM set_config('role','none', true);
+  PERFORM set_config('request.jwt.claims','', true);
+EXCEPTION WHEN OTHERS THEN
+  PERFORM set_config('role','none', true);
+  PERFORM set_config('request.jwt.claims','', true);
+  PERFORM set_config('probe.p755','FALLO ('||SQLSTATE||' '||SQLERRM||')', false);
+END $$;
+SELECT set_config('role','none', true);
+
 -- ===== Veredictos como result set =====
 SELECT 'P1_anon_insert_citas'              AS probe, current_setting('probe.p1', true)  AS verdict, 'BLOQUEADO' AS esperado_post_fix
 UNION ALL SELECT 'P2_medico_cancela_ajena_rpc',         current_setting('probe.p2', true),  'BLOQUEADO'
@@ -18316,6 +18407,10 @@ UNION ALL SELECT 'P751_cc_medico_a_nombre_de_otro',  current_setting('probe.p751
 UNION ALL SELECT 'P752_cc_paciente_a_nombre_medico', current_setting('probe.p752', true),    'OK (42501)'
 UNION ALL SELECT 'P753_cc_super_admin_alta',         current_setting('probe.p753', true),    'OK (control positivo)'
 UNION ALL SELECT 'P754_cc_ruta_b_intacta',           current_setting('probe.p754', true),    'OK (control positivo: Ruta B)'
+UNION ALL SELECT 'P755_cs_anon_sin_bancarios',       current_setting('probe.p755', true),    'OK (anon sin las 5)'
+UNION ALL SELECT 'P756_cs_anon_ve_el_resto',         current_setting('probe.p756', true),    'OK (control positivo)'
+UNION ALL SELECT 'P757_cs_authenticated_ve_todo',    current_setting('probe.p757', true),    'OK (control positivo)'
+UNION ALL SELECT 'P758_cs_service_role_intacto',     current_setting('probe.p758', true),    'OK (control positivo: edge)'
 UNION ALL SELECT 'FX20_fo_fixture',                    current_setting('probe.fo_fx', true),  'OK (fixture)'
 UNION ALL SELECT 'P631_CENSO_anon_perfiles',           current_setting('probe.p631', true), 'OK (anon en cero, los 7)'
 UNION ALL SELECT 'P632_authenticated_perfiles',        current_setting('probe.p632', true), 'OK (4 DML si, 3 no)'
@@ -18541,7 +18636,8 @@ UNION ALL SELECT 'P000_CENTINELA_veredictos_no_nulos',
        'probe.p733', 'probe.p734', 'probe.p735', 'probe.p736', 'probe.p737', 'probe.p738',
        'probe.p739', 'probe.p740', 'probe.p741', 'probe.p742', 'probe.p743', 'probe.p744',
        'probe.p745', 'probe.p746', 'probe.p747', 'probe.p748', 'probe.p749',
-       'probe.p750', 'probe.p751', 'probe.p752', 'probe.p753', 'probe.p754'
+       'probe.p750', 'probe.p751', 'probe.p752', 'probe.p753', 'probe.p754',
+       'probe.p755', 'probe.p756', 'probe.p757', 'probe.p758'
              ]) AS n) s),
   'OK (todos los veredictos publicados)';
 
