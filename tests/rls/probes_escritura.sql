@@ -17957,6 +17957,261 @@ EXCEPTION WHEN OTHERS THEN
 END $$;
 SELECT set_config('role','none', true);
 
+-- ============================================================
+-- MIG 307 · gate de pais + search_path en las 4 RPCs de medicos (GP_FX, P771-P778)
+-- ============================================================
+-- Las cuatro eran SECDEF sin search_path y sin gate, con el filtro
+--     (p_pais_id IS NULL OR m.pais_id = p_pais_id OR m.pais_id IS NULL)
+-- que ve de mas por dos vias. useClinicaCitas.ts:72 llama SIN argumento, asi que una clinica
+-- recibia el padron de medicos de TODOS los paises. Ahora: filtro estricto `= v_pais` y gate de
+-- tres brazos (admin del pais · el pais propio · tener clinica en ese pais).
+--
+-- LOS ACTORES SE SIEMBRAN, NO SE ELIGEN DE LA BASE. La primera version de estos probes tomaba
+-- `perfiles WHERE rol='admin_clinica' ... ORDER BY id LIMIT 1`. Contra prod aislada eso daba el
+-- unico admin_clinica real (pais Guatemala, 5 medicos) y salia verde; DENTRO del harness completo
+-- elegia otro que algun fixture anterior deja creado en el pais "DEMO - No operativo", que tiene
+-- CERO medicos, y P771 daba ROJO "0 filas" sin que el gate hubiera cortado nada: media que el pais
+-- estaba vacio. Misma clase de fragilidad que tenia P746. Elegir un actor por rol con ORDER BY
+-- depende de lo que hayan hecho las ~800 probes anteriores en la misma transaccion.
+--
+-- Ocho probes, y los positivos no son relleno: los 7 call-sites reales tienen que seguir
+-- funcionando. Un gate que cortara de mas dejaria en verde a los negativos y vaciaria la agenda
+-- de la clinica, el dashboard de pais y el de la clinica.
+--
+-- P777 y P778 cubren los dos caminos que NINGUN call-site de hoy ejercita:
+--   · P777 el camino PC025 (v_pais NULL): hace falta un actor sin pais en perfiles NI en pacientes.
+--   · P778 el TERCER brazo del gate. Con p_pais_id NULL el segundo brazo (`v_pais =
+--     mi_pais_viewer()`) es siempre verdadero y corta el circuito antes, asi que el tercero solo se
+--     activa con un medico que pida explicitamente el pais de una clinica suya que NO es su pais.
+SELECT set_config('role','none', true);
+
+-- ---------------- GP_FX — fixture ----------------
+DO $$
+DECLARE
+  v_a uuid;   -- pais A: el que TIENE medicos (para los positivos)
+  v_b uuid;   -- pais B: otro pais activo (para los negativos y el brazo 3)
+  v_adm_cli uuid; v_adm_pais uuid; v_sinpais uuid; v_cruz uuid; v_med_b uuid; v_cli uuid;
+BEGIN
+  -- El pais A se elige por TENER medicos activos, no por orden de id: si no los tiene, P771 mide
+  -- "pais vacio" en vez de "el gate deja pasar".
+  SELECT m.pais_id INTO v_a FROM public.medicos m
+   WHERE m.activo AND m.pais_id IS NOT NULL
+   GROUP BY m.pais_id ORDER BY count(*) DESC, m.pais_id LIMIT 1;
+  SELECT cp.id INTO v_b FROM public.configuracion_pais cp
+   WHERE cp.activo AND cp.id <> v_a ORDER BY cp.id LIMIT 1;
+  IF v_a IS NULL OR v_b IS NULL THEN
+    PERFORM set_config('probe.gp_ready','0', false);
+    PERFORM set_config('probe.gp_fx','ROJO (hace falta 1 pais con medicos + otro pais activo)', false); RETURN;
+  END IF;
+
+  -- (1) admin_clinica DETERMINISTA en el pais A
+  v_adm_cli := gen_random_uuid();
+  INSERT INTO auth.users (id) VALUES (v_adm_cli);
+  INSERT INTO public.perfiles (id, email, nombre_completo, rol, pais_id, activo)
+    VALUES (v_adm_cli, 'gp.adminclinica@example.invalid', 'QA GP admin_clinica', 'admin_clinica', v_a, true);
+
+  -- (2) admin_pais DETERMINISTA en el pais A
+  v_adm_pais := gen_random_uuid();
+  INSERT INTO auth.users (id) VALUES (v_adm_pais);
+  INSERT INTO public.perfiles (id, email, nombre_completo, rol, pais_id, activo)
+    VALUES (v_adm_pais, 'gp.adminpais@example.invalid', 'QA GP admin_pais', 'admin_pais', v_a, true);
+
+  -- (3) actor SIN pais: mi_pais_viewer() recorre perfiles -> cuentas_proveedor -> empresa ->
+  --     pacientes; con este los cuatro dan NULL, que es la unica forma de llegar a PC025.
+  v_sinpais := gen_random_uuid();
+  INSERT INTO auth.users (id) VALUES (v_sinpais);
+  INSERT INTO public.perfiles (id, email, nombre_completo, rol, pais_id, activo)
+    VALUES (v_sinpais, 'gp.sinpais@example.invalid', 'QA GP sin pais', 'medico', NULL, true);
+
+  -- (4) un medico EN EL PAIS B, para que P778 pueda afirmar que VE algo y no solo que no lanzo.
+  v_med_b := gen_random_uuid();
+  INSERT INTO auth.users (id) VALUES (v_med_b);
+  INSERT INTO public.perfiles (id, email, nombre_completo, rol, pais_id, activo)
+    VALUES (v_med_b, 'gp.medico.b@example.invalid', 'QA GP medico del pais B', 'medico', v_b, true);
+  INSERT INTO public.medicos (id, nombre_completo, email, activo, pais_id)
+    VALUES (v_med_b, 'QA GP medico del pais B', 'gp.medico.b@example.invalid', true, v_b);
+
+  -- (5) medico CRUZADO: su perfil es del pais A, pero tiene una clinica en el pais B.
+  --     medico_clinicas.medico_id tiene FK a `medicos`, asi que necesita fila ahi tambien.
+  v_cruz := gen_random_uuid();
+  INSERT INTO auth.users (id) VALUES (v_cruz);
+  INSERT INTO public.perfiles (id, email, nombre_completo, rol, pais_id, activo)
+    VALUES (v_cruz, 'gp.cruzado@example.invalid', 'QA GP medico cruzado', 'medico', v_a, true);
+  INSERT INTO public.medicos (id, nombre_completo, email, activo, pais_id)
+    VALUES (v_cruz, 'QA GP medico cruzado', 'gp.cruzado@example.invalid', true, v_a);
+  v_cli := gen_random_uuid();
+  INSERT INTO public.clinicas (id, doctor_id, nombre, pais_id, activa)
+    VALUES (v_cli, v_cruz, 'QA GP clinica del pais B', v_b, true);
+  INSERT INTO public.medico_clinicas (medico_id, clinica_id, es_principal)
+    VALUES (v_cruz, v_cli, false);
+
+  PERFORM set_config('probe.gp_a', v_a::text, false);
+  PERFORM set_config('probe.gp_b', v_b::text, false);
+  PERFORM set_config('probe.gp_adm_cli',  v_adm_cli::text, false);
+  PERFORM set_config('probe.gp_adm_pais', v_adm_pais::text, false);
+  PERFORM set_config('probe.gp_sinpais',  v_sinpais::text, false);
+  PERFORM set_config('probe.gp_cruz',     v_cruz::text, false);
+  PERFORM set_config('probe.gp_ready','1', false);
+  PERFORM set_config('probe.gp_fx','OK (paisA con '||
+    (SELECT count(*) FROM public.medicos m WHERE m.activo AND m.pais_id=v_a)||
+    ' medicos + paisB con 1 sembrado; admin_clinica, admin_pais, sin-pais y medico cruzado)', false);
+EXCEPTION WHEN OTHERS THEN
+  PERFORM set_config('probe.gp_ready','0', false);
+  PERFORM set_config('probe.gp_fx','ROJO ('||SQLSTATE||' '||SQLERRM||')', false);
+END $$;
+SELECT set_config('role','none', true);
+
+-- ---------------- P771-P778 ----------------
+DO $$
+DECLARE
+  v_a uuid; v_b uuid; v_adm_cli uuid; v_adm_pais uuid; v_sinpais uuid; v_cruz uuid; v_sa uuid;
+  ids uuid[]; n bigint; v_r text;
+BEGIN
+  IF coalesce(current_setting('probe.gp_ready', true),'0') <> '1' THEN
+    PERFORM set_config('probe.p771','N/A (fixture GP no sembro)', false);
+    PERFORM set_config('probe.p772','N/A', false); PERFORM set_config('probe.p773','N/A', false);
+    PERFORM set_config('probe.p774','N/A', false); PERFORM set_config('probe.p775','N/A', false);
+    PERFORM set_config('probe.p776','N/A', false); PERFORM set_config('probe.p777','N/A', false);
+    PERFORM set_config('probe.p778','N/A', false);
+    RETURN;
+  END IF;
+  v_a        := current_setting('probe.gp_a', true)::uuid;
+  v_b        := current_setting('probe.gp_b', true)::uuid;
+  v_adm_cli  := current_setting('probe.gp_adm_cli', true)::uuid;
+  v_adm_pais := current_setting('probe.gp_adm_pais', true)::uuid;
+  v_sinpais  := current_setting('probe.gp_sinpais', true)::uuid;
+  v_cruz     := current_setting('probe.gp_cruz', true)::uuid;
+  SELECT id INTO v_sa FROM public.perfiles WHERE rol='super_admin' AND activo ORDER BY id LIMIT 1;
+  SELECT array_agg(id) INTO ids FROM (SELECT id FROM public.medicos ORDER BY id LIMIT 5) s;
+
+  -- P771 (a) — admin_clinica SIN argumento. Es el caller de useClinicaCitas.ts:72 y el que mas
+  -- riesgo corria: si el gate cortara aca, la agenda de la clinica se queda sin medicos.
+  v_r := 'no se ejecuto';
+  BEGIN
+    PERFORM set_config('request.jwt.claims', json_build_object('sub',v_adm_cli,'role','authenticated')::text, true);
+    PERFORM set_config('role','authenticated', true);
+    SELECT count(*) INTO n FROM public.listar_medicos_por_pais();
+    PERFORM set_config('role','none', true);
+    v_r := CASE WHEN n > 0 THEN 'OK (responde '||n||' medicos de su pais)'
+                ELSE 'ROJO (0 filas con '||(SELECT count(*) FROM public.medicos m WHERE m.activo AND m.pais_id=v_a)
+                     ||' medicos activos en su pais: la agenda de la clinica se queda vacia)' END;
+  EXCEPTION WHEN OTHERS THEN
+    PERFORM set_config('role','none', true);
+    v_r := 'ROJO (corto con '||SQLSTATE||' '||SQLERRM||')';
+  END;
+  PERFORM set_config('probe.p771', v_r, false);
+
+  -- P772 (b) — el mismo admin_clinica pidiendo el pais B -> PC026.
+  v_r := 'ROJO (vio un pais ajeno)';
+  BEGIN
+    PERFORM set_config('request.jwt.claims', json_build_object('sub',v_adm_cli,'role','authenticated')::text, true);
+    PERFORM set_config('role','authenticated', true);
+    PERFORM count(*) FROM public.listar_medicos_por_pais(v_b);
+    PERFORM set_config('role','none', true);
+  EXCEPTION WHEN OTHERS THEN
+    PERFORM set_config('role','none', true);
+    v_r := CASE WHEN SQLSTATE = 'PC026' THEN 'OK (PC026)'
+                ELSE 'ROJO (corto con '||SQLSTATE||', se esperaba PC026)' END;
+  END;
+  PERFORM set_config('probe.p772', v_r, false);
+
+  -- P773 (c) — admin_pais sobre SU pais. Caller: PaisDashboardPage.tsx:104.
+  v_r := 'no se ejecuto';
+  BEGIN
+    PERFORM set_config('request.jwt.claims', json_build_object('sub',v_adm_pais,'role','authenticated')::text, true);
+    PERFORM set_config('role','authenticated', true);
+    SELECT public.contar_medicos_por_pais(v_a) INTO n;
+    PERFORM set_config('role','none', true);
+    v_r := CASE WHEN n > 0 THEN 'OK (cuenta '||n||' en su pais)'
+                ELSE 'ROJO (conto 0 en un pais que tiene medicos)' END;
+  EXCEPTION WHEN OTHERS THEN
+    PERFORM set_config('role','none', true);
+    v_r := 'ROJO (el dashboard de pais se rompe: '||SQLSTATE||' '||SQLERRM||')';
+  END;
+  PERFORM set_config('probe.p773', v_r, false);
+
+  -- P774 (d) — admin_pais sobre el pais B -> PC026.
+  v_r := 'ROJO (conto un pais ajeno)';
+  BEGIN
+    PERFORM set_config('request.jwt.claims', json_build_object('sub',v_adm_pais,'role','authenticated')::text, true);
+    PERFORM set_config('role','authenticated', true);
+    PERFORM public.contar_medicos_por_pais(v_b);
+    PERFORM set_config('role','none', true);
+  EXCEPTION WHEN OTHERS THEN
+    PERFORM set_config('role','none', true);
+    v_r := CASE WHEN SQLSTATE = 'PC026' THEN 'OK (PC026)'
+                ELSE 'ROJO (corto con '||SQLSTATE||', se esperaba PC026)' END;
+  END;
+  PERFORM set_config('probe.p774', v_r, false);
+
+  -- P775 (e) — super_admin puede pedir CUALQUIER pais. El fixture sembro un medico en el pais B,
+  -- asi que aca se puede afirmar que VE algo, no solo que no lanzo.
+  v_r := 'no se ejecuto';
+  BEGIN
+    PERFORM set_config('request.jwt.claims', json_build_object('sub',v_sa,'role','authenticated')::text, true);
+    PERFORM set_config('role','authenticated', true);
+    SELECT count(*) INTO n FROM public.listar_medicos_por_pais(v_b);
+    PERFORM set_config('role','none', true);
+    v_r := CASE WHEN n > 0 THEN 'OK (ve '||n||' del pais ajeno, sin excepcion)'
+                ELSE 'ROJO (0 filas: el fixture sembro 1 medico en ese pais)' END;
+  EXCEPTION WHEN OTHERS THEN
+    PERFORM set_config('role','none', true);
+    v_r := 'ROJO (el super_admin fue rechazado: '||SQLSTATE||')';
+  END;
+  PERFORM set_config('probe.p775', v_r, false);
+
+  -- P776 (f) — anon en las DOS: el REVOKE de la 295 + esta migracion.
+  v_r := '';
+  PERFORM set_config('request.jwt.claims','{"role":"anon"}', true);
+  PERFORM set_config('role','anon', true);
+  BEGIN PERFORM public.listar_medicos_por_pais(v_a); v_r := v_r||'listar respondio; ';
+  EXCEPTION WHEN insufficient_privilege THEN NULL;
+    WHEN OTHERS THEN v_r := v_r||'listar='||SQLSTATE||' (se esperaba 42501); '; END;
+  BEGIN PERFORM public.obtener_medicos_por_ids(ids); v_r := v_r||'obtener_por_ids respondio; ';
+  EXCEPTION WHEN insufficient_privilege THEN NULL;
+    WHEN OTHERS THEN v_r := v_r||'obtener='||SQLSTATE||' (se esperaba 42501); '; END;
+  PERFORM set_config('role','none', true);
+  PERFORM set_config('request.jwt.claims','', true);
+  PERFORM set_config('probe.p776', CASE WHEN v_r = ''
+    THEN 'OK (42501 en las dos)' ELSE 'ROJO ('||v_r||')' END, false);
+
+  -- P777 (g) — actor SIN pais por ninguna via -> PC025.
+  v_r := 'ROJO (no lanzo PC025)';
+  BEGIN
+    PERFORM set_config('request.jwt.claims', json_build_object('sub',v_sinpais,'role','authenticated')::text, true);
+    PERFORM set_config('role','authenticated', true);
+    PERFORM count(*) FROM public.listar_medicos_por_pais();
+    PERFORM set_config('role','none', true);
+  EXCEPTION WHEN OTHERS THEN
+    PERFORM set_config('role','none', true);
+    v_r := CASE WHEN SQLSTATE = 'PC025' THEN 'OK (PC025 pais requerido)'
+                ELSE 'ROJO (corto con '||SQLSTATE||', se esperaba PC025)' END;
+  END;
+  PERFORM set_config('probe.p777', v_r, false);
+
+  -- P778 (h) — TERCER BRAZO: medico del pais A pidiendo el pais B, donde esta SU clinica.
+  -- Es el unico camino que activa el EXISTS sobre medico_clinicas.
+  v_r := 'no se ejecuto';
+  BEGIN
+    PERFORM set_config('request.jwt.claims', json_build_object('sub',v_cruz,'role','authenticated')::text, true);
+    PERFORM set_config('role','authenticated', true);
+    SELECT count(*) INTO n FROM public.listar_medicos_por_pais(v_b);
+    PERFORM set_config('role','none', true);
+    v_r := CASE WHEN n > 0 THEN 'OK (el 3er brazo habilita: ve '||n||' del pais de su clinica)'
+                ELSE 'ROJO (paso el gate pero vio 0, con 1 medico sembrado en ese pais)' END;
+  EXCEPTION WHEN OTHERS THEN
+    PERFORM set_config('role','none', true);
+    v_r := 'ROJO (el 3er brazo no habilita: '||SQLSTATE||' '||SQLERRM||')';
+  END;
+  PERFORM set_config('probe.p778', v_r, false);
+  PERFORM set_config('request.jwt.claims','', true);
+EXCEPTION WHEN OTHERS THEN
+  PERFORM set_config('role','none', true);
+  PERFORM set_config('request.jwt.claims','', true);
+  PERFORM set_config('probe.p778','FALLO ('||SQLSTATE||' '||SQLERRM||')', false);
+END $$;
+SELECT set_config('role','none', true);
+
 -- ===== Veredictos como result set =====
 SELECT 'P1_anon_insert_citas'              AS probe, current_setting('probe.p1', true)  AS verdict, 'BLOQUEADO' AS esperado_post_fix
 UNION ALL SELECT 'P2_medico_cancela_ajena_rpc',         current_setting('probe.p2', true),  'BLOQUEADO'
@@ -18788,6 +19043,15 @@ UNION ALL SELECT 'P767_bk_prefijo_ajeno_bloqueado',  current_setting('probe.p767
 UNION ALL SELECT 'P768_bk_housead_admin',            current_setting('probe.p768', true),    'OK (control positivo)'
 UNION ALL SELECT 'P769_bk_asimetria_productos',      current_setting('probe.p769', true),    'OK (42501: sin brazo admin)'
 UNION ALL SELECT 'P770_bk_objetos_y_catalogo',       current_setting('probe.p770', true),    'OK (control positivo)'
+UNION ALL SELECT 'GP_FX_gate_pais_fixture',          current_setting('probe.gp_fx', true),    'OK (fixture)'
+UNION ALL SELECT 'P771_gp_clinica_sin_arg',          current_setting('probe.p771', true),    'OK (control positivo)'
+UNION ALL SELECT 'P772_gp_clinica_pais_ajeno',       current_setting('probe.p772', true),    'OK (PC026)'
+UNION ALL SELECT 'P773_gp_adminpais_su_pais',        current_setting('probe.p773', true),    'OK (control positivo)'
+UNION ALL SELECT 'P774_gp_adminpais_pais_ajeno',     current_setting('probe.p774', true),    'OK (PC026)'
+UNION ALL SELECT 'P775_gp_superadmin_cualquier',     current_setting('probe.p775', true),    'OK (control positivo)'
+UNION ALL SELECT 'P776_gp_anon_42501',               current_setting('probe.p776', true),    'OK (42501 en las dos)'
+UNION ALL SELECT 'P777_gp_sin_pais_pc025',           current_setting('probe.p777', true),    'OK (PC025)'
+UNION ALL SELECT 'P778_gp_tercer_brazo_clinica',     current_setting('probe.p778', true),    'OK (control positivo)'
 UNION ALL SELECT 'FX20_fo_fixture',                    current_setting('probe.fo_fx', true),  'OK (fixture)'
 UNION ALL SELECT 'P631_CENSO_anon_perfiles',           current_setting('probe.p631', true), 'OK (anon en cero, los 7)'
 UNION ALL SELECT 'P632_authenticated_perfiles',        current_setting('probe.p632', true), 'OK (4 DML si, 3 no)'
@@ -19017,7 +19281,9 @@ UNION ALL SELECT 'P000_CENTINELA_veredictos_no_nulos',
        'probe.p755', 'probe.p756', 'probe.p757', 'probe.p758',
        'probe.p759', 'probe.p760', 'probe.p761', 'probe.p762', 'probe.p763',
        'probe.p764', 'probe.p765',
-       'probe.p766', 'probe.p767', 'probe.p768', 'probe.p769', 'probe.p770'
+       'probe.p766', 'probe.p767', 'probe.p768', 'probe.p769', 'probe.p770',
+       'probe.p771', 'probe.p772', 'probe.p773', 'probe.p774', 'probe.p775',
+       'probe.p776', 'probe.p777', 'probe.p778'
              ]) AS n) s),
   'OK (todos los veredictos publicados)';
 
