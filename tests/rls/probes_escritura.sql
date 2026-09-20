@@ -18424,6 +18424,320 @@ EXCEPTION WHEN OTHERS THEN
 END $$;
 SELECT set_config('role','none', true);
 
+
+-- ============================================================
+-- MIG 310 · examen_adjuntos (EA_FX, P783-P789)
+-- ============================================================
+-- La escritura de examen_adjuntos NO tiene policy: entra solo por
+-- public.registrar_examen_adjunto(), SECURITY DEFINER, mismo patron que visitas_comerciales.
+-- Estas probes ejercitan las dos caras: que la RPC deje pasar a quien corresponde y corte al
+-- resto, y que la lectura de la tabla use el MISMO helper que gobierna storage y examenes.
+--
+-- P788 necesita `storage.allow_delete_query`: storage.objects tiene un BEFORE DELETE
+-- (protect_objects_delete) que rechaza TODO borrado por SQL directo, con policy o sin ella. Sin
+-- apagarlo la probe mediria el trigger y no la policy. Es lo mismo que hizo falta en la mig 306.
+SELECT set_config('role','none', true);
+
+-- ---------------- EA_FX — fixture ----------------
+DO $$
+DECLARE
+  v_emp uuid; v_lab uuid; v_ajeno uuid; v_med uuid; v_pac uuid;
+  v_ex_no int; v_ex_si int; v_url text;
+BEGIN
+  -- El laboratorio se elige por TENER examenes; si se eligiera por orden de id las probes
+  -- medirian un lab sin nada y saldrian verdes por vacio.
+  SELECT e.laboratorio_id INTO v_emp FROM public.examenes e
+   WHERE e.laboratorio_id IS NOT NULL
+   GROUP BY e.laboratorio_id ORDER BY count(*) DESC, e.laboratorio_id LIMIT 1;
+
+  SELECT e.id INTO v_ex_no FROM public.examenes e
+   WHERE e.laboratorio_id = v_emp AND NOT e.liberado_al_paciente ORDER BY e.id LIMIT 1;
+  SELECT e.id, COALESCE(NULLIF(split_part(e.archivo_url,'/resultados-examenes/',2),''), e.archivo_url)
+    INTO v_ex_si, v_url
+    FROM public.examenes e
+   WHERE e.laboratorio_id = v_emp AND e.liberado_al_paciente AND e.archivo_url IS NOT NULL
+   ORDER BY e.id LIMIT 1;
+
+  SELECT cp.id INTO v_lab FROM public.cuentas_proveedor cp
+   WHERE cp.empresa_id = v_emp AND cp.activo ORDER BY cp.id LIMIT 1;
+  SELECT cp.id INTO v_ajeno FROM public.cuentas_proveedor cp
+   WHERE cp.empresa_id IS DISTINCT FROM v_emp AND cp.activo ORDER BY cp.id LIMIT 1;
+
+  SELECT p.auth_user_id INTO v_pac FROM public.pacientes p
+   JOIN public.examenes e ON e.paciente_id = p.id
+   WHERE e.id = v_ex_si AND p.auth_user_id IS NOT NULL LIMIT 1;
+
+  IF v_emp IS NULL OR v_ex_no IS NULL OR v_ex_si IS NULL OR v_lab IS NULL
+     OR v_ajeno IS NULL OR v_pac IS NULL OR v_url IS NULL THEN
+    PERFORM set_config('probe.ea_ready','0', false);
+    PERFORM set_config('probe.ea_fx','ROJO (falta fixture: emp='||COALESCE(v_emp::text,'-')
+      ||' ex_no='||COALESCE(v_ex_no::text,'-')||' ex_si='||COALESCE(v_ex_si::text,'-')
+      ||' lab='||COALESCE(v_lab::text,'-')||' ajeno='||COALESCE(v_ajeno::text,'-')
+      ||' pac='||COALESCE(v_pac::text,'-')||' url='||COALESCE(v_url,'-')||')', false);
+    RETURN;
+  END IF;
+
+  -- medico SIN NINGUNA relacion con estos examenes: se siembra, no se busca. Buscar "un medico"
+  -- con ORDER BY dentro del harness devuelve lo que dejo algun fixture anterior.
+  v_med := gen_random_uuid();
+  INSERT INTO auth.users (id) VALUES (v_med);
+  INSERT INTO public.perfiles (id, email, nombre_completo, rol, activo)
+    VALUES (v_med, 'ea.medico.ajeno@example.invalid', 'QA EA medico sin relacion', 'medico', true);
+
+  -- dos adjuntos sembrados como postgres (la RPC no puede crear el del examen liberado: PE002).
+  -- P787 necesita los DOS para que el veredicto del paciente distinga 1 de 2 y de 0.
+  INSERT INTO public.examen_adjuntos (examen_id, storage_path, mime_type, subido_por)
+   VALUES (v_ex_no, v_emp::text||'/ea-fx-nolib.pdf', 'application/pdf', v_lab),
+          (v_ex_si, v_emp::text||'/ea-fx-lib.pdf',   'application/pdf', v_lab);
+
+  -- objetos en el bucket. Para P788: uno atado a un adjunto, uno atado a examenes.archivo_url
+  -- (se reusa el que ya existe) y uno suelto. Para P789 hace falta ademas el del examen
+  -- LIBERADO, que es el unico que el paciente puede alcanzar, y solo por la rama de adjuntos.
+  INSERT INTO storage.objects (bucket_id, name, owner)
+   VALUES ('resultados-examenes', v_emp::text||'/ea-fx-nolib.pdf', NULL),
+          ('resultados-examenes', v_emp::text||'/ea-fx-lib.pdf',   NULL),
+          ('resultados-examenes', v_emp::text||'/ea-fx-libre.pdf', NULL)
+   ON CONFLICT DO NOTHING;
+
+  PERFORM set_config('probe.ea_emp',   v_emp::text, false);
+  PERFORM set_config('probe.ea_lab',   v_lab::text, false);
+  PERFORM set_config('probe.ea_ajeno', v_ajeno::text, false);
+  PERFORM set_config('probe.ea_med',   v_med::text, false);
+  PERFORM set_config('probe.ea_pac',   v_pac::text, false);
+  PERFORM set_config('probe.ea_exno',  v_ex_no::text, false);
+  PERFORM set_config('probe.ea_exsi',  v_ex_si::text, false);
+  PERFORM set_config('probe.ea_url',   v_url, false);
+  PERFORM set_config('probe.ea_ready','1', false);
+  PERFORM set_config('probe.ea_fx','OK (lab '||v_emp::text||': examen no-liberado '||v_ex_no
+    ||', liberado '||v_ex_si||'; 2 adjuntos y 3 objetos sembrados)', false);
+EXCEPTION WHEN OTHERS THEN
+  PERFORM set_config('probe.ea_ready','0', false);
+  PERFORM set_config('probe.ea_fx','ROJO ('||SQLSTATE||' '||SQLERRM||')', false);
+END $$;
+SELECT set_config('role','none', true);
+
+-- ---------------- P783-P788 ----------------
+DO $$
+DECLARE
+  v_lab uuid; v_ajeno uuid; v_med uuid; v_pac uuid; v_emp uuid;
+  v_exno int; v_exsi int; v_url text;
+  v_fila public.examen_adjuntos; v_r text; n bigint;
+  n_lab bigint; n_med bigint; n_pac bigint;
+  n_adj bigint; n_exa bigint; n_lib bigint; v_e text; v_ok_lib boolean;
+BEGIN
+  IF coalesce(current_setting('probe.ea_ready', true),'0') <> '1' THEN
+    PERFORM set_config('probe.p783','N/A (fixture EA no sembro)', false);
+    PERFORM set_config('probe.p784','N/A', false); PERFORM set_config('probe.p785','N/A', false);
+    PERFORM set_config('probe.p786','N/A', false); PERFORM set_config('probe.p787','N/A', false);
+    PERFORM set_config('probe.p788','N/A', false); PERFORM set_config('probe.p789','N/A', false);
+    RETURN;
+  END IF;
+  v_emp   := current_setting('probe.ea_emp', true)::uuid;
+  v_lab   := current_setting('probe.ea_lab', true)::uuid;
+  v_ajeno := current_setting('probe.ea_ajeno', true)::uuid;
+  v_med   := current_setting('probe.ea_med', true)::uuid;
+  v_pac   := current_setting('probe.ea_pac', true)::uuid;
+  v_exno  := current_setting('probe.ea_exno', true)::int;
+  v_exsi  := current_setting('probe.ea_exsi', true)::int;
+  v_url   := current_setting('probe.ea_url', true);
+
+  -- P783 (a) — CONTROL POSITIVO: el lab duenio registra sobre un examen NO liberado.
+  -- Tambien es la prueba de que FORCE ROW LEVEL SECURITY no deja afuera a la propia RPC:
+  -- la tabla no tiene policy de INSERT, asi que si FORCE alcanzara al DEFINER, esto daria 42501.
+  v_r := 'no se ejecuto';
+  BEGIN
+    PERFORM set_config('request.jwt.claims', json_build_object('sub',v_lab,'role','authenticated')::text, true);
+    PERFORM set_config('role','authenticated', true);
+    v_fila := public.registrar_examen_adjunto(v_exno, v_emp::text||'/ea-p783.pdf', 'application/pdf');
+    PERFORM set_config('role','none', true);
+    v_r := CASE WHEN v_fila.id IS NOT NULL AND v_fila.examen_id = v_exno AND v_fila.subido_por = v_lab
+                THEN 'OK (adjunto '||v_fila.id||' creado por la RPC; FORCE RLS no bloquea al DEFINER)'
+                ELSE 'ROJO (la RPC devolvio una fila inesperada)' END;
+  EXCEPTION WHEN OTHERS THEN
+    PERFORM set_config('role','none', true);
+    v_r := 'ROJO (el lab duenio NO pudo registrar: '||SQLSTATE||' '||SQLERRM||')';
+  END;
+  PERFORM set_config('probe.p783', v_r, false);
+
+  -- P784 (b) — examen YA LIBERADO: PE002.
+  v_r := 'no se ejecuto';
+  BEGIN
+    PERFORM set_config('request.jwt.claims', json_build_object('sub',v_lab,'role','authenticated')::text, true);
+    PERFORM set_config('role','authenticated', true);
+    v_fila := public.registrar_examen_adjunto(v_exsi, v_emp::text||'/ea-p784.pdf', 'application/pdf');
+    PERFORM set_config('role','none', true);
+    v_r := 'ROJO (adjunto '||v_fila.id||' creado sobre un examen LIBERADO)';
+  EXCEPTION WHEN OTHERS THEN
+    PERFORM set_config('role','none', true);
+    v_r := CASE WHEN SQLSTATE = 'PE002' THEN 'OK (PE002 sobre examen liberado)'
+                ELSE 'ROJO (corto con '||SQLSTATE||' en vez de PE002: '||SQLERRM||')' END;
+  END;
+  PERFORM set_config('probe.p784', v_r, false);
+
+  -- P785 (c) — lab de OTRA empresa sobre el mismo examen: 42501.
+  v_r := 'no se ejecuto';
+  BEGIN
+    PERFORM set_config('request.jwt.claims', json_build_object('sub',v_ajeno,'role','authenticated')::text, true);
+    PERFORM set_config('role','authenticated', true);
+    v_fila := public.registrar_examen_adjunto(v_exno, v_emp::text||'/ea-p785.pdf', 'application/pdf');
+    PERFORM set_config('role','none', true);
+    v_r := 'ROJO (un lab AJENO adjunto sobre el examen de otra empresa: fila '||v_fila.id||')';
+  EXCEPTION WHEN OTHERS THEN
+    PERFORM set_config('role','none', true);
+    v_r := CASE WHEN SQLSTATE = '42501' THEN 'OK (42501 al lab ajeno)'
+                ELSE 'ROJO (corto con '||SQLSTATE||' en vez de 42501: '||SQLERRM||')' END;
+  END;
+  PERFORM set_config('probe.p785', v_r, false);
+
+  -- P786 (d) — medico sin relacion y paciente: ninguno es el lab ni super_admin -> 42501 los dos.
+  v_e := '';
+  BEGIN
+    PERFORM set_config('request.jwt.claims', json_build_object('sub',v_med,'role','authenticated')::text, true);
+    PERFORM set_config('role','authenticated', true);
+    v_fila := public.registrar_examen_adjunto(v_exno, v_emp::text||'/ea-p786a.pdf', NULL);
+    PERFORM set_config('role','none', true);
+    v_e := v_e || ' medico=PASO(fila '||v_fila.id||')';
+  EXCEPTION WHEN OTHERS THEN
+    PERFORM set_config('role','none', true);
+    IF SQLSTATE <> '42501' THEN v_e := v_e || ' medico='||SQLSTATE; END IF;
+  END;
+  BEGIN
+    PERFORM set_config('request.jwt.claims', json_build_object('sub',v_pac,'role','authenticated')::text, true);
+    PERFORM set_config('role','authenticated', true);
+    v_fila := public.registrar_examen_adjunto(v_exsi, v_emp::text||'/ea-p786b.pdf', NULL);
+    PERFORM set_config('role','none', true);
+    v_e := v_e || ' paciente=PASO(fila '||v_fila.id||')';
+  EXCEPTION WHEN OTHERS THEN
+    PERFORM set_config('role','none', true);
+    IF SQLSTATE <> '42501' THEN v_e := v_e || ' paciente='||SQLSTATE; END IF;
+  END;
+  PERFORM set_config('probe.p786',
+    CASE WHEN v_e = '' THEN 'OK (42501 a medico sin relacion y a paciente)'
+         ELSE 'ROJO (no dieron 42501:'||v_e||')' END, false);
+
+  -- P787 (e) — la LECTURA de examen_adjuntos usa el mismo helper que storage y examenes.
+  -- Hay 2 adjuntos sembrados (uno en el examen liberado, otro en el no liberado) + el de P783.
+  -- El paciente solo debe ver el del examen LIBERADO; el medico sin relacion, ninguno.
+  n_lab := -1; n_med := -1; n_pac := -1; v_e := '';
+  BEGIN
+    PERFORM set_config('request.jwt.claims', json_build_object('sub',v_lab,'role','authenticated')::text, true);
+    PERFORM set_config('role','authenticated', true);
+    SELECT count(*) INTO n_lab FROM public.examen_adjuntos a WHERE a.examen_id IN (v_exno, v_exsi);
+    PERFORM set_config('role','none', true);
+  EXCEPTION WHEN OTHERS THEN
+    PERFORM set_config('role','none', true); v_e := v_e||' lab='||SQLSTATE;
+  END;
+  BEGIN
+    PERFORM set_config('request.jwt.claims', json_build_object('sub',v_med,'role','authenticated')::text, true);
+    PERFORM set_config('role','authenticated', true);
+    SELECT count(*) INTO n_med FROM public.examen_adjuntos a WHERE a.examen_id IN (v_exno, v_exsi);
+    PERFORM set_config('role','none', true);
+  EXCEPTION WHEN OTHERS THEN
+    PERFORM set_config('role','none', true); v_e := v_e||' med='||SQLSTATE;
+  END;
+  BEGIN
+    PERFORM set_config('request.jwt.claims', json_build_object('sub',v_pac,'role','authenticated')::text, true);
+    PERFORM set_config('role','authenticated', true);
+    SELECT count(*) INTO n_pac FROM public.examen_adjuntos a WHERE a.examen_id IN (v_exno, v_exsi);
+    PERFORM set_config('role','none', true);
+  EXCEPTION WHEN OTHERS THEN
+    PERFORM set_config('role','none', true); v_e := v_e||' pac='||SQLSTATE;
+  END;
+  PERFORM set_config('probe.p787',
+    CASE WHEN v_e <> ''                       THEN 'FALLO (error leyendo:'||v_e||')'
+         WHEN n_lab >= 3 AND n_med = 0 AND n_pac = 1
+           THEN 'OK (lab ve '||n_lab||', medico sin relacion 0, paciente solo el liberado: 1)'
+         ELSE 'ROJO (lab='||n_lab||' medico='||n_med||' paciente='||n_pac
+              ||'; esperado lab>=3, medico=0, paciente=1)' END, false);
+
+  -- P788 (f) — la policy DELETE del bucket. Se apaga el trigger protect_objects_delete para que
+  -- decida la POLICY y no el trigger; si no, los tres casos darian 42501 y no mediria nada.
+  n_adj := -1; n_exa := -1; n_lib := -1; v_e := '';
+  BEGIN
+    PERFORM set_config('storage.allow_delete_query','true', true);
+    PERFORM set_config('request.jwt.claims', json_build_object('sub',v_lab,'role','authenticated')::text, true);
+    PERFORM set_config('role','authenticated', true);
+
+    DELETE FROM storage.objects o
+     WHERE o.bucket_id='resultados-examenes' AND o.name = v_emp::text||'/ea-fx-nolib.pdf';
+    GET DIAGNOSTICS n_adj = ROW_COUNT;
+
+    DELETE FROM storage.objects o
+     WHERE o.bucket_id='resultados-examenes' AND o.name = v_url;
+    GET DIAGNOSTICS n_exa = ROW_COUNT;
+
+    DELETE FROM storage.objects o
+     WHERE o.bucket_id='resultados-examenes' AND o.name = v_emp::text||'/ea-fx-libre.pdf';
+    GET DIAGNOSTICS n_lib = ROW_COUNT;
+
+    PERFORM set_config('role','none', true);
+    RAISE EXCEPTION 'EA_RB';
+  EXCEPTION WHEN OTHERS THEN
+    PERFORM set_config('role','none', true);
+    IF SQLERRM <> 'EA_RB' THEN v_e := SQLSTATE||' '||SQLERRM; END IF;
+  END;
+  PERFORM set_config('probe.p788',
+    CASE WHEN v_e <> ''                             THEN 'FALLO (no midio ROW_COUNT: '||v_e||')'
+         WHEN n_adj = 0 AND n_exa = 0 AND n_lib = 1
+           THEN 'OK (referenciado por adjunto 0, por examenes.archivo_url 0, libre 1)'
+         ELSE 'ROJO (adjunto='||n_adj||' examen='||n_exa||' libre='||n_lib
+              ||'; esperado 0/0/1)' END, false);
+
+  -- P789 (g) — LA RAMA NUEVA del EXISTS de resultados_scoped_select, medida sobre storage.objects.
+  -- Los dos objetos de esta probe estan adjuntados via examen_adjuntos y NINGUNO figura en
+  -- examenes.archivo_url, asi que la unica via posible es la rama de adjuntos. El paciente
+  -- tampoco entra por el brazo de tenant: su mi_empresa_proveedor() es NULL.
+  -- Discrimina porque el paciente tiene que ver UNO y no DOS: el adjunto del examen liberado si,
+  -- el del NO liberado no. Una rama que dejara pasar de mas daria 2 y saldria roja.
+  n_lab := -1; n_med := -1; n_pac := -1; v_ok_lib := NULL; v_e := '';
+  BEGIN
+    PERFORM set_config('request.jwt.claims', json_build_object('sub',v_lab,'role','authenticated')::text, true);
+    PERFORM set_config('role','authenticated', true);
+    SELECT count(*) INTO n_lab FROM storage.objects o
+     WHERE o.bucket_id='resultados-examenes'
+       AND o.name IN (v_emp::text||'/ea-fx-lib.pdf', v_emp::text||'/ea-fx-nolib.pdf');
+    PERFORM set_config('role','none', true);
+  EXCEPTION WHEN OTHERS THEN
+    PERFORM set_config('role','none', true); v_e := v_e||' lab='||SQLSTATE;
+  END;
+  BEGIN
+    PERFORM set_config('request.jwt.claims', json_build_object('sub',v_pac,'role','authenticated')::text, true);
+    PERFORM set_config('role','authenticated', true);
+    SELECT count(*) INTO n_pac FROM storage.objects o
+     WHERE o.bucket_id='resultados-examenes'
+       AND o.name IN (v_emp::text||'/ea-fx-lib.pdf', v_emp::text||'/ea-fx-nolib.pdf');
+    SELECT EXISTS (SELECT 1 FROM storage.objects o
+                    WHERE o.bucket_id='resultados-examenes'
+                      AND o.name = v_emp::text||'/ea-fx-lib.pdf') INTO v_ok_lib;
+    PERFORM set_config('role','none', true);
+  EXCEPTION WHEN OTHERS THEN
+    PERFORM set_config('role','none', true); v_e := v_e||' pac='||SQLSTATE;
+  END;
+  BEGIN
+    PERFORM set_config('request.jwt.claims', json_build_object('sub',v_med,'role','authenticated')::text, true);
+    PERFORM set_config('role','authenticated', true);
+    SELECT count(*) INTO n_med FROM storage.objects o
+     WHERE o.bucket_id='resultados-examenes'
+       AND o.name IN (v_emp::text||'/ea-fx-lib.pdf', v_emp::text||'/ea-fx-nolib.pdf');
+    PERFORM set_config('role','none', true);
+  EXCEPTION WHEN OTHERS THEN
+    PERFORM set_config('role','none', true); v_e := v_e||' med='||SQLSTATE;
+  END;
+  PERFORM set_config('probe.p789',
+    CASE WHEN v_e <> ''  THEN 'FALLO (error leyendo storage:'||v_e||')'
+         WHEN n_lab = 2 AND n_pac = 1 AND COALESCE(v_ok_lib,false) AND n_med = 0
+           THEN 'OK (el paciente abre el adjunto del examen liberado por la rama nueva; no ve el del no liberado; medico sin relacion 0; lab 2)'
+         ELSE 'ROJO (lab='||n_lab||' paciente='||n_pac||' ve_el_liberado='||COALESCE(v_ok_lib::text,'NULL')
+              ||' medico='||n_med||'; esperado 2 / 1 / true / 0)' END, false);
+
+  PERFORM set_config('request.jwt.claims','', true);
+EXCEPTION WHEN OTHERS THEN
+  PERFORM set_config('role','none', true);
+  PERFORM set_config('request.jwt.claims','', true);
+  PERFORM set_config('probe.p789','FALLO ('||SQLSTATE||' '||SQLERRM||')', false);
+END $$;
+SELECT set_config('role','none', true);
+
 -- ===== Veredictos como result set =====
 SELECT 'P1_anon_insert_citas'              AS probe, current_setting('probe.p1', true)  AS verdict, 'BLOQUEADO' AS esperado_post_fix
 UNION ALL SELECT 'P2_medico_cancela_ajena_rpc',         current_setting('probe.p2', true),  'BLOQUEADO'
@@ -19269,6 +19583,14 @@ UNION ALL SELECT 'P779_vag_adminpais_lee_su_pais',   current_setting('probe.p779
 UNION ALL SELECT 'P780_vag_superadmin_lee_todo',     current_setting('probe.p780', true),    'OK (control positivo)'
 UNION ALL SELECT 'P781_vag_update_directo_en_cero',  current_setting('probe.p781', true),    'OK (ROW_COUNT=0, no 42501)'
 UNION ALL SELECT 'P782_vag_delete_directo_en_cero',  current_setting('probe.p782', true),    'OK (ROW_COUNT=0, no 42501)'
+UNION ALL SELECT 'EA_FX_examen_adjuntos_fixture',   current_setting('probe.ea_fx', true),   'OK (fixture)'
+UNION ALL SELECT 'P783_ea_rpc_lab_duenio',          current_setting('probe.p783', true),    'OK (control positivo)'
+UNION ALL SELECT 'P784_ea_pe002_liberado',          current_setting('probe.p784', true),    'OK (PE002)'
+UNION ALL SELECT 'P785_ea_lab_ajeno',               current_setting('probe.p785', true),    'OK (42501)'
+UNION ALL SELECT 'P786_ea_medico_y_paciente',       current_setting('probe.p786', true),    'OK (42501 los dos)'
+UNION ALL SELECT 'P787_ea_select_usa_el_helper',    current_setting('probe.p787', true),    'OK (3 / 0 / 1)'
+UNION ALL SELECT 'P788_ea_delete_storage_libre',    current_setting('probe.p788', true),    'OK (0 / 0 / 1)'
+UNION ALL SELECT 'P789_ea_rama_adjuntos_storage',   current_setting('probe.p789', true),    'OK (2 / 1 / 0)'
 UNION ALL SELECT 'FX20_fo_fixture',                    current_setting('probe.fo_fx', true),  'OK (fixture)'
 UNION ALL SELECT 'P631_CENSO_anon_perfiles',           current_setting('probe.p631', true), 'OK (anon en cero, los 7)'
 UNION ALL SELECT 'P632_authenticated_perfiles',        current_setting('probe.p632', true), 'OK (4 DML si, 3 no)'
@@ -19501,7 +19823,9 @@ UNION ALL SELECT 'P000_CENTINELA_veredictos_no_nulos',
        'probe.p766', 'probe.p767', 'probe.p768', 'probe.p769', 'probe.p770',
        'probe.p771', 'probe.p772', 'probe.p773', 'probe.p774', 'probe.p775',
        'probe.p776', 'probe.p777', 'probe.p778',
-       'probe.vag_fx', 'probe.p779', 'probe.p780', 'probe.p781', 'probe.p782'
+       'probe.vag_fx', 'probe.p779', 'probe.p780', 'probe.p781', 'probe.p782',
+       'probe.ea_fx', 'probe.p783', 'probe.p784', 'probe.p785', 'probe.p786',
+       'probe.p787', 'probe.p788', 'probe.p789'
              ]) AS n) s),
   'OK (todos los veredictos publicados)';
 
