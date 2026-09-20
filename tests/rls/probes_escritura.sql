@@ -18221,6 +18221,209 @@ EXCEPTION WHEN OTHERS THEN
 END $$;
 SELECT set_config('role','none', true);
 
+
+-- ============================================================
+-- MIG 309 · "Admin ve visitas de su pais" de cmd=ALL a SELECT (VAG_FX, P779-P782)
+-- ============================================================
+-- La policy nacio como `FOR ALL`, asi que ademas de la lectura que su nombre promete le daba a
+-- super_admin y a admin_pais INSERT/UPDATE/DELETE sobre visitas_agendadas. Medido el 20-sep contra
+-- prod: un admin_pais borraba 1 fila y actualizaba 1 fila por PostgREST directo. Ningun front lo
+-- usa — el unico write del repo sobre esta tabla es el INSERT de proveedor en
+-- useVisitasAgendadas.ts:186 — y las 7 RPCs que la escriben son todas SECURITY DEFINER, asi que
+-- no dependen de la RLS del llamante.
+--
+-- ESTAS PROBES MIDEN ROW_COUNT, NO SQLSTATE. Es la trampa del frente: en UPDATE y DELETE la RLS
+-- FILTRA FILAS EN SILENCIO, no lanza. Una probe que espere 42501 sale roja con la migracion bien
+-- aplicada. Lo unico que distingue el antes del despues es cuantas filas toco.
+--
+-- NO HAY PROBE DE INSERT, a proposito. `trg_gate_visita_pais` es BEFORE INSERT y los triggers
+-- BEFORE corren ANTES del WITH CHECK de la RLS, asi que para un admin (cuyo
+-- mi_empresa_proveedor() es NULL) el INSERT muere con P0001 "sin plan de visitas activo" IGUAL
+-- antes que despues. Una probe de INSERT seria verde en los dos escenarios: no mediria nada.
+--
+-- EL ADMIN_PAIS SE SIEMBRA; el super_admin se lee. La afirmacion del admin_pais depende de SU
+-- pais, asi que elegirlo con ORDER BY dentro del harness repite el ROJO fantasma de P771/P746
+-- (un fixture anterior deja admin_pais en un pais vacio). Para super_admin la policy mira solo el
+-- rol, asi que cualquiera activo sirve.
+--
+-- LOS CONTEOS SE CALIBRAN SOLOS. No se hardcodea "14": para cuando corren estas probes, ~800
+-- probes anteriores pudieron sembrar visitas en la misma transaccion. Cada probe compara contra lo
+-- que hay en la base en ese momento, medido como postgres antes de impersonar.
+SELECT set_config('role','none', true);
+
+-- ---------------- VAG_FX — fixture ----------------
+DO $$
+DECLARE
+  v_pais uuid; v_adm uuid; v_sa uuid; v_vid uuid;
+  v_n_pais bigint; v_n_total bigint; v_n_ajenas bigint;
+BEGIN
+  -- Pais A = el que TIENE visitas. Si se eligiera por orden de id se mediria "pais vacio".
+  SELECT v.pais_id INTO v_pais FROM public.visitas_agendadas v
+   WHERE v.pais_id IS NOT NULL
+   GROUP BY v.pais_id ORDER BY count(*) DESC, v.pais_id LIMIT 1;
+  SELECT id INTO v_sa FROM public.perfiles WHERE rol='super_admin' AND activo ORDER BY id LIMIT 1;
+  IF v_pais IS NULL OR v_sa IS NULL THEN
+    PERFORM set_config('probe.vag_ready','0', false);
+    PERFORM set_config('probe.vag_fx','ROJO (hace falta 1 pais con visitas + 1 super_admin activo)', false); RETURN;
+  END IF;
+
+  -- admin_pais DETERMINISTA en el pais que tiene las visitas
+  v_adm := gen_random_uuid();
+  INSERT INTO auth.users (id) VALUES (v_adm);
+  INSERT INTO public.perfiles (id, email, nombre_completo, rol, pais_id, activo)
+    VALUES (v_adm, 'vag.adminpais@example.invalid', 'QA VAG admin_pais', 'admin_pais', v_pais, true);
+
+  -- fila objetivo de las mutaciones: la primera visita de ese pais
+  SELECT v.id INTO v_vid FROM public.visitas_agendadas v
+   WHERE v.pais_id = v_pais ORDER BY v.id LIMIT 1;
+
+  SELECT count(*) INTO v_n_pais   FROM public.visitas_agendadas v WHERE v.pais_id = v_pais;
+  SELECT count(*) INTO v_n_total  FROM public.visitas_agendadas;
+  SELECT count(*) INTO v_n_ajenas FROM public.visitas_agendadas v
+   WHERE v.pais_id IS DISTINCT FROM v_pais;
+
+  PERFORM set_config('probe.vag_pais',   v_pais::text, false);
+  PERFORM set_config('probe.vag_adm',    v_adm::text, false);
+  PERFORM set_config('probe.vag_sa',     v_sa::text, false);
+  PERFORM set_config('probe.vag_vid',    v_vid::text, false);
+  PERFORM set_config('probe.vag_npais',  v_n_pais::text, false);
+  PERFORM set_config('probe.vag_ntotal', v_n_total::text, false);
+  PERFORM set_config('probe.vag_ready','1', false);
+  PERFORM set_config('probe.vag_fx','OK (pais con '||v_n_pais||' visitas, '||v_n_total||
+    ' en total, '||v_n_ajenas||' de otros paises; admin_pais sembrado, super_admin leido)', false);
+EXCEPTION WHEN OTHERS THEN
+  PERFORM set_config('probe.vag_ready','0', false);
+  PERFORM set_config('probe.vag_fx','ROJO ('||SQLSTATE||' '||SQLERRM||')', false);
+END $$;
+SELECT set_config('role','none', true);
+
+-- ---------------- P779-P782 ----------------
+DO $$
+DECLARE
+  v_adm uuid; v_sa uuid; v_vid uuid;
+  v_npais bigint; v_ntotal bigint;
+  n bigint; n_ap bigint; n_sa bigint; v_ajenas bigint; v_r text; v_e text;
+BEGIN
+  IF coalesce(current_setting('probe.vag_ready', true),'0') <> '1' THEN
+    PERFORM set_config('probe.p779','N/A (fixture VAG no sembro)', false);
+    PERFORM set_config('probe.p780','N/A', false); PERFORM set_config('probe.p781','N/A', false);
+    PERFORM set_config('probe.p782','N/A', false);
+    RETURN;
+  END IF;
+  v_adm    := current_setting('probe.vag_adm', true)::uuid;
+  v_sa     := current_setting('probe.vag_sa', true)::uuid;
+  v_vid    := current_setting('probe.vag_vid', true)::uuid;
+  v_npais  := current_setting('probe.vag_npais', true)::bigint;
+  v_ntotal := current_setting('probe.vag_ntotal', true)::bigint;
+
+  -- P779 (a) — CONTROL POSITIVO: el admin_pais sigue LEYENDO las visitas de su pais. Si la
+  -- migracion cortara de mas, el panel de pais se queda en blanco y eso no se nota hasta prod.
+  v_r := 'no se ejecuto';
+  BEGIN
+    PERFORM set_config('request.jwt.claims', json_build_object('sub',v_adm,'role','authenticated')::text, true);
+    PERFORM set_config('role','authenticated', true);
+    SELECT count(*) INTO n FROM public.visitas_agendadas;
+    SELECT count(*) INTO v_ajenas FROM public.visitas_agendadas v
+     WHERE v.pais_id IS DISTINCT FROM current_setting('probe.vag_pais', true)::uuid;
+    PERFORM set_config('role','none', true);
+    v_r := CASE
+      WHEN v_ajenas > 0 THEN 'ROJO (ve '||v_ajenas||' visita(s) de otros paises)'
+      WHEN n = v_npais  THEN 'OK (lee sus '||n||'/'||v_npais||' visitas, 0 ajenas)'
+      ELSE 'ROJO (ve '||n||' de las '||v_npais||' de su pais: la migracion corto la LECTURA)'
+    END;
+  EXCEPTION WHEN OTHERS THEN
+    PERFORM set_config('role','none', true);
+    v_r := 'ROJO (la lectura corto con '||SQLSTATE||' '||SQLERRM||')';
+  END;
+  PERFORM set_config('probe.p779', v_r, false);
+
+  -- P780 (b) — CONTROL POSITIVO: el super_admin sigue viendolo todo. Lee por partida doble (esta
+  -- policy y "Admin ezpay ve todas las visitas"), asi que un 0 aca seria muy raro.
+  v_r := 'no se ejecuto';
+  BEGIN
+    PERFORM set_config('request.jwt.claims', json_build_object('sub',v_sa,'role','authenticated')::text, true);
+    PERFORM set_config('role','authenticated', true);
+    SELECT count(*) INTO n FROM public.visitas_agendadas;
+    PERFORM set_config('role','none', true);
+    v_r := CASE WHEN n = v_ntotal THEN 'OK (lee las '||n||'/'||v_ntotal||', sin restriccion)'
+                ELSE 'ROJO (ve '||n||' de '||v_ntotal||')' END;
+  EXCEPTION WHEN OTHERS THEN
+    PERFORM set_config('role','none', true);
+    v_r := 'ROJO (la lectura corto con '||SQLSTATE||' '||SQLERRM||')';
+  END;
+  PERFORM set_config('probe.p780', v_r, false);
+
+  -- P781 (c) — EL HUECO, brazo UPDATE. Directo por rol, NO por RPC. `comentario_admin` esta fuera
+  -- del alcance de trg_gate_visita_pais, que es `BEFORE INSERT OR UPDATE OF medico_id`: el trigger
+  -- NO es una segunda barrera para un UPDATE arbitrario, la unica barrera es la policy.
+  -- La escritura va en subtransaccion que SIEMPRE aborta, asi que ni siquiera cuando el hueco
+  -- esta abierto queda nada tocado.
+  n_ap := -1; n_sa := -1; v_e := '';
+  BEGIN
+    PERFORM set_config('request.jwt.claims', json_build_object('sub',v_adm,'role','authenticated')::text, true);
+    PERFORM set_config('role','authenticated', true);
+    UPDATE public.visitas_agendadas SET comentario_admin = 'VAG_PROBE_781' WHERE id = v_vid;
+    GET DIAGNOSTICS n_ap = ROW_COUNT;
+    RAISE EXCEPTION 'VAG_RB';
+  EXCEPTION WHEN OTHERS THEN
+    PERFORM set_config('role','none', true);
+    IF SQLERRM <> 'VAG_RB' THEN v_e := v_e||' adminpais='||SQLSTATE||' '||SQLERRM; END IF;
+  END;
+  BEGIN
+    PERFORM set_config('request.jwt.claims', json_build_object('sub',v_sa,'role','authenticated')::text, true);
+    PERFORM set_config('role','authenticated', true);
+    UPDATE public.visitas_agendadas SET comentario_admin = 'VAG_PROBE_781' WHERE id = v_vid;
+    GET DIAGNOSTICS n_sa = ROW_COUNT;
+    RAISE EXCEPTION 'VAG_RB';
+  EXCEPTION WHEN OTHERS THEN
+    PERFORM set_config('role','none', true);
+    IF SQLERRM <> 'VAG_RB' THEN v_e := v_e||' superadmin='||SQLSTATE||' '||SQLERRM; END IF;
+  END;
+  v_r := CASE
+    WHEN v_e <> ''               THEN 'FALLO (no midio ROW_COUNT:'||v_e||')'
+    WHEN n_ap = 0 AND n_sa = 0   THEN 'OK (UPDATE directo en cero: admin_pais 0, super_admin 0)'
+    ELSE 'ROJO (UPDATE directo TOCA filas: admin_pais '||n_ap||', super_admin '||n_sa||')'
+  END;
+  PERFORM set_config('probe.p781', v_r, false);
+
+  -- P782 (d) — EL HUECO, brazo DELETE. Es el mas caro de los dos: no hay ningun trigger BEFORE
+  -- DELETE en la tabla, asi que la policy era lo unico que se interponia entre un admin y borrar
+  -- la agenda de un visitador.
+  n_ap := -1; n_sa := -1; v_e := '';
+  BEGIN
+    PERFORM set_config('request.jwt.claims', json_build_object('sub',v_adm,'role','authenticated')::text, true);
+    PERFORM set_config('role','authenticated', true);
+    DELETE FROM public.visitas_agendadas WHERE id = v_vid;
+    GET DIAGNOSTICS n_ap = ROW_COUNT;
+    RAISE EXCEPTION 'VAG_RB';
+  EXCEPTION WHEN OTHERS THEN
+    PERFORM set_config('role','none', true);
+    IF SQLERRM <> 'VAG_RB' THEN v_e := v_e||' adminpais='||SQLSTATE||' '||SQLERRM; END IF;
+  END;
+  BEGIN
+    PERFORM set_config('request.jwt.claims', json_build_object('sub',v_sa,'role','authenticated')::text, true);
+    PERFORM set_config('role','authenticated', true);
+    DELETE FROM public.visitas_agendadas WHERE id = v_vid;
+    GET DIAGNOSTICS n_sa = ROW_COUNT;
+    RAISE EXCEPTION 'VAG_RB';
+  EXCEPTION WHEN OTHERS THEN
+    PERFORM set_config('role','none', true);
+    IF SQLERRM <> 'VAG_RB' THEN v_e := v_e||' superadmin='||SQLSTATE||' '||SQLERRM; END IF;
+  END;
+  v_r := CASE
+    WHEN v_e <> ''               THEN 'FALLO (no midio ROW_COUNT:'||v_e||')'
+    WHEN n_ap = 0 AND n_sa = 0   THEN 'OK (DELETE directo en cero: admin_pais 0, super_admin 0)'
+    ELSE 'ROJO (DELETE directo BORRA filas: admin_pais '||n_ap||', super_admin '||n_sa||')'
+  END;
+  PERFORM set_config('probe.p782', v_r, false);
+  PERFORM set_config('request.jwt.claims','', true);
+EXCEPTION WHEN OTHERS THEN
+  PERFORM set_config('role','none', true);
+  PERFORM set_config('request.jwt.claims','', true);
+  PERFORM set_config('probe.p782','FALLO ('||SQLSTATE||' '||SQLERRM||')', false);
+END $$;
+SELECT set_config('role','none', true);
+
 -- ===== Veredictos como result set =====
 SELECT 'P1_anon_insert_citas'              AS probe, current_setting('probe.p1', true)  AS verdict, 'BLOQUEADO' AS esperado_post_fix
 UNION ALL SELECT 'P2_medico_cancela_ajena_rpc',         current_setting('probe.p2', true),  'BLOQUEADO'
@@ -19061,6 +19264,11 @@ UNION ALL SELECT 'P775_gp_superadmin_cualquier',     current_setting('probe.p775
 UNION ALL SELECT 'P776_gp_anon_42501',               current_setting('probe.p776', true),    'OK (42501 en las dos)'
 UNION ALL SELECT 'P777_gp_sin_pais_pc025',           current_setting('probe.p777', true),    'OK (PC025)'
 UNION ALL SELECT 'P778_gp_tercer_brazo_clinica',     current_setting('probe.p778', true),    'OK (control positivo)'
+UNION ALL SELECT 'VAG_FX_visitas_admin_fixture',     current_setting('probe.vag_fx', true),   'OK (fixture)'
+UNION ALL SELECT 'P779_vag_adminpais_lee_su_pais',   current_setting('probe.p779', true),    'OK (control positivo)'
+UNION ALL SELECT 'P780_vag_superadmin_lee_todo',     current_setting('probe.p780', true),    'OK (control positivo)'
+UNION ALL SELECT 'P781_vag_update_directo_en_cero',  current_setting('probe.p781', true),    'OK (ROW_COUNT=0, no 42501)'
+UNION ALL SELECT 'P782_vag_delete_directo_en_cero',  current_setting('probe.p782', true),    'OK (ROW_COUNT=0, no 42501)'
 UNION ALL SELECT 'FX20_fo_fixture',                    current_setting('probe.fo_fx', true),  'OK (fixture)'
 UNION ALL SELECT 'P631_CENSO_anon_perfiles',           current_setting('probe.p631', true), 'OK (anon en cero, los 7)'
 UNION ALL SELECT 'P632_authenticated_perfiles',        current_setting('probe.p632', true), 'OK (4 DML si, 3 no)'
@@ -19292,7 +19500,8 @@ UNION ALL SELECT 'P000_CENTINELA_veredictos_no_nulos',
        'probe.p764', 'probe.p765',
        'probe.p766', 'probe.p767', 'probe.p768', 'probe.p769', 'probe.p770',
        'probe.p771', 'probe.p772', 'probe.p773', 'probe.p774', 'probe.p775',
-       'probe.p776', 'probe.p777', 'probe.p778'
+       'probe.p776', 'probe.p777', 'probe.p778',
+       'probe.vag_fx', 'probe.p779', 'probe.p780', 'probe.p781', 'probe.p782'
              ]) AS n) s),
   'OK (todos los veredictos publicados)';
 
