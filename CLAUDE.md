@@ -19,9 +19,11 @@ Stack: React + Vite + TypeScript, Supabase / Postgres, deploy en Vercel, repo en
   minutos por esto** (P635 es la probe que faltaba, P636 su contraprueba).
 - NUNCA ampliar policies de RLS sobre tablas adyacentes a datos médicos (p. ej. campana_metricas). Para dar acceso, usar RPCs SECURITY DEFINER con search_path='', fail-closed (si el scope es NULL → 0 filas) y gate interno.
 - Probar aislamiento por rol impersonando request.jwt.claims en prod: cada rol ve lo suyo y no lo ajeno.
-- **Próximos números libres: probe `P790`** (global, no por módulo), **errcode `PA035`** (comercial)
-  y **`PE004`** (expediente: PE001 = mig 291, PE002 = adjuntar sobre examen liberado y PE003 =
-  no autenticado, las dos de la mig 310). El "no autenticado" de las RPCs de médicos es `PC027`
+- **Próximos números libres: probe `P796`** (global, no por módulo), **errcode `PA035`** (comercial)
+  y **`PE005`** (expediente: PE001 = mig 291; PE002 = adjuntar sobre examen liberado y PE003 =
+  no autenticado, mig 310; PE004 = sin autoridad para revertir una liberación, mig 311).
+  `revertir_liberacion_examen` sobre un examen ya no liberado es **no-op** (`{ya_no_liberado:true}`),
+  no un rechazo: no gasta errcode, igual que el `{ya_liberado:true}` de liberar. El "no autenticado" de las RPCs de médicos es `PC027`
   y **NO se reusa fuera de la familia PC**: el front distingue el módulo por el prefijo.
 - **Módulo comercial —** (Mig 285, 6-sep:
   PA028 = check-in sobre visita que no está `planificada`; PA029 = doble checkout. Mig 286, 7-sep:

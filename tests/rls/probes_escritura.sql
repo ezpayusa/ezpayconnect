@@ -18738,6 +18738,272 @@ EXCEPTION WHEN OTHERS THEN
 END $$;
 SELECT set_config('role','none', true);
 
+
+-- ============================================================
+-- MIG 311 · revertir_liberacion_examen (RV_FX, P790-P795)
+-- ============================================================
+-- Revertir alcanza al MISMO conjunto que puede liberar: medico que ordeno, medico que atiende,
+-- admin de la clinica, super_admin. El laboratorio NO, aunque vea el examen y pueda adjuntarle
+-- archivos desde la mig 310 — P792 es la probe que fija esa decision.
+--
+-- LOS EXAMENES SE SIEMBRAN, no se toman de prod. Cuatro, uno por caso, para que ninguna probe
+-- dependa del efecto de otra: si P793 ("ya no liberado") usara el examen que P790 acaba de
+-- revertir, reordenar el archivo la rompe en silencio. Ademas prod tiene los 7 liberados con el
+-- MISMO medico y la MISMA clinica, asi que un actor que pasa el gate para uno lo pasa para todos
+-- y no se podria construir el caso negativo.
+SELECT set_config('role','none', true);
+
+-- ---------------- RV_FX — fixture ----------------
+DO $$
+DECLARE
+  v_pac_id int; v_pac uuid; v_lab_emp uuid; v_lab uuid;
+  v_med uuid; v_ajeno uuid;
+  v_ok int; v_pacx int; v_nolib int; v_neg int;
+  c_flib constant timestamptz := timestamptz '2026-01-15 10:00:00+00';
+BEGIN
+  -- paciente REAL con auth_user_id: paciente_es_mio() tiene que dar true de verdad
+  SELECT p.id, p.auth_user_id INTO v_pac_id, v_pac
+    FROM public.pacientes p WHERE p.auth_user_id IS NOT NULL ORDER BY p.id LIMIT 1;
+  -- laboratorio con cuenta activa: el lab tiene que VER el examen para que P792 signifique algo
+  SELECT cp.empresa_id, cp.id INTO v_lab_emp, v_lab
+    FROM public.cuentas_proveedor cp WHERE cp.activo ORDER BY cp.id LIMIT 1;
+  IF v_pac IS NULL OR v_lab IS NULL THEN
+    PERFORM set_config('probe.rv_ready','0', false);
+    PERFORM set_config('probe.rv_fx','ROJO (falta paciente con auth_user_id o cuenta de proveedor activa)', false);
+    RETURN;
+  END IF;
+
+  -- dos medicos sembrados: el que "ordeno" los examenes y uno sin ninguna relacion
+  v_med := gen_random_uuid();
+  INSERT INTO auth.users (id) VALUES (v_med);
+  INSERT INTO public.perfiles (id, email, nombre_completo, rol, activo)
+    VALUES (v_med, 'rv.medico@example.invalid', 'QA RV medico del examen', 'medico', true);
+  v_ajeno := gen_random_uuid();
+  INSERT INTO auth.users (id) VALUES (v_ajeno);
+  INSERT INTO public.perfiles (id, email, nombre_completo, rol, activo)
+    VALUES (v_ajeno, 'rv.ajeno@example.invalid', 'QA RV medico sin relacion', 'medico', true);
+
+  -- Cuatro examenes. clinica_id se deja en NULL A PROPOSITO: asi el gate depende solo de
+  -- medico_id / medico_atiende_paciente / super_admin y el brazo de es_admin_clinica no puede
+  -- colarse y dar un verde por el motivo equivocado.
+  INSERT INTO public.examenes (tipo, paciente_id, medico_id, laboratorio_id, clinica_id, estado,
+                               liberado_al_paciente, fecha_liberacion, liberado_por)
+       VALUES ('QA RV revertible',  v_pac_id, v_med, v_lab_emp, NULL,
+               'completado'::public.examen_estado, true,  c_flib, v_med)
+  RETURNING id INTO v_ok;
+  INSERT INTO public.examenes (tipo, paciente_id, medico_id, laboratorio_id, clinica_id, estado,
+                               liberado_al_paciente, fecha_liberacion, liberado_por)
+       VALUES ('QA RV paciente',    v_pac_id, v_med, v_lab_emp, NULL,
+               'completado'::public.examen_estado, true,  c_flib, v_med)
+  RETURNING id INTO v_pacx;
+  INSERT INTO public.examenes (tipo, paciente_id, medico_id, laboratorio_id, clinica_id, estado,
+                               liberado_al_paciente, fecha_liberacion, liberado_por)
+       VALUES ('QA RV no liberado', v_pac_id, v_med, v_lab_emp, NULL,
+               'completado'::public.examen_estado, false, NULL,   NULL)
+  RETURNING id INTO v_nolib;
+  INSERT INTO public.examenes (tipo, paciente_id, medico_id, laboratorio_id, clinica_id, estado,
+                               liberado_al_paciente, fecha_liberacion, liberado_por)
+       VALUES ('QA RV negativos',   v_pac_id, v_med, v_lab_emp, NULL,
+               'completado'::public.examen_estado, true,  c_flib, v_med)
+  RETURNING id INTO v_neg;
+
+  -- adjunto sobre el examen de P794: sin el, "el paciente pierde los adjuntos" no se puede medir
+  INSERT INTO public.examen_adjuntos (examen_id, storage_path, mime_type, subido_por)
+    VALUES (v_pacx, v_lab_emp::text||'/rv-fx.pdf', 'application/pdf', v_lab);
+
+  PERFORM set_config('probe.rv_pac',   v_pac::text, false);
+  PERFORM set_config('probe.rv_med',   v_med::text, false);
+  PERFORM set_config('probe.rv_ajeno', v_ajeno::text, false);
+  PERFORM set_config('probe.rv_lab',   v_lab::text, false);
+  PERFORM set_config('probe.rv_ok',    v_ok::text, false);
+  PERFORM set_config('probe.rv_pacx',  v_pacx::text, false);
+  PERFORM set_config('probe.rv_nolib', v_nolib::text, false);
+  PERFORM set_config('probe.rv_neg',   v_neg::text, false);
+  PERFORM set_config('probe.rv_flib',  c_flib::text, false);
+  PERFORM set_config('probe.rv_ready','1', false);
+  PERFORM set_config('probe.rv_fx','OK (4 examenes sembrados: revertible '||v_ok||', paciente '||v_pacx
+    ||', no-liberado '||v_nolib||', negativos '||v_neg||'; 2 medicos y 1 adjunto)', false);
+EXCEPTION WHEN OTHERS THEN
+  PERFORM set_config('probe.rv_ready','0', false);
+  PERFORM set_config('probe.rv_fx','ROJO ('||SQLSTATE||' '||SQLERRM||')', false);
+END $$;
+SELECT set_config('role','none', true);
+
+-- ---------------- P790-P795 ----------------
+DO $$
+DECLARE
+  v_pac uuid; v_med uuid; v_ajeno uuid; v_lab uuid;
+  v_ok int; v_pacx int; v_nolib int; v_neg int; v_flib timestamptz;
+  v_res jsonb; v_r text; n bigint;
+  b_ver boolean; b_adj bigint; a_ver boolean; a_adj bigint;
+  a_flib timestamptz; a_lpor uuid; a_rpor uuid; a_frev timestamptz; v_lib boolean;
+  n_lab bigint; v_e text;
+BEGIN
+  IF coalesce(current_setting('probe.rv_ready', true),'0') <> '1' THEN
+    PERFORM set_config('probe.p790','N/A (fixture RV no sembro)', false);
+    PERFORM set_config('probe.p791','N/A', false); PERFORM set_config('probe.p792','N/A', false);
+    PERFORM set_config('probe.p793','N/A', false); PERFORM set_config('probe.p794','N/A', false);
+    PERFORM set_config('probe.p795','N/A', false);
+    RETURN;
+  END IF;
+  v_pac   := current_setting('probe.rv_pac', true)::uuid;
+  v_med   := current_setting('probe.rv_med', true)::uuid;
+  v_ajeno := current_setting('probe.rv_ajeno', true)::uuid;
+  v_lab   := current_setting('probe.rv_lab', true)::uuid;
+  v_ok    := current_setting('probe.rv_ok', true)::int;
+  v_pacx  := current_setting('probe.rv_pacx', true)::int;
+  v_nolib := current_setting('probe.rv_nolib', true)::int;
+  v_neg   := current_setting('probe.rv_neg', true)::int;
+  v_flib  := current_setting('probe.rv_flib', true)::timestamptz;
+
+  -- P790 (a) — CONTROL POSITIVO: el medico que ordeno revierte.
+  v_r := 'no se ejecuto';
+  BEGIN
+    PERFORM set_config('request.jwt.claims', json_build_object('sub',v_med,'role','authenticated')::text, true);
+    PERFORM set_config('role','authenticated', true);
+    v_res := public.revertir_liberacion_examen(v_ok);
+    PERFORM set_config('role','none', true);
+    SELECT e.liberado_al_paciente INTO v_lib FROM public.examenes e WHERE e.id = v_ok;
+    v_r := CASE WHEN COALESCE(v_res->>'revertido','') = 'true' AND v_lib = false
+                THEN 'OK (revertido, liberado_al_paciente quedo en false)'
+                ELSE 'ROJO (devolvio '||COALESCE(v_res::text,'NULL')||' y liberado='||COALESCE(v_lib::text,'NULL')||')' END;
+  EXCEPTION WHEN OTHERS THEN
+    PERFORM set_config('role','none', true);
+    v_r := 'ROJO (el medico que ordeno NO pudo revertir: '||SQLSTATE||' '||SQLERRM||')';
+  END;
+  PERFORM set_config('probe.p790', v_r, false);
+
+  -- P791 (b) — medico SIN relacion: PE004.
+  v_r := 'no se ejecuto';
+  BEGIN
+    PERFORM set_config('request.jwt.claims', json_build_object('sub',v_ajeno,'role','authenticated')::text, true);
+    PERFORM set_config('role','authenticated', true);
+    v_res := public.revertir_liberacion_examen(v_neg);
+    PERFORM set_config('role','none', true);
+    v_r := 'ROJO (un medico sin relacion revirtio: '||COALESCE(v_res::text,'NULL')||')';
+  EXCEPTION WHEN OTHERS THEN
+    PERFORM set_config('role','none', true);
+    v_r := CASE WHEN SQLSTATE = 'PE004' THEN 'OK (PE004 al medico sin relacion)'
+                ELSE 'ROJO (corto con '||SQLSTATE||' en vez de PE004: '||SQLERRM||')' END;
+  END;
+  PERFORM set_config('probe.p791', v_r, false);
+
+  -- P792 (c) — EL LABORATORIO. Es la probe que fija la decision de Oscar. Dos mitades, y la
+  -- primera importa tanto como la segunda: si el lab NO viera el examen, el PE004 no probaria
+  -- nada (cualquiera que no ve nada "no puede"). Tiene que VER y aun asi no poder.
+  n_lab := -1; v_e := '';
+  BEGIN
+    PERFORM set_config('request.jwt.claims', json_build_object('sub',v_lab,'role','authenticated')::text, true);
+    PERFORM set_config('role','authenticated', true);
+    SELECT count(*) INTO n_lab FROM public.examenes e WHERE e.id = v_neg;
+    PERFORM set_config('role','none', true);
+  EXCEPTION WHEN OTHERS THEN
+    PERFORM set_config('role','none', true); v_e := v_e||' ver='||SQLSTATE;
+  END;
+  v_r := 'no se ejecuto';
+  BEGIN
+    PERFORM set_config('request.jwt.claims', json_build_object('sub',v_lab,'role','authenticated')::text, true);
+    PERFORM set_config('role','authenticated', true);
+    v_res := public.revertir_liberacion_examen(v_neg);
+    PERFORM set_config('role','none', true);
+    v_r := 'ROJO (el LABORATORIO revirtio: '||COALESCE(v_res::text,'NULL')||')';
+  EXCEPTION WHEN OTHERS THEN
+    PERFORM set_config('role','none', true);
+    v_r := CASE WHEN SQLSTATE = 'PE004' THEN 'PE004'
+                ELSE 'ROJO (corto con '||SQLSTATE||' en vez de PE004: '||SQLERRM||')' END;
+  END;
+  PERFORM set_config('probe.p792',
+    CASE WHEN v_e <> ''         THEN 'FALLO (no pudo medir si el lab ve:'||v_e||')'
+         WHEN v_r <> 'PE004'    THEN v_r
+         WHEN n_lab <> 1        THEN 'ROJO (el lab NO ve el examen (n='||n_lab||'): el PE004 no prueba nada)'
+         ELSE 'OK (el lab VE el examen y aun asi recibe PE004)' END, false);
+
+  -- P793 (d) — revertir algo que no estaba liberado: no-op, sin excepcion y sin gastar errcode.
+  v_r := 'no se ejecuto';
+  BEGIN
+    PERFORM set_config('request.jwt.claims', json_build_object('sub',v_med,'role','authenticated')::text, true);
+    PERFORM set_config('role','authenticated', true);
+    v_res := public.revertir_liberacion_examen(v_nolib);
+    PERFORM set_config('role','none', true);
+    SELECT e.revertido_por IS NULL AND e.fecha_reversion IS NULL INTO v_lib
+      FROM public.examenes e WHERE e.id = v_nolib;
+    v_r := CASE WHEN COALESCE(v_res->>'ya_no_liberado','') = 'true' AND v_lib
+                THEN 'OK (ya_no_liberado sin excepcion, y no ensucio revertido_por/fecha_reversion)'
+                WHEN COALESCE(v_res->>'ya_no_liberado','') = 'true'
+                THEN 'ROJO (ya_no_liberado OK pero escribio revertido_por/fecha_reversion en un no-op)'
+                ELSE 'ROJO (devolvio '||COALESCE(v_res::text,'NULL')||')' END;
+  EXCEPTION WHEN OTHERS THEN
+    PERFORM set_config('role','none', true);
+    v_r := 'ROJO (el no-op lanzo excepcion '||SQLSTATE||': '||SQLERRM||')';
+  END;
+  PERFORM set_config('probe.p793', v_r, false);
+
+  -- P794 (e) — el paciente pierde el examen Y sus adjuntos en la misma operacion.
+  -- Se mide ANTES y DESPUES: un "no lo ve" al final no prueba nada si tampoco lo veia antes.
+  b_ver := NULL; b_adj := -1; a_ver := NULL; a_adj := -1; v_e := '';
+  BEGIN
+    PERFORM set_config('request.jwt.claims', json_build_object('sub',v_pac,'role','authenticated')::text, true);
+    PERFORM set_config('role','authenticated', true);
+    b_ver := private.puede_ver_examen(v_pacx);
+    SELECT count(*) INTO b_adj FROM public.examen_adjuntos a WHERE a.examen_id = v_pacx;
+    PERFORM set_config('role','none', true);
+  EXCEPTION WHEN OTHERS THEN
+    PERFORM set_config('role','none', true); v_e := v_e||' antes='||SQLSTATE;
+  END;
+  BEGIN
+    PERFORM set_config('request.jwt.claims', json_build_object('sub',v_med,'role','authenticated')::text, true);
+    PERFORM set_config('role','authenticated', true);
+    PERFORM public.revertir_liberacion_examen(v_pacx);
+    PERFORM set_config('role','none', true);
+  EXCEPTION WHEN OTHERS THEN
+    PERFORM set_config('role','none', true); v_e := v_e||' revertir='||SQLSTATE;
+  END;
+  BEGIN
+    PERFORM set_config('request.jwt.claims', json_build_object('sub',v_pac,'role','authenticated')::text, true);
+    PERFORM set_config('role','authenticated', true);
+    a_ver := private.puede_ver_examen(v_pacx);
+    SELECT count(*) INTO a_adj FROM public.examen_adjuntos a WHERE a.examen_id = v_pacx;
+    PERFORM set_config('role','none', true);
+  EXCEPTION WHEN OTHERS THEN
+    PERFORM set_config('role','none', true); v_e := v_e||' despues='||SQLSTATE;
+  END;
+  PERFORM set_config('probe.p794',
+    CASE WHEN v_e <> ''                          THEN 'FALLO (error midiendo:'||v_e||')'
+         WHEN NOT COALESCE(b_ver,false) OR b_adj < 1
+           THEN 'ROJO (control positivo caido: ANTES el paciente veia examen='||COALESCE(b_ver::text,'NULL')
+                ||' adjuntos='||b_adj||'; la probe no mide nada)'
+         WHEN COALESCE(a_ver,true) OR a_adj <> 0
+           THEN 'ROJO (DESPUES sigue viendo examen='||COALESCE(a_ver::text,'NULL')||' adjuntos='||a_adj||')'
+         ELSE 'OK (antes examen=true adjuntos='||b_adj||'; despues examen=false adjuntos=0)' END, false);
+
+  -- P795 (f) — la auditoria: revertir NO pisa el rastro de la liberacion.
+  -- Se mira el examen que P790 ya revirtio, con el valor sembrado por el fixture como referencia.
+  BEGIN
+    SELECT e.fecha_liberacion, e.liberado_por, e.revertido_por, e.fecha_reversion
+      INTO a_flib, a_lpor, a_rpor, a_frev
+      FROM public.examenes e WHERE e.id = v_ok;
+    PERFORM set_config('probe.p795',
+      CASE WHEN a_flib IS DISTINCT FROM v_flib
+             THEN 'ROJO (fecha_liberacion cambio: sembrada '||v_flib||', ahora '||COALESCE(a_flib::text,'NULL')||')'
+           WHEN a_lpor IS DISTINCT FROM v_med
+             THEN 'ROJO (liberado_por cambio: sembrado '||v_med||', ahora '||COALESCE(a_lpor::text,'NULL')||')'
+           WHEN a_rpor IS DISTINCT FROM v_med
+             THEN 'ROJO (revertido_por deberia ser quien revirtio ('||v_med||'), es '||COALESCE(a_rpor::text,'NULL')||')'
+           WHEN a_frev IS NULL
+             THEN 'ROJO (fecha_reversion quedo NULL)'
+           ELSE 'OK (fecha_liberacion y liberado_por intactas; revertido_por y fecha_reversion llenas)' END, false);
+  EXCEPTION WHEN OTHERS THEN
+    PERFORM set_config('probe.p795','FALLO ('||SQLSTATE||' '||SQLERRM||')', false);
+  END;
+
+  PERFORM set_config('request.jwt.claims','', true);
+EXCEPTION WHEN OTHERS THEN
+  PERFORM set_config('role','none', true);
+  PERFORM set_config('request.jwt.claims','', true);
+  PERFORM set_config('probe.p795','FALLO ('||SQLSTATE||' '||SQLERRM||')', false);
+END $$;
+SELECT set_config('role','none', true);
+
 -- ===== Veredictos como result set =====
 SELECT 'P1_anon_insert_citas'              AS probe, current_setting('probe.p1', true)  AS verdict, 'BLOQUEADO' AS esperado_post_fix
 UNION ALL SELECT 'P2_medico_cancela_ajena_rpc',         current_setting('probe.p2', true),  'BLOQUEADO'
@@ -19591,6 +19857,13 @@ UNION ALL SELECT 'P786_ea_medico_y_paciente',       current_setting('probe.p786'
 UNION ALL SELECT 'P787_ea_select_usa_el_helper',    current_setting('probe.p787', true),    'OK (3 / 0 / 1)'
 UNION ALL SELECT 'P788_ea_delete_storage_libre',    current_setting('probe.p788', true),    'OK (0 / 0 / 1)'
 UNION ALL SELECT 'P789_ea_rama_adjuntos_storage',   current_setting('probe.p789', true),    'OK (2 / 1 / 0)'
+UNION ALL SELECT 'RV_FX_revertir_liberacion_fx',   current_setting('probe.rv_fx', true),   'OK (fixture)'
+UNION ALL SELECT 'P790_rv_medico_revierte',        current_setting('probe.p790', true),    'OK (control positivo)'
+UNION ALL SELECT 'P791_rv_medico_ajeno_pe004',     current_setting('probe.p791', true),    'OK (PE004)'
+UNION ALL SELECT 'P792_rv_lab_ve_pero_pe004',      current_setting('probe.p792', true),    'OK (ve y no puede)'
+UNION ALL SELECT 'P793_rv_noop_ya_no_liberado',    current_setting('probe.p793', true),    'OK (sin excepcion)'
+UNION ALL SELECT 'P794_rv_paciente_pierde_todo',   current_setting('probe.p794', true),    'OK (examen y adjuntos)'
+UNION ALL SELECT 'P795_rv_auditoria_intacta',      current_setting('probe.p795', true),    'OK (no pisa liberado_por)'
 UNION ALL SELECT 'FX20_fo_fixture',                    current_setting('probe.fo_fx', true),  'OK (fixture)'
 UNION ALL SELECT 'P631_CENSO_anon_perfiles',           current_setting('probe.p631', true), 'OK (anon en cero, los 7)'
 UNION ALL SELECT 'P632_authenticated_perfiles',        current_setting('probe.p632', true), 'OK (4 DML si, 3 no)'
@@ -19825,7 +20098,9 @@ UNION ALL SELECT 'P000_CENTINELA_veredictos_no_nulos',
        'probe.p776', 'probe.p777', 'probe.p778',
        'probe.vag_fx', 'probe.p779', 'probe.p780', 'probe.p781', 'probe.p782',
        'probe.ea_fx', 'probe.p783', 'probe.p784', 'probe.p785', 'probe.p786',
-       'probe.p787', 'probe.p788', 'probe.p789'
+       'probe.p787', 'probe.p788', 'probe.p789',
+       'probe.rv_fx', 'probe.p790', 'probe.p791', 'probe.p792', 'probe.p793',
+       'probe.p794', 'probe.p795'
              ]) AS n) s),
   'OK (todos los veredictos publicados)';
 
