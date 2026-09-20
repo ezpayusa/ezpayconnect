@@ -1,7 +1,8 @@
 -- ############################################################################################
 -- 301 — anon pierde EXECUTE en 49 funciones, y se cierra la fabrica que se lo regalaba
 -- ############################################################################################
--- Cierra el frente que abrieron las migs 294-300. Scoping completo en tmp/censo_mig301.md, todo
+-- Cierra el frente que abrieron las migs 294-300. Scoping completo en
+-- docs/CENSO_MIG301_2026-09-18.md (vivio en tmp/censo_mig301.md hasta que se trackeo), todo
 -- medido contra prod el 18-sep, DESPUES de la 300 (el censo original de 62 quedo viejo: hoy son 60,
 -- porque la 300 le revoco el EXECUTE a obtener_admins_ezpay y obtener_clinica_principal_medico).
 --
