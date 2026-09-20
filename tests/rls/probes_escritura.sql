@@ -17784,6 +17784,179 @@ EXCEPTION WHEN OTHERS THEN
 END $$;
 SELECT set_config('role','none', true);
 
+-- ============================================================
+-- MIG 306 · buckets campanas y productos confinados por empresa (P766-P770)
+-- ============================================================
+-- Las policies de escritura de estos dos buckets miraban solo bucket_id + auth.role(): cualquier
+-- cuenta autenticada podia subir o BORRAR la creatividad de cualquier anunciante, y los dos
+-- buckets son publicos. Ahora el prefijo del path tiene que ser la empresa del caller.
+--
+-- NOTA DE MEDICION: storage.objects trae un trigger BEFORE DELETE (`protect_objects_delete`) que
+-- rechaza TODO borrado directo por SQL salvo que el GUC `storage.allow_delete_query` valga 'true'.
+-- Es un guard de plataforma, no una policy. Estos probes lo levantan LOCAL a la transaccion del
+-- harness para que lo que decida el borrado sea la RLS: sin eso, los casos de DELETE darian verde
+-- por el trigger y no por el confinamiento — verdes por el motivo equivocado.
+--
+-- Cinco probes. P766, P768 y P770 son los positivos y no son relleno: un confinamiento de mas
+-- rompe el alta de creatividades de TODOS los anunciantes y el form de house-ads del admin.
+--   P766 cada empresa opera en su propio prefijo (los 2 buckets)
+--   P767 y NO en el de otra, ni subiendo ni borrando (los 2 buckets)
+--   P768 el super_admin sube la house-ad PLANA en campanas
+--   P769 ...y NO puede en productos (la asimetria, ejercitada)
+--   P770 los 14 objetos intactos, lectura publica viva, catalogo limpio
+SELECT set_config('role','none', true);
+
+DO $$
+DECLARE
+  v_cta_a constant uuid := '9ca0b977-3c91-48dc-aa04-2f1fab766963';  -- cuenta de la empresa A
+  v_emp_a constant text := '411d6f8c-a405-49d6-9ed6-fbeb0db05133';
+  v_cta_b constant uuid := '5c9e60a7-6885-486b-adfd-c691d0db33a6';  -- cuenta de la empresa B
+  v_emp_b constant text := 'cc17afe8-fcd5-4ab0-84c4-08ba919d8481';
+  v_sa    constant uuid := '41904e2c-5ef3-4fee-bd48-9ea58e0c8c37';  -- super_admin real
+  v_plano constant text := '1780525121711.png';
+  v_mal text := ''; v_rc int; v_n bigint; v_obj0 bigint;
+BEGIN
+  SELECT count(*) INTO v_obj0 FROM storage.objects WHERE bucket_id IN ('campanas','productos');
+  PERFORM set_config('storage.allow_delete_query', 'true', true);   -- ver NOTA DE MEDICION
+
+  -- ---------------------------------------------------------------- P766
+  v_mal := '';
+  BEGIN
+    PERFORM set_config('request.jwt.claims', json_build_object('sub',v_cta_a,'role','authenticated')::text, true);
+    PERFORM set_config('role','authenticated', true);
+    INSERT INTO storage.objects (bucket_id, name, owner) VALUES ('campanas',  v_emp_a||'/_p766.png', v_cta_a);
+    INSERT INTO storage.objects (bucket_id, name, owner) VALUES ('productos', v_emp_a||'/_p766.png', v_cta_a);
+    DELETE FROM storage.objects WHERE name = v_emp_a||'/_p766.png';
+    GET DIAGNOSTICS v_rc = ROW_COUNT;
+    PERFORM set_config('role','none', true);
+    IF v_rc <> 2 THEN v_mal := 'borro '||v_rc||' de sus 2 objetos'; END IF;
+    RAISE EXCEPTION 'P766_RB';
+  EXCEPTION WHEN OTHERS THEN
+    PERFORM set_config('role','none', true);
+    IF SQLERRM <> 'P766_RB' THEN v_mal := 'la empresa no pudo operar en su prefijo ('||SQLSTATE||')'; END IF;
+  END;
+  PERFORM set_config('probe.p766', CASE WHEN v_mal = ''
+    THEN 'OK (sube y borra en su propio prefijo, campanas y productos)' ELSE 'ROJO ('||v_mal||')' END, false);
+
+  -- ---------------------------------------------------------------- P767
+  v_mal := '';
+  BEGIN
+    PERFORM set_config('request.jwt.claims', json_build_object('sub',v_cta_a,'role','authenticated')::text, true);
+    PERFORM set_config('role','authenticated', true);
+    INSERT INTO storage.objects (bucket_id, name, owner) VALUES ('campanas', v_emp_b||'/_p767.png', v_cta_a);
+    v_mal := v_mal || 'subio a campanas de otra empresa; ';
+    PERFORM set_config('role','none', true);
+    RAISE EXCEPTION 'P767_RB';
+  EXCEPTION WHEN OTHERS THEN
+    PERFORM set_config('role','none', true);
+    IF SQLERRM <> 'P767_RB' AND SQLSTATE <> '42501' THEN v_mal := v_mal||'campanas corto con '||SQLSTATE||'; '; END IF;
+  END;
+  BEGIN
+    PERFORM set_config('request.jwt.claims', json_build_object('sub',v_cta_a,'role','authenticated')::text, true);
+    PERFORM set_config('role','authenticated', true);
+    INSERT INTO storage.objects (bucket_id, name, owner) VALUES ('productos', v_emp_b||'/_p767.png', v_cta_a);
+    v_mal := v_mal || 'subio a productos de otra empresa; ';
+    PERFORM set_config('role','none', true);
+    RAISE EXCEPTION 'P767_RB';
+  EXCEPTION WHEN OTHERS THEN
+    PERFORM set_config('role','none', true);
+    IF SQLERRM <> 'P767_RB' AND SQLSTATE <> '42501' THEN v_mal := v_mal||'productos corto con '||SQLSTATE||'; '; END IF;
+  END;
+  -- el DELETE cruzado es la mitad que mas duele: borrar la creatividad de otro anunciante.
+  BEGIN
+    PERFORM set_config('request.jwt.claims', json_build_object('sub',v_cta_a,'role','authenticated')::text, true);
+    PERFORM set_config('role','authenticated', true);
+    DELETE FROM storage.objects WHERE bucket_id='campanas' AND split_part(name,'/',1) = v_emp_b;
+    GET DIAGNOSTICS v_rc = ROW_COUNT;
+    PERFORM set_config('role','none', true);
+    IF v_rc <> 0 THEN v_mal := v_mal||'borro '||v_rc||' objeto(s) de otra empresa; '; END IF;
+    RAISE EXCEPTION 'P767_RB';
+  EXCEPTION WHEN OTHERS THEN
+    PERFORM set_config('role','none', true);
+    IF SQLERRM <> 'P767_RB' AND SQLSTATE <> '42501' THEN v_mal := v_mal||'el DELETE cruzado corto con '||SQLSTATE||'; '; END IF;
+  END;
+  -- ...y tampoco el objeto plano del admin, que no es de nadie.
+  BEGIN
+    PERFORM set_config('request.jwt.claims', json_build_object('sub',v_cta_b,'role','authenticated')::text, true);
+    PERFORM set_config('role','authenticated', true);
+    DELETE FROM storage.objects WHERE bucket_id='campanas' AND name = v_plano;
+    GET DIAGNOSTICS v_rc = ROW_COUNT;
+    PERFORM set_config('role','none', true);
+    IF v_rc <> 0 THEN v_mal := v_mal||'un proveedor borro el objeto plano del admin; '; END IF;
+    RAISE EXCEPTION 'P767_RB';
+  EXCEPTION WHEN OTHERS THEN
+    PERFORM set_config('role','none', true);
+    IF SQLERRM <> 'P767_RB' AND SQLSTATE <> '42501' THEN v_mal := v_mal||'el plano corto con '||SQLSTATE||'; '; END IF;
+  END;
+  PERFORM set_config('probe.p767', CASE WHEN v_mal = ''
+    THEN 'OK (no sube ni borra en prefijo ajeno, ni el plano del admin)' ELSE 'ROJO ('||v_mal||')' END, false);
+
+  -- ---------------------------------------------------------------- P768
+  v_mal := '';
+  BEGIN
+    PERFORM set_config('request.jwt.claims', json_build_object('sub',v_sa,'role','authenticated')::text, true);
+    PERFORM set_config('role','authenticated', true);
+    INSERT INTO storage.objects (bucket_id, name, owner) VALUES ('campanas', '_p768_housead.png', v_sa);
+    DELETE FROM storage.objects WHERE bucket_id='campanas' AND name='_p768_housead.png';
+    GET DIAGNOSTICS v_rc = ROW_COUNT;
+    PERFORM set_config('role','none', true);
+    IF v_rc <> 1 THEN v_mal := 'borro '||v_rc||' de su house-ad'; END IF;
+    RAISE EXCEPTION 'P768_RB';
+  EXCEPTION WHEN OTHERS THEN
+    PERFORM set_config('role','none', true);
+    IF SQLERRM <> 'P768_RB' THEN v_mal := 'el super_admin no pudo subir la house-ad plana ('||SQLSTATE||')'; END IF;
+  END;
+  PERFORM set_config('probe.p768', CASE WHEN v_mal = ''
+    THEN 'OK (house-ad plana: PlanesPublicidadConfigPage sigue viva)' ELSE 'ROJO ('||v_mal||')' END, false);
+
+  -- ---------------------------------------------------------------- P769
+  -- La asimetria EJERCITADA: el brazo de super_admin existe en campanas y NO en productos. Si
+  -- alguien lo copiara "por simetria", este probe lo ve.
+  v_mal := 'ROJO (el super_admin subio a productos: la asimetria se perdio)';
+  BEGIN
+    PERFORM set_config('request.jwt.claims', json_build_object('sub',v_sa,'role','authenticated')::text, true);
+    PERFORM set_config('role','authenticated', true);
+    INSERT INTO storage.objects (bucket_id, name, owner) VALUES ('productos', '_p769_admin.png', v_sa);
+    PERFORM set_config('role','none', true);
+    RAISE EXCEPTION 'P769_RB';
+  EXCEPTION WHEN OTHERS THEN
+    PERFORM set_config('role','none', true);
+    IF SQLSTATE = '42501' THEN v_mal := 'OK (42501: productos no tiene brazo de admin, a proposito)';
+    ELSIF SQLERRM <> 'P769_RB' THEN v_mal := 'ROJO (corto con '||SQLSTATE||', se esperaba 42501)'; END IF;
+  END;
+  PERFORM set_config('probe.p769', v_mal, false);
+  PERFORM set_config('request.jwt.claims','', true);
+
+  -- ---------------------------------------------------------------- P770
+  v_mal := '';
+  SELECT count(*) INTO v_n FROM storage.objects WHERE bucket_id IN ('campanas','productos');
+  IF v_n <> v_obj0 THEN v_mal := v_mal||'los buckets pasaron de '||v_obj0||' a '||v_n||' objetos; '; END IF;
+  SELECT count(*) INTO v_n FROM storage.objects WHERE name ~ '_p76[6-9]';
+  IF v_n <> 0 THEN v_mal := v_mal||'quedaron '||v_n||' objetos de prueba; '; END IF;
+  IF NOT EXISTS (SELECT 1 FROM storage.objects WHERE bucket_id='campanas' AND name = v_plano) THEN
+    v_mal := v_mal||'el objeto plano desaparecio; '; END IF;
+  SELECT count(*) INTO v_n FROM pg_policy pol JOIN pg_class c ON c.oid=pol.polrelid
+    JOIN pg_namespace ns ON ns.oid=c.relnamespace
+   WHERE ns.nspname='storage' AND c.relname='objects' AND pol.polcmd::text='r'
+     AND pg_get_expr(pol.polqual,pol.polrelid) ~ '(campanas|productos)';
+  IF v_n <> 2 THEN v_mal := v_mal||'hay '||v_n||' policies de lectura publica, se esperaban 2; '; END IF;
+  SELECT count(*) INTO v_n FROM storage.buckets WHERE id IN ('campanas','productos') AND public;
+  IF v_n <> 2 THEN v_mal := v_mal||'un bucket dejo de ser publico; '; END IF;
+  SELECT count(*) INTO v_n FROM pg_policy pol JOIN pg_class c ON c.oid=pol.polrelid
+    JOIN pg_namespace ns ON ns.oid=c.relnamespace
+   WHERE ns.nspname='storage' AND c.relname='objects'
+     AND pol.polname IN ('Usuarios autenticados pueden subir campanas','Usuarios autenticados pueden eliminar campanas',
+                         'Autenticados suben productos','Autenticados eliminan productos');
+  IF v_n <> 0 THEN v_mal := v_mal||'sobrevivieron '||v_n||' policies viejas; '; END IF;
+  PERFORM set_config('probe.p770', CASE WHEN v_mal = ''
+    THEN 'OK (14 objetos intactos, lectura publica viva, catalogo limpio)' ELSE 'ROJO ('||v_mal||')' END, false);
+EXCEPTION WHEN OTHERS THEN
+  PERFORM set_config('role','none', true);
+  PERFORM set_config('request.jwt.claims','', true);
+  PERFORM set_config('probe.p770','FALLO ('||SQLSTATE||' '||SQLERRM||')', false);
+END $$;
+SELECT set_config('role','none', true);
+
 -- ===== Veredictos como result set =====
 SELECT 'P1_anon_insert_citas'              AS probe, current_setting('probe.p1', true)  AS verdict, 'BLOQUEADO' AS esperado_post_fix
 UNION ALL SELECT 'P2_medico_cancela_ajena_rpc',         current_setting('probe.p2', true),  'BLOQUEADO'
@@ -18610,6 +18783,11 @@ UNION ALL SELECT 'P762_nt_broadcast_no_legible',     current_setting('probe.p762
 UNION ALL SELECT 'P763_nt_dueno_ve_y_marca',         current_setting('probe.p763', true),    'OK (control positivo)'
 UNION ALL SELECT 'P764_nt_estado_escribible',        current_setting('probe.p764', true),    'OK (control positivo: admin)'
 UNION ALL SELECT 'P765_nt_grants_y_catalogo',        current_setting('probe.p765', true),    'OK (control positivo)'
+UNION ALL SELECT 'P766_bk_empresa_su_prefijo',       current_setting('probe.p766', true),    'OK (control positivo)'
+UNION ALL SELECT 'P767_bk_prefijo_ajeno_bloqueado',  current_setting('probe.p767', true),    'OK (42501 en los 2 buckets)'
+UNION ALL SELECT 'P768_bk_housead_admin',            current_setting('probe.p768', true),    'OK (control positivo)'
+UNION ALL SELECT 'P769_bk_asimetria_productos',      current_setting('probe.p769', true),    'OK (42501: sin brazo admin)'
+UNION ALL SELECT 'P770_bk_objetos_y_catalogo',       current_setting('probe.p770', true),    'OK (control positivo)'
 UNION ALL SELECT 'FX20_fo_fixture',                    current_setting('probe.fo_fx', true),  'OK (fixture)'
 UNION ALL SELECT 'P631_CENSO_anon_perfiles',           current_setting('probe.p631', true), 'OK (anon en cero, los 7)'
 UNION ALL SELECT 'P632_authenticated_perfiles',        current_setting('probe.p632', true), 'OK (4 DML si, 3 no)'
@@ -18838,7 +19016,8 @@ UNION ALL SELECT 'P000_CENTINELA_veredictos_no_nulos',
        'probe.p750', 'probe.p751', 'probe.p752', 'probe.p753', 'probe.p754',
        'probe.p755', 'probe.p756', 'probe.p757', 'probe.p758',
        'probe.p759', 'probe.p760', 'probe.p761', 'probe.p762', 'probe.p763',
-       'probe.p764', 'probe.p765'
+       'probe.p764', 'probe.p765',
+       'probe.p766', 'probe.p767', 'probe.p768', 'probe.p769', 'probe.p770'
              ]) AS n) s),
   'OK (todos los veredictos publicados)';
 
