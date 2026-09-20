@@ -17166,6 +17166,174 @@ EXCEPTION WHEN OTHERS THEN
 END $$;
 SELECT set_config('role','none', true);
 
+-- ============================================================
+-- MIG 302 · security_invoker en las 4 vistas de F8 (P745-P749)
+-- ============================================================
+-- Una vista SIN security_invoker corre con los privilegios de su DUENO. Las 4 son de `postgres`,
+-- que tiene rolbypassrls: la RLS de las tablas base no se evaluaba, y `anon` —que tiene SELECT
+-- sobre las 4— las leia enteras por REST sin sesion. Medido el 20-sep: v_pacientes_actividad
+-- devolvia los 26 pacientes con nombre y telefono mientras la tabla `pacientes` le daba 0 al
+-- mismo actor.
+--
+-- Estos 5 probes cubren los tres lados, porque los tres pueden romperse por separado:
+--   P745-P747  la fuga esta cerrada (anon en cero)
+--   P748       el actor LEGITIMO no se rompio (el paciente sigue viendo lo suyo)
+--   P749       el CAMINO REAL no se rompio (service_role, que es quien las consulta de verdad)
+-- Sin P748/P749, un cambio que dejara las vistas devolviendo 0 a todo el mundo daria verde en los
+-- tres primeros y nadie se enteraria hasta ver un panel vacio.
+SELECT set_config('role','none', true);
+
+-- P745 — anon sobre v_pacientes_actividad. Es la que mas PHI expone por fila.
+DO $$
+DECLARE n bigint; n_base bigint;
+BEGIN
+  SELECT count(*) INTO n_base FROM public.pacientes;   -- como postgres: el universo
+  PERFORM set_config('request.jwt.claims','{"role":"anon"}', true);
+  PERFORM set_config('role','anon', true);
+  BEGIN
+    SELECT count(*) INTO n FROM public.v_pacientes_actividad;
+  EXCEPTION WHEN OTHERS THEN n := -1;
+  END;
+  PERFORM set_config('role','none', true);
+  PERFORM set_config('request.jwt.claims','', true);
+  PERFORM set_config('probe.p745', CASE
+    WHEN n = 0 THEN 'OK (anon ve 0 de '||n_base||' pacientes)'
+    WHEN n < 0 THEN 'ROJO (error al ejercitar la vista como anon)'
+    ELSE 'ROJO (anon ve '||n||' filas de v_pacientes_actividad; nombre y telefono de cada paciente)'
+    END, false);
+EXCEPTION WHEN OTHERS THEN
+  PERFORM set_config('role','none', true);
+  PERFORM set_config('probe.p745','FALLO ('||SQLSTATE||' '||SQLERRM||')', false);
+END $$;
+SELECT set_config('role','none', true);
+
+-- P746 — anon sobre v_citas_hoy, CON UNA CITA DE HOY SEMBRADA. La vista filtra
+-- `WHERE fecha = CURRENT_DATE`: sin fixture, el dia que no haya agenda el probe daria 0 y seria
+-- verde por estar vacia, no por estar protegida. Ese es exactamente el error que casi comete el
+-- censo del 20-sep, que la midio un dia sin citas. El harness entero corre en BEGIN/ROLLBACK, asi
+-- que la cita no persiste.
+DO $$
+DECLARE n bigint; v_pid bigint; v_mid uuid; v_hay bigint;
+BEGIN
+  SELECT id INTO v_pid FROM public.pacientes ORDER BY id LIMIT 1;
+  SELECT id INTO v_mid FROM public.perfiles WHERE rol = 'medico' AND activo ORDER BY id LIMIT 1;
+  IF v_pid IS NULL OR v_mid IS NULL THEN
+    PERFORM set_config('probe.p746','N/A (no hay paciente o medico para sembrar)', false); RETURN;
+  END IF;
+
+  INSERT INTO public.citas (medico_id, paciente_id, fecha, hora_inicio, hora_fin, estado, motivo)
+  VALUES (v_mid, v_pid, CURRENT_DATE, '09:00', '09:30', 'agendada', 'FIXTURE P746');
+
+  SELECT count(*) INTO v_hay FROM public.citas WHERE fecha = CURRENT_DATE;
+
+  PERFORM set_config('request.jwt.claims','{"role":"anon"}', true);
+  PERFORM set_config('role','anon', true);
+  BEGIN
+    SELECT count(*) INTO n FROM public.v_citas_hoy;
+  EXCEPTION WHEN OTHERS THEN n := -1;
+  END;
+  PERFORM set_config('role','none', true);
+  PERFORM set_config('request.jwt.claims','', true);
+
+  PERFORM set_config('probe.p746', CASE
+    WHEN v_hay = 0 THEN 'ROJO (la fixture no quedo: el probe no medira nada)'
+    WHEN n = 0 THEN 'OK (anon ve 0 con '||v_hay||' cita(s) de HOY en la base)'
+    WHEN n < 0 THEN 'ROJO (error al ejercitar v_citas_hoy como anon)'
+    ELSE 'ROJO (anon ve '||n||' cita(s) de hoy: paciente, telefono y medico)'
+    END, false);
+EXCEPTION WHEN OTHERS THEN
+  PERFORM set_config('role','none', true);
+  PERFORM set_config('request.jwt.claims','', true);
+  PERFORM set_config('probe.p746','FALLO ('||SQLSTATE||' '||SQLERRM||')', false);
+END $$;
+SELECT set_config('role','none', true);
+
+-- P747 — anon sobre las otras dos. Agregados del negocio, no PHI individual, pero la misma clase.
+DO $$
+DECLARE v_mal text := ''; t text; n bigint;
+BEGIN
+  PERFORM set_config('request.jwt.claims','{"role":"anon"}', true);
+  PERFORM set_config('role','anon', true);
+  FOREACH t IN ARRAY ARRAY['v_estadisticas_medico','v_resumen_mensual'] LOOP
+    BEGIN
+      EXECUTE format('SELECT count(*) FROM public.%I', t) INTO n;
+      IF n <> 0 THEN v_mal := v_mal || t||'='||n||' filas; '; END IF;
+    EXCEPTION WHEN OTHERS THEN v_mal := v_mal || t||'='||SQLSTATE||'; ';
+    END;
+  END LOOP;
+  PERFORM set_config('role','none', true);
+  PERFORM set_config('request.jwt.claims','', true);
+  PERFORM set_config('probe.p747', CASE WHEN v_mal = ''
+    THEN 'OK (anon ve 0 en las dos)' ELSE 'ROJO ('||v_mal||')' END, false);
+EXCEPTION WHEN OTHERS THEN
+  PERFORM set_config('role','none', true);
+  PERFORM set_config('probe.p747','FALLO ('||SQLSTATE||' '||SQLERRM||')', false);
+END $$;
+SELECT set_config('role','none', true);
+
+-- P748 — CONTROL POSITIVO: el paciente sigue viendo SU fila, y solo la suya. security_invoker no
+-- apaga la vista: le aplica RLS fila por fila. El paciente pasa de ver 26 a ver 1 por la policy
+-- `Paciente ve su perfil` (auth_user_id = auth.uid()) sobre `pacientes`. Un 0 aca seria tan malo
+-- como un 26: querria decir que el fix rompio al actor legitimo.
+DO $$
+DECLARE n bigint; n_base bigint; v_pac constant uuid := '0dd0c68c-026c-4ebc-9475-e6791cc54933';
+BEGIN
+  SELECT count(*) INTO n_base FROM public.pacientes;
+  PERFORM set_config('request.jwt.claims',
+    json_build_object('sub', v_pac, 'role','authenticated')::text, true);
+  PERFORM set_config('role','authenticated', true);
+  BEGIN
+    SELECT count(*) INTO n FROM public.v_pacientes_actividad;
+  EXCEPTION WHEN OTHERS THEN n := -1;
+  END;
+  PERFORM set_config('role','none', true);
+  PERFORM set_config('request.jwt.claims','', true);
+  PERFORM set_config('probe.p748', CASE
+    WHEN n = 1 THEN 'OK (el paciente ve su fila y solo la suya, de '||n_base||')'
+    WHEN n = 0 THEN 'ROJO (el paciente ve 0: el fix rompio al actor legitimo)'
+    WHEN n < 0 THEN 'ROJO (error al ejercitar la vista como el paciente)'
+    ELSE 'ROJO (el paciente ve '||n||' filas: ve pacientes ajenos)'
+    END, false);
+EXCEPTION WHEN OTHERS THEN
+  PERFORM set_config('role','none', true);
+  PERFORM set_config('request.jwt.claims','', true);
+  PERFORM set_config('probe.p748','FALLO ('||SQLSTATE||' '||SQLERRM||')', false);
+END $$;
+SELECT set_config('role','none', true);
+
+-- P749 — CONTROL POSITIVO: service_role sigue viendo las 4 completas. Es el camino de lectura REAL:
+-- reportes-detalle, exportar-csv y reportes-resumen consultan estas vistas con
+-- createClient(url, SERVICE_ROLE_KEY) —el cliente anon+JWT lo usan solo para getUser()—, y
+-- service_role tiene rolbypassrls. Este probe es lo que protege esos 5 call-sites de que alguien
+-- "endurezca" las vistas mas adelante y vacie el panel de reportes sin darse cuenta.
+DO $$
+DECLARE v_mal text := ''; n bigint; n_pac bigint;
+BEGIN
+  SELECT count(*) INTO n_pac FROM public.pacientes;
+  PERFORM set_config('request.jwt.claims','{"role":"service_role"}', true);
+  PERFORM set_config('role','service_role', true);
+  BEGIN
+    SELECT count(*) INTO n FROM public.v_pacientes_actividad;
+    IF n <> n_pac THEN v_mal := v_mal || 'v_pacientes_actividad='||n||' de '||n_pac||'; '; END IF;
+    SELECT count(*) INTO n FROM public.v_estadisticas_medico;
+    IF n = 0 THEN v_mal := v_mal || 'v_estadisticas_medico=0; '; END IF;
+    SELECT count(*) INTO n FROM public.v_resumen_mensual;
+    IF n = 0 THEN v_mal := v_mal || 'v_resumen_mensual=0; '; END IF;
+    PERFORM count(*) FROM public.v_citas_hoy;   -- puede ser 0 legitimamente (depende del dia)
+  EXCEPTION WHEN OTHERS THEN v_mal := v_mal || 'error '||SQLSTATE||'; ';
+  END;
+  PERFORM set_config('role','none', true);
+  PERFORM set_config('request.jwt.claims','', true);
+  PERFORM set_config('probe.p749', CASE WHEN v_mal = ''
+    THEN 'OK (service_role ve las 4; los 5 call-sites de reportes intactos)'
+    ELSE 'ROJO ('||v_mal||')' END, false);
+EXCEPTION WHEN OTHERS THEN
+  PERFORM set_config('role','none', true);
+  PERFORM set_config('request.jwt.claims','', true);
+  PERFORM set_config('probe.p749','FALLO ('||SQLSTATE||' '||SQLERRM||')', false);
+END $$;
+SELECT set_config('role','none', true);
+
 -- ===== Veredictos como result set =====
 SELECT 'P1_anon_insert_citas'              AS probe, current_setting('probe.p1', true)  AS verdict, 'BLOQUEADO' AS esperado_post_fix
 UNION ALL SELECT 'P2_medico_cancela_ajena_rpc',         current_setting('probe.p2', true),  'BLOQUEADO'
@@ -17971,6 +18139,11 @@ UNION ALL SELECT 'P741_rv_excepciones_intactas',      current_setting('probe.p74
 UNION ALL SELECT 'P742_rv_cadena_interna_viva',       current_setting('probe.p742', true),    'OK (control positivo)'
 UNION ALL SELECT 'P743_rv_liberar_examen_coalesce',   current_setting('probe.p743', true),    'OK (los 2 actores cortados)'
 UNION ALL SELECT 'P744_rv_fabrica_cerrada',           current_setting('probe.p744', true),    'OK (funcion y secuencia nuevas)'
+UNION ALL SELECT 'P745_iv_pacientes_actividad_anon', current_setting('probe.p745', true),    'OK (anon en cero)'
+UNION ALL SELECT 'P746_iv_citas_hoy_anon',           current_setting('probe.p746', true),    'OK (anon en cero, con cita de hoy)'
+UNION ALL SELECT 'P747_iv_estadisticas_resumen_anon',current_setting('probe.p747', true),    'OK (anon en cero en las dos)'
+UNION ALL SELECT 'P748_iv_paciente_ve_lo_suyo',      current_setting('probe.p748', true),    'OK (control positivo: 1 fila)'
+UNION ALL SELECT 'P749_iv_service_role_intacto',     current_setting('probe.p749', true),    'OK (control positivo: reportes)'
 UNION ALL SELECT 'FX20_fo_fixture',                    current_setting('probe.fo_fx', true),  'OK (fixture)'
 UNION ALL SELECT 'P631_CENSO_anon_perfiles',           current_setting('probe.p631', true), 'OK (anon en cero, los 7)'
 UNION ALL SELECT 'P632_authenticated_perfiles',        current_setting('probe.p632', true), 'OK (4 DML si, 3 no)'
@@ -18194,7 +18367,8 @@ UNION ALL SELECT 'P000_CENTINELA_veredictos_no_nulos',
        'probe.ls_fx', 'probe.p725', 'probe.p726', 'probe.p727',
        'probe.fo_fx', 'probe.p728', 'probe.p729', 'probe.p730', 'probe.p731', 'probe.p732',
        'probe.p733', 'probe.p734', 'probe.p735', 'probe.p736', 'probe.p737', 'probe.p738',
-       'probe.p739', 'probe.p740', 'probe.p741', 'probe.p742', 'probe.p743', 'probe.p744'
+       'probe.p739', 'probe.p740', 'probe.p741', 'probe.p742', 'probe.p743', 'probe.p744',
+       'probe.p745', 'probe.p746', 'probe.p747', 'probe.p748', 'probe.p749'
              ]) AS n) s),
   'OK (todos los veredictos publicados)';
 
