@@ -1,4 +1,5 @@
 import { useState, useEffect } from "react";
+import { useNavigate } from "react-router-dom";
 import { useNotificaciones } from "@/hooks/useNotificaciones";
 import { useAuth } from "@/hooks/useAuth";
 import {
@@ -29,6 +30,7 @@ const TIPO_ICONOS: Record<string, any> = {
 
 export default function NotificacionesPage() {
   const { user } = useAuth();
+  const navigate = useNavigate();
   const {
     notificaciones,
     noLeidas,
@@ -43,6 +45,21 @@ export default function NotificacionesPage() {
   useEffect(() => {
     listarNotificaciones();
   }, [listarNotificaciones]);
+
+  // Abrir una notificación = marcarla leída y llevar a donde apunta. Mismo patrón que
+  // ClinicaNotificacionesDropdown.tsx:11-15, que es el único que ya lo hacía bien.
+  //
+  // Hasta acá esta pantalla IGNORABA accion_url: la fila la traía (29 de las 182 en prod la tienen
+  // en NULL, el resto apunta a rutas reales) y no había forma de llegar a ella desde acá. Con la
+  // mig 312 las notificaciones de resultado de examen apuntan a /medico/pacientes/<id>/detalle, y
+  // sin este handler ese destino no se usaba desde la campana, sólo desde el push.
+  //
+  // `marcarLeida` sólo si estaba sin leer: re-marcar una leída es un UPDATE al pedo y, con
+  // realtime encendido, un refresh de lista innecesario.
+  const abrirNotificacion = async (n: { id: string; leida: boolean; accion_url: string | null }) => {
+    if (!n.leida) await marcarLeida(n.id);
+    if (n.accion_url) navigate(n.accion_url);
+  };
 
   const notificacionesFiltradas = filtroTipo
     ? notificaciones.filter((n) => n.tipo === filtroTipo)
@@ -99,14 +116,30 @@ export default function NotificacionesPage() {
         ) : (
           notificacionesFiltradas.map((notif) => {
             const Icon = TIPO_ICONOS[notif.tipo] || Info;
+            // Sólo es clickeable si tiene a dónde ir. Sin accion_url la tarjeta queda como estaba:
+            // fingir que se puede abrir algo que no lleva a ningún lado es peor que no ofrecerlo.
+            const navegable = Boolean(notif.accion_url);
             return (
               <div
                 key={notif.id}
+                onClick={navegable ? () => void abrirNotificacion(notif) : undefined}
+                onKeyDown={
+                  navegable
+                    ? (e) => {
+                        if (e.key === "Enter" || e.key === " ") {
+                          e.preventDefault();
+                          void abrirNotificacion(notif);
+                        }
+                      }
+                    : undefined
+                }
+                role={navegable ? "link" : undefined}
+                tabIndex={navegable ? 0 : undefined}
                 className={`flex items-start gap-4 p-4 rounded-xl border transition-all ${
                   notif.leida
                     ? "bg-[#0f0f23] border-gray-800 opacity-60"
                     : "bg-[#1a1a2e] border-[#00f2ff]/30"
-                }`}
+                } ${navegable ? "cursor-pointer hover:border-[#00f2ff]/60" : ""}`}
               >
                 <div
                   className={`p-2 rounded-lg ${TIPO_COLORES[notif.tipo] || "bg-gray-100"}`}
@@ -134,7 +167,13 @@ export default function NotificacionesPage() {
 
                 {!notif.leida && (
                   <button
-                    onClick={() => marcarLeida(notif.id)}
+                    // stopPropagation: este botón vive DENTRO de la tarjeta, que ahora es
+                    // clickeable. Sin esto, "marcar como leída" además navegaría — o sea que
+                    // no habría forma de descartar una notificación sin irse de la pantalla.
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      marcarLeida(notif.id);
+                    }}
                     className="p-2 text-gray-400 hover:text-[#00f2ff] hover:bg-[#00f2ff]/10 rounded-lg transition-colors"
                     title="Marcar como leída"
                   >
