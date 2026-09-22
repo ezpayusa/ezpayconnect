@@ -45,8 +45,11 @@ export default function LabOrdenesPage() {
   const abrirResultado = (i: OrdenExamen) => {
     setModal(i); setResultado(i.resultados || ''); setArchivoFile(null)
   }
+  // Basta con UNO de los dos. El archivo dejó de ser el accesorio del texto: en la mayoría de los
+  // exámenes el PDF del laboratorio ES el resultado, y exigir que además se transcribiera algo
+  // obligaba a escribir relleno.
   const guardarResultado = async () => {
-    if (!modal || !resultado.trim()) return
+    if (!modal || (!resultado.trim() && !archivoFile)) return
     setGuardando(true)
     const ok = await subirResultado(modal.id, resultado.trim(), archivoFile, modal.tipo)
     setGuardando(false)
@@ -181,9 +184,16 @@ export default function LabOrdenesPage() {
                 <button onClick={() => setModal(null)}><X className="h-5 w-5 text-gray-400" /></button>
               </div>
               <div className="space-y-2">
-                <Label>Resultado / valores *</Label>
+                {/* Sin el asterisco de obligatorio: el texto dejó de serlo. Alcanza con uno de los
+                    dos — texto o archivo — y el botón queda deshabilitado si faltan los dos. */}
+                <Label>Resultado / valores</Label>
                 <Textarea rows={6} value={resultado} onChange={(e) => setResultado(e.target.value)}
                   placeholder="Escribe el resultado del examen…" disabled={modal.estado === 'completado'} />
+                {modal.estado !== 'completado' && (
+                  <p className="text-xs text-muted-foreground">
+                    Podés dejar el texto vacío si el archivo es el resultado.
+                  </p>
+                )}
               </div>
 
               {/* Archivo ya subido (si existe) */}
@@ -196,7 +206,7 @@ export default function LabOrdenesPage() {
 
               {modal.estado !== 'completado' && (
                 <div className="space-y-2">
-                  <Label>Adjuntar archivo (PDF o imagen) — opcional</Label>
+                  <Label>Adjuntar archivo (PDF o imagen)</Label>
                   <input
                     type="file"
                     accept=".pdf,image/*"
@@ -210,7 +220,7 @@ export default function LabOrdenesPage() {
               {modal.estado !== 'completado' && (
                 <div className="flex justify-end gap-2">
                   <Button variant="outline" onClick={() => setModal(null)}>Cancelar</Button>
-                  <Button className="bg-[#0E7C6B] hover:bg-[#0a5e51]" onClick={guardarResultado} disabled={guardando || !resultado.trim()}>
+                  <Button className="bg-[#0E7C6B] hover:bg-[#0a5e51]" onClick={guardarResultado} disabled={guardando || (!resultado.trim() && !archivoFile)}>
                     {guardando ? <Loader2 className="h-4 w-4 animate-spin mr-1" /> : null} Enviar resultado
                   </Button>
                 </div>

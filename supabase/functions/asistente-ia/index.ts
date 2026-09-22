@@ -94,9 +94,16 @@ function buildPrompt(ctxHist: any, soap: any) {
 
   // EXÁMENES RECIENTES
   const exa = Array.isArray(h.examenes_recientes) ? h.examenes_recientes : []
+  // Desde el frente 6, el laboratorio puede cerrar un examen con SOLO el archivo y el texto vacío:
+  // en la mayoría de los exámenes el PDF es el resultado. Decirle al modelo "sin resultado" en ese
+  // caso es FALSO y peor que callar — razonaría sobre un paciente al que le faltan estudios que
+  // están hechos. `tiene_archivo` lo agrega contexto_ia_paciente en la mig 313 (un booleano, no la
+  // URL: este texto va dentro de un prompt a un modelo de terceros).
+  const resultadoDeExamen = (e: any) =>
+    e.resultados || (e.tiene_archivo ? 'resultado disponible en archivo adjunto (ver PDF)' : 'sin resultado')
   const exaTxt = exa.length
     ? exa.map((e: any) =>
-        `- ${fmtFecha(e.fecha_resultado)}: ${e.tipo || 's/t'}${e.descripcion ? ` (${e.descripcion})` : ''} → ${e.resultados || 'sin resultado'}`
+        `- ${fmtFecha(e.fecha_resultado)}: ${e.tipo || 's/t'}${e.descripcion ? ` (${e.descripcion})` : ''} → ${resultadoDeExamen(e)}`
       ).join('\n')
     : 'No registrados'
 
