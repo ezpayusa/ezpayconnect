@@ -2,15 +2,11 @@ import { createContext, useContext, useState, useEffect, useCallback, useMemo, u
 import { supabase } from '@/lib/supabase'
 import type { Perfil } from '@/types'
 
-// País default (Guatemala) para registros sin país explícito
-const PAIS_DEFAULT = 'cbbbbe6d-59fe-4cf2-91ee-3e31ba1d5909'
-
 type AuthContextValue = {
   user: any
   perfil: Perfil | null
   loading: boolean
   login: (email: string, password: string) => Promise<any>
-  register: (email: string, password: string, nombre_completo: string, rol?: string, pais_id?: string) => Promise<any>
   logout: () => Promise<void>
   hasRole: (roles: string[]) => boolean
   isAdmin: () => boolean
@@ -83,25 +79,6 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     return { data, error }
   }, [])
 
-  const register = useCallback(async (email: string, password: string, nombre_completo: string, rol: string = 'medico', pais_id?: string) => {
-    const { data, error } = await supabase.auth.signUp({ email, password })
-    if (error) return { data, error }
-    if (data.user) {
-      const { error: perfilError } = await supabase.from('perfiles').insert({
-        id: data.user.id,
-        email,
-        nombre_completo,
-        rol: rol || 'medico',
-        pais_id: pais_id || PAIS_DEFAULT,
-      })
-      if (perfilError) {
-        console.error('Error creando perfil:', perfilError)
-        return { data, error: { message: `Cuenta creada pero error al crear perfil: ${perfilError.message}` } }
-      }
-    }
-    return { data, error }
-  }, [])
-
   const logout = useCallback(async () => {
     await supabase.auth.signOut()
     setUser(null)
@@ -115,8 +92,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const isAsistente = useCallback(() => ['gerente','soporte'].includes(perfil?.rol ?? ''), [perfil])
 
   const value = useMemo(() => ({
-    user, perfil, loading, login, register, logout, hasRole, isAdmin, isMedico, isAsistente
-  }), [user, perfil, loading, login, register, logout, hasRole, isAdmin, isMedico, isAsistente])
+    user, perfil, loading, login, logout, hasRole, isAdmin, isMedico, isAsistente
+  }), [user, perfil, loading, login, logout, hasRole, isAdmin, isMedico, isAsistente])
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>
 }
