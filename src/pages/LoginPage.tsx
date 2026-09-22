@@ -1,7 +1,6 @@
 import { useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useAuth } from '@/hooks/useAuth'
-import { usePaisesRegistro } from '@/hooks/usePaisesRegistro'
 import { supabase } from '@/lib/supabase'
 import { rutaHomePorRol } from '@/lib/rutas'
 import { enviarReset } from '@/lib/enviarReset'
@@ -10,75 +9,41 @@ import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card'
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
-import { Stethoscope, Loader2, Shield, User, Headphones, Briefcase, Calculator } from 'lucide-react'
+import { Stethoscope, Loader2 } from 'lucide-react'
 
 export default function LoginPage() {
   const navigate = useNavigate()
-  const { login, register } = useAuth()
-  const [isRegister, setIsRegister] = useState(false)
+  const { login } = useAuth()
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
-  const [nombre, setNombre] = useState('')
-  const [rol, setRol] = useState('medico')
-  const [paisId, setPaisId] = useState('')
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
   const [enviandoReset, setEnviandoReset] = useState(false)
-  const { paises } = usePaisesRegistro()
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
     setLoading(true)
     setError('')
 
-    if (isRegister) {
-      // Mapeo a roles del catálogo (perfiles.rol tiene FK → roles_catalogo):
-      // admin→admin_clinica; asistente/enfermera/contador→gerente; medico/gerente igual.
-      const ROL_CATALOGO: Record<string, string> = {
-        admin: 'admin_clinica', asistente: 'gerente', enfermera: 'gerente',
-        contador: 'gerente', medico: 'medico', gerente: 'gerente',
-      }
-      const { error } = await register(email, password, nombre, ROL_CATALOGO[rol] ?? 'medico', paisId)
-      if (error) setError(error.message)
-      else {
-        setIsRegister(false)
-        setEmail('')
-        setPassword('')
-        setNombre('')
-        setRol('medico')
-      }
+    const { error } = await login(email, password)
+    if (error) {
+      setError(error.message)
     } else {
-      const { error } = await login(email, password)
-      if (error) {
-        setError(error.message)
+      // Verificar rol para redirigir al panel correcto
+      const { data: { user } } = await supabase.auth.getUser()
+      if (user) {
+        const { data: profile } = await supabase
+          .from('perfiles')
+          .select('rol, pais_id')
+          .eq('id', user.id)
+          .single()
+        // Ruteo por rol centralizado en rutaHomePorRol (misma tabla de destinos que antes).
+        navigate(rutaHomePorRol(profile))
       } else {
-        // Verificar rol para redirigir al panel correcto
-        const { data: { user } } = await supabase.auth.getUser()
-        if (user) {
-          const { data: profile } = await supabase
-            .from('perfiles')
-            .select('rol, pais_id')
-            .eq('id', user.id)
-            .single()
-          // Ruteo por rol centralizado en rutaHomePorRol (misma tabla de destinos que antes).
-          navigate(rutaHomePorRol(profile))
-        } else {
-          navigate('/dashboard')
-        }
+        navigate('/dashboard')
       }
     }
     setLoading(false)
-  }
-
-  const toggleMode = () => {
-    setIsRegister(!isRegister)
-    setError('')
-    setEmail('')
-    setPassword('')
-    setNombre('')
-    setRol('medico')
-    setPaisId('')
   }
 
   const handleReset = async () => {
@@ -89,15 +54,6 @@ export default function LoginPage() {
     if (error) { toast.error('No se pudo enviar el enlace', { description: error.message }); return }
     toast.success('Si el correo existe, te enviamos un enlace para restablecer tu contraseña')
   }
-
-  const roles = [
-    { value: 'admin', label: 'Administrador', icon: Shield, color: 'text-red-600', desc: 'Control total del sistema' },
-    { value: 'medico', label: 'Médico', icon: Stethoscope, color: 'text-[#1E5C8E]', desc: 'Atención médica y recetas' },
-    { value: 'asistente', label: 'Asistente / Recepcionista', icon: Headphones, color: 'text-green-600', desc: 'Agenda citas y atención al paciente' },
-    { value: 'enfermera', label: 'Enfermera', icon: User, color: 'text-pink-600', desc: 'Asistencia médica y signos vitales' },
-    { value: 'contador', label: 'Contador', icon: Calculator, color: 'text-purple-600', desc: 'Facturación y reportes financieros' },
-    { value: 'gerente', label: 'Gerente de Clínica', icon: Briefcase, color: 'text-orange-600', desc: 'Gestión operativa del consultorio' },
-  ]
 
   return (
     <div className="min-h-screen flex items-center justify-center bg-gradient-to-br from-[#1a2a3a] to-[#1E5C8E]">
@@ -114,67 +70,13 @@ export default function LoginPage() {
 
         <Card className="border-0 shadow-2xl">
           <CardHeader className="space-y-1">
-            <CardTitle className="text-2xl text-center">
-              {isRegister ? 'Crear Cuenta' : 'Iniciar Sesión'}
-            </CardTitle>
+            <CardTitle className="text-2xl text-center">Iniciar Sesión</CardTitle>
             <CardDescription className="text-center">
-              {isRegister
-                ? 'Regístrate para empezar a usar EzPayConnect'
-                : 'Ingresa tus credenciales para continuar'}
+              Ingresa tus credenciales para continuar
             </CardDescription>
           </CardHeader>
           <CardContent>
             <form onSubmit={handleSubmit} className="space-y-4">
-              {isRegister && (
-                <>
-                  <div className="space-y-2">
-                    <Label htmlFor="nombre">Nombre Completo</Label>
-                    <Input
-                      id="nombre"
-                      value={nombre}
-                      onChange={(e) => setNombre(e.target.value)}
-                      placeholder="Dr. Juan Pérez"
-                      required
-                    />
-                  </div>
-                  <div className="space-y-2">
-                    <Label>País</Label>
-                    <Select value={paisId} onValueChange={setPaisId}>
-                      <SelectTrigger>
-                        <SelectValue placeholder="Selecciona tu país" />
-                      </SelectTrigger>
-                      <SelectContent>
-                        {paises.map((p) => (
-                          <SelectItem key={p.id} value={p.id}>
-                            {p.nombre} ({p.codigo})
-                          </SelectItem>
-                        ))}
-                      </SelectContent>
-                    </Select>
-                  </div>
-                  <div className="space-y-2">
-                    <Label htmlFor="rol">Tipo de Usuario</Label>
-                    <Select value={rol} onValueChange={setRol}>
-                      <SelectTrigger>
-                        <SelectValue placeholder="Seleccionar rol" />
-                      </SelectTrigger>
-                      <SelectContent>
-                        {roles.map((r) => (
-                          <SelectItem key={r.value} value={r.value}>
-                            <div className="flex items-center gap-2">
-                              <r.icon className={`h-4 w-4 ${r.color}`} />
-                              <div>
-                                <p className="font-medium">{r.label}</p>
-                                <p className="text-xs text-[#8a9aaa]">{r.desc}</p>
-                              </div>
-                            </div>
-                          </SelectItem>
-                        ))}
-                      </SelectContent>
-                    </Select>
-                  </div>
-                </>
-              )}
               <div className="space-y-2">
                 <Label htmlFor="email">Correo Electrónico</Label>
                 <Input
@@ -203,7 +105,7 @@ export default function LoginPage() {
               )}
               <Button type="submit" className="w-full bg-[#1E5C8E] hover:bg-[#3A8ABF]" disabled={loading}>
                 {loading && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
-                {isRegister ? 'Registrarse' : 'Iniciar Sesión'}
+                Iniciar Sesión
               </Button>
             </form>
 
@@ -215,14 +117,7 @@ export default function LoginPage() {
             </div>
 
             <p className="text-center mt-4 text-sm text-muted-foreground">
-              {isRegister ? '¿Ya tienes cuenta?' : '¿No tienes cuenta?'}{' '}
-              <button
-                type="button"
-                onClick={toggleMode}
-                className="text-[#1E5C8E] hover:underline font-medium"
-              >
-                {isRegister ? 'Inicia Sesión' : 'Regístrate'}
-              </button>
+              El acceso a EzPayConnect es por invitación.
             </p>
           </CardContent>
         </Card>
