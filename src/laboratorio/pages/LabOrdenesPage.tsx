@@ -23,7 +23,9 @@ const FILTROS = [
   { key: 'todas', label: 'Todas' },
 ]
 
-const ordenCompletada = (o: OrdenAgrupada) => o.items.every((i) => i.estado === 'completado')
+// Exportada para que el test cruzado del dashboard use ESTE predicado y no una copia suya:
+// una copia se desincroniza y el test seguiría en verde mientras las dos pantallas divergen.
+export const ordenCompletada = (o: OrdenAgrupada) => o.items.every((i) => i.estado === 'completado')
 
 export default function LabOrdenesPage() {
   const { ordenes, loading, fetchOrdenes, cambiarEstado, subirResultado } = useLaboratorio()

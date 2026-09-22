@@ -5,15 +5,53 @@ import { useProveedorAuth } from '@/proveedor/hooks/useProveedorAuth'
 import { Card, CardContent } from '@/components/ui/card'
 import { ClipboardList, Clock, FlaskConical, CheckCircle2, Building2, UserPlus } from 'lucide-react'
 
+// ############################################################################################
+// Conteo de las tarjetas del dashboard
+// ############################################################################################
+// SE CUENTA POR EXAMEN, NO POR ORDEN. El conteo viejo hacía `ordenes.filter(o => o.estado === …)`
+// y `OrdenAgrupada` NO TIENE `estado`: el estado vive en cada `items[]`. El filtro comparaba
+// contra `undefined` y devolvía siempre cero, así que las tres tarjetas mostraban 0 aunque la
+// bandeja tuviera órdenes activas.
+//
+// EL COMPILADOR LO VENÍA GRITANDO. Esas 3 líneas producían 4 errores
+// `TS2339: Property 'estado' does not exist on type 'OrdenAgrupada'` — estaban adentro del
+// baseline de 82 de `tsc -p tsconfig.app.json`, o sea contadas como deuda tolerada y por eso
+// invisibles. Arreglarlo bajó el baseline a 78. Un baseline es un techo, no una alfombra: lo que
+// entra ahí deja de leerse.
+//
+// Además una orden no tiene UN estado: sus exámenes avanzan por separado. Un pedido de 3 estudios
+// puede tener uno entregado y dos en proceso, así que "por orden" ni siquiera es una pregunta bien
+// formada. La unidad correcta es el examen.
+//
+// LOS 5 VALORES DEL ENUM `examen_estado` ESTÁN CUBIERTOS, medidos contra el tipo vivo:
+//   pendiente · recibida · en_proceso · revision · completado
+// `revision` no estaba contemplado en el conteo viejo y se suma a "En proceso": el examen está en
+// el laboratorio y todavía no salió. El test de este archivo verifica que los tres baldes
+// PARTICIONEN el total — si mañana aparece un sexto estado, falla en vez de tragárselo.
+export interface ConteoExamenes {
+  pendientes: number
+  enProceso: number
+  completadas: number
+}
+
+const EN_PROCESO = new Set(['recibida', 'en_proceso', 'revision'])
+
+export function contarExamenes(ordenes: { items: { estado: string }[] }[]): ConteoExamenes {
+  const todosLosItems = ordenes.flatMap((o) => o.items)
+  return {
+    pendientes: todosLosItems.filter((i) => i.estado === 'pendiente').length,
+    enProceso: todosLosItems.filter((i) => EN_PROCESO.has(i.estado)).length,
+    completadas: todosLosItems.filter((i) => i.estado === 'completado').length,
+  }
+}
+
 export default function LabDashboard() {
   const { empresa } = useProveedorAuth()
   const { ordenes, afiliaciones, invitaciones, fetchAfiliaciones, fetchInvitaciones } = useLaboratorio()
 
   useEffect(() => { fetchAfiliaciones(); fetchInvitaciones() }, [fetchAfiliaciones, fetchInvitaciones])
 
-  const pendientes = ordenes.filter((o) => o.estado === 'pendiente').length
-  const enProceso = ordenes.filter((o) => o.estado === 'recibida' || o.estado === 'en_proceso').length
-  const completadas = ordenes.filter((o) => o.estado === 'completado').length
+  const { pendientes, enProceso, completadas } = contarExamenes(ordenes)
 
   const stats = [
     { label: 'Pendientes de recibir', value: pendientes, icon: Clock, color: 'text-amber-600', to: '/laboratorio/ordenes' },
