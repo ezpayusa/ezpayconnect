@@ -1,8 +1,9 @@
 import { Navigate } from 'react-router-dom'
 import { useProveedorAuth } from '@/proveedor/hooks/useProveedorAuth'
+import GateEstadoEmpresa from '@/proveedor/components/GateEstadoEmpresa'
 
 export default function ProveedorPrivateRoute({ children }: { children: React.ReactNode }) {
-  const { user, cuenta, loading } = useProveedorAuth()
+  const { user, cuenta, empresa, loading } = useProveedorAuth()
 
   if (loading) {
     return (
@@ -16,5 +17,6 @@ export default function ProveedorPrivateRoute({ children }: { children: React.Re
     return <Navigate to="/proveedor/login" replace />
   }
 
-  return <>{children}</>
+  // Empresa no activa → pantalla de estado / onboarding (CORTESÍA; la barrera real es la mig 322).
+  return <GateEstadoEmpresa estado={empresa?.estado}>{children}</GateEstadoEmpresa>
 }

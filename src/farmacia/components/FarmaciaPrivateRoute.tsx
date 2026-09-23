@@ -1,5 +1,6 @@
 import { Navigate } from 'react-router-dom'
 import { useProveedorAuth } from '@/proveedor/hooks/useProveedorAuth'
+import GateEstadoEmpresa from '@/proveedor/components/GateEstadoEmpresa'
 
 // La farmacia-tenant reutiliza la cuenta de proveedor (cuentas_proveedor +
 // empresas_proveedoras) pero solo entra a su portal si su empresa es tipo
@@ -24,5 +25,6 @@ export default function FarmaciaPrivateRoute({ children }: { children: React.Rea
     return <Navigate to="/proveedor/dashboard" replace />
   }
 
-  return <>{children}</>
+  // Empresa no activa → pantalla de estado / onboarding (CORTESÍA; la barrera real es la mig 322).
+  return <GateEstadoEmpresa estado={empresa?.estado}>{children}</GateEstadoEmpresa>
 }

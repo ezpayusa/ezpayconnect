@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 import { useProveedorAuth } from '@/proveedor/hooks/useProveedorAuth'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
@@ -6,49 +6,88 @@ import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { MapPin, Mail, Phone, Briefcase, User, Save, X, Pencil, Palette } from 'lucide-react'
 import { FormPersonalizacion } from '@/components/personalizacion/FormPersonalizacion'
+import { camposPerfilCambiados, type FormPerfil } from '@/proveedor/lib/perfilEmpresa'
+import type { EmpresaProveedora, CuentaProveedor } from '@/proveedor/types/proveedor.types'
+
+// `tipo` NO se edita acá (columna privilegiada; el guard de la mig 322 la bloquea). El form solo
+// contiene los campos de PERFIL. Seed vacío: el useEffect lo carga desde `empresa` en cuanto llega.
+const formVacio: FormPerfil = {
+  nombre_empresa: '',
+  ruc_nit: '',
+  ciudad: '',
+  direccion: '',
+  email_contacto: '',
+  telefono: '',
+}
+
+const snapshotEmpresa = (e: EmpresaProveedora | null | undefined): FormPerfil => ({
+  nombre_empresa: e?.nombre_empresa ?? '',
+  ruc_nit: e?.ruc_nit ?? '',
+  ciudad: e?.ciudad ?? '',
+  direccion: e?.direccion ?? '',
+  email_contacto: e?.email_contacto ?? '',
+  telefono: e?.telefono ?? '',
+})
+
+const mismoForm = (a: FormPerfil, b: FormPerfil): boolean =>
+  (Object.keys(a) as (keyof FormPerfil)[]).every((k) => a[k] === b[k])
 
 export default function ProveedorPerfilPage() {
   const { empresa, cuenta, actualizarEmpresa, actualizarCuenta, isEditor } = useProveedorAuth()
   const [editando, setEditando] = useState(false)
   const [saving, setSaving] = useState(false)
 
-  const [formEmpresa, setFormEmpresa] = useState({
-    nombre_empresa: empresa?.nombre_empresa || '',
-    tipo: empresa?.tipo || 'farmacia',
-    ruc_nit: empresa?.ruc_nit || '',
-    ciudad: empresa?.ciudad || '',
-    direccion: empresa?.direccion || '',
-    email_contacto: empresa?.email_contacto || '',
-    telefono: empresa?.telefono || '',
-  })
+  const [formEmpresa, setFormEmpresa] = useState<FormPerfil>(formVacio)
+  const [formCuenta, setFormCuenta] = useState({ nombre_completo: '' })
 
-  const [formCuenta, setFormCuenta] = useState({
-    nombre_completo: cuenta?.nombre_completo || '',
-  })
+  // Sincroniza el form con `empresa`/`cuenta` MIENTRAS no se esté editando. Así, cuando el fetch
+  // asíncrono de useProveedorAuth resuelve (o al cancelar), el form arranca con los valores REALES —
+  // esto es lo que evita la pérdida de datos: el form ya no nace vacío y no se pisa lo cargado.
+  // Devolver `prev` cuando no cambió nada hace que React se saltee el re-render (no suma ruido).
+  useEffect(() => {
+    if (editando) return
+    setFormEmpresa((prev) => {
+      const next = snapshotEmpresa(empresa)
+      return mismoForm(prev, next) ? prev : next
+    })
+    setFormCuenta((prev) => {
+      const next = { nombre_completo: cuenta?.nombre_completo ?? '' }
+      return prev.nombre_completo === next.nombre_completo ? prev : next
+    })
+  }, [empresa, cuenta, editando])
 
   const handleGuardar = async () => {
     setSaving(true)
-    const okEmpresa = await actualizarEmpresa(formEmpresa)
-    const okCuenta = await actualizarCuenta(formCuenta)
+    // Guardado defensivo: solo los campos de perfil que cambiaron (diff con whitelist). Si no cambió
+    // nada, no se toca la empresa.
+    const cambiosEmpresa = camposPerfilCambiados(empresa, formEmpresa)
+    let okEmpresa = true
+    if (Object.keys(cambiosEmpresa).length > 0) {
+      okEmpresa = await actualizarEmpresa(cambiosEmpresa as Partial<EmpresaProveedora>)
+    }
+
+    // El nombre del representante sigue el mismo criterio: solo si cambió y no quedó vacío.
+    let okCuenta = true
+    const nombre = formCuenta.nombre_completo.trim()
+    if (nombre && nombre !== (cuenta?.nombre_completo ?? '')) {
+      okCuenta = await actualizarCuenta({ nombre_completo: nombre } as Partial<CuentaProveedor>)
+    }
+
     if (okEmpresa && okCuenta) {
       setEditando(false)
     }
     setSaving(false)
   }
 
+  const handleEditar = () => {
+    // Congela el form con los valores actuales de empresa/cuenta al entrar en edición.
+    setFormEmpresa(snapshotEmpresa(empresa))
+    setFormCuenta({ nombre_completo: cuenta?.nombre_completo ?? '' })
+    setEditando(true)
+  }
+
   const handleCancelar = () => {
-    setFormEmpresa({
-      nombre_empresa: empresa?.nombre_empresa || '',
-      tipo: empresa?.tipo || 'farmacia',
-      ruc_nit: empresa?.ruc_nit || '',
-      ciudad: empresa?.ciudad || '',
-      direccion: empresa?.direccion || '',
-      email_contacto: empresa?.email_contacto || '',
-      telefono: empresa?.telefono || '',
-    })
-    setFormCuenta({
-      nombre_completo: cuenta?.nombre_completo || '',
-    })
+    // Al salir de edición, el useEffect re-siembra el form desde empresa/cuenta.
     setEditando(false)
   }
 
@@ -60,7 +99,7 @@ export default function ProveedorPerfilPage() {
           <p className="text-sm text-muted-foreground">Información de tu empresa registrada</p>
         </div>
         {isEditor && !editando && (
-          <Button variant="outline" size="sm" onClick={() => setEditando(true)}>
+          <Button variant="outline" size="sm" onClick={handleEditar} disabled={!empresa}>
             <Pencil className="h-4 w-4 mr-1" />
             Editar
           </Button>
@@ -99,18 +138,12 @@ export default function ProveedorPerfilPage() {
               </div>
               <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                 <div className="space-y-2">
-                  <Label htmlFor="tipo">Tipo</Label>
-                  <select
-                    id="tipo"
-                    className="flex h-9 w-full rounded-md border border-input bg-transparent px-3 py-1 text-sm shadow-sm transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
-                    value={formEmpresa.tipo}
-                    onChange={(e) => setFormEmpresa((prev) => ({ ...prev, tipo: e.target.value as any }))}
-                  >
-                    <option value="farmacia">Farmacia</option>
-                    <option value="laboratorio_farmaceutico">Laboratorio farmacéutico</option>
-                    <option value="laboratorio_clinico">Laboratorio clínico</option>
-                    <option value="empresa_afin">Empresa afín</option>
-                  </select>
+                  {/* Tipo es de solo lectura: columna privilegiada, la cambia únicamente el admin de
+                      EzPay (el guard de la mig 322 la bloquea para el proveedor). */}
+                  <Label>Tipo</Label>
+                  <p className="flex h-9 items-center px-3 text-sm text-muted-foreground capitalize">
+                    {empresa?.tipo?.replace('_', ' ') || '-'}
+                  </p>
                 </div>
                 <div className="space-y-2">
                   <Label htmlFor="ruc_nit">RUC / NIT</Label>
