@@ -139,6 +139,9 @@ const ProveedorPerfilPage = lazy(() => import('@/proveedor/pages/cuenta/Proveedo
 const ProveedorPagosPage = lazy(() => import('@/proveedor/pages/cuenta/ProveedorPagosPage'))
 const ProveedorNotificacionesPage = lazy(() => import('@/proveedor/pages/ProveedorNotificacionesPage'))
 const PagoCheckoutPage = lazy(() => import('@/proveedor/pages/PagoCheckoutPage'))
+// Pantalla de estado para empresas NO activas (pendiente/suspendida/rechazada). Compartida por los
+// 3 portales de proveedor. La monta el GateEstadoEmpresa dentro de un shell mínimo.
+const EmpresaEstadoPage = lazy(() => import('@/proveedor/components/EmpresaEstadoPage'))
 
 // === PORTAL LABORATORIO CLÍNICO ===
 const LabLogin = lazy(() => import('@/laboratorio/pages/LabLogin'))
@@ -466,6 +469,7 @@ function App() {
           <Route path="pagos" element={<ProveedorPagosPage />} />
           <Route path="notificaciones" element={<ProveedorNotificacionesPage />} />
           <Route path="checkout" element={<PagoCheckoutPage />} />
+          <Route path="estado" element={<EmpresaEstadoPage />} />
         </Route>
 
         {/* === RUTAS PORTAL LABORATORIO CLÍNICO === */}
@@ -481,6 +485,7 @@ function App() {
           <Route path="personal" element={<LabPersonalPage />} />
           <Route path="perfil" element={<LabPerfilPage />} />
           <Route path="notificaciones" element={<ProveedorNotificacionesPage />} />
+          <Route path="estado" element={<EmpresaEstadoPage />} />
         </Route>
 
         {/* === PWA REPARTIDOR (delivery; guard por rol_en_empresa='delivery') === */}
@@ -515,6 +520,7 @@ function App() {
           <Route path="pagos" element={<ProveedorPagosPage />} />
           <Route path="perfil" element={<ProveedorPerfilPage />} />
           <Route path="notificaciones" element={<ProveedorNotificacionesPage />} />
+          <Route path="estado" element={<EmpresaEstadoPage />} />
         </Route>
 
         {/* === RUTAS ADMIN PLANES (con AdminLayout) — FIX: ahora tienen layout === */}

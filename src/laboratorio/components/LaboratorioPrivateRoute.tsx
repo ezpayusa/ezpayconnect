@@ -1,5 +1,6 @@
 import { Navigate } from 'react-router-dom'
 import { useProveedorAuth } from '@/proveedor/hooks/useProveedorAuth'
+import GateEstadoEmpresa from '@/proveedor/components/GateEstadoEmpresa'
 
 // El laboratorio clínico reutiliza la cuenta de proveedor (cuentas_proveedor +
 // empresas_proveedoras), pero solo accede a su portal si su empresa es de tipo
@@ -23,5 +24,6 @@ export default function LaboratorioPrivateRoute({ children }: { children: React.
     return <Navigate to="/proveedor/dashboard" replace />
   }
 
-  return <>{children}</>
+  // Empresa no activa → pantalla de estado / onboarding (CORTESÍA; la barrera real es la mig 322).
+  return <GateEstadoEmpresa estado={empresa?.estado}>{children}</GateEstadoEmpresa>
 }
