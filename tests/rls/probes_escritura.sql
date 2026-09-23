@@ -5558,18 +5558,35 @@ DO $$ DECLARE v_cfg text[]; v_ok boolean; BEGIN
 END $$;
 SELECT set_config('role','none',true);
 
--- P344 — equivalencia conductual (no-regresión): mi_rol_proveedor(uid) == cuentas_proveedor.rol_en_empresa
--- para todas las cuentas activas (0 mismatch). Owner: resuelve sin RLS; la fn lee el jwt.
-DO $$ DECLARE rec record; v_r text; v_mis int := 0; v_n int := 0; BEGIN
-  FOR rec IN SELECT id, rol_en_empresa FROM public.cuentas_proveedor WHERE activo LOOP
-    v_n := v_n+1;
+-- P344 — DOS afirmaciones (post-322, mig 322 = gate de estado en mi_rol_proveedor):
+--   (i)  cuentas activas de empresa 'activa'      -> mi_rol_proveedor() == rol_en_empresa (0 mismatch)
+--   (ii) cuentas activas de empresa <> 'activa'   -> mi_rol_proveedor() IS NULL      (0 no-NULL)
+-- Actores elegidos como postgres (join cuentas_proveedor<->empresas_proveedoras) ANTES de impersonar.
+DO $$ DECLARE rec record; v_r text;
+  n_act int := 0; mis_act int := 0; n_noact int := 0; nonull_noact int := 0; BEGIN
+  FOR rec IN
+    SELECT cp.id, cp.rol_en_empresa, (e.estado = 'activa') AS es_activa
+      FROM public.cuentas_proveedor cp JOIN public.empresas_proveedoras e ON e.id = cp.empresa_id
+     WHERE cp.activo
+  LOOP
     PERFORM set_config('request.jwt.claims', json_build_object('sub',rec.id,'role','authenticated')::text, true);
     SELECT public.mi_rol_proveedor() INTO v_r;
-    IF v_r IS DISTINCT FROM rec.rol_en_empresa THEN v_mis := v_mis+1; END IF;
+    IF rec.es_activa THEN
+      n_act := n_act+1;
+      IF v_r IS DISTINCT FROM rec.rol_en_empresa THEN mis_act := mis_act+1; END IF;
+    ELSE
+      n_noact := n_noact+1;
+      IF v_r IS NOT NULL THEN nonull_noact := nonull_noact+1; END IF;
+    END IF;
   END LOOP;
   PERFORM set_config('request.jwt.claims', NULL, true);
-  IF v_mis=0 THEN PERFORM set_config('probe.p344','OK (mi_rol_proveedor==rol_en_empresa en '||v_n||' cuentas, 0 mismatch)',false);
-  ELSE PERFORM set_config('probe.p344','FALLO ('||v_mis||' mismatches mi_rol_proveedor vs rol_en_empresa)',false); END IF;
+  IF mis_act=0 AND nonull_noact=0 THEN
+    PERFORM set_config('probe.p344',
+      CASE WHEN n_noact=0 THEN 'OK (sin muestra no-activa) ' ELSE 'OK (i equivalencia + ii gate 322) ' END
+      ||'[n_activas='||n_act||' mismatch_activas='||mis_act||' n_no_activas='||n_noact||' no_null_no_activas='||nonull_noact||']', false);
+  ELSE
+    PERFORM set_config('probe.p344','FALLO [n_activas='||n_act||' mismatch_activas='||mis_act||' n_no_activas='||n_noact||' no_null_no_activas='||nonull_noact||']',false);
+  END IF;
 EXCEPTION WHEN OTHERS THEN PERFORM set_config('probe.b2_fallos', coalesce(current_setting('probe.b2_fallos', true),'')||'L5563('||SQLSTATE||') ', false);
 END $$;
 SELECT set_config('role','none',true);
@@ -7388,18 +7405,24 @@ DO $$ DECLARE v_A uuid:='411d6f8c-a405-49d6-9ed6-fbeb0db05133'; v_B uuid:='cc17a
 EXCEPTION WHEN OTHERS THEN PERFORM set_config('probe.b2_fallos', coalesce(current_setting('probe.b2_fallos', true),'')||'L7360('||SQLSTATE||') ', false);
 END $$;
 
--- P424 estructural: helper DEFINER+sp''+grants + policy WITH CHECK referencia cuenta_en_empresa
-DO $$ DECLARE v_def boolean; v_cfg text[]; v_sp boolean; v_anon boolean; v_auth boolean; v_chk text; BEGIN
+-- P424 estructural: helper DEFINER+sp''+grants + WITH CHECK reapuntado por la mig 322 a
+-- empresa_id = mi_empresa_proveedor() (antes 'empresa_id IN (subquery)'), conjuntivo con
+-- cuenta_en_empresa y mi_rol_proveedor(). Se exige la presencia de los 3 helpers, no el literal viejo.
+DO $$ DECLARE v_def boolean; v_cfg text[]; v_sp boolean; v_anon boolean; v_auth boolean; v_chk text;
+  v_chk_cta boolean; v_chk_emp boolean; v_chk_rol boolean; BEGIN
   IF to_regprocedure('private.cuenta_en_empresa(uuid,uuid)') IS NULL THEN PERFORM set_config('probe.p424','ROJO (helper ausente)',false); RETURN; END IF;
   SELECT prosecdef, proconfig INTO v_def, v_cfg FROM pg_proc WHERE oid='private.cuenta_en_empresa(uuid,uuid)'::regprocedure;
   v_sp := EXISTS(SELECT 1 FROM unnest(coalesce(v_cfg,'{}'::text[])) e WHERE e LIKE 'search_path=%' AND e<>'search_path=public');
   v_anon := has_function_privilege('anon','private.cuenta_en_empresa(uuid,uuid)','EXECUTE');
   v_auth := has_function_privilege('authenticated','private.cuenta_en_empresa(uuid,uuid)','EXECUTE');
   SELECT pg_get_expr(polwithcheck,polrelid) INTO v_chk FROM pg_policy WHERE polrelid='public.visitas_agendadas'::regclass AND polname='Proveedor crea visitas de su empresa';
+  v_chk_cta := v_chk ILIKE '%cuenta_en_empresa%';
+  v_chk_emp := v_chk ILIKE '%mi_empresa_proveedor()%';
+  v_chk_rol := v_chk ILIKE '%mi_rol_proveedor()%';
   PERFORM set_config('probe.p424', CASE
-    WHEN v_def AND v_sp AND NOT v_anon AND v_auth AND v_chk ILIKE '%cuenta_en_empresa%' AND v_chk ILIKE '%empresa_id IN%'
-    THEN 'OK (helper DEFINER+sp''+grants; WITH CHECK conjuntivo con cuenta_en_empresa)'
-    ELSE 'ROJO (def='||v_def||' sp='||v_sp||' anon='||v_anon||' auth='||v_auth||' chk_cuenta='||(v_chk ILIKE '%cuenta_en_empresa%')||')' END, false);
+    WHEN v_def AND v_sp AND NOT v_anon AND v_auth AND v_chk_cta AND v_chk_emp AND v_chk_rol
+    THEN 'OK (helper DEFINER+sp''+grants; WITH CHECK conjuntivo con cuenta_en_empresa + mi_empresa_proveedor() + mi_rol_proveedor())'
+    ELSE 'ROJO (def='||v_def||' sp='||v_sp||' anon='||v_anon||' auth='||v_auth||' chk_cuenta='||v_chk_cta||' chk_empresa='||v_chk_emp||' chk_rol='||v_chk_rol||')' END, false);
 END $$;
 
 -- aislar el WITH CHECK del gate país/bolsa (RLS sigue activa; rolled-back; postgres dueño)
@@ -13756,17 +13779,38 @@ DO $$ DECLARE v_ve int; v_yo int; BEGIN
     ELSE 'CERRADA' END, false);
 EXCEPTION WHEN OTHERS THEN PERFORM set_config('probe.p614_directo','FALLO('||SQLSTATE||')',false); END $$;
 SELECT set_config('role','none', true);
-DO $$ DECLARE v_pol int; v_sel int; v_dir text; BEGIN
+-- Mitad CATALOGO: el (policyname,cmd) de perfiles debe ser EXACTAMENTE el set de 6, + 0 ALL + 1 INSERT.
+-- Set actualizado por migs 318 (DROP Insertar propio perfil) y 319 (split ALL->S/U/D). El conteo
+-- hardcodeado viejo (5 policies) quedo desactualizado; ahora se compara el conjunto y se listan
+-- sobrantes/faltantes.
+DO $$ DECLARE v_dir text; v_sobra text; v_falta text; v_all int; v_ins int; BEGIN
   IF coalesce(current_setting('probe.av_ready',true),'')<>'1' THEN PERFORM set_config('probe.p614','N/A',false); RETURN; END IF;
-  SELECT count(*), count(*) FILTER (WHERE cmd IN ('SELECT','ALL')) INTO v_pol, v_sel
-    FROM pg_policies WHERE schemaname='public' AND tablename='perfiles';
   v_dir := coalesce(current_setting('probe.p614_directo',true),'');
+  SELECT string_agg(nm||':'||cm, ', ' ORDER BY nm) INTO v_sobra FROM (
+    SELECT policyname::text nm, cmd::text cm FROM pg_policies WHERE schemaname='public' AND tablename='perfiles'
+    EXCEPT
+    SELECT * FROM (VALUES
+      ('Admin borra perfiles de su pais','DELETE'),('Admins pueden insertar perfiles','INSERT'),
+      ('Admin lee perfiles de su pais','SELECT'),('Ver propio perfil','SELECT'),
+      ('Actualizar propio perfil','UPDATE'),('Admin actualiza perfiles de su pais','UPDATE')) AS x(nm,cm)
+  ) s;
+  SELECT string_agg(nm||':'||cm, ', ' ORDER BY nm) INTO v_falta FROM (
+    SELECT * FROM (VALUES
+      ('Admin borra perfiles de su pais','DELETE'),('Admins pueden insertar perfiles','INSERT'),
+      ('Admin lee perfiles de su pais','SELECT'),('Ver propio perfil','SELECT'),
+      ('Actualizar propio perfil','UPDATE'),('Admin actualiza perfiles de su pais','UPDATE')) AS x(nm,cm)
+    EXCEPT
+    SELECT policyname::text, cmd::text FROM pg_policies WHERE schemaname='public' AND tablename='perfiles'
+  ) s;
+  SELECT count(*) FILTER (WHERE cmd='ALL'), count(*) FILTER (WHERE cmd='INSERT') INTO v_all, v_ins
+    FROM pg_policies WHERE schemaname='public' AND tablename='perfiles';
   PERFORM set_config('probe.p614', CASE
     WHEN v_dir = 'ABIERTA' THEN 'ROJO — SE ABRIO perfiles (el supervisor ahora LEE la fila de su asesor por camino directo)'
     WHEN v_dir = 'CIEGA'   THEN 'FALLO (el supervisor no ve ni su propio perfil: la mitad directa no mide nada)'
     WHEN v_dir <> 'CERRADA' THEN 'FALLO (mitad directa: '||v_dir||')'
-    WHEN v_pol <> 5 OR v_sel <> 2 THEN 'ROJO (perfiles quedo con '||v_pol||' policies y '||v_sel||' que dan SELECT; esperaba 5 y 2)'
-    ELSE 'OK (perfiles intacta: 5 policies, 2 dan SELECT, y el supervisor sigue sin leer la fila de su asesor)' END, false);
+    WHEN v_sobra IS NOT NULL OR v_falta IS NOT NULL OR v_all <> 0 OR v_ins <> 1
+      THEN 'ROJO (perfiles cambio — sobrantes: ['||coalesce(v_sobra,'-')||'] faltantes: ['||coalesce(v_falta,'-')||'] cmd_ALL='||v_all||' cmd_INSERT='||v_ins||')'
+    ELSE 'OK (perfiles intacta: set exacto de 6 policies [318/319], 0 ALL, 1 INSERT, y el supervisor sigue sin leer la fila de su asesor)' END, false);
 EXCEPTION WHEN OTHERS THEN PERFORM set_config('probe.p614','FALLO ('||SQLSTATE||' '||SQLERRM||')',false); END $$;
 
 -- ############################################################################################
