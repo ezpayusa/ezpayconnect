@@ -19418,6 +19418,242 @@ END $$;
 SELECT set_config('role','none', true);
 
 
+-- ================================================================================
+-- MIG 323 — PROBES: gate de estado de empresa (lote 2). Actor admin elegido como postgres.
+-- Grupo B: activa->OK, suspendida->42501. Grupo A: activa->valor, suspendida->NULL/false.
+-- Onboarding: rechazada ve su empresa + B bloqueada; pendiente ve empresa+equipo + UPDATE perfil.
+-- Estructural: 17 B con exigir_empresa_activa; 2 exentas sin.
+-- ================================================================================
+-- ---------------- PGR_FX ----------------
+DO $$
+DECLARE v_admin uuid; v_emp uuid; v_co uuid;
+BEGIN
+  SELECT cp.id, cp.empresa_id INTO v_admin, v_emp FROM public.cuentas_proveedor cp
+    JOIN public.empresas_proveedoras e ON e.id=cp.empresa_id
+   WHERE cp.activo AND cp.rol_en_empresa='admin' AND e.estado='activa'
+     AND EXISTS (SELECT 1 FROM public.cuentas_proveedor c2 WHERE c2.empresa_id=cp.empresa_id AND c2.id<>cp.id AND c2.activo)
+   ORDER BY cp.id LIMIT 1;
+  IF v_admin IS NULL THEN
+    PERFORM set_config('probe.pgr_ready','0',false);
+    PERFORM set_config('probe.pgr_fx','ROJO (no hay admin de empresa activa con co-miembro)',false); RETURN;
+  END IF;
+  SELECT id INTO v_co FROM public.cuentas_proveedor WHERE empresa_id=v_emp AND id<>v_admin AND activo LIMIT 1;
+  PERFORM set_config('probe.pgr_admin', v_admin::text, false);
+  PERFORM set_config('probe.pgr_emp', v_emp::text, false);
+  PERFORM set_config('probe.pgr_co', v_co::text, false);
+  PERFORM set_config('probe.pgr_ready','1', false);
+  PERFORM set_config('probe.pgr_fx','OK (admin '||v_admin::text||', empresa '||v_emp::text||', co '||v_co::text||')', false);
+EXCEPTION WHEN OTHERS THEN
+  PERFORM set_config('probe.pgr_ready','0',false);
+  PERFORM set_config('probe.pgr_fx','ROJO ('||SQLSTATE||' '||SQLERRM||')',false);
+END $$;
+SELECT set_config('role','none', true);
+
+-- ---------------- P815-P818 GRUPO B: activa OK / suspendida 42501 ----------------
+DO $$
+DECLARE v_admin uuid; v_emp uuid; v_co uuid; claims text; st text;
+  r_act text; r_sus text; ss text;
+BEGIN
+  IF coalesce(current_setting('probe.pgr_ready',true),'0')<>'1' THEN
+    PERFORM set_config('probe.p815','N/A',false); PERFORM set_config('probe.p816','N/A',false);
+    PERFORM set_config('probe.p817','N/A',false); PERFORM set_config('probe.p818','N/A',false); RETURN;
+  END IF;
+  v_admin:=current_setting('probe.pgr_admin',true)::uuid; v_emp:=current_setting('probe.pgr_emp',true)::uuid; v_co:=current_setting('probe.pgr_co',true)::uuid;
+  claims:=json_build_object('sub',v_admin::text,'role','authenticated')::text;
+
+  -- P815 staff: cambiar_estado_miembro_proveedor(co,false)
+  UPDATE public.empresas_proveedoras SET estado='activa' WHERE id=v_emp;
+  r_act:='?'; r_sus:='?';
+  BEGIN PERFORM set_config('request.jwt.claims',claims,true); PERFORM set_config('role','authenticated',true);
+    PERFORM public.cambiar_estado_miembro_proveedor(v_co,false); PERFORM set_config('role','none',true); r_act:='OK';
+  EXCEPTION WHEN OTHERS THEN PERFORM set_config('role','none',true); r_act:='ERR '||SQLSTATE; END;
+  UPDATE public.empresas_proveedoras SET estado='suspendida' WHERE id=v_emp;
+  BEGIN PERFORM set_config('request.jwt.claims',claims,true); PERFORM set_config('role','authenticated',true);
+    PERFORM public.cambiar_estado_miembro_proveedor(v_co,true); PERFORM set_config('role','none',true); r_sus:='NO_BLOQUEO';
+  EXCEPTION WHEN insufficient_privilege THEN PERFORM set_config('role','none',true); r_sus:='42501';
+           WHEN OTHERS THEN PERFORM set_config('role','none',true); r_sus:='ERR '||SQLSTATE; END;
+  PERFORM set_config('probe.p815', CASE WHEN r_act='OK' AND r_sus='42501' THEN 'OK (staff: activa OK, suspendida 42501)' ELSE 'ROJO (activa='||r_act||' suspendida='||r_sus||')' END, false);
+
+  -- P816 chat: contactos_chat()
+  UPDATE public.empresas_proveedoras SET estado='activa' WHERE id=v_emp;
+  BEGIN PERFORM set_config('request.jwt.claims',claims,true); PERFORM set_config('role','authenticated',true);
+    PERFORM count(*) FROM public.contactos_chat(); PERFORM set_config('role','none',true); r_act:='OK';
+  EXCEPTION WHEN OTHERS THEN PERFORM set_config('role','none',true); r_act:='ERR '||SQLSTATE; END;
+  UPDATE public.empresas_proveedoras SET estado='suspendida' WHERE id=v_emp;
+  BEGIN PERFORM set_config('request.jwt.claims',claims,true); PERFORM set_config('role','authenticated',true);
+    PERFORM count(*) FROM public.contactos_chat(); PERFORM set_config('role','none',true); r_sus:='NO_BLOQUEO';
+  EXCEPTION WHEN insufficient_privilege THEN PERFORM set_config('role','none',true); r_sus:='42501';
+           WHEN OTHERS THEN PERFORM set_config('role','none',true); r_sus:='ERR '||SQLSTATE; END;
+  PERFORM set_config('probe.p816', CASE WHEN r_act='OK' AND r_sus='42501' THEN 'OK (chat: activa OK, suspendida 42501)' ELSE 'ROJO (activa='||r_act||' suspendida='||r_sus||')' END, false);
+
+  -- P817 visitas: get_visitas_proveedor()
+  UPDATE public.empresas_proveedoras SET estado='activa' WHERE id=v_emp;
+  BEGIN PERFORM set_config('request.jwt.claims',claims,true); PERFORM set_config('role','authenticated',true);
+    PERFORM public.get_visitas_proveedor(); PERFORM set_config('role','none',true); r_act:='OK';
+  EXCEPTION WHEN OTHERS THEN PERFORM set_config('role','none',true); r_act:='ERR '||SQLSTATE; END;
+  UPDATE public.empresas_proveedoras SET estado='suspendida' WHERE id=v_emp;
+  BEGIN PERFORM set_config('request.jwt.claims',claims,true); PERFORM set_config('role','authenticated',true);
+    PERFORM public.get_visitas_proveedor(); PERFORM set_config('role','none',true); r_sus:='NO_BLOQUEO';
+  EXCEPTION WHEN insufficient_privilege THEN PERFORM set_config('role','none',true); r_sus:='42501';
+           WHEN OTHERS THEN PERFORM set_config('role','none',true); r_sus:='ERR '||SQLSTATE; END;
+  PERFORM set_config('probe.p817', CASE WHEN r_act='OK' AND r_sus='42501' THEN 'OK (visitas: activa OK, suspendida 42501)' ELSE 'ROJO (activa='||r_act||' suspendida='||r_sus||')' END, false);
+
+  -- P818 invitacion: invitar_miembro_proveedor (gate 42501 antes de validar args). suspendida->42501.
+  UPDATE public.empresas_proveedoras SET estado='suspendida' WHERE id=v_emp;
+  BEGIN PERFORM set_config('request.jwt.claims',claims,true); PERFORM set_config('role','authenticated',true);
+    PERFORM public.invitar_miembro_proveedor('x@x.invalid','QA','visitador_medico',NULL); PERFORM set_config('role','none',true); r_sus:='NO_BLOQUEO';
+  EXCEPTION WHEN insufficient_privilege THEN PERFORM set_config('role','none',true); r_sus:='42501';
+           WHEN OTHERS THEN PERFORM set_config('role','none',true); r_sus:='ERR '||SQLSTATE; END;
+  PERFORM set_config('probe.p818', CASE WHEN r_sus='42501' THEN 'OK (invitacion: suspendida 42501)' ELSE 'ROJO (suspendida='||r_sus||')' END, false);
+
+  PERFORM set_config('request.jwt.claims','',true);
+EXCEPTION WHEN OTHERS THEN PERFORM set_config('role','none',true);
+  PERFORM set_config('probe.p815','FALLO ('||SQLSTATE||')',false); END $$;
+SELECT set_config('role','none', true);
+
+-- ---------------- P819-P821 GRUPO A helpers: activa valor / suspendida NULL-false ----------------
+DO $$
+DECLARE v_admin uuid; v_emp uuid; claims text; u uuid; b boolean;
+  a1 text; s1 text;
+BEGIN
+  IF coalesce(current_setting('probe.pgr_ready',true),'0')<>'1' THEN
+    PERFORM set_config('probe.p819','N/A',false); PERFORM set_config('probe.p820','N/A',false); PERFORM set_config('probe.p821','N/A',false); RETURN; END IF;
+  v_admin:=current_setting('probe.pgr_admin',true)::uuid; v_emp:=current_setting('probe.pgr_emp',true)::uuid;
+  claims:=json_build_object('sub',v_admin::text,'role','authenticated')::text;
+
+  -- P819 get_empresa_id_proveedor
+  UPDATE public.empresas_proveedoras SET estado='activa' WHERE id=v_emp;
+  PERFORM set_config('request.jwt.claims',claims,true); PERFORM set_config('role','authenticated',true);
+  u:=public.get_empresa_id_proveedor(); PERFORM set_config('role','none',true); a1:=COALESCE(u::text,'NULL');
+  UPDATE public.empresas_proveedoras SET estado='suspendida' WHERE id=v_emp;
+  PERFORM set_config('request.jwt.claims',claims,true); PERFORM set_config('role','authenticated',true);
+  u:=public.get_empresa_id_proveedor(); PERFORM set_config('role','none',true); s1:=COALESCE(u::text,'NULL');
+  PERFORM set_config('probe.p819', CASE WHEN a1=v_emp::text AND s1='NULL' THEN 'OK (activa=empresa, suspendida=NULL)' ELSE 'ROJO (activa='||a1||' suspendida='||s1||')' END, false);
+
+  -- P820 puede_aprobar_visitas
+  UPDATE public.empresas_proveedoras SET estado='activa' WHERE id=v_emp;
+  PERFORM set_config('request.jwt.claims',claims,true); PERFORM set_config('role','authenticated',true);
+  b:=private.puede_aprobar_visitas(); PERFORM set_config('role','none',true); a1:=b::text;
+  UPDATE public.empresas_proveedoras SET estado='suspendida' WHERE id=v_emp;
+  PERFORM set_config('request.jwt.claims',claims,true); PERFORM set_config('role','authenticated',true);
+  b:=private.puede_aprobar_visitas(); PERFORM set_config('role','none',true); s1:=b::text;
+  PERFORM set_config('probe.p820', CASE WHEN a1='true' AND s1='false' THEN 'OK (activa=true, suspendida=false)' ELSE 'ROJO (activa='||a1||' suspendida='||s1||')' END, false);
+
+  -- P821 puede_auditar_chat (admin -> true activa, false suspendida)
+  UPDATE public.empresas_proveedoras SET estado='activa' WHERE id=v_emp;
+  PERFORM set_config('request.jwt.claims',claims,true); PERFORM set_config('role','authenticated',true);
+  b:=public.puede_auditar_chat(); PERFORM set_config('role','none',true); a1:=b::text;
+  UPDATE public.empresas_proveedoras SET estado='suspendida' WHERE id=v_emp;
+  PERFORM set_config('request.jwt.claims',claims,true); PERFORM set_config('role','authenticated',true);
+  b:=public.puede_auditar_chat(); PERFORM set_config('role','none',true); s1:=b::text;
+  PERFORM set_config('probe.p821', CASE WHEN a1='true' AND s1='false' THEN 'OK (activa=true, suspendida=false)' ELSE 'ROJO (activa='||a1||' suspendida='||s1||')' END, false);
+
+  PERFORM set_config('request.jwt.claims','',true);
+EXCEPTION WHEN OTHERS THEN PERFORM set_config('role','none',true);
+  PERFORM set_config('probe.p819','FALLO ('||SQLSTATE||')',false); END $$;
+SELECT set_config('role','none', true);
+
+-- ---------------- P822 onboarding RECHAZADA / P823 PENDIENTE ----------------
+DO $$
+DECLARE v_admin uuid; v_emp uuid; v_co uuid; claims text; n int; r_emp text; r_b text; r_eq text; r_upd text;
+BEGIN
+  IF coalesce(current_setting('probe.pgr_ready',true),'0')<>'1' THEN
+    PERFORM set_config('probe.p822','N/A',false); PERFORM set_config('probe.p823','N/A',false); RETURN; END IF;
+  v_admin:=current_setting('probe.pgr_admin',true)::uuid; v_emp:=current_setting('probe.pgr_emp',true)::uuid; v_co:=current_setting('probe.pgr_co',true)::uuid;
+  claims:=json_build_object('sub',v_admin::text,'role','authenticated')::text;
+
+  -- P822 rechazada: ve su empresa (1) + accion B 42501
+  UPDATE public.empresas_proveedoras SET estado='rechazada' WHERE id=v_emp;
+  PERFORM set_config('request.jwt.claims',claims,true); PERFORM set_config('role','authenticated',true);
+  SELECT count(*) INTO n FROM public.empresas_proveedoras WHERE id=v_emp; PERFORM set_config('role','none',true); r_emp:='ve_empresa='||n;
+  BEGIN PERFORM set_config('request.jwt.claims',claims,true); PERFORM set_config('role','authenticated',true);
+    PERFORM public.cambiar_estado_miembro_proveedor(v_co,false); PERFORM set_config('role','none',true); r_b:='NO_BLOQUEO';
+  EXCEPTION WHEN insufficient_privilege THEN PERFORM set_config('role','none',true); r_b:='42501';
+           WHEN OTHERS THEN PERFORM set_config('role','none',true); r_b:='ERR '||SQLSTATE; END;
+  PERFORM set_config('probe.p822', CASE WHEN n=1 AND r_b='42501' THEN 'OK (rechazada ve su empresa (1) y accion B 42501)' ELSE 'ROJO ('||r_emp||' B='||r_b||')' END, false);
+
+  -- P823 pendiente: ve empresa+equipo + UPDATE perfil empresa OK
+  UPDATE public.empresas_proveedoras SET estado='pendiente' WHERE id=v_emp;
+  PERFORM set_config('request.jwt.claims',claims,true); PERFORM set_config('role','authenticated',true);
+  SELECT count(*) INTO n FROM public.empresas_proveedoras WHERE id=v_emp; r_emp:='emp='||n;
+  SELECT count(*) INTO n FROM public.cuentas_proveedor WHERE empresa_id=v_emp; r_eq:='equipo='||n;
+  PERFORM set_config('role','none',true);
+  BEGIN PERFORM set_config('request.jwt.claims',claims,true); PERFORM set_config('role','authenticated',true);
+    UPDATE public.empresas_proveedoras SET telefono=COALESCE(telefono,'') WHERE id=v_emp; GET DIAGNOSTICS n=ROW_COUNT;
+    PERFORM set_config('role','none',true); r_upd:='upd='||n;
+  EXCEPTION WHEN OTHERS THEN PERFORM set_config('role','none',true); r_upd:='upd_ERR '||SQLSTATE; END;
+  PERFORM set_config('probe.p823', CASE WHEN r_emp='emp=1' AND r_eq LIKE 'equipo=%' AND r_upd='upd=1' THEN 'OK (pendiente ve empresa+equipo y UPDATE perfil OK; '||r_eq||')' ELSE 'ROJO ('||r_emp||' '||r_eq||' '||r_upd||')' END, false);
+
+  PERFORM set_config('request.jwt.claims','',true);
+EXCEPTION WHEN OTHERS THEN PERFORM set_config('role','none',true);
+  PERFORM set_config('probe.p822','FALLO ('||SQLSTATE||')',false); END $$;
+SELECT set_config('role','none', true);
+
+-- ---------------- P824 estructural: 17 B con exigir_empresa_activa, 2 exentas sin ----------------
+DO $$
+DECLARE n_b int; n_ex int;
+BEGIN
+  SELECT count(*) INTO n_b FROM pg_proc p JOIN pg_namespace ns ON ns.oid=p.pronamespace
+   WHERE ns.nspname='public' AND p.proname IN ('contactos_chat','get_visitas_proveedor','sincronizar_mis_canales','notificar_visita_resultado',
+     'abrir_canal_administracion','abrir_canal_equipo','abrir_directo','asignar_visitador_equipo','cambiar_auditoria_chat',
+     'cambiar_estado_miembro_proveedor','cambiar_rol_proveedor','asignar_rol_miembro','asignar_sucursal_a_miembro',
+     'autorizar_invitacion_staff','alta_miembro_farmacia','invitar_miembro_farmacia','invitar_miembro_proveedor')
+     AND p.prosrc ILIKE '%exigir_empresa_activa%';
+  SELECT count(*) INTO n_ex FROM pg_proc p JOIN pg_namespace ns ON ns.oid=p.pronamespace
+   WHERE ns.nspname='public' AND p.proname IN ('aceptar_invitacion_proveedor','vincular_membresia_proveedor')
+     AND p.prosrc ILIKE '%exigir_empresa_activa%';
+  PERFORM set_config('probe.p824', CASE WHEN n_b=17 AND n_ex=0 THEN 'OK (17 B con guard, 2 exentas sin)' ELSE 'ROJO (B con guard='||n_b||'/17, exentas con guard='||n_ex||')' END, false);
+EXCEPTION WHEN OTHERS THEN PERFORM set_config('probe.p824','FALLO ('||SQLSTATE||')',false); END $$;
+SELECT set_config('role','none', true);
+
+
+-- ---------------- P825 — INVARIANTE: cuentas_proveedor por rol (admin ve equipo; no-admin solo su fila) ----------------
+-- Contraprueba: policy 2 SIN el filtro de rol (mutacion en savepoint) -> no-admin ve el equipo -> ROJO.
+DO $$
+DECLARE emp uuid; adm uuid; nonadm uuid; nonrol text; claims text; n_adm int; n_non int; n_bad int := -1;
+BEGIN
+  SELECT cp.empresa_id INTO emp FROM public.cuentas_proveedor cp JOIN public.empresas_proveedoras e ON e.id=cp.empresa_id
+   WHERE cp.activo AND e.estado='activa' AND cp.rol_en_empresa='admin'
+     AND EXISTS (SELECT 1 FROM public.cuentas_proveedor c2 WHERE c2.empresa_id=cp.empresa_id AND c2.activo AND c2.rol_en_empresa<>'admin')
+   ORDER BY cp.empresa_id LIMIT 1;
+  IF emp IS NULL THEN PERFORM set_config('probe.p825','N/A (sin empresa activa con admin y no-admin)',false); RETURN; END IF;
+  SELECT id INTO adm FROM public.cuentas_proveedor WHERE empresa_id=emp AND activo AND rol_en_empresa='admin' LIMIT 1;
+  SELECT id, rol_en_empresa INTO nonadm, nonrol FROM public.cuentas_proveedor WHERE empresa_id=emp AND activo AND rol_en_empresa<>'admin' LIMIT 1;
+
+  -- admin ve el equipo
+  claims:=json_build_object('sub',adm::text,'role','authenticated')::text;
+  PERFORM set_config('request.jwt.claims',claims,true); PERFORM set_config('role','authenticated',true);
+  SELECT count(*) INTO n_adm FROM public.cuentas_proveedor WHERE empresa_id=emp; PERFORM set_config('role','none',true);
+
+  -- no-admin ve SOLO su fila
+  claims:=json_build_object('sub',nonadm::text,'role','authenticated')::text;
+  PERFORM set_config('request.jwt.claims',claims,true); PERFORM set_config('role','authenticated',true);
+  SELECT count(*) INTO n_non FROM public.cuentas_proveedor WHERE empresa_id=emp; PERFORM set_config('role','none',true);
+
+  -- CONTRAPRUEBA (savepoint que se descarta): policy 2 sin filtro de rol -> no-admin ve el equipo
+  BEGIN
+    DROP POLICY "Proveedor admin ve cuentas de su empresa" ON public.cuentas_proveedor;
+    CREATE POLICY "Proveedor admin ve cuentas de su empresa" ON public.cuentas_proveedor
+      FOR SELECT TO authenticated USING (empresa_id = private.mi_empresa_onboarding());
+    PERFORM set_config('request.jwt.claims',claims,true); PERFORM set_config('role','authenticated',true);
+    SELECT count(*) INTO n_bad FROM public.cuentas_proveedor WHERE empresa_id=emp; PERFORM set_config('role','none',true);
+    RAISE EXCEPTION 'SENT825';
+  EXCEPTION WHEN raise_exception THEN
+    IF SQLERRM <> 'SENT825' THEN RAISE; END IF;
+  END;
+
+  PERFORM set_config('request.jwt.claims','',true);
+  PERFORM set_config('probe.p825',
+    CASE WHEN n_adm > 1 AND n_non = 1 AND n_bad > 1
+      THEN 'OK (admin ve '||n_adm||', '||nonrol||' ve 1; contraprueba sin filtro ve '||n_bad||')'
+      ELSE 'ROJO (admin='||n_adm||' '||nonrol||'='||n_non||' contraprueba='||n_bad||')' END, false);
+EXCEPTION WHEN OTHERS THEN
+  PERFORM set_config('role','none',true); PERFORM set_config('request.jwt.claims','',true);
+  PERFORM set_config('probe.p825','FALLO ('||SQLSTATE||' '||SQLERRM||')',false);
+END $$;
+SELECT set_config('role','none', true);
+
+
 -- ===== Veredictos como result set =====
 SELECT 'P1_anon_insert_citas'              AS probe, current_setting('probe.p1', true)  AS verdict, 'BLOQUEADO' AS esperado_post_fix
 UNION ALL SELECT 'P2_medico_cancela_ajena_rpc',         current_setting('probe.p2', true),  'BLOQUEADO'
@@ -20306,6 +20542,18 @@ UNION ALL SELECT 'P811_pac_edita_columnas_form',     current_setting('probe.p811
 UNION ALL SELECT 'P812_pac_no_toca_otro_paciente',   current_setting('probe.p812', true),   'OK (0 filas)'
 UNION ALL SELECT 'P813_NR_admin_pais_medico_id',     current_setting('probe.p813', true),   'OK (camino legitimo intacto)'
 UNION ALL SELECT 'P814_estructural_trigger_funcion', current_setting('probe.p814', true),   'OK (trigger+INVOKER+search_path)'
+UNION ALL SELECT 'FX_pgr_gate_estado',               current_setting('probe.pgr_fx', true), 'OK (fixture)'
+UNION ALL SELECT 'P815_B_staff_gate',                current_setting('probe.p815', true),   'OK (activa OK, suspendida 42501)'
+UNION ALL SELECT 'P816_B_chat_gate',                 current_setting('probe.p816', true),   'OK (activa OK, suspendida 42501)'
+UNION ALL SELECT 'P817_B_visitas_gate',             current_setting('probe.p817', true),   'OK (activa OK, suspendida 42501)'
+UNION ALL SELECT 'P818_B_invitacion_gate',          current_setting('probe.p818', true),   'OK (suspendida 42501)'
+UNION ALL SELECT 'P819_A_get_empresa_id',           current_setting('probe.p819', true),   'OK (activa empresa, suspendida NULL)'
+UNION ALL SELECT 'P820_A_puede_aprobar_visitas',    current_setting('probe.p820', true),   'OK (activa true, suspendida false)'
+UNION ALL SELECT 'P821_A_tiene_permiso',            current_setting('probe.p821', true),   'OK (suspendida false)'
+UNION ALL SELECT 'P822_onboarding_rechazada',       current_setting('probe.p822', true),   'OK (ve empresa, B 42501)'
+UNION ALL SELECT 'P823_onboarding_pendiente',       current_setting('probe.p823', true),   'OK (empresa+equipo+UPDATE)'
+UNION ALL SELECT 'P824_estructural_gate',           current_setting('probe.p824', true),   'OK (17 B con guard, 2 exentas sin)'
+UNION ALL SELECT 'P825_invariante_visibilidad_cuentas', current_setting('probe.p825', true), 'OK (admin equipo, no-admin 1)'
 -- Las filas FX* son SALUD DE FIXTURE, no probes de seguridad: dicen si la precondicion que una
 -- migracion posterior empezo a exigir se pudo sembrar. Si una sale ROJO, los probes que dependen de
 -- ese fixture reportan N/A (su flag de ready se pierde con el rollback de la subtransaccion) en vez
@@ -20538,7 +20786,9 @@ UNION ALL SELECT 'P000_CENTINELA_veredictos_no_nulos',
        'probe.nr_fx', 'probe.p796', 'probe.p797', 'probe.p798', 'probe.p799',
        'probe.pg_fx', 'probe.p801', 'probe.p802', 'probe.p803', 'probe.p804', 'probe.p805',
        'probe.p806', 'probe.p807', 'probe.p808', 'probe.p809', 'probe.p810', 'probe.p811',
-       'probe.p812', 'probe.p813', 'probe.p814'
+       'probe.p812', 'probe.p813', 'probe.p814',
+       'probe.pgr_fx', 'probe.p815', 'probe.p816', 'probe.p817', 'probe.p818', 'probe.p819',
+       'probe.p820', 'probe.p821', 'probe.p822', 'probe.p823', 'probe.p824', 'probe.p825'
              ]) AS n) s),
   'OK (todos los veredictos publicados)';
 
