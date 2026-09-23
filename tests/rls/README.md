@@ -60,3 +60,10 @@ El migrador aplica en orden ascendente; el número refleja el orden de aplicaci�
 - Confirmar en Dashboard → Project Settings → API → **Exposed schemas** que el
   esquema `private` **NO** está listado (debe ser solo `public, graphql_public`),
   para que los helpers no sean invocables como RPC desde el cliente.
+
+## Gate de GRANTs del Data API (P800)
+- `probe_grants_p800.sql` — gate global de GRANTs de `public` (service_role S/I/U/D, anon sin grant
+  salvo `WL_ANON_LEGACY`, RLS habilitada). Se corre AISLADO con **`npm run harness:grants`**
+  (`npx supabase db query --linked -f tests/rls/probe_grants_p800.sql`), NO dentro de la corrida
+  transaccional de `probes_escritura.sql`. Debe pasar antes de commitear una migración que cree
+  tabla/VIEW. Ver la regla en `CLAUDE.md` (sección "GRANTs explícitos del Data API").

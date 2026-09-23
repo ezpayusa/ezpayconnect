@@ -12,7 +12,8 @@
     "harness": "python tests/rls/harness_run.py",
     "harness:selftest": "python tests/rls/harness_run.py --self-test",
     "harness:guard": "python tests/rls/b2_guard.py",
-    "harness:guard:test": "python tests/rls/b2_guard_test.py"
+    "harness:guard:test": "python tests/rls/b2_guard_test.py",
+    "harness:grants": "npx supabase db query --linked -f tests/rls/probe_grants_p800.sql"
   },
   "dependencies": {
     "@hookform/resolvers": "^5.2.2",

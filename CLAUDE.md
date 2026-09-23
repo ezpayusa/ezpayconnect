@@ -99,6 +99,28 @@ Stack: React + Vite + TypeScript, Supabase / Postgres, deploy en Vercel, repo en
   `npm run harness:guard:test`) y el hook lo corre ANTES del guard**: se equivocó tres veces en un día
   y llegó a tener un baseline inflado en 108, o sea permisivo. Un gate con el detector sin probar es
   decoración.
+- **Migraciones: SIEMPRE `npx supabase db query --linked -f <archivo>`, NUNCA `db push`.** `db push`
+  desincroniza `schema_migrations` (deuda desde la 047). Los `.sql` viven en `supabase/migrations/`
+  (rollback en `supabase/migrations/rollback/`); los de `supabase/fixes/` se agregan con `git add -f`.
+
+## GRANTs explícitos del Data API (obligatoria desde 30-oct-2026)
+Supabase deja de otorgar GRANTs automáticos a los roles del Data API al crear objetos en `public`.
+Desde esa fecha, una tabla/vista nueva **sin GRANT explícito nace inaccesible**. Reglas:
+1. Toda migración con `CREATE TABLE` / `CREATE VIEW` en `public` lleva **sus `GRANT` explícitos en el
+   mismo archivo** (no en otro, no "después").
+2. **authenticated**: solo los privilegios que la tabla realmente usa (p. ej. `SELECT`, o
+   `SELECT, UPDATE(col)`). **RLS habilitada + policies es obligatoria**; el `GRANT` NO reemplaza la RLS
+   — son capas distintas (el grant abre la puerta, la RLS filtra las filas).
+3. **service_role**: `SELECT, INSERT, UPDATE, DELETE`.
+4. **anon**: **SIN grant.** El acceso sin sesión va solo por edge function o RPC `SECURITY DEFINER`.
+   Excepciones → lista blanca `WL_ANON_LEGACY` del probe **P800**, cada una justificada.
+5. **Prohibido `ALTER DEFAULT PRIVILEGES` para restaurar el comportamiento viejo** (re-otorgar en masa).
+   Los `ALTER DEFAULT PRIVILEGES` que **RESTRINGEN** (migs 298/301) son válidos.
+6. **VIEW expuesta = mismos criterios** que una tabla (grants explícitos por rol; anon sin grant).
+7. **Probe P800 (`npm run harness:grants`) debe pasar antes de commitear cualquier migración que
+   cree tabla/VIEW** (gate global de grants; archivo `tests/rls/probe_grants_p800.sql`).
+8. **Verificación post-apply desde una sesión distinta**: con `information_schema.role_table_grants` /
+   `has_table_privilege`, confirmar que los grants son **exactamente** los esperados (ni de más ni de menos).
 
 ## Modelo de identidad / helpers
 - mi_empresa_proveedor() → empresa_id del proveedor logueado desde cuentas_proveedor (tipo-agnóstica; cubre los 4 tipos: farmacia, laboratorio_clinico, laboratorio_farmaceutico, empresa_afin).
