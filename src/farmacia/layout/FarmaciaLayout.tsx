@@ -2,10 +2,10 @@ import { Link, useLocation, useNavigate, Outlet } from 'react-router-dom'
 import { useProveedorAuth } from '@/proveedor/hooks/useProveedorAuth'
 import { useFarmaciaPermisos } from '@/farmacia/hooks/useFarmaciaPermisos'
 import { useCapacidades } from '@/proveedor/hooks/useCapacidades'
-import { useNotificaciones } from '@/hooks/useNotificaciones'
+import { ProveedorNotificacionesProvider, useProveedorNotificaciones } from '@/proveedor/context/ProveedorNotificacionesContext'
 import { Button } from '@/components/ui/button'
 import { LayoutDashboard, Pill, Package, Users, CreditCard, Bell, LogOut, Menu, X, Building2, ClipboardList, BarChart3, Truck, Receipt } from 'lucide-react'
-import { useState, useEffect } from 'react'
+import { useState } from 'react'
 
 interface NavItem { label: string; path: string; icon: React.ElementType; accion?: string; accionAny?: string[]; badge?: boolean }
 
@@ -26,20 +26,27 @@ const NAV_ITEMS: NavItem[] = [
   { label: 'Notificaciones', path: '/farmacia/notificaciones', icon: Bell, badge: true },
 ]
 
+// Monta UNA instancia de notificaciones (badge del layout + página compartida vía Outlet) → mismo
+// estado y un solo polling, igual que ProveedorLayout/LaboratorioLayout. Antes FarmaciaLayout no
+// montaba el provider y /farmacia/notificaciones (ProveedorNotificacionesPage) crasheaba al llamar
+// useProveedorNotificaciones fuera de contexto. El provider vive acá (solo se monta con empresa
+// operativa; para no operativa el gate rinde OnboardingShell, no este layout).
 export default function FarmaciaLayout() {
+  return (
+    <ProveedorNotificacionesProvider>
+      <FarmaciaLayoutContent />
+    </ProveedorNotificacionesProvider>
+  )
+}
+
+function FarmaciaLayoutContent() {
   const { empresa, logout, loading } = useProveedorAuth()
   const { tienePermiso, loading: permLoading } = useFarmaciaPermisos()
   const { tieneCapacidad, loading: capsLoading } = useCapacidades()
-  const { noLeidas, listarNotificaciones } = useNotificaciones()
+  const { noLeidas } = useProveedorNotificaciones()
   const location = useLocation()
   const navigate = useNavigate()
   const [mobileOpen, setMobileOpen] = useState(false)
-
-  useEffect(() => {
-    listarNotificaciones()
-    const interval = setInterval(listarNotificaciones, 60000)
-    return () => clearInterval(interval)
-  }, [listarNotificaciones])
 
   if (loading || permLoading || capsLoading) {
     return (
