@@ -622,11 +622,15 @@ END $$;
 -- P23 — anon NO debe leer cuentas_bancarias_pais
 SELECT set_config('request.jwt.claims', NULL, true);
 SELECT set_config('role', 'anon', true);
-DO $$ DECLARE n INT;
+DO $$ DECLARE n INT; v_err text;
 BEGIN
-  SELECT count(*) INTO n FROM public.cuentas_bancarias_pais;
+  BEGIN SELECT count(*) INTO n FROM public.cuentas_bancarias_pais; v_err := NULL; EXCEPTION WHEN OTHERS THEN n := -1; v_err := SQLSTATE; END;
   IF n > 0 THEN PERFORM set_config('probe.p23','PERMITIDO (anon ve '||n||' cuentas bancarias)',false);
-  ELSE PERFORM set_config('probe.p23','BLOQUEADO (0 cuentas visibles)',false); END IF;
+  ELSIF n = 0 THEN PERFORM set_config('probe.p23','BLOQUEADO (0 filas)',false);
+  ELSIF v_err = '42501' AND has_table_privilege('anon','public.cuentas_bancarias_pais','SELECT')
+    THEN PERFORM set_config('probe.p23','ROJO (42501 CON grant (policy rota): cuentas_bancarias_pais)',false);
+  ELSIF v_err = '42501' THEN PERFORM set_config('probe.p23','BLOQUEADO (42501 sin grant)',false);
+  ELSE PERFORM set_config('probe.p23','FALLO ('||coalesce(v_err,'?')||')',false); END IF;
 END $$;
 
 -- P25 — anon NO debe leer PII de medicos (cédula). Hoy lee; post = sin acceso a la columna.
@@ -11328,7 +11332,7 @@ SELECT set_config('role','none', true);
 --                            de set_config) y ''::uuid es 22P02: mata la transaccion igual que un
 --                            NOT NULL. Fase 2.1 CERRADA: 155 -> 0 en tres tandas.
 --
---   do_sin_handler = 156     Bloques DO sin `EXCEPTION WHEN`. YA NO ES DEUDA: la fase 2.2 cerro los
+--   do_sin_handler = 155     Bloques DO sin `EXCEPTION WHEN`. YA NO ES DEUDA: la fase 2.2 cerro los
 --                            55 bloques que ESCRIBEN (211 -> 193 -> 175 -> 157 -> 156, P481 incluido)
 --                            y los 156 que quedan solo LEEN y publican — si uno cae no arrastra estado
 --                            ajeno. Este numero es el normal del archivo; sube si alguien agrega un
@@ -11346,7 +11350,7 @@ SELECT set_config('role','none', true);
 DO $$
 BEGIN
   PERFORM set_config('probe.p516',
-    'OK-SENAL (baseline declarado: top_level_dml_ddl=0 excluyendo pg_temp, cast_directo=0 CERRADO, do_sin_handler=156, fase 2.2 CERRADA: los 156 restantes solo LEEN). '||
+    'OK-SENAL (baseline declarado: top_level_dml_ddl=0 excluyendo pg_temp, cast_directo=0 CERRADO, do_sin_handler=155, fase 2.2 CERRADA: los restantes solo LEEN). '||
     'El gate real es tests/rls/b2_guard.py — este probe NO mide, senaliza.', false);
 EXCEPTION WHEN OTHERS THEN
   -- handler puesto por coherencia: el propio b2_guard.py conto este bloque como deuda nueva cuando
@@ -14720,7 +14724,7 @@ SELECT set_config('role','none',true);
 SELECT set_config('request.jwt.claims', NULL, true);
 SELECT set_config('role','anon',true);
 DO $$
-DECLARE r record; v_roto text := ''; v_fuga text := ''; v_ok int := 0; v_n int; v_faltan text := '';
+DECLARE r record; v_roto text := ''; v_rotograve text := ''; v_fuga text := ''; v_ok int := 0; v_n int; v_faltan text := '';
 BEGIN
   FOR r IN SELECT unnest(ARRAY['public.clinicas','public.empresas_proveedoras',
                                'public.visitas_agendadas']) AS t
@@ -14731,16 +14735,19 @@ BEGIN
       IF v_n > 0 THEN v_fuga := v_fuga||r.t||'='||v_n||' ';
       ELSE v_ok := v_ok + 1; END IF;
     EXCEPTION WHEN insufficient_privilege THEN
-      v_roto := v_roto||r.t||' ';
+      -- 42501 CON grant (empresas_proveedoras kept) = policy rota (hazard); SIN grant (clinicas/visitas revocadas) = correcto.
+      IF has_table_privilege('anon', r.t, 'SELECT') THEN v_rotograve := v_rotograve||r.t||' ';
+      ELSE v_roto := v_roto||r.t||' '; END IF;
     WHEN others THEN
       v_fuga := v_fuga||r.t||':'||SQLSTATE||' ';
     END;
   END LOOP;
   PERFORM set_config('probe.p635', CASE
-    WHEN v_faltan <> '' THEN 'ROJO — TABLAS AUSENTES: '||v_faltan||'(esto NO es un rechazo)'
-    WHEN v_roto <> ''   THEN 'ROJO (42501 — la policy no pudo evaluarse: anon perdio un privilegio que el USING necesita; tablas rotas: '||v_roto||')'
-    WHEN v_fuga <> ''   THEN 'ROJO (anon ve filas — fuga: '||v_fuga||')'
-    WHEN v_ok = 3       THEN 'OK (0 filas, sin error, en las 3: la policy pudo evaluarse y dijo que no)'
+    WHEN v_faltan <> ''    THEN 'ROJO — TABLAS AUSENTES: '||v_faltan||'(esto NO es un rechazo)'
+    WHEN v_rotograve <> '' THEN 'ROJO (42501 CON grant (policy rota): '||v_rotograve||')'
+    WHEN v_fuga <> ''      THEN 'ROJO (anon ve filas — fuga: '||v_fuga||')'
+    WHEN v_roto <> ''      THEN 'OK (42501 sin grant en tablas revocadas por 324: '||v_roto||'; sin fuga)'
+    WHEN v_ok = 3          THEN 'OK (0 filas, sin error, en las 3: la policy pudo evaluarse y dijo que no)'
     ELSE 'FALLO (solo '||v_ok||' de 3 tablas medidas)' END, false);
 EXCEPTION WHEN OTHERS THEN PERFORM set_config('probe.p635','FALLO ('||SQLSTATE||' '||SQLERRM||')',false); END $$;
 SELECT set_config('role','none',true);
@@ -16440,7 +16447,9 @@ BEGIN
     PERFORM set_config('probe.p719', CASE WHEN n = 0 THEN 'OK (0 filas, sin 42501)'
       ELSE 'ROJO (anon ve '||n||' invitaciones de medico)' END, false);
   EXCEPTION WHEN insufficient_privilege THEN
-    PERFORM set_config('probe.p719','ROJO (42501: la policy ROMPE la tabla para anon en vez de negar)', false);
+    IF has_table_privilege('anon','public.invitaciones_medico','SELECT')
+      THEN PERFORM set_config('probe.p719','ROJO (42501 CON grant (policy rota): invitaciones_medico)', false);
+      ELSE PERFORM set_config('probe.p719','OK (42501 sin grant: anon revocada tras 324)', false); END IF;
     WHEN OTHERS THEN PERFORM set_config('probe.p719','FALLO ('||SQLSTATE||' '||SQLERRM||')', false);
   END;
 
@@ -16449,7 +16458,9 @@ BEGIN
     PERFORM set_config('probe.p720', CASE WHEN n = 0 THEN 'OK (0 filas, sin 42501)'
       ELSE 'ROJO (anon ve '||n||' invitaciones de clinica)' END, false);
   EXCEPTION WHEN insufficient_privilege THEN
-    PERFORM set_config('probe.p720','ROJO (42501: la policy ROMPE la tabla para anon en vez de negar)', false);
+    IF has_table_privilege('anon','public.invitaciones_clinica','SELECT')
+      THEN PERFORM set_config('probe.p720','ROJO (42501 CON grant (policy rota): invitaciones_clinica)', false);
+      ELSE PERFORM set_config('probe.p720','OK (42501 sin grant: anon revocada tras 324)', false); END IF;
     WHEN OTHERS THEN PERFORM set_config('probe.p720','FALLO ('||SQLSTATE||' '||SQLERRM||')', false);
   END;
 
@@ -16477,7 +16488,7 @@ SELECT set_config('role','none', true);
 -- hubiera nada roto, que es la forma mas rapida de que un harness deje de significar algo.
 SELECT set_config('role','none', true);
 DO $$
-DECLARE t text; n bigint; v_mal text := ''; v_ok int := 0;
+DECLARE t text; n bigint; v_mal text := ''; v_ok int := 0; v_ng text := '';
 BEGIN
   PERFORM set_config('request.jwt.claims','{"role":"anon"}', true);
   PERFORM set_config('role','anon', true);
@@ -16488,13 +16499,15 @@ BEGIN
       IF n = 0 THEN v_ok := v_ok + 1;
       ELSE v_mal := v_mal || t || '=' || n || ' filas; '; END IF;
     EXCEPTION WHEN insufficient_privilege THEN
-      v_mal := v_mal || t || '=42501 (la tabla quedo ROTA para anon); ';
+      -- 42501 CON grant = policy rota (hazard mig284); 42501 SIN grant = correcto post-324.
+      IF has_table_privilege('anon','public.'||t,'SELECT') THEN v_mal := v_mal || t || '=42501 CON grant (policy rota); ';
+      ELSE v_ng := v_ng || t || ' '; END IF;
       WHEN OTHERS THEN v_mal := v_mal || t || '=' || SQLSTATE || '; ';
     END;
   END LOOP;
   PERFORM set_config('role','none', true);
   PERFORM set_config('probe.p721', CASE WHEN v_mal = ''
-    THEN 'OK (' || v_ok || '/11 tablas: 0 filas, sin 42501)'
+    THEN 'OK ('||v_ok||' con 0 filas; sin grant/42501-correcto: '||coalesce(nullif(v_ng,''),'ninguna')||')'
     ELSE 'ROJO (' || v_mal || ')' END, false);
 EXCEPTION WHEN OTHERS THEN
   PERFORM set_config('role','none', true);
@@ -17115,7 +17128,8 @@ BEGIN
     BEGIN
       EXECUTE format('SELECT count(*) FROM public.%I', t) INTO v_n;
     EXCEPTION WHEN insufficient_privilege THEN
-      v_mal := v_mal || 'la tabla '||t||' lanza 42501 a anon (policy rota); ';
+      -- 42501 CON grant = policy rota (perfiles/cuentas_proveedor/pacientes kept); SIN grant (citas/clinicas revocadas) = correcto.
+      IF has_table_privilege('anon','public.'||t,'SELECT') THEN v_mal := v_mal || 'la tabla '||t||' lanza 42501 CON grant a anon (policy rota); '; END IF;
       WHEN OTHERS THEN v_mal := v_mal || 'la tabla '||t||' dio '||SQLSTATE||' a anon; ';
     END;
   END LOOP;
@@ -17123,7 +17137,7 @@ BEGIN
   PERFORM set_config('request.jwt.claims','', true);
 
   PERFORM set_config('probe.p741', CASE WHEN v_mal = ''
-    THEN 'OK (registrar_proveedor + las 10 de policies intactas; 5 tablas sin 42501)'
+    THEN 'OK (registrar_proveedor + las 10 de policies intactas; 5 tablas: 0 filas (kept) o 42501-sin-grant (revocadas))'
     ELSE 'ROJO ('||v_mal||')' END, false);
 EXCEPTION WHEN OTHERS THEN
   PERFORM set_config('role','none', true);
@@ -17238,20 +17252,23 @@ SELECT set_config('role','none', true);
 
 -- P745 — anon sobre v_pacientes_actividad. Es la que mas PHI expone por fila.
 DO $$
-DECLARE n bigint; n_base bigint;
+DECLARE n bigint; n_base bigint; v_err text;
 BEGIN
   SELECT count(*) INTO n_base FROM public.pacientes;   -- como postgres: el universo
   PERFORM set_config('request.jwt.claims','{"role":"anon"}', true);
   PERFORM set_config('role','anon', true);
   BEGIN
-    SELECT count(*) INTO n FROM public.v_pacientes_actividad;
-  EXCEPTION WHEN OTHERS THEN n := -1;
+    SELECT count(*) INTO n FROM public.v_pacientes_actividad; v_err := NULL;
+  EXCEPTION WHEN OTHERS THEN n := -1; v_err := SQLSTATE;
   END;
   PERFORM set_config('role','none', true);
   PERFORM set_config('request.jwt.claims','', true);
   PERFORM set_config('probe.p745', CASE
     WHEN n = 0 THEN 'OK (anon ve 0 de '||n_base||' pacientes)'
-    WHEN n < 0 THEN 'ROJO (error al ejercitar la vista como anon)'
+    WHEN n < 0 AND v_err='42501' AND has_table_privilege('anon','public.v_pacientes_actividad','SELECT')
+      THEN 'ROJO (42501 CON grant (vista/policy rota): v_pacientes_actividad)'
+    WHEN n < 0 AND v_err='42501' THEN 'OK (42501 sin grant: vista revocada tras 324)'
+    WHEN n < 0 THEN 'FALLO ('||coalesce(v_err,'?')||')'
     ELSE 'ROJO (anon ve '||n||' filas de v_pacientes_actividad; nombre y telefono de cada paciente)'
     END, false);
 EXCEPTION WHEN OTHERS THEN
@@ -17266,7 +17283,7 @@ SELECT set_config('role','none', true);
 -- censo del 20-sep, que la midio un dia sin citas. El harness entero corre en BEGIN/ROLLBACK, asi
 -- que la cita no persiste.
 DO $$
-DECLARE n bigint; v_pid bigint; v_mid uuid; v_hay bigint;
+DECLARE n bigint; v_pid bigint; v_mid uuid; v_hay bigint; v_err text;
 BEGIN
   -- El medico se toma de `medicos`, NO de `perfiles WHERE rol='medico'`: citas.medico_id tiene
   -- FK `fk_citas_medico -> medicos(id)`, y un perfil con rol='medico' NO implica fila en
@@ -17288,8 +17305,8 @@ BEGIN
   PERFORM set_config('request.jwt.claims','{"role":"anon"}', true);
   PERFORM set_config('role','anon', true);
   BEGIN
-    SELECT count(*) INTO n FROM public.v_citas_hoy;
-  EXCEPTION WHEN OTHERS THEN n := -1;
+    SELECT count(*) INTO n FROM public.v_citas_hoy; v_err := NULL;
+  EXCEPTION WHEN OTHERS THEN n := -1; v_err := SQLSTATE;
   END;
   PERFORM set_config('role','none', true);
   PERFORM set_config('request.jwt.claims','', true);
@@ -17297,7 +17314,10 @@ BEGIN
   PERFORM set_config('probe.p746', CASE
     WHEN v_hay = 0 THEN 'ROJO (la fixture no quedo: el probe no medira nada)'
     WHEN n = 0 THEN 'OK (anon ve 0 con '||v_hay||' cita(s) de HOY en la base)'
-    WHEN n < 0 THEN 'ROJO (error al ejercitar v_citas_hoy como anon)'
+    WHEN n < 0 AND v_err='42501' AND has_table_privilege('anon','public.v_citas_hoy','SELECT')
+      THEN 'ROJO (42501 CON grant (vista/policy rota): v_citas_hoy)'
+    WHEN n < 0 AND v_err='42501' THEN 'OK (42501 sin grant: v_citas_hoy revocada tras 324)'
+    WHEN n < 0 THEN 'FALLO ('||coalesce(v_err,'?')||')'
     ELSE 'ROJO (anon ve '||n||' cita(s) de hoy: paciente, telefono y medico)'
     END, false);
 EXCEPTION WHEN OTHERS THEN
@@ -17317,13 +17337,16 @@ BEGIN
     BEGIN
       EXECUTE format('SELECT count(*) FROM public.%I', t) INTO n;
       IF n <> 0 THEN v_mal := v_mal || t||'='||n||' filas; '; END IF;
-    EXCEPTION WHEN OTHERS THEN v_mal := v_mal || t||'='||SQLSTATE||'; ';
+    EXCEPTION WHEN insufficient_privilege THEN
+      -- 42501 CON grant (vista kept) = rota; SIN grant (vista revocada) = correcto.
+      IF has_table_privilege('anon','public.'||t,'SELECT') THEN v_mal := v_mal || t||'=42501 CON grant (vista rota); '; END IF;
+      WHEN OTHERS THEN v_mal := v_mal || t||'='||SQLSTATE||'; ';
     END;
   END LOOP;
   PERFORM set_config('role','none', true);
   PERFORM set_config('request.jwt.claims','', true);
   PERFORM set_config('probe.p747', CASE WHEN v_mal = ''
-    THEN 'OK (anon ve 0 en las dos)' ELSE 'ROJO ('||v_mal||')' END, false);
+    THEN 'OK (anon ve 0 filas o 42501-sin-grant en las dos)' ELSE 'ROJO ('||v_mal||')' END, false);
 EXCEPTION WHEN OTHERS THEN
   PERFORM set_config('role','none', true);
   PERFORM set_config('probe.p747','FALLO ('||SQLSTATE||' '||SQLERRM||')', false);
@@ -17760,7 +17783,10 @@ BEGIN
   BEGIN
     SELECT count(*) INTO v_n FROM public.notificaciones;
     IF v_n <> 0 THEN v_mal := v_mal || 'anon ve '||v_n||'; '; END IF;
-  EXCEPTION WHEN OTHERS THEN v_mal := v_mal || 'anon='||SQLSTATE||'; '; END;
+  EXCEPTION WHEN insufficient_privilege THEN
+    -- 42501 CON grant = policy rota; SIN grant (notificaciones revocada) = correcto.
+    IF has_table_privilege('anon','public.notificaciones','SELECT') THEN v_mal := v_mal || 'anon=42501 CON grant (policy rota); '; END IF;
+    WHEN OTHERS THEN v_mal := v_mal || 'anon='||SQLSTATE||'; '; END;
   PERFORM set_config('role','none', true);
   PERFORM set_config('request.jwt.claims', json_build_object('sub',v_pac,'role','authenticated')::text, true);
   PERFORM set_config('role','authenticated', true);

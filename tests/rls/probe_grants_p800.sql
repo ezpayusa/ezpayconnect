@@ -14,8 +14,12 @@ BEGIN;
 -- ============================================================================
 DO $p800$
 DECLARE
-  -- WL_ANON_LEGACY — BASELINE LEGACY 23-sep-2026 — congelada, solo puede achicarse
-  wl_anon text[] := ARRAY['auditoria_ia','auditoria_logs','cache_biblioteca','campana_metricas','campana_vistas','campanas_publicitarias','chat_conversaciones','chat_lecturas','chat_mensajes','chat_mensajes_internos','chat_participantes','citas','clinicas','configuracion','configuracion_pais','configuracion_sistema','confirmaciones_receta','contratos_comision','cuentas_bancarias_pais','cuentas_proveedor','disponibilidad_medico','empresa_paises_operacion','empresas_proveedoras','entrega_evidencias','equipos_visitadores','examenes','examenes_catalogo','expediente_notas','facturas','invitaciones_clinica','invitaciones_laboratorio','invitaciones_medico','invitaciones_visitador','laboratorio_clinicas','liquidacion_dispensaciones','liquidaciones_comision','medico_clinicas','medico_correlativos','notificaciones','notificaciones_email','notificaciones_pacientes','ordenes_examen','pacientes','pagos_proveedor','perfiles','permisos_empresa_rol','planes_asignaciones','planes_excepciones','planes_features','planes_historial','planes_limites','planes_visitador_contratados','productos_empresa','push_subscriptions','push_tokens','receta_items','recetas','recordatorios','recordatorios_citas','recordatorios_programados','reportes_guardados','resumen_comisiones','roles','roles_catalogo','roles_empresa_catalogo','signos_vitales','solicitudes_campana','transacciones','ubicaciones_medico_proveedor','usuario_roles','v_citas_hoy','v_consultas_paciente','v_estadisticas_medico','v_medicamentos_bajo_stock','v_metricas_campana_pais','v_metricas_campana_resumen','v_pacientes_actividad','v_resumen_mensual','visitas_agendadas','whatsapp_mensajes'];
+  -- WL_ANON_LEGACY — BASELINE 8 (achicada de 80 a 8 por mig 324 (23-sep-2026)) — solo puede achicarse.
+  -- Las 72 se revocaron; quedan 8: configuracion_pais/configuracion_sistema (uso sin sesion / policy
+  -- anon) y las 6 dependencias inline de policies ajenas (perfiles, pacientes, cuentas_proveedor,
+  -- empresas_proveedoras, liquidaciones_comision, recetas): sin su SELECT anon, esas policies lanzan
+  -- 42501 en vez de negar en silencio (leccion mig 284). Su cierre = reescribir policies a DEFINER.
+  wl_anon text[] := ARRAY['configuracion_pais','configuracion_sistema','cuentas_proveedor','empresas_proveedoras','liquidaciones_comision','pacientes','perfiles','recetas'];
   wl_auth text[] := ARRAY['empresa_capacidades','jornadas_comerciales','medicamentos_clasificacion_log','solicitudes_capacidad_pais','visitas_comerciales'];
   r record;
   v_viol text := '';
@@ -27,7 +31,7 @@ DECLARE
   nom text;
 BEGIN
   -- FIX 3: las listas blancas solo pueden ACHICARSE (nunca crecer sobre el baseline).
-  IF array_length(wl_anon,1) > 80 THEN RAISE EXCEPTION 'P800: WL_ANON_LEGACY solo puede achicarse (baseline 80), tiene %', array_length(wl_anon,1); END IF;
+  IF array_length(wl_anon,1) > 8 THEN RAISE EXCEPTION 'P800: WL_ANON_LEGACY solo puede achicarse (baseline 8 tras mig 324), tiene %', array_length(wl_anon,1); END IF;
   IF array_length(wl_auth,1) > 5  THEN RAISE EXCEPTION 'P800: WL_AUTH_SIN_GRANT solo puede achicarse (baseline 5), tiene %', array_length(wl_auth,1); END IF;
   -- (g) entradas huerfanas: nombre en la WL que ya no existe como relacion en public (limpiar la lista).
   FOREACH nom IN ARRAY wl_anon LOOP
@@ -89,6 +93,19 @@ BEGIN
     -- (e) RLS deshabilitada en tabla
     IF r.relkind IN ('r','p') AND r.relrowsecurity = false THEN
       v_viol := v_viol || E'\n(e) RLS deshabilitada en tabla '||r.relname;
+    END IF;
+
+    -- (h) EJERCICIO: si anon conserva grant, un SELECT como anon debe responder SIN error
+    --     (si una policy inline-a una tabla que anon ya no lee, lanza 42501 en vez de 0 filas).
+    IF anon_tiene THEN
+      BEGIN
+        PERFORM set_config('role','anon', true);
+        EXECUTE format('SELECT count(*) FROM public.%I', r.relname);
+        PERFORM set_config('role','none', true);
+      EXCEPTION WHEN OTHERS THEN
+        PERFORM set_config('role','none', true);
+        v_viol := v_viol || E'\n(h) anon con grant pero la lectura falla: '||r.relname||' '||SQLSTATE;
+      END;
     END IF;
   END LOOP;
 
