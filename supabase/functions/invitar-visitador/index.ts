@@ -45,10 +45,10 @@ serve(async (req) => {
       })
     }
 
-    // Verificar que el usuario es admin/editor de la empresa
+    // Verificar que el usuario es admin/editor de la empresa (+ estado de la empresa)
     const { data: cuenta, error: cuentaError } = await supabase
       .from('cuentas_proveedor')
-      .select('rol_en_empresa')
+      .select('rol_en_empresa, empresa:empresa_id(estado)')
       .eq('id', user.id)
       .eq('empresa_id', empresa_id)
       .eq('activo', true)
@@ -56,6 +56,15 @@ serve(async (req) => {
 
     if (cuentaError || !cuenta || !['admin', 'editor'].includes(cuenta.rol_en_empresa)) {
       return new Response(JSON.stringify({ error: 'No tienes permisos para invitar visitadores en esta empresa' }), {
+        headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+        status: 403,
+      })
+    }
+
+    // Gate de estado de empresa (lote 2 de la 322): solo una empresa 'activa' puede invitar.
+    // Va ANTES de cualquier efecto (el INSERT de la invitación).
+    if ((cuenta.empresa as { estado?: string } | null)?.estado !== 'activa') {
+      return new Response(JSON.stringify({ error: 'Empresa no activa' }), {
         headers: { ...corsHeaders, 'Content-Type': 'application/json' },
         status: 403,
       })
