@@ -19232,6 +19232,192 @@ EXCEPTION WHEN OTHERS THEN
 END $$;
 SELECT set_config('role','none', true);
 
+-- ================================================================================
+-- MIG 325 — PROBES: guard anti-auto-escalada del paciente sobre public.pacientes
+-- Actor Paciente QA elegido COMO postgres en PG_FX antes de impersonar.
+-- Camino legitimo de escritura de columnas privilegiadas (0c): SOLO admin_pais/super_admin
+-- via la policy ALL "Admin ve pacientes de su pais" (auth.uid()=admin != auth_user_id del
+-- paciente -> el guard no interviene). NO existe policy UPDATE de medico sobre pacientes.
+-- ================================================================================
+-- ---------------- PG_FX — fixture ----------------
+DO $$
+DECLARE v_uid uuid; v_pac bigint; v_otro bigint; v_admin uuid;
+BEGIN
+  SELECT p.auth_user_id, p.id INTO v_uid, v_pac
+    FROM public.pacientes p WHERE p.email='paciente.qa@ezpayconnect.com';
+  SELECT p.id INTO v_otro FROM public.pacientes p
+   WHERE p.id <> v_pac AND p.auth_user_id IS NOT NULL ORDER BY p.id LIMIT 1;
+  SELECT pf.id INTO v_admin FROM public.perfiles pf
+    JOIN public.pacientes pq ON pq.email='paciente.qa@ezpayconnect.com'
+   WHERE pf.rol='admin_pais' AND pf.activo AND pf.pais_id = pq.pais_id LIMIT 1;
+  IF v_uid IS NULL OR v_pac IS NULL THEN
+    PERFORM set_config('probe.pg_ready','0', false);
+    PERFORM set_config('probe.pg_fx','ROJO (no se encontro Paciente QA con auth_user_id)', false);
+    RETURN;
+  END IF;
+  PERFORM set_config('probe.pg_uid', v_uid::text, false);
+  PERFORM set_config('probe.pg_pac', v_pac::text, false);
+  PERFORM set_config('probe.pg_otro', COALESCE(v_otro::text,''), false);
+  PERFORM set_config('probe.pg_admin', COALESCE(v_admin::text,''), false);
+  PERFORM set_config('probe.pg_ready','1', false);
+  PERFORM set_config('probe.pg_fx','OK (QA pac '||v_pac||'; otro_pac '||COALESCE(v_otro::text,'<none>')
+    ||'; admin_pais '||COALESCE(v_admin::text,'<none>')||')', false);
+EXCEPTION WHEN OTHERS THEN
+  PERFORM set_config('probe.pg_ready','0', false);
+  PERFORM set_config('probe.pg_fx','ROJO ('||SQLSTATE||' '||SQLERRM||')', false);
+END $$;
+SELECT set_config('role','none', true);
+
+-- ---------------- P801-P810 — el paciente NO puede cambiar columnas privilegiadas de su fila ----------------
+DO $$
+DECLARE
+  cols text[][] := ARRAY[
+    ARRAY['p801','medico_id','gen_random_uuid()'],
+    ARRAY['p802','medico_primario_id','gen_random_uuid()'],
+    ARRAY['p803','clinica_primaria_id','gen_random_uuid()'],
+    ARRAY['p804','pais_id','gen_random_uuid()'],
+    ARRAY['p805','activo','false'],
+    ARRAY['p806','email','''__hack__@x.invalid'''],
+    ARRAY['p807','foto_path','''hack/otro.jpg'''],
+    ARRAY['p808','id','999999999'],
+    ARRAY['p809','created_at','(now() - interval ''365 days'')'],
+    ARRAY['p810','auth_user_id','gen_random_uuid()']
+  ];
+  v_uid uuid; v_pac bigint; k text; col text; val text; v_before text; v_after text; i int;
+BEGIN
+  IF coalesce(current_setting('probe.pg_ready', true),'0') <> '1' THEN
+    FOR i IN 1..array_length(cols,1) LOOP PERFORM set_config('probe.'||cols[i][1],'N/A (fixture PG no sembro)', false); END LOOP;
+    RETURN;
+  END IF;
+  FOR i IN 1..array_length(cols,1) LOOP PERFORM set_config('probe.'||cols[i][1],'FALLO (no ejecuto)', false); END LOOP;
+  v_uid := current_setting('probe.pg_uid', true)::uuid;
+  v_pac := current_setting('probe.pg_pac', true)::bigint;
+  FOR i IN 1..array_length(cols,1) LOOP
+    k := cols[i][1]; col := cols[i][2]; val := cols[i][3];
+    EXECUTE format('SELECT %I::text FROM public.pacientes WHERE id=%s', col, v_pac) INTO v_before;
+    BEGIN
+      PERFORM set_config('request.jwt.claims', json_build_object('sub', v_uid::text, 'role','authenticated')::text, true);
+      PERFORM set_config('role','authenticated', true);
+      EXECUTE format('UPDATE public.pacientes SET %I = %s WHERE id=%s', col, val, v_pac);
+      PERFORM set_config('role','none', true);
+      PERFORM set_config('probe.'||k, 'ROJO (paciente cambio '||col||' de su propia fila sin 42501)', false);
+    EXCEPTION
+      WHEN insufficient_privilege THEN
+        PERFORM set_config('role','none', true);
+        EXECUTE format('SELECT %I::text FROM public.pacientes WHERE id=%s', col, v_pac) INTO v_after;
+        PERFORM set_config('probe.'||k, CASE WHEN v_after IS NOT DISTINCT FROM v_before
+            THEN 'OK (42501 y '||col||' intacto)'
+            ELSE 'ROJO (42501 pero '||col||' cambio: '||COALESCE(v_before,'NULL')||' -> '||COALESCE(v_after,'NULL')||')' END, false);
+      WHEN OTHERS THEN
+        PERFORM set_config('role','none', true);
+        PERFORM set_config('probe.'||k, 'ROJO ('||col||' corto con '||SQLSTATE||' en vez de 42501: '||SQLERRM||')', false);
+    END;
+  END LOOP;
+  PERFORM set_config('request.jwt.claims','', true);
+EXCEPTION WHEN OTHERS THEN
+  PERFORM set_config('role','none', true);
+  PERFORM set_config('probe.p801','FALLO ('||SQLSTATE||' '||SQLERRM||')', false);
+END $$;
+SELECT set_config('role','none', true);
+
+-- ---------------- P811 — el paciente SI puede cambiar las columnas editables del form ----------------
+DO $$
+DECLARE v_uid uuid; v_pac bigint; n int; v_tel text;
+BEGIN
+  IF coalesce(current_setting('probe.pg_ready', true),'0') <> '1' THEN PERFORM set_config('probe.p811','N/A (fixture PG no sembro)', false); RETURN; END IF;
+  v_uid := current_setting('probe.pg_uid', true)::uuid; v_pac := current_setting('probe.pg_pac', true)::bigint;
+  BEGIN
+    PERFORM set_config('request.jwt.claims', json_build_object('sub', v_uid::text, 'role','authenticated')::text, true);
+    PERFORM set_config('role','authenticated', true);
+    UPDATE public.pacientes SET nombre='QA N', apellido='QA A', telefono='+502 5555-0000',
+      fecha_nacimiento='1990-01-01', genero='otro', direccion='Calle QA 123',
+      alergias='ninguna QA', notas='nota QA', emergencia_nombre='Contacto QA', emergencia_telefono='+502 5555-1111'
+     WHERE id=v_pac;
+    GET DIAGNOSTICS n = ROW_COUNT;
+    PERFORM set_config('role','none', true);
+    SELECT telefono INTO v_tel FROM public.pacientes WHERE id=v_pac;
+    PERFORM set_config('probe.p811', CASE WHEN n=1 AND v_tel='+502 5555-0000'
+        THEN 'OK (1 fila, columnas editables del form cambiadas)'
+        ELSE 'ROJO (n='||n||', telefono='||COALESCE(v_tel,'NULL')||')' END, false);
+  EXCEPTION WHEN OTHERS THEN
+    PERFORM set_config('role','none', true);
+    PERFORM set_config('probe.p811','ROJO (columnas editables cortaron con '||SQLSTATE||': '||SQLERRM||')', false);
+  END;
+  PERFORM set_config('request.jwt.claims','', true);
+EXCEPTION WHEN OTHERS THEN PERFORM set_config('role','none', true); PERFORM set_config('probe.p811','FALLO ('||SQLSTATE||')', false);
+END $$;
+SELECT set_config('role','none', true);
+
+-- ---------------- P812 — el paciente NO puede tocar la fila de otro paciente (0 filas) ----------------
+DO $$
+DECLARE v_uid uuid; v_otro bigint; n int;
+BEGIN
+  IF coalesce(current_setting('probe.pg_ready',true),'0')<>'1' OR coalesce(current_setting('probe.pg_otro',true),'')='' THEN
+    PERFORM set_config('probe.p812','N/A (sin otro paciente o fixture no sembro)', false); RETURN; END IF;
+  v_uid := current_setting('probe.pg_uid',true)::uuid; v_otro := current_setting('probe.pg_otro',true)::bigint;
+  BEGIN
+    PERFORM set_config('request.jwt.claims', json_build_object('sub',v_uid::text,'role','authenticated')::text, true);
+    PERFORM set_config('role','authenticated', true);
+    UPDATE public.pacientes SET alergias='HACK QA' WHERE id=v_otro;
+    GET DIAGNOSTICS n = ROW_COUNT;
+    PERFORM set_config('role','none', true);
+    PERFORM set_config('probe.p812', CASE WHEN n=0 THEN 'OK (0 filas: no toca la fila de otro paciente)' ELSE 'ROJO (afecto '||n||' filas de otro paciente)' END, false);
+  EXCEPTION WHEN OTHERS THEN PERFORM set_config('role','none', true);
+    PERFORM set_config('probe.p812','ROJO (corto con '||SQLSTATE||')', false);
+  END;
+  PERFORM set_config('request.jwt.claims','', true);
+EXCEPTION WHEN OTHERS THEN PERFORM set_config('role','none', true); PERFORM set_config('probe.p812','FALLO ('||SQLSTATE||')', false);
+END $$;
+SELECT set_config('role','none', true);
+
+-- ---------------- P813 — NO-REGRESION: admin_pais del pais del paciente SI puede cambiar medico_id ----------------
+-- Camino legitimo unico (0c): policy ALL "Admin ve pacientes de su pais". No hay policy UPDATE de
+-- medico sobre pacientes, asi que NO se prueba un camino de medico (no se inventa uno).
+DO $$
+DECLARE v_admin uuid; v_pac bigint; v_before uuid; v_after uuid; n int;
+BEGIN
+  IF coalesce(current_setting('probe.pg_ready',true),'0')<>'1' OR coalesce(current_setting('probe.pg_admin',true),'')='' THEN
+    PERFORM set_config('probe.p813','N/A (no hay admin_pais activo en el pais del paciente QA)', false); RETURN; END IF;
+  v_admin := current_setting('probe.pg_admin',true)::uuid; v_pac := current_setting('probe.pg_pac',true)::bigint;
+  SELECT medico_id INTO v_before FROM public.pacientes WHERE id=v_pac;
+  BEGIN
+    PERFORM set_config('request.jwt.claims', json_build_object('sub',v_admin::text,'role','authenticated')::text, true);
+    PERFORM set_config('role','authenticated', true);
+    UPDATE public.pacientes SET medico_id=gen_random_uuid() WHERE id=v_pac;
+    GET DIAGNOSTICS n = ROW_COUNT;
+    PERFORM set_config('role','none', true);
+    SELECT medico_id INTO v_after FROM public.pacientes WHERE id=v_pac;
+    PERFORM set_config('probe.p813', CASE WHEN n=1 AND v_after IS DISTINCT FROM v_before
+        THEN 'OK (admin_pais cambio medico_id por el camino legitimo; el guard no lo bloquea)'
+        ELSE 'ROJO (n='||n||': el guard bloqueo al admin_pais o RLS no dejo)' END, false);
+  EXCEPTION WHEN OTHERS THEN PERFORM set_config('role','none', true);
+    PERFORM set_config('probe.p813','ROJO (admin_pais corto con '||SQLSTATE||': '||SQLERRM||')', false);
+  END;
+  PERFORM set_config('request.jwt.claims','', true);
+EXCEPTION WHEN OTHERS THEN PERFORM set_config('role','none', true); PERFORM set_config('probe.p813','FALLO ('||SQLSTATE||')', false);
+END $$;
+SELECT set_config('role','none', true);
+
+-- ---------------- P814 — estructural: trigger habilitado + funcion INVOKER + search_path '' ----------------
+DO $$
+DECLARE v_tgen char; v_sec boolean; v_cfg text[]; v_msg text := '';
+BEGIN
+  SELECT t.tgenabled INTO v_tgen FROM pg_trigger t JOIN pg_class c ON c.oid=t.tgrelid JOIN pg_namespace ns ON ns.oid=c.relnamespace
+    WHERE ns.nspname='public' AND c.relname='pacientes' AND t.tgname='trg_pacientes_guard_update' AND NOT t.tgisinternal;
+  SELECT p.prosecdef, p.proconfig INTO v_sec, v_cfg FROM pg_proc p JOIN pg_namespace ns ON ns.oid=p.pronamespace
+    WHERE ns.nspname='private' AND p.proname='pacientes_guard_update';
+  IF v_tgen IS NULL THEN v_msg := v_msg||'trigger ausente; '; ELSIF v_tgen<>'O' THEN v_msg := v_msg||'trigger no habilitado ('||v_tgen||'); '; END IF;
+  IF v_sec IS NULL THEN v_msg := v_msg||'funcion ausente; ';
+  ELSE
+    IF v_sec<>false THEN v_msg := v_msg||'funcion DEFINER (debe ser INVOKER); '; END IF;
+    IF v_cfg IS NULL OR NOT EXISTS (SELECT 1 FROM unnest(v_cfg) e WHERE e LIKE 'search_path=%' AND btrim(split_part(e,'=',2),'"') = '') THEN v_msg := v_msg||'search_path != vacio; '; END IF;
+  END IF;
+  PERFORM set_config('probe.p814', CASE WHEN v_msg='' THEN 'OK (trigger habilitado + funcion INVOKER + search_path vacio)' ELSE 'ROJO ('||v_msg||')' END, false);
+EXCEPTION WHEN OTHERS THEN PERFORM set_config('probe.p814','FALLO ('||SQLSTATE||')', false);
+END $$;
+SELECT set_config('role','none', true);
+
+
 -- ===== Veredictos como result set =====
 SELECT 'P1_anon_insert_citas'              AS probe, current_setting('probe.p1', true)  AS verdict, 'BLOQUEADO' AS esperado_post_fix
 UNION ALL SELECT 'P2_medico_cancela_ajena_rpc',         current_setting('probe.p2', true),  'BLOQUEADO'
@@ -20105,6 +20291,21 @@ UNION ALL SELECT 'P634_CENSO_anon_9_tablas_comercial', current_setting('probe.p6
 UNION ALL SELECT 'P635_anon_tablas_dependientes',       current_setting('probe.p635', true), 'OK (0 filas, sin 42501, x3)'
 UNION ALL SELECT 'P636_CONTRAPRUEBA_de_P635',           current_setting('probe.p636', true), 'OK (42501 sin el grant, y vuelve)'
 UNION ALL SELECT 'P516_SENAL_estructura_harness',  current_setting('probe.p516', true),          'OK-SENAL (no mide; el gate es b2_guard.py)'
+UNION ALL SELECT 'FX_pg_guard_fixture',              current_setting('probe.pg_fx', true),  'OK (fixture)'
+UNION ALL SELECT 'P801_pac_no_cambia_medico_id',     current_setting('probe.p801', true),   'OK (42501 y valor intacto)'
+UNION ALL SELECT 'P802_pac_no_cambia_medico_primario',current_setting('probe.p802', true),  'OK (42501 y valor intacto)'
+UNION ALL SELECT 'P803_pac_no_cambia_clinica_primaria',current_setting('probe.p803', true), 'OK (42501 y valor intacto)'
+UNION ALL SELECT 'P804_pac_no_cambia_pais_id',       current_setting('probe.p804', true),   'OK (42501 y valor intacto)'
+UNION ALL SELECT 'P805_pac_no_cambia_activo',        current_setting('probe.p805', true),   'OK (42501 y valor intacto)'
+UNION ALL SELECT 'P806_pac_no_cambia_email',         current_setting('probe.p806', true),   'OK (42501 y valor intacto)'
+UNION ALL SELECT 'P807_pac_no_cambia_foto_path',     current_setting('probe.p807', true),   'OK (42501 y valor intacto)'
+UNION ALL SELECT 'P808_pac_no_cambia_id',            current_setting('probe.p808', true),   'OK (42501 y valor intacto)'
+UNION ALL SELECT 'P809_pac_no_cambia_created_at',    current_setting('probe.p809', true),   'OK (42501 y valor intacto)'
+UNION ALL SELECT 'P810_pac_no_cambia_auth_user_id',  current_setting('probe.p810', true),   'OK (42501; ya lo frenaba el WITH CHECK)'
+UNION ALL SELECT 'P811_pac_edita_columnas_form',     current_setting('probe.p811', true),   'OK (1 fila, editables cambian)'
+UNION ALL SELECT 'P812_pac_no_toca_otro_paciente',   current_setting('probe.p812', true),   'OK (0 filas)'
+UNION ALL SELECT 'P813_NR_admin_pais_medico_id',     current_setting('probe.p813', true),   'OK (camino legitimo intacto)'
+UNION ALL SELECT 'P814_estructural_trigger_funcion', current_setting('probe.p814', true),   'OK (trigger+INVOKER+search_path)'
 -- Las filas FX* son SALUD DE FIXTURE, no probes de seguridad: dicen si la precondicion que una
 -- migracion posterior empezo a exigir se pudo sembrar. Si una sale ROJO, los probes que dependen de
 -- ese fixture reportan N/A (su flag de ready se pierde con el rollback de la subtransaccion) en vez
@@ -20334,7 +20535,10 @@ UNION ALL SELECT 'P000_CENTINELA_veredictos_no_nulos',
        'probe.p787', 'probe.p788', 'probe.p789',
        'probe.rv_fx', 'probe.p790', 'probe.p791', 'probe.p792', 'probe.p793',
        'probe.p794', 'probe.p795',
-       'probe.nr_fx', 'probe.p796', 'probe.p797', 'probe.p798', 'probe.p799'
+       'probe.nr_fx', 'probe.p796', 'probe.p797', 'probe.p798', 'probe.p799',
+       'probe.pg_fx', 'probe.p801', 'probe.p802', 'probe.p803', 'probe.p804', 'probe.p805',
+       'probe.p806', 'probe.p807', 'probe.p808', 'probe.p809', 'probe.p810', 'probe.p811',
+       'probe.p812', 'probe.p813', 'probe.p814'
              ]) AS n) s),
   'OK (todos los veredictos publicados)';
 
