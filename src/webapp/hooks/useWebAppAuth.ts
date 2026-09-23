@@ -66,6 +66,13 @@ export function useWebAppAuth() {
     return () => subscription.unsubscribe()
   }, [fetchPerfil])
 
+  // Re-lee el perfil desde la base (tras un guardado). No confiar en el estado local: el guardado
+  // pudo aplicar solo parte del diff (o normalizar valores), así que la fuente de verdad es la base.
+  const refetchPerfil = useCallback(async () => {
+    const { data: { user } } = await supabase.auth.getUser()
+    if (user) await fetchPerfil(user.id, user.email || undefined)
+  }, [fetchPerfil])
+
   const login = async (email: string, password: string) => {
     const { error } = await supabase.auth.signInWithPassword({ email, password })
     return { error }
@@ -110,5 +117,5 @@ export function useWebAppAuth() {
     setPerfil(null)
   }
 
-  return { user, perfil, loading, login, register, logout, notificacionesNoLeidas }
+  return { user, perfil, loading, login, register, logout, notificacionesNoLeidas, refetchPerfil }
 }

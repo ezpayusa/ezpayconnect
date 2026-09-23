@@ -1,7 +1,16 @@
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 import { useWebAppAuth } from '@/webapp/hooks/useWebAppAuth'
 import { usePushNotifications } from '@/webapp/hooks/usePushNotifications'
 import { supabase } from '@/lib/supabase'
+import { parseFechaLocal } from '@/lib/fecha'
+import {
+  camposPacienteCambiados,
+  mismoFormPaciente,
+  snapshotPaciente,
+  validarPaciente,
+  formVacioPaciente,
+  type FormPaciente,
+} from '@/webapp/lib/perfilPaciente'
 import { Card, CardContent } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -14,7 +23,7 @@ import { toast } from 'sonner'
 import InvitarAmigoButton from '@/webapp/components/InvitarAmigoButton'
 
 // Componente de campo de formulario (definido FUERA para evitar re-renders)
-function CampoPerfil({ icon: Icon, label, value, editando, editValue, onChange, type = 'text' }: any) {
+function CampoPerfil({ icon: Icon, label, value, editando, editValue, onChange, type = 'text', error }: any) {
   return (
     <div className="space-y-1.5">
       <Label className="text-xs text-slate-500 flex items-center gap-1.5">
@@ -22,12 +31,15 @@ function CampoPerfil({ icon: Icon, label, value, editando, editValue, onChange, 
         {label}
       </Label>
       {editando ? (
-        <Input
-          type={type}
-          value={editValue}
-          onChange={(e) => onChange?.(e.target.value)}
-          className="h-9 text-sm"
-        />
+        <>
+          <Input
+            type={type}
+            value={editValue}
+            onChange={(e) => onChange?.(e.target.value)}
+            className={`h-9 text-sm${error ? ' border-red-400 focus-visible:ring-red-400' : ''}`}
+          />
+          {error ? <p className="text-xs text-red-500">{error}</p> : null}
+        </>
       ) : (
         <p className="text-sm text-slate-700">{value || 'No registrado'}</p>
       )}
@@ -36,7 +48,7 @@ function CampoPerfil({ icon: Icon, label, value, editando, editValue, onChange, 
 }
 
 export default function WebAppPerfil() {
-  const { perfil } = useWebAppAuth()
+  const { perfil, refetchPerfil } = useWebAppAuth()
   const {
     soportado: pushSoportado,
     suscrito: pushSuscrito,
@@ -47,63 +59,65 @@ export default function WebAppPerfil() {
   } = usePushNotifications()
   const [editando, setEditando] = useState(false)
   const [guardando, setGuardando] = useState(false)
-  const [form, setForm] = useState({
-    nombre: perfil?.nombre || '',
-    apellido: perfil?.apellido || '',
-    telefono: perfil?.telefono || '',
-    fecha_nacimiento: perfil?.fecha_nacimiento || '',
-    genero: perfil?.genero || '',
-    direccion: perfil?.direccion || '',
-    alergias: perfil?.alergias || '',
-    notas: perfil?.notas || '',
-    emergencia_nombre: perfil?.emergencia_nombre || '',
-    emergencia_telefono: perfil?.emergencia_telefono || '',
-  })
+  // Seed VACÍO: el useEffect lo hidrata desde `perfil` en cuanto llega. Así el form ya no nace con
+  // los valores congelados en '' (el bug de pérdida de datos): un guardado nunca parte de un form
+  // sin hidratar.
+  const [form, setForm] = useState<FormPaciente>(formVacioPaciente)
+
+  // Sincroniza el form con `perfil` MIENTRAS no se esté editando. Cuando el fetch asíncrono de
+  // useWebAppAuth resuelve (o al cancelar / tras guardar), el form arranca con los valores REALES.
+  // Devolver `prev` cuando no cambió nada evita re-renders innecesarios.
+  useEffect(() => {
+    if (editando) return
+    setForm((prev) => {
+      const next = snapshotPaciente(perfil)
+      return mismoFormPaciente(prev, next) ? prev : next
+    })
+  }, [perfil, editando])
+
+  const errNombre = editando && !form.nombre.trim() ? 'El nombre es obligatorio' : ''
+  const errApellido = editando && !form.apellido.trim() ? 'El apellido es obligatorio' : ''
 
   const handleGuardar = async () => {
     if (!perfil?.id) return
+
+    const errValidacion = validarPaciente(form)
+    if (errValidacion) {
+      toast.error(errValidacion)
+      return // no sale de edición, no pierde lo tipeado
+    }
+
+    // Guardado por diff: SOLO las columnas de la whitelist que cambiaron. Si no cambió nada, no se
+    // toca la base.
+    const diff = camposPacienteCambiados(perfil, form)
+    if (Object.keys(diff).length === 0) {
+      setEditando(false)
+      return
+    }
+
     try {
       setGuardando(true)
       const { error } = await supabase
         .from('pacientes')
-        .update({
-          nombre: form.nombre,
-          apellido: form.apellido,
-          telefono: form.telefono || null,
-          fecha_nacimiento: form.fecha_nacimiento || null,
-          genero: form.genero || null,
-          direccion: form.direccion || null,
-          alergias: form.alergias || null,
-          notas: form.notas || null,
-          emergencia_nombre: form.emergencia_nombre || null,
-          emergencia_telefono: form.emergencia_telefono || null,
-        })
+        .update(diff)
         .eq('id', perfil.id)
 
       if (error) throw error
+
+      // No confiar en el estado local: re-leer el perfil desde la base (el useEffect re-hidrata).
+      await refetchPerfil()
       toast.success('Perfil actualizado correctamente')
       setEditando(false)
-      window.location.reload()
     } catch (err: any) {
-      toast.error('Error al guardar: ' + err.message)
+      // Incluye 42501 (guard de columnas privilegiadas). No sale de edición ni pierde lo tipeado.
+      toast.error('Error al guardar: ' + (err?.message ?? 'desconocido'))
     } finally {
       setGuardando(false)
     }
   }
 
   const handleCancelar = () => {
-    setForm({
-      nombre: perfil?.nombre || '',
-      apellido: perfil?.apellido || '',
-      telefono: perfil?.telefono || '',
-      fecha_nacimiento: perfil?.fecha_nacimiento || '',
-      genero: perfil?.genero || '',
-      direccion: perfil?.direccion || '',
-      alergias: perfil?.alergias || '',
-      notas: perfil?.notas || '',
-      emergencia_nombre: perfil?.emergencia_nombre || '',
-      emergencia_telefono: perfil?.emergencia_telefono || '',
-    })
+    setForm(snapshotPaciente(perfil))
     setEditando(false)
   }
 
@@ -116,16 +130,16 @@ export default function WebAppPerfil() {
         </div>
         {editando ? (
           <div className="flex gap-2">
-            <Button variant="outline" size="sm" onClick={handleCancelar}>
+            <Button variant="outline" size="sm" onClick={handleCancelar} disabled={guardando}>
               <X className="h-4 w-4 mr-1" /> Cancelar
             </Button>
-            <Button size="sm" onClick={handleGuardar} disabled={guardando}>
+            <Button size="sm" onClick={handleGuardar} disabled={guardando || !!errNombre || !!errApellido}>
               {guardando ? <Loader2 className="h-4 w-4 animate-spin mr-1" /> : <Save className="h-4 w-4 mr-1" />}
               Guardar
             </Button>
           </div>
         ) : (
-          <Button variant="outline" size="sm" onClick={() => setEditando(true)}>
+          <Button variant="outline" size="sm" onClick={() => setEditando(true)} disabled={!perfil}>
             <Pencil className="h-4 w-4 mr-1" /> Editar
           </Button>
         )}
@@ -154,6 +168,7 @@ export default function WebAppPerfil() {
                 editando={editando}
                 editValue={form.nombre}
                 onChange={(v: string) => setForm({ ...form, nombre: v })}
+                error={errNombre}
               />
               <CampoPerfil
                 icon={User}
@@ -162,12 +177,13 @@ export default function WebAppPerfil() {
                 editando={editando}
                 editValue={form.apellido}
                 onChange={(v: string) => setForm({ ...form, apellido: v })}
+                error={errApellido}
               />
               <CampoPerfil
                 icon={Mail}
                 label="Email"
                 value={perfil?.email}
-                editando={editando}
+                editando={false}
                 editValue={perfil?.email || ''}
               />
               <CampoPerfil
@@ -181,7 +197,7 @@ export default function WebAppPerfil() {
               <CampoPerfil
                 icon={Calendar}
                 label="Fecha de nacimiento"
-                value={perfil?.fecha_nacimiento ? new Date(perfil.fecha_nacimiento).toLocaleDateString('es-GT') : ''}
+                value={perfil?.fecha_nacimiento ? parseFechaLocal(perfil.fecha_nacimiento).toLocaleDateString('es-GT') : ''}
                 editando={editando}
                 editValue={form.fecha_nacimiento}
                 onChange={(v: string) => setForm({ ...form, fecha_nacimiento: v })}
