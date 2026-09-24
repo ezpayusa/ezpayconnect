@@ -19654,6 +19654,332 @@ END $$;
 SELECT set_config('role','none', true);
 
 
+-- ================================================================================
+-- MIG 326 — PROBES M5 (jerarquia) + M4 (cuenta inactiva). Actores elegidos como postgres.
+-- OK = comportamiento arreglado; ROJO = comportamiento viejo (vulnerable). SIN mig dan ROJO.
+-- ================================================================================
+-- ---------------- P826 M5 vincular_membresia_proveedor (jerarquia) ----------------
+-- Negativos: 42501 CON el mensaje de jerarquia y SIN fila creada. Positivos: la fila creada lleva la
+-- empresa del caller, el rol pedido y activo=true. Precondiciones como aserciones ('fixture roto').
+DO $$
+DECLARE
+  gerente uuid := 'e2fa65d4-f294-4f72-ab4c-df8d18cefe63';   -- gerente_farmacia nivel 80 (no es_admin)
+  adminf  uuid := 'e7935069-fd08-4ac5-a094-9c481313f4d3';   -- admin farmacia (es_admin), misma empresa
+  msg_jer CONSTANT text := '%solo puedes conceder roles de nivel inferior al tuyo%';
+  cg text; ca text; emp uuid; fx text := ''; n int := 0; u record; fila text;
+  e1 text; e2 text; e3 text; e4 text; r1 text; r2 text; r3 text; r4 text;
+BEGIN
+  cg := json_build_object('sub',gerente::text,'role','authenticated')::text;
+  ca := json_build_object('sub',adminf::text,'role','authenticated')::text;
+
+  -- precondiciones (como postgres)
+  SELECT cp.empresa_id INTO emp FROM public.cuentas_proveedor cp JOIN public.empresas_proveedoras e ON e.id = cp.empresa_id
+   WHERE cp.id = gerente AND cp.rol_en_empresa = 'gerente_farmacia' AND cp.activo AND e.tipo = 'farmacia' AND e.estado = 'activa';
+  IF emp IS NULL THEN fx := fx||' gerente'; END IF;
+  IF NOT EXISTS (SELECT 1 FROM public.cuentas_proveedor WHERE id = adminf AND empresa_id = emp AND rol_en_empresa = 'admin' AND activo) THEN
+    fx := fx||' adminf'; END IF;
+  -- 4 usuarios auth libres (sin cuenta_proveedor, perfil ni paciente), uno por variable
+  FOR u IN SELECT au.email FROM auth.users au WHERE au.email IS NOT NULL AND trim(au.email) <> ''
+      AND NOT EXISTS (SELECT 1 FROM public.cuentas_proveedor cp WHERE cp.id = au.id)
+      AND NOT EXISTS (SELECT 1 FROM public.perfiles p WHERE p.id = au.id)
+      AND NOT EXISTS (SELECT 1 FROM public.pacientes pa WHERE pa.auth_user_id = au.id)
+      ORDER BY au.created_at DESC, au.id LIMIT 4 LOOP
+    n := n + 1;
+    IF n = 1 THEN e1 := u.email; ELSIF n = 2 THEN e2 := u.email; ELSIF n = 3 THEN e3 := u.email; ELSE e4 := u.email; END IF;
+  END LOOP;
+  -- 4 emails, distintos, y cada uno resuelve a UN usuario (vincular busca por lower(email))
+  IF n <> 4 OR (SELECT count(*) FROM auth.users au WHERE lower(au.email) IN (lower(e1),lower(e2),lower(e3),lower(e4))) <> 4 THEN
+    fx := fx||' emails(n='||n||')'; END IF;
+  IF fx <> '' THEN RAISE EXCEPTION 'fixture roto:%', fx; END IF;
+
+  -- NEGATIVO: gerente (80) concede 'admin' (100) -> 42501 jerarquia, sin fila
+  BEGIN PERFORM set_config('request.jwt.claims',cg,true); PERFORM set_config('role','authenticated',true);
+    PERFORM public.vincular_membresia_proveedor(e1,'admin','QA',NULL,NULL);
+    PERFORM set_config('role','none',true); PERFORM set_config('request.jwt.claims','',true); r1 := 'PASO(admin creado)';
+  EXCEPTION WHEN OTHERS THEN PERFORM set_config('role','none',true); PERFORM set_config('request.jwt.claims','',true);
+    r1 := CASE WHEN SQLSTATE = '42501' AND SQLERRM ILIKE msg_jer THEN '42501' ELSE 'ERR '||SQLSTATE||' '||SQLERRM END; END;
+  IF EXISTS (SELECT 1 FROM public.cuentas_proveedor cp JOIN auth.users au ON au.id = cp.id WHERE lower(au.email) = lower(e1)) THEN
+    r1 := r1||' +FILA'; END IF;
+
+  -- NEGATIVO nivel igual: gerente (80) concede 'gerente_farmacia' (80) -> 42501 jerarquia, sin fila
+  BEGIN PERFORM set_config('request.jwt.claims',cg,true); PERFORM set_config('role','authenticated',true);
+    PERFORM public.vincular_membresia_proveedor(e2,'gerente_farmacia','QA',NULL,NULL);
+    PERFORM set_config('role','none',true); PERFORM set_config('request.jwt.claims','',true); r2 := 'PASO(par creado)';
+  EXCEPTION WHEN OTHERS THEN PERFORM set_config('role','none',true); PERFORM set_config('request.jwt.claims','',true);
+    r2 := CASE WHEN SQLSTATE = '42501' AND SQLERRM ILIKE msg_jer THEN '42501' ELSE 'ERR '||SQLSTATE||' '||SQLERRM END; END;
+  IF EXISTS (SELECT 1 FROM public.cuentas_proveedor cp JOIN auth.users au ON au.id = cp.id WHERE lower(au.email) = lower(e2)) THEN
+    r2 := r2||' +FILA'; END IF;
+
+  -- POSITIVO: gerente (80) concede 'supervisor' (60) -> fila con empresa del caller, rol pedido, activa
+  BEGIN PERFORM set_config('request.jwt.claims',cg,true); PERFORM set_config('role','authenticated',true);
+    PERFORM public.vincular_membresia_proveedor(e3,'supervisor','QA',NULL,NULL);
+    PERFORM set_config('role','none',true); PERFORM set_config('request.jwt.claims','',true); r3 := 'OK';
+  EXCEPTION WHEN OTHERS THEN PERFORM set_config('role','none',true); PERFORM set_config('request.jwt.claims','',true);
+    r3 := 'ERR '||SQLSTATE||' '||SQLERRM; END;
+  SELECT cp.empresa_id::text||'/'||cp.rol_en_empresa||'/'||cp.activo INTO fila
+    FROM public.cuentas_proveedor cp JOIN auth.users au ON au.id = cp.id WHERE lower(au.email) = lower(e3);
+  IF r3 = 'OK' AND fila IS DISTINCT FROM emp::text||'/supervisor/true' THEN r3 := 'FILA MAL ('||COALESCE(fila,'sin fila')||')'; END IF;
+
+  -- POSITIVO: admin (es_admin) concede 'admin' -> fila con empresa del caller, rol pedido, activa
+  BEGIN PERFORM set_config('request.jwt.claims',ca,true); PERFORM set_config('role','authenticated',true);
+    PERFORM public.vincular_membresia_proveedor(e4,'admin','QA',NULL,NULL);
+    PERFORM set_config('role','none',true); PERFORM set_config('request.jwt.claims','',true); r4 := 'OK';
+  EXCEPTION WHEN OTHERS THEN PERFORM set_config('role','none',true); PERFORM set_config('request.jwt.claims','',true);
+    r4 := 'ERR '||SQLSTATE||' '||SQLERRM; END;
+  fila := NULL;
+  SELECT cp.empresa_id::text||'/'||cp.rol_en_empresa||'/'||cp.activo INTO fila
+    FROM public.cuentas_proveedor cp JOIN auth.users au ON au.id = cp.id WHERE lower(au.email) = lower(e4);
+  IF r4 = 'OK' AND fila IS DISTINCT FROM emp::text||'/admin/true' THEN r4 := 'FILA MAL ('||COALESCE(fila,'sin fila')||')'; END IF;
+
+  PERFORM set_config('probe.p826', CASE WHEN r1 = '42501' AND r2 = '42501' AND r3 = 'OK' AND r4 = 'OK'
+    THEN 'OK (gerente->admin 42501; gerente->gerente_farmacia 42501; gerente->supervisor OK+fila; admin->admin OK+fila)'
+    ELSE 'ROJO (gerente->admin='||r1||' gerente->gerente_farmacia='||r2||' gerente->supervisor='||r3||' admin->admin='||r4||')' END, false);
+EXCEPTION WHEN OTHERS THEN
+  PERFORM set_config('role','none',true); PERFORM set_config('request.jwt.claims','',true);
+  PERFORM set_config('probe.p826', CASE WHEN SQLERRM LIKE 'fixture roto%' THEN 'ROJO ('||SQLERRM||')'
+    ELSE 'FALLO ('||SQLSTATE||' '||SQLERRM||')' END, false);
+END $$;
+SELECT set_config('role','none', true);
+
+-- ---------------- P827 M5 autorizar_invitacion_staff directo ----------------
+-- Negativos: 42501 CON el mensaje de jerarquia. Positivos: el JSON trae la empresa y el tipo del caller.
+-- La funcion es de solo lectura: no hay fila destino que verificar.
+DO $$
+DECLARE
+  gerente uuid := 'e2fa65d4-f294-4f72-ab4c-df8d18cefe63';   -- gerente_farmacia nivel 80 (no es_admin)
+  adminf  uuid := 'e7935069-fd08-4ac5-a094-9c481313f4d3';   -- admin farmacia (es_admin), misma empresa
+  msg_jer CONSTANT text := '%solo puedes conceder roles de nivel inferior al tuyo%';
+  cg text; ca text; emp uuid; tipo text; fx text := ''; j jsonb;
+  r1 text; r2 text; r3 text; r4 text;
+BEGIN
+  cg := json_build_object('sub',gerente::text,'role','authenticated')::text;
+  ca := json_build_object('sub',adminf::text,'role','authenticated')::text;
+
+  -- precondiciones (como postgres)
+  SELECT cp.empresa_id, e.tipo INTO emp, tipo FROM public.cuentas_proveedor cp JOIN public.empresas_proveedoras e ON e.id = cp.empresa_id
+   WHERE cp.id = gerente AND cp.rol_en_empresa = 'gerente_farmacia' AND cp.activo AND e.tipo = 'farmacia' AND e.estado = 'activa';
+  IF emp IS NULL THEN fx := fx||' gerente'; END IF;
+  IF NOT EXISTS (SELECT 1 FROM public.cuentas_proveedor WHERE id = adminf AND empresa_id = emp AND rol_en_empresa = 'admin' AND activo) THEN
+    fx := fx||' adminf'; END IF;
+  IF fx <> '' THEN RAISE EXCEPTION 'fixture roto:%', fx; END IF;
+
+  -- NEGATIVO: gerente (80) -> 'admin' (100)
+  BEGIN PERFORM set_config('request.jwt.claims',cg,true); PERFORM set_config('role','authenticated',true);
+    PERFORM public.autorizar_invitacion_staff('admin');
+    PERFORM set_config('role','none',true); PERFORM set_config('request.jwt.claims','',true); r1 := 'PASO';
+  EXCEPTION WHEN OTHERS THEN PERFORM set_config('role','none',true); PERFORM set_config('request.jwt.claims','',true);
+    r1 := CASE WHEN SQLSTATE = '42501' AND SQLERRM ILIKE msg_jer THEN '42501' ELSE 'ERR '||SQLSTATE||' '||SQLERRM END; END;
+
+  -- NEGATIVO nivel igual: gerente (80) -> 'gerente_farmacia' (80)
+  BEGIN PERFORM set_config('request.jwt.claims',cg,true); PERFORM set_config('role','authenticated',true);
+    PERFORM public.autorizar_invitacion_staff('gerente_farmacia');
+    PERFORM set_config('role','none',true); PERFORM set_config('request.jwt.claims','',true); r2 := 'PASO';
+  EXCEPTION WHEN OTHERS THEN PERFORM set_config('role','none',true); PERFORM set_config('request.jwt.claims','',true);
+    r2 := CASE WHEN SQLSTATE = '42501' AND SQLERRM ILIKE msg_jer THEN '42501' ELSE 'ERR '||SQLSTATE||' '||SQLERRM END; END;
+
+  -- POSITIVO: gerente (80) -> 'supervisor' (60): JSON con empresa y tipo del caller
+  j := NULL;
+  BEGIN PERFORM set_config('request.jwt.claims',cg,true); PERFORM set_config('role','authenticated',true);
+    j := public.autorizar_invitacion_staff('supervisor');
+    PERFORM set_config('role','none',true); PERFORM set_config('request.jwt.claims','',true); r3 := 'OK';
+  EXCEPTION WHEN OTHERS THEN PERFORM set_config('role','none',true); PERFORM set_config('request.jwt.claims','',true);
+    r3 := 'ERR '||SQLSTATE||' '||SQLERRM; END;
+  IF r3 = 'OK' AND ((j->>'empresa_id') IS DISTINCT FROM emp::text OR (j->>'tipo') IS DISTINCT FROM tipo) THEN
+    r3 := 'JSON MAL ('||COALESCE(j::text,'NULL')||')'; END IF;
+
+  -- POSITIVO: admin (es_admin) -> 'admin': JSON con empresa y tipo del caller
+  j := NULL;
+  BEGIN PERFORM set_config('request.jwt.claims',ca,true); PERFORM set_config('role','authenticated',true);
+    j := public.autorizar_invitacion_staff('admin');
+    PERFORM set_config('role','none',true); PERFORM set_config('request.jwt.claims','',true); r4 := 'OK';
+  EXCEPTION WHEN OTHERS THEN PERFORM set_config('role','none',true); PERFORM set_config('request.jwt.claims','',true);
+    r4 := 'ERR '||SQLSTATE||' '||SQLERRM; END;
+  IF r4 = 'OK' AND ((j->>'empresa_id') IS DISTINCT FROM emp::text OR (j->>'tipo') IS DISTINCT FROM tipo) THEN
+    r4 := 'JSON MAL ('||COALESCE(j::text,'NULL')||')'; END IF;
+
+  PERFORM set_config('probe.p827', CASE WHEN r1 = '42501' AND r2 = '42501' AND r3 = 'OK' AND r4 = 'OK'
+    THEN 'OK (gerente->admin 42501; gerente->gerente_farmacia 42501; gerente->supervisor OK+json; admin->admin OK+json)'
+    ELSE 'ROJO (gerente->admin='||r1||' gerente->gerente_farmacia='||r2||' gerente->supervisor='||r3||' admin->admin='||r4||')' END, false);
+EXCEPTION WHEN OTHERS THEN
+  PERFORM set_config('role','none',true); PERFORM set_config('request.jwt.claims','',true);
+  PERFORM set_config('probe.p827', CASE WHEN SQLERRM LIKE 'fixture roto%' THEN 'ROJO ('||SQLERRM||')'
+    ELSE 'FALLO ('||SQLSTATE||' '||SQLERRM||')' END, false);
+END $$;
+SELECT set_config('role','none', true);
+
+-- ---------------- P828 M4 cuenta inactiva ----------------
+-- Negativos: 42501 CON el mensaje de la causa y la fila destino (activo, rol, audita_chat, equipo_id)
+-- intacta. Positivos: las 4 RPCs con el caller activo, verificando el efecto. cambiar_rol_proveedor usa
+-- 'lectura': la empresa es laboratorio_farmaceutico (sin filas en roles_empresa_catalogo) y la RPC valida
+-- contra su lista fija. Cada UPDATE de preparacion exige ROW_COUNT = 1.
+DO $$
+DECLARE
+  adm    uuid := '9ca0b977-3c91-48dc-aa04-2f1fab766963';   -- admin de emp
+  co     uuid := 'd50e7efd-d0c6-4f14-a47b-f6b4845b25e9';   -- miembro destino de emp
+  emp    uuid := '411d6f8c-a405-49d6-9ed6-fbeb0db05133';   -- laboratorio_farmaceutico
+  equipo uuid := '7f29111c-6b7f-4772-8eb6-0d736048c9e8';   -- equipo de emp
+  pac    uuid := '5bfb5b4c-dc91-4714-93cb-a292faa6717d';   -- paciente, sin cuenta_proveedor
+  msg_inact CONSTANT text := '%Cuenta proveedora inactiva%';
+  msg_susp  CONSTANT text := '%Empresa proveedora no activa%';
+  msg_pac   CONSTANT text := '%Solo un administrador%';
+  c_adm text; c_pac text; fx text := ''; rc int; snap text; s text; tipo_orig text;
+  co_activo boolean; co_rol text; co_aud boolean; co_eq uuid; snap_ini text; r_rest text := 'OK';
+  r_est text; r_aud text; r_rol text; r_vis text; r_comb text; r_susp text;
+  p_est text; p_aud text; p_rol text; p_vis text; r_pac text;
+BEGIN
+  c_adm := json_build_object('sub',adm::text,'role','authenticated')::text;
+  c_pac := json_build_object('sub',pac::text,'role','authenticated')::text;
+
+  -- tipo NO data-driven: cambiar_rol_proveedor rechaza farmacia/empresa_afin. Dentro del harness el
+  -- fixture FX12 convierte a esta empresa en 'farmacia' (para P65/P66): se fija aca y se restaura al final.
+  SELECT tipo INTO tipo_orig FROM public.empresas_proveedoras WHERE id = emp;
+  IF tipo_orig IN ('farmacia','empresa_afin') THEN
+    UPDATE public.empresas_proveedoras SET tipo = 'laboratorio_farmaceutico' WHERE id = emp;
+    GET DIAGNOSTICS rc = ROW_COUNT; IF rc <> 1 THEN RAISE EXCEPTION 'fixture roto: fijar tipo emp rc=%', rc; END IF;
+  END IF;
+
+  -- precondiciones (como postgres)
+  IF NOT EXISTS (SELECT 1 FROM public.cuentas_proveedor WHERE id = adm AND empresa_id = emp AND rol_en_empresa = 'admin' AND activo) THEN
+    fx := fx||' adm'; END IF;
+  IF NOT EXISTS (SELECT 1 FROM public.cuentas_proveedor WHERE id = co AND empresa_id = emp AND activo AND NOT audita_chat
+      AND rol_en_empresa NOT IN ('admin','lectura') AND equipo_id IS DISTINCT FROM equipo) THEN fx := fx||' co'; END IF;
+  IF NOT EXISTS (SELECT 1 FROM public.empresas_proveedoras WHERE id = emp AND estado = 'activa' AND tipo NOT IN ('farmacia','empresa_afin')) THEN
+    fx := fx||' emp'; END IF;
+  IF NOT EXISTS (SELECT 1 FROM public.equipos_visitadores WHERE id = equipo AND empresa_id = emp) THEN fx := fx||' equipo'; END IF;
+  IF EXISTS (SELECT 1 FROM public.cuentas_proveedor WHERE id = pac) OR NOT EXISTS (SELECT 1 FROM public.pacientes WHERE auth_user_id = pac) THEN
+    fx := fx||' pac'; END IF;
+  IF fx <> '' THEN RAISE EXCEPTION 'fixture roto:%', fx; END IF;
+  -- valores originales de co (como postgres), para restaurarlos al final
+  SELECT activo, rol_en_empresa, audita_chat, equipo_id, row(activo, rol_en_empresa, audita_chat, equipo_id)::text
+    INTO co_activo, co_rol, co_aud, co_eq, snap_ini FROM public.cuentas_proveedor WHERE id = co;
+  snap := snap_ini;
+
+  -- ===== admin INACTIVO, empresa activa: las 4 RPCs -> 42501 cuenta inactiva, sin efecto =====
+  UPDATE public.cuentas_proveedor SET activo = false WHERE id = adm;
+  GET DIAGNOSTICS rc = ROW_COUNT; IF rc <> 1 THEN RAISE EXCEPTION 'fixture roto: desactivar adm rc=%', rc; END IF;
+
+  BEGIN PERFORM set_config('request.jwt.claims',c_adm,true); PERFORM set_config('role','authenticated',true);
+    PERFORM public.cambiar_estado_miembro_proveedor(co,false);
+    PERFORM set_config('role','none',true); PERFORM set_config('request.jwt.claims','',true); r_est := 'PASO';
+  EXCEPTION WHEN OTHERS THEN PERFORM set_config('role','none',true); PERFORM set_config('request.jwt.claims','',true);
+    r_est := CASE WHEN SQLSTATE = '42501' AND SQLERRM ILIKE msg_inact THEN '42501' ELSE 'ERR '||SQLSTATE||' '||SQLERRM END; END;
+  SELECT row(activo, rol_en_empresa, audita_chat, equipo_id)::text INTO s FROM public.cuentas_proveedor WHERE id = co;
+  IF s IS DISTINCT FROM snap THEN r_est := r_est||' +EFECTO'; snap := s; END IF;
+
+  BEGIN PERFORM set_config('request.jwt.claims',c_adm,true); PERFORM set_config('role','authenticated',true);
+    PERFORM public.cambiar_auditoria_chat(co,true);
+    PERFORM set_config('role','none',true); PERFORM set_config('request.jwt.claims','',true); r_aud := 'PASO';
+  EXCEPTION WHEN OTHERS THEN PERFORM set_config('role','none',true); PERFORM set_config('request.jwt.claims','',true);
+    r_aud := CASE WHEN SQLSTATE = '42501' AND SQLERRM ILIKE msg_inact THEN '42501' ELSE 'ERR '||SQLSTATE||' '||SQLERRM END; END;
+  SELECT row(activo, rol_en_empresa, audita_chat, equipo_id)::text INTO s FROM public.cuentas_proveedor WHERE id = co;
+  IF s IS DISTINCT FROM snap THEN r_aud := r_aud||' +EFECTO'; snap := s; END IF;
+
+  BEGIN PERFORM set_config('request.jwt.claims',c_adm,true); PERFORM set_config('role','authenticated',true);
+    PERFORM public.cambiar_rol_proveedor(co,'admin');
+    PERFORM set_config('role','none',true); PERFORM set_config('request.jwt.claims','',true); r_rol := 'PASO';
+  EXCEPTION WHEN OTHERS THEN PERFORM set_config('role','none',true); PERFORM set_config('request.jwt.claims','',true);
+    r_rol := CASE WHEN SQLSTATE = '42501' AND SQLERRM ILIKE msg_inact THEN '42501' ELSE 'ERR '||SQLSTATE||' '||SQLERRM END; END;
+  SELECT row(activo, rol_en_empresa, audita_chat, equipo_id)::text INTO s FROM public.cuentas_proveedor WHERE id = co;
+  IF s IS DISTINCT FROM snap THEN r_rol := r_rol||' +EFECTO'; snap := s; END IF;
+
+  BEGIN PERFORM set_config('request.jwt.claims',c_adm,true); PERFORM set_config('role','authenticated',true);
+    PERFORM public.asignar_visitador_equipo(co,equipo);
+    PERFORM set_config('role','none',true); PERFORM set_config('request.jwt.claims','',true); r_vis := 'PASO';
+  EXCEPTION WHEN OTHERS THEN PERFORM set_config('role','none',true); PERFORM set_config('request.jwt.claims','',true);
+    r_vis := CASE WHEN SQLSTATE = '42501' AND SQLERRM ILIKE msg_inact THEN '42501' ELSE 'ERR '||SQLSTATE||' '||SQLERRM END; END;
+  SELECT row(activo, rol_en_empresa, audita_chat, equipo_id)::text INTO s FROM public.cuentas_proveedor WHERE id = co;
+  IF s IS DISTINCT FROM snap THEN r_vis := r_vis||' +EFECTO'; snap := s; END IF;
+
+  -- ===== combinado: admin INACTIVO + empresa SUSPENDIDA -> prevalece 'Cuenta proveedora inactiva' =====
+  UPDATE public.empresas_proveedoras SET estado = 'suspendida' WHERE id = emp;
+  GET DIAGNOSTICS rc = ROW_COUNT; IF rc <> 1 THEN RAISE EXCEPTION 'fixture roto: suspender emp rc=%', rc; END IF;
+  BEGIN PERFORM set_config('request.jwt.claims',c_adm,true); PERFORM set_config('role','authenticated',true);
+    PERFORM public.cambiar_estado_miembro_proveedor(co,false);
+    PERFORM set_config('role','none',true); PERFORM set_config('request.jwt.claims','',true); r_comb := 'PASO';
+  EXCEPTION WHEN OTHERS THEN PERFORM set_config('role','none',true); PERFORM set_config('request.jwt.claims','',true);
+    r_comb := CASE WHEN SQLSTATE = '42501' AND SQLERRM ILIKE msg_inact THEN '42501' ELSE 'ERR '||SQLSTATE||' '||SQLERRM END; END;
+  SELECT row(activo, rol_en_empresa, audita_chat, equipo_id)::text INTO s FROM public.cuentas_proveedor WHERE id = co;
+  IF s IS DISTINCT FROM snap THEN r_comb := r_comb||' +EFECTO'; snap := s; END IF;
+
+  -- ===== no-regresion 323: admin ACTIVO + empresa SUSPENDIDA -> 42501 empresa no activa =====
+  UPDATE public.cuentas_proveedor SET activo = true WHERE id = adm;
+  GET DIAGNOSTICS rc = ROW_COUNT; IF rc <> 1 THEN RAISE EXCEPTION 'fixture roto: reactivar adm rc=%', rc; END IF;
+  BEGIN PERFORM set_config('request.jwt.claims',c_adm,true); PERFORM set_config('role','authenticated',true);
+    PERFORM public.cambiar_estado_miembro_proveedor(co,false);
+    PERFORM set_config('role','none',true); PERFORM set_config('request.jwt.claims','',true); r_susp := 'PASO';
+  EXCEPTION WHEN OTHERS THEN PERFORM set_config('role','none',true); PERFORM set_config('request.jwt.claims','',true);
+    r_susp := CASE WHEN SQLSTATE = '42501' AND SQLERRM ILIKE msg_susp THEN '42501' ELSE 'ERR '||SQLSTATE||' '||SQLERRM END; END;
+  SELECT row(activo, rol_en_empresa, audita_chat, equipo_id)::text INTO s FROM public.cuentas_proveedor WHERE id = co;
+  IF s IS DISTINCT FROM snap THEN r_susp := r_susp||' +EFECTO'; snap := s; END IF;
+  UPDATE public.empresas_proveedoras SET estado = 'activa' WHERE id = emp;
+  GET DIAGNOSTICS rc = ROW_COUNT; IF rc <> 1 THEN RAISE EXCEPTION 'fixture roto: reactivar emp rc=%', rc; END IF;
+
+  -- ===== controles positivos: admin ACTIVO, empresa activa, las 4 RPCs con su efecto =====
+  BEGIN PERFORM set_config('request.jwt.claims',c_adm,true); PERFORM set_config('role','authenticated',true);
+    PERFORM public.cambiar_estado_miembro_proveedor(co,false);
+    PERFORM set_config('role','none',true); PERFORM set_config('request.jwt.claims','',true); p_est := 'PASA';
+  EXCEPTION WHEN OTHERS THEN PERFORM set_config('role','none',true); PERFORM set_config('request.jwt.claims','',true);
+    p_est := 'ERR '||SQLSTATE||' '||SQLERRM; END;
+  IF p_est = 'PASA' AND NOT EXISTS (SELECT 1 FROM public.cuentas_proveedor WHERE id = co AND activo = false) THEN p_est := 'PASA SIN EFECTO'; END IF;
+
+  BEGIN PERFORM set_config('request.jwt.claims',c_adm,true); PERFORM set_config('role','authenticated',true);
+    PERFORM public.cambiar_auditoria_chat(co,true);
+    PERFORM set_config('role','none',true); PERFORM set_config('request.jwt.claims','',true); p_aud := 'PASA';
+  EXCEPTION WHEN OTHERS THEN PERFORM set_config('role','none',true); PERFORM set_config('request.jwt.claims','',true);
+    p_aud := 'ERR '||SQLSTATE||' '||SQLERRM; END;
+  IF p_aud = 'PASA' AND NOT EXISTS (SELECT 1 FROM public.cuentas_proveedor WHERE id = co AND audita_chat) THEN p_aud := 'PASA SIN EFECTO'; END IF;
+
+  BEGIN PERFORM set_config('request.jwt.claims',c_adm,true); PERFORM set_config('role','authenticated',true);
+    PERFORM public.cambiar_rol_proveedor(co,'lectura');
+    PERFORM set_config('role','none',true); PERFORM set_config('request.jwt.claims','',true); p_rol := 'PASA';
+  EXCEPTION WHEN OTHERS THEN PERFORM set_config('role','none',true); PERFORM set_config('request.jwt.claims','',true);
+    p_rol := 'ERR '||SQLSTATE||' '||SQLERRM; END;
+  IF p_rol = 'PASA' AND NOT EXISTS (SELECT 1 FROM public.cuentas_proveedor WHERE id = co AND rol_en_empresa = 'lectura') THEN p_rol := 'PASA SIN EFECTO'; END IF;
+
+  BEGIN PERFORM set_config('request.jwt.claims',c_adm,true); PERFORM set_config('role','authenticated',true);
+    PERFORM public.asignar_visitador_equipo(co,equipo);
+    PERFORM set_config('role','none',true); PERFORM set_config('request.jwt.claims','',true); p_vis := 'PASA';
+  EXCEPTION WHEN OTHERS THEN PERFORM set_config('role','none',true); PERFORM set_config('request.jwt.claims','',true);
+    p_vis := 'ERR '||SQLSTATE||' '||SQLERRM; END;
+  IF p_vis = 'PASA' AND NOT EXISTS (SELECT 1 FROM public.cuentas_proveedor WHERE id = co AND equipo_id = equipo) THEN p_vis := 'PASA SIN EFECTO'; END IF;
+
+  -- ===== no-proveedor (paciente): el gate nuevo no lo frena; lo frena la RPC (P0001 'Solo un administrador') =====
+  SELECT row(activo, rol_en_empresa, audita_chat, equipo_id)::text INTO snap FROM public.cuentas_proveedor WHERE id = co;
+  BEGIN PERFORM set_config('request.jwt.claims',c_pac,true); PERFORM set_config('role','authenticated',true);
+    PERFORM public.cambiar_estado_miembro_proveedor(co,true);
+    PERFORM set_config('role','none',true); PERFORM set_config('request.jwt.claims','',true); r_pac := 'PASO';
+  EXCEPTION WHEN OTHERS THEN PERFORM set_config('role','none',true); PERFORM set_config('request.jwt.claims','',true);
+    r_pac := CASE WHEN SQLSTATE = 'P0001' AND SQLERRM ILIKE msg_pac THEN 'P0001' ELSE 'ERR '||SQLSTATE||' '||SQLERRM END; END;
+  SELECT row(activo, rol_en_empresa, audita_chat, equipo_id)::text INTO s FROM public.cuentas_proveedor WHERE id = co;
+  IF s IS DISTINCT FROM snap THEN r_pac := r_pac||' +EFECTO'; END IF;
+
+  -- restaurar la fila de co a sus valores previos al probe, y verificar contra el snapshot inicial
+  UPDATE public.cuentas_proveedor SET activo = co_activo, rol_en_empresa = co_rol, audita_chat = co_aud, equipo_id = co_eq
+   WHERE id = co;
+  GET DIAGNOSTICS rc = ROW_COUNT; IF rc <> 1 THEN RAISE EXCEPTION 'fixture roto: restaurar co rc=%', rc; END IF;
+  SELECT row(activo, rol_en_empresa, audita_chat, equipo_id)::text INTO s FROM public.cuentas_proveedor WHERE id = co;
+  IF s IS DISTINCT FROM snap_ini THEN r_rest := 'co no restaurada ('||COALESCE(s,'NULL')||' <> '||snap_ini||')'; END IF;
+
+  -- restaurar el tipo que traia la empresa (no altera a los probes que corran despues)
+  IF tipo_orig IN ('farmacia','empresa_afin') THEN
+    UPDATE public.empresas_proveedoras SET tipo = tipo_orig WHERE id = emp;
+    GET DIAGNOSTICS rc = ROW_COUNT; IF rc <> 1 THEN RAISE EXCEPTION 'fixture roto: restaurar tipo emp rc=%', rc; END IF;
+  END IF;
+
+  PERFORM set_config('probe.p828', CASE WHEN r_est = '42501' AND r_aud = '42501' AND r_rol = '42501' AND r_vis = '42501'
+      AND r_comb = '42501' AND r_susp = '42501'
+      AND p_est = 'PASA' AND p_aud = 'PASA' AND p_rol = 'PASA' AND p_vis = 'PASA' AND r_pac = 'P0001' AND r_rest = 'OK'
+    THEN 'OK (inactivo: estado/aud/rol/visitador 42501 sin efecto; inactivo+suspendida 42501 cuenta; suspendida 42501 empresa; activo: 4 RPCs PASA con efecto; paciente P0001; co restaurada)'
+    ELSE 'ROJO (est='||r_est||' aud='||r_aud||' rol='||r_rol||' vis='||r_vis||' comb='||r_comb||' susp='||r_susp
+      ||' | ctrl est='||p_est||' aud='||p_aud||' rol='||p_rol||' vis='||p_vis||' | pac='||r_pac||' | restaurar='||r_rest||')' END, false);
+EXCEPTION WHEN OTHERS THEN
+  PERFORM set_config('role','none',true); PERFORM set_config('request.jwt.claims','',true);
+  PERFORM set_config('probe.p828', CASE WHEN SQLERRM LIKE 'fixture roto%' THEN 'ROJO ('||SQLERRM||')'
+    ELSE 'FALLO ('||SQLSTATE||' '||SQLERRM||')' END, false);
+END $$;
+SELECT set_config('role','none', true);
+
+
 -- ===== Veredictos como result set =====
 SELECT 'P1_anon_insert_citas'              AS probe, current_setting('probe.p1', true)  AS verdict, 'BLOQUEADO' AS esperado_post_fix
 UNION ALL SELECT 'P2_medico_cancela_ajena_rpc',         current_setting('probe.p2', true),  'BLOQUEADO'
@@ -20554,6 +20880,9 @@ UNION ALL SELECT 'P822_onboarding_rechazada',       current_setting('probe.p822'
 UNION ALL SELECT 'P823_onboarding_pendiente',       current_setting('probe.p823', true),   'OK (empresa+equipo+UPDATE)'
 UNION ALL SELECT 'P824_estructural_gate',           current_setting('probe.p824', true),   'OK (17 B con guard, 2 exentas sin)'
 UNION ALL SELECT 'P825_invariante_visibilidad_cuentas', current_setting('probe.p825', true), 'OK (admin equipo, no-admin 1)'
+UNION ALL SELECT 'P826_M5_vincular_jerarquia',       current_setting('probe.p826', true), 'OK (gerente no crea admin)'
+UNION ALL SELECT 'P827_M5_autorizar_staff_jerarquia',current_setting('probe.p827', true), 'OK (gerente no autoriza admin)'
+UNION ALL SELECT 'P828_M4_cuenta_inactiva',          current_setting('probe.p828', true), 'OK (inactivo 42501)'
 -- Las filas FX* son SALUD DE FIXTURE, no probes de seguridad: dicen si la precondicion que una
 -- migracion posterior empezo a exigir se pudo sembrar. Si una sale ROJO, los probes que dependen de
 -- ese fixture reportan N/A (su flag de ready se pierde con el rollback de la subtransaccion) en vez
@@ -20788,7 +21117,8 @@ UNION ALL SELECT 'P000_CENTINELA_veredictos_no_nulos',
        'probe.p806', 'probe.p807', 'probe.p808', 'probe.p809', 'probe.p810', 'probe.p811',
        'probe.p812', 'probe.p813', 'probe.p814',
        'probe.pgr_fx', 'probe.p815', 'probe.p816', 'probe.p817', 'probe.p818', 'probe.p819',
-       'probe.p820', 'probe.p821', 'probe.p822', 'probe.p823', 'probe.p824', 'probe.p825'
+       'probe.p820', 'probe.p821', 'probe.p822', 'probe.p823', 'probe.p824', 'probe.p825',
+       'probe.p826', 'probe.p827', 'probe.p828'
              ]) AS n) s),
   'OK (todos los veredictos publicados)';
 
