@@ -20329,6 +20329,391 @@ EXCEPTION WHEN OTHERS THEN
 END $$;
 SELECT set_config('role','none', true);
 
+-- ================================================================================
+-- MIG 328 — la emision de recetas pasa SOLO por emitir_receta (P834-P839).
+-- OK = comportamiento de la 328; con 328_rollback aplicado dan ROJO P834, P835, P837, P838 y P839.
+-- P836 es el control POSITIVO (emitir_receta + notificar_receta + fijar_modalidad_grupo siguen
+-- funcionando) y queda OK con o sin la 328. Fixtures elegidos como postgres, fuera de la
+-- impersonacion. Detalle por caso en probe.pNNN_det (caso|esperado|obtenido|sqlstate|mensaje,
+-- separados por ' ;; '). Todo lo que un probe crea o modifica se restaura y se verifica.
+-- ================================================================================
+-- ---------------- P834 medico: INSERT directo en recetas -> 42501, sin filas ----------------
+DO $$
+DECLARE
+  m uuid; p bigint; rid bigint; res text; rc int; det text; r_rest text := 'OK';
+  n_rec0 bigint; n_his0 bigint; n_rec1 bigint; n_his1 bigint;
+BEGIN
+  SELECT pa.medico_id, pa.id INTO m, p FROM public.pacientes pa JOIN public.perfiles pf ON pf.id = pa.medico_id
+   WHERE pf.rol = 'medico' AND pf.activo IS TRUE ORDER BY pa.medico_id, pa.id LIMIT 1;
+  IF m IS NULL THEN RAISE EXCEPTION 'fixture roto: medico con paciente propio'; END IF;
+  SELECT count(*) INTO n_rec0 FROM public.recetas; SELECT count(*) INTO n_his0 FROM public.historial_medico;
+
+  BEGIN
+    PERFORM set_config('request.jwt.claims', json_build_object('sub',m::text,'role','authenticated')::text, true);
+    PERFORM set_config('role','authenticated',true);
+    INSERT INTO public.recetas (paciente_id, medico_id, estado) VALUES (p, m, 'activa') RETURNING id INTO rid;
+    PERFORM set_config('role','none',true); PERFORM set_config('request.jwt.claims','',true);
+    res := 'PASO|00000|receta '||rid;
+  EXCEPTION WHEN OTHERS THEN PERFORM set_config('role','none',true); PERFORM set_config('request.jwt.claims','',true);
+    res := CASE WHEN SQLSTATE = '42501' AND SQLERRM ILIKE 'permission denied for table recetas' THEN '42501' ELSE 'ERR' END||'|'||SQLSTATE||'|'||SQLERRM;
+  END;
+  SELECT count(*) INTO n_rec1 FROM public.recetas; SELECT count(*) INTO n_his1 FROM public.historial_medico;
+  IF n_rec1 <> n_rec0 OR n_his1 <> n_his0 THEN res := res||' +FILAS'; END IF;
+  det := 'medico INSERT directo en recetas (paciente propio '||p||')|42501 permission denied for table recetas|'||res;
+
+  -- restauracion: si paso (sin la 328), borrar la receta y el historial que dispara su trigger
+  IF rid IS NOT NULL THEN
+    DELETE FROM public.historial_medico WHERE referencia_id = rid::text AND tipo_evento = 'receta';
+    DELETE FROM public.recetas WHERE id = rid; GET DIAGNOSTICS rc = ROW_COUNT;
+    IF rc <> 1 THEN RAISE EXCEPTION 'fixture roto: borrar receta P834 rc=%', rc; END IF;
+  END IF;
+  SELECT count(*) INTO n_rec1 FROM public.recetas; SELECT count(*) INTO n_his1 FROM public.historial_medico;
+  IF n_rec1 <> n_rec0 OR n_his1 <> n_his0 THEN
+    r_rest := 'conteos no vuelven (recetas '||n_rec0||'->'||n_rec1||' / historial '||n_his0||'->'||n_his1||')'; END IF;
+  det := det||' ;; restauracion|recetas='||n_rec0||' historial='||n_his0||'|'||r_rest||'|-|recetas='||n_rec1||' historial='||n_his1;
+
+  PERFORM set_config('probe.p834_det', det, false);
+  PERFORM set_config('probe.p834', CASE WHEN split_part(res,'|',1) = '42501' AND res NOT LIKE '%+FILAS%' AND r_rest = 'OK'
+    THEN 'OK (medico con paciente propio: INSERT directo en recetas -> 42501 permission denied, sin filas)'
+    ELSE 'ROJO (insert='||res||' | restauracion='||r_rest||')' END, false);
+EXCEPTION WHEN OTHERS THEN
+  PERFORM set_config('role','none',true); PERFORM set_config('request.jwt.claims','',true);
+  PERFORM set_config('probe.p834', CASE WHEN SQLERRM LIKE 'fixture roto%' THEN 'ROJO ('||SQLERRM||')'
+    ELSE 'FALLO ('||SQLSTATE||' '||SQLERRM||')' END, false);
+END $$;
+SELECT set_config('role','none', true);
+
+-- ---------------- P835 medico: INSERT directo en receta_items de una receta PROPIA -> 42501 ----------------
+DO $$
+DECLARE
+  m uuid; rid bigint; iid bigint; res text; rc int; det text; r_rest text := 'OK'; n0 bigint; n1 bigint;
+BEGIN
+  SELECT r.medico_id, r.id INTO m, rid FROM public.recetas r JOIN public.perfiles pf ON pf.id = r.medico_id
+   WHERE pf.rol = 'medico' AND pf.activo IS TRUE ORDER BY r.medico_id, r.id LIMIT 1;
+  IF rid IS NULL THEN RAISE EXCEPTION 'fixture roto: receta propia de un medico'; END IF;
+  SELECT count(*) INTO n0 FROM public.receta_items;
+
+  BEGIN
+    PERFORM set_config('request.jwt.claims', json_build_object('sub',m::text,'role','authenticated')::text, true);
+    PERFORM set_config('role','authenticated',true);
+    INSERT INTO public.receta_items (receta_id, nombre_medicamento, dosis, frecuencia, cantidad)
+    VALUES (rid, 'P835 QA', '1', 'c/8h', 1) RETURNING id INTO iid;
+    PERFORM set_config('role','none',true); PERFORM set_config('request.jwt.claims','',true);
+    res := 'PASO|00000|item '||iid;
+  EXCEPTION WHEN OTHERS THEN PERFORM set_config('role','none',true); PERFORM set_config('request.jwt.claims','',true);
+    res := CASE WHEN SQLSTATE = '42501' AND SQLERRM ILIKE 'permission denied for table receta_items' THEN '42501' ELSE 'ERR' END||'|'||SQLSTATE||'|'||SQLERRM;
+  END;
+  SELECT count(*) INTO n1 FROM public.receta_items;
+  IF n1 <> n0 THEN res := res||' +FILAS'; END IF;
+  det := 'medico INSERT en receta_items de su receta '||rid||'|42501 permission denied for table receta_items|'||res;
+
+  IF iid IS NOT NULL THEN
+    DELETE FROM public.receta_items WHERE id = iid; GET DIAGNOSTICS rc = ROW_COUNT;
+    IF rc <> 1 THEN RAISE EXCEPTION 'fixture roto: borrar item P835 rc=%', rc; END IF;
+  END IF;
+  SELECT count(*) INTO n1 FROM public.receta_items;
+  IF n1 <> n0 THEN r_rest := 'conteo no vuelve ('||n0||'->'||n1||')'; END IF;
+  det := det||' ;; restauracion|receta_items='||n0||'|'||r_rest||'|-|receta_items='||n1;
+
+  PERFORM set_config('probe.p835_det', det, false);
+  PERFORM set_config('probe.p835', CASE WHEN split_part(res,'|',1) = '42501' AND res NOT LIKE '%+FILAS%' AND r_rest = 'OK'
+    THEN 'OK (medico: INSERT en receta_items de una receta propia -> 42501 permission denied, sin filas)'
+    ELSE 'ROJO (insert='||res||' | restauracion='||r_rest||')' END, false);
+EXCEPTION WHEN OTHERS THEN
+  PERFORM set_config('role','none',true); PERFORM set_config('request.jwt.claims','',true);
+  PERFORM set_config('probe.p835', CASE WHEN SQLERRM LIKE 'fixture roto%' THEN 'ROJO ('||SQLERRM||')'
+    ELSE 'FALLO ('||SQLSTATE||' '||SQLERRM||')' END, false);
+END $$;
+SELECT set_config('role','none', true);
+
+-- ---------------- P836 POSITIVO: emitir_receta + lectura propia + notificar_receta + fijar_modalidad_grupo ----------------
+-- Medico que ATIENDE al paciente (cita): es el gate de emitir_receta (PR009) y de notificar_receta (PT002).
+DO $$
+DECLARE
+  c record; m uuid; p bigint; med bigint; farm integer; claims text; j jsonb; rid bigint; det text := ''; rc int;
+  r_emit text; r_fila text; r_sel text; r_not text; r_mod text; r_rest text := 'OK'; v_n bigint;
+  n_rec0 bigint; n_it0 bigint; n_av0 bigint; n_his0 bigint; n_np0 bigint;
+  n_rec1 bigint; n_it1 bigint; n_av1 bigint; n_his1 bigint; n_np1 bigint;
+  corr_existia boolean; corr_num bigint; corr_upd timestamptz; corr_fin text;
+BEGIN
+  -- fixture: par (medico, paciente) con cita, verificado BAJO los claims del medico
+  FOR c IN SELECT DISTINCT ci.medico_id, ci.paciente_id FROM public.citas ci
+             JOIN public.perfiles pf ON pf.id = ci.medico_id
+            WHERE pf.rol = 'medico' AND pf.activo IS TRUE AND ci.paciente_id IS NOT NULL
+            ORDER BY 1, 2 LOOP
+    PERFORM set_config('request.jwt.claims', json_build_object('sub',c.medico_id::text,'role','authenticated')::text, true);
+    IF COALESCE(private.medico_atiende_paciente(c.paciente_id), false) AND COALESCE(private.tiene_rol(ARRAY['medico']), false) THEN
+      m := c.medico_id; p := c.paciente_id; EXIT; END IF;
+  END LOOP;
+  PERFORM set_config('request.jwt.claims','',true);
+  SELECT md.id INTO med FROM public.medicamentos md LEFT JOIN public.medicamentos_categorias mc ON mc.codigo = md.categoria_regulatoria
+   WHERE md.activo IS TRUE AND NOT COALESCE(mc.requiere_acuse, false) ORDER BY md.id LIMIT 1;
+  SELECT f.id INTO farm FROM public.farmacias f ORDER BY f.id LIMIT 1;
+  IF m IS NULL OR med IS NULL OR farm IS NULL THEN
+    RAISE EXCEPTION 'fixture roto: medico-atiende-paciente=% medicamento=% farmacia=%', m, med, farm; END IF;
+  claims := json_build_object('sub',m::text,'role','authenticated')::text;
+
+  SELECT count(*) INTO n_rec0 FROM public.recetas;           SELECT count(*) INTO n_it0 FROM public.receta_items;
+  SELECT count(*) INTO n_av0 FROM public.recetas_avanzadas;  SELECT count(*) INTO n_his0 FROM public.historial_medico;
+  SELECT count(*) INTO n_np0 FROM public.notificaciones_pacientes;
+  SELECT true, ultimo_numero, updated_at INTO corr_existia, corr_num, corr_upd FROM public.medico_correlativos WHERE medico_id = m;
+  corr_existia := COALESCE(corr_existia, false);
+
+  -- (1) emitir por la RPC
+  BEGIN
+    PERFORM set_config('request.jwt.claims', claims, true); PERFORM set_config('role','authenticated',true);
+    j := public.emitir_receta(p, 'P836 QA', jsonb_build_array(jsonb_build_object(
+           'medicamento_id', med, 'nombre_medicamento', 'P836 QA', 'dosis', '1', 'frecuencia', 'c/8h',
+           'cantidad', 1, 'farmacia_id', farm)));
+    PERFORM set_config('role','none',true); PERFORM set_config('request.jwt.claims','',true);
+    rid := (j->>'receta_id')::bigint; r_emit := 'OK';
+  EXCEPTION WHEN OTHERS THEN PERFORM set_config('role','none',true); PERFORM set_config('request.jwt.claims','',true);
+    r_emit := 'ERR '||SQLSTATE||' '||SQLERRM; END;
+  det := 'emitir_receta como medico que atiende|OK|'||r_emit||'|'||CASE WHEN r_emit = 'OK' THEN '00000' ELSE '-' END||'|'||COALESCE(j::text,'');
+
+  IF rid IS NOT NULL THEN
+    -- (2) la fila: correlativo, recetas_avanzadas con emitida_at, 1 item
+    SELECT 'correlativo='||COALESCE(r.numero_correlativo::text,'NULL')
+         ||' avanzada_emitida='||EXISTS (SELECT 1 FROM public.recetas_avanzadas a WHERE a.receta_base_id = r.id AND a.emitida_at IS NOT NULL)
+         ||' items='||(SELECT count(*) FROM public.receta_items i WHERE i.receta_id = r.id)
+      INTO r_fila FROM public.recetas r WHERE r.id = rid;
+    det := det||' ;; fila emitida|correlativo=' ||(j->>'numero_correlativo')||' avanzada_emitida=true items=1|'||COALESCE(r_fila,'SIN FILA')||'|-|';
+
+    -- (3) el medico LEE sus items (policy receta_items_medico_select)
+    BEGIN
+      PERFORM set_config('request.jwt.claims', claims, true); PERFORM set_config('role','authenticated',true);
+      SELECT count(*) INTO v_n FROM public.receta_items WHERE receta_id = rid;
+      PERFORM set_config('role','none',true); PERFORM set_config('request.jwt.claims','',true);
+      r_sel := 've '||v_n;
+    EXCEPTION WHEN OTHERS THEN PERFORM set_config('role','none',true); PERFORM set_config('request.jwt.claims','',true);
+      r_sel := 'ERR '||SQLSTATE||' '||SQLERRM; END;
+    det := det||' ;; medico SELECT items de su receta|ve 1|'||r_sel||'|-|';
+
+    -- (4) notificar_receta (escritor legitimo: UPDATE recetas.notificado)
+    BEGIN
+      PERFORM set_config('request.jwt.claims', claims, true); PERFORM set_config('role','authenticated',true);
+      PERFORM public.notificar_receta(rid);
+      PERFORM set_config('role','none',true); PERFORM set_config('request.jwt.claims','',true);
+      SELECT CASE WHEN notificado THEN 'OK notificado=true' ELSE 'notificado=false' END INTO r_not FROM public.recetas WHERE id = rid;
+    EXCEPTION WHEN OTHERS THEN PERFORM set_config('role','none',true); PERFORM set_config('request.jwt.claims','',true);
+      r_not := 'ERR '||SQLSTATE||' '||SQLERRM; END;
+    det := det||' ;; notificar_receta|OK notificado=true|'||r_not||'|-|';
+
+    -- (5) fijar_modalidad_grupo (escritor legitimo: UPDATE receta_items.modalidad)
+    BEGIN
+      PERFORM set_config('request.jwt.claims', claims, true); PERFORM set_config('role','authenticated',true);
+      j := public.fijar_modalidad_grupo(rid, farm, 'delivery');
+      PERFORM set_config('role','none',true); PERFORM set_config('request.jwt.claims','',true);
+      SELECT 'items='||(j->>'items')||' modalidad='||string_agg(DISTINCT COALESCE(i.modalidad,'NULL'), ',') INTO r_mod
+        FROM public.receta_items i WHERE i.receta_id = rid;
+    EXCEPTION WHEN OTHERS THEN PERFORM set_config('role','none',true); PERFORM set_config('request.jwt.claims','',true);
+      r_mod := 'ERR '||SQLSTATE||' '||SQLERRM; END;
+    det := det||' ;; fijar_modalidad_grupo delivery|items=1 modalidad=delivery|'||r_mod||'|-|';
+
+    -- RESTAURACION: todo lo que creo la emision + la notificacion, y el correlativo del medico
+    DELETE FROM public.notificaciones_pacientes WHERE paciente_id = p AND tipo = 'receta' AND created_at = now();
+    DELETE FROM public.historial_medico WHERE referencia_id = rid::text AND tipo_evento = 'receta';
+    DELETE FROM public.recetas_avanzadas WHERE receta_base_id = rid; GET DIAGNOSTICS rc = ROW_COUNT;
+    IF rc <> 1 THEN RAISE EXCEPTION 'fixture roto: borrar recetas_avanzadas P836 rc=%', rc; END IF;
+    DELETE FROM public.receta_items WHERE receta_id = rid; GET DIAGNOSTICS rc = ROW_COUNT;
+    IF rc <> 1 THEN RAISE EXCEPTION 'fixture roto: borrar items P836 rc=%', rc; END IF;
+    DELETE FROM public.recetas WHERE id = rid; GET DIAGNOSTICS rc = ROW_COUNT;
+    IF rc <> 1 THEN RAISE EXCEPTION 'fixture roto: borrar receta P836 rc=%', rc; END IF;
+  END IF;
+  IF corr_existia THEN
+    UPDATE public.medico_correlativos SET ultimo_numero = corr_num, updated_at = corr_upd WHERE medico_id = m;
+  ELSE
+    DELETE FROM public.medico_correlativos WHERE medico_id = m;
+  END IF;
+  SELECT count(*) INTO n_rec1 FROM public.recetas;           SELECT count(*) INTO n_it1 FROM public.receta_items;
+  SELECT count(*) INTO n_av1 FROM public.recetas_avanzadas;  SELECT count(*) INTO n_his1 FROM public.historial_medico;
+  SELECT count(*) INTO n_np1 FROM public.notificaciones_pacientes;
+  SELECT COALESCE((SELECT ultimo_numero::text||'@'||updated_at::text FROM public.medico_correlativos WHERE medico_id = m), 'sin fila') INTO corr_fin;
+  IF (n_rec1, n_it1, n_av1, n_his1, n_np1) IS DISTINCT FROM (n_rec0, n_it0, n_av0, n_his0, n_np0)
+     OR corr_fin IS DISTINCT FROM (CASE WHEN corr_existia THEN corr_num::text||'@'||corr_upd::text ELSE 'sin fila' END) THEN
+    r_rest := 'no vuelve: rec '||n_rec0||'->'||n_rec1||' it '||n_it0||'->'||n_it1||' av '||n_av0||'->'||n_av1
+            ||' his '||n_his0||'->'||n_his1||' np '||n_np0||'->'||n_np1||' correlativo '||corr_fin; END IF;
+  det := det||' ;; restauracion (5 conteos + correlativo)|rec='||n_rec0||' it='||n_it0||' av='||n_av0||' his='||n_his0||' np='||n_np0
+        ||'|'||r_rest||'|-|rec='||n_rec1||' it='||n_it1||' av='||n_av1||' his='||n_his1||' np='||n_np1;
+
+  PERFORM set_config('probe.p836_det', det, false);
+  PERFORM set_config('probe.p836', CASE
+    WHEN r_emit = 'OK' AND r_fila NOT LIKE 'correlativo=NULL%' AND r_fila LIKE '%avanzada_emitida=true items=1'
+     AND r_sel = 've 1' AND r_not = 'OK notificado=true' AND r_mod = 'items=1 modalidad=delivery' AND r_rest = 'OK'
+    THEN 'OK (emitir_receta con correlativo + recetas_avanzadas.emitida_at + item; el medico lee su item; notificar_receta y fijar_modalidad_grupo funcionan; restaurado)'
+    ELSE 'ROJO (emitir='||r_emit||' | fila='||COALESCE(r_fila,'-')||' | select='||COALESCE(r_sel,'-')||' | notificar='||COALESCE(r_not,'-')
+         ||' | modalidad='||COALESCE(r_mod,'-')||' | restauracion='||r_rest||')' END, false);
+EXCEPTION WHEN OTHERS THEN
+  PERFORM set_config('role','none',true); PERFORM set_config('request.jwt.claims','',true);
+  PERFORM set_config('probe.p836', CASE WHEN SQLERRM LIKE 'fixture roto%' THEN 'ROJO ('||SQLERRM||')'
+    ELSE 'FALLO ('||SQLSTATE||' '||SQLERRM||')' END, false);
+END $$;
+SELECT set_config('role','none', true);
+
+-- ---------------- P837 medico: UPDATE / DELETE directo de un item de su receta -> 0 filas ----------------
+-- Antes de la 328, receta_items_medico_all (ALL) le dejaba cambiar o borrar items ya emitidos.
+-- El item objetivo lo siembra el probe como postgres (no se toca ningun item real).
+DO $$
+DECLARE
+  m uuid; rid bigint; iid bigint; det text; rc int; r_upd text; r_del text; r_rest text := 'OK'; v_n int;
+  n0 bigint; n1 bigint; cant_fin int;
+BEGIN
+  SELECT r.medico_id, r.id INTO m, rid FROM public.recetas r JOIN public.perfiles pf ON pf.id = r.medico_id
+   WHERE pf.rol = 'medico' AND pf.activo IS TRUE ORDER BY r.medico_id, r.id LIMIT 1;
+  IF rid IS NULL THEN RAISE EXCEPTION 'fixture roto: receta propia de un medico'; END IF;
+  SELECT count(*) INTO n0 FROM public.receta_items;
+  INSERT INTO public.receta_items (receta_id, nombre_medicamento, dosis, frecuencia, cantidad)
+  VALUES (rid, 'P837 QA', '1', 'c/8h', 1) RETURNING id INTO iid;
+
+  BEGIN
+    PERFORM set_config('request.jwt.claims', json_build_object('sub',m::text,'role','authenticated')::text, true);
+    PERFORM set_config('role','authenticated',true);
+    UPDATE public.receta_items SET cantidad = 99 WHERE id = iid; GET DIAGNOSTICS v_n = ROW_COUNT;
+    PERFORM set_config('role','none',true); PERFORM set_config('request.jwt.claims','',true);
+    r_upd := v_n||' filas|00000|';
+  EXCEPTION WHEN OTHERS THEN PERFORM set_config('role','none',true); PERFORM set_config('request.jwt.claims','',true);
+    r_upd := 'ERR|'||SQLSTATE||'|'||SQLERRM; END;
+  SELECT cantidad INTO cant_fin FROM public.receta_items WHERE id = iid;
+  det := 'medico UPDATE cantidad de un item de su receta '||rid||'|0 filas|'||r_upd||'cantidad='||COALESCE(cant_fin::text,'NULL');
+
+  BEGIN
+    PERFORM set_config('request.jwt.claims', json_build_object('sub',m::text,'role','authenticated')::text, true);
+    PERFORM set_config('role','authenticated',true);
+    DELETE FROM public.receta_items WHERE id = iid; GET DIAGNOSTICS v_n = ROW_COUNT;
+    PERFORM set_config('role','none',true); PERFORM set_config('request.jwt.claims','',true);
+    r_del := v_n||' filas|00000|';
+  EXCEPTION WHEN OTHERS THEN PERFORM set_config('role','none',true); PERFORM set_config('request.jwt.claims','',true);
+    r_del := 'ERR|'||SQLSTATE||'|'||SQLERRM; END;
+  det := det||' ;; medico DELETE de ese item|0 filas|'||r_del||'sigue='||EXISTS (SELECT 1 FROM public.receta_items WHERE id = iid);
+
+  DELETE FROM public.receta_items WHERE id = iid;
+  SELECT count(*) INTO n1 FROM public.receta_items;
+  IF n1 <> n0 THEN r_rest := 'conteo no vuelve ('||n0||'->'||n1||')'; END IF;
+  det := det||' ;; restauracion (item sembrado borrado)|receta_items='||n0||'|'||r_rest||'|-|receta_items='||n1;
+
+  PERFORM set_config('probe.p837_det', det, false);
+  PERFORM set_config('probe.p837', CASE WHEN r_upd LIKE '0 filas|%' AND cant_fin = 1 AND r_del LIKE '0 filas|%' AND r_rest = 'OK'
+    THEN 'OK (el medico ya no cambia ni borra items de su receta: UPDATE y DELETE 0 filas)'
+    ELSE 'ROJO (update='||r_upd||' cantidad='||COALESCE(cant_fin::text,'NULL')||' | delete='||r_del||' | restauracion='||r_rest||')' END, false);
+EXCEPTION WHEN OTHERS THEN
+  PERFORM set_config('role','none',true); PERFORM set_config('request.jwt.claims','',true);
+  PERFORM set_config('probe.p837', CASE WHEN SQLERRM LIKE 'fixture roto%' THEN 'ROJO ('||SQLERRM||')'
+    ELSE 'FALLO ('||SQLSTATE||' '||SQLERRM||')' END, false);
+END $$;
+SELECT set_config('role','none', true);
+
+-- ---------------- P838 super_admin conserva SELECT/UPDATE/DELETE sin INSERT; service_role intacto ----------------
+DO $$
+DECLARE
+  sa uuid; rid bigint; iid bigint; iid_srv bigint; claims text; det text; r_ins text; r_sel text; r_upd text; r_del text; r_srv text;
+  r_rest text := 'OK'; v_n int; n0 bigint; n1 bigint; iid_sa bigint;
+BEGIN
+  FOR sa IN SELECT p.id FROM public.perfiles p WHERE p.rol = 'super_admin' AND p.activo IS TRUE ORDER BY p.id LOOP
+    PERFORM set_config('request.jwt.claims', json_build_object('sub',sa::text,'role','authenticated')::text, true);
+    EXIT WHEN COALESCE(private.tiene_rol(ARRAY['super_admin']), false);
+  END LOOP;
+  IF NOT COALESCE(private.tiene_rol(ARRAY['super_admin']), false) THEN sa := NULL; END IF;
+  PERFORM set_config('request.jwt.claims','',true);
+  SELECT r.id INTO rid FROM public.recetas r ORDER BY r.id LIMIT 1;
+  IF sa IS NULL OR rid IS NULL THEN RAISE EXCEPTION 'fixture roto: super_admin=% receta=%', sa, rid; END IF;
+  claims := json_build_object('sub',sa::text,'role','authenticated')::text;
+  SELECT count(*) INTO n0 FROM public.receta_items;
+  INSERT INTO public.receta_items (receta_id, nombre_medicamento, dosis, frecuencia, cantidad)
+  VALUES (rid, 'P838 QA', '1', 'c/8h', 1) RETURNING id INTO iid;
+
+  -- INSERT -> 42501
+  BEGIN
+    PERFORM set_config('request.jwt.claims', claims, true); PERFORM set_config('role','authenticated',true);
+    INSERT INTO public.receta_items (receta_id, nombre_medicamento, dosis, frecuencia, cantidad)
+    VALUES (rid, 'P838 QA sa', '1', 'c/8h', 1) RETURNING id INTO iid_sa;
+    PERFORM set_config('role','none',true); PERFORM set_config('request.jwt.claims','',true);
+    r_ins := 'PASO|00000|item '||iid_sa;
+  EXCEPTION WHEN OTHERS THEN PERFORM set_config('role','none',true); PERFORM set_config('request.jwt.claims','',true);
+    r_ins := CASE WHEN SQLSTATE = '42501' AND SQLERRM ILIKE 'permission denied for table receta_items' THEN '42501' ELSE 'ERR' END||'|'||SQLSTATE||'|'||SQLERRM; END;
+  det := 'super_admin INSERT en receta_items|42501 permission denied|'||r_ins;
+  IF iid_sa IS NOT NULL THEN DELETE FROM public.receta_items WHERE id = iid_sa; END IF;
+
+  -- SELECT / UPDATE / DELETE -> 1 fila cada uno
+  BEGIN
+    PERFORM set_config('request.jwt.claims', claims, true); PERFORM set_config('role','authenticated',true);
+    SELECT count(*) INTO v_n FROM public.receta_items WHERE id = iid; r_sel := v_n||' filas';
+    UPDATE public.receta_items SET cantidad = 2 WHERE id = iid; GET DIAGNOSTICS v_n = ROW_COUNT; r_upd := v_n||' filas';
+    DELETE FROM public.receta_items WHERE id = iid; GET DIAGNOSTICS v_n = ROW_COUNT; r_del := v_n||' filas';
+    PERFORM set_config('role','none',true); PERFORM set_config('request.jwt.claims','',true);
+  EXCEPTION WHEN OTHERS THEN PERFORM set_config('role','none',true); PERFORM set_config('request.jwt.claims','',true);
+    r_del := COALESCE(r_del,'')||' ERR '||SQLSTATE||' '||SQLERRM; END;
+  det := det||' ;; super_admin SELECT / UPDATE / DELETE del item sembrado|1 / 1 / 1|'||COALESCE(r_sel,'-')||' / '||COALESCE(r_upd,'-')||' / '||COALESCE(r_del,'-')||'|-|';
+
+  -- service_role (edges) sigue insertando
+  BEGIN
+    PERFORM set_config('request.jwt.claims','{"role":"service_role"}', true); PERFORM set_config('role','service_role',true);
+    INSERT INTO public.receta_items (receta_id, nombre_medicamento, dosis, frecuencia, cantidad)
+    VALUES (rid, 'P838 QA srv', '1', 'c/8h', 1) RETURNING id INTO iid_srv;
+    PERFORM set_config('role','none',true); PERFORM set_config('request.jwt.claims','',true);
+    r_srv := 'OK';
+  EXCEPTION WHEN OTHERS THEN PERFORM set_config('role','none',true); PERFORM set_config('request.jwt.claims','',true);
+    r_srv := 'ERR '||SQLSTATE||' '||SQLERRM; END;
+  det := det||' ;; service_role INSERT en receta_items|OK|'||r_srv||'|-|';
+
+  DELETE FROM public.receta_items WHERE id IN (iid, iid_srv);
+  SELECT count(*) INTO n1 FROM public.receta_items;
+  IF n1 <> n0 THEN r_rest := 'conteo no vuelve ('||n0||'->'||n1||')'; END IF;
+  det := det||' ;; restauracion|receta_items='||n0||'|'||r_rest||'|-|receta_items='||n1;
+
+  PERFORM set_config('probe.p838_det', det, false);
+  PERFORM set_config('probe.p838', CASE WHEN split_part(r_ins,'|',1) = '42501' AND r_sel = '1 filas' AND r_upd = '1 filas'
+      AND r_del = '1 filas' AND r_srv = 'OK' AND r_rest = 'OK'
+    THEN 'OK (super_admin: INSERT 42501, SELECT/UPDATE/DELETE 1 fila; service_role inserta; restaurado)'
+    ELSE 'ROJO (insert='||r_ins||' | sel='||COALESCE(r_sel,'-')||' upd='||COALESCE(r_upd,'-')||' del='||COALESCE(r_del,'-')
+         ||' | service_role='||COALESCE(r_srv,'-')||' | restauracion='||r_rest||')' END, false);
+EXCEPTION WHEN OTHERS THEN
+  PERFORM set_config('role','none',true); PERFORM set_config('request.jwt.claims','',true);
+  PERFORM set_config('probe.p838', CASE WHEN SQLERRM LIKE 'fixture roto%' THEN 'ROJO ('||SQLERRM||')'
+    ELSE 'FALLO ('||SQLSTATE||' '||SQLERRM||')' END, false);
+END $$;
+SELECT set_config('role','none', true);
+
+-- ---------------- P839 catalogo: sin INSERT para authenticated/anon/PUBLIC, sin policy INSERT/ALL, emitir_receta intacta ----------------
+DO $$
+DECLARE det text := ''; bad text := ''; t text; x text; pol text;
+BEGIN
+  FOREACH t IN ARRAY ARRAY['recetas','receta_items'] LOOP
+    x := 'authenticated='||has_any_column_privilege('authenticated', ('public.'||t)::regclass, 'INSERT')
+       ||' anon='||has_any_column_privilege('anon', ('public.'||t)::regclass, 'INSERT')
+       ||' public='||EXISTS (SELECT 1 FROM pg_class c, aclexplode(c.relacl) a WHERE c.oid = ('public.'||t)::regclass AND a.grantee = 0 AND a.privilege_type = 'INSERT')
+       ||' service_role='||has_table_privilege('service_role', ('public.'||t)::regclass, 'INSERT');
+    det := det||CASE WHEN det = '' THEN '' ELSE ' ;; ' END||'INSERT en '||t||'|authenticated=false anon=false public=false service_role=true|'||x||'|-|';
+    IF x <> 'authenticated=false anon=false public=false service_role=true' THEN bad := bad||t||': '||x||'; '; END IF;
+  END LOOP;
+
+  SELECT string_agg(c.relname||'.'||p.polname||'('||p.polcmd::text||')', ', ' ORDER BY 1) INTO pol
+    FROM pg_policy p JOIN pg_class c ON c.oid = p.polrelid
+   WHERE p.polrelid IN ('public.recetas'::regclass, 'public.receta_items'::regclass) AND p.polcmd IN ('a','*')
+     AND (0 = ANY(p.polroles) OR 'authenticated'::regrole::oid = ANY(p.polroles));
+  det := det||' ;; policies INSERT o ALL para authenticated/public|ninguna|'||COALESCE(pol,'ninguna')||'|-|';
+  IF pol IS NOT NULL THEN bad := bad||'policies: '||pol||'; '; END IF;
+
+  SELECT string_agg(p.polname||'='||p.polcmd::text, ',' ORDER BY p.polname) INTO pol FROM pg_policy p
+   WHERE p.polrelid = 'public.receta_items'::regclass AND p.polname LIKE 'receta_items_%';
+  det := det||' ;; policies receta_items_* |medico_select=r,superadmin_delete=d,superadmin_select=r,superadmin_update=w|'||COALESCE(pol,'ninguna')||'|-|';
+  IF pol IS DISTINCT FROM 'receta_items_medico_select=r,receta_items_superadmin_delete=d,receta_items_superadmin_select=r,receta_items_superadmin_update=w' THEN
+    bad := bad||'set receta_items_*: '||COALESCE(pol,'ninguna')||'; '; END IF;
+
+  SELECT md5(p.prosrc)||' '||pg_get_userbyid(p.proowner)||' '||ARRAY(SELECT a::text FROM unnest(p.proacl) a ORDER BY 1)::text INTO x
+    FROM pg_proc p WHERE p.oid = 'public.emitir_receta(bigint,text,jsonb)'::regprocedure;
+  det := det||' ;; emitir_receta md5 owner acl|74d7013aeea17659bbafb84d780d644b postgres {authenticated=X/postgres,postgres=X/postgres,service_role=X/postgres}|'||COALESCE(x,'NULL')||'|-|';
+  IF x IS DISTINCT FROM '74d7013aeea17659bbafb84d780d644b postgres {authenticated=X/postgres,postgres=X/postgres,service_role=X/postgres}' THEN
+    bad := bad||'emitir_receta: '||COALESCE(x,'NULL')||'; '; END IF;
+
+  PERFORM set_config('probe.p839_det', det, false);
+  PERFORM set_config('probe.p839', CASE WHEN bad = ''
+    THEN 'OK (recetas y receta_items sin INSERT para authenticated/anon/PUBLIC, sin policy INSERT/ALL; service_role intacto; emitir_receta intacta)'
+    ELSE 'ROJO ('||left(bad,800)||')' END, false);
+EXCEPTION WHEN OTHERS THEN
+  PERFORM set_config('probe.p839','FALLO ('||SQLSTATE||' '||SQLERRM||')', false);
+END $$;
+SELECT set_config('role','none', true);
+
 
 -- ===== Veredictos como result set =====
 SELECT 'P1_anon_insert_citas'              AS probe, current_setting('probe.p1', true)  AS verdict, 'BLOQUEADO' AS esperado_post_fix
@@ -21238,6 +21623,12 @@ UNION ALL SELECT 'P830_registrar_identidad_unica',   current_setting('probe.p830
 UNION ALL SELECT 'P831_registrar_pais_operativo',    current_setting('probe.p831', true), 'OK (NULL/ZZ/inexistente 22023)'
 UNION ALL SELECT 'P832_registrar_sesion_y_email',    current_setting('probe.p832', true), 'OK (P0001 / 22023)'
 UNION ALL SELECT 'P833_registrar_sin_anon',          current_setting('probe.p833', true), 'OK (anon/PUBLIC sin EXECUTE)'
+UNION ALL SELECT 'P834_recetas_insert_directo_medico',  current_setting('probe.p834', true), 'OK (42501 permission denied)'
+UNION ALL SELECT 'P835_items_insert_directo_medico',    current_setting('probe.p835', true), 'OK (42501 permission denied)'
+UNION ALL SELECT 'P836_emitir_receta_positivo',         current_setting('probe.p836', true), 'OK (RPC + notificar + modalidad)'
+UNION ALL SELECT 'P837_items_medico_sin_update_delete', current_setting('probe.p837', true), 'OK (0 filas)'
+UNION ALL SELECT 'P838_items_superadmin_sin_insert',    current_setting('probe.p838', true), 'OK (INSERT 42501, S/U/D 1 fila)'
+UNION ALL SELECT 'P839_recetas_catalogo_sin_insert',    current_setting('probe.p839', true), 'OK (sin INSERT ni policy INSERT/ALL)'
 -- Las filas FX* son SALUD DE FIXTURE, no probes de seguridad: dicen si la precondicion que una
 -- migracion posterior empezo a exigir se pudo sembrar. Si una sale ROJO, los probes que dependen de
 -- ese fixture reportan N/A (su flag de ready se pierde con el rollback de la subtransaccion) en vez
@@ -21474,7 +21865,8 @@ UNION ALL SELECT 'P000_CENTINELA_veredictos_no_nulos',
        'probe.pgr_fx', 'probe.p815', 'probe.p816', 'probe.p817', 'probe.p818', 'probe.p819',
        'probe.p820', 'probe.p821', 'probe.p822', 'probe.p823', 'probe.p824', 'probe.p825',
        'probe.p826', 'probe.p827', 'probe.p828', 'probe.p829', 'probe.p830', 'probe.p831',
-       'probe.p832', 'probe.p833'
+       'probe.p832', 'probe.p833', 'probe.p834', 'probe.p835', 'probe.p836', 'probe.p837',
+       'probe.p838', 'probe.p839'
              ]) AS n) s),
   'OK (todos los veredictos publicados)';
 
