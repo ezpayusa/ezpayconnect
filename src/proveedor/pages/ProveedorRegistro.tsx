@@ -1,11 +1,11 @@
-import { useState, useEffect } from 'react'
+import { useState } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { useProveedorAuth } from '@/proveedor/hooks/useProveedorAuth'
-import { supabase } from '@/lib/supabase'
+import { usePaisesRegistroProveedor } from '@/proveedor/hooks/usePaisesRegistroProveedor'
 import { MapPin, Loader2 } from 'lucide-react'
 import { toast } from 'sonner'
 
@@ -37,16 +37,7 @@ export default function ProveedorRegistro() {
     confirmPassword: '',
   })
 
-  const [paises, setPaises] = useState<{ id: string; nombre: string }[]>([])
-
-  useEffect(() => {
-    supabase
-      .from('configuracion_pais')
-      .select('id, nombre')
-      .eq('activo', true)
-      .order('nombre')
-      .then(({ data }) => setPaises((data || []) as { id: string; nombre: string }[]))
-  }, [])
+  const paises = usePaisesRegistroProveedor()
 
   const update = (field: string, value: string) => setForm((prev) => ({ ...prev, [field]: value }))
 
