@@ -1,1 +1,0 @@
-Documentos exploratorios sobre un posible piloto de salud pública gubernamental, producidos por Codex el 14-sep-2026. NO son desarrollo activo. La copia canónica vive en el Project Knowledge de EZPayConnect en claude.ai. Antes de retomar este tema, leer ambos documentos completos.
