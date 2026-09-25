@@ -23,7 +23,7 @@ Stack: React + Vite + TypeScript, Supabase / Postgres, deploy en Vercel, repo en
   minutos por esto** (P635 es la probe que faltaba, P636 su contraprueba).
 - NUNCA ampliar policies de RLS sobre tablas adyacentes a datos médicos (p. ej. campana_metricas). Para dar acceso, usar RPCs SECURITY DEFINER con search_path='', fail-closed (si el scope es NULL → 0 filas) y gate interno.
 - Probar aislamiento por rol impersonando request.jwt.claims en prod: cada rol ve lo suyo y no lo ajeno.
-- **Próximos números libres: probe `P800`** (global, no por módulo), **errcode `PA035`** (comercial)
+- **Próximos números libres: probe `P834`** (global, no por módulo), **migración `328`**, **errcode `PA035`** (comercial)
   y **`PE005`** (expediente: PE001 = mig 291; PE002 = adjuntar sobre examen liberado y PE003 =
   no autenticado, mig 310; PE004 = sin autoridad para revertir una liberación, mig 311).
   `revertir_liberacion_examen` sobre un examen ya no liberado es **no-op** (`{ya_no_liberado:true}`),
@@ -67,6 +67,7 @@ Stack: React + Vite + TypeScript, Supabase / Postgres, deploy en Vercel, repo en
   una sentencia DML/DDL fuera de un bloque `DO` con `EXCEPTION` handler, o si crecen los bloques `DO`
   sin handler. Está enganchado como hook de pre-commit en `.githooks/pre-commit`; en un clone nuevo
   hay que activarlo una vez con `git config core.hooksPath .githooks`.
+- **Todo probe que modifica un fixture lo restaura a su snapshot y verifica la restauración.**
 - **Correr el harness SIEMPRE con `npm run harness`, nunca a mano.** El runner
   (`tests/rls/harness_run.py`) verifica exit code, salida no vacía, JSON parseable, piso de 680
   filas y cero veredictos vacíos. **Por qué**: el 2026-09-03 una corrida devolvió *exit 0 con la
