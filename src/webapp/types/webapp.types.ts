@@ -40,8 +40,16 @@ export interface RecetaPaciente {
   estado: 'activa' | 'completada' | 'vencida' | 'cancelada'
   instrucciones_generales: string | null
   items: RecetaItemPaciente[]
-  codigo_qr: string | null
+  // Fila de recetas_avanzadas (null en recetas legadas). El token es secreto del paciente:
+  // solo se usa para dibujar el QR de la receta expandida; nunca se loguea ni se persiste.
+  despacho: DespachoReceta | null
   created_at: string
+}
+
+export interface DespachoReceta {
+  token: string
+  expira_at: string | null
+  estado_dispensacion: 'pendiente' | 'dispensada' | 'parcial' | 'rechazada'
 }
 
 export interface RecetaItemPaciente {
