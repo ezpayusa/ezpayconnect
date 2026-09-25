@@ -3,8 +3,9 @@ import { useWebAppAuth } from '@/webapp/hooks/useWebAppAuth'
 import { useWebAppRecetas } from '@/webapp/hooks/useWebAppRecetas'
 import { Card, CardContent } from '@/components/ui/card'
 import { Badge } from '@/components/ui/badge'
-import { FileText, Pill, ChevronDown, ChevronUp, Loader2, Truck } from 'lucide-react'
+import { FileText, Pill, ChevronDown, ChevronUp, Loader2, Truck, QrCode } from 'lucide-react'
 import ModalidadGrupo from '@/webapp/components/ModalidadGrupo'
+import QRDespacho from '@/webapp/components/QRDespacho'
 import type { RecetaItemPaciente } from '@/webapp/types/webapp.types'
 
 export default function WebAppRecetas() {
@@ -98,6 +99,14 @@ export default function WebAppRecetas() {
 
                 {expandedId === r.id && (
                   <div className="mt-4 pt-4 border-t border-slate-100 space-y-3">
+                    {/* QR de despacho: se monta solo con la receta expandida (el token no sale de acá). */}
+                    <div className="space-y-2">
+                      <h4 className="text-sm font-medium text-slate-700 flex items-center gap-1">
+                        <QrCode className="h-4 w-4" /> Código de despacho
+                      </h4>
+                      <QRDespacho receta={r} />
+                    </div>
+
                     {r.instrucciones_generales && (
                       <p className="text-sm text-slate-600 bg-slate-50 p-3 rounded-lg">
                         <span className="font-medium">Instrucciones:</span> {r.instrucciones_generales}

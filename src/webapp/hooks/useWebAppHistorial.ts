@@ -35,7 +35,7 @@ export function useWebAppHistorial(pacienteId: number | undefined) {
         titulo: `Receta #${r.id}`,
         descripcion: medicamentos || 'Receta médica',
         medico_nombre: r.medico_nombre,
-        detalles: { estado: r.estado, items: r.items, codigo_qr: r.codigo_qr },
+        detalles: { estado: r.estado, items: r.items },
       })
     })
 
