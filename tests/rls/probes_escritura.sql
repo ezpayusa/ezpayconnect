@@ -17030,9 +17030,11 @@ SELECT set_config('role','none', true);
 -- cuarta; una que solo contara 11 se quedaria callada si se va una y entra otra. Por eso compara
 -- el CONJUNTO contra la lista esperada y publica lo que sobra y lo que falta.
 --
--- Las 11 esperadas son dos grupos distintos, y la distincion importa:
---   · `registrar_proveedor` — unica excepcion por PRODUCTO (unico flujo pre-login).
---   · las otras 10 — excepcion TECNICA: viven dentro del USING de policies RLS sobre 30 tablas
+-- Las esperadas eran 11 en dos grupos; desde la mig 327 quedan 10:
+--   · `registrar_proveedor` — era la unica excepcion por PRODUCTO (flujo pre-login). La mig 327 le
+--     revoco anon y PUBLIC: el alta real corre con sesion (signUp con autoconfirm devuelve sesion).
+--     Ya NO esta en la lista; si reaparece con EXECUTE para anon, P739 la marca como "sobra".
+--   · las 10 — excepcion TECNICA: viven dentro del USING de policies RLS sobre 30 tablas
 --     donde anon tiene SELECT. Una policy se evalua con los privilegios del LLAMANTE (mig 284),
 --     asi que revocarles el EXECUTE no le niega nada a anon: hace que esas 30 tablas le lancen
 --     42501. Quedan afuera del barrido a proposito. Sacarlas de verdad exige reescribir las
@@ -17041,7 +17043,6 @@ SELECT set_config('role','none', true);
 DO $$
 DECLARE v_sobran text; v_faltan text; v_n int;
   esperadas constant text[] := ARRAY[
-    'registrar_proveedor',
     'get_auth_user_rol','get_auth_user_pais_id','mi_empresa_proveedor','mi_rol_proveedor',
     'mi_clinica_id','puede_ver_conversacion','supervisa_cuenta_proveedor',
     'get_empresa_id_proveedor','get_empresa_id_session','admin_clinica_de_medico'];
@@ -17061,7 +17062,7 @@ BEGIN
 
   PERFORM set_config('probe.p739', CASE
     WHEN v_sobran IS NULL AND v_faltan IS NULL
-      THEN 'OK (quedan las 11 esperadas: registrar_proveedor + las 10 usadas en policies)'
+      THEN 'OK (quedan las 10 esperadas: las usadas en policies; registrar_proveedor sin anon desde la 327)'
     WHEN v_faltan IS NOT NULL
       THEN 'ROJO (el barrido se paso: perdieron anon '||v_faltan||')'
     ELSE 'ROJO ('||v_n||' ejecutables por anon; sobran: '||left(v_sobran,200)||')'
@@ -17072,7 +17073,7 @@ END $$;
 
 -- P740 — anon EJERCITADO sobre una muestra de las REVOCADAS. El catalogo dice quien tiene que;
 -- esto dice que pasa cuando se usa (leccion de la mig 284). La muestra NO puede incluir ninguna
--- de las 11 que quedan: seria un chequeo que pasa siempre y no mide nada.
+-- de las 10 que quedan: seria un chequeo que pasa siempre y no mide nada.
 DO $$
 DECLARE v_mal text := ''; v_ok int := 0; t text;
 BEGIN
@@ -17101,16 +17102,17 @@ EXCEPTION WHEN OTHERS THEN
 END $$;
 SELECT set_config('role','none', true);
 
--- P741 — CONTROL NEGATIVO, las dos excepciones. Sin esta, P739/P740 en verde tambien los cumpliria
--- un REVOKE a todo el mundo, que romperia el alta de proveedores Y dejaria 30 tablas tirando 42501.
+-- P741 — CONTROL NEGATIVO de la excepcion tecnica. Sin esta, P739/P740 en verde tambien los cumpliria
+-- un REVOKE a todo el mundo, que dejaria 30 tablas tirando 42501. Desde la mig 327 registrar_proveedor
+-- se controla al reves: tiene que estar SIN anon (lo ejercita P833).
 -- Por eso no alcanza con mirar el ACL de las 10: se EJERCITA una muestra de las tablas que las
 -- llaman desde su USING, que es donde el sintoma aparece de verdad.
 DO $$
 DECLARE v_mal text := ''; t text; v_n int;
 BEGIN
-  IF NOT has_function_privilege('anon',
+  IF has_function_privilege('anon',
     'public.registrar_proveedor(text,text,text,uuid,text,text,text,text,text,text)','EXECUTE') THEN
-    v_mal := v_mal || 'registrar_proveedor perdio anon: se rompe el alta de proveedores; ';
+    v_mal := v_mal || 'registrar_proveedor recupero anon (la mig 327 se lo revoco); ';
   END IF;
 
   FOREACH t IN ARRAY ARRAY['get_auth_user_rol','get_auth_user_pais_id','mi_empresa_proveedor',
@@ -17137,7 +17139,7 @@ BEGIN
   PERFORM set_config('request.jwt.claims','', true);
 
   PERFORM set_config('probe.p741', CASE WHEN v_mal = ''
-    THEN 'OK (registrar_proveedor + las 10 de policies intactas; 5 tablas: 0 filas (kept) o 42501-sin-grant (revocadas))'
+    THEN 'OK (registrar_proveedor sin anon; las 10 de policies intactas; 5 tablas: 0 filas (kept) o 42501-sin-grant (revocadas))'
     ELSE 'ROJO ('||v_mal||')' END, false);
 EXCEPTION WHEN OTHERS THEN
   PERFORM set_config('role','none', true);
@@ -19979,6 +19981,354 @@ EXCEPTION WHEN OTHERS THEN
 END $$;
 SELECT set_config('role','none', true);
 
+-- ================================================================================
+-- MIG 327 — registrar_proveedor: identidad unica + email de auth + pais operativo + sin anon.
+-- OK = comportamiento de la 327; con 327_rollback aplicado dan ROJO. Fixtures elegidos como postgres.
+-- Cada probe publica el veredicto en probe.pNNN y el detalle por caso en probe.pNNN_det
+-- (caso|esperado|obtenido|sqlstate|mensaje, separados por ' ;; ').
+-- Todo lo que un probe crea o modifica se restaura al snapshot inicial y la restauracion se verifica
+-- (conteos de empresas_proveedoras / cuentas_proveedor, email de auth.users).
+-- ================================================================================
+-- ---------------- P829 alta legitima: usuario sin identidad + pais GT ----------------
+DO $$
+DECLARE
+  l1 uuid; l1_email text; gt uuid; claims text; fx text := ''; ret uuid; det text := ''; rc int;
+  n_emp_ini bigint; n_cp_ini bigint; n_emp0 bigint; n_cp0 bigint; n_emp1 bigint; n_cp1 bigint;
+  fila text; r1 text; r2 text; r_rest text := 'OK';
+  ajeno CONSTANT text := 'p829.ajeno@evil.test';
+  msg_id CONSTANT text := '%ya tiene una identidad en la plataforma%';
+BEGIN
+  -- precondiciones (como postgres)
+  SELECT id INTO gt FROM public.configuracion_pais WHERE codigo = 'GT' AND activo IS TRUE;
+  IF gt IS NULL THEN fx := fx||' pais GT'; END IF;
+  SELECT au.id, au.email INTO l1, l1_email FROM auth.users au
+   WHERE NULLIF(trim(au.email),'') IS NOT NULL AND lower(au.email) <> ajeno
+     AND NOT EXISTS (SELECT 1 FROM public.perfiles x WHERE x.id = au.id)
+     AND NOT EXISTS (SELECT 1 FROM public.pacientes x WHERE x.auth_user_id = au.id)
+     AND NOT EXISTS (SELECT 1 FROM public.medicos x WHERE x.id = au.id)
+     AND NOT EXISTS (SELECT 1 FROM public.cuentas_proveedor x WHERE x.id = au.id)
+     AND NOT EXISTS (SELECT 1 FROM public.asesores_perfil x WHERE x.id = au.id)
+     AND NOT EXISTS (SELECT 1 FROM public.usuario_roles x WHERE x.usuario_id = au.id)
+   ORDER BY au.created_at DESC, au.id LIMIT 1;
+  IF l1 IS NULL THEN fx := fx||' usuario libre'; END IF;
+  IF fx <> '' THEN RAISE EXCEPTION 'fixture roto:%', fx; END IF;
+  claims := json_build_object('sub',l1::text,'role','authenticated')::text;
+  SELECT count(*) INTO n_emp_ini FROM public.empresas_proveedoras; SELECT count(*) INTO n_cp_ini FROM public.cuentas_proveedor;
+  n_emp0 := n_emp_ini; n_cp0 := n_cp_ini;
+
+  -- POSITIVO: alta con p_email AJENO -> la cuenta queda con el email de auth
+  BEGIN PERFORM set_config('request.jwt.claims',claims,true); PERFORM set_config('role','authenticated',true);
+    ret := public.registrar_proveedor('P829 QA','farmacia',NULL,gt,NULL,NULL,'p829@qa.test',NULL,'P829 QA',ajeno);
+    PERFORM set_config('role','none',true); PERFORM set_config('request.jwt.claims','',true); r1 := 'OK';
+  EXCEPTION WHEN OTHERS THEN PERFORM set_config('role','none',true); PERFORM set_config('request.jwt.claims','',true);
+    r1 := 'ERR '||SQLSTATE||' '||SQLERRM; END;
+  IF r1 = 'OK' THEN
+    SELECT e.estado||'/'||COALESCE(e.pais_id::text,'NULL')||'/'||cp.rol_en_empresa||'/'||cp.activo||'/'||lower(cp.email) INTO fila
+      FROM public.cuentas_proveedor cp JOIN public.empresas_proveedoras e ON e.id = cp.empresa_id
+     WHERE cp.id = l1 AND cp.empresa_id = ret;
+    IF fila IS DISTINCT FROM 'pendiente/'||gt::text||'/admin/true/'||lower(l1_email) THEN
+      r1 := 'FILA MAL ('||COALESCE(fila,'sin fila')||'; esperado email '||lower(l1_email)||')'; END IF;
+    SELECT count(*) INTO n_emp1 FROM public.empresas_proveedoras; SELECT count(*) INTO n_cp1 FROM public.cuentas_proveedor;
+    IF n_emp1 <> n_emp0 + 1 OR n_cp1 <> n_cp0 + 1 THEN r1 := r1||' (conteos '||n_emp0||'->'||n_emp1||' / '||n_cp0||'->'||n_cp1||')'; END IF;
+  END IF;
+  det := det||'alta usuario libre + GT, p_email ajeno|OK, email de auth|'||r1||'|'||CASE WHEN r1 = 'OK' THEN '00000' ELSE '-' END||'|'||COALESCE(fila,'');
+
+  -- NEGATIVO: el mismo usuario repite el alta -> ya es proveedor -> 42501, sin filas nuevas
+  SELECT count(*) INTO n_emp0 FROM public.empresas_proveedoras; SELECT count(*) INTO n_cp0 FROM public.cuentas_proveedor;
+  BEGIN PERFORM set_config('request.jwt.claims',claims,true); PERFORM set_config('role','authenticated',true);
+    PERFORM public.registrar_proveedor('P829 QA bis','farmacia',NULL,gt,NULL,NULL,'p829@qa.test',NULL,'P829 QA',ajeno);
+    PERFORM set_config('role','none',true); PERFORM set_config('request.jwt.claims','',true); r2 := 'PASO|00000|';
+  EXCEPTION WHEN OTHERS THEN PERFORM set_config('role','none',true); PERFORM set_config('request.jwt.claims','',true);
+    r2 := CASE WHEN SQLSTATE = '42501' AND SQLERRM ILIKE msg_id THEN '42501' ELSE 'ERR' END||'|'||SQLSTATE||'|'||SQLERRM; END;
+  SELECT count(*) INTO n_emp1 FROM public.empresas_proveedoras; SELECT count(*) INTO n_cp1 FROM public.cuentas_proveedor;
+  IF n_emp1 <> n_emp0 OR n_cp1 <> n_cp0 THEN r2 := r2||' +FILAS'; END IF;
+  det := det||' ;; segundo alta del mismo usuario|42501 identidad|'||r2;
+
+  -- RESTAURACION: borrar la cuenta y la empresa del alta positiva y volver a los conteos iniciales
+  IF ret IS NOT NULL THEN
+    DELETE FROM public.cuentas_proveedor WHERE id = l1 AND empresa_id = ret;
+    GET DIAGNOSTICS rc = ROW_COUNT; IF rc <> 1 THEN RAISE EXCEPTION 'fixture roto: borrar cuenta P829 rc=%', rc; END IF;
+    DELETE FROM public.empresas_proveedoras WHERE id = ret;
+    GET DIAGNOSTICS rc = ROW_COUNT; IF rc <> 1 THEN RAISE EXCEPTION 'fixture roto: borrar empresa P829 rc=%', rc; END IF;
+  END IF;
+  SELECT count(*) INTO n_emp1 FROM public.empresas_proveedoras; SELECT count(*) INTO n_cp1 FROM public.cuentas_proveedor;
+  IF n_emp1 <> n_emp_ini OR n_cp1 <> n_cp_ini THEN
+    r_rest := 'conteos no vuelven ('||n_emp_ini||'->'||n_emp1||' / '||n_cp_ini||'->'||n_cp1||')'; END IF;
+  det := det||' ;; restauracion (conteos al snapshot)|emp='||n_emp_ini||' cp='||n_cp_ini||'|'||r_rest||'|-|emp='||n_emp1||' cp='||n_cp1;
+
+  PERFORM set_config('probe.p829_det', det, false);
+  PERFORM set_config('probe.p829', CASE WHEN r1 = 'OK' AND split_part(r2,'|',1) = '42501' AND r2 NOT LIKE '%+FILAS%' AND r_rest = 'OK'
+    THEN 'OK (alta: empresa pendiente GT + cuenta admin activa con email de auth; segundo alta 42501 sin filas; restaurado)'
+    ELSE 'ROJO (alta='||r1||' | segundo='||r2||' | restauracion='||r_rest||')' END, false);
+EXCEPTION WHEN OTHERS THEN
+  PERFORM set_config('role','none',true); PERFORM set_config('request.jwt.claims','',true);
+  PERFORM set_config('probe.p829', CASE WHEN SQLERRM LIKE 'fixture roto%' THEN 'ROJO ('||SQLERRM||')'
+    ELSE 'FALLO ('||SQLSTATE||' '||SQLERRM||')' END, false);
+END $$;
+SELECT set_config('role','none', true);
+
+-- ---------------- P830 exclusion total: cualquier identidad previa -> 42501, sin filas ----------------
+-- Casos reales: paciente, medico, staff, super_admin, proveedor, asesor. medicos, asesores_perfil y
+-- usuario_roles tienen FK de su uid a perfiles(id): son subconjunto de perfiles POR ESQUEMA, y un
+-- "medico sin perfil" no se puede construir. La probe ASERTA esas 3 FK: si alguien quita una, la rama
+-- propia de esa tabla pasa a ser alcanzable sola y esta probe da ROJO hasta que se le agregue su caso.
+DO $$
+DECLARE
+  gt uuid; fx text := ''; det text := ''; bad text := ''; c record; fk_falta text; rc int; v_emp uuid;
+  res text; n_emp_ini bigint; n_cp_ini bigint; n_emp0 bigint; n_cp0 bigint; n_emp1 bigint; n_cp1 bigint;
+  tiene_cp0 boolean; r_rest text := 'OK';
+  msg_id CONSTANT text := '%ya tiene una identidad en la plataforma%';
+BEGIN
+  SELECT id INTO gt FROM public.configuracion_pais WHERE codigo = 'GT' AND activo IS TRUE;
+  IF gt IS NULL THEN RAISE EXCEPTION 'fixture roto: pais GT'; END IF;
+  SELECT count(*) INTO n_emp_ini FROM public.empresas_proveedoras; SELECT count(*) INTO n_cp_ini FROM public.cuentas_proveedor;
+
+  -- invariante de esquema que hace redundantes las ramas medicos/asesores_perfil/usuario_roles
+  SELECT string_agg(x.t, ', ') INTO fk_falta FROM (VALUES ('medicos','id'),('asesores_perfil','id'),('usuario_roles','usuario_id')) x(t, col)
+   WHERE NOT EXISTS (SELECT 1 FROM pg_constraint k
+      WHERE k.contype = 'f' AND k.conrelid = ('public.'||x.t)::regclass AND k.confrelid = 'public.perfiles'::regclass
+        AND k.conkey = ARRAY[(SELECT a.attnum FROM pg_attribute a WHERE a.attrelid = ('public.'||x.t)::regclass AND a.attname = x.col)]);
+  det := 'FK uid->perfiles en medicos, asesores_perfil, usuario_roles|las 3 presentes|'||COALESCE('faltan: '||fk_falta,'presentes')||'|-|';
+  IF fk_falta IS NOT NULL THEN bad := bad||'FK a perfiles ausente en '||fk_falta||' (agregar caso sintetico); '; END IF;
+
+  FOR c IN
+    SELECT * FROM (VALUES
+      ('paciente',    (SELECT pa.auth_user_id FROM public.pacientes pa WHERE pa.auth_user_id IS NOT NULL
+                         AND NOT EXISTS (SELECT 1 FROM public.perfiles x WHERE x.id = pa.auth_user_id)
+                         AND NOT EXISTS (SELECT 1 FROM public.cuentas_proveedor x WHERE x.id = pa.auth_user_id)
+                       ORDER BY pa.auth_user_id LIMIT 1)),
+      ('medico',      (SELECT m.id FROM public.medicos m ORDER BY m.id LIMIT 1)),
+      ('perfil staff',(SELECT p.id FROM public.perfiles p WHERE p.rol NOT IN ('medico','super_admin')
+                         AND NOT EXISTS (SELECT 1 FROM public.medicos x WHERE x.id = p.id)
+                         AND NOT EXISTS (SELECT 1 FROM public.asesores_perfil x WHERE x.id = p.id) ORDER BY p.id LIMIT 1)),
+      ('super_admin', (SELECT p.id FROM public.perfiles p WHERE p.rol = 'super_admin' ORDER BY p.id LIMIT 1)),
+      ('proveedor',   (SELECT cp.id FROM public.cuentas_proveedor cp
+                        WHERE NOT EXISTS (SELECT 1 FROM public.pacientes x WHERE x.auth_user_id = cp.id) ORDER BY cp.id LIMIT 1)),
+      ('asesor',      (SELECT a.id FROM public.asesores_perfil a ORDER BY a.id LIMIT 1))
+    ) v(caso, uid)
+  LOOP
+    IF c.uid IS NULL THEN RAISE EXCEPTION 'fixture roto: sin uid para %', c.caso; END IF;
+    SELECT EXISTS (SELECT 1 FROM public.cuentas_proveedor WHERE id = c.uid) INTO tiene_cp0;
+    SELECT count(*) INTO n_emp0 FROM public.empresas_proveedoras; SELECT count(*) INTO n_cp0 FROM public.cuentas_proveedor;
+    BEGIN
+      PERFORM set_config('request.jwt.claims', json_build_object('sub',c.uid::text,'role','authenticated')::text, true);
+      PERFORM set_config('role','authenticated',true);
+      PERFORM public.registrar_proveedor('P830 QA','farmacia',NULL,gt,NULL,NULL,'p830@qa.test',NULL,'P830 QA','p830@qa.test');
+      PERFORM set_config('role','none',true); PERFORM set_config('request.jwt.claims','',true);
+      res := 'PASO|00000|';
+    EXCEPTION WHEN OTHERS THEN PERFORM set_config('role','none',true); PERFORM set_config('request.jwt.claims','',true);
+      res := CASE WHEN SQLSTATE = '42501' AND SQLERRM ILIKE msg_id THEN '42501' ELSE 'ERR' END||'|'||SQLSTATE||'|'||SQLERRM;
+    END;
+    SELECT count(*) INTO n_emp1 FROM public.empresas_proveedoras; SELECT count(*) INTO n_cp1 FROM public.cuentas_proveedor;
+    IF n_emp1 <> n_emp0 OR n_cp1 <> n_cp0
+       OR (NOT tiene_cp0 AND EXISTS (SELECT 1 FROM public.cuentas_proveedor WHERE id = c.uid)) THEN res := res||' +FILAS'; END IF;
+    -- restauracion: si el alta paso (sin la 327), borrar su cuenta y su empresa
+    IF NOT tiene_cp0 THEN
+      v_emp := NULL;
+      SELECT empresa_id INTO v_emp FROM public.cuentas_proveedor WHERE id = c.uid;
+      IF v_emp IS NOT NULL THEN
+        DELETE FROM public.cuentas_proveedor WHERE id = c.uid;
+        GET DIAGNOSTICS rc = ROW_COUNT; IF rc <> 1 THEN RAISE EXCEPTION 'fixture roto: borrar cuenta P830 % rc=%', c.caso, rc; END IF;
+        DELETE FROM public.empresas_proveedoras WHERE id = v_emp;
+        GET DIAGNOSTICS rc = ROW_COUNT; IF rc <> 1 THEN RAISE EXCEPTION 'fixture roto: borrar empresa P830 % rc=%', c.caso, rc; END IF;
+      END IF;
+    END IF;
+    det := det||' ;; '||c.caso||'|42501 identidad|'||res;
+    IF split_part(res,'|',1) <> '42501' OR res LIKE '%+FILAS%' THEN bad := bad||c.caso||'='||res||'; '; END IF;
+  END LOOP;
+
+  SELECT count(*) INTO n_emp1 FROM public.empresas_proveedoras; SELECT count(*) INTO n_cp1 FROM public.cuentas_proveedor;
+  IF n_emp1 <> n_emp_ini OR n_cp1 <> n_cp_ini THEN
+    r_rest := 'conteos no vuelven ('||n_emp_ini||'->'||n_emp1||' / '||n_cp_ini||'->'||n_cp1||')'; END IF;
+  det := det||' ;; restauracion (conteos al snapshot)|emp='||n_emp_ini||' cp='||n_cp_ini||'|'||r_rest||'|-|emp='||n_emp1||' cp='||n_cp1;
+
+  PERFORM set_config('probe.p830_det', det, false);
+  PERFORM set_config('probe.p830', CASE WHEN bad = '' AND r_rest = 'OK'
+    THEN 'OK (6 identidades reales -> 42501 con mensaje, sin filas: paciente, medico, staff, super_admin, proveedor, asesor; FK a perfiles presentes; restaurado)'
+    ELSE 'ROJO ('||left(bad,800)||' | restauracion='||r_rest||')' END, false);
+EXCEPTION WHEN OTHERS THEN
+  PERFORM set_config('role','none',true); PERFORM set_config('request.jwt.claims','',true);
+  PERFORM set_config('probe.p830', CASE WHEN SQLERRM LIKE 'fixture roto%' THEN 'ROJO ('||SQLERRM||')'
+    ELSE 'FALLO ('||SQLSTATE||' '||SQLERRM||')' END, false);
+END $$;
+SELECT set_config('role','none', true);
+
+-- ---------------- P831 pais operativo: NULL, DEMO 'ZZ', inexistente -> 22023, sin filas ----------------
+DO $$
+DECLARE
+  l2 uuid; zz uuid; inexistente uuid := gen_random_uuid(); claims text; fx text := ''; det text := ''; bad text := '';
+  c record; res text; rc int; v_emp uuid; r_rest text := 'OK';
+  n_emp_ini bigint; n_cp_ini bigint; n_emp0 bigint; n_cp0 bigint; n_emp1 bigint; n_cp1 bigint;
+  msg_pais CONSTANT text := '%País no válido para el registro%';
+BEGIN
+  SELECT id INTO zz FROM public.configuracion_pais WHERE codigo = 'ZZ';
+  IF zz IS NULL THEN fx := fx||' pais ZZ'; END IF;
+  IF EXISTS (SELECT 1 FROM public.configuracion_pais WHERE id = inexistente) THEN fx := fx||' uuid inexistente existe'; END IF;
+  SELECT au.id INTO l2 FROM auth.users au
+   WHERE NULLIF(trim(au.email),'') IS NOT NULL
+     AND NOT EXISTS (SELECT 1 FROM public.perfiles x WHERE x.id = au.id)
+     AND NOT EXISTS (SELECT 1 FROM public.pacientes x WHERE x.auth_user_id = au.id)
+     AND NOT EXISTS (SELECT 1 FROM public.medicos x WHERE x.id = au.id)
+     AND NOT EXISTS (SELECT 1 FROM public.cuentas_proveedor x WHERE x.id = au.id)
+     AND NOT EXISTS (SELECT 1 FROM public.asesores_perfil x WHERE x.id = au.id)
+     AND NOT EXISTS (SELECT 1 FROM public.usuario_roles x WHERE x.usuario_id = au.id)
+   ORDER BY au.created_at DESC, au.id LIMIT 1;
+  IF l2 IS NULL THEN fx := fx||' usuario libre'; END IF;
+  IF fx <> '' THEN RAISE EXCEPTION 'fixture roto:%', fx; END IF;
+  claims := json_build_object('sub',l2::text,'role','authenticated')::text;
+  SELECT count(*) INTO n_emp_ini FROM public.empresas_proveedoras; SELECT count(*) INTO n_cp_ini FROM public.cuentas_proveedor;
+
+  FOR c IN SELECT * FROM (VALUES ('pais NULL', NULL::uuid), ('pais DEMO ZZ', zz), ('pais inexistente', inexistente)) v(caso, pid) LOOP
+    SELECT count(*) INTO n_emp0 FROM public.empresas_proveedoras; SELECT count(*) INTO n_cp0 FROM public.cuentas_proveedor;
+    BEGIN PERFORM set_config('request.jwt.claims',claims,true); PERFORM set_config('role','authenticated',true);
+      PERFORM public.registrar_proveedor('P831 QA','farmacia',NULL,c.pid,NULL,NULL,'p831@qa.test',NULL,'P831 QA','p831@qa.test');
+      PERFORM set_config('role','none',true); PERFORM set_config('request.jwt.claims','',true); res := 'PASO|00000|';
+    EXCEPTION WHEN OTHERS THEN PERFORM set_config('role','none',true); PERFORM set_config('request.jwt.claims','',true);
+      res := CASE WHEN SQLSTATE = '22023' AND SQLERRM ILIKE msg_pais THEN '22023' ELSE 'ERR' END||'|'||SQLSTATE||'|'||SQLERRM; END;
+    SELECT count(*) INTO n_emp1 FROM public.empresas_proveedoras; SELECT count(*) INTO n_cp1 FROM public.cuentas_proveedor;
+    IF n_emp1 <> n_emp0 OR n_cp1 <> n_cp0 THEN res := res||' +FILAS'; END IF;
+    det := det||CASE WHEN det = '' THEN '' ELSE ' ;; ' END||c.caso||'|22023 pais|'||res;
+    IF split_part(res,'|',1) <> '22023' OR res LIKE '%+FILAS%' THEN bad := bad||c.caso||'='||res||'; '; END IF;
+    -- restauracion: si el alta paso (sin la 327), borrar su cuenta Y su empresa antes del caso siguiente
+    v_emp := NULL;
+    SELECT empresa_id INTO v_emp FROM public.cuentas_proveedor WHERE id = l2;
+    IF v_emp IS NOT NULL THEN
+      DELETE FROM public.cuentas_proveedor WHERE id = l2;
+      GET DIAGNOSTICS rc = ROW_COUNT; IF rc <> 1 THEN RAISE EXCEPTION 'fixture roto: borrar cuenta P831 % rc=%', c.caso, rc; END IF;
+      DELETE FROM public.empresas_proveedoras WHERE id = v_emp;
+      GET DIAGNOSTICS rc = ROW_COUNT; IF rc <> 1 THEN RAISE EXCEPTION 'fixture roto: borrar empresa P831 % rc=%', c.caso, rc; END IF;
+    END IF;
+  END LOOP;
+
+  SELECT count(*) INTO n_emp1 FROM public.empresas_proveedoras; SELECT count(*) INTO n_cp1 FROM public.cuentas_proveedor;
+  IF n_emp1 <> n_emp_ini OR n_cp1 <> n_cp_ini THEN
+    r_rest := 'conteos no vuelven ('||n_emp_ini||'->'||n_emp1||' / '||n_cp_ini||'->'||n_cp1||')'; END IF;
+  det := det||' ;; restauracion (conteos al snapshot)|emp='||n_emp_ini||' cp='||n_cp_ini||'|'||r_rest||'|-|emp='||n_emp1||' cp='||n_cp1;
+
+  PERFORM set_config('probe.p831_det', det, false);
+  PERFORM set_config('probe.p831', CASE WHEN bad = '' AND r_rest = 'OK'
+    THEN 'OK (pais NULL / ZZ / inexistente -> 22023 con mensaje, sin filas; restaurado)'
+    ELSE 'ROJO ('||left(bad,800)||' | restauracion='||r_rest||')' END, false);
+EXCEPTION WHEN OTHERS THEN
+  PERFORM set_config('role','none',true); PERFORM set_config('request.jwt.claims','',true);
+  PERFORM set_config('probe.p831', CASE WHEN SQLERRM LIKE 'fixture roto%' THEN 'ROJO ('||SQLERRM||')'
+    ELSE 'FALLO ('||SQLSTATE||' '||SQLERRM||')' END, false);
+END $$;
+SELECT set_config('role','none', true);
+
+-- ---------------- P832 sesion y email: sin sub -> P0001; auth.users.email NULL -> 22023 ----------------
+DO $$
+DECLARE
+  l3 uuid; l3_email text; gt uuid; fx text := ''; det text := ''; rc int; r1 text; r2 text; v_emp uuid;
+  r_rest text := 'OK'; email_fin text;
+  n_emp_ini bigint; n_cp_ini bigint; n_emp0 bigint; n_cp0 bigint; n_emp1 bigint; n_cp1 bigint;
+BEGIN
+  SELECT id INTO gt FROM public.configuracion_pais WHERE codigo = 'GT' AND activo IS TRUE;
+  IF gt IS NULL THEN fx := fx||' pais GT'; END IF;
+  SELECT au.id, au.email INTO l3, l3_email FROM auth.users au
+   WHERE NULLIF(trim(au.email),'') IS NOT NULL
+     AND NOT EXISTS (SELECT 1 FROM public.perfiles x WHERE x.id = au.id)
+     AND NOT EXISTS (SELECT 1 FROM public.pacientes x WHERE x.auth_user_id = au.id)
+     AND NOT EXISTS (SELECT 1 FROM public.medicos x WHERE x.id = au.id)
+     AND NOT EXISTS (SELECT 1 FROM public.cuentas_proveedor x WHERE x.id = au.id)
+     AND NOT EXISTS (SELECT 1 FROM public.asesores_perfil x WHERE x.id = au.id)
+     AND NOT EXISTS (SELECT 1 FROM public.usuario_roles x WHERE x.usuario_id = au.id)
+   ORDER BY au.created_at DESC, au.id LIMIT 1;
+  IF l3 IS NULL THEN fx := fx||' usuario libre'; END IF;
+  IF fx <> '' THEN RAISE EXCEPTION 'fixture roto:%', fx; END IF;
+  SELECT count(*) INTO n_emp_ini FROM public.empresas_proveedoras; SELECT count(*) INTO n_cp_ini FROM public.cuentas_proveedor;
+
+  -- authenticated SIN sub -> auth.uid() NULL -> 'Usuario no autenticado' (P0001), sin filas
+  n_emp0 := n_emp_ini; n_cp0 := n_cp_ini;
+  BEGIN PERFORM set_config('request.jwt.claims','{"role":"authenticated"}',true); PERFORM set_config('role','authenticated',true);
+    PERFORM public.registrar_proveedor('P832 QA','farmacia',NULL,gt,NULL,NULL,'p832@qa.test',NULL,'P832 QA','p832@qa.test');
+    PERFORM set_config('role','none',true); PERFORM set_config('request.jwt.claims','',true); r1 := 'PASO|00000|';
+  EXCEPTION WHEN OTHERS THEN PERFORM set_config('role','none',true); PERFORM set_config('request.jwt.claims','',true);
+    r1 := CASE WHEN SQLSTATE = 'P0001' AND SQLERRM ILIKE '%Usuario no autenticado%' THEN 'P0001' ELSE 'ERR' END||'|'||SQLSTATE||'|'||SQLERRM; END;
+  SELECT count(*) INTO n_emp1 FROM public.empresas_proveedoras; SELECT count(*) INTO n_cp1 FROM public.cuentas_proveedor;
+  IF n_emp1 <> n_emp0 OR n_cp1 <> n_cp0 THEN r1 := r1||' +FILAS'; END IF;
+  det := 'sin sub (auth.uid NULL)|P0001 no autenticado|'||r1;
+
+  -- usuario libre con email NULL en auth.users -> 22023, sin filas (el p_email NO lo rescata)
+  UPDATE auth.users SET email = NULL WHERE id = l3;
+  GET DIAGNOSTICS rc = ROW_COUNT; IF rc <> 1 THEN RAISE EXCEPTION 'fixture roto: email NULL rc=%', rc; END IF;
+  SELECT count(*) INTO n_emp0 FROM public.empresas_proveedoras; SELECT count(*) INTO n_cp0 FROM public.cuentas_proveedor;
+  BEGIN PERFORM set_config('request.jwt.claims', json_build_object('sub',l3::text,'role','authenticated')::text, true);
+    PERFORM set_config('role','authenticated',true);
+    PERFORM public.registrar_proveedor('P832 QA','farmacia',NULL,gt,NULL,NULL,'p832@qa.test',NULL,'P832 QA','p832.rescate@evil.test');
+    PERFORM set_config('role','none',true); PERFORM set_config('request.jwt.claims','',true); r2 := 'PASO|00000|';
+  EXCEPTION WHEN OTHERS THEN PERFORM set_config('role','none',true); PERFORM set_config('request.jwt.claims','',true);
+    r2 := CASE WHEN SQLSTATE = '22023' AND SQLERRM ILIKE '%no tiene email%' THEN '22023' ELSE 'ERR' END||'|'||SQLSTATE||'|'||SQLERRM; END;
+  SELECT count(*) INTO n_emp1 FROM public.empresas_proveedoras; SELECT count(*) INTO n_cp1 FROM public.cuentas_proveedor;
+  IF n_emp1 <> n_emp0 OR n_cp1 <> n_cp0 THEN r2 := r2||' +FILAS'; END IF;
+  det := det||' ;; auth.users.email NULL, p_email de rescate|22023 sin email|'||r2;
+
+  -- RESTAURACION: si el alta paso (sin la 327), borrar cuenta y empresa; devolver el email original a l3
+  SELECT empresa_id INTO v_emp FROM public.cuentas_proveedor WHERE id = l3;
+  IF v_emp IS NOT NULL THEN
+    DELETE FROM public.cuentas_proveedor WHERE id = l3;
+    GET DIAGNOSTICS rc = ROW_COUNT; IF rc <> 1 THEN RAISE EXCEPTION 'fixture roto: borrar cuenta P832 rc=%', rc; END IF;
+    DELETE FROM public.empresas_proveedoras WHERE id = v_emp;
+    GET DIAGNOSTICS rc = ROW_COUNT; IF rc <> 1 THEN RAISE EXCEPTION 'fixture roto: borrar empresa P832 rc=%', rc; END IF;
+  END IF;
+  UPDATE auth.users SET email = l3_email WHERE id = l3;
+  GET DIAGNOSTICS rc = ROW_COUNT; IF rc <> 1 THEN RAISE EXCEPTION 'fixture roto: restaurar email rc=%', rc; END IF;
+  SELECT email INTO email_fin FROM auth.users WHERE id = l3;
+  IF email_fin IS DISTINCT FROM l3_email THEN r_rest := 'email de l3 no vuelve ('||COALESCE(email_fin,'NULL')||')'; END IF;
+  SELECT count(*) INTO n_emp1 FROM public.empresas_proveedoras; SELECT count(*) INTO n_cp1 FROM public.cuentas_proveedor;
+  IF n_emp1 <> n_emp_ini OR n_cp1 <> n_cp_ini THEN
+    r_rest := r_rest||' / conteos no vuelven ('||n_emp_ini||'->'||n_emp1||' / '||n_cp_ini||'->'||n_cp1||')'; END IF;
+  det := det||' ;; restauracion (email de l3 + conteos al snapshot)|email original, emp='||n_emp_ini||' cp='||n_cp_ini||'|'||r_rest
+        ||'|-|email '||CASE WHEN email_fin IS NOT DISTINCT FROM l3_email THEN 'igual al original' ELSE 'DISTINTO' END||', emp='||n_emp1||' cp='||n_cp1;
+
+  PERFORM set_config('probe.p832_det', det, false);
+  PERFORM set_config('probe.p832', CASE WHEN split_part(r1,'|',1) = 'P0001' AND r1 NOT LIKE '%+FILAS%'
+      AND split_part(r2,'|',1) = '22023' AND r2 NOT LIKE '%+FILAS%' AND r_rest = 'OK'
+    THEN 'OK (sin sub P0001; email de auth NULL 22023; sin filas; email y conteos restaurados)'
+    ELSE 'ROJO (sin_sub='||r1||' | email_null='||r2||' | restauracion='||r_rest||')' END, false);
+EXCEPTION WHEN OTHERS THEN
+  PERFORM set_config('role','none',true); PERFORM set_config('request.jwt.claims','',true);
+  PERFORM set_config('probe.p832', CASE WHEN SQLERRM LIKE 'fixture roto%' THEN 'ROJO ('||SQLERRM||')'
+    ELSE 'FALLO ('||SQLSTATE||' '||SQLERRM||')' END, false);
+END $$;
+SELECT set_config('role','none', true);
+
+-- ---------------- P833 anon y PUBLIC sin EXECUTE (catalogo + ejercitado) ----------------
+DO $$
+DECLARE
+  f CONSTANT regprocedure := 'public.registrar_proveedor(text,text,text,uuid,text,text,text,text,text,text)'::regprocedure;
+  gt uuid; det text := ''; r_anon text; h_anon boolean; h_pub boolean; h_auth boolean; h_srv boolean;
+  n_emp0 bigint; n_cp0 bigint; n_emp1 bigint; n_cp1 bigint;
+BEGIN
+  SELECT id INTO gt FROM public.configuracion_pais WHERE codigo = 'GT' AND activo IS TRUE;
+  h_anon := has_function_privilege('anon', f, 'EXECUTE');
+  h_pub  := EXISTS (SELECT 1 FROM pg_proc p, aclexplode(p.proacl) a WHERE p.oid = f AND a.grantee = 0);
+  h_auth := has_function_privilege('authenticated', f, 'EXECUTE');
+  h_srv  := has_function_privilege('service_role', f, 'EXECUTE');
+  det := 'catalogo|anon=f public=f authenticated=t service_role=t|anon='||h_anon||' public='||h_pub||' authenticated='||h_auth||' service_role='||h_srv||'|-|';
+
+  SELECT count(*) INTO n_emp0 FROM public.empresas_proveedoras; SELECT count(*) INTO n_cp0 FROM public.cuentas_proveedor;
+  BEGIN PERFORM set_config('request.jwt.claims','{"role":"anon"}',true); PERFORM set_config('role','anon',true);
+    PERFORM public.registrar_proveedor('P833 QA','farmacia',NULL,gt,NULL,NULL,'p833@qa.test',NULL,'P833 QA','p833@qa.test');
+    PERFORM set_config('role','none',true); PERFORM set_config('request.jwt.claims','',true); r_anon := 'PASO|00000|';
+  EXCEPTION WHEN OTHERS THEN PERFORM set_config('role','none',true); PERFORM set_config('request.jwt.claims','',true);
+    r_anon := CASE WHEN SQLSTATE = '42501' AND SQLERRM ILIKE '%permission denied for function registrar_proveedor%' THEN '42501' ELSE 'ERR' END
+              ||'|'||SQLSTATE||'|'||SQLERRM; END;
+  SELECT count(*) INTO n_emp1 FROM public.empresas_proveedoras; SELECT count(*) INTO n_cp1 FROM public.cuentas_proveedor;
+  IF n_emp1 <> n_emp0 OR n_cp1 <> n_cp0 THEN r_anon := r_anon||' +FILAS'; END IF;
+  det := det||' ;; anon llama registrar_proveedor|42501 permission denied|'||r_anon;
+
+  PERFORM set_config('probe.p833_det', det, false);
+  PERFORM set_config('probe.p833', CASE WHEN NOT h_anon AND NOT h_pub AND h_auth AND h_srv
+      AND split_part(r_anon,'|',1) = '42501' AND r_anon NOT LIKE '%+FILAS%'
+    THEN 'OK (anon y PUBLIC sin EXECUTE; authenticated y service_role con EXECUTE; anon ejercitado 42501)'
+    ELSE 'ROJO (anon='||h_anon||' public='||h_pub||' authenticated='||h_auth||' service_role='||h_srv||' | anon llama='||r_anon||')' END, false);
+EXCEPTION WHEN OTHERS THEN
+  PERFORM set_config('role','none',true); PERFORM set_config('request.jwt.claims','',true);
+  PERFORM set_config('probe.p833','FALLO ('||SQLSTATE||' '||SQLERRM||')', false);
+END $$;
+SELECT set_config('role','none', true);
+
 
 -- ===== Veredictos como result set =====
 SELECT 'P1_anon_insert_citas'              AS probe, current_setting('probe.p1', true)  AS verdict, 'BLOQUEADO' AS esperado_post_fix
@@ -20779,9 +21129,9 @@ UNION ALL SELECT 'P735_fo_planes_paciente',          current_setting('probe.p735
 UNION ALL SELECT 'P736_fo_metrica_anon_no_escribe',  current_setting('probe.p736', true),    'OK (delta 0)'
 UNION ALL SELECT 'P737_fo_slots_anon_y_ctrl_pos',    current_setting('probe.p737', true),    'OK (corta anon, responde auth)'
 UNION ALL SELECT 'P738_fo_sin_execute_y_interna',    current_setting('probe.p738', true),    'OK (revocada, interna viva)'
-UNION ALL SELECT 'P739_rv_censo_anon_secdef',         current_setting('probe.p739', true),    'OK (quedan las 11 esperadas)'
+UNION ALL SELECT 'P739_rv_censo_anon_secdef',         current_setting('probe.p739', true),    'OK (quedan las 10 esperadas)'
 UNION ALL SELECT 'P740_rv_anon_ejercitado',           current_setting('probe.p740', true),    'OK (42501 en 8 revocadas)'
-UNION ALL SELECT 'P741_rv_excepciones_intactas',      current_setting('probe.p741', true),    'OK (11 + 5 tablas sin 42501)'
+UNION ALL SELECT 'P741_rv_excepciones_intactas',      current_setting('probe.p741', true),    'OK (registrar_proveedor sin anon + 10 + 5 tablas sin 42501)'
 UNION ALL SELECT 'P742_rv_cadena_interna_viva',       current_setting('probe.p742', true),    'OK (control positivo)'
 UNION ALL SELECT 'P743_rv_liberar_examen_coalesce',   current_setting('probe.p743', true),    'OK (los 2 actores cortados)'
 UNION ALL SELECT 'P744_rv_fabrica_cerrada',           current_setting('probe.p744', true),    'OK (funcion y secuencia nuevas)'
@@ -20883,6 +21233,11 @@ UNION ALL SELECT 'P825_invariante_visibilidad_cuentas', current_setting('probe.p
 UNION ALL SELECT 'P826_M5_vincular_jerarquia',       current_setting('probe.p826', true), 'OK (gerente no crea admin)'
 UNION ALL SELECT 'P827_M5_autorizar_staff_jerarquia',current_setting('probe.p827', true), 'OK (gerente no autoriza admin)'
 UNION ALL SELECT 'P828_M4_cuenta_inactiva',          current_setting('probe.p828', true), 'OK (inactivo 42501)'
+UNION ALL SELECT 'P829_registrar_alta_legitima',     current_setting('probe.p829', true), 'OK (alta con email de auth)'
+UNION ALL SELECT 'P830_registrar_identidad_unica',   current_setting('probe.p830', true), 'OK (6 identidades 42501)'
+UNION ALL SELECT 'P831_registrar_pais_operativo',    current_setting('probe.p831', true), 'OK (NULL/ZZ/inexistente 22023)'
+UNION ALL SELECT 'P832_registrar_sesion_y_email',    current_setting('probe.p832', true), 'OK (P0001 / 22023)'
+UNION ALL SELECT 'P833_registrar_sin_anon',          current_setting('probe.p833', true), 'OK (anon/PUBLIC sin EXECUTE)'
 -- Las filas FX* son SALUD DE FIXTURE, no probes de seguridad: dicen si la precondicion que una
 -- migracion posterior empezo a exigir se pudo sembrar. Si una sale ROJO, los probes que dependen de
 -- ese fixture reportan N/A (su flag de ready se pierde con el rollback de la subtransaccion) en vez
@@ -21118,7 +21473,8 @@ UNION ALL SELECT 'P000_CENTINELA_veredictos_no_nulos',
        'probe.p812', 'probe.p813', 'probe.p814',
        'probe.pgr_fx', 'probe.p815', 'probe.p816', 'probe.p817', 'probe.p818', 'probe.p819',
        'probe.p820', 'probe.p821', 'probe.p822', 'probe.p823', 'probe.p824', 'probe.p825',
-       'probe.p826', 'probe.p827', 'probe.p828'
+       'probe.p826', 'probe.p827', 'probe.p828', 'probe.p829', 'probe.p830', 'probe.p831',
+       'probe.p832', 'probe.p833'
              ]) AS n) s),
   'OK (todos los veredictos publicados)';
 

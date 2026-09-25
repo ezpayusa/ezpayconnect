@@ -1,11 +1,11 @@
-import { useState, useEffect } from 'react'
+import { useState } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { useProveedorAuth } from '@/proveedor/hooks/useProveedorAuth'
-import { supabase } from '@/lib/supabase'
+import { usePaisesRegistroProveedor } from '@/proveedor/hooks/usePaisesRegistroProveedor'
 import { FlaskConical, Loader2 } from 'lucide-react'
 import { toast } from 'sonner'
 
@@ -14,18 +14,13 @@ export default function LabRegistro() {
   const { register } = useProveedorAuth()
   const [loading, setLoading] = useState(false)
   const [step, setStep] = useState<1 | 2>(1)
-  const [paises, setPaises] = useState<{ id: string; nombre: string }[]>([])
+  const paises = usePaisesRegistroProveedor()
 
   const [form, setForm] = useState({
     nombre_empresa: '', ruc_nit: '', pais_id: '', ciudad: '', direccion: '',
     email_contacto: '', telefono: '', nombre_completo: '', email: '', password: '', confirmPassword: '',
   })
   const update = (f: string, v: string) => setForm((p) => ({ ...p, [f]: v }))
-
-  useEffect(() => {
-    supabase.from('configuracion_pais').select('id, nombre').eq('activo', true).order('nombre')
-      .then(({ data }) => setPaises((data || []) as { id: string; nombre: string }[]))
-  }, [])
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()

@@ -49,6 +49,11 @@
 -- `supabase.auth.signUp()` y despues la RPC, y si alguna vez ese signUp dejara de devolver sesion
 -- inmediata (confirmacion por email), el fallo tiene que seguir siendo el P0001 explicito de la
 -- funcion y no un 42501 de ACL, que es mucho mas dificil de diagnosticar. Es la unica excepcion.
+-- >> SUPERADO por la mig 327 (24-sep-2026): registrar_proveedor ya NO tiene EXECUTE para anon ni PUBLIC
+-- >> (solo authenticated y service_role). Decision de producto: el alta corre con sesion (autoconfirm).
+-- >> Consecuencia aceptada: si el signUp dejara de devolver sesion, el fallo pasa a ser el 42501 de ACL.
+-- >> Esta migracion queda como registro de lo aplicado el 18-sep; NO re-aplicarla: su control (d)
+-- >> aseguraba que anon conservaba el EXECUTE y hoy abortaria. La regla vigente la miden P739/P741/P833.
 --
 -- NINGUNA DE LAS 49 TIENE UN CALL-SITE ALCANZABLE SIN SESION. Se verifico subiendo por la cadena de
 -- imports desde cada `supabase.rpc('...')` de src/ hasta ver si el archivo cuelga de alguno de los
@@ -298,6 +303,7 @@ BEGIN
   PERFORM set_config('role', 'none', true);
 
   -- (d) CONTROL NEGATIVO: registrar_proveedor NO fue alcanzada por el barrido.
+  --     [Vigente solo al 18-sep: la mig 327 le revoco anon a proposito. Ver nota arriba.]
   IF NOT has_function_privilege('anon', 'public.registrar_proveedor(text,text,text,uuid,text,text,text,text,text,text)', 'EXECUTE') THEN
     v_mal := v_mal || 'registrar_proveedor PERDIO el EXECUTE de anon: el barrido se paso de alcance; ';
   END IF;
