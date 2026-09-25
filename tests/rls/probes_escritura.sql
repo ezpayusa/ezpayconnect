@@ -20714,6 +20714,1038 @@ EXCEPTION WHEN OTHERS THEN
 END $$;
 SELECT set_config('role','none', true);
 
+-- ================================================================================
+-- MIG 329 — el despacho rechaza recetas canceladas (P840-P847).
+-- OK = comportamiento de la 329; con 329_rollback aplicado dan ROJO P840-P845 y P847.
+-- P846 es CONTROL: confirmar_recepcion_receta NO se toca (confirma algo ya entregado).
+-- Fixture elegido como postgres: primer item sin dispensar, ruteado, de una receta ACTIVA con token
+-- vigente, y la primera cuenta de su empresa con recetas_dispensar + entregas_gestionar + sucursal
+-- visible. Caso A: la receta pasada a 'cancelada' dentro del probe -> PR010, firma sin cambios.
+-- Caso B: activa -> OK con efecto verificado. Todo se restaura (ids previos, item, stock, fila
+-- avanzada, estado) y se verifica contra la firma del snapshot. El token nunca se publica.
+-- ================================================================================
+
+-- ---------------- P840 verificar_receta_despacho ----------------
+DO $$
+DECLARE
+  rid bigint; iid bigint; farm integer; nom text; emp uuid; ra uuid; tok text; ctok text; pac bigint; pac_uid uuid;
+  cta uuid; c record; det text := ''; r_can text; r_act text; r_rest text := 'OK'; st text; msg text; j jsonb; v_n bigint;
+  sig0 text; sig1 text; sig2 text; eff text;
+  disp0 uuid[]; ent0 bigint[]; fal0 bigint[]; rev0 bigint[]; conf0 uuid[]; it0 record; stock0 jsonb; ra0 record; est0 text; sig_orig text; mod_orig text; emp_est0 text;
+BEGIN
+  SELECT ri.id, ri.receta_id, ri.farmacia_id, ri.nombre_medicamento, f.empresa_id, ra_.id, ra_.dispatch_token, ra_.confirmacion_token, r.paciente_id
+    INTO iid, rid, farm, nom, emp, ra, tok, ctok, pac
+    FROM public.receta_items ri JOIN public.farmacias f ON f.id = ri.farmacia_id
+    JOIN public.recetas r ON r.id = ri.receta_id JOIN public.recetas_avanzadas ra_ ON ra_.receta_base_id = r.id
+   WHERE ri.dispensado = false AND ra_.dispatch_token_expira_at > now() AND ra_.confirmacion_token_expira_at > now()
+     AND r.estado = 'activa'
+   ORDER BY ri.receta_id, ri.id LIMIT 1;
+  IF iid IS NULL THEN RAISE EXCEPTION 'fixture roto: item ruteado de receta activa con token vigente'; END IF;
+  -- el gate de estado de empresa (mig 322) exige empresa 'activa': si la dejo en otro estado un probe anterior
+  -- del harness, se activa aca como fixture y se restaura al final (verificado).
+  SELECT e.estado INTO emp_est0 FROM public.empresas_proveedoras e WHERE e.id = emp;
+  IF emp_est0 IS DISTINCT FROM 'activa' THEN UPDATE public.empresas_proveedoras SET estado = 'activa' WHERE id = emp; END IF;
+  FOR c IN SELECT cp.id FROM public.cuentas_proveedor cp WHERE cp.empresa_id = emp AND cp.activo IS TRUE ORDER BY cp.id LOOP
+    PERFORM set_config('request.jwt.claims', json_build_object('sub',c.id::text,'role','authenticated')::text, true);
+    IF COALESCE(private.tiene_permiso('recetas_dispensar'), false) AND COALESCE(private.tiene_permiso('entregas_gestionar'), false)
+       AND COALESCE(private.sucursal_visible(farm), false) THEN cta := c.id; EXIT; END IF;
+  END LOOP;
+  PERFORM set_config('request.jwt.claims','',true);
+  IF cta IS NULL THEN RAISE EXCEPTION 'fixture roto: cuenta de farmacia con dispensar + entregas + sucursal visible'; END IF;
+  SELECT p.auth_user_id INTO pac_uid FROM public.pacientes p WHERE p.id = pac;
+  -- snapshot
+  SELECT r.estado INTO est0 FROM public.recetas r WHERE r.id = rid;
+  SELECT array_agg(id) INTO disp0 FROM public.dispensaciones WHERE receta_avanzada_id = ra;
+  SELECT array_agg(id) INTO ent0 FROM public.entregas WHERE receta_base_id = rid;
+  SELECT array_agg(id) INTO fal0 FROM private.delivery_autocreate_fallos WHERE receta_base_id = rid;
+  SELECT array_agg(id) INTO rev0 FROM private.reveal_log WHERE receta_base_id = rid;
+  SELECT array_agg(id) INTO conf0 FROM public.confirmaciones_receta WHERE receta_avanzada_id = ra;
+  SELECT dispensado, dispensado_at, modalidad INTO it0 FROM public.receta_items WHERE id = iid;
+  SELECT jsonb_agg(jsonb_build_object('id', id, 's', stock_actual, 'u', updated_at)) INTO stock0
+    FROM public.farmacia_medicamentos WHERE farmacia_id = farm AND nombre_medicamento = nom;
+  SELECT estado_dispensacion, fecha_dispensacion, farmacia_id, updated_at INTO ra0 FROM public.recetas_avanzadas WHERE id = ra;
+  sig0 := concat_ws(' | ',
+    'rec='||COALESCE((SELECT estado FROM public.recetas WHERE id = rid),'-'),
+    'disp='||(SELECT count(*) FROM public.dispensaciones WHERE receta_avanzada_id = ra),
+    'item='||COALESCE((SELECT dispensado::text||'@'||COALESCE(dispensado_at::text,'-')||'@'||COALESCE(modalidad,'-') FROM public.receta_items WHERE id = iid),'-'),
+    'stock='||COALESCE((SELECT string_agg(id::text||':'||stock_actual||'@'||updated_at, ',' ORDER BY id) FROM public.farmacia_medicamentos WHERE farmacia_id = farm AND nombre_medicamento = nom),'-'),
+    'ra='||COALESCE((SELECT COALESCE(estado_dispensacion,'-')||'@'||COALESCE(fecha_dispensacion::text,'-')||'@'||COALESCE(farmacia_id,'-')||'@'||updated_at FROM public.recetas_avanzadas WHERE id = ra),'-'),
+    'entregas='||(SELECT count(*) FROM public.entregas WHERE receta_base_id = rid),
+    'fallos='||(SELECT count(*) FROM private.delivery_autocreate_fallos WHERE receta_base_id = rid),
+    'reveal='||(SELECT count(*) FROM private.reveal_log WHERE receta_base_id = rid),
+    'confirm='||(SELECT count(*) FROM public.confirmaciones_receta WHERE receta_avanzada_id = ra));
+  sig_orig := sig0; mod_orig := it0.modalidad;
+
+  -- A) receta CANCELADA
+  UPDATE public.recetas SET estado = 'cancelada' WHERE id = rid;
+  st := '00000'; msg := ''; j := NULL;
+  BEGIN
+    PERFORM set_config('request.jwt.claims', json_build_object('sub',cta::text,'role','authenticated')::text, true); PERFORM set_config('role','authenticated',true);
+    j := public.verificar_receta_despacho(tok);
+    PERFORM set_config('role','none',true); PERFORM set_config('request.jwt.claims','',true);
+  EXCEPTION WHEN OTHERS THEN PERFORM set_config('role','none',true); PERFORM set_config('request.jwt.claims','',true);
+    st := SQLSTATE; msg := SQLERRM; END;
+  r_can := CASE WHEN st = '00000' THEN 'OK' ELSE 'ERR' END;
+  r_can := st||' '||msg;
+  UPDATE public.recetas SET estado = est0 WHERE id = rid;
+  sig1 := concat_ws(' | ',
+    'rec='||COALESCE((SELECT estado FROM public.recetas WHERE id = rid),'-'),
+    'disp='||(SELECT count(*) FROM public.dispensaciones WHERE receta_avanzada_id = ra),
+    'item='||COALESCE((SELECT dispensado::text||'@'||COALESCE(dispensado_at::text,'-')||'@'||COALESCE(modalidad,'-') FROM public.receta_items WHERE id = iid),'-'),
+    'stock='||COALESCE((SELECT string_agg(id::text||':'||stock_actual||'@'||updated_at, ',' ORDER BY id) FROM public.farmacia_medicamentos WHERE farmacia_id = farm AND nombre_medicamento = nom),'-'),
+    'ra='||COALESCE((SELECT COALESCE(estado_dispensacion,'-')||'@'||COALESCE(fecha_dispensacion::text,'-')||'@'||COALESCE(farmacia_id,'-')||'@'||updated_at FROM public.recetas_avanzadas WHERE id = ra),'-'),
+    'entregas='||(SELECT count(*) FROM public.entregas WHERE receta_base_id = rid),
+    'fallos='||(SELECT count(*) FROM private.delivery_autocreate_fallos WHERE receta_base_id = rid),
+    'reveal='||(SELECT count(*) FROM private.reveal_log WHERE receta_base_id = rid),
+    'confirm='||(SELECT count(*) FROM public.confirmaciones_receta WHERE receta_avanzada_id = ra));
+  DELETE FROM public.dispensaciones WHERE receta_avanzada_id = ra AND NOT (id = ANY(COALESCE(disp0, '{}')));
+  DELETE FROM public.entregas WHERE receta_base_id = rid AND NOT (id = ANY(COALESCE(ent0, '{}')));
+  DELETE FROM private.delivery_autocreate_fallos WHERE receta_base_id = rid AND NOT (id = ANY(COALESCE(fal0, '{}')));
+  DELETE FROM private.reveal_log WHERE receta_base_id = rid AND NOT (id = ANY(COALESCE(rev0, '{}')));
+  DELETE FROM public.confirmaciones_receta WHERE receta_avanzada_id = ra AND NOT (id = ANY(COALESCE(conf0, '{}')));
+  UPDATE public.receta_items SET dispensado = it0.dispensado, dispensado_at = it0.dispensado_at, modalidad = it0.modalidad WHERE id = iid;
+  UPDATE public.farmacia_medicamentos fm SET stock_actual = x.s, updated_at = x.u
+    FROM jsonb_to_recordset(COALESCE(stock0, '[]')) AS x(id uuid, s integer, u timestamptz) WHERE fm.id = x.id;
+  UPDATE public.recetas_avanzadas SET estado_dispensacion = ra0.estado_dispensacion, fecha_dispensacion = ra0.fecha_dispensacion,
+         farmacia_id = ra0.farmacia_id, updated_at = ra0.updated_at WHERE id = ra;
+  UPDATE public.recetas SET estado = est0 WHERE id = rid;
+
+  det := 'cancelada|PR010 Receta cancelada: no se puede despachar|'||CASE WHEN r_can = 'PR010 Receta cancelada: no se puede despachar' THEN 'OK' ELSE 'ROJO' END||'|'||st||'|'||msg
+         ||' ;; cancelada: sin filas ni cambios|firma igual al snapshot|'||CASE WHEN sig1 = sig0 THEN 'igual' ELSE 'DISTINTA' END||'|-|';
+  -- B) receta ACTIVA -> OK, efecto verificado y restaurado
+  st := '00000'; msg := ''; j := NULL;
+  BEGIN
+    PERFORM set_config('request.jwt.claims', json_build_object('sub',cta::text,'role','authenticated')::text, true); PERFORM set_config('role','authenticated',true);
+    j := public.verificar_receta_despacho(tok);
+    PERFORM set_config('role','none',true); PERFORM set_config('request.jwt.claims','',true);
+  EXCEPTION WHEN OTHERS THEN PERFORM set_config('role','none',true); PERFORM set_config('request.jwt.claims','',true);
+    st := SQLSTATE; msg := SQLERRM; END;
+  r_act := CASE WHEN st = '00000' THEN 'OK' ELSE 'ERR' END;
+  eff := 'receta_id='||COALESCE(j->>'receta_id','-')||' coincide='||((j->>'receta_id')::bigint = rid);
+  det := det||' ;; activa|OK|'||r_act||' '||COALESCE(eff,'-')||'|'||st||'|'||msg;
+  IF r_act = 'OK' AND NOT ((j->>'receta_id')::bigint = rid) THEN r_act := 'OK-SIN-EFECTO'; END IF;
+  DELETE FROM public.dispensaciones WHERE receta_avanzada_id = ra AND NOT (id = ANY(COALESCE(disp0, '{}')));
+  DELETE FROM public.entregas WHERE receta_base_id = rid AND NOT (id = ANY(COALESCE(ent0, '{}')));
+  DELETE FROM private.delivery_autocreate_fallos WHERE receta_base_id = rid AND NOT (id = ANY(COALESCE(fal0, '{}')));
+  DELETE FROM private.reveal_log WHERE receta_base_id = rid AND NOT (id = ANY(COALESCE(rev0, '{}')));
+  DELETE FROM public.confirmaciones_receta WHERE receta_avanzada_id = ra AND NOT (id = ANY(COALESCE(conf0, '{}')));
+  UPDATE public.receta_items SET dispensado = it0.dispensado, dispensado_at = it0.dispensado_at, modalidad = it0.modalidad WHERE id = iid;
+  UPDATE public.farmacia_medicamentos fm SET stock_actual = x.s, updated_at = x.u
+    FROM jsonb_to_recordset(COALESCE(stock0, '[]')) AS x(id uuid, s integer, u timestamptz) WHERE fm.id = x.id;
+  UPDATE public.recetas_avanzadas SET estado_dispensacion = ra0.estado_dispensacion, fecha_dispensacion = ra0.fecha_dispensacion,
+         farmacia_id = ra0.farmacia_id, updated_at = ra0.updated_at WHERE id = ra;
+  UPDATE public.recetas SET estado = est0 WHERE id = rid;
+
+  sig2 := concat_ws(' | ',
+    'rec='||COALESCE((SELECT estado FROM public.recetas WHERE id = rid),'-'),
+    'disp='||(SELECT count(*) FROM public.dispensaciones WHERE receta_avanzada_id = ra),
+    'item='||COALESCE((SELECT dispensado::text||'@'||COALESCE(dispensado_at::text,'-')||'@'||COALESCE(modalidad,'-') FROM public.receta_items WHERE id = iid),'-'),
+    'stock='||COALESCE((SELECT string_agg(id::text||':'||stock_actual||'@'||updated_at, ',' ORDER BY id) FROM public.farmacia_medicamentos WHERE farmacia_id = farm AND nombre_medicamento = nom),'-'),
+    'ra='||COALESCE((SELECT COALESCE(estado_dispensacion,'-')||'@'||COALESCE(fecha_dispensacion::text,'-')||'@'||COALESCE(farmacia_id,'-')||'@'||updated_at FROM public.recetas_avanzadas WHERE id = ra),'-'),
+    'entregas='||(SELECT count(*) FROM public.entregas WHERE receta_base_id = rid),
+    'fallos='||(SELECT count(*) FROM private.delivery_autocreate_fallos WHERE receta_base_id = rid),
+    'reveal='||(SELECT count(*) FROM private.reveal_log WHERE receta_base_id = rid),
+    'confirm='||(SELECT count(*) FROM public.confirmaciones_receta WHERE receta_avanzada_id = ra));
+  IF sig2 IS DISTINCT FROM sig_orig THEN r_rest := 'firma no vuelve al snapshot original'; END IF;
+  UPDATE public.empresas_proveedoras SET estado = emp_est0 WHERE id = emp AND estado IS DISTINCT FROM emp_est0;
+  IF (SELECT estado FROM public.empresas_proveedoras WHERE id = emp) IS DISTINCT FROM emp_est0 THEN
+    r_rest := r_rest||' / estado de empresa no vuelve'; END IF;
+  det := det||' ;; empresa del fixture|estado original '||COALESCE(emp_est0,'-')||'|'||CASE WHEN emp_est0 = 'activa' THEN 'ya activa' ELSE 'activada para el probe y restaurada' END||'|-|';
+  det := det||' ;; restauracion|firma igual al snapshot|'||r_rest||'|-|';
+
+  PERFORM set_config('probe.p840_det', det, false);
+  PERFORM set_config('probe.p840', CASE WHEN (r_can = 'PR010 Receta cancelada: no se puede despachar') AND sig1 = sig0 AND r_act = 'OK' AND r_rest = 'OK'
+    THEN 'OK (verificar_receta_despacho: cancelada -> PR010, activa -> OK con efecto; restaurado)'
+    ELSE 'ROJO (cancelada='||r_can||' | activa='||r_act||' '||COALESCE(eff,'-')||' | firma_cancelada='||(sig1 = sig0)||' | restauracion='||r_rest||')' END, false);
+EXCEPTION WHEN OTHERS THEN
+  PERFORM set_config('role','none',true); PERFORM set_config('request.jwt.claims','',true);
+  PERFORM set_config('probe.p840', CASE WHEN SQLERRM LIKE 'fixture roto%' THEN 'ROJO ('||SQLERRM||')'
+    ELSE 'FALLO ('||SQLSTATE||' '||SQLERRM||')' END, false);
+END $$;
+SELECT set_config('role','none', true);
+
+-- ---------------- P841 registrar_dispensacion (token) ----------------
+DO $$
+DECLARE
+  rid bigint; iid bigint; farm integer; nom text; emp uuid; ra uuid; tok text; ctok text; pac bigint; pac_uid uuid;
+  cta uuid; c record; det text := ''; r_can text; r_act text; r_rest text := 'OK'; st text; msg text; j jsonb; v_n bigint;
+  sig0 text; sig1 text; sig2 text; eff text;
+  disp0 uuid[]; ent0 bigint[]; fal0 bigint[]; rev0 bigint[]; conf0 uuid[]; it0 record; stock0 jsonb; ra0 record; est0 text; sig_orig text; mod_orig text; emp_est0 text;
+BEGIN
+  SELECT ri.id, ri.receta_id, ri.farmacia_id, ri.nombre_medicamento, f.empresa_id, ra_.id, ra_.dispatch_token, ra_.confirmacion_token, r.paciente_id
+    INTO iid, rid, farm, nom, emp, ra, tok, ctok, pac
+    FROM public.receta_items ri JOIN public.farmacias f ON f.id = ri.farmacia_id
+    JOIN public.recetas r ON r.id = ri.receta_id JOIN public.recetas_avanzadas ra_ ON ra_.receta_base_id = r.id
+   WHERE ri.dispensado = false AND ra_.dispatch_token_expira_at > now() AND ra_.confirmacion_token_expira_at > now()
+     AND r.estado = 'activa'
+   ORDER BY ri.receta_id, ri.id LIMIT 1;
+  IF iid IS NULL THEN RAISE EXCEPTION 'fixture roto: item ruteado de receta activa con token vigente'; END IF;
+  -- el gate de estado de empresa (mig 322) exige empresa 'activa': si la dejo en otro estado un probe anterior
+  -- del harness, se activa aca como fixture y se restaura al final (verificado).
+  SELECT e.estado INTO emp_est0 FROM public.empresas_proveedoras e WHERE e.id = emp;
+  IF emp_est0 IS DISTINCT FROM 'activa' THEN UPDATE public.empresas_proveedoras SET estado = 'activa' WHERE id = emp; END IF;
+  FOR c IN SELECT cp.id FROM public.cuentas_proveedor cp WHERE cp.empresa_id = emp AND cp.activo IS TRUE ORDER BY cp.id LOOP
+    PERFORM set_config('request.jwt.claims', json_build_object('sub',c.id::text,'role','authenticated')::text, true);
+    IF COALESCE(private.tiene_permiso('recetas_dispensar'), false) AND COALESCE(private.tiene_permiso('entregas_gestionar'), false)
+       AND COALESCE(private.sucursal_visible(farm), false) THEN cta := c.id; EXIT; END IF;
+  END LOOP;
+  PERFORM set_config('request.jwt.claims','',true);
+  IF cta IS NULL THEN RAISE EXCEPTION 'fixture roto: cuenta de farmacia con dispensar + entregas + sucursal visible'; END IF;
+  SELECT p.auth_user_id INTO pac_uid FROM public.pacientes p WHERE p.id = pac;
+  -- snapshot
+  SELECT r.estado INTO est0 FROM public.recetas r WHERE r.id = rid;
+  SELECT array_agg(id) INTO disp0 FROM public.dispensaciones WHERE receta_avanzada_id = ra;
+  SELECT array_agg(id) INTO ent0 FROM public.entregas WHERE receta_base_id = rid;
+  SELECT array_agg(id) INTO fal0 FROM private.delivery_autocreate_fallos WHERE receta_base_id = rid;
+  SELECT array_agg(id) INTO rev0 FROM private.reveal_log WHERE receta_base_id = rid;
+  SELECT array_agg(id) INTO conf0 FROM public.confirmaciones_receta WHERE receta_avanzada_id = ra;
+  SELECT dispensado, dispensado_at, modalidad INTO it0 FROM public.receta_items WHERE id = iid;
+  SELECT jsonb_agg(jsonb_build_object('id', id, 's', stock_actual, 'u', updated_at)) INTO stock0
+    FROM public.farmacia_medicamentos WHERE farmacia_id = farm AND nombre_medicamento = nom;
+  SELECT estado_dispensacion, fecha_dispensacion, farmacia_id, updated_at INTO ra0 FROM public.recetas_avanzadas WHERE id = ra;
+  sig0 := concat_ws(' | ',
+    'rec='||COALESCE((SELECT estado FROM public.recetas WHERE id = rid),'-'),
+    'disp='||(SELECT count(*) FROM public.dispensaciones WHERE receta_avanzada_id = ra),
+    'item='||COALESCE((SELECT dispensado::text||'@'||COALESCE(dispensado_at::text,'-')||'@'||COALESCE(modalidad,'-') FROM public.receta_items WHERE id = iid),'-'),
+    'stock='||COALESCE((SELECT string_agg(id::text||':'||stock_actual||'@'||updated_at, ',' ORDER BY id) FROM public.farmacia_medicamentos WHERE farmacia_id = farm AND nombre_medicamento = nom),'-'),
+    'ra='||COALESCE((SELECT COALESCE(estado_dispensacion,'-')||'@'||COALESCE(fecha_dispensacion::text,'-')||'@'||COALESCE(farmacia_id,'-')||'@'||updated_at FROM public.recetas_avanzadas WHERE id = ra),'-'),
+    'entregas='||(SELECT count(*) FROM public.entregas WHERE receta_base_id = rid),
+    'fallos='||(SELECT count(*) FROM private.delivery_autocreate_fallos WHERE receta_base_id = rid),
+    'reveal='||(SELECT count(*) FROM private.reveal_log WHERE receta_base_id = rid),
+    'confirm='||(SELECT count(*) FROM public.confirmaciones_receta WHERE receta_avanzada_id = ra));
+  sig_orig := sig0; mod_orig := it0.modalidad;
+
+  -- A) receta CANCELADA
+  UPDATE public.recetas SET estado = 'cancelada' WHERE id = rid;
+  st := '00000'; msg := ''; j := NULL;
+  BEGIN
+    PERFORM set_config('request.jwt.claims', json_build_object('sub',cta::text,'role','authenticated')::text, true); PERFORM set_config('role','authenticated',true);
+    j := public.registrar_dispensacion(tok, ARRAY[iid], 'P841 QA');
+    PERFORM set_config('role','none',true); PERFORM set_config('request.jwt.claims','',true);
+  EXCEPTION WHEN OTHERS THEN PERFORM set_config('role','none',true); PERFORM set_config('request.jwt.claims','',true);
+    st := SQLSTATE; msg := SQLERRM; END;
+  r_can := CASE WHEN st = '00000' THEN 'OK' ELSE 'ERR' END;
+  r_can := st||' '||msg;
+  UPDATE public.recetas SET estado = est0 WHERE id = rid;
+  sig1 := concat_ws(' | ',
+    'rec='||COALESCE((SELECT estado FROM public.recetas WHERE id = rid),'-'),
+    'disp='||(SELECT count(*) FROM public.dispensaciones WHERE receta_avanzada_id = ra),
+    'item='||COALESCE((SELECT dispensado::text||'@'||COALESCE(dispensado_at::text,'-')||'@'||COALESCE(modalidad,'-') FROM public.receta_items WHERE id = iid),'-'),
+    'stock='||COALESCE((SELECT string_agg(id::text||':'||stock_actual||'@'||updated_at, ',' ORDER BY id) FROM public.farmacia_medicamentos WHERE farmacia_id = farm AND nombre_medicamento = nom),'-'),
+    'ra='||COALESCE((SELECT COALESCE(estado_dispensacion,'-')||'@'||COALESCE(fecha_dispensacion::text,'-')||'@'||COALESCE(farmacia_id,'-')||'@'||updated_at FROM public.recetas_avanzadas WHERE id = ra),'-'),
+    'entregas='||(SELECT count(*) FROM public.entregas WHERE receta_base_id = rid),
+    'fallos='||(SELECT count(*) FROM private.delivery_autocreate_fallos WHERE receta_base_id = rid),
+    'reveal='||(SELECT count(*) FROM private.reveal_log WHERE receta_base_id = rid),
+    'confirm='||(SELECT count(*) FROM public.confirmaciones_receta WHERE receta_avanzada_id = ra));
+  DELETE FROM public.dispensaciones WHERE receta_avanzada_id = ra AND NOT (id = ANY(COALESCE(disp0, '{}')));
+  DELETE FROM public.entregas WHERE receta_base_id = rid AND NOT (id = ANY(COALESCE(ent0, '{}')));
+  DELETE FROM private.delivery_autocreate_fallos WHERE receta_base_id = rid AND NOT (id = ANY(COALESCE(fal0, '{}')));
+  DELETE FROM private.reveal_log WHERE receta_base_id = rid AND NOT (id = ANY(COALESCE(rev0, '{}')));
+  DELETE FROM public.confirmaciones_receta WHERE receta_avanzada_id = ra AND NOT (id = ANY(COALESCE(conf0, '{}')));
+  UPDATE public.receta_items SET dispensado = it0.dispensado, dispensado_at = it0.dispensado_at, modalidad = it0.modalidad WHERE id = iid;
+  UPDATE public.farmacia_medicamentos fm SET stock_actual = x.s, updated_at = x.u
+    FROM jsonb_to_recordset(COALESCE(stock0, '[]')) AS x(id uuid, s integer, u timestamptz) WHERE fm.id = x.id;
+  UPDATE public.recetas_avanzadas SET estado_dispensacion = ra0.estado_dispensacion, fecha_dispensacion = ra0.fecha_dispensacion,
+         farmacia_id = ra0.farmacia_id, updated_at = ra0.updated_at WHERE id = ra;
+  UPDATE public.recetas SET estado = est0 WHERE id = rid;
+
+  det := 'cancelada|PR010 Receta cancelada: no se puede despachar|'||CASE WHEN r_can = 'PR010 Receta cancelada: no se puede despachar' THEN 'OK' ELSE 'ROJO' END||'|'||st||'|'||msg
+         ||' ;; cancelada: sin filas ni cambios|firma igual al snapshot|'||CASE WHEN sig1 = sig0 THEN 'igual' ELSE 'DISTINTA' END||'|-|';
+  -- B) receta ACTIVA -> OK, efecto verificado y restaurado
+  st := '00000'; msg := ''; j := NULL;
+  BEGIN
+    PERFORM set_config('request.jwt.claims', json_build_object('sub',cta::text,'role','authenticated')::text, true); PERFORM set_config('role','authenticated',true);
+    j := public.registrar_dispensacion(tok, ARRAY[iid], 'P841 QA');
+    PERFORM set_config('role','none',true); PERFORM set_config('request.jwt.claims','',true);
+  EXCEPTION WHEN OTHERS THEN PERFORM set_config('role','none',true); PERFORM set_config('request.jwt.claims','',true);
+    st := SQLSTATE; msg := SQLERRM; END;
+  r_act := CASE WHEN st = '00000' THEN 'OK' ELSE 'ERR' END;
+  eff := 'despachados='||COALESCE(j->>'despachados','-')
+    ||' item_dispensado='||(SELECT dispensado FROM public.receta_items WHERE id = iid)
+    ||' dispensaciones+'||((SELECT count(*) FROM public.dispensaciones WHERE receta_avanzada_id = ra) - COALESCE(array_length(disp0,1),0))
+    ||' estado_dispensacion='||COALESCE((SELECT estado_dispensacion FROM public.recetas_avanzadas WHERE id = ra),'-');
+  det := det||' ;; activa|OK|'||r_act||' '||COALESCE(eff,'-')||'|'||st||'|'||msg;
+  IF r_act = 'OK' AND NOT ((j->>'despachados') = '1' AND (SELECT dispensado FROM public.receta_items WHERE id = iid) IS TRUE
+    AND (SELECT count(*) FROM public.dispensaciones WHERE receta_avanzada_id = ra) = COALESCE(array_length(disp0,1),0) + 1
+    AND (SELECT estado_dispensacion FROM public.recetas_avanzadas WHERE id = ra) IN ('dispensada','parcial')) THEN r_act := 'OK-SIN-EFECTO'; END IF;
+  DELETE FROM public.dispensaciones WHERE receta_avanzada_id = ra AND NOT (id = ANY(COALESCE(disp0, '{}')));
+  DELETE FROM public.entregas WHERE receta_base_id = rid AND NOT (id = ANY(COALESCE(ent0, '{}')));
+  DELETE FROM private.delivery_autocreate_fallos WHERE receta_base_id = rid AND NOT (id = ANY(COALESCE(fal0, '{}')));
+  DELETE FROM private.reveal_log WHERE receta_base_id = rid AND NOT (id = ANY(COALESCE(rev0, '{}')));
+  DELETE FROM public.confirmaciones_receta WHERE receta_avanzada_id = ra AND NOT (id = ANY(COALESCE(conf0, '{}')));
+  UPDATE public.receta_items SET dispensado = it0.dispensado, dispensado_at = it0.dispensado_at, modalidad = it0.modalidad WHERE id = iid;
+  UPDATE public.farmacia_medicamentos fm SET stock_actual = x.s, updated_at = x.u
+    FROM jsonb_to_recordset(COALESCE(stock0, '[]')) AS x(id uuid, s integer, u timestamptz) WHERE fm.id = x.id;
+  UPDATE public.recetas_avanzadas SET estado_dispensacion = ra0.estado_dispensacion, fecha_dispensacion = ra0.fecha_dispensacion,
+         farmacia_id = ra0.farmacia_id, updated_at = ra0.updated_at WHERE id = ra;
+  UPDATE public.recetas SET estado = est0 WHERE id = rid;
+
+  sig2 := concat_ws(' | ',
+    'rec='||COALESCE((SELECT estado FROM public.recetas WHERE id = rid),'-'),
+    'disp='||(SELECT count(*) FROM public.dispensaciones WHERE receta_avanzada_id = ra),
+    'item='||COALESCE((SELECT dispensado::text||'@'||COALESCE(dispensado_at::text,'-')||'@'||COALESCE(modalidad,'-') FROM public.receta_items WHERE id = iid),'-'),
+    'stock='||COALESCE((SELECT string_agg(id::text||':'||stock_actual||'@'||updated_at, ',' ORDER BY id) FROM public.farmacia_medicamentos WHERE farmacia_id = farm AND nombre_medicamento = nom),'-'),
+    'ra='||COALESCE((SELECT COALESCE(estado_dispensacion,'-')||'@'||COALESCE(fecha_dispensacion::text,'-')||'@'||COALESCE(farmacia_id,'-')||'@'||updated_at FROM public.recetas_avanzadas WHERE id = ra),'-'),
+    'entregas='||(SELECT count(*) FROM public.entregas WHERE receta_base_id = rid),
+    'fallos='||(SELECT count(*) FROM private.delivery_autocreate_fallos WHERE receta_base_id = rid),
+    'reveal='||(SELECT count(*) FROM private.reveal_log WHERE receta_base_id = rid),
+    'confirm='||(SELECT count(*) FROM public.confirmaciones_receta WHERE receta_avanzada_id = ra));
+  IF sig2 IS DISTINCT FROM sig_orig THEN r_rest := 'firma no vuelve al snapshot original'; END IF;
+  UPDATE public.empresas_proveedoras SET estado = emp_est0 WHERE id = emp AND estado IS DISTINCT FROM emp_est0;
+  IF (SELECT estado FROM public.empresas_proveedoras WHERE id = emp) IS DISTINCT FROM emp_est0 THEN
+    r_rest := r_rest||' / estado de empresa no vuelve'; END IF;
+  det := det||' ;; empresa del fixture|estado original '||COALESCE(emp_est0,'-')||'|'||CASE WHEN emp_est0 = 'activa' THEN 'ya activa' ELSE 'activada para el probe y restaurada' END||'|-|';
+  det := det||' ;; restauracion|firma igual al snapshot|'||r_rest||'|-|';
+
+  PERFORM set_config('probe.p841_det', det, false);
+  PERFORM set_config('probe.p841', CASE WHEN (r_can = 'PR010 Receta cancelada: no se puede despachar') AND sig1 = sig0 AND r_act = 'OK' AND r_rest = 'OK'
+    THEN 'OK (registrar_dispensacion (token): cancelada -> PR010, activa -> OK con efecto; restaurado)'
+    ELSE 'ROJO (cancelada='||r_can||' | activa='||r_act||' '||COALESCE(eff,'-')||' | firma_cancelada='||(sig1 = sig0)||' | restauracion='||r_rest||')' END, false);
+EXCEPTION WHEN OTHERS THEN
+  PERFORM set_config('role','none',true); PERFORM set_config('request.jwt.claims','',true);
+  PERFORM set_config('probe.p841', CASE WHEN SQLERRM LIKE 'fixture roto%' THEN 'ROJO ('||SQLERRM||')'
+    ELSE 'FALLO ('||SQLSTATE||' '||SQLERRM||')' END, false);
+END $$;
+SELECT set_config('role','none', true);
+
+-- ---------------- P842 registrar_dispensacion_dirigida (receta_id) ----------------
+DO $$
+DECLARE
+  rid bigint; iid bigint; farm integer; nom text; emp uuid; ra uuid; tok text; ctok text; pac bigint; pac_uid uuid;
+  cta uuid; c record; det text := ''; r_can text; r_act text; r_rest text := 'OK'; st text; msg text; j jsonb; v_n bigint;
+  sig0 text; sig1 text; sig2 text; eff text;
+  disp0 uuid[]; ent0 bigint[]; fal0 bigint[]; rev0 bigint[]; conf0 uuid[]; it0 record; stock0 jsonb; ra0 record; est0 text; sig_orig text; mod_orig text; emp_est0 text;
+BEGIN
+  SELECT ri.id, ri.receta_id, ri.farmacia_id, ri.nombre_medicamento, f.empresa_id, ra_.id, ra_.dispatch_token, ra_.confirmacion_token, r.paciente_id
+    INTO iid, rid, farm, nom, emp, ra, tok, ctok, pac
+    FROM public.receta_items ri JOIN public.farmacias f ON f.id = ri.farmacia_id
+    JOIN public.recetas r ON r.id = ri.receta_id JOIN public.recetas_avanzadas ra_ ON ra_.receta_base_id = r.id
+   WHERE ri.dispensado = false AND ra_.dispatch_token_expira_at > now() AND ra_.confirmacion_token_expira_at > now()
+     AND r.estado = 'activa'
+   ORDER BY ri.receta_id, ri.id LIMIT 1;
+  IF iid IS NULL THEN RAISE EXCEPTION 'fixture roto: item ruteado de receta activa con token vigente'; END IF;
+  -- el gate de estado de empresa (mig 322) exige empresa 'activa': si la dejo en otro estado un probe anterior
+  -- del harness, se activa aca como fixture y se restaura al final (verificado).
+  SELECT e.estado INTO emp_est0 FROM public.empresas_proveedoras e WHERE e.id = emp;
+  IF emp_est0 IS DISTINCT FROM 'activa' THEN UPDATE public.empresas_proveedoras SET estado = 'activa' WHERE id = emp; END IF;
+  FOR c IN SELECT cp.id FROM public.cuentas_proveedor cp WHERE cp.empresa_id = emp AND cp.activo IS TRUE ORDER BY cp.id LOOP
+    PERFORM set_config('request.jwt.claims', json_build_object('sub',c.id::text,'role','authenticated')::text, true);
+    IF COALESCE(private.tiene_permiso('recetas_dispensar'), false) AND COALESCE(private.tiene_permiso('entregas_gestionar'), false)
+       AND COALESCE(private.sucursal_visible(farm), false) THEN cta := c.id; EXIT; END IF;
+  END LOOP;
+  PERFORM set_config('request.jwt.claims','',true);
+  IF cta IS NULL THEN RAISE EXCEPTION 'fixture roto: cuenta de farmacia con dispensar + entregas + sucursal visible'; END IF;
+  SELECT p.auth_user_id INTO pac_uid FROM public.pacientes p WHERE p.id = pac;
+  -- snapshot
+  SELECT r.estado INTO est0 FROM public.recetas r WHERE r.id = rid;
+  SELECT array_agg(id) INTO disp0 FROM public.dispensaciones WHERE receta_avanzada_id = ra;
+  SELECT array_agg(id) INTO ent0 FROM public.entregas WHERE receta_base_id = rid;
+  SELECT array_agg(id) INTO fal0 FROM private.delivery_autocreate_fallos WHERE receta_base_id = rid;
+  SELECT array_agg(id) INTO rev0 FROM private.reveal_log WHERE receta_base_id = rid;
+  SELECT array_agg(id) INTO conf0 FROM public.confirmaciones_receta WHERE receta_avanzada_id = ra;
+  SELECT dispensado, dispensado_at, modalidad INTO it0 FROM public.receta_items WHERE id = iid;
+  SELECT jsonb_agg(jsonb_build_object('id', id, 's', stock_actual, 'u', updated_at)) INTO stock0
+    FROM public.farmacia_medicamentos WHERE farmacia_id = farm AND nombre_medicamento = nom;
+  SELECT estado_dispensacion, fecha_dispensacion, farmacia_id, updated_at INTO ra0 FROM public.recetas_avanzadas WHERE id = ra;
+  sig0 := concat_ws(' | ',
+    'rec='||COALESCE((SELECT estado FROM public.recetas WHERE id = rid),'-'),
+    'disp='||(SELECT count(*) FROM public.dispensaciones WHERE receta_avanzada_id = ra),
+    'item='||COALESCE((SELECT dispensado::text||'@'||COALESCE(dispensado_at::text,'-')||'@'||COALESCE(modalidad,'-') FROM public.receta_items WHERE id = iid),'-'),
+    'stock='||COALESCE((SELECT string_agg(id::text||':'||stock_actual||'@'||updated_at, ',' ORDER BY id) FROM public.farmacia_medicamentos WHERE farmacia_id = farm AND nombre_medicamento = nom),'-'),
+    'ra='||COALESCE((SELECT COALESCE(estado_dispensacion,'-')||'@'||COALESCE(fecha_dispensacion::text,'-')||'@'||COALESCE(farmacia_id,'-')||'@'||updated_at FROM public.recetas_avanzadas WHERE id = ra),'-'),
+    'entregas='||(SELECT count(*) FROM public.entregas WHERE receta_base_id = rid),
+    'fallos='||(SELECT count(*) FROM private.delivery_autocreate_fallos WHERE receta_base_id = rid),
+    'reveal='||(SELECT count(*) FROM private.reveal_log WHERE receta_base_id = rid),
+    'confirm='||(SELECT count(*) FROM public.confirmaciones_receta WHERE receta_avanzada_id = ra));
+  sig_orig := sig0; mod_orig := it0.modalidad;
+
+  -- A) receta CANCELADA
+  UPDATE public.recetas SET estado = 'cancelada' WHERE id = rid;
+  st := '00000'; msg := ''; j := NULL;
+  BEGIN
+    PERFORM set_config('request.jwt.claims', json_build_object('sub',cta::text,'role','authenticated')::text, true); PERFORM set_config('role','authenticated',true);
+    j := public.registrar_dispensacion_dirigida(rid, ARRAY[iid], 'P842 QA');
+    PERFORM set_config('role','none',true); PERFORM set_config('request.jwt.claims','',true);
+  EXCEPTION WHEN OTHERS THEN PERFORM set_config('role','none',true); PERFORM set_config('request.jwt.claims','',true);
+    st := SQLSTATE; msg := SQLERRM; END;
+  r_can := CASE WHEN st = '00000' THEN 'OK' ELSE 'ERR' END;
+  r_can := st||' '||msg;
+  UPDATE public.recetas SET estado = est0 WHERE id = rid;
+  sig1 := concat_ws(' | ',
+    'rec='||COALESCE((SELECT estado FROM public.recetas WHERE id = rid),'-'),
+    'disp='||(SELECT count(*) FROM public.dispensaciones WHERE receta_avanzada_id = ra),
+    'item='||COALESCE((SELECT dispensado::text||'@'||COALESCE(dispensado_at::text,'-')||'@'||COALESCE(modalidad,'-') FROM public.receta_items WHERE id = iid),'-'),
+    'stock='||COALESCE((SELECT string_agg(id::text||':'||stock_actual||'@'||updated_at, ',' ORDER BY id) FROM public.farmacia_medicamentos WHERE farmacia_id = farm AND nombre_medicamento = nom),'-'),
+    'ra='||COALESCE((SELECT COALESCE(estado_dispensacion,'-')||'@'||COALESCE(fecha_dispensacion::text,'-')||'@'||COALESCE(farmacia_id,'-')||'@'||updated_at FROM public.recetas_avanzadas WHERE id = ra),'-'),
+    'entregas='||(SELECT count(*) FROM public.entregas WHERE receta_base_id = rid),
+    'fallos='||(SELECT count(*) FROM private.delivery_autocreate_fallos WHERE receta_base_id = rid),
+    'reveal='||(SELECT count(*) FROM private.reveal_log WHERE receta_base_id = rid),
+    'confirm='||(SELECT count(*) FROM public.confirmaciones_receta WHERE receta_avanzada_id = ra));
+  DELETE FROM public.dispensaciones WHERE receta_avanzada_id = ra AND NOT (id = ANY(COALESCE(disp0, '{}')));
+  DELETE FROM public.entregas WHERE receta_base_id = rid AND NOT (id = ANY(COALESCE(ent0, '{}')));
+  DELETE FROM private.delivery_autocreate_fallos WHERE receta_base_id = rid AND NOT (id = ANY(COALESCE(fal0, '{}')));
+  DELETE FROM private.reveal_log WHERE receta_base_id = rid AND NOT (id = ANY(COALESCE(rev0, '{}')));
+  DELETE FROM public.confirmaciones_receta WHERE receta_avanzada_id = ra AND NOT (id = ANY(COALESCE(conf0, '{}')));
+  UPDATE public.receta_items SET dispensado = it0.dispensado, dispensado_at = it0.dispensado_at, modalidad = it0.modalidad WHERE id = iid;
+  UPDATE public.farmacia_medicamentos fm SET stock_actual = x.s, updated_at = x.u
+    FROM jsonb_to_recordset(COALESCE(stock0, '[]')) AS x(id uuid, s integer, u timestamptz) WHERE fm.id = x.id;
+  UPDATE public.recetas_avanzadas SET estado_dispensacion = ra0.estado_dispensacion, fecha_dispensacion = ra0.fecha_dispensacion,
+         farmacia_id = ra0.farmacia_id, updated_at = ra0.updated_at WHERE id = ra;
+  UPDATE public.recetas SET estado = est0 WHERE id = rid;
+
+  det := 'cancelada|PR010 Receta cancelada: no se puede despachar|'||CASE WHEN r_can = 'PR010 Receta cancelada: no se puede despachar' THEN 'OK' ELSE 'ROJO' END||'|'||st||'|'||msg
+         ||' ;; cancelada: sin filas ni cambios|firma igual al snapshot|'||CASE WHEN sig1 = sig0 THEN 'igual' ELSE 'DISTINTA' END||'|-|';
+  -- B) receta ACTIVA -> OK, efecto verificado y restaurado
+  st := '00000'; msg := ''; j := NULL;
+  BEGIN
+    PERFORM set_config('request.jwt.claims', json_build_object('sub',cta::text,'role','authenticated')::text, true); PERFORM set_config('role','authenticated',true);
+    j := public.registrar_dispensacion_dirigida(rid, ARRAY[iid], 'P842 QA');
+    PERFORM set_config('role','none',true); PERFORM set_config('request.jwt.claims','',true);
+  EXCEPTION WHEN OTHERS THEN PERFORM set_config('role','none',true); PERFORM set_config('request.jwt.claims','',true);
+    st := SQLSTATE; msg := SQLERRM; END;
+  r_act := CASE WHEN st = '00000' THEN 'OK' ELSE 'ERR' END;
+  eff := 'despachados='||COALESCE(j->>'despachados','-')
+    ||' item_dispensado='||(SELECT dispensado FROM public.receta_items WHERE id = iid)
+    ||' dispensaciones+'||((SELECT count(*) FROM public.dispensaciones WHERE receta_avanzada_id = ra) - COALESCE(array_length(disp0,1),0))
+    ||' estado_dispensacion='||COALESCE((SELECT estado_dispensacion FROM public.recetas_avanzadas WHERE id = ra),'-');
+  det := det||' ;; activa|OK|'||r_act||' '||COALESCE(eff,'-')||'|'||st||'|'||msg;
+  IF r_act = 'OK' AND NOT ((j->>'despachados') = '1' AND (SELECT dispensado FROM public.receta_items WHERE id = iid) IS TRUE
+    AND (SELECT count(*) FROM public.dispensaciones WHERE receta_avanzada_id = ra) = COALESCE(array_length(disp0,1),0) + 1
+    AND (SELECT estado_dispensacion FROM public.recetas_avanzadas WHERE id = ra) IN ('dispensada','parcial')) THEN r_act := 'OK-SIN-EFECTO'; END IF;
+  DELETE FROM public.dispensaciones WHERE receta_avanzada_id = ra AND NOT (id = ANY(COALESCE(disp0, '{}')));
+  DELETE FROM public.entregas WHERE receta_base_id = rid AND NOT (id = ANY(COALESCE(ent0, '{}')));
+  DELETE FROM private.delivery_autocreate_fallos WHERE receta_base_id = rid AND NOT (id = ANY(COALESCE(fal0, '{}')));
+  DELETE FROM private.reveal_log WHERE receta_base_id = rid AND NOT (id = ANY(COALESCE(rev0, '{}')));
+  DELETE FROM public.confirmaciones_receta WHERE receta_avanzada_id = ra AND NOT (id = ANY(COALESCE(conf0, '{}')));
+  UPDATE public.receta_items SET dispensado = it0.dispensado, dispensado_at = it0.dispensado_at, modalidad = it0.modalidad WHERE id = iid;
+  UPDATE public.farmacia_medicamentos fm SET stock_actual = x.s, updated_at = x.u
+    FROM jsonb_to_recordset(COALESCE(stock0, '[]')) AS x(id uuid, s integer, u timestamptz) WHERE fm.id = x.id;
+  UPDATE public.recetas_avanzadas SET estado_dispensacion = ra0.estado_dispensacion, fecha_dispensacion = ra0.fecha_dispensacion,
+         farmacia_id = ra0.farmacia_id, updated_at = ra0.updated_at WHERE id = ra;
+  UPDATE public.recetas SET estado = est0 WHERE id = rid;
+
+  sig2 := concat_ws(' | ',
+    'rec='||COALESCE((SELECT estado FROM public.recetas WHERE id = rid),'-'),
+    'disp='||(SELECT count(*) FROM public.dispensaciones WHERE receta_avanzada_id = ra),
+    'item='||COALESCE((SELECT dispensado::text||'@'||COALESCE(dispensado_at::text,'-')||'@'||COALESCE(modalidad,'-') FROM public.receta_items WHERE id = iid),'-'),
+    'stock='||COALESCE((SELECT string_agg(id::text||':'||stock_actual||'@'||updated_at, ',' ORDER BY id) FROM public.farmacia_medicamentos WHERE farmacia_id = farm AND nombre_medicamento = nom),'-'),
+    'ra='||COALESCE((SELECT COALESCE(estado_dispensacion,'-')||'@'||COALESCE(fecha_dispensacion::text,'-')||'@'||COALESCE(farmacia_id,'-')||'@'||updated_at FROM public.recetas_avanzadas WHERE id = ra),'-'),
+    'entregas='||(SELECT count(*) FROM public.entregas WHERE receta_base_id = rid),
+    'fallos='||(SELECT count(*) FROM private.delivery_autocreate_fallos WHERE receta_base_id = rid),
+    'reveal='||(SELECT count(*) FROM private.reveal_log WHERE receta_base_id = rid),
+    'confirm='||(SELECT count(*) FROM public.confirmaciones_receta WHERE receta_avanzada_id = ra));
+  IF sig2 IS DISTINCT FROM sig_orig THEN r_rest := 'firma no vuelve al snapshot original'; END IF;
+  UPDATE public.empresas_proveedoras SET estado = emp_est0 WHERE id = emp AND estado IS DISTINCT FROM emp_est0;
+  IF (SELECT estado FROM public.empresas_proveedoras WHERE id = emp) IS DISTINCT FROM emp_est0 THEN
+    r_rest := r_rest||' / estado de empresa no vuelve'; END IF;
+  det := det||' ;; empresa del fixture|estado original '||COALESCE(emp_est0,'-')||'|'||CASE WHEN emp_est0 = 'activa' THEN 'ya activa' ELSE 'activada para el probe y restaurada' END||'|-|';
+  det := det||' ;; restauracion|firma igual al snapshot|'||r_rest||'|-|';
+
+  PERFORM set_config('probe.p842_det', det, false);
+  PERFORM set_config('probe.p842', CASE WHEN (r_can = 'PR010 Receta cancelada: no se puede despachar') AND sig1 = sig0 AND r_act = 'OK' AND r_rest = 'OK'
+    THEN 'OK (registrar_dispensacion_dirigida (receta_id): cancelada -> PR010, activa -> OK con efecto; restaurado)'
+    ELSE 'ROJO (cancelada='||r_can||' | activa='||r_act||' '||COALESCE(eff,'-')||' | firma_cancelada='||(sig1 = sig0)||' | restauracion='||r_rest||')' END, false);
+EXCEPTION WHEN OTHERS THEN
+  PERFORM set_config('role','none',true); PERFORM set_config('request.jwt.claims','',true);
+  PERFORM set_config('probe.p842', CASE WHEN SQLERRM LIKE 'fixture roto%' THEN 'ROJO ('||SQLERRM||')'
+    ELSE 'FALLO ('||SQLSTATE||' '||SQLERRM||')' END, false);
+END $$;
+SELECT set_config('role','none', true);
+
+-- ---------------- P843 revelar_items_receta ----------------
+DO $$
+DECLARE
+  rid bigint; iid bigint; farm integer; nom text; emp uuid; ra uuid; tok text; ctok text; pac bigint; pac_uid uuid;
+  cta uuid; c record; det text := ''; r_can text; r_act text; r_rest text := 'OK'; st text; msg text; j jsonb; v_n bigint;
+  sig0 text; sig1 text; sig2 text; eff text;
+  disp0 uuid[]; ent0 bigint[]; fal0 bigint[]; rev0 bigint[]; conf0 uuid[]; it0 record; stock0 jsonb; ra0 record; est0 text; sig_orig text; mod_orig text; emp_est0 text;
+BEGIN
+  SELECT ri.id, ri.receta_id, ri.farmacia_id, ri.nombre_medicamento, f.empresa_id, ra_.id, ra_.dispatch_token, ra_.confirmacion_token, r.paciente_id
+    INTO iid, rid, farm, nom, emp, ra, tok, ctok, pac
+    FROM public.receta_items ri JOIN public.farmacias f ON f.id = ri.farmacia_id
+    JOIN public.recetas r ON r.id = ri.receta_id JOIN public.recetas_avanzadas ra_ ON ra_.receta_base_id = r.id
+   WHERE ri.dispensado = false AND ra_.dispatch_token_expira_at > now() AND ra_.confirmacion_token_expira_at > now()
+     AND r.estado = 'activa'
+   ORDER BY ri.receta_id, ri.id LIMIT 1;
+  IF iid IS NULL THEN RAISE EXCEPTION 'fixture roto: item ruteado de receta activa con token vigente'; END IF;
+  -- el gate de estado de empresa (mig 322) exige empresa 'activa': si la dejo en otro estado un probe anterior
+  -- del harness, se activa aca como fixture y se restaura al final (verificado).
+  SELECT e.estado INTO emp_est0 FROM public.empresas_proveedoras e WHERE e.id = emp;
+  IF emp_est0 IS DISTINCT FROM 'activa' THEN UPDATE public.empresas_proveedoras SET estado = 'activa' WHERE id = emp; END IF;
+  FOR c IN SELECT cp.id FROM public.cuentas_proveedor cp WHERE cp.empresa_id = emp AND cp.activo IS TRUE ORDER BY cp.id LOOP
+    PERFORM set_config('request.jwt.claims', json_build_object('sub',c.id::text,'role','authenticated')::text, true);
+    IF COALESCE(private.tiene_permiso('recetas_dispensar'), false) AND COALESCE(private.tiene_permiso('entregas_gestionar'), false)
+       AND COALESCE(private.sucursal_visible(farm), false) THEN cta := c.id; EXIT; END IF;
+  END LOOP;
+  PERFORM set_config('request.jwt.claims','',true);
+  IF cta IS NULL THEN RAISE EXCEPTION 'fixture roto: cuenta de farmacia con dispensar + entregas + sucursal visible'; END IF;
+  SELECT p.auth_user_id INTO pac_uid FROM public.pacientes p WHERE p.id = pac;
+  -- snapshot
+  SELECT r.estado INTO est0 FROM public.recetas r WHERE r.id = rid;
+  SELECT array_agg(id) INTO disp0 FROM public.dispensaciones WHERE receta_avanzada_id = ra;
+  SELECT array_agg(id) INTO ent0 FROM public.entregas WHERE receta_base_id = rid;
+  SELECT array_agg(id) INTO fal0 FROM private.delivery_autocreate_fallos WHERE receta_base_id = rid;
+  SELECT array_agg(id) INTO rev0 FROM private.reveal_log WHERE receta_base_id = rid;
+  SELECT array_agg(id) INTO conf0 FROM public.confirmaciones_receta WHERE receta_avanzada_id = ra;
+  SELECT dispensado, dispensado_at, modalidad INTO it0 FROM public.receta_items WHERE id = iid;
+  SELECT jsonb_agg(jsonb_build_object('id', id, 's', stock_actual, 'u', updated_at)) INTO stock0
+    FROM public.farmacia_medicamentos WHERE farmacia_id = farm AND nombre_medicamento = nom;
+  SELECT estado_dispensacion, fecha_dispensacion, farmacia_id, updated_at INTO ra0 FROM public.recetas_avanzadas WHERE id = ra;
+  sig0 := concat_ws(' | ',
+    'rec='||COALESCE((SELECT estado FROM public.recetas WHERE id = rid),'-'),
+    'disp='||(SELECT count(*) FROM public.dispensaciones WHERE receta_avanzada_id = ra),
+    'item='||COALESCE((SELECT dispensado::text||'@'||COALESCE(dispensado_at::text,'-')||'@'||COALESCE(modalidad,'-') FROM public.receta_items WHERE id = iid),'-'),
+    'stock='||COALESCE((SELECT string_agg(id::text||':'||stock_actual||'@'||updated_at, ',' ORDER BY id) FROM public.farmacia_medicamentos WHERE farmacia_id = farm AND nombre_medicamento = nom),'-'),
+    'ra='||COALESCE((SELECT COALESCE(estado_dispensacion,'-')||'@'||COALESCE(fecha_dispensacion::text,'-')||'@'||COALESCE(farmacia_id,'-')||'@'||updated_at FROM public.recetas_avanzadas WHERE id = ra),'-'),
+    'entregas='||(SELECT count(*) FROM public.entregas WHERE receta_base_id = rid),
+    'fallos='||(SELECT count(*) FROM private.delivery_autocreate_fallos WHERE receta_base_id = rid),
+    'reveal='||(SELECT count(*) FROM private.reveal_log WHERE receta_base_id = rid),
+    'confirm='||(SELECT count(*) FROM public.confirmaciones_receta WHERE receta_avanzada_id = ra));
+  sig_orig := sig0; mod_orig := it0.modalidad;
+
+  -- A) receta CANCELADA
+  UPDATE public.recetas SET estado = 'cancelada' WHERE id = rid;
+  st := '00000'; msg := ''; j := NULL;
+  BEGIN
+    PERFORM set_config('request.jwt.claims', json_build_object('sub',cta::text,'role','authenticated')::text, true); PERFORM set_config('role','authenticated',true);
+    j := public.revelar_items_receta(rid, 'bandeja');
+    PERFORM set_config('role','none',true); PERFORM set_config('request.jwt.claims','',true);
+  EXCEPTION WHEN OTHERS THEN PERFORM set_config('role','none',true); PERFORM set_config('request.jwt.claims','',true);
+    st := SQLSTATE; msg := SQLERRM; END;
+  r_can := CASE WHEN st = '00000' THEN 'OK' ELSE 'ERR' END;
+  r_can := st||' '||msg;
+  UPDATE public.recetas SET estado = est0 WHERE id = rid;
+  sig1 := concat_ws(' | ',
+    'rec='||COALESCE((SELECT estado FROM public.recetas WHERE id = rid),'-'),
+    'disp='||(SELECT count(*) FROM public.dispensaciones WHERE receta_avanzada_id = ra),
+    'item='||COALESCE((SELECT dispensado::text||'@'||COALESCE(dispensado_at::text,'-')||'@'||COALESCE(modalidad,'-') FROM public.receta_items WHERE id = iid),'-'),
+    'stock='||COALESCE((SELECT string_agg(id::text||':'||stock_actual||'@'||updated_at, ',' ORDER BY id) FROM public.farmacia_medicamentos WHERE farmacia_id = farm AND nombre_medicamento = nom),'-'),
+    'ra='||COALESCE((SELECT COALESCE(estado_dispensacion,'-')||'@'||COALESCE(fecha_dispensacion::text,'-')||'@'||COALESCE(farmacia_id,'-')||'@'||updated_at FROM public.recetas_avanzadas WHERE id = ra),'-'),
+    'entregas='||(SELECT count(*) FROM public.entregas WHERE receta_base_id = rid),
+    'fallos='||(SELECT count(*) FROM private.delivery_autocreate_fallos WHERE receta_base_id = rid),
+    'reveal='||(SELECT count(*) FROM private.reveal_log WHERE receta_base_id = rid),
+    'confirm='||(SELECT count(*) FROM public.confirmaciones_receta WHERE receta_avanzada_id = ra));
+  DELETE FROM public.dispensaciones WHERE receta_avanzada_id = ra AND NOT (id = ANY(COALESCE(disp0, '{}')));
+  DELETE FROM public.entregas WHERE receta_base_id = rid AND NOT (id = ANY(COALESCE(ent0, '{}')));
+  DELETE FROM private.delivery_autocreate_fallos WHERE receta_base_id = rid AND NOT (id = ANY(COALESCE(fal0, '{}')));
+  DELETE FROM private.reveal_log WHERE receta_base_id = rid AND NOT (id = ANY(COALESCE(rev0, '{}')));
+  DELETE FROM public.confirmaciones_receta WHERE receta_avanzada_id = ra AND NOT (id = ANY(COALESCE(conf0, '{}')));
+  UPDATE public.receta_items SET dispensado = it0.dispensado, dispensado_at = it0.dispensado_at, modalidad = it0.modalidad WHERE id = iid;
+  UPDATE public.farmacia_medicamentos fm SET stock_actual = x.s, updated_at = x.u
+    FROM jsonb_to_recordset(COALESCE(stock0, '[]')) AS x(id uuid, s integer, u timestamptz) WHERE fm.id = x.id;
+  UPDATE public.recetas_avanzadas SET estado_dispensacion = ra0.estado_dispensacion, fecha_dispensacion = ra0.fecha_dispensacion,
+         farmacia_id = ra0.farmacia_id, updated_at = ra0.updated_at WHERE id = ra;
+  UPDATE public.recetas SET estado = est0 WHERE id = rid;
+
+  det := 'cancelada|PR010 Receta cancelada: no se puede despachar|'||CASE WHEN r_can = 'PR010 Receta cancelada: no se puede despachar' THEN 'OK' ELSE 'ROJO' END||'|'||st||'|'||msg
+         ||' ;; cancelada: sin filas ni cambios|firma igual al snapshot|'||CASE WHEN sig1 = sig0 THEN 'igual' ELSE 'DISTINTA' END||'|-|';
+  -- B) receta ACTIVA -> OK, efecto verificado y restaurado
+  st := '00000'; msg := ''; j := NULL;
+  BEGIN
+    PERFORM set_config('request.jwt.claims', json_build_object('sub',cta::text,'role','authenticated')::text, true); PERFORM set_config('role','authenticated',true);
+    j := public.revelar_items_receta(rid, 'bandeja');
+    PERFORM set_config('role','none',true); PERFORM set_config('request.jwt.claims','',true);
+  EXCEPTION WHEN OTHERS THEN PERFORM set_config('role','none',true); PERFORM set_config('request.jwt.claims','',true);
+    st := SQLSTATE; msg := SQLERRM; END;
+  r_act := CASE WHEN st = '00000' THEN 'OK' ELSE 'ERR' END;
+  eff := 'items_con_el_fixture='||EXISTS (SELECT 1 FROM jsonb_array_elements(COALESCE(j,'[]')) e WHERE (e->>'item_id')::bigint = iid)||' reveal_log+'||((SELECT count(*) FROM private.reveal_log WHERE receta_base_id = rid) - COALESCE(array_length(rev0,1),0));
+  det := det||' ;; activa|OK|'||r_act||' '||COALESCE(eff,'-')||'|'||st||'|'||msg;
+  IF r_act = 'OK' AND NOT (EXISTS (SELECT 1 FROM jsonb_array_elements(COALESCE(j,'[]')) e WHERE (e->>'item_id')::bigint = iid) AND (SELECT count(*) FROM private.reveal_log WHERE receta_base_id = rid) = COALESCE(array_length(rev0,1),0) + 1) THEN r_act := 'OK-SIN-EFECTO'; END IF;
+  DELETE FROM public.dispensaciones WHERE receta_avanzada_id = ra AND NOT (id = ANY(COALESCE(disp0, '{}')));
+  DELETE FROM public.entregas WHERE receta_base_id = rid AND NOT (id = ANY(COALESCE(ent0, '{}')));
+  DELETE FROM private.delivery_autocreate_fallos WHERE receta_base_id = rid AND NOT (id = ANY(COALESCE(fal0, '{}')));
+  DELETE FROM private.reveal_log WHERE receta_base_id = rid AND NOT (id = ANY(COALESCE(rev0, '{}')));
+  DELETE FROM public.confirmaciones_receta WHERE receta_avanzada_id = ra AND NOT (id = ANY(COALESCE(conf0, '{}')));
+  UPDATE public.receta_items SET dispensado = it0.dispensado, dispensado_at = it0.dispensado_at, modalidad = it0.modalidad WHERE id = iid;
+  UPDATE public.farmacia_medicamentos fm SET stock_actual = x.s, updated_at = x.u
+    FROM jsonb_to_recordset(COALESCE(stock0, '[]')) AS x(id uuid, s integer, u timestamptz) WHERE fm.id = x.id;
+  UPDATE public.recetas_avanzadas SET estado_dispensacion = ra0.estado_dispensacion, fecha_dispensacion = ra0.fecha_dispensacion,
+         farmacia_id = ra0.farmacia_id, updated_at = ra0.updated_at WHERE id = ra;
+  UPDATE public.recetas SET estado = est0 WHERE id = rid;
+
+  sig2 := concat_ws(' | ',
+    'rec='||COALESCE((SELECT estado FROM public.recetas WHERE id = rid),'-'),
+    'disp='||(SELECT count(*) FROM public.dispensaciones WHERE receta_avanzada_id = ra),
+    'item='||COALESCE((SELECT dispensado::text||'@'||COALESCE(dispensado_at::text,'-')||'@'||COALESCE(modalidad,'-') FROM public.receta_items WHERE id = iid),'-'),
+    'stock='||COALESCE((SELECT string_agg(id::text||':'||stock_actual||'@'||updated_at, ',' ORDER BY id) FROM public.farmacia_medicamentos WHERE farmacia_id = farm AND nombre_medicamento = nom),'-'),
+    'ra='||COALESCE((SELECT COALESCE(estado_dispensacion,'-')||'@'||COALESCE(fecha_dispensacion::text,'-')||'@'||COALESCE(farmacia_id,'-')||'@'||updated_at FROM public.recetas_avanzadas WHERE id = ra),'-'),
+    'entregas='||(SELECT count(*) FROM public.entregas WHERE receta_base_id = rid),
+    'fallos='||(SELECT count(*) FROM private.delivery_autocreate_fallos WHERE receta_base_id = rid),
+    'reveal='||(SELECT count(*) FROM private.reveal_log WHERE receta_base_id = rid),
+    'confirm='||(SELECT count(*) FROM public.confirmaciones_receta WHERE receta_avanzada_id = ra));
+  IF sig2 IS DISTINCT FROM sig_orig THEN r_rest := 'firma no vuelve al snapshot original'; END IF;
+  UPDATE public.empresas_proveedoras SET estado = emp_est0 WHERE id = emp AND estado IS DISTINCT FROM emp_est0;
+  IF (SELECT estado FROM public.empresas_proveedoras WHERE id = emp) IS DISTINCT FROM emp_est0 THEN
+    r_rest := r_rest||' / estado de empresa no vuelve'; END IF;
+  det := det||' ;; empresa del fixture|estado original '||COALESCE(emp_est0,'-')||'|'||CASE WHEN emp_est0 = 'activa' THEN 'ya activa' ELSE 'activada para el probe y restaurada' END||'|-|';
+  det := det||' ;; restauracion|firma igual al snapshot|'||r_rest||'|-|';
+
+  PERFORM set_config('probe.p843_det', det, false);
+  PERFORM set_config('probe.p843', CASE WHEN (r_can = 'PR010 Receta cancelada: no se puede despachar') AND sig1 = sig0 AND r_act = 'OK' AND r_rest = 'OK'
+    THEN 'OK (revelar_items_receta: cancelada -> PR010, activa -> OK con efecto; restaurado)'
+    ELSE 'ROJO (cancelada='||r_can||' | activa='||r_act||' '||COALESCE(eff,'-')||' | firma_cancelada='||(sig1 = sig0)||' | restauracion='||r_rest||')' END, false);
+EXCEPTION WHEN OTHERS THEN
+  PERFORM set_config('role','none',true); PERFORM set_config('request.jwt.claims','',true);
+  PERFORM set_config('probe.p843', CASE WHEN SQLERRM LIKE 'fixture roto%' THEN 'ROJO ('||SQLERRM||')'
+    ELSE 'FALLO ('||SQLSTATE||' '||SQLERRM||')' END, false);
+END $$;
+SELECT set_config('role','none', true);
+
+-- ---------------- P844 crear_entrega ----------------
+DO $$
+DECLARE
+  rid bigint; iid bigint; farm integer; nom text; emp uuid; ra uuid; tok text; ctok text; pac bigint; pac_uid uuid;
+  cta uuid; c record; det text := ''; r_can text; r_act text; r_rest text := 'OK'; st text; msg text; j jsonb; v_n bigint;
+  sig0 text; sig1 text; sig2 text; eff text;
+  disp0 uuid[]; ent0 bigint[]; fal0 bigint[]; rev0 bigint[]; conf0 uuid[]; it0 record; stock0 jsonb; ra0 record; est0 text; sig_orig text; mod_orig text; emp_est0 text;
+BEGIN
+  SELECT ri.id, ri.receta_id, ri.farmacia_id, ri.nombre_medicamento, f.empresa_id, ra_.id, ra_.dispatch_token, ra_.confirmacion_token, r.paciente_id
+    INTO iid, rid, farm, nom, emp, ra, tok, ctok, pac
+    FROM public.receta_items ri JOIN public.farmacias f ON f.id = ri.farmacia_id
+    JOIN public.recetas r ON r.id = ri.receta_id JOIN public.recetas_avanzadas ra_ ON ra_.receta_base_id = r.id
+   WHERE ri.dispensado = false AND ra_.dispatch_token_expira_at > now() AND ra_.confirmacion_token_expira_at > now()
+     AND r.estado = 'activa'
+   ORDER BY ri.receta_id, ri.id LIMIT 1;
+  IF iid IS NULL THEN RAISE EXCEPTION 'fixture roto: item ruteado de receta activa con token vigente'; END IF;
+  -- el gate de estado de empresa (mig 322) exige empresa 'activa': si la dejo en otro estado un probe anterior
+  -- del harness, se activa aca como fixture y se restaura al final (verificado).
+  SELECT e.estado INTO emp_est0 FROM public.empresas_proveedoras e WHERE e.id = emp;
+  IF emp_est0 IS DISTINCT FROM 'activa' THEN UPDATE public.empresas_proveedoras SET estado = 'activa' WHERE id = emp; END IF;
+  FOR c IN SELECT cp.id FROM public.cuentas_proveedor cp WHERE cp.empresa_id = emp AND cp.activo IS TRUE ORDER BY cp.id LOOP
+    PERFORM set_config('request.jwt.claims', json_build_object('sub',c.id::text,'role','authenticated')::text, true);
+    IF COALESCE(private.tiene_permiso('recetas_dispensar'), false) AND COALESCE(private.tiene_permiso('entregas_gestionar'), false)
+       AND COALESCE(private.sucursal_visible(farm), false) THEN cta := c.id; EXIT; END IF;
+  END LOOP;
+  PERFORM set_config('request.jwt.claims','',true);
+  IF cta IS NULL THEN RAISE EXCEPTION 'fixture roto: cuenta de farmacia con dispensar + entregas + sucursal visible'; END IF;
+  SELECT p.auth_user_id INTO pac_uid FROM public.pacientes p WHERE p.id = pac;
+  -- snapshot
+  SELECT r.estado INTO est0 FROM public.recetas r WHERE r.id = rid;
+  SELECT array_agg(id) INTO disp0 FROM public.dispensaciones WHERE receta_avanzada_id = ra;
+  SELECT array_agg(id) INTO ent0 FROM public.entregas WHERE receta_base_id = rid;
+  SELECT array_agg(id) INTO fal0 FROM private.delivery_autocreate_fallos WHERE receta_base_id = rid;
+  SELECT array_agg(id) INTO rev0 FROM private.reveal_log WHERE receta_base_id = rid;
+  SELECT array_agg(id) INTO conf0 FROM public.confirmaciones_receta WHERE receta_avanzada_id = ra;
+  SELECT dispensado, dispensado_at, modalidad INTO it0 FROM public.receta_items WHERE id = iid;
+  SELECT jsonb_agg(jsonb_build_object('id', id, 's', stock_actual, 'u', updated_at)) INTO stock0
+    FROM public.farmacia_medicamentos WHERE farmacia_id = farm AND nombre_medicamento = nom;
+  SELECT estado_dispensacion, fecha_dispensacion, farmacia_id, updated_at INTO ra0 FROM public.recetas_avanzadas WHERE id = ra;
+  sig0 := concat_ws(' | ',
+    'rec='||COALESCE((SELECT estado FROM public.recetas WHERE id = rid),'-'),
+    'disp='||(SELECT count(*) FROM public.dispensaciones WHERE receta_avanzada_id = ra),
+    'item='||COALESCE((SELECT dispensado::text||'@'||COALESCE(dispensado_at::text,'-')||'@'||COALESCE(modalidad,'-') FROM public.receta_items WHERE id = iid),'-'),
+    'stock='||COALESCE((SELECT string_agg(id::text||':'||stock_actual||'@'||updated_at, ',' ORDER BY id) FROM public.farmacia_medicamentos WHERE farmacia_id = farm AND nombre_medicamento = nom),'-'),
+    'ra='||COALESCE((SELECT COALESCE(estado_dispensacion,'-')||'@'||COALESCE(fecha_dispensacion::text,'-')||'@'||COALESCE(farmacia_id,'-')||'@'||updated_at FROM public.recetas_avanzadas WHERE id = ra),'-'),
+    'entregas='||(SELECT count(*) FROM public.entregas WHERE receta_base_id = rid),
+    'fallos='||(SELECT count(*) FROM private.delivery_autocreate_fallos WHERE receta_base_id = rid),
+    'reveal='||(SELECT count(*) FROM private.reveal_log WHERE receta_base_id = rid),
+    'confirm='||(SELECT count(*) FROM public.confirmaciones_receta WHERE receta_avanzada_id = ra));
+  sig_orig := sig0; mod_orig := it0.modalidad;
+  UPDATE public.receta_items SET modalidad = 'delivery' WHERE receta_id = rid AND farmacia_id = farm;  -- fixture: grupo delivery
+  SELECT dispensado, dispensado_at, modalidad INTO it0 FROM public.receta_items WHERE id = iid;
+  sig0 := concat_ws(' | ',
+    'rec='||COALESCE((SELECT estado FROM public.recetas WHERE id = rid),'-'),
+    'disp='||(SELECT count(*) FROM public.dispensaciones WHERE receta_avanzada_id = ra),
+    'item='||COALESCE((SELECT dispensado::text||'@'||COALESCE(dispensado_at::text,'-')||'@'||COALESCE(modalidad,'-') FROM public.receta_items WHERE id = iid),'-'),
+    'stock='||COALESCE((SELECT string_agg(id::text||':'||stock_actual||'@'||updated_at, ',' ORDER BY id) FROM public.farmacia_medicamentos WHERE farmacia_id = farm AND nombre_medicamento = nom),'-'),
+    'ra='||COALESCE((SELECT COALESCE(estado_dispensacion,'-')||'@'||COALESCE(fecha_dispensacion::text,'-')||'@'||COALESCE(farmacia_id,'-')||'@'||updated_at FROM public.recetas_avanzadas WHERE id = ra),'-'),
+    'entregas='||(SELECT count(*) FROM public.entregas WHERE receta_base_id = rid),
+    'fallos='||(SELECT count(*) FROM private.delivery_autocreate_fallos WHERE receta_base_id = rid),
+    'reveal='||(SELECT count(*) FROM private.reveal_log WHERE receta_base_id = rid),
+    'confirm='||(SELECT count(*) FROM public.confirmaciones_receta WHERE receta_avanzada_id = ra));
+  -- A) receta CANCELADA
+  UPDATE public.recetas SET estado = 'cancelada' WHERE id = rid;
+  st := '00000'; msg := ''; j := NULL;
+  BEGIN
+    PERFORM set_config('request.jwt.claims', json_build_object('sub',cta::text,'role','authenticated')::text, true); PERFORM set_config('role','authenticated',true);
+    j := public.crear_entrega(rid, farm);
+    PERFORM set_config('role','none',true); PERFORM set_config('request.jwt.claims','',true);
+  EXCEPTION WHEN OTHERS THEN PERFORM set_config('role','none',true); PERFORM set_config('request.jwt.claims','',true);
+    st := SQLSTATE; msg := SQLERRM; END;
+  r_can := CASE WHEN st = '00000' THEN 'OK' ELSE 'ERR' END;
+  r_can := st||' '||msg;
+  UPDATE public.recetas SET estado = est0 WHERE id = rid;
+  sig1 := concat_ws(' | ',
+    'rec='||COALESCE((SELECT estado FROM public.recetas WHERE id = rid),'-'),
+    'disp='||(SELECT count(*) FROM public.dispensaciones WHERE receta_avanzada_id = ra),
+    'item='||COALESCE((SELECT dispensado::text||'@'||COALESCE(dispensado_at::text,'-')||'@'||COALESCE(modalidad,'-') FROM public.receta_items WHERE id = iid),'-'),
+    'stock='||COALESCE((SELECT string_agg(id::text||':'||stock_actual||'@'||updated_at, ',' ORDER BY id) FROM public.farmacia_medicamentos WHERE farmacia_id = farm AND nombre_medicamento = nom),'-'),
+    'ra='||COALESCE((SELECT COALESCE(estado_dispensacion,'-')||'@'||COALESCE(fecha_dispensacion::text,'-')||'@'||COALESCE(farmacia_id,'-')||'@'||updated_at FROM public.recetas_avanzadas WHERE id = ra),'-'),
+    'entregas='||(SELECT count(*) FROM public.entregas WHERE receta_base_id = rid),
+    'fallos='||(SELECT count(*) FROM private.delivery_autocreate_fallos WHERE receta_base_id = rid),
+    'reveal='||(SELECT count(*) FROM private.reveal_log WHERE receta_base_id = rid),
+    'confirm='||(SELECT count(*) FROM public.confirmaciones_receta WHERE receta_avanzada_id = ra));
+  DELETE FROM public.dispensaciones WHERE receta_avanzada_id = ra AND NOT (id = ANY(COALESCE(disp0, '{}')));
+  DELETE FROM public.entregas WHERE receta_base_id = rid AND NOT (id = ANY(COALESCE(ent0, '{}')));
+  DELETE FROM private.delivery_autocreate_fallos WHERE receta_base_id = rid AND NOT (id = ANY(COALESCE(fal0, '{}')));
+  DELETE FROM private.reveal_log WHERE receta_base_id = rid AND NOT (id = ANY(COALESCE(rev0, '{}')));
+  DELETE FROM public.confirmaciones_receta WHERE receta_avanzada_id = ra AND NOT (id = ANY(COALESCE(conf0, '{}')));
+  UPDATE public.receta_items SET dispensado = it0.dispensado, dispensado_at = it0.dispensado_at, modalidad = it0.modalidad WHERE id = iid;
+  UPDATE public.farmacia_medicamentos fm SET stock_actual = x.s, updated_at = x.u
+    FROM jsonb_to_recordset(COALESCE(stock0, '[]')) AS x(id uuid, s integer, u timestamptz) WHERE fm.id = x.id;
+  UPDATE public.recetas_avanzadas SET estado_dispensacion = ra0.estado_dispensacion, fecha_dispensacion = ra0.fecha_dispensacion,
+         farmacia_id = ra0.farmacia_id, updated_at = ra0.updated_at WHERE id = ra;
+  UPDATE public.recetas SET estado = est0 WHERE id = rid;
+
+  det := 'cancelada|PR010 Receta cancelada: no se puede despachar|'||CASE WHEN r_can = 'PR010 Receta cancelada: no se puede despachar' THEN 'OK' ELSE 'ROJO' END||'|'||st||'|'||msg
+         ||' ;; cancelada: sin filas ni cambios|firma igual al snapshot|'||CASE WHEN sig1 = sig0 THEN 'igual' ELSE 'DISTINTA' END||'|-|';
+  -- B) receta ACTIVA -> OK, efecto verificado y restaurado
+  st := '00000'; msg := ''; j := NULL;
+  BEGIN
+    PERFORM set_config('request.jwt.claims', json_build_object('sub',cta::text,'role','authenticated')::text, true); PERFORM set_config('role','authenticated',true);
+    j := public.crear_entrega(rid, farm);
+    PERFORM set_config('role','none',true); PERFORM set_config('request.jwt.claims','',true);
+  EXCEPTION WHEN OTHERS THEN PERFORM set_config('role','none',true); PERFORM set_config('request.jwt.claims','',true);
+    st := SQLSTATE; msg := SQLERRM; END;
+  r_act := CASE WHEN st = '00000' THEN 'OK' ELSE 'ERR' END;
+  eff := 'entrega_id='||COALESCE(j->>'entrega_id','-')||' entregas+'||((SELECT count(*) FROM public.entregas WHERE receta_base_id = rid) - COALESCE(array_length(ent0,1),0));
+  det := det||' ;; activa|OK|'||r_act||' '||COALESCE(eff,'-')||'|'||st||'|'||msg;
+  IF r_act = 'OK' AND NOT ((j->>'entrega_id') IS NOT NULL AND (SELECT count(*) FROM public.entregas WHERE receta_base_id = rid) = COALESCE(array_length(ent0,1),0) + 1) THEN r_act := 'OK-SIN-EFECTO'; END IF;
+  DELETE FROM public.dispensaciones WHERE receta_avanzada_id = ra AND NOT (id = ANY(COALESCE(disp0, '{}')));
+  DELETE FROM public.entregas WHERE receta_base_id = rid AND NOT (id = ANY(COALESCE(ent0, '{}')));
+  DELETE FROM private.delivery_autocreate_fallos WHERE receta_base_id = rid AND NOT (id = ANY(COALESCE(fal0, '{}')));
+  DELETE FROM private.reveal_log WHERE receta_base_id = rid AND NOT (id = ANY(COALESCE(rev0, '{}')));
+  DELETE FROM public.confirmaciones_receta WHERE receta_avanzada_id = ra AND NOT (id = ANY(COALESCE(conf0, '{}')));
+  UPDATE public.receta_items SET dispensado = it0.dispensado, dispensado_at = it0.dispensado_at, modalidad = it0.modalidad WHERE id = iid;
+  UPDATE public.farmacia_medicamentos fm SET stock_actual = x.s, updated_at = x.u
+    FROM jsonb_to_recordset(COALESCE(stock0, '[]')) AS x(id uuid, s integer, u timestamptz) WHERE fm.id = x.id;
+  UPDATE public.recetas_avanzadas SET estado_dispensacion = ra0.estado_dispensacion, fecha_dispensacion = ra0.fecha_dispensacion,
+         farmacia_id = ra0.farmacia_id, updated_at = ra0.updated_at WHERE id = ra;
+  UPDATE public.recetas SET estado = est0 WHERE id = rid;
+  UPDATE public.receta_items SET modalidad = mod_orig WHERE receta_id = rid AND farmacia_id = farm;
+  sig2 := concat_ws(' | ',
+    'rec='||COALESCE((SELECT estado FROM public.recetas WHERE id = rid),'-'),
+    'disp='||(SELECT count(*) FROM public.dispensaciones WHERE receta_avanzada_id = ra),
+    'item='||COALESCE((SELECT dispensado::text||'@'||COALESCE(dispensado_at::text,'-')||'@'||COALESCE(modalidad,'-') FROM public.receta_items WHERE id = iid),'-'),
+    'stock='||COALESCE((SELECT string_agg(id::text||':'||stock_actual||'@'||updated_at, ',' ORDER BY id) FROM public.farmacia_medicamentos WHERE farmacia_id = farm AND nombre_medicamento = nom),'-'),
+    'ra='||COALESCE((SELECT COALESCE(estado_dispensacion,'-')||'@'||COALESCE(fecha_dispensacion::text,'-')||'@'||COALESCE(farmacia_id,'-')||'@'||updated_at FROM public.recetas_avanzadas WHERE id = ra),'-'),
+    'entregas='||(SELECT count(*) FROM public.entregas WHERE receta_base_id = rid),
+    'fallos='||(SELECT count(*) FROM private.delivery_autocreate_fallos WHERE receta_base_id = rid),
+    'reveal='||(SELECT count(*) FROM private.reveal_log WHERE receta_base_id = rid),
+    'confirm='||(SELECT count(*) FROM public.confirmaciones_receta WHERE receta_avanzada_id = ra));
+  IF sig2 IS DISTINCT FROM sig_orig THEN r_rest := 'firma no vuelve al snapshot original'; END IF;
+  UPDATE public.empresas_proveedoras SET estado = emp_est0 WHERE id = emp AND estado IS DISTINCT FROM emp_est0;
+  IF (SELECT estado FROM public.empresas_proveedoras WHERE id = emp) IS DISTINCT FROM emp_est0 THEN
+    r_rest := r_rest||' / estado de empresa no vuelve'; END IF;
+  det := det||' ;; empresa del fixture|estado original '||COALESCE(emp_est0,'-')||'|'||CASE WHEN emp_est0 = 'activa' THEN 'ya activa' ELSE 'activada para el probe y restaurada' END||'|-|';
+  det := det||' ;; restauracion|firma igual al snapshot|'||r_rest||'|-|';
+
+  PERFORM set_config('probe.p844_det', det, false);
+  PERFORM set_config('probe.p844', CASE WHEN (r_can = 'PR010 Receta cancelada: no se puede despachar') AND sig1 = sig0 AND r_act = 'OK' AND r_rest = 'OK'
+    THEN 'OK (crear_entrega: cancelada -> PR010, activa -> OK con efecto; restaurado)'
+    ELSE 'ROJO (cancelada='||r_can||' | activa='||r_act||' '||COALESCE(eff,'-')||' | firma_cancelada='||(sig1 = sig0)||' | restauracion='||r_rest||')' END, false);
+EXCEPTION WHEN OTHERS THEN
+  PERFORM set_config('role','none',true); PERFORM set_config('request.jwt.claims','',true);
+  PERFORM set_config('probe.p844', CASE WHEN SQLERRM LIKE 'fixture roto%' THEN 'ROJO ('||SQLERRM||')'
+    ELSE 'FALLO ('||SQLSTATE||' '||SQLERRM||')' END, false);
+END $$;
+SELECT set_config('role','none', true);
+
+-- ---------------- P845 fijar_modalidad_grupo (paciente) ----------------
+DO $$
+DECLARE
+  rid bigint; iid bigint; farm integer; nom text; emp uuid; ra uuid; tok text; ctok text; pac bigint; pac_uid uuid;
+  cta uuid; c record; det text := ''; r_can text; r_act text; r_rest text := 'OK'; st text; msg text; j jsonb; v_n bigint;
+  sig0 text; sig1 text; sig2 text; eff text;
+  disp0 uuid[]; ent0 bigint[]; fal0 bigint[]; rev0 bigint[]; conf0 uuid[]; it0 record; stock0 jsonb; ra0 record; est0 text; sig_orig text; mod_orig text; emp_est0 text;
+BEGIN
+  SELECT ri.id, ri.receta_id, ri.farmacia_id, ri.nombre_medicamento, f.empresa_id, ra_.id, ra_.dispatch_token, ra_.confirmacion_token, r.paciente_id
+    INTO iid, rid, farm, nom, emp, ra, tok, ctok, pac
+    FROM public.receta_items ri JOIN public.farmacias f ON f.id = ri.farmacia_id
+    JOIN public.recetas r ON r.id = ri.receta_id JOIN public.recetas_avanzadas ra_ ON ra_.receta_base_id = r.id
+   WHERE ri.dispensado = false AND ra_.dispatch_token_expira_at > now() AND ra_.confirmacion_token_expira_at > now()
+     AND r.estado = 'activa'
+   ORDER BY ri.receta_id, ri.id LIMIT 1;
+  IF iid IS NULL THEN RAISE EXCEPTION 'fixture roto: item ruteado de receta activa con token vigente'; END IF;
+  -- el gate de estado de empresa (mig 322) exige empresa 'activa': si la dejo en otro estado un probe anterior
+  -- del harness, se activa aca como fixture y se restaura al final (verificado).
+  SELECT e.estado INTO emp_est0 FROM public.empresas_proveedoras e WHERE e.id = emp;
+  IF emp_est0 IS DISTINCT FROM 'activa' THEN UPDATE public.empresas_proveedoras SET estado = 'activa' WHERE id = emp; END IF;
+  FOR c IN SELECT cp.id FROM public.cuentas_proveedor cp WHERE cp.empresa_id = emp AND cp.activo IS TRUE ORDER BY cp.id LOOP
+    PERFORM set_config('request.jwt.claims', json_build_object('sub',c.id::text,'role','authenticated')::text, true);
+    IF COALESCE(private.tiene_permiso('recetas_dispensar'), false) AND COALESCE(private.tiene_permiso('entregas_gestionar'), false)
+       AND COALESCE(private.sucursal_visible(farm), false) THEN cta := c.id; EXIT; END IF;
+  END LOOP;
+  PERFORM set_config('request.jwt.claims','',true);
+  IF cta IS NULL THEN RAISE EXCEPTION 'fixture roto: cuenta de farmacia con dispensar + entregas + sucursal visible'; END IF;
+  SELECT p.auth_user_id INTO pac_uid FROM public.pacientes p WHERE p.id = pac;
+  -- snapshot
+  SELECT r.estado INTO est0 FROM public.recetas r WHERE r.id = rid;
+  SELECT array_agg(id) INTO disp0 FROM public.dispensaciones WHERE receta_avanzada_id = ra;
+  SELECT array_agg(id) INTO ent0 FROM public.entregas WHERE receta_base_id = rid;
+  SELECT array_agg(id) INTO fal0 FROM private.delivery_autocreate_fallos WHERE receta_base_id = rid;
+  SELECT array_agg(id) INTO rev0 FROM private.reveal_log WHERE receta_base_id = rid;
+  SELECT array_agg(id) INTO conf0 FROM public.confirmaciones_receta WHERE receta_avanzada_id = ra;
+  SELECT dispensado, dispensado_at, modalidad INTO it0 FROM public.receta_items WHERE id = iid;
+  SELECT jsonb_agg(jsonb_build_object('id', id, 's', stock_actual, 'u', updated_at)) INTO stock0
+    FROM public.farmacia_medicamentos WHERE farmacia_id = farm AND nombre_medicamento = nom;
+  SELECT estado_dispensacion, fecha_dispensacion, farmacia_id, updated_at INTO ra0 FROM public.recetas_avanzadas WHERE id = ra;
+  sig0 := concat_ws(' | ',
+    'rec='||COALESCE((SELECT estado FROM public.recetas WHERE id = rid),'-'),
+    'disp='||(SELECT count(*) FROM public.dispensaciones WHERE receta_avanzada_id = ra),
+    'item='||COALESCE((SELECT dispensado::text||'@'||COALESCE(dispensado_at::text,'-')||'@'||COALESCE(modalidad,'-') FROM public.receta_items WHERE id = iid),'-'),
+    'stock='||COALESCE((SELECT string_agg(id::text||':'||stock_actual||'@'||updated_at, ',' ORDER BY id) FROM public.farmacia_medicamentos WHERE farmacia_id = farm AND nombre_medicamento = nom),'-'),
+    'ra='||COALESCE((SELECT COALESCE(estado_dispensacion,'-')||'@'||COALESCE(fecha_dispensacion::text,'-')||'@'||COALESCE(farmacia_id,'-')||'@'||updated_at FROM public.recetas_avanzadas WHERE id = ra),'-'),
+    'entregas='||(SELECT count(*) FROM public.entregas WHERE receta_base_id = rid),
+    'fallos='||(SELECT count(*) FROM private.delivery_autocreate_fallos WHERE receta_base_id = rid),
+    'reveal='||(SELECT count(*) FROM private.reveal_log WHERE receta_base_id = rid),
+    'confirm='||(SELECT count(*) FROM public.confirmaciones_receta WHERE receta_avanzada_id = ra));
+  sig_orig := sig0; mod_orig := it0.modalidad;
+
+  -- A) receta CANCELADA
+  UPDATE public.recetas SET estado = 'cancelada' WHERE id = rid;
+  st := '00000'; msg := ''; j := NULL;
+  BEGIN
+    PERFORM set_config('request.jwt.claims', json_build_object('sub',pac_uid::text,'role','authenticated')::text, true); PERFORM set_config('role','authenticated',true);
+    j := public.fijar_modalidad_grupo(rid, farm, CASE WHEN it0.modalidad = 'delivery' THEN 'pickup' ELSE 'delivery' END);
+    PERFORM set_config('role','none',true); PERFORM set_config('request.jwt.claims','',true);
+  EXCEPTION WHEN OTHERS THEN PERFORM set_config('role','none',true); PERFORM set_config('request.jwt.claims','',true);
+    st := SQLSTATE; msg := SQLERRM; END;
+  r_can := CASE WHEN st = '00000' THEN 'OK' ELSE 'ERR' END;
+  r_can := st||' '||msg;
+  UPDATE public.recetas SET estado = est0 WHERE id = rid;
+  sig1 := concat_ws(' | ',
+    'rec='||COALESCE((SELECT estado FROM public.recetas WHERE id = rid),'-'),
+    'disp='||(SELECT count(*) FROM public.dispensaciones WHERE receta_avanzada_id = ra),
+    'item='||COALESCE((SELECT dispensado::text||'@'||COALESCE(dispensado_at::text,'-')||'@'||COALESCE(modalidad,'-') FROM public.receta_items WHERE id = iid),'-'),
+    'stock='||COALESCE((SELECT string_agg(id::text||':'||stock_actual||'@'||updated_at, ',' ORDER BY id) FROM public.farmacia_medicamentos WHERE farmacia_id = farm AND nombre_medicamento = nom),'-'),
+    'ra='||COALESCE((SELECT COALESCE(estado_dispensacion,'-')||'@'||COALESCE(fecha_dispensacion::text,'-')||'@'||COALESCE(farmacia_id,'-')||'@'||updated_at FROM public.recetas_avanzadas WHERE id = ra),'-'),
+    'entregas='||(SELECT count(*) FROM public.entregas WHERE receta_base_id = rid),
+    'fallos='||(SELECT count(*) FROM private.delivery_autocreate_fallos WHERE receta_base_id = rid),
+    'reveal='||(SELECT count(*) FROM private.reveal_log WHERE receta_base_id = rid),
+    'confirm='||(SELECT count(*) FROM public.confirmaciones_receta WHERE receta_avanzada_id = ra));
+  DELETE FROM public.dispensaciones WHERE receta_avanzada_id = ra AND NOT (id = ANY(COALESCE(disp0, '{}')));
+  DELETE FROM public.entregas WHERE receta_base_id = rid AND NOT (id = ANY(COALESCE(ent0, '{}')));
+  DELETE FROM private.delivery_autocreate_fallos WHERE receta_base_id = rid AND NOT (id = ANY(COALESCE(fal0, '{}')));
+  DELETE FROM private.reveal_log WHERE receta_base_id = rid AND NOT (id = ANY(COALESCE(rev0, '{}')));
+  DELETE FROM public.confirmaciones_receta WHERE receta_avanzada_id = ra AND NOT (id = ANY(COALESCE(conf0, '{}')));
+  UPDATE public.receta_items SET dispensado = it0.dispensado, dispensado_at = it0.dispensado_at, modalidad = it0.modalidad WHERE id = iid;
+  UPDATE public.farmacia_medicamentos fm SET stock_actual = x.s, updated_at = x.u
+    FROM jsonb_to_recordset(COALESCE(stock0, '[]')) AS x(id uuid, s integer, u timestamptz) WHERE fm.id = x.id;
+  UPDATE public.recetas_avanzadas SET estado_dispensacion = ra0.estado_dispensacion, fecha_dispensacion = ra0.fecha_dispensacion,
+         farmacia_id = ra0.farmacia_id, updated_at = ra0.updated_at WHERE id = ra;
+  UPDATE public.recetas SET estado = est0 WHERE id = rid;
+
+  det := 'cancelada|PR010 Receta cancelada: no se puede despachar|'||CASE WHEN r_can = 'PR010 Receta cancelada: no se puede despachar' THEN 'OK' ELSE 'ROJO' END||'|'||st||'|'||msg
+         ||' ;; cancelada: sin filas ni cambios|firma igual al snapshot|'||CASE WHEN sig1 = sig0 THEN 'igual' ELSE 'DISTINTA' END||'|-|';
+  -- B) receta ACTIVA -> OK, efecto verificado y restaurado
+  st := '00000'; msg := ''; j := NULL;
+  BEGIN
+    PERFORM set_config('request.jwt.claims', json_build_object('sub',pac_uid::text,'role','authenticated')::text, true); PERFORM set_config('role','authenticated',true);
+    j := public.fijar_modalidad_grupo(rid, farm, CASE WHEN it0.modalidad = 'delivery' THEN 'pickup' ELSE 'delivery' END);
+    PERFORM set_config('role','none',true); PERFORM set_config('request.jwt.claims','',true);
+  EXCEPTION WHEN OTHERS THEN PERFORM set_config('role','none',true); PERFORM set_config('request.jwt.claims','',true);
+    st := SQLSTATE; msg := SQLERRM; END;
+  r_act := CASE WHEN st = '00000' THEN 'OK' ELSE 'ERR' END;
+  eff := 'items='||COALESCE(j->>'items','-')||' modalidad='||COALESCE((SELECT modalidad FROM public.receta_items WHERE id = iid),'-');
+  det := det||' ;; activa|OK|'||r_act||' '||COALESCE(eff,'-')||'|'||st||'|'||msg;
+  IF r_act = 'OK' AND NOT ((j->>'items')::int >= 1 AND (SELECT modalidad FROM public.receta_items WHERE id = iid) IS DISTINCT FROM it0.modalidad) THEN r_act := 'OK-SIN-EFECTO'; END IF;
+  DELETE FROM public.dispensaciones WHERE receta_avanzada_id = ra AND NOT (id = ANY(COALESCE(disp0, '{}')));
+  DELETE FROM public.entregas WHERE receta_base_id = rid AND NOT (id = ANY(COALESCE(ent0, '{}')));
+  DELETE FROM private.delivery_autocreate_fallos WHERE receta_base_id = rid AND NOT (id = ANY(COALESCE(fal0, '{}')));
+  DELETE FROM private.reveal_log WHERE receta_base_id = rid AND NOT (id = ANY(COALESCE(rev0, '{}')));
+  DELETE FROM public.confirmaciones_receta WHERE receta_avanzada_id = ra AND NOT (id = ANY(COALESCE(conf0, '{}')));
+  UPDATE public.receta_items SET dispensado = it0.dispensado, dispensado_at = it0.dispensado_at, modalidad = it0.modalidad WHERE id = iid;
+  UPDATE public.farmacia_medicamentos fm SET stock_actual = x.s, updated_at = x.u
+    FROM jsonb_to_recordset(COALESCE(stock0, '[]')) AS x(id uuid, s integer, u timestamptz) WHERE fm.id = x.id;
+  UPDATE public.recetas_avanzadas SET estado_dispensacion = ra0.estado_dispensacion, fecha_dispensacion = ra0.fecha_dispensacion,
+         farmacia_id = ra0.farmacia_id, updated_at = ra0.updated_at WHERE id = ra;
+  UPDATE public.recetas SET estado = est0 WHERE id = rid;
+
+  sig2 := concat_ws(' | ',
+    'rec='||COALESCE((SELECT estado FROM public.recetas WHERE id = rid),'-'),
+    'disp='||(SELECT count(*) FROM public.dispensaciones WHERE receta_avanzada_id = ra),
+    'item='||COALESCE((SELECT dispensado::text||'@'||COALESCE(dispensado_at::text,'-')||'@'||COALESCE(modalidad,'-') FROM public.receta_items WHERE id = iid),'-'),
+    'stock='||COALESCE((SELECT string_agg(id::text||':'||stock_actual||'@'||updated_at, ',' ORDER BY id) FROM public.farmacia_medicamentos WHERE farmacia_id = farm AND nombre_medicamento = nom),'-'),
+    'ra='||COALESCE((SELECT COALESCE(estado_dispensacion,'-')||'@'||COALESCE(fecha_dispensacion::text,'-')||'@'||COALESCE(farmacia_id,'-')||'@'||updated_at FROM public.recetas_avanzadas WHERE id = ra),'-'),
+    'entregas='||(SELECT count(*) FROM public.entregas WHERE receta_base_id = rid),
+    'fallos='||(SELECT count(*) FROM private.delivery_autocreate_fallos WHERE receta_base_id = rid),
+    'reveal='||(SELECT count(*) FROM private.reveal_log WHERE receta_base_id = rid),
+    'confirm='||(SELECT count(*) FROM public.confirmaciones_receta WHERE receta_avanzada_id = ra));
+  IF sig2 IS DISTINCT FROM sig_orig THEN r_rest := 'firma no vuelve al snapshot original'; END IF;
+  UPDATE public.empresas_proveedoras SET estado = emp_est0 WHERE id = emp AND estado IS DISTINCT FROM emp_est0;
+  IF (SELECT estado FROM public.empresas_proveedoras WHERE id = emp) IS DISTINCT FROM emp_est0 THEN
+    r_rest := r_rest||' / estado de empresa no vuelve'; END IF;
+  det := det||' ;; empresa del fixture|estado original '||COALESCE(emp_est0,'-')||'|'||CASE WHEN emp_est0 = 'activa' THEN 'ya activa' ELSE 'activada para el probe y restaurada' END||'|-|';
+  det := det||' ;; restauracion|firma igual al snapshot|'||r_rest||'|-|';
+
+  PERFORM set_config('probe.p845_det', det, false);
+  PERFORM set_config('probe.p845', CASE WHEN (r_can = 'PR010 Receta cancelada: no se puede despachar') AND sig1 = sig0 AND r_act = 'OK' AND r_rest = 'OK'
+    THEN 'OK (fijar_modalidad_grupo (paciente): cancelada -> PR010, activa -> OK con efecto; restaurado)'
+    ELSE 'ROJO (cancelada='||r_can||' | activa='||r_act||' '||COALESCE(eff,'-')||' | firma_cancelada='||(sig1 = sig0)||' | restauracion='||r_rest||')' END, false);
+EXCEPTION WHEN OTHERS THEN
+  PERFORM set_config('role','none',true); PERFORM set_config('request.jwt.claims','',true);
+  PERFORM set_config('probe.p845', CASE WHEN SQLERRM LIKE 'fixture roto%' THEN 'ROJO ('||SQLERRM||')'
+    ELSE 'FALLO ('||SQLSTATE||' '||SQLERRM||')' END, false);
+END $$;
+SELECT set_config('role','none', true);
+
+-- ---------------- P846 confirmar_recepcion_receta (control: no se toca) ----------------
+DO $$
+DECLARE
+  rid bigint; iid bigint; farm integer; nom text; emp uuid; ra uuid; tok text; ctok text; pac bigint; pac_uid uuid;
+  cta uuid; c record; det text := ''; r_can text; r_act text; r_rest text := 'OK'; st text; msg text; j jsonb; v_n bigint;
+  sig0 text; sig1 text; sig2 text; eff text;
+  disp0 uuid[]; ent0 bigint[]; fal0 bigint[]; rev0 bigint[]; conf0 uuid[]; it0 record; stock0 jsonb; ra0 record; est0 text; sig_orig text; mod_orig text; emp_est0 text;
+BEGIN
+  SELECT ri.id, ri.receta_id, ri.farmacia_id, ri.nombre_medicamento, f.empresa_id, ra_.id, ra_.dispatch_token, ra_.confirmacion_token, r.paciente_id
+    INTO iid, rid, farm, nom, emp, ra, tok, ctok, pac
+    FROM public.receta_items ri JOIN public.farmacias f ON f.id = ri.farmacia_id
+    JOIN public.recetas r ON r.id = ri.receta_id JOIN public.recetas_avanzadas ra_ ON ra_.receta_base_id = r.id
+   WHERE ri.dispensado = false AND ra_.dispatch_token_expira_at > now() AND ra_.confirmacion_token_expira_at > now()
+     AND r.estado = 'activa'
+   ORDER BY ri.receta_id, ri.id LIMIT 1;
+  IF iid IS NULL THEN RAISE EXCEPTION 'fixture roto: item ruteado de receta activa con token vigente'; END IF;
+  -- el gate de estado de empresa (mig 322) exige empresa 'activa': si la dejo en otro estado un probe anterior
+  -- del harness, se activa aca como fixture y se restaura al final (verificado).
+  SELECT e.estado INTO emp_est0 FROM public.empresas_proveedoras e WHERE e.id = emp;
+  IF emp_est0 IS DISTINCT FROM 'activa' THEN UPDATE public.empresas_proveedoras SET estado = 'activa' WHERE id = emp; END IF;
+  FOR c IN SELECT cp.id FROM public.cuentas_proveedor cp WHERE cp.empresa_id = emp AND cp.activo IS TRUE ORDER BY cp.id LOOP
+    PERFORM set_config('request.jwt.claims', json_build_object('sub',c.id::text,'role','authenticated')::text, true);
+    IF COALESCE(private.tiene_permiso('recetas_dispensar'), false) AND COALESCE(private.tiene_permiso('entregas_gestionar'), false)
+       AND COALESCE(private.sucursal_visible(farm), false) THEN cta := c.id; EXIT; END IF;
+  END LOOP;
+  PERFORM set_config('request.jwt.claims','',true);
+  IF cta IS NULL THEN RAISE EXCEPTION 'fixture roto: cuenta de farmacia con dispensar + entregas + sucursal visible'; END IF;
+  SELECT p.auth_user_id INTO pac_uid FROM public.pacientes p WHERE p.id = pac;
+  -- snapshot
+  SELECT r.estado INTO est0 FROM public.recetas r WHERE r.id = rid;
+  SELECT array_agg(id) INTO disp0 FROM public.dispensaciones WHERE receta_avanzada_id = ra;
+  SELECT array_agg(id) INTO ent0 FROM public.entregas WHERE receta_base_id = rid;
+  SELECT array_agg(id) INTO fal0 FROM private.delivery_autocreate_fallos WHERE receta_base_id = rid;
+  SELECT array_agg(id) INTO rev0 FROM private.reveal_log WHERE receta_base_id = rid;
+  SELECT array_agg(id) INTO conf0 FROM public.confirmaciones_receta WHERE receta_avanzada_id = ra;
+  SELECT dispensado, dispensado_at, modalidad INTO it0 FROM public.receta_items WHERE id = iid;
+  SELECT jsonb_agg(jsonb_build_object('id', id, 's', stock_actual, 'u', updated_at)) INTO stock0
+    FROM public.farmacia_medicamentos WHERE farmacia_id = farm AND nombre_medicamento = nom;
+  SELECT estado_dispensacion, fecha_dispensacion, farmacia_id, updated_at INTO ra0 FROM public.recetas_avanzadas WHERE id = ra;
+  sig0 := concat_ws(' | ',
+    'rec='||COALESCE((SELECT estado FROM public.recetas WHERE id = rid),'-'),
+    'disp='||(SELECT count(*) FROM public.dispensaciones WHERE receta_avanzada_id = ra),
+    'item='||COALESCE((SELECT dispensado::text||'@'||COALESCE(dispensado_at::text,'-')||'@'||COALESCE(modalidad,'-') FROM public.receta_items WHERE id = iid),'-'),
+    'stock='||COALESCE((SELECT string_agg(id::text||':'||stock_actual||'@'||updated_at, ',' ORDER BY id) FROM public.farmacia_medicamentos WHERE farmacia_id = farm AND nombre_medicamento = nom),'-'),
+    'ra='||COALESCE((SELECT COALESCE(estado_dispensacion,'-')||'@'||COALESCE(fecha_dispensacion::text,'-')||'@'||COALESCE(farmacia_id,'-')||'@'||updated_at FROM public.recetas_avanzadas WHERE id = ra),'-'),
+    'entregas='||(SELECT count(*) FROM public.entregas WHERE receta_base_id = rid),
+    'fallos='||(SELECT count(*) FROM private.delivery_autocreate_fallos WHERE receta_base_id = rid),
+    'reveal='||(SELECT count(*) FROM private.reveal_log WHERE receta_base_id = rid),
+    'confirm='||(SELECT count(*) FROM public.confirmaciones_receta WHERE receta_avanzada_id = ra));
+  sig_orig := sig0; mod_orig := it0.modalidad;
+
+  -- A) receta CANCELADA
+  UPDATE public.recetas SET estado = 'cancelada' WHERE id = rid;
+  st := '00000'; msg := ''; j := NULL;
+  BEGIN
+    PERFORM set_config('request.jwt.claims','{"role":"service_role"}', true); PERFORM set_config('role','service_role',true);
+    j := to_jsonb(public.confirmar_recepcion_receta(ctok, NULL, 'P846 QA'));
+    PERFORM set_config('role','none',true); PERFORM set_config('request.jwt.claims','',true);
+  EXCEPTION WHEN OTHERS THEN PERFORM set_config('role','none',true); PERFORM set_config('request.jwt.claims','',true);
+    st := SQLSTATE; msg := SQLERRM; END;
+  r_can := CASE WHEN st = '00000' THEN 'OK' ELSE 'ERR' END;
+  r_can := st||' '||msg;
+
+  DELETE FROM public.dispensaciones WHERE receta_avanzada_id = ra AND NOT (id = ANY(COALESCE(disp0, '{}')));
+  DELETE FROM public.entregas WHERE receta_base_id = rid AND NOT (id = ANY(COALESCE(ent0, '{}')));
+  DELETE FROM private.delivery_autocreate_fallos WHERE receta_base_id = rid AND NOT (id = ANY(COALESCE(fal0, '{}')));
+  DELETE FROM private.reveal_log WHERE receta_base_id = rid AND NOT (id = ANY(COALESCE(rev0, '{}')));
+  DELETE FROM public.confirmaciones_receta WHERE receta_avanzada_id = ra AND NOT (id = ANY(COALESCE(conf0, '{}')));
+  UPDATE public.receta_items SET dispensado = it0.dispensado, dispensado_at = it0.dispensado_at, modalidad = it0.modalidad WHERE id = iid;
+  UPDATE public.farmacia_medicamentos fm SET stock_actual = x.s, updated_at = x.u
+    FROM jsonb_to_recordset(COALESCE(stock0, '[]')) AS x(id uuid, s integer, u timestamptz) WHERE fm.id = x.id;
+  UPDATE public.recetas_avanzadas SET estado_dispensacion = ra0.estado_dispensacion, fecha_dispensacion = ra0.fecha_dispensacion,
+         farmacia_id = ra0.farmacia_id, updated_at = ra0.updated_at WHERE id = ra;
+  UPDATE public.recetas SET estado = est0 WHERE id = rid;
+  sig1 := concat_ws(' | ',
+    'rec='||COALESCE((SELECT estado FROM public.recetas WHERE id = rid),'-'),
+    'disp='||(SELECT count(*) FROM public.dispensaciones WHERE receta_avanzada_id = ra),
+    'item='||COALESCE((SELECT dispensado::text||'@'||COALESCE(dispensado_at::text,'-')||'@'||COALESCE(modalidad,'-') FROM public.receta_items WHERE id = iid),'-'),
+    'stock='||COALESCE((SELECT string_agg(id::text||':'||stock_actual||'@'||updated_at, ',' ORDER BY id) FROM public.farmacia_medicamentos WHERE farmacia_id = farm AND nombre_medicamento = nom),'-'),
+    'ra='||COALESCE((SELECT COALESCE(estado_dispensacion,'-')||'@'||COALESCE(fecha_dispensacion::text,'-')||'@'||COALESCE(farmacia_id,'-')||'@'||updated_at FROM public.recetas_avanzadas WHERE id = ra),'-'),
+    'entregas='||(SELECT count(*) FROM public.entregas WHERE receta_base_id = rid),
+    'fallos='||(SELECT count(*) FROM private.delivery_autocreate_fallos WHERE receta_base_id = rid),
+    'reveal='||(SELECT count(*) FROM private.reveal_log WHERE receta_base_id = rid),
+    'confirm='||(SELECT count(*) FROM public.confirmaciones_receta WHERE receta_avanzada_id = ra));
+  det := 'cancelada|sin rechazo (no se toca)|'||CASE WHEN r_can = '00000 ' THEN 'OK' ELSE 'ROJO' END||'|'||st||'|'||msg
+         ||' ;; cancelada: firma tras restaurar|firma igual al snapshot|'||CASE WHEN sig1 = sig0 THEN 'igual' ELSE 'DISTINTA' END||'|-|';
+  -- B) receta ACTIVA -> OK, efecto verificado y restaurado
+  st := '00000'; msg := ''; j := NULL;
+  BEGIN
+    PERFORM set_config('request.jwt.claims','{"role":"service_role"}', true); PERFORM set_config('role','service_role',true);
+    j := to_jsonb(public.confirmar_recepcion_receta(ctok, NULL, 'P846 QA'));
+    PERFORM set_config('role','none',true); PERFORM set_config('request.jwt.claims','',true);
+  EXCEPTION WHEN OTHERS THEN PERFORM set_config('role','none',true); PERFORM set_config('request.jwt.claims','',true);
+    st := SQLSTATE; msg := SQLERRM; END;
+  r_act := CASE WHEN st = '00000' THEN 'OK' ELSE 'ERR' END;
+  eff := 'estado='||COALESCE(j #>> '{}','-');
+  det := det||' ;; activa|confirmada o ya_confirmada|'||r_act||' '||COALESCE(eff,'-')||'|'||st||'|'||msg;
+  IF r_act = 'OK' AND NOT ((j #>> '{}') IN ('confirmada','ya_confirmada')) THEN r_act := 'OK-SIN-EFECTO'; END IF;
+  DELETE FROM public.dispensaciones WHERE receta_avanzada_id = ra AND NOT (id = ANY(COALESCE(disp0, '{}')));
+  DELETE FROM public.entregas WHERE receta_base_id = rid AND NOT (id = ANY(COALESCE(ent0, '{}')));
+  DELETE FROM private.delivery_autocreate_fallos WHERE receta_base_id = rid AND NOT (id = ANY(COALESCE(fal0, '{}')));
+  DELETE FROM private.reveal_log WHERE receta_base_id = rid AND NOT (id = ANY(COALESCE(rev0, '{}')));
+  DELETE FROM public.confirmaciones_receta WHERE receta_avanzada_id = ra AND NOT (id = ANY(COALESCE(conf0, '{}')));
+  UPDATE public.receta_items SET dispensado = it0.dispensado, dispensado_at = it0.dispensado_at, modalidad = it0.modalidad WHERE id = iid;
+  UPDATE public.farmacia_medicamentos fm SET stock_actual = x.s, updated_at = x.u
+    FROM jsonb_to_recordset(COALESCE(stock0, '[]')) AS x(id uuid, s integer, u timestamptz) WHERE fm.id = x.id;
+  UPDATE public.recetas_avanzadas SET estado_dispensacion = ra0.estado_dispensacion, fecha_dispensacion = ra0.fecha_dispensacion,
+         farmacia_id = ra0.farmacia_id, updated_at = ra0.updated_at WHERE id = ra;
+  UPDATE public.recetas SET estado = est0 WHERE id = rid;
+
+  sig2 := concat_ws(' | ',
+    'rec='||COALESCE((SELECT estado FROM public.recetas WHERE id = rid),'-'),
+    'disp='||(SELECT count(*) FROM public.dispensaciones WHERE receta_avanzada_id = ra),
+    'item='||COALESCE((SELECT dispensado::text||'@'||COALESCE(dispensado_at::text,'-')||'@'||COALESCE(modalidad,'-') FROM public.receta_items WHERE id = iid),'-'),
+    'stock='||COALESCE((SELECT string_agg(id::text||':'||stock_actual||'@'||updated_at, ',' ORDER BY id) FROM public.farmacia_medicamentos WHERE farmacia_id = farm AND nombre_medicamento = nom),'-'),
+    'ra='||COALESCE((SELECT COALESCE(estado_dispensacion,'-')||'@'||COALESCE(fecha_dispensacion::text,'-')||'@'||COALESCE(farmacia_id,'-')||'@'||updated_at FROM public.recetas_avanzadas WHERE id = ra),'-'),
+    'entregas='||(SELECT count(*) FROM public.entregas WHERE receta_base_id = rid),
+    'fallos='||(SELECT count(*) FROM private.delivery_autocreate_fallos WHERE receta_base_id = rid),
+    'reveal='||(SELECT count(*) FROM private.reveal_log WHERE receta_base_id = rid),
+    'confirm='||(SELECT count(*) FROM public.confirmaciones_receta WHERE receta_avanzada_id = ra));
+  IF sig2 IS DISTINCT FROM sig_orig THEN r_rest := 'firma no vuelve al snapshot original'; END IF;
+  UPDATE public.empresas_proveedoras SET estado = emp_est0 WHERE id = emp AND estado IS DISTINCT FROM emp_est0;
+  IF (SELECT estado FROM public.empresas_proveedoras WHERE id = emp) IS DISTINCT FROM emp_est0 THEN
+    r_rest := r_rest||' / estado de empresa no vuelve'; END IF;
+  det := det||' ;; empresa del fixture|estado original '||COALESCE(emp_est0,'-')||'|'||CASE WHEN emp_est0 = 'activa' THEN 'ya activa' ELSE 'activada para el probe y restaurada' END||'|-|';
+  det := det||' ;; restauracion|firma igual al snapshot|'||r_rest||'|-|';
+
+  PERFORM set_config('probe.p846_det', det, false);
+  PERFORM set_config('probe.p846', CASE WHEN (r_can = '00000 ') AND sig1 = sig0 AND r_act = 'OK' AND r_rest = 'OK'
+    THEN 'OK (confirmar_recepcion_receta (control: no se toca): cancelada -> sin cambio, activa -> OK con efecto; restaurado)'
+    ELSE 'ROJO (cancelada='||r_can||' | activa='||r_act||' '||COALESCE(eff,'-')||' | firma_cancelada='||(sig1 = sig0)||' | restauracion='||r_rest||')' END, false);
+EXCEPTION WHEN OTHERS THEN
+  PERFORM set_config('role','none',true); PERFORM set_config('request.jwt.claims','',true);
+  PERFORM set_config('probe.p846', CASE WHEN SQLERRM LIKE 'fixture roto%' THEN 'ROJO ('||SQLERRM||')'
+    ELSE 'FALLO ('||SQLSTATE||' '||SQLERRM||')' END, false);
+END $$;
+SELECT set_config('role','none', true);
+
+-- ---------------- P847 catalogo: 6 funciones con el chequeo, metadata intacta, confirmar sin tocar ----------------
+DO $$
+DECLARE det text := ''; bad text := ''; e record; r record;
+BEGIN
+  FOR e IN SELECT * FROM (VALUES
+    ('public.verificar_receta_despacho(text)'), ('public.registrar_dispensacion(text,bigint[],text)'),
+    ('public.registrar_dispensacion_dirigida(bigint,bigint[],text)'), ('public.revelar_items_receta(bigint,text)'),
+    ('public.crear_entrega(bigint,integer)'), ('public.fijar_modalidad_grupo(bigint,integer,text)')) x(f) LOOP
+    SELECT p.prosecdef, pg_get_userbyid(p.proowner) AS owner, p.proconfig::text AS cfg,
+           has_function_privilege('authenticated', p.oid, 'EXECUTE') AS auth, has_function_privilege('anon', p.oid, 'EXECUTE') AS anon,
+           (position('Receta cancelada: no se puede despachar' in p.prosrc) > 0 AND position('PR010' in p.prosrc) > 0) AS chequeo
+      INTO r FROM pg_proc p WHERE p.oid = e.f::regprocedure;
+    det := det||CASE WHEN det = '' THEN '' ELSE ' ;; ' END||e.f||'|chequeo=t secdef=t owner=postgres cfg=search_path="" auth=t anon=f|'
+           ||'chequeo='||r.chequeo||' secdef='||r.prosecdef||' owner='||r.owner||' cfg='||COALESCE(r.cfg,'NULL')||' auth='||r.auth||' anon='||r.anon||'|-|';
+    IF NOT (r.chequeo AND r.prosecdef AND r.owner = 'postgres' AND r.cfg = '{"search_path=\"\""}' AND r.auth AND NOT r.anon) THEN
+      bad := bad||e.f||'; '; END IF;
+  END LOOP;
+  SELECT md5(prosrc) INTO r FROM pg_proc WHERE oid = 'public.confirmar_recepcion_receta(text,inet,text)'::regprocedure;
+  det := det||' ;; confirmar_recepcion_receta md5|b94e4d21e567ceeb38fb83ebf9a83b03|'||r.md5||'|-|';
+  IF r.md5 IS DISTINCT FROM 'b94e4d21e567ceeb38fb83ebf9a83b03' THEN bad := bad||'confirmar_recepcion_receta cambio; '; END IF;
+  PERFORM set_config('probe.p847_det', det, false);
+  PERFORM set_config('probe.p847', CASE WHEN bad = ''
+    THEN 'OK (6 funciones con el chequeo PR010 y metadata intacta; confirmar_recepcion_receta sin tocar)'
+    ELSE 'ROJO ('||left(bad,800)||')' END, false);
+EXCEPTION WHEN OTHERS THEN
+  PERFORM set_config('probe.p847','FALLO ('||SQLSTATE||' '||SQLERRM||')', false);
+END $$;
+SELECT set_config('role','none', true);
 
 -- ===== Veredictos como result set =====
 SELECT 'P1_anon_insert_citas'              AS probe, current_setting('probe.p1', true)  AS verdict, 'BLOQUEADO' AS esperado_post_fix
@@ -21629,6 +22661,14 @@ UNION ALL SELECT 'P836_emitir_receta_positivo',         current_setting('probe.p
 UNION ALL SELECT 'P837_items_medico_sin_update_delete', current_setting('probe.p837', true), 'OK (0 filas)'
 UNION ALL SELECT 'P838_items_superadmin_sin_insert',    current_setting('probe.p838', true), 'OK (INSERT 42501, S/U/D 1 fila)'
 UNION ALL SELECT 'P839_recetas_catalogo_sin_insert',    current_setting('probe.p839', true), 'OK (sin INSERT ni policy INSERT/ALL)'
+UNION ALL SELECT 'P840_verificar_despacho_cancelada',    current_setting('probe.p840', true), 'OK (cancelada PR010, activa OK)'
+UNION ALL SELECT 'P841_dispensacion_token_cancelada',    current_setting('probe.p841', true), 'OK (cancelada PR010 sin cambios)'
+UNION ALL SELECT 'P842_dispensacion_dirigida_cancelada', current_setting('probe.p842', true), 'OK (cancelada PR010 sin cambios)'
+UNION ALL SELECT 'P843_revelar_items_cancelada',         current_setting('probe.p843', true), 'OK (cancelada PR010 sin reveal)'
+UNION ALL SELECT 'P844_crear_entrega_cancelada',         current_setting('probe.p844', true), 'OK (cancelada PR010 sin entrega)'
+UNION ALL SELECT 'P845_modalidad_grupo_cancelada',       current_setting('probe.p845', true), 'OK (cancelada PR010 sin cambio)'
+UNION ALL SELECT 'P846_confirmar_recepcion_control',     current_setting('probe.p846', true), 'OK (no se toca)'
+UNION ALL SELECT 'P847_despacho_catalogo_329',           current_setting('probe.p847', true), 'OK (6 con PR010, metadata intacta)'
 -- Las filas FX* son SALUD DE FIXTURE, no probes de seguridad: dicen si la precondicion que una
 -- migracion posterior empezo a exigir se pudo sembrar. Si una sale ROJO, los probes que dependen de
 -- ese fixture reportan N/A (su flag de ready se pierde con el rollback de la subtransaccion) en vez
@@ -21866,7 +22906,8 @@ UNION ALL SELECT 'P000_CENTINELA_veredictos_no_nulos',
        'probe.p820', 'probe.p821', 'probe.p822', 'probe.p823', 'probe.p824', 'probe.p825',
        'probe.p826', 'probe.p827', 'probe.p828', 'probe.p829', 'probe.p830', 'probe.p831',
        'probe.p832', 'probe.p833', 'probe.p834', 'probe.p835', 'probe.p836', 'probe.p837',
-       'probe.p838', 'probe.p839'
+       'probe.p838', 'probe.p839', 'probe.p840', 'probe.p841', 'probe.p842', 'probe.p843',
+       'probe.p844', 'probe.p845', 'probe.p846', 'probe.p847'
              ]) AS n) s),
   'OK (todos los veredictos publicados)';
 
