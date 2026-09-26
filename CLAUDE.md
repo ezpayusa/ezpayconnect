@@ -23,11 +23,13 @@ Stack: React + Vite + TypeScript, Supabase / Postgres, deploy en Vercel, repo en
   minutos por esto** (P635 es la probe que faltaba, P636 su contraprueba).
 - NUNCA ampliar policies de RLS sobre tablas adyacentes a datos médicos (p. ej. campana_metricas). Para dar acceso, usar RPCs SECURITY DEFINER con search_path='', fail-closed (si el scope es NULL → 0 filas) y gate interno.
 - Probar aislamiento por rol impersonando request.jwt.claims en prod: cada rol ve lo suyo y no lo ajeno.
-- **Próximos números libres: probe `P861`** (global, no por módulo), **migración `331`**, **errcode `PA035`** (comercial),
+- **Próximos números libres: probe `P866`** (global, no por módulo), **migración `332`**, **errcode `PA035`** (comercial),
   **`PR011`** (recetas: PR001-PR009 = emitir_receta; PR010 = receta cancelada no se despacha, mig 329
   — APLICADA en prod y verificada en sesión independiente el 25-sep-2026, probes P840-P847),
-  **`SV003`** (signos vitales: SV001 = fuera de rango, SV002 = formato de PA, mig 330
-  — APLICADA en prod y verificada en sesión independiente el 25-sep-2026, probes P848-P860)
+  **`SV004`** (signos vitales: SV001 = fuera de rango, SV002 = formato de PA, mig 330
+  — APLICADA en prod y verificada en sesión independiente el 25-sep-2026, probes P848-P860;
+  SV003 = toma vacía, mig 331 — APLICADA en prod y verificada en sesión independiente el 25-sep-2026,
+  probes P861-P865)
   y **`PE005`** (expediente: PE001 = mig 291; PE002 = adjuntar sobre examen liberado y PE003 =
   no autenticado, mig 310; PE004 = sin autoridad para revertir una liberación, mig 311).
   `revertir_liberacion_examen` sobre un examen ya no liberado es **no-op** (`{ya_no_liberado:true}`),
