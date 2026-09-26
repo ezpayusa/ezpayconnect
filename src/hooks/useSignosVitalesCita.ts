@@ -2,6 +2,7 @@ import { useState, useEffect, useCallback } from 'react'
 import { supabase } from '@/lib/supabase'
 import { toast } from 'sonner'
 import type { VitalesValues } from '@/clinica/components/FormularioVitales'
+import { esErrorVital } from '@/lib/vitalesRangos'
 
 export interface SignoVitalToma {
   id: number
@@ -29,7 +30,10 @@ const num = (v: string) => (v.trim() === '' ? null : Number(v))
 
 /**
  * Serie de signos vitales de una cita (fuente única = signos_vitales, append-only).
- * Todo por RPC DEFINER — NUNCA .from('signos_vitales') (la RLS deniega lectura/escritura directa).
+ * Todo por RPC DEFINER. La ESCRITURA directa la deniega la RLS (solo super_admin tiene policy de
+ * escritura); la LECTURA directa no: las policies SELECT de médico (sv_select_medico) y de admin de
+ * clínica la permiten. Se lee por listar_signos_vitales_cita porque gatea la serie por cita y rol de
+ * captura, y trae el nombre del capturador.
  */
 export function useSignosVitalesCita(citaId: number) {
   const [serie, setSerie] = useState<SignoVitalToma[]>([])
@@ -64,8 +68,9 @@ export function useSignosVitalesCita(citaId: number) {
     return true
   }, [cargarSerie])
 
+  // errorVital = mensaje SV001/SV002 de la RPC (rango/formato), para mostrar en el formulario tal cual.
   const agregarToma = useCallback(
-    async (values: VitalesValues, pacienteId: number, medicoId: string): Promise<boolean> => {
+    async (values: VitalesValues, pacienteId: number, medicoId: string): Promise<{ ok: boolean; errorVital: string | null }> => {
       const { error } = await supabase.rpc('capturar_signo_vital', {
         p_paciente_id: pacienteId,
         p_cita_id: citaId,
@@ -80,10 +85,14 @@ export function useSignosVitalesCita(citaId: number) {
         p_glucosa: num(values.glucosa),
         p_notas: values.notas.trim() || null,
       })
-      if (error) { toast.error(error.message); return false }
+      if (error) {
+        if (esErrorVital(error)) return { ok: false, errorVital: error.message }
+        toast.error(error.message)
+        return { ok: false, errorVital: null }
+      }
       toast.success('Toma registrada')
       await cargarSerie()
-      return true
+      return { ok: true, errorVital: null }
     },
     [citaId, cargarSerie],
   )

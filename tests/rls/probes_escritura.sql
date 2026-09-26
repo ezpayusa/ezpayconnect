@@ -21747,6 +21747,1001 @@ EXCEPTION WHEN OTHERS THEN
 END $$;
 SELECT set_config('role','none', true);
 
+-- ================================================================================
+-- MIG 330 — rangos de plausibilidad de signos vitales (P848-P860).
+-- OK = comportamiento de la 330; con 330_rollback aplicado dan ROJO todos menos P857 (control: todo
+-- NULL salvo FC, pasa con y sin la 330).
+-- Fixture: primera cita con medico y paciente; se llama capturar_signo_vital impersonando al medico
+-- duenio de la cita (brazo 254 del gate). Negativos: errcode + mensaje exacto por SQLERRM y ninguna fila
+-- nueva. Positivos (bordes exactos): OK y la fila existe con el valor. Se borra solo lo que el probe
+-- creo y se verifica que las filas previas quedan byte a byte (md5 de row_to_json).
+-- ================================================================================
+
+-- ---------------- P848 capturar_signo_vital: frecuencia_cardiaca ----------------
+DO $$
+DECLARE
+  med uuid; pac integer; cit bigint; maxid integer; sig0 text; created integer[] := '{}';
+  st text; msg text; j jsonb; nx bigint; ok boolean; det text := ''; bad text := ''; r_rest text := 'OK'; nid integer;
+BEGIN
+  -- fixture: primera cita con medico y paciente; el medico duenio de la cita pasa el gate de la RPC (254)
+  SELECT c.medico_id, c.paciente_id, c.id INTO med, pac, cit FROM public.citas c
+   WHERE c.medico_id IS NOT NULL AND c.paciente_id IS NOT NULL ORDER BY c.id LIMIT 1;
+  IF cit IS NULL THEN RAISE EXCEPTION 'fixture roto: cita con medico y paciente'; END IF;
+  -- snapshot: filas existentes byte a byte
+  SELECT COALESCE(max(id), 0) INTO maxid FROM public.signos_vitales;
+  SELECT md5(COALESCE(string_agg(row_to_json(s)::text, '|' ORDER BY s.id), '')) INTO sig0 FROM public.signos_vitales s WHERE s.id <= maxid;
+  st := '00000'; msg := ''; j := NULL;
+  nx := (SELECT count(*) FROM public.signos_vitales WHERE id > maxid AND NOT (id = ANY(created)));
+  BEGIN
+    PERFORM set_config('request.jwt.claims', json_build_object('sub',med::text,'role','authenticated')::text, true); PERFORM set_config('role','authenticated',true);
+    j := public.capturar_signo_vital(p_paciente_id => pac, p_cita_id => cit, p_medico_id => med, p_frecuencia_cardiaca => 19);
+    PERFORM set_config('role','none',true); PERFORM set_config('request.jwt.claims','',true);
+  EXCEPTION WHEN OTHERS THEN PERFORM set_config('role','none',true); PERFORM set_config('request.jwt.claims','',true);
+    st := SQLSTATE; msg := SQLERRM; END;
+  IF j IS NOT NULL THEN created := created || (j->>'id')::integer; END IF;
+  ok := (st = 'SV001' AND msg = 'Signo vital fuera de rango: frecuencia_cardiaca (20-300 lpm)' AND j IS NULL
+         AND (SELECT count(*) FROM public.signos_vitales WHERE id > maxid AND NOT (id = ANY(created))) = nx);
+  det := det||' ;; frecuencia_cardiaca=19|SV001 Signo vital fuera de rango: frecuencia_cardiaca (20-300 lpm) sin fila|'||CASE WHEN ok THEN 'OK' ELSE 'ROJO' END||'|'||st||'|'||msg;
+  IF NOT ok THEN bad := bad||'frecuencia_cardiaca=19: '||st||' '||left(msg,100)||'; '; END IF;
+  st := '00000'; msg := ''; j := NULL;
+  nx := (SELECT count(*) FROM public.signos_vitales WHERE id > maxid AND NOT (id = ANY(created)));
+  BEGIN
+    PERFORM set_config('request.jwt.claims', json_build_object('sub',med::text,'role','authenticated')::text, true); PERFORM set_config('role','authenticated',true);
+    j := public.capturar_signo_vital(p_paciente_id => pac, p_cita_id => cit, p_medico_id => med, p_frecuencia_cardiaca => 301);
+    PERFORM set_config('role','none',true); PERFORM set_config('request.jwt.claims','',true);
+  EXCEPTION WHEN OTHERS THEN PERFORM set_config('role','none',true); PERFORM set_config('request.jwt.claims','',true);
+    st := SQLSTATE; msg := SQLERRM; END;
+  IF j IS NOT NULL THEN created := created || (j->>'id')::integer; END IF;
+  ok := (st = 'SV001' AND msg = 'Signo vital fuera de rango: frecuencia_cardiaca (20-300 lpm)' AND j IS NULL
+         AND (SELECT count(*) FROM public.signos_vitales WHERE id > maxid AND NOT (id = ANY(created))) = nx);
+  det := det||' ;; frecuencia_cardiaca=301|SV001 Signo vital fuera de rango: frecuencia_cardiaca (20-300 lpm) sin fila|'||CASE WHEN ok THEN 'OK' ELSE 'ROJO' END||'|'||st||'|'||msg;
+  IF NOT ok THEN bad := bad||'frecuencia_cardiaca=301: '||st||' '||left(msg,100)||'; '; END IF;
+  st := '00000'; msg := ''; j := NULL;
+  nx := (SELECT count(*) FROM public.signos_vitales WHERE id > maxid AND NOT (id = ANY(created)));
+  BEGIN
+    PERFORM set_config('request.jwt.claims', json_build_object('sub',med::text,'role','authenticated')::text, true); PERFORM set_config('role','authenticated',true);
+    j := public.capturar_signo_vital(p_paciente_id => pac, p_cita_id => cit, p_medico_id => med, p_frecuencia_cardiaca => 20);
+    PERFORM set_config('role','none',true); PERFORM set_config('request.jwt.claims','',true);
+  EXCEPTION WHEN OTHERS THEN PERFORM set_config('role','none',true); PERFORM set_config('request.jwt.claims','',true);
+    st := SQLSTATE; msg := SQLERRM; END;
+  IF j IS NOT NULL THEN created := created || (j->>'id')::integer; END IF;
+  ok := (st = '00000' AND j IS NOT NULL
+         AND EXISTS (SELECT 1 FROM public.signos_vitales s WHERE s.id = (j->>'id')::integer AND s.frecuencia_cardiaca = 20));
+  det := det||' ;; frecuencia_cardiaca=20|OK e inserta|'||CASE WHEN ok THEN 'OK' ELSE 'ROJO' END||'|'||st||'|'||msg;
+  IF NOT ok THEN bad := bad||'frecuencia_cardiaca=20: '||st||' '||left(msg,100)||'; '; END IF;
+  st := '00000'; msg := ''; j := NULL;
+  nx := (SELECT count(*) FROM public.signos_vitales WHERE id > maxid AND NOT (id = ANY(created)));
+  BEGIN
+    PERFORM set_config('request.jwt.claims', json_build_object('sub',med::text,'role','authenticated')::text, true); PERFORM set_config('role','authenticated',true);
+    j := public.capturar_signo_vital(p_paciente_id => pac, p_cita_id => cit, p_medico_id => med, p_frecuencia_cardiaca => 300);
+    PERFORM set_config('role','none',true); PERFORM set_config('request.jwt.claims','',true);
+  EXCEPTION WHEN OTHERS THEN PERFORM set_config('role','none',true); PERFORM set_config('request.jwt.claims','',true);
+    st := SQLSTATE; msg := SQLERRM; END;
+  IF j IS NOT NULL THEN created := created || (j->>'id')::integer; END IF;
+  ok := (st = '00000' AND j IS NOT NULL
+         AND EXISTS (SELECT 1 FROM public.signos_vitales s WHERE s.id = (j->>'id')::integer AND s.frecuencia_cardiaca = 300));
+  det := det||' ;; frecuencia_cardiaca=300|OK e inserta|'||CASE WHEN ok THEN 'OK' ELSE 'ROJO' END||'|'||st||'|'||msg;
+  IF NOT ok THEN bad := bad||'frecuencia_cardiaca=300: '||st||' '||left(msg,100)||'; '; END IF;
+  -- restauracion: se borra solo lo que el probe creo y se verifica contra el snapshot
+  DELETE FROM public.signos_vitales WHERE id = ANY(created);
+  IF EXISTS (SELECT 1 FROM public.signos_vitales WHERE id = ANY(created)) THEN r_rest := 'quedaron filas creadas'; END IF;
+  IF (SELECT md5(COALESCE(string_agg(row_to_json(s)::text, '|' ORDER BY s.id), '')) FROM public.signos_vitales s WHERE s.id <= maxid) IS DISTINCT FROM sig0 THEN
+    r_rest := r_rest||' / filas previas cambiaron'; END IF;
+  det := det||' ;; restauracion|'||cardinality(created)||' fila(s) creadas borradas, snapshot igual|'||r_rest||'|-|';
+
+  PERFORM set_config('probe.p848_det', det, false);
+  PERFORM set_config('probe.p848', CASE WHEN bad = '' AND r_rest = 'OK'
+    THEN 'OK (frecuencia_cardiaca: 19 y 301 -> SV001 sin fila; 20 y 300 -> OK con fila; restaurado)'
+    ELSE 'ROJO ('||left(bad,700)||' | restauracion='||r_rest||')' END, false);
+EXCEPTION WHEN OTHERS THEN
+  PERFORM set_config('role','none',true); PERFORM set_config('request.jwt.claims','',true);
+  PERFORM set_config('probe.p848', CASE WHEN SQLERRM LIKE 'fixture roto%' THEN 'ROJO ('||SQLERRM||')'
+    ELSE 'FALLO ('||SQLSTATE||' '||SQLERRM||')' END, false);
+END $$;
+SELECT set_config('role','none', true);
+
+-- ---------------- P849 capturar_signo_vital: frecuencia_respiratoria ----------------
+DO $$
+DECLARE
+  med uuid; pac integer; cit bigint; maxid integer; sig0 text; created integer[] := '{}';
+  st text; msg text; j jsonb; nx bigint; ok boolean; det text := ''; bad text := ''; r_rest text := 'OK'; nid integer;
+BEGIN
+  -- fixture: primera cita con medico y paciente; el medico duenio de la cita pasa el gate de la RPC (254)
+  SELECT c.medico_id, c.paciente_id, c.id INTO med, pac, cit FROM public.citas c
+   WHERE c.medico_id IS NOT NULL AND c.paciente_id IS NOT NULL ORDER BY c.id LIMIT 1;
+  IF cit IS NULL THEN RAISE EXCEPTION 'fixture roto: cita con medico y paciente'; END IF;
+  -- snapshot: filas existentes byte a byte
+  SELECT COALESCE(max(id), 0) INTO maxid FROM public.signos_vitales;
+  SELECT md5(COALESCE(string_agg(row_to_json(s)::text, '|' ORDER BY s.id), '')) INTO sig0 FROM public.signos_vitales s WHERE s.id <= maxid;
+  st := '00000'; msg := ''; j := NULL;
+  nx := (SELECT count(*) FROM public.signos_vitales WHERE id > maxid AND NOT (id = ANY(created)));
+  BEGIN
+    PERFORM set_config('request.jwt.claims', json_build_object('sub',med::text,'role','authenticated')::text, true); PERFORM set_config('role','authenticated',true);
+    j := public.capturar_signo_vital(p_paciente_id => pac, p_cita_id => cit, p_medico_id => med, p_frecuencia_respiratoria => 3);
+    PERFORM set_config('role','none',true); PERFORM set_config('request.jwt.claims','',true);
+  EXCEPTION WHEN OTHERS THEN PERFORM set_config('role','none',true); PERFORM set_config('request.jwt.claims','',true);
+    st := SQLSTATE; msg := SQLERRM; END;
+  IF j IS NOT NULL THEN created := created || (j->>'id')::integer; END IF;
+  ok := (st = 'SV001' AND msg = 'Signo vital fuera de rango: frecuencia_respiratoria (4-80 rpm)' AND j IS NULL
+         AND (SELECT count(*) FROM public.signos_vitales WHERE id > maxid AND NOT (id = ANY(created))) = nx);
+  det := det||' ;; frecuencia_respiratoria=3|SV001 Signo vital fuera de rango: frecuencia_respiratoria (4-80 rpm) sin fila|'||CASE WHEN ok THEN 'OK' ELSE 'ROJO' END||'|'||st||'|'||msg;
+  IF NOT ok THEN bad := bad||'frecuencia_respiratoria=3: '||st||' '||left(msg,100)||'; '; END IF;
+  st := '00000'; msg := ''; j := NULL;
+  nx := (SELECT count(*) FROM public.signos_vitales WHERE id > maxid AND NOT (id = ANY(created)));
+  BEGIN
+    PERFORM set_config('request.jwt.claims', json_build_object('sub',med::text,'role','authenticated')::text, true); PERFORM set_config('role','authenticated',true);
+    j := public.capturar_signo_vital(p_paciente_id => pac, p_cita_id => cit, p_medico_id => med, p_frecuencia_respiratoria => 81);
+    PERFORM set_config('role','none',true); PERFORM set_config('request.jwt.claims','',true);
+  EXCEPTION WHEN OTHERS THEN PERFORM set_config('role','none',true); PERFORM set_config('request.jwt.claims','',true);
+    st := SQLSTATE; msg := SQLERRM; END;
+  IF j IS NOT NULL THEN created := created || (j->>'id')::integer; END IF;
+  ok := (st = 'SV001' AND msg = 'Signo vital fuera de rango: frecuencia_respiratoria (4-80 rpm)' AND j IS NULL
+         AND (SELECT count(*) FROM public.signos_vitales WHERE id > maxid AND NOT (id = ANY(created))) = nx);
+  det := det||' ;; frecuencia_respiratoria=81|SV001 Signo vital fuera de rango: frecuencia_respiratoria (4-80 rpm) sin fila|'||CASE WHEN ok THEN 'OK' ELSE 'ROJO' END||'|'||st||'|'||msg;
+  IF NOT ok THEN bad := bad||'frecuencia_respiratoria=81: '||st||' '||left(msg,100)||'; '; END IF;
+  st := '00000'; msg := ''; j := NULL;
+  nx := (SELECT count(*) FROM public.signos_vitales WHERE id > maxid AND NOT (id = ANY(created)));
+  BEGIN
+    PERFORM set_config('request.jwt.claims', json_build_object('sub',med::text,'role','authenticated')::text, true); PERFORM set_config('role','authenticated',true);
+    j := public.capturar_signo_vital(p_paciente_id => pac, p_cita_id => cit, p_medico_id => med, p_frecuencia_respiratoria => 4);
+    PERFORM set_config('role','none',true); PERFORM set_config('request.jwt.claims','',true);
+  EXCEPTION WHEN OTHERS THEN PERFORM set_config('role','none',true); PERFORM set_config('request.jwt.claims','',true);
+    st := SQLSTATE; msg := SQLERRM; END;
+  IF j IS NOT NULL THEN created := created || (j->>'id')::integer; END IF;
+  ok := (st = '00000' AND j IS NOT NULL
+         AND EXISTS (SELECT 1 FROM public.signos_vitales s WHERE s.id = (j->>'id')::integer AND s.frecuencia_respiratoria = 4));
+  det := det||' ;; frecuencia_respiratoria=4|OK e inserta|'||CASE WHEN ok THEN 'OK' ELSE 'ROJO' END||'|'||st||'|'||msg;
+  IF NOT ok THEN bad := bad||'frecuencia_respiratoria=4: '||st||' '||left(msg,100)||'; '; END IF;
+  st := '00000'; msg := ''; j := NULL;
+  nx := (SELECT count(*) FROM public.signos_vitales WHERE id > maxid AND NOT (id = ANY(created)));
+  BEGIN
+    PERFORM set_config('request.jwt.claims', json_build_object('sub',med::text,'role','authenticated')::text, true); PERFORM set_config('role','authenticated',true);
+    j := public.capturar_signo_vital(p_paciente_id => pac, p_cita_id => cit, p_medico_id => med, p_frecuencia_respiratoria => 80);
+    PERFORM set_config('role','none',true); PERFORM set_config('request.jwt.claims','',true);
+  EXCEPTION WHEN OTHERS THEN PERFORM set_config('role','none',true); PERFORM set_config('request.jwt.claims','',true);
+    st := SQLSTATE; msg := SQLERRM; END;
+  IF j IS NOT NULL THEN created := created || (j->>'id')::integer; END IF;
+  ok := (st = '00000' AND j IS NOT NULL
+         AND EXISTS (SELECT 1 FROM public.signos_vitales s WHERE s.id = (j->>'id')::integer AND s.frecuencia_respiratoria = 80));
+  det := det||' ;; frecuencia_respiratoria=80|OK e inserta|'||CASE WHEN ok THEN 'OK' ELSE 'ROJO' END||'|'||st||'|'||msg;
+  IF NOT ok THEN bad := bad||'frecuencia_respiratoria=80: '||st||' '||left(msg,100)||'; '; END IF;
+  -- restauracion: se borra solo lo que el probe creo y se verifica contra el snapshot
+  DELETE FROM public.signos_vitales WHERE id = ANY(created);
+  IF EXISTS (SELECT 1 FROM public.signos_vitales WHERE id = ANY(created)) THEN r_rest := 'quedaron filas creadas'; END IF;
+  IF (SELECT md5(COALESCE(string_agg(row_to_json(s)::text, '|' ORDER BY s.id), '')) FROM public.signos_vitales s WHERE s.id <= maxid) IS DISTINCT FROM sig0 THEN
+    r_rest := r_rest||' / filas previas cambiaron'; END IF;
+  det := det||' ;; restauracion|'||cardinality(created)||' fila(s) creadas borradas, snapshot igual|'||r_rest||'|-|';
+
+  PERFORM set_config('probe.p849_det', det, false);
+  PERFORM set_config('probe.p849', CASE WHEN bad = '' AND r_rest = 'OK'
+    THEN 'OK (frecuencia_respiratoria: 3 y 81 -> SV001 sin fila; 4 y 80 -> OK con fila; restaurado)'
+    ELSE 'ROJO ('||left(bad,700)||' | restauracion='||r_rest||')' END, false);
+EXCEPTION WHEN OTHERS THEN
+  PERFORM set_config('role','none',true); PERFORM set_config('request.jwt.claims','',true);
+  PERFORM set_config('probe.p849', CASE WHEN SQLERRM LIKE 'fixture roto%' THEN 'ROJO ('||SQLERRM||')'
+    ELSE 'FALLO ('||SQLSTATE||' '||SQLERRM||')' END, false);
+END $$;
+SELECT set_config('role','none', true);
+
+-- ---------------- P850 capturar_signo_vital: temperatura ----------------
+DO $$
+DECLARE
+  med uuid; pac integer; cit bigint; maxid integer; sig0 text; created integer[] := '{}';
+  st text; msg text; j jsonb; nx bigint; ok boolean; det text := ''; bad text := ''; r_rest text := 'OK'; nid integer;
+BEGIN
+  -- fixture: primera cita con medico y paciente; el medico duenio de la cita pasa el gate de la RPC (254)
+  SELECT c.medico_id, c.paciente_id, c.id INTO med, pac, cit FROM public.citas c
+   WHERE c.medico_id IS NOT NULL AND c.paciente_id IS NOT NULL ORDER BY c.id LIMIT 1;
+  IF cit IS NULL THEN RAISE EXCEPTION 'fixture roto: cita con medico y paciente'; END IF;
+  -- snapshot: filas existentes byte a byte
+  SELECT COALESCE(max(id), 0) INTO maxid FROM public.signos_vitales;
+  SELECT md5(COALESCE(string_agg(row_to_json(s)::text, '|' ORDER BY s.id), '')) INTO sig0 FROM public.signos_vitales s WHERE s.id <= maxid;
+  st := '00000'; msg := ''; j := NULL;
+  nx := (SELECT count(*) FROM public.signos_vitales WHERE id > maxid AND NOT (id = ANY(created)));
+  BEGIN
+    PERFORM set_config('request.jwt.claims', json_build_object('sub',med::text,'role','authenticated')::text, true); PERFORM set_config('role','authenticated',true);
+    j := public.capturar_signo_vital(p_paciente_id => pac, p_cita_id => cit, p_medico_id => med, p_temperatura => 29.99);
+    PERFORM set_config('role','none',true); PERFORM set_config('request.jwt.claims','',true);
+  EXCEPTION WHEN OTHERS THEN PERFORM set_config('role','none',true); PERFORM set_config('request.jwt.claims','',true);
+    st := SQLSTATE; msg := SQLERRM; END;
+  IF j IS NOT NULL THEN created := created || (j->>'id')::integer; END IF;
+  ok := (st = 'SV001' AND msg = 'Signo vital fuera de rango: temperatura (30-45 °C)' AND j IS NULL
+         AND (SELECT count(*) FROM public.signos_vitales WHERE id > maxid AND NOT (id = ANY(created))) = nx);
+  det := det||' ;; temperatura=29.99|SV001 Signo vital fuera de rango: temperatura (30-45 °C) sin fila|'||CASE WHEN ok THEN 'OK' ELSE 'ROJO' END||'|'||st||'|'||msg;
+  IF NOT ok THEN bad := bad||'temperatura=29.99: '||st||' '||left(msg,100)||'; '; END IF;
+  st := '00000'; msg := ''; j := NULL;
+  nx := (SELECT count(*) FROM public.signos_vitales WHERE id > maxid AND NOT (id = ANY(created)));
+  BEGIN
+    PERFORM set_config('request.jwt.claims', json_build_object('sub',med::text,'role','authenticated')::text, true); PERFORM set_config('role','authenticated',true);
+    j := public.capturar_signo_vital(p_paciente_id => pac, p_cita_id => cit, p_medico_id => med, p_temperatura => 45.01);
+    PERFORM set_config('role','none',true); PERFORM set_config('request.jwt.claims','',true);
+  EXCEPTION WHEN OTHERS THEN PERFORM set_config('role','none',true); PERFORM set_config('request.jwt.claims','',true);
+    st := SQLSTATE; msg := SQLERRM; END;
+  IF j IS NOT NULL THEN created := created || (j->>'id')::integer; END IF;
+  ok := (st = 'SV001' AND msg = 'Signo vital fuera de rango: temperatura (30-45 °C)' AND j IS NULL
+         AND (SELECT count(*) FROM public.signos_vitales WHERE id > maxid AND NOT (id = ANY(created))) = nx);
+  det := det||' ;; temperatura=45.01|SV001 Signo vital fuera de rango: temperatura (30-45 °C) sin fila|'||CASE WHEN ok THEN 'OK' ELSE 'ROJO' END||'|'||st||'|'||msg;
+  IF NOT ok THEN bad := bad||'temperatura=45.01: '||st||' '||left(msg,100)||'; '; END IF;
+  st := '00000'; msg := ''; j := NULL;
+  nx := (SELECT count(*) FROM public.signos_vitales WHERE id > maxid AND NOT (id = ANY(created)));
+  BEGIN
+    PERFORM set_config('request.jwt.claims', json_build_object('sub',med::text,'role','authenticated')::text, true); PERFORM set_config('role','authenticated',true);
+    j := public.capturar_signo_vital(p_paciente_id => pac, p_cita_id => cit, p_medico_id => med, p_temperatura => 30);
+    PERFORM set_config('role','none',true); PERFORM set_config('request.jwt.claims','',true);
+  EXCEPTION WHEN OTHERS THEN PERFORM set_config('role','none',true); PERFORM set_config('request.jwt.claims','',true);
+    st := SQLSTATE; msg := SQLERRM; END;
+  IF j IS NOT NULL THEN created := created || (j->>'id')::integer; END IF;
+  ok := (st = '00000' AND j IS NOT NULL
+         AND EXISTS (SELECT 1 FROM public.signos_vitales s WHERE s.id = (j->>'id')::integer AND s.temperatura = 30));
+  det := det||' ;; temperatura=30|OK e inserta|'||CASE WHEN ok THEN 'OK' ELSE 'ROJO' END||'|'||st||'|'||msg;
+  IF NOT ok THEN bad := bad||'temperatura=30: '||st||' '||left(msg,100)||'; '; END IF;
+  st := '00000'; msg := ''; j := NULL;
+  nx := (SELECT count(*) FROM public.signos_vitales WHERE id > maxid AND NOT (id = ANY(created)));
+  BEGIN
+    PERFORM set_config('request.jwt.claims', json_build_object('sub',med::text,'role','authenticated')::text, true); PERFORM set_config('role','authenticated',true);
+    j := public.capturar_signo_vital(p_paciente_id => pac, p_cita_id => cit, p_medico_id => med, p_temperatura => 45);
+    PERFORM set_config('role','none',true); PERFORM set_config('request.jwt.claims','',true);
+  EXCEPTION WHEN OTHERS THEN PERFORM set_config('role','none',true); PERFORM set_config('request.jwt.claims','',true);
+    st := SQLSTATE; msg := SQLERRM; END;
+  IF j IS NOT NULL THEN created := created || (j->>'id')::integer; END IF;
+  ok := (st = '00000' AND j IS NOT NULL
+         AND EXISTS (SELECT 1 FROM public.signos_vitales s WHERE s.id = (j->>'id')::integer AND s.temperatura = 45));
+  det := det||' ;; temperatura=45|OK e inserta|'||CASE WHEN ok THEN 'OK' ELSE 'ROJO' END||'|'||st||'|'||msg;
+  IF NOT ok THEN bad := bad||'temperatura=45: '||st||' '||left(msg,100)||'; '; END IF;
+  -- restauracion: se borra solo lo que el probe creo y se verifica contra el snapshot
+  DELETE FROM public.signos_vitales WHERE id = ANY(created);
+  IF EXISTS (SELECT 1 FROM public.signos_vitales WHERE id = ANY(created)) THEN r_rest := 'quedaron filas creadas'; END IF;
+  IF (SELECT md5(COALESCE(string_agg(row_to_json(s)::text, '|' ORDER BY s.id), '')) FROM public.signos_vitales s WHERE s.id <= maxid) IS DISTINCT FROM sig0 THEN
+    r_rest := r_rest||' / filas previas cambiaron'; END IF;
+  det := det||' ;; restauracion|'||cardinality(created)||' fila(s) creadas borradas, snapshot igual|'||r_rest||'|-|';
+
+  PERFORM set_config('probe.p850_det', det, false);
+  PERFORM set_config('probe.p850', CASE WHEN bad = '' AND r_rest = 'OK'
+    THEN 'OK (temperatura: 29.99 y 45.01 -> SV001 sin fila; 30 y 45 -> OK con fila; restaurado)'
+    ELSE 'ROJO ('||left(bad,700)||' | restauracion='||r_rest||')' END, false);
+EXCEPTION WHEN OTHERS THEN
+  PERFORM set_config('role','none',true); PERFORM set_config('request.jwt.claims','',true);
+  PERFORM set_config('probe.p850', CASE WHEN SQLERRM LIKE 'fixture roto%' THEN 'ROJO ('||SQLERRM||')'
+    ELSE 'FALLO ('||SQLSTATE||' '||SQLERRM||')' END, false);
+END $$;
+SELECT set_config('role','none', true);
+
+-- ---------------- P851 capturar_signo_vital: saturacion_o2 ----------------
+DO $$
+DECLARE
+  med uuid; pac integer; cit bigint; maxid integer; sig0 text; created integer[] := '{}';
+  st text; msg text; j jsonb; nx bigint; ok boolean; det text := ''; bad text := ''; r_rest text := 'OK'; nid integer;
+BEGIN
+  -- fixture: primera cita con medico y paciente; el medico duenio de la cita pasa el gate de la RPC (254)
+  SELECT c.medico_id, c.paciente_id, c.id INTO med, pac, cit FROM public.citas c
+   WHERE c.medico_id IS NOT NULL AND c.paciente_id IS NOT NULL ORDER BY c.id LIMIT 1;
+  IF cit IS NULL THEN RAISE EXCEPTION 'fixture roto: cita con medico y paciente'; END IF;
+  -- snapshot: filas existentes byte a byte
+  SELECT COALESCE(max(id), 0) INTO maxid FROM public.signos_vitales;
+  SELECT md5(COALESCE(string_agg(row_to_json(s)::text, '|' ORDER BY s.id), '')) INTO sig0 FROM public.signos_vitales s WHERE s.id <= maxid;
+  st := '00000'; msg := ''; j := NULL;
+  nx := (SELECT count(*) FROM public.signos_vitales WHERE id > maxid AND NOT (id = ANY(created)));
+  BEGIN
+    PERFORM set_config('request.jwt.claims', json_build_object('sub',med::text,'role','authenticated')::text, true); PERFORM set_config('role','authenticated',true);
+    j := public.capturar_signo_vital(p_paciente_id => pac, p_cita_id => cit, p_medico_id => med, p_saturacion_o2 => 49);
+    PERFORM set_config('role','none',true); PERFORM set_config('request.jwt.claims','',true);
+  EXCEPTION WHEN OTHERS THEN PERFORM set_config('role','none',true); PERFORM set_config('request.jwt.claims','',true);
+    st := SQLSTATE; msg := SQLERRM; END;
+  IF j IS NOT NULL THEN created := created || (j->>'id')::integer; END IF;
+  ok := (st = 'SV001' AND msg = 'Signo vital fuera de rango: saturacion_o2 (50-100 %)' AND j IS NULL
+         AND (SELECT count(*) FROM public.signos_vitales WHERE id > maxid AND NOT (id = ANY(created))) = nx);
+  det := det||' ;; saturacion_o2=49|SV001 Signo vital fuera de rango: saturacion_o2 (50-100 %) sin fila|'||CASE WHEN ok THEN 'OK' ELSE 'ROJO' END||'|'||st||'|'||msg;
+  IF NOT ok THEN bad := bad||'saturacion_o2=49: '||st||' '||left(msg,100)||'; '; END IF;
+  st := '00000'; msg := ''; j := NULL;
+  nx := (SELECT count(*) FROM public.signos_vitales WHERE id > maxid AND NOT (id = ANY(created)));
+  BEGIN
+    PERFORM set_config('request.jwt.claims', json_build_object('sub',med::text,'role','authenticated')::text, true); PERFORM set_config('role','authenticated',true);
+    j := public.capturar_signo_vital(p_paciente_id => pac, p_cita_id => cit, p_medico_id => med, p_saturacion_o2 => 101);
+    PERFORM set_config('role','none',true); PERFORM set_config('request.jwt.claims','',true);
+  EXCEPTION WHEN OTHERS THEN PERFORM set_config('role','none',true); PERFORM set_config('request.jwt.claims','',true);
+    st := SQLSTATE; msg := SQLERRM; END;
+  IF j IS NOT NULL THEN created := created || (j->>'id')::integer; END IF;
+  ok := (st = 'SV001' AND msg = 'Signo vital fuera de rango: saturacion_o2 (50-100 %)' AND j IS NULL
+         AND (SELECT count(*) FROM public.signos_vitales WHERE id > maxid AND NOT (id = ANY(created))) = nx);
+  det := det||' ;; saturacion_o2=101|SV001 Signo vital fuera de rango: saturacion_o2 (50-100 %) sin fila|'||CASE WHEN ok THEN 'OK' ELSE 'ROJO' END||'|'||st||'|'||msg;
+  IF NOT ok THEN bad := bad||'saturacion_o2=101: '||st||' '||left(msg,100)||'; '; END IF;
+  st := '00000'; msg := ''; j := NULL;
+  nx := (SELECT count(*) FROM public.signos_vitales WHERE id > maxid AND NOT (id = ANY(created)));
+  BEGIN
+    PERFORM set_config('request.jwt.claims', json_build_object('sub',med::text,'role','authenticated')::text, true); PERFORM set_config('role','authenticated',true);
+    j := public.capturar_signo_vital(p_paciente_id => pac, p_cita_id => cit, p_medico_id => med, p_saturacion_o2 => 50);
+    PERFORM set_config('role','none',true); PERFORM set_config('request.jwt.claims','',true);
+  EXCEPTION WHEN OTHERS THEN PERFORM set_config('role','none',true); PERFORM set_config('request.jwt.claims','',true);
+    st := SQLSTATE; msg := SQLERRM; END;
+  IF j IS NOT NULL THEN created := created || (j->>'id')::integer; END IF;
+  ok := (st = '00000' AND j IS NOT NULL
+         AND EXISTS (SELECT 1 FROM public.signos_vitales s WHERE s.id = (j->>'id')::integer AND s.saturacion_o2 = 50));
+  det := det||' ;; saturacion_o2=50|OK e inserta|'||CASE WHEN ok THEN 'OK' ELSE 'ROJO' END||'|'||st||'|'||msg;
+  IF NOT ok THEN bad := bad||'saturacion_o2=50: '||st||' '||left(msg,100)||'; '; END IF;
+  st := '00000'; msg := ''; j := NULL;
+  nx := (SELECT count(*) FROM public.signos_vitales WHERE id > maxid AND NOT (id = ANY(created)));
+  BEGIN
+    PERFORM set_config('request.jwt.claims', json_build_object('sub',med::text,'role','authenticated')::text, true); PERFORM set_config('role','authenticated',true);
+    j := public.capturar_signo_vital(p_paciente_id => pac, p_cita_id => cit, p_medico_id => med, p_saturacion_o2 => 100);
+    PERFORM set_config('role','none',true); PERFORM set_config('request.jwt.claims','',true);
+  EXCEPTION WHEN OTHERS THEN PERFORM set_config('role','none',true); PERFORM set_config('request.jwt.claims','',true);
+    st := SQLSTATE; msg := SQLERRM; END;
+  IF j IS NOT NULL THEN created := created || (j->>'id')::integer; END IF;
+  ok := (st = '00000' AND j IS NOT NULL
+         AND EXISTS (SELECT 1 FROM public.signos_vitales s WHERE s.id = (j->>'id')::integer AND s.saturacion_o2 = 100));
+  det := det||' ;; saturacion_o2=100|OK e inserta|'||CASE WHEN ok THEN 'OK' ELSE 'ROJO' END||'|'||st||'|'||msg;
+  IF NOT ok THEN bad := bad||'saturacion_o2=100: '||st||' '||left(msg,100)||'; '; END IF;
+  -- restauracion: se borra solo lo que el probe creo y se verifica contra el snapshot
+  DELETE FROM public.signos_vitales WHERE id = ANY(created);
+  IF EXISTS (SELECT 1 FROM public.signos_vitales WHERE id = ANY(created)) THEN r_rest := 'quedaron filas creadas'; END IF;
+  IF (SELECT md5(COALESCE(string_agg(row_to_json(s)::text, '|' ORDER BY s.id), '')) FROM public.signos_vitales s WHERE s.id <= maxid) IS DISTINCT FROM sig0 THEN
+    r_rest := r_rest||' / filas previas cambiaron'; END IF;
+  det := det||' ;; restauracion|'||cardinality(created)||' fila(s) creadas borradas, snapshot igual|'||r_rest||'|-|';
+
+  PERFORM set_config('probe.p851_det', det, false);
+  PERFORM set_config('probe.p851', CASE WHEN bad = '' AND r_rest = 'OK'
+    THEN 'OK (saturacion_o2: 49 y 101 -> SV001 sin fila; 50 y 100 -> OK con fila; restaurado)'
+    ELSE 'ROJO ('||left(bad,700)||' | restauracion='||r_rest||')' END, false);
+EXCEPTION WHEN OTHERS THEN
+  PERFORM set_config('role','none',true); PERFORM set_config('request.jwt.claims','',true);
+  PERFORM set_config('probe.p851', CASE WHEN SQLERRM LIKE 'fixture roto%' THEN 'ROJO ('||SQLERRM||')'
+    ELSE 'FALLO ('||SQLSTATE||' '||SQLERRM||')' END, false);
+END $$;
+SELECT set_config('role','none', true);
+
+-- ---------------- P852 capturar_signo_vital: peso_kg ----------------
+DO $$
+DECLARE
+  med uuid; pac integer; cit bigint; maxid integer; sig0 text; created integer[] := '{}';
+  st text; msg text; j jsonb; nx bigint; ok boolean; det text := ''; bad text := ''; r_rest text := 'OK'; nid integer;
+BEGIN
+  -- fixture: primera cita con medico y paciente; el medico duenio de la cita pasa el gate de la RPC (254)
+  SELECT c.medico_id, c.paciente_id, c.id INTO med, pac, cit FROM public.citas c
+   WHERE c.medico_id IS NOT NULL AND c.paciente_id IS NOT NULL ORDER BY c.id LIMIT 1;
+  IF cit IS NULL THEN RAISE EXCEPTION 'fixture roto: cita con medico y paciente'; END IF;
+  -- snapshot: filas existentes byte a byte
+  SELECT COALESCE(max(id), 0) INTO maxid FROM public.signos_vitales;
+  SELECT md5(COALESCE(string_agg(row_to_json(s)::text, '|' ORDER BY s.id), '')) INTO sig0 FROM public.signos_vitales s WHERE s.id <= maxid;
+  st := '00000'; msg := ''; j := NULL;
+  nx := (SELECT count(*) FROM public.signos_vitales WHERE id > maxid AND NOT (id = ANY(created)));
+  BEGIN
+    PERFORM set_config('request.jwt.claims', json_build_object('sub',med::text,'role','authenticated')::text, true); PERFORM set_config('role','authenticated',true);
+    j := public.capturar_signo_vital(p_paciente_id => pac, p_cita_id => cit, p_medico_id => med, p_peso_kg => 0.49);
+    PERFORM set_config('role','none',true); PERFORM set_config('request.jwt.claims','',true);
+  EXCEPTION WHEN OTHERS THEN PERFORM set_config('role','none',true); PERFORM set_config('request.jwt.claims','',true);
+    st := SQLSTATE; msg := SQLERRM; END;
+  IF j IS NOT NULL THEN created := created || (j->>'id')::integer; END IF;
+  ok := (st = 'SV001' AND msg = 'Signo vital fuera de rango: peso_kg (0.5-400 kg)' AND j IS NULL
+         AND (SELECT count(*) FROM public.signos_vitales WHERE id > maxid AND NOT (id = ANY(created))) = nx);
+  det := det||' ;; peso_kg=0.49|SV001 Signo vital fuera de rango: peso_kg (0.5-400 kg) sin fila|'||CASE WHEN ok THEN 'OK' ELSE 'ROJO' END||'|'||st||'|'||msg;
+  IF NOT ok THEN bad := bad||'peso_kg=0.49: '||st||' '||left(msg,100)||'; '; END IF;
+  st := '00000'; msg := ''; j := NULL;
+  nx := (SELECT count(*) FROM public.signos_vitales WHERE id > maxid AND NOT (id = ANY(created)));
+  BEGIN
+    PERFORM set_config('request.jwt.claims', json_build_object('sub',med::text,'role','authenticated')::text, true); PERFORM set_config('role','authenticated',true);
+    j := public.capturar_signo_vital(p_paciente_id => pac, p_cita_id => cit, p_medico_id => med, p_peso_kg => 400.01);
+    PERFORM set_config('role','none',true); PERFORM set_config('request.jwt.claims','',true);
+  EXCEPTION WHEN OTHERS THEN PERFORM set_config('role','none',true); PERFORM set_config('request.jwt.claims','',true);
+    st := SQLSTATE; msg := SQLERRM; END;
+  IF j IS NOT NULL THEN created := created || (j->>'id')::integer; END IF;
+  ok := (st = 'SV001' AND msg = 'Signo vital fuera de rango: peso_kg (0.5-400 kg)' AND j IS NULL
+         AND (SELECT count(*) FROM public.signos_vitales WHERE id > maxid AND NOT (id = ANY(created))) = nx);
+  det := det||' ;; peso_kg=400.01|SV001 Signo vital fuera de rango: peso_kg (0.5-400 kg) sin fila|'||CASE WHEN ok THEN 'OK' ELSE 'ROJO' END||'|'||st||'|'||msg;
+  IF NOT ok THEN bad := bad||'peso_kg=400.01: '||st||' '||left(msg,100)||'; '; END IF;
+  st := '00000'; msg := ''; j := NULL;
+  nx := (SELECT count(*) FROM public.signos_vitales WHERE id > maxid AND NOT (id = ANY(created)));
+  BEGIN
+    PERFORM set_config('request.jwt.claims', json_build_object('sub',med::text,'role','authenticated')::text, true); PERFORM set_config('role','authenticated',true);
+    j := public.capturar_signo_vital(p_paciente_id => pac, p_cita_id => cit, p_medico_id => med, p_peso_kg => 0.5);
+    PERFORM set_config('role','none',true); PERFORM set_config('request.jwt.claims','',true);
+  EXCEPTION WHEN OTHERS THEN PERFORM set_config('role','none',true); PERFORM set_config('request.jwt.claims','',true);
+    st := SQLSTATE; msg := SQLERRM; END;
+  IF j IS NOT NULL THEN created := created || (j->>'id')::integer; END IF;
+  ok := (st = '00000' AND j IS NOT NULL
+         AND EXISTS (SELECT 1 FROM public.signos_vitales s WHERE s.id = (j->>'id')::integer AND s.peso_kg = 0.5));
+  det := det||' ;; peso_kg=0.5|OK e inserta|'||CASE WHEN ok THEN 'OK' ELSE 'ROJO' END||'|'||st||'|'||msg;
+  IF NOT ok THEN bad := bad||'peso_kg=0.5: '||st||' '||left(msg,100)||'; '; END IF;
+  st := '00000'; msg := ''; j := NULL;
+  nx := (SELECT count(*) FROM public.signos_vitales WHERE id > maxid AND NOT (id = ANY(created)));
+  BEGIN
+    PERFORM set_config('request.jwt.claims', json_build_object('sub',med::text,'role','authenticated')::text, true); PERFORM set_config('role','authenticated',true);
+    j := public.capturar_signo_vital(p_paciente_id => pac, p_cita_id => cit, p_medico_id => med, p_peso_kg => 400);
+    PERFORM set_config('role','none',true); PERFORM set_config('request.jwt.claims','',true);
+  EXCEPTION WHEN OTHERS THEN PERFORM set_config('role','none',true); PERFORM set_config('request.jwt.claims','',true);
+    st := SQLSTATE; msg := SQLERRM; END;
+  IF j IS NOT NULL THEN created := created || (j->>'id')::integer; END IF;
+  ok := (st = '00000' AND j IS NOT NULL
+         AND EXISTS (SELECT 1 FROM public.signos_vitales s WHERE s.id = (j->>'id')::integer AND s.peso_kg = 400));
+  det := det||' ;; peso_kg=400|OK e inserta|'||CASE WHEN ok THEN 'OK' ELSE 'ROJO' END||'|'||st||'|'||msg;
+  IF NOT ok THEN bad := bad||'peso_kg=400: '||st||' '||left(msg,100)||'; '; END IF;
+  -- restauracion: se borra solo lo que el probe creo y se verifica contra el snapshot
+  DELETE FROM public.signos_vitales WHERE id = ANY(created);
+  IF EXISTS (SELECT 1 FROM public.signos_vitales WHERE id = ANY(created)) THEN r_rest := 'quedaron filas creadas'; END IF;
+  IF (SELECT md5(COALESCE(string_agg(row_to_json(s)::text, '|' ORDER BY s.id), '')) FROM public.signos_vitales s WHERE s.id <= maxid) IS DISTINCT FROM sig0 THEN
+    r_rest := r_rest||' / filas previas cambiaron'; END IF;
+  det := det||' ;; restauracion|'||cardinality(created)||' fila(s) creadas borradas, snapshot igual|'||r_rest||'|-|';
+
+  PERFORM set_config('probe.p852_det', det, false);
+  PERFORM set_config('probe.p852', CASE WHEN bad = '' AND r_rest = 'OK'
+    THEN 'OK (peso_kg: 0.49 y 400.01 -> SV001 sin fila; 0.5 y 400 -> OK con fila; restaurado)'
+    ELSE 'ROJO ('||left(bad,700)||' | restauracion='||r_rest||')' END, false);
+EXCEPTION WHEN OTHERS THEN
+  PERFORM set_config('role','none',true); PERFORM set_config('request.jwt.claims','',true);
+  PERFORM set_config('probe.p852', CASE WHEN SQLERRM LIKE 'fixture roto%' THEN 'ROJO ('||SQLERRM||')'
+    ELSE 'FALLO ('||SQLSTATE||' '||SQLERRM||')' END, false);
+END $$;
+SELECT set_config('role','none', true);
+
+-- ---------------- P853 capturar_signo_vital: talla_cm ----------------
+DO $$
+DECLARE
+  med uuid; pac integer; cit bigint; maxid integer; sig0 text; created integer[] := '{}';
+  st text; msg text; j jsonb; nx bigint; ok boolean; det text := ''; bad text := ''; r_rest text := 'OK'; nid integer;
+BEGIN
+  -- fixture: primera cita con medico y paciente; el medico duenio de la cita pasa el gate de la RPC (254)
+  SELECT c.medico_id, c.paciente_id, c.id INTO med, pac, cit FROM public.citas c
+   WHERE c.medico_id IS NOT NULL AND c.paciente_id IS NOT NULL ORDER BY c.id LIMIT 1;
+  IF cit IS NULL THEN RAISE EXCEPTION 'fixture roto: cita con medico y paciente'; END IF;
+  -- snapshot: filas existentes byte a byte
+  SELECT COALESCE(max(id), 0) INTO maxid FROM public.signos_vitales;
+  SELECT md5(COALESCE(string_agg(row_to_json(s)::text, '|' ORDER BY s.id), '')) INTO sig0 FROM public.signos_vitales s WHERE s.id <= maxid;
+  st := '00000'; msg := ''; j := NULL;
+  nx := (SELECT count(*) FROM public.signos_vitales WHERE id > maxid AND NOT (id = ANY(created)));
+  BEGIN
+    PERFORM set_config('request.jwt.claims', json_build_object('sub',med::text,'role','authenticated')::text, true); PERFORM set_config('role','authenticated',true);
+    j := public.capturar_signo_vital(p_paciente_id => pac, p_cita_id => cit, p_medico_id => med, p_talla_cm => 29.99);
+    PERFORM set_config('role','none',true); PERFORM set_config('request.jwt.claims','',true);
+  EXCEPTION WHEN OTHERS THEN PERFORM set_config('role','none',true); PERFORM set_config('request.jwt.claims','',true);
+    st := SQLSTATE; msg := SQLERRM; END;
+  IF j IS NOT NULL THEN created := created || (j->>'id')::integer; END IF;
+  ok := (st = 'SV001' AND msg = 'Signo vital fuera de rango: talla_cm (30-250 cm)' AND j IS NULL
+         AND (SELECT count(*) FROM public.signos_vitales WHERE id > maxid AND NOT (id = ANY(created))) = nx);
+  det := det||' ;; talla_cm=29.99|SV001 Signo vital fuera de rango: talla_cm (30-250 cm) sin fila|'||CASE WHEN ok THEN 'OK' ELSE 'ROJO' END||'|'||st||'|'||msg;
+  IF NOT ok THEN bad := bad||'talla_cm=29.99: '||st||' '||left(msg,100)||'; '; END IF;
+  st := '00000'; msg := ''; j := NULL;
+  nx := (SELECT count(*) FROM public.signos_vitales WHERE id > maxid AND NOT (id = ANY(created)));
+  BEGIN
+    PERFORM set_config('request.jwt.claims', json_build_object('sub',med::text,'role','authenticated')::text, true); PERFORM set_config('role','authenticated',true);
+    j := public.capturar_signo_vital(p_paciente_id => pac, p_cita_id => cit, p_medico_id => med, p_talla_cm => 250.01);
+    PERFORM set_config('role','none',true); PERFORM set_config('request.jwt.claims','',true);
+  EXCEPTION WHEN OTHERS THEN PERFORM set_config('role','none',true); PERFORM set_config('request.jwt.claims','',true);
+    st := SQLSTATE; msg := SQLERRM; END;
+  IF j IS NOT NULL THEN created := created || (j->>'id')::integer; END IF;
+  ok := (st = 'SV001' AND msg = 'Signo vital fuera de rango: talla_cm (30-250 cm)' AND j IS NULL
+         AND (SELECT count(*) FROM public.signos_vitales WHERE id > maxid AND NOT (id = ANY(created))) = nx);
+  det := det||' ;; talla_cm=250.01|SV001 Signo vital fuera de rango: talla_cm (30-250 cm) sin fila|'||CASE WHEN ok THEN 'OK' ELSE 'ROJO' END||'|'||st||'|'||msg;
+  IF NOT ok THEN bad := bad||'talla_cm=250.01: '||st||' '||left(msg,100)||'; '; END IF;
+  st := '00000'; msg := ''; j := NULL;
+  nx := (SELECT count(*) FROM public.signos_vitales WHERE id > maxid AND NOT (id = ANY(created)));
+  BEGIN
+    PERFORM set_config('request.jwt.claims', json_build_object('sub',med::text,'role','authenticated')::text, true); PERFORM set_config('role','authenticated',true);
+    j := public.capturar_signo_vital(p_paciente_id => pac, p_cita_id => cit, p_medico_id => med, p_talla_cm => 30);
+    PERFORM set_config('role','none',true); PERFORM set_config('request.jwt.claims','',true);
+  EXCEPTION WHEN OTHERS THEN PERFORM set_config('role','none',true); PERFORM set_config('request.jwt.claims','',true);
+    st := SQLSTATE; msg := SQLERRM; END;
+  IF j IS NOT NULL THEN created := created || (j->>'id')::integer; END IF;
+  ok := (st = '00000' AND j IS NOT NULL
+         AND EXISTS (SELECT 1 FROM public.signos_vitales s WHERE s.id = (j->>'id')::integer AND s.talla_cm = 30));
+  det := det||' ;; talla_cm=30|OK e inserta|'||CASE WHEN ok THEN 'OK' ELSE 'ROJO' END||'|'||st||'|'||msg;
+  IF NOT ok THEN bad := bad||'talla_cm=30: '||st||' '||left(msg,100)||'; '; END IF;
+  st := '00000'; msg := ''; j := NULL;
+  nx := (SELECT count(*) FROM public.signos_vitales WHERE id > maxid AND NOT (id = ANY(created)));
+  BEGIN
+    PERFORM set_config('request.jwt.claims', json_build_object('sub',med::text,'role','authenticated')::text, true); PERFORM set_config('role','authenticated',true);
+    j := public.capturar_signo_vital(p_paciente_id => pac, p_cita_id => cit, p_medico_id => med, p_talla_cm => 250);
+    PERFORM set_config('role','none',true); PERFORM set_config('request.jwt.claims','',true);
+  EXCEPTION WHEN OTHERS THEN PERFORM set_config('role','none',true); PERFORM set_config('request.jwt.claims','',true);
+    st := SQLSTATE; msg := SQLERRM; END;
+  IF j IS NOT NULL THEN created := created || (j->>'id')::integer; END IF;
+  ok := (st = '00000' AND j IS NOT NULL
+         AND EXISTS (SELECT 1 FROM public.signos_vitales s WHERE s.id = (j->>'id')::integer AND s.talla_cm = 250));
+  det := det||' ;; talla_cm=250|OK e inserta|'||CASE WHEN ok THEN 'OK' ELSE 'ROJO' END||'|'||st||'|'||msg;
+  IF NOT ok THEN bad := bad||'talla_cm=250: '||st||' '||left(msg,100)||'; '; END IF;
+  -- restauracion: se borra solo lo que el probe creo y se verifica contra el snapshot
+  DELETE FROM public.signos_vitales WHERE id = ANY(created);
+  IF EXISTS (SELECT 1 FROM public.signos_vitales WHERE id = ANY(created)) THEN r_rest := 'quedaron filas creadas'; END IF;
+  IF (SELECT md5(COALESCE(string_agg(row_to_json(s)::text, '|' ORDER BY s.id), '')) FROM public.signos_vitales s WHERE s.id <= maxid) IS DISTINCT FROM sig0 THEN
+    r_rest := r_rest||' / filas previas cambiaron'; END IF;
+  det := det||' ;; restauracion|'||cardinality(created)||' fila(s) creadas borradas, snapshot igual|'||r_rest||'|-|';
+
+  PERFORM set_config('probe.p853_det', det, false);
+  PERFORM set_config('probe.p853', CASE WHEN bad = '' AND r_rest = 'OK'
+    THEN 'OK (talla_cm: 29.99 y 250.01 -> SV001 sin fila; 30 y 250 -> OK con fila; restaurado)'
+    ELSE 'ROJO ('||left(bad,700)||' | restauracion='||r_rest||')' END, false);
+EXCEPTION WHEN OTHERS THEN
+  PERFORM set_config('role','none',true); PERFORM set_config('request.jwt.claims','',true);
+  PERFORM set_config('probe.p853', CASE WHEN SQLERRM LIKE 'fixture roto%' THEN 'ROJO ('||SQLERRM||')'
+    ELSE 'FALLO ('||SQLSTATE||' '||SQLERRM||')' END, false);
+END $$;
+SELECT set_config('role','none', true);
+
+-- ---------------- P854 capturar_signo_vital: glucosa ----------------
+DO $$
+DECLARE
+  med uuid; pac integer; cit bigint; maxid integer; sig0 text; created integer[] := '{}';
+  st text; msg text; j jsonb; nx bigint; ok boolean; det text := ''; bad text := ''; r_rest text := 'OK'; nid integer;
+BEGIN
+  -- fixture: primera cita con medico y paciente; el medico duenio de la cita pasa el gate de la RPC (254)
+  SELECT c.medico_id, c.paciente_id, c.id INTO med, pac, cit FROM public.citas c
+   WHERE c.medico_id IS NOT NULL AND c.paciente_id IS NOT NULL ORDER BY c.id LIMIT 1;
+  IF cit IS NULL THEN RAISE EXCEPTION 'fixture roto: cita con medico y paciente'; END IF;
+  -- snapshot: filas existentes byte a byte
+  SELECT COALESCE(max(id), 0) INTO maxid FROM public.signos_vitales;
+  SELECT md5(COALESCE(string_agg(row_to_json(s)::text, '|' ORDER BY s.id), '')) INTO sig0 FROM public.signos_vitales s WHERE s.id <= maxid;
+  st := '00000'; msg := ''; j := NULL;
+  nx := (SELECT count(*) FROM public.signos_vitales WHERE id > maxid AND NOT (id = ANY(created)));
+  BEGIN
+    PERFORM set_config('request.jwt.claims', json_build_object('sub',med::text,'role','authenticated')::text, true); PERFORM set_config('role','authenticated',true);
+    j := public.capturar_signo_vital(p_paciente_id => pac, p_cita_id => cit, p_medico_id => med, p_glucosa => 9);
+    PERFORM set_config('role','none',true); PERFORM set_config('request.jwt.claims','',true);
+  EXCEPTION WHEN OTHERS THEN PERFORM set_config('role','none',true); PERFORM set_config('request.jwt.claims','',true);
+    st := SQLSTATE; msg := SQLERRM; END;
+  IF j IS NOT NULL THEN created := created || (j->>'id')::integer; END IF;
+  ok := (st = 'SV001' AND msg = 'Signo vital fuera de rango: glucosa (10-1000 mg/dL)' AND j IS NULL
+         AND (SELECT count(*) FROM public.signos_vitales WHERE id > maxid AND NOT (id = ANY(created))) = nx);
+  det := det||' ;; glucosa=9|SV001 Signo vital fuera de rango: glucosa (10-1000 mg/dL) sin fila|'||CASE WHEN ok THEN 'OK' ELSE 'ROJO' END||'|'||st||'|'||msg;
+  IF NOT ok THEN bad := bad||'glucosa=9: '||st||' '||left(msg,100)||'; '; END IF;
+  st := '00000'; msg := ''; j := NULL;
+  nx := (SELECT count(*) FROM public.signos_vitales WHERE id > maxid AND NOT (id = ANY(created)));
+  BEGIN
+    PERFORM set_config('request.jwt.claims', json_build_object('sub',med::text,'role','authenticated')::text, true); PERFORM set_config('role','authenticated',true);
+    j := public.capturar_signo_vital(p_paciente_id => pac, p_cita_id => cit, p_medico_id => med, p_glucosa => 1001);
+    PERFORM set_config('role','none',true); PERFORM set_config('request.jwt.claims','',true);
+  EXCEPTION WHEN OTHERS THEN PERFORM set_config('role','none',true); PERFORM set_config('request.jwt.claims','',true);
+    st := SQLSTATE; msg := SQLERRM; END;
+  IF j IS NOT NULL THEN created := created || (j->>'id')::integer; END IF;
+  ok := (st = 'SV001' AND msg = 'Signo vital fuera de rango: glucosa (10-1000 mg/dL)' AND j IS NULL
+         AND (SELECT count(*) FROM public.signos_vitales WHERE id > maxid AND NOT (id = ANY(created))) = nx);
+  det := det||' ;; glucosa=1001|SV001 Signo vital fuera de rango: glucosa (10-1000 mg/dL) sin fila|'||CASE WHEN ok THEN 'OK' ELSE 'ROJO' END||'|'||st||'|'||msg;
+  IF NOT ok THEN bad := bad||'glucosa=1001: '||st||' '||left(msg,100)||'; '; END IF;
+  st := '00000'; msg := ''; j := NULL;
+  nx := (SELECT count(*) FROM public.signos_vitales WHERE id > maxid AND NOT (id = ANY(created)));
+  BEGIN
+    PERFORM set_config('request.jwt.claims', json_build_object('sub',med::text,'role','authenticated')::text, true); PERFORM set_config('role','authenticated',true);
+    j := public.capturar_signo_vital(p_paciente_id => pac, p_cita_id => cit, p_medico_id => med, p_glucosa => 10);
+    PERFORM set_config('role','none',true); PERFORM set_config('request.jwt.claims','',true);
+  EXCEPTION WHEN OTHERS THEN PERFORM set_config('role','none',true); PERFORM set_config('request.jwt.claims','',true);
+    st := SQLSTATE; msg := SQLERRM; END;
+  IF j IS NOT NULL THEN created := created || (j->>'id')::integer; END IF;
+  ok := (st = '00000' AND j IS NOT NULL
+         AND EXISTS (SELECT 1 FROM public.signos_vitales s WHERE s.id = (j->>'id')::integer AND s.glucosa = 10));
+  det := det||' ;; glucosa=10|OK e inserta|'||CASE WHEN ok THEN 'OK' ELSE 'ROJO' END||'|'||st||'|'||msg;
+  IF NOT ok THEN bad := bad||'glucosa=10: '||st||' '||left(msg,100)||'; '; END IF;
+  st := '00000'; msg := ''; j := NULL;
+  nx := (SELECT count(*) FROM public.signos_vitales WHERE id > maxid AND NOT (id = ANY(created)));
+  BEGIN
+    PERFORM set_config('request.jwt.claims', json_build_object('sub',med::text,'role','authenticated')::text, true); PERFORM set_config('role','authenticated',true);
+    j := public.capturar_signo_vital(p_paciente_id => pac, p_cita_id => cit, p_medico_id => med, p_glucosa => 1000);
+    PERFORM set_config('role','none',true); PERFORM set_config('request.jwt.claims','',true);
+  EXCEPTION WHEN OTHERS THEN PERFORM set_config('role','none',true); PERFORM set_config('request.jwt.claims','',true);
+    st := SQLSTATE; msg := SQLERRM; END;
+  IF j IS NOT NULL THEN created := created || (j->>'id')::integer; END IF;
+  ok := (st = '00000' AND j IS NOT NULL
+         AND EXISTS (SELECT 1 FROM public.signos_vitales s WHERE s.id = (j->>'id')::integer AND s.glucosa = 1000));
+  det := det||' ;; glucosa=1000|OK e inserta|'||CASE WHEN ok THEN 'OK' ELSE 'ROJO' END||'|'||st||'|'||msg;
+  IF NOT ok THEN bad := bad||'glucosa=1000: '||st||' '||left(msg,100)||'; '; END IF;
+  -- restauracion: se borra solo lo que el probe creo y se verifica contra el snapshot
+  DELETE FROM public.signos_vitales WHERE id = ANY(created);
+  IF EXISTS (SELECT 1 FROM public.signos_vitales WHERE id = ANY(created)) THEN r_rest := 'quedaron filas creadas'; END IF;
+  IF (SELECT md5(COALESCE(string_agg(row_to_json(s)::text, '|' ORDER BY s.id), '')) FROM public.signos_vitales s WHERE s.id <= maxid) IS DISTINCT FROM sig0 THEN
+    r_rest := r_rest||' / filas previas cambiaron'; END IF;
+  det := det||' ;; restauracion|'||cardinality(created)||' fila(s) creadas borradas, snapshot igual|'||r_rest||'|-|';
+
+  PERFORM set_config('probe.p854_det', det, false);
+  PERFORM set_config('probe.p854', CASE WHEN bad = '' AND r_rest = 'OK'
+    THEN 'OK (glucosa: 9 y 1001 -> SV001 sin fila; 10 y 1000 -> OK con fila; restaurado)'
+    ELSE 'ROJO ('||left(bad,700)||' | restauracion='||r_rest||')' END, false);
+EXCEPTION WHEN OTHERS THEN
+  PERFORM set_config('role','none',true); PERFORM set_config('request.jwt.claims','',true);
+  PERFORM set_config('probe.p854', CASE WHEN SQLERRM LIKE 'fixture roto%' THEN 'ROJO ('||SQLERRM||')'
+    ELSE 'FALLO ('||SQLSTATE||' '||SQLERRM||')' END, false);
+END $$;
+SELECT set_config('role','none', true);
+
+-- ---------------- P855 capturar_signo_vital: formato de PA ----------------
+DO $$
+DECLARE
+  med uuid; pac integer; cit bigint; maxid integer; sig0 text; created integer[] := '{}';
+  st text; msg text; j jsonb; nx bigint; ok boolean; det text := ''; bad text := ''; r_rest text := 'OK'; nid integer;
+BEGIN
+  -- fixture: primera cita con medico y paciente; el medico duenio de la cita pasa el gate de la RPC (254)
+  SELECT c.medico_id, c.paciente_id, c.id INTO med, pac, cit FROM public.citas c
+   WHERE c.medico_id IS NOT NULL AND c.paciente_id IS NOT NULL ORDER BY c.id LIMIT 1;
+  IF cit IS NULL THEN RAISE EXCEPTION 'fixture roto: cita con medico y paciente'; END IF;
+  -- snapshot: filas existentes byte a byte
+  SELECT COALESCE(max(id), 0) INTO maxid FROM public.signos_vitales;
+  SELECT md5(COALESCE(string_agg(row_to_json(s)::text, '|' ORDER BY s.id), '')) INTO sig0 FROM public.signos_vitales s WHERE s.id <= maxid;
+  st := '00000'; msg := ''; j := NULL;
+  nx := (SELECT count(*) FROM public.signos_vitales WHERE id > maxid AND NOT (id = ANY(created)));
+  BEGIN
+    PERFORM set_config('request.jwt.claims', json_build_object('sub',med::text,'role','authenticated')::text, true); PERFORM set_config('role','authenticated',true);
+    j := public.capturar_signo_vital(p_paciente_id => pac, p_cita_id => cit, p_medico_id => med, p_presion_arterial => 'abc');
+    PERFORM set_config('role','none',true); PERFORM set_config('request.jwt.claims','',true);
+  EXCEPTION WHEN OTHERS THEN PERFORM set_config('role','none',true); PERFORM set_config('request.jwt.claims','',true);
+    st := SQLSTATE; msg := SQLERRM; END;
+  IF j IS NOT NULL THEN created := created || (j->>'id')::integer; END IF;
+  ok := (st = 'SV002' AND msg = 'Presión arterial con formato inválido (use NNN/NN)' AND j IS NULL
+         AND (SELECT count(*) FROM public.signos_vitales WHERE id > maxid AND NOT (id = ANY(created))) = nx);
+  det := det||' ;; PA ''abc''|SV002 Presión arterial con formato inválido (use NNN/NN) sin fila|'||CASE WHEN ok THEN 'OK' ELSE 'ROJO' END||'|'||st||'|'||msg;
+  IF NOT ok THEN bad := bad||'PA ''abc'': '||st||' '||left(msg,100)||'; '; END IF;
+  st := '00000'; msg := ''; j := NULL;
+  nx := (SELECT count(*) FROM public.signos_vitales WHERE id > maxid AND NOT (id = ANY(created)));
+  BEGIN
+    PERFORM set_config('request.jwt.claims', json_build_object('sub',med::text,'role','authenticated')::text, true); PERFORM set_config('role','authenticated',true);
+    j := public.capturar_signo_vital(p_paciente_id => pac, p_cita_id => cit, p_medico_id => med, p_presion_arterial => '120-80');
+    PERFORM set_config('role','none',true); PERFORM set_config('request.jwt.claims','',true);
+  EXCEPTION WHEN OTHERS THEN PERFORM set_config('role','none',true); PERFORM set_config('request.jwt.claims','',true);
+    st := SQLSTATE; msg := SQLERRM; END;
+  IF j IS NOT NULL THEN created := created || (j->>'id')::integer; END IF;
+  ok := (st = 'SV002' AND msg = 'Presión arterial con formato inválido (use NNN/NN)' AND j IS NULL
+         AND (SELECT count(*) FROM public.signos_vitales WHERE id > maxid AND NOT (id = ANY(created))) = nx);
+  det := det||' ;; PA ''120-80''|SV002 Presión arterial con formato inválido (use NNN/NN) sin fila|'||CASE WHEN ok THEN 'OK' ELSE 'ROJO' END||'|'||st||'|'||msg;
+  IF NOT ok THEN bad := bad||'PA ''120-80'': '||st||' '||left(msg,100)||'; '; END IF;
+  st := '00000'; msg := ''; j := NULL;
+  nx := (SELECT count(*) FROM public.signos_vitales WHERE id > maxid AND NOT (id = ANY(created)));
+  BEGIN
+    PERFORM set_config('request.jwt.claims', json_build_object('sub',med::text,'role','authenticated')::text, true); PERFORM set_config('role','authenticated',true);
+    j := public.capturar_signo_vital(p_paciente_id => pac, p_cita_id => cit, p_medico_id => med, p_presion_arterial => '120/');
+    PERFORM set_config('role','none',true); PERFORM set_config('request.jwt.claims','',true);
+  EXCEPTION WHEN OTHERS THEN PERFORM set_config('role','none',true); PERFORM set_config('request.jwt.claims','',true);
+    st := SQLSTATE; msg := SQLERRM; END;
+  IF j IS NOT NULL THEN created := created || (j->>'id')::integer; END IF;
+  ok := (st = 'SV002' AND msg = 'Presión arterial con formato inválido (use NNN/NN)' AND j IS NULL
+         AND (SELECT count(*) FROM public.signos_vitales WHERE id > maxid AND NOT (id = ANY(created))) = nx);
+  det := det||' ;; PA ''120/''|SV002 Presión arterial con formato inválido (use NNN/NN) sin fila|'||CASE WHEN ok THEN 'OK' ELSE 'ROJO' END||'|'||st||'|'||msg;
+  IF NOT ok THEN bad := bad||'PA ''120/'': '||st||' '||left(msg,100)||'; '; END IF;
+  -- restauracion: se borra solo lo que el probe creo y se verifica contra el snapshot
+  DELETE FROM public.signos_vitales WHERE id = ANY(created);
+  IF EXISTS (SELECT 1 FROM public.signos_vitales WHERE id = ANY(created)) THEN r_rest := 'quedaron filas creadas'; END IF;
+  IF (SELECT md5(COALESCE(string_agg(row_to_json(s)::text, '|' ORDER BY s.id), '')) FROM public.signos_vitales s WHERE s.id <= maxid) IS DISTINCT FROM sig0 THEN
+    r_rest := r_rest||' / filas previas cambiaron'; END IF;
+  det := det||' ;; restauracion|'||cardinality(created)||' fila(s) creadas borradas, snapshot igual|'||r_rest||'|-|';
+
+  PERFORM set_config('probe.p855_det', det, false);
+  PERFORM set_config('probe.p855', CASE WHEN bad = '' AND r_rest = 'OK'
+    THEN 'OK (PA ''abc'', ''120-80'', ''120/'' -> SV002 sin fila; restaurado)'
+    ELSE 'ROJO ('||left(bad,700)||' | restauracion='||r_rest||')' END, false);
+EXCEPTION WHEN OTHERS THEN
+  PERFORM set_config('role','none',true); PERFORM set_config('request.jwt.claims','',true);
+  PERFORM set_config('probe.p855', CASE WHEN SQLERRM LIKE 'fixture roto%' THEN 'ROJO ('||SQLERRM||')'
+    ELSE 'FALLO ('||SQLSTATE||' '||SQLERRM||')' END, false);
+END $$;
+SELECT set_config('role','none', true);
+
+-- ---------------- P856 capturar_signo_vital: rango de PA y btrim ----------------
+DO $$
+DECLARE
+  med uuid; pac integer; cit bigint; maxid integer; sig0 text; created integer[] := '{}';
+  st text; msg text; j jsonb; nx bigint; ok boolean; det text := ''; bad text := ''; r_rest text := 'OK'; nid integer;
+BEGIN
+  -- fixture: primera cita con medico y paciente; el medico duenio de la cita pasa el gate de la RPC (254)
+  SELECT c.medico_id, c.paciente_id, c.id INTO med, pac, cit FROM public.citas c
+   WHERE c.medico_id IS NOT NULL AND c.paciente_id IS NOT NULL ORDER BY c.id LIMIT 1;
+  IF cit IS NULL THEN RAISE EXCEPTION 'fixture roto: cita con medico y paciente'; END IF;
+  -- snapshot: filas existentes byte a byte
+  SELECT COALESCE(max(id), 0) INTO maxid FROM public.signos_vitales;
+  SELECT md5(COALESCE(string_agg(row_to_json(s)::text, '|' ORDER BY s.id), '')) INTO sig0 FROM public.signos_vitales s WHERE s.id <= maxid;
+  st := '00000'; msg := ''; j := NULL;
+  nx := (SELECT count(*) FROM public.signos_vitales WHERE id > maxid AND NOT (id = ANY(created)));
+  BEGIN
+    PERFORM set_config('request.jwt.claims', json_build_object('sub',med::text,'role','authenticated')::text, true); PERFORM set_config('role','authenticated',true);
+    j := public.capturar_signo_vital(p_paciente_id => pac, p_cita_id => cit, p_medico_id => med, p_presion_arterial => '80/120');
+    PERFORM set_config('role','none',true); PERFORM set_config('request.jwt.claims','',true);
+  EXCEPTION WHEN OTHERS THEN PERFORM set_config('role','none',true); PERFORM set_config('request.jwt.claims','',true);
+    st := SQLSTATE; msg := SQLERRM; END;
+  IF j IS NOT NULL THEN created := created || (j->>'id')::integer; END IF;
+  ok := (st = 'SV001' AND msg = 'Signo vital fuera de rango: presion_arterial (sistolica 50-300, diastolica 20-200 mmHg, sistolica > diastolica)' AND j IS NULL
+         AND (SELECT count(*) FROM public.signos_vitales WHERE id > maxid AND NOT (id = ANY(created))) = nx);
+  det := det||' ;; PA ''80/120''|SV001 Signo vital fuera de rango: presion_arterial (sistolica 50-300, diastolica 20-200 mmHg, sistolica > diastolica) sin fila|'||CASE WHEN ok THEN 'OK' ELSE 'ROJO' END||'|'||st||'|'||msg;
+  IF NOT ok THEN bad := bad||'PA ''80/120'': '||st||' '||left(msg,100)||'; '; END IF;
+  st := '00000'; msg := ''; j := NULL;
+  nx := (SELECT count(*) FROM public.signos_vitales WHERE id > maxid AND NOT (id = ANY(created)));
+  BEGIN
+    PERFORM set_config('request.jwt.claims', json_build_object('sub',med::text,'role','authenticated')::text, true); PERFORM set_config('role','authenticated',true);
+    j := public.capturar_signo_vital(p_paciente_id => pac, p_cita_id => cit, p_medico_id => med, p_presion_arterial => '350/80');
+    PERFORM set_config('role','none',true); PERFORM set_config('request.jwt.claims','',true);
+  EXCEPTION WHEN OTHERS THEN PERFORM set_config('role','none',true); PERFORM set_config('request.jwt.claims','',true);
+    st := SQLSTATE; msg := SQLERRM; END;
+  IF j IS NOT NULL THEN created := created || (j->>'id')::integer; END IF;
+  ok := (st = 'SV001' AND msg = 'Signo vital fuera de rango: presion_arterial (sistolica 50-300, diastolica 20-200 mmHg, sistolica > diastolica)' AND j IS NULL
+         AND (SELECT count(*) FROM public.signos_vitales WHERE id > maxid AND NOT (id = ANY(created))) = nx);
+  det := det||' ;; PA ''350/80''|SV001 Signo vital fuera de rango: presion_arterial (sistolica 50-300, diastolica 20-200 mmHg, sistolica > diastolica) sin fila|'||CASE WHEN ok THEN 'OK' ELSE 'ROJO' END||'|'||st||'|'||msg;
+  IF NOT ok THEN bad := bad||'PA ''350/80'': '||st||' '||left(msg,100)||'; '; END IF;
+  st := '00000'; msg := ''; j := NULL;
+  nx := (SELECT count(*) FROM public.signos_vitales WHERE id > maxid AND NOT (id = ANY(created)));
+  BEGIN
+    PERFORM set_config('request.jwt.claims', json_build_object('sub',med::text,'role','authenticated')::text, true); PERFORM set_config('role','authenticated',true);
+    j := public.capturar_signo_vital(p_paciente_id => pac, p_cita_id => cit, p_medico_id => med, p_presion_arterial => ' 120/80 ');
+    PERFORM set_config('role','none',true); PERFORM set_config('request.jwt.claims','',true);
+  EXCEPTION WHEN OTHERS THEN PERFORM set_config('role','none',true); PERFORM set_config('request.jwt.claims','',true);
+    st := SQLSTATE; msg := SQLERRM; END;
+  IF j IS NOT NULL THEN created := created || (j->>'id')::integer; END IF;
+  ok := (st = '00000' AND j IS NOT NULL
+         AND EXISTS (SELECT 1 FROM public.signos_vitales s WHERE s.id = (j->>'id')::integer AND s.presion_arterial = '120/80'));
+  det := det||' ;; PA '' 120/80 ''|OK e inserta|'||CASE WHEN ok THEN 'OK' ELSE 'ROJO' END||'|'||st||'|'||msg;
+  IF NOT ok THEN bad := bad||'PA '' 120/80 '': '||st||' '||left(msg,100)||'; '; END IF;
+  -- restauracion: se borra solo lo que el probe creo y se verifica contra el snapshot
+  DELETE FROM public.signos_vitales WHERE id = ANY(created);
+  IF EXISTS (SELECT 1 FROM public.signos_vitales WHERE id = ANY(created)) THEN r_rest := 'quedaron filas creadas'; END IF;
+  IF (SELECT md5(COALESCE(string_agg(row_to_json(s)::text, '|' ORDER BY s.id), '')) FROM public.signos_vitales s WHERE s.id <= maxid) IS DISTINCT FROM sig0 THEN
+    r_rest := r_rest||' / filas previas cambiaron'; END IF;
+  det := det||' ;; restauracion|'||cardinality(created)||' fila(s) creadas borradas, snapshot igual|'||r_rest||'|-|';
+
+  PERFORM set_config('probe.p856_det', det, false);
+  PERFORM set_config('probe.p856', CASE WHEN bad = '' AND r_rest = 'OK'
+    THEN 'OK (PA ''80/120'' y ''350/80'' -> SV001 sin fila; '' 120/80 '' -> OK guardada ''120/80''; restaurado)'
+    ELSE 'ROJO ('||left(bad,700)||' | restauracion='||r_rest||')' END, false);
+EXCEPTION WHEN OTHERS THEN
+  PERFORM set_config('role','none',true); PERFORM set_config('request.jwt.claims','',true);
+  PERFORM set_config('probe.p856', CASE WHEN SQLERRM LIKE 'fixture roto%' THEN 'ROJO ('||SQLERRM||')'
+    ELSE 'FALLO ('||SQLSTATE||' '||SQLERRM||')' END, false);
+END $$;
+SELECT set_config('role','none', true);
+
+-- ---------------- P857 capturar_signo_vital: NULL = no medido (control) ----------------
+DO $$
+DECLARE
+  med uuid; pac integer; cit bigint; maxid integer; sig0 text; created integer[] := '{}';
+  st text; msg text; j jsonb; nx bigint; ok boolean; det text := ''; bad text := ''; r_rest text := 'OK'; nid integer;
+BEGIN
+  -- fixture: primera cita con medico y paciente; el medico duenio de la cita pasa el gate de la RPC (254)
+  SELECT c.medico_id, c.paciente_id, c.id INTO med, pac, cit FROM public.citas c
+   WHERE c.medico_id IS NOT NULL AND c.paciente_id IS NOT NULL ORDER BY c.id LIMIT 1;
+  IF cit IS NULL THEN RAISE EXCEPTION 'fixture roto: cita con medico y paciente'; END IF;
+  -- snapshot: filas existentes byte a byte
+  SELECT COALESCE(max(id), 0) INTO maxid FROM public.signos_vitales;
+  SELECT md5(COALESCE(string_agg(row_to_json(s)::text, '|' ORDER BY s.id), '')) INTO sig0 FROM public.signos_vitales s WHERE s.id <= maxid;
+  st := '00000'; msg := ''; j := NULL;
+  nx := (SELECT count(*) FROM public.signos_vitales WHERE id > maxid AND NOT (id = ANY(created)));
+  BEGIN
+    PERFORM set_config('request.jwt.claims', json_build_object('sub',med::text,'role','authenticated')::text, true); PERFORM set_config('role','authenticated',true);
+    j := public.capturar_signo_vital(p_paciente_id => pac, p_cita_id => cit, p_medico_id => med, p_frecuencia_cardiaca => 72);
+    PERFORM set_config('role','none',true); PERFORM set_config('request.jwt.claims','',true);
+  EXCEPTION WHEN OTHERS THEN PERFORM set_config('role','none',true); PERFORM set_config('request.jwt.claims','',true);
+    st := SQLSTATE; msg := SQLERRM; END;
+  IF j IS NOT NULL THEN created := created || (j->>'id')::integer; END IF;
+  ok := (st = '00000' AND j IS NOT NULL
+         AND EXISTS (SELECT 1 FROM public.signos_vitales s WHERE s.id = (j->>'id')::integer AND s.frecuencia_cardiaca = 72 AND s.presion_arterial IS NULL AND s.frecuencia_respiratoria IS NULL AND s.temperatura IS NULL AND s.peso_kg IS NULL AND s.talla_cm IS NULL AND s.imc IS NULL AND s.saturacion_o2 IS NULL AND s.glucosa IS NULL));
+  det := det||' ;; solo FC=72|OK e inserta|'||CASE WHEN ok THEN 'OK' ELSE 'ROJO' END||'|'||st||'|'||msg;
+  IF NOT ok THEN bad := bad||'solo FC=72: '||st||' '||left(msg,100)||'; '; END IF;
+  -- restauracion: se borra solo lo que el probe creo y se verifica contra el snapshot
+  DELETE FROM public.signos_vitales WHERE id = ANY(created);
+  IF EXISTS (SELECT 1 FROM public.signos_vitales WHERE id = ANY(created)) THEN r_rest := 'quedaron filas creadas'; END IF;
+  IF (SELECT md5(COALESCE(string_agg(row_to_json(s)::text, '|' ORDER BY s.id), '')) FROM public.signos_vitales s WHERE s.id <= maxid) IS DISTINCT FROM sig0 THEN
+    r_rest := r_rest||' / filas previas cambiaron'; END IF;
+  det := det||' ;; restauracion|'||cardinality(created)||' fila(s) creadas borradas, snapshot igual|'||r_rest||'|-|';
+
+  PERFORM set_config('probe.p857_det', det, false);
+  PERFORM set_config('probe.p857', CASE WHEN bad = '' AND r_rest = 'OK'
+    THEN 'OK (todo NULL salvo FC -> OK con fila; restaurado)'
+    ELSE 'ROJO ('||left(bad,700)||' | restauracion='||r_rest||')' END, false);
+EXCEPTION WHEN OTHERS THEN
+  PERFORM set_config('role','none',true); PERFORM set_config('request.jwt.claims','',true);
+  PERFORM set_config('probe.p857', CASE WHEN SQLERRM LIKE 'fixture roto%' THEN 'ROJO ('||SQLERRM||')'
+    ELSE 'FALLO ('||SQLSTATE||' '||SQLERRM||')' END, false);
+END $$;
+SELECT set_config('role','none', true);
+
+-- ---------------- P858 capturar_signo_vital: combinacion peso/talla ----------------
+DO $$
+DECLARE
+  med uuid; pac integer; cit bigint; maxid integer; sig0 text; created integer[] := '{}';
+  st text; msg text; j jsonb; nx bigint; ok boolean; det text := ''; bad text := ''; r_rest text := 'OK'; nid integer;
+BEGIN
+  -- fixture: primera cita con medico y paciente; el medico duenio de la cita pasa el gate de la RPC (254)
+  SELECT c.medico_id, c.paciente_id, c.id INTO med, pac, cit FROM public.citas c
+   WHERE c.medico_id IS NOT NULL AND c.paciente_id IS NOT NULL ORDER BY c.id LIMIT 1;
+  IF cit IS NULL THEN RAISE EXCEPTION 'fixture roto: cita con medico y paciente'; END IF;
+  -- snapshot: filas existentes byte a byte
+  SELECT COALESCE(max(id), 0) INTO maxid FROM public.signos_vitales;
+  SELECT md5(COALESCE(string_agg(row_to_json(s)::text, '|' ORDER BY s.id), '')) INTO sig0 FROM public.signos_vitales s WHERE s.id <= maxid;
+  st := '00000'; msg := ''; j := NULL;
+  nx := (SELECT count(*) FROM public.signos_vitales WHERE id > maxid AND NOT (id = ANY(created)));
+  BEGIN
+    PERFORM set_config('request.jwt.claims', json_build_object('sub',med::text,'role','authenticated')::text, true); PERFORM set_config('role','authenticated',true);
+    j := public.capturar_signo_vital(p_paciente_id => pac, p_cita_id => cit, p_medico_id => med, p_peso_kg => 400, p_talla_cm => 30);
+    PERFORM set_config('role','none',true); PERFORM set_config('request.jwt.claims','',true);
+  EXCEPTION WHEN OTHERS THEN PERFORM set_config('role','none',true); PERFORM set_config('request.jwt.claims','',true);
+    st := SQLSTATE; msg := SQLERRM; END;
+  IF j IS NOT NULL THEN created := created || (j->>'id')::integer; END IF;
+  ok := (st = 'SV001' AND msg = 'Combinación peso/talla inválida' AND j IS NULL
+         AND (SELECT count(*) FROM public.signos_vitales WHERE id > maxid AND NOT (id = ANY(created))) = nx);
+  det := det||' ;; peso 400 + talla 30|SV001 Combinación peso/talla inválida sin fila|'||CASE WHEN ok THEN 'OK' ELSE 'ROJO' END||'|'||st||'|'||msg;
+  IF NOT ok THEN bad := bad||'peso 400 + talla 30: '||st||' '||left(msg,100)||'; '; END IF;
+  st := '00000'; msg := ''; j := NULL;
+  nx := (SELECT count(*) FROM public.signos_vitales WHERE id > maxid AND NOT (id = ANY(created)));
+  BEGIN
+    PERFORM set_config('request.jwt.claims', json_build_object('sub',med::text,'role','authenticated')::text, true); PERFORM set_config('role','authenticated',true);
+    j := public.capturar_signo_vital(p_paciente_id => pac, p_cita_id => cit, p_medico_id => med, p_peso_kg => 70, p_talla_cm => 170);
+    PERFORM set_config('role','none',true); PERFORM set_config('request.jwt.claims','',true);
+  EXCEPTION WHEN OTHERS THEN PERFORM set_config('role','none',true); PERFORM set_config('request.jwt.claims','',true);
+    st := SQLSTATE; msg := SQLERRM; END;
+  IF j IS NOT NULL THEN created := created || (j->>'id')::integer; END IF;
+  ok := (st = '00000' AND j IS NOT NULL
+         AND EXISTS (SELECT 1 FROM public.signos_vitales s WHERE s.id = (j->>'id')::integer AND s.imc = 24.22));
+  det := det||' ;; peso 70 + talla 170|OK e inserta|'||CASE WHEN ok THEN 'OK' ELSE 'ROJO' END||'|'||st||'|'||msg;
+  IF NOT ok THEN bad := bad||'peso 70 + talla 170: '||st||' '||left(msg,100)||'; '; END IF;
+  -- restauracion: se borra solo lo que el probe creo y se verifica contra el snapshot
+  DELETE FROM public.signos_vitales WHERE id = ANY(created);
+  IF EXISTS (SELECT 1 FROM public.signos_vitales WHERE id = ANY(created)) THEN r_rest := 'quedaron filas creadas'; END IF;
+  IF (SELECT md5(COALESCE(string_agg(row_to_json(s)::text, '|' ORDER BY s.id), '')) FROM public.signos_vitales s WHERE s.id <= maxid) IS DISTINCT FROM sig0 THEN
+    r_rest := r_rest||' / filas previas cambiaron'; END IF;
+  det := det||' ;; restauracion|'||cardinality(created)||' fila(s) creadas borradas, snapshot igual|'||r_rest||'|-|';
+
+  PERFORM set_config('probe.p858_det', det, false);
+  PERFORM set_config('probe.p858', CASE WHEN bad = '' AND r_rest = 'OK'
+    THEN 'OK (peso 400 + talla 30 -> SV001 sin fila; 70 + 170 -> OK imc 24.22; restaurado)'
+    ELSE 'ROJO ('||left(bad,700)||' | restauracion='||r_rest||')' END, false);
+EXCEPTION WHEN OTHERS THEN
+  PERFORM set_config('role','none',true); PERFORM set_config('request.jwt.claims','',true);
+  PERFORM set_config('probe.p858', CASE WHEN SQLERRM LIKE 'fixture roto%' THEN 'ROJO ('||SQLERRM||')'
+    ELSE 'FALLO ('||SQLSTATE||' '||SQLERRM||')' END, false);
+END $$;
+SELECT set_config('role','none', true);
+
+-- ---------------- P859 INSERT directo como postgres: los CHECK sv_*_rango ----------------
+DO $$
+DECLARE
+  med uuid; pac integer; cit bigint; maxid integer; sig0 text; created integer[] := '{}';
+  st text; msg text; j jsonb; nx bigint; ok boolean; det text := ''; bad text := ''; r_rest text := 'OK'; nid integer;
+BEGIN
+  -- fixture: primera cita con medico y paciente; el medico duenio de la cita pasa el gate de la RPC (254)
+  SELECT c.medico_id, c.paciente_id, c.id INTO med, pac, cit FROM public.citas c
+   WHERE c.medico_id IS NOT NULL AND c.paciente_id IS NOT NULL ORDER BY c.id LIMIT 1;
+  IF cit IS NULL THEN RAISE EXCEPTION 'fixture roto: cita con medico y paciente'; END IF;
+  -- snapshot: filas existentes byte a byte
+  SELECT COALESCE(max(id), 0) INTO maxid FROM public.signos_vitales;
+  SELECT md5(COALESCE(string_agg(row_to_json(s)::text, '|' ORDER BY s.id), '')) INTO sig0 FROM public.signos_vitales s WHERE s.id <= maxid;
+  st := '00000'; msg := ''; nid := NULL;
+  BEGIN
+    INSERT INTO public.signos_vitales (paciente_id, frecuencia_cardiaca) VALUES (pac, 19) RETURNING id INTO nid;
+  EXCEPTION WHEN OTHERS THEN st := SQLSTATE; msg := SQLERRM; END;
+  IF nid IS NOT NULL THEN created := created || nid; END IF;
+  ok := (st = '23514' AND position('"sv_frecuencia_cardiaca_rango"' in msg) > 0 AND nid IS NULL);
+  det := det||' ;; directo frecuencia_cardiaca=19|23514 sv_frecuencia_cardiaca_rango|'||CASE WHEN ok THEN 'OK' ELSE 'ROJO' END||'|'||st||'|'||msg;
+  IF NOT ok THEN bad := bad||'directo frecuencia_cardiaca=19: '||st||' '||left(msg,100)||'; '; END IF;
+  st := '00000'; msg := ''; nid := NULL;
+  BEGIN
+    INSERT INTO public.signos_vitales (paciente_id, frecuencia_respiratoria) VALUES (pac, 81) RETURNING id INTO nid;
+  EXCEPTION WHEN OTHERS THEN st := SQLSTATE; msg := SQLERRM; END;
+  IF nid IS NOT NULL THEN created := created || nid; END IF;
+  ok := (st = '23514' AND position('"sv_frecuencia_respiratoria_rango"' in msg) > 0 AND nid IS NULL);
+  det := det||' ;; directo frecuencia_respiratoria=81|23514 sv_frecuencia_respiratoria_rango|'||CASE WHEN ok THEN 'OK' ELSE 'ROJO' END||'|'||st||'|'||msg;
+  IF NOT ok THEN bad := bad||'directo frecuencia_respiratoria=81: '||st||' '||left(msg,100)||'; '; END IF;
+  st := '00000'; msg := ''; nid := NULL;
+  BEGIN
+    INSERT INTO public.signos_vitales (paciente_id, temperatura) VALUES (pac, 45.01) RETURNING id INTO nid;
+  EXCEPTION WHEN OTHERS THEN st := SQLSTATE; msg := SQLERRM; END;
+  IF nid IS NOT NULL THEN created := created || nid; END IF;
+  ok := (st = '23514' AND position('"sv_temperatura_rango"' in msg) > 0 AND nid IS NULL);
+  det := det||' ;; directo temperatura=45.01|23514 sv_temperatura_rango|'||CASE WHEN ok THEN 'OK' ELSE 'ROJO' END||'|'||st||'|'||msg;
+  IF NOT ok THEN bad := bad||'directo temperatura=45.01: '||st||' '||left(msg,100)||'; '; END IF;
+  st := '00000'; msg := ''; nid := NULL;
+  BEGIN
+    INSERT INTO public.signos_vitales (paciente_id, saturacion_o2) VALUES (pac, 49) RETURNING id INTO nid;
+  EXCEPTION WHEN OTHERS THEN st := SQLSTATE; msg := SQLERRM; END;
+  IF nid IS NOT NULL THEN created := created || nid; END IF;
+  ok := (st = '23514' AND position('"sv_saturacion_o2_rango"' in msg) > 0 AND nid IS NULL);
+  det := det||' ;; directo saturacion_o2=49|23514 sv_saturacion_o2_rango|'||CASE WHEN ok THEN 'OK' ELSE 'ROJO' END||'|'||st||'|'||msg;
+  IF NOT ok THEN bad := bad||'directo saturacion_o2=49: '||st||' '||left(msg,100)||'; '; END IF;
+  st := '00000'; msg := ''; nid := NULL;
+  BEGIN
+    INSERT INTO public.signos_vitales (paciente_id, peso_kg) VALUES (pac, 400.01) RETURNING id INTO nid;
+  EXCEPTION WHEN OTHERS THEN st := SQLSTATE; msg := SQLERRM; END;
+  IF nid IS NOT NULL THEN created := created || nid; END IF;
+  ok := (st = '23514' AND position('"sv_peso_kg_rango"' in msg) > 0 AND nid IS NULL);
+  det := det||' ;; directo peso_kg=400.01|23514 sv_peso_kg_rango|'||CASE WHEN ok THEN 'OK' ELSE 'ROJO' END||'|'||st||'|'||msg;
+  IF NOT ok THEN bad := bad||'directo peso_kg=400.01: '||st||' '||left(msg,100)||'; '; END IF;
+  st := '00000'; msg := ''; nid := NULL;
+  BEGIN
+    INSERT INTO public.signos_vitales (paciente_id, talla_cm) VALUES (pac, 29.99) RETURNING id INTO nid;
+  EXCEPTION WHEN OTHERS THEN st := SQLSTATE; msg := SQLERRM; END;
+  IF nid IS NOT NULL THEN created := created || nid; END IF;
+  ok := (st = '23514' AND position('"sv_talla_cm_rango"' in msg) > 0 AND nid IS NULL);
+  det := det||' ;; directo talla_cm=29.99|23514 sv_talla_cm_rango|'||CASE WHEN ok THEN 'OK' ELSE 'ROJO' END||'|'||st||'|'||msg;
+  IF NOT ok THEN bad := bad||'directo talla_cm=29.99: '||st||' '||left(msg,100)||'; '; END IF;
+  st := '00000'; msg := ''; nid := NULL;
+  BEGIN
+    INSERT INTO public.signos_vitales (paciente_id, glucosa) VALUES (pac, 1001) RETURNING id INTO nid;
+  EXCEPTION WHEN OTHERS THEN st := SQLSTATE; msg := SQLERRM; END;
+  IF nid IS NOT NULL THEN created := created || nid; END IF;
+  ok := (st = '23514' AND position('"sv_glucosa_rango"' in msg) > 0 AND nid IS NULL);
+  det := det||' ;; directo glucosa=1001|23514 sv_glucosa_rango|'||CASE WHEN ok THEN 'OK' ELSE 'ROJO' END||'|'||st||'|'||msg;
+  IF NOT ok THEN bad := bad||'directo glucosa=1001: '||st||' '||left(msg,100)||'; '; END IF;
+  st := '00000'; msg := ''; nid := NULL;
+  BEGIN
+    INSERT INTO public.signos_vitales (paciente_id, presion_arterial) VALUES (pac, '80/120') RETURNING id INTO nid;
+  EXCEPTION WHEN OTHERS THEN st := SQLSTATE; msg := SQLERRM; END;
+  IF nid IS NOT NULL THEN created := created || nid; END IF;
+  ok := (st = '23514' AND position('"sv_presion_arterial_rango"' in msg) > 0 AND nid IS NULL);
+  det := det||' ;; directo presion_arterial=''80/120''|23514 sv_presion_arterial_rango|'||CASE WHEN ok THEN 'OK' ELSE 'ROJO' END||'|'||st||'|'||msg;
+  IF NOT ok THEN bad := bad||'directo presion_arterial=''80/120'': '||st||' '||left(msg,100)||'; '; END IF;
+  st := '00000'; msg := ''; nid := NULL;
+  BEGIN
+    INSERT INTO public.signos_vitales (paciente_id, presion_arterial) VALUES (pac, 'abc') RETURNING id INTO nid;
+  EXCEPTION WHEN OTHERS THEN st := SQLSTATE; msg := SQLERRM; END;
+  IF nid IS NOT NULL THEN created := created || nid; END IF;
+  ok := (st = '23514' AND position('"sv_presion_arterial_rango"' in msg) > 0 AND nid IS NULL);
+  det := det||' ;; directo presion_arterial=''abc''|23514 sv_presion_arterial_rango|'||CASE WHEN ok THEN 'OK' ELSE 'ROJO' END||'|'||st||'|'||msg;
+  IF NOT ok THEN bad := bad||'directo presion_arterial=''abc'': '||st||' '||left(msg,100)||'; '; END IF;
+  st := '00000'; msg := ''; nid := NULL;
+  BEGIN
+    INSERT INTO public.signos_vitales (paciente_id, presion_arterial) VALUES (pac, ' 120/80') RETURNING id INTO nid;
+  EXCEPTION WHEN OTHERS THEN st := SQLSTATE; msg := SQLERRM; END;
+  IF nid IS NOT NULL THEN created := created || nid; END IF;
+  ok := (st = '23514' AND position('"sv_presion_arterial_rango"' in msg) > 0 AND nid IS NULL);
+  det := det||' ;; directo presion_arterial='' 120/80''|23514 sv_presion_arterial_rango|'||CASE WHEN ok THEN 'OK' ELSE 'ROJO' END||'|'||st||'|'||msg;
+  IF NOT ok THEN bad := bad||'directo presion_arterial='' 120/80'': '||st||' '||left(msg,100)||'; '; END IF;
+  -- control: bordes exactos por INSERT directo -> entra (los CHECK no son mas estrictos que la RPC)
+  st := '00000'; msg := ''; nid := NULL;
+  BEGIN
+    INSERT INTO public.signos_vitales (paciente_id, frecuencia_cardiaca, frecuencia_respiratoria, temperatura, saturacion_o2, peso_kg, talla_cm, glucosa, presion_arterial)
+    VALUES (pac, 300, 4, 45, 100, 0.5, 250, 10, '300/200') RETURNING id INTO nid;
+  EXCEPTION WHEN OTHERS THEN st := SQLSTATE; msg := SQLERRM; END;
+  IF nid IS NOT NULL THEN created := created || nid; END IF;
+  ok := (st = '00000' AND nid IS NOT NULL);
+  det := det||' ;; directo bordes exactos|OK e inserta|'||CASE WHEN ok THEN 'OK' ELSE 'ROJO' END||'|'||st||'|'||msg;
+  IF NOT ok THEN bad := bad||'directo bordes: '||st||' '||left(msg,100)||'; '; END IF;
+  -- restauracion: se borra solo lo que el probe creo y se verifica contra el snapshot
+  DELETE FROM public.signos_vitales WHERE id = ANY(created);
+  IF EXISTS (SELECT 1 FROM public.signos_vitales WHERE id = ANY(created)) THEN r_rest := 'quedaron filas creadas'; END IF;
+  IF (SELECT md5(COALESCE(string_agg(row_to_json(s)::text, '|' ORDER BY s.id), '')) FROM public.signos_vitales s WHERE s.id <= maxid) IS DISTINCT FROM sig0 THEN
+    r_rest := r_rest||' / filas previas cambiaron'; END IF;
+  det := det||' ;; restauracion|'||cardinality(created)||' fila(s) creadas borradas, snapshot igual|'||r_rest||'|-|';
+
+  PERFORM set_config('probe.p859_det', det, false);
+  PERFORM set_config('probe.p859', CASE WHEN bad = '' AND r_rest = 'OK'
+    THEN 'OK (10 INSERT directos fuera de rango -> 23514 con el nombre de su CHECK; bordes exactos -> OK; restaurado)'
+    ELSE 'ROJO ('||left(bad,700)||' | restauracion='||r_rest||')' END, false);
+EXCEPTION WHEN OTHERS THEN
+  PERFORM set_config('role','none',true); PERFORM set_config('request.jwt.claims','',true);
+  PERFORM set_config('probe.p859', CASE WHEN SQLERRM LIKE 'fixture roto%' THEN 'ROJO ('||SQLERRM||')'
+    ELSE 'FALLO ('||SQLSTATE||' '||SQLERRM||')' END, false);
+END $$;
+SELECT set_config('role','none', true);
+
+-- ---------------- P860 catalogo: 8 CHECK validados, RPC con metadata intacta, lectores sin tocar ----------------
+DO $$
+DECLARE det text := ''; bad text := ''; r record; n int; x text; e record; cv boolean;
+BEGIN
+  FOR e IN SELECT unnest(ARRAY['sv_frecuencia_cardiaca_rango', 'sv_frecuencia_respiratoria_rango', 'sv_temperatura_rango', 'sv_saturacion_o2_rango', 'sv_peso_kg_rango', 'sv_talla_cm_rango', 'sv_glucosa_rango', 'sv_presion_arterial_rango']) AS c LOOP
+    cv := NULL;
+    SELECT convalidated INTO cv FROM pg_constraint WHERE conrelid = 'public.signos_vitales'::regclass AND contype = 'c' AND conname = e.c;
+    det := det||CASE WHEN det = '' THEN '' ELSE ' ;; ' END||e.c||'|validado|'||COALESCE(cv::text,'NO EXISTE')||'|-|';
+    IF cv IS NOT TRUE THEN bad := bad||e.c||' '||COALESCE(cv::text,'no existe')||'; '; END IF;
+  END LOOP;
+  SELECT count(*) INTO n FROM pg_proc p JOIN pg_namespace ns ON ns.oid = p.pronamespace WHERE ns.nspname = 'public' AND p.proname = 'capturar_signo_vital';
+  SELECT p.prosecdef, p.proconfig::text AS cfg, p.proacl::text AS acl, md5(p.prosrc) AS m, pg_get_userbyid(p.proowner) AS owner,
+         has_function_privilege('anon', p.oid, 'EXECUTE') AS anon
+    INTO r FROM pg_proc p WHERE p.oid = 'public.capturar_signo_vital(integer,bigint,text,integer,integer,numeric,numeric,numeric,integer,integer,text,uuid)'::regprocedure;
+  x := 'firmas='||n||' secdef='||r.prosecdef||' owner='||r.owner||' cfg='||COALESCE(r.cfg,'NULL')||' acl='||COALESCE(r.acl,'NULL')||' anon='||r.anon||' md5='||r.m;
+  det := det||' ;; capturar_signo_vital|firmas=1 secdef=true owner=postgres cfg={"search_path=\"\""} acl={postgres=X/postgres,authenticated=X/postgres,service_role=X/postgres} anon=false md5=b2246251fd9154ebcb851332991170c7|'||x||'|-|';
+  IF NOT (n = 1 AND r.prosecdef AND r.owner = 'postgres' AND r.cfg = '{"search_path=\"\""}' AND r.acl = '{postgres=X/postgres,authenticated=X/postgres,service_role=X/postgres}' AND NOT r.anon
+          AND r.m = 'b2246251fd9154ebcb851332991170c7') THEN bad := bad||'capturar_signo_vital: '||x||'; '; END IF;
+  SELECT md5(prosrc) INTO x FROM pg_proc WHERE oid = 'public.calcular_imc_signos_vitales()'::regprocedure;
+  det := det||' ;; public.calcular_imc_signos_vitales() md5|1b9ad49a5cd1464c54d9a211e5763532|'||COALESCE(x,'NULL')||'|-|';
+  IF x IS DISTINCT FROM '1b9ad49a5cd1464c54d9a211e5763532' THEN bad := bad||'public.calcular_imc_signos_vitales() cambio; '; END IF;
+  SELECT md5(prosrc) INTO x FROM pg_proc WHERE oid = 'public.listar_signos_vitales_cita(bigint)'::regprocedure;
+  det := det||' ;; public.listar_signos_vitales_cita(bigint) md5|f1039b8bc0a5b91d21401ba3075147b7|'||COALESCE(x,'NULL')||'|-|';
+  IF x IS DISTINCT FROM 'f1039b8bc0a5b91d21401ba3075147b7' THEN bad := bad||'public.listar_signos_vitales_cita(bigint) cambio; '; END IF;
+  SELECT md5(prosrc) INTO x FROM pg_proc WHERE oid = 'public.validar_signo_vital(bigint)'::regprocedure;
+  det := det||' ;; public.validar_signo_vital(bigint) md5|23acbb8fec90faf2db3f6fce1aff04e2|'||COALESCE(x,'NULL')||'|-|';
+  IF x IS DISTINCT FROM '23acbb8fec90faf2db3f6fce1aff04e2' THEN bad := bad||'public.validar_signo_vital(bigint) cambio; '; END IF;
+  SELECT md5(prosrc) INTO x FROM pg_proc WHERE oid = 'public.contar_tomas_citas(bigint[])'::regprocedure;
+  det := det||' ;; public.contar_tomas_citas(bigint[]) md5|7fdf0b0ed24da5fd92abe2ba0dd09b6e|'||COALESCE(x,'NULL')||'|-|';
+  IF x IS DISTINCT FROM '7fdf0b0ed24da5fd92abe2ba0dd09b6e' THEN bad := bad||'public.contar_tomas_citas(bigint[]) cambio; '; END IF;
+  SELECT md5(prosrc) INTO x FROM pg_proc WHERE oid = 'public.contexto_ia_paciente(bigint)'::regprocedure;
+  det := det||' ;; public.contexto_ia_paciente(bigint) md5|1eaf84a3475dfdfc3845d68ce2406fbb|'||COALESCE(x,'NULL')||'|-|';
+  IF x IS DISTINCT FROM '1eaf84a3475dfdfc3845d68ce2406fbb' THEN bad := bad||'public.contexto_ia_paciente(bigint) cambio; '; END IF;
+  PERFORM set_config('probe.p860_det', det, false);
+  PERFORM set_config('probe.p860', CASE WHEN bad = ''
+    THEN 'OK (8 CHECK sv_*_rango validados; capturar_signo_vital con firma unica, secdef, search_path, acl y md5 de la 330; 5 lectores sin tocar)'
+    ELSE 'ROJO ('||left(bad,800)||')' END, false);
+EXCEPTION WHEN OTHERS THEN
+  PERFORM set_config('probe.p860','FALLO ('||SQLSTATE||' '||SQLERRM||')', false);
+END $$;
+SELECT set_config('role','none', true);
+
 -- ===== Veredictos como result set =====
 SELECT 'P1_anon_insert_citas'              AS probe, current_setting('probe.p1', true)  AS verdict, 'BLOQUEADO' AS esperado_post_fix
 UNION ALL SELECT 'P2_medico_cancela_ajena_rpc',         current_setting('probe.p2', true),  'BLOQUEADO'
@@ -22669,6 +23664,19 @@ UNION ALL SELECT 'P844_crear_entrega_cancelada',         current_setting('probe.
 UNION ALL SELECT 'P845_modalidad_grupo_cancelada',       current_setting('probe.p845', true), 'OK (cancelada PR010 sin cambio)'
 UNION ALL SELECT 'P846_confirmar_recepcion_control',     current_setting('probe.p846', true), 'OK (no se toca)'
 UNION ALL SELECT 'P847_despacho_catalogo_329',           current_setting('probe.p847', true), 'OK (6 con PR010, metadata intacta)'
+UNION ALL SELECT 'P848_sv_rango_frecuencia_cardiaca',   current_setting('probe.p848', true), 'OK (19/301 SV001, 20/300 OK)'
+UNION ALL SELECT 'P849_sv_rango_frecuencia_respiratoria', current_setting('probe.p849', true), 'OK (3/81 SV001, 4/80 OK)'
+UNION ALL SELECT 'P850_sv_rango_temperatura',           current_setting('probe.p850', true), 'OK (29.99/45.01 SV001, 30/45 OK)'
+UNION ALL SELECT 'P851_sv_rango_saturacion_o2',         current_setting('probe.p851', true), 'OK (49/101 SV001, 50/100 OK)'
+UNION ALL SELECT 'P852_sv_rango_peso_kg',               current_setting('probe.p852', true), 'OK (0.49/400.01 SV001, 0.5/400 OK)'
+UNION ALL SELECT 'P853_sv_rango_talla_cm',              current_setting('probe.p853', true), 'OK (29.99/250.01 SV001, 30/250 OK)'
+UNION ALL SELECT 'P854_sv_rango_glucosa',               current_setting('probe.p854', true), 'OK (9/1001 SV001, 10/1000 OK)'
+UNION ALL SELECT 'P855_sv_pa_formato',                  current_setting('probe.p855', true), 'OK (''abc'',''120-80'',''120/'' SV002)'
+UNION ALL SELECT 'P856_sv_pa_rango_btrim',              current_setting('probe.p856', true), 'OK (''80/120'',''350/80'' SV001; '' 120/80 '' -> ''120/80'')'
+UNION ALL SELECT 'P857_sv_nulls_permitidos',            current_setting('probe.p857', true), 'OK (todo NULL salvo FC)'
+UNION ALL SELECT 'P858_sv_combinacion_imc',             current_setting('probe.p858', true), 'OK (400/30 SV001; 70/170 imc 24.22)'
+UNION ALL SELECT 'P859_sv_check_insert_directo',        current_setting('probe.p859', true), 'OK (23514 con el nombre del CHECK)'
+UNION ALL SELECT 'P860_sv_catalogo_330',                current_setting('probe.p860', true), 'OK (8 CHECK validados, RPC intacta)'
 -- Las filas FX* son SALUD DE FIXTURE, no probes de seguridad: dicen si la precondicion que una
 -- migracion posterior empezo a exigir se pudo sembrar. Si una sale ROJO, los probes que dependen de
 -- ese fixture reportan N/A (su flag de ready se pierde con el rollback de la subtransaccion) en vez
@@ -22907,7 +23915,8 @@ UNION ALL SELECT 'P000_CENTINELA_veredictos_no_nulos',
        'probe.p826', 'probe.p827', 'probe.p828', 'probe.p829', 'probe.p830', 'probe.p831',
        'probe.p832', 'probe.p833', 'probe.p834', 'probe.p835', 'probe.p836', 'probe.p837',
        'probe.p838', 'probe.p839', 'probe.p840', 'probe.p841', 'probe.p842', 'probe.p843',
-       'probe.p844', 'probe.p845', 'probe.p846', 'probe.p847'
+       'probe.p844', 'probe.p845', 'probe.p846', 'probe.p847',
+       'probe.p848', 'probe.p849', 'probe.p850', 'probe.p851', 'probe.p852', 'probe.p853', 'probe.p854', 'probe.p855', 'probe.p856', 'probe.p857', 'probe.p858', 'probe.p859', 'probe.p860'
              ]) AS n) s),
   'OK (todos los veredictos publicados)';
 
