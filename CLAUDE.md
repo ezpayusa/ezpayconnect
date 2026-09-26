@@ -23,11 +23,12 @@ Stack: React + Vite + TypeScript, Supabase / Postgres, deploy en Vercel, repo en
   minutos por esto** (P635 es la probe que faltaba, P636 su contraprueba).
 - NUNCA ampliar policies de RLS sobre tablas adyacentes a datos médicos (p. ej. campana_metricas). Para dar acceso, usar RPCs SECURITY DEFINER con search_path='', fail-closed (si el scope es NULL → 0 filas) y gate interno.
 - Probar aislamiento por rol impersonando request.jwt.claims en prod: cada rol ve lo suyo y no lo ajeno.
-- **Próximos números libres: probe `P879`** (global, no por módulo), **migración `333`** (reservada al cierre de P3:
-  REVOKE del INSERT directo de órdenes de examen, después del front), **errcode `PA035`** (comercial),
+- **Próximos números libres: probe `P885`** (global, no por módulo), **migración `334`**, **errcode `PA035`** (comercial),
   **`EX023`** (exámenes: EX001-EX020 órdenes por RPC, EX022 congelamiento de tipo/catalogo_id; EX021 reservado
   sin uso — el renombre del catálogo se cierra por grants; mig 332 — APLICADA en prod y verificada en sesión
-  independiente el 25-sep-2026, probes P866-P878; la 333 (REVOKE del INSERT directo) queda pendiente del front),
+  independiente el 25-sep-2026, probes P866-P878; mig 333 (REVOKE del INSERT directo + split de las ALL + M.8)
+  — APLICADA en prod y verificada en sesión independiente el 25-sep-2026, probes P879-P884; P3 CERRADO
+  (332 + front + 333)),
   **`PR011`** (recetas: PR001-PR009 = emitir_receta; PR010 = receta cancelada no se despacha, mig 329
   — APLICADA en prod y verificada en sesión independiente el 25-sep-2026, probes P840-P847),
   **`SV004`** (signos vitales: SV001 = fuera de rango, SV002 = formato de PA, mig 330
@@ -156,3 +157,5 @@ Detalles a recordar:
 
 ## Pendiente / ideas
 - (Producto, no código) Prompts de video sobre el software médico para mostrar a futuros clientes.
+- (Deuda de privilegios) authenticated tiene MAINTAIN (PG17: VACUUM/ANALYZE/REINDEX/CLUSTER/LOCK) en 109/121 tablas
+  de public y anon en 8 (incl. pacientes, recetas); P800 no lo ve porque mira role_table_grants — frente aparte.
