@@ -117,6 +117,25 @@ export interface ExpedienteNota {
   glucosa: number | null
   signos_vitales: Record<string, any> | null
   created_at: string
+  // Mig 334 (P4): los fija el trigger guardia; el cliente no los escribe (NT009).
+  updated_at: string
+  updated_by: string | null
+  cerrada_at: string | null   // nota cerrada: solo se cambia con corregir_nota_consulta
+  corregida_at: string | null // última corrección con motivo
+}
+
+// Mig 334 (P4): historia append-only de expediente_notas. version_anterior = la fila previa completa.
+export interface ExpedienteNotaRevision {
+  id: number
+  nota_id: number
+  paciente_id: number
+  medico_id: string
+  revision: number
+  tipo: 'edicion' | 'correccion'
+  motivo: string | null
+  version_anterior: Partial<ExpedienteNota>
+  editado_por: string | null
+  editado_at: string
 }
 
 export interface SignosVitales {

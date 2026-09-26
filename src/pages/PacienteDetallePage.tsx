@@ -16,6 +16,7 @@ import { formatVital, formatPA } from '@/lib/vitalesRangos'
 import { FotoPacienteAvatar } from '@/components/FotoPacienteAvatar'
 import { DocumentosPaciente } from '@/components/DocumentosPaciente'
 import { ConsentimientoPresencial } from '@/components/ConsentimientoPresencial'
+import type { ExpedienteNotaRevision } from '@/types'
 import {
   ArrowLeft,
   User,
@@ -42,7 +43,19 @@ import {
   Gauge,
   Wind,
   FolderOpen,
+  ChevronDown,
+  ChevronUp,
 } from 'lucide-react'
+
+// Mig 334 (P4): campos de la nota que guarda cada revisión en version_anterior.
+const CAMPOS_REVISION: { key: 'motivo_consulta' | 'subjetivo' | 'objetivo' | 'analisis' | 'plan' | 'diagnostico'; label: string }[] = [
+  { key: 'motivo_consulta', label: 'Motivo' },
+  { key: 'subjetivo', label: 'S' },
+  { key: 'objetivo', label: 'O' },
+  { key: 'analisis', label: 'A' },
+  { key: 'plan', label: 'P' },
+  { key: 'diagnostico', label: 'Diagnóstico' },
+]
 
 interface Paciente {
   id: string
@@ -195,6 +208,30 @@ export default function PacienteDetallePage() {
       .order('fecha', { ascending: false })
     setCitas(data || [])
   }, [id])
+
+  // Historial de revisiones de una nota (mig 334). La RLS de expediente_notas_revisiones limita a
+  // autor, tratantes, admin clínica y super_admin: 0 filas = "Sin historial", no un error.
+  const [historialAbierto, setHistorialAbierto] = useState<number | null>(null)
+  const [revisiones, setRevisiones] = useState<Record<number, ExpedienteNotaRevision[] | 'cargando' | 'error'>>({})
+
+  const toggleHistorialNota = async (notaId: number) => {
+    if (historialAbierto === notaId) { setHistorialAbierto(null); return }
+    setHistorialAbierto(notaId)
+    const actual = revisiones[notaId]
+    if (actual && actual !== 'error') return
+    setRevisiones(prev => ({ ...prev, [notaId]: 'cargando' }))
+    const { data, error } = await supabase
+      .from('expediente_notas_revisiones')
+      .select('id, nota_id, paciente_id, medico_id, revision, tipo, motivo, version_anterior, editado_por, editado_at')
+      .eq('nota_id', notaId)
+      .order('revision', { ascending: true })
+    if (error) {
+      console.error('Error cargando historial de la nota:', error.message ?? error.code)
+      setRevisiones(prev => ({ ...prev, [notaId]: 'error' }))
+      return
+    }
+    setRevisiones(prev => ({ ...prev, [notaId]: (data || []) as ExpedienteNotaRevision[] }))
+  }
 
   const cargarConsultas = useCallback(async () => {
     const { data } = await supabase
@@ -538,8 +575,11 @@ export default function PacienteDetallePage() {
                 {consultas.map((consulta: any) => (
                   <div key={consulta.id} className="bg-gray-50 p-4 rounded-lg border-l-4 border-[#1E5C8E]">
                     <div className="flex items-center justify-between mb-2">
-                      <span className="text-sm font-medium text-[#1a2a3a]">
+                      <span className="text-sm font-medium text-[#1a2a3a] flex items-center gap-2">
                         {new Date(consulta.created_at).toLocaleDateString('es-ES', { day: 'numeric', month: 'long', year: 'numeric' })}
+                        {consulta.corregida_at && (
+                          <span className="text-xs font-medium px-2 py-0.5 rounded-full bg-amber-100 text-amber-800">Corregida</span>
+                        )}
                       </span>
                       <span className="text-xs text-gray-400">
                         Dr. {consulta.perfiles?.nombre_completo || 'Medico'}
@@ -589,6 +629,50 @@ export default function PacienteDetallePage() {
                         {consulta.plan && <p><span className="font-medium">P:</span> {consulta.plan.substring(0, 100)}{consulta.plan.length > 100 ? '...' : ''}</p>}
                       </div>
                     )}
+                    <button
+                      type="button"
+                      onClick={() => void toggleHistorialNota(consulta.id)}
+                      className="mt-3 text-xs font-medium text-[#1E5C8E] hover:underline flex items-center gap-1"
+                    >
+                      <History size={14} /> Ver historial
+                      {historialAbierto === consulta.id ? <ChevronUp size={14} /> : <ChevronDown size={14} />}
+                    </button>
+                    {historialAbierto === consulta.id && (() => {
+                      const revs = revisiones[consulta.id]
+                      if (!revs || revs === 'cargando') {
+                        return <p className="mt-2 text-xs text-gray-400 flex items-center gap-1"><Loader2 size={12} className="animate-spin" /> Cargando historial...</p>
+                      }
+                      if (revs === 'error') {
+                        return <p className="mt-2 text-xs text-red-600">No se pudo cargar el historial.</p>
+                      }
+                      if (revs.length === 0) {
+                        return <p className="mt-2 text-xs text-gray-400">Sin historial</p>
+                      }
+                      return (
+                        <div className="mt-2 space-y-2">
+                          {revs.map(r => (
+                            <div key={r.id} className="bg-white p-3 rounded border border-gray-200 text-xs text-gray-600">
+                              <div className="flex flex-wrap items-center gap-2 mb-1">
+                                <span className="font-semibold text-[#1a2a3a]">Revisión {r.revision}</span>
+                                <span className={`px-2 py-0.5 rounded-full ${r.tipo === 'correccion' ? 'bg-amber-100 text-amber-800' : 'bg-gray-100 text-gray-700'}`}>
+                                  {r.tipo === 'correccion' ? 'Corrección' : 'Edición'}
+                                </span>
+                                <span className="text-gray-400">
+                                  {new Date(r.editado_at).toLocaleString('es-ES', { day: 'numeric', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' })}
+                                </span>
+                              </div>
+                              {r.motivo && <p className="mb-1"><span className="font-medium">Motivo de la corrección:</span> {r.motivo}</p>}
+                              <p className="font-medium text-gray-500 mt-1">Versión anterior:</p>
+                              <div className="mt-1 space-y-0.5 whitespace-pre-wrap">
+                                {CAMPOS_REVISION.map(c => (
+                                  <p key={c.key}><span className="font-medium">{c.label}:</span> {r.version_anterior?.[c.key] || '—'}</p>
+                                ))}
+                              </div>
+                            </div>
+                          ))}
+                        </div>
+                      )
+                    })()}
                   </div>
                 ))}
               </div>
