@@ -57,6 +57,8 @@ const SOAP_VACIO = {
   plan: '',
   diagnostico: '',
 }
+const AVISO_BORRADOR =
+  'La nota se cerró mientras editabas. Tus cambios siguen en pantalla: escribí el motivo y enviá la corrección, o tocá Cancelar para descartarlos.'
 type CampoSoap = keyof typeof SOAP_VACIO
 const CAMPOS_SOAP = Object.keys(SOAP_VACIO) as CampoSoap[]
 
@@ -113,6 +115,7 @@ export default function ConsultaPage() {
   const [notaGuardada, setNotaGuardada] = useState<ExpedienteNota | null>(null)
   const [corrigiendo, setCorrigiendo] = useState(false)
   const [motivoCorreccion, setMotivoCorreccion] = useState('')
+  const [borradorPreservado, setBorradorPreservado] = useState(false) // corrección abierta por un NT006
   const notaCerrada = !!notaGuardada?.cerrada_at
   const soloLectura = notaCerrada && !corrigiendo
   // Los handlers de dictado / biblioteca / IA escriben por acá: con la nota cerrada no tocan nada.
@@ -335,9 +338,11 @@ export default function ConsultaPage() {
     )
 
     if (result.error) {
+      // NT006: la nota se cerró mientras se editaba (la cita se completó en otra pantalla). El borrador
+      // NO se pisa: se toma la versión de la base como referencia y se pasa a modo corrección con el
+      // texto del médico todavía en los campos.
+      if (result.errorCode === 'NT006' && (await pasarACorreccionConBorrador())) return false
       toast.error(mensajeErrorNota({ code: result.errorCode, message: result.error }, 'Error al guardar: '))
-      // NT006: la nota se cerró (la cita se completó en otra pantalla) y este estado quedó viejo.
-      if (result.errorCode === 'NT006') await recargarNota()
       return false
     }
     toast.success('Consulta guardada correctamente')
@@ -353,11 +358,32 @@ export default function ConsultaPage() {
     const n = await fetchConsultaPorCita(cita.id)
     setCorrigiendo(false)
     setMotivoCorreccion('')
+    setBorradorPreservado(false)
     if (n) {
       setConsultaId(n.id)
       setNotaGuardada(n)
       setSoap(soapDeNota(n))
     }
+  }
+
+  // Trae la fila vigente SIN tocar `soap` (consulta directa: fetchConsultaPorCita prende el spinner de
+  // pantalla completa). notaGuardada pasa a ser la versión de la base: contra ella comparan "Enviar
+  // corrección" y soapParaCorreccion, y a ella vuelve "Cancelar".
+  const pasarACorreccionConBorrador = async (): Promise<boolean> => {
+    if (!cita) return false
+    const { data, error } = await supabase
+      .from('expediente_notas')
+      .select('*')
+      .eq('cita_id', cita.id)
+      .maybeSingle()
+    if (error || !data?.cerrada_at) return false
+    setConsultaId(data.id)
+    setNotaGuardada(data as ExpedienteNota)
+    setMotivoCorreccion('')
+    setCorrigiendo(true)
+    setBorradorPreservado(true)
+    toast.warning(AVISO_BORRADOR, { duration: 10000 })
+    return true
   }
 
   // Un campo que el médico no tocó viaja con el valor que tiene la base (NULL incluido): así un NULL
@@ -373,10 +399,12 @@ export default function ConsultaPage() {
   const correccionCambiaAlgo = !!notaGuardada && CAMPOS_SOAP.some(k => soap[k] !== (notaGuardada[k] ?? ''))
   const motivoCorreccionOk = motivoCorreccion.trim().length > 0 && motivoCorreccion.trim().length <= 500
 
+  // También descarta el borrador preservado ante NT006: vuelve a la versión de la base.
   const cancelarCorreccion = () => {
     if (notaGuardada) setSoap(soapDeNota(notaGuardada))
     setMotivoCorreccion('')
     setCorrigiendo(false)
+    setBorradorPreservado(false)
   }
 
   const enviarCorreccion = async () => {
@@ -395,8 +423,12 @@ export default function ConsultaPage() {
   // escribía nunca — medido el 13-sep, la única cita 'completada' de prod no tenía nota.
   // La barrera REAL es el trigger trg_exigir_nota_al_completar (mig 291, PE001), que también corta
   // el UPDATE directo y la RPC. Esto es lo que evita que el médico llegue a chocársela.
+  //
+  // Con la nota ya CERRADA (la cita volvió de 'completada' a 'en_curso') no se guarda: la nota existe,
+  // que es lo único que exige trg_exigir_nota_al_completar, y un UPDATE directo daría NT006 y la cita
+  // no se podría completar nunca desde esta pantalla.
   const finalizarConsulta = async () => {
-    if (!(await guardarNotaSOAP())) return
+    if (!notaCerrada && !(await guardarNotaSOAP())) return
     await cambiarEstadoCita('completada')
   }
 
@@ -408,8 +440,9 @@ export default function ConsultaPage() {
     } else {
       setCita({ ...cita, estado: nuevoEstado })
       toast.success(`Cita marcada como ${nuevoEstado.replace('_', ' ')}`)
-      // Mig 334: completar la cita cierra la nota (trigger). Se recarga para mostrarla cerrada.
-      if (nuevoEstado === 'completada') await recargarNota()
+      // Mig 334: completar la cita cierra la nota (trigger). Se recarga para mostrarla cerrada. Si ya
+      // estaba cerrada no hace falta, y recargar pisaría un borrador de corrección en curso.
+      if (nuevoEstado === 'completada' && !notaCerrada) await recargarNota()
     }
   }
 
@@ -769,6 +802,12 @@ export default function ConsultaPage() {
 
               {corrigiendo && (
                 <div className="mt-4 pt-4 border-t space-y-2">
+                  {borradorPreservado && (
+                    <div className="bg-amber-50 border border-amber-200 rounded p-2 text-xs text-amber-800 flex gap-2">
+                      <AlertTriangle className="h-4 w-4 shrink-0" />
+                      <span>{AVISO_BORRADOR}</span>
+                    </div>
+                  )}
                   <Label htmlFor="motivo-correccion">Motivo de la corrección *</Label>
                   <Textarea
                     id="motivo-correccion"
