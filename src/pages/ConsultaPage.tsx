@@ -4,7 +4,7 @@ import { supabase } from '@/lib/supabase'
 import { useVisor, archivoDeResultado, descargarResultado } from '@/components/visor/useVisor'
 import { parseFechaLocal } from '@/lib/fecha'
 import { useAuth } from '@/hooks/useAuth'
-import { useConsultas } from '@/hooks/useConsultas'
+import { useConsultas, mensajeErrorNota, type SoapNota } from '@/hooks/useConsultas'
 import { useCitas } from '@/hooks/useCitas'
 import { useSignosVitalesCita } from '@/hooks/useSignosVitalesCita'
 import { FormularioVitales, VITALES_VACIO } from '@/clinica/components/FormularioVitales'
@@ -26,7 +26,7 @@ import RecetaModal from '@/components/consulta/RecetaModal'
 import { FotoPacienteAvatar } from '@/components/FotoPacienteAvatar'
 import { toast } from 'sonner'
 import { armarItemsOrden, lineasExamenes, mensajeErrorOrden, type ItemOrdenExamen } from '@/lib/ordenesExamen'
-import type { Paciente, Cita } from '@/types'
+import type { Paciente, Cita, ExpedienteNota } from '@/types'
 import {
   ArrowLeft,
   User,
@@ -45,7 +45,31 @@ import {
   Brain,
   ChevronDown,
   ChevronUp,
+  PencilLine,
+  Lock,
 } from 'lucide-react'
+
+const SOAP_VACIO = {
+  motivo_consulta: '',
+  subjetivo: '',
+  objetivo: '',
+  analisis: '',
+  plan: '',
+  diagnostico: '',
+}
+type CampoSoap = keyof typeof SOAP_VACIO
+const CAMPOS_SOAP = Object.keys(SOAP_VACIO) as CampoSoap[]
+
+function soapDeNota(n: ExpedienteNota): typeof SOAP_VACIO {
+  return {
+    motivo_consulta: n.motivo_consulta || '',
+    subjetivo: n.subjetivo || '',
+    objetivo: n.objetivo || '',
+    analisis: n.analisis || '',
+    plan: n.plan || '',
+    diagnostico: n.diagnostico || '',
+  }
+}
 
 function calcularEdad(fechaNacimiento: string | null): number | null {
   if (!fechaNacimiento) return null
@@ -72,6 +96,7 @@ export default function ConsultaPage() {
     saving,
     fetchConsultaPorCita,
     crearOActualizarConsulta,
+    corregirNota,
   } = useConsultas()
 
   const [cita, setCita] = useState<Cita | null>(null)
@@ -80,14 +105,20 @@ export default function ConsultaPage() {
   const [cargando, setCargando] = useState(true)
 
   // Nota SOAP
-  const [soap, setSoap] = useState({
-    motivo_consulta: '',
-    subjetivo: '',
-    objetivo: '',
-    analisis: '',
-    plan: '',
-    diagnostico: '',
-  })
+  const [soap, setSoap] = useState(SOAP_VACIO)
+
+  // Mig 334 (P4): la nota tal como está en la base. Si tiene cerrada_at, la pantalla NO la guarda:
+  // solo se corrige con motivo (corregir_nota_consulta). La condición es SOLO cerrada_at (C4: la
+  // base decide, no cita.estado — una cita puede volver de 'completada' y la nota sigue cerrada).
+  const [notaGuardada, setNotaGuardada] = useState<ExpedienteNota | null>(null)
+  const [corrigiendo, setCorrigiendo] = useState(false)
+  const [motivoCorreccion, setMotivoCorreccion] = useState('')
+  const notaCerrada = !!notaGuardada?.cerrada_at
+  const soloLectura = notaCerrada && !corrigiendo
+  // Los handlers de dictado / biblioteca / IA escriben por acá: con la nota cerrada no tocan nada.
+  const editarSoap = (fn: (p: typeof SOAP_VACIO) => typeof SOAP_VACIO) => {
+    if (!soloLectura) setSoap(fn)
+  }
 
   // Ola 3: signos vitales = SERIE de la cita (fuente única signos_vitales, vía RPC DEFINER).
   // El médico ve la serie pre-capturada, valida cada toma y agrega la suya. Append-only.
@@ -276,14 +307,8 @@ export default function ConsultaPage() {
       const consultaExistente = await fetchConsultaPorCita(id)
       if (consultaExistente) {
         setConsultaId(consultaExistente.id)
-        setSoap({
-          motivo_consulta: consultaExistente.motivo_consulta || '',
-          subjetivo: consultaExistente.subjetivo || '',
-          objetivo: consultaExistente.objetivo || '',
-          analisis: consultaExistente.analisis || '',
-          plan: consultaExistente.plan || '',
-          diagnostico: consultaExistente.diagnostico || '',
-        })
+        setNotaGuardada(consultaExistente)
+        setSoap(soapDeNota(consultaExistente))
       } else {
         // Pre-llenar motivo con el de la cita
         setSoap(prev => ({ ...prev, motivo_consulta: citaData.motivo || '' }))
@@ -310,12 +335,59 @@ export default function ConsultaPage() {
     )
 
     if (result.error) {
-      toast.error('Error al guardar: ' + result.error)
+      toast.error(mensajeErrorNota({ code: result.errorCode, message: result.error }, 'Error al guardar: '))
+      // NT006: la nota se cerró (la cita se completó en otra pantalla) y este estado quedó viejo.
+      if (result.errorCode === 'NT006') await recargarNota()
       return false
     }
     toast.success('Consulta guardada correctamente')
-    if (result.data) setConsultaId(result.data.id)
+    if (result.data) {
+      setConsultaId(result.data.id)
+      setNotaGuardada(result.data)
+    }
     return true
+  }
+
+  const recargarNota = async () => {
+    if (!cita) return
+    const n = await fetchConsultaPorCita(cita.id)
+    setCorrigiendo(false)
+    setMotivoCorreccion('')
+    if (n) {
+      setConsultaId(n.id)
+      setNotaGuardada(n)
+      setSoap(soapDeNota(n))
+    }
+  }
+
+  // Un campo que el médico no tocó viaja con el valor que tiene la base (NULL incluido): así un NULL
+  // mostrado como '' no cuenta como cambio para la RPC.
+  const soapParaCorreccion = (): SoapNota => {
+    const out = {} as SoapNota
+    for (const k of CAMPOS_SOAP) {
+      const original = notaGuardada?.[k] ?? null
+      out[k] = soap[k] === (original ?? '') ? original : soap[k]
+    }
+    return out
+  }
+  const correccionCambiaAlgo = !!notaGuardada && CAMPOS_SOAP.some(k => soap[k] !== (notaGuardada[k] ?? ''))
+  const motivoCorreccionOk = motivoCorreccion.trim().length > 0 && motivoCorreccion.trim().length <= 500
+
+  const cancelarCorreccion = () => {
+    if (notaGuardada) setSoap(soapDeNota(notaGuardada))
+    setMotivoCorreccion('')
+    setCorrigiendo(false)
+  }
+
+  const enviarCorreccion = async () => {
+    if (!notaGuardada || !correccionCambiaAlgo || !motivoCorreccionOk) return
+    const { error } = await corregirNota(notaGuardada.id, soapParaCorreccion(), motivoCorreccion.trim())
+    if (error) {
+      toast.error(error)
+      return
+    }
+    toast.success('Nota corregida')
+    await recargarNota()
   }
 
   // Guardar y completar, en ese orden, y lo segundo sólo si lo primero salió bien. Hasta hoy
@@ -336,6 +408,8 @@ export default function ConsultaPage() {
     } else {
       setCita({ ...cita, estado: nuevoEstado })
       toast.success(`Cita marcada como ${nuevoEstado.replace('_', ' ')}`)
+      // Mig 334: completar la cita cierra la nota (trigger). Se recarga para mostrarla cerrada.
+      if (nuevoEstado === 'completada') await recargarNota()
     }
   }
 
@@ -417,9 +491,15 @@ export default function ConsultaPage() {
               <CheckCircle2 className="h-4 w-4 sm:mr-1" /> <span className="hidden sm:inline">Finalizar</span>
             </Button>
           )}
-          <Button size="sm" onClick={guardarNotaSOAP} disabled={saving} className="bg-[#1E5C8E]">
-            <Save className="h-4 w-4 sm:mr-1" /> <span className="hidden sm:inline">{saving ? 'Guardando...' : 'Guardar'}</span>
-          </Button>
+          {!notaCerrada ? (
+            <Button size="sm" onClick={guardarNotaSOAP} disabled={saving} className="bg-[#1E5C8E]">
+              <Save className="h-4 w-4 sm:mr-1" /> <span className="hidden sm:inline">{saving ? 'Guardando...' : 'Guardar'}</span>
+            </Button>
+          ) : !corrigiendo && (
+            <Button size="sm" variant="outline" onClick={() => setCorrigiendo(true)}>
+              <PencilLine className="h-4 w-4 sm:mr-1" /> <span className="hidden sm:inline">Corregir nota</span>
+            </Button>
+          )}
         </div>
       </div>
 
@@ -559,7 +639,20 @@ export default function ConsultaPage() {
               <CardTitle className="text-sm flex items-center gap-2">
                 <ClipboardList className="h-4 w-4 text-[#1E5C8E]" />
                 Nota Clínica SOAP
+                {notaCerrada && (
+                  <Badge variant="outline" className="ml-auto text-xs gap-1">
+                    <Lock className="h-3 w-3" /> Cerrada
+                  </Badge>
+                )}
+                {notaGuardada?.corregida_at && (
+                  <Badge className="bg-amber-100 text-amber-800 text-xs">Corregida</Badge>
+                )}
               </CardTitle>
+              {soloLectura && (
+                <p className="text-xs text-muted-foreground">
+                  La nota está cerrada. Para cambiarla usá "Corregir nota": la corrección queda registrada con su motivo.
+                </p>
+              )}
             </CardHeader>
             <CardContent className="flex-1">
               <Tabs defaultValue="subjetivo" className="h-full flex flex-col">
@@ -573,14 +666,17 @@ export default function ConsultaPage() {
 
                 <TabsContent value="motivo" className="flex-1 flex flex-col gap-2">
                   <Label>Motivo de consulta</Label>
-                  <DictadoVoz
-                    pacienteId={paciente.id}
-                    onTranscript={text => setSoap(p => ({ ...p, motivo_consulta: text }))}
-                    placeholder="Dicta el motivo de consulta..."
-                  />
+                  {!soloLectura && (
+                    <DictadoVoz
+                      pacienteId={paciente.id}
+                      onTranscript={text => editarSoap(p => ({ ...p, motivo_consulta: text }))}
+                      placeholder="Dicta el motivo de consulta..."
+                    />
+                  )}
                   <Textarea
                     value={soap.motivo_consulta}
-                    onChange={e => setSoap(p => ({ ...p, motivo_consulta: e.target.value }))}
+                    readOnly={soloLectura}
+                    onChange={e => editarSoap(p => ({ ...p, motivo_consulta: e.target.value }))}
                     placeholder="Ej: Dolor de cabeza intenso desde hace 3 días..."
                     className="flex-1 min-h-[200px]"
                   />
@@ -588,14 +684,17 @@ export default function ConsultaPage() {
 
                 <TabsContent value="subjetivo" className="flex-1 flex flex-col gap-2">
                   <Label>Subjetivo — Lo que refiere el paciente</Label>
-                  <DictadoVoz
-                    pacienteId={paciente.id}
-                    onTranscript={text => setSoap(p => ({ ...p, subjetivo: text }))}
-                    placeholder="Dicta lo que el paciente cuenta..."
-                  />
+                  {!soloLectura && (
+                    <DictadoVoz
+                      pacienteId={paciente.id}
+                      onTranscript={text => editarSoap(p => ({ ...p, subjetivo: text }))}
+                      placeholder="Dicta lo que el paciente cuenta..."
+                    />
+                  )}
                   <Textarea
                     value={soap.subjetivo}
-                    onChange={e => setSoap(p => ({ ...p, subjetivo: e.target.value }))}
+                    readOnly={soloLectura}
+                    onChange={e => editarSoap(p => ({ ...p, subjetivo: e.target.value }))}
                     placeholder="Ej: Paciente refiere cefalea frontal pulsátil de intensidad 8/10, acompañada de náuseas..."
                     className="flex-1 min-h-[200px]"
                   />
@@ -603,14 +702,17 @@ export default function ConsultaPage() {
 
                 <TabsContent value="objetivo" className="flex-1 flex flex-col gap-2">
                   <Label>Objetivo — Hallazgos de exploración física</Label>
-                  <DictadoVoz
-                    pacienteId={paciente.id}
-                    onTranscript={text => setSoap(p => ({ ...p, objetivo: text }))}
-                    placeholder="Dicta los hallazgos de la exploración..."
-                  />
+                  {!soloLectura && (
+                    <DictadoVoz
+                      pacienteId={paciente.id}
+                      onTranscript={text => editarSoap(p => ({ ...p, objetivo: text }))}
+                      placeholder="Dicta los hallazgos de la exploración..."
+                    />
+                  )}
                   <Textarea
                     value={soap.objetivo}
-                    onChange={e => setSoap(p => ({ ...p, objetivo: e.target.value }))}
+                    readOnly={soloLectura}
+                    onChange={e => editarSoap(p => ({ ...p, objetivo: e.target.value }))}
                     placeholder="Ej: Consciente, orientado. Pupilas isocóricas. Faringe eritematosa. Auscultación cardiopulmonar normal..."
                     className="flex-1 min-h-[200px]"
                   />
@@ -618,14 +720,17 @@ export default function ConsultaPage() {
 
                 <TabsContent value="analisis" className="flex-1 flex flex-col gap-2">
                   <Label>Análisis — Diagnóstico e interpretación</Label>
-                  <DictadoVoz
-                    pacienteId={paciente.id}
-                    onTranscript={text => setSoap(p => ({ ...p, analisis: text }))}
-                    placeholder="Dicta tu análisis diagnóstico..."
-                  />
+                  {!soloLectura && (
+                    <DictadoVoz
+                      pacienteId={paciente.id}
+                      onTranscript={text => editarSoap(p => ({ ...p, analisis: text }))}
+                      placeholder="Dicta tu análisis diagnóstico..."
+                    />
+                  )}
                   <Textarea
                     value={soap.analisis}
-                    onChange={e => setSoap(p => ({ ...p, analisis: e.target.value }))}
+                    readOnly={soloLectura}
+                    onChange={e => editarSoap(p => ({ ...p, analisis: e.target.value }))}
                     placeholder="Ej: Cefalea tensional probablemente relacionada con estrés laboral. Se descartan signos de alarma..."
                     className="flex-1 min-h-[200px]"
                   />
@@ -633,14 +738,17 @@ export default function ConsultaPage() {
 
                 <TabsContent value="plan" className="flex-1 flex flex-col gap-2">
                   <Label>Plan — Tratamiento, estudios, indicaciones</Label>
-                  <DictadoVoz
-                    pacienteId={paciente.id}
-                    onTranscript={text => setSoap(p => ({ ...p, plan: text }))}
-                    placeholder="Dicta el plan de tratamiento..."
-                  />
+                  {!soloLectura && (
+                    <DictadoVoz
+                      pacienteId={paciente.id}
+                      onTranscript={text => editarSoap(p => ({ ...p, plan: text }))}
+                      placeholder="Dicta el plan de tratamiento..."
+                    />
+                  )}
                   <Textarea
                     value={soap.plan}
-                    onChange={e => setSoap(p => ({ ...p, plan: e.target.value }))}
+                    readOnly={soloLectura}
+                    onChange={e => editarSoap(p => ({ ...p, plan: e.target.value }))}
                     placeholder="Ej: 1. Paracetamol 500mg c/8h x 5 días. 2. Hidratación abundante. 3. Reposo. 4. Control en 7 días..."
                     className="flex-1 min-h-[200px]"
                   />
@@ -652,11 +760,45 @@ export default function ConsultaPage() {
                 <Label className="text-xs text-muted-foreground">Diagnóstico (para receta y reportes)</Label>
                 <Input
                   value={soap.diagnostico}
-                  onChange={e => setSoap(p => ({ ...p, diagnostico: e.target.value }))}
+                  readOnly={soloLectura}
+                  onChange={e => editarSoap(p => ({ ...p, diagnostico: e.target.value }))}
                   placeholder="Diagnóstico principal (ej: Cefalea tensional)"
                   className="mt-1"
                 />
               </div>
+
+              {corrigiendo && (
+                <div className="mt-4 pt-4 border-t space-y-2">
+                  <Label htmlFor="motivo-correccion">Motivo de la corrección *</Label>
+                  <Textarea
+                    id="motivo-correccion"
+                    value={motivoCorreccion}
+                    onChange={e => setMotivoCorreccion(e.target.value)}
+                    maxLength={500}
+                    rows={2}
+                    placeholder="Ej: Se corrige el diagnóstico tras revisar los resultados de laboratorio"
+                  />
+                  <div className="flex items-center justify-between gap-2">
+                    <span className="text-xs text-muted-foreground">
+                      {motivoCorreccion.length}/500{!correccionCambiaAlgo && ' · Todavía no cambiaste ningún campo'}
+                    </span>
+                    <div className="flex gap-2">
+                      <Button size="sm" variant="outline" onClick={cancelarCorreccion} disabled={saving}>
+                        Cancelar
+                      </Button>
+                      <Button
+                        size="sm"
+                        className="bg-[#1E5C8E]"
+                        onClick={() => void enviarCorreccion()}
+                        disabled={saving || !motivoCorreccionOk || !correccionCambiaAlgo}
+                      >
+                        {saving ? <Loader2 className="h-4 w-4 mr-1 animate-spin" /> : <Save className="h-4 w-4 mr-1" />}
+                        Enviar corrección
+                      </Button>
+                    </div>
+                  </div>
+                </div>
+              )}
             </CardContent>
           </Card>
         </div>
@@ -757,7 +899,7 @@ export default function ConsultaPage() {
             </CardHeader>
             {mostrarBiblioteca && (
               <CardContent>
-                <BibliotecaMedica onCopiar={texto => setSoap(p => ({ ...p, plan: p.plan + '\n\n[Referencia bibliográfica]\n' + texto }))} />
+                <BibliotecaMedica onCopiar={texto => editarSoap(p => ({ ...p, plan: p.plan + '\n\n[Referencia bibliográfica]\n' + texto }))} />
               </CardContent>
             )}
           </Card>
@@ -781,7 +923,7 @@ export default function ConsultaPage() {
                   subjetivo={soap.subjetivo}
                   objetivo={soap.objetivo}
                   consultaId={consultaId}
-                  onCopiarSugerencia={texto => setSoap(p => ({ ...p, analisis: p.analisis + '\n\n[Sugerencia IA]\n' + texto }))}
+                  onCopiarSugerencia={texto => editarSoap(p => ({ ...p, analisis: p.analisis + '\n\n[Sugerencia IA]\n' + texto }))}
                 />
               </CardContent>
             )}
