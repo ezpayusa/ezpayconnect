@@ -324,10 +324,11 @@ BEGIN
   PERFORM private.exigir_empresa_activa();
 
   SELECT * INTO v_ex FROM public.examenes e WHERE e.id = p_examen_id FOR UPDATE;
-  -- mismo codigo para "no existe" (no se revela la existencia). laboratorio_id NULL no es de nadie:
-  -- sin el IS NULL, un examen sin laboratorio y un caller sin empresa pasarian el IS DISTINCT FROM.
+  -- mismo codigo para "no existe" (no se revela la existencia). laboratorio_id NULL no es de nadie.
+  -- El COALESCE cubre el helper NULL (caller sin cuenta, cuenta inactiva o empresa no activa):
+  -- la comparacion da NULL y el COALESCE la vuelve false, asi que el gate corta (fail-closed, P480).
   IF NOT FOUND OR v_ex.laboratorio_id IS NULL
-     OR v_ex.laboratorio_id IS DISTINCT FROM public.mi_empresa_proveedor() THEN
+     OR NOT COALESCE(v_ex.laboratorio_id = public.mi_empresa_proveedor(), false) THEN
     RAISE EXCEPTION 'No autorizado: el examen no es de su laboratorio' USING ERRCODE = 'EX024';
   END IF;
   IF NOT COALESCE(private.tiene_permiso('resultados_cargar'), false) THEN
