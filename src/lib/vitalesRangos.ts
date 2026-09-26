@@ -56,14 +56,19 @@ export const MSG_PA_FORMATO = 'Presión arterial con formato inválido (use NNN/
 export const MSG_PA_RANGO =
   'Signo vital fuera de rango: presion_arterial (sistolica 50-300, diastolica 20-200 mmHg, sistolica > diastolica)'
 export const MSG_COMBINACION = 'Combinación peso/talla inválida'
+// Mismo texto que el SV003 de la RPC (mig 331). notas no es un vital.
+export const MSG_TOMA_VACIA = 'Toma vacía: cargue al menos un signo vital'
+// input type=number con texto que no es número (p. ej. "10-100"): el navegador entrega '' y marca
+// validity.badInput. Sin este error, '' se leía como "no medido" (mig 331, fila 1453).
+export const MSG_VALOR_INVALIDO = 'Valor inválido: ingrese solo un número'
 
 export function mensajeFueraDeRango(campo: CampoVitalNumerico): string {
   const r = RANGOS_VITALES[campo]
   return `Signo vital fuera de rango: ${campo} (${r.min}-${r.max} ${r.unidad})`
 }
 
-// Clave 'imc' = error de la combinación peso/talla (no es un input).
-export type CampoConError = CampoVitalNumerico | 'presion_arterial' | 'imc'
+// Clave 'imc' = error de la combinación peso/talla (no es un input). 'toma' = toma vacía (va arriba del botón).
+export type CampoConError = CampoVitalNumerico | 'presion_arterial' | 'imc' | 'toma'
 export type ErroresVitales = Partial<Record<CampoConError, string>>
 
 export interface VitalesAValidar {
@@ -78,14 +83,17 @@ export interface VitalesAValidar {
 }
 
 /**
- * Valida igual que capturar_signo_vital (mig 330). Vacío = no medido → válido.
- * Los numéricos llegan como string (lo que tipea el usuario); el peso ya en kg.
- * Único agregado del cliente: un valor no numérico o con decimales en un campo entero, que la RPC
+ * Valida igual que capturar_signo_vital (migs 330/331). Vacío = no medido → válido, pero al menos un
+ * vital tiene que venir (SV003). Los numéricos llegan como string (lo que tipea el usuario); el peso ya en kg.
+ * `invalidos`: campos cuyo input tiene validity.badInput — su '' NO es "no medido", es texto inválido.
+ * Agregados del cliente: badInput, y un valor no numérico o con decimales en un campo entero, que la RPC
  * rechazaría con un error de tipo (no SV) — acá se nombra el campo en lugar de eso.
  */
-export function validarVitales(v: VitalesAValidar): ErroresVitales {
+export function validarVitales(v: VitalesAValidar, invalidos: CampoVitalNumerico[] = []): ErroresVitales {
   const errores: ErroresVitales = {}
+  for (const campo of invalidos) errores[campo] = MSG_VALOR_INVALIDO
   for (const campo of Object.keys(RANGOS_VITALES) as CampoVitalNumerico[]) {
+    if (errores[campo]) continue
     const s = v[campo].trim()
     if (s === '') continue
     const r = RANGOS_VITALES[campo]
@@ -112,6 +120,10 @@ export function validarVitales(v: VitalesAValidar): ErroresVitales {
     const talla = round2(Number(v.talla_cm))
     if (round2(peso / ((talla / 100) * (talla / 100))) > IMC_MAX) errores.imc = MSG_COMBINACION
   }
+
+  // Toma vacía (SV003): solo si no hay otro error — un badInput deja el campo en '' y el error útil es el suyo.
+  const vacia = pa === '' && (Object.keys(RANGOS_VITALES) as CampoVitalNumerico[]).every((c) => v[c].trim() === '')
+  if (vacia && Object.keys(errores).length === 0) errores.toma = MSG_TOMA_VACIA
   return errores
 }
 
@@ -119,13 +131,14 @@ const round2 = (n: number) => Math.round(n * 100) / 100
 
 /** Errores de rango/formato de la RPC: se muestran tal cual en el formulario, no como toast. */
 export function esErrorVital(error: { code?: string } | null | undefined): boolean {
-  return error?.code === 'SV001' || error?.code === 'SV002'
+  return error?.code === 'SV001' || error?.code === 'SV002' || error?.code === 'SV003'
 }
 
 /** A qué campo del formulario corresponde un mensaje SV de la RPC (null = general). */
 export function campoDeErrorVital(mensaje: string): CampoConError | null {
   if (mensaje === MSG_PA_FORMATO || mensaje === MSG_PA_RANGO) return 'presion_arterial'
   if (mensaje === MSG_COMBINACION) return 'imc'
+  if (mensaje === MSG_TOMA_VACIA) return 'toma'
   const m = /^Signo vital fuera de rango: (\w+) /.exec(mensaje)
   return m && m[1] in RANGOS_VITALES ? (m[1] as CampoVitalNumerico) : null
 }

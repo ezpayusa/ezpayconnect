@@ -68,7 +68,7 @@ export function useSignosVitalesCita(citaId: number) {
     return true
   }, [cargarSerie])
 
-  // errorVital = mensaje SV001/SV002 de la RPC (rango/formato), para mostrar en el formulario tal cual.
+  // errorVital = mensaje SV001/SV002/SV003 de la RPC (rango/formato/toma vacía), para mostrar en el formulario tal cual.
   const agregarToma = useCallback(
     async (values: VitalesValues, pacienteId: number, medicoId: string): Promise<{ ok: boolean; errorVital: string | null }> => {
       const { error } = await supabase.rpc('capturar_signo_vital', {

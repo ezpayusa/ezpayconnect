@@ -158,7 +158,7 @@ function ModalAdmision({ cita, puedePHI, onClose, onTomaGuardada, onLlegada }: {
     })
     setGuardando(false)
     if (error) {
-      // SV001/SV002 (rango/formato, mig 330): el mensaje va al formulario tal cual, no a un toast.
+      // SV001/SV002/SV003 (rango/formato/toma vacía, migs 330/331): el mensaje va al formulario tal cual, no a un toast.
       if (esErrorVital(error)) setErrorVital(error.message)
       else toast.error(error.message)
       return

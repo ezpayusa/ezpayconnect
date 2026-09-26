@@ -37,7 +37,7 @@ function ErrorCampo({ msg }: { msg?: string }) {
  * reutilizable (admisión Ola 2C, validación Ola 3). El IMC mostrado es informativo; el server
  * lo recalcula con el trigger trg_calcular_imc.
  * Rangos y unidades: src/lib/vitalesRangos.ts (espejo de la mig 330). Se valida en el cliente antes de
- * llamar a onSubmit; si igual la RPC rechaza con SV001/SV002, la página pasa error.message en
+ * llamar a onSubmit; si igual la RPC rechaza con SV001/SV002/SV003, la página pasa error.message en
  * `errorServidor` y se muestra en el campo que nombra (o arriba del botón si no nombra ninguno).
  */
 export function FormularioVitales({ values, onChange, onSubmit, loading, errorServidor }: {
@@ -80,14 +80,27 @@ export function FormularioVitales({ values, onChange, onSubmit, loading, errorSe
       const sig: ErroresVitales = { ...e }
       delete sig[campo as CampoConError]
       if (campo === 'peso_kg' || campo === 'talla_cm') delete sig.imc
+      delete sig.toma
       return sig
     })
     setErrorGeneral(null)
     onChange(campo, valor)
   }
 
-  const enviar = () => {
-    const errs = validarVitales(values)
+  // Un input type=number con texto que no es número ("10-100") entrega '' con validity.badInput: se lee
+  // del DOM al enviar (el onChange no alcanza: si el campo ya estaba en '' React no lo dispara).
+  const camposConBadInput = (form: HTMLFormElement): CampoVitalNumerico[] => {
+    const campos: CampoVitalNumerico[] = []
+    for (const campo of Object.keys(RANGOS_VITALES) as CampoVitalNumerico[]) {
+      const id = campo === 'peso_kg' ? 'vital-peso' : `vital-${campo}`
+      const input = form.querySelector<HTMLInputElement>(`#${id}`)
+      if (input?.validity.badInput) campos.push(campo)
+    }
+    return campos
+  }
+
+  const enviar = (form: HTMLFormElement) => {
+    const errs = validarVitales(values, camposConBadInput(form))
     setErrores(errs)
     setErrorGeneral(null)
     if (Object.keys(errs).length > 0) return
@@ -118,7 +131,7 @@ export function FormularioVitales({ values, onChange, onSubmit, loading, errorSe
   }
 
   return (
-    <form onSubmit={(e) => { e.preventDefault(); enviar() }} noValidate className="space-y-3">
+    <form onSubmit={(e) => { e.preventDefault(); enviar(e.currentTarget) }} noValidate className="space-y-3">
       <div className="grid grid-cols-2 gap-2">
         <div>
           <Label htmlFor="vital-presion_arterial" className="text-xs flex items-center gap-1"><HeartPulse className="h-3 w-3" /> PA ({PRESION_ARTERIAL.unidad})</Label>
@@ -164,6 +177,7 @@ export function FormularioVitales({ values, onChange, onSubmit, loading, errorSe
         </div>
       )}
       <ErrorCampo msg={errores.imc} />
+      {errores.toma && <p role="alert" className="text-xs text-red-600">{errores.toma}</p>}
       {errorGeneral && <p role="alert" className="text-xs text-red-600">{errorGeneral}</p>}
       <Button type="submit" disabled={loading} className="w-full bg-[#1E5C8E] hover:bg-[#164a70]">
         {loading ? <><Loader2 className="h-4 w-4 mr-2 animate-spin" /> Guardando…</> : 'Guardar toma'}
