@@ -142,6 +142,11 @@ export default function LabOrdenesPage() {
                       <div key={i.id} className="flex items-center justify-between gap-3 p-2 bg-gray-50 rounded-lg">
                         <div className="min-w-0">
                           <span className="font-medium text-sm">{i.tipo}</span>
+                          {i.catalogo_id == null && (
+                            <Badge variant="outline" className="ml-2 border-amber-300 text-amber-700" title="Escrito a mano: no está en el catálogo del laboratorio">
+                              fuera de catálogo
+                            </Badge>
+                          )}
                           <Badge className={`ml-2 ${est.color}`}>{est.label}</Badge>
                         </div>
                         <div className="flex items-center gap-2 shrink-0">

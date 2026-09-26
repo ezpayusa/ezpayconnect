@@ -8,6 +8,7 @@ import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Textarea } from '@/components/ui/textarea'
 import { UserPlus, Loader2, AlertTriangle } from 'lucide-react'
+import { armarItemsOrden, lineasExamenes } from '@/lib/ordenesExamen'
 
 export default function LabWalkInPage() {
   const { crearWalkIn, catalogo, fetchCatalogo } = useLaboratorio()
@@ -28,17 +29,18 @@ export default function LabWalkInPage() {
     return acc
   }, [catalogo])
 
-  const toggle = (nombre: string) => {
-    setSel((prev) => { const n = new Set(prev); n.has(nombre) ? n.delete(nombre) : n.add(nombre); return n })
+  // sel guarda IDS de examenes_catalogo (mig 332): el nombre lo copia el servidor.
+  const toggle = (id: string) => {
+    setSel((prev) => { const n = new Set(prev); n.has(id) ? n.delete(id) : n.add(id); return n })
   }
 
   const submit = async (e: React.FormEvent) => {
     e.preventDefault()
-    const examenes = [...sel, ...otros.split('\n').map((s) => s.trim()).filter(Boolean)]
-    if (!form.paciente_nombre.trim() || examenes.length === 0) return
+    const items = armarItemsOrden(sel, lineasExamenes(otros))
+    if (!form.paciente_nombre.trim() || items.length === 0) return
     setSaving(true)
     const ok = await crearWalkIn({
-      examenes,
+      items,
       instrucciones: form.instrucciones.trim() || undefined,
       prioridad: form.prioridad,
       paciente_nombre: form.paciente_nombre.trim(),
@@ -49,7 +51,7 @@ export default function LabWalkInPage() {
     if (ok) navigate('/laboratorio/ordenes')
   }
 
-  const total = sel.size + otros.split('\n').map((s) => s.trim()).filter(Boolean).length
+  const total = sel.size + lineasExamenes(otros).length
 
   if (!permLoading && !tienePermiso('walkin_registrar')) {
     return (
@@ -113,7 +115,7 @@ export default function LabWalkInPage() {
                   <div className="grid grid-cols-1 md:grid-cols-2 gap-1">
                     {items.map((c) => (
                       <label key={c.id} className="flex items-center gap-2 p-2 rounded-lg hover:bg-gray-50 cursor-pointer text-sm">
-                        <input type="checkbox" checked={sel.has(c.nombre)} onChange={() => toggle(c.nombre)} className="accent-[#0E7C6B] h-4 w-4" />
+                        <input type="checkbox" checked={sel.has(c.id)} onChange={() => toggle(c.id)} className="accent-[#0E7C6B] h-4 w-4" />
                         {c.nombre}
                       </label>
                     ))}
