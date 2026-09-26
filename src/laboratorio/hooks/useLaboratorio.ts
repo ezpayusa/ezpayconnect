@@ -4,6 +4,7 @@ import { useProveedorAuth } from '@/proveedor/hooks/useProveedorAuth'
 import { toast } from 'sonner'
 import { hoyISO } from '@/lib/fecha'
 import { mensajeErrorOrden, type ItemOrdenExamen } from '@/lib/ordenesExamen'
+import { leerResultadoCorreccion, mensajeErrorCorreccion } from '@/lib/correccionResultados'
 
 export interface OrdenExamen {
   id: number
@@ -24,6 +25,7 @@ export interface OrdenExamen {
   clinica_nombre: string | null
   orden_id: string | null
   catalogo_id: string | null   // mig 332: NULL = examen fuera de catálogo (texto libre)
+  liberado_al_paciente: boolean
 }
 
 // Una orden agrupa varios exámenes (ítems) en una sola "hoja"
@@ -59,7 +61,7 @@ export function useLaboratorio() {
     setLoading(true)
     const [itemsRes, headersRes] = await Promise.all([
       supabase.from('examenes')
-        .select('id, tipo, descripcion, estado, origen, prioridad, fecha_solicitud, fecha_resultado, resultados, archivo_url, paciente_id, paciente_nombre, paciente_documento, paciente_telefono, medico_nombre, clinica_nombre, orden_id, catalogo_id')
+        .select('id, tipo, descripcion, estado, origen, prioridad, fecha_solicitud, fecha_resultado, resultados, archivo_url, paciente_id, paciente_nombre, paciente_documento, paciente_telefono, medico_nombre, clinica_nombre, orden_id, catalogo_id, liberado_al_paciente')
         .eq('laboratorio_id', labId)
         .order('created_at', { ascending: false }),
       supabase.from('ordenes_examen')
@@ -176,6 +178,36 @@ export function useLaboratorio() {
     return true
   }
 
+  // Corrección de un resultado COMPLETADO (mig 335/336). El archivo nuevo se sube primero (mismo path
+  // y upsert:false que la carga normal) y la RPC recibe su PATH. Si la RPC rechaza, ese archivo quedó
+  // sin referencia: se borra (la policy de DELETE lo permite justamente porque nadie lo referencia)
+  // y se muestra el error ORIGINAL de la RPC, no el del borrado.
+  const corregirResultado = async (examenId: number, motivo: string, resultados: string, archivo?: File | null) => {
+    let path: string | null = null
+    if (archivo) {
+      path = await subirArchivo(examenId, archivo)
+      if (!path) return false // el toast ya se mostró
+    }
+    const { data, error } = await supabase.rpc('corregir_resultado_examen', {
+      p_examen_id: examenId, p_motivo: motivo.trim(), p_resultados: resultados, p_archivo_path: path,
+    })
+    if (error) {
+      if (path) {
+        const { error: eDel } = await supabase.storage.from('resultados-examenes').remove([path])
+        if (eDel) console.error('[corregirResultado] no se pudo borrar el archivo huérfano', { path, error: eDel })
+      }
+      console.error('[corregirResultado] RPC falló', { examenId, code: error.code })
+      toast.error(mensajeErrorCorreccion(error))
+      return false
+    }
+    const r = leerResultadoCorreccion(data)
+    toast.success(r
+      ? `Resultado corregido (revisión ${r.revision})${r.notificado ? '. Se notificó al médico y al paciente.' : ''}`
+      : 'Resultado corregido')
+    fetchOrdenes()
+    return true
+  }
+
   // ---- Catálogo de exámenes del laboratorio ----
   const fetchCatalogo = useCallback(async () => {
     if (!labId) return
@@ -263,7 +295,7 @@ export function useLaboratorio() {
   return {
     ordenes, afiliaciones, invitaciones, catalogo, loading,
     fetchOrdenes, fetchAfiliaciones, fetchInvitaciones, fetchCatalogo,
-    cambiarEstado, subirResultado, responderInvitacion, crearWalkIn,
+    cambiarEstado, subirResultado, corregirResultado, responderInvitacion, crearWalkIn,
     crearCatalogo, toggleCatalogo, eliminarCatalogo,
   }
 }

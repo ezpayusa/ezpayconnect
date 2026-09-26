@@ -2,12 +2,14 @@ import { useState, useMemo } from 'react'
 import { useVisor, archivoDeResultado } from '@/components/visor/useVisor'
 import { useLaboratorio, type OrdenExamen, type OrdenAgrupada } from '@/laboratorio/hooks/useLaboratorio'
 import { useLaboratorioPermisos } from '@/laboratorio/hooks/useLaboratorioPermisos'
+import CorregirResultadoModal from '@/laboratorio/components/CorregirResultadoModal'
+import { ACCEPT_RESULTADO } from '@/lib/correccionResultados'
 import { Card, CardContent } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
 import { Textarea } from '@/components/ui/textarea'
 import { Label } from '@/components/ui/label'
-import { ClipboardList, Loader2, RefreshCw, FlaskConical, User, Stethoscope, Clock, X, FileText, MessageSquare } from 'lucide-react'
+import { ClipboardList, Loader2, RefreshCw, FlaskConical, User, Stethoscope, Clock, X, FileText, MessageSquare, PencilLine } from 'lucide-react'
 
 const ESTADO: Record<string, { label: string; color: string }> = {
   pendiente:  { label: 'Pendiente',   color: 'bg-amber-100 text-amber-700' },
@@ -28,7 +30,7 @@ const FILTROS = [
 export const ordenCompletada = (o: OrdenAgrupada) => o.items.every((i) => i.estado === 'completado')
 
 export default function LabOrdenesPage() {
-  const { ordenes, loading, fetchOrdenes, cambiarEstado, subirResultado } = useLaboratorio()
+  const { ordenes, loading, fetchOrdenes, cambiarEstado, subirResultado, corregirResultado } = useLaboratorio()
   const { abrir, visor } = useVisor()
   const { tienePermiso } = useLaboratorioPermisos()
   const puedeCargar = tienePermiso('resultados_cargar')
@@ -37,6 +39,7 @@ export default function LabOrdenesPage() {
   const [resultado, setResultado] = useState('')
   const [archivoFile, setArchivoFile] = useState<File | null>(null)
   const [guardando, setGuardando] = useState(false)
+  const [corrigiendo, setCorrigiendo] = useState<OrdenExamen | null>(null)
 
   const lista = useMemo(() => {
     if (filtro === 'todas') return ordenes
@@ -168,6 +171,11 @@ export default function LabOrdenesPage() {
                           {i.estado === 'completado' && (
                             <Button size="sm" variant="ghost" onClick={() => abrirResultado(i)}>Ver</Button>
                           )}
+                          {i.estado === 'completado' && puedeCargar && (
+                            <Button size="sm" variant="outline" onClick={() => setCorrigiendo(i)}>
+                              <PencilLine className="h-4 w-4 mr-1" /> Corregir
+                            </Button>
+                          )}
                         </div>
                       </div>
                     )
@@ -177,6 +185,11 @@ export default function LabOrdenesPage() {
             </Card>
           ))}
         </div>
+      )}
+
+      {corrigiendo && (
+        <CorregirResultadoModal examen={corrigiendo} abrir={abrir}
+          onCerrar={() => setCorrigiendo(null)} onCorregir={corregirResultado} />
       )}
 
       {/* Modal resultado por examen */}
@@ -216,7 +229,7 @@ export default function LabOrdenesPage() {
                   <Label>Adjuntar archivo (PDF o imagen)</Label>
                   <input
                     type="file"
-                    accept=".pdf,image/*"
+                    accept={ACCEPT_RESULTADO}
                     onChange={(e) => setArchivoFile(e.target.files?.[0] || null)}
                     className="block w-full text-sm text-gray-600 file:mr-3 file:py-2 file:px-3 file:rounded-lg file:border-0 file:bg-[#0E7C6B] file:text-white hover:file:bg-[#0a5e51] file:cursor-pointer"
                   />
