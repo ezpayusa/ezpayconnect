@@ -25380,6 +25380,1259 @@ EXCEPTION WHEN OTHERS THEN
 END $$;
 SELECT set_config('role', 'none', true);
 
+-- ============================================================================================
+-- P4 / MIG 334 — notas con revisiones inmutables (P885-P896, P908-P911)
+-- ============================================================================================
+-- REGLA DE ESTE BLOQUE (spec P4 v2, "subtransaccion descartable"): las revisiones son inmutables
+-- (NT008 tambien para postgres) y tienen FK RESTRICT hacia la nota, asi que una probe que genera
+-- historia NO puede limpiar con DELETE. Toda la siembra y las mediciones corren dentro de un
+-- sub-bloque que termina con RAISE ... ERRCODE 'P0999'; el handler deshace la subtransaccion entera
+-- (citas, notas, revisiones, historial) y afuera se verifica el snapshot contra el PRE. Las
+-- variables de plpgsql no se deshacen: el veredicto sobrevive al descarte.
+-- Actores: medico A = 09d243d5 (autor, atiende al paciente 23); B/C/ajeno = otros medicos activos
+-- con fila en medicos (resueltos al vuelo); C se vuelve tratante con una cita sembrada.
+
+-- ---------------- P885 nota abierta: el medico edita, revision 'edicion' con la fila previa ----------------
+DO $$
+DECLARE
+  c_med uuid := '09d243d5-b222-482a-9762-94a582e9e752'; c_clin uuid := 'c76d862c-e82f-4748-bc07-86c8a3343576'; c_pacid integer := 23;
+  st text := '00000'; msg text := ''; ok boolean; det text := ''; bad text := ''; r_rest text := 'OK';
+  s_notas text; s_rev text; s_citas text; n_hist bigint;
+  v_cita bigint; v_nota integer; nn bigint; v_prev jsonb;
+BEGIN
+  SELECT md5(COALESCE(string_agg(to_jsonb(t)::text, '|' ORDER BY t.id), '')) INTO s_notas FROM public.expediente_notas t;
+  SELECT md5(COALESCE(string_agg(to_jsonb(t)::text, '|' ORDER BY t.id), '')) INTO s_rev FROM public.expediente_notas_revisiones t;
+  SELECT md5(COALESCE(string_agg(to_jsonb(t)::text, '|' ORDER BY t.id), '')) INTO s_citas FROM public.citas t;
+  SELECT count(*) INTO n_hist FROM public.historial_medico;
+  BEGIN
+    INSERT INTO public.citas (paciente_id, medico_id, clinica_id, fecha, hora_inicio, hora_fin, estado)
+      VALUES (c_pacid, c_med, c_clin, CURRENT_DATE + 400, '08:00', '08:30', 'en_curso') RETURNING id INTO v_cita;
+    INSERT INTO public.expediente_notas (cita_id, paciente_id, medico_id, subjetivo) VALUES (v_cita, c_pacid, c_med, 'P885 v1') RETURNING id INTO v_nota;
+    SELECT to_jsonb(t) INTO v_prev FROM public.expediente_notas t WHERE t.id = v_nota;
+    st := '00000'; msg := ''; nn := NULL;
+    BEGIN
+      PERFORM set_config('request.jwt.claims', json_build_object('sub', c_med::text, 'role', 'authenticated')::text, true); PERFORM set_config('role', 'authenticated', true);
+      UPDATE public.expediente_notas SET subjetivo = 'P885 v2' WHERE id = v_nota;
+      GET DIAGNOSTICS nn = ROW_COUNT;
+      PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
+    EXCEPTION WHEN OTHERS THEN PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
+      st := SQLSTATE; msg := SQLERRM; END;
+    ok := COALESCE((st = '00000' AND nn = 1
+      AND (SELECT t.subjetivo = 'P885 v2' AND t.updated_by = c_med AND t.cerrada_at IS NULL FROM public.expediente_notas t WHERE t.id = v_nota)
+      AND (SELECT count(*) FROM public.expediente_notas_revisiones r WHERE r.nota_id = v_nota) = 1
+      AND EXISTS (SELECT 1 FROM public.expediente_notas_revisiones r WHERE r.nota_id = v_nota AND r.revision = 1 AND r.tipo = 'edicion'
+                    AND r.motivo IS NULL AND r.version_anterior = v_prev AND r.editado_por = c_med
+                    AND r.paciente_id = c_pacid AND r.medico_id = c_med)), false);
+    det := det||' ;; medico edita nota abierta|1 fila, revision 1 edicion = fila previa, updated_by medico|'||CASE WHEN ok THEN 'OK' ELSE 'ROJO' END||'|'||st||'|'||left(msg, 160);
+    IF NOT ok THEN bad := bad||'medico edita nota abierta: '||st||' '||left(msg, 120)||'; '; END IF;
+    SELECT to_jsonb(t) INTO v_prev FROM public.expediente_notas t WHERE t.id = v_nota;
+    st := '00000'; msg := ''; nn := NULL;
+    BEGIN
+      PERFORM set_config('request.jwt.claims', json_build_object('sub', c_med::text, 'role', 'authenticated')::text, true); PERFORM set_config('role', 'authenticated', true);
+      UPDATE public.expediente_notas SET subjetivo = 'P885 v3' WHERE id = v_nota;
+      GET DIAGNOSTICS nn = ROW_COUNT;
+      PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
+    EXCEPTION WHEN OTHERS THEN PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
+      st := SQLSTATE; msg := SQLERRM; END;
+    ok := COALESCE((st = '00000' AND nn = 1
+      AND (SELECT count(*) FROM public.expediente_notas_revisiones r WHERE r.nota_id = v_nota) = 2
+      AND EXISTS (SELECT 1 FROM public.expediente_notas_revisiones r WHERE r.nota_id = v_nota AND r.revision = 2 AND r.tipo = 'edicion'
+                    AND r.version_anterior = v_prev)), false);
+    det := det||' ;; segunda edicion|revision 2 = version v2|'||CASE WHEN ok THEN 'OK' ELSE 'ROJO' END||'|'||st||'|'||left(msg, 160);
+    IF NOT ok THEN bad := bad||'segunda edicion: '||st||' '||left(msg, 120)||'; '; END IF;
+    st := '00000'; msg := ''; nn := NULL;
+    BEGIN
+      PERFORM set_config('request.jwt.claims', json_build_object('sub', c_med::text, 'role', 'authenticated')::text, true); PERFORM set_config('role', 'authenticated', true);
+      UPDATE public.expediente_notas SET plan = plan WHERE id = v_nota;
+      GET DIAGNOSTICS nn = ROW_COUNT;
+      PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
+    EXCEPTION WHEN OTHERS THEN PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
+      st := SQLSTATE; msg := SQLERRM; END;
+    ok := COALESCE((st = '00000' AND nn = 1 AND (SELECT count(*) FROM public.expediente_notas_revisiones r WHERE r.nota_id = v_nota) = 2), false);
+    det := det||' ;; UPDATE sin cambio de contenido|0 revisiones nuevas|'||CASE WHEN ok THEN 'OK' ELSE 'ROJO' END||'|'||st||'|'||left(msg, 160);
+    IF NOT ok THEN bad := bad||'UPDATE sin cambio de contenido: '||st||' '||left(msg, 120)||'; '; END IF;
+    RAISE EXCEPTION 'P885 descarte' USING ERRCODE = 'P0999';
+  EXCEPTION WHEN SQLSTATE 'P0999' THEN NULL;
+  END;
+  PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
+  IF (SELECT md5(COALESCE(string_agg(to_jsonb(t)::text, '|' ORDER BY t.id), '')) FROM public.expediente_notas t) IS DISTINCT FROM s_notas THEN r_rest := r_rest||' / expediente_notas'; END IF;
+  IF (SELECT md5(COALESCE(string_agg(to_jsonb(t)::text, '|' ORDER BY t.id), '')) FROM public.expediente_notas_revisiones t) IS DISTINCT FROM s_rev THEN r_rest := r_rest||' / revisiones'; END IF;
+  IF (SELECT md5(COALESCE(string_agg(to_jsonb(t)::text, '|' ORDER BY t.id), '')) FROM public.citas t) IS DISTINCT FROM s_citas THEN r_rest := r_rest||' / citas'; END IF;
+  IF (SELECT count(*) FROM public.historial_medico) <> n_hist THEN r_rest := r_rest||' / historial_medico'; END IF;
+  det := det||' ;; restauracion|subtransaccion descartada; snapshot igual|'||r_rest||'|-|';
+  PERFORM set_config('probe.p885_det', det, false);
+  PERFORM set_config('probe.p885', CASE WHEN bad = '' AND r_rest = 'OK'
+    THEN 'OK (nota abierta: edicion libre, revisiones 1 y 2 con la fila previa, sin revision si no cambia el contenido; restaurado)'
+    ELSE 'ROJO ('||left(bad, 700)||' | restauracion='||r_rest||')' END, false);
+EXCEPTION WHEN OTHERS THEN
+  PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
+  PERFORM set_config('probe.p885', CASE WHEN SQLERRM LIKE 'fixture roto%' THEN 'ROJO ('||SQLERRM||')' ELSE 'FALLO ('||SQLSTATE||' '||SQLERRM||')' END, false);
+END $$;
+SELECT set_config('role', 'none', true);
+
+-- ---------------- P886 congelados: paciente/cita/medico/created_at (NT007) y created_at del INSERT ----------------
+DO $$
+DECLARE
+  c_med uuid := '09d243d5-b222-482a-9762-94a582e9e752'; c_clin uuid := 'c76d862c-e82f-4748-bc07-86c8a3343576'; c_pacid integer := 23; c_medb uuid;
+  st text := '00000'; msg text := ''; ok boolean; det text := ''; bad text := ''; r_rest text := 'OK';
+  s_notas text; s_rev text; s_citas text; n_hist bigint;
+  v_cita bigint; v_cita2 bigint; v_nota integer; v_nota2 integer; nn bigint; v_f0 text; r record;
+BEGIN
+  SELECT p.id INTO c_medb FROM public.perfiles p JOIN public.medicos m ON m.id = p.id WHERE p.rol = 'medico' AND p.activo AND p.id <> c_med ORDER BY p.id LIMIT 1;
+  IF c_medb IS NULL THEN RAISE EXCEPTION 'fixture roto: no hay un segundo medico activo'; END IF;
+  SELECT md5(COALESCE(string_agg(to_jsonb(t)::text, '|' ORDER BY t.id), '')) INTO s_notas FROM public.expediente_notas t;
+  SELECT md5(COALESCE(string_agg(to_jsonb(t)::text, '|' ORDER BY t.id), '')) INTO s_rev FROM public.expediente_notas_revisiones t;
+  SELECT md5(COALESCE(string_agg(to_jsonb(t)::text, '|' ORDER BY t.id), '')) INTO s_citas FROM public.citas t;
+  SELECT count(*) INTO n_hist FROM public.historial_medico;
+  BEGIN
+    INSERT INTO public.citas (paciente_id, medico_id, clinica_id, fecha, hora_inicio, hora_fin, estado)
+      VALUES (c_pacid, c_med, c_clin, CURRENT_DATE + 400, '08:00', '08:30', 'en_curso') RETURNING id INTO v_cita;
+    INSERT INTO public.citas (paciente_id, medico_id, clinica_id, fecha, hora_inicio, hora_fin, estado)
+      VALUES (c_pacid, c_med, c_clin, CURRENT_DATE + 400, '09:00', '09:30', 'en_curso') RETURNING id INTO v_cita2;
+    INSERT INTO public.expediente_notas (cita_id, paciente_id, medico_id, subjetivo) VALUES (v_cita, c_pacid, c_med, 'P886') RETURNING id INTO v_nota;
+    SELECT md5(to_jsonb(t)::text) INTO v_f0 FROM public.expediente_notas t WHERE t.id = v_nota;
+    FOR r IN SELECT * FROM (VALUES ('medico', 'paciente_id'), ('medico', 'cita_id'), ('medico', 'medico_id'), ('medico', 'created_at'),
+                                   ('postgres', 'paciente_id'), ('postgres', 'cita_id'), ('postgres', 'medico_id'), ('postgres', 'created_at')) v(actor, col) LOOP
+      st := '00000'; msg := ''; nn := NULL;
+      BEGIN
+        IF r.actor = 'medico' THEN
+          PERFORM set_config('request.jwt.claims', json_build_object('sub', c_med::text, 'role', 'authenticated')::text, true); PERFORM set_config('role', 'authenticated', true);
+        END IF;
+        IF r.col = 'paciente_id' THEN UPDATE public.expediente_notas SET paciente_id = 546 WHERE id = v_nota;
+        ELSIF r.col = 'cita_id' THEN UPDATE public.expediente_notas SET cita_id = v_cita2 WHERE id = v_nota;
+        ELSIF r.col = 'medico_id' THEN UPDATE public.expediente_notas SET medico_id = c_medb WHERE id = v_nota;
+        ELSE UPDATE public.expediente_notas SET created_at = now() - interval '1 day' WHERE id = v_nota;
+        END IF;
+        GET DIAGNOSTICS nn = ROW_COUNT;
+        PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
+      EXCEPTION WHEN OTHERS THEN PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
+        st := SQLSTATE; msg := SQLERRM; END;
+      ok := COALESCE((st = 'NT007' AND msg = 'La nota no permite cambiar paciente, cita, médico ni fecha de creación'
+        AND (SELECT md5(to_jsonb(t)::text) FROM public.expediente_notas t WHERE t.id = v_nota) = v_f0
+        AND (SELECT count(*) FROM public.expediente_notas_revisiones rv WHERE rv.nota_id = v_nota) = 0), false);
+      det := det||' ;; NT007 '||r.actor||' cambia '||r.col||'|NT007 sin cambios|'||CASE WHEN ok THEN 'OK' ELSE 'ROJO' END||'|'||st||'|'||left(msg, 160);
+      IF NOT ok THEN bad := bad||'NT007 '||r.actor||' '||r.col||': '||st||' '||left(msg, 120)||'; '; END IF;
+    END LOOP;
+    st := '00000'; msg := ''; nn := NULL;
+    BEGIN
+      PERFORM set_config('request.jwt.claims', json_build_object('sub', c_med::text, 'role', 'authenticated')::text, true); PERFORM set_config('role', 'authenticated', true);
+      INSERT INTO public.expediente_notas (cita_id, paciente_id, medico_id, subjetivo, created_at)
+        VALUES (v_cita2, c_pacid, c_med, 'P886 fechada', '2020-01-01 00:00:00+00') RETURNING id INTO v_nota2;
+      GET DIAGNOSTICS nn = ROW_COUNT;
+      PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
+    EXCEPTION WHEN OTHERS THEN PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
+      st := SQLSTATE; msg := SQLERRM; END;
+    ok := COALESCE((st = '00000' AND nn = 1
+      AND (SELECT t.created_at = now() AND t.updated_at = now() FROM public.expediente_notas t WHERE t.id = v_nota2)), false);
+    det := det||' ;; INSERT con created_at 2020|created_at = now()|'||CASE WHEN ok THEN 'OK' ELSE 'ROJO' END||'|'||st||'|'||left(msg, 160);
+    IF NOT ok THEN bad := bad||'INSERT con created_at 2020: '||st||' '||left(msg, 120)||'; '; END IF;
+    RAISE EXCEPTION 'P886 descarte' USING ERRCODE = 'P0999';
+  EXCEPTION WHEN SQLSTATE 'P0999' THEN NULL;
+  END;
+  PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
+  IF (SELECT md5(COALESCE(string_agg(to_jsonb(t)::text, '|' ORDER BY t.id), '')) FROM public.expediente_notas t) IS DISTINCT FROM s_notas THEN r_rest := r_rest||' / expediente_notas'; END IF;
+  IF (SELECT md5(COALESCE(string_agg(to_jsonb(t)::text, '|' ORDER BY t.id), '')) FROM public.expediente_notas_revisiones t) IS DISTINCT FROM s_rev THEN r_rest := r_rest||' / revisiones'; END IF;
+  IF (SELECT md5(COALESCE(string_agg(to_jsonb(t)::text, '|' ORDER BY t.id), '')) FROM public.citas t) IS DISTINCT FROM s_citas THEN r_rest := r_rest||' / citas'; END IF;
+  IF (SELECT count(*) FROM public.historial_medico) <> n_hist THEN r_rest := r_rest||' / historial_medico'; END IF;
+  det := det||' ;; restauracion|subtransaccion descartada; snapshot igual|'||r_rest||'|-|';
+  PERFORM set_config('probe.p886_det', det, false);
+  PERFORM set_config('probe.p886', CASE WHEN bad = '' AND r_rest = 'OK'
+    THEN 'OK (NT007 x8: paciente/cita/medico/created_at, medico y postgres; INSERT fechado queda en now(); restaurado)'
+    ELSE 'ROJO ('||left(bad, 700)||' | restauracion='||r_rest||')' END, false);
+EXCEPTION WHEN OTHERS THEN
+  PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
+  PERFORM set_config('probe.p886', CASE WHEN SQLERRM LIKE 'fixture roto%' THEN 'ROJO ('||SQLERRM||')' ELSE 'FALLO ('||SQLSTATE||' '||SQLERRM||')' END, false);
+END $$;
+SELECT set_config('role', 'none', true);
+
+-- ---------------- P887 cierre al completar la cita; cerrada_at pegajoso; UPDATE directo -> NT006 ----------------
+DO $$
+DECLARE
+  c_med uuid := '09d243d5-b222-482a-9762-94a582e9e752'; c_clin uuid := 'c76d862c-e82f-4748-bc07-86c8a3343576'; c_pacid integer := 23;
+  st text := '00000'; msg text := ''; ok boolean; det text := ''; bad text := ''; r_rest text := 'OK';
+  s_notas text; s_rev text; s_citas text; n_hist bigint;
+  v_cita bigint; v_nota integer; nn bigint; v_cerr timestamptz; v_f0 text;
+BEGIN
+  SELECT md5(COALESCE(string_agg(to_jsonb(t)::text, '|' ORDER BY t.id), '')) INTO s_notas FROM public.expediente_notas t;
+  SELECT md5(COALESCE(string_agg(to_jsonb(t)::text, '|' ORDER BY t.id), '')) INTO s_rev FROM public.expediente_notas_revisiones t;
+  SELECT md5(COALESCE(string_agg(to_jsonb(t)::text, '|' ORDER BY t.id), '')) INTO s_citas FROM public.citas t;
+  SELECT count(*) INTO n_hist FROM public.historial_medico;
+  BEGIN
+    INSERT INTO public.citas (paciente_id, medico_id, clinica_id, fecha, hora_inicio, hora_fin, estado)
+      VALUES (c_pacid, c_med, c_clin, CURRENT_DATE + 400, '08:00', '08:30', 'en_curso') RETURNING id INTO v_cita;
+    INSERT INTO public.expediente_notas (cita_id, paciente_id, medico_id, subjetivo) VALUES (v_cita, c_pacid, c_med, 'P887') RETURNING id INTO v_nota;
+    -- (1) el medico completa la cita por la RPC del front
+    st := '00000'; msg := '';
+    BEGIN
+      PERFORM set_config('request.jwt.claims', json_build_object('sub', c_med::text, 'role', 'authenticated')::text, true); PERFORM set_config('role', 'authenticated', true);
+      PERFORM public.actualizar_estado_cita(v_cita, 'completada');
+      PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
+    EXCEPTION WHEN OTHERS THEN PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
+      st := SQLSTATE; msg := SQLERRM; END;
+    SELECT t.cerrada_at INTO v_cerr FROM public.expediente_notas t WHERE t.id = v_nota;
+    ok := COALESCE((st = '00000' AND v_cerr IS NOT NULL
+      AND (SELECT c.estado = 'completada' FROM public.citas c WHERE c.id = v_cita)
+      AND (SELECT count(*) FROM public.expediente_notas_revisiones r WHERE r.nota_id = v_nota) = 0), false);
+    det := det||' ;; completar la cita cierra la nota|cerrada_at puesto, 0 revisiones|'||CASE WHEN ok THEN 'OK' ELSE 'ROJO' END||'|'||st||'|'||left(msg, 160);
+    IF NOT ok THEN bad := bad||'completar la cita cierra la nota: '||st||' '||left(msg, 120)||'; '; END IF;
+    -- (2) la cita vuelve atras: la nota NO se reabre
+    st := '00000'; msg := '';
+    BEGIN
+      UPDATE public.citas SET estado = 'en_curso' WHERE id = v_cita;
+    EXCEPTION WHEN OTHERS THEN st := SQLSTATE; msg := SQLERRM; END;
+    ok := COALESCE((st = '00000' AND (SELECT t.cerrada_at FROM public.expediente_notas t WHERE t.id = v_nota) = v_cerr), false);
+    det := det||' ;; la cita vuelve a en_curso|cerrada_at igual|'||CASE WHEN ok THEN 'OK' ELSE 'ROJO' END||'|'||st||'|'||left(msg, 160);
+    IF NOT ok THEN bad := bad||'la cita vuelve a en_curso: '||st||' '||left(msg, 120)||'; '; END IF;
+    -- (3) el autor intenta editar la nota cerrada
+    SELECT md5(to_jsonb(t)::text) INTO v_f0 FROM public.expediente_notas t WHERE t.id = v_nota;
+    st := '00000'; msg := ''; nn := NULL;
+    BEGIN
+      PERFORM set_config('request.jwt.claims', json_build_object('sub', c_med::text, 'role', 'authenticated')::text, true); PERFORM set_config('role', 'authenticated', true);
+      UPDATE public.expediente_notas SET subjetivo = 'P887 reescrita' WHERE id = v_nota;
+      GET DIAGNOSTICS nn = ROW_COUNT;
+      PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
+    EXCEPTION WHEN OTHERS THEN PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
+      st := SQLSTATE; msg := SQLERRM; END;
+    ok := COALESCE((st = 'NT006' AND msg = 'La nota está cerrada: solo se puede corregir con motivo'
+      AND (SELECT md5(to_jsonb(t)::text) FROM public.expediente_notas t WHERE t.id = v_nota) = v_f0
+      AND (SELECT count(*) FROM public.expediente_notas_revisiones r WHERE r.nota_id = v_nota) = 0), false);
+    det := det||' ;; NT006 autor edita nota cerrada (cita reabierta)|NT006 sin cambios|'||CASE WHEN ok THEN 'OK' ELSE 'ROJO' END||'|'||st||'|'||left(msg, 160);
+    IF NOT ok THEN bad := bad||'NT006 autor edita nota cerrada: '||st||' '||left(msg, 120)||'; '; END IF;
+    -- (4) se vuelve a completar: el cierre no pisa la fecha original
+    st := '00000'; msg := '';
+    BEGIN
+      UPDATE public.citas SET estado = 'completada' WHERE id = v_cita;
+    EXCEPTION WHEN OTHERS THEN st := SQLSTATE; msg := SQLERRM; END;
+    ok := COALESCE((st = '00000' AND (SELECT t.cerrada_at FROM public.expediente_notas t WHERE t.id = v_nota) = v_cerr), false);
+    det := det||' ;; se vuelve a completar|cerrada_at original|'||CASE WHEN ok THEN 'OK' ELSE 'ROJO' END||'|'||st||'|'||left(msg, 160);
+    IF NOT ok THEN bad := bad||'se vuelve a completar: '||st||' '||left(msg, 120)||'; '; END IF;
+    RAISE EXCEPTION 'P887 descarte' USING ERRCODE = 'P0999';
+  EXCEPTION WHEN SQLSTATE 'P0999' THEN NULL;
+  END;
+  PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
+  IF (SELECT md5(COALESCE(string_agg(to_jsonb(t)::text, '|' ORDER BY t.id), '')) FROM public.expediente_notas t) IS DISTINCT FROM s_notas THEN r_rest := r_rest||' / expediente_notas'; END IF;
+  IF (SELECT md5(COALESCE(string_agg(to_jsonb(t)::text, '|' ORDER BY t.id), '')) FROM public.expediente_notas_revisiones t) IS DISTINCT FROM s_rev THEN r_rest := r_rest||' / revisiones'; END IF;
+  IF (SELECT md5(COALESCE(string_agg(to_jsonb(t)::text, '|' ORDER BY t.id), '')) FROM public.citas t) IS DISTINCT FROM s_citas THEN r_rest := r_rest||' / citas'; END IF;
+  IF (SELECT count(*) FROM public.historial_medico) <> n_hist THEN r_rest := r_rest||' / historial_medico'; END IF;
+  det := det||' ;; restauracion|subtransaccion descartada; snapshot igual|'||r_rest||'|-|';
+  PERFORM set_config('probe.p887_det', det, false);
+  PERFORM set_config('probe.p887', CASE WHEN bad = '' AND r_rest = 'OK'
+    THEN 'OK (completar cierra sin revision; reabrir la cita no reabre la nota; NT006 al editar; recompletar no pisa la fecha; restaurado)'
+    ELSE 'ROJO ('||left(bad, 700)||' | restauracion='||r_rest||')' END, false);
+EXCEPTION WHEN OTHERS THEN
+  PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
+  PERFORM set_config('probe.p887', CASE WHEN SQLERRM LIKE 'fixture roto%' THEN 'ROJO ('||SQLERRM||')' ELSE 'FALLO ('||SQLSTATE||' '||SQLERRM||')' END, false);
+END $$;
+SELECT set_config('role', 'none', true);
+
+-- ---------------- P888 nota cerrada: UPDATE directo -> NT006 para autor, super_admin y postgres sin llave ----------------
+DO $$
+DECLARE
+  c_med uuid := '09d243d5-b222-482a-9762-94a582e9e752'; c_clin uuid := 'c76d862c-e82f-4748-bc07-86c8a3343576'; c_pacid integer := 23; c_sa uuid;
+  st text := '00000'; msg text := ''; ok boolean; det text := ''; bad text := ''; r_rest text := 'OK';
+  s_notas text; s_rev text; s_citas text; n_hist bigint;
+  v_cita bigint; v_nota integer; nn bigint; v_f0 text; r record;
+BEGIN
+  SELECT p.id INTO c_sa FROM public.perfiles p WHERE p.rol = 'super_admin' AND p.activo ORDER BY p.id LIMIT 1;
+  IF c_sa IS NULL THEN RAISE EXCEPTION 'fixture roto: super_admin activo'; END IF;
+  SELECT md5(COALESCE(string_agg(to_jsonb(t)::text, '|' ORDER BY t.id), '')) INTO s_notas FROM public.expediente_notas t;
+  SELECT md5(COALESCE(string_agg(to_jsonb(t)::text, '|' ORDER BY t.id), '')) INTO s_rev FROM public.expediente_notas_revisiones t;
+  SELECT md5(COALESCE(string_agg(to_jsonb(t)::text, '|' ORDER BY t.id), '')) INTO s_citas FROM public.citas t;
+  SELECT count(*) INTO n_hist FROM public.historial_medico;
+  BEGIN
+    INSERT INTO public.citas (paciente_id, medico_id, clinica_id, fecha, hora_inicio, hora_fin, estado)
+      VALUES (c_pacid, c_med, c_clin, CURRENT_DATE + 400, '08:00', '08:30', 'en_curso') RETURNING id INTO v_cita;
+    INSERT INTO public.expediente_notas (cita_id, paciente_id, medico_id, subjetivo) VALUES (v_cita, c_pacid, c_med, 'P888') RETURNING id INTO v_nota;
+    UPDATE public.citas SET estado = 'completada' WHERE id = v_cita;
+    IF (SELECT t.cerrada_at IS NULL FROM public.expediente_notas t WHERE t.id = v_nota) THEN RAISE EXCEPTION 'fixture roto: la nota sembrada no quedo cerrada'; END IF;
+    SELECT md5(to_jsonb(t)::text) INTO v_f0 FROM public.expediente_notas t WHERE t.id = v_nota;
+    FOR r IN SELECT * FROM (VALUES ('autor', c_med::text, ''), ('super_admin', c_sa::text, ''), ('postgres sin llave', NULL, ''),
+                                   ('postgres con llave de otra nota', NULL, 'otra')) v(actor, sub, llave) LOOP
+      st := '00000'; msg := ''; nn := NULL;
+      BEGIN
+        IF r.sub IS NOT NULL THEN
+          PERFORM set_config('request.jwt.claims', json_build_object('sub', r.sub, 'role', 'authenticated')::text, true); PERFORM set_config('role', 'authenticated', true);
+        END IF;
+        IF r.llave = 'otra' THEN PERFORM set_config('ezpay.nota_llave', 'corregir:'||(v_nota + 1), true); END IF;
+        UPDATE public.expediente_notas SET subjetivo = 'P888 reescrita' WHERE id = v_nota;
+        GET DIAGNOSTICS nn = ROW_COUNT;
+        PERFORM set_config('ezpay.nota_llave', '', true);
+        PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
+      EXCEPTION WHEN OTHERS THEN PERFORM set_config('ezpay.nota_llave', '', true); PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
+        st := SQLSTATE; msg := SQLERRM; END;
+      ok := COALESCE((st = 'NT006' AND msg = 'La nota está cerrada: solo se puede corregir con motivo'
+        AND (SELECT md5(to_jsonb(t)::text) FROM public.expediente_notas t WHERE t.id = v_nota) = v_f0
+        AND (SELECT count(*) FROM public.expediente_notas_revisiones rv WHERE rv.nota_id = v_nota) = 0), false);
+      det := det||' ;; NT006 '||r.actor||'|NT006 sin cambios|'||CASE WHEN ok THEN 'OK' ELSE 'ROJO' END||'|'||st||'|'||left(msg, 160);
+      IF NOT ok THEN bad := bad||'NT006 '||r.actor||': '||st||' '||left(msg, 120)||'; '; END IF;
+    END LOOP;
+    RAISE EXCEPTION 'P888 descarte' USING ERRCODE = 'P0999';
+  EXCEPTION WHEN SQLSTATE 'P0999' THEN NULL;
+  END;
+  PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
+  IF (SELECT md5(COALESCE(string_agg(to_jsonb(t)::text, '|' ORDER BY t.id), '')) FROM public.expediente_notas t) IS DISTINCT FROM s_notas THEN r_rest := r_rest||' / expediente_notas'; END IF;
+  IF (SELECT md5(COALESCE(string_agg(to_jsonb(t)::text, '|' ORDER BY t.id), '')) FROM public.expediente_notas_revisiones t) IS DISTINCT FROM s_rev THEN r_rest := r_rest||' / revisiones'; END IF;
+  IF (SELECT md5(COALESCE(string_agg(to_jsonb(t)::text, '|' ORDER BY t.id), '')) FROM public.citas t) IS DISTINCT FROM s_citas THEN r_rest := r_rest||' / citas'; END IF;
+  IF (SELECT count(*) FROM public.historial_medico) <> n_hist THEN r_rest := r_rest||' / historial_medico'; END IF;
+  det := det||' ;; restauracion|subtransaccion descartada; snapshot igual|'||r_rest||'|-|';
+  PERFORM set_config('probe.p888_det', det, false);
+  PERFORM set_config('probe.p888', CASE WHEN bad = '' AND r_rest = 'OK'
+    THEN 'OK (nota cerrada: NT006 para autor, super_admin, postgres sin llave y con llave de otra nota; restaurado)'
+    ELSE 'ROJO ('||left(bad, 700)||' | restauracion='||r_rest||')' END, false);
+EXCEPTION WHEN OTHERS THEN
+  PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
+  PERFORM set_config('probe.p888', CASE WHEN SQLERRM LIKE 'fixture roto%' THEN 'ROJO ('||SQLERRM||')' ELSE 'FALLO ('||SQLSTATE||' '||SQLERRM||')' END, false);
+END $$;
+SELECT set_config('role', 'none', true);
+
+-- ---------------- P889 corregir_nota_consulta positivo ----------------
+DO $$
+DECLARE
+  c_med uuid := '09d243d5-b222-482a-9762-94a582e9e752'; c_clin uuid := 'c76d862c-e82f-4748-bc07-86c8a3343576'; c_pacid integer := 23;
+  st text := '00000'; msg text := ''; ok boolean; det text := ''; bad text := ''; r_rest text := 'OK';
+  s_notas text; s_rev text; s_citas text; n_hist bigint;
+  v_cita bigint; v_nota integer; nn bigint; j jsonb; v_prev jsonb; v_cerr timestamptz;
+BEGIN
+  SELECT md5(COALESCE(string_agg(to_jsonb(t)::text, '|' ORDER BY t.id), '')) INTO s_notas FROM public.expediente_notas t;
+  SELECT md5(COALESCE(string_agg(to_jsonb(t)::text, '|' ORDER BY t.id), '')) INTO s_rev FROM public.expediente_notas_revisiones t;
+  SELECT md5(COALESCE(string_agg(to_jsonb(t)::text, '|' ORDER BY t.id), '')) INTO s_citas FROM public.citas t;
+  SELECT count(*) INTO n_hist FROM public.historial_medico;
+  BEGIN
+    INSERT INTO public.citas (paciente_id, medico_id, clinica_id, fecha, hora_inicio, hora_fin, estado)
+      VALUES (c_pacid, c_med, c_clin, CURRENT_DATE + 400, '08:00', '08:30', 'en_curso') RETURNING id INTO v_cita;
+    INSERT INTO public.expediente_notas (cita_id, paciente_id, medico_id, motivo_consulta, subjetivo, objetivo, analisis, plan, diagnostico)
+      VALUES (v_cita, c_pacid, c_med, 'mc v1', 'P889 v1', 'o v1', 'a v1', 'p v1', 'd v1') RETURNING id INTO v_nota;
+    UPDATE public.citas SET estado = 'completada' WHERE id = v_cita;
+    SELECT to_jsonb(t), t.cerrada_at INTO v_prev, v_cerr FROM public.expediente_notas t WHERE t.id = v_nota;
+    IF v_cerr IS NULL THEN RAISE EXCEPTION 'fixture roto: la nota sembrada no quedo cerrada'; END IF;
+    st := '00000'; msg := ''; j := NULL;
+    BEGIN
+      PERFORM set_config('request.jwt.claims', json_build_object('sub', c_med::text, 'role', 'authenticated')::text, true); PERFORM set_config('role', 'authenticated', true);
+      j := public.corregir_nota_consulta(v_nota, '  error de transcripcion QA  ', 'mc v1', 'P889 v2', 'o v1', 'a v1', 'p v2', 'd v1');
+      PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
+    EXCEPTION WHEN OTHERS THEN PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
+      st := SQLSTATE; msg := SQLERRM; END;
+    ok := COALESCE((st = '00000' AND (j->>'nota_id')::int = v_nota AND (j->>'revision')::int = 1 AND j->>'corregida_at' IS NOT NULL
+      AND (SELECT t.subjetivo = 'P889 v2' AND t.plan = 'p v2' AND t.motivo_consulta = 'mc v1' AND t.diagnostico = 'd v1'
+                  AND t.corregida_at IS NOT NULL AND t.cerrada_at = v_cerr AND t.updated_by = c_med
+             FROM public.expediente_notas t WHERE t.id = v_nota)
+      AND (SELECT count(*) FROM public.expediente_notas_revisiones r WHERE r.nota_id = v_nota) = 1
+      AND EXISTS (SELECT 1 FROM public.expediente_notas_revisiones r WHERE r.nota_id = v_nota AND r.revision = 1 AND r.tipo = 'correccion'
+                    AND r.motivo = 'error de transcripcion QA' AND r.version_anterior = v_prev AND r.editado_por = c_med)
+      AND COALESCE(current_setting('ezpay.nota_llave', true), '') = '' AND COALESCE(current_setting('ezpay.nota_motivo', true), '') = ''), false);
+    det := det||' ;; autor corrige nota cerrada|revision 1 correccion con motivo recortado, corregida_at, llaves limpias|'||CASE WHEN ok THEN 'OK' ELSE 'ROJO' END||'|'||st||'|'||left(msg, 160);
+    IF NOT ok THEN bad := bad||'autor corrige nota cerrada: '||st||' '||left(msg, 120)||'; '; END IF;
+    -- la llave no queda abierta: un UPDATE directo despues de corregir sigue en NT006
+    st := '00000'; msg := ''; nn := NULL;
+    BEGIN
+      PERFORM set_config('request.jwt.claims', json_build_object('sub', c_med::text, 'role', 'authenticated')::text, true); PERFORM set_config('role', 'authenticated', true);
+      UPDATE public.expediente_notas SET subjetivo = 'P889 directo' WHERE id = v_nota;
+      GET DIAGNOSTICS nn = ROW_COUNT;
+      PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
+    EXCEPTION WHEN OTHERS THEN PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
+      st := SQLSTATE; msg := SQLERRM; END;
+    ok := COALESCE((st = 'NT006' AND msg = 'La nota está cerrada: solo se puede corregir con motivo'
+      AND (SELECT t.subjetivo FROM public.expediente_notas t WHERE t.id = v_nota) = 'P889 v2'), false);
+    det := det||' ;; UPDATE directo despues de corregir|NT006|'||CASE WHEN ok THEN 'OK' ELSE 'ROJO' END||'|'||st||'|'||left(msg, 160);
+    IF NOT ok THEN bad := bad||'UPDATE directo despues de corregir: '||st||' '||left(msg, 120)||'; '; END IF;
+    -- segunda correccion: revision 2
+    st := '00000'; msg := ''; j := NULL;
+    BEGIN
+      PERFORM set_config('request.jwt.claims', json_build_object('sub', c_med::text, 'role', 'authenticated')::text, true); PERFORM set_config('role', 'authenticated', true);
+      j := public.corregir_nota_consulta(v_nota, 'segunda QA', 'mc v1', 'P889 v3', 'o v1', 'a v1', 'p v2', 'd v1');
+      PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
+    EXCEPTION WHEN OTHERS THEN PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
+      st := SQLSTATE; msg := SQLERRM; END;
+    ok := COALESCE((st = '00000' AND (j->>'revision')::int = 2
+      AND EXISTS (SELECT 1 FROM public.expediente_notas_revisiones r WHERE r.nota_id = v_nota AND r.revision = 2 AND r.tipo = 'correccion'
+                    AND r.motivo = 'segunda QA' AND r.version_anterior->>'subjetivo' = 'P889 v2')), false);
+    det := det||' ;; segunda correccion|revision 2 con la version v2|'||CASE WHEN ok THEN 'OK' ELSE 'ROJO' END||'|'||st||'|'||left(msg, 160);
+    IF NOT ok THEN bad := bad||'segunda correccion: '||st||' '||left(msg, 120)||'; '; END IF;
+    RAISE EXCEPTION 'P889 descarte' USING ERRCODE = 'P0999';
+  EXCEPTION WHEN SQLSTATE 'P0999' THEN NULL;
+  END;
+  PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
+  IF (SELECT md5(COALESCE(string_agg(to_jsonb(t)::text, '|' ORDER BY t.id), '')) FROM public.expediente_notas t) IS DISTINCT FROM s_notas THEN r_rest := r_rest||' / expediente_notas'; END IF;
+  IF (SELECT md5(COALESCE(string_agg(to_jsonb(t)::text, '|' ORDER BY t.id), '')) FROM public.expediente_notas_revisiones t) IS DISTINCT FROM s_rev THEN r_rest := r_rest||' / revisiones'; END IF;
+  IF (SELECT md5(COALESCE(string_agg(to_jsonb(t)::text, '|' ORDER BY t.id), '')) FROM public.citas t) IS DISTINCT FROM s_citas THEN r_rest := r_rest||' / citas'; END IF;
+  IF (SELECT count(*) FROM public.historial_medico) <> n_hist THEN r_rest := r_rest||' / historial_medico'; END IF;
+  det := det||' ;; restauracion|subtransaccion descartada; snapshot igual|'||r_rest||'|-|';
+  PERFORM set_config('probe.p889_det', det, false);
+  PERFORM set_config('probe.p889', CASE WHEN bad = '' AND r_rest = 'OK'
+    THEN 'OK (correccion con motivo: contenido nuevo, revisiones 1 y 2 correccion, llaves limpias, UPDATE directo sigue NT006; restaurado)'
+    ELSE 'ROJO ('||left(bad, 700)||' | restauracion='||r_rest||')' END, false);
+EXCEPTION WHEN OTHERS THEN
+  PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
+  PERFORM set_config('probe.p889', CASE WHEN SQLERRM LIKE 'fixture roto%' THEN 'ROJO ('||SQLERRM||')' ELSE 'FALLO ('||SQLSTATE||' '||SQLERRM||')' END, false);
+END $$;
+SELECT set_config('role', 'none', true);
+
+-- ---------------- P890 corregir_nota_consulta: rechazos por causa (NT001-NT005), sin cambios ----------------
+DO $$
+DECLARE
+  c_med uuid := '09d243d5-b222-482a-9762-94a582e9e752'; c_clin uuid := 'c76d862c-e82f-4748-bc07-86c8a3343576'; c_pacid integer := 23; c_medb uuid;
+  st text := '00000'; msg text := ''; ok boolean; det text := ''; bad text := ''; r_rest text := 'OK';
+  s_notas text; s_rev text; s_citas text; n_hist bigint;
+  v_cita bigint; v_cita2 bigint; v_cer integer; v_abi integer; j jsonb; v_f0 text; v_n0 bigint; r record;
+BEGIN
+  SELECT p.id INTO c_medb FROM public.perfiles p JOIN public.medicos m ON m.id = p.id WHERE p.rol = 'medico' AND p.activo AND p.id <> c_med ORDER BY p.id LIMIT 1;
+  IF c_medb IS NULL THEN RAISE EXCEPTION 'fixture roto: no hay un segundo medico activo'; END IF;
+  SELECT md5(COALESCE(string_agg(to_jsonb(t)::text, '|' ORDER BY t.id), '')) INTO s_notas FROM public.expediente_notas t;
+  SELECT md5(COALESCE(string_agg(to_jsonb(t)::text, '|' ORDER BY t.id), '')) INTO s_rev FROM public.expediente_notas_revisiones t;
+  SELECT md5(COALESCE(string_agg(to_jsonb(t)::text, '|' ORDER BY t.id), '')) INTO s_citas FROM public.citas t;
+  SELECT count(*) INTO n_hist FROM public.historial_medico;
+  BEGIN
+    -- una nota cerrada y una abierta, las dos del medico A
+    INSERT INTO public.citas (paciente_id, medico_id, clinica_id, fecha, hora_inicio, hora_fin, estado)
+      VALUES (c_pacid, c_med, c_clin, CURRENT_DATE + 400, '08:00', '08:30', 'en_curso') RETURNING id INTO v_cita;
+    INSERT INTO public.citas (paciente_id, medico_id, clinica_id, fecha, hora_inicio, hora_fin, estado)
+      VALUES (c_pacid, c_med, c_clin, CURRENT_DATE + 400, '09:00', '09:30', 'en_curso') RETURNING id INTO v_cita2;
+    INSERT INTO public.expediente_notas (cita_id, paciente_id, medico_id, motivo_consulta, subjetivo, objetivo, analisis, plan, diagnostico)
+      VALUES (v_cita, c_pacid, c_med, 'mc', 's', 'o', 'a', 'p', 'd') RETURNING id INTO v_cer;
+    INSERT INTO public.expediente_notas (cita_id, paciente_id, medico_id, motivo_consulta, subjetivo, objetivo, analisis, plan, diagnostico)
+      VALUES (v_cita2, c_pacid, c_med, 'mc', 's', 'o', 'a', 'p', 'd') RETURNING id INTO v_abi;
+    UPDATE public.citas SET estado = 'completada' WHERE id = v_cita;
+    IF (SELECT t.cerrada_at IS NULL FROM public.expediente_notas t WHERE t.id = v_cer) THEN RAISE EXCEPTION 'fixture roto: la nota sembrada no quedo cerrada'; END IF;
+    SELECT md5(COALESCE(string_agg(to_jsonb(t)::text, '|' ORDER BY t.id), '')) INTO v_f0 FROM public.expediente_notas t WHERE t.id IN (v_cer, v_abi);
+    SELECT count(*) INTO v_n0 FROM public.expediente_notas_revisiones;
+    FOR r IN SELECT * FROM (VALUES
+        ('NT001 sin sesion',              'sinsub',  'cer', 'motivo QA', 's2',  'NT001', 'No autorizado: inicie sesión'),
+        ('NT002 otro medico',             'medb',    'cer', 'motivo QA', 's2',  'NT002', 'No autorizado: solo el médico autor puede corregir la nota'),
+        ('NT002 nota inexistente',        'meda',    'nox', 'motivo QA', 's2',  'NT002', 'No autorizado: solo el médico autor puede corregir la nota'),
+        ('NT003 nota abierta',            'meda',    'abi', 'motivo QA', 's2',  'NT003', 'La nota todavía no está cerrada: guárdela normalmente'),
+        ('NT004 motivo en blanco',        'meda',    'cer', '   ',       's2',  'NT004', 'El motivo de la corrección es obligatorio (máximo 500 caracteres)'),
+        ('NT004 motivo NULL',             'meda',    'cer', NULL,        's2',  'NT004', 'El motivo de la corrección es obligatorio (máximo 500 caracteres)'),
+        ('NT004 motivo de 501',           'meda',    'cer', repeat('x', 501), 's2', 'NT004', 'El motivo de la corrección es obligatorio (máximo 500 caracteres)'),
+        ('NT005 sin cambios',             'meda',    'cer', 'motivo QA', 's',   'NT005', 'La corrección no cambia ningún campo de la nota')
+      ) v(caso, actor, nota, motivo, subj, code, texto) LOOP
+      st := '00000'; msg := ''; j := NULL;
+      BEGIN
+        IF r.actor = 'sinsub' THEN
+          PERFORM set_config('request.jwt.claims', '{"role":"authenticated"}', true);
+        ELSE
+          PERFORM set_config('request.jwt.claims', json_build_object('sub', CASE r.actor WHEN 'medb' THEN c_medb ELSE c_med END::text, 'role', 'authenticated')::text, true);
+        END IF;
+        PERFORM set_config('role', 'authenticated', true);
+        j := public.corregir_nota_consulta(CASE r.nota WHEN 'cer' THEN v_cer WHEN 'abi' THEN v_abi ELSE -1 END,
+                                           r.motivo, 'mc', r.subj, 'o', 'a', 'p', 'd');
+        PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
+      EXCEPTION WHEN OTHERS THEN PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
+        st := SQLSTATE; msg := SQLERRM; END;
+      ok := COALESCE((st = r.code AND msg = r.texto AND j IS NULL
+        AND (SELECT md5(COALESCE(string_agg(to_jsonb(t)::text, '|' ORDER BY t.id), '')) FROM public.expediente_notas t WHERE t.id IN (v_cer, v_abi)) = v_f0
+        AND (SELECT count(*) FROM public.expediente_notas_revisiones) = v_n0), false);
+      det := det||' ;; '||r.caso||'|'||r.code||' sin cambios|'||CASE WHEN ok THEN 'OK' ELSE 'ROJO' END||'|'||st||'|'||left(msg, 160);
+      IF NOT ok THEN bad := bad||r.caso||': '||st||' '||left(msg, 120)||'; '; END IF;
+    END LOOP;
+    RAISE EXCEPTION 'P890 descarte' USING ERRCODE = 'P0999';
+  EXCEPTION WHEN SQLSTATE 'P0999' THEN NULL;
+  END;
+  PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
+  IF (SELECT md5(COALESCE(string_agg(to_jsonb(t)::text, '|' ORDER BY t.id), '')) FROM public.expediente_notas t) IS DISTINCT FROM s_notas THEN r_rest := r_rest||' / expediente_notas'; END IF;
+  IF (SELECT md5(COALESCE(string_agg(to_jsonb(t)::text, '|' ORDER BY t.id), '')) FROM public.expediente_notas_revisiones t) IS DISTINCT FROM s_rev THEN r_rest := r_rest||' / revisiones'; END IF;
+  IF (SELECT md5(COALESCE(string_agg(to_jsonb(t)::text, '|' ORDER BY t.id), '')) FROM public.citas t) IS DISTINCT FROM s_citas THEN r_rest := r_rest||' / citas'; END IF;
+  IF (SELECT count(*) FROM public.historial_medico) <> n_hist THEN r_rest := r_rest||' / historial_medico'; END IF;
+  det := det||' ;; restauracion|subtransaccion descartada; snapshot igual|'||r_rest||'|-|';
+  PERFORM set_config('probe.p890_det', det, false);
+  PERFORM set_config('probe.p890', CASE WHEN bad = '' AND r_rest = 'OK'
+    THEN 'OK (NT001, NT002 x2, NT003, NT004 x3, NT005 por SQLERRM exacto; sin cambios ni revisiones; restaurado)'
+    ELSE 'ROJO ('||left(bad, 700)||' | restauracion='||r_rest||')' END, false);
+EXCEPTION WHEN OTHERS THEN
+  PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
+  PERFORM set_config('probe.p890', CASE WHEN SQLERRM LIKE 'fixture roto%' THEN 'ROJO ('||SQLERRM||')' ELSE 'FALLO ('||SQLSTATE||' '||SQLERRM||')' END, false);
+END $$;
+SELECT set_config('role', 'none', true);
+
+-- ---------------- P891 revisiones inmutables (42501 / NT008) y campos de control (NT009) ----------------
+DO $$
+DECLARE
+  c_med uuid := '09d243d5-b222-482a-9762-94a582e9e752'; c_clin uuid := 'c76d862c-e82f-4748-bc07-86c8a3343576'; c_pacid integer := 23;
+  st text := '00000'; msg text := ''; ok boolean; det text := ''; bad text := ''; r_rest text := 'OK';
+  s_notas text; s_rev text; s_citas text; n_hist bigint;
+  v_cita bigint; v_nota integer; nn bigint; v_f0 text; v_r0 text; r record;
+BEGIN
+  SELECT md5(COALESCE(string_agg(to_jsonb(t)::text, '|' ORDER BY t.id), '')) INTO s_notas FROM public.expediente_notas t;
+  SELECT md5(COALESCE(string_agg(to_jsonb(t)::text, '|' ORDER BY t.id), '')) INTO s_rev FROM public.expediente_notas_revisiones t;
+  SELECT md5(COALESCE(string_agg(to_jsonb(t)::text, '|' ORDER BY t.id), '')) INTO s_citas FROM public.citas t;
+  SELECT count(*) INTO n_hist FROM public.historial_medico;
+  BEGIN
+    INSERT INTO public.citas (paciente_id, medico_id, clinica_id, fecha, hora_inicio, hora_fin, estado)
+      VALUES (c_pacid, c_med, c_clin, CURRENT_DATE + 400, '08:00', '08:30', 'en_curso') RETURNING id INTO v_cita;
+    INSERT INTO public.expediente_notas (cita_id, paciente_id, medico_id, subjetivo) VALUES (v_cita, c_pacid, c_med, 'P891 v1') RETURNING id INTO v_nota;
+    UPDATE public.expediente_notas SET subjetivo = 'P891 v2' WHERE id = v_nota;       -- genera la revision 1
+    IF (SELECT count(*) FROM public.expediente_notas_revisiones rv WHERE rv.nota_id = v_nota) <> 1 THEN RAISE EXCEPTION 'fixture roto: no se genero la revision'; END IF;
+    SELECT md5(COALESCE(string_agg(to_jsonb(t)::text, '|' ORDER BY t.id), '')) INTO v_r0 FROM public.expediente_notas_revisiones t WHERE t.nota_id = v_nota;
+    SELECT md5(to_jsonb(t)::text) INTO v_f0 FROM public.expediente_notas t WHERE t.id = v_nota;
+    FOR r IN SELECT * FROM (VALUES
+        ('authenticated UPDATE revision', 'medico',   'upd_rev',  '42501', 'permission denied for table expediente_notas_revisiones'),
+        ('authenticated DELETE revision', 'medico',   'del_rev',  '42501', 'permission denied for table expediente_notas_revisiones'),
+        ('authenticated TRUNCATE',        'medico',   'trunc',    '42501', 'permission denied for table expediente_notas_revisiones'),
+        ('postgres UPDATE revision',      'postgres', 'upd_rev',  'NT008', 'Las revisiones de la nota son inmutables'),
+        ('postgres DELETE revision',      'postgres', 'del_rev',  'NT008', 'Las revisiones de la nota son inmutables'),
+        ('medico pone cerrada_at',        'medico',   'cerrada',  'NT009', 'Campo de control de la nota reservado al sistema'),
+        ('medico pone corregida_at',      'medico',   'corregida','NT009', 'Campo de control de la nota reservado al sistema'),
+        ('postgres con llave cerrar edita','postgres','llave_cerrar','NT009', 'Campo de control de la nota reservado al sistema')
+      ) v(caso, actor, accion, code, texto) LOOP
+      st := '00000'; msg := ''; nn := NULL;
+      BEGIN
+        IF r.actor = 'medico' THEN
+          PERFORM set_config('request.jwt.claims', json_build_object('sub', c_med::text, 'role', 'authenticated')::text, true); PERFORM set_config('role', 'authenticated', true);
+        END IF;
+        IF r.accion = 'upd_rev' THEN UPDATE public.expediente_notas_revisiones SET motivo = 'reescrito' WHERE nota_id = v_nota;
+        ELSIF r.accion = 'del_rev' THEN DELETE FROM public.expediente_notas_revisiones WHERE nota_id = v_nota;
+        ELSIF r.accion = 'trunc' THEN EXECUTE 'TRUNCATE public.expediente_notas_revisiones';
+        ELSIF r.accion = 'cerrada' THEN UPDATE public.expediente_notas SET cerrada_at = now() WHERE id = v_nota;
+        ELSIF r.accion = 'corregida' THEN UPDATE public.expediente_notas SET corregida_at = now() WHERE id = v_nota;
+        ELSE
+          PERFORM set_config('ezpay.nota_llave', 'cerrar:'||v_nota, true);
+          UPDATE public.expediente_notas SET cerrada_at = now(), subjetivo = 'P891 colada en el cierre' WHERE id = v_nota;
+        END IF;
+        GET DIAGNOSTICS nn = ROW_COUNT;
+        PERFORM set_config('ezpay.nota_llave', '', true);
+        PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
+      EXCEPTION WHEN OTHERS THEN PERFORM set_config('ezpay.nota_llave', '', true); PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
+        st := SQLSTATE; msg := SQLERRM; END;
+      ok := COALESCE((st = r.code AND msg = r.texto
+        AND (SELECT md5(COALESCE(string_agg(to_jsonb(t)::text, '|' ORDER BY t.id), '')) FROM public.expediente_notas_revisiones t WHERE t.nota_id = v_nota) = v_r0
+        AND (SELECT md5(to_jsonb(t)::text) FROM public.expediente_notas t WHERE t.id = v_nota) = v_f0), false);
+      det := det||' ;; '||r.caso||'|'||r.code||' sin cambios|'||CASE WHEN ok THEN 'OK' ELSE 'ROJO' END||'|'||st||'|'||left(msg, 160);
+      IF NOT ok THEN bad := bad||r.caso||': '||st||' '||left(msg, 120)||'; '; END IF;
+    END LOOP;
+    RAISE EXCEPTION 'P891 descarte' USING ERRCODE = 'P0999';
+  EXCEPTION WHEN SQLSTATE 'P0999' THEN NULL;
+  END;
+  PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
+  IF (SELECT md5(COALESCE(string_agg(to_jsonb(t)::text, '|' ORDER BY t.id), '')) FROM public.expediente_notas t) IS DISTINCT FROM s_notas THEN r_rest := r_rest||' / expediente_notas'; END IF;
+  IF (SELECT md5(COALESCE(string_agg(to_jsonb(t)::text, '|' ORDER BY t.id), '')) FROM public.expediente_notas_revisiones t) IS DISTINCT FROM s_rev THEN r_rest := r_rest||' / revisiones'; END IF;
+  IF (SELECT md5(COALESCE(string_agg(to_jsonb(t)::text, '|' ORDER BY t.id), '')) FROM public.citas t) IS DISTINCT FROM s_citas THEN r_rest := r_rest||' / citas'; END IF;
+  IF (SELECT count(*) FROM public.historial_medico) <> n_hist THEN r_rest := r_rest||' / historial_medico'; END IF;
+  det := det||' ;; restauracion|subtransaccion descartada; snapshot igual|'||r_rest||'|-|';
+  PERFORM set_config('probe.p891_det', det, false);
+  PERFORM set_config('probe.p891', CASE WHEN bad = '' AND r_rest = 'OK'
+    THEN 'OK (revisiones: 42501 x3 authenticated, NT008 x2 postgres; NT009 x3 campos de control y llave cerrar; restaurado)'
+    ELSE 'ROJO ('||left(bad, 700)||' | restauracion='||r_rest||')' END, false);
+EXCEPTION WHEN OTHERS THEN
+  PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
+  PERFORM set_config('probe.p891', CASE WHEN SQLERRM LIKE 'fixture roto%' THEN 'ROJO ('||SQLERRM||')' ELSE 'FALLO ('||SQLSTATE||' '||SQLERRM||')' END, false);
+END $$;
+SELECT set_config('role', 'none', true);
+
+-- ---------------- P892 visibilidad de revisiones por rol ----------------
+DO $$
+DECLARE
+  c_med uuid := '09d243d5-b222-482a-9762-94a582e9e752'; c_clin uuid := 'c76d862c-e82f-4748-bc07-86c8a3343576'; c_pacid integer := 23;
+  c_medc uuid; c_ajeno uuid; c_adm uuid; c_sa uuid; c_pac uuid;
+  st text := '00000'; msg text := ''; ok boolean; det text := ''; bad text := ''; r_rest text := 'OK';
+  s_notas text; s_rev text; s_citas text; n_hist bigint;
+  v_cita bigint; v_nota integer; n bigint; r record;
+BEGIN
+  SELECT p.id INTO c_medc FROM public.perfiles p JOIN public.medicos m ON m.id = p.id WHERE p.rol = 'medico' AND p.activo AND p.id <> c_med
+     AND NOT EXISTS (SELECT 1 FROM public.citas c WHERE c.medico_id = p.id AND c.paciente_id = c_pacid) ORDER BY p.id LIMIT 1;
+  SELECT p.id INTO c_ajeno FROM public.perfiles p JOIN public.medicos m ON m.id = p.id WHERE p.rol = 'medico' AND p.activo AND p.id NOT IN (c_med, c_medc)
+     AND NOT EXISTS (SELECT 1 FROM public.citas c WHERE c.medico_id = p.id AND c.paciente_id = c_pacid) ORDER BY p.id LIMIT 1;
+  SELECT p.id INTO c_adm FROM public.perfiles p WHERE p.rol IN ('admin_clinica','gerente') AND p.activo
+     AND EXISTS (SELECT 1 FROM public.medico_clinicas mc WHERE mc.medico_id = c_med AND mc.clinica_id IN (SELECT private.clinicas_de(p.id))) ORDER BY p.id LIMIT 1;
+  SELECT p.id INTO c_sa FROM public.perfiles p WHERE p.rol = 'super_admin' AND p.activo ORDER BY p.id LIMIT 1;
+  SELECT pa.auth_user_id INTO c_pac FROM public.pacientes pa WHERE pa.id = c_pacid;
+  IF c_medc IS NULL OR c_ajeno IS NULL OR c_adm IS NULL OR c_sa IS NULL OR c_pac IS NULL THEN
+    RAISE EXCEPTION 'fixture roto: medico C, medico ajeno, admin de clinica de A, super_admin o usuario del paciente 23'; END IF;
+  SELECT md5(COALESCE(string_agg(to_jsonb(t)::text, '|' ORDER BY t.id), '')) INTO s_notas FROM public.expediente_notas t;
+  SELECT md5(COALESCE(string_agg(to_jsonb(t)::text, '|' ORDER BY t.id), '')) INTO s_rev FROM public.expediente_notas_revisiones t;
+  SELECT md5(COALESCE(string_agg(to_jsonb(t)::text, '|' ORDER BY t.id), '')) INTO s_citas FROM public.citas t;
+  SELECT count(*) INTO n_hist FROM public.historial_medico;
+  BEGIN
+    INSERT INTO public.citas (paciente_id, medico_id, clinica_id, fecha, hora_inicio, hora_fin, estado)
+      VALUES (c_pacid, c_med, c_clin, CURRENT_DATE + 400, '08:00', '08:30', 'en_curso') RETURNING id INTO v_cita;
+    -- C pasa a ser medico tratante del paciente 23
+    INSERT INTO public.citas (paciente_id, medico_id, fecha, hora_inicio, hora_fin, estado)
+      VALUES (c_pacid, c_medc, CURRENT_DATE + 400, '10:00', '10:30', 'agendada');
+    INSERT INTO public.expediente_notas (cita_id, paciente_id, medico_id, subjetivo) VALUES (v_cita, c_pacid, c_med, 'P892 v1') RETURNING id INTO v_nota;
+    UPDATE public.expediente_notas SET subjetivo = 'P892 v2' WHERE id = v_nota;
+    FOR r IN SELECT * FROM (VALUES ('autor', c_med, 1), ('medico tratante', c_medc, 1), ('admin de la clinica', c_adm, 1), ('super_admin', c_sa, 1),
+                                   ('paciente', c_pac, 0), ('medico ajeno', c_ajeno, 0)) v(actor, sub, esperado) LOOP
+      st := '00000'; msg := ''; n := NULL;
+      BEGIN
+        PERFORM set_config('request.jwt.claims', json_build_object('sub', r.sub::text, 'role', 'authenticated')::text, true); PERFORM set_config('role', 'authenticated', true);
+        SELECT count(*) INTO n FROM public.expediente_notas_revisiones rv WHERE rv.nota_id = v_nota;
+        PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
+      EXCEPTION WHEN OTHERS THEN PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
+        st := SQLSTATE; msg := SQLERRM; END;
+      ok := COALESCE((st = '00000' AND n = r.esperado), false);
+      det := det||' ;; '||r.actor||' ve revisiones|'||r.esperado||' fila(s)|'||CASE WHEN ok THEN 'OK' ELSE 'ROJO' END||'|'||st||'|'||COALESCE(n::text, '-')||' '||left(msg, 150);
+      IF NOT ok THEN bad := bad||r.actor||' ve '||COALESCE(n::text, '-')||' (esperado '||r.esperado||') '||st||'; '; END IF;
+    END LOOP;
+    RAISE EXCEPTION 'P892 descarte' USING ERRCODE = 'P0999';
+  EXCEPTION WHEN SQLSTATE 'P0999' THEN NULL;
+  END;
+  PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
+  IF (SELECT md5(COALESCE(string_agg(to_jsonb(t)::text, '|' ORDER BY t.id), '')) FROM public.expediente_notas t) IS DISTINCT FROM s_notas THEN r_rest := r_rest||' / expediente_notas'; END IF;
+  IF (SELECT md5(COALESCE(string_agg(to_jsonb(t)::text, '|' ORDER BY t.id), '')) FROM public.expediente_notas_revisiones t) IS DISTINCT FROM s_rev THEN r_rest := r_rest||' / revisiones'; END IF;
+  IF (SELECT md5(COALESCE(string_agg(to_jsonb(t)::text, '|' ORDER BY t.id), '')) FROM public.citas t) IS DISTINCT FROM s_citas THEN r_rest := r_rest||' / citas'; END IF;
+  IF (SELECT count(*) FROM public.historial_medico) <> n_hist THEN r_rest := r_rest||' / historial_medico'; END IF;
+  det := det||' ;; restauracion|subtransaccion descartada; snapshot igual|'||r_rest||'|-|';
+  PERFORM set_config('probe.p892_det', det, false);
+  PERFORM set_config('probe.p892', CASE WHEN bad = '' AND r_rest = 'OK'
+    THEN 'OK (revisiones: autor, tratante, admin clinica y super_admin ven 1; paciente y medico ajeno 0; restaurado)'
+    ELSE 'ROJO ('||left(bad, 700)||' | restauracion='||r_rest||')' END, false);
+EXCEPTION WHEN OTHERS THEN
+  PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
+  PERFORM set_config('probe.p892', CASE WHEN SQLERRM LIKE 'fixture roto%' THEN 'ROJO ('||SQLERRM||')' ELSE 'FALLO ('||SQLSTATE||' '||SQLERRM||')' END, false);
+END $$;
+SELECT set_config('role', 'none', true);
+
+-- ---------------- P893 DELETE de notas: sin grant (42501) y RESTRICT (23503) ----------------
+DO $$
+DECLARE
+  c_med uuid := '09d243d5-b222-482a-9762-94a582e9e752'; c_clin uuid := 'c76d862c-e82f-4748-bc07-86c8a3343576'; c_pacid integer := 23; c_sa uuid;
+  st text := '00000'; msg text := ''; ok boolean; det text := ''; bad text := ''; r_rest text := 'OK';
+  s_notas text; s_rev text; s_citas text; s_sv text; n_hist bigint;
+  v_c1 bigint; v_c2 bigint; v_c3 bigint; v_sig integer; v_rev integer; v_lim integer; nn bigint; r record;
+BEGIN
+  SELECT p.id INTO c_sa FROM public.perfiles p WHERE p.rol = 'super_admin' AND p.activo ORDER BY p.id LIMIT 1;
+  IF c_sa IS NULL THEN RAISE EXCEPTION 'fixture roto: super_admin activo'; END IF;
+  SELECT md5(COALESCE(string_agg(to_jsonb(t)::text, '|' ORDER BY t.id), '')) INTO s_notas FROM public.expediente_notas t;
+  SELECT md5(COALESCE(string_agg(to_jsonb(t)::text, '|' ORDER BY t.id), '')) INTO s_rev FROM public.expediente_notas_revisiones t;
+  SELECT md5(COALESCE(string_agg(to_jsonb(t)::text, '|' ORDER BY t.id), '')) INTO s_citas FROM public.citas t;
+  SELECT md5(COALESCE(string_agg(to_jsonb(t)::text, '|' ORDER BY t.id), '')) INTO s_sv FROM public.signos_vitales t;
+  SELECT count(*) INTO n_hist FROM public.historial_medico;
+  BEGIN
+    INSERT INTO public.citas (paciente_id, medico_id, clinica_id, fecha, hora_inicio, hora_fin, estado)
+      VALUES (c_pacid, c_med, c_clin, CURRENT_DATE + 400, '08:00', '08:30', 'en_curso') RETURNING id INTO v_c1;
+    INSERT INTO public.citas (paciente_id, medico_id, clinica_id, fecha, hora_inicio, hora_fin, estado)
+      VALUES (c_pacid, c_med, c_clin, CURRENT_DATE + 400, '09:00', '09:30', 'en_curso') RETURNING id INTO v_c2;
+    INSERT INTO public.citas (paciente_id, medico_id, clinica_id, fecha, hora_inicio, hora_fin, estado)
+      VALUES (c_pacid, c_med, c_clin, CURRENT_DATE + 400, '10:00', '10:30', 'en_curso') RETURNING id INTO v_c3;
+    INSERT INTO public.expediente_notas (cita_id, paciente_id, medico_id, subjetivo) VALUES (v_c1, c_pacid, c_med, 'P893 con signos') RETURNING id INTO v_sig;
+    INSERT INTO public.signos_vitales (paciente_id, medico_id, consulta_id, peso_kg) VALUES (c_pacid, c_med, v_sig, 70);
+    INSERT INTO public.expediente_notas (cita_id, paciente_id, medico_id, subjetivo) VALUES (v_c2, c_pacid, c_med, 'P893 con revision') RETURNING id INTO v_rev;
+    UPDATE public.expediente_notas SET subjetivo = 'P893 con revision v2' WHERE id = v_rev;
+    INSERT INTO public.expediente_notas (cita_id, paciente_id, medico_id, subjetivo) VALUES (v_c3, c_pacid, c_med, 'P893 limpia') RETURNING id INTO v_lim;
+    FOR r IN SELECT * FROM (VALUES
+        ('super_admin borra',               c_sa::text,  'sig', '42501', 'permission denied for table expediente_notas'),
+        ('autor borra',                     c_med::text, 'lim', '42501', 'permission denied for table expediente_notas'),
+        ('postgres borra nota con signos',  NULL,        'sig', '23503', 'update or delete on table "expediente_notas" violates foreign key constraint "signos_vitales_consulta_id_fkey" on table "signos_vitales"'),
+        ('postgres borra nota con revision',NULL,        'rev', '23503', 'update or delete on table "expediente_notas" violates foreign key constraint "expediente_notas_revisiones_nota_id_fkey" on table "expediente_notas_revisiones"')
+      ) v(caso, sub, nota, code, texto) LOOP
+      st := '00000'; msg := ''; nn := NULL;
+      BEGIN
+        IF r.sub IS NOT NULL THEN
+          PERFORM set_config('request.jwt.claims', json_build_object('sub', r.sub, 'role', 'authenticated')::text, true); PERFORM set_config('role', 'authenticated', true);
+        END IF;
+        DELETE FROM public.expediente_notas WHERE id = CASE r.nota WHEN 'sig' THEN v_sig WHEN 'rev' THEN v_rev ELSE v_lim END;
+        GET DIAGNOSTICS nn = ROW_COUNT;
+        PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
+      EXCEPTION WHEN OTHERS THEN PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
+        st := SQLSTATE; msg := SQLERRM; END;
+      ok := COALESCE((st = r.code AND msg = r.texto AND (SELECT count(*) FROM public.expediente_notas t WHERE t.id IN (v_sig, v_rev, v_lim)) = 3), false);
+      det := det||' ;; '||r.caso||'|'||r.code||', la nota sigue|'||CASE WHEN ok THEN 'OK' ELSE 'ROJO' END||'|'||st||'|'||left(msg, 160);
+      IF NOT ok THEN bad := bad||r.caso||': '||st||' '||left(msg, 120)||'; '; END IF;
+    END LOOP;
+    -- control: postgres sigue pudiendo borrar una nota sin hijos (fixtures)
+    st := '00000'; msg := ''; nn := NULL;
+    BEGIN
+      DELETE FROM public.expediente_notas WHERE id = v_lim;
+      GET DIAGNOSTICS nn = ROW_COUNT;
+    EXCEPTION WHEN OTHERS THEN st := SQLSTATE; msg := SQLERRM; END;
+    ok := COALESCE((st = '00000' AND nn = 1), false);
+    det := det||' ;; postgres borra nota sin hijos|1 fila|'||CASE WHEN ok THEN 'OK' ELSE 'ROJO' END||'|'||st||'|'||left(msg, 160);
+    IF NOT ok THEN bad := bad||'postgres borra nota sin hijos: '||st||' '||left(msg, 120)||'; '; END IF;
+    RAISE EXCEPTION 'P893 descarte' USING ERRCODE = 'P0999';
+  EXCEPTION WHEN SQLSTATE 'P0999' THEN NULL;
+  END;
+  PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
+  IF (SELECT md5(COALESCE(string_agg(to_jsonb(t)::text, '|' ORDER BY t.id), '')) FROM public.expediente_notas t) IS DISTINCT FROM s_notas THEN r_rest := r_rest||' / expediente_notas'; END IF;
+  IF (SELECT md5(COALESCE(string_agg(to_jsonb(t)::text, '|' ORDER BY t.id), '')) FROM public.expediente_notas_revisiones t) IS DISTINCT FROM s_rev THEN r_rest := r_rest||' / revisiones'; END IF;
+  IF (SELECT md5(COALESCE(string_agg(to_jsonb(t)::text, '|' ORDER BY t.id), '')) FROM public.citas t) IS DISTINCT FROM s_citas THEN r_rest := r_rest||' / citas'; END IF;
+  IF (SELECT md5(COALESCE(string_agg(to_jsonb(t)::text, '|' ORDER BY t.id), '')) FROM public.signos_vitales t) IS DISTINCT FROM s_sv THEN r_rest := r_rest||' / signos_vitales'; END IF;
+  IF (SELECT count(*) FROM public.historial_medico) <> n_hist THEN r_rest := r_rest||' / historial_medico'; END IF;
+  det := det||' ;; restauracion|subtransaccion descartada; snapshot igual|'||r_rest||'|-|';
+  PERFORM set_config('probe.p893_det', det, false);
+  PERFORM set_config('probe.p893', CASE WHEN bad = '' AND r_rest = 'OK'
+    THEN 'OK (DELETE: 42501 super_admin y autor; 23503 con signos y con revision; postgres borra nota sin hijos; restaurado)'
+    ELSE 'ROJO ('||left(bad, 700)||' | restauracion='||r_rest||')' END, false);
+EXCEPTION WHEN OTHERS THEN
+  PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
+  PERFORM set_config('probe.p893', CASE WHEN SQLERRM LIKE 'fixture roto%' THEN 'ROJO ('||SQLERRM||')' ELSE 'FALLO ('||SQLSTATE||' '||SQLERRM||')' END, false);
+END $$;
+SELECT set_config('role', 'none', true);
+
+-- ---------------- P894 nota sin cita: nace cerrada (R1) ----------------
+DO $$
+DECLARE
+  c_med uuid := '09d243d5-b222-482a-9762-94a582e9e752'; c_pacid integer := 23;
+  st text := '00000'; msg text := ''; ok boolean; det text := ''; bad text := ''; r_rest text := 'OK';
+  s_notas text; s_rev text; s_citas text; n_hist bigint;
+  v_nota integer; nn bigint; j jsonb;
+BEGIN
+  SELECT md5(COALESCE(string_agg(to_jsonb(t)::text, '|' ORDER BY t.id), '')) INTO s_notas FROM public.expediente_notas t;
+  SELECT md5(COALESCE(string_agg(to_jsonb(t)::text, '|' ORDER BY t.id), '')) INTO s_rev FROM public.expediente_notas_revisiones t;
+  SELECT md5(COALESCE(string_agg(to_jsonb(t)::text, '|' ORDER BY t.id), '')) INTO s_citas FROM public.citas t;
+  SELECT count(*) INTO n_hist FROM public.historial_medico;
+  BEGIN
+    st := '00000'; msg := ''; nn := NULL;
+    BEGIN
+      PERFORM set_config('request.jwt.claims', json_build_object('sub', c_med::text, 'role', 'authenticated')::text, true); PERFORM set_config('role', 'authenticated', true);
+      INSERT INTO public.expediente_notas (paciente_id, medico_id, subjetivo) VALUES (c_pacid, c_med, 'P894 v1') RETURNING id INTO v_nota;
+      GET DIAGNOSTICS nn = ROW_COUNT;
+      PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
+    EXCEPTION WHEN OTHERS THEN PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
+      st := SQLSTATE; msg := SQLERRM; END;
+    ok := COALESCE((st = '00000' AND nn = 1 AND (SELECT t.cita_id IS NULL AND t.cerrada_at IS NOT NULL FROM public.expediente_notas t WHERE t.id = v_nota)), false);
+    det := det||' ;; medico inserta nota sin cita|nace con cerrada_at|'||CASE WHEN ok THEN 'OK' ELSE 'ROJO' END||'|'||st||'|'||left(msg, 160);
+    IF NOT ok THEN bad := bad||'medico inserta nota sin cita: '||st||' '||left(msg, 120)||'; '; END IF;
+    IF v_nota IS NULL THEN RAISE EXCEPTION 'fixture roto: no se pudo sembrar la nota sin cita'; END IF;
+    st := '00000'; msg := ''; nn := NULL;
+    BEGIN
+      PERFORM set_config('request.jwt.claims', json_build_object('sub', c_med::text, 'role', 'authenticated')::text, true); PERFORM set_config('role', 'authenticated', true);
+      UPDATE public.expediente_notas SET subjetivo = 'P894 directo' WHERE id = v_nota;
+      GET DIAGNOSTICS nn = ROW_COUNT;
+      PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
+    EXCEPTION WHEN OTHERS THEN PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
+      st := SQLSTATE; msg := SQLERRM; END;
+    ok := COALESCE((st = 'NT006' AND msg = 'La nota está cerrada: solo se puede corregir con motivo'
+      AND (SELECT t.subjetivo FROM public.expediente_notas t WHERE t.id = v_nota) = 'P894 v1'), false);
+    det := det||' ;; UPDATE directo|NT006|'||CASE WHEN ok THEN 'OK' ELSE 'ROJO' END||'|'||st||'|'||left(msg, 160);
+    IF NOT ok THEN bad := bad||'UPDATE directo: '||st||' '||left(msg, 120)||'; '; END IF;
+    st := '00000'; msg := ''; j := NULL;
+    BEGIN
+      PERFORM set_config('request.jwt.claims', json_build_object('sub', c_med::text, 'role', 'authenticated')::text, true); PERFORM set_config('role', 'authenticated', true);
+      j := public.corregir_nota_consulta(v_nota, 'correccion QA', NULL, 'P894 v2', NULL, NULL, NULL, NULL);
+      PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
+    EXCEPTION WHEN OTHERS THEN PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
+      st := SQLSTATE; msg := SQLERRM; END;
+    ok := COALESCE((st = '00000' AND (j->>'revision')::int = 1
+      AND (SELECT t.subjetivo = 'P894 v2' AND t.corregida_at IS NOT NULL FROM public.expediente_notas t WHERE t.id = v_nota)
+      AND EXISTS (SELECT 1 FROM public.expediente_notas_revisiones r WHERE r.nota_id = v_nota AND r.tipo = 'correccion' AND r.motivo = 'correccion QA')), false);
+    det := det||' ;; correccion por RPC|OK revision correccion|'||CASE WHEN ok THEN 'OK' ELSE 'ROJO' END||'|'||st||'|'||left(msg, 160);
+    IF NOT ok THEN bad := bad||'correccion por RPC: '||st||' '||left(msg, 120)||'; '; END IF;
+    RAISE EXCEPTION 'P894 descarte' USING ERRCODE = 'P0999';
+  EXCEPTION WHEN SQLSTATE 'P0999' THEN NULL;
+  END;
+  PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
+  IF (SELECT md5(COALESCE(string_agg(to_jsonb(t)::text, '|' ORDER BY t.id), '')) FROM public.expediente_notas t) IS DISTINCT FROM s_notas THEN r_rest := r_rest||' / expediente_notas'; END IF;
+  IF (SELECT md5(COALESCE(string_agg(to_jsonb(t)::text, '|' ORDER BY t.id), '')) FROM public.expediente_notas_revisiones t) IS DISTINCT FROM s_rev THEN r_rest := r_rest||' / revisiones'; END IF;
+  IF (SELECT md5(COALESCE(string_agg(to_jsonb(t)::text, '|' ORDER BY t.id), '')) FROM public.citas t) IS DISTINCT FROM s_citas THEN r_rest := r_rest||' / citas'; END IF;
+  IF (SELECT count(*) FROM public.historial_medico) <> n_hist THEN r_rest := r_rest||' / historial_medico'; END IF;
+  det := det||' ;; restauracion|subtransaccion descartada; snapshot igual|'||r_rest||'|-|';
+  PERFORM set_config('probe.p894_det', det, false);
+  PERFORM set_config('probe.p894', CASE WHEN bad = '' AND r_rest = 'OK'
+    THEN 'OK (nota sin cita nace cerrada; UPDATE directo NT006; correccion por RPC OK; restaurado)'
+    ELSE 'ROJO ('||left(bad, 700)||' | restauracion='||r_rest||')' END, false);
+EXCEPTION WHEN OTHERS THEN
+  PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
+  PERFORM set_config('probe.p894', CASE WHEN SQLERRM LIKE 'fixture roto%' THEN 'ROJO ('||SQLERRM||')' ELSE 'FALLO ('||SQLSTATE||' '||SQLERRM||')' END, false);
+END $$;
+SELECT set_config('role', 'none', true);
+
+-- ---------------- P895 PE001 intacto y flujo "Finalizar" (guardar + completar) ----------------
+DO $$
+DECLARE
+  c_med uuid := '09d243d5-b222-482a-9762-94a582e9e752'; c_clin uuid := 'c76d862c-e82f-4748-bc07-86c8a3343576'; c_pacid integer := 23;
+  st text := '00000'; msg text := ''; ok boolean; det text := ''; bad text := ''; r_rest text := 'OK';
+  s_notas text; s_rev text; s_citas text; n_hist bigint;
+  v_cita bigint; v_nota integer; nn bigint;
+BEGIN
+  SELECT md5(COALESCE(string_agg(to_jsonb(t)::text, '|' ORDER BY t.id), '')) INTO s_notas FROM public.expediente_notas t;
+  SELECT md5(COALESCE(string_agg(to_jsonb(t)::text, '|' ORDER BY t.id), '')) INTO s_rev FROM public.expediente_notas_revisiones t;
+  SELECT md5(COALESCE(string_agg(to_jsonb(t)::text, '|' ORDER BY t.id), '')) INTO s_citas FROM public.citas t;
+  SELECT count(*) INTO n_hist FROM public.historial_medico;
+  BEGIN
+    INSERT INTO public.citas (paciente_id, medico_id, clinica_id, fecha, hora_inicio, hora_fin, estado)
+      VALUES (c_pacid, c_med, c_clin, CURRENT_DATE + 400, '08:00', '08:30', 'en_curso') RETURNING id INTO v_cita;
+    st := '00000'; msg := '';
+    BEGIN
+      UPDATE public.citas SET estado = 'completada' WHERE id = v_cita;
+    EXCEPTION WHEN OTHERS THEN st := SQLSTATE; msg := SQLERRM; END;
+    ok := COALESCE((st = 'PE001' AND msg = 'Debe guardar la nota de la consulta antes de finalizar'
+      AND (SELECT c.estado FROM public.citas c WHERE c.id = v_cita) = 'en_curso'), false);
+    det := det||' ;; completar sin nota|PE001, sigue en_curso|'||CASE WHEN ok THEN 'OK' ELSE 'ROJO' END||'|'||st||'|'||left(msg, 160);
+    IF NOT ok THEN bad := bad||'completar sin nota: '||st||' '||left(msg, 120)||'; '; END IF;
+    st := '00000'; msg := ''; nn := NULL;
+    BEGIN
+      PERFORM set_config('request.jwt.claims', json_build_object('sub', c_med::text, 'role', 'authenticated')::text, true); PERFORM set_config('role', 'authenticated', true);
+      INSERT INTO public.expediente_notas (cita_id, paciente_id, medico_id, subjetivo) VALUES (v_cita, c_pacid, c_med, 'P895') RETURNING id INTO v_nota;
+      PERFORM public.actualizar_estado_cita(v_cita, 'completada');
+      PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
+    EXCEPTION WHEN OTHERS THEN PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
+      st := SQLSTATE; msg := SQLERRM; END;
+    ok := COALESCE((st = '00000' AND (SELECT c.estado FROM public.citas c WHERE c.id = v_cita) = 'completada'
+      AND (SELECT t.cerrada_at IS NOT NULL FROM public.expediente_notas t WHERE t.id = v_nota)
+      AND (SELECT count(*) FROM public.expediente_notas_revisiones r WHERE r.nota_id = v_nota) = 0), false);
+    det := det||' ;; Finalizar: guardar + completar|cita completada, nota cerrada, 0 revisiones|'||CASE WHEN ok THEN 'OK' ELSE 'ROJO' END||'|'||st||'|'||left(msg, 160);
+    IF NOT ok THEN bad := bad||'Finalizar: '||st||' '||left(msg, 120)||'; '; END IF;
+    RAISE EXCEPTION 'P895 descarte' USING ERRCODE = 'P0999';
+  EXCEPTION WHEN SQLSTATE 'P0999' THEN NULL;
+  END;
+  PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
+  IF (SELECT md5(COALESCE(string_agg(to_jsonb(t)::text, '|' ORDER BY t.id), '')) FROM public.expediente_notas t) IS DISTINCT FROM s_notas THEN r_rest := r_rest||' / expediente_notas'; END IF;
+  IF (SELECT md5(COALESCE(string_agg(to_jsonb(t)::text, '|' ORDER BY t.id), '')) FROM public.expediente_notas_revisiones t) IS DISTINCT FROM s_rev THEN r_rest := r_rest||' / revisiones'; END IF;
+  IF (SELECT md5(COALESCE(string_agg(to_jsonb(t)::text, '|' ORDER BY t.id), '')) FROM public.citas t) IS DISTINCT FROM s_citas THEN r_rest := r_rest||' / citas'; END IF;
+  IF (SELECT count(*) FROM public.historial_medico) <> n_hist THEN r_rest := r_rest||' / historial_medico'; END IF;
+  det := det||' ;; restauracion|subtransaccion descartada; snapshot igual|'||r_rest||'|-|';
+  PERFORM set_config('probe.p895_det', det, false);
+  PERFORM set_config('probe.p895', CASE WHEN bad = '' AND r_rest = 'OK'
+    THEN 'OK (PE001 sin nota; guardar + completar por la RPC cierra la nota sin revision; restaurado)'
+    ELSE 'ROJO ('||left(bad, 700)||' | restauracion='||r_rest||')' END, false);
+EXCEPTION WHEN OTHERS THEN
+  PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
+  PERFORM set_config('probe.p895', CASE WHEN SQLERRM LIKE 'fixture roto%' THEN 'ROJO ('||SQLERRM||')' ELSE 'FALLO ('||SQLSTATE||' '||SQLERRM||')' END, false);
+END $$;
+SELECT set_config('role', 'none', true);
+
+-- ---------------- P896 catalogo de objetos post-334 ----------------
+DO $$
+DECLARE ok boolean; det text := ''; bad text := ''; x text; n bigint; r record; st text := '00000'; msg text := '';
+BEGIN
+  SELECT string_agg(a.attname||':'||format_type(a.atttypid, a.atttypmod)||':'||CASE WHEN a.attnotnull THEN 'NN' ELSE 'N' END, ',' ORDER BY a.attname)
+    INTO x FROM pg_attribute a WHERE a.attrelid = 'public.expediente_notas'::regclass AND NOT a.attisdropped
+     AND a.attname IN ('updated_at','updated_by','cerrada_at','corregida_at');
+  ok := COALESCE(x = 'cerrada_at:timestamp with time zone:N,corregida_at:timestamp with time zone:N,updated_at:timestamp with time zone:NN,updated_by:uuid:N', false);
+  det := det||' ;; columnas nuevas|4 con tipo y nulabilidad|'||CASE WHEN ok THEN 'OK' ELSE 'ROJO' END||'|-|'||COALESCE(x, '-');
+  IF NOT ok THEN bad := bad||'columnas; '; END IF;
+  ok := COALESCE((SELECT relrowsecurity AND relforcerowsecurity FROM pg_class WHERE oid = to_regclass('public.expediente_notas_revisiones'))
+    AND (SELECT string_agg(policyname||':'||cmd||':'||roles::text, ',') FROM pg_policies WHERE schemaname = 'public' AND tablename = 'expediente_notas_revisiones') = 'exp_rev_select:SELECT:{authenticated}'
+    AND EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'expediente_notas_revisiones_nota_id_fkey' AND confdeltype = 'r'), false);
+  det := det||' ;; revisiones: RLS+FORCE, 1 policy SELECT, FK RESTRICT|si|'||CASE WHEN ok THEN 'OK' ELSE 'ROJO' END||'|-|';
+  IF NOT ok THEN bad := bad||'tabla de revisiones; '; END IF;
+  SELECT string_agg(g, ',' ORDER BY g COLLATE "C") INTO x
+    FROM (SELECT CASE WHEN a.grantee = 0 THEN 'PUBLIC' ELSE pg_get_userbyid(a.grantee) END||':'||a.privilege_type AS g
+            FROM pg_class c, aclexplode(c.relacl) a WHERE c.oid = to_regclass('public.expediente_notas_revisiones') AND a.grantee <> c.relowner) z;
+  ok := COALESCE(x = 'authenticated:SELECT,service_role:DELETE,service_role:INSERT,service_role:SELECT,service_role:UPDATE', false);
+  det := det||' ;; grants revisiones|authenticated SELECT; service_role SIUD|'||CASE WHEN ok THEN 'OK' ELSE 'ROJO' END||'|-|'||COALESCE(x, '-');
+  IF NOT ok THEN bad := bad||'grants revisiones='||COALESCE(x, '-')||'; '; END IF;
+  n := 0;
+  FOR r IN SELECT * FROM (VALUES
+      ('trg_expediente_notas_guardia', 'public.expediente_notas',            23, 'private.expediente_notas_guardia()'),
+      ('trg_cerrar_nota_al_completar', 'public.citas',                       17, 'private.cerrar_nota_al_completar()'),
+      ('trg_exp_rev_inmutable',        'public.expediente_notas_revisiones', 27, 'private.revision_nota_inmutable()'),
+      ('trg_exigir_nota_al_completar', 'public.citas',                       19, 'private.exigir_nota_al_completar()'),
+      ('trg_calcular_imc_expediente',  'public.expediente_notas',            23, 'public.calcular_imc_signos_vitales()')) v(tg, tb, ty, fn) LOOP
+    IF EXISTS (SELECT 1 FROM pg_trigger t WHERE t.tgname = r.tg AND t.tgrelid = to_regclass(r.tb) AND t.tgtype = r.ty
+         AND t.tgfoid = to_regprocedure(r.fn) AND t.tgenabled = 'O') THEN n := n + 1; END IF;
+  END LOOP;
+  ok := (n = 5);
+  det := det||' ;; triggers|5 con tipo, funcion y habilitados|'||CASE WHEN ok THEN 'OK' ELSE 'ROJO' END||'|-|'||n;
+  IF NOT ok THEN bad := bad||'triggers '||n||'/5; '; END IF;
+  n := 0;
+  FOR r IN SELECT * FROM (VALUES
+      ('public.corregir_nota_consulta(integer,text,text,text,text,text,text,text)', '{postgres=X/postgres,authenticated=X/postgres}'),
+      ('private.expediente_notas_guardia()',  '{postgres=X/postgres}'),
+      ('private.cerrar_nota_al_completar()',  '{postgres=X/postgres}'),
+      ('private.revision_nota_inmutable()',   '{postgres=X/postgres}')) v(f, acl) LOOP
+    IF EXISTS (SELECT 1 FROM pg_proc p WHERE p.oid = to_regprocedure(r.f) AND p.prosecdef
+         AND p.proconfig = ARRAY['search_path=""'] AND p.proacl::text = r.acl) THEN n := n + 1; END IF;
+  END LOOP;
+  ok := (n = 4) AND (SELECT count(*) FROM pg_proc WHERE proname = 'corregir_nota_consulta') = 1;
+  det := det||' ;; funciones|4 DEFINER, search_path vacio, EXECUTE exacto; 1 firma de la RPC|'||CASE WHEN ok THEN 'OK' ELSE 'ROJO' END||'|-|'||n;
+  IF NOT ok THEN bad := bad||'funciones '||n||'/4; '; END IF;
+  SELECT string_agg(policyname||':'||cmd, ',' ORDER BY policyname COLLATE "C") INTO x FROM pg_policies WHERE schemaname = 'public' AND tablename = 'expediente_notas';
+  ok := COALESCE(x = 'Admin clinica ve expediente de su clinica:SELECT,exp_insert_medico:INSERT,exp_select_medico:SELECT,exp_select_paciente:SELECT,exp_superadmin_insert:INSERT,exp_superadmin_select:SELECT,exp_superadmin_update:UPDATE,exp_update_medico:UPDATE', false);
+  det := det||' ;; policies de notas|sin ALL ni DELETE|'||CASE WHEN ok THEN 'OK' ELSE 'ROJO' END||'|-|'||COALESCE(x, '-');
+  IF NOT ok THEN bad := bad||'policies notas='||COALESCE(x, '-')||'; '; END IF;
+  SELECT string_agg(p, ',' ORDER BY p) INTO x FROM unnest(ARRAY['SELECT','INSERT','UPDATE','DELETE','TRUNCATE','REFERENCES','TRIGGER','MAINTAIN']) p
+   WHERE has_table_privilege('authenticated', 'public.expediente_notas', p);
+  ok := COALESCE(x = 'INSERT,SELECT,UPDATE', false)
+    AND NOT EXISTS (SELECT 1 FROM unnest(ARRAY['SELECT','INSERT','UPDATE','DELETE','TRUNCATE','REFERENCES','TRIGGER','MAINTAIN']) p WHERE has_table_privilege('anon', 'public.expediente_notas', p))
+    AND NOT EXISTS (SELECT 1 FROM pg_class c, aclexplode(c.relacl) a WHERE c.oid = 'public.expediente_notas'::regclass AND a.grantee = 0);
+  det := det||' ;; grants de notas|authenticated INSERT,SELECT,UPDATE; anon y PUBLIC nada|'||CASE WHEN ok THEN 'OK' ELSE 'ROJO' END||'|-|'||COALESCE(x, '-');
+  IF NOT ok THEN bad := bad||'grants notas='||COALESCE(x, '-')||'; '; END IF;
+  ok := EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'signos_vitales_consulta_id_fkey' AND conrelid = 'public.signos_vitales'::regclass AND confdeltype = 'r');
+  det := det||' ;; FK signos_vitales.consulta_id|RESTRICT|'||CASE WHEN ok THEN 'OK' ELSE 'ROJO' END||'|-|';
+  IF NOT ok THEN bad := bad||'FK signos no RESTRICT; '; END IF;
+  n := 0;
+  FOR r IN SELECT * FROM (VALUES
+      ('private.exigir_nota_al_completar()',          '102adac580dfb08ed65158f065a98b3e'),
+      ('private.cita_tiene_nota(bigint)',             '6ea1318eddf06bb33db2545c9ab2233a'),
+      ('public.calcular_imc_signos_vitales()',        '1b9ad49a5cd1464c54d9a211e5763532'),
+      ('public.contexto_ia_paciente(bigint)',         '1eaf84a3475dfdfc3845d68ce2406fbb'),
+      ('public.obtener_contexto_visita(bigint)',      '24c3825b9c8fc6d172f8963191025097'),
+      ('public.actualizar_estado_cita(bigint,text)',  '3ff6976362482995bd17cb2322bcc082'),
+      ('private.exigir_empresa_activa()',             'd62cc5a3c6edf0aaf48488e59a8d1e9b')) v(f, m) LOOP
+    IF (SELECT md5(prosrc) FROM pg_proc WHERE oid = to_regprocedure(r.f)) = r.m THEN n := n + 1; END IF;
+  END LOOP;
+  ok := (n = 7);
+  det := det||' ;; las 7 funciones que la 334 no toca|7 md5 iguales|'||CASE WHEN ok THEN 'OK' ELSE 'ROJO' END||'|-|'||n;
+  IF NOT ok THEN bad := bad||'md5 intactas '||n||'/7; '; END IF;
+  PERFORM set_config('probe.p896_det', det, false);
+  PERFORM set_config('probe.p896', CASE WHEN bad = ''
+    THEN 'OK (columnas, tabla de revisiones, grants, 5 triggers, 4 funciones, policies sin ALL/DELETE, FK RESTRICT, 7 md5 intactos)'
+    ELSE 'ROJO ('||left(bad, 700)||')' END, false);
+EXCEPTION WHEN OTHERS THEN
+  PERFORM set_config('probe.p896', 'FALLO ('||SQLSTATE||' '||SQLERRM||')', false);
+END $$;
+SELECT set_config('role', 'none', true);
+
+-- ---------------- P908 (C1) nota creada sobre una cita ya completada: nace cerrada ----------------
+DO $$
+DECLARE
+  c_med uuid := '09d243d5-b222-482a-9762-94a582e9e752'; c_clin uuid := 'c76d862c-e82f-4748-bc07-86c8a3343576'; c_pacid integer := 23;
+  st text := '00000'; msg text := ''; ok boolean; det text := ''; bad text := ''; r_rest text := 'OK';
+  s_notas text; s_rev text; s_citas text; n_hist bigint;
+  v_cita bigint; v_cita2 bigint; v_nota integer; v_nota2 integer; nn bigint; j jsonb;
+BEGIN
+  SELECT md5(COALESCE(string_agg(to_jsonb(t)::text, '|' ORDER BY t.id), '')) INTO s_notas FROM public.expediente_notas t;
+  SELECT md5(COALESCE(string_agg(to_jsonb(t)::text, '|' ORDER BY t.id), '')) INTO s_rev FROM public.expediente_notas_revisiones t;
+  SELECT md5(COALESCE(string_agg(to_jsonb(t)::text, '|' ORDER BY t.id), '')) INTO s_citas FROM public.citas t;
+  SELECT count(*) INTO n_hist FROM public.historial_medico;
+  BEGIN
+    -- nace completada por INSERT: PE001 es BEFORE UPDATE y no dispara
+    INSERT INTO public.citas (paciente_id, medico_id, clinica_id, fecha, hora_inicio, hora_fin, estado)
+      VALUES (c_pacid, c_med, c_clin, CURRENT_DATE + 400, '08:00', '08:30', 'completada') RETURNING id INTO v_cita;
+    INSERT INTO public.citas (paciente_id, medico_id, clinica_id, fecha, hora_inicio, hora_fin, estado)
+      VALUES (c_pacid, c_med, c_clin, CURRENT_DATE + 400, '09:00', '09:30', 'en_curso') RETURNING id INTO v_cita2;
+    st := '00000'; msg := ''; nn := NULL;
+    BEGIN
+      PERFORM set_config('request.jwt.claims', json_build_object('sub', c_med::text, 'role', 'authenticated')::text, true); PERFORM set_config('role', 'authenticated', true);
+      INSERT INTO public.expediente_notas (cita_id, paciente_id, medico_id, subjetivo) VALUES (v_cita, c_pacid, c_med, 'P908 v1') RETURNING id INTO v_nota;
+      GET DIAGNOSTICS nn = ROW_COUNT;
+      PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
+    EXCEPTION WHEN OTHERS THEN PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
+      st := SQLSTATE; msg := SQLERRM; END;
+    ok := COALESCE((st = '00000' AND nn = 1 AND (SELECT t.cerrada_at IS NOT NULL FROM public.expediente_notas t WHERE t.id = v_nota)), false);
+    det := det||' ;; nota sobre cita completada|nace con cerrada_at|'||CASE WHEN ok THEN 'OK' ELSE 'ROJO' END||'|'||st||'|'||left(msg, 160);
+    IF NOT ok THEN bad := bad||'nota sobre cita completada: '||st||' '||left(msg, 120)||'; '; END IF;
+    IF v_nota IS NULL THEN RAISE EXCEPTION 'fixture roto: no se pudo sembrar la nota sobre la cita completada'; END IF;
+    st := '00000'; msg := ''; nn := NULL;
+    BEGIN
+      PERFORM set_config('request.jwt.claims', json_build_object('sub', c_med::text, 'role', 'authenticated')::text, true); PERFORM set_config('role', 'authenticated', true);
+      UPDATE public.expediente_notas SET subjetivo = 'P908 directo' WHERE id = v_nota;
+      GET DIAGNOSTICS nn = ROW_COUNT;
+      PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
+    EXCEPTION WHEN OTHERS THEN PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
+      st := SQLSTATE; msg := SQLERRM; END;
+    ok := COALESCE((st = 'NT006' AND msg = 'La nota está cerrada: solo se puede corregir con motivo'
+      AND (SELECT t.subjetivo FROM public.expediente_notas t WHERE t.id = v_nota) = 'P908 v1'), false);
+    det := det||' ;; UPDATE directo|NT006|'||CASE WHEN ok THEN 'OK' ELSE 'ROJO' END||'|'||st||'|'||left(msg, 160);
+    IF NOT ok THEN bad := bad||'UPDATE directo: '||st||' '||left(msg, 120)||'; '; END IF;
+    st := '00000'; msg := ''; j := NULL;
+    BEGIN
+      PERFORM set_config('request.jwt.claims', json_build_object('sub', c_med::text, 'role', 'authenticated')::text, true); PERFORM set_config('role', 'authenticated', true);
+      j := public.corregir_nota_consulta(v_nota, 'correccion QA', NULL, 'P908 v2', NULL, NULL, NULL, NULL);
+      PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
+    EXCEPTION WHEN OTHERS THEN PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
+      st := SQLSTATE; msg := SQLERRM; END;
+    ok := COALESCE((st = '00000' AND (j->>'revision')::int = 1 AND (SELECT t.subjetivo FROM public.expediente_notas t WHERE t.id = v_nota) = 'P908 v2'), false);
+    det := det||' ;; correccion por RPC|OK revision 1|'||CASE WHEN ok THEN 'OK' ELSE 'ROJO' END||'|'||st||'|'||left(msg, 160);
+    IF NOT ok THEN bad := bad||'correccion por RPC: '||st||' '||left(msg, 120)||'; '; END IF;
+    st := '00000'; msg := ''; nn := NULL;
+    BEGIN
+      PERFORM set_config('request.jwt.claims', json_build_object('sub', c_med::text, 'role', 'authenticated')::text, true); PERFORM set_config('role', 'authenticated', true);
+      INSERT INTO public.expediente_notas (cita_id, paciente_id, medico_id, subjetivo) VALUES (v_cita2, c_pacid, c_med, 'P908 control') RETURNING id INTO v_nota2;
+      GET DIAGNOSTICS nn = ROW_COUNT;
+      PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
+    EXCEPTION WHEN OTHERS THEN PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
+      st := SQLSTATE; msg := SQLERRM; END;
+    ok := COALESCE((st = '00000' AND nn = 1 AND (SELECT t.cerrada_at IS NULL FROM public.expediente_notas t WHERE t.id = v_nota2)), false);
+    det := det||' ;; control: nota sobre cita en_curso|nace abierta|'||CASE WHEN ok THEN 'OK' ELSE 'ROJO' END||'|'||st||'|'||left(msg, 160);
+    IF NOT ok THEN bad := bad||'control cita en_curso: '||st||' '||left(msg, 120)||'; '; END IF;
+    RAISE EXCEPTION 'P908 descarte' USING ERRCODE = 'P0999';
+  EXCEPTION WHEN SQLSTATE 'P0999' THEN NULL;
+  END;
+  PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
+  IF (SELECT md5(COALESCE(string_agg(to_jsonb(t)::text, '|' ORDER BY t.id), '')) FROM public.expediente_notas t) IS DISTINCT FROM s_notas THEN r_rest := r_rest||' / expediente_notas'; END IF;
+  IF (SELECT md5(COALESCE(string_agg(to_jsonb(t)::text, '|' ORDER BY t.id), '')) FROM public.expediente_notas_revisiones t) IS DISTINCT FROM s_rev THEN r_rest := r_rest||' / revisiones'; END IF;
+  IF (SELECT md5(COALESCE(string_agg(to_jsonb(t)::text, '|' ORDER BY t.id), '')) FROM public.citas t) IS DISTINCT FROM s_citas THEN r_rest := r_rest||' / citas'; END IF;
+  IF (SELECT count(*) FROM public.historial_medico) <> n_hist THEN r_rest := r_rest||' / historial_medico'; END IF;
+  det := det||' ;; restauracion|subtransaccion descartada; snapshot igual|'||r_rest||'|-|';
+  PERFORM set_config('probe.p908_det', det, false);
+  PERFORM set_config('probe.p908', CASE WHEN bad = '' AND r_rest = 'OK'
+    THEN 'OK (nota sobre cita completada nace cerrada; NT006 directo; correccion OK; control en_curso nace abierta; restaurado)'
+    ELSE 'ROJO ('||left(bad, 700)||' | restauracion='||r_rest||')' END, false);
+EXCEPTION WHEN OTHERS THEN
+  PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
+  PERFORM set_config('probe.p908', CASE WHEN SQLERRM LIKE 'fixture roto%' THEN 'ROJO ('||SQLERRM||')' ELSE 'FALLO ('||SQLSTATE||' '||SQLERRM||')' END, false);
+END $$;
+SELECT set_config('role', 'none', true);
+
+-- ---------------- P909 (C2) integridad nota<->cita en el INSERT: NT010 para todos ----------------
+DO $$
+DECLARE
+  c_med uuid := '09d243d5-b222-482a-9762-94a582e9e752'; c_clin uuid := 'c76d862c-e82f-4748-bc07-86c8a3343576'; c_pacid integer := 23; c_medb uuid;
+  st text := '00000'; msg text := ''; ok boolean; det text := ''; bad text := ''; r_rest text := 'OK';
+  s_notas text; s_rev text; s_citas text; n_hist bigint;
+  v_cita bigint; v_cita2 bigint; v_cita_sin bigint; v_nota integer; nn bigint; n0 bigint; r record;
+BEGIN
+  SELECT p.id INTO c_medb FROM public.perfiles p JOIN public.medicos m ON m.id = p.id WHERE p.rol = 'medico' AND p.activo AND p.id <> c_med ORDER BY p.id LIMIT 1;
+  IF c_medb IS NULL THEN RAISE EXCEPTION 'fixture roto: no hay un segundo medico activo'; END IF;
+  SELECT md5(COALESCE(string_agg(to_jsonb(t)::text, '|' ORDER BY t.id), '')) INTO s_notas FROM public.expediente_notas t;
+  SELECT md5(COALESCE(string_agg(to_jsonb(t)::text, '|' ORDER BY t.id), '')) INTO s_rev FROM public.expediente_notas_revisiones t;
+  SELECT md5(COALESCE(string_agg(to_jsonb(t)::text, '|' ORDER BY t.id), '')) INTO s_citas FROM public.citas t;
+  SELECT count(*) INTO n_hist FROM public.historial_medico;
+  BEGIN
+    INSERT INTO public.citas (paciente_id, medico_id, clinica_id, fecha, hora_inicio, hora_fin, estado)
+      VALUES (c_pacid, c_med, c_clin, CURRENT_DATE + 400, '08:00', '08:30', 'en_curso') RETURNING id INTO v_cita;
+    INSERT INTO public.citas (paciente_id, medico_id, clinica_id, fecha, hora_inicio, hora_fin, estado)
+      VALUES (c_pacid, c_med, c_clin, CURRENT_DATE + 400, '09:00', '09:30', 'en_curso') RETURNING id INTO v_cita2;
+    INSERT INTO public.citas (paciente_id, medico_id, clinica_id, fecha, hora_inicio, hora_fin, estado)
+      VALUES (c_pacid, NULL, c_clin, CURRENT_DATE + 400, '10:00', '10:30', 'confirmada') RETURNING id INTO v_cita_sin;
+    SELECT count(*) INTO n0 FROM public.expediente_notas;
+    FOR r IN SELECT * FROM (VALUES
+        ('medico B en la cita del medico A',        'medb',     'cita', 23,  'medb'),
+        ('medico A con otro paciente',              'meda',     'cita', 546, 'meda'),
+        ('postgres con otro paciente',              'postgres', 'cita', 546, 'meda'),
+        ('postgres con cita inexistente',           'postgres', 'nox',  23,  'meda'),
+        ('postgres en cita sin medico asignado',    'postgres', 'sin',  23,  'meda')
+      ) v(caso, actor, cita, pac, autor) LOOP
+      st := '00000'; msg := ''; nn := NULL;
+      BEGIN
+        IF r.actor <> 'postgres' THEN
+          PERFORM set_config('request.jwt.claims', json_build_object('sub', CASE r.actor WHEN 'medb' THEN c_medb ELSE c_med END::text, 'role', 'authenticated')::text, true);
+          PERFORM set_config('role', 'authenticated', true);
+        END IF;
+        INSERT INTO public.expediente_notas (cita_id, paciente_id, medico_id, subjetivo)
+          VALUES (CASE r.cita WHEN 'cita' THEN v_cita WHEN 'sin' THEN v_cita_sin ELSE -1 END, r.pac,
+                  CASE r.autor WHEN 'medb' THEN c_medb ELSE c_med END, 'P909 '||r.caso);
+        GET DIAGNOSTICS nn = ROW_COUNT;
+        PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
+      EXCEPTION WHEN OTHERS THEN PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
+        st := SQLSTATE; msg := SQLERRM; END;
+      ok := COALESCE((st = 'NT010' AND msg = 'La nota no corresponde a la cita' AND (SELECT count(*) FROM public.expediente_notas) = n0), false);
+      det := det||' ;; '||r.caso||'|NT010 sin filas|'||CASE WHEN ok THEN 'OK' ELSE 'ROJO' END||'|'||st||'|'||left(msg, 160);
+      IF NOT ok THEN bad := bad||r.caso||': '||st||' '||left(msg, 120)||'; '; END IF;
+    END LOOP;
+    -- control: el medico A en su propia cita
+    st := '00000'; msg := ''; nn := NULL;
+    BEGIN
+      PERFORM set_config('request.jwt.claims', json_build_object('sub', c_med::text, 'role', 'authenticated')::text, true); PERFORM set_config('role', 'authenticated', true);
+      INSERT INTO public.expediente_notas (cita_id, paciente_id, medico_id, subjetivo) VALUES (v_cita2, c_pacid, c_med, 'P909 control') RETURNING id INTO v_nota;
+      GET DIAGNOSTICS nn = ROW_COUNT;
+      PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
+    EXCEPTION WHEN OTHERS THEN PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
+      st := SQLSTATE; msg := SQLERRM; END;
+    ok := COALESCE((st = '00000' AND nn = 1 AND (SELECT count(*) FROM public.expediente_notas) = n0 + 1
+      AND (SELECT t.cerrada_at IS NULL FROM public.expediente_notas t WHERE t.id = v_nota)), false);
+    det := det||' ;; control: medico A en su cita|1 fila, abierta|'||CASE WHEN ok THEN 'OK' ELSE 'ROJO' END||'|'||st||'|'||left(msg, 160);
+    IF NOT ok THEN bad := bad||'control medico A en su cita: '||st||' '||left(msg, 120)||'; '; END IF;
+    RAISE EXCEPTION 'P909 descarte' USING ERRCODE = 'P0999';
+  EXCEPTION WHEN SQLSTATE 'P0999' THEN NULL;
+  END;
+  PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
+  IF (SELECT md5(COALESCE(string_agg(to_jsonb(t)::text, '|' ORDER BY t.id), '')) FROM public.expediente_notas t) IS DISTINCT FROM s_notas THEN r_rest := r_rest||' / expediente_notas'; END IF;
+  IF (SELECT md5(COALESCE(string_agg(to_jsonb(t)::text, '|' ORDER BY t.id), '')) FROM public.expediente_notas_revisiones t) IS DISTINCT FROM s_rev THEN r_rest := r_rest||' / revisiones'; END IF;
+  IF (SELECT md5(COALESCE(string_agg(to_jsonb(t)::text, '|' ORDER BY t.id), '')) FROM public.citas t) IS DISTINCT FROM s_citas THEN r_rest := r_rest||' / citas'; END IF;
+  IF (SELECT count(*) FROM public.historial_medico) <> n_hist THEN r_rest := r_rest||' / historial_medico'; END IF;
+  det := det||' ;; restauracion|subtransaccion descartada; snapshot igual|'||r_rest||'|-|';
+  PERFORM set_config('probe.p909_det', det, false);
+  PERFORM set_config('probe.p909', CASE WHEN bad = '' AND r_rest = 'OK'
+    THEN 'OK (NT010 x5: medico B en cita de A, paciente distinto (medico y postgres), cita inexistente, cita sin medico; control A OK; restaurado)'
+    ELSE 'ROJO ('||left(bad, 700)||' | restauracion='||r_rest||')' END, false);
+EXCEPTION WHEN OTHERS THEN
+  PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
+  PERFORM set_config('probe.p909', CASE WHEN SQLERRM LIKE 'fixture roto%' THEN 'ROJO ('||SQLERRM||')' ELSE 'FALLO ('||SQLSTATE||' '||SQLERRM||')' END, false);
+END $$;
+SELECT set_config('role', 'none', true);
+
+-- ---------------- P910 (C5 v3) gate de cuenta en corregir_nota_consulta: solo perfiles.activo (NT011); doble rol medico+proveedor corrige ----------------
+DO $$
+DECLARE
+  c_med uuid := '09d243d5-b222-482a-9762-94a582e9e752'; c_clin uuid := 'c76d862c-e82f-4748-bc07-86c8a3343576'; c_pacid integer := 23;
+  c_prov uuid := 'e6f95b2f-7561-4e0b-b0c8-d1f38e6c4d66'; c_adm uuid; c_pac uuid;
+  st text := '00000'; msg text := ''; ok boolean; det text := ''; bad text := ''; r_rest text := 'OK';
+  s_notas text; s_rev text; s_citas text; s_perf text; s_cp text; s_emp text; n_hist bigint;
+  v_cita bigint; v_nota integer; j jsonb; v_f0 text; v_n0 bigint; r record;
+  v_emp_a uuid; v_estado text; v_cp_prev text; st_g text;
+BEGIN
+  SELECT p.id INTO c_adm FROM public.perfiles p WHERE p.rol IN ('admin_clinica','gerente') AND p.activo
+     AND EXISTS (SELECT 1 FROM public.medico_clinicas mc WHERE mc.medico_id = c_med AND mc.clinica_id IN (SELECT private.clinicas_de(p.id))) ORDER BY p.id LIMIT 1;
+  SELECT pa.auth_user_id INTO c_pac FROM public.pacientes pa WHERE pa.id = c_pacid;
+  IF c_adm IS NULL OR c_pac IS NULL OR NOT EXISTS (SELECT 1 FROM public.cuentas_proveedor cp WHERE cp.id = c_prov AND cp.activo)
+     OR EXISTS (SELECT 1 FROM public.perfiles pf WHERE pf.id = c_prov AND pf.rol = 'medico') THEN
+    RAISE EXCEPTION 'fixture roto: admin de clinica de A, usuario del paciente 23 o cuenta solo-proveedor activa'; END IF;
+  SELECT md5(COALESCE(string_agg(to_jsonb(t)::text, '|' ORDER BY t.id), '')) INTO s_notas FROM public.expediente_notas t;
+  SELECT md5(COALESCE(string_agg(to_jsonb(t)::text, '|' ORDER BY t.id), '')) INTO s_rev FROM public.expediente_notas_revisiones t;
+  SELECT md5(COALESCE(string_agg(to_jsonb(t)::text, '|' ORDER BY t.id), '')) INTO s_citas FROM public.citas t;
+  SELECT md5(to_jsonb(t)::text) INTO s_perf FROM public.perfiles t WHERE t.id = c_med;
+  SELECT md5(COALESCE(string_agg(to_jsonb(t)::text, '|' ORDER BY t.id), '')) INTO s_cp FROM public.cuentas_proveedor t WHERE t.id IN (c_med, c_prov);
+  SELECT md5(COALESCE(string_agg(to_jsonb(t)::text, '|' ORDER BY t.id), '')) INTO s_emp FROM public.empresas_proveedoras t;
+  SELECT count(*) INTO n_hist FROM public.historial_medico;
+  -- estado previo del doble rol del medico A (en el harness lo pone el fixture PASIGN; no se aisla)
+  SELECT COALESCE(string_agg('cuenta activo='||cp.activo||' empresa '||COALESCE(e.estado,'-'), ','), 'sin cuenta de proveedor') INTO v_cp_prev
+    FROM public.cuentas_proveedor cp LEFT JOIN public.empresas_proveedoras e ON e.id = cp.empresa_id WHERE cp.id = c_med;
+  det := det||' ;; estado previo del medico A como proveedor|-|INFO|-|'||v_cp_prev;
+  BEGIN
+    INSERT INTO public.citas (paciente_id, medico_id, clinica_id, fecha, hora_inicio, hora_fin, estado)
+      VALUES (c_pacid, c_med, c_clin, CURRENT_DATE + 400, '08:00', '08:30', 'en_curso') RETURNING id INTO v_cita;
+    INSERT INTO public.expediente_notas (cita_id, paciente_id, medico_id, subjetivo) VALUES (v_cita, c_pacid, c_med, 'P910 v1') RETURNING id INTO v_nota;
+    UPDATE public.citas SET estado = 'completada' WHERE id = v_cita;
+    SELECT md5(to_jsonb(t)::text) INTO v_f0 FROM public.expediente_notas t WHERE t.id = v_nota;
+    SELECT count(*) INTO v_n0 FROM public.expediente_notas_revisiones;
+    -- negativos: nadie sin rol medico activo corrige (NT011), sin cambios
+    UPDATE public.perfiles SET activo = false WHERE id = c_med;                 -- postgres esta exento del guard de perfiles
+    FOR r IN SELECT * FROM (VALUES
+        ('autor con perfil inactivo',          c_med),
+        ('usuario solo proveedor',             c_prov),
+        ('admin de clinica',                   c_adm),
+        ('paciente',                           c_pac)
+      ) v(caso, sub) LOOP
+      st := '00000'; msg := ''; j := NULL;
+      BEGIN
+        PERFORM set_config('request.jwt.claims', json_build_object('sub', r.sub::text, 'role', 'authenticated')::text, true); PERFORM set_config('role', 'authenticated', true);
+        j := public.corregir_nota_consulta(v_nota, 'motivo QA', NULL, 'P910 v2', NULL, NULL, NULL, NULL);
+        PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
+      EXCEPTION WHEN OTHERS THEN PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
+        st := SQLSTATE; msg := SQLERRM; END;
+      ok := COALESCE((st = 'NT011' AND msg = 'No autorizado: solo un médico con cuenta activa puede corregir notas' AND j IS NULL
+        AND (SELECT md5(to_jsonb(t)::text) FROM public.expediente_notas t WHERE t.id = v_nota) = v_f0
+        AND (SELECT count(*) FROM public.expediente_notas_revisiones) = v_n0), false);
+      det := det||' ;; '||r.caso||'|NT011 sin cambios|'||CASE WHEN ok THEN 'OK' ELSE 'ROJO' END||'|'||st||'|'||left(msg, 160);
+      IF NOT ok THEN bad := bad||r.caso||': '||st||' '||left(msg, 120)||'; '; END IF;
+    END LOOP;
+    UPDATE public.perfiles SET activo = true WHERE id = c_med;
+    -- (a1) medico A activo con cuenta de proveedor INACTIVA: corrige
+    IF EXISTS (SELECT 1 FROM public.cuentas_proveedor cp WHERE cp.id = c_med) THEN
+      UPDATE public.cuentas_proveedor SET activo = false WHERE id = c_med;
+    ELSE
+      INSERT INTO public.cuentas_proveedor (id, empresa_id, email, nombre_completo, rol_en_empresa, activo, sucursal_id)
+        SELECT c_med, cp.empresa_id, 'p910-medprov@x.test', 'P910 MedProv', 'cajero', false, NULL FROM public.cuentas_proveedor cp WHERE cp.id = c_prov;
+    END IF;
+    st_g := '00000';
+    BEGIN
+      PERFORM set_config('request.jwt.claims', json_build_object('sub', c_med::text, 'role', 'authenticated')::text, true);
+      PERFORM private.exigir_empresa_activa();
+      PERFORM set_config('request.jwt.claims', '', true);
+    EXCEPTION WHEN OTHERS THEN PERFORM set_config('request.jwt.claims', '', true); st_g := SQLSTATE; END;
+    st := '00000'; msg := ''; j := NULL;
+    BEGIN
+      PERFORM set_config('request.jwt.claims', json_build_object('sub', c_med::text, 'role', 'authenticated')::text, true); PERFORM set_config('role', 'authenticated', true);
+      j := public.corregir_nota_consulta(v_nota, 'motivo QA a1', NULL, 'P910 v2', NULL, NULL, NULL, NULL);
+      PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
+    EXCEPTION WHEN OTHERS THEN PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
+      st := SQLSTATE; msg := SQLERRM; END;
+    ok := COALESCE((st_g = '42501' AND st = '00000' AND (j->>'revision')::int = 1
+      AND (SELECT t.subjetivo = 'P910 v2' AND t.corregida_at IS NOT NULL FROM public.expediente_notas t WHERE t.id = v_nota)
+      AND EXISTS (SELECT 1 FROM public.expediente_notas_revisiones rv WHERE rv.nota_id = v_nota AND rv.revision = 1 AND rv.tipo = 'correccion'
+                    AND rv.motivo = 'motivo QA a1' AND rv.version_anterior->>'subjetivo' = 'P910 v1')), false);
+    det := det||' ;; medico activo + cuenta de proveedor inactiva|corrige (revision 1); exigir_empresa_activa lo habria rechazado (42501)|'||CASE WHEN ok THEN 'OK' ELSE 'ROJO' END||'|'||st||' gate='||st_g||'|'||left(msg, 150);
+    IF NOT ok THEN bad := bad||'doble rol cuenta inactiva: '||st||' gate='||st_g||' '||left(msg, 110)||'; '; END IF;
+    -- (a2) medico A activo con cuenta ACTIVA en empresa NO activa: corrige
+    UPDATE public.cuentas_proveedor SET activo = true WHERE id = c_med RETURNING empresa_id INTO v_emp_a;
+    SELECT e.estado INTO v_estado FROM public.empresas_proveedoras e WHERE e.id = v_emp_a;
+    IF v_estado IS NOT DISTINCT FROM 'activa' THEN
+      UPDATE public.empresas_proveedoras SET estado = 'pendiente' WHERE id = v_emp_a;
+      SELECT e.estado INTO v_estado FROM public.empresas_proveedoras e WHERE e.id = v_emp_a;
+    END IF;
+    st_g := '00000';
+    BEGIN
+      PERFORM set_config('request.jwt.claims', json_build_object('sub', c_med::text, 'role', 'authenticated')::text, true);
+      PERFORM private.exigir_empresa_activa();
+      PERFORM set_config('request.jwt.claims', '', true);
+    EXCEPTION WHEN OTHERS THEN PERFORM set_config('request.jwt.claims', '', true); st_g := SQLSTATE; END;
+    st := '00000'; msg := ''; j := NULL;
+    BEGIN
+      PERFORM set_config('request.jwt.claims', json_build_object('sub', c_med::text, 'role', 'authenticated')::text, true); PERFORM set_config('role', 'authenticated', true);
+      j := public.corregir_nota_consulta(v_nota, 'motivo QA a2', NULL, 'P910 v3', NULL, NULL, NULL, NULL);
+      PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
+    EXCEPTION WHEN OTHERS THEN PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
+      st := SQLSTATE; msg := SQLERRM; END;
+    ok := COALESCE((st_g = '42501' AND st = '00000' AND (j->>'revision')::int = 2
+      AND (SELECT t.subjetivo = 'P910 v3' FROM public.expediente_notas t WHERE t.id = v_nota)
+      AND EXISTS (SELECT 1 FROM public.expediente_notas_revisiones rv WHERE rv.nota_id = v_nota AND rv.revision = 2 AND rv.tipo = 'correccion'
+                    AND rv.motivo = 'motivo QA a2' AND rv.version_anterior->>'subjetivo' = 'P910 v2')), false);
+    det := det||' ;; medico activo + cuenta activa en empresa '||COALESCE(v_estado, '-')||'|corrige (revision 2); exigir_empresa_activa lo habria rechazado (42501)|'||CASE WHEN ok THEN 'OK' ELSE 'ROJO' END||'|'||st||' gate='||st_g||'|'||left(msg, 150);
+    IF NOT ok THEN bad := bad||'doble rol empresa no activa: '||st||' gate='||st_g||' '||left(msg, 110)||'; '; END IF;
+    RAISE EXCEPTION 'P910 descarte' USING ERRCODE = 'P0999';
+  EXCEPTION WHEN SQLSTATE 'P0999' THEN NULL;
+  END;
+  PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
+  IF (SELECT md5(COALESCE(string_agg(to_jsonb(t)::text, '|' ORDER BY t.id), '')) FROM public.expediente_notas t) IS DISTINCT FROM s_notas THEN r_rest := r_rest||' / expediente_notas'; END IF;
+  IF (SELECT md5(COALESCE(string_agg(to_jsonb(t)::text, '|' ORDER BY t.id), '')) FROM public.expediente_notas_revisiones t) IS DISTINCT FROM s_rev THEN r_rest := r_rest||' / revisiones'; END IF;
+  IF (SELECT md5(COALESCE(string_agg(to_jsonb(t)::text, '|' ORDER BY t.id), '')) FROM public.citas t) IS DISTINCT FROM s_citas THEN r_rest := r_rest||' / citas'; END IF;
+  IF (SELECT md5(to_jsonb(t)::text) FROM public.perfiles t WHERE t.id = c_med) IS DISTINCT FROM s_perf THEN r_rest := r_rest||' / perfiles'; END IF;
+  IF (SELECT md5(COALESCE(string_agg(to_jsonb(t)::text, '|' ORDER BY t.id), '')) FROM public.cuentas_proveedor t WHERE t.id IN (c_med, c_prov)) IS DISTINCT FROM s_cp THEN r_rest := r_rest||' / cuentas_proveedor'; END IF;
+  IF (SELECT md5(COALESCE(string_agg(to_jsonb(t)::text, '|' ORDER BY t.id), '')) FROM public.empresas_proveedoras t) IS DISTINCT FROM s_emp THEN r_rest := r_rest||' / empresas_proveedoras'; END IF;
+  IF (SELECT count(*) FROM public.historial_medico) <> n_hist THEN r_rest := r_rest||' / historial_medico'; END IF;
+  det := det||' ;; restauracion|subtransaccion descartada; snapshot igual (incl. perfil, cuentas y empresas)|'||r_rest||'|-|';
+  PERFORM set_config('probe.p910_det', det, false);
+  PERFORM set_config('probe.p910', CASE WHEN bad = '' AND r_rest = 'OK'
+    THEN 'OK (NT011: perfil inactivo, solo proveedor, admin clinica, paciente; doble rol medico+proveedor (cuenta inactiva / empresa no activa) corrige; restaurado)'
+    ELSE 'ROJO ('||left(bad, 700)||' | restauracion='||r_rest||')' END, false);
+EXCEPTION WHEN OTHERS THEN
+  PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
+  PERFORM set_config('probe.p910', CASE WHEN SQLERRM LIKE 'fixture roto%' THEN 'ROJO ('||SQLERRM||')' ELSE 'FALLO ('||SQLSTATE||' '||SQLERRM||')' END, false);
+END $$;
+SELECT set_config('role', 'none', true);
+
+-- ---------------- P911 (C3) IMC derivado: sin revisiones espurias; el cierre no lo recalcula ----------------
+DO $$
+DECLARE
+  c_med uuid := '09d243d5-b222-482a-9762-94a582e9e752'; c_clin uuid := 'c76d862c-e82f-4748-bc07-86c8a3343576'; c_pacid integer := 23;
+  st text := '00000'; msg text := ''; ok boolean; det text := ''; bad text := ''; r_rest text := 'OK';
+  s_notas text; s_rev text; s_citas text; n_hist bigint;
+  v_c1 bigint; v_c2 bigint; v_n1 integer; v_n2 integer; nn bigint;
+BEGIN
+  SELECT md5(COALESCE(string_agg(to_jsonb(t)::text, '|' ORDER BY t.id), '')) INTO s_notas FROM public.expediente_notas t;
+  SELECT md5(COALESCE(string_agg(to_jsonb(t)::text, '|' ORDER BY t.id), '')) INTO s_rev FROM public.expediente_notas_revisiones t;
+  SELECT md5(COALESCE(string_agg(to_jsonb(t)::text, '|' ORDER BY t.id), '')) INTO s_citas FROM public.citas t;
+  SELECT count(*) INTO n_hist FROM public.historial_medico;
+  BEGIN
+    INSERT INTO public.citas (paciente_id, medico_id, clinica_id, fecha, hora_inicio, hora_fin, estado)
+      VALUES (c_pacid, c_med, c_clin, CURRENT_DATE + 400, '08:00', '08:30', 'en_curso') RETURNING id INTO v_c1;
+    INSERT INTO public.citas (paciente_id, medico_id, clinica_id, fecha, hora_inicio, hora_fin, estado)
+      VALUES (c_pacid, c_med, c_clin, CURRENT_DATE + 400, '09:00', '09:30', 'en_curso') RETURNING id INTO v_c2;
+    INSERT INTO public.expediente_notas (cita_id, paciente_id, medico_id, subjetivo, peso_kg, talla_cm) VALUES (v_c1, c_pacid, c_med, 'P911 n1', 70, 170) RETURNING id INTO v_n1;
+    INSERT INTO public.expediente_notas (cita_id, paciente_id, medico_id, subjetivo, peso_kg, talla_cm) VALUES (v_c2, c_pacid, c_med, 'P911 n2', 70, 170) RETURNING id INTO v_n2;
+    -- fila "legacy": imc distinto de la formula (24.22), escrito con el trigger del IMC apagado
+    ALTER TABLE public.expediente_notas DISABLE TRIGGER trg_calcular_imc_expediente;
+    UPDATE public.expediente_notas SET imc = 30.00 WHERE id IN (v_n1, v_n2);
+    ALTER TABLE public.expediente_notas ENABLE TRIGGER trg_calcular_imc_expediente;
+    IF (SELECT count(*) FROM public.expediente_notas t WHERE t.id IN (v_n1, v_n2) AND t.imc = 30.00) <> 2
+       OR (SELECT count(*) FROM public.expediente_notas_revisiones r WHERE r.nota_id IN (v_n1, v_n2)) <> 0 THEN
+      RAISE EXCEPTION 'fixture roto: no se pudo sembrar el imc legacy sin revisiones'; END IF;
+    -- (a) el cierre no recalcula el imc ni genera revision
+    st := '00000'; msg := '';
+    BEGIN
+      UPDATE public.citas SET estado = 'completada' WHERE id = v_c1;
+    EXCEPTION WHEN OTHERS THEN st := SQLSTATE; msg := SQLERRM; END;
+    ok := COALESCE((st = '00000' AND (SELECT t.cerrada_at IS NOT NULL AND t.imc = 30.00 FROM public.expediente_notas t WHERE t.id = v_n1)
+      AND (SELECT count(*) FROM public.expediente_notas_revisiones r WHERE r.nota_id = v_n1) = 0), false);
+    det := det||' ;; cierre con imc legacy|cerrada, imc 30.00 intacto, 0 revisiones|'||CASE WHEN ok THEN 'OK' ELSE 'ROJO' END||'|'||st||'|'||left(msg, 160);
+    IF NOT ok THEN bad := bad||'cierre con imc legacy: '||st||' '||left(msg, 120)||'; '; END IF;
+    -- (b) UPDATE sin cambio de contenido sobre nota abierta con imc legacy: el imc se recalcula, sin revision
+    st := '00000'; msg := ''; nn := NULL;
+    BEGIN
+      PERFORM set_config('request.jwt.claims', json_build_object('sub', c_med::text, 'role', 'authenticated')::text, true); PERFORM set_config('role', 'authenticated', true);
+      UPDATE public.expediente_notas SET plan = plan WHERE id = v_n2;
+      GET DIAGNOSTICS nn = ROW_COUNT;
+      PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
+    EXCEPTION WHEN OTHERS THEN PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
+      st := SQLSTATE; msg := SQLERRM; END;
+    ok := COALESCE((st = '00000' AND nn = 1 AND (SELECT t.imc FROM public.expediente_notas t WHERE t.id = v_n2) = 24.22
+      AND (SELECT count(*) FROM public.expediente_notas_revisiones r WHERE r.nota_id = v_n2) = 0), false);
+    det := det||' ;; recalculo del imc sin otro cambio|imc 24.22, 0 revisiones|'||CASE WHEN ok THEN 'OK' ELSE 'ROJO' END||'|'||st||'|'||left(msg, 160);
+    IF NOT ok THEN bad := bad||'recalculo del imc sin otro cambio: '||st||' '||left(msg, 120)||'; '; END IF;
+    -- (c) una edicion real: exactamente 1 revision
+    st := '00000'; msg := ''; nn := NULL;
+    BEGIN
+      PERFORM set_config('request.jwt.claims', json_build_object('sub', c_med::text, 'role', 'authenticated')::text, true); PERFORM set_config('role', 'authenticated', true);
+      UPDATE public.expediente_notas SET subjetivo = 'P911 n2 v2' WHERE id = v_n2;
+      GET DIAGNOSTICS nn = ROW_COUNT;
+      PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
+    EXCEPTION WHEN OTHERS THEN PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
+      st := SQLSTATE; msg := SQLERRM; END;
+    ok := COALESCE((st = '00000' AND nn = 1 AND (SELECT count(*) FROM public.expediente_notas_revisiones r WHERE r.nota_id = v_n2) = 1
+      AND EXISTS (SELECT 1 FROM public.expediente_notas_revisiones r WHERE r.nota_id = v_n2 AND r.version_anterior->>'subjetivo' = 'P911 n2')), false);
+    det := det||' ;; edicion de subjetivo|1 revision|'||CASE WHEN ok THEN 'OK' ELSE 'ROJO' END||'|'||st||'|'||left(msg, 160);
+    IF NOT ok THEN bad := bad||'edicion de subjetivo: '||st||' '||left(msg, 120)||'; '; END IF;
+    RAISE EXCEPTION 'P911 descarte' USING ERRCODE = 'P0999';
+  EXCEPTION WHEN SQLSTATE 'P0999' THEN NULL;
+  END;
+  PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
+  IF (SELECT md5(COALESCE(string_agg(to_jsonb(t)::text, '|' ORDER BY t.id), '')) FROM public.expediente_notas t) IS DISTINCT FROM s_notas THEN r_rest := r_rest||' / expediente_notas'; END IF;
+  IF (SELECT md5(COALESCE(string_agg(to_jsonb(t)::text, '|' ORDER BY t.id), '')) FROM public.expediente_notas_revisiones t) IS DISTINCT FROM s_rev THEN r_rest := r_rest||' / revisiones'; END IF;
+  IF (SELECT md5(COALESCE(string_agg(to_jsonb(t)::text, '|' ORDER BY t.id), '')) FROM public.citas t) IS DISTINCT FROM s_citas THEN r_rest := r_rest||' / citas'; END IF;
+  IF (SELECT count(*) FROM public.historial_medico) <> n_hist THEN r_rest := r_rest||' / historial_medico'; END IF;
+  IF NOT EXISTS (SELECT 1 FROM pg_trigger WHERE tgname = 'trg_calcular_imc_expediente' AND tgenabled = 'O') THEN r_rest := r_rest||' / trigger del IMC apagado'; END IF;
+  det := det||' ;; restauracion|subtransaccion descartada; snapshot igual; trigger del IMC encendido|'||r_rest||'|-|';
+  PERFORM set_config('probe.p911_det', det, false);
+  PERFORM set_config('probe.p911', CASE WHEN bad = '' AND r_rest = 'OK'
+    THEN 'OK (imc legacy: el cierre no lo recalcula ni genera revision; recalculo solo no genera revision; edicion real = 1; restaurado)'
+    ELSE 'ROJO ('||left(bad, 700)||' | restauracion='||r_rest||')' END, false);
+EXCEPTION WHEN OTHERS THEN
+  PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
+  PERFORM set_config('probe.p911', CASE WHEN SQLERRM LIKE 'fixture roto%' THEN 'ROJO ('||SQLERRM||')' ELSE 'FALLO ('||SQLSTATE||' '||SQLERRM||')' END, false);
+END $$;
+SELECT set_config('role', 'none', true);
+
 -- ===== Veredictos como result set =====
 SELECT 'P1_anon_insert_citas'              AS probe, current_setting('probe.p1', true)  AS verdict, 'BLOQUEADO' AS esperado_post_fix
 UNION ALL SELECT 'P2_medico_cancela_ajena_rpc',         current_setting('probe.p2', true),  'BLOQUEADO'
@@ -26339,6 +27592,22 @@ UNION ALL SELECT 'P881_ex_acceso_por_rol',              current_setting('probe.p
 UNION ALL SELECT 'P882_ex_truncate_trigger_references', current_setting('probe.p882', true), 'OK (TRUNCATE 42501 x3; sin TRIGGER/REFERENCES)'
 UNION ALL SELECT 'P883_ex_catalogo_alta_sigue',         current_setting('probe.p883', true), 'OK (alta en su catalogo OK; en otro lab 42501)'
 UNION ALL SELECT 'P884_ex_catalogo_333',                current_setting('probe.p884', true), 'OK (policies por comando, sin INSERT/ALL, grants exactos)'
+UNION ALL SELECT 'P885_nt_edicion_abierta',            current_setting('probe.p885', true), 'OK (edicion libre con revision de la fila previa)'
+UNION ALL SELECT 'P886_nt_congelados',                 current_setting('probe.p886', true), 'OK (NT007 x8; INSERT fechado queda en now())'
+UNION ALL SELECT 'P887_nt_cierre_al_completar',        current_setting('probe.p887', true), 'OK (cierra sin revision; no se reabre; NT006)'
+UNION ALL SELECT 'P888_nt_cerrada_nt006',              current_setting('probe.p888', true), 'OK (NT006 autor, super_admin y postgres sin llave)'
+UNION ALL SELECT 'P889_nt_corregir_positivo',          current_setting('probe.p889', true), 'OK (revision correccion con motivo; llaves limpias)'
+UNION ALL SELECT 'P890_nt_corregir_rechazos',          current_setting('probe.p890', true), 'OK (NT001-NT005 por SQLERRM, sin cambios)'
+UNION ALL SELECT 'P891_nt_revisiones_inmutables',      current_setting('probe.p891', true), 'OK (42501 authenticated; NT008 postgres; NT009 control)'
+UNION ALL SELECT 'P892_nt_visibilidad_revisiones',     current_setting('probe.p892', true), 'OK (autor/tratante/admin/super_admin ven; paciente/ajeno 0)'
+UNION ALL SELECT 'P893_nt_delete',                     current_setting('probe.p893', true), 'OK (42501 sin grant; 23503 RESTRICT)'
+UNION ALL SELECT 'P894_nt_nota_sin_cita',              current_setting('probe.p894', true), 'OK (nace cerrada; NT006; correccion OK)'
+UNION ALL SELECT 'P895_nt_pe001_y_finalizar',          current_setting('probe.p895', true), 'OK (PE001 intacto; Finalizar cierra la nota)'
+UNION ALL SELECT 'P896_nt_catalogo_334',               current_setting('probe.p896', true), 'OK (catalogo exacto post-334)'
+UNION ALL SELECT 'P908_nt_cita_ya_completada',         current_setting('probe.p908', true), 'OK (nota sobre cita completada nace cerrada)'
+UNION ALL SELECT 'P909_nt_integridad_nota_cita',       current_setting('probe.p909', true), 'OK (NT010 x5; control OK)'
+UNION ALL SELECT 'P910_nt_gate_cuenta',                current_setting('probe.p910', true), 'OK (NT011 x4; doble rol medico+proveedor corrige)'
+UNION ALL SELECT 'P911_nt_imc_derivado',               current_setting('probe.p911', true), 'OK (imc sin revisiones espurias; cierre no lo recalcula)'
 -- Las filas FX* son SALUD DE FIXTURE, no probes de seguridad: dicen si la precondicion que una
 -- migracion posterior empezo a exigir se pudo sembrar. Si una sale ROJO, los probes que dependen de
 -- ese fixture reportan N/A (su flag de ready se pierde con el rollback de la subtransaccion) en vez
@@ -26581,7 +27850,8 @@ UNION ALL SELECT 'P000_CENTINELA_veredictos_no_nulos',
        'probe.p848', 'probe.p849', 'probe.p850', 'probe.p851', 'probe.p852', 'probe.p853', 'probe.p854', 'probe.p855', 'probe.p856', 'probe.p857', 'probe.p858', 'probe.p859', 'probe.p860',
        'probe.p861', 'probe.p862', 'probe.p863', 'probe.p864', 'probe.p865',
        'probe.p866', 'probe.p867', 'probe.p868', 'probe.p869', 'probe.p870', 'probe.p871', 'probe.p872', 'probe.p873', 'probe.p874', 'probe.p875', 'probe.p876', 'probe.p877', 'probe.p878',
-       'probe.p879', 'probe.p880', 'probe.p881', 'probe.p882', 'probe.p883', 'probe.p884'
+       'probe.p879', 'probe.p880', 'probe.p881', 'probe.p882', 'probe.p883', 'probe.p884',
+       'probe.p885', 'probe.p886', 'probe.p887', 'probe.p888', 'probe.p889', 'probe.p890', 'probe.p891', 'probe.p892', 'probe.p893', 'probe.p894', 'probe.p895', 'probe.p896', 'probe.p908', 'probe.p909', 'probe.p910', 'probe.p911'
              ]) AS n) s),
   'OK (todos los veredictos publicados)';
 
