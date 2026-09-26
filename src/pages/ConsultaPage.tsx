@@ -83,7 +83,16 @@ function calcularEdad(fechaNacimiento: string | null): number | null {
   return edad
 }
 
+// React Router reutiliza el elemento de la ruta cuando solo cambia :citaId (App.tsx, /consulta/:citaId
+// y /medico/consulta/:citaId), así que la página NO se desmontaría al pasar de una cita a otra y
+// arrastraría el estado de la anterior (nota cerrada, corrección en curso, serie de vitales, exámenes,
+// paneles hijos). Con key={citaId} cada cita monta una consulta nueva desde cero.
 export default function ConsultaPage() {
+  const { citaId } = useParams<{ citaId: string }>()
+  return <ConsultaDeCita key={citaId} />
+}
+
+function ConsultaDeCita() {
   const { citaId } = useParams<{ citaId: string }>()
   const { abrir, visor } = useVisor()
   const navigate = useNavigate()
@@ -353,9 +362,25 @@ export default function ConsultaPage() {
     return true
   }
 
+  // Lectura silenciosa de la nota vigente de la cita. Consulta directa a propósito:
+  // fetchConsultaPorCita prende loadingConsulta, y con eso el spinner de pantalla completa desmonta la
+  // consulta entera (pestaña SOAP abierta, sugerencias de la IA, formularios a medio llenar).
+  const leerNotaVigente = async (): Promise<ExpedienteNota | null> => {
+    if (!cita) return null
+    const { data, error } = await supabase
+      .from('expediente_notas')
+      .select('*')
+      .eq('cita_id', cita.id)
+      .maybeSingle()
+    if (error) {
+      console.error('Error recargando la nota:', error.message ?? error.code)
+      return null
+    }
+    return data as ExpedienteNota | null
+  }
+
   const recargarNota = async () => {
-    if (!cita) return
-    const n = await fetchConsultaPorCita(cita.id)
+    const n = await leerNotaVigente()
     setCorrigiendo(false)
     setMotivoCorreccion('')
     setBorradorPreservado(false)
@@ -366,19 +391,13 @@ export default function ConsultaPage() {
     }
   }
 
-  // Trae la fila vigente SIN tocar `soap` (consulta directa: fetchConsultaPorCita prende el spinner de
-  // pantalla completa). notaGuardada pasa a ser la versión de la base: contra ella comparan "Enviar
-  // corrección" y soapParaCorreccion, y a ella vuelve "Cancelar".
+  // Trae la fila vigente SIN tocar `soap`. notaGuardada pasa a ser la versión de la base: contra ella
+  // comparan "Enviar corrección" y soapParaCorreccion, y a ella vuelve "Cancelar".
   const pasarACorreccionConBorrador = async (): Promise<boolean> => {
-    if (!cita) return false
-    const { data, error } = await supabase
-      .from('expediente_notas')
-      .select('*')
-      .eq('cita_id', cita.id)
-      .maybeSingle()
-    if (error || !data?.cerrada_at) return false
+    const data = await leerNotaVigente()
+    if (!data?.cerrada_at) return false
     setConsultaId(data.id)
-    setNotaGuardada(data as ExpedienteNota)
+    setNotaGuardada(data)
     setMotivoCorreccion('')
     setCorrigiendo(true)
     setBorradorPreservado(true)
