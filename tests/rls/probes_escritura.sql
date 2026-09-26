@@ -24682,7 +24682,7 @@ BEGIN
   IF NOT ok THEN bad := bad||'fase 2 (333): sin INSERT directo: '||st||' '||left(msg, 120)||'; '; END IF;
   -- (335) liberar_examen_al_paciente, liberar_orden_al_paciente, revertir_liberacion_examen y
   -- paciente_examenes cambiaron con la 335 (evento de liberacion, columna corregido): md5 post-335.
-  ok := COALESCE(((SELECT md5(prosrc) FROM pg_proc WHERE oid = to_regprocedure('public.liberar_examen_al_paciente(integer)')) = 'b701e61cd3f05a3b1f1b382d495a9afb' AND (SELECT md5(prosrc) FROM pg_proc WHERE oid = to_regprocedure('public.liberar_orden_al_paciente(uuid)')) = '10a82b4176a65a58cb46ec5f2dca0447' AND (SELECT md5(prosrc) FROM pg_proc WHERE oid = to_regprocedure('public.revertir_liberacion_examen(integer)')) = 'b42cb2b6386b348efb351048974ce3af' AND (SELECT md5(prosrc) FROM pg_proc WHERE oid = to_regprocedure('public.notificar_orden_lab(uuid)')) = '59fafc8572840548c27ad39a759cba47' AND (SELECT md5(prosrc) FROM pg_proc WHERE oid = to_regprocedure('public.notificar_resultado_examen(integer)')) = '33a7a110c39574c5a40f7ca1495d2686' AND (SELECT md5(prosrc) FROM pg_proc WHERE oid = to_regprocedure('public.paciente_examenes()')) = '63b3a78795ab9e70fcb9ad476365d71f' AND (SELECT md5(prosrc) FROM pg_proc WHERE oid = to_regprocedure('public.contexto_ia_paciente(bigint)')) = '1eaf84a3475dfdfc3845d68ce2406fbb' AND (SELECT md5(prosrc) FROM pg_proc WHERE oid = to_regprocedure('private.puede_ver_examen(integer)')) = '2b8150875b99dfb5df9fdb3d8af62ae0' AND (SELECT md5(prosrc) FROM pg_proc WHERE oid = to_regprocedure('public.registrar_examen_adjunto(integer,text,text)')) = '245fb6669aa3fb22f8e62ca40a8b3467'), false);
+  ok := COALESCE(((SELECT md5(prosrc) FROM pg_proc WHERE oid = to_regprocedure('public.liberar_examen_al_paciente(integer)')) = 'd1321b5fd0d994da4605b959249ba3b7' AND (SELECT md5(prosrc) FROM pg_proc WHERE oid = to_regprocedure('public.liberar_orden_al_paciente(uuid)')) = '10a82b4176a65a58cb46ec5f2dca0447' AND (SELECT md5(prosrc) FROM pg_proc WHERE oid = to_regprocedure('public.revertir_liberacion_examen(integer)')) = '8884c3445e9f29fa8850beab66a07775' AND (SELECT md5(prosrc) FROM pg_proc WHERE oid = to_regprocedure('public.notificar_orden_lab(uuid)')) = '59fafc8572840548c27ad39a759cba47' AND (SELECT md5(prosrc) FROM pg_proc WHERE oid = to_regprocedure('public.notificar_resultado_examen(integer)')) = '33a7a110c39574c5a40f7ca1495d2686' AND (SELECT md5(prosrc) FROM pg_proc WHERE oid = to_regprocedure('public.paciente_examenes()')) = '63b3a78795ab9e70fcb9ad476365d71f' AND (SELECT md5(prosrc) FROM pg_proc WHERE oid = to_regprocedure('public.contexto_ia_paciente(bigint)')) = '1eaf84a3475dfdfc3845d68ce2406fbb' AND (SELECT md5(prosrc) FROM pg_proc WHERE oid = to_regprocedure('private.puede_ver_examen(integer)')) = '2b8150875b99dfb5df9fdb3d8af62ae0' AND (SELECT md5(prosrc) FROM pg_proc WHERE oid = to_regprocedure('public.registrar_examen_adjunto(integer,text,text)')) = '245fb6669aa3fb22f8e62ca40a8b3467'), false);
   det := det||' ;; las 9 funciones previas con su md5 esperado (4 post-335)|9 md5 iguales|'||CASE WHEN ok THEN 'OK' ELSE 'ROJO' END||'|'||st||'|'||left(msg, 160);
   IF NOT ok THEN bad := bad||'las 9 funciones previas con su md5 esperado: '||st||' '||left(msg, 120)||'; '; END IF;
   -- restauracion: se borra solo lo que el probe creo/sembro y se verifica contra el snapshot
@@ -27539,9 +27539,9 @@ BEGIN
   END LOOP;
   -- las 4 funciones que cambio la 335: md5 post-335 exacto, misma cabecera y ACL
   FOR r IN SELECT * FROM (VALUES
-      ('public.liberar_examen_al_paciente(integer)', 'b701e61cd3f05a3b1f1b382d495a9afb', 'v'),
+      ('public.liberar_examen_al_paciente(integer)', 'd1321b5fd0d994da4605b959249ba3b7', 'v'),
       ('public.liberar_orden_al_paciente(uuid)',     '10a82b4176a65a58cb46ec5f2dca0447', 'v'),
-      ('public.revertir_liberacion_examen(integer)', 'b42cb2b6386b348efb351048974ce3af', 'v'),
+      ('public.revertir_liberacion_examen(integer)', '8884c3445e9f29fa8850beab66a07775', 'v'),
       ('public.paciente_examenes()',                 '63b3a78795ab9e70fcb9ad476365d71f', 's')) v(f, m, vol) LOOP
     SELECT md5(p.prosrc)||' '||p.prosecdef::text||' '||p.provolatile::text||' '||COALESCE(p.proconfig::text,'-')||' '||COALESCE(p.proacl::text,'-')
       INTO x FROM pg_proc p WHERE p.oid = to_regprocedure(r.f);
@@ -27593,6 +27593,213 @@ BEGIN
     ELSE 'ROJO ('||left(bad, 700)||')' END, false);
 EXCEPTION WHEN OTHERS THEN
   PERFORM set_config('probe.p905', 'FALLO ('||SQLSTATE||' '||SQLERRM||')', false);
+END $$;
+SELECT set_config('role', 'none', true);
+
+-- ============================================================================================
+-- MIG 336 — fix de la 335: liberacion/reversion concurrente (P906) y EX028 normalizado (P907)
+-- ============================================================================================
+-- Misma regla que el bloque 335: siembra y mediciones dentro de un sub-bloque que termina con
+-- RAISE ... ERRCODE 'P0999' (subtransaccion descartada) y snapshot verificado afuera.
+-- La carrera real necesita DOS sesiones y el harness corre en una sola transaccion de una sola
+-- sesion: P906 fija la ESTRUCTURA que la cierra (FOR UPDATE + UPDATE condicionado al estado previo +
+-- evento solo con ROW_COUNT = 1) y mide el comportamiento de dos llamadas seguidas.
+
+-- ---------------- P906 liberar / revertir: FOR UPDATE + UPDATE condicionado; dos llamadas = un evento ----------------
+DO $$
+DECLARE
+  c_med uuid := '09d243d5-b222-482a-9762-94a582e9e752'; c_lab uuid := 'a5cf575a-5d63-4ed2-839e-9b58da8152e0'; c_pacid integer := 23;
+  st text := '00000'; msg text := ''; ok boolean; det text := ''; bad text := ''; r_rest text := 'OK';
+  s_ex text; s_rev text; s_ev text; n_not bigint; n_notp bigint;
+  v_e1 integer; j jsonb; x text; r record; np0 bigint;
+BEGIN
+  -- (1) estructural: las dos cambiadas con su md5 post-336, lock, UPDATE condicionado y evento tras ROW_COUNT
+  FOR r IN SELECT * FROM (VALUES
+      ('public.liberar_examen_al_paciente(integer)', 'd1321b5fd0d994da4605b959249ba3b7', 'AND liberado_al_paciente IS NOT TRUE'),
+      ('public.revertir_liberacion_examen(integer)', '8884c3445e9f29fa8850beab66a07775', 'AND liberado_al_paciente IS TRUE')) v(f, m, cond) LOOP
+    st := '-'; msg := '-'; x := NULL;
+    SELECT md5(p.prosrc)||' '||(position('WHERE id = p_examen_id FOR UPDATE;' in p.prosrc) > 0)::text
+           ||' '||(position('WHERE id = v.id '||r.cond||';' in p.prosrc) > 0)::text
+           ||' '||(p.prosrc LIKE '%GET DIAGNOSTICS v\_n = ROW\_COUNT;%IF v\_n <> 1 THEN%INSERT INTO public.examen\_liberacion\_eventos%')::text
+      INTO x FROM pg_proc p WHERE p.oid = to_regprocedure(r.f);
+    ok := COALESCE((x = r.m||' true true true'), false);
+    det := det||' ;; '||r.f||'|md5 post-336 '||left(r.m, 8)||', FOR UPDATE, UPDATE '||r.cond||', evento tras ROW_COUNT|'||CASE WHEN ok THEN 'OK' ELSE 'ROJO' END||'|'||st||'|'||COALESCE(x, 'NO EXISTE');
+    IF NOT ok THEN bad := bad||r.f||': '||COALESCE(x, 'NO EXISTE')||'; '; END IF;
+  END LOOP;
+  -- liberar_orden_al_paciente queda intacta: un solo UPDATE con el estado previo en el WHERE y el evento del RETURNING
+  st := '-'; msg := '-'; x := NULL;
+  SELECT md5(p.prosrc)||' '||(p.prosrc LIKE '%AND e.liberado\_al\_paciente = false%RETURNING e.id, e.paciente\_id%FROM upd u%')::text
+    INTO x FROM pg_proc p WHERE p.oid = to_regprocedure('public.liberar_orden_al_paciente(uuid)');
+  ok := COALESCE((x = '10a82b4176a65a58cb46ec5f2dca0447 true'), false);
+  det := det||' ;; liberar_orden_al_paciente|intacta (10a82b41), estado previo en el WHERE del UPDATE|'||CASE WHEN ok THEN 'OK' ELSE 'ROJO' END||'|'||st||'|'||COALESCE(x, 'NO EXISTE');
+  IF NOT ok THEN bad := bad||'liberar_orden_al_paciente: '||COALESCE(x, 'NO EXISTE')||'; '; END IF;
+
+  -- (2) funcional
+  SELECT md5(COALESCE(string_agg(to_jsonb(t)::text, '|' ORDER BY t.id), '')) INTO s_ex FROM public.examenes t;
+  SELECT md5(COALESCE(string_agg(to_jsonb(t)::text, '|' ORDER BY t.id), '')) INTO s_rev FROM public.examen_revisiones t;
+  SELECT md5(COALESCE(string_agg(to_jsonb(t)::text, '|' ORDER BY t.id), '')) INTO s_ev FROM public.examen_liberacion_eventos t;
+  SELECT count(*) INTO n_not FROM public.notificaciones; SELECT count(*) INTO n_notp FROM public.notificaciones_pacientes;
+  BEGIN
+    INSERT INTO public.examenes (tipo, paciente_id, medico_id, laboratorio_id, estado, origen, resultados, fecha_resultado)
+      VALUES ('P906 QA', c_pacid, c_med, c_lab, 'completado', 'medico', 'P906 r', CURRENT_DATE) RETURNING id INTO v_e1;
+    SELECT count(*) INTO np0 FROM public.notificaciones_pacientes;
+    -- liberar
+    st := '00000'; msg := ''; j := NULL;
+    BEGIN
+      PERFORM set_config('request.jwt.claims', json_build_object('sub', c_med::text, 'role', 'authenticated')::text, true); PERFORM set_config('role', 'authenticated', true);
+      j := public.liberar_examen_al_paciente(v_e1);
+      PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
+    EXCEPTION WHEN OTHERS THEN PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
+      st := SQLSTATE; msg := SQLERRM; END;
+    ok := COALESCE((st = '00000' AND j = jsonb_build_object('examen', v_e1, 'liberado', true)), false);
+    det := det||' ;; liberar (1a)|liberado|'||CASE WHEN ok THEN 'OK' ELSE 'ROJO' END||'|'||st||'|'||left(COALESCE(j::text, msg), 160);
+    IF NOT ok THEN bad := bad||'liberar 1a: '||st||' '||left(COALESCE(j::text, msg), 120)||'; '; END IF;
+    -- liberar otra vez
+    st := '00000'; msg := ''; j := NULL;
+    BEGIN
+      PERFORM set_config('request.jwt.claims', json_build_object('sub', c_med::text, 'role', 'authenticated')::text, true); PERFORM set_config('role', 'authenticated', true);
+      j := public.liberar_examen_al_paciente(v_e1);
+      PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
+    EXCEPTION WHEN OTHERS THEN PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
+      st := SQLSTATE; msg := SQLERRM; END;
+    ok := COALESCE((st = '00000' AND j = jsonb_build_object('examen', v_e1, 'ya_liberado', true)
+      AND (SELECT count(*) FROM public.examen_liberacion_eventos e WHERE e.examen_id = v_e1) = 1
+      AND (SELECT count(*) FROM public.examen_liberacion_eventos e WHERE e.examen_id = v_e1 AND e.evento = 'liberado' AND e.via = 'examen' AND e.actor = c_med) = 1
+      AND (SELECT count(*) FROM public.notificaciones_pacientes) = np0 + 1
+      AND (SELECT count(*) FROM public.notificaciones) = n_not), false);
+    det := det||' ;; liberar dos veces|ya_liberado; 1 evento liberado, 1 aviso al paciente, 0 al medico|'||CASE WHEN ok THEN 'OK' ELSE 'ROJO' END||'|'||st||'|'||left(COALESCE(j::text, msg), 160);
+    IF NOT ok THEN bad := bad||'liberar dos veces: '||st||' '||left(COALESCE(j::text, msg), 120)||'; '; END IF;
+    -- revertir
+    st := '00000'; msg := ''; j := NULL;
+    BEGIN
+      PERFORM set_config('request.jwt.claims', json_build_object('sub', c_med::text, 'role', 'authenticated')::text, true); PERFORM set_config('role', 'authenticated', true);
+      j := public.revertir_liberacion_examen(v_e1);
+      PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
+    EXCEPTION WHEN OTHERS THEN PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
+      st := SQLSTATE; msg := SQLERRM; END;
+    ok := COALESCE((st = '00000' AND j = jsonb_build_object('examen', v_e1, 'revertido', true)), false);
+    det := det||' ;; revertir (1a)|revertido|'||CASE WHEN ok THEN 'OK' ELSE 'ROJO' END||'|'||st||'|'||left(COALESCE(j::text, msg), 160);
+    IF NOT ok THEN bad := bad||'revertir 1a: '||st||' '||left(COALESCE(j::text, msg), 120)||'; '; END IF;
+    -- revertir otra vez
+    st := '00000'; msg := ''; j := NULL;
+    BEGIN
+      PERFORM set_config('request.jwt.claims', json_build_object('sub', c_med::text, 'role', 'authenticated')::text, true); PERFORM set_config('role', 'authenticated', true);
+      j := public.revertir_liberacion_examen(v_e1);
+      PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
+    EXCEPTION WHEN OTHERS THEN PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
+      st := SQLSTATE; msg := SQLERRM; END;
+    ok := COALESCE((st = '00000' AND j = jsonb_build_object('examen', v_e1, 'ya_no_liberado', true)
+      AND (SELECT count(*) FROM public.examen_liberacion_eventos e WHERE e.examen_id = v_e1 AND e.evento = 'revertido' AND e.via = 'examen' AND e.actor = c_med) = 1
+      AND (SELECT count(*) FROM public.examen_liberacion_eventos e WHERE e.examen_id = v_e1) = 2
+      AND (SELECT NOT t.liberado_al_paciente AND t.revertido_por = c_med FROM public.examenes t WHERE t.id = v_e1)
+      AND (SELECT count(*) FROM public.notificaciones_pacientes) = np0 + 1
+      AND (SELECT count(*) FROM public.notificaciones) = n_not), false);
+    det := det||' ;; revertir dos veces|ya_no_liberado; 1 evento revertido (2 en total), sin avisos nuevos|'||CASE WHEN ok THEN 'OK' ELSE 'ROJO' END||'|'||st||'|'||left(COALESCE(j::text, msg), 160);
+    IF NOT ok THEN bad := bad||'revertir dos veces: '||st||' '||left(COALESCE(j::text, msg), 120)||'; '; END IF;
+    RAISE EXCEPTION 'P906 descarte' USING ERRCODE = 'P0999';
+  EXCEPTION WHEN SQLSTATE 'P0999' THEN NULL;
+  END;
+  PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
+  IF (SELECT md5(COALESCE(string_agg(to_jsonb(t)::text, '|' ORDER BY t.id), '')) FROM public.examenes t) IS DISTINCT FROM s_ex THEN r_rest := r_rest||' / examenes'; END IF;
+  IF (SELECT md5(COALESCE(string_agg(to_jsonb(t)::text, '|' ORDER BY t.id), '')) FROM public.examen_revisiones t) IS DISTINCT FROM s_rev THEN r_rest := r_rest||' / revisiones'; END IF;
+  IF (SELECT md5(COALESCE(string_agg(to_jsonb(t)::text, '|' ORDER BY t.id), '')) FROM public.examen_liberacion_eventos t) IS DISTINCT FROM s_ev THEN r_rest := r_rest||' / eventos'; END IF;
+  IF (SELECT count(*) FROM public.notificaciones) <> n_not OR (SELECT count(*) FROM public.notificaciones_pacientes) <> n_notp THEN r_rest := r_rest||' / notificaciones'; END IF;
+  det := det||' ;; restauracion|subtransaccion descartada; snapshot igual|'||r_rest||'|-|';
+  PERFORM set_config('probe.p906_det', det, false);
+  PERFORM set_config('probe.p906', CASE WHEN bad = '' AND r_rest = 'OK'
+    THEN 'OK (liberar y revertir con FOR UPDATE + UPDATE condicionado + evento tras ROW_COUNT, md5 post-336; orden intacta; liberar x2 = 1 evento y 1 aviso; revertir x2 = 1 evento; restaurado)'
+    ELSE 'ROJO ('||left(bad, 700)||' | restauracion='||r_rest||')' END, false);
+EXCEPTION WHEN OTHERS THEN
+  PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
+  PERFORM set_config('probe.p906', CASE WHEN SQLERRM LIKE 'fixture roto%' THEN 'ROJO ('||SQLERRM||')' ELSE 'FALLO ('||SQLSTATE||' '||SQLERRM||')' END, false);
+END $$;
+SELECT set_config('role', 'none', true);
+
+-- ---------------- P907 EX028 normalizado: espacios del valor GUARDADO no cuentan como cambio ----------------
+DO $$
+DECLARE
+  c_med uuid := '09d243d5-b222-482a-9762-94a582e9e752'; c_lab uuid := 'a5cf575a-5d63-4ed2-839e-9b58da8152e0'; c_admin uuid := 'e6f95b2f-7561-4e0b-b0c8-d1f38e6c4d66'; c_pacid integer := 23;
+  st text := '00000'; msg text := ''; ok boolean; det text := ''; bad text := ''; r_rest text := 'OK';
+  s_ex text; s_rev text; s_ev text; n_not bigint; n_notp bigint;
+  v_sp integer; v_nl integer; v_tb integer; v_ex integer; v_f0 text; j jsonb; x text; r record;
+BEGIN
+  -- estructural: md5 post-336 y la comparacion normalizada
+  st := '-'; msg := '-'; x := NULL;
+  SELECT md5(p.prosrc)||' '||(position('v_res  := NULLIF(btrim(p_resultados, E'' \t\r\n''), '''');' in p.prosrc) > 0)::text
+         ||' '||(position('IF v_res IS NOT DISTINCT FROM NULLIF(btrim(v_ex.resultados, E'' \t\r\n''), '''') AND v_arch IS NOT DISTINCT FROM v_ex.archivo_url THEN' in p.prosrc) > 0)::text
+    INTO x FROM pg_proc p WHERE p.oid = to_regprocedure('public.corregir_resultado_examen(integer,text,text,text)');
+  ok := COALESCE((x = '9a2a4b5b33e6b6f0bc0ddd454906f848 true true'), false);
+  det := det||' ;; corregir_resultado_examen|md5 post-336 9a2a4b5b, v_res y EX028 con btrim de espacios/tabs/saltos de los dos lados|'||CASE WHEN ok THEN 'OK' ELSE 'ROJO' END||'|'||st||'|'||COALESCE(x, 'NO EXISTE');
+  IF NOT ok THEN bad := bad||'estructura: '||COALESCE(x, 'NO EXISTE')||'; '; END IF;
+
+  SELECT md5(COALESCE(string_agg(to_jsonb(t)::text, '|' ORDER BY t.id), '')) INTO s_ex FROM public.examenes t;
+  SELECT md5(COALESCE(string_agg(to_jsonb(t)::text, '|' ORDER BY t.id), '')) INTO s_rev FROM public.examen_revisiones t;
+  SELECT md5(COALESCE(string_agg(to_jsonb(t)::text, '|' ORDER BY t.id), '')) INTO s_ev FROM public.examen_liberacion_eventos t;
+  SELECT count(*) INTO n_not FROM public.notificaciones; SELECT count(*) INTO n_notp FROM public.notificaciones_pacientes;
+  BEGIN
+    -- LIBERADOS a proposito: con el bug, una "correccion" sin cambio avisaba al medico y al paciente
+    INSERT INTO public.examenes (tipo, paciente_id, medico_id, laboratorio_id, estado, origen, resultados, fecha_resultado, liberado_al_paciente, fecha_liberacion, liberado_por)
+      VALUES ('P907 espacios QA', c_pacid, c_med, c_lab, 'completado', 'medico', '  P907 r  ', CURRENT_DATE - 1, true, now(), c_med) RETURNING id INTO v_sp;
+    INSERT INTO public.examenes (tipo, paciente_id, medico_id, laboratorio_id, estado, origen, resultados, fecha_resultado, liberado_al_paciente, fecha_liberacion, liberado_por)
+      VALUES ('P907 salto QA', c_pacid, c_med, c_lab, 'completado', 'medico', E'P907 r\n', CURRENT_DATE - 1, true, now(), c_med) RETURNING id INTO v_nl;
+    INSERT INTO public.examenes (tipo, paciente_id, medico_id, laboratorio_id, estado, origen, resultados, fecha_resultado, liberado_al_paciente, fecha_liberacion, liberado_por)
+      VALUES ('P907 tab QA', c_pacid, c_med, c_lab, 'completado', 'medico', E'P907 r\t', CURRENT_DATE - 1, true, now(), c_med) RETURNING id INTO v_tb;
+    FOR r IN SELECT * FROM (VALUES
+        ('guardado con espacios, reenvia recortado',     'sp', 'P907 r'::text),
+        ('guardado con espacios, reenvia el mismo texto','sp', '  P907 r  '),
+        ('guardado con espacios, reenvia otros espacios','sp', 'P907 r   '),
+        ('guardado con salto final, reenvia el mismo',   'nl', E'P907 r\n'),
+        ('guardado con salto final, reenvia sin salto',  'nl', 'P907 r'),
+        ('guardado con tab final, reenvia sin tab',      'tb', 'P907 r')) v(caso, cual, nuevo) LOOP
+      v_ex := CASE r.cual WHEN 'sp' THEN v_sp WHEN 'nl' THEN v_nl ELSE v_tb END;
+      SELECT md5(to_jsonb(t)::text) INTO v_f0 FROM public.examenes t WHERE t.id = v_ex;
+      st := '00000'; msg := ''; j := NULL;
+      BEGIN
+        PERFORM set_config('request.jwt.claims', json_build_object('sub', c_admin::text, 'role', 'authenticated')::text, true); PERFORM set_config('role', 'authenticated', true);
+        j := public.corregir_resultado_examen(v_ex, 'motivo QA', r.nuevo, NULL);
+        PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
+      EXCEPTION WHEN OTHERS THEN PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
+        st := SQLSTATE; msg := SQLERRM; END;
+      ok := COALESCE((st = 'EX028' AND msg = 'La corrección no cambia el resultado'
+        AND (SELECT md5(to_jsonb(t)::text) FROM public.examenes t WHERE t.id = v_ex) = v_f0
+        AND (SELECT count(*) FROM public.examen_revisiones rv WHERE rv.examen_id IN (v_sp, v_nl, v_tb)) = 0
+        AND (SELECT count(*) FROM public.notificaciones) = n_not AND (SELECT count(*) FROM public.notificaciones_pacientes) = n_notp), false);
+      det := det||' ;; '||r.caso||'|EX028, 0 revisiones, 0 avisos, fila igual|'||CASE WHEN ok THEN 'OK' ELSE 'ROJO' END||'|'||st||'|'||left(COALESCE(j::text, msg), 160);
+      IF NOT ok THEN bad := bad||r.caso||': '||st||' '||left(COALESCE(j::text, msg), 120)||'; '; END IF;
+    END LOOP;
+    -- control positivo: un cambio real sobre el guardado con espacios si corrige (y avisa: estaba liberado)
+    st := '00000'; msg := ''; j := NULL;
+    BEGIN
+      PERFORM set_config('request.jwt.claims', json_build_object('sub', c_admin::text, 'role', 'authenticated')::text, true); PERFORM set_config('role', 'authenticated', true);
+      j := public.corregir_resultado_examen(v_sp, 'motivo QA', 'P907 r2', NULL);
+      PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
+    EXCEPTION WHEN OTHERS THEN PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
+      st := SQLSTATE; msg := SQLERRM; END;
+    ok := COALESCE((st = '00000' AND j = jsonb_build_object('examen_id', v_sp, 'revision', 1, 'notificado', true)
+      AND (SELECT t.resultados FROM public.examenes t WHERE t.id = v_sp) = 'P907 r2'
+      AND (SELECT count(*) FROM public.examen_revisiones rv WHERE rv.examen_id = v_sp) = 1
+      AND EXISTS (SELECT 1 FROM public.examen_revisiones rv WHERE rv.examen_id = v_sp AND rv.revision = 1
+                    AND rv.resultados_anterior = '  P907 r  ' AND rv.liberado_al_corregir AND rv.corregido_por = c_admin)
+      AND (SELECT count(*) FROM public.notificaciones) = n_not + 1 AND (SELECT count(*) FROM public.notificaciones_pacientes) = n_notp + 1
+      AND COALESCE(current_setting('ezpay.examen_llave', true), '') = ''), false);
+    det := det||' ;; control: cambio real sobre el guardado con espacios|revision 1 con el valor previo exacto, 1 aviso medico + 1 paciente|'||CASE WHEN ok THEN 'OK' ELSE 'ROJO' END||'|'||st||'|'||left(COALESCE(j::text, msg), 160);
+    IF NOT ok THEN bad := bad||'control positivo: '||st||' '||left(COALESCE(j::text, msg), 120)||'; '; END IF;
+    RAISE EXCEPTION 'P907 descarte' USING ERRCODE = 'P0999';
+  EXCEPTION WHEN SQLSTATE 'P0999' THEN NULL;
+  END;
+  PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true); PERFORM set_config('ezpay.examen_llave', '', true);
+  IF (SELECT md5(COALESCE(string_agg(to_jsonb(t)::text, '|' ORDER BY t.id), '')) FROM public.examenes t) IS DISTINCT FROM s_ex THEN r_rest := r_rest||' / examenes'; END IF;
+  IF (SELECT md5(COALESCE(string_agg(to_jsonb(t)::text, '|' ORDER BY t.id), '')) FROM public.examen_revisiones t) IS DISTINCT FROM s_rev THEN r_rest := r_rest||' / revisiones'; END IF;
+  IF (SELECT md5(COALESCE(string_agg(to_jsonb(t)::text, '|' ORDER BY t.id), '')) FROM public.examen_liberacion_eventos t) IS DISTINCT FROM s_ev THEN r_rest := r_rest||' / eventos'; END IF;
+  IF (SELECT count(*) FROM public.notificaciones) <> n_not OR (SELECT count(*) FROM public.notificaciones_pacientes) <> n_notp THEN r_rest := r_rest||' / notificaciones'; END IF;
+  det := det||' ;; restauracion|subtransaccion descartada; snapshot igual|'||r_rest||'|-|';
+  PERFORM set_config('probe.p907_det', det, false);
+  PERFORM set_config('probe.p907', CASE WHEN bad = '' AND r_rest = 'OK'
+    THEN 'OK (md5 post-336; guardado con espacios: EX028 x3; con salto final: EX028 x2 (mismo texto y sin salto); con tab final: EX028; 0 revisiones y 0 avisos; control: cambio real corrige con 1 aviso medico + 1 paciente; restaurado)'
+    ELSE 'ROJO ('||left(bad, 700)||' | restauracion='||r_rest||')' END, false);
+EXCEPTION WHEN OTHERS THEN
+  PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true); PERFORM set_config('ezpay.examen_llave', '', true);
+  PERFORM set_config('probe.p907', CASE WHEN SQLERRM LIKE 'fixture roto%' THEN 'ROJO ('||SQLERRM||')' ELSE 'FALLO ('||SQLSTATE||' '||SQLERRM||')' END, false);
 END $$;
 SELECT set_config('role', 'none', true);
 
@@ -28580,6 +28787,8 @@ UNION ALL SELECT 'P902_ex_eventos_liberacion',         current_setting('probe.p9
 UNION ALL SELECT 'P903_ex_storage_sin_sobrescritura',  current_setting('probe.p903', true), 'OK (UPDATE 0 filas; DELETE respeta historial y vigente)'
 UNION ALL SELECT 'P904_ex_paciente_corregido',         current_setting('probe.p904', true), 'OK (corregido tras corregir un liberado; paciente sin historial)'
 UNION ALL SELECT 'P905_ex_catalogo_335',               current_setting('probe.p905', true), 'OK (catalogo exacto post-335)'
+UNION ALL SELECT 'P906_ex_liberacion_concurrente',     current_setting('probe.p906', true), 'OK (FOR UPDATE + UPDATE condicionado; x2 = 1 evento)'
+UNION ALL SELECT 'P907_ex_ex028_normalizado',          current_setting('probe.p907', true), 'OK (espacios del guardado no son cambio; EX028)'
 -- Las filas FX* son SALUD DE FIXTURE, no probes de seguridad: dicen si la precondicion que una
 -- migracion posterior empezo a exigir se pudo sembrar. Si una sale ROJO, los probes que dependen de
 -- ese fixture reportan N/A (su flag de ready se pierde con el rollback de la subtransaccion) en vez
@@ -28824,7 +29033,7 @@ UNION ALL SELECT 'P000_CENTINELA_veredictos_no_nulos',
        'probe.p866', 'probe.p867', 'probe.p868', 'probe.p869', 'probe.p870', 'probe.p871', 'probe.p872', 'probe.p873', 'probe.p874', 'probe.p875', 'probe.p876', 'probe.p877', 'probe.p878',
        'probe.p879', 'probe.p880', 'probe.p881', 'probe.p882', 'probe.p883', 'probe.p884',
        'probe.p885', 'probe.p886', 'probe.p887', 'probe.p888', 'probe.p889', 'probe.p890', 'probe.p891', 'probe.p892', 'probe.p893', 'probe.p894', 'probe.p895', 'probe.p896', 'probe.p908', 'probe.p909', 'probe.p910', 'probe.p911',
-       'probe.p897', 'probe.p898', 'probe.p899', 'probe.p900', 'probe.p901', 'probe.p902', 'probe.p903', 'probe.p904', 'probe.p905'
+       'probe.p897', 'probe.p898', 'probe.p899', 'probe.p900', 'probe.p901', 'probe.p902', 'probe.p903', 'probe.p904', 'probe.p905', 'probe.p906', 'probe.p907'
              ]) AS n) s),
   'OK (todos los veredictos publicados)';
 
