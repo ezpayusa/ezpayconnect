@@ -23,10 +23,11 @@ Stack: React + Vite + TypeScript, Supabase / Postgres, deploy en Vercel, repo en
   minutos por esto** (P635 es la probe que faltaba, P636 su contraprueba).
 - NUNCA ampliar policies de RLS sobre tablas adyacentes a datos médicos (p. ej. campana_metricas). Para dar acceso, usar RPCs SECURITY DEFINER con search_path='', fail-closed (si el scope es NULL → 0 filas) y gate interno.
 - Probar aislamiento por rol impersonando request.jwt.claims en prod: cada rol ve lo suyo y no lo ajeno.
-- **Próximos números libres: probe `P906`** (global, no por módulo; P906-P907 reservados para la mig 336 — la 337 toma desde `P912`), **migración `336`**
-  (336 = fix de la 335: liberación/reversión con FOR UPDATE + evento solo si cambió la fila; EX028 compara
-  btrim contra btrim; 337 = cierre de DELETE directo de examenes/ordenes + MAINTAIN ordenes_examen, ajusta
-  P881 y P884), **errcode `PA035`** (comercial),
+- **Próximos números libres: probe `P912`** (global, no por módulo; P906-P907 usados por la mig 336), **migración `337`**
+  (337 = cierre de DELETE directo de examenes/ordenes + MAINTAIN ordenes_examen, ajusta P881 y P884;
+  336 = fix de la 335: liberación/reversión con FOR UPDATE + evento solo si cambió la fila; EX028
+  normalizado espacios/tabs/saltos — APLICADA en prod y verificada en sesión independiente el
+  26-sep-2026), **errcode `PA035`** (comercial),
   **`NT012`** (notas clínicas, mig 334 — APLICADA en prod, main b84edd4, probes P885-P911; front en
   feat/p4-334-front): NT001 = no autenticado, NT002 = no es el autor (o la nota no existe), NT003 = nota
   todavía abierta, NT004 = motivo vacío o > 500, NT005 = la corrección no cambia nada (esos 5 + NT011 =
