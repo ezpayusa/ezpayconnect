@@ -6,8 +6,9 @@ Stack: React + Vite + TypeScript, Supabase / Postgres, deploy en Vercel, repo en
 ## Reglas de trabajo (mantener siempre)
 - Diagnosticar antes de tocar nada. Rastrear el flujo de datos de punta a punta y confirmar la causa raíz (idealmente contra la DB viva) antes de escribir código.
 - Un commit por bloque, con mensaje claro. Nada de un commit gigante al final.
-- Verificar en cada cambio: tsc -p tsconfig.app.json (baseline actual = **78** errores; objetivo = 0 nuevos) + vite build verde + prueba por rol en prod.
-  **El comando es `npx tsc -p tsconfig.app.json --noEmit` y el baseline es 78.** Bajó de 82 a 78 el
+- Verificar en cada cambio: tsc -p tsconfig.app.json (baseline actual = **75** errores; objetivo = 0 nuevos) + vite build verde + prueba por rol en prod.
+  **El comando es `npx tsc -p tsconfig.app.json --noEmit` y el baseline es 75.** Bajó de 78 a 75 el 26-sep con el front de P4 (los 3 `TS2339 'descripcion'`
+  de `ExamenPaciente`: el paciente nunca veía la descripción del examen). Antes, de 82 a 78 el
   22-sep con el frente 7 (lab): los 4 `TS2339 Property 'estado' does not exist on type
   'OrdenAgrupada'` de LabDashboard eran el bug del conteo, y llevaban meses escondidos DENTRO del
   baseline. Un baseline es un techo, no una alfombra — bajarlo cuando se arregla algo es parte del
