@@ -23,9 +23,11 @@ Stack: React + Vite + TypeScript, Supabase / Postgres, deploy en Vercel, repo en
   minutos por esto** (P635 es la probe que faltaba, P636 su contraprueba).
 - NUNCA ampliar policies de RLS sobre tablas adyacentes a datos médicos (p. ej. campana_metricas). Para dar acceso, usar RPCs SECURITY DEFINER con search_path='', fail-closed (si el scope es NULL → 0 filas) y gate interno.
 - Probar aislamiento por rol impersonando request.jwt.claims en prod: cada rol ve lo suyo y no lo ajeno.
-- **Próximos números libres: probe `P848`** (global, no por módulo), **migración `330`**, **errcode `PA035`** (comercial),
+- **Próximos números libres: probe `P861`** (global, no por módulo), **migración `331`**, **errcode `PA035`** (comercial),
   **`PR011`** (recetas: PR001-PR009 = emitir_receta; PR010 = receta cancelada no se despacha, mig 329
-  — APLICADA en prod y verificada en sesión independiente el 25-sep-2026, probes P840-P847)
+  — APLICADA en prod y verificada en sesión independiente el 25-sep-2026, probes P840-P847),
+  **`SV003`** (signos vitales: SV001 = fuera de rango, SV002 = formato de PA, mig 330
+  — APLICADA en prod y verificada en sesión independiente el 25-sep-2026, probes P848-P860)
   y **`PE005`** (expediente: PE001 = mig 291; PE002 = adjuntar sobre examen liberado y PE003 =
   no autenticado, mig 310; PE004 = sin autoridad para revertir una liberación, mig 311).
   `revertir_liberacion_examen` sobre un examen ya no liberado es **no-op** (`{ya_no_liberado:true}`),
@@ -95,8 +97,8 @@ Stack: React + Vite + TypeScript, Supabase / Postgres, deploy en Vercel, repo en
   **Por qué**: el harness corre en UNA transacción — una sentencia que revienta fuera de un handler
   no da rojo, MATA la transacción y la salida queda vacía, que se lee como "todavía no lo corrí".
   Pasó dos veces (18cf819 y el lote 1 de PA-FAILOPEN) y una de ellas tardó dos meses en detectarse.
-  Baselines vivos: `top_level_dml_ddl=0` (excluye `pg_temp`), `cast_directo=0`, `do_sin_handler=156`
-  (fase 2.2 CERRADA: los 55 bloques que escriben están envueltos, 211→193→175→157→156; los 156
+  Baselines vivos: `top_level_dml_ddl=0` (excluye `pg_temp`), `cast_directo=0`, `do_sin_handler=155`
+  (fase 2.2 CERRADA: los 55 bloques que escriben están envueltos, 211→193→175→157→156→155; los 155
   restantes sólo leen y publican, así que ya no son deuda). El señalizador P516 del harness los publica, pero NO mide:
   el gate es el script. **El detector del guard tiene test propio (`tests/rls/b2_guard_test.py`,
   `npm run harness:guard:test`) y el hook lo corre ANTES del guard**: se equivocó tres veces en un día
