@@ -10,6 +10,9 @@ import { useVisor, archivoDeResultado, descargarResultado } from '@/components/v
 import { liberarUnExamen, liberarExamenes, type ExamenLiberable } from '@/lib/liberacionExamenes'
 import { ConfirmarLiberacionDialog } from '@/components/examenes/ConfirmarLiberacionDialog'
 import { useAuth } from '@/hooks/useAuth'
+import { useUnidadPeso } from '@/hooks/useUnidadPeso'
+import { formatPeso } from '@/lib/unidades'
+import { formatVital, formatPA } from '@/lib/vitalesRangos'
 import { FotoPacienteAvatar } from '@/components/FotoPacienteAvatar'
 import { DocumentosPaciente } from '@/components/DocumentosPaciente'
 import { ConsentimientoPresencial } from '@/components/ConsentimientoPresencial'
@@ -84,6 +87,7 @@ export default function PacienteDetallePage() {
   const location = useLocation()
   const base = location.pathname.startsWith('/medico') ? '/medico' : ''
   const { user } = useAuth()
+  const { unidad: unidadPeso } = useUnidadPeso()
   const [activeTab, setActiveTab] = useState<'info' | 'historial' | 'consultas' | 'signos_vitales' | 'recetas' | 'citas' | 'examenes' | 'documentos'>('info')
   const [paciente, setPaciente] = useState<Paciente | null>(null)
   const [historial, setHistorial] = useState<HistorialEvento[]>([])
@@ -552,21 +556,21 @@ export default function PacienteDetallePage() {
                         <div className="bg-white p-2 rounded text-center">
                           <HeartPulse size={14} className="mx-auto text-red-500 mb-1" />
                           <p className="text-xs text-gray-500">PA</p>
-                          <p className="text-sm font-medium">{consulta.presion_arterial}</p>
+                          <p className="text-sm font-medium">{formatPA(consulta.presion_arterial)}</p>
                         </div>
                       )}
                       {consulta.temperatura && (
                         <div className="bg-white p-2 rounded text-center">
                           <Thermometer size={14} className="mx-auto text-orange-500 mb-1" />
                           <p className="text-xs text-gray-500">Temp</p>
-                          <p className="text-sm font-medium">{consulta.temperatura}°C</p>
+                          <p className="text-sm font-medium">{formatVital('temperatura', consulta.temperatura)}</p>
                         </div>
                       )}
                       {consulta.peso_kg && (
                         <div className="bg-white p-2 rounded text-center">
                           <Scale size={14} className="mx-auto text-blue-500 mb-1" />
                           <p className="text-xs text-gray-500">Peso</p>
-                          <p className="text-sm font-medium">{consulta.peso_kg} kg</p>
+                          <p className="text-sm font-medium">{formatPeso(consulta.peso_kg, unidadPeso)}</p>
                         </div>
                       )}
                       {consulta.imc && (
@@ -625,14 +629,14 @@ export default function PacienteDetallePage() {
                     {signosVitales.map((sv: any) => (
                       <tr key={sv.id} className="border-t border-gray-100 hover:bg-gray-50">
                         <td className="px-4 py-3">{new Date(sv.fecha_toma).toLocaleDateString('es-ES')}</td>
-                        <td className="px-4 py-3 text-center font-medium">{sv.presion_arterial || '-'}</td>
-                        <td className="px-4 py-3 text-center">{sv.frecuencia_cardiaca || '-'}</td>
-                        <td className="px-4 py-3 text-center">{sv.temperatura ? `${sv.temperatura}°C` : '-'}</td>
-                        <td className="px-4 py-3 text-center">{sv.peso_kg ? `${sv.peso_kg} kg` : '-'}</td>
-                        <td className="px-4 py-3 text-center">{sv.talla_cm ? `${sv.talla_cm} cm` : '-'}</td>
-                        <td className="px-4 py-3 text-center font-medium text-[#1E5C8E]">{sv.imc || '-'}</td>
-                        <td className="px-4 py-3 text-center">{sv.saturacion_o2 ? `${sv.saturacion_o2}%` : '-'}</td>
-                        <td className="px-4 py-3 text-center">{sv.glucosa || '-'}</td>
+                        <td className="px-4 py-3 text-center font-medium">{sv.presion_arterial ? formatPA(sv.presion_arterial) : '-'}</td>
+                        <td className="px-4 py-3 text-center">{sv.frecuencia_cardiaca != null ? formatVital('frecuencia_cardiaca', sv.frecuencia_cardiaca) : '-'}</td>
+                        <td className="px-4 py-3 text-center">{sv.temperatura != null ? formatVital('temperatura', sv.temperatura) : '-'}</td>
+                        <td className="px-4 py-3 text-center">{sv.peso_kg != null ? formatPeso(sv.peso_kg, unidadPeso) : '-'}</td>
+                        <td className="px-4 py-3 text-center">{sv.talla_cm != null ? formatVital('talla_cm', sv.talla_cm) : '-'}</td>
+                        <td className="px-4 py-3 text-center font-medium text-[#1E5C8E]">{sv.imc ?? '-'}</td>
+                        <td className="px-4 py-3 text-center">{sv.saturacion_o2 != null ? formatVital('saturacion_o2', sv.saturacion_o2) : '-'}</td>
+                        <td className="px-4 py-3 text-center">{sv.glucosa != null ? formatVital('glucosa', sv.glucosa) : '-'}</td>
                       </tr>
                     ))}
                   </tbody>

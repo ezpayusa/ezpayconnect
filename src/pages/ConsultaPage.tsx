@@ -11,6 +11,7 @@ import { FormularioVitales, VITALES_VACIO } from '@/clinica/components/Formulari
 import type { VitalesValues } from '@/clinica/components/FormularioVitales'
 import { useUnidadPeso } from '@/hooks/useUnidadPeso'
 import { formatPeso } from '@/lib/unidades'
+import { formatVital, formatPA } from '@/lib/vitalesRangos'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
@@ -93,6 +94,7 @@ export default function ConsultaPage() {
   const [formMedico, setFormMedico] = useState<VitalesValues>(VITALES_VACIO)
   const { unidad: unidadPeso } = useUnidadPeso()
   const [guardandoToma, setGuardandoToma] = useState(false)
+  const [errorVitalToma, setErrorVitalToma] = useState<string | null>(null)
   const [validandoId, setValidandoId] = useState<number | null>(null)
 
   // Paneles desplegables
@@ -378,9 +380,11 @@ export default function ConsultaPage() {
     const medicoId = perfil?.id
     if (!medicoId) { toast.error('Sin médico en sesión'); return }
     setGuardandoToma(true)
-    const ok = await agregarToma(formMedico, paciente.id, medicoId)
+    setErrorVitalToma(null)
+    const { ok, errorVital } = await agregarToma(formMedico, paciente.id, medicoId)
     setGuardandoToma(false)
     if (ok) setFormMedico(VITALES_VACIO)
+    else setErrorVitalToma(errorVital)
   }
 
   if (cargando || loadingConsulta) {
@@ -553,15 +557,15 @@ export default function ConsultaPage() {
                       )}
                     </div>
                     <div className="flex flex-wrap gap-x-3 gap-y-1">
-                      {t.presion_arterial && <span>PA {t.presion_arterial}</span>}
-                      {t.frecuencia_cardiaca != null && <span>FC {t.frecuencia_cardiaca}</span>}
-                      {t.frecuencia_respiratoria != null && <span>FR {t.frecuencia_respiratoria}</span>}
-                      {t.temperatura != null && <span>T {t.temperatura}°</span>}
-                      {t.peso_kg != null && <span>{formatPeso(t.peso_kg, unidadPeso)}</span>}
-                      {t.talla_cm != null && <span>{t.talla_cm}cm</span>}
+                      {t.presion_arterial && <span>PA {formatPA(t.presion_arterial)}</span>}
+                      {t.frecuencia_cardiaca != null && <span>FC {formatVital('frecuencia_cardiaca', t.frecuencia_cardiaca)}</span>}
+                      {t.frecuencia_respiratoria != null && <span>FR {formatVital('frecuencia_respiratoria', t.frecuencia_respiratoria)}</span>}
+                      {t.temperatura != null && <span>T {formatVital('temperatura', t.temperatura)}</span>}
+                      {t.peso_kg != null && <span>Peso {formatPeso(t.peso_kg, unidadPeso)}</span>}
+                      {t.talla_cm != null && <span>Talla {formatVital('talla_cm', t.talla_cm)}</span>}
                       {t.imc != null && <span>IMC {t.imc}</span>}
-                      {t.saturacion_o2 != null && <span>SpO2 {t.saturacion_o2}%</span>}
-                      {t.glucosa != null && <span>Gluc {t.glucosa}</span>}
+                      {t.saturacion_o2 != null && <span>SpO2 {formatVital('saturacion_o2', t.saturacion_o2)}</span>}
+                      {t.glucosa != null && <span>Glucosa {formatVital('glucosa', t.glucosa)}</span>}
                       {t.notas && <span className="italic">{t.notas}</span>}
                     </div>
                   </div>
@@ -579,7 +583,7 @@ export default function ConsultaPage() {
               </CardTitle>
             </CardHeader>
             <CardContent>
-              <FormularioVitales values={formMedico} onChange={(c, v) => setFormMedico(f => ({ ...f, [c]: v }))} onSubmit={handleAgregarToma} loading={guardandoToma} />
+              <FormularioVitales values={formMedico} onChange={(c, v) => setFormMedico(f => ({ ...f, [c]: v }))} onSubmit={handleAgregarToma} loading={guardandoToma} errorServidor={errorVitalToma} />
             </CardContent>
           </Card>
         </div>

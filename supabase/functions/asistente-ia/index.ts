@@ -57,15 +57,16 @@ function buildPrompt(ctxHist: any, soap: any) {
   const vitalesTxt = vit.length
     ? vit.map((v: any) => {
         const partes: string[] = []
-        if (v.presion_arterial != null) partes.push(`PA ${v.presion_arterial}`)
+        // Unidades canonicas de signos_vitales: la mig 330 las exige por CHECK (rangos sv_*_rango).
+        if (v.presion_arterial != null) partes.push(`PA ${v.presion_arterial} mmHg`)
         if (v.frecuencia_cardiaca != null) partes.push(`FC ${v.frecuencia_cardiaca} lpm`)
-        if (v.frecuencia_respiratoria != null) partes.push(`FR ${v.frecuencia_respiratoria}`)
-        if (v.temperatura != null) partes.push(`T ${v.temperatura} C`)
-        if (v.saturacion_o2 != null) partes.push(`SpO2 ${v.saturacion_o2}%`)
-        if (v.glucosa != null) partes.push(`Glu ${v.glucosa}`)
+        if (v.frecuencia_respiratoria != null) partes.push(`FR ${v.frecuencia_respiratoria} rpm`)
+        if (v.temperatura != null) partes.push(`Temp ${v.temperatura} °C`)
+        if (v.saturacion_o2 != null) partes.push(`SpO2 ${v.saturacion_o2} %`)
+        if (v.glucosa != null) partes.push(`Glucosa ${v.glucosa} mg/dL`)
         if (v.peso_kg != null) partes.push(`Peso ${v.peso_kg} kg`)
         if (v.talla_cm != null) partes.push(`Talla ${v.talla_cm} cm`)
-        if (v.imc != null) partes.push(`IMC ${v.imc}`)
+        if (v.imc != null) partes.push(`IMC ${v.imc} kg/m2`)
         return `- ${fmtFecha(v.fecha_toma)}: ${partes.length ? partes.join(', ') : 'sin valores'}`
       }).join('\n')
     : 'No registrados'

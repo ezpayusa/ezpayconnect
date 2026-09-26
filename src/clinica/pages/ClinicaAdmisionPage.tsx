@@ -5,6 +5,9 @@ import { useAuth } from '@/hooks/useAuth'
 import { useClinicaAuth } from '@/clinica/hooks/useClinicaAuth'
 import { useAdmisionCitas, type CitaAdmision } from '@/clinica/hooks/useAdmisionCitas'
 import { FormularioVitales, type VitalesValues, VITALES_VACIO } from '@/clinica/components/FormularioVitales'
+import { useUnidadPeso } from '@/hooks/useUnidadPeso'
+import { formatPeso } from '@/lib/unidades'
+import { formatVital, formatPA, esErrorVital } from '@/lib/vitalesRangos'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
@@ -109,6 +112,8 @@ function ModalAdmision({ cita, puedePHI, onClose, onTomaGuardada, onLlegada }: {
   const [form, setForm] = useState<VitalesValues>(VITALES_VACIO)
   const [guardando, setGuardando] = useState(false)
   const [marcandoLlegada, setMarcandoLlegada] = useState(false)
+  const [errorVital, setErrorVital] = useState<string | null>(null)
+  const { unidad: unidadPeso } = useUnidadPeso()
 
   const cargarSerie = useCallback(async () => {
     setCargandoSerie(true)
@@ -135,6 +140,7 @@ function ModalAdmision({ cita, puedePHI, onClose, onTomaGuardada, onLlegada }: {
 
   const guardar = async () => {
     setGuardando(true)
+    setErrorVital(null)
     const { error } = await supabase.rpc('capturar_signo_vital', {
       p_paciente_id: cita.paciente_id,
       p_cita_id: cita.id,
@@ -151,7 +157,12 @@ function ModalAdmision({ cita, puedePHI, onClose, onTomaGuardada, onLlegada }: {
       // capturado_por lo fuerza el server (NO se manda).
     })
     setGuardando(false)
-    if (error) { toast.error(error.message); return }
+    if (error) {
+      // SV001/SV002 (rango/formato, mig 330): el mensaje va al formulario tal cual, no a un toast.
+      if (esErrorVital(error)) setErrorVital(error.message)
+      else toast.error(error.message)
+      return
+    }
     toast.success('Toma registrada')
     setForm(VITALES_VACIO)
     cargarSerie()    // refresca la serie del modal
@@ -223,15 +234,15 @@ function ModalAdmision({ cita, puedePHI, onClose, onTomaGuardada, onLlegada }: {
                       <span>tomado por {t.capturado_por_nombre || '—'}</span>
                     </div>
                     <div className="flex flex-wrap gap-x-3 gap-y-1">
-                      {t.presion_arterial && <span>PA {t.presion_arterial}</span>}
-                      {t.frecuencia_cardiaca != null && <span>FC {t.frecuencia_cardiaca}</span>}
-                      {t.frecuencia_respiratoria != null && <span>FR {t.frecuencia_respiratoria}</span>}
-                      {t.temperatura != null && <span>T {t.temperatura}°</span>}
-                      {t.peso_kg != null && <span>{t.peso_kg}kg</span>}
-                      {t.talla_cm != null && <span>{t.talla_cm}cm</span>}
+                      {t.presion_arterial && <span>PA {formatPA(t.presion_arterial)}</span>}
+                      {t.frecuencia_cardiaca != null && <span>FC {formatVital('frecuencia_cardiaca', t.frecuencia_cardiaca)}</span>}
+                      {t.frecuencia_respiratoria != null && <span>FR {formatVital('frecuencia_respiratoria', t.frecuencia_respiratoria)}</span>}
+                      {t.temperatura != null && <span>T {formatVital('temperatura', t.temperatura)}</span>}
+                      {t.peso_kg != null && <span>Peso {formatPeso(t.peso_kg, unidadPeso)}</span>}
+                      {t.talla_cm != null && <span>Talla {formatVital('talla_cm', t.talla_cm)}</span>}
                       {t.imc != null && <span>IMC {t.imc}</span>}
-                      {t.saturacion_o2 != null && <span>SpO2 {t.saturacion_o2}%</span>}
-                      {t.glucosa != null && <span>Gluc {t.glucosa}</span>}
+                      {t.saturacion_o2 != null && <span>SpO2 {formatVital('saturacion_o2', t.saturacion_o2)}</span>}
+                      {t.glucosa != null && <span>Glucosa {formatVital('glucosa', t.glucosa)}</span>}
                       {t.notas && <span className="italic">{t.notas}</span>}
                     </div>
                   </div>
@@ -243,7 +254,7 @@ function ModalAdmision({ cita, puedePHI, onClose, onTomaGuardada, onLlegada }: {
           {/* Agregar toma */}
           <div>
             <h3 className="text-sm font-semibold mb-2">Agregar toma</h3>
-            <FormularioVitales values={form} onChange={onChange} onSubmit={guardar} loading={guardando} />
+            <FormularioVitales values={form} onChange={onChange} onSubmit={guardar} loading={guardando} errorServidor={errorVital} />
           </div>
           </>
           )}
