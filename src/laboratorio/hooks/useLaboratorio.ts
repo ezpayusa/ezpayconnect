@@ -137,7 +137,7 @@ export function useLaboratorio() {
     if (!labId) return null
     const ext = file.name.split('.').pop() || 'pdf'
     const path = `${labId}/${examenId}-${Date.now()}.${ext}`
-    const { error } = await supabase.storage.from('resultados-examenes').upload(path, file, { upsert: true })
+    const { error } = await supabase.storage.from('resultados-examenes').upload(path, file, { upsert: false })
     if (error) {
       console.error('[subirArchivo] upload falló', { bucket: 'resultados-examenes', path, labId, file: { name: file.name, type: file.type, size: file.size }, error })
       toast.error(`No se pudo subir el archivo: ${error.message}${(error as any).statusCode ? ' [' + (error as any).statusCode + ']' : ''}`)
