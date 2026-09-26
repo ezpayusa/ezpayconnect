@@ -31,6 +31,8 @@ export function useWebAppExamenes(pacienteId: number | undefined) {
         notas: e.notas,
         created_at: e.created_at,
         en_revision: e.en_revision,
+        descripcion: e.descripcion ?? null,
+        corregido: e.corregido === true,
       }))
       setExamenes(mapped)
     } catch (err: any) {

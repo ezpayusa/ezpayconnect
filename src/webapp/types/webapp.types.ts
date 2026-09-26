@@ -79,6 +79,9 @@ export interface ExamenPaciente {
   notas: string | null
   created_at: string
   en_revision?: boolean
+  descripcion: string | null
+  /** paciente_examenes(): true si el resultado liberado fue corregido. Sin motivo ni versión anterior. */
+  corregido: boolean
 }
 
 export interface HistorialItem {
