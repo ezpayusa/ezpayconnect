@@ -23,7 +23,10 @@ Stack: React + Vite + TypeScript, Supabase / Postgres, deploy en Vercel, repo en
   minutos por esto** (P635 es la probe que faltaba, P636 su contraprueba).
 - NUNCA ampliar policies de RLS sobre tablas adyacentes a datos médicos (p. ej. campana_metricas). Para dar acceso, usar RPCs SECURITY DEFINER con search_path='', fail-closed (si el scope es NULL → 0 filas) y gate interno.
 - Probar aislamiento por rol impersonando request.jwt.claims en prod: cada rol ve lo suyo y no lo ajeno.
-- **Próximos números libres: probe `P912`** (global, no por módulo), **migración `335`**, **errcode `PA035`** (comercial),
+- **Próximos números libres: probe `P906`** (global, no por módulo; P906-P907 reservados para la mig 336 — la 337 toma desde `P912`), **migración `336`**
+  (336 = fix de la 335: liberación/reversión con FOR UPDATE + evento solo si cambió la fila; EX028 compara
+  btrim contra btrim; 337 = cierre de DELETE directo de examenes/ordenes + MAINTAIN ordenes_examen, ajusta
+  P881 y P884), **errcode `PA035`** (comercial),
   **`NT012`** (notas clínicas, mig 334 — APLICADA en prod, main b84edd4, probes P885-P911; front en
   feat/p4-334-front): NT001 = no autenticado, NT002 = no es el autor (o la nota no existe), NT003 = nota
   todavía abierta, NT004 = motivo vacío o > 500, NT005 = la corrección no cambia nada (esos 5 + NT011 =
@@ -32,11 +35,12 @@ Stack: React + Vite + TypeScript, Supabase / Postgres, deploy en Vercel, repo en
   (trigger guardia, UPDATE); NT008 = revisiones inmutables; NT010 = la nota no corresponde a la cita
   (guardia, INSERT); NT011 = no es médico con cuenta activa. El front muestra NT* y 42501 con
   `error.message` tal cual (`mensajeErrorNota`, `src/hooks/useConsultas.ts`),
-  **`EX023`** (exámenes: EX001-EX020 órdenes por RPC, EX022 congelamiento de tipo/catalogo_id; EX021 reservado
+  **`EX035`** (exámenes: EX001-EX020 órdenes por RPC, EX022 congelamiento de tipo/catalogo_id; EX021 reservado
   sin uso — el renombre del catálogo se cierra por grants; mig 332 — APLICADA en prod y verificada en sesión
   independiente el 25-sep-2026, probes P866-P878; mig 333 (REVOKE del INSERT directo + split de las ALL + M.8)
   — APLICADA en prod y verificada en sesión independiente el 25-sep-2026, probes P879-P884; P3 CERRADO
-  (332 + front + 333)),
+  (332 + front + 333); EX023-EX034 = mig 335 (corrección de resultados, historial inmutable) — APLICADA
+  en prod y verificada en sesión independiente el 26-sep-2026, probes P897-P905),
   **`PR011`** (recetas: PR001-PR009 = emitir_receta; PR010 = receta cancelada no se despacha, mig 329
   — APLICADA en prod y verificada en sesión independiente el 25-sep-2026, probes P840-P847),
   **`SV004`** (signos vitales: SV001 = fuera de rango, SV002 = formato de PA, mig 330
