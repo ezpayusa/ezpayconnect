@@ -50,3 +50,6 @@ __pycache__/
 # .claude/QA_CUENTAS_PILOTO.md, que lleva CONTRASENAS: no puede entrar al repo.
 # El ignore global del usuario solo cubria .claude/settings.local.json, no el directorio.
 .claude/
+
+# Resguardos locales de esquema (dumps de Supabase): no entran al repo.
+backups/
