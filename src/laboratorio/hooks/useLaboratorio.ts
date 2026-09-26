@@ -3,6 +3,7 @@ import { supabase } from '@/lib/supabase'
 import { useProveedorAuth } from '@/proveedor/hooks/useProveedorAuth'
 import { toast } from 'sonner'
 import { hoyISO } from '@/lib/fecha'
+import { mensajeErrorOrden, type ItemOrdenExamen } from '@/lib/ordenesExamen'
 
 export interface OrdenExamen {
   id: number
@@ -22,6 +23,7 @@ export interface OrdenExamen {
   medico_nombre: string | null
   clinica_nombre: string | null
   orden_id: string | null
+  catalogo_id: string | null   // mig 332: NULL = examen fuera de catálogo (texto libre)
 }
 
 // Una orden agrupa varios exámenes (ítems) en una sola "hoja"
@@ -57,7 +59,7 @@ export function useLaboratorio() {
     setLoading(true)
     const [itemsRes, headersRes] = await Promise.all([
       supabase.from('examenes')
-        .select('id, tipo, descripcion, estado, origen, prioridad, fecha_solicitud, fecha_resultado, resultados, archivo_url, paciente_id, paciente_nombre, paciente_documento, paciente_telefono, medico_nombre, clinica_nombre, orden_id')
+        .select('id, tipo, descripcion, estado, origen, prioridad, fecha_solicitud, fecha_resultado, resultados, archivo_url, paciente_id, paciente_nombre, paciente_documento, paciente_telefono, medico_nombre, clinica_nombre, orden_id, catalogo_id')
         .eq('laboratorio_id', labId)
         .order('created_at', { ascending: false }),
       supabase.from('ordenes_examen')
@@ -191,7 +193,11 @@ export function useLaboratorio() {
     const { error } = await supabase.from('examenes_catalogo').insert({
       laboratorio_id: labId, nombre: nombre.trim(), categoria: categoria?.trim() || null,
     })
-    if (error) { toast.error('No se pudo agregar: ' + error.message); return false }
+    if (error) {
+      // 23505 = UNIQUE (laboratorio_id, lower(btrim(nombre))) de la mig 332
+      toast.error(error.code === '23505' ? 'Ya existe un examen con ese nombre en tu catálogo' : 'No se pudo agregar: ' + error.message)
+      return false
+    }
     toast.success('Examen agregado al catálogo')
     fetchCatalogo()
     return true
@@ -206,7 +212,17 @@ export function useLaboratorio() {
   const eliminarCatalogo = async (id: string) => {
     if (!window.confirm('¿Eliminar este examen del catálogo?')) return
     const { error } = await supabase.from('examenes_catalogo').delete().eq('id', id)
-    if (error) { toast.error('No se pudo eliminar'); return }
+    if (error) {
+      // 23503 = FK RESTRICT de examenes.catalogo_id (mig 332): un examen ya ordenado no se borra, se desactiva
+      if (error.code === '23503') {
+        toast.error('Este examen ya fue ordenado y no se puede borrar. Podés desactivarlo.', {
+          action: { label: 'Desactivar', onClick: () => { toggleCatalogo(id, false) } },
+        })
+      } else {
+        toast.error('No se pudo eliminar')
+      }
+      return
+    }
     toast.success('Examen eliminado')
     fetchCatalogo()
   }
@@ -221,37 +237,23 @@ export function useLaboratorio() {
   }
 
   const crearWalkIn = async (datos: {
-    examenes: string[]; instrucciones?: string; prioridad?: string
+    items: ItemOrdenExamen[]; instrucciones?: string; prioridad?: string
     paciente_nombre: string; paciente_documento?: string; paciente_telefono?: string
   }) => {
     if (!labId) { toast.error('Sin laboratorio'); return false }
-    if (datos.examenes.length === 0) { toast.error('Selecciona al menos un examen'); return false }
+    if (datos.items.length === 0) { toast.error('Selecciona al menos un examen'); return false }
 
-    const { data: orden, error: oErr } = await supabase.from('ordenes_examen').insert({
-      laboratorio_id: labId,
-      origen: 'walk_in',
-      prioridad: datos.prioridad || 'normal',
-      instrucciones: datos.instrucciones || null,
-      paciente_nombre: datos.paciente_nombre,
-      paciente_documento: datos.paciente_documento || null,
-      paciente_telefono: datos.paciente_telefono || null,
-    }).select('id').single()
-    if (oErr || !orden) { toast.error('No se pudo crear la orden: ' + (oErr?.message || '')); return false }
-
-    const filas = datos.examenes.map((tipo) => ({
-      orden_id: orden.id,
-      laboratorio_id: labId,
-      tipo,
-      descripcion: datos.instrucciones || null,
-      prioridad: datos.prioridad || 'normal',
-      origen: 'walk_in',
-      estado: 'recibida',
-      paciente_nombre: datos.paciente_nombre,
-      paciente_documento: datos.paciente_documento || null,
-      paciente_telefono: datos.paciente_telefono || null,
-    }))
-    const { error: iErr } = await supabase.from('examenes').insert(filas)
-    if (iErr) { toast.error('No se pudieron crear los exámenes: ' + iErr.message); return false }
+    // Una sola RPC atómica (cabecera + ítems): el laboratorio lo deriva el servidor de la cuenta
+    // (mi_empresa_proveedor) y exige el permiso walkin_registrar.
+    const { error } = await supabase.rpc('crear_orden_examen_walkin', {
+      p_items: datos.items,
+      p_paciente_nombre: datos.paciente_nombre,
+      p_paciente_documento: datos.paciente_documento || null,
+      p_paciente_telefono: datos.paciente_telefono || null,
+      p_instrucciones: datos.instrucciones || null,
+      p_prioridad: datos.prioridad || 'normal',
+    })
+    if (error) { toast.error(mensajeErrorOrden(error, 'No se pudo crear la orden: ')); return false }
 
     toast.success('Orden walk-in registrada')
     fetchOrdenes()

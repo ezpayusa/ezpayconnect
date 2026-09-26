@@ -25,6 +25,7 @@ import AsistenteIA from '@/components/consulta/AsistenteIA'
 import RecetaModal from '@/components/consulta/RecetaModal'
 import { FotoPacienteAvatar } from '@/components/FotoPacienteAvatar'
 import { toast } from 'sonner'
+import { armarItemsOrden, lineasExamenes, mensajeErrorOrden, type ItemOrdenExamen } from '@/lib/ordenesExamen'
 import type { Paciente, Cita } from '@/types'
 import {
   ArrowLeft,
@@ -155,82 +156,45 @@ export default function ConsultaPage() {
       .then(({ data }) => { setCatalogoLab((data || []) as CatItem[]); setExamenesSel(new Set()) })
   }, [labSel])
 
-  const toggleExamenSel = (nombre: string) =>
-    setExamenesSel((prev) => { const n = new Set(prev); n.has(nombre) ? n.delete(nombre) : n.add(nombre); return n })
+  // examenesSel guarda IDS de examenes_catalogo (mig 332): el nombre lo copia el servidor.
+  const toggleExamenSel = (id: string) =>
+    setExamenesSel((prev) => { const n = new Set(prev); n.has(id) ? n.delete(id) : n.add(id); return n })
 
-  const examenesElegidos = () => [
-    ...examenesSel,
-    ...otrosExamenes.split('\n').map((s) => s.trim()).filter(Boolean),
-  ]
+  // Ítems de la orden: casillas del catálogo → {catalogo_id}; "Otros" y, sin laboratorio, el campo
+  // libre "tipo" → {nombre}. Sin laboratorio no hay catálogo: solo texto libre.
+  const itemsElegidos = (): ItemOrdenExamen[] => labSel
+    ? armarItemsOrden(examenesSel, lineasExamenes(otrosExamenes))
+    : armarItemsOrden([], [...lineasExamenes(otrosExamenes), examenForm.tipo])
 
   const handleCrearExamen = async () => {
     if (!paciente) return
-    // Exámenes elegidos: del catálogo + "otros". Si no hay lab/catálogo, el campo libre "tipo".
-    const lista = labSel ? examenesElegidos() : examenesElegidos().concat(examenForm.tipo.trim() ? [examenForm.tipo.trim()] : [])
-    if (lista.length === 0) {
+    const items = itemsElegidos()
+    if (items.length === 0) {
       toast.error('Selecciona o escribe al menos un examen')
       return
     }
     setGuardandoExamen(true)
-
-    const { data: clinicaRows } = await supabase.rpc('mi_clinica_medico')
-    const clinica = (clinicaRows || [])[0] as { clinica_id: string; clinica_nombre: string } | undefined
     const labElegido = labs.find((l) => l.id === labSel)
-    const pacienteNombre = `${paciente.nombre} ${paciente.apellido}`.trim()
-    const instrucciones = examenForm.descripcion.trim() || null
 
-    // 1. Cabecera de la orden
-    const { data: orden, error: oErr } = await supabase.from('ordenes_examen').insert({
-      laboratorio_id: labSel || null,
-      clinica_id: clinica?.clinica_id || null,
-      medico_id: perfil?.id,
-      paciente_id: paciente.id,
-      origen: 'medico',
-      instrucciones,
-      paciente_nombre: pacienteNombre,
-      medico_nombre: perfil?.nombre_completo || null,
-      clinica_nombre: clinica?.clinica_nombre || null,
-    }).select('id').single()
-
-    if (oErr || !orden) {
-      setGuardandoExamen(false)
-      toast.error('Error al crear la orden: ' + (oErr?.message || ''))
-      return
-    }
-
-    // 2. Un ítem (fila examenes) por examen
-    const filas = lista.map((tipo) => ({
-      orden_id: orden.id,
-      paciente_id: paciente.id,
-      medico_id: perfil?.id,
-      tipo,
-      descripcion: instrucciones,
-      estado: 'pendiente',
-      laboratorio_id: labSel || null,
-      clinica_id: clinica?.clinica_id || null,
-      origen: 'medico',
-      paciente_nombre: pacienteNombre,
-      medico_nombre: perfil?.nombre_completo || null,
-      clinica_nombre: clinica?.clinica_nombre || null,
-    }))
-    const { error } = await supabase.from('examenes').insert(filas)
+    // Una sola RPC atómica (cabecera + ítems): médico, clínica, nombres, origen y estado los deriva el
+    // servidor, y notifica al lab y al paciente (notificar_orden_lab) dentro de la misma llamada.
+    const { data, error } = await supabase.rpc('crear_orden_examen_medico', {
+      p_paciente_id: paciente.id,
+      p_laboratorio_id: labSel || null,
+      p_items: items,
+      p_instrucciones: examenForm.descripcion.trim() || null,
+    })
     setGuardandoExamen(false)
     if (error) {
-      toast.error('Error al crear los exámenes: ' + error.message)
+      toast.error(mensajeErrorOrden(error, 'Error al crear la orden: '))
       return
     }
 
-    // Camino ÚNICO server-side gateado: notificar_orden_lab(orden.id) UNA vez al finalizar la orden.
-    // Deriva lab + paciente + count de los exámenes de la orden, compone el resumen ('N exámenes')
-    // server-side y crea 1 notif paciente + fan-out al lab + web-push. Reemplaza notificar_paciente +
-    // notificar_laboratorio + enviar-push (gate = médico de la orden; cero target/contenido del caller).
-    try {
-      await supabase.rpc('notificar_orden_lab', { p_orden_id: orden.id })
-    } catch (e) { console.error('Error notificar_orden_lab:', e?.message ?? e?.code) }
+    const n = (data as { n_items?: number } | null)?.n_items ?? items.length
     toast.success(
       labElegido
-        ? `Orden (${lista.length}) enviada a ${labElegido.nombre_empresa}. El paciente también la verá en su portal.`
-        : `Orden de examen creada (${lista.length}). El paciente la verá en su portal.`
+        ? `Orden (${n}) enviada a ${labElegido.nombre_empresa}. El paciente también la verá en su portal.`
+        : `Orden de examen creada (${n}). El paciente la verá en su portal.`
     )
     setModalExamen(false)
     setExamenForm({ tipo: '', descripcion: '' })
@@ -910,7 +874,7 @@ export default function ConsultaPage() {
                           <p className="text-[11px] font-semibold text-muted-foreground uppercase mb-1">{cat}</p>
                           {items.map((c) => (
                             <label key={c.id} className="flex items-center gap-2 px-1 py-1 rounded hover:bg-gray-50 cursor-pointer text-sm">
-                              <input type="checkbox" checked={examenesSel.has(c.nombre)} onChange={() => toggleExamenSel(c.nombre)} className="accent-[#1E5C8E] h-4 w-4" />
+                              <input type="checkbox" checked={examenesSel.has(c.id)} onChange={() => toggleExamenSel(c.id)} className="accent-[#1E5C8E] h-4 w-4" />
                               {c.nombre}
                             </label>
                           ))}
@@ -963,7 +927,7 @@ export default function ConsultaPage() {
               <Button
                 className="bg-[#1E5C8E] hover:bg-[#164a70]"
                 onClick={handleCrearExamen}
-                disabled={guardandoExamen || (labSel ? examenesElegidos().length === 0 : !examenForm.tipo.trim())}
+                disabled={guardandoExamen || itemsElegidos().length === 0}
               >
                 {guardandoExamen ? 'Creando…' : 'Crear orden'}
               </Button>

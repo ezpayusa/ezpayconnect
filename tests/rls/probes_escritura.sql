@@ -6960,9 +6960,10 @@ END $$;
 SELECT set_config('role','none', true);
 DO $$ BEGIN
   IF current_setting('probe.lx_ready',true)='1' AND coalesce(current_setting('probe.lx_ex',true),'')<>'' AND coalesce(current_setting('probe.lx_lab',true),'')<>'' THEN
-    -- sentinels: resultado crudo + TIPO de examen + NOMBRE de paciente → ninguno debe llegar al cuerpo (lock screen)
+    -- sentinels: resultado crudo + NOMBRE de paciente → ninguno debe llegar al cuerpo (lock screen).
+    -- El TIPO ya no se muta: la mig 332 lo congela para todos (EX022); P413 busca el tipo REAL del examen.
     UPDATE public.examenes SET laboratorio_id=NULLIF(current_setting('probe.lx_lab',true), '')::uuid,
-      resultados='PHISENTINEL_EVT4', tipo='TIPOSENTINEL_EVT4', paciente_nombre='NOMBRESENTINEL_EVT4'
+      resultados='PHISENTINEL_EVT4', paciente_nombre='NOMBRESENTINEL_EVT4'
       WHERE id=NULLIF(current_setting('probe.lx_ex',true), '')::int;
   END IF;
 EXCEPTION WHEN OTHERS THEN PERFORM set_config('probe.b2_fallos', coalesce(current_setting('probe.b2_fallos', true),'')||'L6930('||SQLSTATE||') ', false);
@@ -6987,12 +6988,17 @@ END $$;
 
 -- P413 PHI ENDURECIDO: ni resultado crudo NI tipo de examen NI nombre de paciente en titulo/mensaje de NINGUNA
 -- fila (3 sentinels ausentes) + accion_url interna (^/). El detalle vive in-app tras la accion_url.
-DO $$ DECLARE v_leak int; v_url_ok boolean; BEGIN
+DO $$ DECLARE v_leak int; v_url_ok boolean; v_tipo text; BEGIN
   IF current_setting('probe.fold4_call',true) IS DISTINCT FROM 'OK' THEN PERFORM set_config('probe.p413','N/A',false); RETURN; END IF;
+  -- (332) tipo real del examen (ya no se muta con sentinel); sin tipo la probe no puede afirmar nada
+  SELECT e.tipo INTO v_tipo FROM public.examenes e WHERE e.id = NULLIF(current_setting('probe.lx_ex',true), '')::int;
+  IF COALESCE(v_tipo,'') = '' THEN PERFORM set_config('probe.p413','FALLO (sin tipo real de lx_ex)',false); RETURN; END IF;
   SELECT (SELECT count(*) FROM public.notificaciones_pacientes WHERE paciente_id=NULLIF(current_setting('probe.lx_pac',true), '')::int AND titulo='Resultado de examen listo'
-            AND (titulo ~ 'PHISENTINEL_EVT4|TIPOSENTINEL_EVT4|NOMBRESENTINEL_EVT4' OR mensaje ~ 'PHISENTINEL_EVT4|TIPOSENTINEL_EVT4|NOMBRESENTINEL_EVT4'))
+            AND (titulo ~ 'PHISENTINEL_EVT4|NOMBRESENTINEL_EVT4' OR mensaje ~ 'PHISENTINEL_EVT4|NOMBRESENTINEL_EVT4'
+                 OR position(v_tipo in titulo) > 0 OR position(v_tipo in mensaje) > 0))
        + (SELECT count(*) FROM public.notificaciones WHERE usuario_id=NULLIF(current_setting('probe.lx_med',true), '')::uuid AND titulo='Resultado de examen listo'
-            AND (titulo ~ 'PHISENTINEL_EVT4|TIPOSENTINEL_EVT4|NOMBRESENTINEL_EVT4' OR mensaje ~ 'PHISENTINEL_EVT4|TIPOSENTINEL_EVT4|NOMBRESENTINEL_EVT4')) INTO v_leak;
+            AND (titulo ~ 'PHISENTINEL_EVT4|NOMBRESENTINEL_EVT4' OR mensaje ~ 'PHISENTINEL_EVT4|NOMBRESENTINEL_EVT4'
+                 OR position(v_tipo in titulo) > 0 OR position(v_tipo in mensaje) > 0)) INTO v_leak;
   SELECT bool_and(accion_url ~ '^/') INTO v_url_ok FROM (
     SELECT accion_url FROM public.notificaciones_pacientes WHERE paciente_id=NULLIF(current_setting('probe.lx_pac',true), '')::int AND titulo='Resultado de examen listo'
     UNION ALL
@@ -23042,6 +23048,1627 @@ EXCEPTION WHEN OTHERS THEN
 END $$;
 SELECT set_config('role','none', true);
 
+-- ================================================================================
+-- MIG 332 — ordenes de examen por RPC con catalogo_id (P866-P878).
+-- OK = comportamiento de la 332; con 332_rollback aplicado dan ROJO todos menos los que no dependen
+-- de objetos de la 332 (ver el reporte del dry-run).
+-- Fixture: medico QA 09d243d5 (atiende al paciente 23 por la cita 970), laboratorio QA a5cf575a
+-- (GT) con sus cuentas recepcion/admin/tecnico. Semillas propias por probe (catalogo inactivo,
+-- catalogo de otro lab, laboratorios de otro pais/suspendido). Negativos por SQLSTATE + SQLERRM
+-- exacto y sin filas nuevas. Cada probe borra lo que creo o sembro y verifica el snapshot.
+-- Las notificaciones que crea notificar_orden_lab se borran; la cola de net.http_post (push) la
+-- deshace el ROLLBACK del harness, igual que en las probes existentes que notifican.
+-- ================================================================================
+
+-- ---------------- P866 crear_orden_examen_medico: positivo con efecto ----------------
+DO $$
+DECLARE
+  c_med uuid := '09d243d5-b222-482a-9762-94a582e9e752'; c_lab uuid := 'a5cf575a-5d63-4ed2-839e-9b58da8152e0'; c_recep uuid := 'ce871197-285a-4d5f-9e5f-78606f9e124f'; c_admin uuid := 'e6f95b2f-7561-4e0b-b0c8-d1f38e6c4d66'; c_tec uuid := 'f69e2096-932f-45f0-9022-4e9058f2f0fd';
+  c_copro uuid := '27a2af0f-e201-4a1d-900a-cb27851d9577'; c_tp uuid := '43a1a45c-82f7-403a-a663-1ab7fc8b3732'; c_bhcg uuid := '4f32f195-e4de-4282-8303-8ec8bafecec1'; c_hemo uuid := '7c980fb6-5048-4905-a682-9d6e9feb55ed';
+  ords uuid[] := '{}'; seed_cat uuid[] := '{}'; seed_emp uuid[] := '{}'; seed_ex integer[] := '{}';
+  st text; msg text; j jsonb; ok boolean; det text := ''; bad text := ''; r_rest text := 'OK';
+  s_ex text; s_or text; s_cat text; s_cp text; notif0 uuid[]; np0 integer; n_or bigint; n_ex bigint;
+  v uuid; v2 uuid; x text; y text; n int; nn int; rec record; id_ex integer;
+BEGIN
+  -- snapshot: examenes, ordenes_examen, examenes_catalogo, cuentas del lab QA y notificaciones
+  SELECT md5(COALESCE(string_agg(to_jsonb(e)::text, '|' ORDER BY e.id), '')) INTO s_ex FROM public.examenes e;
+  SELECT md5(COALESCE(string_agg(to_jsonb(o)::text, '|' ORDER BY o.id), '')) INTO s_or FROM public.ordenes_examen o;
+  SELECT md5(COALESCE(string_agg(to_jsonb(c)::text, '|' ORDER BY c.id), '')) INTO s_cat FROM public.examenes_catalogo c;
+  SELECT md5(COALESCE(string_agg(to_jsonb(c)::text, '|' ORDER BY c.id), '')) INTO s_cp FROM public.cuentas_proveedor c WHERE c.empresa_id = c_lab OR c.id IN (c_recep, c_admin, c_tec);
+  notif0 := ARRAY(SELECT id FROM public.notificaciones);
+  SELECT COALESCE(max(id), 0) INTO np0 FROM public.notificaciones_pacientes;
+  st := '00000'; msg := ''; j := NULL;
+  SELECT count(*) INTO n_or FROM public.ordenes_examen; SELECT count(*) INTO n_ex FROM public.examenes;
+  BEGIN
+    PERFORM set_config('request.jwt.claims', json_build_object('sub', c_med::text, 'role', 'authenticated')::text, true); PERFORM set_config('role', 'authenticated', true);
+    j := public.crear_orden_examen_medico(p_paciente_id => 23, p_laboratorio_id => c_lab, p_items => jsonb_build_array(jsonb_build_object('catalogo_id', c_copro), jsonb_build_object('catalogo_id', c_hemo), jsonb_build_object('nombre', '  Cultivo especial QA  ')), p_instrucciones => '  Ayuno de 8 horas  ');
+    PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
+  EXCEPTION WHEN OTHERS THEN PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
+    st := SQLSTATE; msg := SQLERRM; END;
+  IF j IS NOT NULL THEN ords := ords || (j->>'orden_id')::uuid; END IF;
+  ok := COALESCE((st = '00000' AND (j->>'n_items')::int = 3 AND jsonb_array_length(j->'examen_ids') = 3), false);
+  det := det||' ;; RPC ok, 3 items|OK n_items=3|'||CASE WHEN ok THEN 'OK' ELSE 'ROJO' END||'|'||st||'|'||left(msg, 160);
+  IF NOT ok THEN bad := bad||'RPC ok, 3 items: '||st||' '||left(msg, 120)||'; '; END IF;
+  ok := COALESCE((EXISTS (SELECT 1 FROM public.ordenes_examen o
+      WHERE o.id = (j->>'orden_id')::uuid AND o.medico_id = c_med AND o.paciente_id = 23 AND o.laboratorio_id = c_lab
+        AND o.origen = 'medico' AND o.prioridad = 'normal' AND o.instrucciones = 'Ayuno de 8 horas'
+        AND o.clinica_id IS NOT DISTINCT FROM (SELECT m.clinica_id FROM public.obtener_clinica_principal_medico(c_med) m LIMIT 1)
+        AND o.clinica_nombre IS NOT DISTINCT FROM (SELECT cl.nombre FROM public.clinicas cl WHERE cl.id = o.clinica_id)
+        AND o.medico_nombre = (SELECT p.nombre_completo FROM public.perfiles p WHERE p.id = c_med)
+        AND o.paciente_nombre = (SELECT btrim(pa.nombre||' '||pa.apellido) FROM public.pacientes pa WHERE pa.id = 23)
+        AND o.clinica_id IS NOT NULL)), false);
+  det := det||' ;; cabecera derivada en el servidor|medico/paciente/lab/clinica/nombres derivados|'||CASE WHEN ok THEN 'OK' ELSE 'ROJO' END||'|'||st||'|'||left(msg, 160);
+  IF NOT ok THEN bad := bad||'cabecera derivada en el servidor: '||st||' '||left(msg, 120)||'; '; END IF;
+  ok := COALESCE(((SELECT string_agg(e.tipo||'='||COALESCE(e.catalogo_id::text, 'NULL'), ',' ORDER BY e.id)
+      FROM public.examenes e WHERE e.orden_id = (j->>'orden_id')::uuid)
+    = (SELECT nombre FROM public.examenes_catalogo WHERE id = c_copro)||'='||c_copro::text||','
+      ||(SELECT nombre FROM public.examenes_catalogo WHERE id = c_hemo)||'='||c_hemo::text||',Cultivo especial QA=NULL'), false);
+  det := det||' ;; nombre copiado del catalogo + catalogo_id|Coprológico=copro, Hemograma completo=hemo, libre recortado=NULL|'||CASE WHEN ok THEN 'OK' ELSE 'ROJO' END||'|'||st||'|'||left(msg, 160);
+  IF NOT ok THEN bad := bad||'nombre copiado del catalogo + catalogo_id: '||st||' '||left(msg, 120)||'; '; END IF;
+  ok := COALESCE((NOT EXISTS (SELECT 1 FROM public.examenes e JOIN public.ordenes_examen o ON o.id = e.orden_id
+      WHERE e.orden_id = (j->>'orden_id')::uuid AND NOT (e.estado = 'pendiente' AND e.prioridad = 'normal' AND e.origen = 'medico'
+        AND e.descripcion = o.instrucciones AND e.medico_id = o.medico_id AND e.paciente_id = o.paciente_id AND e.laboratorio_id = o.laboratorio_id
+        AND e.clinica_id IS NOT DISTINCT FROM o.clinica_id AND e.paciente_nombre = o.paciente_nombre
+        AND e.medico_nombre = o.medico_nombre AND e.clinica_nombre IS NOT DISTINCT FROM o.clinica_nombre AND NOT e.liberado_al_paciente))), false);
+  det := det||' ;; items copian la cabecera|estado pendiente + copias de la cabecera|'||CASE WHEN ok THEN 'OK' ELSE 'ROJO' END||'|'||st||'|'||left(msg, 160);
+  IF NOT ok THEN bad := bad||'items copian la cabecera: '||st||' '||left(msg, 120)||'; '; END IF;
+  ok := COALESCE((EXISTS (SELECT 1 FROM public.notificaciones_pacientes np WHERE np.id > np0 AND np.paciente_id = 23
+      AND np.titulo = 'Nueva orden de examen' AND np.mensaje = 'Tu médico te ordenó: 3 exámenes.')), false);
+  det := det||' ;; notificacion al paciente|1 notif al paciente (3 exámenes)|'||CASE WHEN ok THEN 'OK' ELSE 'ROJO' END||'|'||st||'|'||left(msg, 160);
+  IF NOT ok THEN bad := bad||'notificacion al paciente: '||st||' '||left(msg, 120)||'; '; END IF;
+  ok := COALESCE(((SELECT count(*) FROM public.notificaciones nt WHERE NOT (nt.id = ANY (notif0)) AND nt.tipo = 'orden_examen')
+    = (SELECT count(*) FROM public.cuentas_proveedor cp WHERE cp.empresa_id = c_lab AND cp.activo) AND
+    (SELECT count(*) FROM public.cuentas_proveedor cp WHERE cp.empresa_id = c_lab AND cp.activo) > 0), false);
+  det := det||' ;; notificacion al laboratorio|1 notif por cuenta activa del lab|'||CASE WHEN ok THEN 'OK' ELSE 'ROJO' END||'|'||st||'|'||left(msg, 160);
+  IF NOT ok THEN bad := bad||'notificacion al laboratorio: '||st||' '||left(msg, 120)||'; '; END IF;
+  -- restauracion: se borra solo lo que el probe creo/sembro y se verifica contra el snapshot
+  DELETE FROM public.ordenes_examen WHERE id = ANY (ords);           -- CASCADE a examenes
+  DELETE FROM public.examenes WHERE id = ANY (seed_ex);
+  DELETE FROM public.examenes_catalogo WHERE id = ANY (seed_cat);
+  DELETE FROM public.empresas_proveedoras WHERE id = ANY (seed_emp);
+  DELETE FROM public.notificaciones WHERE NOT (id = ANY (notif0));
+  DELETE FROM public.notificaciones_pacientes WHERE id > np0;
+  IF (SELECT md5(COALESCE(string_agg(to_jsonb(e)::text, '|' ORDER BY e.id), '')) FROM public.examenes e) IS DISTINCT FROM s_ex THEN r_rest := r_rest||' / examenes'; END IF;
+  IF (SELECT md5(COALESCE(string_agg(to_jsonb(o)::text, '|' ORDER BY o.id), '')) FROM public.ordenes_examen o) IS DISTINCT FROM s_or THEN r_rest := r_rest||' / ordenes_examen'; END IF;
+  IF (SELECT md5(COALESCE(string_agg(to_jsonb(c)::text, '|' ORDER BY c.id), '')) FROM public.examenes_catalogo c) IS DISTINCT FROM s_cat THEN r_rest := r_rest||' / examenes_catalogo'; END IF;
+  IF (SELECT md5(COALESCE(string_agg(to_jsonb(c)::text, '|' ORDER BY c.id), '')) FROM public.cuentas_proveedor c WHERE c.empresa_id = c_lab OR c.id IN (c_recep, c_admin, c_tec)) IS DISTINCT FROM s_cp THEN r_rest := r_rest||' / cuentas_proveedor'; END IF;
+  IF (SELECT count(*) FROM public.notificaciones WHERE NOT (id = ANY (notif0))) <> 0 OR (SELECT count(*) FROM public.notificaciones_pacientes WHERE id > np0) <> 0
+     OR (SELECT count(*) FROM public.notificaciones) <> cardinality(notif0) THEN r_rest := r_rest||' / notificaciones'; END IF;
+  IF EXISTS (SELECT 1 FROM public.empresas_proveedoras WHERE id = ANY (seed_emp)) THEN r_rest := r_rest||' / empresas sembradas'; END IF;
+  det := det||' ;; restauracion|'||cardinality(ords)||' orden(es) creadas, '||cardinality(seed_cat)||' catalogo, '||cardinality(seed_emp)||' empresas, '||cardinality(seed_ex)||' examenes sembrados; snapshot igual|'||r_rest||'|-|';
+
+  PERFORM set_config('probe.p866_det', det, false);
+  PERFORM set_config('probe.p866', CASE WHEN bad = '' AND r_rest = 'OK'
+    THEN 'OK (medico: 1 orden + 3 items; nombre copiado del catalogo y catalogo_id; texto libre NULL; derivados del servidor; notif paciente + lab; restaurado)'
+    ELSE 'ROJO ('||left(bad, 700)||' | restauracion='||r_rest||')' END, false);
+EXCEPTION WHEN OTHERS THEN
+  PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
+  PERFORM set_config('probe.p866', 'FALLO ('||SQLSTATE||' '||SQLERRM||')', false);
+END $$;
+SELECT set_config('role', 'none', true);
+
+-- ---------------- P867 crear_orden_examen_medico: orden sin laboratorio ----------------
+DO $$
+DECLARE
+  c_med uuid := '09d243d5-b222-482a-9762-94a582e9e752'; c_lab uuid := 'a5cf575a-5d63-4ed2-839e-9b58da8152e0'; c_recep uuid := 'ce871197-285a-4d5f-9e5f-78606f9e124f'; c_admin uuid := 'e6f95b2f-7561-4e0b-b0c8-d1f38e6c4d66'; c_tec uuid := 'f69e2096-932f-45f0-9022-4e9058f2f0fd';
+  c_copro uuid := '27a2af0f-e201-4a1d-900a-cb27851d9577'; c_tp uuid := '43a1a45c-82f7-403a-a663-1ab7fc8b3732'; c_bhcg uuid := '4f32f195-e4de-4282-8303-8ec8bafecec1'; c_hemo uuid := '7c980fb6-5048-4905-a682-9d6e9feb55ed';
+  ords uuid[] := '{}'; seed_cat uuid[] := '{}'; seed_emp uuid[] := '{}'; seed_ex integer[] := '{}';
+  st text; msg text; j jsonb; ok boolean; det text := ''; bad text := ''; r_rest text := 'OK';
+  s_ex text; s_or text; s_cat text; s_cp text; notif0 uuid[]; np0 integer; n_or bigint; n_ex bigint;
+  v uuid; v2 uuid; x text; y text; n int; nn int; rec record; id_ex integer;
+BEGIN
+  -- snapshot: examenes, ordenes_examen, examenes_catalogo, cuentas del lab QA y notificaciones
+  SELECT md5(COALESCE(string_agg(to_jsonb(e)::text, '|' ORDER BY e.id), '')) INTO s_ex FROM public.examenes e;
+  SELECT md5(COALESCE(string_agg(to_jsonb(o)::text, '|' ORDER BY o.id), '')) INTO s_or FROM public.ordenes_examen o;
+  SELECT md5(COALESCE(string_agg(to_jsonb(c)::text, '|' ORDER BY c.id), '')) INTO s_cat FROM public.examenes_catalogo c;
+  SELECT md5(COALESCE(string_agg(to_jsonb(c)::text, '|' ORDER BY c.id), '')) INTO s_cp FROM public.cuentas_proveedor c WHERE c.empresa_id = c_lab OR c.id IN (c_recep, c_admin, c_tec);
+  notif0 := ARRAY(SELECT id FROM public.notificaciones);
+  SELECT COALESCE(max(id), 0) INTO np0 FROM public.notificaciones_pacientes;
+  st := '00000'; msg := ''; j := NULL;
+  SELECT count(*) INTO n_or FROM public.ordenes_examen; SELECT count(*) INTO n_ex FROM public.examenes;
+  BEGIN
+    PERFORM set_config('request.jwt.claims', json_build_object('sub', c_med::text, 'role', 'authenticated')::text, true); PERFORM set_config('role', 'authenticated', true);
+    j := public.crear_orden_examen_medico(p_paciente_id => 23, p_laboratorio_id => NULL, p_items => jsonb_build_array(jsonb_build_object('nombre', 'Coprológico')));
+    PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
+  EXCEPTION WHEN OTHERS THEN PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
+    st := SQLSTATE; msg := SQLERRM; END;
+  IF j IS NOT NULL THEN ords := ords || (j->>'orden_id')::uuid; END IF;
+  ok := COALESCE((st = '00000' AND EXISTS (SELECT 1 FROM public.ordenes_examen o WHERE o.id = (j->>'orden_id')::uuid AND o.laboratorio_id IS NULL)
+    AND (SELECT count(*) FROM public.examenes e WHERE e.orden_id = (j->>'orden_id')::uuid AND e.laboratorio_id IS NULL AND e.catalogo_id IS NULL AND e.tipo = 'Coprológico') = 1), false);
+  det := det||' ;; sin lab + texto libre (aunque exista en un catalogo)|OK, laboratorio NULL, catalogo_id NULL|'||CASE WHEN ok THEN 'OK' ELSE 'ROJO' END||'|'||st||'|'||left(msg, 160);
+  IF NOT ok THEN bad := bad||'sin lab + texto libre (aunque exista en un catalogo): '||st||' '||left(msg, 120)||'; '; END IF;
+  st := '00000'; msg := ''; j := NULL;
+  SELECT count(*) INTO n_or FROM public.ordenes_examen; SELECT count(*) INTO n_ex FROM public.examenes;
+  BEGIN
+    PERFORM set_config('request.jwt.claims', json_build_object('sub', c_med::text, 'role', 'authenticated')::text, true); PERFORM set_config('role', 'authenticated', true);
+    j := public.crear_orden_examen_medico(p_paciente_id => 23, p_laboratorio_id => NULL, p_items => jsonb_build_array(jsonb_build_object('catalogo_id', c_copro)));
+    PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
+  EXCEPTION WHEN OTHERS THEN PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
+    st := SQLSTATE; msg := SQLERRM; END;
+  IF j IS NOT NULL THEN ords := ords || (j->>'orden_id')::uuid; END IF;
+  ok := COALESCE((st = 'EX013' AND msg = 'Una orden sin laboratorio solo admite exámenes escritos a mano' AND j IS NULL AND (SELECT count(*) FROM public.ordenes_examen) = n_or AND (SELECT count(*) FROM public.examenes) = n_ex), false);
+  det := det||' ;; sin lab + catalogo_id|EX013 sin filas|'||CASE WHEN ok THEN 'OK' ELSE 'ROJO' END||'|'||st||'|'||left(msg, 160);
+  IF NOT ok THEN bad := bad||'sin lab + catalogo_id: '||st||' '||left(msg, 120)||'; '; END IF;
+  -- restauracion: se borra solo lo que el probe creo/sembro y se verifica contra el snapshot
+  DELETE FROM public.ordenes_examen WHERE id = ANY (ords);           -- CASCADE a examenes
+  DELETE FROM public.examenes WHERE id = ANY (seed_ex);
+  DELETE FROM public.examenes_catalogo WHERE id = ANY (seed_cat);
+  DELETE FROM public.empresas_proveedoras WHERE id = ANY (seed_emp);
+  DELETE FROM public.notificaciones WHERE NOT (id = ANY (notif0));
+  DELETE FROM public.notificaciones_pacientes WHERE id > np0;
+  IF (SELECT md5(COALESCE(string_agg(to_jsonb(e)::text, '|' ORDER BY e.id), '')) FROM public.examenes e) IS DISTINCT FROM s_ex THEN r_rest := r_rest||' / examenes'; END IF;
+  IF (SELECT md5(COALESCE(string_agg(to_jsonb(o)::text, '|' ORDER BY o.id), '')) FROM public.ordenes_examen o) IS DISTINCT FROM s_or THEN r_rest := r_rest||' / ordenes_examen'; END IF;
+  IF (SELECT md5(COALESCE(string_agg(to_jsonb(c)::text, '|' ORDER BY c.id), '')) FROM public.examenes_catalogo c) IS DISTINCT FROM s_cat THEN r_rest := r_rest||' / examenes_catalogo'; END IF;
+  IF (SELECT md5(COALESCE(string_agg(to_jsonb(c)::text, '|' ORDER BY c.id), '')) FROM public.cuentas_proveedor c WHERE c.empresa_id = c_lab OR c.id IN (c_recep, c_admin, c_tec)) IS DISTINCT FROM s_cp THEN r_rest := r_rest||' / cuentas_proveedor'; END IF;
+  IF (SELECT count(*) FROM public.notificaciones WHERE NOT (id = ANY (notif0))) <> 0 OR (SELECT count(*) FROM public.notificaciones_pacientes WHERE id > np0) <> 0
+     OR (SELECT count(*) FROM public.notificaciones) <> cardinality(notif0) THEN r_rest := r_rest||' / notificaciones'; END IF;
+  IF EXISTS (SELECT 1 FROM public.empresas_proveedoras WHERE id = ANY (seed_emp)) THEN r_rest := r_rest||' / empresas sembradas'; END IF;
+  det := det||' ;; restauracion|'||cardinality(ords)||' orden(es) creadas, '||cardinality(seed_cat)||' catalogo, '||cardinality(seed_emp)||' empresas, '||cardinality(seed_ex)||' examenes sembrados; snapshot igual|'||r_rest||'|-|';
+
+  PERFORM set_config('probe.p867_det', det, false);
+  PERFORM set_config('probe.p867', CASE WHEN bad = '' AND r_rest = 'OK'
+    THEN 'OK (sin laboratorio: texto libre OK con lab NULL; catalogo_id -> EX013 sin filas; restaurado)'
+    ELSE 'ROJO ('||left(bad, 700)||' | restauracion='||r_rest||')' END, false);
+EXCEPTION WHEN OTHERS THEN
+  PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
+  PERFORM set_config('probe.p867', 'FALLO ('||SQLSTATE||' '||SQLERRM||')', false);
+END $$;
+SELECT set_config('role', 'none', true);
+
+-- ---------------- P868 crear_orden_examen_walkin: positivo con efecto ----------------
+DO $$
+DECLARE
+  c_med uuid := '09d243d5-b222-482a-9762-94a582e9e752'; c_lab uuid := 'a5cf575a-5d63-4ed2-839e-9b58da8152e0'; c_recep uuid := 'ce871197-285a-4d5f-9e5f-78606f9e124f'; c_admin uuid := 'e6f95b2f-7561-4e0b-b0c8-d1f38e6c4d66'; c_tec uuid := 'f69e2096-932f-45f0-9022-4e9058f2f0fd';
+  c_copro uuid := '27a2af0f-e201-4a1d-900a-cb27851d9577'; c_tp uuid := '43a1a45c-82f7-403a-a663-1ab7fc8b3732'; c_bhcg uuid := '4f32f195-e4de-4282-8303-8ec8bafecec1'; c_hemo uuid := '7c980fb6-5048-4905-a682-9d6e9feb55ed';
+  ords uuid[] := '{}'; seed_cat uuid[] := '{}'; seed_emp uuid[] := '{}'; seed_ex integer[] := '{}';
+  st text; msg text; j jsonb; ok boolean; det text := ''; bad text := ''; r_rest text := 'OK';
+  s_ex text; s_or text; s_cat text; s_cp text; notif0 uuid[]; np0 integer; n_or bigint; n_ex bigint;
+  v uuid; v2 uuid; x text; y text; n int; nn int; rec record; id_ex integer;
+BEGIN
+  -- snapshot: examenes, ordenes_examen, examenes_catalogo, cuentas del lab QA y notificaciones
+  SELECT md5(COALESCE(string_agg(to_jsonb(e)::text, '|' ORDER BY e.id), '')) INTO s_ex FROM public.examenes e;
+  SELECT md5(COALESCE(string_agg(to_jsonb(o)::text, '|' ORDER BY o.id), '')) INTO s_or FROM public.ordenes_examen o;
+  SELECT md5(COALESCE(string_agg(to_jsonb(c)::text, '|' ORDER BY c.id), '')) INTO s_cat FROM public.examenes_catalogo c;
+  SELECT md5(COALESCE(string_agg(to_jsonb(c)::text, '|' ORDER BY c.id), '')) INTO s_cp FROM public.cuentas_proveedor c WHERE c.empresa_id = c_lab OR c.id IN (c_recep, c_admin, c_tec);
+  notif0 := ARRAY(SELECT id FROM public.notificaciones);
+  SELECT COALESCE(max(id), 0) INTO np0 FROM public.notificaciones_pacientes;
+  st := '00000'; msg := ''; j := NULL;
+  SELECT count(*) INTO n_or FROM public.ordenes_examen; SELECT count(*) INTO n_ex FROM public.examenes;
+  BEGIN
+    PERFORM set_config('request.jwt.claims', json_build_object('sub', c_recep::text, 'role', 'authenticated')::text, true); PERFORM set_config('role', 'authenticated', true);
+    j := public.crear_orden_examen_walkin(p_items => jsonb_build_array(jsonb_build_object('catalogo_id', c_tp), jsonb_build_object('nombre', 'Prueba libre walkin QA')), p_paciente_nombre => '  Juan Walkin QA  ', p_paciente_documento => ' 1234567 ', p_paciente_telefono => '5550000', p_instrucciones => 'Traer orina', p_prioridad => 'urgente');
+    PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
+  EXCEPTION WHEN OTHERS THEN PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
+    st := SQLSTATE; msg := SQLERRM; END;
+  IF j IS NOT NULL THEN ords := ords || (j->>'orden_id')::uuid; END IF;
+  ok := COALESCE((st = '00000' AND (j->>'n_items')::int = 2), false);
+  det := det||' ;; RPC ok, 2 items|OK n_items=2|'||CASE WHEN ok THEN 'OK' ELSE 'ROJO' END||'|'||st||'|'||left(msg, 160);
+  IF NOT ok THEN bad := bad||'RPC ok, 2 items: '||st||' '||left(msg, 120)||'; '; END IF;
+  ok := COALESCE((EXISTS (SELECT 1 FROM public.ordenes_examen o WHERE o.id = (j->>'orden_id')::uuid
+      AND o.laboratorio_id = c_lab AND o.origen = 'walk_in' AND o.prioridad = 'urgente' AND o.instrucciones = 'Traer orina'
+      AND o.paciente_nombre = 'Juan Walkin QA' AND o.paciente_documento = '1234567' AND o.paciente_telefono = '5550000'
+      AND o.medico_id IS NULL AND o.paciente_id IS NULL AND o.clinica_id IS NULL AND o.medico_nombre IS NULL AND o.clinica_nombre IS NULL)), false);
+  det := det||' ;; cabecera walk-in|lab derivado, walk_in, urgente, datos recortados, sin medico/paciente/clinica|'||CASE WHEN ok THEN 'OK' ELSE 'ROJO' END||'|'||st||'|'||left(msg, 160);
+  IF NOT ok THEN bad := bad||'cabecera walk-in: '||st||' '||left(msg, 120)||'; '; END IF;
+  ok := COALESCE(((SELECT string_agg(e.tipo||'='||COALESCE(e.catalogo_id::text, 'NULL')||'/'||e.estado||'/'||e.prioridad||'/'||e.origen, ',' ORDER BY e.id)
+      FROM public.examenes e WHERE e.orden_id = (j->>'orden_id')::uuid)
+    = (SELECT nombre FROM public.examenes_catalogo WHERE id = c_tp)||'='||c_tp::text||'/recibida/urgente/walk_in,Prueba libre walkin QA=NULL/recibida/urgente/walk_in'), false);
+  det := det||' ;; items walk-in|estado recibida; nombre de catalogo copiado; libre NULL|'||CASE WHEN ok THEN 'OK' ELSE 'ROJO' END||'|'||st||'|'||left(msg, 160);
+  IF NOT ok THEN bad := bad||'items walk-in: '||st||' '||left(msg, 120)||'; '; END IF;
+  ok := COALESCE(((SELECT count(*) FROM public.notificaciones WHERE NOT (id = ANY (notif0))) = 0 AND (SELECT count(*) FROM public.notificaciones_pacientes WHERE id > np0) = 0), false);
+  det := det||' ;; walk-in no notifica|0 notificaciones|'||CASE WHEN ok THEN 'OK' ELSE 'ROJO' END||'|'||st||'|'||left(msg, 160);
+  IF NOT ok THEN bad := bad||'walk-in no notifica: '||st||' '||left(msg, 120)||'; '; END IF;
+  -- restauracion: se borra solo lo que el probe creo/sembro y se verifica contra el snapshot
+  DELETE FROM public.ordenes_examen WHERE id = ANY (ords);           -- CASCADE a examenes
+  DELETE FROM public.examenes WHERE id = ANY (seed_ex);
+  DELETE FROM public.examenes_catalogo WHERE id = ANY (seed_cat);
+  DELETE FROM public.empresas_proveedoras WHERE id = ANY (seed_emp);
+  DELETE FROM public.notificaciones WHERE NOT (id = ANY (notif0));
+  DELETE FROM public.notificaciones_pacientes WHERE id > np0;
+  IF (SELECT md5(COALESCE(string_agg(to_jsonb(e)::text, '|' ORDER BY e.id), '')) FROM public.examenes e) IS DISTINCT FROM s_ex THEN r_rest := r_rest||' / examenes'; END IF;
+  IF (SELECT md5(COALESCE(string_agg(to_jsonb(o)::text, '|' ORDER BY o.id), '')) FROM public.ordenes_examen o) IS DISTINCT FROM s_or THEN r_rest := r_rest||' / ordenes_examen'; END IF;
+  IF (SELECT md5(COALESCE(string_agg(to_jsonb(c)::text, '|' ORDER BY c.id), '')) FROM public.examenes_catalogo c) IS DISTINCT FROM s_cat THEN r_rest := r_rest||' / examenes_catalogo'; END IF;
+  IF (SELECT md5(COALESCE(string_agg(to_jsonb(c)::text, '|' ORDER BY c.id), '')) FROM public.cuentas_proveedor c WHERE c.empresa_id = c_lab OR c.id IN (c_recep, c_admin, c_tec)) IS DISTINCT FROM s_cp THEN r_rest := r_rest||' / cuentas_proveedor'; END IF;
+  IF (SELECT count(*) FROM public.notificaciones WHERE NOT (id = ANY (notif0))) <> 0 OR (SELECT count(*) FROM public.notificaciones_pacientes WHERE id > np0) <> 0
+     OR (SELECT count(*) FROM public.notificaciones) <> cardinality(notif0) THEN r_rest := r_rest||' / notificaciones'; END IF;
+  IF EXISTS (SELECT 1 FROM public.empresas_proveedoras WHERE id = ANY (seed_emp)) THEN r_rest := r_rest||' / empresas sembradas'; END IF;
+  det := det||' ;; restauracion|'||cardinality(ords)||' orden(es) creadas, '||cardinality(seed_cat)||' catalogo, '||cardinality(seed_emp)||' empresas, '||cardinality(seed_ex)||' examenes sembrados; snapshot igual|'||r_rest||'|-|';
+
+  PERFORM set_config('probe.p868_det', det, false);
+  PERFORM set_config('probe.p868', CASE WHEN bad = '' AND r_rest = 'OK'
+    THEN 'OK (walk-in (recepcion): 1 orden + 2 items; lab derivado; recibida; urgente; nombre de catalogo copiado; sin notificacion; restaurado)'
+    ELSE 'ROJO ('||left(bad, 700)||' | restauracion='||r_rest||')' END, false);
+EXCEPTION WHEN OTHERS THEN
+  PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
+  PERFORM set_config('probe.p868', 'FALLO ('||SQLSTATE||' '||SQLERRM||')', false);
+END $$;
+SELECT set_config('role', 'none', true);
+
+-- ---------------- P869 crear_orden_examen_medico: cada causa de rechazo ----------------
+DO $$
+DECLARE
+  c_med uuid := '09d243d5-b222-482a-9762-94a582e9e752'; c_lab uuid := 'a5cf575a-5d63-4ed2-839e-9b58da8152e0'; c_recep uuid := 'ce871197-285a-4d5f-9e5f-78606f9e124f'; c_admin uuid := 'e6f95b2f-7561-4e0b-b0c8-d1f38e6c4d66'; c_tec uuid := 'f69e2096-932f-45f0-9022-4e9058f2f0fd';
+  c_copro uuid := '27a2af0f-e201-4a1d-900a-cb27851d9577'; c_tp uuid := '43a1a45c-82f7-403a-a663-1ab7fc8b3732'; c_bhcg uuid := '4f32f195-e4de-4282-8303-8ec8bafecec1'; c_hemo uuid := '7c980fb6-5048-4905-a682-9d6e9feb55ed';
+  ords uuid[] := '{}'; seed_cat uuid[] := '{}'; seed_emp uuid[] := '{}'; seed_ex integer[] := '{}';
+  st text; msg text; j jsonb; ok boolean; det text := ''; bad text := ''; r_rest text := 'OK';
+  s_ex text; s_or text; s_cat text; s_cp text; notif0 uuid[]; np0 integer; n_or bigint; n_ex bigint;
+  v uuid; v2 uuid; x text; y text; n int; nn int; rec record; id_ex integer;
+BEGIN
+  -- snapshot: examenes, ordenes_examen, examenes_catalogo, cuentas del lab QA y notificaciones
+  SELECT md5(COALESCE(string_agg(to_jsonb(e)::text, '|' ORDER BY e.id), '')) INTO s_ex FROM public.examenes e;
+  SELECT md5(COALESCE(string_agg(to_jsonb(o)::text, '|' ORDER BY o.id), '')) INTO s_or FROM public.ordenes_examen o;
+  SELECT md5(COALESCE(string_agg(to_jsonb(c)::text, '|' ORDER BY c.id), '')) INTO s_cat FROM public.examenes_catalogo c;
+  SELECT md5(COALESCE(string_agg(to_jsonb(c)::text, '|' ORDER BY c.id), '')) INTO s_cp FROM public.cuentas_proveedor c WHERE c.empresa_id = c_lab OR c.id IN (c_recep, c_admin, c_tec);
+  notif0 := ARRAY(SELECT id FROM public.notificaciones);
+  SELECT COALESCE(max(id), 0) INTO np0 FROM public.notificaciones_pacientes;
+  -- semilla: examen de catalogo INACTIVO del lab QA y uno de OTRO laboratorio
+  INSERT INTO public.examenes_catalogo (laboratorio_id, nombre, categoria, activo) VALUES (c_lab, 'P332 Inactivo QA', 'QA', false) RETURNING id INTO v;
+  seed_cat := seed_cat || v;
+  INSERT INTO public.examenes_catalogo (laboratorio_id, nombre, categoria, activo) VALUES ('411d6f8c-a405-49d6-9ed6-fbeb0db05133', 'P332 Otro lab QA', 'QA', true) RETURNING id INTO v2;
+  seed_cat := seed_cat || v2;
+  -- laboratorios sembrados: clinico de OTRO pais y clinico SUSPENDIDO del mismo pais
+  INSERT INTO public.empresas_proveedoras (nombre_empresa, email_contacto, tipo, pais_id, estado)
+    VALUES ('P332 Lab MX', 'p332mx@probe.test', 'laboratorio_clinico', 'ecee97df-1795-415c-a56c-3dcb261586fb', 'activa') RETURNING id INTO v;
+  seed_emp := seed_emp || v;
+  INSERT INTO public.empresas_proveedoras (nombre_empresa, email_contacto, tipo, pais_id, estado)
+    VALUES ('P332 Lab suspendido', 'p332susp@probe.test', 'laboratorio_clinico', 'cbbbbe6d-59fe-4cf2-91ee-3e31ba1d5909', 'suspendida') RETURNING id INTO v;
+  seed_emp := seed_emp || v;
+  st := '00000'; msg := ''; j := NULL;
+  SELECT count(*) INTO n_or FROM public.ordenes_examen; SELECT count(*) INTO n_ex FROM public.examenes;
+  BEGIN
+    PERFORM set_config('request.jwt.claims', '', true); PERFORM set_config('role', 'authenticated', true);
+    j := public.crear_orden_examen_medico(p_paciente_id => 23, p_laboratorio_id => c_lab, p_items => jsonb_build_array(jsonb_build_object('catalogo_id', c_copro)));
+    PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
+  EXCEPTION WHEN OTHERS THEN PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
+    st := SQLSTATE; msg := SQLERRM; END;
+  IF j IS NOT NULL THEN ords := ords || (j->>'orden_id')::uuid; END IF;
+  ok := COALESCE((st = 'EX001' AND msg = 'No autorizado: inicie sesión' AND j IS NULL AND (SELECT count(*) FROM public.ordenes_examen) = n_or AND (SELECT count(*) FROM public.examenes) = n_ex), false);
+  det := det||' ;; EX001 sin sesion|EX001 sin filas|'||CASE WHEN ok THEN 'OK' ELSE 'ROJO' END||'|'||st||'|'||left(msg, 160);
+  IF NOT ok THEN bad := bad||'EX001 sin sesion: '||st||' '||left(msg, 120)||'; '; END IF;
+  st := '00000'; msg := ''; j := NULL;
+  SELECT count(*) INTO n_or FROM public.ordenes_examen; SELECT count(*) INTO n_ex FROM public.examenes;
+  BEGIN
+    PERFORM set_config('request.jwt.claims', json_build_object('sub', c_recep::text, 'role', 'authenticated')::text, true); PERFORM set_config('role', 'authenticated', true);
+    j := public.crear_orden_examen_medico(p_paciente_id => 23, p_laboratorio_id => c_lab, p_items => jsonb_build_array(jsonb_build_object('catalogo_id', c_copro)));
+    PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
+  EXCEPTION WHEN OTHERS THEN PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
+    st := SQLSTATE; msg := SQLERRM; END;
+  IF j IS NOT NULL THEN ords := ords || (j->>'orden_id')::uuid; END IF;
+  ok := COALESCE((st = 'EX002' AND msg = 'No autorizado: solo un médico puede ordenar exámenes' AND j IS NULL AND (SELECT count(*) FROM public.ordenes_examen) = n_or AND (SELECT count(*) FROM public.examenes) = n_ex), false);
+  det := det||' ;; EX002 cuenta de lab|EX002 sin filas|'||CASE WHEN ok THEN 'OK' ELSE 'ROJO' END||'|'||st||'|'||left(msg, 160);
+  IF NOT ok THEN bad := bad||'EX002 cuenta de lab: '||st||' '||left(msg, 120)||'; '; END IF;
+  st := '00000'; msg := ''; j := NULL;
+  SELECT count(*) INTO n_or FROM public.ordenes_examen; SELECT count(*) INTO n_ex FROM public.examenes;
+  BEGIN
+    PERFORM set_config('request.jwt.claims', json_build_object('sub', c_med::text, 'role', 'authenticated')::text, true); PERFORM set_config('role', 'authenticated', true);
+    j := public.crear_orden_examen_medico(p_paciente_id => NULL, p_laboratorio_id => c_lab, p_items => jsonb_build_array(jsonb_build_object('catalogo_id', c_copro)));
+    PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
+  EXCEPTION WHEN OTHERS THEN PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
+    st := SQLSTATE; msg := SQLERRM; END;
+  IF j IS NOT NULL THEN ords := ords || (j->>'orden_id')::uuid; END IF;
+  ok := COALESCE((st = 'EX003' AND msg = 'Paciente no encontrado' AND j IS NULL AND (SELECT count(*) FROM public.ordenes_examen) = n_or AND (SELECT count(*) FROM public.examenes) = n_ex), false);
+  det := det||' ;; EX003 paciente NULL|EX003 sin filas|'||CASE WHEN ok THEN 'OK' ELSE 'ROJO' END||'|'||st||'|'||left(msg, 160);
+  IF NOT ok THEN bad := bad||'EX003 paciente NULL: '||st||' '||left(msg, 120)||'; '; END IF;
+  st := '00000'; msg := ''; j := NULL;
+  SELECT count(*) INTO n_or FROM public.ordenes_examen; SELECT count(*) INTO n_ex FROM public.examenes;
+  BEGIN
+    PERFORM set_config('request.jwt.claims', json_build_object('sub', c_med::text, 'role', 'authenticated')::text, true); PERFORM set_config('role', 'authenticated', true);
+    j := public.crear_orden_examen_medico(p_paciente_id => 999999999, p_laboratorio_id => c_lab, p_items => jsonb_build_array(jsonb_build_object('catalogo_id', c_copro)));
+    PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
+  EXCEPTION WHEN OTHERS THEN PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
+    st := SQLSTATE; msg := SQLERRM; END;
+  IF j IS NOT NULL THEN ords := ords || (j->>'orden_id')::uuid; END IF;
+  ok := COALESCE((st = 'EX003' AND msg = 'Paciente no encontrado' AND j IS NULL AND (SELECT count(*) FROM public.ordenes_examen) = n_or AND (SELECT count(*) FROM public.examenes) = n_ex), false);
+  det := det||' ;; EX003 paciente inexistente|EX003 sin filas|'||CASE WHEN ok THEN 'OK' ELSE 'ROJO' END||'|'||st||'|'||left(msg, 160);
+  IF NOT ok THEN bad := bad||'EX003 paciente inexistente: '||st||' '||left(msg, 120)||'; '; END IF;
+  st := '00000'; msg := ''; j := NULL;
+  SELECT count(*) INTO n_or FROM public.ordenes_examen; SELECT count(*) INTO n_ex FROM public.examenes;
+  BEGIN
+    PERFORM set_config('request.jwt.claims', json_build_object('sub', c_med::text, 'role', 'authenticated')::text, true); PERFORM set_config('role', 'authenticated', true);
+    j := public.crear_orden_examen_medico(p_paciente_id => 10, p_laboratorio_id => c_lab, p_items => jsonb_build_array(jsonb_build_object('catalogo_id', c_copro)));
+    PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
+  EXCEPTION WHEN OTHERS THEN PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
+    st := SQLSTATE; msg := SQLERRM; END;
+  IF j IS NOT NULL THEN ords := ords || (j->>'orden_id')::uuid; END IF;
+  ok := COALESCE((st = 'EX004' AND msg = 'No autorizado: no atiende a este paciente' AND j IS NULL AND (SELECT count(*) FROM public.ordenes_examen) = n_or AND (SELECT count(*) FROM public.examenes) = n_ex), false);
+  det := det||' ;; EX004 paciente ajeno (10)|EX004 sin filas|'||CASE WHEN ok THEN 'OK' ELSE 'ROJO' END||'|'||st||'|'||left(msg, 160);
+  IF NOT ok THEN bad := bad||'EX004 paciente ajeno (10): '||st||' '||left(msg, 120)||'; '; END IF;
+  st := '00000'; msg := ''; j := NULL;
+  SELECT count(*) INTO n_or FROM public.ordenes_examen; SELECT count(*) INTO n_ex FROM public.examenes;
+  BEGIN
+    PERFORM set_config('request.jwt.claims', json_build_object('sub', c_med::text, 'role', 'authenticated')::text, true); PERFORM set_config('role', 'authenticated', true);
+    j := public.crear_orden_examen_medico(p_paciente_id => 23, p_laboratorio_id => '411d6f8c-a405-49d6-9ed6-fbeb0db05133'::uuid, p_items => jsonb_build_array(jsonb_build_object('nombre','x')));
+    PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
+  EXCEPTION WHEN OTHERS THEN PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
+    st := SQLSTATE; msg := SQLERRM; END;
+  IF j IS NOT NULL THEN ords := ords || (j->>'orden_id')::uuid; END IF;
+  ok := COALESCE((st = 'EX005' AND msg = 'Laboratorio no disponible para esta orden' AND j IS NULL AND (SELECT count(*) FROM public.ordenes_examen) = n_or AND (SELECT count(*) FROM public.examenes) = n_ex), false);
+  det := det||' ;; EX005 lab farmaceutico|EX005 sin filas|'||CASE WHEN ok THEN 'OK' ELSE 'ROJO' END||'|'||st||'|'||left(msg, 160);
+  IF NOT ok THEN bad := bad||'EX005 lab farmaceutico: '||st||' '||left(msg, 120)||'; '; END IF;
+  st := '00000'; msg := ''; j := NULL;
+  SELECT count(*) INTO n_or FROM public.ordenes_examen; SELECT count(*) INTO n_ex FROM public.examenes;
+  BEGIN
+    PERFORM set_config('request.jwt.claims', json_build_object('sub', c_med::text, 'role', 'authenticated')::text, true); PERFORM set_config('role', 'authenticated', true);
+    j := public.crear_orden_examen_medico(p_paciente_id => 23, p_laboratorio_id => '548741e4-dc6d-4b8b-81db-c30f5ef5b142'::uuid, p_items => jsonb_build_array(jsonb_build_object('nombre','x')));
+    PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
+  EXCEPTION WHEN OTHERS THEN PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
+    st := SQLSTATE; msg := SQLERRM; END;
+  IF j IS NOT NULL THEN ords := ords || (j->>'orden_id')::uuid; END IF;
+  ok := COALESCE((st = 'EX005' AND msg = 'Laboratorio no disponible para esta orden' AND j IS NULL AND (SELECT count(*) FROM public.ordenes_examen) = n_or AND (SELECT count(*) FROM public.examenes) = n_ex), false);
+  det := det||' ;; EX005 farmacia|EX005 sin filas|'||CASE WHEN ok THEN 'OK' ELSE 'ROJO' END||'|'||st||'|'||left(msg, 160);
+  IF NOT ok THEN bad := bad||'EX005 farmacia: '||st||' '||left(msg, 120)||'; '; END IF;
+  st := '00000'; msg := ''; j := NULL;
+  SELECT count(*) INTO n_or FROM public.ordenes_examen; SELECT count(*) INTO n_ex FROM public.examenes;
+  BEGIN
+    PERFORM set_config('request.jwt.claims', json_build_object('sub', c_med::text, 'role', 'authenticated')::text, true); PERFORM set_config('role', 'authenticated', true);
+    j := public.crear_orden_examen_medico(p_paciente_id => 23, p_laboratorio_id => '00000000-0000-0000-0000-000000000332'::uuid, p_items => jsonb_build_array(jsonb_build_object('nombre','x')));
+    PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
+  EXCEPTION WHEN OTHERS THEN PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
+    st := SQLSTATE; msg := SQLERRM; END;
+  IF j IS NOT NULL THEN ords := ords || (j->>'orden_id')::uuid; END IF;
+  ok := COALESCE((st = 'EX005' AND msg = 'Laboratorio no disponible para esta orden' AND j IS NULL AND (SELECT count(*) FROM public.ordenes_examen) = n_or AND (SELECT count(*) FROM public.examenes) = n_ex), false);
+  det := det||' ;; EX005 inexistente|EX005 sin filas|'||CASE WHEN ok THEN 'OK' ELSE 'ROJO' END||'|'||st||'|'||left(msg, 160);
+  IF NOT ok THEN bad := bad||'EX005 inexistente: '||st||' '||left(msg, 120)||'; '; END IF;
+  st := '00000'; msg := ''; j := NULL;
+  SELECT count(*) INTO n_or FROM public.ordenes_examen; SELECT count(*) INTO n_ex FROM public.examenes;
+  BEGIN
+    PERFORM set_config('request.jwt.claims', json_build_object('sub', c_med::text, 'role', 'authenticated')::text, true); PERFORM set_config('role', 'authenticated', true);
+    j := public.crear_orden_examen_medico(p_paciente_id => 23, p_laboratorio_id => seed_emp[1], p_items => jsonb_build_array(jsonb_build_object('nombre','x')));
+    PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
+  EXCEPTION WHEN OTHERS THEN PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
+    st := SQLSTATE; msg := SQLERRM; END;
+  IF j IS NOT NULL THEN ords := ords || (j->>'orden_id')::uuid; END IF;
+  ok := COALESCE((st = 'EX005' AND msg = 'Laboratorio no disponible para esta orden' AND j IS NULL AND (SELECT count(*) FROM public.ordenes_examen) = n_or AND (SELECT count(*) FROM public.examenes) = n_ex), false);
+  det := det||' ;; EX005 otro pais|EX005 sin filas|'||CASE WHEN ok THEN 'OK' ELSE 'ROJO' END||'|'||st||'|'||left(msg, 160);
+  IF NOT ok THEN bad := bad||'EX005 otro pais: '||st||' '||left(msg, 120)||'; '; END IF;
+  st := '00000'; msg := ''; j := NULL;
+  SELECT count(*) INTO n_or FROM public.ordenes_examen; SELECT count(*) INTO n_ex FROM public.examenes;
+  BEGIN
+    PERFORM set_config('request.jwt.claims', json_build_object('sub', c_med::text, 'role', 'authenticated')::text, true); PERFORM set_config('role', 'authenticated', true);
+    j := public.crear_orden_examen_medico(p_paciente_id => 23, p_laboratorio_id => seed_emp[2], p_items => jsonb_build_array(jsonb_build_object('nombre','x')));
+    PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
+  EXCEPTION WHEN OTHERS THEN PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
+    st := SQLSTATE; msg := SQLERRM; END;
+  IF j IS NOT NULL THEN ords := ords || (j->>'orden_id')::uuid; END IF;
+  ok := COALESCE((st = 'EX005' AND msg = 'Laboratorio no disponible para esta orden' AND j IS NULL AND (SELECT count(*) FROM public.ordenes_examen) = n_or AND (SELECT count(*) FROM public.examenes) = n_ex), false);
+  det := det||' ;; EX005 suspendido|EX005 sin filas|'||CASE WHEN ok THEN 'OK' ELSE 'ROJO' END||'|'||st||'|'||left(msg, 160);
+  IF NOT ok THEN bad := bad||'EX005 suspendido: '||st||' '||left(msg, 120)||'; '; END IF;
+  st := '00000'; msg := ''; j := NULL;
+  SELECT count(*) INTO n_or FROM public.ordenes_examen; SELECT count(*) INTO n_ex FROM public.examenes;
+  BEGIN
+    PERFORM set_config('request.jwt.claims', json_build_object('sub', c_med::text, 'role', 'authenticated')::text, true); PERFORM set_config('role', 'authenticated', true);
+    j := public.crear_orden_examen_medico(p_paciente_id => 23, p_laboratorio_id => c_lab, p_items => NULL);
+    PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
+  EXCEPTION WHEN OTHERS THEN PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
+    st := SQLSTATE; msg := SQLERRM; END;
+  IF j IS NOT NULL THEN ords := ords || (j->>'orden_id')::uuid; END IF;
+  ok := COALESCE((st = 'EX008' AND msg = 'Seleccione o escriba al menos un examen' AND j IS NULL AND (SELECT count(*) FROM public.ordenes_examen) = n_or AND (SELECT count(*) FROM public.examenes) = n_ex), false);
+  det := det||' ;; EX008 items NULL|EX008 sin filas|'||CASE WHEN ok THEN 'OK' ELSE 'ROJO' END||'|'||st||'|'||left(msg, 160);
+  IF NOT ok THEN bad := bad||'EX008 items NULL: '||st||' '||left(msg, 120)||'; '; END IF;
+  st := '00000'; msg := ''; j := NULL;
+  SELECT count(*) INTO n_or FROM public.ordenes_examen; SELECT count(*) INTO n_ex FROM public.examenes;
+  BEGIN
+    PERFORM set_config('request.jwt.claims', json_build_object('sub', c_med::text, 'role', 'authenticated')::text, true); PERFORM set_config('role', 'authenticated', true);
+    j := public.crear_orden_examen_medico(p_paciente_id => 23, p_laboratorio_id => c_lab, p_items => '[]'::jsonb);
+    PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
+  EXCEPTION WHEN OTHERS THEN PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
+    st := SQLSTATE; msg := SQLERRM; END;
+  IF j IS NOT NULL THEN ords := ords || (j->>'orden_id')::uuid; END IF;
+  ok := COALESCE((st = 'EX008' AND msg = 'Seleccione o escriba al menos un examen' AND j IS NULL AND (SELECT count(*) FROM public.ordenes_examen) = n_or AND (SELECT count(*) FROM public.examenes) = n_ex), false);
+  det := det||' ;; EX008 items []|EX008 sin filas|'||CASE WHEN ok THEN 'OK' ELSE 'ROJO' END||'|'||st||'|'||left(msg, 160);
+  IF NOT ok THEN bad := bad||'EX008 items []: '||st||' '||left(msg, 120)||'; '; END IF;
+  st := '00000'; msg := ''; j := NULL;
+  SELECT count(*) INTO n_or FROM public.ordenes_examen; SELECT count(*) INTO n_ex FROM public.examenes;
+  BEGIN
+    PERFORM set_config('request.jwt.claims', json_build_object('sub', c_med::text, 'role', 'authenticated')::text, true); PERFORM set_config('role', 'authenticated', true);
+    j := public.crear_orden_examen_medico(p_paciente_id => 23, p_laboratorio_id => c_lab, p_items => '{}'::jsonb);
+    PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
+  EXCEPTION WHEN OTHERS THEN PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
+    st := SQLSTATE; msg := SQLERRM; END;
+  IF j IS NOT NULL THEN ords := ords || (j->>'orden_id')::uuid; END IF;
+  ok := COALESCE((st = 'EX008' AND msg = 'Seleccione o escriba al menos un examen' AND j IS NULL AND (SELECT count(*) FROM public.ordenes_examen) = n_or AND (SELECT count(*) FROM public.examenes) = n_ex), false);
+  det := det||' ;; EX008 items objeto|EX008 sin filas|'||CASE WHEN ok THEN 'OK' ELSE 'ROJO' END||'|'||st||'|'||left(msg, 160);
+  IF NOT ok THEN bad := bad||'EX008 items objeto: '||st||' '||left(msg, 120)||'; '; END IF;
+  st := '00000'; msg := ''; j := NULL;
+  SELECT count(*) INTO n_or FROM public.ordenes_examen; SELECT count(*) INTO n_ex FROM public.examenes;
+  BEGIN
+    PERFORM set_config('request.jwt.claims', json_build_object('sub', c_med::text, 'role', 'authenticated')::text, true); PERFORM set_config('role', 'authenticated', true);
+    j := public.crear_orden_examen_medico(p_paciente_id => 23, p_laboratorio_id => c_lab, p_items => (SELECT jsonb_agg(jsonb_build_object('nombre', 'Libre '||g)) FROM generate_series(1, 31) g));
+    PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
+  EXCEPTION WHEN OTHERS THEN PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
+    st := SQLSTATE; msg := SQLERRM; END;
+  IF j IS NOT NULL THEN ords := ords || (j->>'orden_id')::uuid; END IF;
+  ok := COALESCE((st = 'EX009' AND msg = 'Una orden admite como máximo 30 exámenes' AND j IS NULL AND (SELECT count(*) FROM public.ordenes_examen) = n_or AND (SELECT count(*) FROM public.examenes) = n_ex), false);
+  det := det||' ;; EX009 31 items|EX009 sin filas|'||CASE WHEN ok THEN 'OK' ELSE 'ROJO' END||'|'||st||'|'||left(msg, 160);
+  IF NOT ok THEN bad := bad||'EX009 31 items: '||st||' '||left(msg, 120)||'; '; END IF;
+  st := '00000'; msg := ''; j := NULL;
+  SELECT count(*) INTO n_or FROM public.ordenes_examen; SELECT count(*) INTO n_ex FROM public.examenes;
+  BEGIN
+    PERFORM set_config('request.jwt.claims', json_build_object('sub', c_med::text, 'role', 'authenticated')::text, true); PERFORM set_config('role', 'authenticated', true);
+    j := public.crear_orden_examen_medico(p_paciente_id => 23, p_laboratorio_id => c_lab, p_items => '["x"]'::jsonb);
+    PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
+  EXCEPTION WHEN OTHERS THEN PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
+    st := SQLSTATE; msg := SQLERRM; END;
+  IF j IS NOT NULL THEN ords := ords || (j->>'orden_id')::uuid; END IF;
+  ok := COALESCE((st = 'EX010' AND msg = 'Examen mal formado en la orden' AND j IS NULL AND (SELECT count(*) FROM public.ordenes_examen) = n_or AND (SELECT count(*) FROM public.examenes) = n_ex), false);
+  det := det||' ;; EX010 string|EX010 sin filas|'||CASE WHEN ok THEN 'OK' ELSE 'ROJO' END||'|'||st||'|'||left(msg, 160);
+  IF NOT ok THEN bad := bad||'EX010 string: '||st||' '||left(msg, 120)||'; '; END IF;
+  st := '00000'; msg := ''; j := NULL;
+  SELECT count(*) INTO n_or FROM public.ordenes_examen; SELECT count(*) INTO n_ex FROM public.examenes;
+  BEGIN
+    PERFORM set_config('request.jwt.claims', json_build_object('sub', c_med::text, 'role', 'authenticated')::text, true); PERFORM set_config('role', 'authenticated', true);
+    j := public.crear_orden_examen_medico(p_paciente_id => 23, p_laboratorio_id => c_lab, p_items => '[{}]'::jsonb);
+    PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
+  EXCEPTION WHEN OTHERS THEN PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
+    st := SQLSTATE; msg := SQLERRM; END;
+  IF j IS NOT NULL THEN ords := ords || (j->>'orden_id')::uuid; END IF;
+  ok := COALESCE((st = 'EX010' AND msg = 'Examen mal formado en la orden' AND j IS NULL AND (SELECT count(*) FROM public.ordenes_examen) = n_or AND (SELECT count(*) FROM public.examenes) = n_ex), false);
+  det := det||' ;; EX010 objeto vacio|EX010 sin filas|'||CASE WHEN ok THEN 'OK' ELSE 'ROJO' END||'|'||st||'|'||left(msg, 160);
+  IF NOT ok THEN bad := bad||'EX010 objeto vacio: '||st||' '||left(msg, 120)||'; '; END IF;
+  st := '00000'; msg := ''; j := NULL;
+  SELECT count(*) INTO n_or FROM public.ordenes_examen; SELECT count(*) INTO n_ex FROM public.examenes;
+  BEGIN
+    PERFORM set_config('request.jwt.claims', json_build_object('sub', c_med::text, 'role', 'authenticated')::text, true); PERFORM set_config('role', 'authenticated', true);
+    j := public.crear_orden_examen_medico(p_paciente_id => 23, p_laboratorio_id => c_lab, p_items => jsonb_build_array(jsonb_build_object('catalogo_id', c_copro, 'nombre', 'x')));
+    PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
+  EXCEPTION WHEN OTHERS THEN PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
+    st := SQLSTATE; msg := SQLERRM; END;
+  IF j IS NOT NULL THEN ords := ords || (j->>'orden_id')::uuid; END IF;
+  ok := COALESCE((st = 'EX010' AND msg = 'Examen mal formado en la orden' AND j IS NULL AND (SELECT count(*) FROM public.ordenes_examen) = n_or AND (SELECT count(*) FROM public.examenes) = n_ex), false);
+  det := det||' ;; EX010 ambas claves|EX010 sin filas|'||CASE WHEN ok THEN 'OK' ELSE 'ROJO' END||'|'||st||'|'||left(msg, 160);
+  IF NOT ok THEN bad := bad||'EX010 ambas claves: '||st||' '||left(msg, 120)||'; '; END IF;
+  st := '00000'; msg := ''; j := NULL;
+  SELECT count(*) INTO n_or FROM public.ordenes_examen; SELECT count(*) INTO n_ex FROM public.examenes;
+  BEGIN
+    PERFORM set_config('request.jwt.claims', json_build_object('sub', c_med::text, 'role', 'authenticated')::text, true); PERFORM set_config('role', 'authenticated', true);
+    j := public.crear_orden_examen_medico(p_paciente_id => 23, p_laboratorio_id => c_lab, p_items => '[{"catalogo_id": "no-es-uuid"}]'::jsonb);
+    PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
+  EXCEPTION WHEN OTHERS THEN PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
+    st := SQLSTATE; msg := SQLERRM; END;
+  IF j IS NOT NULL THEN ords := ords || (j->>'orden_id')::uuid; END IF;
+  ok := COALESCE((st = 'EX010' AND msg = 'Examen mal formado en la orden' AND j IS NULL AND (SELECT count(*) FROM public.ordenes_examen) = n_or AND (SELECT count(*) FROM public.examenes) = n_ex), false);
+  det := det||' ;; EX010 uuid invalido|EX010 sin filas|'||CASE WHEN ok THEN 'OK' ELSE 'ROJO' END||'|'||st||'|'||left(msg, 160);
+  IF NOT ok THEN bad := bad||'EX010 uuid invalido: '||st||' '||left(msg, 120)||'; '; END IF;
+  st := '00000'; msg := ''; j := NULL;
+  SELECT count(*) INTO n_or FROM public.ordenes_examen; SELECT count(*) INTO n_ex FROM public.examenes;
+  BEGIN
+    PERFORM set_config('request.jwt.claims', json_build_object('sub', c_med::text, 'role', 'authenticated')::text, true); PERFORM set_config('role', 'authenticated', true);
+    j := public.crear_orden_examen_medico(p_paciente_id => 23, p_laboratorio_id => c_lab, p_items => '[{"catalogo_id": 123}]'::jsonb);
+    PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
+  EXCEPTION WHEN OTHERS THEN PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
+    st := SQLSTATE; msg := SQLERRM; END;
+  IF j IS NOT NULL THEN ords := ords || (j->>'orden_id')::uuid; END IF;
+  ok := COALESCE((st = 'EX010' AND msg = 'Examen mal formado en la orden' AND j IS NULL AND (SELECT count(*) FROM public.ordenes_examen) = n_or AND (SELECT count(*) FROM public.examenes) = n_ex), false);
+  det := det||' ;; EX010 catalogo_id numerico|EX010 sin filas|'||CASE WHEN ok THEN 'OK' ELSE 'ROJO' END||'|'||st||'|'||left(msg, 160);
+  IF NOT ok THEN bad := bad||'EX010 catalogo_id numerico: '||st||' '||left(msg, 120)||'; '; END IF;
+  st := '00000'; msg := ''; j := NULL;
+  SELECT count(*) INTO n_or FROM public.ordenes_examen; SELECT count(*) INTO n_ex FROM public.examenes;
+  BEGIN
+    PERFORM set_config('request.jwt.claims', json_build_object('sub', c_med::text, 'role', 'authenticated')::text, true); PERFORM set_config('role', 'authenticated', true);
+    j := public.crear_orden_examen_medico(p_paciente_id => 23, p_laboratorio_id => c_lab, p_items => '[{"nombre": null}]'::jsonb);
+    PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
+  EXCEPTION WHEN OTHERS THEN PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
+    st := SQLSTATE; msg := SQLERRM; END;
+  IF j IS NOT NULL THEN ords := ords || (j->>'orden_id')::uuid; END IF;
+  ok := COALESCE((st = 'EX010' AND msg = 'Examen mal formado en la orden' AND j IS NULL AND (SELECT count(*) FROM public.ordenes_examen) = n_or AND (SELECT count(*) FROM public.examenes) = n_ex), false);
+  det := det||' ;; EX010 nombre null|EX010 sin filas|'||CASE WHEN ok THEN 'OK' ELSE 'ROJO' END||'|'||st||'|'||left(msg, 160);
+  IF NOT ok THEN bad := bad||'EX010 nombre null: '||st||' '||left(msg, 120)||'; '; END IF;
+  st := '00000'; msg := ''; j := NULL;
+  SELECT count(*) INTO n_or FROM public.ordenes_examen; SELECT count(*) INTO n_ex FROM public.examenes;
+  BEGIN
+    PERFORM set_config('request.jwt.claims', json_build_object('sub', c_med::text, 'role', 'authenticated')::text, true); PERFORM set_config('role', 'authenticated', true);
+    j := public.crear_orden_examen_medico(p_paciente_id => 23, p_laboratorio_id => c_lab, p_items => '[{"nombre": "x", "extra": 1}]'::jsonb);
+    PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
+  EXCEPTION WHEN OTHERS THEN PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
+    st := SQLSTATE; msg := SQLERRM; END;
+  IF j IS NOT NULL THEN ords := ords || (j->>'orden_id')::uuid; END IF;
+  ok := COALESCE((st = 'EX010' AND msg = 'Examen mal formado en la orden' AND j IS NULL AND (SELECT count(*) FROM public.ordenes_examen) = n_or AND (SELECT count(*) FROM public.examenes) = n_ex), false);
+  det := det||' ;; EX010 clave extra|EX010 sin filas|'||CASE WHEN ok THEN 'OK' ELSE 'ROJO' END||'|'||st||'|'||left(msg, 160);
+  IF NOT ok THEN bad := bad||'EX010 clave extra: '||st||' '||left(msg, 120)||'; '; END IF;
+  st := '00000'; msg := ''; j := NULL;
+  SELECT count(*) INTO n_or FROM public.ordenes_examen; SELECT count(*) INTO n_ex FROM public.examenes;
+  BEGIN
+    PERFORM set_config('request.jwt.claims', json_build_object('sub', c_med::text, 'role', 'authenticated')::text, true); PERFORM set_config('role', 'authenticated', true);
+    j := public.crear_orden_examen_medico(p_paciente_id => 23, p_laboratorio_id => c_lab, p_items => jsonb_build_array(jsonb_build_object('catalogo_id', seed_cat[2])));
+    PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
+  EXCEPTION WHEN OTHERS THEN PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
+    st := SQLSTATE; msg := SQLERRM; END;
+  IF j IS NOT NULL THEN ords := ords || (j->>'orden_id')::uuid; END IF;
+  ok := COALESCE((st = 'EX011' AND msg = 'El examen seleccionado no pertenece al catálogo de este laboratorio' AND j IS NULL AND (SELECT count(*) FROM public.ordenes_examen) = n_or AND (SELECT count(*) FROM public.examenes) = n_ex), false);
+  det := det||' ;; EX011 catalogo de otro lab|EX011 sin filas|'||CASE WHEN ok THEN 'OK' ELSE 'ROJO' END||'|'||st||'|'||left(msg, 160);
+  IF NOT ok THEN bad := bad||'EX011 catalogo de otro lab: '||st||' '||left(msg, 120)||'; '; END IF;
+  st := '00000'; msg := ''; j := NULL;
+  SELECT count(*) INTO n_or FROM public.ordenes_examen; SELECT count(*) INTO n_ex FROM public.examenes;
+  BEGIN
+    PERFORM set_config('request.jwt.claims', json_build_object('sub', c_med::text, 'role', 'authenticated')::text, true); PERFORM set_config('role', 'authenticated', true);
+    j := public.crear_orden_examen_medico(p_paciente_id => 23, p_laboratorio_id => c_lab, p_items => jsonb_build_array(jsonb_build_object('catalogo_id', '00000000-0000-0000-0000-000000000332'::uuid)));
+    PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
+  EXCEPTION WHEN OTHERS THEN PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
+    st := SQLSTATE; msg := SQLERRM; END;
+  IF j IS NOT NULL THEN ords := ords || (j->>'orden_id')::uuid; END IF;
+  ok := COALESCE((st = 'EX011' AND msg = 'El examen seleccionado no pertenece al catálogo de este laboratorio' AND j IS NULL AND (SELECT count(*) FROM public.ordenes_examen) = n_or AND (SELECT count(*) FROM public.examenes) = n_ex), false);
+  det := det||' ;; EX011 catalogo inexistente|EX011 sin filas|'||CASE WHEN ok THEN 'OK' ELSE 'ROJO' END||'|'||st||'|'||left(msg, 160);
+  IF NOT ok THEN bad := bad||'EX011 catalogo inexistente: '||st||' '||left(msg, 120)||'; '; END IF;
+  st := '00000'; msg := ''; j := NULL;
+  SELECT count(*) INTO n_or FROM public.ordenes_examen; SELECT count(*) INTO n_ex FROM public.examenes;
+  BEGIN
+    PERFORM set_config('request.jwt.claims', json_build_object('sub', c_med::text, 'role', 'authenticated')::text, true); PERFORM set_config('role', 'authenticated', true);
+    j := public.crear_orden_examen_medico(p_paciente_id => 23, p_laboratorio_id => c_lab, p_items => jsonb_build_array(jsonb_build_object('catalogo_id', seed_cat[1])));
+    PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
+  EXCEPTION WHEN OTHERS THEN PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
+    st := SQLSTATE; msg := SQLERRM; END;
+  IF j IS NOT NULL THEN ords := ords || (j->>'orden_id')::uuid; END IF;
+  ok := COALESCE((st = 'EX012' AND msg = 'El examen seleccionado ya no está disponible en el catálogo' AND j IS NULL AND (SELECT count(*) FROM public.ordenes_examen) = n_or AND (SELECT count(*) FROM public.examenes) = n_ex), false);
+  det := det||' ;; EX012 catalogo inactivo|EX012 sin filas|'||CASE WHEN ok THEN 'OK' ELSE 'ROJO' END||'|'||st||'|'||left(msg, 160);
+  IF NOT ok THEN bad := bad||'EX012 catalogo inactivo: '||st||' '||left(msg, 120)||'; '; END IF;
+  st := '00000'; msg := ''; j := NULL;
+  SELECT count(*) INTO n_or FROM public.ordenes_examen; SELECT count(*) INTO n_ex FROM public.examenes;
+  BEGIN
+    PERFORM set_config('request.jwt.claims', json_build_object('sub', c_med::text, 'role', 'authenticated')::text, true); PERFORM set_config('role', 'authenticated', true);
+    j := public.crear_orden_examen_medico(p_paciente_id => 23, p_laboratorio_id => c_lab, p_items => jsonb_build_array(jsonb_build_object('catalogo_id', c_copro), jsonb_build_object('catalogo_id', c_copro)));
+    PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
+  EXCEPTION WHEN OTHERS THEN PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
+    st := SQLSTATE; msg := SQLERRM; END;
+  IF j IS NOT NULL THEN ords := ords || (j->>'orden_id')::uuid; END IF;
+  ok := COALESCE((st = 'EX014' AND msg = 'Hay exámenes repetidos en la orden' AND j IS NULL AND (SELECT count(*) FROM public.ordenes_examen) = n_or AND (SELECT count(*) FROM public.examenes) = n_ex), false);
+  det := det||' ;; EX014 catalogo repetido|EX014 sin filas|'||CASE WHEN ok THEN 'OK' ELSE 'ROJO' END||'|'||st||'|'||left(msg, 160);
+  IF NOT ok THEN bad := bad||'EX014 catalogo repetido: '||st||' '||left(msg, 120)||'; '; END IF;
+  st := '00000'; msg := ''; j := NULL;
+  SELECT count(*) INTO n_or FROM public.ordenes_examen; SELECT count(*) INTO n_ex FROM public.examenes;
+  BEGIN
+    PERFORM set_config('request.jwt.claims', json_build_object('sub', c_med::text, 'role', 'authenticated')::text, true); PERFORM set_config('role', 'authenticated', true);
+    j := public.crear_orden_examen_medico(p_paciente_id => 23, p_laboratorio_id => c_lab, p_items => jsonb_build_array(jsonb_build_object('nombre','Libre A QA'), jsonb_build_object('nombre',' libre a qa ')));
+    PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
+  EXCEPTION WHEN OTHERS THEN PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
+    st := SQLSTATE; msg := SQLERRM; END;
+  IF j IS NOT NULL THEN ords := ords || (j->>'orden_id')::uuid; END IF;
+  ok := COALESCE((st = 'EX014' AND msg = 'Hay exámenes repetidos en la orden' AND j IS NULL AND (SELECT count(*) FROM public.ordenes_examen) = n_or AND (SELECT count(*) FROM public.examenes) = n_ex), false);
+  det := det||' ;; EX014 libre repetido|EX014 sin filas|'||CASE WHEN ok THEN 'OK' ELSE 'ROJO' END||'|'||st||'|'||left(msg, 160);
+  IF NOT ok THEN bad := bad||'EX014 libre repetido: '||st||' '||left(msg, 120)||'; '; END IF;
+  st := '00000'; msg := ''; j := NULL;
+  SELECT count(*) INTO n_or FROM public.ordenes_examen; SELECT count(*) INTO n_ex FROM public.examenes;
+  BEGIN
+    PERFORM set_config('request.jwt.claims', json_build_object('sub', c_med::text, 'role', 'authenticated')::text, true); PERFORM set_config('role', 'authenticated', true);
+    j := public.crear_orden_examen_medico(p_paciente_id => 23, p_laboratorio_id => c_lab, p_items => jsonb_build_array(jsonb_build_object('nombre','   ')));
+    PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
+  EXCEPTION WHEN OTHERS THEN PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
+    st := SQLSTATE; msg := SQLERRM; END;
+  IF j IS NOT NULL THEN ords := ords || (j->>'orden_id')::uuid; END IF;
+  ok := COALESCE((st = 'EX015' AND msg = 'El nombre del examen no puede estar vacío' AND j IS NULL AND (SELECT count(*) FROM public.ordenes_examen) = n_or AND (SELECT count(*) FROM public.examenes) = n_ex), false);
+  det := det||' ;; EX015 nombre vacio|EX015 sin filas|'||CASE WHEN ok THEN 'OK' ELSE 'ROJO' END||'|'||st||'|'||left(msg, 160);
+  IF NOT ok THEN bad := bad||'EX015 nombre vacio: '||st||' '||left(msg, 120)||'; '; END IF;
+  st := '00000'; msg := ''; j := NULL;
+  SELECT count(*) INTO n_or FROM public.ordenes_examen; SELECT count(*) INTO n_ex FROM public.examenes;
+  BEGIN
+    PERFORM set_config('request.jwt.claims', json_build_object('sub', c_med::text, 'role', 'authenticated')::text, true); PERFORM set_config('role', 'authenticated', true);
+    j := public.crear_orden_examen_medico(p_paciente_id => 23, p_laboratorio_id => c_lab, p_items => jsonb_build_array(jsonb_build_object('nombre', repeat('x', 201))));
+    PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
+  EXCEPTION WHEN OTHERS THEN PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
+    st := SQLSTATE; msg := SQLERRM; END;
+  IF j IS NOT NULL THEN ords := ords || (j->>'orden_id')::uuid; END IF;
+  ok := COALESCE((st = 'EX016' AND msg = 'El nombre del examen es demasiado largo (máximo 200)' AND j IS NULL AND (SELECT count(*) FROM public.ordenes_examen) = n_or AND (SELECT count(*) FROM public.examenes) = n_ex), false);
+  det := det||' ;; EX016 nombre 201|EX016 sin filas|'||CASE WHEN ok THEN 'OK' ELSE 'ROJO' END||'|'||st||'|'||left(msg, 160);
+  IF NOT ok THEN bad := bad||'EX016 nombre 201: '||st||' '||left(msg, 120)||'; '; END IF;
+  st := '00000'; msg := ''; j := NULL;
+  SELECT count(*) INTO n_or FROM public.ordenes_examen; SELECT count(*) INTO n_ex FROM public.examenes;
+  BEGIN
+    PERFORM set_config('request.jwt.claims', json_build_object('sub', c_med::text, 'role', 'authenticated')::text, true); PERFORM set_config('role', 'authenticated', true);
+    j := public.crear_orden_examen_medico(p_paciente_id => 23, p_laboratorio_id => c_lab, p_items => jsonb_build_array(jsonb_build_object('nombre','  COPROLÓGICO ')));
+    PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
+  EXCEPTION WHEN OTHERS THEN PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
+    st := SQLSTATE; msg := SQLERRM; END;
+  IF j IS NOT NULL THEN ords := ords || (j->>'orden_id')::uuid; END IF;
+  ok := COALESCE((st = 'EX017' AND msg = 'Ese examen está en el catálogo: selecciónelo de la lista' AND j IS NULL AND (SELECT count(*) FROM public.ordenes_examen) = n_or AND (SELECT count(*) FROM public.examenes) = n_ex), false);
+  det := det||' ;; EX017 libre = catalogo activo|EX017 sin filas|'||CASE WHEN ok THEN 'OK' ELSE 'ROJO' END||'|'||st||'|'||left(msg, 160);
+  IF NOT ok THEN bad := bad||'EX017 libre = catalogo activo: '||st||' '||left(msg, 120)||'; '; END IF;
+  st := '00000'; msg := ''; j := NULL;
+  SELECT count(*) INTO n_or FROM public.ordenes_examen; SELECT count(*) INTO n_ex FROM public.examenes;
+  BEGIN
+    PERFORM set_config('request.jwt.claims', json_build_object('sub', c_med::text, 'role', 'authenticated')::text, true); PERFORM set_config('role', 'authenticated', true);
+    j := public.crear_orden_examen_medico(p_paciente_id => 23, p_laboratorio_id => c_lab, p_items => jsonb_build_array(jsonb_build_object('catalogo_id', c_copro)), p_instrucciones => repeat('i', 2001));
+    PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
+  EXCEPTION WHEN OTHERS THEN PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
+    st := SQLSTATE; msg := SQLERRM; END;
+  IF j IS NOT NULL THEN ords := ords || (j->>'orden_id')::uuid; END IF;
+  ok := COALESCE((st = 'EX020' AND msg = 'Las instrucciones son demasiado largas (máximo 2000)' AND j IS NULL AND (SELECT count(*) FROM public.ordenes_examen) = n_or AND (SELECT count(*) FROM public.examenes) = n_ex), false);
+  det := det||' ;; EX020 instrucciones 2001|EX020 sin filas|'||CASE WHEN ok THEN 'OK' ELSE 'ROJO' END||'|'||st||'|'||left(msg, 160);
+  IF NOT ok THEN bad := bad||'EX020 instrucciones 2001: '||st||' '||left(msg, 120)||'; '; END IF;
+  -- restauracion: se borra solo lo que el probe creo/sembro y se verifica contra el snapshot
+  DELETE FROM public.ordenes_examen WHERE id = ANY (ords);           -- CASCADE a examenes
+  DELETE FROM public.examenes WHERE id = ANY (seed_ex);
+  DELETE FROM public.examenes_catalogo WHERE id = ANY (seed_cat);
+  DELETE FROM public.empresas_proveedoras WHERE id = ANY (seed_emp);
+  DELETE FROM public.notificaciones WHERE NOT (id = ANY (notif0));
+  DELETE FROM public.notificaciones_pacientes WHERE id > np0;
+  IF (SELECT md5(COALESCE(string_agg(to_jsonb(e)::text, '|' ORDER BY e.id), '')) FROM public.examenes e) IS DISTINCT FROM s_ex THEN r_rest := r_rest||' / examenes'; END IF;
+  IF (SELECT md5(COALESCE(string_agg(to_jsonb(o)::text, '|' ORDER BY o.id), '')) FROM public.ordenes_examen o) IS DISTINCT FROM s_or THEN r_rest := r_rest||' / ordenes_examen'; END IF;
+  IF (SELECT md5(COALESCE(string_agg(to_jsonb(c)::text, '|' ORDER BY c.id), '')) FROM public.examenes_catalogo c) IS DISTINCT FROM s_cat THEN r_rest := r_rest||' / examenes_catalogo'; END IF;
+  IF (SELECT md5(COALESCE(string_agg(to_jsonb(c)::text, '|' ORDER BY c.id), '')) FROM public.cuentas_proveedor c WHERE c.empresa_id = c_lab OR c.id IN (c_recep, c_admin, c_tec)) IS DISTINCT FROM s_cp THEN r_rest := r_rest||' / cuentas_proveedor'; END IF;
+  IF (SELECT count(*) FROM public.notificaciones WHERE NOT (id = ANY (notif0))) <> 0 OR (SELECT count(*) FROM public.notificaciones_pacientes WHERE id > np0) <> 0
+     OR (SELECT count(*) FROM public.notificaciones) <> cardinality(notif0) THEN r_rest := r_rest||' / notificaciones'; END IF;
+  IF EXISTS (SELECT 1 FROM public.empresas_proveedoras WHERE id = ANY (seed_emp)) THEN r_rest := r_rest||' / empresas sembradas'; END IF;
+  det := det||' ;; restauracion|'||cardinality(ords)||' orden(es) creadas, '||cardinality(seed_cat)||' catalogo, '||cardinality(seed_emp)||' empresas, '||cardinality(seed_ex)||' examenes sembrados; snapshot igual|'||r_rest||'|-|';
+
+  PERFORM set_config('probe.p869_det', det, false);
+  PERFORM set_config('probe.p869', CASE WHEN bad = '' AND r_rest = 'OK'
+    THEN 'OK (32 rechazos del medico, cada uno con su EX y mensaje exacto, sin filas nuevas; restaurado)'
+    ELSE 'ROJO ('||left(bad, 700)||' | restauracion='||r_rest||')' END, false);
+EXCEPTION WHEN OTHERS THEN
+  PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
+  PERFORM set_config('probe.p869', 'FALLO ('||SQLSTATE||' '||SQLERRM||')', false);
+END $$;
+SELECT set_config('role', 'none', true);
+
+-- ---------------- P870 crear_orden_examen_walkin: cada causa de rechazo ----------------
+DO $$
+DECLARE
+  c_med uuid := '09d243d5-b222-482a-9762-94a582e9e752'; c_lab uuid := 'a5cf575a-5d63-4ed2-839e-9b58da8152e0'; c_recep uuid := 'ce871197-285a-4d5f-9e5f-78606f9e124f'; c_admin uuid := 'e6f95b2f-7561-4e0b-b0c8-d1f38e6c4d66'; c_tec uuid := 'f69e2096-932f-45f0-9022-4e9058f2f0fd';
+  c_copro uuid := '27a2af0f-e201-4a1d-900a-cb27851d9577'; c_tp uuid := '43a1a45c-82f7-403a-a663-1ab7fc8b3732'; c_bhcg uuid := '4f32f195-e4de-4282-8303-8ec8bafecec1'; c_hemo uuid := '7c980fb6-5048-4905-a682-9d6e9feb55ed';
+  ords uuid[] := '{}'; seed_cat uuid[] := '{}'; seed_emp uuid[] := '{}'; seed_ex integer[] := '{}';
+  st text; msg text; j jsonb; ok boolean; det text := ''; bad text := ''; r_rest text := 'OK';
+  s_ex text; s_or text; s_cat text; s_cp text; notif0 uuid[]; np0 integer; n_or bigint; n_ex bigint;
+  v uuid; v2 uuid; x text; y text; n int; nn int; rec record; id_ex integer;
+BEGIN
+  -- snapshot: examenes, ordenes_examen, examenes_catalogo, cuentas del lab QA y notificaciones
+  SELECT md5(COALESCE(string_agg(to_jsonb(e)::text, '|' ORDER BY e.id), '')) INTO s_ex FROM public.examenes e;
+  SELECT md5(COALESCE(string_agg(to_jsonb(o)::text, '|' ORDER BY o.id), '')) INTO s_or FROM public.ordenes_examen o;
+  SELECT md5(COALESCE(string_agg(to_jsonb(c)::text, '|' ORDER BY c.id), '')) INTO s_cat FROM public.examenes_catalogo c;
+  SELECT md5(COALESCE(string_agg(to_jsonb(c)::text, '|' ORDER BY c.id), '')) INTO s_cp FROM public.cuentas_proveedor c WHERE c.empresa_id = c_lab OR c.id IN (c_recep, c_admin, c_tec);
+  notif0 := ARRAY(SELECT id FROM public.notificaciones);
+  SELECT COALESCE(max(id), 0) INTO np0 FROM public.notificaciones_pacientes;
+  -- laboratorio SUSPENDIDO sembrado, para mover ahi temporalmente la cuenta de recepcion
+  INSERT INTO public.empresas_proveedoras (nombre_empresa, email_contacto, tipo, pais_id, estado)
+    VALUES ('P332 Lab suspendido', 'p332susp@probe.test', 'laboratorio_clinico', 'cbbbbe6d-59fe-4cf2-91ee-3e31ba1d5909', 'suspendida') RETURNING id INTO v;
+  seed_emp := seed_emp || v;
+  st := '00000'; msg := ''; j := NULL;
+  SELECT count(*) INTO n_or FROM public.ordenes_examen; SELECT count(*) INTO n_ex FROM public.examenes;
+  BEGIN
+    PERFORM set_config('request.jwt.claims', '', true); PERFORM set_config('role', 'authenticated', true);
+    j := public.crear_orden_examen_walkin(p_items => jsonb_build_array(jsonb_build_object('catalogo_id', c_copro)), p_paciente_nombre => 'Paciente Walkin QA');
+    PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
+  EXCEPTION WHEN OTHERS THEN PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
+    st := SQLSTATE; msg := SQLERRM; END;
+  IF j IS NOT NULL THEN ords := ords || (j->>'orden_id')::uuid; END IF;
+  ok := COALESCE((st = 'EX001' AND msg = 'No autorizado: inicie sesión' AND j IS NULL AND (SELECT count(*) FROM public.ordenes_examen) = n_or AND (SELECT count(*) FROM public.examenes) = n_ex), false);
+  det := det||' ;; EX001 sin sesion|EX001 sin filas|'||CASE WHEN ok THEN 'OK' ELSE 'ROJO' END||'|'||st||'|'||left(msg, 160);
+  IF NOT ok THEN bad := bad||'EX001 sin sesion: '||st||' '||left(msg, 120)||'; '; END IF;
+  -- EX006: un perfil SIN cuenta de proveedor (el medico QA puede tener una sembrada por otro fixture del harness)
+  SELECT p.id INTO v2 FROM public.perfiles p WHERE NOT EXISTS (SELECT 1 FROM public.cuentas_proveedor cp WHERE cp.id = p.id) ORDER BY p.id LIMIT 1;
+  st := '00000'; msg := ''; j := NULL;
+  SELECT count(*) INTO n_or FROM public.ordenes_examen; SELECT count(*) INTO n_ex FROM public.examenes;
+  BEGIN
+    PERFORM set_config('request.jwt.claims', json_build_object('sub', v2::text, 'role', 'authenticated')::text, true); PERFORM set_config('role', 'authenticated', true);
+    j := public.crear_orden_examen_walkin(p_items => jsonb_build_array(jsonb_build_object('catalogo_id', c_copro)), p_paciente_nombre => 'Paciente Walkin QA');
+    PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
+  EXCEPTION WHEN OTHERS THEN PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
+    st := SQLSTATE; msg := SQLERRM; END;
+  IF j IS NOT NULL THEN ords := ords || (j->>'orden_id')::uuid; END IF;
+  ok := COALESCE((st = 'EX006' AND msg = 'No autorizado: su cuenta no pertenece a un laboratorio clínico activo' AND j IS NULL AND (SELECT count(*) FROM public.ordenes_examen) = n_or AND (SELECT count(*) FROM public.examenes) = n_ex), false);
+  det := det||' ;; EX006 perfil sin cuenta de proveedor|EX006 sin filas|'||CASE WHEN ok THEN 'OK' ELSE 'ROJO' END||'|'||st||'|'||left(msg, 160);
+  IF NOT ok THEN bad := bad||'EX006 perfil sin cuenta de proveedor: '||st||' '||left(msg, 120)||'; '; END IF;
+  st := '00000'; msg := ''; j := NULL;
+  SELECT count(*) INTO n_or FROM public.ordenes_examen; SELECT count(*) INTO n_ex FROM public.examenes;
+  BEGIN
+    PERFORM set_config('request.jwt.claims', json_build_object('sub', c_tec::text, 'role', 'authenticated')::text, true); PERFORM set_config('role', 'authenticated', true);
+    j := public.crear_orden_examen_walkin(p_items => jsonb_build_array(jsonb_build_object('catalogo_id', c_copro)), p_paciente_nombre => 'Paciente Walkin QA');
+    PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
+  EXCEPTION WHEN OTHERS THEN PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
+    st := SQLSTATE; msg := SQLERRM; END;
+  IF j IS NOT NULL THEN ords := ords || (j->>'orden_id')::uuid; END IF;
+  ok := COALESCE((st = 'EX007' AND msg = 'No autorizado: no tiene permiso para registrar pacientes sin cita' AND j IS NULL AND (SELECT count(*) FROM public.ordenes_examen) = n_or AND (SELECT count(*) FROM public.examenes) = n_ex), false);
+  det := det||' ;; EX007 tecnico sin walkin_registrar|EX007 sin filas|'||CASE WHEN ok THEN 'OK' ELSE 'ROJO' END||'|'||st||'|'||left(msg, 160);
+  IF NOT ok THEN bad := bad||'EX007 tecnico sin walkin_registrar: '||st||' '||left(msg, 120)||'; '; END IF;
+  UPDATE public.cuentas_proveedor SET activo = false WHERE id = c_recep;
+  st := '00000'; msg := ''; j := NULL;
+  SELECT count(*) INTO n_or FROM public.ordenes_examen; SELECT count(*) INTO n_ex FROM public.examenes;
+  BEGIN
+    PERFORM set_config('request.jwt.claims', json_build_object('sub', c_recep::text, 'role', 'authenticated')::text, true); PERFORM set_config('role', 'authenticated', true);
+    j := public.crear_orden_examen_walkin(p_items => jsonb_build_array(jsonb_build_object('catalogo_id', c_copro)), p_paciente_nombre => 'Paciente Walkin QA');
+    PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
+  EXCEPTION WHEN OTHERS THEN PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
+    st := SQLSTATE; msg := SQLERRM; END;
+  IF j IS NOT NULL THEN ords := ords || (j->>'orden_id')::uuid; END IF;
+  ok := COALESCE((st = '42501' AND msg = 'Cuenta proveedora inactiva' AND j IS NULL AND (SELECT count(*) FROM public.ordenes_examen) = n_or AND (SELECT count(*) FROM public.examenes) = n_ex), false);
+  det := det||' ;; 42501 cuenta inactiva|42501 sin filas|'||CASE WHEN ok THEN 'OK' ELSE 'ROJO' END||'|'||st||'|'||left(msg, 160);
+  IF NOT ok THEN bad := bad||'42501 cuenta inactiva: '||st||' '||left(msg, 120)||'; '; END IF;
+  UPDATE public.cuentas_proveedor SET activo = true WHERE id = c_recep;
+  UPDATE public.cuentas_proveedor SET empresa_id = seed_emp[1] WHERE id = c_recep;
+  st := '00000'; msg := ''; j := NULL;
+  SELECT count(*) INTO n_or FROM public.ordenes_examen; SELECT count(*) INTO n_ex FROM public.examenes;
+  BEGIN
+    PERFORM set_config('request.jwt.claims', json_build_object('sub', c_recep::text, 'role', 'authenticated')::text, true); PERFORM set_config('role', 'authenticated', true);
+    j := public.crear_orden_examen_walkin(p_items => jsonb_build_array(jsonb_build_object('catalogo_id', c_copro)), p_paciente_nombre => 'Paciente Walkin QA');
+    PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
+  EXCEPTION WHEN OTHERS THEN PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
+    st := SQLSTATE; msg := SQLERRM; END;
+  IF j IS NOT NULL THEN ords := ords || (j->>'orden_id')::uuid; END IF;
+  ok := COALESCE((st = '42501' AND msg = 'Empresa proveedora no activa (estado=suspendida): accion no permitida' AND j IS NULL AND (SELECT count(*) FROM public.ordenes_examen) = n_or AND (SELECT count(*) FROM public.examenes) = n_ex), false);
+  det := det||' ;; 42501 empresa suspendida|42501 sin filas|'||CASE WHEN ok THEN 'OK' ELSE 'ROJO' END||'|'||st||'|'||left(msg, 160);
+  IF NOT ok THEN bad := bad||'42501 empresa suspendida: '||st||' '||left(msg, 120)||'; '; END IF;
+  UPDATE public.cuentas_proveedor SET empresa_id = c_lab WHERE id = c_recep;
+  st := '00000'; msg := ''; j := NULL;
+  SELECT count(*) INTO n_or FROM public.ordenes_examen; SELECT count(*) INTO n_ex FROM public.examenes;
+  BEGIN
+    PERFORM set_config('request.jwt.claims', json_build_object('sub', c_recep::text, 'role', 'authenticated')::text, true); PERFORM set_config('role', 'authenticated', true);
+    j := public.crear_orden_examen_walkin(p_items => jsonb_build_array(jsonb_build_object('catalogo_id', c_copro)), p_paciente_nombre => '   ');
+    PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
+  EXCEPTION WHEN OTHERS THEN PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
+    st := SQLSTATE; msg := SQLERRM; END;
+  IF j IS NOT NULL THEN ords := ords || (j->>'orden_id')::uuid; END IF;
+  ok := COALESCE((st = 'EX018' AND msg = 'Datos del paciente inválidos (nombre obligatorio, máximo 200; documento máximo 50; teléfono máximo 30)' AND j IS NULL AND (SELECT count(*) FROM public.ordenes_examen) = n_or AND (SELECT count(*) FROM public.examenes) = n_ex), false);
+  det := det||' ;; EX018 nombre vacio|EX018 sin filas|'||CASE WHEN ok THEN 'OK' ELSE 'ROJO' END||'|'||st||'|'||left(msg, 160);
+  IF NOT ok THEN bad := bad||'EX018 nombre vacio: '||st||' '||left(msg, 120)||'; '; END IF;
+  st := '00000'; msg := ''; j := NULL;
+  SELECT count(*) INTO n_or FROM public.ordenes_examen; SELECT count(*) INTO n_ex FROM public.examenes;
+  BEGIN
+    PERFORM set_config('request.jwt.claims', json_build_object('sub', c_recep::text, 'role', 'authenticated')::text, true); PERFORM set_config('role', 'authenticated', true);
+    j := public.crear_orden_examen_walkin(p_items => jsonb_build_array(jsonb_build_object('catalogo_id', c_copro)), p_paciente_nombre => NULL);
+    PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
+  EXCEPTION WHEN OTHERS THEN PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
+    st := SQLSTATE; msg := SQLERRM; END;
+  IF j IS NOT NULL THEN ords := ords || (j->>'orden_id')::uuid; END IF;
+  ok := COALESCE((st = 'EX018' AND msg = 'Datos del paciente inválidos (nombre obligatorio, máximo 200; documento máximo 50; teléfono máximo 30)' AND j IS NULL AND (SELECT count(*) FROM public.ordenes_examen) = n_or AND (SELECT count(*) FROM public.examenes) = n_ex), false);
+  det := det||' ;; EX018 nombre NULL|EX018 sin filas|'||CASE WHEN ok THEN 'OK' ELSE 'ROJO' END||'|'||st||'|'||left(msg, 160);
+  IF NOT ok THEN bad := bad||'EX018 nombre NULL: '||st||' '||left(msg, 120)||'; '; END IF;
+  st := '00000'; msg := ''; j := NULL;
+  SELECT count(*) INTO n_or FROM public.ordenes_examen; SELECT count(*) INTO n_ex FROM public.examenes;
+  BEGIN
+    PERFORM set_config('request.jwt.claims', json_build_object('sub', c_recep::text, 'role', 'authenticated')::text, true); PERFORM set_config('role', 'authenticated', true);
+    j := public.crear_orden_examen_walkin(p_items => jsonb_build_array(jsonb_build_object('catalogo_id', c_copro)), p_paciente_nombre => repeat('n', 201));
+    PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
+  EXCEPTION WHEN OTHERS THEN PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
+    st := SQLSTATE; msg := SQLERRM; END;
+  IF j IS NOT NULL THEN ords := ords || (j->>'orden_id')::uuid; END IF;
+  ok := COALESCE((st = 'EX018' AND msg = 'Datos del paciente inválidos (nombre obligatorio, máximo 200; documento máximo 50; teléfono máximo 30)' AND j IS NULL AND (SELECT count(*) FROM public.ordenes_examen) = n_or AND (SELECT count(*) FROM public.examenes) = n_ex), false);
+  det := det||' ;; EX018 nombre 201|EX018 sin filas|'||CASE WHEN ok THEN 'OK' ELSE 'ROJO' END||'|'||st||'|'||left(msg, 160);
+  IF NOT ok THEN bad := bad||'EX018 nombre 201: '||st||' '||left(msg, 120)||'; '; END IF;
+  st := '00000'; msg := ''; j := NULL;
+  SELECT count(*) INTO n_or FROM public.ordenes_examen; SELECT count(*) INTO n_ex FROM public.examenes;
+  BEGIN
+    PERFORM set_config('request.jwt.claims', json_build_object('sub', c_recep::text, 'role', 'authenticated')::text, true); PERFORM set_config('role', 'authenticated', true);
+    j := public.crear_orden_examen_walkin(p_items => jsonb_build_array(jsonb_build_object('catalogo_id', c_copro)), p_paciente_nombre => 'Paciente Walkin QA', p_paciente_documento => repeat('1', 51));
+    PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
+  EXCEPTION WHEN OTHERS THEN PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
+    st := SQLSTATE; msg := SQLERRM; END;
+  IF j IS NOT NULL THEN ords := ords || (j->>'orden_id')::uuid; END IF;
+  ok := COALESCE((st = 'EX018' AND msg = 'Datos del paciente inválidos (nombre obligatorio, máximo 200; documento máximo 50; teléfono máximo 30)' AND j IS NULL AND (SELECT count(*) FROM public.ordenes_examen) = n_or AND (SELECT count(*) FROM public.examenes) = n_ex), false);
+  det := det||' ;; EX018 documento 51|EX018 sin filas|'||CASE WHEN ok THEN 'OK' ELSE 'ROJO' END||'|'||st||'|'||left(msg, 160);
+  IF NOT ok THEN bad := bad||'EX018 documento 51: '||st||' '||left(msg, 120)||'; '; END IF;
+  st := '00000'; msg := ''; j := NULL;
+  SELECT count(*) INTO n_or FROM public.ordenes_examen; SELECT count(*) INTO n_ex FROM public.examenes;
+  BEGIN
+    PERFORM set_config('request.jwt.claims', json_build_object('sub', c_recep::text, 'role', 'authenticated')::text, true); PERFORM set_config('role', 'authenticated', true);
+    j := public.crear_orden_examen_walkin(p_items => jsonb_build_array(jsonb_build_object('catalogo_id', c_copro)), p_paciente_nombre => 'Paciente Walkin QA', p_paciente_telefono => repeat('5', 31));
+    PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
+  EXCEPTION WHEN OTHERS THEN PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
+    st := SQLSTATE; msg := SQLERRM; END;
+  IF j IS NOT NULL THEN ords := ords || (j->>'orden_id')::uuid; END IF;
+  ok := COALESCE((st = 'EX018' AND msg = 'Datos del paciente inválidos (nombre obligatorio, máximo 200; documento máximo 50; teléfono máximo 30)' AND j IS NULL AND (SELECT count(*) FROM public.ordenes_examen) = n_or AND (SELECT count(*) FROM public.examenes) = n_ex), false);
+  det := det||' ;; EX018 telefono 31|EX018 sin filas|'||CASE WHEN ok THEN 'OK' ELSE 'ROJO' END||'|'||st||'|'||left(msg, 160);
+  IF NOT ok THEN bad := bad||'EX018 telefono 31: '||st||' '||left(msg, 120)||'; '; END IF;
+  st := '00000'; msg := ''; j := NULL;
+  SELECT count(*) INTO n_or FROM public.ordenes_examen; SELECT count(*) INTO n_ex FROM public.examenes;
+  BEGIN
+    PERFORM set_config('request.jwt.claims', json_build_object('sub', c_recep::text, 'role', 'authenticated')::text, true); PERFORM set_config('role', 'authenticated', true);
+    j := public.crear_orden_examen_walkin(p_items => jsonb_build_array(jsonb_build_object('catalogo_id', c_copro)), p_paciente_nombre => 'Paciente Walkin QA', p_prioridad => 'alta');
+    PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
+  EXCEPTION WHEN OTHERS THEN PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
+    st := SQLSTATE; msg := SQLERRM; END;
+  IF j IS NOT NULL THEN ords := ords || (j->>'orden_id')::uuid; END IF;
+  ok := COALESCE((st = 'EX019' AND msg = 'Prioridad inválida (normal o urgente)' AND j IS NULL AND (SELECT count(*) FROM public.ordenes_examen) = n_or AND (SELECT count(*) FROM public.examenes) = n_ex), false);
+  det := det||' ;; EX019 prioridad alta|EX019 sin filas|'||CASE WHEN ok THEN 'OK' ELSE 'ROJO' END||'|'||st||'|'||left(msg, 160);
+  IF NOT ok THEN bad := bad||'EX019 prioridad alta: '||st||' '||left(msg, 120)||'; '; END IF;
+  st := '00000'; msg := ''; j := NULL;
+  SELECT count(*) INTO n_or FROM public.ordenes_examen; SELECT count(*) INTO n_ex FROM public.examenes;
+  BEGIN
+    PERFORM set_config('request.jwt.claims', json_build_object('sub', c_recep::text, 'role', 'authenticated')::text, true); PERFORM set_config('role', 'authenticated', true);
+    j := public.crear_orden_examen_walkin(p_items => jsonb_build_array(jsonb_build_object('catalogo_id', c_copro)), p_paciente_nombre => 'Paciente Walkin QA', p_instrucciones => repeat('i', 2001));
+    PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
+  EXCEPTION WHEN OTHERS THEN PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
+    st := SQLSTATE; msg := SQLERRM; END;
+  IF j IS NOT NULL THEN ords := ords || (j->>'orden_id')::uuid; END IF;
+  ok := COALESCE((st = 'EX020' AND msg = 'Las instrucciones son demasiado largas (máximo 2000)' AND j IS NULL AND (SELECT count(*) FROM public.ordenes_examen) = n_or AND (SELECT count(*) FROM public.examenes) = n_ex), false);
+  det := det||' ;; EX020 instrucciones 2001|EX020 sin filas|'||CASE WHEN ok THEN 'OK' ELSE 'ROJO' END||'|'||st||'|'||left(msg, 160);
+  IF NOT ok THEN bad := bad||'EX020 instrucciones 2001: '||st||' '||left(msg, 120)||'; '; END IF;
+  st := '00000'; msg := ''; j := NULL;
+  SELECT count(*) INTO n_or FROM public.ordenes_examen; SELECT count(*) INTO n_ex FROM public.examenes;
+  BEGIN
+    PERFORM set_config('request.jwt.claims', json_build_object('sub', c_recep::text, 'role', 'authenticated')::text, true); PERFORM set_config('role', 'authenticated', true);
+    j := public.crear_orden_examen_walkin(p_items => '[]'::jsonb, p_paciente_nombre => 'Paciente Walkin QA');
+    PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
+  EXCEPTION WHEN OTHERS THEN PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
+    st := SQLSTATE; msg := SQLERRM; END;
+  IF j IS NOT NULL THEN ords := ords || (j->>'orden_id')::uuid; END IF;
+  ok := COALESCE((st = 'EX008' AND msg = 'Seleccione o escriba al menos un examen' AND j IS NULL AND (SELECT count(*) FROM public.ordenes_examen) = n_or AND (SELECT count(*) FROM public.examenes) = n_ex), false);
+  det := det||' ;; EX008 items [] (helper comun)|EX008 sin filas|'||CASE WHEN ok THEN 'OK' ELSE 'ROJO' END||'|'||st||'|'||left(msg, 160);
+  IF NOT ok THEN bad := bad||'EX008 items [] (helper comun): '||st||' '||left(msg, 120)||'; '; END IF;
+  st := '00000'; msg := ''; j := NULL;
+  SELECT count(*) INTO n_or FROM public.ordenes_examen; SELECT count(*) INTO n_ex FROM public.examenes;
+  BEGIN
+    PERFORM set_config('request.jwt.claims', json_build_object('sub', c_recep::text, 'role', 'authenticated')::text, true); PERFORM set_config('role', 'authenticated', true);
+    j := public.crear_orden_examen_walkin(p_items => jsonb_build_array(jsonb_build_object('nombre','hemograma completo')), p_paciente_nombre => 'Paciente Walkin QA');
+    PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
+  EXCEPTION WHEN OTHERS THEN PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
+    st := SQLSTATE; msg := SQLERRM; END;
+  IF j IS NOT NULL THEN ords := ords || (j->>'orden_id')::uuid; END IF;
+  ok := COALESCE((st = 'EX017' AND msg = 'Ese examen está en el catálogo: selecciónelo de la lista' AND j IS NULL AND (SELECT count(*) FROM public.ordenes_examen) = n_or AND (SELECT count(*) FROM public.examenes) = n_ex), false);
+  det := det||' ;; EX017 libre = catalogo activo|EX017 sin filas|'||CASE WHEN ok THEN 'OK' ELSE 'ROJO' END||'|'||st||'|'||left(msg, 160);
+  IF NOT ok THEN bad := bad||'EX017 libre = catalogo activo: '||st||' '||left(msg, 120)||'; '; END IF;
+  -- restauracion: se borra solo lo que el probe creo/sembro y se verifica contra el snapshot
+  DELETE FROM public.ordenes_examen WHERE id = ANY (ords);           -- CASCADE a examenes
+  DELETE FROM public.examenes WHERE id = ANY (seed_ex);
+  DELETE FROM public.examenes_catalogo WHERE id = ANY (seed_cat);
+  DELETE FROM public.empresas_proveedoras WHERE id = ANY (seed_emp);
+  DELETE FROM public.notificaciones WHERE NOT (id = ANY (notif0));
+  DELETE FROM public.notificaciones_pacientes WHERE id > np0;
+  IF (SELECT md5(COALESCE(string_agg(to_jsonb(e)::text, '|' ORDER BY e.id), '')) FROM public.examenes e) IS DISTINCT FROM s_ex THEN r_rest := r_rest||' / examenes'; END IF;
+  IF (SELECT md5(COALESCE(string_agg(to_jsonb(o)::text, '|' ORDER BY o.id), '')) FROM public.ordenes_examen o) IS DISTINCT FROM s_or THEN r_rest := r_rest||' / ordenes_examen'; END IF;
+  IF (SELECT md5(COALESCE(string_agg(to_jsonb(c)::text, '|' ORDER BY c.id), '')) FROM public.examenes_catalogo c) IS DISTINCT FROM s_cat THEN r_rest := r_rest||' / examenes_catalogo'; END IF;
+  IF (SELECT md5(COALESCE(string_agg(to_jsonb(c)::text, '|' ORDER BY c.id), '')) FROM public.cuentas_proveedor c WHERE c.empresa_id = c_lab OR c.id IN (c_recep, c_admin, c_tec)) IS DISTINCT FROM s_cp THEN r_rest := r_rest||' / cuentas_proveedor'; END IF;
+  IF (SELECT count(*) FROM public.notificaciones WHERE NOT (id = ANY (notif0))) <> 0 OR (SELECT count(*) FROM public.notificaciones_pacientes WHERE id > np0) <> 0
+     OR (SELECT count(*) FROM public.notificaciones) <> cardinality(notif0) THEN r_rest := r_rest||' / notificaciones'; END IF;
+  IF EXISTS (SELECT 1 FROM public.empresas_proveedoras WHERE id = ANY (seed_emp)) THEN r_rest := r_rest||' / empresas sembradas'; END IF;
+  det := det||' ;; restauracion|'||cardinality(ords)||' orden(es) creadas, '||cardinality(seed_cat)||' catalogo, '||cardinality(seed_emp)||' empresas, '||cardinality(seed_ex)||' examenes sembrados; snapshot igual|'||r_rest||'|-|';
+
+  PERFORM set_config('probe.p870_det', det, false);
+  PERFORM set_config('probe.p870', CASE WHEN bad = '' AND r_rest = 'OK'
+    THEN 'OK (15 rechazos del walk-in (incluye cuenta inactiva y empresa suspendida -> 42501), sin filas nuevas; cuenta de recepcion restaurada; restaurado)'
+    ELSE 'ROJO ('||left(bad, 700)||' | restauracion='||r_rest||')' END, false);
+EXCEPTION WHEN OTHERS THEN
+  PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
+  PERFORM set_config('probe.p870', 'FALLO ('||SQLSTATE||' '||SQLERRM||')', false);
+END $$;
+SELECT set_config('role', 'none', true);
+
+-- ---------------- P871 atomicidad y bordes ----------------
+DO $$
+DECLARE
+  c_med uuid := '09d243d5-b222-482a-9762-94a582e9e752'; c_lab uuid := 'a5cf575a-5d63-4ed2-839e-9b58da8152e0'; c_recep uuid := 'ce871197-285a-4d5f-9e5f-78606f9e124f'; c_admin uuid := 'e6f95b2f-7561-4e0b-b0c8-d1f38e6c4d66'; c_tec uuid := 'f69e2096-932f-45f0-9022-4e9058f2f0fd';
+  c_copro uuid := '27a2af0f-e201-4a1d-900a-cb27851d9577'; c_tp uuid := '43a1a45c-82f7-403a-a663-1ab7fc8b3732'; c_bhcg uuid := '4f32f195-e4de-4282-8303-8ec8bafecec1'; c_hemo uuid := '7c980fb6-5048-4905-a682-9d6e9feb55ed';
+  ords uuid[] := '{}'; seed_cat uuid[] := '{}'; seed_emp uuid[] := '{}'; seed_ex integer[] := '{}';
+  st text; msg text; j jsonb; ok boolean; det text := ''; bad text := ''; r_rest text := 'OK';
+  s_ex text; s_or text; s_cat text; s_cp text; notif0 uuid[]; np0 integer; n_or bigint; n_ex bigint;
+  v uuid; v2 uuid; x text; y text; n int; nn int; rec record; id_ex integer;
+BEGIN
+  -- snapshot: examenes, ordenes_examen, examenes_catalogo, cuentas del lab QA y notificaciones
+  SELECT md5(COALESCE(string_agg(to_jsonb(e)::text, '|' ORDER BY e.id), '')) INTO s_ex FROM public.examenes e;
+  SELECT md5(COALESCE(string_agg(to_jsonb(o)::text, '|' ORDER BY o.id), '')) INTO s_or FROM public.ordenes_examen o;
+  SELECT md5(COALESCE(string_agg(to_jsonb(c)::text, '|' ORDER BY c.id), '')) INTO s_cat FROM public.examenes_catalogo c;
+  SELECT md5(COALESCE(string_agg(to_jsonb(c)::text, '|' ORDER BY c.id), '')) INTO s_cp FROM public.cuentas_proveedor c WHERE c.empresa_id = c_lab OR c.id IN (c_recep, c_admin, c_tec);
+  notif0 := ARRAY(SELECT id FROM public.notificaciones);
+  SELECT COALESCE(max(id), 0) INTO np0 FROM public.notificaciones_pacientes;
+  -- semilla: examen de catalogo INACTIVO del lab QA y uno de OTRO laboratorio
+  INSERT INTO public.examenes_catalogo (laboratorio_id, nombre, categoria, activo) VALUES (c_lab, 'P332 Inactivo QA', 'QA', false) RETURNING id INTO v;
+  seed_cat := seed_cat || v;
+  INSERT INTO public.examenes_catalogo (laboratorio_id, nombre, categoria, activo) VALUES ('411d6f8c-a405-49d6-9ed6-fbeb0db05133', 'P332 Otro lab QA', 'QA', true) RETURNING id INTO v2;
+  seed_cat := seed_cat || v2;
+  st := '00000'; msg := ''; j := NULL;
+  SELECT count(*) INTO n_or FROM public.ordenes_examen; SELECT count(*) INTO n_ex FROM public.examenes;
+  BEGIN
+    PERFORM set_config('request.jwt.claims', json_build_object('sub', c_med::text, 'role', 'authenticated')::text, true); PERFORM set_config('role', 'authenticated', true);
+    j := public.crear_orden_examen_medico(p_paciente_id => 23, p_laboratorio_id => c_lab, p_items => jsonb_build_array(jsonb_build_object('catalogo_id', c_copro), jsonb_build_object('catalogo_id', c_hemo), jsonb_build_object('catalogo_id', seed_cat[1])));
+    PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
+  EXCEPTION WHEN OTHERS THEN PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
+    st := SQLSTATE; msg := SQLERRM; END;
+  IF j IS NOT NULL THEN ords := ords || (j->>'orden_id')::uuid; END IF;
+  ok := COALESCE((st = 'EX012' AND msg = 'El examen seleccionado ya no está disponible en el catálogo' AND j IS NULL AND (SELECT count(*) FROM public.ordenes_examen) = n_or AND (SELECT count(*) FROM public.examenes) = n_ex), false);
+  det := det||' ;; atomicidad: 2 validos + 1 inactivo|EX012 sin filas|'||CASE WHEN ok THEN 'OK' ELSE 'ROJO' END||'|'||st||'|'||left(msg, 160);
+  IF NOT ok THEN bad := bad||'atomicidad: 2 validos + 1 inactivo: '||st||' '||left(msg, 120)||'; '; END IF;
+  st := '00000'; msg := ''; j := NULL;
+  SELECT count(*) INTO n_or FROM public.ordenes_examen; SELECT count(*) INTO n_ex FROM public.examenes;
+  BEGIN
+    PERFORM set_config('request.jwt.claims', json_build_object('sub', c_med::text, 'role', 'authenticated')::text, true); PERFORM set_config('role', 'authenticated', true);
+    j := public.crear_orden_examen_medico(p_paciente_id => 23, p_laboratorio_id => c_lab, p_items => jsonb_build_array(jsonb_build_object('nombre', 'p332 inactivo qa')));
+    PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
+  EXCEPTION WHEN OTHERS THEN PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
+    st := SQLSTATE; msg := SQLERRM; END;
+  IF j IS NOT NULL THEN ords := ords || (j->>'orden_id')::uuid; END IF;
+  ok := COALESCE((st = '00000' AND (SELECT count(*) FROM public.examenes e WHERE e.orden_id = (j->>'orden_id')::uuid AND e.catalogo_id IS NULL AND e.tipo = 'p332 inactivo qa') = 1), false);
+  det := det||' ;; control: libre = catalogo INACTIVO se permite|OK como texto libre|'||CASE WHEN ok THEN 'OK' ELSE 'ROJO' END||'|'||st||'|'||left(msg, 160);
+  IF NOT ok THEN bad := bad||'control: libre = catalogo INACTIVO se permite: '||st||' '||left(msg, 120)||'; '; END IF;
+  st := '00000'; msg := ''; j := NULL;
+  SELECT count(*) INTO n_or FROM public.ordenes_examen; SELECT count(*) INTO n_ex FROM public.examenes;
+  BEGIN
+    PERFORM set_config('request.jwt.claims', json_build_object('sub', c_med::text, 'role', 'authenticated')::text, true); PERFORM set_config('role', 'authenticated', true);
+    j := public.crear_orden_examen_medico(p_paciente_id => 23, p_laboratorio_id => c_lab, p_items => (SELECT jsonb_agg(jsonb_build_object('nombre', 'Libre borde '||g)) FROM generate_series(1, 30) g));
+    PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
+  EXCEPTION WHEN OTHERS THEN PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
+    st := SQLSTATE; msg := SQLERRM; END;
+  IF j IS NOT NULL THEN ords := ords || (j->>'orden_id')::uuid; END IF;
+  ok := COALESCE((st = '00000' AND (j->>'n_items')::int = 30), false);
+  det := det||' ;; borde: 30 items|OK 30 items|'||CASE WHEN ok THEN 'OK' ELSE 'ROJO' END||'|'||st||'|'||left(msg, 160);
+  IF NOT ok THEN bad := bad||'borde: 30 items: '||st||' '||left(msg, 120)||'; '; END IF;
+  st := '00000'; msg := ''; j := NULL;
+  SELECT count(*) INTO n_or FROM public.ordenes_examen; SELECT count(*) INTO n_ex FROM public.examenes;
+  BEGIN
+    PERFORM set_config('request.jwt.claims', json_build_object('sub', c_med::text, 'role', 'authenticated')::text, true); PERFORM set_config('role', 'authenticated', true);
+    j := public.crear_orden_examen_medico(p_paciente_id => 23, p_laboratorio_id => c_lab, p_items => jsonb_build_array(jsonb_build_object('nombre', repeat('y', 200))), p_instrucciones => repeat('i', 2000));
+    PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
+  EXCEPTION WHEN OTHERS THEN PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
+    st := SQLSTATE; msg := SQLERRM; END;
+  IF j IS NOT NULL THEN ords := ords || (j->>'orden_id')::uuid; END IF;
+  ok := COALESCE((st = '00000' AND (j->>'n_items')::int = 1), false);
+  det := det||' ;; borde: nombre 200 + instrucciones 2000|OK|'||CASE WHEN ok THEN 'OK' ELSE 'ROJO' END||'|'||st||'|'||left(msg, 160);
+  IF NOT ok THEN bad := bad||'borde: nombre 200 + instrucciones 2000: '||st||' '||left(msg, 120)||'; '; END IF;
+  -- restauracion: se borra solo lo que el probe creo/sembro y se verifica contra el snapshot
+  DELETE FROM public.ordenes_examen WHERE id = ANY (ords);           -- CASCADE a examenes
+  DELETE FROM public.examenes WHERE id = ANY (seed_ex);
+  DELETE FROM public.examenes_catalogo WHERE id = ANY (seed_cat);
+  DELETE FROM public.empresas_proveedoras WHERE id = ANY (seed_emp);
+  DELETE FROM public.notificaciones WHERE NOT (id = ANY (notif0));
+  DELETE FROM public.notificaciones_pacientes WHERE id > np0;
+  IF (SELECT md5(COALESCE(string_agg(to_jsonb(e)::text, '|' ORDER BY e.id), '')) FROM public.examenes e) IS DISTINCT FROM s_ex THEN r_rest := r_rest||' / examenes'; END IF;
+  IF (SELECT md5(COALESCE(string_agg(to_jsonb(o)::text, '|' ORDER BY o.id), '')) FROM public.ordenes_examen o) IS DISTINCT FROM s_or THEN r_rest := r_rest||' / ordenes_examen'; END IF;
+  IF (SELECT md5(COALESCE(string_agg(to_jsonb(c)::text, '|' ORDER BY c.id), '')) FROM public.examenes_catalogo c) IS DISTINCT FROM s_cat THEN r_rest := r_rest||' / examenes_catalogo'; END IF;
+  IF (SELECT md5(COALESCE(string_agg(to_jsonb(c)::text, '|' ORDER BY c.id), '')) FROM public.cuentas_proveedor c WHERE c.empresa_id = c_lab OR c.id IN (c_recep, c_admin, c_tec)) IS DISTINCT FROM s_cp THEN r_rest := r_rest||' / cuentas_proveedor'; END IF;
+  IF (SELECT count(*) FROM public.notificaciones WHERE NOT (id = ANY (notif0))) <> 0 OR (SELECT count(*) FROM public.notificaciones_pacientes WHERE id > np0) <> 0
+     OR (SELECT count(*) FROM public.notificaciones) <> cardinality(notif0) THEN r_rest := r_rest||' / notificaciones'; END IF;
+  IF EXISTS (SELECT 1 FROM public.empresas_proveedoras WHERE id = ANY (seed_emp)) THEN r_rest := r_rest||' / empresas sembradas'; END IF;
+  det := det||' ;; restauracion|'||cardinality(ords)||' orden(es) creadas, '||cardinality(seed_cat)||' catalogo, '||cardinality(seed_emp)||' empresas, '||cardinality(seed_ex)||' examenes sembrados; snapshot igual|'||r_rest||'|-|';
+
+  PERFORM set_config('probe.p871_det', det, false);
+  PERFORM set_config('probe.p871', CASE WHEN bad = '' AND r_rest = 'OK'
+    THEN 'OK (2 validos + 1 invalido -> EX012 y 0 filas; libre igual a un catalogo inactivo OK; bordes 30 items / 200 / 2000 OK; restaurado)'
+    ELSE 'ROJO ('||left(bad, 700)||' | restauracion='||r_rest||')' END, false);
+EXCEPTION WHEN OTHERS THEN
+  PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
+  PERFORM set_config('probe.p871', 'FALLO ('||SQLSTATE||' '||SQLERRM||')', false);
+END $$;
+SELECT set_config('role', 'none', true);
+
+-- ---------------- P872 M.2: notificar_orden_lab falla y la orden se guarda ----------------
+DO $$
+DECLARE
+  c_med uuid := '09d243d5-b222-482a-9762-94a582e9e752'; c_lab uuid := 'a5cf575a-5d63-4ed2-839e-9b58da8152e0'; c_recep uuid := 'ce871197-285a-4d5f-9e5f-78606f9e124f'; c_admin uuid := 'e6f95b2f-7561-4e0b-b0c8-d1f38e6c4d66'; c_tec uuid := 'f69e2096-932f-45f0-9022-4e9058f2f0fd';
+  c_copro uuid := '27a2af0f-e201-4a1d-900a-cb27851d9577'; c_tp uuid := '43a1a45c-82f7-403a-a663-1ab7fc8b3732'; c_bhcg uuid := '4f32f195-e4de-4282-8303-8ec8bafecec1'; c_hemo uuid := '7c980fb6-5048-4905-a682-9d6e9feb55ed';
+  ords uuid[] := '{}'; seed_cat uuid[] := '{}'; seed_emp uuid[] := '{}'; seed_ex integer[] := '{}';
+  st text; msg text; j jsonb; ok boolean; det text := ''; bad text := ''; r_rest text := 'OK';
+  s_ex text; s_or text; s_cat text; s_cp text; notif0 uuid[]; np0 integer; n_or bigint; n_ex bigint;
+  v uuid; v2 uuid; x text; y text; n int; nn int; rec record; id_ex integer;
+BEGIN
+  -- snapshot: examenes, ordenes_examen, examenes_catalogo, cuentas del lab QA y notificaciones
+  SELECT md5(COALESCE(string_agg(to_jsonb(e)::text, '|' ORDER BY e.id), '')) INTO s_ex FROM public.examenes e;
+  SELECT md5(COALESCE(string_agg(to_jsonb(o)::text, '|' ORDER BY o.id), '')) INTO s_or FROM public.ordenes_examen o;
+  SELECT md5(COALESCE(string_agg(to_jsonb(c)::text, '|' ORDER BY c.id), '')) INTO s_cat FROM public.examenes_catalogo c;
+  SELECT md5(COALESCE(string_agg(to_jsonb(c)::text, '|' ORDER BY c.id), '')) INTO s_cp FROM public.cuentas_proveedor c WHERE c.empresa_id = c_lab OR c.id IN (c_recep, c_admin, c_tec);
+  notif0 := ARRAY(SELECT id FROM public.notificaciones);
+  SELECT COALESCE(max(id), 0) INTO np0 FROM public.notificaciones_pacientes;
+  -- fuerza el fallo de notificar_orden_lab: un trigger que rechaza el INSERT de la notif del paciente
+  CREATE FUNCTION public.p872_falla_notif() RETURNS trigger LANGUAGE plpgsql AS 'BEGIN RAISE EXCEPTION ''p872 forzado''; END';
+  CREATE TRIGGER p872_falla_notif BEFORE INSERT ON public.notificaciones_pacientes FOR EACH ROW EXECUTE FUNCTION public.p872_falla_notif();
+  st := '00000'; msg := ''; j := NULL;
+  SELECT count(*) INTO n_or FROM public.ordenes_examen; SELECT count(*) INTO n_ex FROM public.examenes;
+  BEGIN
+    PERFORM set_config('request.jwt.claims', json_build_object('sub', c_med::text, 'role', 'authenticated')::text, true); PERFORM set_config('role', 'authenticated', true);
+    j := public.crear_orden_examen_medico(p_paciente_id => 23, p_laboratorio_id => c_lab, p_items => jsonb_build_array(jsonb_build_object('catalogo_id', c_copro)));
+    PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
+  EXCEPTION WHEN OTHERS THEN PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
+    st := SQLSTATE; msg := SQLERRM; END;
+  IF j IS NOT NULL THEN ords := ords || (j->>'orden_id')::uuid; END IF;
+  DROP TRIGGER p872_falla_notif ON public.notificaciones_pacientes;
+  DROP FUNCTION public.p872_falla_notif();
+  ok := COALESCE((st = '00000' AND EXISTS (SELECT 1 FROM public.ordenes_examen o WHERE o.id = (j->>'orden_id')::uuid)
+    AND (SELECT count(*) FROM public.examenes e WHERE e.orden_id = (j->>'orden_id')::uuid AND e.catalogo_id = c_copro) = 1), false);
+  det := det||' ;; la orden se guarda igual|OK orden + item|'||CASE WHEN ok THEN 'OK' ELSE 'ROJO' END||'|'||st||'|'||left(msg, 160);
+  IF NOT ok THEN bad := bad||'la orden se guarda igual: '||st||' '||left(msg, 120)||'; '; END IF;
+  ok := COALESCE(((SELECT count(*) FROM public.notificaciones WHERE NOT (id = ANY (notif0))) = 0 AND (SELECT count(*) FROM public.notificaciones_pacientes WHERE id > np0) = 0), false);
+  det := det||' ;; la notificacion no quedo a medias|0 notif (el sub-bloque deshizo las del lab)|'||CASE WHEN ok THEN 'OK' ELSE 'ROJO' END||'|'||st||'|'||left(msg, 160);
+  IF NOT ok THEN bad := bad||'la notificacion no quedo a medias: '||st||' '||left(msg, 120)||'; '; END IF;
+  ok := COALESCE((NOT EXISTS (SELECT 1 FROM pg_trigger WHERE tgname = 'p872_falla_notif') AND to_regprocedure('public.p872_falla_notif()') IS NULL), false);
+  det := det||' ;; el trigger forzado ya no existe|limpio|'||CASE WHEN ok THEN 'OK' ELSE 'ROJO' END||'|'||st||'|'||left(msg, 160);
+  IF NOT ok THEN bad := bad||'el trigger forzado ya no existe: '||st||' '||left(msg, 120)||'; '; END IF;
+  -- restauracion: se borra solo lo que el probe creo/sembro y se verifica contra el snapshot
+  DELETE FROM public.ordenes_examen WHERE id = ANY (ords);           -- CASCADE a examenes
+  DELETE FROM public.examenes WHERE id = ANY (seed_ex);
+  DELETE FROM public.examenes_catalogo WHERE id = ANY (seed_cat);
+  DELETE FROM public.empresas_proveedoras WHERE id = ANY (seed_emp);
+  DELETE FROM public.notificaciones WHERE NOT (id = ANY (notif0));
+  DELETE FROM public.notificaciones_pacientes WHERE id > np0;
+  IF (SELECT md5(COALESCE(string_agg(to_jsonb(e)::text, '|' ORDER BY e.id), '')) FROM public.examenes e) IS DISTINCT FROM s_ex THEN r_rest := r_rest||' / examenes'; END IF;
+  IF (SELECT md5(COALESCE(string_agg(to_jsonb(o)::text, '|' ORDER BY o.id), '')) FROM public.ordenes_examen o) IS DISTINCT FROM s_or THEN r_rest := r_rest||' / ordenes_examen'; END IF;
+  IF (SELECT md5(COALESCE(string_agg(to_jsonb(c)::text, '|' ORDER BY c.id), '')) FROM public.examenes_catalogo c) IS DISTINCT FROM s_cat THEN r_rest := r_rest||' / examenes_catalogo'; END IF;
+  IF (SELECT md5(COALESCE(string_agg(to_jsonb(c)::text, '|' ORDER BY c.id), '')) FROM public.cuentas_proveedor c WHERE c.empresa_id = c_lab OR c.id IN (c_recep, c_admin, c_tec)) IS DISTINCT FROM s_cp THEN r_rest := r_rest||' / cuentas_proveedor'; END IF;
+  IF (SELECT count(*) FROM public.notificaciones WHERE NOT (id = ANY (notif0))) <> 0 OR (SELECT count(*) FROM public.notificaciones_pacientes WHERE id > np0) <> 0
+     OR (SELECT count(*) FROM public.notificaciones) <> cardinality(notif0) THEN r_rest := r_rest||' / notificaciones'; END IF;
+  IF EXISTS (SELECT 1 FROM public.empresas_proveedoras WHERE id = ANY (seed_emp)) THEN r_rest := r_rest||' / empresas sembradas'; END IF;
+  det := det||' ;; restauracion|'||cardinality(ords)||' orden(es) creadas, '||cardinality(seed_cat)||' catalogo, '||cardinality(seed_emp)||' empresas, '||cardinality(seed_ex)||' examenes sembrados; snapshot igual|'||r_rest||'|-|';
+
+  PERFORM set_config('probe.p872_det', det, false);
+  PERFORM set_config('probe.p872', CASE WHEN bad = '' AND r_rest = 'OK'
+    THEN 'OK (con notificar_orden_lab forzada a fallar la orden y su item se guardan y no queda ninguna notificacion; trigger forzado retirado; restaurado)'
+    ELSE 'ROJO ('||left(bad, 700)||' | restauracion='||r_rest||')' END, false);
+EXCEPTION WHEN OTHERS THEN
+  PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
+  PERFORM set_config('probe.p872', 'FALLO ('||SQLSTATE||' '||SQLERRM||')', false);
+END $$;
+SELECT set_config('role', 'none', true);
+
+-- ---------------- P873 FK RESTRICT de examenes.catalogo_id ----------------
+DO $$
+DECLARE
+  c_med uuid := '09d243d5-b222-482a-9762-94a582e9e752'; c_lab uuid := 'a5cf575a-5d63-4ed2-839e-9b58da8152e0'; c_recep uuid := 'ce871197-285a-4d5f-9e5f-78606f9e124f'; c_admin uuid := 'e6f95b2f-7561-4e0b-b0c8-d1f38e6c4d66'; c_tec uuid := 'f69e2096-932f-45f0-9022-4e9058f2f0fd';
+  c_copro uuid := '27a2af0f-e201-4a1d-900a-cb27851d9577'; c_tp uuid := '43a1a45c-82f7-403a-a663-1ab7fc8b3732'; c_bhcg uuid := '4f32f195-e4de-4282-8303-8ec8bafecec1'; c_hemo uuid := '7c980fb6-5048-4905-a682-9d6e9feb55ed';
+  ords uuid[] := '{}'; seed_cat uuid[] := '{}'; seed_emp uuid[] := '{}'; seed_ex integer[] := '{}';
+  st text; msg text; j jsonb; ok boolean; det text := ''; bad text := ''; r_rest text := 'OK';
+  s_ex text; s_or text; s_cat text; s_cp text; notif0 uuid[]; np0 integer; n_or bigint; n_ex bigint;
+  v uuid; v2 uuid; x text; y text; n int; nn int; rec record; id_ex integer;
+BEGIN
+  -- snapshot: examenes, ordenes_examen, examenes_catalogo, cuentas del lab QA y notificaciones
+  SELECT md5(COALESCE(string_agg(to_jsonb(e)::text, '|' ORDER BY e.id), '')) INTO s_ex FROM public.examenes e;
+  SELECT md5(COALESCE(string_agg(to_jsonb(o)::text, '|' ORDER BY o.id), '')) INTO s_or FROM public.ordenes_examen o;
+  SELECT md5(COALESCE(string_agg(to_jsonb(c)::text, '|' ORDER BY c.id), '')) INTO s_cat FROM public.examenes_catalogo c;
+  SELECT md5(COALESCE(string_agg(to_jsonb(c)::text, '|' ORDER BY c.id), '')) INTO s_cp FROM public.cuentas_proveedor c WHERE c.empresa_id = c_lab OR c.id IN (c_recep, c_admin, c_tec);
+  notif0 := ARRAY(SELECT id FROM public.notificaciones);
+  SELECT COALESCE(max(id), 0) INTO np0 FROM public.notificaciones_pacientes;
+  INSERT INTO public.examenes_catalogo (laboratorio_id, nombre, categoria, activo) VALUES (c_lab, 'P332 Sin ordenar QA', 'QA', true) RETURNING id INTO v;
+  seed_cat := seed_cat || v;
+  -- copia completa de la fila ordenada: si el DELETE pasara (sin la 332), se reinserta igual antes del snapshot
+  SELECT to_jsonb(k)::text INTO y FROM public.examenes_catalogo k WHERE k.id = c_copro;
+  st := '00000'; msg := ''; nn := NULL;
+  BEGIN
+    PERFORM set_config('request.jwt.claims', json_build_object('sub', c_admin::text, 'role', 'authenticated')::text, true); PERFORM set_config('role', 'authenticated', true);
+    DELETE FROM public.examenes_catalogo WHERE id = c_copro;
+    GET DIAGNOSTICS nn = ROW_COUNT;
+    PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
+  EXCEPTION WHEN OTHERS THEN PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
+    st := SQLSTATE; msg := SQLERRM; END;
+  ok := COALESCE((st = '23503' AND position('examenes_catalogo_id_fkey' in msg) > 0 AND EXISTS (SELECT 1 FROM public.examenes_catalogo WHERE id = c_copro)), false);
+  det := det||' ;; DELETE de catalogo ya ordenado|23503 examenes_catalogo_id_fkey, la fila sigue|'||CASE WHEN ok THEN 'OK' ELSE 'ROJO' END||'|'||st||'|'||left(msg, 160);
+  IF NOT ok THEN bad := bad||'DELETE de catalogo ya ordenado: '||st||' '||left(msg, 120)||'; '; END IF;
+  st := '00000'; msg := ''; nn := NULL;
+  BEGIN
+    PERFORM set_config('request.jwt.claims', json_build_object('sub', c_admin::text, 'role', 'authenticated')::text, true); PERFORM set_config('role', 'authenticated', true);
+    DELETE FROM public.examenes_catalogo WHERE id = seed_cat[1];
+    GET DIAGNOSTICS nn = ROW_COUNT;
+    PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
+  EXCEPTION WHEN OTHERS THEN PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
+    st := SQLSTATE; msg := SQLERRM; END;
+  ok := COALESCE((st = '00000' AND nn = 1 AND NOT EXISTS (SELECT 1 FROM public.examenes_catalogo WHERE id = seed_cat[1])), false);
+  det := det||' ;; DELETE de catalogo sin ordenar|OK 1 fila|'||CASE WHEN ok THEN 'OK' ELSE 'ROJO' END||'|'||st||'|'||left(msg, 160);
+  IF NOT ok THEN bad := bad||'DELETE de catalogo sin ordenar: '||st||' '||left(msg, 120)||'; '; END IF;
+  st := '00000'; msg := ''; nn := NULL;
+  BEGIN
+    PERFORM set_config('request.jwt.claims', json_build_object('sub', c_admin::text, 'role', 'authenticated')::text, true); PERFORM set_config('role', 'authenticated', true);
+    UPDATE public.examenes_catalogo SET activo = false WHERE id = c_copro;
+    GET DIAGNOSTICS nn = ROW_COUNT;
+    PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
+  EXCEPTION WHEN OTHERS THEN PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
+    st := SQLSTATE; msg := SQLERRM; END;
+  ok := COALESCE((st = '00000' AND nn = 1 AND NOT (SELECT activo FROM public.examenes_catalogo WHERE id = c_copro)), false);
+  det := det||' ;; desactivar el ya ordenado|OK (se desactiva, no se borra)|'||CASE WHEN ok THEN 'OK' ELSE 'ROJO' END||'|'||st||'|'||left(msg, 160);
+  IF NOT ok THEN bad := bad||'desactivar el ya ordenado: '||st||' '||left(msg, 120)||'; '; END IF;
+  UPDATE public.examenes_catalogo SET activo = true WHERE id = c_copro;
+  IF NOT EXISTS (SELECT 1 FROM public.examenes_catalogo WHERE id = c_copro) THEN
+    INSERT INTO public.examenes_catalogo SELECT * FROM jsonb_populate_record(NULL::public.examenes_catalogo, y::jsonb);
+  END IF;
+  -- restauracion: se borra solo lo que el probe creo/sembro y se verifica contra el snapshot
+  DELETE FROM public.ordenes_examen WHERE id = ANY (ords);           -- CASCADE a examenes
+  DELETE FROM public.examenes WHERE id = ANY (seed_ex);
+  DELETE FROM public.examenes_catalogo WHERE id = ANY (seed_cat);
+  DELETE FROM public.empresas_proveedoras WHERE id = ANY (seed_emp);
+  DELETE FROM public.notificaciones WHERE NOT (id = ANY (notif0));
+  DELETE FROM public.notificaciones_pacientes WHERE id > np0;
+  IF (SELECT md5(COALESCE(string_agg(to_jsonb(e)::text, '|' ORDER BY e.id), '')) FROM public.examenes e) IS DISTINCT FROM s_ex THEN r_rest := r_rest||' / examenes'; END IF;
+  IF (SELECT md5(COALESCE(string_agg(to_jsonb(o)::text, '|' ORDER BY o.id), '')) FROM public.ordenes_examen o) IS DISTINCT FROM s_or THEN r_rest := r_rest||' / ordenes_examen'; END IF;
+  IF (SELECT md5(COALESCE(string_agg(to_jsonb(c)::text, '|' ORDER BY c.id), '')) FROM public.examenes_catalogo c) IS DISTINCT FROM s_cat THEN r_rest := r_rest||' / examenes_catalogo'; END IF;
+  IF (SELECT md5(COALESCE(string_agg(to_jsonb(c)::text, '|' ORDER BY c.id), '')) FROM public.cuentas_proveedor c WHERE c.empresa_id = c_lab OR c.id IN (c_recep, c_admin, c_tec)) IS DISTINCT FROM s_cp THEN r_rest := r_rest||' / cuentas_proveedor'; END IF;
+  IF (SELECT count(*) FROM public.notificaciones WHERE NOT (id = ANY (notif0))) <> 0 OR (SELECT count(*) FROM public.notificaciones_pacientes WHERE id > np0) <> 0
+     OR (SELECT count(*) FROM public.notificaciones) <> cardinality(notif0) THEN r_rest := r_rest||' / notificaciones'; END IF;
+  IF EXISTS (SELECT 1 FROM public.empresas_proveedoras WHERE id = ANY (seed_emp)) THEN r_rest := r_rest||' / empresas sembradas'; END IF;
+  det := det||' ;; restauracion|'||cardinality(ords)||' orden(es) creadas, '||cardinality(seed_cat)||' catalogo, '||cardinality(seed_emp)||' empresas, '||cardinality(seed_ex)||' examenes sembrados; snapshot igual|'||r_rest||'|-|';
+
+  PERFORM set_config('probe.p873_det', det, false);
+  PERFORM set_config('probe.p873', CASE WHEN bad = '' AND r_rest = 'OK'
+    THEN 'OK (admin del lab: borrar un examen de catalogo ya ordenado -> 23503 y la fila sigue; uno sin ordenar se borra; el ordenado se desactiva; restaurado)'
+    ELSE 'ROJO ('||left(bad, 700)||' | restauracion='||r_rest||')' END, false);
+EXCEPTION WHEN OTHERS THEN
+  PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
+  PERFORM set_config('probe.p873', 'FALLO ('||SQLSTATE||' '||SQLERRM||')', false);
+END $$;
+SELECT set_config('role', 'none', true);
+
+-- ---------------- P874 congelamiento de tipo/catalogo_id + M.7 ----------------
+DO $$
+DECLARE
+  c_med uuid := '09d243d5-b222-482a-9762-94a582e9e752'; c_lab uuid := 'a5cf575a-5d63-4ed2-839e-9b58da8152e0'; c_recep uuid := 'ce871197-285a-4d5f-9e5f-78606f9e124f'; c_admin uuid := 'e6f95b2f-7561-4e0b-b0c8-d1f38e6c4d66'; c_tec uuid := 'f69e2096-932f-45f0-9022-4e9058f2f0fd';
+  c_copro uuid := '27a2af0f-e201-4a1d-900a-cb27851d9577'; c_tp uuid := '43a1a45c-82f7-403a-a663-1ab7fc8b3732'; c_bhcg uuid := '4f32f195-e4de-4282-8303-8ec8bafecec1'; c_hemo uuid := '7c980fb6-5048-4905-a682-9d6e9feb55ed';
+  ords uuid[] := '{}'; seed_cat uuid[] := '{}'; seed_emp uuid[] := '{}'; seed_ex integer[] := '{}';
+  st text; msg text; j jsonb; ok boolean; det text := ''; bad text := ''; r_rest text := 'OK';
+  s_ex text; s_or text; s_cat text; s_cp text; notif0 uuid[]; np0 integer; n_or bigint; n_ex bigint;
+  v uuid; v2 uuid; x text; y text; n int; nn int; rec record; id_ex integer;
+BEGIN
+  -- snapshot: examenes, ordenes_examen, examenes_catalogo, cuentas del lab QA y notificaciones
+  SELECT md5(COALESCE(string_agg(to_jsonb(e)::text, '|' ORDER BY e.id), '')) INTO s_ex FROM public.examenes e;
+  SELECT md5(COALESCE(string_agg(to_jsonb(o)::text, '|' ORDER BY o.id), '')) INTO s_or FROM public.ordenes_examen o;
+  SELECT md5(COALESCE(string_agg(to_jsonb(c)::text, '|' ORDER BY c.id), '')) INTO s_cat FROM public.examenes_catalogo c;
+  SELECT md5(COALESCE(string_agg(to_jsonb(c)::text, '|' ORDER BY c.id), '')) INTO s_cp FROM public.cuentas_proveedor c WHERE c.empresa_id = c_lab OR c.id IN (c_recep, c_admin, c_tec);
+  notif0 := ARRAY(SELECT id FROM public.notificaciones);
+  SELECT COALESCE(max(id), 0) INTO np0 FROM public.notificaciones_pacientes;
+  -- examen sembrado del lab QA, del medico QA y completado (para editar, liberar y revertir)
+  INSERT INTO public.examenes (tipo, paciente_id, medico_id, laboratorio_id, estado, catalogo_id, origen)
+    VALUES ('P332 congelado QA', 23, c_med, c_lab, 'completado', NULL, 'medico') RETURNING id INTO id_ex;
+  seed_ex := seed_ex || id_ex;
+  st := '00000'; msg := ''; nn := NULL;
+  BEGIN
+    PERFORM set_config('request.jwt.claims', json_build_object('sub', c_admin::text, 'role', 'authenticated')::text, true); PERFORM set_config('role', 'authenticated', true);
+    UPDATE public.examenes SET tipo = 'otro' WHERE id = id_ex;
+    GET DIAGNOSTICS nn = ROW_COUNT;
+    PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
+  EXCEPTION WHEN OTHERS THEN PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
+    st := SQLSTATE; msg := SQLERRM; END;
+  ok := COALESCE((st = '42501' AND (SELECT tipo = 'P332 congelado QA' AND catalogo_id IS NULL AND laboratorio_id = c_lab AND paciente_id = 23 FROM public.examenes WHERE id = id_ex)), false);
+  det := det||' ;; lab UPDATE tipo|42501 (grant por columna), sin cambio|'||CASE WHEN ok THEN 'OK' ELSE 'ROJO' END||'|'||st||'|'||left(msg, 160);
+  IF NOT ok THEN bad := bad||'lab UPDATE tipo: '||st||' '||left(msg, 120)||'; '; END IF;
+  st := '00000'; msg := ''; nn := NULL;
+  BEGIN
+    PERFORM set_config('request.jwt.claims', json_build_object('sub', c_admin::text, 'role', 'authenticated')::text, true); PERFORM set_config('role', 'authenticated', true);
+    UPDATE public.examenes SET catalogo_id = c_copro WHERE id = id_ex;
+    GET DIAGNOSTICS nn = ROW_COUNT;
+    PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
+  EXCEPTION WHEN OTHERS THEN PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
+    st := SQLSTATE; msg := SQLERRM; END;
+  ok := COALESCE((st = '42501' AND (SELECT tipo = 'P332 congelado QA' AND catalogo_id IS NULL AND laboratorio_id = c_lab AND paciente_id = 23 FROM public.examenes WHERE id = id_ex)), false);
+  det := det||' ;; lab UPDATE catalogo_id|42501 (grant por columna), sin cambio|'||CASE WHEN ok THEN 'OK' ELSE 'ROJO' END||'|'||st||'|'||left(msg, 160);
+  IF NOT ok THEN bad := bad||'lab UPDATE catalogo_id: '||st||' '||left(msg, 120)||'; '; END IF;
+  st := '00000'; msg := ''; nn := NULL;
+  BEGIN
+    PERFORM set_config('request.jwt.claims', json_build_object('sub', c_admin::text, 'role', 'authenticated')::text, true); PERFORM set_config('role', 'authenticated', true);
+    UPDATE public.examenes SET laboratorio_id = NULL WHERE id = id_ex;
+    GET DIAGNOSTICS nn = ROW_COUNT;
+    PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
+  EXCEPTION WHEN OTHERS THEN PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
+    st := SQLSTATE; msg := SQLERRM; END;
+  ok := COALESCE((st = '42501' AND (SELECT tipo = 'P332 congelado QA' AND catalogo_id IS NULL AND laboratorio_id = c_lab AND paciente_id = 23 FROM public.examenes WHERE id = id_ex)), false);
+  det := det||' ;; lab UPDATE laboratorio_id|42501 (grant por columna), sin cambio|'||CASE WHEN ok THEN 'OK' ELSE 'ROJO' END||'|'||st||'|'||left(msg, 160);
+  IF NOT ok THEN bad := bad||'lab UPDATE laboratorio_id: '||st||' '||left(msg, 120)||'; '; END IF;
+  st := '00000'; msg := ''; nn := NULL;
+  BEGIN
+    PERFORM set_config('request.jwt.claims', json_build_object('sub', c_admin::text, 'role', 'authenticated')::text, true); PERFORM set_config('role', 'authenticated', true);
+    UPDATE public.examenes SET paciente_id = 10 WHERE id = id_ex;
+    GET DIAGNOSTICS nn = ROW_COUNT;
+    PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
+  EXCEPTION WHEN OTHERS THEN PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
+    st := SQLSTATE; msg := SQLERRM; END;
+  ok := COALESCE((st = '42501' AND (SELECT tipo = 'P332 congelado QA' AND catalogo_id IS NULL AND laboratorio_id = c_lab AND paciente_id = 23 FROM public.examenes WHERE id = id_ex)), false);
+  det := det||' ;; lab UPDATE paciente_id|42501 (grant por columna), sin cambio|'||CASE WHEN ok THEN 'OK' ELSE 'ROJO' END||'|'||st||'|'||left(msg, 160);
+  IF NOT ok THEN bad := bad||'lab UPDATE paciente_id: '||st||' '||left(msg, 120)||'; '; END IF;
+  st := '00000'; msg := '';
+  BEGIN UPDATE public.examenes SET tipo = 'otro' WHERE id = id_ex; EXCEPTION WHEN OTHERS THEN st := SQLSTATE; msg := SQLERRM; END;
+  ok := COALESCE((st = 'EX022' AND msg = 'El examen de una orden no se puede cambiar una vez creado'), false);
+  det := det||' ;; postgres UPDATE tipo|EX022 (trigger)|'||CASE WHEN ok THEN 'OK' ELSE 'ROJO' END||'|'||st||'|'||left(msg, 160);
+  IF NOT ok THEN bad := bad||'postgres UPDATE tipo: '||st||' '||left(msg, 120)||'; '; END IF;
+  st := '00000'; msg := '';
+  BEGIN UPDATE public.examenes SET catalogo_id = c_copro WHERE id = id_ex; EXCEPTION WHEN OTHERS THEN st := SQLSTATE; msg := SQLERRM; END;
+  ok := COALESCE((st = 'EX022' AND msg = 'El examen de una orden no se puede cambiar una vez creado'), false);
+  det := det||' ;; postgres UPDATE catalogo_id|EX022 (trigger)|'||CASE WHEN ok THEN 'OK' ELSE 'ROJO' END||'|'||st||'|'||left(msg, 160);
+  IF NOT ok THEN bad := bad||'postgres UPDATE catalogo_id: '||st||' '||left(msg, 120)||'; '; END IF;
+  st := '00000'; msg := ''; nn := NULL;
+  BEGIN
+    PERFORM set_config('request.jwt.claims', json_build_object('sub', c_admin::text, 'role', 'authenticated')::text, true); PERFORM set_config('role', 'authenticated', true);
+    UPDATE public.examenes SET estado = 'en_proceso', resultados = 'r', archivo_url = 'a/b.pdf', fecha_resultado = CURRENT_DATE WHERE id = id_ex;
+    GET DIAGNOSTICS nn = ROW_COUNT;
+    PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
+  EXCEPTION WHEN OTHERS THEN PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
+    st := SQLSTATE; msg := SQLERRM; END;
+  ok := COALESCE((st = '00000' AND nn = 1 AND (SELECT estado::text = 'en_proceso' AND resultados = 'r' FROM public.examenes WHERE id = id_ex)), false);
+  det := det||' ;; lab UPDATE estado/resultados/archivo/fecha|OK 1 fila|'||CASE WHEN ok THEN 'OK' ELSE 'ROJO' END||'|'||st||'|'||left(msg, 160);
+  IF NOT ok THEN bad := bad||'lab UPDATE estado/resultados/archivo/fecha: '||st||' '||left(msg, 120)||'; '; END IF;
+  UPDATE public.examenes SET estado = 'completado' WHERE id = id_ex;
+  st := '00000'; msg := ''; nn := NULL;
+  BEGIN
+    PERFORM set_config('request.jwt.claims', json_build_object('sub', c_med::text, 'role', 'authenticated')::text, true); PERFORM set_config('role', 'authenticated', true);
+    UPDATE public.examenes SET resultados = 'medico' WHERE id = id_ex;
+    GET DIAGNOSTICS nn = ROW_COUNT;
+    PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
+  EXCEPTION WHEN OTHERS THEN PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
+    st := SQLSTATE; msg := SQLERRM; END;
+  ok := COALESCE((st = '00000' AND nn = 0 AND (SELECT resultados FROM public.examenes WHERE id = id_ex) = 'r'), false);
+  det := det||' ;; medico UPDATE directo (sin examenes_medico_update)|0 filas (sin policy)|'||CASE WHEN ok THEN 'OK' ELSE 'ROJO' END||'|'||st||'|'||left(msg, 160);
+  IF NOT ok THEN bad := bad||'medico UPDATE directo (sin examenes_medico_update): '||st||' '||left(msg, 120)||'; '; END IF;
+  st := '00000'; msg := ''; nn := NULL;
+  BEGIN
+    PERFORM set_config('request.jwt.claims', json_build_object('sub', c_med::text, 'role', 'authenticated')::text, true); PERFORM set_config('role', 'authenticated', true);
+    PERFORM public.liberar_examen_al_paciente(id_ex);
+    GET DIAGNOSTICS nn = ROW_COUNT;
+    PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
+  EXCEPTION WHEN OTHERS THEN PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
+    st := SQLSTATE; msg := SQLERRM; END;
+  ok := COALESCE((st = '00000' AND (SELECT liberado_al_paciente FROM public.examenes WHERE id = id_ex)), false);
+  det := det||' ;; liberar sigue funcionando|OK liberado|'||CASE WHEN ok THEN 'OK' ELSE 'ROJO' END||'|'||st||'|'||left(msg, 160);
+  IF NOT ok THEN bad := bad||'liberar sigue funcionando: '||st||' '||left(msg, 120)||'; '; END IF;
+  st := '00000'; msg := ''; nn := NULL;
+  BEGIN
+    PERFORM set_config('request.jwt.claims', json_build_object('sub', c_med::text, 'role', 'authenticated')::text, true); PERFORM set_config('role', 'authenticated', true);
+    PERFORM public.revertir_liberacion_examen(id_ex);
+    GET DIAGNOSTICS nn = ROW_COUNT;
+    PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
+  EXCEPTION WHEN OTHERS THEN PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
+    st := SQLSTATE; msg := SQLERRM; END;
+  ok := COALESCE((st = '00000' AND NOT (SELECT liberado_al_paciente FROM public.examenes WHERE id = id_ex) AND (SELECT revertido_por FROM public.examenes WHERE id = id_ex) = c_med), false);
+  det := det||' ;; revertir sigue funcionando|OK revertido|'||CASE WHEN ok THEN 'OK' ELSE 'ROJO' END||'|'||st||'|'||left(msg, 160);
+  IF NOT ok THEN bad := bad||'revertir sigue funcionando: '||st||' '||left(msg, 120)||'; '; END IF;
+  st := '00000'; msg := ''; nn := NULL;
+  BEGIN
+    PERFORM set_config('request.jwt.claims', json_build_object('sub', c_med::text, 'role', 'authenticated')::text, true); PERFORM set_config('role', 'authenticated', true);
+    UPDATE public.ordenes_examen SET instrucciones = 'x' WHERE medico_id = c_med;
+    GET DIAGNOSTICS nn = ROW_COUNT;
+    PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
+  EXCEPTION WHEN OTHERS THEN PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
+    st := SQLSTATE; msg := SQLERRM; END;
+  ok := COALESCE((st = '42501'), false);
+  det := det||' ;; UPDATE de ordenes_examen (M.7)|42501 (sin grant)|'||CASE WHEN ok THEN 'OK' ELSE 'ROJO' END||'|'||st||'|'||left(msg, 160);
+  IF NOT ok THEN bad := bad||'UPDATE de ordenes_examen (M.7): '||st||' '||left(msg, 120)||'; '; END IF;
+  -- restauracion: se borra solo lo que el probe creo/sembro y se verifica contra el snapshot
+  DELETE FROM public.ordenes_examen WHERE id = ANY (ords);           -- CASCADE a examenes
+  DELETE FROM public.examenes WHERE id = ANY (seed_ex);
+  DELETE FROM public.examenes_catalogo WHERE id = ANY (seed_cat);
+  DELETE FROM public.empresas_proveedoras WHERE id = ANY (seed_emp);
+  DELETE FROM public.notificaciones WHERE NOT (id = ANY (notif0));
+  DELETE FROM public.notificaciones_pacientes WHERE id > np0;
+  IF (SELECT md5(COALESCE(string_agg(to_jsonb(e)::text, '|' ORDER BY e.id), '')) FROM public.examenes e) IS DISTINCT FROM s_ex THEN r_rest := r_rest||' / examenes'; END IF;
+  IF (SELECT md5(COALESCE(string_agg(to_jsonb(o)::text, '|' ORDER BY o.id), '')) FROM public.ordenes_examen o) IS DISTINCT FROM s_or THEN r_rest := r_rest||' / ordenes_examen'; END IF;
+  IF (SELECT md5(COALESCE(string_agg(to_jsonb(c)::text, '|' ORDER BY c.id), '')) FROM public.examenes_catalogo c) IS DISTINCT FROM s_cat THEN r_rest := r_rest||' / examenes_catalogo'; END IF;
+  IF (SELECT md5(COALESCE(string_agg(to_jsonb(c)::text, '|' ORDER BY c.id), '')) FROM public.cuentas_proveedor c WHERE c.empresa_id = c_lab OR c.id IN (c_recep, c_admin, c_tec)) IS DISTINCT FROM s_cp THEN r_rest := r_rest||' / cuentas_proveedor'; END IF;
+  IF (SELECT count(*) FROM public.notificaciones WHERE NOT (id = ANY (notif0))) <> 0 OR (SELECT count(*) FROM public.notificaciones_pacientes WHERE id > np0) <> 0
+     OR (SELECT count(*) FROM public.notificaciones) <> cardinality(notif0) THEN r_rest := r_rest||' / notificaciones'; END IF;
+  IF EXISTS (SELECT 1 FROM public.empresas_proveedoras WHERE id = ANY (seed_emp)) THEN r_rest := r_rest||' / empresas sembradas'; END IF;
+  det := det||' ;; restauracion|'||cardinality(ords)||' orden(es) creadas, '||cardinality(seed_cat)||' catalogo, '||cardinality(seed_emp)||' empresas, '||cardinality(seed_ex)||' examenes sembrados; snapshot igual|'||r_rest||'|-|';
+
+  PERFORM set_config('probe.p874_det', det, false);
+  PERFORM set_config('probe.p874', CASE WHEN bad = '' AND r_rest = 'OK'
+    THEN 'OK (lab: UPDATE de tipo/catalogo_id/laboratorio_id/paciente_id -> 42501; postgres: tipo/catalogo_id -> EX022; estado/resultados OK; liberar y revertir OK; medico sin UPDATE directo; ordenes_examen sin UPDATE; restaurado)'
+    ELSE 'ROJO ('||left(bad, 700)||' | restauracion='||r_rest||')' END, false);
+EXCEPTION WHEN OTHERS THEN
+  PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
+  PERFORM set_config('probe.p874', 'FALLO ('||SQLSTATE||' '||SQLERRM||')', false);
+END $$;
+SELECT set_config('role', 'none', true);
+
+-- ---------------- P875 catalogo: renombre, UNIQUE y lectura ----------------
+DO $$
+DECLARE
+  c_med uuid := '09d243d5-b222-482a-9762-94a582e9e752'; c_lab uuid := 'a5cf575a-5d63-4ed2-839e-9b58da8152e0'; c_recep uuid := 'ce871197-285a-4d5f-9e5f-78606f9e124f'; c_admin uuid := 'e6f95b2f-7561-4e0b-b0c8-d1f38e6c4d66'; c_tec uuid := 'f69e2096-932f-45f0-9022-4e9058f2f0fd';
+  c_copro uuid := '27a2af0f-e201-4a1d-900a-cb27851d9577'; c_tp uuid := '43a1a45c-82f7-403a-a663-1ab7fc8b3732'; c_bhcg uuid := '4f32f195-e4de-4282-8303-8ec8bafecec1'; c_hemo uuid := '7c980fb6-5048-4905-a682-9d6e9feb55ed';
+  ords uuid[] := '{}'; seed_cat uuid[] := '{}'; seed_emp uuid[] := '{}'; seed_ex integer[] := '{}';
+  st text; msg text; j jsonb; ok boolean; det text := ''; bad text := ''; r_rest text := 'OK';
+  s_ex text; s_or text; s_cat text; s_cp text; notif0 uuid[]; np0 integer; n_or bigint; n_ex bigint;
+  v uuid; v2 uuid; x text; y text; n int; nn int; rec record; id_ex integer;
+BEGIN
+  -- snapshot: examenes, ordenes_examen, examenes_catalogo, cuentas del lab QA y notificaciones
+  SELECT md5(COALESCE(string_agg(to_jsonb(e)::text, '|' ORDER BY e.id), '')) INTO s_ex FROM public.examenes e;
+  SELECT md5(COALESCE(string_agg(to_jsonb(o)::text, '|' ORDER BY o.id), '')) INTO s_or FROM public.ordenes_examen o;
+  SELECT md5(COALESCE(string_agg(to_jsonb(c)::text, '|' ORDER BY c.id), '')) INTO s_cat FROM public.examenes_catalogo c;
+  SELECT md5(COALESCE(string_agg(to_jsonb(c)::text, '|' ORDER BY c.id), '')) INTO s_cp FROM public.cuentas_proveedor c WHERE c.empresa_id = c_lab OR c.id IN (c_recep, c_admin, c_tec);
+  notif0 := ARRAY(SELECT id FROM public.notificaciones);
+  SELECT COALESCE(max(id), 0) INTO np0 FROM public.notificaciones_pacientes;
+  -- semilla: examen de catalogo INACTIVO del lab QA y uno de OTRO laboratorio
+  INSERT INTO public.examenes_catalogo (laboratorio_id, nombre, categoria, activo) VALUES (c_lab, 'P332 Inactivo QA', 'QA', false) RETURNING id INTO v;
+  seed_cat := seed_cat || v;
+  INSERT INTO public.examenes_catalogo (laboratorio_id, nombre, categoria, activo) VALUES ('411d6f8c-a405-49d6-9ed6-fbeb0db05133', 'P332 Otro lab QA', 'QA', true) RETURNING id INTO v2;
+  seed_cat := seed_cat || v2;
+  -- copia completa de la fila: se restaura entera al final (nombre incluido, por si el renombre pasara)
+  SELECT to_jsonb(k)::text INTO y FROM public.examenes_catalogo k WHERE k.id = c_copro;
+  st := '00000'; msg := ''; nn := NULL;
+  BEGIN
+    PERFORM set_config('request.jwt.claims', json_build_object('sub', c_admin::text, 'role', 'authenticated')::text, true); PERFORM set_config('role', 'authenticated', true);
+    UPDATE public.examenes_catalogo SET nombre = 'Renombrado QA' WHERE id = c_copro;
+    GET DIAGNOSTICS nn = ROW_COUNT;
+    PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
+  EXCEPTION WHEN OTHERS THEN PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
+    st := SQLSTATE; msg := SQLERRM; END;
+  ok := COALESCE((st = '42501' AND (SELECT nombre FROM public.examenes_catalogo WHERE id = c_copro) = 'Coprológico'), false);
+  det := det||' ;; renombrar (M.6)|42501, sin cambio|'||CASE WHEN ok THEN 'OK' ELSE 'ROJO' END||'|'||st||'|'||left(msg, 160);
+  IF NOT ok THEN bad := bad||'renombrar (M.6): '||st||' '||left(msg, 120)||'; '; END IF;
+  st := '00000'; msg := ''; nn := NULL;
+  BEGIN
+    PERFORM set_config('request.jwt.claims', json_build_object('sub', c_admin::text, 'role', 'authenticated')::text, true); PERFORM set_config('role', 'authenticated', true);
+    UPDATE public.examenes_catalogo SET categoria = 'Heces QA', activo = false WHERE id = c_copro;
+    GET DIAGNOSTICS nn = ROW_COUNT;
+    PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
+  EXCEPTION WHEN OTHERS THEN PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
+    st := SQLSTATE; msg := SQLERRM; END;
+  ok := COALESCE((st = '00000' AND nn = 1), false);
+  det := det||' ;; categoria y activo se editan|OK 1 fila|'||CASE WHEN ok THEN 'OK' ELSE 'ROJO' END||'|'||st||'|'||left(msg, 160);
+  IF NOT ok THEN bad := bad||'categoria y activo se editan: '||st||' '||left(msg, 120)||'; '; END IF;
+  UPDATE public.examenes_catalogo k SET nombre = r.nombre, categoria = r.categoria, activo = r.activo
+    FROM jsonb_populate_record(NULL::public.examenes_catalogo, y::jsonb) r WHERE k.id = c_copro;
+  st := '00000'; msg := '';
+  BEGIN INSERT INTO public.examenes_catalogo (laboratorio_id, nombre) VALUES (c_lab, '  coprológico ') RETURNING id INTO v; seed_cat := seed_cat || v;
+  EXCEPTION WHEN OTHERS THEN st := SQLSTATE; msg := SQLERRM; END;
+  ok := COALESCE((st = '23505' AND position('ux_examenes_catalogo_lab_nombre' in msg) > 0), false);
+  det := det||' ;; UNIQUE (lab, lower(btrim(nombre)))|23505|'||CASE WHEN ok THEN 'OK' ELSE 'ROJO' END||'|'||st||'|'||left(msg, 160);
+  IF NOT ok THEN bad := bad||'UNIQUE (lab, lower(btrim(nombre))): '||st||' '||left(msg, 120)||'; '; END IF;
+  st := '00000'; msg := '';
+  BEGIN INSERT INTO public.examenes_catalogo (laboratorio_id, nombre) VALUES ('411d6f8c-a405-49d6-9ed6-fbeb0db05133', 'Coprológico') RETURNING id INTO v; seed_cat := seed_cat || v;
+  EXCEPTION WHEN OTHERS THEN st := SQLSTATE; msg := SQLERRM; END;
+  ok := COALESCE((st = '00000'), false);
+  det := det||' ;; mismo nombre en otro lab|OK|'||CASE WHEN ok THEN 'OK' ELSE 'ROJO' END||'|'||st||'|'||left(msg, 160);
+  IF NOT ok THEN bad := bad||'mismo nombre en otro lab: '||st||' '||left(msg, 120)||'; '; END IF;
+  st := '00000'; msg := ''; nn := NULL;
+  BEGIN
+    PERFORM set_config('request.jwt.claims', json_build_object('sub', c_med::text, 'role', 'authenticated')::text, true); PERFORM set_config('role', 'authenticated', true);
+    SELECT count(*) INTO n FROM public.examenes_catalogo WHERE id IN (c_copro, seed_cat[1]);
+    GET DIAGNOSTICS nn = ROW_COUNT;
+    PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
+  EXCEPTION WHEN OTHERS THEN PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
+    st := SQLSTATE; msg := SQLERRM; END;
+  ok := COALESCE((st = '00000' AND n = 1), false);
+  det := det||' ;; el medico no ve inactivos|1 (solo el activo)|'||CASE WHEN ok THEN 'OK' ELSE 'ROJO' END||'|'||st||'|'||left(msg, 160);
+  IF NOT ok THEN bad := bad||'el medico no ve inactivos: '||st||' '||left(msg, 120)||'; '; END IF;
+  -- restauracion: se borra solo lo que el probe creo/sembro y se verifica contra el snapshot
+  DELETE FROM public.ordenes_examen WHERE id = ANY (ords);           -- CASCADE a examenes
+  DELETE FROM public.examenes WHERE id = ANY (seed_ex);
+  DELETE FROM public.examenes_catalogo WHERE id = ANY (seed_cat);
+  DELETE FROM public.empresas_proveedoras WHERE id = ANY (seed_emp);
+  DELETE FROM public.notificaciones WHERE NOT (id = ANY (notif0));
+  DELETE FROM public.notificaciones_pacientes WHERE id > np0;
+  IF (SELECT md5(COALESCE(string_agg(to_jsonb(e)::text, '|' ORDER BY e.id), '')) FROM public.examenes e) IS DISTINCT FROM s_ex THEN r_rest := r_rest||' / examenes'; END IF;
+  IF (SELECT md5(COALESCE(string_agg(to_jsonb(o)::text, '|' ORDER BY o.id), '')) FROM public.ordenes_examen o) IS DISTINCT FROM s_or THEN r_rest := r_rest||' / ordenes_examen'; END IF;
+  IF (SELECT md5(COALESCE(string_agg(to_jsonb(c)::text, '|' ORDER BY c.id), '')) FROM public.examenes_catalogo c) IS DISTINCT FROM s_cat THEN r_rest := r_rest||' / examenes_catalogo'; END IF;
+  IF (SELECT md5(COALESCE(string_agg(to_jsonb(c)::text, '|' ORDER BY c.id), '')) FROM public.cuentas_proveedor c WHERE c.empresa_id = c_lab OR c.id IN (c_recep, c_admin, c_tec)) IS DISTINCT FROM s_cp THEN r_rest := r_rest||' / cuentas_proveedor'; END IF;
+  IF (SELECT count(*) FROM public.notificaciones WHERE NOT (id = ANY (notif0))) <> 0 OR (SELECT count(*) FROM public.notificaciones_pacientes WHERE id > np0) <> 0
+     OR (SELECT count(*) FROM public.notificaciones) <> cardinality(notif0) THEN r_rest := r_rest||' / notificaciones'; END IF;
+  IF EXISTS (SELECT 1 FROM public.empresas_proveedoras WHERE id = ANY (seed_emp)) THEN r_rest := r_rest||' / empresas sembradas'; END IF;
+  det := det||' ;; restauracion|'||cardinality(ords)||' orden(es) creadas, '||cardinality(seed_cat)||' catalogo, '||cardinality(seed_emp)||' empresas, '||cardinality(seed_ex)||' examenes sembrados; snapshot igual|'||r_rest||'|-|';
+
+  PERFORM set_config('probe.p875_det', det, false);
+  PERFORM set_config('probe.p875', CASE WHEN bad = '' AND r_rest = 'OK'
+    THEN 'OK (renombrar -> 42501; categoria/activo OK; UNIQUE lower(btrim) -> 23505; mismo nombre en otro lab OK; el medico no ve inactivos; restaurado)'
+    ELSE 'ROJO ('||left(bad, 700)||' | restauracion='||r_rest||')' END, false);
+EXCEPTION WHEN OTHERS THEN
+  PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
+  PERFORM set_config('probe.p875', 'FALLO ('||SQLSTATE||' '||SQLERRM||')', false);
+END $$;
+SELECT set_config('role', 'none', true);
+
+-- ---------------- P876 backfill 10/4 ----------------
+DO $$
+DECLARE
+  c_med uuid := '09d243d5-b222-482a-9762-94a582e9e752'; c_lab uuid := 'a5cf575a-5d63-4ed2-839e-9b58da8152e0'; c_recep uuid := 'ce871197-285a-4d5f-9e5f-78606f9e124f'; c_admin uuid := 'e6f95b2f-7561-4e0b-b0c8-d1f38e6c4d66'; c_tec uuid := 'f69e2096-932f-45f0-9022-4e9058f2f0fd';
+  c_copro uuid := '27a2af0f-e201-4a1d-900a-cb27851d9577'; c_tp uuid := '43a1a45c-82f7-403a-a663-1ab7fc8b3732'; c_bhcg uuid := '4f32f195-e4de-4282-8303-8ec8bafecec1'; c_hemo uuid := '7c980fb6-5048-4905-a682-9d6e9feb55ed';
+  ords uuid[] := '{}'; seed_cat uuid[] := '{}'; seed_emp uuid[] := '{}'; seed_ex integer[] := '{}';
+  st text; msg text; j jsonb; ok boolean; det text := ''; bad text := ''; r_rest text := 'OK';
+  s_ex text; s_or text; s_cat text; s_cp text; notif0 uuid[]; np0 integer; n_or bigint; n_ex bigint;
+  v uuid; v2 uuid; x text; y text; n int; nn int; rec record; id_ex integer;
+BEGIN
+  -- snapshot: examenes, ordenes_examen, examenes_catalogo, cuentas del lab QA y notificaciones
+  SELECT md5(COALESCE(string_agg(to_jsonb(e)::text, '|' ORDER BY e.id), '')) INTO s_ex FROM public.examenes e;
+  SELECT md5(COALESCE(string_agg(to_jsonb(o)::text, '|' ORDER BY o.id), '')) INTO s_or FROM public.ordenes_examen o;
+  SELECT md5(COALESCE(string_agg(to_jsonb(c)::text, '|' ORDER BY c.id), '')) INTO s_cat FROM public.examenes_catalogo c;
+  SELECT md5(COALESCE(string_agg(to_jsonb(c)::text, '|' ORDER BY c.id), '')) INTO s_cp FROM public.cuentas_proveedor c WHERE c.empresa_id = c_lab OR c.id IN (c_recep, c_admin, c_tec);
+  notif0 := ARRAY(SELECT id FROM public.notificaciones);
+  SELECT COALESCE(max(id), 0) INTO np0 FROM public.notificaciones_pacientes;
+  ok := COALESCE(((SELECT string_agg(e.id::text||'='||COALESCE(left(e.catalogo_id::text, 8), 'NULL'), ',' ORDER BY e.id)
+      FROM public.examenes e WHERE e.id IN (1,2,3,4,157,158,250,251,252,253,254,718,719,720))
+    = '1=27a2af0f,2=43a1a45c,3=4f32f195,4=NULL,157=7c980fb6,158=NULL,250=27a2af0f,251=7c980fb6,252=43a1a45c,253=4f32f195,254=NULL,718=27a2af0f,719=7c980fb6,720=NULL'), false);
+  det := det||' ;; backfill exacto|10 con su catalogo, 4 NULL|'||CASE WHEN ok THEN 'OK' ELSE 'ROJO' END||'|'||st||'|'||left(msg, 160);
+  IF NOT ok THEN bad := bad||'backfill exacto: '||st||' '||left(msg, 120)||'; '; END IF;
+  ok := COALESCE((NOT EXISTS (SELECT 1 FROM public.examenes e JOIN public.examenes_catalogo k ON k.id = e.catalogo_id
+      WHERE e.id IN (1,2,3,157,250,251,252,253,718,719) AND (k.nombre <> e.tipo OR k.laboratorio_id <> e.laboratorio_id))), false);
+  det := det||' ;; el catalogo_id coincide por nombre y lab|nombre y lab iguales|'||CASE WHEN ok THEN 'OK' ELSE 'ROJO' END||'|'||st||'|'||left(msg, 160);
+  IF NOT ok THEN bad := bad||'el catalogo_id coincide por nombre y lab: '||st||' '||left(msg, 120)||'; '; END IF;
+  -- restauracion: se borra solo lo que el probe creo/sembro y se verifica contra el snapshot
+  DELETE FROM public.ordenes_examen WHERE id = ANY (ords);           -- CASCADE a examenes
+  DELETE FROM public.examenes WHERE id = ANY (seed_ex);
+  DELETE FROM public.examenes_catalogo WHERE id = ANY (seed_cat);
+  DELETE FROM public.empresas_proveedoras WHERE id = ANY (seed_emp);
+  DELETE FROM public.notificaciones WHERE NOT (id = ANY (notif0));
+  DELETE FROM public.notificaciones_pacientes WHERE id > np0;
+  IF (SELECT md5(COALESCE(string_agg(to_jsonb(e)::text, '|' ORDER BY e.id), '')) FROM public.examenes e) IS DISTINCT FROM s_ex THEN r_rest := r_rest||' / examenes'; END IF;
+  IF (SELECT md5(COALESCE(string_agg(to_jsonb(o)::text, '|' ORDER BY o.id), '')) FROM public.ordenes_examen o) IS DISTINCT FROM s_or THEN r_rest := r_rest||' / ordenes_examen'; END IF;
+  IF (SELECT md5(COALESCE(string_agg(to_jsonb(c)::text, '|' ORDER BY c.id), '')) FROM public.examenes_catalogo c) IS DISTINCT FROM s_cat THEN r_rest := r_rest||' / examenes_catalogo'; END IF;
+  IF (SELECT md5(COALESCE(string_agg(to_jsonb(c)::text, '|' ORDER BY c.id), '')) FROM public.cuentas_proveedor c WHERE c.empresa_id = c_lab OR c.id IN (c_recep, c_admin, c_tec)) IS DISTINCT FROM s_cp THEN r_rest := r_rest||' / cuentas_proveedor'; END IF;
+  IF (SELECT count(*) FROM public.notificaciones WHERE NOT (id = ANY (notif0))) <> 0 OR (SELECT count(*) FROM public.notificaciones_pacientes WHERE id > np0) <> 0
+     OR (SELECT count(*) FROM public.notificaciones) <> cardinality(notif0) THEN r_rest := r_rest||' / notificaciones'; END IF;
+  IF EXISTS (SELECT 1 FROM public.empresas_proveedoras WHERE id = ANY (seed_emp)) THEN r_rest := r_rest||' / empresas sembradas'; END IF;
+  det := det||' ;; restauracion|'||cardinality(ords)||' orden(es) creadas, '||cardinality(seed_cat)||' catalogo, '||cardinality(seed_emp)||' empresas, '||cardinality(seed_ex)||' examenes sembrados; snapshot igual|'||r_rest||'|-|';
+
+  PERFORM set_config('probe.p876_det', det, false);
+  PERFORM set_config('probe.p876', CASE WHEN bad = '' AND r_rest = 'OK'
+    THEN 'OK (ids 1,2,3,157,250,251,252,253,718,719 con su catalogo exacto; 4,158,254,720 NULL)'
+    ELSE 'ROJO ('||left(bad, 700)||' | restauracion='||r_rest||')' END, false);
+EXCEPTION WHEN OTHERS THEN
+  PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
+  PERFORM set_config('probe.p876', 'FALLO ('||SQLSTATE||' '||SQLERRM||')', false);
+END $$;
+SELECT set_config('role', 'none', true);
+
+-- ---------------- P877 lectura de tablas dependientes por rol ----------------
+DO $$
+DECLARE
+  c_med uuid := '09d243d5-b222-482a-9762-94a582e9e752'; c_lab uuid := 'a5cf575a-5d63-4ed2-839e-9b58da8152e0'; c_recep uuid := 'ce871197-285a-4d5f-9e5f-78606f9e124f'; c_admin uuid := 'e6f95b2f-7561-4e0b-b0c8-d1f38e6c4d66'; c_tec uuid := 'f69e2096-932f-45f0-9022-4e9058f2f0fd';
+  c_copro uuid := '27a2af0f-e201-4a1d-900a-cb27851d9577'; c_tp uuid := '43a1a45c-82f7-403a-a663-1ab7fc8b3732'; c_bhcg uuid := '4f32f195-e4de-4282-8303-8ec8bafecec1'; c_hemo uuid := '7c980fb6-5048-4905-a682-9d6e9feb55ed';
+  ords uuid[] := '{}'; seed_cat uuid[] := '{}'; seed_emp uuid[] := '{}'; seed_ex integer[] := '{}';
+  st text; msg text; j jsonb; ok boolean; det text := ''; bad text := ''; r_rest text := 'OK';
+  s_ex text; s_or text; s_cat text; s_cp text; notif0 uuid[]; np0 integer; n_or bigint; n_ex bigint;
+  v uuid; v2 uuid; x text; y text; n int; nn int; rec record; id_ex integer;
+BEGIN
+  -- snapshot: examenes, ordenes_examen, examenes_catalogo, cuentas del lab QA y notificaciones
+  SELECT md5(COALESCE(string_agg(to_jsonb(e)::text, '|' ORDER BY e.id), '')) INTO s_ex FROM public.examenes e;
+  SELECT md5(COALESCE(string_agg(to_jsonb(o)::text, '|' ORDER BY o.id), '')) INTO s_or FROM public.ordenes_examen o;
+  SELECT md5(COALESCE(string_agg(to_jsonb(c)::text, '|' ORDER BY c.id), '')) INTO s_cat FROM public.examenes_catalogo c;
+  SELECT md5(COALESCE(string_agg(to_jsonb(c)::text, '|' ORDER BY c.id), '')) INTO s_cp FROM public.cuentas_proveedor c WHERE c.empresa_id = c_lab OR c.id IN (c_recep, c_admin, c_tec);
+  notif0 := ARRAY(SELECT id FROM public.notificaciones);
+  SELECT COALESCE(max(id), 0) INTO np0 FROM public.notificaciones_pacientes;
+  SELECT pa.auth_user_id INTO v FROM public.pacientes pa WHERE pa.id = 23;
+  st := '00000'; msg := ''; nn := NULL;
+  BEGIN
+    PERFORM set_config('request.jwt.claims', json_build_object('sub', c_med::text, 'role', 'authenticated')::text, true); PERFORM set_config('role', 'authenticated', true);
+    SELECT (SELECT count(*) FROM public.examenes) + (SELECT count(*) FROM public.ordenes_examen) + (SELECT count(*) FROM public.examen_adjuntos) + (SELECT count(*) FROM public.examenes_catalogo) INTO n;
+    GET DIAGNOSTICS nn = ROW_COUNT;
+    PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
+  EXCEPTION WHEN OTHERS THEN PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
+    st := SQLSTATE; msg := SQLERRM; END;
+  ok := COALESCE((st = '00000'), false);
+  det := det||' ;; medico lee las 4 tablas|sin error|'||CASE WHEN ok THEN 'OK' ELSE 'ROJO' END||'|'||st||'|'||left(msg, 160);
+  IF NOT ok THEN bad := bad||'medico lee las 4 tablas: '||st||' '||left(msg, 120)||'; '; END IF;
+  st := '00000'; msg := ''; nn := NULL;
+  BEGIN
+    PERFORM set_config('request.jwt.claims', json_build_object('sub', c_admin::text, 'role', 'authenticated')::text, true); PERFORM set_config('role', 'authenticated', true);
+    SELECT (SELECT count(*) FROM public.examenes) + (SELECT count(*) FROM public.ordenes_examen) + (SELECT count(*) FROM public.examen_adjuntos) + (SELECT count(*) FROM public.examenes_catalogo) INTO n;
+    GET DIAGNOSTICS nn = ROW_COUNT;
+    PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
+  EXCEPTION WHEN OTHERS THEN PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
+    st := SQLSTATE; msg := SQLERRM; END;
+  ok := COALESCE((st = '00000'), false);
+  det := det||' ;; lab admin lee las 4 tablas|sin error|'||CASE WHEN ok THEN 'OK' ELSE 'ROJO' END||'|'||st||'|'||left(msg, 160);
+  IF NOT ok THEN bad := bad||'lab admin lee las 4 tablas: '||st||' '||left(msg, 120)||'; '; END IF;
+  st := '00000'; msg := ''; nn := NULL;
+  BEGIN
+    PERFORM set_config('request.jwt.claims', json_build_object('sub', c_tec::text, 'role', 'authenticated')::text, true); PERFORM set_config('role', 'authenticated', true);
+    SELECT (SELECT count(*) FROM public.examenes) + (SELECT count(*) FROM public.ordenes_examen) + (SELECT count(*) FROM public.examen_adjuntos) + (SELECT count(*) FROM public.examenes_catalogo) INTO n;
+    GET DIAGNOSTICS nn = ROW_COUNT;
+    PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
+  EXCEPTION WHEN OTHERS THEN PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
+    st := SQLSTATE; msg := SQLERRM; END;
+  ok := COALESCE((st = '00000'), false);
+  det := det||' ;; lab tecnico lee las 4 tablas|sin error|'||CASE WHEN ok THEN 'OK' ELSE 'ROJO' END||'|'||st||'|'||left(msg, 160);
+  IF NOT ok THEN bad := bad||'lab tecnico lee las 4 tablas: '||st||' '||left(msg, 120)||'; '; END IF;
+  st := '00000'; msg := ''; nn := NULL;
+  BEGIN
+    PERFORM set_config('request.jwt.claims', json_build_object('sub', v::text, 'role', 'authenticated')::text, true); PERFORM set_config('role', 'authenticated', true);
+    SELECT (SELECT count(*) FROM public.examenes) + (SELECT count(*) FROM public.ordenes_examen) + (SELECT count(*) FROM public.examen_adjuntos) + (SELECT count(*) FROM public.examenes_catalogo) INTO n;
+    GET DIAGNOSTICS nn = ROW_COUNT;
+    PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
+  EXCEPTION WHEN OTHERS THEN PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
+    st := SQLSTATE; msg := SQLERRM; END;
+  ok := COALESCE((st = '00000' OR v IS NULL), false);
+  det := det||' ;; paciente 23 lee las 4 tablas|sin error|'||CASE WHEN ok THEN 'OK' ELSE 'ROJO' END||'|'||st||'|'||left(msg, 160);
+  IF NOT ok THEN bad := bad||'paciente 23 lee las 4 tablas: '||st||' '||left(msg, 120)||'; '; END IF;
+  -- restauracion: se borra solo lo que el probe creo/sembro y se verifica contra el snapshot
+  DELETE FROM public.ordenes_examen WHERE id = ANY (ords);           -- CASCADE a examenes
+  DELETE FROM public.examenes WHERE id = ANY (seed_ex);
+  DELETE FROM public.examenes_catalogo WHERE id = ANY (seed_cat);
+  DELETE FROM public.empresas_proveedoras WHERE id = ANY (seed_emp);
+  DELETE FROM public.notificaciones WHERE NOT (id = ANY (notif0));
+  DELETE FROM public.notificaciones_pacientes WHERE id > np0;
+  IF (SELECT md5(COALESCE(string_agg(to_jsonb(e)::text, '|' ORDER BY e.id), '')) FROM public.examenes e) IS DISTINCT FROM s_ex THEN r_rest := r_rest||' / examenes'; END IF;
+  IF (SELECT md5(COALESCE(string_agg(to_jsonb(o)::text, '|' ORDER BY o.id), '')) FROM public.ordenes_examen o) IS DISTINCT FROM s_or THEN r_rest := r_rest||' / ordenes_examen'; END IF;
+  IF (SELECT md5(COALESCE(string_agg(to_jsonb(c)::text, '|' ORDER BY c.id), '')) FROM public.examenes_catalogo c) IS DISTINCT FROM s_cat THEN r_rest := r_rest||' / examenes_catalogo'; END IF;
+  IF (SELECT md5(COALESCE(string_agg(to_jsonb(c)::text, '|' ORDER BY c.id), '')) FROM public.cuentas_proveedor c WHERE c.empresa_id = c_lab OR c.id IN (c_recep, c_admin, c_tec)) IS DISTINCT FROM s_cp THEN r_rest := r_rest||' / cuentas_proveedor'; END IF;
+  IF (SELECT count(*) FROM public.notificaciones WHERE NOT (id = ANY (notif0))) <> 0 OR (SELECT count(*) FROM public.notificaciones_pacientes WHERE id > np0) <> 0
+     OR (SELECT count(*) FROM public.notificaciones) <> cardinality(notif0) THEN r_rest := r_rest||' / notificaciones'; END IF;
+  IF EXISTS (SELECT 1 FROM public.empresas_proveedoras WHERE id = ANY (seed_emp)) THEN r_rest := r_rest||' / empresas sembradas'; END IF;
+  det := det||' ;; restauracion|'||cardinality(ords)||' orden(es) creadas, '||cardinality(seed_cat)||' catalogo, '||cardinality(seed_emp)||' empresas, '||cardinality(seed_ex)||' examenes sembrados; snapshot igual|'||r_rest||'|-|';
+
+  PERFORM set_config('probe.p877_det', det, false);
+  PERFORM set_config('probe.p877', CASE WHEN bad = '' AND r_rest = 'OK'
+    THEN 'OK (medico, admin y tecnico del lab y paciente 23 leen examenes/ordenes_examen/examen_adjuntos/examenes_catalogo sin error)'
+    ELSE 'ROJO ('||left(bad, 700)||' | restauracion='||r_rest||')' END, false);
+EXCEPTION WHEN OTHERS THEN
+  PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
+  PERFORM set_config('probe.p877', 'FALLO ('||SQLSTATE||' '||SQLERRM||')', false);
+END $$;
+SELECT set_config('role', 'none', true);
+
+-- ---------------- P878 catalogo de objetos de la 332 ----------------
+DO $$
+DECLARE
+  c_med uuid := '09d243d5-b222-482a-9762-94a582e9e752'; c_lab uuid := 'a5cf575a-5d63-4ed2-839e-9b58da8152e0'; c_recep uuid := 'ce871197-285a-4d5f-9e5f-78606f9e124f'; c_admin uuid := 'e6f95b2f-7561-4e0b-b0c8-d1f38e6c4d66'; c_tec uuid := 'f69e2096-932f-45f0-9022-4e9058f2f0fd';
+  c_copro uuid := '27a2af0f-e201-4a1d-900a-cb27851d9577'; c_tp uuid := '43a1a45c-82f7-403a-a663-1ab7fc8b3732'; c_bhcg uuid := '4f32f195-e4de-4282-8303-8ec8bafecec1'; c_hemo uuid := '7c980fb6-5048-4905-a682-9d6e9feb55ed';
+  ords uuid[] := '{}'; seed_cat uuid[] := '{}'; seed_emp uuid[] := '{}'; seed_ex integer[] := '{}';
+  st text; msg text; j jsonb; ok boolean; det text := ''; bad text := ''; r_rest text := 'OK';
+  s_ex text; s_or text; s_cat text; s_cp text; notif0 uuid[]; np0 integer; n_or bigint; n_ex bigint;
+  v uuid; v2 uuid; x text; y text; n int; nn int; rec record; id_ex integer;
+BEGIN
+  -- snapshot: examenes, ordenes_examen, examenes_catalogo, cuentas del lab QA y notificaciones
+  SELECT md5(COALESCE(string_agg(to_jsonb(e)::text, '|' ORDER BY e.id), '')) INTO s_ex FROM public.examenes e;
+  SELECT md5(COALESCE(string_agg(to_jsonb(o)::text, '|' ORDER BY o.id), '')) INTO s_or FROM public.ordenes_examen o;
+  SELECT md5(COALESCE(string_agg(to_jsonb(c)::text, '|' ORDER BY c.id), '')) INTO s_cat FROM public.examenes_catalogo c;
+  SELECT md5(COALESCE(string_agg(to_jsonb(c)::text, '|' ORDER BY c.id), '')) INTO s_cp FROM public.cuentas_proveedor c WHERE c.empresa_id = c_lab OR c.id IN (c_recep, c_admin, c_tec);
+  notif0 := ARRAY(SELECT id FROM public.notificaciones);
+  SELECT COALESCE(max(id), 0) INTO np0 FROM public.notificaciones_pacientes;
+  SELECT p.prosecdef::text||'|'||COALESCE(p.proconfig::text, 'NULL')||'|'||md5(p.prosrc)||'|'||
+         COALESCE((SELECT string_agg(CASE WHEN a.grantee = 0 THEN 'PUBLIC' ELSE a.grantee::regrole::text END, ',' ORDER BY CASE WHEN a.grantee = 0 THEN 'PUBLIC' ELSE a.grantee::regrole::text END)
+                     FROM aclexplode(p.proacl) a WHERE a.privilege_type = 'EXECUTE'), '')
+    INTO x FROM pg_proc p WHERE p.oid = to_regprocedure('public.crear_orden_examen_medico(bigint,uuid,jsonb,text)');
+  ok := COALESCE((x = 'true|{"search_path=\"\""}|79a994588ab2b4458135272efb59b867|authenticated,postgres'), false);
+  det := det||' ;; public.crear_orden_examen_medico(bigint,uuid,jsonb,text)|secdef|search_path|md5 332|EXECUTE authenticated,postgres|'||CASE WHEN ok THEN 'OK' ELSE 'ROJO' END||'|'||st||'|'||left(msg, 160);
+  IF NOT ok THEN bad := bad||'public.crear_orden_examen_medico(bigint,uuid,jsonb,text): '||st||' '||left(msg, 120)||'; '; END IF;
+  SELECT p.prosecdef::text||'|'||COALESCE(p.proconfig::text, 'NULL')||'|'||md5(p.prosrc)||'|'||
+         COALESCE((SELECT string_agg(CASE WHEN a.grantee = 0 THEN 'PUBLIC' ELSE a.grantee::regrole::text END, ',' ORDER BY CASE WHEN a.grantee = 0 THEN 'PUBLIC' ELSE a.grantee::regrole::text END)
+                     FROM aclexplode(p.proacl) a WHERE a.privilege_type = 'EXECUTE'), '')
+    INTO x FROM pg_proc p WHERE p.oid = to_regprocedure('public.crear_orden_examen_walkin(jsonb,text,text,text,text,text)');
+  ok := COALESCE((x = 'true|{"search_path=\"\""}|434d122370e340d895c8540a290379f3|authenticated,postgres'), false);
+  det := det||' ;; public.crear_orden_examen_walkin(jsonb,text,text,text,text,text)|secdef|search_path|md5 332|EXECUTE authenticated,postgres|'||CASE WHEN ok THEN 'OK' ELSE 'ROJO' END||'|'||st||'|'||left(msg, 160);
+  IF NOT ok THEN bad := bad||'public.crear_orden_examen_walkin(jsonb,text,text,text,text,text): '||st||' '||left(msg, 120)||'; '; END IF;
+  SELECT p.prosecdef::text||'|'||COALESCE(p.proconfig::text, 'NULL')||'|'||md5(p.prosrc)||'|'||
+         COALESCE((SELECT string_agg(CASE WHEN a.grantee = 0 THEN 'PUBLIC' ELSE a.grantee::regrole::text END, ',' ORDER BY CASE WHEN a.grantee = 0 THEN 'PUBLIC' ELSE a.grantee::regrole::text END)
+                     FROM aclexplode(p.proacl) a WHERE a.privilege_type = 'EXECUTE'), '')
+    INTO x FROM pg_proc p WHERE p.oid = to_regprocedure('private.armar_items_orden_examen(uuid,jsonb)');
+  ok := COALESCE((x = 'true|{"search_path=\"\""}|36823df5ac3f7347a30275c07b4c39f9|postgres'), false);
+  det := det||' ;; private.armar_items_orden_examen(uuid,jsonb)|secdef|search_path|md5 332|EXECUTE postgres|'||CASE WHEN ok THEN 'OK' ELSE 'ROJO' END||'|'||st||'|'||left(msg, 160);
+  IF NOT ok THEN bad := bad||'private.armar_items_orden_examen(uuid,jsonb): '||st||' '||left(msg, 120)||'; '; END IF;
+  SELECT p.prosecdef::text||'|'||COALESCE(p.proconfig::text, 'NULL')||'|'||md5(p.prosrc)||'|'||
+         COALESCE((SELECT string_agg(CASE WHEN a.grantee = 0 THEN 'PUBLIC' ELSE a.grantee::regrole::text END, ',' ORDER BY CASE WHEN a.grantee = 0 THEN 'PUBLIC' ELSE a.grantee::regrole::text END)
+                     FROM aclexplode(p.proacl) a WHERE a.privilege_type = 'EXECUTE'), '')
+    INTO x FROM pg_proc p WHERE p.oid = to_regprocedure('private.examenes_congelar_identidad()');
+  ok := COALESCE((x = 'true|{"search_path=\"\""}|f0ff903d5c5af6e137ba6b6aed0bad9a|postgres'), false);
+  det := det||' ;; private.examenes_congelar_identidad()|secdef|search_path|md5 332|EXECUTE postgres|'||CASE WHEN ok THEN 'OK' ELSE 'ROJO' END||'|'||st||'|'||left(msg, 160);
+  IF NOT ok THEN bad := bad||'private.examenes_congelar_identidad(): '||st||' '||left(msg, 120)||'; '; END IF;
+  ok := COALESCE(((SELECT count(*) FROM pg_proc p JOIN pg_namespace ns ON ns.oid = p.pronamespace
+    WHERE (ns.nspname, p.proname) IN (('public','crear_orden_examen_medico'),('public','crear_orden_examen_walkin'),('private','armar_items_orden_examen'),('private','examenes_congelar_identidad'))) = 4), false);
+  det := det||' ;; una sola firma por nombre|4|'||CASE WHEN ok THEN 'OK' ELSE 'ROJO' END||'|'||st||'|'||left(msg, 160);
+  IF NOT ok THEN bad := bad||'una sola firma por nombre: '||st||' '||left(msg, 120)||'; '; END IF;
+  ok := COALESCE((NOT has_function_privilege('anon', 'public.crear_orden_examen_medico(bigint,uuid,jsonb,text)', 'EXECUTE') AND NOT has_function_privilege('anon', 'public.crear_orden_examen_walkin(jsonb,text,text,text,text,text)', 'EXECUTE')), false);
+  det := det||' ;; anon sin EXECUTE|false|'||CASE WHEN ok THEN 'OK' ELSE 'ROJO' END||'|'||st||'|'||left(msg, 160);
+  IF NOT ok THEN bad := bad||'anon sin EXECUTE: '||st||' '||left(msg, 120)||'; '; END IF;
+  ok := COALESCE(((SELECT confdeltype FROM pg_constraint WHERE conname = 'examenes_catalogo_id_fkey' AND conrelid = 'public.examenes'::regclass) = 'r'), false);
+  det := det||' ;; FK RESTRICT|confdeltype=''r''|'||CASE WHEN ok THEN 'OK' ELSE 'ROJO' END||'|'||st||'|'||left(msg, 160);
+  IF NOT ok THEN bad := bad||'FK RESTRICT: '||st||' '||left(msg, 120)||'; '; END IF;
+  ok := COALESCE(((SELECT pg_get_indexdef(to_regclass('public.ux_examenes_catalogo_lab_nombre'))) = 'CREATE UNIQUE INDEX ux_examenes_catalogo_lab_nombre ON public.examenes_catalogo USING btree (laboratorio_id, lower(btrim(nombre)))'), false);
+  det := det||' ;; UNIQUE del catalogo|lower(btrim)|'||CASE WHEN ok THEN 'OK' ELSE 'ROJO' END||'|'||st||'|'||left(msg, 160);
+  IF NOT ok THEN bad := bad||'UNIQUE del catalogo: '||st||' '||left(msg, 120)||'; '; END IF;
+  ok := COALESCE((EXISTS (SELECT 1 FROM pg_trigger WHERE tgrelid = 'public.examenes'::regclass AND tgname = 'trg_examenes_congelar_identidad' AND tgenabled = 'O')), false);
+  det := det||' ;; trigger de congelamiento|presente|'||CASE WHEN ok THEN 'OK' ELSE 'ROJO' END||'|'||st||'|'||left(msg, 160);
+  IF NOT ok THEN bad := bad||'trigger de congelamiento: '||st||' '||left(msg, 120)||'; '; END IF;
+  ok := COALESCE(((SELECT string_agg(a.attname, ',' ORDER BY a.attname) FROM pg_attribute a WHERE a.attrelid = 'public.examenes'::regclass AND a.attnum > 0 AND NOT a.attisdropped
+      AND has_column_privilege('authenticated', 'public.examenes', a.attname, 'UPDATE')) = 'archivo_url,estado,fecha_resultado,resultados'), false);
+  det := det||' ;; UPDATE por columna en examenes|4 columnas|'||CASE WHEN ok THEN 'OK' ELSE 'ROJO' END||'|'||st||'|'||left(msg, 160);
+  IF NOT ok THEN bad := bad||'UPDATE por columna en examenes: '||st||' '||left(msg, 120)||'; '; END IF;
+  ok := COALESCE(((SELECT string_agg(a.attname, ',' ORDER BY a.attname) FROM pg_attribute a WHERE a.attrelid = 'public.examenes_catalogo'::regclass AND a.attnum > 0 AND NOT a.attisdropped
+      AND has_column_privilege('authenticated', 'public.examenes_catalogo', a.attname, 'UPDATE')) = 'activo,categoria'), false);
+  det := det||' ;; UPDATE por columna en catalogo|activo,categoria|'||CASE WHEN ok THEN 'OK' ELSE 'ROJO' END||'|'||st||'|'||left(msg, 160);
+  IF NOT ok THEN bad := bad||'UPDATE por columna en catalogo: '||st||' '||left(msg, 120)||'; '; END IF;
+  ok := COALESCE((NOT has_table_privilege('authenticated', 'public.ordenes_examen', 'UPDATE') AND NOT EXISTS (SELECT 1 FROM pg_attribute a WHERE a.attrelid = 'public.ordenes_examen'::regclass AND a.attnum > 0 AND NOT a.attisdropped AND has_column_privilege('authenticated', 'public.ordenes_examen', a.attname, 'UPDATE'))), false);
+  det := det||' ;; sin UPDATE en ordenes_examen|sin UPDATE|'||CASE WHEN ok THEN 'OK' ELSE 'ROJO' END||'|'||st||'|'||left(msg, 160);
+  IF NOT ok THEN bad := bad||'sin UPDATE en ordenes_examen: '||st||' '||left(msg, 120)||'; '; END IF;
+  ok := COALESCE((NOT EXISTS (SELECT 1 FROM pg_policies WHERE schemaname = 'public' AND tablename = 'examenes' AND policyname = 'examenes_medico_update')), false);
+  det := det||' ;; examenes_medico_update eliminada|no existe|'||CASE WHEN ok THEN 'OK' ELSE 'ROJO' END||'|'||st||'|'||left(msg, 160);
+  IF NOT ok THEN bad := bad||'examenes_medico_update eliminada: '||st||' '||left(msg, 120)||'; '; END IF;
+  ok := COALESCE((has_table_privilege('authenticated', 'public.examenes', 'INSERT') AND has_table_privilege('authenticated', 'public.ordenes_examen', 'INSERT')
+    AND (SELECT count(*) FROM pg_policies WHERE schemaname = 'public' AND policyname IN ('examenes_medico_insert', 'ordenes_medico_insert')) = 2), false);
+  det := det||' ;; fase 1: INSERT directo todavia vivo|grants + policies de INSERT (van en la 333)|'||CASE WHEN ok THEN 'OK' ELSE 'ROJO' END||'|'||st||'|'||left(msg, 160);
+  IF NOT ok THEN bad := bad||'fase 1: INSERT directo todavia vivo: '||st||' '||left(msg, 120)||'; '; END IF;
+  ok := COALESCE(((SELECT md5(prosrc) FROM pg_proc WHERE oid = to_regprocedure('public.liberar_examen_al_paciente(integer)')) = '7c980b20f713d0cf49e7235da30838e1' AND (SELECT md5(prosrc) FROM pg_proc WHERE oid = to_regprocedure('public.liberar_orden_al_paciente(uuid)')) = '96a54d314911a439af77e426ebe46611' AND (SELECT md5(prosrc) FROM pg_proc WHERE oid = to_regprocedure('public.revertir_liberacion_examen(integer)')) = '4a7f4912f3330543d2d7a47b2a06fbc6' AND (SELECT md5(prosrc) FROM pg_proc WHERE oid = to_regprocedure('public.notificar_orden_lab(uuid)')) = '59fafc8572840548c27ad39a759cba47' AND (SELECT md5(prosrc) FROM pg_proc WHERE oid = to_regprocedure('public.notificar_resultado_examen(integer)')) = '33a7a110c39574c5a40f7ca1495d2686' AND (SELECT md5(prosrc) FROM pg_proc WHERE oid = to_regprocedure('public.paciente_examenes()')) = 'a14ea485045b28883d81a0dd9fe7cd83' AND (SELECT md5(prosrc) FROM pg_proc WHERE oid = to_regprocedure('public.contexto_ia_paciente(bigint)')) = '1eaf84a3475dfdfc3845d68ce2406fbb' AND (SELECT md5(prosrc) FROM pg_proc WHERE oid = to_regprocedure('private.puede_ver_examen(integer)')) = '2b8150875b99dfb5df9fdb3d8af62ae0' AND (SELECT md5(prosrc) FROM pg_proc WHERE oid = to_regprocedure('public.registrar_examen_adjunto(integer,text,text)')) = '245fb6669aa3fb22f8e62ca40a8b3467'), false);
+  det := det||' ;; las 9 funciones previas sin cambios|9 md5 iguales|'||CASE WHEN ok THEN 'OK' ELSE 'ROJO' END||'|'||st||'|'||left(msg, 160);
+  IF NOT ok THEN bad := bad||'las 9 funciones previas sin cambios: '||st||' '||left(msg, 120)||'; '; END IF;
+  -- restauracion: se borra solo lo que el probe creo/sembro y se verifica contra el snapshot
+  DELETE FROM public.ordenes_examen WHERE id = ANY (ords);           -- CASCADE a examenes
+  DELETE FROM public.examenes WHERE id = ANY (seed_ex);
+  DELETE FROM public.examenes_catalogo WHERE id = ANY (seed_cat);
+  DELETE FROM public.empresas_proveedoras WHERE id = ANY (seed_emp);
+  DELETE FROM public.notificaciones WHERE NOT (id = ANY (notif0));
+  DELETE FROM public.notificaciones_pacientes WHERE id > np0;
+  IF (SELECT md5(COALESCE(string_agg(to_jsonb(e)::text, '|' ORDER BY e.id), '')) FROM public.examenes e) IS DISTINCT FROM s_ex THEN r_rest := r_rest||' / examenes'; END IF;
+  IF (SELECT md5(COALESCE(string_agg(to_jsonb(o)::text, '|' ORDER BY o.id), '')) FROM public.ordenes_examen o) IS DISTINCT FROM s_or THEN r_rest := r_rest||' / ordenes_examen'; END IF;
+  IF (SELECT md5(COALESCE(string_agg(to_jsonb(c)::text, '|' ORDER BY c.id), '')) FROM public.examenes_catalogo c) IS DISTINCT FROM s_cat THEN r_rest := r_rest||' / examenes_catalogo'; END IF;
+  IF (SELECT md5(COALESCE(string_agg(to_jsonb(c)::text, '|' ORDER BY c.id), '')) FROM public.cuentas_proveedor c WHERE c.empresa_id = c_lab OR c.id IN (c_recep, c_admin, c_tec)) IS DISTINCT FROM s_cp THEN r_rest := r_rest||' / cuentas_proveedor'; END IF;
+  IF (SELECT count(*) FROM public.notificaciones WHERE NOT (id = ANY (notif0))) <> 0 OR (SELECT count(*) FROM public.notificaciones_pacientes WHERE id > np0) <> 0
+     OR (SELECT count(*) FROM public.notificaciones) <> cardinality(notif0) THEN r_rest := r_rest||' / notificaciones'; END IF;
+  IF EXISTS (SELECT 1 FROM public.empresas_proveedoras WHERE id = ANY (seed_emp)) THEN r_rest := r_rest||' / empresas sembradas'; END IF;
+  det := det||' ;; restauracion|'||cardinality(ords)||' orden(es) creadas, '||cardinality(seed_cat)||' catalogo, '||cardinality(seed_emp)||' empresas, '||cardinality(seed_ex)||' examenes sembrados; snapshot igual|'||r_rest||'|-|';
+
+  PERFORM set_config('probe.p878_det', det, false);
+  PERFORM set_config('probe.p878', CASE WHEN bad = '' AND r_rest = 'OK'
+    THEN 'OK (4 funciones (secdef, search_path, md5, EXECUTE), FK RESTRICT, UNIQUE, trigger, grants por columna, sin UPDATE en ordenes, examenes_medico_update fuera, INSERT directo vivo (fase 1), 9 funciones previas intactas)'
+    ELSE 'ROJO ('||left(bad, 700)||' | restauracion='||r_rest||')' END, false);
+EXCEPTION WHEN OTHERS THEN
+  PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
+  PERFORM set_config('probe.p878', 'FALLO ('||SQLSTATE||' '||SQLERRM||')', false);
+END $$;
+SELECT set_config('role', 'none', true);
+
 -- ===== Veredictos como result set =====
 SELECT 'P1_anon_insert_citas'              AS probe, current_setting('probe.p1', true)  AS verdict, 'BLOQUEADO' AS esperado_post_fix
 UNION ALL SELECT 'P2_medico_cancela_ajena_rpc',         current_setting('probe.p2', true),  'BLOQUEADO'
@@ -23982,6 +25609,19 @@ UNION ALL SELECT 'P862_sv_toma_vacia_con_notas',        current_setting('probe.p
 UNION ALL SELECT 'P863_sv_toma_vacia_pa_espacios',      current_setting('probe.p863', true), 'OK (PA ''   '' -> SV003)'
 UNION ALL SELECT 'P864_sv_un_solo_vital',               current_setting('probe.p864', true), 'OK (8 x un solo vital -> OK con fila)'
 UNION ALL SELECT 'P865_sv_catalogo_331',                current_setting('probe.p865', true), 'OK (md5 331, acl, secdef, SV003)'
+UNION ALL SELECT 'P866_ex_medico_positivo',             current_setting('probe.p866', true), 'OK (orden + 3 items, nombre de catalogo copiado, derivados, notificada)'
+UNION ALL SELECT 'P867_ex_medico_sin_laboratorio',      current_setting('probe.p867', true), 'OK (sin lab: texto libre OK, catalogo EX013)'
+UNION ALL SELECT 'P868_ex_walkin_positivo',             current_setting('probe.p868', true), 'OK (orden walk-in + 2 items, recibida, sin notificar)'
+UNION ALL SELECT 'P869_ex_medico_rechazos',             current_setting('probe.p869', true), 'OK (EX001-EX005, EX008-EX017, EX020 por SQLERRM, sin filas)'
+UNION ALL SELECT 'P870_ex_walkin_rechazos',             current_setting('probe.p870', true), 'OK (EX001/6/7, 42501 x2, EX018-EX020, EX008, EX017, sin filas)'
+UNION ALL SELECT 'P871_ex_atomicidad_y_bordes',         current_setting('probe.p871', true), 'OK (item invalido => 0 filas; bordes 30/200/2000 OK)'
+UNION ALL SELECT 'P872_ex_notificacion_best_effort',    current_setting('probe.p872', true), 'OK (notificar falla -> la orden queda, 0 notifs)'
+UNION ALL SELECT 'P873_ex_fk_restrict',                 current_setting('probe.p873', true), 'OK (borrar ordenado 23503; sin ordenar OK; desactivar OK)'
+UNION ALL SELECT 'P874_ex_congelamiento',               current_setting('probe.p874', true), 'OK (tipo/catalogo_id/identidad congelados; estado/resultados/liberar/revertir OK)'
+UNION ALL SELECT 'P875_ex_catalogo',                    current_setting('probe.p875', true), 'OK (sin renombre, UNIQUE, activo/categoria editables, medico no ve inactivos)'
+UNION ALL SELECT 'P876_ex_backfill_10_4',               current_setting('probe.p876', true), 'OK (10 con catalogo exacto, 4 texto libre NULL)'
+UNION ALL SELECT 'P877_ex_dependientes',                current_setting('probe.p877', true), 'OK (medico/lab/paciente leen examenes, ordenes, adjuntos y catalogo sin error)'
+UNION ALL SELECT 'P878_ex_catalogo_332',                current_setting('probe.p878', true), 'OK (4 funciones, FK, UNIQUE, trigger, grants por columna, fase 1)'
 -- Las filas FX* son SALUD DE FIXTURE, no probes de seguridad: dicen si la precondicion que una
 -- migracion posterior empezo a exigir se pudo sembrar. Si una sale ROJO, los probes que dependen de
 -- ese fixture reportan N/A (su flag de ready se pierde con el rollback de la subtransaccion) en vez
@@ -24222,7 +25862,8 @@ UNION ALL SELECT 'P000_CENTINELA_veredictos_no_nulos',
        'probe.p838', 'probe.p839', 'probe.p840', 'probe.p841', 'probe.p842', 'probe.p843',
        'probe.p844', 'probe.p845', 'probe.p846', 'probe.p847',
        'probe.p848', 'probe.p849', 'probe.p850', 'probe.p851', 'probe.p852', 'probe.p853', 'probe.p854', 'probe.p855', 'probe.p856', 'probe.p857', 'probe.p858', 'probe.p859', 'probe.p860',
-       'probe.p861', 'probe.p862', 'probe.p863', 'probe.p864', 'probe.p865'
+       'probe.p861', 'probe.p862', 'probe.p863', 'probe.p864', 'probe.p865',
+       'probe.p866', 'probe.p867', 'probe.p868', 'probe.p869', 'probe.p870', 'probe.p871', 'probe.p872', 'probe.p873', 'probe.p874', 'probe.p875', 'probe.p876', 'probe.p877', 'probe.p878'
              ]) AS n) s),
   'OK (todos los veredictos publicados)';
 
