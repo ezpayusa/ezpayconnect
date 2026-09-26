@@ -59,6 +59,11 @@ export default function WebAppExamenes() {
                       <Badge variant="outline" className={getEstadoColor(ex.estado)}>
                         {ex.estado}
                       </Badge>
+                      {ex.corregido && (
+                        <Badge variant="outline" className="bg-amber-50 text-amber-700 border-amber-200">
+                          Corregido
+                        </Badge>
+                      )}
                     </div>
                     {ex.descripcion && (
                       <p className="text-sm text-slate-500">{ex.descripcion}</p>
