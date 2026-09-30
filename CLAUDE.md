@@ -24,9 +24,13 @@ Stack: React + Vite + TypeScript, Supabase / Postgres, deploy en Vercel, repo en
   minutos por esto** (P635 es la probe que faltaba, P636 su contraprueba).
 - NUNCA ampliar policies de RLS sobre tablas adyacentes a datos médicos (p. ej. campana_metricas). Para dar acceso, usar RPCs SECURITY DEFINER con search_path='', fail-closed (si el scope es NULL → 0 filas) y gate interno.
 - Probar aislamiento por rol impersonando request.jwt.claims en prod: cada rol ve lo suyo y no lo ajeno.
-- **Próximos números libres: probe `P914`** (global, no por módulo; P906-P907 usados por la mig 336, P912-P913
-  por la 337), **migración `338`**
-  (338 = cierre de DELETE directo de examenes/ordenes + MAINTAIN ordenes_examen, ajusta P881 y P884;
+- **Próximos números libres: probe `P916`** (global, no por módulo; P906-P907 usados por la mig 336, P912-P913
+  por la 337, P914-P915 por la 338), **migración `339`**
+  (338 = cierre de DELETE directo de examenes/ordenes_examen + REVOKE MAINTAIN ordenes_examen, ajusta P881,
+  P884 y P905 — APLICADA en prod el 30-sep-2026 12:17:45 UTC y verificada en sesión independiente 9/9
+  (huella dbb4786b…, 990 filas / 11 rojas de deuda, P800 PASA, guard 155). **P4 (revisiones inmutables)
+  CERRADO: migs 334-338.** Orden de rollback: `338_rollback` → `337_rollback` → `335_rollback` (cada uno
+  depende del estado que deja el siguiente);
   337 = resultados_scoped_select + rama examen_revisiones.archivo_url_anterior con puede_ver_historial_examen
   (el paciente no ve el archivo anterior, R3) — APLICADA en prod el 30-sep-2026 01:13 UTC y verificada en
   sesión independiente (988 filas / 11 rojas de deuda, guard 155 sobre 946 DO, tsc 78, qual 9f07449d…).
@@ -132,6 +136,8 @@ Stack: React + Vite + TypeScript, Supabase / Postgres, deploy en Vercel, repo en
 - **Migraciones: SIEMPRE `npx supabase db query --linked -f <archivo>`, NUNCA `db push`.** `db push`
   desincroniza `schema_migrations` (deuda desde la 047). Los `.sql` viven en `supabase/migrations/`
   (rollback en `supabase/migrations/rollback/`); los de `supabase/fixes/` se agregan con `git add -f`.
+  **Desvío aceptado (familia 8):** los rollbacks de 334-338 viven en `supabase/migrations/`
+  (`33X_rollback.sql`), no en `supabase/migrations/rollback/`.
 
 ## GRANTs explícitos del Data API (obligatoria desde 30-oct-2026)
 Supabase deja de otorgar GRANTs automáticos a los roles del Data API al crear objetos en `public`.
@@ -177,3 +183,8 @@ Detalles a recordar:
 - (Producto, no código) Prompts de video sobre el software médico para mostrar a futuros clientes.
 - (Deuda de privilegios) authenticated tiene MAINTAIN (PG17: VACUUM/ANALYZE/REINDEX/CLUSTER/LOCK) en 109/121 tablas
   de public y anon en 8 (incl. pacientes, recetas); P800 no lo ve porque mira role_table_grants — frente aparte.
+- (Familia 3/4) FK `examenes_orden_id_fkey` sigue `ON DELETE CASCADE`: tras la 338 sólo la alcanzan
+  postgres/service_role (borrar una orden arrastra sus exámenes, completados incluidos).
+- (Familia 4) `examenes.updated_at` no se actualiza al corregir ni al liberar.
+- (Familia 7) El lab no tiene vista del historial de revisiones; "Ver archivo anterior" aparece en
+  revisiones que no cambiaron el archivo.
