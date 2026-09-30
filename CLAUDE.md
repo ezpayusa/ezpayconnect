@@ -23,8 +23,12 @@ Stack: React + Vite + TypeScript, Supabase / Postgres, deploy en Vercel, repo en
   minutos por esto** (P635 es la probe que faltaba, P636 su contraprueba).
 - NUNCA ampliar policies de RLS sobre tablas adyacentes a datos médicos (p. ej. campana_metricas). Para dar acceso, usar RPCs SECURITY DEFINER con search_path='', fail-closed (si el scope es NULL → 0 filas) y gate interno.
 - Probar aislamiento por rol impersonando request.jwt.claims en prod: cada rol ve lo suyo y no lo ajeno.
-- **Próximos números libres: probe `P912`** (global, no por módulo; P906-P907 usados por la mig 336), **migración `337`**
-  (337 = cierre de DELETE directo de examenes/ordenes + MAINTAIN ordenes_examen, ajusta P881 y P884;
+- **Próximos números libres: probe `P914`** (global, no por módulo; P906-P907 usados por la mig 336, P912-P913
+  por la 337), **migración `338`**
+  (338 = cierre de DELETE directo de examenes/ordenes + MAINTAIN ordenes_examen, ajusta P881 y P884;
+  337 = resultados_scoped_select + rama examen_revisiones.archivo_url_anterior con puede_ver_historial_examen
+  (el paciente no ve el archivo anterior, R3) — APLICADA en prod el 30-sep-2026 01:13 UTC y verificada en
+  sesión independiente (988 filas / 11 rojas de deuda, guard 155 sobre 946 DO, tsc 78, qual 9f07449d…).
   336 = fix de la 335: liberación/reversión con FOR UPDATE + evento solo si cambió la fila; EX028
   normalizado espacios/tabs/saltos — APLICADA en prod y verificada en sesión independiente el
   26-sep-2026), **errcode `PA035`** (comercial),
