@@ -27803,6 +27803,184 @@ EXCEPTION WHEN OTHERS THEN
 END $$;
 SELECT set_config('role', 'none', true);
 
+-- ============================================================================================
+-- MIG 337 — resultados_scoped_select lee examen_revisiones.archivo_url_anterior (P912, P913)
+-- ============================================================================================
+-- P912: el archivo ANTERIOR de una correccion, contado sobre storage.objects por actor. Misma regla
+-- del bloque P897-P905: la revision es inmutable y tiene FK RESTRICT, asi que toda la siembra corre
+-- en un sub-bloque descartable (RAISE P0999) y afuera se verifica el snapshot contra el PRE.
+-- Fixture: dos examenes LIBERADOS del paciente 23 con medico_id = medico X (sin citas con el 23, sin
+-- cuenta de proveedor) y clinica_id = la clinica de un admin_clinica existente (sin citas con el 23,
+-- sin cuenta de proveedor; no se crea ninguna clinica). El lab los corrige por la RPC con archivo
+-- nuevo, igual que el front: el archivo viejo queda SOLO en examen_revisiones (ni en
+-- examenes.archivo_url ni en examen_adjuntos). El segundo examen guarda la URL completa.
+-- Cada actor entra por UNA sola rama de puede_ver_historial_examen (se verifica antes de medir):
+-- medico X por medico_id, medico A por medico_atiende_paciente, el admin por es_admin_clinica, el lab
+-- por su carpeta. El paciente dueno tiene el examen liberado (su rama de puede_ver_examen es true) y
+-- aun asi no ve el archivo anterior (R3); como control SI ve el vigente.
+DO $$
+DECLARE
+  c_med uuid := '09d243d5-b222-482a-9762-94a582e9e752'; c_lab uuid := 'a5cf575a-5d63-4ed2-839e-9b58da8152e0'; c_admin uuid := 'e6f95b2f-7561-4e0b-b0c8-d1f38e6c4d66'; c_pacid integer := 23;
+  c_pac uuid; c_medx uuid; c_medy uuid; c_adm uuid; c_clin uuid;
+  st text := '00000'; msg text := ''; ok boolean; det text := ''; bad text := ''; r_rest text := 'OK';
+  s_ex text; s_rev text; s_ev text; s_obj text; n_not bigint; n_notp bigint;
+  v_ex integer; v_ex2 integer; v_viejo text; v_nuevo text; v_fullobj text; v_full text; v_nuevo2 text;
+  j jsonb; n bigint; v_san text; r record;
+BEGIN
+  SELECT pa.auth_user_id INTO c_pac FROM public.pacientes pa WHERE pa.id = c_pacid;
+  SELECT p.id INTO c_medx FROM public.perfiles p JOIN public.medicos m ON m.id = p.id WHERE p.rol = 'medico' AND p.activo AND p.id <> c_med
+     AND NOT EXISTS (SELECT 1 FROM public.cuentas_proveedor cp WHERE cp.id = p.id)
+     AND NOT EXISTS (SELECT 1 FROM public.citas c WHERE c.medico_id = p.id AND c.paciente_id = c_pacid) ORDER BY p.id LIMIT 1;
+  SELECT p.id INTO c_medy FROM public.perfiles p JOIN public.medicos m ON m.id = p.id WHERE p.rol = 'medico' AND p.activo AND p.id <> c_med AND p.id <> c_medx
+     AND NOT EXISTS (SELECT 1 FROM public.cuentas_proveedor cp WHERE cp.id = p.id)
+     AND NOT EXISTS (SELECT 1 FROM public.citas c WHERE c.medico_id = p.id AND c.paciente_id = c_pacid) ORDER BY p.id LIMIT 1;
+  SELECT p.id, x.clinica_id INTO c_adm, c_clin FROM public.perfiles p
+   CROSS JOIN LATERAL (SELECT mc.clinica_id FROM public.medico_clinicas mc WHERE mc.medico_id = p.id
+                       UNION SELECT cl.id FROM public.clinicas cl WHERE cl.doctor_id = p.id) x
+   WHERE p.rol = 'admin_clinica' AND p.activo IS TRUE
+     AND NOT EXISTS (SELECT 1 FROM public.cuentas_proveedor cp WHERE cp.id = p.id)
+     AND NOT EXISTS (SELECT 1 FROM public.citas c WHERE c.medico_id = p.id AND c.paciente_id = c_pacid)
+   ORDER BY p.id, x.clinica_id LIMIT 1;
+  IF c_pac IS NULL OR c_medx IS NULL OR c_medy IS NULL OR c_adm IS NULL THEN
+    RAISE EXCEPTION 'fixture roto: usuario del paciente 23, medico X, medico sin relacion o admin_clinica con clinica'; END IF;
+  SELECT md5(COALESCE(string_agg(to_jsonb(t)::text, '|' ORDER BY t.id), '')) INTO s_ex FROM public.examenes t;
+  SELECT md5(COALESCE(string_agg(to_jsonb(t)::text, '|' ORDER BY t.id), '')) INTO s_rev FROM public.examen_revisiones t;
+  SELECT md5(COALESCE(string_agg(to_jsonb(t)::text, '|' ORDER BY t.id), '')) INTO s_ev FROM public.examen_liberacion_eventos t;
+  SELECT md5(COALESCE(string_agg(to_jsonb(t)::text, '|' ORDER BY t.id), '')) INTO s_obj FROM storage.objects t WHERE t.bucket_id = 'resultados-examenes';
+  SELECT count(*) INTO n_not FROM public.notificaciones; SELECT count(*) INTO n_notp FROM public.notificaciones_pacientes;
+  v_viejo   := c_lab::text||'/P912-viejo-'||txid_current()::text||'.pdf';
+  v_nuevo   := c_lab::text||'/P912-nuevo-'||txid_current()::text||'.pdf';
+  v_fullobj := c_lab::text||'/P912-full-'||txid_current()::text||'.pdf';
+  v_full    := 'https://qa.supabase.co/storage/v1/object/public/resultados-examenes/'||v_fullobj;
+  v_nuevo2  := c_lab::text||'/P912-nuevo2-'||txid_current()::text||'.pdf';
+  BEGIN
+    INSERT INTO public.examenes (tipo, paciente_id, medico_id, laboratorio_id, clinica_id, estado, origen, resultados, archivo_url, fecha_resultado,
+                                 liberado_al_paciente, fecha_liberacion, liberado_por)
+      VALUES ('P912 archivo anterior QA', c_pacid, c_medx, c_lab, c_clin, 'completado', 'medico', 'P912 r1', v_viejo, CURRENT_DATE - 2, true, now(), c_medx)
+      RETURNING id INTO v_ex;
+    INSERT INTO public.examenes (tipo, paciente_id, medico_id, laboratorio_id, clinica_id, estado, origen, resultados, archivo_url, fecha_resultado,
+                                 liberado_al_paciente, fecha_liberacion, liberado_por)
+      VALUES ('P912 URL completa QA', c_pacid, c_medx, c_lab, c_clin, 'completado', 'medico', 'P912 r1', v_full, CURRENT_DATE - 2, true, now(), c_medx)
+      RETURNING id INTO v_ex2;
+    INSERT INTO storage.objects (bucket_id, name, owner) VALUES
+      ('resultados-examenes', v_viejo, NULL), ('resultados-examenes', v_nuevo, NULL),
+      ('resultados-examenes', v_fullobj, NULL), ('resultados-examenes', v_nuevo2, NULL);
+    -- el lab corrige los dos por la RPC, con archivo nuevo: el viejo pasa al historial
+    BEGIN
+      PERFORM set_config('request.jwt.claims', json_build_object('sub', c_admin::text, 'role', 'authenticated')::text, true); PERFORM set_config('role', 'authenticated', true);
+      j := public.corregir_resultado_examen(v_ex,  'archivo equivocado QA', 'P912 r1', v_nuevo);
+      j := public.corregir_resultado_examen(v_ex2, 'archivo equivocado QA', 'P912 r1', v_nuevo2);
+      PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
+    EXCEPTION WHEN OTHERS THEN PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
+      st := SQLSTATE; msg := SQLERRM; END;
+    ok := COALESCE((st = '00000'
+      AND EXISTS (SELECT 1 FROM public.examen_revisiones rv WHERE rv.examen_id = v_ex  AND rv.archivo_url_anterior = v_viejo)
+      AND EXISTS (SELECT 1 FROM public.examen_revisiones rv WHERE rv.examen_id = v_ex2 AND rv.archivo_url_anterior = v_full)
+      AND NOT EXISTS (SELECT 1 FROM public.examenes e
+                       WHERE COALESCE(NULLIF(split_part(e.archivo_url, '/resultados-examenes/', 2), ''), e.archivo_url) IN (v_viejo, v_fullobj))
+      AND NOT EXISTS (SELECT 1 FROM public.examen_adjuntos a WHERE a.storage_path IN (v_viejo, v_fullobj))), false);
+    det := det||' ;; fixture|revision con el viejo (path relativo) y con la URL completa; ninguno en examenes.archivo_url ni en adjuntos|'||CASE WHEN ok THEN 'OK' ELSE 'ROJO' END||'|'||st||'|'||left(msg, 160);
+    IF NOT ok THEN bad := bad||'fixture: '||st||' '||left(msg, 120)||'; '; END IF;
+    -- cordura de actores: cada uno entra por una sola rama
+    v_san := '';
+    FOR r IN SELECT * FROM (VALUES ('medx', c_medx), ('med', c_med), ('adm', c_adm), ('medy', c_medy)) v(k, u) LOOP
+      BEGIN
+        PERFORM set_config('request.jwt.claims', json_build_object('sub', r.u::text, 'role', 'authenticated')::text, true); PERFORM set_config('role', 'authenticated', true);
+        v_san := v_san||r.k||':'||private.medico_atiende_paciente(c_pacid::bigint)::text||'/'||private.es_admin_clinica(c_clin)::text||' ';
+        PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
+      EXCEPTION WHEN OTHERS THEN PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
+        v_san := v_san||r.k||':'||SQLSTATE||' '; END;
+    END LOOP;
+    ok := COALESCE((v_san = 'medx:false/false med:true/false adm:false/true medy:false/false '), false);
+    det := det||' ;; cordura de actores (atiende/admin)|medx f/f, med t/f, adm f/t, medy f/f|'||CASE WHEN ok THEN 'OK' ELSE 'ROJO' END||'|-|'||v_san;
+    IF NOT ok THEN bad := bad||'actores: '||v_san||'; '; END IF;
+    -- el objeto del archivo anterior, por actor
+    FOR r IN SELECT * FROM (VALUES
+        ('medico del examen (medico_id)',             'medx', 'viejo', 1),
+        ('medico que atiende al paciente',            'med',  'viejo', 1),
+        ('admin de la clinica del examen',            'adm',  'viejo', 1),
+        ('lab duenio (su carpeta)',                   'lab',  'viejo', 1),
+        ('medico sin relacion',                       'medy', 'viejo', 0),
+        ('paciente duenio con examen liberado (R3)',  'pac',  'viejo', 0),
+        ('control: paciente duenio ve el vigente',    'pac',  'nuevo', 1),
+        ('anon',                                      'anon', 'viejo', 0),
+        ('URL completa: medico del examen',           'medx', 'full',  1),
+        ('URL completa: medico sin relacion',         'medy', 'full',  0)) v(caso, actor, obj, esperado) LOOP
+      st := '00000'; msg := ''; n := -1;
+      BEGIN
+        IF r.actor = 'anon' THEN
+          PERFORM set_config('request.jwt.claims', json_build_object('role', 'anon')::text, true); PERFORM set_config('role', 'anon', true);
+        ELSE
+          PERFORM set_config('request.jwt.claims', json_build_object('sub', CASE r.actor WHEN 'medx' THEN c_medx WHEN 'med' THEN c_med WHEN 'adm' THEN c_adm
+            WHEN 'lab' THEN c_admin WHEN 'medy' THEN c_medy ELSE c_pac END::text, 'role', 'authenticated')::text, true);
+          PERFORM set_config('role', 'authenticated', true);
+        END IF;
+        SELECT count(*) INTO n FROM storage.objects o
+         WHERE o.bucket_id = 'resultados-examenes'
+           AND o.name = CASE r.obj WHEN 'viejo' THEN v_viejo WHEN 'nuevo' THEN v_nuevo ELSE v_fullobj END;
+        PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
+      EXCEPTION WHEN OTHERS THEN PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
+        st := SQLSTATE; msg := SQLERRM; END;
+      ok := COALESCE((n = r.esperado), false);
+      det := det||' ;; '||r.caso||'|'||r.esperado||'|'||CASE WHEN ok THEN 'OK' ELSE 'ROJO' END||'|'||st||'|'||n;
+      IF NOT ok THEN bad := bad||r.caso||' ve '||n||' (esperado '||r.esperado||', '||st||'); '; END IF;
+    END LOOP;
+    RAISE EXCEPTION 'P912 descarte' USING ERRCODE = 'P0999';
+  EXCEPTION WHEN SQLSTATE 'P0999' THEN NULL;
+  END;
+  PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
+  IF (SELECT md5(COALESCE(string_agg(to_jsonb(t)::text, '|' ORDER BY t.id), '')) FROM public.examenes t) IS DISTINCT FROM s_ex THEN r_rest := r_rest||' / examenes'; END IF;
+  IF (SELECT md5(COALESCE(string_agg(to_jsonb(t)::text, '|' ORDER BY t.id), '')) FROM public.examen_revisiones t) IS DISTINCT FROM s_rev THEN r_rest := r_rest||' / revisiones'; END IF;
+  IF (SELECT md5(COALESCE(string_agg(to_jsonb(t)::text, '|' ORDER BY t.id), '')) FROM public.examen_liberacion_eventos t) IS DISTINCT FROM s_ev THEN r_rest := r_rest||' / eventos'; END IF;
+  IF (SELECT md5(COALESCE(string_agg(to_jsonb(t)::text, '|' ORDER BY t.id), '')) FROM storage.objects t WHERE t.bucket_id = 'resultados-examenes') IS DISTINCT FROM s_obj THEN r_rest := r_rest||' / storage'; END IF;
+  IF (SELECT count(*) FROM public.notificaciones) <> n_not OR (SELECT count(*) FROM public.notificaciones_pacientes) <> n_notp THEN r_rest := r_rest||' / notificaciones'; END IF;
+  det := det||' ;; restauracion|subtransaccion descartada; snapshot igual|'||r_rest||'|-|';
+  PERFORM set_config('probe.p912_det', det, false);
+  PERFORM set_config('probe.p912', CASE WHEN bad = '' AND r_rest = 'OK'
+    THEN 'OK (archivo anterior: medico del examen 1, medico que atiende 1, admin de clinica 1, lab 1; medico sin relacion 0, paciente liberado 0 (ve el vigente), anon 0; URL completa: medico 1 / sin relacion 0; restaurado)'
+    ELSE 'ROJO ('||left(bad, 700)||' | restauracion='||r_rest||')' END, false);
+EXCEPTION WHEN OTHERS THEN
+  PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
+  PERFORM set_config('probe.p912', CASE WHEN SQLERRM LIKE 'fixture roto%' THEN 'ROJO ('||SQLERRM||')' ELSE 'FALLO ('||SQLSTATE||' '||SQLERRM||')' END, false);
+END $$;
+SELECT set_config('role', 'none', true);
+
+-- ---------------- P913 catalogo post-337: resultados_scoped_select con la rama del historial ----------------
+-- md5 del qual post-337 fijado (medido en el dry-run del 29-sep-2026). Con el 337_rollback aplicado
+-- sale ROJO a proposito, igual que P878/P905 fuera de su migracion.
+DO $$
+DECLARE ok boolean; det text := ''; bad text := ''; x text;
+BEGIN
+  SELECT md5(qual)||' '||cmd||' '||roles::text||' '||permissive INTO x
+    FROM pg_policies WHERE schemaname = 'storage' AND tablename = 'objects' AND policyname = 'resultados_scoped_select';
+  ok := COALESCE((x = '9f07449decf102173f65ff67c44f04bb SELECT {authenticated} PERMISSIVE'), false);
+  det := det||' ;; resultados_scoped_select|md5 post-337 9f07449d, SELECT, authenticated, PERMISSIVE|'||CASE WHEN ok THEN 'OK' ELSE 'ROJO' END||'|-|'||COALESCE(x, 'NO EXISTE');
+  IF NOT ok THEN bad := bad||'select: '||COALESCE(x, 'NO EXISTE')||'; '; END IF;
+  SELECT md5(qual)||' '||cmd INTO x FROM pg_policies WHERE schemaname = 'storage' AND tablename = 'objects' AND policyname = 'resultados_scoped_delete';
+  ok := COALESCE((x = 'af31fe630e999108dd983a14ac423fa6 DELETE'), false);
+  det := det||' ;; resultados_scoped_delete|md5 igual al PRE af31fe63|'||CASE WHEN ok THEN 'OK' ELSE 'ROJO' END||'|-|'||COALESCE(x, 'NO EXISTE');
+  IF NOT ok THEN bad := bad||'delete: '||COALESCE(x, 'NO EXISTE')||'; '; END IF;
+  SELECT md5(with_check)||' '||cmd INTO x FROM pg_policies WHERE schemaname = 'storage' AND tablename = 'objects' AND policyname = 'resultados_scoped_insert';
+  ok := COALESCE((x = 'f1e5474c07ee86cadd28882b06606555 INSERT'), false);
+  det := det||' ;; resultados_scoped_insert|md5 igual al PRE f1e5474c|'||CASE WHEN ok THEN 'OK' ELSE 'ROJO' END||'|-|'||COALESCE(x, 'NO EXISTE');
+  IF NOT ok THEN bad := bad||'insert: '||COALESCE(x, 'NO EXISTE')||'; '; END IF;
+  SELECT string_agg(policyname||':'||cmd, ',' ORDER BY policyname COLLATE "C") INTO x FROM pg_policies
+   WHERE schemaname = 'storage' AND tablename = 'objects' AND (policyname LIKE 'resultados%' OR qual LIKE '%resultados-examenes%' OR with_check LIKE '%resultados-examenes%');
+  ok := COALESCE((x = 'resultados_scoped_delete:DELETE,resultados_scoped_insert:INSERT,resultados_scoped_select:SELECT'), false);
+  det := det||' ;; policies del bucket|delete, insert, select; sin UPDATE|'||CASE WHEN ok THEN 'OK' ELSE 'ROJO' END||'|-|'||COALESCE(x, '-');
+  IF NOT ok THEN bad := bad||'set: '||COALESCE(x, '-')||'; '; END IF;
+  ok := COALESCE(((SELECT public FROM storage.buckets WHERE id = 'resultados-examenes') = false), false);
+  det := det||' ;; bucket|privado|'||CASE WHEN ok THEN 'OK' ELSE 'ROJO' END||'|-|-';
+  IF NOT ok THEN bad := bad||'bucket no privado; '; END IF;
+  PERFORM set_config('probe.p913_det', det, false);
+  PERFORM set_config('probe.p913', CASE WHEN bad = ''
+    THEN 'OK (select post-337 con la rama de examen_revisiones; insert/delete iguales al PRE; sin UPDATE; bucket privado)'
+    ELSE 'ROJO ('||left(bad, 700)||')' END, false);
+EXCEPTION WHEN OTHERS THEN
+  PERFORM set_config('probe.p913', 'FALLO ('||SQLSTATE||' '||SQLERRM||')', false);
+END $$;
+SELECT set_config('role', 'none', true);
+
 -- ===== Veredictos como result set =====
 SELECT 'P1_anon_insert_citas'              AS probe, current_setting('probe.p1', true)  AS verdict, 'BLOQUEADO' AS esperado_post_fix
 UNION ALL SELECT 'P2_medico_cancela_ajena_rpc',         current_setting('probe.p2', true),  'BLOQUEADO'
@@ -28789,6 +28967,8 @@ UNION ALL SELECT 'P904_ex_paciente_corregido',         current_setting('probe.p9
 UNION ALL SELECT 'P905_ex_catalogo_335',               current_setting('probe.p905', true), 'OK (catalogo exacto post-335)'
 UNION ALL SELECT 'P906_ex_liberacion_concurrente',     current_setting('probe.p906', true), 'OK (FOR UPDATE + UPDATE condicionado; x2 = 1 evento)'
 UNION ALL SELECT 'P907_ex_ex028_normalizado',          current_setting('probe.p907', true), 'OK (espacios del guardado no son cambio; EX028)'
+UNION ALL SELECT 'P912_ex_archivo_anterior_storage',   current_setting('probe.p912', true), 'OK (equipo clinico lee el archivo anterior; paciente y ajenos no)'
+UNION ALL SELECT 'P913_ex_catalogo_337',               current_setting('probe.p913', true), 'OK (select post-337; insert/delete intactos)'
 -- Las filas FX* son SALUD DE FIXTURE, no probes de seguridad: dicen si la precondicion que una
 -- migracion posterior empezo a exigir se pudo sembrar. Si una sale ROJO, los probes que dependen de
 -- ese fixture reportan N/A (su flag de ready se pierde con el rollback de la subtransaccion) en vez
@@ -29033,7 +29213,7 @@ UNION ALL SELECT 'P000_CENTINELA_veredictos_no_nulos',
        'probe.p866', 'probe.p867', 'probe.p868', 'probe.p869', 'probe.p870', 'probe.p871', 'probe.p872', 'probe.p873', 'probe.p874', 'probe.p875', 'probe.p876', 'probe.p877', 'probe.p878',
        'probe.p879', 'probe.p880', 'probe.p881', 'probe.p882', 'probe.p883', 'probe.p884',
        'probe.p885', 'probe.p886', 'probe.p887', 'probe.p888', 'probe.p889', 'probe.p890', 'probe.p891', 'probe.p892', 'probe.p893', 'probe.p894', 'probe.p895', 'probe.p896', 'probe.p908', 'probe.p909', 'probe.p910', 'probe.p911',
-       'probe.p897', 'probe.p898', 'probe.p899', 'probe.p900', 'probe.p901', 'probe.p902', 'probe.p903', 'probe.p904', 'probe.p905', 'probe.p906', 'probe.p907'
+       'probe.p897', 'probe.p898', 'probe.p899', 'probe.p900', 'probe.p901', 'probe.p902', 'probe.p903', 'probe.p904', 'probe.p905', 'probe.p906', 'probe.p907', 'probe.p912', 'probe.p913'
              ]) AS n) s),
   'OK (todos los veredictos publicados)';
 
