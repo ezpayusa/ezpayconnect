@@ -9,6 +9,8 @@ import { supabase } from '@/lib/supabase'
 import { useVisor, archivoDeResultado, descargarResultado } from '@/components/visor/useVisor'
 import { liberarUnExamen, liberarExamenes, type ExamenLiberable } from '@/lib/liberacionExamenes'
 import { ConfirmarLiberacionDialog } from '@/components/examenes/ConfirmarLiberacionDialog'
+import HistorialRevisionesExamen from '@/components/examenes/HistorialRevisionesExamen'
+import { cargarRevisiones, revisionesPorExamen, type RevisionExamen } from '@/lib/correccionResultados'
 import { useAuth } from '@/hooks/useAuth'
 import { useUnidadPeso } from '@/hooks/useUnidadPeso'
 import { formatPeso } from '@/lib/unidades'
@@ -109,6 +111,7 @@ export default function PacienteDetallePage() {
   const [consultas, setConsultas] = useState<any[]>([])
   const [signosVitales, setSignosVitales] = useState<any[]>([])
   const [examenes, setExamenes] = useState<any[]>([])
+  const [revisionesExamen, setRevisionesExamen] = useState<Map<number, RevisionExamen[]>>(new Map())
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
 
@@ -123,6 +126,9 @@ export default function PacienteDetallePage() {
       .eq('paciente_id', id)
       .order('created_at', { ascending: false })
     setExamenes(data || [])
+    // Historial de correcciones: UNA query para todos los exámenes del paciente
+    const ids = ((data || []) as { id: number }[]).map((e) => e.id)
+    setRevisionesExamen(revisionesPorExamen(await cargarRevisiones(ids)))
   }, [id])
 
   // Liberación de resultados al paciente (Fase 4). Cada liberación es por EXAMEN y por id; "liberar
@@ -799,11 +805,17 @@ export default function PacienteDetallePage() {
               <div className="space-y-3">
                 {examenes.map((ex: any) => {
                   const completado = ex.estado === 'completado'
+                  const revs = revisionesExamen.get(ex.id) ?? []
                   return (
                     <div key={ex.id} className={`p-4 rounded-lg border-l-4 ${completado ? 'border-green-500 bg-green-50/40' : 'border-[#1E5C8E] bg-gray-50'}`}>
                       <div className="flex items-start justify-between gap-3 flex-wrap">
                         <div className="min-w-0">
-                          <p className="font-medium text-[#1a2a3a]">{ex.tipo}</p>
+                          <p className="font-medium text-[#1a2a3a]">
+                            {ex.tipo}
+                            {revs.length > 0 && (
+                              <span className="ml-2 px-2 py-0.5 rounded text-xs font-medium bg-amber-100 text-amber-700 align-middle">Corregido</span>
+                            )}
+                          </p>
                           <p className="text-xs text-gray-500">
                             Solicitado: {ex.fecha_solicitud}
                             {ex.fecha_resultado ? ` · Resultado: ${ex.fecha_resultado}` : ''}
@@ -836,6 +848,7 @@ export default function PacienteDetallePage() {
                           </button>
                         </div>
                       )}
+                      <HistorialRevisionesExamen revisiones={revs} abrir={abrir} />
                       {completado && (
                         ex.liberado_al_paciente ? (
                           <div className="mt-2 inline-flex items-center gap-1 text-xs text-green-700">
