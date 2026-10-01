@@ -29,7 +29,7 @@ Stack: React + Vite + TypeScript, Supabase / Postgres, deploy en Vercel, repo en
   (338 = cierre de DELETE directo de examenes/ordenes_examen + REVOKE MAINTAIN ordenes_examen, ajusta P881,
   P884 y P905 — APLICADA en prod el 30-sep-2026 12:17:45 UTC y verificada en sesión independiente 9/9
   (huella dbb4786b…, 990 filas / 11 rojas de deuda, P800 PASA, guard 155). **P4 (revisiones inmutables)
-  CERRADO: migs 334-338.** Orden de rollback: `338_rollback` → `337_rollback` → `335_rollback` (cada uno
+  CERRADO: migs 334-338.** Orden de rollback: `338_rollback` → `337_rollback` → `336_rollback` → `335_rollback` (cada uno
   depende del estado que deja el siguiente);
   337 = resultados_scoped_select + rama examen_revisiones.archivo_url_anterior con puede_ver_historial_examen
   (el paciente no ve el archivo anterior, R3) — APLICADA en prod el 30-sep-2026 01:13 UTC y verificada en
