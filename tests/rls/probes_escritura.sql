@@ -24953,7 +24953,9 @@ EXCEPTION WHEN OTHERS THEN
 END $$;
 SELECT set_config('role', 'none', true);
 
--- ---------------- P881 SELECT/UPDATE/DELETE por rol sin cambios (control) ----------------
+-- ---------------- P881 SELECT/UPDATE por rol sin cambios (control); DELETE directo cerrado desde la 338 ----------------
+-- Hasta la 337 los 5 DELETE (lab examen/orden, super_admin examen, medico examen/orden) esperaban 1 fila.
+-- La 338 los cierra: esperan 42501, 0 filas y la fila sembrada presente. La limpieza sigue como postgres.
 DO $$
 DECLARE
   c_med uuid := '09d243d5-b222-482a-9762-94a582e9e752'; c_lab uuid := 'a5cf575a-5d63-4ed2-839e-9b58da8152e0'; c_recep uuid := 'ce871197-285a-4d5f-9e5f-78606f9e124f'; c_admin uuid := 'e6f95b2f-7561-4e0b-b0c8-d1f38e6c4d66'; c_tec uuid := 'f69e2096-932f-45f0-9022-4e9058f2f0fd';
@@ -25052,9 +25054,9 @@ BEGIN
     PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
   EXCEPTION WHEN OTHERS THEN PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
     st := SQLSTATE; msg := SQLERRM; END;
-  ok := COALESCE((st = '00000' AND nn = 1), false);
-  det := det||' ;; lab borra un examen de su lab|1 fila|'||CASE WHEN ok THEN 'OK' ELSE 'ROJO' END||'|'||st||'|'||left(msg, 160);
-  IF NOT ok THEN bad := bad||'lab borra un examen de su lab: '||st||' '||left(msg, 120)||'; '; END IF;
+  ok := COALESCE((st = '42501' AND COALESCE(nn, 0) = 0 AND EXISTS (SELECT 1 FROM public.examenes WHERE id = e2)), false);
+  det := det||' ;; lab no borra un examen de su lab (338)|42501, 0 filas, la fila sigue|'||CASE WHEN ok THEN 'OK' ELSE 'ROJO' END||'|'||st||'|'||left(msg, 160);
+  IF NOT ok THEN bad := bad||'lab no borra un examen de su lab (338): '||st||' '||left(msg, 120)||'; '; END IF;
   st := '00000'; msg := ''; nn := NULL;
   SELECT count(*) INTO n_or FROM public.ordenes_examen; SELECT count(*) INTO n_ex FROM public.examenes; SELECT count(*) INTO n_cat FROM public.examenes_catalogo;
   BEGIN
@@ -25064,9 +25066,9 @@ BEGIN
     PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
   EXCEPTION WHEN OTHERS THEN PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
     st := SQLSTATE; msg := SQLERRM; END;
-  ok := COALESCE((st = '00000' AND nn = 1), false);
-  det := det||' ;; lab borra una orden de su lab|1 fila|'||CASE WHEN ok THEN 'OK' ELSE 'ROJO' END||'|'||st||'|'||left(msg, 160);
-  IF NOT ok THEN bad := bad||'lab borra una orden de su lab: '||st||' '||left(msg, 120)||'; '; END IF;
+  ok := COALESCE((st = '42501' AND COALESCE(nn, 0) = 0 AND EXISTS (SELECT 1 FROM public.ordenes_examen WHERE id = o1)), false);
+  det := det||' ;; lab no borra una orden de su lab (338)|42501, 0 filas, la fila sigue|'||CASE WHEN ok THEN 'OK' ELSE 'ROJO' END||'|'||st||'|'||left(msg, 160);
+  IF NOT ok THEN bad := bad||'lab no borra una orden de su lab (338): '||st||' '||left(msg, 120)||'; '; END IF;
   st := '00000'; msg := ''; nn := NULL;
   SELECT count(*) INTO n_or FROM public.ordenes_examen; SELECT count(*) INTO n_ex FROM public.examenes; SELECT count(*) INTO n_cat FROM public.examenes_catalogo;
   BEGIN
@@ -25100,9 +25102,9 @@ BEGIN
     PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
   EXCEPTION WHEN OTHERS THEN PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
     st := SQLSTATE; msg := SQLERRM; END;
-  ok := COALESCE((st = '00000' AND nn = 1), false);
-  det := det||' ;; super_admin borra|1 fila|'||CASE WHEN ok THEN 'OK' ELSE 'ROJO' END||'|'||st||'|'||left(msg, 160);
-  IF NOT ok THEN bad := bad||'super_admin borra: '||st||' '||left(msg, 120)||'; '; END IF;
+  ok := COALESCE((st = '42501' AND COALESCE(nn, 0) = 0 AND EXISTS (SELECT 1 FROM public.examenes WHERE id = e4)), false);
+  det := det||' ;; super_admin no borra (338)|42501, 0 filas, la fila sigue|'||CASE WHEN ok THEN 'OK' ELSE 'ROJO' END||'|'||st||'|'||left(msg, 160);
+  IF NOT ok THEN bad := bad||'super_admin no borra (338): '||st||' '||left(msg, 120)||'; '; END IF;
   st := '00000'; msg := ''; nn := NULL;
   SELECT count(*) INTO n_or FROM public.ordenes_examen; SELECT count(*) INTO n_ex FROM public.examenes; SELECT count(*) INTO n_cat FROM public.examenes_catalogo;
   BEGIN
@@ -25148,9 +25150,9 @@ BEGIN
     PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
   EXCEPTION WHEN OTHERS THEN PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
     st := SQLSTATE; msg := SQLERRM; END;
-  ok := COALESCE((st = '00000' AND nn = 1), false);
-  det := det||' ;; medico borra un examen suyo|1 fila|'||CASE WHEN ok THEN 'OK' ELSE 'ROJO' END||'|'||st||'|'||left(msg, 160);
-  IF NOT ok THEN bad := bad||'medico borra un examen suyo: '||st||' '||left(msg, 120)||'; '; END IF;
+  ok := COALESCE((st = '42501' AND COALESCE(nn, 0) = 0 AND EXISTS (SELECT 1 FROM public.examenes WHERE id = e3)), false);
+  det := det||' ;; medico no borra un examen suyo (338)|42501, 0 filas, la fila sigue|'||CASE WHEN ok THEN 'OK' ELSE 'ROJO' END||'|'||st||'|'||left(msg, 160);
+  IF NOT ok THEN bad := bad||'medico no borra un examen suyo (338): '||st||' '||left(msg, 120)||'; '; END IF;
   st := '00000'; msg := ''; nn := NULL;
   SELECT count(*) INTO n_or FROM public.ordenes_examen; SELECT count(*) INTO n_ex FROM public.examenes; SELECT count(*) INTO n_cat FROM public.examenes_catalogo;
   BEGIN
@@ -25160,9 +25162,9 @@ BEGIN
     PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
   EXCEPTION WHEN OTHERS THEN PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
     st := SQLSTATE; msg := SQLERRM; END;
-  ok := COALESCE((st = '00000' AND nn = 1), false);
-  det := det||' ;; medico borra una orden suya|1 fila|'||CASE WHEN ok THEN 'OK' ELSE 'ROJO' END||'|'||st||'|'||left(msg, 160);
-  IF NOT ok THEN bad := bad||'medico borra una orden suya: '||st||' '||left(msg, 120)||'; '; END IF;
+  ok := COALESCE((st = '42501' AND COALESCE(nn, 0) = 0 AND EXISTS (SELECT 1 FROM public.ordenes_examen WHERE id = o2)), false);
+  det := det||' ;; medico no borra una orden suya (338)|42501, 0 filas, la fila sigue|'||CASE WHEN ok THEN 'OK' ELSE 'ROJO' END||'|'||st||'|'||left(msg, 160);
+  IF NOT ok THEN bad := bad||'medico no borra una orden suya (338): '||st||' '||left(msg, 120)||'; '; END IF;
   st := '00000'; msg := ''; nn := NULL;
   SELECT count(*) INTO n_or FROM public.ordenes_examen; SELECT count(*) INTO n_ex FROM public.examenes; SELECT count(*) INTO n_cat FROM public.examenes_catalogo;
   BEGIN
@@ -25189,7 +25191,7 @@ BEGIN
 
   PERFORM set_config('probe.p881_det', det, false);
   PERFORM set_config('probe.p881', CASE WHEN bad = '' AND r_rest = 'OK'
-    THEN 'OK (lab (admin/tecnico) ve y edita lo de su lab y borra; super_admin ve todo, edita y borra; medico ve y borra lo suyo sin UPDATE directo; paciente ve lo suyo liberado; restaurado)'
+    THEN 'OK (lab (admin/tecnico) ve y edita lo de su lab; super_admin ve todo y edita; medico ve lo suyo sin UPDATE directo; paciente ve lo suyo liberado; nadie borra examenes ni ordenes por DELETE directo (338: 42501, filas intactas); restaurado)'
     ELSE 'ROJO ('||left(bad, 700)||' | restauracion='||r_rest||')' END, false);
 EXCEPTION WHEN OTHERS THEN
   PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
@@ -25349,6 +25351,8 @@ END $$;
 SELECT set_config('role', 'none', true);
 
 -- ---------------- P884 catalogo de objetos post-333 ----------------
+-- Ajustado por la 338: sin las 5 policies *_delete, authenticated = SELECT en examenes y ordenes_examen,
+-- y MAINTAIN en la lista de privilegios (antes no la miraba). Con 338_rollback aplicado sale ROJO a proposito.
 DO $$
 DECLARE
   c_med uuid := '09d243d5-b222-482a-9762-94a582e9e752'; c_lab uuid := 'a5cf575a-5d63-4ed2-839e-9b58da8152e0'; c_recep uuid := 'ce871197-285a-4d5f-9e5f-78606f9e124f'; c_admin uuid := 'e6f95b2f-7561-4e0b-b0c8-d1f38e6c4d66'; c_tec uuid := 'f69e2096-932f-45f0-9022-4e9058f2f0fd';
@@ -25369,30 +25373,30 @@ BEGIN
   SELECT md5(COALESCE(string_agg(to_jsonb(c)::text, '|' ORDER BY c.id), '')) INTO s_cat FROM public.examenes_catalogo c;
   notif0 := ARRAY(SELECT id FROM public.notificaciones);
   SELECT COALESCE(max(id), 0) INTO np0 FROM public.notificaciones_pacientes;
-  ok := COALESCE(((SELECT string_agg(policyname||':'||cmd||':'||roles::text, ',' ORDER BY policyname) FROM pg_policies WHERE schemaname = 'public' AND tablename = 'examenes') = 'Admin clinica ve examenes de su clinica:SELECT:{authenticated},Paciente ve sus examenes:SELECT:{public},examenes_laboratorio_delete:DELETE:{public},examenes_laboratorio_select:SELECT:{public},examenes_laboratorio_update:UPDATE:{public},examenes_medico_delete:DELETE:{authenticated},examenes_medico_select:SELECT:{authenticated},examenes_superadmin_delete:DELETE:{authenticated},examenes_superadmin_select:SELECT:{authenticated},examenes_superadmin_update:UPDATE:{authenticated}'), false);
+  ok := COALESCE(((SELECT string_agg(policyname||':'||cmd||':'||roles::text, ',' ORDER BY policyname) FROM pg_policies WHERE schemaname = 'public' AND tablename = 'examenes') = 'Admin clinica ve examenes de su clinica:SELECT:{authenticated},Paciente ve sus examenes:SELECT:{public},examenes_laboratorio_select:SELECT:{public},examenes_laboratorio_update:UPDATE:{public},examenes_medico_select:SELECT:{authenticated},examenes_superadmin_select:SELECT:{authenticated},examenes_superadmin_update:UPDATE:{authenticated}'), false);
   det := det||' ;; policies de examenes|conjunto exacto|'||CASE WHEN ok THEN 'OK' ELSE 'ROJO' END||'|'||st||'|'||left(msg, 160);
   IF NOT ok THEN bad := bad||'policies de examenes: '||st||' '||left(msg, 120)||'; '; END IF;
-  ok := COALESCE(((SELECT string_agg(policyname||':'||cmd||':'||roles::text, ',' ORDER BY policyname) FROM pg_policies WHERE schemaname = 'public' AND tablename = 'ordenes_examen') = 'ordenes_lab_delete:DELETE:{public},ordenes_lab_select:SELECT:{public},ordenes_medico_delete:DELETE:{authenticated},ordenes_medico_select:SELECT:{authenticated}'), false);
+  ok := COALESCE(((SELECT string_agg(policyname||':'||cmd||':'||roles::text, ',' ORDER BY policyname) FROM pg_policies WHERE schemaname = 'public' AND tablename = 'ordenes_examen') = 'ordenes_lab_select:SELECT:{public},ordenes_medico_select:SELECT:{authenticated}'), false);
   det := det||' ;; policies de ordenes_examen|conjunto exacto|'||CASE WHEN ok THEN 'OK' ELSE 'ROJO' END||'|'||st||'|'||left(msg, 160);
   IF NOT ok THEN bad := bad||'policies de ordenes_examen: '||st||' '||left(msg, 120)||'; '; END IF;
-  ok := COALESCE((NOT EXISTS (SELECT 1 FROM pg_policies WHERE schemaname = 'public' AND policyname IN ('examenes_laboratorio_select','examenes_laboratorio_update','examenes_laboratorio_delete','ordenes_lab_select','ordenes_lab_delete')
+  ok := COALESCE((NOT EXISTS (SELECT 1 FROM pg_policies WHERE schemaname = 'public' AND policyname IN ('examenes_laboratorio_select','examenes_laboratorio_update','ordenes_lab_select')
       AND (qual IS DISTINCT FROM '(laboratorio_id = mi_empresa_proveedor())' OR with_check IS DISTINCT FROM CASE WHEN cmd = 'UPDATE' THEN qual END))), false);
   det := det||' ;; expresiones de lab|USING/WITH CHECK de las ALL|'||CASE WHEN ok THEN 'OK' ELSE 'ROJO' END||'|'||st||'|'||left(msg, 160);
   IF NOT ok THEN bad := bad||'expresiones de lab: '||st||' '||left(msg, 120)||'; '; END IF;
-  ok := COALESCE((NOT EXISTS (SELECT 1 FROM pg_policies WHERE schemaname = 'public' AND policyname IN ('examenes_superadmin_select','examenes_superadmin_update','examenes_superadmin_delete')
+  ok := COALESCE((NOT EXISTS (SELECT 1 FROM pg_policies WHERE schemaname = 'public' AND policyname IN ('examenes_superadmin_select','examenes_superadmin_update')
       AND (qual IS DISTINCT FROM 'private.tiene_rol(ARRAY[''super_admin''::text])' OR with_check IS DISTINCT FROM CASE WHEN cmd = 'UPDATE' THEN qual END))), false);
   det := det||' ;; expresiones de super_admin|USING/WITH CHECK de la ALL|'||CASE WHEN ok THEN 'OK' ELSE 'ROJO' END||'|'||st||'|'||left(msg, 160);
   IF NOT ok THEN bad := bad||'expresiones de super_admin: '||st||' '||left(msg, 120)||'; '; END IF;
-  ok := COALESCE(((SELECT string_agg(p, ',' ORDER BY p) FROM unnest(ARRAY['SELECT','INSERT','UPDATE','DELETE','TRUNCATE','REFERENCES','TRIGGER']) p WHERE has_table_privilege('authenticated', 'public.examenes', p)) = 'DELETE,SELECT'), false);
-  det := det||' ;; authenticated en examenes|DELETE,SELECT (+ UPDATE por columna)|'||CASE WHEN ok THEN 'OK' ELSE 'ROJO' END||'|'||st||'|'||left(msg, 160);
+  ok := COALESCE(((SELECT string_agg(p, ',' ORDER BY p) FROM unnest(ARRAY['SELECT','INSERT','UPDATE','DELETE','TRUNCATE','REFERENCES','TRIGGER','MAINTAIN']) p WHERE has_table_privilege('authenticated', 'public.examenes', p)) = 'SELECT'), false);
+  det := det||' ;; authenticated en examenes|SELECT (+ UPDATE por columna), sin DELETE ni MAINTAIN (338)|'||CASE WHEN ok THEN 'OK' ELSE 'ROJO' END||'|'||st||'|'||left(msg, 160);
   IF NOT ok THEN bad := bad||'authenticated en examenes: '||st||' '||left(msg, 120)||'; '; END IF;
-  ok := COALESCE(((SELECT string_agg(p, ',' ORDER BY p) FROM unnest(ARRAY['SELECT','INSERT','UPDATE','DELETE','TRUNCATE','REFERENCES','TRIGGER']) p WHERE has_table_privilege('authenticated', 'public.ordenes_examen', p)) = 'DELETE,SELECT'), false);
-  det := det||' ;; authenticated en ordenes_examen|DELETE,SELECT|'||CASE WHEN ok THEN 'OK' ELSE 'ROJO' END||'|'||st||'|'||left(msg, 160);
+  ok := COALESCE(((SELECT string_agg(p, ',' ORDER BY p) FROM unnest(ARRAY['SELECT','INSERT','UPDATE','DELETE','TRUNCATE','REFERENCES','TRIGGER','MAINTAIN']) p WHERE has_table_privilege('authenticated', 'public.ordenes_examen', p)) = 'SELECT'), false);
+  det := det||' ;; authenticated en ordenes_examen|SELECT, sin DELETE ni MAINTAIN (338)|'||CASE WHEN ok THEN 'OK' ELSE 'ROJO' END||'|'||st||'|'||left(msg, 160);
   IF NOT ok THEN bad := bad||'authenticated en ordenes_examen: '||st||' '||left(msg, 120)||'; '; END IF;
-  ok := COALESCE(((SELECT string_agg(p, ',' ORDER BY p) FROM unnest(ARRAY['SELECT','INSERT','UPDATE','DELETE','TRUNCATE','REFERENCES','TRIGGER']) p WHERE has_table_privilege('authenticated', 'public.examenes_catalogo', p)) = 'DELETE,INSERT,SELECT'), false);
-  det := det||' ;; authenticated en examenes_catalogo|DELETE,INSERT,SELECT (+ UPDATE por columna)|'||CASE WHEN ok THEN 'OK' ELSE 'ROJO' END||'|'||st||'|'||left(msg, 160);
+  ok := COALESCE(((SELECT string_agg(p, ',' ORDER BY p) FROM unnest(ARRAY['SELECT','INSERT','UPDATE','DELETE','TRUNCATE','REFERENCES','TRIGGER','MAINTAIN']) p WHERE has_table_privilege('authenticated', 'public.examenes_catalogo', p)) = 'DELETE,INSERT,MAINTAIN,SELECT'), false);
+  det := det||' ;; authenticated en examenes_catalogo|DELETE,INSERT,MAINTAIN,SELECT (+ UPDATE por columna; fuera de la 338)|'||CASE WHEN ok THEN 'OK' ELSE 'ROJO' END||'|'||st||'|'||left(msg, 160);
   IF NOT ok THEN bad := bad||'authenticated en examenes_catalogo: '||st||' '||left(msg, 120)||'; '; END IF;
-  ok := COALESCE((NOT EXISTS (SELECT 1 FROM unnest(ARRAY['public.examenes','public.ordenes_examen','public.examenes_catalogo']) t, unnest(ARRAY['SELECT','INSERT','UPDATE','DELETE','TRUNCATE','REFERENCES','TRIGGER']) p WHERE has_table_privilege('anon', t, p))
+  ok := COALESCE((NOT EXISTS (SELECT 1 FROM unnest(ARRAY['public.examenes','public.ordenes_examen','public.examenes_catalogo']) t, unnest(ARRAY['SELECT','INSERT','UPDATE','DELETE','TRUNCATE','REFERENCES','TRIGGER','MAINTAIN']) p WHERE has_table_privilege('anon', t, p))
     AND NOT EXISTS (SELECT 1 FROM pg_class k, aclexplode(k.relacl) a WHERE k.oid IN ('public.examenes'::regclass, 'public.ordenes_examen'::regclass, 'public.examenes_catalogo'::regclass) AND a.grantee = 0)), false);
   det := det||' ;; anon y PUBLIC sin nada|ninguno|'||CASE WHEN ok THEN 'OK' ELSE 'ROJO' END||'|'||st||'|'||left(msg, 160);
   IF NOT ok THEN bad := bad||'anon y PUBLIC sin nada: '||st||' '||left(msg, 120)||'; '; END IF;
@@ -25414,7 +25418,7 @@ BEGIN
 
   PERFORM set_config('probe.p884_det', det, false);
   PERFORM set_config('probe.p884', CASE WHEN bad = '' AND r_rest = 'OK'
-    THEN 'OK (policies por comando exactas (sin INSERT ni ALL), mismas expresiones que las ALL, grants de tabla exactos, anon/PUBLIC sin nada, grants por columna de la 332 intactos)'
+    THEN 'OK (policies por comando exactas (sin INSERT, DELETE ni ALL desde la 338), mismas expresiones que las ALL, grants de tabla exactos con MAINTAIN, anon/PUBLIC sin nada, grants por columna de la 332 intactos)'
     ELSE 'ROJO ('||left(bad, 700)||' | restauracion='||r_rest||')' END, false);
 EXCEPTION WHEN OTHERS THEN
   PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
@@ -27580,12 +27584,13 @@ BEGIN
   det := det||' ;; policies del bucket|sin UPDATE; DELETE con path_resultado_referenciado|'||CASE WHEN ok THEN 'OK' ELSE 'ROJO' END||'|'||st||'|'||COALESCE(x,'-');
   IF NOT ok THEN bad := bad||'policies del bucket: '||COALESCE(x,'-')||'; '; END IF;
   -- examenes: authenticated sin MAINTAIN/TRUNCATE/TRIGGER/REFERENCES; grants por columna de la 332
+  -- (338: authenticated pierde el DELETE -> 'r'; con 338_rollback vuelve a 'rd' y esto sale ROJO a proposito)
   SELECT (SELECT relacl::text FROM pg_class WHERE oid = 'public.examenes'::regclass)||' | '||
          (SELECT string_agg(a.attname, ',' ORDER BY a.attname) FROM pg_attribute a WHERE a.attrelid = 'public.examenes'::regclass AND a.attnum > 0 AND NOT a.attisdropped
             AND has_column_privilege('authenticated', 'public.examenes', a.attname, 'UPDATE'))
     INTO x;
-  ok := COALESCE((x = '{postgres=arwdDxtm/postgres,authenticated=rd/postgres,service_role=arwdDxtm/postgres} | archivo_url,estado,fecha_resultado,resultados'), false);
-  det := det||' ;; grants de examenes|authenticated rd + UPDATE en 4 columnas|'||CASE WHEN ok THEN 'OK' ELSE 'ROJO' END||'|'||st||'|'||COALESCE(x,'-');
+  ok := COALESCE((x = '{postgres=arwdDxtm/postgres,authenticated=r/postgres,service_role=arwdDxtm/postgres} | archivo_url,estado,fecha_resultado,resultados'), false);
+  det := det||' ;; grants de examenes|authenticated r (sin DELETE desde la 338) + UPDATE en 4 columnas|'||CASE WHEN ok THEN 'OK' ELSE 'ROJO' END||'|'||st||'|'||COALESCE(x,'-');
   IF NOT ok THEN bad := bad||'grants de examenes: '||COALESCE(x,'-')||'; '; END IF;
   PERFORM set_config('probe.p905_det', det, false);
   PERFORM set_config('probe.p905', CASE WHEN bad = ''
@@ -27978,6 +27983,147 @@ BEGIN
     ELSE 'ROJO ('||left(bad, 700)||')' END, false);
 EXCEPTION WHEN OTHERS THEN
   PERFORM set_config('probe.p913', 'FALLO ('||SQLSTATE||' '||SQLERRM||')', false);
+END $$;
+SELECT set_config('role', 'none', true);
+
+-- ================================================================================
+-- MIG 338 — cierre del DELETE directo sobre examenes y ordenes_examen (P914, P915)
+-- OK = comportamiento de la 338; con 338_rollback aplicado dan ROJO P914, P915, P881 y P884.
+-- Nada toca los examenes reales (1369/1373/1374) ni filas con historia: todo lo que se borra o se
+-- intenta borrar lo siembra el propio probe como postgres, y se limpia y verifica contra el snapshot.
+-- ================================================================================
+
+-- ---------------- P914 DELETE directo por actor -> 42501, sin filas, la fila sigue ----------------
+-- Actores: admin y tecnico del lab QA, medico QA y un super_admin activo; cada uno sobre un examen y
+-- una orden que ve (salvo super_admin sobre ordenes: no tiene policy de SELECT ahi). Caso cascade: el
+-- admin del lab intenta borrar la orden de un examen COMPLETADO sin historia; la FK examenes_orden_id_fkey
+-- sigue CASCADE, asi que si el DELETE pasara se llevaria al examen. Tiene que dar 42501 y los hijos seguir.
+DO $$
+DECLARE
+  c_med uuid := '09d243d5-b222-482a-9762-94a582e9e752'; c_lab uuid := 'a5cf575a-5d63-4ed2-839e-9b58da8152e0'; c_admin uuid := 'e6f95b2f-7561-4e0b-b0c8-d1f38e6c4d66'; c_tec uuid := 'f69e2096-932f-45f0-9022-4e9058f2f0fd';
+  c_sa uuid; seed_ex integer[] := '{}'; seed_or uuid[] := '{}';
+  st text := '00000'; msg text := ''; ok boolean; det text := ''; bad text := ''; r_rest text := 'OK';
+  s_ex text; s_or text; nn bigint; vis bigint; sigue boolean; r record;
+  e_lab integer; e_med integer; e_sa integer; e_c1 integer; e_c2 integer; o_lab uuid; o_med uuid; o_sa uuid; o_cas uuid;
+BEGIN
+  SELECT p.id INTO c_sa FROM public.perfiles p WHERE p.rol = 'super_admin' AND p.activo ORDER BY p.id LIMIT 1;
+  IF c_sa IS NULL THEN RAISE EXCEPTION 'fixture roto: sin super_admin activo'; END IF;
+  -- snapshot
+  SELECT md5(COALESCE(string_agg(to_jsonb(e)::text, '|' ORDER BY e.id), '')) INTO s_ex FROM public.examenes e;
+  SELECT md5(COALESCE(string_agg(to_jsonb(o)::text, '|' ORDER BY o.id), '')) INTO s_or FROM public.ordenes_examen o;
+  -- semillas (postgres)
+  INSERT INTO public.examenes (tipo, laboratorio_id, estado) VALUES ('P914 lab QA', c_lab, 'pendiente') RETURNING id INTO e_lab;
+  INSERT INTO public.examenes (tipo, medico_id, paciente_id, estado) VALUES ('P914 medico QA', c_med, 23, 'pendiente') RETURNING id INTO e_med;
+  INSERT INTO public.examenes (tipo, estado) VALUES ('P914 superadmin QA', 'pendiente') RETURNING id INTO e_sa;
+  INSERT INTO public.ordenes_examen (laboratorio_id, origen) VALUES (c_lab, 'walk_in') RETURNING id INTO o_lab;
+  INSERT INTO public.ordenes_examen (medico_id, paciente_id, origen) VALUES (c_med, 23, 'medico') RETURNING id INTO o_med;
+  INSERT INTO public.ordenes_examen (laboratorio_id, origen) VALUES (c_lab, 'walk_in') RETURNING id INTO o_sa;
+  INSERT INTO public.ordenes_examen (laboratorio_id, origen, paciente_nombre) VALUES (c_lab, 'walk_in', 'P914 cascade QA') RETURNING id INTO o_cas;
+  INSERT INTO public.examenes (tipo, laboratorio_id, orden_id, estado, resultados, fecha_resultado, origen, paciente_nombre)
+    VALUES ('P914 hijo completado QA', c_lab, o_cas, 'completado', 'P914 r', CURRENT_DATE, 'walk_in', 'P914 cascade QA') RETURNING id INTO e_c1;
+  INSERT INTO public.examenes (tipo, laboratorio_id, orden_id, estado, origen, paciente_nombre)
+    VALUES ('P914 hijo pendiente QA', c_lab, o_cas, 'pendiente', 'walk_in', 'P914 cascade QA') RETURNING id INTO e_c2;
+  seed_ex := ARRAY[e_lab, e_med, e_sa, e_c1, e_c2]; seed_or := ARRAY[o_lab, o_med, o_sa, o_cas];
+  FOR r IN SELECT * FROM (VALUES
+      ('lab admin borra examen',          c_admin, 'examenes',       e_lab::text, true),
+      ('lab admin borra orden',           c_admin, 'ordenes_examen', o_lab::text, true),
+      ('lab tecnico borra examen',        c_tec,   'examenes',       e_lab::text, true),
+      ('lab tecnico borra orden',         c_tec,   'ordenes_examen', o_lab::text, true),
+      ('medico borra examen',             c_med,   'examenes',       e_med::text, true),
+      ('medico borra orden',              c_med,   'ordenes_examen', o_med::text, true),
+      ('super_admin borra examen',        c_sa,    'examenes',       e_sa::text,  true),
+      ('super_admin borra orden',         c_sa,    'ordenes_examen', o_sa::text,  false),
+      ('lab admin borra orden de examen completado (cascade)', c_admin, 'ordenes_examen', o_cas::text, true)
+    ) v(caso, uid, tabla, id, debe_ver) LOOP
+    st := '00000'; msg := ''; nn := NULL; vis := NULL;
+    BEGIN
+      PERFORM set_config('request.jwt.claims', json_build_object('sub', r.uid::text, 'role', 'authenticated')::text, true); PERFORM set_config('role', 'authenticated', true);
+      EXECUTE format('SELECT count(*) FROM public.%I WHERE id = %L', r.tabla, r.id) INTO vis;
+      EXECUTE format('DELETE FROM public.%I WHERE id = %L', r.tabla, r.id);
+      GET DIAGNOSTICS nn = ROW_COUNT;
+      PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
+    EXCEPTION WHEN OTHERS THEN PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
+      st := SQLSTATE; msg := SQLERRM; END;
+    EXECUTE format('SELECT EXISTS (SELECT 1 FROM public.%I WHERE id = %L)', r.tabla, r.id) INTO sigue;
+    -- el actor ve la fila (cuando le corresponde): el 42501 es por el DELETE, no porque no la alcance
+    ok := COALESCE((st = '42501' AND msg LIKE 'permission denied%' AND COALESCE(nn, 0) = 0 AND sigue
+                    AND (NOT r.debe_ver OR vis = 1)), false);
+    det := det||' ;; '||r.caso||'|42501, 0 filas, la fila sigue'||CASE WHEN r.debe_ver THEN ' (la ve)' ELSE '' END||'|'||CASE WHEN ok THEN 'OK' ELSE 'ROJO' END||'|'||st||'|'||left(msg, 120)||' vis='||COALESCE(vis::text, '-');
+    IF NOT ok THEN bad := bad||r.caso||': '||st||' '||left(msg, 100)||' vis='||COALESCE(vis::text, '-')||'; '; END IF;
+  END LOOP;
+  -- los hijos de la orden del caso cascade siguen, sin cambios
+  ok := COALESCE(((SELECT count(*) FROM public.examenes WHERE orden_id = o_cas) = 2
+                  AND (SELECT estado::text = 'completado' AND resultados = 'P914 r' FROM public.examenes WHERE id = e_c1)), false);
+  det := det||' ;; hijos de la orden (cascade)|2 examenes, el completado intacto|'||CASE WHEN ok THEN 'OK' ELSE 'ROJO' END||'|-|-';
+  IF NOT ok THEN bad := bad||'hijos de la orden cascade no quedaron intactos; '; END IF;
+  -- restauracion: se borra solo lo sembrado (postgres) y se verifica contra el snapshot
+  DELETE FROM public.ordenes_examen WHERE id = ANY (seed_or);   -- CASCADE a examenes
+  DELETE FROM public.examenes WHERE id = ANY (seed_ex);
+  IF (SELECT md5(COALESCE(string_agg(to_jsonb(e)::text, '|' ORDER BY e.id), '')) FROM public.examenes e) IS DISTINCT FROM s_ex THEN r_rest := r_rest||' / examenes'; END IF;
+  IF (SELECT md5(COALESCE(string_agg(to_jsonb(o)::text, '|' ORDER BY o.id), '')) FROM public.ordenes_examen o) IS DISTINCT FROM s_or THEN r_rest := r_rest||' / ordenes_examen'; END IF;
+  det := det||' ;; restauracion|'||cardinality(seed_ex)||' examenes, '||cardinality(seed_or)||' ordenes sembrados; snapshot igual|'||r_rest||'|-|';
+  PERFORM set_config('probe.p914_det', det, false);
+  PERFORM set_config('probe.p914', CASE WHEN bad = '' AND r_rest = 'OK'
+    THEN 'OK (DELETE directo de examenes y ordenes: lab admin/tecnico, medico y super_admin 42501 sin filas; orden con examen completado no se borra y los hijos siguen; restaurado)'
+    ELSE 'ROJO ('||left(bad, 700)||' | restauracion='||r_rest||')' END, false);
+EXCEPTION WHEN OTHERS THEN
+  PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
+  PERFORM set_config('probe.p914', CASE WHEN SQLERRM LIKE 'fixture roto%' THEN 'ROJO ('||SQLERRM||')' ELSE 'FALLO ('||SQLSTATE||' '||SQLERRM||')' END, false);
+END $$;
+SELECT set_config('role', 'none', true);
+
+-- ---------------- P915 catalogo post-338 + postgres sigue borrando fixtures sin historia ----------------
+DO $$
+DECLARE
+  c_lab uuid := 'a5cf575a-5d63-4ed2-839e-9b58da8152e0';
+  ok boolean; det text := ''; bad text := ''; r_rest text := 'OK'; x text; nn bigint; n2 bigint;
+  s_ex text; s_or text; o1 uuid; e1 integer; e2 integer;
+BEGIN
+  SELECT string_agg(tablename||'.'||policyname||':'||cmd, ',' ORDER BY tablename, policyname) INTO x
+    FROM pg_policies WHERE schemaname = 'public' AND tablename IN ('examenes','ordenes_examen') AND cmd IN ('DELETE','ALL');
+  ok := x IS NULL;
+  det := det||' ;; policies DELETE/ALL en examenes y ordenes_examen|ninguna|'||CASE WHEN ok THEN 'OK' ELSE 'ROJO' END||'|-|'||COALESCE(x, '-');
+  IF NOT ok THEN bad := bad||'policies DELETE/ALL: '||x||'; '; END IF;
+  SELECT string_agg(rl||':'||tb||':'||pv, ',') INTO x
+    FROM unnest(ARRAY['authenticated','anon']) rl, unnest(ARRAY['public.examenes','public.ordenes_examen']) tb, unnest(ARRAY['DELETE','MAINTAIN']) pv
+   WHERE has_table_privilege(rl, tb, pv);
+  ok := x IS NULL;
+  det := det||' ;; DELETE/MAINTAIN de authenticated y anon|ninguno|'||CASE WHEN ok THEN 'OK' ELSE 'ROJO' END||'|-|'||COALESCE(x, '-');
+  IF NOT ok THEN bad := bad||'privilegios: '||x||'; '; END IF;
+  ok := NOT EXISTS (SELECT 1 FROM pg_class c, aclexplode(c.relacl) a WHERE c.oid IN ('public.examenes'::regclass, 'public.ordenes_examen'::regclass) AND a.grantee = 0)
+    AND NOT EXISTS (SELECT 1 FROM pg_attribute at, aclexplode(at.attacl) a WHERE at.attrelid IN ('public.examenes'::regclass, 'public.ordenes_examen'::regclass) AND a.grantee = 0);
+  det := det||' ;; entradas PUBLIC (tabla y columnas)|ninguna|'||CASE WHEN ok THEN 'OK' ELSE 'ROJO' END||'|-|-';
+  IF NOT ok THEN bad := bad||'hay entradas PUBLIC; '; END IF;
+  ok := has_table_privilege('service_role', 'public.examenes', 'DELETE') AND has_table_privilege('service_role', 'public.ordenes_examen', 'DELETE')
+    AND has_table_privilege('service_role', 'public.ordenes_examen', 'MAINTAIN');
+  det := det||' ;; service_role|conserva DELETE y MAINTAIN|'||CASE WHEN ok THEN 'OK' ELSE 'ROJO' END||'|-|-';
+  IF NOT ok THEN bad := bad||'service_role sin DELETE/MAINTAIN; '; END IF;
+  -- postgres (fixtures): siembra orden + examen hijo + examen suelto, sin historia, y los borra
+  SELECT md5(COALESCE(string_agg(to_jsonb(e)::text, '|' ORDER BY e.id), '')) INTO s_ex FROM public.examenes e;
+  SELECT md5(COALESCE(string_agg(to_jsonb(o)::text, '|' ORDER BY o.id), '')) INTO s_or FROM public.ordenes_examen o;
+  INSERT INTO public.ordenes_examen (laboratorio_id, origen) VALUES (c_lab, 'walk_in') RETURNING id INTO o1;
+  INSERT INTO public.examenes (tipo, laboratorio_id, orden_id, estado) VALUES ('P915 hijo QA', c_lab, o1, 'pendiente') RETURNING id INTO e1;
+  INSERT INTO public.examenes (tipo, laboratorio_id, estado) VALUES ('P915 suelto QA', c_lab, 'pendiente') RETURNING id INTO e2;
+  DELETE FROM public.examenes WHERE id = e2;
+  GET DIAGNOSTICS nn = ROW_COUNT;
+  DELETE FROM public.ordenes_examen WHERE id = o1;
+  GET DIAGNOSTICS n2 = ROW_COUNT;
+  ok := COALESCE((nn = 1 AND n2 = 1 AND NOT EXISTS (SELECT 1 FROM public.examenes WHERE id IN (e1, e2))), false);
+  det := det||' ;; postgres borra fixture sin historia|examen 1, orden 1 + hijo por cascade|'||CASE WHEN ok THEN 'OK' ELSE 'ROJO' END||'|-|examen='||COALESCE(nn::text, '-')||' orden='||COALESCE(n2::text, '-');
+  IF NOT ok THEN bad := bad||'postgres no pudo borrar el fixture; '; END IF;
+  -- restauracion (por si algo no se borro) y snapshot
+  DELETE FROM public.ordenes_examen WHERE id = o1;
+  DELETE FROM public.examenes WHERE id IN (e1, e2);
+  IF (SELECT md5(COALESCE(string_agg(to_jsonb(e)::text, '|' ORDER BY e.id), '')) FROM public.examenes e) IS DISTINCT FROM s_ex THEN r_rest := r_rest||' / examenes'; END IF;
+  IF (SELECT md5(COALESCE(string_agg(to_jsonb(o)::text, '|' ORDER BY o.id), '')) FROM public.ordenes_examen o) IS DISTINCT FROM s_or THEN r_rest := r_rest||' / ordenes_examen'; END IF;
+  det := det||' ;; restauracion|snapshot igual|'||r_rest||'|-|';
+  PERFORM set_config('probe.p915_det', det, false);
+  PERFORM set_config('probe.p915', CASE WHEN bad = '' AND r_rest = 'OK'
+    THEN 'OK (sin policies DELETE/ALL; authenticated/anon sin DELETE ni MAINTAIN; 0 PUBLIC; service_role intacto; postgres borra fixtures sin historia; restaurado)'
+    ELSE 'ROJO ('||left(bad, 700)||' | restauracion='||r_rest||')' END, false);
+EXCEPTION WHEN OTHERS THEN
+  PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
+  PERFORM set_config('probe.p915', 'FALLO ('||SQLSTATE||' '||SQLERRM||')', false);
 END $$;
 SELECT set_config('role', 'none', true);
 
@@ -28936,10 +29082,10 @@ UNION ALL SELECT 'P877_ex_dependientes',                current_setting('probe.p
 UNION ALL SELECT 'P878_ex_catalogo_332',                current_setting('probe.p878', true), 'OK (4 funciones, FK, UNIQUE, trigger, grants por columna, sin INSERT directo)'
 UNION ALL SELECT 'P879_ex_insert_directo_denegado',     current_setting('probe.p879', true), 'OK (5 roles x 2 tablas: 42501 sin filas)'
 UNION ALL SELECT 'P880_ex_rpcs_siguen_creando',         current_setting('probe.p880', true), 'OK (medico y walk-in crean por RPC)'
-UNION ALL SELECT 'P881_ex_acceso_por_rol',              current_setting('probe.p881', true), 'OK (SELECT/UPDATE/DELETE por rol igual que antes)'
+UNION ALL SELECT 'P881_ex_acceso_por_rol',              current_setting('probe.p881', true), 'OK (SELECT/UPDATE por rol igual; DELETE directo 42501 desde la 338)'
 UNION ALL SELECT 'P882_ex_truncate_trigger_references', current_setting('probe.p882', true), 'OK (TRUNCATE 42501 x3; sin TRIGGER/REFERENCES)'
 UNION ALL SELECT 'P883_ex_catalogo_alta_sigue',         current_setting('probe.p883', true), 'OK (alta en su catalogo OK; en otro lab 42501)'
-UNION ALL SELECT 'P884_ex_catalogo_333',                current_setting('probe.p884', true), 'OK (policies por comando, sin INSERT/ALL, grants exactos)'
+UNION ALL SELECT 'P884_ex_catalogo_333',                current_setting('probe.p884', true), 'OK (policies por comando, sin INSERT/DELETE/ALL, grants exactos con MAINTAIN)'
 UNION ALL SELECT 'P885_nt_edicion_abierta',            current_setting('probe.p885', true), 'OK (edicion libre con revision de la fila previa)'
 UNION ALL SELECT 'P886_nt_congelados',                 current_setting('probe.p886', true), 'OK (NT007 x8; INSERT fechado queda en now())'
 UNION ALL SELECT 'P887_nt_cierre_al_completar',        current_setting('probe.p887', true), 'OK (cierra sin revision; no se reabre; NT006)'
@@ -28969,6 +29115,8 @@ UNION ALL SELECT 'P906_ex_liberacion_concurrente',     current_setting('probe.p9
 UNION ALL SELECT 'P907_ex_ex028_normalizado',          current_setting('probe.p907', true), 'OK (espacios del guardado no son cambio; EX028)'
 UNION ALL SELECT 'P912_ex_archivo_anterior_storage',   current_setting('probe.p912', true), 'OK (equipo clinico lee el archivo anterior; paciente y ajenos no)'
 UNION ALL SELECT 'P913_ex_catalogo_337',               current_setting('probe.p913', true), 'OK (select post-337; insert/delete intactos)'
+UNION ALL SELECT 'P914_ex_delete_directo_cerrado',    current_setting('probe.p914', true), 'OK (42501 sin filas por actor; cascade inalcanzable)'
+UNION ALL SELECT 'P915_ex_catalogo_338',              current_setting('probe.p915', true), 'OK (sin DELETE/MAINTAIN; postgres borra fixtures)'
 -- Las filas FX* son SALUD DE FIXTURE, no probes de seguridad: dicen si la precondicion que una
 -- migracion posterior empezo a exigir se pudo sembrar. Si una sale ROJO, los probes que dependen de
 -- ese fixture reportan N/A (su flag de ready se pierde con el rollback de la subtransaccion) en vez
@@ -29213,7 +29361,7 @@ UNION ALL SELECT 'P000_CENTINELA_veredictos_no_nulos',
        'probe.p866', 'probe.p867', 'probe.p868', 'probe.p869', 'probe.p870', 'probe.p871', 'probe.p872', 'probe.p873', 'probe.p874', 'probe.p875', 'probe.p876', 'probe.p877', 'probe.p878',
        'probe.p879', 'probe.p880', 'probe.p881', 'probe.p882', 'probe.p883', 'probe.p884',
        'probe.p885', 'probe.p886', 'probe.p887', 'probe.p888', 'probe.p889', 'probe.p890', 'probe.p891', 'probe.p892', 'probe.p893', 'probe.p894', 'probe.p895', 'probe.p896', 'probe.p908', 'probe.p909', 'probe.p910', 'probe.p911',
-       'probe.p897', 'probe.p898', 'probe.p899', 'probe.p900', 'probe.p901', 'probe.p902', 'probe.p903', 'probe.p904', 'probe.p905', 'probe.p906', 'probe.p907', 'probe.p912', 'probe.p913'
+       'probe.p897', 'probe.p898', 'probe.p899', 'probe.p900', 'probe.p901', 'probe.p902', 'probe.p903', 'probe.p904', 'probe.p905', 'probe.p906', 'probe.p907', 'probe.p912', 'probe.p913', 'probe.p914', 'probe.p915'
              ]) AS n) s),
   'OK (todos los veredictos publicados)';
 
