@@ -22,6 +22,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import DictadoVoz from '@/components/consulta/DictadoVoz'
 import BibliotecaMedica from '@/components/consulta/BibliotecaMedica'
 import AsistenteIA from '@/components/consulta/AsistenteIA'
+import ResumenUltimaVisita from '@/components/consulta/ResumenUltimaVisita'
 import RecetaModal from '@/components/consulta/RecetaModal'
 import { FotoPacienteAvatar } from '@/components/FotoPacienteAvatar'
 import { toast } from 'sonner'
@@ -605,6 +606,9 @@ function ConsultaDeCita() {
                   <span className="font-medium">Antecedentes:</span> {paciente.antecedentes_personales}
                 </div>
               )}
+              <div className="pt-2 border-t">
+                <ResumenUltimaVisita key={paciente.id} pacienteId={paciente.id} />
+              </div>
             </CardContent>
           </Card>
 
