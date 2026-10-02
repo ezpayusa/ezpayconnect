@@ -29358,6 +29358,86 @@ EXCEPTION WHEN OTHERS THEN
 END $$;
 SELECT set_config('role', 'none', true);
 
+-- ---------------- P931 censo: funciones SECURITY DEFINER sin search_path fijo (347) ----------------
+-- Un DEFINER sin search_path resuelve los nombres sin calificar con el search_path del LLAMANTE y corre con los
+-- privilegios del duenio: secuestro de nombres. Desde la 347 no queda ninguna en public/private. Solo lee el
+-- catalogo. Con 347_rollback sale ROJO a proposito (vuelve auto_configurar_planes_publicidad()).
+DO $$
+DECLARE v text;
+BEGIN
+  SELECT string_agg(p.oid::regprocedure::text, ', ' ORDER BY p.oid::regprocedure::text) INTO v FROM pg_proc p
+   WHERE p.pronamespace IN ('public'::regnamespace, 'private'::regnamespace) AND p.prosecdef
+     AND NOT EXISTS (SELECT 1 FROM unnest(COALESCE(p.proconfig, '{}')) c WHERE c LIKE 'search_path=%');
+  PERFORM set_config('probe.p931', CASE WHEN v IS NULL
+    THEN 'OK (0 funciones SECURITY DEFINER de public/private sin search_path fijo)'
+    ELSE 'ROJO (DEFINER sin search_path: '||left(v, 800)||')' END, false);
+EXCEPTION WHEN OTHERS THEN
+  PERFORM set_config('probe.p931', 'FALLO ('||SQLSTATE||' '||SQLERRM||')', false);
+END $$;
+SELECT set_config('role', 'none', true);
+
+-- ---------------- P932 funcional: el trigger de configuracion_pais siembra los planes (347) ----------------
+-- Dispara trigger_auto_planes_publicidad (AFTER INSERT ON configuracion_pais -> auto_configurar_planes_publicidad(),
+-- SECURITY DEFINER) con un INSERT real de un pais como super_admin (el unico camino de escritura de un usuario:
+-- policy "Allow admin write configuracion_pais", ALL). Espera: una fila de planes_publicidad_config por cada plan
+-- activo, con su precio y la moneda del pais. Dos variantes, cada una en su subtransaccion descartada:
+--   (1) con un search_path HOSTIL (solo pg_catalog), PRIMERO: antes de la 347 la funcion heredaba el path del
+--       llamante y no encontraba sus tablas (42P01); desde la 347 tiene search_path = '' y nombres calificados;
+--   (2) con el search_path normal de la sesion.
+-- Afuera verifica que los conteos de configuracion_pais y planes_publicidad_config volvieron. El INSERT en
+-- planes_publicidad_config consume su secuencia (nextval no es transaccional): huecos en los ids, esperado.
+DO $$
+DECLARE
+  det text := ''; bad text := ''; st text; msg text; r_rest text := 'OK'; v_sa uuid; v_cod text; v_pais uuid;
+  n_act int; n_cfg int; n_ok int; v_sp text; snap_pre text; snap_post text; variante text;
+BEGIN
+  IF current_user <> 'postgres' THEN RAISE EXCEPTION 'fixture roto: P932 corre como %', current_user; END IF;
+  SELECT id INTO v_sa FROM public.perfiles WHERE rol = 'super_admin' ORDER BY id LIMIT 1;
+  SELECT count(*) INTO n_act FROM public.planes_publicidad WHERE activo;
+  SELECT x INTO v_cod FROM (SELECT chr(90)||chr(65 + g) AS x FROM generate_series(0, 25) g) z
+   WHERE NOT EXISTS (SELECT 1 FROM public.configuracion_pais c WHERE c.codigo = z.x) ORDER BY x DESC LIMIT 1;
+  IF v_sa IS NULL OR v_cod IS NULL OR n_act = 0 THEN
+    RAISE EXCEPTION 'fixture roto: P932 sin super_admin (%), codigo libre Z? (%) o planes activos (%)', v_sa, v_cod, n_act;
+  END IF;
+  v_sp := current_setting('search_path');
+  snap_pre := (SELECT count(*) FROM public.configuracion_pais)||'/'||(SELECT count(*) FROM public.planes_publicidad_config);
+  FOREACH variante IN ARRAY ARRAY['hostil', 'normal'] LOOP
+    st := 'OK'; msg := '-'; n_cfg := -1; n_ok := -1;
+    BEGIN
+      IF variante = 'hostil' THEN PERFORM set_config('search_path', 'pg_catalog', true); END IF;
+      PERFORM set_config('request.jwt.claims', json_build_object('sub', v_sa::text, 'role', 'authenticated')::text, true);
+      PERFORM set_config('role', 'authenticated', true);
+      EXECUTE 'INSERT INTO public.configuracion_pais (codigo, nombre, moneda) VALUES ($1, $2, $3) RETURNING id'
+        INTO v_pais USING v_cod, 'P932 pais de prueba', 'P932';
+      PERFORM set_config('role', 'none', true);
+      SELECT count(*), count(*) FILTER (WHERE c.moneda_local = 'P932' AND c.precio_local = pp.precio AND pp.activo AND c.activo)
+        INTO n_cfg, n_ok
+        FROM public.planes_publicidad_config c JOIN public.planes_publicidad pp ON pp.id = c.plan_publicidad_id
+       WHERE c.pais_id = v_pais;
+      RAISE EXCEPTION 'P932 descarte' USING ERRCODE = 'P0999';
+    EXCEPTION
+      WHEN SQLSTATE 'P0999' THEN NULL;
+      WHEN OTHERS THEN st := SQLSTATE; msg := SQLERRM;
+    END;
+    PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
+    PERFORM set_config('search_path', v_sp, true);
+    IF st = 'OK' AND (n_cfg <> n_act OR n_ok <> n_act) THEN st := 'PLANES'; msg := n_cfg||' filas, '||n_ok||' correctas, '||n_act||' planes activos'; END IF;
+    det := det||' ;; INSERT pais como super_admin, search_path '||variante||'|'||n_act||' planes sembrados|'||CASE WHEN st = 'OK' THEN 'OK' ELSE 'ROJO' END||'|'||st||'|'||left(msg, 200);
+    IF st <> 'OK' THEN bad := bad||variante||': '||st||' '||left(msg, 200)||'; '; END IF;
+  END LOOP;
+  snap_post := (SELECT count(*) FROM public.configuracion_pais)||'/'||(SELECT count(*) FROM public.planes_publicidad_config);
+  IF snap_post IS DISTINCT FROM snap_pre THEN r_rest := 'conteos '||COALESCE(snap_post, '-')||' vs '||COALESCE(snap_pre, '-'); END IF;
+  det := det||' ;; restauracion|subtransacciones descartadas; conteos iguales|'||r_rest||'|-|'||snap_post;
+  PERFORM set_config('probe.p932_det', det, false);
+  PERFORM set_config('probe.p932', CASE WHEN bad = '' AND r_rest = 'OK'
+    THEN 'OK (el trigger de configuracion_pais siembra los '||n_act||' planes activos como super_admin, con search_path hostil y normal; descartado)'
+    ELSE 'ROJO ('||left(bad, 800)||' | restauracion='||r_rest||')' END, false);
+EXCEPTION WHEN OTHERS THEN
+  PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
+  PERFORM set_config('probe.p932', CASE WHEN SQLERRM LIKE 'fixture roto%' THEN 'ROJO ('||SQLERRM||')' ELSE 'FALLO ('||SQLSTATE||' '||SQLERRM||')' END, false);
+END $$;
+SELECT set_config('role', 'none', true);
+
 -- ===== Veredictos como result set =====
 SELECT 'P1_anon_insert_citas'              AS probe, current_setting('probe.p1', true)  AS verdict, 'BLOQUEADO' AS esperado_post_fix
 UNION ALL SELECT 'P2_medico_cancela_ajena_rpc',         current_setting('probe.p2', true),  'BLOQUEADO'
@@ -30363,6 +30443,8 @@ UNION ALL SELECT 'P927_defacl_funcional_344',         current_setting('probe.p92
 UNION ALL SELECT 'P928_secuencias_censo_345',         current_setting('probe.p928', true), 'OK (345: anon/PUBLIC nada en secuencias; authenticated sin SELECT/UPDATE y USAGE solo en el conjunto necesario)'
 UNION ALL SELECT 'P929_secuencias_funcional_345',     current_setting('probe.p929', true), 'OK (345: INSERT real en las tablas del conjunto; 42501 fuera; descartado)'
 UNION ALL SELECT 'P930_privilegios_muertos_346',      current_setting('probe.p930', true), 'OK (346: 0 privilegios muertos de anon/authenticated en public fuera de la allowlist)'
+UNION ALL SELECT 'P931_definer_search_path_347',      current_setting('probe.p931', true), 'OK (347: 0 funciones SECURITY DEFINER de public/private sin search_path fijo)'
+UNION ALL SELECT 'P932_trigger_planes_pais_347',      current_setting('probe.p932', true), 'OK (347: el trigger de configuracion_pais siembra los planes con search_path hostil y normal)'
 -- Las filas FX* son SALUD DE FIXTURE, no probes de seguridad: dicen si la precondicion que una
 -- migracion posterior empezo a exigir se pudo sembrar. Si una sale ROJO, los probes que dependen de
 -- ese fixture reportan N/A (su flag de ready se pierde con el rollback de la subtransaccion) en vez
@@ -30607,7 +30689,7 @@ UNION ALL SELECT 'P000_CENTINELA_veredictos_no_nulos',
        'probe.p866', 'probe.p867', 'probe.p868', 'probe.p869', 'probe.p870', 'probe.p871', 'probe.p872', 'probe.p873', 'probe.p874', 'probe.p875', 'probe.p876', 'probe.p877', 'probe.p878',
        'probe.p879', 'probe.p880', 'probe.p881', 'probe.p882', 'probe.p883', 'probe.p884',
        'probe.p885', 'probe.p886', 'probe.p887', 'probe.p888', 'probe.p889', 'probe.p890', 'probe.p891', 'probe.p892', 'probe.p893', 'probe.p894', 'probe.p895', 'probe.p896', 'probe.p908', 'probe.p909', 'probe.p910', 'probe.p911',
-       'probe.p897', 'probe.p898', 'probe.p899', 'probe.p900', 'probe.p901', 'probe.p902', 'probe.p903', 'probe.p904', 'probe.p905', 'probe.p906', 'probe.p907', 'probe.p912', 'probe.p913', 'probe.p914', 'probe.p915', 'probe.p916', 'probe.p917', 'probe.p918', 'probe.p919', 'probe.p920', 'probe.p921', 'probe.p922', 'probe.p923', 'probe.p924', 'probe.p925', 'probe.p926', 'probe.p927', 'probe.p928', 'probe.p929', 'probe.p930'
+       'probe.p897', 'probe.p898', 'probe.p899', 'probe.p900', 'probe.p901', 'probe.p902', 'probe.p903', 'probe.p904', 'probe.p905', 'probe.p906', 'probe.p907', 'probe.p912', 'probe.p913', 'probe.p914', 'probe.p915', 'probe.p916', 'probe.p917', 'probe.p918', 'probe.p919', 'probe.p920', 'probe.p921', 'probe.p922', 'probe.p923', 'probe.p924', 'probe.p925', 'probe.p926', 'probe.p927', 'probe.p928', 'probe.p929', 'probe.p930', 'probe.p931', 'probe.p932'
              ]) AS n) s),
   'OK (todos los veredictos publicados)';
 
