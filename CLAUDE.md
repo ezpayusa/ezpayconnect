@@ -24,15 +24,20 @@ Stack: React + Vite + TypeScript, Supabase / Postgres, deploy en Vercel, repo en
   minutos por esto** (P635 es la probe que faltaba, P636 su contraprueba).
 - NUNCA ampliar policies de RLS sobre tablas adyacentes a datos médicos (p. ej. campana_metricas). Para dar acceso, usar RPCs SECURITY DEFINER con search_path='', fail-closed (si el scope es NULL → 0 filas) y gate interno.
 - Probar aislamiento por rol impersonando request.jwt.claims en prod: cada rol ve lo suyo y no lo ajeno.
-- **Próximos números libres: probe `P926`** (global, no por módulo; P906-P907 usados por la mig 336, P912-P913
+- **Próximos números libres: probe `P928`** (global, no por módulo; P906-P907 usados por la mig 336, P912-P913
   por la 337, P914-P915 por la 338, P916-P920 por la 339/340, P921-P923 por la 341, P924 por la 342, P925 por
-  la 343), **migración `344`**
-  (343 = familia 1, paso 2: REVOKE MAINTAIN de anon/authenticated/PUBLIC (authenticated en 114 relaciones de
+  la 343, P926-P927 por la 344), **migración `345`**
+  (344 = familia 1, paso 3: default privileges de postgres en public — tablas nuevas → authenticated solo
+  SELECT/INSERT/UPDATE/DELETE; secuencias nuevas → authenticated solo USAGE; funciones sin cambio (ya cubiertas
+  por la entrada global); pg_default_acl 1f07b802… → 7143eca7…; objetos existentes intactos; probes P926
+  (catálogo) y P927 (funcional) — APLICADA en prod el 2-oct-2026 18:31:37 UTC y verificada en sesión
+  independiente 9/9 (1002 filas / 11 rojas de deuda, P800 PASA, guard `do_sin_handler` 155 sobre 960 bloques DO).
+  Orden de rollback de la familia 1: `344_rollback` → `343_rollback` → `342_rollback` (la 344 es independiente
+  en la práctica; la precondición de `343_rollback` exige TRU/TRI/REF en 0); todos independientes de 334-341.
+  343 = familia 1, paso 2: REVOKE MAINTAIN de anon/authenticated/PUBLIC (authenticated en 114 relaciones de
   public, anon en 8; 122 tuplas); huella ACL c57c024f… → 855f0797…; probe P925 = censo global public+private;
   P800 extendido a MAINTAIN — APLICADA en prod el 2-oct-2026 18:11:49 UTC y verificada en sesión independiente
   8/8 (1000 filas / 11 rojas de deuda, P800 extendido PASA, guard `do_sin_handler` 155 sobre 958 bloques DO).
-  Orden de rollback de la familia 1: `343_rollback` → `342_rollback` (la precondición de `343_rollback` exige
-  TRU/TRI/REF en 0); los dos son independientes de 334-341 (solo ACL).
   342 = familia 1, paso 1: REVOKE TRUNCATE/TRIGGER/REFERENCES de anon/authenticated/PUBLIC en las 83
   relaciones de public que los tenían (242 tuplas, todas de authenticated); huella ACL 1df9d1b3… → c57c024f…;
   probe P924 = censo global — APLICADA en prod el 2-oct-2026 16:33:09 UTC y verificada en sesión independiente
@@ -156,8 +161,8 @@ Stack: React + Vite + TypeScript, Supabase / Postgres, deploy en Vercel, repo en
   Pasó dos veces (18cf819 y el lote 1 de PA-FAILOPEN) y una de ellas tardó dos meses en detectarse.
   Baselines vivos: `top_level_dml_ddl=0` (excluye `pg_temp`), `cast_directo=0`, `do_sin_handler=155`
   (fase 2.2 CERRADA: los 55 bloques que escriben están envueltos, 211→193→175→157→156→155; los 155
-  restantes sólo leen y publican, así que ya no son deuda; 958 bloques DO en total y harness en 1000 filas /
-  11 rojas de deuda al 2-oct-2026, tras la 343). El señalizador P516 del harness los publica, pero NO mide:
+  restantes sólo leen y publican, así que ya no son deuda; 960 bloques DO en total y harness en 1002 filas /
+  11 rojas de deuda al 2-oct-2026, tras la 344). El señalizador P516 del harness los publica, pero NO mide:
   el gate es el script. **El detector del guard tiene test propio (`tests/rls/b2_guard_test.py`,
   `npm run harness:guard:test`) y el hook lo corre ANTES del guard**: se equivocó tres veces en un día
   y llegó a tener un baseline inflado en 108, o sea permisivo. Un gate con el detector sin probar es
@@ -165,7 +170,7 @@ Stack: React + Vite + TypeScript, Supabase / Postgres, deploy en Vercel, repo en
 - **Migraciones: SIEMPRE `npx supabase db query --linked -f <archivo>`, NUNCA `db push`.** `db push`
   desincroniza `schema_migrations` (deuda desde la 047). Los `.sql` viven en `supabase/migrations/`
   (rollback en `supabase/migrations/rollback/`); los de `supabase/fixes/` se agregan con `git add -f`.
-  **Desvío aceptado (familia 8):** los rollbacks de 334-343 viven en `supabase/migrations/`
+  **Desvío aceptado (familia 8):** los rollbacks de 334-344 viven en `supabase/migrations/`
   (`3XX_rollback.sql`), no en `supabase/migrations/rollback/`.
 - **Los tests de edge (deno) NO corren en vitest ni en el pre-commit**: se corren a mano desde
   `supabase/functions/<fn>/` con `deno test --allow-net --allow-env --no-check` (asistente-ia: 17).
@@ -193,6 +198,14 @@ Desde esa fecha, una tabla/vista nueva **sin GRANT explícito nace inaccesible**
    cree tabla/VIEW** (gate global de grants; archivo `tests/rls/probe_grants_p800.sql`).
 8. **Verificación post-apply desde una sesión distinta**: con `information_schema.role_table_grants` /
    `has_table_privilege`, confirmar que los grants son **exactamente** los esperados (ni de más ni de menos).
+9. **Defaults vigentes desde la mig 344** (lo que postgres crea nace así): tabla nueva en public →
+   authenticated `SELECT, INSERT, UPDATE, DELETE` (sin TRUNCATE/TRIGGER/REFERENCES/MAINTAIN); secuencia nueva →
+   authenticated solo `USAGE`; función nueva de public → `EXECUTE` para authenticated y service_role, **no**
+   para PUBLIC ni anon. Toda tabla nueva que necesite **menos** que SELECT/INSERT/UPDATE/DELETE para
+   authenticated debe hacer el `REVOKE` explícito en su migración.
+10. **Toda función nueva de `private`** nace con `EXECUTE` **solo para postgres** (entrada global de
+   pg_default_acl sin PUBLIC; private no tiene entrada propia): si la usa una policy o una RPC de authenticated,
+   su migración lleva `GRANT EXECUTE … TO authenticated` explícito (sin él, la policy lanza 42501).
 
 ## Modelo de identidad / helpers
 - mi_empresa_proveedor() → empresa_id del proveedor logueado desde cuentas_proveedor (tipo-agnóstica; cubre los 4 tipos: farmacia, laboratorio_clinico, laboratorio_farmaceutico, empresa_afin).
@@ -221,8 +234,8 @@ Detalles a recordar:
   por API; el problema de fondo son los default privileges de postgres en public, que dan los 8 privilegios de
   tabla a authenticated en cada tabla nueva):
   342 TRUNCATE/TRIGGER/REFERENCES (**APLICADA**) → 343 MAINTAIN (**APLICADA**; authenticated en 114
-  relaciones, anon en 8) → **sigue: 344** default privileges de postgres en public (tablas sin TRU/TRI/REF/MAI, secuencias sin SELECT/UPDATE,
-  `REVOKE EXECUTE ON FUNCTIONS FROM PUBLIC`) → 345 secuencias (anon nada; authenticated solo USAGE en las 11
+  relaciones, anon en 8) → 344 default privileges de postgres en public (**APLICADA**; tablas sin
+  TRU/TRI/REF/MAI, secuencias sin SELECT/UPDATE; funciones ya cubiertas) → **sigue: 345** secuencias existentes (anon nada; authenticated solo USAGE en las 11
   con INSERT directo) → 346 escrituras muertas (INSERT/UPDATE/DELETE sin policy) en 37 tablas → 347
   `search_path` de `auto_configurar_planes_publicidad` → 348 EXECUTE de PUBLIC/anon en funciones (**BLOQUEADA**
   hasta reescribir a DEFINER las policies `TO public` de las tablas de la allowlist de anon: lección mig 284).
@@ -231,13 +244,21 @@ Detalles a recordar:
   Hallazgos del recon para no perderlos: **P800 NO consulta `pg_proc`** (queda para la 348); 21 funciones de public con
   EXECUTE para anon (10 helpers DEFINER usados por policies `TO public`, 9 de trigger, 2 utilitarias); 7 tablas
   con RLS y 0 policies con todos los privilegios (cache_biblioteca, confirmaciones_receta, medico_correlativos,
-  planes_features, planes_limites, resumen_comisiones, transacciones); los default privileges de
-  `supabase_admin` y los de `storage` probablemente no son modificables desde postgres.
+  planes_features, planes_limites, resumen_comisiones, transacciones).
+  **Corrección del recon (344):** el EXECUTE de PUBLIC en funciones NUEVAS ya estaba cerrado por una entrada
+  GLOBAL de pg_default_acl (`postgres|f {postgres=X/postgres}`; el recon la pasó por alto porque filtró entradas
+  sin anon/authenticated/PUBLIC); las 21 funciones de public con EXECUTE para PUBLIC son anteriores o tienen
+  GRANT explícito (siguen siendo la 348). `supabase_admin`: MEDIDO, postgres no puede alterar sus defaults
+  (42501 "permission denied to change default privileges"); inerte porque las migraciones crean como postgres, y
+  P724 lo vigila. Defaults de postgres en `storage` (anon/authenticated con todo): inertes, postgres no tiene
+  CREATE en storage.
 - (Familia 3/4) FK `examenes_orden_id_fkey` sigue `ON DELETE CASCADE`: tras la 338 sólo la alcanzan
   postgres/service_role (borrar una orden arrastra sus exámenes, completados incluidos).
 - (Familia 4) `examenes.updated_at` no se actualiza al corregir ni al liberar.
 - (Familia 7) El lab no tiene vista del historial de revisiones; "Ver archivo anterior" aparece en
   revisiones que no cambiaron el archivo.
+- (Familia 8) P800 salta las foreign tables (relkind 'f': mira `'r','v','m','p'`) mientras la 343 y P925 las
+  incluyen; sin efecto hoy (0 foreign tables en public). Alinear cuando se toque P800 en la 348.
 - (Familia 8, no urgente) `.gitattributes` ya tiene `* text=auto eol=lf` (476b925; 0 blobs renormalizados),
   pero ~640 archivos siguen en CRLF en disco (checkouts viejos con `core.autocrlf=true`). Para pasarlos a LF
   hay que refrescar el checkout (`git rm --cached -r . && git reset --hard`) en un momento sin cambios locales.
