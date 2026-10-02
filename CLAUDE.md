@@ -24,9 +24,15 @@ Stack: React + Vite + TypeScript, Supabase / Postgres, deploy en Vercel, repo en
   minutos por esto** (P635 es la probe que faltaba, P636 su contraprueba).
 - NUNCA ampliar policies de RLS sobre tablas adyacentes a datos médicos (p. ej. campana_metricas). Para dar acceso, usar RPCs SECURITY DEFINER con search_path='', fail-closed (si el scope es NULL → 0 filas) y gate interno.
 - Probar aislamiento por rol impersonando request.jwt.claims en prod: cada rol ve lo suyo y no lo ajeno.
-- **Próximos números libres: probe `P924`** (global, no por módulo; P906-P907 usados por la mig 336, P912-P913
-  por la 337, P914-P915 por la 338, P916-P920 por la 339/340, P921-P923 por la 341), **migración `342`**
-  (341 = el mismo gate de relación de la 340 en `contexto_ia_paciente` (asistente IA en vivo), después de
+- **Próximos números libres: probe `P925`** (global, no por módulo; P906-P907 usados por la mig 336, P912-P913
+  por la 337, P914-P915 por la 338, P916-P920 por la 339/340, P921-P923 por la 341, P924 por la 342),
+  **migración `343`**
+  (342 = familia 1, paso 1: REVOKE TRUNCATE/TRIGGER/REFERENCES de anon/authenticated/PUBLIC en las 83
+  relaciones de public que los tenían (242 tuplas, todas de authenticated); huella ACL 1df9d1b3… → c57c024f…;
+  probe P924 = censo global — APLICADA en prod el 2-oct-2026 16:33:09 UTC y verificada en sesión independiente
+  7/7 (999 filas / 11 rojas de deuda, P800 PASA, guard `do_sin_handler` 155 sobre 957 bloques DO).
+  `342_rollback` es independiente de 334-341 (solo ACL). Plan de la familia: ver "Pendiente / ideas".
+  341 = el mismo gate de relación de la 340 en `contexto_ia_paciente` (asistente IA en vivo), después de
   `gate_accion_phi`; md5(prosrc) 1eaf84a3… → 04fe590c…: `asistente_medico` y médicos de la clínica sin
   relación ya no reciben las notas por el asistente IA en vivo — APLICADA en prod el 2-oct-2026 15:59:42 UTC
   y verificada en sesión independiente 7/7 (998 filas / 11 rojas de deuda, P800 PASA, guard
@@ -144,8 +150,8 @@ Stack: React + Vite + TypeScript, Supabase / Postgres, deploy en Vercel, repo en
   Pasó dos veces (18cf819 y el lote 1 de PA-FAILOPEN) y una de ellas tardó dos meses en detectarse.
   Baselines vivos: `top_level_dml_ddl=0` (excluye `pg_temp`), `cast_directo=0`, `do_sin_handler=155`
   (fase 2.2 CERRADA: los 55 bloques que escriben están envueltos, 211→193→175→157→156→155; los 155
-  restantes sólo leen y publican, así que ya no son deuda; 956 bloques DO en total y harness en 998 filas /
-  11 rojas de deuda al 2-oct-2026, tras la 341). El señalizador P516 del harness los publica, pero NO mide:
+  restantes sólo leen y publican, así que ya no son deuda; 957 bloques DO en total y harness en 999 filas /
+  11 rojas de deuda al 2-oct-2026, tras la 342). El señalizador P516 del harness los publica, pero NO mide:
   el gate es el script. **El detector del guard tiene test propio (`tests/rls/b2_guard_test.py`,
   `npm run harness:guard:test`) y el hook lo corre ANTES del guard**: se equivocó tres veces en un día
   y llegó a tener un baseline inflado en 108, o sea permisivo. Un gate con el detector sin probar es
@@ -153,7 +159,7 @@ Stack: React + Vite + TypeScript, Supabase / Postgres, deploy en Vercel, repo en
 - **Migraciones: SIEMPRE `npx supabase db query --linked -f <archivo>`, NUNCA `db push`.** `db push`
   desincroniza `schema_migrations` (deuda desde la 047). Los `.sql` viven en `supabase/migrations/`
   (rollback en `supabase/migrations/rollback/`); los de `supabase/fixes/` se agregan con `git add -f`.
-  **Desvío aceptado (familia 8):** los rollbacks de 334-341 viven en `supabase/migrations/`
+  **Desvío aceptado (familia 8):** los rollbacks de 334-342 viven en `supabase/migrations/`
   (`3XX_rollback.sql`), no en `supabase/migrations/rollback/`.
 - **Los tests de edge (deno) NO corren en vitest ni en el pre-commit**: se corren a mano desde
   `supabase/functions/<fn>/` con `deno test --allow-net --allow-env --no-check` (asistente-ia: 17).
@@ -205,16 +211,29 @@ Detalles a recordar:
 
 ## Pendiente / ideas
 - (Producto, no código) Prompts de video sobre el software médico para mostrar a futuros clientes.
-- (Deuda de privilegios) authenticated tiene MAINTAIN (PG17: VACUUM/ANALYZE/REINDEX/CLUSTER/LOCK) en 109/121 tablas
-  de public y anon en 8 (incl. pacientes, recetas); P800 no lo ve porque mira role_table_grants — frente aparte.
+- **FAMILIA 1 (privilegios) EN CURSO.** Plan aprobado (recon del 2-oct-2026 sobre f29f974: sin fuga explotable
+  por API; el problema de fondo son los default privileges de postgres en public, que dan los 8 privilegios de
+  tabla a authenticated en cada tabla nueva):
+  342 TRUNCATE/TRIGGER/REFERENCES (**APLICADA**) → 343 MAINTAIN (authenticated en 114 relaciones, anon en 8) →
+  344 default privileges de postgres en public (tablas sin TRU/TRI/REF/MAI, secuencias sin SELECT/UPDATE,
+  `REVOKE EXECUTE ON FUNCTIONS FROM PUBLIC`) → 345 secuencias (anon nada; authenticated solo USAGE en las 11
+  con INSERT directo) → 346 escrituras muertas (INSERT/UPDATE/DELETE sin policy) en 37 tablas → 347
+  `search_path` de `auto_configurar_planes_publicidad` → 348 EXECUTE de PUBLIC/anon en funciones (**BLOQUEADA**
+  hasta reescribir a DEFINER las policies `TO public` de las tablas de la allowlist de anon: lección mig 284).
+  Extender P800 a MAINTAIN (343) y a funciones (348).
+  Hallazgos del recon para no perderlos: **P800 NO consulta `pg_proc` ni MAINTAIN**; 21 funciones de public con
+  EXECUTE para anon (10 helpers DEFINER usados por policies `TO public`, 9 de trigger, 2 utilitarias); 7 tablas
+  con RLS y 0 policies con todos los privilegios (cache_biblioteca, confirmaciones_receta, medico_correlativos,
+  planes_features, planes_limites, resumen_comisiones, transacciones); los default privileges de
+  `supabase_admin` y los de `storage` probablemente no son modificables desde postgres.
 - (Familia 3/4) FK `examenes_orden_id_fkey` sigue `ON DELETE CASCADE`: tras la 338 sólo la alcanzan
   postgres/service_role (borrar una orden arrastra sus exámenes, completados incluidos).
 - (Familia 4) `examenes.updated_at` no se actualiza al corregir ni al liberar.
 - (Familia 7) El lab no tiene vista del historial de revisiones; "Ver archivo anterior" aparece en
   revisiones que no cambiaron el archivo.
-- (Familia 8) `tests/rls/probes_escritura.sql` está en CRLF en el working copy (el blob es LF): md5 del
-  archivo en disco ≠ md5 del blob. Resolver con `.gitattributes` `eol=lf` al inicio de la familia 1, como
-  estaba previsto.
+- (Familia 8, no urgente) `.gitattributes` ya tiene `* text=auto eol=lf` (476b925; 0 blobs renormalizados),
+  pero ~640 archivos siguen en CRLF en disco (checkouts viejos con `core.autocrlf=true`). Para pasarlos a LF
+  hay que refrescar el checkout (`git rm --cached -r . && git reset --hard`) en un momento sin cambios locales.
 - (Familia 7) `AsistenteIA.tsx` no muestra el motivo de los 403/400 (usar `src/lib/errorAsistenteIA.ts`); el
   sidebar filtra por `'asistente'` y no por `'asistente_medico'` (`Sidebar.tsx:55-57`).
 - (Familia 7, resumen IA) Los vitales del resumen se muestran sin fecha de toma; el título "Datos faltantes
