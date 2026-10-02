@@ -35,7 +35,10 @@ Stack: React + Vite + TypeScript, Supabase / Postgres, deploy en Vercel, repo en
   P933 — APLICADA en prod el 2-oct-2026 20:29:16 UTC y verificada en sesión independiente 9/9 (1008 filas / 11
   rojas de deuda, P800 PASA, guard `do_sin_handler` 155 sobre 966 bloques DO). medico_clinicas y recordatorios
   quedan con 0 policies: authenticated no tiene privilegios vivos ahí desde la 346; el acceso es solo por
-  service_role o DEFINER. Rollback: `348_rollback`, independiente de la familia 1.)
+  service_role o DEFINER. Orden de rollback global: `348_rollback` → `347_rollback` → … → `342_rollback`.
+  `348_rollback` debe correr ANTES que cualquier rollback de la familia 1: su precondición exige las huellas finales
+  de ACL/secuencias/funciones/defaults de la familia 1 y aborta si alguna ya se revirtió. En sentido inverso sí es
+  independiente (los rollbacks 345/346 no miran policies TO service_role).)
   (347 = familia 1, paso 6: `SET search_path = ''` en `auto_configurar_planes_publicidad()`, la única SECURITY
   DEFINER de public/private sin search_path (función del trigger AFTER INSERT de `configuracion_pais`); sus 2
   referencias calificadas con `public.`; md5(prosrc) 6d1fe3a9… → 5949ef5d…; oid, dueño, ACL y trigger iguales;
