@@ -24,14 +24,20 @@ Stack: React + Vite + TypeScript, Supabase / Postgres, deploy en Vercel, repo en
   minutos por esto** (P635 es la probe que faltaba, P636 su contraprueba).
 - NUNCA ampliar policies de RLS sobre tablas adyacentes a datos médicos (p. ej. campana_metricas). Para dar acceso, usar RPCs SECURITY DEFINER con search_path='', fail-closed (si el scope es NULL → 0 filas) y gate interno.
 - Probar aislamiento por rol impersonando request.jwt.claims en prod: cada rol ve lo suyo y no lo ajeno.
-- **Próximos números libres: probe `P925`** (global, no por módulo; P906-P907 usados por la mig 336, P912-P913
-  por la 337, P914-P915 por la 338, P916-P920 por la 339/340, P921-P923 por la 341, P924 por la 342),
-  **migración `343`**
-  (342 = familia 1, paso 1: REVOKE TRUNCATE/TRIGGER/REFERENCES de anon/authenticated/PUBLIC en las 83
+- **Próximos números libres: probe `P926`** (global, no por módulo; P906-P907 usados por la mig 336, P912-P913
+  por la 337, P914-P915 por la 338, P916-P920 por la 339/340, P921-P923 por la 341, P924 por la 342, P925 por
+  la 343), **migración `344`**
+  (343 = familia 1, paso 2: REVOKE MAINTAIN de anon/authenticated/PUBLIC (authenticated en 114 relaciones de
+  public, anon en 8; 122 tuplas); huella ACL c57c024f… → 855f0797…; probe P925 = censo global public+private;
+  P800 extendido a MAINTAIN — APLICADA en prod el 2-oct-2026 18:11:49 UTC y verificada en sesión independiente
+  8/8 (1000 filas / 11 rojas de deuda, P800 extendido PASA, guard `do_sin_handler` 155 sobre 958 bloques DO).
+  Orden de rollback de la familia 1: `343_rollback` → `342_rollback` (la precondición de `343_rollback` exige
+  TRU/TRI/REF en 0); los dos son independientes de 334-341 (solo ACL).
+  342 = familia 1, paso 1: REVOKE TRUNCATE/TRIGGER/REFERENCES de anon/authenticated/PUBLIC en las 83
   relaciones de public que los tenían (242 tuplas, todas de authenticated); huella ACL 1df9d1b3… → c57c024f…;
   probe P924 = censo global — APLICADA en prod el 2-oct-2026 16:33:09 UTC y verificada en sesión independiente
   7/7 (999 filas / 11 rojas de deuda, P800 PASA, guard `do_sin_handler` 155 sobre 957 bloques DO).
-  `342_rollback` es independiente de 334-341 (solo ACL). Plan de la familia: ver "Pendiente / ideas".
+  Plan de la familia: ver "Pendiente / ideas".
   341 = el mismo gate de relación de la 340 en `contexto_ia_paciente` (asistente IA en vivo), después de
   `gate_accion_phi`; md5(prosrc) 1eaf84a3… → 04fe590c…: `asistente_medico` y médicos de la clínica sin
   relación ya no reciben las notas por el asistente IA en vivo — APLICADA en prod el 2-oct-2026 15:59:42 UTC
@@ -150,8 +156,8 @@ Stack: React + Vite + TypeScript, Supabase / Postgres, deploy en Vercel, repo en
   Pasó dos veces (18cf819 y el lote 1 de PA-FAILOPEN) y una de ellas tardó dos meses en detectarse.
   Baselines vivos: `top_level_dml_ddl=0` (excluye `pg_temp`), `cast_directo=0`, `do_sin_handler=155`
   (fase 2.2 CERRADA: los 55 bloques que escriben están envueltos, 211→193→175→157→156→155; los 155
-  restantes sólo leen y publican, así que ya no son deuda; 957 bloques DO en total y harness en 999 filas /
-  11 rojas de deuda al 2-oct-2026, tras la 342). El señalizador P516 del harness los publica, pero NO mide:
+  restantes sólo leen y publican, así que ya no son deuda; 958 bloques DO en total y harness en 1000 filas /
+  11 rojas de deuda al 2-oct-2026, tras la 343). El señalizador P516 del harness los publica, pero NO mide:
   el gate es el script. **El detector del guard tiene test propio (`tests/rls/b2_guard_test.py`,
   `npm run harness:guard:test`) y el hook lo corre ANTES del guard**: se equivocó tres veces en un día
   y llegó a tener un baseline inflado en 108, o sea permisivo. Un gate con el detector sin probar es
@@ -159,7 +165,7 @@ Stack: React + Vite + TypeScript, Supabase / Postgres, deploy en Vercel, repo en
 - **Migraciones: SIEMPRE `npx supabase db query --linked -f <archivo>`, NUNCA `db push`.** `db push`
   desincroniza `schema_migrations` (deuda desde la 047). Los `.sql` viven en `supabase/migrations/`
   (rollback en `supabase/migrations/rollback/`); los de `supabase/fixes/` se agregan con `git add -f`.
-  **Desvío aceptado (familia 8):** los rollbacks de 334-342 viven en `supabase/migrations/`
+  **Desvío aceptado (familia 8):** los rollbacks de 334-343 viven en `supabase/migrations/`
   (`3XX_rollback.sql`), no en `supabase/migrations/rollback/`.
 - **Los tests de edge (deno) NO corren en vitest ni en el pre-commit**: se corren a mano desde
   `supabase/functions/<fn>/` con `deno test --allow-net --allow-env --no-check` (asistente-ia: 17).
@@ -214,14 +220,15 @@ Detalles a recordar:
 - **FAMILIA 1 (privilegios) EN CURSO.** Plan aprobado (recon del 2-oct-2026 sobre f29f974: sin fuga explotable
   por API; el problema de fondo son los default privileges de postgres en public, que dan los 8 privilegios de
   tabla a authenticated en cada tabla nueva):
-  342 TRUNCATE/TRIGGER/REFERENCES (**APLICADA**) → 343 MAINTAIN (authenticated en 114 relaciones, anon en 8) →
-  344 default privileges de postgres en public (tablas sin TRU/TRI/REF/MAI, secuencias sin SELECT/UPDATE,
+  342 TRUNCATE/TRIGGER/REFERENCES (**APLICADA**) → 343 MAINTAIN (**APLICADA**; authenticated en 114
+  relaciones, anon en 8) → **sigue: 344** default privileges de postgres en public (tablas sin TRU/TRI/REF/MAI, secuencias sin SELECT/UPDATE,
   `REVOKE EXECUTE ON FUNCTIONS FROM PUBLIC`) → 345 secuencias (anon nada; authenticated solo USAGE en las 11
   con INSERT directo) → 346 escrituras muertas (INSERT/UPDATE/DELETE sin policy) en 37 tablas → 347
   `search_path` de `auto_configurar_planes_publicidad` → 348 EXECUTE de PUBLIC/anon en funciones (**BLOQUEADA**
   hasta reescribir a DEFINER las policies `TO public` de las tablas de la allowlist de anon: lección mig 284).
-  Extender P800 a MAINTAIN (343) y a funciones (348).
-  Hallazgos del recon para no perderlos: **P800 NO consulta `pg_proc` ni MAINTAIN**; 21 funciones de public con
+  P800 ya extendido a MAINTAIN (343: reglas (c)/(d) + nueva (i), authenticated/PUBLIC sin TRU/TRI/REF/MAI en
+  ninguna relación de public); falta extenderlo a funciones (348).
+  Hallazgos del recon para no perderlos: **P800 NO consulta `pg_proc`** (queda para la 348); 21 funciones de public con
   EXECUTE para anon (10 helpers DEFINER usados por policies `TO public`, 9 de trigger, 2 utilitarias); 7 tablas
   con RLS y 0 policies con todos los privilegios (cache_biblioteca, confirmaciones_receta, medico_correlativos,
   planes_features, planes_limites, resumen_comisiones, transacciones); los default privileges de
