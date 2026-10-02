@@ -29316,11 +29316,11 @@ DECLARE
     'recordatorios|authenticated|SELECT',
     -- AdminEzPayPage y las 2 ReportesEzPayPage lo leen con el JWT del usuario: idem
     'transacciones|authenticated|SELECT',
-    -- WL_ANON_LEGACY de P800: una policy ajena la consulta inline (leccion mig 284); se cierra con la 348
+    -- WL_ANON_LEGACY de P800: una policy ajena la consulta inline (leccion mig 284); se cierra con el paso de EXECUTE (ultimo de la familia 2)
     'liquidaciones_comision|anon|SELECT',
     -- P800 regla (b): authenticated tiene que conservar ALGUN privilegio en toda tabla de public fuera de WL_AUTH, y
     -- WL_AUTH solo puede achicarse (tope 5). En estas 7 el SELECT es su unico privilegio y nadie lo usa con el JWT
-    -- del usuario. Decision 2-oct-2026 (346): no agrandar WL_AUTH; se cierran cuando se rehaga P800 (348).
+    -- del usuario. Decision 2-oct-2026 (346): no agrandar WL_AUTH; se cierran cuando se rehaga P800 (paso de EXECUTE, ultimo de la familia 2).
     'cache_biblioteca|authenticated|SELECT', 'confirmaciones_receta|authenticated|SELECT',
     'medico_clinicas|authenticated|SELECT', 'medico_correlativos|authenticated|SELECT',
     'planes_features|authenticated|SELECT', 'planes_limites|authenticated|SELECT',
@@ -29435,6 +29435,26 @@ BEGIN
 EXCEPTION WHEN OTHERS THEN
   PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
   PERFORM set_config('probe.p932', CASE WHEN SQLERRM LIKE 'fixture roto%' THEN 'ROJO ('||SQLERRM||')' ELSE 'FALLO ('||SQLSTATE||' '||SQLERRM||')' END, false);
+END $$;
+SELECT set_config('role', 'none', true);
+
+-- ---------------- P933 censo: policies TO service_role (348) ----------------
+-- service_role tiene BYPASSRLS: una policy cuyos roles son solo {service_role} no tiene efecto y solo confunde los
+-- censos. Desde la 348 no queda ninguna en public/private/storage. Tambien exige que service_role siga con
+-- BYPASSRLS (si lo perdiera, las edges dependerian de policies y esta premisa se cae). Solo lee el catalogo.
+-- Con 348_rollback sale ROJO a proposito (vuelven las 5).
+DO $$
+DECLARE v text; b text;
+BEGIN
+  SELECT string_agg(n.nspname||'.'||c.relname||'/'||pl.polname, ', ' ORDER BY 1) INTO v
+    FROM pg_policy pl JOIN pg_class c ON c.oid = pl.polrelid JOIN pg_namespace n ON n.oid = c.relnamespace
+   WHERE n.nspname IN ('public','private','storage') AND pl.polroles = ARRAY['service_role'::regrole::oid];
+  SELECT rolbypassrls::text INTO b FROM pg_roles WHERE rolname = 'service_role';
+  PERFORM set_config('probe.p933', CASE
+    WHEN v IS NULL AND b = 'true' THEN 'OK (0 policies TO service_role en public/private/storage; service_role con BYPASSRLS)'
+    ELSE 'ROJO ('||COALESCE('policies TO service_role: '||v, '')||CASE WHEN b IS DISTINCT FROM 'true' THEN ' service_role SIN BYPASSRLS' ELSE '' END||')' END, false);
+EXCEPTION WHEN OTHERS THEN
+  PERFORM set_config('probe.p933', 'FALLO ('||SQLSTATE||' '||SQLERRM||')', false);
 END $$;
 SELECT set_config('role', 'none', true);
 
@@ -30445,6 +30465,7 @@ UNION ALL SELECT 'P929_secuencias_funcional_345',     current_setting('probe.p92
 UNION ALL SELECT 'P930_privilegios_muertos_346',      current_setting('probe.p930', true), 'OK (346: 0 privilegios muertos de anon/authenticated en public fuera de la allowlist)'
 UNION ALL SELECT 'P931_definer_search_path_347',      current_setting('probe.p931', true), 'OK (347: 0 funciones SECURITY DEFINER de public/private sin search_path fijo)'
 UNION ALL SELECT 'P932_trigger_planes_pais_347',      current_setting('probe.p932', true), 'OK (347: el trigger de configuracion_pais siembra los planes con search_path hostil y normal)'
+UNION ALL SELECT 'P933_policies_service_role_348',    current_setting('probe.p933', true), 'OK (348: 0 policies TO service_role; service_role con BYPASSRLS)'
 -- Las filas FX* son SALUD DE FIXTURE, no probes de seguridad: dicen si la precondicion que una
 -- migracion posterior empezo a exigir se pudo sembrar. Si una sale ROJO, los probes que dependen de
 -- ese fixture reportan N/A (su flag de ready se pierde con el rollback de la subtransaccion) en vez
@@ -30689,7 +30710,7 @@ UNION ALL SELECT 'P000_CENTINELA_veredictos_no_nulos',
        'probe.p866', 'probe.p867', 'probe.p868', 'probe.p869', 'probe.p870', 'probe.p871', 'probe.p872', 'probe.p873', 'probe.p874', 'probe.p875', 'probe.p876', 'probe.p877', 'probe.p878',
        'probe.p879', 'probe.p880', 'probe.p881', 'probe.p882', 'probe.p883', 'probe.p884',
        'probe.p885', 'probe.p886', 'probe.p887', 'probe.p888', 'probe.p889', 'probe.p890', 'probe.p891', 'probe.p892', 'probe.p893', 'probe.p894', 'probe.p895', 'probe.p896', 'probe.p908', 'probe.p909', 'probe.p910', 'probe.p911',
-       'probe.p897', 'probe.p898', 'probe.p899', 'probe.p900', 'probe.p901', 'probe.p902', 'probe.p903', 'probe.p904', 'probe.p905', 'probe.p906', 'probe.p907', 'probe.p912', 'probe.p913', 'probe.p914', 'probe.p915', 'probe.p916', 'probe.p917', 'probe.p918', 'probe.p919', 'probe.p920', 'probe.p921', 'probe.p922', 'probe.p923', 'probe.p924', 'probe.p925', 'probe.p926', 'probe.p927', 'probe.p928', 'probe.p929', 'probe.p930', 'probe.p931', 'probe.p932'
+       'probe.p897', 'probe.p898', 'probe.p899', 'probe.p900', 'probe.p901', 'probe.p902', 'probe.p903', 'probe.p904', 'probe.p905', 'probe.p906', 'probe.p907', 'probe.p912', 'probe.p913', 'probe.p914', 'probe.p915', 'probe.p916', 'probe.p917', 'probe.p918', 'probe.p919', 'probe.p920', 'probe.p921', 'probe.p922', 'probe.p923', 'probe.p924', 'probe.p925', 'probe.p926', 'probe.p927', 'probe.p928', 'probe.p929', 'probe.p930', 'probe.p931', 'probe.p932', 'probe.p933'
              ]) AS n) s),
   'OK (todos los veredictos publicados)';
 
