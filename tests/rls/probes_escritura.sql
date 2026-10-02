@@ -28929,6 +28929,27 @@ EXCEPTION WHEN OTHERS THEN
 END $$;
 SELECT set_config('role', 'none', true);
 
+-- ---------------- P924 censo global: TRUNCATE, TRIGGER y REFERENCES en public (342) ----------------
+-- 342 (familia 1, paso 1): ninguna relacion de public (tablas y vistas) con TRUNCATE, TRIGGER o REFERENCES
+-- para anon, authenticated o PUBLIC (aclexplode, no information_schema). Con 342_rollback sale ROJO a
+-- proposito (76 TRUNCATE, 83 TRIGGER y 83 REFERENCES de authenticated). Solo lee el catalogo.
+-- Una tabla nueva sigue naciendo con los tres por el default privilege de postgres hasta la 344: si una
+-- migracion la crea sin revocarlos, este probe la marca.
+DO $$
+DECLARE v text;
+BEGIN
+  v := (SELECT COALESCE(string_agg(DISTINCT split_part(x.s, '|', 1)||':'||split_part(x.s, '|', 2)||':'||x.pv, ',' ORDER BY split_part(x.s, '|', 1)||':'||split_part(x.s, '|', 2)||':'||x.pv), '') FROM (SELECT c.relname||'|'||CASE a.grantee WHEN 0 THEN 'PUBLIC' ELSE pg_get_userbyid(a.grantee) END||'|'||pg_get_userbyid(a.grantor)||'|'||a.privilege_type||'|'||a.is_grantable::text AS s,
+           a.grantee AS ge, a.privilege_type AS pv
+      FROM pg_class c, aclexplode(COALESCE(c.relacl, acldefault('r', c.relowner))) a
+     WHERE c.relnamespace = 'public'::regnamespace AND c.relkind IN ('r','p','v','m','f')) x WHERE x.pv IN ('TRUNCATE','TRIGGER','REFERENCES') AND x.ge IN (0, 'anon'::regrole::oid, 'authenticated'::regrole::oid));
+  PERFORM set_config('probe.p924', CASE WHEN v = ''
+    THEN 'OK (0 relaciones de public con TRUNCATE, TRIGGER o REFERENCES para anon, authenticated o PUBLIC)'
+    ELSE 'ROJO ('||array_length(string_to_array(v, ','), 1)||' pares relacion:rol:privilegio: '||left(v, 900)||')' END, false);
+EXCEPTION WHEN OTHERS THEN
+  PERFORM set_config('probe.p924', 'FALLO ('||SQLSTATE||' '||SQLERRM||')', false);
+END $$;
+SELECT set_config('role', 'none', true);
+
 -- ===== Veredictos como result set =====
 SELECT 'P1_anon_insert_citas'              AS probe, current_setting('probe.p1', true)  AS verdict, 'BLOQUEADO' AS esperado_post_fix
 UNION ALL SELECT 'P2_medico_cancela_ajena_rpc',         current_setting('probe.p2', true),  'BLOQUEADO'
@@ -29927,6 +29948,7 @@ UNION ALL SELECT 'P920_ia_coherencia_rpc_rls',        current_setting('probe.p92
 UNION ALL SELECT 'P921_ia_paciente_gate_341',         current_setting('probe.p921', true), 'OK (341: asistente y medico sin relacion no_pertenencia; QA y tratante si; resto el de gate_accion_phi; revocado; anon 42501)'
 UNION ALL SELECT 'P922_ia_paciente_coherencia_rls',   current_setting('probe.p922', true), 'OK (RPC => RLS sobre las notas del 23 para 6 actores; centinela)'
 UNION ALL SELECT 'P923_ia_paciente_catalogo_341',     current_setting('probe.p923', true), 'OK (md5 341, DEFINER, search_path, EXECUTE exacto, vecinas y exp_select_medico intactos)'
+UNION ALL SELECT 'P924_priv_tru_tri_ref_342',         current_setting('probe.p924', true), 'OK (342: 0 relaciones de public con TRUNCATE/TRIGGER/REFERENCES para anon, authenticated o PUBLIC)'
 -- Las filas FX* son SALUD DE FIXTURE, no probes de seguridad: dicen si la precondicion que una
 -- migracion posterior empezo a exigir se pudo sembrar. Si una sale ROJO, los probes que dependen de
 -- ese fixture reportan N/A (su flag de ready se pierde con el rollback de la subtransaccion) en vez
@@ -30171,7 +30193,7 @@ UNION ALL SELECT 'P000_CENTINELA_veredictos_no_nulos',
        'probe.p866', 'probe.p867', 'probe.p868', 'probe.p869', 'probe.p870', 'probe.p871', 'probe.p872', 'probe.p873', 'probe.p874', 'probe.p875', 'probe.p876', 'probe.p877', 'probe.p878',
        'probe.p879', 'probe.p880', 'probe.p881', 'probe.p882', 'probe.p883', 'probe.p884',
        'probe.p885', 'probe.p886', 'probe.p887', 'probe.p888', 'probe.p889', 'probe.p890', 'probe.p891', 'probe.p892', 'probe.p893', 'probe.p894', 'probe.p895', 'probe.p896', 'probe.p908', 'probe.p909', 'probe.p910', 'probe.p911',
-       'probe.p897', 'probe.p898', 'probe.p899', 'probe.p900', 'probe.p901', 'probe.p902', 'probe.p903', 'probe.p904', 'probe.p905', 'probe.p906', 'probe.p907', 'probe.p912', 'probe.p913', 'probe.p914', 'probe.p915', 'probe.p916', 'probe.p917', 'probe.p918', 'probe.p919', 'probe.p920', 'probe.p921', 'probe.p922', 'probe.p923'
+       'probe.p897', 'probe.p898', 'probe.p899', 'probe.p900', 'probe.p901', 'probe.p902', 'probe.p903', 'probe.p904', 'probe.p905', 'probe.p906', 'probe.p907', 'probe.p912', 'probe.p913', 'probe.p914', 'probe.p915', 'probe.p916', 'probe.p917', 'probe.p918', 'probe.p919', 'probe.p920', 'probe.p921', 'probe.p922', 'probe.p923', 'probe.p924'
              ]) AS n) s),
   'OK (todos los veredictos publicados)';
 
