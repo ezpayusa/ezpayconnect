@@ -26,7 +26,9 @@ Stack: React + Vite + TypeScript, Supabase / Postgres, deploy en Vercel, repo en
 - Probar aislamiento por rol impersonando request.jwt.claims en prod: cada rol ve lo suyo y no lo ajeno.
 - **Próximos números libres: probe `P921`** (global, no por módulo; P906-P907 usados por la mig 336, P912-P913
   por la 337, P914-P915 por la 338, P916-P920 por la 339/340), **migración `341`**
-  (**Resumen IA fase 1:** 339 = RPC `contexto_ia_ultima_visita` — APLICADA en prod el 1-oct-2026 21:43:50 UTC;
+  (**Resumen IA de la última visita, fase 1: CERRADA y probada en prod el 2-oct-2026** — PR #15, merge
+  4df0be1; caso feliz paciente 23 → `auditoria_ia` id 181; `sin_visita` paciente 8 sin auditar. **Fase 2
+  (`cita_id` en recetas y órdenes de examen) pendiente.** 339 = RPC `contexto_ia_ultima_visita` — APLICADA en prod el 1-oct-2026 21:43:50 UTC;
   340 = gate de relación alineado con las ramas por paciente de `exp_select_medico` (`private.es_medico_de` /
   `private.medico_atiende_paciente`, COALESCE fail-closed → `no_pertenencia`), md5(prosrc) 339 a755ff5b… → 340
   7c97629d… — APLICADA en prod el 2-oct-2026 14:28:11 UTC; las dos verificadas en sesión independiente
@@ -148,6 +150,11 @@ Stack: React + Vite + TypeScript, Supabase / Postgres, deploy en Vercel, repo en
   (`3XX_rollback.sql`), no en `supabase/migrations/rollback/`.
 - **Los tests de edge (deno) NO corren en vitest ni en el pre-commit**: se corren a mano desde
   `supabase/functions/<fn>/` con `deno test --allow-net --allow-env --no-check` (asistente-ia: 17).
+- **El CORS de `asistente-ia` sólo acepta `med.ezpayconnect.com`**: las pruebas de edges desde un preview
+  de Vercel no funcionan. El caso feliz de una feature con edge se prueba en prod DESPUÉS del merge.
+- **Nota de QA:** el paciente QA 23 se llama literalmente "Paciente". En un chequeo de PII del prompt de
+  la IA, su nombre "aparece" por el encabezado fijo `PACIENTE:` de la plantilla — no es filtración.
+  Medir como palabra entera y contar contra la plantilla, no por substring.
 
 ## GRANTs explícitos del Data API (obligatoria desde 30-oct-2026)
 Supabase deja de otorgar GRANTs automáticos a los roles del Data API al crear objetos en `public`.
@@ -203,3 +210,9 @@ Detalles a recordar:
   RLS de `expediente_notas` no se las deja leer. Corregir con el mismo gate de relación de la 340.
 - (Familia 7) `AsistenteIA.tsx` no muestra el motivo de los 403/400 (usar `src/lib/errorAsistenteIA.ts`); el
   sidebar filtra por `'asistente'` y no por `'asistente_medico'` (`Sidebar.tsx:55-57`).
+- (Familia 7, resumen IA) Los vitales del resumen se muestran sin fecha de toma; el título "Datos faltantes
+  en la nota" (`ResumenUltimaVisita.tsx:45`) incluye campos de la ficha → renombrar a "Datos faltantes";
+  admin_clinica ve el botón "Iniciar consulta" en `/pacientes/:id/detalle` (`PacienteDetallePage.tsx:401`);
+  "Dr. Dr." duplicado en Historial de Consultas (el "Dr." se antepone en `PacienteDetallePage.tsx:593`).
+- **(QA-MANUAL, cleanup pre-go-live)** `auditoria_ia` id **181** (2026-10-02 15:38:37 UTC, medico.qa →
+  paciente 23): `DELETE FROM public.auditoria_ia WHERE id = 181;`
