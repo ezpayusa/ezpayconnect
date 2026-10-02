@@ -24,9 +24,15 @@ Stack: React + Vite + TypeScript, Supabase / Postgres, deploy en Vercel, repo en
   minutos por esto** (P635 es la probe que faltaba, P636 su contraprueba).
 - NUNCA ampliar policies de RLS sobre tablas adyacentes a datos médicos (p. ej. campana_metricas). Para dar acceso, usar RPCs SECURITY DEFINER con search_path='', fail-closed (si el scope es NULL → 0 filas) y gate interno.
 - Probar aislamiento por rol impersonando request.jwt.claims en prod: cada rol ve lo suyo y no lo ajeno.
-- **Próximos números libres: probe `P933`** (global, no por módulo; P906-P907 usados por la mig 336, P912-P913
+- **Próximos números libres: probe `P934`** (global, no por módulo; P906-P907 usados por la mig 336, P912-P913
   por la 337, P914-P915 por la 338, P916-P920 por la 339/340, P921-P923 por la 341, P924 por la 342, P925 por
-  la 343, P926-P927 por la 344, P928-P929 por la 345, P930 por la 346, P931-P932 por la 347), **migración `348`**
+  la 343, P926-P927 por la 344, P928-P929 por la 345, P930 por la 346, P931-P932 por la 347, P933 por la 348),
+  **migración `349`**
+  (348 = familia 2, paso 1 (F2-a): DROP de las 5 policies TO service_role (inertes: service_role tiene
+  BYPASSRLS) — invitaciones_clinica_service_all, invitaciones_medico_service_all, "Service role all
+  medico_clinicas", "Service role all push subscriptions", recordatorios_service_all; huella de policies de
+  public/private/storage 75a9fb10… (314) → 96a7fabd… (309); ACL intactas; probe P933 — ESCRITA, sin aplicar.
+  Rollback: `348_rollback` (independiente de la familia 1).)
   (347 = familia 1, paso 6: `SET search_path = ''` en `auto_configurar_planes_publicidad()`, la única SECURITY
   DEFINER de public/private sin search_path (función del trigger AFTER INSERT de `configuracion_pais`); sus 2
   referencias calificadas con `public.`; md5(prosrc) 6d1fe3a9… → 5949ef5d…; oid, dueño, ACL y trigger iguales;
@@ -185,8 +191,8 @@ Stack: React + Vite + TypeScript, Supabase / Postgres, deploy en Vercel, repo en
   Pasó dos veces (18cf819 y el lote 1 de PA-FAILOPEN) y una de ellas tardó dos meses en detectarse.
   Baselines vivos: `top_level_dml_ddl=0` (excluye `pg_temp`), `cast_directo=0`, `do_sin_handler=155`
   (fase 2.2 CERRADA: los 55 bloques que escriben están envueltos, 211→193→175→157→156→155; los 155
-  restantes sólo leen y publican, así que ya no son deuda; 965 bloques DO en total y harness en 1007 filas /
-  11 rojas de deuda al 2-oct-2026, tras la 347). **P782 ajustado en la 346:** el DELETE directo sobre
+  restantes sólo leen y publican, así que ya no son deuda; 966 bloques DO en total y harness en 1008 filas /
+  11 rojas de deuda al 2-oct-2026, con P933 de la 348). **P782 ajustado en la 346:** el DELETE directo sobre
   `visitas_agendadas` ahora da 42501 de privilegio (authenticated ya no tiene DELETE) y cuenta como OK, más fuerte
   que ROW_COUNT=0; cualquier otro error sigue siendo FALLO. **P929 y los dry-runs consumen valores de secuencia en prod**
   (`nextval` no es transaccional: el ROLLBACK no los devuelve) → huecos en los ids, esperado; no se devuelven
@@ -272,7 +278,25 @@ Detalles a recordar:
 
 ## Pendiente / ideas
 - (Producto, no código) Prompts de video sobre el software médico para mostrar a futuros clientes.
-- **FAMILIA 1 (privilegios) EN CURSO.** Plan aprobado (recon del 2-oct-2026 sobre f29f974: sin fuga explotable
+- **FAMILIA 2 (policies) EN CURSO.** Recon del 2-oct-2026 sobre 092c863 (`tmp/recon_fam2/`): 314 policies (271 public,
+  43 storage), todas permissive; 109 `TO public`, de las que solo las de la WL_ANON_LEGACY y 3 de lectura pública
+  de storage las evalúa anon; las 21 funciones con EXECUTE para anon lo reciben VÍA PUBLIC (authenticated también),
+  ninguna se llama por RPC desde el cliente. Plan: **F2-a** policies TO service_role inertes (348) → **F2-b** las 88
+  `{public}` de public que anon no alcanza → TO authenticated (sin cambio funcional; ajustar P884) → **F2-c** las 17
+  `{public}` de la WL_ANON_LEGACY (salvo "Publico lee paises activos") → TO authenticated, con probe de anon (0 filas
+  sin 42501) → **F2-d** quitar el UPDATE directo de visitas_agendadas (2 policies + el privilegio) → **F2-e** decisiones
+  de producto (exp_superadmin_insert: super_admin crea notas a nombre de cualquier médico; claves bancarias de
+  configuracion_sistema visibles para todo authenticated) → **F2-f** con front (campana_vistas con `ignoreDuplicates`
+  + revocar UPDATE y sacarlo de la allowlist de P930; partir catalogo_lab_all) → **F2-g** opcional (partir ALL;
+  `(select auth.uid())`) → **ÚLTIMO: EXECUTE** (con el número que le toque): `GRANT EXECUTE … TO authenticated,
+  service_role` explícito en los helpers usados por policies ANTES de `REVOKE … FROM PUBLIC, anon` en las 21 (si no,
+  se rompen para authenticated las 52 policies de mi_empresa_proveedor() y el resto); extender P800 a `pg_proc`;
+  achicar WL_ANON_LEGACY. Hallazgos a conservar: `transacciones` se lee desde el front (AdminEzPayPage y las
+  ReportesEzPayPage) y siempre devuelve [] porque tiene 0 policies → familia 7; configuracion_pais: el `true` de
+  authenticated anula el filtro `activo` para logueados; 123 policies con `auth.uid()` sin `(select …)` (performance).
+- **FAMILIA 1 (privilegios) CERRADA: 342-347 aplicadas.** El paso de EXECUTE (antes "348") pasa a ser el ÚLTIMO de
+  la familia 2, porque su prerequisito (sacar de `TO public` las policies que anon evalúa) es trabajo de policies.
+  Plan original (recon del 2-oct-2026 sobre f29f974: sin fuga explotable
   por API; el problema de fondo son los default privileges de postgres en public, que dan los 8 privilegios de
   tabla a authenticated en cada tabla nueva):
   342 TRUNCATE/TRIGGER/REFERENCES (**APLICADA**) → 343 MAINTAIN (**APLICADA**; authenticated en 114
@@ -291,21 +315,21 @@ Detalles a recordar:
   SELECT de anon en `liquidaciones_comision` (WL_ANON_LEGACY, lección 284), y SELECT de 7 tablas sin otro
   privilegio que P800 regla (b) obliga a conservar — cache_biblioteca, confirmaciones_receta, medico_clinicas,
   medico_correlativos, planes_features, planes_limites, resumen_comisiones —: decisión 2-oct-2026 de no agrandar
-  WL_AUTH, diferido a la 348) → 347 `search_path` de `auto_configurar_planes_publicidad` (**APLICADA**;
+  WL_AUTH, diferido al paso de EXECUTE, último de la familia 2) → 347 `search_path` de `auto_configurar_planes_publicidad` (**APLICADA**;
   `SET search_path = ''`, única DEFINER sin search_path; sus 2 referencias calificadas con `public.`; md5(prosrc)
   6d1fe3a9… → 5949ef5d…; cuerpo armado con `replace()` sobre el prosrc vivo para preservar sus CRLF; P931 = censo
-  de DEFINER sin search_path, P932 = funcional con search_path hostil) → **sigue: 348** EXECUTE de PUBLIC/anon en funciones (**BLOQUEADA**
-  hasta reescribir a DEFINER las policies `TO public` de las tablas de la allowlist de anon: lección mig 284).
+  de DEFINER sin search_path, P932 = funcional con search_path hostil) → EXECUTE de PUBLIC/anon en funciones:
+  movido a la familia 2 (último paso).
   P800 ya extendido a MAINTAIN (343: reglas (c)/(d) + nueva (i), authenticated/PUBLIC sin TRU/TRI/REF/MAI en
-  ninguna relación de public); falta extenderlo a funciones (348).
-  Hallazgos del recon para no perderlos: **P800 NO consulta `pg_proc`** (queda para la 348); 21 funciones de public con
+  ninguna relación de public); falta extenderlo a funciones (último paso de la familia 2).
+  Hallazgos del recon para no perderlos: **P800 NO consulta `pg_proc`**; 21 funciones de public con
   EXECUTE para anon (10 helpers DEFINER usados por policies `TO public`, 9 de trigger, 2 utilitarias); 7 tablas
   con RLS y 0 policies con todos los privilegios (cache_biblioteca, confirmaciones_receta, medico_correlativos,
   planes_features, planes_limites, resumen_comisiones, transacciones).
   **Corrección del recon (344):** el EXECUTE de PUBLIC en funciones NUEVAS ya estaba cerrado por una entrada
   GLOBAL de pg_default_acl (`postgres|f {postgres=X/postgres}`; el recon la pasó por alto porque filtró entradas
   sin anon/authenticated/PUBLIC); las 21 funciones de public con EXECUTE para PUBLIC son anteriores o tienen
-  GRANT explícito (siguen siendo la 348). `supabase_admin`: MEDIDO, postgres no puede alterar sus defaults
+  GRANT explícito (siguen siendo el último paso de la familia 2). `supabase_admin`: MEDIDO, postgres no puede alterar sus defaults
   (42501 "permission denied to change default privileges"); inerte porque las migraciones crean como postgres, y
   P724 lo vigila. Defaults de postgres en `storage` (anon/authenticated con todo): inertes, postgres no tiene
   CREATE en storage.
@@ -326,7 +350,7 @@ Detalles a recordar:
 - (Familia 7) El lab no tiene vista del historial de revisiones; "Ver archivo anterior" aparece en
   revisiones que no cambiaron el archivo.
 - (Familia 8) P800 salta las foreign tables (relkind 'f': mira `'r','v','m','p'`) mientras la 343 y P925 las
-  incluyen; sin efecto hoy (0 foreign tables en public). Alinear cuando se toque P800 en la 348.
+  incluyen; sin efecto hoy (0 foreign tables en public). Alinear cuando se toque P800 en el paso de EXECUTE (último de la familia 2).
 - (Familia 8, no urgente) `.gitattributes` ya tiene `* text=auto eol=lf` (476b925; 0 blobs renormalizados),
   pero ~640 archivos siguen en CRLF en disco (checkouts viejos con `core.autocrlf=true`). Para pasarlos a LF
   hay que refrescar el checkout (`git rm --cached -r . && git reset --hard`) en un momento sin cambios locales.
