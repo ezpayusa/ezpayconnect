@@ -141,7 +141,257 @@ ${exaTxt}
 Proporciona tu analisis de soporte segun las reglas establecidas.`
 }
 
-serve(async (req) => {
+// ============================================================================================
+// MODO resumen_visita (fase 1, mig 339): resumen de la ULTIMA visita del paciente para el médico.
+// El contexto lo arma contexto_ia_ultima_visita, que gatea con gate_accion_phi('asistente_ia')
+// ANTES de leer; el edge la llama con el JWT del caller, igual que contexto_ia_paciente.
+// Las piezas puras van exportadas para test.ts (deno test, sin red).
+// ============================================================================================
+
+export const MODO_RESUMEN_VISITA = 'resumen_visita'
+
+export const SYSTEM_PROMPT_RESUMEN = `Eres un asistente de documentacion clinica. Redactas, en espanol, un resumen de la ULTIMA visita de un paciente para el medico tratante, que lo va a leer antes de volver a atenderlo.
+
+Reglas estrictas:
+1. Basate EXCLUSIVAMENTE en los datos recibidos. No inventes, no completes ni supongas nada que no este escrito.
+2. NO diagnostiques de nuevo ni propongas diagnosticos distintos a los registrados. Si citas un diagnostico, es el que escribio el medico.
+3. NO prescribas ni sugieras medicamentos, dosis ni tratamientos nuevos. Si la nota menciona un tratamiento, solo reportalo.
+4. Si un campo viene como "No registrado", nombralo en datos_faltantes. No lo rellenes.
+5. Si la nota fue corregida despues de cerrada, dilo en el resumen.
+6. pendientes_seguimiento solo recoge lo que la propia nota deja pendiente (plan, controles, examenes pedidos). Si no hay, deja la lista vacia.
+7. signos_vitales_relevantes: valores tal como vienen, con su unidad y fecha de toma. Sin interpretar mas alla de lo que dice la nota.
+
+Responde UNICAMENTE con este JSON (sin markdown, sin texto adicional, sin claves extra):
+{
+  "resumen": "string",
+  "hallazgos_clave": ["string"],
+  "signos_vitales_relevantes": ["string"],
+  "pendientes_seguimiento": ["string"],
+  "datos_faltantes": ["string"]
+}`
+
+export type ResumenVisita = {
+  resumen: string
+  hallazgos_clave: string[]
+  signos_vitales_relevantes: string[]
+  pendientes_seguimiento: string[]
+  datos_faltantes: string[]
+}
+
+const CLAVES_RESUMEN = [
+  'resumen', 'hallazgos_clave', 'signos_vitales_relevantes', 'pendientes_seguimiento', 'datos_faltantes',
+] as const
+
+// Decide el modo ANTES del chequeo de soap: sólo 'resumen_visita' exacto entra al modo nuevo. Cualquier
+// otra cosa (sin modo, modo desconocido) sigue por el camino actual, con su contrato intacto.
+export function decidirModo(body: unknown): 'resumen_visita' | 'asistente' {
+  if (body && typeof body === 'object' && !Array.isArray(body) &&
+      (body as Record<string, unknown>).modo === MODO_RESUMEN_VISITA) return 'resumen_visita'
+  return 'asistente'
+}
+
+// Id de fila (bigint/serial) que llega por el body: entero positivo seguro, o null.
+export function idPositivo(v: unknown): number | null {
+  const n = typeof v === 'number' ? v : (typeof v === 'string' && v.trim() !== '' ? Number(v) : NaN)
+  return Number.isSafeInteger(n) && n > 0 ? n : null
+}
+
+// consulta_id del modo actual: ausente (null/undefined) = se audita NULL como hasta hoy;
+// presente = tiene que ser un id válido, si no es consulta_invalida.
+export function parsearConsultaId(v: unknown): { presente: false } | { presente: true; id: number | null } {
+  if (v === undefined || v === null) return { presente: false }
+  return { presente: true, id: idPositivo(v) }
+}
+
+// Error de la RPC de contexto → respuesta HTTP. Los motivos del gate viajan en el mensaje del RAISE
+// (P0001); el 42501 es el de un rol sin EXECUTE (anon). Lo no reconocido devuelve null y el caller
+// responde 500 error_contexto, como hoy.
+export function mapearErrorRpc(err: { message?: string; code?: string } | null | undefined):
+  { status: number; error: string } | null {
+  if (!err) return null
+  const m = err.message || ''
+  if (/no_pertenencia/.test(m)) return { status: 403, error: 'no_pertenencia' }
+  if (/consentimiento_revocado/.test(m)) return { status: 403, error: 'consentimiento_revocado' }
+  if (/no_auth/.test(m)) return { status: 401, error: 'no_auth' }
+  if (err.code === '42501') return { status: 403, error: 'sin_permiso' }
+  if (/paciente_no_encontrado/.test(m)) return { status: 404, error: 'paciente_no_encontrado' }
+  return null
+}
+
+// Prompt de usuario del resumen, a partir del JSON de contexto_ia_ultima_visita. Todo campo vacío se
+// escribe 'No registrado' para que el modelo lo liste en datos_faltantes en vez de rellenarlo.
+// El nombre del médico NO va al prompt: no le sirve al resumen y no tiene por qué salir a un tercero.
+export function buildPromptResumen(ctx: any): string {
+  const c = ctx || {}
+  const p = c.paciente || {}
+  const u = c.unidades_signos_vitales || {}
+  const txt = (v: unknown) => (v === null || v === undefined || String(v).trim() === '' ? 'No registrado' : String(v).trim())
+  const fecha = (f: unknown) => (f ? String(f).slice(0, 10) : 's/f')
+  const hora = (h: unknown) => (h ? String(h).slice(0, 5) : '')
+
+  const campos: [string, string, string][] = [
+    ['presion_arterial', 'PA', 'mmHg'], ['frecuencia_cardiaca', 'FC', 'lpm'],
+    ['frecuencia_respiratoria', 'FR', 'rpm'], ['temperatura', 'Temp', '°C'],
+    ['saturacion_o2', 'SpO2', '%'], ['glucosa', 'Glucosa', 'mg/dL'],
+    ['peso_kg', 'Peso', 'kg'], ['talla_cm', 'Talla', 'cm'], ['imc', 'IMC', 'kg/m2'],
+  ]
+  const vit = Array.isArray(c.signos_vitales) ? c.signos_vitales : []
+  const vitalesTxt = vit.length
+    ? vit.map((v: any) => {
+        const partes = campos
+          .filter(([k]) => v[k] !== null && v[k] !== undefined && v[k] !== '')
+          .map(([k, et, unidad]) => `${et} ${v[k]} ${u[k] || unidad}`)
+        const toma = String(v.fecha_toma || '').replace('T', ' ').slice(0, 16) || 's/f'
+        return `- ${toma} (${v.estado || 'sin estado'}): ${partes.length ? partes.join(', ') : 'sin valores'}`
+      }).join('\n')
+    : 'No registrado'
+
+  return `VISITA: ${fecha(c.fecha)}${hora(c.hora_inicio) ? ` ${hora(c.hora_inicio)}` : ''}
+NOTA CORREGIDA DESPUES DE CERRADA: ${c.corregida === true ? 'Si' : 'No'}
+
+PACIENTE:
+- Edad: ${p.edad != null ? `${p.edad} años` : 'No registrado'}
+- Genero: ${txt(p.genero)}
+- Tipo de sangre: ${txt(p.tipo_sangre)}
+- Alergias: ${txt(p.alergias)}
+- Medicacion en uso (declarada en ficha): ${txt(p.medicacion_en_uso)}
+- Antecedentes personales: ${txt(p.antecedentes_personales)}
+- Antecedentes familiares: ${txt(p.antecedentes_familiares)}
+
+NOTA DE LA VISITA (SOAP):
+- Motivo de consulta: ${txt(c.motivo_consulta)}
+- Subjetivo: ${txt(c.subjetivo)}
+- Objetivo: ${txt(c.objetivo)}
+- Analisis: ${txt(c.analisis)}
+- Diagnostico: ${txt(c.diagnostico)}
+- Plan: ${txt(c.plan)}
+- Nota libre: ${txt(c.nota)}
+
+SIGNOS VITALES DE ESA VISITA (hora de toma en UTC; validados primero, luego mas reciente primero):
+${vitalesTxt}
+
+Redacta el resumen segun las reglas establecidas.`
+}
+
+// Forma EXACTA de la salida del modelo: las 5 claves, ni una más, con sus tipos.
+export function validarResumen(v: unknown): ResumenVisita | null {
+  if (!v || typeof v !== 'object' || Array.isArray(v)) return null
+  const o = v as Record<string, unknown>
+  const claves = Object.keys(o)
+  if (claves.length !== CLAVES_RESUMEN.length || !CLAVES_RESUMEN.every((k) => claves.includes(k))) return null
+  if (typeof o.resumen !== 'string' || o.resumen.trim() === '') return null
+  for (const k of CLAVES_RESUMEN.slice(1)) {
+    const a = o[k]
+    if (!Array.isArray(a) || !a.every((x) => typeof x === 'string')) return null
+  }
+  return o as unknown as ResumenVisita
+}
+
+// Texto crudo de OpenAI → resumen validado o null. Sin rescate por regex: o es el JSON exacto o no sirve.
+export function parsearResumen(texto: string): ResumenVisita | null {
+  try {
+    return validarResumen(JSON.parse(texto))
+  } catch {
+    return null
+  }
+}
+
+// ============================================================================================
+// Piezas compartidas por los dos modos: llamada a OpenAI (mismo modelo/timeout/max_tokens) y auditoría.
+// ============================================================================================
+
+const MODELO_IA = 'gpt-4o-mini'
+
+type ResultadoOpenAI = { ok: true; texto: string } | { ok: false; status: number; body: Record<string, unknown> }
+
+async function llamarOpenAI(apiKey: string, system: string, user: string): Promise<ResultadoOpenAI> {
+  // Timeout duro: abortar si OpenAI tarda demasiado (no colgar la edge hasta su wall-clock).
+  const ac = new AbortController()
+  const timeoutId = setTimeout(() => ac.abort(), 25000)
+  let openaiRes: Response
+  try {
+    openaiRes = await fetch('https://api.openai.com/v1/chat/completions', {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${apiKey}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        model: MODELO_IA,
+        messages: [
+          { role: 'system', content: system },
+          { role: 'user', content: user }
+        ],
+        temperature: 0.3,
+        max_tokens: 1500,
+        response_format: { type: 'json_object' },
+      }),
+      signal: ac.signal,
+    })
+  } catch (e: any) {
+    clearTimeout(timeoutId)
+    const abortado = e?.name === 'AbortError'
+    console.error('OpenAI fetch error:', abortado ? 'timeout' : (e?.message ?? e))
+    return {
+      ok: false, status: 504, body: {
+        error: abortado ? 'asistente_timeout' : 'error_openai',
+        message: abortado
+          ? 'El asistente de IA tardó demasiado en responder. Intentá de nuevo.'
+          : 'No se pudo contactar al asistente de IA. Intentá de nuevo en unos minutos.',
+      },
+    }
+  }
+  clearTimeout(timeoutId)
+
+  if (!openaiRes.ok) {
+    let errMsg = 'Error en OpenAI'
+    try {
+      const err = await openaiRes.json()
+      errMsg = err.error?.message || `OpenAI HTTP ${openaiRes.status}`
+    } catch {
+      errMsg = `OpenAI HTTP ${openaiRes.status}`
+    }
+    console.error('OpenAI error, status:', openaiRes.status)
+    // FAIL-CLOSED: NUNCA devolver una sugerencia clínica falsa. Ante cualquier error de OpenAI
+    // (cuota, billing, rate-limit 429...) se responde error honesto -> el front muestra el estado de error.
+    const esCuota = openaiRes.status === 429 || /quota|billing|exceeded|rate limit/i.test(errMsg)
+    return {
+      ok: false, status: 503, body: {
+        error: esCuota ? 'asistente_no_disponible' : 'error_openai',
+        message: esCuota
+          ? 'El asistente de IA no está disponible en este momento (límite de uso). Intentá más tarde.'
+          : 'El asistente de IA tuvo un error. Intentá de nuevo en unos minutos.',
+      },
+    }
+  }
+
+  const openaiData = await openaiRes.json()
+  return { ok: true, texto: openaiData.choices?.[0]?.message?.content || '' }
+}
+
+// Auditoria via fetch directo con SERVICE_ROLE (SOLO para esto; NUNCA para el gate).
+// medico_id = identidad verificada (getUser); paciente_id = ya validado por el gate (pertenencia).
+async function auditar(supabaseUrl: string, fila: Record<string, unknown>) {
+  try {
+    const serviceKey = Deno.env.get('SB_SERVICE_ROLE_KEY') || Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')
+    if (supabaseUrl && serviceKey) {
+      await fetch(`${supabaseUrl}/rest/v1/auditoria_ia`, {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${serviceKey}`,
+          'apikey': serviceKey,
+          'Content-Type': 'application/json',
+          'Prefer': 'return=minimal',
+        },
+        body: JSON.stringify(fila),
+      })
+    }
+  } catch (auditErr: any) {
+    console.error('Auditoria error (no critico):', auditErr?.message ?? auditErr?.code)
+  }
+}
+
+export async function handle(req: Request): Promise<Response> {
   const corsHeaders = buildCors(req.headers.get('Origin'))
   const json = (body: unknown, status = 200) =>
     new Response(JSON.stringify(body), { status, headers: { ...corsHeaders, 'Content-Type': 'application/json' } })
@@ -173,7 +423,53 @@ serve(async (req) => {
   const medicoIdReal = userData.user.id
 
   try {
-    const { soap, paciente_id, consulta_id } = await req.json() // medico_id del body se IGNORA a propósito
+    const body = await req.json()
+
+    // MODO resumen_visita: se resuelve ANTES del chequeo de soap. Sólo se lee paciente_id; consulta_id,
+    // medico_id y soap del body se ignoran (la nota sale de la RPC, no del caller).
+    if (decidirModo(body) === 'resumen_visita') {
+      const pacienteIdResumen = idPositivo(body.paciente_id)
+      if (!pacienteIdResumen) return json({ error: 'paciente_id requerido' }, 400)
+
+      const { data: ctx, error: rErr } = await supa.rpc('contexto_ia_ultima_visita', { p_paciente_id: pacienteIdResumen })
+      if (rErr) {
+        const mapeado = mapearErrorRpc(rErr)
+        if (mapeado) return json({ error: mapeado.error }, mapeado.status)
+        console.error('contexto_ia_ultima_visita error:', rErr?.message ?? rErr?.code)
+        return json({ error: 'error_contexto' }, 500)
+      }
+      if (!ctx || typeof ctx !== 'object') return json({ error: 'error_contexto' }, 500)
+      // Sin visita: ni OpenAI ni auditoría (no salió nada del paciente hacia un tercero).
+      if (ctx.sin_visita === true) return json({ sin_visita: true })
+
+      const promptResumen = buildPromptResumen(ctx)
+      const r = await llamarOpenAI(apiKey, SYSTEM_PROMPT_RESUMEN, promptResumen)
+      if (!r.ok) return json(r.body, r.status)
+
+      const resumen = parsearResumen(r.texto)
+      await auditar(supabaseUrl, {
+        medico_id: medicoIdReal,
+        paciente_id: pacienteIdResumen,
+        consulta_id: ctx.nota_id ?? null, // nota_id DEVUELTO por la RPC, nunca del body
+        accion_medico: MODO_RESUMEN_VISITA,
+        prompt: promptResumen,
+        respuesta_ia: resumen ? JSON.stringify(resumen) : r.texto,
+        modelo_ia: MODELO_IA,
+      })
+      if (!resumen) return json({ error: 'respuesta_ia_invalida' }, 502)
+
+      return json({
+        sin_visita: false,
+        cita_id: ctx.cita_id,
+        fecha: ctx.fecha,
+        hora_inicio: ctx.hora_inicio,
+        medico_nombre: ctx.medico_nombre,
+        corregida: ctx.corregida === true,
+        resumen,
+      })
+    }
+
+    const { soap, paciente_id, consulta_id } = body // medico_id del body se IGNORA a propósito
     const pacienteId = Number(paciente_id)
     if (!pacienteId) return json({ error: 'paciente_id requerido' }, 400)
 
@@ -196,124 +492,68 @@ serve(async (req) => {
       return json({ error: 'error_contexto' }, 500)
     }
 
+    // consulta_id del body: si viene, tiene que ser una nota de ESTE paciente que el caller pueda leer
+    // (cliente del usuario, o sea RLS). Antes se auditaba tal cual llegaba.
+    const cons = parsearConsultaId(consulta_id)
+    let consultaIdAuditada: number | null = null
+    if (cons.presente) {
+      if (cons.id === null) return json({ error: 'consulta_invalida' }, 400)
+      const { data: nota, error: nErr } = await supa
+        .from('expediente_notas').select('id')
+        .eq('id', cons.id).eq('paciente_id', pacienteId)
+        .maybeSingle()
+      if (nErr) {
+        console.error('validacion consulta_id error:', nErr?.message ?? nErr?.code)
+        return json({ error: 'error_contexto' }, 500)
+      }
+      if (!nota) return json({ error: 'consulta_invalida' }, 400)
+      consultaIdAuditada = cons.id
+    }
+
     const userPrompt = buildPrompt(ctxHist, soap)
 
-    // Timeout duro: abortar si OpenAI tarda demasiado (no colgar la edge hasta su wall-clock).
-    const ac = new AbortController()
-    const timeoutId = setTimeout(() => ac.abort(), 25000)
-    let openaiRes: Response
-    try {
-      openaiRes = await fetch('https://api.openai.com/v1/chat/completions', {
-        method: 'POST',
-        headers: {
-          'Authorization': `Bearer ${apiKey}`,
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({
-          model: 'gpt-4o-mini',
-          messages: [
-            { role: 'system', content: SYSTEM_PROMPT },
-            { role: 'user', content: userPrompt }
-          ],
-          temperature: 0.3,
-          max_tokens: 1500,
-          response_format: { type: 'json_object' },
-        }),
-        signal: ac.signal,
-      })
-    } catch (e: any) {
-      clearTimeout(timeoutId)
-      const abortado = e?.name === 'AbortError'
-      console.error('OpenAI fetch error:', abortado ? 'timeout' : (e?.message ?? e))
-      return json({
-        error: abortado ? 'asistente_timeout' : 'error_openai',
-        message: abortado
-          ? 'El asistente de IA tardó demasiado en responder. Intentá de nuevo.'
-          : 'No se pudo contactar al asistente de IA. Intentá de nuevo en unos minutos.',
-      }, 504)
-    }
-    clearTimeout(timeoutId)
+    const r = await llamarOpenAI(apiKey, SYSTEM_PROMPT, userPrompt)
+    if (!r.ok) return json(r.body, r.status)
+    const respuestaTexto = r.texto
 
     let respuestaEstructurada: any
-    let fromOpenAI = false
-
-    if (!openaiRes.ok) {
-      let errMsg = 'Error en OpenAI'
-      try {
-        const err = await openaiRes.json()
-        errMsg = err.error?.message || `OpenAI HTTP ${openaiRes.status}`
-      } catch {
-        errMsg = `OpenAI HTTP ${openaiRes.status}`
-      }
-      console.error('OpenAI error, status:', openaiRes.status)
-      // FAIL-CLOSED: NUNCA devolver una sugerencia clínica falsa. Ante cualquier error de OpenAI
-      // (cuota, billing, rate-limit 429...) se responde error honesto -> el front muestra el estado de error.
-      const esCuota = openaiRes.status === 429 || /quota|billing|exceeded|rate limit/i.test(errMsg)
-      return json({
-        error: esCuota ? 'asistente_no_disponible' : 'error_openai',
-        message: esCuota
-          ? 'El asistente de IA no está disponible en este momento (límite de uso). Intentá más tarde.'
-          : 'El asistente de IA tuvo un error. Intentá de nuevo en unos minutos.',
-      }, 503)
-    } else {
-      const openaiData = await openaiRes.json()
-      const respuestaTexto = openaiData.choices?.[0]?.message?.content || ''
-      fromOpenAI = true
-
-      try {
-        respuestaEstructurada = JSON.parse(respuestaTexto)
-      } catch {
-        const jsonMatch = respuestaTexto.match(/\{[\s\S]*\}/)
-        if (jsonMatch) {
-          respuestaEstructurada = JSON.parse(jsonMatch[0])
-        } else {
-          respuestaEstructurada = {
-            disclaimer: "Sugerencia de IA generada automaticamente. NO reemplaza la evaluacion medica.",
-            diagnosticos_diferenciales: [],
-            examenes_recomendados: [],
-            opciones_farmacologicas: [],
-            contraindicaciones: [],
-            referencias_guias: [],
-            notas_adicionales: respuestaTexto
-          }
+    try {
+      respuestaEstructurada = JSON.parse(respuestaTexto)
+    } catch {
+      const jsonMatch = respuestaTexto.match(/\{[\s\S]*\}/)
+      if (jsonMatch) {
+        respuestaEstructurada = JSON.parse(jsonMatch[0])
+      } else {
+        respuestaEstructurada = {
+          disclaimer: "Sugerencia de IA generada automaticamente. NO reemplaza la evaluacion medica.",
+          diagnosticos_diferenciales: [],
+          examenes_recomendados: [],
+          opciones_farmacologicas: [],
+          contraindicaciones: [],
+          referencias_guias: [],
+          notas_adicionales: respuestaTexto
         }
       }
     }
 
-    // Auditoria via fetch directo con SERVICE_ROLE (SOLO para esto; NUNCA para el gate).
-    // medico_id = identidad verificada (getUser); paciente_id = ya validado por el gate (pertenencia).
-    try {
-      const serviceKey = Deno.env.get('SB_SERVICE_ROLE_KEY') || Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')
-      if (supabaseUrl && serviceKey) {
-        await fetch(`${supabaseUrl}/rest/v1/auditoria_ia`, {
-          method: 'POST',
-          headers: {
-            'Authorization': `Bearer ${serviceKey}`,
-            'apikey': serviceKey,
-            'Content-Type': 'application/json',
-            'Prefer': 'return=minimal',
-          },
-          body: JSON.stringify({
-            medico_id: medicoIdReal,
-            paciente_id: pacienteId,
-            consulta_id: consulta_id || null,
-            prompt: userPrompt,
-            respuesta_ia: fromOpenAI ? JSON.stringify(respuestaEstructurada) : '[MOCK - OpenAI quota exceeded]',
-            modelo_ia: fromOpenAI ? 'gpt-4o-mini' : 'mock-quota',
-          }),
-        })
-      }
-    } catch (auditErr: any) {
-      console.error('Auditoria error (no critico):', auditErr?.message ?? auditErr?.code)
-    }
+    await auditar(supabaseUrl, {
+      medico_id: medicoIdReal,
+      paciente_id: pacienteId,
+      consulta_id: consultaIdAuditada,
+      prompt: userPrompt,
+      respuesta_ia: JSON.stringify(respuestaEstructurada),
+      modelo_ia: MODELO_IA,
+    })
 
     return json({
       sugerencias: respuestaEstructurada,
-      modelo: fromOpenAI ? 'gpt-4o-mini' : 'mock-mode',
+      modelo: MODELO_IA,
     })
 
   } catch (error: any) {
     console.error('Error asistente-ia:', error?.message ?? error?.code)
     return json({ error: error?.message || 'Error interno del servidor' }, 500)
   }
-})
+}
+
+if (import.meta.main) serve(handle)

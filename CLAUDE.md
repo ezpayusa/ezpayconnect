@@ -24,9 +24,17 @@ Stack: React + Vite + TypeScript, Supabase / Postgres, deploy en Vercel, repo en
   minutos por esto** (P635 es la probe que faltaba, P636 su contraprueba).
 - NUNCA ampliar policies de RLS sobre tablas adyacentes a datos médicos (p. ej. campana_metricas). Para dar acceso, usar RPCs SECURITY DEFINER con search_path='', fail-closed (si el scope es NULL → 0 filas) y gate interno.
 - Probar aislamiento por rol impersonando request.jwt.claims en prod: cada rol ve lo suyo y no lo ajeno.
-- **Próximos números libres: probe `P916`** (global, no por módulo; P906-P907 usados por la mig 336, P912-P913
-  por la 337, P914-P915 por la 338), **migración `339`**
-  (338 = cierre de DELETE directo de examenes/ordenes_examen + REVOKE MAINTAIN ordenes_examen, ajusta P881,
+- **Próximos números libres: probe `P921`** (global, no por módulo; P906-P907 usados por la mig 336, P912-P913
+  por la 337, P914-P915 por la 338, P916-P920 por la 339/340), **migración `341`**
+  (**Resumen IA fase 1:** 339 = RPC `contexto_ia_ultima_visita` — APLICADA en prod el 1-oct-2026 21:43:50 UTC;
+  340 = gate de relación alineado con las ramas por paciente de `exp_select_medico` (`private.es_medico_de` /
+  `private.medico_atiende_paciente`, COALESCE fail-closed → `no_pertenencia`), md5(prosrc) 339 a755ff5b… → 340
+  7c97629d… — APLICADA en prod el 2-oct-2026 14:28:11 UTC; las dos verificadas en sesión independiente
+  (995 filas / 11 rojas de deuda, guard 155). Orden de rollback: `340_rollback` → `339_rollback`. Edge
+  `asistente-ia` v29 (md5 bb68fbb8…) desplegado en prod con modo `resumen_visita`; su rollback = redeploy del
+  `index.ts` de `0043936^` (md5 4efc0997…). **Orden de deploy de la feature: edge ANTES que front** — el edge
+  viejo responde 400 `app_desactualizada` al modo `resumen_visita`.
+  338 = cierre de DELETE directo de examenes/ordenes_examen + REVOKE MAINTAIN ordenes_examen, ajusta P881,
   P884 y P905 — APLICADA en prod el 30-sep-2026 12:17:45 UTC y verificada en sesión independiente 9/9
   (huella dbb4786b…, 990 filas / 11 rojas de deuda, P800 PASA, guard 155). **P4 (revisiones inmutables)
   CERRADO: migs 334-338.** Orden de rollback: `338_rollback` → `337_rollback` → `336_rollback` → `335_rollback` (cada uno
@@ -136,8 +144,10 @@ Stack: React + Vite + TypeScript, Supabase / Postgres, deploy en Vercel, repo en
 - **Migraciones: SIEMPRE `npx supabase db query --linked -f <archivo>`, NUNCA `db push`.** `db push`
   desincroniza `schema_migrations` (deuda desde la 047). Los `.sql` viven en `supabase/migrations/`
   (rollback en `supabase/migrations/rollback/`); los de `supabase/fixes/` se agregan con `git add -f`.
-  **Desvío aceptado (familia 8):** los rollbacks de 334-338 viven en `supabase/migrations/`
-  (`33X_rollback.sql`), no en `supabase/migrations/rollback/`.
+  **Desvío aceptado (familia 8):** los rollbacks de 334-340 viven en `supabase/migrations/`
+  (`3XX_rollback.sql`), no en `supabase/migrations/rollback/`.
+- **Los tests de edge (deno) NO corren en vitest ni en el pre-commit**: se corren a mano desde
+  `supabase/functions/<fn>/` con `deno test --allow-net --allow-env --no-check` (asistente-ia: 17).
 
 ## GRANTs explícitos del Data API (obligatoria desde 30-oct-2026)
 Supabase deja de otorgar GRANTs automáticos a los roles del Data API al crear objetos en `public`.
@@ -188,3 +198,8 @@ Detalles a recordar:
 - (Familia 4) `examenes.updated_at` no se actualiza al corregir ni al liberar.
 - (Familia 7) El lab no tiene vista del historial de revisiones; "Ver archivo anterior" aparece en
   revisiones que no cambiaron el archivo.
+- (Familia 3, DEFINER) `contexto_ia_paciente` (asistente IA en vivo) tiene el mismo ensanchamiento que tenía
+  la 339: `asistente_medico` y médicos de la clínica sin relación reciben las últimas 5 notas SOAP aunque la
+  RLS de `expediente_notas` no se las deja leer. Corregir con el mismo gate de relación de la 340.
+- (Familia 7) `AsistenteIA.tsx` no muestra el motivo de los 403/400 (usar `src/lib/errorAsistenteIA.ts`); el
+  sidebar filtra por `'asistente'` y no por `'asistente_medico'` (`Sidebar.tsx:55-57`).

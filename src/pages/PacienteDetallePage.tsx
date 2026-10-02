@@ -18,6 +18,7 @@ import { formatVital, formatPA } from '@/lib/vitalesRangos'
 import { FotoPacienteAvatar } from '@/components/FotoPacienteAvatar'
 import { DocumentosPaciente } from '@/components/DocumentosPaciente'
 import { ConsentimientoPresencial } from '@/components/ConsentimientoPresencial'
+import ResumenUltimaVisitaMedico from '@/components/consulta/ResumenUltimaVisitaMedico'
 import type { ExpedienteNotaRevision } from '@/types'
 import {
   ArrowLeft,
@@ -574,6 +575,7 @@ export default function PacienteDetallePage() {
             </h2>
           </div>
           <div className="p-6">
+            <ResumenUltimaVisitaMedico key={paciente.id} pacienteId={Number(paciente.id)} className="mb-6" />
             {consultas.length === 0 ? (
               <div className="text-center text-gray-400 py-12">No hay consultas registradas</div>
             ) : (
