@@ -29071,6 +29071,225 @@ EXCEPTION WHEN OTHERS THEN
 END $$;
 SELECT set_config('role', 'none', true);
 
+-- ---------------- P928 censo: privilegios de las secuencias de public/private (345) ----------------
+-- 345: anon y PUBLIC sin ningun privilegio en ninguna secuencia de public/private; authenticated sin SELECT ni
+-- UPDATE en ninguna; authenticated con USAGE EXACTAMENTE en el conjunto necesario. El conjunto se recalcula aca
+-- con la misma regla de la 345 (no es una lista fija): secuencia referida por el DEFAULT de una columna de una
+-- tabla de public donde authenticated tiene INSERT en la ACL y hay una policy de INSERT o ALL para authenticated
+-- o public. Mira la ACL explicita Y el privilegio efectivo (has_sequence_privilege). Con 345_rollback sale ROJO.
+-- Solo lee el catalogo.
+DO $$
+DECLARE v text; ok boolean; det text := ''; bad text := ''; nec text; n int;
+BEGIN
+  nec := (SELECT COALESCE(string_agg(DISTINCT s.relname::text, ',' ORDER BY s.relname::text), '') FROM pg_depend d
+       JOIN pg_attrdef ad ON ad.oid = d.objid JOIN pg_class t ON t.oid = ad.adrelid
+       JOIN pg_class s ON s.oid = d.refobjid AND s.relkind = 'S'
+      WHERE d.classid = 'pg_attrdef'::regclass AND d.refclassid = 'pg_class'::regclass
+        AND t.relnamespace = 'public'::regnamespace
+        AND EXISTS (SELECT 1 FROM aclexplode(COALESCE(t.relacl, acldefault('r', t.relowner))) x
+                     WHERE x.grantee = 'authenticated'::regrole AND x.privilege_type = 'INSERT')
+        AND EXISTS (SELECT 1 FROM pg_policy pl WHERE pl.polrelid = t.oid AND pl.polcmd IN ('a','*')
+                     AND (0 = ANY (pl.polroles) OR 'authenticated'::regrole = ANY (pl.polroles))));
+  n := COALESCE(array_length(string_to_array(NULLIF(nec, ''), ','), 1), 0);
+  -- (a) anon y PUBLIC: nada, ni explicito ni efectivo
+  SELECT string_agg(ns.nspname||'.'||c.relname, ',' ORDER BY ns.nspname, c.relname) INTO v
+    FROM pg_class c JOIN pg_namespace ns ON ns.oid = c.relnamespace
+   WHERE c.relkind = 'S' AND ns.nspname IN ('public','private')
+     AND (EXISTS (SELECT 1 FROM aclexplode(COALESCE(c.relacl, acldefault('s', c.relowner))) a WHERE a.grantee IN (0, 'anon'::regrole))
+          OR has_sequence_privilege('anon', c.oid, 'USAGE') OR has_sequence_privilege('anon', c.oid, 'SELECT')
+          OR has_sequence_privilege('anon', c.oid, 'UPDATE'));
+  ok := v IS NULL;
+  det := det||' ;; anon/PUBLIC|ninguna secuencia de public/private|'||CASE WHEN ok THEN 'OK' ELSE 'ROJO' END||'|-|'||left(COALESCE(v, '-'), 300);
+  IF NOT ok THEN bad := bad||'anon/PUBLIC en '||left(v, 300)||'; '; END IF;
+  -- (b) authenticated: ni SELECT (currval/last_value) ni UPDATE (setval) en ninguna
+  SELECT string_agg(ns.nspname||'.'||c.relname, ',' ORDER BY ns.nspname, c.relname) INTO v
+    FROM pg_class c JOIN pg_namespace ns ON ns.oid = c.relnamespace
+   WHERE c.relkind = 'S' AND ns.nspname IN ('public','private')
+     AND (EXISTS (SELECT 1 FROM aclexplode(COALESCE(c.relacl, acldefault('s', c.relowner))) a
+                   WHERE a.grantee = 'authenticated'::regrole AND a.privilege_type IN ('SELECT','UPDATE'))
+          OR has_sequence_privilege('authenticated', c.oid, 'SELECT') OR has_sequence_privilege('authenticated', c.oid, 'UPDATE'));
+  ok := v IS NULL;
+  det := det||' ;; authenticated SELECT/UPDATE|ninguna secuencia|'||CASE WHEN ok THEN 'OK' ELSE 'ROJO' END||'|-|'||left(COALESCE(v, '-'), 300);
+  IF NOT ok THEN bad := bad||'authenticated SELECT/UPDATE en '||left(v, 300)||'; '; END IF;
+  -- (c) authenticated USAGE: exactamente el conjunto necesario (explicito y efectivo coinciden)
+  SELECT COALESCE(string_agg(c.relname::text, ',' ORDER BY c.relname::text), '') INTO v
+    FROM pg_class c JOIN pg_namespace ns ON ns.oid = c.relnamespace
+   WHERE c.relkind = 'S' AND ns.nspname IN ('public','private')
+     AND (EXISTS (SELECT 1 FROM aclexplode(COALESCE(c.relacl, acldefault('s', c.relowner))) a
+                   WHERE a.grantee = 'authenticated'::regrole AND a.privilege_type = 'USAGE')
+          OR has_sequence_privilege('authenticated', c.oid, 'USAGE'));
+  ok := COALESCE(v = nec, false) AND n > 0;
+  det := det||' ;; authenticated USAGE|= conjunto necesario ('||n||'): '||nec||'|'||CASE WHEN ok THEN 'OK' ELSE 'ROJO' END||'|-|'||left(COALESCE(v, '-'), 700);
+  IF NOT ok THEN bad := bad||'authenticated USAGE en {'||left(v, 500)||'} vs necesario {'||nec||'}; '; END IF;
+  PERFORM set_config('probe.p928_det', det, false);
+  PERFORM set_config('probe.p928', CASE WHEN bad = ''
+    THEN 'OK (secuencias de public/private: anon y PUBLIC nada; authenticated sin SELECT/UPDATE y con USAGE exactamente en las '||n||' del conjunto necesario)'
+    ELSE 'ROJO ('||left(bad, 900)||')' END, false);
+EXCEPTION WHEN OTHERS THEN
+  PERFORM set_config('probe.p928', 'FALLO ('||SQLSTATE||' '||SQLERRM||')', false);
+END $$;
+SELECT set_config('role', 'none', true);
+
+-- ---------------- P929 funcional: INSERT real en el conjunto necesario y 42501 fuera de el (345) ----------------
+-- Para cada tabla del conjunto necesario (recalculado con la regla de P928), un INSERT real como authenticated con
+-- un actor que su policy permite (paciente 23, super_admin o medico): el DEFAULT nextval() tiene que funcionar, y
+-- los triggers de la tabla corren como el caller. Una tabla que entre al conjunto sin receta sale ROJO a proposito
+-- (agregar su receta es un acto deliberado). Despues, como authenticated: nextval() de TODA secuencia de public/
+-- private fuera del conjunto -> 42501, y SELECT last_value de las del conjunto -> 42501 (sin SELECT).
+-- setval() NO se prueba: no es transaccional, y si el privilegio estuviera (antes de la 345) moveria la secuencia
+-- real de prod; el UPDATE lo cubre el catalogo en P928.
+-- Todo adentro de una subtransaccion descartada con RAISE P0999; afuera verifica que los conteos volvieron.
+-- nextval() tampoco es transaccional: los valores que consumen los INSERT de este probe quedan como huecos en las
+-- secuencias (igual que con cualquier otro probe que inserta). Se deja asi a proposito: devolverlos con setval
+-- podria pisar un valor que prod entrego mientras tanto.
+DO $$
+DECLARE
+  det text := ''; bad text := ''; ok boolean; r record; st text; msg text; r_rest text := 'OK';
+  c_pac CONSTANT int := 23; v_pauth uuid; v_sa uuid; v_med uuid; v_pais uuid; v_camp int; v_plan int;
+  n_ins int := 0; n_neg int := 0; n_sel int := 0; snap_pre text; snap_post text;
+BEGIN
+  IF current_user <> 'postgres' THEN RAISE EXCEPTION 'fixture roto: P929 corre como %', current_user; END IF;
+  SELECT auth_user_id INTO v_pauth FROM public.pacientes WHERE id = c_pac;
+  SELECT id INTO v_sa FROM public.perfiles WHERE rol = 'super_admin' ORDER BY id LIMIT 1;
+  SELECT p.id INTO v_med FROM public.perfiles p WHERE p.rol = 'medico' AND EXISTS (SELECT 1 FROM auth.users u WHERE u.id = p.id) ORDER BY p.id LIMIT 1;
+  SELECT id INTO v_pais FROM public.configuracion_pais ORDER BY id LIMIT 1;
+  SELECT cp.id INTO v_camp FROM public.campanas_publicitarias cp
+   WHERE NOT EXISTS (SELECT 1 FROM public.campana_vistas cv WHERE cv.campana_id = cp.id AND cv.paciente_id = c_pac) ORDER BY cp.id LIMIT 1;
+  IF v_pauth IS NULL OR v_sa IS NULL OR v_med IS NULL OR v_pais IS NULL OR v_camp IS NULL THEN
+    RAISE EXCEPTION 'fixture roto: P929 sin paciente 23 con cuenta (%), super_admin (%), medico (%), pais (%) o campana libre (%)', v_pauth, v_sa, v_med, v_pais, v_camp;
+  END IF;
+  snap_pre := (SELECT string_agg(x, ',') FROM (
+    SELECT 'campana_vistas='||(SELECT count(*) FROM public.campana_vistas) UNION ALL SELECT 'campanas='||(SELECT count(*) FROM public.campanas_publicitarias)
+    UNION ALL SELECT 'chat='||(SELECT count(*) FROM public.chat_mensajes) UNION ALL SELECT 'citas='||(SELECT count(*) FROM public.citas)
+    UNION ALL SELECT 'notas='||(SELECT count(*) FROM public.expediente_notas) UNION ALL SELECT 'facturas='||(SELECT count(*) FROM public.facturas)
+    UNION ALL SELECT 'farmacias='||(SELECT count(*) FROM public.farmacias) UNION ALL SELECT 'pacientes='||(SELECT count(*) FROM public.pacientes)
+    UNION ALL SELECT 'planes='||(SELECT count(*) FROM public.planes_publicidad) UNION ALL SELECT 'planes_cfg='||(SELECT count(*) FROM public.planes_publicidad_config)
+    UNION ALL SELECT 'push='||(SELECT count(*) FROM public.push_tokens) UNION ALL SELECT 'vitales='||(SELECT count(*) FROM public.signos_vitales)) z(x));
+  BEGIN
+    -- planes_publicidad_config tiene UNIQUE (pais_id, plan_publicidad_id) y en prod no queda combinacion libre:
+    -- un plan propio, sembrado como postgres y descartado con todo lo demas. Con id EXPLICITO: la secuencia de
+    -- planes_publicidad esta atrasada respecto de max(id) (medido 2-oct-2026: last_value 1, max 3) y el DEFAULT
+    -- choca con la PK; ademas asi el fixture no consume valores de una secuencia que no es lo que se prueba.
+    INSERT INTO public.planes_publicidad (id, nombre)
+      VALUES ((SELECT COALESCE(max(id), 0) + 1 FROM public.planes_publicidad), 'P929 plan de prueba') RETURNING id INTO v_plan;
+    FOR r IN
+      SELECT DISTINCT s.oid AS seq_oid, s.relname::text AS seq, t.relname::text AS tab FROM pg_depend d
+        JOIN pg_attrdef ad ON ad.oid = d.objid JOIN pg_class t ON t.oid = ad.adrelid
+        JOIN pg_class s ON s.oid = d.refobjid AND s.relkind = 'S'
+       WHERE d.classid = 'pg_attrdef'::regclass AND d.refclassid = 'pg_class'::regclass
+         AND t.relnamespace = 'public'::regnamespace
+         AND EXISTS (SELECT 1 FROM aclexplode(COALESCE(t.relacl, acldefault('r', t.relowner))) x
+                      WHERE x.grantee = 'authenticated'::regrole AND x.privilege_type = 'INSERT')
+         AND EXISTS (SELECT 1 FROM pg_policy pl WHERE pl.polrelid = t.oid AND pl.polcmd IN ('a','*')
+                      AND (0 = ANY (pl.polroles) OR 'authenticated'::regrole = ANY (pl.polroles)))
+       ORDER BY 3
+    LOOP
+      st := 'OK'; msg := '-';
+      BEGIN
+        IF r.tab IN ('campana_vistas', 'chat_mensajes', 'push_tokens') THEN
+          PERFORM set_config('request.jwt.claims', json_build_object('sub', v_pauth::text, 'role', 'authenticated')::text, true);
+        ELSIF r.tab IN ('facturas', 'pacientes') THEN
+          PERFORM set_config('request.jwt.claims', json_build_object('sub', v_med::text, 'role', 'authenticated')::text, true);
+        ELSE
+          PERFORM set_config('request.jwt.claims', json_build_object('sub', v_sa::text, 'role', 'authenticated')::text, true);
+        END IF;
+        PERFORM set_config('role', 'authenticated', true);
+        CASE r.tab
+          WHEN 'campana_vistas' THEN
+            INSERT INTO public.campana_vistas (campana_id, paciente_id, clickeado) VALUES (v_camp, c_pac, false);
+          WHEN 'campanas_publicitarias' THEN
+            INSERT INTO public.campanas_publicitarias (titulo, fecha_inicio, fecha_fin, pais_id) VALUES ('P929 campana', CURRENT_DATE, CURRENT_DATE + 1, v_pais);
+          WHEN 'chat_mensajes' THEN
+            INSERT INTO public.chat_mensajes (paciente_id, medico_id, remitente, mensaje) VALUES (c_pac, NULL, 'paciente', 'P929 mensaje');
+          WHEN 'citas' THEN
+            INSERT INTO public.citas (paciente_id, fecha, hora_inicio, hora_fin) VALUES (c_pac, CURRENT_DATE, '06:00', '06:30');
+          WHEN 'expediente_notas' THEN
+            INSERT INTO public.expediente_notas (paciente_id, medico_id, subjetivo) VALUES (c_pac, v_med, 'P929 nota');
+          WHEN 'facturas' THEN
+            INSERT INTO public.facturas (medico_id, concepto, precio_unitario) VALUES (v_med, 'P929 factura', 1);
+          WHEN 'farmacias' THEN
+            INSERT INTO public.farmacias (nombre, tipo, pais_id) VALUES ('P929 farmacia', 'farmacia', v_pais);
+          WHEN 'pacientes' THEN
+            INSERT INTO public.pacientes (nombre, apellido, activo, medico_id) VALUES ('P929', 'Probe', true, v_med);
+          WHEN 'planes_publicidad_config' THEN
+            INSERT INTO public.planes_publicidad_config (pais_id, plan_publicidad_id, precio_local) VALUES (v_pais, v_plan, 1);
+          WHEN 'push_tokens' THEN
+            INSERT INTO public.push_tokens (paciente_id, token, plataforma) VALUES (c_pac, 'P929-token-de-prueba', 'web');
+          WHEN 'signos_vitales' THEN
+            INSERT INTO public.signos_vitales (paciente_id, frecuencia_cardiaca) VALUES (c_pac, 70);
+          ELSE
+            st := 'SIN RECETA';
+        END CASE;
+      EXCEPTION WHEN OTHERS THEN st := SQLSTATE; msg := SQLERRM;
+      END;
+      PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
+      ok := st = 'OK';
+      IF ok THEN n_ins := n_ins + 1; END IF;
+      det := det||' ;; INSERT '||r.tab||' ('||r.seq||')|sin error|'||CASE WHEN ok THEN 'OK' ELSE 'ROJO' END||'|'||st||'|'||left(msg, 200);
+      IF NOT ok THEN bad := bad||'INSERT '||r.tab||': '||st||' '||left(msg, 150)||'; '; END IF;
+      -- sin SELECT: last_value de una secuencia del conjunto -> 42501
+      st := 'PASO';
+      BEGIN
+        PERFORM set_config('request.jwt.claims', json_build_object('sub', v_pauth::text, 'role', 'authenticated')::text, true);
+        PERFORM set_config('role', 'authenticated', true);
+        EXECUTE format('SELECT last_value FROM %s', r.seq_oid::regclass);
+      EXCEPTION WHEN OTHERS THEN st := SQLSTATE;
+      END;
+      PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
+      IF st = '42501' THEN n_sel := n_sel + 1;
+      ELSE bad := bad||'SELECT last_value de '||r.seq||': '||st||'; '; END IF;
+    END LOOP;
+    det := det||' ;; SELECT last_value del conjunto|42501 en todas|'||CASE WHEN bad NOT LIKE '%SELECT last_value%' THEN 'OK' ELSE 'ROJO' END||'|'||n_sel||'|-';
+    -- fuera del conjunto: nextval() como authenticated -> 42501 en TODAS las de public/private
+    FOR r IN
+      SELECT c.oid AS seq_oid, ns.nspname||'.'||c.relname AS seq FROM pg_class c JOIN pg_namespace ns ON ns.oid = c.relnamespace
+       WHERE c.relkind = 'S' AND ns.nspname IN ('public','private')
+         AND c.oid NOT IN (SELECT d.refobjid FROM pg_depend d
+                JOIN pg_attrdef ad ON ad.oid = d.objid JOIN pg_class t ON t.oid = ad.adrelid
+               WHERE d.classid = 'pg_attrdef'::regclass AND d.refclassid = 'pg_class'::regclass
+                 AND t.relnamespace = 'public'::regnamespace
+                 AND EXISTS (SELECT 1 FROM aclexplode(COALESCE(t.relacl, acldefault('r', t.relowner))) x
+                              WHERE x.grantee = 'authenticated'::regrole AND x.privilege_type = 'INSERT')
+                 AND EXISTS (SELECT 1 FROM pg_policy pl WHERE pl.polrelid = t.oid AND pl.polcmd IN ('a','*')
+                              AND (0 = ANY (pl.polroles) OR 'authenticated'::regrole = ANY (pl.polroles))))
+       ORDER BY 2
+    LOOP
+      st := 'PASO';
+      BEGIN
+        PERFORM set_config('request.jwt.claims', json_build_object('sub', v_pauth::text, 'role', 'authenticated')::text, true);
+        PERFORM set_config('role', 'authenticated', true);
+        PERFORM nextval(r.seq_oid::regclass);
+      EXCEPTION WHEN OTHERS THEN st := SQLSTATE;
+      END;
+      PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
+      IF st = '42501' THEN n_neg := n_neg + 1;
+      ELSE bad := bad||'nextval '||r.seq||': '||st||'; '; END IF;
+    END LOOP;
+    det := det||' ;; nextval fuera del conjunto|42501 en todas|'||CASE WHEN bad NOT LIKE '%nextval %' THEN 'OK' ELSE 'ROJO' END||'|'||n_neg||'|-';
+    RAISE EXCEPTION 'P929 descarte' USING ERRCODE = 'P0999';
+  EXCEPTION WHEN SQLSTATE 'P0999' THEN NULL;
+  END;
+  PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
+  snap_post := (SELECT string_agg(x, ',') FROM (
+    SELECT 'campana_vistas='||(SELECT count(*) FROM public.campana_vistas) UNION ALL SELECT 'campanas='||(SELECT count(*) FROM public.campanas_publicitarias)
+    UNION ALL SELECT 'chat='||(SELECT count(*) FROM public.chat_mensajes) UNION ALL SELECT 'citas='||(SELECT count(*) FROM public.citas)
+    UNION ALL SELECT 'notas='||(SELECT count(*) FROM public.expediente_notas) UNION ALL SELECT 'facturas='||(SELECT count(*) FROM public.facturas)
+    UNION ALL SELECT 'farmacias='||(SELECT count(*) FROM public.farmacias) UNION ALL SELECT 'pacientes='||(SELECT count(*) FROM public.pacientes)
+    UNION ALL SELECT 'planes='||(SELECT count(*) FROM public.planes_publicidad) UNION ALL SELECT 'planes_cfg='||(SELECT count(*) FROM public.planes_publicidad_config)
+    UNION ALL SELECT 'push='||(SELECT count(*) FROM public.push_tokens) UNION ALL SELECT 'vitales='||(SELECT count(*) FROM public.signos_vitales)) z(x));
+  IF snap_post IS DISTINCT FROM snap_pre THEN r_rest := 'conteos distintos: '||COALESCE(snap_post, 'NULL')||' vs '||COALESCE(snap_pre, 'NULL'); END IF;
+  IF n_ins = 0 THEN bad := bad||'conjunto necesario vacio; '; END IF;
+  det := det||' ;; restauracion|subtransaccion descartada; conteos iguales|'||r_rest||'|-|'||COALESCE(snap_post, '-');
+  PERFORM set_config('probe.p929_det', det, false);
+  PERFORM set_config('probe.p929', CASE WHEN bad = '' AND r_rest = 'OK'
+    THEN 'OK (INSERT real como authenticated en las '||n_ins||' tablas del conjunto; sin SELECT en sus '||n_sel||' secuencias; nextval 42501 en las '||n_neg||' de fuera; descartado)'
+    ELSE 'ROJO ('||left(bad, 900)||' | restauracion='||r_rest||')' END, false);
+EXCEPTION WHEN OTHERS THEN
+  PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
+  PERFORM set_config('probe.p929', CASE WHEN SQLERRM LIKE 'fixture roto%' THEN 'ROJO ('||SQLERRM||')' ELSE 'FALLO ('||SQLSTATE||' '||SQLERRM||')' END, false);
+END $$;
+SELECT set_config('role', 'none', true);
+
 -- ===== Veredictos como result set =====
 SELECT 'P1_anon_insert_citas'              AS probe, current_setting('probe.p1', true)  AS verdict, 'BLOQUEADO' AS esperado_post_fix
 UNION ALL SELECT 'P2_medico_cancela_ajena_rpc',         current_setting('probe.p2', true),  'BLOQUEADO'
@@ -30073,6 +30292,8 @@ UNION ALL SELECT 'P924_priv_tru_tri_ref_342',         current_setting('probe.p92
 UNION ALL SELECT 'P925_priv_maintain_343',            current_setting('probe.p925', true), 'OK (343: 0 relaciones de public/private con MAINTAIN para anon, authenticated o PUBLIC)'
 UNION ALL SELECT 'P926_defacl_postgres_344',          current_setting('probe.p926', true), 'OK (344: defaults de postgres sin TRU/TRI/REF/MAI en tablas ni SELECT/UPDATE en secuencias; funciones sin PUBLIC)'
 UNION ALL SELECT 'P927_defacl_funcional_344',         current_setting('probe.p927', true), 'OK (344: tabla/secuencia/funciones nuevas nacen con la ACL esperada; descartadas)'
+UNION ALL SELECT 'P928_secuencias_censo_345',         current_setting('probe.p928', true), 'OK (345: anon/PUBLIC nada en secuencias; authenticated sin SELECT/UPDATE y USAGE solo en el conjunto necesario)'
+UNION ALL SELECT 'P929_secuencias_funcional_345',     current_setting('probe.p929', true), 'OK (345: INSERT real en las tablas del conjunto; 42501 fuera; descartado)'
 -- Las filas FX* son SALUD DE FIXTURE, no probes de seguridad: dicen si la precondicion que una
 -- migracion posterior empezo a exigir se pudo sembrar. Si una sale ROJO, los probes que dependen de
 -- ese fixture reportan N/A (su flag de ready se pierde con el rollback de la subtransaccion) en vez
@@ -30317,7 +30538,7 @@ UNION ALL SELECT 'P000_CENTINELA_veredictos_no_nulos',
        'probe.p866', 'probe.p867', 'probe.p868', 'probe.p869', 'probe.p870', 'probe.p871', 'probe.p872', 'probe.p873', 'probe.p874', 'probe.p875', 'probe.p876', 'probe.p877', 'probe.p878',
        'probe.p879', 'probe.p880', 'probe.p881', 'probe.p882', 'probe.p883', 'probe.p884',
        'probe.p885', 'probe.p886', 'probe.p887', 'probe.p888', 'probe.p889', 'probe.p890', 'probe.p891', 'probe.p892', 'probe.p893', 'probe.p894', 'probe.p895', 'probe.p896', 'probe.p908', 'probe.p909', 'probe.p910', 'probe.p911',
-       'probe.p897', 'probe.p898', 'probe.p899', 'probe.p900', 'probe.p901', 'probe.p902', 'probe.p903', 'probe.p904', 'probe.p905', 'probe.p906', 'probe.p907', 'probe.p912', 'probe.p913', 'probe.p914', 'probe.p915', 'probe.p916', 'probe.p917', 'probe.p918', 'probe.p919', 'probe.p920', 'probe.p921', 'probe.p922', 'probe.p923', 'probe.p924', 'probe.p925', 'probe.p926', 'probe.p927'
+       'probe.p897', 'probe.p898', 'probe.p899', 'probe.p900', 'probe.p901', 'probe.p902', 'probe.p903', 'probe.p904', 'probe.p905', 'probe.p906', 'probe.p907', 'probe.p912', 'probe.p913', 'probe.p914', 'probe.p915', 'probe.p916', 'probe.p917', 'probe.p918', 'probe.p919', 'probe.p920', 'probe.p921', 'probe.p922', 'probe.p923', 'probe.p924', 'probe.p925', 'probe.p926', 'probe.p927', 'probe.p928', 'probe.p929'
              ]) AS n) s),
   'OK (todos los veredictos publicados)';
 
