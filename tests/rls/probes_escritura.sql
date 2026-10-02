@@ -28973,6 +28973,104 @@ EXCEPTION WHEN OTHERS THEN
 END $$;
 SELECT set_config('role', 'none', true);
 
+-- ---------------- P926 catalogo: pg_default_acl de postgres (344) ----------------
+-- 344: las tablas que postgres crea en public nacen con authenticated arwd (sin TRUNCATE/TRIGGER/REFERENCES/
+-- MAINTAIN) y las secuencias con authenticated U (sin SELECT/UPDATE); la entrada global de funciones sigue sin
+-- PUBLIC y la de public con authenticated y service_role; private sin entradas. Con 344_rollback sale ROJO a
+-- proposito (tablas arwdDxtm, secuencias rwU). Solo lee el catalogo.
+DO $$
+DECLARE v text; ok boolean; det text := ''; bad text := '';
+BEGIN
+  v := (SELECT COALESCE((SELECT d.defaclacl::text FROM pg_default_acl d WHERE d.defaclrole = 'postgres'::regrole AND d.defaclnamespace = 'public'::regnamespace AND d.defaclobjtype = 'r'), 'NO EXISTE'));
+  ok := COALESCE(v = '{postgres=arwdDxtm/postgres,authenticated=arwd/postgres,service_role=arwdDxtm/postgres}', false);
+  det := det||' ;; postgres|public|tablas|{postgres=arwdDxtm/postgres,authenticated=arwd/postgres,service_role=arwdDxtm/postgres}|'||CASE WHEN ok THEN 'OK' ELSE 'ROJO' END||'|-|'||COALESCE(v, 'NULL');
+  IF NOT ok THEN bad := bad||'postgres|public|tablas='||COALESCE(v, 'NULL')||'; '; END IF;
+  v := (SELECT COALESCE((SELECT d.defaclacl::text FROM pg_default_acl d WHERE d.defaclrole = 'postgres'::regrole AND d.defaclnamespace = 'public'::regnamespace AND d.defaclobjtype = 'S'), 'NO EXISTE'));
+  ok := COALESCE(v = '{postgres=rwU/postgres,authenticated=U/postgres,service_role=rwU/postgres}', false);
+  det := det||' ;; postgres|public|secuencias|{postgres=rwU/postgres,authenticated=U/postgres,service_role=rwU/postgres}|'||CASE WHEN ok THEN 'OK' ELSE 'ROJO' END||'|-|'||COALESCE(v, 'NULL');
+  IF NOT ok THEN bad := bad||'postgres|public|secuencias='||COALESCE(v, 'NULL')||'; '; END IF;
+  v := (SELECT COALESCE((SELECT d.defaclacl::text FROM pg_default_acl d WHERE d.defaclrole = 'postgres'::regrole AND d.defaclnamespace = 'public'::regnamespace AND d.defaclobjtype = 'f'), 'NO EXISTE'));
+  ok := COALESCE(v = '{postgres=X/postgres,authenticated=X/postgres,service_role=X/postgres}', false);
+  det := det||' ;; postgres|public|funciones|{postgres=X/postgres,authenticated=X/postgres,service_role=X/postgres}|'||CASE WHEN ok THEN 'OK' ELSE 'ROJO' END||'|-|'||COALESCE(v, 'NULL');
+  IF NOT ok THEN bad := bad||'postgres|public|funciones='||COALESCE(v, 'NULL')||'; '; END IF;
+  v := (SELECT COALESCE((SELECT d.defaclacl::text FROM pg_default_acl d WHERE d.defaclrole = 'postgres'::regrole AND d.defaclnamespace = 0 AND d.defaclobjtype = 'f'), 'NO EXISTE'));
+  ok := COALESCE(v = '{postgres=X/postgres}', false);
+  det := det||' ;; postgres|global|funciones|{postgres=X/postgres}|'||CASE WHEN ok THEN 'OK' ELSE 'ROJO' END||'|-|'||COALESCE(v, 'NULL');
+  IF NOT ok THEN bad := bad||'postgres|global|funciones='||COALESCE(v, 'NULL')||'; '; END IF;
+  v := (SELECT COALESCE((SELECT count(*)::text FROM pg_default_acl d WHERE d.defaclnamespace = 'private'::regnamespace), '-'));
+  ok := COALESCE(v = '0', false);
+  det := det||' ;; private sin entradas|0|'||CASE WHEN ok THEN 'OK' ELSE 'ROJO' END||'|-|'||COALESCE(v, 'NULL');
+  IF NOT ok THEN bad := bad||'private sin entradas='||COALESCE(v, 'NULL')||'; '; END IF;
+  PERFORM set_config('probe.p926_det', det, false);
+  PERFORM set_config('probe.p926', CASE WHEN bad = ''
+    THEN 'OK (defaults de postgres: tablas de public arwd para authenticated, secuencias U, funciones sin PUBLIC (global) y con authenticated en public; private sin entradas)'
+    ELSE 'ROJO ('||left(bad, 800)||')' END, false);
+EXCEPTION WHEN OTHERS THEN
+  PERFORM set_config('probe.p926', 'FALLO ('||SQLSTATE||' '||SQLERRM||')', false);
+END $$;
+SELECT set_config('role', 'none', true);
+
+-- ---------------- P927 funcional: con que ACL nacen los objetos nuevos de postgres (344) ----------------
+-- Crea, como el rol de la sesion (postgres, el mismo que corre las migraciones), una tabla, una secuencia y una
+-- funcion en public y una funcion en private, mira sus ACL y lo DESCARTA TODO con un RAISE P0999 dentro de la
+-- subtransaccion: P924, P925 y P800 nunca los ven. Afuera verifica que no quede ninguno.
+-- Esperado (344): tabla -> authenticated solo SELECT/INSERT/UPDATE/DELETE, anon y PUBLIC nada; secuencia ->
+-- authenticated solo USAGE, anon y PUBLIC nada; funcion de public -> EXECUTE para authenticated, no para PUBLIC
+-- ni anon; funcion de private -> EXECUTE solo para el duenio. Con 344_rollback la tabla y la secuencia salen ROJO.
+DO $$
+DECLARE det text := ''; bad text := ''; v text; ok boolean; r_rest text := 'OK';
+BEGIN
+  IF current_user <> 'postgres' THEN RAISE EXCEPTION 'fixture roto: P927 corre como % y los defaults son de postgres', current_user; END IF;
+  BEGIN
+    EXECUTE 'CREATE TABLE public._p927_tabla (id int)';
+    EXECUTE 'CREATE SEQUENCE public._p927_seq';
+    EXECUTE 'CREATE FUNCTION public._p927_fn() RETURNS int LANGUAGE sql AS $f$ SELECT 1 $f$';
+    EXECUTE 'CREATE FUNCTION private._p927_fn() RETURNS int LANGUAGE sql AS $f$ SELECT 1 $f$';
+    -- tabla
+    SELECT string_agg(p, ',' ORDER BY p) INTO v FROM unnest(ARRAY['SELECT','INSERT','UPDATE','DELETE','TRUNCATE','REFERENCES','TRIGGER','MAINTAIN']) p
+     WHERE has_table_privilege('authenticated', 'public._p927_tabla', p);
+    ok := COALESCE(v = 'DELETE,INSERT,SELECT,UPDATE', false)
+      AND NOT EXISTS (SELECT 1 FROM unnest(ARRAY['SELECT','INSERT','UPDATE','DELETE','TRUNCATE','REFERENCES','TRIGGER','MAINTAIN']) p
+                       WHERE has_table_privilege('anon', 'public._p927_tabla', p) OR has_table_privilege('public', 'public._p927_tabla', p));
+    det := det||' ;; tabla nueva|authenticated DELETE,INSERT,SELECT,UPDATE; anon y PUBLIC nada|'||CASE WHEN ok THEN 'OK' ELSE 'ROJO' END||'|-|'||COALESCE(v, '-');
+    IF NOT ok THEN bad := bad||'tabla nueva: authenticated '||COALESCE(v, '-')||'; '; END IF;
+    -- secuencia
+    SELECT string_agg(p, ',' ORDER BY p) INTO v FROM unnest(ARRAY['USAGE','SELECT','UPDATE']) p
+     WHERE has_sequence_privilege('authenticated', 'public._p927_seq', p);
+    ok := COALESCE(v = 'USAGE', false)
+      AND NOT EXISTS (SELECT 1 FROM unnest(ARRAY['USAGE','SELECT','UPDATE']) p
+                       WHERE has_sequence_privilege('anon', 'public._p927_seq', p) OR has_sequence_privilege('public', 'public._p927_seq', p));
+    det := det||' ;; secuencia nueva|authenticated USAGE; anon y PUBLIC nada|'||CASE WHEN ok THEN 'OK' ELSE 'ROJO' END||'|-|'||COALESCE(v, '-');
+    IF NOT ok THEN bad := bad||'secuencia nueva: authenticated '||COALESCE(v, '-')||'; '; END IF;
+    -- funcion de public
+    SELECT string_agg(CASE a.grantee WHEN 0 THEN 'PUBLIC' ELSE pg_get_userbyid(a.grantee) END, ',' ORDER BY CASE a.grantee WHEN 0 THEN 'PUBLIC' ELSE pg_get_userbyid(a.grantee) END)
+      INTO v FROM pg_proc pr, aclexplode(COALESCE(pr.proacl, acldefault('f', pr.proowner))) a WHERE pr.oid = 'public._p927_fn()'::regprocedure AND a.privilege_type = 'EXECUTE';
+    ok := COALESCE(v = 'authenticated,postgres,service_role', false) AND NOT has_function_privilege('anon', 'public._p927_fn()', 'EXECUTE');
+    det := det||' ;; funcion nueva de public|EXECUTE authenticated, postgres, service_role; no PUBLIC ni anon|'||CASE WHEN ok THEN 'OK' ELSE 'ROJO' END||'|-|'||COALESCE(v, '-');
+    IF NOT ok THEN bad := bad||'funcion de public: '||COALESCE(v, '-')||'; '; END IF;
+    -- funcion de private
+    SELECT string_agg(CASE a.grantee WHEN 0 THEN 'PUBLIC' ELSE pg_get_userbyid(a.grantee) END, ',' ORDER BY CASE a.grantee WHEN 0 THEN 'PUBLIC' ELSE pg_get_userbyid(a.grantee) END)
+      INTO v FROM pg_proc pr, aclexplode(COALESCE(pr.proacl, acldefault('f', pr.proowner))) a WHERE pr.oid = 'private._p927_fn()'::regprocedure AND a.privilege_type = 'EXECUTE';
+    ok := COALESCE(v = 'postgres', false) AND NOT has_function_privilege('authenticated', 'private._p927_fn()', 'EXECUTE');
+    det := det||' ;; funcion nueva de private|EXECUTE solo postgres (necesita GRANT explicito)|'||CASE WHEN ok THEN 'OK' ELSE 'ROJO' END||'|-|'||COALESCE(v, '-');
+    IF NOT ok THEN bad := bad||'funcion de private: '||COALESCE(v, '-')||'; '; END IF;
+    RAISE EXCEPTION 'P927 descarte' USING ERRCODE = 'P0999';
+  EXCEPTION WHEN SQLSTATE 'P0999' THEN NULL;
+  END;
+  IF to_regclass('public._p927_tabla') IS NOT NULL OR to_regclass('public._p927_seq') IS NOT NULL
+     OR to_regprocedure('public._p927_fn()') IS NOT NULL OR to_regprocedure('private._p927_fn()') IS NOT NULL THEN
+    r_rest := 'QUEDO UN OBJETO DE PRUEBA';
+  END IF;
+  det := det||' ;; restauracion|subtransaccion descartada; ningun objeto de prueba queda|'||r_rest||'|-|';
+  PERFORM set_config('probe.p927_det', det, false);
+  PERFORM set_config('probe.p927', CASE WHEN bad = '' AND r_rest = 'OK'
+    THEN 'OK (objetos nuevos de postgres: tabla de public arwd para authenticated, secuencia U, funcion de public EXECUTE authenticated sin PUBLIC/anon, funcion de private solo duenio; descartados)'
+    ELSE 'ROJO ('||left(bad, 800)||' | restauracion='||r_rest||')' END, false);
+EXCEPTION WHEN OTHERS THEN
+  PERFORM set_config('probe.p927', CASE WHEN SQLERRM LIKE 'fixture roto%' THEN 'ROJO ('||SQLERRM||')' ELSE 'FALLO ('||SQLSTATE||' '||SQLERRM||')' END, false);
+END $$;
+SELECT set_config('role', 'none', true);
+
 -- ===== Veredictos como result set =====
 SELECT 'P1_anon_insert_citas'              AS probe, current_setting('probe.p1', true)  AS verdict, 'BLOQUEADO' AS esperado_post_fix
 UNION ALL SELECT 'P2_medico_cancela_ajena_rpc',         current_setting('probe.p2', true),  'BLOQUEADO'
@@ -29973,6 +30071,8 @@ UNION ALL SELECT 'P922_ia_paciente_coherencia_rls',   current_setting('probe.p92
 UNION ALL SELECT 'P923_ia_paciente_catalogo_341',     current_setting('probe.p923', true), 'OK (md5 341, DEFINER, search_path, EXECUTE exacto, vecinas y exp_select_medico intactos)'
 UNION ALL SELECT 'P924_priv_tru_tri_ref_342',         current_setting('probe.p924', true), 'OK (342: 0 relaciones de public con TRUNCATE/TRIGGER/REFERENCES para anon, authenticated o PUBLIC)'
 UNION ALL SELECT 'P925_priv_maintain_343',            current_setting('probe.p925', true), 'OK (343: 0 relaciones de public/private con MAINTAIN para anon, authenticated o PUBLIC)'
+UNION ALL SELECT 'P926_defacl_postgres_344',          current_setting('probe.p926', true), 'OK (344: defaults de postgres sin TRU/TRI/REF/MAI en tablas ni SELECT/UPDATE en secuencias; funciones sin PUBLIC)'
+UNION ALL SELECT 'P927_defacl_funcional_344',         current_setting('probe.p927', true), 'OK (344: tabla/secuencia/funciones nuevas nacen con la ACL esperada; descartadas)'
 -- Las filas FX* son SALUD DE FIXTURE, no probes de seguridad: dicen si la precondicion que una
 -- migracion posterior empezo a exigir se pudo sembrar. Si una sale ROJO, los probes que dependen de
 -- ese fixture reportan N/A (su flag de ready se pierde con el rollback de la subtransaccion) en vez
@@ -30217,7 +30317,7 @@ UNION ALL SELECT 'P000_CENTINELA_veredictos_no_nulos',
        'probe.p866', 'probe.p867', 'probe.p868', 'probe.p869', 'probe.p870', 'probe.p871', 'probe.p872', 'probe.p873', 'probe.p874', 'probe.p875', 'probe.p876', 'probe.p877', 'probe.p878',
        'probe.p879', 'probe.p880', 'probe.p881', 'probe.p882', 'probe.p883', 'probe.p884',
        'probe.p885', 'probe.p886', 'probe.p887', 'probe.p888', 'probe.p889', 'probe.p890', 'probe.p891', 'probe.p892', 'probe.p893', 'probe.p894', 'probe.p895', 'probe.p896', 'probe.p908', 'probe.p909', 'probe.p910', 'probe.p911',
-       'probe.p897', 'probe.p898', 'probe.p899', 'probe.p900', 'probe.p901', 'probe.p902', 'probe.p903', 'probe.p904', 'probe.p905', 'probe.p906', 'probe.p907', 'probe.p912', 'probe.p913', 'probe.p914', 'probe.p915', 'probe.p916', 'probe.p917', 'probe.p918', 'probe.p919', 'probe.p920', 'probe.p921', 'probe.p922', 'probe.p923', 'probe.p924', 'probe.p925'
+       'probe.p897', 'probe.p898', 'probe.p899', 'probe.p900', 'probe.p901', 'probe.p902', 'probe.p903', 'probe.p904', 'probe.p905', 'probe.p906', 'probe.p907', 'probe.p912', 'probe.p913', 'probe.p914', 'probe.p915', 'probe.p916', 'probe.p917', 'probe.p918', 'probe.p919', 'probe.p920', 'probe.p921', 'probe.p922', 'probe.p923', 'probe.p924', 'probe.p925', 'probe.p926', 'probe.p927'
              ]) AS n) s),
   'OK (todos los veredictos publicados)';
 
