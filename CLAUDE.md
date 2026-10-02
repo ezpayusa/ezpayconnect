@@ -24,15 +24,21 @@ Stack: React + Vite + TypeScript, Supabase / Postgres, deploy en Vercel, repo en
   minutos por esto** (P635 es la probe que faltaba, P636 su contraprueba).
 - NUNCA ampliar policies de RLS sobre tablas adyacentes a datos médicos (p. ej. campana_metricas). Para dar acceso, usar RPCs SECURITY DEFINER con search_path='', fail-closed (si el scope es NULL → 0 filas) y gate interno.
 - Probar aislamiento por rol impersonando request.jwt.claims en prod: cada rol ve lo suyo y no lo ajeno.
-- **Próximos números libres: probe `P921`** (global, no por módulo; P906-P907 usados por la mig 336, P912-P913
-  por la 337, P914-P915 por la 338, P916-P920 por la 339/340), **migración `341`**
-  (**Resumen IA de la última visita, fase 1: CERRADA y probada en prod el 2-oct-2026** — PR #15, merge
+- **Próximos números libres: probe `P924`** (global, no por módulo; P906-P907 usados por la mig 336, P912-P913
+  por la 337, P914-P915 por la 338, P916-P920 por la 339/340, P921-P923 por la 341), **migración `342`**
+  (341 = el mismo gate de relación de la 340 en `contexto_ia_paciente` (asistente IA en vivo), después de
+  `gate_accion_phi`; md5(prosrc) 1eaf84a3… → 04fe590c…: `asistente_medico` y médicos de la clínica sin
+  relación ya no reciben las notas por el asistente IA en vivo — APLICADA en prod el 2-oct-2026 15:59:42 UTC
+  y verificada en sesión independiente 7/7 (998 filas / 11 rojas de deuda, P800 PASA, guard
+  `do_sin_handler` 155 sobre 956 bloques DO). Orden de rollback: `341_rollback` → `340_rollback` →
+  `339_rollback`.
+  **Resumen IA de la última visita, fase 1: CERRADA y probada en prod el 2-oct-2026** — PR #15, merge
   4df0be1; caso feliz paciente 23 → `auditoria_ia` id 181; `sin_visita` paciente 8 sin auditar. **Fase 2
   (`cita_id` en recetas y órdenes de examen) pendiente.** 339 = RPC `contexto_ia_ultima_visita` — APLICADA en prod el 1-oct-2026 21:43:50 UTC;
   340 = gate de relación alineado con las ramas por paciente de `exp_select_medico` (`private.es_medico_de` /
   `private.medico_atiende_paciente`, COALESCE fail-closed → `no_pertenencia`), md5(prosrc) 339 a755ff5b… → 340
   7c97629d… — APLICADA en prod el 2-oct-2026 14:28:11 UTC; las dos verificadas en sesión independiente
-  (995 filas / 11 rojas de deuda, guard 155). Orden de rollback: `340_rollback` → `339_rollback`. Edge
+  (995 filas / 11 rojas de deuda, guard 155). Edge
   `asistente-ia` v29 (md5 bb68fbb8…) desplegado en prod con modo `resumen_visita`; su rollback = redeploy del
   `index.ts` de `0043936^` (md5 4efc0997…). **Orden de deploy de la feature: edge ANTES que front** — el edge
   viejo responde 400 `app_desactualizada` al modo `resumen_visita`.
@@ -138,7 +144,8 @@ Stack: React + Vite + TypeScript, Supabase / Postgres, deploy en Vercel, repo en
   Pasó dos veces (18cf819 y el lote 1 de PA-FAILOPEN) y una de ellas tardó dos meses en detectarse.
   Baselines vivos: `top_level_dml_ddl=0` (excluye `pg_temp`), `cast_directo=0`, `do_sin_handler=155`
   (fase 2.2 CERRADA: los 55 bloques que escriben están envueltos, 211→193→175→157→156→155; los 155
-  restantes sólo leen y publican, así que ya no son deuda). El señalizador P516 del harness los publica, pero NO mide:
+  restantes sólo leen y publican, así que ya no son deuda; 956 bloques DO en total y harness en 998 filas /
+  11 rojas de deuda al 2-oct-2026, tras la 341). El señalizador P516 del harness los publica, pero NO mide:
   el gate es el script. **El detector del guard tiene test propio (`tests/rls/b2_guard_test.py`,
   `npm run harness:guard:test`) y el hook lo corre ANTES del guard**: se equivocó tres veces en un día
   y llegó a tener un baseline inflado en 108, o sea permisivo. Un gate con el detector sin probar es
@@ -146,7 +153,7 @@ Stack: React + Vite + TypeScript, Supabase / Postgres, deploy en Vercel, repo en
 - **Migraciones: SIEMPRE `npx supabase db query --linked -f <archivo>`, NUNCA `db push`.** `db push`
   desincroniza `schema_migrations` (deuda desde la 047). Los `.sql` viven en `supabase/migrations/`
   (rollback en `supabase/migrations/rollback/`); los de `supabase/fixes/` se agregan con `git add -f`.
-  **Desvío aceptado (familia 8):** los rollbacks de 334-340 viven en `supabase/migrations/`
+  **Desvío aceptado (familia 8):** los rollbacks de 334-341 viven en `supabase/migrations/`
   (`3XX_rollback.sql`), no en `supabase/migrations/rollback/`.
 - **Los tests de edge (deno) NO corren en vitest ni en el pre-commit**: se corren a mano desde
   `supabase/functions/<fn>/` con `deno test --allow-net --allow-env --no-check` (asistente-ia: 17).
@@ -205,9 +212,9 @@ Detalles a recordar:
 - (Familia 4) `examenes.updated_at` no se actualiza al corregir ni al liberar.
 - (Familia 7) El lab no tiene vista del historial de revisiones; "Ver archivo anterior" aparece en
   revisiones que no cambiaron el archivo.
-- (Familia 3, DEFINER) `contexto_ia_paciente` (asistente IA en vivo) tiene el mismo ensanchamiento que tenía
-  la 339: `asistente_medico` y médicos de la clínica sin relación reciben las últimas 5 notas SOAP aunque la
-  RLS de `expediente_notas` no se las deja leer. Corregir con el mismo gate de relación de la 340.
+- (Familia 8) `tests/rls/probes_escritura.sql` está en CRLF en el working copy (el blob es LF): md5 del
+  archivo en disco ≠ md5 del blob. Resolver con `.gitattributes` `eol=lf` al inicio de la familia 1, como
+  estaba previsto.
 - (Familia 7) `AsistenteIA.tsx` no muestra el motivo de los 403/400 (usar `src/lib/errorAsistenteIA.ts`); el
   sidebar filtra por `'asistente'` y no por `'asistente_medico'` (`Sidebar.tsx:55-57`).
 - (Familia 7, resumen IA) Los vitales del resumen se muestran sin fecha de toma; el título "Datos faltantes
