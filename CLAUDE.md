@@ -24,17 +24,25 @@ Stack: React + Vite + TypeScript, Supabase / Postgres, deploy en Vercel, repo en
   minutos por esto** (P635 es la probe que faltaba, P636 su contraprueba).
 - NUNCA ampliar policies de RLS sobre tablas adyacentes a datos médicos (p. ej. campana_metricas). Para dar acceso, usar RPCs SECURITY DEFINER con search_path='', fail-closed (si el scope es NULL → 0 filas) y gate interno.
 - Probar aislamiento por rol impersonando request.jwt.claims en prod: cada rol ve lo suyo y no lo ajeno.
-- **Próximos números libres: probe `P931`** (global, no por módulo; P906-P907 usados por la mig 336, P912-P913
+- **Próximos números libres: probe `P933`** (global, no por módulo; P906-P907 usados por la mig 336, P912-P913
   por la 337, P914-P915 por la 338, P916-P920 por la 339/340, P921-P923 por la 341, P924 por la 342, P925 por
-  la 343, P926-P927 por la 344, P928-P929 por la 345, P930 por la 346), **migración `347`**
-  (346 = familia 1, paso 5: REVOKE de 102 privilegios muertos de authenticated — escrituras sin policy aplicable
+  la 343, P926-P927 por la 344, P928-P929 por la 345, P930 por la 346, P931-P932 por la 347), **migración `348`**
+  (347 = familia 1, paso 6: `SET search_path = ''` en `auto_configurar_planes_publicidad()`, la única SECURITY
+  DEFINER de public/private sin search_path (función del trigger AFTER INSERT de `configuracion_pais`); sus 2
+  referencias calificadas con `public.`; md5(prosrc) 6d1fe3a9… → 5949ef5d…; oid, dueño, ACL y trigger iguales;
+  probes P931 (censo de DEFINER sin search_path) y P932 (funcional, con search_path hostil) — APLICADA en prod el
+  2-oct-2026 20:02 UTC y verificada en sesión independiente 9/9 (1007 filas / 11 rojas de deuda, P800 PASA, guard
+  `do_sin_handler` 155 sobre 965 bloques DO). **Técnica (patrón de la 347):** cuando el prosrc vivo tiene CRLF y
+  el repo exige LF, el cuerpo nuevo se arma en SQL con `replace()` sobre el prosrc vivo y se ejecuta con
+  `EXECUTE format(... %L)`, verificando el md5 de partida y el del resultado antes de ejecutar; el rollback hace el
+  reemplazo inverso. Orden de rollback de la familia 1: `347_rollback` → `346_rollback` → `345_rollback` →
+  `344_rollback` → `343_rollback` → `342_rollback`.
+  346 = familia 1, paso 5: REVOKE de 102 privilegios muertos de authenticated — escrituras sin policy aplicable
   en 36 tablas (87 privilegios) + INSERT/UPDATE/DELETE en 5 vistas no actualizables (15) = 102; la 37ª tabla del
   recon, campana_vistas, queda en la allowlist (UPDATE por el upsert del front); de 113 muertos quedan 11 en la
   allowlist de P930; ACL de relaciones 855f0797… → deedb2e6…; escrituras de authenticated en public 239 → 137;
   probe P930 (censo) y P782 ajustado — APLICADA en prod el 2-oct-2026 19:38 UTC y verificada en sesión
   independiente 9/9 (1005 filas / 11 rojas de deuda, P800 PASA, guard `do_sin_handler` 155 sobre 963 bloques DO).
-  Orden de rollback de la familia 1: `346_rollback` → `345_rollback` → `344_rollback` → `343_rollback` →
-  `342_rollback`.
   345 = familia 1, paso 4: privilegios de las secuencias existentes de public — anon/PUBLIC sin nada (estaban
   en 32); authenticated sin SELECT/UPDATE (33) y con USAGE solo en las 11 del conjunto necesario; huella de
   secuencias 2b8162b5… → e1ef3639… (39); resto intacto; probes P928 (censo) y P929 (funcional) — APLICADA en
@@ -177,8 +185,8 @@ Stack: React + Vite + TypeScript, Supabase / Postgres, deploy en Vercel, repo en
   Pasó dos veces (18cf819 y el lote 1 de PA-FAILOPEN) y una de ellas tardó dos meses en detectarse.
   Baselines vivos: `top_level_dml_ddl=0` (excluye `pg_temp`), `cast_directo=0`, `do_sin_handler=155`
   (fase 2.2 CERRADA: los 55 bloques que escriben están envueltos, 211→193→175→157→156→155; los 155
-  restantes sólo leen y publican, así que ya no son deuda; 963 bloques DO en total y harness en 1005 filas /
-  11 rojas de deuda al 2-oct-2026, tras la 346). **P782 ajustado en la 346:** el DELETE directo sobre
+  restantes sólo leen y publican, así que ya no son deuda; 965 bloques DO en total y harness en 1007 filas /
+  11 rojas de deuda al 2-oct-2026, tras la 347). **P782 ajustado en la 346:** el DELETE directo sobre
   `visitas_agendadas` ahora da 42501 de privilegio (authenticated ya no tiene DELETE) y cuenta como OK, más fuerte
   que ROW_COUNT=0; cualquier otro error sigue siendo FALLO. **P929 y los dry-runs consumen valores de secuencia en prod**
   (`nextval` no es transaccional: el ROLLBACK no los devuelve) → huecos en los ids, esperado; no se devuelven
@@ -190,7 +198,7 @@ Stack: React + Vite + TypeScript, Supabase / Postgres, deploy en Vercel, repo en
 - **Migraciones: SIEMPRE `npx supabase db query --linked -f <archivo>`, NUNCA `db push`.** `db push`
   desincroniza `schema_migrations` (deuda desde la 047). Los `.sql` viven en `supabase/migrations/`
   (rollback en `supabase/migrations/rollback/`); los de `supabase/fixes/` se agregan con `git add -f`.
-  **Desvío aceptado (familia 8):** los rollbacks de 334-346 viven en `supabase/migrations/`
+  **Desvío aceptado (familia 8):** los rollbacks de 334-347 viven en `supabase/migrations/`
   (`3XX_rollback.sql`), no en `supabase/migrations/rollback/`.
 - **Los tests de edge (deno) NO corren en vitest ni en el pre-commit**: se corren a mano desde
   `supabase/functions/<fn>/` con `deno test --allow-net --allow-env --no-check` (asistente-ia: 17).
@@ -236,6 +244,10 @@ Desde esa fecha, una tabla/vista nueva **sin GRANT explícito nace inaccesible**
    Cualquier excepción va a la allowlist de P930, con comentario del motivo. P930 también sale ROJO si una entrada
    de la allowlist deja de estar muerta: hay que sacarla. Ojo: un `upsert` (`ON CONFLICT DO UPDATE`) exige UPDATE
    aunque no haya conflicto.
+13. **Toda función SECURITY DEFINER nueva lleva `SET search_path = ''`** y todas sus referencias calificadas con
+   schema (tablas, funciones, tipos; `pg_catalog` no hace falta). Sin eso, resuelve los nombres con el search_path
+   del llamante y corre como el dueño (secuestro de nombres). **P931 sale ROJO** si queda alguna DEFINER de
+   public/private sin search_path fijo (desde la 347).
 
 ## Modelo de identidad / helpers
 - mi_empresa_proveedor() → empresa_id del proveedor logueado desde cuentas_proveedor (tipo-agnóstica; cubre los 4 tipos: farmacia, laboratorio_clinico, laboratorio_farmaceutico, empresa_afin).
@@ -279,7 +291,10 @@ Detalles a recordar:
   SELECT de anon en `liquidaciones_comision` (WL_ANON_LEGACY, lección 284), y SELECT de 7 tablas sin otro
   privilegio que P800 regla (b) obliga a conservar — cache_biblioteca, confirmaciones_receta, medico_clinicas,
   medico_correlativos, planes_features, planes_limites, resumen_comisiones —: decisión 2-oct-2026 de no agrandar
-  WL_AUTH, diferido a la 348) → **sigue: 347** `search_path` de `auto_configurar_planes_publicidad` → 348 EXECUTE de PUBLIC/anon en funciones (**BLOQUEADA**
+  WL_AUTH, diferido a la 348) → 347 `search_path` de `auto_configurar_planes_publicidad` (**APLICADA**;
+  `SET search_path = ''`, única DEFINER sin search_path; sus 2 referencias calificadas con `public.`; md5(prosrc)
+  6d1fe3a9… → 5949ef5d…; cuerpo armado con `replace()` sobre el prosrc vivo para preservar sus CRLF; P931 = censo
+  de DEFINER sin search_path, P932 = funcional con search_path hostil) → **sigue: 348** EXECUTE de PUBLIC/anon en funciones (**BLOQUEADA**
   hasta reescribir a DEFINER las policies `TO public` de las tablas de la allowlist de anon: lección mig 284).
   P800 ya extendido a MAINTAIN (343: reglas (c)/(d) + nueva (i), authenticated/PUBLIC sin TRU/TRI/REF/MAI en
   ninguna relación de public); falta extenderlo a funciones (348).
