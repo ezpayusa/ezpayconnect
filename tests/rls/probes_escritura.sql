@@ -22770,8 +22770,8 @@ BEGIN
   det := det||' ;; public.contar_tomas_citas(bigint[]) md5|7fdf0b0ed24da5fd92abe2ba0dd09b6e|'||COALESCE(x,'NULL')||'|-|';
   IF x IS DISTINCT FROM '7fdf0b0ed24da5fd92abe2ba0dd09b6e' THEN bad := bad||'public.contar_tomas_citas(bigint[]) cambio; '; END IF;
   SELECT md5(prosrc) INTO x FROM pg_proc WHERE oid = 'public.contexto_ia_paciente(bigint)'::regprocedure;
-  det := det||' ;; public.contexto_ia_paciente(bigint) md5|1eaf84a3475dfdfc3845d68ce2406fbb|'||COALESCE(x,'NULL')||'|-|';
-  IF x IS DISTINCT FROM '1eaf84a3475dfdfc3845d68ce2406fbb' THEN bad := bad||'public.contexto_ia_paciente(bigint) cambio; '; END IF;
+  det := det||' ;; public.contexto_ia_paciente(bigint) md5|04fe590c805c79b52b324dde69948480|'||COALESCE(x,'NULL')||'|-|';
+  IF x IS DISTINCT FROM '04fe590c805c79b52b324dde69948480' THEN bad := bad||'public.contexto_ia_paciente(bigint) cambio; '; END IF;
   PERFORM set_config('probe.p860_det', det, false);
   PERFORM set_config('probe.p860', CASE WHEN bad = ''
     THEN 'OK (8 CHECK sv_*_rango validados; capturar_signo_vital con firma unica, secdef, search_path, acl y SV001/SV002; 5 lectores sin tocar)'
@@ -24682,7 +24682,7 @@ BEGIN
   IF NOT ok THEN bad := bad||'fase 2 (333): sin INSERT directo: '||st||' '||left(msg, 120)||'; '; END IF;
   -- (335) liberar_examen_al_paciente, liberar_orden_al_paciente, revertir_liberacion_examen y
   -- paciente_examenes cambiaron con la 335 (evento de liberacion, columna corregido): md5 post-335.
-  ok := COALESCE(((SELECT md5(prosrc) FROM pg_proc WHERE oid = to_regprocedure('public.liberar_examen_al_paciente(integer)')) = 'd1321b5fd0d994da4605b959249ba3b7' AND (SELECT md5(prosrc) FROM pg_proc WHERE oid = to_regprocedure('public.liberar_orden_al_paciente(uuid)')) = '10a82b4176a65a58cb46ec5f2dca0447' AND (SELECT md5(prosrc) FROM pg_proc WHERE oid = to_regprocedure('public.revertir_liberacion_examen(integer)')) = '8884c3445e9f29fa8850beab66a07775' AND (SELECT md5(prosrc) FROM pg_proc WHERE oid = to_regprocedure('public.notificar_orden_lab(uuid)')) = '59fafc8572840548c27ad39a759cba47' AND (SELECT md5(prosrc) FROM pg_proc WHERE oid = to_regprocedure('public.notificar_resultado_examen(integer)')) = '33a7a110c39574c5a40f7ca1495d2686' AND (SELECT md5(prosrc) FROM pg_proc WHERE oid = to_regprocedure('public.paciente_examenes()')) = '63b3a78795ab9e70fcb9ad476365d71f' AND (SELECT md5(prosrc) FROM pg_proc WHERE oid = to_regprocedure('public.contexto_ia_paciente(bigint)')) = '1eaf84a3475dfdfc3845d68ce2406fbb' AND (SELECT md5(prosrc) FROM pg_proc WHERE oid = to_regprocedure('private.puede_ver_examen(integer)')) = '2b8150875b99dfb5df9fdb3d8af62ae0' AND (SELECT md5(prosrc) FROM pg_proc WHERE oid = to_regprocedure('public.registrar_examen_adjunto(integer,text,text)')) = '245fb6669aa3fb22f8e62ca40a8b3467'), false);
+  ok := COALESCE(((SELECT md5(prosrc) FROM pg_proc WHERE oid = to_regprocedure('public.liberar_examen_al_paciente(integer)')) = 'd1321b5fd0d994da4605b959249ba3b7' AND (SELECT md5(prosrc) FROM pg_proc WHERE oid = to_regprocedure('public.liberar_orden_al_paciente(uuid)')) = '10a82b4176a65a58cb46ec5f2dca0447' AND (SELECT md5(prosrc) FROM pg_proc WHERE oid = to_regprocedure('public.revertir_liberacion_examen(integer)')) = '8884c3445e9f29fa8850beab66a07775' AND (SELECT md5(prosrc) FROM pg_proc WHERE oid = to_regprocedure('public.notificar_orden_lab(uuid)')) = '59fafc8572840548c27ad39a759cba47' AND (SELECT md5(prosrc) FROM pg_proc WHERE oid = to_regprocedure('public.notificar_resultado_examen(integer)')) = '33a7a110c39574c5a40f7ca1495d2686' AND (SELECT md5(prosrc) FROM pg_proc WHERE oid = to_regprocedure('public.paciente_examenes()')) = '63b3a78795ab9e70fcb9ad476365d71f' AND (SELECT md5(prosrc) FROM pg_proc WHERE oid = to_regprocedure('public.contexto_ia_paciente(bigint)')) = '04fe590c805c79b52b324dde69948480' AND (SELECT md5(prosrc) FROM pg_proc WHERE oid = to_regprocedure('private.puede_ver_examen(integer)')) = '2b8150875b99dfb5df9fdb3d8af62ae0' AND (SELECT md5(prosrc) FROM pg_proc WHERE oid = to_regprocedure('public.registrar_examen_adjunto(integer,text,text)')) = '245fb6669aa3fb22f8e62ca40a8b3467'), false);
   det := det||' ;; las 9 funciones previas con su md5 esperado (4 post-335)|9 md5 iguales|'||CASE WHEN ok THEN 'OK' ELSE 'ROJO' END||'|'||st||'|'||left(msg, 160);
   IF NOT ok THEN bad := bad||'las 9 funciones previas con su md5 esperado: '||st||' '||left(msg, 120)||'; '; END IF;
   -- restauracion: se borra solo lo que el probe creo/sembro y se verifica contra el snapshot
@@ -26290,7 +26290,7 @@ BEGIN
       ('private.exigir_nota_al_completar()',          '102adac580dfb08ed65158f065a98b3e'),
       ('private.cita_tiene_nota(bigint)',             '6ea1318eddf06bb33db2545c9ab2233a'),
       ('public.calcular_imc_signos_vitales()',        '1b9ad49a5cd1464c54d9a211e5763532'),
-      ('public.contexto_ia_paciente(bigint)',         '1eaf84a3475dfdfc3845d68ce2406fbb'),
+      ('public.contexto_ia_paciente(bigint)',         '04fe590c805c79b52b324dde69948480'),
       ('public.obtener_contexto_visita(bigint)',      '24c3825b9c8fc6d172f8963191025097'),
       ('public.actualizar_estado_cita(bigint,text)',  '3ff6976362482995bd17cb2322bcc082'),
       ('private.exigir_empresa_activa()',             'd62cc5a3c6edf0aaf48488e59a8d1e9b')) v(f, m) LOOP
@@ -27565,7 +27565,7 @@ BEGIN
       ('public.notificar_orden_lab(uuid)',                            '59fafc8572840548c27ad39a759cba47'),
       ('private.puede_ver_examen(integer)',                           '2b8150875b99dfb5df9fdb3d8af62ae0'),
       ('public.registrar_examen_adjunto(integer,text,text)',          '245fb6669aa3fb22f8e62ca40a8b3467'),
-      ('public.contexto_ia_paciente(bigint)',                         '1eaf84a3475dfdfc3845d68ce2406fbb'),
+      ('public.contexto_ia_paciente(bigint)',                         '04fe590c805c79b52b324dde69948480'),
       ('private.examenes_congelar_identidad()',                       'f0ff903d5c5af6e137ba6b6aed0bad9a'),
       ('public.crear_orden_examen_medico(bigint,uuid,jsonb,text)',    '79a994588ab2b4458135272efb59b867'),
       ('public.crear_orden_examen_walkin(jsonb,text,text,text,text,text)', '434d122370e340d895c8540a290379f3'),
@@ -28478,7 +28478,7 @@ BEGIN
   IF NOT ok THEN bad := bad||'firmas; '; END IF;
   FOR r IN SELECT * FROM (VALUES
       ('public.gate_accion_phi(bigint,text)',         '790e09208a5c67102a2b5c378c500940'),
-      ('public.contexto_ia_paciente(bigint)',         '1eaf84a3475dfdfc3845d68ce2406fbb'),
+      ('public.contexto_ia_paciente(bigint)',         '04fe590c805c79b52b324dde69948480'),
       ('public.obtener_contexto_visita(bigint)',      '24c3825b9c8fc6d172f8963191025097'),
       ('private.es_medico_de(bigint)',                'f68727f9861162f212f57ff2412d7c8b'),
       ('private.medico_atiende_paciente(bigint)',     'ffbb220849b4c21896d103faf8d05abd')) v(f, m) LOOP
@@ -28585,6 +28585,347 @@ BEGIN
 EXCEPTION WHEN OTHERS THEN
   PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
   PERFORM set_config('probe.p920', CASE WHEN SQLERRM LIKE 'fixture roto%' THEN 'ROJO ('||SQLERRM||')' ELSE 'FALLO ('||SQLSTATE||' '||SQLERRM||')' END, false);
+END $$;
+SELECT set_config('role', 'none', true);
+
+-- ================================================================================
+-- MIG 341 — contexto_ia_paciente (asistente IA en vivo): gate de relacion de exp_select_medico (P921-P923)
+-- OK = comportamiento de la 341; con 341_rollback (vuelve el cuerpo 1eaf84a3) P921, P922 y P923 dan ROJO a
+-- proposito. P921 y P922 siembran dentro de una subtransaccion descartable (RAISE P0999): pacientes, citas,
+-- notas, consentimientos y un medico FIXTURE, nunca el 23 ni 1369/1373/1374 ni filas con historia; afuera
+-- se verifica el snapshot. P923 solo lee el catalogo.
+-- ================================================================================
+
+-- ---------------- P921 gate: gate_accion_phi('asistente_ia') + relacion de exp_select_medico (341) ----------------
+-- Actores (cuentas QA vivas, clinica c76d862c del paciente 23 salvo el medico ajeno): medico QA (tiene que
+-- recibir notas: sin eso el probe es vacio), asistente_medico, medico de otra clinica (5f638655), secretaria,
+-- admin_clinica, el usuario del paciente 23, una cuenta de farmacia (sin fila en perfiles) y anon.
+-- 341: el asistente_medico y un medico FIXTURE de la MISMA clinica (uuid ...0921) pasan gate_accion_phi y la
+-- relacion los corta -> no_pertenencia (se verifica antes que el gate los deja pasar: el rechazo es de la 341).
+-- Medico de otra clinica, secretaria, admin_clinica, paciente y farmacia: el error lo da gate_accion_phi (se
+-- llama directo y tiene que dar el mismo error que la RPC). Tratante de un paciente FIXTURE (atiende otra
+-- cita de ese paciente, no es autor de la nota) -> recibe la nota. Revocado: paciente FIXTURE con fila v2 false.
+DO $$
+DECLARE
+  c_med uuid := '09d243d5-b222-482a-9762-94a582e9e752'; c_clin uuid := 'c76d862c-e82f-4748-bc07-86c8a3343576';
+  c_asis uuid := '974f917b-f21c-4b29-b556-530513e1b3b4'; c_ajeno uuid := '5f638655-f21f-4b81-8138-db76a183de67';
+  c_secr uuid := '63591ecb-26d7-49ef-96c8-265c6bdaa916'; c_admc uuid := '7e9ee700-48ac-43e1-812b-777518b971ec';
+  c_farm uuid := '97ef5f86-55e4-416c-afd3-3c8a69362d07'; c_pac uuid;
+  c_mfx uuid := '00000000-0000-4921-8921-000000000921';
+  st text := '00000'; msg text := ''; gst text; gmsg text; ok boolean; det text := ''; bad text := ''; r_rest text := 'OK';
+  s_pac text; s_cons text; j jsonb; r record; v_pz bigint;
+  s_citas text; s_notas text; s_perf text; s_meds text; s_mc text; n_users bigint; n_hist bigint;
+  v_px bigint; c_vieja bigint; c_trat bigint; n_vieja integer; v_pais uuid; g jsonb;
+BEGIN
+  SELECT pa.auth_user_id INTO c_pac FROM public.pacientes pa WHERE pa.id = 23;
+  IF c_pac IS NULL
+     OR NOT EXISTS (SELECT 1 FROM public.expediente_notas n WHERE n.paciente_id = 23)
+     OR (SELECT string_agg(p.id::text||':'||p.rol, ',' ORDER BY p.id) FROM public.perfiles p WHERE p.activo AND p.id IN (c_med, c_asis, c_ajeno, c_secr, c_admc))
+        IS DISTINCT FROM (SELECT string_agg(v.id::text||':'||v.rol, ',' ORDER BY v.id) FROM (VALUES (c_med, 'medico'), (c_asis, 'asistente_medico'), (c_ajeno, 'medico'), (c_secr, 'secretaria'), (c_admc, 'admin_clinica')) v(id, rol))
+     OR NOT EXISTS (SELECT 1 FROM public.cuentas_proveedor cp JOIN public.empresas_proveedoras e ON e.id = cp.empresa_id WHERE cp.id = c_farm AND cp.activo AND e.tipo = 'farmacia')
+     OR EXISTS (SELECT 1 FROM public.perfiles WHERE id = c_farm)
+     OR c_clin IN (SELECT private.clinicas_de(c_ajeno))
+     OR c_clin NOT IN (SELECT private.clinicas_de(c_asis))
+     OR EXISTS (SELECT 1 FROM auth.users WHERE id = c_mfx) THEN
+    RAISE EXCEPTION 'fixture roto: actores de P921 (rol, clinica, notas del 23 o cuenta de farmacia)';
+  END IF;
+  -- medico QA: recibe las notas del 23
+  st := '00000'; msg := ''; j := NULL;
+  BEGIN
+    PERFORM set_config('request.jwt.claims', json_build_object('sub', c_med::text, 'role', 'authenticated')::text, true); PERFORM set_config('role', 'authenticated', true);
+    j := public.contexto_ia_paciente(23);
+    PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
+  EXCEPTION WHEN OTHERS THEN PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
+    st := SQLSTATE; msg := SQLERRM; END;
+  ok := COALESCE((st = '00000' AND jsonb_array_length(j->'diagnosticos_recientes') >= 1), false);
+  det := det||' ;; medico QA (paciente 23)|OK, devuelve notas|'||CASE WHEN ok THEN 'OK' ELSE 'ROJO' END||'|'||st||'|'||left(msg, 120)||' notas='||COALESCE(jsonb_array_length(j->'diagnosticos_recientes')::text, '-');
+  IF NOT ok THEN bad := bad||'medico QA: '||st||' '||left(msg, 100)||'; '; END IF;
+  -- 341: el asistente pasa gate_accion_phi (el no_pertenencia de abajo es de la relacion, no del gate)
+  st := '00000'; msg := ''; g := NULL;
+  BEGIN
+    PERFORM set_config('request.jwt.claims', json_build_object('sub', c_asis::text, 'role', 'authenticated')::text, true); PERFORM set_config('role', 'authenticated', true);
+    g := public.gate_accion_phi(23, 'asistente_ia');
+    PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
+  EXCEPTION WHEN OTHERS THEN PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
+    st := SQLSTATE; msg := SQLERRM; END;
+  ok := COALESCE((st = '00000' AND g->>'ok' = 'true'), false);
+  det := det||' ;; asistente_medico: gate_accion_phi|pasa (ok:true)|'||CASE WHEN ok THEN 'OK' ELSE 'ROJO' END||'|'||st||'|'||left(msg, 120);
+  IF NOT ok THEN bad := bad||'asistente gate_accion_phi: '||st||' '||left(msg, 100)||'; '; END IF;
+  st := '00000'; msg := ''; j := NULL;
+  BEGIN
+    PERFORM set_config('request.jwt.claims', json_build_object('sub', c_asis::text, 'role', 'authenticated')::text, true); PERFORM set_config('role', 'authenticated', true);
+    j := public.contexto_ia_paciente(23);
+    PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
+  EXCEPTION WHEN OTHERS THEN PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
+    st := SQLSTATE; msg := SQLERRM; END;
+  ok := COALESCE((st = 'P0001' AND msg = 'no_pertenencia' AND j IS NULL), false);
+  det := det||' ;; asistente_medico de la clinica|P0001 no_pertenencia (341)|'||CASE WHEN ok THEN 'OK' ELSE 'ROJO' END||'|'||st||'|'||left(msg, 120)||' notas='||COALESCE(jsonb_array_length(j->'diagnosticos_recientes')::text, '-');
+  IF NOT ok THEN bad := bad||'asistente: '||st||' '||left(msg, 100)||' notas='||COALESCE(jsonb_array_length(j->'diagnosticos_recientes')::text, '-')||'; '; END IF;
+  -- los que corta gate_accion_phi: el mismo error llamando al gate directo y a la RPC
+  FOR r IN SELECT * FROM (VALUES
+      ('medico de otra clinica',      c_ajeno),
+      ('secretaria de la clinica',    c_secr),
+      ('admin_clinica de la clinica', c_admc),
+      ('el propio paciente',          c_pac),
+      ('cuenta de farmacia',          c_farm)) v(caso, uid) LOOP
+    gst := '00000'; gmsg := ''; g := NULL;
+    BEGIN
+      PERFORM set_config('request.jwt.claims', json_build_object('sub', r.uid::text, 'role', 'authenticated')::text, true); PERFORM set_config('role', 'authenticated', true);
+      g := public.gate_accion_phi(23, 'asistente_ia');
+      PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
+    EXCEPTION WHEN OTHERS THEN PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
+      gst := SQLSTATE; gmsg := SQLERRM; END;
+    st := '00000'; msg := ''; j := NULL;
+    BEGIN
+      PERFORM set_config('request.jwt.claims', json_build_object('sub', r.uid::text, 'role', 'authenticated')::text, true); PERFORM set_config('role', 'authenticated', true);
+      j := public.contexto_ia_paciente(23);
+      PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
+    EXCEPTION WHEN OTHERS THEN PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
+      st := SQLSTATE; msg := SQLERRM; END;
+    ok := COALESCE((gst = 'P0001' AND gmsg = 'no_pertenencia' AND st = gst AND msg = gmsg AND j IS NULL), false);
+    det := det||' ;; '||r.caso||'|el error de gate_accion_phi (P0001 no_pertenencia)|'||CASE WHEN ok THEN 'OK' ELSE 'ROJO' END||'|gate='||gst||' '||left(gmsg, 40)||' rpc='||st||'|'||left(msg, 80);
+    IF NOT ok THEN bad := bad||r.caso||': gate='||gst||' '||left(gmsg, 40)||' rpc='||st||' '||left(msg, 60)||'; '; END IF;
+  END LOOP;
+  -- anon: sin EXECUTE
+  st := '00000'; msg := ''; j := NULL;
+  BEGIN
+    PERFORM set_config('request.jwt.claims', json_build_object('role', 'anon')::text, true); PERFORM set_config('role', 'anon', true);
+    j := public.contexto_ia_paciente(23);
+    PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
+  EXCEPTION WHEN OTHERS THEN PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
+    st := SQLSTATE; msg := SQLERRM; END;
+  ok := COALESCE((st = '42501' AND msg LIKE 'permission denied for function contexto_ia_paciente%' AND j IS NULL), false);
+  det := det||' ;; anon|42501 sin EXECUTE|'||CASE WHEN ok THEN 'OK' ELSE 'ROJO' END||'|'||st||'|'||left(msg, 120);
+  IF NOT ok THEN bad := bad||'anon: '||st||' '||left(msg, 100)||'; '; END IF;
+  -- fixtures: snapshot antes de la subtransaccion descartable
+  SELECT md5(COALESCE(string_agg(to_jsonb(t)::text, '|' ORDER BY t.id), '')) INTO s_pac FROM public.pacientes t;
+  SELECT md5(COALESCE(string_agg(to_jsonb(t)::text, '|' ORDER BY t.id), '')) INTO s_cons FROM public.consentimientos t;
+  SELECT md5(COALESCE(string_agg(to_jsonb(t)::text, '|' ORDER BY t.id), '')) INTO s_citas FROM public.citas t;
+  SELECT md5(COALESCE(string_agg(to_jsonb(t)::text, '|' ORDER BY t.id), '')) INTO s_notas FROM public.expediente_notas t;
+  SELECT md5(COALESCE(string_agg(to_jsonb(t)::text, '|' ORDER BY t.id), '')) INTO s_perf FROM public.perfiles t;
+  SELECT md5(COALESCE(string_agg(to_jsonb(t)::text, '|' ORDER BY t.id), '')) INTO s_meds FROM public.medicos t;
+  SELECT md5(COALESCE(string_agg(to_jsonb(t)::text, '|' ORDER BY t.medico_id, t.clinica_id), '')) INTO s_mc FROM public.medico_clinicas t;
+  SELECT count(*) INTO n_users FROM auth.users;
+  SELECT count(*) INTO n_hist FROM public.historial_medico;
+  BEGIN
+    -- consentimiento revocado: paciente FIXTURE de la clinica (medico QA es su medico), ultima fila asistente_ia v2 = false
+    INSERT INTO public.pacientes (nombre, apellido, activo, clinica_primaria_id, medico_id) VALUES ('P921', 'QA revocado', true, c_clin, c_med) RETURNING id INTO v_pz;
+    INSERT INTO public.consentimientos (paciente_id, permiso_codigo, permiso_version, concedido, via) VALUES (v_pz, 'asistente_ia', 2, true, 'app');
+    INSERT INTO public.consentimientos (paciente_id, permiso_codigo, permiso_version, concedido, via, created_at) VALUES (v_pz, 'asistente_ia', 2, false, 'app', now() + interval '1 second');
+    st := '00000'; msg := ''; j := NULL;
+    BEGIN
+      PERFORM set_config('request.jwt.claims', json_build_object('sub', c_med::text, 'role', 'authenticated')::text, true); PERFORM set_config('role', 'authenticated', true);
+      j := public.contexto_ia_paciente(v_pz);
+      PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
+    EXCEPTION WHEN OTHERS THEN PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
+      st := SQLSTATE; msg := SQLERRM; END;
+    ok := COALESCE((st = 'P0001' AND msg = 'consentimiento_revocado' AND j IS NULL), false);
+    det := det||' ;; consentimiento revocado (paciente fixture)|P0001 consentimiento_revocado|'||CASE WHEN ok THEN 'OK' ELSE 'ROJO' END||'|'||st||'|'||left(msg, 120);
+    IF NOT ok THEN bad := bad||'revocado: '||st||' '||left(msg, 100)||'; '; END IF;
+    -- 341: medico FIXTURE de la MISMA clinica, sin relacion con el paciente 23
+    SELECT pais_id INTO v_pais FROM public.perfiles WHERE id = c_med;
+    INSERT INTO auth.users (id) VALUES (c_mfx);
+    INSERT INTO public.perfiles (id, email, nombre_completo, rol, pais_id, activo)
+      VALUES (c_mfx, 'p921_medico@example.invalid', 'P921 Medico Fixture', 'medico', v_pais, true)
+      ON CONFLICT (id) DO UPDATE SET rol = 'medico', pais_id = v_pais, activo = true;
+    INSERT INTO public.medicos (id, clinica_id, nombre_completo, pais_id) VALUES (c_mfx, c_clin, 'P921 Medico Fixture', v_pais);
+    INSERT INTO public.medico_clinicas (medico_id, clinica_id) VALUES (c_mfx, c_clin);
+    IF c_clin NOT IN (SELECT private.clinicas_de(c_mfx))
+       OR EXISTS (SELECT 1 FROM public.citas WHERE paciente_id = 23 AND medico_id = c_mfx)
+       OR EXISTS (SELECT 1 FROM public.pacientes WHERE id = 23 AND medico_id = c_mfx) THEN
+      RAISE EXCEPTION 'fixture roto: medico fixture de P921 (clinica o relacion previa con el 23)';
+    END IF;
+    st := '00000'; msg := ''; g := NULL;
+    BEGIN
+      PERFORM set_config('request.jwt.claims', json_build_object('sub', c_mfx::text, 'role', 'authenticated')::text, true); PERFORM set_config('role', 'authenticated', true);
+      g := public.gate_accion_phi(23, 'asistente_ia');
+      PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
+    EXCEPTION WHEN OTHERS THEN PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
+      st := SQLSTATE; msg := SQLERRM; END;
+    ok := COALESCE((st = '00000' AND g->>'ok' = 'true'), false);
+    det := det||' ;; medico fixture sin relacion: gate_accion_phi|pasa (ok:true)|'||CASE WHEN ok THEN 'OK' ELSE 'ROJO' END||'|'||st||'|'||left(msg, 120);
+    IF NOT ok THEN bad := bad||'medico sin relacion gate_accion_phi: '||st||' '||left(msg, 100)||'; '; END IF;
+    st := '00000'; msg := ''; j := NULL;
+    BEGIN
+      PERFORM set_config('request.jwt.claims', json_build_object('sub', c_mfx::text, 'role', 'authenticated')::text, true); PERFORM set_config('role', 'authenticated', true);
+      j := public.contexto_ia_paciente(23);
+      PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
+    EXCEPTION WHEN OTHERS THEN PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
+      st := SQLSTATE; msg := SQLERRM; END;
+    ok := COALESCE((st = 'P0001' AND msg = 'no_pertenencia' AND j IS NULL), false);
+    det := det||' ;; medico de la misma clinica sin relacion (fixture)|P0001 no_pertenencia (341)|'||CASE WHEN ok THEN 'OK' ELSE 'ROJO' END||'|'||st||'|'||left(msg, 120);
+    IF NOT ok THEN bad := bad||'medico sin relacion: '||st||' '||left(msg, 100)||' notas='||COALESCE(jsonb_array_length(j->'diagnosticos_recientes')::text, '-')||'; '; END IF;
+    -- 341: el mismo medico como TRATANTE de un paciente fixture: atiende una cita (completada, sin nota); la
+    -- nota del paciente es del medico QA -> la recibe (no es su autor)
+    INSERT INTO public.pacientes (nombre, apellido, activo, clinica_primaria_id, medico_id) VALUES ('P921', 'QA tratante', true, c_clin, c_med) RETURNING id INTO v_px;
+    INSERT INTO public.citas (paciente_id, medico_id, clinica_id, fecha, hora_inicio, hora_fin, estado)
+      VALUES (v_px, c_mfx, c_clin, CURRENT_DATE + 498, '09:00', '09:30', 'completada') RETURNING id INTO c_trat;   -- sin nota
+    INSERT INTO public.citas (paciente_id, medico_id, clinica_id, fecha, hora_inicio, hora_fin, estado)
+      VALUES (v_px, c_med, c_clin, CURRENT_DATE + 497, '09:00', '09:30', 'completada') RETURNING id INTO c_vieja;
+    INSERT INTO public.expediente_notas (cita_id, paciente_id, medico_id, subjetivo, plan) VALUES (c_vieja, v_px, c_med, 'P921 tratante', 'P921 plan') RETURNING id INTO n_vieja;
+    st := '00000'; msg := ''; j := NULL;
+    BEGIN
+      PERFORM set_config('request.jwt.claims', json_build_object('sub', c_mfx::text, 'role', 'authenticated')::text, true); PERFORM set_config('role', 'authenticated', true);
+      j := public.contexto_ia_paciente(v_px);
+      PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
+    EXCEPTION WHEN OTHERS THEN PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
+      st := SQLSTATE; msg := SQLERRM; END;
+    ok := COALESCE((st = '00000' AND jsonb_array_length(j->'diagnosticos_recientes') = 1 AND j->'diagnosticos_recientes'->0->>'subjetivo' = 'P921 tratante'), false);
+    det := det||' ;; tratante no autor (fixture: atiende otra cita del paciente)|OK, recibe la nota del medico QA|'||CASE WHEN ok THEN 'OK' ELSE 'ROJO' END||'|'||st||'|'||left(msg, 120)||' notas='||COALESCE(jsonb_array_length(j->'diagnosticos_recientes')::text, '-');
+    IF NOT ok THEN bad := bad||'tratante: '||st||' '||left(msg, 100)||' notas='||COALESCE(jsonb_array_length(j->'diagnosticos_recientes')::text, '-')||'; '; END IF;
+    RAISE EXCEPTION 'P921 descarte' USING ERRCODE = 'P0999';
+  EXCEPTION WHEN SQLSTATE 'P0999' THEN NULL;
+  END;
+  PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
+  IF (SELECT md5(COALESCE(string_agg(to_jsonb(t)::text, '|' ORDER BY t.id), '')) FROM public.pacientes t) IS DISTINCT FROM s_pac THEN r_rest := r_rest||' / pacientes'; END IF;
+  IF (SELECT md5(COALESCE(string_agg(to_jsonb(t)::text, '|' ORDER BY t.id), '')) FROM public.consentimientos t) IS DISTINCT FROM s_cons THEN r_rest := r_rest||' / consentimientos'; END IF;
+  IF (SELECT md5(COALESCE(string_agg(to_jsonb(t)::text, '|' ORDER BY t.id), '')) FROM public.citas t) IS DISTINCT FROM s_citas THEN r_rest := r_rest||' / citas'; END IF;
+  IF (SELECT md5(COALESCE(string_agg(to_jsonb(t)::text, '|' ORDER BY t.id), '')) FROM public.expediente_notas t) IS DISTINCT FROM s_notas THEN r_rest := r_rest||' / expediente_notas'; END IF;
+  IF (SELECT md5(COALESCE(string_agg(to_jsonb(t)::text, '|' ORDER BY t.id), '')) FROM public.perfiles t) IS DISTINCT FROM s_perf THEN r_rest := r_rest||' / perfiles'; END IF;
+  IF (SELECT md5(COALESCE(string_agg(to_jsonb(t)::text, '|' ORDER BY t.id), '')) FROM public.medicos t) IS DISTINCT FROM s_meds THEN r_rest := r_rest||' / medicos'; END IF;
+  IF (SELECT md5(COALESCE(string_agg(to_jsonb(t)::text, '|' ORDER BY t.medico_id, t.clinica_id), '')) FROM public.medico_clinicas t) IS DISTINCT FROM s_mc THEN r_rest := r_rest||' / medico_clinicas'; END IF;
+  IF (SELECT count(*) FROM auth.users) <> n_users OR EXISTS (SELECT 1 FROM auth.users WHERE id = c_mfx) THEN r_rest := r_rest||' / auth.users'; END IF;
+  IF (SELECT count(*) FROM public.historial_medico) <> n_hist THEN r_rest := r_rest||' / historial_medico'; END IF;
+  det := det||' ;; restauracion|subtransaccion descartada; snapshot igual|'||r_rest||'|-|';
+  PERFORM set_config('probe.p921_det', det, false);
+  PERFORM set_config('probe.p921', CASE WHEN bad = '' AND r_rest = 'OK'
+    THEN 'OK (medico QA recibe las notas del 23; asistente_medico y medico fixture de la clinica sin relacion: pasan gate_accion_phi y la 341 los corta con P0001 no_pertenencia; tratante no autor recibe la nota; medico ajeno, secretaria, admin_clinica, paciente y farmacia: el no_pertenencia de gate_accion_phi; anon 42501; revocado: consentimiento_revocado; restaurado)'
+    ELSE 'ROJO ('||left(bad, 700)||' | restauracion='||r_rest||')' END, false);
+EXCEPTION WHEN OTHERS THEN
+  PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
+  PERFORM set_config('probe.p921', CASE WHEN SQLERRM LIKE 'fixture roto%' THEN 'ROJO ('||SQLERRM||')' ELSE 'FALLO ('||SQLSTATE||' '||SQLERRM||')' END, false);
+END $$;
+SELECT set_config('role', 'none', true);
+
+-- ---------------- P922 CENTINELA coherencia RPC <-> RLS sobre las notas del paciente 23 ----------------
+-- Invariante de la 341: para cada actor, "contexto_ia_paciente(23) devuelve notas" IMPLICA "SELECT de
+-- expediente_notas del paciente 23 devuelve >= 1 fila" para ese mismo actor. Nadie obtiene notas SOAP por la
+-- RPC sin verlas por RLS. Actores: medico QA (tiene que obtenerlas: sin eso el centinela es vacio),
+-- asistente_medico y medico FIXTURE de la clinica sin relacion (los casos que motivaron la 341: la RLS tiene
+-- que negarles las notas), admin_clinica, el usuario del paciente 23 y super_admin.
+-- Antes de la 341 (o tras 341_rollback) sale ROJO: el asistente obtiene las notas por la RPC y la RLS no se las da.
+-- El medico fixture se siembra en una subtransaccion descartable; afuera se verifica el snapshot.
+DO $$
+DECLARE
+  c_med uuid := '09d243d5-b222-482a-9762-94a582e9e752'; c_clin uuid := 'c76d862c-e82f-4748-bc07-86c8a3343576';
+  c_asis uuid := '974f917b-f21c-4b29-b556-530513e1b3b4'; c_admc uuid := '7e9ee700-48ac-43e1-812b-777518b971ec';
+  c_sup uuid := '41904e2c-5ef3-4fee-bd48-9ea58e0c8c37'; c_mfx uuid := '00000000-0000-4922-8922-000000000922'; c_pac uuid;
+  st text; msg text; j jsonb; v_rpc boolean; v_rls bigint; v_rls_err text; ok boolean;
+  det text := ''; bad text := ''; r_rest text := 'OK'; r record; v_pais uuid; v_medrpc boolean := false;
+  s_perf text; s_meds text; s_mc text; n_users bigint;
+BEGIN
+  SELECT pa.auth_user_id INTO c_pac FROM public.pacientes pa WHERE pa.id = 23;
+  IF c_pac IS NULL
+     OR NOT EXISTS (SELECT 1 FROM public.expediente_notas n WHERE n.paciente_id = 23)
+     OR (SELECT string_agg(p.id::text||':'||p.rol, ',' ORDER BY p.id) FROM public.perfiles p WHERE p.activo AND p.id IN (c_med, c_asis, c_admc, c_sup))
+        IS DISTINCT FROM (SELECT string_agg(v.id::text||':'||v.rol, ',' ORDER BY v.id) FROM (VALUES (c_med, 'medico'), (c_asis, 'asistente_medico'), (c_admc, 'admin_clinica'), (c_sup, 'super_admin')) v(id, rol))
+     OR c_clin NOT IN (SELECT private.clinicas_de(c_asis))
+     OR EXISTS (SELECT 1 FROM auth.users WHERE id = c_mfx) THEN
+    RAISE EXCEPTION 'fixture roto: actores de P922 (notas del 23, roles o clinica)';
+  END IF;
+  SELECT md5(COALESCE(string_agg(to_jsonb(t)::text, '|' ORDER BY t.id), '')) INTO s_perf FROM public.perfiles t;
+  SELECT md5(COALESCE(string_agg(to_jsonb(t)::text, '|' ORDER BY t.id), '')) INTO s_meds FROM public.medicos t;
+  SELECT md5(COALESCE(string_agg(to_jsonb(t)::text, '|' ORDER BY t.medico_id, t.clinica_id), '')) INTO s_mc FROM public.medico_clinicas t;
+  SELECT count(*) INTO n_users FROM auth.users;
+  BEGIN
+    SELECT pais_id INTO v_pais FROM public.perfiles WHERE id = c_med;
+    INSERT INTO auth.users (id) VALUES (c_mfx);
+    INSERT INTO public.perfiles (id, email, nombre_completo, rol, pais_id, activo)
+      VALUES (c_mfx, 'p922_medico@example.invalid', 'P922 Medico Fixture', 'medico', v_pais, true)
+      ON CONFLICT (id) DO UPDATE SET rol = 'medico', pais_id = v_pais, activo = true;
+    INSERT INTO public.medicos (id, clinica_id, nombre_completo, pais_id) VALUES (c_mfx, c_clin, 'P922 Medico Fixture', v_pais);
+    INSERT INTO public.medico_clinicas (medico_id, clinica_id) VALUES (c_mfx, c_clin);
+    IF c_clin NOT IN (SELECT private.clinicas_de(c_mfx)) THEN RAISE EXCEPTION 'fixture roto: medico fixture de P922 fuera de la clinica'; END IF;
+    FOR r IN SELECT * FROM (VALUES
+        ('medico QA (autor, medico del paciente)', c_med,  'debe'),
+        ('asistente_medico de la clinica',         c_asis, 'rls_niega'),
+        ('medico de la clinica sin relacion',      c_mfx,  'rls_niega'),
+        ('admin_clinica de la clinica',            c_admc, '-'),
+        ('el propio paciente',                     c_pac,  '-'),
+        ('super_admin',                            c_sup,  '-')) v(caso, uid, extra) LOOP
+      st := '00000'; msg := ''; j := NULL; v_rls := NULL; v_rls_err := NULL;
+      BEGIN
+        PERFORM set_config('request.jwt.claims', json_build_object('sub', r.uid::text, 'role', 'authenticated')::text, true); PERFORM set_config('role', 'authenticated', true);
+        j := public.contexto_ia_paciente(23);
+        PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
+      EXCEPTION WHEN OTHERS THEN PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
+        st := SQLSTATE; msg := SQLERRM; END;
+      v_rpc := COALESCE(st = '00000' AND jsonb_array_length(j->'diagnosticos_recientes') >= 1, false);
+      BEGIN
+        PERFORM set_config('request.jwt.claims', json_build_object('sub', r.uid::text, 'role', 'authenticated')::text, true); PERFORM set_config('role', 'authenticated', true);
+        SELECT count(*) INTO v_rls FROM public.expediente_notas n WHERE n.paciente_id = 23;
+        PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
+      EXCEPTION WHEN OTHERS THEN PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
+        v_rls_err := SQLSTATE||' '||SQLERRM; END;
+      -- el invariante
+      ok := (NOT v_rpc) OR COALESCE(v_rls >= 1, false);
+      IF r.extra = 'debe' THEN v_medrpc := v_rpc AND COALESCE(v_rls >= 1, false); ok := ok AND v_medrpc; END IF;
+      IF r.extra = 'rls_niega' THEN ok := ok AND COALESCE(v_rls = 0, false); END IF;
+      det := det||' ;; '||r.caso||'|'||CASE r.extra WHEN 'debe' THEN 'RPC si y RLS >= 1' WHEN 'rls_niega' THEN 'RLS 0 y RPC no' ELSE 'RPC => RLS' END||'|'
+                 ||CASE WHEN ok THEN 'OK' ELSE 'ROJO' END||'|rpc='||v_rpc::text||' ('||st||' '||left(msg, 60)||') rls='||COALESCE(v_rls::text, 'ERR '||left(v_rls_err, 80))||'|';
+      IF NOT ok THEN bad := bad||r.caso||': rpc='||v_rpc::text||' rls='||COALESCE(v_rls::text, 'ERR')||'; '; END IF;
+    END LOOP;
+    RAISE EXCEPTION 'P922 descarte' USING ERRCODE = 'P0999';
+  EXCEPTION WHEN SQLSTATE 'P0999' THEN NULL;
+  END;
+  PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
+  IF (SELECT md5(COALESCE(string_agg(to_jsonb(t)::text, '|' ORDER BY t.id), '')) FROM public.perfiles t) IS DISTINCT FROM s_perf THEN r_rest := r_rest||' / perfiles'; END IF;
+  IF (SELECT md5(COALESCE(string_agg(to_jsonb(t)::text, '|' ORDER BY t.id), '')) FROM public.medicos t) IS DISTINCT FROM s_meds THEN r_rest := r_rest||' / medicos'; END IF;
+  IF (SELECT md5(COALESCE(string_agg(to_jsonb(t)::text, '|' ORDER BY t.medico_id, t.clinica_id), '')) FROM public.medico_clinicas t) IS DISTINCT FROM s_mc THEN r_rest := r_rest||' / medico_clinicas'; END IF;
+  IF (SELECT count(*) FROM auth.users) <> n_users OR EXISTS (SELECT 1 FROM auth.users WHERE id = c_mfx) THEN r_rest := r_rest||' / auth.users'; END IF;
+  det := det||' ;; restauracion|subtransaccion descartada; snapshot igual|'||r_rest||'|-|';
+  PERFORM set_config('probe.p922_det', det, false);
+  PERFORM set_config('probe.p922', CASE WHEN bad = '' AND r_rest = 'OK'
+    THEN 'OK (RPC => RLS para los 6 actores sobre las notas del 23: el medico QA las obtiene y las ve; asistente_medico y medico de la clinica sin relacion: RLS 0 y la RPC tampoco; admin_clinica, paciente y super_admin no las obtienen por la RPC; restaurado)'
+    ELSE 'ROJO ('||left(bad, 700)||' | restauracion='||r_rest||')' END, false);
+EXCEPTION WHEN OTHERS THEN
+  PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
+  PERFORM set_config('probe.p922', CASE WHEN SQLERRM LIKE 'fixture roto%' THEN 'ROJO ('||SQLERRM||')' ELSE 'FALLO ('||SQLSTATE||' '||SQLERRM||')' END, false);
+END $$;
+SELECT set_config('role', 'none', true);
+
+-- ---------------- P923 catalogo post-341 ----------------
+-- md5 de contexto_ia_paciente: 1eaf84a3 -> 04fe590c (341, 2-oct-2026); con 341_rollback sale ROJO a proposito.
+-- Fija tambien la ACL (aclexplode), los vecinos y el qual de exp_select_medico.
+DO $$
+DECLARE ok boolean; det text := ''; bad text := ''; x text; r record; v_oid oid := to_regprocedure('public.contexto_ia_paciente(bigint)');
+BEGIN
+  SELECT md5(p.prosrc)||' '||p.prosecdef::text||' '||COALESCE(p.proconfig::text, '-')||' '||p.provolatile::text INTO x FROM pg_proc p WHERE p.oid = v_oid;
+  ok := COALESCE(x = '04fe590c805c79b52b324dde69948480 true {"search_path=\"\""} v', false);
+  det := det||' ;; funcion|md5 04fe590c (341), DEFINER, search_path vacio, VOLATILE|'||CASE WHEN ok THEN 'OK' ELSE 'ROJO' END||'|-|'||COALESCE(x, 'NO EXISTE');
+  IF NOT ok THEN bad := bad||'funcion: '||COALESCE(x, 'NO EXISTE')||'; '; END IF;
+  SELECT string_agg(CASE a.grantee WHEN 0 THEN 'PUBLIC' ELSE pg_get_userbyid(a.grantee) END||':'||a.privilege_type, ','
+                    ORDER BY CASE a.grantee WHEN 0 THEN 'PUBLIC' ELSE pg_get_userbyid(a.grantee) END||':'||a.privilege_type)
+    INTO x FROM pg_proc p, aclexplode(p.proacl) a WHERE p.oid = v_oid;
+  ok := COALESCE(x = 'authenticated:EXECUTE,postgres:EXECUTE,service_role:EXECUTE' AND NOT has_function_privilege('anon', v_oid, 'EXECUTE'), false);
+  det := det||' ;; EXECUTE|authenticated, service_role (+ duenio); sin PUBLIC ni anon|'||CASE WHEN ok THEN 'OK' ELSE 'ROJO' END||'|-|'||COALESCE(x, '-');
+  IF NOT ok THEN bad := bad||'ACL: '||COALESCE(x, '-')||'; '; END IF;
+  ok := (SELECT count(*) FROM pg_proc p WHERE p.pronamespace = 'public'::regnamespace AND p.proname = 'contexto_ia_paciente') = 1
+        AND obj_description(v_oid, 'pg_proc') IS NULL;
+  det := det||' ;; firmas y comentario|una sola firma, sin comentario|'||CASE WHEN ok THEN 'OK' ELSE 'ROJO' END||'|-|-';
+  IF NOT ok THEN bad := bad||'firmas/comentario; '; END IF;
+  FOR r IN SELECT * FROM (VALUES
+      ('public.gate_accion_phi(bigint,text)',          '790e09208a5c67102a2b5c378c500940'),
+      ('public.contexto_ia_ultima_visita(bigint)',     '7c97629d2a213a201c40f5615bf40cdf'),
+      ('public.obtener_contexto_visita(bigint)',       '24c3825b9c8fc6d172f8963191025097'),
+      ('private.es_medico_de(bigint)',                 'f68727f9861162f212f57ff2412d7c8b'),
+      ('private.medico_atiende_paciente(bigint)',      'ffbb220849b4c21896d103faf8d05abd')) v(f, m) LOOP
+    SELECT md5(p.prosrc) INTO x FROM pg_proc p WHERE p.oid = to_regprocedure(r.f);
+    ok := COALESCE(x = r.m, false);
+    det := det||' ;; '||r.f||'|md5 sin cambios|'||CASE WHEN ok THEN 'OK' ELSE 'ROJO' END||'|-|'||COALESCE(x, 'NO EXISTE');
+    IF NOT ok THEN bad := bad||r.f||' md5 '||COALESCE(x, 'NO EXISTE')||'; '; END IF;
+  END LOOP;
+  SELECT cmd||' '||permissive||' '||roles::text||' '||COALESCE(qual, '-')||' '||COALESCE(with_check, '-') INTO x
+    FROM pg_policies WHERE schemaname = 'public' AND tablename = 'expediente_notas' AND policyname = 'exp_select_medico';
+  ok := COALESCE(x = 'SELECT PERMISSIVE {authenticated} ((medico_id = auth.uid()) OR private.es_medico_de((paciente_id)::bigint) OR private.medico_atiende_paciente((paciente_id)::bigint)) -', false);
+  det := det||' ;; exp_select_medico|qual sin cambios (el gate de la 341 copia su predicado de paciente)|'||CASE WHEN ok THEN 'OK' ELSE 'ROJO' END||'|-|'||COALESCE(x, 'NO EXISTE');
+  IF NOT ok THEN bad := bad||'exp_select_medico: '||COALESCE(x, 'NO EXISTE')||'; '; END IF;
+  PERFORM set_config('probe.p923_det', det, false);
+  PERFORM set_config('probe.p923', CASE WHEN bad = ''
+    THEN 'OK (contexto_ia_paciente: md5 04fe590c (341), DEFINER, search_path vacio, VOLATILE, EXECUTE solo authenticated/service_role, sin comentario; gate_accion_phi, contexto_ia_ultima_visita, obtener_contexto_visita, es_medico_de y medico_atiende_paciente intactos; exp_select_medico sin cambios)'
+    ELSE 'ROJO ('||left(bad, 700)||')' END, false);
+EXCEPTION WHEN OTHERS THEN
+  PERFORM set_config('probe.p923', 'FALLO ('||SQLSTATE||' '||SQLERRM||')', false);
 END $$;
 SELECT set_config('role', 'none', true);
 
@@ -29583,6 +29924,9 @@ UNION ALL SELECT 'P917_ia_ultima_visita_fallback',    current_setting('probe.p91
 UNION ALL SELECT 'P918_ia_ultima_visita_gate',        current_setting('probe.p918', true), 'OK (340: asistente y medico sin relacion no_pertenencia; tratante si; resto no_pertenencia; revocado; anon 42501)'
 UNION ALL SELECT 'P919_ia_catalogo_339',              current_setting('probe.p919', true), 'OK (md5 340, DEFINER, search_path, EXECUTE exacto, vecinas, helpers y exp_select_medico intactos)'
 UNION ALL SELECT 'P920_ia_coherencia_rpc_rls',        current_setting('probe.p920', true), 'OK (RPC => RLS sobre la nota 2214 para 6 actores; centinela)'
+UNION ALL SELECT 'P921_ia_paciente_gate_341',         current_setting('probe.p921', true), 'OK (341: asistente y medico sin relacion no_pertenencia; QA y tratante si; resto el de gate_accion_phi; revocado; anon 42501)'
+UNION ALL SELECT 'P922_ia_paciente_coherencia_rls',   current_setting('probe.p922', true), 'OK (RPC => RLS sobre las notas del 23 para 6 actores; centinela)'
+UNION ALL SELECT 'P923_ia_paciente_catalogo_341',     current_setting('probe.p923', true), 'OK (md5 341, DEFINER, search_path, EXECUTE exacto, vecinas y exp_select_medico intactos)'
 -- Las filas FX* son SALUD DE FIXTURE, no probes de seguridad: dicen si la precondicion que una
 -- migracion posterior empezo a exigir se pudo sembrar. Si una sale ROJO, los probes que dependen de
 -- ese fixture reportan N/A (su flag de ready se pierde con el rollback de la subtransaccion) en vez
@@ -29827,7 +30171,7 @@ UNION ALL SELECT 'P000_CENTINELA_veredictos_no_nulos',
        'probe.p866', 'probe.p867', 'probe.p868', 'probe.p869', 'probe.p870', 'probe.p871', 'probe.p872', 'probe.p873', 'probe.p874', 'probe.p875', 'probe.p876', 'probe.p877', 'probe.p878',
        'probe.p879', 'probe.p880', 'probe.p881', 'probe.p882', 'probe.p883', 'probe.p884',
        'probe.p885', 'probe.p886', 'probe.p887', 'probe.p888', 'probe.p889', 'probe.p890', 'probe.p891', 'probe.p892', 'probe.p893', 'probe.p894', 'probe.p895', 'probe.p896', 'probe.p908', 'probe.p909', 'probe.p910', 'probe.p911',
-       'probe.p897', 'probe.p898', 'probe.p899', 'probe.p900', 'probe.p901', 'probe.p902', 'probe.p903', 'probe.p904', 'probe.p905', 'probe.p906', 'probe.p907', 'probe.p912', 'probe.p913', 'probe.p914', 'probe.p915', 'probe.p916', 'probe.p917', 'probe.p918', 'probe.p919', 'probe.p920'
+       'probe.p897', 'probe.p898', 'probe.p899', 'probe.p900', 'probe.p901', 'probe.p902', 'probe.p903', 'probe.p904', 'probe.p905', 'probe.p906', 'probe.p907', 'probe.p912', 'probe.p913', 'probe.p914', 'probe.p915', 'probe.p916', 'probe.p917', 'probe.p918', 'probe.p919', 'probe.p920', 'probe.p921', 'probe.p922', 'probe.p923'
              ]) AS n) s),
   'OK (todos los veredictos publicados)';
 
