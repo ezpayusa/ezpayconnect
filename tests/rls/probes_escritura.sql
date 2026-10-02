@@ -25353,6 +25353,7 @@ SELECT set_config('role', 'none', true);
 -- ---------------- P884 catalogo de objetos post-333 ----------------
 -- Ajustado por la 338: sin las 5 policies *_delete, authenticated = SELECT en examenes y ordenes_examen,
 -- y MAINTAIN en la lista de privilegios (antes no la miraba). Con 338_rollback aplicado sale ROJO a proposito.
+-- Ajustado por la 343: examenes_catalogo pierde MAINTAIN (DELETE,INSERT,SELECT); con 343_rollback sale ROJO a proposito.
 DO $$
 DECLARE
   c_med uuid := '09d243d5-b222-482a-9762-94a582e9e752'; c_lab uuid := 'a5cf575a-5d63-4ed2-839e-9b58da8152e0'; c_recep uuid := 'ce871197-285a-4d5f-9e5f-78606f9e124f'; c_admin uuid := 'e6f95b2f-7561-4e0b-b0c8-d1f38e6c4d66'; c_tec uuid := 'f69e2096-932f-45f0-9022-4e9058f2f0fd';
@@ -25393,8 +25394,8 @@ BEGIN
   ok := COALESCE(((SELECT string_agg(p, ',' ORDER BY p) FROM unnest(ARRAY['SELECT','INSERT','UPDATE','DELETE','TRUNCATE','REFERENCES','TRIGGER','MAINTAIN']) p WHERE has_table_privilege('authenticated', 'public.ordenes_examen', p)) = 'SELECT'), false);
   det := det||' ;; authenticated en ordenes_examen|SELECT, sin DELETE ni MAINTAIN (338)|'||CASE WHEN ok THEN 'OK' ELSE 'ROJO' END||'|'||st||'|'||left(msg, 160);
   IF NOT ok THEN bad := bad||'authenticated en ordenes_examen: '||st||' '||left(msg, 120)||'; '; END IF;
-  ok := COALESCE(((SELECT string_agg(p, ',' ORDER BY p) FROM unnest(ARRAY['SELECT','INSERT','UPDATE','DELETE','TRUNCATE','REFERENCES','TRIGGER','MAINTAIN']) p WHERE has_table_privilege('authenticated', 'public.examenes_catalogo', p)) = 'DELETE,INSERT,MAINTAIN,SELECT'), false);
-  det := det||' ;; authenticated en examenes_catalogo|DELETE,INSERT,MAINTAIN,SELECT (+ UPDATE por columna; fuera de la 338)|'||CASE WHEN ok THEN 'OK' ELSE 'ROJO' END||'|'||st||'|'||left(msg, 160);
+  ok := COALESCE(((SELECT string_agg(p, ',' ORDER BY p) FROM unnest(ARRAY['SELECT','INSERT','UPDATE','DELETE','TRUNCATE','REFERENCES','TRIGGER','MAINTAIN']) p WHERE has_table_privilege('authenticated', 'public.examenes_catalogo', p)) = 'DELETE,INSERT,SELECT'), false);
+  det := det||' ;; authenticated en examenes_catalogo|DELETE,INSERT,SELECT (+ UPDATE por columna; fuera de la 338; sin MAINTAIN desde la 343)|'||CASE WHEN ok THEN 'OK' ELSE 'ROJO' END||'|'||st||'|'||left(msg, 160);
   IF NOT ok THEN bad := bad||'authenticated en examenes_catalogo: '||st||' '||left(msg, 120)||'; '; END IF;
   ok := COALESCE((NOT EXISTS (SELECT 1 FROM unnest(ARRAY['public.examenes','public.ordenes_examen','public.examenes_catalogo']) t, unnest(ARRAY['SELECT','INSERT','UPDATE','DELETE','TRUNCATE','REFERENCES','TRIGGER','MAINTAIN']) p WHERE has_table_privilege('anon', t, p))
     AND NOT EXISTS (SELECT 1 FROM pg_class k, aclexplode(k.relacl) a WHERE k.oid IN ('public.examenes'::regclass, 'public.ordenes_examen'::regclass, 'public.examenes_catalogo'::regclass) AND a.grantee = 0)), false);
@@ -25418,7 +25419,7 @@ BEGIN
 
   PERFORM set_config('probe.p884_det', det, false);
   PERFORM set_config('probe.p884', CASE WHEN bad = '' AND r_rest = 'OK'
-    THEN 'OK (policies por comando exactas (sin INSERT, DELETE ni ALL desde la 338), mismas expresiones que las ALL, grants de tabla exactos con MAINTAIN, anon/PUBLIC sin nada, grants por columna de la 332 intactos)'
+    THEN 'OK (policies por comando exactas (sin INSERT, DELETE ni ALL desde la 338), mismas expresiones que las ALL, grants de tabla exactos (MAINTAIN en la lista; ninguno lo tiene desde la 343), anon/PUBLIC sin nada, grants por columna de la 332 intactos)'
     ELSE 'ROJO ('||left(bad, 700)||' | restauracion='||r_rest||')' END, false);
 EXCEPTION WHEN OTHERS THEN
   PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
@@ -28950,6 +28951,28 @@ EXCEPTION WHEN OTHERS THEN
 END $$;
 SELECT set_config('role', 'none', true);
 
+-- ---------------- P925 censo global: MAINTAIN en public y private (343) ----------------
+-- 343 (familia 1, paso 2): ninguna relacion de public ni de private (tablas y vistas) con MAINTAIN para anon,
+-- authenticated o PUBLIC, ni en la ACL (aclexplode) ni efectivo (has_table_privilege). Con 343_rollback sale
+-- ROJO a proposito (114 de authenticated y 8 de anon). Solo lee el catalogo.
+-- Una tabla nueva sigue naciendo con MAINTAIN para authenticated por el default privilege de postgres hasta
+-- la 344: si una migracion la crea sin revocarlo, este probe la marca.
+DO $$
+DECLARE v text; e text;
+BEGIN
+  v := (SELECT COALESCE(string_agg(n.nspname||'.'||c.relname||':'||CASE a.grantee WHEN 0 THEN 'PUBLIC' ELSE pg_get_userbyid(a.grantee) END, ',' ORDER BY n.nspname||'.'||c.relname||':'||CASE a.grantee WHEN 0 THEN 'PUBLIC' ELSE pg_get_userbyid(a.grantee) END), '')
+      FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace, aclexplode(COALESCE(c.relacl, acldefault('r', c.relowner))) a
+     WHERE n.nspname IN ('public','private') AND c.relkind IN ('r','p','v','m','f') AND a.privilege_type = 'MAINTAIN' AND a.grantee IN (0, 'anon'::regrole::oid, 'authenticated'::regrole::oid));
+  e := (SELECT count(*) FILTER (WHERE has_table_privilege('anon', c.oid, 'MAINTAIN'))||'/'||count(*) FILTER (WHERE has_table_privilege('authenticated', c.oid, 'MAINTAIN'))||'/'||count(*) FILTER (WHERE has_table_privilege('public', c.oid, 'MAINTAIN'))
+      FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace WHERE n.nspname IN ('public','private') AND c.relkind IN ('r','p','v','m','f'));
+  PERFORM set_config('probe.p925', CASE WHEN v = '' AND e = '0/0/0'
+    THEN 'OK (0 relaciones de public/private con MAINTAIN para anon, authenticated o PUBLIC; efectivo 0/0/0)'
+    ELSE 'ROJO (efectivo anon/auth/PUBLIC='||e||'; '||COALESCE(array_length(string_to_array(NULLIF(v, ''), ','), 1), 0)||' pares relacion:rol: '||left(v, 900)||')' END, false);
+EXCEPTION WHEN OTHERS THEN
+  PERFORM set_config('probe.p925', 'FALLO ('||SQLSTATE||' '||SQLERRM||')', false);
+END $$;
+SELECT set_config('role', 'none', true);
+
 -- ===== Veredictos como result set =====
 SELECT 'P1_anon_insert_citas'              AS probe, current_setting('probe.p1', true)  AS verdict, 'BLOQUEADO' AS esperado_post_fix
 UNION ALL SELECT 'P2_medico_cancela_ajena_rpc',         current_setting('probe.p2', true),  'BLOQUEADO'
@@ -29908,7 +29931,7 @@ UNION ALL SELECT 'P880_ex_rpcs_siguen_creando',         current_setting('probe.p
 UNION ALL SELECT 'P881_ex_acceso_por_rol',              current_setting('probe.p881', true), 'OK (SELECT/UPDATE por rol igual; DELETE directo 42501 desde la 338)'
 UNION ALL SELECT 'P882_ex_truncate_trigger_references', current_setting('probe.p882', true), 'OK (TRUNCATE 42501 x3; sin TRIGGER/REFERENCES)'
 UNION ALL SELECT 'P883_ex_catalogo_alta_sigue',         current_setting('probe.p883', true), 'OK (alta en su catalogo OK; en otro lab 42501)'
-UNION ALL SELECT 'P884_ex_catalogo_333',                current_setting('probe.p884', true), 'OK (policies por comando, sin INSERT/DELETE/ALL, grants exactos con MAINTAIN)'
+UNION ALL SELECT 'P884_ex_catalogo_333',                current_setting('probe.p884', true), 'OK (policies por comando, sin INSERT/DELETE/ALL, grants exactos; examenes_catalogo sin MAINTAIN desde la 343)'
 UNION ALL SELECT 'P885_nt_edicion_abierta',            current_setting('probe.p885', true), 'OK (edicion libre con revision de la fila previa)'
 UNION ALL SELECT 'P886_nt_congelados',                 current_setting('probe.p886', true), 'OK (NT007 x8; INSERT fechado queda en now())'
 UNION ALL SELECT 'P887_nt_cierre_al_completar',        current_setting('probe.p887', true), 'OK (cierra sin revision; no se reabre; NT006)'
@@ -29949,6 +29972,7 @@ UNION ALL SELECT 'P921_ia_paciente_gate_341',         current_setting('probe.p92
 UNION ALL SELECT 'P922_ia_paciente_coherencia_rls',   current_setting('probe.p922', true), 'OK (RPC => RLS sobre las notas del 23 para 6 actores; centinela)'
 UNION ALL SELECT 'P923_ia_paciente_catalogo_341',     current_setting('probe.p923', true), 'OK (md5 341, DEFINER, search_path, EXECUTE exacto, vecinas y exp_select_medico intactos)'
 UNION ALL SELECT 'P924_priv_tru_tri_ref_342',         current_setting('probe.p924', true), 'OK (342: 0 relaciones de public con TRUNCATE/TRIGGER/REFERENCES para anon, authenticated o PUBLIC)'
+UNION ALL SELECT 'P925_priv_maintain_343',            current_setting('probe.p925', true), 'OK (343: 0 relaciones de public/private con MAINTAIN para anon, authenticated o PUBLIC)'
 -- Las filas FX* son SALUD DE FIXTURE, no probes de seguridad: dicen si la precondicion que una
 -- migracion posterior empezo a exigir se pudo sembrar. Si una sale ROJO, los probes que dependen de
 -- ese fixture reportan N/A (su flag de ready se pierde con el rollback de la subtransaccion) en vez
@@ -30193,7 +30217,7 @@ UNION ALL SELECT 'P000_CENTINELA_veredictos_no_nulos',
        'probe.p866', 'probe.p867', 'probe.p868', 'probe.p869', 'probe.p870', 'probe.p871', 'probe.p872', 'probe.p873', 'probe.p874', 'probe.p875', 'probe.p876', 'probe.p877', 'probe.p878',
        'probe.p879', 'probe.p880', 'probe.p881', 'probe.p882', 'probe.p883', 'probe.p884',
        'probe.p885', 'probe.p886', 'probe.p887', 'probe.p888', 'probe.p889', 'probe.p890', 'probe.p891', 'probe.p892', 'probe.p893', 'probe.p894', 'probe.p895', 'probe.p896', 'probe.p908', 'probe.p909', 'probe.p910', 'probe.p911',
-       'probe.p897', 'probe.p898', 'probe.p899', 'probe.p900', 'probe.p901', 'probe.p902', 'probe.p903', 'probe.p904', 'probe.p905', 'probe.p906', 'probe.p907', 'probe.p912', 'probe.p913', 'probe.p914', 'probe.p915', 'probe.p916', 'probe.p917', 'probe.p918', 'probe.p919', 'probe.p920', 'probe.p921', 'probe.p922', 'probe.p923', 'probe.p924'
+       'probe.p897', 'probe.p898', 'probe.p899', 'probe.p900', 'probe.p901', 'probe.p902', 'probe.p903', 'probe.p904', 'probe.p905', 'probe.p906', 'probe.p907', 'probe.p912', 'probe.p913', 'probe.p914', 'probe.p915', 'probe.p916', 'probe.p917', 'probe.p918', 'probe.p919', 'probe.p920', 'probe.p921', 'probe.p922', 'probe.p923', 'probe.p924', 'probe.p925'
              ]) AS n) s),
   'OK (todos los veredictos publicados)';
 

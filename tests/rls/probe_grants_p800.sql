@@ -11,6 +11,9 @@ BEGIN;
 -- violaciones y RAISE con el detalle. La parte (f) trae su EXCEPTION handler
 -- (satisface b2_guard: el bloque "tiene handler"); el RAISE final es top-level y
 -- por eso propaga. Baseline anon = 80 relaciones SELECT (23-sep-2026).
+-- 343 (2-oct-2026): (c)/(d) miran tambien MAINTAIN de anon, y la regla nueva (i) exige 0 TRUNCATE/TRIGGER/
+-- REFERENCES/MAINTAIN para authenticated y PUBLIC (antes P800 no veia MAINTAIN). Con 343_rollback sale ROJO.
+-- P800 sigue sin mirar funciones (pg_proc): eso es la 348.
 -- ============================================================================
 DO $p800$
 DECLARE
@@ -77,7 +80,8 @@ BEGIN
     anon_tiene := has_table_privilege('anon', r.oid,'SELECT') OR has_table_privilege('anon', r.oid,'INSERT')
       OR has_table_privilege('anon', r.oid,'UPDATE') OR has_table_privilege('anon', r.oid,'DELETE')
       OR has_table_privilege('anon', r.oid,'REFERENCES') OR has_table_privilege('anon', r.oid,'TRIGGER')
-      OR has_table_privilege('anon', r.oid,'TRUNCATE') OR has_any_column_privilege('anon', r.oid, 'SELECT,INSERT,UPDATE,REFERENCES');
+      OR has_table_privilege('anon', r.oid,'TRUNCATE') OR has_table_privilege('anon', r.oid,'MAINTAIN')
+      OR has_any_column_privilege('anon', r.oid, 'SELECT,INSERT,UPDATE,REFERENCES');
     -- (c) anon con cualquier privilegio y fuera de WL_ANON_LEGACY
     IF anon_tiene AND NOT (r.relname = ANY(wl_anon)) THEN
       v_viol := v_viol || E'\n(c) anon CON privilegio y fuera de WL_ANON_LEGACY: '||r.relname;
@@ -85,9 +89,20 @@ BEGIN
     -- (d) en WL_ANON_LEGACY pero con algo != SELECT
     anon_no_select := has_table_privilege('anon', r.oid,'INSERT') OR has_table_privilege('anon', r.oid,'UPDATE')
       OR has_table_privilege('anon', r.oid,'DELETE') OR has_table_privilege('anon', r.oid,'REFERENCES') OR has_table_privilege('anon', r.oid,'TRIGGER')
-      OR has_table_privilege('anon', r.oid,'TRUNCATE') OR has_any_column_privilege('anon', r.oid, 'INSERT,UPDATE,REFERENCES');
+      OR has_table_privilege('anon', r.oid,'TRUNCATE') OR has_table_privilege('anon', r.oid,'MAINTAIN')
+      OR has_any_column_privilege('anon', r.oid, 'INSERT,UPDATE,REFERENCES');
     IF (r.relname = ANY(wl_anon)) AND anon_no_select THEN
       v_viol := v_viol || E'\n(d) anon con privilegio != SELECT en WL_ANON_LEGACY: '||r.relname;
+    END IF;
+
+    -- (i) privilegios que ningun cliente usa y que saltan la RLS o toman locks (migs 342/343): ni authenticated
+    --     ni PUBLIC tienen TRUNCATE, TRIGGER, REFERENCES ni MAINTAIN en ninguna relacion de public, sin allowlist
+    --     (anon ya lo cubren (c) y (d)). Una tabla nueva nace con los cuatro hasta la 344: hay que revocarlos.
+    IF has_table_privilege('authenticated', r.oid,'TRUNCATE') OR has_table_privilege('authenticated', r.oid,'TRIGGER')
+       OR has_table_privilege('authenticated', r.oid,'REFERENCES') OR has_table_privilege('authenticated', r.oid,'MAINTAIN')
+       OR has_table_privilege('public', r.oid,'TRUNCATE') OR has_table_privilege('public', r.oid,'TRIGGER')
+       OR has_table_privilege('public', r.oid,'REFERENCES') OR has_table_privilege('public', r.oid,'MAINTAIN') THEN
+      v_viol := v_viol || E'\n(i) authenticated o PUBLIC con TRUNCATE/TRIGGER/REFERENCES/MAINTAIN: '||r.relname;
     END IF;
 
     -- (e) RLS deshabilitada en tabla
