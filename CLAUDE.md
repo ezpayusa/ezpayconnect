@@ -28,7 +28,8 @@ Stack: React + Vite + TypeScript, Supabase / Postgres, deploy en Vercel, repo en
   por la 337, P914-P915 por la 338, P916-P920 por la 339/340, P921-P923 por la 341, P924 por la 342, P925 por
   la 343, P926-P927 por la 344, P928-P929 por la 345, P930 por la 346), **migración `347`**
   (346 = familia 1, paso 5: REVOKE de 102 privilegios muertos de authenticated — escrituras sin policy aplicable
-  en 37 tablas (87) + INSERT/UPDATE/DELETE en 5 vistas no actualizables (15); de 113 muertos quedan 11 en la
+  en 36 tablas (87 privilegios) + INSERT/UPDATE/DELETE en 5 vistas no actualizables (15) = 102; la 37ª tabla del
+  recon, campana_vistas, queda en la allowlist (UPDATE por el upsert del front); de 113 muertos quedan 11 en la
   allowlist de P930; ACL de relaciones 855f0797… → deedb2e6…; escrituras de authenticated en public 239 → 137;
   probe P930 (censo) y P782 ajustado — APLICADA en prod el 2-oct-2026 19:38 UTC y verificada en sesión
   independiente 9/9 (1005 filas / 11 rojas de deuda, P800 PASA, guard `do_sin_handler` 155 sobre 963 bloques DO).
@@ -270,7 +271,9 @@ Detalles a recordar:
   authenticated en la ACL y una policy INSERT/ALL para authenticated o public. Huella 2b8162b5… → e1ef3639…;
   P928 = censo que recalcula el conjunto desde el catálogo, P929 = funcional con INSERT real en las 11 y ROJO
   a propósito si entra una tabla sin receta) → 346 privilegios muertos (**APLICADA**; 102 revocados de 113:
-  escrituras de authenticated sin policy aplicable en 37 tablas + escrituras en 5 vistas no actualizables;
+  escrituras de authenticated sin policy aplicable en 36 tablas (87 privilegios) + escrituras en 5 vistas no
+  actualizables (15) = 102; la 37ª tabla del recon, campana_vistas, queda en la allowlist (UPDATE por el upsert
+  del front);
   ACL 855f0797… → deedb2e6…; escrituras de authenticated 239 → 137; P930 = censo con allowlist de 11 comentada:
   UPDATE de `campana_vistas` (upsert del front), SELECT de `recordatorios` y `transacciones` (las lee el front),
   SELECT de anon en `liquidaciones_comision` (WL_ANON_LEGACY, lección 284), y SELECT de 7 tablas sin otro
