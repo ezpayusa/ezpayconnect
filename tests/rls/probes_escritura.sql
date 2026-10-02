@@ -25381,10 +25381,10 @@ BEGIN
   SELECT md5(COALESCE(string_agg(to_jsonb(c)::text, '|' ORDER BY c.id), '')) INTO s_cat FROM public.examenes_catalogo c;
   notif0 := ARRAY(SELECT id FROM public.notificaciones);
   SELECT COALESCE(max(id), 0) INTO np0 FROM public.notificaciones_pacientes;
-  ok := COALESCE(((SELECT string_agg(policyname||':'||cmd||':'||roles::text, ',' ORDER BY policyname) FROM pg_policies WHERE schemaname = 'public' AND tablename = 'examenes') = 'Admin clinica ve examenes de su clinica:SELECT:{authenticated},Paciente ve sus examenes:SELECT:{public},examenes_laboratorio_select:SELECT:{public},examenes_laboratorio_update:UPDATE:{public},examenes_medico_select:SELECT:{authenticated},examenes_superadmin_select:SELECT:{authenticated},examenes_superadmin_update:UPDATE:{authenticated}'), false);
+  ok := COALESCE(((SELECT string_agg(policyname||':'||cmd||':'||roles::text, ',' ORDER BY policyname) FROM pg_policies WHERE schemaname = 'public' AND tablename = 'examenes') = 'Admin clinica ve examenes de su clinica:SELECT:{authenticated},Paciente ve sus examenes:SELECT:{authenticated},examenes_laboratorio_select:SELECT:{authenticated},examenes_laboratorio_update:UPDATE:{authenticated},examenes_medico_select:SELECT:{authenticated},examenes_superadmin_select:SELECT:{authenticated},examenes_superadmin_update:UPDATE:{authenticated}'), false);
   det := det||' ;; policies de examenes|conjunto exacto|'||CASE WHEN ok THEN 'OK' ELSE 'ROJO' END||'|'||st||'|'||left(msg, 160);
   IF NOT ok THEN bad := bad||'policies de examenes: '||st||' '||left(msg, 120)||'; '; END IF;
-  ok := COALESCE(((SELECT string_agg(policyname||':'||cmd||':'||roles::text, ',' ORDER BY policyname) FROM pg_policies WHERE schemaname = 'public' AND tablename = 'ordenes_examen') = 'ordenes_lab_select:SELECT:{public},ordenes_medico_select:SELECT:{authenticated}'), false);
+  ok := COALESCE(((SELECT string_agg(policyname||':'||cmd||':'||roles::text, ',' ORDER BY policyname) FROM pg_policies WHERE schemaname = 'public' AND tablename = 'ordenes_examen') = 'ordenes_lab_select:SELECT:{authenticated},ordenes_medico_select:SELECT:{authenticated}'), false);
   det := det||' ;; policies de ordenes_examen|conjunto exacto|'||CASE WHEN ok THEN 'OK' ELSE 'ROJO' END||'|'||st||'|'||left(msg, 160);
   IF NOT ok THEN bad := bad||'policies de ordenes_examen: '||st||' '||left(msg, 120)||'; '; END IF;
   ok := COALESCE((NOT EXISTS (SELECT 1 FROM pg_policies WHERE schemaname = 'public' AND policyname IN ('examenes_laboratorio_select','examenes_laboratorio_update','ordenes_lab_select')
@@ -29458,6 +29458,143 @@ EXCEPTION WHEN OTHERS THEN
 END $$;
 SELECT set_config('role', 'none', true);
 
+-- ---------------- P934 censo: policies {public} en public fuera de la WL_ANON_LEGACY (349) ----------------
+-- Una policy {public} en una tabla donde anon no tiene privilegios no cambia nada hoy, pero si alguien le diera un
+-- privilegio a anon esa policy pasaria a aplicarsele. Desde la 349 las policies de public son TO authenticated (o de
+-- un rol explicito) salvo las de las 8 tablas de la WL_ANON_LEGACY, que son F2-c. storage no cuenta (sus {public}
+-- son lectura publica de buckets). Solo lee el catalogo. Con 349_rollback sale ROJO a proposito.
+DO $$
+DECLARE v text; n int;
+BEGIN
+  SELECT count(*), string_agg(c.relname||'/'||pl.polname, ', ' ORDER BY c.relname, pl.polname) INTO n, v
+    FROM pg_policy pl JOIN pg_class c ON c.oid = pl.polrelid
+   WHERE c.relnamespace = 'public'::regnamespace AND pl.polroles = '{0}'::oid[]
+     AND NOT (c.relname = ANY (ARRAY['configuracion_pais','configuracion_sistema','cuentas_proveedor','empresas_proveedoras',
+                                     'liquidaciones_comision','pacientes','perfiles','recetas']));
+  PERFORM set_config('probe.p934', CASE WHEN n = 0
+    THEN 'OK (0 policies {public} en public fuera de las tablas de la WL_ANON_LEGACY)'
+    ELSE 'ROJO ('||n||' policies {public} fuera de la WL: '||left(v, 800)||')' END, false);
+EXCEPTION WHEN OTHERS THEN
+  PERFORM set_config('probe.p934', 'FALLO ('||SQLSTATE||' '||SQLERRM||')', false);
+END $$;
+SELECT set_config('role', 'none', true);
+
+-- ---------------- P935 funcional: {public} -> authenticated no cambia nada para authenticated ni para anon (349) ----------------
+-- Muestra con un comando de cada tipo: citas (SELECT + ALL), push_subscriptions (INSERT, DELETE, SELECT), facturas
+-- (UPDATE), campanas_publicitarias (ALL). Corre el mismo set de operaciones dos veces dentro de una subtransaccion
+-- descartada: (1) con los roles que tengan hoy esas 13 policies y (2) despues de ALTERNARLOS ({public} <->
+-- {authenticated}). Los resultados tienen que ser identicos, y anon tiene que recibir 42501 de PRIVILEGIO ("permission
+-- denied for table") en las 4 tablas en las dos pasadas. Asi el probe vale antes y despues de la 349 (y con el
+-- rollback). Cada escritura va en su propia subtransaccion descartada: una pasada no altera a la otra.
+DO $$
+DECLARE
+  c_pacu CONSTANT uuid := '5bfb5b4c-dc91-4714-93cb-a292faa6717d';
+  v_med uuid; v_sa uuid; r record; k int; n int; st text; res text[] := ARRAY['', '']; anon text[] := ARRAY['', ''];
+  det text := ''; bad text := ''; r_rest text := 'OK'; snap_pre text; snap_post text; v_tabla text; v_roles_pre text;
+BEGIN
+  IF current_user <> 'postgres' THEN RAISE EXCEPTION 'fixture roto: P935 corre como %', current_user; END IF;
+  SELECT id INTO v_sa FROM public.perfiles WHERE rol = 'super_admin' ORDER BY id LIMIT 1;
+  SELECT f.medico_id INTO v_med FROM public.facturas f JOIN public.perfiles p ON p.id = f.medico_id ORDER BY f.id LIMIT 1;
+  IF v_sa IS NULL OR v_med IS NULL OR NOT EXISTS (SELECT 1 FROM public.pacientes WHERE auth_user_id = c_pacu) THEN
+    RAISE EXCEPTION 'fixture roto: P935 sin super_admin (%), medico con facturas (%) o paciente 23', v_sa, v_med;
+  END IF;
+  SELECT string_agg(pl.polname||'='||pl.polroles::text, ',' ORDER BY pl.polname) INTO v_roles_pre FROM pg_policy pl
+   WHERE pl.polrelid IN ('public.citas'::regclass, 'public.facturas'::regclass, 'public.push_subscriptions'::regclass, 'public.campanas_publicitarias'::regclass);
+  snap_pre := (SELECT count(*) FROM public.push_subscriptions)||'/'||(SELECT md5(string_agg(to_jsonb(f)::text, '|' ORDER BY f.id)) FROM public.facturas f)
+              ||'/'||(SELECT md5(string_agg(to_jsonb(c)::text, '|' ORDER BY c.id)) FROM public.campanas_publicitarias c);
+  BEGIN
+    FOR k IN 1..2 LOOP
+      PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
+      IF k = 2 THEN
+        FOR r IN SELECT c.relname AS tab, pl.polname AS pol, pl.polroles = '{0}'::oid[] AS es_public
+                   FROM pg_policy pl JOIN pg_class c ON c.oid = pl.polrelid
+                  WHERE c.relnamespace = 'public'::regnamespace AND (c.relname, pl.polname) IN (
+                    ('campanas_publicitarias', 'Admin ve campanas de su pais'), ('citas', 'Admin ve citas de su pais'),
+                    ('citas', 'Paciente ve sus citas'), ('facturas', 'Admin ve facturas de su pais'),
+                    ('facturas', 'Medico actualiza sus facturas'), ('facturas', 'Medico crea sus facturas'),
+                    ('facturas', 'Medico ve sus facturas'), ('facturas', 'medicos_actualizar_facturas'),
+                    ('facturas', 'medicos_crear_facturas'), ('facturas', 'medicos_ver_facturas'),
+                    ('push_subscriptions', 'Usuario crea sus push subscriptions'),
+                    ('push_subscriptions', 'Usuario elimina sus push subscriptions'),
+                    ('push_subscriptions', 'Usuario ve sus push subscriptions')) LOOP
+          EXECUTE format('ALTER POLICY %I ON public.%I TO %s', r.pol, r.tab, CASE WHEN r.es_public THEN 'authenticated' ELSE 'public' END);
+          n := COALESCE(n, 0) + 1;
+        END LOOP;
+      END IF;
+      -- paciente 23: SELECT de citas (Paciente ve sus citas + Admin ve citas ALL), INSERT propio y ajeno, SELECT y DELETE de push
+      PERFORM set_config('request.jwt.claims', json_build_object('sub', c_pacu::text, 'role', 'authenticated')::text, true);
+      PERFORM set_config('role', 'authenticated', true);
+      SELECT count(*) INTO n FROM public.citas; res[k] := res[k]||'pac citas='||n||'; ';
+      BEGIN INSERT INTO public.push_subscriptions (user_id, endpoint, p256dh, auth) VALUES (c_pacu, 'https://p935.invalid/a', 'k', 'a');
+        st := 'OK'; RAISE EXCEPTION 'x' USING ERRCODE = 'P0999';
+      EXCEPTION WHEN SQLSTATE 'P0999' THEN NULL; WHEN OTHERS THEN st := SQLSTATE; END;
+      res[k] := res[k]||'pac push insert propio='||st||'; ';
+      BEGIN INSERT INTO public.push_subscriptions (user_id, endpoint, p256dh, auth) VALUES (v_med, 'https://p935.invalid/b', 'k', 'a');
+        st := 'OK'; RAISE EXCEPTION 'x' USING ERRCODE = 'P0999';
+      EXCEPTION WHEN SQLSTATE 'P0999' THEN NULL; WHEN OTHERS THEN st := SQLSTATE; END;
+      res[k] := res[k]||'pac push insert ajeno='||st||'; ';
+      SELECT count(*) INTO n FROM public.push_subscriptions; res[k] := res[k]||'pac push select='||n||'; ';
+      BEGIN DELETE FROM public.push_subscriptions; GET DIAGNOSTICS n = ROW_COUNT; st := n::text; RAISE EXCEPTION 'x' USING ERRCODE = 'P0999';
+      EXCEPTION WHEN SQLSTATE 'P0999' THEN NULL; WHEN OTHERS THEN st := SQLSTATE; END;
+      res[k] := res[k]||'pac push delete='||st||'; ';
+      PERFORM set_config('role', 'none', true);
+      -- medico con facturas: SELECT y UPDATE (las 2 policies UPDATE)
+      PERFORM set_config('request.jwt.claims', json_build_object('sub', v_med::text, 'role', 'authenticated')::text, true);
+      PERFORM set_config('role', 'authenticated', true);
+      SELECT count(*) INTO n FROM public.facturas; res[k] := res[k]||'med facturas='||n||'; ';
+      BEGIN UPDATE public.facturas SET concepto = concepto; GET DIAGNOSTICS n = ROW_COUNT; st := n::text; RAISE EXCEPTION 'x' USING ERRCODE = 'P0999';
+      EXCEPTION WHEN SQLSTATE 'P0999' THEN NULL; WHEN OTHERS THEN st := SQLSTATE; END;
+      res[k] := res[k]||'med facturas update='||st||'; ';
+      PERFORM set_config('role', 'none', true);
+      -- super_admin: ALL de campanas_publicitarias (SELECT + UPDATE) y ALL de citas
+      PERFORM set_config('request.jwt.claims', json_build_object('sub', v_sa::text, 'role', 'authenticated')::text, true);
+      PERFORM set_config('role', 'authenticated', true);
+      SELECT count(*) INTO n FROM public.campanas_publicitarias; res[k] := res[k]||'sa campanas='||n||'; ';
+      BEGIN UPDATE public.campanas_publicitarias SET titulo = titulo; GET DIAGNOSTICS n = ROW_COUNT; st := n::text; RAISE EXCEPTION 'x' USING ERRCODE = 'P0999';
+      EXCEPTION WHEN SQLSTATE 'P0999' THEN NULL; WHEN OTHERS THEN st := SQLSTATE; END;
+      res[k] := res[k]||'sa campanas update='||st||'; ';
+      SELECT count(*) INTO n FROM public.citas; res[k] := res[k]||'sa citas='||n||'; ';
+      PERFORM set_config('role', 'none', true);
+      -- anon: 42501 de privilegio en las 4 tablas
+      PERFORM set_config('request.jwt.claims', json_build_object('role', 'anon')::text, true);
+      PERFORM set_config('role', 'anon', true);
+      FOREACH v_tabla IN ARRAY ARRAY['citas', 'push_subscriptions', 'facturas', 'campanas_publicitarias'] LOOP
+        BEGIN EXECUTE format('SELECT count(*) FROM public.%I', v_tabla) INTO n; st := 'LEYO '||n;
+        EXCEPTION WHEN OTHERS THEN st := CASE WHEN SQLSTATE = '42501' AND SQLERRM = 'permission denied for table '||v_tabla THEN '42501-priv' ELSE SQLSTATE||' '||SQLERRM END; END;
+        anon[k] := anon[k]||v_tabla||'='||st||'; ';
+      END LOOP;
+      PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
+    END LOOP;
+    RAISE EXCEPTION 'P935 descarte' USING ERRCODE = 'P0999';
+  EXCEPTION WHEN SQLSTATE 'P0999' THEN NULL;
+  END;
+  PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
+  det := det||' ;; authenticated antes|-|-|-|'||res[1];
+  det := det||' ;; authenticated con los roles alternados|= antes|'||CASE WHEN res[1] = res[2] AND res[1] <> '' THEN 'OK' ELSE 'ROJO' END||'|-|'||res[2];
+  IF res[1] IS DISTINCT FROM res[2] OR res[1] = '' THEN bad := bad||'authenticated distinto: ['||res[1]||'] vs ['||res[2]||']; '; END IF;
+  IF anon[1] <> 'citas=42501-priv; push_subscriptions=42501-priv; facturas=42501-priv; campanas_publicitarias=42501-priv; ' OR anon[2] <> anon[1] THEN
+    bad := bad||'anon: ['||anon[1]||'] / ['||anon[2]||']; ';
+  END IF;
+  det := det||' ;; anon en las 4 tablas|42501 de privilegio en las dos pasadas|'||CASE WHEN bad NOT LIKE '%anon:%' THEN 'OK' ELSE 'ROJO' END||'|-|'||anon[1];
+  snap_post := (SELECT count(*) FROM public.push_subscriptions)||'/'||(SELECT md5(string_agg(to_jsonb(f)::text, '|' ORDER BY f.id)) FROM public.facturas f)
+               ||'/'||(SELECT md5(string_agg(to_jsonb(c)::text, '|' ORDER BY c.id)) FROM public.campanas_publicitarias c);
+  IF snap_post IS DISTINCT FROM snap_pre THEN r_rest := 'cambio el snapshot'; END IF;
+  IF (SELECT string_agg(pl.polname||'='||pl.polroles::text, ',' ORDER BY pl.polname) FROM pg_policy pl
+        WHERE pl.polrelid IN ('public.citas'::regclass, 'public.facturas'::regclass, 'public.push_subscriptions'::regclass, 'public.campanas_publicitarias'::regclass))
+     IS DISTINCT FROM v_roles_pre THEN
+    r_rest := r_rest||' / roles no restaurados';
+  END IF;
+  det := det||' ;; restauracion|subtransaccion descartada (roles y escrituras)|'||r_rest||'|-|';
+  PERFORM set_config('probe.p935_det', det, false);
+  PERFORM set_config('probe.p935', CASE WHEN bad = '' AND r_rest = 'OK'
+    THEN 'OK (13 policies de muestra con roles alternados: authenticated ve y escribe lo mismo, anon en 42501 de privilegio; descartado)'
+    ELSE 'ROJO ('||left(bad, 900)||' | restauracion='||r_rest||')' END, false);
+EXCEPTION WHEN OTHERS THEN
+  PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
+  PERFORM set_config('probe.p935', CASE WHEN SQLERRM LIKE 'fixture roto%' THEN 'ROJO ('||SQLERRM||')' ELSE 'FALLO ('||SQLSTATE||' '||SQLERRM||')' END, false);
+END $$;
+SELECT set_config('role', 'none', true);
+
 -- ===== Veredictos como result set =====
 SELECT 'P1_anon_insert_citas'              AS probe, current_setting('probe.p1', true)  AS verdict, 'BLOQUEADO' AS esperado_post_fix
 UNION ALL SELECT 'P2_medico_cancela_ajena_rpc',         current_setting('probe.p2', true),  'BLOQUEADO'
@@ -30466,6 +30603,8 @@ UNION ALL SELECT 'P930_privilegios_muertos_346',      current_setting('probe.p93
 UNION ALL SELECT 'P931_definer_search_path_347',      current_setting('probe.p931', true), 'OK (347: 0 funciones SECURITY DEFINER de public/private sin search_path fijo)'
 UNION ALL SELECT 'P932_trigger_planes_pais_347',      current_setting('probe.p932', true), 'OK (347: el trigger de configuracion_pais siembra los planes con search_path hostil y normal)'
 UNION ALL SELECT 'P933_policies_service_role_348',    current_setting('probe.p933', true), 'OK (348: 0 policies TO service_role; service_role con BYPASSRLS)'
+UNION ALL SELECT 'P934_policies_public_fuera_wl_349',  current_setting('probe.p934', true), 'OK (349: 0 policies {public} en public fuera de la WL_ANON_LEGACY)'
+UNION ALL SELECT 'P935_public_a_authenticated_349',   current_setting('probe.p935', true), 'OK (349: con los roles alternados authenticated ve y escribe lo mismo; anon en 42501 de privilegio)'
 -- Las filas FX* son SALUD DE FIXTURE, no probes de seguridad: dicen si la precondicion que una
 -- migracion posterior empezo a exigir se pudo sembrar. Si una sale ROJO, los probes que dependen de
 -- ese fixture reportan N/A (su flag de ready se pierde con el rollback de la subtransaccion) en vez
@@ -30710,7 +30849,7 @@ UNION ALL SELECT 'P000_CENTINELA_veredictos_no_nulos',
        'probe.p866', 'probe.p867', 'probe.p868', 'probe.p869', 'probe.p870', 'probe.p871', 'probe.p872', 'probe.p873', 'probe.p874', 'probe.p875', 'probe.p876', 'probe.p877', 'probe.p878',
        'probe.p879', 'probe.p880', 'probe.p881', 'probe.p882', 'probe.p883', 'probe.p884',
        'probe.p885', 'probe.p886', 'probe.p887', 'probe.p888', 'probe.p889', 'probe.p890', 'probe.p891', 'probe.p892', 'probe.p893', 'probe.p894', 'probe.p895', 'probe.p896', 'probe.p908', 'probe.p909', 'probe.p910', 'probe.p911',
-       'probe.p897', 'probe.p898', 'probe.p899', 'probe.p900', 'probe.p901', 'probe.p902', 'probe.p903', 'probe.p904', 'probe.p905', 'probe.p906', 'probe.p907', 'probe.p912', 'probe.p913', 'probe.p914', 'probe.p915', 'probe.p916', 'probe.p917', 'probe.p918', 'probe.p919', 'probe.p920', 'probe.p921', 'probe.p922', 'probe.p923', 'probe.p924', 'probe.p925', 'probe.p926', 'probe.p927', 'probe.p928', 'probe.p929', 'probe.p930', 'probe.p931', 'probe.p932', 'probe.p933'
+       'probe.p897', 'probe.p898', 'probe.p899', 'probe.p900', 'probe.p901', 'probe.p902', 'probe.p903', 'probe.p904', 'probe.p905', 'probe.p906', 'probe.p907', 'probe.p912', 'probe.p913', 'probe.p914', 'probe.p915', 'probe.p916', 'probe.p917', 'probe.p918', 'probe.p919', 'probe.p920', 'probe.p921', 'probe.p922', 'probe.p923', 'probe.p924', 'probe.p925', 'probe.p926', 'probe.p927', 'probe.p928', 'probe.p929', 'probe.p930', 'probe.p931', 'probe.p932', 'probe.p933', 'probe.p934', 'probe.p935'
              ]) AS n) s),
   'OK (todos los veredictos publicados)';
 
