@@ -31,8 +31,11 @@ Stack: React + Vite + TypeScript, Supabase / Postgres, deploy en Vercel, repo en
   (348 = familia 2, paso 1 (F2-a): DROP de las 5 policies TO service_role (inertes: service_role tiene
   BYPASSRLS) — invitaciones_clinica_service_all, invitaciones_medico_service_all, "Service role all
   medico_clinicas", "Service role all push subscriptions", recordatorios_service_all; huella de policies de
-  public/private/storage 75a9fb10… (314) → 96a7fabd… (309); ACL intactas; probe P933 — ESCRITA, sin aplicar.
-  Rollback: `348_rollback` (independiente de la familia 1).)
+  public/private/storage 75a9fb10… (314) → 96a7fabd… (309); 0 policies TO service_role; ACL intactas; probe
+  P933 — APLICADA en prod el 2-oct-2026 20:29:16 UTC y verificada en sesión independiente 9/9 (1008 filas / 11
+  rojas de deuda, P800 PASA, guard `do_sin_handler` 155 sobre 966 bloques DO). medico_clinicas y recordatorios
+  quedan con 0 policies: authenticated no tiene privilegios vivos ahí desde la 346; el acceso es solo por
+  service_role o DEFINER. Rollback: `348_rollback`, independiente de la familia 1.)
   (347 = familia 1, paso 6: `SET search_path = ''` en `auto_configurar_planes_publicidad()`, la única SECURITY
   DEFINER de public/private sin search_path (función del trigger AFTER INSERT de `configuracion_pais`); sus 2
   referencias calificadas con `public.`; md5(prosrc) 6d1fe3a9… → 5949ef5d…; oid, dueño, ACL y trigger iguales;
@@ -204,7 +207,7 @@ Stack: React + Vite + TypeScript, Supabase / Postgres, deploy en Vercel, repo en
 - **Migraciones: SIEMPRE `npx supabase db query --linked -f <archivo>`, NUNCA `db push`.** `db push`
   desincroniza `schema_migrations` (deuda desde la 047). Los `.sql` viven en `supabase/migrations/`
   (rollback en `supabase/migrations/rollback/`); los de `supabase/fixes/` se agregan con `git add -f`.
-  **Desvío aceptado (familia 8):** los rollbacks de 334-347 viven en `supabase/migrations/`
+  **Desvío aceptado (familia 8):** los rollbacks de 334-348 viven en `supabase/migrations/`
   (`3XX_rollback.sql`), no en `supabase/migrations/rollback/`.
 - **Los tests de edge (deno) NO corren en vitest ni en el pre-commit**: se corren a mano desde
   `supabase/functions/<fn>/` con `deno test --allow-net --allow-env --no-check` (asistente-ia: 17).
@@ -281,7 +284,7 @@ Detalles a recordar:
 - **FAMILIA 2 (policies) EN CURSO.** Recon del 2-oct-2026 sobre 092c863 (`tmp/recon_fam2/`): 314 policies (271 public,
   43 storage), todas permissive; 109 `TO public`, de las que solo las de la WL_ANON_LEGACY y 3 de lectura pública
   de storage las evalúa anon; las 21 funciones con EXECUTE para anon lo reciben VÍA PUBLIC (authenticated también),
-  ninguna se llama por RPC desde el cliente. Plan: **F2-a** policies TO service_role inertes (348) → **F2-b** las 88
+  ninguna se llama por RPC desde el cliente. Plan: **F2-a** policies TO service_role inertes (348, **APLICADA**) → **sigue: F2-b** las 88
   `{public}` de public que anon no alcanza → TO authenticated (sin cambio funcional; ajustar P884) → **F2-c** las 17
   `{public}` de la WL_ANON_LEGACY (salvo "Publico lee paises activos") → TO authenticated, con probe de anon (0 filas
   sin 42501) → **F2-d** quitar el UPDATE directo de visitas_agendadas (2 policies + el privilegio) → **F2-e** decisiones
