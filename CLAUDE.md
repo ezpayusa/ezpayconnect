@@ -24,16 +24,25 @@ Stack: React + Vite + TypeScript, Supabase / Postgres, deploy en Vercel, repo en
   minutos por esto** (P635 es la probe que faltaba, P636 su contraprueba).
 - NUNCA ampliar policies de RLS sobre tablas adyacentes a datos médicos (p. ej. campana_metricas). Para dar acceso, usar RPCs SECURITY DEFINER con search_path='', fail-closed (si el scope es NULL → 0 filas) y gate interno.
 - Probar aislamiento por rol impersonando request.jwt.claims en prod: cada rol ve lo suyo y no lo ajeno.
-- **Próximos números libres: probe `P928`** (global, no por módulo; P906-P907 usados por la mig 336, P912-P913
+- **Próximos números libres: probe `P930`** (global, no por módulo; P906-P907 usados por la mig 336, P912-P913
   por la 337, P914-P915 por la 338, P916-P920 por la 339/340, P921-P923 por la 341, P924 por la 342, P925 por
-  la 343, P926-P927 por la 344), **migración `345`**
-  (344 = familia 1, paso 3: default privileges de postgres en public — tablas nuevas → authenticated solo
+  la 343, P926-P927 por la 344, P928-P929 por la 345), **migración `346`**
+  (345 = familia 1, paso 4: privilegios de las secuencias existentes de public — anon/PUBLIC sin nada (estaban
+  en 32); authenticated sin SELECT/UPDATE (33) y con USAGE solo en las 11 del conjunto necesario; huella de
+  secuencias 2b8162b5… → e1ef3639… (39); resto intacto; probes P928 (censo) y P929 (funcional) — APLICADA en
+  prod el 2-oct-2026 19:07 UTC y verificada en sesión independiente 9/9 (1004 filas / 11 rojas de deuda, P800
+  PASA, guard `do_sin_handler` 155 sobre 962 bloques DO). Orden de rollback de la familia 1: `345_rollback` →
+  `344_rollback` → `343_rollback` → `342_rollback`. **Nota:** el header de `345_revoke_secuencias.sql` dice
+  "currval/last_value = SELECT"; es inexacto para currval (Postgres lo acepta con USAGE o SELECT). Sin
+  impacto: currval falla sin un nextval previo en la sesión, y last_value/setval sí quedan cerrados. El archivo
+  no se edita porque ya está aplicado.
+  344 = familia 1, paso 3: default privileges de postgres en public — tablas nuevas → authenticated solo
   SELECT/INSERT/UPDATE/DELETE; secuencias nuevas → authenticated solo USAGE; funciones sin cambio (ya cubiertas
   por la entrada global); pg_default_acl 1f07b802… → 7143eca7…; objetos existentes intactos; probes P926
   (catálogo) y P927 (funcional) — APLICADA en prod el 2-oct-2026 18:31:37 UTC y verificada en sesión
   independiente 9/9 (1002 filas / 11 rojas de deuda, P800 PASA, guard `do_sin_handler` 155 sobre 960 bloques DO).
-  Orden de rollback de la familia 1: `344_rollback` → `343_rollback` → `342_rollback` (la 344 es independiente
-  en la práctica; la precondición de `343_rollback` exige TRU/TRI/REF en 0); todos independientes de 334-341.
+  En la práctica la 344 y la 345 son independientes; la precondición de `343_rollback` exige TRU/TRI/REF en 0;
+  todos independientes de 334-341.
   343 = familia 1, paso 2: REVOKE MAINTAIN de anon/authenticated/PUBLIC (authenticated en 114 relaciones de
   public, anon en 8; 122 tuplas); huella ACL c57c024f… → 855f0797…; probe P925 = censo global public+private;
   P800 extendido a MAINTAIN — APLICADA en prod el 2-oct-2026 18:11:49 UTC y verificada en sesión independiente
@@ -161,8 +170,10 @@ Stack: React + Vite + TypeScript, Supabase / Postgres, deploy en Vercel, repo en
   Pasó dos veces (18cf819 y el lote 1 de PA-FAILOPEN) y una de ellas tardó dos meses en detectarse.
   Baselines vivos: `top_level_dml_ddl=0` (excluye `pg_temp`), `cast_directo=0`, `do_sin_handler=155`
   (fase 2.2 CERRADA: los 55 bloques que escriben están envueltos, 211→193→175→157→156→155; los 155
-  restantes sólo leen y publican, así que ya no son deuda; 960 bloques DO en total y harness en 1002 filas /
-  11 rojas de deuda al 2-oct-2026, tras la 344). El señalizador P516 del harness los publica, pero NO mide:
+  restantes sólo leen y publican, así que ya no son deuda; 962 bloques DO en total y harness en 1004 filas /
+  11 rojas de deuda al 2-oct-2026, tras la 345). **P929 y los dry-runs consumen valores de secuencia en prod**
+  (`nextval` no es transaccional: el ROLLBACK no los devuelve) → huecos en los ids, esperado; no se devuelven
+  con `setval` porque podría pisar un valor que prod entregó mientras tanto. El señalizador P516 del harness los publica, pero NO mide:
   el gate es el script. **El detector del guard tiene test propio (`tests/rls/b2_guard_test.py`,
   `npm run harness:guard:test`) y el hook lo corre ANTES del guard**: se equivocó tres veces en un día
   y llegó a tener un baseline inflado en 108, o sea permisivo. Un gate con el detector sin probar es
@@ -170,7 +181,7 @@ Stack: React + Vite + TypeScript, Supabase / Postgres, deploy en Vercel, repo en
 - **Migraciones: SIEMPRE `npx supabase db query --linked -f <archivo>`, NUNCA `db push`.** `db push`
   desincroniza `schema_migrations` (deuda desde la 047). Los `.sql` viven en `supabase/migrations/`
   (rollback en `supabase/migrations/rollback/`); los de `supabase/fixes/` se agregan con `git add -f`.
-  **Desvío aceptado (familia 8):** los rollbacks de 334-344 viven en `supabase/migrations/`
+  **Desvío aceptado (familia 8):** los rollbacks de 334-345 viven en `supabase/migrations/`
   (`3XX_rollback.sql`), no en `supabase/migrations/rollback/`.
 - **Los tests de edge (deno) NO corren en vitest ni en el pre-commit**: se corren a mano desde
   `supabase/functions/<fn>/` con `deno test --allow-net --allow-env --no-check` (asistente-ia: 17).
@@ -206,6 +217,11 @@ Desde esa fecha, una tabla/vista nueva **sin GRANT explícito nace inaccesible**
 10. **Toda función nueva de `private`** nace con `EXECUTE` **solo para postgres** (entrada global de
    pg_default_acl sin PUBLIC; private no tiene entrada propia): si la usa una policy o una RPC de authenticated,
    su migración lleva `GRANT EXECUTE … TO authenticated` explícito (sin él, la policy lanza 42501).
+11. **Tabla nueva con INSERT directo de authenticated y `DEFAULT nextval`** (serial, no IDENTITY): necesita
+   `USAGE` en su secuencia para authenticated. El default de la 344 lo da; si la migración lo revoca, tiene
+   que reponerlo con un `GRANT USAGE ON SEQUENCE … TO authenticated` explícito. Además va una **receta en P929**
+   (INSERT real como un actor que su policy permite): P929 da ROJO a propósito si entra al conjunto necesario
+   una tabla sin receta. Las columnas IDENTITY no necesitan grant (su nextval interno no chequea privilegios).
 
 ## Modelo de identidad / helpers
 - mi_empresa_proveedor() → empresa_id del proveedor logueado desde cuentas_proveedor (tipo-agnóstica; cubre los 4 tipos: farmacia, laboratorio_clinico, laboratorio_farmaceutico, empresa_afin).
@@ -235,8 +251,12 @@ Detalles a recordar:
   tabla a authenticated en cada tabla nueva):
   342 TRUNCATE/TRIGGER/REFERENCES (**APLICADA**) → 343 MAINTAIN (**APLICADA**; authenticated en 114
   relaciones, anon en 8) → 344 default privileges de postgres en public (**APLICADA**; tablas sin
-  TRU/TRI/REF/MAI, secuencias sin SELECT/UPDATE; funciones ya cubiertas) → **sigue: 345** secuencias existentes (anon nada; authenticated solo USAGE en las 11
-  con INSERT directo) → 346 escrituras muertas (INSERT/UPDATE/DELETE sin policy) en 37 tablas → 347
+  TRU/TRI/REF/MAI, secuencias sin SELECT/UPDATE; funciones ya cubiertas) → 345 secuencias existentes
+  (**APLICADA**; anon/PUBLIC sin nada; authenticated sin SELECT/UPDATE y con USAGE solo en las 11 del conjunto
+  necesario. Regla del conjunto: secuencia de un `DEFAULT nextval` en una tabla de public con INSERT de
+  authenticated en la ACL y una policy INSERT/ALL para authenticated o public. Huella 2b8162b5… → e1ef3639…;
+  P928 = censo que recalcula el conjunto desde el catálogo, P929 = funcional con INSERT real en las 11 y ROJO
+  a propósito si entra una tabla sin receta) → **sigue: 346** escrituras muertas (INSERT/UPDATE/DELETE sin policy) en 37 tablas → 347
   `search_path` de `auto_configurar_planes_publicidad` → 348 EXECUTE de PUBLIC/anon en funciones (**BLOQUEADA**
   hasta reescribir a DEFINER las policies `TO public` de las tablas de la allowlist de anon: lección mig 284).
   P800 ya extendido a MAINTAIN (343: reglas (c)/(d) + nueva (i), authenticated/PUBLIC sin TRU/TRI/REF/MAI en
@@ -252,6 +272,9 @@ Detalles a recordar:
   (42501 "permission denied to change default privileges"); inerte porque las migraciones crean como postgres, y
   P724 lo vigila. Defaults de postgres en `storage` (anon/authenticated con todo): inertes, postgres no tiene
   CREATE en storage.
+- (Familia 6) La secuencia de `planes_publicidad` está desfasada (medido 2-oct-2026: `last_value` 1, `max(id)` 3):
+  un INSERT por default choca con la PK (23505). Corregir con `setval` en una migración aparte (lo detectó el
+  dry-run A2 de la 345; P929 siembra su plan con id explícito).
 - (Familia 3/4) FK `examenes_orden_id_fkey` sigue `ON DELETE CASCADE`: tras la 338 sólo la alcanzan
   postgres/service_role (borrar una orden arrastra sus exámenes, completados incluidos).
 - (Familia 4) `examenes.updated_at` no se actualiza al corregir ni al liberar.
