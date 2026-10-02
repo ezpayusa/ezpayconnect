@@ -18497,6 +18497,10 @@ BEGIN
   -- P782 (d) — EL HUECO, brazo DELETE. Es el mas caro de los dos: no hay ningun trigger BEFORE
   -- DELETE en la tabla, asi que la policy era lo unico que se interponia entre un admin y borrar
   -- la agenda de un visitador.
+  -- Desde la mig 346 authenticated NO TIENE el privilegio DELETE en visitas_agendadas (era un privilegio
+  -- muerto: ninguna policy de DELETE): el DELETE directo ya no llega a la RLS y lanza 42501 "permission
+  -- denied for table". Eso es MAS fuerte que ROW_COUNT=0 y cuenta como OK (n = -2 = negado por privilegio).
+  -- Cualquier OTRO error sigue siendo FALLO, y borrar filas sigue siendo ROJO.
   n_ap := -1; n_sa := -1; v_e := '';
   BEGIN
     PERFORM set_config('request.jwt.claims', json_build_object('sub',v_adm,'role','authenticated')::text, true);
@@ -18506,7 +18510,8 @@ BEGIN
     RAISE EXCEPTION 'VAG_RB';
   EXCEPTION WHEN OTHERS THEN
     PERFORM set_config('role','none', true);
-    IF SQLERRM <> 'VAG_RB' THEN v_e := v_e||' adminpais='||SQLSTATE||' '||SQLERRM; END IF;
+    IF SQLSTATE = '42501' AND SQLERRM = 'permission denied for table visitas_agendadas' THEN n_ap := -2;
+    ELSIF SQLERRM <> 'VAG_RB' THEN v_e := v_e||' adminpais='||SQLSTATE||' '||SQLERRM; END IF;
   END;
   BEGIN
     PERFORM set_config('request.jwt.claims', json_build_object('sub',v_sa,'role','authenticated')::text, true);
@@ -18516,11 +18521,13 @@ BEGIN
     RAISE EXCEPTION 'VAG_RB';
   EXCEPTION WHEN OTHERS THEN
     PERFORM set_config('role','none', true);
-    IF SQLERRM <> 'VAG_RB' THEN v_e := v_e||' superadmin='||SQLSTATE||' '||SQLERRM; END IF;
+    IF SQLSTATE = '42501' AND SQLERRM = 'permission denied for table visitas_agendadas' THEN n_sa := -2;
+    ELSIF SQLERRM <> 'VAG_RB' THEN v_e := v_e||' superadmin='||SQLSTATE||' '||SQLERRM; END IF;
   END;
   v_r := CASE
     WHEN v_e <> ''               THEN 'FALLO (no midio ROW_COUNT:'||v_e||')'
-    WHEN n_ap = 0 AND n_sa = 0   THEN 'OK (DELETE directo en cero: admin_pais 0, super_admin 0)'
+    WHEN n_ap = -2 AND n_sa = -2 THEN 'OK (DELETE directo negado por privilegio desde la 346: admin_pais 42501, super_admin 42501)'
+    WHEN n_ap IN (0, -2) AND n_sa IN (0, -2) THEN 'OK (DELETE directo en cero o negado: admin_pais '||n_ap||', super_admin '||n_sa||'; -2 = 42501 de privilegio)'
     ELSE 'ROJO (DELETE directo BORRA filas: admin_pais '||n_ap||', super_admin '||n_sa||')'
   END;
   PERFORM set_config('probe.p782', v_r, false);
@@ -29290,6 +29297,67 @@ EXCEPTION WHEN OTHERS THEN
 END $$;
 SELECT set_config('role', 'none', true);
 
+-- ---------------- P930 censo: privilegios muertos de anon/authenticated en public (346) ----------------
+-- Un privilegio es MUERTO cuando nada lo puede usar: (a) SELECT/INSERT/UPDATE/DELETE de anon, authenticated o
+-- PUBLIC en una tabla de public con RLS activa y ninguna policy PERMISIVA para ese comando (o ALL) cuyos roles
+-- incluyan al grantee o a public; (b) INSERT/UPDATE/DELETE en una vista que no es actualizable (ni por si misma
+-- ni por reglas/triggers INSTEAD: pg_relation_is_updatable). Hoy no abren nada, pero la primera policy permisiva
+-- que alguien agregue los abre al instante. Se recalcula desde el catalogo (misma regla que la 346).
+-- ALLOWLIST: privilegios muertos que se dejan A PROPOSITO. Una entrada que deja de estar muerta (se revoco o
+-- aparecio su policy) tambien es ROJO: hay que sacarla de aca. Agregar una entrada es un acto deliberado.
+-- Con 346_rollback sale ROJO a proposito (vuelven los 102). Solo lee el catalogo.
+DO $$
+DECLARE
+  allow text[] := ARRAY[
+    -- el front registra la vista del anuncio con upsert (INSERT ... ON CONFLICT DO UPDATE): Postgres exige UPDATE
+    -- aunque no haya conflicto (medido en el recon de la 346: sin UPDATE, 42501 y la vista no se registra)
+    'campana_vistas|authenticated|UPDATE',
+    -- CitasPage lo lee con el JWT del usuario: hoy recibe [], sin SELECT recibiria 42501
+    'recordatorios|authenticated|SELECT',
+    -- AdminEzPayPage y las 2 ReportesEzPayPage lo leen con el JWT del usuario: idem
+    'transacciones|authenticated|SELECT',
+    -- WL_ANON_LEGACY de P800: una policy ajena la consulta inline (leccion mig 284); se cierra con la 348
+    'liquidaciones_comision|anon|SELECT',
+    -- P800 regla (b): authenticated tiene que conservar ALGUN privilegio en toda tabla de public fuera de WL_AUTH, y
+    -- WL_AUTH solo puede achicarse (tope 5). En estas 7 el SELECT es su unico privilegio y nadie lo usa con el JWT
+    -- del usuario. Decision 2-oct-2026 (346): no agrandar WL_AUTH; se cierran cuando se rehaga P800 (348).
+    'cache_biblioteca|authenticated|SELECT', 'confirmaciones_receta|authenticated|SELECT',
+    'medico_clinicas|authenticated|SELECT', 'medico_correlativos|authenticated|SELECT',
+    'planes_features|authenticated|SELECT', 'planes_limites|authenticated|SELECT',
+    'resumen_comisiones|authenticated|SELECT'];
+  muertos text[]; viol text; sobra text; n int; det text := ''; ok boolean; bad text := '';
+BEGIN
+  SELECT COALESCE(array_agg(z.s ORDER BY z.s COLLATE "C"), '{}') INTO muertos FROM (
+      SELECT c.relname||'|'||CASE a.grantee WHEN 0 THEN 'PUBLIC' ELSE pg_get_userbyid(a.grantee) END||'|'||a.privilege_type AS s
+        FROM pg_class c, aclexplode(COALESCE(c.relacl, acldefault('r', c.relowner))) a
+       WHERE c.relnamespace = 'public'::regnamespace
+         AND (a.grantee = 0 OR a.grantee IN ('authenticated'::regrole, 'anon'::regrole))
+         AND a.privilege_type IN ('SELECT','INSERT','UPDATE','DELETE')
+         AND ((c.relkind IN ('r','p') AND c.relrowsecurity
+               AND NOT EXISTS (SELECT 1 FROM pg_policy pl WHERE pl.polrelid = c.oid AND pl.polpermissive
+                     AND pl.polcmd IN ('*', CASE a.privilege_type WHEN 'SELECT' THEN 'r' WHEN 'INSERT' THEN 'a' WHEN 'UPDATE' THEN 'w' ELSE 'd' END)
+                     AND (0 = ANY (pl.polroles) OR a.grantee = ANY (pl.polroles))))
+           OR (c.relkind = 'v' AND a.privilege_type <> 'SELECT'
+               AND (pg_relation_is_updatable(c.oid::regclass, true)
+                    & CASE a.privilege_type WHEN 'UPDATE' THEN 4 WHEN 'INSERT' THEN 8 ELSE 16 END) = 0))) z;
+  n := COALESCE(array_length(muertos, 1), 0);
+  SELECT string_agg(m, ', ' ORDER BY m COLLATE "C") INTO viol FROM unnest(muertos) m WHERE m <> ALL (allow);
+  ok := viol IS NULL;
+  det := det||' ;; muertos fuera de la allowlist|0|'||CASE WHEN ok THEN 'OK' ELSE 'ROJO' END||'|-|'||left(COALESCE(viol, '-'), 900);
+  IF NOT ok THEN bad := bad||'muertos: '||left(viol, 700)||'; '; END IF;
+  SELECT string_agg(x, ', ' ORDER BY x COLLATE "C") INTO sobra FROM unnest(allow) x WHERE x <> ALL (muertos);
+  ok := sobra IS NULL;
+  det := det||' ;; allowlist vigente|las '||array_length(allow, 1)||' siguen muertas|'||CASE WHEN ok THEN 'OK' ELSE 'ROJO' END||'|-|'||COALESCE(sobra, '-');
+  IF NOT ok THEN bad := bad||'allowlist que ya no esta muerta (sacarla): '||sobra||'; '; END IF;
+  PERFORM set_config('probe.p930_det', det, false);
+  PERFORM set_config('probe.p930', CASE WHEN bad = ''
+    THEN 'OK (0 privilegios muertos de anon/authenticated en public fuera de la allowlist; '||n||' muertos = las '||array_length(allow, 1)||' de la allowlist)'
+    ELSE 'ROJO ('||left(bad, 900)||')' END, false);
+EXCEPTION WHEN OTHERS THEN
+  PERFORM set_config('probe.p930', 'FALLO ('||SQLSTATE||' '||SQLERRM||')', false);
+END $$;
+SELECT set_config('role', 'none', true);
+
 -- ===== Veredictos como result set =====
 SELECT 'P1_anon_insert_citas'              AS probe, current_setting('probe.p1', true)  AS verdict, 'BLOQUEADO' AS esperado_post_fix
 UNION ALL SELECT 'P2_medico_cancela_ajena_rpc',         current_setting('probe.p2', true),  'BLOQUEADO'
@@ -30134,7 +30202,7 @@ UNION ALL SELECT 'VAG_FX_visitas_admin_fixture',     current_setting('probe.vag_
 UNION ALL SELECT 'P779_vag_adminpais_lee_su_pais',   current_setting('probe.p779', true),    'OK (control positivo)'
 UNION ALL SELECT 'P780_vag_superadmin_lee_todo',     current_setting('probe.p780', true),    'OK (control positivo)'
 UNION ALL SELECT 'P781_vag_update_directo_en_cero',  current_setting('probe.p781', true),    'OK (ROW_COUNT=0, no 42501)'
-UNION ALL SELECT 'P782_vag_delete_directo_en_cero',  current_setting('probe.p782', true),    'OK (ROW_COUNT=0, no 42501)'
+UNION ALL SELECT 'P782_vag_delete_directo_en_cero',  current_setting('probe.p782', true),    'OK (ROW_COUNT=0 o, desde la 346, 42501 de privilegio)'
 UNION ALL SELECT 'EA_FX_examen_adjuntos_fixture',   current_setting('probe.ea_fx', true),   'OK (fixture)'
 UNION ALL SELECT 'P783_ea_rpc_lab_duenio',          current_setting('probe.p783', true),    'OK (control positivo)'
 UNION ALL SELECT 'P784_ea_pe002_liberado',          current_setting('probe.p784', true),    'OK (PE002)'
@@ -30294,6 +30362,7 @@ UNION ALL SELECT 'P926_defacl_postgres_344',          current_setting('probe.p92
 UNION ALL SELECT 'P927_defacl_funcional_344',         current_setting('probe.p927', true), 'OK (344: tabla/secuencia/funciones nuevas nacen con la ACL esperada; descartadas)'
 UNION ALL SELECT 'P928_secuencias_censo_345',         current_setting('probe.p928', true), 'OK (345: anon/PUBLIC nada en secuencias; authenticated sin SELECT/UPDATE y USAGE solo en el conjunto necesario)'
 UNION ALL SELECT 'P929_secuencias_funcional_345',     current_setting('probe.p929', true), 'OK (345: INSERT real en las tablas del conjunto; 42501 fuera; descartado)'
+UNION ALL SELECT 'P930_privilegios_muertos_346',      current_setting('probe.p930', true), 'OK (346: 0 privilegios muertos de anon/authenticated en public fuera de la allowlist)'
 -- Las filas FX* son SALUD DE FIXTURE, no probes de seguridad: dicen si la precondicion que una
 -- migracion posterior empezo a exigir se pudo sembrar. Si una sale ROJO, los probes que dependen de
 -- ese fixture reportan N/A (su flag de ready se pierde con el rollback de la subtransaccion) en vez
@@ -30538,7 +30607,7 @@ UNION ALL SELECT 'P000_CENTINELA_veredictos_no_nulos',
        'probe.p866', 'probe.p867', 'probe.p868', 'probe.p869', 'probe.p870', 'probe.p871', 'probe.p872', 'probe.p873', 'probe.p874', 'probe.p875', 'probe.p876', 'probe.p877', 'probe.p878',
        'probe.p879', 'probe.p880', 'probe.p881', 'probe.p882', 'probe.p883', 'probe.p884',
        'probe.p885', 'probe.p886', 'probe.p887', 'probe.p888', 'probe.p889', 'probe.p890', 'probe.p891', 'probe.p892', 'probe.p893', 'probe.p894', 'probe.p895', 'probe.p896', 'probe.p908', 'probe.p909', 'probe.p910', 'probe.p911',
-       'probe.p897', 'probe.p898', 'probe.p899', 'probe.p900', 'probe.p901', 'probe.p902', 'probe.p903', 'probe.p904', 'probe.p905', 'probe.p906', 'probe.p907', 'probe.p912', 'probe.p913', 'probe.p914', 'probe.p915', 'probe.p916', 'probe.p917', 'probe.p918', 'probe.p919', 'probe.p920', 'probe.p921', 'probe.p922', 'probe.p923', 'probe.p924', 'probe.p925', 'probe.p926', 'probe.p927', 'probe.p928', 'probe.p929'
+       'probe.p897', 'probe.p898', 'probe.p899', 'probe.p900', 'probe.p901', 'probe.p902', 'probe.p903', 'probe.p904', 'probe.p905', 'probe.p906', 'probe.p907', 'probe.p912', 'probe.p913', 'probe.p914', 'probe.p915', 'probe.p916', 'probe.p917', 'probe.p918', 'probe.p919', 'probe.p920', 'probe.p921', 'probe.p922', 'probe.p923', 'probe.p924', 'probe.p925', 'probe.p926', 'probe.p927', 'probe.p928', 'probe.p929', 'probe.p930'
              ]) AS n) s),
   'OK (todos los veredictos publicados)';
 
