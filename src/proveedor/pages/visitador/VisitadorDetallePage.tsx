@@ -5,6 +5,7 @@ import { useProveedorAuth } from '@/proveedor/hooks/useProveedorAuth'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Badge } from '@/components/ui/badge'
 import { toast } from 'sonner'
+import { nombreMedico, resolverNombresMedicos, SIN_NOMBRE } from '@/proveedor/lib/nombresMedicos'
 import {
   ArrowLeft, Loader2, AlertTriangle, MapPin, Clock, CheckCircle, CalendarCheck,
   Stethoscope, TrendingUp, Timer, ClipboardList,
@@ -65,13 +66,15 @@ export default function VisitadorDetallePage() {
     } else {
       const lista = (vis || []) as Visita[]
       setVisitas(lista)
-      const ids = [...new Set(lista.map((v) => v.medico_id).filter(Boolean))] as string[]
-      if (ids.length > 0) {
-        const { data: meds } = await supabase.from('medicos').select('id, nombre_completo').in('id', ids)
-        const map: Record<string, string> = {}
-        ;(meds || []).forEach((m: any) => { map[m.id] = m.nombre_completo })
-        setMedicos(map)
+      // Nombres por RPC acotada (mig 354): el proveedor ya no lee la tabla medicos.
+      const { mapa, error: errNombres } = await resolverNombresMedicos(lista.map((v) => v.medico_id))
+      if (errNombres) {
+        toast.error('No se pudieron cargar los nombres de los médicos')
+        console.error('nombres_medicos_visitas:', errNombres.code, errNombres.message)
       }
+      const map: Record<string, string> = {}
+      for (const id of Object.keys(mapa)) map[id] = nombreMedico(mapa, id)
+      setMedicos(map)
     }
     setLoading(false)
   }, [id])
@@ -196,7 +199,7 @@ export default function VisitadorDetallePage() {
                     <div className="min-w-0">
                       <p className="font-medium flex items-center gap-2">
                         <Stethoscope className="w-4 h-4 text-muted-foreground" />
-                        {v.medico_id ? medicos[v.medico_id] || 'Médico' : 'Médico'}
+                        {v.medico_id ? medicos[v.medico_id] || SIN_NOMBRE : SIN_NOMBRE}
                       </p>
                       <p className="text-sm text-muted-foreground flex items-center gap-2 flex-wrap">
                         <span className="flex items-center gap-1">

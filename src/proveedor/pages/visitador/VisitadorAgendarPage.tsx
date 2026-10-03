@@ -284,7 +284,7 @@ export default function VisitadorAgendarPage() {
                   </div>
                   <div className="min-w-0">
                     <h3 className="font-semibold truncate">{m.nombre_completo}</h3>
-                    <p className="text-sm text-muted-foreground truncate">{m.email}</p>
+                    <p className="text-sm text-muted-foreground truncate">{m.especialidad || 'Especialidad no indicada'}</p>
                   </div>
                 </div>
                 <Button

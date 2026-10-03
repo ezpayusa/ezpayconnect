@@ -3,11 +3,12 @@ import { supabase } from '@/lib/supabase'
 import { toast } from 'sonner'
 import type { DisponibilidadMedico } from '@/proveedor/types/proveedor.types'
 
+// buscar_medicos_proveedor (mig 354): id, nombre y especialidad. Sin email. Sin rol de visitas o sin la capacidad
+// 'visitadores' devuelve 0 filas (no error).
 export interface MedicoResumen {
   id: string
   nombre_completo: string
-  especialidad?: string
-  email?: string
+  especialidad: string | null
 }
 
 export function useMedicosDisponibles() {
