@@ -4349,11 +4349,11 @@ DO $$ DECLARE v_medhn uuid; BEGIN
   UPDATE public.perfiles SET pais_id = NULLIF(current_setting('probe.p0_hn',true), '')::uuid WHERE id = v_medhn;   -- médico HN
   -- slots: médico GT (visitador + paciente), médico HN (visitador)
   INSERT INTO public.disponibilidad_medico (medico_id,dia_semana,hora_inicio,hora_fin,duracion_slot,activo,contexto)
-    VALUES (NULLIF(current_setting('probe.fm_medgt',true), '')::uuid, 1,'09:00','10:00',30,true,'visitador');
+    VALUES (NULLIF(current_setting('probe.fm_medgt',true), '')::uuid, 1,'09:00','10:00',15,true,'visitador');  -- 15: CHECK de la 355
   INSERT INTO public.disponibilidad_medico (medico_id,dia_semana,hora_inicio,hora_fin,duracion_slot,activo,contexto)
     VALUES (NULLIF(current_setting('probe.fm_medgt',true), '')::uuid, 2,'09:00','10:00',30,true,'paciente');
   INSERT INTO public.disponibilidad_medico (medico_id,dia_semana,hora_inicio,hora_fin,duracion_slot,activo,contexto)
-    VALUES (v_medhn, 1,'09:00','10:00',30,true,'visitador');
+    VALUES (v_medhn, 1,'09:00','10:00',15,true,'visitador');  -- 15: CHECK de la 355
   PERFORM set_config('probe.vg1_medhn', v_medhn::text, false);
   PERFORM set_config('probe.vg1_ready','1',false);
 EXCEPTION WHEN others THEN PERFORM set_config('probe.vg1_ready','0',false); END $$;
@@ -30583,14 +30583,19 @@ SELECT set_config('role', 'none', true);
 -- 42501: conservan el privilegio, solo pierden la policy). Medico, admin_clinica y admin_pais: no son cuentas de
 -- proveedor (pais_de_proveedor() NULL), asi que la policy borrada nunca les sumaba filas -> leen sin error; super_admin
 -- ve todas. (La comparacion antes/despues de los conteos se mide en el dry-run de la 354.)
+-- Actores perfil deterministas (flake de la 354: el de menor id podia ser un perfil creado por un fixture, sin pais):
+-- perfiles reales (created_at anterior a esta transaccion; los fixtures nacen con created_at = now()), activos, en
+-- auth.users, sin cuenta de proveedor ni paciente; medico/admin_clinica/admin_pais con pais_id y un oraculo > 0 (medicos
+-- de su pais, contado como postgres al inicio del bloque); el mas antiguo por created_at y despues por id. Lee >= oraculo.
+-- Sin actor que cumpla -> FALLO (sin fixture), nunca OK.
 DO $$
 DECLARE
-  det text := ''; bad text := ''; st text; n int; ppais text; r record; tot int; k_prov int := 0;
+  det text := ''; bad text := ''; st text; n int; ppais text; r record; tot int; k_prov int := 0; m_act text := '-';
 BEGIN
   IF current_user <> 'postgres' THEN RAISE EXCEPTION 'fixture roto: P945 corre como %', current_user; END IF;
   tot := (SELECT count(*) FROM public.medicos);
   FOR r IN
-    SELECT x.id, x.etiqueta, x.tipo FROM (
+    SELECT x.id, x.etiqueta, x.tipo, 0 AS orc FROM (
       SELECT DISTINCT ON (e.tipo, cp.rol_en_empresa) cp.id, e.tipo||'/'||cp.rol_en_empresa AS etiqueta, 'prov' AS tipo
         FROM public.cuentas_proveedor cp JOIN public.empresas_proveedoras e ON e.id = cp.empresa_id
        WHERE cp.activo AND e.estado = 'activa' AND EXISTS (SELECT 1 FROM auth.users u WHERE u.id = cp.id)
@@ -30598,11 +30603,16 @@ BEGIN
          AND NOT EXISTS (SELECT 1 FROM public.perfiles pf WHERE pf.id = cp.id)
        ORDER BY e.tipo, cp.rol_en_empresa, cp.id) x
     UNION ALL
-    SELECT y.id, y.rol, 'perf' FROM (
-      SELECT DISTINCT ON (p.rol) p.id, p.rol FROM public.perfiles p
+    SELECT y.id, y.rol, 'perf', y.orc FROM (
+      SELECT DISTINCT ON (p.rol) p.id, p.rol,
+             CASE WHEN p.rol = 'super_admin' THEN tot ELSE (SELECT count(*) FROM public.medicos m WHERE m.pais_id = p.pais_id)::int END AS orc
+        FROM public.perfiles p
        WHERE p.activo AND p.rol IN ('medico','admin_clinica','admin_pais','super_admin') AND EXISTS (SELECT 1 FROM auth.users u WHERE u.id = p.id)
+         AND COALESCE(p.created_at, '-infinity') < now()                                 -- real: no lo creo un fixture de esta transaccion
          AND NOT EXISTS (SELECT 1 FROM public.cuentas_proveedor c WHERE c.id = p.id)   -- identidad unica (no tambien proveedor)
-       ORDER BY p.rol, p.id) y
+         AND NOT EXISTS (SELECT 1 FROM public.pacientes pa WHERE pa.auth_user_id = p.id)
+         AND (p.rol = 'super_admin' OR (p.pais_id IS NOT NULL AND EXISTS (SELECT 1 FROM public.medicos m WHERE m.pais_id = p.pais_id)))
+       ORDER BY p.rol, COALESCE(p.created_at, '-infinity'), p.id) y
   LOOP
     IF r.tipo = 'prov' THEN k_prov := k_prov + 1; IF k_prov > 6 THEN CONTINUE; END IF; END IF;
     st := 'OK'; n := NULL; ppais := NULL;
@@ -30618,18 +30628,23 @@ BEGIN
       det := det||' ;; '||r.etiqueta||'|0 filas sin error|'||CASE WHEN st = 'OK' AND n = 0 THEN 'OK' ELSE 'ROJO' END||'|'||st||' '||COALESCE(n::text, '-')||'|';
       IF st <> 'OK' OR n <> 0 THEN bad := bad||r.etiqueta||' '||st||' '||COALESCE(n::text, '-')||'; '; END IF;
     ELSE
-      det := det||' ;; '||r.etiqueta||'|> 0 sin error, pais_de_proveedor NULL'||CASE WHEN r.etiqueta = 'super_admin' THEN ', todas ('||tot||')' ELSE '' END||'|'
-             ||CASE WHEN st = 'OK' AND ppais = 'NULL' AND n > 0 AND (r.etiqueta <> 'super_admin' OR n = tot) THEN 'OK' ELSE 'ROJO' END||'|'||st||' '||COALESCE(n::text, '-')||' pais_de_proveedor='||COALESCE(ppais, '-')||'|';
-      IF st <> 'OK' OR ppais IS DISTINCT FROM 'NULL' OR NOT COALESCE(n > 0, false) OR (r.etiqueta = 'super_admin' AND n <> tot) THEN bad := bad||r.etiqueta||' '||st||' '||COALESCE(n::text, '-')||'; '; END IF;
+      det := det||' ;; '||r.etiqueta||'|>= oraculo > 0 sin error, pais_de_proveedor NULL'||CASE WHEN r.etiqueta = 'super_admin' THEN ', todas ('||tot||')' ELSE '' END||'|'
+             ||CASE WHEN st = 'OK' AND ppais = 'NULL' AND n > 0 AND n >= r.orc AND (r.etiqueta <> 'super_admin' OR n = tot) THEN 'OK' ELSE 'ROJO' END||'|'||st||' '||COALESCE(n::text, '-')
+             ||' pais_de_proveedor='||COALESCE(ppais, '-')||' actor='||r.id||' oraculo='||r.orc||'|';
+      IF r.etiqueta = 'medico' THEN m_act := r.id||' lee '||COALESCE(n::text, '-')||', oraculo '||r.orc; END IF;
+      IF st <> 'OK' OR ppais IS DISTINCT FROM 'NULL' OR NOT COALESCE(n > 0 AND n >= r.orc, false) OR (r.etiqueta = 'super_admin' AND n <> tot) THEN
+        bad := bad||r.etiqueta||' '||st||' '||COALESCE(n::text, '-')||' (actor '||r.id||', oraculo '||r.orc||'); ';
+      END IF;
     END IF;
   END LOOP;
-  IF k_prov < 3 OR position(' ;; super_admin|' IN det) = 0 OR position(' ;; medico|' IN det) = 0
+  IF position(' ;; super_admin|' IN det) = 0 OR position(' ;; medico|' IN det) = 0
      OR position(' ;; admin_clinica|' IN det) = 0 OR position(' ;; admin_pais|' IN det) = 0 THEN
-    RAISE EXCEPTION 'fixture roto: P945 con % cuentas de proveedor o sin medico/admin_clinica/admin_pais/super_admin', k_prov;
+    RAISE EXCEPTION 'sin fixture: P945 sin actor perfil real para medico/admin_clinica/admin_pais/super_admin (det:%)', det;
   END IF;
+  IF k_prov < 3 THEN RAISE EXCEPTION 'fixture roto: P945 con % cuentas de proveedor', k_prov; END IF;
   PERFORM set_config('probe.p945_det', det, false);
   PERFORM set_config('probe.p945', CASE WHEN bad = ''
-    THEN 'OK (cuentas de proveedor ven 0 medicos sin 42501; medico, admin_clinica y admin_pais leen > 0 sin error (pais_de_proveedor NULL); super_admin todas)'
+    THEN 'OK (cuentas de proveedor ven 0 medicos sin 42501; medico, admin_clinica y admin_pais leen >= su oraculo > 0 sin error (pais_de_proveedor NULL); super_admin todas; medico '||m_act||')'
     ELSE 'ROJO ('||left(bad, 900)||')' END, false);
 EXCEPTION WHEN OTHERS THEN
   PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
@@ -31002,6 +31017,92 @@ BEGIN
     ELSE 'ROJO ('||left(bad, 900)||')' END, false);
 EXCEPTION WHEN OTHERS THEN
   PERFORM set_config('probe.p950', 'FALLO ('||SQLSTATE||' '||SQLERRM||')', false);
+END $$;
+
+-- ---------------- P951-P954 franjas de visitador a 15 min (355) ----------------
+-- Actor: un medico con identidad unica (perfiles rol medico activo, en auth.users, sin cuenta de proveedor ni
+-- paciente) que inserta su propia franja por la policy "Medico gestiona su disponibilidad", como el front.
+-- P951 visitador 30 -> check_violation capturado por nombre, con el nombre de la constraint verificado.
+-- P952 visitador 15 -> se inserta. P953 paciente 30 -> se inserta (la constraint no toca pacientes).
+-- Las tres corren en una subtransaccion descartada (RAISE con SQLSTATE propio) y se verifica que las franjas del
+-- medico vuelven a su snapshot.
+SELECT set_config('role', 'none', true);
+DO $$
+DECLARE
+  c_med uuid; snap_ini text; snap_fin text; r_rest text := 'OK';
+  r951 text := 'no corrio'; r952 text := 'no corrio'; r953 text := 'no corrio'; cn text; n int;
+BEGIN
+  c_med := (SELECT p.id FROM public.perfiles p
+             WHERE p.rol = 'medico' AND p.activo AND EXISTS (SELECT 1 FROM auth.users u WHERE u.id = p.id)
+               AND NOT EXISTS (SELECT 1 FROM public.cuentas_proveedor c WHERE c.id = p.id)
+               AND NOT EXISTS (SELECT 1 FROM public.pacientes pa WHERE pa.auth_user_id = p.id)
+             ORDER BY p.id LIMIT 1);
+  IF c_med IS NULL THEN RAISE EXCEPTION 'sin fixture medico (ningun medico activo con identidad unica)'; END IF;
+  snap_ini := (SELECT md5(COALESCE(string_agg(d::text, E'\n' ORDER BY d.id), ''))||' '||count(*) FROM public.disponibilidad_medico d WHERE d.medico_id = c_med);
+  BEGIN
+    PERFORM set_config('request.jwt.claims', json_build_object('sub', c_med::text, 'role', 'authenticated')::text, true);
+    PERFORM set_config('role', 'authenticated', true);
+    -- P951: visitador 30
+    BEGIN
+      INSERT INTO public.disponibilidad_medico (medico_id, dia_semana, hora_inicio, hora_fin, duracion_slot, activo, contexto)
+        VALUES (c_med, 6, '20:00', '21:00', 30, true, 'visitador');
+      r951 := 'se inserto (sin check_violation)';
+    EXCEPTION WHEN check_violation THEN
+      GET STACKED DIAGNOSTICS cn = CONSTRAINT_NAME;
+      r951 := 'check_violation:'||COALESCE(cn, '-');
+    END;
+    -- P952: visitador 15
+    INSERT INTO public.disponibilidad_medico (medico_id, dia_semana, hora_inicio, hora_fin, duracion_slot, activo, contexto)
+      VALUES (c_med, 6, '21:00', '22:00', 15, true, 'visitador');
+    GET DIAGNOSTICS n = ROW_COUNT;
+    r952 := CASE WHEN n = 1 AND EXISTS (SELECT 1 FROM public.disponibilidad_medico d WHERE d.medico_id = c_med AND d.dia_semana = 6
+                                         AND d.hora_inicio = '21:00' AND d.contexto = 'visitador' AND d.duracion_slot = 15)
+                 THEN 'OK' ELSE 'insert sin fila visible ('||n||')' END;
+    -- P953: paciente 30
+    INSERT INTO public.disponibilidad_medico (medico_id, dia_semana, hora_inicio, hora_fin, duracion_slot, activo, contexto)
+      VALUES (c_med, 6, '22:00', '23:00', 30, true, 'paciente');
+    GET DIAGNOSTICS n = ROW_COUNT;
+    r953 := CASE WHEN n = 1 AND EXISTS (SELECT 1 FROM public.disponibilidad_medico d WHERE d.medico_id = c_med AND d.dia_semana = 6
+                                         AND d.hora_inicio = '22:00' AND d.contexto = 'paciente' AND d.duracion_slot = 30)
+                 THEN 'OK' ELSE 'insert sin fila visible ('||n||')' END;
+    PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
+    RAISE EXCEPTION 'P951 descartar' USING ERRCODE = 'PZ951';
+  EXCEPTION WHEN SQLSTATE 'PZ951' THEN
+    PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
+  END;
+  snap_fin := (SELECT md5(COALESCE(string_agg(d::text, E'\n' ORDER BY d.id), ''))||' '||count(*) FROM public.disponibilidad_medico d WHERE d.medico_id = c_med);
+  IF snap_fin IS DISTINCT FROM snap_ini THEN r_rest := 'franjas del medico no vuelven ('||snap_ini||' -> '||COALESCE(snap_fin, '-')||')'; END IF;
+  PERFORM set_config('probe.p951', CASE WHEN r951 = 'check_violation:disponibilidad_visitador_slot_15' AND r_rest = 'OK'
+    THEN 'OK (visitador 30 -> 23514 por disponibilidad_visitador_slot_15; medico '||c_med||'; descartado)'
+    ELSE 'ROJO (visitador 30: '||r951||' | restauracion: '||r_rest||')' END, false);
+  PERFORM set_config('probe.p952', CASE WHEN r952 = 'OK' AND r_rest = 'OK'
+    THEN 'OK (visitador 15 se inserta; descartado)' ELSE 'ROJO (visitador 15: '||r952||' | restauracion: '||r_rest||')' END, false);
+  PERFORM set_config('probe.p953', CASE WHEN r953 = 'OK' AND r_rest = 'OK'
+    THEN 'OK (paciente 30 se inserta; descartado)' ELSE 'ROJO (paciente 30: '||r953||' | restauracion: '||r_rest||')' END, false);
+EXCEPTION WHEN OTHERS THEN
+  PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
+  PERFORM set_config('probe.p951', 'FALLO ('||SQLSTATE||' '||SQLERRM||'; P951 '||r951||')', false);
+  PERFORM set_config('probe.p952', 'FALLO ('||SQLSTATE||' '||SQLERRM||'; P952 '||r952||')', false);
+  PERFORM set_config('probe.p953', 'FALLO ('||SQLSTATE||' '||SQLERRM||'; P953 '||r953||')', false);
+END $$;
+
+-- ---------------- P954 censo de la 355 ----------------
+-- 0 franjas visitador con duracion_slot <> 15 y la constraint existe, validada y con su definicion exacta.
+DO $$
+DECLARE n int; v text; bad text := '';
+BEGIN
+  n := (SELECT count(*) FROM public.disponibilidad_medico WHERE contexto = 'visitador' AND duracion_slot <> 15);
+  IF n <> 0 THEN bad := bad||n||' franjas visitador <> 15; '; END IF;
+  v := (SELECT pg_get_constraintdef(oid)||'|'||convalidated::text FROM pg_constraint
+         WHERE conrelid = 'public.disponibilidad_medico'::regclass AND conname = 'disponibilidad_visitador_slot_15');
+  IF v IS DISTINCT FROM 'CHECK (((contexto <> ''visitador''::text) OR (duracion_slot = 15)))|true' THEN
+    bad := bad||'constraint '||COALESCE(v, 'NO EXISTE')||'; ';
+  END IF;
+  PERFORM set_config('probe.p954', CASE WHEN bad = ''
+    THEN 'OK (0 franjas visitador <> 15; disponibilidad_visitador_slot_15 validada)'
+    ELSE 'ROJO ('||bad||')' END, false);
+EXCEPTION WHEN OTHERS THEN
+  PERFORM set_config('probe.p954', 'FALLO ('||SQLSTATE||' '||SQLERRM||')', false);
 END $$;
 
 -- ===== Veredictos como result set =====
@@ -32029,6 +32130,10 @@ UNION ALL SELECT 'P947_nombre_empresa_productos_354',current_setting('probe.p947
 UNION ALL SELECT 'P948_buscar_medicos_proveedor_354',current_setting('probe.p948', true), 'OK (354: roles de visitas con capacidad = oraculo; resto y sin capacidad 0; sin email)'
 UNION ALL SELECT 'P949_productos_por_rol_354',       current_setting('probe.p949', true), 'OK (354: ajenos solo para medico/super_admin; propios intactos)'
 UNION ALL SELECT 'P950_catalogo_visibilidad_354',    current_setting('probe.p950', true), 'OK (354: DEFINER + search_path + ACL; get_visitas_proveedor y policy de proveedor de medicos inexistentes; qual nuevo)'
+UNION ALL SELECT 'P951_visitador_30_rechazado_355',  current_setting('probe.p951', true), 'OK (355: franja visitador de 30 -> 23514 por disponibilidad_visitador_slot_15)'
+UNION ALL SELECT 'P952_visitador_15_ok_355',         current_setting('probe.p952', true), 'OK (355: franja visitador de 15 se inserta)'
+UNION ALL SELECT 'P953_paciente_30_ok_355',          current_setting('probe.p953', true), 'OK (355: franja paciente de 30 se inserta)'
+UNION ALL SELECT 'P954_censo_slot_15_355',           current_setting('probe.p954', true), 'OK (355: 0 franjas visitador <> 15; CHECK validado)'
 -- Las filas FX* son SALUD DE FIXTURE, no probes de seguridad: dicen si la precondicion que una
 -- migracion posterior empezo a exigir se pudo sembrar. Si una sale ROJO, los probes que dependen de
 -- ese fixture reportan N/A (su flag de ready se pierde con el rollback de la subtransaccion) en vez
@@ -32273,7 +32378,7 @@ UNION ALL SELECT 'P000_CENTINELA_veredictos_no_nulos',
        'probe.p866', 'probe.p867', 'probe.p868', 'probe.p869', 'probe.p870', 'probe.p871', 'probe.p872', 'probe.p873', 'probe.p874', 'probe.p875', 'probe.p876', 'probe.p877', 'probe.p878',
        'probe.p879', 'probe.p880', 'probe.p881', 'probe.p882', 'probe.p883', 'probe.p884',
        'probe.p885', 'probe.p886', 'probe.p887', 'probe.p888', 'probe.p889', 'probe.p890', 'probe.p891', 'probe.p892', 'probe.p893', 'probe.p894', 'probe.p895', 'probe.p896', 'probe.p908', 'probe.p909', 'probe.p910', 'probe.p911',
-       'probe.p897', 'probe.p898', 'probe.p899', 'probe.p900', 'probe.p901', 'probe.p902', 'probe.p903', 'probe.p904', 'probe.p905', 'probe.p906', 'probe.p907', 'probe.p912', 'probe.p913', 'probe.p914', 'probe.p915', 'probe.p916', 'probe.p917', 'probe.p918', 'probe.p919', 'probe.p920', 'probe.p921', 'probe.p922', 'probe.p923', 'probe.p924', 'probe.p925', 'probe.p926', 'probe.p927', 'probe.p928', 'probe.p929', 'probe.p930', 'probe.p931', 'probe.p932', 'probe.p933', 'probe.p934', 'probe.p935', 'probe.p936', 'probe.p937', 'probe.p938', 'probe.p939', 'probe.p940', 'probe.p941', 'probe.p942', 'probe.p943', 'probe.p944', 'probe.p945', 'probe.p946', 'probe.p947', 'probe.p948', 'probe.p949', 'probe.p950'
+       'probe.p897', 'probe.p898', 'probe.p899', 'probe.p900', 'probe.p901', 'probe.p902', 'probe.p903', 'probe.p904', 'probe.p905', 'probe.p906', 'probe.p907', 'probe.p912', 'probe.p913', 'probe.p914', 'probe.p915', 'probe.p916', 'probe.p917', 'probe.p918', 'probe.p919', 'probe.p920', 'probe.p921', 'probe.p922', 'probe.p923', 'probe.p924', 'probe.p925', 'probe.p926', 'probe.p927', 'probe.p928', 'probe.p929', 'probe.p930', 'probe.p931', 'probe.p932', 'probe.p933', 'probe.p934', 'probe.p935', 'probe.p936', 'probe.p937', 'probe.p938', 'probe.p939', 'probe.p940', 'probe.p941', 'probe.p942', 'probe.p943', 'probe.p944', 'probe.p945', 'probe.p946', 'probe.p947', 'probe.p948', 'probe.p949', 'probe.p950', 'probe.p951', 'probe.p952', 'probe.p953', 'probe.p954'
              ]) AS n) s),
   'OK (todos los veredictos publicados)';
 
