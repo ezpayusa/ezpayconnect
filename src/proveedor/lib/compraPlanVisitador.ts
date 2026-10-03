@@ -104,6 +104,18 @@ export function cupoPorPais(bolsas: BolsaCupo[], hoy: string = hoyUTC()): CupoPa
   }))
 }
 
+/**
+ * País en el que opera la cuenta: el mismo que usa el servidor, private.mi_pais() = COALESCE(cuenta.pais_id,
+ * empresa.pais_id). buscar_medicos_proveedor solo ofrece médicos de ese país, así que es el país de las visitas y el
+ * de la bolsa que las cobra (private.gate_visita_pais).
+ */
+export function paisOperativo(
+  cuenta: { pais_id?: string | null } | null | undefined,
+  empresa: { pais_id?: string | null } | null | undefined,
+): string | null {
+  return cuenta?.pais_id ?? empresa?.pais_id ?? null
+}
+
 /** El cupo de un país, o null si no tiene bolsa vigente (el gate rechaza: sin plan que cubra el país). */
 export function cupoDelPais(cupos: CupoPais[], paisId: string | null | undefined): CupoPais | null {
   if (!paisId) return null

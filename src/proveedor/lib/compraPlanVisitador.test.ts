@@ -2,7 +2,7 @@ import { describe, it, expect } from 'vitest'
 import {
   mensajeErrorCompraPlan, MENSAJES_SOLICITAR, MENSAJES_APROBAR, MENSAJE_GENERICO_COMPRA,
   esBolsaVigente, configComprable, enteroPositivo, hoyUTC, normalizarMoneda, advertenciaMonedaCuenta,
-  cupoPorPais, cupoDelPais, hayCupo, type BolsaCupo,
+  cupoPorPais, cupoDelPais, hayCupo, paisOperativo, type BolsaCupo,
   MENSAJE_BOLSA_AGOTADA_VISITADOR, RUTA_COMPRA_PLANES_VISITADOR,
 } from './compraPlanVisitador'
 
@@ -166,5 +166,20 @@ describe('textos del visitador', () => {
   it('el visitador no compra: avisa a su administrador; la compra va al panel del admin', () => {
     expect(MENSAJE_BOLSA_AGOTADA_VISITADOR).toBe('Bolsa agotada · avisale a tu administrador para recargarla')
     expect(RUTA_COMPRA_PLANES_VISITADOR).toBe('/proveedor/visitador/planes')
+  })
+})
+
+describe('paisOperativo (= private.mi_pais: COALESCE(cuenta.pais_id, empresa.pais_id))', () => {
+  it('cuenta con pais distinto del de la empresa -> gana la cuenta', () => {
+    expect(paisOperativo({ pais_id: 'SV' }, { pais_id: 'GT' })).toBe('SV')
+  })
+  it('cuenta sin pais -> el de la empresa', () => {
+    expect(paisOperativo({ pais_id: null }, { pais_id: 'GT' })).toBe('GT')
+    expect(paisOperativo({}, { pais_id: 'GT' })).toBe('GT')
+    expect(paisOperativo(null, { pais_id: 'GT' })).toBe('GT')
+  })
+  it('sin ninguno -> null', () => {
+    expect(paisOperativo(null, null)).toBeNull()
+    expect(paisOperativo({ pais_id: null }, { pais_id: null })).toBeNull()
   })
 })

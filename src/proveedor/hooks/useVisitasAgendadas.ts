@@ -2,7 +2,7 @@ import { useState, useEffect, useCallback } from 'react'
 import { supabase } from '@/lib/supabase'
 import { useProveedorAuth } from './useProveedorAuth'
 import type { VisitaAgendada } from '@/proveedor/types/proveedor.types'
-import { cupoDelPais, cupoPorPais, hayCupo, type BolsaCupo } from '@/proveedor/lib/compraPlanVisitador'
+import { cupoDelPais, cupoPorPais, hayCupo, paisOperativo, type BolsaCupo } from '@/proveedor/lib/compraPlanVisitador'
 import type { UbicacionVisita } from './useRutaVisitador'
 import { toast } from 'sonner'
 
@@ -161,7 +161,7 @@ export function useVisitasAgendadas() {
   // proveedor no lo puede leer, pero buscar_medicos_proveedor solo ofrece médicos con perfiles.pais_id =
   // private.mi_pais() = COALESCE(cuenta.pais_id, empresa.pais_id). Ese es el país del médico de la visita.
   const cupos = cupoPorPais(planesAsignados)
-  const paisMedico = cuenta?.pais_id ?? empresa?.pais_id ?? null
+  const paisMedico = paisOperativo(cuenta, empresa)
   const cupoPaisMedico = cupoDelPais(cupos, paisMedico)
   const visitasDisponibles = cupoPaisMedico?.ilimitado ? Infinity : (cupoPaisMedico?.restante ?? 0)
 

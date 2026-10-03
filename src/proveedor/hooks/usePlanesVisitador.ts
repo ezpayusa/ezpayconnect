@@ -3,7 +3,7 @@ import { supabase } from '@/lib/supabase'
 import { useProveedorAuth } from './useProveedorAuth'
 import { toast } from 'sonner'
 import type { PlanBase, PlanConfiguracion } from '@/types/planes'
-import { configComprable, cupoDelPais, cupoPorPais, esBolsaVigente, hoyUTC } from '@/proveedor/lib/compraPlanVisitador'
+import { configComprable, cupoDelPais, cupoPorPais, esBolsaVigente, hoyUTC, paisOperativo } from '@/proveedor/lib/compraPlanVisitador'
 
 // Fila pvc (única fuente de visitas: país + bolsa). incluidas/restante NULL = ilimitado.
 interface PvcRow {
@@ -34,7 +34,7 @@ export interface PlanProveedorDisponible {
 }
 
 export function usePlanesVisitador() {
-  const { empresa } = useProveedorAuth()
+  const { empresa, cuenta } = useProveedorAuth()
   const [planesDisponibles, setPlanesDisponibles] = useState<PlanProveedorDisponible[]>([])
   const [planesAsignados, setPlanesAsignados] = useState<PvcRow[]>([])
   const [loading, setLoading] = useState(false)
@@ -143,13 +143,15 @@ export function usePlanesVisitador() {
   const hoy = hoyUTC()
 
   // Cupo POR PAÍS con el criterio de private.gate_visita_pais (por país, la bolsa vigente de fecha_fin más
-  // lejana; las bolsas no se suman). El cupo "principal" es el del país de la empresa.
+  // lejana; las bolsas no se suman). El cupo "principal" es el del país operativo de la cuenta (paisOperativo =
+  // private.mi_pais, el mismo que usan buscar_medicos_proveedor y el pre-chequeo de useVisitasAgendadas).
   const cupos = cupoPorPais(planesAsignados, hoy)
-  const cupoEmpresa = cupoDelPais(cupos, empresa?.pais_id)
+  const pais = paisOperativo(cuenta, empresa)
+  const cupoEmpresa = cupoDelPais(cupos, pais)
   const visitasDisponibles = cupoEmpresa && !cupoEmpresa.ilimitado ? (cupoEmpresa.restante ?? 0) : 0
   const tieneIlimitado = !!cupoEmpresa?.ilimitado
-  // Desglose cuando hay cupo en algún país que no es el de la empresa (o en más de uno).
-  const cupoConDesglose = cupos.some((c) => c.pais_id !== empresa?.pais_id)
+  // Desglose cuando hay cupo en algún país que no es el operativo (o en más de uno).
+  const cupoConDesglose = cupos.some((c) => c.pais_id !== pais)
 
   // planesContratados (lo que VisitadorPlanesPage espera: cantidad_visitas_incluidas, fecha_fin, estado)
   const aLegacy = (a: PvcRow) => ({
