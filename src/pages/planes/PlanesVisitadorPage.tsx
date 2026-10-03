@@ -1,29 +1,36 @@
 import { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { toast } from 'sonner';
-import { MapPin, Check, ArrowRight, Navigation, Route, Users, BarChart3, Truck } from 'lucide-react';
+import { MapPin, Check, ArrowRight, Navigation, Route, CalendarCheck, ClipboardCheck, BarChart3 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader } from '@/components/ui/card';
-import { Badge } from '@/components/ui/badge';
-import { Switch } from '@/components/ui/switch';
-import { Label } from '@/components/ui/label';
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import { usePlanes } from '@/hooks/usePlanes';
 import { useAuth } from '@/hooks/useAuth';
 import { usePaisFiltro } from '@/hooks/usePaisFiltro';
 import { formatearPrecio, getBanderaPais } from '@/lib/planes-utils';
+import { configComprable } from '@/proveedor/lib/compraPlanVisitador';
+
+// Solo se describe lo que el módulo de visitas hace hoy.
+const FUNCIONES_REALES = [
+  'Agenda de visitas a médicos',
+  'Aprobación del supervisor',
+  'Check-in y check-out con evidencia',
+  'Ruta del día',
+  'Reporte de visitas',
+];
 
 export default function PlanesVisitadorPage() {
   const { paisId } = usePaisFiltro();
   const { planesBase, planesConfig, paises, loading } = usePlanes({ pais_id: paisId || undefined });
   const { user } = useAuth();
   const navigate = useNavigate();
-  const [esAnual, setEsAnual] = useState(false);
   const [paisSeleccionado, setPaisSeleccionado] = useState(paisId || 'GT');
   const [planCheckout, setPlanCheckout] = useState<any>(null);
 
   const planesVisitador = planesBase.filter(p => p.tipo === 'visitador');
 
+  // La compra cobra el precio mensual de la configuración del país y suma sus visitas por su duración (mig 351).
   const getConfigForPlan = (planId: string) => {
     return planesConfig.find(c => c.plan_base_id === planId && c.pais?.codigo === paisSeleccionado);
   };
@@ -40,18 +47,18 @@ export default function PlanesVisitadorPage() {
 
   const handleElegirPlan = (plan: any) => {
     const config = getConfigForPlan(plan.id);
-    const precio = esAnual 
-      ? (config?.precio_anual || plan.precio_base * 12 * 0.8)
-      : (config?.precio_local || plan.precio_base);
-    const moneda = config?.pais?.moneda || plan.moneda || 'USD';
-
+    if (!config || !configComprable(config)) {
+      toast.error('Este plan no está disponible para el país seleccionado.');
+      return;
+    }
     setPlanCheckout({
       ...plan,
-      config_id: config?.id,
-      precio_local: precio,
-      precio_anual: config?.precio_anual || plan.precio_base * 12 * 0.8,
-      moneda: moneda,
-      pais: config?.pais,
+      config_id: config.id,
+      precio_local: config.precio_local,
+      moneda: config.moneda_local || config.pais?.moneda || 'USD',
+      visitas_incluidas: config.visitas_incluidas,
+      duracion_dias: config.duracion_dias,
+      pais: config.pais,
     });
   };
 
@@ -65,13 +72,14 @@ export default function PlanesVisitadorPage() {
           </div>
           <h1 className="text-4xl font-bold mb-4">Planes para Visitadores</h1>
           <p className="text-xl text-amber-100 max-w-2xl mx-auto">
-            Optimiza tus rutas de ventas. Gestiona clientes, pedidos y comisiones desde cualquier lugar.
+            Organiza las visitas de tu equipo a médicos: agenda, aprobación del supervisor, check-in y check-out con
+            evidencia, ruta del día y reporte de visitas.
           </p>
         </div>
       </div>
 
       <div className="container mx-auto px-4 py-12">
-        {/* Selector país y anual/mensual */}
+        {/* Selector de país */}
         <div className="flex flex-col md:flex-row justify-between items-center mb-8 gap-4">
           <div className="flex gap-2">
             {paises && paises.map((pais: any) => (
@@ -85,17 +93,6 @@ export default function PlanesVisitadorPage() {
                 {getBanderaPais(pais.codigo)} {pais.nombre}
               </Button>
             ))}
-          </div>
-
-          <div className="flex items-center gap-3 bg-white px-4 py-2 rounded-lg shadow-sm border">
-            <Label htmlFor="anual-visitador" className={!esAnual ? 'font-semibold text-orange-700' : 'text-gray-500'}>
-              Mensual
-            </Label>
-            <Switch id="anual-visitador" checked={esAnual} onCheckedChange={setEsAnual} />
-            <Label htmlFor="anual-visitador" className={esAnual ? 'font-semibold text-orange-700' : 'text-gray-500'}>
-              Anual
-            </Label>
-            {esAnual && <Badge className="bg-orange-100 text-orange-700 hover:bg-orange-100">Ahorra 20%</Badge>}
           </div>
         </div>
 
@@ -111,11 +108,8 @@ export default function PlanesVisitadorPage() {
           <div className="grid md:grid-cols-2 gap-8 max-w-4xl mx-auto">
             {planesVisitador.map((plan) => {
               const config = getConfigForPlan(plan.id);
-              const precio = esAnual 
-                ? (config?.precio_anual || plan.precio_base * 12 * 0.8)
-                : (config?.precio_local || plan.precio_base);
-              const precioOriginal = esAnual ? (config?.precio_local || plan.precio_base) * 12 : null;
-              const moneda = config?.pais?.moneda || plan.moneda || 'USD';
+              const disponible = !!config && configComprable(config);
+              const moneda = config?.moneda_local || config?.pais?.moneda || plan.moneda || 'USD';
 
               return (
                 <Card
@@ -138,45 +132,41 @@ export default function PlanesVisitadorPage() {
 
                   <CardContent className="p-6">
                     <div className="mb-6">
-                      <div className="flex items-baseline gap-1">
-                        <span className="text-4xl font-bold text-gray-900">
-                          {formatearPrecio(precio, moneda)}
-                        </span>
-                        <span className="text-gray-500">/{esAnual ? 'año' : 'mes'}</span>
-                      </div>
-                      {precioOriginal && (
-                        <p className="text-sm text-gray-400 line-through">
-                          {formatearPrecio(precioOriginal, moneda)}/año
-                        </p>
+                      {disponible ? (
+                        <div className="flex items-baseline gap-1">
+                          <span className="text-4xl font-bold text-gray-900">{formatearPrecio(config!.precio_local, moneda)}</span>
+                          <span className="text-gray-500">/{config!.duracion_dias} días</span>
+                        </div>
+                      ) : (
+                        <p className="text-sm text-gray-500">No disponible en el país seleccionado.</p>
                       )}
                     </div>
 
                     <ul className="space-y-3 mb-6">
-                      <li className="flex items-start gap-2 text-sm">
-                        <Check className="h-4 w-4 text-orange-500 mt-0.5 shrink-0" />
-                        <span className="text-gray-700">Gestión de rutas diarias</span>
-                      </li>
-                      <li className="flex items-start gap-2 text-sm">
-                        <Check className="h-4 w-4 text-orange-500 mt-0.5 shrink-0" />
-                        <span className="text-gray-700">{plan.nombre.includes('Pro') ? 'Clientes ilimitados' : 'Hasta 50 clientes'}</span>
-                      </li>
-                      <li className="flex items-start gap-2 text-sm">
-                        <Check className="h-4 w-4 text-orange-500 mt-0.5 shrink-0" />
-                        <span className="text-gray-700">{plan.nombre.includes('Pro') ? 'Tracking GPS en tiempo real' : 'Registro de pedidos básico'}</span>
-                      </li>
-                      <li className="flex items-start gap-2 text-sm">
-                        <Check className="h-4 w-4 text-orange-500 mt-0.5 shrink-0" />
-                        <span className="text-gray-700">{plan.nombre.includes('Pro') ? 'Cálculo automático de comisiones' : 'Reportes mensuales de visitas'}</span>
-                      </li>
-                      <li className="flex items-start gap-2 text-sm">
-                        <Check className="h-4 w-4 text-orange-500 mt-0.5 shrink-0" />
-                        <span className="text-gray-700">{plan.nombre.includes('Pro') ? 'Soporte prioritario 24/7' : 'Soporte por email'}</span>
-                      </li>
+                      {disponible && (
+                        <>
+                          <li className="flex items-start gap-2 text-sm">
+                            <Check className="h-4 w-4 text-orange-500 mt-0.5 shrink-0" />
+                            <span className="text-gray-700 font-medium">{config!.visitas_incluidas} visitas incluidas</span>
+                          </li>
+                          <li className="flex items-start gap-2 text-sm">
+                            <Check className="h-4 w-4 text-orange-500 mt-0.5 shrink-0" />
+                            <span className="text-gray-700 font-medium">Vigencia de {config!.duracion_dias} días</span>
+                          </li>
+                        </>
+                      )}
+                      {FUNCIONES_REALES.map((f) => (
+                        <li key={f} className="flex items-start gap-2 text-sm">
+                          <Check className="h-4 w-4 text-orange-500 mt-0.5 shrink-0" />
+                          <span className="text-gray-700">{f}</span>
+                        </li>
+                      ))}
                     </ul>
 
                     <Button
                       className={`w-full ${plan.nombre.includes('Pro') ? 'bg-gradient-to-r from-orange-600 to-amber-600 hover:from-orange-700 hover:to-amber-700' : 'bg-gray-900 hover:bg-gray-800'}`}
                       size="lg"
+                      disabled={!disponible}
                       onClick={() => handleElegirPlan(plan)}
                     >
                       Elegir Plan <ArrowRight className="ml-2 h-4 w-4" />
@@ -194,22 +184,22 @@ export default function PlanesVisitadorPage() {
           </div>
         )}
 
-        {/* Features section */}
+        {/* Lo que incluye el módulo (solo lo que existe) */}
         <div className="mt-16 grid md:grid-cols-3 gap-8">
           <div className="text-center p-6">
-            <Truck className="h-12 w-12 text-orange-600 mx-auto mb-4" />
-            <h3 className="text-lg font-semibold mb-2">Rutas Optimizadas</h3>
-            <p className="text-gray-600">Planifica y optimiza tus rutas de visitas para maximizar tu tiempo.</p>
+            <CalendarCheck className="h-12 w-12 text-orange-600 mx-auto mb-4" />
+            <h3 className="text-lg font-semibold mb-2">Agenda y aprobación</h3>
+            <p className="text-gray-600">El visitador propone las visitas a médicos y el supervisor las aprueba.</p>
           </div>
           <div className="text-center p-6">
-            <Users className="h-12 w-12 text-orange-600 mx-auto mb-4" />
-            <h3 className="text-lg font-semibold mb-2">Gestión de Clientes</h3>
-            <p className="text-gray-600">Mantén un registro completo de todos tus clientes y sus pedidos.</p>
+            <ClipboardCheck className="h-12 w-12 text-orange-600 mx-auto mb-4" />
+            <h3 className="text-lg font-semibold mb-2">Check-in y check-out</h3>
+            <p className="text-gray-600">Cada visita se registra al llegar y al salir, con evidencia.</p>
           </div>
           <div className="text-center p-6">
             <BarChart3 className="h-12 w-12 text-orange-600 mx-auto mb-4" />
-            <h3 className="text-lg font-semibold mb-2">Reportes de Ventas</h3>
-            <p className="text-gray-600">Análisis detallado de tus ventas, comisiones y territorios.</p>
+            <h3 className="text-lg font-semibold mb-2">Ruta y reporte</h3>
+            <p className="text-gray-600">La ruta del día de cada visitador y el reporte de visitas realizadas.</p>
           </div>
         </div>
       </div>
@@ -220,7 +210,7 @@ export default function PlanesVisitadorPage() {
           <DialogHeader>
             <DialogTitle className="flex items-center gap-2">
               <MapPin className="h-5 w-5 text-orange-600" />
-              Confirmar Suscripción
+              Confirmar compra
             </DialogTitle>
           </DialogHeader>
           {planCheckout && (
@@ -230,28 +220,22 @@ export default function PlanesVisitadorPage() {
                 <p className="text-sm text-gray-600">{planCheckout.descripcion}</p>
                 <div className="mt-2">
                   <span className="text-2xl font-bold text-orange-700">
-                    {formatearPrecio(esAnual ? planCheckout.precio_anual : planCheckout.precio_local, planCheckout.moneda)}
+                    {formatearPrecio(planCheckout.precio_local, planCheckout.moneda)}
                   </span>
-                  <span className="text-gray-500">/{esAnual ? 'año' : 'mes'}</span>
                 </div>
               </div>
 
               <div className="space-y-2">
                 <p className="text-sm"><strong>País:</strong> {getBanderaPais(planCheckout.pais?.codigo)} {planCheckout.pais?.nombre || paisSeleccionado}</p>
-                <p className="text-sm"><strong>Periodicidad:</strong> {esAnual ? 'Anual (ahorras 20%)' : 'Mensual'}</p>
+                <p className="text-sm"><strong>Incluye:</strong> {planCheckout.visitas_incluidas} visitas, vigentes {planCheckout.duracion_dias} días</p>
                 <p className="text-sm"><strong>Usuario:</strong> {user?.email || 'Invitado'}</p>
               </div>
 
               <div className="flex gap-2">
-                <Button 
+                <Button
                   className="flex-1 bg-orange-600 hover:bg-orange-700"
                   onClick={() => {
-                    if (!planCheckout.config_id) {
-                      toast.error('Este plan no está configurado para el país seleccionado.');
-                      return;
-                    }
-                    const monto = esAnual ? planCheckout.precio_anual : planCheckout.precio_local;
-                    navigate(`/proveedor/checkout?tipo=plan_visitador&referencia_id=${planCheckout.config_id}&monto=${monto}&descripcion=${encodeURIComponent(planCheckout.nombre)}`);
+                    navigate(`/proveedor/checkout?tipo=plan_visitador&referencia_id=${planCheckout.config_id}&descripcion=${encodeURIComponent(planCheckout.nombre)}`);
                     setPlanCheckout(null);
                   }}
                 >
