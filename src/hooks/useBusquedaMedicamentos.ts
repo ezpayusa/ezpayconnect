@@ -2,6 +2,23 @@ import { useState, useCallback } from 'react';
 import { supabase } from '@/lib/supabase';
 import { toast } from 'sonner';
 import type { ProductoEmpresa } from '@/proveedor/types/proveedor.types';
+import { conNombreEmpresa, idsEmpresa } from '@/lib/nombreEmpresaProductos';
+
+/**
+ * "En proveedores": completa el nombre del laboratorio con nombre_empresa_por_productos (mig 354), best-effort. El
+ * error de la RPC se registra con su código; la lista se muestra igual, sin el nombre.
+ * Empresas afines: la barrera es la RLS de productos_empresa (las excluye); el cliente no tiene el tipo de empresa.
+ */
+async function enriquecerConLaboratorio(productos: ProductoEmpresa[]): Promise<ProductoEmpresa[]> {
+  const ids = idsEmpresa(productos as any[]);
+  if (ids.length === 0) return productos;
+  const { data, error } = await supabase.rpc('nombre_empresa_por_productos', { p_empresa_ids: ids });
+  if (error) {
+    console.error('nombre_empresa_por_productos:', error.code, error.message);
+    return productos;
+  }
+  return conNombreEmpresa(productos as any[], data as any[]) as ProductoEmpresa[];
+}
 
 export interface FarmaciaMedicamento {
   id: string;
@@ -111,10 +128,10 @@ export function useBusquedaMedicamentos(): UseBusquedaMedicamentosReturn {
         .order('precio_unitario', { ascending: true });
 
       if (proveedorError) throw proveedorError;
-      // Defensa en profundidad: excluir productos de empresas afines de la búsqueda
-      // del médico (la RLS ya los excluye en servidor; esto cubre cualquier camino).
+      // Empresas afines: la barrera es la RLS ("Médico ve productos activos" las excluye). Este filtro solo actúa
+      // cuando el embed trae el tipo (super_admin); para el médico el embed llega null.
       const sinAfines = (proveedorData || []).filter((p: any) => p.empresa?.tipo !== 'empresa_afin');
-      setResultadosProveedores(sinAfines as ProductoEmpresa[]);
+      setResultadosProveedores(await enriquecerConLaboratorio(sinAfines as ProductoEmpresa[]));
     } catch (err: any) {
       console.error('Error buscando medicamentos:', err);
       toast.error('Error al buscar medicamentos', { description: err.message });
@@ -249,9 +266,9 @@ export function useBusquedaMedicamentos(): UseBusquedaMedicamentosReturn {
         .order('precio_unitario', { ascending: true });
 
       if (error) throw error;
-      // Defensa en profundidad: excluir empresas afines (la RLS ya las excluye en servidor).
+      // Empresas afines: la barrera es la RLS (ver arriba); este filtro solo actúa si el embed trae el tipo.
       const sinAfines = (data || []).filter((p: any) => p.empresa?.tipo !== 'empresa_afin');
-      setResultadosProveedores(sinAfines as ProductoEmpresa[]);
+      setResultadosProveedores(await enriquecerConLaboratorio(sinAfines as ProductoEmpresa[]));
     } catch (err: any) {
       console.error('Error buscando en proveedores:', err);
       toast.error('Error al buscar proveedores', { description: err.message });
