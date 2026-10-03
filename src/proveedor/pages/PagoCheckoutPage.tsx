@@ -6,6 +6,7 @@ import { Skeleton } from '@/components/ui/skeleton'
 import { usePagosProveedor } from '@/proveedor/hooks/usePagosProveedor'
 import { useProveedorAuth } from '@/proveedor/hooks/useProveedorAuth'
 import { useCuentaBancariaCheckout } from '@/proveedor/hooks/useCuentaBancariaCheckout'
+import { useConfigPlanVisitador } from '@/proveedor/hooks/useConfigPlanVisitador'
 import { supabase } from '@/lib/supabase'
 import { toast } from 'sonner'
 import { ArrowLeft, Upload, CreditCard, MapPin, User, Hash, Loader2, Mail, FileText, AlertCircle } from 'lucide-react'
@@ -13,15 +14,19 @@ import { ArrowLeft, Upload, CreditCard, MapPin, User, Hash, Loader2, Mail, FileT
 export default function PagoCheckoutPage() {
   const navigate = useNavigate()
   const [searchParams] = useSearchParams()
-  const { crearPago, saving } = usePagosProveedor()
+  const { crearPago, solicitarCompraPlanVisitador, saving } = usePagosProveedor()
   const { empresa } = useProveedorAuth()
   const { cuenta, loading: loadingCuenta } = useCuentaBancariaCheckout(empresa?.pais_id)
 
   const tipo = searchParams.get('tipo') || ''
   const referenciaId = searchParams.get('referencia_id') || ''
-  const monto = parseFloat(searchParams.get('monto') || '0')
-  const descripcion = searchParams.get('descripcion') || ''
-  const moneda = cuenta?.moneda || 'GTQ'
+  // Plan de visitador (mig 351): precio, moneda, visitas y duración salen de la configuración, NUNCA de la URL.
+  const esPlanVisitador = tipo === 'plan_visitador'
+  const { config: configPlan, loading: loadingPlan } = useConfigPlanVisitador(esPlanVisitador ? referenciaId || null : null)
+  const planNoDisponible = esPlanVisitador && !loadingPlan && !configPlan?.comprable
+  const monto = esPlanVisitador ? configPlan?.precio ?? 0 : parseFloat(searchParams.get('monto') || '0')
+  const descripcion = esPlanVisitador ? configPlan?.nombre ?? '' : searchParams.get('descripcion') || ''
+  const moneda = esPlanVisitador ? configPlan?.moneda ?? '' : cuenta?.moneda || 'GTQ'
 
   const [comprobanteFile, setComprobanteFile] = useState<File | null>(null)
   const [comprobantePreview, setComprobantePreview] = useState<string | null>(null)
@@ -40,6 +45,13 @@ export default function PagoCheckoutPage() {
   const handleSubmit = async () => {
     if (!comprobanteFile) {
       toast.error('Debes subir el comprobante de pago')
+      return
+    }
+
+    if (esPlanVisitador) {
+      if (!configPlan?.comprable) return
+      const pagoId = await solicitarCompraPlanVisitador(configPlan.id, comprobanteFile)
+      if (pagoId) navigate('/proveedor/visitador/planes')
       return
     }
 
@@ -114,10 +126,31 @@ export default function PagoCheckoutPage() {
             <span className="text-muted-foreground">Tipo</span>
             <span className="font-medium capitalize">{tipo.replace('_', ' ')}</span>
           </div>
-          <div className="border-t pt-3 flex justify-between items-center">
-            <span className="font-medium">Total a pagar</span>
-            <span className="text-2xl font-bold text-[#1E5C8E]">{formatMonto(monto)}</span>
-          </div>
+          {esPlanVisitador && configPlan?.comprable && (
+            <>
+              <div className="flex justify-between text-sm">
+                <span className="text-muted-foreground">Visitas incluidas</span>
+                <span className="font-medium">{configPlan.visitasIncluidas}</span>
+              </div>
+              <div className="flex justify-between text-sm">
+                <span className="text-muted-foreground">Vigencia</span>
+                <span className="font-medium">{configPlan.duracionDias} días</span>
+              </div>
+            </>
+          )}
+          {esPlanVisitador && loadingPlan ? (
+            <Skeleton className="h-8 w-full" />
+          ) : planNoDisponible ? (
+            <div className="bg-amber-50 border border-amber-200 rounded-lg p-3 text-sm text-amber-800 flex items-start gap-2">
+              <AlertCircle className="h-5 w-5 shrink-0 mt-0.5" />
+              <p>Este plan no está disponible para la compra. Volvé a la lista de planes y elegí otro.</p>
+            </div>
+          ) : (
+            <div className="border-t pt-3 flex justify-between items-center">
+              <span className="font-medium">Total a pagar</span>
+              <span className="text-2xl font-bold text-[#1E5C8E]">{formatMonto(monto)}</span>
+            </div>
+          )}
         </CardContent>
       </Card>
 
@@ -243,7 +276,7 @@ export default function PagoCheckoutPage() {
               </Button>
               <Button
                 className="flex-1 bg-[#1E5C8E] hover:bg-[#164a70]"
-                disabled={saving || !comprobanteFile || loadingCuenta}
+                disabled={saving || !comprobanteFile || loadingCuenta || (esPlanVisitador && (loadingPlan || !configPlan?.comprable))}
                 onClick={handleSubmit}
               >
                 {saving ? <Loader2 className="h-4 w-4 animate-spin mr-2" /> : <Upload className="h-4 w-4 mr-2" />}
