@@ -24,10 +24,27 @@ Stack: React + Vite + TypeScript, Supabase / Postgres, deploy en Vercel, repo en
   minutos por esto** (P635 es la probe que faltaba, P636 su contraprueba).
 - NUNCA ampliar policies de RLS sobre tablas adyacentes a datos médicos (p. ej. campana_metricas). Para dar acceso, usar RPCs SECURITY DEFINER con search_path='', fail-closed (si el scope es NULL → 0 filas) y gate interno.
 - Probar aislamiento por rol impersonando request.jwt.claims en prod: cada rol ve lo suyo y no lo ajeno.
-- **Próximos números libres: probe `P940`** (global, no por módulo; P906-P907 usados por la mig 336, P912-P913
+- **Próximos números libres: probe `P944`** (global, no por módulo; P906-P907 usados por la mig 336, P912-P913
   por la 337, P914-P915 por la 338, P916-P920 por la 339/340, P921-P923 por la 341, P924 por la 342, P925 por
   la 343, P926-P927 por la 344, P928-P929 por la 345, P930 por la 346, P931-P932 por la 347, P933 por la 348,
-  P934-P935 por la 349, P936 por la 350, P937-P939 por la 351), **migración `353`**
+  P934-P935 por la 349, P936 por la 350, P937-P939 por la 351, P940-P943 por la 353), **migración `354`**
+  (353 = delivery, lote demo 1: `tablero_repartidores(p_farmacia_id)` (carga por repartidor activo de las sucursales
+  visibles: asignadas, en_camino, entregadas_hoy, fallidas_hoy, libre/en_ruta; gate `entregas_ver` y rol <> delivery;
+  sin datos de pacientes), `listar_repartidores_asignables(p_entrega_id)` (los que `asignar_entrega` aceptaría, con su
+  carga; gate `entregas_gestionar`), `asignar_entregas_lote(p_entrega_ids, p_delivery_id)` (atómica, máx 50, sin
+  repetidos, mismas reglas que `asignar_entrega` por entrega; la que falla viaja en DETAIL) y
+  `private.notificar_entregas_asignadas` (EXECUTE solo postgres); errcodes 42501 + DE001-DE009 en
+  `asignar_entrega`/`reasignar_entrega` (cuerpo armado con `replace()` sobre el prosrc vivo: solo agregan ERRCODE y la
+  notificación; md5(prosrc) ff727cc7… → e4b71601… y 2883d4d8… → 2647876d…) y en las nuevas; push por
+  `private.push_notificar` con accion_url `/repartidor` ("Tenés N entregas nuevas"; "Te quitaron una entrega" al
+  anterior en la reasignación), en la misma transacción; cola en vivo por realtime sobre `notificaciones` (ya
+  publicada, SELECT propio) — `entregas` NO se publica porque tiene datos de pacientes; ACL de funciones b8189120…
+  (370) → 70a9dc38… (374); policies, relaciones, columnas, defaults y publicación sin cambio; probes P940 (gates por
+  rol), P941 (lote atómico), P942 (asignar/reasignar + push + tablero), P943 (catálogo) — APLICADA en prod el
+  2026-10-03 entre 13:41:13 y 13:41:15 UTC y verificada en sesión independiente 8/8. Dry-run: harness 1018 filas / 11
+  rojas de deuda, P800 PASA, guard `do_sin_handler` 155 sobre 974 bloques DO; tsc 74, vitest 358. Orden de rollback
+  global: `353_rollback` → `352_rollback` → `351_rollback` → … (`353_rollback` restaura los cuerpos ff727cc7…/2883d4d8…
+  por replace inverso y borra las 4 funciones).)
   (352 = familia CP: catálogo QA de planes de visitador de GT — 3 configuraciones activas con UUID fijo: Bronce
   80f3c3e0… 250 GTQ / 20 visitas, Plata a383402a… 450 GTQ / 50, Oro 19a760ae… 900 GTQ / 120, las tres de 30 días;
   las 7 configuraciones inactivas de GT y planes_base no se tocan; planes_configuracion 110 → 113 filas; policies sin
@@ -135,6 +152,10 @@ Stack: React + Vite + TypeScript, Supabase / Postgres, deploy en Vercel, repo en
   336 = fix de la 335: liberación/reversión con FOR UPDATE + evento solo si cambió la fila; EX028
   normalizado espacios/tabs/saltos — APLICADA en prod y verificada en sesión independiente el
   26-sep-2026), **errcode `PA035`** (comercial),
+  **`DE010`** (delivery, mig 353: 42501 sin permiso; DE001 entrega inexistente o no visible, DE002 no está pendiente,
+  DE003 el repartidor no es delivery activo de la empresa, DE004 repartidor de otra sucursal, DE005 entrega cobrada no
+  se reasigna, DE006 no se reasigna desde ese estado, DE007 tanda vacía, DE008 tanda de más de 50, DE009 tanda con ids
+  repetidos o NULL; el front los mapea en `src/farmacia/lib/gestionEntregas.ts`),
   **`CP018`** (familia CP, mig 351: `solicitar_compra_plan_visitador` → 42501 sin empresa o rol fuera de admin/editor,
   CP001 configuración no disponible, CP002 otro país, CP003 sin visitas/duración/precio, CP004 sin cuenta bancaria
   activa, CP005 moneda distinta a la de la cuenta, CP006 comprobante inválido, CP007 ya hay una compra pendiente;
@@ -233,8 +254,8 @@ Stack: React + Vite + TypeScript, Supabase / Postgres, deploy en Vercel, repo en
   Pasó dos veces (18cf819 y el lote 1 de PA-FAILOPEN) y una de ellas tardó dos meses en detectarse.
   Baselines vivos: `top_level_dml_ddl=0` (excluye `pg_temp`), `cast_directo=0`, `do_sin_handler=155`
   (fase 2.2 CERRADA: los 55 bloques que escriben están envueltos, 211→193→175→157→156→155; los 155
-  restantes sólo leen y publican, así que ya no son deuda; 972 bloques DO en total al 3-oct-2026, con P937-P939
-  de la 351; la última cuenta de filas medida en esta memoria es 1011 / 11 rojas de deuda, tras la 350).
+  restantes sólo leen y publican, así que ya no son deuda; 974 bloques DO en total al 3-oct-2026, con P940-P943
+  de la 353; la última cuenta de filas medida en esta memoria es 1018 / 11 rojas de deuda, tras la 353).
   **Regla de método: el harness NUNCA corre en paralelo con otra sesión que escriba o impersone contra prod**
   (las dos compiten por las mismas filas: deadlocks 40P01 que salen como rojos falsos). **P782 ajustado en la 346:** el DELETE directo sobre
   `visitas_agendadas` ahora da 42501 de privilegio (authenticated ya no tiene DELETE) y cuenta como OK, más fuerte
@@ -248,7 +269,7 @@ Stack: React + Vite + TypeScript, Supabase / Postgres, deploy en Vercel, repo en
 - **Migraciones: SIEMPRE `npx supabase db query --linked -f <archivo>`, NUNCA `db push`.** `db push`
   desincroniza `schema_migrations` (deuda desde la 047). Los `.sql` viven en `supabase/migrations/`
   (rollback en `supabase/migrations/rollback/`); los de `supabase/fixes/` se agregan con `git add -f`.
-  **Desvío aceptado (familia 8):** los rollbacks de 334-352 viven en `supabase/migrations/`
+  **Desvío aceptado (familia 8):** los rollbacks de 334-353 viven en `supabase/migrations/`
   (`3XX_rollback.sql`), no en `supabase/migrations/rollback/`.
 - **Los tests de edge (deno) NO corren en vitest ni en el pre-commit**: se corren a mano desde
   `supabase/functions/<fn>/` con `deno test --allow-net --allow-env --no-check` (asistente-ia: 17).
@@ -380,7 +401,9 @@ Detalles a recordar:
   (42501 "permission denied to change default privileges"); inerte porque las migraciones crean como postgres, y
   P724 lo vigila. Defaults de postgres en `storage` (anon/authenticated con todo): inertes, postgres no tiene
   CREATE en storage.
-- **FAMILIA CP (compra de planes de visitador): 351 + 352 APLICADAS, front en `cp/351-compra-plan-visitador`.**
+- **FAMILIA CP (compra de planes de visitador): 351 + 352 APLICADAS, front en main (PR #27, merge a00f804).** El cupo
+  del front se calcula POR PAÍS con el criterio de `private.gate_visita_pais` (`cupoPorPais`, lote demo 1: hallazgo A3
+  del review #27 cerrado).
   Decisiones (Oscar, 3-oct-2026): pago por transferencia con aprobación manual del super_admin; el precio, la moneda,
   las visitas y la duración salen del catálogo del país en el servidor (el monto de la URL no se usa); con una bolsa
   vigente en el país la compra SUMA visitas y EXTIENDE la fecha_fin (dos bolsas superpuestas no suman cupo); no se vende
@@ -394,6 +417,14 @@ Detalles a recordar:
   usa CURRENT_DATE en UTC: en GT una bolsa vence a las 18:00 hora local de su último día. Evaluar pasar el criterio a la
   zona horaria del país (gate de visitas + RPCs); el front lo replica en `esBolsaVigente`/`hoyUTC`
   (`src/proveedor/lib/compraPlanVisitador.ts`) y hay que cambiar los dos juntos.
+- **DELIVERY — lote demo 1 (mig 353 APLICADA + front en `fix/lote-demo-1`).** Decisiones (Oscar, 3-oct-2026): el
+  reparto es por tandas durante el día; el gerente ve un tablero con la carga de cada repartidor; asigna en tanda (máx
+  50 entregas, de una sola sucursal, porque cada repartidor es de una sucursal) y reasigna; el repartidor tiene la cola
+  en vivo, con aviso push al asignarle, y un mapa con sus pendientes ordenadas por cercanía a su ubicación actual — la
+  ubicación se usa solo en el dispositivo, no se envía al servidor. Backlog: el autochequeo de `353_rollback` no
+  remide grants por columna ni `pg_default_acl`; `fallidas_hoy` usa `updated_at` (no existe `fallida_at`); "hoy" del
+  tablero en UTC (igual que la familia CP); aviso al paciente del estado de la entrega; ruta optimizada y tracking en
+  vivo (roadmap).
 - (Familia 6) La secuencia de `planes_publicidad` está desfasada (medido 2-oct-2026: `last_value` 1, `max(id)` 3):
   un INSERT por default choca con la PK (23505). Corregir con `setval` en una migración aparte (lo detectó el
   dry-run A2 de la 345; P929 siembra su plan con id explícito).
