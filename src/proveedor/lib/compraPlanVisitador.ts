@@ -65,6 +65,56 @@ export function esBolsaVigente(bolsa: FechasBolsa, hoy: string = hoyUTC()): bool
   return !!inicio && !!fin && inicio <= hoy && hoy <= fin
 }
 
+/** Bolsa (pvc) tal como la devuelve get_planes_visitador_proveedor; restante NULL = ilimitada. */
+export interface BolsaCupo extends FechasBolsa {
+  pais_id: string
+  pais_nombre?: string | null
+  estado?: string | null
+  restante: number | null
+  ilimitado: boolean
+}
+
+/** Cupo de un país: el de UNA bolsa (la que usa el gate), no la suma de las bolsas del país. */
+export interface CupoPais {
+  pais_id: string
+  pais_nombre: string | null
+  ilimitado: boolean
+  restante: number | null // null = ilimitado
+  fecha_fin: string
+}
+
+/**
+ * Cupo por país con el mismo criterio que private.gate_visita_pais: por país, entre las bolsas activas y
+ * vigentes (esBolsaVigente), cuenta solo la de fecha_fin más lejana — su restante, o ilimitada si sus
+ * visitas incluidas son NULL. Dos bolsas superpuestas del mismo país NO suman; cada país es independiente.
+ */
+export function cupoPorPais(bolsas: BolsaCupo[], hoy: string = hoyUTC()): CupoPais[] {
+  const elegida = new Map<string, BolsaCupo>()
+  for (const b of bolsas) {
+    if ((b.estado ?? 'activo') !== 'activo' || !esBolsaVigente(b, hoy)) continue
+    const actual = elegida.get(b.pais_id)
+    if (!actual || (b.fecha_fin as string).slice(0, 10) > (actual.fecha_fin as string).slice(0, 10)) elegida.set(b.pais_id, b)
+  }
+  return [...elegida.values()].map((b) => ({
+    pais_id: b.pais_id,
+    pais_nombre: b.pais_nombre ?? null,
+    ilimitado: b.ilimitado,
+    restante: b.ilimitado ? null : Math.max(0, b.restante ?? 0),
+    fecha_fin: (b.fecha_fin as string).slice(0, 10),
+  }))
+}
+
+/** El cupo de un país, o null si no tiene bolsa vigente (el gate rechaza: sin plan que cubra el país). */
+export function cupoDelPais(cupos: CupoPais[], paisId: string | null | undefined): CupoPais | null {
+  if (!paisId) return null
+  return cupos.find((c) => c.pais_id === paisId) ?? null
+}
+
+/** ¿Queda al menos una visita? Ilimitada siempre; sin bolsa vigente, nunca. */
+export function hayCupo(cupo: CupoPais | null): boolean {
+  return !!cupo && (cupo.ilimitado || (cupo.restante ?? 0) > 0)
+}
+
 /** Una configuración se puede comprar solo con visitas y duración > 0 (la RPC rechaza el resto con CP003). */
 export function configComprable(c: { visitas_incluidas?: number | null; duracion_dias?: number | null }): boolean {
   return (c.visitas_incluidas ?? 0) > 0 && (c.duracion_dias ?? 0) > 0
