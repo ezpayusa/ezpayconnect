@@ -501,7 +501,7 @@ function App() {
           <Route path="agendar" element={<VisitadorAgendarPage />} />
           <Route path="mis-visitas" element={<VisitadorMisVisitasPage />} />
           <Route path="ruta" element={<VisitadorRutaPage />} />
-          <Route path="planes" element={<VisitadorPlanesPage />} />
+          <Route path="planes" element={<VisitadorPlanesPage soloCupo />} />
         </Route>
 
         {/* === PORTAL FARMACIA (tenant; guard por tipo='farmacia') === */}

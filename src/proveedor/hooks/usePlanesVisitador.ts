@@ -3,6 +3,7 @@ import { supabase } from '@/lib/supabase'
 import { useProveedorAuth } from './useProveedorAuth'
 import { toast } from 'sonner'
 import type { PlanBase, PlanConfiguracion } from '@/types/planes'
+import { configComprable, esBolsaVigente, hoyUTC } from '@/proveedor/lib/compraPlanVisitador'
 
 // Fila pvc (única fuente de visitas: país + bolsa). incluidas/restante NULL = ilimitado.
 interface PvcRow {
@@ -24,6 +25,9 @@ export interface PlanProveedorDisponible {
   descripcion: string
   precio: number
   moneda: string
+  // Visitas y vigencia de la compra: salen de la configuración del país (mig 351), no de planes_base.atributos.
+  visitasIncluidas: number
+  duracionDias: number
   atributos: Record<string, any>
   planBase: PlanBase
   configuracion: PlanConfiguracion
@@ -68,7 +72,9 @@ export function usePlanesVisitador() {
       if (configError) throw configError
       const configs = (configData || []) as PlanConfiguracion[]
 
+      // Solo se listan las configuraciones que se pueden comprar: sin visitas o sin duración la RPC las rechaza (CP003).
       const mapeados: PlanProveedorDisponible[] = configs
+        .filter(configComprable)
         .map((c) => {
           const base = bases.find((b) => b.id === c.plan_base_id)
           if (!base) return null
@@ -76,8 +82,11 @@ export function usePlanesVisitador() {
             configId: c.id,
             nombre: base.nombre,
             descripcion: base.descripcion,
-            precio: c.precio_local ?? c.precio_anual ?? base.precio_base ?? 0,
+            // El monto lo cobra la RPC desde precio_local: es lo único que se muestra.
+            precio: c.precio_local ?? 0,
             moneda: c.moneda_local ?? base.moneda ?? 'GTQ',
+            visitasIncluidas: c.visitas_incluidas as number,
+            duracionDias: c.duracion_dias as number,
             atributos: base.atributos || {},
             planBase: base,
             configuracion: c,
@@ -130,14 +139,18 @@ export function usePlanesVisitador() {
     cargarTodo()
   }, [cargarTodo])
 
-  // Bolsa restante = Σ restante de pvc activos (DERIVADO del gate real; ilimitado no suma número)
-  const visitasDisponibles = planesAsignados
-    .filter((a) => a.estado === 'activo' && !a.ilimitado)
+  // Vigente = activa y fecha_inicio <= hoy <= fecha_fin, con hoy en UTC (el criterio del gate de visitas del servidor).
+  const hoy = hoyUTC()
+  const vigentes = planesAsignados.filter((a) => a.estado === 'activo' && esBolsaVigente(a, hoy))
+
+  // Bolsa restante = Σ restante de pvc vigentes (DERIVADO del gate real; ilimitado no suma número)
+  const visitasDisponibles = vigentes
+    .filter((a) => !a.ilimitado)
     .reduce((acc, a) => acc + Math.max(0, a.restante ?? 0), 0)
-  const tieneIlimitado = planesAsignados.some((a) => a.estado === 'activo' && a.ilimitado)
+  const tieneIlimitado = vigentes.some((a) => a.ilimitado)
 
   // planesContratados (lo que VisitadorPlanesPage espera: cantidad_visitas_incluidas, fecha_fin, estado)
-  const planesContratadosLegacy = planesAsignados.map((a) => ({
+  const aLegacy = (a: PvcRow) => ({
     id: a.id,
     empresa_id: '',
     plan_visitador_id: 0,
@@ -151,9 +164,11 @@ export function usePlanesVisitador() {
     pais_nombre: a.pais_nombre,
     restante: a.restante,
     ilimitado: a.ilimitado,
+    vigente: a.estado === 'activo' && esBolsaVigente(a, hoy),
     created_at: '',
     updated_at: '',
-  }))
+  })
+  const planesContratadosLegacy = planesAsignados.map(aLegacy)
 
   return {
     // Nuevos datos dinámicos
@@ -164,12 +179,15 @@ export function usePlanesVisitador() {
       id: p.configId,
       nombre: p.nombre,
       descripcion: p.descripcion,
-      cantidad_visitas: p.atributos.visitas_incluidas || 0,
+      cantidad_visitas: p.visitasIncluidas,
       precio_referencia: p.precio,
       moneda: p.moneda,
-      duracion_dias: p.atributos.duracion_dias || 30,
+      duracion_dias: p.duracionDias,
     })),
     planesContratados: planesContratadosLegacy,
+    planesVigentes: planesContratadosLegacy.filter((p) => p.vigente),
+    // Vencida = ya pasó su fecha_fin (una bolsa que todavía no empezó no es vigente, pero tampoco vencida).
+    planesVencidos: planesContratadosLegacy.filter((p) => !p.vigente && (p.fecha_fin ?? '').slice(0, 10) < hoy),
     visitasDisponibles,
     tieneIlimitado,
     loading,

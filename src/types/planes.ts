@@ -45,6 +45,9 @@ export interface PlanConfiguracion {
   comision_aplicada?: number;
   descuento_porcentaje?: number;
   activo: boolean;
+  // Planes de visitador (mig 351): visitas y vigencia de la compra, por país. NULL = no se puede comprar.
+  visitas_incluidas?: number | null;
+  duracion_dias?: number | null;
   created_at?: string;
   updated_at?: string;
   // Joins
@@ -183,6 +186,8 @@ export interface CrearPlanConfigDTO {
   precio_impuestos?: number;
   comision_aplicada?: number;
   descuento_porcentaje?: number;
+  visitas_incluidas?: number | null;
+  duracion_dias?: number | null;
 }
 
 export interface CrearPlanAsignacionDTO {

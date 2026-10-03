@@ -2,6 +2,7 @@ import { useState, useEffect, useCallback } from 'react'
 import { supabase } from '@/lib/supabase'
 import { useProveedorAuth } from './useProveedorAuth'
 import { toast } from 'sonner'
+import { mensajeErrorCompraPlan } from '@/proveedor/lib/compraPlanVisitador'
 
 export interface PagoProveedor {
   id: string
@@ -106,11 +107,44 @@ export function usePagosProveedor() {
     return data.id
   }
 
+  // Compra de plan de visitador (mig 351): el monto, la moneda, las visitas y la duración los pone la RPC desde el
+  // catálogo del país. El cliente solo sube el comprobante y manda la configuración elegida y el PATH del objeto.
+  const solicitarCompraPlanVisitador = async (configuracionId: string, comprobanteFile: File): Promise<string | null> => {
+    if (!empresa?.id) {
+      toast.error('No hay empresa vinculada')
+      return null
+    }
+    setSaving(true)
+    const fileExt = comprobanteFile.name.split('.').pop()
+    const filePath = `${empresa.id}/${Date.now()}.${fileExt}`
+    const { error: uploadError } = await supabase.storage.from('comprobantes').upload(filePath, comprobanteFile)
+    if (uploadError) {
+      toast.error('Error subiendo comprobante')
+      console.error(uploadError)
+      setSaving(false)
+      return null
+    }
+    const { data, error } = await supabase.rpc('solicitar_compra_plan_visitador', {
+      p_configuracion_id: configuracionId,
+      p_comprobante_path: filePath,
+    })
+    setSaving(false)
+    if (error) {
+      toast.error(mensajeErrorCompraPlan(error, 'solicitar'))
+      console.error(error)
+      return null
+    }
+    toast.success('Comprobante enviado. En espera de verificación.')
+    fetchPagos()
+    return data as string
+  }
+
   return {
     pagos,
     loading,
     saving,
     fetchPagos,
     crearPago,
+    solicitarCompraPlanVisitador,
   }
 }
