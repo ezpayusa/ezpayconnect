@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest'
 import {
   mensajeErrorCompraPlan, MENSAJES_SOLICITAR, MENSAJES_APROBAR, MENSAJE_GENERICO_COMPRA,
-  esBolsaVigente, configComprable, enteroPositivo, hoyISO, normalizarMoneda, advertenciaMonedaCuenta,
+  esBolsaVigente, configComprable, enteroPositivo, hoyUTC, normalizarMoneda, advertenciaMonedaCuenta,
 } from './compraPlanVisitador'
 
 const pg = (code: string, message = 'texto de la base') => ({ code, message })
@@ -34,19 +34,36 @@ describe('mensajeErrorCompraPlan — aprobar', () => {
   })
 })
 
-describe('esBolsaVigente', () => {
-  it('fecha_fin hoy o futura -> vigente; pasada o vacia -> no', () => {
-    expect(esBolsaVigente('2026-10-03', '2026-10-03')).toBe(true)
-    expect(esBolsaVigente('2027-06-12', '2026-10-03')).toBe(true)
-    expect(esBolsaVigente('2026-10-02', '2026-10-03')).toBe(false)
-    expect(esBolsaVigente(null, '2026-10-03')).toBe(false)
-    expect(esBolsaVigente('', '2026-10-03')).toBe(false)
+describe('esBolsaVigente (criterio UTC del servidor: fecha_inicio <= hoy <= fecha_fin)', () => {
+  const bolsa = { fecha_inicio: '2026-09-04', fecha_fin: '2026-10-03' }
+
+  it('hoyUTC toma la fecha en UTC, no la local', () => {
+    expect(hoyUTC(new Date('2026-10-04T00:30:00Z'))).toBe('2026-10-04')
+    expect(hoyUTC(new Date('2026-10-03T23:59:00Z'))).toBe('2026-10-03')
+  })
+  it('18:30 hora de Guatemala del ultimo dia (00:30 UTC del dia siguiente) -> NO vigente', () => {
+    const ahora = new Date('2026-10-03T18:30:00-06:00')
+    expect(esBolsaVigente(bolsa, hoyUTC(ahora))).toBe(false)
+  })
+  it('23:59 UTC del ultimo dia -> vigente', () => {
+    expect(esBolsaVigente(bolsa, hoyUTC(new Date('2026-10-03T23:59:59Z')))).toBe(true)
+  })
+  it('fecha_inicio manana -> NO vigente', () => {
+    expect(esBolsaVigente({ fecha_inicio: '2026-10-04', fecha_fin: '2026-11-03' }, '2026-10-03')).toBe(false)
+  })
+  it('bordes inclusivos: el dia de inicio y el de fin son vigentes; el anterior y el siguiente no', () => {
+    expect(esBolsaVigente(bolsa, '2026-09-04')).toBe(true)
+    expect(esBolsaVigente(bolsa, '2026-10-03')).toBe(true)
+    expect(esBolsaVigente(bolsa, '2026-09-03')).toBe(false)
+    expect(esBolsaVigente(bolsa, '2026-10-04')).toBe(false)
+  })
+  it('sin fecha_inicio o sin fecha_fin -> NO vigente', () => {
+    expect(esBolsaVigente({ fecha_inicio: null, fecha_fin: '2026-10-03' }, '2026-10-01')).toBe(false)
+    expect(esBolsaVigente({ fecha_inicio: '2026-09-04', fecha_fin: '' }, '2026-10-01')).toBe(false)
+    expect(esBolsaVigente({}, '2026-10-01')).toBe(false)
   })
   it('acepta timestamps (compara solo la fecha)', () => {
-    expect(esBolsaVigente('2026-10-03T00:00:00Z', '2026-10-03')).toBe(true)
-  })
-  it('hoyISO usa la fecha local', () => {
-    expect(hoyISO(new Date(2026, 0, 5, 23, 59))).toBe('2026-01-05')
+    expect(esBolsaVigente({ fecha_inicio: '2026-09-04T00:00:00Z', fecha_fin: '2026-10-03T00:00:00Z' }, '2026-10-03')).toBe(true)
   })
 })
 

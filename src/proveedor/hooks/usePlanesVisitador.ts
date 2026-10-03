@@ -3,7 +3,7 @@ import { supabase } from '@/lib/supabase'
 import { useProveedorAuth } from './useProveedorAuth'
 import { toast } from 'sonner'
 import type { PlanBase, PlanConfiguracion } from '@/types/planes'
-import { configComprable, esBolsaVigente, hoyISO } from '@/proveedor/lib/compraPlanVisitador'
+import { configComprable, esBolsaVigente, hoyUTC } from '@/proveedor/lib/compraPlanVisitador'
 
 // Fila pvc (única fuente de visitas: país + bolsa). incluidas/restante NULL = ilimitado.
 interface PvcRow {
@@ -139,9 +139,9 @@ export function usePlanesVisitador() {
     cargarTodo()
   }, [cargarTodo])
 
-  // Vigente = activa y con fecha_fin >= hoy (el gate de visitas solo usa bolsas vigentes).
-  const hoy = hoyISO()
-  const vigentes = planesAsignados.filter((a) => a.estado === 'activo' && esBolsaVigente(a.fecha_fin, hoy))
+  // Vigente = activa y fecha_inicio <= hoy <= fecha_fin, con hoy en UTC (el criterio del gate de visitas del servidor).
+  const hoy = hoyUTC()
+  const vigentes = planesAsignados.filter((a) => a.estado === 'activo' && esBolsaVigente(a, hoy))
 
   // Bolsa restante = Σ restante de pvc vigentes (DERIVADO del gate real; ilimitado no suma número)
   const visitasDisponibles = vigentes
@@ -164,7 +164,7 @@ export function usePlanesVisitador() {
     pais_nombre: a.pais_nombre,
     restante: a.restante,
     ilimitado: a.ilimitado,
-    vigente: a.estado === 'activo' && esBolsaVigente(a.fecha_fin, hoy),
+    vigente: a.estado === 'activo' && esBolsaVigente(a, hoy),
     created_at: '',
     updated_at: '',
   })
@@ -186,7 +186,8 @@ export function usePlanesVisitador() {
     })),
     planesContratados: planesContratadosLegacy,
     planesVigentes: planesContratadosLegacy.filter((p) => p.vigente),
-    planesVencidos: planesContratadosLegacy.filter((p) => !p.vigente),
+    // Vencida = ya pasó su fecha_fin (una bolsa que todavía no empezó no es vigente, pero tampoco vencida).
+    planesVencidos: planesContratadosLegacy.filter((p) => !p.vigente && (p.fecha_fin ?? '').slice(0, 10) < hoy),
     visitasDisponibles,
     tieneIlimitado,
     loading,

@@ -6,8 +6,8 @@ Stack: React + Vite + TypeScript, Supabase / Postgres, deploy en Vercel, repo en
 ## Reglas de trabajo (mantener siempre)
 - Diagnosticar antes de tocar nada. Rastrear el flujo de datos de punta a punta y confirmar la causa raíz (idealmente contra la DB viva) antes de escribir código.
 - Un commit por bloque, con mensaje claro. Nada de un commit gigante al final.
-- Verificar en cada cambio: tsc -p tsconfig.app.json (baseline actual = **75** errores; objetivo = 0 nuevos) + vite build verde + prueba por rol en prod.
-  **El comando es `npx tsc -p tsconfig.app.json --noEmit` y el baseline es 75.** Bajó de 78 a 75 el 26-sep con el front de P4 (los 3 `TS2339 'descripcion'`
+- Verificar en cada cambio: tsc -p tsconfig.app.json (baseline actual = **74** errores; objetivo = 0 nuevos) + vite build verde + prueba por rol en prod.
+  **El comando es `npx tsc -p tsconfig.app.json --noEmit` y el baseline es 74.** Bajó de 75 a 74 el 3-oct con el fix de vigencia UTC (review #27: el `TS2339 'visitas_usadas'` de `useVisitasAgendadas` era el cálculo de cupo viejo, que leía un campo que el mapeo no traía). Antes, de 78 a 75 el 26-sep con el front de P4 (los 3 `TS2339 'descripcion'`
   de `ExamenPaciente`: el paciente nunca veía la descripción del examen). Antes, de 82 a 78 el
   22-sep con el frente 7 (lab): los 4 `TS2339 Property 'estado' does not exist on type
   'OrdenAgrupada'` de LabDashboard eran el bug del conteo, y llevaban meses escondidos DENTRO del
@@ -390,7 +390,10 @@ Detalles a recordar:
   plan_visitador falla (la policy ya no admite el INSERT directo). Backlog: comprobante huérfano cuando la RPC rechaza
   (falta una policy DELETE acotada en el bucket `comprobantes`); monto libre en el checkout de campana/plan_laboratorio/
   plan_farmacia (misma solución por RPC); rechazar un pago sigue sin RPC (UPDATE directo del super_admin); la columna
-  `planes_visitador_contratados.visitas_usadas` está muerta (el cupo se cuenta con `private.pvc_usadas`).
+  `planes_visitador_contratados.visitas_usadas` está muerta (el cupo se cuenta con `private.pvc_usadas`). El servidor
+  usa CURRENT_DATE en UTC: en GT una bolsa vence a las 18:00 hora local de su último día. Evaluar pasar el criterio a la
+  zona horaria del país (gate de visitas + RPCs); el front lo replica en `esBolsaVigente`/`hoyUTC`
+  (`src/proveedor/lib/compraPlanVisitador.ts`) y hay que cambiar los dos juntos.
 - (Familia 6) La secuencia de `planes_publicidad` está desfasada (medido 2-oct-2026: `last_value` 1, `max(id)` 3):
   un INSERT por default choca con la PK (23505). Corregir con `setval` en una migración aparte (lo detectó el
   dry-run A2 de la 345; P929 siembra su plan con id explícito).

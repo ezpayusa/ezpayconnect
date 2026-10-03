@@ -47,7 +47,7 @@ export default function VisitadorPlanesPage({ soloCupo = false }: Props) {
         </div>
       ) : (
         <>
-          {/* Bolsas vigentes (fecha_fin >= hoy) */}
+          {/* Bolsas vigentes (fecha_inicio <= hoy <= fecha_fin, hoy en UTC: esBolsaVigente) */}
           <div className="space-y-3">
             <h2 className="text-lg font-semibold">{soloCupo ? 'Cupo vigente' : 'Mis planes vigentes'}</h2>
             {planesVigentes.length === 0 ? (

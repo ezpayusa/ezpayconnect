@@ -39,17 +39,24 @@ export function mensajeErrorCompraPlan(error: ErrorRpc, operacion: 'solicitar' |
   return MENSAJE_GENERICO_COMPRA
 }
 
-/** Fecha local de hoy como 'YYYY-MM-DD' (las fechas de la bolsa son DATE, sin zona). */
-export function hoyISO(ahora: Date = new Date()): string {
-  const y = ahora.getFullYear()
-  const m = String(ahora.getMonth() + 1).padStart(2, '0')
-  const d = String(ahora.getDate()).padStart(2, '0')
-  return `${y}-${m}-${d}`
+/**
+ * Hoy en UTC como 'YYYY-MM-DD'. Es el CURRENT_DATE del servidor (la base corre en UTC): el gate de visitas y las
+ * RPCs de compra deciden la vigencia con esa fecha, así que el front usa la misma y no la fecha local.
+ */
+export function hoyUTC(ahora: Date = new Date()): string {
+  return ahora.toISOString().slice(0, 10)
 }
 
-/** Una bolsa está vigente si su fecha_fin es hoy o posterior. */
-export function esBolsaVigente(fechaFin: string | null | undefined, hoy: string = hoyISO()): boolean {
-  return !!fechaFin && fechaFin.slice(0, 10) >= hoy
+type FechasBolsa = { fecha_inicio?: string | null; fecha_fin?: string | null }
+
+/**
+ * Una bolsa está vigente si fecha_inicio <= hoy <= fecha_fin (bordes inclusivos), con hoy en UTC: el mismo
+ * criterio que el servidor. En GT (UTC-6) una bolsa deja de estar vigente a las 18:00 hora local de su último día.
+ */
+export function esBolsaVigente(bolsa: FechasBolsa, hoy: string = hoyUTC()): boolean {
+  const inicio = bolsa.fecha_inicio?.slice(0, 10)
+  const fin = bolsa.fecha_fin?.slice(0, 10)
+  return !!inicio && !!fin && inicio <= hoy && hoy <= fin
 }
 
 /** Una configuración se puede comprar solo con visitas y duración > 0 (la RPC rechaza el resto con CP003). */

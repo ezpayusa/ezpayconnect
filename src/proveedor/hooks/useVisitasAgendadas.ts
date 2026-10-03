@@ -2,14 +2,23 @@ import { useState, useEffect, useCallback } from 'react'
 import { supabase } from '@/lib/supabase'
 import { useProveedorAuth } from './useProveedorAuth'
 import type { VisitaAgendada } from '@/proveedor/types/proveedor.types'
-import type { PlanAsignacion } from '@/types/planes'
+import { esBolsaVigente } from '@/proveedor/lib/compraPlanVisitador'
 import type { UbicacionVisita } from './useRutaVisitador'
 import { toast } from 'sonner'
+
+// Bolsa de visitas (pvc) tal como la devuelve get_planes_visitador_proveedor.
+interface BolsaVisitas {
+  fecha_inicio: string
+  fecha_fin: string
+  estado: string
+  restante: number | null
+  ilimitado: boolean
+}
 
 export function useVisitasAgendadas() {
   const { empresa, cuenta, puede } = useProveedorAuth()
   const [visitas, setVisitas] = useState<VisitaAgendada[]>([])
-  const [planesAsignados, setPlanesAsignados] = useState<PlanAsignacion[]>([])
+  const [planesAsignados, setPlanesAsignados] = useState<BolsaVisitas[]>([])
   const [loading, setLoading] = useState(false)
   const [saving, setSaving] = useState(false)
   const rol = cuenta?.rol_en_empresa || 'visitador_medico'
@@ -19,18 +28,19 @@ export function useVisitasAgendadas() {
   // Cargar planes asignados (pool compartido de la empresa)
   const fetchPlanesAsignados = useCallback(async () => {
     if (!empresa?.id) return
-    // pvc = única fuente de visitas (país + bolsa). Se mapea a la forma anidada legacy
-    // para no tocar la lógica downstream de planActivo. usadas/restante son DERIVADOS (gate real).
+    // pvc = única fuente de visitas (país + bolsa). usadas/restante son DERIVADOS (gate real).
     const { data, error } = await supabase.rpc('get_planes_visitador_proveedor', { p_empresa_id: empresa.id })
     if (error) {
       console.error('Error cargando planes asignados:', error)
       return
     }
-    setPlanesAsignados((data || []).map((r: any) => ({
+    setPlanesAsignados((data || []).map((r: any): BolsaVisitas => ({
+      fecha_inicio: r.fecha_inicio,
       fecha_fin: r.fecha_fin,
-      visitas_usadas: r.usadas,
-      plan_configuracion: { plan_base: { tipo: 'visitador', atributos: { visitas_incluidas: r.incluidas } } },
-    })) as unknown as PlanAsignacion[])
+      estado: r.estado,
+      restante: r.restante,     // null = ilimitado
+      ilimitado: r.ilimitado,
+    })))
   }, [empresa?.id])
 
   const fetchVisitas = useCallback(async () => {
@@ -153,17 +163,13 @@ export function useVisitasAgendadas() {
     fetchPlanesAsignados()
   }, [fetchVisitas, fetchPlanesAsignados])
 
-  // Calcular visitas disponibles del pool compartido
-  // Solo cuentan las visitas CONFIRMADAS/PENDIENTES/COMPLETADAS contra el plan
-  const visitasDisponibles = (() => {
-    const planActivo = planesAsignados.find((a) => {
-      if (a.fecha_fin && new Date(a.fecha_fin) < new Date()) return false
-      return a.plan_configuracion?.plan_base?.tipo === 'visitador'
-    })
-    if (!planActivo) return 0
-    const incluidas = planActivo.plan_configuracion?.plan_base?.atributos?.visitas_incluidas || 0
-    return Math.max(0, incluidas - (planActivo.visitas_usadas || 0))
-  })()
+  // Visitas disponibles del pool compartido: mismo criterio que usePlanesVisitador y que el gate del servidor.
+  // Vigente = activa y fecha_inicio <= hoy <= fecha_fin con hoy en UTC (esBolsaVigente); una bolsa ilimitada
+  // vigente no limita (Infinity); si no, Σ restante de las vigentes.
+  const vigentes = planesAsignados.filter((a) => a.estado === 'activo' && esBolsaVigente(a))
+  const visitasDisponibles = vigentes.some((a) => a.ilimitado)
+    ? Infinity
+    : vigentes.reduce((acc, a) => acc + Math.max(0, a.restante ?? 0), 0)
 
   // Agendar visita (visitador propone, admin crea confirmada)
   const agendarVisita = async (visita: Partial<VisitaAgendada>, visitadorId?: string): Promise<boolean> => {
