@@ -29731,6 +29731,395 @@ EXCEPTION WHEN OTHERS THEN
 END $$;
 SELECT set_config('role', 'none', true);
 
+-- ---------------- P937 solicitar_compra_plan_visitador: monto/moneda/visitas del catalogo; rechazos por causa (351) ----------------
+-- Fixture propio, sembrado como postgres y descartado (RAISE P0999): una empresa GT activa que opera en GT, una
+-- cuenta proveedora real reasignada a ella (el rol se cambia entre llamadas), configuraciones QA del plan base de
+-- visitador activo mas barato (valida, sin visitas, de otro pais, con otra moneda, inactiva) y objetos del bucket
+-- comprobantes. La RPC recibe SOLO (config, path): monto, moneda, visitas y duracion tienen que salir del catalogo.
+-- Afuera verifica que los conteos y la cuenta reasignada volvieron a su snapshot.
+DO $$
+DECLARE
+  det text := ''; bad text := ''; st text; msg text; r_rest text := 'OK'; esp text; n int;
+  v_gt uuid; v_otro uuid; v_cta uuid; v_pb uuid; v_mon text; v_mon_otra text; v_ajena uuid;
+  v_emp uuid; c_ok uuid; c_sinvis uuid; c_otro uuid; c_mon uuid; c_inact uuid;
+  v_path text; v_path2 text; v_path_ajeno text; v_pago uuid; v_pago2 uuid; v_fila text; v_args int;
+  snap_pre text; snap_post text; v_ctas uuid[];
+BEGIN
+  IF current_user <> 'postgres' THEN RAISE EXCEPTION 'fixture roto: P937 corre como %', current_user; END IF;
+  SELECT id INTO v_gt FROM public.configuracion_pais WHERE codigo = 'GT';
+  SELECT id INTO v_otro FROM public.configuracion_pais WHERE id <> v_gt ORDER BY codigo LIMIT 1;
+  SELECT cp.id INTO v_cta FROM public.cuentas_proveedor cp WHERE cp.activo AND cp.rol_en_empresa = 'admin'
+     AND EXISTS (SELECT 1 FROM auth.users u WHERE u.id = cp.id) ORDER BY cp.id LIMIT 1;
+  SELECT id INTO v_pb FROM public.planes_base WHERE tipo = 'visitador' AND activo ORDER BY precio_base, id LIMIT 1;
+  SELECT cb.moneda INTO v_mon FROM public.cuentas_bancarias_pais cb WHERE cb.pais_id = v_gt AND cb.activo ORDER BY cb.created_at LIMIT 1;
+  SELECT id INTO v_ajena FROM public.empresas_proveedoras ORDER BY id LIMIT 1;
+  IF v_gt IS NULL OR v_otro IS NULL OR v_cta IS NULL OR v_pb IS NULL OR v_mon IS NULL OR v_ajena IS NULL THEN
+    RAISE EXCEPTION 'fixture roto: P937 sin GT (%), otro pais (%), cuenta admin (%), plan base visitador (%), cuenta bancaria GT con moneda (%) o empresa ajena (%)',
+      v_gt, v_otro, v_cta, v_pb, v_mon, v_ajena;
+  END IF;
+  v_mon_otra := CASE WHEN v_mon = 'USD' THEN 'GTQ' ELSE 'USD' END;
+  v_args := (SELECT pronargs FROM pg_proc WHERE oid = 'public.solicitar_compra_plan_visitador(uuid,text)'::regprocedure);
+  snap_pre := (SELECT string_agg(x, ',') FROM (
+    SELECT 'pagos='||(SELECT count(*) FROM public.pagos_proveedor) UNION ALL SELECT 'cfg='||(SELECT count(*) FROM public.planes_configuracion)
+    UNION ALL SELECT 'emp='||(SELECT count(*) FROM public.empresas_proveedoras) UNION ALL SELECT 'obj='||(SELECT count(*) FROM storage.objects WHERE bucket_id = 'comprobantes')
+    UNION ALL SELECT 'ctas='||(SELECT string_agg(id::text||':'||activo::text, ';' ORDER BY id) FROM public.cuentas_bancarias_pais)
+    UNION ALL SELECT 'cta='||(SELECT empresa_id::text||'/'||rol_en_empresa||'/'||activo::text FROM public.cuentas_proveedor WHERE id = v_cta)) z(x));
+  BEGIN
+    INSERT INTO public.empresas_proveedoras (nombre_empresa, tipo, estado, pais_id, email_contacto)
+      VALUES ('P937 Empresa', 'laboratorio_farmaceutico', 'activa', v_gt, 'p937@example.invalid') RETURNING id INTO v_emp;
+    INSERT INTO public.empresa_paises_operacion (empresa_id, pais_id) VALUES (v_emp, v_gt);
+    UPDATE public.cuentas_proveedor SET empresa_id = v_emp, rol_en_empresa = 'admin', activo = true, equipo_id = NULL WHERE id = v_cta;
+    INSERT INTO public.planes_configuracion (pais_id, plan_base_id, precio_local, moneda_local, activo, visitas_incluidas, duracion_dias)
+      VALUES (v_gt, v_pb, 123.45, v_mon, true, 7, 15) RETURNING id INTO c_ok;
+    INSERT INTO public.planes_configuracion (pais_id, plan_base_id, precio_local, moneda_local, activo)
+      VALUES (v_gt, v_pb, 99, v_mon, true) RETURNING id INTO c_sinvis;
+    INSERT INTO public.planes_configuracion (pais_id, plan_base_id, precio_local, moneda_local, activo, visitas_incluidas, duracion_dias)
+      VALUES (v_otro, v_pb, 50, v_mon, true, 7, 15) RETURNING id INTO c_otro;
+    INSERT INTO public.planes_configuracion (pais_id, plan_base_id, precio_local, moneda_local, activo, visitas_incluidas, duracion_dias)
+      VALUES (v_gt, v_pb, 50, v_mon_otra, true, 7, 15) RETURNING id INTO c_mon;
+    INSERT INTO public.planes_configuracion (pais_id, plan_base_id, precio_local, moneda_local, activo, visitas_incluidas, duracion_dias)
+      VALUES (v_gt, v_pb, 50, v_mon, false, 7, 15) RETURNING id INTO c_inact;
+    v_path := v_emp::text||'/p937-a.pdf'; v_path2 := v_emp::text||'/p937-b.pdf'; v_path_ajeno := v_ajena::text||'/p937-ajeno.pdf';
+    INSERT INTO storage.objects (bucket_id, name, owner) VALUES ('comprobantes', v_path, v_cta), ('comprobantes', v_path2, v_cta), ('comprobantes', v_path_ajeno, v_cta);
+
+    -- casos de rechazo: (rol, config, path, errcode esperado)
+    FOR n IN 1..9 LOOP
+      st := 'OK'; msg := '-';
+      UPDATE public.cuentas_proveedor SET rol_en_empresa = CASE n WHEN 1 THEN 'visitador_medico' WHEN 2 THEN 'finanzas' ELSE 'admin' END WHERE id = v_cta;
+      IF n = 8 THEN
+        v_ctas := ARRAY(SELECT id FROM public.cuentas_bancarias_pais WHERE pais_id = v_gt AND activo);
+        UPDATE public.cuentas_bancarias_pais SET activo = false WHERE id = ANY (v_ctas);
+      END IF;
+      BEGIN
+        PERFORM set_config('request.jwt.claims', json_build_object('sub', v_cta::text, 'role', 'authenticated')::text, true);
+        PERFORM set_config('role', 'authenticated', true);
+        PERFORM public.solicitar_compra_plan_visitador(
+          CASE n WHEN 3 THEN c_sinvis WHEN 4 THEN c_otro WHEN 5 THEN c_mon WHEN 9 THEN c_inact ELSE c_ok END,
+          CASE n WHEN 6 THEN v_path_ajeno WHEN 7 THEN v_emp::text||'/no-existe.pdf' ELSE v_path END);
+      EXCEPTION WHEN OTHERS THEN st := SQLSTATE; msg := SQLERRM;
+      END;
+      PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
+      IF n = 8 THEN UPDATE public.cuentas_bancarias_pais SET activo = true WHERE id = ANY (v_ctas); END IF;
+      esp := CASE n WHEN 1 THEN '42501' WHEN 2 THEN '42501' WHEN 3 THEN 'CP003' WHEN 4 THEN 'CP002' WHEN 5 THEN 'CP005'
+                    WHEN 6 THEN 'CP006' WHEN 7 THEN 'CP006' WHEN 8 THEN 'CP004' ELSE 'CP001' END;
+      det := det||' ;; '||CASE n WHEN 1 THEN 'visitador_medico' WHEN 2 THEN 'finanzas' WHEN 3 THEN 'config sin visitas/duracion'
+                    WHEN 4 THEN 'config de otro pais' WHEN 5 THEN 'moneda distinta a la cuenta' WHEN 6 THEN 'path de otra empresa'
+                    WHEN 7 THEN 'path propio inexistente' WHEN 8 THEN 'sin cuenta bancaria activa' ELSE 'config inactiva' END
+             ||'|'||esp||'|'||CASE WHEN st = esp THEN 'OK' ELSE 'ROJO' END||'|'||st||'|'||left(msg, 120);
+      IF st <> esp THEN bad := bad||'caso '||n||': '||st||' (esperado '||esp||') '||left(msg, 100)||'; '; END IF;
+    END LOOP;
+    IF EXISTS (SELECT 1 FROM public.pagos_proveedor WHERE empresa_id = v_emp) THEN bad := bad||'un rechazo dejo un pago; '; END IF;
+
+    -- admin, config valida: pago pendiente con todo del catalogo
+    st := 'OK'; msg := '-';
+    UPDATE public.cuentas_proveedor SET rol_en_empresa = 'admin' WHERE id = v_cta;
+    BEGIN
+      PERFORM set_config('request.jwt.claims', json_build_object('sub', v_cta::text, 'role', 'authenticated')::text, true);
+      PERFORM set_config('role', 'authenticated', true);
+      v_pago := public.solicitar_compra_plan_visitador(c_ok, v_path);
+    EXCEPTION WHEN OTHERS THEN st := SQLSTATE; msg := SQLERRM;
+    END;
+    PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
+    v_fila := (SELECT p.tipo||'|'||p.estado||'|'||p.monto::text||'|'||p.moneda||'|'||p.plan_visitas::text||'|'||p.plan_duracion_dias::text||'|'||
+                      (p.referencia_id = c_ok::text)::text||'|'||(p.comprobante_url = v_path)::text||'|'||(p.verificado_por IS NULL)::text||'|'||
+                      (p.pvc_id IS NULL)::text||'|'||p.metodo_pago||'|'||(p.fecha_pago = CURRENT_DATE)::text
+                 FROM public.pagos_proveedor p WHERE p.id = v_pago AND p.empresa_id = v_emp);
+    esp := 'plan_visitador|pendiente|123.45|'||v_mon||'|7|15|true|true|true|true|transferencia|true';
+    det := det||' ;; admin, config valida (la RPC recibe 2 argumentos: '||v_args||')|'||esp||'|'||CASE WHEN st = 'OK' AND v_fila = esp AND v_args = 2 THEN 'OK' ELSE 'ROJO' END||'|'||st||'|'||COALESCE(v_fila, 'sin fila')||' '||left(msg, 100);
+    IF st <> 'OK' OR v_fila IS DISTINCT FROM esp OR v_args <> 2 THEN bad := bad||'admin valida: '||st||' '||COALESCE(v_fila, 'sin fila')||' '||left(msg, 100)||'; '; END IF;
+
+    -- segundo pendiente (como editor) -> CP007
+    st := 'OK'; msg := '-';
+    UPDATE public.cuentas_proveedor SET rol_en_empresa = 'editor' WHERE id = v_cta;
+    BEGIN
+      PERFORM set_config('request.jwt.claims', json_build_object('sub', v_cta::text, 'role', 'authenticated')::text, true);
+      PERFORM set_config('role', 'authenticated', true);
+      PERFORM public.solicitar_compra_plan_visitador(c_ok, v_path2);
+    EXCEPTION WHEN OTHERS THEN st := SQLSTATE; msg := SQLERRM;
+    END;
+    PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
+    det := det||' ;; segundo pendiente|CP007|'||CASE WHEN st = 'CP007' THEN 'OK' ELSE 'ROJO' END||'|'||st||'|'||left(msg, 120);
+    IF st <> 'CP007' THEN bad := bad||'segundo pendiente: '||st||' '||left(msg, 100)||'; '; END IF;
+
+    -- con el primero rechazado, el editor puede solicitar
+    UPDATE public.pagos_proveedor SET estado = 'rechazado' WHERE id = v_pago;
+    st := 'OK'; msg := '-';
+    BEGIN
+      PERFORM set_config('request.jwt.claims', json_build_object('sub', v_cta::text, 'role', 'authenticated')::text, true);
+      PERFORM set_config('role', 'authenticated', true);
+      v_pago2 := public.solicitar_compra_plan_visitador(c_ok, v_path2);
+    EXCEPTION WHEN OTHERS THEN st := SQLSTATE; msg := SQLERRM;
+    END;
+    PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
+    v_fila := (SELECT p.estado||'|'||p.monto::text||'|'||p.plan_visitas::text||'|'||p.plan_duracion_dias::text FROM public.pagos_proveedor p WHERE p.id = v_pago2);
+    det := det||' ;; editor, con el anterior rechazado|pendiente|123.45|7|15|'||CASE WHEN st = 'OK' AND v_fila = 'pendiente|123.45|7|15' THEN 'OK' ELSE 'ROJO' END||'|'||st||'|'||COALESCE(v_fila, 'sin fila');
+    IF st <> 'OK' OR v_fila IS DISTINCT FROM 'pendiente|123.45|7|15' THEN bad := bad||'editor: '||st||' '||COALESCE(v_fila, 'sin fila')||' '||left(msg, 100)||'; '; END IF;
+
+    RAISE EXCEPTION 'P937 descarte' USING ERRCODE = 'P0999';
+  EXCEPTION WHEN SQLSTATE 'P0999' THEN NULL;
+  END;
+  PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
+  snap_post := (SELECT string_agg(x, ',') FROM (
+    SELECT 'pagos='||(SELECT count(*) FROM public.pagos_proveedor) UNION ALL SELECT 'cfg='||(SELECT count(*) FROM public.planes_configuracion)
+    UNION ALL SELECT 'emp='||(SELECT count(*) FROM public.empresas_proveedoras) UNION ALL SELECT 'obj='||(SELECT count(*) FROM storage.objects WHERE bucket_id = 'comprobantes')
+    UNION ALL SELECT 'ctas='||(SELECT string_agg(id::text||':'||activo::text, ';' ORDER BY id) FROM public.cuentas_bancarias_pais)
+    UNION ALL SELECT 'cta='||(SELECT empresa_id::text||'/'||rol_en_empresa||'/'||activo::text FROM public.cuentas_proveedor WHERE id = v_cta)) z(x));
+  IF snap_post IS DISTINCT FROM snap_pre THEN r_rest := 'snapshot distinto: '||left(snap_post, 300); END IF;
+  det := det||' ;; restauracion|subtransaccion descartada|'||r_rest||'|-|';
+  PERFORM set_config('probe.p937_det', det, false);
+  PERFORM set_config('probe.p937', CASE WHEN bad = '' AND r_rest = 'OK'
+    THEN 'OK (admin/editor: pago pendiente con monto, moneda, visitas y duracion del catalogo; 42501 visitador/finanzas; CP001-CP007 por causa; descartado)'
+    ELSE 'ROJO ('||left(bad, 900)||' | restauracion='||r_rest||')' END, false);
+EXCEPTION WHEN OTHERS THEN
+  PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
+  PERFORM set_config('probe.p937', CASE WHEN SQLERRM LIKE 'fixture roto%' THEN 'ROJO ('||SQLERRM||')' ELSE 'FALLO ('||SQLSTATE||' '||SQLERRM||')' END, false);
+END $$;
+SELECT set_config('role', 'none', true);
+
+-- ---------------- P938 aprobar_pago_plan_visitador: gate, creada, idempotente, sumada, ilimitada (351) ----------------
+-- Fixture propio y descartado: empresa GT activa que opera en GT con una cuenta admin reasignada (pide los pagos
+-- por la RPC de solicitud) y una segunda empresa con una bolsa ILIMITADA vigente (pago sembrado como postgres).
+-- Cubre: no super -> 42501 sin cambios; primera aprobacion -> bolsa creada (7 visitas, current_date ..
+-- current_date+14), capacidad 'visitadores' permanente, pago verificado con pvc_id, 1 notificacion; segunda
+-- llamada -> idempotente sin escribir; segunda compra -> sumada en la MISMA bolsa (14 visitas, fecha_fin +15,
+-- precio acumulado); bolsa ilimitada vigente -> CP017 sin escribir; pago legacy sin snapshot -> CP013; pago de
+-- otro tipo -> CP011.
+DO $$
+DECLARE
+  det text := ''; bad text := ''; st text; msg text; r_rest text := 'OK'; res jsonb; esp text; v text; v2 text;
+  v_gt uuid; v_cta uuid; v_sa uuid; v_pb uuid; v_mon text;
+  v_emp uuid; v_emp2 uuid; c_ok uuid; v_pago1 uuid; v_pago2 uuid; v_pago3 uuid; v_pago4 uuid; v_pago5 uuid;
+  v_pvc uuid; v_pvc2 uuid; v_fin1 date; n_notif_pre int; snap_pre text; snap_post text;
+BEGIN
+  IF current_user <> 'postgres' THEN RAISE EXCEPTION 'fixture roto: P938 corre como %', current_user; END IF;
+  SELECT id INTO v_gt FROM public.configuracion_pais WHERE codigo = 'GT';
+  SELECT cp.id INTO v_cta FROM public.cuentas_proveedor cp WHERE cp.activo AND cp.rol_en_empresa = 'admin'
+     AND EXISTS (SELECT 1 FROM auth.users u WHERE u.id = cp.id) ORDER BY cp.id LIMIT 1;
+  SELECT p.id INTO v_sa FROM public.perfiles p WHERE p.rol = 'super_admin' AND EXISTS (SELECT 1 FROM auth.users u WHERE u.id = p.id) ORDER BY p.id LIMIT 1;
+  SELECT id INTO v_pb FROM public.planes_base WHERE tipo = 'visitador' AND activo ORDER BY precio_base, id LIMIT 1;
+  SELECT cb.moneda INTO v_mon FROM public.cuentas_bancarias_pais cb WHERE cb.pais_id = v_gt AND cb.activo ORDER BY cb.created_at LIMIT 1;
+  IF v_gt IS NULL OR v_cta IS NULL OR v_sa IS NULL OR v_pb IS NULL OR v_mon IS NULL THEN
+    RAISE EXCEPTION 'fixture roto: P938 sin GT (%), cuenta admin (%), super_admin (%), plan base visitador (%) o cuenta bancaria GT con moneda (%)', v_gt, v_cta, v_sa, v_pb, v_mon;
+  END IF;
+  snap_pre := (SELECT string_agg(x, ',') FROM (
+    SELECT 'pagos='||(SELECT count(*) FROM public.pagos_proveedor) UNION ALL SELECT 'pvc='||(SELECT count(*) FROM public.planes_visitador_contratados)
+    UNION ALL SELECT 'cfg='||(SELECT count(*) FROM public.planes_configuracion) UNION ALL SELECT 'emp='||(SELECT count(*) FROM public.empresas_proveedoras)
+    UNION ALL SELECT 'cap='||(SELECT count(*) FROM public.empresa_capacidades) UNION ALL SELECT 'notif='||(SELECT count(*) FROM public.notificaciones)
+    UNION ALL SELECT 'obj='||(SELECT count(*) FROM storage.objects WHERE bucket_id = 'comprobantes')
+    UNION ALL SELECT 'cta='||(SELECT empresa_id::text||'/'||rol_en_empresa||'/'||activo::text FROM public.cuentas_proveedor WHERE id = v_cta)) z(x));
+  BEGIN
+    INSERT INTO public.empresas_proveedoras (nombre_empresa, tipo, estado, pais_id, email_contacto)
+      VALUES ('P938 Empresa', 'laboratorio_farmaceutico', 'activa', v_gt, 'p938@example.invalid') RETURNING id INTO v_emp;
+    INSERT INTO public.empresas_proveedoras (nombre_empresa, tipo, estado, pais_id, email_contacto)
+      VALUES ('P938 Empresa ilimitada', 'laboratorio_farmaceutico', 'activa', v_gt, 'p938b@example.invalid') RETURNING id INTO v_emp2;
+    INSERT INTO public.empresa_paises_operacion (empresa_id, pais_id) VALUES (v_emp, v_gt), (v_emp2, v_gt);
+    UPDATE public.cuentas_proveedor SET empresa_id = v_emp, rol_en_empresa = 'admin', activo = true, equipo_id = NULL WHERE id = v_cta;
+    INSERT INTO public.planes_configuracion (pais_id, plan_base_id, precio_local, moneda_local, activo, visitas_incluidas, duracion_dias)
+      VALUES (v_gt, v_pb, 123.45, v_mon, true, 7, 15) RETURNING id INTO c_ok;
+    INSERT INTO storage.objects (bucket_id, name, owner) VALUES ('comprobantes', v_emp::text||'/p938-a.pdf', v_cta), ('comprobantes', v_emp::text||'/p938-b.pdf', v_cta);
+    PERFORM set_config('request.jwt.claims', json_build_object('sub', v_cta::text, 'role', 'authenticated')::text, true);
+    PERFORM set_config('role', 'authenticated', true);
+    v_pago1 := public.solicitar_compra_plan_visitador(c_ok, v_emp::text||'/p938-a.pdf');
+    PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
+    n_notif_pre := (SELECT count(*) FROM public.notificaciones WHERE usuario_id = v_cta AND tipo = 'pago');
+
+    -- 1) no super_admin -> 42501, el pago sigue pendiente
+    st := 'OK'; msg := '-';
+    BEGIN
+      PERFORM set_config('request.jwt.claims', json_build_object('sub', v_cta::text, 'role', 'authenticated')::text, true);
+      PERFORM set_config('role', 'authenticated', true);
+      PERFORM public.aprobar_pago_plan_visitador(v_pago1);
+    EXCEPTION WHEN OTHERS THEN st := SQLSTATE; msg := SQLERRM;
+    END;
+    PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
+    v := (SELECT estado FROM public.pagos_proveedor WHERE id = v_pago1);
+    det := det||' ;; no super_admin|42501, pago pendiente|'||CASE WHEN st = '42501' AND v = 'pendiente' THEN 'OK' ELSE 'ROJO' END||'|'||st||' '||COALESCE(v, '-')||'|'||left(msg, 100);
+    IF st <> '42501' OR v IS DISTINCT FROM 'pendiente' THEN bad := bad||'no super: '||st||' '||COALESCE(v, '-')||'; '; END IF;
+
+    -- 2) primera aprobacion, sin bolsa -> creada
+    st := 'OK'; msg := '-'; res := NULL;
+    BEGIN
+      PERFORM set_config('request.jwt.claims', json_build_object('sub', v_sa::text, 'role', 'authenticated')::text, true);
+      PERFORM set_config('role', 'authenticated', true);
+      res := public.aprobar_pago_plan_visitador(v_pago1);
+    EXCEPTION WHEN OTHERS THEN st := SQLSTATE; msg := SQLERRM;
+    END;
+    PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
+    v_pvc := NULLIF(res->>'pvc_id', '')::uuid;
+    v := (SELECT b.cantidad_visitas_incluidas||'|'||(b.fecha_inicio = CURRENT_DATE)::text||'|'||(b.fecha_fin = CURRENT_DATE + 14)::text||'|'||b.precio_pagado||'|'||b.origen||'|'||b.estado||'|'||(b.pais_id = v_gt)::text
+            ||' ;pago '||p.estado||'|'||(p.pvc_id = b.id)::text||'|'||(p.verificado_por = v_sa)::text||'|'||(p.fecha_verificacion IS NOT NULL)::text
+            ||' ;cap '||COALESCE((SELECT ec.activa::text||'|'||(ec.hasta IS NULL)::text FROM public.empresa_capacidades ec WHERE ec.empresa_id = v_emp AND ec.capacidad_codigo = 'visitadores'), 'ninguna')
+            ||' ;notif +'||((SELECT count(*) FROM public.notificaciones WHERE usuario_id = v_cta AND tipo = 'pago') - n_notif_pre)
+          FROM public.planes_visitador_contratados b JOIN public.pagos_proveedor p ON p.id = v_pago1 WHERE b.id = v_pvc AND b.empresa_id = v_emp);
+    esp := '7|true|true|123.45|comprado|activo|true ;pago verificado|true|true|true ;cap true|true ;notif +1';
+    det := det||' ;; primera aprobacion|creada: '||esp||'|'||CASE WHEN st = 'OK' AND res->>'accion' = 'creada' AND v = esp THEN 'OK' ELSE 'ROJO' END||'|'||st||' '||COALESCE(res::text, '-')||'|'||COALESCE(v, 'sin fila')||' '||left(msg, 100);
+    IF st <> 'OK' OR res->>'accion' IS DISTINCT FROM 'creada' OR v IS DISTINCT FROM esp THEN bad := bad||'creada: '||st||' '||COALESCE(res::text, '-')||' '||COALESCE(v, 'sin fila')||' '||left(msg, 100)||'; '; END IF;
+
+    -- 3) segunda llamada -> idempotente, sin escribir
+    v := (SELECT p::text FROM public.pagos_proveedor p WHERE p.id = v_pago1)||(SELECT b::text FROM public.planes_visitador_contratados b WHERE b.id = v_pvc)
+         ||(SELECT count(*) FROM public.notificaciones)::text||(SELECT string_agg(ec::text, ';') FROM public.empresa_capacidades ec WHERE ec.empresa_id = v_emp);
+    st := 'OK'; msg := '-'; res := NULL;
+    BEGIN
+      PERFORM set_config('request.jwt.claims', json_build_object('sub', v_sa::text, 'role', 'authenticated')::text, true);
+      PERFORM set_config('role', 'authenticated', true);
+      res := public.aprobar_pago_plan_visitador(v_pago1);
+    EXCEPTION WHEN OTHERS THEN st := SQLSTATE; msg := SQLERRM;
+    END;
+    PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
+    v2 := (SELECT p::text FROM public.pagos_proveedor p WHERE p.id = v_pago1)||(SELECT b::text FROM public.planes_visitador_contratados b WHERE b.id = v_pvc)
+         ||(SELECT count(*) FROM public.notificaciones)::text||(SELECT string_agg(ec::text, ';') FROM public.empresa_capacidades ec WHERE ec.empresa_id = v_emp);
+    det := det||' ;; segunda llamada|idempotente, sin cambios|'||CASE WHEN st = 'OK' AND (res->>'idempotente')::boolean AND res->>'pvc_id' = v_pvc::text AND v2 = v THEN 'OK' ELSE 'ROJO' END||'|'||st||' '||COALESCE(res::text, '-')||'|filas iguales='||(v2 = v)::text;
+    IF st <> 'OK' OR NOT COALESCE((res->>'idempotente')::boolean, false) OR res->>'pvc_id' IS DISTINCT FROM v_pvc::text OR v2 IS DISTINCT FROM v THEN
+      bad := bad||'idempotente: '||st||' '||COALESCE(res::text, '-')||' iguales='||COALESCE((v2 = v)::text, 'null')||'; ';
+    END IF;
+
+    -- 4) segunda compra con bolsa vigente -> sumada en la misma bolsa
+    v_fin1 := (SELECT fecha_fin FROM public.planes_visitador_contratados WHERE id = v_pvc);
+    PERFORM set_config('request.jwt.claims', json_build_object('sub', v_cta::text, 'role', 'authenticated')::text, true);
+    PERFORM set_config('role', 'authenticated', true);
+    v_pago2 := public.solicitar_compra_plan_visitador(c_ok, v_emp::text||'/p938-b.pdf');
+    PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
+    st := 'OK'; msg := '-'; res := NULL;
+    BEGIN
+      PERFORM set_config('request.jwt.claims', json_build_object('sub', v_sa::text, 'role', 'authenticated')::text, true);
+      PERFORM set_config('role', 'authenticated', true);
+      res := public.aprobar_pago_plan_visitador(v_pago2);
+    EXCEPTION WHEN OTHERS THEN st := SQLSTATE; msg := SQLERRM;
+    END;
+    PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
+    v := (SELECT b.cantidad_visitas_incluidas||'|'||(b.fecha_fin = v_fin1 + 15)::text||'|'||b.precio_pagado||'|'||b.origen
+            ||' ;pago '||p.estado||'|'||(p.pvc_id = v_pvc)::text
+            ||' ;bolsas '||(SELECT count(*) FROM public.planes_visitador_contratados x WHERE x.empresa_id = v_emp)
+          FROM public.planes_visitador_contratados b JOIN public.pagos_proveedor p ON p.id = v_pago2 WHERE b.id = v_pvc);
+    esp := '14|true|246.90|comprado ;pago verificado|true ;bolsas 1';
+    det := det||' ;; segunda compra con bolsa vigente|sumada: '||esp||'|'||CASE WHEN st = 'OK' AND res->>'accion' = 'sumada' AND res->>'pvc_id' = v_pvc::text AND v = esp THEN 'OK' ELSE 'ROJO' END||'|'||st||' '||COALESCE(res::text, '-')||'|'||COALESCE(v, 'sin fila')||' '||left(msg, 100);
+    IF st <> 'OK' OR res->>'accion' IS DISTINCT FROM 'sumada' OR res->>'pvc_id' IS DISTINCT FROM v_pvc::text OR v IS DISTINCT FROM esp THEN
+      bad := bad||'sumada: '||st||' '||COALESCE(res::text, '-')||' '||COALESCE(v, 'sin fila')||' '||left(msg, 100)||'; ';
+    END IF;
+
+    -- 5) bolsa ilimitada vigente -> CP017 sin escribir; 6) legacy sin snapshot -> CP013; 7) otro tipo -> CP011
+    INSERT INTO public.planes_visitador_contratados (empresa_id, plan_visitador_id, pais_id, cantidad_visitas_incluidas, visitas_usadas, precio_pagado, fecha_inicio, fecha_fin, estado, origen)
+      VALUES (v_emp2, 1, v_gt, NULL, 0, 0, CURRENT_DATE - 1, CURRENT_DATE + 10, 'activo', 'comprado') RETURNING id INTO v_pvc2;
+    INSERT INTO public.pagos_proveedor (empresa_id, tipo, referencia_id, monto, moneda, metodo_pago, estado, plan_visitas, plan_duracion_dias)
+      VALUES (v_emp2, 'plan_visitador', c_ok::text, 123.45, v_mon, 'transferencia', 'pendiente', 7, 15) RETURNING id INTO v_pago3;
+    INSERT INTO public.pagos_proveedor (empresa_id, tipo, referencia_id, monto, moneda, metodo_pago, estado)
+      VALUES (v_emp2, 'plan_visitador', c_ok::text, 123.45, v_mon, 'transferencia', 'pendiente') RETURNING id INTO v_pago4;
+    INSERT INTO public.pagos_proveedor (empresa_id, tipo, monto, moneda, metodo_pago, estado)
+      VALUES (v_emp2, 'campana', 10, v_mon, 'transferencia', 'pendiente') RETURNING id INTO v_pago5;
+    v := (SELECT b::text FROM public.planes_visitador_contratados b WHERE b.id = v_pvc2)||(SELECT string_agg(p::text, ';' ORDER BY p.id) FROM public.pagos_proveedor p WHERE p.empresa_id = v_emp2)
+         ||(SELECT count(*) FROM public.empresa_capacidades WHERE empresa_id = v_emp2)::text||(SELECT count(*) FROM public.notificaciones)::text;
+    FOR i IN 1..3 LOOP
+      st := 'OK'; msg := '-';
+      BEGIN
+        PERFORM set_config('request.jwt.claims', json_build_object('sub', v_sa::text, 'role', 'authenticated')::text, true);
+        PERFORM set_config('role', 'authenticated', true);
+        PERFORM public.aprobar_pago_plan_visitador(CASE i WHEN 1 THEN v_pago3 WHEN 2 THEN v_pago4 ELSE v_pago5 END);
+      EXCEPTION WHEN OTHERS THEN st := SQLSTATE; msg := SQLERRM;
+      END;
+      PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
+      esp := CASE i WHEN 1 THEN 'CP017' WHEN 2 THEN 'CP013' ELSE 'CP011' END;
+      det := det||' ;; '||CASE i WHEN 1 THEN 'bolsa ilimitada vigente' WHEN 2 THEN 'pago legacy sin snapshot' ELSE 'pago de otro tipo' END
+             ||'|'||esp||'|'||CASE WHEN st = esp THEN 'OK' ELSE 'ROJO' END||'|'||st||'|'||left(msg, 120);
+      IF st <> esp THEN bad := bad||'caso '||esp||': '||st||' '||left(msg, 100)||'; '; END IF;
+    END LOOP;
+    v2 := (SELECT b::text FROM public.planes_visitador_contratados b WHERE b.id = v_pvc2)||(SELECT string_agg(p::text, ';' ORDER BY p.id) FROM public.pagos_proveedor p WHERE p.empresa_id = v_emp2)
+         ||(SELECT count(*) FROM public.empresa_capacidades WHERE empresa_id = v_emp2)::text||(SELECT count(*) FROM public.notificaciones)::text;
+    det := det||' ;; rechazos sin escritura|bolsa, pagos, capacidad y notificaciones iguales|'||CASE WHEN v2 = v THEN 'OK' ELSE 'ROJO' END||'|-|';
+    IF v2 IS DISTINCT FROM v THEN bad := bad||'un rechazo escribio; '; END IF;
+
+    RAISE EXCEPTION 'P938 descarte' USING ERRCODE = 'P0999';
+  EXCEPTION WHEN SQLSTATE 'P0999' THEN NULL;
+  END;
+  PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
+  snap_post := (SELECT string_agg(x, ',') FROM (
+    SELECT 'pagos='||(SELECT count(*) FROM public.pagos_proveedor) UNION ALL SELECT 'pvc='||(SELECT count(*) FROM public.planes_visitador_contratados)
+    UNION ALL SELECT 'cfg='||(SELECT count(*) FROM public.planes_configuracion) UNION ALL SELECT 'emp='||(SELECT count(*) FROM public.empresas_proveedoras)
+    UNION ALL SELECT 'cap='||(SELECT count(*) FROM public.empresa_capacidades) UNION ALL SELECT 'notif='||(SELECT count(*) FROM public.notificaciones)
+    UNION ALL SELECT 'obj='||(SELECT count(*) FROM storage.objects WHERE bucket_id = 'comprobantes')
+    UNION ALL SELECT 'cta='||(SELECT empresa_id::text||'/'||rol_en_empresa||'/'||activo::text FROM public.cuentas_proveedor WHERE id = v_cta)) z(x));
+  IF snap_post IS DISTINCT FROM snap_pre THEN r_rest := 'snapshot distinto: '||left(snap_post, 300); END IF;
+  det := det||' ;; restauracion|subtransaccion descartada|'||r_rest||'|-|';
+  PERFORM set_config('probe.p938_det', det, false);
+  PERFORM set_config('probe.p938', CASE WHEN bad = '' AND r_rest = 'OK'
+    THEN 'OK (42501 no super; creada con capacidad y notificacion; idempotente sin escribir; sumada en la misma bolsa; CP017/CP013/CP011 sin escribir; descartado)'
+    ELSE 'ROJO ('||left(bad, 900)||' | restauracion='||r_rest||')' END, false);
+EXCEPTION WHEN OTHERS THEN
+  PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
+  PERFORM set_config('probe.p938', CASE WHEN SQLERRM LIKE 'fixture roto%' THEN 'ROJO ('||SQLERRM||')' ELSE 'FALLO ('||SQLSTATE||' '||SQLERRM||')' END, false);
+END $$;
+SELECT set_config('role', 'none', true);
+
+-- ---------------- P939 policy "Proveedor crea pagos": sin autoaprobacion, sin plan_visitador directo (351) ----------------
+-- Como admin de una empresa propia (fixture descartado): INSERT directo con estado 'verificado', con
+-- verificado_por, con fecha_verificacion, con pvc_id o de tipo plan_visitador -> 42501 de RLS; INSERT directo de
+-- una campana pendiente -> 1 fila (el checkout de campanas/planes de lab y farmacia sigue andando).
+DO $$
+DECLARE
+  det text := ''; bad text := ''; st text; msg text; r_rest text := 'OK'; esp text; n int; k int;
+  v_gt uuid; v_cta uuid; v_emp uuid; v_pvc uuid; v_perfil uuid; snap_pre text; snap_post text;
+BEGIN
+  IF current_user <> 'postgres' THEN RAISE EXCEPTION 'fixture roto: P939 corre como %', current_user; END IF;
+  SELECT id INTO v_gt FROM public.configuracion_pais WHERE codigo = 'GT';
+  SELECT cp.id INTO v_cta FROM public.cuentas_proveedor cp WHERE cp.activo AND cp.rol_en_empresa = 'admin'
+     AND EXISTS (SELECT 1 FROM auth.users u WHERE u.id = cp.id) ORDER BY cp.id LIMIT 1;
+  SELECT id INTO v_pvc FROM public.planes_visitador_contratados ORDER BY id LIMIT 1;
+  -- verificado_por es FK a perfiles: un perfil real, para que el caso 2 mida la policy y no la FK
+  SELECT id INTO v_perfil FROM public.perfiles WHERE rol = 'super_admin' ORDER BY id LIMIT 1;
+  IF v_gt IS NULL OR v_cta IS NULL OR v_pvc IS NULL OR v_perfil IS NULL THEN
+    RAISE EXCEPTION 'fixture roto: P939 sin GT (%), cuenta admin (%), bolsa (%) o perfil super_admin (%)', v_gt, v_cta, v_pvc, v_perfil;
+  END IF;
+  snap_pre := (SELECT string_agg(x, ',') FROM (
+    SELECT 'pagos='||(SELECT count(*) FROM public.pagos_proveedor) UNION ALL SELECT 'emp='||(SELECT count(*) FROM public.empresas_proveedoras)
+    UNION ALL SELECT 'cta='||(SELECT empresa_id::text||'/'||rol_en_empresa||'/'||activo::text FROM public.cuentas_proveedor WHERE id = v_cta)) z(x));
+  BEGIN
+    INSERT INTO public.empresas_proveedoras (nombre_empresa, tipo, estado, pais_id, email_contacto)
+      VALUES ('P939 Empresa', 'laboratorio_farmaceutico', 'activa', v_gt, 'p939@example.invalid') RETURNING id INTO v_emp;
+    UPDATE public.cuentas_proveedor SET empresa_id = v_emp, rol_en_empresa = 'admin', activo = true, equipo_id = NULL WHERE id = v_cta;
+    FOR k IN 1..6 LOOP
+      st := 'OK'; msg := '-'; n := NULL;
+      BEGIN
+        PERFORM set_config('request.jwt.claims', json_build_object('sub', v_cta::text, 'role', 'authenticated')::text, true);
+        PERFORM set_config('role', 'authenticated', true);
+        -- pvc_id solo aparece en el caso 4: sin la 351 la columna no existe y los otros 5 casos miden la policy vieja
+        IF k = 4 THEN
+          EXECUTE 'INSERT INTO public.pagos_proveedor (empresa_id, tipo, monto, moneda, metodo_pago, estado, pvc_id) VALUES ($1, ''campana'', 10, ''GTQ'', ''transferencia'', ''pendiente'', $2)'
+            USING v_emp, v_pvc;
+        ELSE
+          INSERT INTO public.pagos_proveedor (empresa_id, tipo, monto, moneda, metodo_pago, estado, verificado_por, fecha_verificacion)
+            VALUES (v_emp, CASE k WHEN 5 THEN 'plan_visitador' ELSE 'campana' END, 10, 'GTQ', 'transferencia',
+                    CASE k WHEN 1 THEN 'verificado' ELSE 'pendiente' END,
+                    CASE k WHEN 2 THEN v_perfil END, CASE k WHEN 3 THEN now() END);
+        END IF;
+        GET DIAGNOSTICS n = ROW_COUNT;
+      EXCEPTION WHEN OTHERS THEN st := SQLSTATE; msg := SQLERRM;
+      END;
+      PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
+      IF st = 'OK' THEN st := 'OK filas='||n; END IF;
+      esp := CASE k WHEN 6 THEN 'OK filas=1' ELSE '42501' END;
+      det := det||' ;; '||CASE k WHEN 1 THEN 'campana estado verificado' WHEN 2 THEN 'campana con verificado_por' WHEN 3 THEN 'campana con fecha_verificacion'
+                    WHEN 4 THEN 'campana con pvc_id' WHEN 5 THEN 'plan_visitador pendiente directo' ELSE 'campana pendiente' END
+             ||'|'||esp||'|'||CASE WHEN st = esp THEN 'OK' ELSE 'ROJO' END||'|'||st||'|'||left(msg, 120);
+      IF st <> esp THEN bad := bad||'caso '||k||': '||st||' (esperado '||esp||') '||left(msg, 100)||'; '; END IF;
+    END LOOP;
+    RAISE EXCEPTION 'P939 descarte' USING ERRCODE = 'P0999';
+  EXCEPTION WHEN SQLSTATE 'P0999' THEN NULL;
+  END;
+  PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
+  snap_post := (SELECT string_agg(x, ',') FROM (
+    SELECT 'pagos='||(SELECT count(*) FROM public.pagos_proveedor) UNION ALL SELECT 'emp='||(SELECT count(*) FROM public.empresas_proveedoras)
+    UNION ALL SELECT 'cta='||(SELECT empresa_id::text||'/'||rol_en_empresa||'/'||activo::text FROM public.cuentas_proveedor WHERE id = v_cta)) z(x));
+  IF snap_post IS DISTINCT FROM snap_pre THEN r_rest := 'snapshot distinto: '||left(snap_post, 300); END IF;
+  det := det||' ;; restauracion|subtransaccion descartada|'||r_rest||'|-|';
+  PERFORM set_config('probe.p939_det', det, false);
+  PERFORM set_config('probe.p939', CASE WHEN bad = '' AND r_rest = 'OK'
+    THEN 'OK (INSERT directo: verificado/verificado_por/fecha_verificacion/pvc_id/plan_visitador -> 42501; campana pendiente -> 1 fila; descartado)'
+    ELSE 'ROJO ('||left(bad, 900)||' | restauracion='||r_rest||')' END, false);
+EXCEPTION WHEN OTHERS THEN
+  PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
+  PERFORM set_config('probe.p939', CASE WHEN SQLERRM LIKE 'fixture roto%' THEN 'ROJO ('||SQLERRM||')' ELSE 'FALLO ('||SQLSTATE||' '||SQLERRM||')' END, false);
+END $$;
+SELECT set_config('role', 'none', true);
+
 -- ===== Veredictos como result set =====
 SELECT 'P1_anon_insert_citas'              AS probe, current_setting('probe.p1', true)  AS verdict, 'BLOQUEADO' AS esperado_post_fix
 UNION ALL SELECT 'P2_medico_cancela_ajena_rpc',         current_setting('probe.p2', true),  'BLOQUEADO'
@@ -30742,6 +31131,9 @@ UNION ALL SELECT 'P933_policies_service_role_348',    current_setting('probe.p93
 UNION ALL SELECT 'P934_policies_public_fuera_wl_349',  current_setting('probe.p934', true), 'OK (349: 0 policies {public} en public fuera de la WL_ANON_LEGACY)'
 UNION ALL SELECT 'P935_public_a_authenticated_349',   current_setting('probe.p935', true), 'OK (349: con los roles alternados authenticated ve y escribe lo mismo; anon en 42501 de privilegio)'
 UNION ALL SELECT 'P936_wl_anon_a_authenticated_350',  current_setting('probe.p936', true), 'OK (350: las 17 en {authenticated}; anon sin 42501 y sin filas salvo paises/config; authenticated igual)'
+UNION ALL SELECT 'P937_solicitar_compra_plan_351',   current_setting('probe.p937', true), 'OK (351: pago pendiente con todo del catalogo; 42501 por rol; CP001-CP007 por causa)'
+UNION ALL SELECT 'P938_aprobar_pago_plan_351',       current_setting('probe.p938', true), 'OK (351: 42501 no super; creada / idempotente / sumada; CP017/CP013/CP011 sin escribir)'
+UNION ALL SELECT 'P939_policy_insert_pagos_351',     current_setting('probe.p939', true), 'OK (351: sin autoaprobacion ni plan_visitador directo; campana pendiente sigue)'
 -- Las filas FX* son SALUD DE FIXTURE, no probes de seguridad: dicen si la precondicion que una
 -- migracion posterior empezo a exigir se pudo sembrar. Si una sale ROJO, los probes que dependen de
 -- ese fixture reportan N/A (su flag de ready se pierde con el rollback de la subtransaccion) en vez
@@ -30986,7 +31378,7 @@ UNION ALL SELECT 'P000_CENTINELA_veredictos_no_nulos',
        'probe.p866', 'probe.p867', 'probe.p868', 'probe.p869', 'probe.p870', 'probe.p871', 'probe.p872', 'probe.p873', 'probe.p874', 'probe.p875', 'probe.p876', 'probe.p877', 'probe.p878',
        'probe.p879', 'probe.p880', 'probe.p881', 'probe.p882', 'probe.p883', 'probe.p884',
        'probe.p885', 'probe.p886', 'probe.p887', 'probe.p888', 'probe.p889', 'probe.p890', 'probe.p891', 'probe.p892', 'probe.p893', 'probe.p894', 'probe.p895', 'probe.p896', 'probe.p908', 'probe.p909', 'probe.p910', 'probe.p911',
-       'probe.p897', 'probe.p898', 'probe.p899', 'probe.p900', 'probe.p901', 'probe.p902', 'probe.p903', 'probe.p904', 'probe.p905', 'probe.p906', 'probe.p907', 'probe.p912', 'probe.p913', 'probe.p914', 'probe.p915', 'probe.p916', 'probe.p917', 'probe.p918', 'probe.p919', 'probe.p920', 'probe.p921', 'probe.p922', 'probe.p923', 'probe.p924', 'probe.p925', 'probe.p926', 'probe.p927', 'probe.p928', 'probe.p929', 'probe.p930', 'probe.p931', 'probe.p932', 'probe.p933', 'probe.p934', 'probe.p935', 'probe.p936'
+       'probe.p897', 'probe.p898', 'probe.p899', 'probe.p900', 'probe.p901', 'probe.p902', 'probe.p903', 'probe.p904', 'probe.p905', 'probe.p906', 'probe.p907', 'probe.p912', 'probe.p913', 'probe.p914', 'probe.p915', 'probe.p916', 'probe.p917', 'probe.p918', 'probe.p919', 'probe.p920', 'probe.p921', 'probe.p922', 'probe.p923', 'probe.p924', 'probe.p925', 'probe.p926', 'probe.p927', 'probe.p928', 'probe.p929', 'probe.p930', 'probe.p931', 'probe.p932', 'probe.p933', 'probe.p934', 'probe.p935', 'probe.p936', 'probe.p937', 'probe.p938', 'probe.p939'
              ]) AS n) s),
   'OK (todos los veredictos publicados)';
 
