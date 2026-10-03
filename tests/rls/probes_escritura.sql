@@ -31105,6 +31105,86 @@ EXCEPTION WHEN OTHERS THEN
   PERFORM set_config('probe.p954', 'FALLO ('||SQLSTATE||' '||SQLERRM||')', false);
 END $$;
 
+-- ---------------- P955-P957 get_ubicaciones_con_medico sin email (356) ----------------
+-- P955 catalogo: RETURNS sin email, DEFINER + search_path '', ACL postgres/authenticated/service_role, sin EXECUTE para
+-- PUBLIC ni anon, prosrc sin email.
+DO $$
+DECLARE bad text := ''; v text;
+BEGIN
+  v := (SELECT string_agg(pg_get_function_result(p.oid)||' | definer='||p.prosecdef::text||' sp='||COALESCE(array_to_string(p.proconfig, ','), '-')||' | '||
+           (SELECT string_agg(CASE a.grantee WHEN 0 THEN 'PUBLIC' ELSE pg_get_userbyid(a.grantee) END||'='||a.privilege_type, '+'
+                               ORDER BY CASE a.grantee WHEN 0 THEN 'PUBLIC' ELSE pg_get_userbyid(a.grantee) END)
+              FROM aclexplode(COALESCE(p.proacl, acldefault('f', p.proowner))) a), ';')
+          FROM pg_proc p WHERE p.pronamespace = 'public'::regnamespace AND p.proname = 'get_ubicaciones_con_medico');
+  IF v IS DISTINCT FROM 'TABLE(ubicacion_id uuid, medico_id uuid, nombre_completo text, direccion text, lat double precision, lng double precision, notas text, updated_at timestamp with time zone)'
+                     || ' | definer=true sp=search_path="" | authenticated=EXECUTE+postgres=EXECUTE+service_role=EXECUTE' THEN
+    bad := bad||'catalogo: '||COALESCE(v, 'NO EXISTE')||'; ';
+  END IF;
+  IF EXISTS (SELECT 1 FROM pg_proc p WHERE p.pronamespace = 'public'::regnamespace AND p.proname = 'get_ubicaciones_con_medico' AND position('email' IN p.prosrc) > 0) THEN
+    bad := bad||'el cuerpo nombra email; ';
+  END IF;
+  IF has_function_privilege('anon', 'public.get_ubicaciones_con_medico(uuid)', 'EXECUTE') THEN bad := bad||'anon tiene EXECUTE; '; END IF;
+  PERFORM set_config('probe.p955', CASE WHEN bad = ''
+    THEN 'OK (RETURNS sin email; DEFINER + search_path=''''; EXECUTE solo authenticated/service_role/postgres; cuerpo sin email)'
+    ELSE 'ROJO ('||left(bad, 900)||')' END, false);
+EXCEPTION WHEN OTHERS THEN
+  PERFORM set_config('probe.p955', 'FALLO ('||SQLSTATE||' '||SQLERRM||')', false);
+END $$;
+
+-- P956/P957: actores reales (created_at anterior a esta transaccion), activos, en auth.users, identidad unica (sin
+-- perfil ni paciente), de empresa activa; el mas antiguo por created_at y despues por id. Empresa: la mas antigua con
+-- ubicaciones y un admin que cumpla. P956: su admin obtiene n filas = oraculo (como postgres) > 0. P957: una cuenta de
+-- otra empresa activa pide las ubicaciones de la primera -> 0 filas, sin error. Solo lectura: no hay fixture que
+-- restaurar. Sin empresa con ubicaciones o sin actores -> FALLO (sin fixture), nunca OK.
+DO $$
+DECLARE
+  v_emp uuid; c_adm uuid; c_otra uuid; esp int; n int; n2 int; st text := 'OK'; st2 text := 'OK';
+BEGIN
+  IF current_user <> 'postgres' THEN RAISE EXCEPTION 'fixture roto: P956 corre como %', current_user; END IF;
+  SELECT e.id, c.id INTO v_emp, c_adm
+    FROM public.empresas_proveedoras e JOIN public.cuentas_proveedor c ON c.empresa_id = e.id
+   WHERE e.estado = 'activa' AND EXISTS (SELECT 1 FROM public.ubicaciones_medico_proveedor u WHERE u.empresa_id = e.id)
+     AND c.activo AND c.rol_en_empresa = 'admin' AND COALESCE(c.created_at, '-infinity') < now()
+     AND EXISTS (SELECT 1 FROM auth.users au WHERE au.id = c.id)
+     AND NOT EXISTS (SELECT 1 FROM public.perfiles pf WHERE pf.id = c.id) AND NOT EXISTS (SELECT 1 FROM public.pacientes pa WHERE pa.auth_user_id = c.id)
+   ORDER BY e.created_at NULLS FIRST, e.id, COALESCE(c.created_at, '-infinity'), c.id LIMIT 1;
+  IF v_emp IS NULL THEN RAISE EXCEPTION 'sin fixture: ninguna empresa activa con ubicaciones y un admin real de identidad unica'; END IF;
+  esp := (SELECT count(*) FROM public.ubicaciones_medico_proveedor u JOIN public.perfiles p ON p.id = u.medico_id WHERE u.empresa_id = v_emp);
+  IF esp = 0 THEN RAISE EXCEPTION 'sin fixture: oraculo 0 para la empresa %', v_emp; END IF;
+  c_otra := (SELECT c.id FROM public.cuentas_proveedor c JOIN public.empresas_proveedoras e ON e.id = c.empresa_id
+              WHERE e.estado = 'activa' AND c.empresa_id <> v_emp AND c.activo AND COALESCE(c.created_at, '-infinity') < now()
+                AND EXISTS (SELECT 1 FROM auth.users au WHERE au.id = c.id)
+                AND NOT EXISTS (SELECT 1 FROM public.perfiles pf WHERE pf.id = c.id) AND NOT EXISTS (SELECT 1 FROM public.pacientes pa WHERE pa.auth_user_id = c.id)
+              ORDER BY COALESCE(c.created_at, '-infinity'), c.id LIMIT 1);
+  IF c_otra IS NULL THEN RAISE EXCEPTION 'sin fixture: ninguna cuenta real de otra empresa activa'; END IF;
+  BEGIN
+    PERFORM set_config('request.jwt.claims', json_build_object('sub', c_adm::text, 'role', 'authenticated')::text, true);
+    PERFORM set_config('role', 'authenticated', true);
+    n := (SELECT count(*) FROM public.get_ubicaciones_con_medico(v_emp));
+    PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
+  EXCEPTION WHEN OTHERS THEN st := SQLSTATE||' '||SQLERRM; PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
+  END;
+  BEGIN
+    PERFORM set_config('request.jwt.claims', json_build_object('sub', c_otra::text, 'role', 'authenticated')::text, true);
+    PERFORM set_config('role', 'authenticated', true);
+    n2 := (SELECT count(*) FROM public.get_ubicaciones_con_medico(v_emp));
+    PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
+  EXCEPTION WHEN OTHERS THEN st2 := SQLSTATE||' '||SQLERRM; PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
+  END;
+  PERFORM set_config('probe.p956_det', 'empresa '||v_emp||' admin '||c_adm||' oraculo '||esp||' obtiene '||COALESCE(n::text, '-')||' ('||st||'); otra '||c_otra||' obtiene '||COALESCE(n2::text, '-')||' ('||st2||')', false);
+  PERFORM set_config('probe.p956', CASE WHEN st = 'OK' AND n = esp AND n > 0
+    THEN 'OK (admin '||c_adm||' de '||v_emp||' obtiene '||n||' = oraculo)'
+    ELSE 'ROJO (admin '||c_adm||' de '||v_emp||': '||COALESCE(n::text, '-')||' / oraculo '||esp||' '||st||')' END, false);
+  PERFORM set_config('probe.p957', CASE WHEN st2 = 'OK' AND n2 = 0
+    THEN 'OK (cuenta '||c_otra||' de otra empresa obtiene 0 de '||v_emp||', sin error)'
+    ELSE 'ROJO (cuenta '||c_otra||' de otra empresa: '||COALESCE(n2::text, '-')||' '||st2||')' END, false);
+EXCEPTION WHEN OTHERS THEN
+  PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
+  PERFORM set_config('probe.p956', 'FALLO ('||SQLSTATE||' '||SQLERRM||')', false);
+  PERFORM set_config('probe.p957', 'FALLO ('||SQLSTATE||' '||SQLERRM||')', false);
+END $$;
+SELECT set_config('role', 'none', true);
+
 -- ===== Veredictos como result set =====
 SELECT 'P1_anon_insert_citas'              AS probe, current_setting('probe.p1', true)  AS verdict, 'BLOQUEADO' AS esperado_post_fix
 UNION ALL SELECT 'P2_medico_cancela_ajena_rpc',         current_setting('probe.p2', true),  'BLOQUEADO'
@@ -32134,6 +32214,9 @@ UNION ALL SELECT 'P951_visitador_30_rechazado_355',  current_setting('probe.p951
 UNION ALL SELECT 'P952_visitador_15_ok_355',         current_setting('probe.p952', true), 'OK (355: franja visitador de 15 se inserta)'
 UNION ALL SELECT 'P953_paciente_30_ok_355',          current_setting('probe.p953', true), 'OK (355: franja paciente de 30 se inserta)'
 UNION ALL SELECT 'P954_censo_slot_15_355',           current_setting('probe.p954', true), 'OK (355: 0 franjas visitador <> 15; CHECK validado)'
+UNION ALL SELECT 'P955_ubicaciones_catalogo_356',    current_setting('probe.p955', true), 'OK (356: RETURNS sin email; DEFINER + search_path; EXECUTE authenticated/service_role)'
+UNION ALL SELECT 'P956_ubicaciones_admin_356',       current_setting('probe.p956', true), 'OK (356: admin de una empresa con ubicaciones = oraculo > 0)'
+UNION ALL SELECT 'P957_ubicaciones_otra_empresa_356',current_setting('probe.p957', true), 'OK (356: cuenta de otra empresa 0 filas, sin error)'
 -- Las filas FX* son SALUD DE FIXTURE, no probes de seguridad: dicen si la precondicion que una
 -- migracion posterior empezo a exigir se pudo sembrar. Si una sale ROJO, los probes que dependen de
 -- ese fixture reportan N/A (su flag de ready se pierde con el rollback de la subtransaccion) en vez
@@ -32378,7 +32461,7 @@ UNION ALL SELECT 'P000_CENTINELA_veredictos_no_nulos',
        'probe.p866', 'probe.p867', 'probe.p868', 'probe.p869', 'probe.p870', 'probe.p871', 'probe.p872', 'probe.p873', 'probe.p874', 'probe.p875', 'probe.p876', 'probe.p877', 'probe.p878',
        'probe.p879', 'probe.p880', 'probe.p881', 'probe.p882', 'probe.p883', 'probe.p884',
        'probe.p885', 'probe.p886', 'probe.p887', 'probe.p888', 'probe.p889', 'probe.p890', 'probe.p891', 'probe.p892', 'probe.p893', 'probe.p894', 'probe.p895', 'probe.p896', 'probe.p908', 'probe.p909', 'probe.p910', 'probe.p911',
-       'probe.p897', 'probe.p898', 'probe.p899', 'probe.p900', 'probe.p901', 'probe.p902', 'probe.p903', 'probe.p904', 'probe.p905', 'probe.p906', 'probe.p907', 'probe.p912', 'probe.p913', 'probe.p914', 'probe.p915', 'probe.p916', 'probe.p917', 'probe.p918', 'probe.p919', 'probe.p920', 'probe.p921', 'probe.p922', 'probe.p923', 'probe.p924', 'probe.p925', 'probe.p926', 'probe.p927', 'probe.p928', 'probe.p929', 'probe.p930', 'probe.p931', 'probe.p932', 'probe.p933', 'probe.p934', 'probe.p935', 'probe.p936', 'probe.p937', 'probe.p938', 'probe.p939', 'probe.p940', 'probe.p941', 'probe.p942', 'probe.p943', 'probe.p944', 'probe.p945', 'probe.p946', 'probe.p947', 'probe.p948', 'probe.p949', 'probe.p950', 'probe.p951', 'probe.p952', 'probe.p953', 'probe.p954'
+       'probe.p897', 'probe.p898', 'probe.p899', 'probe.p900', 'probe.p901', 'probe.p902', 'probe.p903', 'probe.p904', 'probe.p905', 'probe.p906', 'probe.p907', 'probe.p912', 'probe.p913', 'probe.p914', 'probe.p915', 'probe.p916', 'probe.p917', 'probe.p918', 'probe.p919', 'probe.p920', 'probe.p921', 'probe.p922', 'probe.p923', 'probe.p924', 'probe.p925', 'probe.p926', 'probe.p927', 'probe.p928', 'probe.p929', 'probe.p930', 'probe.p931', 'probe.p932', 'probe.p933', 'probe.p934', 'probe.p935', 'probe.p936', 'probe.p937', 'probe.p938', 'probe.p939', 'probe.p940', 'probe.p941', 'probe.p942', 'probe.p943', 'probe.p944', 'probe.p945', 'probe.p946', 'probe.p947', 'probe.p948', 'probe.p949', 'probe.p950', 'probe.p951', 'probe.p952', 'probe.p953', 'probe.p954', 'probe.p955', 'probe.p956', 'probe.p957'
              ]) AS n) s),
   'OK (todos los veredictos publicados)';
 
