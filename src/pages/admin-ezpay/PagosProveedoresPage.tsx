@@ -8,6 +8,7 @@ import { Badge } from '@/components/ui/badge'
 import { toast } from 'sonner'
 import { CreditCard, CheckCircle, XCircle, Loader2, Filter, Eye } from 'lucide-react'
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog'
+import { mensajeErrorCompraPlan } from '@/proveedor/lib/compraPlanVisitador'
 
 interface PagoConEmpresa {
   id: string
@@ -21,8 +22,16 @@ interface PagoConEmpresa {
   estado: string
   fecha_pago: string | null
   created_at: string
+  // Plan de visitador (mig 351): snapshot del catálogo al comprar y bolsa a la que sumó la aprobación.
+  plan_visitas?: number | null
+  plan_duracion_dias?: number | null
+  pvc_id?: string | null
   empresa: { nombre_empresa: string; email_contacto: string } | null
 }
+
+// Un pendiente de plan de visitador sin snapshot nació antes de la compra por RPC: la RPC lo rechaza (CP013).
+const esPlanVisitadorLegacy = (p: PagoConEmpresa) =>
+  p.tipo === 'plan_visitador' && (p.plan_visitas == null || p.plan_duracion_dias == null)
 
 export default function PagosProveedoresPage() {
   const [pagos, setPagos] = useState<PagoConEmpresa[]>([])
@@ -56,6 +65,27 @@ export default function PagosProveedoresPage() {
     fetchPagos()
   }, [fetchPagos])
 
+  // Plan de visitador (mig 351): UNA RPC atómica e idempotente crea o suma la bolsa, activa la capacidad,
+  // marca el pago y notifica al proveedor. No hay camino viejo (INSERT directo de la bolsa).
+  const aprobarPlanVisitador = async (pago: PagoConEmpresa) => {
+    setProcesando(true)
+    const { data, error } = await supabase.rpc('aprobar_pago_plan_visitador', { p_pago_id: pago.id })
+    setProcesando(false)
+    if (error) {
+      toast.error(mensajeErrorCompraPlan(error, 'aprobar'))
+      console.error(error)
+      return
+    }
+    const r = (data || {}) as { accion?: string; cantidad_visitas_incluidas?: number; fecha_fin?: string; idempotente?: boolean }
+    toast.success(
+      r.idempotente
+        ? 'Este pago ya estaba aprobado.'
+        : `Plan ${r.accion === 'sumada' ? 'sumado a la bolsa vigente' : 'creado'}: ${r.cantidad_visitas_incluidas} visitas, vigente hasta ${r.fecha_fin}`
+    )
+    setPagoActivo(null)
+    fetchPagos()
+  }
+
   const verificar = async (id: string, estado: 'verificado' | 'rechazado') => {
     setProcesando(true)
     const { data: { user } } = await supabase.auth.getUser()
@@ -64,48 +94,11 @@ export default function PagosProveedoresPage() {
       // Obtener datos del pago para procesar según tipo
       const { data: pagoData } = await supabase.from('pagos_proveedor').select('*').eq('id', id).single()
 
-      if (pagoData?.tipo === 'plan_visitador' && pagoData.referencia_id) {
-        // Leer configuración del plan desde el sistema unificado
-        const { data: planConfig } = await supabase
-          .from('planes_configuracion')
-          .select('*, plan_base:plan_base_id(*)')
-          .eq('id', pagoData.referencia_id)
-          .single()
-
-        if (planConfig) {
-          const atributos = planConfig.plan_base?.atributos || {}
-          const duracionDias = atributos.duracion_dias || 30
-          const hoy = new Date()
-          const fin = new Date()
-          fin.setDate(hoy.getDate() + duracionDias)
-          const dia = (d: Date) => d.toISOString().split('T')[0] // pvc fechas son DATE
-
-          // Visitas = BOLSA por país en pvc (única fuente; super_admin la provisiona al verificar el pago).
-          // incluidas = atributos.visitas_incluidas; null/0-ausente → ilimitado (NULL).
-          const incluidas = atributos.visitas_incluidas ?? null
-          const { error: planError } = await supabase.from('planes_visitador_contratados').insert({
-            empresa_id: pagoData.empresa_id,
-            plan_visitador_id: 1,                 // catálogo sin FK; valor por defecto
-            pais_id: planConfig.pais_id,          // bolsa POR PAÍS (la config es por país)
-            cantidad_visitas_incluidas: incluidas,
-            visitas_usadas: 0,
-            precio_pagado: pagoData.monto,
-            fecha_inicio: dia(hoy),
-            fecha_fin: dia(fin),
-            estado: 'activo',
-          })
-
-          if (planError) {
-            toast.error('Error activando plan de visitas')
-            console.error(planError)
-            setProcesando(false)
-            return
-          }
-        } else {
-          toast.error('No se encontró la configuración del plan')
-          setProcesando(false)
-          return
-        }
+      if (pagoData?.tipo === 'plan_visitador') {
+        // Se aprueba solo por aprobarPlanVisitador (RPC); un legacy se resuelve a mano.
+        toast.error('Los planes de visitador se aprueban con su propio botón.')
+        setProcesando(false)
+        return
       }
 
       if (pagoData?.tipo === 'campana' && pagoData.referencia_id) {
@@ -333,6 +326,16 @@ export default function PagosProveedoresPage() {
                   </button>
                 </div>
               )}
+              {pagoActivo.tipo === 'plan_visitador' && !esPlanVisitadorLegacy(pagoActivo) && (
+                <div className="text-sm text-slate-600">
+                  <span className="font-medium">Plan:</span> {pagoActivo.plan_visitas} visitas · {pagoActivo.plan_duracion_dias} días
+                </div>
+              )}
+              {pagoActivo.estado === 'pendiente' && esPlanVisitadorLegacy(pagoActivo) && (
+                <div className="bg-amber-50 border border-amber-200 rounded-lg p-3 text-sm text-amber-800">
+                  Pago legacy: resolver manualmente.
+                </div>
+              )}
               {pagoActivo.estado === 'pendiente' && (
                 <div className="flex gap-3 pt-2">
                   <Button
@@ -344,14 +347,18 @@ export default function PagosProveedoresPage() {
                     <XCircle className="h-4 w-4 mr-1" />
                     Rechazar
                   </Button>
-                  <Button
-                    className="flex-1 bg-emerald-600 hover:bg-emerald-700 text-white"
-                    disabled={procesando}
-                    onClick={() => verificar(pagoActivo.id, 'verificado')}
-                  >
-                    <CheckCircle className="h-4 w-4 mr-1" />
-                    Verificar
-                  </Button>
+                  {!esPlanVisitadorLegacy(pagoActivo) && (
+                    <Button
+                      className="flex-1 bg-emerald-600 hover:bg-emerald-700 text-white"
+                      disabled={procesando}
+                      onClick={() =>
+                        pagoActivo.tipo === 'plan_visitador' ? aprobarPlanVisitador(pagoActivo) : verificar(pagoActivo.id, 'verificado')
+                      }
+                    >
+                      <CheckCircle className="h-4 w-4 mr-1" />
+                      Verificar
+                    </Button>
+                  )}
                 </div>
               )}
             </div>
