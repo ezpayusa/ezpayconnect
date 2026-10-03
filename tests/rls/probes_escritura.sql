@@ -29324,7 +29324,11 @@ DECLARE
     'cache_biblioteca|authenticated|SELECT', 'confirmaciones_receta|authenticated|SELECT',
     'medico_clinicas|authenticated|SELECT', 'medico_correlativos|authenticated|SELECT',
     'planes_features|authenticated|SELECT', 'planes_limites|authenticated|SELECT',
-    'resumen_comisiones|authenticated|SELECT'];
+    'resumen_comisiones|authenticated|SELECT',
+    -- Temporal (mig 350, F2-c): SELECT anon conservado por WL_ANON_LEGACY hasta el paso EXECUTE de familia 2, donde se
+    -- achica la WL y se quitan estas 5 entradas.
+    'cuentas_proveedor|anon|SELECT', 'empresas_proveedoras|anon|SELECT', 'pacientes|anon|SELECT',
+    'perfiles|anon|SELECT', 'recetas|anon|SELECT'];
   muertos text[]; viol text; sobra text; n int; det text := ''; ok boolean; bad text := '';
 BEGIN
   SELECT COALESCE(array_agg(z.s ORDER BY z.s COLLATE "C"), '{}') INTO muertos FROM (
@@ -29592,6 +29596,138 @@ BEGIN
 EXCEPTION WHEN OTHERS THEN
   PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
   PERFORM set_config('probe.p935', CASE WHEN SQLERRM LIKE 'fixture roto%' THEN 'ROJO ('||SQLERRM||')' ELSE 'FALLO ('||SQLSTATE||' '||SQLERRM||')' END, false);
+END $$;
+SELECT set_config('role', 'none', true);
+
+-- ---------------- P936 funcional: las {public} de la WL_ANON_LEGACY en TO authenticated (350) ----------------
+-- Las 8 tablas de la WL_ANON_LEGACY conservan el SELECT de anon (P800). Desde la 350 sus 17 policies de sesion son
+-- TO authenticated: anon ya no las evalua. Se exige:
+--   (a) las 17 tienen roles = {authenticated} (catalogo; con 350_rollback sale ROJO a proposito);
+--   (b) anon: SELECT en las 8 tablas SIN 42501 (el privilegio sigue); configuracion_pais = las activas ("Publico lee
+--       paises activos"), configuracion_sistema = las claves no bancarias (configuracion_sistema_select_anon), las
+--       otras 6 = 0 filas;
+--   (c) authenticated (paciente 23, medico.qa, super_admin, admin_pais, laboratorio.qa) ve lo mismo con los roles de
+--       las 17 alternados ({public} <-> {authenticated}) dentro de una subtransaccion descartada, y anon tambien.
+-- Solo lee; el ALTER de (c) se descarta con RAISE P0999 y se verifica que los roles volvieron.
+DO $$
+DECLARE
+  c_pacu CONSTANT uuid := '5bfb5b4c-dc91-4714-93cb-a292faa6717d'; c_med CONSTANT uuid := '09d243d5-b222-482a-9762-94a582e9e752';
+  c_lab CONSTANT uuid := 'e6f95b2f-7561-4e0b-b0c8-d1f38e6c4d66';
+  v_sa uuid; v_ap uuid; r record; k int; n int; st text; v text; actor record;
+  res text[] := ARRAY['', '']; anon text[] := ARRAY['', '']; det text := ''; bad text := ''; r_rest text := 'OK';
+  n_pais int; n_cfg int; esperado_anon text; v_roles_pre text;
+  tablas CONSTANT text[] := ARRAY['configuracion_pais','configuracion_sistema','cuentas_proveedor','empresas_proveedoras',
+                                  'liquidaciones_comision','pacientes','perfiles','recetas'];
+BEGIN
+  IF current_user <> 'postgres' THEN RAISE EXCEPTION 'fixture roto: P936 corre como %', current_user; END IF;
+  SELECT id INTO v_sa FROM public.perfiles WHERE rol = 'super_admin' ORDER BY id LIMIT 1;
+  SELECT p.id INTO v_ap FROM public.perfiles p WHERE p.rol = 'admin_pais' AND p.activo AND EXISTS (SELECT 1 FROM auth.users u WHERE u.id = p.id) ORDER BY p.id LIMIT 1;
+  IF v_sa IS NULL OR v_ap IS NULL THEN RAISE EXCEPTION 'fixture roto: P936 sin super_admin (%) o admin_pais (%)', v_sa, v_ap; END IF;
+  SELECT count(*) INTO n_pais FROM public.configuracion_pais WHERE activo = true;
+  SELECT count(*) INTO n_cfg FROM public.configuracion_sistema WHERE clave <> ALL (ARRAY['banco','cuenta_bancaria','tipo_cuenta','titular_cuenta','email_pagos']);
+  esperado_anon := 'configuracion_pais='||n_pais||'; configuracion_sistema='||n_cfg||'; cuentas_proveedor=0; empresas_proveedoras=0; '
+                 ||'liquidaciones_comision=0; pacientes=0; perfiles=0; recetas=0; ';
+  -- (a) catalogo
+  SELECT count(*) FILTER (WHERE pl.polroles = ARRAY['authenticated'::regrole::oid]), string_agg(s.tab||'/'||s.pol||'='||COALESCE(pl.polroles::text, 'NO EXISTE'), ', ')
+           FILTER (WHERE pl.polroles IS DISTINCT FROM ARRAY['authenticated'::regrole::oid])
+    INTO n, v
+    FROM (VALUES
+                    ('configuracion_sistema', 'Admin ezpay actualiza configuracion'),
+                    ('cuentas_proveedor', 'Admin ezpay ve cuentas proveedor'),
+                    ('cuentas_proveedor', 'Proveedor ve su propia cuenta'),
+                    ('cuentas_proveedor', 'Supervisor ve cuentas de su equipo'),
+                    ('empresas_proveedoras', 'Admin ezpay actualiza empresas'),
+                    ('empresas_proveedoras', 'Admin ezpay ve todas las empresas'),
+                    ('pacientes', 'Admin ve pacientes de su pais'),
+                    ('pacientes', 'Paciente crea su perfil'),
+                    ('pacientes', 'Paciente ve su perfil'),
+                    ('perfiles', 'Actualizar propio perfil'),
+                    ('perfiles', 'Admin actualiza perfiles de su pais'),
+                    ('perfiles', 'Admin borra perfiles de su pais'),
+                    ('perfiles', 'Admin lee perfiles de su pais'),
+                    ('perfiles', 'Admins pueden insertar perfiles'),
+                    ('perfiles', 'Ver propio perfil'),
+                    ('recetas', 'Admin ve recetas de su pais'),
+                    ('recetas', 'Paciente ve sus recetas')) s(tab, pol)
+    LEFT JOIN pg_class c ON c.relnamespace = 'public'::regnamespace AND c.relname = s.tab
+    LEFT JOIN pg_policy pl ON pl.polrelid = c.oid AND pl.polname = s.pol;
+  det := det||' ;; las 17 en {authenticated}|17|'||CASE WHEN n = 17 THEN 'OK' ELSE 'ROJO' END||'|'||n||'|'||left(COALESCE(v, '-'), 300);
+  IF n <> 17 THEN bad := bad||'catalogo: '||n||' de 17 en {authenticated} ('||left(COALESCE(v, '-'), 300)||'); '; END IF;
+  SELECT string_agg(pl.polname||'='||pl.polroles::text, ',' ORDER BY pl.polname) INTO v_roles_pre FROM pg_policy pl JOIN pg_class c ON c.oid = pl.polrelid
+   WHERE c.relnamespace = 'public'::regnamespace AND c.relname = ANY (tablas);
+  -- (b) y (c): dos pasadas, la segunda con los roles de las 17 alternados
+  BEGIN
+    FOR k IN 1..2 LOOP
+      PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
+      IF k = 2 THEN
+        FOR r IN SELECT s.tab, s.pol, pl.polroles = '{0}'::oid[] AS es_public FROM (VALUES
+                    ('configuracion_sistema', 'Admin ezpay actualiza configuracion'),
+                    ('cuentas_proveedor', 'Admin ezpay ve cuentas proveedor'),
+                    ('cuentas_proveedor', 'Proveedor ve su propia cuenta'),
+                    ('cuentas_proveedor', 'Supervisor ve cuentas de su equipo'),
+                    ('empresas_proveedoras', 'Admin ezpay actualiza empresas'),
+                    ('empresas_proveedoras', 'Admin ezpay ve todas las empresas'),
+                    ('pacientes', 'Admin ve pacientes de su pais'),
+                    ('pacientes', 'Paciente crea su perfil'),
+                    ('pacientes', 'Paciente ve su perfil'),
+                    ('perfiles', 'Actualizar propio perfil'),
+                    ('perfiles', 'Admin actualiza perfiles de su pais'),
+                    ('perfiles', 'Admin borra perfiles de su pais'),
+                    ('perfiles', 'Admin lee perfiles de su pais'),
+                    ('perfiles', 'Admins pueden insertar perfiles'),
+                    ('perfiles', 'Ver propio perfil'),
+                    ('recetas', 'Admin ve recetas de su pais'),
+                    ('recetas', 'Paciente ve sus recetas')) s(tab, pol)
+                   JOIN pg_class c ON c.relnamespace = 'public'::regnamespace AND c.relname = s.tab
+                   JOIN pg_policy pl ON pl.polrelid = c.oid AND pl.polname = s.pol LOOP
+          EXECUTE format('ALTER POLICY %I ON public.%I TO %s', r.pol, r.tab, CASE WHEN r.es_public THEN 'authenticated' ELSE 'public' END);
+        END LOOP;
+      END IF;
+      FOR actor IN SELECT * FROM (VALUES ('paciente', c_pacu), ('medico', c_med), ('super_admin', v_sa), ('admin_pais', v_ap), ('laboratorio', c_lab)) a(nom, uid) LOOP
+        PERFORM set_config('request.jwt.claims', json_build_object('sub', actor.uid::text, 'role', 'authenticated')::text, true);
+        PERFORM set_config('role', 'authenticated', true);
+        res[k] := res[k]||actor.nom||':';
+        FOREACH v IN ARRAY tablas LOOP
+          BEGIN EXECUTE format('SELECT count(*) FROM public.%I', v) INTO n; st := n::text;
+          EXCEPTION WHEN OTHERS THEN st := 'ERR'||SQLSTATE; END;
+          res[k] := res[k]||' '||v||'='||st;
+        END LOOP;
+        res[k] := res[k]||'; ';
+        PERFORM set_config('role', 'none', true);
+      END LOOP;
+      PERFORM set_config('request.jwt.claims', json_build_object('role', 'anon')::text, true);
+      PERFORM set_config('role', 'anon', true);
+      FOREACH v IN ARRAY tablas LOOP
+        BEGIN EXECUTE format('SELECT count(*) FROM public.%I', v) INTO n; st := n::text;
+        EXCEPTION WHEN OTHERS THEN st := SQLSTATE||' '||SQLERRM; END;
+        anon[k] := anon[k]||v||'='||st||'; ';
+      END LOOP;
+      PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
+    END LOOP;
+    RAISE EXCEPTION 'P936 descarte' USING ERRCODE = 'P0999';
+  EXCEPTION WHEN SQLSTATE 'P0999' THEN NULL;
+  END;
+  PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
+  det := det||' ;; anon (roles actuales)|'||esperado_anon||'|'||CASE WHEN anon[1] = esperado_anon THEN 'OK' ELSE 'ROJO' END||'|-|'||anon[1];
+  IF anon[1] IS DISTINCT FROM esperado_anon THEN bad := bad||'anon: ['||anon[1]||'] esperado ['||esperado_anon||']; '; END IF;
+  det := det||' ;; anon con los roles de las 17 alternados|= roles actuales|'||CASE WHEN anon[2] = anon[1] THEN 'OK' ELSE 'ROJO' END||'|-|'||anon[2];
+  IF anon[2] IS DISTINCT FROM anon[1] THEN bad := bad||'anon cambia al alternar: ['||anon[2]||']; '; END IF;
+  det := det||' ;; authenticated (5 actores x 8 tablas)|-|-|-|'||res[1];
+  det := det||' ;; authenticated con los roles alternados|= antes|'||CASE WHEN res[2] = res[1] AND res[1] <> '' THEN 'OK' ELSE 'ROJO' END||'|-|'||res[2];
+  IF res[2] IS DISTINCT FROM res[1] OR res[1] = '' THEN bad := bad||'authenticated distinto: ['||res[1]||'] vs ['||res[2]||']; '; END IF;
+  IF res[1] LIKE '%ERR%' OR res[2] LIKE '%ERR%' THEN bad := bad||'authenticated con error (ERR = SQLSTATE); '; END IF;
+  IF (SELECT string_agg(pl.polname||'='||pl.polroles::text, ',' ORDER BY pl.polname) FROM pg_policy pl JOIN pg_class c ON c.oid = pl.polrelid
+        WHERE c.relnamespace = 'public'::regnamespace AND c.relname = ANY (tablas)) IS DISTINCT FROM v_roles_pre THEN
+    r_rest := 'roles no restaurados';
+  END IF;
+  det := det||' ;; restauracion|subtransaccion descartada|'||r_rest||'|-|';
+  PERFORM set_config('probe.p936_det', det, false);
+  PERFORM set_config('probe.p936', CASE WHEN bad = '' AND r_rest = 'OK'
+    THEN 'OK (las 17 en {authenticated}; anon sin 42501: paises '||n_pais||', config '||n_cfg||', resto 0; authenticated igual con los roles alternados; descartado)'
+    ELSE 'ROJO ('||left(bad, 900)||' | restauracion='||r_rest||')' END, false);
+EXCEPTION WHEN OTHERS THEN
+  PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
+  PERFORM set_config('probe.p936', CASE WHEN SQLERRM LIKE 'fixture roto%' THEN 'ROJO ('||SQLERRM||')' ELSE 'FALLO ('||SQLSTATE||' '||SQLERRM||')' END, false);
 END $$;
 SELECT set_config('role', 'none', true);
 
@@ -30605,6 +30741,7 @@ UNION ALL SELECT 'P932_trigger_planes_pais_347',      current_setting('probe.p93
 UNION ALL SELECT 'P933_policies_service_role_348',    current_setting('probe.p933', true), 'OK (348: 0 policies TO service_role; service_role con BYPASSRLS)'
 UNION ALL SELECT 'P934_policies_public_fuera_wl_349',  current_setting('probe.p934', true), 'OK (349: 0 policies {public} en public fuera de la WL_ANON_LEGACY)'
 UNION ALL SELECT 'P935_public_a_authenticated_349',   current_setting('probe.p935', true), 'OK (349: con los roles alternados authenticated ve y escribe lo mismo; anon en 42501 de privilegio)'
+UNION ALL SELECT 'P936_wl_anon_a_authenticated_350',  current_setting('probe.p936', true), 'OK (350: las 17 en {authenticated}; anon sin 42501 y sin filas salvo paises/config; authenticated igual)'
 -- Las filas FX* son SALUD DE FIXTURE, no probes de seguridad: dicen si la precondicion que una
 -- migracion posterior empezo a exigir se pudo sembrar. Si una sale ROJO, los probes que dependen de
 -- ese fixture reportan N/A (su flag de ready se pierde con el rollback de la subtransaccion) en vez
@@ -30849,7 +30986,7 @@ UNION ALL SELECT 'P000_CENTINELA_veredictos_no_nulos',
        'probe.p866', 'probe.p867', 'probe.p868', 'probe.p869', 'probe.p870', 'probe.p871', 'probe.p872', 'probe.p873', 'probe.p874', 'probe.p875', 'probe.p876', 'probe.p877', 'probe.p878',
        'probe.p879', 'probe.p880', 'probe.p881', 'probe.p882', 'probe.p883', 'probe.p884',
        'probe.p885', 'probe.p886', 'probe.p887', 'probe.p888', 'probe.p889', 'probe.p890', 'probe.p891', 'probe.p892', 'probe.p893', 'probe.p894', 'probe.p895', 'probe.p896', 'probe.p908', 'probe.p909', 'probe.p910', 'probe.p911',
-       'probe.p897', 'probe.p898', 'probe.p899', 'probe.p900', 'probe.p901', 'probe.p902', 'probe.p903', 'probe.p904', 'probe.p905', 'probe.p906', 'probe.p907', 'probe.p912', 'probe.p913', 'probe.p914', 'probe.p915', 'probe.p916', 'probe.p917', 'probe.p918', 'probe.p919', 'probe.p920', 'probe.p921', 'probe.p922', 'probe.p923', 'probe.p924', 'probe.p925', 'probe.p926', 'probe.p927', 'probe.p928', 'probe.p929', 'probe.p930', 'probe.p931', 'probe.p932', 'probe.p933', 'probe.p934', 'probe.p935'
+       'probe.p897', 'probe.p898', 'probe.p899', 'probe.p900', 'probe.p901', 'probe.p902', 'probe.p903', 'probe.p904', 'probe.p905', 'probe.p906', 'probe.p907', 'probe.p912', 'probe.p913', 'probe.p914', 'probe.p915', 'probe.p916', 'probe.p917', 'probe.p918', 'probe.p919', 'probe.p920', 'probe.p921', 'probe.p922', 'probe.p923', 'probe.p924', 'probe.p925', 'probe.p926', 'probe.p927', 'probe.p928', 'probe.p929', 'probe.p930', 'probe.p931', 'probe.p932', 'probe.p933', 'probe.p934', 'probe.p935', 'probe.p936'
              ]) AS n) s),
   'OK (todos los veredictos publicados)';
 
