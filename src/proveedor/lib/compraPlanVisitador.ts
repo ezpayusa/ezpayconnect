@@ -29,6 +29,12 @@ export const MENSAJES_APROBAR: Record<string, string> = {
 
 export const MENSAJE_GENERICO_COMPRA = 'No se pudo completar la operación. Intentá de nuevo.'
 
+// Comprar planes es de admin/editor (permiso planes.contratar). Al visitador no se le ofrece comprar:
+// se le pide que avise a su administrador.
+export const MENSAJE_BOLSA_AGOTADA_VISITADOR = 'Bolsa agotada · avisale a tu administrador para recargarla'
+export const MENSAJE_SIN_BOLSA_VISITADOR = 'Avisale a tu administrador para que contrate un plan de visitas.'
+export const RUTA_COMPRA_PLANES_VISITADOR = '/proveedor/visitador/planes'
+
 type ErrorRpc = { code?: string | null; message?: string | null } | null | undefined
 
 export function mensajeErrorCompraPlan(error: ErrorRpc, operacion: 'solicitar' | 'aprobar'): string {

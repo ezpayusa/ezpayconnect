@@ -8,6 +8,8 @@ import { supabase } from '@/lib/supabase'
 import { useMedicosDisponibles } from '@/proveedor/hooks/useMedicosDisponibles'
 import { useVisitasAgendadas } from '@/proveedor/hooks/useVisitasAgendadas'
 import { usePlanesVisitador } from '@/proveedor/hooks/usePlanesVisitador'
+import { useProveedorAuth } from '@/proveedor/hooks/useProveedorAuth'
+import { MENSAJE_BOLSA_AGOTADA_VISITADOR, MENSAJE_SIN_BOLSA_VISITADOR, RUTA_COMPRA_PLANES_VISITADOR } from '@/proveedor/lib/compraPlanVisitador'
 import { toast } from 'sonner'
 import {
   Search,
@@ -50,6 +52,9 @@ export default function VisitadorAgendarPage() {
   const { medicos, disponibilidad, loading, buscarMedicos, fetchDisponibilidadMedico } = useMedicosDisponibles()
   const { agendarVisita, saving, fetchSlotsOcupados } = useVisitasAgendadas()
   const { visitasDisponibles } = usePlanesVisitador()
+  // Comprar es de admin/editor (planes.contratar); el visitador solo avisa a su administrador.
+  const { puede } = useProveedorAuth()
+  const puedeComprar = puede('planes.contratar')
 
   const [query, setQuery] = useState('')
   const [medicoSeleccionado, setMedicoSeleccionado] = useState<string | null>(null)
@@ -210,11 +215,13 @@ export default function VisitadorAgendarPage() {
             <CardContent className="p-4 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
               <div className="text-sm text-amber-800">
                 <p className="font-semibold">Tu empresa no tiene un plan de visitas activo.</p>
-                <p>Contrata un plan para poder agendar visitas con médicos.</p>
+                <p>{puedeComprar ? 'Contrata un plan para poder agendar visitas con médicos.' : MENSAJE_SIN_BOLSA_VISITADOR}</p>
               </div>
-              <Button className="bg-[#1E5C8E] hover:bg-[#164a70]" onClick={() => navigate('/visitador/planes')}>
-                Ver planes
-              </Button>
+              {puedeComprar && (
+                <Button className="bg-[#1E5C8E] hover:bg-[#164a70]" onClick={() => navigate(RUTA_COMPRA_PLANES_VISITADOR)}>
+                  Ver planes
+                </Button>
+              )}
             </CardContent>
           </Card>
         ) : (
@@ -225,7 +232,13 @@ export default function VisitadorAgendarPage() {
                 <Card key={p.pais_id} className={agotada ? 'border-red-300 bg-red-50' : 'bg-slate-50'}>
                   <CardContent className="p-3 text-sm flex items-center justify-between">
                     <span>Bolsa {p.pais_nombre}: <strong>{p.ilimitado ? 'ilimitada' : `${p.restante} / ${p.incluidas} disponibles`}</strong></span>
-                    {agotada && <span className="text-red-600 font-medium">Bolsa agotada · compra más visitas</span>}
+                    {agotada && (puedeComprar ? (
+                      <button type="button" className="text-red-600 font-medium underline" onClick={() => navigate(RUTA_COMPRA_PLANES_VISITADOR)}>
+                        Bolsa agotada · compra más visitas
+                      </button>
+                    ) : (
+                      <span className="text-red-600 font-medium">{MENSAJE_BOLSA_AGOTADA_VISITADOR}</span>
+                    ))}
                   </CardContent>
                 </Card>
               )
