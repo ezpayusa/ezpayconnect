@@ -255,9 +255,16 @@ export default function ColaPage() {
         </div>
       )}
 
-      {/* Vacío con filtro */}
-      {!loading && !error && filtro !== 'todas' && entregas.length === 0 && (
+      {/* Vacío con filtro (lista) */}
+      {!loading && !error && vista === 'lista' && filtro !== 'todas' && entregas.length === 0 && (
         <p className="text-sm text-gray-500 text-center py-8">No hay entregas en este estado.</p>
+      )}
+
+      {/* Mapa sin nada que dibujar: el filtro no tiene pendientes (Entregadas, Fallidas o vacío) */}
+      {!loading && !error && vista === 'mapa' && cola.entregas.length === 0 && !(filtro === 'todas' && libre) && (
+        <div className="rounded-2xl bg-white border border-gray-100 p-6 text-center text-sm text-gray-500">
+          No hay entregas para mostrar en el mapa con este filtro.
+        </div>
       )}
 
       {/* Mapa: pendientes ordenadas, numeradas por orden de la cola */}

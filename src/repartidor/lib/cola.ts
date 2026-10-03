@@ -76,6 +76,31 @@ export function debeRecalcular(referencia: Coordenada | null, nueva: Coordenada,
   return referencia == null || haversineMetros(referencia, nueva) > umbral
 }
 
+/** Más allá de esto la ubicación no sirve para encuadrar: el repartidor está fuera de su zona (o el GPS miente). */
+export const DISTANCIA_ABSURDA_M = 200_000
+
+export interface Encuadre {
+  /** Puntos a encuadrar con fitBounds. */
+  puntos: [number, number][]
+  /** true = la entrega más cercana está a más de 200 km: se encuadran solo las entregas y se avisa. */
+  lejos: boolean
+}
+
+/**
+ * Encuadre inicial del mapa: la ubicación del repartidor + sus entregas pendientes con coordenadas. Si hasta la más
+ * cercana queda a más de 200 km, la ubicación se deja afuera (el mapa quedaría ilegible) y se marca `lejos`.
+ */
+export function encuadreMapa(posicion: Coordenada | null, entregas: Pick<EntregaRepartidor, 'lat' | 'lng'>[]): Encuadre {
+  const destinos = entregas
+    .filter((e) => e.lat != null && e.lng != null)
+    .map((e) => [e.lat as number, e.lng as number] as [number, number])
+  if (!posicion) return { puntos: destinos, lejos: false }
+  if (destinos.length === 0) return { puntos: [[posicion.lat, posicion.lng]], lejos: false }
+  const masCercana = Math.min(...destinos.map(([lat, lng]) => haversineMetros(posicion, { lat, lng })))
+  if (masCercana > DISTANCIA_ABSURDA_M) return { puntos: destinos, lejos: true }
+  return { puntos: [[posicion.lat, posicion.lng], ...destinos], lejos: false }
+}
+
 /** Distancia legible: "350 m" o "2,4 km". */
 export function formatoDistancia(metros: number): string {
   if (metros < 1000) return `${Math.round(metros / 10) * 10} m`

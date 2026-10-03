@@ -1,9 +1,10 @@
-import { MapContainer, TileLayer, Marker, Popup, CircleMarker, Polyline } from 'react-leaflet'
+import { useEffect } from 'react'
+import { MapContainer, TileLayer, Marker, Popup, CircleMarker, Polyline, useMap } from 'react-leaflet'
 import L from 'leaflet'
 import 'leaflet/dist/leaflet.css'
 import type { EntregaRepartidor } from '@/repartidor/types'
 import type { Coordenada } from '@/repartidor/lib/cola'
-import { formatoDistancia } from '@/repartidor/lib/cola'
+import { encuadreMapa, formatoDistancia } from '@/repartidor/lib/cola'
 import { folioEntrega } from '@/repartidor/lib/folio'
 
 interface Props {
@@ -23,14 +24,27 @@ const icono = (n: number, primero: boolean) => L.divIcon({
   iconAnchor: [14, 14],
 })
 
+/** Encuadra el mapa en los puntos (fitBounds) y vuelve a encuadrar cuando cambian: entregas nuevas o movimiento > 200 m. */
+function Encuadrar({ puntos }: { puntos: [number, number][] }) {
+  const map = useMap()
+  const clave = puntos.map((p) => p.join(',')).join(';')
+  useEffect(() => {
+    if (puntos.length === 0) return
+    if (puntos.length === 1) map.setView(puntos[0], 15)
+    else map.fitBounds(L.latLngBounds(puntos), { padding: [32, 32], maxZoom: 16 })
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [clave, map])
+  return null
+}
+
 export default function MapaEntregas({ entregas, distancias, posicion, onAbrir }: Props) {
   const conCoords = entregas.filter((e) => e.lat != null && e.lng != null)
   const sinCoords = entregas.length - conCoords.length
-  const centro: [number, number] | null = posicion
-    ? [posicion.lat, posicion.lng]
-    : conCoords.length > 0 ? [conCoords[0].lat as number, conCoords[0].lng as number] : null
+  // Encuadre inicial: ubicación + pendientes; a más de 200 km de la más cercana, solo las pendientes (y aviso).
+  const encuadre = encuadreMapa(posicion, conCoords)
+  const centro: [number, number] | null = encuadre.puntos[0] ?? null
 
-  if (!centro) {
+  if (!centro || conCoords.length === 0) {
     return (
       <div className="rounded-2xl bg-white border border-gray-100 p-6 text-center text-sm text-gray-500">
         Ninguna de tus entregas tiene ubicación en el mapa todavía.
@@ -38,15 +52,22 @@ export default function MapaEntregas({ entregas, distancias, posicion, onAbrir }
     )
   }
 
+  // La línea sale de la ubicación solo si está cerca: a cientos de km sería una raya que cruza el mapa.
   const recorrido: [number, number][] = [
-    ...(posicion ? [[posicion.lat, posicion.lng] as [number, number]] : []),
+    ...(posicion && !encuadre.lejos ? [[posicion.lat, posicion.lng] as [number, number]] : []),
     ...conCoords.map((e) => [e.lat as number, e.lng as number] as [number, number]),
   ]
 
   return (
     <div className="space-y-2">
+      {encuadre.lejos && (
+        <div className="rounded-xl bg-amber-50 border border-amber-200 text-amber-800 text-sm px-3 py-2">
+          Estás lejos de tu zona de entregas: el mapa muestra solo tus entregas.
+        </div>
+      )}
       <div className="h-[60vh] rounded-2xl overflow-hidden border border-gray-100">
         <MapContainer center={centro} zoom={13} scrollWheelZoom style={{ height: '100%', width: '100%' }}>
+          <Encuadrar puntos={encuadre.puntos} />
           <TileLayer
             attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'
             url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"

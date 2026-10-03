@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest'
 import {
   haversineMetros, ordenarCola, estadoRepartidor, debeRecalcular, formatoDistancia, textoEntregasNuevas, UMBRAL_RECALCULO_M,
+  encuadreMapa,
 } from './cola'
 import type { EstadoEntrega } from '@/repartidor/types'
 
@@ -77,5 +78,24 @@ describe('textos', () => {
     expect(formatoDistancia(2400)).toBe('2,4 km')
     expect(textoEntregasNuevas(1)).toBe('Tenés 1 entrega nueva')
     expect(textoEntregasNuevas(3)).toBe('Tenés 3 entregas nuevas')
+  })
+})
+
+describe('encuadreMapa (fitBounds inicial)', () => {
+  const zona = [{ lat: 14.61, lng: -90.51 }, { lat: 14.63, lng: -90.52 }, { lat: null, lng: null }]
+  it('ubicacion + entregas con coordenadas', () => {
+    const r = encuadreMapa(AQUI, zona)
+    expect(r.lejos).toBe(false)
+    expect(r.puntos).toEqual([[14.6, -90.51], [14.61, -90.51], [14.63, -90.52]])
+  })
+  it('a mas de 200 km de la entrega mas cercana: solo las entregas, con aviso', () => {
+    const r = encuadreMapa({ lat: 14.07, lng: -87.19 }, zona)   // Tegucigalpa, ~360 km
+    expect(r.lejos).toBe(true)
+    expect(r.puntos).toEqual([[14.61, -90.51], [14.63, -90.52]])
+  })
+  it('sin ubicacion: solo las entregas; sin entregas dibujables: solo la ubicacion', () => {
+    expect(encuadreMapa(null, zona)).toEqual({ puntos: [[14.61, -90.51], [14.63, -90.52]], lejos: false })
+    expect(encuadreMapa(AQUI, [{ lat: null, lng: null }])).toEqual({ puntos: [[14.6, -90.51]], lejos: false })
+    expect(encuadreMapa(null, [])).toEqual({ puntos: [], lejos: false })
   })
 })
