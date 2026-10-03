@@ -19536,19 +19536,56 @@ BEGIN
 
   -- P817 visitas: get_visitas_proveedor() se elimino en la 354 (0 llamadores, devolvia el email del medico a
   -- cualquier rol). Su reemplazo acotado, nombres_medicos_visitas, no usa exigir_empresa_activa: es fail-closed por
-  -- mi_empresa_proveedor() (exige empresa 'activa') -> con la empresa suspendida devuelve 0 filas, sin error.
-  UPDATE public.empresas_proveedoras SET estado='activa' WHERE id=v_emp;
-  BEGIN PERFORM set_config('request.jwt.claims',claims,true); PERFORM set_config('role','authenticated',true);
-    PERFORM count(*) FROM public.nombres_medicos_visitas(ARRAY(SELECT p.id FROM public.perfiles p WHERE p.rol='medico')); PERFORM set_config('role','none',true); r_act:='OK';
-  EXCEPTION WHEN OTHERS THEN PERFORM set_config('role','none',true); r_act:='ERR '||SQLSTATE; END;
-  UPDATE public.empresas_proveedoras SET estado='suspendida' WHERE id=v_emp;
-  BEGIN PERFORM set_config('request.jwt.claims',claims,true); PERFORM set_config('role','authenticated',true);
-    r_sus := (SELECT CASE WHEN count(*) = 0 THEN '0_FILAS' ELSE 'VE '||count(*) END FROM public.nombres_medicos_visitas(ARRAY(SELECT p.id FROM public.perfiles p WHERE p.rol='medico')));
-    PERFORM set_config('role','none',true);
-  EXCEPTION WHEN OTHERS THEN PERFORM set_config('role','none',true); r_sus:='ERR '||SQLSTATE; END;
-  PERFORM set_config('probe.p817', CASE WHEN r_act='OK' AND r_sus='0_FILAS' AND NOT EXISTS (SELECT 1 FROM pg_proc WHERE proname='get_visitas_proveedor')
-    THEN 'OK (visitas: get_visitas_proveedor eliminada; nombres_medicos_visitas activa OK, suspendida 0 filas)'
-    ELSE 'ROJO (activa='||r_act||' suspendida='||r_sus||' get_visitas_proveedor='||EXISTS (SELECT 1 FROM pg_proc WHERE proname='get_visitas_proveedor')::text||')' END, false);
+  -- mi_empresa_proveedor() (exige empresa 'activa'). Fixture PROPIO (no el de PGR_FX, que puede no tener visitas):
+  -- la empresa activa con mas visitas que tenga un admin o editor de identidad unica (ni paciente ni perfil); los ids
+  -- son los medico_id de SUS visitas. Activa: n_act > 0 y = oraculo (medicos distintos de sus visitas). Suspendida,
+  -- mismos ids: 0 filas sin error. La suspension se descarta (P0999) y se verifica el estado restaurado. Sin
+  -- empresa con visitas -> FALLO (sin fixture), nunca OK.
+  DECLARE
+    e17 uuid; a17 uuid; ids17 uuid[]; esp17 int; n_act int; n_sus int; st17 text := 'OK'; est_pre text; est_post text;
+  BEGIN
+    SELECT v.empresa_id INTO e17 FROM public.visitas_agendadas v JOIN public.empresas_proveedoras e ON e.id = v.empresa_id
+     WHERE e.estado = 'activa'
+       AND EXISTS (SELECT 1 FROM public.cuentas_proveedor c WHERE c.empresa_id = v.empresa_id AND c.activo AND c.rol_en_empresa IN ('admin','editor')
+                     AND EXISTS (SELECT 1 FROM auth.users u WHERE u.id = c.id)
+                     AND NOT EXISTS (SELECT 1 FROM public.pacientes pa WHERE pa.auth_user_id = c.id)
+                     AND NOT EXISTS (SELECT 1 FROM public.perfiles pf WHERE pf.id = c.id))
+     GROUP BY v.empresa_id ORDER BY count(*) DESC, v.empresa_id LIMIT 1;
+    IF e17 IS NULL THEN
+      PERFORM set_config('probe.p817', 'FALLO (sin fixture: ninguna empresa activa con visitas y un admin/editor)', false);
+    ELSE
+      a17 := (SELECT c.id FROM public.cuentas_proveedor c WHERE c.empresa_id = e17 AND c.activo AND c.rol_en_empresa IN ('admin','editor')
+                AND EXISTS (SELECT 1 FROM auth.users u WHERE u.id = c.id)
+                AND NOT EXISTS (SELECT 1 FROM public.pacientes pa WHERE pa.auth_user_id = c.id)
+                AND NOT EXISTS (SELECT 1 FROM public.perfiles pf WHERE pf.id = c.id)
+              ORDER BY c.rol_en_empresa, c.id LIMIT 1);
+      ids17 := ARRAY(SELECT DISTINCT v.medico_id FROM public.visitas_agendadas v WHERE v.empresa_id = e17 AND v.medico_id IS NOT NULL);
+      esp17 := cardinality(ids17);
+      est_pre := (SELECT estado FROM public.empresas_proveedoras WHERE id = e17);
+      BEGIN
+        PERFORM set_config('request.jwt.claims', json_build_object('sub', a17::text, 'role', 'authenticated')::text, true);
+        PERFORM set_config('role', 'authenticated', true);
+        n_act := (SELECT count(*) FROM public.nombres_medicos_visitas(ids17));
+        PERFORM set_config('role', 'none', true);
+        UPDATE public.empresas_proveedoras SET estado = 'suspendida' WHERE id = e17;
+        PERFORM set_config('role', 'authenticated', true);
+        n_sus := (SELECT count(*) FROM public.nombres_medicos_visitas(ids17));
+        PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
+        RAISE EXCEPTION 'P817 descarte' USING ERRCODE = 'P0999';
+      EXCEPTION
+        WHEN SQLSTATE 'P0999' THEN NULL;
+        WHEN OTHERS THEN PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true); st17 := SQLSTATE||' '||SQLERRM;
+      END;
+      est_post := (SELECT estado FROM public.empresas_proveedoras WHERE id = e17);
+      PERFORM set_config('probe.p817',
+        CASE WHEN st17 = 'OK' AND n_act > 0 AND n_act = esp17 AND n_sus = 0 AND est_post IS NOT DISTINCT FROM est_pre
+                  AND NOT EXISTS (SELECT 1 FROM pg_proc WHERE proname = 'get_visitas_proveedor')
+          THEN 'OK (get_visitas_proveedor eliminada; nombres_medicos_visitas activa n_act='||n_act||' = oraculo '||esp17||', suspendida 0 filas; estado restaurado)'
+          ELSE 'ROJO (n_act='||COALESCE(n_act::text, '-')||' oraculo='||esp17||' n_sus='||COALESCE(n_sus::text, '-')||' st='||st17
+               ||' estado '||COALESCE(est_pre, '-')||'->'||COALESCE(est_post, '-')
+               ||' get_visitas_proveedor='||EXISTS (SELECT 1 FROM pg_proc WHERE proname = 'get_visitas_proveedor')::text||')' END, false);
+    END IF;
+  END;
 
   -- P818 invitacion: invitar_miembro_proveedor (gate 42501 antes de validar args). suspendida->42501.
   UPDATE public.empresas_proveedoras SET estado='suspendida' WHERE id=v_emp;
@@ -31767,7 +31804,7 @@ UNION ALL SELECT 'P814_estructural_trigger_funcion', current_setting('probe.p814
 UNION ALL SELECT 'FX_pgr_gate_estado',               current_setting('probe.pgr_fx', true), 'OK (fixture)'
 UNION ALL SELECT 'P815_B_staff_gate',                current_setting('probe.p815', true),   'OK (activa OK, suspendida 42501)'
 UNION ALL SELECT 'P816_B_chat_gate',                 current_setting('probe.p816', true),   'OK (activa OK, suspendida 42501)'
-UNION ALL SELECT 'P817_B_visitas_gate',             current_setting('probe.p817', true),   'OK (354: get_visitas_proveedor eliminada; nombres_medicos_visitas suspendida 0 filas)'
+UNION ALL SELECT 'P817_B_visitas_gate',             current_setting('probe.p817', true),   'OK (354: get_visitas_proveedor eliminada; nombres_medicos_visitas activa n_act > 0 = oraculo, suspendida 0 filas)'
 UNION ALL SELECT 'P818_B_invitacion_gate',          current_setting('probe.p818', true),   'OK (suspendida 42501)'
 UNION ALL SELECT 'P819_A_get_empresa_id',           current_setting('probe.p819', true),   'OK (activa empresa, suspendida NULL)'
 UNION ALL SELECT 'P820_A_puede_aprobar_visitas',    current_setting('probe.p820', true),   'OK (activa true, suspendida false)'
