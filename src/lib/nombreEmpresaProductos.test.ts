@@ -7,6 +7,7 @@ describe('idsEmpresa', () => {
   it('ids distintos y no vacios', () => {
     expect(idsEmpresa([prod('1', 'e1'), prod('2', 'e2'), prod('3', 'e1'), prod('4', null)])).toEqual(['e1', 'e2'])
     expect(idsEmpresa([])).toEqual([])
+    expect(idsEmpresa([prod('1', ''), prod('2', 'e1'), prod('3', '')])).toEqual(['e1'])
   })
 })
 

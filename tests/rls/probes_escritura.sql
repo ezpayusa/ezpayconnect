@@ -19489,6 +19489,10 @@ BEGIN
   PERFORM set_config('probe.pgr_admin', v_admin::text, false);
   PERFORM set_config('probe.pgr_emp', v_emp::text, false);
   PERFORM set_config('probe.pgr_co', v_co::text, false);
+  -- estado original para restaurar al final de cada bloque PGR (ninguna probe posterior hereda la empresa suspendida
+  -- ni la cuenta co desactivada)
+  PERFORM set_config('probe.pgr_emp_estado0', (SELECT estado FROM public.empresas_proveedoras WHERE id = v_emp), false);
+  PERFORM set_config('probe.pgr_co_activo0', (SELECT activo::text FROM public.cuentas_proveedor WHERE id = v_co), false);
   PERFORM set_config('probe.pgr_ready','1', false);
   PERFORM set_config('probe.pgr_fx','OK (admin '||v_admin::text||', empresa '||v_emp::text||', co '||v_co::text||')', false);
 EXCEPTION WHEN OTHERS THEN
@@ -19593,7 +19597,14 @@ BEGIN
     PERFORM public.invitar_miembro_proveedor('x@x.invalid','QA','visitador_medico',NULL); PERFORM set_config('role','none',true); r_sus:='NO_BLOQUEO';
   EXCEPTION WHEN insufficient_privilege THEN PERFORM set_config('role','none',true); r_sus:='42501';
            WHEN OTHERS THEN PERFORM set_config('role','none',true); r_sus:='ERR '||SQLSTATE; END;
-  PERFORM set_config('probe.p818', CASE WHEN r_sus='42501' THEN 'OK (invitacion: suspendida 42501)' ELSE 'ROJO (suspendida='||r_sus||')' END, false);
+  -- restauracion (354): P815 desactiva la cuenta co y P818 deja la empresa suspendida; se vuelven al estado original
+  UPDATE public.empresas_proveedoras SET estado = current_setting('probe.pgr_emp_estado0', true) WHERE id = v_emp;
+  UPDATE public.cuentas_proveedor SET activo = current_setting('probe.pgr_co_activo0', true)::boolean WHERE id = v_co;
+  ss := (SELECT e.estado||'/'||c.activo::text FROM public.empresas_proveedoras e, public.cuentas_proveedor c WHERE e.id = v_emp AND c.id = v_co);
+  PERFORM set_config('probe.p818_det', 'restauracion: empresa/co = '||COALESCE(ss, '-')||' (original '||current_setting('probe.pgr_emp_estado0', true)||'/'||current_setting('probe.pgr_co_activo0', true)||')', false);
+  PERFORM set_config('probe.p818', CASE WHEN r_sus='42501' AND ss = current_setting('probe.pgr_emp_estado0', true)||'/'||current_setting('probe.pgr_co_activo0', true)
+    THEN 'OK (invitacion: suspendida 42501; restaurado empresa/co = '||ss||')'
+    ELSE 'ROJO (suspendida='||r_sus||' restauracion empresa/co='||COALESCE(ss, '-')||' esperado '||current_setting('probe.pgr_emp_estado0', true)||'/'||current_setting('probe.pgr_co_activo0', true)||')' END, false);
 
   PERFORM set_config('request.jwt.claims','',true);
 EXCEPTION WHEN OTHERS THEN PERFORM set_config('role','none',true);
@@ -19636,6 +19647,7 @@ BEGIN
   PERFORM set_config('request.jwt.claims',claims,true); PERFORM set_config('role','authenticated',true);
   b:=public.puede_auditar_chat(); PERFORM set_config('role','none',true); s1:=b::text;
   PERFORM set_config('probe.p821', CASE WHEN a1='true' AND s1='false' THEN 'OK (activa=true, suspendida=false)' ELSE 'ROJO (activa='||a1||' suspendida='||s1||')' END, false);
+  UPDATE public.empresas_proveedoras SET estado = current_setting('probe.pgr_emp_estado0', true) WHERE id = v_emp;  -- restauracion (354)
 
   PERFORM set_config('request.jwt.claims','',true);
 EXCEPTION WHEN OTHERS THEN PERFORM set_config('role','none',true);
@@ -19672,6 +19684,7 @@ BEGIN
     PERFORM set_config('role','none',true); r_upd:='upd='||n;
   EXCEPTION WHEN OTHERS THEN PERFORM set_config('role','none',true); r_upd:='upd_ERR '||SQLSTATE; END;
   PERFORM set_config('probe.p823', CASE WHEN r_emp='emp=1' AND r_eq LIKE 'equipo=%' AND r_upd='upd=1' THEN 'OK (pendiente ve empresa+equipo y UPDATE perfil OK; '||r_eq||')' ELSE 'ROJO ('||r_emp||' '||r_eq||' '||r_upd||')' END, false);
+  UPDATE public.empresas_proveedoras SET estado = current_setting('probe.pgr_emp_estado0', true) WHERE id = v_emp;  -- restauracion (354)
 
   PERFORM set_config('request.jwt.claims','',true);
 EXCEPTION WHEN OTHERS THEN PERFORM set_config('role','none',true);
@@ -30477,9 +30490,14 @@ END $$;
 DO $$
 DECLARE
   det text := ''; bad text := ''; v text; r record; n_med int; n_aj int; k_prov int := 0; k_perf int := 0;
-  c_med uuid; c_sa uuid; e_med int; n1 int; n2 int; tot int; dobles text;
+  c_med uuid; c_sa uuid; e_med int; n1 int; n2 int; tot int; dobles text; k_esp int;
 BEGIN
   IF current_user <> 'postgres' THEN RAISE EXCEPTION 'fixture roto: P944 corre como %', current_user; END IF;
+  -- piso: oraculo de cuentas que cumplen el criterio del barrido (b), calculado al inicio del mismo bloque
+  k_esp := (SELECT count(*) FROM public.cuentas_proveedor cp JOIN public.empresas_proveedoras e ON e.id = cp.empresa_id
+             WHERE cp.activo AND e.estado = 'activa' AND EXISTS (SELECT 1 FROM auth.users u WHERE u.id = cp.id)
+               AND NOT EXISTS (SELECT 1 FROM public.pacientes pa WHERE pa.auth_user_id = cp.id)
+               AND NOT EXISTS (SELECT 1 FROM public.perfiles pf WHERE pf.id = cp.id));
   v := (SELECT string_agg(pl.polname, ',') FROM pg_policy pl WHERE pl.polrelid = 'public.medicos'::regclass
          AND (COALESCE(pg_get_expr(pl.polqual, pl.polrelid), '')||COALESCE(pg_get_expr(pl.polwithcheck, pl.polrelid), ''))
              ~ '(pais_de_proveedor|mi_empresa_proveedor|mi_rol_proveedor|cuentas_proveedor)');
@@ -30503,10 +30521,12 @@ BEGIN
     k_prov := k_prov + 1;
     IF n_med <> 0 OR n_aj <> 0 THEN bad := bad||'proveedor '||r.email||' medicos='||n_med||' productos_ajenos='||n_aj||'; '; END IF;
   END LOOP;
-  IF k_prov = 0 THEN RAISE EXCEPTION 'fixture roto: P944 sin cuentas activas solo de proveedor'; END IF;
+  IF k_esp = 0 THEN RAISE EXCEPTION 'fixture roto: P944 sin cuentas activas solo de proveedor (oraculo 0)'; END IF;
+  IF k_prov <> k_esp THEN bad := bad||'k_prov='||k_prov||' distinto del oraculo '||k_esp||'; '; END IF;
   dobles := (SELECT string_agg(cp.email, ',' ORDER BY cp.email) FROM public.cuentas_proveedor cp
               WHERE cp.activo AND (EXISTS (SELECT 1 FROM public.pacientes pa WHERE pa.auth_user_id = cp.id) OR EXISTS (SELECT 1 FROM public.perfiles pf WHERE pf.id = cp.id)));
-  det := det||' ;; (b) cuentas solo de proveedor, activas|0 medicos y 0 productos ajenos|'||CASE WHEN position('proveedor ' IN bad) = 0 THEN 'OK' ELSE 'ROJO' END||'|'||k_prov||' cuentas|'
+  det := det||' ;; (b) cuentas solo de proveedor, activas|0 medicos y 0 productos ajenos; k_prov = oraculo|'
+         ||CASE WHEN position('proveedor ' IN bad) = 0 AND k_prov = k_esp THEN 'OK' ELSE 'ROJO' END||'|k_prov='||k_prov||' oraculo='||k_esp||'|'
          ||' ;; (b) fuera del barrido: identidad doble (paciente o perfil)|listadas|INFO|'||COALESCE(dobles, 'ninguna')||'|';
 
   FOR r IN SELECT p.id, p.email, p.rol FROM public.perfiles p
@@ -30523,7 +30543,8 @@ BEGIN
     k_perf := k_perf + 1;
     IF n_aj <> 0 THEN bad := bad||'perfil '||r.email||' ('||r.rol||') productos='||n_aj||'; '; END IF;
   END LOOP;
-  det := det||' ;; (c) perfiles activos fuera de medico/super_admin|0 productos|'||CASE WHEN position('perfil ' IN bad) = 0 THEN 'OK' ELSE 'ROJO' END||'|'||k_perf||' perfiles|';
+  IF k_perf = 0 THEN bad := bad||'k_perf=0: sin perfiles para barrer; '; END IF;
+  det := det||' ;; (c) perfiles activos fuera de medico/super_admin|0 productos, k_perf > 0|'||CASE WHEN position('perfil ' IN bad) = 0 AND k_perf > 0 THEN 'OK' ELSE 'ROJO' END||'|k_perf='||k_perf||'|';
 
   -- (d) medico con mas productos visibles segun el oraculo (activos, no afines, de su pais)
   SELECT p.id, (SELECT count(*) FROM public.productos_empresa pe WHERE pe.estado = 'activo' AND NOT COALESCE(private.empresa_es_afin(pe.empresa_id), false) AND pe.pais_id = p.pais_id)
@@ -30532,6 +30553,7 @@ BEGIN
    ORDER BY 2 DESC, p.id LIMIT 1;
   SELECT p.id INTO c_sa FROM public.perfiles p WHERE p.rol = 'super_admin' AND p.activo AND EXISTS (SELECT 1 FROM auth.users u WHERE u.id = p.id) ORDER BY p.id LIMIT 1;
   IF c_med IS NULL OR c_sa IS NULL THEN RAISE EXCEPTION 'fixture roto: P944 sin medico activo (%) o super_admin (%)', c_med, c_sa; END IF;
+  IF COALESCE(e_med, 0) = 0 THEN RAISE EXCEPTION 'fixture roto: P944 oraculo del medico 0 (ningun medico activo ve productos)'; END IF;
   tot := (SELECT count(*) FROM public.productos_empresa);
   PERFORM set_config('request.jwt.claims', json_build_object('sub', c_med::text, 'role', 'authenticated')::text, true);
   PERFORM set_config('role', 'authenticated', true);
@@ -30541,14 +30563,13 @@ BEGIN
   PERFORM set_config('role', 'authenticated', true);
   n2 := (SELECT count(*) FROM public.productos_empresa);
   PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
-  det := det||' ;; (d) contraprueba: medico = oraculo ('||e_med||'), super_admin = todos ('||tot||')|'
-         ||CASE WHEN e_med = 0 THEN 'oraculo del medico 0: sin contraprueba de medico' ELSE 'iguales' END||'|'
+  det := det||' ;; (d) contraprueba: medico = oraculo ('||e_med||' > 0), super_admin = todos ('||tot||')|iguales|'
          ||CASE WHEN n1 = e_med AND n2 = tot THEN 'OK' ELSE 'ROJO' END||'|medico='||n1||' super_admin='||n2||'|';
   IF n1 <> e_med OR n2 <> tot THEN bad := bad||'contraprueba medico='||n1||'/'||e_med||' super='||n2||'/'||tot||'; '; END IF;
 
   PERFORM set_config('probe.p944_det', det, false);
   PERFORM set_config('probe.p944', CASE WHEN bad = ''
-    THEN 'OK (medicos sin policy de proveedor; '||k_prov||' cuentas solo de proveedor ven 0 medicos y 0 productos ajenos; '||k_perf||' perfiles fuera de medico/super_admin ven 0 productos)'
+    THEN 'OK (medicos sin policy de proveedor; k_prov='||k_prov||' = oraculo '||k_esp||' cuentas solo de proveedor ven 0 medicos y 0 productos ajenos; k_perf='||k_perf||' perfiles fuera de medico/super_admin ven 0 productos; medico ve '||e_med||')'
     ELSE 'ROJO ('||left(bad, 900)||')' END, false);
 EXCEPTION WHEN OTHERS THEN
   PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
@@ -30557,6 +30578,7 @@ END $$;
 SELECT set_config('role', 'none', true);
 
 -- ---------------- P945 medicos por rol: proveedores 0 filas sin 42501; el resto conserva (354) ----------------
+-- Actores de identidad unica (una cuenta de proveedor que ademas es perfil, o al reves, no mide lo que dice).
 -- Cuentas solo de proveedor, una por (tipo de empresa, rol), hasta 6: SELECT de medicos -> 0 filas y sin error (no
 -- 42501: conservan el privilegio, solo pierden la policy). Medico, admin_clinica y admin_pais: no son cuentas de
 -- proveedor (pais_de_proveedor() NULL), asi que la policy borrada nunca les sumaba filas -> leen sin error; super_admin
@@ -30579,6 +30601,7 @@ BEGIN
     SELECT y.id, y.rol, 'perf' FROM (
       SELECT DISTINCT ON (p.rol) p.id, p.rol FROM public.perfiles p
        WHERE p.activo AND p.rol IN ('medico','admin_clinica','admin_pais','super_admin') AND EXISTS (SELECT 1 FROM auth.users u WHERE u.id = p.id)
+         AND NOT EXISTS (SELECT 1 FROM public.cuentas_proveedor c WHERE c.id = p.id)   -- identidad unica (no tambien proveedor)
        ORDER BY p.rol, p.id) y
   LOOP
     IF r.tipo = 'prov' THEN k_prov := k_prov + 1; IF k_prov > 6 THEN CONTINUE; END IF; END IF;
@@ -30595,17 +30618,18 @@ BEGIN
       det := det||' ;; '||r.etiqueta||'|0 filas sin error|'||CASE WHEN st = 'OK' AND n = 0 THEN 'OK' ELSE 'ROJO' END||'|'||st||' '||COALESCE(n::text, '-')||'|';
       IF st <> 'OK' OR n <> 0 THEN bad := bad||r.etiqueta||' '||st||' '||COALESCE(n::text, '-')||'; '; END IF;
     ELSE
-      det := det||' ;; '||r.etiqueta||'|lee sin error, pais_de_proveedor NULL'||CASE WHEN r.etiqueta = 'super_admin' THEN ', todas ('||tot||')' ELSE '' END||'|'
-             ||CASE WHEN st = 'OK' AND ppais = 'NULL' AND (r.etiqueta <> 'super_admin' OR n = tot) THEN 'OK' ELSE 'ROJO' END||'|'||st||' '||COALESCE(n::text, '-')||' pais_de_proveedor='||COALESCE(ppais, '-')||'|';
-      IF st <> 'OK' OR ppais IS DISTINCT FROM 'NULL' OR (r.etiqueta = 'super_admin' AND n <> tot) THEN bad := bad||r.etiqueta||' '||st||' '||COALESCE(n::text, '-')||'; '; END IF;
+      det := det||' ;; '||r.etiqueta||'|> 0 sin error, pais_de_proveedor NULL'||CASE WHEN r.etiqueta = 'super_admin' THEN ', todas ('||tot||')' ELSE '' END||'|'
+             ||CASE WHEN st = 'OK' AND ppais = 'NULL' AND n > 0 AND (r.etiqueta <> 'super_admin' OR n = tot) THEN 'OK' ELSE 'ROJO' END||'|'||st||' '||COALESCE(n::text, '-')||' pais_de_proveedor='||COALESCE(ppais, '-')||'|';
+      IF st <> 'OK' OR ppais IS DISTINCT FROM 'NULL' OR NOT COALESCE(n > 0, false) OR (r.etiqueta = 'super_admin' AND n <> tot) THEN bad := bad||r.etiqueta||' '||st||' '||COALESCE(n::text, '-')||'; '; END IF;
     END IF;
   END LOOP;
-  IF k_prov < 3 OR position(' ;; super_admin|' IN det) = 0 OR position(' ;; medico|' IN det) = 0 THEN
-    RAISE EXCEPTION 'fixture roto: P945 con % cuentas de proveedor o sin medico/super_admin', k_prov;
+  IF k_prov < 3 OR position(' ;; super_admin|' IN det) = 0 OR position(' ;; medico|' IN det) = 0
+     OR position(' ;; admin_clinica|' IN det) = 0 OR position(' ;; admin_pais|' IN det) = 0 THEN
+    RAISE EXCEPTION 'fixture roto: P945 con % cuentas de proveedor o sin medico/admin_clinica/admin_pais/super_admin', k_prov;
   END IF;
   PERFORM set_config('probe.p945_det', det, false);
   PERFORM set_config('probe.p945', CASE WHEN bad = ''
-    THEN 'OK (cuentas de proveedor ven 0 medicos sin 42501; medico, admin_clinica y admin_pais leen sin error (pais_de_proveedor NULL); super_admin todas)'
+    THEN 'OK (cuentas de proveedor ven 0 medicos sin 42501; medico, admin_clinica y admin_pais leen > 0 sin error (pais_de_proveedor NULL); super_admin todas)'
     ELSE 'ROJO ('||left(bad, 900)||')' END, false);
 EXCEPTION WHEN OTHERS THEN
   PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
@@ -30620,7 +30644,7 @@ SELECT set_config('role', 'none', true);
 -- otra empresa -> 0; un medico sin visitas de la empresa -> 0; la firma no tiene email. Fixture descartado.
 DO $$
 DECLARE
-  det text := ''; bad text := ''; r_rest text := 'OK'; st text; v text; esp text; r record; p uuid;
+  det text := ''; bad text := ''; r_rest text := 'OK'; st text; v text; esp text; esp_eq text; r record; p uuid; medidos text := '';
   v_emp uuid; c_adm uuid; c_vm uuid; c_sup uuid; c_cat uuid; c_otra uuid; m_ajeno uuid; todos uuid[]; snap_pre text; snap_post text;
 BEGIN
   IF current_user <> 'postgres' THEN RAISE EXCEPTION 'fixture roto: P946 corre como %', current_user; END IF;
@@ -30630,12 +30654,28 @@ BEGIN
   c_adm := (SELECT c.id FROM public.cuentas_proveedor c WHERE c.empresa_id = v_emp AND c.activo AND c.rol_en_empresa = 'admin'
              AND NOT EXISTS (SELECT 1 FROM public.pacientes pa WHERE pa.auth_user_id = c.id) ORDER BY c.id LIMIT 1);
   c_vm := (SELECT c.id FROM public.cuentas_proveedor c WHERE c.empresa_id = v_emp AND c.activo AND c.rol_en_empresa = 'visitador_medico' ORDER BY c.id LIMIT 1);
-  c_sup := (SELECT c.id FROM public.cuentas_proveedor c WHERE c.empresa_id = v_emp AND c.activo AND c.rol_en_empresa = 'supervisor' ORDER BY c.id LIMIT 1);
+  -- supervisor de CUALQUIER empresa activa con un equipo (equipos_visitadores.supervisor_id) que tenga visitas
+  c_sup := (SELECT s.id FROM public.cuentas_proveedor s JOIN public.empresas_proveedoras es ON es.id = s.empresa_id
+             WHERE s.activo AND s.rol_en_empresa = 'supervisor' AND es.estado = 'activa' AND EXISTS (SELECT 1 FROM auth.users u WHERE u.id = s.id)
+               AND NOT EXISTS (SELECT 1 FROM public.pacientes pa WHERE pa.auth_user_id = s.id) AND NOT EXISTS (SELECT 1 FROM public.perfiles pf WHERE pf.id = s.id)
+               AND EXISTS (SELECT 1 FROM public.visitas_agendadas va JOIN public.cuentas_proveedor cv ON cv.id = va.cuenta_proveedor_id
+                            JOIN public.equipos_visitadores eq ON eq.id = cv.equipo_id
+                           WHERE va.empresa_id = s.empresa_id AND eq.supervisor_id = s.id)
+             ORDER BY s.id LIMIT 1);
+  IF c_sup IS NULL THEN RAISE EXCEPTION 'sin fixture supervisor (ningun supervisor con equipo con visitas)'; END IF;
+  -- oraculo del equipo, como postgres: medicos de las visitas de su empresa hechas por cuentas de su equipo, o propias
+  esp_eq := (SELECT COALESCE(string_agg(x.m::text, ',' ORDER BY x.m), '') FROM (
+              SELECT DISTINCT va.medico_id AS m FROM public.visitas_agendadas va JOIN public.cuentas_proveedor s ON s.id = c_sup
+               WHERE va.empresa_id = s.empresa_id AND va.medico_id IS NOT NULL
+                 AND (va.cuenta_proveedor_id = c_sup OR va.propuesta_por = c_sup
+                      OR EXISTS (SELECT 1 FROM public.cuentas_proveedor cv JOIN public.equipos_visitadores eq ON eq.id = cv.equipo_id
+                                  WHERE cv.id = va.cuenta_proveedor_id AND eq.supervisor_id = c_sup))) x);
+  IF esp_eq = '' THEN RAISE EXCEPTION 'sin fixture supervisor (oraculo del equipo vacio)'; END IF;
   c_otra := (SELECT c.id FROM public.cuentas_proveedor c JOIN public.empresas_proveedoras e ON e.id = c.empresa_id
-              WHERE c.activo AND e.estado = 'activa' AND c.empresa_id <> v_emp AND EXISTS (SELECT 1 FROM auth.users u WHERE u.id = c.id)
+              WHERE c.activo AND e.estado = 'activa' AND c.empresa_id <> v_emp AND c.id <> c_sup AND EXISTS (SELECT 1 FROM auth.users u WHERE u.id = c.id)
                 AND NOT EXISTS (SELECT 1 FROM public.pacientes pa WHERE pa.auth_user_id = c.id) ORDER BY c.id LIMIT 1);
   c_cat := (SELECT c.id FROM public.cuentas_proveedor c JOIN public.empresas_proveedoras e ON e.id = c.empresa_id
-             WHERE c.activo AND e.estado = 'activa' AND c.empresa_id <> v_emp AND c.id <> c_otra AND EXISTS (SELECT 1 FROM auth.users u WHERE u.id = c.id)
+             WHERE c.activo AND e.estado = 'activa' AND c.empresa_id <> v_emp AND c.id <> c_otra AND c.id <> c_sup AND EXISTS (SELECT 1 FROM auth.users u WHERE u.id = c.id)
                AND NOT EXISTS (SELECT 1 FROM public.pacientes pa WHERE pa.auth_user_id = c.id) ORDER BY c.id DESC LIMIT 1);
   m_ajeno := (SELECT p.id FROM public.perfiles p WHERE p.rol = 'medico'
                AND NOT EXISTS (SELECT 1 FROM public.visitas_agendadas v WHERE v.medico_id = p.id AND v.empresa_id = v_emp) ORDER BY p.id LIMIT 1);
@@ -30665,6 +30705,11 @@ BEGIN
       END;
       IF r.k IN (4,5) AND esp <> '' THEN bad := bad||r.nombre||': el oraculo no es vacio ('||esp||'); '; END IF;
       IF r.k = 1 AND esp = '' THEN bad := bad||'admin: oraculo vacio, la prueba no mide; '; END IF;
+      -- supervisor: ademas del oraculo RLS, el oraculo de su equipo calculado como postgres, no vacio
+      IF r.k = 3 AND (v IS DISTINCT FROM esp_eq OR esp IS DISTINCT FROM esp_eq) THEN
+        bad := bad||'supervisor: rpc='||COALESCE(v, '-')||' oraculo equipo='||esp_eq||' oraculo RLS='||COALESCE(esp, '-')||'; ';
+      END IF;
+      medidos := medidos||CASE WHEN medidos = '' THEN '' ELSE ', ' END||r.nombre;
       det := det||' ;; '||r.nombre||'|'||CASE WHEN esp = '' THEN '0 filas' ELSE (array_length(string_to_array(esp, ','), 1))||' medicos = oraculo RLS' END||'|'
              ||CASE WHEN st = 'OK' AND v = esp THEN 'OK' ELSE 'ROJO' END||'|'||st||' rpc='||COALESCE(array_length(string_to_array(NULLIF(v, ''), ','), 1), 0)||'|';
       IF st <> 'OK' OR v IS DISTINCT FROM esp THEN bad := bad||r.nombre||': rpc='||COALESCE(v, '-')||' oraculo='||COALESCE(esp, '-')||' '||st||'; '; END IF;
@@ -30681,7 +30726,7 @@ BEGIN
   det := det||' ;; restauracion|subtransaccion descartada|'||r_rest||'|-|';
   PERFORM set_config('probe.p946_det', det, false);
   PERFORM set_config('probe.p946', CASE WHEN bad = '' AND r_rest = 'OK'
-    THEN 'OK (admin, visitador y supervisor = oraculo RLS de visitas; catalogo y otra empresa 0; medico sin visitas 0; sin email; descartado)'
+    THEN 'OK (medidos: '||medidos||'; admin/visitador = oraculo RLS; supervisor '||c_sup||' = oraculo de su equipo ('||array_length(string_to_array(esp_eq, ','), 1)||' medicos) = RLS; catalogo y otra empresa 0; medico sin visitas 0; sin email; descartado)'
     ELSE 'ROJO ('||left(bad, 900)||' | restauracion='||r_rest||')' END, false);
 EXCEPTION WHEN OTHERS THEN
   PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
@@ -30728,6 +30773,7 @@ BEGIN
     det := det||' ;; '||r.nombre||'|'||CASE WHEN esp = '' THEN '0 filas' ELSE 'empresas = oraculo ('||array_length(string_to_array(esp, ','), 1)||')' END||'|'
            ||CASE WHEN st = 'OK' AND v = esp THEN 'OK' ELSE 'ROJO' END||'|'||st||' '||COALESCE(v, '-')||'|';
     IF st <> 'OK' OR v IS DISTINCT FROM esp THEN bad := bad||r.nombre||': '||COALESCE(v, '-')||' esperado '||esp||' '||st||'; '; END IF;
+    IF r.k = 4 AND esp = '' THEN RAISE EXCEPTION 'sin fixture (oraculo del medico vacio: ninguna empresa con productos visibles)'; END IF;
     IF r.k = 4 AND EXISTS (SELECT 1 FROM public.empresas_proveedoras e WHERE e.tipo = 'empresa_afin' AND position(e.id::text IN COALESCE(v, '')) > 0) THEN
       bad := bad||'el medico ve una empresa afin; ';
     END IF;
@@ -30749,7 +30795,7 @@ SELECT set_config('role', 'none', true);
 -- capacidad apagada -> admin 0. Firma sin email. Fixture descartado.
 DO $$
 DECLARE
-  det text := ''; bad text := ''; r_rest text := 'OK'; st text; n int; esp int; esp_k int; r record; p uuid; k_otros int := 0;
+  det text := ''; bad text := ''; r_rest text := 'OK'; st text; n int; esp int; esp_k int; r record; p uuid; k_otros int := 0; medidos text := ''; pais_r uuid;
   v_emp uuid; v_pais uuid; c_adm uuid; c_ed uuid; c_sup uuid; c_vm uuid; snap_pre text; snap_post text; v text;
 BEGIN
   IF current_user <> 'postgres' THEN RAISE EXCEPTION 'fixture roto: P948 corre como %', current_user; END IF;
@@ -30757,10 +30803,19 @@ BEGIN
    WHERE c.activo AND e.estado = 'activa' AND c.rol_en_empresa = 'admin' AND COALESCE(private.empresa_tiene_capacidad(c.empresa_id, 'visitadores'), false)
      AND NOT EXISTS (SELECT 1 FROM public.pacientes pa WHERE pa.auth_user_id = c.id) AND NOT EXISTS (SELECT 1 FROM public.perfiles pf WHERE pf.id = c.id)
    ORDER BY (SELECT count(*) FROM public.visitas_agendadas v WHERE v.empresa_id = c.empresa_id) DESC, c.id LIMIT 1;
-  c_sup := (SELECT c.id FROM public.cuentas_proveedor c WHERE c.empresa_id = v_emp AND c.activo AND c.rol_en_empresa = 'supervisor' ORDER BY c.id LIMIT 1);
+  -- supervisor de CUALQUIER empresa activa con la capacidad y un equipo con visitas
+  c_sup := (SELECT s.id FROM public.cuentas_proveedor s JOIN public.empresas_proveedoras es ON es.id = s.empresa_id
+             WHERE s.activo AND s.rol_en_empresa = 'supervisor' AND es.estado = 'activa' AND COALESCE(private.empresa_tiene_capacidad(s.empresa_id, 'visitadores'), false)
+               AND EXISTS (SELECT 1 FROM auth.users u WHERE u.id = s.id)
+               AND NOT EXISTS (SELECT 1 FROM public.pacientes pa WHERE pa.auth_user_id = s.id) AND NOT EXISTS (SELECT 1 FROM public.perfiles pf WHERE pf.id = s.id)
+               AND EXISTS (SELECT 1 FROM public.visitas_agendadas va JOIN public.cuentas_proveedor cv ON cv.id = va.cuenta_proveedor_id
+                            JOIN public.equipos_visitadores eq ON eq.id = cv.equipo_id
+                           WHERE va.empresa_id = s.empresa_id AND eq.supervisor_id = s.id)
+             ORDER BY s.id LIMIT 1);
+  IF c_sup IS NULL THEN RAISE EXCEPTION 'sin fixture supervisor (ningun supervisor con capacidad y equipo con visitas)'; END IF;
   c_vm := (SELECT c.id FROM public.cuentas_proveedor c WHERE c.empresa_id = v_emp AND c.activo AND c.rol_en_empresa = 'visitador_medico' ORDER BY c.id LIMIT 1);
   c_ed := (SELECT c.id FROM public.cuentas_proveedor c JOIN public.empresas_proveedoras e ON e.id = c.empresa_id
-            WHERE c.activo AND e.estado = 'activa' AND c.empresa_id <> v_emp AND EXISTS (SELECT 1 FROM auth.users u WHERE u.id = c.id)
+            WHERE c.activo AND e.estado = 'activa' AND c.empresa_id <> v_emp AND c.id <> c_sup AND EXISTS (SELECT 1 FROM auth.users u WHERE u.id = c.id)
               AND NOT EXISTS (SELECT 1 FROM public.pacientes pa WHERE pa.auth_user_id = c.id) ORDER BY c.id DESC LIMIT 1);
   v_pais := (SELECT COALESCE(c.pais_id, e.pais_id) FROM public.cuentas_proveedor c JOIN public.empresas_proveedoras e ON e.id = c.empresa_id WHERE c.id = c_adm);
   esp := (SELECT count(*) FROM (SELECT 1 FROM public.perfiles pf WHERE pf.rol = 'medico' AND pf.activo AND pf.pais_id = v_pais LIMIT 50) x);
@@ -30794,8 +30849,12 @@ BEGIN
         PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
       EXCEPTION WHEN OTHERS THEN st := SQLSTATE||' '||SQLERRM; PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
       END;
-      esp_k := CASE WHEN r.k <= 4 THEN esp ELSE 0 END;
-      det := det||' ;; '||r.nombre||'|'||CASE WHEN r.k <= 4 THEN esp::text||' medicos (oraculo)' ELSE '0 filas' END||'|'
+      -- oraculo por actor: medicos activos de SU pais (COALESCE(cuenta.pais_id, empresa.pais_id)), LIMIT 50; debe ser > 0
+      pais_r := (SELECT COALESCE(c.pais_id, e.pais_id) FROM public.cuentas_proveedor c JOIN public.empresas_proveedoras e ON e.id = c.empresa_id WHERE c.id = r.id);
+      esp_k := CASE WHEN r.k <= 4 THEN (SELECT count(*) FROM (SELECT 1 FROM public.perfiles pf WHERE pf.rol = 'medico' AND pf.activo AND pf.pais_id = pais_r LIMIT 50) x) ELSE 0 END;
+      IF r.k <= 4 AND r.k <> 6 AND esp_k = 0 THEN bad := bad||r.nombre||': oraculo 0, la prueba no mide; '; END IF;
+      medidos := medidos||CASE WHEN medidos = '' THEN '' ELSE ', ' END||r.nombre;
+      det := det||' ;; '||r.nombre||'|'||CASE WHEN r.k <= 4 THEN esp_k::text||' medicos (oraculo)' ELSE '0 filas' END||'|'
              ||CASE WHEN st = 'OK' AND n = esp_k THEN 'OK' ELSE 'ROJO' END||'|'||st||' '||COALESCE(n::text, '-')||'|';
       IF st <> 'OK' OR n IS DISTINCT FROM esp_k THEN bad := bad||r.nombre||': '||st||' '||COALESCE(n::text, '-')||'; '; END IF;
     END LOOP;
@@ -30813,7 +30872,7 @@ BEGIN
   det := det||' ;; restauracion|subtransaccion descartada|'||r_rest||'|-|';
   PERFORM set_config('probe.p948_det', det, false);
   PERFORM set_config('probe.p948', CASE WHEN bad = '' AND r_rest = 'OK'
-    THEN 'OK (admin/editor/supervisor/visitador con capacidad = oraculo; '||k_otros||' roles sin visitas 0; sin capacidad 0; sin email; descartado)'
+    THEN 'OK (medidos: '||medidos||' (supervisor '||c_sup||'); roles de visitas con capacidad = oraculo de su pais (> 0); '||k_otros||' roles sin visitas 0; sin capacidad 0; sin email; descartado)'
     ELSE 'ROJO ('||left(bad, 900)||' | restauracion='||r_rest||')' END, false);
 EXCEPTION WHEN OTHERS THEN
   PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
@@ -31805,7 +31864,7 @@ UNION ALL SELECT 'FX_pgr_gate_estado',               current_setting('probe.pgr_
 UNION ALL SELECT 'P815_B_staff_gate',                current_setting('probe.p815', true),   'OK (activa OK, suspendida 42501)'
 UNION ALL SELECT 'P816_B_chat_gate',                 current_setting('probe.p816', true),   'OK (activa OK, suspendida 42501)'
 UNION ALL SELECT 'P817_B_visitas_gate',             current_setting('probe.p817', true),   'OK (354: get_visitas_proveedor eliminada; nombres_medicos_visitas activa n_act > 0 = oraculo, suspendida 0 filas)'
-UNION ALL SELECT 'P818_B_invitacion_gate',          current_setting('probe.p818', true),   'OK (suspendida 42501)'
+UNION ALL SELECT 'P818_B_invitacion_gate',          current_setting('probe.p818', true),   'OK (suspendida 42501; empresa y cuenta co restauradas)'
 UNION ALL SELECT 'P819_A_get_empresa_id',           current_setting('probe.p819', true),   'OK (activa empresa, suspendida NULL)'
 UNION ALL SELECT 'P820_A_puede_aprobar_visitas',    current_setting('probe.p820', true),   'OK (activa true, suspendida false)'
 UNION ALL SELECT 'P821_A_tiene_permiso',            current_setting('probe.p821', true),   'OK (suspendida false)'

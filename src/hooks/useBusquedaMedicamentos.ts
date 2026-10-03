@@ -9,7 +9,7 @@ import { conNombreEmpresa, idsEmpresa } from '@/lib/nombreEmpresaProductos';
  * error de la RPC se registra con su código; la lista se muestra igual, sin el nombre.
  * Empresas afines: la barrera es la RLS de productos_empresa (las excluye); el cliente no tiene el tipo de empresa.
  */
-async function enriquecerConLaboratorio(productos: ProductoEmpresa[]): Promise<ProductoEmpresa[]> {
+export async function enriquecerConLaboratorio(productos: ProductoEmpresa[]): Promise<ProductoEmpresa[]> {
   const ids = idsEmpresa(productos as any[]);
   if (ids.length === 0) return productos;
   const { data, error } = await supabase.rpc('nombre_empresa_por_productos', { p_empresa_ids: ids });
