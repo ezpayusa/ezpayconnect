@@ -30583,14 +30583,19 @@ SELECT set_config('role', 'none', true);
 -- 42501: conservan el privilegio, solo pierden la policy). Medico, admin_clinica y admin_pais: no son cuentas de
 -- proveedor (pais_de_proveedor() NULL), asi que la policy borrada nunca les sumaba filas -> leen sin error; super_admin
 -- ve todas. (La comparacion antes/despues de los conteos se mide en el dry-run de la 354.)
+-- Actores perfil deterministas (flake de la 354: el de menor id podia ser un perfil creado por un fixture, sin pais):
+-- perfiles reales (created_at anterior a esta transaccion; los fixtures nacen con created_at = now()), activos, en
+-- auth.users, sin cuenta de proveedor ni paciente; medico/admin_clinica/admin_pais con pais_id y un oraculo > 0 (medicos
+-- de su pais, contado como postgres al inicio del bloque); el mas antiguo por created_at y despues por id. Lee >= oraculo.
+-- Sin actor que cumpla -> FALLO (sin fixture), nunca OK.
 DO $$
 DECLARE
-  det text := ''; bad text := ''; st text; n int; ppais text; r record; tot int; k_prov int := 0;
+  det text := ''; bad text := ''; st text; n int; ppais text; r record; tot int; k_prov int := 0; m_act text := '-';
 BEGIN
   IF current_user <> 'postgres' THEN RAISE EXCEPTION 'fixture roto: P945 corre como %', current_user; END IF;
   tot := (SELECT count(*) FROM public.medicos);
   FOR r IN
-    SELECT x.id, x.etiqueta, x.tipo FROM (
+    SELECT x.id, x.etiqueta, x.tipo, 0 AS orc FROM (
       SELECT DISTINCT ON (e.tipo, cp.rol_en_empresa) cp.id, e.tipo||'/'||cp.rol_en_empresa AS etiqueta, 'prov' AS tipo
         FROM public.cuentas_proveedor cp JOIN public.empresas_proveedoras e ON e.id = cp.empresa_id
        WHERE cp.activo AND e.estado = 'activa' AND EXISTS (SELECT 1 FROM auth.users u WHERE u.id = cp.id)
@@ -30598,11 +30603,16 @@ BEGIN
          AND NOT EXISTS (SELECT 1 FROM public.perfiles pf WHERE pf.id = cp.id)
        ORDER BY e.tipo, cp.rol_en_empresa, cp.id) x
     UNION ALL
-    SELECT y.id, y.rol, 'perf' FROM (
-      SELECT DISTINCT ON (p.rol) p.id, p.rol FROM public.perfiles p
+    SELECT y.id, y.rol, 'perf', y.orc FROM (
+      SELECT DISTINCT ON (p.rol) p.id, p.rol,
+             CASE WHEN p.rol = 'super_admin' THEN tot ELSE (SELECT count(*) FROM public.medicos m WHERE m.pais_id = p.pais_id)::int END AS orc
+        FROM public.perfiles p
        WHERE p.activo AND p.rol IN ('medico','admin_clinica','admin_pais','super_admin') AND EXISTS (SELECT 1 FROM auth.users u WHERE u.id = p.id)
+         AND COALESCE(p.created_at, '-infinity') < now()                                 -- real: no lo creo un fixture de esta transaccion
          AND NOT EXISTS (SELECT 1 FROM public.cuentas_proveedor c WHERE c.id = p.id)   -- identidad unica (no tambien proveedor)
-       ORDER BY p.rol, p.id) y
+         AND NOT EXISTS (SELECT 1 FROM public.pacientes pa WHERE pa.auth_user_id = p.id)
+         AND (p.rol = 'super_admin' OR (p.pais_id IS NOT NULL AND EXISTS (SELECT 1 FROM public.medicos m WHERE m.pais_id = p.pais_id)))
+       ORDER BY p.rol, COALESCE(p.created_at, '-infinity'), p.id) y
   LOOP
     IF r.tipo = 'prov' THEN k_prov := k_prov + 1; IF k_prov > 6 THEN CONTINUE; END IF; END IF;
     st := 'OK'; n := NULL; ppais := NULL;
@@ -30618,18 +30628,23 @@ BEGIN
       det := det||' ;; '||r.etiqueta||'|0 filas sin error|'||CASE WHEN st = 'OK' AND n = 0 THEN 'OK' ELSE 'ROJO' END||'|'||st||' '||COALESCE(n::text, '-')||'|';
       IF st <> 'OK' OR n <> 0 THEN bad := bad||r.etiqueta||' '||st||' '||COALESCE(n::text, '-')||'; '; END IF;
     ELSE
-      det := det||' ;; '||r.etiqueta||'|> 0 sin error, pais_de_proveedor NULL'||CASE WHEN r.etiqueta = 'super_admin' THEN ', todas ('||tot||')' ELSE '' END||'|'
-             ||CASE WHEN st = 'OK' AND ppais = 'NULL' AND n > 0 AND (r.etiqueta <> 'super_admin' OR n = tot) THEN 'OK' ELSE 'ROJO' END||'|'||st||' '||COALESCE(n::text, '-')||' pais_de_proveedor='||COALESCE(ppais, '-')||'|';
-      IF st <> 'OK' OR ppais IS DISTINCT FROM 'NULL' OR NOT COALESCE(n > 0, false) OR (r.etiqueta = 'super_admin' AND n <> tot) THEN bad := bad||r.etiqueta||' '||st||' '||COALESCE(n::text, '-')||'; '; END IF;
+      det := det||' ;; '||r.etiqueta||'|>= oraculo > 0 sin error, pais_de_proveedor NULL'||CASE WHEN r.etiqueta = 'super_admin' THEN ', todas ('||tot||')' ELSE '' END||'|'
+             ||CASE WHEN st = 'OK' AND ppais = 'NULL' AND n > 0 AND n >= r.orc AND (r.etiqueta <> 'super_admin' OR n = tot) THEN 'OK' ELSE 'ROJO' END||'|'||st||' '||COALESCE(n::text, '-')
+             ||' pais_de_proveedor='||COALESCE(ppais, '-')||' actor='||r.id||' oraculo='||r.orc||'|';
+      IF r.etiqueta = 'medico' THEN m_act := r.id||' lee '||COALESCE(n::text, '-')||', oraculo '||r.orc; END IF;
+      IF st <> 'OK' OR ppais IS DISTINCT FROM 'NULL' OR NOT COALESCE(n > 0 AND n >= r.orc, false) OR (r.etiqueta = 'super_admin' AND n <> tot) THEN
+        bad := bad||r.etiqueta||' '||st||' '||COALESCE(n::text, '-')||' (actor '||r.id||', oraculo '||r.orc||'); ';
+      END IF;
     END IF;
   END LOOP;
-  IF k_prov < 3 OR position(' ;; super_admin|' IN det) = 0 OR position(' ;; medico|' IN det) = 0
+  IF position(' ;; super_admin|' IN det) = 0 OR position(' ;; medico|' IN det) = 0
      OR position(' ;; admin_clinica|' IN det) = 0 OR position(' ;; admin_pais|' IN det) = 0 THEN
-    RAISE EXCEPTION 'fixture roto: P945 con % cuentas de proveedor o sin medico/admin_clinica/admin_pais/super_admin', k_prov;
+    RAISE EXCEPTION 'sin fixture: P945 sin actor perfil real para medico/admin_clinica/admin_pais/super_admin (det:%)', det;
   END IF;
+  IF k_prov < 3 THEN RAISE EXCEPTION 'fixture roto: P945 con % cuentas de proveedor', k_prov; END IF;
   PERFORM set_config('probe.p945_det', det, false);
   PERFORM set_config('probe.p945', CASE WHEN bad = ''
-    THEN 'OK (cuentas de proveedor ven 0 medicos sin 42501; medico, admin_clinica y admin_pais leen > 0 sin error (pais_de_proveedor NULL); super_admin todas)'
+    THEN 'OK (cuentas de proveedor ven 0 medicos sin 42501; medico, admin_clinica y admin_pais leen >= su oraculo > 0 sin error (pais_de_proveedor NULL); super_admin todas; medico '||m_act||')'
     ELSE 'ROJO ('||left(bad, 900)||')' END, false);
 EXCEPTION WHEN OTHERS THEN
   PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
