@@ -20,7 +20,7 @@ const formatearPrecio = (moneda: string, monto: number) => `${moneda === 'GTQ' ?
 export default function VisitadorPlanesPage({ soloCupo = false }: Props) {
   const navigate = useNavigate()
   const { puede } = useProveedorAuth()
-  const { planesBase, planesVigentes, planesVencidos, visitasDisponibles, tieneIlimitado, loading } = usePlanesVisitador()
+  const { planesBase, planesVigentes, planesVencidos, visitasDisponibles, tieneIlimitado, cupos, cupoConDesglose, loading } = usePlanesVisitador()
   const puedeContratar = !soloCupo && puede('planes.contratar')
 
   return (
@@ -34,7 +34,16 @@ export default function VisitadorPlanesPage({ soloCupo = false }: Props) {
             {soloCupo ? 'Visitas disponibles de tu empresa y su vigencia' : 'Planes para agendar visitas con médicos'}
           </p>
         </div>
-        {tieneIlimitado ? (
+        {/* Cupo por país (criterio del gate): el del país de la empresa, o un desglose si hay cupo en otro país. */}
+        {cupoConDesglose ? (
+          <div className="flex flex-wrap justify-end gap-1">
+            {cupos.map((c) => (
+              <Badge key={c.pais_id} className="bg-emerald-100 text-emerald-700 text-sm px-3 py-1">
+                {c.pais_nombre ?? 'País'}: {c.ilimitado ? 'ilimitadas' : `${c.restante} disponibles`}
+              </Badge>
+            ))}
+          </div>
+        ) : tieneIlimitado ? (
           <Badge className="bg-emerald-100 text-emerald-700 text-sm px-3 py-1">Visitas ilimitadas</Badge>
         ) : visitasDisponibles > 0 ? (
           <Badge className="bg-emerald-100 text-emerald-700 text-sm px-3 py-1">{visitasDisponibles} visitas disponibles</Badge>

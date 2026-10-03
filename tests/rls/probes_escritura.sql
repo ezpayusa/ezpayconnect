@@ -30120,6 +30120,303 @@ EXCEPTION WHEN OTHERS THEN
 END $$;
 SELECT set_config('role', 'none', true);
 
+-- ---------------- P940-P942 delivery: gates por rol, lote atomico, asignar/reasignar con push, tablero (353) ----------------
+-- Fixture propio y descartado: farmacia 'P940 Farmacia' (GT, activa) con 2 sucursales (S1, S2) y 8 cuentas reales
+-- reasignadas: admin, gerente_farmacia, supervisor, cajero, inventario y 3 repartidores (D1 y D2 en S1, D3 en S2);
+-- una segunda farmacia 'ajena' con su sucursal. Entregas sembradas como postgres: 4 pendientes en S1 (p1..p4), una
+-- asignada a D1, una asignada a D2 ya cobrada, una pendiente en S2, una entregada hoy por D3 y una pendiente ajena.
+-- P940: gates de las 5 RPCs por rol (admin/gerente/supervisor pasan el gate; repartidor/cajero/inventario 42501), sin
+--       escribir nada.
+-- P941: asignar_entregas_lote es atomico (una invalida -> ninguna asignada, sin notificacion) con DE001-DE004 y la
+--       entrega que fallo en DETAIL; DE007/DE008/DE009; la tanda valida asigna todas y emite UNA notificacion
+--       "Tenes 2 entregas nuevas" al repartidor.
+-- P942: asignar_entrega / reasignar_entrega: errcodes DE001-DE006, notificacion al nuevo y "Te quitaron una entrega"
+--       al anterior; tablero (por gerente y por supervisor con filtro de sucursal) y repartidores asignables.
+DO $$
+DECLARE
+  d940 text := ''; b940 text := ''; d941 text := ''; b941 text := ''; d942 text := ''; b942 text := '';
+  st text; msg text; dt text; res jsonb; v text; v2 text; esp text; r_rest text := 'OK';
+  v_gt uuid; v_emp uuid; v_emp2 uuid; v_s1 integer; v_s2 integer; v_s3 integer; c uuid[]; rc bigint[];
+  c_adm uuid; c_ger uuid; c_sup uuid; c_caj uuid; c_inv uuid; c_d1 uuid; c_d2 uuid; c_d3 uuid;
+  e_p1 bigint; e_p2 bigint; e_p3 bigint; e_p4 bigint; e_asig bigint; e_cob bigint; e_s2 bigint; e_ent bigint; e_ajena bigint;
+  n0 integer; quien uuid; rol_actor text; fn text; snap_pre text; snap_post text; ids bigint[]; del uuid; k integer; j integer;
+BEGIN
+  IF current_user <> 'postgres' THEN RAISE EXCEPTION 'fixture roto: P940 corre como %', current_user; END IF;
+  SELECT id INTO v_gt FROM public.configuracion_pais WHERE codigo = 'GT';
+  c := ARRAY(SELECT cp.id FROM public.cuentas_proveedor cp WHERE EXISTS (SELECT 1 FROM auth.users u WHERE u.id = cp.id) ORDER BY cp.id LIMIT 8);
+  rc := ARRAY(SELECT r.id FROM public.recetas r WHERE r.paciente_id IS NOT NULL ORDER BY r.id LIMIT 9);
+  IF v_gt IS NULL OR COALESCE(cardinality(c), 0) < 8 OR COALESCE(cardinality(rc), 0) < 9 THEN
+    RAISE EXCEPTION 'fixture roto: P940 sin GT (%), 8 cuentas con usuario (%) o 9 recetas con paciente (%)', v_gt, cardinality(c), cardinality(rc);
+  END IF;
+  c_adm := c[1]; c_ger := c[2]; c_sup := c[3]; c_caj := c[4]; c_inv := c[5]; c_d1 := c[6]; c_d2 := c[7]; c_d3 := c[8];
+  snap_pre := (SELECT string_agg(x, ',') FROM (
+    SELECT 'ent='||(SELECT count(*) FROM public.entregas) UNION ALL SELECT 'notif='||(SELECT count(*) FROM public.notificaciones)
+    UNION ALL SELECT 'emp='||(SELECT count(*) FROM public.empresas_proveedoras) UNION ALL SELECT 'farm='||(SELECT count(*) FROM public.farmacias)
+    UNION ALL SELECT 'ctas='||(SELECT string_agg(cp.id::text||'/'||cp.empresa_id::text||'/'||cp.rol_en_empresa||'/'||cp.activo::text||'/'||COALESCE(cp.sucursal_id::text, '-')
+                                                ||'/'||COALESCE(cp.pais_id::text, '-')||'/'||COALESCE(cp.equipo_id::text, '-'), ';' ORDER BY cp.id)
+                               FROM public.cuentas_proveedor cp WHERE cp.id = ANY (c))) z(x));
+  BEGIN
+    INSERT INTO public.empresas_proveedoras (nombre_empresa, tipo, estado, pais_id, email_contacto)
+      VALUES ('P940 Farmacia', 'farmacia', 'activa', v_gt, 'p940@example.invalid') RETURNING id INTO v_emp;
+    INSERT INTO public.empresas_proveedoras (nombre_empresa, tipo, estado, pais_id, email_contacto)
+      VALUES ('P940 Farmacia ajena', 'farmacia', 'activa', v_gt, 'p940b@example.invalid') RETURNING id INTO v_emp2;
+    INSERT INTO public.farmacias (nombre, empresa_id, activo, pais_id) VALUES ('P940 Sucursal 1', v_emp, true, v_gt) RETURNING id INTO v_s1;
+    INSERT INTO public.farmacias (nombre, empresa_id, activo, pais_id) VALUES ('P940 Sucursal 2', v_emp, true, v_gt) RETURNING id INTO v_s2;
+    INSERT INTO public.farmacias (nombre, empresa_id, activo, pais_id) VALUES ('P940 Sucursal ajena', v_emp2, true, v_gt) RETURNING id INTO v_s3;
+    UPDATE public.cuentas_proveedor SET empresa_id = v_emp, activo = true, equipo_id = NULL, pais_id = NULL,
+           rol_en_empresa = CASE id WHEN c_adm THEN 'admin' WHEN c_ger THEN 'gerente_farmacia' WHEN c_sup THEN 'supervisor'
+                                    WHEN c_caj THEN 'cajero' WHEN c_inv THEN 'inventario' ELSE 'delivery' END,
+           sucursal_id = CASE id WHEN c_d1 THEN v_s1 WHEN c_d2 THEN v_s1 WHEN c_d3 THEN v_s2 ELSE NULL END
+     WHERE id = ANY (c);
+    -- entregas: la direccion y el telefono son marcadores para medir que el tablero no los expone
+    INSERT INTO public.entregas (receta_base_id, farmacia_id, empresa_id, paciente_id, direccion_entrega, telefono_contacto, estado)
+      SELECT r.id, v_s1, v_emp, r.paciente_id, 'P940 Calle Secreta 123', '55500940', 'pendiente' FROM public.recetas r WHERE r.id = rc[1] RETURNING id INTO e_p1;
+    INSERT INTO public.entregas (receta_base_id, farmacia_id, empresa_id, paciente_id, direccion_entrega, telefono_contacto, estado)
+      SELECT r.id, v_s1, v_emp, r.paciente_id, 'P940 Calle Secreta 123', '55500940', 'pendiente' FROM public.recetas r WHERE r.id = rc[2] RETURNING id INTO e_p2;
+    INSERT INTO public.entregas (receta_base_id, farmacia_id, empresa_id, paciente_id, direccion_entrega, telefono_contacto, estado)
+      SELECT r.id, v_s1, v_emp, r.paciente_id, 'P940 Calle Secreta 123', '55500940', 'pendiente' FROM public.recetas r WHERE r.id = rc[3] RETURNING id INTO e_p3;
+    INSERT INTO public.entregas (receta_base_id, farmacia_id, empresa_id, paciente_id, direccion_entrega, telefono_contacto, estado)
+      SELECT r.id, v_s1, v_emp, r.paciente_id, 'P940 Calle Secreta 123', '55500940', 'pendiente' FROM public.recetas r WHERE r.id = rc[4] RETURNING id INTO e_p4;
+    INSERT INTO public.entregas (receta_base_id, farmacia_id, empresa_id, paciente_id, direccion_entrega, telefono_contacto, estado, delivery_id, asignado_at)
+      SELECT r.id, v_s1, v_emp, r.paciente_id, 'P940 Calle Secreta 123', '55500940', 'asignada', c_d1, now() FROM public.recetas r WHERE r.id = rc[5] RETURNING id INTO e_asig;
+    INSERT INTO public.entregas (receta_base_id, farmacia_id, empresa_id, paciente_id, direccion_entrega, telefono_contacto, estado, delivery_id, asignado_at,
+                                 monto, cobrado, cobrado_at, cobrado_por, metodo_cobro)
+      SELECT r.id, v_s1, v_emp, r.paciente_id, 'P940 Calle Secreta 123', '55500940', 'asignada', c_d2, now(), 10, true, now(), c_d2, 'efectivo'
+        FROM public.recetas r WHERE r.id = rc[6] RETURNING id INTO e_cob;
+    INSERT INTO public.entregas (receta_base_id, farmacia_id, empresa_id, paciente_id, direccion_entrega, telefono_contacto, estado)
+      SELECT r.id, v_s2, v_emp, r.paciente_id, 'P940 Calle Secreta 123', '55500940', 'pendiente' FROM public.recetas r WHERE r.id = rc[7] RETURNING id INTO e_s2;
+    INSERT INTO public.entregas (receta_base_id, farmacia_id, empresa_id, paciente_id, direccion_entrega, telefono_contacto, estado, delivery_id, asignado_at, entregado_at)
+      SELECT r.id, v_s2, v_emp, r.paciente_id, 'P940 Calle Secreta 123', '55500940', 'entregada', c_d3, now(), now() FROM public.recetas r WHERE r.id = rc[8] RETURNING id INTO e_ent;
+    INSERT INTO public.entregas (receta_base_id, farmacia_id, empresa_id, paciente_id, direccion_entrega, telefono_contacto, estado)
+      SELECT r.id, v_s3, v_emp2, r.paciente_id, 'P940 Calle Secreta 123', '55500940', 'pendiente' FROM public.recetas r WHERE r.id = rc[9] RETURNING id INTO e_ajena;
+
+    -- ===================== P940: gates por rol, sin escribir =====================
+    v := (SELECT string_agg(e::text, ';' ORDER BY e.id) FROM public.entregas e WHERE e.empresa_id IN (v_emp, v_emp2))||'|'||(SELECT count(*) FROM public.notificaciones);
+    FOR k IN 1..6 LOOP
+      quien := CASE k WHEN 1 THEN c_adm WHEN 2 THEN c_ger WHEN 3 THEN c_sup WHEN 4 THEN c_d1 WHEN 5 THEN c_caj ELSE c_inv END;
+      rol_actor := CASE k WHEN 1 THEN 'admin' WHEN 2 THEN 'gerente' WHEN 3 THEN 'supervisor' WHEN 4 THEN 'repartidor' WHEN 5 THEN 'cajero' ELSE 'inventario' END;
+      v2 := '';
+      FOR j IN 1..5 LOOP
+        fn := CASE j WHEN 1 THEN 'tablero' WHEN 2 THEN 'asignables' WHEN 3 THEN 'lote' WHEN 4 THEN 'asignar' ELSE 'reasignar' END;
+        st := 'OK'; msg := '-';
+        BEGIN
+          PERFORM set_config('request.jwt.claims', json_build_object('sub', quien::text, 'role', 'authenticated')::text, true);
+          PERFORM set_config('role', 'authenticated', true);
+          IF j = 1 THEN PERFORM count(*) FROM public.tablero_repartidores(NULL);
+          ELSIF j = 2 THEN PERFORM count(*) FROM public.listar_repartidores_asignables(e_p1);
+          ELSIF j = 3 THEN PERFORM public.asignar_entregas_lote(ARRAY[e_asig], c_d1);
+          ELSIF j = 4 THEN PERFORM public.asignar_entrega(e_asig, c_d1);
+          ELSE PERFORM public.reasignar_entrega(e_p4, c_d1);
+          END IF;
+        EXCEPTION WHEN OTHERS THEN st := SQLSTATE; msg := SQLERRM;
+        END;
+        PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
+        -- pasar el gate = no 42501: los que pasan chocan con la regla siguiente (DE002 / DE006) y no escriben
+        esp := CASE WHEN k >= 4 THEN '42501' WHEN j <= 2 THEN 'OK' WHEN j = 5 THEN 'DE006' ELSE 'DE002' END;
+        v2 := v2||fn||'='||st||' ';
+        IF st <> esp THEN b940 := b940||rol_actor||'/'||fn||': '||st||' (esperado '||esp||') '||left(msg, 80)||'; '; END IF;
+      END LOOP;
+      d940 := d940||' ;; '||rol_actor||'|'||CASE WHEN k >= 4 THEN '42501 en las 5' ELSE 'gate OK (tablero, asignables OK; lote/asignar DE002; reasignar DE006)' END
+              ||'|'||CASE WHEN position(rol_actor||'/' IN b940) = 0 THEN 'OK' ELSE 'ROJO' END||'|'||rtrim(v2)||'|';
+    END LOOP;
+    v2 := (SELECT string_agg(e::text, ';' ORDER BY e.id) FROM public.entregas e WHERE e.empresa_id IN (v_emp, v_emp2))||'|'||(SELECT count(*) FROM public.notificaciones);
+    d940 := d940||' ;; sin escritura|entregas y notificaciones iguales|'||CASE WHEN v2 = v THEN 'OK' ELSE 'ROJO' END||'|-|';
+    IF v2 IS DISTINCT FROM v THEN b940 := b940||'una llamada de gate escribio; '; END IF;
+
+    -- ===================== P941: lote atomico =====================
+    n0 := (SELECT count(*) FROM public.notificaciones);
+    v := (SELECT string_agg(e::text, ';' ORDER BY e.id) FROM public.entregas e WHERE e.empresa_id IN (v_emp, v_emp2));
+    FOR k IN 1..10 LOOP
+      ids := CASE k WHEN 1 THEN ARRAY[e_p1, e_p2, e_asig] WHEN 2 THEN ARRAY[]::bigint[] WHEN 3 THEN NULL
+                    WHEN 4 THEN ARRAY(SELECT g::bigint FROM generate_series(1, 51) g) WHEN 5 THEN ARRAY[e_p1, e_p1]
+                    WHEN 6 THEN ARRAY[e_p1, NULL] WHEN 7 THEN ARRAY[e_p1, e_ajena] WHEN 8 THEN ARRAY[e_p1, e_p2]
+                    WHEN 9 THEN ARRAY[e_p1, e_p2] ELSE ARRAY[e_p1, e_s2] END;
+      del := CASE k WHEN 8 THEN c_d3 WHEN 9 THEN c_caj ELSE c_d1 END;
+      esp := CASE k WHEN 1 THEN 'DE002:'||e_asig WHEN 2 THEN 'DE007:' WHEN 3 THEN 'DE007:' WHEN 4 THEN 'DE008:' WHEN 5 THEN 'DE009:'
+                    WHEN 6 THEN 'DE009:' WHEN 7 THEN 'DE001:'||e_ajena WHEN 8 THEN 'DE004:'||e_p1 WHEN 9 THEN 'DE003:'||e_p1 ELSE 'DE004:'||e_s2 END;
+      st := 'OK'; msg := '-'; dt := '';
+      BEGIN
+        PERFORM set_config('request.jwt.claims', json_build_object('sub', c_adm::text, 'role', 'authenticated')::text, true);
+        PERFORM set_config('role', 'authenticated', true);
+        PERFORM public.asignar_entregas_lote(ids, del);
+      EXCEPTION WHEN OTHERS THEN st := SQLSTATE; msg := SQLERRM; GET STACKED DIAGNOSTICS dt = PG_EXCEPTION_DETAIL;
+      END;
+      PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
+      v2 := st||':'||COALESCE(dt, '');
+      d941 := d941||' ;; '||CASE k WHEN 1 THEN '2 pendientes + 1 asignada' WHEN 2 THEN 'lote vacio' WHEN 3 THEN 'lote NULL' WHEN 4 THEN '51 ids'
+                                     WHEN 5 THEN 'id repetido' WHEN 6 THEN 'id NULL' WHEN 7 THEN 'pendiente + entrega ajena'
+                                     WHEN 8 THEN 'repartidor de otra sucursal' WHEN 9 THEN 'cuenta que no es delivery' ELSE 'S1 + S2 (sucursales mezcladas)' END
+              ||'|'||esp||'|'||CASE WHEN v2 = esp THEN 'OK' ELSE 'ROJO' END||'|'||v2||'|'||left(msg, 100);
+      IF v2 IS DISTINCT FROM esp THEN b941 := b941||'caso '||k||': '||v2||' (esperado '||esp||'); '; END IF;
+    END LOOP;
+    v2 := (SELECT string_agg(e::text, ';' ORDER BY e.id) FROM public.entregas e WHERE e.empresa_id IN (v_emp, v_emp2));
+    d941 := d941||' ;; atomicidad|ninguna entrega cambio y 0 notificaciones tras los 10 rechazos|'
+            ||CASE WHEN v2 = v AND (SELECT count(*) FROM public.notificaciones) = n0 THEN 'OK' ELSE 'ROJO' END||'|-|';
+    IF v2 IS DISTINCT FROM v OR (SELECT count(*) FROM public.notificaciones) <> n0 THEN b941 := b941||'un lote rechazado escribio; '; END IF;
+    -- la tanda valida
+    st := 'OK'; msg := '-'; res := NULL;
+    BEGIN
+      PERFORM set_config('request.jwt.claims', json_build_object('sub', c_adm::text, 'role', 'authenticated')::text, true);
+      PERFORM set_config('role', 'authenticated', true);
+      res := public.asignar_entregas_lote(ARRAY[e_p1, e_p2], c_d1);
+    EXCEPTION WHEN OTHERS THEN st := SQLSTATE; msg := SQLERRM;
+    END;
+    PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
+    v := (SELECT string_agg(e.estado||'/'||(e.delivery_id = c_d1)::text||'/'||(e.asignado_por = c_adm)::text||'/'||(e.asignado_at IS NOT NULL)::text, ',' ORDER BY e.id)
+            FROM public.entregas e WHERE e.id IN (e_p1, e_p2))
+         ||' ;notif +'||((SELECT count(*) FROM public.notificaciones) - n0)
+         ||' ;'||COALESCE((SELECT string_agg((n.usuario_id = c_d1)::text||'/'||n.tipo||'/'||n.titulo||'/'||n.accion_url||'/'||(n.metadata->'entrega_ids' = to_jsonb(ARRAY[e_p1, e_p2]))::text, ',')
+                             FROM public.notificaciones n WHERE n.tipo LIKE 'entrega_%' AND n.usuario_id = ANY (c)), 'ninguna');
+    esp := 'asignada/true/true/true,asignada/true/true/true ;notif +1 ;true/entrega_asignada/Tenés 2 entregas nuevas//repartidor/true';
+    d941 := d941||' ;; tanda valida (2 a D1)|'||esp||'|'||CASE WHEN st = 'OK' AND (res->>'asignadas')::int = 2 AND v = esp THEN 'OK' ELSE 'ROJO' END
+            ||'|'||st||' '||COALESCE(res::text, '-')||'|'||COALESCE(v, '-')||' '||left(msg, 100);
+    IF st <> 'OK' OR COALESCE((res->>'asignadas')::int, -1) <> 2 OR v IS DISTINCT FROM esp THEN
+      b941 := b941||'tanda valida: '||st||' '||COALESCE(res::text, '-')||' '||COALESCE(v, '-')||' '||left(msg, 100)||'; ';
+    END IF;
+
+    -- ===================== P942: asignar / reasignar / tablero / asignables =====================
+    n0 := (SELECT count(*) FROM public.notificaciones);
+    FOR k IN 1..12 LOOP
+      st := 'OK'; msg := '-';
+      esp := CASE k WHEN 1 THEN 'OK' WHEN 2 THEN 'DE002' WHEN 3 THEN 'DE001' WHEN 4 THEN 'DE004' WHEN 5 THEN 'DE003'
+                    WHEN 6 THEN 'OK' WHEN 7 THEN 'DE004' WHEN 8 THEN 'DE003' WHEN 9 THEN 'DE005' WHEN 10 THEN 'DE006'
+                    WHEN 11 THEN 'DE001' ELSE 'DE006' END;
+      BEGIN
+        PERFORM set_config('request.jwt.claims', json_build_object('sub', c_ger::text, 'role', 'authenticated')::text, true);
+        PERFORM set_config('role', 'authenticated', true);
+        CASE k
+          WHEN 1 THEN PERFORM public.asignar_entrega(e_p3, c_d1);
+          WHEN 2 THEN PERFORM public.asignar_entrega(e_p3, c_d2);
+          WHEN 3 THEN PERFORM public.asignar_entrega(e_ajena, c_d1);
+          WHEN 4 THEN PERFORM public.asignar_entrega(e_p4, c_d3);
+          WHEN 5 THEN PERFORM public.asignar_entrega(e_p4, c_caj);
+          WHEN 6 THEN PERFORM public.reasignar_entrega(e_p3, c_d2);
+          WHEN 7 THEN PERFORM public.reasignar_entrega(e_p3, c_d3);
+          WHEN 8 THEN PERFORM public.reasignar_entrega(e_p3, c_caj);
+          WHEN 9 THEN PERFORM public.reasignar_entrega(e_cob, c_d1);
+          WHEN 10 THEN PERFORM public.reasignar_entrega(e_p4, c_d1);
+          WHEN 11 THEN PERFORM public.reasignar_entrega(e_ajena, c_d1);
+          ELSE PERFORM public.reasignar_entrega(e_ent, c_d1);
+        END CASE;
+      EXCEPTION WHEN OTHERS THEN st := SQLSTATE; msg := SQLERRM;
+      END;
+      PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
+      d942 := d942||' ;; '||CASE k WHEN 1 THEN 'asignar p3 a D1' WHEN 2 THEN 'asignar p3 ya asignada' WHEN 3 THEN 'asignar entrega ajena'
+                                     WHEN 4 THEN 'asignar a D3 (otra sucursal)' WHEN 5 THEN 'asignar a cuenta no delivery' WHEN 6 THEN 'reasignar p3 a D2'
+                                     WHEN 7 THEN 'reasignar a D3 (otra sucursal)' WHEN 8 THEN 'reasignar a cuenta no delivery' WHEN 9 THEN 'reasignar entrega cobrada'
+                                     WHEN 10 THEN 'reasignar pendiente' WHEN 11 THEN 'reasignar entrega ajena' ELSE 'reasignar entregada' END
+              ||'|'||esp||'|'||CASE WHEN st = esp THEN 'OK' ELSE 'ROJO' END||'|'||st||'|'||left(msg, 100);
+      IF st <> esp THEN b942 := b942||'caso '||k||': '||st||' (esperado '||esp||') '||left(msg, 80)||'; '; END IF;
+    END LOOP;
+    -- notificaciones: asignar -> D1 "1 nueva"; reasignar -> D2 "1 nueva" + D1 "te quitaron"; los rechazos no notifican
+    v := (SELECT string_agg(x.s, ',' ORDER BY x.s) FROM (
+            SELECT CASE n.usuario_id WHEN c_d1 THEN 'D1' WHEN c_d2 THEN 'D2' WHEN c_d3 THEN 'D3' ELSE 'otro' END||'/'||n.tipo||'/'||n.titulo||'/'||n.accion_url
+                   ||'/'||(n.metadata->'entrega_ids' = to_jsonb(ARRAY[e_p3]))::text AS s
+              FROM public.notificaciones n WHERE n.tipo LIKE 'entrega_%' AND n.usuario_id = ANY (c)
+               AND NOT (n.metadata->'entrega_ids' = to_jsonb(ARRAY[e_p1, e_p2]))) x)
+         ||' ;total +'||((SELECT count(*) FROM public.notificaciones) - n0)
+         ||' ;p3 '||(SELECT e.estado||'/'||CASE e.delivery_id WHEN c_d2 THEN 'D2' ELSE 'otro' END FROM public.entregas e WHERE e.id = e_p3);
+    esp := 'D1/entrega_asignada/Tenés 1 entrega nueva//repartidor/true,D1/entrega_quitada/Te quitaron una entrega//repartidor/true,D2/entrega_asignada/Tenés 1 entrega nueva//repartidor/true ;total +3 ;p3 asignada/D2';
+    d942 := d942||' ;; notificaciones|'||esp||'|'||CASE WHEN v = esp THEN 'OK' ELSE 'ROJO' END||'|'||COALESCE(v, '-')||'|';
+    IF v IS DISTINCT FROM esp THEN b942 := b942||'notificaciones: '||COALESCE(v, '-')||'; '; END IF;
+    -- tablero como gerente (todas) y como supervisor (filtro S2); asignables como gerente
+    FOR k IN 1..4 LOOP
+      st := 'OK'; msg := '-'; v := NULL;
+      BEGIN
+        PERFORM set_config('request.jwt.claims', json_build_object('sub', CASE WHEN k = 2 THEN c_sup ELSE c_ger END::text, 'role', 'authenticated')::text, true);
+        PERFORM set_config('role', 'authenticated', true);
+        IF k = 1 OR k = 2 THEN
+          v := (SELECT string_agg(x.s, ',' ORDER BY x.s) FROM (
+                  SELECT CASE t.repartidor_id WHEN c_d1 THEN 'D1' WHEN c_d2 THEN 'D2' WHEN c_d3 THEN 'D3' ELSE 'otro' END||':'
+                         ||CASE t.sucursal_id WHEN v_s1 THEN 'S1' WHEN v_s2 THEN 'S2' ELSE 'otra' END||':'
+                         ||t.asignadas||'/'||t.en_camino||'/'||t.entregadas_hoy||'/'||t.fallidas_hoy||'/'||t.estado_calc AS s
+                    FROM public.tablero_repartidores(CASE WHEN k = 2 THEN v_s2 END) t) x);
+          v2 := (SELECT string_agg(t::text, ';') FROM public.tablero_repartidores(NULL) t);
+          IF v2 LIKE '%P940 Calle Secreta%' OR v2 LIKE '%55500940%' THEN v := v||' CON PII'; END IF;
+        ELSE
+          v := (SELECT string_agg(CASE t.repartidor_id WHEN c_d1 THEN 'D1' WHEN c_d2 THEN 'D2' WHEN c_d3 THEN 'D3' ELSE 'otro' END||'='||t.estado_calc, ',')
+                  FROM public.listar_repartidores_asignables(CASE WHEN k = 3 THEN e_p4 ELSE e_s2 END) t);
+        END IF;
+      EXCEPTION WHEN OTHERS THEN st := SQLSTATE; msg := SQLERRM;
+      END;
+      PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
+      esp := CASE k WHEN 1 THEN 'D1:S1:3/0/0/0/en_ruta,D2:S1:2/0/0/0/en_ruta,D3:S2:0/0/1/0/libre'
+                    WHEN 2 THEN 'D3:S2:0/0/1/0/libre'
+                    WHEN 3 THEN 'D2=en_ruta,D1=en_ruta'
+                    ELSE 'D3=libre' END;
+      d942 := d942||' ;; '||CASE k WHEN 1 THEN 'tablero (gerente, todas)' WHEN 2 THEN 'tablero (supervisor, S2)' WHEN 3 THEN 'asignables p4 (S1, menos cargado primero)' ELSE 'asignables S2' END
+              ||'|'||esp||'|'||CASE WHEN st = 'OK' AND v = esp THEN 'OK' ELSE 'ROJO' END||'|'||st||' '||COALESCE(v, '-')||'|'||left(msg, 100);
+      IF st <> 'OK' OR v IS DISTINCT FROM esp THEN b942 := b942||'consulta '||k||': '||st||' '||COALESCE(v, '-')||' '||left(msg, 80)||'; '; END IF;
+    END LOOP;
+
+    RAISE EXCEPTION 'P940 descarte' USING ERRCODE = 'P0999';
+  EXCEPTION WHEN SQLSTATE 'P0999' THEN NULL;
+  END;
+  PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
+  snap_post := (SELECT string_agg(x, ',') FROM (
+    SELECT 'ent='||(SELECT count(*) FROM public.entregas) UNION ALL SELECT 'notif='||(SELECT count(*) FROM public.notificaciones)
+    UNION ALL SELECT 'emp='||(SELECT count(*) FROM public.empresas_proveedoras) UNION ALL SELECT 'farm='||(SELECT count(*) FROM public.farmacias)
+    UNION ALL SELECT 'ctas='||(SELECT string_agg(cp.id::text||'/'||cp.empresa_id::text||'/'||cp.rol_en_empresa||'/'||cp.activo::text||'/'||COALESCE(cp.sucursal_id::text, '-')
+                                                ||'/'||COALESCE(cp.pais_id::text, '-')||'/'||COALESCE(cp.equipo_id::text, '-'), ';' ORDER BY cp.id)
+                               FROM public.cuentas_proveedor cp WHERE cp.id = ANY (c))) z(x));
+  IF snap_post IS DISTINCT FROM snap_pre THEN r_rest := 'snapshot distinto: '||left(snap_post, 300); END IF;
+  PERFORM set_config('probe.p940_det', d940||' ;; restauracion|subtransaccion descartada|'||r_rest||'|-|', false);
+  PERFORM set_config('probe.p941_det', d941, false);
+  PERFORM set_config('probe.p942_det', d942, false);
+  PERFORM set_config('probe.p940', CASE WHEN b940 = '' AND r_rest = 'OK'
+    THEN 'OK (admin/gerente/supervisor pasan el gate de las 5 RPCs; repartidor/cajero/inventario 42501; sin escribir; descartado)'
+    ELSE 'ROJO ('||left(b940, 900)||' | restauracion='||r_rest||')' END, false);
+  PERFORM set_config('probe.p941', CASE WHEN b941 = '' AND r_rest = 'OK'
+    THEN 'OK (lote atomico: DE001-DE004 con la entrega en DETAIL, DE007/DE008/DE009, ninguna asignada; tanda valida + 1 notificacion)'
+    ELSE 'ROJO ('||left(b941, 900)||' | restauracion='||r_rest||')' END, false);
+  PERFORM set_config('probe.p942', CASE WHEN b942 = '' AND r_rest = 'OK'
+    THEN 'OK (asignar/reasignar DE001-DE006; push al nuevo y al anterior; tablero sin PII por sucursal; asignables de la sucursal)'
+    ELSE 'ROJO ('||left(b942, 900)||' | restauracion='||r_rest||')' END, false);
+EXCEPTION WHEN OTHERS THEN
+  PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
+  PERFORM set_config('probe.p940', CASE WHEN SQLERRM LIKE 'fixture roto%' THEN 'ROJO ('||SQLERRM||')' ELSE 'FALLO ('||SQLSTATE||' '||SQLERRM||')' END, false);
+  PERFORM set_config('probe.p941', 'FALLO (el bloque de P940 cayo: ver P940)', false);
+  PERFORM set_config('probe.p942', 'FALLO (el bloque de P940 cayo: ver P940)', false);
+END $$;
+SELECT set_config('role', 'none', true);
+
+-- ---------------- P943 catalogo de delivery: DEFINER, search_path, ACL, errcodes, tablero sin pacientes (353) ----------------
+-- Centinela permanente: las 5 RPCs de entregas de la 353 son DEFINER con search_path='' y EXECUTE solo para
+-- authenticated/service_role (y postgres); el helper de notificacion solo para postgres; cada RAISE lleva su ERRCODE
+-- (el conjunto exacto por funcion) y la firma del tablero no tiene columnas de pacientes, direccion ni telefono.
+DO $$
+DECLARE bad text := ''; v text; esp text;
+BEGIN
+  v := (SELECT string_agg(n.nspname||'.'||p.proname||':'||p.prosecdef::text||':'||COALESCE(array_to_string(p.proconfig, ','), '-')||':'||
+           (SELECT string_agg(CASE a.grantee WHEN 0 THEN 'PUBLIC' ELSE pg_get_userbyid(a.grantee) END||'='||a.privilege_type, '+'
+                               ORDER BY CASE a.grantee WHEN 0 THEN 'PUBLIC' ELSE pg_get_userbyid(a.grantee) END)
+              FROM aclexplode(COALESCE(p.proacl, acldefault('f', p.proowner))) a), ',' ORDER BY n.nspname, p.proname)
+          FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace
+         WHERE (n.nspname = 'public' AND p.proname IN ('tablero_repartidores','listar_repartidores_asignables','asignar_entregas_lote','asignar_entrega','reasignar_entrega'))
+            OR (n.nspname = 'private' AND p.proname = 'notificar_entregas_asignadas'));
+  esp := 'private.notificar_entregas_asignadas:true:search_path="":postgres=EXECUTE,'
+      || 'public.asignar_entrega:true:search_path="":authenticated=EXECUTE+postgres=EXECUTE+service_role=EXECUTE,'
+      || 'public.asignar_entregas_lote:true:search_path="":authenticated=EXECUTE+postgres=EXECUTE+service_role=EXECUTE,'
+      || 'public.listar_repartidores_asignables:true:search_path="":authenticated=EXECUTE+postgres=EXECUTE+service_role=EXECUTE,'
+      || 'public.reasignar_entrega:true:search_path="":authenticated=EXECUTE+postgres=EXECUTE+service_role=EXECUTE,'
+      || 'public.tablero_repartidores:true:search_path="":authenticated=EXECUTE+postgres=EXECUTE+service_role=EXECUTE';
+  IF v IS DISTINCT FROM esp THEN bad := bad||'funciones: '||COALESCE(v, 'no existen')||'; '; END IF;
+  v := (SELECT string_agg(p.proname||'='||(SELECT string_agg(DISTINCT m[1], '+' ORDER BY m[1]) FROM regexp_matches(p.prosrc, 'ERRCODE = ''([0-9A-Z]{5})''', 'g') m)
+                          ||CASE WHEN (SELECT count(*) FROM regexp_matches(p.prosrc, 'RAISE EXCEPTION', 'g')) = (SELECT count(*) FROM regexp_matches(p.prosrc, 'ERRCODE = ''', 'g'))
+                                 THEN '' ELSE ' (RAISE sin ERRCODE)' END, ',' ORDER BY p.proname)
+          FROM pg_proc p WHERE p.pronamespace = 'public'::regnamespace
+           AND p.proname IN ('tablero_repartidores','listar_repartidores_asignables','asignar_entregas_lote','asignar_entrega','reasignar_entrega'));
+  esp := 'asignar_entrega=42501+DE001+DE002+DE003+DE004,asignar_entregas_lote=42501+DE001+DE002+DE003+DE004+DE007+DE008+DE009,'
+      || 'listar_repartidores_asignables=42501+DE001,reasignar_entrega=42501+DE001+DE003+DE004+DE005+DE006,tablero_repartidores=42501';
+  IF v IS DISTINCT FROM esp THEN bad := bad||'errcodes: '||COALESCE(v, '-')||'; '; END IF;
+  v := pg_get_function_result('public.tablero_repartidores(bigint)'::regprocedure);
+  IF v ~* '(paciente|direcci|telefono|lat|lng)' THEN bad := bad||'el tablero expone '||v||'; '; END IF;
+  PERFORM set_config('probe.p943', CASE WHEN bad = '' THEN 'OK (5 RPCs DEFINER con search_path='''' y EXECUTE solo authenticated/service_role; helper solo postgres; errcodes exactos; tablero sin datos de pacientes)'
+                                        ELSE 'ROJO ('||left(bad, 900)||')' END, false);
+EXCEPTION WHEN OTHERS THEN
+  PERFORM set_config('probe.p943', 'FALLO ('||SQLSTATE||' '||SQLERRM||')', false);
+END $$;
+
 -- ===== Veredictos como result set =====
 SELECT 'P1_anon_insert_citas'              AS probe, current_setting('probe.p1', true)  AS verdict, 'BLOQUEADO' AS esperado_post_fix
 UNION ALL SELECT 'P2_medico_cancela_ajena_rpc',         current_setting('probe.p2', true),  'BLOQUEADO'
@@ -31134,6 +31431,10 @@ UNION ALL SELECT 'P936_wl_anon_a_authenticated_350',  current_setting('probe.p93
 UNION ALL SELECT 'P937_solicitar_compra_plan_351',   current_setting('probe.p937', true), 'OK (351: pago pendiente con todo del catalogo; 42501 por rol; CP001-CP007 por causa)'
 UNION ALL SELECT 'P938_aprobar_pago_plan_351',       current_setting('probe.p938', true), 'OK (351: 42501 no super; creada / idempotente / sumada; CP017/CP013/CP011 sin escribir)'
 UNION ALL SELECT 'P939_policy_insert_pagos_351',     current_setting('probe.p939', true), 'OK (351: sin autoaprobacion ni plan_visitador directo; campana pendiente sigue)'
+UNION ALL SELECT 'P940_delivery_gates_353',          current_setting('probe.p940', true), 'OK (353: admin/gerente/supervisor pasan el gate; repartidor/cajero/inventario 42501; sin escribir)'
+UNION ALL SELECT 'P941_delivery_lote_atomico_353',   current_setting('probe.p941', true), 'OK (353: una invalida -> ninguna asignada, DE001-DE004/DE007-DE009; tanda valida + 1 notificacion)'
+UNION ALL SELECT 'P942_delivery_asignar_push_353',   current_setting('probe.p942', true), 'OK (353: DE001-DE006; push al nuevo y al anterior; tablero sin PII; asignables por sucursal)'
+UNION ALL SELECT 'P943_delivery_catalogo_353',       current_setting('probe.p943', true), 'OK (353: DEFINER + search_path + ACL; errcodes exactos; tablero sin pacientes)'
 -- Las filas FX* son SALUD DE FIXTURE, no probes de seguridad: dicen si la precondicion que una
 -- migracion posterior empezo a exigir se pudo sembrar. Si una sale ROJO, los probes que dependen de
 -- ese fixture reportan N/A (su flag de ready se pierde con el rollback de la subtransaccion) en vez
@@ -31378,7 +31679,7 @@ UNION ALL SELECT 'P000_CENTINELA_veredictos_no_nulos',
        'probe.p866', 'probe.p867', 'probe.p868', 'probe.p869', 'probe.p870', 'probe.p871', 'probe.p872', 'probe.p873', 'probe.p874', 'probe.p875', 'probe.p876', 'probe.p877', 'probe.p878',
        'probe.p879', 'probe.p880', 'probe.p881', 'probe.p882', 'probe.p883', 'probe.p884',
        'probe.p885', 'probe.p886', 'probe.p887', 'probe.p888', 'probe.p889', 'probe.p890', 'probe.p891', 'probe.p892', 'probe.p893', 'probe.p894', 'probe.p895', 'probe.p896', 'probe.p908', 'probe.p909', 'probe.p910', 'probe.p911',
-       'probe.p897', 'probe.p898', 'probe.p899', 'probe.p900', 'probe.p901', 'probe.p902', 'probe.p903', 'probe.p904', 'probe.p905', 'probe.p906', 'probe.p907', 'probe.p912', 'probe.p913', 'probe.p914', 'probe.p915', 'probe.p916', 'probe.p917', 'probe.p918', 'probe.p919', 'probe.p920', 'probe.p921', 'probe.p922', 'probe.p923', 'probe.p924', 'probe.p925', 'probe.p926', 'probe.p927', 'probe.p928', 'probe.p929', 'probe.p930', 'probe.p931', 'probe.p932', 'probe.p933', 'probe.p934', 'probe.p935', 'probe.p936', 'probe.p937', 'probe.p938', 'probe.p939'
+       'probe.p897', 'probe.p898', 'probe.p899', 'probe.p900', 'probe.p901', 'probe.p902', 'probe.p903', 'probe.p904', 'probe.p905', 'probe.p906', 'probe.p907', 'probe.p912', 'probe.p913', 'probe.p914', 'probe.p915', 'probe.p916', 'probe.p917', 'probe.p918', 'probe.p919', 'probe.p920', 'probe.p921', 'probe.p922', 'probe.p923', 'probe.p924', 'probe.p925', 'probe.p926', 'probe.p927', 'probe.p928', 'probe.p929', 'probe.p930', 'probe.p931', 'probe.p932', 'probe.p933', 'probe.p934', 'probe.p935', 'probe.p936', 'probe.p937', 'probe.p938', 'probe.p939', 'probe.p940', 'probe.p941', 'probe.p942', 'probe.p943'
              ]) AS n) s),
   'OK (todos los veredictos publicados)';
 

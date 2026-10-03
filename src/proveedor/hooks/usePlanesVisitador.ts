@@ -3,7 +3,7 @@ import { supabase } from '@/lib/supabase'
 import { useProveedorAuth } from './useProveedorAuth'
 import { toast } from 'sonner'
 import type { PlanBase, PlanConfiguracion } from '@/types/planes'
-import { configComprable, esBolsaVigente, hoyUTC } from '@/proveedor/lib/compraPlanVisitador'
+import { configComprable, cupoDelPais, cupoPorPais, esBolsaVigente, hoyUTC, paisOperativo } from '@/proveedor/lib/compraPlanVisitador'
 
 // Fila pvc (única fuente de visitas: país + bolsa). incluidas/restante NULL = ilimitado.
 interface PvcRow {
@@ -34,7 +34,7 @@ export interface PlanProveedorDisponible {
 }
 
 export function usePlanesVisitador() {
-  const { empresa } = useProveedorAuth()
+  const { empresa, cuenta } = useProveedorAuth()
   const [planesDisponibles, setPlanesDisponibles] = useState<PlanProveedorDisponible[]>([])
   const [planesAsignados, setPlanesAsignados] = useState<PvcRow[]>([])
   const [loading, setLoading] = useState(false)
@@ -141,13 +141,17 @@ export function usePlanesVisitador() {
 
   // Vigente = activa y fecha_inicio <= hoy <= fecha_fin, con hoy en UTC (el criterio del gate de visitas del servidor).
   const hoy = hoyUTC()
-  const vigentes = planesAsignados.filter((a) => a.estado === 'activo' && esBolsaVigente(a, hoy))
 
-  // Bolsa restante = Σ restante de pvc vigentes (DERIVADO del gate real; ilimitado no suma número)
-  const visitasDisponibles = vigentes
-    .filter((a) => !a.ilimitado)
-    .reduce((acc, a) => acc + Math.max(0, a.restante ?? 0), 0)
-  const tieneIlimitado = vigentes.some((a) => a.ilimitado)
+  // Cupo POR PAÍS con el criterio de private.gate_visita_pais (por país, la bolsa vigente de fecha_fin más
+  // lejana; las bolsas no se suman). El cupo "principal" es el del país operativo de la cuenta (paisOperativo =
+  // private.mi_pais, el mismo que usan buscar_medicos_proveedor y el pre-chequeo de useVisitasAgendadas).
+  const cupos = cupoPorPais(planesAsignados, hoy)
+  const pais = paisOperativo(cuenta, empresa)
+  const cupoEmpresa = cupoDelPais(cupos, pais)
+  const visitasDisponibles = cupoEmpresa && !cupoEmpresa.ilimitado ? (cupoEmpresa.restante ?? 0) : 0
+  const tieneIlimitado = !!cupoEmpresa?.ilimitado
+  // Desglose cuando hay cupo en algún país que no es el operativo (o en más de uno).
+  const cupoConDesglose = cupos.some((c) => c.pais_id !== pais)
 
   // planesContratados (lo que VisitadorPlanesPage espera: cantidad_visitas_incluidas, fecha_fin, estado)
   const aLegacy = (a: PvcRow) => ({
@@ -190,6 +194,8 @@ export function usePlanesVisitador() {
     planesVencidos: planesContratadosLegacy.filter((p) => !p.vigente && (p.fecha_fin ?? '').slice(0, 10) < hoy),
     visitasDisponibles,
     tieneIlimitado,
+    cupos,
+    cupoConDesglose,
     loading,
     recargar: cargarTodo,
     fetchPlanesContratados: fetchPlanesAsignados,

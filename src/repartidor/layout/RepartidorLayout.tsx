@@ -1,11 +1,13 @@
 import { Outlet, useNavigate, useLocation } from 'react-router-dom'
 import { Truck, WifiOff, ListChecks, User } from 'lucide-react'
 import { useEffect, useState } from 'react'
+import { usePushNotifications } from '@/webapp/hooks/usePushNotifications'
 
 // Shell móvil del repartidor: header compacto + outlet + nav inferior (Cola / Perfil).
 export default function RepartidorLayout() {
   const navigate = useNavigate()
   const location = useLocation()
+  usePushNotifications() // registra la suscripción push del repartidor (auto, si acepta permiso): avisos de asignación (mig 353)
   const [online, setOnline] = useState(typeof navigator !== 'undefined' ? navigator.onLine : true)
 
   useEffect(() => {

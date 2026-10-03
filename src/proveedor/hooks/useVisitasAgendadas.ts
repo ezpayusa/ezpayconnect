@@ -2,23 +2,14 @@ import { useState, useEffect, useCallback } from 'react'
 import { supabase } from '@/lib/supabase'
 import { useProveedorAuth } from './useProveedorAuth'
 import type { VisitaAgendada } from '@/proveedor/types/proveedor.types'
-import { esBolsaVigente } from '@/proveedor/lib/compraPlanVisitador'
+import { cupoDelPais, cupoPorPais, hayCupo, paisOperativo, type BolsaCupo } from '@/proveedor/lib/compraPlanVisitador'
 import type { UbicacionVisita } from './useRutaVisitador'
 import { toast } from 'sonner'
-
-// Bolsa de visitas (pvc) tal como la devuelve get_planes_visitador_proveedor.
-interface BolsaVisitas {
-  fecha_inicio: string
-  fecha_fin: string
-  estado: string
-  restante: number | null
-  ilimitado: boolean
-}
 
 export function useVisitasAgendadas() {
   const { empresa, cuenta, puede } = useProveedorAuth()
   const [visitas, setVisitas] = useState<VisitaAgendada[]>([])
-  const [planesAsignados, setPlanesAsignados] = useState<BolsaVisitas[]>([])
+  const [planesAsignados, setPlanesAsignados] = useState<BolsaCupo[]>([])
   const [loading, setLoading] = useState(false)
   const [saving, setSaving] = useState(false)
   const rol = cuenta?.rol_en_empresa || 'visitador_medico'
@@ -34,7 +25,9 @@ export function useVisitasAgendadas() {
       console.error('Error cargando planes asignados:', error)
       return
     }
-    setPlanesAsignados((data || []).map((r: any): BolsaVisitas => ({
+    setPlanesAsignados((data || []).map((r: any): BolsaCupo => ({
+      pais_id: r.pais_id,
+      pais_nombre: r.pais_nombre,
       fecha_inicio: r.fecha_inicio,
       fecha_fin: r.fecha_fin,
       estado: r.estado,
@@ -163,13 +156,14 @@ export function useVisitasAgendadas() {
     fetchPlanesAsignados()
   }, [fetchVisitas, fetchPlanesAsignados])
 
-  // Visitas disponibles del pool compartido: mismo criterio que usePlanesVisitador y que el gate del servidor.
-  // Vigente = activa y fecha_inicio <= hoy <= fecha_fin con hoy en UTC (esBolsaVigente); una bolsa ilimitada
-  // vigente no limita (Infinity); si no, Σ restante de las vigentes.
-  const vigentes = planesAsignados.filter((a) => a.estado === 'activo' && esBolsaVigente(a))
-  const visitasDisponibles = vigentes.some((a) => a.ilimitado)
-    ? Infinity
-    : vigentes.reduce((acc, a) => acc + Math.max(0, a.restante ?? 0), 0)
+  // Cupo por país con el criterio de private.gate_visita_pais (cupoPorPais): por país, la bolsa vigente de
+  // fecha_fin más lejana. El país de la visita es el del médico, que el gate lee de perfiles.pais_id; el
+  // proveedor no lo puede leer, pero buscar_medicos_proveedor solo ofrece médicos con perfiles.pais_id =
+  // private.mi_pais() = COALESCE(cuenta.pais_id, empresa.pais_id). Ese es el país del médico de la visita.
+  const cupos = cupoPorPais(planesAsignados)
+  const paisMedico = paisOperativo(cuenta, empresa)
+  const cupoPaisMedico = cupoDelPais(cupos, paisMedico)
+  const visitasDisponibles = cupoPaisMedico?.ilimitado ? Infinity : (cupoPaisMedico?.restante ?? 0)
 
   // Agendar visita (visitador propone, admin crea confirmada)
   const agendarVisita = async (visita: Partial<VisitaAgendada>, visitadorId?: string): Promise<boolean> => {
@@ -182,9 +176,12 @@ export function useVisitasAgendadas() {
     // Si es admin, puede confirmar directamente
     const estadoFinal = esAdmin ? (visita.estado || 'confirmada') : 'propuesta'
 
-    // Solo validar límite si el admin está confirmando directamente
-    if (esAdmin && estadoFinal === 'confirmada' && visitasDisponibles <= 0) {
-      toast.error('No hay visitas disponibles en el plan')
+    // Solo validar límite si el admin está confirmando directamente: con el cupo del país del médico.
+    // Sin país conocido no se bloquea acá; decide el gate del servidor.
+    if (esAdmin && estadoFinal === 'confirmada' && paisMedico && !hayCupo(cupoPaisMedico)) {
+      toast.error(cupoPaisMedico
+        ? `No hay visitas disponibles en la bolsa de ${cupoPaisMedico.pais_nombre ?? 'ese país'}`
+        : 'Tu empresa no tiene una bolsa de visitas vigente para el país del médico')
       return false
     }
 

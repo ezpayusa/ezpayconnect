@@ -38,6 +38,7 @@ export interface CuentaProveedor {
   created_at: string
   updated_at: string
   sucursal_id?: number | null
+  pais_id?: string | null // país propio de la cuenta; NULL = el de la empresa (private.pais_de_proveedor)
   empresa?: EmpresaProveedora
 }
 
