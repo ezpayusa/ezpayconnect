@@ -151,7 +151,7 @@ export default function AdminUbicacionesMedicosPage() {
                   </div>
                   <div>
                     <h3 className="font-semibold">{m.nombre_completo}</h3>
-                    <p className="text-sm text-muted-foreground">{m.email}</p>
+                    <p className="text-sm text-muted-foreground">{m.especialidad || 'Especialidad no indicada'}</p>
                   </div>
                 </div>
                 {m.tieneUbicacion ? (

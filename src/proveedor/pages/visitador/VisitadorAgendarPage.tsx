@@ -6,6 +6,7 @@ import { Input } from '@/components/ui/input'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { supabase } from '@/lib/supabase'
 import { useMedicosDisponibles } from '@/proveedor/hooks/useMedicosDisponibles'
+import ListaMedicosAgendar from '@/proveedor/components/ListaMedicosAgendar'
 import { useVisitasAgendadas } from '@/proveedor/hooks/useVisitasAgendadas'
 import { usePlanesVisitador } from '@/proveedor/hooks/usePlanesVisitador'
 import { useProveedorAuth } from '@/proveedor/hooks/useProveedorAuth'
@@ -17,7 +18,6 @@ import {
   Clock,
   ArrowLeft,
   Loader2,
-  Stethoscope,
   CheckCircle,
   ChevronLeft,
   ChevronRight,
@@ -270,38 +270,7 @@ export default function VisitadorAgendarPage() {
 
       {/* Lista médicos */}
       {medicos.length > 0 && !medicoSeleccionado && (
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-          {medicos.map((m) => (
-            <Card
-              key={m.id}
-              className="cursor-pointer hover:border-[#1E5C8E] transition-colors"
-              onClick={() => seleccionarMedico(m.id)}
-            >
-              <CardContent className="p-4 flex items-center justify-between gap-4">
-                <div className="flex items-center gap-4 min-w-0">
-                  <div className="w-12 h-12 rounded-full bg-[#1E5C8E]/10 flex items-center justify-center flex-shrink-0">
-                    <Stethoscope className="h-6 w-6 text-[#1E5C8E]" />
-                  </div>
-                  <div className="min-w-0">
-                    <h3 className="font-semibold truncate">{m.nombre_completo}</h3>
-                    <p className="text-sm text-muted-foreground truncate">{m.email}</p>
-                  </div>
-                </div>
-                <Button
-                  size="sm"
-                  variant="outline"
-                  className="flex-shrink-0"
-                  onClick={(e) => {
-                    e.stopPropagation()
-                    seleccionarMedico(m.id)
-                  }}
-                >
-                  Seleccionar
-                </Button>
-              </CardContent>
-            </Card>
-          ))}
-        </div>
+        <ListaMedicosAgendar medicos={medicos} onSeleccionar={seleccionarMedico} />
       )}
 
       {/* Disponibilidad del médico seleccionado */}

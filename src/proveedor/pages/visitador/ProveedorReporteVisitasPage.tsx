@@ -9,11 +9,12 @@ import { useProveedorAuth } from '@/proveedor/hooks/useProveedorAuth'
 import { toast } from 'sonner'
 import { ArrowLeft, CalendarDays, MapPin, CheckCircle, Loader2, Search, User, Image as ImageIcon } from 'lucide-react'
 import { openSignedUrl } from '@/lib/signedUrl'
+import { nombreMedico, resolverNombresMedicos } from '@/proveedor/lib/nombresMedicos'
 
 interface VisitaReporte {
   id: string
   medico_nombre: string
-  medico_email: string
+  medico_especialidad: string | null
   fecha_visita: string
   hora_inicio: string
   hora_fin: string
@@ -58,8 +59,7 @@ export default function ProveedorReporteVisitasPage() {
       .from('visitas_agendadas')
       .select(`
         id, fecha_visita, hora_inicio, hora_fin, tipo_visita, estado,
-        notas_empresa, checkout_notas, checkin_fecha, checkin_evidencia_url, visita_concretada,
-        medico:medico_id(nombre_completo, email)
+        notas_empresa, checkout_notas, checkin_fecha, checkin_evidencia_url, visita_concretada, medico_id
       `)
       .eq('empresa_id', empresa.id)
       .order('fecha_visita', { ascending: false })
@@ -68,10 +68,16 @@ export default function ProveedorReporteVisitasPage() {
       toast.error('Error cargando reporte')
       console.error(error)
     } else {
+      // Nombres por RPC acotada (mig 354): el proveedor no lee perfiles ni medicos.
+      const { mapa, error: errNombres } = await resolverNombresMedicos((data || []).map((v: any) => v.medico_id))
+      if (errNombres) {
+        toast.error('No se pudieron cargar los nombres de los médicos')
+        console.error('nombres_medicos_visitas:', errNombres.code, errNombres.message)
+      }
       const mapped = (data || []).map((v: any) => ({
         id: v.id,
-        medico_nombre: v.medico?.nombre_completo || 'Desconocido',
-        medico_email: v.medico?.email || '',
+        medico_nombre: nombreMedico(mapa, v.medico_id),
+        medico_especialidad: v.medico_id ? mapa[v.medico_id]?.especialidad ?? null : null,
         fecha_visita: v.fecha_visita,
         hora_inicio: v.hora_inicio,
         hora_fin: v.hora_fin,
@@ -163,6 +169,7 @@ export default function ProveedorReporteVisitasPage() {
                     <h3 className="font-semibold text-gray-900 flex items-center gap-2">
                       <User className="h-4 w-4 text-[#1E5C8E]" />
                       {v.medico_nombre}
+                      {v.medico_especialidad && <span className="text-sm font-normal text-muted-foreground">· {v.medico_especialidad}</span>}
                     </h3>
                     <p className="text-sm text-muted-foreground">
                       <CalendarDays className="h-3.5 w-3.5 inline mr-1" />

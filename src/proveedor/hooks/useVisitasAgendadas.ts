@@ -5,6 +5,7 @@ import type { VisitaAgendada } from '@/proveedor/types/proveedor.types'
 import { cupoDelPais, cupoPorPais, hayCupo, paisOperativo, type BolsaCupo } from '@/proveedor/lib/compraPlanVisitador'
 import type { UbicacionVisita } from './useRutaVisitador'
 import { toast } from 'sonner'
+import { nombreMedico, resolverNombresMedicos } from '@/proveedor/lib/nombresMedicos'
 
 export function useVisitasAgendadas() {
   const { empresa, cuenta, puede } = useProveedorAuth()
@@ -55,22 +56,12 @@ export function useVisitasAgendadas() {
       const { data: visitasRaw, error } = await q.order('fecha_visita', { ascending: false })
       if (error) throw error
 
-      // Obtener nombres de médicos por separado (evita problemas RLS con joins)
-      const medicoIds = [...new Set((visitasRaw || []).map((v: any) => v.medico_id).filter(Boolean))]
-      let medicosMap: Record<string, { nombre_completo: string; email: string }> = {}
-      
-      if (medicoIds.length > 0) {
-        const { data: medicosData, error: medicosError } = await supabase.rpc('buscar_medicos_proveedor', { p_query: null })
-        if (medicosError) {
-          // Antes se ignoraba en silencio; ahora se reporta igual que useMedicosDisponibles.
-          toast.error('Error buscando médicos')
-          console.error(medicosError)
-        } else if (medicosData) {
-          medicosMap = (medicosData as any[]).reduce((acc, m) => {
-            acc[m.id] = { nombre_completo: m.nombre_completo, email: m.email }
-            return acc
-          }, {})
-        }
+      // Nombres de los médicos de ESTAS visitas por RPC acotada (mig 354): sin el tope de 50 ni el filtro de activos
+      // de buscar_medicos_proveedor, y sin email.
+      const { mapa: medicosMap, error: medicosError } = await resolverNombresMedicos((visitasRaw || []).map((v: any) => v.medico_id))
+      if (medicosError) {
+        toast.error('No se pudieron cargar los nombres de los médicos')
+        console.error('nombres_medicos_visitas:', medicosError.code, medicosError.message)
       }
 
       // Obtener nombres de visitadores por separado
@@ -118,9 +109,9 @@ export function useVisitasAgendadas() {
         notas_medico: v.notas_medico,
         created_at: v.created_at,
         updated_at: v.updated_at,
-        medico: medicosMap[v.medico_id] ? {
-          nombre_completo: medicosMap[v.medico_id].nombre_completo,
-          email: medicosMap[v.medico_id].email,
+        medico: v.medico_id ? {
+          nombre_completo: nombreMedico(medicosMap, v.medico_id),
+          especialidad: medicosMap[v.medico_id]?.especialidad ?? null,
         } : undefined,
         ubicacion: ubicacionesMap[v.medico_id] || undefined,
         visitador: visitadoresMap[v.cuenta_proveedor_id] ? {

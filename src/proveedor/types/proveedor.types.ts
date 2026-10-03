@@ -90,7 +90,7 @@ export interface VisitaAgendada {
   notas_medico: string | null
   created_at: string
   updated_at: string
-  medico?: { nombre_completo: string; email: string; direccion_consultorio?: string; lat?: number; lng?: number }
+  medico?: { nombre_completo: string; especialidad?: string | null; direccion_consultorio?: string; lat?: number; lng?: number }
   visitador?: { nombre_completo: string; email: string }
   ubicacion?: { direccion?: string | null; lat?: number | null; lng?: number | null }
   // Flujo aprobación
