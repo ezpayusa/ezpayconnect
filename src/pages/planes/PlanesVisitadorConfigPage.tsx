@@ -21,7 +21,9 @@ import { usePlanes } from '@/hooks/usePlanes';
 import { useAdminAuth } from '@/hooks/admin/useAdminAuth';
 import { usePaisFiltro } from '@/hooks/usePaisFiltro';
 import { formatearPrecio, getBanderaPais } from '@/lib/planes-utils';
-import { ArrowLeft, Plus, Search, RefreshCw, Edit, Trash2, MapPin, X, AlertTriangle } from 'lucide-react';
+import { ArrowLeft, Plus, Search, RefreshCw, Edit, Trash2, MapPin, X, AlertTriangle, Save } from 'lucide-react';
+import { toast } from 'sonner';
+import { enteroPositivo } from '@/proveedor/lib/compraPlanVisitador';
 
 // ════════════════════════════════════════════════════
 // COMPONENTE REUTILIZABLE: Ventana Arrastrable
@@ -119,8 +121,9 @@ export default function PlanesVisitadorConfigPage() {
     paises, 
     loading, 
     crearPlanBase, 
-    crearPlanConfig, 
-    actualizarPlanBase, 
+    crearPlanConfig,
+    actualizarPlanConfig,
+    actualizarPlanBase,
     eliminarPlanBase, 
     eliminarPlanConfig,
     recargar 
@@ -161,7 +164,13 @@ export default function PlanesVisitadorConfigPage() {
     precio_anual: '',
     comision_aplicada: '',
     descuento_porcentaje: '',
+    visitas_incluidas: '',
+    duracion_dias: '',
   });
+
+  // Edición en línea de visitas/duración por configuración (mig 351: la compra sale de acá, no de planes_base).
+  const [edicionCupo, setEdicionCupo] = useState<Record<string, { visitas: string; duracion: string }>>({});
+  const [guardandoCupo, setGuardandoCupo] = useState<string | null>(null);
 
   if (adminLoading) {
     return (
@@ -283,6 +292,12 @@ console.log('configsVisitador.length:', configsVisitador.length);
       alert('Debes seleccionar un plan y un país');
       return;
     }
+    const visitasNueva = enteroPositivo(nuevaConfig.visitas_incluidas);
+    const duracionNueva = enteroPositivo(nuevaConfig.duracion_dias);
+    if (visitasNueva === null || duracionNueva === null) {
+      toast.error('Visitas incluidas y duración (días) deben ser enteros mayores que 0');
+      return;
+    }
 
     await crearPlanConfig({
       plan_base_id: nuevaConfig.plan_base_id,
@@ -291,10 +306,37 @@ console.log('configsVisitador.length:', configsVisitador.length);
       precio_anual: nuevaConfig.precio_anual ? parseFloat(nuevaConfig.precio_anual) : undefined,
       comision_aplicada: parseFloat(nuevaConfig.comision_aplicada) || 0,
       descuento_porcentaje: parseFloat(nuevaConfig.descuento_porcentaje) || 0,
+      visitas_incluidas: visitasNueva,
+      duracion_dias: duracionNueva,
     });
     setDialogoConfig(false);
-    setNuevaConfig({ plan_base_id: '', pais_id: '', precio_local: '', precio_anual: '', comision_aplicada: '', descuento_porcentaje: '' });
+    setNuevaConfig({ plan_base_id: '', pais_id: '', precio_local: '', precio_anual: '', comision_aplicada: '', descuento_porcentaje: '', visitas_incluidas: '', duracion_dias: '' });
     recargar();
+  };
+
+  // ════════════════════════════════════════════════════
+  // HANDLER CUPO (visitas/duración) POR CONFIGURACIÓN
+  // ════════════════════════════════════════════════════
+  const valorCupo = (config: any) =>
+    edicionCupo[config.id] ?? { visitas: config.visitas_incluidas?.toString() ?? '', duracion: config.duracion_dias?.toString() ?? '' };
+
+  const handleGuardarCupo = async (config: any) => {
+    const v = valorCupo(config);
+    const visitas = enteroPositivo(v.visitas);
+    const duracion = enteroPositivo(v.duracion);
+    if (visitas === null || duracion === null) {
+      toast.error('Visitas incluidas y duración (días) deben ser enteros mayores que 0');
+      return;
+    }
+    setGuardandoCupo(config.id);
+    const ok = await actualizarPlanConfig(config.id, { visitas_incluidas: visitas, duracion_dias: duracion });
+    setGuardandoCupo(null);
+    if (ok) {
+      setEdicionCupo(prev => {
+        const { [config.id]: _, ...resto } = prev;
+        return resto;
+      });
+    }
   };
 
   // ════════════════════════════════════════════════════
@@ -424,6 +466,8 @@ console.log('configsVisitador.length:', configsVisitador.length);
                   <TableHead>Precio Anual</TableHead>
                   <TableHead>Comision</TableHead>
                   <TableHead>Descuento</TableHead>
+                  <TableHead>Visitas</TableHead>
+                  <TableHead>Duración (días)</TableHead>
                   <TableHead>Estado</TableHead>
                   <TableHead className="text-right">Acciones</TableHead>
                 </TableRow>
@@ -443,11 +487,32 @@ console.log('configsVisitador.length:', configsVisitador.length);
                     <TableCell>{config.comision_aplicada}%</TableCell>
                     <TableCell>{config.descuento_porcentaje}%</TableCell>
                     <TableCell>
+                      <Input
+                        type="number" min={1} step={1} className="w-20 h-8"
+                        value={valorCupo(config).visitas}
+                        onChange={(e) => setEdicionCupo({ ...edicionCupo, [config.id]: { ...valorCupo(config), visitas: e.target.value } })}
+                        aria-label="Visitas incluidas"
+                      />
+                    </TableCell>
+                    <TableCell>
+                      <Input
+                        type="number" min={1} step={1} className="w-20 h-8"
+                        value={valorCupo(config).duracion}
+                        onChange={(e) => setEdicionCupo({ ...edicionCupo, [config.id]: { ...valorCupo(config), duracion: e.target.value } })}
+                        aria-label="Duración en días"
+                      />
+                    </TableCell>
+                    <TableCell>
                       <Badge className={config.activo ? 'bg-green-100 text-green-700' : 'bg-gray-100 text-gray-700'}>
                         {config.activo ? 'Activo' : 'Inactivo'}
                       </Badge>
                     </TableCell>
                     <TableCell className="text-right">
+                     {edicionCupo[config.id] && (
+                       <Button variant="ghost" size="icon" className="text-emerald-600" disabled={guardandoCupo === config.id} onClick={() => handleGuardarCupo(config)} title="Guardar visitas y duración">
+                         <Save className="h-4 w-4" />
+                       </Button>
+                     )}
                      <Button variant="ghost" size="icon" className="text-red-500" onClick={() => setDialogoEliminarConfig(config.id)} title="Eliminar configuracion">
                         <Trash2 className="h-4 w-4" />
                       </Button>
@@ -455,7 +520,7 @@ console.log('configsVisitador.length:', configsVisitador.length);
                   </TableRow>
                 ))}
                 {configsVisitador.length === 0 && (
-                  <TableRow><TableCell colSpan={8} className="text-center py-8 text-muted-foreground">No hay configuraciones de visitador</TableCell></TableRow>
+                  <TableRow><TableCell colSpan={10} className="text-center py-8 text-muted-foreground">No hay configuraciones de visitador</TableCell></TableRow>
                 )}
               </TableBody>
             </Table>
@@ -709,9 +774,19 @@ console.log('configsVisitador.length:', configsVisitador.length);
               <Input type="number" value={nuevaConfig.descuento_porcentaje} onChange={(e) => setNuevaConfig({...nuevaConfig, descuento_porcentaje: e.target.value})} placeholder="0" />
             </div>
           </div>
+          <div className="grid grid-cols-2 gap-4">
+            <div>
+              <Label>Visitas incluidas</Label>
+              <Input type="number" min={1} step={1} value={nuevaConfig.visitas_incluidas} onChange={(e) => setNuevaConfig({...nuevaConfig, visitas_incluidas: e.target.value})} placeholder="20" />
+            </div>
+            <div>
+              <Label>Duración (días)</Label>
+              <Input type="number" min={1} step={1} value={nuevaConfig.duracion_dias} onChange={(e) => setNuevaConfig({...nuevaConfig, duracion_dias: e.target.value})} placeholder="30" />
+            </div>
+          </div>
           <div className="flex justify-end gap-2 pt-2">
             <Button variant="outline" onClick={() => setDialogoConfig(false)}>Cancelar</Button>
-            <Button onClick={handleCrearConfig} disabled={!nuevaConfig.plan_base_id || !nuevaConfig.pais_id} className="bg-orange-600 hover:bg-orange-700">
+            <Button onClick={handleCrearConfig} disabled={!nuevaConfig.plan_base_id || !nuevaConfig.pais_id || enteroPositivo(nuevaConfig.visitas_incluidas) === null || enteroPositivo(nuevaConfig.duracion_dias) === null} className="bg-orange-600 hover:bg-orange-700">
               <Plus className="h-4 w-4 mr-2" /> Crear Configuracion
             </Button>
           </div>
