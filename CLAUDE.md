@@ -24,10 +24,25 @@ Stack: React + Vite + TypeScript, Supabase / Postgres, deploy en Vercel, repo en
   minutos por esto** (P635 es la probe que faltaba, P636 su contraprueba).
 - NUNCA ampliar policies de RLS sobre tablas adyacentes a datos médicos (p. ej. campana_metricas). Para dar acceso, usar RPCs SECURITY DEFINER con search_path='', fail-closed (si el scope es NULL → 0 filas) y gate interno.
 - Probar aislamiento por rol impersonando request.jwt.claims en prod: cada rol ve lo suyo y no lo ajeno.
-- **Próximos números libres: probe `P937`** (global, no por módulo; P906-P907 usados por la mig 336, P912-P913
+- **Próximos números libres: probe `P940`** (global, no por módulo; P906-P907 usados por la mig 336, P912-P913
   por la 337, P914-P915 por la 338, P916-P920 por la 339/340, P921-P923 por la 341, P924 por la 342, P925 por
   la 343, P926-P927 por la 344, P928-P929 por la 345, P930 por la 346, P931-P932 por la 347, P933 por la 348,
-  P934-P935 por la 349, P936 por la 350), **migración `351`**
+  P934-P935 por la 349, P936 por la 350, P937-P939 por la 351), **migración `353`**
+  (352 = familia CP: catálogo QA de planes de visitador de GT — 3 configuraciones activas con UUID fijo: Bronce
+  80f3c3e0… 250 GTQ / 20 visitas, Plata a383402a… 450 GTQ / 50, Oro 19a760ae… 900 GTQ / 120, las tres de 30 días;
+  las 7 configuraciones inactivas de GT y planes_base no se tocan; planes_configuracion 110 → 113 filas; policies sin
+  cambio — APLICADA en prod el 2026-10-03 entre 12:30:11 y 12:30:14 UTC. Dry-run: compra Bronce como proveedor.qa →
+  pago pendiente 250 GTQ 20/30; aprobación como super_admin → `sumada` sobre la bolsa 6570afce (2 → 22 visitas, fin
+  2027-06-12 → 2027-07-12), segunda aprobación `idempotente`.)
+  (351 = familia CP: compra de plan de visitador por RPC — `solicitar_compra_plan_visitador(p_configuracion_id,
+  p_comprobante_path)` y `aprobar_pago_plan_visitador(p_pago_id)` (DEFINER, `search_path=''`, sin EXECUTE para PUBLIC ni
+  anon); columnas `planes_configuracion.visitas_incluidas/duracion_dias` y `pagos_proveedor.pvc_id/plan_visitas/
+  plan_duracion_dias`; CHECK de `pagos_proveedor.estado` (pendiente/verificado/rechazado); policy "Proveedor crea pagos"
+  endurecida (sin autoaprobación y sin `plan_visitador` directo); backfill de 2 `pvc_id`; huella de policies d1aae5eb… →
+  70008237… (309); ACL de funciones b20ef072… → b8189120… (370); probes P937/P938/P939 — APLICADA en prod el
+  2026-10-03 entre 12:03:38 y 12:03:41 UTC y verificada en sesión independiente 9/9. Orden de rollback global:
+  `352_rollback` → `351_rollback` → `350_rollback` → … (`351_rollback` aborta si hay pagos con snapshot o
+  configuraciones con visitas/duración cargadas: por eso primero va el de la 352).)
   (350 = familia 2, paso 3 (F2-c): las 17 policies `{public}` de las tablas de la WL_ANON_LEGACY → `TO authenticated`
   ("Publico lee paises activos" sigue `{public}`); las 17 dependen de la sesión y anon ya veía 0 por ellas (medido:
   paises 21 y configuracion_sistema 16 por sus propias policies de anon, el resto 0, sin 42501, igual después); huella
@@ -120,6 +135,13 @@ Stack: React + Vite + TypeScript, Supabase / Postgres, deploy en Vercel, repo en
   336 = fix de la 335: liberación/reversión con FOR UPDATE + evento solo si cambió la fila; EX028
   normalizado espacios/tabs/saltos — APLICADA en prod y verificada en sesión independiente el
   26-sep-2026), **errcode `PA035`** (comercial),
+  **`CP018`** (familia CP, mig 351: `solicitar_compra_plan_visitador` → 42501 sin empresa o rol fuera de admin/editor,
+  CP001 configuración no disponible, CP002 otro país, CP003 sin visitas/duración/precio, CP004 sin cuenta bancaria
+  activa, CP005 moneda distinta a la de la cuenta, CP006 comprobante inválido, CP007 ya hay una compra pendiente;
+  `aprobar_pago_plan_visitador` → 42501 no es super_admin, CP010 pago inexistente, CP011 no es plan_visitador, CP012 no
+  pendiente, CP013 legacy sin snapshot, CP014 configuración inexistente, CP015 empresa no activa, CP016 no opera en el
+  país, CP017 bolsa vigente ilimitada; libres CP008, CP009 y desde CP018; el front los mapea en
+  `src/proveedor/lib/compraPlanVisitador.ts`),
   **`NT012`** (notas clínicas, mig 334 — APLICADA en prod, main b84edd4, probes P885-P911; front en
   feat/p4-334-front): NT001 = no autenticado, NT002 = no es el autor (o la nota no existe), NT003 = nota
   todavía abierta, NT004 = motivo vacío o > 500, NT005 = la corrección no cambia nada (esos 5 + NT011 =
@@ -211,8 +233,10 @@ Stack: React + Vite + TypeScript, Supabase / Postgres, deploy en Vercel, repo en
   Pasó dos veces (18cf819 y el lote 1 de PA-FAILOPEN) y una de ellas tardó dos meses en detectarse.
   Baselines vivos: `top_level_dml_ddl=0` (excluye `pg_temp`), `cast_directo=0`, `do_sin_handler=155`
   (fase 2.2 CERRADA: los 55 bloques que escriben están envueltos, 211→193→175→157→156→155; los 155
-  restantes sólo leen y publican, así que ya no son deuda; 969 bloques DO en total y harness en 1011 filas /
-  11 rojas de deuda al 3-oct-2026, con P936 de la 350). **P782 ajustado en la 346:** el DELETE directo sobre
+  restantes sólo leen y publican, así que ya no son deuda; 972 bloques DO en total al 3-oct-2026, con P937-P939
+  de la 351; la última cuenta de filas medida en esta memoria es 1011 / 11 rojas de deuda, tras la 350).
+  **Regla de método: el harness NUNCA corre en paralelo con otra sesión que escriba o impersone contra prod**
+  (las dos compiten por las mismas filas: deadlocks 40P01 que salen como rojos falsos). **P782 ajustado en la 346:** el DELETE directo sobre
   `visitas_agendadas` ahora da 42501 de privilegio (authenticated ya no tiene DELETE) y cuenta como OK, más fuerte
   que ROW_COUNT=0; cualquier otro error sigue siendo FALLO. **P929 y los dry-runs consumen valores de secuencia en prod**
   (`nextval` no es transaccional: el ROLLBACK no los devuelve) → huecos en los ids, esperado; no se devuelven
@@ -224,7 +248,7 @@ Stack: React + Vite + TypeScript, Supabase / Postgres, deploy en Vercel, repo en
 - **Migraciones: SIEMPRE `npx supabase db query --linked -f <archivo>`, NUNCA `db push`.** `db push`
   desincroniza `schema_migrations` (deuda desde la 047). Los `.sql` viven en `supabase/migrations/`
   (rollback en `supabase/migrations/rollback/`); los de `supabase/fixes/` se agregan con `git add -f`.
-  **Desvío aceptado (familia 8):** los rollbacks de 334-350 viven en `supabase/migrations/`
+  **Desvío aceptado (familia 8):** los rollbacks de 334-352 viven en `supabase/migrations/`
   (`3XX_rollback.sql`), no en `supabase/migrations/rollback/`.
 - **Los tests de edge (deno) NO corren en vitest ni en el pre-commit**: se corren a mano desde
   `supabase/functions/<fn>/` con `deno test --allow-net --allow-env --no-check` (asistente-ia: 17).
@@ -356,6 +380,17 @@ Detalles a recordar:
   (42501 "permission denied to change default privileges"); inerte porque las migraciones crean como postgres, y
   P724 lo vigila. Defaults de postgres en `storage` (anon/authenticated con todo): inertes, postgres no tiene
   CREATE en storage.
+- **FAMILIA CP (compra de planes de visitador): 351 + 352 APLICADAS, front en `cp/351-compra-plan-visitador`.**
+  Decisiones (Oscar, 3-oct-2026): pago por transferencia con aprobación manual del super_admin; el precio, la moneda,
+  las visitas y la duración salen del catálogo del país en el servidor (el monto de la URL no se usa); con una bolsa
+  vigente en el país la compra SUMA visitas y EXTIENDE la fecha_fin (dos bolsas superpuestas no suman cupo); no se vende
+  ilimitado; la aprobación es una RPC atómica e idempotente que activa la capacidad 'visitadores' (permanente); el
+  visitador solo ve su bolsa (cupo y vigencia), sin catálogo; se quitó el toggle anual de `/planes-visitador` (la compra
+  cobra el precio mensual). **Ventana rota:** entre el apply de la 351 y el deploy del front, el checkout viejo de
+  plan_visitador falla (la policy ya no admite el INSERT directo). Backlog: comprobante huérfano cuando la RPC rechaza
+  (falta una policy DELETE acotada en el bucket `comprobantes`); monto libre en el checkout de campana/plan_laboratorio/
+  plan_farmacia (misma solución por RPC); rechazar un pago sigue sin RPC (UPDATE directo del super_admin); la columna
+  `planes_visitador_contratados.visitas_usadas` está muerta (el cupo se cuenta con `private.pvc_usadas`).
 - (Familia 6) La secuencia de `planes_publicidad` está desfasada (medido 2-oct-2026: `last_value` 1, `max(id)` 3):
   un INSERT por default choca con la PK (23505). Corregir con `setval` en una migración aparte (lo detectó el
   dry-run A2 de la 345; P929 siembra su plan con id explícito).
