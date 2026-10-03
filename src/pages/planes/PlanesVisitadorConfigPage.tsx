@@ -8,7 +8,8 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
-import { useState, useRef, useCallback } from 'react';
+import { useState, useRef, useCallback, useEffect } from 'react';
+import { supabase } from '@/lib/supabase';
 import { useNavigate } from 'react-router-dom';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -23,7 +24,7 @@ import { usePaisFiltro } from '@/hooks/usePaisFiltro';
 import { formatearPrecio, getBanderaPais } from '@/lib/planes-utils';
 import { ArrowLeft, Plus, Search, RefreshCw, Edit, Trash2, MapPin, X, AlertTriangle, Save } from 'lucide-react';
 import { toast } from 'sonner';
-import { enteroPositivo } from '@/proveedor/lib/compraPlanVisitador';
+import { enteroPositivo, normalizarMoneda, advertenciaMonedaCuenta } from '@/proveedor/lib/compraPlanVisitador';
 
 // ════════════════════════════════════════════════════
 // COMPONENTE REUTILIZABLE: Ventana Arrastrable
@@ -166,11 +167,29 @@ export default function PlanesVisitadorConfigPage() {
     descuento_porcentaje: '',
     visitas_incluidas: '',
     duracion_dias: '',
+    moneda_local: '',
   });
 
-  // Edición en línea de visitas/duración por configuración (mig 351: la compra sale de acá, no de planes_base).
-  const [edicionCupo, setEdicionCupo] = useState<Record<string, { visitas: string; duracion: string }>>({});
+  // Edición en línea de visitas/duración/moneda por configuración (mig 351: la compra sale de acá, no de planes_base).
+  const [edicionCupo, setEdicionCupo] = useState<Record<string, { visitas: string; duracion: string; moneda: string }>>({});
   const [guardandoCupo, setGuardandoCupo] = useState<string | null>(null);
+
+  // Moneda de la cuenta bancaria del checkout por país (la primera activa por created_at, igual que
+  // useCuentaBancariaCheckout y la RPC). Si no coincide con moneda_local, la compra falla con CP005.
+  const [monedaCuentaPorPais, setMonedaCuentaPorPais] = useState<Record<string, string>>({});
+  useEffect(() => {
+    supabase
+      .from('cuentas_bancarias_pais')
+      .select('pais_id, moneda, created_at')
+      .eq('activo', true)
+      .order('created_at')
+      .then(({ data, error }) => {
+        if (error) { console.error(error); return; }
+        const mapa: Record<string, string> = {};
+        for (const c of data || []) if (c.pais_id && !(c.pais_id in mapa) && c.moneda) mapa[c.pais_id] = c.moneda;
+        setMonedaCuentaPorPais(mapa);
+      });
+  }, []);
 
   if (adminLoading) {
     return (
@@ -298,6 +317,11 @@ console.log('configsVisitador.length:', configsVisitador.length);
       toast.error('Visitas incluidas y duración (días) deben ser enteros mayores que 0');
       return;
     }
+    const monedaNueva = normalizarMoneda(nuevaConfig.moneda_local);
+    if (monedaNueva === null) {
+      toast.error('La moneda debe ser un código de 3 letras (p. ej. GTQ, USD)');
+      return;
+    }
 
     await crearPlanConfig({
       plan_base_id: nuevaConfig.plan_base_id,
@@ -308,9 +332,10 @@ console.log('configsVisitador.length:', configsVisitador.length);
       descuento_porcentaje: parseFloat(nuevaConfig.descuento_porcentaje) || 0,
       visitas_incluidas: visitasNueva,
       duracion_dias: duracionNueva,
+      moneda_local: monedaNueva,
     });
     setDialogoConfig(false);
-    setNuevaConfig({ plan_base_id: '', pais_id: '', precio_local: '', precio_anual: '', comision_aplicada: '', descuento_porcentaje: '', visitas_incluidas: '', duracion_dias: '' });
+    setNuevaConfig({ plan_base_id: '', pais_id: '', precio_local: '', precio_anual: '', comision_aplicada: '', descuento_porcentaje: '', visitas_incluidas: '', duracion_dias: '', moneda_local: '' });
     recargar();
   };
 
@@ -318,7 +343,11 @@ console.log('configsVisitador.length:', configsVisitador.length);
   // HANDLER CUPO (visitas/duración) POR CONFIGURACIÓN
   // ════════════════════════════════════════════════════
   const valorCupo = (config: any) =>
-    edicionCupo[config.id] ?? { visitas: config.visitas_incluidas?.toString() ?? '', duracion: config.duracion_dias?.toString() ?? '' };
+    edicionCupo[config.id] ?? {
+      visitas: config.visitas_incluidas?.toString() ?? '',
+      duracion: config.duracion_dias?.toString() ?? '',
+      moneda: config.moneda_local ?? '',
+    };
 
   const handleGuardarCupo = async (config: any) => {
     const v = valorCupo(config);
@@ -328,8 +357,13 @@ console.log('configsVisitador.length:', configsVisitador.length);
       toast.error('Visitas incluidas y duración (días) deben ser enteros mayores que 0');
       return;
     }
+    const moneda = normalizarMoneda(v.moneda);
+    if (moneda === null) {
+      toast.error('La moneda debe ser un código de 3 letras (p. ej. GTQ, USD)');
+      return;
+    }
     setGuardandoCupo(config.id);
-    const ok = await actualizarPlanConfig(config.id, { visitas_incluidas: visitas, duracion_dias: duracion });
+    const ok = await actualizarPlanConfig(config.id, { visitas_incluidas: visitas, duracion_dias: duracion, moneda_local: moneda });
     setGuardandoCupo(null);
     if (ok) {
       setEdicionCupo(prev => {
@@ -466,6 +500,7 @@ console.log('configsVisitador.length:', configsVisitador.length);
                   <TableHead>Precio Anual</TableHead>
                   <TableHead>Comision</TableHead>
                   <TableHead>Descuento</TableHead>
+                  <TableHead>Moneda</TableHead>
                   <TableHead>Visitas</TableHead>
                   <TableHead>Duración (días)</TableHead>
                   <TableHead>Estado</TableHead>
@@ -482,10 +517,23 @@ console.log('configsVisitador.length:', configsVisitador.length);
                         {config.pais?.nombre}
                       </div>
                     </TableCell>
-                    <TableCell>{formatearPrecio(config.precio_local, config.pais?.moneda || 'USD')}</TableCell>
-                    <TableCell>{formatearPrecio(config.precio_anual || 0, config.pais?.moneda || 'USD')}</TableCell>
+                    <TableCell>{formatearPrecio(config.precio_local, config.moneda_local || config.pais?.moneda || 'USD')}</TableCell>
+                    <TableCell>{formatearPrecio(config.precio_anual || 0, config.moneda_local || config.pais?.moneda || 'USD')}</TableCell>
                     <TableCell>{config.comision_aplicada}%</TableCell>
                     <TableCell>{config.descuento_porcentaje}%</TableCell>
+                    <TableCell>
+                      <Input
+                        className="w-20 h-8 uppercase" maxLength={3}
+                        value={valorCupo(config).moneda}
+                        onChange={(e) => setEdicionCupo({ ...edicionCupo, [config.id]: { ...valorCupo(config), moneda: e.target.value } })}
+                        aria-label="Moneda"
+                      />
+                      {advertenciaMonedaCuenta(valorCupo(config).moneda, monedaCuentaPorPais[config.pais_id]) && (
+                        <p className="text-xs text-amber-700 mt-1 max-w-[12rem]">
+                          {advertenciaMonedaCuenta(valorCupo(config).moneda, monedaCuentaPorPais[config.pais_id])}
+                        </p>
+                      )}
+                    </TableCell>
                     <TableCell>
                       <Input
                         type="number" min={1} step={1} className="w-20 h-8"
@@ -520,7 +568,7 @@ console.log('configsVisitador.length:', configsVisitador.length);
                   </TableRow>
                 ))}
                 {configsVisitador.length === 0 && (
-                  <TableRow><TableCell colSpan={10} className="text-center py-8 text-muted-foreground">No hay configuraciones de visitador</TableCell></TableRow>
+                  <TableRow><TableCell colSpan={11} className="text-center py-8 text-muted-foreground">No hay configuraciones de visitador</TableCell></TableRow>
                 )}
               </TableBody>
             </Table>
@@ -745,7 +793,10 @@ console.log('configsVisitador.length:', configsVisitador.length);
           </div>
           <div>
             <Label>Pais</Label>
-            <Select value={nuevaConfig.pais_id} onValueChange={(v) => setNuevaConfig({...nuevaConfig, pais_id: v})}>
+            <Select
+              value={nuevaConfig.pais_id}
+              onValueChange={(v) => setNuevaConfig({ ...nuevaConfig, pais_id: v, moneda_local: (paises.find((p: any) => p.id === v) as any)?.moneda ?? nuevaConfig.moneda_local })}
+            >
               <SelectTrigger className="w-full"><SelectValue placeholder="Seleccionar pais" /></SelectTrigger>
               <SelectContent position="popper" className="z-[70]">
                 {paises.map(p => (
@@ -774,6 +825,20 @@ console.log('configsVisitador.length:', configsVisitador.length);
               <Input type="number" value={nuevaConfig.descuento_porcentaje} onChange={(e) => setNuevaConfig({...nuevaConfig, descuento_porcentaje: e.target.value})} placeholder="0" />
             </div>
           </div>
+          <div>
+            <Label>Moneda</Label>
+            <Input
+              className="uppercase" maxLength={3}
+              value={nuevaConfig.moneda_local}
+              onChange={(e) => setNuevaConfig({ ...nuevaConfig, moneda_local: e.target.value })}
+              placeholder="Moneda del país (p. ej. GTQ)"
+            />
+            {advertenciaMonedaCuenta(nuevaConfig.moneda_local, monedaCuentaPorPais[nuevaConfig.pais_id]) && (
+              <p className="text-xs text-amber-700 mt-1">
+                {advertenciaMonedaCuenta(nuevaConfig.moneda_local, monedaCuentaPorPais[nuevaConfig.pais_id])}
+              </p>
+            )}
+          </div>
           <div className="grid grid-cols-2 gap-4">
             <div>
               <Label>Visitas incluidas</Label>
@@ -786,7 +851,7 @@ console.log('configsVisitador.length:', configsVisitador.length);
           </div>
           <div className="flex justify-end gap-2 pt-2">
             <Button variant="outline" onClick={() => setDialogoConfig(false)}>Cancelar</Button>
-            <Button onClick={handleCrearConfig} disabled={!nuevaConfig.plan_base_id || !nuevaConfig.pais_id || enteroPositivo(nuevaConfig.visitas_incluidas) === null || enteroPositivo(nuevaConfig.duracion_dias) === null} className="bg-orange-600 hover:bg-orange-700">
+            <Button onClick={handleCrearConfig} disabled={!nuevaConfig.plan_base_id || !nuevaConfig.pais_id || enteroPositivo(nuevaConfig.visitas_incluidas) === null || enteroPositivo(nuevaConfig.duracion_dias) === null || normalizarMoneda(nuevaConfig.moneda_local) === null} className="bg-orange-600 hover:bg-orange-700">
               <Plus className="h-4 w-4 mr-2" /> Crear Configuracion
             </Button>
           </div>

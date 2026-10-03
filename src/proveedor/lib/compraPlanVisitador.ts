@@ -63,3 +63,20 @@ export function enteroPositivo(valor: string | number | null | undefined): numbe
   const n = typeof valor === 'number' ? valor : Number(valor)
   return Number.isInteger(n) && n > 0 ? n : null
 }
+
+/** Código de moneda ISO de 3 letras en mayúsculas (moneda_local es varchar(3)); null si no es válido. */
+export function normalizarMoneda(valor: string | null | undefined): string | null {
+  const m = (valor ?? '').trim().toUpperCase()
+  return /^[A-Z]{3}$/.test(m) ? m : null
+}
+
+/**
+ * La RPC rechaza la compra (CP005) si la moneda del plan no es la de la cuenta bancaria activa del país.
+ * Devuelve el aviso para el admin, o null si coinciden o el país no tiene cuenta activa (eso lo reporta CP004).
+ */
+export function advertenciaMonedaCuenta(monedaConfig: string | null | undefined, monedaCuenta: string | null | undefined): string | null {
+  const cfg = normalizarMoneda(monedaConfig)
+  const cta = normalizarMoneda(monedaCuenta)
+  if (!cta || !cfg || cfg === cta) return null
+  return `La compra fallará: la cuenta bancaria del país está en ${cta}`
+}

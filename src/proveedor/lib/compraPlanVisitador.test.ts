@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest'
 import {
   mensajeErrorCompraPlan, MENSAJES_SOLICITAR, MENSAJES_APROBAR, MENSAJE_GENERICO_COMPRA,
-  esBolsaVigente, configComprable, enteroPositivo, hoyISO,
+  esBolsaVigente, configComprable, enteroPositivo, hoyISO, normalizarMoneda, advertenciaMonedaCuenta,
 } from './compraPlanVisitador'
 
 const pg = (code: string, message = 'texto de la base') => ({ code, message })
@@ -66,5 +66,22 @@ describe('configComprable y enteroPositivo', () => {
     expect(enteroPositivo('2.5')).toBeNull()
     expect(enteroPositivo('abc')).toBeNull()
     expect(enteroPositivo(null)).toBeNull()
+  })
+})
+
+describe('normalizarMoneda y advertenciaMonedaCuenta', () => {
+  it('normaliza a 3 letras mayusculas', () => {
+    expect(normalizarMoneda(' gtq ')).toBe('GTQ')
+    expect(normalizarMoneda('USD')).toBe('USD')
+    expect(normalizarMoneda('US')).toBeNull()
+    expect(normalizarMoneda('USDT')).toBeNull()
+    expect(normalizarMoneda('')).toBeNull()
+    expect(normalizarMoneda(null)).toBeNull()
+  })
+  it('avisa solo si la cuenta del pais esta en otra moneda', () => {
+    expect(advertenciaMonedaCuenta('USD', 'GTQ')).toBe('La compra fallará: la cuenta bancaria del país está en GTQ')
+    expect(advertenciaMonedaCuenta('gtq', 'GTQ')).toBeNull()
+    expect(advertenciaMonedaCuenta('GTQ', null)).toBeNull()
+    expect(advertenciaMonedaCuenta('', 'GTQ')).toBeNull()
   })
 })
