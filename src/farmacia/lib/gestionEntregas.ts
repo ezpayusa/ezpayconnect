@@ -57,6 +57,20 @@ export function puedeReasignar(e: EntregaGestion): boolean {
 }
 
 /**
+ * Al reasignar, ¿se puede elegir al repartidor que ya la tiene? Solo si la entrega está fallida: reasignar_entrega la
+ * reabre (vuelve a 'asignada', suma un intento) aunque sea el mismo repartidor. En asignada / en camino no tiene sentido.
+ */
+export function puedeElegirRepartidorActual(estado: EstadoEntrega): boolean {
+  return estado === 'fallida'
+}
+
+/** Texto del botón del diálogo: "Reabrir" si es una fallida que vuelve al mismo repartidor; si no, según el modo. */
+export function textoBotonAsignacion(modo: 'asignar' | 'reasignar', estado: EstadoEntrega | null, elegido: string | null, actual: string | null): string {
+  if (modo === 'asignar') return 'Asignar'
+  return estado === 'fallida' && elegido != null && elegido === actual ? 'Reabrir' : 'Reasignar'
+}
+
+/**
  * Una tanda va a UN repartidor, y el repartidor es de UNA sucursal: la selección tiene que ser de una sola
  * sucursal. Devuelve esa sucursal, o null si la selección está vacía o mezcla sucursales.
  */

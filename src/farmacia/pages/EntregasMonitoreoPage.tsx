@@ -6,6 +6,7 @@ import { Button } from '@/components/ui/button'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
 import { Truck, Camera, PenLine, MapPinned, AlertTriangle, Loader2, Banknote, UserPlus, Repeat } from 'lucide-react'
 import { Checkbox } from '@/components/ui/checkbox'
+import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
 import { toast } from 'sonner'
 import { useEntregasMonitoreo, type EntregaMonitoreo } from '@/farmacia/hooks/useEntregasMonitoreo'
 import { useFarmaciaPermisos } from '@/farmacia/hooks/useFarmaciaPermisos'
@@ -34,7 +35,7 @@ export default function EntregasMonitoreoPage() {
   const [geoEntrega, setGeoEntrega] = useState<EntregaMonitoreo | null>(null)
   // Asignación (mig 353): selección de pendientes para la tanda y el diálogo abierto (tanda o reasignación).
   const [seleccion, setSeleccion] = useState<Set<number>>(new Set())
-  const [dialogo, setDialogo] = useState<{ modo: 'asignar' | 'reasignar'; ids: number[]; actual?: string | null } | null>(null)
+  const [dialogo, setDialogo] = useState<{ modo: 'asignar' | 'reasignar'; ids: number[]; actual?: string | null; estado?: EstadoEntrega } | null>(null)
 
   const filtros = useMemo(() => ({
     estado: estado === 'todas' ? null : (estado as EstadoEntrega),
@@ -76,13 +77,15 @@ export default function EntregasMonitoreoPage() {
     if (seleccionadas.length > MAX_LOTE) { toast.error(`Podés asignar hasta ${MAX_LOTE} entregas por tanda.`); return }
     setDialogo({ modo: 'asignar', ids: seleccionadas.map((e) => e.id) })
   }
-  const alTerminarAsignacion = () => {
+  const alTerminarAsignacion = (repartidorId: string) => {
     const d = dialogo
     setDialogo(null)
     setSeleccion(new Set())
     if (d) toast.success(d.modo === 'asignar'
       ? (d.ids.length === 1 ? 'Entrega asignada. El repartidor recibió el aviso.' : `${d.ids.length} entregas asignadas. El repartidor recibió el aviso.`)
-      : 'Entrega reasignada. Avisamos a los dos repartidores.')
+      : repartidorId === d.actual
+        ? 'Entrega reabierta con el mismo repartidor. Le avisamos.'
+        : 'Entrega reasignada. Avisamos a los dos repartidores.')
     recargar()
   }
 
@@ -256,19 +259,25 @@ export default function EntregasMonitoreoPage() {
                       <TableCell>
                         {puedeGestionar && (
                           <div className="flex gap-1">
-                            {puedeAsignar(e) && (
-                              <button type="button" title="Asignar repartidor" onClick={() => setDialogo({ modo: 'asignar', ids: [e.id] })} className="text-[#1E5C8E] p-1">
-                                <UserPlus className="h-4 w-4" />
-                              </button>
-                            )}
                             {puedeReasignar(e) && (
-                              <button type="button" title="Reasignar" onClick={() => setDialogo({ modo: 'reasignar', ids: [e.id], actual: e.delivery_id })} className="text-[#1E5C8E] p-1">
-                                <Repeat className="h-4 w-4" />
-                              </button>
+                              <Tooltip>
+                                <TooltipTrigger asChild>
+                                  <button type="button" aria-label={e.estado === 'fallida' ? 'Reasignar o reabrir la entrega' : 'Reasignar a otro repartidor'}
+                                    onClick={() => setDialogo({ modo: 'reasignar', ids: [e.id], actual: e.delivery_id, estado: e.estado })} className="text-[#1E5C8E] p-1">
+                                    <Repeat className="h-4 w-4" />
+                                  </button>
+                                </TooltipTrigger>
+                                <TooltipContent>{e.estado === 'fallida' ? 'Reasignar o reabrir la entrega' : 'Reasignar a otro repartidor'}</TooltipContent>
+                              </Tooltip>
                             )}
-                            <button type="button" title="Corregir dirección" onClick={() => setGeoEntrega(e)} className="text-[#1E5C8E] p-1">
-                              <MapPinned className="h-4 w-4" />
-                            </button>
+                            <Tooltip>
+                              <TooltipTrigger asChild>
+                                <button type="button" aria-label="Corregir la dirección de entrega" onClick={() => setGeoEntrega(e)} className="text-[#1E5C8E] p-1">
+                                  <MapPinned className="h-4 w-4" />
+                                </button>
+                              </TooltipTrigger>
+                              <TooltipContent>Corregir la dirección de entrega</TooltipContent>
+                            </Tooltip>
                           </div>
                         )}
                       </TableCell>
@@ -309,6 +318,7 @@ export default function EntregasMonitoreoPage() {
           modo={dialogo.modo}
           entregaIds={dialogo.ids}
           repartidorActual={dialogo.actual}
+          estadoEntrega={dialogo.estado ?? null}
           onHecho={alTerminarAsignacion}
           onClose={() => setDialogo(null)}
         />

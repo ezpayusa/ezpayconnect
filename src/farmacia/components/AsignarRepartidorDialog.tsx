@@ -3,8 +3,9 @@ import { Loader2 } from 'lucide-react'
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import { Button } from '@/components/ui/button'
 import { useAsignacionEntregas, type ErrorGestion, type RepartidorAsignable } from '@/farmacia/hooks/useGestionEntregas'
-import { mensajeErrorEntrega } from '@/farmacia/lib/gestionEntregas'
+import { mensajeErrorEntrega, puedeElegirRepartidorActual, textoBotonAsignacion } from '@/farmacia/lib/gestionEntregas'
 import { folioEntrega } from '@/repartidor/lib/folio'
+import type { EstadoEntrega } from '@/repartidor/types'
 
 interface Props {
   /** 'asignar' = tanda de pendientes (asignar_entregas_lote); 'reasignar' = una entrega (reasignar_entrega). */
@@ -13,13 +14,16 @@ interface Props {
   entregaIds: number[]
   /** Repartidor actual (solo reasignar): se marca en la lista. */
   repartidorActual?: string | null
-  onHecho: () => void
+  /** Estado de la entrega a reasignar: si está fallida, se puede reabrir con el mismo repartidor. */
+  estadoEntrega?: EstadoEntrega | null
+  /** Recibe el repartidor elegido. */
+  onHecho: (repartidorId: string) => void
   onClose: () => void
 }
 
 // Selector de repartidor: lista los que el servidor aceptaría para la sucursal de las entregas
 // (listar_repartidores_asignables), menos cargado primero. El servidor re-valida todo al confirmar.
-export default function AsignarRepartidorDialog({ modo, entregaIds, repartidorActual, onHecho, onClose }: Props) {
+export default function AsignarRepartidorDialog({ modo, entregaIds, repartidorActual, estadoEntrega = null, onHecho, onClose }: Props) {
   const { listarAsignables, asignarLote, reasignar } = useAsignacionEntregas()
   const [opciones, setOpciones] = useState<RepartidorAsignable[]>([])
   const [cargando, setCargando] = useState(true)
@@ -48,7 +52,7 @@ export default function AsignarRepartidorDialog({ modo, entregaIds, repartidorAc
     const { error } = modo === 'asignar' ? await asignarLote(entregaIds, elegido) : await reasignar(entregaIds[0], elegido)
     setGuardando(false)
     if (error) { setErrorAccion(error); return }
-    onHecho()
+    onHecho(elegido)
   }
 
   const titulo = modo === 'asignar'
@@ -63,7 +67,9 @@ export default function AsignarRepartidorDialog({ modo, entregaIds, repartidorAc
           <DialogDescription>
             {modo === 'asignar'
               ? 'Elegí el repartidor. Le llega un aviso con las entregas nuevas.'
-              : 'Elegí el nuevo repartidor. Les avisamos a los dos.'}
+              : estadoEntrega === 'fallida'
+                ? 'Elegí el repartidor: podés reabrirla con el mismo o pasarla a otro. Le llega un aviso.'
+                : 'Elegí el nuevo repartidor. Les avisamos a los dos.'}
           </DialogDescription>
         </DialogHeader>
 
@@ -76,17 +82,19 @@ export default function AsignarRepartidorDialog({ modo, entregaIds, repartidorAc
           <div className="space-y-2 max-h-72 overflow-y-auto" role="radiogroup">
             {opciones.map((r) => {
               const actual = r.repartidor_id === repartidorActual
+              // fallida: el actual se puede elegir (reasignar_entrega la reabre); asignada / en camino: no
+              const bloqueado = actual && !(estadoEntrega != null && puedeElegirRepartidorActual(estadoEntrega))
               return (
                 <button
                   key={r.repartidor_id}
                   type="button"
                   role="radio"
                   aria-checked={elegido === r.repartidor_id}
-                  disabled={actual}
+                  disabled={bloqueado}
                   onClick={() => setElegido(r.repartidor_id)}
                   className={`w-full text-left rounded-lg border px-3 py-2 flex items-center justify-between gap-2 ${
                     elegido === r.repartidor_id ? 'border-[#1E5C8E] bg-[#1E5C8E]/5' : 'border-gray-200'
-                  } ${actual ? 'opacity-50 cursor-not-allowed' : ''}`}
+                  } ${bloqueado ? 'opacity-50 cursor-not-allowed' : ''}`}
                 >
                   <span className="text-sm font-medium text-[#1a2a3a]">{r.nombre}{actual ? ' (actual)' : ''}</span>
                   <span className="text-xs text-[#8a9aaa]">
@@ -104,7 +112,7 @@ export default function AsignarRepartidorDialog({ modo, entregaIds, repartidorAc
           <Button variant="outline" onClick={onClose} disabled={guardando}>Cancelar</Button>
           <Button onClick={() => void confirmar()} disabled={!elegido || guardando} className="bg-[#1E5C8E] hover:bg-[#164a70]">
             {guardando && <Loader2 className="h-4 w-4 mr-1 animate-spin" />}
-            {modo === 'asignar' ? 'Asignar' : 'Reasignar'}
+            {textoBotonAsignacion(modo, estadoEntrega, elegido, repartidorActual ?? null)}
           </Button>
         </DialogFooter>
       </DialogContent>

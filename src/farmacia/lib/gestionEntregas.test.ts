@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest'
 import {
   mensajeErrorEntrega, entregaQueFallo, puedeAsignar, puedeReasignar, sucursalUnica,
+  puedeElegirRepartidorActual, textoBotonAsignacion,
   MENSAJES_ENTREGAS, MENSAJE_GENERICO_ENTREGAS,
 } from './gestionEntregas'
 
@@ -50,5 +51,20 @@ describe('reglas de asignacion (espejo de asignar_entrega / reasignar_entrega)',
     expect(sucursalUnica([])).toBeNull()
     expect(sucursalUnica([{ farmacia_id: 3 }, { farmacia_id: 3 }])).toBe(3)
     expect(sucursalUnica([{ farmacia_id: 3 }, { farmacia_id: 5 }])).toBeNull()
+  })
+})
+
+describe('reasignar una fallida con el mismo repartidor (reabrir)', () => {
+  it('el repartidor actual solo se puede elegir si la entrega esta fallida', () => {
+    expect(puedeElegirRepartidorActual('fallida')).toBe(true)
+    expect(puedeElegirRepartidorActual('asignada')).toBe(false)
+    expect(puedeElegirRepartidorActual('en_camino')).toBe(false)
+  })
+  it('el boton dice Reabrir solo con fallida y el mismo repartidor', () => {
+    expect(textoBotonAsignacion('reasignar', 'fallida', 'r1', 'r1')).toBe('Reabrir')
+    expect(textoBotonAsignacion('reasignar', 'fallida', 'r2', 'r1')).toBe('Reasignar')
+    expect(textoBotonAsignacion('reasignar', 'fallida', null, 'r1')).toBe('Reasignar')
+    expect(textoBotonAsignacion('reasignar', 'asignada', 'r1', 'r1')).toBe('Reasignar')
+    expect(textoBotonAsignacion('asignar', null, 'r1', null)).toBe('Asignar')
   })
 })

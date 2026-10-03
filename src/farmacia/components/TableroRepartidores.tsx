@@ -74,7 +74,7 @@ export default function TableroRepartidores({ farmaciaId }: Props) {
           </Table>
         </div>
       )}
-      <p className="text-xs text-[#8a9aaa]">"Hoy" se cuenta en UTC, igual que el servidor.</p>
+      {/* "Hoy" (entregadas_hoy / fallidas_hoy) se cuenta en UTC, igual que el servidor (CURRENT_DATE). */}
     </div>
   )
 }
