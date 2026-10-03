@@ -24,17 +24,25 @@ Stack: React + Vite + TypeScript, Supabase / Postgres, deploy en Vercel, repo en
   minutos por esto** (P635 es la probe que faltaba, P636 su contraprueba).
 - NUNCA ampliar policies de RLS sobre tablas adyacentes a datos médicos (p. ej. campana_metricas). Para dar acceso, usar RPCs SECURITY DEFINER con search_path='', fail-closed (si el scope es NULL → 0 filas) y gate interno.
 - Probar aislamiento por rol impersonando request.jwt.claims en prod: cada rol ve lo suyo y no lo ajeno.
-- **Próximos números libres: probe `P936`** (global, no por módulo; P906-P907 usados por la mig 336, P912-P913
+- **Próximos números libres: probe `P937`** (global, no por módulo; P906-P907 usados por la mig 336, P912-P913
   por la 337, P914-P915 por la 338, P916-P920 por la 339/340, P921-P923 por la 341, P924 por la 342, P925 por
   la 343, P926-P927 por la 344, P928-P929 por la 345, P930 por la 346, P931-P932 por la 347, P933 por la 348,
-  P934-P935 por la 349), **migración `350`**
+  P934-P935 por la 349, P936 por la 350), **migración `351`**
+  (350 = familia 2, paso 3 (F2-c): las 17 policies `{public}` de las tablas de la WL_ANON_LEGACY → `TO authenticated`
+  ("Publico lee paises activos" sigue `{public}`); las 17 dependen de la sesión y anon ya veía 0 por ellas (medido:
+  paises 21 y configuracion_sistema 16 por sus propias policies de anon, el resto 0, sin 42501, igual después); huella
+  de policies fc06b02c… → d1aae5eb… (309); contenido sin roles 2003cbbf… (309) sin cambios; probe P936 — APLICADA en
+  prod el 2026-10-03 entre 11:06:51 y 11:06:53 UTC y verificada en sesión independiente 9/9 (1011 filas / 11 rojas de
+  deuda, P800 PASA, guard `do_sin_handler` 155 sobre 969 bloques DO). **Allowlist TEMPORAL de P930:** SELECT de anon en
+  cuentas_proveedor, empresas_proveedoras, pacientes, perfiles y recetas (sin policy de anon desde la 350); se quita en
+  el paso EXECUTE de la familia 2, junto con el achique de la WL_ANON_LEGACY. Orden de rollback global: `350_rollback`
+  → `349_rollback` → `348_rollback` → … → `342_rollback` (`350_rollback` exige d1aae5eb…).)
   (349 = familia 2, paso 2 (F2-b): 88 policies `{public}` de public → `TO authenticated`, en 41 tablas donde anon no
   tiene ningún privilegio (ni de tabla ni de columna), sin cambiar USING/CHECK/cmd/permissive; huella de policies
   96a7fabd… → fc06b02c… (309); contenido sin roles d0dfa2b9… (88) igual; probes P934 (censo) y P935 (funcional);
   P884 ajustado (fijaba `{public}` en 4 de estas policies) — APLICADA en prod el 2-oct-2026 20:53:20 UTC y
   verificada en sesión independiente 8/8 (1010 filas / 11 rojas de deuda, P800 PASA, guard `do_sin_handler` 155
-  sobre 968 bloques DO). Orden de rollback global: `349_rollback` → `348_rollback` → `347_rollback` → … →
-  `342_rollback` (la precondición de `348_rollback` exige la huella 96a7fabd…).)
+  sobre 968 bloques DO). La precondición de `348_rollback` exige la huella 96a7fabd….)
   (348 = familia 2, paso 1 (F2-a): DROP de las 5 policies TO service_role (inertes: service_role tiene
   BYPASSRLS) — invitaciones_clinica_service_all, invitaciones_medico_service_all, "Service role all
   medico_clinicas", "Service role all push subscriptions", recordatorios_service_all; huella de policies de
@@ -203,8 +211,8 @@ Stack: React + Vite + TypeScript, Supabase / Postgres, deploy en Vercel, repo en
   Pasó dos veces (18cf819 y el lote 1 de PA-FAILOPEN) y una de ellas tardó dos meses en detectarse.
   Baselines vivos: `top_level_dml_ddl=0` (excluye `pg_temp`), `cast_directo=0`, `do_sin_handler=155`
   (fase 2.2 CERRADA: los 55 bloques que escriben están envueltos, 211→193→175→157→156→155; los 155
-  restantes sólo leen y publican, así que ya no son deuda; 968 bloques DO en total y harness en 1010 filas /
-  11 rojas de deuda al 2-oct-2026, con P934-P935 de la 349). **P782 ajustado en la 346:** el DELETE directo sobre
+  restantes sólo leen y publican, así que ya no son deuda; 969 bloques DO en total y harness en 1011 filas /
+  11 rojas de deuda al 3-oct-2026, con P936 de la 350). **P782 ajustado en la 346:** el DELETE directo sobre
   `visitas_agendadas` ahora da 42501 de privilegio (authenticated ya no tiene DELETE) y cuenta como OK, más fuerte
   que ROW_COUNT=0; cualquier otro error sigue siendo FALLO. **P929 y los dry-runs consumen valores de secuencia en prod**
   (`nextval` no es transaccional: el ROLLBACK no los devuelve) → huecos en los ids, esperado; no se devuelven
@@ -216,7 +224,7 @@ Stack: React + Vite + TypeScript, Supabase / Postgres, deploy en Vercel, repo en
 - **Migraciones: SIEMPRE `npx supabase db query --linked -f <archivo>`, NUNCA `db push`.** `db push`
   desincroniza `schema_migrations` (deuda desde la 047). Los `.sql` viven en `supabase/migrations/`
   (rollback en `supabase/migrations/rollback/`); los de `supabase/fixes/` se agregan con `git add -f`.
-  **Desvío aceptado (familia 8):** los rollbacks de 334-349 viven en `supabase/migrations/`
+  **Desvío aceptado (familia 8):** los rollbacks de 334-350 viven en `supabase/migrations/`
   (`3XX_rollback.sql`), no en `supabase/migrations/rollback/`.
 - **Los tests de edge (deno) NO corren en vitest ni en el pre-commit**: se corren a mano desde
   `supabase/functions/<fn>/` con `deno test --allow-net --allow-env --no-check` (asistente-ia: 17).
@@ -297,16 +305,16 @@ Detalles a recordar:
   43 storage), todas permissive; 109 `TO public`, de las que solo las de la WL_ANON_LEGACY y 3 de lectura pública
   de storage las evalúa anon; las 21 funciones con EXECUTE para anon lo reciben VÍA PUBLIC (authenticated también),
   ninguna se llama por RPC desde el cliente. Plan: **F2-a** policies TO service_role inertes (348, **APLICADA**) → **F2-b** las 88
-  `{public}` de public que anon no alcanza → TO authenticated (349, **APLICADA**; P884 ajustado) → **sigue: F2-c** las
+  `{public}` de public que anon no alcanza → TO authenticated (349, **APLICADA**; P884 ajustado) → **F2-c** las
   18 `{public}` de las tablas de la WL_ANON_LEGACY salvo "Publico lee paises activos" (17 cambian) → TO authenticated, con probe de anon (0 filas
-  sin 42501) → **F2-d** quitar el UPDATE directo de visitas_agendadas (2 policies + el privilegio) → **F2-e** decisiones
+  sin 42501) (350, **APLICADA**; P936; allowlist temporal de P930 con el SELECT de anon en 5 tablas) → **sigue: F2-d** quitar el UPDATE directo de visitas_agendadas (2 policies + el privilegio) → **F2-e** decisiones
   de producto (exp_superadmin_insert: super_admin crea notas a nombre de cualquier médico; claves bancarias de
   configuracion_sistema visibles para todo authenticated) → **F2-f** con front (campana_vistas con `ignoreDuplicates`
   + revocar UPDATE y sacarlo de la allowlist de P930; partir catalogo_lab_all) → **F2-g** opcional (partir ALL;
   `(select auth.uid())`) → **ÚLTIMO: EXECUTE** (con el número que le toque): `GRANT EXECUTE … TO authenticated,
   service_role` explícito en los helpers usados por policies ANTES de `REVOKE … FROM PUBLIC, anon` en las 21 (si no,
   se rompen para authenticated las 52 policies de mi_empresa_proveedor() y el resto); extender P800 a `pg_proc`;
-  achicar WL_ANON_LEGACY. Hallazgos a conservar: `transacciones` se lee desde el front (AdminEzPayPage y las
+  achicar WL_ANON_LEGACY y sacar las 5 entradas temporales de anon de la allowlist de P930 (350). Hallazgos a conservar: `transacciones` se lee desde el front (AdminEzPayPage y las
   ReportesEzPayPage) y siempre devuelve [] porque tiene 0 policies → familia 7; configuracion_pais: el `true` de
   authenticated anula el filtro `activo` para logueados; 123 policies con `auth.uid()` sin `(select …)` (performance).
 - **FAMILIA 1 (privilegios) CERRADA: 342-347 aplicadas.** El paso de EXECUTE (antes "348") pasa a ser el ÚLTIMO de
