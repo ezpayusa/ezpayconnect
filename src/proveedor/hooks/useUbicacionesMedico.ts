@@ -7,7 +7,6 @@ export interface UbicacionMedico {
   ubicacion_id: string
   medico_id: string
   nombre_completo: string
-  email: string
   direccion: string | null
   lat: number | null
   lng: number | null
