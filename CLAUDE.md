@@ -24,10 +24,22 @@ Stack: React + Vite + TypeScript, Supabase / Postgres, deploy en Vercel, repo en
   minutos por esto** (P635 es la probe que faltaba, P636 su contraprueba).
 - NUNCA ampliar policies de RLS sobre tablas adyacentes a datos médicos (p. ej. campana_metricas). Para dar acceso, usar RPCs SECURITY DEFINER con search_path='', fail-closed (si el scope es NULL → 0 filas) y gate interno.
 - Probar aislamiento por rol impersonando request.jwt.claims en prod: cada rol ve lo suyo y no lo ajeno.
-- **Próximos números libres: probe `P944`** (global, no por módulo; P906-P907 usados por la mig 336, P912-P913
+- **Próximos números libres: probe `P967`** (global, no por módulo; P958-P966 usados por la mig 357
+  (obtener_medicos_por_ids acotada a relación); P906-P907 usados por la mig 336, P912-P913
   por la 337, P914-P915 por la 338, P916-P920 por la 339/340, P921-P923 por la 341, P924 por la 342, P925 por
   la 343, P926-P927 por la 344, P928-P929 por la 345, P930 por la 346, P931-P932 por la 347, P933 por la 348,
-  P934-P935 por la 349, P936 por la 350, P937-P939 por la 351, P940-P943 por la 353), **migración `354`**
+  P934-P935 por la 349, P936 por la 350, P937-P939 por la 351, P940-P943 por la 353), **migración `358`**
+  (357 = `obtener_medicos_por_ids(uuid[])` acotada a relación: antes cualquier sesión autenticada resolvía nombre y
+  especialidad de cualquier médico por id. Misma firma, RETURNS, DEFINER, `search_path=''`, VOLATILE y guard PC027;
+  devuelve un médico solo si (a) el llamante es super_admin, (b) es el propio médico, (c) el médico aparece en una cita
+  que el llamante ve como paciente (`pacientes.auth_user_id`), admin_pais del país de la cita (`private.puede_admin_pais`)
+  o gestor de su clínica (`private.puede_gestionar_citas`), o (d) es miembro (`medico_clinicas`) de una clínica de
+  `private.clinicas_del_usuario()`; COALESCE fail-closed. Eliminada la rama de fallback a perfiles (muerta: 0 filas).
+  `contar_medicos_por_ids` queda FUERA (lote 2). md5(prosrc) 2d646322… → 8ee60166…; ACL igual (sin PUBLIC ni anon);
+  probes P958-P965 (por actor) y P966 (catálogo); PM_FX elige `pm_pac` determinista (paciente real de GT con cita con
+  `pm_med`) para P701. Rollback `357_rollback.sql` (rearma el cuerpo viejo con CRLF por `E'…\r\n…'` y verifica el md5
+  antes de ejecutar) — APLICADA en prod el 2026-10-04 entre 12:31:47 y 12:31:49 UTC; harness 1041 filas / 11 rojas de
+  deuda; tsc 74, vitest 385; smoke manual por rol 6/6.)
   (353 = delivery, lote demo 1: `tablero_repartidores(p_farmacia_id)` (carga por repartidor activo de las sucursales
   visibles: asignadas, en_camino, entregadas_hoy, fallidas_hoy, libre/en_ruta; gate `entregas_ver` y rol <> delivery;
   sin datos de pacientes), `listar_repartidores_asignables(p_entrega_id)` (los que `asignar_entrega` aceptaría, con su
