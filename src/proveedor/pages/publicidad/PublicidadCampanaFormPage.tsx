@@ -10,7 +10,21 @@ import { useSolicitudesCampana } from '@/proveedor/hooks/useSolicitudesCampana'
 import { usePlanesPublicidad } from '@/proveedor/hooks/usePlanesPublicidad'
 import { useProveedorAuth } from '@/proveedor/hooks/useProveedorAuth'
 import { supabase } from '@/lib/supabase'
+import { parseFechaLocal, fechaLocalISO } from '@/lib/fecha'
 import type { SolicitudCampana } from '@/proveedor/types/proveedor.types'
+
+// fecha_inicio/fecha_fin son columnas DATE: se suman días con los helpers locales de @/lib/fecha (nada de
+// new Date('YYYY-MM-DD'), que en GT cae en el día anterior).
+const sumarDias = (iso: string, dias: number) => {
+  const d = parseFechaLocal(iso)
+  d.setDate(d.getDate() + dias)
+  return fechaLocalISO(d)
+}
+const diasEntre = (desde: string, hasta: string) =>
+  Math.round((parseFechaLocal(hasta).getTime() - parseFechaLocal(desde).getTime()) / 86_400_000)
+// mismos textos que el mapeo de CA014/CA015 (mig 361)
+const MSG_CA014 = 'La duración de la campaña supera los días del plan'
+const MSG_CA015 = 'La fecha de fin es anterior a la de inicio'
 
 const TIPOS = [
   { value: 'farmacia', label: 'Farmacia' },
@@ -95,6 +109,18 @@ export default function PublicidadCampanaFormPage() {
 
   const update = (field: string, value: any) => setForm((prev) => ({ ...prev, [field]: value }))
 
+  // Mig 361: la duración no puede superar los días del plan. Al elegir plan o cambiar el inicio, el fin se completa a
+  // inicio + días del plan (el proveedor puede acortarla, no alargarla: el input lleva min/max).
+  const diasDelPlan = (planId: string) => planes.find((p) => String(p.id) === planId)?.dias
+  const conFinAutocompletado = (prev: typeof form, cambios: Partial<typeof form>) => {
+    const sig = { ...prev, ...cambios }
+    const dias = diasDelPlan(sig.plan_publicidad_id)
+    if (sig.fecha_inicio && dias) sig.fecha_fin = sumarDias(sig.fecha_inicio, dias)
+    return sig
+  }
+  const cambiarPlan = (planId: string) => setForm((prev) => conFinAutocompletado(prev, { plan_publicidad_id: planId }))
+  const cambiarInicio = (inicio: string) => setForm((prev) => conFinAutocompletado(prev, { fecha_inicio: inicio }))
+
   const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0]
     if (!file) return
@@ -118,6 +144,15 @@ export default function PublicidadCampanaFormPage() {
     }
     if (!form.plan_publicidad_id) {
       toast.error('Selecciona un plan de publicidad')
+      return
+    }
+    if (form.fecha_fin < form.fecha_inicio) {
+      toast.error(MSG_CA015)
+      return
+    }
+    const diasPlan = diasDelPlan(form.plan_publicidad_id)
+    if (diasPlan && diasEntre(form.fecha_inicio, form.fecha_fin) > diasPlan) {
+      toast.error(MSG_CA014)
       return
     }
 
@@ -181,7 +216,7 @@ export default function PublicidadCampanaFormPage() {
               <Label>Plan de publicidad *</Label>
               <select
                 value={form.plan_publicidad_id}
-                onChange={(e) => update('plan_publicidad_id', e.target.value)}
+                onChange={(e) => cambiarPlan(e.target.value)}
                 className="w-full h-10 rounded-md border border-input bg-background px-3 py-2 text-sm"
                 required
               >
@@ -243,7 +278,7 @@ export default function PublicidadCampanaFormPage() {
                 <Input
                   type="date"
                   value={form.fecha_inicio}
-                  onChange={(e) => update('fecha_inicio', e.target.value)}
+                  onChange={(e) => cambiarInicio(e.target.value)}
                   required
                 />
               </div>
@@ -253,6 +288,8 @@ export default function PublicidadCampanaFormPage() {
                   type="date"
                   value={form.fecha_fin}
                   onChange={(e) => update('fecha_fin', e.target.value)}
+                  min={form.fecha_inicio || undefined}
+                  max={form.fecha_inicio && planSeleccionado?.dias ? sumarDias(form.fecha_inicio, planSeleccionado.dias) : undefined}
                   required
                 />
               </div>

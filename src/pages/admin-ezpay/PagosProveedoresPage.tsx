@@ -43,6 +43,8 @@ const MENSAJES_APROBAR_CAMPANA: Record<string, string> = {
   CA006: 'El pago de esta campaña fue rechazado',
   CA007: 'La campaña no tiene plan asignado',
   CA008: 'La empresa no opera en el país de la campaña',
+  CA014: 'La duración de la campaña supera los días del plan',
+  CA015: 'La fecha de fin es anterior a la de inicio',
 }
 const mensajeErrorAprobarCampana = (code: string | undefined) =>
   (code && MENSAJES_APROBAR_CAMPANA[code]) || 'No se pudo aprobar la campaña. Intentá de nuevo.'

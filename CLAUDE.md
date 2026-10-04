@@ -24,13 +24,21 @@ Stack: React + Vite + TypeScript, Supabase / Postgres, deploy en Vercel, repo en
   minutos por esto** (P635 es la probe que faltaba, P636 su contraprueba).
 - NUNCA ampliar policies de RLS sobre tablas adyacentes a datos médicos (p. ej. campana_metricas). Para dar acceso, usar RPCs SECURITY DEFINER con search_path='', fail-closed (si el scope es NULL → 0 filas) y gate interno.
 - Probar aislamiento por rol impersonando request.jwt.claims en prod: cada rol ve lo suyo y no lo ajeno.
-- **Próximos números libres: probe `P990`** (global, no por módulo; P983-P989 usados por la mig 360, P975-P982 por la
+- **Próximos números libres: probe `P996`** (global, no por módulo; P990-P995 usados por la mig 361, P983-P989 por la 360, P975-P982 por la
   359, P967-P974 por la 358, P958-P966 por la 357 (obtener_medicos_por_ids acotada a relación); P906-P907 usados por la mig 336, P912-P913
   por la 337, P914-P915 por la 338, P916-P920 por la 339/340, P921-P923 por la 341, P924 por la 342, P925 por
   la 343, P926-P927 por la 344, P928-P929 por la 345, P930 por la 346, P931-P932 por la 347, P933 por la 348,
-  P934-P935 por la 349, P936 por la 350, P937-P939 por la 351, P940-P943 por la 353), **migración `361`**
-  (360 = familia CAMPAÑAS, cierre en el servidor — **EN RAMA, SIN APLICAR: se aplica DESPUÉS del merge y del deploy de
-  Production del front** (rompe el checkout viejo: el INSERT directo del pago de campaña deja de entrar). Policies:
+  P934-P935 por la 349, P936 por la 350, P937-P939 por la 351, P940-P943 por la 353), **migración `362`**
+  (361 = familia CAMPAÑAS, duración <= días del plan — APLICADA en prod el 2026-10-04 16:06 UTC (16:06:33-16:06:35),
+  harness 1070 / 11 rojas de deuda, verificada independientemente: `solicitar_pago_campana` (después de
+  CA011, antes de CA010) y `aprobar_solicitud_campana` (después de la rama idempotente y de CA003) rechazan fecha_fin <
+  fecha_inicio (CA015) y fecha_fin - fecha_inicio > `planes_publicidad.dias` (CA014); una ya publicada sigue devolviendo
+  su id. md5 aprobar 64b305dc… → b0492c9d…, solicitar 49a10261… → 9d8a997a…; ACL y policies sin cambio; datos sin tocar
+  (hay 4 publicadas del plan de 7 días con 13-30 días, se dejan). Probes P990-P995; P967-P982 siembran la duración =
+  días del plan. Front: el form autocompleta fecha_fin = inicio + días y limita el input con min/max. Rollback
+  `361_rollback.sql` (cuerpos exactos de la 358/359, sin CRLF); orden `361_rollback` → `360_rollback` → ….)
+  (360 = familia CAMPAÑAS, cierre en el servidor — APLICADA en prod el 2026-10-04 entre 15:45:04 y 15:45:06 UTC,
+  después del merge (#33, 908b29d) y del deploy de Production; harness 1064 filas / 11 rojas de deuda, 0 PENDIENTE. Policies:
   "Proveedor crea pagos" + `tipo <> 'campana'`; "Proveedor crea campañas" solo `estado = 'borrador'`; "Proveedor
   actualiza sus campañas borrador" USING/CHECK solo borrador; NUEVA "Proveedor elimina sus campañas borrador" (DELETE);
   "Admin ve campanas de su pais" y "Admin ve solicitudes de su pais" de ALL a SELECT; NUEVAS `campanas_superadmin_update`
@@ -186,10 +194,11 @@ Stack: React + Vite + TypeScript, Supabase / Postgres, deploy en Vercel, repo en
   336 = fix de la 335: liberación/reversión con FOR UPDATE + evento solo si cambió la fila; EX028
   normalizado espacios/tabs/saltos — APLICADA en prod y verificada en sesión independiente el
   26-sep-2026), **errcode `PA035`** (comercial),
-  **`CA014`** (familia CAMPAÑAS: mig 358 `aprobar_solicitud_campana` → CA001 no es super_admin, CA002 solicitud
+  **`CA016`** (familia CAMPAÑAS: mig 358 `aprobar_solicitud_campana` → CA001 no es super_admin, CA002 solicitud
   inexistente, CA003 no está enviada, CA004 sin pago, CA005 más de un pago, CA006 pago rechazado, CA007 sin plan, CA008 la
   empresa no opera en el país; mig 359 `cotizar_campana`/`solicitar_pago_campana` → CA009 no es de tu empresa o rol,
-  CA010 sin precio, CA011 no está en borrador, CA012 ya tiene pago, CA013 comprobante inválido; el front los mapea en
+  CA010 sin precio, CA011 no está en borrador, CA012 ya tiene pago, CA013 comprobante inválido; mig 361 → CA014 la
+  duración supera los días del plan, CA015 fecha_fin anterior a fecha_inicio; el front los mapea en
   PagoCheckoutPage, PagosProveedoresPage y SolicitudesCampanaPage),
   **`DE010`** (delivery, mig 353: 42501 sin permiso; DE001 entrega inexistente o no visible, DE002 no está pendiente,
   DE003 el repartidor no es delivery activo de la empresa, DE004 repartidor de otra sucursal, DE005 entrega cobrada no
@@ -308,7 +317,7 @@ Stack: React + Vite + TypeScript, Supabase / Postgres, deploy en Vercel, repo en
 - **Migraciones: SIEMPRE `npx supabase db query --linked -f <archivo>`, NUNCA `db push`.** `db push`
   desincroniza `schema_migrations` (deuda desde la 047). Los `.sql` viven en `supabase/migrations/`
   (rollback en `supabase/migrations/rollback/`); los de `supabase/fixes/` se agregan con `git add -f`.
-  **Desvío aceptado (familia 8):** los rollbacks de 334-360 viven en `supabase/migrations/`
+  **Desvío aceptado (familia 8):** los rollbacks de 334-361 viven en `supabase/migrations/`
   (`3XX_rollback.sql`), no en `supabase/migrations/rollback/`.
 - **Los tests de edge (deno) NO corren en vitest ni en el pre-commit**: se corren a mano desde
   `supabase/functions/<fn>/` con `deno test --allow-net --allow-env --no-check` (asistente-ia: 17).

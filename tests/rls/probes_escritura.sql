@@ -31417,7 +31417,7 @@ END $$;
 DO $$
 DECLARE
   v_gt uuid := 'cbbbbe6d-59fe-4cf2-91ee-3e31ba1d5909';
-  v_emp uuid; v_cta uuid; v_plan int; v_peso int; a_sa uuid; a_ap uuid;
+  v_emp uuid; v_cta uuid; v_plan int; v_peso int; v_dias int; a_sa uuid; a_ap uuid;
   s1 uuid; s2 uuid; s3 uuid; s4 uuid; s5 uuid; g1 uuid; g2 uuid; g3 uuid; g5 uuid;
   pre text; post text; r_rest text := 'OK';
   st text; ret int; ret1 int; n int; e text; cname text;
@@ -31430,8 +31430,9 @@ BEGIN
    WHERE e.estado = 'activa' AND COALESCE(e.created_at, '-infinity') < now() AND private.empresa_opera_en_pais(e.id, v_gt)
      AND c.activo AND COALESCE(c.created_at, '-infinity') < now() AND EXISTS (SELECT 1 FROM auth.users u WHERE u.id = c.id)
    ORDER BY COALESCE(e.created_at, '-infinity'), e.id, COALESCE(c.created_at, '-infinity'), c.id LIMIT 1;
-  SELECT pp.id, pp.peso INTO v_plan, v_peso FROM public.planes_publicidad pp
-   WHERE pp.activo AND pp.peso > 0 ORDER BY pp.peso DESC, pp.id LIMIT 1;
+  -- 361: la duracion de las solicitudes sembradas = los dias del plan (la regla de la 361 rechaza mas)
+  SELECT pp.id, pp.peso, pp.dias INTO v_plan, v_peso, v_dias FROM public.planes_publicidad pp
+   WHERE pp.activo AND pp.peso > 0 AND pp.dias > 0 ORDER BY pp.peso DESC, pp.id LIMIT 1;
   a_sa := (SELECT p.id FROM public.perfiles p WHERE p.rol = 'super_admin' AND p.activo AND COALESCE(p.created_at, '-infinity') < now()
              AND EXISTS (SELECT 1 FROM auth.users u WHERE u.id = p.id)
              AND NOT EXISTS (SELECT 1 FROM public.cuentas_proveedor cp WHERE cp.id = p.id)
@@ -31450,15 +31451,15 @@ BEGIN
   BEGIN
     -- siembra (como postgres)
     INSERT INTO public.solicitudes_campana (empresa_id, cuenta_proveedor_id, titulo, tipo, fecha_inicio, fecha_fin, estado, pais_id, plan_publicidad_id)
-      VALUES (v_emp, v_cta, 'P967 enviada', 'banner', CURRENT_DATE, CURRENT_DATE + 30, 'enviada', v_gt, v_plan) RETURNING id INTO s1;
+      VALUES (v_emp, v_cta, 'P967 enviada', 'banner', CURRENT_DATE, CURRENT_DATE + v_dias, 'enviada', v_gt, v_plan) RETURNING id INTO s1;
     INSERT INTO public.solicitudes_campana (empresa_id, cuenta_proveedor_id, titulo, tipo, fecha_inicio, fecha_fin, estado, pais_id, plan_publicidad_id)
-      VALUES (v_emp, v_cta, 'P969 admin_pais', 'banner', CURRENT_DATE, CURRENT_DATE + 30, 'enviada', v_gt, v_plan) RETURNING id INTO s2;
+      VALUES (v_emp, v_cta, 'P969 admin_pais', 'banner', CURRENT_DATE, CURRENT_DATE + v_dias, 'enviada', v_gt, v_plan) RETURNING id INTO s2;
     INSERT INTO public.solicitudes_campana (empresa_id, cuenta_proveedor_id, titulo, tipo, fecha_inicio, fecha_fin, estado, pais_id, plan_publicidad_id)
-      VALUES (v_emp, v_cta, 'P970 borrador', 'banner', CURRENT_DATE, CURRENT_DATE + 30, 'borrador', v_gt, v_plan) RETURNING id INTO s3;
+      VALUES (v_emp, v_cta, 'P970 borrador', 'banner', CURRENT_DATE, CURRENT_DATE + v_dias, 'borrador', v_gt, v_plan) RETURNING id INTO s3;
     INSERT INTO public.solicitudes_campana (empresa_id, cuenta_proveedor_id, titulo, tipo, fecha_inicio, fecha_fin, estado, pais_id, plan_publicidad_id)
-      VALUES (v_emp, v_cta, 'P971 sin pago', 'banner', CURRENT_DATE, CURRENT_DATE + 30, 'enviada', v_gt, v_plan) RETURNING id INTO s4;
+      VALUES (v_emp, v_cta, 'P971 sin pago', 'banner', CURRENT_DATE, CURRENT_DATE + v_dias, 'enviada', v_gt, v_plan) RETURNING id INTO s4;
     INSERT INTO public.solicitudes_campana (empresa_id, cuenta_proveedor_id, titulo, tipo, fecha_inicio, fecha_fin, estado, pais_id, plan_publicidad_id)
-      VALUES (v_emp, v_cta, 'P972 pago rechazado', 'banner', CURRENT_DATE, CURRENT_DATE + 30, 'enviada', v_gt, v_plan) RETURNING id INTO s5;
+      VALUES (v_emp, v_cta, 'P972 pago rechazado', 'banner', CURRENT_DATE, CURRENT_DATE + v_dias, 'enviada', v_gt, v_plan) RETURNING id INTO s5;
     INSERT INTO public.pagos_proveedor (empresa_id, tipo, monto, estado, referencia_id) VALUES (v_emp, 'campana', 1, 'pendiente', s1::text) RETURNING id INTO g1;
     INSERT INTO public.pagos_proveedor (empresa_id, tipo, monto, estado, referencia_id) VALUES (v_emp, 'campana', 1, 'pendiente', s2::text) RETURNING id INTO g2;
     INSERT INTO public.pagos_proveedor (empresa_id, tipo, monto, estado, referencia_id) VALUES (v_emp, 'campana', 1, 'pendiente', s3::text) RETURNING id INTO g3;
@@ -31611,7 +31612,7 @@ END $$;
 --   P982 catalogo: firmas, DEFINER + search_path '', ACL, helper sin EXECUTE para authenticated, policy con el termino
 DO $$
 DECLARE
-  v_emp uuid; v_cta uuid; v_pais uuid; v_plan int; o_monto numeric; o_moneda text; v_otra uuid; v_cta_otra uuid;
+  v_emp uuid; v_cta uuid; v_pais uuid; v_plan int; v_dias int; o_monto numeric; o_moneda text; v_otra uuid; v_cta_otra uuid;
   s1 uuid; s2 uuid; s3 uuid; s4 uuid; pago uuid; ret uuid; st text; n int; c_monto numeric; c_moneda text;
   pre text; post text; r_rest text := 'OK';
   r975 text; r976 text; r977 text; r978 text; r979 text; r980 text; r981 text; v_360 boolean;
@@ -31627,12 +31628,13 @@ BEGIN
      AND NOT EXISTS (SELECT 1 FROM public.perfiles pf WHERE pf.id = c.id) AND NOT EXISTS (SELECT 1 FROM public.pacientes pa WHERE pa.auth_user_id = c.id)
      AND EXISTS (SELECT 1 FROM public.empresa_capacidades ec WHERE ec.empresa_id = e.id AND ec.capacidad_codigo = 'publicidad' AND ec.activa AND (ec.hasta IS NULL OR ec.hasta > now()))
    ORDER BY COALESCE(c.created_at, '-infinity'), c.id LIMIT 1;
-  SELECT x.id, x.monto, x.moneda INTO v_plan, o_monto, o_moneda FROM (
-    SELECT pp.id, COALESCE(cf.precio_local, pp.precio) AS monto, COALESCE(cf.moneda_local, pp.moneda) AS moneda
+  -- 361: la duracion de las solicitudes sembradas = los dias del plan (la regla de la 361 rechaza mas)
+  SELECT x.id, x.monto, x.moneda, x.dias INTO v_plan, o_monto, o_moneda, v_dias FROM (
+    SELECT pp.id, pp.dias, COALESCE(cf.precio_local, pp.precio) AS monto, COALESCE(cf.moneda_local, pp.moneda) AS moneda
       FROM public.planes_publicidad pp
       LEFT JOIN public.planes_publicidad_config cf ON cf.plan_publicidad_id = pp.id AND cf.pais_id = v_pais AND cf.activo
      WHERE pp.activo) x
-   WHERE x.monto > 0 AND x.moneda IS NOT NULL ORDER BY x.monto DESC, x.id LIMIT 1;
+   WHERE x.monto > 0 AND x.moneda IS NOT NULL AND x.dias > 0 ORDER BY x.monto DESC, x.id LIMIT 1;
   SELECT e.id, c.id INTO v_otra, v_cta_otra
     FROM public.empresas_proveedoras e JOIN public.cuentas_proveedor c ON c.empresa_id = e.id
    WHERE e.estado = 'activa' AND e.id <> v_emp AND e.pais_id IS NOT NULL AND COALESCE(e.created_at, '-infinity') < now()
@@ -31644,13 +31646,13 @@ BEGIN
 
   BEGIN
     INSERT INTO public.solicitudes_campana (empresa_id, cuenta_proveedor_id, titulo, tipo, fecha_inicio, fecha_fin, estado, pais_id, plan_publicidad_id)
-      VALUES (v_emp, v_cta, 'P975 borrador', 'banner', CURRENT_DATE, CURRENT_DATE + 30, 'borrador', v_pais, v_plan) RETURNING id INTO s1;
+      VALUES (v_emp, v_cta, 'P975 borrador', 'banner', CURRENT_DATE, CURRENT_DATE + v_dias, 'borrador', v_pais, v_plan) RETURNING id INTO s1;
     INSERT INTO public.solicitudes_campana (empresa_id, cuenta_proveedor_id, titulo, tipo, fecha_inicio, fecha_fin, estado, pais_id, plan_publicidad_id)
-      VALUES (v_otra, v_cta_otra, 'P977 otra empresa', 'banner', CURRENT_DATE, CURRENT_DATE + 30, 'borrador', v_pais, v_plan) RETURNING id INTO s2;
+      VALUES (v_otra, v_cta_otra, 'P977 otra empresa', 'banner', CURRENT_DATE, CURRENT_DATE + v_dias, 'borrador', v_pais, v_plan) RETURNING id INTO s2;
     INSERT INTO public.solicitudes_campana (empresa_id, cuenta_proveedor_id, titulo, tipo, fecha_inicio, fecha_fin, estado, pais_id, plan_publicidad_id)
-      VALUES (v_emp, v_cta, 'P978 enviada', 'banner', CURRENT_DATE, CURRENT_DATE + 30, 'enviada', v_pais, v_plan) RETURNING id INTO s3;
+      VALUES (v_emp, v_cta, 'P978 enviada', 'banner', CURRENT_DATE, CURRENT_DATE + v_dias, 'enviada', v_pais, v_plan) RETURNING id INTO s3;
     INSERT INTO public.solicitudes_campana (empresa_id, cuenta_proveedor_id, titulo, tipo, fecha_inicio, fecha_fin, estado, pais_id, plan_publicidad_id)
-      VALUES (v_emp, v_cta, 'P979 comprobante ajeno', 'banner', CURRENT_DATE, CURRENT_DATE + 30, 'borrador', v_pais, v_plan) RETURNING id INTO s4;
+      VALUES (v_emp, v_cta, 'P979 comprobante ajeno', 'banner', CURRENT_DATE, CURRENT_DATE + v_dias, 'borrador', v_pais, v_plan) RETURNING id INTO s4;
     INSERT INTO storage.objects (bucket_id, name, owner) VALUES
       ('comprobantes', v_emp::text||'/p975-a.pdf', v_cta), ('comprobantes', v_emp::text||'/p975-b.pdf', v_cta),
       ('comprobantes', v_otra::text||'/p979-ajeno.pdf', v_cta);
@@ -31970,6 +31972,143 @@ BEGIN
     ELSE 'ROJO ('||left(bad, 900)||')' END, false);
 EXCEPTION WHEN OTHERS THEN
   PERFORM set_config('probe.p989', 'FALLO ('||SQLSTATE||' '||SQLERRM||')', false);
+END $$;
+
+-- ---------------- P990-P995 duracion de la campana <= dias del plan (361) ----------------
+-- Fixture propio, sembrado como postgres DENTRO de una subtransaccion que se descarta (P0999). Actores reales (created_at
+-- anterior a esta transaccion, activos, en auth.users, de identidad unica; el mas antiguo por created_at y despues por
+-- id): el proveedor que paga (rol admin/editor/finanzas/marketing/supervisor, empresa activa con pais y capacidad
+-- 'publicidad') y el super_admin. Plan: el activo de mayor precio para el pais de esa empresa, con dias > 0 (oraculo).
+-- Sin alguno -> FALLO (sin fixture). Despues del descarte se verifica que solicitudes, pagos y publicaciones vuelven a
+-- sus conteos de antes.
+--   P990 pagar una solicitud con duracion = dias del plan -> pago creado
+--   P991 pagar con duracion = dias + 1 -> CA014, sin pago y la solicitud sigue en borrador
+--   P992 pagar con fecha_fin < fecha_inicio -> CA015, sin pago
+--   P993 super_admin aprueba una enviada con pago pendiente que excede -> CA014, sin publicar, pago todavia pendiente
+--   P994 super_admin aprueba una ya publicada que excede (con su publicacion) -> devuelve el id de esa publicacion
+DO $$
+DECLARE
+  v_emp uuid; v_cta uuid; v_pais uuid; v_plan int; v_dias int; v_sa uuid;
+  s_ok uuid; s_mas uuid; s_inv uuid; s_apr uuid; s_pub uuid; g_apr uuid; pub_id int;
+  pre text; post text; r_rest text := 'OK'; st text; ret uuid; reti int; n int;
+  r990 text; r991 text; r992 text; r993 text; r994 text;
+BEGIN
+  IF current_user <> 'postgres' THEN RAISE EXCEPTION 'fixture roto: P990 corre como %', current_user; END IF;
+  SELECT e.id, c.id, e.pais_id INTO v_emp, v_cta, v_pais
+    FROM public.cuentas_proveedor c JOIN public.empresas_proveedoras e ON e.id = c.empresa_id
+   WHERE c.activo AND e.estado = 'activa' AND e.pais_id IS NOT NULL
+     AND c.rol_en_empresa IN ('admin','editor','finanzas','marketing','supervisor')
+     AND COALESCE(c.created_at, '-infinity') < now() AND EXISTS (SELECT 1 FROM auth.users u WHERE u.id = c.id)
+     AND NOT EXISTS (SELECT 1 FROM public.perfiles pf WHERE pf.id = c.id) AND NOT EXISTS (SELECT 1 FROM public.pacientes pa WHERE pa.auth_user_id = c.id)
+     AND EXISTS (SELECT 1 FROM public.empresa_capacidades ec WHERE ec.empresa_id = e.id AND ec.capacidad_codigo = 'publicidad' AND ec.activa AND (ec.hasta IS NULL OR ec.hasta > now()))
+   ORDER BY COALESCE(c.created_at, '-infinity'), c.id LIMIT 1;
+  SELECT x.id, x.dias INTO v_plan, v_dias FROM (
+    SELECT pp.id, pp.dias, COALESCE(cf.precio_local, pp.precio) AS monto
+      FROM public.planes_publicidad pp
+      LEFT JOIN public.planes_publicidad_config cf ON cf.plan_publicidad_id = pp.id AND cf.pais_id = v_pais AND cf.activo
+     WHERE pp.activo) x
+   WHERE x.monto > 0 AND x.dias > 0 ORDER BY x.monto DESC, x.id LIMIT 1;
+  v_sa := (SELECT p.id FROM public.perfiles p WHERE p.rol = 'super_admin' AND p.activo AND COALESCE(p.created_at, '-infinity') < now()
+             AND EXISTS (SELECT 1 FROM auth.users u WHERE u.id = p.id)
+             AND NOT EXISTS (SELECT 1 FROM public.cuentas_proveedor cp WHERE cp.id = p.id) AND NOT EXISTS (SELECT 1 FROM public.pacientes pa WHERE pa.auth_user_id = p.id)
+           ORDER BY COALESCE(p.created_at, '-infinity'), p.id LIMIT 1);
+  IF v_emp IS NULL OR v_plan IS NULL OR v_sa IS NULL THEN
+    RAISE EXCEPTION 'sin fixture: P990 sin proveedor real con capacidad publicidad (%), plan con precio y dias > 0 (%) o super_admin (%)', v_emp, v_plan, v_sa;
+  END IF;
+  pre := (SELECT count(*) FROM public.solicitudes_campana)||'/'||(SELECT count(*) FROM public.pagos_proveedor)||'/'||(SELECT count(*) FROM public.campanas_publicitarias);
+
+  BEGIN
+    INSERT INTO public.solicitudes_campana (empresa_id, cuenta_proveedor_id, titulo, tipo, fecha_inicio, fecha_fin, estado, pais_id, plan_publicidad_id)
+      VALUES (v_emp, v_cta, 'P990 justa', 'banner', CURRENT_DATE, CURRENT_DATE + v_dias, 'borrador', v_pais, v_plan) RETURNING id INTO s_ok;
+    INSERT INTO public.solicitudes_campana (empresa_id, cuenta_proveedor_id, titulo, tipo, fecha_inicio, fecha_fin, estado, pais_id, plan_publicidad_id)
+      VALUES (v_emp, v_cta, 'P991 un dia de mas', 'banner', CURRENT_DATE, CURRENT_DATE + v_dias + 1, 'borrador', v_pais, v_plan) RETURNING id INTO s_mas;
+    INSERT INTO public.solicitudes_campana (empresa_id, cuenta_proveedor_id, titulo, tipo, fecha_inicio, fecha_fin, estado, pais_id, plan_publicidad_id)
+      VALUES (v_emp, v_cta, 'P992 fin antes de inicio', 'banner', CURRENT_DATE, CURRENT_DATE - 1, 'borrador', v_pais, v_plan) RETURNING id INTO s_inv;
+    INSERT INTO public.solicitudes_campana (empresa_id, cuenta_proveedor_id, titulo, tipo, fecha_inicio, fecha_fin, estado, pais_id, plan_publicidad_id)
+      VALUES (v_emp, v_cta, 'P993 enviada que excede', 'banner', CURRENT_DATE, CURRENT_DATE + v_dias + 1, 'enviada', v_pais, v_plan) RETURNING id INTO s_apr;
+    INSERT INTO public.pagos_proveedor (empresa_id, tipo, monto, estado, referencia_id) VALUES (v_emp, 'campana', 1, 'pendiente', s_apr::text) RETURNING id INTO g_apr;
+    INSERT INTO public.solicitudes_campana (empresa_id, cuenta_proveedor_id, titulo, tipo, fecha_inicio, fecha_fin, estado, pais_id, plan_publicidad_id)
+      VALUES (v_emp, v_cta, 'P994 publicada que excede', 'banner', CURRENT_DATE, CURRENT_DATE + v_dias + 1, 'publicada', v_pais, v_plan) RETURNING id INTO s_pub;
+    INSERT INTO public.campanas_publicitarias (titulo, fecha_inicio, fecha_fin, activa, pais_id, empresa_id, solicitud_campana_id)
+      VALUES ('P994 publicada', CURRENT_DATE, CURRENT_DATE + v_dias + 1, true, v_pais, v_emp, s_pub) RETURNING id INTO pub_id;
+    INSERT INTO storage.objects (bucket_id, name, owner) VALUES
+      ('comprobantes', v_emp::text||'/p990-a.pdf', v_cta), ('comprobantes', v_emp::text||'/p990-b.pdf', v_cta), ('comprobantes', v_emp::text||'/p990-c.pdf', v_cta);
+
+    PERFORM set_config('request.jwt.claims', json_build_object('sub', v_cta::text, 'role', 'authenticated')::text, true);
+    -- P990
+    st := 'OK'; ret := NULL;
+    BEGIN PERFORM set_config('role', 'authenticated', true); ret := public.solicitar_pago_campana(s_ok, v_emp::text||'/p990-a.pdf'); PERFORM set_config('role', 'none', true);
+    EXCEPTION WHEN OTHERS THEN st := SQLSTATE; PERFORM set_config('role', 'none', true); END;
+    n := (SELECT count(*) FROM public.pagos_proveedor g WHERE g.tipo = 'campana' AND g.referencia_id = s_ok::text);
+    r990 := CASE WHEN st = 'OK' AND ret IS NOT NULL AND n = 1 THEN 'OK' ELSE 'ROJO' END||' (pagar con duracion = '||v_dias||' dias del plan '||v_plan||': '||st||', pagos '||n||')';
+    -- P991
+    st := 'OK';
+    BEGIN PERFORM set_config('role', 'authenticated', true); ret := public.solicitar_pago_campana(s_mas, v_emp::text||'/p990-b.pdf'); PERFORM set_config('role', 'none', true);
+    EXCEPTION WHEN OTHERS THEN st := SQLSTATE; PERFORM set_config('role', 'none', true); END;
+    n := (SELECT count(*) FROM public.pagos_proveedor g WHERE g.tipo = 'campana' AND g.referencia_id = s_mas::text);
+    r991 := CASE WHEN st = 'CA014' AND n = 0 AND (SELECT s.estado FROM public.solicitudes_campana s WHERE s.id = s_mas) = 'borrador' THEN 'OK' ELSE 'ROJO' END
+           ||' (pagar con duracion = '||(v_dias + 1)||' dias, plan de '||v_dias||': '||st||', pagos '||n||', solicitud '||(SELECT s.estado FROM public.solicitudes_campana s WHERE s.id = s_mas)||')';
+    -- P992
+    st := 'OK';
+    BEGIN PERFORM set_config('role', 'authenticated', true); ret := public.solicitar_pago_campana(s_inv, v_emp::text||'/p990-c.pdf'); PERFORM set_config('role', 'none', true);
+    EXCEPTION WHEN OTHERS THEN st := SQLSTATE; PERFORM set_config('role', 'none', true); END;
+    n := (SELECT count(*) FROM public.pagos_proveedor g WHERE g.tipo = 'campana' AND g.referencia_id = s_inv::text);
+    r992 := CASE WHEN st = 'CA015' AND n = 0 THEN 'OK' ELSE 'ROJO' END||' (pagar con fecha_fin anterior a fecha_inicio: '||st||', pagos '||n||')';
+
+    PERFORM set_config('request.jwt.claims', json_build_object('sub', v_sa::text, 'role', 'authenticated')::text, true);
+    -- P993
+    st := 'OK'; reti := NULL;
+    BEGIN PERFORM set_config('role', 'authenticated', true); reti := public.aprobar_solicitud_campana(s_apr, '__p993'); PERFORM set_config('role', 'none', true);
+    EXCEPTION WHEN OTHERS THEN st := SQLSTATE; PERFORM set_config('role', 'none', true); END;
+    n := (SELECT count(*) FROM public.campanas_publicitarias c WHERE c.solicitud_campana_id = s_apr);
+    r993 := CASE WHEN st = 'CA014' AND n = 0 AND (SELECT g.estado FROM public.pagos_proveedor g WHERE g.id = g_apr) = 'pendiente'
+                  AND (SELECT s.estado FROM public.solicitudes_campana s WHERE s.id = s_apr) = 'enviada' THEN 'OK' ELSE 'ROJO' END
+           ||' (super_admin '||v_sa||' aprueba una enviada de '||(v_dias + 1)||' dias con plan de '||v_dias||': '||st||', publicaciones '||n
+           ||', pago '||(SELECT g.estado FROM public.pagos_proveedor g WHERE g.id = g_apr)||', solicitud '||(SELECT s.estado FROM public.solicitudes_campana s WHERE s.id = s_apr)||')';
+    -- P994
+    st := 'OK'; reti := NULL;
+    BEGIN PERFORM set_config('role', 'authenticated', true); reti := public.aprobar_solicitud_campana(s_pub, NULL); PERFORM set_config('role', 'none', true);
+    EXCEPTION WHEN OTHERS THEN st := SQLSTATE; PERFORM set_config('role', 'none', true); END;
+    n := (SELECT count(*) FROM public.campanas_publicitarias c WHERE c.solicitud_campana_id = s_pub);
+    r994 := CASE WHEN st = 'OK' AND reti = pub_id AND n = 1 THEN 'OK' ELSE 'ROJO' END
+           ||' (super_admin aprueba una ya publicada que excede: '||st||', id '||COALESCE(reti::text, '-')||' vs '||pub_id||', publicaciones '||n||')';
+
+    PERFORM set_config('request.jwt.claims', '', true);
+    RAISE EXCEPTION 'P990 descarte' USING ERRCODE = 'P0999';
+  EXCEPTION WHEN SQLSTATE 'P0999' THEN NULL;
+  END;
+  PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
+  post := (SELECT count(*) FROM public.solicitudes_campana)||'/'||(SELECT count(*) FROM public.pagos_proveedor)||'/'||(SELECT count(*) FROM public.campanas_publicitarias);
+  IF post IS DISTINCT FROM pre THEN r_rest := 'conteos solicitudes/pagos/publicaciones '||pre||' -> '||post; END IF;
+  IF r_rest <> 'OK' THEN
+    r990 := 'ROJO (restauracion: '||r_rest||') '||r990; r991 := 'ROJO (restauracion) '||r991; r992 := 'ROJO (restauracion) '||r992;
+    r993 := 'ROJO (restauracion) '||r993; r994 := 'ROJO (restauracion) '||r994;
+  END IF;
+  PERFORM set_config('probe.p990', COALESCE(r990, 'FALLO (sin veredicto)'), false);
+  PERFORM set_config('probe.p991', COALESCE(r991, 'FALLO (sin veredicto)'), false);
+  PERFORM set_config('probe.p992', COALESCE(r992, 'FALLO (sin veredicto)'), false);
+  PERFORM set_config('probe.p993', COALESCE(r993, 'FALLO (sin veredicto)'), false);
+  PERFORM set_config('probe.p994', COALESCE(r994, 'FALLO (sin veredicto)'), false);
+EXCEPTION WHEN OTHERS THEN
+  PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
+  PERFORM set_config('probe.p990', 'FALLO ('||SQLSTATE||' '||SQLERRM||')', false);
+  PERFORM set_config('probe.p991', 'FALLO ('||SQLSTATE||' '||SQLERRM||')', false);
+  PERFORM set_config('probe.p992', 'FALLO ('||SQLSTATE||' '||SQLERRM||')', false);
+  PERFORM set_config('probe.p993', 'FALLO ('||SQLSTATE||' '||SQLERRM||')', false);
+  PERFORM set_config('probe.p994', 'FALLO ('||SQLSTATE||' '||SQLERRM||')', false);
+END $$;
+SELECT set_config('role', 'none', true);
+
+-- P995 catalogo de la 361: md5(prosrc) de aprobar_solicitud_campana y solicitar_pago_campana = los de la 361.
+DO $$
+DECLARE v text;
+BEGIN
+  v := (SELECT string_agg(p.proname||'='||md5(p.prosrc), ',' ORDER BY p.proname) FROM pg_proc p
+         WHERE p.pronamespace = 'public'::regnamespace AND p.proname IN ('aprobar_solicitud_campana', 'solicitar_pago_campana'));
+  PERFORM set_config('probe.p995', CASE WHEN v = 'aprobar_solicitud_campana=b0492c9d72db61d9bc9b6f43f0c580ce,solicitar_pago_campana=9d8a997a3ec046356641af1ce015b905'
+    THEN 'OK (md5 de la 361 en las dos funciones: '||v||')' ELSE 'ROJO (md5 '||COALESCE(v, 'NO EXISTEN')||')' END, false);
+EXCEPTION WHEN OTHERS THEN
+  PERFORM set_config('probe.p995', 'FALLO ('||SQLSTATE||' '||SQLERRM||')', false);
 END $$;
 
 -- ===== Veredictos como result set =====
@@ -33036,6 +33175,12 @@ UNION ALL SELECT 'P986_campana_admin_pais_pub_360',  current_setting('probe.p986
 UNION ALL SELECT 'P987_campana_admin_pais_sol_360',  current_setting('probe.p987', true), 'PENDIENTE mig 360 / OK (360: admin_pais UPDATE 0 filas, SELECT > 0)'
 UNION ALL SELECT 'P988_campana_super_admin_360',     current_setting('probe.p988', true), 'OK (360: super_admin pausa, borra y rechaza: 1 fila cada uno)'
 UNION ALL SELECT 'P989_campana_policies_catalogo_360',  current_setting('probe.p989', true), 'PENDIENTE mig 360 / OK (360: texto de las 8 policies; 0 ALL en las 2 tablas)'
+UNION ALL SELECT 'P990_campana_duracion_justa_361',  current_setting('probe.p990', true), 'OK (361: duracion = dias del plan, pago creado)'
+UNION ALL SELECT 'P991_campana_duracion_excede_361',  current_setting('probe.p991', true), 'OK (361: dias + 1 -> CA014, sin efecto)'
+UNION ALL SELECT 'P992_campana_fin_antes_inicio_361',  current_setting('probe.p992', true), 'OK (361: fin < inicio -> CA015, sin pago)'
+UNION ALL SELECT 'P993_campana_aprobar_excede_361',  current_setting('probe.p993', true), 'OK (361: aprobar una enviada que excede -> CA014, sin publicar, pago pendiente)'
+UNION ALL SELECT 'P994_campana_aprobar_publicada_361',  current_setting('probe.p994', true), 'OK (361: una ya publicada que excede devuelve su id)'
+UNION ALL SELECT 'P995_campana_duracion_catalogo_361',  current_setting('probe.p995', true), 'OK (361: md5 de las dos funciones)'
 -- Las filas FX* son SALUD DE FIXTURE, no probes de seguridad: dicen si la precondicion que una
 -- migracion posterior empezo a exigir se pudo sembrar. Si una sale ROJO, los probes que dependen de
 -- ese fixture reportan N/A (su flag de ready se pierde con el rollback de la subtransaccion) en vez
@@ -33280,7 +33425,7 @@ UNION ALL SELECT 'P000_CENTINELA_veredictos_no_nulos',
        'probe.p866', 'probe.p867', 'probe.p868', 'probe.p869', 'probe.p870', 'probe.p871', 'probe.p872', 'probe.p873', 'probe.p874', 'probe.p875', 'probe.p876', 'probe.p877', 'probe.p878',
        'probe.p879', 'probe.p880', 'probe.p881', 'probe.p882', 'probe.p883', 'probe.p884',
        'probe.p885', 'probe.p886', 'probe.p887', 'probe.p888', 'probe.p889', 'probe.p890', 'probe.p891', 'probe.p892', 'probe.p893', 'probe.p894', 'probe.p895', 'probe.p896', 'probe.p908', 'probe.p909', 'probe.p910', 'probe.p911',
-       'probe.p897', 'probe.p898', 'probe.p899', 'probe.p900', 'probe.p901', 'probe.p902', 'probe.p903', 'probe.p904', 'probe.p905', 'probe.p906', 'probe.p907', 'probe.p912', 'probe.p913', 'probe.p914', 'probe.p915', 'probe.p916', 'probe.p917', 'probe.p918', 'probe.p919', 'probe.p920', 'probe.p921', 'probe.p922', 'probe.p923', 'probe.p924', 'probe.p925', 'probe.p926', 'probe.p927', 'probe.p928', 'probe.p929', 'probe.p930', 'probe.p931', 'probe.p932', 'probe.p933', 'probe.p934', 'probe.p935', 'probe.p936', 'probe.p937', 'probe.p938', 'probe.p939', 'probe.p940', 'probe.p941', 'probe.p942', 'probe.p943', 'probe.p944', 'probe.p945', 'probe.p946', 'probe.p947', 'probe.p948', 'probe.p949', 'probe.p950', 'probe.p951', 'probe.p952', 'probe.p953', 'probe.p954', 'probe.p955', 'probe.p956', 'probe.p957', 'probe.p958', 'probe.p959', 'probe.p960', 'probe.p961', 'probe.p962', 'probe.p963', 'probe.p964', 'probe.p965', 'probe.p966', 'probe.p967', 'probe.p968', 'probe.p969', 'probe.p970', 'probe.p971', 'probe.p972', 'probe.p973', 'probe.p974', 'probe.p975', 'probe.p976', 'probe.p977', 'probe.p978', 'probe.p979', 'probe.p980', 'probe.p981', 'probe.p982', 'probe.p983', 'probe.p984', 'probe.p985', 'probe.p986', 'probe.p987', 'probe.p988', 'probe.p989'
+       'probe.p897', 'probe.p898', 'probe.p899', 'probe.p900', 'probe.p901', 'probe.p902', 'probe.p903', 'probe.p904', 'probe.p905', 'probe.p906', 'probe.p907', 'probe.p912', 'probe.p913', 'probe.p914', 'probe.p915', 'probe.p916', 'probe.p917', 'probe.p918', 'probe.p919', 'probe.p920', 'probe.p921', 'probe.p922', 'probe.p923', 'probe.p924', 'probe.p925', 'probe.p926', 'probe.p927', 'probe.p928', 'probe.p929', 'probe.p930', 'probe.p931', 'probe.p932', 'probe.p933', 'probe.p934', 'probe.p935', 'probe.p936', 'probe.p937', 'probe.p938', 'probe.p939', 'probe.p940', 'probe.p941', 'probe.p942', 'probe.p943', 'probe.p944', 'probe.p945', 'probe.p946', 'probe.p947', 'probe.p948', 'probe.p949', 'probe.p950', 'probe.p951', 'probe.p952', 'probe.p953', 'probe.p954', 'probe.p955', 'probe.p956', 'probe.p957', 'probe.p958', 'probe.p959', 'probe.p960', 'probe.p961', 'probe.p962', 'probe.p963', 'probe.p964', 'probe.p965', 'probe.p966', 'probe.p967', 'probe.p968', 'probe.p969', 'probe.p970', 'probe.p971', 'probe.p972', 'probe.p973', 'probe.p974', 'probe.p975', 'probe.p976', 'probe.p977', 'probe.p978', 'probe.p979', 'probe.p980', 'probe.p981', 'probe.p982', 'probe.p983', 'probe.p984', 'probe.p985', 'probe.p986', 'probe.p987', 'probe.p988', 'probe.p989', 'probe.p990', 'probe.p991', 'probe.p992', 'probe.p993', 'probe.p994', 'probe.p995'
              ]) AS n) s),
   'OK (todos los veredictos publicados)';
 
