@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback } from 'react'
 import { supabase } from '@/lib/supabase'
 import type { CitaPaciente } from '@/webapp/types/webapp.types'
+import { clasificarCitas } from '@/webapp/lib/clasificarCitas'
 
 export function useWebAppCitas(pacienteId: number | undefined) {
   const [citas, setCitas] = useState<CitaPaciente[]>([])
@@ -127,15 +128,9 @@ export function useWebAppCitas(pacienteId: number | undefined) {
     [fetchCitas]
   )
 
-  const proximas = citas.filter((c) =>
-    ['solicitada', 'agendada', 'confirmada', 'en_curso'].includes(c.estado)
-  )
-  const pasadas = citas.filter((c) =>
-    ['completada'].includes(c.estado)
-  )
-  const canceladas = citas.filter((c) =>
-    ['cancelada', 'no_show'].includes(c.estado)
-  )
+  // Por fecha y hora (no solo por estado): una confirmada vieja sin cerrar va a Pasadas. Orden final: Próximas
+  // ascendente, Pasadas descendente.
+  const { proximas, pasadas, canceladas } = clasificarCitas(citas, new Date())
 
   return { citas, proximas, pasadas, canceladas, loading, error, refetch: fetchCitas, cancelarCita }
 }
