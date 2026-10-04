@@ -104,7 +104,7 @@ export function usePagosProveedor() {
       return null
     }
 
-    toast.success('Comprobante enviado. En espera de verificación.')
+    toast.success('Comprobante enviado. EzPayConnect lo va a revisar y le avisamos cuando esté acreditado.')
     fetchPagos()
     return data.id
   }
@@ -136,7 +136,7 @@ export function usePagosProveedor() {
       console.error(error)
       return null
     }
-    toast.success('Comprobante enviado. En espera de verificación.')
+    toast.success('Comprobante enviado. EzPayConnect lo va a revisar y le avisamos cuando esté acreditado.')
     fetchPagos()
     return data as string
   }

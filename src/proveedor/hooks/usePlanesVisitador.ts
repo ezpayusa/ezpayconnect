@@ -72,9 +72,10 @@ export function usePlanesVisitador() {
       if (configError) throw configError
       const configs = (configData || []) as PlanConfiguracion[]
 
-      // Solo se listan las configuraciones que se pueden comprar: sin visitas o sin duración la RPC las rechaza (CP003).
+      // Solo se listan las configuraciones que se pueden comprar: sin visitas, sin duración o sin precio > 0 la RPC las
+      // rechaza (CP003).
       const mapeados: PlanProveedorDisponible[] = configs
-        .filter(configComprable)
+        .filter((c) => configComprable(c) && Number(c.precio_local ?? 0) > 0)
         .map((c) => {
           const base = bases.find((b) => b.id === c.plan_base_id)
           if (!base) return null

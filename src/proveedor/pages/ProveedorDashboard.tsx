@@ -38,7 +38,7 @@ export default function ProveedorDashboard() {
     },
     {
       title: etiquetaRol('visitador_medico'),
-      desc: 'Agenda visitas con médicos',
+      desc: 'Planes y cupo de visitas de su equipo',
       icon: CalendarCheck,
       path: '/proveedor/visitador/planes',
       color: 'bg-emerald-50 text-emerald-600',

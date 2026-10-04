@@ -8,6 +8,7 @@ import { useProveedorAuth } from '@/proveedor/hooks/useProveedorAuth'
 import { useCuentaBancariaCheckout } from '@/proveedor/hooks/useCuentaBancariaCheckout'
 import { useConfigPlanVisitador } from '@/proveedor/hooks/useConfigPlanVisitador'
 import { supabase } from '@/lib/supabase'
+import { formatearMonto } from '@/lib/moneda'
 import { toast } from 'sonner'
 import { ArrowLeft, Upload, CreditCard, MapPin, User, Hash, Loader2, Mail, FileText, AlertCircle } from 'lucide-react'
 
@@ -94,7 +95,7 @@ export default function PagoCheckoutPage() {
 
   const handleSubmit = async () => {
     if (!comprobanteFile) {
-      toast.error('Debes subir el comprobante de pago')
+      toast.error('Suba el comprobante de pago')
       return
     }
 
@@ -148,6 +149,8 @@ export default function PagoCheckoutPage() {
   }
 
   const formatMonto = (val: number) => {
+    // plan_visitador: el mismo formato que la landing y la gestión de planes ("Q250.00")
+    if (esPlanVisitador) return formatearMonto(val, moneda)
     try {
       return new Intl.NumberFormat('es-GT', { style: 'currency', currency: moneda }).format(val)
     } catch {
@@ -184,7 +187,7 @@ export default function PagoCheckoutPage() {
           </div>
           <div className="flex justify-between text-sm">
             <span className="text-muted-foreground">Tipo</span>
-            <span className="font-medium capitalize">{tipo.replace('_', ' ')}</span>
+            <span className="font-medium capitalize">{esPlanVisitador ? 'Plan de visitas' : tipo.replace('_', ' ')}</span>
           </div>
           {esPlanVisitador && configPlan?.comprable && (
             <>
@@ -196,6 +199,10 @@ export default function PagoCheckoutPage() {
                 <span className="text-muted-foreground">Vigencia</span>
                 <span className="font-medium">{configPlan.duracionDias} días</span>
               </div>
+              <p className="text-xs text-muted-foreground">
+                Si su empresa ya tiene un plan vigente en el país, estas visitas se suman y la vigencia se extiende{' '}
+                {configPlan.duracionDias} días desde su fecha de fin actual.
+              </p>
             </>
           )}
           {(esPlanVisitador && loadingPlan) || (esCampana && cotizando) ? (
@@ -203,7 +210,7 @@ export default function PagoCheckoutPage() {
           ) : planNoDisponible ? (
             <div className="bg-amber-50 border border-amber-200 rounded-lg p-3 text-sm text-amber-800 flex items-start gap-2">
               <AlertCircle className="h-5 w-5 shrink-0 mt-0.5" />
-              <p>Este plan no está disponible para la compra. Volvé a la lista de planes y elegí otro.</p>
+              <p>Este plan no está disponible para la compra. Vuelva a la lista de planes y elija otro.</p>
             </div>
           ) : esCampana && !cotizacion ? (
             <div className="bg-amber-50 border border-amber-200 rounded-lg p-3 text-sm text-amber-800 flex items-start gap-2">
@@ -237,10 +244,10 @@ export default function PagoCheckoutPage() {
           ) : sinCuenta ? (
             <div className="bg-amber-50 border border-amber-200 rounded-lg p-4 text-sm text-amber-800 flex items-start gap-2">
               <AlertCircle className="h-5 w-5 shrink-0 mt-0.5" />
-              <div>
-                <p className="font-medium">Pago por transferencia no disponible aún en tu país.</p>
-                <p>Contacta al equipo de EzPayConnect para coordinar tu pago.</p>
-              </div>
+              <p>
+                Por ahora no se puede comprar en su país. Escriba al equipo de EzPayConnect para saber cuándo estará
+                disponible.
+              </p>
             </div>
           ) : (
             <>
@@ -304,7 +311,7 @@ export default function PagoCheckoutPage() {
               <div className="bg-amber-50 border border-amber-200 rounded-lg p-3 text-sm text-amber-800">
                 {cuenta!.instrucciones
                   ? cuenta!.instrucciones
-                  : 'Una vez realizada la transferencia, sube el comprobante abajo. El admin lo verificará en un plazo de 24-48 horas hábiles.'}
+                  : 'Haga la transferencia y suba el comprobante abajo. El equipo de EzPayConnect lo revisa y, cuando lo apruebe, el servicio se acredita a su empresa. Le avisamos por notificación.'}
               </div>
             </>
           )}
@@ -331,7 +338,7 @@ export default function PagoCheckoutPage() {
               </label>
             </div>
             {comprobantePreview && comprobanteFile?.type.startsWith('image/') && (
-              <img src={comprobantePreview} alt="Preview" className="h-32 object-contain rounded-lg border" />
+              <img src={comprobantePreview} alt="Vista previa del comprobante" className="h-32 object-contain rounded-lg border" />
             )}
             <p className="text-xs text-slate-400">Máx 5MB. Formatos: JPG, PNG, WebP, PDF</p>
 
