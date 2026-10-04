@@ -8,7 +8,6 @@ import { supabase } from '@/lib/supabase';
 import { useAuth } from '@/hooks/useAuth';
 import { usePaisFiltro } from '@/hooks/usePaisFiltro';
 import { useProveedorAuth } from '@/proveedor/hooks/useProveedorAuth';
-import { paisOperativo } from '@/proveedor/lib/compraPlanVisitador';
 import { getBanderaPais } from '@/lib/planes-utils';
 import { formatearMonto } from '@/lib/moneda';
 
@@ -52,10 +51,11 @@ export default function PlanesVisitadorPage() {
   const [paisElegido, setPaisElegido] = useState<string | null>(null);
   const [planCheckout, setPlanCheckout] = useState<PlanCatalogo | null>(null);
 
-  // País de la sesión: el de la cuenta proveedora (private.mi_pais) o, si no, el del perfil. Es un uuid de
-  // configuracion_pais y el catálogo se identifica por código: hay que resolverlo (comparar el uuid contra el código
-  // era el bug que dejaba todos los planes en "No disponible").
-  const paisSesionId = paisOperativo(cuenta, empresa) ?? paisPerfil ?? null;
+  // País de la sesión: PRIMERO el de la empresa (es el que valida la compra, CP002 de solicitar_compra_plan_visitador),
+  // después el de la cuenta proveedora y después el del perfil. Es un uuid de configuracion_pais y el catálogo se
+  // identifica por código: hay que resolverlo (comparar el uuid contra el código dejaba todo en "No disponible").
+  const paisEmpresaId: string | null = empresa?.pais_id ?? null;
+  const paisSesionId: string | null = paisEmpresaId ?? cuenta?.pais_id ?? paisPerfil ?? null;
   const [codigoSesion, setCodigoSesion] = useState<{ id: string; codigo: string | null } | null>(null);
   const resolviendoPais = !!paisSesionId && codigoSesion?.id !== paisSesionId;
 
@@ -89,12 +89,20 @@ export default function PlanesVisitadorPage() {
       .eq('id', paisSesionId)
       .maybeSingle()
       .then(
-        ({ data }) => {
-          if (!cancelado) setCodigoSesion({ id: paisSesionId, codigo: (data as { codigo?: string } | null)?.codigo ?? null });
+        ({ data, error }) => {
+          if (cancelado) return;
+          if (error) {
+            // sin código resoluble se usa el primer país del catálogo
+            console.error('[planes-visitador] no se pudo resolver el país:', error.code);
+            setCodigoSesion({ id: paisSesionId, codigo: null });
+            return;
+          }
+          setCodigoSesion({ id: paisSesionId, codigo: (data as { codigo?: string } | null)?.codigo ?? null });
         },
-        // sin código resoluble se usa el primer país del catálogo
-        () => {
-          if (!cancelado) setCodigoSesion({ id: paisSesionId, codigo: null });
+        (err: { code?: string } | null) => {
+          if (cancelado) return;
+          console.error('[planes-visitador] no se pudo resolver el país:', err?.code ?? 'sin code');
+          setCodigoSesion({ id: paisSesionId, codigo: null });
         }
       );
     return () => {
@@ -116,6 +124,14 @@ export default function PlanesVisitadorPage() {
   const planesPais = planes.filter((p) => p.pais_codigo === paisSeleccionado);
   const loading = cargando || resolviendoPais;
   const esProveedor = !!cuenta;
+
+  // La compra es solo en el país de la empresa (CP002). Con sesión de proveedor, fuera de ese país no se ofrece comprar.
+  const codigoEmpresa = paisEmpresaId && codigoSesion?.id === paisEmpresaId ? codigoSesion.codigo : null;
+  const paisEmpresa = codigoEmpresa ? paises.find((p) => p.codigo === codigoEmpresa) ?? null : null;
+  const puedeComprarAca = !esProveedor || (!!paisEmpresa && paisSeleccionado === paisEmpresa.codigo);
+  const avisoPaisEmpresa = paisEmpresa
+    ? `Su empresa puede comprar planes solo en ${paisEmpresa.nombre}.`
+    : 'Por ahora no hay planes disponibles para su país.';
 
   return (
     <div className="min-h-screen bg-gradient-to-b from-amber-50 to-white">
@@ -163,6 +179,12 @@ export default function PlanesVisitadorPage() {
 
         {!loading && errorCarga && <div className="text-center py-12 text-gray-500">{ERROR_CARGA}</div>}
 
+        {!loading && !errorCarga && planesPais.length > 0 && !puedeComprarAca && (
+          <div className="mb-8 max-w-5xl mx-auto rounded-lg border border-amber-200 bg-amber-50 p-4 text-center text-sm text-amber-800">
+            {avisoPaisEmpresa}
+          </div>
+        )}
+
         {/* Grid planes */}
         {!loading && !errorCarga && planesPais.length > 0 && (
           <div className="grid md:grid-cols-3 gap-8 max-w-5xl mx-auto">
@@ -199,9 +221,11 @@ export default function PlanesVisitadorPage() {
                     ))}
                   </ul>
 
-                  <Button className="w-full bg-gray-900 hover:bg-gray-800" size="lg" onClick={() => setPlanCheckout(plan)}>
-                    Elegir plan <ArrowRight className="ml-2 h-4 w-4" />
-                  </Button>
+                  {puedeComprarAca && (
+                    <Button className="w-full bg-gray-900 hover:bg-gray-800" size="lg" onClick={() => setPlanCheckout(plan)}>
+                      Elegir plan <ArrowRight className="ml-2 h-4 w-4" />
+                    </Button>
+                  )}
                 </CardContent>
               </Card>
             ))}
@@ -280,8 +304,10 @@ export default function PlanesVisitadorPage() {
                 </p>
               )}
 
+              {esProveedor && !puedeComprarAca && <p className="text-sm text-amber-800">{avisoPaisEmpresa}</p>}
+
               <div className="flex gap-2">
-                {esProveedor && (
+                {esProveedor && puedeComprarAca && (
                   <Button
                     className="flex-1 bg-orange-600 hover:bg-orange-700"
                     onClick={() => {

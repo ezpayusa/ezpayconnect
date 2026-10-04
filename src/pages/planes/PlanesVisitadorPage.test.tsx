@@ -27,9 +27,11 @@ const cadena = (tabla: string) => {
     return q
   }
   q.maybeSingle = async () =>
-    tabla === 'configuracion_pais' && typeof filtros.id === 'string' && codigosPorId[filtros.id]
-      ? { data: { codigo: codigosPorId[filtros.id] }, error: null }
-      : { data: null, error: null }
+    tabla === 'configuracion_pais' && filtros.id === 'uuid-error'
+      ? { data: null, error: { code: 'PGRST301', message: 'JWT expired' } }
+      : tabla === 'configuracion_pais' && typeof filtros.id === 'string' && codigosPorId[filtros.id]
+        ? { data: { codigo: codigosPorId[filtros.id] }, error: null }
+        : { data: null, error: null }
   q.single = q.maybeSingle
   q.then = (ok: any, ko: any) => Promise.resolve({ data: [], error: null }).then(ok, ko)
   return q
@@ -109,6 +111,48 @@ describe('PlanesVisitadorPage (landing pública)', () => {
     expect(await screen.findByRole('button', { name: /Continuar: pago por transferencia/ })).toBeInTheDocument()
     expect(screen.getByText('Usuario:')).toBeInTheDocument()
     expect(screen.getByText(/la vigencia se extiende 60 días/)).toBeInTheDocument()
+  })
+
+  it('cuenta en HN y empresa en GT: el país inicial es el de la empresa (GT)', async () => {
+    proveedor = {
+      user: { email: 'proveedor@qa.test' },
+      cuenta: { id: 'c1', pais_id: 'uuid-hn' },
+      empresa: { id: 'e1', pais_id: 'uuid-gt' },
+    }
+    pintar()
+    expect(await screen.findByText('Plan Bronce')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /Guatemala/, pressed: true })).toBeInTheDocument()
+    expect(screen.queryByText('Plan Hondureño')).not.toBeInTheDocument()
+    expect(screen.getAllByRole('button', { name: /Elegir plan/ }).length).toBeGreaterThan(0)
+  })
+
+  it('empresa en GT que elige HN: sin botón de compra y con el aviso del país de la empresa', async () => {
+    proveedor = {
+      user: { email: 'proveedor@qa.test' },
+      cuenta: { id: 'c1', pais_id: null },
+      empresa: { id: 'e1', pais_id: 'uuid-gt' },
+    }
+    pintar()
+    expect(await screen.findByText('Plan Bronce')).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: /Honduras/ }))
+    expect(await screen.findByText('Plan Hondureño')).toBeInTheDocument()
+    expect(screen.getByText('Su empresa puede comprar planes solo en Guatemala.')).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /Elegir plan/ })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /Continuar: pago por transferencia/ })).not.toBeInTheDocument()
+  })
+
+  it('si no se puede resolver el país: console.error con mensaje fijo y el primer país del catálogo', async () => {
+    const espia = vi.spyOn(console, 'error').mockImplementation(() => {})
+    proveedor = {
+      user: { email: 'proveedor@qa.test' },
+      cuenta: { id: 'c1', pais_id: null },
+      empresa: { id: 'e1', pais_id: 'uuid-error' },
+    }
+    pintar()
+    expect(await screen.findByText('Plan Bronce')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /Guatemala/, pressed: true })).toBeInTheDocument()
+    expect(espia).toHaveBeenCalledWith('[planes-visitador] no se pudo resolver el país:', 'PGRST301')
+    espia.mockRestore()
   })
 
   it('error de la RPC: mensaje fijo, nunca el texto de Postgres', async () => {
