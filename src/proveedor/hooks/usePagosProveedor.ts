@@ -46,6 +46,8 @@ export function usePagosProveedor() {
     fetchPagos()
   }, [fetchPagos])
 
+  // INSERT directo del pago: SOLO para los tipos que no son campaña (plan_laboratorio, plan_farmacia, ...). La campaña va
+  // por solicitarPagoCampana (mig 359) y el plan de visitador por solicitarCompraPlanVisitador (mig 351).
   const crearPago = async (
     tipo: string,
     monto: number,
@@ -139,6 +141,37 @@ export function usePagosProveedor() {
     return data as string
   }
 
+  // Pago de campaña (mig 359): el monto y la moneda los pone solicitar_pago_campana desde el plan del país; la RPC
+  // también pasa la solicitud a 'enviada'. El cliente solo sube el comprobante y manda el PATH del objeto. No toastea los
+  // errores de la RPC: los devuelve con su code (CA0xx) para que la página los traduzca.
+  const solicitarPagoCampana = async (
+    solicitudId: string,
+    comprobanteFile: File
+  ): Promise<{ pagoId: string | null; error: { code: string; message: string } | null }> => {
+    if (!empresa?.id) return { pagoId: null, error: { code: 'sin_empresa', message: 'No hay empresa vinculada' } }
+    setSaving(true)
+    const fileExt = comprobanteFile.name.split('.').pop()
+    const filePath = `${empresa.id}/${Date.now()}.${fileExt}`
+    const { error: uploadError } = await supabase.storage.from('comprobantes').upload(filePath, comprobanteFile)
+    if (uploadError) {
+      console.error(uploadError)
+      setSaving(false)
+      return { pagoId: null, error: { code: 'upload', message: uploadError.message } }
+    }
+    const { data, error } = await supabase.rpc('solicitar_pago_campana', {
+      p_solicitud_id: solicitudId,
+      p_comprobante_path: filePath,
+    })
+    setSaving(false)
+    if (error) {
+      // TODO lote 2: si la RPC rechaza, el comprobante queda huérfano en Storage (no hay policy DELETE en comprobantes).
+      console.error(error)
+      return { pagoId: null, error: { code: error.code ?? '', message: error.message } }
+    }
+    fetchPagos()
+    return { pagoId: data as string, error: null }
+  }
+
   return {
     pagos,
     loading,
@@ -146,5 +179,6 @@ export function usePagosProveedor() {
     fetchPagos,
     crearPago,
     solicitarCompraPlanVisitador,
+    solicitarPagoCampana,
   }
 }

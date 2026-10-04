@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useState, useEffect, useRef } from 'react'
 import { useSearchParams, useNavigate } from 'react-router-dom'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
@@ -11,10 +11,20 @@ import { supabase } from '@/lib/supabase'
 import { toast } from 'sonner'
 import { ArrowLeft, Upload, CreditCard, MapPin, User, Hash, Loader2, Mail, FileText, AlertCircle } from 'lucide-react'
 
+// Errores de cotizar_campana / solicitar_pago_campana (mig 359). Nunca se muestra el texto crudo de Postgres.
+const MENSAJES_CAMPANA: Record<string, string> = {
+  CA009: 'No tenés permiso para pagar esta campaña',
+  CA010: 'El plan de esta campaña no tiene precio para tu país',
+  CA011: 'Esta campaña ya no está en borrador',
+  CA012: 'Esta campaña ya tiene un pago registrado',
+  CA013: 'No se pudo validar el comprobante, volvé a subirlo',
+}
+const mensajeErrorCampana = (code: string | undefined, generico: string) => (code && MENSAJES_CAMPANA[code]) || generico
+
 export default function PagoCheckoutPage() {
   const navigate = useNavigate()
   const [searchParams] = useSearchParams()
-  const { crearPago, solicitarCompraPlanVisitador, saving } = usePagosProveedor()
+  const { crearPago, solicitarCompraPlanVisitador, solicitarPagoCampana, saving } = usePagosProveedor()
   const { empresa } = useProveedorAuth()
   const { cuenta, loading: loadingCuenta } = useCuentaBancariaCheckout(empresa?.pais_id)
 
@@ -24,9 +34,47 @@ export default function PagoCheckoutPage() {
   const esPlanVisitador = tipo === 'plan_visitador'
   const { config: configPlan, loading: loadingPlan } = useConfigPlanVisitador(esPlanVisitador ? referenciaId || null : null)
   const planNoDisponible = esPlanVisitador && !loadingPlan && !configPlan?.comprable
-  const monto = esPlanVisitador ? configPlan?.precio ?? 0 : parseFloat(searchParams.get('monto') || '0')
+  // Campaña (mig 359): monto y moneda salen de cotizar_campana (servidor), NUNCA de ?monto= ni de la cuenta bancaria.
+  const esCampana = tipo === 'campana'
+  const [cotizacion, setCotizacion] = useState<{ monto: number; moneda: string } | null>(null)
+  const [cotizando, setCotizando] = useState(esCampana)
+  const [errorCotizacion, setErrorCotizacion] = useState<string | null>(null)
+  const enviandoRef = useRef(false)
+  // ?monto= solo vale para los tipos que todavía no cotizan en el servidor (plan_laboratorio, plan_farmacia, ...).
+  const monto = esPlanVisitador
+    ? configPlan?.precio ?? 0
+    : esCampana
+      ? cotizacion?.monto ?? 0
+      : parseFloat(searchParams.get('monto') || '0')
   const descripcion = esPlanVisitador ? configPlan?.nombre ?? '' : searchParams.get('descripcion') || ''
-  const moneda = esPlanVisitador ? configPlan?.moneda ?? '' : cuenta?.moneda || 'GTQ'
+  const moneda = esPlanVisitador ? configPlan?.moneda ?? '' : esCampana ? cotizacion?.moneda ?? '' : cuenta?.moneda || 'GTQ'
+
+  useEffect(() => {
+    if (!esCampana) return
+    if (!referenciaId) {
+      setErrorCotizacion('No se encontró la campaña a pagar')
+      setCotizando(false)
+      return
+    }
+    let cancelado = false
+    setCotizando(true)
+    setErrorCotizacion(null)
+    supabase.rpc('cotizar_campana', { p_solicitud_id: referenciaId }).then(({ data, error }) => {
+      if (cancelado) return
+      const fila = Array.isArray(data) ? data[0] : data
+      if (error || !fila || !(Number(fila.monto) > 0) || !fila.moneda) {
+        if (error) console.error(error)
+        setCotizacion(null)
+        setErrorCotizacion(mensajeErrorCampana(error?.code, 'No se pudo calcular el precio de la campaña'))
+      } else {
+        setCotizacion({ monto: Number(fila.monto), moneda: fila.moneda })
+      }
+      setCotizando(false)
+    })
+    return () => {
+      cancelado = true
+    }
+  }, [esCampana, referenciaId])
 
   const [comprobanteFile, setComprobanteFile] = useState<File | null>(null)
   const [comprobantePreview, setComprobantePreview] = useState<string | null>(null)
@@ -55,26 +103,36 @@ export default function PagoCheckoutPage() {
       return
     }
 
+    if (esCampana) {
+      // guard síncrono contra doble envío (además del botón deshabilitado): saving tarda un render en llegar
+      if (saving || enviandoRef.current) return
+      if (!referenciaId || !cotizacion) return
+      enviandoRef.current = true
+      try {
+        // solicitar_pago_campana crea el pago con el precio del servidor Y pasa la solicitud a 'enviada'
+        const { pagoId, error } = await solicitarPagoCampana(referenciaId, comprobanteFile)
+        if (error || !pagoId) {
+          toast.error(
+            error?.code === 'upload'
+              ? 'Error subiendo comprobante'
+              : mensajeErrorCampana(error?.code, 'No se pudo registrar el pago. Intentá de nuevo.')
+          )
+          return
+        }
+        toast.success('Comprobante enviado. En espera de verificación.')
+        // Avisar a los admins de EzPay (RPC gateado: gate dueño + estado='enviada', que ya dejó la RPC; deriva admins + monto del ref)
+        await supabase.rpc('notificar_campana_enviada', { p_solicitud_id: referenciaId })
+        navigate('/proveedor/publicidad/campanas')
+      } finally {
+        enviandoRef.current = false
+      }
+      return
+    }
+
     const pagoId = await crearPago(tipo, monto, moneda, referenciaId || null, comprobanteFile)
     if (pagoId) {
-      if (tipo === 'campana' && referenciaId) {
-        const { error: updError } = await supabase
-          .from('solicitudes_campana')
-          .update({ estado: 'enviada', monto_pagado: monto })
-          .eq('id', referenciaId)
-        if (updError) {
-          toast.error('Error actualizando campaña')
-          console.error(updError)
-        } else {
-          // Avisar a los admins de EzPay (RPC gateado: gate dueño + estado='enviada' ya seteado arriba; deriva admins + monto del ref)
-          await supabase.rpc('notificar_campana_enviada', { p_solicitud_id: referenciaId })
-        }
-      }
-
       if (tipo === 'plan_visitador') {
         navigate('/proveedor/visitador/planes')
-      } else if (tipo === 'campana') {
-        navigate('/proveedor/publicidad/campanas')
       } else {
         navigate('/proveedor/dashboard')
       }
@@ -138,12 +196,17 @@ export default function PagoCheckoutPage() {
               </div>
             </>
           )}
-          {esPlanVisitador && loadingPlan ? (
+          {(esPlanVisitador && loadingPlan) || (esCampana && cotizando) ? (
             <Skeleton className="h-8 w-full" />
           ) : planNoDisponible ? (
             <div className="bg-amber-50 border border-amber-200 rounded-lg p-3 text-sm text-amber-800 flex items-start gap-2">
               <AlertCircle className="h-5 w-5 shrink-0 mt-0.5" />
               <p>Este plan no está disponible para la compra. Volvé a la lista de planes y elegí otro.</p>
+            </div>
+          ) : esCampana && !cotizacion ? (
+            <div className="bg-amber-50 border border-amber-200 rounded-lg p-3 text-sm text-amber-800 flex items-start gap-2">
+              <AlertCircle className="h-5 w-5 shrink-0 mt-0.5" />
+              <p>{errorCotizacion || 'No se pudo calcular el precio de la campaña'}</p>
             </div>
           ) : (
             <div className="border-t pt-3 flex justify-between items-center">
@@ -276,7 +339,13 @@ export default function PagoCheckoutPage() {
               </Button>
               <Button
                 className="flex-1 bg-[#1E5C8E] hover:bg-[#164a70]"
-                disabled={saving || !comprobanteFile || loadingCuenta || (esPlanVisitador && (loadingPlan || !configPlan?.comprable))}
+                disabled={
+                  saving ||
+                  !comprobanteFile ||
+                  loadingCuenta ||
+                  (esPlanVisitador && (loadingPlan || !configPlan?.comprable)) ||
+                  (esCampana && (cotizando || !cotizacion))
+                }
                 onClick={handleSubmit}
               >
                 {saving ? <Loader2 className="h-4 w-4 animate-spin mr-2" /> : <Upload className="h-4 w-4 mr-2" />}

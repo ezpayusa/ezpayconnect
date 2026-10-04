@@ -3,10 +3,7 @@ import { Card, CardContent } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
 import { useSolicitudesCampana } from '@/proveedor/hooks/useSolicitudesCampana'
-import { usePlanesPublicidad } from '@/proveedor/hooks/usePlanesPublicidad'
-import { useProveedorAuth } from '@/proveedor/hooks/useProveedorAuth'
 import { Megaphone, Plus, Trash2, Pencil, Loader2, CreditCard, BarChart3 } from 'lucide-react'
-import { toast } from 'sonner'
 
 const estadoColor: Record<string, string> = {
   borrador: 'bg-slate-100 text-slate-700',
@@ -20,23 +17,8 @@ const estadoColor: Record<string, string> = {
 export default function PublicidadCampanasPage() {
   const navigate = useNavigate()
   const { solicitudes, loading, eliminarSolicitud } = useSolicitudesCampana()
-  const { empresa } = useProveedorAuth()
-  const paisIdProveedor = empresa?.pais_id || undefined
-  const { planes, loading: loadingPlanes } = usePlanesPublicidad(paisIdProveedor)
-
-  const getPlanPrecio = (planId: number | null): number => {
-    if (!planId) return 0
-    const plan = planes.find((p) => p.id === planId)
-    return plan?.precio_local || plan?.precio || 0
-  }
-
-  const getPlanMoneda = (planId: number | null): string => {
-    if (!planId) return 'GTQ'
-    const plan = planes.find((p) => p.id === planId)
-    return plan?.moneda_local || plan?.moneda || 'GTQ'
-  }
-
-  const isLoading = loading || loadingPlanes
+  // El precio de la campaña lo calcula el servidor en el checkout (cotizar_campana, mig 359): acá no se lee el plan.
+  const isLoading = loading
 
   return (
     <div className="space-y-6">
@@ -129,23 +111,17 @@ export default function PublicidadCampanasPage() {
                     <Button
                       size="sm"
                       className="flex-1 bg-emerald-600 hover:bg-emerald-700 text-white"
-                      onClick={() => {
-                        const monto = getPlanPrecio(c.plan_publicidad_id)
-                        const moneda = getPlanMoneda(c.plan_publicidad_id)
-                        if (!monto) {
-                          toast?.error?.('No se encontró el precio del plan')
-                          return
-                        }
+                      onClick={() =>
                         navigate(
-                          `/proveedor/checkout?tipo=campana&referencia_id=${c.id}&monto=${monto}&moneda=${moneda}&descripcion=${encodeURIComponent(c.titulo)}`
+                          `/proveedor/checkout?tipo=campana&referencia_id=${c.id}&descripcion=${encodeURIComponent(c.titulo)}`
                         )
-                      }}
+                      }
                     >
                       <CreditCard className="h-3.5 w-3.5 mr-1" />
                       Pagar y enviar
                     </Button>
                   )}
-                  {c.estado === 'rechazada' && (
+                  {c.estado === 'borrador' && (
                     <Link to={`/proveedor/publicidad/campanas/${c.id}/editar`} className="flex-1">
                       <Button variant="outline" size="sm" className="w-full">
                         <Pencil className="h-3.5 w-3.5 mr-1" />
@@ -153,14 +129,16 @@ export default function PublicidadCampanasPage() {
                       </Button>
                     </Link>
                   )}
-                  <Button
-                    size="sm"
-                    variant="outline"
-                    className="text-red-600 hover:bg-red-50"
-                    onClick={() => eliminarSolicitud(c.id)}
-                  >
-                    <Trash2 className="h-3.5 w-3.5" />
-                  </Button>
+                  {c.estado === 'borrador' && (
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      className="text-red-600 hover:bg-red-50"
+                      onClick={() => eliminarSolicitud(c.id)}
+                    >
+                      <Trash2 className="h-3.5 w-3.5" />
+                    </Button>
+                  )}
                 </div>
               </CardContent>
             </Card>
