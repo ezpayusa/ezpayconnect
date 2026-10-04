@@ -133,13 +133,24 @@ export function useSolicitudesCampana() {
       plan_publicidad_id: campana.plan_publicidad_id,
     }
     if (imagen_url !== undefined) updateData.imagen_url = imagen_url
+    // Sin `estado` en el payload: editar no cambia el estado (la campaña sigue en borrador).
 
-    const { error } = await supabase.from('solicitudes_campana').update(updateData).eq('id', id)
+    // Solo en borrador, y tiene que afectar EXACTAMENTE 1 fila: 0 filas (RLS o ya no está en borrador) no es un éxito.
+    const { data, error } = await supabase
+      .from('solicitudes_campana')
+      .update(updateData)
+      .eq('id', id)
+      .eq('estado', 'borrador')
+      .select('id')
     setSaving(false)
 
     if (error) {
       toast.error('Error actualizando campaña')
       console.error(error)
+      return false
+    }
+    if ((data?.length ?? 0) !== 1) {
+      toast.error('No se pudo actualizar la campaña; puede que ya no esté en borrador')
       return false
     }
 
@@ -150,9 +161,19 @@ export function useSolicitudesCampana() {
 
   const eliminarSolicitud = async (id: string): Promise<boolean> => {
     if (!confirm('¿Eliminar esta campaña?')) return false
-    const { error } = await supabase.from('solicitudes_campana').delete().eq('id', id)
+    // Solo en borrador, y tiene que afectar EXACTAMENTE 1 fila: un DELETE que RLS filtra devuelve 0 filas sin error.
+    const { data, error } = await supabase
+      .from('solicitudes_campana')
+      .delete()
+      .eq('id', id)
+      .eq('estado', 'borrador')
+      .select('id')
     if (error) {
       toast.error('Error eliminando campaña')
+      return false
+    }
+    if ((data?.length ?? 0) !== 1) {
+      toast.error('No se pudo eliminar la campaña; puede que ya no esté en borrador')
       return false
     }
     toast.success('Campaña eliminada')

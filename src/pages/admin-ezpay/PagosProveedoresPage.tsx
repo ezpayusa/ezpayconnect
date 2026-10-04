@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from 'react'
+import { useState, useEffect, useCallback, useRef } from 'react'
 import { supabase } from '@/lib/supabase'
 import { openSignedUrl } from '@/lib/signedUrl'
 import { Button } from '@/components/ui/button'
@@ -32,6 +32,40 @@ interface PagoConEmpresa {
 // Un pendiente de plan de visitador sin snapshot nació antes de la compra por RPC: la RPC lo rechaza (CP013).
 const esPlanVisitadorLegacy = (p: PagoConEmpresa) =>
   p.tipo === 'plan_visitador' && (p.plan_visitas == null || p.plan_duracion_dias == null)
+
+// Errores de aprobar_solicitud_campana (mig 358). Nunca se muestra el texto crudo de Postgres.
+const MENSAJES_APROBAR_CAMPANA: Record<string, string> = {
+  CA001: 'Solo el superadministrador puede aprobar campañas',
+  CA002: 'La solicitud no existe',
+  CA003: 'La solicitud no está en estado enviada',
+  CA004: 'La campaña no tiene pago registrado',
+  CA005: 'La campaña tiene más de un pago; revisá antes de aprobar',
+  CA006: 'El pago de esta campaña fue rechazado',
+  CA007: 'La campaña no tiene plan asignado',
+  CA008: 'La empresa no opera en el país de la campaña',
+}
+const mensajeErrorAprobarCampana = (code: string | undefined) =>
+  (code && MENSAJES_APROBAR_CAMPANA[code]) || 'No se pudo aprobar la campaña. Intentá de nuevo.'
+
+// Avisos al proveedor después de aprobar: primero el pago, después la campaña. Ninguno de los dos es idempotente (cada
+// llamada inserta otra notificación), por eso se llaman UNA vez, solo tras el éxito de la aprobación. Un fallo no
+// deshace la aprobación, pero queda en la consola (mensaje fijo + code, sin datos personales).
+const notificarAprobacionCampana = async (pagoId: string | null | undefined, solicitudId: string) => {
+  if (pagoId) {
+    try {
+      const { error } = await supabase.rpc('notificar_pago_resultado', { p_pago_id: pagoId })
+      if (error) console.error('notificar_pago_resultado falló:', error.code)
+    } catch (e) {
+      console.error('notificar_pago_resultado falló:', (e as { code?: string })?.code ?? 'sin code')
+    }
+  }
+  try {
+    const { error } = await supabase.rpc('notificar_campana_resultado', { p_solicitud_id: solicitudId })
+    if (error) console.error('notificar_campana_resultado falló:', error.code)
+  } catch (e) {
+    console.error('notificar_campana_resultado falló:', (e as { code?: string })?.code ?? 'sin code')
+  }
+}
 
 export default function PagosProveedoresPage() {
   const [pagos, setPagos] = useState<PagoConEmpresa[]>([])
@@ -86,6 +120,35 @@ export default function PagosProveedoresPage() {
     fetchPagos()
   }
 
+  // Campaña (mig 358): aprobar_solicitud_campana es el ÚNICO camino de publicación. Verifica el pago pendiente, publica y
+  // marca la solicitud en una sola transacción, y es idempotente. Nada de INSERT directo en campanas_publicitarias.
+  const aprobandoCampanaRef = useRef(false)
+  const aprobarCampana = async (pago: { id: string; referencia_id: string | null }) => {
+    // guard síncrono contra doble click (procesando tarda un render en deshabilitar el botón)
+    if (aprobandoCampanaRef.current) return
+    if (!pago.referencia_id) {
+      toast.error('El pago no tiene una campaña asociada')
+      return
+    }
+    aprobandoCampanaRef.current = true
+    setProcesando(true)
+    try {
+      const { error } = await supabase.rpc('aprobar_solicitud_campana', { p_solicitud_id: pago.referencia_id })
+      if (error) {
+        console.error('aprobar_solicitud_campana falló:', error.code)
+        toast.error(mensajeErrorAprobarCampana(error.code))
+        return
+      }
+      toast.success('Pago verificado y campaña publicada')
+      await notificarAprobacionCampana(pago.id, pago.referencia_id)
+      setPagoActivo(null)
+      fetchPagos()
+    } finally {
+      aprobandoCampanaRef.current = false
+      setProcesando(false)
+    }
+  }
+
   const verificar = async (id: string, estado: 'verificado' | 'rechazado') => {
     setProcesando(true)
     const { data: { user } } = await supabase.auth.getUser()
@@ -101,56 +164,12 @@ export default function PagosProveedoresPage() {
         return
       }
 
-      if (pagoData?.tipo === 'campana' && pagoData.referencia_id) {
-        const { data: campana } = await supabase
-          .from('solicitudes_campana')
-          .select('*, plan:plan_publicidad_id(peso)')
-          .eq('id', pagoData.referencia_id)
-          .single()
-
-        if (campana) {
-          const pesoPlan = (campana.plan as any)?.peso || 1
-
-          const { error: pubError } = await supabase.from('campanas_publicitarias').insert({
-            titulo: campana.titulo,
-            descripcion: campana.descripcion,
-            tipo: campana.tipo,
-            imagen_url: campana.imagen_url,
-            link_url: campana.link_url,
-            fecha_inicio: campana.fecha_inicio,
-            fecha_fin: campana.fecha_fin,
-            activa: true,
-            pais_id: campana.pais_id,   // NOT NULL en campanas_publicitarias (mig 099); se propaga de la solicitud
-            condicion_filtro: campana.condicion_filtro,
-            genero_filtro: campana.genero_filtro,
-            edad_min: campana.edad_min,
-            edad_max: campana.edad_max,
-            peso: pesoPlan,
-            empresa_id: campana.empresa_id,          // dueño real: las métricas del proveedor dependen de esto
-            solicitud_campana_id: pagoData.referencia_id,
-          })
-
-          // Solo marcar la solicitud como 'publicada' si el INSERT de la campaña fue exitoso.
-          // Antes se marcaba antes de chequear el error -> solicitud "publicada" sin campaña.
-          if (pubError) {
-            toast.error('Error publicando campaña')
-            console.error(pubError?.message ?? pubError?.code)
-            setProcesando(false)
-            return
-          }
-
-          const { error: updError } = await supabase
-            .from('solicitudes_campana')
-            .update({ estado: 'publicada' })
-            .eq('id', pagoData.referencia_id)
-
-          if (updError) {
-            toast.error('Error publicando campaña')
-            console.error(updError?.message ?? updError?.code)
-            setProcesando(false)
-            return
-          }
-        }
+      if (pagoData?.tipo === 'campana') {
+        // Mig 358: verificar un pago de campaña ES aprobar la campaña, y eso se hace solo por aprobar_solicitud_campana
+        // (verifica el pago, publica y marca la solicitud en una transacción). El UPDATE genérico de abajo no corre.
+        setProcesando(false)
+        await aprobarCampana({ id: pagoData.id, referencia_id: pagoData.referencia_id })
+        return
       }
 
       if ((pagoData?.tipo === 'plan_laboratorio' || pagoData?.tipo === 'plan_farmacia') && pagoData.referencia_id) {

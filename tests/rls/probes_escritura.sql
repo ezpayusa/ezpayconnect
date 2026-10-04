@@ -11105,8 +11105,8 @@ BEGIN
       v_det := v_det||'notif_campana='||CASE WHEN SQLSTATE='PT002' THEN 'BLOQ' ELSE 'otro('||SQLSTATE||')' END||' '; END;
 
     BEGIN PERFORM public.aprobar_solicitud_campana(v_solpend_np, 'nota'); v_det := v_det||'aprobar_campana=PASO! ';
-    EXCEPTION WHEN OTHERS THEN
-      v_det := v_det||'aprobar_campana='||CASE WHEN SQLSTATE='P0001' AND SQLERRM LIKE 'No autorizado%'
+    EXCEPTION WHEN OTHERS THEN  -- 358: el rechazo de autz de aprobar_solicitud_campana es CA001 (antes P0001 'No autorizado%')
+      v_det := v_det||'aprobar_campana='||CASE WHEN SQLSTATE='CA001'
                THEN 'BLOQ' ELSE 'otro('||SQLSTATE||')' END||' '; END;
 
     BEGIN PERFORM public.resolver_canje(v_canje_np, true, NULL); v_det := v_det||'resolver_canje=PASO! ';
@@ -11141,8 +11141,14 @@ BEGIN
       EXCEPTION WHEN OTHERS THEN v_det := v_det||'notif_pago='||CASE WHEN SQLSTATE='PT002' THEN 'RECHAZO_AUTZ!' ELSE 'paso('||SQLSTATE||')' END||' '; END;
       BEGIN PERFORM public.notificar_campana_resultado(v_solpub_gt); v_det := v_det||'notif_campana=paso ';
       EXCEPTION WHEN OTHERS THEN v_det := v_det||'notif_campana='||CASE WHEN SQLSTATE='PT002' THEN 'RECHAZO_AUTZ!' ELSE 'paso('||SQLSTATE||')' END||' '; END;
-      BEGIN PERFORM public.aprobar_solicitud_campana(r.sol,'nota'); v_det := v_det||'aprobar_campana=paso ';
-      EXCEPTION WHEN OTHERS THEN v_det := v_det||'aprobar_campana='||CASE WHEN SQLSTATE='P0001' AND SQLERRM LIKE 'No autorizado%' THEN 'RECHAZO_AUTZ!' ELSE 'paso('||SQLSTATE||')' END||' '; END;
+      -- 358: solo super_admin aprueba campanas. Para super, CA001 es rechazo de autz (ROJO); para admin_pais, CA001 es
+      -- lo ESPERADO y aprobar sin CA001 es ROJO.
+      BEGIN PERFORM public.aprobar_solicitud_campana(r.sol,'nota');
+        v_det := v_det||CASE WHEN r.etq='adminpais' THEN 'aprobar_campana=PASO_SIN_CA001! ' ELSE 'aprobar_campana=paso ' END;
+      EXCEPTION WHEN OTHERS THEN v_det := v_det||'aprobar_campana='||CASE
+          WHEN SQLSTATE='CA001' THEN CASE WHEN r.etq='adminpais' THEN 'CA001' ELSE 'RECHAZO_AUTZ!' END
+          WHEN r.etq='adminpais' THEN 'NO_CA001('||SQLSTATE||')!'
+          ELSE 'paso('||SQLSTATE||')' END||' '; END;
       BEGIN PERFORM public.resolver_canje(r.canje, true, NULL); v_det := v_det||'resolver_canje=paso ';
       EXCEPTION WHEN OTHERS THEN v_det := v_det||'resolver_canje='||CASE WHEN SQLSTATE='P0001' AND SQLERRM='no_autorizado' THEN 'RECHAZO_AUTZ!' ELSE 'paso('||SQLSTATE||')' END||' '; END;
       PERFORM set_config('role','none', true);
@@ -11150,8 +11156,10 @@ BEGIN
         v_508 := CASE WHEN v_det NOT LIKE '%RECHAZO_AUTZ!%' THEN 'OK (super_admin sin rechazo de autz en las 4: '||v_det||')'
                       ELSE 'ROJO — GATE CERRADO DE MAS para super_admin ('||v_det||')' END;
       ELSE
-        v_509 := CASE WHEN v_det NOT LIKE '%RECHAZO_AUTZ!%' THEN 'OK (admin_pais GT sin rechazo de autz en las 4 sobre SU pais: '||v_det||')'
-                      ELSE 'ROJO — GATE CERRADO DE MAS para admin_pais ('||v_det||')' END;
+        v_509 := CASE WHEN v_det NOT LIKE '%RECHAZO_AUTZ!%' AND v_det LIKE '%aprobar_campana=CA001 %'
+                           AND v_det NOT LIKE '%PASO_SIN_CA001!%' AND v_det NOT LIKE '%NO_CA001(%'
+                      THEN 'OK (admin_pais GT sin rechazo de autz en notif_pago/notif_campana/resolver_canje sobre SU pais; aprobar_campana rechazado con CA001 (358): '||v_det||')'
+                      ELSE 'ROJO — admin_pais: rechazo de autz donde no va, o aprobo campana sin CA001 ('||v_det||')' END;
       END IF;
     END LOOP;
 
@@ -11165,7 +11173,7 @@ BEGIN
     BEGIN PERFORM public.notificar_campana_resultado(v_solpub_sv); v_det := v_det||'notif_campana=PASO! ';
     EXCEPTION WHEN OTHERS THEN v_det := v_det||'notif_campana='||CASE WHEN SQLSTATE='PT002' THEN 'BLOQ' ELSE 'otro('||SQLSTATE||')' END||' '; END;
     BEGIN PERFORM public.aprobar_solicitud_campana(v_solpend_sv,'nota'); v_det := v_det||'aprobar_campana=PASO! ';
-    EXCEPTION WHEN OTHERS THEN v_det := v_det||'aprobar_campana='||CASE WHEN SQLSTATE='P0001' AND SQLERRM LIKE 'No autorizado%' THEN 'BLOQ' ELSE 'otro('||SQLSTATE||')' END||' '; END;
+    EXCEPTION WHEN OTHERS THEN v_det := v_det||'aprobar_campana='||CASE WHEN SQLSTATE='CA001' THEN 'BLOQ' ELSE 'otro('||SQLSTATE||')' END||' '; END;  -- 358: CA001
     BEGIN PERFORM public.resolver_canje(v_canje_sv, true, NULL); v_det := v_det||'resolver_canje=PASO! ';
     EXCEPTION WHEN OTHERS THEN v_det := v_det||'resolver_canje='||CASE WHEN SQLSTATE='P0001' AND SQLERRM='no_autorizado' THEN 'BLOQ' ELSE 'otro('||SQLSTATE||')' END||' '; END;
     PERFORM set_config('role','none', true);
@@ -30117,14 +30125,19 @@ SELECT set_config('role', 'none', true);
 
 -- ---------------- P939 policy "Proveedor crea pagos": sin autoaprobacion, sin plan_visitador directo (351) ----------------
 -- Como admin de una empresa propia (fixture descartado): INSERT directo con estado 'verificado', con
--- verificado_por, con fecha_verificacion, con pvc_id o de tipo plan_visitador -> 42501 de RLS; INSERT directo de
--- una campana pendiente -> 1 fila (el checkout de campanas/planes de lab y farmacia sigue andando).
+-- verificado_por, con fecha_verificacion, con pvc_id o de tipo plan_visitador -> 42501 de RLS.
+-- 359: los casos 1-4 pasan a tipo plan_laboratorio (con campana darian 42501 por el termino de la 360 y dejarian de
+-- medir lo que dicen); caso 7 nuevo: plan_laboratorio pendiente -> 1 fila (el checkout de lab/farmacia sigue).
+-- Caso 6 (campana pendiente directa), PENDIENTE MIG 360: si la policy ya tiene AND tipo <> 'campana' (catalogo) exige
+-- 42501; si no, exige que SIGA entrando (1 fila: el checkout actual de campana no se rompio) y el veredicto lo dice.
 DO $$
 DECLARE
   det text := ''; bad text := ''; st text; msg text; r_rest text := 'OK'; esp text; n int; k int;
-  v_gt uuid; v_cta uuid; v_emp uuid; v_pvc uuid; v_perfil uuid; snap_pre text; snap_post text;
+  v_gt uuid; v_cta uuid; v_emp uuid; v_pvc uuid; v_perfil uuid; snap_pre text; snap_post text; v_360 boolean; r6 text := '-';
 BEGIN
   IF current_user <> 'postgres' THEN RAISE EXCEPTION 'fixture roto: P939 corre como %', current_user; END IF;
+  v_360 := COALESCE((SELECT position('(tipo <> ''campana''::text)' IN pg_get_expr(pl.polwithcheck, pl.polrelid)) > 0
+                       FROM pg_policy pl WHERE pl.polrelid = 'public.pagos_proveedor'::regclass AND pl.polname = 'Proveedor crea pagos'), false);
   SELECT id INTO v_gt FROM public.configuracion_pais WHERE codigo = 'GT';
   SELECT cp.id INTO v_cta FROM public.cuentas_proveedor cp WHERE cp.activo AND cp.rol_en_empresa = 'admin'
      AND EXISTS (SELECT 1 FROM auth.users u WHERE u.id = cp.id) ORDER BY cp.id LIMIT 1;
@@ -30141,18 +30154,18 @@ BEGIN
     INSERT INTO public.empresas_proveedoras (nombre_empresa, tipo, estado, pais_id, email_contacto)
       VALUES ('P939 Empresa', 'laboratorio_farmaceutico', 'activa', v_gt, 'p939@example.invalid') RETURNING id INTO v_emp;
     UPDATE public.cuentas_proveedor SET empresa_id = v_emp, rol_en_empresa = 'admin', activo = true, equipo_id = NULL WHERE id = v_cta;
-    FOR k IN 1..6 LOOP
+    FOR k IN 1..7 LOOP
       st := 'OK'; msg := '-'; n := NULL;
       BEGIN
         PERFORM set_config('request.jwt.claims', json_build_object('sub', v_cta::text, 'role', 'authenticated')::text, true);
         PERFORM set_config('role', 'authenticated', true);
         -- pvc_id solo aparece en el caso 4: sin la 351 la columna no existe y los otros 5 casos miden la policy vieja
         IF k = 4 THEN
-          EXECUTE 'INSERT INTO public.pagos_proveedor (empresa_id, tipo, monto, moneda, metodo_pago, estado, pvc_id) VALUES ($1, ''campana'', 10, ''GTQ'', ''transferencia'', ''pendiente'', $2)'
+          EXECUTE 'INSERT INTO public.pagos_proveedor (empresa_id, tipo, monto, moneda, metodo_pago, estado, pvc_id) VALUES ($1, ''plan_laboratorio'', 10, ''GTQ'', ''transferencia'', ''pendiente'', $2)'
             USING v_emp, v_pvc;
         ELSE
           INSERT INTO public.pagos_proveedor (empresa_id, tipo, monto, moneda, metodo_pago, estado, verificado_por, fecha_verificacion)
-            VALUES (v_emp, CASE k WHEN 5 THEN 'plan_visitador' ELSE 'campana' END, 10, 'GTQ', 'transferencia',
+            VALUES (v_emp, CASE k WHEN 5 THEN 'plan_visitador' WHEN 6 THEN 'campana' ELSE 'plan_laboratorio' END, 10, 'GTQ', 'transferencia',
                     CASE k WHEN 1 THEN 'verificado' ELSE 'pendiente' END,
                     CASE k WHEN 2 THEN v_perfil END, CASE k WHEN 3 THEN now() END);
         END IF;
@@ -30161,9 +30174,10 @@ BEGIN
       END;
       PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
       IF st = 'OK' THEN st := 'OK filas='||n; END IF;
-      esp := CASE k WHEN 6 THEN 'OK filas=1' ELSE '42501' END;
-      det := det||' ;; '||CASE k WHEN 1 THEN 'campana estado verificado' WHEN 2 THEN 'campana con verificado_por' WHEN 3 THEN 'campana con fecha_verificacion'
-                    WHEN 4 THEN 'campana con pvc_id' WHEN 5 THEN 'plan_visitador pendiente directo' ELSE 'campana pendiente' END
+      esp := CASE WHEN k = 7 OR (k = 6 AND NOT v_360) THEN 'OK filas=1' ELSE '42501' END;
+      IF k = 6 THEN r6 := st; END IF;
+      det := det||' ;; '||CASE k WHEN 1 THEN 'plan_laboratorio estado verificado' WHEN 2 THEN 'plan_laboratorio con verificado_por' WHEN 3 THEN 'plan_laboratorio con fecha_verificacion'
+                    WHEN 4 THEN 'plan_laboratorio con pvc_id' WHEN 5 THEN 'plan_visitador pendiente directo' WHEN 6 THEN CASE WHEN v_360 THEN 'campana pendiente directa (360)' ELSE 'campana pendiente directa (PENDIENTE mig 360: hoy debe entrar)' END ELSE 'plan_laboratorio pendiente' END
              ||'|'||esp||'|'||CASE WHEN st = esp THEN 'OK' ELSE 'ROJO' END||'|'||st||'|'||left(msg, 120);
       IF st <> esp THEN bad := bad||'caso '||k||': '||st||' (esperado '||esp||') '||left(msg, 100)||'; '; END IF;
     END LOOP;
@@ -30178,7 +30192,8 @@ BEGIN
   det := det||' ;; restauracion|subtransaccion descartada|'||r_rest||'|-|';
   PERFORM set_config('probe.p939_det', det, false);
   PERFORM set_config('probe.p939', CASE WHEN bad = '' AND r_rest = 'OK'
-    THEN 'OK (INSERT directo: verificado/verificado_por/fecha_verificacion/pvc_id/plan_visitador -> 42501; campana pendiente -> 1 fila; descartado)'
+    THEN 'OK (INSERT directo: verificado/verificado_por/fecha_verificacion/pvc_id/plan_visitador -> 42501; plan_laboratorio pendiente -> 1 fila; '
+         ||CASE WHEN v_360 THEN 'campana pendiente -> 42501 (360)' ELSE 'campana pendiente: PENDIENTE mig 360, hoy entra ('||r6||')' END||'; descartado)'
     ELSE 'ROJO ('||left(bad, 900)||' | restauracion='||r_rest||')' END, false);
 EXCEPTION WHEN OTHERS THEN
   PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
@@ -31384,6 +31399,579 @@ EXCEPTION WHEN OTHERS THEN
   PERFORM set_config('probe.p966', 'FALLO ('||SQLSTATE||' '||SQLERRM||')', false);
 END $$;
 
+-- ---------------- P967-P974 aprobar_solicitud_campana: un solo camino, atomico e idempotente (358) ----------------
+-- Fixture propio, sembrado como postgres DENTRO de una subtransaccion que se descarta (P0999): 5 solicitudes de una
+-- empresa real activa que opera en GT (la mas antigua por created_at, id, con una cuenta de proveedor real), con el plan
+-- de publicidad activo de mayor peso (oraculo: peso > 0), y sus pagos tipo='campana'. Actores reales (created_at
+-- anterior a esta transaccion, activos, en auth.users, sin cuenta de proveedor ni paciente): el super_admin y el
+-- admin_pais de GT mas antiguos. Sin alguno -> FALLO (sin fixture), nunca OK. Despues del descarte se verifica que
+-- solicitudes, pagos y publicaciones vuelven a sus conteos de antes.
+--   P967 super_admin aprueba (enviada + pago pendiente) -> 1 publicacion, pago verificado por el actor, peso del plan,
+--        solicitud publicada con las notas
+--   P968 segunda llamada sobre la misma solicitud -> mismo id, sigue 1 publicacion, sin error
+--   P969 admin_pais de GT sobre una solicitud de GT -> CA001, sin efecto
+--   P970 solicitud en borrador -> CA003; P971 sin pago -> CA004; P972 pago rechazado -> CA006 (todas sin efecto)
+--   P973 INSERT directo de una 2a publicacion con la misma solicitud (como super_admin) -> 23505 del indice
+--        campanas_publicitarias_solicitud_uniq, capturado por nombre
+--   P974 catalogo: firma, RETURNS, DEFINER + search_path '', ACL, indice unico parcial valido
+DO $$
+DECLARE
+  v_gt uuid := 'cbbbbe6d-59fe-4cf2-91ee-3e31ba1d5909';
+  v_emp uuid; v_cta uuid; v_plan int; v_peso int; a_sa uuid; a_ap uuid;
+  s1 uuid; s2 uuid; s3 uuid; s4 uuid; s5 uuid; g1 uuid; g2 uuid; g3 uuid; g5 uuid;
+  pre text; post text; r_rest text := 'OK';
+  st text; ret int; ret1 int; n int; e text; cname text;
+  r967 text; r968 text; r969 text; r970 text; r971 text; r972 text; r973 text;
+  r record;
+BEGIN
+  IF current_user <> 'postgres' THEN RAISE EXCEPTION 'fixture roto: P967 corre como %', current_user; END IF;
+  SELECT e.id, c.id INTO v_emp, v_cta
+    FROM public.empresas_proveedoras e JOIN public.cuentas_proveedor c ON c.empresa_id = e.id
+   WHERE e.estado = 'activa' AND COALESCE(e.created_at, '-infinity') < now() AND private.empresa_opera_en_pais(e.id, v_gt)
+     AND c.activo AND COALESCE(c.created_at, '-infinity') < now() AND EXISTS (SELECT 1 FROM auth.users u WHERE u.id = c.id)
+   ORDER BY COALESCE(e.created_at, '-infinity'), e.id, COALESCE(c.created_at, '-infinity'), c.id LIMIT 1;
+  SELECT pp.id, pp.peso INTO v_plan, v_peso FROM public.planes_publicidad pp
+   WHERE pp.activo AND pp.peso > 0 ORDER BY pp.peso DESC, pp.id LIMIT 1;
+  a_sa := (SELECT p.id FROM public.perfiles p WHERE p.rol = 'super_admin' AND p.activo AND COALESCE(p.created_at, '-infinity') < now()
+             AND EXISTS (SELECT 1 FROM auth.users u WHERE u.id = p.id)
+             AND NOT EXISTS (SELECT 1 FROM public.cuentas_proveedor cp WHERE cp.id = p.id)
+             AND NOT EXISTS (SELECT 1 FROM public.pacientes pa WHERE pa.auth_user_id = p.id)
+           ORDER BY COALESCE(p.created_at, '-infinity'), p.id LIMIT 1);
+  a_ap := (SELECT p.id FROM public.perfiles p WHERE p.rol = 'admin_pais' AND p.pais_id = v_gt AND p.activo AND COALESCE(p.created_at, '-infinity') < now()
+             AND EXISTS (SELECT 1 FROM auth.users u WHERE u.id = p.id)
+             AND NOT EXISTS (SELECT 1 FROM public.cuentas_proveedor cp WHERE cp.id = p.id)
+             AND NOT EXISTS (SELECT 1 FROM public.pacientes pa WHERE pa.auth_user_id = p.id)
+           ORDER BY COALESCE(p.created_at, '-infinity'), p.id LIMIT 1);
+  IF v_emp IS NULL OR v_plan IS NULL OR a_sa IS NULL OR a_ap IS NULL THEN
+    RAISE EXCEPTION 'sin fixture: P967 sin empresa real que opere en GT (%), plan con peso (%), super_admin (%) o admin_pais de GT (%)', v_emp, v_plan, a_sa, a_ap;
+  END IF;
+  pre := (SELECT count(*) FROM public.solicitudes_campana)||'/'||(SELECT count(*) FROM public.pagos_proveedor)||'/'||(SELECT count(*) FROM public.campanas_publicitarias);
+
+  BEGIN
+    -- siembra (como postgres)
+    INSERT INTO public.solicitudes_campana (empresa_id, cuenta_proveedor_id, titulo, tipo, fecha_inicio, fecha_fin, estado, pais_id, plan_publicidad_id)
+      VALUES (v_emp, v_cta, 'P967 enviada', 'banner', CURRENT_DATE, CURRENT_DATE + 30, 'enviada', v_gt, v_plan) RETURNING id INTO s1;
+    INSERT INTO public.solicitudes_campana (empresa_id, cuenta_proveedor_id, titulo, tipo, fecha_inicio, fecha_fin, estado, pais_id, plan_publicidad_id)
+      VALUES (v_emp, v_cta, 'P969 admin_pais', 'banner', CURRENT_DATE, CURRENT_DATE + 30, 'enviada', v_gt, v_plan) RETURNING id INTO s2;
+    INSERT INTO public.solicitudes_campana (empresa_id, cuenta_proveedor_id, titulo, tipo, fecha_inicio, fecha_fin, estado, pais_id, plan_publicidad_id)
+      VALUES (v_emp, v_cta, 'P970 borrador', 'banner', CURRENT_DATE, CURRENT_DATE + 30, 'borrador', v_gt, v_plan) RETURNING id INTO s3;
+    INSERT INTO public.solicitudes_campana (empresa_id, cuenta_proveedor_id, titulo, tipo, fecha_inicio, fecha_fin, estado, pais_id, plan_publicidad_id)
+      VALUES (v_emp, v_cta, 'P971 sin pago', 'banner', CURRENT_DATE, CURRENT_DATE + 30, 'enviada', v_gt, v_plan) RETURNING id INTO s4;
+    INSERT INTO public.solicitudes_campana (empresa_id, cuenta_proveedor_id, titulo, tipo, fecha_inicio, fecha_fin, estado, pais_id, plan_publicidad_id)
+      VALUES (v_emp, v_cta, 'P972 pago rechazado', 'banner', CURRENT_DATE, CURRENT_DATE + 30, 'enviada', v_gt, v_plan) RETURNING id INTO s5;
+    INSERT INTO public.pagos_proveedor (empresa_id, tipo, monto, estado, referencia_id) VALUES (v_emp, 'campana', 1, 'pendiente', s1::text) RETURNING id INTO g1;
+    INSERT INTO public.pagos_proveedor (empresa_id, tipo, monto, estado, referencia_id) VALUES (v_emp, 'campana', 1, 'pendiente', s2::text) RETURNING id INTO g2;
+    INSERT INTO public.pagos_proveedor (empresa_id, tipo, monto, estado, referencia_id) VALUES (v_emp, 'campana', 1, 'pendiente', s3::text) RETURNING id INTO g3;
+    INSERT INTO public.pagos_proveedor (empresa_id, tipo, monto, estado, referencia_id) VALUES (v_emp, 'campana', 1, 'rechazado', s5::text) RETURNING id INTO g5;
+
+    FOR r IN SELECT * FROM (VALUES (967, a_sa, s1), (968, a_sa, s1), (969, a_ap, s2), (970, a_sa, s3), (971, a_sa, s4), (972, a_sa, s5)) t(k, actor, sol) ORDER BY t.k LOOP
+      st := 'OK'; ret := NULL;
+      BEGIN
+        PERFORM set_config('request.jwt.claims', json_build_object('sub', r.actor::text, 'role', 'authenticated')::text, true);
+        PERFORM set_config('role', 'authenticated', true);
+        ret := public.aprobar_solicitud_campana(r.sol, '__p'||r.k);
+        PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
+      EXCEPTION WHEN OTHERS THEN st := SQLSTATE; e := SQLERRM; PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
+      END;
+      n := (SELECT count(*) FROM public.campanas_publicitarias c WHERE c.solicitud_campana_id = r.sol);
+      IF r.k = 967 THEN
+        ret1 := ret;
+        SELECT CASE WHEN st = 'OK' AND ret IS NOT NULL AND n = 1
+                     AND (SELECT c.peso FROM public.campanas_publicitarias c WHERE c.id = ret) = v_peso
+                     AND (SELECT s.estado||'|'||COALESCE(s.notas_admin, '-') FROM public.solicitudes_campana s WHERE s.id = s1) = 'publicada|__p967'
+                     AND (SELECT g.estado = 'verificado' AND g.verificado_por = a_sa AND g.fecha_verificacion IS NOT NULL FROM public.pagos_proveedor g WHERE g.id = g1)
+                THEN 'OK' ELSE 'ROJO' END
+               ||' (super_admin '||a_sa||' aprueba solicitud enviada con pago pendiente: '||st||', id '||COALESCE(ret::text, '-')||', publicaciones '||n
+               ||', peso '||COALESCE((SELECT c.peso::text FROM public.campanas_publicitarias c WHERE c.id = ret), '-')||' (plan '||v_plan||' peso '||v_peso||')'
+               ||', solicitud '||(SELECT s.estado||'/'||COALESCE(s.notas_admin, '-') FROM public.solicitudes_campana s WHERE s.id = s1)
+               ||', pago '||(SELECT g.estado||' por '||COALESCE(g.verificado_por::text, '-') FROM public.pagos_proveedor g WHERE g.id = g1)||')'
+          INTO r967;
+      ELSIF r.k = 968 THEN
+        r968 := CASE WHEN st = 'OK' AND ret IS NOT DISTINCT FROM ret1 AND ret1 IS NOT NULL AND n = 1 THEN 'OK' ELSE 'ROJO' END
+               ||' (segunda llamada sobre la misma solicitud: '||st||', id '||COALESCE(ret::text, '-')||' vs '||COALESCE(ret1::text, '-')||', publicaciones '||n||')';
+      ELSIF r.k = 969 THEN
+        r969 := CASE WHEN st = 'CA001' AND n = 0
+                      AND (SELECT s.estado FROM public.solicitudes_campana s WHERE s.id = s2) = 'enviada'
+                      AND (SELECT g.estado FROM public.pagos_proveedor g WHERE g.id = g2) = 'pendiente' THEN 'OK' ELSE 'ROJO' END
+               ||' (admin_pais '||a_ap||' de GT aprueba una solicitud de GT: '||st||', publicaciones '||n
+               ||', solicitud '||(SELECT s.estado FROM public.solicitudes_campana s WHERE s.id = s2)||', pago '||(SELECT g.estado FROM public.pagos_proveedor g WHERE g.id = g2)||')';
+      ELSIF r.k = 970 THEN
+        r970 := CASE WHEN st = 'CA003' AND n = 0
+                      AND (SELECT s.estado FROM public.solicitudes_campana s WHERE s.id = s3) = 'borrador'
+                      AND (SELECT g.estado FROM public.pagos_proveedor g WHERE g.id = g3) = 'pendiente' THEN 'OK' ELSE 'ROJO' END
+               ||' (solicitud en borrador: '||st||', publicaciones '||n||', solicitud '||(SELECT s.estado FROM public.solicitudes_campana s WHERE s.id = s3)
+               ||', pago '||(SELECT g.estado FROM public.pagos_proveedor g WHERE g.id = g3)||')';
+      ELSIF r.k = 971 THEN
+        r971 := CASE WHEN st = 'CA004' AND n = 0 AND (SELECT s.estado FROM public.solicitudes_campana s WHERE s.id = s4) = 'enviada' THEN 'OK' ELSE 'ROJO' END
+               ||' (solicitud sin pago: '||st||', publicaciones '||n||', solicitud '||(SELECT s.estado FROM public.solicitudes_campana s WHERE s.id = s4)||')';
+      ELSE
+        r972 := CASE WHEN st = 'CA006' AND n = 0
+                      AND (SELECT s.estado FROM public.solicitudes_campana s WHERE s.id = s5) = 'enviada'
+                      AND (SELECT g.estado FROM public.pagos_proveedor g WHERE g.id = g5) = 'rechazado' THEN 'OK' ELSE 'ROJO' END
+               ||' (pago rechazado: '||st||', publicaciones '||n||', solicitud '||(SELECT s.estado FROM public.solicitudes_campana s WHERE s.id = s5)
+               ||', pago '||(SELECT g.estado FROM public.pagos_proveedor g WHERE g.id = g5)||')';
+      END IF;
+    END LOOP;
+
+    -- P973: segunda publicacion directa de s1, como super_admin (la policy campanas_superadmin_insert lo deja insertar)
+    st := 'OK'; cname := '-';
+    BEGIN
+      PERFORM set_config('request.jwt.claims', json_build_object('sub', a_sa::text, 'role', 'authenticated')::text, true);
+      PERFORM set_config('role', 'authenticated', true);
+      INSERT INTO public.campanas_publicitarias (titulo, fecha_fin, pais_id, empresa_id, solicitud_campana_id)
+        VALUES ('P973 duplicada', CURRENT_DATE + 30, v_gt, v_emp, s1);
+      PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
+    EXCEPTION WHEN unique_violation THEN
+      GET STACKED DIAGNOSTICS cname = CONSTRAINT_NAME; st := '23505';
+      PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
+    WHEN OTHERS THEN st := SQLSTATE||' '||SQLERRM; PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
+    END;
+    n := (SELECT count(*) FROM public.campanas_publicitarias c WHERE c.solicitud_campana_id = s1);
+    r973 := CASE WHEN st = '23505' AND cname = 'campanas_publicitarias_solicitud_uniq' AND n = 1 THEN 'OK' ELSE 'ROJO' END
+           ||' (super_admin inserta directo una 2a publicacion de la misma solicitud: '||st||', constraint '||COALESCE(cname, '-')||', publicaciones '||n||')';
+
+    RAISE EXCEPTION 'P967 descarte' USING ERRCODE = 'P0999';
+  EXCEPTION WHEN SQLSTATE 'P0999' THEN NULL;
+  END;
+  PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
+  post := (SELECT count(*) FROM public.solicitudes_campana)||'/'||(SELECT count(*) FROM public.pagos_proveedor)||'/'||(SELECT count(*) FROM public.campanas_publicitarias);
+  IF post IS DISTINCT FROM pre THEN r_rest := 'conteos solicitudes/pagos/publicaciones '||pre||' -> '||post; END IF;
+  IF r_rest <> 'OK' THEN
+    r967 := 'ROJO (restauracion: '||r_rest||') '||r967; r968 := 'ROJO (restauracion) '||r968; r969 := 'ROJO (restauracion) '||r969;
+    r970 := 'ROJO (restauracion) '||r970; r971 := 'ROJO (restauracion) '||r971; r972 := 'ROJO (restauracion) '||r972; r973 := 'ROJO (restauracion) '||r973;
+  END IF;
+  PERFORM set_config('probe.p967', COALESCE(r967, 'FALLO (sin veredicto)'), false);
+  PERFORM set_config('probe.p968', COALESCE(r968, 'FALLO (sin veredicto)'), false);
+  PERFORM set_config('probe.p969', COALESCE(r969, 'FALLO (sin veredicto)'), false);
+  PERFORM set_config('probe.p970', COALESCE(r970, 'FALLO (sin veredicto)'), false);
+  PERFORM set_config('probe.p971', COALESCE(r971, 'FALLO (sin veredicto)'), false);
+  PERFORM set_config('probe.p972', COALESCE(r972, 'FALLO (sin veredicto)'), false);
+  PERFORM set_config('probe.p973', COALESCE(r973, 'FALLO (sin veredicto)'), false);
+EXCEPTION WHEN OTHERS THEN
+  PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
+  PERFORM set_config('probe.p967', 'FALLO ('||SQLSTATE||' '||SQLERRM||')', false);
+  PERFORM set_config('probe.p968', 'FALLO ('||SQLSTATE||' '||SQLERRM||')', false);
+  PERFORM set_config('probe.p969', 'FALLO ('||SQLSTATE||' '||SQLERRM||')', false);
+  PERFORM set_config('probe.p970', 'FALLO ('||SQLSTATE||' '||SQLERRM||')', false);
+  PERFORM set_config('probe.p971', 'FALLO ('||SQLSTATE||' '||SQLERRM||')', false);
+  PERFORM set_config('probe.p972', 'FALLO ('||SQLSTATE||' '||SQLERRM||')', false);
+  PERFORM set_config('probe.p973', 'FALLO ('||SQLSTATE||' '||SQLERRM||')', false);
+END $$;
+SELECT set_config('role', 'none', true);
+
+-- P974 catalogo de la 358: 1 sobrecarga, firma (p_solicitud_id uuid, p_notas_admin text DEFAULT NULL) -> integer,
+-- DEFINER + search_path '', VOLATILE, EXECUTE solo authenticated/service_role/postgres; indice unico parcial
+-- campanas_publicitarias_solicitud_uniq valido; 0 solicitudes con mas de una publicacion.
+DO $$
+DECLARE bad text := ''; v text;
+BEGIN
+  v := (SELECT string_agg(p.oid::regprocedure::text||'('||pg_get_function_arguments(p.oid)||') -> '||pg_get_function_result(p.oid)||' | definer='||p.prosecdef::text||' sp='||COALESCE(array_to_string(p.proconfig, ','), '-')||' vol='||p.provolatile::text||' | '||
+           (SELECT string_agg(CASE a.grantee WHEN 0 THEN 'PUBLIC' ELSE pg_get_userbyid(a.grantee) END||'='||a.privilege_type, '+'
+                               ORDER BY CASE a.grantee WHEN 0 THEN 'PUBLIC' ELSE pg_get_userbyid(a.grantee) END)
+              FROM aclexplode(COALESCE(p.proacl, acldefault('f', p.proowner))) a), ';')
+          FROM pg_proc p WHERE p.pronamespace = 'public'::regnamespace AND p.proname = 'aprobar_solicitud_campana');
+  IF v IS DISTINCT FROM 'aprobar_solicitud_campana(uuid,text)(p_solicitud_id uuid, p_notas_admin text DEFAULT NULL::text) -> integer | definer=true sp=search_path="" vol=v | authenticated=EXECUTE+postgres=EXECUTE+service_role=EXECUTE' THEN
+    bad := bad||'catalogo: '||COALESCE(v, 'NO EXISTE')||'; ';
+  END IF;
+  v := (SELECT pg_get_indexdef(i.indexrelid)||' valid='||i.indisvalid::text||' unique='||i.indisunique::text
+          FROM pg_index i WHERE i.indexrelid = to_regclass('public.campanas_publicitarias_solicitud_uniq'));
+  IF v IS DISTINCT FROM 'CREATE UNIQUE INDEX campanas_publicitarias_solicitud_uniq ON public.campanas_publicitarias USING btree (solicitud_campana_id) WHERE (solicitud_campana_id IS NOT NULL) valid=true unique=true' THEN
+    bad := bad||'indice: '||COALESCE(v, 'NO EXISTE')||'; ';
+  END IF;
+  IF EXISTS (SELECT 1 FROM public.campanas_publicitarias c WHERE c.solicitud_campana_id IS NOT NULL GROUP BY c.solicitud_campana_id HAVING count(*) > 1) THEN
+    bad := bad||'hay solicitudes con mas de una publicacion; ';
+  END IF;
+  IF has_function_privilege('anon', 'public.aprobar_solicitud_campana(uuid,text)', 'EXECUTE') THEN bad := bad||'anon tiene EXECUTE; '; END IF;
+  PERFORM set_config('probe.p974', CASE WHEN bad = ''
+    THEN 'OK (1 sobrecarga, firma y RETURNS integer; DEFINER + search_path=''''; EXECUTE solo authenticated/service_role/postgres; indice unico parcial valido; 0 duplicadas)'
+    ELSE 'ROJO ('||left(bad, 900)||')' END, false);
+EXCEPTION WHEN OTHERS THEN
+  PERFORM set_config('probe.p974', 'FALLO ('||SQLSTATE||' '||SQLERRM||')', false);
+END $$;
+
+-- ---------------- P975-P982 pago de campana por RPC: el precio lo fija el servidor (359) ----------------
+-- Fixture propio, sembrado como postgres DENTRO de una subtransaccion que se descarta (P0999): solicitudes de campana
+-- y objetos de comprobante en storage. Actor real: la cuenta de proveedor mas antigua (created_at anterior a esta
+-- transaccion, activa, en auth.users, sin perfil ni paciente) con rol admin/editor/finanzas/marketing/supervisor, de una
+-- empresa activa con pais y con la capacidad 'publicidad' (el trigger de solicitudes_campana la exige cuando escribe el
+-- proveedor). Plan: el activo de mayor precio para el pais de esa empresa. Oraculo de precio leido por el probe de
+-- planes_publicidad_config (activa del pais) y planes_publicidad (si no hay config), > 0. "Otra empresa": la empresa
+-- activa mas antigua distinta, con una cuenta. Sin alguno -> FALLO (sin fixture). Despues del descarte se verifica que
+-- solicitudes, pagos y objetos de comprobantes vuelven a sus conteos de antes.
+--   P975 solicitar_pago_campana sobre su solicitud en borrador -> 1 pago pendiente con monto/moneda = oraculo;
+--        solicitud enviada con monto_pagado = oraculo
+--   P976 segunda llamada -> CA012, sigue 1 pago
+--   P977 solicitud de otra empresa -> CA009, sin pago y la solicitud sigue en borrador
+--   P978 solicitud propia en estado enviada -> CA011, sin pago
+--   P979 comprobante con prefijo de otra empresa (el objeto existe) -> CA013, sin pago, sigue en borrador
+--   P980 INSERT directo de un pago tipo 'campana' pendiente como el proveedor. PENDIENTE MIG 360: si la policy ya tiene
+--        AND tipo <> 'campana' (catalogo) -> 42501; si no -> tiene que SEGUIR entrando (el checkout actual no se rompio)
+--        y el veredicto sale 'PENDIENTE mig 360 (...)', nunca OK
+--   P981 cotizar_campana sobre la solicitud de P975 -> mismo monto y moneda que el pago creado
+--   P982 catalogo: firmas, DEFINER + search_path '', ACL, helper sin EXECUTE para authenticated, policy con el termino
+DO $$
+DECLARE
+  v_emp uuid; v_cta uuid; v_pais uuid; v_plan int; o_monto numeric; o_moneda text; v_otra uuid; v_cta_otra uuid;
+  s1 uuid; s2 uuid; s3 uuid; s4 uuid; pago uuid; ret uuid; st text; n int; c_monto numeric; c_moneda text;
+  pre text; post text; r_rest text := 'OK';
+  r975 text; r976 text; r977 text; r978 text; r979 text; r980 text; r981 text; v_360 boolean;
+BEGIN
+  IF current_user <> 'postgres' THEN RAISE EXCEPTION 'fixture roto: P975 corre como %', current_user; END IF;
+  v_360 := COALESCE((SELECT position('(tipo <> ''campana''::text)' IN pg_get_expr(pl.polwithcheck, pl.polrelid)) > 0
+                       FROM pg_policy pl WHERE pl.polrelid = 'public.pagos_proveedor'::regclass AND pl.polname = 'Proveedor crea pagos'), false);
+  SELECT e.id, c.id, e.pais_id INTO v_emp, v_cta, v_pais
+    FROM public.cuentas_proveedor c JOIN public.empresas_proveedoras e ON e.id = c.empresa_id
+   WHERE c.activo AND e.estado = 'activa' AND e.pais_id IS NOT NULL
+     AND c.rol_en_empresa IN ('admin','editor','finanzas','marketing','supervisor')
+     AND COALESCE(c.created_at, '-infinity') < now() AND EXISTS (SELECT 1 FROM auth.users u WHERE u.id = c.id)
+     AND NOT EXISTS (SELECT 1 FROM public.perfiles pf WHERE pf.id = c.id) AND NOT EXISTS (SELECT 1 FROM public.pacientes pa WHERE pa.auth_user_id = c.id)
+     AND EXISTS (SELECT 1 FROM public.empresa_capacidades ec WHERE ec.empresa_id = e.id AND ec.capacidad_codigo = 'publicidad' AND ec.activa AND (ec.hasta IS NULL OR ec.hasta > now()))
+   ORDER BY COALESCE(c.created_at, '-infinity'), c.id LIMIT 1;
+  SELECT x.id, x.monto, x.moneda INTO v_plan, o_monto, o_moneda FROM (
+    SELECT pp.id, COALESCE(cf.precio_local, pp.precio) AS monto, COALESCE(cf.moneda_local, pp.moneda) AS moneda
+      FROM public.planes_publicidad pp
+      LEFT JOIN public.planes_publicidad_config cf ON cf.plan_publicidad_id = pp.id AND cf.pais_id = v_pais AND cf.activo
+     WHERE pp.activo) x
+   WHERE x.monto > 0 AND x.moneda IS NOT NULL ORDER BY x.monto DESC, x.id LIMIT 1;
+  SELECT e.id, c.id INTO v_otra, v_cta_otra
+    FROM public.empresas_proveedoras e JOIN public.cuentas_proveedor c ON c.empresa_id = e.id
+   WHERE e.estado = 'activa' AND e.id <> v_emp AND e.pais_id IS NOT NULL AND COALESCE(e.created_at, '-infinity') < now()
+   ORDER BY COALESCE(e.created_at, '-infinity'), e.id, c.id LIMIT 1;
+  IF v_emp IS NULL OR v_plan IS NULL OR v_otra IS NULL THEN
+    RAISE EXCEPTION 'sin fixture: P975 sin proveedor real con capacidad publicidad (%), plan con precio > 0 (%) u otra empresa (%)', v_emp, v_plan, v_otra;
+  END IF;
+  pre := (SELECT count(*) FROM public.solicitudes_campana)||'/'||(SELECT count(*) FROM public.pagos_proveedor)||'/'||(SELECT count(*) FROM storage.objects WHERE bucket_id = 'comprobantes');
+
+  BEGIN
+    INSERT INTO public.solicitudes_campana (empresa_id, cuenta_proveedor_id, titulo, tipo, fecha_inicio, fecha_fin, estado, pais_id, plan_publicidad_id)
+      VALUES (v_emp, v_cta, 'P975 borrador', 'banner', CURRENT_DATE, CURRENT_DATE + 30, 'borrador', v_pais, v_plan) RETURNING id INTO s1;
+    INSERT INTO public.solicitudes_campana (empresa_id, cuenta_proveedor_id, titulo, tipo, fecha_inicio, fecha_fin, estado, pais_id, plan_publicidad_id)
+      VALUES (v_otra, v_cta_otra, 'P977 otra empresa', 'banner', CURRENT_DATE, CURRENT_DATE + 30, 'borrador', v_pais, v_plan) RETURNING id INTO s2;
+    INSERT INTO public.solicitudes_campana (empresa_id, cuenta_proveedor_id, titulo, tipo, fecha_inicio, fecha_fin, estado, pais_id, plan_publicidad_id)
+      VALUES (v_emp, v_cta, 'P978 enviada', 'banner', CURRENT_DATE, CURRENT_DATE + 30, 'enviada', v_pais, v_plan) RETURNING id INTO s3;
+    INSERT INTO public.solicitudes_campana (empresa_id, cuenta_proveedor_id, titulo, tipo, fecha_inicio, fecha_fin, estado, pais_id, plan_publicidad_id)
+      VALUES (v_emp, v_cta, 'P979 comprobante ajeno', 'banner', CURRENT_DATE, CURRENT_DATE + 30, 'borrador', v_pais, v_plan) RETURNING id INTO s4;
+    INSERT INTO storage.objects (bucket_id, name, owner) VALUES
+      ('comprobantes', v_emp::text||'/p975-a.pdf', v_cta), ('comprobantes', v_emp::text||'/p975-b.pdf', v_cta),
+      ('comprobantes', v_otra::text||'/p979-ajeno.pdf', v_cta);
+
+    PERFORM set_config('request.jwt.claims', json_build_object('sub', v_cta::text, 'role', 'authenticated')::text, true);
+
+    -- P975
+    st := 'OK'; ret := NULL;
+    BEGIN
+      PERFORM set_config('role', 'authenticated', true);
+      ret := public.solicitar_pago_campana(s1, v_emp::text||'/p975-a.pdf');
+      PERFORM set_config('role', 'none', true);
+    EXCEPTION WHEN OTHERS THEN st := SQLSTATE||' '||SQLERRM; PERFORM set_config('role', 'none', true); END;
+    pago := ret;
+    r975 := CASE WHEN st = 'OK' AND ret IS NOT NULL
+                  AND (SELECT g.monto = o_monto AND g.moneda = o_moneda AND g.estado = 'pendiente' AND g.tipo = 'campana' AND g.empresa_id = v_emp
+                         AND g.referencia_id = s1::text AND g.comprobante_url = v_emp::text||'/p975-a.pdf' FROM public.pagos_proveedor g WHERE g.id = ret)
+                  AND (SELECT s.estado = 'enviada' AND s.monto_pagado = o_monto FROM public.solicitudes_campana s WHERE s.id = s1)
+             THEN 'OK' ELSE 'ROJO' END
+           ||' (proveedor '||v_cta||' paga su solicitud en borrador, plan '||v_plan||' en el pais '||v_pais||': '||st
+           ||', pago '||COALESCE((SELECT g.monto||' '||g.moneda||' '||g.estado FROM public.pagos_proveedor g WHERE g.id = ret), '-')
+           ||' (oraculo '||o_monto||' '||o_moneda||'), solicitud '||(SELECT s.estado||'/'||COALESCE(s.monto_pagado::text, '-') FROM public.solicitudes_campana s WHERE s.id = s1)||')';
+
+    -- P976
+    st := 'OK';
+    BEGIN
+      PERFORM set_config('role', 'authenticated', true);
+      ret := public.solicitar_pago_campana(s1, v_emp::text||'/p975-b.pdf');
+      PERFORM set_config('role', 'none', true);
+    EXCEPTION WHEN OTHERS THEN st := SQLSTATE; PERFORM set_config('role', 'none', true); END;
+    n := (SELECT count(*) FROM public.pagos_proveedor g WHERE g.tipo = 'campana' AND g.referencia_id = s1::text);
+    r976 := CASE WHEN st = 'CA012' AND n = 1 THEN 'OK' ELSE 'ROJO' END||' (segunda llamada sobre la misma solicitud: '||st||', pagos de la solicitud '||n||')';
+
+    -- P977
+    st := 'OK';
+    BEGIN
+      PERFORM set_config('role', 'authenticated', true);
+      ret := public.solicitar_pago_campana(s2, v_emp::text||'/p975-b.pdf');
+      PERFORM set_config('role', 'none', true);
+    EXCEPTION WHEN OTHERS THEN st := SQLSTATE; PERFORM set_config('role', 'none', true); END;
+    n := (SELECT count(*) FROM public.pagos_proveedor g WHERE g.tipo = 'campana' AND g.referencia_id = s2::text);
+    r977 := CASE WHEN st = 'CA009' AND n = 0 AND (SELECT s.estado FROM public.solicitudes_campana s WHERE s.id = s2) = 'borrador' THEN 'OK' ELSE 'ROJO' END
+           ||' (solicitud de otra empresa '||v_otra||': '||st||', pagos '||n||', solicitud '||(SELECT s.estado FROM public.solicitudes_campana s WHERE s.id = s2)||')';
+
+    -- P978
+    st := 'OK';
+    BEGIN
+      PERFORM set_config('role', 'authenticated', true);
+      ret := public.solicitar_pago_campana(s3, v_emp::text||'/p975-b.pdf');
+      PERFORM set_config('role', 'none', true);
+    EXCEPTION WHEN OTHERS THEN st := SQLSTATE; PERFORM set_config('role', 'none', true); END;
+    n := (SELECT count(*) FROM public.pagos_proveedor g WHERE g.tipo = 'campana' AND g.referencia_id = s3::text);
+    r978 := CASE WHEN st = 'CA011' AND n = 0 THEN 'OK' ELSE 'ROJO' END||' (solicitud propia en estado enviada: '||st||', pagos '||n||')';
+
+    -- P979
+    st := 'OK';
+    BEGIN
+      PERFORM set_config('role', 'authenticated', true);
+      ret := public.solicitar_pago_campana(s4, v_otra::text||'/p979-ajeno.pdf');
+      PERFORM set_config('role', 'none', true);
+    EXCEPTION WHEN OTHERS THEN st := SQLSTATE; PERFORM set_config('role', 'none', true); END;
+    n := (SELECT count(*) FROM public.pagos_proveedor g WHERE g.tipo = 'campana' AND g.referencia_id = s4::text);
+    r979 := CASE WHEN st = 'CA013' AND n = 0 AND (SELECT s.estado FROM public.solicitudes_campana s WHERE s.id = s4) = 'borrador' THEN 'OK' ELSE 'ROJO' END
+           ||' (comprobante con prefijo de otra empresa, objeto existente: '||st||', pagos '||n||', solicitud '||(SELECT s.estado FROM public.solicitudes_campana s WHERE s.id = s4)||')';
+
+    -- P980
+    st := 'OK'; n := NULL;
+    BEGIN
+      PERFORM set_config('role', 'authenticated', true);
+      INSERT INTO public.pagos_proveedor (empresa_id, tipo, referencia_id, monto, moneda, metodo_pago, estado)
+        VALUES (v_emp, 'campana', s4::text, 1, o_moneda, 'transferencia', 'pendiente');
+      GET DIAGNOSTICS n = ROW_COUNT;
+      PERFORM set_config('role', 'none', true);
+    EXCEPTION WHEN OTHERS THEN st := SQLSTATE; PERFORM set_config('role', 'none', true); END;
+    IF v_360 THEN
+      r980 := CASE WHEN st = '42501' THEN 'OK' ELSE 'ROJO' END||' (360: INSERT directo de un pago de campana pendiente por 1 '||o_moneda||' como el proveedor: '
+             ||CASE WHEN st = 'OK' THEN 'entro ('||COALESCE(n::text, '-')||' fila)' ELSE st END||')';
+    ELSE
+      r980 := CASE WHEN st = 'OK' AND n = 1 THEN 'PENDIENTE mig 360' ELSE 'ROJO' END||' (la policy todavia no excluye campana; INSERT directo de un pago de campana como el proveedor: '
+             ||CASE WHEN st = 'OK' THEN 'entro ('||COALESCE(n::text, '-')||' fila), el checkout actual sigue andando' ELSE st||' (el checkout actual se rompio)' END||')';
+    END IF;
+
+    -- P981
+    st := 'OK'; c_monto := NULL; c_moneda := NULL;
+    BEGIN
+      PERFORM set_config('role', 'authenticated', true);
+      SELECT x.monto, x.moneda INTO c_monto, c_moneda FROM public.cotizar_campana(s1) x;
+      PERFORM set_config('role', 'none', true);
+    EXCEPTION WHEN OTHERS THEN st := SQLSTATE; PERFORM set_config('role', 'none', true); END;
+    r981 := CASE WHEN st = 'OK' AND pago IS NOT NULL
+                  AND (SELECT g.monto = c_monto AND g.moneda = c_moneda FROM public.pagos_proveedor g WHERE g.id = pago) THEN 'OK' ELSE 'ROJO' END
+           ||' (cotizar_campana de la solicitud de P975: '||st||', '||COALESCE(c_monto::text, '-')||' '||COALESCE(c_moneda, '-')
+           ||' vs pago '||COALESCE((SELECT g.monto||' '||g.moneda FROM public.pagos_proveedor g WHERE g.id = pago), '-')||')';
+
+    PERFORM set_config('request.jwt.claims', '', true);
+    RAISE EXCEPTION 'P975 descarte' USING ERRCODE = 'P0999';
+  EXCEPTION WHEN SQLSTATE 'P0999' THEN NULL;
+  END;
+  PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
+  post := (SELECT count(*) FROM public.solicitudes_campana)||'/'||(SELECT count(*) FROM public.pagos_proveedor)||'/'||(SELECT count(*) FROM storage.objects WHERE bucket_id = 'comprobantes');
+  IF post IS DISTINCT FROM pre THEN r_rest := 'conteos solicitudes/pagos/comprobantes '||pre||' -> '||post; END IF;
+  IF r_rest <> 'OK' THEN
+    r975 := 'ROJO (restauracion: '||r_rest||') '||r975; r976 := 'ROJO (restauracion) '||r976; r977 := 'ROJO (restauracion) '||r977;
+    r978 := 'ROJO (restauracion) '||r978; r979 := 'ROJO (restauracion) '||r979; r980 := 'ROJO (restauracion) '||r980; r981 := 'ROJO (restauracion) '||r981;
+  END IF;
+  PERFORM set_config('probe.p975', COALESCE(r975, 'FALLO (sin veredicto)'), false);
+  PERFORM set_config('probe.p976', COALESCE(r976, 'FALLO (sin veredicto)'), false);
+  PERFORM set_config('probe.p977', COALESCE(r977, 'FALLO (sin veredicto)'), false);
+  PERFORM set_config('probe.p978', COALESCE(r978, 'FALLO (sin veredicto)'), false);
+  PERFORM set_config('probe.p979', COALESCE(r979, 'FALLO (sin veredicto)'), false);
+  PERFORM set_config('probe.p980', COALESCE(r980, 'FALLO (sin veredicto)'), false);
+  PERFORM set_config('probe.p981', COALESCE(r981, 'FALLO (sin veredicto)'), false);
+EXCEPTION WHEN OTHERS THEN
+  PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
+  PERFORM set_config('probe.p975', 'FALLO ('||SQLSTATE||' '||SQLERRM||')', false);
+  PERFORM set_config('probe.p976', 'FALLO ('||SQLSTATE||' '||SQLERRM||')', false);
+  PERFORM set_config('probe.p977', 'FALLO ('||SQLSTATE||' '||SQLERRM||')', false);
+  PERFORM set_config('probe.p978', 'FALLO ('||SQLSTATE||' '||SQLERRM||')', false);
+  PERFORM set_config('probe.p979', 'FALLO ('||SQLSTATE||' '||SQLERRM||')', false);
+  PERFORM set_config('probe.p980', 'FALLO ('||SQLSTATE||' '||SQLERRM||')', false);
+  PERFORM set_config('probe.p981', 'FALLO ('||SQLSTATE||' '||SQLERRM||')', false);
+END $$;
+SELECT set_config('role', 'none', true);
+
+-- P982 catalogo de la 359: las 3 funciones con su firma, DEFINER + search_path '' y ACL (las dos publicas solo para
+-- authenticated/service_role/postgres; el helper de private solo para postgres). La policy es de la 360 (P939/P980).
+DO $$
+DECLARE bad text := ''; v text;
+BEGIN
+  v := (SELECT string_agg(p.oid::regprocedure::text||'('||pg_get_function_arguments(p.oid)||') -> '||pg_get_function_result(p.oid)||' | definer='||p.prosecdef::text
+          ||' sp='||COALESCE(array_to_string(p.proconfig, ','), '-')||' | '||COALESCE(p.proacl::text, 'default'), ' ;; ' ORDER BY p.oid::regprocedure::text)
+          FROM pg_proc p
+         WHERE p.oid IN (to_regprocedure('private.precio_plan_publicidad(uuid,integer)'), to_regprocedure('public.cotizar_campana(uuid)'), to_regprocedure('public.solicitar_pago_campana(uuid,text)')));
+  IF v IS DISTINCT FROM 'cotizar_campana(uuid)(p_solicitud_id uuid) -> TABLE(monto numeric, moneda text) | definer=true sp=search_path="" | {postgres=X/postgres,authenticated=X/postgres,service_role=X/postgres}'
+                     ||' ;; private.precio_plan_publicidad(uuid,integer)(p_pais_id uuid, p_plan_id integer) -> TABLE(monto numeric, moneda text) | definer=true sp=search_path="" | {postgres=X/postgres}'
+                     ||' ;; solicitar_pago_campana(uuid,text)(p_solicitud_id uuid, p_comprobante_path text) -> uuid | definer=true sp=search_path="" | {postgres=X/postgres,authenticated=X/postgres,service_role=X/postgres}' THEN
+    bad := bad||'catalogo: '||COALESCE(v, 'NO EXISTEN')||'; ';
+  END IF;
+  IF to_regprocedure('private.precio_plan_publicidad(uuid,integer)') IS NOT NULL
+     AND has_function_privilege('authenticated', 'private.precio_plan_publicidad(uuid,integer)', 'EXECUTE') THEN bad := bad||'authenticated ejecuta el helper; '; END IF;
+  PERFORM set_config('probe.p982', CASE WHEN bad = ''
+    THEN 'OK (3 funciones con su firma; DEFINER + search_path=''''; RPCs solo authenticated/service_role/postgres; helper solo postgres)'
+    ELSE 'ROJO ('||left(bad, 900)||')' END, false);
+EXCEPTION WHEN OTHERS THEN
+  PERFORM set_config('probe.p982', 'FALLO ('||SQLSTATE||' '||SQLERRM||')', false);
+END $$;
+
+-- ---------------- P983-P989 cierre de campanas en el servidor (360) ----------------
+-- Fixture propio, sembrado como postgres DENTRO de una subtransaccion que se descarta (P0999). Actores reales (created_at
+-- anterior a esta transaccion, activos, en auth.users, de identidad unica; el mas antiguo por created_at y despues por
+-- id): el proveedor GESTOR (rol admin/editor de una empresa activa con pais, que opera en ese pais y tiene la capacidad
+-- 'publicidad', que el trigger de solicitudes_campana exige cuando escribe el proveedor), el admin_pais de GT y el
+-- super_admin. "Otra empresa": la empresa activa mas antigua distinta, con una cuenta. Sin alguno -> FALLO (sin
+-- fixture). Cada caso corre como su actor y mide filas afectadas (n=…) o el SQLSTATE; los SELECT, que el conteo sea > 0
+-- (oraculo contado como postgres, > 0). Despues del descarte se verifica que solicitudes y publicaciones vuelven a sus
+-- conteos de antes.
+--   P983 proveedor gestor: INSERT de solicitud 'enviada' -> 42501; 'borrador' -> 1 fila
+--   P984 proveedor gestor: UPDATE de su solicitud 'enviada' -> 0 filas; de su 'borrador' -> 1 fila; borrador -> 'enviada' -> 42501
+--   P985 proveedor gestor: DELETE de su borrador -> 1 fila; de su 'enviada' -> 0 filas; de un borrador de otra empresa -> 0 filas
+--   P986 admin_pais de GT: UPDATE y DELETE de una publicacion de GT -> 0 filas; INSERT de publicacion -> 42501; SELECT de GT > 0
+--   P987 admin_pais de GT: UPDATE de una solicitud de GT -> 0 filas; SELECT de GT > 0
+--   P988 super_admin: UPDATE de activa en una publicacion -> 1 fila; DELETE de una publicacion -> 1 fila; UPDATE a
+--        'rechazada' de una solicitud enviada -> 1 fila (mide igual con y sin la 360)
+-- PENDIENTE MIG 360 (patron de P980): si la 360 no esta viva (no existe la policy "Proveedor elimina sus campañas
+-- borrador", catalogo), P983-P987 y P989 salen 'PENDIENTE mig 360 (lo medido)', nunca OK; P988 se juzga igual.
+DO $$
+DECLARE
+  v_gt uuid := 'cbbbbe6d-59fe-4cf2-91ee-3e31ba1d5909';
+  v_emp uuid; v_prov uuid; v_pais uuid; v_otra uuid; v_cta_otra uuid; v_ap uuid; v_sa uuid;
+  s_env uuid; s_bor uuid; s_bor2 uuid; s_bor_del uuid; s_otra uuid; s_gt_ap uuid; s_gt_sa uuid;
+  pub_ap int; pub_sa_upd int; pub_sa_del int;
+  pre text; post text; r_rest text := 'OK'; r record; st text; n int; o int;
+  res text[] := ARRAY['','','','','','']; bad text[] := ARRAY['','','','','','']; v_360 boolean;
+BEGIN
+  IF current_user <> 'postgres' THEN RAISE EXCEPTION 'fixture roto: P983 corre como %', current_user; END IF;
+  v_360 := EXISTS (SELECT 1 FROM pg_policy pl WHERE pl.polrelid = 'public.solicitudes_campana'::regclass AND pl.polname = 'Proveedor elimina sus campañas borrador');
+  SELECT e.id, c.id, e.pais_id INTO v_emp, v_prov, v_pais
+    FROM public.cuentas_proveedor c JOIN public.empresas_proveedoras e ON e.id = c.empresa_id
+   WHERE c.activo AND e.estado = 'activa' AND e.pais_id IS NOT NULL AND c.rol_en_empresa IN ('admin','editor')
+     AND COALESCE(c.created_at, '-infinity') < now() AND EXISTS (SELECT 1 FROM auth.users u WHERE u.id = c.id)
+     AND NOT EXISTS (SELECT 1 FROM public.perfiles pf WHERE pf.id = c.id) AND NOT EXISTS (SELECT 1 FROM public.pacientes pa WHERE pa.auth_user_id = c.id)
+     AND private.empresa_opera_en_pais(e.id, e.pais_id)
+     AND EXISTS (SELECT 1 FROM public.empresa_capacidades ec WHERE ec.empresa_id = e.id AND ec.capacidad_codigo = 'publicidad' AND ec.activa AND (ec.hasta IS NULL OR ec.hasta > now()))
+   ORDER BY COALESCE(c.created_at, '-infinity'), c.id LIMIT 1;
+  SELECT e.id, c.id INTO v_otra, v_cta_otra
+    FROM public.empresas_proveedoras e JOIN public.cuentas_proveedor c ON c.empresa_id = e.id
+   WHERE e.estado = 'activa' AND e.id <> v_emp AND e.pais_id IS NOT NULL AND COALESCE(e.created_at, '-infinity') < now()
+   ORDER BY COALESCE(e.created_at, '-infinity'), e.id, c.id LIMIT 1;
+  v_ap := (SELECT p.id FROM public.perfiles p WHERE p.rol = 'admin_pais' AND p.pais_id = v_gt AND p.activo AND COALESCE(p.created_at, '-infinity') < now()
+             AND EXISTS (SELECT 1 FROM auth.users u WHERE u.id = p.id)
+             AND NOT EXISTS (SELECT 1 FROM public.cuentas_proveedor cp WHERE cp.id = p.id) AND NOT EXISTS (SELECT 1 FROM public.pacientes pa WHERE pa.auth_user_id = p.id)
+           ORDER BY COALESCE(p.created_at, '-infinity'), p.id LIMIT 1);
+  v_sa := (SELECT p.id FROM public.perfiles p WHERE p.rol = 'super_admin' AND p.activo AND COALESCE(p.created_at, '-infinity') < now()
+             AND EXISTS (SELECT 1 FROM auth.users u WHERE u.id = p.id)
+             AND NOT EXISTS (SELECT 1 FROM public.cuentas_proveedor cp WHERE cp.id = p.id) AND NOT EXISTS (SELECT 1 FROM public.pacientes pa WHERE pa.auth_user_id = p.id)
+           ORDER BY COALESCE(p.created_at, '-infinity'), p.id LIMIT 1);
+  IF v_emp IS NULL OR v_otra IS NULL OR v_ap IS NULL OR v_sa IS NULL THEN
+    RAISE EXCEPTION 'sin fixture: P983 sin proveedor gestor real con capacidad publicidad (%), otra empresa (%), admin_pais de GT (%) o super_admin (%)', v_emp, v_otra, v_ap, v_sa;
+  END IF;
+  pre := (SELECT count(*) FROM public.solicitudes_campana)||'/'||(SELECT count(*) FROM public.campanas_publicitarias);
+
+  BEGIN
+    INSERT INTO public.solicitudes_campana (empresa_id, cuenta_proveedor_id, titulo, fecha_inicio, fecha_fin, estado, pais_id)
+      VALUES (v_emp, v_prov, 'P984 enviada', CURRENT_DATE, CURRENT_DATE + 30, 'enviada', v_pais) RETURNING id INTO s_env;
+    INSERT INTO public.solicitudes_campana (empresa_id, cuenta_proveedor_id, titulo, fecha_inicio, fecha_fin, estado, pais_id)
+      VALUES (v_emp, v_prov, 'P984 borrador', CURRENT_DATE, CURRENT_DATE + 30, 'borrador', v_pais) RETURNING id INTO s_bor;
+    INSERT INTO public.solicitudes_campana (empresa_id, cuenta_proveedor_id, titulo, fecha_inicio, fecha_fin, estado, pais_id)
+      VALUES (v_emp, v_prov, 'P984 borrador a enviada', CURRENT_DATE, CURRENT_DATE + 30, 'borrador', v_pais) RETURNING id INTO s_bor2;
+    INSERT INTO public.solicitudes_campana (empresa_id, cuenta_proveedor_id, titulo, fecha_inicio, fecha_fin, estado, pais_id)
+      VALUES (v_emp, v_prov, 'P985 borrador a borrar', CURRENT_DATE, CURRENT_DATE + 30, 'borrador', v_pais) RETURNING id INTO s_bor_del;
+    INSERT INTO public.solicitudes_campana (empresa_id, cuenta_proveedor_id, titulo, fecha_inicio, fecha_fin, estado, pais_id)
+      VALUES (v_otra, v_cta_otra, 'P985 borrador de otra empresa', CURRENT_DATE, CURRENT_DATE + 30, 'borrador', v_pais) RETURNING id INTO s_otra;
+    INSERT INTO public.solicitudes_campana (empresa_id, cuenta_proveedor_id, titulo, fecha_inicio, fecha_fin, estado, pais_id)
+      VALUES (v_emp, v_prov, 'P987 GT', CURRENT_DATE, CURRENT_DATE + 30, 'enviada', v_gt) RETURNING id INTO s_gt_ap;
+    INSERT INTO public.solicitudes_campana (empresa_id, cuenta_proveedor_id, titulo, fecha_inicio, fecha_fin, estado, pais_id)
+      VALUES (v_emp, v_prov, 'P988 GT a rechazar', CURRENT_DATE, CURRENT_DATE + 30, 'enviada', v_gt) RETURNING id INTO s_gt_sa;
+    INSERT INTO public.campanas_publicitarias (titulo, fecha_inicio, fecha_fin, activa, pais_id) VALUES ('P986 GT', CURRENT_DATE, CURRENT_DATE + 30, true, v_gt) RETURNING id INTO pub_ap;
+    INSERT INTO public.campanas_publicitarias (titulo, fecha_inicio, fecha_fin, activa, pais_id) VALUES ('P988 pausar', CURRENT_DATE, CURRENT_DATE + 30, true, v_gt) RETURNING id INTO pub_sa_upd;
+    INSERT INTO public.campanas_publicitarias (titulo, fecha_inicio, fecha_fin, activa, pais_id) VALUES ('P988 borrar', CURRENT_DATE, CURRENT_DATE + 30, true, v_gt) RETURNING id INTO pub_sa_del;
+
+    FOR r IN SELECT * FROM (VALUES
+      (1, 'INSERT enviada', v_prov, 'dml', '42501', format('INSERT INTO public.solicitudes_campana (empresa_id, cuenta_proveedor_id, titulo, fecha_inicio, fecha_fin, estado, pais_id) VALUES (%L, %L, %L, CURRENT_DATE, CURRENT_DATE + 30, %L, %L)', v_emp, v_prov, 'P983 enviada', 'enviada', v_pais)),
+      (1, 'INSERT borrador', v_prov, 'dml', 'n=1', format('INSERT INTO public.solicitudes_campana (empresa_id, cuenta_proveedor_id, titulo, fecha_inicio, fecha_fin, estado, pais_id) VALUES (%L, %L, %L, CURRENT_DATE, CURRENT_DATE + 30, %L, %L)', v_emp, v_prov, 'P983 borrador', 'borrador', v_pais)),
+      (2, 'UPDATE de su enviada', v_prov, 'dml', 'n=0', format('UPDATE public.solicitudes_campana SET titulo = titulo || %L WHERE id = %L', ' (p984)', s_env)),
+      (2, 'UPDATE de su borrador', v_prov, 'dml', 'n=1', format('UPDATE public.solicitudes_campana SET titulo = titulo || %L WHERE id = %L', ' (p984)', s_bor)),
+      (2, 'UPDATE borrador a enviada', v_prov, 'dml', '42501', format('UPDATE public.solicitudes_campana SET estado = %L WHERE id = %L', 'enviada', s_bor2)),
+      (3, 'DELETE de su borrador', v_prov, 'dml', 'n=1', format('DELETE FROM public.solicitudes_campana WHERE id = %L', s_bor_del)),
+      (3, 'DELETE de su enviada', v_prov, 'dml', 'n=0', format('DELETE FROM public.solicitudes_campana WHERE id = %L', s_env)),
+      (3, 'DELETE de un borrador de otra empresa', v_prov, 'dml', 'n=0', format('DELETE FROM public.solicitudes_campana WHERE id = %L', s_otra)),
+      (4, 'UPDATE de una publicacion de GT', v_ap, 'dml', 'n=0', format('UPDATE public.campanas_publicitarias SET activa = false WHERE id = %s', pub_ap)),
+      (4, 'DELETE de una publicacion de GT', v_ap, 'dml', 'n=0', format('DELETE FROM public.campanas_publicitarias WHERE id = %s', pub_ap)),
+      (4, 'INSERT de publicacion en GT', v_ap, 'dml', '42501', format('INSERT INTO public.campanas_publicitarias (titulo, fecha_inicio, fecha_fin, pais_id) VALUES (%L, CURRENT_DATE, CURRENT_DATE + 1, %L)', 'P986 admin_pais', v_gt)),
+      (4, 'SELECT de publicaciones de GT', v_ap, 'count', '>0', format('SELECT count(*) FROM public.campanas_publicitarias WHERE pais_id = %L', v_gt)),
+      (5, 'UPDATE de una solicitud de GT', v_ap, 'dml', 'n=0', format('UPDATE public.solicitudes_campana SET titulo = titulo || %L WHERE id = %L', ' (p987)', s_gt_ap)),
+      (5, 'SELECT de solicitudes de GT', v_ap, 'count', '>0', format('SELECT count(*) FROM public.solicitudes_campana WHERE pais_id = %L', v_gt)),
+      (6, 'UPDATE de activa en una publicacion', v_sa, 'dml', 'n=1', format('UPDATE public.campanas_publicitarias SET activa = NOT activa WHERE id = %s', pub_sa_upd)),
+      (6, 'DELETE de una publicacion', v_sa, 'dml', 'n=1', format('DELETE FROM public.campanas_publicitarias WHERE id = %s', pub_sa_del)),
+      (6, 'UPDATE a rechazada de una solicitud enviada', v_sa, 'dml', 'n=1', format('UPDATE public.solicitudes_campana SET estado = %L WHERE id = %L', 'rechazada', s_gt_sa))
+    ) t(g, etiqueta, actor, tipo, esperado, sql) LOOP
+      st := NULL; n := NULL;
+      IF r.tipo = 'count' THEN
+        EXECUTE r.sql INTO o;  -- oraculo: el mismo conteo como postgres (sin RLS)
+        IF COALESCE(o, 0) = 0 THEN RAISE EXCEPTION 'sin fixture: oraculo 0 para "%"', r.etiqueta; END IF;
+      END IF;
+      BEGIN
+        PERFORM set_config('request.jwt.claims', json_build_object('sub', r.actor::text, 'role', 'authenticated')::text, true);
+        PERFORM set_config('role', 'authenticated', true);
+        IF r.tipo = 'count' THEN
+          EXECUTE r.sql INTO n;
+          st := CASE WHEN n > 0 THEN '>0' ELSE 'n='||n END;
+        ELSE
+          EXECUTE r.sql;
+          GET DIAGNOSTICS n = ROW_COUNT;
+          st := 'n='||n;
+        END IF;
+        PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
+      EXCEPTION WHEN OTHERS THEN st := SQLSTATE; PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
+      END;
+      res[r.g] := res[r.g]||CASE WHEN res[r.g] = '' THEN '' ELSE '; ' END||r.etiqueta||': '||st
+                  ||CASE WHEN r.tipo = 'count' THEN ' ('||n||' de '||o||')' ELSE '' END||CASE WHEN st = r.esperado THEN '' ELSE ' (esperado '||r.esperado||')' END;
+      IF st IS DISTINCT FROM r.esperado THEN bad[r.g] := bad[r.g]||r.etiqueta||'; '; END IF;
+    END LOOP;
+    RAISE EXCEPTION 'P983 descarte' USING ERRCODE = 'P0999';
+  EXCEPTION WHEN SQLSTATE 'P0999' THEN NULL;
+  END;
+  PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
+  post := (SELECT count(*) FROM public.solicitudes_campana)||'/'||(SELECT count(*) FROM public.campanas_publicitarias);
+  IF post IS DISTINCT FROM pre THEN r_rest := 'conteos solicitudes/publicaciones '||pre||' -> '||post; END IF;
+  FOR n IN 1..6 LOOP
+    PERFORM set_config('probe.p'||(982 + n),
+      CASE WHEN n <> 6 AND NOT v_360 THEN 'PENDIENTE mig 360'
+           WHEN bad[n] = '' AND r_rest = 'OK' AND res[n] <> '' THEN 'OK' ELSE 'ROJO' END
+      ||' ('||CASE n WHEN 1 THEN 'proveedor gestor '||v_prov WHEN 2 THEN 'proveedor gestor '||v_prov WHEN 3 THEN 'proveedor gestor '||v_prov
+                     WHEN 4 THEN 'admin_pais de GT '||v_ap WHEN 5 THEN 'admin_pais de GT '||v_ap ELSE 'super_admin '||v_sa END
+      ||': '||res[n]||CASE WHEN r_rest = 'OK' THEN '' ELSE ' | restauracion: '||r_rest END||')', false);
+  END LOOP;
+EXCEPTION WHEN OTHERS THEN
+  PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
+  PERFORM set_config('probe.p983', 'FALLO ('||SQLSTATE||' '||SQLERRM||')', false);
+  PERFORM set_config('probe.p984', 'FALLO ('||SQLSTATE||' '||SQLERRM||')', false);
+  PERFORM set_config('probe.p985', 'FALLO ('||SQLSTATE||' '||SQLERRM||')', false);
+  PERFORM set_config('probe.p986', 'FALLO ('||SQLSTATE||' '||SQLERRM||')', false);
+  PERFORM set_config('probe.p987', 'FALLO ('||SQLSTATE||' '||SQLERRM||')', false);
+  PERFORM set_config('probe.p988', 'FALLO ('||SQLSTATE||' '||SQLERRM||')', false);
+END $$;
+SELECT set_config('role', 'none', true);
+
+-- P989 catalogo de la 360: texto de las policies tocadas y nuevas (comparacion textual del deparse de los terminos
+-- nuevos), 0 policies ALL en solicitudes_campana y campanas_publicitarias. Sin la 360 (catalogo): 'PENDIENTE mig 360'.
+DO $$
+DECLARE bad text := ''; v text; r record; v_360 boolean;
+BEGIN
+  v_360 := EXISTS (SELECT 1 FROM pg_policy pl WHERE pl.polrelid = 'public.solicitudes_campana'::regclass AND pl.polname = 'Proveedor elimina sus campañas borrador');
+  FOR r IN SELECT * FROM (VALUES
+    ('pagos_proveedor', 'Proveedor crea pagos', 'a', NULL::text, 'AND (tipo <> ''campana''::text))'),
+    ('solicitudes_campana', 'Proveedor crea campañas', 'a', NULL, 'AND (estado = ''borrador''::text) AND COALESCE(private.empresa_opera_en_pais(empresa_id, pais_id), false))'),
+    ('solicitudes_campana', 'Proveedor actualiza sus campañas borrador', 'w', 'AND (estado = ''borrador''::text))', 'AND (estado = ''borrador''::text))'),
+    ('solicitudes_campana', 'Proveedor elimina sus campañas borrador', 'd', '(COALESCE((empresa_id = mi_empresa_proveedor()), false) AND (COALESCE(private.tiene_permiso(''publicidad_gestionar''::text), false) OR (mi_rol_proveedor() = ANY (ARRAY[''admin''::text, ''editor''::text]))) AND (estado = ''borrador''::text))', NULL),
+    ('solicitudes_campana', 'Admin ve solicitudes de su pais', 'r', '((get_auth_user_rol() = ''super_admin''::text) OR ((get_auth_user_rol() = ''admin_pais''::text) AND (pais_id = get_auth_user_pais_id())))', NULL),
+    ('campanas_publicitarias', 'Admin ve campanas de su pais', 'r', '((get_auth_user_rol() = ''super_admin''::text) OR ((get_auth_user_rol() = ''admin_pais''::text) AND (pais_id = get_auth_user_pais_id())))', NULL),
+    ('campanas_publicitarias', 'campanas_superadmin_update', 'w', 'COALESCE(private.tiene_rol(ARRAY[''super_admin''::text]), false)', 'COALESCE(private.tiene_rol(ARRAY[''super_admin''::text]), false)'),
+    ('campanas_publicitarias', 'campanas_superadmin_delete', 'd', 'COALESCE(private.tiene_rol(ARRAY[''super_admin''::text]), false)', NULL)
+  ) t(tab, pol, cmd, q, c) LOOP
+    v := (SELECT pl.polcmd::text||'|'||ARRAY(SELECT pg_get_userbyid(x) FROM unnest(pl.polroles) x)::text||'|'||COALESCE(pg_get_expr(pl.polqual, pl.polrelid), '-')||'|'||COALESCE(pg_get_expr(pl.polwithcheck, pl.polrelid), '-')
+            FROM pg_policy pl WHERE pl.polrelid = ('public.'||r.tab)::regclass AND pl.polname = r.pol);
+    IF v IS NULL THEN bad := bad||r.pol||': no existe; '; CONTINUE; END IF;
+    IF split_part(v, '|', 1) <> r.cmd OR split_part(v, '|', 2) <> '{authenticated}' THEN bad := bad||r.pol||': cmd/roles '||split_part(v, '|', 1)||'/'||split_part(v, '|', 2)||'; '; END IF;
+    IF r.q IS NOT NULL AND (r.q LIKE 'AND %' AND right(split_part(v, '|', 3), length(r.q)) <> r.q OR r.q NOT LIKE 'AND %' AND split_part(v, '|', 3) <> r.q) THEN bad := bad||r.pol||': USING; '; END IF;
+    IF r.c IS NOT NULL AND (r.c LIKE 'AND %' AND position(r.c IN split_part(v, '|', 4)) = 0 OR r.c NOT LIKE 'AND %' AND split_part(v, '|', 4) <> r.c) THEN bad := bad||r.pol||': WITH CHECK; '; END IF;
+  END LOOP;
+  IF EXISTS (SELECT 1 FROM pg_policy pl WHERE pl.polrelid IN ('public.solicitudes_campana'::regclass, 'public.campanas_publicitarias'::regclass) AND pl.polcmd = '*') THEN
+    bad := bad||'quedan policies ALL en solicitudes_campana o campanas_publicitarias; ';
+  END IF;
+  PERFORM set_config('probe.p989', CASE WHEN NOT v_360 THEN 'PENDIENTE mig 360 (catalogo actual: '||left(bad, 600)||')'
+    WHEN bad = ''
+    THEN 'OK (8 policies con el texto esperado: pagos sin campana directa; solicitudes crear/editar/borrar solo borrador; admin de pais solo SELECT en solicitudes y publicaciones; super_admin UPDATE/DELETE de publicaciones; 0 ALL en las 2 tablas)'
+    ELSE 'ROJO ('||left(bad, 900)||')' END, false);
+EXCEPTION WHEN OTHERS THEN
+  PERFORM set_config('probe.p989', 'FALLO ('||SQLSTATE||' '||SQLERRM||')', false);
+END $$;
+
 -- ===== Veredictos como result set =====
 SELECT 'P1_anon_insert_citas'              AS probe, current_setting('probe.p1', true)  AS verdict, 'BLOQUEADO' AS esperado_post_fix
 UNION ALL SELECT 'P2_medico_cancela_ajena_rpc',         current_setting('probe.p2', true),  'BLOQUEADO'
@@ -31920,7 +32508,7 @@ UNION ALL SELECT 'P505_confinamiento_listar',     current_setting('probe.p505', 
 UNION ALL SELECT 'P506_super_admin_ve_ambos',     current_setting('probe.p506', true), 'OK (GT y SV)'
 UNION ALL SELECT 'P507_NEG_sin_perfil_4fn',       current_setting('probe.p507', true), 'BLOQUEADO en las 4 + sin efecto'
 UNION ALL SELECT 'P508_POS_super_admin_4fn',      current_setting('probe.p508', true), 'OK (sin rechazo de autz)'
-UNION ALL SELECT 'P509_POS_admin_pais_4fn',       current_setting('probe.p509', true), 'OK (sin rechazo de autz)'
+UNION ALL SELECT 'P509_POS_admin_pais_4fn',       current_setting('probe.p509', true), 'OK (sin rechazo de autz en 3; aprobar_campana CA001 desde la 358)'
 UNION ALL SELECT 'P510_NEG_cross_pais_4fn',       current_setting('probe.p510', true), 'BLOQUEADO en las 4'
 UNION ALL SELECT 'P511_NEG_sin_identidad_5fn',    current_setting('probe.p511', true), 'BLOQUEADO (candado)'
 UNION ALL SELECT 'P512_POS_super_admin_5fn',      current_setting('probe.p512', true), 'OK (sin rechazo)'
@@ -32397,7 +32985,7 @@ UNION ALL SELECT 'P935_public_a_authenticated_349',   current_setting('probe.p93
 UNION ALL SELECT 'P936_wl_anon_a_authenticated_350',  current_setting('probe.p936', true), 'OK (350: las 17 en {authenticated}; anon sin 42501 y sin filas salvo paises/config; authenticated igual)'
 UNION ALL SELECT 'P937_solicitar_compra_plan_351',   current_setting('probe.p937', true), 'OK (351: pago pendiente con todo del catalogo; 42501 por rol; CP001-CP007 por causa)'
 UNION ALL SELECT 'P938_aprobar_pago_plan_351',       current_setting('probe.p938', true), 'OK (351: 42501 no super; creada / idempotente / sumada; CP017/CP013/CP011 sin escribir)'
-UNION ALL SELECT 'P939_policy_insert_pagos_351',     current_setting('probe.p939', true), 'OK (351: sin autoaprobacion ni plan_visitador directo; campana pendiente sigue)'
+UNION ALL SELECT 'P939_policy_insert_pagos_351',     current_setting('probe.p939', true), 'OK (351: sin autoaprobacion ni plan_visitador directo; plan_laboratorio pendiente sigue; campana directa: entra hasta la 360, 42501 desde la 360)'
 UNION ALL SELECT 'P940_delivery_gates_353',          current_setting('probe.p940', true), 'OK (353: admin/gerente/supervisor pasan el gate; repartidor/cajero/inventario 42501; sin escribir)'
 UNION ALL SELECT 'P941_delivery_lote_atomico_353',   current_setting('probe.p941', true), 'OK (353: una invalida -> ninguna asignada, DE001-DE004/DE007-DE009; tanda valida + 1 notificacion)'
 UNION ALL SELECT 'P942_delivery_asignar_push_353',   current_setting('probe.p942', true), 'OK (353: DE001-DE006; push al nuevo y al anterior; tablero sin PII; asignables por sucursal)'
@@ -32425,6 +33013,29 @@ UNION ALL SELECT 'P963_omi_secretaria_cita_357',    current_setting('probe.p963'
 UNION ALL SELECT 'P964_omi_admin_pais_357',         current_setting('probe.p964', true), 'OK (357: admin_pais de GT obtiene 1 medico en cita de GT, brazo c)'
 UNION ALL SELECT 'P965_omi_super_admin_357',        current_setting('probe.p965', true), 'OK (357: super_admin obtiene todos los ids pedidos)'
 UNION ALL SELECT 'P966_omi_catalogo_357',           current_setting('probe.p966', true), 'OK (357: 1 sobrecarga, firma igual, DEFINER + search_path, ACL sin anon, cuerpo sin perfiles)'
+UNION ALL SELECT 'P967_campana_aprueba_358',         current_setting('probe.p967', true), 'OK (358: 1 publicacion, pago verificado por el actor, peso del plan, solicitud publicada)'
+UNION ALL SELECT 'P968_campana_idempotente_358',     current_setting('probe.p968', true), 'OK (358: segunda llamada, mismo id, 1 publicacion)'
+UNION ALL SELECT 'P969_campana_admin_pais_358',      current_setting('probe.p969', true), 'OK (358: admin_pais CA001, sin efecto)'
+UNION ALL SELECT 'P970_campana_borrador_358',        current_setting('probe.p970', true), 'OK (358: borrador CA003, sin efecto)'
+UNION ALL SELECT 'P971_campana_sin_pago_358',        current_setting('probe.p971', true), 'OK (358: sin pago CA004, sin efecto)'
+UNION ALL SELECT 'P972_campana_pago_rechazado_358',  current_setting('probe.p972', true), 'OK (358: pago rechazado CA006, sin efecto)'
+UNION ALL SELECT 'P973_campana_insert_duplicado_358',  current_setting('probe.p973', true), 'OK (358: 23505 de campanas_publicitarias_solicitud_uniq)'
+UNION ALL SELECT 'P974_campana_catalogo_358',        current_setting('probe.p974', true), 'OK (358: firma, DEFINER + search_path, ACL, indice unico parcial)'
+UNION ALL SELECT 'P975_campana_pago_servidor_359',   current_setting('probe.p975', true), 'OK (359: pago pendiente con monto y moneda del servidor; solicitud enviada con monto_pagado)'
+UNION ALL SELECT 'P976_campana_pago_doble_359',      current_setting('probe.p976', true), 'OK (359: segunda llamada CA012, 1 pago)'
+UNION ALL SELECT 'P977_campana_pago_otra_empresa_359',  current_setting('probe.p977', true), 'OK (359: CA009, sin efecto)'
+UNION ALL SELECT 'P978_campana_pago_no_borrador_359',  current_setting('probe.p978', true), 'OK (359: CA011, sin pago)'
+UNION ALL SELECT 'P979_campana_pago_comprobante_359',  current_setting('probe.p979', true), 'OK (359: comprobante ajeno CA013, sin efecto)'
+UNION ALL SELECT 'P980_campana_pago_insert_directo_359',  current_setting('probe.p980', true), 'PENDIENTE mig 360 (hoy entra) / OK desde la 360 (42501)'
+UNION ALL SELECT 'P981_campana_cotizacion_359',      current_setting('probe.p981', true), 'OK (359: cotizar_campana = monto y moneda del pago)'
+UNION ALL SELECT 'P982_campana_cobro_catalogo_359',  current_setting('probe.p982', true), 'OK (359: firmas, DEFINER + search_path, ACL, helper solo postgres)'
+UNION ALL SELECT 'P983_campana_insert_borrador_360',  current_setting('probe.p983', true), 'PENDIENTE mig 360 / OK (360: INSERT enviada 42501; borrador 1 fila)'
+UNION ALL SELECT 'P984_campana_update_borrador_360',  current_setting('probe.p984', true), 'PENDIENTE mig 360 / OK (360: enviada 0 filas; borrador 1 fila; borrador a enviada 42501)'
+UNION ALL SELECT 'P985_campana_delete_borrador_360',  current_setting('probe.p985', true), 'PENDIENTE mig 360 / OK (360: borrador propio 1 fila; enviada 0; ajeno 0)'
+UNION ALL SELECT 'P986_campana_admin_pais_pub_360',  current_setting('probe.p986', true), 'PENDIENTE mig 360 / OK (360: admin_pais UPDATE/DELETE 0 filas, INSERT 42501, SELECT > 0)'
+UNION ALL SELECT 'P987_campana_admin_pais_sol_360',  current_setting('probe.p987', true), 'PENDIENTE mig 360 / OK (360: admin_pais UPDATE 0 filas, SELECT > 0)'
+UNION ALL SELECT 'P988_campana_super_admin_360',     current_setting('probe.p988', true), 'OK (360: super_admin pausa, borra y rechaza: 1 fila cada uno)'
+UNION ALL SELECT 'P989_campana_policies_catalogo_360',  current_setting('probe.p989', true), 'PENDIENTE mig 360 / OK (360: texto de las 8 policies; 0 ALL en las 2 tablas)'
 -- Las filas FX* son SALUD DE FIXTURE, no probes de seguridad: dicen si la precondicion que una
 -- migracion posterior empezo a exigir se pudo sembrar. Si una sale ROJO, los probes que dependen de
 -- ese fixture reportan N/A (su flag de ready se pierde con el rollback de la subtransaccion) en vez
@@ -32669,7 +33280,7 @@ UNION ALL SELECT 'P000_CENTINELA_veredictos_no_nulos',
        'probe.p866', 'probe.p867', 'probe.p868', 'probe.p869', 'probe.p870', 'probe.p871', 'probe.p872', 'probe.p873', 'probe.p874', 'probe.p875', 'probe.p876', 'probe.p877', 'probe.p878',
        'probe.p879', 'probe.p880', 'probe.p881', 'probe.p882', 'probe.p883', 'probe.p884',
        'probe.p885', 'probe.p886', 'probe.p887', 'probe.p888', 'probe.p889', 'probe.p890', 'probe.p891', 'probe.p892', 'probe.p893', 'probe.p894', 'probe.p895', 'probe.p896', 'probe.p908', 'probe.p909', 'probe.p910', 'probe.p911',
-       'probe.p897', 'probe.p898', 'probe.p899', 'probe.p900', 'probe.p901', 'probe.p902', 'probe.p903', 'probe.p904', 'probe.p905', 'probe.p906', 'probe.p907', 'probe.p912', 'probe.p913', 'probe.p914', 'probe.p915', 'probe.p916', 'probe.p917', 'probe.p918', 'probe.p919', 'probe.p920', 'probe.p921', 'probe.p922', 'probe.p923', 'probe.p924', 'probe.p925', 'probe.p926', 'probe.p927', 'probe.p928', 'probe.p929', 'probe.p930', 'probe.p931', 'probe.p932', 'probe.p933', 'probe.p934', 'probe.p935', 'probe.p936', 'probe.p937', 'probe.p938', 'probe.p939', 'probe.p940', 'probe.p941', 'probe.p942', 'probe.p943', 'probe.p944', 'probe.p945', 'probe.p946', 'probe.p947', 'probe.p948', 'probe.p949', 'probe.p950', 'probe.p951', 'probe.p952', 'probe.p953', 'probe.p954', 'probe.p955', 'probe.p956', 'probe.p957', 'probe.p958', 'probe.p959', 'probe.p960', 'probe.p961', 'probe.p962', 'probe.p963', 'probe.p964', 'probe.p965', 'probe.p966'
+       'probe.p897', 'probe.p898', 'probe.p899', 'probe.p900', 'probe.p901', 'probe.p902', 'probe.p903', 'probe.p904', 'probe.p905', 'probe.p906', 'probe.p907', 'probe.p912', 'probe.p913', 'probe.p914', 'probe.p915', 'probe.p916', 'probe.p917', 'probe.p918', 'probe.p919', 'probe.p920', 'probe.p921', 'probe.p922', 'probe.p923', 'probe.p924', 'probe.p925', 'probe.p926', 'probe.p927', 'probe.p928', 'probe.p929', 'probe.p930', 'probe.p931', 'probe.p932', 'probe.p933', 'probe.p934', 'probe.p935', 'probe.p936', 'probe.p937', 'probe.p938', 'probe.p939', 'probe.p940', 'probe.p941', 'probe.p942', 'probe.p943', 'probe.p944', 'probe.p945', 'probe.p946', 'probe.p947', 'probe.p948', 'probe.p949', 'probe.p950', 'probe.p951', 'probe.p952', 'probe.p953', 'probe.p954', 'probe.p955', 'probe.p956', 'probe.p957', 'probe.p958', 'probe.p959', 'probe.p960', 'probe.p961', 'probe.p962', 'probe.p963', 'probe.p964', 'probe.p965', 'probe.p966', 'probe.p967', 'probe.p968', 'probe.p969', 'probe.p970', 'probe.p971', 'probe.p972', 'probe.p973', 'probe.p974', 'probe.p975', 'probe.p976', 'probe.p977', 'probe.p978', 'probe.p979', 'probe.p980', 'probe.p981', 'probe.p982', 'probe.p983', 'probe.p984', 'probe.p985', 'probe.p986', 'probe.p987', 'probe.p988', 'probe.p989'
              ]) AS n) s),
   'OK (todos los veredictos publicados)';
 

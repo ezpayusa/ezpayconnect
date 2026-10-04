@@ -1,7 +1,8 @@
-import { useState, useEffect, useCallback } from 'react'
+import { useState, useEffect, useCallback, useRef } from 'react'
 import { supabase } from '@/lib/supabase'
 import { openSignedUrl } from '@/lib/signedUrl'
 import { usePaisFiltro } from '@/hooks/usePaisFiltro'
+import { useAdminAuth } from '@/hooks/admin/useAdminAuth'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Card, CardContent } from '@/components/ui/card'
@@ -57,6 +58,40 @@ interface SolicitudConEmpresa {
   plan_publicidad_id: number | null
 }
 
+// Errores de aprobar_solicitud_campana (mig 358). Nunca se muestra el texto crudo de Postgres.
+const MENSAJES_APROBAR_CAMPANA: Record<string, string> = {
+  CA001: 'Solo el superadministrador puede aprobar campañas',
+  CA002: 'La solicitud no existe',
+  CA003: 'La solicitud no está en estado enviada',
+  CA004: 'La campaña no tiene pago registrado',
+  CA005: 'La campaña tiene más de un pago; revisá antes de aprobar',
+  CA006: 'El pago de esta campaña fue rechazado',
+  CA007: 'La campaña no tiene plan asignado',
+  CA008: 'La empresa no opera en el país de la campaña',
+}
+const mensajeErrorAprobarCampana = (code: string | undefined) =>
+  (code && MENSAJES_APROBAR_CAMPANA[code]) || 'No se pudo aprobar la campaña. Intentá de nuevo.'
+
+// Avisos al proveedor después de aprobar: primero el pago, después la campaña. Ninguno de los dos es idempotente (cada
+// llamada inserta otra notificación), por eso se llaman UNA vez, solo tras el éxito de la aprobación. Un fallo no
+// deshace la aprobación, pero queda en la consola (mensaje fijo + code, sin datos personales).
+const notificarAprobacionCampana = async (pagoId: string | null | undefined, solicitudId: string) => {
+  if (pagoId) {
+    try {
+      const { error } = await supabase.rpc('notificar_pago_resultado', { p_pago_id: pagoId })
+      if (error) console.error('notificar_pago_resultado falló:', error.code)
+    } catch (e) {
+      console.error('notificar_pago_resultado falló:', (e as { code?: string })?.code ?? 'sin code')
+    }
+  }
+  try {
+    const { error } = await supabase.rpc('notificar_campana_resultado', { p_solicitud_id: solicitudId })
+    if (error) console.error('notificar_campana_resultado falló:', error.code)
+  } catch (e) {
+    console.error('notificar_campana_resultado falló:', (e as { code?: string })?.code ?? 'sin code')
+  }
+}
+
 export default function SolicitudesCampanaPage() {
   const [solicitudes, setSolicitudes] = useState<SolicitudConEmpresa[]>([])
   const [pagosMap, setPagosMap] = useState<Record<string, PagoCampana>>({})
@@ -67,6 +102,9 @@ export default function SolicitudesCampanaPage() {
   const [notasAdmin, setNotasAdmin] = useState('')
   const [procesando, setProcesando] = useState(false)
   const { paisId } = usePaisFiltro()
+  // Desde la 358 solo el super_admin aprueba (CA001): en modo país el botón no se muestra.
+  const { isSuperAdmin } = useAdminAuth()
+  const aprobandoRef = useRef(false)
 
   const fetchSolicitudes = useCallback(async () => {
     setLoading(true)
@@ -116,34 +154,34 @@ export default function SolicitudesCampanaPage() {
   }
 
   const aprobar = async (solicitud: SolicitudConEmpresa) => {
-    const pago = pagosMap[solicitud.id]
-    if (!pago || pago.estado !== 'verificado') {
-      toast.error('No se puede aprobar: el pago no está verificado. Verificalo primero en "Pagos de Proveedores".')
-      return
-    }
-
+    // guard síncrono contra doble click (procesando tarda un render en deshabilitar el botón)
+    if (aprobandoRef.current) return
+    aprobandoRef.current = true
     setProcesando(true)
+    try {
+      // Mig 358: aprobar_solicitud_campana es el único camino. Revalida super_admin (CA001), verifica el pago pendiente
+      // (CA004/CA005/CA006: el cliente ya no exige el pago verificado antes de llamar), publica y marca la solicitud
+      // 'publicada' en una transacción. Es idempotente.
+      const { error: rpcError } = await supabase.rpc('aprobar_solicitud_campana', {
+        p_solicitud_id: solicitud.id,
+        p_notas_admin: notasAdmin || null,
+      })
 
-    // Publicar vía RPC SECURITY DEFINER (revalida super_admin server-side):
-    // inserta la campaña + marca la solicitud 'publicada' atómicamente.
-    const { error: rpcError } = await supabase.rpc('aprobar_solicitud_campana', {
-      p_solicitud_id: solicitud.id,
-      p_notas_admin: notasAdmin || null,
-    })
+      if (rpcError) {
+        console.error('aprobar_solicitud_campana falló:', rpcError.code)
+        toast.error(mensajeErrorAprobarCampana(rpcError.code))
+        return
+      }
 
-    if (rpcError) {
-      toast.error('Error publicando campaña')
-      console.error(rpcError)
+      toast.success('Campaña aprobada y publicada')
+      await notificarAprobacionCampana(pagosMap[solicitud.id]?.id, solicitud.id)
+      setSolicitudActiva(null)
+      setNotasAdmin('')
+      fetchSolicitudes()
+    } finally {
+      aprobandoRef.current = false
       setProcesando(false)
-      return
     }
-
-    toast.success('Campaña aprobada y publicada')
-    await notificarProveedor(solicitud, 'aprobada')
-    setSolicitudActiva(null)
-    setNotasAdmin('')
-    fetchSolicitudes()
-    setProcesando(false)
   }
 
   const rechazar = async (solicitud: SolicitudConEmpresa) => {
@@ -412,22 +450,19 @@ export default function SolicitudesCampanaPage() {
                       <XCircle className="h-4 w-4 mr-1" />
                       Rechazar
                     </Button>
-                    <Button
-                      className="flex-1 bg-emerald-600 hover:bg-emerald-700 text-white"
-                      disabled={procesando || !pagosMap[solicitudActiva.id] || pagosMap[solicitudActiva.id].estado !== 'verificado'}
-                      onClick={() => aprobar(solicitudActiva)}
-                    >
-                      <CheckCircle className="h-4 w-4 mr-1" />
-                      Aprobar
-                    </Button>
+                    {isSuperAdmin && (
+                      <Button
+                        className="flex-1 bg-emerald-600 hover:bg-emerald-700 text-white"
+                        disabled={procesando}
+                        onClick={() => aprobar(solicitudActiva)}
+                      >
+                        <CheckCircle className="h-4 w-4 mr-1" />
+                        Aprobar
+                      </Button>
+                    )}
                   </>
                 )}
               </div>
-              {solicitudActiva.estado !== 'publicada' && solicitudActiva.estado !== 'rechazada' && (!pagosMap[solicitudActiva.id] || pagosMap[solicitudActiva.id].estado !== 'verificado') && (
-                <p className="text-xs text-center text-red-500">
-                  Solo se puede aprobar si el pago está verificado en "Pagos de Proveedores".
-                </p>
-              )}
             </div>
           )}
         </DialogContent>

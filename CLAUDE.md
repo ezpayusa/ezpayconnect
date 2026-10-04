@@ -24,11 +24,33 @@ Stack: React + Vite + TypeScript, Supabase / Postgres, deploy en Vercel, repo en
   minutos por esto** (P635 es la probe que faltaba, P636 su contraprueba).
 - NUNCA ampliar policies de RLS sobre tablas adyacentes a datos médicos (p. ej. campana_metricas). Para dar acceso, usar RPCs SECURITY DEFINER con search_path='', fail-closed (si el scope es NULL → 0 filas) y gate interno.
 - Probar aislamiento por rol impersonando request.jwt.claims en prod: cada rol ve lo suyo y no lo ajeno.
-- **Próximos números libres: probe `P967`** (global, no por módulo; P958-P966 usados por la mig 357
-  (obtener_medicos_por_ids acotada a relación); P906-P907 usados por la mig 336, P912-P913
+- **Próximos números libres: probe `P990`** (global, no por módulo; P983-P989 usados por la mig 360, P975-P982 por la
+  359, P967-P974 por la 358, P958-P966 por la 357 (obtener_medicos_por_ids acotada a relación); P906-P907 usados por la mig 336, P912-P913
   por la 337, P914-P915 por la 338, P916-P920 por la 339/340, P921-P923 por la 341, P924 por la 342, P925 por
   la 343, P926-P927 por la 344, P928-P929 por la 345, P930 por la 346, P931-P932 por la 347, P933 por la 348,
-  P934-P935 por la 349, P936 por la 350, P937-P939 por la 351, P940-P943 por la 353), **migración `358`**
+  P934-P935 por la 349, P936 por la 350, P937-P939 por la 351, P940-P943 por la 353), **migración `361`**
+  (360 = familia CAMPAÑAS, cierre en el servidor — **EN RAMA, SIN APLICAR: se aplica DESPUÉS del merge y del deploy de
+  Production del front** (rompe el checkout viejo: el INSERT directo del pago de campaña deja de entrar). Policies:
+  "Proveedor crea pagos" + `tipo <> 'campana'`; "Proveedor crea campañas" solo `estado = 'borrador'`; "Proveedor
+  actualiza sus campañas borrador" USING/CHECK solo borrador; NUEVA "Proveedor elimina sus campañas borrador" (DELETE);
+  "Admin ve campanas de su pais" y "Admin ve solicitudes de su pais" de ALL a SELECT; NUEVAS `campanas_superadmin_update`
+  y `campanas_superadmin_delete` (el super_admin conserva pausar/reactivar/eliminar; el admin_pais pierde la escritura
+  directa). Huella de policies b2a47be7… 308 → 6fd0d66d… 311; texto de las 3 tablas e2885295… → e42777c5…. Probes
+  P983-P989; hasta la 360, P983-P987/P989, P980 y el caso 6 de P939 salen 'PENDIENTE mig 360' (catálogo). **Orden de
+  rollback de la familia: `360_rollback` → `359_rollback` → `358_rollback`.**)
+  (359 = familia CAMPAÑAS, precio en el servidor, SOLO ADITIVA: `private.precio_plan_publicidad(pais, plan)` (config
+  activa del país, si no el plan base; EXECUTE solo postgres), `cotizar_campana(p_solicitud_id)` y
+  `solicitar_pago_campana(p_solicitud_id, p_comprobante_path)` (CA009 gate empresa+rol, CA012 ya tiene pago — antes que
+  CA011 no está en borrador —, CA010 sin precio, CA013 comprobante; crea el pago con monto/moneda del servidor y pasa la
+  solicitud a 'enviada'). md5 949e707c…/6323c55a…/49a10261…; ACL de funciones 20151138… 375 → a01b26ab… 378; policies
+  sin cambio. Probes P975-P982 — APLICADA en prod el 2026-10-04 entre 14:24:43 y 14:24:45 UTC; harness 1057 / 11 rojas de
+  deuda.)
+  (358 = familia CAMPAÑAS, publicación única: DELETE del grupo duplicado de la solicitud 900dc0b3… (quedó la publicación
+  6; 7 y 8 con sus métricas por CASCADE, datos QA, no se restauran); índice único parcial
+  `campanas_publicitarias_solicitud_uniq`; `aprobar_solicitud_campana` atómica e idempotente, solo super_admin (CA001;
+  el admin_pais perdió el permiso, sin caller), CA002-CA008, verifica el pago pendiente y carga el peso del plan.
+  md5 f5a46a02… → 64b305dc…. Probes P967-P974; ajustados P507-P510 (rechazo = CA001) — APLICADA en prod el 2026-10-04
+  entre 13:58:05 y 13:58:06 UTC; harness 1049 / 11 rojas de deuda.)
   (357 = `obtener_medicos_por_ids(uuid[])` acotada a relación: antes cualquier sesión autenticada resolvía nombre y
   especialidad de cualquier médico por id. Misma firma, RETURNS, DEFINER, `search_path=''`, VOLATILE y guard PC027;
   devuelve un médico solo si (a) el llamante es super_admin, (b) es el propio médico, (c) el médico aparece en una cita
@@ -164,6 +186,11 @@ Stack: React + Vite + TypeScript, Supabase / Postgres, deploy en Vercel, repo en
   336 = fix de la 335: liberación/reversión con FOR UPDATE + evento solo si cambió la fila; EX028
   normalizado espacios/tabs/saltos — APLICADA en prod y verificada en sesión independiente el
   26-sep-2026), **errcode `PA035`** (comercial),
+  **`CA014`** (familia CAMPAÑAS: mig 358 `aprobar_solicitud_campana` → CA001 no es super_admin, CA002 solicitud
+  inexistente, CA003 no está enviada, CA004 sin pago, CA005 más de un pago, CA006 pago rechazado, CA007 sin plan, CA008 la
+  empresa no opera en el país; mig 359 `cotizar_campana`/`solicitar_pago_campana` → CA009 no es de tu empresa o rol,
+  CA010 sin precio, CA011 no está en borrador, CA012 ya tiene pago, CA013 comprobante inválido; el front los mapea en
+  PagoCheckoutPage, PagosProveedoresPage y SolicitudesCampanaPage),
   **`DE010`** (delivery, mig 353: 42501 sin permiso; DE001 entrega inexistente o no visible, DE002 no está pendiente,
   DE003 el repartidor no es delivery activo de la empresa, DE004 repartidor de otra sucursal, DE005 entrega cobrada no
   se reasigna, DE006 no se reasigna desde ese estado, DE007 tanda vacía, DE008 tanda de más de 50, DE009 tanda con ids
@@ -281,7 +308,7 @@ Stack: React + Vite + TypeScript, Supabase / Postgres, deploy en Vercel, repo en
 - **Migraciones: SIEMPRE `npx supabase db query --linked -f <archivo>`, NUNCA `db push`.** `db push`
   desincroniza `schema_migrations` (deuda desde la 047). Los `.sql` viven en `supabase/migrations/`
   (rollback en `supabase/migrations/rollback/`); los de `supabase/fixes/` se agregan con `git add -f`.
-  **Desvío aceptado (familia 8):** los rollbacks de 334-353 viven en `supabase/migrations/`
+  **Desvío aceptado (familia 8):** los rollbacks de 334-360 viven en `supabase/migrations/`
   (`3XX_rollback.sql`), no en `supabase/migrations/rollback/`.
 - **Los tests de edge (deno) NO corren en vitest ni en el pre-commit**: se corren a mano desde
   `supabase/functions/<fn>/` con `deno test --allow-net --allow-env --no-check` (asistente-ia: 17).

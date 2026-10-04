@@ -179,7 +179,8 @@ const PlanesVisitadorConfigPage = lazy(() => import('@/pages/planes/PlanesVisita
 const PlanesTodosPage = lazy(() => import('@/pages/planes/PlanesTodosPage'))
 const PlanesFarmaceuticoConfigPage = lazy(() => import('@/pages/planes/PlanesFarmaceuticoConfigPage'))
 const PlanesFarmaciaConfigPage = lazy(() => import('@/pages/planes/PlanesFarmaciaConfigPage'))
-const PlanesPublicidadConfigPage = lazy(() => import('@/pages/planes/PlanesPublicidadConfigPage'))
+// Catálogo de precios de publicidad que lee el servidor (planes_publicidad + planes_publicidad_config; mig 359)
+const PlanesPublicidadConfigPage = lazy(() => import('@/pages/admin-ezpay/PlanesPublicidadConfigPage'))
 const PlanesEmpresasAfinesConfigPage = lazy(() => import('@/pages/planes/PlanesEmpresasAfinesConfigPage'))
 
 // === CLÍNICA ===
@@ -376,7 +377,7 @@ function App() {
           <Route path="planes-visitador" element={<Navigate to="/admin/planes/visitador" replace />} />
           <Route path="planes-farmaceutico" element={<Navigate to="/admin/planes/farmaceutico" replace />} />
           <Route path="planes-farmacia" element={<Navigate to="/admin/planes/farmacia" replace />} />
-          <Route path="planes-publicidad" element={<Navigate to="/admin/planes/publicidad" replace />} />
+          <Route path="planes-publicidad" element={<Navigate to="/admin-ezpay/planes-publicidad-config" replace />} />
           <Route path="planes-empresas-afines" element={<Navigate to="/admin/planes/empresas-afines" replace />} />
           <Route path="excepciones" element={<Navigate to="/admin/planes/excepciones" replace />} />
           <Route path="finanzas" element={<FinanzasPage />} />
@@ -463,6 +464,7 @@ function App() {
           <Route path="publicidad/planes" element={<PublicidadPlanesPage />} />
           <Route path="publicidad/campanas" element={<PublicidadCampanasPage />} />
           <Route path="publicidad/campanas/nueva" element={<PublicidadCampanaFormPage />} />
+          <Route path="publicidad/campanas/:id/editar" element={<PublicidadCampanaFormPage />} />
           <Route path="publicidad/metricas" element={<PublicidadMetricasPage />} />
           <Route path="perfil" element={<ProveedorPerfilPage />} />
           <Route path="equipo" element={<EquipoRolesPage />} />
@@ -533,7 +535,7 @@ function App() {
           <Route path="visitador" element={<PlanesVisitadorConfigPage />} />
           <Route path="farmaceutico" element={<PlanesFarmaceuticoConfigPage />} />
           <Route path="farmacia" element={<PlanesFarmaciaConfigPage />} />
-          <Route path="publicidad" element={<PlanesPublicidadConfigPage />} />
+          <Route path="publicidad" element={<Navigate to="/admin-ezpay/planes-publicidad-config" replace />} />
           <Route path="empresas-afines" element={<PlanesEmpresasAfinesConfigPage />} />
         </Route>
 

@@ -29,6 +29,9 @@ export default function PublicidadCampanaFormPage() {
   const paisIdProveedor = empresa?.pais_id || undefined
   const { planes, loading: loadingPlanes } = usePlanesPublicidad(paisIdProveedor)
   const [loadingData, setLoadingData] = useState(isEditing)
+  // Solo se edita en borrador: una campaña enviada ya tiene su pago (mig 359) y el admin la está revisando.
+  const [estadoCargado, setEstadoCargado] = useState<string | null>(null)
+  const noEditable = isEditing && estadoCargado !== null && estadoCargado !== 'borrador'
 
   const [form, setForm] = useState({
     titulo: '',
@@ -83,6 +86,7 @@ export default function PublicidadCampanaFormPage() {
           plan_publicidad_id: data.plan_publicidad_id ? String(data.plan_publicidad_id) : '',
         })
         if (data.imagen_url) setImagenPreview(data.imagen_url)
+        setEstadoCargado(data.estado ?? null)
         setLoadingData(false)
       }
       fetchCampana()
@@ -104,6 +108,10 @@ export default function PublicidadCampanaFormPage() {
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
+    if (noEditable) {
+      toast.error('Solo se pueden editar campañas en borrador')
+      return
+    }
     if (!form.titulo || !form.fecha_inicio || !form.fecha_fin) {
       toast.error('Completa los campos obligatorios')
       return
@@ -121,20 +129,18 @@ export default function PublicidadCampanaFormPage() {
     }
 
     if (isEditing && id) {
+      // sin `estado`: la campaña sigue en borrador (el form no lo tiene y el hook no lo manda)
       const ok = await actualizarSolicitud(id, campanaData, imagenFile)
       if (ok) navigate('/proveedor/publicidad/campanas')
     } else {
       const ok = await crearSolicitud({ ...campanaData, estado: 'borrador' }, imagenFile)
       if (ok) {
-        // Redirigir al checkout para forzar el pago inmediatamente
+        // Redirigir al checkout para forzar el pago inmediatamente. El precio NO viaja en la URL: el checkout lo pide a
+        // cotizar_campana y lo cobra solicitar_pago_campana (mig 359).
         const planSeleccionado = planes.find((p) => String(p.id) === form.plan_publicidad_id)
-        if (planSeleccionado) {
-          navigate(
-            `/proveedor/checkout?tipo=campana&referencia_id=${ok}&monto=${planSeleccionado.precio_local}&descripcion=${encodeURIComponent(planSeleccionado.nombre)}`
-          )
-        } else {
-          navigate('/proveedor/publicidad/campanas')
-        }
+        navigate(
+          `/proveedor/checkout?tipo=campana&referencia_id=${ok}&descripcion=${encodeURIComponent(planSeleccionado?.nombre ?? form.titulo)}`
+        )
       }
     }
   }
@@ -165,6 +171,11 @@ export default function PublicidadCampanaFormPage() {
 
       <Card>
         <CardContent className="p-6">
+          {noEditable && (
+            <div className="mb-5 bg-amber-50 border border-amber-200 rounded-lg p-3 text-sm text-amber-800">
+              Solo se pueden editar campañas en borrador
+            </div>
+          )}
           <form onSubmit={handleSubmit} className="space-y-5">
             <div className="space-y-2">
               <Label>Plan de publicidad *</Label>
@@ -328,7 +339,7 @@ export default function PublicidadCampanaFormPage() {
               >
                 Cancelar
               </Button>
-              <Button type="submit" className="flex-1 bg-[#1E5C8E] hover:bg-[#164a70]" disabled={saving}>
+              <Button type="submit" className="flex-1 bg-[#1E5C8E] hover:bg-[#164a70]" disabled={saving || noEditable}>
                 {saving ? <Loader2 className="h-4 w-4 animate-spin mr-2" /> : null}
                 {isEditing ? 'Guardar cambios' : 'Enviar a revisión'}
               </Button>
