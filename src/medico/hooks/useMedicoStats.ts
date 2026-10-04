@@ -1,5 +1,6 @@
 import { useState, useEffect, useCallback } from 'react'
 import { supabase } from '@/lib/supabase'
+import { hoyISO, fechaLocalISO, combinar } from '@/lib/fecha'
 import type { MedicoStats, CitaConPaciente } from '@/medico/types/medico.types'
 
 export function useMedicoStats() {
@@ -11,9 +12,12 @@ export function useMedicoStats() {
     proximaCita: null,
   })
   const [loading, setLoading] = useState(true)
+  // Mensaje fijo si falla la carga: los consumidores pueden mostrarlo en vez de tomar los ceros iniciales como datos.
+  const [error, setError] = useState<string | null>(null)
 
   const fetchStats = useCallback(async () => {
     setLoading(true)
+    setError(null)
     try {
       const { data: { user } } = await supabase.auth.getUser()
       if (!user) {
@@ -21,8 +25,14 @@ export function useMedicoStats() {
         return
       }
 
-      const hoy = new Date().toISOString().split('T')[0]
-      const inicioMes = new Date(new Date().getFullYear(), new Date().getMonth(), 1).toISOString().split('T')[0]
+      // Fechas DATE en hora local (el día UTC hacía que en GT, después de las 18:00, "hoy" fuera mañana).
+      const ahora = new Date()
+      const hoy = hoyISO()
+      const inicioMes = fechaLocalISO(new Date(ahora.getFullYear(), ahora.getMonth(), 1))
+      // fin de una cita = fecha + hora_fin (o hora_inicio si no hay); inicio = fecha + hora_inicio
+      const finDe = (c: { fecha: string; hora_inicio: string | null; hora_fin?: string | null }) =>
+        combinar(c.fecha, c.hora_fin || c.hora_inicio).getTime()
+      const inicioDe = (c: { fecha: string; hora_inicio: string | null }) => combinar(c.fecha, c.hora_inicio).getTime()
 
       // Citas de hoy
       const { count: citasHoyCount } = await supabase
@@ -31,12 +41,15 @@ export function useMedicoStats() {
         .eq('medico_id', user.id)
         .eq('fecha', hoy)
 
-      // Pendientes de confirmar (solicitada + agendada)
-      const { count: pendientesCount } = await supabase
+      // Pendientes de confirmar (solicitada + agendada) que todavía no terminaron: una vieja sin cerrar no cuenta.
+      const { data: pendientesData, error: errPendientes } = await supabase
         .from('citas')
-        .select('*', { count: 'exact', head: true })
+        .select('fecha, hora_inicio, hora_fin')
         .eq('medico_id', user.id)
         .in('estado', ['solicitada', 'agendada'])
+        .gte('fecha', hoy)
+      if (errPendientes) throw errPendientes
+      const pendientesCount = (pendientesData || []).filter((c) => finDe(c) >= ahora.getTime()).length
 
       // Pacientes únicos atendidos este mes (completadas)
       const { data: pacientesMesData } = await supabase
@@ -55,8 +68,9 @@ export function useMedicoStats() {
         .eq('medico_id', user.id)
         .gte('created_at', inicioMes)
 
-      // Próxima cita confirmada o agendada (sin join para evitar schema cache bug)
-      const { data: proximaData } = await supabase
+      // Próxima cita confirmada o agendada: la primera que todavía no empezó (las de hoy ya pasadas no cuentan).
+      // Sin join para evitar schema cache bug.
+      const { data: candidatas, error: errProxima } = await supabase
         .from('citas')
         .select('*')
         .eq('medico_id', user.id)
@@ -64,8 +78,10 @@ export function useMedicoStats() {
         .gte('fecha', hoy)
         .order('fecha', { ascending: true })
         .order('hora_inicio', { ascending: true })
-        .limit(1)
-        .maybeSingle()
+        // Ordenadas desde hoy: antes de la próxima real solo hay citas de hoy ya empezadas; perderla exigiría 50 de ellas.
+        .limit(50)
+      if (errProxima) throw errProxima
+      const proximaData = (candidatas || []).find((c) => inicioDe(c) >= ahora.getTime()) ?? null
 
       let proximaCita: CitaConPaciente | null = null
       if (proximaData) {
@@ -96,7 +112,8 @@ export function useMedicoStats() {
         proximaCita,
       })
     } catch (err) {
-      console.error('Error cargando stats:', err)
+      console.error('[medico-stats] no se pudieron cargar las estadísticas:', (err as { code?: string } | null)?.code ?? 'sin code')
+      setError('No se pudieron cargar las estadísticas')
     } finally {
       setLoading(false)
     }
@@ -106,5 +123,5 @@ export function useMedicoStats() {
     fetchStats()
   }, [fetchStats])
 
-  return { stats, loading, recargar: fetchStats }
+  return { stats, loading, error, recargar: fetchStats }
 }

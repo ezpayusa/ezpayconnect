@@ -4,6 +4,7 @@ import { useWebAppAuth } from '@/webapp/hooks/useWebAppAuth'
 import { useWebAppCitas } from '@/webapp/hooks/useWebAppCitas'
 import type { CitaPaciente } from '@/webapp/types/webapp.types'
 import { parseFechaLocal } from '@/lib/fecha'
+import { citaSinCerrar } from '@/webapp/lib/clasificarCitas'
 import AgendarCitaModal from '@/webapp/components/AgendarCitaModal'
 import { Card, CardContent } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
@@ -46,12 +47,20 @@ export default function WebAppCitas() {
       case 'agendada': return 'bg-sky-50 text-sky-700 border-sky-200'
       case 'confirmada': return 'bg-emerald-50 text-emerald-700 border-emerald-200'
       case 'en_curso': return 'bg-amber-50 text-amber-700 border-amber-200'
+      case 'en_espera': return 'bg-orange-50 text-orange-700 border-orange-200'
+      case 'sin_cerrar': return 'bg-slate-100 text-slate-600 border-slate-300'
       case 'solicitada': return 'bg-yellow-50 text-yellow-700 border-yellow-200'
       case 'completada': return 'bg-blue-50 text-blue-700 border-blue-200'
       case 'cancelada': return 'bg-red-50 text-red-700 border-red-200'
       default: return 'bg-slate-50 text-slate-700'
     }
   }
+
+  const ETIQUETAS: Record<string, string> = { en_espera: 'En espera', en_curso: 'En curso', no_show: 'No asistió', sin_cerrar: 'Sin cerrar' }
+  // En Pasadas, una cita que nadie cerró (solicitada/agendada/confirmada/en_espera/en_curso, ver citaSinCerrar): "Sin cerrar".
+  const estadoMostrado = (cita: CitaPaciente) => (tab === 'pasadas' && citaSinCerrar(cita) ? 'sin_cerrar' : cita.estado)
+
+  const TAB_LABEL = { proximas: 'Próximas', pasadas: 'Pasadas', canceladas: 'Canceladas' } as const
 
   const tabData = {
     proximas,
@@ -86,7 +95,7 @@ export default function WebAppCitas() {
               tab === t ? 'bg-sky-50 text-sky-600' : 'text-slate-500 hover:text-slate-700'
             }`}
           >
-            {t.charAt(0).toUpperCase() + t.slice(1)}
+            {TAB_LABEL[t]}
             {tabData[t].length > 0 && (
               <span className="ml-1.5 text-xs bg-slate-100 text-slate-600 px-1.5 py-0.5 rounded-full">
                 {tabData[t].length}
@@ -111,7 +120,7 @@ export default function WebAppCitas() {
       {!loading && !error && currentList.length === 0 && (
         <div className="text-center py-12">
           <CalendarDays className="h-12 w-12 text-slate-300 mx-auto mb-3" />
-          <p className="text-slate-500">No tienes citas {tab}</p>
+          <p className="text-slate-500">No tienes citas {TAB_LABEL[tab].toLowerCase()}</p>
           <Button
             variant="outline"
             className="mt-4 border-sky-200 text-sky-600 hover:bg-sky-50"
@@ -133,8 +142,8 @@ export default function WebAppCitas() {
                       <h3 className="font-semibold text-slate-800">
                         {cita.motivo || 'Consulta médica'}
                       </h3>
-                      <Badge variant="outline" className={getEstadoColor(cita.estado)}>
-                        {cita.estado}
+                      <Badge variant="outline" className={getEstadoColor(estadoMostrado(cita))}>
+                        {ETIQUETAS[estadoMostrado(cita)] ?? estadoMostrado(cita)}
                       </Badge>
                     </div>
                     <div className="flex items-center gap-4 text-sm text-slate-500">
@@ -169,7 +178,7 @@ export default function WebAppCitas() {
                     )}
                   </div>
 
-                  {ESTADOS_CANCELABLES.includes(cita.estado) && (
+                  {tab === 'proximas' && ESTADOS_CANCELABLES.includes(cita.estado) && (
                     <Button
                       variant="outline"
                       size="sm"

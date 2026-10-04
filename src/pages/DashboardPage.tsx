@@ -5,6 +5,7 @@ import { usePacientes } from '@/hooks/usePacientes'
 import { useCitas } from '@/hooks/useCitas'
 import { useRecetas } from '@/hooks/useRecetas'
 import { supabase } from '@/lib/supabase'
+import { hoyISO, combinar } from '@/lib/fecha'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
 import { Users, CalendarDays, FileText, Pill, Activity, TrendingUp, Filter, ArrowRight, Stethoscope } from 'lucide-react'
@@ -29,7 +30,7 @@ export default function DashboardPage() {
 
   useEffect(() => {
     const cargarStats = async () => {
-      const hoy = new Date().toISOString().split('T')[0]
+      const hoy = hoyISO()
       const inicioSemana = new Date()
       inicioSemana.setDate(inicioSemana.getDate() - inicioSemana.getDay())
       const inicioMes = new Date()
@@ -67,7 +68,7 @@ export default function DashboardPage() {
     { label: 'Nuevo Paciente', icon: Users, action: () => navigate('/pacientes?nuevo=true'), color: 'bg-[#1E5C8E]' },
     { label: 'Nueva Cita', icon: CalendarDays, action: () => navigate('/citas?nuevo=true'), color: 'bg-[#3A8ABF]' },
     { label: 'Iniciar Consulta', icon: Stethoscope, action: () => {
-      const hoy = new Date().toISOString().split('T')[0]
+      const hoy = hoyISO()
       const citaHoy = citas?.find(c => c.fecha === hoy && (c.estado === 'agendada' || c.estado === 'confirmada'))
       if (citaHoy) {
         navigate(`/consulta/${citaHoy.id}`)
@@ -77,9 +78,12 @@ export default function DashboardPage() {
     }, color: 'bg-[#5BA8D1]' },
   ]
 
+  // Próximas: estado activo y que todavía no terminaron (fin = fecha + hora_fin, o hora_inicio), ascendente por inicio.
+  const ahoraMs = Date.now()
   const proximasCitas = (citas || [])
-    .filter(c => c.estado === 'agendada')
-    .sort((a, b) => new Date(a.fecha + 'T' + a.hora_inicio).getTime() - new Date(b.fecha + 'T' + b.hora_inicio).getTime())
+    .filter(c => ['solicitada', 'agendada', 'confirmada'].includes(c.estado)
+      && combinar(c.fecha, c.hora_fin || c.hora_inicio).getTime() >= ahoraMs)
+    .sort((a, b) => combinar(a.fecha, a.hora_inicio).getTime() - combinar(b.fecha, b.hora_inicio).getTime())
     .slice(0, 5)
 
   // FILTROS DE PERÍODO
