@@ -5,6 +5,7 @@ import { Button } from '@/components/ui/button'
 import { useAdminAuth } from '@/hooks/admin/useAdminAuth'
 import { usePaisActivo } from '@/hooks/usePaisActivo'
 import { supabase } from '@/lib/supabase'
+import { hoyISO } from '@/lib/fecha'
 import {
   Users,
   MapPin,
@@ -22,23 +23,31 @@ import {
   CheckCircle2,
 } from 'lucide-react'
 
+// null = la consulta falló: la tarjeta muestra "—", nunca un 0 como dato.
 interface PaisStats {
-  total_medicos: number
-  total_clinicas: number
-  total_pacientes: number
-  total_citas: number
-  total_recetas: number
-  total_campanas: number
-  total_proveedores: number
-  total_facturas: number
-  total_confirmaciones: number
+  total_medicos: number | null
+  total_clinicas: number | null
+  total_pacientes: number | null
+  total_citas: number | null
+  total_recetas: number | null
+  total_campanas: number | null
+  total_proveedores: number | null
+  total_facturas: number | null
+  total_confirmaciones: number | null
 }
 
 interface CampanaMetrics {
-  impresiones: number
-  clicks: number
-  ctr: number
+  impresiones: number | null
+  clicks: number | null
+  ctr: number | null
 }
+
+// Error de una consulta del dashboard: mensaje fijo + code (sin datos de la fila).
+function logError(que: string, error: { code?: string } | null) {
+  if (error) console.error(`[dashboard-pais] no se pudo cargar ${que}:`, error.code ?? 'sin code')
+}
+
+const mostrar = (n: number | null) => (n === null ? '—' : n.toLocaleString())
 
 export default function PaisDashboardPage() {
   const navigate = useNavigate()
@@ -46,21 +55,21 @@ export default function PaisDashboardPage() {
   const { isAdmin, loading: adminLoading } = useAdminAuth()
   const { paisActivo, setPaisActivo, clearPaisActivo } = usePaisActivo()
   const [campanaMetrics, setCampanaMetrics] = useState<CampanaMetrics>({
-    impresiones: 0,
-    clicks: 0,
-    ctr: 0,
+    impresiones: null,
+    clicks: null,
+    ctr: null,
   })
   const [desgloseCampanas, setDesgloseCampanas] = useState<any[]>([])
   const [stats, setStats] = useState<PaisStats>({
-    total_medicos: 0,
-    total_clinicas: 0,
-    total_pacientes: 0,
-    total_citas: 0,
-    total_recetas: 0,
-    total_campanas: 0,
-    total_proveedores: 0,
-    total_facturas: 0,
-    total_confirmaciones: 0,
+    total_medicos: null,
+    total_clinicas: null,
+    total_pacientes: null,
+    total_citas: null,
+    total_recetas: null,
+    total_campanas: null,
+    total_proveedores: null,
+    total_facturas: null,
+    total_confirmaciones: null,
   })
   const [paisInfo, setPaisInfo] = useState<any>(null)
   const [loading, setLoading] = useState(true)
@@ -76,11 +85,12 @@ export default function PaisDashboardPage() {
     if (!paisId) return
 
     const cargarPais = async () => {
-      const { data } = await supabase
+      const { data, error } = await supabase
         .from('configuracion_pais')
         .select('*')
         .eq('id', paisId)
         .single()
+      logError('el país', error)
 
       if (data) {
         setPaisInfo(data)
@@ -100,80 +110,93 @@ export default function PaisDashboardPage() {
     const cargarStats = async () => {
       setLoading(true)
       try {
-        const { data: medicosCount } = await supabase
+        const { data: medicosCount, error: errMedicos } = await supabase
           .rpc('contar_medicos_por_pais', { p_pais_id: paisId })
+        logError('los médicos', errMedicos)
 
-        const { count: clinicasCount } = await supabase
+        const { count: clinicasCount, error: errClinicas } = await supabase
           .from('clinicas')
           .select('*', { count: 'exact', head: true })
           .eq('pais_id', paisId)
+        logError('las clínicas', errClinicas)
 
-        const { count: pacientesCount } = await supabase
+        const { count: pacientesCount, error: errPacientes } = await supabase
           .from('pacientes')
           .select('*', { count: 'exact', head: true })
           .eq('pais_id', paisId)
+        logError('los pacientes', errPacientes)
 
-        const { count: citasCount } = await supabase
+        const { count: citasCount, error: errCitas } = await supabase
           .from('citas')
           .select('*', { count: 'exact', head: true })
           .eq('pais_id', paisId)
+        logError('las citas', errCitas)
 
-        const { count: campanasCount } = await supabase
+        const { count: campanasCount, error: errCampanas } = await supabase
           .from('campanas_publicitarias')
           .select('*', { count: 'exact', head: true })
           .eq('pais_id', paisId)
+        logError('las campañas', errCampanas)
 
-        const { count: proveedoresCount } = await supabase
-          .from('empresas_proveedoras')
-          .select('*', { count: 'exact', head: true })
-          .eq('pais_id', paisId)
+        // RPC con gate de país (mig 363): el admin_pais no ve empresas_proveedoras por RLS.
+        const { data: proveedoresCount, error: errProveedores } = await supabase
+          .rpc('contar_proveedores_por_pais', { p_pais_id: paisId })
+        logError('los proveedores', errProveedores)
 
-        const { count: recetasCount } = await supabase
+        const { count: recetasCount, error: errRecetas } = await supabase
           .from('recetas')
           .select('*', { count: 'exact', head: true })
           .eq('pais_id', paisId)
+        logError('las recetas', errRecetas)
 
-        const { count: facturasCount } = await supabase
+        const { count: facturasCount, error: errFacturas } = await supabase
           .from('facturas')
           .select('*', { count: 'exact', head: true })
           .eq('pais_id', paisId)
+        logError('las facturas', errFacturas)
 
         // Métricas de campañas (RPC país SECURITY DEFINER; gate super_admin / admin_pais-de-este-país).
-        const { data: metricasData } = await supabase.rpc('metricas_campana_pais', { p_pais_id: paisId })
+        const { data: metricasData, error: errMetricas } = await supabase.rpc('metricas_campana_pais', { p_pais_id: paisId })
+        logError('las métricas de campañas', errMetricas)
 
-        const impresiones = (metricasData || []).reduce((a: number, r: any) => a + (Number(r.impresiones) || 0), 0)
-        const clicks = (metricasData || []).reduce((a: number, r: any) => a + (Number(r.clicks) || 0), 0)
-        const ctr = impresiones > 0 ? Math.round((clicks / impresiones) * 100 * 100) / 100 : 0
-
-        setCampanaMetrics({ impresiones, clicks, ctr })
-        setDesgloseCampanas((metricasData || []) as any[])
+        if (errMetricas) {
+          setCampanaMetrics({ impresiones: null, clicks: null, ctr: null })
+          setDesgloseCampanas([])
+        } else {
+          const impresiones = (metricasData || []).reduce((a: number, r: any) => a + (Number(r.impresiones) || 0), 0)
+          const clicks = (metricasData || []).reduce((a: number, r: any) => a + (Number(r.clicks) || 0), 0)
+          const ctr = impresiones > 0 ? Math.round((clicks / impresiones) * 100 * 100) / 100 : 0
+          setCampanaMetrics({ impresiones, clicks, ctr })
+          setDesgloseCampanas((metricasData || []) as any[])
+        }
 
         // Confirmaciones de recepción de receta (acumulado histórico → hoy), país-scoped.
-        const hoyStr = new Date().toISOString().slice(0, 10) // YYYY-MM-DD
-        const { data: confData } = await supabase
+        const hoyStr = hoyISO() // p_hasta es DATE: día LOCAL
+        const { data: confData, error: errConf } = await supabase
           .rpc('reporte_confirmaciones_pais', {
             p_desde: '2020-01-01',
             p_hasta: hoyStr,
             p_pais_id: paisId,
           })
+        logError('las confirmaciones', errConf)
         // la RPC devuelve filas por país; para este dashboard (un país fijo) sumamos el conteo (0 filas → 0)
         const confirmacionesCount = (confData ?? []).reduce(
           (acc: number, r: any) => acc + Number(r.confirmaciones ?? 0), 0
         )
 
         setStats({
-          total_medicos: medicosCount || 0,
-          total_clinicas: clinicasCount || 0,
-          total_pacientes: pacientesCount || 0,
-          total_citas: citasCount || 0,
-          total_recetas: recetasCount || 0,
-          total_campanas: campanasCount || 0,
-          total_proveedores: proveedoresCount || 0,
-          total_facturas: facturasCount || 0,
-          total_confirmaciones: confirmacionesCount,
+          total_medicos: errMedicos ? null : Number(medicosCount ?? 0),
+          total_clinicas: errClinicas ? null : clinicasCount ?? 0,
+          total_pacientes: errPacientes ? null : pacientesCount ?? 0,
+          total_citas: errCitas ? null : citasCount ?? 0,
+          total_recetas: errRecetas ? null : recetasCount ?? 0,
+          total_campanas: errCampanas ? null : campanasCount ?? 0,
+          total_proveedores: errProveedores ? null : Number(proveedoresCount ?? 0),
+          total_facturas: errFacturas ? null : facturasCount ?? 0,
+          total_confirmaciones: errConf ? null : confirmacionesCount,
         })
       } catch (error) {
-        console.error('Error cargando stats:', error)
+        console.error('[dashboard-pais] error cargando las estadísticas:', (error as { code?: string } | null)?.code ?? 'sin code')
       } finally {
         setLoading(false)
       }
@@ -197,7 +220,7 @@ export default function PaisDashboardPage() {
 
   if (!isAdmin) return null
 
-  const statCards = [
+  const statCards: { title: string; value: number | null; icon: typeof MapPin; color: string; path?: string }[] = [
     {
       title: 'Clínicas',
       value: stats.total_clinicas,
@@ -218,7 +241,7 @@ export default function PaisDashboardPage() {
       color: 'bg-blue-50 text-blue-600',
     },
     {
-      title: 'Citas Agendadas',
+      title: 'Citas',
       value: stats.total_citas,
       icon: TrendingUp,
       color: 'bg-amber-50 text-amber-600',
@@ -236,7 +259,7 @@ export default function PaisDashboardPage() {
       color: 'bg-teal-50 text-teal-600',
     },
     {
-      title: 'Facturas Emitidas',
+      title: 'Facturas',
       value: stats.total_facturas,
       icon: CreditCard,
       color: 'bg-orange-50 text-orange-600',
@@ -293,14 +316,15 @@ export default function PaisDashboardPage() {
           return (
             <Card
               key={card.title}
-              className="cursor-pointer hover:shadow-md transition-shadow"
-              onClick={() => navigate(card.path)}
+              // solo navegan las tarjetas con path
+              className={card.path ? 'cursor-pointer hover:shadow-md transition-shadow' : undefined}
+              onClick={card.path ? () => navigate(card.path!) : undefined}
             >
               <CardContent className="p-6">
                 <div className="flex items-center justify-between">
                   <div>
                     <p className="text-sm text-gray-500">{card.title}</p>
-                    <p className="text-2xl font-bold mt-1">{card.value}</p>
+                    <p className="text-2xl font-bold mt-1">{mostrar(card.value)}</p>
                   </div>
                   <div className={`p-3 rounded-lg ${card.color}`}>
                     <Icon className="w-6 h-6" />
@@ -328,7 +352,7 @@ export default function PaisDashboardPage() {
               </div>
               <div>
                 <p className="text-sm text-gray-500">Impresiones</p>
-                <p className="text-xl font-bold">{campanaMetrics.impresiones.toLocaleString()}</p>
+                <p className="text-xl font-bold">{mostrar(campanaMetrics.impresiones)}</p>
               </div>
             </div>
             <div className="flex items-center gap-3">
@@ -337,7 +361,7 @@ export default function PaisDashboardPage() {
               </div>
               <div>
                 <p className="text-sm text-gray-500">Clicks</p>
-                <p className="text-xl font-bold">{campanaMetrics.clicks.toLocaleString()}</p>
+                <p className="text-xl font-bold">{mostrar(campanaMetrics.clicks)}</p>
               </div>
             </div>
             <div className="flex items-center gap-3">
@@ -346,7 +370,7 @@ export default function PaisDashboardPage() {
               </div>
               <div>
                 <p className="text-sm text-gray-500">CTR</p>
-                <p className="text-xl font-bold">{campanaMetrics.ctr}%</p>
+                <p className="text-xl font-bold">{campanaMetrics.ctr === null ? '—' : `${campanaMetrics.ctr}%`}</p>
               </div>
             </div>
           </div>
