@@ -24,11 +24,21 @@ Stack: React + Vite + TypeScript, Supabase / Postgres, deploy en Vercel, repo en
   minutos por esto** (P635 es la probe que faltaba, P636 su contraprueba).
 - NUNCA ampliar policies de RLS sobre tablas adyacentes a datos médicos (p. ej. campana_metricas). Para dar acceso, usar RPCs SECURITY DEFINER con search_path='', fail-closed (si el scope es NULL → 0 filas) y gate interno.
 - Probar aislamiento por rol impersonando request.jwt.claims en prod: cada rol ve lo suyo y no lo ajeno.
-- **Próximos números libres: probe `P996`** (global, no por módulo; P990-P995 usados por la mig 361, P983-P989 por la 360, P975-P982 por la
+- **Próximos números libres: probe `P1001`** (global, no por módulo; P996-P1000 usados por la mig 362, P990-P995 por la 361, P983-P989 por la 360, P975-P982 por la
   359, P967-P974 por la 358, P958-P966 por la 357 (obtener_medicos_por_ids acotada a relación); P906-P907 usados por la mig 336, P912-P913
   por la 337, P914-P915 por la 338, P916-P920 por la 339/340, P921-P923 por la 341, P924 por la 342, P925 por
   la 343, P926-P927 por la 344, P928-P929 por la 345, P930 por la 346, P931-P932 por la 347, P933 por la 348,
-  P934-P935 por la 349, P936 por la 350, P937-P939 por la 351, P940-P943 por la 353), **migración `362`**
+  P934-P935 por la 349, P936 por la 350, P937-P939 por la 351, P940-P943 por la 353), **migración `363`**
+  (362 = catálogo PÚBLICO de planes de visitador para la landing `/planes-visitador` sin sesión —
+  APLICADA en prod el 2026-10-04 16:58 UTC (16:58:32-16:58:33), harness 1075 / 11 rojas de deuda, verificada
+  independientemente. `public.catalogo_planes_visitador_publico()` (STABLE, DEFINER, `search_path=''`, md5 02d8c328…):
+  devuelve país, config, plan, precio, moneda, visitas y duración SOLO de las configs que acepta
+  `solicitar_compra_plan_visitador` (mismo predicado de CP001/CP003/CP004/CP005: config y base activas tipo visitador,
+  visitas/duración/precio no nulos y precio > 0, primera cuenta activa del país con la misma moneda); hoy solo GT.
+  **Excepción de anon justificada en P739** (catálogo público de precios, solo lectura; la allowlist vive en el harness,
+  no en la base): ACL `{postgres, authenticated, service_role, anon}`; anon ejecuta 38 → 39 funciones; anon SIGUE sin
+  SELECT en planes_base/planes_configuracion (350). ACL de funciones a01b26ab… 378 → 83031eae… 379; policies sin cambio.
+  Probes P996-P1000; P739 pasa a 11 esperadas. Rollback `362_rollback.sql` (DROP de la función).)
   (361 = familia CAMPAÑAS, duración <= días del plan — APLICADA en prod el 2026-10-04 16:06 UTC (16:06:33-16:06:35),
   harness 1070 / 11 rojas de deuda, verificada independientemente: `solicitar_pago_campana` (después de
   CA011, antes de CA010) y `aprobar_solicitud_campana` (después de la rama idempotente y de CA003) rechazan fecha_fin <
@@ -317,7 +327,7 @@ Stack: React + Vite + TypeScript, Supabase / Postgres, deploy en Vercel, repo en
 - **Migraciones: SIEMPRE `npx supabase db query --linked -f <archivo>`, NUNCA `db push`.** `db push`
   desincroniza `schema_migrations` (deuda desde la 047). Los `.sql` viven en `supabase/migrations/`
   (rollback en `supabase/migrations/rollback/`); los de `supabase/fixes/` se agregan con `git add -f`.
-  **Desvío aceptado (familia 8):** los rollbacks de 334-361 viven en `supabase/migrations/`
+  **Desvío aceptado (familia 8):** los rollbacks de 334-362 viven en `supabase/migrations/`
   (`3XX_rollback.sql`), no en `supabase/migrations/rollback/`.
 - **Los tests de edge (deno) NO corren en vitest ni en el pre-commit**: se corren a mano desde
   `supabase/functions/<fn>/` con `deno test --allow-net --allow-env --no-check` (asistente-ia: 17).

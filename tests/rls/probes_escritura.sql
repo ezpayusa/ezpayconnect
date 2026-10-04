@@ -17094,13 +17094,17 @@ SELECT set_config('role','none', true);
 --     asi que revocarles el EXECUTE no le niega nada a anon: hace que esas 30 tablas le lancen
 --     42501. Quedan afuera del barrido a proposito. Sacarlas de verdad exige reescribir las
 --     policies para que no dependan de ellas — frente propio, pendiente.
+--   · `catalogo_planes_visitador_publico` (mig 362) — excepcion de PRODUCTO: catalogo publico de precios para la
+--     landing /planes-visitador sin sesion; solo lectura; mismas filas que compraria solicitar_compra_plan_visitador.
+--     Con ella son 11.
 SELECT set_config('role','none', true);
 DO $$
 DECLARE v_sobran text; v_faltan text; v_n int;
   esperadas constant text[] := ARRAY[
     'get_auth_user_rol','get_auth_user_pais_id','mi_empresa_proveedor','mi_rol_proveedor',
     'mi_clinica_id','puede_ver_conversacion','supervisa_cuenta_proveedor',
-    'get_empresa_id_proveedor','get_empresa_id_session','admin_clinica_de_medico'];
+    'get_empresa_id_proveedor','get_empresa_id_session','admin_clinica_de_medico',
+    'catalogo_planes_visitador_publico'];
 BEGIN
   SELECT count(*) INTO v_n FROM pg_proc p JOIN pg_namespace n ON n.oid=p.pronamespace
    WHERE n.nspname='public' AND p.prosecdef AND has_function_privilege('anon', p.oid,'EXECUTE');
@@ -17117,7 +17121,7 @@ BEGIN
 
   PERFORM set_config('probe.p739', CASE
     WHEN v_sobran IS NULL AND v_faltan IS NULL
-      THEN 'OK (quedan las 10 esperadas: las usadas en policies; registrar_proveedor sin anon desde la 327)'
+      THEN 'OK (quedan las 11 esperadas: las 10 usadas en policies y catalogo_planes_visitador_publico (362); registrar_proveedor sin anon desde la 327)'
     WHEN v_faltan IS NOT NULL
       THEN 'ROJO (el barrido se paso: perdieron anon '||v_faltan||')'
     ELSE 'ROJO ('||v_n||' ejecutables por anon; sobran: '||left(v_sobran,200)||')'
@@ -32111,6 +32115,124 @@ EXCEPTION WHEN OTHERS THEN
   PERFORM set_config('probe.p995', 'FALLO ('||SQLSTATE||' '||SQLERRM||')', false);
 END $$;
 
+-- ---------------- P996-P1000 catalogo publico de planes de visitador (362) ----------------
+-- anon con el mecanismo del harness (request.jwt.claims {"role":"anon"} + role anon, sin sub). Oraculo: las configs
+-- comprables de GT leidas como postgres de planes_configuracion/planes_base/cuentas_bancarias_pais con el criterio de
+-- solicitar_compra_plan_visitador (351), > 0, si no FALLO (sin fixture). P998 siembra como postgres, dentro de una
+-- subtransaccion que se descarta, una config INACTIVA y su gemela ACTIVA (control positivo) sobre una base comprable de
+-- GT; despues se verifica que planes_configuracion vuelve a su conteo.
+--   P996 anon: > 0 filas de GT y cada una coincide (config, precio, moneda, visitas, duracion) con el oraculo
+--   P997 anon: no aparece ningun pais sin config comprable (ZZ, T9)
+--   P998 anon: la config inactiva sembrada no aparece (y su gemela activa si)
+--   P999 anon: sigue sin SELECT en planes_base y planes_configuracion (la 350 no se revierte; ejercitado)
+--   P1000 catalogo: ACL exacta de la funcion y funciones de public/private ejecutables por anon = 38 + 1 (esta)
+DO $$
+DECLARE
+  v_gt uuid; o_txt text; f_txt text; n int; st text; v_zz boolean; v_t9 boolean; v_paises text;
+  v_base uuid; c_inact uuid; c_act uuid; pre bigint; post bigint; r_rest text := 'OK'; v_vis text;
+  r996 text; r997 text; r998 text; r999 text; e_pb text; e_pc text;
+BEGIN
+  IF current_user <> 'postgres' THEN RAISE EXCEPTION 'fixture roto: P996 corre como %', current_user; END IF;
+  SELECT id INTO v_gt FROM public.configuracion_pais WHERE codigo = 'GT';
+  v_zz := EXISTS (SELECT 1 FROM public.configuracion_pais WHERE codigo = 'ZZ');
+  v_t9 := EXISTS (SELECT 1 FROM public.configuracion_pais WHERE codigo = 'T9');
+  -- oraculo GT, como postgres: el criterio de la 351
+  o_txt := (SELECT string_agg(pc.id||'|'||pc.precio_local||'|'||pc.moneda_local||'|'||pc.visitas_incluidas||'|'||pc.duracion_dias, ',' ORDER BY pc.id)
+              FROM public.planes_configuracion pc JOIN public.planes_base pb ON pb.id = pc.plan_base_id
+             WHERE pc.pais_id = v_gt AND pc.activo IS TRUE AND pb.activo IS TRUE AND pb.tipo::text = 'visitador'
+               AND pc.visitas_incluidas IS NOT NULL AND pc.duracion_dias IS NOT NULL AND pc.precio_local > 0
+               AND (SELECT cb.moneda FROM public.cuentas_bancarias_pais cb WHERE cb.pais_id = pc.pais_id AND cb.activo ORDER BY cb.created_at LIMIT 1) = pc.moneda_local::text);
+  IF v_gt IS NULL OR o_txt IS NULL OR NOT v_zz OR NOT v_t9 THEN
+    RAISE EXCEPTION 'sin fixture: P996 sin GT (%), sin configs comprables de GT (oraculo vacio) o sin ZZ/T9 (%/%)', v_gt, v_zz, v_t9;
+  END IF;
+  SELECT pc.plan_base_id INTO v_base FROM public.planes_configuracion pc
+   WHERE pc.pais_id = v_gt AND pc.id::text = split_part(split_part(o_txt, ',', 1), '|', 1);
+
+  -- P996 / P997 como anon
+  st := 'OK';
+  BEGIN
+    PERFORM set_config('request.jwt.claims', '{"role":"anon"}', true);
+    PERFORM set_config('role', 'anon', true);
+    f_txt := (SELECT string_agg(x.config_id||'|'||x.precio||'|'||x.moneda||'|'||x.visitas||'|'||x.duracion_dias, ',' ORDER BY x.config_id)
+                FROM public.catalogo_planes_visitador_publico() x WHERE x.pais_codigo = 'GT');
+    v_paises := (SELECT string_agg(DISTINCT x.pais_codigo, ',') FROM public.catalogo_planes_visitador_publico() x);
+    PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
+  EXCEPTION WHEN OTHERS THEN st := SQLSTATE; PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
+  END;
+  r996 := CASE WHEN st = 'OK' AND f_txt IS NOT DISTINCT FROM o_txt THEN 'OK' ELSE 'ROJO' END
+          ||' (anon: '||st||'; GT por la funcion '||COALESCE(array_length(string_to_array(f_txt, ','), 1), 0)||' filas, oraculo '
+          ||array_length(string_to_array(o_txt, ','), 1)||CASE WHEN f_txt IS DISTINCT FROM o_txt THEN '; distinto: funcion='||COALESCE(f_txt, '-')||' oraculo='||o_txt ELSE ', iguales en config/precio/moneda/visitas/duracion' END||')';
+  r997 := CASE WHEN st = 'OK' AND v_paises IS NOT NULL AND position('ZZ' IN v_paises) = 0 AND position('T9' IN v_paises) = 0 THEN 'OK' ELSE 'ROJO' END
+          ||' (anon: '||st||'; paises en el catalogo: '||COALESCE(v_paises, '-')||'; ZZ y T9 existen y no deben aparecer)';
+
+  -- P998: config inactiva sembrada (y su gemela activa como control)
+  pre := (SELECT count(*) FROM public.planes_configuracion);
+  BEGIN
+    INSERT INTO public.planes_configuracion (pais_id, plan_base_id, precio_local, moneda_local, visitas_incluidas, duracion_dias, activo)
+      VALUES (v_gt, v_base, 333, 'GTQ', 7, 30, false) RETURNING id INTO c_inact;
+    INSERT INTO public.planes_configuracion (pais_id, plan_base_id, precio_local, moneda_local, visitas_incluidas, duracion_dias, activo)
+      VALUES (v_gt, v_base, 334, 'GTQ', 7, 30, true) RETURNING id INTO c_act;
+    st := 'OK';
+    BEGIN
+      PERFORM set_config('request.jwt.claims', '{"role":"anon"}', true);
+      PERFORM set_config('role', 'anon', true);
+      v_vis := (SELECT string_agg(CASE x.config_id WHEN c_inact THEN 'inactiva' WHEN c_act THEN 'activa' END, ',' ORDER BY 1)
+                  FROM public.catalogo_planes_visitador_publico() x WHERE x.config_id IN (c_inact, c_act));
+      PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
+    EXCEPTION WHEN OTHERS THEN st := SQLSTATE; PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
+    END;
+    r998 := CASE WHEN st = 'OK' AND v_vis = 'activa' THEN 'OK' ELSE 'ROJO' END
+            ||' (anon: '||st||'; de las 2 sembradas en GT aparecen: '||COALESCE(v_vis, 'ninguna')||'; esperado solo la activa)';
+    RAISE EXCEPTION 'P998 descarte' USING ERRCODE = 'P0999';
+  EXCEPTION WHEN SQLSTATE 'P0999' THEN NULL;
+  END;
+  post := (SELECT count(*) FROM public.planes_configuracion);
+  IF post IS DISTINCT FROM pre THEN r_rest := 'planes_configuracion '||pre||' -> '||post; r998 := 'ROJO (restauracion: '||r_rest||') '||r998; END IF;
+
+  -- P999: anon sigue sin SELECT en planes_base y planes_configuracion (catalogo + ejercitado)
+  e_pb := 'OK'; e_pc := 'OK';
+  BEGIN
+    PERFORM set_config('request.jwt.claims', '{"role":"anon"}', true);
+    PERFORM set_config('role', 'anon', true);
+    BEGIN PERFORM 1 FROM public.planes_base LIMIT 1; e_pb := 'LEYO'; EXCEPTION WHEN insufficient_privilege THEN e_pb := '42501'; END;
+    BEGIN PERFORM 1 FROM public.planes_configuracion LIMIT 1; e_pc := 'LEYO'; EXCEPTION WHEN insufficient_privilege THEN e_pc := '42501'; END;
+    PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
+  EXCEPTION WHEN OTHERS THEN e_pb := SQLSTATE; PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
+  END;
+  r999 := CASE WHEN e_pb = '42501' AND e_pc = '42501' AND NOT has_table_privilege('anon', 'public.planes_base', 'SELECT')
+                    AND NOT has_table_privilege('anon', 'public.planes_configuracion', 'SELECT') THEN 'OK' ELSE 'ROJO' END
+          ||' (anon SELECT planes_base: '||e_pb||', planes_configuracion: '||e_pc||'; privilegio de tabla: '
+          ||has_table_privilege('anon', 'public.planes_base', 'SELECT')||'/'||has_table_privilege('anon', 'public.planes_configuracion', 'SELECT')||')';
+
+  PERFORM set_config('probe.p996', r996, false);
+  PERFORM set_config('probe.p997', r997, false);
+  PERFORM set_config('probe.p998', r998, false);
+  PERFORM set_config('probe.p999', r999, false);
+EXCEPTION WHEN OTHERS THEN
+  PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
+  PERFORM set_config('probe.p996', 'FALLO ('||SQLSTATE||' '||SQLERRM||')', false);
+  PERFORM set_config('probe.p997', 'FALLO ('||SQLSTATE||' '||SQLERRM||')', false);
+  PERFORM set_config('probe.p998', 'FALLO ('||SQLSTATE||' '||SQLERRM||')', false);
+  PERFORM set_config('probe.p999', 'FALLO ('||SQLSTATE||' '||SQLERRM||')', false);
+END $$;
+SELECT set_config('role', 'none', true);
+
+-- P1000 catalogo de la 362: ACL exacta de catalogo_planes_visitador_publico (postgres, authenticated, service_role, anon;
+-- sin PUBLIC) y funciones de public/private ejecutables por anon = 38 (antes de la 362) + 1, y esa 1 es esta.
+DO $$
+DECLARE v text; n_total int; n_sin int;
+BEGIN
+  v := (SELECT p.proacl::text FROM pg_proc p WHERE p.oid = to_regprocedure('public.catalogo_planes_visitador_publico()'));
+  n_total := (SELECT count(*) FROM pg_proc p WHERE p.pronamespace IN ('public'::regnamespace, 'private'::regnamespace) AND has_function_privilege('anon', p.oid, 'EXECUTE'));
+  n_sin := (SELECT count(*) FROM pg_proc p WHERE p.pronamespace IN ('public'::regnamespace, 'private'::regnamespace) AND has_function_privilege('anon', p.oid, 'EXECUTE')
+              AND p.oid IS DISTINCT FROM to_regprocedure('public.catalogo_planes_visitador_publico()'));
+  PERFORM set_config('probe.p1000', CASE WHEN v = '{postgres=X/postgres,authenticated=X/postgres,service_role=X/postgres,anon=X/postgres}' AND n_sin = 38 AND n_total = 39
+    THEN 'OK (ACL exacta '||v||'; ejecutables por anon '||n_total||' = 38 + esta)'
+    ELSE 'ROJO (ACL '||COALESCE(v, 'NO EXISTE')||'; ejecutables por anon '||n_total||', sin esta '||n_sin||'; esperado 39 = 38 + 1)' END, false);
+EXCEPTION WHEN OTHERS THEN
+  PERFORM set_config('probe.p1000', 'FALLO ('||SQLSTATE||' '||SQLERRM||')', false);
+END $$;
+
 -- ===== Veredictos como result set =====
 SELECT 'P1_anon_insert_citas'              AS probe, current_setting('probe.p1', true)  AS verdict, 'BLOQUEADO' AS esperado_post_fix
 UNION ALL SELECT 'P2_medico_cancela_ajena_rpc',         current_setting('probe.p2', true),  'BLOQUEADO'
@@ -32910,7 +33032,7 @@ UNION ALL SELECT 'P735_fo_planes_paciente',          current_setting('probe.p735
 UNION ALL SELECT 'P736_fo_metrica_anon_no_escribe',  current_setting('probe.p736', true),    'OK (delta 0)'
 UNION ALL SELECT 'P737_fo_slots_anon_y_ctrl_pos',    current_setting('probe.p737', true),    'OK (corta anon, responde auth)'
 UNION ALL SELECT 'P738_fo_sin_execute_y_interna',    current_setting('probe.p738', true),    'OK (revocada, interna viva)'
-UNION ALL SELECT 'P739_rv_censo_anon_secdef',         current_setting('probe.p739', true),    'OK (quedan las 10 esperadas)'
+UNION ALL SELECT 'P739_rv_censo_anon_secdef',         current_setting('probe.p739', true),    'OK (11 esperadas: 10 de policies + catalogo_planes_visitador_publico desde la 362)'
 UNION ALL SELECT 'P740_rv_anon_ejercitado',           current_setting('probe.p740', true),    'OK (42501 en 8 revocadas)'
 UNION ALL SELECT 'P741_rv_excepciones_intactas',      current_setting('probe.p741', true),    'OK (registrar_proveedor sin anon + 10 + 5 tablas sin 42501)'
 UNION ALL SELECT 'P742_rv_cadena_interna_viva',       current_setting('probe.p742', true),    'OK (control positivo)'
@@ -33181,6 +33303,11 @@ UNION ALL SELECT 'P992_campana_fin_antes_inicio_361',  current_setting('probe.p9
 UNION ALL SELECT 'P993_campana_aprobar_excede_361',  current_setting('probe.p993', true), 'OK (361: aprobar una enviada que excede -> CA014, sin publicar, pago pendiente)'
 UNION ALL SELECT 'P994_campana_aprobar_publicada_361',  current_setting('probe.p994', true), 'OK (361: una ya publicada que excede devuelve su id)'
 UNION ALL SELECT 'P995_campana_duracion_catalogo_361',  current_setting('probe.p995', true), 'OK (361: md5 de las dos funciones)'
+UNION ALL SELECT 'P996_catalogo_visitador_anon_362',  current_setting('probe.p996', true), 'OK (362: anon ve las configs comprables de GT = oraculo)'
+UNION ALL SELECT 'P997_catalogo_visitador_sin_zz_t9_362',  current_setting('probe.p997', true), 'OK (362: ZZ y T9 no aparecen)'
+UNION ALL SELECT 'P998_catalogo_visitador_inactiva_362',  current_setting('probe.p998', true), 'OK (362: la config inactiva no aparece; su gemela activa si)'
+UNION ALL SELECT 'P999_catalogo_visitador_anon_tablas_362',  current_setting('probe.p999', true), 'OK (362: anon sigue sin SELECT en planes_base/planes_configuracion)'
+UNION ALL SELECT 'P1000_catalogo_visitador_acl_362',  current_setting('probe.p1000', true), 'OK (362: ACL exacta; ejecutables por anon = 38 + 1)'
 -- Las filas FX* son SALUD DE FIXTURE, no probes de seguridad: dicen si la precondicion que una
 -- migracion posterior empezo a exigir se pudo sembrar. Si una sale ROJO, los probes que dependen de
 -- ese fixture reportan N/A (su flag de ready se pierde con el rollback de la subtransaccion) en vez
@@ -33425,7 +33552,7 @@ UNION ALL SELECT 'P000_CENTINELA_veredictos_no_nulos',
        'probe.p866', 'probe.p867', 'probe.p868', 'probe.p869', 'probe.p870', 'probe.p871', 'probe.p872', 'probe.p873', 'probe.p874', 'probe.p875', 'probe.p876', 'probe.p877', 'probe.p878',
        'probe.p879', 'probe.p880', 'probe.p881', 'probe.p882', 'probe.p883', 'probe.p884',
        'probe.p885', 'probe.p886', 'probe.p887', 'probe.p888', 'probe.p889', 'probe.p890', 'probe.p891', 'probe.p892', 'probe.p893', 'probe.p894', 'probe.p895', 'probe.p896', 'probe.p908', 'probe.p909', 'probe.p910', 'probe.p911',
-       'probe.p897', 'probe.p898', 'probe.p899', 'probe.p900', 'probe.p901', 'probe.p902', 'probe.p903', 'probe.p904', 'probe.p905', 'probe.p906', 'probe.p907', 'probe.p912', 'probe.p913', 'probe.p914', 'probe.p915', 'probe.p916', 'probe.p917', 'probe.p918', 'probe.p919', 'probe.p920', 'probe.p921', 'probe.p922', 'probe.p923', 'probe.p924', 'probe.p925', 'probe.p926', 'probe.p927', 'probe.p928', 'probe.p929', 'probe.p930', 'probe.p931', 'probe.p932', 'probe.p933', 'probe.p934', 'probe.p935', 'probe.p936', 'probe.p937', 'probe.p938', 'probe.p939', 'probe.p940', 'probe.p941', 'probe.p942', 'probe.p943', 'probe.p944', 'probe.p945', 'probe.p946', 'probe.p947', 'probe.p948', 'probe.p949', 'probe.p950', 'probe.p951', 'probe.p952', 'probe.p953', 'probe.p954', 'probe.p955', 'probe.p956', 'probe.p957', 'probe.p958', 'probe.p959', 'probe.p960', 'probe.p961', 'probe.p962', 'probe.p963', 'probe.p964', 'probe.p965', 'probe.p966', 'probe.p967', 'probe.p968', 'probe.p969', 'probe.p970', 'probe.p971', 'probe.p972', 'probe.p973', 'probe.p974', 'probe.p975', 'probe.p976', 'probe.p977', 'probe.p978', 'probe.p979', 'probe.p980', 'probe.p981', 'probe.p982', 'probe.p983', 'probe.p984', 'probe.p985', 'probe.p986', 'probe.p987', 'probe.p988', 'probe.p989', 'probe.p990', 'probe.p991', 'probe.p992', 'probe.p993', 'probe.p994', 'probe.p995'
+       'probe.p897', 'probe.p898', 'probe.p899', 'probe.p900', 'probe.p901', 'probe.p902', 'probe.p903', 'probe.p904', 'probe.p905', 'probe.p906', 'probe.p907', 'probe.p912', 'probe.p913', 'probe.p914', 'probe.p915', 'probe.p916', 'probe.p917', 'probe.p918', 'probe.p919', 'probe.p920', 'probe.p921', 'probe.p922', 'probe.p923', 'probe.p924', 'probe.p925', 'probe.p926', 'probe.p927', 'probe.p928', 'probe.p929', 'probe.p930', 'probe.p931', 'probe.p932', 'probe.p933', 'probe.p934', 'probe.p935', 'probe.p936', 'probe.p937', 'probe.p938', 'probe.p939', 'probe.p940', 'probe.p941', 'probe.p942', 'probe.p943', 'probe.p944', 'probe.p945', 'probe.p946', 'probe.p947', 'probe.p948', 'probe.p949', 'probe.p950', 'probe.p951', 'probe.p952', 'probe.p953', 'probe.p954', 'probe.p955', 'probe.p956', 'probe.p957', 'probe.p958', 'probe.p959', 'probe.p960', 'probe.p961', 'probe.p962', 'probe.p963', 'probe.p964', 'probe.p965', 'probe.p966', 'probe.p967', 'probe.p968', 'probe.p969', 'probe.p970', 'probe.p971', 'probe.p972', 'probe.p973', 'probe.p974', 'probe.p975', 'probe.p976', 'probe.p977', 'probe.p978', 'probe.p979', 'probe.p980', 'probe.p981', 'probe.p982', 'probe.p983', 'probe.p984', 'probe.p985', 'probe.p986', 'probe.p987', 'probe.p988', 'probe.p989', 'probe.p990', 'probe.p991', 'probe.p992', 'probe.p993', 'probe.p994', 'probe.p995', 'probe.p996', 'probe.p997', 'probe.p998', 'probe.p999', 'probe.p1000'
              ]) AS n) s),
   'OK (todos los veredictos publicados)';
 

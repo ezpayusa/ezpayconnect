@@ -1,15 +1,34 @@
-import { useState } from 'react';
-import { useNavigate } from 'react-router-dom';
-import { toast } from 'sonner';
-import { MapPin, Check, ArrowRight, Navigation, Route, CalendarCheck, ClipboardCheck, BarChart3 } from 'lucide-react';
+import { useEffect, useMemo, useState } from 'react';
+import { Link, useNavigate } from 'react-router-dom';
+import { MapPin, Check, ArrowRight, Navigation, CalendarCheck, ClipboardCheck, BarChart3 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader } from '@/components/ui/card';
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog';
-import { usePlanes } from '@/hooks/usePlanes';
+import { supabase } from '@/lib/supabase';
 import { useAuth } from '@/hooks/useAuth';
 import { usePaisFiltro } from '@/hooks/usePaisFiltro';
-import { formatearPrecio, getBanderaPais } from '@/lib/planes-utils';
-import { configComprable } from '@/proveedor/lib/compraPlanVisitador';
+import { useProveedorAuth } from '@/proveedor/hooks/useProveedorAuth';
+import { getBanderaPais } from '@/lib/planes-utils';
+import { formatearMonto } from '@/lib/moneda';
+
+// Fila de catalogo_planes_visitador_publico (mig 362): solo lo que hoy se puede comprar (mismo criterio que
+// solicitar_compra_plan_visitador). Funciona sin sesión, así que la landing no lee planes_base ni planes_configuracion.
+interface PlanCatalogo {
+  pais_codigo: string;
+  pais_nombre: string;
+  config_id: string;
+  plan_nombre: string;
+  plan_descripcion: string | null;
+  precio: number;
+  moneda: string;
+  visitas: number;
+  duracion_dias: number;
+}
+
+// getBanderaPais tipa el código con su lista cerrada; un código fuera de la lista cae en su bandera genérica.
+const bandera = (codigo: string) => getBanderaPais(codigo as Parameters<typeof getBanderaPais>[0]);
+
+const ERROR_CARGA = 'No pudimos cargar los planes. Intente de nuevo en unos minutos.';
 
 // Solo se describe lo que el módulo de visitas hace hoy.
 const FUNCIONES_REALES = [
@@ -21,46 +40,98 @@ const FUNCIONES_REALES = [
 ];
 
 export default function PlanesVisitadorPage() {
-  const { paisId } = usePaisFiltro();
-  const { planesBase, planesConfig, paises, loading } = usePlanes({ pais_id: paisId || undefined });
+  const { paisId: paisPerfil } = usePaisFiltro();
+  const { user: userProveedor, cuenta, empresa } = useProveedorAuth();
   const { user } = useAuth();
   const navigate = useNavigate();
-  const [paisSeleccionado, setPaisSeleccionado] = useState(paisId || 'GT');
-  const [planCheckout, setPlanCheckout] = useState<any>(null);
 
-  const planesVisitador = planesBase.filter(p => p.tipo === 'visitador');
+  const [planes, setPlanes] = useState<PlanCatalogo[]>([]);
+  const [cargando, setCargando] = useState(true);
+  const [errorCarga, setErrorCarga] = useState(false);
+  const [paisElegido, setPaisElegido] = useState<string | null>(null);
+  const [planCheckout, setPlanCheckout] = useState<PlanCatalogo | null>(null);
 
-  // La compra cobra el precio mensual de la configuración del país y suma sus visitas por su duración (mig 351).
-  const getConfigForPlan = (planId: string) => {
-    return planesConfig.find(c => c.plan_base_id === planId && c.pais?.codigo === paisSeleccionado);
-  };
+  // País de la sesión: PRIMERO el de la empresa (es el que valida la compra, CP002 de solicitar_compra_plan_visitador),
+  // después el de la cuenta proveedora y después el del perfil. Es un uuid de configuracion_pais y el catálogo se
+  // identifica por código: hay que resolverlo (comparar el uuid contra el código dejaba todo en "No disponible").
+  const paisEmpresaId: string | null = empresa?.pais_id ?? null;
+  const paisSesionId: string | null = paisEmpresaId ?? cuenta?.pais_id ?? paisPerfil ?? null;
+  const [codigoSesion, setCodigoSesion] = useState<{ id: string; codigo: string | null } | null>(null);
+  const resolviendoPais = !!paisSesionId && codigoSesion?.id !== paisSesionId;
 
-  const getIcono = (nombre: string) => {
-    if (nombre.includes('Pro')) return <Route className="h-8 w-8" />;
-    return <Navigation className="h-8 w-8" />;
-  };
-
-  const getGradient = (nombre: string) => {
-    if (nombre.includes('Pro')) return 'from-orange-600 to-amber-700';
-    return 'from-amber-500 to-orange-600';
-  };
-
-  const handleElegirPlan = (plan: any) => {
-    const config = getConfigForPlan(plan.id);
-    if (!config || !configComprable(config)) {
-      toast.error('Este plan no está disponible para el país seleccionado.');
-      return;
-    }
-    setPlanCheckout({
-      ...plan,
-      config_id: config.id,
-      precio_local: config.precio_local,
-      moneda: config.moneda_local || config.pais?.moneda || 'USD',
-      visitas_incluidas: config.visitas_incluidas,
-      duracion_dias: config.duracion_dias,
-      pais: config.pais,
+  useEffect(() => {
+    let cancelado = false;
+    const fallo = (err: unknown) => {
+      console.error(err);
+      setErrorCarga(true);
+      setPlanes([]);
+      setCargando(false);
+    };
+    supabase.rpc('catalogo_planes_visitador_publico').then(({ data, error }) => {
+      if (cancelado) return;
+      if (error) return fallo(error);
+      setPlanes(((data as PlanCatalogo[] | null) ?? []).map((p) => ({ ...p, precio: Number(p.precio) })));
+      setCargando(false);
+    }, (err: unknown) => {
+      if (!cancelado) fallo(err);
     });
-  };
+    return () => {
+      cancelado = true;
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!paisSesionId) return;
+    let cancelado = false;
+    supabase
+      .from('configuracion_pais')
+      .select('codigo')
+      .eq('id', paisSesionId)
+      .maybeSingle()
+      .then(
+        ({ data, error }) => {
+          if (cancelado) return;
+          if (error) {
+            // sin código resoluble se usa el primer país del catálogo
+            console.error('[planes-visitador] no se pudo resolver el país:', error.code);
+            setCodigoSesion({ id: paisSesionId, codigo: null });
+            return;
+          }
+          setCodigoSesion({ id: paisSesionId, codigo: (data as { codigo?: string } | null)?.codigo ?? null });
+        },
+        (err: { code?: string } | null) => {
+          if (cancelado) return;
+          console.error('[planes-visitador] no se pudo resolver el país:', err?.code ?? 'sin code');
+          setCodigoSesion({ id: paisSesionId, codigo: null });
+        }
+      );
+    return () => {
+      cancelado = true;
+    };
+  }, [paisSesionId]);
+
+  // Países del selector: solo los que tienen algo comprable (el orden es el de la RPC, por código).
+  const paises = useMemo(() => {
+    const vistos = new Map<string, string>();
+    for (const p of planes) if (!vistos.has(p.pais_codigo)) vistos.set(p.pais_codigo, p.pais_nombre);
+    return [...vistos].map(([codigo, nombre]) => ({ codigo, nombre }));
+  }, [planes]);
+
+  // País inicial: el de la sesión si está en el catálogo; si no, el primero del catálogo.
+  const codigoInicial =
+    codigoSesion?.codigo && paises.some((p) => p.codigo === codigoSesion.codigo) ? codigoSesion.codigo : paises[0]?.codigo;
+  const paisSeleccionado = paisElegido ?? codigoInicial ?? null;
+  const planesPais = planes.filter((p) => p.pais_codigo === paisSeleccionado);
+  const loading = cargando || resolviendoPais;
+  const esProveedor = !!cuenta;
+
+  // La compra es solo en el país de la empresa (CP002). Con sesión de proveedor, fuera de ese país no se ofrece comprar.
+  const codigoEmpresa = paisEmpresaId && codigoSesion?.id === paisEmpresaId ? codigoSesion.codigo : null;
+  const paisEmpresa = codigoEmpresa ? paises.find((p) => p.codigo === codigoEmpresa) ?? null : null;
+  const puedeComprarAca = !esProveedor || (!!paisEmpresa && paisSeleccionado === paisEmpresa.codigo);
+  const avisoPaisEmpresa = paisEmpresa
+    ? `Su empresa puede comprar planes solo en ${paisEmpresa.nombre}.`
+    : 'Por ahora no hay planes disponibles para su país.';
 
   return (
     <div className="min-h-screen bg-gradient-to-b from-amber-50 to-white">
@@ -70,31 +141,34 @@ export default function PlanesVisitadorPage() {
           <div className="flex justify-center mb-4">
             <MapPin className="h-16 w-16 text-amber-200" />
           </div>
-          <h1 className="text-4xl font-bold mb-4">Planes para Visitadores</h1>
+          <h1 className="text-4xl font-bold mb-4">Planes de visitas médicas para su empresa</h1>
           <p className="text-xl text-amber-100 max-w-2xl mx-auto">
-            Organiza las visitas de tu equipo a médicos: agenda, aprobación del supervisor, check-in y check-out con
-            evidencia, ruta del día y reporte de visitas.
+            Compre una bolsa de visitas para todo su equipo en el país: agenda, aprobación del supervisor, check-in y
+            check-out con evidencia, ruta del día y reporte de visitas.
           </p>
         </div>
       </div>
 
       <div className="container mx-auto px-4 py-12">
         {/* Selector de país */}
-        <div className="flex flex-col md:flex-row justify-between items-center mb-8 gap-4">
-          <div className="flex gap-2">
-            {paises && paises.map((pais: any) => (
-              <Button
-                key={pais.id}
-                variant={paisSeleccionado === pais.codigo ? 'default' : 'outline'}
-                size="sm"
-                onClick={() => setPaisSeleccionado(pais.codigo)}
-                className={paisSeleccionado === pais.codigo ? 'bg-orange-600 hover:bg-orange-700' : ''}
-              >
-                {getBanderaPais(pais.codigo)} {pais.nombre}
-              </Button>
-            ))}
+        {!loading && paises.length > 0 && (
+          <div className="flex flex-col md:flex-row justify-between items-center mb-8 gap-4">
+            <div className="flex gap-2" role="group" aria-label="País">
+              {paises.map((pais) => (
+                <Button
+                  key={pais.codigo}
+                  variant={paisSeleccionado === pais.codigo ? 'default' : 'outline'}
+                  size="sm"
+                  aria-pressed={paisSeleccionado === pais.codigo}
+                  onClick={() => setPaisElegido(pais.codigo)}
+                  className={paisSeleccionado === pais.codigo ? 'bg-orange-600 hover:bg-orange-700' : ''}
+                >
+                  {bandera(pais.codigo)} {pais.nombre}
+                </Button>
+              ))}
+            </div>
           </div>
-        </div>
+        )}
 
         {/* Loading */}
         {loading && (
@@ -103,84 +177,64 @@ export default function PlanesVisitadorPage() {
           </div>
         )}
 
-        {/* Grid planes */}
-        {!loading && planesVisitador.length > 0 && (
-          <div className="grid md:grid-cols-2 gap-8 max-w-4xl mx-auto">
-            {planesVisitador.map((plan) => {
-              const config = getConfigForPlan(plan.id);
-              const disponible = !!config && configComprable(config);
-              const moneda = config?.moneda_local || config?.pais?.moneda || plan.moneda || 'USD';
+        {!loading && errorCarga && <div className="text-center py-12 text-gray-500">{ERROR_CARGA}</div>}
 
-              return (
-                <Card
-                  key={plan.id}
-                  className={`relative overflow-hidden border-2 ${plan.nombre.includes('Pro') ? 'border-orange-500 shadow-xl scale-105' : 'border-gray-200'}`}
-                >
-                  {plan.nombre.includes('Pro') && (
-                    <div className="absolute top-0 right-0 bg-gradient-to-l from-orange-500 to-amber-600 text-white px-4 py-1 rounded-bl-lg text-sm font-semibold">
-                      Recomendado
-                    </div>
-                  )}
-
-                  <CardHeader className={`bg-gradient-to-r ${getGradient(plan.nombre)} text-white p-6`}>
-                    <div className="flex items-center gap-3 mb-2">
-                      {getIcono(plan.nombre)}
-                      <h3 className="text-2xl font-bold">{plan.nombre}</h3>
-                    </div>
-                    <p className="text-amber-100 text-sm">{plan.descripcion}</p>
-                  </CardHeader>
-
-                  <CardContent className="p-6">
-                    <div className="mb-6">
-                      {disponible ? (
-                        <div className="flex items-baseline gap-1">
-                          <span className="text-4xl font-bold text-gray-900">{formatearPrecio(config!.precio_local, moneda)}</span>
-                          <span className="text-gray-500">/{config!.duracion_dias} días</span>
-                        </div>
-                      ) : (
-                        <p className="text-sm text-gray-500">No disponible en el país seleccionado.</p>
-                      )}
-                    </div>
-
-                    <ul className="space-y-3 mb-6">
-                      {disponible && (
-                        <>
-                          <li className="flex items-start gap-2 text-sm">
-                            <Check className="h-4 w-4 text-orange-500 mt-0.5 shrink-0" />
-                            <span className="text-gray-700 font-medium">{config!.visitas_incluidas} visitas incluidas</span>
-                          </li>
-                          <li className="flex items-start gap-2 text-sm">
-                            <Check className="h-4 w-4 text-orange-500 mt-0.5 shrink-0" />
-                            <span className="text-gray-700 font-medium">Vigencia de {config!.duracion_dias} días</span>
-                          </li>
-                        </>
-                      )}
-                      {FUNCIONES_REALES.map((f) => (
-                        <li key={f} className="flex items-start gap-2 text-sm">
-                          <Check className="h-4 w-4 text-orange-500 mt-0.5 shrink-0" />
-                          <span className="text-gray-700">{f}</span>
-                        </li>
-                      ))}
-                    </ul>
-
-                    <Button
-                      className={`w-full ${plan.nombre.includes('Pro') ? 'bg-gradient-to-r from-orange-600 to-amber-600 hover:from-orange-700 hover:to-amber-700' : 'bg-gray-900 hover:bg-gray-800'}`}
-                      size="lg"
-                      disabled={!disponible}
-                      onClick={() => handleElegirPlan(plan)}
-                    >
-                      Elegir Plan <ArrowRight className="ml-2 h-4 w-4" />
-                    </Button>
-                  </CardContent>
-                </Card>
-              );
-            })}
+        {!loading && !errorCarga && planesPais.length > 0 && !puedeComprarAca && (
+          <div className="mb-8 max-w-5xl mx-auto rounded-lg border border-amber-200 bg-amber-50 p-4 text-center text-sm text-amber-800">
+            {avisoPaisEmpresa}
           </div>
         )}
 
-        {!loading && planesVisitador.length === 0 && (
+        {/* Grid planes */}
+        {!loading && !errorCarga && planesPais.length > 0 && (
+          <div className="grid md:grid-cols-3 gap-8 max-w-5xl mx-auto">
+            {planesPais.map((plan) => (
+              <Card key={plan.config_id} className="relative overflow-hidden border-2 border-gray-200">
+                <CardHeader className="bg-gradient-to-r from-amber-500 to-orange-600 text-white p-6">
+                  <div className="flex items-center gap-3 mb-2">
+                    <Navigation className="h-8 w-8" />
+                    <h3 className="text-2xl font-bold">{plan.plan_nombre}</h3>
+                  </div>
+                  {plan.plan_descripcion && <p className="text-amber-100 text-sm">{plan.plan_descripcion}</p>}
+                </CardHeader>
+
+                <CardContent className="p-6">
+                  <div className="mb-6 flex items-baseline gap-1">
+                    <span className="text-4xl font-bold text-gray-900">{formatearMonto(plan.precio, plan.moneda)}</span>
+                    <span className="text-gray-500">/{plan.duracion_dias} días</span>
+                  </div>
+
+                  <ul className="space-y-3 mb-6">
+                    <li className="flex items-start gap-2 text-sm">
+                      <Check className="h-4 w-4 text-orange-500 mt-0.5 shrink-0" />
+                      <span className="text-gray-700 font-medium">{plan.visitas} visitas para todo su equipo</span>
+                    </li>
+                    <li className="flex items-start gap-2 text-sm">
+                      <Check className="h-4 w-4 text-orange-500 mt-0.5 shrink-0" />
+                      <span className="text-gray-700 font-medium">Vigencia de {plan.duracion_dias} días</span>
+                    </li>
+                    {FUNCIONES_REALES.map((f) => (
+                      <li key={f} className="flex items-start gap-2 text-sm">
+                        <Check className="h-4 w-4 text-orange-500 mt-0.5 shrink-0" />
+                        <span className="text-gray-700">{f}</span>
+                      </li>
+                    ))}
+                  </ul>
+
+                  {puedeComprarAca && (
+                    <Button className="w-full bg-gray-900 hover:bg-gray-800" size="lg" onClick={() => setPlanCheckout(plan)}>
+                      Elegir plan <ArrowRight className="ml-2 h-4 w-4" />
+                    </Button>
+                  )}
+                </CardContent>
+              </Card>
+            ))}
+          </div>
+        )}
+
+        {!loading && !errorCarga && planesPais.length === 0 && (
           <div className="text-center py-12 text-gray-500">
-            No hay planes de visitador disponibles.
+            Por ahora no hay planes de visitas a la venta. Escriba al equipo de EzPayConnect para más información.
           </div>
         )}
 
@@ -189,17 +243,17 @@ export default function PlanesVisitadorPage() {
           <div className="text-center p-6">
             <CalendarCheck className="h-12 w-12 text-orange-600 mx-auto mb-4" />
             <h3 className="text-lg font-semibold mb-2">Agenda y aprobación</h3>
-            <p className="text-gray-600">El visitador propone las visitas a médicos y el supervisor las aprueba.</p>
+            <p className="text-gray-600">Sus visitadores proponen las visitas a médicos y su supervisor las aprueba.</p>
           </div>
           <div className="text-center p-6">
             <ClipboardCheck className="h-12 w-12 text-orange-600 mx-auto mb-4" />
             <h3 className="text-lg font-semibold mb-2">Check-in y check-out</h3>
-            <p className="text-gray-600">Cada visita se registra al llegar y al salir, con evidencia.</p>
+            <p className="text-gray-600">Cada visita queda registrada al llegar y al salir, con evidencia.</p>
           </div>
           <div className="text-center p-6">
             <BarChart3 className="h-12 w-12 text-orange-600 mx-auto mb-4" />
             <h3 className="text-lg font-semibold mb-2">Ruta y reporte</h3>
-            <p className="text-gray-600">La ruta del día de cada visitador y el reporte de visitas realizadas.</p>
+            <p className="text-gray-600">Usted ve la ruta del día de cada visitador y el reporte de las visitas realizadas.</p>
           </div>
         </div>
       </div>
@@ -216,31 +270,56 @@ export default function PlanesVisitadorPage() {
           {planCheckout && (
             <div className="space-y-4">
               <div className="bg-orange-50 p-4 rounded-lg">
-                <h3 className="font-bold text-lg">{planCheckout.nombre}</h3>
-                <p className="text-sm text-gray-600">{planCheckout.descripcion}</p>
+                <h3 className="font-bold text-lg">{planCheckout.plan_nombre}</h3>
+                {planCheckout.plan_descripcion && <p className="text-sm text-gray-600">{planCheckout.plan_descripcion}</p>}
                 <div className="mt-2">
                   <span className="text-2xl font-bold text-orange-700">
-                    {formatearPrecio(planCheckout.precio_local, planCheckout.moneda)}
+                    {formatearMonto(planCheckout.precio, planCheckout.moneda)}
                   </span>
                 </div>
               </div>
 
               <div className="space-y-2">
-                <p className="text-sm"><strong>País:</strong> {getBanderaPais(planCheckout.pais?.codigo)} {planCheckout.pais?.nombre || paisSeleccionado}</p>
-                <p className="text-sm"><strong>Incluye:</strong> {planCheckout.visitas_incluidas} visitas, vigentes {planCheckout.duracion_dias} días</p>
-                <p className="text-sm"><strong>Usuario:</strong> {user?.email || 'Invitado'}</p>
+                <p className="text-sm"><strong>País:</strong> {bandera(planCheckout.pais_codigo)} {planCheckout.pais_nombre}</p>
+                <p className="text-sm">
+                  <strong>Incluye:</strong> {planCheckout.visitas} visitas para todo su equipo, vigentes {planCheckout.duracion_dias} días
+                </p>
+                {esProveedor && (
+                  <p className="text-sm"><strong>Usuario:</strong> {userProveedor?.email || user?.email}</p>
+                )}
               </div>
 
+              <p className="text-sm text-gray-600">
+                El pago es por transferencia bancaria: usted sube el comprobante y, cuando EzPayConnect lo aprueba, las
+                visitas se acreditan a su empresa. Si su empresa ya tiene un plan vigente en este país, las visitas se
+                suman y la vigencia se extiende {planCheckout.duracion_dias} días.
+              </p>
+
+              {!esProveedor && (
+                <p className="text-sm text-gray-700">
+                  Para comprar, ingrese con la cuenta de su empresa proveedora.{' '}
+                  <Link to="/proveedor/login" className="font-medium text-orange-700 underline">
+                    Ingresar
+                  </Link>
+                </p>
+              )}
+
+              {esProveedor && !puedeComprarAca && <p className="text-sm text-amber-800">{avisoPaisEmpresa}</p>}
+
               <div className="flex gap-2">
-                <Button
-                  className="flex-1 bg-orange-600 hover:bg-orange-700"
-                  onClick={() => {
-                    navigate(`/proveedor/checkout?tipo=plan_visitador&referencia_id=${planCheckout.config_id}&descripcion=${encodeURIComponent(planCheckout.nombre)}`);
-                    setPlanCheckout(null);
-                  }}
-                >
-                  Proceder al Pago
-                </Button>
+                {esProveedor && puedeComprarAca && (
+                  <Button
+                    className="flex-1 bg-orange-600 hover:bg-orange-700"
+                    onClick={() => {
+                      navigate(
+                        `/proveedor/checkout?tipo=plan_visitador&referencia_id=${planCheckout.config_id}&descripcion=${encodeURIComponent(planCheckout.plan_nombre)}`
+                      );
+                      setPlanCheckout(null);
+                    }}
+                  >
+                    Continuar: pago por transferencia
+                  </Button>
+                )}
                 <Button variant="outline" onClick={() => setPlanCheckout(null)}>
                   Cancelar
                 </Button>
