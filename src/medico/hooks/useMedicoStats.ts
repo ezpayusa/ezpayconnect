@@ -29,17 +29,21 @@ export function useMedicoStats() {
       const ahora = new Date()
       const hoy = hoyISO()
       const inicioMes = fechaLocalISO(new Date(ahora.getFullYear(), ahora.getMonth(), 1))
+      // recetas.created_at es timestamptz: medianoche LOCAL del día 1, convertida a instante
+      const inicioMesInstante = new Date(ahora.getFullYear(), ahora.getMonth(), 1).toISOString()
       // fin de una cita = fecha + hora_fin (o hora_inicio si no hay); inicio = fecha + hora_inicio
       const finDe = (c: { fecha: string; hora_inicio: string | null; hora_fin?: string | null }) =>
         combinar(c.fecha, c.hora_fin || c.hora_inicio).getTime()
       const inicioDe = (c: { fecha: string; hora_inicio: string | null }) => combinar(c.fecha, c.hora_inicio).getTime()
 
-      // Citas de hoy
-      const { count: citasHoyCount } = await supabase
+      // Citas de hoy (sin canceladas ni no_show)
+      const { count: citasHoyCount, error: errHoy } = await supabase
         .from('citas')
         .select('*', { count: 'exact', head: true })
         .eq('medico_id', user.id)
         .eq('fecha', hoy)
+        .not('estado', 'in', '(cancelada,no_show)')
+      if (errHoy) throw errHoy
 
       // Pendientes de confirmar (solicitada + agendada) que todavía no terminaron: una vieja sin cerrar no cuenta.
       const { data: pendientesData, error: errPendientes } = await supabase
@@ -52,21 +56,23 @@ export function useMedicoStats() {
       const pendientesCount = (pendientesData || []).filter((c) => finDe(c) >= ahora.getTime()).length
 
       // Pacientes únicos atendidos este mes (completadas)
-      const { data: pacientesMesData } = await supabase
+      const { data: pacientesMesData, error: errPacientesMes } = await supabase
         .from('citas')
         .select('paciente_id')
         .eq('medico_id', user.id)
         .eq('estado', 'completada')
         .gte('fecha', inicioMes)
+      if (errPacientesMes) throw errPacientesMes
 
       const pacientesUnicos = new Set(pacientesMesData?.map(c => c.paciente_id) || []).size
 
       // Recetas emitidas este mes
-      const { count: recetasCount } = await supabase
+      const { count: recetasCount, error: errRecetas } = await supabase
         .from('recetas')
         .select('*', { count: 'exact', head: true })
         .eq('medico_id', user.id)
-        .gte('created_at', inicioMes)
+        .gte('created_at', inicioMesInstante)
+      if (errRecetas) throw errRecetas
 
       // Próxima cita confirmada o agendada: la primera que todavía no empezó (las de hoy ya pasadas no cuentan).
       // Sin join para evitar schema cache bug.

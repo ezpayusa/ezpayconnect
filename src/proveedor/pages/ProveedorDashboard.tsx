@@ -212,7 +212,7 @@ export default function ProveedorDashboard() {
                 <div className="flex items-center justify-between">
                   <div>
                     <p className="text-sm text-muted-foreground">Campañas activas</p>
-                    <p className="text-2xl font-bold mt-1">{stats.campanasAprobadas}</p>
+                    <p className="text-2xl font-bold mt-1">{stats.campanasActivas}</p>
                   </div>
                   <div className="w-10 h-10 rounded-lg bg-amber-50 text-amber-600 flex items-center justify-center">
                     <Megaphone className="h-5 w-5" />
@@ -249,15 +249,25 @@ export default function ProveedorDashboard() {
                   <Badge variant="secondary" className="bg-gray-100 text-gray-700">
                     Total: {stats.visitasTotal}
                   </Badge>
+                  {stats.visitasPropuestas > 0 && (
+                    <Badge variant="secondary" className="bg-amber-50 text-amber-700">
+                      Propuestas: {stats.visitasPropuestas}
+                    </Badge>
+                  )}
                   <Badge variant="secondary" className="bg-blue-50 text-blue-700">
-                    Propuestas: {stats.visitasPropuestas}
+                    Pendientes: {stats.visitasPendientes}
                   </Badge>
                   <Badge variant="secondary" className="bg-emerald-50 text-emerald-700">
                     Confirmadas: {stats.visitasConfirmadas}
                   </Badge>
-                  <Badge variant="secondary" className="bg-purple-50 text-purple-700">
-                    Completadas: {stats.visitasCompletadas}
+                  <Badge variant="secondary" className="bg-red-50 text-red-700">
+                    Canceladas: {stats.visitasCanceladas}
                   </Badge>
+                  {stats.visitasOtras > 0 && (
+                    <Badge variant="secondary" className="bg-gray-50 text-gray-600">
+                      Otras: {stats.visitasOtras}
+                    </Badge>
+                  )}
                 </div>
               </CardContent>
             </Card>

@@ -3,22 +3,20 @@ import {
   MapPin, 
   DollarSign, 
   CreditCard, 
-  TrendingUp, 
-  TrendingDown,
-  Activity,
   Globe
 } from 'lucide-react';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { useEffect, useState } from 'react';
 import { supabase } from '@/lib/supabase';
-import { usePaisFiltro } from '@/hooks/usePaisFiltro';
+import { formatearMonto } from '@/lib/moneda';
 
+// null = la consulta falló: la tarjeta muestra "—", nunca un 0 como dato.
 interface AdminStats {
-  total_medicos: number;
-  total_clinicas: number;
-  total_ingresos_mes: number;
-  total_transacciones: number;
-  medicos_nuevos_mes: number;
+  total_medicos: number | null;
+  total_clinicas: number | null;
+  // monto verificado del mes por moneda (no se suman monedas distintas)
+  ingresos_mes: { moneda: string; monto: number }[] | null;
+  pagos_verificados_mes: number | null;
 }
 
 interface PaisConfig {
@@ -46,129 +44,107 @@ function codigoABandera(codigo?: string): string {
 
 export default function AdminEzPayPage() {
   const [stats, setStats] = useState<AdminStats>({
-    total_medicos: 0,
-    total_clinicas: 0,
-    total_ingresos_mes: 0,
-    total_transacciones: 0,
-    medicos_nuevos_mes: 0,
+    total_medicos: null,
+    total_clinicas: null,
+    ingresos_mes: null,
+    pagos_verificados_mes: null,
   });
   const [paises, setPaises] = useState<PaisConfig[]>([]);
   const [loading, setLoading] = useState(true);
-  const { paisId } = usePaisFiltro();
 
   useEffect(() => {
     fetchDashboardData();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [paisId]);
+  }, []);
 
+  // Vista GLOBAL (super_admin): sin filtro de país.
   const fetchDashboardData = async () => {
     try {
-      let medicosQuery = supabase
-        .from('perfiles')
-        .select('*', { count: 'exact', head: true })
-        .eq('rol', 'medico')
-      if (paisId) medicosQuery = medicosQuery.eq('pais_id', paisId)
-      const { count: medicosCount } = await medicosQuery
+      const { count: clinicasCount, error: errClinicas } = await supabase
+        .from('clinicas')
+        .select('id', { count: 'exact', head: true })
+      if (errClinicas) console.error('[dashboard-maestro] no se pudieron contar las clínicas:', errClinicas.code)
 
-      let clinicasQuery = supabase
-        .from('perfiles')
-        .select('*', { count: 'exact', head: true })
-        .eq('rol', 'clinica')
-      if (paisId) clinicasQuery = clinicasQuery.eq('pais_id', paisId)
-      const { count: clinicasCount } = await clinicasQuery
+      const { count: medicosCount, error: errMedicos } = await supabase
+        .from('medicos')
+        .select('id', { count: 'exact', head: true })
+        .eq('activo', true)
+      if (errMedicos) console.error('[dashboard-maestro] no se pudieron contar los médicos:', errMedicos.code)
 
-      const { data: paisesData } = await supabase
+      // Mes actual: medianoche local del día 1 → medianoche local del día 1 del mes siguiente (timestamptz).
+      const ahora = new Date()
+      const inicioMes = new Date(ahora.getFullYear(), ahora.getMonth(), 1)
+      const inicioMesSiguiente = new Date(ahora.getFullYear(), ahora.getMonth() + 1, 1)
+      const { data: pagosData, count: pagosCount, error: errPagos } = await supabase
+        .from('pagos_proveedor')
+        .select('monto, moneda', { count: 'exact' })
+        .eq('estado', 'verificado')
+        .gte('fecha_verificacion', inicioMes.toISOString())
+        .lt('fecha_verificacion', inicioMesSiguiente.toISOString())
+      if (errPagos) console.error('[dashboard-maestro] no se pudieron cargar los pagos verificados:', errPagos.code)
+
+      let ingresosMes: AdminStats['ingresos_mes'] = null
+      if (!errPagos) {
+        const porMoneda = new Map<string, number>()
+        for (const p of (pagosData || []) as { monto: number | string | null; moneda: string | null }[]) {
+          const moneda = (p.moneda || '').trim().toUpperCase()
+          porMoneda.set(moneda, (porMoneda.get(moneda) || 0) + (Number(p.monto) || 0))
+        }
+        ingresosMes = [...porMoneda.entries()]
+          .map(([moneda, monto]) => ({ moneda, monto }))
+          .sort((a, b) => a.moneda.localeCompare(b.moneda))
+      }
+
+      const { data: paisesData, error: errPaises } = await supabase
         .from('configuracion_pais')
         .select('*')
         .eq('activo', true);
-
-      // Inicio del mes actual
-      const inicioMes = new Date()
-      inicioMes.setDate(1)
-      inicioMes.setHours(0, 0, 0, 0)
-      const inicioMesISO = inicioMes.toISOString()
-
-      // Transacciones e ingresos del mes (resiliente: no rompe el resto si falla)
-      let ingresosMes = 0
-      let totalTx = 0
-      try {
-        let txQuery = supabase
-          .from('transacciones')
-          .select('monto, estado')
-          .gte('created_at', inicioMesISO)
-        if (paisId) txQuery = txQuery.eq('pais_id', paisId)
-        const { data: txData } = await txQuery
-        const txList = (txData || []) as { monto: number | null; estado: string | null }[]
-        totalTx = txList.length
-        ingresosMes = txList
-          .filter((t) => ['completado', 'pagado', 'verificado'].includes((t.estado || '').toLowerCase()))
-          .reduce((s, t) => s + (Number(t.monto) || 0), 0)
-      } catch (e) {
-        console.error('Error cargando transacciones:', e)
-      }
-
-      // Médicos nuevos del mes
-      let medicosNuevos = 0
-      try {
-        let nuevosQuery = supabase
-          .from('perfiles')
-          .select('*', { count: 'exact', head: true })
-          .eq('rol', 'medico')
-          .gte('created_at', inicioMesISO)
-        if (paisId) nuevosQuery = nuevosQuery.eq('pais_id', paisId)
-        const { count } = await nuevosQuery
-        medicosNuevos = count || 0
-      } catch (e) {
-        console.error('Error cargando médicos nuevos:', e)
-      }
+      if (errPaises) console.error('[dashboard-maestro] no se pudieron cargar los países:', errPaises.code)
 
       setStats({
-        total_medicos: medicosCount || 0,
-        total_clinicas: clinicasCount || 0,
-        total_ingresos_mes: ingresosMes,
-        total_transacciones: totalTx,
-        medicos_nuevos_mes: medicosNuevos,
+        total_clinicas: errClinicas ? null : clinicasCount ?? 0,
+        total_medicos: errMedicos ? null : medicosCount ?? 0,
+        ingresos_mes: ingresosMes,
+        pagos_verificados_mes: errPagos ? null : pagosCount ?? 0,
       });
 
       setPaises(paisesData || []);
     } catch (error) {
-      console.error('Error cargando dashboard:', error);
+      console.error('[dashboard-maestro] error cargando el dashboard:', (error as { code?: string } | null)?.code ?? 'sin code');
     } finally {
       setLoading(false);
     }
   };
 
+  const valor = (n: number | null) => (n === null ? '—' : n)
+  const ingresosTexto = stats.ingresos_mes === null
+    ? '—'
+    : stats.ingresos_mes.length === 0
+      ? 'Sin ingresos este mes'
+      : stats.ingresos_mes.map((i) => formatearMonto(i.monto, i.moneda)).join('\n')
+
   const statCards = [
     { 
       title: 'Médicos Activos', 
-      value: stats.total_medicos, 
+      value: valor(stats.total_medicos), 
       icon: Users, 
-      trend: '+12%',
-      trendUp: true,
       color: 'bg-[#87CEEB]/10 text-[#1E5C8E]' 
     },
     { 
       title: 'Clínicas Registradas', 
-      value: stats.total_clinicas, 
+      value: valor(stats.total_clinicas), 
       icon: MapPin, 
-      trend: '+5%',
-      trendUp: true,
       color: 'bg-emerald-50 text-emerald-600' 
     },
     { 
       title: 'Ingresos del Mes', 
-      value: `Q${stats.total_ingresos_mes.toLocaleString()}`, 
+      value: ingresosTexto, 
       icon: DollarSign, 
-      trend: '+8%',
-      trendUp: true,
       color: 'bg-amber-50 text-amber-600' 
     },
     { 
-      title: 'Transacciones', 
-      value: stats.total_transacciones, 
+      title: 'Pagos verificados (mes)', 
+      value: valor(stats.pagos_verificados_mes), 
       icon: CreditCard, 
-      trend: '-2%',
-      trendUp: false,
       color: 'bg-purple-50 text-purple-600' 
     },
   ];
@@ -196,13 +172,10 @@ export default function AdminEzPayPage() {
                 <div className={`p-3 rounded-xl ${stat.color}`}>
                   <stat.icon size={24} />
                 </div>
-                <div className={`flex items-center gap-1 text-xs font-medium ${stat.trendUp ? 'text-emerald-500' : 'text-red-500'}`}>
-                  {stat.trendUp ? <TrendingUp size={14} /> : <TrendingDown size={14} />}
-                  {stat.trend}
-                </div>
               </div>
               <div className="mt-4">
-                <p className="text-2xl font-bold text-gray-800">{stat.value}</p>
+                {/* whitespace-pre-line: los ingresos van una línea por moneda */}
+                <p className="text-2xl font-bold text-gray-800 whitespace-pre-line">{stat.value}</p>
                 <p className="text-sm text-gray-500 mt-1">{stat.title}</p>
               </div>
             </CardContent>
@@ -242,58 +215,6 @@ export default function AdminEzPayPage() {
           </div>
         </CardContent>
       </Card>
-
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-        <Card className="border-0 shadow-md">
-          <CardHeader>
-            <CardTitle className="flex items-center gap-2 text-[#1E5C8E]">
-              <Activity size={20} />
-              Actividad Reciente
-            </CardTitle>
-          </CardHeader>
-          <CardContent>
-            <div className="space-y-4">
-              {[1, 2, 3, 4, 5].map((_, i) => (
-                <div key={i} className="flex items-center gap-3 p-3 rounded-lg hover:bg-gray-50 transition-colors">
-                  <div className="w-2 h-2 rounded-full bg-[#87CEEB]"></div>
-                  <div className="flex-1">
-                    <p className="text-sm font-medium text-gray-800">Nuevo médico registrado</p>
-                    <p className="text-xs text-gray-500">Dr. García - Guatemala</p>
-                  </div>
-                  <span className="text-xs text-gray-400">Hace 2h</span>
-                </div>
-              ))}
-            </div>
-          </CardContent>
-        </Card>
-
-        <Card className="border-0 shadow-md">
-          <CardHeader>
-            <CardTitle className="flex items-center gap-2 text-[#1E5C8E]">
-              <TrendingUp size={20} />
-              Crecimiento por País
-            </CardTitle>
-          </CardHeader>
-          <CardContent>
-            <div className="space-y-4">
-              {paises.map((pais) => (
-                <div key={pais.id}>
-                  <div className="flex justify-between text-sm mb-1">
-                    <span className="font-medium text-gray-700">{pais.nombre}</span>
-                    <span className="text-gray-500">65%</span>
-                  </div>
-                  <div className="w-full bg-gray-100 rounded-full h-2">
-                    <div 
-                      className="bg-[#87CEEB] h-2 rounded-full transition-all duration-500"
-                      style={{ width: `${Math.random() * 40 + 40}%` }}
-                    ></div>
-                  </div>
-                </div>
-              ))}
-            </div>
-          </CardContent>
-        </Card>
-      </div>
     </div>
   );
 }

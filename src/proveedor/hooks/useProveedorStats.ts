@@ -2,16 +2,20 @@ import { useState, useEffect, useCallback } from 'react'
 import { supabase } from '@/lib/supabase'
 import { useProveedorAuth } from './useProveedorAuth'
 import { toast } from 'sonner'
+import { hoyISO, fechaLocalISO } from '@/lib/fecha'
 
 export interface ProveedorStats {
   productosActivos: number
   productosTotal: number
   visitasPropuestas: number
+  visitasPendientes: number
   visitasConfirmadas: number
-  visitasCompletadas: number
+  visitasCanceladas: number
+  // estados del CHECK de visitas_agendadas sin badge propio (aprobada, rechazada, completada, no_asistio)
+  visitasOtras: number
   visitasTotal: number
   campanasEnviadas: number
-  campanasAprobadas: number
+  campanasActivas: number
   campanasTotal: number
   pagosPendientes: number
   pagosVerificados: number
@@ -30,10 +34,10 @@ export function useProveedorStats() {
     setLoading(true)
 
     try {
-      const hoy = new Date().toISOString().split('T')[0]
-      const inicioSemana = new Date()
-      inicioSemana.setDate(inicioSemana.getDate() - inicioSemana.getDay())
-      const inicioSemanaStr = inicioSemana.toISOString().split('T')[0]
+      // fecha_visita es DATE: hoy y el domingo de la semana como strings de día LOCAL
+      const hoy = hoyISO()
+      const ahora = new Date()
+      const inicioSemanaStr = fechaLocalISO(new Date(ahora.getFullYear(), ahora.getMonth(), ahora.getDate() - ahora.getDay()))
 
       // Productos
       const { data: productosData, error: productosError } = await supabase
@@ -54,21 +58,27 @@ export function useProveedorStats() {
       if (visitasError) throw visitasError
       const visitasTotal = visitasData?.length || 0
       const visitasPropuestas = visitasData?.filter((v: any) => v.estado === 'propuesta').length || 0
+      const visitasPendientes = visitasData?.filter((v: any) => v.estado === 'pendiente').length || 0
       const visitasConfirmadas = visitasData?.filter((v: any) => v.estado === 'confirmada').length || 0
-      const visitasCompletadas = visitasData?.filter((v: any) => v.estado === 'completada').length || 0
+      const visitasCanceladas = visitasData?.filter((v: any) => v.estado === 'cancelada').length || 0
+      // Total = suma de los badges: lo que no es propuesta/pendiente/confirmada/cancelada va a "Otras"
+      const visitasOtras = visitasTotal - visitasPropuestas - visitasPendientes - visitasConfirmadas - visitasCanceladas
       const visitasHoy = visitasData?.filter((v: any) => v.fecha_visita === hoy).length || 0
       const visitasSemana = visitasData?.filter((v: any) => v.fecha_visita >= inicioSemanaStr && v.fecha_visita <= hoy).length || 0
 
-      // Campañas
+      // Campañas: el proveedor no lee campanas_publicitarias por empresa_id (RLS: solo admin y viewer por país),
+      // así que "activas" = solicitudes publicadas de la empresa vigentes hoy (día local).
       const { data: campanasData, error: campanasError } = await supabase
         .from('solicitudes_campana')
-        .select('estado', { count: 'exact', head: false })
+        .select('estado, fecha_inicio, fecha_fin', { count: 'exact', head: false })
         .eq('empresa_id', empresa.id)
 
       if (campanasError) throw campanasError
       const campanasTotal = campanasData?.length || 0
       const campanasEnviadas = campanasData?.filter((c: any) => c.estado === 'enviada').length || 0
-      const campanasAprobadas = campanasData?.filter((c: any) => c.estado === 'aprobada' || c.estado === 'publicada').length || 0
+      const campanasActivas = campanasData?.filter((c: any) =>
+        c.estado === 'publicada' && c.fecha_inicio && c.fecha_fin && c.fecha_inicio <= hoy && hoy <= c.fecha_fin
+      ).length || 0
 
       // Pagos
       const { data: pagosData, error: pagosError } = await supabase
@@ -85,11 +95,13 @@ export function useProveedorStats() {
         productosActivos,
         productosTotal,
         visitasPropuestas,
+        visitasPendientes,
         visitasConfirmadas,
-        visitasCompletadas,
+        visitasCanceladas,
+        visitasOtras,
         visitasTotal,
         campanasEnviadas,
-        campanasAprobadas,
+        campanasActivas,
         campanasTotal,
         pagosPendientes,
         pagosVerificados,

@@ -12,22 +12,30 @@ import {
   TrendingUp,
 } from 'lucide-react'
 
+// null = la consulta falló: la tarjeta muestra "—", nunca un 0 como dato.
 interface ClinicaStats {
-  total_medicos: number
-  total_staff: number
-  total_pacientes: number
-  total_citas: number
-  total_recetas: number
+  total_medicos: number | null
+  total_staff: number | null
+  total_pacientes: number | null
+  total_citas: number | null
+  total_recetas: number | null
 }
+
+// Error de una consulta del dashboard: mensaje fijo + code (sin datos de la fila).
+function logError(que: string, error: { code?: string } | null) {
+  if (error) console.error(`[dashboard-clinica] no se pudo cargar ${que}:`, error.code ?? 'sin code')
+}
+
+const PAGINA = 1000
 
 export default function ClinicaDashboardPage() {
   const { clinica, loading: clinicaLoading, error: clinicaError } = useClinicaAuth()
   const [stats, setStats] = useState<ClinicaStats>({
-    total_medicos: 0,
-    total_staff: 0,
-    total_pacientes: 0,
-    total_citas: 0,
-    total_recetas: 0,
+    total_medicos: null,
+    total_staff: null,
+    total_pacientes: null,
+    total_citas: null,
+    total_recetas: null,
   })
   const [loading, setLoading] = useState(true)
 
@@ -44,43 +52,63 @@ export default function ClinicaDashboardPage() {
       setLoading(true)
       try {
         // Obtener médicos de esta clínica via RPC
-        const { data: medicosRel } = await supabase
+        const { data: medicosRel, error: errMedicosRel } = await supabase
           .rpc('obtener_medicos_clinica', { p_clinica_id: clinica.id })
+        logError('los médicos de la clínica', errMedicosRel)
 
         const medicoIds = medicosRel?.map(m => m.medico_id) || []
 
-        let medicosCount = 0
-        if (medicoIds.length > 0) {
-          const { data: countResult } = await supabase
+        let medicosCount: number | null = errMedicosRel ? null : 0
+        if (!errMedicosRel && medicoIds.length > 0) {
+          const { data: countResult, error: errContar } = await supabase
             .rpc('contar_medicos_por_ids', { p_medico_ids: medicoIds })
-          medicosCount = countResult || 0
+          logError('el conteo de médicos', errContar)
+          medicosCount = errContar ? null : Number(countResult ?? 0)
         }
 
-        const { count: citasCount } = await supabase
+        // Citas de la clínica (por clinica_id)
+        const { count: citasCount, error: errCitas } = await supabase
           .from('citas')
-          .select('*', { count: 'exact', head: true })
-          .in('medico_id', medicoIds.length > 0 ? medicoIds : ['no-existe'])
+          .select('id', { count: 'exact', head: true })
+          .eq('clinica_id', clinica.id)
+        logError('las citas', errCitas)
 
-        const { count: recetasCount } = await supabase
-          .from('recetas')
-          .select('*', { count: 'exact', head: true })
-          .in('medico_id', medicoIds.length > 0 ? medicoIds : ['no-existe'])
+        // Pacientes distintos con al menos una cita en la clínica (paginado: PostgREST corta en 1000 filas)
+        const pacientesIds = new Set<number>()
+        let errPacientes: { code?: string } | null = null
+        for (let desde = 0; ; desde += PAGINA) {
+          const { data, error } = await supabase
+            .from('citas')
+            .select('paciente_id')
+            .eq('clinica_id', clinica.id)
+            .order('id', { ascending: true })
+            .range(desde, desde + PAGINA - 1)
+          if (error) { errPacientes = error; break }
+          for (const c of data || []) if (c.paciente_id != null) pacientesIds.add(c.paciente_id)
+          if (!data || data.length < PAGINA) break
+        }
+        logError('los pacientes', errPacientes)
 
-        // Pacientes atendidos por los médicos de la clínica
-        const { count: pacientesCount } = await supabase
-          .from('pacientes')
-          .select('*', { count: 'exact', head: true })
-          .in('medico_id', medicoIds.length > 0 ? medicoIds : ['no-existe'])
+        // recetas no tiene clinica_id: se cuentan las de los médicos de la clínica (criterio anterior)
+        let recetasCount: number | null = errMedicosRel ? null : 0
+        if (!errMedicosRel && medicoIds.length > 0) {
+          const { count, error: errRecetas } = await supabase
+            .from('recetas')
+            .select('id', { count: 'exact', head: true })
+            .in('medico_id', medicoIds)
+          logError('las recetas', errRecetas)
+          recetasCount = errRecetas ? null : count ?? 0
+        }
 
         setStats({
-          total_medicos: medicosCount || 0,
-          total_staff: medicoIds.length,
-          total_pacientes: pacientesCount || 0,
-          total_citas: citasCount || 0,
-          total_recetas: recetasCount || 0,
+          total_medicos: medicosCount,
+          total_staff: errMedicosRel ? null : medicoIds.length,
+          total_pacientes: errPacientes ? null : pacientesIds.size,
+          total_citas: errCitas ? null : citasCount ?? 0,
+          total_recetas: recetasCount,
         })
       } catch (error) {
-        console.error('Error cargando stats:', error)
+        console.error('[dashboard-clinica] error cargando las estadísticas:', (error as { code?: string } | null)?.code ?? 'sin code')
       } finally {
         setLoading(false)
       }
@@ -136,7 +164,7 @@ export default function ClinicaDashboardPage() {
                 <div className="flex items-center justify-between">
                   <div>
                     <p className="text-sm text-gray-500">{card.title}</p>
-                    <p className="text-2xl font-bold mt-1">{card.value}</p>
+                    <p className="text-2xl font-bold mt-1">{card.value === null ? '—' : card.value}</p>
                   </div>
                   <div className={`p-3 rounded-lg ${card.color}`}>
                     <Icon className="w-6 h-6" />

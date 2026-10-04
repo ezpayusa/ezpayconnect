@@ -32233,6 +32233,94 @@ EXCEPTION WHEN OTHERS THEN
   PERFORM set_config('probe.p1000', 'FALLO ('||SQLSTATE||' '||SQLERRM||')', false);
 END $$;
 
+-- ---------------- P1001-P1006 contar_proveedores_por_pais con gate de pais (363) ----------------
+-- Actores reales (created_at anterior a esta transaccion, activos, en auth.users, de identidad unica; el mas antiguo por
+-- created_at y despues por id): admin_pais de GT, super_admin y una cuenta de proveedor. Oraculo: empresas_proveedoras
+-- con pais_id = GT contadas como postgres, > 0, si no FALLO (sin fixture). "Otro pais": el primero por codigo distinto de
+-- GT. anon con el mecanismo del harness (request.jwt.claims {"role":"anon"} + role anon). Solo lectura.
+--   P1001 admin_pais de GT -> contar(GT) = oraculo
+--   P1002 admin_pais de GT -> contar(otro pais) -> PC028
+--   P1003 super_admin -> contar(GT) = oraculo
+--   P1004 cuenta de proveedor -> contar(GT) -> PC028
+--   P1005 anon -> 42501 (sin EXECUTE)
+--   P1006 catalogo: ACL exacta, sin anon ni PUBLIC
+DO $$
+DECLARE
+  v_gt uuid; v_otro uuid; v_otro_cod text; o int; a_ap uuid; a_sa uuid; a_prov uuid; r record; st text; n int;
+  res text[] := ARRAY['','','','','']; ok boolean[] := ARRAY[false,false,false,false,false];
+BEGIN
+  IF current_user <> 'postgres' THEN RAISE EXCEPTION 'fixture roto: P1001 corre como %', current_user; END IF;
+  SELECT id INTO v_gt FROM public.configuracion_pais WHERE codigo = 'GT';
+  SELECT id, codigo INTO v_otro, v_otro_cod FROM public.configuracion_pais WHERE codigo <> 'GT' ORDER BY codigo LIMIT 1;
+  o := (SELECT count(*) FROM public.empresas_proveedoras e WHERE e.pais_id = v_gt);
+  a_ap := (SELECT p.id FROM public.perfiles p WHERE p.rol = 'admin_pais' AND p.pais_id = v_gt AND p.activo AND COALESCE(p.created_at, '-infinity') < now()
+             AND EXISTS (SELECT 1 FROM auth.users u WHERE u.id = p.id)
+             AND NOT EXISTS (SELECT 1 FROM public.cuentas_proveedor cp WHERE cp.id = p.id) AND NOT EXISTS (SELECT 1 FROM public.pacientes pa WHERE pa.auth_user_id = p.id)
+           ORDER BY COALESCE(p.created_at, '-infinity'), p.id LIMIT 1);
+  a_sa := (SELECT p.id FROM public.perfiles p WHERE p.rol = 'super_admin' AND p.activo AND COALESCE(p.created_at, '-infinity') < now()
+             AND EXISTS (SELECT 1 FROM auth.users u WHERE u.id = p.id)
+             AND NOT EXISTS (SELECT 1 FROM public.cuentas_proveedor cp WHERE cp.id = p.id) AND NOT EXISTS (SELECT 1 FROM public.pacientes pa WHERE pa.auth_user_id = p.id)
+           ORDER BY COALESCE(p.created_at, '-infinity'), p.id LIMIT 1);
+  a_prov := (SELECT c.id FROM public.cuentas_proveedor c JOIN public.empresas_proveedoras e ON e.id = c.empresa_id
+              WHERE c.activo AND e.estado = 'activa' AND COALESCE(c.created_at, '-infinity') < now()
+                AND EXISTS (SELECT 1 FROM auth.users u WHERE u.id = c.id)
+                AND NOT EXISTS (SELECT 1 FROM public.perfiles pf WHERE pf.id = c.id) AND NOT EXISTS (SELECT 1 FROM public.pacientes pa WHERE pa.auth_user_id = c.id)
+              ORDER BY COALESCE(c.created_at, '-infinity'), c.id LIMIT 1);
+  IF v_gt IS NULL OR v_otro IS NULL OR COALESCE(o, 0) = 0 OR a_ap IS NULL OR a_sa IS NULL OR a_prov IS NULL THEN
+    RAISE EXCEPTION 'sin fixture: P1001 sin GT/otro pais (%/%), oraculo 0 (%), admin_pais de GT (%), super_admin (%) o proveedor (%)', v_gt, v_otro, o, a_ap, a_sa, a_prov;
+  END IF;
+
+  FOR r IN SELECT * FROM (VALUES
+      (1, 'admin_pais de GT, contar(GT)', a_ap::text, v_gt, 'n='||o),
+      (2, 'admin_pais de GT, contar('||v_otro_cod||')', a_ap::text, v_otro, 'PC028'),
+      (3, 'super_admin, contar(GT)', a_sa::text, v_gt, 'n='||o),
+      (4, 'cuenta de proveedor, contar(GT)', a_prov::text, v_gt, 'PC028'),
+      (5, 'anon, contar(GT)', NULL, v_gt, '42501')
+    ) t(k, etiqueta, actor, pais, esperado) LOOP
+    st := NULL; n := NULL;
+    BEGIN
+      IF r.actor IS NULL THEN
+        PERFORM set_config('request.jwt.claims', '{"role":"anon"}', true);
+        PERFORM set_config('role', 'anon', true);
+      ELSE
+        PERFORM set_config('request.jwt.claims', json_build_object('sub', r.actor, 'role', 'authenticated')::text, true);
+        PERFORM set_config('role', 'authenticated', true);
+      END IF;
+      n := public.contar_proveedores_por_pais(r.pais);
+      st := 'n='||n;
+      PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
+    EXCEPTION WHEN OTHERS THEN st := SQLSTATE; PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
+    END;
+    ok[r.k] := st = r.esperado;
+    res[r.k] := r.etiqueta||': '||st||' (esperado '||r.esperado||CASE WHEN r.esperado LIKE 'n=%' THEN ', oraculo como postgres' ELSE '' END||')';
+  END LOOP;
+  FOR n IN 1..5 LOOP
+    PERFORM set_config('probe.p'||(1000 + n), CASE WHEN ok[n] THEN 'OK' ELSE 'ROJO' END||' ('||res[n]||')', false);
+  END LOOP;
+EXCEPTION WHEN OTHERS THEN
+  PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
+  PERFORM set_config('probe.p1001', 'FALLO ('||SQLSTATE||' '||SQLERRM||')', false);
+  PERFORM set_config('probe.p1002', 'FALLO ('||SQLSTATE||' '||SQLERRM||')', false);
+  PERFORM set_config('probe.p1003', 'FALLO ('||SQLSTATE||' '||SQLERRM||')', false);
+  PERFORM set_config('probe.p1004', 'FALLO ('||SQLSTATE||' '||SQLERRM||')', false);
+  PERFORM set_config('probe.p1005', 'FALLO ('||SQLSTATE||' '||SQLERRM||')', false);
+END $$;
+SELECT set_config('role', 'none', true);
+
+-- P1006 catalogo de la 363: ACL exacta de contar_proveedores_por_pais (postgres, authenticated, service_role; sin anon ni
+-- PUBLIC), DEFINER, STABLE y search_path ''.
+DO $$
+DECLARE v text;
+BEGIN
+  v := (SELECT p.proacl::text||' definer='||p.prosecdef::text||' vol='||p.provolatile::text||' sp='||COALESCE(array_to_string(p.proconfig, ','), '-')
+          FROM pg_proc p WHERE p.oid = to_regprocedure('public.contar_proveedores_por_pais(uuid)'));
+  PERFORM set_config('probe.p1006', CASE WHEN v = '{postgres=X/postgres,authenticated=X/postgres,service_role=X/postgres} definer=true vol=s sp=search_path=""'
+                                          AND NOT has_function_privilege('anon', 'public.contar_proveedores_por_pais(uuid)', 'EXECUTE')
+    THEN 'OK (ACL exacta sin anon ni PUBLIC; DEFINER, STABLE, search_path='''')' ELSE 'ROJO ('||COALESCE(v, 'NO EXISTE')||')' END, false);
+EXCEPTION WHEN OTHERS THEN
+  PERFORM set_config('probe.p1006', 'FALLO ('||SQLSTATE||' '||SQLERRM||')', false);
+END $$;
+
 -- ===== Veredictos como result set =====
 SELECT 'P1_anon_insert_citas'              AS probe, current_setting('probe.p1', true)  AS verdict, 'BLOQUEADO' AS esperado_post_fix
 UNION ALL SELECT 'P2_medico_cancela_ajena_rpc',         current_setting('probe.p2', true),  'BLOQUEADO'
@@ -33308,6 +33396,12 @@ UNION ALL SELECT 'P997_catalogo_visitador_sin_zz_t9_362',  current_setting('prob
 UNION ALL SELECT 'P998_catalogo_visitador_inactiva_362',  current_setting('probe.p998', true), 'OK (362: la config inactiva no aparece; su gemela activa si)'
 UNION ALL SELECT 'P999_catalogo_visitador_anon_tablas_362',  current_setting('probe.p999', true), 'OK (362: anon sigue sin SELECT en planes_base/planes_configuracion)'
 UNION ALL SELECT 'P1000_catalogo_visitador_acl_362',  current_setting('probe.p1000', true), 'OK (362: ACL exacta; ejecutables por anon = 38 + 1)'
+UNION ALL SELECT 'P1001_proveedores_pais_admin_363',  current_setting('probe.p1001', true), 'OK (363: admin_pais de GT cuenta GT = oraculo)'
+UNION ALL SELECT 'P1002_proveedores_pais_otro_363',  current_setting('probe.p1002', true), 'OK (363: admin_pais de GT sobre otro pais -> PC028)'
+UNION ALL SELECT 'P1003_proveedores_pais_super_363',  current_setting('probe.p1003', true), 'OK (363: super_admin cuenta GT = oraculo)'
+UNION ALL SELECT 'P1004_proveedores_pais_proveedor_363',  current_setting('probe.p1004', true), 'OK (363: cuenta de proveedor -> PC028)'
+UNION ALL SELECT 'P1005_proveedores_pais_anon_363',  current_setting('probe.p1005', true), 'OK (363: anon -> 42501)'
+UNION ALL SELECT 'P1006_proveedores_pais_catalogo_363',  current_setting('probe.p1006', true), 'OK (363: ACL exacta sin anon; DEFINER, STABLE, search_path)'
 -- Las filas FX* son SALUD DE FIXTURE, no probes de seguridad: dicen si la precondicion que una
 -- migracion posterior empezo a exigir se pudo sembrar. Si una sale ROJO, los probes que dependen de
 -- ese fixture reportan N/A (su flag de ready se pierde con el rollback de la subtransaccion) en vez
@@ -33552,7 +33646,7 @@ UNION ALL SELECT 'P000_CENTINELA_veredictos_no_nulos',
        'probe.p866', 'probe.p867', 'probe.p868', 'probe.p869', 'probe.p870', 'probe.p871', 'probe.p872', 'probe.p873', 'probe.p874', 'probe.p875', 'probe.p876', 'probe.p877', 'probe.p878',
        'probe.p879', 'probe.p880', 'probe.p881', 'probe.p882', 'probe.p883', 'probe.p884',
        'probe.p885', 'probe.p886', 'probe.p887', 'probe.p888', 'probe.p889', 'probe.p890', 'probe.p891', 'probe.p892', 'probe.p893', 'probe.p894', 'probe.p895', 'probe.p896', 'probe.p908', 'probe.p909', 'probe.p910', 'probe.p911',
-       'probe.p897', 'probe.p898', 'probe.p899', 'probe.p900', 'probe.p901', 'probe.p902', 'probe.p903', 'probe.p904', 'probe.p905', 'probe.p906', 'probe.p907', 'probe.p912', 'probe.p913', 'probe.p914', 'probe.p915', 'probe.p916', 'probe.p917', 'probe.p918', 'probe.p919', 'probe.p920', 'probe.p921', 'probe.p922', 'probe.p923', 'probe.p924', 'probe.p925', 'probe.p926', 'probe.p927', 'probe.p928', 'probe.p929', 'probe.p930', 'probe.p931', 'probe.p932', 'probe.p933', 'probe.p934', 'probe.p935', 'probe.p936', 'probe.p937', 'probe.p938', 'probe.p939', 'probe.p940', 'probe.p941', 'probe.p942', 'probe.p943', 'probe.p944', 'probe.p945', 'probe.p946', 'probe.p947', 'probe.p948', 'probe.p949', 'probe.p950', 'probe.p951', 'probe.p952', 'probe.p953', 'probe.p954', 'probe.p955', 'probe.p956', 'probe.p957', 'probe.p958', 'probe.p959', 'probe.p960', 'probe.p961', 'probe.p962', 'probe.p963', 'probe.p964', 'probe.p965', 'probe.p966', 'probe.p967', 'probe.p968', 'probe.p969', 'probe.p970', 'probe.p971', 'probe.p972', 'probe.p973', 'probe.p974', 'probe.p975', 'probe.p976', 'probe.p977', 'probe.p978', 'probe.p979', 'probe.p980', 'probe.p981', 'probe.p982', 'probe.p983', 'probe.p984', 'probe.p985', 'probe.p986', 'probe.p987', 'probe.p988', 'probe.p989', 'probe.p990', 'probe.p991', 'probe.p992', 'probe.p993', 'probe.p994', 'probe.p995', 'probe.p996', 'probe.p997', 'probe.p998', 'probe.p999', 'probe.p1000'
+       'probe.p897', 'probe.p898', 'probe.p899', 'probe.p900', 'probe.p901', 'probe.p902', 'probe.p903', 'probe.p904', 'probe.p905', 'probe.p906', 'probe.p907', 'probe.p912', 'probe.p913', 'probe.p914', 'probe.p915', 'probe.p916', 'probe.p917', 'probe.p918', 'probe.p919', 'probe.p920', 'probe.p921', 'probe.p922', 'probe.p923', 'probe.p924', 'probe.p925', 'probe.p926', 'probe.p927', 'probe.p928', 'probe.p929', 'probe.p930', 'probe.p931', 'probe.p932', 'probe.p933', 'probe.p934', 'probe.p935', 'probe.p936', 'probe.p937', 'probe.p938', 'probe.p939', 'probe.p940', 'probe.p941', 'probe.p942', 'probe.p943', 'probe.p944', 'probe.p945', 'probe.p946', 'probe.p947', 'probe.p948', 'probe.p949', 'probe.p950', 'probe.p951', 'probe.p952', 'probe.p953', 'probe.p954', 'probe.p955', 'probe.p956', 'probe.p957', 'probe.p958', 'probe.p959', 'probe.p960', 'probe.p961', 'probe.p962', 'probe.p963', 'probe.p964', 'probe.p965', 'probe.p966', 'probe.p967', 'probe.p968', 'probe.p969', 'probe.p970', 'probe.p971', 'probe.p972', 'probe.p973', 'probe.p974', 'probe.p975', 'probe.p976', 'probe.p977', 'probe.p978', 'probe.p979', 'probe.p980', 'probe.p981', 'probe.p982', 'probe.p983', 'probe.p984', 'probe.p985', 'probe.p986', 'probe.p987', 'probe.p988', 'probe.p989', 'probe.p990', 'probe.p991', 'probe.p992', 'probe.p993', 'probe.p994', 'probe.p995', 'probe.p996', 'probe.p997', 'probe.p998', 'probe.p999', 'probe.p1000', 'probe.p1001', 'probe.p1002', 'probe.p1003', 'probe.p1004', 'probe.p1005', 'probe.p1006'
              ]) AS n) s),
   'OK (todos los veredictos publicados)';
 

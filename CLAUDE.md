@@ -24,11 +24,19 @@ Stack: React + Vite + TypeScript, Supabase / Postgres, deploy en Vercel, repo en
   minutos por esto** (P635 es la probe que faltaba, P636 su contraprueba).
 - NUNCA ampliar policies de RLS sobre tablas adyacentes a datos médicos (p. ej. campana_metricas). Para dar acceso, usar RPCs SECURITY DEFINER con search_path='', fail-closed (si el scope es NULL → 0 filas) y gate interno.
 - Probar aislamiento por rol impersonando request.jwt.claims en prod: cada rol ve lo suyo y no lo ajeno.
-- **Próximos números libres: probe `P1001`** (global, no por módulo; P996-P1000 usados por la mig 362, P990-P995 por la 361, P983-P989 por la 360, P975-P982 por la
+- **Próximos números libres: probe `P1007`** (global, no por módulo; P1001-P1006 usados por la mig 363, P996-P1000 por la 362, P990-P995 por la 361, P983-P989 por la 360, P975-P982 por la
   359, P967-P974 por la 358, P958-P966 por la 357 (obtener_medicos_por_ids acotada a relación); P906-P907 usados por la mig 336, P912-P913
   por la 337, P914-P915 por la 338, P916-P920 por la 339/340, P921-P923 por la 341, P924 por la 342, P925 por
   la 343, P926-P927 por la 344, P928-P929 por la 345, P930 por la 346, P931-P932 por la 347, P933 por la 348,
-  P934-P935 por la 349, P936 por la 350, P937-P939 por la 351, P940-P943 por la 353), **migración `363`**
+  P934-P935 por la 349, P936 por la 350, P937-P939 por la 351, P940-P943 por la 353), **migración `364`**, **errcode `PC029`** (familia PC: PC025 país requerido y PC026 sin autoridad en `contar_medicos_por_pais`, PC027
+  no autenticado, PC028 sin autoridad sobre el país en `contar_proveedores_por_pais`)
+  (363 = familia DASHBOARDS, conteo de proveedores por país para el admin_pais — APLICADA en prod el 2026-10-04 20:33 UTC,
+  harness 1081 / 11 rojas de deuda, verificada independientemente. `public.contar_proveedores_por_pais(p_pais_id)`
+  (STABLE, DEFINER, `search_path=''`, md5 43c82022…): sin sesión → PC027; sin autoridad sobre el país (super_admin, o
+  admin_pais de ESE país, `private.puede_admin_pais`, COALESCE fail-closed) → PC028; cuenta `empresas_proveedoras` con
+  `pais_id` = el país (el mismo criterio que la tarjeta "Proveedores" de `PaisDashboardPage`, que el admin_pais veía en 0
+  por RLS). ACL `{postgres, authenticated, service_role}` (sin PUBLIC ni anon); ACL de funciones 83031eae… 379 →
+  c7f89c6d… 380; policies y relaciones sin cambio. Probes P1001-P1006. Rollback `363_rollback.sql` (DROP de la función).)
   (362 = catálogo PÚBLICO de planes de visitador para la landing `/planes-visitador` sin sesión —
   APLICADA en prod el 2026-10-04 16:58 UTC (16:58:32-16:58:33), harness 1075 / 11 rojas de deuda, verificada
   independientemente. `public.catalogo_planes_visitador_publico()` (STABLE, DEFINER, `search_path=''`, md5 02d8c328…):
@@ -327,7 +335,7 @@ Stack: React + Vite + TypeScript, Supabase / Postgres, deploy en Vercel, repo en
 - **Migraciones: SIEMPRE `npx supabase db query --linked -f <archivo>`, NUNCA `db push`.** `db push`
   desincroniza `schema_migrations` (deuda desde la 047). Los `.sql` viven en `supabase/migrations/`
   (rollback en `supabase/migrations/rollback/`); los de `supabase/fixes/` se agregan con `git add -f`.
-  **Desvío aceptado (familia 8):** los rollbacks de 334-362 viven en `supabase/migrations/`
+  **Desvío aceptado (familia 8):** los rollbacks de 334-363 viven en `supabase/migrations/`
   (`3XX_rollback.sql`), no en `supabase/migrations/rollback/`.
 - **Los tests de edge (deno) NO corren en vitest ni en el pre-commit**: se corren a mano desde
   `supabase/functions/<fn>/` con `deno test --allow-net --allow-env --no-check` (asistente-ia: 17).

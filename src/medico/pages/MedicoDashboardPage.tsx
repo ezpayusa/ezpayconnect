@@ -18,7 +18,7 @@ import {
 
 export default function MedicoDashboardPage() {
   const navigate = useNavigate()
-  const { stats, loading } = useMedicoStats()
+  const { stats, loading, error } = useMedicoStats()
 
   if (loading) {
     return (
@@ -76,7 +76,18 @@ export default function MedicoDashboardPage() {
       {/* Banner publicitario (sección dedicada — país filtrado por RLS, separado del catálogo) */}
       <BannerPublicidadProfesional tipoPerfil="medico" contexto="dashboard" />
 
+      {/* Si la carga falló, aviso en lugar de los ceros iniciales */}
+      {error && (
+        <Card className="border-amber-300 bg-amber-50">
+          <CardContent className="p-4 flex items-center gap-2 text-amber-800">
+            <AlertCircle className="h-5 w-5 shrink-0" />
+            <p className="text-sm">No se pudieron cargar las estadísticas</p>
+          </CardContent>
+        </Card>
+      )}
+
       {/* Stats Grid */}
+      {!error && (
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
         {statCards.map((card) => {
           const Icon = card.icon
@@ -101,6 +112,7 @@ export default function MedicoDashboardPage() {
           )
         })}
       </div>
+      )}
 
       {/* Próxima cita + Acciones rápidas */}
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
@@ -113,7 +125,9 @@ export default function MedicoDashboardPage() {
             </CardTitle>
           </CardHeader>
           <CardContent>
-            {stats.proximaCita ? (
+            {error ? (
+              <p className="text-center py-8 text-sm text-muted-foreground">No se pudo cargar la próxima cita</p>
+            ) : stats.proximaCita ? (
               <div className="flex items-start justify-between">
                 <div className="space-y-2">
                   <div className="flex items-center gap-3">
