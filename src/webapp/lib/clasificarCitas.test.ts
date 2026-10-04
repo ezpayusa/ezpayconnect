@@ -33,11 +33,12 @@ describe('clasificarCitas', () => {
     expect(r.pasadas).toEqual([])
   })
 
-  it('(d) en_espera de ayer sigue en Próximas', () => {
+  it('(d) en_espera de ayer va a Pasadas, sin cerrar', () => {
     const c = cita(5, '2026-10-03', '16:00:00', '16:30:00', 'en_espera')
     const r = clasificarCitas([c], AHORA)
-    expect(r.proximas).toEqual([c])
-    expect(r.pasadas).toEqual([])
+    expect(r.proximas).toEqual([])
+    expect(r.pasadas).toEqual([c])
+    expect(citaSinCerrar(c)).toBe(true)
   })
 
   it('(e) cancelada futura va a Canceladas', () => {
@@ -46,6 +47,21 @@ describe('clasificarCitas', () => {
     expect(r.canceladas).toEqual([c])
     expect(r.proximas).toEqual([])
     expect(r.pasadas).toEqual([])
+  })
+
+  it('(g) en_espera de hoy con hora_fin ya pasada sigue en Próximas', () => {
+    const c = cita(7, '2026-10-04', '08:00:00', '08:30:00', 'en_espera')
+    const r = clasificarCitas([c], AHORA)
+    expect(r.proximas).toEqual([c])
+    expect(r.pasadas).toEqual([])
+  })
+
+  it('(h) en_curso de hace 3 meses va a Pasadas, sin cerrar', () => {
+    const c = cita(8, '2026-07-14', '10:00:00', '10:30:00', 'en_curso')
+    const r = clasificarCitas([c], AHORA)
+    expect(r.proximas).toEqual([])
+    expect(r.pasadas).toEqual([c])
+    expect(citaSinCerrar(c)).toBe(true)
   })
 
   it('(f) Próximas ascendente por fecha y hora; Pasadas descendente', () => {
