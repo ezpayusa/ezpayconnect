@@ -15768,8 +15768,16 @@ BEGIN
   SELECT id INTO v_sv FROM public.configuracion_pais WHERE codigo='SV';
   SELECT id INTO v_prov FROM public.cuentas_proveedor WHERE email='farmacianueva1@test.com';
   SELECT id INTO v_med  FROM public.medicos WHERE pais_id = v_gt ORDER BY id LIMIT 1;
-  SELECT auth_user_id INTO v_pac FROM public.pacientes
-   WHERE auth_user_id IS NOT NULL AND pais_id = v_gt LIMIT 1;
+  -- 357: pm_pac determinista y CON cita con pm_med (obtener_medicos_por_ids ya no resuelve medicos sin relacion; P701
+  -- exige 1). Real: created_at anterior a esta transaccion; el mas antiguo por created_at y despues por id.
+  SELECT pa.auth_user_id INTO v_pac FROM public.pacientes pa
+   WHERE pa.auth_user_id IS NOT NULL AND pa.pais_id = v_gt AND COALESCE(pa.created_at, '-infinity') < now()
+     AND EXISTS (SELECT 1 FROM public.citas c WHERE c.paciente_id = pa.id AND c.medico_id = v_med)
+   ORDER BY COALESCE(pa.created_at, '-infinity'), pa.id LIMIT 1;
+  IF v_med IS NOT NULL AND v_pac IS NULL THEN
+    PERFORM set_config('probe.pm_ready','0',false);
+    PERFORM set_config('probe.pm_fx','FALLO (sin fixture: ningun paciente real de GT con cita con el medico '||v_med||')',false);
+    RETURN; END IF;
   SELECT id INTO v_adm FROM public.perfiles WHERE rol='admin_pais' AND pais_id = v_gt LIMIT 1;
   SELECT id INTO v_ajeno FROM public.medicos WHERE pais_id IS NULL ORDER BY id LIMIT 1;
 
@@ -31185,6 +31193,197 @@ EXCEPTION WHEN OTHERS THEN
 END $$;
 SELECT set_config('role', 'none', true);
 
+-- ---------------- P958-P966 obtener_medicos_por_ids acotada a relacion (357) ----------------
+-- Actores reales: created_at anterior a esta transaccion (los fixtures nacen con now()), activos, en auth.users, de
+-- identidad unica (un perfil no es tambien cuenta de proveedor ni paciente, y al reves); el mas antiguo por created_at y
+-- despues por id. Positivos: oraculo (contado como postgres) > 0, si no FALLO (sin fixture). Negativos: el medico pedido
+-- existe en medicos (sin la 357 la RPC lo devolvia), si no FALLO (sin fixture). Solo lectura: nada que restaurar.
+--   P958 paciente de GT SIN cita con pm_med                  -> 0 para [pm_med]
+--   P959 cuenta de proveedor                                  -> 0 para [pm_med]
+--   P960 medico (perfil rol medico, en medicos)               -> 1 para su propio id                 (brazo b)
+--   P961 medico                                               -> 0 para un medico sin clinica ni cita compartida
+--   P962 asistente_medico/enfermeria con membresia            -> 1 para un medico miembro de su clinica (brazo d)
+--   P963 secretaria                                           -> 1 para un medico de una cita de su clinica (brazo c,
+--        puede_gestionar_citas). Prefiere un medico que NO sea miembro de sus clinicas (aisla c de d); el 4-oct-2026
+--        no habia ninguno en prod, y el veredicto dice si quedo aislado o no.
+--   P964 admin_pais de GT                                     -> 1 para un medico en cita con pais_id = GT (brazo c,
+--        puede_admin_pais); tambien informa si quedo aislado de d.
+--   P965 super_admin                                          -> todos los ids pedidos                (brazo a)
+DO $$
+DECLARE
+  v_gt uuid := 'cbbbbe6d-59fe-4cf2-91ee-3e31ba1d5909';
+  v_med uuid; r record; n int; st text; vr text;
+  a958 uuid; a959 uuid; a960 uuid; a961 uuid; t961 uuid; a962 uuid; t962 uuid;
+  a963 uuid; t963 uuid; c963 uuid; m963 boolean; g963 text := '-';
+  a964 uuid; t964 uuid; m964 boolean; a965 uuid; ids965 uuid[];
+BEGIN
+  IF current_user <> 'postgres' THEN RAISE EXCEPTION 'fixture roto: P958 corre como %', current_user; END IF;
+  v_med := NULLIF(current_setting('probe.pm_med', true), '')::uuid;
+  IF v_med IS NULL OR coalesce(current_setting('probe.pm_ready', true), '') <> '1'
+     OR NOT EXISTS (SELECT 1 FROM public.medicos m WHERE m.id = v_med) THEN
+    RAISE EXCEPTION 'sin fixture: PM_FX no dejo pm_med en medicos';
+  END IF;
+
+  a958 := (SELECT pa.auth_user_id FROM public.pacientes pa
+            WHERE pa.auth_user_id IS NOT NULL AND pa.pais_id = v_gt AND COALESCE(pa.created_at, '-infinity') < now()
+              AND EXISTS (SELECT 1 FROM auth.users u WHERE u.id = pa.auth_user_id)
+              AND NOT EXISTS (SELECT 1 FROM public.perfiles pf WHERE pf.id = pa.auth_user_id)
+              AND NOT EXISTS (SELECT 1 FROM public.cuentas_proveedor cp WHERE cp.id = pa.auth_user_id)
+              AND NOT EXISTS (SELECT 1 FROM public.citas c JOIN public.pacientes p2 ON p2.id = c.paciente_id
+                               WHERE p2.auth_user_id = pa.auth_user_id AND c.medico_id = v_med)
+            ORDER BY COALESCE(pa.created_at, '-infinity'), pa.id LIMIT 1);
+
+  a959 := (SELECT cp.id FROM public.cuentas_proveedor cp JOIN public.empresas_proveedoras e ON e.id = cp.empresa_id
+            WHERE cp.activo AND e.estado = 'activa' AND COALESCE(cp.created_at, '-infinity') < now()
+              AND EXISTS (SELECT 1 FROM auth.users u WHERE u.id = cp.id)
+              AND NOT EXISTS (SELECT 1 FROM public.perfiles pf WHERE pf.id = cp.id)
+              AND NOT EXISTS (SELECT 1 FROM public.pacientes pa WHERE pa.auth_user_id = cp.id)
+            ORDER BY COALESCE(cp.created_at, '-infinity'), cp.id LIMIT 1);
+
+  a960 := (SELECT x.id FROM public.perfiles x JOIN public.medicos mx ON mx.id = x.id
+            WHERE x.rol = 'medico' AND x.activo AND COALESCE(x.created_at, '-infinity') < now()
+              AND EXISTS (SELECT 1 FROM auth.users u WHERE u.id = x.id)
+              AND NOT EXISTS (SELECT 1 FROM public.cuentas_proveedor cp WHERE cp.id = x.id)
+              AND NOT EXISTS (SELECT 1 FROM public.pacientes pa WHERE pa.auth_user_id = x.id)
+            ORDER BY COALESCE(x.created_at, '-infinity'), x.id LIMIT 1);
+
+  SELECT x.id, y.id INTO a961, t961
+    FROM public.perfiles x JOIN public.medicos mx ON mx.id = x.id
+    JOIN public.medicos y ON y.id <> x.id JOIN public.perfiles py ON py.id = y.id AND py.rol = 'medico'
+   WHERE x.rol = 'medico' AND x.activo AND COALESCE(x.created_at, '-infinity') < now()
+     AND EXISTS (SELECT 1 FROM auth.users u WHERE u.id = x.id)
+     AND NOT EXISTS (SELECT 1 FROM public.cuentas_proveedor cp WHERE cp.id = x.id)
+     AND NOT EXISTS (SELECT 1 FROM public.pacientes pa WHERE pa.auth_user_id = x.id)
+     AND NOT EXISTS (SELECT 1 FROM public.medico_clinicas mc WHERE mc.medico_id = y.id AND mc.clinica_id IN (SELECT private.clinicas_de(x.id)))
+     AND NOT EXISTS (SELECT 1 FROM public.citas c WHERE c.medico_id = y.id AND c.clinica_id IN (SELECT private.clinicas_de(x.id)))
+   ORDER BY COALESCE(x.created_at, '-infinity'), x.id, COALESCE(py.created_at, '-infinity'), y.id LIMIT 1;
+
+  SELECT s.id, t.id INTO a962, t962
+    FROM public.perfiles s JOIN public.medico_clinicas mm ON mm.clinica_id IN (SELECT private.clinicas_de(s.id)) AND mm.medico_id <> s.id
+    JOIN public.perfiles t ON t.id = mm.medico_id AND t.rol = 'medico'
+   WHERE s.rol IN ('asistente_medico','enfermeria') AND s.activo AND COALESCE(s.created_at, '-infinity') < now()
+     AND EXISTS (SELECT 1 FROM auth.users u WHERE u.id = s.id)
+     AND NOT EXISTS (SELECT 1 FROM public.cuentas_proveedor cp WHERE cp.id = s.id)
+     AND NOT EXISTS (SELECT 1 FROM public.pacientes pa WHERE pa.auth_user_id = s.id)
+   ORDER BY COALESCE(s.created_at, '-infinity'), s.id, COALESCE(t.created_at, '-infinity'), t.id LIMIT 1;
+
+  SELECT s.id, c.medico_id, c.clinica_id,
+         EXISTS (SELECT 1 FROM public.medico_clinicas mc WHERE mc.medico_id = c.medico_id AND mc.clinica_id IN (SELECT private.clinicas_de(s.id)))
+    INTO a963, t963, c963, m963
+    FROM public.perfiles s JOIN public.citas c ON c.clinica_id IN (SELECT private.clinicas_de(s.id)) AND c.medico_id IS NOT NULL AND c.medico_id <> s.id
+    JOIN public.perfiles t ON t.id = c.medico_id
+   WHERE s.rol = 'secretaria' AND s.activo AND COALESCE(s.created_at, '-infinity') < now()
+     AND EXISTS (SELECT 1 FROM auth.users u WHERE u.id = s.id)
+     AND NOT EXISTS (SELECT 1 FROM public.cuentas_proveedor cp WHERE cp.id = s.id)
+     AND NOT EXISTS (SELECT 1 FROM public.pacientes pa WHERE pa.auth_user_id = s.id)
+   ORDER BY 4, COALESCE(s.created_at, '-infinity'), s.id, COALESCE(t.created_at, '-infinity'), t.id, c.id LIMIT 1;
+
+  SELECT a.id, c.medico_id,
+         EXISTS (SELECT 1 FROM public.medico_clinicas mc WHERE mc.medico_id = c.medico_id AND mc.clinica_id IN (SELECT private.clinicas_de(a.id)))
+    INTO a964, t964, m964
+    FROM public.perfiles a JOIN public.citas c ON c.pais_id = v_gt AND c.medico_id IS NOT NULL
+    JOIN public.perfiles t ON t.id = c.medico_id
+   WHERE a.rol = 'admin_pais' AND a.pais_id = v_gt AND a.activo AND COALESCE(a.created_at, '-infinity') < now()
+     AND EXISTS (SELECT 1 FROM auth.users u WHERE u.id = a.id)
+     AND NOT EXISTS (SELECT 1 FROM public.cuentas_proveedor cp WHERE cp.id = a.id)
+     AND NOT EXISTS (SELECT 1 FROM public.pacientes pa WHERE pa.auth_user_id = a.id)
+   ORDER BY 3, COALESCE(a.created_at, '-infinity'), a.id, COALESCE(t.created_at, '-infinity'), t.id, c.id LIMIT 1;
+
+  a965 := (SELECT p.id FROM public.perfiles p
+            WHERE p.rol = 'super_admin' AND p.activo AND COALESCE(p.created_at, '-infinity') < now()
+              AND EXISTS (SELECT 1 FROM auth.users u WHERE u.id = p.id)
+              AND NOT EXISTS (SELECT 1 FROM public.cuentas_proveedor cp WHERE cp.id = p.id)
+              AND NOT EXISTS (SELECT 1 FROM public.pacientes pa WHERE pa.auth_user_id = p.id)
+            ORDER BY COALESCE(p.created_at, '-infinity'), p.id LIMIT 1);
+  ids965 := (SELECT array_agg(m.id ORDER BY m.id) FROM public.medicos m);
+
+  -- P963: lo que dice el helper del brazo c para esa secretaria y esa clinica (medido como ella).
+  IF a963 IS NOT NULL THEN
+    BEGIN
+      PERFORM set_config('request.jwt.claims', json_build_object('sub', a963::text, 'role', 'authenticated')::text, true);
+      PERFORM set_config('role', 'authenticated', true);
+      g963 := COALESCE(private.puede_gestionar_citas(c963)::text, 'NULL');
+      PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
+    EXCEPTION WHEN OTHERS THEN g963 := SQLSTATE; PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
+    END;
+  END IF;
+
+  FOR r IN
+    SELECT * FROM (VALUES
+      ('p958', a958, ARRAY[v_med], 0, 'paciente de GT sin cita con el medico', 'ningun paciente real de GT sin cita con pm_med', ''),
+      ('p959', a959, ARRAY[v_med], 0, 'cuenta de proveedor', 'ninguna cuenta de proveedor real de identidad unica', ''),
+      ('p960', a960, ARRAY[a960], 1, 'medico pide su propio id', 'ningun medico real con fila en medicos', ''),
+      ('p961', a961, ARRAY[t961], 0, 'medico pide un medico sin clinica ni cita compartida', 'ningun par medico / medico ajeno', ''),
+      ('p962', a962, ARRAY[t962], 1, 'asistente_medico/enfermeria pide un medico miembro de su clinica', 'ningun par staff no gestor / medico de su clinica', ''),
+      ('p963', a963, ARRAY[t963], 1, 'secretaria pide un medico de una cita de su clinica', 'ninguna secretaria real con citas en su clinica',
+         '; puede_gestionar_citas('||COALESCE(c963::text, '-')||')='||g963||CASE WHEN m963 THEN '; el medico tambien es miembro de su clinica: brazo c NO aislado de d' ELSE '; brazo c aislado (no es miembro)' END),
+      ('p964', a964, ARRAY[t964], 1, 'admin_pais de GT pide un medico en cita de GT', 'ningun admin_pais real de GT con citas de GT',
+         CASE WHEN m964 THEN '; el medico tambien es miembro de una clinica suya: brazo c NO aislado de d' ELSE '; brazo c aislado (sin membresia)' END),
+      ('p965', a965, ids965, COALESCE(cardinality(ids965), 0), 'super_admin pide todos los medicos', 'ningun super_admin real o 0 medicos', '')
+    ) x(k, actor, ids, esperado, etiqueta, sin_fixture, nota)
+  LOOP
+    IF r.actor IS NULL OR r.ids IS NULL OR array_position(r.ids, NULL) IS NOT NULL OR (r.k = 'p965' AND r.esperado = 0) THEN
+      vr := 'FALLO (sin fixture: '||r.sin_fixture||')';
+    ELSE
+      st := 'OK'; n := NULL;
+      BEGIN
+        PERFORM set_config('request.jwt.claims', json_build_object('sub', r.actor::text, 'role', 'authenticated')::text, true);
+        PERFORM set_config('role', 'authenticated', true);
+        n := (SELECT count(*) FROM public.obtener_medicos_por_ids(r.ids));
+        PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
+      EXCEPTION WHEN OTHERS THEN st := SQLSTATE||' '||SQLERRM; PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
+      END;
+      vr := CASE WHEN st = 'OK' AND n = r.esperado THEN 'OK' ELSE 'ROJO' END
+            ||' ('||r.etiqueta||': actor '||r.actor||' pide '
+            ||CASE WHEN cardinality(r.ids) = 1 THEN r.ids[1]::text ELSE cardinality(r.ids)||' ids' END
+            ||', obtiene '||COALESCE(n::text, '-')||' (esperado '||r.esperado||')'||CASE WHEN st = 'OK' THEN ', sin error' ELSE ', '||st END||r.nota||')';
+    END IF;
+    PERFORM set_config('probe.'||r.k, vr, false);
+  END LOOP;
+EXCEPTION WHEN OTHERS THEN
+  PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
+  PERFORM set_config('probe.p958', 'FALLO ('||SQLSTATE||' '||SQLERRM||')', false);
+  PERFORM set_config('probe.p959', 'FALLO ('||SQLSTATE||' '||SQLERRM||')', false);
+  PERFORM set_config('probe.p960', 'FALLO ('||SQLSTATE||' '||SQLERRM||')', false);
+  PERFORM set_config('probe.p961', 'FALLO ('||SQLSTATE||' '||SQLERRM||')', false);
+  PERFORM set_config('probe.p962', 'FALLO ('||SQLSTATE||' '||SQLERRM||')', false);
+  PERFORM set_config('probe.p963', 'FALLO ('||SQLSTATE||' '||SQLERRM||')', false);
+  PERFORM set_config('probe.p964', 'FALLO ('||SQLSTATE||' '||SQLERRM||')', false);
+  PERFORM set_config('probe.p965', 'FALLO ('||SQLSTATE||' '||SQLERRM||')', false);
+END $$;
+SELECT set_config('role', 'none', true);
+
+-- P966 catalogo de la 357: 1 sobrecarga, misma firma y columnas de salida, DEFINER + search_path '', VOLATILE, EXECUTE
+-- solo authenticated/service_role/postgres (sin PUBLIC ni anon), md5(prosrc) distinto del de partida y cuerpo sin la
+-- rama de fallback (no nombra perfiles).
+DO $$
+DECLARE bad text := ''; v text;
+BEGIN
+  v := (SELECT string_agg(p.oid::regprocedure::text||' -> '||pg_get_function_result(p.oid)||' | definer='||p.prosecdef::text||' sp='||COALESCE(array_to_string(p.proconfig, ','), '-')||' vol='||p.provolatile::text||' | '||
+           (SELECT string_agg(CASE a.grantee WHEN 0 THEN 'PUBLIC' ELSE pg_get_userbyid(a.grantee) END||'='||a.privilege_type, '+'
+                               ORDER BY CASE a.grantee WHEN 0 THEN 'PUBLIC' ELSE pg_get_userbyid(a.grantee) END)
+              FROM aclexplode(COALESCE(p.proacl, acldefault('f', p.proowner))) a), ';')
+          FROM pg_proc p WHERE p.pronamespace = 'public'::regnamespace AND p.proname = 'obtener_medicos_por_ids');
+  IF v IS DISTINCT FROM 'obtener_medicos_por_ids(uuid[]) -> TABLE(id uuid, nombre_completo text, especialidad text) | definer=true sp=search_path="" vol=v | authenticated=EXECUTE+postgres=EXECUTE+service_role=EXECUTE' THEN
+    bad := bad||'catalogo: '||COALESCE(v, 'NO EXISTE')||'; ';
+  END IF;
+  v := (SELECT string_agg(p.prorettype::regtype::text||' | '||array_to_string(p.proallargtypes::regtype[], ',')||' | '||array_to_string(p.proargmodes, ',')||' | '||array_to_string(p.proargnames, ','), ';')
+          FROM pg_proc p WHERE p.pronamespace = 'public'::regnamespace AND p.proname = 'obtener_medicos_por_ids');
+  IF v IS DISTINCT FROM 'record | uuid[],uuid,text,text | i,t,t,t | p_medico_ids,id,nombre_completo,especialidad' THEN bad := bad||'columnas de salida: '||COALESCE(v, '-')||'; '; END IF;
+  IF EXISTS (SELECT 1 FROM pg_proc p WHERE p.pronamespace = 'public'::regnamespace AND p.proname = 'obtener_medicos_por_ids' AND md5(p.prosrc) = '2d646322d21e4f5d8cae0b20de7723f5') THEN
+    bad := bad||'md5(prosrc) es el de partida (sin la 357); ';
+  END IF;
+  IF EXISTS (SELECT 1 FROM pg_proc p WHERE p.pronamespace = 'public'::regnamespace AND p.proname = 'obtener_medicos_por_ids' AND position('perfiles' IN p.prosrc) > 0) THEN
+    bad := bad||'el cuerpo nombra perfiles (rama de fallback); ';
+  END IF;
+  IF has_function_privilege('anon', 'public.obtener_medicos_por_ids(uuid[])', 'EXECUTE') THEN bad := bad||'anon tiene EXECUTE; '; END IF;
+  PERFORM set_config('probe.p966', CASE WHEN bad = ''
+    THEN 'OK (1 sobrecarga, misma firma y columnas; DEFINER + search_path=''''; VOLATILE; EXECUTE solo authenticated/service_role/postgres; md5 distinto del de partida; cuerpo sin perfiles)'
+    ELSE 'ROJO ('||left(bad, 900)||')' END, false);
+EXCEPTION WHEN OTHERS THEN
+  PERFORM set_config('probe.p966', 'FALLO ('||SQLSTATE||' '||SQLERRM||')', false);
+END $$;
+
 -- ===== Veredictos como result set =====
 SELECT 'P1_anon_insert_citas'              AS probe, current_setting('probe.p1', true)  AS verdict, 'BLOQUEADO' AS esperado_post_fix
 UNION ALL SELECT 'P2_medico_cancela_ajena_rpc',         current_setting('probe.p2', true),  'BLOQUEADO'
@@ -32217,6 +32416,15 @@ UNION ALL SELECT 'P954_censo_slot_15_355',           current_setting('probe.p954
 UNION ALL SELECT 'P955_ubicaciones_catalogo_356',    current_setting('probe.p955', true), 'OK (356: RETURNS sin email; DEFINER + search_path; EXECUTE authenticated/service_role)'
 UNION ALL SELECT 'P956_ubicaciones_admin_356',       current_setting('probe.p956', true), 'OK (356: admin de una empresa con ubicaciones = oraculo > 0)'
 UNION ALL SELECT 'P957_ubicaciones_otra_empresa_356',current_setting('probe.p957', true), 'OK (356: cuenta de otra empresa 0 filas, sin error)'
+UNION ALL SELECT 'P958_omi_paciente_sin_cita_357',  current_setting('probe.p958', true), 'OK (357: paciente de GT sin cita con el medico obtiene 0, sin error)'
+UNION ALL SELECT 'P959_omi_proveedor_357',          current_setting('probe.p959', true), 'OK (357: cuenta de proveedor obtiene 0, sin error)'
+UNION ALL SELECT 'P960_omi_medico_propio_357',      current_setting('probe.p960', true), 'OK (357: medico obtiene su propio id, 1)'
+UNION ALL SELECT 'P961_omi_medico_ajeno_357',       current_setting('probe.p961', true), 'OK (357: medico sin clinica ni cita compartida obtiene 0)'
+UNION ALL SELECT 'P962_omi_staff_membresia_357',    current_setting('probe.p962', true), 'OK (357: asistente_medico/enfermeria obtiene 1 medico de su clinica, brazo d)'
+UNION ALL SELECT 'P963_omi_secretaria_cita_357',    current_setting('probe.p963', true), 'OK (357: secretaria obtiene 1 medico de cita de su clinica, brazo c)'
+UNION ALL SELECT 'P964_omi_admin_pais_357',         current_setting('probe.p964', true), 'OK (357: admin_pais de GT obtiene 1 medico en cita de GT, brazo c)'
+UNION ALL SELECT 'P965_omi_super_admin_357',        current_setting('probe.p965', true), 'OK (357: super_admin obtiene todos los ids pedidos)'
+UNION ALL SELECT 'P966_omi_catalogo_357',           current_setting('probe.p966', true), 'OK (357: 1 sobrecarga, firma igual, DEFINER + search_path, ACL sin anon, cuerpo sin perfiles)'
 -- Las filas FX* son SALUD DE FIXTURE, no probes de seguridad: dicen si la precondicion que una
 -- migracion posterior empezo a exigir se pudo sembrar. Si una sale ROJO, los probes que dependen de
 -- ese fixture reportan N/A (su flag de ready se pierde con el rollback de la subtransaccion) en vez
@@ -32461,7 +32669,7 @@ UNION ALL SELECT 'P000_CENTINELA_veredictos_no_nulos',
        'probe.p866', 'probe.p867', 'probe.p868', 'probe.p869', 'probe.p870', 'probe.p871', 'probe.p872', 'probe.p873', 'probe.p874', 'probe.p875', 'probe.p876', 'probe.p877', 'probe.p878',
        'probe.p879', 'probe.p880', 'probe.p881', 'probe.p882', 'probe.p883', 'probe.p884',
        'probe.p885', 'probe.p886', 'probe.p887', 'probe.p888', 'probe.p889', 'probe.p890', 'probe.p891', 'probe.p892', 'probe.p893', 'probe.p894', 'probe.p895', 'probe.p896', 'probe.p908', 'probe.p909', 'probe.p910', 'probe.p911',
-       'probe.p897', 'probe.p898', 'probe.p899', 'probe.p900', 'probe.p901', 'probe.p902', 'probe.p903', 'probe.p904', 'probe.p905', 'probe.p906', 'probe.p907', 'probe.p912', 'probe.p913', 'probe.p914', 'probe.p915', 'probe.p916', 'probe.p917', 'probe.p918', 'probe.p919', 'probe.p920', 'probe.p921', 'probe.p922', 'probe.p923', 'probe.p924', 'probe.p925', 'probe.p926', 'probe.p927', 'probe.p928', 'probe.p929', 'probe.p930', 'probe.p931', 'probe.p932', 'probe.p933', 'probe.p934', 'probe.p935', 'probe.p936', 'probe.p937', 'probe.p938', 'probe.p939', 'probe.p940', 'probe.p941', 'probe.p942', 'probe.p943', 'probe.p944', 'probe.p945', 'probe.p946', 'probe.p947', 'probe.p948', 'probe.p949', 'probe.p950', 'probe.p951', 'probe.p952', 'probe.p953', 'probe.p954', 'probe.p955', 'probe.p956', 'probe.p957'
+       'probe.p897', 'probe.p898', 'probe.p899', 'probe.p900', 'probe.p901', 'probe.p902', 'probe.p903', 'probe.p904', 'probe.p905', 'probe.p906', 'probe.p907', 'probe.p912', 'probe.p913', 'probe.p914', 'probe.p915', 'probe.p916', 'probe.p917', 'probe.p918', 'probe.p919', 'probe.p920', 'probe.p921', 'probe.p922', 'probe.p923', 'probe.p924', 'probe.p925', 'probe.p926', 'probe.p927', 'probe.p928', 'probe.p929', 'probe.p930', 'probe.p931', 'probe.p932', 'probe.p933', 'probe.p934', 'probe.p935', 'probe.p936', 'probe.p937', 'probe.p938', 'probe.p939', 'probe.p940', 'probe.p941', 'probe.p942', 'probe.p943', 'probe.p944', 'probe.p945', 'probe.p946', 'probe.p947', 'probe.p948', 'probe.p949', 'probe.p950', 'probe.p951', 'probe.p952', 'probe.p953', 'probe.p954', 'probe.p955', 'probe.p956', 'probe.p957', 'probe.p958', 'probe.p959', 'probe.p960', 'probe.p961', 'probe.p962', 'probe.p963', 'probe.p964', 'probe.p965', 'probe.p966'
              ]) AS n) s),
   'OK (todos los veredictos publicados)';
 
