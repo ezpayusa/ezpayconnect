@@ -18,6 +18,8 @@ const MENSAJES_CAMPANA: Record<string, string> = {
   CA011: 'Esta campaña ya no está en borrador',
   CA012: 'Esta campaña ya tiene un pago registrado',
   CA013: 'No se pudo validar el comprobante, volvé a subirlo',
+  CA014: 'La duración de la campaña supera los días del plan',
+  CA015: 'La fecha de fin es anterior a la de inicio',
 }
 const mensajeErrorCampana = (code: string | undefined, generico: string) => (code && MENSAJES_CAMPANA[code]) || generico
 
