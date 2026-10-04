@@ -24,7 +24,8 @@ export default function DashboardPage() {
     pacientes: 0,
     citasHoy: 0,
     recetas: 0,
-    consultasSemana: 0,
+    // null = la consulta falló: la tarjeta muestra "—", nunca un 0 como dato
+    consultasSemana: null as number | null,
   })
 
   useEffect(() => {
@@ -38,16 +39,17 @@ export default function DashboardPage() {
       const recetasCount = recetas?.length || 0
 
       // Consultas esta semana
-      const { count: consultasSemana } = await supabase
+      const { count: consultasSemana, error: errConsultas } = await supabase
         .from('expediente_notas')
         .select('*', { count: 'exact', head: true })
         .gte('created_at', inicioSemana.toISOString())
+      if (errConsultas) console.error('[dashboard] no se pudieron contar las consultas de la semana:', errConsultas.code ?? 'sin code')
 
       setStats({
         pacientes: pacientes?.length || 0,
         citasHoy,
         recetas: recetasCount,
-        consultasSemana: consultasSemana || 0,
+        consultasSemana: errConsultas ? null : consultasSemana ?? 0,
       })
     }
 
@@ -104,7 +106,7 @@ export default function DashboardPage() {
   const citasFiltradas = (citas || []).filter(c => c?.fecha >= rango.inicio && c?.fecha <= rango.fin)
 
   // DATOS PARA GRÁFICOS (adaptados al período)
-  const diasSemana = ['Dom', 'Lun', 'Mar', 'Mie', 'Jue', 'Vie', 'Sab']
+  const diasSemana = ['Dom', 'Lun', 'Mar', 'Mié', 'Jue', 'Vie', 'Sab']
   const hoy = new Date()
   const inicioSemana = new Date(hoy)
   inicioSemana.setDate(hoy.getDate() - hoy.getDay())
@@ -222,7 +224,7 @@ export default function DashboardPage() {
             <div className="flex items-center justify-between">
               <div>
                 <p className="text-sm text-[#8a9aaa]">Consultas Semana</p>
-                <p className="text-3xl font-bold text-[#1a2a3a]">{stats.consultasSemana}</p>
+                <p className="text-3xl font-bold text-[#1a2a3a]">{stats.consultasSemana === null ? '—' : stats.consultasSemana}</p>
               </div>
               <Activity className="h-10 w-10 text-[#22c55e]" />
             </div>

@@ -1,8 +1,8 @@
 -- ############################################################################################
 -- 363 ROLLBACK - saca el conteo de proveedores por pais
 -- ############################################################################################
--- DROP de public.contar_proveedores_por_pais(uuid). Un front que ya la llame vuelve a ver 0 proveedores para el
--- admin_pais (su SELECT directo no pasa las policies de empresas_proveedoras). Precondicion: la 363 esta viva (md5
+-- DROP de public.contar_proveedores_por_pais(uuid). Un front que ya la llame vuelve a ver — por error de la RPC en
+-- la tarjeta de proveedores (el SELECT directo de antes no pasaba las policies de empresas_proveedoras). Precondicion: la 363 esta viva (md5
 -- 43c82022...). Autochequeo: la funcion no existe y la huella de ACL de funciones vuelve a 83031eae... 379.
 -- Probes: con este rollback aplicado, P1001-P1006 dan ROJO o FALLO.
 -- ############################################################################################
