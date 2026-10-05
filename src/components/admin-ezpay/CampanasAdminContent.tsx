@@ -3,6 +3,8 @@ import { useNavigate } from 'react-router-dom'
 import { supabase } from '@/lib/supabase'
 import { usePaisFiltro } from '@/hooks/usePaisFiltro'
 import { useMetricasCampanaAdmin } from '@/hooks/admin/useMetricasCampanaAdmin'
+import { esCampanaVigente } from '@/lib/campanas'
+import { hoyISO } from '@/lib/fecha'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
@@ -89,19 +91,21 @@ export default function CampanasAdminContent() {
     }
   }
 
+  const hoy = hoyISO()
+
   const campanasFiltradas = campanas.filter((c) => {
     const matchSearch = !search || c.titulo.toLowerCase().includes(search.toLowerCase())
     const matchActiva =
       filtroActiva === 'todas' ||
-      (filtroActiva === 'activas' && c.activa) ||
-      (filtroActiva === 'inactivas' && !c.activa)
+      (filtroActiva === 'activas' && esCampanaVigente(c, hoy)) ||
+      (filtroActiva === 'inactivas' && !esCampanaVigente(c, hoy))
     return matchSearch && matchActiva
   })
 
   const totalImpresiones = metricasDetalle.reduce((sum, m) => sum + m.impresiones, 0)
   const totalClicks = metricasDetalle.reduce((sum, m) => sum + m.clicks, 0)
   const ctrPromedio = totalImpresiones > 0 ? Math.round((totalClicks / totalImpresiones) * 100 * 100) / 100 : 0
-  const activas = campanas.filter((c) => c.activa).length
+  const activas = campanas.filter((c) => esCampanaVigente(c, hoy)).length
 
   const metricasMap = new Map(metricasDetalle.map((m) => [m.campana_id, m]))
 
@@ -242,7 +246,8 @@ export default function CampanasAdminContent() {
                 const impresiones = m?.impresiones || 0
                 const clicks = m?.clicks || 0
                 const ctr = impresiones > 0 ? Math.round((clicks / impresiones) * 100 * 100) / 100 : 0
-                const vencida = new Date(c.fecha_fin) < new Date()
+                const vencida = c.fecha_fin.slice(0, 10) < hoy
+                const programada = c.fecha_inicio.slice(0, 10) > hoy
 
                 return (
                   <tr key={c.id} className="hover:bg-gray-50">
@@ -280,10 +285,12 @@ export default function CampanasAdminContent() {
                       </span>
                     </td>
                     <td className="px-4 py-3">
-                      {c.activa && !vencida ? (
+                      {c.activa && esCampanaVigente(c, hoy) ? (
                         <Badge className="bg-emerald-100 text-emerald-700">Activa</Badge>
                       ) : c.activa && vencida ? (
                         <Badge className="bg-red-100 text-red-700">Vencida</Badge>
+                      ) : c.activa && programada ? (
+                        <Badge className="bg-gray-100 text-gray-700">Programada</Badge>
                       ) : (
                         <Badge className="bg-gray-100 text-gray-700">Inactiva</Badge>
                       )}
