@@ -5,14 +5,14 @@
 // Un CP0xx que este mapa todavía no conoce no cae en un genérico mudo: sale con el código a la vista.
 
 export const MENSAJES_SOLICITAR: Record<string, string> = {
-  '42501': 'Tu usuario no puede contratar planes. Pedíselo a un administrador o editor de tu empresa.',
-  CP001: 'El plan elegido ya no está disponible. Volvé a la lista de planes y elegí otro.',
+  '42501': 'Tu usuario no puede contratar planes. Pídeselo a un administrador o editor de tu empresa.',
+  CP001: 'El plan elegido ya no está disponible. Vuelve a la lista de planes y elige otro.',
   CP002: 'El plan elegido no corresponde al país de tu empresa.',
-  CP003: 'El plan elegido no tiene visitas, vigencia o precio configurados. Avisá al equipo de EzPayConnect.',
-  CP004: 'Todavía no hay una cuenta bancaria activa para tu país. Contactá al equipo de EzPayConnect.',
-  CP005: 'La moneda del plan no coincide con la de la cuenta bancaria. Avisá al equipo de EzPayConnect.',
-  CP006: 'No se pudo validar el comprobante. Volvé a subirlo.',
-  CP007: 'Ya tenés una compra de plan pendiente de verificación. Esperá a que se resuelva antes de comprar otra.',
+  CP003: 'El plan elegido no tiene visitas, vigencia o precio configurados. Avisa al equipo de EzPayConnect.',
+  CP004: 'Todavía no hay una cuenta bancaria activa para tu país. Contacta al equipo de EzPayConnect.',
+  CP005: 'La moneda del plan no coincide con la de la cuenta bancaria. Avisa al equipo de EzPayConnect.',
+  CP006: 'No se pudo validar el comprobante. Vuelve a subirlo.',
+  CP007: 'Ya tienes una compra de plan pendiente de verificación. Espera a que se resuelva antes de comprar otra.',
 }
 
 export const MENSAJES_APROBAR: Record<string, string> = {
@@ -27,7 +27,7 @@ export const MENSAJES_APROBAR: Record<string, string> = {
   CP017: 'La bolsa vigente de la empresa en ese país es ilimitada: no se le puede sumar una compra.',
 }
 
-export const MENSAJE_GENERICO_COMPRA = 'No se pudo completar la operación. Intentá de nuevo.'
+export const MENSAJE_GENERICO_COMPRA = 'No se pudo completar la operación. Intenta de nuevo.'
 
 // Comprar planes es de admin/editor (permiso planes.contratar). Al visitador no se le ofrece comprar:
 // se le pide que avise a su administrador.

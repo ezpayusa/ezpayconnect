@@ -14,11 +14,11 @@ import { ArrowLeft, Upload, CreditCard, MapPin, User, Hash, Loader2, Mail, FileT
 
 // Errores de cotizar_campana / solicitar_pago_campana (mig 359). Nunca se muestra el texto crudo de Postgres.
 const MENSAJES_CAMPANA: Record<string, string> = {
-  CA009: 'No tenés permiso para pagar esta campaña',
+  CA009: 'No tienes permiso para pagar esta campaña',
   CA010: 'El plan de esta campaña no tiene precio para tu país',
   CA011: 'Esta campaña ya no está en borrador',
   CA012: 'Esta campaña ya tiene un pago registrado',
-  CA013: 'No se pudo validar el comprobante, volvé a subirlo',
+  CA013: 'No se pudo validar el comprobante, vuelve a subirlo',
   CA014: 'La duración de la campaña supera los días del plan',
   CA015: 'La fecha de fin es anterior a la de inicio',
 }
@@ -118,7 +118,7 @@ export default function PagoCheckoutPage() {
           toast.error(
             error?.code === 'upload'
               ? 'Error subiendo comprobante'
-              : mensajeErrorCampana(error?.code, 'No se pudo registrar el pago. Intentá de nuevo.')
+              : mensajeErrorCampana(error?.code, 'No se pudo registrar el pago. Intenta de nuevo.')
           )
           return
         }

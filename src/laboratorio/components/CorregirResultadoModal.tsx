@@ -69,7 +69,7 @@ export default function CorregirResultadoModal({ examen, abrir, onCerrar, onCorr
             <Label>Resultado / valores</Label>
             <Textarea rows={6} value={resultado} onChange={(e) => setResultado(e.target.value)} />
             <p className="text-xs text-muted-foreground">
-              Se guarda este texto tal como quede. Si lo vaciás, el resultado queda solo con el archivo.
+              Se guarda este texto tal como quede. Si lo vacías, el resultado queda solo con el archivo.
             </p>
           </div>
 

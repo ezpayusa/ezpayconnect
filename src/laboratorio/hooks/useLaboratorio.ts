@@ -247,7 +247,7 @@ export function useLaboratorio() {
     if (error) {
       // 23503 = FK RESTRICT de examenes.catalogo_id (mig 332): un examen ya ordenado no se borra, se desactiva
       if (error.code === '23503') {
-        toast.error('Este examen ya fue ordenado y no se puede borrar. Podés desactivarlo.', {
+        toast.error('Este examen ya fue ordenado y no se puede borrar. Puedes desactivarlo.', {
           action: { label: 'Desactivar', onClick: () => { toggleCatalogo(id, false) } },
         })
       } else {
