@@ -191,6 +191,19 @@ export default function CitaCard({
               </>
             )}
 
+            {/* Vencida → solo Cancelar (mismo botón que el de confirmada), para poder cerrarla */}
+            {vencida && onRechazar && (
+              <Button
+                size="sm"
+                variant="outline"
+                className="w-full text-red-600 border-red-200 hover:bg-red-50"
+                onClick={() => onRechazar(cita)}
+                disabled={isLoading('rechazar')}
+              >
+                Cancelar
+              </Button>
+            )}
+
             {/* En curso → Continuar consulta */}
             {cita.estado === 'en_curso' && (
               <Button
