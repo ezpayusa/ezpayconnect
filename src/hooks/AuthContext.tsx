@@ -21,12 +21,16 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const [perfil, setPerfil] = useState<Perfil | null>(null)
   const [loading, setLoading] = useState(true)
   const loadedForUserId = useRef<string | null>(null)
+  // Usuario cuyo perfil está cargando el listener; null si no hay carga en curso.
+  const usuarioEnCurso = useRef<string | null>(null)
 
-  const fetchPerfil = useCallback(async (userId: string) => {
+  // esVigente (opcional): si devuelve false al volver la respuesta, se descarta (no pisa perfil ni loadedForUserId).
+  const fetchPerfil = useCallback(async (userId: string, esVigente?: () => boolean) => {
     // Intentar via RPC primero (bypass PostgREST schema cache)
     const { data: perfilRpc } = await supabase
       .rpc('obtener_perfil', { p_user_id: userId })
       .maybeSingle()
+    if (esVigente && !esVigente()) return
     if (perfilRpc) {
       setPerfil(perfilRpc as any)
       loadedForUserId.current = userId
@@ -38,6 +42,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       .select('*')
       .eq('id', userId)
       .maybeSingle()
+    if (esVigente && !esVigente()) return
     setPerfil(data)
     loadedForUserId.current = userId
   }, [])
@@ -61,10 +66,30 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       const nextUser = session?.user ?? null
       setUser(nextUser)
       if (nextUser) {
-        if (loadedForUserId.current !== nextUser.id) fetchPerfil(nextUser.id)
+        if (loadedForUserId.current !== nextUser.id) {
+          // Cambio de usuario (login): las rutas esperan al perfil en vez de evaluar el rol con perfil null.
+          // Mismo id (TOKEN_REFRESHED, USER_UPDATED…) no entra acá: loading no se toca.
+          const id = nextUser.id
+          usuarioEnCurso.current = id
+          setLoading(true)
+          fetchPerfil(id, () => usuarioEnCurso.current === id)
+            .catch((e) => console.error('fetchPerfil:', e?.message ?? e))
+            .finally(() => {
+              // Solo la carga vigente apaga el loading: una respuesta vieja no toca el del usuario actual.
+              if (usuarioEnCurso.current === id) {
+                usuarioEnCurso.current = null
+                setLoading(false)
+              }
+            })
+        }
       } else {
         setPerfil(null)
         loadedForUserId.current = null
+        // Logout con una carga en curso: se invalida (su finally ya no apaga el loading) y se libera acá.
+        if (usuarioEnCurso.current !== null) {
+          usuarioEnCurso.current = null
+          setLoading(false)
+        }
       }
     })
 
