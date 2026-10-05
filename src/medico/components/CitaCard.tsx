@@ -3,11 +3,12 @@ import { Card, CardContent } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
 import type { CitaConPaciente } from '@/medico/types/medico.types'
-import { parseFechaLocal } from '@/lib/fecha'
+import { parseFechaLocal, hoyISO } from '@/lib/fecha'
 import {
   User,
   Clock,
   CalendarDays,
+  CalendarX,
   Stethoscope,
   CheckCircle2,
   XCircle,
@@ -56,7 +57,17 @@ export default function CitaCard({
     no_show: { label: 'No asistió', color: 'bg-red-200 text-red-800', border: 'border-red-600', icon: XCircle },
   }
 
-  const config = estadoConfig[cita.estado] || estadoConfig.agendada
+  // Solo presentación (el estado real no cambia): una cita de un día anterior que nadie atendió es "Vencida"
+  // y no ofrece acciones; una que quedó en espera o en curso es "Sin cerrar" (en_curso conserva Continuar consulta).
+  const pasada = cita.fecha.slice(0, 10) < hoyISO()
+  const vencida = pasada && ['solicitada', 'agendada', 'confirmada'].includes(cita.estado)
+  const sinCerrar = pasada && ['en_espera', 'en_curso'].includes(cita.estado)
+
+  const config = vencida
+    ? { label: 'Vencida', color: 'bg-gray-100 text-gray-600', border: 'border-gray-300', icon: CalendarX }
+    : sinCerrar
+      ? { label: 'Sin cerrar', color: 'bg-amber-100 text-amber-700', border: 'border-amber-400', icon: AlertTriangle }
+      : estadoConfig[cita.estado] || estadoConfig.agendada
   const EstadoIcon = config.icon
 
   const pacienteNombre = cita.paciente
@@ -120,7 +131,7 @@ export default function CitaCard({
           {/* Acciones */}
           <div className="flex flex-col gap-2 min-w-[140px]">
             {/* Confirmar / Rechazar */}
-            {(cita.estado === 'solicitada' || cita.estado === 'agendada') && (
+            {!vencida && (cita.estado === 'solicitada' || cita.estado === 'agendada') && (
               <>
                 <Button
                   size="sm"
@@ -153,7 +164,7 @@ export default function CitaCard({
             )}
 
             {/* Confirmada → En sala */}
-            {cita.estado === 'confirmada' && (
+            {!vencida && cita.estado === 'confirmada' && (
               <>
                 <Button
                   size="sm"
