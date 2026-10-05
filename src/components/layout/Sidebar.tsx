@@ -30,6 +30,26 @@ export function Sidebar() {
   // Normalizar rol para comparación
   const userRol = (perfil?.rol || '').toLowerCase().trim()
 
+  // Etiqueta legible del rol (13 códigos de roles_catalogo + 'admin'). Un rol fuera del mapa muestra su código.
+  const ETIQUETA_ROL: Record<string, string> = {
+    super_admin: 'Super admin',
+    admin_pais: 'Admin de país',
+    asesor_comercial: 'Asesor comercial',
+    supervisor_comercial: 'Supervisor comercial',
+    admin_clinica: 'Admin de clínica',
+    admin: 'Administrador',
+    gerente: 'Gerente',
+    medico: 'Médico',
+    asistente_medico: 'Asistente médico',
+    enfermeria: 'Enfermería',
+    secretaria: 'Secretaría',
+    soporte: 'Soporte',
+    vendedor: 'Vendedor',
+    cliente: 'Cliente',
+  }
+  // Sin rol se conserva el 'Usuario' de antes.
+  const etiquetaRol = perfil?.rol ? (ETIQUETA_ROL[perfil.rol] ?? perfil.rol) : 'Usuario'
+
   // Definir items de navegación según rol
   const getNavItems = () => {
     // Si es admin_clinica, redirige a su panel
@@ -97,7 +117,7 @@ export function Sidebar() {
         <div className="flex items-center gap-2 px-4 py-2 rounded-lg bg-white/5">
           <Shield className="h-4 w-4 text-[#5BA8D1]" />
           <span className="text-xs font-medium text-[#B8D0E0] uppercase">
-            {perfil?.rol || 'Usuario'}
+            {etiquetaRol}
           </span>
         </div>
       </div>
