@@ -12,9 +12,9 @@
 // `asistente_medico` está acá por MEDICIÓN, no por diseño: es el único de los seis roles que el
 // default mandaba a /dashboard y que tiene una cuenta real y activa (login 2026-07-21). Mandarla
 // a /sin-panel le cambiaba el aterrizaje a una persona de verdad, y eso es decisión de producto.
-// Los otros cinco (cliente, enfermeria, gerente, soporte, vendedor) sólo tienen cuentas de prueba
-// y quedan en /sin-panel; su destino real es un frente abierto.
-export const ROLES_DASHBOARD_CLINICO = ['admin_clinica', 'asistente_medico'] as const
+// De los otros cinco, gerente aterriza en /clinica (su panel administrativo); cliente, enfermeria,
+// soporte y vendedor quedan en /sin-panel y su destino real es un frente abierto.
+export const ROLES_DASHBOARD_CLINICO = ['asistente_medico'] as const
 
 // Destinos:
 //   medico                       -> /medico
@@ -24,7 +24,8 @@ export const ROLES_DASHBOARD_CLINICO = ['admin_clinica', 'asistente_medico'] as 
 //   secretaria                   -> /clinica/calendario   (su única superficie operativa)
 //   asesor_comercial             -> /comercial
 //   supervisor_comercial         -> /comercial   (misma superficie: la cartera la ensancha la RLS)
-//   admin_clinica                -> /dashboard   (el único rol del catálogo con menú propio ahí)
+//   admin_clinica, gerente       -> /clinica   (panel de clínica; el index los admite)
+//   asistente_medico             -> /dashboard
 //   cualquier otro / sin rol     -> /sin-panel
 export function rutaHomePorRol(
   perfil: { rol?: string | null; pais_id?: string | null } | null | undefined
@@ -34,6 +35,7 @@ export function rutaHomePorRol(
   if (rol === 'admin_pais') return perfil?.pais_id ? `/admin-ezpay/pais/${perfil.pais_id}` : '/sin-panel'
   if (rol === 'super_admin') return '/admin-ezpay'
   if (rol === 'secretaria') return '/clinica/calendario'
+  if (rol === 'admin_clinica' || rol === 'gerente') return '/clinica'
   if (rol === 'asesor_comercial' || rol === 'supervisor_comercial') return '/comercial'
   if (rol && (ROLES_DASHBOARD_CLINICO as readonly string[]).includes(rol)) return '/dashboard'
   // Sin rama clínica de consuelo. /sin-panel no lee nada, no muestra datos de nadie y ofrece

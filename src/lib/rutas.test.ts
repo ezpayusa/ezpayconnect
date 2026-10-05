@@ -13,11 +13,11 @@ describe('rutaHomePorRol — destino de cada rol del catálogo', () => {
     ['secretaria', '/clinica/calendario'],
     ['asesor_comercial', '/comercial'],
     ['supervisor_comercial', '/comercial'],
-    ['admin_clinica', '/dashboard'],
+    ['admin_clinica', '/clinica'],
     ['asistente_medico', '/dashboard'],   // devuelto a su destino previo: tiene una cuenta real
     ['cliente', '/sin-panel'],
     ['enfermeria', '/sin-panel'],
-    ['gerente', '/sin-panel'],
+    ['gerente', '/clinica'],
     ['soporte', '/sin-panel'],
     ['vendedor', '/sin-panel'],
   ])('%s -> %s', (rol, esperado) => {

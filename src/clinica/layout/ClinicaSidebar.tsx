@@ -29,6 +29,19 @@ export function ClinicaSidebar() {
   // Roles administrativos (ven todo el panel). Los de captura solo ven Admisión.
   const ROLES_ADMIN = ['admin_clinica', 'admin', 'super_admin', 'gerente']
 
+  // Etiqueta legible del rol real (los 7 de ROLES_PERMITIDOS de ClinicaLayout). Un rol fuera del mapa muestra su código.
+  const ETIQUETA_ROL: Record<string, string> = {
+    admin_clinica: 'Admin de clínica',
+    admin: 'Administrador',
+    super_admin: 'Super admin',
+    gerente: 'Gerente',
+    asistente_medico: 'Asistente médico',
+    enfermeria: 'Enfermería',
+    secretaria: 'Secretaría',
+  }
+  const rol = perfil?.rol || ''
+  const etiquetaRol = ETIQUETA_ROL[rol] ?? rol
+
   // `roles` declara quién ve cada item. Item sin `roles` = visible a todos (compat hacia atrás).
   const navItems = [
     { label: 'Dashboard', icon: LayoutDashboard, path: '/clinica', roles: ROLES_ADMIN },
@@ -63,7 +76,7 @@ export function ClinicaSidebar() {
       <div className="px-4 pt-4">
         <div className="flex items-center gap-2 px-4 py-2 rounded-lg bg-white/5">
           <span className="text-xs font-medium text-[#B8D0E0] uppercase">
-            Admin de Clínica
+            {etiquetaRol}
           </span>
         </div>
       </div>
