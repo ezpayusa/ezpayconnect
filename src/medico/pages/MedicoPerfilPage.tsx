@@ -25,7 +25,7 @@ export default function MedicoPerfilPage() {
     const file = e.target.files?.[0]
     e.target.value = ''
     if (!file || !user?.id) return
-    if (!file.type.startsWith('image/')) { toast.error('Elegí una imagen'); return }
+    if (!file.type.startsWith('image/')) { toast.error('Elige una imagen'); return }
     if (file.size > 2 * 1024 * 1024) { toast.error('La imagen no puede superar 2 MB'); return }
     setSubiendo(true)
     try {

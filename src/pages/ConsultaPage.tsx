@@ -59,7 +59,7 @@ const SOAP_VACIO = {
   diagnostico: '',
 }
 const AVISO_BORRADOR =
-  'La nota se cerró mientras editabas. Tus cambios siguen en pantalla: escribí el motivo y enviá la corrección, o tocá Cancelar para descartarlos.'
+  'La nota se cerró mientras editabas. Tus cambios siguen en pantalla: escribe el motivo y envía la corrección, o toca Cancelar para descartarlos.'
 type CampoSoap = keyof typeof SOAP_VACIO
 const CAMPOS_SOAP = Object.keys(SOAP_VACIO) as CampoSoap[]
 
@@ -704,7 +704,7 @@ function ConsultaDeCita() {
               </CardTitle>
               {soloLectura && (
                 <p className="text-xs text-muted-foreground">
-                  La nota está cerrada. Para cambiarla usá "Corregir nota": la corrección queda registrada con su motivo.
+                  La nota está cerrada. Para cambiarla usa "Corregir nota": la corrección queda registrada con su motivo.
                 </p>
               )}
             </CardHeader>
