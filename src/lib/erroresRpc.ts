@@ -39,7 +39,7 @@ export interface ErrorRpcMapeado {
   sinMapear?: boolean
 }
 
-const GENERICO = 'No se pudo completar la operación. Intentá de nuevo.'
+const GENERICO = 'No se pudo completar la operación. Intenta de nuevo.'
 
 type Entrada = Omit<ErrorRpcMapeado, 'code' | 'mensaje'> & {
   /** Texto propio. Si falta, se usa el mensaje de la base (los PA0xx ya vienen redactados). */
@@ -51,7 +51,7 @@ const MAPA: Record<string, Entrada> = {
   // 42501 se levanta con el mensaje 'no_autorizado', que no es texto para un usuario. Y es
   // deliberadamente el MISMO error cuando el registro no existe: el front no debe inventar un
   // "no encontrado" que revelaría existencia.
-  '42501': { texto: 'No tenés permiso para esta acción.', destino: 'toast', reportar: false },
+  '42501': { texto: 'No tienes permiso para esta acción.', destino: 'toast', reportar: false },
 
   // PT002 lo usan DOS familias con significados distintos (medido 15-sep): las RPCs de push
   // transaccional (migs 121-127, "No autorizado para notificar…") y liberar_examen_al_paciente
@@ -60,7 +60,7 @@ const MAPA: Record<string, Entrada> = {
   // cierto para todos: no promete una causa. La pantalla que sabe de qué operación se trata agrega
   // el contexto POR CÓDIGO (ver src/lib/liberacionExamenes.ts), nunca leyendo el mensaje.
   // No se reporta: es un rechazo de negocio, no un bug nuestro.
-  PT002: { texto: 'No tenés permiso para esta acción o el registro no está en un estado que la permita.',
+  PT002: { texto: 'No tienes permiso para esta acción o el registro no está en un estado que la permita.',
            destino: 'toast', reportar: false },
 
   // --- Guards de la mig 264: la jerarquía comercial ------------------------------------------
@@ -95,7 +95,7 @@ const MAPA: Record<string, Entrada> = {
   // El texto describe la SITUACIÓN —alguien ya guardó eso— y pide recargar, que es lo accionable
   // en los tres casos. Cada pantalla puede agregar contexto propio si lo necesita.
   '23505': {
-    texto: 'Ya existe un registro con esos datos. Puede que se haya guardado desde otra pantalla: actualizá y volvé a mirar.',
+    texto: 'Ya existe un registro con esos datos. Puede que se haya guardado desde otra pantalla: actualiza y vuelve a mirar.',
     destino: 'inline', campo: 'nombre', recargar: 'visita', reportar: false,
   },
   '23514': {
@@ -107,16 +107,16 @@ const MAPA: Record<string, Entrada> = {
 
   // --- Storage (mismo mapa, códigos normalizados a STORAGE_<status>) -------------------------
   // El texto crudo de storage viene en inglés y a veces es un JSON: nunca se muestra tal cual.
-  STORAGE_400: { texto: 'El archivo no se pudo subir. Revisá que no esté dañado y probá de nuevo.', destino: 'toast', reportar: true },
-  STORAGE_401: { texto: 'Tu sesión venció. Volvé a entrar y reintentá la subida.', destino: 'toast', reportar: false },
-  STORAGE_403: { texto: 'No tenés permiso para subir a esta visita.', destino: 'toast', reportar: false },
+  STORAGE_400: { texto: 'El archivo no se pudo subir. Revisa que no esté dañado y prueba de nuevo.', destino: 'toast', reportar: true },
+  STORAGE_401: { texto: 'Tu sesión venció. Vuelve a entrar y reintenta la subida.', destino: 'toast', reportar: false },
+  STORAGE_403: { texto: 'No tienes permiso para subir a esta visita.', destino: 'toast', reportar: false },
   STORAGE_404: { texto: 'No encontramos el archivo en el servidor.', destino: 'toast', reportar: true },
-  STORAGE_409: { texto: 'Ya existe un archivo con ese nombre. Probá de nuevo.', destino: 'toast', reportar: true },
+  STORAGE_409: { texto: 'Ya existe un archivo con ese nombre. Prueba de nuevo.', destino: 'toast', reportar: true },
   // 413 y 415 los ataja el cliente ANTES de subir; si llegan acá es que la validación local
   // quedó desalineada con el bucket, y eso es bug nuestro.
   STORAGE_413: { texto: 'El archivo supera el máximo permitido.', destino: 'inline', campo: 'adjunto', reportar: true },
   STORAGE_415: { texto: 'Ese tipo de archivo no está permitido.', destino: 'inline', campo: 'adjunto', reportar: true },
-  STORAGE_0:   { texto: 'Se cortó la subida. No quedó nada guardado: reintentá.', destino: 'inline', campo: 'adjunto', reportar: false },
+  STORAGE_0:   { texto: 'Se cortó la subida. No quedó nada guardado: reintenta.', destino: 'inline', campo: 'adjunto', reportar: false },
 
   // --- Frente visitas (migs 273/274) --------------------------------------------------------
   // Los guards de país y de jerarquía traen su propio texto explicando qué no coincide.
@@ -139,7 +139,7 @@ const MAPA: Record<string, Entrada> = {
   // Ya había check-in: la ficha que el usuario está viendo está vieja.
   PA025: { destino: 'toast', recargar: 'visita', reportar: false },
   // --- Agenda (mig 280) ----------------------------------------------------------------------
-  PA026: { texto: 'La fecha ya pasó. Elegí hoy o una fecha futura.', destino: 'inline', campo: 'fecha', reportar: false },
+  PA026: { texto: 'La fecha ya pasó. Elige hoy o una fecha futura.', destino: 'inline', campo: 'fecha', reportar: false },
   PA027: { texto: 'Esta visita ya no está planificada (tiene check-in, se realizó o se canceló), o falta el motivo.',
            destino: 'inline', campo: 'visita', reportar: false },
   // --- Guards de check-in / checkout (mig 285) ------------------------------------------------

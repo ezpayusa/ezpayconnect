@@ -24,7 +24,7 @@ export function useEnviarReceta() {
       // autenticado con rol clínico (cierra el open-relay de emails).
       const { data: { session } } = await supabase.auth.getSession()
       if (!session?.access_token) {
-        setError('Sesión no válida. Iniciá sesión de nuevo.')
+        setError('Sesión no válida. Inicia sesión de nuevo.')
         return { success: false, error: 'No autenticado' }
       }
       const response = await fetch('/api/send-receta', {
@@ -41,7 +41,7 @@ export function useEnviarReceta() {
         // o texto plano (ej. el genérico de Vercel "A server error has occurred"), que
         // rompería el parseo JSON directo con un SyntaxError crudo para el médico.
         const raw = await response.text()
-        let mensaje = 'No se pudo procesar el envío. Intentá de nuevo en unos minutos.'
+        let mensaje = 'No se pudo procesar el envío. Intenta de nuevo en unos minutos.'
         try {
           const parsed = JSON.parse(raw)
           if (parsed?.error) mensaje = String(parsed.error)
@@ -71,7 +71,7 @@ export function useEnviarReceta() {
       return { success: true, data }
     } catch (err: any) {
       // Con el manejo de arriba, acá solo caen errores de RED (fetch rechazado).
-      const mensaje = 'No se pudo conectar. Revisá tu conexión.'
+      const mensaje = 'No se pudo conectar. Revisa tu conexión.'
       setError(mensaje)
       return { success: false, error: err?.message || mensaje }
     } finally {

@@ -8,7 +8,7 @@ describe('mapearErrorRpc — una fila del contrato por caso', () => {
   it('42501 -> toast con texto propio, no el "no_autorizado" crudo de la base', () => {
     const r = mapearErrorRpc(pg('42501', 'no_autorizado'))
     expect(r.destino).toBe('toast')
-    expect(r.mensaje).toBe('No tenés permiso para esta acción.')
+    expect(r.mensaje).toBe('No tienes permiso para esta acción.')
     expect(r.mensaje).not.toMatch(/no_autorizado/)
     expect(r.reportar).toBe(false)
   })
@@ -93,7 +93,7 @@ describe('mapearErrorRpc — una fila del contrato por caso', () => {
 
   it('PT002 -> texto neutro, sin reportar: lo comparten push y liberar_examen_al_paciente con distintos sentidos', () => {
     const m = mapearErrorRpc({ code: 'PT002', message: 'No autorizado para liberar este examen' })
-    expect(m.mensaje).toBe('No tenés permiso para esta acción o el registro no está en un estado que la permita.')
+    expect(m.mensaje).toBe('No tienes permiso para esta acción o el registro no está en un estado que la permita.')
     expect(m.reportar).toBe(false)
     expect(m.destino).toBe('toast')
   })
@@ -129,7 +129,7 @@ describe('frente visitas — PA015 a PA025', () => {
     const r = mapearErrorRpc(pg('PA023', 'PA023: el path no corresponde a la visita'))
     expect(r.reportar).toBe(true)
     // y no se le muestra al usuario el path crudo, que no significa nada para él
-    expect(r.mensaje).toBe('No se pudo completar la operación. Intentá de nuevo.')
+    expect(r.mensaje).toBe('No se pudo completar la operación. Intenta de nuevo.')
   })
 
   it('ninguno de los quince cae en "sin mapear"', () => {
@@ -147,7 +147,7 @@ describe('storage — el MISMO mapa, con el código normalizado', () => {
   it('normaliza statusCode a STORAGE_<n> y lo resuelve en el mapa único', () => {
     const r = mapearErrorRpc(st('403'))
     expect(r.code).toBe('STORAGE_403')
-    expect(r.mensaje).toBe('No tenés permiso para subir a esta visita.')
+    expect(r.mensaje).toBe('No tienes permiso para subir a esta visita.')
     expect(r.mensaje).not.toMatch(/inglés/)
   })
 
@@ -164,7 +164,7 @@ describe('storage — el MISMO mapa, con el código normalizado', () => {
   it('un status que no está en el mapa NO inventa nada: va al genérico', () => {
     const r = mapearErrorRpc(st('502'))
     expect(r.code).toBe('STORAGE_502')
-    expect(r.mensaje).toBe('No se pudo completar la operación. Intentá de nuevo.')
+    expect(r.mensaje).toBe('No se pudo completar la operación. Intenta de nuevo.')
     expect(r.reportar).toBe(true)
   })
 
@@ -182,7 +182,7 @@ describe('agenda (mig 280) — PA026 y PA027', () => {
     const r = mapearErrorRpc(pg('PA026', 'fecha_pasada'))
     expect(r.destino).toBe('inline')
     expect(r.campo).toBe('fecha')
-    expect(r.mensaje).toBe('La fecha ya pasó. Elegí hoy o una fecha futura.')
+    expect(r.mensaje).toBe('La fecha ya pasó. Elige hoy o una fecha futura.')
     expect(r.reportar).toBe(false)
   })
   it('PA027 (no planificada / sin motivo) -> inline en "visita", con texto propio', () => {
@@ -217,7 +217,7 @@ describe('los tres negativos — que el mapa envejezca bien y no rompa', () => {
     expect(r.mensaje).toContain('PA035')          // el código queda A LA VISTA
     expect(r.mensaje).toContain('una regla que todavia no mapeamos')
     expect(r.reportar).toBe(true)                 // y llega a Sentry
-    expect(r.mensaje).not.toBe('No se pudo completar la operación. Intentá de nuevo.')
+    expect(r.mensaje).not.toBe('No se pudo completar la operación. Intenta de nuevo.')
   })
 
   it('un PA sin mapear y SIN mensaje tampoco desaparece', () => {
@@ -233,7 +233,7 @@ describe('los tres negativos — que el mapa envejezca bien y no rompa', () => {
       expect(r.code).toBe(null)
       expect(r.destino).toBe('toast')
       expect(r.reportar).toBe(true)
-      expect(r.mensaje).toBe('No se pudo completar la operación. Intentá de nuevo.')
+      expect(r.mensaje).toBe('No se pudo completar la operación. Intenta de nuevo.')
     }
   })
 
@@ -254,7 +254,7 @@ describe('los tres negativos — que el mapa envejezca bien y no rompa', () => {
   it('un código desconocido que NO es PA sí va al genérico (no se inventa nada)', () => {
     const r = mapearErrorRpc(pg('40001', 'serialization failure'))
     expect(r.sinMapear).toBeUndefined()
-    expect(r.mensaje).toBe('No se pudo completar la operación. Intentá de nuevo.')
+    expect(r.mensaje).toBe('No se pudo completar la operación. Intenta de nuevo.')
     expect(r.reportar).toBe(true)
   })
 })
