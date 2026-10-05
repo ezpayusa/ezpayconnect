@@ -109,5 +109,5 @@ export function formatoDistancia(metros: number): string {
 
 /** Texto del aviso de entregas nuevas (el mismo de la notificación del servidor). */
 export function textoEntregasNuevas(n: number): string {
-  return n === 1 ? 'Tenés 1 entrega nueva' : `Tenés ${n} entregas nuevas`
+  return n === 1 ? 'Tienes 1 entrega nueva' : `Tienes ${n} entregas nuevas`
 }

@@ -23,7 +23,7 @@ export function useColaEnVivo(usuarioId: string | null | undefined, refrescar: (
         { event: 'INSERT', schema: 'public', table: 'notificaciones', filter: `usuario_id=eq.${usuarioId}` },
         (payload) => {
           const n = payload.new as { tipo?: string; titulo?: string | null; mensaje?: string | null }
-          if (n.tipo === 'entrega_asignada') toast.success(n.titulo || 'Tenés entregas nuevas', { description: n.mensaje ?? undefined })
+          if (n.tipo === 'entrega_asignada') toast.success(n.titulo || 'Tienes entregas nuevas', { description: n.mensaje ?? undefined })
           else if (n.tipo === 'entrega_quitada') toast.info(n.titulo || 'Te quitaron una entrega', { description: n.mensaje ?? undefined })
           else return
           refrescarRef.current()

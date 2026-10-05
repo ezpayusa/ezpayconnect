@@ -174,7 +174,7 @@ export default function ColaPage() {
           <span>
             {estadoUbicacion === 'buscando'
               ? 'Buscando tu ubicación… Mientras tanto, la cola va por hora de asignación.'
-              : 'Sin tu ubicación la cola va por hora de asignación. Activá la ubicación para ordenarla por cercanía.'}
+              : 'Sin tu ubicación la cola va por hora de asignación. Activa la ubicación para ordenarla por cercanía.'}
           </span>
         </div>
       )}
@@ -232,7 +232,7 @@ export default function ColaPage() {
             <AlertTriangle className="h-5 w-5 shrink-0" />
             <div className="flex-1">
               <p className="font-medium">No se pudo cargar tu lista.</p>
-              <p className="opacity-80">Revisá tu conexión e intentá de nuevo.</p>
+              <p className="opacity-80">Revisa tu conexión e intenta de nuevo.</p>
             </div>
           </div>
           <button type="button" onClick={() => aplicarFiltro(filtro)} className="mt-3 w-full rounded-lg bg-red-600 text-white py-2 font-medium">
@@ -248,7 +248,7 @@ export default function ColaPage() {
             {entregas.length === 0 ? <PackageOpen className="h-8 w-8 text-emerald-300" /> : <Coffee className="h-8 w-8 text-emerald-400" />}
           </div>
           <p className="font-semibold text-gray-700">Estás libre</p>
-          <p className="text-sm text-gray-500 mt-1">No tenés entregas pendientes. Cuando te asignen, te avisamos y aparecen acá.</p>
+          <p className="text-sm text-gray-500 mt-1">No tienes entregas pendientes. Cuando te asignen, te avisamos y aparecen acá.</p>
           <button type="button" onClick={() => aplicarFiltro(filtro)} className="mt-4 inline-flex items-center gap-1 text-[#1E5C8E] font-medium">
             <RefreshCw className="h-4 w-4" /> Actualizar
           </button>

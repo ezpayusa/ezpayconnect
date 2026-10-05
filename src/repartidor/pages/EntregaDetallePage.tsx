@@ -192,7 +192,7 @@ export default function EntregaDetallePage() {
         {entrega.lat != null && entrega.lng != null ? (
           <MapaInteractivo lat={entrega.lat} lng={entrega.lng} onChange={() => { /* solo lectura */ }} height="200px" />
         ) : (
-          <p className="text-sm text-gray-500">Sin ubicación en el mapa. Usá la dirección para llegar.</p>
+          <p className="text-sm text-gray-500">Sin ubicación en el mapa. Usa la dirección para llegar.</p>
         )}
         <p className="text-sm text-gray-600 flex items-start gap-1">
           <MapPin className="h-4 w-4 shrink-0 mt-0.5 text-gray-400" /> {entrega.direccion_entrega ?? 'Sin dirección'}
@@ -267,7 +267,7 @@ export default function EntregaDetallePage() {
         <div className="rounded-2xl bg-white border border-gray-100 shadow-sm p-4 space-y-3">
           <p className="text-sm font-medium text-gray-700 flex items-center gap-1"><Banknote className="h-4 w-4" /> Registrar cobro</p>
           <p className="text-2xl font-bold text-gray-800">{montoFmt}</p>
-          <p className="text-xs text-gray-400">El monto lo calcula el sistema; vos solo elegís el método.</p>
+          <p className="text-xs text-gray-400">El monto lo calcula el sistema; tú solo eliges el método.</p>
           <div className="grid grid-cols-2 gap-2">
             {METODOS.map((m) => (
               <button

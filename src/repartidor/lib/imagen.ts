@@ -29,11 +29,11 @@ export async function comprimirImagen(file: File, maxDim = 1600, quality = 0.8):
     const im = new Image()
     im.onload = () => resolve(im)
     im.onerror = () =>
-      reject(new Error('No se pudo procesar la imagen (formato no soportado, p.ej. HEIC de iPhone). Probá con otra foto o cambiá el formato de cámara a "Más compatible".'))
+      reject(new Error('No se pudo procesar la imagen (formato no soportado, p.ej. HEIC de iPhone). Prueba con otra foto o cambia el formato de cámara a "Más compatible".'))
     im.src = dataUrl
   })
   if (img.width === 0 || img.height === 0) {
-    throw new Error('La imagen está vacía o dañada. Probá con otra foto.')
+    throw new Error('La imagen está vacía o dañada. Prueba con otra foto.')
   }
   const scale = Math.min(1, maxDim / Math.max(img.width, img.height))
   const w = Math.max(1, Math.round(img.width * scale))

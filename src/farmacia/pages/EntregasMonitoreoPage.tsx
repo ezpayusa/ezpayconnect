@@ -73,8 +73,8 @@ export default function EntregasMonitoreoPage() {
   })
   const abrirTanda = () => {
     if (seleccionadas.length === 0) return
-    if (sucursalSel == null) { toast.error('Elegí entregas de una sola sucursal: cada repartidor es de una sucursal.'); return }
-    if (seleccionadas.length > MAX_LOTE) { toast.error(`Podés asignar hasta ${MAX_LOTE} entregas por tanda.`); return }
+    if (sucursalSel == null) { toast.error('Elige entregas de una sola sucursal: cada repartidor es de una sucursal.'); return }
+    if (seleccionadas.length > MAX_LOTE) { toast.error(`Puedes asignar hasta ${MAX_LOTE} entregas por tanda.`); return }
     setDialogo({ modo: 'asignar', ids: seleccionadas.map((e) => e.id) })
   }
   const alTerminarAsignacion = (repartidorId: string) => {
@@ -183,7 +183,7 @@ export default function EntregasMonitoreoPage() {
               <span className="font-medium text-[#1a2a3a]">
                 {seleccionadas.length === 1 ? '1 pendiente seleccionada' : `${seleccionadas.length} pendientes seleccionadas`}
               </span>
-              {sucursalSel == null && <span className="text-amber-700">Son de sucursales distintas: elegí de una sola.</span>}
+              {sucursalSel == null && <span className="text-amber-700">Son de sucursales distintas: elige de una sola.</span>}
               <div className="ml-auto flex gap-2">
                 <Button size="sm" variant="outline" onClick={() => setSeleccion(new Set())}>Limpiar</Button>
                 <Button size="sm" className="bg-[#1E5C8E] hover:bg-[#164a70]" disabled={sucursalSel == null} onClick={abrirTanda}>

@@ -66,10 +66,10 @@ export default function AsignarRepartidorDialog({ modo, entregaIds, repartidorAc
           <DialogTitle>{titulo}</DialogTitle>
           <DialogDescription>
             {modo === 'asignar'
-              ? 'Elegí el repartidor. Le llega un aviso con las entregas nuevas.'
+              ? 'Elige el repartidor. Le llega un aviso con las entregas nuevas.'
               : estadoEntrega === 'fallida'
-                ? 'Elegí el repartidor: podés reabrirla con el mismo o pasarla a otro. Le llega un aviso.'
-                : 'Elegí el nuevo repartidor. Les avisamos a los dos.'}
+                ? 'Elige el repartidor: puedes reabrirla con el mismo o pasarla a otro. Le llega un aviso.'
+                : 'Elige el nuevo repartidor. Les avisamos a los dos.'}
           </DialogDescription>
         </DialogHeader>
 

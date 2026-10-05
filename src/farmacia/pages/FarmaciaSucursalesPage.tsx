@@ -105,7 +105,7 @@ export default function FarmaciaSucursalesPage() {
       <div className="flex items-center justify-between gap-3">
         <div>
           <h1 className="text-2xl font-bold flex items-center gap-2"><Building2 className="w-6 h-6" /> Sucursales</h1>
-          <p className="text-sm text-muted-foreground">Gestioná las sucursales de tu empresa. El médico solo ve las activas al recetar.</p>
+          <p className="text-sm text-muted-foreground">Gestiona las sucursales de tu empresa. El médico solo ve las activas al recetar.</p>
         </div>
         {!editando && (
           <Button onClick={abrirNueva} className="bg-[#B45309] hover:bg-[#92400e]"><Plus className="h-4 w-4 mr-2" /> Nueva sucursal</Button>
@@ -142,7 +142,7 @@ export default function FarmaciaSucursalesPage() {
         <div className="flex justify-center py-12"><Loader2 className="h-8 w-8 animate-spin text-slate-400" /></div>
       ) : sucursales.length === 0 ? (
         <Card className="bg-gray-50 border-dashed"><CardContent className="p-8 text-center text-muted-foreground">
-          <Building2 className="h-10 w-10 mx-auto mb-3 text-gray-300" /><p>Aún no hay sucursales. Creá la primera.</p>
+          <Building2 className="h-10 w-10 mx-auto mb-3 text-gray-300" /><p>Aún no hay sucursales. Crea la primera.</p>
         </CardContent></Card>
       ) : (
         <div className="space-y-3">

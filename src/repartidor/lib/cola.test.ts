@@ -76,8 +76,8 @@ describe('textos', () => {
   it('distancia legible y aviso de entregas nuevas', () => {
     expect(formatoDistancia(347)).toBe('350 m')
     expect(formatoDistancia(2400)).toBe('2,4 km')
-    expect(textoEntregasNuevas(1)).toBe('Tenés 1 entrega nueva')
-    expect(textoEntregasNuevas(3)).toBe('Tenés 3 entregas nuevas')
+    expect(textoEntregasNuevas(1)).toBe('Tienes 1 entrega nueva')
+    expect(textoEntregasNuevas(3)).toBe('Tienes 3 entregas nuevas')
   })
 })
 

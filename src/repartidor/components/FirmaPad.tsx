@@ -117,7 +117,7 @@ export default function FirmaPad({ onSave, onCancel, saving, folio }: FirmaPadPr
         />
         {vacio && (
           <div className="absolute inset-0 grid place-items-center pointer-events-none">
-            <p className="text-sm text-gray-300">Firmá dentro del recuadro</p>
+            <p className="text-sm text-gray-300">Firma dentro del recuadro</p>
           </div>
         )}
       </div>
