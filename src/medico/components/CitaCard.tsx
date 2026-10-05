@@ -17,6 +17,12 @@ import {
   Loader2,
 } from 'lucide-react'
 
+// Texto a pintar, o null si está vacío: null, undefined, '' o el literal 'NULL' (sin distinguir mayúsculas, con trim).
+const textoVisible = (v: string | null | undefined): string | null => {
+  const t = (v ?? '').trim()
+  return t === '' || t.toUpperCase() === 'NULL' ? null : t
+}
+
 interface CitaCardProps {
   cita: CitaConPaciente
   onConfirmar?: (cita: CitaConPaciente) => Promise<void>
@@ -72,9 +78,14 @@ export default function CitaCard({
               </Badge>
               <Badge variant="outline" className="text-xs">
                 <CalendarDays className="h-3 w-3 mr-1" />
-                {parseFechaLocal(cita.fecha).toLocaleDateString('es-GT', {
-                  weekday: 'short', day: 'numeric', month: 'short',
-                })}
+                {(() => {
+                  // El año solo cuando la cita no es del año en curso.
+                  const f = parseFechaLocal(cita.fecha.slice(0, 10))
+                  return f.toLocaleDateString('es-GT', {
+                    weekday: 'short', day: 'numeric', month: 'short',
+                    ...(f.getFullYear() !== new Date().getFullYear() ? { year: 'numeric' as const } : {}),
+                  })
+                })()}
               </Badge>
               <Badge variant="outline" className="text-xs">
                 <Clock className="h-3 w-3 mr-1" />
@@ -93,15 +104,15 @@ export default function CitaCard({
               </p>
             )}
 
-            {cita.motivo && (
+            {textoVisible(cita.motivo) && (
               <p className="text-sm text-muted-foreground mt-1 truncate">
-                Motivo: {cita.motivo}
+                Motivo: {textoVisible(cita.motivo)}
               </p>
             )}
 
-            {cita.notas && (
+            {textoVisible(cita.notas) && (
               <p className="text-xs text-muted-foreground mt-1 line-clamp-2">
-                Notas: {cita.notas}
+                Notas: {textoVisible(cita.notas)}
               </p>
             )}
           </div>
