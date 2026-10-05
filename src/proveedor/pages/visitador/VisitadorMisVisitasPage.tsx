@@ -6,6 +6,7 @@ import { Badge } from '@/components/ui/badge'
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import { Textarea } from '@/components/ui/textarea'
 import { useVisitasAgendadas } from '@/proveedor/hooks/useVisitasAgendadas'
+import { hoyISO, parseFechaLocal } from '@/lib/fecha'
 import { CalendarDays, ArrowLeft, Loader2, Clock, User, AlertCircle, MapPin, Camera, CheckCircle, XCircle } from 'lucide-react'
 
 const estadoColor: Record<string, string> = {
@@ -39,15 +40,14 @@ export default function VisitadorMisVisitasPage() {
     if (v.estado !== 'confirmada' && v.estado !== 'aprobada' && v.estado !== 'pendiente') return false
     const hoy = new Date()
     hoy.setHours(0, 0, 0, 0)
-    const limite = v.fecha_limite_cancelacion ? new Date(v.fecha_limite_cancelacion) : null
+    const limite = v.fecha_limite_cancelacion ? parseFechaLocal(v.fecha_limite_cancelacion.slice(0, 10)) : null
     return !limite || hoy <= limite
   }
 
   const puedeCheckin = (v: typeof visitas[0]) => {
     if (v.estado !== 'confirmada' && v.estado !== 'aprobada') return false
-    const hoy = new Date()
-    const fechaVisita = new Date(v.fecha_visita)
-    return hoy.toDateString() === fechaVisita.toDateString()
+    // fecha_visita es DATE: comparar strings ISO en hora local (parsearla como Date cae el día anterior en GT)
+    return !!v.fecha_visita && hoyISO() === v.fecha_visita.slice(0, 10)
   }
 
   const puedeCheckout = (v: typeof visitas[0]) => {

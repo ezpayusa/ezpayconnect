@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback, useMemo } from 'react'
 import { useParams, Link } from 'react-router-dom'
 import { supabase } from '@/lib/supabase'
+import { parseFechaLocal } from '@/lib/fecha'
 import { useProveedorAuth } from '@/proveedor/hooks/useProveedorAuth'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Badge } from '@/components/ui/badge'
@@ -86,8 +87,9 @@ export default function VisitadorDetallePage() {
     if (rango === 'todo') return visitas
     return visitas.filter((v) => {
       if (!v.fecha_visita) return false
-      const f = new Date(v.fecha_visita)
+      const f = parseFechaLocal(v.fecha_visita.slice(0, 10))
       const hoy = new Date()
+      hoy.setHours(0, 0, 0, 0)
       if (rango === '30d') {
         const limite = new Date(hoy)
         limite.setDate(limite.getDate() - 30)
@@ -204,7 +206,7 @@ export default function VisitadorDetallePage() {
                       <p className="text-sm text-muted-foreground flex items-center gap-2 flex-wrap">
                         <span className="flex items-center gap-1">
                           <MapPin className="w-3 h-3" />
-                          {v.fecha_visita ? new Date(v.fecha_visita).toLocaleDateString('es-GT') : '—'}
+                          {v.fecha_visita ? parseFechaLocal(v.fecha_visita.slice(0, 10)).toLocaleDateString('es-GT') : '—'}
                         </span>
                         {v.hora_inicio && (
                           <span className="flex items-center gap-1">

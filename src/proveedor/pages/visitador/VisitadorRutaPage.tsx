@@ -1,6 +1,7 @@
 import { useState } from 'react'
 import { useVisitasAgendadas } from '@/proveedor/hooks/useVisitasAgendadas'
 import { useRutaVisitador } from '@/proveedor/hooks/useRutaVisitador'
+import { hoyISO } from '@/lib/fecha'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
@@ -27,7 +28,7 @@ L.Marker.prototype.options.icon = DefaultIcon
 
 export default function VisitadorRutaPage() {
   const { visitas } = useVisitasAgendadas()
-  const [fechaSeleccionada, setFechaSeleccionada] = useState(new Date().toISOString().split('T')[0])
+  const [fechaSeleccionada, setFechaSeleccionada] = useState(hoyISO())
   const { ruta, tiempoTotal, distanciaTotalKm } = useRutaVisitador(visitas, fechaSeleccionada)
 
   // Determinar siguiente visita pendiente (sin check-in)
