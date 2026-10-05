@@ -29295,6 +29295,11 @@ BEGIN
     -- choca con la PK; ademas asi el fixture no consume valores de una secuencia que no es lo que se prueba.
     INSERT INTO public.planes_publicidad (id, nombre)
       VALUES ((SELECT COALESCE(max(id), 0) + 1 FROM public.planes_publicidad), 'P929 plan de prueba') RETURNING id INTO v_plan;
+    -- 5-oct-2026, mig 365: el super_admin ya no inserta notas; la receta usa al medico. exp_insert_medico exige
+    -- medico_id = auth.uid() y medico_atiende_paciente(paciente): una cita propia de v_med con el paciente 23, sembrada
+    -- aca como postgres y descartada con todo lo demas.
+    INSERT INTO public.citas (paciente_id, medico_id, fecha, hora_inicio, hora_fin)
+      VALUES (c_pac, v_med, CURRENT_DATE + 451, '07:00', '07:30');
     FOR r IN
       SELECT DISTINCT s.oid AS seq_oid, s.relname::text AS seq, t.relname::text AS tab FROM pg_depend d
         JOIN pg_attrdef ad ON ad.oid = d.objid JOIN pg_class t ON t.oid = ad.adrelid
@@ -29311,7 +29316,7 @@ BEGIN
       BEGIN
         IF r.tab IN ('campana_vistas', 'chat_mensajes', 'push_tokens') THEN
           PERFORM set_config('request.jwt.claims', json_build_object('sub', v_pauth::text, 'role', 'authenticated')::text, true);
-        ELSIF r.tab IN ('facturas', 'pacientes') THEN
+        ELSIF r.tab IN ('facturas', 'pacientes', 'expediente_notas') THEN   -- expediente_notas: mig 365, el super_admin ya no inserta notas; la receta usa al medico
           PERFORM set_config('request.jwt.claims', json_build_object('sub', v_med::text, 'role', 'authenticated')::text, true);
         ELSE
           PERFORM set_config('request.jwt.claims', json_build_object('sub', v_sa::text, 'role', 'authenticated')::text, true);
