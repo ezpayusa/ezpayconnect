@@ -66,7 +66,7 @@ export function useProgramaPuntos() {
     const { error } = await supabase.rpc('solicitar_canje', { _premio_id: premioId })
     if (error) {
       const m = error.message || ''
-      const msg = /saldo_insuficiente/.test(m) ? 'No tenés puntos suficientes para este premio.'
+      const msg = /saldo_insuficiente/.test(m) ? 'No tienes puntos suficientes para este premio.'
         : /premio_no_disponible/.test(m) ? 'El premio ya no está disponible (sin stock).'
         : /premio_otro_pais/.test(m) ? 'Ese premio no está disponible en tu país.'
         : 'No se pudo procesar el canje.'

@@ -6,7 +6,7 @@ import { Check, Loader2, MoreHorizontal } from 'lucide-react'
 import { toast } from 'sonner'
 
 // Mensaje genérico (SIN PHI ni datos del paciente más allá del código en el link).
-const MENSAJE = 'Te invito a EzPayConnect: gestioná tus citas, recetas y resultados médicos desde el celular. Conocela e instalala aquí:'
+const MENSAJE = 'Te invito a EzPayConnect: gestiona tus citas, recetas y resultados médicos desde el celular. Conócela e instálala aquí:'
 
 type ButtonVariant = 'default' | 'secondary' | 'outline' | 'ghost' | 'link'
 type ButtonSize = 'default' | 'sm' | 'lg'
@@ -34,7 +34,7 @@ function WhatsAppIcon({ className }: { className?: string }) {
  *  - "Más opciones": Web Share nativo (SMS/otras apps) con fallback a copiar al portapapeles.
  * Genera el código LAZY al primer clic (el RPC puede tardar la 1ra vez → estado loading).
  */
-export default function InvitarAmigoButton({ className, variant = 'default', size = 'sm', label = 'Invitá a un amigo' }: Props) {
+export default function InvitarAmigoButton({ className, variant = 'default', size = 'sm', label = 'Invita a un amigo' }: Props) {
   const { generar, loading } = useReferido()
   const [copiado, setCopiado] = useState(false)
 

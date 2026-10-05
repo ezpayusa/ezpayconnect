@@ -39,7 +39,7 @@ export default function WebAppPremios() {
     <div className="space-y-6">
       <div>
         <h1 className="text-2xl font-bold text-slate-800">Mis Puntos</h1>
-        <p className="text-slate-500 mt-1">Canjeá tus puntos por premios</p>
+        <p className="text-slate-500 mt-1">Canjea tus puntos por premios</p>
       </div>
 
       {/* Saldo + invitar */}
@@ -55,8 +55,8 @@ export default function WebAppPremios() {
             </div>
           </div>
           <div className="text-right">
-            <p className="text-amber-50 text-xs mb-2">Ganá más puntos invitando amigos</p>
-            <InvitarAmigoButton variant="secondary" label="Invitá y ganá" />
+            <p className="text-amber-50 text-xs mb-2">Gana más puntos invitando amigos</p>
+            <InvitarAmigoButton variant="secondary" label="Invita y gana" />
           </div>
         </CardContent>
       </Card>

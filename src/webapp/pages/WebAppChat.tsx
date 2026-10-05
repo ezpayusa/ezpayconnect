@@ -82,7 +82,7 @@ export default function WebAppChat() {
               </div>
             ) : medicos.length === 0 ? (
               <div className="p-6 text-sm text-slate-500 text-center">
-                Aún no tienes médicos asignados. Agendá una cita para poder conversar.
+                Aún no tienes médicos asignados. Agenda una cita para poder conversar.
               </div>
             ) : (
               medicos.map((m) => (
@@ -126,7 +126,7 @@ export default function WebAppChat() {
         <Card className={`overflow-hidden flex flex-col ${!medicoSel ? 'hidden md:flex' : 'flex'}`}>
           {!medicoSel || !medico ? (
             <div className="flex-1 flex items-center justify-center text-slate-400 text-sm p-6 text-center">
-              {medicos.length === 0 ? 'No hay conversaciones' : 'Seleccioná un médico para ver la conversación.'}
+              {medicos.length === 0 ? 'No hay conversaciones' : 'Selecciona un médico para ver la conversación.'}
             </div>
           ) : (
             <>
