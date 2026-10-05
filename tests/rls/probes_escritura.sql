@@ -25776,12 +25776,16 @@ END $$;
 SELECT set_config('role', 'none', true);
 
 -- ---------------- P888 nota cerrada: UPDATE directo -> NT006 para autor, super_admin y postgres sin llave ----------------
+-- 5-oct-2026 (mig 365): el super_admin ya no tiene policy de UPDATE en expediente_notas. Su UPDATE no llega al trigger:
+-- la RLS filtra la fila en silencio (0 filas, sin error) y la nota queda igual. Con la 365 aplicada ese es el resultado
+-- esperado para el super_admin; sin aplicar, sigue siendo NT006 y el veredicto sale 'PENDIENTE mig 365', nunca OK.
 DO $$
 DECLARE
   c_med uuid := '09d243d5-b222-482a-9762-94a582e9e752'; c_clin uuid := 'c76d862c-e82f-4748-bc07-86c8a3343576'; c_pacid integer := 23; c_sa uuid;
   st text := '00000'; msg text := ''; ok boolean; det text := ''; bad text := ''; r_rest text := 'OK';
   s_notas text; s_rev text; s_citas text; n_hist bigint;
   v_cita bigint; v_nota integer; nn bigint; v_f0 text; r record;
+  v_365 boolean := NOT EXISTS (SELECT 1 FROM pg_policy pl WHERE pl.polrelid = 'public.expediente_notas'::regclass AND pl.polname = 'exp_superadmin_update');
 BEGIN
   SELECT p.id INTO c_sa FROM public.perfiles p WHERE p.rol = 'super_admin' AND p.activo ORDER BY p.id LIMIT 1;
   IF c_sa IS NULL THEN RAISE EXCEPTION 'fixture roto: super_admin activo'; END IF;
@@ -25810,6 +25814,15 @@ BEGIN
         PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
       EXCEPTION WHEN OTHERS THEN PERFORM set_config('ezpay.nota_llave', '', true); PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
         st := SQLSTATE; msg := SQLERRM; END;
+      IF r.actor = 'super_admin' AND v_365 THEN
+        -- desde la 365: 0 filas sin error (RLS sin policy de UPDATE), nota y revisiones iguales
+        ok := COALESCE((st = '00000' AND nn = 0
+          AND (SELECT md5(to_jsonb(t)::text) FROM public.expediente_notas t WHERE t.id = v_nota) = v_f0
+          AND (SELECT count(*) FROM public.expediente_notas_revisiones rv WHERE rv.nota_id = v_nota) = 0), false);
+        det := det||' ;; super_admin (365)|0 filas sin error, sin cambios|'||CASE WHEN ok THEN 'OK' ELSE 'ROJO' END||'|'||st||' filas='||COALESCE(nn::text, '-')||'|'||left(msg, 160);
+        IF NOT ok THEN bad := bad||'super_admin (365): '||st||' filas='||COALESCE(nn::text, '-')||' '||left(msg, 120)||'; '; END IF;
+        CONTINUE;
+      END IF;
       ok := COALESCE((st = 'NT006' AND msg = 'La nota está cerrada: solo se puede corregir con motivo'
         AND (SELECT md5(to_jsonb(t)::text) FROM public.expediente_notas t WHERE t.id = v_nota) = v_f0
         AND (SELECT count(*) FROM public.expediente_notas_revisiones rv WHERE rv.nota_id = v_nota) = 0), false);
@@ -25826,8 +25839,10 @@ BEGIN
   IF (SELECT count(*) FROM public.historial_medico) <> n_hist THEN r_rest := r_rest||' / historial_medico'; END IF;
   det := det||' ;; restauracion|subtransaccion descartada; snapshot igual|'||r_rest||'|-|';
   PERFORM set_config('probe.p888_det', det, false);
-  PERFORM set_config('probe.p888', CASE WHEN bad = '' AND r_rest = 'OK'
-    THEN 'OK (nota cerrada: NT006 para autor, super_admin, postgres sin llave y con llave de otra nota; restaurado)'
+  PERFORM set_config('probe.p888', CASE WHEN bad = '' AND r_rest = 'OK' AND NOT v_365
+    THEN 'PENDIENTE mig 365 (nota cerrada: NT006 para autor, super_admin, postgres sin llave y con llave de otra nota; restaurado)'
+    WHEN bad = '' AND r_rest = 'OK'
+    THEN 'OK (nota cerrada: NT006 para autor, postgres sin llave y con llave de otra nota; super_admin 0 filas sin cambios (365); restaurado)'
     ELSE 'ROJO ('||left(bad, 700)||' | restauracion='||r_rest||')' END, false);
 EXCEPTION WHEN OTHERS THEN
   PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
@@ -26331,7 +26346,7 @@ SELECT set_config('role', 'none', true);
 
 -- ---------------- P896 catalogo de objetos post-334 ----------------
 DO $$
-DECLARE ok boolean; det text := ''; bad text := ''; x text; n bigint; r record; st text := '00000'; msg text := '';
+DECLARE ok boolean; det text := ''; bad text := ''; x text; n bigint; r record; st text := '00000'; msg text := ''; pend365 boolean := false;
 BEGIN
   SELECT string_agg(a.attname||':'||format_type(a.atttypid, a.atttypmod)||':'||CASE WHEN a.attnotnull THEN 'NN' ELSE 'N' END, ',' ORDER BY a.attname)
     INTO x FROM pg_attribute a WHERE a.attrelid = 'public.expediente_notas'::regclass AND NOT a.attisdropped
@@ -26376,8 +26391,11 @@ BEGIN
   det := det||' ;; funciones|4 DEFINER, search_path vacio, EXECUTE exacto; 1 firma de la RPC|'||CASE WHEN ok THEN 'OK' ELSE 'ROJO' END||'|-|'||n;
   IF NOT ok THEN bad := bad||'funciones '||n||'/4; '; END IF;
   SELECT string_agg(policyname||':'||cmd, ',' ORDER BY policyname COLLATE "C") INTO x FROM pg_policies WHERE schemaname = 'public' AND tablename = 'expediente_notas';
-  ok := COALESCE(x = 'Admin clinica ve expediente de su clinica:SELECT,exp_insert_medico:INSERT,exp_select_medico:SELECT,exp_select_paciente:SELECT,exp_superadmin_insert:INSERT,exp_superadmin_select:SELECT,exp_superadmin_update:UPDATE,exp_update_medico:UPDATE', false);
-  det := det||' ;; policies de notas|sin ALL ni DELETE|'||CASE WHEN ok THEN 'OK' ELSE 'ROJO' END||'|-|'||COALESCE(x, '-');
+  -- 5-oct-2026 (mig 365): sin exp_superadmin_insert ni exp_superadmin_update (el super_admin no crea ni edita notas de un
+  -- medico; conserva exp_superadmin_select). Con la lista vieja (365 sin aplicar) el veredicto sale 'PENDIENTE mig 365', nunca OK.
+  pend365 := COALESCE(x = 'Admin clinica ve expediente de su clinica:SELECT,exp_insert_medico:INSERT,exp_select_medico:SELECT,exp_select_paciente:SELECT,exp_superadmin_insert:INSERT,exp_superadmin_select:SELECT,exp_superadmin_update:UPDATE,exp_update_medico:UPDATE', false);
+  ok := COALESCE(x = 'Admin clinica ve expediente de su clinica:SELECT,exp_insert_medico:INSERT,exp_select_medico:SELECT,exp_select_paciente:SELECT,exp_superadmin_select:SELECT,exp_update_medico:UPDATE', false) OR pend365;
+  det := det||' ;; policies de notas|sin ALL ni DELETE; sin INSERT/UPDATE del super_admin (365)|'||CASE WHEN pend365 THEN 'PENDIENTE mig 365' WHEN ok THEN 'OK' ELSE 'ROJO' END||'|-|'||COALESCE(x, '-');
   IF NOT ok THEN bad := bad||'policies notas='||COALESCE(x, '-')||'; '; END IF;
   SELECT string_agg(p, ',' ORDER BY p) INTO x FROM unnest(ARRAY['SELECT','INSERT','UPDATE','DELETE','TRUNCATE','REFERENCES','TRIGGER','MAINTAIN']) p
    WHERE has_table_privilege('authenticated', 'public.expediente_notas', p);
@@ -26404,8 +26422,10 @@ BEGIN
   det := det||' ;; las 7 funciones que la 334 no toca|7 md5 iguales|'||CASE WHEN ok THEN 'OK' ELSE 'ROJO' END||'|-|'||n;
   IF NOT ok THEN bad := bad||'md5 intactas '||n||'/7; '; END IF;
   PERFORM set_config('probe.p896_det', det, false);
-  PERFORM set_config('probe.p896', CASE WHEN bad = ''
-    THEN 'OK (columnas, tabla de revisiones, grants, 5 triggers, 4 funciones, policies sin ALL/DELETE, FK RESTRICT, 7 md5 intactos)'
+  PERFORM set_config('probe.p896', CASE WHEN bad = '' AND pend365
+    THEN 'PENDIENTE mig 365 (todo lo demas OK; expediente_notas todavia tiene exp_superadmin_insert y exp_superadmin_update)'
+    WHEN bad = ''
+    THEN 'OK (columnas, tabla de revisiones, grants, 5 triggers, 4 funciones, policies sin ALL/DELETE ni escritura del super_admin, FK RESTRICT, 7 md5 intactos)'
     ELSE 'ROJO ('||left(bad, 700)||')' END, false);
 EXCEPTION WHEN OTHERS THEN
   PERFORM set_config('probe.p896', 'FALLO ('||SQLSTATE||' '||SQLERRM||')', false);
@@ -32611,6 +32631,149 @@ EXCEPTION WHEN OTHERS THEN
 END $$;
 SELECT set_config('role', 'none', true);
 
+-- ---------------- P1008 expediente_notas: el super_admin no crea ni edita notas; lee y el medico sigue escribiendo (365) ----------------
+-- Actores reales y deterministas (created_at anterior a esta transaccion, activos, en auth.users; orden created_at, id):
+-- el super_admin, y el medico mas antiguo que tiene una cita abierta propia (no completada ni cancelada, sin nota,
+-- created_at anterior). El paciente es el de esa cita. Las notas reales (1013, 2213, 2214) no se tocan: la nota que se
+-- usa la crea el propio probe como el medico, dentro de una subtransaccion descartada (RAISE P0999).
+--   (a) super_admin: INSERT de una nota con el medico_id del medico (sin cita) -> 42501 (WITH CHECK de RLS); UPDATE de la
+--       nota ABIERTA del medico -> 0 filas SIN error (RLS sin policy de UPDATE filtra en silencio) y la nota igual, leida
+--       como postgres en un statement aparte.
+--   (b) super_admin sigue leyendo: ve las notas existentes antes del probe (ids previos, n_pre) > 0 y = el oraculo.
+--   (c) no-regresion: el medico inserta su nota (exp_insert_medico) y la actualiza abierta (exp_update_medico).
+--   (d) mientras la 365 no este aplicada (catalogo: exp_superadmin_insert o exp_superadmin_update existen) el veredicto es
+--       'PENDIENTE mig 365 (lo medido)', nunca OK; (b) o (c) rotos son FALLO siempre.
+-- Lo que se cuenta se acota por ids previos (n_pre) o por la nota del probe; sin count(*) global.
+DO $$
+DECLARE
+  v_365 boolean; a_sa uuid; a_med uuid; v_cita bigint; v_pac integer; n_pre integer[]; o_lect integer;
+  v_nota integer; n int; st text; msg text; v_f0 text; v_f1 text;
+  r_ins text := '-'; r_upd text := '-'; r_sel text := '-'; r_mins text := '-'; r_mupd text := '-';
+  bad_a text := ''; bad_bc text := ''; snap_pre text; snap_post text;
+BEGIN
+  IF current_user <> 'postgres' THEN RAISE EXCEPTION 'fixture roto: P1008 corre como %', current_user; END IF;
+  v_365 := NOT EXISTS (SELECT 1 FROM pg_policy pl WHERE pl.polrelid = 'public.expediente_notas'::regclass
+                         AND pl.polname IN ('exp_superadmin_insert', 'exp_superadmin_update'));
+  a_sa := (SELECT p.id FROM public.perfiles p WHERE p.rol = 'super_admin' AND p.activo AND COALESCE(p.created_at, '-infinity') < now()
+             AND EXISTS (SELECT 1 FROM auth.users u WHERE u.id = p.id)
+           ORDER BY COALESCE(p.created_at, '-infinity'), p.id LIMIT 1);
+  SELECT p.id, c.id, c.paciente_id INTO a_med, v_cita, v_pac
+    FROM public.perfiles p
+    JOIN LATERAL (SELECT c.id, c.paciente_id FROM public.citas c
+                   WHERE c.medico_id = p.id AND c.paciente_id IS NOT NULL AND c.estado NOT IN ('completada', 'cancelada') AND c.created_at < now()
+                     AND NOT EXISTS (SELECT 1 FROM public.expediente_notas n WHERE n.cita_id = c.id)
+                   ORDER BY c.created_at, c.id LIMIT 1) c ON true
+   WHERE p.rol = 'medico' AND p.activo AND COALESCE(p.created_at, '-infinity') < now() AND EXISTS (SELECT 1 FROM auth.users u WHERE u.id = p.id)
+   ORDER BY COALESCE(p.created_at, '-infinity'), p.id LIMIT 1;
+  n_pre := ARRAY(SELECT t.id FROM public.expediente_notas t ORDER BY t.id);
+  o_lect := cardinality(n_pre);
+  IF a_sa IS NULL OR a_med IS NULL OR v_cita IS NULL OR v_pac IS NULL OR COALESCE(o_lect, 0) = 0 THEN
+    RAISE EXCEPTION 'sin fixture: P1008 super_admin %, medico %, cita abierta %, paciente %, notas previas %', a_sa, a_med, v_cita, v_pac, o_lect;
+  END IF;
+  snap_pre := (SELECT md5(COALESCE(string_agg(to_jsonb(t)::text, '|' ORDER BY t.id), '')) FROM public.expediente_notas t WHERE t.id = ANY (n_pre))
+            ||'/'||(SELECT md5(COALESCE(string_agg(to_jsonb(t)::text, '|' ORDER BY t.id), '')) FROM public.expediente_notas_revisiones t WHERE t.nota_id = ANY (n_pre));
+
+  BEGIN
+    -- (c1) el medico crea su nota abierta sobre su cita abierta
+    st := '00000'; msg := '';
+    BEGIN
+      PERFORM set_config('request.jwt.claims', json_build_object('sub', a_med, 'role', 'authenticated')::text, true);
+      PERFORM set_config('role', 'authenticated', true);
+      INSERT INTO public.expediente_notas (cita_id, paciente_id, medico_id, subjetivo) VALUES (v_cita, v_pac, a_med, 'P1008 v1') RETURNING id INTO v_nota;
+      PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
+    EXCEPTION WHEN OTHERS THEN
+      PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
+      st := SQLSTATE; msg := SQLERRM;
+    END;
+    r_mins := CASE WHEN v_nota IS NOT NULL AND (SELECT t.cerrada_at IS NULL AND t.medico_id = a_med FROM public.expediente_notas t WHERE t.id = v_nota)
+                   THEN 'ok (nota abierta)' ELSE 'ERROR '||st||' '||left(msg, 120) END;
+    IF r_mins NOT LIKE 'ok%' THEN RAISE EXCEPTION 'sin fixture: P1008 el medico no pudo crear su nota: %', r_mins; END IF;
+    SELECT md5(to_jsonb(t)::text) INTO v_f0 FROM public.expediente_notas t WHERE t.id = v_nota;
+
+    -- (a1) super_admin INSERT con el medico_id del medico, sin cita
+    st := '00000'; msg := ''; n := NULL;
+    BEGIN
+      PERFORM set_config('request.jwt.claims', json_build_object('sub', a_sa, 'role', 'authenticated')::text, true);
+      PERFORM set_config('role', 'authenticated', true);
+      INSERT INTO public.expediente_notas (paciente_id, medico_id, subjetivo) VALUES (v_pac, a_med, 'P1008 super_admin');
+      GET DIAGNOSTICS n = ROW_COUNT;
+      RAISE EXCEPTION 'P1008 descarte' USING ERRCODE = 'P0998';
+    EXCEPTION WHEN OTHERS THEN
+      PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
+      IF SQLSTATE <> 'P0998' THEN st := SQLSTATE; msg := SQLERRM; END IF;
+    END;
+    r_ins := CASE WHEN st = '42501' AND msg LIKE 'new row violates row-level security policy%' THEN '42501'
+                  WHEN st = '00000' THEN 'inserto '||COALESCE(n::text, '?')||' fila(s)' ELSE st||' '||left(msg, 120) END;
+    IF r_ins <> '42501' THEN bad_a := bad_a||'INSERT super_admin='||r_ins||'; '; END IF;
+
+    -- (a2) super_admin UPDATE de la nota abierta del medico
+    st := '00000'; msg := ''; n := NULL;
+    BEGIN
+      PERFORM set_config('request.jwt.claims', json_build_object('sub', a_sa, 'role', 'authenticated')::text, true);
+      PERFORM set_config('role', 'authenticated', true);
+      UPDATE public.expediente_notas SET subjetivo = 'P1008 super_admin reescribe' WHERE id = v_nota;
+      GET DIAGNOSTICS n = ROW_COUNT;
+      PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
+    EXCEPTION WHEN OTHERS THEN
+      PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
+      st := SQLSTATE; msg := SQLERRM;
+    END;
+    SELECT md5(to_jsonb(t)::text) INTO v_f1 FROM public.expediente_notas t WHERE t.id = v_nota;
+    r_upd := st||' filas='||COALESCE(n::text, '-')||' nota_igual='||(v_f1 IS NOT DISTINCT FROM v_f0)::text
+             ||' revisiones='||(SELECT count(*) FROM public.expediente_notas_revisiones rv WHERE rv.nota_id = v_nota);
+    IF r_upd <> '00000 filas=0 nota_igual=true revisiones=0' THEN bad_a := bad_a||'UPDATE super_admin='||r_upd||'; '; END IF;
+
+    -- (b) super_admin lee las notas previas
+    BEGIN
+      PERFORM set_config('request.jwt.claims', json_build_object('sub', a_sa, 'role', 'authenticated')::text, true);
+      PERFORM set_config('role', 'authenticated', true);
+      SELECT count(*) INTO n FROM public.expediente_notas t WHERE t.id = ANY (n_pre);
+      PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
+      r_sel := n||'/'||o_lect;
+    EXCEPTION WHEN OTHERS THEN
+      PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
+      r_sel := 'ERROR '||SQLSTATE||' '||left(SQLERRM, 120);
+    END;
+    IF r_sel IS DISTINCT FROM (o_lect||'/'||o_lect) THEN bad_bc := bad_bc||'SELECT super_admin='||r_sel||'; '; END IF;
+
+    -- (c2) el medico actualiza su nota abierta
+    st := '00000'; msg := ''; n := NULL;
+    BEGIN
+      PERFORM set_config('request.jwt.claims', json_build_object('sub', a_med, 'role', 'authenticated')::text, true);
+      PERFORM set_config('role', 'authenticated', true);
+      UPDATE public.expediente_notas SET subjetivo = 'P1008 v2' WHERE id = v_nota;
+      GET DIAGNOSTICS n = ROW_COUNT;
+      PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
+    EXCEPTION WHEN OTHERS THEN
+      PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
+      st := SQLSTATE; msg := SQLERRM;
+    END;
+    r_mupd := st||' filas='||COALESCE(n::text, '-')||' subjetivo_v2='||COALESCE((SELECT (t.subjetivo = 'P1008 v2')::text FROM public.expediente_notas t WHERE t.id = v_nota), '-');
+    IF r_mupd <> '00000 filas=1 subjetivo_v2=true' THEN bad_bc := bad_bc||'UPDATE medico='||r_mupd||' '||left(msg, 120)||'; '; END IF;
+
+    RAISE EXCEPTION 'P1008 descarte' USING ERRCODE = 'P0999';
+  EXCEPTION WHEN SQLSTATE 'P0999' THEN NULL;
+  END;
+  PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
+  snap_post := (SELECT md5(COALESCE(string_agg(to_jsonb(t)::text, '|' ORDER BY t.id), '')) FROM public.expediente_notas t WHERE t.id = ANY (n_pre))
+             ||'/'||(SELECT md5(COALESCE(string_agg(to_jsonb(t)::text, '|' ORDER BY t.id), '')) FROM public.expediente_notas_revisiones t WHERE t.nota_id = ANY (n_pre));
+  IF snap_post IS DISTINCT FROM snap_pre OR EXISTS (SELECT 1 FROM public.expediente_notas t WHERE t.cita_id = v_cita) THEN
+    bad_bc := bad_bc||'no se restauro (notas previas, sus revisiones o la nota del probe); ';
+  END IF;
+
+  PERFORM set_config('probe.p1008_det', '(a) INSERT super_admin='||r_ins||'; UPDATE super_admin='||r_upd||' (b) SELECT super_admin='||r_sel
+                                        ||' (c) INSERT medico='||r_mins||'; UPDATE medico='||r_mupd, false);
+  PERFORM set_config('probe.p1008', CASE
+    WHEN bad_bc <> '' THEN 'FALLO ('||bad_bc||' | (a) INSERT='||r_ins||' UPDATE='||r_upd||')'
+    WHEN NOT v_365 THEN 'PENDIENTE mig 365 ((a) INSERT super_admin='||r_ins||'; UPDATE super_admin='||r_upd||'; (b) y (c) OK)'
+    WHEN bad_a = '' THEN 'OK (super_admin: INSERT con medico ajeno -> 42501, UPDATE de nota abierta ajena -> 0 filas sin cambios; lee '||r_sel||'; el medico crea y edita su nota; descartado)'
+    ELSE 'ROJO ('||bad_a||')' END, false);
+EXCEPTION WHEN OTHERS THEN
+  PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
+  PERFORM set_config('probe.p1008', 'FALLO ('||SQLSTATE||' '||SQLERRM||')', false);
+END $$;
+SELECT set_config('role', 'none', true);
+
 -- ===== Veredictos como result set =====
 SELECT 'P1_anon_insert_citas'              AS probe, current_setting('probe.p1', true)  AS verdict, 'BLOQUEADO' AS esperado_post_fix
 UNION ALL SELECT 'P2_medico_cancela_ajena_rpc',         current_setting('probe.p2', true),  'BLOQUEADO'
@@ -33573,7 +33736,7 @@ UNION ALL SELECT 'P884_ex_catalogo_333',                current_setting('probe.p
 UNION ALL SELECT 'P885_nt_edicion_abierta',            current_setting('probe.p885', true), 'OK (edicion libre con revision de la fila previa)'
 UNION ALL SELECT 'P886_nt_congelados',                 current_setting('probe.p886', true), 'OK (NT007 x8; INSERT fechado queda en now())'
 UNION ALL SELECT 'P887_nt_cierre_al_completar',        current_setting('probe.p887', true), 'OK (cierra sin revision; no se reabre; NT006)'
-UNION ALL SELECT 'P888_nt_cerrada_nt006',              current_setting('probe.p888', true), 'OK (NT006 autor, super_admin y postgres sin llave)'
+UNION ALL SELECT 'P888_nt_cerrada_nt006',              current_setting('probe.p888', true), 'OK (NT006 autor y postgres sin llave; super_admin 0 filas desde la 365)'
 UNION ALL SELECT 'P889_nt_corregir_positivo',          current_setting('probe.p889', true), 'OK (revision correccion con motivo; llaves limpias)'
 UNION ALL SELECT 'P890_nt_corregir_rechazos',          current_setting('probe.p890', true), 'OK (NT001-NT005 por SQLERRM, sin cambios)'
 UNION ALL SELECT 'P891_nt_revisiones_inmutables',      current_setting('probe.p891', true), 'OK (42501 authenticated; NT008 postgres; NT009 control)'
@@ -33581,7 +33744,7 @@ UNION ALL SELECT 'P892_nt_visibilidad_revisiones',     current_setting('probe.p8
 UNION ALL SELECT 'P893_nt_delete',                     current_setting('probe.p893', true), 'OK (42501 sin grant; 23503 RESTRICT)'
 UNION ALL SELECT 'P894_nt_nota_sin_cita',              current_setting('probe.p894', true), 'OK (nace cerrada; NT006; correccion OK)'
 UNION ALL SELECT 'P895_nt_pe001_y_finalizar',          current_setting('probe.p895', true), 'OK (PE001 intacto; Finalizar cierra la nota)'
-UNION ALL SELECT 'P896_nt_catalogo_334',               current_setting('probe.p896', true), 'OK (catalogo exacto post-334)'
+UNION ALL SELECT 'P896_nt_catalogo_334',               current_setting('probe.p896', true), 'OK (catalogo exacto post-334; sin escritura del super_admin desde la 365)'
 UNION ALL SELECT 'P908_nt_cita_ya_completada',         current_setting('probe.p908', true), 'OK (nota sobre cita completada nace cerrada)'
 UNION ALL SELECT 'P909_nt_integridad_nota_cita',       current_setting('probe.p909', true), 'OK (NT010 x5; control OK)'
 UNION ALL SELECT 'P910_nt_gate_cuenta',                current_setting('probe.p910', true), 'OK (NT011 x4; doble rol medico+proveedor corrige)'
@@ -33692,6 +33855,7 @@ UNION ALL SELECT 'P1003_proveedores_pais_super_363',  current_setting('probe.p10
 UNION ALL SELECT 'P1004_proveedores_pais_proveedor_363',  current_setting('probe.p1004', true), 'OK (363: cuenta de proveedor -> PC028)'
 UNION ALL SELECT 'P1005_proveedores_pais_anon_363',  current_setting('probe.p1005', true), 'OK (363: anon -> 42501)'
 UNION ALL SELECT 'P1006_proveedores_pais_catalogo_363',  current_setting('probe.p1006', true), 'OK (363: ACL exacta sin anon; DEFINER, STABLE, search_path)'
+UNION ALL SELECT 'P1008_notas_sin_escritura_superadmin_365',  current_setting('probe.p1008', true), 'OK (365: super_admin INSERT ajeno -> 42501, UPDATE -> 0 filas; lee; el medico escribe; antes de la 365: PENDIENTE)'
 UNION ALL SELECT 'P1007_visitas_sin_update_directo_364',  current_setting('probe.p1007', true), 'OK (364: UPDATE directo -> 42501 x4; las RPCs siguen escribiendo; ACL SELECT+INSERT sin UPDATE; antes de la 364: PENDIENTE)'
 -- Las filas FX* son SALUD DE FIXTURE, no probes de seguridad: dicen si la precondicion que una
 -- migracion posterior empezo a exigir se pudo sembrar. Si una sale ROJO, los probes que dependen de
@@ -33937,7 +34101,7 @@ UNION ALL SELECT 'P000_CENTINELA_veredictos_no_nulos',
        'probe.p866', 'probe.p867', 'probe.p868', 'probe.p869', 'probe.p870', 'probe.p871', 'probe.p872', 'probe.p873', 'probe.p874', 'probe.p875', 'probe.p876', 'probe.p877', 'probe.p878',
        'probe.p879', 'probe.p880', 'probe.p881', 'probe.p882', 'probe.p883', 'probe.p884',
        'probe.p885', 'probe.p886', 'probe.p887', 'probe.p888', 'probe.p889', 'probe.p890', 'probe.p891', 'probe.p892', 'probe.p893', 'probe.p894', 'probe.p895', 'probe.p896', 'probe.p908', 'probe.p909', 'probe.p910', 'probe.p911',
-       'probe.p897', 'probe.p898', 'probe.p899', 'probe.p900', 'probe.p901', 'probe.p902', 'probe.p903', 'probe.p904', 'probe.p905', 'probe.p906', 'probe.p907', 'probe.p912', 'probe.p913', 'probe.p914', 'probe.p915', 'probe.p916', 'probe.p917', 'probe.p918', 'probe.p919', 'probe.p920', 'probe.p921', 'probe.p922', 'probe.p923', 'probe.p924', 'probe.p925', 'probe.p926', 'probe.p927', 'probe.p928', 'probe.p929', 'probe.p930', 'probe.p931', 'probe.p932', 'probe.p933', 'probe.p934', 'probe.p935', 'probe.p936', 'probe.p937', 'probe.p938', 'probe.p939', 'probe.p940', 'probe.p941', 'probe.p942', 'probe.p943', 'probe.p944', 'probe.p945', 'probe.p946', 'probe.p947', 'probe.p948', 'probe.p949', 'probe.p950', 'probe.p951', 'probe.p952', 'probe.p953', 'probe.p954', 'probe.p955', 'probe.p956', 'probe.p957', 'probe.p958', 'probe.p959', 'probe.p960', 'probe.p961', 'probe.p962', 'probe.p963', 'probe.p964', 'probe.p965', 'probe.p966', 'probe.p967', 'probe.p968', 'probe.p969', 'probe.p970', 'probe.p971', 'probe.p972', 'probe.p973', 'probe.p974', 'probe.p975', 'probe.p976', 'probe.p977', 'probe.p978', 'probe.p979', 'probe.p980', 'probe.p981', 'probe.p982', 'probe.p983', 'probe.p984', 'probe.p985', 'probe.p986', 'probe.p987', 'probe.p988', 'probe.p989', 'probe.p990', 'probe.p991', 'probe.p992', 'probe.p993', 'probe.p994', 'probe.p995', 'probe.p996', 'probe.p997', 'probe.p998', 'probe.p999', 'probe.p1000', 'probe.p1001', 'probe.p1002', 'probe.p1003', 'probe.p1004', 'probe.p1005', 'probe.p1006', 'probe.p1007'
+       'probe.p897', 'probe.p898', 'probe.p899', 'probe.p900', 'probe.p901', 'probe.p902', 'probe.p903', 'probe.p904', 'probe.p905', 'probe.p906', 'probe.p907', 'probe.p912', 'probe.p913', 'probe.p914', 'probe.p915', 'probe.p916', 'probe.p917', 'probe.p918', 'probe.p919', 'probe.p920', 'probe.p921', 'probe.p922', 'probe.p923', 'probe.p924', 'probe.p925', 'probe.p926', 'probe.p927', 'probe.p928', 'probe.p929', 'probe.p930', 'probe.p931', 'probe.p932', 'probe.p933', 'probe.p934', 'probe.p935', 'probe.p936', 'probe.p937', 'probe.p938', 'probe.p939', 'probe.p940', 'probe.p941', 'probe.p942', 'probe.p943', 'probe.p944', 'probe.p945', 'probe.p946', 'probe.p947', 'probe.p948', 'probe.p949', 'probe.p950', 'probe.p951', 'probe.p952', 'probe.p953', 'probe.p954', 'probe.p955', 'probe.p956', 'probe.p957', 'probe.p958', 'probe.p959', 'probe.p960', 'probe.p961', 'probe.p962', 'probe.p963', 'probe.p964', 'probe.p965', 'probe.p966', 'probe.p967', 'probe.p968', 'probe.p969', 'probe.p970', 'probe.p971', 'probe.p972', 'probe.p973', 'probe.p974', 'probe.p975', 'probe.p976', 'probe.p977', 'probe.p978', 'probe.p979', 'probe.p980', 'probe.p981', 'probe.p982', 'probe.p983', 'probe.p984', 'probe.p985', 'probe.p986', 'probe.p987', 'probe.p988', 'probe.p989', 'probe.p990', 'probe.p991', 'probe.p992', 'probe.p993', 'probe.p994', 'probe.p995', 'probe.p996', 'probe.p997', 'probe.p998', 'probe.p999', 'probe.p1000', 'probe.p1001', 'probe.p1002', 'probe.p1003', 'probe.p1004', 'probe.p1005', 'probe.p1006', 'probe.p1007', 'probe.p1008'
              ]) AS n) s),
   'OK (todos los veredictos publicados)';
 
