@@ -20,7 +20,7 @@ export const MENSAJES_APROBAR: Record<string, string> = {
   CP010: 'El pago no existe.',
   CP011: 'El pago no es de un plan de visitador.',
   CP012: 'El pago ya no está pendiente.',
-  CP013: 'Pago legacy (sin visitas ni vigencia registradas): resolvelo manualmente.',
+  CP013: 'Pago legacy (sin visitas ni vigencia registradas): resuélvelo manualmente.',
   CP014: 'La configuración del plan de este pago ya no existe.',
   CP015: 'La empresa no está activa.',
   CP016: 'La empresa no opera en el país del plan.',
@@ -31,8 +31,8 @@ export const MENSAJE_GENERICO_COMPRA = 'No se pudo completar la operación. Inte
 
 // Comprar planes es de admin/editor (permiso planes.contratar). Al visitador no se le ofrece comprar:
 // se le pide que avise a su administrador.
-export const MENSAJE_BOLSA_AGOTADA_VISITADOR = 'Bolsa agotada · avisale a tu administrador para recargarla'
-export const MENSAJE_SIN_BOLSA_VISITADOR = 'Avisale a tu administrador para que contrate un plan de visitas.'
+export const MENSAJE_BOLSA_AGOTADA_VISITADOR = 'Bolsa agotada · avísale a tu administrador para recargarla'
+export const MENSAJE_SIN_BOLSA_VISITADOR = 'Avísale a tu administrador para que contrate un plan de visitas.'
 export const RUTA_COMPRA_PLANES_VISITADOR = '/proveedor/visitador/planes'
 
 type ErrorRpc = { code?: string | null; message?: string | null } | null | undefined
