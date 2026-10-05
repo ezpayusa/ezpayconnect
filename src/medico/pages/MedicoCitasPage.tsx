@@ -5,6 +5,14 @@ import CitaCard from '@/medico/components/CitaCard'
 import CitasFilter from '@/medico/components/CitasFilter'
 import { Button } from '@/components/ui/button'
 import { CalendarDays, Plus, Loader2, RefreshCw } from 'lucide-react'
+import { hoyISO } from '@/lib/fecha'
+import type { CitaConPaciente } from '@/medico/types/medico.types'
+
+// Orden por fecha (string ISO, sin parsear la columna DATE), hora_inicio e id para un desempate estable.
+const compararCitas = (a: CitaConPaciente, b: CitaConPaciente): number =>
+  a.fecha.slice(0, 10).localeCompare(b.fecha.slice(0, 10)) ||
+  (a.hora_inicio ?? '').localeCompare(b.hora_inicio ?? '') ||
+  a.id - b.id
 
 export default function MedicoCitasPage() {
   const navigate = useNavigate()
@@ -48,6 +56,25 @@ export default function MedicoCitasPage() {
     })
     return c
   }, [citas])
+
+  // Próximas: fecha >= hoy local, ascendente. Anteriores: fecha < hoy, la más reciente primero.
+  const { proximas, anteriores } = useMemo(() => {
+    const hoy = hoyISO()
+    const proximas = citas.filter((c) => c.fecha.slice(0, 10) >= hoy).sort(compararCitas)
+    const anteriores = citas.filter((c) => c.fecha.slice(0, 10) < hoy).sort((a, b) => compararCitas(b, a))
+    return { proximas, anteriores }
+  }, [citas])
+
+  const renderCita = (cita: CitaConPaciente) => (
+    <CitaCard
+      key={cita.id}
+      cita={cita}
+      onConfirmar={handleConfirmar}
+      onRechazar={handleRechazar}
+      onEnSala={handleEnSala}
+      accionEnProgreso={accionEnProgreso}
+    />
+  )
 
   if (loading) {
     return (
@@ -96,16 +123,24 @@ export default function MedicoCitasPage() {
             </p>
           </div>
         ) : (
-          citas.map((cita) => (
-            <CitaCard
-              key={cita.id}
-              cita={cita}
-              onConfirmar={handleConfirmar}
-              onRechazar={handleRechazar}
-              onEnSala={handleEnSala}
-              accionEnProgreso={accionEnProgreso}
-            />
-          ))
+          <>
+            <section className="space-y-3">
+              <h2 className="text-lg font-semibold text-[#1a2a3a]">Próximas</h2>
+              {proximas.length === 0 ? (
+                <p className="text-sm text-muted-foreground">No hay citas próximas.</p>
+              ) : (
+                proximas.map(renderCita)
+              )}
+            </section>
+            <section className="space-y-3 pt-4">
+              <h2 className="text-lg font-semibold text-[#1a2a3a]">Anteriores</h2>
+              {anteriores.length === 0 ? (
+                <p className="text-sm text-muted-foreground">No hay citas anteriores.</p>
+              ) : (
+                anteriores.map(renderCita)
+              )}
+            </section>
+          </>
         )}
       </div>
     </div>

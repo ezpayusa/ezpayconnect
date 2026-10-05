@@ -3,11 +3,12 @@ import { Card, CardContent } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
 import type { CitaConPaciente } from '@/medico/types/medico.types'
-import { parseFechaLocal } from '@/lib/fecha'
+import { parseFechaLocal, hoyISO } from '@/lib/fecha'
 import {
   User,
   Clock,
   CalendarDays,
+  CalendarX,
   Stethoscope,
   CheckCircle2,
   XCircle,
@@ -16,6 +17,12 @@ import {
   AlertTriangle,
   Loader2,
 } from 'lucide-react'
+
+// Texto a pintar, o null si está vacío: null, undefined, '' o el literal 'NULL' (sin distinguir mayúsculas, con trim).
+const textoVisible = (v: string | null | undefined): string | null => {
+  const t = (v ?? '').trim()
+  return t === '' || t.toUpperCase() === 'NULL' ? null : t
+}
 
 interface CitaCardProps {
   cita: CitaConPaciente
@@ -50,7 +57,17 @@ export default function CitaCard({
     no_show: { label: 'No asistió', color: 'bg-red-200 text-red-800', border: 'border-red-600', icon: XCircle },
   }
 
-  const config = estadoConfig[cita.estado] || estadoConfig.agendada
+  // Solo presentación (el estado real no cambia): una cita de un día anterior que nadie atendió es "Vencida"
+  // y no ofrece acciones; una que quedó en espera o en curso es "Sin cerrar" (en_curso conserva Continuar consulta).
+  const pasada = cita.fecha.slice(0, 10) < hoyISO()
+  const vencida = pasada && ['solicitada', 'agendada', 'confirmada'].includes(cita.estado)
+  const sinCerrar = pasada && ['en_espera', 'en_curso'].includes(cita.estado)
+
+  const config = vencida
+    ? { label: 'Vencida', color: 'bg-gray-100 text-gray-600', border: 'border-gray-300', icon: CalendarX }
+    : sinCerrar
+      ? { label: 'Sin cerrar', color: 'bg-amber-100 text-amber-700', border: 'border-amber-400', icon: AlertTriangle }
+      : estadoConfig[cita.estado] || estadoConfig.agendada
   const EstadoIcon = config.icon
 
   const pacienteNombre = cita.paciente
@@ -72,9 +89,14 @@ export default function CitaCard({
               </Badge>
               <Badge variant="outline" className="text-xs">
                 <CalendarDays className="h-3 w-3 mr-1" />
-                {parseFechaLocal(cita.fecha).toLocaleDateString('es-GT', {
-                  weekday: 'short', day: 'numeric', month: 'short',
-                })}
+                {(() => {
+                  // El año solo cuando la cita no es del año en curso.
+                  const f = parseFechaLocal(cita.fecha.slice(0, 10))
+                  return f.toLocaleDateString('es-GT', {
+                    weekday: 'short', day: 'numeric', month: 'short',
+                    ...(f.getFullYear() !== new Date().getFullYear() ? { year: 'numeric' as const } : {}),
+                  })
+                })()}
               </Badge>
               <Badge variant="outline" className="text-xs">
                 <Clock className="h-3 w-3 mr-1" />
@@ -93,15 +115,15 @@ export default function CitaCard({
               </p>
             )}
 
-            {cita.motivo && (
+            {textoVisible(cita.motivo) && (
               <p className="text-sm text-muted-foreground mt-1 truncate">
-                Motivo: {cita.motivo}
+                Motivo: {textoVisible(cita.motivo)}
               </p>
             )}
 
-            {cita.notas && (
+            {textoVisible(cita.notas) && (
               <p className="text-xs text-muted-foreground mt-1 line-clamp-2">
-                Notas: {cita.notas}
+                Notas: {textoVisible(cita.notas)}
               </p>
             )}
           </div>
@@ -109,7 +131,7 @@ export default function CitaCard({
           {/* Acciones */}
           <div className="flex flex-col gap-2 min-w-[140px]">
             {/* Confirmar / Rechazar */}
-            {(cita.estado === 'solicitada' || cita.estado === 'agendada') && (
+            {!vencida && (cita.estado === 'solicitada' || cita.estado === 'agendada') && (
               <>
                 <Button
                   size="sm"
@@ -142,7 +164,7 @@ export default function CitaCard({
             )}
 
             {/* Confirmada → En sala */}
-            {cita.estado === 'confirmada' && (
+            {!vencida && cita.estado === 'confirmada' && (
               <>
                 <Button
                   size="sm"
@@ -167,6 +189,19 @@ export default function CitaCard({
                   Cancelar
                 </Button>
               </>
+            )}
+
+            {/* Vencida → solo Cancelar (mismo botón que el de confirmada), para poder cerrarla */}
+            {vencida && onRechazar && (
+              <Button
+                size="sm"
+                variant="outline"
+                className="w-full text-red-600 border-red-200 hover:bg-red-50"
+                onClick={() => onRechazar(cita)}
+                disabled={isLoading('rechazar')}
+              >
+                Cancelar
+              </Button>
             )}
 
             {/* En curso → Continuar consulta */}
