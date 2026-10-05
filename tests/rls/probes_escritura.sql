@@ -4537,6 +4537,9 @@ DO $$ BEGIN
 END $$;
 
 -- P258 — re-targeting: UPDATE de medico_id a un médico no cubierto → BLOQ (restaura plan antes)
+-- Nota 5-oct-2026 (mig 364): desde la 364 authenticated no tiene UPDATE en visitas_agendadas, así que este UPDATE
+-- directo lo bloquea el PRIVILEGIO (42501 "permission denied for table") antes de llegar a trg_gate_visita_pais; el
+-- gate de país sigue vigente para las RPCs DEFINER. El veredicto sigue siendo 'BLOQUEADO (42501)'.
 SELECT set_config('role','none',true);
 DO $$ BEGIN IF current_setting('probe.va2_ready',true)='1' THEN
   UPDATE public.planes_visitador_contratados SET fecha_fin=CURRENT_DATE+30 WHERE empresa_id=NULLIF(current_setting('probe.pa_ea',true), '')::uuid;
@@ -4556,17 +4559,25 @@ DO $$ DECLARE v_id uuid; BEGIN
   END IF;
 EXCEPTION WHEN others THEN PERFORM set_config('probe.p258','FALLO ('||SQLERRM||')',false); END $$;
 
--- P259 — NO-REGRESIÓN: médico aprueba/cancela (UPDATE de estado sin tocar medico_id) → OK
+-- P259 — INVERTIDO el 5-oct-2026 (mig 364). Antes: no-regresión "el médico aprueba/cancela con UPDATE directo de estado"
+-- (OK si afectaba 1 fila). Desde la 364 el UPDATE directo de visitas_agendadas está cerrado: authenticated no tiene el
+-- privilegio y no hay policies de UPDATE; toda transición de estado va por las RPCs DEFINER (P1007 b). Ahora:
+--   42501 "permission denied for table visitas_agendadas" → OK (BLOQUEADO); cualquier otro resultado → FALLO.
+--   Mientras la 364 no esté aplicada (catálogo: authenticated con UPDATE) sale 'PENDIENTE mig 364 (lo medido)', nunca OK.
 SELECT set_config('request.jwt.claims', json_build_object('sub', current_setting('probe.fm_medgt',true), 'role','authenticated')::text, true);
-DO $$ DECLARE v_n int; BEGIN
+DO $$ DECLARE v_n int; v_364 boolean; BEGIN
+  v_364 := NOT has_table_privilege('authenticated', 'public.visitas_agendadas', 'UPDATE');
   IF current_setting('probe.va2_ready',true)<>'1' OR NULLIF(current_setting('probe.va2_visita',true),'') IS NULL THEN PERFORM set_config('probe.p259','N/A',false);
   ELSE
     BEGIN
       UPDATE public.visitas_agendadas SET estado='confirmada' WHERE id = current_setting('probe.va2_visita',true)::uuid AND medico_id = current_setting('probe.fm_medgt',true)::uuid;
       GET DIAGNOSTICS v_n = ROW_COUNT;
-      IF v_n=1 THEN PERFORM set_config('probe.p259','OK (médico aprueba/cancela sin disparar el gate país)',false);
-      ELSE PERFORM set_config('probe.p259','FALLO (UPDATE de estado afectó '||v_n||' filas)',false); END IF;
-    EXCEPTION WHEN others THEN PERFORM set_config('probe.p259','FALLO (gate bloqueó UPDATE de estado: '||SQLERRM||')',false); END;
+      PERFORM set_config('probe.p259', CASE WHEN v_364 THEN 'FALLO' ELSE 'PENDIENTE mig 364' END||' (el UPDATE directo de estado del médico afectó '||v_n||' fila(s))', false);
+    EXCEPTION WHEN others THEN
+      IF SQLSTATE = '42501' AND SQLERRM = 'permission denied for table visitas_agendadas' AND v_364 THEN
+        PERFORM set_config('probe.p259','OK (BLOQUEADO: UPDATE directo de estado del médico -> 42501 de privilegio, mig 364)',false);
+      ELSE PERFORM set_config('probe.p259','FALLO ('||SQLSTATE||' '||SQLERRM||')',false); END IF;
+    END;
   END IF;
 END $$;
 
@@ -18489,6 +18500,10 @@ BEGIN
   -- NO es una segunda barrera para un UPDATE arbitrario, la unica barrera es la policy.
   -- La escritura va en subtransaccion que SIEMPRE aborta, asi que ni siquiera cuando el hueco
   -- esta abierto queda nada tocado.
+  -- Ajuste 5-oct-2026 (mig 364), el mismo que se le hizo a P782 en la 346: desde la 364 authenticated NO TIENE el
+  -- privilegio UPDATE en visitas_agendadas (y no quedan policies de UPDATE): el UPDATE directo ya no llega a la RLS y
+  -- lanza 42501 "permission denied for table". Eso es MAS fuerte que ROW_COUNT=0 y cuenta como OK (n = -2 = negado por
+  -- privilegio). Cualquier OTRO error sigue siendo FALLO, y tocar filas sigue siendo ROJO.
   n_ap := -1; n_sa := -1; v_e := '';
   BEGIN
     PERFORM set_config('request.jwt.claims', json_build_object('sub',v_adm,'role','authenticated')::text, true);
@@ -18498,7 +18513,8 @@ BEGIN
     RAISE EXCEPTION 'VAG_RB';
   EXCEPTION WHEN OTHERS THEN
     PERFORM set_config('role','none', true);
-    IF SQLERRM <> 'VAG_RB' THEN v_e := v_e||' adminpais='||SQLSTATE||' '||SQLERRM; END IF;
+    IF SQLSTATE = '42501' AND SQLERRM = 'permission denied for table visitas_agendadas' THEN n_ap := -2;
+    ELSIF SQLERRM <> 'VAG_RB' THEN v_e := v_e||' adminpais='||SQLSTATE||' '||SQLERRM; END IF;
   END;
   BEGIN
     PERFORM set_config('request.jwt.claims', json_build_object('sub',v_sa,'role','authenticated')::text, true);
@@ -18508,11 +18524,13 @@ BEGIN
     RAISE EXCEPTION 'VAG_RB';
   EXCEPTION WHEN OTHERS THEN
     PERFORM set_config('role','none', true);
-    IF SQLERRM <> 'VAG_RB' THEN v_e := v_e||' superadmin='||SQLSTATE||' '||SQLERRM; END IF;
+    IF SQLSTATE = '42501' AND SQLERRM = 'permission denied for table visitas_agendadas' THEN n_sa := -2;
+    ELSIF SQLERRM <> 'VAG_RB' THEN v_e := v_e||' superadmin='||SQLSTATE||' '||SQLERRM; END IF;
   END;
   v_r := CASE
     WHEN v_e <> ''               THEN 'FALLO (no midio ROW_COUNT:'||v_e||')'
-    WHEN n_ap = 0 AND n_sa = 0   THEN 'OK (UPDATE directo en cero: admin_pais 0, super_admin 0)'
+    WHEN n_ap = -2 AND n_sa = -2 THEN 'OK (UPDATE directo negado por privilegio desde la 364: admin_pais 42501, super_admin 42501)'
+    WHEN n_ap IN (0, -2) AND n_sa IN (0, -2) THEN 'OK (UPDATE directo en cero o negado: admin_pais '||n_ap||', super_admin '||n_sa||'; -2 = 42501 de privilegio)'
     ELSE 'ROJO (UPDATE directo TOCA filas: admin_pais '||n_ap||', super_admin '||n_sa||')'
   END;
   PERFORM set_config('probe.p781', v_r, false);
@@ -29573,7 +29591,12 @@ DECLARE
   c_pacu CONSTANT uuid := '5bfb5b4c-dc91-4714-93cb-a292faa6717d';
   v_med uuid; v_sa uuid; r record; k int; n int; st text; res text[] := ARRAY['', '']; anon text[] := ARRAY['', ''];
   det text := ''; bad text := ''; r_rest text := 'OK'; snap_pre text; snap_post text; v_tabla text; v_roles_pre text;
+  v_lt text := current_setting('lock_timeout');
 BEGIN
+  -- 5-oct-2026: lock_timeout de 5s mientras corre este bloque (alterna roles de policies con ALTER POLICY: sin tope, una
+  -- sesion de prod con lock sobre estas tablas lo deja esperando sin limite). Se restaura al valor previo al final del
+  -- camino normal; si el bloque aborta, el rollback de su subtransaccion lo revierte solo.
+  SET LOCAL lock_timeout = '5s';
   IF current_user <> 'postgres' THEN RAISE EXCEPTION 'fixture roto: P935 corre como %', current_user; END IF;
   SELECT id INTO v_sa FROM public.perfiles WHERE rol = 'super_admin' ORDER BY id LIMIT 1;
   SELECT f.medico_id INTO v_med FROM public.facturas f JOIN public.perfiles p ON p.id = f.medico_id ORDER BY f.id LIMIT 1;
@@ -29668,6 +29691,7 @@ BEGIN
   END IF;
   det := det||' ;; restauracion|subtransaccion descartada (roles y escrituras)|'||r_rest||'|-|';
   PERFORM set_config('probe.p935_det', det, false);
+  PERFORM set_config('lock_timeout', v_lt, true);
   PERFORM set_config('probe.p935', CASE WHEN bad = '' AND r_rest = 'OK'
     THEN 'OK (13 policies de muestra con roles alternados: authenticated ve y escribe lo mismo, anon en 42501 de privilegio; descartado)'
     ELSE 'ROJO ('||left(bad, 900)||' | restauracion='||r_rest||')' END, false);
@@ -29693,15 +29717,22 @@ DECLARE
   c_lab CONSTANT uuid := 'e6f95b2f-7561-4e0b-b0c8-d1f38e6c4d66';
   v_sa uuid; v_ap uuid; r record; k int; n int; st text; v text; actor record;
   res text[] := ARRAY['', '']; anon text[] := ARRAY['', '']; det text := ''; bad text := ''; r_rest text := 'OK';
-  n_pais int; n_cfg int; esperado_anon text; v_roles_pre text;
+  n_pais int; n_cfg int; esperado_anon text; v_roles_pre text; v_lt text := current_setting('lock_timeout');
   tablas CONSTANT text[] := ARRAY['configuracion_pais','configuracion_sistema','cuentas_proveedor','empresas_proveedoras',
                                   'liquidaciones_comision','pacientes','perfiles','recetas'];
 BEGIN
+  -- 5-oct-2026: lock_timeout de 5s mientras corre este bloque (alterna roles de policies con ALTER POLICY: sin tope, una
+  -- sesion de prod con lock sobre estas tablas lo deja esperando sin limite). Se restaura al valor previo al final del
+  -- camino normal; si el bloque aborta, el rollback de su subtransaccion lo revierte solo.
+  SET LOCAL lock_timeout = '5s';
   IF current_user <> 'postgres' THEN RAISE EXCEPTION 'fixture roto: P936 corre como %', current_user; END IF;
   SELECT id INTO v_sa FROM public.perfiles WHERE rol = 'super_admin' ORDER BY id LIMIT 1;
   SELECT p.id INTO v_ap FROM public.perfiles p WHERE p.rol = 'admin_pais' AND p.activo AND EXISTS (SELECT 1 FROM auth.users u WHERE u.id = p.id) ORDER BY p.id LIMIT 1;
   IF v_sa IS NULL OR v_ap IS NULL THEN RAISE EXCEPTION 'fixture roto: P936 sin super_admin (%) o admin_pais (%)', v_sa, v_ap; END IF;
   SELECT count(*) INTO n_pais FROM public.configuracion_pais WHERE activo = true;
+  -- 5-oct-2026: piso del oraculo. Con 0 paises activos el esperado de anon seria 'configuracion_pais=0' y el probe pasaria
+  -- sin medir la policy "Publico lee paises activos": FALLO 'sin fixture'.
+  IF COALESCE(n_pais, 0) = 0 THEN RAISE EXCEPTION 'sin fixture: P936 con 0 paises activos (n_pais = %)', n_pais; END IF;
   SELECT count(*) INTO n_cfg FROM public.configuracion_sistema WHERE clave <> ALL (ARRAY['banco','cuenta_bancaria','tipo_cuenta','titular_cuenta','email_pagos']);
   esperado_anon := 'configuracion_pais='||n_pais||'; configuracion_sistema='||n_cfg||'; cuentas_proveedor=0; empresas_proveedoras=0; '
                  ||'liquidaciones_comision=0; pacientes=0; perfiles=0; recetas=0; ';
@@ -29800,6 +29831,7 @@ BEGIN
   END IF;
   det := det||' ;; restauracion|subtransaccion descartada|'||r_rest||'|-|';
   PERFORM set_config('probe.p936_det', det, false);
+  PERFORM set_config('lock_timeout', v_lt, true);
   PERFORM set_config('probe.p936', CASE WHEN bad = '' AND r_rest = 'OK'
     THEN 'OK (las 17 en {authenticated}; anon sin 42501: paises '||n_pais||', config '||n_cfg||', resto 0; authenticated igual con los roles alternados; descartado)'
     ELSE 'ROJO ('||left(bad, 900)||' | restauracion='||r_rest||')' END, false);
@@ -32321,6 +32353,217 @@ EXCEPTION WHEN OTHERS THEN
   PERFORM set_config('probe.p1006', 'FALLO ('||SQLSTATE||' '||SQLERRM||')', false);
 END $$;
 
+-- ---------------- P1007 visitas_agendadas sin UPDATE directo; las RPCs DEFINER siguen escribiendo (364) ----------------
+-- Actores reales y deterministas: created_at anterior a esta transaccion, activos, en auth.users; orden created_at, id.
+-- Visitas reales con created_at anterior a esta transaccion (las que siembran probes anteriores quedan afuera).
+--   (a) NEGATIVOS: UPDATE directo de visitas_agendadas (SET updated_at = updated_at sobre una visita que la policy vieja le
+--       dejaba tocar) como el medico de la visita, como admin de la empresa, como el visitador duenio y como supervisor de
+--       la empresa -> 42501 "permission denied for table" en los cuatro. Cada UPDATE en una subtransaccion descartada.
+--   (b) NO-REGRESION, cada RPC en su subtransaccion descartada (RAISE P0999), con el estado leido como postgres en un
+--       statement separado:
+--       checkin_visita + checkout_visita como el visitador duenio de una visita confirmada sin check-in (se la mueve a
+--       CURRENT_DATE, sin chocar con ux_visita_medico_slot) -> checkin_fecha puesta y despues 'completada';
+--       administrar_visita('aprobar') como admin de la empresa de una visita pendiente -> 'confirmada' y aprobada_por = admin;
+--       cancelar_visita como el visitador duenio (fecha_limite_cancelacion NULL y email_cancelacion_enviado puesto, para no
+--       disparar el aviso a la clinica) -> 'cancelada';
+--       marcar_visitador_presente como staff de la clinica principal del medico (el primero para el que
+--       private.es_staff_calendario_clinica da true, sin ser super_admin) -> confirmado_presente_clinica_at/por puestos.
+--   (c) ACL: authenticated sin UPDATE (ni de columna), con SELECT e INSERT.
+-- Oraculo: si falta un actor o una visita -> FALLO 'sin fixture'. Snapshot de visitas_agendadas y conteo de notificaciones
+-- antes/despues: tienen que quedar iguales. Mientras la 364 no este aplicada (catalogo: authenticated con UPDATE) el
+-- veredicto es 'PENDIENTE mig 364 (lo medido)', nunca OK; una RPC rota es FALLO siempre.
+DO $$
+DECLARE
+  v_364 boolean; a_med uuid; t_med uuid; a_adm uuid; t_adm uuid; a_vis uuid; t_vis uuid; a_sup uuid; t_sup uuid;
+  v_conf uuid; a_conf uuid; v_pend uuid; a_pend uuid; v_mar uuid; a_staff uuid; v_clin uuid; r record; c record;
+  n int; st text; j jsonb; e1 text; e2 text; e3 text;
+  neg text := ''; neg_bad text := ''; rpc text := ''; rpc_bad text := ''; acl text; acl_bad text := '';
+  snap_pre text; snap_post text;
+BEGIN
+  IF current_user <> 'postgres' THEN RAISE EXCEPTION 'fixture roto: P1007 corre como %', current_user; END IF;
+  v_364 := NOT has_table_privilege('authenticated', 'public.visitas_agendadas', 'UPDATE')
+           AND NOT EXISTS (SELECT 1 FROM pg_policy pl WHERE pl.polrelid = 'public.visitas_agendadas'::regclass AND pl.polcmd IN ('w', '*'));
+  snap_pre := (SELECT md5(string_agg(to_jsonb(v)::text, '|' ORDER BY v.id)) FROM public.visitas_agendadas v)||'/'||(SELECT count(*) FROM public.notificaciones);
+
+  -- actores de (a)
+  SELECT v.medico_id, v.id INTO a_med, t_med FROM public.visitas_agendadas v JOIN public.perfiles p ON p.id = v.medico_id
+   WHERE v.created_at < now() AND p.rol = 'medico' AND p.activo AND COALESCE(p.created_at, '-infinity') < now()
+     AND EXISTS (SELECT 1 FROM auth.users u WHERE u.id = p.id)
+   ORDER BY v.created_at, v.id LIMIT 1;
+  FOR r IN SELECT x.rol FROM (VALUES (1, 'admin'), (2, 'visitador_medico'), (3, 'supervisor')) x(k, rol) ORDER BY x.k LOOP
+    SELECT cp.id, (SELECT v.id FROM public.visitas_agendadas v
+                    WHERE v.empresa_id = cp.empresa_id AND v.created_at < now() AND (r.rol <> 'visitador_medico' OR v.cuenta_proveedor_id = cp.id)
+                    ORDER BY v.created_at, v.id LIMIT 1) AS t
+      INTO c
+      FROM public.cuentas_proveedor cp JOIN public.empresas_proveedoras e ON e.id = cp.empresa_id AND e.estado = 'activa'
+     WHERE cp.rol_en_empresa = r.rol AND cp.activo AND COALESCE(cp.created_at, '-infinity') < now()
+       AND EXISTS (SELECT 1 FROM auth.users u WHERE u.id = cp.id)
+       AND EXISTS (SELECT 1 FROM public.visitas_agendadas v WHERE v.empresa_id = cp.empresa_id AND v.created_at < now()
+                     AND (r.rol <> 'visitador_medico' OR v.cuenta_proveedor_id = cp.id))
+     ORDER BY COALESCE(cp.created_at, '-infinity'), cp.id LIMIT 1;
+    IF r.rol = 'admin' THEN a_adm := c.id; t_adm := c.t;
+    ELSIF r.rol = 'visitador_medico' THEN a_vis := c.id; t_vis := c.t;
+    ELSE a_sup := c.id; t_sup := c.t; END IF;
+  END LOOP;
+
+  -- visitas y actores de (b)
+  SELECT v.id, v.cuenta_proveedor_id INTO v_conf, a_conf FROM public.visitas_agendadas v
+    JOIN public.cuentas_proveedor cp ON cp.id = v.cuenta_proveedor_id AND cp.rol_en_empresa = 'visitador_medico' AND cp.activo
+    JOIN public.empresas_proveedoras e ON e.id = v.empresa_id AND e.estado = 'activa'
+   WHERE v.estado = 'confirmada' AND v.checkin_fecha IS NULL AND v.checkout_fecha IS NULL AND v.created_at < now()
+     AND COALESCE(cp.created_at, '-infinity') < now() AND EXISTS (SELECT 1 FROM auth.users u WHERE u.id = cp.id)
+     AND NOT EXISTS (SELECT 1 FROM public.visitas_agendadas o WHERE o.id <> v.id AND o.medico_id = v.medico_id AND o.fecha_visita = CURRENT_DATE
+                       AND o.hora_inicio = v.hora_inicio AND o.estado <> ALL (ARRAY['cancelada','rechazada','no_asistio']))
+   ORDER BY v.created_at, v.id LIMIT 1;
+  SELECT v.id, (SELECT cp.id FROM public.cuentas_proveedor cp WHERE cp.empresa_id = v.empresa_id AND cp.rol_en_empresa = 'admin' AND cp.activo
+                  AND COALESCE(cp.created_at, '-infinity') < now() AND EXISTS (SELECT 1 FROM auth.users u WHERE u.id = cp.id)
+                ORDER BY COALESCE(cp.created_at, '-infinity'), cp.id LIMIT 1)
+    INTO v_pend, a_pend
+    FROM public.visitas_agendadas v JOIN public.empresas_proveedoras e ON e.id = v.empresa_id AND e.estado = 'activa'
+   WHERE v.estado = 'pendiente' AND v.created_at < now()
+     AND EXISTS (SELECT 1 FROM public.cuentas_proveedor cp WHERE cp.empresa_id = v.empresa_id AND cp.rol_en_empresa = 'admin' AND cp.activo
+                   AND COALESCE(cp.created_at, '-infinity') < now() AND EXISTS (SELECT 1 FROM auth.users u WHERE u.id = cp.id))
+   ORDER BY v.created_at, v.id LIMIT 1;
+  <<staff>>
+  FOR r IN SELECT v.id, mc.clinica_id FROM public.visitas_agendadas v
+             JOIN public.medico_clinicas mc ON mc.medico_id = v.medico_id AND mc.es_principal
+            WHERE v.created_at < now() ORDER BY v.created_at, v.id LOOP
+    FOR c IN SELECT p.id FROM public.perfiles p
+              WHERE p.rol = ANY (ARRAY['admin_clinica','admin','gerente','secretaria','asistente_medico','enfermeria']) AND p.activo
+                AND COALESCE(p.created_at, '-infinity') < now() AND EXISTS (SELECT 1 FROM auth.users u WHERE u.id = p.id)
+              ORDER BY COALESCE(p.created_at, '-infinity'), p.id LOOP
+      PERFORM set_config('request.jwt.claims', json_build_object('sub', c.id, 'role', 'authenticated')::text, true);
+      IF COALESCE(private.es_staff_calendario_clinica(r.clinica_id), false) AND NOT COALESCE(private.tiene_rol(ARRAY['super_admin']), false) THEN
+        v_mar := r.id; v_clin := r.clinica_id; a_staff := c.id;
+        PERFORM set_config('request.jwt.claims', '', true);
+        EXIT staff;
+      END IF;
+    END LOOP;
+  END LOOP;
+  PERFORM set_config('request.jwt.claims', '', true);
+
+  IF a_med IS NULL OR t_med IS NULL OR a_adm IS NULL OR t_adm IS NULL OR a_vis IS NULL OR t_vis IS NULL OR a_sup IS NULL OR t_sup IS NULL
+     OR v_conf IS NULL OR a_conf IS NULL OR v_pend IS NULL OR a_pend IS NULL OR v_mar IS NULL OR a_staff IS NULL THEN
+    RAISE EXCEPTION 'sin fixture: P1007 medico %/%, admin %/%, visitador %/%, supervisor %/%, confirmada %/%, pendiente %/%, staff %/%',
+      a_med, t_med, a_adm, t_adm, a_vis, t_vis, a_sup, t_sup, v_conf, a_conf, v_pend, a_pend, v_mar, a_staff;
+  END IF;
+
+  -- (a) negativos
+  FOR r IN SELECT * FROM (VALUES (1, 'medico', a_med, t_med), (2, 'admin', a_adm, t_adm), (3, 'visitador', a_vis, t_vis), (4, 'supervisor', a_sup, t_sup)) x(k, nom, uid, vid) ORDER BY x.k LOOP
+    st := NULL;
+    BEGIN
+      PERFORM set_config('request.jwt.claims', json_build_object('sub', r.uid, 'role', 'authenticated')::text, true);
+      PERFORM set_config('role', 'authenticated', true);
+      UPDATE public.visitas_agendadas SET updated_at = updated_at WHERE id = r.vid;
+      GET DIAGNOSTICS n = ROW_COUNT;
+      st := 'filas='||n;
+      RAISE EXCEPTION 'P1007 descarte' USING ERRCODE = 'P0999';
+    EXCEPTION WHEN OTHERS THEN
+      PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
+      IF SQLSTATE = 'P0999' THEN NULL;
+      ELSIF SQLSTATE = '42501' AND SQLERRM = 'permission denied for table visitas_agendadas' THEN st := '42501';
+      ELSE st := SQLSTATE||' '||SQLERRM; END IF;
+    END;
+    neg := neg||r.nom||'='||st||'; ';
+    IF st IS DISTINCT FROM '42501' THEN neg_bad := neg_bad||r.nom||'='||COALESCE(st, '-')||'; '; END IF;
+  END LOOP;
+
+  -- (b1) checkin + checkout como el visitador duenio
+  e1 := NULL;
+  BEGIN
+    UPDATE public.visitas_agendadas SET fecha_visita = CURRENT_DATE WHERE id = v_conf;
+    PERFORM set_config('request.jwt.claims', json_build_object('sub', a_conf, 'role', 'authenticated')::text, true);
+    PERFORM set_config('role', 'authenticated', true);
+    j := public.checkin_visita(v_conf);
+    PERFORM set_config('role', 'none', true);
+    SELECT 'checkin='||COALESCE(j->>'success', j->>'error', '-')||' estado='||v.estado||' checkin_fecha='||(v.checkin_fecha IS NOT NULL)::text INTO e1
+      FROM public.visitas_agendadas v WHERE v.id = v_conf;
+    PERFORM set_config('role', 'authenticated', true);
+    j := public.checkout_visita(v_conf, 'P1007');
+    PERFORM set_config('role', 'none', true);
+    SELECT e1||' / checkout='||COALESCE(j->>'success', j->>'error', '-')||' estado='||v.estado||' concretada='||COALESCE(v.visita_concretada::text, 'null') INTO e1
+      FROM public.visitas_agendadas v WHERE v.id = v_conf;
+    RAISE EXCEPTION 'P1007 descarte' USING ERRCODE = 'P0999';
+  EXCEPTION WHEN OTHERS THEN
+    PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
+    IF SQLSTATE <> 'P0999' THEN e1 := COALESCE(e1, '')||' error '||SQLSTATE||' '||SQLERRM; END IF;
+  END;
+  rpc := rpc||'checkin/checkout: '||COALESCE(e1, '-')||'; ';
+  IF e1 IS DISTINCT FROM 'checkin=true estado=confirmada checkin_fecha=true / checkout=true estado=completada concretada=true' THEN rpc_bad := rpc_bad||'checkin/checkout; '; END IF;
+
+  -- (b2) administrar_visita('aprobar') como admin de la empresa
+  e2 := NULL;
+  BEGIN
+    PERFORM set_config('request.jwt.claims', json_build_object('sub', a_pend, 'role', 'authenticated')::text, true);
+    PERFORM set_config('role', 'authenticated', true);
+    j := public.administrar_visita(v_pend, 'aprobar');
+    PERFORM set_config('role', 'none', true);
+    SELECT 'aprobar='||COALESCE(j->>'success', j->>'error', '-')||' estado='||v.estado||' aprobada_por_admin='||(v.aprobada_por IS NOT DISTINCT FROM a_pend)::text INTO e2
+      FROM public.visitas_agendadas v WHERE v.id = v_pend;
+    RAISE EXCEPTION 'P1007 descarte' USING ERRCODE = 'P0999';
+  EXCEPTION WHEN OTHERS THEN
+    PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
+    IF SQLSTATE <> 'P0999' THEN e2 := COALESCE(e2, '')||' error '||SQLSTATE||' '||SQLERRM; END IF;
+  END;
+  rpc := rpc||'administrar_visita: '||COALESCE(e2, '-')||'; ';
+  IF e2 IS DISTINCT FROM 'aprobar=true estado=confirmada aprobada_por_admin=true' THEN rpc_bad := rpc_bad||'administrar_visita; '; END IF;
+
+  -- (b3) cancelar_visita como el visitador duenio
+  e3 := NULL;
+  BEGIN
+    UPDATE public.visitas_agendadas SET fecha_limite_cancelacion = NULL, email_cancelacion_enviado = COALESCE(email_cancelacion_enviado, now()) WHERE id = v_conf;
+    PERFORM set_config('request.jwt.claims', json_build_object('sub', a_conf, 'role', 'authenticated')::text, true);
+    PERFORM set_config('role', 'authenticated', true);
+    j := public.cancelar_visita(v_conf);
+    PERFORM set_config('role', 'none', true);
+    SELECT 'cancelar='||COALESCE(j->>'success', j->>'error', '-')||' estado='||v.estado INTO e3 FROM public.visitas_agendadas v WHERE v.id = v_conf;
+    RAISE EXCEPTION 'P1007 descarte' USING ERRCODE = 'P0999';
+  EXCEPTION WHEN OTHERS THEN
+    PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
+    IF SQLSTATE <> 'P0999' THEN e3 := COALESCE(e3, '')||' error '||SQLSTATE||' '||SQLERRM; END IF;
+  END;
+  rpc := rpc||'cancelar_visita: '||COALESCE(e3, '-')||'; ';
+  IF e3 IS DISTINCT FROM 'cancelar=true estado=cancelada' THEN rpc_bad := rpc_bad||'cancelar_visita; '; END IF;
+
+  -- (b4) marcar_visitador_presente como staff de la clinica
+  e1 := NULL;
+  BEGIN
+    PERFORM set_config('request.jwt.claims', json_build_object('sub', a_staff, 'role', 'authenticated')::text, true);
+    PERFORM set_config('role', 'authenticated', true);
+    j := public.marcar_visitador_presente(v_mar, true);
+    PERFORM set_config('role', 'none', true);
+    SELECT 'presente='||COALESCE(j->>'presente', '-')||' at='||(v.confirmado_presente_clinica_at IS NOT NULL)::text||' por_staff='||(v.confirmado_presente_clinica_por IS NOT DISTINCT FROM a_staff)::text INTO e1
+      FROM public.visitas_agendadas v WHERE v.id = v_mar;
+    RAISE EXCEPTION 'P1007 descarte' USING ERRCODE = 'P0999';
+  EXCEPTION WHEN OTHERS THEN
+    PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
+    IF SQLSTATE <> 'P0999' THEN e1 := COALESCE(e1, '')||' error '||SQLSTATE||' '||SQLERRM; END IF;
+  END;
+  rpc := rpc||'marcar_visitador_presente: '||COALESCE(e1, '-')||'; ';
+  IF e1 IS DISTINCT FROM 'presente=true at=true por_staff=true' THEN rpc_bad := rpc_bad||'marcar_visitador_presente; '; END IF;
+
+  -- (c) ACL
+  acl := 'UPDATE='||has_table_privilege('authenticated', 'public.visitas_agendadas', 'UPDATE')::text
+       ||' UPDATE_col='||has_any_column_privilege('authenticated', 'public.visitas_agendadas', 'UPDATE')::text
+       ||' SELECT='||has_table_privilege('authenticated', 'public.visitas_agendadas', 'SELECT')::text
+       ||' INSERT='||has_table_privilege('authenticated', 'public.visitas_agendadas', 'INSERT')::text;
+  IF acl IS DISTINCT FROM 'UPDATE=false UPDATE_col=false SELECT=true INSERT=true' THEN acl_bad := acl; END IF;
+
+  snap_post := (SELECT md5(string_agg(to_jsonb(v)::text, '|' ORDER BY v.id)) FROM public.visitas_agendadas v)||'/'||(SELECT count(*) FROM public.notificaciones);
+  IF snap_post IS DISTINCT FROM snap_pre THEN rpc_bad := rpc_bad||'snapshot de visitas/notificaciones cambio; '; END IF;
+
+  PERFORM set_config('probe.p1007_det', '(a) '||neg||' (b) '||rpc||' (c) '||acl, false);
+  PERFORM set_config('probe.p1007', CASE
+    WHEN rpc_bad <> '' THEN 'FALLO (RPC: '||rpc_bad||' | (b) '||left(rpc, 700)||')'
+    WHEN NOT v_364 THEN 'PENDIENTE mig 364 ((a) '||neg||'(c) '||acl||'; RPCs OK)'
+    WHEN neg_bad = '' AND acl_bad = '' THEN 'OK (UPDATE directo -> 42501 como medico, admin, visitador y supervisor; checkin/checkout, administrar_visita, cancelar_visita y marcar_visitador_presente siguen escribiendo; authenticated SELECT+INSERT sin UPDATE; descartado)'
+    ELSE 'ROJO ((a) '||neg||' (c) '||acl||')' END, false);
+EXCEPTION WHEN OTHERS THEN
+  PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
+  PERFORM set_config('probe.p1007', 'FALLO ('||SQLSTATE||' '||SQLERRM||')', false);
+END $$;
+SELECT set_config('role', 'none', true);
+
 -- ===== Veredictos como result set =====
 SELECT 'P1_anon_insert_citas'              AS probe, current_setting('probe.p1', true)  AS verdict, 'BLOQUEADO' AS esperado_post_fix
 UNION ALL SELECT 'P2_medico_cancela_ajena_rpc',         current_setting('probe.p2', true),  'BLOQUEADO'
@@ -32566,7 +32809,7 @@ UNION ALL SELECT 'P255_vg2_plan_pos',                   current_setting('probe.p
 UNION ALL SELECT 'P256_vg2_medico_otro_pais',           current_setting('probe.p256', true), 'BLOQUEADO post-104 (ROJO pre)'
 UNION ALL SELECT 'P257_vg2_plan_vencido',               current_setting('probe.p257', true), 'BLOQUEADO post-104 (ROJO pre)'
 UNION ALL SELECT 'P258_vg2_retargeting',                current_setting('probe.p258', true), 'BLOQUEADO post-104 (ROJO pre)'
-UNION ALL SELECT 'P259_vg2_medico_estado_noregresion',  current_setting('probe.p259', true), 'OK'
+UNION ALL SELECT 'P259_vg2_medico_estado_noregresion',  current_setting('probe.p259', true), 'OK (364: UPDATE directo de estado del medico -> 42501; antes de la 364: PENDIENTE)'
 UNION ALL SELECT 'P260_vg2_cuota_intacta',              current_setting('probe.p260', true), 'OK'
 UNION ALL SELECT 'P261_searchpath_hijack_obtener_clinica', current_setting('probe.p261', true), 'OK post-105 (ROJO pre)'
 UNION ALL SELECT 'P262_searchpath_estructural',          current_setting('probe.p262', true), 'OK post-105 (ROJO pre)'
@@ -33164,7 +33407,7 @@ UNION ALL SELECT 'P778_gp_tercer_brazo_clinica',     current_setting('probe.p778
 UNION ALL SELECT 'VAG_FX_visitas_admin_fixture',     current_setting('probe.vag_fx', true),   'OK (fixture)'
 UNION ALL SELECT 'P779_vag_adminpais_lee_su_pais',   current_setting('probe.p779', true),    'OK (control positivo)'
 UNION ALL SELECT 'P780_vag_superadmin_lee_todo',     current_setting('probe.p780', true),    'OK (control positivo)'
-UNION ALL SELECT 'P781_vag_update_directo_en_cero',  current_setting('probe.p781', true),    'OK (ROW_COUNT=0, no 42501)'
+UNION ALL SELECT 'P781_vag_update_directo_en_cero',  current_setting('probe.p781', true),    'OK (ROW_COUNT=0 o, desde la 364, 42501 de privilegio)'
 UNION ALL SELECT 'P782_vag_delete_directo_en_cero',  current_setting('probe.p782', true),    'OK (ROW_COUNT=0 o, desde la 346, 42501 de privilegio)'
 UNION ALL SELECT 'EA_FX_examen_adjuntos_fixture',   current_setting('probe.ea_fx', true),   'OK (fixture)'
 UNION ALL SELECT 'P783_ea_rpc_lab_duenio',          current_setting('probe.p783', true),    'OK (control positivo)'
@@ -33402,6 +33645,7 @@ UNION ALL SELECT 'P1003_proveedores_pais_super_363',  current_setting('probe.p10
 UNION ALL SELECT 'P1004_proveedores_pais_proveedor_363',  current_setting('probe.p1004', true), 'OK (363: cuenta de proveedor -> PC028)'
 UNION ALL SELECT 'P1005_proveedores_pais_anon_363',  current_setting('probe.p1005', true), 'OK (363: anon -> 42501)'
 UNION ALL SELECT 'P1006_proveedores_pais_catalogo_363',  current_setting('probe.p1006', true), 'OK (363: ACL exacta sin anon; DEFINER, STABLE, search_path)'
+UNION ALL SELECT 'P1007_visitas_sin_update_directo_364',  current_setting('probe.p1007', true), 'OK (364: UPDATE directo -> 42501 x4; las RPCs siguen escribiendo; ACL SELECT+INSERT sin UPDATE; antes de la 364: PENDIENTE)'
 -- Las filas FX* son SALUD DE FIXTURE, no probes de seguridad: dicen si la precondicion que una
 -- migracion posterior empezo a exigir se pudo sembrar. Si una sale ROJO, los probes que dependen de
 -- ese fixture reportan N/A (su flag de ready se pierde con el rollback de la subtransaccion) en vez
@@ -33646,7 +33890,7 @@ UNION ALL SELECT 'P000_CENTINELA_veredictos_no_nulos',
        'probe.p866', 'probe.p867', 'probe.p868', 'probe.p869', 'probe.p870', 'probe.p871', 'probe.p872', 'probe.p873', 'probe.p874', 'probe.p875', 'probe.p876', 'probe.p877', 'probe.p878',
        'probe.p879', 'probe.p880', 'probe.p881', 'probe.p882', 'probe.p883', 'probe.p884',
        'probe.p885', 'probe.p886', 'probe.p887', 'probe.p888', 'probe.p889', 'probe.p890', 'probe.p891', 'probe.p892', 'probe.p893', 'probe.p894', 'probe.p895', 'probe.p896', 'probe.p908', 'probe.p909', 'probe.p910', 'probe.p911',
-       'probe.p897', 'probe.p898', 'probe.p899', 'probe.p900', 'probe.p901', 'probe.p902', 'probe.p903', 'probe.p904', 'probe.p905', 'probe.p906', 'probe.p907', 'probe.p912', 'probe.p913', 'probe.p914', 'probe.p915', 'probe.p916', 'probe.p917', 'probe.p918', 'probe.p919', 'probe.p920', 'probe.p921', 'probe.p922', 'probe.p923', 'probe.p924', 'probe.p925', 'probe.p926', 'probe.p927', 'probe.p928', 'probe.p929', 'probe.p930', 'probe.p931', 'probe.p932', 'probe.p933', 'probe.p934', 'probe.p935', 'probe.p936', 'probe.p937', 'probe.p938', 'probe.p939', 'probe.p940', 'probe.p941', 'probe.p942', 'probe.p943', 'probe.p944', 'probe.p945', 'probe.p946', 'probe.p947', 'probe.p948', 'probe.p949', 'probe.p950', 'probe.p951', 'probe.p952', 'probe.p953', 'probe.p954', 'probe.p955', 'probe.p956', 'probe.p957', 'probe.p958', 'probe.p959', 'probe.p960', 'probe.p961', 'probe.p962', 'probe.p963', 'probe.p964', 'probe.p965', 'probe.p966', 'probe.p967', 'probe.p968', 'probe.p969', 'probe.p970', 'probe.p971', 'probe.p972', 'probe.p973', 'probe.p974', 'probe.p975', 'probe.p976', 'probe.p977', 'probe.p978', 'probe.p979', 'probe.p980', 'probe.p981', 'probe.p982', 'probe.p983', 'probe.p984', 'probe.p985', 'probe.p986', 'probe.p987', 'probe.p988', 'probe.p989', 'probe.p990', 'probe.p991', 'probe.p992', 'probe.p993', 'probe.p994', 'probe.p995', 'probe.p996', 'probe.p997', 'probe.p998', 'probe.p999', 'probe.p1000', 'probe.p1001', 'probe.p1002', 'probe.p1003', 'probe.p1004', 'probe.p1005', 'probe.p1006'
+       'probe.p897', 'probe.p898', 'probe.p899', 'probe.p900', 'probe.p901', 'probe.p902', 'probe.p903', 'probe.p904', 'probe.p905', 'probe.p906', 'probe.p907', 'probe.p912', 'probe.p913', 'probe.p914', 'probe.p915', 'probe.p916', 'probe.p917', 'probe.p918', 'probe.p919', 'probe.p920', 'probe.p921', 'probe.p922', 'probe.p923', 'probe.p924', 'probe.p925', 'probe.p926', 'probe.p927', 'probe.p928', 'probe.p929', 'probe.p930', 'probe.p931', 'probe.p932', 'probe.p933', 'probe.p934', 'probe.p935', 'probe.p936', 'probe.p937', 'probe.p938', 'probe.p939', 'probe.p940', 'probe.p941', 'probe.p942', 'probe.p943', 'probe.p944', 'probe.p945', 'probe.p946', 'probe.p947', 'probe.p948', 'probe.p949', 'probe.p950', 'probe.p951', 'probe.p952', 'probe.p953', 'probe.p954', 'probe.p955', 'probe.p956', 'probe.p957', 'probe.p958', 'probe.p959', 'probe.p960', 'probe.p961', 'probe.p962', 'probe.p963', 'probe.p964', 'probe.p965', 'probe.p966', 'probe.p967', 'probe.p968', 'probe.p969', 'probe.p970', 'probe.p971', 'probe.p972', 'probe.p973', 'probe.p974', 'probe.p975', 'probe.p976', 'probe.p977', 'probe.p978', 'probe.p979', 'probe.p980', 'probe.p981', 'probe.p982', 'probe.p983', 'probe.p984', 'probe.p985', 'probe.p986', 'probe.p987', 'probe.p988', 'probe.p989', 'probe.p990', 'probe.p991', 'probe.p992', 'probe.p993', 'probe.p994', 'probe.p995', 'probe.p996', 'probe.p997', 'probe.p998', 'probe.p999', 'probe.p1000', 'probe.p1001', 'probe.p1002', 'probe.p1003', 'probe.p1004', 'probe.p1005', 'probe.p1006', 'probe.p1007'
              ]) AS n) s),
   'OK (todos los veredictos publicados)';
 
