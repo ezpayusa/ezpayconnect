@@ -155,7 +155,7 @@ export default function AsesoresPaisPage() {
       // desde el mapa no se sabe cuál fue. Acá sí se sabe: el único de esta pantalla es
       // (pais_id, codigo_asesor).
       if (m.code === '23505') {
-        setErr({ campo: 'codigo_asesor', mensaje: 'Ya hay otra ficha con ese código en este país. Elegí otro.' })
+        setErr({ campo: 'codigo_asesor', mensaje: 'Ya hay otra ficha con ese código en este país. Elige otro.' })
       }
       return
     }

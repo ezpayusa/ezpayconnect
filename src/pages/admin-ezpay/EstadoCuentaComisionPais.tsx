@@ -157,7 +157,7 @@ export function EstadoCuentaComisionPais({ paisId, esSuper }: { paisId: string |
       {!resumen ? (
         <Card>
           <CardContent className="py-10 text-center text-sm text-muted-foreground">
-            Seleccioná una farmacia y un período, y presioná <strong>Calcular</strong>.
+            Selecciona una farmacia y un período, y presiona <strong>Calcular</strong>.
           </CardContent>
         </Card>
       ) : (

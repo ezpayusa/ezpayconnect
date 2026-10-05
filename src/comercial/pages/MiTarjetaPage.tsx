@@ -89,7 +89,7 @@ export default function MiTarjetaPage() {
       reportarError(error, { onRecargar: (q) => { if (q === 'tarjeta') void cargar() } })
     } else {
       toast.success(encender
-        ? 'Tu tarjeta está publicada. Ya podés compartir el enlace.'
+        ? 'Tu tarjeta está publicada. Ya puedes compartir el enlace.'
         : 'Tu tarjeta dejó de estar disponible. El enlace ya no responde.')
       await cargar()
     }
@@ -126,7 +126,7 @@ export default function MiTarjetaPage() {
       reportarError(r.error, { onRecargar: (q) => { if (q === 'tarjeta') void cargar() } })
       if (r.huerfano) {
         toast.warning('La foto se subió pero no quedó registrada, y tampoco se pudo borrar. '
-          + 'Avisale a soporte con este dato: ' + r.huerfano)
+          + 'Avísale a soporte con este dato: ' + r.huerfano)
       }
       return
     }
@@ -153,7 +153,7 @@ export default function MiTarjetaPage() {
       setCopiado(true)
       setTimeout(() => setCopiado(false), 2000)
     } catch {
-      toast.error('No se pudo copiar. Mantené presionado el enlace para copiarlo a mano.')
+      toast.error('No se pudo copiar. Mantén presionado el enlace para copiarlo a mano.')
     }
   }
 
@@ -174,7 +174,7 @@ export default function MiTarjetaPage() {
           <IdCard className="h-5 w-5 text-[#1E5C8E]" /> Mi tarjeta
         </h1>
         <div className="rounded-lg border bg-white p-4 text-sm text-gray-600">
-          <p className="font-medium text-gray-900">Todavía no tenés ficha de asesor.</p>
+          <p className="font-medium text-gray-900">Todavía no tienes ficha de asesor.</p>
           <p className="mt-1">
             La tarjeta pública se arma con los datos de tu ficha (cargo, territorio y teléfonos), y
             esa ficha la crea el administrador de tu país. Cuando la tengas, vas a poder publicar tu
@@ -248,10 +248,10 @@ export default function MiTarjetaPage() {
         <p className="mt-2 text-sm leading-relaxed text-gray-600">
           Al publicarla, <strong>cualquier persona que tenga el enlace</strong> puede abrir tu
           tarjeta <strong>sin iniciar sesión</strong> y ver tu nombre, tu cargo, tu territorio, tus
-          teléfonos y tu foto. El enlace se puede reenviar: no controlás a quién se lo pasan.
+          teléfonos y tu foto. El enlace se puede reenviar: no controlas a quién se lo pasan.
         </p>
         <p className="mt-2 text-sm leading-relaxed text-gray-600">
-          Si la despublicás, <strong>el enlace deja de responder de inmediato</strong> — no se
+          Si la despublicas, <strong>el enlace deja de responder de inmediato</strong> — no se
           esconde un botón: la página entera devuelve "no disponible", incluida tu foto, para todos
           los que ya lo tenían.
         </p>
@@ -344,7 +344,7 @@ export default function MiTarjetaPage() {
       <div className="rounded-lg border bg-white p-4">
         <h2 className="text-sm font-semibold text-gray-900">Generar un enlace nuevo</h2>
         <p className="mt-2 text-sm leading-relaxed text-gray-600">
-          Sirve si compartiste el enlace con alguien a quien ya no querés dárselo.
+          Sirve si compartiste el enlace con alguien a quien ya no quieres dárselo.
         </p>
         {!confirmandoRotar ? (
           <button

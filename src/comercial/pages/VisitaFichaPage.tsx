@@ -313,7 +313,7 @@ export default function VisitaFichaPage() {
             {errAdjunto && <p id="err-adjunto" className="mt-2 text-xs text-red-600">{errAdjunto.mensaje}</p>}
             {huerfano && (
               <p className="mt-1 text-xs text-amber-800">
-                No se pudo limpiar el archivo a medio subir. Avisale a soporte con este dato:
+                No se pudo limpiar el archivo a medio subir. Avísale a soporte con este dato:
                 <span className="font-mono"> {huerfano}</span>
               </p>
             )}

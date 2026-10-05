@@ -66,7 +66,7 @@ describe('sin ficha de asesor', () => {
   it('lo dice con calma y NO ofrece ningún control', async () => {
     ficha = null
     pintar()
-    await screen.findByText(/Todavía no tenés ficha de asesor/i)
+    await screen.findByText(/Todavía no tienes ficha de asesor/i)
 
     // Ni interruptor, ni foto, ni rotar: un botón que siempre falla es peor que no tenerlo.
     expect(screen.queryByRole('button', { name: /publicar mi tarjeta/i })).toBeNull()
@@ -96,7 +96,7 @@ describe('tarjeta NO publicada', () => {
     expect(screen.getByText(/cualquier persona que tenga el enlace/i)).toBeTruthy()
     expect(screen.getByText(/sin iniciar sesión/i)).toBeTruthy()
     expect(screen.getByText(/tu nombre, tu cargo, tu territorio, tus/i)).toBeTruthy()
-    expect(screen.getByText(/no controlás a quién se lo pasan/i)).toBeTruthy()
+    expect(screen.getByText(/no controlas a quién se lo pasan/i)).toBeTruthy()
 
     // Y que revocar MATA el enlace, no que esconde un botón.
     expect(screen.getByText(/el enlace deja de responder de inmediato/i)).toBeTruthy()

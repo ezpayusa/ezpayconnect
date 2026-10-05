@@ -46,7 +46,7 @@ export default function ProspectosPage() {
 
       {filas.length === 0 ? (
         <p className="rounded-lg border border-dashed border-gray-300 bg-white p-6 text-sm text-gray-600">
-          Todavía no tenés prospectos asignados. Los carga el administrador de tu país.
+          Todavía no tienes prospectos asignados. Los carga el administrador de tu país.
         </p>
       ) : (
         <ul className="space-y-2">

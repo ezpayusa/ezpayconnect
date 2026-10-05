@@ -168,7 +168,7 @@ export default function HoyPage() {
           <span className="text-xs text-gray-500">{proximas.length}</span>
         </div>
         {proximas.length === 0 ? (
-          <p className="mt-2 text-sm text-gray-500">No tenés visitas agendadas a futuro.</p>
+          <p className="mt-2 text-sm text-gray-500">No tienes visitas agendadas a futuro.</p>
         ) : (
           <ul className="mt-2 divide-y">
             {proximas.map(p => (

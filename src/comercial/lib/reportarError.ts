@@ -27,7 +27,7 @@ export function reportarError(error: unknown, opciones: Opciones = {}): ErrorRpc
   // `navigator` no lo es. La cola es su propio frente: mezclarla escondería bugs de las dos.
   if (m.code === null && typeof navigator !== 'undefined' && navigator.onLine === false) {
     const sinRed = 'Estás sin conexión. Esto necesita red y NO queda guardado para después: '
-      + 'volvé a intentarlo cuando tengas señal.'
+      + 'vuelve a intentarlo cuando tengas señal.'
     toast.error(sinRed)
     return { ...m, mensaje: sinRed, reportar: false }
   }

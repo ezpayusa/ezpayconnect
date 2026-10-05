@@ -88,7 +88,7 @@ export function validarFoto(a: File): string | null {
   }
   if (a.size > MAX_BYTES_FOTO) {
     return `La foto pesa ${MB(a.size)} y el máximo es ${MB(MAX_BYTES_FOTO)}. `
-      + 'Sacale una con menos resolución o recortala.'
+      + 'Sácale una con menos resolución o recórtala.'
   }
   return null
 }

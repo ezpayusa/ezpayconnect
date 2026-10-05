@@ -57,7 +57,7 @@ export default function EquipoPage() {
 
       {equipo.length === 0 ? (
         <p className="rounded-lg border border-dashed bg-white p-6 text-sm text-gray-600">
-          No tenés asesores asignados todavía.
+          No tienes asesores asignados todavía.
         </p>
       ) : (
         <ul className="space-y-2">

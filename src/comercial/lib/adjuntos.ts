@@ -34,7 +34,7 @@ export function validarAdjunto(a: File): string | null {
   }
   if (a.size > MAX_BYTES_ADJUNTO) {
     return `El archivo pesa ${MB(a.size)} y el máximo es ${MB(MAX_BYTES_ADJUNTO)}. `
-      + 'Grabá el video más corto o bajá la calidad.'
+      + 'Graba el video más corto o baja la calidad.'
   }
   return null
 }

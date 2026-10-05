@@ -23,7 +23,7 @@ export default function SinPanelPage() {
         <p className="mt-2 text-sm text-gray-600">
           El acceso quedó creado correctamente, pero el rol{' '}
           <span className="font-mono text-gray-800">{perfil?.rol || 'sin rol'}</span> aún no tiene una
-          pantalla propia en esta versión. Escribile a quien administra tu cuenta para que te asignen
+          pantalla propia en esta versión. Escríbele a quien administra tu cuenta para que te asignen
           el panel que corresponde.
         </p>
         <button
