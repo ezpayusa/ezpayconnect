@@ -30,6 +30,14 @@ Stack: React + Vite + TypeScript, Supabase / Postgres, deploy en Vercel, repo en
   la 343, P926-P927 por la 344, P928-P929 por la 345, P930 por la 346, P931-P932 por la 347, P933 por la 348,
   P934-P935 por la 349, P936 por la 350, P937-P939 por la 351, P940-P943 por la 353), **migración `365`**, **errcode `PC029`** (familia PC: PC025 país requerido y PC026 sin autoridad en `contar_medicos_por_pais`, PC027
   no autenticado, PC028 sin autoridad sobre el país en `contar_proveedores_por_pais`)
+  (364 = familia 2, F2-d, visitas_agendadas sin UPDATE directo — APLICADA en prod el 2026-10-05 19:04:29 UTC, harness
+  1082 filas / 11 rojas de deuda, verificada independientemente. DROP de "Médico actualiza sus visitas" y "Proveedor cancela
+  sus visitas" (UPDATE sin WITH CHECK: el médico y cualquier cuenta de la empresa reescribían estado, check-in/out, fecha y
+  pais_id, y devolvían cupo a la bolsa de `private.pvc_usadas`) + REVOKE UPDATE de authenticated; quedan SELECT+INSERT y las
+  5 policies restantes (md5 2c45abcf… 5); las escrituras van solo por las 7 RPCs DEFINER (md5 sin cambio). Huella de
+  policies 6fd0d66d… 311 → 1929c331… 309; ACL de relaciones deedb2e6… → d05a8b3a…; ACL de funciones sin cambio (c7f89c6d…
+  380). Probe P1007 (snapshot acotado a sus visitas y actores; excluye las visitas de la demo e9151f3e/523a1e31); P259
+  invertido y P781 acepta 42501 (P258/P259 siguen N/A por la cadena vg1→va2). Rollback `364_rollback.sql`.)
   (363 = familia DASHBOARDS, conteo de proveedores por país para el admin_pais — APLICADA en prod el 2026-10-04 20:33 UTC,
   harness 1081 / 11 rojas de deuda, verificada independientemente. `public.contar_proveedores_por_pais(p_pais_id)`
   (STABLE, DEFINER, `search_path=''`, md5 43c82022…): sin sesión → PC027; sin autoridad sobre el país (super_admin, o
@@ -337,7 +345,7 @@ Stack: React + Vite + TypeScript, Supabase / Postgres, deploy en Vercel, repo en
 - **Migraciones: SIEMPRE `npx supabase db query --linked -f <archivo>`, NUNCA `db push`.** `db push`
   desincroniza `schema_migrations` (deuda desde la 047). Los `.sql` viven en `supabase/migrations/`
   (rollback en `supabase/migrations/rollback/`); los de `supabase/fixes/` se agregan con `git add -f`.
-  **Desvío aceptado (familia 8):** los rollbacks de 334-363 viven en `supabase/migrations/`
+  **Desvío aceptado (familia 8):** los rollbacks de 334-364 viven en `supabase/migrations/`
   (`3XX_rollback.sql`), no en `supabase/migrations/rollback/`.
 - **Los tests de edge (deno) NO corren en vitest ni en el pre-commit**: se corren a mano desde
   `supabase/functions/<fn>/` con `deno test --allow-net --allow-env --no-check` (asistente-ia: 17).

@@ -30256,8 +30256,8 @@ DECLARE
   v_gt uuid; v_emp uuid; v_emp2 uuid; v_s1 integer; v_s2 integer; v_s3 integer; c uuid[]; rc bigint[];
   c_adm uuid; c_ger uuid; c_sup uuid; c_caj uuid; c_inv uuid; c_d1 uuid; c_d2 uuid; c_d3 uuid;
   e_p1 bigint; e_p2 bigint; e_p3 bigint; e_p4 bigint; e_asig bigint; e_cob bigint; e_s2 bigint; e_ent bigint; e_ajena bigint;
-  n0 integer; quien uuid; rol_actor text; fn text; snap_pre text; snap_post text; ids bigint[]; del uuid; k integer; j integer;
-  n_pre uuid[];
+  quien uuid; rol_actor text; fn text; snap_pre text; snap_post text; ids bigint[]; del uuid; k integer; j integer;
+  n_pre uuid[]; n_ini uuid[];
 BEGIN
   IF current_user <> 'postgres' THEN RAISE EXCEPTION 'fixture roto: P940 corre como %', current_user; END IF;
   SELECT id INTO v_gt FROM public.configuracion_pais WHERE codigo = 'GT';
@@ -30267,8 +30267,12 @@ BEGIN
     RAISE EXCEPTION 'fixture roto: P940 sin GT (%), 8 cuentas con usuario (%) o 9 recetas con paciente (%)', v_gt, cardinality(c), cardinality(rc);
   END IF;
   c_adm := c[1]; c_ger := c[2]; c_sup := c[3]; c_caj := c[4]; c_inv := c[5]; c_d1 := c[6]; c_d2 := c[7]; c_d3 := c[8];
+  -- 5-oct-2026: la restauracion (r_rest, que tambien decide P941/P942) cuenta las notificaciones de las 8 cuentas que no
+  -- estaban al empezar (patron n_pre), no el count(*) global: el harness corre en READ COMMITTED y el trafico real no debe
+  -- dar rojo.
+  n_ini := ARRAY(SELECT n.id FROM public.notificaciones n WHERE n.usuario_id = ANY (c));
   snap_pre := (SELECT string_agg(x, ',') FROM (
-    SELECT 'ent='||(SELECT count(*) FROM public.entregas) UNION ALL SELECT 'notif='||(SELECT count(*) FROM public.notificaciones)
+    SELECT 'ent='||(SELECT count(*) FROM public.entregas) UNION ALL SELECT 'notif_nuevas='||(SELECT count(*) FROM public.notificaciones n WHERE n.usuario_id = ANY (c) AND n.id <> ALL (n_ini))
     UNION ALL SELECT 'emp='||(SELECT count(*) FROM public.empresas_proveedoras) UNION ALL SELECT 'farm='||(SELECT count(*) FROM public.farmacias)
     UNION ALL SELECT 'ctas='||(SELECT string_agg(cp.id::text||'/'||cp.empresa_id::text||'/'||cp.rol_en_empresa||'/'||cp.activo::text||'/'||COALESCE(cp.sucursal_id::text, '-')
                                                 ||'/'||COALESCE(cp.pais_id::text, '-')||'/'||COALESCE(cp.equipo_id::text, '-'), ';' ORDER BY cp.id)
@@ -30342,7 +30346,6 @@ BEGIN
     IF v2 IS DISTINCT FROM v THEN b940 := b940||'una llamada de gate escribio; '; END IF;
 
     -- ===================== P941: lote atomico =====================
-    n0 := (SELECT count(*) FROM public.notificaciones);
     -- 5-oct-2026: el oraculo cuenta SOLO las notificaciones que crea este probe. Las 8 cuentas son reales y desde el 5-oct
     -- tienen notificaciones entrega_% reales de delivery (10 entre las 10:08 y las 11:38 UTC), que entraban en la cuenta.
     -- Snapshot de los ids existentes (notificaciones.id es uuid: max(id) no ordena; created_at tampoco sirve, en el harness
@@ -30374,8 +30377,8 @@ BEGIN
     END LOOP;
     v2 := (SELECT string_agg(e::text, ';' ORDER BY e.id) FROM public.entregas e WHERE e.empresa_id IN (v_emp, v_emp2));
     d941 := d941||' ;; atomicidad|ninguna entrega cambio y 0 notificaciones tras los 10 rechazos|'
-            ||CASE WHEN v2 = v AND (SELECT count(*) FROM public.notificaciones) = n0 THEN 'OK' ELSE 'ROJO' END||'|-|';
-    IF v2 IS DISTINCT FROM v OR (SELECT count(*) FROM public.notificaciones) <> n0 THEN b941 := b941||'un lote rechazado escribio; '; END IF;
+            ||CASE WHEN v2 = v AND NOT EXISTS (SELECT 1 FROM public.notificaciones n WHERE n.usuario_id = ANY (c) AND n.id <> ALL (n_pre)) THEN 'OK' ELSE 'ROJO' END||'|-|';
+    IF v2 IS DISTINCT FROM v OR EXISTS (SELECT 1 FROM public.notificaciones n WHERE n.usuario_id = ANY (c) AND n.id <> ALL (n_pre)) THEN b941 := b941||'un lote rechazado escribio; '; END IF;
     -- la tanda valida
     st := 'OK'; msg := '-'; res := NULL;
     BEGIN
@@ -30387,7 +30390,7 @@ BEGIN
     PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
     v := (SELECT string_agg(e.estado||'/'||(e.delivery_id = c_d1)::text||'/'||(e.asignado_por = c_adm)::text||'/'||(e.asignado_at IS NOT NULL)::text, ',' ORDER BY e.id)
             FROM public.entregas e WHERE e.id IN (e_p1, e_p2))
-         ||' ;notif +'||((SELECT count(*) FROM public.notificaciones) - n0)
+         ||' ;notif +'||(SELECT count(*) FROM public.notificaciones n WHERE n.usuario_id = ANY (c) AND n.id <> ALL (n_pre))
          ||' ;'||COALESCE((SELECT string_agg((n.usuario_id = c_d1)::text||'/'||n.tipo||'/'||n.titulo||'/'||n.accion_url||'/'||(n.metadata->'entrega_ids' = to_jsonb(ARRAY[e_p1, e_p2]))::text, ',')
                              FROM public.notificaciones n WHERE n.tipo LIKE 'entrega_%' AND n.usuario_id = ANY (c) AND n.id <> ALL (n_pre)), 'ninguna');
     esp := 'asignada/true/true/true,asignada/true/true/true ;notif +1 ;true/entrega_asignada/Tenés 2 entregas nuevas//repartidor/true';
@@ -30398,7 +30401,6 @@ BEGIN
     END IF;
 
     -- ===================== P942: asignar / reasignar / tablero / asignables =====================
-    n0 := (SELECT count(*) FROM public.notificaciones);
     -- 5-oct-2026: mismo ajuste que P941 (notificaciones reales de delivery del 5-oct en las cuentas reales): el oraculo
     -- cuenta solo las notificaciones creadas desde aca (snapshot de ids; la de la tanda de P941 tambien queda afuera).
     n_pre := ARRAY(SELECT n.id FROM public.notificaciones n WHERE n.usuario_id = ANY (c));
@@ -30440,7 +30442,7 @@ BEGIN
                    ||'/'||(n.metadata->'entrega_ids' = to_jsonb(ARRAY[e_p3]))::text AS s
               FROM public.notificaciones n WHERE n.tipo LIKE 'entrega_%' AND n.usuario_id = ANY (c) AND n.id <> ALL (n_pre)
                AND NOT (n.metadata->'entrega_ids' = to_jsonb(ARRAY[e_p1, e_p2]))) x)
-         ||' ;total +'||((SELECT count(*) FROM public.notificaciones) - n0)
+         ||' ;total +'||(SELECT count(*) FROM public.notificaciones n WHERE n.usuario_id = ANY (c) AND n.id <> ALL (n_pre))
          ||' ;p3 '||(SELECT e.estado||'/'||CASE e.delivery_id WHEN c_d2 THEN 'D2' ELSE 'otro' END FROM public.entregas e WHERE e.id = e_p3);
     esp := 'D1/entrega_asignada/Tenés 1 entrega nueva//repartidor/true,D1/entrega_quitada/Te quitaron una entrega//repartidor/true,D2/entrega_asignada/Tenés 1 entrega nueva//repartidor/true ;total +3 ;p3 asignada/D2';
     d942 := d942||' ;; notificaciones|'||esp||'|'||CASE WHEN v = esp THEN 'OK' ELSE 'ROJO' END||'|'||COALESCE(v, '-')||'|';
@@ -30480,7 +30482,7 @@ BEGIN
   END;
   PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
   snap_post := (SELECT string_agg(x, ',') FROM (
-    SELECT 'ent='||(SELECT count(*) FROM public.entregas) UNION ALL SELECT 'notif='||(SELECT count(*) FROM public.notificaciones)
+    SELECT 'ent='||(SELECT count(*) FROM public.entregas) UNION ALL SELECT 'notif_nuevas='||(SELECT count(*) FROM public.notificaciones n WHERE n.usuario_id = ANY (c) AND n.id <> ALL (n_ini))
     UNION ALL SELECT 'emp='||(SELECT count(*) FROM public.empresas_proveedoras) UNION ALL SELECT 'farm='||(SELECT count(*) FROM public.farmacias)
     UNION ALL SELECT 'ctas='||(SELECT string_agg(cp.id::text||'/'||cp.empresa_id::text||'/'||cp.rol_en_empresa||'/'||cp.activo::text||'/'||COALESCE(cp.sucursal_id::text, '-')
                                                 ||'/'||COALESCE(cp.pais_id::text, '-')||'/'||COALESCE(cp.equipo_id::text, '-'), ';' ORDER BY cp.id)
@@ -32396,27 +32398,27 @@ DECLARE
   v_conf uuid; a_conf uuid; v_conf_med uuid; v_hora time; v_pend uuid; a_pend uuid; v_mar uuid; a_staff uuid; v_clin uuid; r record; c record;
   n int; st text; j jsonb; e1 text; e2 text; e3 text;
   neg text := ''; neg_bad text := ''; rpc text := ''; rpc_bad text := ''; acl text; acl_bad text := '';
-  snap_pre text; snap_post text;
+  snap_pre text; snap_post text; vis uuid[]; act uuid[]; n_pre uuid[]; n_nuevas int;
+  c_demo CONSTANT uuid[] := ARRAY['e9151f3e-fc12-473e-87f0-d2b530befa07', '523a1e31-5a6b-4e8f-a2ec-7e4b417b4766']::uuid[];  -- visitas de la demo del 8-oct: nunca se tocan
 BEGIN
   IF current_user <> 'postgres' THEN RAISE EXCEPTION 'fixture roto: P1007 corre como %', current_user; END IF;
   v_364 := NOT has_table_privilege('authenticated', 'public.visitas_agendadas', 'UPDATE')
            AND NOT EXISTS (SELECT 1 FROM pg_policy pl WHERE pl.polrelid = 'public.visitas_agendadas'::regclass AND pl.polcmd IN ('w', '*'));
-  snap_pre := (SELECT md5(string_agg(to_jsonb(v)::text, '|' ORDER BY v.id)) FROM public.visitas_agendadas v)||'/'||(SELECT count(*) FROM public.notificaciones);
 
   -- actores de (a)
   SELECT v.medico_id, v.id INTO a_med, t_med FROM public.visitas_agendadas v JOIN public.perfiles p ON p.id = v.medico_id
-   WHERE v.created_at < now() AND p.rol = 'medico' AND p.activo AND COALESCE(p.created_at, '-infinity') < now()
+   WHERE v.created_at < now() AND v.id <> ALL (c_demo) AND p.rol = 'medico' AND p.activo AND COALESCE(p.created_at, '-infinity') < now()
      AND EXISTS (SELECT 1 FROM auth.users u WHERE u.id = p.id)
    ORDER BY v.created_at, v.id LIMIT 1;
   FOR r IN SELECT x.rol FROM (VALUES (1, 'admin'), (2, 'visitador_medico'), (3, 'supervisor')) x(k, rol) ORDER BY x.k LOOP
     SELECT cp.id, (SELECT v.id FROM public.visitas_agendadas v
-                    WHERE v.empresa_id = cp.empresa_id AND v.created_at < now() AND (r.rol <> 'visitador_medico' OR v.cuenta_proveedor_id = cp.id)
+                    WHERE v.empresa_id = cp.empresa_id AND v.created_at < now() AND v.id <> ALL (c_demo) AND (r.rol <> 'visitador_medico' OR v.cuenta_proveedor_id = cp.id)
                     ORDER BY v.created_at, v.id LIMIT 1) AS t
       INTO c
       FROM public.cuentas_proveedor cp JOIN public.empresas_proveedoras e ON e.id = cp.empresa_id AND e.estado = 'activa'
      WHERE cp.rol_en_empresa = r.rol AND cp.activo AND COALESCE(cp.created_at, '-infinity') < now()
        AND EXISTS (SELECT 1 FROM auth.users u WHERE u.id = cp.id)
-       AND EXISTS (SELECT 1 FROM public.visitas_agendadas v WHERE v.empresa_id = cp.empresa_id AND v.created_at < now()
+       AND EXISTS (SELECT 1 FROM public.visitas_agendadas v WHERE v.empresa_id = cp.empresa_id AND v.created_at < now() AND v.id <> ALL (c_demo)
                      AND (r.rol <> 'visitador_medico' OR v.cuenta_proveedor_id = cp.id))
      ORDER BY COALESCE(cp.created_at, '-infinity'), cp.id LIMIT 1;
     IF r.rol = 'admin' THEN a_adm := c.id; t_adm := c.t;
@@ -32427,7 +32429,7 @@ BEGIN
   -- visitas y actores de (b)
   SELECT v.id, v.cuenta_proveedor_id, v.medico_id INTO v_conf, a_conf, v_conf_med FROM public.visitas_agendadas v
    WHERE v.created_at < now() AND v.cuenta_proveedor_id IS NOT NULL
-     AND v.id <> ALL (ARRAY['e9151f3e-fc12-473e-87f0-d2b530befa07', '523a1e31-5a6b-4e8f-a2ec-7e4b417b4766']::uuid[])
+     AND v.id <> ALL (c_demo)
      AND EXISTS (SELECT 1 FROM auth.users u WHERE u.id = v.cuenta_proveedor_id)
      AND NOT EXISTS (SELECT 1 FROM public.perfiles p WHERE p.id = v.cuenta_proveedor_id)
    ORDER BY v.created_at, v.id LIMIT 1;
@@ -32440,14 +32442,14 @@ BEGIN
                 ORDER BY COALESCE(cp.created_at, '-infinity'), cp.id LIMIT 1)
     INTO v_pend, a_pend
     FROM public.visitas_agendadas v JOIN public.empresas_proveedoras e ON e.id = v.empresa_id AND e.estado = 'activa'
-   WHERE v.estado = 'pendiente' AND v.created_at < now()
+   WHERE v.estado = 'pendiente' AND v.created_at < now() AND v.id <> ALL (c_demo)
      AND EXISTS (SELECT 1 FROM public.cuentas_proveedor cp WHERE cp.empresa_id = v.empresa_id AND cp.rol_en_empresa = 'admin' AND cp.activo
                    AND COALESCE(cp.created_at, '-infinity') < now() AND EXISTS (SELECT 1 FROM auth.users u WHERE u.id = cp.id))
    ORDER BY v.created_at, v.id LIMIT 1;
   <<staff>>
   FOR r IN SELECT v.id, mc.clinica_id FROM public.visitas_agendadas v
              JOIN public.medico_clinicas mc ON mc.medico_id = v.medico_id AND mc.es_principal
-            WHERE v.created_at < now() ORDER BY v.created_at, v.id LOOP
+            WHERE v.created_at < now() AND v.id <> ALL (c_demo) ORDER BY v.created_at, v.id LOOP
     FOR c IN SELECT p.id FROM public.perfiles p
               WHERE p.rol = ANY (ARRAY['admin_clinica','admin','gerente','secretaria','asistente_medico','enfermeria']) AND p.activo
                 AND COALESCE(p.created_at, '-infinity') < now() AND EXISTS (SELECT 1 FROM auth.users u WHERE u.id = p.id)
@@ -32467,6 +32469,19 @@ BEGIN
     RAISE EXCEPTION 'sin fixture: P1007 medico %/%, admin %/%, visitador %/%, supervisor %/%, preparada %/% (slot %), pendiente %/%, staff %/%',
       a_med, t_med, a_adm, t_adm, a_vis, t_vis, a_sup, t_sup, v_conf, a_conf, v_hora, v_pend, a_pend, v_mar, a_staff;
   END IF;
+  IF ARRAY[t_med, t_adm, t_vis, t_sup, v_conf, v_pend, v_mar] && c_demo THEN
+    RAISE EXCEPTION 'fixture roto: P1007 eligio una visita de la demo (%)', ARRAY[t_med, t_adm, t_vis, t_sup, v_conf, v_pend, v_mar];
+  END IF;
+
+  -- 5-oct-2026: snapshot acotado: el harness corre en READ COMMITTED y el trafico real no debe dar rojo. Antes era el md5 de
+  -- toda visitas_agendadas y el count(*) global de notificaciones (una notificacion o una visita real commiteada durante el
+  -- probe lo hacia FALLO). Ahora: md5 de SOLO las visitas que toca el probe, y las notificaciones de sus actores (y de los
+  -- medicos de esas visitas, a quienes avisan las RPCs) que no estaban en el snapshot de ids previo (patron n_pre de P941).
+  vis := ARRAY[t_med, t_adm, t_vis, t_sup, v_conf, v_pend, v_mar];
+  act := ARRAY(SELECT DISTINCT x FROM unnest(ARRAY[a_med, a_adm, a_vis, a_sup, a_conf, a_pend, a_staff]
+                                             || ARRAY(SELECT v.medico_id FROM public.visitas_agendadas v WHERE v.id = ANY (vis))) x WHERE x IS NOT NULL);
+  snap_pre := (SELECT md5(string_agg(to_jsonb(v)::text, '|' ORDER BY v.id))||' '||count(*) FROM public.visitas_agendadas v WHERE v.id = ANY (vis));
+  n_pre := ARRAY(SELECT n.id FROM public.notificaciones n WHERE n.usuario_id = ANY (act));
 
   -- (a) negativos
   FOR r IN SELECT * FROM (VALUES (1, 'medico', a_med, t_med), (2, 'admin', a_adm, t_adm), (3, 'visitador', a_vis, t_vis), (4, 'supervisor', a_sup, t_sup)) x(k, nom, uid, vid) ORDER BY x.k LOOP
@@ -32579,8 +32594,10 @@ BEGIN
        ||' INSERT='||has_table_privilege('authenticated', 'public.visitas_agendadas', 'INSERT')::text;
   IF acl IS DISTINCT FROM 'UPDATE=false UPDATE_col=false SELECT=true INSERT=true' THEN acl_bad := acl; END IF;
 
-  snap_post := (SELECT md5(string_agg(to_jsonb(v)::text, '|' ORDER BY v.id)) FROM public.visitas_agendadas v)||'/'||(SELECT count(*) FROM public.notificaciones);
-  IF snap_post IS DISTINCT FROM snap_pre THEN rpc_bad := rpc_bad||'snapshot de visitas/notificaciones cambio; '; END IF;
+  snap_post := (SELECT md5(string_agg(to_jsonb(v)::text, '|' ORDER BY v.id))||' '||count(*) FROM public.visitas_agendadas v WHERE v.id = ANY (vis));
+  n_nuevas := (SELECT count(*) FROM public.notificaciones n WHERE n.usuario_id = ANY (act) AND n.id <> ALL (n_pre));
+  IF snap_post IS DISTINCT FROM snap_pre THEN rpc_bad := rpc_bad||'snapshot de las visitas del probe cambio; '; END IF;
+  IF n_nuevas <> 0 THEN rpc_bad := rpc_bad||n_nuevas||' notificacion(es) nueva(s) de los actores del probe; '; END IF;
 
   PERFORM set_config('probe.p1007_det', '(a) '||neg||' (b) '||rpc||' (c) '||acl, false);
   PERFORM set_config('probe.p1007', CASE
