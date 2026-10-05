@@ -137,7 +137,7 @@ export default function ClinicaConfiguracionPage() {
           <CardTitle className="text-lg flex items-center gap-2">
             <Palette className="h-5 w-5 text-[#1E5C8E]" /> Personalización del panel
           </CardTitle>
-          <p className="text-sm text-muted-foreground">Elegí logo y colores. Se aplican tras la aprobación de un administrador.</p>
+          <p className="text-sm text-muted-foreground">Elige logo y colores. Se aplican tras la aprobación de un administrador.</p>
         </CardHeader>
         <CardContent>
           <FormPersonalizacion tenantTipo="clinica" tenantId={clinica.id} actual={clinica} />

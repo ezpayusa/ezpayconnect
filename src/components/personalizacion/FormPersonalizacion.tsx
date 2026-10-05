@@ -52,7 +52,7 @@ export function FormPersonalizacion({
     const f = e.target.files?.[0]
     if (!f) return
     if (!MIME_OK.includes(f.type)) {
-      toast.error('Formato no permitido. Usá PNG, JPG, WEBP o SVG.')
+      toast.error('Formato no permitido. Usa PNG, JPG, WEBP o SVG.')
       e.target.value = ''
       return
     }
@@ -103,8 +103,8 @@ export function FormPersonalizacion({
         if (code !== 'PT003' && code !== 'PT006') console.error('[solicitar_personalizacion]', error)
         const msg =
           code === 'PT003' ? 'Tu rol no tiene permiso para solicitar personalización.' :
-          code === 'PT006' ? 'No pudimos determinar tu clínica/empresa. Contactá a soporte.' :
-          'No se pudo enviar la solicitud. Intentá de nuevo o contactá a soporte.'
+          code === 'PT006' ? 'No pudimos determinar tu clínica/empresa. Contacta a soporte.' :
+          'No se pudo enviar la solicitud. Intenta de nuevo o contacta a soporte.'
         toast.error(msg)
         setEnviando(false)
         return
@@ -130,7 +130,7 @@ export function FormPersonalizacion({
           {pendiente && (
             <div className="flex items-center gap-2 rounded-lg border border-amber-200 bg-amber-50 p-3 text-sm text-amber-700">
               <Clock className="h-4 w-4 shrink-0" />
-              Tenés una solicitud pendiente de revisión. No podés enviar otra hasta que se resuelva.
+              Tienes una solicitud pendiente de revisión. No puedes enviar otra hasta que se resuelva.
             </div>
           )}
           {!pendiente && ultima?.estado === 'rechazada' && (

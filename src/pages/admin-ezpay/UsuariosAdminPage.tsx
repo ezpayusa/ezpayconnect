@@ -471,7 +471,7 @@ export default function UsuariosAdminPage() {
             <DialogTitle className="text-center">Desactivar Usuario</DialogTitle>
           </DialogHeader>
           <div className="text-center py-4">
-            <p className="text-muted-foreground mb-4">El usuario quedará inactivo y no podrá iniciar sesión. Podés reactivarlo cuando quieras.</p>
+            <p className="text-muted-foreground mb-4">El usuario quedará inactivo y no podrá iniciar sesión. Puedes reactivarlo cuando quieras.</p>
             <div className="flex justify-center gap-2">
               <Button variant="outline" onClick={() => setDialogoDesactivar(null)}>Cancelar</Button>
               <Button className="bg-[#1E5C8E] hover:bg-[#164a70]" onClick={() => dialogoDesactivar && handleDesactivarUsuario(dialogoDesactivar)}>

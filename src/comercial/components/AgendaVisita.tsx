@@ -146,7 +146,7 @@ export function AccionesVisitaPlanificada(props: { visita: VisitaComercial; onCa
 
   const onCancelar = async () => {
     setError(null)
-    if (!motivo.trim()) { setError({ campo: 'motivo', mensaje: 'Decí por qué se cancela.' }); return }
+    if (!motivo.trim()) { setError({ campo: 'motivo', mensaje: 'Di por qué se cancela.' }); return }
     setBusy(true)
     const { error: e } = await cancelarVisita(visita.id, motivo.trim())
     setBusy(false)
@@ -176,7 +176,7 @@ export function AccionesVisitaPlanificada(props: { visita: VisitaComercial; onCa
       )}
       {modo === 'cancelar' && (
         <div className="rounded border border-red-200 bg-red-50 p-3">
-          <p className="text-sm text-red-900">¿Cancelar la visita del {fmtFecha(visita.fecha_planificada)}? Contá por qué:</p>
+          <p className="text-sm text-red-900">¿Cancelar la visita del {fmtFecha(visita.fecha_planificada)}? Cuenta por qué:</p>
           <input value={motivo} onChange={(e) => setMotivo(e.target.value)} data-testid={`motivo-${visita.id}`}
             placeholder="Motivo (obligatorio)" className="mt-2 w-full rounded border px-2 py-1.5 text-sm" />
           {error && <p className="mt-1 text-xs text-red-600">{error.mensaje}</p>}

@@ -47,7 +47,7 @@ export default function MaterialPaisPage() {
   const onSubir = async (archivo: File | null) => {
     if (!archivo) return
     setErr(null); setHuerfano(null)
-    if (!titulo.trim()) { setErr({ campo: 'titulo', mensaje: 'Ponele un título antes de subir.' }); return }
+    if (!titulo.trim()) { setErr({ campo: 'titulo', mensaje: 'Ponle un título antes de subir.' }); return }
     const motivo = validarMaterial(archivo)
     if (motivo) { setErr({ campo: 'archivo', mensaje: motivo }); return }
 
@@ -92,7 +92,7 @@ export default function MaterialPaisPage() {
       // La fila YA NO EXISTE y el archivo quedó. Esto NO se pinta como éxito: se avisa y se
       // recarga igual, porque la lista cambió de verdad.
       reportarError(error)
-      toast.warning('Se eliminó el registro pero el archivo no pudo borrarse; volvé a intentar.')
+      toast.warning('Se eliminó el registro pero el archivo no pudo borrarse; vuelve a intentar.')
       void cargar()
       return
     }
@@ -139,7 +139,7 @@ export default function MaterialPaisPage() {
         {err && err.campo !== 'titulo' && <p id="err-material" className="mt-2 text-xs text-red-600">{err.mensaje}</p>}
         {huerfano && (
           <p className="mt-1 text-xs text-amber-800">
-            No se pudo limpiar el archivo a medio subir. Avisale a soporte:
+            No se pudo limpiar el archivo a medio subir. Avísale a soporte:
             <span className="font-mono"> {huerfano}</span>
           </p>
         )}
@@ -193,7 +193,7 @@ export default function MaterialPaisPage() {
                       <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />
                       <span>
                         ¿Eliminar <b>{m.titulo}</b>? Se elimina definitivamente el archivo y su
-                        registro. Si solo querés ocultarlo a los asesores, usá Desactivar.
+                        registro. Si solo quieres ocultarlo a los asesores, usa Desactivar.
                       </span>
                     </p>
                     <div className="mt-2 flex gap-2">
@@ -224,7 +224,7 @@ export default function MaterialPaisPage() {
         )}
         {/* nada acá: la confirmación se pinta dentro de cada ítem */}
         <p className="mt-3 text-xs text-gray-500">
-          Desactivar no borra: el archivo queda y lo podés reactivar. Los asesores dejan de verlo.
+          Desactivar no borra: el archivo queda y lo puedes reactivar. Los asesores dejan de verlo.
         </p>
       </section>
     </div>

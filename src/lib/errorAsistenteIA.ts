@@ -6,22 +6,22 @@
 // FunctionsFetchError / FunctionsRelayError = no hubo respuesta del edge (red, relay).
 
 export const MENSAJES_ASISTENTE_IA: Record<string, string> = {
-  no_auth: 'Tu sesión expiró. Volvé a iniciar sesión.',
-  no_pertenencia: 'No tenés acceso a este paciente para usar el asistente de IA.',
+  no_auth: 'Tu sesión expiró. Vuelve a iniciar sesión.',
+  no_pertenencia: 'No tienes acceso a este paciente para usar el asistente de IA.',
   consentimiento_revocado: 'El paciente revocó el consentimiento para el uso de IA.',
   sin_permiso: 'Tu usuario no tiene permiso para usar el asistente de IA.',
   paciente_no_encontrado: 'No se encontró el paciente.',
   consulta_invalida: 'La nota de la consulta no corresponde a este paciente.',
-  respuesta_ia_invalida: 'La IA devolvió una respuesta con formato inválido. Probá volver a generar.',
-  error_contexto: 'No se pudo leer el expediente del paciente. Intentá de nuevo.',
-  asistente_timeout: 'El asistente de IA tardó demasiado en responder. Intentá de nuevo.',
-  asistente_no_disponible: 'El asistente de IA no está disponible en este momento (límite de uso). Intentá más tarde.',
-  error_openai: 'El asistente de IA tuvo un error. Intentá de nuevo en unos minutos.',
-  needs_config: 'El asistente de IA no está configurado. Contactá al administrador.',
-  red: 'No se pudo conectar con el asistente de IA. Revisá tu conexión e intentá de nuevo.',
+  respuesta_ia_invalida: 'La IA devolvió una respuesta con formato inválido. Prueba volver a generar.',
+  error_contexto: 'No se pudo leer el expediente del paciente. Intenta de nuevo.',
+  asistente_timeout: 'El asistente de IA tardó demasiado en responder. Intenta de nuevo.',
+  asistente_no_disponible: 'El asistente de IA no está disponible en este momento (límite de uso). Intenta más tarde.',
+  error_openai: 'El asistente de IA tuvo un error. Intenta de nuevo en unos minutos.',
+  needs_config: 'El asistente de IA no está configurado. Contacta al administrador.',
+  red: 'No se pudo conectar con el asistente de IA. Revisa tu conexión e intenta de nuevo.',
 }
 
-export const MENSAJE_GENERICO_ASISTENTE_IA = 'El asistente de IA tuvo un error inesperado. Intentá de nuevo.'
+export const MENSAJE_GENERICO_ASISTENTE_IA = 'El asistente de IA tuvo un error inesperado. Intenta de nuevo.'
 
 const esCodigoConocido = (c: unknown): c is string =>
   typeof c === 'string' && Object.prototype.hasOwnProperty.call(MENSAJES_ASISTENTE_IA, c)

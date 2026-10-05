@@ -19,7 +19,7 @@ export default function WebAppLoginPage() {
   const [enviandoReset, setEnviandoReset] = useState(false)
 
   const handleReset = async () => {
-    if (!email.trim()) { toast.error('Ingresá tu correo para restablecer la contraseña'); return }
+    if (!email.trim()) { toast.error('Ingresa tu correo para restablecer la contraseña'); return }
     setEnviandoReset(true)
     const { error } = await enviarReset(email.trim(), '/paciente/dashboard')
     setEnviandoReset(false)

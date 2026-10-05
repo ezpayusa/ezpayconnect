@@ -260,7 +260,7 @@ export function useVisitasAgendadas() {
     } catch (err: any) {
       // La RPC lanza RAISE EXCEPTION si no sos el dueño ni super_admin (mig 211).
       const msg = typeof err?.message === 'string' && err.message.includes('No autorizado')
-        ? 'No tenés permiso para cancelar esta visita.'
+        ? 'No tienes permiso para cancelar esta visita.'
         : 'Error cancelando visita'
       toast.error(msg)
       console.error(err)
@@ -346,7 +346,7 @@ export function useVisitasAgendadas() {
       // La RPC lanza RAISE EXCEPTION en el gate de autorización (mig 210): p.ej. un visitador
       // sin permiso de aprobar que intente llegar acá queda bloqueado server-side.
       const msg = typeof err?.message === 'string' && err.message.includes('No autorizado')
-        ? 'No tenés permiso para administrar esta visita.'
+        ? 'No tienes permiso para administrar esta visita.'
         : 'Error administrando visita'
       toast.error(msg)
       console.error(err)
@@ -406,7 +406,7 @@ export function useVisitasAgendadas() {
       return true
     } catch (err: any) {
       const msg = typeof err?.message === 'string' && err.message.includes('No autorizado')
-        ? 'No tenés permiso para hacer check-in de esta visita.'
+        ? 'No tienes permiso para hacer check-in de esta visita.'
         : 'Error registrando check-in'
       toast.error(msg)
       console.error(err)
@@ -433,7 +433,7 @@ export function useVisitasAgendadas() {
       return true
     } catch (err: any) {
       const msg = typeof err?.message === 'string' && err.message.includes('No autorizado')
-        ? 'No tenés permiso para hacer check-out de esta visita.'
+        ? 'No tienes permiso para hacer check-out de esta visita.'
         : 'Error registrando check-out'
       toast.error(msg)
       console.error(err)

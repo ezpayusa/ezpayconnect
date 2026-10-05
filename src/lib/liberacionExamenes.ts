@@ -36,7 +36,7 @@ export type ResultadoUno =
 // PT002 en ESTE contexto es uno de tres: examen inexistente, sin autoridad, o sin resultado cargado.
 // El código no los distingue (medido en el cuerpo vivo de la RPC), así que el texto no elige uno.
 export const MENSAJE_PT002_LIBERAR =
-  'No se pudo liberar: no tenés permiso sobre este examen o todavía no tiene resultado cargado.'
+  'No se pudo liberar: no tienes permiso sobre este examen o todavía no tiene resultado cargado.'
 
 export async function liberarUnExamen(examenId: number): Promise<ResultadoUno> {
   const { data, error } = await supabase.rpc('liberar_examen_al_paciente', { p_examen_id: examenId })

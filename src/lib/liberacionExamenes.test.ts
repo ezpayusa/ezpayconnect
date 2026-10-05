@@ -43,7 +43,7 @@ describe('liberarUnExamen', () => {
 
   it('un código que no es PT002 usa el mapa global (42501)', async () => {
     respuestas[9] = { data: null, error: { code: '42501', message: 'no_autorizado' } }
-    expect(await liberarUnExamen(9)).toEqual({ estado: 'error', mensaje: 'No tenés permiso para esta acción.' })
+    expect(await liberarUnExamen(9)).toEqual({ estado: 'error', mensaje: 'No tienes permiso para esta acción.' })
   })
 
   it('sin código (red) nunca deja el mensaje vacío', async () => {

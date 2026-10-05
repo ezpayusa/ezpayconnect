@@ -31,7 +31,7 @@ export default function WebAppAutorizaciones() {
     <div className="space-y-6">
       <div>
         <h1 className="text-2xl font-bold text-slate-800">Autorizaciones</h1>
-        <p className="text-slate-500 mt-1">Controlá qué permisos otorgás sobre tus datos. Podés cambiarlos cuando quieras.</p>
+        <p className="text-slate-500 mt-1">Controla qué permisos otorgas sobre tus datos. Puedes cambiarlos cuando quieras.</p>
       </div>
 
       {cargando && (

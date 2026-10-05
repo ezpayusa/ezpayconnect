@@ -28,7 +28,7 @@ export function useFotoPaciente() {
       const { error: e2 } = await supabase.storage.from(BUCKET).upload(path, blob, { contentType: 'image/jpeg', upsert: true })
       if (e2) {
         toast.error(/permiso|row-level|not authorized/i.test(e2.message)
-          ? 'No tenés permiso para subir la foto de este paciente.'
+          ? 'No tienes permiso para subir la foto de este paciente.'
           : e2.message)
         return null
       }

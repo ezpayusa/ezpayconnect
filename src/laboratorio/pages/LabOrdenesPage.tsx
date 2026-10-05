@@ -211,7 +211,7 @@ export default function LabOrdenesPage() {
                   placeholder="Escribe el resultado del examen…" disabled={modal.estado === 'completado'} />
                 {modal.estado !== 'completado' && (
                   <p className="text-xs text-muted-foreground">
-                    Podés dejar el texto vacío si el archivo es el resultado.
+                    Puedes dejar el texto vacío si el archivo es el resultado.
                   </p>
                 )}
               </div>

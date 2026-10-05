@@ -41,7 +41,7 @@ describe('ResumenUltimaVisita', () => {
     render(<ResumenUltimaVisita pacienteId={23} />)
     await waitFor(() => expect(boton()).toBeEnabled())
     expect(invocaciones).toHaveLength(0)
-    expect(screen.getByText(/Resumen generado por IA a partir de la nota registrada\. Verificá contra el expediente antes de usarlo\./)).toBeInTheDocument()
+    expect(screen.getByText(/Resumen generado por IA a partir de la nota registrada\. Verifica contra el expediente antes de usarlo\./)).toBeInTheDocument()
   })
 
   it('consentimiento revocado → botón deshabilitado, sin invocar', async () => {
@@ -117,7 +117,7 @@ describe('ResumenUltimaVisita', () => {
     await waitFor(() => expect(boton()).toBeEnabled())
     fireEvent.click(boton())
     const alerta = await screen.findByRole('alert')
-    expect(alerta).toHaveTextContent('No tenés acceso a este paciente para usar el asistente de IA.')
+    expect(alerta).toHaveTextContent('No tienes acceso a este paciente para usar el asistente de IA.')
     expect(alerta).not.toHaveTextContent(/non-2xx/)
     await waitFor(() => expect(boton()).toBeEnabled())
     expect(invocaciones).toHaveLength(1)

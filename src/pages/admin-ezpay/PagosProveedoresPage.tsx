@@ -39,7 +39,7 @@ const MENSAJES_APROBAR_CAMPANA: Record<string, string> = {
   CA002: 'La solicitud no existe',
   CA003: 'La solicitud no está en estado enviada',
   CA004: 'La campaña no tiene pago registrado',
-  CA005: 'La campaña tiene más de un pago; revisá antes de aprobar',
+  CA005: 'La campaña tiene más de un pago; revisa antes de aprobar',
   CA006: 'El pago de esta campaña fue rechazado',
   CA007: 'La campaña no tiene plan asignado',
   CA008: 'La empresa no opera en el país de la campaña',
@@ -47,7 +47,7 @@ const MENSAJES_APROBAR_CAMPANA: Record<string, string> = {
   CA015: 'La fecha de fin es anterior a la de inicio',
 }
 const mensajeErrorAprobarCampana = (code: string | undefined) =>
-  (code && MENSAJES_APROBAR_CAMPANA[code]) || 'No se pudo aprobar la campaña. Intentá de nuevo.'
+  (code && MENSAJES_APROBAR_CAMPANA[code]) || 'No se pudo aprobar la campaña. Intenta de nuevo.'
 
 // Avisos al proveedor después de aprobar: primero el pago, después la campaña. Ninguno de los dos es idempotente (cada
 // llamada inserta otra notificación), por eso se llaman UNA vez, solo tras el éxito de la aprobación. Un fallo no

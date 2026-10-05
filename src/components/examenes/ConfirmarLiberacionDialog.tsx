@@ -26,7 +26,7 @@ export function ConfirmarLiberacionDialog({ examenes, liberando, onConfirmar, on
           </AlertDialogTitle>
           <AlertDialogDescription>
             El paciente {n === 1 ? 'lo va a ver' : 'los va a ver'} en su app y recibe una notificación por cada uno.
-            Si preferís hablarlo antes, liberalos de a uno desde cada examen.
+            Si prefieres hablarlo antes, libéralos de a uno desde cada examen.
           </AlertDialogDescription>
         </AlertDialogHeader>
         <ul className="max-h-60 space-y-1 overflow-y-auto rounded-md border bg-gray-50 p-3 text-sm" aria-label="Exámenes a liberar">

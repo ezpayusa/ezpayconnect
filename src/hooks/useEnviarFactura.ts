@@ -31,7 +31,7 @@ export function useEnviarFactura() {
       // con rol clínico/administrativo (cierra el open-relay de emails). Mismo patrón que recetas.
       const { data: { session } } = await supabase.auth.getSession()
       if (!session?.access_token) {
-        setError('Sesión no válida. Iniciá sesión de nuevo.')
+        setError('Sesión no válida. Inicia sesión de nuevo.')
         return { success: false, error: 'No autenticado' }
       }
       const response = await fetch('/api/send-factura', {
@@ -45,7 +45,7 @@ export function useEnviarFactura() {
 
       if (!response.ok) {
         const raw = await response.text()
-        let mensaje = 'No se pudo procesar el envío. Intentá de nuevo en unos minutos.'
+        let mensaje = 'No se pudo procesar el envío. Intenta de nuevo en unos minutos.'
         try {
           const parsed = JSON.parse(raw)
           if (parsed?.error) mensaje = String(parsed.error)
@@ -69,7 +69,7 @@ export function useEnviarFactura() {
       setExito(true)
       return { success: true, data }
     } catch (err: any) {
-      const mensaje = 'No se pudo conectar. Revisá tu conexión.'
+      const mensaje = 'No se pudo conectar. Revisa tu conexión.'
       setError(mensaje)
       return { success: false, error: err?.message || mensaje }
     } finally {

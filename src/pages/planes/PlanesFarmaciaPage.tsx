@@ -199,7 +199,7 @@ export default function PlanesFarmaciaPage() {
           <div className="text-center p-6">
             <Clock className="h-12 w-12 text-blue-600 mx-auto mb-4" />
             <h3 className="text-lg font-semibold mb-2">Recetas en Tiempo Real</h3>
-            <p className="text-gray-600">Recibí recetas de los médicos al instante y despachá más rápido.</p>
+            <p className="text-gray-600">Recibe recetas de los médicos al instante y despacha más rápido.</p>
           </div>
           <div className="text-center p-6">
             <Truck className="h-12 w-12 text-blue-600 mx-auto mb-4" />

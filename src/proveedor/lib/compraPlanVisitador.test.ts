@@ -164,7 +164,7 @@ describe('cupoPorPais (criterio de private.gate_visita_pais)', () => {
 
 describe('textos del visitador', () => {
   it('el visitador no compra: avisa a su administrador; la compra va al panel del admin', () => {
-    expect(MENSAJE_BOLSA_AGOTADA_VISITADOR).toBe('Bolsa agotada · avisale a tu administrador para recargarla')
+    expect(MENSAJE_BOLSA_AGOTADA_VISITADOR).toBe('Bolsa agotada · avísale a tu administrador para recargarla')
     expect(RUTA_COMPRA_PLANES_VISITADOR).toBe('/proveedor/visitador/planes')
   })
 })

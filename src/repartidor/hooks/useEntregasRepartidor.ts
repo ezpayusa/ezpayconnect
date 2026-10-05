@@ -17,7 +17,7 @@ const CACHE_KEY = 'repartidor.cola.cache.v1' // cache de la ÚLTIMA cola leída 
 /** Lanza si no hay red: toda ESCRITURA exige online (sin cola offline en v1 → evita inconsistencia de cobro). */
 function requireOnline(): void {
   if (typeof navigator !== 'undefined' && navigator.onLine === false) {
-    throw new Error('Sin conexión. Reintentá cuando vuelva la red.')
+    throw new Error('Sin conexión. Reintenta cuando vuelva la red.')
   }
 }
 
@@ -134,7 +134,7 @@ export function useEntregasRepartidor() {
       })
       if (upError) {
         const msg = /row-level security|not authorized|violates/i.test(upError.message)
-          ? 'No tenés permiso para adjuntar evidencia a esta entrega (fuera de tu sucursal o no asignada).'
+          ? 'No tienes permiso para adjuntar evidencia a esta entrega (fuera de tu sucursal o no asignada).'
           : upError.message
         throw new Error(msg)
       }

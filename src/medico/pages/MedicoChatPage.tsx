@@ -117,7 +117,7 @@ export default function MedicoChatPage() {
         <Card className={`overflow-hidden flex flex-col ${hiloActivo == null ? 'hidden md:flex' : 'flex'}`}>
           {hiloActivo == null || !hiloSel ? (
             <div className="flex-1 flex items-center justify-center text-muted-foreground text-sm">
-              {hilos.length === 0 ? 'No hay conversaciones' : 'Seleccioná una conversación'}
+              {hilos.length === 0 ? 'No hay conversaciones' : 'Selecciona una conversación'}
             </div>
           ) : (
             <>

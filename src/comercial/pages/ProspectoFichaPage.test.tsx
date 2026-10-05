@@ -69,7 +69,7 @@ describe('ProspectoFichaPage — el 23505 al agendar lleva el contexto de la pan
     fireEvent.click(await screen.findByRole('button', { name: /^agendar$/i }))
 
     await waitFor(() => {
-      expect(screen.getByText('La fecha ya pasó. Elegí hoy o una fecha futura.')).toBeInTheDocument()
+      expect(screen.getByText('La fecha ya pasó. Elige hoy o una fecha futura.')).toBeInTheDocument()
     })
   })
 })

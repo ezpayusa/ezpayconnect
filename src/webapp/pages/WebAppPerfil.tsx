@@ -348,8 +348,8 @@ export default function WebAppPerfil() {
               <Gift className="h-5 w-5 text-pink-500" />
             </div>
             <div>
-              <h3 className="font-semibold text-slate-800">Invitá a un amigo</h3>
-              <p className="text-slate-500 text-sm">Compartí EzPayConnect con quien quieras.</p>
+              <h3 className="font-semibold text-slate-800">Invita a un amigo</h3>
+              <p className="text-slate-500 text-sm">Comparte EzPayConnect con quien quieras.</p>
             </div>
           </div>
           <InvitarAmigoButton variant="outline" />

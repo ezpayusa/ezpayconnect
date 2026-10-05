@@ -53,7 +53,7 @@ export class ErrorBoundary extends Component<Props, State> {
         >
           <h1 style={{ fontSize: 20, fontWeight: 700, margin: 0 }}>Algo salió mal</h1>
           <p style={{ color: '#6b7280', margin: 0 }}>
-            Ocurrió un error inesperado. Podés recargar la página.
+            Ocurrió un error inesperado. Puedes recargar la página.
           </p>
           <button
             onClick={() => window.location.reload()}

@@ -223,7 +223,7 @@ export default function WebAppDashboard() {
             </div>
             <div>
               <h3 className="font-semibold text-slate-800">Mis Puntos</h3>
-              <p className="text-slate-500 text-sm">Canjeá tus puntos por premios.</p>
+              <p className="text-slate-500 text-sm">Canjea tus puntos por premios.</p>
             </div>
           </div>
           <Button variant="outline" size="sm" onClick={(e) => { e.stopPropagation(); navigate('/paciente/premios') }}>
@@ -240,8 +240,8 @@ export default function WebAppDashboard() {
               <Gift className="h-5 w-5 text-pink-500" />
             </div>
             <div>
-              <h3 className="font-semibold text-slate-800">Invitá a un amigo</h3>
-              <p className="text-slate-500 text-sm">Compartí EzPayConnect con quien quieras.</p>
+              <h3 className="font-semibold text-slate-800">Invita a un amigo</h3>
+              <p className="text-slate-500 text-sm">Comparte EzPayConnect con quien quieras.</p>
             </div>
           </div>
           <InvitarAmigoButton variant="outline" />

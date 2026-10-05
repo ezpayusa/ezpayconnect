@@ -70,7 +70,7 @@ function FarmaciaLayoutContent() {
           </div>
           <h1 className="text-xl font-bold text-slate-800">Plan de farmacia inactivo</h1>
           <p className="text-sm text-slate-500">
-            Tu farmacia no tiene un plan activo. Adquirí un plan o contactá al administrador para acceder al portal.
+            Tu farmacia no tiene un plan activo. Adquiere un plan o contacta al administrador para acceder al portal.
           </p>
           <div className="flex flex-col gap-2 pt-2">
             <Link to="/planes-farmacia">

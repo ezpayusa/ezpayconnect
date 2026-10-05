@@ -5,14 +5,14 @@
 // Un CP0xx que este mapa todavía no conoce no cae en un genérico mudo: sale con el código a la vista.
 
 export const MENSAJES_SOLICITAR: Record<string, string> = {
-  '42501': 'Tu usuario no puede contratar planes. Pedíselo a un administrador o editor de tu empresa.',
-  CP001: 'El plan elegido ya no está disponible. Volvé a la lista de planes y elegí otro.',
+  '42501': 'Tu usuario no puede contratar planes. Pídeselo a un administrador o editor de tu empresa.',
+  CP001: 'El plan elegido ya no está disponible. Vuelve a la lista de planes y elige otro.',
   CP002: 'El plan elegido no corresponde al país de tu empresa.',
-  CP003: 'El plan elegido no tiene visitas, vigencia o precio configurados. Avisá al equipo de EzPayConnect.',
-  CP004: 'Todavía no hay una cuenta bancaria activa para tu país. Contactá al equipo de EzPayConnect.',
-  CP005: 'La moneda del plan no coincide con la de la cuenta bancaria. Avisá al equipo de EzPayConnect.',
-  CP006: 'No se pudo validar el comprobante. Volvé a subirlo.',
-  CP007: 'Ya tenés una compra de plan pendiente de verificación. Esperá a que se resuelva antes de comprar otra.',
+  CP003: 'El plan elegido no tiene visitas, vigencia o precio configurados. Avisa al equipo de EzPayConnect.',
+  CP004: 'Todavía no hay una cuenta bancaria activa para tu país. Contacta al equipo de EzPayConnect.',
+  CP005: 'La moneda del plan no coincide con la de la cuenta bancaria. Avisa al equipo de EzPayConnect.',
+  CP006: 'No se pudo validar el comprobante. Vuelve a subirlo.',
+  CP007: 'Ya tienes una compra de plan pendiente de verificación. Espera a que se resuelva antes de comprar otra.',
 }
 
 export const MENSAJES_APROBAR: Record<string, string> = {
@@ -20,19 +20,19 @@ export const MENSAJES_APROBAR: Record<string, string> = {
   CP010: 'El pago no existe.',
   CP011: 'El pago no es de un plan de visitador.',
   CP012: 'El pago ya no está pendiente.',
-  CP013: 'Pago legacy (sin visitas ni vigencia registradas): resolvelo manualmente.',
+  CP013: 'Pago legacy (sin visitas ni vigencia registradas): resuélvelo manualmente.',
   CP014: 'La configuración del plan de este pago ya no existe.',
   CP015: 'La empresa no está activa.',
   CP016: 'La empresa no opera en el país del plan.',
   CP017: 'La bolsa vigente de la empresa en ese país es ilimitada: no se le puede sumar una compra.',
 }
 
-export const MENSAJE_GENERICO_COMPRA = 'No se pudo completar la operación. Intentá de nuevo.'
+export const MENSAJE_GENERICO_COMPRA = 'No se pudo completar la operación. Intenta de nuevo.'
 
 // Comprar planes es de admin/editor (permiso planes.contratar). Al visitador no se le ofrece comprar:
 // se le pide que avise a su administrador.
-export const MENSAJE_BOLSA_AGOTADA_VISITADOR = 'Bolsa agotada · avisale a tu administrador para recargarla'
-export const MENSAJE_SIN_BOLSA_VISITADOR = 'Avisale a tu administrador para que contrate un plan de visitas.'
+export const MENSAJE_BOLSA_AGOTADA_VISITADOR = 'Bolsa agotada · avísale a tu administrador para recargarla'
+export const MENSAJE_SIN_BOLSA_VISITADOR = 'Avísale a tu administrador para que contrate un plan de visitas.'
 export const RUTA_COMPRA_PLANES_VISITADOR = '/proveedor/visitador/planes'
 
 type ErrorRpc = { code?: string | null; message?: string | null } | null | undefined

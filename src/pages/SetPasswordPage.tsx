@@ -53,7 +53,7 @@ export default function SetPasswordPage() {
         <Card className="w-full max-w-md"><CardContent className="p-8 text-center space-y-3">
           <Lock className="mx-auto h-10 w-10 text-slate-400" />
           <h2 className="text-lg font-semibold">Enlace no válido o vencido</h2>
-          <p className="text-sm text-muted-foreground">Volvé a solicitar el restablecimiento de contraseña.</p>
+          <p className="text-sm text-muted-foreground">Vuelve a solicitar el restablecimiento de contraseña.</p>
           <Button onClick={() => navigate('/login')}>Ir al inicio de sesión</Button>
         </CardContent></Card>
       </div>
@@ -66,8 +66,8 @@ export default function SetPasswordPage() {
         <CardContent className="p-8 space-y-5">
           <div className="text-center space-y-1">
             <CheckCircle2 className="mx-auto h-10 w-10 text-emerald-500" />
-            <h1 className="text-xl font-semibold">Establecé tu contraseña</h1>
-            <p className="text-sm text-muted-foreground">Elegí una contraseña nueva para tu cuenta.</p>
+            <h1 className="text-xl font-semibold">Establece tu contraseña</h1>
+            <p className="text-sm text-muted-foreground">Elige una contraseña nueva para tu cuenta.</p>
           </div>
           <form onSubmit={guardar} className="space-y-4">
             <div className="space-y-2">

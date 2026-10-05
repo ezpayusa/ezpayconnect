@@ -26,15 +26,15 @@ export default function GeocodeEntregaDialog({ entrega, geocodificar, guardarDir
   const [saving, setSaving] = useState(false)
 
   const onGeolocalizar = async () => {
-    if (!direccion.trim()) { toast.error('Escribí una dirección'); return }
+    if (!direccion.trim()) { toast.error('Escribe una dirección'); return }
     setGeocoding(true)
     const coords = await geocodificar(direccion.trim())
     setGeocoding(false)
     if (coords) {
       setLat(coords.lat); setLng(coords.lng)
-      toast.success('Ubicación encontrada — ajustá el pin si hace falta')
+      toast.success('Ubicación encontrada — ajusta el pin si hace falta')
     } else {
-      toast.warning('No se pudo geolocalizar. Ajustá el pin a mano o guardá sin coordenadas.')
+      toast.warning('No se pudo geolocalizar. Ajusta el pin a mano o guarda sin coordenadas.')
     }
   }
 
@@ -75,7 +75,7 @@ export default function GeocodeEntregaDialog({ entrega, geocodificar, guardarDir
 
           <MapaInteractivo lat={lat} lng={lng} onChange={(la, ln) => { setLat(la); setLng(ln) }} height="240px" />
           <p className="text-xs text-[#8a9aaa]">
-            {lat != null && lng != null ? 'Tocá el mapa para ajustar el pin.' : 'Sin coordenadas aún — geolocalizá o tocá el mapa.'}
+            {lat != null && lng != null ? 'Toca el mapa para ajustar el pin.' : 'Sin coordenadas aún — geolocaliza o toca el mapa.'}
           </p>
 
           <div className="flex justify-end gap-2">

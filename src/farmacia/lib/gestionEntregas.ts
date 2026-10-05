@@ -8,19 +8,19 @@ import { folioEntrega } from '@/repartidor/lib/folio'
 import type { EstadoEntrega } from '@/repartidor/types'
 
 export const MENSAJES_ENTREGAS: Record<string, string> = {
-  '42501': 'Tu usuario no puede asignar entregas. Pedíselo a un administrador o gerente de tu farmacia.',
-  DE001: 'La entrega ya no existe o no es de tu sucursal. Actualizá la lista.',
-  DE002: 'La entrega ya no está pendiente: otra persona la asignó. Actualizá la lista.',
-  DE003: 'El repartidor elegido no está activo en tu farmacia. Elegí otro.',
-  DE004: 'El repartidor elegido es de otra sucursal. Elegí uno de la sucursal de la entrega.',
+  '42501': 'Tu usuario no puede asignar entregas. Pídeselo a un administrador o gerente de tu farmacia.',
+  DE001: 'La entrega ya no existe o no es de tu sucursal. Actualiza la lista.',
+  DE002: 'La entrega ya no está pendiente: otra persona la asignó. Actualiza la lista.',
+  DE003: 'El repartidor elegido no está activo en tu farmacia. Elige otro.',
+  DE004: 'El repartidor elegido es de otra sucursal. Elige uno de la sucursal de la entrega.',
   DE005: 'La entrega ya está cobrada: no se puede reasignar.',
-  DE006: 'La entrega no se puede reasignar en su estado actual. Actualizá la lista.',
-  DE007: 'Elegí al menos una entrega.',
-  DE008: 'Podés asignar hasta 50 entregas por tanda.',
-  DE009: 'La tanda tiene entregas repetidas. Volvé a seleccionarlas.',
+  DE006: 'La entrega no se puede reasignar en su estado actual. Actualiza la lista.',
+  DE007: 'Elige al menos una entrega.',
+  DE008: 'Puedes asignar hasta 50 entregas por tanda.',
+  DE009: 'La tanda tiene entregas repetidas. Vuelve a seleccionarlas.',
 }
 
-export const MENSAJE_GENERICO_ENTREGAS = 'No se pudo completar la operación. Intentá de nuevo.'
+export const MENSAJE_GENERICO_ENTREGAS = 'No se pudo completar la operación. Intenta de nuevo.'
 
 /** Tope de la tanda: el mismo que asignar_entregas_lote (DE008). */
 export const MAX_LOTE = 50

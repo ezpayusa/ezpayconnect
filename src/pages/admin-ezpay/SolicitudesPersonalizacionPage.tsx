@@ -114,7 +114,7 @@ export default function SolicitudesPersonalizacionPage() {
       <div className="p-8">
         <div className="flex items-center gap-3 text-red-600 bg-red-50 border border-red-200 rounded-lg p-4 max-w-md">
           <ShieldAlert className="h-5 w-5 shrink-0" />
-          <p className="text-sm">No tenés permiso para ver esta sección.</p>
+          <p className="text-sm">No tienes permiso para ver esta sección.</p>
         </div>
       </div>
     )
@@ -254,7 +254,7 @@ export default function SolicitudesPersonalizacionPage() {
                 <div className="space-y-2 pt-2 border-t">
                   <label className="text-sm font-medium">Motivo del rechazo <span className="text-red-500">*</span></label>
                   <Textarea
-                    placeholder="Explicá por qué se rechaza (obligatorio)…"
+                    placeholder="Explica por qué se rechaza (obligatorio)…"
                     value={motivo}
                     onChange={(e) => setMotivo(e.target.value)}
                     rows={3}

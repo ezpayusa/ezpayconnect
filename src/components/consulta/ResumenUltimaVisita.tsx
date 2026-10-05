@@ -99,7 +99,7 @@ export default function ResumenUltimaVisita({ pacienteId }: { pacienteId: number
     <div className="space-y-3">
       <div className="bg-purple-50 border border-purple-200 rounded-lg p-3 text-xs text-purple-700 flex items-start gap-2">
         <AlertTriangle className="h-4 w-4 shrink-0 mt-0.5" />
-        <p>Resumen generado por IA a partir de la nota registrada. Verificá contra el expediente antes de usarlo.</p>
+        <p>Resumen generado por IA a partir de la nota registrada. Verifica contra el expediente antes de usarlo.</p>
       </div>
 
       {errorConsent ? (

@@ -276,7 +276,7 @@ export function CapacidadesTiersPais({ paisId, esSuper }: { paisId: string | nul
           <DialogHeader><DialogTitle>Revisar solicitud de {revisar?.tipo}</DialogTitle></DialogHeader>
           {revisar && (
             <div className="space-y-3">
-              <p className="text-xs text-muted-foreground">País: {revisar.pais_nombre} · Solicitó: {revisar.solicitante || '—'}. Podés editar los campos antes de aprobar.</p>
+              <p className="text-xs text-muted-foreground">País: {revisar.pais_nombre} · Solicitó: {revisar.solicitante || '—'}. Puedes editar los campos antes de aprobar.</p>
               <div className="grid grid-cols-2 gap-3">
                 <div><Label className="text-xs">Código</Label><Input value={edit.codigo} onChange={(e) => setEdit({ ...edit, codigo: e.target.value })} /></div>
                 <div><Label className="text-xs">Orden</Label><Input type="number" value={edit.orden} onChange={(e) => setEdit({ ...edit, orden: parseInt(e.target.value || '100', 10) })} /></div>

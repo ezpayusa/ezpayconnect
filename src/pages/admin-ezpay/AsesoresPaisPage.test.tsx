@@ -126,7 +126,7 @@ describe('AsesoresPaisPage — alta de ficha', () => {
     fireEvent.change(document.getElementById('codigo_asesor')!, { target: { value: 'GT-ASE-01' } })
     fireEvent.click(screen.getByRole('button', { name: 'Guardar ficha nueva' }))
     await waitFor(() => {
-      expect(screen.getByText('Ya hay otra ficha con ese código en este país. Elegí otro.')).toBeInTheDocument()
+      expect(screen.getByText('Ya hay otra ficha con ese código en este país. Elige otro.')).toBeInTheDocument()
     })
     expect(screen.queryByText('Ya existe un registro con esos datos.')).not.toBeInTheDocument()
   })

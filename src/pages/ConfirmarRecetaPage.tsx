@@ -64,7 +64,7 @@ export default function ConfirmarRecetaPage() {
     error: {
       icon: <AlertTriangle className="h-14 w-14 text-amber-500" />,
       titulo: 'Algo salió mal',
-      texto: 'Ocurrió un error. Intentá de nuevo más tarde.',
+      texto: 'Ocurrió un error. Intenta de nuevo más tarde.',
     },
   }
 

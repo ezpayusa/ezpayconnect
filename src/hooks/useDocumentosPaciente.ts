@@ -59,7 +59,7 @@ export function useDocumentosPaciente(pacienteId: number | undefined) {
         const { error: e2 } = await supabase.storage.from(BUCKET).upload(path, blob, { contentType, upsert: false })
         if (e2) {
           toast.error(/permiso|row-level|not authorized/i.test(e2.message)
-            ? 'No tenés permiso para subir documentos de este paciente.'
+            ? 'No tienes permiso para subir documentos de este paciente.'
             : e2.message)
           return false
         }
@@ -91,7 +91,7 @@ export function useDocumentosPaciente(pacienteId: number | undefined) {
         const path: string | undefined = pathData?.path
         if (!path) { toast.error('No se pudo derivar la ruta del documento'); return null }
         const { error: e2 } = await supabase.storage.from(BUCKET).upload(path, blobOrFile, { contentType, upsert: false })
-        if (e2) { toast.error(/permiso|row-level|not authorized/i.test(e2.message) ? 'No tenés permiso para subir documentos de este paciente.' : e2.message); return null }
+        if (e2) { toast.error(/permiso|row-level|not authorized/i.test(e2.message) ? 'No tienes permiso para subir documentos de este paciente.' : e2.message); return null }
         const { data: regData, error: e3 } = await supabase.rpc('registrar_documento_paciente', { p_paciente_id: pid, p_tipo: tipo, p_path: path, p_descripcion: descripcion || null })
         if (e3) { toast.error(e3.message); return null }
         await listar()

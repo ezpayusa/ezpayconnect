@@ -70,7 +70,7 @@ export function validarCorreccion(b: BorradorCorreccion, vigente: ResultadoVigen
 
 /** EX0xx traen el mensaje para el usuario en español: se muestran tal cual. */
 export function mensajeErrorCorreccion(error: { code?: string; message: string }): string {
-  if (error.code === '42501') return 'No tenés permiso para corregir este resultado.'
+  if (error.code === '42501') return 'No tienes permiso para corregir este resultado.'
   return mensajeErrorOrden(error, 'No se pudo corregir el resultado: ')
 }
 

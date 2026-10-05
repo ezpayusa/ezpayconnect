@@ -74,7 +74,7 @@ export default function CanjesPendientesPage() {
       <div className="p-8">
         <div className="flex items-center gap-3 text-red-600 bg-red-50 border border-red-200 rounded-lg p-4 max-w-md">
           <ShieldAlert className="h-5 w-5 shrink-0" />
-          <p className="text-sm">No tenés permiso para ver esta sección.</p>
+          <p className="text-sm">No tienes permiso para ver esta sección.</p>
         </div>
       </div>
     )
@@ -139,7 +139,7 @@ export default function CanjesPendientesPage() {
           <DialogHeader>
             <DialogTitle>Rechazar canje</DialogTitle>
             <DialogDescription>
-              {rechazando && <>Rechazar el canje de <strong>{rechazando.premio_nombre}</strong> de {rechazando.paciente_nombre}. Se devolverán los puntos y el stock. Podés indicar un motivo.</>}
+              {rechazando && <>Rechazar el canje de <strong>{rechazando.premio_nombre}</strong> de {rechazando.paciente_nombre}. Se devolverán los puntos y el stock. Puedes indicar un motivo.</>}
             </DialogDescription>
           </DialogHeader>
           <Textarea placeholder="Motivo del rechazo (opcional)" value={nota} onChange={(e) => setNota(e.target.value)} />

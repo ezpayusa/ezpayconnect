@@ -30,7 +30,7 @@ export default function EmpresaEstadoPage() {
           bg: 'bg-amber-100',
           titulo: 'Cuenta en revisión',
           detalle:
-            'Estamos revisando los datos de tu empresa. Mientras tanto podés completar el perfil y registrar tu pago con el comprobante. Te avisaremos cuando se active.',
+            'Estamos revisando los datos de tu empresa. Mientras tanto puedes completar el perfil y registrar tu pago con el comprobante. Te avisaremos cuando se active.',
         }
       case 'suspendida':
         return {
@@ -39,7 +39,7 @@ export default function EmpresaEstadoPage() {
           bg: 'bg-orange-100',
           titulo: 'Cuenta suspendida',
           detalle:
-            'Tu empresa está suspendida. Podés actualizar el perfil y regularizar tu pago. Si necesitás ayuda, contactá al administrador.',
+            'Tu empresa está suspendida. Puedes actualizar el perfil y regularizar tu pago. Si necesitas ayuda, contacta al administrador.',
         }
       case 'rechazada':
         return {
@@ -48,7 +48,7 @@ export default function EmpresaEstadoPage() {
           bg: 'bg-red-100',
           titulo: 'Solicitud rechazada',
           detalle:
-            'Tu solicitud no fue aprobada, así que no tenés acceso al portal. Si creés que es un error, contactá al administrador.',
+            'Tu solicitud no fue aprobada, así que no tienes acceso al portal. Si crees que es un error, contacta al administrador.',
         }
       default:
         // null / undefined / valor desconocido → bloqueada (fail-closed).
@@ -58,7 +58,7 @@ export default function EmpresaEstadoPage() {
           bg: 'bg-slate-100',
           titulo: 'Cuenta no disponible',
           detalle:
-            'No pudimos verificar el estado de tu empresa. No tenés acceso al portal por ahora. Contactá al administrador.',
+            'No pudimos verificar el estado de tu empresa. No tienes acceso al portal por ahora. Contacta al administrador.',
         }
     }
   })()

@@ -194,7 +194,7 @@ export function ContratosComisionPais({ paisId, esSuper }: { paisId: string | nu
           <DialogHeader><DialogTitle>Revisar contrato de comisión</DialogTitle></DialogHeader>
           {revisar && (
             <div className="space-y-3">
-              <p className="text-xs text-muted-foreground">Farmacia: {revisar.empresa_nombre} · País: {revisar.pais_nombre} · Solicitó: {revisar.solicitante || '—'}. Podés editar los campos antes de aprobar.</p>
+              <p className="text-xs text-muted-foreground">Farmacia: {revisar.empresa_nombre} · País: {revisar.pais_nombre} · Solicitó: {revisar.solicitante || '—'}. Puedes editar los campos antes de aprobar.</p>
               <div className="grid grid-cols-2 gap-3">
                 <div><Label className="text-xs">Porcentaje base (%)</Label><Input type="number" min={0} max={100} step="0.01" value={edit.porcentaje_base} onChange={(e) => setEdit({ ...edit, porcentaje_base: e.target.value })} /></div>
                 <div><Label className="text-xs">Vigencia desde</Label><Input type="date" value={edit.vigencia_desde} onChange={(e) => setEdit({ ...edit, vigencia_desde: e.target.value })} /></div>

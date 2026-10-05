@@ -42,7 +42,7 @@ export function pedirUbicacion(): Promise<EstadoGeo> {
       (err) => {
         if (err.code === err.PERMISSION_DENIED) resolve({ estado: 'denegado' })
         else if (err.code === err.POSITION_UNAVAILABLE) resolve({ estado: 'error', mensaje: 'No se pudo obtener la ubicación (GPS sin señal).' })
-        else resolve({ estado: 'error', mensaje: 'La ubicación tardó demasiado. Probá de nuevo al aire libre.' })
+        else resolve({ estado: 'error', mensaje: 'La ubicación tardó demasiado. Prueba de nuevo al aire libre.' })
       },
       { enableHighAccuracy: true, timeout: GEO_TIMEOUT_MS, maximumAge: 0 },
     )
@@ -67,9 +67,9 @@ export function avisoPrevio(g: EstadoGeo, precisionMax: number | null): string |
   if (g.estado === 'no_disponible')
     return 'Este navegador no da ubicación: vas a poder registrar, pero la visita va a quedar SIN VERIFICAR.'
   if (g.estado === 'error')
-    return `${g.mensaje} Si seguís sin señal, la visita va a quedar SIN VERIFICAR.`
+    return `${g.mensaje} Si sigues sin señal, la visita va a quedar SIN VERIFICAR.`
   if (g.estado === 'ok' && precisionMax != null && g.precision_m > precisionMax)
     return `Tu GPS está reportando ±${g.precision_m} m y el máximo para verificar es ${precisionMax} m. `
-      + 'Si hacés check-in así, la visita va a quedar SIN VERIFICAR. Probá al aire libre.'
+      + 'Si haces check-in así, la visita va a quedar SIN VERIFICAR. Prueba al aire libre.'
   return null
 }
