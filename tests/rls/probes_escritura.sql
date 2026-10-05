@@ -30257,6 +30257,7 @@ DECLARE
   c_adm uuid; c_ger uuid; c_sup uuid; c_caj uuid; c_inv uuid; c_d1 uuid; c_d2 uuid; c_d3 uuid;
   e_p1 bigint; e_p2 bigint; e_p3 bigint; e_p4 bigint; e_asig bigint; e_cob bigint; e_s2 bigint; e_ent bigint; e_ajena bigint;
   n0 integer; quien uuid; rol_actor text; fn text; snap_pre text; snap_post text; ids bigint[]; del uuid; k integer; j integer;
+  n_pre uuid[];
 BEGIN
   IF current_user <> 'postgres' THEN RAISE EXCEPTION 'fixture roto: P940 corre como %', current_user; END IF;
   SELECT id INTO v_gt FROM public.configuracion_pais WHERE codigo = 'GT';
@@ -30342,6 +30343,11 @@ BEGIN
 
     -- ===================== P941: lote atomico =====================
     n0 := (SELECT count(*) FROM public.notificaciones);
+    -- 5-oct-2026: el oraculo cuenta SOLO las notificaciones que crea este probe. Las 8 cuentas son reales y desde el 5-oct
+    -- tienen notificaciones entrega_% reales de delivery (10 entre las 10:08 y las 11:38 UTC), que entraban en la cuenta.
+    -- Snapshot de los ids existentes (notificaciones.id es uuid: max(id) no ordena; created_at tampoco sirve, en el harness
+    -- now() es el inicio de la transaccion para todos los probes).
+    n_pre := ARRAY(SELECT n.id FROM public.notificaciones n WHERE n.usuario_id = ANY (c));
     v := (SELECT string_agg(e::text, ';' ORDER BY e.id) FROM public.entregas e WHERE e.empresa_id IN (v_emp, v_emp2));
     FOR k IN 1..10 LOOP
       ids := CASE k WHEN 1 THEN ARRAY[e_p1, e_p2, e_asig] WHEN 2 THEN ARRAY[]::bigint[] WHEN 3 THEN NULL
@@ -30383,7 +30389,7 @@ BEGIN
             FROM public.entregas e WHERE e.id IN (e_p1, e_p2))
          ||' ;notif +'||((SELECT count(*) FROM public.notificaciones) - n0)
          ||' ;'||COALESCE((SELECT string_agg((n.usuario_id = c_d1)::text||'/'||n.tipo||'/'||n.titulo||'/'||n.accion_url||'/'||(n.metadata->'entrega_ids' = to_jsonb(ARRAY[e_p1, e_p2]))::text, ',')
-                             FROM public.notificaciones n WHERE n.tipo LIKE 'entrega_%' AND n.usuario_id = ANY (c)), 'ninguna');
+                             FROM public.notificaciones n WHERE n.tipo LIKE 'entrega_%' AND n.usuario_id = ANY (c) AND n.id <> ALL (n_pre)), 'ninguna');
     esp := 'asignada/true/true/true,asignada/true/true/true ;notif +1 ;true/entrega_asignada/Tenés 2 entregas nuevas//repartidor/true';
     d941 := d941||' ;; tanda valida (2 a D1)|'||esp||'|'||CASE WHEN st = 'OK' AND (res->>'asignadas')::int = 2 AND v = esp THEN 'OK' ELSE 'ROJO' END
             ||'|'||st||' '||COALESCE(res::text, '-')||'|'||COALESCE(v, '-')||' '||left(msg, 100);
@@ -30393,6 +30399,9 @@ BEGIN
 
     -- ===================== P942: asignar / reasignar / tablero / asignables =====================
     n0 := (SELECT count(*) FROM public.notificaciones);
+    -- 5-oct-2026: mismo ajuste que P941 (notificaciones reales de delivery del 5-oct en las cuentas reales): el oraculo
+    -- cuenta solo las notificaciones creadas desde aca (snapshot de ids; la de la tanda de P941 tambien queda afuera).
+    n_pre := ARRAY(SELECT n.id FROM public.notificaciones n WHERE n.usuario_id = ANY (c));
     FOR k IN 1..12 LOOP
       st := 'OK'; msg := '-';
       esp := CASE k WHEN 1 THEN 'OK' WHEN 2 THEN 'DE002' WHEN 3 THEN 'DE001' WHEN 4 THEN 'DE004' WHEN 5 THEN 'DE003'
@@ -30429,7 +30438,7 @@ BEGIN
     v := (SELECT string_agg(x.s, ',' ORDER BY x.s) FROM (
             SELECT CASE n.usuario_id WHEN c_d1 THEN 'D1' WHEN c_d2 THEN 'D2' WHEN c_d3 THEN 'D3' ELSE 'otro' END||'/'||n.tipo||'/'||n.titulo||'/'||n.accion_url
                    ||'/'||(n.metadata->'entrega_ids' = to_jsonb(ARRAY[e_p3]))::text AS s
-              FROM public.notificaciones n WHERE n.tipo LIKE 'entrega_%' AND n.usuario_id = ANY (c)
+              FROM public.notificaciones n WHERE n.tipo LIKE 'entrega_%' AND n.usuario_id = ANY (c) AND n.id <> ALL (n_pre)
                AND NOT (n.metadata->'entrega_ids' = to_jsonb(ARRAY[e_p1, e_p2]))) x)
          ||' ;total +'||((SELECT count(*) FROM public.notificaciones) - n0)
          ||' ;p3 '||(SELECT e.estado||'/'||CASE e.delivery_id WHEN c_d2 THEN 'D2' ELSE 'otro' END FROM public.entregas e WHERE e.id = e_p3);
@@ -32361,21 +32370,30 @@ END $$;
 --       la empresa -> 42501 "permission denied for table" en los cuatro. Cada UPDATE en una subtransaccion descartada.
 --   (b) NO-REGRESION, cada RPC en su subtransaccion descartada (RAISE P0999), con el estado leido como postgres en un
 --       statement separado:
---       checkin_visita + checkout_visita como el visitador duenio de una visita confirmada sin check-in (se la mueve a
---       CURRENT_DATE, sin chocar con ux_visita_medico_slot) -> checkin_fecha puesta y despues 'completada';
+--       checkin_visita + checkout_visita como el visitador duenio de la visita preparada -> checkin_fecha puesta y despues
+--       'completada';
 --       administrar_visita('aprobar') como admin de la empresa de una visita pendiente -> 'confirmada' y aprobada_por = admin;
---       cancelar_visita como el visitador duenio (fecha_limite_cancelacion NULL y email_cancelacion_enviado puesto, para no
---       disparar el aviso a la clinica) -> 'cancelada';
+--       cancelar_visita como el visitador duenio de la visita preparada -> 'cancelada';
 --       marcar_visitador_presente como staff de la clinica principal del medico (el primero para el que
 --       private.es_staff_calendario_clinica da true, sin ser super_admin) -> confirmado_presente_clinica_at/por puestos.
 --   (c) ACL: authenticated sin UPDATE (ni de columna), con SELECT e INSERT.
+-- VISITA PREPARADA (5-oct-2026): la primera version elegia una visita 'confirmada' real con filtros sobre la cuenta
+-- (rol, empresa activa) y sobre el slot de hoy; dentro del harness el fixture C.2 (P309-P316) reasigna las 8 primeras
+-- cuentas por id (la del visitador quedaba 'cajero' de otra empresa) y el filtro de hoy dependia de que visitas habia ese
+-- dia -> 'sin fixture'. Ahora: la visita real mas antigua (created_at, id) con duenio en auth.users y sin perfil (cuenta de
+-- proveedor), EXCLUIDAS las 2 de la demo del 8-oct (e9151f3e, 523a1e31), se PREPARA como postgres dentro del savepoint
+-- de cada RPC con un UPDATE (confirmada, sin check-in/out, CURRENT_DATE en el primer slot de 15 min libre para su medico,
+-- sin limite de cancelacion y con email_cancelacion_enviado puesto para no avisar a la clinica). No es un INSERT a
+-- proposito: los triggers BEFORE INSERT (gate de pais + bolsa, estado 'propuesta', head start, limite de cancelacion)
+-- dependen de la cuenta y del dia; el UPDATE no dispara ninguno (trg_gate_visita_pais es UPDATE OF medico_id, que no se
+-- toca). Las RPCs solo exigen ser el duenio (cuenta_proveedor_id = auth.uid()), no el rol de la cuenta.
 -- Oraculo: si falta un actor o una visita -> FALLO 'sin fixture'. Snapshot de visitas_agendadas y conteo de notificaciones
 -- antes/despues: tienen que quedar iguales. Mientras la 364 no este aplicada (catalogo: authenticated con UPDATE) el
 -- veredicto es 'PENDIENTE mig 364 (lo medido)', nunca OK; una RPC rota es FALLO siempre.
 DO $$
 DECLARE
   v_364 boolean; a_med uuid; t_med uuid; a_adm uuid; t_adm uuid; a_vis uuid; t_vis uuid; a_sup uuid; t_sup uuid;
-  v_conf uuid; a_conf uuid; v_pend uuid; a_pend uuid; v_mar uuid; a_staff uuid; v_clin uuid; r record; c record;
+  v_conf uuid; a_conf uuid; v_conf_med uuid; v_hora time; v_pend uuid; a_pend uuid; v_mar uuid; a_staff uuid; v_clin uuid; r record; c record;
   n int; st text; j jsonb; e1 text; e2 text; e3 text;
   neg text := ''; neg_bad text := ''; rpc text := ''; rpc_bad text := ''; acl text; acl_bad text := '';
   snap_pre text; snap_post text;
@@ -32407,14 +32425,16 @@ BEGIN
   END LOOP;
 
   -- visitas y actores de (b)
-  SELECT v.id, v.cuenta_proveedor_id INTO v_conf, a_conf FROM public.visitas_agendadas v
-    JOIN public.cuentas_proveedor cp ON cp.id = v.cuenta_proveedor_id AND cp.rol_en_empresa = 'visitador_medico' AND cp.activo
-    JOIN public.empresas_proveedoras e ON e.id = v.empresa_id AND e.estado = 'activa'
-   WHERE v.estado = 'confirmada' AND v.checkin_fecha IS NULL AND v.checkout_fecha IS NULL AND v.created_at < now()
-     AND COALESCE(cp.created_at, '-infinity') < now() AND EXISTS (SELECT 1 FROM auth.users u WHERE u.id = cp.id)
-     AND NOT EXISTS (SELECT 1 FROM public.visitas_agendadas o WHERE o.id <> v.id AND o.medico_id = v.medico_id AND o.fecha_visita = CURRENT_DATE
-                       AND o.hora_inicio = v.hora_inicio AND o.estado <> ALL (ARRAY['cancelada','rechazada','no_asistio']))
+  SELECT v.id, v.cuenta_proveedor_id, v.medico_id INTO v_conf, a_conf, v_conf_med FROM public.visitas_agendadas v
+   WHERE v.created_at < now() AND v.cuenta_proveedor_id IS NOT NULL
+     AND v.id <> ALL (ARRAY['e9151f3e-fc12-473e-87f0-d2b530befa07', '523a1e31-5a6b-4e8f-a2ec-7e4b417b4766']::uuid[])
+     AND EXISTS (SELECT 1 FROM auth.users u WHERE u.id = v.cuenta_proveedor_id)
+     AND NOT EXISTS (SELECT 1 FROM public.perfiles p WHERE p.id = v.cuenta_proveedor_id)
    ORDER BY v.created_at, v.id LIMIT 1;
+  -- primer slot de 15 min de CURRENT_DATE libre para ese medico (ux_visita_medico_slot), calculado, no fijo
+  v_hora := (SELECT min(g.t::time) FROM generate_series(timestamp '2000-01-01 06:00', timestamp '2000-01-01 21:45', interval '15 minutes') g(t)
+              WHERE NOT EXISTS (SELECT 1 FROM public.visitas_agendadas o WHERE o.id <> v_conf AND o.medico_id = v_conf_med AND o.fecha_visita = CURRENT_DATE
+                                  AND o.hora_inicio = g.t::time AND o.estado <> ALL (ARRAY['cancelada','rechazada','no_asistio'])));
   SELECT v.id, (SELECT cp.id FROM public.cuentas_proveedor cp WHERE cp.empresa_id = v.empresa_id AND cp.rol_en_empresa = 'admin' AND cp.activo
                   AND COALESCE(cp.created_at, '-infinity') < now() AND EXISTS (SELECT 1 FROM auth.users u WHERE u.id = cp.id)
                 ORDER BY COALESCE(cp.created_at, '-infinity'), cp.id LIMIT 1)
@@ -32443,9 +32463,9 @@ BEGIN
   PERFORM set_config('request.jwt.claims', '', true);
 
   IF a_med IS NULL OR t_med IS NULL OR a_adm IS NULL OR t_adm IS NULL OR a_vis IS NULL OR t_vis IS NULL OR a_sup IS NULL OR t_sup IS NULL
-     OR v_conf IS NULL OR a_conf IS NULL OR v_pend IS NULL OR a_pend IS NULL OR v_mar IS NULL OR a_staff IS NULL THEN
-    RAISE EXCEPTION 'sin fixture: P1007 medico %/%, admin %/%, visitador %/%, supervisor %/%, confirmada %/%, pendiente %/%, staff %/%',
-      a_med, t_med, a_adm, t_adm, a_vis, t_vis, a_sup, t_sup, v_conf, a_conf, v_pend, a_pend, v_mar, a_staff;
+     OR v_conf IS NULL OR a_conf IS NULL OR v_hora IS NULL OR v_pend IS NULL OR a_pend IS NULL OR v_mar IS NULL OR a_staff IS NULL THEN
+    RAISE EXCEPTION 'sin fixture: P1007 medico %/%, admin %/%, visitador %/%, supervisor %/%, preparada %/% (slot %), pendiente %/%, staff %/%',
+      a_med, t_med, a_adm, t_adm, a_vis, t_vis, a_sup, t_sup, v_conf, a_conf, v_hora, v_pend, a_pend, v_mar, a_staff;
   END IF;
 
   -- (a) negativos
@@ -32471,7 +32491,12 @@ BEGIN
   -- (b1) checkin + checkout como el visitador duenio
   e1 := NULL;
   BEGIN
-    UPDATE public.visitas_agendadas SET fecha_visita = CURRENT_DATE WHERE id = v_conf;
+    UPDATE public.visitas_agendadas SET estado = 'confirmada', fecha_visita = CURRENT_DATE, hora_inicio = v_hora, hora_fin = v_hora + interval '15 minutes',
+           checkin_fecha = NULL, checkin_lat = NULL, checkin_lng = NULL, checkin_evidencia_url = NULL, checkout_fecha = NULL, checkout_notas = NULL,
+           visita_concretada = false, fecha_limite_cancelacion = NULL, email_cancelacion_enviado = COALESCE(email_cancelacion_enviado, now())
+     WHERE id = v_conf;
+    GET DIAGNOSTICS n = ROW_COUNT;
+    IF n <> 1 THEN RAISE EXCEPTION 'sin fixture: P1007 no se pudo preparar la visita % (% filas)', v_conf, n; END IF;
     PERFORM set_config('request.jwt.claims', json_build_object('sub', a_conf, 'role', 'authenticated')::text, true);
     PERFORM set_config('role', 'authenticated', true);
     j := public.checkin_visita(v_conf);
@@ -32511,7 +32536,12 @@ BEGIN
   -- (b3) cancelar_visita como el visitador duenio
   e3 := NULL;
   BEGIN
-    UPDATE public.visitas_agendadas SET fecha_limite_cancelacion = NULL, email_cancelacion_enviado = COALESCE(email_cancelacion_enviado, now()) WHERE id = v_conf;
+    UPDATE public.visitas_agendadas SET estado = 'confirmada', fecha_visita = CURRENT_DATE, hora_inicio = v_hora, hora_fin = v_hora + interval '15 minutes',
+           checkin_fecha = NULL, checkin_lat = NULL, checkin_lng = NULL, checkin_evidencia_url = NULL, checkout_fecha = NULL, checkout_notas = NULL,
+           visita_concretada = false, fecha_limite_cancelacion = NULL, email_cancelacion_enviado = COALESCE(email_cancelacion_enviado, now())
+     WHERE id = v_conf;
+    GET DIAGNOSTICS n = ROW_COUNT;
+    IF n <> 1 THEN RAISE EXCEPTION 'sin fixture: P1007 no se pudo preparar la visita % (% filas)', v_conf, n; END IF;
     PERFORM set_config('request.jwt.claims', json_build_object('sub', a_conf, 'role', 'authenticated')::text, true);
     PERFORM set_config('role', 'authenticated', true);
     j := public.cancelar_visita(v_conf);
