@@ -29308,7 +29308,15 @@ BEGIN
   IF current_user <> 'postgres' THEN RAISE EXCEPTION 'fixture roto: P929 corre como %', current_user; END IF;
   SELECT auth_user_id INTO v_pauth FROM public.pacientes WHERE id = c_pac;
   SELECT id INTO v_sa FROM public.perfiles WHERE rol = 'super_admin' ORDER BY id LIMIT 1;
-  SELECT p.id INTO v_med FROM public.perfiles p WHERE p.rol = 'medico' AND EXISTS (SELECT 1 FROM auth.users u WHERE u.id = p.id) ORDER BY p.id LIMIT 1;
+  -- 6-oct-2026 (fix de 0755207): v_med = medico.qa por email, con fila en public.medicos. Antes era el primer perfil
+  -- 'medico' por ORDER BY p.id: P639, P777, P788, la mig 311 (x2) y P799 dejan vivos en la transaccion perfiles 'medico'
+  -- con uuid aleatorio y SIN fila en medicos; cuando uno quedaba por debajo de 09d243d5..., el INSERT a citas de abajo
+  -- daba 23503 en fk_citas_medico (FK a medicos(id)) en ~21 % de las corridas.
+  SELECT u.id INTO v_med FROM auth.users u JOIN public.perfiles p ON p.id = u.id
+   WHERE lower(u.email) LIKE 'medico.qa@%' AND p.rol = 'medico' AND p.activo AND COALESCE(p.created_at, '-infinity') < now()
+     AND EXISTS (SELECT 1 FROM public.medicos m WHERE m.id = u.id)
+   ORDER BY u.email LIMIT 1;
+  IF v_med IS NULL THEN RAISE EXCEPTION 'sin fixture: P929 medico.qa con fila en medicos'; END IF;
   SELECT id INTO v_pais FROM public.configuracion_pais ORDER BY id LIMIT 1;
   SELECT cp.id INTO v_camp FROM public.campanas_publicitarias cp
    WHERE NOT EXISTS (SELECT 1 FROM public.campana_vistas cv WHERE cv.campana_id = cp.id AND cv.paciente_id = c_pac) ORDER BY cp.id LIMIT 1;
