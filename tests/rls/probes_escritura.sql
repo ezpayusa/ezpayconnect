@@ -24295,7 +24295,7 @@ BEGIN
     st := SQLSTATE; msg := SQLERRM; END;
   ok := COALESCE(((CASE WHEN v_369 THEN st = 'EX038' ELSE st = '23503' AND position('examenes_catalogo_id_fkey' in msg) > 0 END)
                   AND EXISTS (SELECT 1 FROM public.examenes_catalogo WHERE id = c_copro)), false);
-  det := det||' ;; DELETE de catalogo ya ordenado|23503 examenes_catalogo_id_fkey, la fila sigue|'||CASE WHEN ok THEN 'OK' ELSE 'ROJO' END||'|'||st||'|'||left(msg, 160);
+  det := det||' ;; DELETE de catalogo ya ordenado|'||CASE WHEN v_369 THEN 'EX038 por la RPC' ELSE '23503 examenes_catalogo_id_fkey' END||', la fila sigue|'||CASE WHEN ok THEN 'OK' ELSE 'ROJO' END||'|'||st||'|'||left(msg, 160);
   IF NOT ok THEN bad := bad||'DELETE de catalogo ya ordenado: '||st||' '||left(msg, 120)||'; '; END IF;
   st := '00000'; msg := ''; nn := NULL;
   BEGIN
@@ -24517,6 +24517,10 @@ END $$;
 SELECT set_config('role', 'none', true);
 
 -- ---------------- P875 catalogo: renombre, UNIQUE y lectura ----------------
+-- 6-oct-2026 (mig 369): con la 369 el catalogo se escribe por RPC. Renombrar: el UPDATE directo de nombre sigue dando
+-- 42501 Y la firma de actualizar_examen_catalogo no tiene parametro de nombre. categoria/activo: por la RPC, leido como
+-- postgres. UNIQUE: el indice se mide igual (INSERT como postgres) y ademas crear_examen_catalogo con el nombre variando
+-- mayusculas y espacios da EX039. El medico sin inactivos no depende de la 369. Sin la 369, el camino directo de antes.
 DO $$
 DECLARE
   c_med uuid := '09d243d5-b222-482a-9762-94a582e9e752'; c_lab uuid := 'a5cf575a-5d63-4ed2-839e-9b58da8152e0'; c_recep uuid := 'ce871197-285a-4d5f-9e5f-78606f9e124f'; c_admin uuid := 'e6f95b2f-7561-4e0b-b0c8-d1f38e6c4d66'; c_tec uuid := 'f69e2096-932f-45f0-9022-4e9058f2f0fd';
@@ -24525,6 +24529,10 @@ DECLARE
   st text := '00000'; msg text := ''; j jsonb; ok boolean; det text := ''; bad text := ''; r_rest text := 'OK';
   s_ex text; s_or text; s_cat text; s_cp text; notif0 uuid[]; np0 integer; n_or bigint; n_ex bigint;
   v uuid; v2 uuid; x text; y text; n int; nn int; rec record; id_ex integer;
+  v_369 boolean := to_regprocedure('public.crear_examen_catalogo(text,text)') IS NOT NULL
+                   AND to_regprocedure('public.actualizar_examen_catalogo(uuid,text,boolean)') IS NOT NULL
+                   AND to_regprocedure('public.eliminar_examen_catalogo(uuid)') IS NOT NULL
+                   AND NOT has_table_privilege('authenticated', 'public.examenes_catalogo', 'INSERT');
 BEGIN
   -- snapshot: examenes, ordenes_examen, examenes_catalogo, cuentas del lab QA y notificaciones
   SELECT md5(COALESCE(string_agg(to_jsonb(e)::text, '|' ORDER BY e.id), '')) INTO s_ex FROM public.examenes e;
@@ -24551,16 +24559,22 @@ BEGIN
   ok := COALESCE((st = '42501' AND (SELECT nombre FROM public.examenes_catalogo WHERE id = c_copro) = 'Coprológico'), false);
   det := det||' ;; renombrar (M.6)|42501, sin cambio|'||CASE WHEN ok THEN 'OK' ELSE 'ROJO' END||'|'||st||'|'||left(msg, 160);
   IF NOT ok THEN bad := bad||'renombrar (M.6): '||st||' '||left(msg, 120)||'; '; END IF;
+  IF v_369 THEN
+    x := pg_get_function_arguments(to_regprocedure('public.actualizar_examen_catalogo(uuid,text,boolean)'));
+    ok := COALESCE(x = 'p_id uuid, p_categoria text DEFAULT NULL::text, p_activo boolean DEFAULT NULL::boolean' AND position('nombre' in x) = 0, false);
+    det := det||' ;; renombrar por la RPC (369)|actualizar_examen_catalogo sin parametro de nombre|'||CASE WHEN ok THEN 'OK' ELSE 'ROJO' END||'|-|'||COALESCE(x, 'NULL');
+    IF NOT ok THEN bad := bad||'la RPC acepta otro parametro: '||COALESCE(x, 'NULL')||'; '; END IF;
+  END IF;
   st := '00000'; msg := ''; nn := NULL;
   BEGIN
     PERFORM set_config('request.jwt.claims', json_build_object('sub', c_admin::text, 'role', 'authenticated')::text, true); PERFORM set_config('role', 'authenticated', true);
-    UPDATE public.examenes_catalogo SET categoria = 'Heces QA', activo = false WHERE id = c_copro;
-    GET DIAGNOSTICS nn = ROW_COUNT;
+    IF v_369 THEN EXECUTE 'SELECT public.actualizar_examen_catalogo($1, $2, $3)' INTO v USING c_copro, 'Heces QA', false; nn := CASE WHEN v = c_copro THEN 1 ELSE 0 END;
+    ELSE UPDATE public.examenes_catalogo SET categoria = 'Heces QA', activo = false WHERE id = c_copro; GET DIAGNOSTICS nn = ROW_COUNT; END IF;
     PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
   EXCEPTION WHEN OTHERS THEN PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
     st := SQLSTATE; msg := SQLERRM; END;
-  ok := COALESCE((st = '00000' AND nn = 1), false);
-  det := det||' ;; categoria y activo se editan|OK 1 fila|'||CASE WHEN ok THEN 'OK' ELSE 'ROJO' END||'|'||st||'|'||left(msg, 160);
+  ok := COALESCE((st = '00000' AND nn = 1 AND EXISTS (SELECT 1 FROM public.examenes_catalogo WHERE id = c_copro AND categoria = 'Heces QA' AND NOT activo)), false);
+  det := det||' ;; categoria y activo se editan|'||CASE WHEN v_369 THEN 'por la RPC, ' ELSE '' END||'OK 1 fila, leido como postgres|'||CASE WHEN ok THEN 'OK' ELSE 'ROJO' END||'|'||st||'|'||left(msg, 160);
   IF NOT ok THEN bad := bad||'categoria y activo se editan: '||st||' '||left(msg, 120)||'; '; END IF;
   UPDATE public.examenes_catalogo k SET nombre = r.nombre, categoria = r.categoria, activo = r.activo
     FROM jsonb_populate_record(NULL::public.examenes_catalogo, y::jsonb) r WHERE k.id = c_copro;
@@ -24570,6 +24584,19 @@ BEGIN
   ok := COALESCE((st = '23505' AND position('ux_examenes_catalogo_lab_nombre' in msg) > 0), false);
   det := det||' ;; UNIQUE (lab, lower(btrim(nombre)))|23505|'||CASE WHEN ok THEN 'OK' ELSE 'ROJO' END||'|'||st||'|'||left(msg, 160);
   IF NOT ok THEN bad := bad||'UNIQUE (lab, lower(btrim(nombre))): '||st||' '||left(msg, 120)||'; '; END IF;
+  IF v_369 THEN
+    st := '00000'; msg := ''; v := NULL; n := (SELECT count(*) FROM public.examenes_catalogo);
+    BEGIN
+      PERFORM set_config('request.jwt.claims', json_build_object('sub', c_admin::text, 'role', 'authenticated')::text, true); PERFORM set_config('role', 'authenticated', true);
+      EXECUTE 'SELECT public.crear_examen_catalogo($1, $2)' INTO v USING '  CoprolóGICO  ', NULL::text;
+      PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
+    EXCEPTION WHEN OTHERS THEN PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
+      st := SQLSTATE; msg := SQLERRM; END;
+    IF v IS NOT NULL THEN seed_cat := seed_cat || v; END IF;
+    ok := COALESCE((st = 'EX039' AND v IS NULL AND (SELECT count(*) FROM public.examenes_catalogo) = n), false);
+    det := det||' ;; UNIQUE por la RPC (369)|EX039, sin fila nueva|'||CASE WHEN ok THEN 'OK' ELSE 'ROJO' END||'|'||st||'|'||left(msg, 160);
+    IF NOT ok THEN bad := bad||'UNIQUE por la RPC: '||st||' '||left(msg, 120)||'; '; END IF;
+  END IF;
   st := '00000'; msg := '';
   BEGIN INSERT INTO public.examenes_catalogo (laboratorio_id, nombre) VALUES ('411d6f8c-a405-49d6-9ed6-fbeb0db05133', 'Coprológico') RETURNING id INTO v; seed_cat := seed_cat || v;
   EXCEPTION WHEN OTHERS THEN st := SQLSTATE; msg := SQLERRM; END;
@@ -24605,7 +24632,8 @@ BEGIN
 
   PERFORM set_config('probe.p875_det', det, false);
   PERFORM set_config('probe.p875', CASE WHEN bad = '' AND r_rest = 'OK'
-    THEN 'OK (renombrar -> 42501; categoria/activo OK; UNIQUE lower(btrim) -> 23505; mismo nombre en otro lab OK; el medico no ve inactivos; restaurado)'
+    THEN 'OK (renombrar -> 42501'||CASE WHEN v_369 THEN ' y la RPC no acepta nombre' ELSE '' END||'; categoria/activo OK'||CASE WHEN v_369 THEN ' por la RPC' ELSE '' END
+         ||'; UNIQUE lower(btrim) -> 23505'||CASE WHEN v_369 THEN ' y por la RPC -> EX039' ELSE '' END||'; mismo nombre en otro lab OK; el medico no ve inactivos; restaurado)'
     ELSE 'ROJO ('||left(bad, 700)||' | restauracion='||r_rest||')' END, false);
 EXCEPTION WHEN OTHERS THEN
   PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
@@ -24754,6 +24782,8 @@ END $$;
 SELECT set_config('role', 'none', true);
 
 -- ---------------- P878 catalogo de objetos de la 332 ----------------
+-- 6-oct-2026 (mig 369): con la 369 el catalogo no tiene grants por columna: 'UPDATE por columna en catalogo' pasa a
+-- 'sin attacl y authenticated sin UPDATE en ninguna columna (ni INSERT/DELETE)'. El resto no cambia.
 DO $$
 DECLARE
   c_med uuid := '09d243d5-b222-482a-9762-94a582e9e752'; c_lab uuid := 'a5cf575a-5d63-4ed2-839e-9b58da8152e0'; c_recep uuid := 'ce871197-285a-4d5f-9e5f-78606f9e124f'; c_admin uuid := 'e6f95b2f-7561-4e0b-b0c8-d1f38e6c4d66'; c_tec uuid := 'f69e2096-932f-45f0-9022-4e9058f2f0fd';
@@ -24762,6 +24792,10 @@ DECLARE
   st text := '00000'; msg text := ''; j jsonb; ok boolean; det text := ''; bad text := ''; r_rest text := 'OK';
   s_ex text; s_or text; s_cat text; s_cp text; notif0 uuid[]; np0 integer; n_or bigint; n_ex bigint;
   v uuid; v2 uuid; x text; y text; n int; nn int; rec record; id_ex integer;
+  v_369 boolean := to_regprocedure('public.crear_examen_catalogo(text,text)') IS NOT NULL
+                   AND to_regprocedure('public.actualizar_examen_catalogo(uuid,text,boolean)') IS NOT NULL
+                   AND to_regprocedure('public.eliminar_examen_catalogo(uuid)') IS NOT NULL
+                   AND NOT has_table_privilege('authenticated', 'public.examenes_catalogo', 'INSERT');
 BEGIN
   -- snapshot: examenes, ordenes_examen, examenes_catalogo, cuentas del lab QA y notificaciones
   SELECT md5(COALESCE(string_agg(to_jsonb(e)::text, '|' ORDER BY e.id), '')) INTO s_ex FROM public.examenes e;
@@ -24818,9 +24852,15 @@ BEGIN
       AND has_column_privilege('authenticated', 'public.examenes', a.attname, 'UPDATE')) = 'archivo_url,estado,fecha_resultado,resultados'), false);
   det := det||' ;; UPDATE por columna en examenes|4 columnas|'||CASE WHEN ok THEN 'OK' ELSE 'ROJO' END||'|'||st||'|'||left(msg, 160);
   IF NOT ok THEN bad := bad||'UPDATE por columna en examenes: '||st||' '||left(msg, 120)||'; '; END IF;
-  ok := COALESCE(((SELECT string_agg(a.attname, ',' ORDER BY a.attname) FROM pg_attribute a WHERE a.attrelid = 'public.examenes_catalogo'::regclass AND a.attnum > 0 AND NOT a.attisdropped
+  IF v_369 THEN
+    ok := COALESCE((NOT EXISTS (SELECT 1 FROM pg_attribute a WHERE a.attrelid = 'public.examenes_catalogo'::regclass AND a.attnum > 0 AND NOT a.attisdropped AND a.attacl IS NOT NULL)
+      AND NOT has_any_column_privilege('authenticated', 'public.examenes_catalogo', 'UPDATE')
+      AND NOT has_table_privilege('authenticated', 'public.examenes_catalogo', 'INSERT') AND NOT has_table_privilege('authenticated', 'public.examenes_catalogo', 'DELETE')), false);
+  ELSE
+    ok := COALESCE(((SELECT string_agg(a.attname, ',' ORDER BY a.attname) FROM pg_attribute a WHERE a.attrelid = 'public.examenes_catalogo'::regclass AND a.attnum > 0 AND NOT a.attisdropped
       AND has_column_privilege('authenticated', 'public.examenes_catalogo', a.attname, 'UPDATE')) = 'activo,categoria'), false);
-  det := det||' ;; UPDATE por columna en catalogo|activo,categoria|'||CASE WHEN ok THEN 'OK' ELSE 'ROJO' END||'|'||st||'|'||left(msg, 160);
+  END IF;
+  det := det||' ;; UPDATE por columna en catalogo|'||CASE WHEN v_369 THEN 'sin attacl; authenticated sin UPDATE de columna ni INSERT/DELETE (369)' ELSE 'activo,categoria' END||'|'||CASE WHEN ok THEN 'OK' ELSE 'ROJO' END||'|'||st||'|'||left(msg, 160);
   IF NOT ok THEN bad := bad||'UPDATE por columna en catalogo: '||st||' '||left(msg, 120)||'; '; END IF;
   ok := COALESCE((NOT has_table_privilege('authenticated', 'public.ordenes_examen', 'UPDATE') AND NOT EXISTS (SELECT 1 FROM pg_attribute a WHERE a.attrelid = 'public.ordenes_examen'::regclass AND a.attnum > 0 AND NOT a.attisdropped AND has_column_privilege('authenticated', 'public.ordenes_examen', a.attname, 'UPDATE'))), false);
   det := det||' ;; sin UPDATE en ordenes_examen|sin UPDATE|'||CASE WHEN ok THEN 'OK' ELSE 'ROJO' END||'|'||st||'|'||left(msg, 160);
@@ -24855,7 +24895,7 @@ BEGIN
 
   PERFORM set_config('probe.p878_det', det, false);
   PERFORM set_config('probe.p878', CASE WHEN bad = '' AND r_rest = 'OK'
-    THEN 'OK (4 funciones (secdef, search_path, md5, EXECUTE), FK RESTRICT, UNIQUE, trigger, grants por columna, sin UPDATE en ordenes, examenes_medico_update fuera, sin INSERT directo (333), 9 funciones previas con su md5 esperado, 4 post-335)'
+    THEN 'OK (4 funciones (secdef, search_path, md5, EXECUTE), FK RESTRICT, UNIQUE, trigger, '||CASE WHEN v_369 THEN 'catalogo sin grants por columna ni escritura (369), UPDATE por columna en examenes' ELSE 'grants por columna' END||', sin UPDATE en ordenes, examenes_medico_update fuera, sin INSERT directo (333), 9 funciones previas con su md5 esperado, 4 post-335)'
     ELSE 'ROJO ('||left(bad, 700)||' | restauracion='||r_rest||')' END, false);
 EXCEPTION WHEN OTHERS THEN
   PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
@@ -25435,6 +25475,9 @@ END $$;
 SELECT set_config('role', 'none', true);
 
 -- ---------------- P883 el alta del catalogo sigue (control) ----------------
+-- 6-oct-2026 (mig 369): con la 369 el alta va por crear_examen_catalogo como admin del lab (id con su propio
+-- laboratorio_id); la firma no acepta laboratorio_id (las 3 RPCs usan siempre la empresa propia); el INSERT directo con
+-- un laboratorio_id ajeno sigue dando 42501 (ahora de privilegio). Sin la 369, el camino directo de antes.
 DO $$
 DECLARE
   c_med uuid := '09d243d5-b222-482a-9762-94a582e9e752'; c_lab uuid := 'a5cf575a-5d63-4ed2-839e-9b58da8152e0'; c_recep uuid := 'ce871197-285a-4d5f-9e5f-78606f9e124f'; c_admin uuid := 'e6f95b2f-7561-4e0b-b0c8-d1f38e6c4d66'; c_tec uuid := 'f69e2096-932f-45f0-9022-4e9058f2f0fd';
@@ -25444,6 +25487,10 @@ DECLARE
   s_ex text; s_or text; s_cat text; notif0 uuid[]; np0 integer; n_or bigint; n_ex bigint; n_cat bigint;
   v uuid; x text; n bigint; nn bigint; e1 integer; e2 integer; e3 integer; e4 integer; o1 uuid; o2 uuid;
   or0 uuid[]; ex0 integer;
+  v_369 boolean := to_regprocedure('public.crear_examen_catalogo(text,text)') IS NOT NULL
+                   AND to_regprocedure('public.actualizar_examen_catalogo(uuid,text,boolean)') IS NOT NULL
+                   AND to_regprocedure('public.eliminar_examen_catalogo(uuid)') IS NOT NULL
+                   AND NOT has_table_privilege('authenticated', 'public.examenes_catalogo', 'INSERT');
 BEGIN
   -- actores resueltos al vuelo: super_admin activo y el usuario del paciente 23
   SELECT p.id INTO c_sa FROM public.perfiles p WHERE p.rol = 'super_admin' AND p.activo ORDER BY p.id LIMIT 1;
@@ -25459,14 +25506,15 @@ BEGIN
   SELECT count(*) INTO n_or FROM public.ordenes_examen; SELECT count(*) INTO n_ex FROM public.examenes; SELECT count(*) INTO n_cat FROM public.examenes_catalogo;
   BEGIN
     PERFORM set_config('request.jwt.claims', json_build_object('sub', c_admin::text, 'role', 'authenticated')::text, true); PERFORM set_config('role', 'authenticated', true);
-    INSERT INTO public.examenes_catalogo (laboratorio_id, nombre, categoria) VALUES (c_lab, 'P333 alta QA', 'QA');
-    GET DIAGNOSTICS nn = ROW_COUNT;
+    IF v_369 THEN EXECUTE 'SELECT public.crear_examen_catalogo($1, $2)' INTO v USING 'P333 alta QA', 'QA';
+      nn := (SELECT count(*) FROM public.examenes_catalogo WHERE id = v);
+    ELSE INSERT INTO public.examenes_catalogo (laboratorio_id, nombre, categoria) VALUES (c_lab, 'P333 alta QA', 'QA'); GET DIAGNOSTICS nn = ROW_COUNT; END IF;
     PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
   EXCEPTION WHEN OTHERS THEN PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
     st := SQLSTATE; msg := SQLERRM; END;
   seed_cat := seed_cat || ARRAY(SELECT id FROM public.examenes_catalogo WHERE laboratorio_id = c_lab AND nombre = 'P333 alta QA');
-  ok := COALESCE((st = '00000' AND nn = 1 AND cardinality(seed_cat) = 1), false);
-  det := det||' ;; lab da de alta en su catalogo|1 fila|'||CASE WHEN ok THEN 'OK' ELSE 'ROJO' END||'|'||st||'|'||left(msg, 160);
+  ok := COALESCE((st = '00000' AND nn = 1 AND cardinality(seed_cat) = 1 AND (NOT v_369 OR seed_cat[1] = v)), false);
+  det := det||' ;; lab da de alta en su catalogo|'||CASE WHEN v_369 THEN 'por la RPC: id con laboratorio_id propio' ELSE '1 fila' END||'|'||CASE WHEN ok THEN 'OK' ELSE 'ROJO' END||'|'||st||'|'||left(msg, 160);
   IF NOT ok THEN bad := bad||'lab da de alta en su catalogo: '||st||' '||left(msg, 120)||'; '; END IF;
   st := '00000'; msg := ''; nn := NULL;
   SELECT count(*) INTO n_or FROM public.ordenes_examen; SELECT count(*) INTO n_ex FROM public.examenes; SELECT count(*) INTO n_cat FROM public.examenes_catalogo;
@@ -25477,9 +25525,17 @@ BEGIN
     PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
   EXCEPTION WHEN OTHERS THEN PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
     st := SQLSTATE; msg := SQLERRM; END;
-  ok := COALESCE((st = '42501' AND (SELECT count(*) FROM public.examenes_catalogo) = n_cat), false);
-  det := det||' ;; no en el catalogo de otro lab|42501 (RLS)|'||CASE WHEN ok THEN 'OK' ELSE 'ROJO' END||'|'||st||'|'||left(msg, 160);
+  ok := COALESCE((st = '42501' AND (NOT v_369 OR msg = 'permission denied for table examenes_catalogo') AND (SELECT count(*) FROM public.examenes_catalogo) = n_cat), false);
+  det := det||' ;; no en el catalogo de otro lab|'||CASE WHEN v_369 THEN '42501 (privilegio, 369)' ELSE '42501 (RLS)' END||'|'||CASE WHEN ok THEN 'OK' ELSE 'ROJO' END||'|'||st||'|'||left(msg, 160);
   IF NOT ok THEN bad := bad||'no en el catalogo de otro lab: '||st||' '||left(msg, 120)||'; '; END IF;
+  IF v_369 THEN
+    x := (SELECT string_agg(f||'('||pg_get_function_arguments(to_regprocedure(f))||')', ' ; ' ORDER BY f)
+            FROM unnest(ARRAY['public.crear_examen_catalogo(text,text)', 'public.actualizar_examen_catalogo(uuid,text,boolean)', 'public.eliminar_examen_catalogo(uuid)']) f);
+    ok := COALESCE(pg_get_function_arguments(to_regprocedure('public.crear_examen_catalogo(text,text)')) = 'p_nombre text, p_categoria text DEFAULT NULL::text'
+      AND position('laboratorio' in x) = 0, false);
+    det := det||' ;; la RPC no acepta laboratorio_id (369)|firma (p_nombre, p_categoria); ninguna de las 3 con laboratorio|'||CASE WHEN ok THEN 'OK' ELSE 'ROJO' END||'|-|'||left(COALESCE(x, 'NULL'), 300);
+    IF NOT ok THEN bad := bad||'firma de las RPCs: '||left(COALESCE(x, 'NULL'), 200)||'; '; END IF;
+  END IF;
   -- restauracion: se borra solo lo que el probe creo o sembro y se verifica contra el snapshot
   DELETE FROM public.ordenes_examen WHERE id = ANY (ords) OR id = ANY (seed_or);   -- CASCADE a examenes
   DELETE FROM public.examenes WHERE id = ANY (seed_ex);
@@ -25494,7 +25550,7 @@ BEGIN
 
   PERFORM set_config('probe.p883_det', det, false);
   PERFORM set_config('probe.p883', CASE WHEN bad = '' AND r_rest = 'OK'
-    THEN 'OK (el admin del lab da de alta en su catalogo; en el de otro lab -> 42501; restaurado)'
+    THEN 'OK (el admin del lab da de alta en su catalogo'||CASE WHEN v_369 THEN ' por la RPC (firma sin laboratorio_id)' ELSE '' END||'; en el de otro lab -> 42501; restaurado)'
     ELSE 'ROJO ('||left(bad, 700)||' | restauracion='||r_rest||')' END, false);
 EXCEPTION WHEN OTHERS THEN
   PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
@@ -25503,6 +25559,9 @@ END $$;
 SELECT set_config('role', 'none', true);
 
 -- ---------------- P884 catalogo de objetos post-333 ----------------
+-- Ajustado por la 369 (6-oct-2026): examenes_catalogo con policies exactas catalogo_lab_select + catalogo_read_activos
+-- (solo SELECT), relacl exacta (authenticated=r), sin attacl ni MAINTAIN. Sin la 369, el estado de antes (ALL del lab,
+-- DELETE,INSERT,SELECT + UPDATE de columna en activo,categoria). Los grants por columna de examenes se miden en las dos.
 -- Ajustado por la 338: sin las 5 policies *_delete, authenticated = SELECT en examenes y ordenes_examen,
 -- y MAINTAIN en la lista de privilegios (antes no la miraba). Con 338_rollback aplicado sale ROJO a proposito.
 -- Ajustado por la 343: examenes_catalogo pierde MAINTAIN (DELETE,INSERT,SELECT); con 343_rollback sale ROJO a proposito.
@@ -25515,6 +25574,10 @@ DECLARE
   s_ex text; s_or text; s_cat text; notif0 uuid[]; np0 integer; n_or bigint; n_ex bigint; n_cat bigint;
   v uuid; x text; n bigint; nn bigint; e1 integer; e2 integer; e3 integer; e4 integer; o1 uuid; o2 uuid;
   or0 uuid[]; ex0 integer;
+  v_369 boolean := to_regprocedure('public.crear_examen_catalogo(text,text)') IS NOT NULL
+                   AND to_regprocedure('public.actualizar_examen_catalogo(uuid,text,boolean)') IS NOT NULL
+                   AND to_regprocedure('public.eliminar_examen_catalogo(uuid)') IS NOT NULL
+                   AND NOT has_table_privilege('authenticated', 'public.examenes_catalogo', 'INSERT');
 BEGIN
   -- actores resueltos al vuelo: super_admin activo y el usuario del paciente 23
   SELECT p.id INTO c_sa FROM public.perfiles p WHERE p.rol = 'super_admin' AND p.activo ORDER BY p.id LIMIT 1;
@@ -25546,17 +25609,34 @@ BEGIN
   ok := COALESCE(((SELECT string_agg(p, ',' ORDER BY p) FROM unnest(ARRAY['SELECT','INSERT','UPDATE','DELETE','TRUNCATE','REFERENCES','TRIGGER','MAINTAIN']) p WHERE has_table_privilege('authenticated', 'public.ordenes_examen', p)) = 'SELECT'), false);
   det := det||' ;; authenticated en ordenes_examen|SELECT, sin DELETE ni MAINTAIN (338)|'||CASE WHEN ok THEN 'OK' ELSE 'ROJO' END||'|'||st||'|'||left(msg, 160);
   IF NOT ok THEN bad := bad||'authenticated en ordenes_examen: '||st||' '||left(msg, 120)||'; '; END IF;
-  ok := COALESCE(((SELECT string_agg(p, ',' ORDER BY p) FROM unnest(ARRAY['SELECT','INSERT','UPDATE','DELETE','TRUNCATE','REFERENCES','TRIGGER','MAINTAIN']) p WHERE has_table_privilege('authenticated', 'public.examenes_catalogo', p)) = 'DELETE,INSERT,SELECT'), false);
-  det := det||' ;; authenticated en examenes_catalogo|DELETE,INSERT,SELECT (+ UPDATE por columna; fuera de la 338; sin MAINTAIN desde la 343)|'||CASE WHEN ok THEN 'OK' ELSE 'ROJO' END||'|'||st||'|'||left(msg, 160);
+  ok := COALESCE(((SELECT string_agg(p, ',' ORDER BY p) FROM unnest(ARRAY['SELECT','INSERT','UPDATE','DELETE','TRUNCATE','REFERENCES','TRIGGER','MAINTAIN']) p WHERE has_table_privilege('authenticated', 'public.examenes_catalogo', p))
+      = CASE WHEN v_369 THEN 'SELECT' ELSE 'DELETE,INSERT,SELECT' END
+    AND (NOT v_369 OR (SELECT relacl::text FROM pg_class WHERE oid = 'public.examenes_catalogo'::regclass) = '{postgres=arwdDxtm/postgres,authenticated=r/postgres,service_role=arwdDxtm/postgres}')), false);
+  det := det||' ;; authenticated en examenes_catalogo|'||CASE WHEN v_369 THEN 'SELECT y relacl exacta, sin MAINTAIN (369)' ELSE 'DELETE,INSERT,SELECT (+ UPDATE por columna; fuera de la 338; sin MAINTAIN desde la 343)' END||'|'||CASE WHEN ok THEN 'OK' ELSE 'ROJO' END||'|'||st||'|'||left(msg, 160);
   IF NOT ok THEN bad := bad||'authenticated en examenes_catalogo: '||st||' '||left(msg, 120)||'; '; END IF;
   ok := COALESCE((NOT EXISTS (SELECT 1 FROM unnest(ARRAY['public.examenes','public.ordenes_examen','public.examenes_catalogo']) t, unnest(ARRAY['SELECT','INSERT','UPDATE','DELETE','TRUNCATE','REFERENCES','TRIGGER','MAINTAIN']) p WHERE has_table_privilege('anon', t, p))
     AND NOT EXISTS (SELECT 1 FROM pg_class k, aclexplode(k.relacl) a WHERE k.oid IN ('public.examenes'::regclass, 'public.ordenes_examen'::regclass, 'public.examenes_catalogo'::regclass) AND a.grantee = 0)), false);
   det := det||' ;; anon y PUBLIC sin nada|ninguno|'||CASE WHEN ok THEN 'OK' ELSE 'ROJO' END||'|'||st||'|'||left(msg, 160);
   IF NOT ok THEN bad := bad||'anon y PUBLIC sin nada: '||st||' '||left(msg, 120)||'; '; END IF;
-  ok := COALESCE(((SELECT string_agg(a.attname, ',' ORDER BY a.attname) FROM pg_attribute a WHERE a.attrelid = 'public.examenes'::regclass AND a.attnum > 0 AND NOT a.attisdropped AND has_column_privilege('authenticated', 'public.examenes', a.attname, 'UPDATE')) = 'archivo_url,estado,fecha_resultado,resultados'
-    AND (SELECT string_agg(a.attname, ',' ORDER BY a.attname) FROM pg_attribute a WHERE a.attrelid = 'public.examenes_catalogo'::regclass AND a.attnum > 0 AND NOT a.attisdropped AND has_column_privilege('authenticated', 'public.examenes_catalogo', a.attname, 'UPDATE')) = 'activo,categoria'), false);
-  det := det||' ;; grants por columna de la 332 intactos|exactos|'||CASE WHEN ok THEN 'OK' ELSE 'ROJO' END||'|'||st||'|'||left(msg, 160);
-  IF NOT ok THEN bad := bad||'grants por columna de la 332 intactos: '||st||' '||left(msg, 120)||'; '; END IF;
+  -- grants por columna de examenes (332): no dependen de la 369, se miden antes y en las dos ramas
+  ok := COALESCE(((SELECT string_agg(a.attname, ',' ORDER BY a.attname) FROM pg_attribute a WHERE a.attrelid = 'public.examenes'::regclass AND a.attnum > 0 AND NOT a.attisdropped AND has_column_privilege('authenticated', 'public.examenes', a.attname, 'UPDATE')) = 'archivo_url,estado,fecha_resultado,resultados'), false);
+  det := det||' ;; grants por columna de examenes (332) intactos|archivo_url,estado,fecha_resultado,resultados|'||CASE WHEN ok THEN 'OK' ELSE 'ROJO' END||'|'||st||'|'||left(msg, 160);
+  IF NOT ok THEN bad := bad||'grants por columna de examenes (332): '||st||' '||left(msg, 120)||'; '; END IF;
+  IF v_369 THEN
+    ok := COALESCE((NOT EXISTS (SELECT 1 FROM pg_attribute a WHERE a.attrelid = 'public.examenes_catalogo'::regclass AND a.attnum > 0 AND NOT a.attisdropped AND a.attacl IS NOT NULL)
+      AND NOT has_any_column_privilege('authenticated', 'public.examenes_catalogo', 'UPDATE')), false);
+  ELSE
+    ok := COALESCE(((SELECT string_agg(a.attname, ',' ORDER BY a.attname) FROM pg_attribute a WHERE a.attrelid = 'public.examenes_catalogo'::regclass AND a.attnum > 0 AND NOT a.attisdropped AND has_column_privilege('authenticated', 'public.examenes_catalogo', a.attname, 'UPDATE')) = 'activo,categoria'), false);
+  END IF;
+  det := det||' ;; grants por columna de examenes_catalogo|'||CASE WHEN v_369 THEN 'sin attacl ni UPDATE de columna (369)' ELSE 'activo,categoria (332)' END||'|'||CASE WHEN ok THEN 'OK' ELSE 'ROJO' END||'|'||st||'|'||left(msg, 160);
+  IF NOT ok THEN bad := bad||'grants por columna de examenes_catalogo: '||st||' '||left(msg, 120)||'; '; END IF;
+  x := (SELECT string_agg(pl.policyname||':'||pl.cmd||':'||pl.roles::text||':'||COALESCE(pl.qual, '-')||':'||COALESCE(pl.with_check, '-'), ' ;; ' ORDER BY pl.policyname)
+          FROM pg_policies pl WHERE pl.schemaname = 'public' AND pl.tablename = 'examenes_catalogo');
+  ok := COALESCE(x = CASE WHEN v_369
+      THEN 'catalogo_lab_select:SELECT:{authenticated}:COALESCE((laboratorio_id = mi_empresa_proveedor()), false):- ;; catalogo_read_activos:SELECT:{authenticated}:((activo = true) AND private.lab_en_mi_pais(laboratorio_id)):-'
+      ELSE 'catalogo_lab_all:ALL:{authenticated}:(laboratorio_id = mi_empresa_proveedor()):(laboratorio_id = mi_empresa_proveedor()) ;; catalogo_read_activos:SELECT:{authenticated}:((activo = true) AND private.lab_en_mi_pais(laboratorio_id)):-' END, false);
+  det := det||' ;; policies de examenes_catalogo|'||CASE WHEN v_369 THEN 'catalogo_lab_select + catalogo_read_activos, solo SELECT (369)' ELSE 'catalogo_lab_all + catalogo_read_activos' END||'|'||CASE WHEN ok THEN 'OK' ELSE 'ROJO' END||'|-|'||left(COALESCE(x, 'NULL'), 300);
+  IF NOT ok THEN bad := bad||'policies de examenes_catalogo: '||left(COALESCE(x, 'NULL'), 200)||'; '; END IF;
   -- restauracion: se borra solo lo que el probe creo o sembro y se verifica contra el snapshot
   DELETE FROM public.ordenes_examen WHERE id = ANY (ords) OR id = ANY (seed_or);   -- CASCADE a examenes
   DELETE FROM public.examenes WHERE id = ANY (seed_ex);
@@ -25571,7 +25651,7 @@ BEGIN
 
   PERFORM set_config('probe.p884_det', det, false);
   PERFORM set_config('probe.p884', CASE WHEN bad = '' AND r_rest = 'OK'
-    THEN 'OK (policies por comando exactas (sin INSERT, DELETE ni ALL desde la 338), mismas expresiones que las ALL, grants de tabla exactos (MAINTAIN en la lista; ninguno lo tiene desde la 343), anon/PUBLIC sin nada, grants por columna de la 332 intactos)'
+    THEN 'OK (policies por comando exactas (sin INSERT, DELETE ni ALL desde la 338), mismas expresiones que las ALL, grants de tabla exactos (MAINTAIN en la lista; ninguno lo tiene desde la 343), anon/PUBLIC sin nada, grants por columna de examenes intactos, '||CASE WHEN v_369 THEN 'catalogo solo SELECT sin grants por columna (369)' ELSE 'catalogo con los de la 332' END||')'
     ELSE 'ROJO ('||left(bad, 700)||' | restauracion='||r_rest||')' END, false);
 EXCEPTION WHEN OTHERS THEN
   PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
