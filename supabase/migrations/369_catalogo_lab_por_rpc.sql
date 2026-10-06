@@ -26,7 +26,8 @@
 -- Huellas: policies 2c6e39d7... 307 -> 9ad617568275d4b7f27b1e2115f8978f 307; ACL de public e2bb57f4... 2370 -> 64ff833d25666534b8de9171d1e5d404 2368; ACL de funciones
 -- 0ee90ba6... 381 -> e5c9770e31312d34601dc45f0c545173 384.
 -- Probes: P1011-P1014 (nuevos); P873 usa las RPCs con la 369 aplicada.
--- Front: useLaboratorio llama a las 3 RPCs. Rollback: 369_rollback.sql (va antes que 368_rollback).
+-- Front: useLaboratorio llama a las 3 RPCs. Rollback: 369_rollback.sql (va antes que 368_rollback y que 367_rollback:
+-- la precondicion de 367_rollback exige la ACL de public e2bb57f4... 2370, que esta migracion cambia).
 -- ############################################################################################
 
 BEGIN;
