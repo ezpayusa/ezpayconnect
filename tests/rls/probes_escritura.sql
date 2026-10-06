@@ -17686,12 +17686,15 @@ SELECT set_config('role','none', true);
 DO $$
 DECLARE
   v_tot bigint; o_pub bigint; v_n bigint; v_s bigint; v_l text; v_366 boolean; a_sa uuid; a_ap uuid; a_med uuid; r757 text := '';
+  v_368 boolean; v_ap_sens bigint; v_ap_integ text;
   publicas constant text[] := ARRAY['app_logo_url','app_nombre','color_fondo','color_primario','color_secundario','integ_google_calendar',
                                     'notif_email_activo','notif_recordatorios_activo','notif_sms_activo','notif_whatsapp_activo',
                                     'sistema_formato_fecha','sistema_idioma','sistema_moneda','sistema_zona_horaria'];
   sensibles constant text[] := ARRAY['banco','cuenta_bancaria','tipo_cuenta','titular_cuenta','email_pagos','integ_email_smtp','integ_whatsapp_api'];
 BEGIN
   v_366 := EXISTS (SELECT 1 FROM pg_policy WHERE polrelid = 'public.configuracion_sistema'::regclass AND polname = 'configuracion_sistema_select_anon_publicas');
+  -- 6-oct-2026 (mig 368): el qual de configuracion_sistema_select_authenticated_publicas ya no menciona admin_pais
+  v_368 := NOT EXISTS (SELECT 1 FROM pg_policy pl WHERE pl.polrelid = 'public.configuracion_sistema'::regclass AND pl.polname = 'configuracion_sistema_select_authenticated_publicas' AND position('admin_pais' IN pg_get_expr(pl.polqual, pl.polrelid)) > 0);
   SELECT count(*) INTO v_tot FROM public.configuracion_sistema;
   SELECT count(*) INTO o_pub FROM public.configuracion_sistema WHERE clave = ANY (publicas);
   a_sa := (SELECT p.id FROM public.perfiles p WHERE p.rol = 'super_admin' AND p.activo AND EXISTS (SELECT 1 FROM auth.users u WHERE u.id = p.id)
@@ -17735,7 +17738,9 @@ BEGIN
   PERFORM set_config('role','none', true);
   PERFORM set_config('request.jwt.claims','', true);
 
-  -- ---------------------------------------------------------------- P757 (super_admin y admin_pais)
+  -- ---------------------------------------------------------------- P757 (super_admin 21; admin_pais 14 desde la 368)
+  -- 6-oct-2026 (mig 368): el admin_pais pasa de 21 a las 14 publicas, sin sensibles y sin integ_email_smtp ni
+  -- integ_whatsapp_api por nombre; el super_admin sigue en 21. Sin la 368 (catalogo) sale 'PENDIENTE mig 368', nunca OK ni ROJO.
   BEGIN
     PERFORM set_config('request.jwt.claims', json_build_object('sub', a_sa, 'role', 'authenticated')::text, true);
     PERFORM set_config('role','authenticated', true);
@@ -17744,11 +17749,15 @@ BEGIN
     PERFORM set_config('role','none', true);
     PERFORM set_config('request.jwt.claims', json_build_object('sub', a_ap, 'role', 'authenticated')::text, true);
     PERFORM set_config('role','authenticated', true);
-    SELECT count(*) INTO v_s FROM public.configuracion_sistema;
-    r757 := r757||' admin_pais='||v_s;
+    SELECT count(*), count(*) FILTER (WHERE clave <> ALL (publicas)),
+           string_agg(clave, ',' ORDER BY clave) FILTER (WHERE clave IN ('integ_email_smtp', 'integ_whatsapp_api'))
+      INTO v_s, v_ap_sens, v_ap_integ FROM public.configuracion_sistema;
+    r757 := r757||' admin_pais='||v_s||' (sensibles '||v_ap_sens||', integ_* '||COALESCE(v_ap_integ, 'ninguna')||')';
     PERFORM set_config('role','none', true);
-    PERFORM set_config('probe.p757', CASE WHEN v_n = v_tot AND v_s = v_tot
-      THEN 'OK (super_admin y admin_pais ven las '||v_tot||')'
+    PERFORM set_config('probe.p757', CASE
+      WHEN NOT v_368 THEN 'PENDIENTE mig 368 ('||r757||' de '||v_tot||')'
+      WHEN v_n = v_tot AND v_s = o_pub AND v_ap_sens = 0 AND v_ap_integ IS NULL
+        THEN 'OK (super_admin ve las '||v_tot||'; admin_pais ve las '||o_pub||' publicas, 0 sensibles, sin integ_email_smtp ni integ_whatsapp_api)'
       ELSE 'ROJO ('||r757||' de '||v_tot||')' END, false);
   EXCEPTION WHEN OTHERS THEN
     PERFORM set_config('role','none', true);
@@ -32852,7 +32861,7 @@ SELECT set_config('role', 'none', true);
 -- (RAISE P0999).
 DO $$
 DECLARE
-  v_366 boolean; v_gt uuid; v_otro uuid; v_otro_cod text; o_gt int; o_otro int; o_tot int; o_pub int;
+  v_366 boolean; v_368 boolean; v_gt uuid; v_otro uuid; v_otro_cod text; o_gt int; o_otro int; o_tot int; o_pub int;
   a_sa uuid; a_apgt uuid; a_apotro uuid; a_pact uuid; e_pact uuid; a_pno uuid; a_farm uuid; a_med uuid; a_pac uuid; a_sec uuid; a_sop uuid; a_ase uuid;
   neg uuid[]; r record; n int; ngt int; not_ int; nk int; ns int; v text; res text := ''; bad text := ''; chk text := '-';
   pend_sembrada boolean := false; ap_sembrado boolean := false; fila_sembrada boolean := false;
@@ -32863,6 +32872,9 @@ DECLARE
 BEGIN
   IF current_user <> 'postgres' THEN RAISE EXCEPTION 'fixture roto: P1009 corre como %', current_user; END IF;
   v_366 := EXISTS (SELECT 1 FROM pg_policy WHERE polrelid = 'public.cuentas_bancarias_pais'::regclass AND polname = 'cuentas_banco_read_acotada');
+  -- 6-oct-2026 (mig 368): los admin_pais ven solo las 14 publicas de configuracion_sistema; sin la 368, la parte de config
+  -- de los admin_pais sale 'PENDIENTE mig 368' (las cuentas se juzgan igual).
+  v_368 := NOT EXISTS (SELECT 1 FROM pg_policy pl WHERE pl.polrelid = 'public.configuracion_sistema'::regclass AND pl.polname = 'configuracion_sistema_select_authenticated_publicas' AND position('admin_pais' IN pg_get_expr(pl.polqual, pl.polrelid)) > 0);
   SELECT id INTO v_gt FROM public.configuracion_pais WHERE codigo = 'GT';
   o_gt := (SELECT count(*) FROM public.cuentas_bancarias_pais WHERE pais_id = v_gt);
   o_tot := (SELECT count(*) FROM public.configuracion_sistema);
@@ -32945,8 +32957,8 @@ BEGIN
 
     -- (a) + (c) por actor: total, GT y otro pais en cuentas_bancarias_pais; claves de configuracion_sistema
     FOR r IN SELECT * FROM (VALUES
-        (1, 'super_admin', a_sa, o_gt + o_otro, o_gt, o_otro, 'admin'), (2, 'admin_pais GT', a_apgt, o_gt, o_gt, 0, 'admin'),
-        (3, 'admin_pais '||v_otro_cod, a_apotro, o_otro, 0, o_otro, 'admin'),
+        (1, 'super_admin', a_sa, o_gt + o_otro, o_gt, o_otro, 'admin'), (2, 'admin_pais GT', a_apgt, o_gt, o_gt, 0, 'apais'),
+        (3, 'admin_pais '||v_otro_cod, a_apotro, o_otro, 0, o_otro, 'apais'),
         (4, 'proveedor GT activa', a_pact, o_gt, o_gt, 0, 'resto'), (5, 'proveedor GT no activa', a_pno, o_gt, o_gt, 0, 'resto'),
         (6, 'farmacia GT', a_farm, o_gt, o_gt, 0, 'resto'),
         (7, 'medico.qa', a_med, 0, 0, 0, 'resto'), (8, 'paciente.qa', a_pac, 0, 0, 0, 'resto'), (9, 'secretaria.qa', a_sec, 0, 0, 0, 'resto'),
@@ -32968,8 +32980,8 @@ BEGIN
         bad := bad||r.nom||' cuentas='||COALESCE(n::text, '-')||'/GT '||COALESCE(ngt::text, '-')||'/'||v_otro_cod||' '||COALESCE(not_::text, '-')
                ||' (esperado '||r.e_tot||'/'||r.e_gt||'/'||r.e_otro||')'||v||'; ';
       END IF;
-      IF nk IS DISTINCT FROM (CASE WHEN r.cfg = 'admin' THEN o_tot ELSE o_pub END)
-         OR (r.cfg <> 'admin' AND ns IS DISTINCT FROM 0) THEN
+      IF nk IS DISTINCT FROM (CASE WHEN r.cfg = 'admin' OR (r.cfg = 'apais' AND NOT v_368) THEN o_tot ELSE o_pub END)
+         OR ((r.cfg = 'resto' OR (r.cfg = 'apais' AND v_368)) AND ns IS DISTINCT FROM 0) THEN
         bad := bad||r.nom||' config='||COALESCE(nk::text, '-')||'/sens='||COALESCE(ns::text, '-')||'; ';
       END IF;
     END LOOP;
@@ -32999,9 +33011,11 @@ BEGIN
        ||CASE WHEN pend_sembrada THEN '; empresa GT no activa sembrada' ELSE '' END;
   PERFORM set_config('probe.p1009_det', res||'checkout(admin proveedor GT)='||chk||'; '||v, false);
   PERFORM set_config('probe.p1009', CASE
+    WHEN bad = '' AND v_366 AND NOT v_368 THEN 'PENDIENTE mig 368 (config de los admin_pais todavia '||o_tot||'; cuentas OK: super_admin ve GT+'||v_otro_cod
+                                 ||'; admin_pais GT, proveedores GT y farmacia solo GT; admin_pais '||v_otro_cod||' solo '||v_otro_cod||'; resto 0; checkout 1 fila; '||v||')'
     WHEN bad = '' AND v_366 THEN 'OK (cuentas: super_admin ve GT+'||v_otro_cod||'; admin_pais GT, proveedores GT activa/no activa y farmacia solo GT; admin_pais '
-                                 ||v_otro_cod||' solo '||v_otro_cod||'; medico, paciente, secretaria, soporte y asesor 0; checkout 1 fila; config 21 admins y '
-                                 ||o_pub||' publicas resto; '||v||'; descartado)'
+                                 ||v_otro_cod||' solo '||v_otro_cod||'; medico, paciente, secretaria, soporte y asesor 0; checkout 1 fila; config 21 super_admin y '
+                                 ||o_pub||' publicas el resto, admin_pais incluido; '||v||'; descartado)'
     WHEN NOT v_366 THEN 'PENDIENTE mig 366 ('||left(res, 600)||' checkout='||chk||'; '||v||')'
     ELSE 'ROJO ('||left(bad, 700)||' | '||v||')' END, false);
 EXCEPTION WHEN OTHERS THEN
@@ -33929,7 +33943,7 @@ UNION ALL SELECT 'P753_cc_super_admin_alta',         current_setting('probe.p753
 UNION ALL SELECT 'P754_cc_ruta_b_intacta',           current_setting('probe.p754', true),    'OK (control positivo: Ruta B)'
 UNION ALL SELECT 'P755_cs_anon_sin_bancarios',       current_setting('probe.p755', true),    'OK (366: anon ve las 14 publicas, ninguna sensible)'
 UNION ALL SELECT 'P756_cs_anon_ve_el_resto',         current_setting('probe.p756', true),    'OK (366: authenticated sin rol de admin ve las 14 publicas)'
-UNION ALL SELECT 'P757_cs_authenticated_ve_todo',    current_setting('probe.p757', true),    'OK (366: super_admin y admin_pais ven las 21)'
+UNION ALL SELECT 'P757_cs_authenticated_ve_todo',    current_setting('probe.p757', true),    'OK (368: super_admin ve las 21; admin_pais las 14 publicas, sin integ_*; antes de la 368: PENDIENTE)'
 UNION ALL SELECT 'P758_cs_service_role_intacto',     current_setting('probe.p758', true),    'OK (control positivo: edge)'
 UNION ALL SELECT 'P759_nt_apropiacion_bloqueada',    current_setting('probe.p759', true),    'OK (42501 de columna)'
 UNION ALL SELECT 'P760_nt_texto_no_escribible',      current_setting('probe.p760', true),    'OK (42501 de columna)'
