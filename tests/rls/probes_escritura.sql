@@ -33029,6 +33029,7 @@ BEGIN
     IF a_pno IS NULL THEN
       SELECT cp.id INTO a_pno FROM public.cuentas_proveedor cp JOIN public.empresas_proveedoras e ON e.id = cp.empresa_id
        WHERE e.pais_id = v_gt AND e.estado = 'activa' AND e.id <> e_pact AND cp.id <> a_farm AND cp.activo AND COALESCE(cp.created_at, '-infinity') < now()
+         AND e.id IS DISTINCT FROM (SELECT empresa_id FROM public.cuentas_proveedor WHERE id = a_farm)
          AND EXISTS (SELECT 1 FROM auth.users u WHERE u.id = cp.id) AND NOT EXISTS (SELECT 1 FROM public.perfiles pf WHERE pf.id = cp.id)
        ORDER BY COALESCE(cp.created_at, '-infinity'), cp.id LIMIT 1;
       IF a_pno IS NULL THEN RAISE EXCEPTION 'sin fixture: P1009 sin cuenta GT para la empresa no activa'; END IF;
