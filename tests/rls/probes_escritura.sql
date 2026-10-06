@@ -40,8 +40,9 @@ DO $$ BEGIN
     ('DUP TEST', true), ('NORMTEST 500 MG', true),
     ('PROBE C2 X', true), ('PROBE C2 Y', true),
     ('PROBE C2 WRITE X', true), ('PROBE C2 WRITE Y ADMIN', true),
-    ('PROBE RLS MED', true);
-  PERFORM set_config('probe.fx_medsglobal','OK (13 medicamentos de fixture en el catalogo global)',false);
+    ('PROBE RLS MED', true),
+    ('FM GT PAIS', true), ('FM HN PAIS', true);
+  PERFORM set_config('probe.fx_medsglobal','OK (17 medicamentos de fixture en el catalogo global)',false);
 EXCEPTION WHEN OTHERS THEN
   PERFORM set_config('probe.fx_medsglobal','ROJO (no se pudo sembrar la precondicion: '||SQLSTATE||' '||SQLERRM||')',false);
 END $$;
