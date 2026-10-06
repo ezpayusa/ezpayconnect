@@ -34523,13 +34523,17 @@ UNION ALL SELECT 'P1004_proveedores_pais_proveedor_363',  current_setting('probe
 UNION ALL SELECT 'P1005_proveedores_pais_anon_363',  current_setting('probe.p1005', true), 'OK (363: anon -> 42501)'
 UNION ALL SELECT 'P1006_proveedores_pais_catalogo_363',  current_setting('probe.p1006', true), 'OK (363: ACL exacta sin anon; DEFINER, STABLE, search_path)'
 UNION ALL SELECT 'P1011_catalogo_lab_admin_rpc_369',  current_setting('probe.p1011', true), 'OK (369: admin del lab crea/actualiza/elimina por RPC; referenciado EX038; ajeno o inexistente EX036; antes de la 369: PENDIENTE)'
+UNION ALL SELECT 'DET_p1011',  'DET ' || COALESCE(NULLIF(current_setting('probe.p1011_det', true), ''), '(sin dato)'), 'DET (detalle de P1011, no es probe)'
 UNION ALL SELECT 'P1012_catalogo_lab_sin_permiso_369',  current_setting('probe.p1012', true), 'OK (369: EX035 para recepcion, tecnico, farmacia, medico y paciente; anon sin EXECUTE; antes de la 369: PENDIENTE)'
 UNION ALL SELECT 'P1013_catalogo_lab_sin_escritura_directa_369',  current_setting('probe.p1013', true), 'OK (369: INSERT/UPDATE/DELETE directo 42501; antes de la 369: PENDIENTE)'
 UNION ALL SELECT 'P1014_catalogo_lab_select_369',  current_setting('probe.p1014', true), 'OK (staff del lab ve activos e inactivos; medico solo activos de su pais; farmacia no ve el inactivo ajeno)'
 UNION ALL SELECT 'P1010_campana_vistas_sin_update_367',  current_setting('probe.p1010', true), 'OK (367: INSERT 1; ON CONFLICT DO NOTHING 0 sin error; DO UPDATE y UPDATE 42501; otro paciente 0; antes de la 367: PENDIENTE)'
 UNION ALL SELECT 'P1009_datos_bancarios_acotados_366',  current_setting('probe.p1009', true), 'OK (366: cuenta GT solo super_admin/admin_pais GT/proveedores GT; checkout 1 fila; config 21 super_admin y 14 el resto, admin_pais incluido; antes de la 366: PENDIENTE)'
+UNION ALL SELECT 'DET_p1009',  'DET ' || COALESCE(NULLIF(current_setting('probe.p1009_det', true), ''), '(sin dato)'), 'DET (detalle de P1009, no es probe)'
 UNION ALL SELECT 'P1008_notas_sin_escritura_superadmin_365',  current_setting('probe.p1008', true), 'OK (365: super_admin INSERT ajeno -> 42501, UPDATE -> 0 filas; lee; el medico escribe; antes de la 365: PENDIENTE)'
+UNION ALL SELECT 'DET_p1008',  'DET ' || COALESCE(NULLIF(current_setting('probe.p1008_det', true), ''), '(sin dato)'), 'DET (detalle de P1008, no es probe)'
 UNION ALL SELECT 'P1007_visitas_sin_update_directo_364',  current_setting('probe.p1007', true), 'OK (364: UPDATE directo -> 42501 x4; las RPCs siguen escribiendo; ACL SELECT+INSERT sin UPDATE; antes de la 364: PENDIENTE)'
+UNION ALL SELECT 'DET_p1007',  'DET ' || COALESCE(NULLIF(current_setting('probe.p1007_det', true), ''), '(sin dato)'), 'DET (detalle de P1007, no es probe)'
 UNION ALL SELECT 'DET_fm_ready_err',  'DET ' || COALESCE(NULLIF(current_setting('probe.fm_err', true), ''), '(sin error: fm_ready=' || COALESCE(current_setting('probe.fm_ready', true), 'NULL') || ')'), 'DET (diagnóstico, no es probe)'
 -- Las filas FX* son SALUD DE FIXTURE, no probes de seguridad: dicen si la precondicion que una
 -- migracion posterior empezo a exigir se pudo sembrar. Si una sale ROJO, los probes que dependen de
