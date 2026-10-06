@@ -35,7 +35,7 @@ Stack: React + Vite + TypeScript, Supabase / Postgres, deploy en Vercel, repo en
   sale `admin_pais` del `tiene_rol`; queda con las 14 claves públicas para todo authenticated y las 21 solo para el
   super_admin (nadie lee la tabla con sesión de usuario: `/configuracion` va por la edge con service_role). Huella de
   policies a99ac4be…/307 → 2c6e39d704ebd6a2e28542b9d3b4fbc0/307; ACL sin cambio. Probes P757 y P1009 ajustados (el
-  admin_pais ve 14, sin integ_* por nombre). Rollback `368_rollback.sql` (va antes que `367_rollback`).)
+  admin_pais ve 14, sin integ_* por nombre). Rollback `368_rollback.sql` (va antes que `366_rollback`; con `367_rollback` es conmutable).)
   (367 = familia 2, F2-f parcial, campana_vistas sin UPDATE — APLICADA en prod el 2026-10-06 entre 18:45:04 y 18:45:08 UTC
   y verificada en sesión independiente. REVOKE UPDATE de authenticated en `campana_vistas` (privilegio muerto: sin policy
   de UPDATE; el upsert que lo justificaba, `registrarVista`, no tenía llamadores y se borró del front); INSERT y
@@ -334,6 +334,9 @@ Stack: React + Vite + TypeScript, Supabase / Postgres, deploy en Vercel, repo en
   sin handler. Está enganchado como hook de pre-commit en `.githooks/pre-commit`; en un clone nuevo
   hay que activarlo una vez con `git config core.hooksPath .githooks`.
 - **Todo probe que modifica un fixture lo restaura a su snapshot y verifica la restauración.**
+- **En un probe con PENDIENTE, las regresiones que no dependen de la migración se chequean ANTES de la rama PENDIENTE**
+  (p. ej. que el super_admin vea menos de 21 claves): si no, una regresión real queda tapada por 'PENDIENTE mig N'
+  (review del #46, 6-oct-2026).
 - **Los fixtures que toman cuentas reales por posición (ORDER BY id LIMIT/OFFSET) las dejan modificadas para el resto de la
   transacción (C.2, P309-P316). Un probe nuevo no debe filtrar actores por rol o empresa sin tener esto en cuenta.**
 - **Un actor que alimenta un INSERT con FK se elige por email o con EXISTS en la tabla destino de la FK, nunca por ORDER BY
@@ -383,7 +386,8 @@ Stack: React + Vite + TypeScript, Supabase / Postgres, deploy en Vercel, repo en
   (rollback en `supabase/migrations/rollback/`); los de `supabase/fixes/` se agregan con `git add -f`.
   **Desvío aceptado (familia 8):** los rollbacks de 334-368 viven en `supabase/migrations/`
   (`3XX_rollback.sql`), no en `supabase/migrations/rollback/`. Orden de rollback global: `368_rollback` →
-  `367_rollback` → `366_rollback` → `365_rollback` → ….
+  `366_rollback` → `365_rollback` → … (solo 368 antes que 366 está forzado por huella; `367_rollback` es
+  conmutable con 366 y 368).
 - **Los tests de edge (deno) NO corren en vitest ni en el pre-commit**: se corren a mano desde
   `supabase/functions/<fn>/` con `deno test --allow-net --allow-env --no-check` (asistente-ia: 17).
 - **El CORS de `asistente-ia` sólo acepta `med.ezpayconnect.com`**: las pruebas de edges desde un preview
@@ -552,9 +556,7 @@ Detalles a recordar:
   se borra o pasa a DEFINER.
 - (Familia 7) Bugs latentes que la 346 vuelve visibles (42501 en vez de un "éxito" silencioso con 0 filas):
   `useProveedorAuth.ts:171` UPDATE de `cuentas_proveedor`; `useFacturas.ts:80` DELETE de `facturas`;
-  `useRecetas.ts:197` UPDATE de `recetas`. Y: `campana_vistas` no tiene policy de UPDATE, así que el upsert del
-  front con conflicto (vista repetida) probablemente falla desde antes de la 346 (el front traga el error);
-  revisar.
+  `useRecetas.ts:197` UPDATE de `recetas`.
 - (Familia 3/4) FK `examenes_orden_id_fkey` sigue `ON DELETE CASCADE`: tras la 338 sólo la alcanzan
   postgres/service_role (borrar una orden arrastra sus exámenes, completados incluidos).
 - (Familia 4) `examenes.updated_at` no se actualiza al corregir ni al liberar.
