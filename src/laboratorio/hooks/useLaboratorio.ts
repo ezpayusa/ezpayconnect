@@ -5,6 +5,7 @@ import { toast } from 'sonner'
 import { hoyISO } from '@/lib/fecha'
 import { mensajeErrorOrden, type ItemOrdenExamen } from '@/lib/ordenesExamen'
 import { leerResultadoCorreccion, mensajeErrorCorreccion } from '@/lib/correccionResultados'
+import { mensajeErrorCatalogo, esExamenReferenciado } from '@/laboratorio/lib/catalogoExamenes'
 
 export interface OrdenExamen {
   id: number
@@ -220,14 +221,15 @@ export function useLaboratorio() {
     setCatalogo((data || []) as CatalogoItem[])
   }, [labId])
 
+  // Mig 369: el catálogo se escribe solo por RPC; cada una devuelve el id del examen. Un resultado sin id es un error.
   const crearCatalogo = async (nombre: string, categoria?: string) => {
     if (!labId) return false
-    const { error } = await supabase.from('examenes_catalogo').insert({
-      laboratorio_id: labId, nombre: nombre.trim(), categoria: categoria?.trim() || null,
+    const { data, error } = await supabase.rpc('crear_examen_catalogo', {
+      p_nombre: nombre.trim(), p_categoria: categoria?.trim() || null,
     })
-    if (error) {
-      // 23505 = UNIQUE (laboratorio_id, lower(btrim(nombre))) de la mig 332
-      toast.error(error.code === '23505' ? 'Ya existe un examen con ese nombre en tu catálogo' : 'No se pudo agregar: ' + error.message)
+    if (error || !data) {
+      console.error('crear_examen_catalogo:', error?.code ?? 'sin id')
+      toast.error(mensajeErrorCatalogo(error, 'No se pudo agregar el examen'))
       return false
     }
     toast.success('Examen agregado al catálogo')
@@ -236,22 +238,27 @@ export function useLaboratorio() {
   }
 
   const toggleCatalogo = async (id: string, activo: boolean) => {
-    const { error } = await supabase.from('examenes_catalogo').update({ activo }).eq('id', id)
-    if (error) { toast.error('No se pudo actualizar'); return }
+    const { data, error } = await supabase.rpc('actualizar_examen_catalogo', { p_id: id, p_categoria: null, p_activo: activo })
+    if (error || !data) {
+      console.error('actualizar_examen_catalogo:', error?.code ?? 'sin id')
+      toast.error(mensajeErrorCatalogo(error, 'No se pudo actualizar'))
+      return
+    }
     fetchCatalogo()
   }
 
   const eliminarCatalogo = async (id: string) => {
     if (!window.confirm('¿Eliminar este examen del catálogo?')) return
-    const { error } = await supabase.from('examenes_catalogo').delete().eq('id', id)
-    if (error) {
-      // 23503 = FK RESTRICT de examenes.catalogo_id (mig 332): un examen ya ordenado no se borra, se desactiva
-      if (error.code === '23503') {
-        toast.error('Este examen ya fue ordenado y no se puede borrar. Puedes desactivarlo.', {
+    const { data, error } = await supabase.rpc('eliminar_examen_catalogo', { p_id: id })
+    if (error || !data) {
+      console.error('eliminar_examen_catalogo:', error?.code ?? 'sin id')
+      // EX038: un examen ya ordenado no se borra, se desactiva
+      if (esExamenReferenciado(error)) {
+        toast.error(mensajeErrorCatalogo(error, 'Este examen ya fue ordenado y no se puede borrar. Puedes desactivarlo.'), {
           action: { label: 'Desactivar', onClick: () => { toggleCatalogo(id, false) } },
         })
       } else {
-        toast.error('No se pudo eliminar')
+        toast.error(mensajeErrorCatalogo(error, 'No se pudo eliminar'))
       }
       return
     }
