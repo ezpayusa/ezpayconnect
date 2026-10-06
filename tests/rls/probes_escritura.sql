@@ -3745,7 +3745,7 @@ DO $$ DECLARE v_medgt uuid; BEGIN
   UPDATE public.perfiles SET pais_id = NULLIF(current_setting('probe.p0_gt',true), '')::uuid WHERE id = NULLIF(current_setting('probe.cat_clinico',true), '')::uuid;  -- clínico GT
   PERFORM set_config('probe.fm_medgt', v_medgt::text, false);
   PERFORM set_config('probe.fm_ready','1',false);
-EXCEPTION WHEN others THEN PERFORM set_config('probe.fm_ready','0',false); END $$;
+EXCEPTION WHEN others THEN PERFORM set_config('probe.fm_err', SQLSTATE || ' ' || SQLERRM, false); PERFORM set_config('probe.fm_ready','0',false); END $$;
 
 -- P204 — NEG (red-first): médico GT NO ve stock de farmacia HN
 SELECT set_config('request.jwt.claims', json_build_object('sub', current_setting('probe.fm_medgt',true))::text, true);
@@ -34523,6 +34523,7 @@ UNION ALL SELECT 'P1010_campana_vistas_sin_update_367',  current_setting('probe.
 UNION ALL SELECT 'P1009_datos_bancarios_acotados_366',  current_setting('probe.p1009', true), 'OK (366: cuenta GT solo super_admin/admin_pais GT/proveedores GT; checkout 1 fila; config 21 super_admin y 14 el resto, admin_pais incluido; antes de la 366: PENDIENTE)'
 UNION ALL SELECT 'P1008_notas_sin_escritura_superadmin_365',  current_setting('probe.p1008', true), 'OK (365: super_admin INSERT ajeno -> 42501, UPDATE -> 0 filas; lee; el medico escribe; antes de la 365: PENDIENTE)'
 UNION ALL SELECT 'P1007_visitas_sin_update_directo_364',  current_setting('probe.p1007', true), 'OK (364: UPDATE directo -> 42501 x4; las RPCs siguen escribiendo; ACL SELECT+INSERT sin UPDATE; antes de la 364: PENDIENTE)'
+UNION ALL SELECT 'DET_fm_ready_err',  'DET ' || COALESCE(NULLIF(current_setting('probe.fm_err', true), ''), '(sin error: fm_ready=' || COALESCE(current_setting('probe.fm_ready', true), 'NULL') || ')'), 'DET (diagnóstico, no es probe)'
 -- Las filas FX* son SALUD DE FIXTURE, no probes de seguridad: dicen si la precondicion que una
 -- migracion posterior empezo a exigir se pudo sembrar. Si una sale ROJO, los probes que dependen de
 -- ese fixture reportan N/A (su flag de ready se pierde con el rollback de la subtransaccion) en vez
