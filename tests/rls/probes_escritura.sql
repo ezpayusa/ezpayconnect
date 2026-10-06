@@ -17205,51 +17205,136 @@ SELECT set_config('role','none', true);
 -- ============================================================
 -- MIG 301 · anon sin EXECUTE en 49 funciones + fabrica cerrada (P739-P744)
 -- ============================================================
+-- E370_FX (mig 370, 6-oct-2026) — ESTADO del EXECUTE de funciones, leido del catalogo. No toca datos.
+-- Define pg_temp.e370_estado(): 'post' = 0 funciones de public/private con PUBLIC y anon ejecuta SOLO
+-- catalogo_planes_visitador_publico(); 'pre' = el estado previo a la 370 INTACTO Y EXACTO (las 38 con PUBLIC y anon
+-- explicito en las 21 legacy + la del catalogo, ni una mas ni una menos); 'otro: ...' = cualquier otra cosa (con lo que
+-- sobra y lo que falta). Los probes de la 370 (P739, P741, P1015, P1016) dan PENDIENTE SOLO con 'pre': una regresion
+-- despues del apply (una funcion que recupera PUBLIC o anon) deja el estado en 'otro' y se juzga como ROJO, no PENDIENTE.
+-- Las listas literales son el censo de prod del 6-oct-2026 (tmp/recon_execute/censo_funciones.tsv); despues del apply se
+-- pueden borrar junto con la rama 'pre'. Si este bloque falla, los 4 probes dan FALLO (pg_temp.e370_estado no existe).
+DO $e370fx$
+BEGIN
+  EXECUTE $fn$
+CREATE OR REPLACE FUNCTION pg_temp.e370_estado() RETURNS text LANGUAGE sql STABLE AS $body$
+WITH f AS (
+  SELECT p.oid, n.nspname||'.'||p.proname||'('||COALESCE((SELECT string_agg(format_type(t, NULL), ', ' ORDER BY o)
+           FROM unnest(p.proargtypes::oid[]) WITH ORDINALITY u(t, o)), '')||')' AS sig,
+         EXISTS (SELECT 1 FROM aclexplode(COALESCE(p.proacl, acldefault('f', p.proowner))) a WHERE a.grantee = 0 AND a.privilege_type = 'EXECUTE') AS pub,
+         EXISTS (SELECT 1 FROM aclexplode(p.proacl) a WHERE a.grantee = 'anon'::regrole AND a.privilege_type = 'EXECUTE') AS anon_x,
+         has_function_privilege('anon', p.oid, 'EXECUTE') AS anon_e
+    FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace WHERE n.nspname IN ('public', 'private')
+), pre38(sig) AS (SELECT unnest(ARRAY[
+    'private.es_staff_calendario_clinica(uuid)', 'private.guard_jornada_pais()', 'private.guard_pais_prospecto()',
+    'private.guard_pais_visita_comercial()', 'private.guard_reporte_exige_checkin()',
+    'private.guard_supervisor_asesor()', 'private.medclaslog_solo_append()', 'private.puede_aprobar_visitas()',
+    'private.receta_items_modalidad_uniforme()', 'private.reset_notificado_cancelacion()',
+    'private.reset_notificado_envio()', 'private.resolver_medicamento_id(text)', 'private.safe_uuid(text)',
+    'private.trg_farmed_resolver_medid()', 'private.trg_gate_capacidad_productos()',
+    'private.trg_gate_capacidad_publicidad()', 'private.trg_guard_tema_columns()',
+    'public.actualizar_stock_dispensacion()', 'public.admin_clinica_de_medico(uuid)',
+    'public.calcular_imc_signos_vitales()', 'public.calcular_limite_cancelacion(date)',
+    'public.get_auth_user_pais_id()', 'public.get_auth_user_rol()', 'public.get_empresa_id_proveedor()',
+    'public.get_empresa_id_session()', 'public.limpiar_cache_biblioteca_expirada()', 'public.mi_clinica_id()',
+    'public.mi_empresa_proveedor()', 'public.mi_rol_proveedor()', 'public.perfiles_guard_rol_update()',
+    'public.puede_ver_conversacion(uuid)', 'public.set_fecha_limite_cancelacion()',
+    'public.supervisa_cuenta_proveedor(uuid)', 'public.trg_gate_head_start_lab()',
+    'public.trg_medicos_lab_enrolador_inmutable()', 'public.trigger_set_updated_at()',
+    'public.update_config_timestamp()', 'public.update_updated_at_column()'
+])), pre22(sig) AS (SELECT unnest(ARRAY[
+    'public.actualizar_stock_dispensacion()', 'public.admin_clinica_de_medico(uuid)',
+    'public.calcular_imc_signos_vitales()', 'public.calcular_limite_cancelacion(date)',
+    'public.get_auth_user_pais_id()', 'public.get_auth_user_rol()', 'public.get_empresa_id_proveedor()',
+    'public.get_empresa_id_session()', 'public.limpiar_cache_biblioteca_expirada()', 'public.mi_clinica_id()',
+    'public.mi_empresa_proveedor()', 'public.mi_rol_proveedor()', 'public.perfiles_guard_rol_update()',
+    'public.puede_ver_conversacion(uuid)', 'public.set_fecha_limite_cancelacion()',
+    'public.supervisa_cuenta_proveedor(uuid)', 'public.trg_gate_head_start_lab()',
+    'public.trg_medicos_lab_enrolador_inmutable()', 'public.trigger_set_updated_at()',
+    'public.update_config_timestamp()', 'public.update_updated_at_column()',
+    'public.catalogo_planes_visitador_publico()'
+])), d AS (
+  SELECT
+    (SELECT count(*) FROM f WHERE f.pub) AS n_pub,
+    (SELECT string_agg(f.sig, ', ' ORDER BY f.sig) FROM f WHERE f.anon_e) AS anon_e,
+    (SELECT string_agg(s, ', ' ORDER BY s) FROM (SELECT f.sig AS s FROM f WHERE f.pub EXCEPT SELECT sig FROM pre38) z) AS pub_sobra,
+    (SELECT string_agg(s, ', ' ORDER BY s) FROM (SELECT sig AS s FROM pre38 EXCEPT SELECT f.sig FROM f WHERE f.pub) z) AS pub_falta,
+    (SELECT string_agg(s, ', ' ORDER BY s) FROM (SELECT f.sig AS s FROM f WHERE f.anon_x EXCEPT SELECT sig FROM pre22) z) AS anon_sobra,
+    (SELECT string_agg(s, ', ' ORDER BY s) FROM (SELECT sig AS s FROM pre22 EXCEPT SELECT f.sig FROM f WHERE f.anon_x) z) AS anon_falta
+)
+SELECT CASE
+  WHEN d.n_pub = 0 AND d.anon_e IS NOT DISTINCT FROM 'public.catalogo_planes_visitador_publico()' THEN 'post'
+  WHEN d.pub_sobra IS NULL AND d.pub_falta IS NULL AND d.anon_sobra IS NULL AND d.anon_falta IS NULL THEN 'pre'
+  ELSE 'otro: '||d.n_pub||' con PUBLIC; anon ejecuta ['||left(COALESCE(d.anon_e, '-'), 300)||']; PUBLIC sobra ['||COALESCE(d.pub_sobra, '-')
+       ||'] falta ['||left(COALESCE(d.pub_falta, '-'), 200)||']; anon sobra ['||COALESCE(d.anon_sobra, '-')||'] falta ['||left(COALESCE(d.anon_falta, '-'), 200)||']'
+  END
+FROM d
+$body$
+$fn$;
+  -- pg_temp.e370_anon_alternado_ok(a1, a2): P935/P936 corren lo mismo con los roles de policies "alternados" de vuelta a
+  -- {public} (el estado de 349_rollback/350_rollback) y exigen que anon vea lo mismo. Con la 370 viva ese contrafactico
+  -- ya no es inocuo: anon evalua las policies {public} y recibe 42501 de FUNCION en las helpers que la 370 le saco (medido
+  -- en el dry-run A). Igualdad exacta salvo con estado 'post', donde cada entrada 'tabla=...' de a2 puede ser igual a la de
+  -- a1 o 'tabla=42501 permission denied for function <una de las 11 helpers revocadas>'; cualquier otra diferencia es
+  -- ROJO. Consecuencia operativa: con la 370 aplicada, 370_rollback va ANTES que 350_rollback y 349_rollback.
+  EXECUTE $fn2$
+CREATE OR REPLACE FUNCTION pg_temp.e370_anon_alternado_ok(a1 text, a2 text) RETURNS boolean LANGUAGE plpgsql STABLE AS $body$
+DECLARE x text[] := string_to_array(a1, '; '); y text[] := string_to_array(a2, '; '); i int;
+BEGIN
+  IF a1 IS NOT DISTINCT FROM a2 THEN RETURN true; END IF;
+  IF pg_temp.e370_estado() <> 'post' OR a1 IS NULL OR a2 IS NULL OR cardinality(x) <> cardinality(y) THEN RETURN false; END IF;
+  FOR i IN 1..cardinality(x) LOOP
+    IF y[i] IS DISTINCT FROM x[i] AND y[i] !~ ('^'||split_part(x[i], '=', 1)||'=42501 permission denied for function '
+         ||'(get_auth_user_rol|get_auth_user_pais_id|mi_empresa_proveedor|mi_rol_proveedor|mi_clinica_id|puede_ver_conversacion|'
+         ||'supervisa_cuenta_proveedor|admin_clinica_de_medico|get_empresa_id_proveedor|get_empresa_id_session|safe_uuid)$') THEN
+      RETURN false;
+    END IF;
+  END LOOP;
+  RETURN true;
+END
+$body$
+$fn2$;
+  PERFORM set_config('probe.e370_fx', 'OK ('||pg_temp.e370_estado()||')', false);
+EXCEPTION WHEN OTHERS THEN
+  PERFORM set_config('probe.e370_fx', 'FALLO ('||SQLSTATE||' '||SQLERRM||')', false);
+END $e370fx$;
+
 -- P739 es un CENSO, no una muestra: mide QUE conjunto de SECDEF de public le queda ejecutable a
--- anon, no cuantas. Una probe que mirara 3 nombres fijos se volveria muda el dia que aparezca la
--- cuarta; una que solo contara 11 se quedaria callada si se va una y entra otra. Por eso compara
--- el CONJUNTO contra la lista esperada y publica lo que sobra y lo que falta.
+-- anon, no cuantas. Compara el CONJUNTO contra la lista esperada y publica lo que sobra y lo que falta.
 --
--- Las esperadas eran 11 en dos grupos; desde la mig 327 quedan 10:
---   · `registrar_proveedor` — era la unica excepcion por PRODUCTO (flujo pre-login). La mig 327 le
---     revoco anon y PUBLIC: el alta real corre con sesion (signUp con autoconfirm devuelve sesion).
---     Ya NO esta en la lista; si reaparece con EXECUTE para anon, P739 la marca como "sobra".
---   · las 10 — excepcion TECNICA: viven dentro del USING de policies RLS sobre 30 tablas
---     donde anon tiene SELECT. Una policy se evalua con los privilegios del LLAMANTE (mig 284),
---     asi que revocarles el EXECUTE no le niega nada a anon: hace que esas 30 tablas le lancen
---     42501. Quedan afuera del barrido a proposito. Sacarlas de verdad exige reescribir las
---     policies para que no dependan de ellas — frente propio, pendiente.
---   · `catalogo_planes_visitador_publico` (mig 362) — excepcion de PRODUCTO: catalogo publico de precios para la
---     landing /planes-visitador sin sesion; solo lectura; mismas filas que compraria solicitar_compra_plan_visitador.
---     Con ella son 11.
+-- INVERTIDO en la mig 370 (6-oct-2026). Desde la 301 quedaban 11: las 10 helpers que vivian en policies TO public
+-- (excepcion TECNICA, leccion 284) + catalogo_planes_visitador_publico (excepcion de PRODUCTO, 362; registrar_proveedor
+-- salio en la 327). Las 349/350 pasaron esas policies a TO authenticated y anon ya no las evalua, asi que la 370 les saca
+-- anon y PUBLIC: la esperada pasa a ser SOLO catalogo_planes_visitador_publico.
+--   · OK      = anon ejecuta exactamente {catalogo_planes_visitador_publico} entre las SECDEF de public.
+--   · PENDIENTE mig 370 = el estado previo esta INTACTO (pg_temp.e370_estado() = 'pre') y el conjunto es exactamente
+--     las 11 viejas. Antes de la rama PENDIENTE se juzga lo que no depende de la 370: si sobra alguna que no estaba en
+--     las 11, o falta la del catalogo, es ROJO igual.
 SELECT set_config('role','none', true);
 DO $$
-DECLARE v_sobran text; v_faltan text; v_n int;
-  esperadas constant text[] := ARRAY[
+DECLARE v_sobran text; v_faltan text; v_n int; v_est text; v_set text; v_sobra11 text;
+  viejas constant text[] := ARRAY[
     'get_auth_user_rol','get_auth_user_pais_id','mi_empresa_proveedor','mi_rol_proveedor',
     'mi_clinica_id','puede_ver_conversacion','supervisa_cuenta_proveedor',
     'get_empresa_id_proveedor','get_empresa_id_session','admin_clinica_de_medico',
     'catalogo_planes_visitador_publico'];
 BEGIN
-  SELECT count(*) INTO v_n FROM pg_proc p JOIN pg_namespace n ON n.oid=p.pronamespace
+  v_est := pg_temp.e370_estado();
+  SELECT count(*), string_agg(p.proname, ', ' ORDER BY p.proname) INTO v_n, v_set FROM pg_proc p JOIN pg_namespace n ON n.oid=p.pronamespace
    WHERE n.nspname='public' AND p.prosecdef AND has_function_privilege('anon', p.oid,'EXECUTE');
-
-  SELECT string_agg(DISTINCT p.proname, ', ') INTO v_sobran
-    FROM pg_proc p JOIN pg_namespace n ON n.oid=p.pronamespace
-   WHERE n.nspname='public' AND p.prosecdef AND has_function_privilege('anon', p.oid,'EXECUTE')
-     AND NOT (p.proname = ANY(esperadas));
-
-  SELECT string_agg(e, ', ') INTO v_faltan FROM unnest(esperadas) e
-   WHERE NOT EXISTS (SELECT 1 FROM pg_proc p JOIN pg_namespace n ON n.oid=p.pronamespace
-                      WHERE n.nspname='public' AND p.proname = e
-                        AND has_function_privilege('anon', p.oid,'EXECUTE'));
+  -- independiente de la 370: nada fuera de las 11 viejas, y la del catalogo presente
+  SELECT string_agg(DISTINCT p.proname, ', ') INTO v_sobra11 FROM pg_proc p JOIN pg_namespace n ON n.oid=p.pronamespace
+   WHERE n.nspname='public' AND p.prosecdef AND has_function_privilege('anon', p.oid,'EXECUTE') AND NOT (p.proname = ANY(viejas));
+  SELECT string_agg(DISTINCT p.proname, ', ') INTO v_sobran FROM pg_proc p JOIN pg_namespace n ON n.oid=p.pronamespace
+   WHERE n.nspname='public' AND p.prosecdef AND has_function_privilege('anon', p.oid,'EXECUTE') AND p.proname <> 'catalogo_planes_visitador_publico';
+  v_faltan := CASE WHEN has_function_privilege('anon', 'public.catalogo_planes_visitador_publico()'::regprocedure, 'EXECUTE') THEN NULL
+                   ELSE 'catalogo_planes_visitador_publico' END;
 
   PERFORM set_config('probe.p739', CASE
-    WHEN v_sobran IS NULL AND v_faltan IS NULL
-      THEN 'OK (quedan las 11 esperadas: las 10 usadas en policies y catalogo_planes_visitador_publico (362); registrar_proveedor sin anon desde la 327)'
-    WHEN v_faltan IS NOT NULL
-      THEN 'ROJO (el barrido se paso: perdieron anon '||v_faltan||')'
-    ELSE 'ROJO ('||v_n||' ejecutables por anon; sobran: '||left(v_sobran,200)||')'
+    WHEN v_sobra11 IS NOT NULL THEN 'ROJO (anon ejecuta SECDEF fuera de las 11 de la 301: '||left(v_sobra11, 200)||')'
+    WHEN v_faltan IS NOT NULL THEN 'ROJO (catalogo_planes_visitador_publico perdio anon: la landing /planes-visitador sin sesion se rompe)'
+    WHEN v_sobran IS NULL THEN 'OK (370: anon ejecuta solo catalogo_planes_visitador_publico entre las SECDEF de public; las 10 helpers de policies sin anon)'
+    WHEN v_est = 'pre' AND v_n = 11 THEN 'PENDIENTE mig 370 (anon ejecuta las 11 de la 301: '||v_set||')'
+    ELSE 'ROJO ('||v_n||' SECDEF ejecutables por anon; sobran: '||left(v_sobran, 200)||'; estado '||left(v_est, 300)||')'
     END, false);
 EXCEPTION WHEN OTHERS THEN
   PERFORM set_config('probe.p739','FALLO ('||SQLSTATE||' '||SQLERRM||')', false);
@@ -17286,18 +17371,40 @@ EXCEPTION WHEN OTHERS THEN
 END $$;
 SELECT set_config('role','none', true);
 
--- P741 — CONTROL NEGATIVO de la excepcion tecnica. Sin esta, P739/P740 en verde tambien los cumpliria
--- un REVOKE a todo el mundo, que dejaria 30 tablas tirando 42501. Desde la mig 327 registrar_proveedor
--- se controla al reves: tiene que estar SIN anon (lo ejercita P833).
--- Por eso no alcanza con mirar el ACL de las 10: se EJERCITA una muestra de las tablas que las
--- llaman desde su USING, que es donde el sintoma aparece de verdad.
+-- P741 — INVERTIDO en la mig 370 (6-oct-2026). Antes era el CONTROL NEGATIVO de la excepcion tecnica de la 301 (las 10
+-- helpers de policies tenian que CONSERVAR anon). Desde las 349/350 esas policies son TO authenticated y anon no las
+-- evalua; la 370 les saca anon. Ahora mide:
+--   (independiente de la 370) registrar_proveedor sin anon (mig 327; lo ejercita P833) y anon EJERCITADO sobre 5 tablas
+--   que esas policies protegen: con grant de anon -> 0 filas SIN error (si alguna policy que anon evalua llamara a una
+--   helper sin EXECUTE, lanzaria 42501: el sintoma de la leccion 284); sin grant -> 42501 de privilegio, correcto.
+--   (de la 370) las 10 helpers SIN anon. Si las 10 conservan anon y el estado previo esta intacto
+--   (pg_temp.e370_estado() = 'pre') -> PENDIENTE mig 370; mezcla -> ROJO.
 DO $$
-DECLARE v_mal text := ''; t text; v_n int;
+DECLARE v_mal text := ''; t text; v_n int; v_est text; v_con text := ''; v_sin text := ''; n_con int := 0; d text := '';
 BEGIN
+  v_est := pg_temp.e370_estado();
   IF has_function_privilege('anon',
     'public.registrar_proveedor(text,text,text,uuid,text,text,text,text,text,text)','EXECUTE') THEN
     v_mal := v_mal || 'registrar_proveedor recupero anon (la mig 327 se lo revoco); ';
   END IF;
+
+  PERFORM set_config('request.jwt.claims','{"role":"anon"}', true);
+  PERFORM set_config('role','anon', true);
+  FOREACH t IN ARRAY ARRAY['perfiles','citas','cuentas_proveedor','pacientes','clinicas'] LOOP
+    BEGIN
+      EXECUTE format('SELECT count(*) FROM public.%I', t) INTO v_n;
+      d := d || t || '=' || v_n || ' ';
+    EXCEPTION WHEN insufficient_privilege THEN
+      -- 42501 CON grant = policy rota; SIN grant (citas/clinicas revocadas en la 301) = correcto.
+      IF has_table_privilege('anon','public.'||t,'SELECT') THEN
+        v_mal := v_mal || 'la tabla '||t||' lanza 42501 CON grant a anon (policy rota): '||left(SQLERRM, 80)||'; ';
+      END IF;
+      d := d || t || '=42501 ';
+      WHEN OTHERS THEN v_mal := v_mal || 'la tabla '||t||' dio '||SQLSTATE||' a anon; ';
+    END;
+  END LOOP;
+  PERFORM set_config('role','none', true);
+  PERFORM set_config('request.jwt.claims','', true);
 
   FOREACH t IN ARRAY ARRAY['get_auth_user_rol','get_auth_user_pais_id','mi_empresa_proveedor',
                            'mi_rol_proveedor','mi_clinica_id','puede_ver_conversacion',
@@ -17305,28 +17412,17 @@ BEGIN
                            'get_empresa_id_session','admin_clinica_de_medico'] LOOP
     SELECT count(*) INTO v_n FROM pg_proc p JOIN pg_namespace n ON n.oid=p.pronamespace
      WHERE n.nspname='public' AND p.proname=t AND has_function_privilege('anon', p.oid,'EXECUTE');
-    IF v_n = 0 THEN v_mal := v_mal || t || ' perdio anon (la usan policies); '; END IF;
+    IF v_n > 0 THEN v_con := v_con || t || ' '; n_con := n_con + 1; ELSE v_sin := v_sin || t || ' '; END IF;
   END LOOP;
 
-  PERFORM set_config('request.jwt.claims','{"role":"anon"}', true);
-  PERFORM set_config('role','anon', true);
-  FOREACH t IN ARRAY ARRAY['perfiles','citas','cuentas_proveedor','pacientes','clinicas'] LOOP
-    BEGIN
-      EXECUTE format('SELECT count(*) FROM public.%I', t) INTO v_n;
-    EXCEPTION WHEN insufficient_privilege THEN
-      -- 42501 CON grant = policy rota (perfiles/cuentas_proveedor/pacientes kept); SIN grant (citas/clinicas revocadas) = correcto.
-      IF has_table_privilege('anon','public.'||t,'SELECT') THEN v_mal := v_mal || 'la tabla '||t||' lanza 42501 CON grant a anon (policy rota); '; END IF;
-      WHEN OTHERS THEN v_mal := v_mal || 'la tabla '||t||' dio '||SQLSTATE||' a anon; ';
-    END;
-  END LOOP;
-  PERFORM set_config('role','none', true);
-  PERFORM set_config('request.jwt.claims','', true);
-
-  PERFORM set_config('probe.p741', CASE WHEN v_mal = ''
-    THEN 'OK (registrar_proveedor sin anon; las 10 de policies intactas; 5 tablas: 0 filas (kept) o 42501-sin-grant (revocadas))'
-    ELSE 'ROJO ('||v_mal||')' END, false);
+  PERFORM set_config('probe.p741', CASE
+    WHEN v_mal <> '' THEN 'ROJO ('||v_mal||')'
+    WHEN n_con = 0 THEN 'OK (370: registrar_proveedor sin anon; las 10 helpers sin anon; anon en 5 tablas: '||d||'(0 filas con grant o 42501 sin grant))'
+    WHEN n_con = 10 AND v_est = 'pre' THEN 'PENDIENTE mig 370 (las 10 helpers conservan anon; registrar_proveedor sin anon; 5 tablas: '||d||')'
+    ELSE 'ROJO (helpers con anon: '||v_con||'| sin anon: '||v_sin||'| estado '||left(v_est, 300)||')' END, false);
 EXCEPTION WHEN OTHERS THEN
   PERFORM set_config('role','none', true);
+  PERFORM set_config('request.jwt.claims','', true);
   PERFORM set_config('probe.p741','FALLO ('||SQLSTATE||' '||SQLERRM||')', false);
 END $$;
 SELECT set_config('role','none', true);
@@ -29966,7 +30062,9 @@ BEGIN
   det := det||' ;; authenticated antes|-|-|-|'||res[1];
   det := det||' ;; authenticated con los roles alternados|= antes|'||CASE WHEN res[1] = res[2] AND res[1] <> '' THEN 'OK' ELSE 'ROJO' END||'|-|'||res[2];
   IF res[1] IS DISTINCT FROM res[2] OR res[1] = '' THEN bad := bad||'authenticated distinto: ['||res[1]||'] vs ['||res[2]||']; '; END IF;
-  IF anon[1] <> 'citas=42501-priv; push_subscriptions=42501-priv; facturas=42501-priv; campanas_publicitarias=42501-priv; ' OR anon[2] <> anon[1] THEN
+  -- 370: con la 370 viva, la pasada alternada ({public}) le da a anon 42501 de FUNCION (ver pg_temp.e370_anon_alternado_ok)
+  IF anon[1] <> 'citas=42501-priv; push_subscriptions=42501-priv; facturas=42501-priv; campanas_publicitarias=42501-priv; '
+     OR NOT pg_temp.e370_anon_alternado_ok(anon[1], anon[2]) THEN
     bad := bad||'anon: ['||anon[1]||'] / ['||anon[2]||']; ';
   END IF;
   det := det||' ;; anon en las 4 tablas|42501 de privilegio en las dos pasadas|'||CASE WHEN bad NOT LIKE '%anon:%' THEN 'OK' ELSE 'ROJO' END||'|-|'||anon[1];
@@ -29982,7 +30080,8 @@ BEGIN
   PERFORM set_config('probe.p935_det', det, false);
   PERFORM set_config('lock_timeout', v_lt, true);
   PERFORM set_config('probe.p935', CASE WHEN bad = '' AND r_rest = 'OK'
-    THEN 'OK (13 policies de muestra con roles alternados: authenticated ve y escribe lo mismo, anon en 42501 de privilegio; descartado)'
+    THEN 'OK (13 policies de muestra con roles alternados: authenticated ve y escribe lo mismo, anon en 42501 de privilegio'
+         ||CASE WHEN anon[2] IS DISTINCT FROM anon[1] THEN ' (con la 370, alternadas a {public} anon recibe 42501 de funcion: 349_rollback va despues de 370_rollback)' ELSE '' END||'; descartado)'
     ELSE 'ROJO ('||left(bad, 900)||' | restauracion='||r_rest||')' END, false);
 EXCEPTION WHEN OTHERS THEN
   PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
@@ -30117,8 +30216,9 @@ BEGIN
   PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
   det := det||' ;; anon (roles actuales)|'||esperado_anon||'|'||CASE WHEN anon[1] = esperado_anon THEN 'OK' ELSE 'ROJO' END||'|-|'||anon[1];
   IF anon[1] IS DISTINCT FROM esperado_anon THEN bad := bad||'anon: ['||anon[1]||'] esperado ['||esperado_anon||']; '; END IF;
-  det := det||' ;; anon con los roles de las 17 alternados|= roles actuales|'||CASE WHEN anon[2] = anon[1] THEN 'OK' ELSE 'ROJO' END||'|-|'||anon[2];
-  IF anon[2] IS DISTINCT FROM anon[1] THEN bad := bad||'anon cambia al alternar: ['||anon[2]||']; '; END IF;
+  -- 370: con la 370 viva, la pasada alternada ({public}) le da a anon 42501 de FUNCION (ver pg_temp.e370_anon_alternado_ok)
+  det := det||' ;; anon con los roles de las 17 alternados|= roles actuales (con la 370: o 42501 de funcion)|'||CASE WHEN pg_temp.e370_anon_alternado_ok(anon[1], anon[2]) THEN 'OK' ELSE 'ROJO' END||'|-|'||anon[2];
+  IF NOT pg_temp.e370_anon_alternado_ok(anon[1], anon[2]) THEN bad := bad||'anon cambia al alternar: ['||anon[2]||']; '; END IF;
   det := det||' ;; authenticated (5 actores x 8 tablas)|-|-|-|'||res[1];
   det := det||' ;; authenticated con los roles alternados|= antes|'||CASE WHEN res[2] = res[1] AND res[1] <> '' THEN 'OK' ELSE 'ROJO' END||'|-|'||res[2];
   IF res[2] IS DISTINCT FROM res[1] OR res[1] = '' THEN bad := bad||'authenticated distinto: ['||res[1]||'] vs ['||res[2]||']; '; END IF;
@@ -30133,7 +30233,8 @@ BEGIN
   PERFORM set_config('probe.p936', CASE WHEN bad = '' AND r_rest = 'OK' AND NOT v366
     THEN 'PENDIENTE mig 366 (anon config '||n_cfg||' con la denylist vieja; el resto OK)'
     WHEN bad = '' AND r_rest = 'OK'
-    THEN 'OK (las 17 en {authenticated}; anon sin 42501: paises '||n_pais||', config '||n_cfg||', resto 0; authenticated igual con los roles alternados; descartado)'
+    THEN 'OK (las 17 en {authenticated}; anon sin 42501: paises '||n_pais||', config '||n_cfg||', resto 0; authenticated igual con los roles alternados'
+         ||CASE WHEN anon[2] IS DISTINCT FROM anon[1] THEN ' (con la 370, alternadas a {public} anon recibe 42501 de funcion: 350_rollback va despues de 370_rollback)' ELSE '' END||'; descartado)'
     ELSE 'ROJO ('||left(bad, 900)||' | restauracion='||r_rest||')' END, false);
 EXCEPTION WHEN OTHERS THEN
   PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
@@ -32572,6 +32673,8 @@ SELECT set_config('role', 'none', true);
 
 -- P1000 catalogo de la 362: ACL exacta de catalogo_planes_visitador_publico (postgres, authenticated, service_role, anon;
 -- sin PUBLIC) y funciones de public/private ejecutables por anon = 38 (antes de la 362) + 1, y esa 1 es esta.
+-- 370 (6-oct-2026): con la 370 anon ejecuta SOLO esta (0 + 1). Las 38 + 1 son el estado previo: PENDIENTE mig 370 solo si
+-- pg_temp.e370_estado() = 'pre' (intacto y exacto); la ACL exacta se juzga antes y siempre.
 DO $$
 DECLARE v text; n_total int; n_sin int;
 BEGIN
@@ -32579,9 +32682,12 @@ BEGIN
   n_total := (SELECT count(*) FROM pg_proc p WHERE p.pronamespace IN ('public'::regnamespace, 'private'::regnamespace) AND has_function_privilege('anon', p.oid, 'EXECUTE'));
   n_sin := (SELECT count(*) FROM pg_proc p WHERE p.pronamespace IN ('public'::regnamespace, 'private'::regnamespace) AND has_function_privilege('anon', p.oid, 'EXECUTE')
               AND p.oid IS DISTINCT FROM to_regprocedure('public.catalogo_planes_visitador_publico()'));
-  PERFORM set_config('probe.p1000', CASE WHEN v = '{postgres=X/postgres,authenticated=X/postgres,service_role=X/postgres,anon=X/postgres}' AND n_sin = 38 AND n_total = 39
-    THEN 'OK (ACL exacta '||v||'; ejecutables por anon '||n_total||' = 38 + esta)'
-    ELSE 'ROJO (ACL '||COALESCE(v, 'NO EXISTE')||'; ejecutables por anon '||n_total||', sin esta '||n_sin||'; esperado 39 = 38 + 1)' END, false);
+  PERFORM set_config('probe.p1000', CASE
+    WHEN v IS DISTINCT FROM '{postgres=X/postgres,authenticated=X/postgres,service_role=X/postgres,anon=X/postgres}'
+      THEN 'ROJO (ACL '||COALESCE(v, 'NO EXISTE')||'; ejecutables por anon '||n_total||', sin esta '||n_sin||')'
+    WHEN n_sin = 0 AND n_total = 1 THEN 'OK (ACL exacta '||v||'; ejecutables por anon '||n_total||' = solo esta (370))'
+    WHEN n_sin = 38 AND n_total = 39 AND pg_temp.e370_estado() = 'pre' THEN 'PENDIENTE mig 370 (ACL exacta; ejecutables por anon 39 = 38 + esta)'
+    ELSE 'ROJO (ejecutables por anon '||n_total||', sin esta '||n_sin||'; esperado 1 (370) o 39 con el estado previo intacto; estado '||left(pg_temp.e370_estado(), 300)||')' END, false);
 EXCEPTION WHEN OTHERS THEN
   PERFORM set_config('probe.p1000', 'FALLO ('||SQLSTATE||' '||SQLERRM||')', false);
 END $$;
@@ -33591,6 +33697,368 @@ EXCEPTION WHEN OTHERS THEN
 END $$;
 SELECT set_config('role', 'none', true);
 
+-- ---------------- P1015-P1018 EXECUTE de funciones sin PUBLIC ni anon (370) ----------------
+-- El estado (pre/post/otro) sale de pg_temp.e370_estado() (bloque E370_FX, antes de P739). PENDIENTE solo con 'pre'
+-- (el estado previo intacto y exacto); cualquier otro estado distinto de 'post' es ROJO. Lo que no depende de la 370 se
+-- juzga ANTES de la rama PENDIENTE (regla del review #46).
+--   P1015 censo: 0 funciones de public/private con PUBLIC; anon ejecuta solo catalogo_planes_visitador_publico(). Siempre:
+--         authenticated ejecuta las 10 (9 helpers de public + private.safe_uuid), service_role las 9 de public, y toda
+--         funcion de la que depende una policy (pg_depend) la puede ejecutar cada rol de la policy (public -> anon y
+--         authenticated): la leccion 284 aplicada a funciones, en el catalogo.
+--   P1016 anon EJERCITADO: siempre, catalogo_planes_visitador_publico() devuelve filas y configuracion_pais /
+--         configuracion_sistema devuelven filas sin error; con la 370, las 8 helpers de public dan 42501 'permission denied
+--         for function' y anon no ejecuta private.safe_uuid.
+--   P1017 authenticated por panel: una tabla por helper, SELECT sin 42501 y con filas donde corresponde (las 9 helpers no
+--         dependen de la 370: OK antes y despues). Antes verifica en el catalogo que cada tabla tenga una policy SELECT/ALL
+--         TO authenticated que dependa de esa helper (si una policy cambia, el probe avisa en vez de quedar mudo). Ademas
+--         entrega_evidencias (private.entrega_visible, GRANT de la 370): sin el GRANT, PENDIENTE mig 370 por catalogo.
+--   P1018 triggers disparados como authenticated (no depende de la 370): los 3 INVOKER que llaman helpers
+--         (set_fecha_limite_cancelacion -> calcular_limite_cancelacion, perfiles_guard_rol_update -> get_auth_user_rol,
+--         private.trg_gate_capacidad_publicidad -> mi_empresa_proveedor; este ultimo ademas es de private con proacl NULL
+--         antes de la 370) y private.trg_guard_tema_columns (proacl NULL antes de la 370). Sin 42501; todo descartado.
+DO $$
+DECLARE v_est text; bad text := ''; r record; v text; n int;
+BEGIN
+  IF current_user <> 'postgres' THEN RAISE EXCEPTION 'fixture roto: P1015 corre como %', current_user; END IF;
+  v_est := pg_temp.e370_estado();
+  -- independiente de la 370
+  FOR r IN SELECT x.f, x.sr FROM (VALUES
+      ('public.mi_empresa_proveedor()', true), ('public.mi_rol_proveedor()', true), ('public.get_auth_user_rol()', true),
+      ('public.get_auth_user_pais_id()', true), ('public.puede_ver_conversacion(uuid)', true), ('public.mi_clinica_id()', true),
+      ('public.supervisa_cuenta_proveedor(uuid)', true), ('public.admin_clinica_de_medico(uuid)', true),
+      ('public.calcular_limite_cancelacion(date)', true), ('private.safe_uuid(text)', false)) x(f, sr) LOOP
+    IF to_regprocedure(r.f) IS NULL THEN bad := bad||r.f||' no existe; ';
+    ELSIF NOT has_function_privilege('authenticated', to_regprocedure(r.f), 'EXECUTE') THEN bad := bad||r.f||' sin authenticated; ';
+    ELSIF r.sr AND NOT has_function_privilege('service_role', to_regprocedure(r.f), 'EXECUTE') THEN bad := bad||r.f||' sin service_role; ';
+    END IF;
+  END LOOP;
+  IF NOT has_function_privilege('anon', 'public.catalogo_planes_visitador_publico()'::regprocedure, 'EXECUTE') THEN
+    bad := bad||'catalogo_planes_visitador_publico sin anon; ';
+  END IF;
+  v := (SELECT string_agg(DISTINCT pl.polname||'@'||pl.polrelid::regclass::text||' -> '||d.refobjid::regprocedure::text||' ['||rl||']', '; ')
+          FROM pg_policy pl JOIN pg_depend d ON d.classid = 'pg_policy'::regclass AND d.objid = pl.oid AND d.refclassid = 'pg_proc'::regclass
+          CROSS JOIN LATERAL (SELECT CASE WHEN x = 0 THEN 'anon' ELSE pg_get_userbyid(x) END AS rl FROM unnest(pl.polroles) x
+                              UNION SELECT 'authenticated' WHERE 0 = ANY (pl.polroles)) rr
+         WHERE NOT has_function_privilege(rr.rl, d.refobjid, 'EXECUTE'));
+  IF v IS NOT NULL THEN bad := bad||'policies con funciones que su rol no ejecuta: '||left(v, 400)||'; '; END IF;
+  n := (SELECT count(*) FROM pg_proc p WHERE p.pronamespace IN ('public'::regnamespace, 'private'::regnamespace)
+          AND EXISTS (SELECT 1 FROM aclexplode(COALESCE(p.proacl, acldefault('f', p.proowner))) a WHERE a.grantee = 0 AND a.privilege_type = 'EXECUTE'));
+
+  PERFORM set_config('probe.p1015', CASE
+    WHEN bad <> '' THEN 'ROJO ('||left(bad, 800)||')'
+    WHEN v_est = 'post' THEN 'OK (370: 0 funciones de public/private con PUBLIC; anon solo catalogo_planes_visitador_publico; las 10 con authenticated, 9 con service_role; policies ejecutables por sus roles)'
+    WHEN v_est = 'pre' THEN 'PENDIENTE mig 370 (estado previo intacto: '||n||' con PUBLIC; las 10 con authenticated; policies ejecutables por sus roles)'
+    ELSE 'ROJO (estado '||left(v_est, 800)||')' END, false);
+EXCEPTION WHEN OTHERS THEN
+  PERFORM set_config('probe.p1015', 'FALLO ('||SQLSTATE||' '||SQLERRM||')', false);
+END $$;
+SELECT set_config('role', 'none', true);
+
+DO $$
+DECLARE v_est text; bad text := ''; d text := ''; t text; st text; msg text; n int; n_42501 int := 0; n_resp int := 0; dh text := '';
+BEGIN
+  IF current_user <> 'postgres' THEN RAISE EXCEPTION 'fixture roto: P1016 corre como %', current_user; END IF;
+  v_est := pg_temp.e370_estado();
+  PERFORM set_config('request.jwt.claims', '{"role":"anon"}', true);
+  -- independiente de la 370: lo que anon usa de verdad sin sesion
+  FOREACH t IN ARRAY ARRAY['SELECT count(*) FROM public.catalogo_planes_visitador_publico()',
+                           'SELECT count(*) FROM public.configuracion_pais',
+                           'SELECT count(*) FROM public.configuracion_sistema'] LOOP
+    BEGIN
+      PERFORM set_config('role', 'anon', true);
+      EXECUTE t INTO n;
+      PERFORM set_config('role', 'none', true);
+      d := d||split_part(split_part(t, 'public.', 2), '(', 1)||'='||n||'; ';
+      IF n = 0 THEN bad := bad||t||' devolvio 0 filas; '; END IF;
+    EXCEPTION WHEN OTHERS THEN
+      PERFORM set_config('role', 'none', true);
+      bad := bad||t||' ERROR '||SQLSTATE||' '||left(SQLERRM, 80)||'; ';
+    END;
+  END LOOP;
+  -- de la 370: las 8 helpers de public, ejercitadas (el valor del argumento da igual: el ACL se chequea antes)
+  FOREACH t IN ARRAY ARRAY['get_auth_user_rol()', 'get_auth_user_pais_id()', 'mi_empresa_proveedor()', 'mi_rol_proveedor()',
+                           'mi_clinica_id()', 'puede_ver_conversacion(NULL::uuid)', 'supervisa_cuenta_proveedor(NULL::uuid)',
+                           'admin_clinica_de_medico(NULL::uuid)'] LOOP
+    st := '00000'; msg := '';
+    BEGIN
+      PERFORM set_config('role', 'anon', true);
+      EXECUTE 'SELECT public.'||t;
+      PERFORM set_config('role', 'none', true);
+    EXCEPTION WHEN OTHERS THEN PERFORM set_config('role', 'none', true); st := SQLSTATE; msg := SQLERRM; END;
+    IF st = '42501' AND msg LIKE 'permission denied for function %' THEN n_42501 := n_42501 + 1;
+    ELSIF st = '00000' THEN n_resp := n_resp + 1;
+    ELSE bad := bad||t||' dio '||st||' '||left(msg, 60)||'; ';
+    END IF;
+    dh := dh||split_part(t, '(', 1)||'='||st||' ';
+  END LOOP;
+  PERFORM set_config('request.jwt.claims', '', true);
+  dh := dh||'safe_uuid anon='||has_function_privilege('anon', 'private.safe_uuid(text)'::regprocedure, 'EXECUTE')::text;
+
+  PERFORM set_config('probe.p1016', CASE
+    WHEN bad <> '' THEN 'ROJO ('||left(bad, 600)||' | '||d||')'
+    WHEN v_est = 'post' AND n_42501 = 8 AND NOT has_function_privilege('anon', 'private.safe_uuid(text)'::regprocedure, 'EXECUTE')
+      THEN 'OK (370: anon '||d||'las 8 helpers 42501; safe_uuid sin anon)'
+    WHEN v_est = 'pre' AND n_resp = 8 THEN 'PENDIENTE mig 370 (anon '||d||'helpers: '||dh||')'
+    ELSE 'ROJO (estado '||left(v_est, 300)||'; helpers: '||dh||')' END, false);
+EXCEPTION WHEN OTHERS THEN
+  PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
+  PERFORM set_config('probe.p1016', 'FALLO ('||SQLSTATE||' '||SQLERRM||')', false);
+END $$;
+SELECT set_config('role', 'none', true);
+
+-- P1017: actores por email (proveedor.qa, adminpais.qa, medico.qa, clinica.qa). Dentro del savepoint se PREPARAN (empresa
+-- de proveedor.qa activa y su cuenta activa; adminpais.qa con rol admin_pais y activo) porque los fixtures por posicion
+-- del harness pueden moverlos. Oraculos leidos como postgres: proveedor.qa ve >= 1 cuenta de su empresa (la propia);
+-- adminpais.qa ve TODAS las clinicas de su pais (y son > 0); medico.qa ve su perfil (1). chat_conversaciones,
+-- laboratorio_clinicas, disponibilidad_medico y storage.objects: sin error (el conteo va al detalle).
+-- entrega_evidencias (370, private.entrega_visible): farmacia.qa (admin de la farmacia QA, la de las entregas con evidencias)
+-- por email lee la tabla: sin 42501 y filas >= 0. Su policy entrega_evidencias_select llama a private.entrega_visible, que
+-- hasta la 370 no tiene EXECUTE para authenticated (42501 para todo authenticated). Si el GRANT no esta (catalogo) el
+-- veredicto es 'PENDIENTE mig 370 (lo medido)', pero SOLO despues de juzgar el resto: una regresion en las otras tablas es
+-- ROJO igual. Con el GRANT, un 42501 ahi es ROJO.
+DO $$
+DECLARE a_prov uuid; e_prov uuid; a_ap uuid; p_ap uuid; a_med uuid; a_cli uuid; r record; n bigint; o bigint;
+  bad text := ''; d text := ''; snap_pre text; snap_post text;
+  a_farm uuid; v_ent boolean; st_ent text := '-'; msg_ent text := ''; n_ent bigint;
+BEGIN
+  IF current_user <> 'postgres' THEN RAISE EXCEPTION 'fixture roto: P1017 corre como %', current_user; END IF;
+  a_prov := (SELECT u.id FROM auth.users u WHERE lower(u.email) LIKE 'proveedor.qa@%' ORDER BY u.email LIMIT 1);
+  a_ap := (SELECT u.id FROM auth.users u WHERE lower(u.email) LIKE 'adminpais.qa@%' ORDER BY u.email LIMIT 1);
+  a_med := (SELECT u.id FROM auth.users u WHERE lower(u.email) LIKE 'medico.qa@%' ORDER BY u.email LIMIT 1);
+  a_cli := (SELECT u.id FROM auth.users u WHERE lower(u.email) LIKE 'clinica.qa@%' ORDER BY u.email LIMIT 1);
+  a_farm := (SELECT u.id FROM auth.users u WHERE lower(u.email) LIKE 'farmacia.qa@%' ORDER BY u.email LIMIT 1);
+  v_ent := has_function_privilege('authenticated', 'private.entrega_visible(uuid,integer,uuid)'::regprocedure, 'EXECUTE');
+  e_prov := (SELECT cp.empresa_id FROM public.cuentas_proveedor cp WHERE cp.id = a_prov);
+  p_ap := (SELECT p.pais_id FROM public.perfiles p WHERE p.id = a_ap);
+  IF a_prov IS NULL OR e_prov IS NULL OR a_ap IS NULL OR p_ap IS NULL OR a_med IS NULL OR a_cli IS NULL OR a_farm IS NULL THEN
+    RAISE EXCEPTION 'sin fixture: P1017 proveedor.qa % (empresa %), adminpais.qa % (pais %), medico.qa %, clinica.qa %, farmacia.qa %', a_prov, e_prov, a_ap, p_ap, a_med, a_cli, a_farm;
+  END IF;
+  -- cada tabla elegida tiene que tener una policy SELECT/ALL TO authenticated que dependa de la helper
+  FOR r IN SELECT * FROM (VALUES
+      ('public.cuentas_proveedor', 'public.mi_empresa_proveedor()'), ('public.cuentas_proveedor', 'public.mi_rol_proveedor()'),
+      ('public.cuentas_proveedor', 'public.supervisa_cuenta_proveedor(uuid)'), ('storage.objects', 'private.safe_uuid(text)'),
+      ('public.clinicas', 'public.get_auth_user_pais_id()'), ('public.clinicas', 'public.get_auth_user_rol()'),
+      ('public.perfiles', 'public.get_auth_user_rol()'), ('public.chat_conversaciones', 'public.puede_ver_conversacion(uuid)'),
+      ('public.laboratorio_clinicas', 'public.mi_clinica_id()'), ('public.disponibilidad_medico', 'public.admin_clinica_de_medico(uuid)'),
+      ('public.entrega_evidencias', 'private.entrega_visible(uuid,integer,uuid)')) x(t, f) LOOP
+    IF NOT EXISTS (SELECT 1 FROM pg_policy pl JOIN pg_depend dp ON dp.classid = 'pg_policy'::regclass AND dp.objid = pl.oid
+                     AND dp.refclassid = 'pg_proc'::regclass AND dp.refobjid = to_regprocedure(r.f)
+                    WHERE pl.polrelid = to_regclass(r.t) AND pl.polcmd IN ('r', '*') AND 'authenticated'::regrole = ANY (pl.polroles)) THEN
+      bad := bad||'fixture desactualizado: ninguna policy SELECT/ALL de '||r.t||' usa '||r.f||'; ';
+    END IF;
+  END LOOP;
+  snap_pre := (SELECT md5(COALESCE((SELECT to_jsonb(c)::text FROM public.cuentas_proveedor c WHERE c.id = a_prov), '-')||'|'||
+                          COALESCE((SELECT to_jsonb(e)::text FROM public.empresas_proveedoras e WHERE e.id = e_prov), '-')||'|'||
+                          COALESCE((SELECT to_jsonb(p)::text FROM public.perfiles p WHERE p.id = a_ap), '-')));
+
+  BEGIN
+    UPDATE public.empresas_proveedoras SET estado = 'activa' WHERE id = e_prov AND estado <> 'activa';
+    UPDATE public.cuentas_proveedor SET activo = true WHERE id = a_prov AND activo IS DISTINCT FROM true;
+    UPDATE public.perfiles SET rol = 'admin_pais', activo = true WHERE id = a_ap AND (rol IS DISTINCT FROM 'admin_pais' OR activo IS DISTINCT FROM true);
+    FOR r IN SELECT * FROM (VALUES
+        (1, 'proveedor.qa', 'cuentas_proveedor', a_prov), (2, 'proveedor.qa', 'storage.objects', a_prov),
+        (3, 'adminpais.qa', 'clinicas', a_ap), (4, 'medico.qa', 'perfiles', a_med), (5, 'medico.qa', 'chat_conversaciones', a_med),
+        (6, 'clinica.qa', 'laboratorio_clinicas', a_cli), (7, 'clinica.qa', 'disponibilidad_medico', a_cli)) x(k, nom, t, uid) ORDER BY x.k LOOP
+      BEGIN
+        PERFORM set_config('request.jwt.claims', json_build_object('sub', r.uid, 'role', 'authenticated')::text, true);
+        PERFORM set_config('role', 'authenticated', true);
+        CASE r.k
+          WHEN 1 THEN SELECT count(*) INTO n FROM public.cuentas_proveedor c WHERE c.empresa_id = e_prov;
+          WHEN 2 THEN SELECT count(*) INTO n FROM storage.objects;
+          WHEN 3 THEN SELECT count(*) INTO n FROM public.clinicas c WHERE c.pais_id = p_ap;
+          WHEN 4 THEN SELECT count(*) INTO n FROM public.perfiles p WHERE p.id = a_med;
+          WHEN 5 THEN SELECT count(*) INTO n FROM public.chat_conversaciones;
+          WHEN 6 THEN SELECT count(*) INTO n FROM public.laboratorio_clinicas;
+          ELSE SELECT count(*) INTO n FROM public.disponibilidad_medico;
+        END CASE;
+        PERFORM set_config('role', 'none', true);
+        o := CASE r.k WHEN 3 THEN (SELECT count(*) FROM public.clinicas c WHERE c.pais_id = p_ap) ELSE NULL END;
+        d := d||r.nom||'/'||r.t||'='||n||CASE WHEN o IS NOT NULL THEN '/'||o ELSE '' END||'; ';
+        IF (r.k = 1 AND n < 1) OR (r.k = 3 AND (n <> o OR o = 0)) OR (r.k = 4 AND n <> 1) THEN
+          bad := bad||r.nom||'/'||r.t||' filas '||n||COALESCE(' de '||o, '')||'; ';
+        END IF;
+      EXCEPTION WHEN OTHERS THEN
+        PERFORM set_config('role', 'none', true);
+        bad := bad||r.nom||'/'||r.t||' ERROR '||SQLSTATE||' '||left(SQLERRM, 90)||'; ';
+      END;
+    END LOOP;
+    -- entrega_evidencias como farmacia.qa (370: private.entrega_visible)
+    BEGIN
+      PERFORM set_config('request.jwt.claims', json_build_object('sub', a_farm, 'role', 'authenticated')::text, true);
+      PERFORM set_config('role', 'authenticated', true);
+      SELECT count(*) INTO n_ent FROM public.entrega_evidencias;
+      PERFORM set_config('role', 'none', true);
+      st_ent := '00000';
+    EXCEPTION WHEN OTHERS THEN
+      PERFORM set_config('role', 'none', true); st_ent := SQLSTATE; msg_ent := SQLERRM;
+    END;
+    d := d||'farmacia.qa/entrega_evidencias='||CASE WHEN st_ent = '00000' THEN n_ent::text ELSE st_ent||' '||left(msg_ent, 60) END||'; ';
+    PERFORM set_config('request.jwt.claims', '', true);
+    RAISE EXCEPTION 'P1017 descarte' USING ERRCODE = 'P0999';
+  EXCEPTION WHEN SQLSTATE 'P0999' THEN NULL;
+  END;
+  PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
+  snap_post := (SELECT md5(COALESCE((SELECT to_jsonb(c)::text FROM public.cuentas_proveedor c WHERE c.id = a_prov), '-')||'|'||
+                           COALESCE((SELECT to_jsonb(e)::text FROM public.empresas_proveedoras e WHERE e.id = e_prov), '-')||'|'||
+                           COALESCE((SELECT to_jsonb(p)::text FROM public.perfiles p WHERE p.id = a_ap), '-')));
+  IF snap_post IS DISTINCT FROM snap_pre THEN bad := bad||'los actores no quedaron como estaban tras el descarte; '; END IF;
+  PERFORM set_config('probe.p1017', CASE
+    WHEN bad <> '' THEN 'ROJO ('||left(bad, 700)||' | '||left(d, 300)||')'
+    WHEN NOT v_ent THEN 'PENDIENTE mig 370 (entrega_visible sin EXECUTE de authenticated; lo medido: '||d||'descartado)'
+    WHEN st_ent <> '00000' THEN 'ROJO (farmacia.qa/entrega_evidencias '||st_ent||' '||left(msg_ent, 100)||' con el GRANT de entrega_visible | '||left(d, 300)||')'
+    ELSE 'OK (sin 42501: '||d||'descartado; estado 370 '||left(pg_temp.e370_estado(), 20)||')' END, false);
+EXCEPTION WHEN OTHERS THEN
+  PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
+  PERFORM set_config('probe.p1017', 'FALLO ('||SQLSTATE||' '||SQLERRM||')', false);
+END $$;
+SELECT set_config('role', 'none', true);
+
+-- P1018: actores deterministas. La empresa QA de visitadores (411d6f8c..., laboratorio_farmaceutico, lab prioritario de
+-- medico.qa) y su visitador real (e00f68c8..., el de las visitas de la demo) por id, como en P1011; proveedor.qa,
+-- superadmin, medico.qa y adminpais.qa por email. Dentro del savepoint se PREPARAN (empresa activa; cuentas en la empresa,
+-- activas, con su rol; super_admin y admin_pais con su rol y activos; una bolsa de visitas vigente del pais de medico.qa
+-- con cupo de sobra; la empresa opera en su pais). Casos, todos como authenticated:
+--   (a) el visitador INSERTa una visita -> 1 fila y fecha_limite_cancelacion = calcular_limite_cancelacion(fecha)
+--       (set_fecha_limite_cancelacion, INVOKER, llama a calcular_limite_cancelacion);
+--   (b) el super_admin cambia activo de medico.qa -> 1 fila y el valor cambio (perfiles_guard_rol_update, INVOKER, llama a
+--       get_auth_user_rol porque cambia una de las 4 columnas vigiladas);
+--   (c) proveedor.qa (admin) INSERTa un borrador de campana -> 00000 si la empresa tiene la capacidad 'publicidad' (medido
+--       como postgres), PC014 si no: en los dos casos private.trg_gate_capacidad_publicidad (INVOKER, de private) ya llamo
+--       a mi_empresa_proveedor;
+--   (d) adminpais.qa hace un UPDATE sin cambios de las clinicas de su pais -> filas = las de su pais (> 0)
+--       (private.trg_guard_tema_columns, de private).
+-- Ninguno puede dar 42501. Todo se descarta (RAISE P0999) y se verifican los conteos y las filas tocadas.
+DO $$
+DECLARE
+  c_emp CONSTANT uuid := '411d6f8c-a405-49d6-9ed6-fbeb0db05133'; c_vis CONSTANT uuid := 'e00f68c8-bd30-4d62-b73b-9490e4e17efe';
+  a_prov uuid; a_sa uuid; a_med uuid; a_ap uuid; p_med uuid; p_emp uuid; p_ap uuid; v_cap boolean; v_fecha date := CURRENT_DATE + 90;
+  st text; msg text; n bigint; o bigint; bad text := ''; d text := ''; v text; snap_pre text; snap_post text; r record;
+BEGIN
+  IF current_user <> 'postgres' THEN RAISE EXCEPTION 'fixture roto: P1018 corre como %', current_user; END IF;
+  a_prov := (SELECT u.id FROM auth.users u WHERE lower(u.email) LIKE 'proveedor.qa@%' ORDER BY u.email LIMIT 1);
+  a_sa := (SELECT u.id FROM auth.users u WHERE lower(u.email) LIKE 'superadmin@%' ORDER BY u.email LIMIT 1);
+  a_med := (SELECT u.id FROM auth.users u WHERE lower(u.email) LIKE 'medico.qa@%' ORDER BY u.email LIMIT 1);
+  a_ap := (SELECT u.id FROM auth.users u WHERE lower(u.email) LIKE 'adminpais.qa@%' ORDER BY u.email LIMIT 1);
+  p_med := (SELECT p.pais_id FROM public.perfiles p WHERE p.id = a_med);
+  p_emp := (SELECT e.pais_id FROM public.empresas_proveedoras e WHERE e.id = c_emp);
+  p_ap := (SELECT p.pais_id FROM public.perfiles p WHERE p.id = a_ap);
+  IF a_prov IS NULL OR a_sa IS NULL OR a_med IS NULL OR a_ap IS NULL OR p_med IS NULL OR p_emp IS NULL OR p_ap IS NULL
+     OR NOT EXISTS (SELECT 1 FROM public.cuentas_proveedor WHERE id = c_vis) THEN
+    RAISE EXCEPTION 'sin fixture: P1018 proveedor.qa %, superadmin %, medico.qa % (pais %), adminpais.qa % (pais %), empresa % (pais %), visitador %',
+      a_prov, a_sa, a_med, p_med, a_ap, p_ap, c_emp, p_emp, c_vis;
+  END IF;
+  -- catalogo: los 3 llamantes son INVOKER y trg_guard_tema_columns vive en private
+  FOR r IN SELECT * FROM (VALUES ('public.set_fecha_limite_cancelacion()'), ('public.perfiles_guard_rol_update()'),
+                                 ('private.trg_gate_capacidad_publicidad()')) x(f) LOOP
+    IF (SELECT prosecdef FROM pg_proc WHERE oid = to_regprocedure(r.f)) IS DISTINCT FROM false THEN bad := bad||r.f||' no es INVOKER; '; END IF;
+  END LOOP;
+  IF to_regprocedure('private.trg_guard_tema_columns()') IS NULL THEN bad := bad||'private.trg_guard_tema_columns no existe; '; END IF;
+  d := 'PUBLIC en trg_gate_capacidad_publicidad/trg_guard_tema_columns='||
+       (SELECT string_agg(EXISTS (SELECT 1 FROM aclexplode(COALESCE(p.proacl, acldefault('f', p.proowner))) a WHERE a.grantee = 0)::text, '/' ORDER BY p.proname)
+          FROM pg_proc p WHERE p.oid IN ('private.trg_gate_capacidad_publicidad()'::regprocedure, 'private.trg_guard_tema_columns()'::regprocedure))||'; ';
+  snap_pre := (SELECT md5((SELECT count(*) FROM public.visitas_agendadas)::text||'|'||(SELECT count(*) FROM public.solicitudes_campana)::text||'|'||
+                          (SELECT count(*) FROM public.planes_visitador_contratados)::text||'|'||
+                          COALESCE((SELECT string_agg(to_jsonb(p)::text, '|' ORDER BY p.id) FROM public.perfiles p WHERE p.id IN (a_med, a_sa, a_ap)), '-')||'|'||
+                          COALESCE((SELECT string_agg(to_jsonb(c)::text, '|' ORDER BY c.id) FROM public.cuentas_proveedor c WHERE c.id IN (a_prov, c_vis)), '-')||'|'||
+                          COALESCE((SELECT string_agg(to_jsonb(c)::text, '|' ORDER BY c.id) FROM public.clinicas c WHERE c.pais_id = p_ap), '-')));
+
+  BEGIN
+    -- preparar
+    UPDATE public.empresas_proveedoras SET estado = 'activa' WHERE id = c_emp AND estado <> 'activa';
+    UPDATE public.cuentas_proveedor SET empresa_id = c_emp, activo = true,
+           rol_en_empresa = CASE id WHEN c_vis THEN 'visitador_medico' ELSE 'admin' END
+     WHERE id IN (c_vis, a_prov);
+    UPDATE public.perfiles SET rol = 'super_admin', activo = true WHERE id = a_sa AND (rol IS DISTINCT FROM 'super_admin' OR activo IS DISTINCT FROM true);
+    UPDATE public.perfiles SET rol = 'admin_pais', activo = true WHERE id = a_ap AND (rol IS DISTINCT FROM 'admin_pais' OR activo IS DISTINCT FROM true);
+    INSERT INTO public.planes_visitador_contratados (empresa_id, plan_visitador_id, pais_id, cantidad_visitas_incluidas, visitas_usadas, precio_pagado, fecha_inicio, fecha_fin, estado)
+      VALUES (c_emp, 1, p_med, 100000, 0, 0, CURRENT_DATE - 1, CURRENT_DATE + 3650, 'activo');
+    INSERT INTO public.empresa_paises_operacion (empresa_id, pais_id, activo) VALUES (c_emp, p_emp, true)
+      ON CONFLICT (empresa_id, pais_id) DO UPDATE SET activo = true;
+    v_cap := private.empresa_tiene_capacidad(c_emp, 'publicidad');
+
+    -- (a) set_fecha_limite_cancelacion como el visitador
+    st := '00000'; msg := ''; n := NULL;
+    BEGIN
+      PERFORM set_config('request.jwt.claims', json_build_object('sub', c_vis, 'role', 'authenticated')::text, true);
+      PERFORM set_config('role', 'authenticated', true);
+      INSERT INTO public.visitas_agendadas (empresa_id, medico_id, cuenta_proveedor_id, fecha_visita, hora_inicio, hora_fin, tipo_visita, estado)
+        VALUES (c_emp, a_med, c_vis, v_fecha, '07:00', '07:30', 'presentacion_producto', 'pendiente');
+      GET DIAGNOSTICS n = ROW_COUNT;
+      PERFORM set_config('role', 'none', true);
+    EXCEPTION WHEN OTHERS THEN PERFORM set_config('role', 'none', true); st := SQLSTATE; msg := SQLERRM; END;
+    v := (SELECT string_agg(va.fecha_limite_cancelacion::text, ',') FROM public.visitas_agendadas va
+           WHERE va.empresa_id = c_emp AND va.medico_id = a_med AND va.cuenta_proveedor_id = c_vis AND va.fecha_visita = v_fecha AND va.hora_inicio = '07:00');
+    d := d||'(a) visita='||st||' filas='||COALESCE(n::text, '-')||' limite='||COALESCE(v, '-')||'; ';
+    IF st <> '00000' OR n IS DISTINCT FROM 1 OR v IS DISTINCT FROM public.calcular_limite_cancelacion(v_fecha)::text THEN
+      bad := bad||'(a) '||st||' '||left(msg, 100)||' filas='||COALESCE(n::text, '-')||' limite='||COALESCE(v, '-')||'; ';
+    END IF;
+
+    -- (b) perfiles_guard_rol_update como el super_admin
+    st := '00000'; msg := ''; n := NULL;
+    o := (SELECT CASE WHEN p.activo THEN 1 ELSE 0 END FROM public.perfiles p WHERE p.id = a_med);
+    BEGIN
+      PERFORM set_config('request.jwt.claims', json_build_object('sub', a_sa, 'role', 'authenticated')::text, true);
+      PERFORM set_config('role', 'authenticated', true);
+      UPDATE public.perfiles SET activo = NOT activo WHERE id = a_med;
+      GET DIAGNOSTICS n = ROW_COUNT;
+      PERFORM set_config('role', 'none', true);
+    EXCEPTION WHEN OTHERS THEN PERFORM set_config('role', 'none', true); st := SQLSTATE; msg := SQLERRM; END;
+    d := d||'(b) perfil='||st||' filas='||COALESCE(n::text, '-')||'; ';
+    IF st <> '00000' OR n IS DISTINCT FROM 1
+       OR (SELECT CASE WHEN p.activo THEN 1 ELSE 0 END FROM public.perfiles p WHERE p.id = a_med) IS NOT DISTINCT FROM o THEN
+      bad := bad||'(b) '||st||' '||left(msg, 100)||' filas='||COALESCE(n::text, '-')||'; ';
+    END IF;
+
+    -- (c) private.trg_gate_capacidad_publicidad como proveedor.qa
+    st := '00000'; msg := ''; n := NULL;
+    BEGIN
+      PERFORM set_config('request.jwt.claims', json_build_object('sub', a_prov, 'role', 'authenticated')::text, true);
+      PERFORM set_config('role', 'authenticated', true);
+      INSERT INTO public.solicitudes_campana (empresa_id, cuenta_proveedor_id, titulo, tipo, fecha_inicio, fecha_fin, estado, pais_id)
+        VALUES (c_emp, a_prov, 'P1018 QA', 'banner', CURRENT_DATE + 1, CURRENT_DATE + 8, 'borrador', p_emp);
+      GET DIAGNOSTICS n = ROW_COUNT;
+      PERFORM set_config('role', 'none', true);
+    EXCEPTION WHEN OTHERS THEN PERFORM set_config('role', 'none', true); st := SQLSTATE; msg := SQLERRM; END;
+    d := d||'(c) campana='||st||' filas='||COALESCE(n::text, '-')||' capacidad='||COALESCE(v_cap::text, '-')||'; ';
+    IF NOT ((v_cap AND st = '00000' AND n = 1) OR (NOT v_cap AND st = 'PC014')) THEN
+      bad := bad||'(c) '||st||' '||left(msg, 100)||' capacidad='||COALESCE(v_cap::text, '-')||'; ';
+    END IF;
+
+    -- (d) private.trg_guard_tema_columns como adminpais.qa
+    st := '00000'; msg := ''; n := NULL;
+    o := (SELECT count(*) FROM public.clinicas c WHERE c.pais_id = p_ap);
+    BEGIN
+      PERFORM set_config('request.jwt.claims', json_build_object('sub', a_ap, 'role', 'authenticated')::text, true);
+      PERFORM set_config('role', 'authenticated', true);
+      UPDATE public.clinicas SET telefono = telefono WHERE pais_id = p_ap;
+      GET DIAGNOSTICS n = ROW_COUNT;
+      PERFORM set_config('role', 'none', true);
+    EXCEPTION WHEN OTHERS THEN PERFORM set_config('role', 'none', true); st := SQLSTATE; msg := SQLERRM; END;
+    d := d||'(d) clinicas='||st||' filas='||COALESCE(n::text, '-')||'/'||o||'; ';
+    IF st <> '00000' OR n IS DISTINCT FROM o OR o = 0 THEN
+      bad := bad||'(d) '||st||' '||left(msg, 100)||' filas='||COALESCE(n::text, '-')||'/'||o||'; ';
+    END IF;
+
+    PERFORM set_config('request.jwt.claims', '', true);
+    RAISE EXCEPTION 'P1018 descarte' USING ERRCODE = 'P0999';
+  EXCEPTION WHEN SQLSTATE 'P0999' THEN NULL;
+  END;
+  PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
+  snap_post := (SELECT md5((SELECT count(*) FROM public.visitas_agendadas)::text||'|'||(SELECT count(*) FROM public.solicitudes_campana)::text||'|'||
+                           (SELECT count(*) FROM public.planes_visitador_contratados)::text||'|'||
+                           COALESCE((SELECT string_agg(to_jsonb(p)::text, '|' ORDER BY p.id) FROM public.perfiles p WHERE p.id IN (a_med, a_sa, a_ap)), '-')||'|'||
+                           COALESCE((SELECT string_agg(to_jsonb(c)::text, '|' ORDER BY c.id) FROM public.cuentas_proveedor c WHERE c.id IN (a_prov, c_vis)), '-')||'|'||
+                           COALESCE((SELECT string_agg(to_jsonb(c)::text, '|' ORDER BY c.id) FROM public.clinicas c WHERE c.pais_id = p_ap), '-')));
+  IF snap_post IS DISTINCT FROM snap_pre THEN bad := bad||'no quedo todo como estaba tras el descarte; '; END IF;
+  PERFORM set_config('probe.p1018', CASE WHEN bad = ''
+    THEN 'OK (triggers como authenticated sin 42501: '||d||'descartado; estado 370 '||left(pg_temp.e370_estado(), 20)||')'
+    ELSE 'ROJO ('||left(bad, 700)||' | '||left(d, 300)||')' END, false);
+EXCEPTION WHEN OTHERS THEN
+  PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
+  PERFORM set_config('probe.p1018', 'FALLO ('||SQLSTATE||' '||SQLERRM||')', false);
+END $$;
+SELECT set_config('role', 'none', true);
+
 -- ===== Veredictos como result set =====
 SELECT 'P1_anon_insert_citas'              AS probe, current_setting('probe.p1', true)  AS verdict, 'BLOQUEADO' AS esperado_post_fix
 UNION ALL SELECT 'P2_medico_cancela_ajena_rpc',         current_setting('probe.p2', true),  'BLOQUEADO'
@@ -34393,9 +34861,9 @@ UNION ALL SELECT 'P735_fo_planes_paciente',          current_setting('probe.p735
 UNION ALL SELECT 'P736_fo_metrica_anon_no_escribe',  current_setting('probe.p736', true),    'OK (delta 0)'
 UNION ALL SELECT 'P737_fo_slots_anon_y_ctrl_pos',    current_setting('probe.p737', true),    'OK (corta anon, responde auth)'
 UNION ALL SELECT 'P738_fo_sin_execute_y_interna',    current_setting('probe.p738', true),    'OK (revocada, interna viva)'
-UNION ALL SELECT 'P739_rv_censo_anon_secdef',         current_setting('probe.p739', true),    'OK (11 esperadas: 10 de policies + catalogo_planes_visitador_publico desde la 362)'
+UNION ALL SELECT 'P739_rv_censo_anon_secdef',         current_setting('probe.p739', true),    'OK (370: solo catalogo_planes_visitador_publico; antes de la 370: PENDIENTE con las 11 de la 301)'
 UNION ALL SELECT 'P740_rv_anon_ejercitado',           current_setting('probe.p740', true),    'OK (42501 en 8 revocadas)'
-UNION ALL SELECT 'P741_rv_excepciones_intactas',      current_setting('probe.p741', true),    'OK (registrar_proveedor sin anon + 10 + 5 tablas sin 42501)'
+UNION ALL SELECT 'P741_rv_excepciones_intactas',      current_setting('probe.p741', true),    'OK (370: registrar_proveedor sin anon + las 10 helpers sin anon + 5 tablas sin 42501 con grant; antes de la 370: PENDIENTE)'
 UNION ALL SELECT 'P742_rv_cadena_interna_viva',       current_setting('probe.p742', true),    'OK (control positivo)'
 UNION ALL SELECT 'P743_rv_liberar_examen_coalesce',   current_setting('probe.p743', true),    'OK (los 2 actores cortados)'
 UNION ALL SELECT 'P744_rv_fabrica_cerrada',           current_setting('probe.p744', true),    'OK (funcion y secuencia nuevas)'
@@ -34668,7 +35136,7 @@ UNION ALL SELECT 'P996_catalogo_visitador_anon_362',  current_setting('probe.p99
 UNION ALL SELECT 'P997_catalogo_visitador_sin_zz_t9_362',  current_setting('probe.p997', true), 'OK (362: ZZ y T9 no aparecen)'
 UNION ALL SELECT 'P998_catalogo_visitador_inactiva_362',  current_setting('probe.p998', true), 'OK (362: la config inactiva no aparece; su gemela activa si)'
 UNION ALL SELECT 'P999_catalogo_visitador_anon_tablas_362',  current_setting('probe.p999', true), 'OK (362: anon sigue sin SELECT en planes_base/planes_configuracion)'
-UNION ALL SELECT 'P1000_catalogo_visitador_acl_362',  current_setting('probe.p1000', true), 'OK (362: ACL exacta; ejecutables por anon = 38 + 1)'
+UNION ALL SELECT 'P1000_catalogo_visitador_acl_362',  current_setting('probe.p1000', true), 'OK (362: ACL exacta; ejecutables por anon = solo esta desde la 370; antes de la 370: PENDIENTE con 38 + 1)'
 UNION ALL SELECT 'P1001_proveedores_pais_admin_363',  current_setting('probe.p1001', true), 'OK (363: admin_pais de GT cuenta GT = oraculo)'
 UNION ALL SELECT 'P1002_proveedores_pais_otro_363',  current_setting('probe.p1002', true), 'OK (363: admin_pais de GT sobre otro pais -> PC028)'
 UNION ALL SELECT 'P1003_proveedores_pais_super_363',  current_setting('probe.p1003', true), 'OK (363: super_admin cuenta GT = oraculo)'
@@ -34680,6 +35148,11 @@ UNION ALL SELECT 'DET_p1011',  'DET ' || COALESCE(NULLIF(current_setting('probe.
 UNION ALL SELECT 'P1012_catalogo_lab_sin_permiso_369',  current_setting('probe.p1012', true), 'OK (369: EX035 para recepcion, tecnico, farmacia, medico y paciente; anon sin EXECUTE; antes de la 369: PENDIENTE)'
 UNION ALL SELECT 'P1013_catalogo_lab_sin_escritura_directa_369',  current_setting('probe.p1013', true), 'OK (369: INSERT/UPDATE/DELETE directo 42501; antes de la 369: PENDIENTE)'
 UNION ALL SELECT 'P1014_catalogo_lab_select_369',  current_setting('probe.p1014', true), 'OK (staff del lab ve activos e inactivos; medico solo activos de su pais; farmacia no ve el inactivo ajeno)'
+UNION ALL SELECT 'E370_FX_estado_execute',  current_setting('probe.e370_fx', true), 'OK (pre antes de la 370; post despues) - salud del fixture de P739/P741/P1015/P1016'
+UNION ALL SELECT 'P1015_execute_censo_370',  current_setting('probe.p1015', true), 'OK (370: 0 funciones con PUBLIC; anon solo catalogo_planes_visitador_publico; policies ejecutables por sus roles; antes de la 370: PENDIENTE)'
+UNION ALL SELECT 'P1016_execute_anon_ejercitado_370',  current_setting('probe.p1016', true), 'OK (370: anon lee catalogo y configuracion; las 8 helpers 42501; antes de la 370: PENDIENTE)'
+UNION ALL SELECT 'P1017_execute_authenticated_por_panel_370',  current_setting('probe.p1017', true), 'OK (sin 42501 por panel, entrega_evidencias incluida; antes de la 370: PENDIENTE por entrega_visible)'
+UNION ALL SELECT 'P1018_execute_triggers_authenticated_370',  current_setting('probe.p1018', true), 'OK (4 triggers como authenticated sin 42501, antes y despues de la 370)'
 UNION ALL SELECT 'P1010_campana_vistas_sin_update_367',  current_setting('probe.p1010', true), 'OK (367: INSERT 1; ON CONFLICT DO NOTHING 0 sin error; DO UPDATE y UPDATE 42501; otro paciente 0; antes de la 367: PENDIENTE)'
 UNION ALL SELECT 'P1009_datos_bancarios_acotados_366',  current_setting('probe.p1009', true), 'OK (366: cuenta GT solo super_admin/admin_pais GT/proveedores GT; checkout 1 fila; config 21 super_admin y 14 el resto, admin_pais incluido; antes de la 366: PENDIENTE)'
 UNION ALL SELECT 'DET_p1009',  'DET ' || COALESCE(NULLIF(current_setting('probe.p1009_det', true), ''), '(sin dato)'), 'DET (detalle de P1009, no es probe)'
@@ -34932,7 +35405,7 @@ UNION ALL SELECT 'P000_CENTINELA_veredictos_no_nulos',
        'probe.p866', 'probe.p867', 'probe.p868', 'probe.p869', 'probe.p870', 'probe.p871', 'probe.p872', 'probe.p873', 'probe.p874', 'probe.p875', 'probe.p876', 'probe.p877', 'probe.p878',
        'probe.p879', 'probe.p880', 'probe.p881', 'probe.p882', 'probe.p883', 'probe.p884',
        'probe.p885', 'probe.p886', 'probe.p887', 'probe.p888', 'probe.p889', 'probe.p890', 'probe.p891', 'probe.p892', 'probe.p893', 'probe.p894', 'probe.p895', 'probe.p896', 'probe.p908', 'probe.p909', 'probe.p910', 'probe.p911',
-       'probe.p897', 'probe.p898', 'probe.p899', 'probe.p900', 'probe.p901', 'probe.p902', 'probe.p903', 'probe.p904', 'probe.p905', 'probe.p906', 'probe.p907', 'probe.p912', 'probe.p913', 'probe.p914', 'probe.p915', 'probe.p916', 'probe.p917', 'probe.p918', 'probe.p919', 'probe.p920', 'probe.p921', 'probe.p922', 'probe.p923', 'probe.p924', 'probe.p925', 'probe.p926', 'probe.p927', 'probe.p928', 'probe.p929', 'probe.p930', 'probe.p931', 'probe.p932', 'probe.p933', 'probe.p934', 'probe.p935', 'probe.p936', 'probe.p937', 'probe.p938', 'probe.p939', 'probe.p940', 'probe.p941', 'probe.p942', 'probe.p943', 'probe.p944', 'probe.p945', 'probe.p946', 'probe.p947', 'probe.p948', 'probe.p949', 'probe.p950', 'probe.p951', 'probe.p952', 'probe.p953', 'probe.p954', 'probe.p955', 'probe.p956', 'probe.p957', 'probe.p958', 'probe.p959', 'probe.p960', 'probe.p961', 'probe.p962', 'probe.p963', 'probe.p964', 'probe.p965', 'probe.p966', 'probe.p967', 'probe.p968', 'probe.p969', 'probe.p970', 'probe.p971', 'probe.p972', 'probe.p973', 'probe.p974', 'probe.p975', 'probe.p976', 'probe.p977', 'probe.p978', 'probe.p979', 'probe.p980', 'probe.p981', 'probe.p982', 'probe.p983', 'probe.p984', 'probe.p985', 'probe.p986', 'probe.p987', 'probe.p988', 'probe.p989', 'probe.p990', 'probe.p991', 'probe.p992', 'probe.p993', 'probe.p994', 'probe.p995', 'probe.p996', 'probe.p997', 'probe.p998', 'probe.p999', 'probe.p1000', 'probe.p1001', 'probe.p1002', 'probe.p1003', 'probe.p1004', 'probe.p1005', 'probe.p1006', 'probe.p1007', 'probe.p1008', 'probe.p1009', 'probe.p1010', 'probe.p1011', 'probe.p1012', 'probe.p1013', 'probe.p1014'
+       'probe.p897', 'probe.p898', 'probe.p899', 'probe.p900', 'probe.p901', 'probe.p902', 'probe.p903', 'probe.p904', 'probe.p905', 'probe.p906', 'probe.p907', 'probe.p912', 'probe.p913', 'probe.p914', 'probe.p915', 'probe.p916', 'probe.p917', 'probe.p918', 'probe.p919', 'probe.p920', 'probe.p921', 'probe.p922', 'probe.p923', 'probe.p924', 'probe.p925', 'probe.p926', 'probe.p927', 'probe.p928', 'probe.p929', 'probe.p930', 'probe.p931', 'probe.p932', 'probe.p933', 'probe.p934', 'probe.p935', 'probe.p936', 'probe.p937', 'probe.p938', 'probe.p939', 'probe.p940', 'probe.p941', 'probe.p942', 'probe.p943', 'probe.p944', 'probe.p945', 'probe.p946', 'probe.p947', 'probe.p948', 'probe.p949', 'probe.p950', 'probe.p951', 'probe.p952', 'probe.p953', 'probe.p954', 'probe.p955', 'probe.p956', 'probe.p957', 'probe.p958', 'probe.p959', 'probe.p960', 'probe.p961', 'probe.p962', 'probe.p963', 'probe.p964', 'probe.p965', 'probe.p966', 'probe.p967', 'probe.p968', 'probe.p969', 'probe.p970', 'probe.p971', 'probe.p972', 'probe.p973', 'probe.p974', 'probe.p975', 'probe.p976', 'probe.p977', 'probe.p978', 'probe.p979', 'probe.p980', 'probe.p981', 'probe.p982', 'probe.p983', 'probe.p984', 'probe.p985', 'probe.p986', 'probe.p987', 'probe.p988', 'probe.p989', 'probe.p990', 'probe.p991', 'probe.p992', 'probe.p993', 'probe.p994', 'probe.p995', 'probe.p996', 'probe.p997', 'probe.p998', 'probe.p999', 'probe.p1000', 'probe.p1001', 'probe.p1002', 'probe.p1003', 'probe.p1004', 'probe.p1005', 'probe.p1006', 'probe.p1007', 'probe.p1008', 'probe.p1009', 'probe.p1010', 'probe.p1011', 'probe.p1012', 'probe.p1013', 'probe.p1014', 'probe.e370_fx', 'probe.p1015', 'probe.p1016', 'probe.p1017', 'probe.p1018'
              ]) AS n) s),
   'OK (todos los veredictos publicados)';
 
