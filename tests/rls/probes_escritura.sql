@@ -24260,6 +24260,8 @@ END $$;
 SELECT set_config('role', 'none', true);
 
 -- ---------------- P873 FK RESTRICT de examenes.catalogo_id ----------------
+-- 6-oct-2026 (mig 369): con la 369 aplicada el admin del lab ya no escribe el catalogo directo (42501): borra y desactiva
+-- por las RPCs, y el borrado de uno ya ordenado da EX038 (no el 23503 crudo). Sin la 369 sigue el camino directo.
 DO $$
 DECLARE
   c_med uuid := '09d243d5-b222-482a-9762-94a582e9e752'; c_lab uuid := 'a5cf575a-5d63-4ed2-839e-9b58da8152e0'; c_recep uuid := 'ce871197-285a-4d5f-9e5f-78606f9e124f'; c_admin uuid := 'e6f95b2f-7561-4e0b-b0c8-d1f38e6c4d66'; c_tec uuid := 'f69e2096-932f-45f0-9022-4e9058f2f0fd';
@@ -24268,6 +24270,8 @@ DECLARE
   st text := '00000'; msg text := ''; j jsonb; ok boolean; det text := ''; bad text := ''; r_rest text := 'OK';
   s_ex text; s_or text; s_cat text; s_cp text; notif0 uuid[]; np0 integer; n_or bigint; n_ex bigint;
   v uuid; v2 uuid; x text; y text; n int; nn int; rec record; id_ex integer;
+  v_369 boolean := to_regprocedure('public.eliminar_examen_catalogo(uuid)') IS NOT NULL
+                   AND NOT has_table_privilege('authenticated', 'public.examenes_catalogo', 'DELETE');
 BEGIN
   -- snapshot: examenes, ordenes_examen, examenes_catalogo, cuentas del lab QA y notificaciones
   SELECT md5(COALESCE(string_agg(to_jsonb(e)::text, '|' ORDER BY e.id), '')) INTO s_ex FROM public.examenes e;
@@ -24283,19 +24287,21 @@ BEGIN
   st := '00000'; msg := ''; nn := NULL;
   BEGIN
     PERFORM set_config('request.jwt.claims', json_build_object('sub', c_admin::text, 'role', 'authenticated')::text, true); PERFORM set_config('role', 'authenticated', true);
-    DELETE FROM public.examenes_catalogo WHERE id = c_copro;
+    IF v_369 THEN EXECUTE 'SELECT public.eliminar_examen_catalogo($1)' USING c_copro;
+    ELSE DELETE FROM public.examenes_catalogo WHERE id = c_copro; END IF;
     GET DIAGNOSTICS nn = ROW_COUNT;
     PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
   EXCEPTION WHEN OTHERS THEN PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
     st := SQLSTATE; msg := SQLERRM; END;
-  ok := COALESCE((st = '23503' AND position('examenes_catalogo_id_fkey' in msg) > 0 AND EXISTS (SELECT 1 FROM public.examenes_catalogo WHERE id = c_copro)), false);
+  ok := COALESCE(((CASE WHEN v_369 THEN st = 'EX038' ELSE st = '23503' AND position('examenes_catalogo_id_fkey' in msg) > 0 END)
+                  AND EXISTS (SELECT 1 FROM public.examenes_catalogo WHERE id = c_copro)), false);
   det := det||' ;; DELETE de catalogo ya ordenado|23503 examenes_catalogo_id_fkey, la fila sigue|'||CASE WHEN ok THEN 'OK' ELSE 'ROJO' END||'|'||st||'|'||left(msg, 160);
   IF NOT ok THEN bad := bad||'DELETE de catalogo ya ordenado: '||st||' '||left(msg, 120)||'; '; END IF;
   st := '00000'; msg := ''; nn := NULL;
   BEGIN
     PERFORM set_config('request.jwt.claims', json_build_object('sub', c_admin::text, 'role', 'authenticated')::text, true); PERFORM set_config('role', 'authenticated', true);
-    DELETE FROM public.examenes_catalogo WHERE id = seed_cat[1];
-    GET DIAGNOSTICS nn = ROW_COUNT;
+    IF v_369 THEN EXECUTE 'SELECT public.eliminar_examen_catalogo($1)' USING seed_cat[1]; nn := 1;
+    ELSE DELETE FROM public.examenes_catalogo WHERE id = seed_cat[1]; GET DIAGNOSTICS nn = ROW_COUNT; END IF;
     PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
   EXCEPTION WHEN OTHERS THEN PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
     st := SQLSTATE; msg := SQLERRM; END;
@@ -24305,8 +24311,8 @@ BEGIN
   st := '00000'; msg := ''; nn := NULL;
   BEGIN
     PERFORM set_config('request.jwt.claims', json_build_object('sub', c_admin::text, 'role', 'authenticated')::text, true); PERFORM set_config('role', 'authenticated', true);
-    UPDATE public.examenes_catalogo SET activo = false WHERE id = c_copro;
-    GET DIAGNOSTICS nn = ROW_COUNT;
+    IF v_369 THEN EXECUTE 'SELECT public.actualizar_examen_catalogo($1, $2, $3)' USING c_copro, NULL::text, false; nn := 1;
+    ELSE UPDATE public.examenes_catalogo SET activo = false WHERE id = c_copro; GET DIAGNOSTICS nn = ROW_COUNT; END IF;
     PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
   EXCEPTION WHEN OTHERS THEN PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
     st := SQLSTATE; msg := SQLERRM; END;
@@ -24335,7 +24341,7 @@ BEGIN
 
   PERFORM set_config('probe.p873_det', det, false);
   PERFORM set_config('probe.p873', CASE WHEN bad = '' AND r_rest = 'OK'
-    THEN 'OK (admin del lab: borrar un examen de catalogo ya ordenado -> 23503 y la fila sigue; uno sin ordenar se borra; el ordenado se desactiva; restaurado)'
+    THEN 'OK (admin del lab: borrar un examen de catalogo ya ordenado -> '||CASE WHEN v_369 THEN 'EX038 por la RPC' ELSE '23503' END||' y la fila sigue; uno sin ordenar se borra; el ordenado se desactiva; restaurado)'
     ELSE 'ROJO ('||left(bad, 700)||' | restauracion='||r_rest||')' END, false);
 EXCEPTION WHEN OTHERS THEN
   PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
@@ -33126,6 +33132,212 @@ EXCEPTION WHEN OTHERS THEN
 END $$;
 SELECT set_config('role', 'none', true);
 
+-- ---------------- P1011-P1014 examenes_catalogo: escrituras solo por RPC con permiso; SELECT del lab propio (369) ----------------
+-- Actores deterministas: el lab clinico QA (a5cf575a..., el unico con catalogo) y sus 3 cuentas por id (admin e6f95b2f...,
+-- recepcion ce871197..., tecnico f69e2096..., las mismas de P873), que se PREPARAN dentro del savepoint (empresa, rol y
+-- activo; sin overrides de 'catalogo_examenes_editar') porque los fixtures por posicion del harness pueden moverlas; el
+-- admin de una farmacia activa (created_at, id); medico.qa y paciente.qa por email. Filas: una referenciada por examenes
+-- (EXISTS, orden por id) y, sembradas en el savepoint, una inactiva propia del lab y una de otra empresa.
+--   P1011 admin del lab: crear, actualizar (categoria/activo) y eliminar uno propio no referenciado -> OK; eliminar el
+--         referenciado -> EX038 y la fila sigue; actualizar/eliminar uno de otra empresa o inexistente -> EX036 (el mismo).
+--   P1012 recepcion y tecnico (crear/actualizar/eliminar), admin de farmacia (crear), medico.qa y paciente.qa (las 3)
+--         -> EX035 y 0 cambios; anon sin EXECUTE en las 3.
+--   P1013 escritura directa (INSERT/UPDATE/DELETE) como el admin del lab -> 42501 de privilegio.
+--   P1014 SELECT (no depende de la 369: se juzga siempre): el staff del lab ve sus activos e inactivos; medico.qa solo los
+--         activos de labs de su pais; la farmacia no ve el inactivo ajeno.
+-- Sin la 369 (catalogo: no existen las RPCs o authenticated conserva INSERT) P1011-P1013 salen 'PENDIENTE mig 369 (lo
+-- medido)', nunca OK. Todo en una subtransaccion descartada (RAISE P0999); al final se verifica el snapshot del catalogo.
+DO $$
+DECLARE
+  c_lab CONSTANT uuid := 'a5cf575a-5d63-4ed2-839e-9b58da8152e0'; c_admin CONSTANT uuid := 'e6f95b2f-7561-4e0b-b0c8-d1f38e6c4d66';
+  c_recep CONSTANT uuid := 'ce871197-285a-4d5f-9e5f-78606f9e124f'; c_tec CONSTANT uuid := 'f69e2096-932f-45f0-9022-4e9058f2f0fd';
+  v_369 boolean; a_farm uuid; e_farm uuid; e_otra uuid; a_med uuid; a_pac uuid; v_ref uuid; v_inact uuid; v_ajena uuid; v_nuevo uuid;
+  r record; st text; msg text; v uuid; n int; o int; snap_pre text; snap_post text;
+  b1 text := ''; b2 text := ''; b3 text := ''; b4 text := ''; d1 text := ''; d2 text := ''; d3 text := ''; d4 text := '';
+BEGIN
+  IF current_user <> 'postgres' THEN RAISE EXCEPTION 'fixture roto: P1011 corre como %', current_user; END IF;
+  v_369 := to_regprocedure('public.crear_examen_catalogo(text,text)') IS NOT NULL
+           AND NOT has_table_privilege('authenticated', 'public.examenes_catalogo', 'INSERT');
+  SELECT cp.id, cp.empresa_id INTO a_farm, e_farm FROM public.cuentas_proveedor cp JOIN public.empresas_proveedoras e ON e.id = cp.empresa_id
+   WHERE e.tipo = 'farmacia' AND e.estado = 'activa' AND cp.activo AND cp.rol_en_empresa = 'admin' AND EXISTS (SELECT 1 FROM auth.users u WHERE u.id = cp.id)
+   ORDER BY COALESCE(cp.created_at, '-infinity'), cp.id LIMIT 1;
+  e_otra := (SELECT e.id FROM public.empresas_proveedoras e WHERE e.id <> c_lab AND e.id IS DISTINCT FROM e_farm ORDER BY e.id LIMIT 1);
+  a_med := (SELECT u.id FROM auth.users u WHERE lower(u.email) LIKE 'medico.qa@%' ORDER BY u.email LIMIT 1);
+  a_pac := (SELECT u.id FROM auth.users u WHERE lower(u.email) LIKE 'paciente.qa@%' ORDER BY u.email LIMIT 1);
+  v_ref := (SELECT c.id FROM public.examenes_catalogo c WHERE c.laboratorio_id = c_lab AND EXISTS (SELECT 1 FROM public.examenes ex WHERE ex.catalogo_id = c.id) ORDER BY c.id LIMIT 1);
+  IF NOT EXISTS (SELECT 1 FROM public.empresas_proveedoras WHERE id = c_lab AND tipo = 'laboratorio_clinico')
+     OR (SELECT count(*) FROM public.cuentas_proveedor WHERE id IN (c_admin, c_recep, c_tec)) <> 3
+     OR NOT EXISTS (SELECT 1 FROM public.permisos_empresa_rol WHERE tipo_empresa = 'laboratorio_clinico' AND rol = 'admin' AND accion = 'catalogo_examenes_editar')
+     OR a_farm IS NULL OR e_otra IS NULL OR a_med IS NULL OR a_pac IS NULL OR v_ref IS NULL THEN
+    RAISE EXCEPTION 'sin fixture: P1011 lab/cuentas/permiso, farmacia %, otra empresa %, medico.qa %, paciente.qa %, referenciado %', a_farm, e_otra, a_med, a_pac, v_ref;
+  END IF;
+  snap_pre := (SELECT md5(COALESCE(string_agg(to_jsonb(c)::text, '|' ORDER BY c.id), '')) FROM public.examenes_catalogo c);
+
+  BEGIN
+    -- preparar el lab QA y sus cuentas (por si otro fixture las movio), sin overrides del permiso
+    UPDATE public.empresas_proveedoras SET estado = 'activa' WHERE id = c_lab AND estado <> 'activa';
+    UPDATE public.cuentas_proveedor SET empresa_id = c_lab, activo = true,
+           rol_en_empresa = CASE id WHEN c_admin THEN 'admin' WHEN c_recep THEN 'recepcion' ELSE 'tecnico' END
+     WHERE id IN (c_admin, c_recep, c_tec);
+    DELETE FROM public.permisos_empresa_rol_override WHERE empresa_id = c_lab AND accion = 'catalogo_examenes_editar';
+    INSERT INTO public.examenes_catalogo (laboratorio_id, nombre, categoria, activo) VALUES (c_lab, 'P1011 inactivo propio QA', 'QA', false) RETURNING id INTO v_inact;
+    INSERT INTO public.examenes_catalogo (laboratorio_id, nombre, categoria, activo) VALUES (e_otra, 'P1011 de otra empresa QA', 'QA', false) RETURNING id INTO v_ajena;
+
+    -- ===================== P1014: SELECT (independiente de la 369) =====================
+    FOR r IN SELECT * FROM (VALUES (1, 'recepcion del lab', c_recep), (2, 'admin del lab', c_admin), (3, 'medico.qa', a_med), (4, 'farmacia', a_farm)) x(k, nom, uid) ORDER BY x.k LOOP
+      BEGIN
+        PERFORM set_config('request.jwt.claims', json_build_object('sub', r.uid, 'role', 'authenticated')::text, true);
+        PERFORM set_config('role', 'authenticated', true);
+        IF r.k <= 2 THEN
+          SELECT count(*) INTO n FROM public.examenes_catalogo c WHERE c.laboratorio_id = c_lab;
+          PERFORM set_config('role', 'none', true);
+          o := (SELECT count(*) FROM public.examenes_catalogo c WHERE c.laboratorio_id = c_lab);
+          d4 := d4||r.nom||' ve '||n||'/'||o||' del lab (inactivos incluidos); ';
+          IF n <> o OR o = 0 THEN b4 := b4||r.nom||' '||n||'/'||o||'; '; END IF;
+        ELSIF r.k = 3 THEN
+          SELECT count(*), count(*) FILTER (WHERE NOT c.activo) INTO n, o FROM public.examenes_catalogo c;
+          PERFORM set_config('role', 'none', true);
+          d4 := d4||'medico.qa ve '||n||' (inactivos '||o||'; esperado '||(SELECT count(*) FROM public.examenes_catalogo c JOIN public.empresas_proveedoras e ON e.id = c.laboratorio_id
+                  WHERE c.activo AND e.pais_id = (SELECT p.pais_id FROM public.perfiles p WHERE p.id = a_med))||' activos de su pais); ';
+          IF o <> 0 OR n <> (SELECT count(*) FROM public.examenes_catalogo c JOIN public.empresas_proveedoras e ON e.id = c.laboratorio_id
+                              WHERE c.activo AND e.pais_id = (SELECT p.pais_id FROM public.perfiles p WHERE p.id = a_med)) OR n = 0 THEN
+            b4 := b4||'medico.qa '||n||' (inactivos '||o||'); ';
+          END IF;
+        ELSE
+          SELECT count(*) INTO n FROM public.examenes_catalogo c WHERE c.id = v_inact;
+          PERFORM set_config('role', 'none', true);
+          d4 := d4||'farmacia ve el inactivo ajeno: '||n||'; ';
+          IF n <> 0 THEN b4 := b4||'farmacia ve el inactivo ajeno; '; END IF;
+        END IF;
+      EXCEPTION WHEN OTHERS THEN
+        PERFORM set_config('role', 'none', true);
+        b4 := b4||r.nom||' ERROR '||SQLSTATE||' '||left(SQLERRM, 80)||'; ';
+      END;
+    END LOOP;
+    PERFORM set_config('request.jwt.claims', '', true);
+
+    -- ===================== P1013: escritura directa como admin del lab =====================
+    FOR r IN SELECT * FROM (VALUES (1, 'INSERT'), (2, 'UPDATE'), (3, 'DELETE')) x(k, op) ORDER BY x.k LOOP
+      st := '00000'; msg := ''; n := NULL;
+      BEGIN
+        PERFORM set_config('request.jwt.claims', json_build_object('sub', c_admin, 'role', 'authenticated')::text, true);
+        PERFORM set_config('role', 'authenticated', true);
+        IF r.k = 1 THEN INSERT INTO public.examenes_catalogo (laboratorio_id, nombre) VALUES (c_lab, 'P1013 directo QA');
+        ELSIF r.k = 2 THEN UPDATE public.examenes_catalogo SET activo = false WHERE id = v_ref;
+        ELSE DELETE FROM public.examenes_catalogo WHERE id = v_inact; END IF;
+        GET DIAGNOSTICS n = ROW_COUNT;
+        RAISE EXCEPTION 'P1013 descarte' USING ERRCODE = 'P0998';
+      EXCEPTION WHEN OTHERS THEN
+        PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
+        IF SQLSTATE <> 'P0998' THEN st := SQLSTATE; msg := SQLERRM; END IF;
+      END;
+      d3 := d3||r.op||'='||CASE WHEN st = '00000' THEN 'filas '||COALESCE(n::text, '-') ELSE st END||'; ';
+      IF NOT (st = '42501' AND msg = 'permission denied for table examenes_catalogo') THEN b3 := b3||r.op||' '||st||' '||left(msg, 60)||'; '; END IF;
+    END LOOP;
+
+    IF v_369 THEN
+      -- ===================== P1011: admin del lab =====================
+      FOR r IN SELECT * FROM (VALUES
+          (1, 'crear', 'OK'), (2, 'actualizar propio', 'OK'), (3, 'eliminar propio', 'OK'), (4, 'eliminar referenciado', 'EX038'),
+          (5, 'actualizar de otra empresa', 'EX036'), (6, 'eliminar de otra empresa', 'EX036'), (7, 'actualizar inexistente', 'EX036'), (8, 'eliminar inexistente', 'EX036')) x(k, nom, esp) ORDER BY x.k LOOP
+        st := 'OK'; msg := ''; v := NULL;
+        BEGIN
+          PERFORM set_config('request.jwt.claims', json_build_object('sub', c_admin, 'role', 'authenticated')::text, true);
+          PERFORM set_config('role', 'authenticated', true);
+          CASE r.k
+            WHEN 1 THEN EXECUTE 'SELECT public.crear_examen_catalogo($1, $2)' INTO v USING '  P1011 examen QA  ', 'QA';
+            WHEN 2 THEN EXECUTE 'SELECT public.actualizar_examen_catalogo($1, $2, $3)' INTO v USING v_nuevo, 'QA2', false;
+            WHEN 3 THEN EXECUTE 'SELECT public.eliminar_examen_catalogo($1)' INTO v USING v_nuevo;
+            WHEN 4 THEN EXECUTE 'SELECT public.eliminar_examen_catalogo($1)' INTO v USING v_ref;
+            WHEN 5 THEN EXECUTE 'SELECT public.actualizar_examen_catalogo($1, $2, $3)' INTO v USING v_ajena, NULL::text, true;
+            WHEN 6 THEN EXECUTE 'SELECT public.eliminar_examen_catalogo($1)' INTO v USING v_ajena;
+            WHEN 7 THEN EXECUTE 'SELECT public.actualizar_examen_catalogo($1, $2, $3)' INTO v USING gen_random_uuid(), NULL::text, true;
+            ELSE EXECUTE 'SELECT public.eliminar_examen_catalogo($1)' INTO v USING gen_random_uuid();
+          END CASE;
+          PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
+        EXCEPTION WHEN OTHERS THEN
+          PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
+          st := SQLSTATE; msg := SQLERRM;
+        END;
+        IF r.k = 1 THEN v_nuevo := v; END IF;
+        -- estado leido como postgres en un statement aparte
+        d1 := d1||r.nom||'='||st||CASE r.k
+                 WHEN 1 THEN ' ('||COALESCE((SELECT c.nombre||'/'||c.categoria||'/activo='||c.activo FROM public.examenes_catalogo c WHERE c.id = v_nuevo AND c.laboratorio_id = c_lab), 'sin fila')||')'
+                 WHEN 2 THEN ' ('||COALESCE((SELECT c.categoria||'/activo='||c.activo FROM public.examenes_catalogo c WHERE c.id = v_nuevo), 'sin fila')||')'
+                 WHEN 3 THEN ' (existe='||EXISTS (SELECT 1 FROM public.examenes_catalogo c WHERE c.id = v_nuevo)::text||')'
+                 WHEN 4 THEN ' (sigue='||EXISTS (SELECT 1 FROM public.examenes_catalogo c WHERE c.id = v_ref)::text||')'
+                 ELSE '' END||'; ';
+        IF st <> r.esp
+           OR (r.k = 1 AND NOT EXISTS (SELECT 1 FROM public.examenes_catalogo c WHERE c.id = v_nuevo AND c.laboratorio_id = c_lab AND c.nombre = 'P1011 examen QA' AND c.categoria = 'QA' AND c.activo))
+           OR (r.k = 2 AND NOT EXISTS (SELECT 1 FROM public.examenes_catalogo c WHERE c.id = v_nuevo AND c.categoria = 'QA2' AND NOT c.activo))
+           OR (r.k = 3 AND EXISTS (SELECT 1 FROM public.examenes_catalogo c WHERE c.id = v_nuevo))
+           OR (r.k = 4 AND NOT EXISTS (SELECT 1 FROM public.examenes_catalogo c WHERE c.id = v_ref))
+           OR (r.k IN (5, 6) AND NOT EXISTS (SELECT 1 FROM public.examenes_catalogo c WHERE c.id = v_ajena AND NOT c.activo)) THEN
+          b1 := b1||r.nom||' '||st||' '||left(msg, 60)||'; ';
+        END IF;
+      END LOOP;
+
+      -- ===================== P1012: sin permiso =====================
+      o := (SELECT count(*) FROM public.examenes_catalogo);
+      FOR r IN SELECT * FROM (VALUES
+          (1, 'recepcion', c_recep, 'c'), (2, 'recepcion', c_recep, 'a'), (3, 'recepcion', c_recep, 'e'),
+          (4, 'tecnico', c_tec, 'c'), (5, 'tecnico', c_tec, 'a'), (6, 'tecnico', c_tec, 'e'),
+          (7, 'farmacia', a_farm, 'c'),
+          (8, 'medico.qa', a_med, 'c'), (9, 'medico.qa', a_med, 'a'), (10, 'medico.qa', a_med, 'e'),
+          (11, 'paciente.qa', a_pac, 'c'), (12, 'paciente.qa', a_pac, 'a'), (13, 'paciente.qa', a_pac, 'e')) x(k, nom, uid, op) ORDER BY x.k LOOP
+        st := 'OK'; msg := '';
+        BEGIN
+          PERFORM set_config('request.jwt.claims', json_build_object('sub', r.uid, 'role', 'authenticated')::text, true);
+          PERFORM set_config('role', 'authenticated', true);
+          IF r.op = 'c' THEN EXECUTE 'SELECT public.crear_examen_catalogo($1, $2)' INTO v USING 'P1012 sin permiso QA', NULL::text;
+          ELSIF r.op = 'a' THEN EXECUTE 'SELECT public.actualizar_examen_catalogo($1, $2, $3)' INTO v USING v_inact, NULL::text, true;
+          ELSE EXECUTE 'SELECT public.eliminar_examen_catalogo($1)' INTO v USING v_inact; END IF;
+          PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
+        EXCEPTION WHEN OTHERS THEN
+          PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
+          st := SQLSTATE; msg := SQLERRM;
+        END;
+        d2 := d2||r.nom||'/'||r.op||'='||st||'; ';
+        IF st <> 'EX035' THEN b2 := b2||r.nom||'/'||r.op||' '||st||' '||left(msg, 60)||'; '; END IF;
+      END LOOP;
+      IF (SELECT count(*) FROM public.examenes_catalogo) <> o OR NOT EXISTS (SELECT 1 FROM public.examenes_catalogo c WHERE c.id = v_inact AND NOT c.activo) THEN
+        b2 := b2||'hubo cambios en el catalogo; ';
+      END IF;
+      FOR r IN SELECT * FROM (VALUES ('public.crear_examen_catalogo(text,text)'), ('public.actualizar_examen_catalogo(uuid,text,boolean)'), ('public.eliminar_examen_catalogo(uuid)')) x(f) LOOP
+        IF has_function_privilege('anon', to_regprocedure(r.f), 'EXECUTE') THEN b2 := b2||'anon ejecuta '||r.f||'; '; END IF;
+      END LOOP;
+      d2 := d2||'anon sin EXECUTE en las 3='||(b2 NOT LIKE '%anon ejecuta%')::text||'; ';
+    END IF;
+
+    RAISE EXCEPTION 'P1011 descarte' USING ERRCODE = 'P0999';
+  EXCEPTION WHEN SQLSTATE 'P0999' THEN NULL;
+  END;
+  PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
+  snap_post := (SELECT md5(COALESCE(string_agg(to_jsonb(c)::text, '|' ORDER BY c.id), '')) FROM public.examenes_catalogo c);
+  IF snap_post IS DISTINCT FROM snap_pre THEN b4 := b4||'el catalogo no quedo igual tras el descarte; '; END IF;
+
+  PERFORM set_config('probe.p1014', CASE WHEN b4 = '' THEN 'OK ('||d4||'descartado)' ELSE 'ROJO ('||left(b4, 600)||' | '||left(d4, 300)||')' END, false);
+  PERFORM set_config('probe.p1013', CASE
+    WHEN NOT v_369 THEN 'PENDIENTE mig 369 (escritura directa del admin del lab: '||d3||')'
+    WHEN b3 = '' THEN 'OK (escritura directa del admin del lab: '||d3||'todas 42501 de privilegio)'
+    ELSE 'ROJO ('||b3||')' END, false);
+  PERFORM set_config('probe.p1011', CASE
+    WHEN NOT v_369 THEN 'PENDIENTE mig 369 (las RPCs no existen todavia)'
+    WHEN b1 = '' THEN 'OK (admin del lab: '||d1||'descartado)'
+    ELSE 'ROJO ('||left(b1, 700)||')' END, false);
+  PERFORM set_config('probe.p1012', CASE
+    WHEN NOT v_369 THEN 'PENDIENTE mig 369 (las RPCs no existen todavia)'
+    WHEN b2 = '' THEN 'OK (EX035 para recepcion, tecnico, farmacia, medico.qa y paciente.qa; 0 cambios; anon sin EXECUTE)'
+    ELSE 'ROJO ('||left(b2, 700)||')' END, false);
+EXCEPTION WHEN OTHERS THEN
+  PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
+  PERFORM set_config('probe.p1011', 'FALLO ('||SQLSTATE||' '||SQLERRM||')', false);
+  PERFORM set_config('probe.p1012', 'FALLO ('||SQLSTATE||' '||SQLERRM||')', false);
+  PERFORM set_config('probe.p1013', 'FALLO ('||SQLSTATE||' '||SQLERRM||')', false);
+  PERFORM set_config('probe.p1014', 'FALLO ('||SQLSTATE||' '||SQLERRM||')', false);
+END $$;
+SELECT set_config('role', 'none', true);
+
 -- ===== Veredictos como result set =====
 SELECT 'P1_anon_insert_citas'              AS probe, current_setting('probe.p1', true)  AS verdict, 'BLOQUEADO' AS esperado_post_fix
 UNION ALL SELECT 'P2_medico_cancela_ajena_rpc',         current_setting('probe.p2', true),  'BLOQUEADO'
@@ -34207,6 +34419,10 @@ UNION ALL SELECT 'P1003_proveedores_pais_super_363',  current_setting('probe.p10
 UNION ALL SELECT 'P1004_proveedores_pais_proveedor_363',  current_setting('probe.p1004', true), 'OK (363: cuenta de proveedor -> PC028)'
 UNION ALL SELECT 'P1005_proveedores_pais_anon_363',  current_setting('probe.p1005', true), 'OK (363: anon -> 42501)'
 UNION ALL SELECT 'P1006_proveedores_pais_catalogo_363',  current_setting('probe.p1006', true), 'OK (363: ACL exacta sin anon; DEFINER, STABLE, search_path)'
+UNION ALL SELECT 'P1011_catalogo_lab_admin_rpc_369',  current_setting('probe.p1011', true), 'OK (369: admin del lab crea/actualiza/elimina por RPC; referenciado EX038; ajeno o inexistente EX036; antes de la 369: PENDIENTE)'
+UNION ALL SELECT 'P1012_catalogo_lab_sin_permiso_369',  current_setting('probe.p1012', true), 'OK (369: EX035 para recepcion, tecnico, farmacia, medico y paciente; anon sin EXECUTE; antes de la 369: PENDIENTE)'
+UNION ALL SELECT 'P1013_catalogo_lab_sin_escritura_directa_369',  current_setting('probe.p1013', true), 'OK (369: INSERT/UPDATE/DELETE directo 42501; antes de la 369: PENDIENTE)'
+UNION ALL SELECT 'P1014_catalogo_lab_select_369',  current_setting('probe.p1014', true), 'OK (staff del lab ve activos e inactivos; medico solo activos de su pais; farmacia no ve el inactivo ajeno)'
 UNION ALL SELECT 'P1010_campana_vistas_sin_update_367',  current_setting('probe.p1010', true), 'OK (367: INSERT 1; ON CONFLICT DO NOTHING 0 sin error; DO UPDATE y UPDATE 42501; otro paciente 0; antes de la 367: PENDIENTE)'
 UNION ALL SELECT 'P1009_datos_bancarios_acotados_366',  current_setting('probe.p1009', true), 'OK (366: cuenta GT solo super_admin/admin_pais GT/proveedores GT; checkout 1 fila; config 21 admins y 14 resto; antes de la 366: PENDIENTE)'
 UNION ALL SELECT 'P1008_notas_sin_escritura_superadmin_365',  current_setting('probe.p1008', true), 'OK (365: super_admin INSERT ajeno -> 42501, UPDATE -> 0 filas; lee; el medico escribe; antes de la 365: PENDIENTE)'
@@ -34455,7 +34671,7 @@ UNION ALL SELECT 'P000_CENTINELA_veredictos_no_nulos',
        'probe.p866', 'probe.p867', 'probe.p868', 'probe.p869', 'probe.p870', 'probe.p871', 'probe.p872', 'probe.p873', 'probe.p874', 'probe.p875', 'probe.p876', 'probe.p877', 'probe.p878',
        'probe.p879', 'probe.p880', 'probe.p881', 'probe.p882', 'probe.p883', 'probe.p884',
        'probe.p885', 'probe.p886', 'probe.p887', 'probe.p888', 'probe.p889', 'probe.p890', 'probe.p891', 'probe.p892', 'probe.p893', 'probe.p894', 'probe.p895', 'probe.p896', 'probe.p908', 'probe.p909', 'probe.p910', 'probe.p911',
-       'probe.p897', 'probe.p898', 'probe.p899', 'probe.p900', 'probe.p901', 'probe.p902', 'probe.p903', 'probe.p904', 'probe.p905', 'probe.p906', 'probe.p907', 'probe.p912', 'probe.p913', 'probe.p914', 'probe.p915', 'probe.p916', 'probe.p917', 'probe.p918', 'probe.p919', 'probe.p920', 'probe.p921', 'probe.p922', 'probe.p923', 'probe.p924', 'probe.p925', 'probe.p926', 'probe.p927', 'probe.p928', 'probe.p929', 'probe.p930', 'probe.p931', 'probe.p932', 'probe.p933', 'probe.p934', 'probe.p935', 'probe.p936', 'probe.p937', 'probe.p938', 'probe.p939', 'probe.p940', 'probe.p941', 'probe.p942', 'probe.p943', 'probe.p944', 'probe.p945', 'probe.p946', 'probe.p947', 'probe.p948', 'probe.p949', 'probe.p950', 'probe.p951', 'probe.p952', 'probe.p953', 'probe.p954', 'probe.p955', 'probe.p956', 'probe.p957', 'probe.p958', 'probe.p959', 'probe.p960', 'probe.p961', 'probe.p962', 'probe.p963', 'probe.p964', 'probe.p965', 'probe.p966', 'probe.p967', 'probe.p968', 'probe.p969', 'probe.p970', 'probe.p971', 'probe.p972', 'probe.p973', 'probe.p974', 'probe.p975', 'probe.p976', 'probe.p977', 'probe.p978', 'probe.p979', 'probe.p980', 'probe.p981', 'probe.p982', 'probe.p983', 'probe.p984', 'probe.p985', 'probe.p986', 'probe.p987', 'probe.p988', 'probe.p989', 'probe.p990', 'probe.p991', 'probe.p992', 'probe.p993', 'probe.p994', 'probe.p995', 'probe.p996', 'probe.p997', 'probe.p998', 'probe.p999', 'probe.p1000', 'probe.p1001', 'probe.p1002', 'probe.p1003', 'probe.p1004', 'probe.p1005', 'probe.p1006', 'probe.p1007', 'probe.p1008', 'probe.p1009', 'probe.p1010'
+       'probe.p897', 'probe.p898', 'probe.p899', 'probe.p900', 'probe.p901', 'probe.p902', 'probe.p903', 'probe.p904', 'probe.p905', 'probe.p906', 'probe.p907', 'probe.p912', 'probe.p913', 'probe.p914', 'probe.p915', 'probe.p916', 'probe.p917', 'probe.p918', 'probe.p919', 'probe.p920', 'probe.p921', 'probe.p922', 'probe.p923', 'probe.p924', 'probe.p925', 'probe.p926', 'probe.p927', 'probe.p928', 'probe.p929', 'probe.p930', 'probe.p931', 'probe.p932', 'probe.p933', 'probe.p934', 'probe.p935', 'probe.p936', 'probe.p937', 'probe.p938', 'probe.p939', 'probe.p940', 'probe.p941', 'probe.p942', 'probe.p943', 'probe.p944', 'probe.p945', 'probe.p946', 'probe.p947', 'probe.p948', 'probe.p949', 'probe.p950', 'probe.p951', 'probe.p952', 'probe.p953', 'probe.p954', 'probe.p955', 'probe.p956', 'probe.p957', 'probe.p958', 'probe.p959', 'probe.p960', 'probe.p961', 'probe.p962', 'probe.p963', 'probe.p964', 'probe.p965', 'probe.p966', 'probe.p967', 'probe.p968', 'probe.p969', 'probe.p970', 'probe.p971', 'probe.p972', 'probe.p973', 'probe.p974', 'probe.p975', 'probe.p976', 'probe.p977', 'probe.p978', 'probe.p979', 'probe.p980', 'probe.p981', 'probe.p982', 'probe.p983', 'probe.p984', 'probe.p985', 'probe.p986', 'probe.p987', 'probe.p988', 'probe.p989', 'probe.p990', 'probe.p991', 'probe.p992', 'probe.p993', 'probe.p994', 'probe.p995', 'probe.p996', 'probe.p997', 'probe.p998', 'probe.p999', 'probe.p1000', 'probe.p1001', 'probe.p1002', 'probe.p1003', 'probe.p1004', 'probe.p1005', 'probe.p1006', 'probe.p1007', 'probe.p1008', 'probe.p1009', 'probe.p1010', 'probe.p1011', 'probe.p1012', 'probe.p1013', 'probe.p1014'
              ]) AS n) s),
   'OK (todos los veredictos publicados)';
 
