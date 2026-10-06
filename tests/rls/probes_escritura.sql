@@ -4478,9 +4478,9 @@ DO $$ BEGIN
   ELSE
     BEGIN
       INSERT INTO public.visitas_agendadas (empresa_id,medico_id,cuenta_proveedor_id,fecha_visita,hora_inicio,hora_fin,tipo_visita,estado)
-        VALUES (current_setting('probe.pa_ea',true)::uuid, current_setting('probe.fm_medgt',true)::uuid, current_setting('probe.cat_inv',true)::uuid, CURRENT_DATE+7,'09:00','10:00','presencial','pendiente');
+        VALUES (current_setting('probe.pa_ea',true)::uuid, current_setting('probe.fm_medgt',true)::uuid, current_setting('probe.cat_inv',true)::uuid, CURRENT_DATE+7,'09:00','10:00','presentacion_producto','pendiente');
       PERFORM set_config('probe.p254','ROJO (agendó sin plan de visitas — leak vivo)',false);
-    EXCEPTION WHEN others THEN PERFORM set_config('probe.p254','BLOQUEADO ('||SQLSTATE||')',false); END;
+    EXCEPTION WHEN others THEN PERFORM set_config('probe.p254', CASE WHEN SQLSTATE = '23514' THEN 'FALLO (CHECK 23514: lo frenó el constraint, no el gate)' ELSE 'BLOQUEADO ('||SQLSTATE||')' END, false); END;
   END IF;
 END $$;
 
@@ -4499,7 +4499,7 @@ DO $$ DECLARE v_id uuid; BEGIN
   ELSE
     BEGIN
       INSERT INTO public.visitas_agendadas (empresa_id,medico_id,cuenta_proveedor_id,fecha_visita,hora_inicio,hora_fin,tipo_visita,estado)
-        VALUES (current_setting('probe.pa_ea',true)::uuid, current_setting('probe.fm_medgt',true)::uuid, current_setting('probe.cat_inv',true)::uuid, CURRENT_DATE+8,'09:00','10:00','presencial','pendiente') RETURNING id INTO v_id;
+        VALUES (current_setting('probe.pa_ea',true)::uuid, current_setting('probe.fm_medgt',true)::uuid, current_setting('probe.cat_inv',true)::uuid, CURRENT_DATE+8,'09:00','10:00','presentacion_producto','pendiente') RETURNING id INTO v_id;
       PERFORM set_config('probe.va2_visita', v_id::text, false);
       PERFORM set_config('probe.p255','OK (agenda con plan país-cubriente)',false);
     EXCEPTION WHEN others THEN PERFORM set_config('probe.p255','FALLO ('||SQLERRM||')',false); END;
@@ -4512,9 +4512,9 @@ DO $$ BEGIN
   ELSE
     BEGIN
       INSERT INTO public.visitas_agendadas (empresa_id,medico_id,cuenta_proveedor_id,fecha_visita,hora_inicio,hora_fin,tipo_visita,estado)
-        VALUES (current_setting('probe.pa_ea',true)::uuid, current_setting('probe.vg1_medhn',true)::uuid, current_setting('probe.cat_inv',true)::uuid, CURRENT_DATE+9,'09:00','10:00','presencial','pendiente');
+        VALUES (current_setting('probe.pa_ea',true)::uuid, current_setting('probe.vg1_medhn',true)::uuid, current_setting('probe.cat_inv',true)::uuid, CURRENT_DATE+9,'09:00','10:00','presentacion_producto','pendiente');
       PERFORM set_config('probe.p256','ROJO (agendó médico de otro país — leak vivo)',false);
-    EXCEPTION WHEN others THEN PERFORM set_config('probe.p256','BLOQUEADO ('||SQLSTATE||')',false); END;
+    EXCEPTION WHEN others THEN PERFORM set_config('probe.p256', CASE WHEN SQLSTATE = '23514' THEN 'FALLO (CHECK 23514: lo frenó el constraint, no el gate)' ELSE 'BLOQUEADO ('||SQLSTATE||')' END, false); END;
   END IF;
 END $$;
 
@@ -4530,9 +4530,9 @@ DO $$ BEGIN
   ELSE
     BEGIN
       INSERT INTO public.visitas_agendadas (empresa_id,medico_id,cuenta_proveedor_id,fecha_visita,hora_inicio,hora_fin,tipo_visita,estado)
-        VALUES (current_setting('probe.pa_ea',true)::uuid, current_setting('probe.fm_medgt',true)::uuid, current_setting('probe.cat_inv',true)::uuid, CURRENT_DATE+10,'09:00','10:00','presencial','pendiente');
+        VALUES (current_setting('probe.pa_ea',true)::uuid, current_setting('probe.fm_medgt',true)::uuid, current_setting('probe.cat_inv',true)::uuid, CURRENT_DATE+10,'09:00','10:00','presentacion_producto','pendiente');
       PERFORM set_config('probe.p257','ROJO (agendó con plan vencido — leak vivo)',false);
-    EXCEPTION WHEN others THEN PERFORM set_config('probe.p257','BLOQUEADO ('||SQLSTATE||')',false); END;
+    EXCEPTION WHEN others THEN PERFORM set_config('probe.p257', CASE WHEN SQLSTATE = '23514' THEN 'FALLO (CHECK 23514: lo frenó el constraint, no el gate)' ELSE 'BLOQUEADO ('||SQLSTATE||')' END, false); END;
   END IF;
 END $$;
 
@@ -4551,7 +4551,7 @@ DO $$ DECLARE v_id uuid; BEGIN
   ELSE
     -- visita propia de P258 (médico GT, plan activo) para no tocar va2_visita (usada por P259)
     INSERT INTO public.visitas_agendadas (empresa_id,medico_id,cuenta_proveedor_id,fecha_visita,hora_inicio,hora_fin,tipo_visita,estado)
-      VALUES (current_setting('probe.pa_ea',true)::uuid, current_setting('probe.fm_medgt',true)::uuid, current_setting('probe.cat_inv',true)::uuid, CURRENT_DATE+11,'09:00','10:00','presencial','pendiente') RETURNING id INTO v_id;
+      VALUES (current_setting('probe.pa_ea',true)::uuid, current_setting('probe.fm_medgt',true)::uuid, current_setting('probe.cat_inv',true)::uuid, CURRENT_DATE+11,'09:00','10:00','presentacion_producto','pendiente') RETURNING id INTO v_id;
     BEGIN
       UPDATE public.visitas_agendadas SET medico_id = current_setting('probe.vg1_medhn',true)::uuid WHERE id = v_id;
       PERFORM set_config('probe.p258','ROJO (re-targeteó a médico no cubierto — leak vivo)',false);
@@ -5472,9 +5472,9 @@ DO $$ BEGIN
   IF current_setting('probe.c3_ready',true)<>'1' THEN PERFORM set_config('probe.p322','N/A',false);
   ELSE BEGIN
     INSERT INTO public.visitas_agendadas (empresa_id,medico_id,cuenta_proveedor_id,fecha_visita,hora_inicio,hora_fin,tipo_visita,estado)
-      VALUES (current_setting('probe.pa_ea',true)::uuid, current_setting('probe.fm_medgt',true)::uuid, current_setting('probe.cat_inv',true)::uuid, CURRENT_DATE+20,'09:00','10:00','presencial','pendiente');
+      VALUES (current_setting('probe.pa_ea',true)::uuid, current_setting('probe.fm_medgt',true)::uuid, current_setting('probe.cat_inv',true)::uuid, CURRENT_DATE+20,'09:00','10:00','presentacion_producto','pendiente');
     PERFORM set_config('probe.p322','ROJO (agendó sin pvc — leak)',false);
-  EXCEPTION WHEN others THEN PERFORM set_config('probe.p322','BLOQUEADO ('||SQLSTATE||')',false); END; END IF;
+  EXCEPTION WHEN others THEN PERFORM set_config('probe.p322', CASE WHEN SQLSTATE = '23514' THEN 'FALLO (CHECK 23514: lo frenó el constraint, no el gate)' ELSE 'BLOQUEADO ('||SQLSTATE||')' END, false); END; END IF;
 END $$;
 
 SELECT set_config('role','none',true);
@@ -5490,9 +5490,9 @@ DO $$ BEGIN
   IF current_setting('probe.c3_ready',true)<>'1' THEN PERFORM set_config('probe.p323','N/A',false);
   ELSE BEGIN
     INSERT INTO public.visitas_agendadas (empresa_id,medico_id,cuenta_proveedor_id,fecha_visita,hora_inicio,hora_fin,tipo_visita,estado)
-      VALUES (current_setting('probe.pa_ea',true)::uuid, current_setting('probe.vg1_medhn',true)::uuid, current_setting('probe.cat_inv',true)::uuid, CURRENT_DATE+21,'09:00','10:00','presencial','pendiente');
+      VALUES (current_setting('probe.pa_ea',true)::uuid, current_setting('probe.vg1_medhn',true)::uuid, current_setting('probe.cat_inv',true)::uuid, CURRENT_DATE+21,'09:00','10:00','presentacion_producto','pendiente');
     PERFORM set_config('probe.p323','ROJO (agendó médico de otro país — invariante país roto)',false);
-  EXCEPTION WHEN others THEN PERFORM set_config('probe.p323','BLOQUEADO ('||SQLSTATE||')',false); END; END IF;
+  EXCEPTION WHEN others THEN PERFORM set_config('probe.p323', CASE WHEN SQLSTATE = '23514' THEN 'FALLO (CHECK 23514: lo frenó el constraint, no el gate)' ELSE 'BLOQUEADO ('||SQLSTATE||')' END, false); END; END IF;
 END $$;
 
 -- P324 — dentro de bolsa + país ok → PERMITE (1ª, llena cap=1)
@@ -5500,7 +5500,7 @@ DO $$ DECLARE v_id uuid; BEGIN
   IF current_setting('probe.c3_ready',true)<>'1' THEN PERFORM set_config('probe.p324','N/A',false);
   ELSE BEGIN
     INSERT INTO public.visitas_agendadas (empresa_id,medico_id,cuenta_proveedor_id,fecha_visita,hora_inicio,hora_fin,tipo_visita,estado)
-      VALUES (current_setting('probe.pa_ea',true)::uuid, current_setting('probe.fm_medgt',true)::uuid, current_setting('probe.cat_inv',true)::uuid, CURRENT_DATE+22,'09:00','10:00','presencial','pendiente') RETURNING id INTO v_id;
+      VALUES (current_setting('probe.pa_ea',true)::uuid, current_setting('probe.fm_medgt',true)::uuid, current_setting('probe.cat_inv',true)::uuid, CURRENT_DATE+22,'09:00','10:00','presentacion_producto','pendiente') RETURNING id INTO v_id;
     PERFORM set_config('probe.c3_v1', v_id::text, false);
     PERFORM set_config('probe.p324','OK (agenda dentro de bolsa + país)',false);
   EXCEPTION WHEN others THEN PERFORM set_config('probe.p324','FALLO ('||SQLERRM||')',false); END; END IF;
@@ -5522,9 +5522,9 @@ DO $$ BEGIN
   IF current_setting('probe.c3_ready',true)<>'1' THEN PERFORM set_config('probe.p326','N/A',false);
   ELSE BEGIN
     INSERT INTO public.visitas_agendadas (empresa_id,medico_id,cuenta_proveedor_id,fecha_visita,hora_inicio,hora_fin,tipo_visita,estado)
-      VALUES (current_setting('probe.pa_ea',true)::uuid, current_setting('probe.fm_medgt',true)::uuid, current_setting('probe.cat_inv',true)::uuid, CURRENT_DATE+23,'09:00','10:00','presencial','pendiente');
+      VALUES (current_setting('probe.pa_ea',true)::uuid, current_setting('probe.fm_medgt',true)::uuid, current_setting('probe.cat_inv',true)::uuid, CURRENT_DATE+23,'09:00','10:00','presentacion_producto','pendiente');
     PERFORM set_config('probe.p326','ROJO (agendó sobre bolsa agotada — sin bucket gate)',false);
-  EXCEPTION WHEN others THEN PERFORM set_config('probe.p326','BLOQUEADO ('||SQLSTATE||')',false); END; END IF;
+  EXCEPTION WHEN others THEN PERFORM set_config('probe.p326', CASE WHEN SQLSTATE = '23514' THEN 'FALLO (CHECK 23514: lo frenó el constraint, no el gate)' ELSE 'BLOQUEADO ('||SQLSTATE||')' END, false); END; END IF;
 END $$;
 
 -- P327 — cancelar 1 libera bolsa → reintento PERMITE (conteo derivado) [POST]
@@ -5538,7 +5538,7 @@ DO $$ BEGIN
   IF current_setting('probe.c3_ready',true)<>'1' THEN PERFORM set_config('probe.p327','N/A',false);
   ELSE BEGIN
     INSERT INTO public.visitas_agendadas (empresa_id,medico_id,cuenta_proveedor_id,fecha_visita,hora_inicio,hora_fin,tipo_visita,estado)
-      VALUES (current_setting('probe.pa_ea',true)::uuid, current_setting('probe.fm_medgt',true)::uuid, current_setting('probe.cat_inv',true)::uuid, CURRENT_DATE+24,'09:00','10:00','presencial','pendiente');
+      VALUES (current_setting('probe.pa_ea',true)::uuid, current_setting('probe.fm_medgt',true)::uuid, current_setting('probe.cat_inv',true)::uuid, CURRENT_DATE+24,'09:00','10:00','presentacion_producto','pendiente');
     PERFORM set_config('probe.p327','OK (cancelar liberó la bolsa, reintento permitido)',false);
   EXCEPTION WHEN others THEN PERFORM set_config('probe.p327', CASE WHEN current_setting('probe.c3_post',true)='1' THEN 'FALLO (no liberó: '||SQLSTATE||')' ELSE 'N/A pre' END, false); END; END IF;
 END $$;
