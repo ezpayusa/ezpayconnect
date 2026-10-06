@@ -65,20 +65,7 @@ export function useWebAppCampanas(pacienteId: number | undefined, perfil: any) {
     fetchCampanas()
   }, [fetchCampanas])
 
-  const registrarVista = async (campanaId: number, clickeado = false) => {
-    if (!pacienteId) return
-    try {
-      await supabase.from('campana_vistas').upsert({
-        campana_id: campanaId,
-        paciente_id: pacienteId,
-        clickeado,
-      }, { onConflict: 'campana_id,paciente_id' })
-    } catch (err) {
-      console.error('Error registrando vista:', err)
-    }
-  }
-
-  return { campanas, loading, registrarVista, refetch: fetchCampanas }
+  return { campanas, loading, refetch: fetchCampanas }
 }
 
 function calcularEdad(fechaNacimiento: string): number {
