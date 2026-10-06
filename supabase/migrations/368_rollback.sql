@@ -2,7 +2,7 @@
 -- 368 ROLLBACK - el admin_pais vuelve a ver las 21 claves de configuracion_sistema
 -- ############################################################################################
 -- Vuelve configuracion_sistema_select_authenticated_publicas al qual EXACTO de la 366 (las 14 publicas OR
--- super_admin/admin_pais). Va ANTES que 367_rollback y que 366_rollback.
+-- super_admin/admin_pais). Va ANTES que 366_rollback (forzado por huella); con 367_rollback es conmutable.
 -- Precondicion: la 368 esta viva (qual sin admin_pais, huella de policies 2c6e39d7... 307).
 -- Autochequeo: huella de policies a99ac4be... 307.
 -- ############################################################################################

@@ -24,18 +24,33 @@ Stack: React + Vite + TypeScript, Supabase / Postgres, deploy en Vercel, repo en
   minutos por esto** (P635 es la probe que faltaba, P636 su contraprueba).
 - NUNCA ampliar policies de RLS sobre tablas adyacentes a datos médicos (p. ej. campana_metricas). Para dar acceso, usar RPCs SECURITY DEFINER con search_path='', fail-closed (si el scope es NULL → 0 filas) y gate interno.
 - Probar aislamiento por rol impersonando request.jwt.claims en prod: cada rol ve lo suyo y no lo ajeno.
-- **Próximos números libres: probe `P1011`** (global, no por módulo; P1010 usado por la mig 367, P1009 por la 366, P1008 por la 365, P1007 por la 364, P1001-P1006 por la mig 363, P996-P1000 por la 362, P990-P995 por la 361, P983-P989 por la 360, P975-P982 por la
+- **Próximos números libres: probe `P1015`** (global, no por módulo; P1011-P1014 usados por la mig 369, P1010 por la mig 367, P1009 por la 366, P1008 por la 365, P1007 por la 364, P1001-P1006 por la mig 363, P996-P1000 por la 362, P990-P995 por la 361, P983-P989 por la 360, P975-P982 por la
   359, P967-P974 por la 358, P958-P966 por la 357 (obtener_medicos_por_ids acotada a relación); P906-P907 usados por la mig 336, P912-P913
   por la 337, P914-P915 por la 338, P916-P920 por la 339/340, P921-P923 por la 341, P924 por la 342, P925 por
   la 343, P926-P927 por la 344, P928-P929 por la 345, P930 por la 346, P931-P932 por la 347, P933 por la 348,
-  P934-P935 por la 349, P936 por la 350, P937-P939 por la 351, P940-P943 por la 353), **migración `369`**, **errcode `PC029`** (familia PC: PC025 país requerido y PC026 sin autoridad en `contar_medicos_por_pais`, PC027
+  P934-P935 por la 349, P936 por la 350, P937-P939 por la 351, P940-P943 por la 353), **migración `370`**, **errcode `PC029`** (familia PC: PC025 país requerido y PC026 sin autoridad en `contar_medicos_por_pais`, PC027
   no autenticado, PC028 sin autoridad sobre el país en `contar_proveedores_por_pais`)
+  (369 = familia 2, F2-f (cierra la F2-f), examenes_catalogo sin escritura directa — APLICADA en prod el 2026-10-06 entre
+  19:44:34 y 19:44:38 UTC y verificada en sesión independiente; harness 1089 filas / 11 rojas de deuda, P800 PASA. Antes,
+  recepción y técnico del lab (y cualquier empresa activa con su propio id) escribían el catálogo por API sin el permiso.
+  3 RPCs DEFINER (`search_path=''`, EXECUTE solo authenticated y service_role): `crear_examen_catalogo(p_nombre,
+  p_categoria)`, `actualizar_examen_catalogo(p_id, p_categoria, p_activo)` (NULL = sin cambio; no renombra) y
+  `eliminar_examen_catalogo(p_id)`, con el gate PRIMERO: `mi_empresa_proveedor()` + empresa `laboratorio_clinico` activa +
+  `COALESCE(private.tiene_permiso('catalogo_examenes_editar'), false)`. Errcodes EX035 sin permiso, EX036 no existe en tu
+  catálogo (también si es de otro lab), EX037 nombre/categoría inválidos, EX038 ya ordenado (se desactiva, no se borra),
+  EX039 nombre repetido. `catalogo_lab_all` → `catalogo_lab_select` (SELECT TO authenticated, COALESCE fail-closed);
+  REVOKE INSERT/UPDATE/DELETE y el UPDATE de columna (categoria, activo) de authenticated. Huellas: policies 2c6e39d7…/307
+  → 9ad617568275d4b7f27b1e2115f8978f/307; ACL de public e2bb57f4…/2370 → 64ff833d25666534b8de9171d1e5d404/2368; ACL de
+  funciones 0ee90ba6…/381 → e5c9770e31312d34601dc45f0c545173/384. Probes: P1011-P1014 nuevos; P873, P875, P878, P883 y
+  P884 con rama `v_369` (verdes con y sin la 369). Front: `useLaboratorio` por RPC + `src/laboratorio/lib/catalogoExamenes.ts`
+  (mensaje por whitelist EX035-EX039/42501; EX038 ofrece desactivar). Rollback `369_rollback.sql` (va antes que
+  `368_rollback`; exige revertir también el front de `useLaboratorio` a la escritura directa).)
   (368 = familia 2, F2-f parcial, configuracion_sistema sin admin_pais — APLICADA en prod el 2026-10-06 entre 18:58:26 y
   18:58:30 UTC y verificada en sesión independiente. ALTER POLICY de `configuracion_sistema_select_authenticated_publicas`:
   sale `admin_pais` del `tiene_rol`; queda con las 14 claves públicas para todo authenticated y las 21 solo para el
   super_admin (nadie lee la tabla con sesión de usuario: `/configuracion` va por la edge con service_role). Huella de
   policies a99ac4be…/307 → 2c6e39d704ebd6a2e28542b9d3b4fbc0/307; ACL sin cambio. Probes P757 y P1009 ajustados (el
-  admin_pais ve 14, sin integ_* por nombre). Rollback `368_rollback.sql` (va antes que `367_rollback`).)
+  admin_pais ve 14, sin integ_* por nombre). Rollback `368_rollback.sql` (va antes que `366_rollback`; con `367_rollback` es conmutable).)
   (367 = familia 2, F2-f parcial, campana_vistas sin UPDATE — APLICADA en prod el 2026-10-06 entre 18:45:04 y 18:45:08 UTC
   y verificada en sesión independiente. REVOKE UPDATE de authenticated en `campana_vistas` (privilegio muerto: sin policy
   de UPDATE; el upsert que lo justificaba, `registrarVista`, no tenía llamadores y se borró del front); INSERT y
@@ -278,7 +293,7 @@ Stack: React + Vite + TypeScript, Supabase / Postgres, deploy en Vercel, repo en
   (trigger guardia, UPDATE); NT008 = revisiones inmutables; NT010 = la nota no corresponde a la cita
   (guardia, INSERT); NT011 = no es médico con cuenta activa. El front muestra NT* y 42501 con
   `error.message` tal cual (`mensajeErrorNota`, `src/hooks/useConsultas.ts`),
-  **`EX035`** (exámenes: EX001-EX020 órdenes por RPC, EX022 congelamiento de tipo/catalogo_id; EX021 reservado
+  **`EX040`** (exámenes: EX035-EX039 = mig 369, catálogo del lab por RPC; EX001-EX020 órdenes por RPC, EX022 congelamiento de tipo/catalogo_id; EX021 reservado
   sin uso — el renombre del catálogo se cierra por grants; mig 332 — APLICADA en prod y verificada en sesión
   independiente el 25-sep-2026, probes P866-P878; mig 333 (REVOKE del INSERT directo + split de las ALL + M.8)
   — APLICADA en prod y verificada en sesión independiente el 25-sep-2026, probes P879-P884; P3 CERRADO
@@ -334,6 +349,9 @@ Stack: React + Vite + TypeScript, Supabase / Postgres, deploy en Vercel, repo en
   sin handler. Está enganchado como hook de pre-commit en `.githooks/pre-commit`; en un clone nuevo
   hay que activarlo una vez con `git config core.hooksPath .githooks`.
 - **Todo probe que modifica un fixture lo restaura a su snapshot y verifica la restauración.**
+- **En un probe con PENDIENTE, las regresiones que no dependen de la migración se chequean ANTES de la rama PENDIENTE**
+  (p. ej. que el super_admin vea menos de 21 claves): si no, una regresión real queda tapada por 'PENDIENTE mig N'
+  (review del #46, 6-oct-2026).
 - **Los fixtures que toman cuentas reales por posición (ORDER BY id LIMIT/OFFSET) las dejan modificadas para el resto de la
   transacción (C.2, P309-P316). Un probe nuevo no debe filtrar actores por rol o empresa sin tener esto en cuenta.**
 - **Un actor que alimenta un INSERT con FK se elige por email o con EXISTS en la tabla destino de la FK, nunca por ORDER BY
@@ -366,8 +384,8 @@ Stack: React + Vite + TypeScript, Supabase / Postgres, deploy en Vercel, repo en
   Pasó dos veces (18cf819 y el lote 1 de PA-FAILOPEN) y una de ellas tardó dos meses en detectarse.
   Baselines vivos: `top_level_dml_ddl=0` (excluye `pg_temp`), `cast_directo=0`, `do_sin_handler=155`
   (fase 2.2 CERRADA: los 55 bloques que escriben están envueltos, 211→193→175→157→156→155; los 155
-  restantes sólo leen y publican, así que ya no son deuda; 1003 bloques DO en total al 6-oct-2026, tras la 368; la
-  última cuenta de filas medida en esta memoria es 1085 / 11 rojas de deuda, tras la 368; tsc 74, vitest 420).
+  restantes sólo leen y publican, así que ya no son deuda; 1004 bloques DO en total al 6-oct-2026, tras la 369; la
+  última cuenta de filas medida en esta memoria es 1089 / 11 rojas de deuda, tras la 369; tsc 74, vitest 424).
   **Regla de método: el harness NUNCA corre en paralelo con otra sesión que escriba o impersone contra prod**
   (las dos compiten por las mismas filas: deadlocks 40P01 que salen como rojos falsos). **P782 ajustado en la 346:** el DELETE directo sobre
   `visitas_agendadas` ahora da 42501 de privilegio (authenticated ya no tiene DELETE) y cuenta como OK, más fuerte
@@ -381,9 +399,10 @@ Stack: React + Vite + TypeScript, Supabase / Postgres, deploy en Vercel, repo en
 - **Migraciones: SIEMPRE `npx supabase db query --linked -f <archivo>`, NUNCA `db push`.** `db push`
   desincroniza `schema_migrations` (deuda desde la 047). Los `.sql` viven en `supabase/migrations/`
   (rollback en `supabase/migrations/rollback/`); los de `supabase/fixes/` se agregan con `git add -f`.
-  **Desvío aceptado (familia 8):** los rollbacks de 334-368 viven en `supabase/migrations/`
-  (`3XX_rollback.sql`), no en `supabase/migrations/rollback/`. Orden de rollback global: `368_rollback` →
-  `367_rollback` → `366_rollback` → `365_rollback` → ….
+  **Desvío aceptado (familia 8):** los rollbacks de 334-369 viven en `supabase/migrations/`
+  (`3XX_rollback.sql`), no en `supabase/migrations/rollback/`. Orden de rollback global: `369_rollback` →
+  `368_rollback` → `366_rollback` → `365_rollback` → … (369 antes que 368 y 368 antes que 366 están forzados por huella;
+  `367_rollback` es conmutable con 366 y 368). `369_rollback` exige revertir también el front de `useLaboratorio`.
 - **Los tests de edge (deno) NO corren en vitest ni en el pre-commit**: se corren a mano desde
   `supabase/functions/<fn>/` con `deno test --allow-net --allow-env --no-check` (asistente-ia: 17).
 - **El CORS de `asistente-ia` sólo acepta `med.ezpayconnect.com`**: las pruebas de edges desde un preview
@@ -468,7 +487,7 @@ Detalles a recordar:
   sin 42501) (350, **APLICADA**; P936; allowlist temporal de P930 con el SELECT de anon en 5 tablas) → **F2-d** quitar el UPDATE directo de visitas_agendadas (2 policies + el privilegio) (364, **APLICADA**) → **F2-e** decisiones
   de producto (exp_superadmin_insert: super_admin crea notas a nombre de cualquier médico; claves bancarias de
   configuracion_sistema visibles para todo authenticated) (365 + 366, **APLICADAS**) → **F2-f** con front (campana_vistas sin UPDATE y fuera de la allowlist de P930,
-  367 **APLICADA**; configuracion_sistema sin admin_pais, 368 **APLICADA**; **sigue: 369**, catalogo_lab_all partida) → **F2-g** opcional (partir ALL;
+  367 **APLICADA**; configuracion_sistema sin admin_pais, 368 **APLICADA**; catalogo_lab_all partida, 369 **APLICADA** — **F2-f CERRADA**) → **sigue:** **F2-g** opcional (partir ALL;
   `(select auth.uid())`) → **ÚLTIMO: EXECUTE** (con el número que le toque): `GRANT EXECUTE … TO authenticated,
   service_role` explícito en los helpers usados por policies ANTES de `REVOKE … FROM PUBLIC, anon` en las 21 (si no,
   se rompen para authenticated las 52 policies de mi_empresa_proveedor() y el resto); extender P800 a `pg_proc`;
@@ -477,10 +496,10 @@ Detalles a recordar:
   authenticated anula el filtro `activo` para logueados; 123 policies con `auth.uid()` sin `(select …)` (performance).
   F2-d (mig 364, 5-oct): visitas_agendadas sin UPDATE directo; las escrituras van solo por las 7 RPCs DEFINER.
   F2-e (migs 365 y 366, 5/6-oct): el super_admin no escribe notas clínicas; cuenta de depósito y claves bancarias acotadas.
-  F2-f parcial (migs 367 y 368, 6-oct): campana_vistas sin UPDATE; configuracion_sistema con las 21 claves solo para el
-  super_admin. Sigue la 369: catalogo_lab_all partida, con las escrituras por RPC DEFINER con el gate
-  `tiene_permiso('catalogo_examenes_editar')` adentro, un SELECT del lab propio y el front de `useLaboratorio`. NO va por
-  policy con WITH CHECK que llame funciones DEFINER (lección rls-with-check-definer-flaky-postgrest).
+  F2-f CERRADA (migs 367, 368 y 369, 6-oct): campana_vistas sin UPDATE; configuracion_sistema con las 21 claves solo para el
+  super_admin; examenes_catalogo sin escritura directa (catalogo_lab_all partida; escrituras por 3 RPCs DEFINER con el gate
+  `tiene_permiso('catalogo_examenes_editar')` adentro, no por policy con WITH CHECK que llame funciones DEFINER — lección
+  rls-with-check-definer-flaky-postgrest). Sigue F2-g (opcional) y después EXECUTE.
 - **FAMILIA 1 (privilegios) CERRADA: 342-347 aplicadas.** El paso de EXECUTE (antes "348") pasa a ser el ÚLTIMO de
   la familia 2, porque su prerequisito (sacar de `TO public` las policies que anon evalúa) es trabajo de policies.
   Plan original (recon del 2-oct-2026 sobre f29f974: sin fuga explotable
@@ -552,11 +571,12 @@ Detalles a recordar:
   se borra o pasa a DEFINER.
 - (Familia 7) Bugs latentes que la 346 vuelve visibles (42501 en vez de un "éxito" silencioso con 0 filas):
   `useProveedorAuth.ts:171` UPDATE de `cuentas_proveedor`; `useFacturas.ts:80` DELETE de `facturas`;
-  `useRecetas.ts:197` UPDATE de `recetas`. Y: `campana_vistas` no tiene policy de UPDATE, así que el upsert del
-  front con conflicto (vista repetida) probablemente falla desde antes de la 346 (el front traga el error);
-  revisar.
+  `useRecetas.ts:197` UPDATE de `recetas`.
 - (Familia 3/4) FK `examenes_orden_id_fkey` sigue `ON DELETE CASCADE`: tras la 338 sólo la alcanzan
   postgres/service_role (borrar una orden arrastra sus exámenes, completados incluidos).
+- (Familia 2/4) `catalogo_read_activos` no filtra por tipo de empresa: `private.lab_en_mi_pais` solo compara el país. Hoy no
+  se explota porque las RPCs de la 369 exigen `laboratorio_clinico`, pero una fila activa con `laboratorio_id` de otro tipo
+  de empresa (sembrada por postgres/service_role) sería visible para el médico.
 - (Familia 4) `examenes.updated_at` no se actualiza al corregir ni al liberar.
 - (Familia 7) El lab no tiene vista del historial de revisiones; "Ver archivo anterior" aparece en
   revisiones que no cambiaron el archivo.
