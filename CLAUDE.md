@@ -43,8 +43,9 @@ Stack: React + Vite + TypeScript, Supabase / Postgres, deploy en Vercel, repo en
   → 9ad617568275d4b7f27b1e2115f8978f/307; ACL de public e2bb57f4…/2370 → 64ff833d25666534b8de9171d1e5d404/2368; ACL de
   funciones 0ee90ba6…/381 → e5c9770e31312d34601dc45f0c545173/384. Probes: P1011-P1014 nuevos; P873, P875, P878, P883 y
   P884 con rama `v_369` (verdes con y sin la 369). Front: `useLaboratorio` por RPC + `src/laboratorio/lib/catalogoExamenes.ts`
-  (mensaje por whitelist EX035-EX039/42501; EX038 ofrece desactivar). Rollback `369_rollback.sql` (va antes que
-  `368_rollback`; exige revertir también el front de `useLaboratorio` a la escritura directa).)
+  (mensaje por whitelist EX035-EX039; 42501 y el resto con texto genérico desde el review #47; EX038 ofrece desactivar).
+  Rollback `369_rollback.sql` (va antes que `368_rollback` y que `367_rollback`: la precondición de la 367 exige la ACL de
+  public e2bb57f4…/2370, que la 369 cambió; exige revertir también el front de `useLaboratorio` a la escritura directa).)
   (368 = familia 2, F2-f parcial, configuracion_sistema sin admin_pais — APLICADA en prod el 2026-10-06 entre 18:58:26 y
   18:58:30 UTC y verificada en sesión independiente. ALTER POLICY de `configuracion_sistema_select_authenticated_publicas`:
   sale `admin_pais` del `tiene_rol`; queda con las 14 claves públicas para todo authenticated y las 21 solo para el
@@ -401,8 +402,10 @@ Stack: React + Vite + TypeScript, Supabase / Postgres, deploy en Vercel, repo en
   (rollback en `supabase/migrations/rollback/`); los de `supabase/fixes/` se agregan con `git add -f`.
   **Desvío aceptado (familia 8):** los rollbacks de 334-369 viven en `supabase/migrations/`
   (`3XX_rollback.sql`), no en `supabase/migrations/rollback/`. Orden de rollback global: `369_rollback` →
-  `368_rollback` → `366_rollback` → `365_rollback` → … (369 antes que 368 y 368 antes que 366 están forzados por huella;
-  `367_rollback` es conmutable con 366 y 368). `369_rollback` exige revertir también el front de `useLaboratorio`.
+  `368_rollback` → `366_rollback` → `365_rollback` → … Forzados por huella: 369 antes que 368 Y antes que 367 (la
+  precondición de `367_rollback` exige la ACL de public e2bb57f4…/2370, que la 369 cambió) y 368 antes que 366;
+  `367_rollback` sigue conmutable con 366 y 368 (siempre después de 369). `369_rollback` exige revertir también el front
+  de `useLaboratorio`.
 - **Los tests de edge (deno) NO corren en vitest ni en el pre-commit**: se corren a mano desde
   `supabase/functions/<fn>/` con `deno test --allow-net --allow-env --no-check` (asistente-ia: 17).
 - **El CORS de `asistente-ia` sólo acepta `med.ezpayconnect.com`**: las pruebas de edges desde un preview
@@ -574,6 +577,9 @@ Detalles a recordar:
   `useRecetas.ts:197` UPDATE de `recetas`.
 - (Familia 3/4) FK `examenes_orden_id_fkey` sigue `ON DELETE CASCADE`: tras la 338 sólo la alcanzan
   postgres/service_role (borrar una orden arrastra sus exámenes, completados incluidos).
+- (Familia 4, review #47 M-2, candidato a mig 370) Las RPCs de la 369 normalizan nombre y categoría con `btrim`, que solo
+  recorta espacios: tabs y saltos de línea pasan por API (el front hace `.trim()`, que sí los recorta). La 336 ya normaliza
+  espacios/tabs/saltos para EX028: usar el mismo criterio en `crear_examen_catalogo` y `actualizar_examen_catalogo`.
 - (Familia 2/4) `catalogo_read_activos` no filtra por tipo de empresa: `private.lab_en_mi_pais` solo compara el país. Hoy no
   se explota porque las RPCs de la 369 exigen `laboratorio_clinico`, pero una fila activa con `laboratorio_id` de otro tipo
   de empresa (sembrada por postgres/service_role) sería visible para el médico.

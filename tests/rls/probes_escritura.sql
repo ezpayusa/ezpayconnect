@@ -24300,7 +24300,7 @@ BEGIN
   st := '00000'; msg := ''; nn := NULL;
   BEGIN
     PERFORM set_config('request.jwt.claims', json_build_object('sub', c_admin::text, 'role', 'authenticated')::text, true); PERFORM set_config('role', 'authenticated', true);
-    IF v_369 THEN EXECUTE 'SELECT public.eliminar_examen_catalogo($1)' USING seed_cat[1]; nn := 1;
+    IF v_369 THEN EXECUTE 'SELECT public.eliminar_examen_catalogo($1)' INTO v2 USING seed_cat[1]; nn := CASE WHEN v2 = seed_cat[1] THEN 1 ELSE 0 END;
     ELSE DELETE FROM public.examenes_catalogo WHERE id = seed_cat[1]; GET DIAGNOSTICS nn = ROW_COUNT; END IF;
     PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
   EXCEPTION WHEN OTHERS THEN PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
@@ -24311,7 +24311,7 @@ BEGIN
   st := '00000'; msg := ''; nn := NULL;
   BEGIN
     PERFORM set_config('request.jwt.claims', json_build_object('sub', c_admin::text, 'role', 'authenticated')::text, true); PERFORM set_config('role', 'authenticated', true);
-    IF v_369 THEN EXECUTE 'SELECT public.actualizar_examen_catalogo($1, $2, $3)' USING c_copro, NULL::text, false; nn := 1;
+    IF v_369 THEN EXECUTE 'SELECT public.actualizar_examen_catalogo($1, $2, $3)' INTO v2 USING c_copro, NULL::text, false; nn := CASE WHEN v2 = c_copro THEN 1 ELSE 0 END;
     ELSE UPDATE public.examenes_catalogo SET activo = false WHERE id = c_copro; GET DIAGNOSTICS nn = ROW_COUNT; END IF;
     PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
   EXCEPTION WHEN OTHERS THEN PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
@@ -33227,6 +33227,9 @@ SELECT set_config('role', 'none', true);
 --         activos de labs de su pais; la farmacia no ve el inactivo ajeno.
 -- Sin la 369 (catalogo: no existen las RPCs o authenticated conserva INSERT) P1011-P1013 salen 'PENDIENTE mig 369 (lo
 -- medido)', nunca OK. Todo en una subtransaccion descartada (RAISE P0999); al final se verifica el snapshot del catalogo.
+-- Review #47 (I-1, 6-oct-2026): otros probes dejan cuentas_proveedor activas para medico.qa/paciente.qa (P101 deja a
+-- medico.qa como cuenta de un lab): dentro del savepoint, ANTES de medir, se neutralizan (activo=false) con el patron de
+-- P1009 y la firma (id/rol/empresa/estado) y el conteo van al veredicto. e_otra se elige sin cuentas activas de ellos.
 DO $$
 DECLARE
   c_lab CONSTANT uuid := 'a5cf575a-5d63-4ed2-839e-9b58da8152e0'; c_admin CONSTANT uuid := 'e6f95b2f-7561-4e0b-b0c8-d1f38e6c4d66';
@@ -33234,6 +33237,7 @@ DECLARE
   v_369 boolean; a_farm uuid; e_farm uuid; e_otra uuid; a_med uuid; a_pac uuid; v_ref uuid; v_inact uuid; v_ajena uuid; v_nuevo uuid;
   r record; st text; msg text; v uuid; n int; o int; snap_pre text; snap_post text;
   b1 text := ''; b2 text := ''; b3 text := ''; b4 text := ''; d1 text := ''; d2 text := ''; d3 text := ''; d4 text := '';
+  n_contam int := 0; firma text := '-'; n_neutr int := 0; contam text := '';
 BEGIN
   IF current_user <> 'postgres' THEN RAISE EXCEPTION 'fixture roto: P1011 corre como %', current_user; END IF;
   v_369 := to_regprocedure('public.crear_examen_catalogo(text,text)') IS NOT NULL
@@ -33241,9 +33245,11 @@ BEGIN
   SELECT cp.id, cp.empresa_id INTO a_farm, e_farm FROM public.cuentas_proveedor cp JOIN public.empresas_proveedoras e ON e.id = cp.empresa_id
    WHERE e.tipo = 'farmacia' AND e.estado = 'activa' AND cp.activo AND cp.rol_en_empresa = 'admin' AND EXISTS (SELECT 1 FROM auth.users u WHERE u.id = cp.id)
    ORDER BY COALESCE(cp.created_at, '-infinity'), cp.id LIMIT 1;
-  e_otra := (SELECT e.id FROM public.empresas_proveedoras e WHERE e.id <> c_lab AND e.id IS DISTINCT FROM e_farm ORDER BY e.id LIMIT 1);
   a_med := (SELECT u.id FROM auth.users u WHERE lower(u.email) LIKE 'medico.qa@%' ORDER BY u.email LIMIT 1);
   a_pac := (SELECT u.id FROM auth.users u WHERE lower(u.email) LIKE 'paciente.qa@%' ORDER BY u.email LIMIT 1);
+  e_otra := (SELECT e.id FROM public.empresas_proveedoras e WHERE e.id <> c_lab AND e.id IS DISTINCT FROM e_farm
+               AND NOT EXISTS (SELECT 1 FROM public.cuentas_proveedor cp WHERE cp.empresa_id = e.id AND cp.activo AND cp.id IN (a_med, a_pac))
+             ORDER BY e.id LIMIT 1);
   v_ref := (SELECT c.id FROM public.examenes_catalogo c WHERE c.laboratorio_id = c_lab AND EXISTS (SELECT 1 FROM public.examenes ex WHERE ex.catalogo_id = c.id) ORDER BY c.id LIMIT 1);
   IF NOT EXISTS (SELECT 1 FROM public.empresas_proveedoras WHERE id = c_lab AND tipo = 'laboratorio_clinico')
      OR (SELECT count(*) FROM public.cuentas_proveedor WHERE id IN (c_admin, c_recep, c_tec)) <> 3
@@ -33260,6 +33266,14 @@ BEGIN
            rol_en_empresa = CASE id WHEN c_admin THEN 'admin' WHEN c_recep THEN 'recepcion' ELSE 'tecnico' END
      WHERE id IN (c_admin, c_recep, c_tec);
     DELETE FROM public.permisos_empresa_rol_override WHERE empresa_id = c_lab AND accion = 'catalogo_examenes_editar';
+    -- contaminacion (I-1): cuentas_proveedor activas de los actores que no deben escribir ni ver lo ajeno
+    SELECT count(*), COALESCE(string_agg(cp.id::text||'/'||COALESCE(cp.rol_en_empresa, '-')||'/'||COALESCE(cp.empresa_id::text, '-')||'/'||COALESCE(e.estado, '-'), ' ; ' ORDER BY cp.id), '-')
+      INTO n_contam, firma
+      FROM public.cuentas_proveedor cp LEFT JOIN public.empresas_proveedoras e ON e.id = cp.empresa_id
+     WHERE cp.id IN (a_med, a_pac) AND cp.activo;
+    UPDATE public.cuentas_proveedor SET activo = false WHERE id IN (a_med, a_pac) AND activo;
+    GET DIAGNOSTICS n_neutr = ROW_COUNT;
+    IF n_neutr <> n_contam THEN RAISE EXCEPTION 'fixture roto: P1011 neutralizo % de % cuentas de medico.qa/paciente.qa', n_neutr, n_contam; END IF;
     INSERT INTO public.examenes_catalogo (laboratorio_id, nombre, categoria, activo) VALUES (c_lab, 'P1011 inactivo propio QA', 'QA', false) RETURNING id INTO v_inact;
     INSERT INTO public.examenes_catalogo (laboratorio_id, nombre, categoria, activo) VALUES (e_otra, 'P1011 de otra empresa QA', 'QA', false) RETURNING id INTO v_ajena;
 
@@ -33394,21 +33408,23 @@ BEGIN
   END;
   PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
   snap_post := (SELECT md5(COALESCE(string_agg(to_jsonb(c)::text, '|' ORDER BY c.id), '')) FROM public.examenes_catalogo c);
+  contam := 'contaminacion: '||n_contam||' cuenta(s) activa(s) de medico.qa/paciente.qa ['||firma||'] neutralizadas='||n_neutr||'; ';
+  PERFORM set_config('probe.p1011_det', contam, false);
   IF snap_post IS DISTINCT FROM snap_pre THEN b4 := b4||'el catalogo no quedo igual tras el descarte; '; END IF;
 
-  PERFORM set_config('probe.p1014', CASE WHEN b4 = '' THEN 'OK ('||d4||'descartado)' ELSE 'ROJO ('||left(b4, 600)||' | '||left(d4, 300)||')' END, false);
+  PERFORM set_config('probe.p1014', CASE WHEN b4 = '' THEN 'OK ('||d4||'neutralizadas='||n_neutr||'; descartado)' ELSE 'ROJO ('||left(b4, 600)||' | '||left(d4, 300)||' | '||contam||')' END, false);
   PERFORM set_config('probe.p1013', CASE
     WHEN NOT v_369 THEN 'PENDIENTE mig 369 (escritura directa del admin del lab: '||d3||')'
     WHEN b3 = '' THEN 'OK (escritura directa del admin del lab: '||d3||'todas 42501 de privilegio)'
     ELSE 'ROJO ('||b3||')' END, false);
   PERFORM set_config('probe.p1011', CASE
     WHEN NOT v_369 THEN 'PENDIENTE mig 369 (las RPCs no existen todavia)'
-    WHEN b1 = '' THEN 'OK (admin del lab: '||d1||'descartado)'
+    WHEN b1 = '' THEN 'OK (admin del lab: '||d1||'neutralizadas='||n_neutr||'; descartado)'
     ELSE 'ROJO ('||left(b1, 700)||')' END, false);
   PERFORM set_config('probe.p1012', CASE
     WHEN NOT v_369 THEN 'PENDIENTE mig 369 (las RPCs no existen todavia)'
-    WHEN b2 = '' THEN 'OK (EX035 para recepcion, tecnico, farmacia, medico.qa y paciente.qa; 0 cambios; anon sin EXECUTE)'
-    ELSE 'ROJO ('||left(b2, 700)||')' END, false);
+    WHEN b2 = '' THEN 'OK (EX035 para recepcion, tecnico, farmacia, medico.qa y paciente.qa; 0 cambios; anon sin EXECUTE; neutralizadas='||n_neutr||')'
+    ELSE 'ROJO ('||left(b2, 600)||' | '||contam||')' END, false);
 EXCEPTION WHEN OTHERS THEN
   PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
   PERFORM set_config('probe.p1011', 'FALLO ('||SQLSTATE||' '||SQLERRM||')', false);

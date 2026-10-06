@@ -4,7 +4,8 @@
 -- Restaura catalogo_lab_all con su texto EXACTO previo (ALL TO authenticated, USING y WITH CHECK laboratorio_id =
 -- mi_empresa_proveedor()), borra catalogo_lab_select, devuelve los GRANT exactos (INSERT y DELETE de tabla + UPDATE de
 -- columna en categoria y activo) y hace DROP de las 3 RPCs. El front de la 369 deja de funcionar: hay que volver
--- useLaboratorio a la escritura directa. Va ANTES que 368_rollback.
+-- useLaboratorio a la escritura directa. Va ANTES que 368_rollback y que 367_rollback (la precondicion de 367_rollback
+-- exige la ACL de public e2bb57f4... 2370, que la 369 cambio y este rollback restaura).
 -- Precondicion: la 369 esta viva (policies, relacl, huellas post). Autochequeo: huellas de antes.
 -- ############################################################################################
 
