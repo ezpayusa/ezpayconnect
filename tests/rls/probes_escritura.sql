@@ -29472,9 +29472,8 @@ SELECT set_config('role', 'none', true);
 DO $$
 DECLARE
   allow text[] := ARRAY[
-    -- el front registra la vista del anuncio con upsert (INSERT ... ON CONFLICT DO UPDATE): Postgres exige UPDATE
-    -- aunque no haya conflicto (medido en el recon de la 346: sin UPDATE, 42501 y la vista no se registra)
-    'campana_vistas|authenticated|UPDATE',
+    -- 6-oct-2026 (mig 367): sale la entrada del UPDATE de authenticated en campana_vistas. El upsert que la justificaba (registrarVista) no tenia
+    -- llamadores y se borro; la 367 revoca el UPDATE. Hasta que la 367 este aplicada, P930 sale ROJO por esa tupla.
     -- CitasPage lo lee con el JWT del usuario: hoy recibe [], sin SELECT recibiria 42501
     'recordatorios|authenticated|SELECT',
     -- AdminEzPayPage y las 2 ReportesEzPayPage lo leen con el JWT del usuario: idem
@@ -33011,6 +33010,108 @@ EXCEPTION WHEN OTHERS THEN
 END $$;
 SELECT set_config('role', 'none', true);
 
+-- ---------------- P1010 campana_vistas sin UPDATE de authenticated (367) ----------------
+-- Actores reales y deterministas: paciente.qa por email, con fila en pacientes (auth_user_id); "otro paciente" = el primer
+-- paciente por id con usuario en auth.users y distinto de paciente.qa; la campana = la primera de campanas_publicitarias por
+-- id sin vista de paciente.qa (la FK solo pide existencia, no vigencia). Todo en una subtransaccion descartada (RAISE P0999).
+--   (a) como el paciente: INSERT de su vista -> 1 fila;
+--   (b) INSERT ... ON CONFLICT (campana_id, paciente_id) DO NOTHING del duplicado -> 0 filas, SIN error (lo que manda
+--       PostgREST con ignoreDuplicates);
+--   (c) INSERT ... ON CONFLICT ... DO UPDATE SET clickeado = true -> 42501 de privilegio;
+--   (d) UPDATE directo -> 42501 de privilegio;
+--   (e) el otro paciente no ve la vista del primero (0 filas).
+-- Mientras la 367 no este aplicada (catalogo: authenticated con UPDATE) el veredicto es 'PENDIENTE mig 367 (lo medido)',
+-- nunca OK. Oraculos: paciente.qa, el otro paciente y la campana deben existir; si no, FALLO 'sin fixture'.
+DO $$
+DECLARE
+  v_367 boolean; a_pu uuid; v_pac integer; a_otro uuid; v_camp integer; n int; st text; msg text;
+  ra text; rb text; rc text; rd text; re text; bad text := '';
+BEGIN
+  IF current_user <> 'postgres' THEN RAISE EXCEPTION 'fixture roto: P1010 corre como %', current_user; END IF;
+  v_367 := NOT has_table_privilege('authenticated', 'public.campana_vistas', 'UPDATE');
+  SELECT u.id, pa.id INTO a_pu, v_pac FROM auth.users u JOIN public.pacientes pa ON pa.auth_user_id = u.id
+   WHERE lower(u.email) LIKE 'paciente.qa@%' ORDER BY u.email, pa.id LIMIT 1;
+  a_otro := (SELECT pa.auth_user_id FROM public.pacientes pa WHERE pa.auth_user_id IS NOT NULL AND pa.auth_user_id IS DISTINCT FROM a_pu
+               AND EXISTS (SELECT 1 FROM auth.users u WHERE u.id = pa.auth_user_id) ORDER BY pa.id LIMIT 1);
+  v_camp := (SELECT cp.id FROM public.campanas_publicitarias cp
+              WHERE NOT EXISTS (SELECT 1 FROM public.campana_vistas cv WHERE cv.campana_id = cp.id AND cv.paciente_id = v_pac) ORDER BY cp.id LIMIT 1);
+  IF a_pu IS NULL OR v_pac IS NULL OR a_otro IS NULL OR v_camp IS NULL THEN
+    RAISE EXCEPTION 'sin fixture: P1010 paciente.qa % (paciente %), otro paciente %, campana %', a_pu, v_pac, a_otro, v_camp;
+  END IF;
+
+  BEGIN
+    -- (a) INSERT de su vista
+    st := '00000'; msg := ''; n := NULL;
+    BEGIN
+      PERFORM set_config('request.jwt.claims', json_build_object('sub', a_pu, 'role', 'authenticated')::text, true);
+      PERFORM set_config('role', 'authenticated', true);
+      INSERT INTO public.campana_vistas (campana_id, paciente_id, clickeado) VALUES (v_camp, v_pac, false);
+      GET DIAGNOSTICS n = ROW_COUNT;
+      PERFORM set_config('role', 'none', true);
+    EXCEPTION WHEN OTHERS THEN PERFORM set_config('role', 'none', true); st := SQLSTATE; msg := SQLERRM; END;
+    ra := st||' filas='||COALESCE(n::text, '-');
+    IF ra <> '00000 filas=1' THEN bad := bad||'(a) INSERT='||ra||' '||left(msg, 100)||'; '; END IF;
+
+    -- (b) ON CONFLICT DO NOTHING del duplicado
+    st := '00000'; msg := ''; n := NULL;
+    BEGIN
+      PERFORM set_config('role', 'authenticated', true);
+      INSERT INTO public.campana_vistas (campana_id, paciente_id, clickeado) VALUES (v_camp, v_pac, true)
+        ON CONFLICT (campana_id, paciente_id) DO NOTHING;
+      GET DIAGNOSTICS n = ROW_COUNT;
+      PERFORM set_config('role', 'none', true);
+    EXCEPTION WHEN OTHERS THEN PERFORM set_config('role', 'none', true); st := SQLSTATE; msg := SQLERRM; END;
+    rb := st||' filas='||COALESCE(n::text, '-');
+    IF rb <> '00000 filas=0' THEN bad := bad||'(b) DO NOTHING='||rb||' '||left(msg, 100)||'; '; END IF;
+
+    -- (c) ON CONFLICT DO UPDATE
+    st := '00000'; msg := ''; n := NULL;
+    BEGIN
+      PERFORM set_config('role', 'authenticated', true);
+      INSERT INTO public.campana_vistas (campana_id, paciente_id, clickeado) VALUES (v_camp, v_pac, true)
+        ON CONFLICT (campana_id, paciente_id) DO UPDATE SET clickeado = true;
+      GET DIAGNOSTICS n = ROW_COUNT;
+      PERFORM set_config('role', 'none', true);
+    EXCEPTION WHEN OTHERS THEN PERFORM set_config('role', 'none', true); st := SQLSTATE; msg := SQLERRM; END;
+    rc := st||CASE WHEN st = '00000' THEN ' filas='||COALESCE(n::text, '-') ELSE ' '||left(msg, 90) END;
+    IF NOT (st = '42501' AND msg = 'permission denied for table campana_vistas') THEN bad := bad||'(c) DO UPDATE='||rc||'; '; END IF;
+
+    -- (d) UPDATE directo
+    st := '00000'; msg := ''; n := NULL;
+    BEGIN
+      PERFORM set_config('role', 'authenticated', true);
+      UPDATE public.campana_vistas SET clickeado = true WHERE campana_id = v_camp AND paciente_id = v_pac;
+      GET DIAGNOSTICS n = ROW_COUNT;
+      PERFORM set_config('role', 'none', true);
+    EXCEPTION WHEN OTHERS THEN PERFORM set_config('role', 'none', true); st := SQLSTATE; msg := SQLERRM; END;
+    rd := st||CASE WHEN st = '00000' THEN ' filas='||COALESCE(n::text, '-') ELSE ' '||left(msg, 90) END;
+    IF NOT (st = '42501' AND msg = 'permission denied for table campana_vistas') THEN bad := bad||'(d) UPDATE='||rd||'; '; END IF;
+
+    -- (e) el otro paciente no ve la vista del primero
+    BEGIN
+      PERFORM set_config('request.jwt.claims', json_build_object('sub', a_otro, 'role', 'authenticated')::text, true);
+      PERFORM set_config('role', 'authenticated', true);
+      SELECT count(*) INTO n FROM public.campana_vistas WHERE campana_id = v_camp AND paciente_id = v_pac;
+      PERFORM set_config('role', 'none', true);
+      re := n::text;
+    EXCEPTION WHEN OTHERS THEN PERFORM set_config('role', 'none', true); re := 'ERROR '||SQLSTATE||' '||left(SQLERRM, 80); END;
+    IF re IS DISTINCT FROM '0' THEN bad := bad||'(e) otro paciente ve='||re||'; '; END IF;
+
+    RAISE EXCEPTION 'P1010 descarte' USING ERRCODE = 'P0999';
+  EXCEPTION WHEN SQLSTATE 'P0999' THEN NULL;
+  END;
+  PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
+
+  PERFORM set_config('probe.p1010', CASE
+    WHEN NOT v_367 THEN 'PENDIENTE mig 367 ((a) '||ra||'; (b) '||rb||'; (c) '||rc||'; (d) '||rd||'; (e) '||re||')'
+    WHEN bad = '' THEN 'OK (paciente.qa: INSERT de su vista 1 fila; ON CONFLICT DO NOTHING 0 filas sin error; ON CONFLICT DO UPDATE y UPDATE directo 42501; otro paciente ve 0; descartado)'
+    ELSE 'ROJO ('||left(bad, 800)||')' END, false);
+EXCEPTION WHEN OTHERS THEN
+  PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
+  PERFORM set_config('probe.p1010', 'FALLO ('||SQLSTATE||' '||SQLERRM||')', false);
+END $$;
+SELECT set_config('role', 'none', true);
+
 -- ===== Veredictos como result set =====
 SELECT 'P1_anon_insert_citas'              AS probe, current_setting('probe.p1', true)  AS verdict, 'BLOQUEADO' AS esperado_post_fix
 UNION ALL SELECT 'P2_medico_cancela_ajena_rpc',         current_setting('probe.p2', true),  'BLOQUEADO'
@@ -34092,6 +34193,7 @@ UNION ALL SELECT 'P1003_proveedores_pais_super_363',  current_setting('probe.p10
 UNION ALL SELECT 'P1004_proveedores_pais_proveedor_363',  current_setting('probe.p1004', true), 'OK (363: cuenta de proveedor -> PC028)'
 UNION ALL SELECT 'P1005_proveedores_pais_anon_363',  current_setting('probe.p1005', true), 'OK (363: anon -> 42501)'
 UNION ALL SELECT 'P1006_proveedores_pais_catalogo_363',  current_setting('probe.p1006', true), 'OK (363: ACL exacta sin anon; DEFINER, STABLE, search_path)'
+UNION ALL SELECT 'P1010_campana_vistas_sin_update_367',  current_setting('probe.p1010', true), 'OK (367: INSERT 1; ON CONFLICT DO NOTHING 0 sin error; DO UPDATE y UPDATE 42501; otro paciente 0; antes de la 367: PENDIENTE)'
 UNION ALL SELECT 'P1009_datos_bancarios_acotados_366',  current_setting('probe.p1009', true), 'OK (366: cuenta GT solo super_admin/admin_pais GT/proveedores GT; checkout 1 fila; config 21 admins y 14 resto; antes de la 366: PENDIENTE)'
 UNION ALL SELECT 'P1008_notas_sin_escritura_superadmin_365',  current_setting('probe.p1008', true), 'OK (365: super_admin INSERT ajeno -> 42501, UPDATE -> 0 filas; lee; el medico escribe; antes de la 365: PENDIENTE)'
 UNION ALL SELECT 'P1007_visitas_sin_update_directo_364',  current_setting('probe.p1007', true), 'OK (364: UPDATE directo -> 42501 x4; las RPCs siguen escribiendo; ACL SELECT+INSERT sin UPDATE; antes de la 364: PENDIENTE)'
@@ -34339,7 +34441,7 @@ UNION ALL SELECT 'P000_CENTINELA_veredictos_no_nulos',
        'probe.p866', 'probe.p867', 'probe.p868', 'probe.p869', 'probe.p870', 'probe.p871', 'probe.p872', 'probe.p873', 'probe.p874', 'probe.p875', 'probe.p876', 'probe.p877', 'probe.p878',
        'probe.p879', 'probe.p880', 'probe.p881', 'probe.p882', 'probe.p883', 'probe.p884',
        'probe.p885', 'probe.p886', 'probe.p887', 'probe.p888', 'probe.p889', 'probe.p890', 'probe.p891', 'probe.p892', 'probe.p893', 'probe.p894', 'probe.p895', 'probe.p896', 'probe.p908', 'probe.p909', 'probe.p910', 'probe.p911',
-       'probe.p897', 'probe.p898', 'probe.p899', 'probe.p900', 'probe.p901', 'probe.p902', 'probe.p903', 'probe.p904', 'probe.p905', 'probe.p906', 'probe.p907', 'probe.p912', 'probe.p913', 'probe.p914', 'probe.p915', 'probe.p916', 'probe.p917', 'probe.p918', 'probe.p919', 'probe.p920', 'probe.p921', 'probe.p922', 'probe.p923', 'probe.p924', 'probe.p925', 'probe.p926', 'probe.p927', 'probe.p928', 'probe.p929', 'probe.p930', 'probe.p931', 'probe.p932', 'probe.p933', 'probe.p934', 'probe.p935', 'probe.p936', 'probe.p937', 'probe.p938', 'probe.p939', 'probe.p940', 'probe.p941', 'probe.p942', 'probe.p943', 'probe.p944', 'probe.p945', 'probe.p946', 'probe.p947', 'probe.p948', 'probe.p949', 'probe.p950', 'probe.p951', 'probe.p952', 'probe.p953', 'probe.p954', 'probe.p955', 'probe.p956', 'probe.p957', 'probe.p958', 'probe.p959', 'probe.p960', 'probe.p961', 'probe.p962', 'probe.p963', 'probe.p964', 'probe.p965', 'probe.p966', 'probe.p967', 'probe.p968', 'probe.p969', 'probe.p970', 'probe.p971', 'probe.p972', 'probe.p973', 'probe.p974', 'probe.p975', 'probe.p976', 'probe.p977', 'probe.p978', 'probe.p979', 'probe.p980', 'probe.p981', 'probe.p982', 'probe.p983', 'probe.p984', 'probe.p985', 'probe.p986', 'probe.p987', 'probe.p988', 'probe.p989', 'probe.p990', 'probe.p991', 'probe.p992', 'probe.p993', 'probe.p994', 'probe.p995', 'probe.p996', 'probe.p997', 'probe.p998', 'probe.p999', 'probe.p1000', 'probe.p1001', 'probe.p1002', 'probe.p1003', 'probe.p1004', 'probe.p1005', 'probe.p1006', 'probe.p1007', 'probe.p1008', 'probe.p1009'
+       'probe.p897', 'probe.p898', 'probe.p899', 'probe.p900', 'probe.p901', 'probe.p902', 'probe.p903', 'probe.p904', 'probe.p905', 'probe.p906', 'probe.p907', 'probe.p912', 'probe.p913', 'probe.p914', 'probe.p915', 'probe.p916', 'probe.p917', 'probe.p918', 'probe.p919', 'probe.p920', 'probe.p921', 'probe.p922', 'probe.p923', 'probe.p924', 'probe.p925', 'probe.p926', 'probe.p927', 'probe.p928', 'probe.p929', 'probe.p930', 'probe.p931', 'probe.p932', 'probe.p933', 'probe.p934', 'probe.p935', 'probe.p936', 'probe.p937', 'probe.p938', 'probe.p939', 'probe.p940', 'probe.p941', 'probe.p942', 'probe.p943', 'probe.p944', 'probe.p945', 'probe.p946', 'probe.p947', 'probe.p948', 'probe.p949', 'probe.p950', 'probe.p951', 'probe.p952', 'probe.p953', 'probe.p954', 'probe.p955', 'probe.p956', 'probe.p957', 'probe.p958', 'probe.p959', 'probe.p960', 'probe.p961', 'probe.p962', 'probe.p963', 'probe.p964', 'probe.p965', 'probe.p966', 'probe.p967', 'probe.p968', 'probe.p969', 'probe.p970', 'probe.p971', 'probe.p972', 'probe.p973', 'probe.p974', 'probe.p975', 'probe.p976', 'probe.p977', 'probe.p978', 'probe.p979', 'probe.p980', 'probe.p981', 'probe.p982', 'probe.p983', 'probe.p984', 'probe.p985', 'probe.p986', 'probe.p987', 'probe.p988', 'probe.p989', 'probe.p990', 'probe.p991', 'probe.p992', 'probe.p993', 'probe.p994', 'probe.p995', 'probe.p996', 'probe.p997', 'probe.p998', 'probe.p999', 'probe.p1000', 'probe.p1001', 'probe.p1002', 'probe.p1003', 'probe.p1004', 'probe.p1005', 'probe.p1006', 'probe.p1007', 'probe.p1008', 'probe.p1009', 'probe.p1010'
              ]) AS n) s),
   'OK (todos los veredictos publicados)';
 
