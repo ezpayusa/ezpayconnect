@@ -17673,55 +17673,86 @@ SELECT set_config('role','none', true);
 -- romperia el branding del front publico y el panel de configuracion sin que nadie se entere.
 SELECT set_config('role','none', true);
 
+-- 5-oct-2026 (mig 366): reescritos. configuracion_sistema pasa a ALLOWLIST: anon y todo authenticated sin rol de admin leen
+-- SOLO las 14 claves publicas; super_admin y admin_pais leen las 21. Quedan fuera para el resto las 5 bancarias y las 2
+-- integ_* (integ_email_smtp, integ_whatsapp_api). Actores reales y deterministas: super_admin y admin_pais (el mas antiguo
+-- activo con usuario), y medico.qa como authenticated sin rol de admin (el sub fijo 0dd0c68c... de antes no tiene perfil).
+--   P755 anon ve exactamente las 14 publicas, ninguna sensible
+--   P756 authenticated sin rol de admin (medico.qa) ve exactamente las 14 publicas, ninguna sensible
+--   P757 super_admin y admin_pais ven las 21
+--   P758 service_role ve las 21 (la edge actualizar-configuracion)
+-- Mientras la 366 no este aplicada (catalogo: no existe configuracion_sistema_select_anon_publicas), P755 y P756 salen
+-- 'PENDIENTE mig 366 (lo medido)', nunca OK.
 DO $$
 DECLARE
-  v_tot bigint; v_n bigint; v_l text;
-  bancarias constant text[] := ARRAY['banco','cuenta_bancaria','tipo_cuenta','titular_cuenta','email_pagos'];
+  v_tot bigint; o_pub bigint; v_n bigint; v_s bigint; v_l text; v_366 boolean; a_sa uuid; a_ap uuid; a_med uuid; r757 text := '';
+  publicas constant text[] := ARRAY['app_logo_url','app_nombre','color_fondo','color_primario','color_secundario','integ_google_calendar',
+                                    'notif_email_activo','notif_recordatorios_activo','notif_sms_activo','notif_whatsapp_activo',
+                                    'sistema_formato_fecha','sistema_idioma','sistema_moneda','sistema_zona_horaria'];
+  sensibles constant text[] := ARRAY['banco','cuenta_bancaria','tipo_cuenta','titular_cuenta','email_pagos','integ_email_smtp','integ_whatsapp_api'];
 BEGIN
+  v_366 := EXISTS (SELECT 1 FROM pg_policy WHERE polrelid = 'public.configuracion_sistema'::regclass AND polname = 'configuracion_sistema_select_anon_publicas');
   SELECT count(*) INTO v_tot FROM public.configuracion_sistema;
+  SELECT count(*) INTO o_pub FROM public.configuracion_sistema WHERE clave = ANY (publicas);
+  a_sa := (SELECT p.id FROM public.perfiles p WHERE p.rol = 'super_admin' AND p.activo AND EXISTS (SELECT 1 FROM auth.users u WHERE u.id = p.id)
+           ORDER BY COALESCE(p.created_at, '-infinity'), p.id LIMIT 1);
+  a_ap := (SELECT p.id FROM public.perfiles p WHERE p.rol = 'admin_pais' AND p.activo AND EXISTS (SELECT 1 FROM auth.users u WHERE u.id = p.id)
+           ORDER BY COALESCE(p.created_at, '-infinity'), p.id LIMIT 1);
+  a_med := (SELECT u.id FROM auth.users u JOIN public.perfiles p ON p.id = u.id WHERE lower(u.email) LIKE 'medico.qa@%' AND p.rol = 'medico' ORDER BY u.email LIMIT 1);
+  IF COALESCE(o_pub, 0) = 0 OR v_tot <= o_pub OR a_sa IS NULL OR a_ap IS NULL OR a_med IS NULL THEN
+    RAISE EXCEPTION 'sin fixture: P755 publicas %, total %, super_admin %, admin_pais %, medico.qa %', o_pub, v_tot, a_sa, a_ap, a_med;
+  END IF;
 
-  -- ---------------------------------------------------------------- P755 / P756 (anon)
+  -- ---------------------------------------------------------------- P755 (anon)
   PERFORM set_config('request.jwt.claims','{"role":"anon"}', true);
   PERFORM set_config('role','anon', true);
   BEGIN
-    SELECT count(*), string_agg(clave, ', ' ORDER BY clave) INTO v_n, v_l
-      FROM public.configuracion_sistema WHERE clave = ANY(bancarias);
-    PERFORM set_config('probe.p755', CASE WHEN v_n = 0
-      THEN 'OK (anon no ve ninguna de las 5 claves bancarias)'
-      ELSE 'ROJO (anon ve '||v_n||': '||coalesce(v_l,'')||')' END, false);
+    SELECT count(*), count(*) FILTER (WHERE clave = ANY (sensibles)), string_agg(clave, ', ' ORDER BY clave) FILTER (WHERE clave = ANY (sensibles))
+      INTO v_n, v_s, v_l FROM public.configuracion_sistema;
+    PERFORM set_config('probe.p755', CASE
+      WHEN v_n = o_pub AND v_s = 0 AND v_366 THEN 'OK (anon ve las '||v_n||' publicas, ninguna bancaria ni integ_*)'
+      WHEN NOT v_366 THEN 'PENDIENTE mig 366 (anon ve '||v_n||', sensibles '||v_s||': '||COALESCE(v_l, '-')||')'
+      ELSE 'ROJO (anon ve '||v_n||' de '||o_pub||' publicas; sensibles '||v_s||': '||COALESCE(v_l, '-')||')' END, false);
   EXCEPTION WHEN OTHERS THEN
-    PERFORM set_config('probe.p755','FALLO ('||SQLSTATE||')', false);
-  END;
-
-  BEGIN
-    SELECT count(*) INTO v_n FROM public.configuracion_sistema;
-    SELECT count(*) INTO v_tot FROM (SELECT 1 FROM public.configuracion_sistema
-      WHERE clave IN ('app_nombre','color_primario','sistema_moneda','notif_email_activo')) s;
-    PERFORM set_config('probe.p756', CASE
-      WHEN v_n = 0 THEN 'ROJO (anon ve 0 filas: se cerro de mas, se rompe el branding publico)'
-      WHEN v_tot <> 4 THEN 'ROJO (anon solo ve '||v_tot||' de las 4 claves de branding/sistema)'
-      ELSE 'OK (anon ve '||v_n||' filas no bancarias, con las 4 de branding/sistema)' END, false);
-  EXCEPTION WHEN OTHERS THEN
-    PERFORM set_config('probe.p756','FALLO ('||SQLSTATE||')', false);
+    PERFORM set_config('probe.p755','FALLO ('||SQLSTATE||' '||SQLERRM||')', false);
   END;
   PERFORM set_config('role','none', true);
   PERFORM set_config('request.jwt.claims','', true);
 
-  -- ---------------------------------------------------------------- P757 (authenticated)
-  SELECT count(*) INTO v_tot FROM public.configuracion_sistema;   -- universo, como postgres
-  PERFORM set_config('request.jwt.claims',
-    '{"sub":"0dd0c68c-026c-4ebc-9475-e6791cc54933","role":"authenticated"}', true);
+  -- ---------------------------------------------------------------- P756 (authenticated sin rol de admin)
+  PERFORM set_config('request.jwt.claims', json_build_object('sub', a_med, 'role', 'authenticated')::text, true);
   PERFORM set_config('role','authenticated', true);
   BEGIN
-    SELECT count(*) INTO v_n FROM public.configuracion_sistema;
-    SELECT string_agg(b, ', ') INTO v_l FROM unnest(bancarias) b
-     WHERE NOT EXISTS (SELECT 1 FROM public.configuracion_sistema cs WHERE cs.clave = b);
-    PERFORM set_config('probe.p757', CASE
-      WHEN v_l IS NOT NULL THEN 'ROJO (un authenticated perdio: '||v_l||')'
-      WHEN v_n <> v_tot     THEN 'ROJO (un authenticated ve '||v_n||' de '||v_tot||')'
-      ELSE 'OK (un authenticated ve las '||v_n||', bancarias incluidas)' END, false);
+    SELECT count(*), count(*) FILTER (WHERE clave = ANY (sensibles)), string_agg(clave, ', ' ORDER BY clave) FILTER (WHERE clave = ANY (sensibles))
+      INTO v_n, v_s, v_l FROM public.configuracion_sistema;
+    PERFORM set_config('probe.p756', CASE
+      WHEN v_n = o_pub AND v_s = 0 AND v_366 THEN 'OK (medico.qa ve las '||v_n||' publicas, ninguna bancaria ni integ_*)'
+      WHEN NOT v_366 THEN 'PENDIENTE mig 366 (medico.qa ve '||v_n||', sensibles '||v_s||': '||COALESCE(v_l, '-')||')'
+      ELSE 'ROJO (medico.qa ve '||v_n||' de '||o_pub||' publicas; sensibles '||v_s||': '||COALESCE(v_l, '-')||')' END, false);
   EXCEPTION WHEN OTHERS THEN
-    PERFORM set_config('probe.p757','FALLO ('||SQLSTATE||')', false);
+    PERFORM set_config('probe.p756','FALLO ('||SQLSTATE||' '||SQLERRM||')', false);
+  END;
+  PERFORM set_config('role','none', true);
+  PERFORM set_config('request.jwt.claims','', true);
+
+  -- ---------------------------------------------------------------- P757 (super_admin y admin_pais)
+  BEGIN
+    PERFORM set_config('request.jwt.claims', json_build_object('sub', a_sa, 'role', 'authenticated')::text, true);
+    PERFORM set_config('role','authenticated', true);
+    SELECT count(*) INTO v_n FROM public.configuracion_sistema;
+    r757 := 'super_admin='||v_n;
+    PERFORM set_config('role','none', true);
+    PERFORM set_config('request.jwt.claims', json_build_object('sub', a_ap, 'role', 'authenticated')::text, true);
+    PERFORM set_config('role','authenticated', true);
+    SELECT count(*) INTO v_s FROM public.configuracion_sistema;
+    r757 := r757||' admin_pais='||v_s;
+    PERFORM set_config('role','none', true);
+    PERFORM set_config('probe.p757', CASE WHEN v_n = v_tot AND v_s = v_tot
+      THEN 'OK (super_admin y admin_pais ven las '||v_tot||')'
+      ELSE 'ROJO ('||r757||' de '||v_tot||')' END, false);
+  EXCEPTION WHEN OTHERS THEN
+    PERFORM set_config('role','none', true);
+    PERFORM set_config('probe.p757','FALLO ('||SQLSTATE||' '||SQLERRM||')', false);
   END;
   PERFORM set_config('role','none', true);
   PERFORM set_config('request.jwt.claims','', true);
@@ -17743,6 +17774,9 @@ EXCEPTION WHEN OTHERS THEN
   PERFORM set_config('role','none', true);
   PERFORM set_config('request.jwt.claims','', true);
   PERFORM set_config('probe.p755','FALLO ('||SQLSTATE||' '||SQLERRM||')', false);
+  PERFORM set_config('probe.p756','FALLO ('||SQLSTATE||' '||SQLERRM||')', false);
+  PERFORM set_config('probe.p757','FALLO ('||SQLSTATE||' '||SQLERRM||')', false);
+  PERFORM set_config('probe.p758','FALLO ('||SQLSTATE||' '||SQLERRM||')', false);
 END $$;
 SELECT set_config('role','none', true);
 
@@ -25776,12 +25810,16 @@ END $$;
 SELECT set_config('role', 'none', true);
 
 -- ---------------- P888 nota cerrada: UPDATE directo -> NT006 para autor, super_admin y postgres sin llave ----------------
+-- 5-oct-2026 (mig 365): el super_admin ya no tiene policy de UPDATE en expediente_notas. Su UPDATE no llega al trigger:
+-- la RLS filtra la fila en silencio (0 filas, sin error) y la nota queda igual. Con la 365 aplicada ese es el resultado
+-- esperado para el super_admin; sin aplicar, sigue siendo NT006 y el veredicto sale 'PENDIENTE mig 365', nunca OK.
 DO $$
 DECLARE
   c_med uuid := '09d243d5-b222-482a-9762-94a582e9e752'; c_clin uuid := 'c76d862c-e82f-4748-bc07-86c8a3343576'; c_pacid integer := 23; c_sa uuid;
   st text := '00000'; msg text := ''; ok boolean; det text := ''; bad text := ''; r_rest text := 'OK';
   s_notas text; s_rev text; s_citas text; n_hist bigint;
   v_cita bigint; v_nota integer; nn bigint; v_f0 text; r record;
+  v_365 boolean := NOT EXISTS (SELECT 1 FROM pg_policy pl WHERE pl.polrelid = 'public.expediente_notas'::regclass AND pl.polname = 'exp_superadmin_update');
 BEGIN
   SELECT p.id INTO c_sa FROM public.perfiles p WHERE p.rol = 'super_admin' AND p.activo ORDER BY p.id LIMIT 1;
   IF c_sa IS NULL THEN RAISE EXCEPTION 'fixture roto: super_admin activo'; END IF;
@@ -25810,6 +25848,15 @@ BEGIN
         PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
       EXCEPTION WHEN OTHERS THEN PERFORM set_config('ezpay.nota_llave', '', true); PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
         st := SQLSTATE; msg := SQLERRM; END;
+      IF r.actor = 'super_admin' AND v_365 THEN
+        -- desde la 365: 0 filas sin error (RLS sin policy de UPDATE), nota y revisiones iguales
+        ok := COALESCE((st = '00000' AND nn = 0
+          AND (SELECT md5(to_jsonb(t)::text) FROM public.expediente_notas t WHERE t.id = v_nota) = v_f0
+          AND (SELECT count(*) FROM public.expediente_notas_revisiones rv WHERE rv.nota_id = v_nota) = 0), false);
+        det := det||' ;; super_admin (365)|0 filas sin error, sin cambios|'||CASE WHEN ok THEN 'OK' ELSE 'ROJO' END||'|'||st||' filas='||COALESCE(nn::text, '-')||'|'||left(msg, 160);
+        IF NOT ok THEN bad := bad||'super_admin (365): '||st||' filas='||COALESCE(nn::text, '-')||' '||left(msg, 120)||'; '; END IF;
+        CONTINUE;
+      END IF;
       ok := COALESCE((st = 'NT006' AND msg = 'La nota está cerrada: solo se puede corregir con motivo'
         AND (SELECT md5(to_jsonb(t)::text) FROM public.expediente_notas t WHERE t.id = v_nota) = v_f0
         AND (SELECT count(*) FROM public.expediente_notas_revisiones rv WHERE rv.nota_id = v_nota) = 0), false);
@@ -25826,8 +25873,10 @@ BEGIN
   IF (SELECT count(*) FROM public.historial_medico) <> n_hist THEN r_rest := r_rest||' / historial_medico'; END IF;
   det := det||' ;; restauracion|subtransaccion descartada; snapshot igual|'||r_rest||'|-|';
   PERFORM set_config('probe.p888_det', det, false);
-  PERFORM set_config('probe.p888', CASE WHEN bad = '' AND r_rest = 'OK'
-    THEN 'OK (nota cerrada: NT006 para autor, super_admin, postgres sin llave y con llave de otra nota; restaurado)'
+  PERFORM set_config('probe.p888', CASE WHEN bad = '' AND r_rest = 'OK' AND NOT v_365
+    THEN 'PENDIENTE mig 365 (nota cerrada: NT006 para autor, super_admin, postgres sin llave y con llave de otra nota; restaurado)'
+    WHEN bad = '' AND r_rest = 'OK'
+    THEN 'OK (nota cerrada: NT006 para autor, postgres sin llave y con llave de otra nota; super_admin 0 filas sin cambios (365); restaurado)'
     ELSE 'ROJO ('||left(bad, 700)||' | restauracion='||r_rest||')' END, false);
 EXCEPTION WHEN OTHERS THEN
   PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
@@ -26331,7 +26380,7 @@ SELECT set_config('role', 'none', true);
 
 -- ---------------- P896 catalogo de objetos post-334 ----------------
 DO $$
-DECLARE ok boolean; det text := ''; bad text := ''; x text; n bigint; r record; st text := '00000'; msg text := '';
+DECLARE ok boolean; det text := ''; bad text := ''; x text; n bigint; r record; st text := '00000'; msg text := ''; pend365 boolean := false;
 BEGIN
   SELECT string_agg(a.attname||':'||format_type(a.atttypid, a.atttypmod)||':'||CASE WHEN a.attnotnull THEN 'NN' ELSE 'N' END, ',' ORDER BY a.attname)
     INTO x FROM pg_attribute a WHERE a.attrelid = 'public.expediente_notas'::regclass AND NOT a.attisdropped
@@ -26376,8 +26425,11 @@ BEGIN
   det := det||' ;; funciones|4 DEFINER, search_path vacio, EXECUTE exacto; 1 firma de la RPC|'||CASE WHEN ok THEN 'OK' ELSE 'ROJO' END||'|-|'||n;
   IF NOT ok THEN bad := bad||'funciones '||n||'/4; '; END IF;
   SELECT string_agg(policyname||':'||cmd, ',' ORDER BY policyname COLLATE "C") INTO x FROM pg_policies WHERE schemaname = 'public' AND tablename = 'expediente_notas';
-  ok := COALESCE(x = 'Admin clinica ve expediente de su clinica:SELECT,exp_insert_medico:INSERT,exp_select_medico:SELECT,exp_select_paciente:SELECT,exp_superadmin_insert:INSERT,exp_superadmin_select:SELECT,exp_superadmin_update:UPDATE,exp_update_medico:UPDATE', false);
-  det := det||' ;; policies de notas|sin ALL ni DELETE|'||CASE WHEN ok THEN 'OK' ELSE 'ROJO' END||'|-|'||COALESCE(x, '-');
+  -- 5-oct-2026 (mig 365): sin exp_superadmin_insert ni exp_superadmin_update (el super_admin no crea ni edita notas de un
+  -- medico; conserva exp_superadmin_select). Con la lista vieja (365 sin aplicar) el veredicto sale 'PENDIENTE mig 365', nunca OK.
+  pend365 := COALESCE(x = 'Admin clinica ve expediente de su clinica:SELECT,exp_insert_medico:INSERT,exp_select_medico:SELECT,exp_select_paciente:SELECT,exp_superadmin_insert:INSERT,exp_superadmin_select:SELECT,exp_superadmin_update:UPDATE,exp_update_medico:UPDATE', false);
+  ok := COALESCE(x = 'Admin clinica ve expediente de su clinica:SELECT,exp_insert_medico:INSERT,exp_select_medico:SELECT,exp_select_paciente:SELECT,exp_superadmin_select:SELECT,exp_update_medico:UPDATE', false) OR pend365;
+  det := det||' ;; policies de notas|sin ALL ni DELETE; sin INSERT/UPDATE del super_admin (365)|'||CASE WHEN pend365 THEN 'PENDIENTE mig 365' WHEN ok THEN 'OK' ELSE 'ROJO' END||'|-|'||COALESCE(x, '-');
   IF NOT ok THEN bad := bad||'policies notas='||COALESCE(x, '-')||'; '; END IF;
   SELECT string_agg(p, ',' ORDER BY p) INTO x FROM unnest(ARRAY['SELECT','INSERT','UPDATE','DELETE','TRUNCATE','REFERENCES','TRIGGER','MAINTAIN']) p
    WHERE has_table_privilege('authenticated', 'public.expediente_notas', p);
@@ -26404,8 +26456,10 @@ BEGIN
   det := det||' ;; las 7 funciones que la 334 no toca|7 md5 iguales|'||CASE WHEN ok THEN 'OK' ELSE 'ROJO' END||'|-|'||n;
   IF NOT ok THEN bad := bad||'md5 intactas '||n||'/7; '; END IF;
   PERFORM set_config('probe.p896_det', det, false);
-  PERFORM set_config('probe.p896', CASE WHEN bad = ''
-    THEN 'OK (columnas, tabla de revisiones, grants, 5 triggers, 4 funciones, policies sin ALL/DELETE, FK RESTRICT, 7 md5 intactos)'
+  PERFORM set_config('probe.p896', CASE WHEN bad = '' AND pend365
+    THEN 'PENDIENTE mig 365 (todo lo demas OK; expediente_notas todavia tiene exp_superadmin_insert y exp_superadmin_update)'
+    WHEN bad = ''
+    THEN 'OK (columnas, tabla de revisiones, grants, 5 triggers, 4 funciones, policies sin ALL/DELETE ni escritura del super_admin, FK RESTRICT, 7 md5 intactos)'
     ELSE 'ROJO ('||left(bad, 700)||')' END, false);
 EXCEPTION WHEN OTHERS THEN
   PERFORM set_config('probe.p896', 'FALLO ('||SQLSTATE||' '||SQLERRM||')', false);
@@ -29254,7 +29308,15 @@ BEGIN
   IF current_user <> 'postgres' THEN RAISE EXCEPTION 'fixture roto: P929 corre como %', current_user; END IF;
   SELECT auth_user_id INTO v_pauth FROM public.pacientes WHERE id = c_pac;
   SELECT id INTO v_sa FROM public.perfiles WHERE rol = 'super_admin' ORDER BY id LIMIT 1;
-  SELECT p.id INTO v_med FROM public.perfiles p WHERE p.rol = 'medico' AND EXISTS (SELECT 1 FROM auth.users u WHERE u.id = p.id) ORDER BY p.id LIMIT 1;
+  -- 6-oct-2026 (fix de 0755207): v_med = medico.qa por email, con fila en public.medicos. Antes era el primer perfil
+  -- 'medico' por ORDER BY p.id: P639, P777, P788, la mig 311 (x2) y P799 dejan vivos en la transaccion perfiles 'medico'
+  -- con uuid aleatorio y SIN fila en medicos; cuando uno quedaba por debajo de 09d243d5..., el INSERT a citas de abajo
+  -- daba 23503 en fk_citas_medico (FK a medicos(id)) en ~21 % de las corridas.
+  SELECT u.id INTO v_med FROM auth.users u JOIN public.perfiles p ON p.id = u.id
+   WHERE lower(u.email) LIKE 'medico.qa@%' AND p.rol = 'medico' AND p.activo AND COALESCE(p.created_at, '-infinity') < now()
+     AND EXISTS (SELECT 1 FROM public.medicos m WHERE m.id = u.id)
+   ORDER BY u.email LIMIT 1;
+  IF v_med IS NULL THEN RAISE EXCEPTION 'sin fixture: P929 medico.qa con fila en medicos'; END IF;
   SELECT id INTO v_pais FROM public.configuracion_pais ORDER BY id LIMIT 1;
   SELECT cp.id INTO v_camp FROM public.campanas_publicitarias cp
    WHERE NOT EXISTS (SELECT 1 FROM public.campana_vistas cv WHERE cv.campana_id = cp.id AND cv.paciente_id = c_pac) ORDER BY cp.id LIMIT 1;
@@ -29275,6 +29337,11 @@ BEGIN
     -- choca con la PK; ademas asi el fixture no consume valores de una secuencia que no es lo que se prueba.
     INSERT INTO public.planes_publicidad (id, nombre)
       VALUES ((SELECT COALESCE(max(id), 0) + 1 FROM public.planes_publicidad), 'P929 plan de prueba') RETURNING id INTO v_plan;
+    -- 5-oct-2026, mig 365: el super_admin ya no inserta notas; la receta usa al medico. exp_insert_medico exige
+    -- medico_id = auth.uid() y medico_atiende_paciente(paciente): una cita propia de v_med con el paciente 23, sembrada
+    -- aca como postgres y descartada con todo lo demas.
+    INSERT INTO public.citas (paciente_id, medico_id, fecha, hora_inicio, hora_fin)
+      VALUES (c_pac, v_med, CURRENT_DATE + 451, '07:00', '07:30');
     FOR r IN
       SELECT DISTINCT s.oid AS seq_oid, s.relname::text AS seq, t.relname::text AS tab FROM pg_depend d
         JOIN pg_attrdef ad ON ad.oid = d.objid JOIN pg_class t ON t.oid = ad.adrelid
@@ -29291,7 +29358,7 @@ BEGIN
       BEGIN
         IF r.tab IN ('campana_vistas', 'chat_mensajes', 'push_tokens') THEN
           PERFORM set_config('request.jwt.claims', json_build_object('sub', v_pauth::text, 'role', 'authenticated')::text, true);
-        ELSIF r.tab IN ('facturas', 'pacientes') THEN
+        ELSIF r.tab IN ('facturas', 'pacientes', 'expediente_notas') THEN   -- expediente_notas: mig 365, el super_admin ya no inserta notas; la receta usa al medico
           PERFORM set_config('request.jwt.claims', json_build_object('sub', v_med::text, 'role', 'authenticated')::text, true);
         ELSE
           PERFORM set_config('request.jwt.claims', json_build_object('sub', v_sa::text, 'role', 'authenticated')::text, true);
@@ -29717,7 +29784,7 @@ DECLARE
   c_lab CONSTANT uuid := 'e6f95b2f-7561-4e0b-b0c8-d1f38e6c4d66';
   v_sa uuid; v_ap uuid; r record; k int; n int; st text; v text; actor record;
   res text[] := ARRAY['', '']; anon text[] := ARRAY['', '']; det text := ''; bad text := ''; r_rest text := 'OK';
-  n_pais int; n_cfg int; esperado_anon text; v_roles_pre text; v_lt text := current_setting('lock_timeout');
+  n_pais int; n_cfg int; esperado_anon text; v_roles_pre text; v_lt text := current_setting('lock_timeout'); v366 boolean;
   tablas CONSTANT text[] := ARRAY['configuracion_pais','configuracion_sistema','cuentas_proveedor','empresas_proveedoras',
                                   'liquidaciones_comision','pacientes','perfiles','recetas'];
 BEGIN
@@ -29733,7 +29800,16 @@ BEGIN
   -- 5-oct-2026: piso del oraculo. Con 0 paises activos el esperado de anon seria 'configuracion_pais=0' y el probe pasaria
   -- sin medir la policy "Publico lee paises activos": FALLO 'sin fixture'.
   IF COALESCE(n_pais, 0) = 0 THEN RAISE EXCEPTION 'sin fixture: P936 con 0 paises activos (n_pais = %)', n_pais; END IF;
-  SELECT count(*) INTO n_cfg FROM public.configuracion_sistema WHERE clave <> ALL (ARRAY['banco','cuenta_bancaria','tipo_cuenta','titular_cuenta','email_pagos']);
+  -- 5-oct-2026 (mig 366): anon lee solo la ALLOWLIST de las 14 claves publicas (antes: todo menos las 5 bancarias = 16).
+  -- Sin la 366 (catalogo) el oraculo es el viejo y el veredicto sale 'PENDIENTE mig 366', nunca OK.
+  v366 := EXISTS (SELECT 1 FROM pg_policy WHERE polrelid = 'public.configuracion_sistema'::regclass AND polname = 'configuracion_sistema_select_anon_publicas');
+  IF v366 THEN
+    SELECT count(*) INTO n_cfg FROM public.configuracion_sistema WHERE clave = ANY (ARRAY['app_logo_url','app_nombre','color_fondo','color_primario',
+      'color_secundario','integ_google_calendar','notif_email_activo','notif_recordatorios_activo','notif_sms_activo','notif_whatsapp_activo',
+      'sistema_formato_fecha','sistema_idioma','sistema_moneda','sistema_zona_horaria']);
+  ELSE
+    SELECT count(*) INTO n_cfg FROM public.configuracion_sistema WHERE clave <> ALL (ARRAY['banco','cuenta_bancaria','tipo_cuenta','titular_cuenta','email_pagos']);
+  END IF;
   esperado_anon := 'configuracion_pais='||n_pais||'; configuracion_sistema='||n_cfg||'; cuentas_proveedor=0; empresas_proveedoras=0; '
                  ||'liquidaciones_comision=0; pacientes=0; perfiles=0; recetas=0; ';
   -- (a) catalogo
@@ -29832,7 +29908,9 @@ BEGIN
   det := det||' ;; restauracion|subtransaccion descartada|'||r_rest||'|-|';
   PERFORM set_config('probe.p936_det', det, false);
   PERFORM set_config('lock_timeout', v_lt, true);
-  PERFORM set_config('probe.p936', CASE WHEN bad = '' AND r_rest = 'OK'
+  PERFORM set_config('probe.p936', CASE WHEN bad = '' AND r_rest = 'OK' AND NOT v366
+    THEN 'PENDIENTE mig 366 (anon config '||n_cfg||' con la denylist vieja; el resto OK)'
+    WHEN bad = '' AND r_rest = 'OK'
     THEN 'OK (las 17 en {authenticated}; anon sin 42501: paises '||n_pais||', config '||n_cfg||', resto 0; authenticated igual con los roles alternados; descartado)'
     ELSE 'ROJO ('||left(bad, 900)||' | restauracion='||r_rest||')' END, false);
 EXCEPTION WHEN OTHERS THEN
@@ -32611,6 +32689,328 @@ EXCEPTION WHEN OTHERS THEN
 END $$;
 SELECT set_config('role', 'none', true);
 
+-- ---------------- P1008 expediente_notas: el super_admin no crea ni edita notas; lee y el medico sigue escribiendo (365) ----------------
+-- Actores reales y deterministas (created_at anterior a esta transaccion, activos, en auth.users; orden created_at, id):
+-- el super_admin, y el medico mas antiguo que tiene una cita abierta propia (no completada ni cancelada, sin nota,
+-- created_at anterior). El paciente es el de esa cita. Las notas reales (1013, 2213, 2214) no se tocan: la nota que se
+-- usa la crea el propio probe como el medico, dentro de una subtransaccion descartada (RAISE P0999).
+--   (a) super_admin: INSERT de una nota con el medico_id del medico (sin cita) -> 42501 (WITH CHECK de RLS); UPDATE de la
+--       nota ABIERTA del medico -> 0 filas SIN error (RLS sin policy de UPDATE filtra en silencio) y la nota igual, leida
+--       como postgres en un statement aparte.
+--   (b) super_admin sigue leyendo: ve las notas existentes antes del probe (ids previos, n_pre) > 0 y = el oraculo.
+--   (c) no-regresion: el medico inserta su nota (exp_insert_medico) y la actualiza abierta (exp_update_medico).
+--   (d) mientras la 365 no este aplicada (catalogo: exp_superadmin_insert o exp_superadmin_update existen) el veredicto es
+--       'PENDIENTE mig 365 (lo medido)', nunca OK; (b) o (c) rotos son FALLO siempre.
+-- Lo que se cuenta se acota por ids previos (n_pre) o por la nota del probe; sin count(*) global.
+DO $$
+DECLARE
+  v_365 boolean; a_sa uuid; a_med uuid; v_cita bigint; v_pac integer; n_pre integer[]; o_lect integer;
+  v_nota integer; n int; st text; msg text; v_f0 text; v_f1 text;
+  r_ins text := '-'; r_upd text := '-'; r_sel text := '-'; r_mins text := '-'; r_mupd text := '-';
+  bad_a text := ''; bad_bc text := ''; snap_pre text; snap_post text;
+BEGIN
+  IF current_user <> 'postgres' THEN RAISE EXCEPTION 'fixture roto: P1008 corre como %', current_user; END IF;
+  v_365 := NOT EXISTS (SELECT 1 FROM pg_policy pl WHERE pl.polrelid = 'public.expediente_notas'::regclass
+                         AND pl.polname IN ('exp_superadmin_insert', 'exp_superadmin_update'));
+  a_sa := (SELECT p.id FROM public.perfiles p WHERE p.rol = 'super_admin' AND p.activo AND COALESCE(p.created_at, '-infinity') < now()
+             AND EXISTS (SELECT 1 FROM auth.users u WHERE u.id = p.id)
+           ORDER BY COALESCE(p.created_at, '-infinity'), p.id LIMIT 1);
+  SELECT p.id, c.id, c.paciente_id INTO a_med, v_cita, v_pac
+    FROM public.perfiles p
+    JOIN LATERAL (SELECT c.id, c.paciente_id FROM public.citas c
+                   WHERE c.medico_id = p.id AND c.paciente_id IS NOT NULL AND c.estado NOT IN ('completada', 'cancelada') AND c.created_at < now()
+                     AND NOT EXISTS (SELECT 1 FROM public.expediente_notas n WHERE n.cita_id = c.id)
+                   ORDER BY c.created_at, c.id LIMIT 1) c ON true
+   WHERE p.rol = 'medico' AND p.activo AND COALESCE(p.created_at, '-infinity') < now() AND EXISTS (SELECT 1 FROM auth.users u WHERE u.id = p.id)
+   ORDER BY COALESCE(p.created_at, '-infinity'), p.id LIMIT 1;
+  n_pre := ARRAY(SELECT t.id FROM public.expediente_notas t ORDER BY t.id);
+  o_lect := cardinality(n_pre);
+  IF a_sa IS NULL OR a_med IS NULL OR v_cita IS NULL OR v_pac IS NULL OR COALESCE(o_lect, 0) = 0 THEN
+    RAISE EXCEPTION 'sin fixture: P1008 super_admin %, medico %, cita abierta %, paciente %, notas previas %', a_sa, a_med, v_cita, v_pac, o_lect;
+  END IF;
+  snap_pre := (SELECT md5(COALESCE(string_agg(to_jsonb(t)::text, '|' ORDER BY t.id), '')) FROM public.expediente_notas t WHERE t.id = ANY (n_pre))
+            ||'/'||(SELECT md5(COALESCE(string_agg(to_jsonb(t)::text, '|' ORDER BY t.id), '')) FROM public.expediente_notas_revisiones t WHERE t.nota_id = ANY (n_pre));
+
+  BEGIN
+    -- (c1) el medico crea su nota abierta sobre su cita abierta
+    st := '00000'; msg := '';
+    BEGIN
+      PERFORM set_config('request.jwt.claims', json_build_object('sub', a_med, 'role', 'authenticated')::text, true);
+      PERFORM set_config('role', 'authenticated', true);
+      INSERT INTO public.expediente_notas (cita_id, paciente_id, medico_id, subjetivo) VALUES (v_cita, v_pac, a_med, 'P1008 v1') RETURNING id INTO v_nota;
+      PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
+    EXCEPTION WHEN OTHERS THEN
+      PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
+      st := SQLSTATE; msg := SQLERRM;
+    END;
+    r_mins := CASE WHEN v_nota IS NOT NULL AND (SELECT t.cerrada_at IS NULL AND t.medico_id = a_med FROM public.expediente_notas t WHERE t.id = v_nota)
+                   THEN 'ok (nota abierta)' ELSE 'ERROR '||st||' '||left(msg, 120) END;
+    IF r_mins NOT LIKE 'ok%' THEN RAISE EXCEPTION 'sin fixture: P1008 el medico no pudo crear su nota: %', r_mins; END IF;
+    SELECT md5(to_jsonb(t)::text) INTO v_f0 FROM public.expediente_notas t WHERE t.id = v_nota;
+
+    -- (a1) super_admin INSERT con el medico_id del medico, sin cita
+    st := '00000'; msg := ''; n := NULL;
+    BEGIN
+      PERFORM set_config('request.jwt.claims', json_build_object('sub', a_sa, 'role', 'authenticated')::text, true);
+      PERFORM set_config('role', 'authenticated', true);
+      INSERT INTO public.expediente_notas (paciente_id, medico_id, subjetivo) VALUES (v_pac, a_med, 'P1008 super_admin');
+      GET DIAGNOSTICS n = ROW_COUNT;
+      RAISE EXCEPTION 'P1008 descarte' USING ERRCODE = 'P0998';
+    EXCEPTION WHEN OTHERS THEN
+      PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
+      IF SQLSTATE <> 'P0998' THEN st := SQLSTATE; msg := SQLERRM; END IF;
+    END;
+    r_ins := CASE WHEN st = '42501' AND msg LIKE 'new row violates row-level security policy%' THEN '42501'
+                  WHEN st = '00000' THEN 'inserto '||COALESCE(n::text, '?')||' fila(s)' ELSE st||' '||left(msg, 120) END;
+    IF r_ins <> '42501' THEN bad_a := bad_a||'INSERT super_admin='||r_ins||'; '; END IF;
+
+    -- (a2) super_admin UPDATE de la nota abierta del medico
+    st := '00000'; msg := ''; n := NULL;
+    BEGIN
+      PERFORM set_config('request.jwt.claims', json_build_object('sub', a_sa, 'role', 'authenticated')::text, true);
+      PERFORM set_config('role', 'authenticated', true);
+      UPDATE public.expediente_notas SET subjetivo = 'P1008 super_admin reescribe' WHERE id = v_nota;
+      GET DIAGNOSTICS n = ROW_COUNT;
+      PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
+    EXCEPTION WHEN OTHERS THEN
+      PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
+      st := SQLSTATE; msg := SQLERRM;
+    END;
+    SELECT md5(to_jsonb(t)::text) INTO v_f1 FROM public.expediente_notas t WHERE t.id = v_nota;
+    r_upd := st||' filas='||COALESCE(n::text, '-')||' nota_igual='||(v_f1 IS NOT DISTINCT FROM v_f0)::text
+             ||' revisiones='||(SELECT count(*) FROM public.expediente_notas_revisiones rv WHERE rv.nota_id = v_nota);
+    IF r_upd <> '00000 filas=0 nota_igual=true revisiones=0' THEN bad_a := bad_a||'UPDATE super_admin='||r_upd||'; '; END IF;
+
+    -- (b) super_admin lee las notas previas
+    BEGIN
+      PERFORM set_config('request.jwt.claims', json_build_object('sub', a_sa, 'role', 'authenticated')::text, true);
+      PERFORM set_config('role', 'authenticated', true);
+      SELECT count(*) INTO n FROM public.expediente_notas t WHERE t.id = ANY (n_pre);
+      PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
+      r_sel := n||'/'||o_lect;
+    EXCEPTION WHEN OTHERS THEN
+      PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
+      r_sel := 'ERROR '||SQLSTATE||' '||left(SQLERRM, 120);
+    END;
+    IF r_sel IS DISTINCT FROM (o_lect||'/'||o_lect) THEN bad_bc := bad_bc||'SELECT super_admin='||r_sel||'; '; END IF;
+
+    -- (c2) el medico actualiza su nota abierta
+    st := '00000'; msg := ''; n := NULL;
+    BEGIN
+      PERFORM set_config('request.jwt.claims', json_build_object('sub', a_med, 'role', 'authenticated')::text, true);
+      PERFORM set_config('role', 'authenticated', true);
+      UPDATE public.expediente_notas SET subjetivo = 'P1008 v2' WHERE id = v_nota;
+      GET DIAGNOSTICS n = ROW_COUNT;
+      PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
+    EXCEPTION WHEN OTHERS THEN
+      PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
+      st := SQLSTATE; msg := SQLERRM;
+    END;
+    r_mupd := st||' filas='||COALESCE(n::text, '-')||' subjetivo_v2='||COALESCE((SELECT (t.subjetivo = 'P1008 v2')::text FROM public.expediente_notas t WHERE t.id = v_nota), '-');
+    IF r_mupd <> '00000 filas=1 subjetivo_v2=true' THEN bad_bc := bad_bc||'UPDATE medico='||r_mupd||' '||left(msg, 120)||'; '; END IF;
+
+    RAISE EXCEPTION 'P1008 descarte' USING ERRCODE = 'P0999';
+  EXCEPTION WHEN SQLSTATE 'P0999' THEN NULL;
+  END;
+  PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
+  snap_post := (SELECT md5(COALESCE(string_agg(to_jsonb(t)::text, '|' ORDER BY t.id), '')) FROM public.expediente_notas t WHERE t.id = ANY (n_pre))
+             ||'/'||(SELECT md5(COALESCE(string_agg(to_jsonb(t)::text, '|' ORDER BY t.id), '')) FROM public.expediente_notas_revisiones t WHERE t.nota_id = ANY (n_pre));
+  IF snap_post IS DISTINCT FROM snap_pre OR EXISTS (SELECT 1 FROM public.expediente_notas t WHERE t.cita_id = v_cita) THEN
+    bad_bc := bad_bc||'no se restauro (notas previas, sus revisiones o la nota del probe); ';
+  END IF;
+
+  PERFORM set_config('probe.p1008_det', '(a) INSERT super_admin='||r_ins||'; UPDATE super_admin='||r_upd||' (b) SELECT super_admin='||r_sel
+                                        ||' (c) INSERT medico='||r_mins||'; UPDATE medico='||r_mupd, false);
+  PERFORM set_config('probe.p1008', CASE
+    WHEN bad_bc <> '' THEN 'FALLO ('||bad_bc||' | (a) INSERT='||r_ins||' UPDATE='||r_upd||')'
+    WHEN NOT v_365 THEN 'PENDIENTE mig 365 ((a) INSERT super_admin='||r_ins||'; UPDATE super_admin='||r_upd||'; (b) y (c) OK)'
+    WHEN bad_a = '' THEN 'OK (super_admin: INSERT con medico ajeno -> 42501, UPDATE de nota abierta ajena -> 0 filas sin cambios; lee '||r_sel||'; el medico crea y edita su nota; descartado)'
+    ELSE 'ROJO ('||bad_a||')' END, false);
+EXCEPTION WHEN OTHERS THEN
+  PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
+  PERFORM set_config('probe.p1008', 'FALLO ('||SQLSTATE||' '||SQLERRM||')', false);
+END $$;
+SELECT set_config('role', 'none', true);
+
+-- ---------------- P1009 datos bancarios acotados: cuentas_bancarias_pais y configuracion_sistema (366) ----------------
+-- Actores reales y deterministas (activos, en auth.users; orden created_at, id). Los proveedores se eligen con el estado
+-- del MOMENTO (los fixtures por posicion reasignan cuentas reales dentro del harness, ver CLAUDE.md): una cuenta admin de
+-- una empresa GT ACTIVA, una cuenta de una empresa GT pendiente o suspendida (si no hay, la empresa de otra cuenta GT se
+-- pone 'pendiente' dentro del savepoint) y una cuenta de una empresa tipo farmacia GT activa (otra cuenta).
+-- 6-oct-2026: (1) P87, P97, P101 y Pinvit insertan cuentas_proveedor activas para "el siguiente usuario sin cuenta" y no
+-- las borran: dentro del harness medico.qa termina con una cuenta viva en una empresa de GT, pais_empresa_onboarding()
+-- devuelve GT y la ve. El probe publica la firma de esas cuentas (los actores que NO deben ver ninguna cuenta) y las pone
+-- activo=false dentro del savepoint (nada de DELETE). (2) Aislamiento entre paises: un admin_pais de otro pais (real; si no
+-- hay, se siembra en el savepoint en el primer pais activo distinto de GT por codigo) y una fila de fixture en
+-- cuentas_bancarias_pais para ese pais (si no tiene una), con valores ficticios.
+--   (a) count(*) sin filtro y por pais: super_admin ve GT + otro; admin_pais GT solo GT; admin_pais otro solo el suyo;
+--       proveedor GT activa, no activa y farmacia solo GT; medico.qa, paciente.qa, secretaria.qa, soporte y asesor 0.
+--   (b) checkout: el SELECT de useCuentaBancariaCheckout.ts:31 (mismas columnas) como el admin del proveedor GT -> 1 fila.
+--   (c) configuracion_sistema: super_admin y los dos admin_pais 21; el resto las 14 publicas, 0 sensibles.
+--   (d) mientras la 366 no este aplicada (catalogo: no existe cuentas_banco_read_acotada) el veredicto es
+--       'PENDIENTE mig 366 (lo medido)', nunca OK.
+-- Oraculos: filas de GT y del otro pais como postgres > 0, si no FALLO 'sin fixture'. Todo en una subtransaccion descartada
+-- (RAISE P0999).
+DO $$
+DECLARE
+  v_366 boolean; v_gt uuid; v_otro uuid; v_otro_cod text; o_gt int; o_otro int; o_tot int; o_pub int;
+  a_sa uuid; a_apgt uuid; a_apotro uuid; a_pact uuid; e_pact uuid; a_pno uuid; a_farm uuid; a_med uuid; a_pac uuid; a_sec uuid; a_sop uuid; a_ase uuid;
+  neg uuid[]; r record; n int; ngt int; not_ int; nk int; ns int; v text; res text := ''; bad text := ''; chk text := '-';
+  pend_sembrada boolean := false; ap_sembrado boolean := false; fila_sembrada boolean := false;
+  n_contam int := 0; firma text := '-'; n_neutr int := 0;
+  publicas constant text[] := ARRAY['app_logo_url','app_nombre','color_fondo','color_primario','color_secundario','integ_google_calendar',
+                                    'notif_email_activo','notif_recordatorios_activo','notif_sms_activo','notif_whatsapp_activo',
+                                    'sistema_formato_fecha','sistema_idioma','sistema_moneda','sistema_zona_horaria'];
+BEGIN
+  IF current_user <> 'postgres' THEN RAISE EXCEPTION 'fixture roto: P1009 corre como %', current_user; END IF;
+  v_366 := EXISTS (SELECT 1 FROM pg_policy WHERE polrelid = 'public.cuentas_bancarias_pais'::regclass AND polname = 'cuentas_banco_read_acotada');
+  SELECT id INTO v_gt FROM public.configuracion_pais WHERE codigo = 'GT';
+  o_gt := (SELECT count(*) FROM public.cuentas_bancarias_pais WHERE pais_id = v_gt);
+  o_tot := (SELECT count(*) FROM public.configuracion_sistema);
+  o_pub := (SELECT count(*) FROM public.configuracion_sistema WHERE clave = ANY (publicas));
+  a_sa := (SELECT p.id FROM public.perfiles p WHERE p.rol = 'super_admin' AND p.activo AND COALESCE(p.created_at, '-infinity') < now()
+             AND EXISTS (SELECT 1 FROM auth.users u WHERE u.id = p.id) ORDER BY COALESCE(p.created_at, '-infinity'), p.id LIMIT 1);
+  a_apgt := (SELECT p.id FROM public.perfiles p WHERE p.rol = 'admin_pais' AND p.activo AND p.pais_id = v_gt AND COALESCE(p.created_at, '-infinity') < now()
+             AND EXISTS (SELECT 1 FROM auth.users u WHERE u.id = p.id) ORDER BY COALESCE(p.created_at, '-infinity'), p.id LIMIT 1);
+  SELECT p.id, p.pais_id INTO a_apotro, v_otro FROM public.perfiles p
+   WHERE p.rol = 'admin_pais' AND p.activo AND p.pais_id IS NOT NULL AND p.pais_id <> v_gt AND COALESCE(p.created_at, '-infinity') < now()
+     AND EXISTS (SELECT 1 FROM auth.users u WHERE u.id = p.id) ORDER BY COALESCE(p.created_at, '-infinity'), p.id LIMIT 1;
+  IF v_otro IS NULL THEN
+    SELECT id INTO v_otro FROM public.configuracion_pais WHERE codigo <> 'GT' AND activo ORDER BY codigo LIMIT 1;
+  END IF;
+  v_otro_cod := (SELECT codigo FROM public.configuracion_pais WHERE id = v_otro);
+  SELECT cp.id, cp.empresa_id INTO a_pact, e_pact FROM public.cuentas_proveedor cp JOIN public.empresas_proveedoras e ON e.id = cp.empresa_id
+   WHERE e.pais_id = v_gt AND e.estado = 'activa' AND cp.activo AND cp.rol_en_empresa = 'admin' AND COALESCE(cp.created_at, '-infinity') < now()
+     AND EXISTS (SELECT 1 FROM auth.users u WHERE u.id = cp.id) AND NOT EXISTS (SELECT 1 FROM public.perfiles pf WHERE pf.id = cp.id)
+   ORDER BY COALESCE(cp.created_at, '-infinity'), cp.id LIMIT 1;
+  a_farm := (SELECT cp.id FROM public.cuentas_proveedor cp JOIN public.empresas_proveedoras e ON e.id = cp.empresa_id
+              WHERE e.pais_id = v_gt AND e.estado = 'activa' AND e.tipo = 'farmacia' AND cp.activo AND cp.id IS DISTINCT FROM a_pact
+                AND COALESCE(cp.created_at, '-infinity') < now() AND EXISTS (SELECT 1 FROM auth.users u WHERE u.id = cp.id)
+                AND NOT EXISTS (SELECT 1 FROM public.perfiles pf WHERE pf.id = cp.id)
+              ORDER BY COALESCE(cp.created_at, '-infinity'), cp.id LIMIT 1);
+  a_med := (SELECT u.id FROM auth.users u WHERE lower(u.email) LIKE 'medico.qa@%' ORDER BY u.email LIMIT 1);
+  a_pac := (SELECT u.id FROM auth.users u WHERE lower(u.email) LIKE 'paciente.qa@%' ORDER BY u.email LIMIT 1);
+  a_sec := (SELECT u.id FROM auth.users u WHERE lower(u.email) LIKE 'secretaria.qa@%' ORDER BY u.email LIMIT 1);
+  a_sop := (SELECT p.id FROM public.perfiles p WHERE p.rol = 'soporte' AND p.activo AND COALESCE(p.created_at, '-infinity') < now()
+             AND EXISTS (SELECT 1 FROM auth.users u WHERE u.id = p.id) ORDER BY COALESCE(p.created_at, '-infinity'), p.id LIMIT 1);
+  a_ase := (SELECT p.id FROM public.perfiles p WHERE p.rol = 'asesor_comercial' AND p.activo AND COALESCE(p.created_at, '-infinity') < now()
+             AND EXISTS (SELECT 1 FROM auth.users u WHERE u.id = p.id) ORDER BY COALESCE(p.created_at, '-infinity'), p.id LIMIT 1);
+  IF v_gt IS NULL OR COALESCE(o_gt, 0) = 0 OR COALESCE(o_pub, 0) = 0 OR v_otro IS NULL OR a_sa IS NULL OR a_apgt IS NULL OR a_pact IS NULL OR a_farm IS NULL
+     OR a_med IS NULL OR a_pac IS NULL OR a_sec IS NULL OR a_sop IS NULL OR a_ase IS NULL THEN
+    RAISE EXCEPTION 'sin fixture: P1009 GT %, cuentas GT %, publicas %, otro pais %, super_admin %, admin_pais GT %, proveedor GT activa %, farmacia GT %, medico.qa %, paciente.qa %, secretaria.qa %, soporte %, asesor %',
+      v_gt, o_gt, o_pub, v_otro, a_sa, a_apgt, a_pact, a_farm, a_med, a_pac, a_sec, a_sop, a_ase;
+  END IF;
+
+  BEGIN
+    -- admin_pais de otro pais: real o sembrado
+    IF a_apotro IS NULL THEN
+      a_apotro := gen_random_uuid();
+      INSERT INTO auth.users (id) VALUES (a_apotro);
+      INSERT INTO public.perfiles (id, email, nombre_completo, rol, pais_id, activo)
+        VALUES (a_apotro, 'p1009.adminpais@example.invalid', 'QA P1009 admin_pais otro pais', 'admin_pais', v_otro, true);
+      ap_sembrado := true;
+    END IF;
+    -- fila de fixture en cuentas_bancarias_pais para el otro pais (si no tiene)
+    IF NOT EXISTS (SELECT 1 FROM public.cuentas_bancarias_pais WHERE pais_id = v_otro) THEN
+      INSERT INTO public.cuentas_bancarias_pais (pais_id, banco, numero_cuenta, titular)
+        VALUES (v_otro, 'P1009 banco ficticio', '0000-P1009', 'P1009 titular ficticio');
+      fila_sembrada := true;
+    END IF;
+    o_otro := (SELECT count(*) FROM public.cuentas_bancarias_pais WHERE pais_id = v_otro);
+    IF COALESCE(o_otro, 0) = 0 THEN RAISE EXCEPTION 'sin fixture: P1009 sin fila de cuenta en el otro pais (%)', v_otro_cod; END IF;
+
+    -- proveedor de una empresa GT no activa (pendiente o suspendida); si no hay, se pone 'pendiente' la empresa de otra cuenta GT
+    SELECT cp.id INTO a_pno FROM public.cuentas_proveedor cp JOIN public.empresas_proveedoras e ON e.id = cp.empresa_id
+     WHERE e.pais_id = v_gt AND e.estado IN ('pendiente', 'suspendida') AND cp.activo AND COALESCE(cp.created_at, '-infinity') < now()
+       AND EXISTS (SELECT 1 FROM auth.users u WHERE u.id = cp.id) AND NOT EXISTS (SELECT 1 FROM public.perfiles pf WHERE pf.id = cp.id)
+     ORDER BY COALESCE(cp.created_at, '-infinity'), cp.id LIMIT 1;
+    IF a_pno IS NULL THEN
+      SELECT cp.id INTO a_pno FROM public.cuentas_proveedor cp JOIN public.empresas_proveedoras e ON e.id = cp.empresa_id
+       WHERE e.pais_id = v_gt AND e.estado = 'activa' AND e.id <> e_pact AND cp.id <> a_farm AND cp.activo AND COALESCE(cp.created_at, '-infinity') < now()
+         AND EXISTS (SELECT 1 FROM auth.users u WHERE u.id = cp.id) AND NOT EXISTS (SELECT 1 FROM public.perfiles pf WHERE pf.id = cp.id)
+       ORDER BY COALESCE(cp.created_at, '-infinity'), cp.id LIMIT 1;
+      IF a_pno IS NULL THEN RAISE EXCEPTION 'sin fixture: P1009 sin cuenta GT para la empresa no activa'; END IF;
+      UPDATE public.empresas_proveedoras SET estado = 'pendiente' WHERE id = (SELECT empresa_id FROM public.cuentas_proveedor WHERE id = a_pno);
+      pend_sembrada := true;
+    END IF;
+
+    -- contaminacion: cuentas_proveedor activas de los actores que NO deben ver ninguna cuenta (y del admin_pais de otro pais)
+    neg := ARRAY[a_med, a_pac, a_sec, a_sop, a_ase, a_apotro];
+    SELECT count(*), COALESCE(string_agg(cp.id::text||'/'||cp.rol_en_empresa||'/'||cp.email||'/'||cp.nombre_completo||'/'||COALESCE(e.estado, '-')||'/'
+                                         ||COALESCE((SELECT g.codigo FROM public.configuracion_pais g WHERE g.id = e.pais_id), COALESCE(e.pais_id::text, '-')), ' ; ' ORDER BY cp.id), '-')
+      INTO n_contam, firma
+      FROM public.cuentas_proveedor cp LEFT JOIN public.empresas_proveedoras e ON e.id = cp.empresa_id
+     WHERE cp.id = ANY (neg) AND cp.activo;
+    UPDATE public.cuentas_proveedor SET activo = false WHERE id = ANY (neg) AND activo;
+    GET DIAGNOSTICS n_neutr = ROW_COUNT;
+
+    -- (a) + (c) por actor: total, GT y otro pais en cuentas_bancarias_pais; claves de configuracion_sistema
+    FOR r IN SELECT * FROM (VALUES
+        (1, 'super_admin', a_sa, o_gt + o_otro, o_gt, o_otro, 'admin'), (2, 'admin_pais GT', a_apgt, o_gt, o_gt, 0, 'admin'),
+        (3, 'admin_pais '||v_otro_cod, a_apotro, o_otro, 0, o_otro, 'admin'),
+        (4, 'proveedor GT activa', a_pact, o_gt, o_gt, 0, 'resto'), (5, 'proveedor GT no activa', a_pno, o_gt, o_gt, 0, 'resto'),
+        (6, 'farmacia GT', a_farm, o_gt, o_gt, 0, 'resto'),
+        (7, 'medico.qa', a_med, 0, 0, 0, 'resto'), (8, 'paciente.qa', a_pac, 0, 0, 0, 'resto'), (9, 'secretaria.qa', a_sec, 0, 0, 0, 'resto'),
+        (10, 'soporte', a_sop, 0, 0, 0, 'resto'), (11, 'asesor_comercial', a_ase, 0, 0, 0, 'resto')) x(k, nom, uid, e_tot, e_gt, e_otro, cfg) ORDER BY x.k LOOP
+      n := NULL; ngt := NULL; not_ := NULL; nk := NULL; ns := NULL; v := '';
+      BEGIN
+        PERFORM set_config('request.jwt.claims', json_build_object('sub', r.uid, 'role', 'authenticated')::text, true);
+        PERFORM set_config('role', 'authenticated', true);
+        SELECT count(*), count(*) FILTER (WHERE pais_id = v_gt), count(*) FILTER (WHERE pais_id = v_otro) INTO n, ngt, not_ FROM public.cuentas_bancarias_pais;
+        SELECT count(*), count(*) FILTER (WHERE clave <> ALL (publicas)) INTO nk, ns FROM public.configuracion_sistema;
+        PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
+      EXCEPTION WHEN OTHERS THEN
+        PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
+        v := ' ERROR '||SQLSTATE||' '||left(SQLERRM, 80);
+      END;
+      res := res||r.nom||': cuentas='||COALESCE(n::text, '-')||' (GT '||COALESCE(ngt::text, '-')||', '||v_otro_cod||' '||COALESCE(not_::text, '-')||') config='
+             ||COALESCE(nk::text, '-')||'/sens='||COALESCE(ns::text, '-')||v||'; ';
+      IF v <> '' OR n IS DISTINCT FROM r.e_tot OR ngt IS DISTINCT FROM r.e_gt OR not_ IS DISTINCT FROM r.e_otro THEN
+        bad := bad||r.nom||' cuentas='||COALESCE(n::text, '-')||'/GT '||COALESCE(ngt::text, '-')||'/'||v_otro_cod||' '||COALESCE(not_::text, '-')
+               ||' (esperado '||r.e_tot||'/'||r.e_gt||'/'||r.e_otro||')'||v||'; ';
+      END IF;
+      IF nk IS DISTINCT FROM (CASE WHEN r.cfg = 'admin' THEN o_tot ELSE o_pub END)
+         OR (r.cfg <> 'admin' AND ns IS DISTINCT FROM 0) THEN
+        bad := bad||r.nom||' config='||COALESCE(nk::text, '-')||'/sens='||COALESCE(ns::text, '-')||'; ';
+      END IF;
+    END LOOP;
+
+    -- (b) el SELECT del checkout como el admin del proveedor GT activa
+    BEGIN
+      PERFORM set_config('request.jwt.claims', json_build_object('sub', a_pact, 'role', 'authenticated')::text, true);
+      PERFORM set_config('role', 'authenticated', true);
+      SELECT count(*) INTO n FROM (SELECT banco, numero_cuenta, tipo_cuenta, titular, nit, moneda, instrucciones, email_pagos
+                                     FROM public.cuentas_bancarias_pais WHERE pais_id = v_gt AND activo = true ORDER BY created_at LIMIT 1) q;
+      PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
+      chk := n::text;
+    EXCEPTION WHEN OTHERS THEN
+      PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
+      chk := 'ERROR '||SQLSTATE||' '||left(SQLERRM, 80);
+    END;
+    IF chk IS DISTINCT FROM '1' THEN bad := bad||'checkout='||chk||'; '; END IF;
+
+    RAISE EXCEPTION 'P1009 descarte' USING ERRCODE = 'P0999';
+  EXCEPTION WHEN SQLSTATE 'P0999' THEN NULL;
+  END;
+  PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
+
+  v := 'contaminacion: '||n_contam||' cuenta(s) activa(s) de actores sin acceso ['||firma||'] neutralizadas='||n_neutr
+       ||'; admin_pais '||v_otro_cod||' '||CASE WHEN ap_sembrado THEN 'sembrado' ELSE 'real' END
+       ||'; fila de cuenta '||v_otro_cod||' '||CASE WHEN fila_sembrada THEN 'sembrada (ficticia)' ELSE 'existente' END
+       ||CASE WHEN pend_sembrada THEN '; empresa GT no activa sembrada' ELSE '' END;
+  PERFORM set_config('probe.p1009_det', res||'checkout(admin proveedor GT)='||chk||'; '||v, false);
+  PERFORM set_config('probe.p1009', CASE
+    WHEN bad = '' AND v_366 THEN 'OK (cuentas: super_admin ve GT+'||v_otro_cod||'; admin_pais GT, proveedores GT activa/no activa y farmacia solo GT; admin_pais '
+                                 ||v_otro_cod||' solo '||v_otro_cod||'; medico, paciente, secretaria, soporte y asesor 0; checkout 1 fila; config 21 admins y '
+                                 ||o_pub||' publicas resto; '||v||'; descartado)'
+    WHEN NOT v_366 THEN 'PENDIENTE mig 366 ('||left(res, 600)||' checkout='||chk||'; '||v||')'
+    ELSE 'ROJO ('||left(bad, 700)||' | '||v||')' END, false);
+EXCEPTION WHEN OTHERS THEN
+  PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
+  PERFORM set_config('probe.p1009', 'FALLO ('||SQLSTATE||' '||SQLERRM||')', false);
+END $$;
+SELECT set_config('role', 'none', true);
+
 -- ===== Veredictos como result set =====
 SELECT 'P1_anon_insert_citas'              AS probe, current_setting('probe.p1', true)  AS verdict, 'BLOQUEADO' AS esperado_post_fix
 UNION ALL SELECT 'P2_medico_cancela_ajena_rpc',         current_setting('probe.p2', true),  'BLOQUEADO'
@@ -33426,9 +33826,9 @@ UNION ALL SELECT 'P751_cc_medico_a_nombre_de_otro',  current_setting('probe.p751
 UNION ALL SELECT 'P752_cc_paciente_a_nombre_medico', current_setting('probe.p752', true),    'OK (42501)'
 UNION ALL SELECT 'P753_cc_super_admin_alta',         current_setting('probe.p753', true),    'OK (control positivo)'
 UNION ALL SELECT 'P754_cc_ruta_b_intacta',           current_setting('probe.p754', true),    'OK (control positivo: Ruta B)'
-UNION ALL SELECT 'P755_cs_anon_sin_bancarios',       current_setting('probe.p755', true),    'OK (anon sin las 5)'
-UNION ALL SELECT 'P756_cs_anon_ve_el_resto',         current_setting('probe.p756', true),    'OK (control positivo)'
-UNION ALL SELECT 'P757_cs_authenticated_ve_todo',    current_setting('probe.p757', true),    'OK (control positivo)'
+UNION ALL SELECT 'P755_cs_anon_sin_bancarios',       current_setting('probe.p755', true),    'OK (366: anon ve las 14 publicas, ninguna sensible)'
+UNION ALL SELECT 'P756_cs_anon_ve_el_resto',         current_setting('probe.p756', true),    'OK (366: authenticated sin rol de admin ve las 14 publicas)'
+UNION ALL SELECT 'P757_cs_authenticated_ve_todo',    current_setting('probe.p757', true),    'OK (366: super_admin y admin_pais ven las 21)'
 UNION ALL SELECT 'P758_cs_service_role_intacto',     current_setting('probe.p758', true),    'OK (control positivo: edge)'
 UNION ALL SELECT 'P759_nt_apropiacion_bloqueada',    current_setting('probe.p759', true),    'OK (42501 de columna)'
 UNION ALL SELECT 'P760_nt_texto_no_escribible',      current_setting('probe.p760', true),    'OK (42501 de columna)'
@@ -33573,7 +33973,7 @@ UNION ALL SELECT 'P884_ex_catalogo_333',                current_setting('probe.p
 UNION ALL SELECT 'P885_nt_edicion_abierta',            current_setting('probe.p885', true), 'OK (edicion libre con revision de la fila previa)'
 UNION ALL SELECT 'P886_nt_congelados',                 current_setting('probe.p886', true), 'OK (NT007 x8; INSERT fechado queda en now())'
 UNION ALL SELECT 'P887_nt_cierre_al_completar',        current_setting('probe.p887', true), 'OK (cierra sin revision; no se reabre; NT006)'
-UNION ALL SELECT 'P888_nt_cerrada_nt006',              current_setting('probe.p888', true), 'OK (NT006 autor, super_admin y postgres sin llave)'
+UNION ALL SELECT 'P888_nt_cerrada_nt006',              current_setting('probe.p888', true), 'OK (NT006 autor y postgres sin llave; super_admin 0 filas desde la 365)'
 UNION ALL SELECT 'P889_nt_corregir_positivo',          current_setting('probe.p889', true), 'OK (revision correccion con motivo; llaves limpias)'
 UNION ALL SELECT 'P890_nt_corregir_rechazos',          current_setting('probe.p890', true), 'OK (NT001-NT005 por SQLERRM, sin cambios)'
 UNION ALL SELECT 'P891_nt_revisiones_inmutables',      current_setting('probe.p891', true), 'OK (42501 authenticated; NT008 postgres; NT009 control)'
@@ -33581,7 +33981,7 @@ UNION ALL SELECT 'P892_nt_visibilidad_revisiones',     current_setting('probe.p8
 UNION ALL SELECT 'P893_nt_delete',                     current_setting('probe.p893', true), 'OK (42501 sin grant; 23503 RESTRICT)'
 UNION ALL SELECT 'P894_nt_nota_sin_cita',              current_setting('probe.p894', true), 'OK (nace cerrada; NT006; correccion OK)'
 UNION ALL SELECT 'P895_nt_pe001_y_finalizar',          current_setting('probe.p895', true), 'OK (PE001 intacto; Finalizar cierra la nota)'
-UNION ALL SELECT 'P896_nt_catalogo_334',               current_setting('probe.p896', true), 'OK (catalogo exacto post-334)'
+UNION ALL SELECT 'P896_nt_catalogo_334',               current_setting('probe.p896', true), 'OK (catalogo exacto post-334; sin escritura del super_admin desde la 365)'
 UNION ALL SELECT 'P908_nt_cita_ya_completada',         current_setting('probe.p908', true), 'OK (nota sobre cita completada nace cerrada)'
 UNION ALL SELECT 'P909_nt_integridad_nota_cita',       current_setting('probe.p909', true), 'OK (NT010 x5; control OK)'
 UNION ALL SELECT 'P910_nt_gate_cuenta',                current_setting('probe.p910', true), 'OK (NT011 x4; doble rol medico+proveedor corrige)'
@@ -33692,6 +34092,8 @@ UNION ALL SELECT 'P1003_proveedores_pais_super_363',  current_setting('probe.p10
 UNION ALL SELECT 'P1004_proveedores_pais_proveedor_363',  current_setting('probe.p1004', true), 'OK (363: cuenta de proveedor -> PC028)'
 UNION ALL SELECT 'P1005_proveedores_pais_anon_363',  current_setting('probe.p1005', true), 'OK (363: anon -> 42501)'
 UNION ALL SELECT 'P1006_proveedores_pais_catalogo_363',  current_setting('probe.p1006', true), 'OK (363: ACL exacta sin anon; DEFINER, STABLE, search_path)'
+UNION ALL SELECT 'P1009_datos_bancarios_acotados_366',  current_setting('probe.p1009', true), 'OK (366: cuenta GT solo super_admin/admin_pais GT/proveedores GT; checkout 1 fila; config 21 admins y 14 resto; antes de la 366: PENDIENTE)'
+UNION ALL SELECT 'P1008_notas_sin_escritura_superadmin_365',  current_setting('probe.p1008', true), 'OK (365: super_admin INSERT ajeno -> 42501, UPDATE -> 0 filas; lee; el medico escribe; antes de la 365: PENDIENTE)'
 UNION ALL SELECT 'P1007_visitas_sin_update_directo_364',  current_setting('probe.p1007', true), 'OK (364: UPDATE directo -> 42501 x4; las RPCs siguen escribiendo; ACL SELECT+INSERT sin UPDATE; antes de la 364: PENDIENTE)'
 -- Las filas FX* son SALUD DE FIXTURE, no probes de seguridad: dicen si la precondicion que una
 -- migracion posterior empezo a exigir se pudo sembrar. Si una sale ROJO, los probes que dependen de
@@ -33937,7 +34339,7 @@ UNION ALL SELECT 'P000_CENTINELA_veredictos_no_nulos',
        'probe.p866', 'probe.p867', 'probe.p868', 'probe.p869', 'probe.p870', 'probe.p871', 'probe.p872', 'probe.p873', 'probe.p874', 'probe.p875', 'probe.p876', 'probe.p877', 'probe.p878',
        'probe.p879', 'probe.p880', 'probe.p881', 'probe.p882', 'probe.p883', 'probe.p884',
        'probe.p885', 'probe.p886', 'probe.p887', 'probe.p888', 'probe.p889', 'probe.p890', 'probe.p891', 'probe.p892', 'probe.p893', 'probe.p894', 'probe.p895', 'probe.p896', 'probe.p908', 'probe.p909', 'probe.p910', 'probe.p911',
-       'probe.p897', 'probe.p898', 'probe.p899', 'probe.p900', 'probe.p901', 'probe.p902', 'probe.p903', 'probe.p904', 'probe.p905', 'probe.p906', 'probe.p907', 'probe.p912', 'probe.p913', 'probe.p914', 'probe.p915', 'probe.p916', 'probe.p917', 'probe.p918', 'probe.p919', 'probe.p920', 'probe.p921', 'probe.p922', 'probe.p923', 'probe.p924', 'probe.p925', 'probe.p926', 'probe.p927', 'probe.p928', 'probe.p929', 'probe.p930', 'probe.p931', 'probe.p932', 'probe.p933', 'probe.p934', 'probe.p935', 'probe.p936', 'probe.p937', 'probe.p938', 'probe.p939', 'probe.p940', 'probe.p941', 'probe.p942', 'probe.p943', 'probe.p944', 'probe.p945', 'probe.p946', 'probe.p947', 'probe.p948', 'probe.p949', 'probe.p950', 'probe.p951', 'probe.p952', 'probe.p953', 'probe.p954', 'probe.p955', 'probe.p956', 'probe.p957', 'probe.p958', 'probe.p959', 'probe.p960', 'probe.p961', 'probe.p962', 'probe.p963', 'probe.p964', 'probe.p965', 'probe.p966', 'probe.p967', 'probe.p968', 'probe.p969', 'probe.p970', 'probe.p971', 'probe.p972', 'probe.p973', 'probe.p974', 'probe.p975', 'probe.p976', 'probe.p977', 'probe.p978', 'probe.p979', 'probe.p980', 'probe.p981', 'probe.p982', 'probe.p983', 'probe.p984', 'probe.p985', 'probe.p986', 'probe.p987', 'probe.p988', 'probe.p989', 'probe.p990', 'probe.p991', 'probe.p992', 'probe.p993', 'probe.p994', 'probe.p995', 'probe.p996', 'probe.p997', 'probe.p998', 'probe.p999', 'probe.p1000', 'probe.p1001', 'probe.p1002', 'probe.p1003', 'probe.p1004', 'probe.p1005', 'probe.p1006', 'probe.p1007'
+       'probe.p897', 'probe.p898', 'probe.p899', 'probe.p900', 'probe.p901', 'probe.p902', 'probe.p903', 'probe.p904', 'probe.p905', 'probe.p906', 'probe.p907', 'probe.p912', 'probe.p913', 'probe.p914', 'probe.p915', 'probe.p916', 'probe.p917', 'probe.p918', 'probe.p919', 'probe.p920', 'probe.p921', 'probe.p922', 'probe.p923', 'probe.p924', 'probe.p925', 'probe.p926', 'probe.p927', 'probe.p928', 'probe.p929', 'probe.p930', 'probe.p931', 'probe.p932', 'probe.p933', 'probe.p934', 'probe.p935', 'probe.p936', 'probe.p937', 'probe.p938', 'probe.p939', 'probe.p940', 'probe.p941', 'probe.p942', 'probe.p943', 'probe.p944', 'probe.p945', 'probe.p946', 'probe.p947', 'probe.p948', 'probe.p949', 'probe.p950', 'probe.p951', 'probe.p952', 'probe.p953', 'probe.p954', 'probe.p955', 'probe.p956', 'probe.p957', 'probe.p958', 'probe.p959', 'probe.p960', 'probe.p961', 'probe.p962', 'probe.p963', 'probe.p964', 'probe.p965', 'probe.p966', 'probe.p967', 'probe.p968', 'probe.p969', 'probe.p970', 'probe.p971', 'probe.p972', 'probe.p973', 'probe.p974', 'probe.p975', 'probe.p976', 'probe.p977', 'probe.p978', 'probe.p979', 'probe.p980', 'probe.p981', 'probe.p982', 'probe.p983', 'probe.p984', 'probe.p985', 'probe.p986', 'probe.p987', 'probe.p988', 'probe.p989', 'probe.p990', 'probe.p991', 'probe.p992', 'probe.p993', 'probe.p994', 'probe.p995', 'probe.p996', 'probe.p997', 'probe.p998', 'probe.p999', 'probe.p1000', 'probe.p1001', 'probe.p1002', 'probe.p1003', 'probe.p1004', 'probe.p1005', 'probe.p1006', 'probe.p1007', 'probe.p1008', 'probe.p1009'
              ]) AS n) s),
   'OK (todos los veredictos publicados)';
 

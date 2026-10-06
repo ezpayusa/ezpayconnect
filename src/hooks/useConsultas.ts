@@ -22,9 +22,16 @@ export interface SoapNota {
   diagnostico: string | null
 }
 
-/** Los rechazos NTnnn (mig 334) y el 42501 traen el mensaje para el usuario: se muestran tal cual. */
+// Mig 365: un UPDATE de la nota que la RLS filtra (p. ej. el super_admin sobre la nota de otro médico) no da error,
+// afecta 0 filas. Se piden las filas afectadas y, si no vuelve ninguna, se devuelve este código propio con un mensaje fijo.
+export const CODIGO_NOTA_SIN_FILAS = 'SIN_FILAS'
+export const MENSAJE_NOTA_SIN_FILAS = 'No se pudo guardar la nota. Es posible que no tengas permiso para editarla.'
+
+/** Los rechazos NTnnn (mig 334), el 42501 y SIN_FILAS traen el mensaje para el usuario: se muestran tal cual. */
 export function mensajeErrorNota(error: { code?: string | null; message: string }, prefijo = 'Error: '): string {
-  return error.code?.startsWith('NT') || error.code === '42501' ? error.message : prefijo + error.message
+  return error.code?.startsWith('NT') || error.code === '42501' || error.code === CODIGO_NOTA_SIN_FILAS
+    ? error.message
+    : prefijo + error.message
 }
 
 export function useConsultas() {
@@ -81,12 +88,18 @@ export function useConsultas() {
 
     // errorCode: la pantalla necesita distinguir NT006 (la nota se cerró mientras estaba abierta).
     if (consultaId) {
-      const { error } = await supabase
+      const { data: filas, error } = await supabase
         .from('expediente_notas')
         .update(payload)
         .eq('id', consultaId)
+        .select('id')
       setSaving(false)
-      return { error: error?.message || null, errorCode: error?.code ?? null }
+      if (error) return { error: error.message || null, errorCode: error.code ?? null }
+      if (!filas || filas.length === 0) {
+        console.error('Guardar nota: el UPDATE no afectó filas:', CODIGO_NOTA_SIN_FILAS)
+        return { error: MENSAJE_NOTA_SIN_FILAS, errorCode: CODIGO_NOTA_SIN_FILAS }
+      }
+      return { error: null, errorCode: null }
     } else {
       const { data: result, error } = await supabase
         .from('expediente_notas')

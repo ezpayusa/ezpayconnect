@@ -24,12 +24,33 @@ Stack: React + Vite + TypeScript, Supabase / Postgres, deploy en Vercel, repo en
   minutos por esto** (P635 es la probe que faltaba, P636 su contraprueba).
 - NUNCA ampliar policies de RLS sobre tablas adyacentes a datos médicos (p. ej. campana_metricas). Para dar acceso, usar RPCs SECURITY DEFINER con search_path='', fail-closed (si el scope es NULL → 0 filas) y gate interno.
 - Probar aislamiento por rol impersonando request.jwt.claims en prod: cada rol ve lo suyo y no lo ajeno.
-- **Próximos números libres: probe `P1008`** (global, no por módulo; P1007 usado por la mig 364, P1001-P1006 por la mig 363, P996-P1000 por la 362, P990-P995 por la 361, P983-P989 por la 360, P975-P982 por la
+- **Próximos números libres: probe `P1010`** (global, no por módulo; P1009 usado por la mig 366, P1008 por la 365, P1007 por la 364, P1001-P1006 por la mig 363, P996-P1000 por la 362, P990-P995 por la 361, P983-P989 por la 360, P975-P982 por la
   359, P967-P974 por la 358, P958-P966 por la 357 (obtener_medicos_por_ids acotada a relación); P906-P907 usados por la mig 336, P912-P913
   por la 337, P914-P915 por la 338, P916-P920 por la 339/340, P921-P923 por la 341, P924 por la 342, P925 por
   la 343, P926-P927 por la 344, P928-P929 por la 345, P930 por la 346, P931-P932 por la 347, P933 por la 348,
-  P934-P935 por la 349, P936 por la 350, P937-P939 por la 351, P940-P943 por la 353), **migración `365`**, **errcode `PC029`** (familia PC: PC025 país requerido y PC026 sin autoridad en `contar_medicos_por_pais`, PC027
+  P934-P935 por la 349, P936 por la 350, P937-P939 por la 351, P940-P943 por la 353), **migración `367`**, **errcode `PC029`** (familia PC: PC025 país requerido y PC026 sin autoridad en `contar_medicos_por_pais`, PC027
   no autenticado, PC028 sin autoridad sobre el país en `contar_proveedores_por_pais`)
+  (366 = familia 2, F2-e parte 2, datos bancarios acotados — APLICADA en prod el 2026-10-06 entre 15:10:06 y 15:10:09 UTC y
+  verificada en sesión independiente; harness 1084 filas / 11 rojas de deuda. `private.pais_empresa_onboarding()` (DEFINER,
+  `search_path=''`, país de la empresa del proveedor que llama, derivada de `auth.uid()`, con la empresa en estado
+  activa/pendiente/suspendida y la cuenta activa; EXECUTE solo authenticated); en `cuentas_bancarias_pais`, DROP de
+  `cuentas_banco_read_pais` (`pais_id = private.mi_pais()`: cualquier perfil del país veía la cuenta de depósito) y nueva
+  `cuentas_banco_read_acotada` (SELECT TO authenticated: super_admin, admin_pais DE ESE PAÍS por `private.puede_admin_pais`,
+  o el proveedor cuya empresa es del país, en cualquier estado; COALESCE fail-closed); en `configuracion_sistema`, ALLOWLIST
+  de las 14 claves públicas para anon y authenticated (`configuracion_sistema_select_anon_publicas` y
+  `configuracion_sistema_select_authenticated_publicas`); super_admin y admin_pais ven las 21; las 5 bancarias y
+  integ_email_smtp/integ_whatsapp_api quedan fuera para el resto. Sin cambios de ACL de tablas. Huellas: policies
+  66bef0e5…/307 → a99ac4becc3fba65a272569c293fdd26/307; ACL de funciones c7f89c6d…/380 → 0ee90ba6869cce295105d3b32b893aed/381.
+  Probes: P755-P758 reescritos, P936 anon config 16 → 14, P1009 nuevo (neutraliza las cuentas_proveedor que dejan
+  P87/P97/P101/Pinvit y siembra un admin_pais y una cuenta ficticia de otro país en su savepoint). Front:
+  `useConfiguracionSistema.ts` (muerto) borrado. Rollback `366_rollback.sql`.)
+  (365 = familia 2, F2-e parte 1, expediente_notas sin escritura del super_admin — APLICADA en prod el 2026-10-05
+  20:05:27 UTC y verificada en sesión independiente. DROP de `exp_superadmin_insert` (el super_admin creaba notas a nombre
+  de cualquier médico; sin cita nacían cerradas) y `exp_superadmin_update`; el super_admin conserva la lectura
+  (`exp_superadmin_select`); las correcciones las hace el médico por `corregir_nota_consulta`. Huella de policies
+  1929c331…/309 → 66bef0e5…/307; ACL sin cambio. Probes P888/P896 ajustados, P1008 nuevo, P929 (su receta de
+  expediente_notas usa a medico.qa). Front: `useConsultas` cuenta las filas al guardar la nota y, si vuelven 0, devuelve
+  `SIN_FILAS` con mensaje fijo. Rollback `365_rollback.sql`.)
   (364 = familia 2, F2-d, visitas_agendadas sin UPDATE directo — APLICADA en prod el 2026-10-05 19:04:29 UTC, harness
   1082 filas / 11 rojas de deuda, verificada independientemente. DROP de "Médico actualiza sus visitas" y "Proveedor cancela
   sus visitas" (UPDATE sin WITH CHECK: el médico y cualquier cuenta de la empresa reescribían estado, check-in/out, fecha y
@@ -303,6 +324,9 @@ Stack: React + Vite + TypeScript, Supabase / Postgres, deploy en Vercel, repo en
 - **Todo probe que modifica un fixture lo restaura a su snapshot y verifica la restauración.**
 - **Los fixtures que toman cuentas reales por posición (ORDER BY id LIMIT/OFFSET) las dejan modificadas para el resto de la
   transacción (C.2, P309-P316). Un probe nuevo no debe filtrar actores por rol o empresa sin tener esto en cuenta.**
+- **Un actor que alimenta un INSERT con FK se elige por email o con EXISTS en la tabla destino de la FK, nunca por ORDER BY
+  id: otros probes dejan vivas en la transacción filas sembradas con uuid aleatorio (P929, 6-oct). Y los actores que NO
+  deben ver algo se neutralizan dentro del savepoint (P101 deja a medico.qa con cuenta_proveedor activa; P1009, 6-oct).**
 - **Correr el harness SIEMPRE con `npm run harness`, nunca a mano.** El runner
   (`tests/rls/harness_run.py`) verifica exit code, salida no vacía, JSON parseable, piso de 680
   filas y cero veredictos vacíos. **Por qué**: el 2026-09-03 una corrida devolvió *exit 0 con la
@@ -330,8 +354,8 @@ Stack: React + Vite + TypeScript, Supabase / Postgres, deploy en Vercel, repo en
   Pasó dos veces (18cf819 y el lote 1 de PA-FAILOPEN) y una de ellas tardó dos meses en detectarse.
   Baselines vivos: `top_level_dml_ddl=0` (excluye `pg_temp`), `cast_directo=0`, `do_sin_handler=155`
   (fase 2.2 CERRADA: los 55 bloques que escriben están envueltos, 211→193→175→157→156→155; los 155
-  restantes sólo leen y publican, así que ya no son deuda; 974 bloques DO en total al 3-oct-2026, con P940-P943
-  de la 353; la última cuenta de filas medida en esta memoria es 1018 / 11 rojas de deuda, tras la 353).
+  restantes sólo leen y publican, así que ya no son deuda; 1002 bloques DO en total al 6-oct-2026, tras la 366; la
+  última cuenta de filas medida en esta memoria es 1084 / 11 rojas de deuda, tras la 366; tsc 74, vitest 420).
   **Regla de método: el harness NUNCA corre en paralelo con otra sesión que escriba o impersone contra prod**
   (las dos compiten por las mismas filas: deadlocks 40P01 que salen como rojos falsos). **P782 ajustado en la 346:** el DELETE directo sobre
   `visitas_agendadas` ahora da 42501 de privilegio (authenticated ya no tiene DELETE) y cuenta como OK, más fuerte
@@ -345,8 +369,9 @@ Stack: React + Vite + TypeScript, Supabase / Postgres, deploy en Vercel, repo en
 - **Migraciones: SIEMPRE `npx supabase db query --linked -f <archivo>`, NUNCA `db push`.** `db push`
   desincroniza `schema_migrations` (deuda desde la 047). Los `.sql` viven en `supabase/migrations/`
   (rollback en `supabase/migrations/rollback/`); los de `supabase/fixes/` se agregan con `git add -f`.
-  **Desvío aceptado (familia 8):** los rollbacks de 334-364 viven en `supabase/migrations/`
-  (`3XX_rollback.sql`), no en `supabase/migrations/rollback/`.
+  **Desvío aceptado (familia 8):** los rollbacks de 334-366 viven en `supabase/migrations/`
+  (`3XX_rollback.sql`), no en `supabase/migrations/rollback/`. Orden de rollback global: `366_rollback` →
+  `365_rollback` → `364_rollback` → ….
 - **Los tests de edge (deno) NO corren en vitest ni en el pre-commit**: se corren a mano desde
   `supabase/functions/<fn>/` con `deno test --allow-net --allow-env --no-check` (asistente-ia: 17).
 - **El CORS de `asistente-ia` sólo acepta `med.ezpayconnect.com`**: las pruebas de edges desde un preview
@@ -428,9 +453,9 @@ Detalles a recordar:
   ninguna se llama por RPC desde el cliente. Plan: **F2-a** policies TO service_role inertes (348, **APLICADA**) → **F2-b** las 88
   `{public}` de public que anon no alcanza → TO authenticated (349, **APLICADA**; P884 ajustado) → **F2-c** las
   18 `{public}` de las tablas de la WL_ANON_LEGACY salvo "Publico lee paises activos" (17 cambian) → TO authenticated, con probe de anon (0 filas
-  sin 42501) (350, **APLICADA**; P936; allowlist temporal de P930 con el SELECT de anon en 5 tablas) → **F2-d** quitar el UPDATE directo de visitas_agendadas (2 policies + el privilegio) (364, **APLICADA**) → **sigue:** **F2-e** decisiones
+  sin 42501) (350, **APLICADA**; P936; allowlist temporal de P930 con el SELECT de anon en 5 tablas) → **F2-d** quitar el UPDATE directo de visitas_agendadas (2 policies + el privilegio) (364, **APLICADA**) → **F2-e** decisiones
   de producto (exp_superadmin_insert: super_admin crea notas a nombre de cualquier médico; claves bancarias de
-  configuracion_sistema visibles para todo authenticated) → **F2-f** con front (campana_vistas con `ignoreDuplicates`
+  configuracion_sistema visibles para todo authenticated) (365 + 366, **APLICADAS**) → **sigue:** **F2-f** con front (campana_vistas con `ignoreDuplicates`
   + revocar UPDATE y sacarlo de la allowlist de P930; partir catalogo_lab_all) → **F2-g** opcional (partir ALL;
   `(select auth.uid())`) → **ÚLTIMO: EXECUTE** (con el número que le toque): `GRANT EXECUTE … TO authenticated,
   service_role` explícito en los helpers usados por policies ANTES de `REVOKE … FROM PUBLIC, anon` en las 21 (si no,
@@ -439,6 +464,7 @@ Detalles a recordar:
   ReportesEzPayPage) y siempre devuelve [] porque tiene 0 policies → familia 7; configuracion_pais: el `true` de
   authenticated anula el filtro `activo` para logueados; 123 policies con `auth.uid()` sin `(select …)` (performance).
   F2-d (mig 364, 5-oct): visitas_agendadas sin UPDATE directo; las escrituras van solo por las 7 RPCs DEFINER.
+  F2-e (migs 365 y 366, 5/6-oct): el super_admin no escribe notas clínicas; cuenta de depósito y claves bancarias acotadas.
 - **FAMILIA 1 (privilegios) CERRADA: 342-347 aplicadas.** El paso de EXECUTE (antes "348") pasa a ser el ÚLTIMO de
   la familia 2, porque su prerequisito (sacar de `TO public` las policies que anon evalúa) es trabajo de policies.
   Plan original (recon del 2-oct-2026 sobre f29f974: sin fuga explotable
@@ -518,6 +544,10 @@ Detalles a recordar:
 - (Familia 4) `examenes.updated_at` no se actualiza al corregir ni al liberar.
 - (Familia 7) El lab no tiene vista del historial de revisiones; "Ver archivo anterior" aparece en
   revisiones que no cambiaron el archivo.
+- (Familia 8, backlog del harness, 6-oct-2026) P87/P97/P101/Pinvit no borran las cuentas_proveedor que crean (P101 deja a
+  medico.qa como 'Lab Inv', y un fixture posterior lo reasigna a admin); P639/P777/P788/mig 311 (x2)/P799 dejan perfiles
+  'medico' sin fila en medicos; algún fixture deja un admin_pais HN "real" dentro de la transacción (en prod no existe);
+  `probe.p1009_det` se setea pero no se publica en el result set.
 - (Familia 8) P800 salta las foreign tables (relkind 'f': mira `'r','v','m','p'`) mientras la 343 y P925 las
   incluyen; sin efecto hoy (0 foreign tables en public). Alinear cuando se toque P800 en el paso de EXECUTE (último de la familia 2).
 - (Familia 8, no urgente) `.gitattributes` ya tiene `* text=auto eol=lf` (476b925; 0 blobs renormalizados),
