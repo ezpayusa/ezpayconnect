@@ -32827,23 +32827,29 @@ SELECT set_config('role', 'none', true);
 -- ---------------- P1009 datos bancarios acotados: cuentas_bancarias_pais y configuracion_sistema (366) ----------------
 -- Actores reales y deterministas (activos, en auth.users; orden created_at, id). Los proveedores se eligen con el estado
 -- del MOMENTO (los fixtures por posicion reasignan cuentas reales dentro del harness, ver CLAUDE.md): una cuenta admin de
--- una empresa GT ACTIVA y una cuenta de una empresa GT pendiente o suspendida (si no hay, la empresa de otra cuenta GT se
--- pone 'pendiente' dentro del savepoint y se descarta).
---   (a) la cuenta de GT la ven: super_admin, admin_pais de GT, proveedor GT activa, proveedor GT no activa; NO la ven:
---       medico.qa, paciente.qa, secretaria.qa, un soporte, un asesor_comercial y un admin_pais de otro pais (si existe; si
---       no, el veredicto lo dice).
---   (b) checkout: el SELECT de useCuentaBancariaCheckout.ts:31 (mismas columnas, pais de la empresa, activo, order by
---       created_at, limit 1) como el admin del proveedor GT activa -> 1 fila.
---   (c) configuracion_sistema por actor: super_admin y admin_pais 21; el resto 14 (las publicas), 0 sensibles.
+-- una empresa GT ACTIVA, una cuenta de una empresa GT pendiente o suspendida (si no hay, la empresa de otra cuenta GT se
+-- pone 'pendiente' dentro del savepoint) y una cuenta de una empresa tipo farmacia GT activa (otra cuenta).
+-- 6-oct-2026: (1) P87, P97, P101 y Pinvit insertan cuentas_proveedor activas para "el siguiente usuario sin cuenta" y no
+-- las borran: dentro del harness medico.qa termina con una cuenta viva en una empresa de GT, pais_empresa_onboarding()
+-- devuelve GT y la ve. El probe publica la firma de esas cuentas (los actores que NO deben ver ninguna cuenta) y las pone
+-- activo=false dentro del savepoint (nada de DELETE). (2) Aislamiento entre paises: un admin_pais de otro pais (real; si no
+-- hay, se siembra en el savepoint en el primer pais activo distinto de GT por codigo) y una fila de fixture en
+-- cuentas_bancarias_pais para ese pais (si no tiene una), con valores ficticios.
+--   (a) count(*) sin filtro y por pais: super_admin ve GT + otro; admin_pais GT solo GT; admin_pais otro solo el suyo;
+--       proveedor GT activa, no activa y farmacia solo GT; medico.qa, paciente.qa, secretaria.qa, soporte y asesor 0.
+--   (b) checkout: el SELECT de useCuentaBancariaCheckout.ts:31 (mismas columnas) como el admin del proveedor GT -> 1 fila.
+--   (c) configuracion_sistema: super_admin y los dos admin_pais 21; el resto las 14 publicas, 0 sensibles.
 --   (d) mientras la 366 no este aplicada (catalogo: no existe cuentas_banco_read_acotada) el veredicto es
 --       'PENDIENTE mig 366 (lo medido)', nunca OK.
--- Oraculo: filas de cuentas_bancarias_pais de GT como postgres > 0, si no FALLO 'sin fixture'. Todo en una subtransaccion
--- descartada (RAISE P0999); solo lee salvo el fallback de la empresa pendiente.
+-- Oraculos: filas de GT y del otro pais como postgres > 0, si no FALLO 'sin fixture'. Todo en una subtransaccion descartada
+-- (RAISE P0999).
 DO $$
 DECLARE
-  v_366 boolean; v_gt uuid; o_cbp int; o_tot int; o_pub int;
-  a_sa uuid; a_apgt uuid; a_apotro uuid; a_pact uuid; e_pact uuid; a_pno uuid; a_med uuid; a_pac uuid; a_sec uuid; a_sop uuid; a_ase uuid;
-  r record; n int; nk int; ns int; v text; res text := ''; bad text := ''; chk text := '-'; pend_sembrada boolean := false;
+  v_366 boolean; v_gt uuid; v_otro uuid; v_otro_cod text; o_gt int; o_otro int; o_tot int; o_pub int;
+  a_sa uuid; a_apgt uuid; a_apotro uuid; a_pact uuid; e_pact uuid; a_pno uuid; a_farm uuid; a_med uuid; a_pac uuid; a_sec uuid; a_sop uuid; a_ase uuid;
+  neg uuid[]; r record; n int; ngt int; not_ int; nk int; ns int; v text; res text := ''; bad text := ''; chk text := '-';
+  pend_sembrada boolean := false; ap_sembrado boolean := false; fila_sembrada boolean := false;
+  n_contam int := 0; firma text := '-'; n_neutr int := 0;
   publicas constant text[] := ARRAY['app_logo_url','app_nombre','color_fondo','color_primario','color_secundario','integ_google_calendar',
                                     'notif_email_activo','notif_recordatorios_activo','notif_sms_activo','notif_whatsapp_activo',
                                     'sistema_formato_fecha','sistema_idioma','sistema_moneda','sistema_zona_horaria'];
@@ -32851,19 +32857,29 @@ BEGIN
   IF current_user <> 'postgres' THEN RAISE EXCEPTION 'fixture roto: P1009 corre como %', current_user; END IF;
   v_366 := EXISTS (SELECT 1 FROM pg_policy WHERE polrelid = 'public.cuentas_bancarias_pais'::regclass AND polname = 'cuentas_banco_read_acotada');
   SELECT id INTO v_gt FROM public.configuracion_pais WHERE codigo = 'GT';
-  o_cbp := (SELECT count(*) FROM public.cuentas_bancarias_pais WHERE pais_id = v_gt);
+  o_gt := (SELECT count(*) FROM public.cuentas_bancarias_pais WHERE pais_id = v_gt);
   o_tot := (SELECT count(*) FROM public.configuracion_sistema);
   o_pub := (SELECT count(*) FROM public.configuracion_sistema WHERE clave = ANY (publicas));
   a_sa := (SELECT p.id FROM public.perfiles p WHERE p.rol = 'super_admin' AND p.activo AND COALESCE(p.created_at, '-infinity') < now()
              AND EXISTS (SELECT 1 FROM auth.users u WHERE u.id = p.id) ORDER BY COALESCE(p.created_at, '-infinity'), p.id LIMIT 1);
   a_apgt := (SELECT p.id FROM public.perfiles p WHERE p.rol = 'admin_pais' AND p.activo AND p.pais_id = v_gt AND COALESCE(p.created_at, '-infinity') < now()
              AND EXISTS (SELECT 1 FROM auth.users u WHERE u.id = p.id) ORDER BY COALESCE(p.created_at, '-infinity'), p.id LIMIT 1);
-  a_apotro := (SELECT p.id FROM public.perfiles p WHERE p.rol = 'admin_pais' AND p.activo AND p.pais_id IS DISTINCT FROM v_gt AND COALESCE(p.created_at, '-infinity') < now()
-             AND EXISTS (SELECT 1 FROM auth.users u WHERE u.id = p.id) ORDER BY COALESCE(p.created_at, '-infinity'), p.id LIMIT 1);
+  SELECT p.id, p.pais_id INTO a_apotro, v_otro FROM public.perfiles p
+   WHERE p.rol = 'admin_pais' AND p.activo AND p.pais_id IS NOT NULL AND p.pais_id <> v_gt AND COALESCE(p.created_at, '-infinity') < now()
+     AND EXISTS (SELECT 1 FROM auth.users u WHERE u.id = p.id) ORDER BY COALESCE(p.created_at, '-infinity'), p.id LIMIT 1;
+  IF v_otro IS NULL THEN
+    SELECT id INTO v_otro FROM public.configuracion_pais WHERE codigo <> 'GT' AND activo ORDER BY codigo LIMIT 1;
+  END IF;
+  v_otro_cod := (SELECT codigo FROM public.configuracion_pais WHERE id = v_otro);
   SELECT cp.id, cp.empresa_id INTO a_pact, e_pact FROM public.cuentas_proveedor cp JOIN public.empresas_proveedoras e ON e.id = cp.empresa_id
    WHERE e.pais_id = v_gt AND e.estado = 'activa' AND cp.activo AND cp.rol_en_empresa = 'admin' AND COALESCE(cp.created_at, '-infinity') < now()
      AND EXISTS (SELECT 1 FROM auth.users u WHERE u.id = cp.id) AND NOT EXISTS (SELECT 1 FROM public.perfiles pf WHERE pf.id = cp.id)
    ORDER BY COALESCE(cp.created_at, '-infinity'), cp.id LIMIT 1;
+  a_farm := (SELECT cp.id FROM public.cuentas_proveedor cp JOIN public.empresas_proveedoras e ON e.id = cp.empresa_id
+              WHERE e.pais_id = v_gt AND e.estado = 'activa' AND e.tipo = 'farmacia' AND cp.activo AND cp.id IS DISTINCT FROM a_pact
+                AND COALESCE(cp.created_at, '-infinity') < now() AND EXISTS (SELECT 1 FROM auth.users u WHERE u.id = cp.id)
+                AND NOT EXISTS (SELECT 1 FROM public.perfiles pf WHERE pf.id = cp.id)
+              ORDER BY COALESCE(cp.created_at, '-infinity'), cp.id LIMIT 1);
   a_med := (SELECT u.id FROM auth.users u WHERE lower(u.email) LIKE 'medico.qa@%' ORDER BY u.email LIMIT 1);
   a_pac := (SELECT u.id FROM auth.users u WHERE lower(u.email) LIKE 'paciente.qa@%' ORDER BY u.email LIMIT 1);
   a_sec := (SELECT u.id FROM auth.users u WHERE lower(u.email) LIKE 'secretaria.qa@%' ORDER BY u.email LIMIT 1);
@@ -32871,13 +32887,30 @@ BEGIN
              AND EXISTS (SELECT 1 FROM auth.users u WHERE u.id = p.id) ORDER BY COALESCE(p.created_at, '-infinity'), p.id LIMIT 1);
   a_ase := (SELECT p.id FROM public.perfiles p WHERE p.rol = 'asesor_comercial' AND p.activo AND COALESCE(p.created_at, '-infinity') < now()
              AND EXISTS (SELECT 1 FROM auth.users u WHERE u.id = p.id) ORDER BY COALESCE(p.created_at, '-infinity'), p.id LIMIT 1);
-  IF v_gt IS NULL OR COALESCE(o_cbp, 0) = 0 OR COALESCE(o_pub, 0) = 0 OR a_sa IS NULL OR a_apgt IS NULL OR a_pact IS NULL OR a_med IS NULL
-     OR a_pac IS NULL OR a_sec IS NULL OR a_sop IS NULL OR a_ase IS NULL THEN
-    RAISE EXCEPTION 'sin fixture: P1009 GT %, cuentas GT %, publicas %, super_admin %, admin_pais GT %, proveedor GT activa %, medico.qa %, paciente.qa %, secretaria.qa %, soporte %, asesor %',
-      v_gt, o_cbp, o_pub, a_sa, a_apgt, a_pact, a_med, a_pac, a_sec, a_sop, a_ase;
+  IF v_gt IS NULL OR COALESCE(o_gt, 0) = 0 OR COALESCE(o_pub, 0) = 0 OR v_otro IS NULL OR a_sa IS NULL OR a_apgt IS NULL OR a_pact IS NULL OR a_farm IS NULL
+     OR a_med IS NULL OR a_pac IS NULL OR a_sec IS NULL OR a_sop IS NULL OR a_ase IS NULL THEN
+    RAISE EXCEPTION 'sin fixture: P1009 GT %, cuentas GT %, publicas %, otro pais %, super_admin %, admin_pais GT %, proveedor GT activa %, farmacia GT %, medico.qa %, paciente.qa %, secretaria.qa %, soporte %, asesor %',
+      v_gt, o_gt, o_pub, v_otro, a_sa, a_apgt, a_pact, a_farm, a_med, a_pac, a_sec, a_sop, a_ase;
   END IF;
 
   BEGIN
+    -- admin_pais de otro pais: real o sembrado
+    IF a_apotro IS NULL THEN
+      a_apotro := gen_random_uuid();
+      INSERT INTO auth.users (id) VALUES (a_apotro);
+      INSERT INTO public.perfiles (id, email, nombre_completo, rol, pais_id, activo)
+        VALUES (a_apotro, 'p1009.adminpais@example.invalid', 'QA P1009 admin_pais otro pais', 'admin_pais', v_otro, true);
+      ap_sembrado := true;
+    END IF;
+    -- fila de fixture en cuentas_bancarias_pais para el otro pais (si no tiene)
+    IF NOT EXISTS (SELECT 1 FROM public.cuentas_bancarias_pais WHERE pais_id = v_otro) THEN
+      INSERT INTO public.cuentas_bancarias_pais (pais_id, banco, numero_cuenta, titular)
+        VALUES (v_otro, 'P1009 banco ficticio', '0000-P1009', 'P1009 titular ficticio');
+      fila_sembrada := true;
+    END IF;
+    o_otro := (SELECT count(*) FROM public.cuentas_bancarias_pais WHERE pais_id = v_otro);
+    IF COALESCE(o_otro, 0) = 0 THEN RAISE EXCEPTION 'sin fixture: P1009 sin fila de cuenta en el otro pais (%)', v_otro_cod; END IF;
+
     -- proveedor de una empresa GT no activa (pendiente o suspendida); si no hay, se pone 'pendiente' la empresa de otra cuenta GT
     SELECT cp.id INTO a_pno FROM public.cuentas_proveedor cp JOIN public.empresas_proveedoras e ON e.id = cp.empresa_id
      WHERE e.pais_id = v_gt AND e.estado IN ('pendiente', 'suspendida') AND cp.activo AND COALESCE(cp.created_at, '-infinity') < now()
@@ -32885,7 +32918,7 @@ BEGIN
      ORDER BY COALESCE(cp.created_at, '-infinity'), cp.id LIMIT 1;
     IF a_pno IS NULL THEN
       SELECT cp.id INTO a_pno FROM public.cuentas_proveedor cp JOIN public.empresas_proveedoras e ON e.id = cp.empresa_id
-       WHERE e.pais_id = v_gt AND e.estado = 'activa' AND e.id <> e_pact AND cp.activo AND COALESCE(cp.created_at, '-infinity') < now()
+       WHERE e.pais_id = v_gt AND e.estado = 'activa' AND e.id <> e_pact AND cp.id <> a_farm AND cp.activo AND COALESCE(cp.created_at, '-infinity') < now()
          AND EXISTS (SELECT 1 FROM auth.users u WHERE u.id = cp.id) AND NOT EXISTS (SELECT 1 FROM public.perfiles pf WHERE pf.id = cp.id)
        ORDER BY COALESCE(cp.created_at, '-infinity'), cp.id LIMIT 1;
       IF a_pno IS NULL THEN RAISE EXCEPTION 'sin fixture: P1009 sin cuenta GT para la empresa no activa'; END IF;
@@ -32893,25 +32926,41 @@ BEGIN
       pend_sembrada := true;
     END IF;
 
-    -- (a) + (c) por actor: filas de cuentas_bancarias_pais de GT; claves de configuracion_sistema (total y sensibles)
+    -- contaminacion: cuentas_proveedor activas de los actores que NO deben ver ninguna cuenta (y del admin_pais de otro pais)
+    neg := ARRAY[a_med, a_pac, a_sec, a_sop, a_ase, a_apotro];
+    SELECT count(*), COALESCE(string_agg(cp.id::text||'/'||cp.rol_en_empresa||'/'||cp.email||'/'||cp.nombre_completo||'/'||COALESCE(e.estado, '-')||'/'
+                                         ||COALESCE((SELECT g.codigo FROM public.configuracion_pais g WHERE g.id = e.pais_id), COALESCE(e.pais_id::text, '-')), ' ; ' ORDER BY cp.id), '-')
+      INTO n_contam, firma
+      FROM public.cuentas_proveedor cp LEFT JOIN public.empresas_proveedoras e ON e.id = cp.empresa_id
+     WHERE cp.id = ANY (neg) AND cp.activo;
+    UPDATE public.cuentas_proveedor SET activo = false WHERE id = ANY (neg) AND activo;
+    GET DIAGNOSTICS n_neutr = ROW_COUNT;
+
+    -- (a) + (c) por actor: total, GT y otro pais en cuentas_bancarias_pais; claves de configuracion_sistema
     FOR r IN SELECT * FROM (VALUES
-        (1, 'super_admin', a_sa, true, 'admin'), (2, 'admin_pais GT', a_apgt, true, 'admin'), (3, 'proveedor GT activa', a_pact, true, 'resto'),
-        (4, 'proveedor GT no activa', a_pno, true, 'resto'), (5, 'medico.qa', a_med, false, 'resto'), (6, 'paciente.qa', a_pac, false, 'resto'),
-        (7, 'secretaria.qa', a_sec, false, 'resto'), (8, 'soporte', a_sop, false, 'resto'), (9, 'asesor_comercial', a_ase, false, 'resto'),
-        (10, 'admin_pais otro pais', a_apotro, false, 'admin')) x(k, nom, uid, ve, cfg) WHERE x.uid IS NOT NULL ORDER BY x.k LOOP
-      n := NULL; nk := NULL; ns := NULL; v := '';
+        (1, 'super_admin', a_sa, o_gt + o_otro, o_gt, o_otro, 'admin'), (2, 'admin_pais GT', a_apgt, o_gt, o_gt, 0, 'admin'),
+        (3, 'admin_pais '||v_otro_cod, a_apotro, o_otro, 0, o_otro, 'admin'),
+        (4, 'proveedor GT activa', a_pact, o_gt, o_gt, 0, 'resto'), (5, 'proveedor GT no activa', a_pno, o_gt, o_gt, 0, 'resto'),
+        (6, 'farmacia GT', a_farm, o_gt, o_gt, 0, 'resto'),
+        (7, 'medico.qa', a_med, 0, 0, 0, 'resto'), (8, 'paciente.qa', a_pac, 0, 0, 0, 'resto'), (9, 'secretaria.qa', a_sec, 0, 0, 0, 'resto'),
+        (10, 'soporte', a_sop, 0, 0, 0, 'resto'), (11, 'asesor_comercial', a_ase, 0, 0, 0, 'resto')) x(k, nom, uid, e_tot, e_gt, e_otro, cfg) ORDER BY x.k LOOP
+      n := NULL; ngt := NULL; not_ := NULL; nk := NULL; ns := NULL; v := '';
       BEGIN
         PERFORM set_config('request.jwt.claims', json_build_object('sub', r.uid, 'role', 'authenticated')::text, true);
         PERFORM set_config('role', 'authenticated', true);
-        SELECT count(*) INTO n FROM public.cuentas_bancarias_pais WHERE pais_id = v_gt;
+        SELECT count(*), count(*) FILTER (WHERE pais_id = v_gt), count(*) FILTER (WHERE pais_id = v_otro) INTO n, ngt, not_ FROM public.cuentas_bancarias_pais;
         SELECT count(*), count(*) FILTER (WHERE clave <> ALL (publicas)) INTO nk, ns FROM public.configuracion_sistema;
         PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
       EXCEPTION WHEN OTHERS THEN
         PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
         v := ' ERROR '||SQLSTATE||' '||left(SQLERRM, 80);
       END;
-      res := res||r.nom||': cuenta='||COALESCE(n::text, '-')||' config='||COALESCE(nk::text, '-')||'/sens='||COALESCE(ns::text, '-')||v||'; ';
-      IF v <> '' OR n IS DISTINCT FROM (CASE WHEN r.ve THEN o_cbp ELSE 0 END) THEN bad := bad||r.nom||' cuenta='||COALESCE(n::text, '-')||v||'; '; END IF;
+      res := res||r.nom||': cuentas='||COALESCE(n::text, '-')||' (GT '||COALESCE(ngt::text, '-')||', '||v_otro_cod||' '||COALESCE(not_::text, '-')||') config='
+             ||COALESCE(nk::text, '-')||'/sens='||COALESCE(ns::text, '-')||v||'; ';
+      IF v <> '' OR n IS DISTINCT FROM r.e_tot OR ngt IS DISTINCT FROM r.e_gt OR not_ IS DISTINCT FROM r.e_otro THEN
+        bad := bad||r.nom||' cuentas='||COALESCE(n::text, '-')||'/GT '||COALESCE(ngt::text, '-')||'/'||v_otro_cod||' '||COALESCE(not_::text, '-')
+               ||' (esperado '||r.e_tot||'/'||r.e_gt||'/'||r.e_otro||')'||v||'; ';
+      END IF;
       IF nk IS DISTINCT FROM (CASE WHEN r.cfg = 'admin' THEN o_tot ELSE o_pub END)
          OR (r.cfg <> 'admin' AND ns IS DISTINCT FROM 0) THEN
         bad := bad||r.nom||' config='||COALESCE(nk::text, '-')||'/sens='||COALESCE(ns::text, '-')||'; ';
@@ -32937,14 +32986,17 @@ BEGIN
   END;
   PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
 
-  PERFORM set_config('probe.p1009_det', res||'checkout(admin proveedor GT)='||chk||CASE WHEN pend_sembrada THEN '; empresa no activa sembrada en el savepoint' ELSE '' END
-                                        ||CASE WHEN a_apotro IS NULL THEN '; no existe admin_pais de otro pais' ELSE '' END, false);
+  v := 'contaminacion: '||n_contam||' cuenta(s) activa(s) de actores sin acceso ['||firma||'] neutralizadas='||n_neutr
+       ||'; admin_pais '||v_otro_cod||' '||CASE WHEN ap_sembrado THEN 'sembrado' ELSE 'real' END
+       ||'; fila de cuenta '||v_otro_cod||' '||CASE WHEN fila_sembrada THEN 'sembrada (ficticia)' ELSE 'existente' END
+       ||CASE WHEN pend_sembrada THEN '; empresa GT no activa sembrada' ELSE '' END;
+  PERFORM set_config('probe.p1009_det', res||'checkout(admin proveedor GT)='||chk||'; '||v, false);
   PERFORM set_config('probe.p1009', CASE
-    WHEN bad = '' AND v_366 THEN 'OK (cuenta GT: la ven super_admin, admin_pais GT y proveedores GT activa y no activa; no la ven medico, paciente, secretaria, soporte ni asesor'
-                                 ||CASE WHEN a_apotro IS NULL THEN '; no existe admin_pais de otro pais' ELSE ', ni admin_pais de otro pais' END
-                                 ||'; checkout 1 fila; config 21 para admins y '||o_pub||' publicas para el resto; descartado)'
-    WHEN NOT v_366 THEN 'PENDIENTE mig 366 ('||left(res, 700)||' checkout='||chk||')'
-    ELSE 'ROJO ('||left(bad, 800)||')' END, false);
+    WHEN bad = '' AND v_366 THEN 'OK (cuentas: super_admin ve GT+'||v_otro_cod||'; admin_pais GT, proveedores GT activa/no activa y farmacia solo GT; admin_pais '
+                                 ||v_otro_cod||' solo '||v_otro_cod||'; medico, paciente, secretaria, soporte y asesor 0; checkout 1 fila; config 21 admins y '
+                                 ||o_pub||' publicas resto; '||v||'; descartado)'
+    WHEN NOT v_366 THEN 'PENDIENTE mig 366 ('||left(res, 600)||' checkout='||chk||'; '||v||')'
+    ELSE 'ROJO ('||left(bad, 700)||' | '||v||')' END, false);
 EXCEPTION WHEN OTHERS THEN
   PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
   PERFORM set_config('probe.p1009', 'FALLO ('||SQLSTATE||' '||SQLERRM||')', false);
