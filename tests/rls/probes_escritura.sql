@@ -33247,11 +33247,12 @@ BEGIN
   IF current_user <> 'postgres' THEN RAISE EXCEPTION 'fixture roto: P1011 corre como %', current_user; END IF;
   v_369 := to_regprocedure('public.crear_examen_catalogo(text,text)') IS NOT NULL
            AND NOT has_table_privilege('authenticated', 'public.examenes_catalogo', 'INSERT');
-  SELECT cp.id, cp.empresa_id INTO a_farm, e_farm FROM public.cuentas_proveedor cp JOIN public.empresas_proveedoras e ON e.id = cp.empresa_id
-   WHERE e.tipo = 'farmacia' AND e.estado = 'activa' AND cp.activo AND cp.rol_en_empresa = 'admin' AND EXISTS (SELECT 1 FROM auth.users u WHERE u.id = cp.id)
-   ORDER BY COALESCE(cp.created_at, '-infinity'), cp.id LIMIT 1;
   a_med := (SELECT u.id FROM auth.users u WHERE lower(u.email) LIKE 'medico.qa@%' ORDER BY u.email LIMIT 1);
   a_pac := (SELECT u.id FROM auth.users u WHERE lower(u.email) LIKE 'paciente.qa@%' ORDER BY u.email LIMIT 1);
+  SELECT cp.id, cp.empresa_id INTO a_farm, e_farm FROM public.cuentas_proveedor cp JOIN public.empresas_proveedoras e ON e.id = cp.empresa_id
+   WHERE e.tipo = 'farmacia' AND e.estado = 'activa' AND cp.activo AND cp.rol_en_empresa = 'admin' AND EXISTS (SELECT 1 FROM auth.users u WHERE u.id = cp.id)
+     AND cp.id IS DISTINCT FROM a_med AND cp.id IS DISTINCT FROM a_pac
+   ORDER BY COALESCE(cp.created_at, '-infinity'), cp.id LIMIT 1;
   e_otra := (SELECT e.id FROM public.empresas_proveedoras e WHERE e.id <> c_lab AND e.id IS DISTINCT FROM e_farm
                AND NOT EXISTS (SELECT 1 FROM public.cuentas_proveedor cp WHERE cp.empresa_id = e.id AND cp.activo AND cp.id IN (a_med, a_pac))
              ORDER BY e.id LIMIT 1);
