@@ -3895,11 +3895,13 @@ EXCEPTION WHEN others THEN PERFORM set_config('probe.p214','FALLO ('||SQLERRM||'
 SELECT set_config('role','none',true);
 SELECT set_config('request.jwt.claims', '{"role":"anon"}', true);
 SELECT set_config('role','anon',true);
-DO $$ DECLARE n int; BEGIN
+DO $$ DECLARE n int; st text; BEGIN
   IF current_setting('probe.ex_ready',true)<>'1' THEN PERFORM set_config('probe.p215','N/A',false);
   ELSE
-    BEGIN SELECT count(*) INTO n FROM public.examenes_catalogo; EXCEPTION WHEN others THEN n:=-1; END;
+    BEGIN SELECT count(*) INTO n FROM public.examenes_catalogo; EXCEPTION WHEN others THEN n:=-1; st:=SQLSTATE; END;
     IF n=0 THEN PERFORM set_config('probe.p215','OK (anon no lee examenes_catalogo)',false);
+    ELSIF n=-1 AND st='42501' THEN PERFORM set_config('probe.p215','OK (42501 de privilegio: anon sin SELECT)',false);
+    ELSIF n=-1 THEN PERFORM set_config('probe.p215','ROJO (anon: error '||st||')',false);
     ELSE PERFORM set_config('probe.p215','ROJO/INFO (anon lee '||n||' — pre-097 era public)',false); END IF;
   END IF;
 END $$;
@@ -4191,11 +4193,13 @@ EXCEPTION WHEN others THEN PERFORM set_config('probe.p235','FALLO ('||SQLERRM||'
 -- P236 — anon: comportamiento definido (0, sin error)
 SELECT set_config('role','none',true);
 SELECT set_config('request.jwt.claims','{"role":"anon"}',true); SELECT set_config('role','anon',true);
-DO $$ DECLARE n int; BEGIN
+DO $$ DECLARE n int; st text; BEGIN
   IF current_setting('probe.pb_ready',true)<>'1' THEN PERFORM set_config('probe.p236','N/A',false);
   ELSE
-    BEGIN SELECT count(*) INTO n FROM public.campanas_publicitarias WHERE titulo='PB GT'; EXCEPTION WHEN others THEN n:=-1; END;
+    BEGIN SELECT count(*) INTO n FROM public.campanas_publicitarias WHERE titulo='PB GT'; EXCEPTION WHEN others THEN n:=-1; st:=SQLSTATE; END;
     IF n=0 THEN PERFORM set_config('probe.p236','OK (anon no ve ads, sin error)',false);
+    ELSIF n=-1 AND st='42501' THEN PERFORM set_config('probe.p236','OK (42501 de privilegio: anon sin SELECT)',false);
+    ELSIF n=-1 THEN PERFORM set_config('probe.p236','ROJO (anon: error '||st||')',false);
     ELSE PERFORM set_config('probe.p236','ROJO (anon ve '||n||' o error)',false); END IF;
   END IF;
 END $$;
