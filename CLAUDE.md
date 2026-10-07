@@ -385,8 +385,9 @@ Stack: React + Vite + TypeScript, Supabase / Postgres, deploy en Vercel, repo en
   Pasó dos veces (18cf819 y el lote 1 de PA-FAILOPEN) y una de ellas tardó dos meses en detectarse.
   Baselines vivos: `top_level_dml_ddl=0` (excluye `pg_temp`), `cast_directo=0`, `do_sin_handler=155`
   (fase 2.2 CERRADA: los 55 bloques que escriben están envueltos, 211→193→175→157→156→155; los 155
-  restantes sólo leen y publican, así que ya no son deuda; 1004 bloques DO en total al 6-oct-2026, tras la 369; la
-  última cuenta de filas medida en esta memoria es 1089 / 11 rojas de deuda, tras la 369; tsc 74, vitest 424).
+  restantes sólo leen y publican, así que ya no son deuda; 1006 bloques DO en total al 7-oct-2026, rama
+  harness/diag-fixture-fm; la última cuenta de filas medida en esta memoria es 1097 / 11 rojas de deuda, en esa rama; tsc
+  74, vitest 424).
   **Regla de método: el harness NUNCA corre en paralelo con otra sesión que escriba o impersone contra prod**
   (las dos compiten por las mismas filas: deadlocks 40P01 que salen como rojos falsos). **P782 ajustado en la 346:** el DELETE directo sobre
   `visitas_agendadas` ahora da 42501 de privilegio (authenticated ya no tiene DELETE) y cuenta como OK, más fuerte
@@ -586,11 +587,15 @@ Detalles a recordar:
 - (Familia 4) `examenes.updated_at` no se actualiza al corregir ni al liberar.
 - (Familia 7) El lab no tiene vista del historial de revisiones; "Ver archivo anterior" aparece en
   revisiones que no cambiaron el archivo.
-- (Familia 8, backlog del harness, 6-oct-2026) P87/P97/P101/Pinvit no borran las cuentas_proveedor que crean (P101 deja a
-  medico.qa como 'Lab Inv', y un fixture posterior lo reasigna a admin); P639/P777/P788/mig 311 (x2)/P799 dejan perfiles
+- (Familia 8, backlog del harness, 6-oct-2026) ~~P87/P97/P101/Pinvit no borran las cuentas_proveedor que crean (P101 deja a
+  medico.qa como 'Lab Inv', y un fixture posterior lo reasigna a admin)~~ **resuelto en la rama harness/diag-fixture-fm
+  (7-oct): ahora las borran y lo verifican (`DET_trio_cleanup` / `DET_pinvit_cleanup` = OK con esperadas + restantes=0)**; P639/P777/P788/mig 311 (x2)/P799 dejan perfiles
   'medico' sin fila en medicos; algún fixture deja un admin_pais HN "real" dentro de la transacción (en prod no existe);
   `probe.p1009_det` se setea pero no se publica en el result set; `probe.p1008_det` tampoco; en P1009 el fallback de
   `a_pno` excluye la cuenta de `a_farm` pero no su empresa.
+- (Producto) `administrar_visita('rechazar')` no valida el estado de la visita (definición viva): rechaza visitas
+  completadas, canceladas o ya rechazadas. Recon de producto post-11-oct. Detectado en la review de
+  harness/diag-fixture-fm (m5 descartado, ver c38862e).
 - (Familia 8) P800 salta las foreign tables (relkind 'f': mira `'r','v','m','p'`) mientras la 343 y P925 las
   incluyen; sin efecto hoy (0 foreign tables en public). Alinear cuando se toque P800 en el paso de EXECUTE (último de la familia 2).
 - (Familia 8, no urgente) `.gitattributes` ya tiene `* text=auto eol=lf` (476b925; 0 blobs renormalizados),
