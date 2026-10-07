@@ -28,10 +28,19 @@ Stack: React + Vite + TypeScript, Supabase / Postgres, deploy en Vercel, repo en
   359, P967-P974 por la 358, P958-P966 por la 357 (obtener_medicos_por_ids acotada a relación); P906-P907 usados por la mig 336, P912-P913
   por la 337, P914-P915 por la 338, P916-P920 por la 339/340, P921-P923 por la 341, P924 por la 342, P925 por
   la 343, P926-P927 por la 344, P928-P929 por la 345, P930 por la 346, P931-P932 por la 347, P933 por la 348,
-  P934-P935 por la 349, P936 por la 350, P937-P939 por la 351, P940-P943 por la 353), **migración `371`**, **errcode `PC029`** (familia PC: PC025 país requerido y PC026 sin autoridad en `contar_medicos_por_pais`, PC027
+  P934-P935 por la 349, P936 por la 350, P937-P939 por la 351, P940-P943 por la 353), **migración `371`**, **errcode `LG001`** (prefijo nuevo, GL-02), **errcode `PC029`** (familia PC: PC025 país requerido y PC026 sin autoridad en `contar_medicos_por_pais`, PC027
   no autenticado, PC028 sin autoridad sobre el país en `contar_proveedores_por_pais`)
-  (370 = familia 2, ÚLTIMO paso: EXECUTE de funciones sin PUBLIC ni anon — **ESCRITA Y PROBADA EN DRY-RUN, PENDIENTE DE APPLY**
-  (va después del domingo 11-oct-2026; rama `fam2/execute-370-funciones`, sin push). Recon del 6-oct (`tmp/recon_execute/`):
+  (370 = familia 2, ÚLTIMO paso: EXECUTE de funciones sin PUBLIC ni anon — **APLICADA en prod el 2026-10-07 a las 19:18 UTC
+  (19:18:26.914 → 19:18:28.737)**, sha256 del archivo 529777fd…cddbf7, y verificada VERDE en sesión independiente: harness
+  post370 1102 filas / 1011 bloques DO / 11 rojas de deuda, P1015/P1016/P1017/P739/P741/P1000 en OK. **Bug vivo cerrado:**
+  `entrega_evidencias` le daba 42501 a farmacia.qa (`entrega_visible` sin EXECUTE de authenticated). **Huellas post (las
+  precondiciones que tiene que exigir la 371):** ACL de funciones 4878afd5e7fa74667b466d6994d565ff/384; 0 funciones con
+  PUBLIC; anon ejecuta solo `catalogo_planes_visitador_publico`; policies 9ad617568275d4b7f27b1e2115f8978f/307 y ACL de
+  relaciones de public 64ff833d25666534b8de9171d1e5d404/2368 sin cambio. Rama `fam2/execute-370-funciones` (rebasada
+  sobre main 9ccd229; ~~va después del domingo 11-oct-2026~~). Pre-apply sobre main: 1102 filas / 11 rojas de deuda,
+  tras corregir P1015 (fa385a7: `entrega_visible` sin authenticated es PENDIENTE en 'pre', como P1017; en 'post' se
+  exige). Nota de método: el harness (payload de 2,8 MB) falló dos veces con "tls: bad record MAC" en la capa de red del
+  sandbox de CC; ROLLBACK verificado, sin efectos. Recon del 6-oct (`tmp/recon_execute/`):
   de 384 funciones de public/private, 38 tenían EXECUTE para PUBLIC (21 legacy de public + 15 de private con proacl NULL + 2
   de private) y 22 anon explícito (las 21 legacy + `catalogo_planes_visitador_publico`). **Ninguna le llega a authenticated
   solo vía PUBLIC**: las 9 helpers de policies ya tienen authenticated (y las de public, service_role) explícitos. Cambio:
@@ -54,7 +63,7 @@ Stack: React + Vite + TypeScript, Supabase / Postgres, deploy en Vercel, repo en
   policies ejecutables por sus roles, (m) anon ejercitado; relkind con 'f'; antes del apply dice "PASA … (j)/(k)/(m)
   PENDIENTE mig 370". Dry-run 6-oct: A (370 + harness) 1094 filas / 11 rojas de deuda; B (370 + P800) PASA limpio; C (370
   + rollback) huellas de vuelta; D huellas vivas intactas, proacl_null 15; E (harness sin la 370) 12 rojas = las 11 + P1015
-  por entrega_visible, hasta el apply.)
+  por entrega_visible, hasta el apply (corregido en fa385a7, ver arriba).)
   (369 = familia 2, F2-f (cierra la F2-f), examenes_catalogo sin escritura directa — APLICADA en prod el 2026-10-06 entre
   19:44:34 y 19:44:38 UTC y verificada en sesión independiente; harness 1089 filas / 11 rojas de deuda, P800 PASA. Antes,
   recepción y técnico del lab (y cualquier empresa activa con su propio id) escribían el catálogo por API sin el permiso.
@@ -422,7 +431,8 @@ Stack: React + Vite + TypeScript, Supabase / Postgres, deploy en Vercel, repo en
   el error; cada rama se exime solo por su propia condición, un ELSE nunca: cualquier error sale verde; techo, solo puede
   bajar; censo de veredictos, rama harness/censo-veredictos,
   7-oct-2026). Los probes de la 370, medidos ANTES de rebasarla sobre main (base 00e503e, tras la 369): 1004 → 1009
-  bloques DO y 1089 → 1094 filas en el dry-run; sobre main hay que volver a medir.
+  bloques DO y 1089 → 1094 filas en el dry-run. Sobre main, con la 370 aplicada (post370, 7-oct-2026): **1102 filas /
+  1011 bloques DO / 11 rojas de deuda**.
   **Regla de método: el harness NUNCA corre en paralelo con otra sesión que escriba o impersone contra prod**
   (las dos compiten por las mismas filas: deadlocks 40P01 que salen como rojos falsos). **P782 ajustado en la 346:** el DELETE directo sobre
   `visitas_agendadas` ahora da 42501 de privilegio (authenticated ya no tiene DELETE) y cuenta como OK, más fuerte
@@ -441,7 +451,7 @@ Stack: React + Vite + TypeScript, Supabase / Postgres, deploy en Vercel, repo en
   `368_rollback` → `366_rollback` → `365_rollback` → … Forzados por huella: 369 antes que 368 Y antes que 367 (la
   precondición de `367_rollback` exige la ACL de public e2bb57f4…/2370, que la 369 cambió) y 368 antes que 366;
   `367_rollback` sigue conmutable con 366 y 368 (siempre después de 369). `369_rollback` exige revertir también el front
-  de `useLaboratorio`. **370 (cuando se aplique) va antes que 369, 350 y 349:** `369_rollback` espera la ACL de funciones
+  de `useLaboratorio`. **370 (APLICADA el 7-oct) encabeza la cadena y va antes que 369, 350 y 349:** `369_rollback` espera la ACL de funciones
   e5c9770e…/384, y con la 370 viva devolver las policies de la 349/350 a `TO public` le da a anon 42501 de FUNCIÓN
   (`get_auth_user_pais_id`) en configuracion_sistema (la landing la lee sin sesión) y otras 8 tablas (medido con P935/P936).
 - **Los tests de edge (deno) NO corren en vitest ni en el pre-commit**: se corren a mano desde
@@ -529,7 +539,7 @@ Detalles a recordar:
   de producto (exp_superadmin_insert: super_admin crea notas a nombre de cualquier médico; claves bancarias de
   configuracion_sistema visibles para todo authenticated) (365 + 366, **APLICADAS**) → **F2-f** con front (campana_vistas sin UPDATE y fuera de la allowlist de P930,
   367 **APLICADA**; configuracion_sistema sin admin_pais, 368 **APLICADA**; catalogo_lab_all partida, 369 **APLICADA** — **F2-f CERRADA**) → **sigue:** **F2-g** opcional (partir ALL;
-  `(select auth.uid())`) → **ÚLTIMO: EXECUTE** = mig 370 (**escrita y en dry-run, pendiente de apply**; ver la entrada
+  `(select auth.uid())`) → **ÚLTIMO: EXECUTE** = mig 370 (**APLICADA el 7-oct-2026 19:18 UTC**; ver la entrada
   370 arriba). Corrección del recon del 6-oct: las helpers de policies YA tienen authenticated y service_role explícitos,
   así que el REVOKE de PUBLIC/anon no le rompe nada a authenticated; el riesgo de este paso es solo para anon, y anon ya no
   evalúa ninguna policy con funciones desde las 349/350. P800 extendido a `pg_proc` en la misma rama. Lo que queda para
@@ -541,7 +551,7 @@ Detalles a recordar:
   F2-f CERRADA (migs 367, 368 y 369, 6-oct): campana_vistas sin UPDATE; configuracion_sistema con las 21 claves solo para el
   super_admin; examenes_catalogo sin escritura directa (catalogo_lab_all partida; escrituras por 3 RPCs DEFINER con el gate
   `tiene_permiso('catalogo_examenes_editar')` adentro, no por policy con WITH CHECK que llame funciones DEFINER — lección
-  rls-with-check-definer-flaky-postgrest). EXECUTE = mig 370 (pendiente de apply); después la 371 (anon en 6 tablas).
+  rls-with-check-definer-flaky-postgrest). EXECUTE = mig 370 (**APLICADA** el 7-oct); sigue la 371 (anon en 6 tablas).
   F2-g sigue opcional.
 - **FAMILIA 1 (privilegios) CERRADA: 342-347 aplicadas.** El paso de EXECUTE (antes "348") pasa a ser el ÚLTIMO de
   la familia 2, porque su prerequisito (sacar de `TO public` las policies que anon evalúa) es trabajo de policies.
