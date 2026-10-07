@@ -17209,8 +17209,9 @@ SELECT set_config('role','none', true);
 -- Define pg_temp.e370_estado(): 'post' = 0 funciones de public/private con PUBLIC y anon ejecuta SOLO
 -- catalogo_planes_visitador_publico(); 'pre' = el estado previo a la 370 INTACTO Y EXACTO (las 38 con PUBLIC y anon
 -- explicito en las 21 legacy + la del catalogo, ni una mas ni una menos); 'otro: ...' = cualquier otra cosa (con lo que
--- sobra y lo que falta). La 370 esta APLICADA (7-oct-2026): ningun probe de la 370 publica PENDIENTE. 'pre' (el estado
--- previo de vuelta exacto, p. ej. tras 370_rollback) es REGRESION en P739, P741, P1000, P1015 y P1016; 'otro' es ROJO.
+-- sobra y lo que falta). La 370 esta APLICADA (7-oct-2026): ningun probe de la 370 publica PENDIENTE. Con 'pre' (el
+-- estado previo de vuelta exacto, p. ej. tras 370_rollback o un re-otorgamiento manual) P739, P741, P1000, P1015 y P1016
+-- publican REGRESION (por e370_estado) y P1017 REGRESION (por catalogo: entrega_visible sin authenticated); 'otro' es ROJO.
 -- Las listas literales (censo de prod del 6-oct-2026, tmp/recon_execute/censo_funciones.tsv) se conservan solo para
 -- nombrar esa regresion (review #53 punto 1). Si este bloque falla, los probes dan FALLO (pg_temp.e370_estado no existe).
 DO $e370fx$
@@ -33745,10 +33746,13 @@ BEGIN
   n := (SELECT count(*) FROM pg_proc p WHERE p.pronamespace IN ('public'::regnamespace, 'private'::regnamespace)
           AND EXISTS (SELECT 1 FROM aclexplode(COALESCE(p.proacl, acldefault('f', p.proowner))) a WHERE a.grantee = 0 AND a.privilege_type = 'EXECUTE'));
 
+  -- 'pre' se nombra ANTES de bad: con el estado previo de vuelta, entrega_visible pierde authenticated y bad no queda
+  -- vacio; sin este orden saldria un ROJO generico en vez de la regresion (delta-review #53). bad va al detalle.
   PERFORM set_config('probe.p1015', CASE
+    WHEN v_est = 'pre' THEN 'REGRESION (estado pre-370 de vuelta: '||n||' con PUBLIC'
+                            ||CASE WHEN bad <> '' THEN '; ademas: '||left(bad, 700) ELSE '' END||')'
     WHEN bad <> '' THEN 'ROJO ('||left(bad, 800)||')'
     WHEN v_est = 'post' THEN 'OK (370: 0 funciones de public/private con PUBLIC; anon solo catalogo_planes_visitador_publico; las 10 con authenticated, 9 con service_role; policies ejecutables por sus roles)'
-    WHEN v_est = 'pre' THEN 'REGRESION (estado pre-370 de vuelta: '||n||' con PUBLIC; las 10 con authenticated; policies ejecutables por sus roles)'
     ELSE 'ROJO (estado '||left(v_est, 800)||')' END, false);
 EXCEPTION WHEN OTHERS THEN
   PERFORM set_config('probe.p1015', 'FALLO ('||SQLSTATE||' '||SQLERRM||')', false);
@@ -35149,7 +35153,7 @@ UNION ALL SELECT 'DET_p1011',  'DET ' || COALESCE(NULLIF(current_setting('probe.
 UNION ALL SELECT 'P1012_catalogo_lab_sin_permiso_369',  current_setting('probe.p1012', true), 'OK (369: EX035 para recepcion, tecnico, farmacia, medico y paciente; anon sin EXECUTE; antes de la 369: PENDIENTE)'
 UNION ALL SELECT 'P1013_catalogo_lab_sin_escritura_directa_369',  current_setting('probe.p1013', true), 'OK (369: INSERT/UPDATE/DELETE directo 42501; antes de la 369: PENDIENTE)'
 UNION ALL SELECT 'P1014_catalogo_lab_select_369',  current_setting('probe.p1014', true), 'OK (staff del lab ve activos e inactivos; medico solo activos de su pais; farmacia no ve el inactivo ajeno)'
-UNION ALL SELECT 'E370_FX_estado_execute',  current_setting('probe.e370_fx', true), 'OK (pre antes de la 370; post despues) - salud del fixture de P739/P741/P1015/P1016'
+UNION ALL SELECT 'E370_FX_estado_execute',  current_setting('probe.e370_fx', true), 'OK (post: 370 aplicada; un estado pre es regresión y lo reportan P739/P741/P1000/P1015/P1016/P1017)'
 UNION ALL SELECT 'P1015_execute_censo_370',  current_setting('probe.p1015', true), 'OK (370: 0 funciones con PUBLIC; anon solo catalogo_planes_visitador_publico; policies ejecutables por sus roles; estado pre-370 de vuelta: REGRESION)'
 UNION ALL SELECT 'P1016_execute_anon_ejercitado_370',  current_setting('probe.p1016', true), 'OK (370: anon lee catalogo y configuracion; las 8 helpers 42501; estado pre-370 de vuelta: REGRESION)'
 UNION ALL SELECT 'P1017_execute_authenticated_por_panel_370',  current_setting('probe.p1017', true), 'OK (sin 42501 por panel, entrega_evidencias incluida; entrega_visible sin authenticated: REGRESION)'
