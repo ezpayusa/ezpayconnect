@@ -39,7 +39,7 @@ Stack: React + Vite + TypeScript, Supabase / Postgres, deploy en Vercel, repo en
   relaciones de public 64ff833d25666534b8de9171d1e5d404/2368 sin cambio. Rama `fam2/execute-370-funciones` (rebasada
   sobre main 9ccd229; ~~va después del domingo 11-oct-2026~~). Pre-apply sobre main: 1102 filas / 11 rojas de deuda,
   tras corregir P1015 (fa385a7: `entrega_visible` sin authenticated es PENDIENTE en 'pre', como P1017; en 'post' se
-  exige). Nota de método: el harness (payload de 2,8 MB) falló dos veces con "tls: bad record MAC" en la capa de red del
+  exige) (superado por b359a8f: el estado pre es REGRESION). Nota de método: el harness (payload de 2,8 MB) falló dos veces con "tls: bad record MAC" en la capa de red del
   sandbox de CC; ROLLBACK verificado, sin efectos. Recon del 6-oct (`tmp/recon_execute/`):
   de 384 funciones de public/private, 38 tenían EXECUTE para PUBLIC (21 legacy de public + 15 de private con proacl NULL + 2
   de private) y 22 anon explícito (las 21 legacy + `catalogo_planes_visitador_publico`). **Ninguna le llega a authenticated
@@ -58,10 +58,11 @@ Stack: React + Vite + TypeScript, Supabase / Postgres, deploy en Vercel, repo en
   (+ regla "toda función de una policy la ejecuta cada rol de la policy"), P1016 anon ejercitado, P1017 authenticated por
   panel (incluye `entrega_evidencias` como farmacia.qa), P1018 triggers INVOKER y de private disparados como authenticated;
   P739/P741/P1000 invertidos; P935/P936 aceptan, con la 370 viva, el 42501 de FUNCIÓN de anon en la pasada alternada a
-  `{public}`. PENDIENTE solo si `pg_temp.e370_estado()` (fixture E370_FX) = 'pre' (estado previo intacto y exacto): una
-  regresión post-apply sale ROJO. P800: reglas (j) sin PUBLIC, (k) anon solo en WL_ANON_FN (baseline 1), (l) funciones de
-  policies ejecutables por sus roles, (m) anon ejercitado; relkind con 'f'; antes del apply dice "PASA … (j)/(k)/(m)
-  PENDIENTE mig 370". Dry-run 6-oct: A (370 + harness) 1094 filas / 11 rojas de deuda; B (370 + P800) PASA limpio; C (370
+  `{public}`. **Con la 370 aplicada no hay rama PENDIENTE:** un estado pre (`370_rollback` o un re-otorgamiento manual;
+  `pg_temp.e370_estado()` = 'pre', fixture E370_FX) da REGRESION en P739/P741/P1000/P1015/P1016/P1017, y P800 aborta con
+  violaciones (j)/(k)/(m) → el harness sale con exit 1. **Quien corra `370_rollback` tiene que esperar esas rojas.** Cualquier
+  otro estado distinto de 'post' es ROJO. P800: reglas (j) sin PUBLIC, (k) anon solo en WL_ANON_FN (baseline 1), (l)
+  funciones de policies ejecutables por sus roles, (m) anon ejercitado; relkind con 'f'. Dry-run 6-oct: A (370 + harness) 1094 filas / 11 rojas de deuda; B (370 + P800) PASA limpio; C (370
   + rollback) huellas de vuelta; D huellas vivas intactas, proacl_null 15; E (harness sin la 370) 12 rojas = las 11 + P1015
   por entrega_visible, hasta el apply (corregido en fa385a7, ver arriba).)
   (369 = familia 2, F2-f (cierra la F2-f), examenes_catalogo sin escritura directa — APLICADA en prod el 2026-10-06 entre
