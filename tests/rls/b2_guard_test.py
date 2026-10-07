@@ -242,6 +242,59 @@ DO $$ BEGIN
 EXCEPTION WHEN OTHERS THEN PERFORM set_config('probe.x','FALLO ('||SQLSTATE||')',false);
 END $$;
 """, 0),
+
+    # Review del censo (8-oct-2026). Punto 1: el fin del handler va por ANIDAMIENTO, no por el primer END/WHEN.
+    ("CAV-T1 IF ... END IF que no publica, ANTES del set_config verde: el END IF no cierra el handler", """
+DO $$ BEGIN
+  PERFORM 1;
+EXCEPTION WHEN OTHERS THEN IF true THEN NULL; END IF; PERFORM set_config('probe.x','OK (x)',false);
+END $$;
+""", 1),
+
+    ("CAV-T2 sub-bloque BEGIN ... END dentro del handler: su END no cierra el handler", """
+DO $$ BEGIN
+  PERFORM 1;
+EXCEPTION WHEN OTHERS THEN BEGIN PERFORM 1; END; PERFORM set_config('probe.x','OK (x)',false);
+END $$;
+""", 1),
+
+    # Punto 2: un IF/CASE solo exime si su condicion mira el error. IF v_360 no lo mira.
+    ("CAV-T3 IF sobre una variable que NO es el error (v_360): sigue siendo verde para cualquier SQLSTATE", """
+DO $$ DECLARE v_360 boolean := true; BEGIN
+  PERFORM 1;
+EXCEPTION WHEN OTHERS THEN IF v_360 THEN PERFORM set_config('probe.x','OK',false); END IF;
+END $$;
+""", 1),
+    # T4 (IF s='42501' tras GET STACKED DIAGNOSTICS -> 0) ya esta cubierto por CAV-NEG-1: no se duplica.
+
+    # Punto 3: verde = todo lo que el runner NO cuenta como rojo (PREFIJOS_ROJOS de harness_run.py), no una lista propia.
+    ("CAV-T5 'OK? (' no es prefijo rojo: cuenta", """
+DO $$ BEGIN
+  PERFORM 1;
+EXCEPTION WHEN OTHERS THEN PERFORM set_config('probe.x','OK? ('||SQLSTATE||')',false);
+END $$;
+""", 1),
+
+    ("CAV-T6 'PENDIENTE mig 9' no es prefijo rojo: cuenta", """
+DO $$ BEGIN
+  PERFORM 1;
+EXCEPTION WHEN OTHERS THEN PERFORM set_config('probe.x','PENDIENTE mig 9',false);
+END $$;
+""", 1),
+
+    ("CAV-T7 'RECHAZA (' no es prefijo rojo: cuenta", """
+DO $$ BEGIN
+  PERFORM 1;
+EXCEPTION WHEN OTHERS THEN PERFORM set_config('probe.x','RECHAZA ('||SQLSTATE||')',false);
+END $$;
+""", 1),
+
+    ("CAV-T8 'OK-SENAL (' no es prefijo rojo: cuenta", """
+DO $$ BEGIN
+  PERFORM 1;
+EXCEPTION WHEN OTHERS THEN PERFORM set_config('probe.x','OK-SENAL (x)',false);
+END $$;
+""", 1),
 ]
 
 

@@ -45,9 +45,11 @@ LAS CUATRO METRICAS
    El detector tiene test propio en tests/rls/b2_guard_test.py, con los casos positivos Y el
    negativo (RAISE EXCEPTION), que es el error simetrico e invisible.
 
-4) catchall_verde — handlers `EXCEPTION WHEN OTHERS` que publican un veredicto VERDE de forma
-   INCONDICIONAL: `set_config('probe.<x>', '<literal>'...)` cuyo literal empieza con OK, N/A,
-   BLOQUEADO (sin '?') u OCULTO, sin IF ni CASE en el handler antes del set_config. Cualquier error
+4) catchall_verde — handlers `EXCEPTION WHEN OTHERS` que publican un valor VERDE de forma
+   INCONDICIONAL: `set_config('probe.<x>', '<literal>'...)` cuyo literal NO empieza con un prefijo de
+   PREFIJOS_ROJOS (importado de harness_run.py: lo que el runner no cuenta rojo), fuera de todo IF/CASE
+   que mire el error (SQLSTATE, SQLERRM, GET STACKED DIAGNOSTICS, un nombre de condicion o una variable
+   cargada con el error). El fin del handler se resuelve por anidamiento (IF, CASE, BEGIN, LOOP). Cualquier error
    (una firma que cambio, un 22P02 del fixture, un deadlock) sale VERDE: el probe no distingue el
    rechazo que mide de una rotura (clase P44, censo de veredictos 2026-10-07, tmp/censo_veredictos).
    Se cuenta por set_config, no por bloque. No es deuda con fecha: es un techo para que la clase no
@@ -65,6 +67,7 @@ Sale 0 si ninguna metrica crecio, 1 si alguna crecio. Si BAJAN, lo dice y recuer
 baseline en este archivo y en P516.
 """
 import io
+import os
 import re
 import sys
 
@@ -79,11 +82,14 @@ BASELINE_DO_SIN_HANDLER = 155     # 156 -> 155 (mig 324, P23 gano handler intern
                                   # que este numero deja de ser deuda y pasa a ser el normal.
                                   # El 319 previo estaba inflado en 108 por tres fallas del detector,
                                   # corregidas en aac4562 y fijadas por b2_guard_test.py.
-BASELINE_CATCHALL_VERDE = 139     # censo de veredictos, lote 3 (2026-10-07, sobre bbbf6d3): 138 del censo
-                                  # (134 del censo original - P44 + 5 OCULTO de P114/P127/P129/P133/P151; P159
-                                  # salio en el lote 1) + 1 que el censo no veia porque no es un setting de
-                                  # veredicto: probe.p141_act (L2717), que P141 copia a su veredicto. Techo, no
-                                  # deuda con fecha: que no CREZCA.
+BASELINE_CATCHALL_VERDE = 202     # 139 del lote 3 + 63 por el punto 3 de la review (verde = lo que el runner NO
+                                  # cuenta rojo, PREFIJOS_ROJOS importado): son FLAGS internos de fixture que un
+                                  # catch-all pone en un valor no rojo y que el probe siguiente lee como "no
+                                  # medible": 39 *_ready='0' (+ p291_called, vj_visitas) y 21 'ERR:'/'err' que el
+                                  # siguiente convierte en N/A (p.ej. rx_legit -> P421). Los puntos 1 (fin del handler
+                                  # por anidamiento) y 2 (IF/CASE solo exime si mira el error) no agregaron ni
+                                  # sacaron sitios hoy: 0 y 0. Lote 3 (139) = 134 del censo - P44 + 5 OCULTO + p141_act.
+                                  # Techo, no deuda con fecha: que no CREZCA.
 
 # ===============================================================================
 #
@@ -146,33 +152,175 @@ def tiene_handler(cuerpo):
 # 4a metrica. Las palabras clave se buscan sobre el texto con los literales ENMASCARADOS (mismo largo,
 # contenido reemplazado), para que un 'CASE' o un 'END' dentro de un texto de veredicto no corte ni
 # condicione el handler; el literal publicado se lee del texto original en la misma posicion.
+#
+# VERDE = lo que el RUNNER no cuenta como rojo: se importa PREFIJOS_ROJOS de harness_run.py en vez de
+# tener una lista propia (review del censo, punto 3): 'OK? (', 'PENDIENTE', 'RECHAZA', 'OK-SENAL'...
+# pasan como verdes para el runner, asi que para este gate tambien. El literal vacio no cuenta: un
+# veredicto vacio ya es rojo (verificar() del runner y P000).
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from harness_run import PREFIJOS_ROJOS, _sin_tildes  # noqa: E402
+
 WHEN_OTHERS = re.compile(r'\bWHEN\s+OTHERS\s+THEN\b', re.I)
-FIN_HANDLER = re.compile(r'\b(WHEN|END)\b', re.I)
-CONDICION = re.compile(r'\b(IF|CASE)\b', re.I)
 SET_PROBE = re.compile(r"set_config\s*\(\s*'probe\.[^']*'\s*,\s*'((?:[^']|'')*)'", re.I)
-VERDE = re.compile(r'^(OK|N/A|BLOQUEADO(?!\?)|OCULTO)(?=$|[\s(:,;.])', re.I)
+TOKEN = re.compile(r"[A-Za-z_][A-Za-z0-9_$]*|;|'x*'", re.I)
+# Una condicion EXIME solo si mira el error (punto 2). Nombres de condicion de Postgres: los que usa el
+# harness y los de la familia *_violation / *_privilege / undefined_*; OTHERS no exime (es el catch-all).
+ERROR_EN_COND = re.compile(
+    r'\b(SQLSTATE|SQLERRM|RETURNED_SQLSTATE|MESSAGE_TEXT|PG_EXCEPTION_DETAIL|PG_EXCEPTION_HINT|'
+    r'\w+_violation|\w+_privilege|undefined_\w+|raise_exception|no_data_found|too_many_rows|'
+    r'invalid_text_representation|division_by_zero|deadlock_detected|lock_not_available)\b', re.I)
+ASIGNA_ERROR = re.compile(r'\b([A-Za-z_]\w*)\s*:=\s*[^;]*?\b(SQLSTATE|SQLERRM)\b', re.I)
+DIAG = re.compile(r'\bGET\s+STACKED\s+DIAGNOSTICS\b([^;]*)', re.I)
 
 
 def _enmascarar(texto):
     return LITERAL.sub(lambda m: "'" + 'x' * (len(m.group(0)) - 2) + "'", texto)
 
 
-def catchall_verde(cuerpo):
-    """Lista de (offset, literal) de los set_config('probe.*', '<verde>' ...) publicados dentro de un
-    handler WHEN OTHERS sin IF ni CASE entre el THEN y el set_config. El handler termina en el
-    siguiente WHEN (otro handler, o el WHEN de un CASE: si hay CASE ya es condicional) o END."""
-    masc = _enmascarar(cuerpo)
-    out = []
-    for h in WHEN_OTHERS.finditer(masc):
-        fin = FIN_HANDLER.search(masc, h.end())
-        tope = fin.start() if fin else len(masc)
-        for s in SET_PROBE.finditer(cuerpo, h.end(), tope):
-            if CONDICION.search(masc, h.end(), s.start()):
-                continue
-            lit = s.group(1).replace("''", "'").strip()
-            if VERDE.match(lit):
-                out.append((s.start(), lit))
+def es_verde(literal):
+    """True si el runner NO lo contaria como rojo (y no esta vacio)."""
+    v = literal.strip()
+    return bool(v) and not _sin_tildes(v.upper()).startswith(PREFIJOS_ROJOS)
+
+
+def _vars_de_error(texto):
+    """Variables a las que el handler les asigna el error: GET STACKED DIAGNOSTICS a = ..., b = ...;
+    y v := ... SQLSTATE/SQLERRM ... ;"""
+    out = set()
+    for m in DIAG.finditer(texto):
+        out.update(x.lower() for x in re.findall(r'([A-Za-z_]\w*)\s*=', m.group(1)))
+    out.update(m.group(1).lower() for m in ASIGNA_ERROR.finditer(texto))
     return out
+
+
+def _mira_error(cond, vars_err):
+    if ERROR_EN_COND.search(cond):
+        return True
+    return any(re.search(r'\b' + re.escape(v) + r'\b', cond, re.I) for v in vars_err)
+
+
+def _escanear_handler(masc, ini):
+    """Recorre el handler desde `ini` (despues del THEN) con una pila de construcciones (IF, CASE, BEGIN,
+    LOOP) y devuelve (fin, ramas): `fin` = offset del WHEN (proximo handler) o del END que cierra el
+    bloque, ambos a NIVEL DEL HANDLER (punto 1: ni el END IF ni el END de un sub-bloque ni el WHEN de
+    un CASE interno lo cortan); `ramas` = lista de (desde, hasta, [condiciones del camino]) que dice,
+    para cada tramo del handler, que condiciones lo encierran. Cada frame lleva las condiciones de sus
+    ramas previas: una rama ELSE hereda las de las ramas anteriores (es su negacion)."""
+    toks = [(m.group(0), m.start(), m.end()) for m in TOKEN.finditer(masc, ini)]
+    pila = []          # frames: {'k': IF|CASE|BEGIN|LOOP, 'previas': [...], 'actual': str, 'exc': bool}
+    ramas, desde = [], ini
+    def camino():
+        out = []
+        for f in pila:
+            out.extend(f['previas'])
+            if f['actual']:
+                out.append(f['actual'])
+        return out
+    def corte(pos):
+        nonlocal desde
+        ramas.append((desde, pos, camino()))
+        desde = pos
+    def cond_hasta(i, fin_kw):
+        """Texto desde el token i hasta el primer token fin_kw de ese nivel (THEN/LOOP); devuelve (texto, j)."""
+        j = i
+        while j < len(toks) and toks[j][0].upper() not in fin_kw:
+            j += 1
+        a = toks[i][1] if i < len(toks) else len(masc)
+        b = toks[j][1] if j < len(toks) else len(masc)
+        return masc[a:b], j
+    i, prev = 0, ''
+    while i < len(toks):
+        w, s, e = toks[i]
+        W = w.upper()
+        if W == 'END':
+            nxt = toks[i + 1][0].upper() if i + 1 < len(toks) else ''
+            if not pila:
+                corte(s)
+                return s, ramas
+            corte(s)
+            pila.pop()
+            i += 2 if nxt in ('IF', 'CASE', 'LOOP') else 1
+            desde = toks[i - 1][2]
+            prev = 'END'
+            continue
+        if W == 'WHEN':
+            if not pila:
+                corte(s)
+                return s, ramas
+            top = pila[-1]
+            if prev in ('EXIT', 'CONTINUE'):
+                prev = W; i += 1; continue
+            if top['k'] in ('CASE', 'BEGIN'):
+                corte(s)
+                if top['actual']:
+                    top['previas'].append(top['actual'])
+                c, j = cond_hasta(i + 1, ('THEN',))
+                top['actual'] = (top.get('sel', '') + ' ' + c).strip()
+                i = j + 1; desde = toks[j][2] if j < len(toks) else len(masc); prev = 'THEN'
+                continue
+        elif W == 'IF':
+            corte(s)
+            c, j = cond_hasta(i + 1, ('THEN',))
+            pila.append({'k': 'IF', 'previas': [], 'actual': c, 'exc': False})
+            i = j + 1; desde = toks[j][2] if j < len(toks) else len(masc); prev = 'THEN'
+            continue
+        elif W == 'ELSIF' and pila and pila[-1]['k'] == 'IF':
+            corte(s)
+            top = pila[-1]
+            top['previas'].append(top['actual'])
+            c, j = cond_hasta(i + 1, ('THEN',))
+            top['actual'] = c
+            i = j + 1; desde = toks[j][2] if j < len(toks) else len(masc); prev = 'THEN'
+            continue
+        elif W == 'ELSE' and pila and pila[-1]['k'] in ('IF', 'CASE'):
+            corte(s)
+            top = pila[-1]
+            top['previas'].append(top['actual'])
+            top['actual'] = ''
+        elif W == 'CASE':
+            corte(s)
+            sel, j = cond_hasta(i + 1, ('WHEN',))
+            pila.append({'k': 'CASE', 'previas': [], 'actual': '', 'sel': sel.strip(), 'exc': False})
+            desde = toks[j - 1][2] if j > i + 1 else e
+            i = j; prev = 'CASE'
+            continue
+        elif W == 'BEGIN':
+            corte(s)
+            pila.append({'k': 'BEGIN', 'previas': [], 'actual': '', 'exc': False})
+        elif W == 'EXCEPTION' and pila and pila[-1]['k'] == 'BEGIN':
+            corte(s)
+            pila[-1]['exc'] = True
+        elif W == 'LOOP':
+            corte(s)
+            pila.append({'k': 'LOOP', 'previas': [], 'actual': '', 'exc': False})
+        prev = W
+        i += 1
+    corte(len(masc))
+    return len(masc), ramas
+
+
+def catchall_verde(cuerpo):
+    """Lista de (offset, literal) de los set_config('probe.*', '<verde para el runner>' ...) publicados
+    dentro de un handler WHEN OTHERS cuyo CAMINO (IF/CASE que los encierran, y ramas previas si es un
+    ELSE) no mira el error. Una condicion mira el error si menciona SQLSTATE, SQLERRM, RETURNED_SQLSTATE,
+    MESSAGE_TEXT, un nombre de condicion de Postgres, o una variable que el handler cargo con el error
+    (GET STACKED DIAGNOSTICS o := SQLSTATE/SQLERRM). Un handler anidado dentro de otro se cuenta una sola vez."""
+    masc = _enmascarar(cuerpo)
+    vistos = {}
+    for h in WHEN_OTHERS.finditer(masc):
+        fin, ramas = _escanear_handler(masc, h.end())
+        vars_err = _vars_de_error(masc[h.end():fin])
+        for s in SET_PROBE.finditer(cuerpo, h.end(), fin):
+            if s.start() in vistos:
+                continue
+            lit = s.group(1).replace("''", "'")
+            if not es_verde(lit):
+                continue
+            conds = next((c for a, b, c in ramas if a <= s.start() < b), [])
+            if any(_mira_error(c, vars_err) for c in conds):
+                continue
+            vistos[s.start()] = lit.strip()
+    return sorted(vistos.items())
 
 
 def analizar(path):
@@ -222,7 +370,10 @@ def catchall_del_archivo(path, blocks):
 
 
 def main():
-    path = sys.argv[1] if len(sys.argv) > 1 else DEFAULT
+    # --listar en cualquier posicion (review del censo, punto 7); el primer argumento que no sea opcion es el archivo
+    listar = '--listar' in sys.argv[1:]
+    args = [a for a in sys.argv[1:] if a != '--listar']
+    path = args[0] if args else DEFAULT
     top, blocks, cast = analizar(path)
     sin_h = [b for b in blocks if not b[1]]
     cav = catchall_del_archivo(path, blocks)
@@ -233,9 +384,9 @@ def main():
           % (len(cast), BASELINE_CAST_DIRECTO))
     print('  do_sin_handler    : %d   (baseline %d)  [%d bloques DO en total]'
           % (len(sin_h), BASELINE_DO_SIN_HANDLER, len(blocks)))
-    print('  catchall_verde    : %d   (baseline %d)  [WHEN OTHERS que publica OK/N/A/BLOQUEADO/OCULTO sin mirar el SQLSTATE]'
+    print('  catchall_verde    : %d   (baseline %d)  [WHEN OTHERS que publica un valor no rojo sin mirar el SQLSTATE]'
           % (len(cav), BASELINE_CATCHALL_VERDE))
-    if len(sys.argv) > 2 and sys.argv[2] == '--listar':
+    if listar:
         for n, lit in cav:
             print('     L%-6d %s' % (n, lit[:90]))
 
