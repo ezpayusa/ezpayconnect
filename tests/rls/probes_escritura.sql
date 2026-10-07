@@ -1902,6 +1902,23 @@ EXCEPTION
   WHEN others THEN PERFORM set_config('probe.p102','PERMITIDO? (alcanzó el cuerpo: '||SQLSTATE||')',false);
 END $$;
 
+-- ---- DET_trio_cleanup: limpieza de las cuentas_proveedor del trío P87/P97/P101 ----
+-- alta_user, invitee e invitee2 se eligen SIN cuenta (NOT IN cuentas_proveedor), así que toda fila con su id
+-- la crearon P87 (alta_miembro_farmacia) o P97/P101 (aceptar_invitacion_proveedor). Las dos RPCs solo
+-- insertan en cuentas_proveedor (aceptar además pasa la invitación a 'usada', que no se crea acá y no se
+-- toca). Entre P87 y este bloque nada referencia esas cuentas por FK. Último consumidor explícito: P102.
+SELECT set_config('role', 'none', true);
+DO $$ DECLARE v_ids uuid[]; v_cp int; BEGIN
+  v_ids := ARRAY[NULLIF(current_setting('probe.alta_user', true), '')::uuid,
+                 NULLIF(current_setting('probe.invitee', true), '')::uuid,
+                 NULLIF(current_setting('probe.invitee2', true), '')::uuid];
+  DELETE FROM public.cuentas_proveedor WHERE id = ANY (v_ids);
+  GET DIAGNOSTICS v_cp = ROW_COUNT;
+  PERFORM set_config('probe.trio_cleanup', 'borradas cp='||v_cp, false);
+EXCEPTION WHEN OTHERS THEN
+  PERFORM set_config('probe.trio_cleanup', 'error SQLSTATE='||SQLSTATE||' '||SQLERRM, false);
+END $$;
+
 -- ============================================================
 -- FIX visibilidad personal de clínica (obtener_personal_clinica) — P110/P111
 -- ============================================================
@@ -33560,6 +33577,7 @@ UNION ALL SELECT 'P99_consume_token_expirado',          current_setting('probe.p
 UNION ALL SELECT 'P100_consume_email_distinto',         current_setting('probe.p100', true), 'BLOQUEADO'
 UNION ALL SELECT 'P101_consume_visitador_lab_e2e',      current_setting('probe.p101', true), 'OK'
 UNION ALL SELECT 'P102_camino_viejo_cerrado',           current_setting('probe.p102', true), 'BLOQUEADO'
+UNION ALL SELECT 'DET_trio_cleanup',  'DET ' || COALESCE(NULLIF(current_setting('probe.trio_cleanup', true), ''), '(sin dato)'), 'DET (limpieza del trío P87/P97/P101: borradas cp=N, N >= 1)'
 UNION ALL SELECT 'P110_miembro_ve_su_equipo',           current_setting('probe.p110', true), 'OK'
 UNION ALL SELECT 'P111_ajeno_no_ve_personal',           current_setting('probe.p111', true), 'BLOQUEADO'
 UNION ALL SELECT 'P112_miembroA_no_ve_clinicaB',        current_setting('probe.p112', true), 'BLOQUEADO'
