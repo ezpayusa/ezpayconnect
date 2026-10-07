@@ -7760,7 +7760,7 @@ BEGIN
     FROM public.cuentas_proveedor cp JOIN public.empresas_proveedoras e ON e.id=cp.empresa_id
    WHERE e.tipo='farmacia' AND cp.activo ORDER BY cp.id LIMIT 1;
   SELECT u.id, u.email INTO v_tgt_libre, v_mail_libre FROM auth.users u
-   WHERE NOT EXISTS (SELECT 1 FROM public.cuentas_proveedor c WHERE c.id=u.id) AND u.email IS NOT NULL LIMIT 1;
+   WHERE NOT EXISTS (SELECT 1 FROM public.cuentas_proveedor c WHERE c.id=u.id) AND u.email IS NOT NULL ORDER BY u.id LIMIT 1;
   SELECT email INTO v_mail_ocup FROM public.cuentas_proveedor WHERE email IS NOT NULL LIMIT 1;
   IF v_admin IS NULL OR v_tgt_libre IS NULL THEN
     PERFORM set_config('probe.pinvit_pregate','N/A (sin fixture)',false); PERFORM set_config('probe.pinvit_rolcat','N/A',false);
@@ -7815,6 +7815,17 @@ BEGIN
 
   PERFORM set_config('role','none',true);
   UPDATE public.cuentas_proveedor SET rol_en_empresa=v_orig_rol WHERE id=v_admin;
+
+  -- limpieza: la membresía que vincular_membresia_proveedor creó para v_tgt_libre (elegido SIN cuenta, así que
+  -- toda fila con su id la creó este bloque). Sin dependientes: la RPC solo inserta en cuentas_proveedor.
+  DECLARE v_borradas int;
+  BEGIN
+    DELETE FROM public.cuentas_proveedor WHERE id = v_tgt_libre;
+    GET DIAGNOSTICS v_borradas = ROW_COUNT;
+    PERFORM set_config('probe.pinvit_cleanup', 'borradas='||v_borradas, false);
+  EXCEPTION WHEN OTHERS THEN
+    PERFORM set_config('probe.pinvit_cleanup', 'error SQLSTATE='||SQLSTATE||' '||SQLERRM, false);
+  END;
 END $$;
 SELECT set_config('role','none', true);
 
@@ -33871,6 +33882,7 @@ UNION ALL SELECT 'Pinvit_NEG_rol_fuera_catalogo',         current_setting('probe
 UNION ALL SELECT 'Pinvit_NEG_1a1_segunda_membresia',      current_setting('probe.pinvit_409', true),     'OK (1:1 guard → 23505/409)'
 UNION ALL SELECT 'Pinvit_POS_vincular_ii_cred_intacta',   current_setting('probe.pinvit_pos', true),     'OK (vinculado, empresa=invitador, credencial intacta)'
 UNION ALL SELECT 'Pinvit_cross_empresa_estructural',      current_setting('probe.pinvit_xempresa', true),'OK (sin param empresa)'
+UNION ALL SELECT 'DET_pinvit_cleanup',  'DET ' || COALESCE(NULLIF(current_setting('probe.pinvit_cleanup', true), ''), '(sin dato)'), 'DET (limpieza de Pinvit: borradas=N, N >= 1)'
 UNION ALL SELECT 'Pgest_gate_4rpcs',                      current_setting('probe.pgest_gate', true),      'OK (sin sucursales_gestionar → denegado)'
 UNION ALL SELECT 'Pgest_xempresa_globales',               current_setting('probe.pgest_xempresa', true),  'OK (editar/desactivar ajena/global → 42501)'
 UNION ALL SELECT 'Pgest_listar_scope',                    current_setting('probe.pgest_scope', true),     'OK (solo mi empresa, excluye globales)'
