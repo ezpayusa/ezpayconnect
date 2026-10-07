@@ -33704,7 +33704,8 @@ SELECT set_config('role', 'none', true);
 --   P1015 censo: 0 funciones de public/private con PUBLIC; anon ejecuta solo catalogo_planes_visitador_publico(). Siempre:
 --         authenticated ejecuta las 10 (9 helpers de public + private.safe_uuid), service_role las 9 de public, y toda
 --         funcion de la que depende una policy (pg_depend) la puede ejecutar cada rol de la policy (public -> anon y
---         authenticated): la leccion 284 aplicada a funciones, en el catalogo.
+--         authenticated): la leccion 284 aplicada a funciones, en el catalogo. Unica excepcion, solo en 'pre':
+--         private.entrega_visible para authenticated (lo arregla la 370) cae en PENDIENTE, como en P1017; en 'post' se exige.
 --   P1016 anon EJERCITADO: siempre, catalogo_planes_visitador_publico() devuelve filas y configuracion_pais /
 --         configuracion_sistema devuelven filas sin error; con la 370, las 8 helpers de public dan 42501 'permission denied
 --         for function' y anon no ejecuta private.safe_uuid.
@@ -33717,7 +33718,7 @@ SELECT set_config('role', 'none', true);
 --         private.trg_gate_capacidad_publicidad -> mi_empresa_proveedor; este ultimo ademas es de private con proacl NULL
 --         antes de la 370) y private.trg_guard_tema_columns (proacl NULL antes de la 370). Sin 42501; todo descartado.
 DO $$
-DECLARE v_est text; bad text := ''; r record; v text; n int;
+DECLARE v_est text; bad text := ''; r record; v text; n int; v_ent_pend boolean;
 BEGIN
   IF current_user <> 'postgres' THEN RAISE EXCEPTION 'fixture roto: P1015 corre como %', current_user; END IF;
   v_est := pg_temp.e370_estado();
@@ -33739,15 +33740,21 @@ BEGIN
           FROM pg_policy pl JOIN pg_depend d ON d.classid = 'pg_policy'::regclass AND d.objid = pl.oid AND d.refclassid = 'pg_proc'::regclass
           CROSS JOIN LATERAL (SELECT CASE WHEN x = 0 THEN 'anon' ELSE pg_get_userbyid(x) END AS rl FROM unnest(pl.polroles) x
                               UNION SELECT 'authenticated' WHERE 0 = ANY (pl.polroles)) rr
-         WHERE NOT has_function_privilege(rr.rl, d.refobjid, 'EXECUTE'));
+         WHERE NOT has_function_privilege(rr.rl, d.refobjid, 'EXECUTE')
+           AND NOT COALESCE(v_est = 'pre' AND rr.rl = 'authenticated'
+                            AND d.refobjid IS NOT DISTINCT FROM to_regprocedure('private.entrega_visible(uuid,integer,uuid)'), false));
   IF v IS NOT NULL THEN bad := bad||'policies con funciones que su rol no ejecuta: '||left(v, 400)||'; '; END IF;
+  -- la excepcion de 'pre' (entrega_visible sin authenticated, la arregla la 370): no es ROJO, va al detalle de PENDIENTE
+  v_ent_pend := COALESCE(v_est = 'pre', false) AND to_regprocedure('private.entrega_visible(uuid,integer,uuid)') IS NOT NULL
+                AND NOT has_function_privilege('authenticated', to_regprocedure('private.entrega_visible(uuid,integer,uuid)'), 'EXECUTE');
   n := (SELECT count(*) FROM pg_proc p WHERE p.pronamespace IN ('public'::regnamespace, 'private'::regnamespace)
           AND EXISTS (SELECT 1 FROM aclexplode(COALESCE(p.proacl, acldefault('f', p.proowner))) a WHERE a.grantee = 0 AND a.privilege_type = 'EXECUTE'));
 
   PERFORM set_config('probe.p1015', CASE
     WHEN bad <> '' THEN 'ROJO ('||left(bad, 800)||')'
     WHEN v_est = 'post' THEN 'OK (370: 0 funciones de public/private con PUBLIC; anon solo catalogo_planes_visitador_publico; las 10 con authenticated, 9 con service_role; policies ejecutables por sus roles)'
-    WHEN v_est = 'pre' THEN 'PENDIENTE mig 370 (estado previo intacto: '||n||' con PUBLIC; las 10 con authenticated; policies ejecutables por sus roles)'
+    WHEN v_est = 'pre' THEN 'PENDIENTE mig 370 (estado previo intacto: '||n||' con PUBLIC; las 10 con authenticated; policies ejecutables por sus roles'
+                            ||CASE WHEN v_ent_pend THEN ' salvo entrega_evidencias_select -> private.entrega_visible sin EXECUTE de authenticated (lo da la 370)' ELSE '' END||')'
     ELSE 'ROJO (estado '||left(v_est, 800)||')' END, false);
 EXCEPTION WHEN OTHERS THEN
   PERFORM set_config('probe.p1015', 'FALLO ('||SQLSTATE||' '||SQLERRM||')', false);
