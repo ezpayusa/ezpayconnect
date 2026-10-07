@@ -440,13 +440,14 @@ BEGIN
   EXCEPTION WHEN OTHERS THEN GET STACKED DIAGNOSTICS s=RETURNED_SQLSTATE; PERFORM set_config('probe.p9','BLOQUEADO ('||s||')',false); END; END IF;
 END $$;
 
--- P10 — feature reparada: el médico SÍ inserta signos para un paciente que ATIENDE
+-- P10 — NEGATIVO desde la mig 162: el médico NO inserta signos por INSERT directo (aun de un paciente que
+-- ATIENDE); la captura va solo por public.capturar_signo_vital (DEFINER). Antes era un positivo.
 DO $$ DECLARE s TEXT; v BIGINT := NULLIF(current_setting('probe.pac_de', true), '')::bigint;
 BEGIN
   IF v IS NULL THEN PERFORM set_config('probe.p10','N/A (médico sin cita-paciente)',false);
   ELSE BEGIN
     INSERT INTO public.signos_vitales (paciente_id, medico_id) VALUES (v::int, auth.uid());
-    PERFORM set_config('probe.p10','OK (insertó signos vitales)',false);
+    PERFORM set_config('probe.p10','PERMITIDO (insertó signos vitales directo: mig 162 rota)',false);
   EXCEPTION WHEN OTHERS THEN GET STACKED DIAGNOSTICS s=RETURNED_SQLSTATE; PERFORM set_config('probe.p10','BLOQUEADO ('||s||')',false); END; END IF;
 END $$;
 
@@ -901,10 +902,12 @@ SELECT set_config('probe.av_visita',
   (SELECT v.id::text FROM public.visitas_agendadas v WHERE v.medico_id IS NOT NULL ORDER BY v.id LIMIT 1), false);
 SELECT set_config('probe.av_medico', -- médico de esa visita (parte VISITADA, no aprueba)
   (SELECT v.medico_id::text FROM public.visitas_agendadas v WHERE v.medico_id IS NOT NULL ORDER BY v.id LIMIT 1), false);
-SELECT set_config('probe.av_emp_member', -- miembro proveedor de la empresa de la visita (aprobador legítimo)
-  (SELECT cp.id::text FROM public.cuentas_proveedor cp WHERE cp.activo
-     AND cp.empresa_id = (SELECT v.empresa_id FROM public.visitas_agendadas v WHERE v.medico_id IS NOT NULL ORDER BY v.id LIMIT 1)
-     ORDER BY cp.id LIMIT 1), false);
+SELECT set_config('probe.av_emp_member', -- aprobador legítimo de la empresa de la visita: desde la mig 210 tiene que
+  -- pasar private.puede_aprobar_visitas() (cuenta activa, empresa activa, rol admin/supervisor/editor)
+  (SELECT cp.id::text FROM public.cuentas_proveedor cp JOIN public.empresas_proveedoras e ON e.id = cp.empresa_id
+    WHERE cp.activo AND e.estado = 'activa' AND cp.rol_en_empresa IN ('admin','supervisor','editor')
+      AND cp.empresa_id = (SELECT v.empresa_id FROM public.visitas_agendadas v WHERE v.medico_id IS NOT NULL ORDER BY v.id LIMIT 1)
+    ORDER BY cp.id LIMIT 1), false);
 -- "ajeno universal" para notif lab y visita: el médico que atiende al paciente np_pac
 -- (no es miembro del lab nl_lab ni parte de la visita av_visita).
 SELECT set_config('probe.ajeno', current_setting('probe.np_medico', true), false);
@@ -949,11 +952,11 @@ DO $$ DECLARE r jsonb; BEGIN
   IF NULLIF(current_setting('probe.av_emp_member', true),'') IS NULL THEN PERFORM set_config('probe.p45','N/A (empresa sin proveedor activo)',false);
   ELSE
     r := public.administrar_visita(NULLIF(current_setting('probe.av_visita', true), '')::uuid,'rechazar',NULL,NULL,NULL,'__probe_ok');
-    IF r ? 'success' THEN PERFORM set_config('probe.p45','OK (proveedor administró su visita)',false);
-    ELSE PERFORM set_config('probe.p45','REGRESIÓN (devolvió: '||r::text||')',false); END IF;
+    IF r ? 'success' THEN PERFORM set_config('probe.p45','OK (proveedor administró su visita)'||' [actor '||left(current_setting('probe.av_emp_member', true),8)||']',false);
+    ELSE PERFORM set_config('probe.p45','REGRESIÓN (devolvió: '||r::text||')'||' [actor '||left(current_setting('probe.av_emp_member', true),8)||']',false); END IF;
   END IF;
 EXCEPTION
-  WHEN others THEN PERFORM set_config('probe.p45','REGRESIÓN ('||SQLSTATE||')',false);
+  WHEN others THEN PERFORM set_config('probe.p45','REGRESIÓN ('||SQLSTATE||')'||' [actor '||left(current_setting('probe.av_emp_member', true),8)||']',false);
 END $$;
 
 -- P46 RETIRADO (CIERRE FINAL mig 136): notificar_paciente con EXECUTE REVOCADO (la rama staff-clínica ahora va por
@@ -2556,17 +2559,31 @@ END $$;
 SELECT set_config('role','none',true);
 SELECT set_config('request.jwt.claims', json_build_object('sub', current_setting('probe.qr_actorA', true), 'role','authenticated')::text, true);
 SELECT set_config('role','authenticated',true);
-DO $$ DECLARE v jsonb; v_a bool; v_b bool; BEGIN
-  IF current_setting('probe.qr_ready', true) <> '1' THEN PERFORM set_config('probe.p146','N/A (pendiente migración 085)',false);
+DO $$ DECLARE v jsonb; v_a bool; v_b bool; v_gate boolean; v_g text; BEGIN
+  -- mig 156 (R2): con el gate walkin_qr activo la RPC devuelve CABECERA, sin 'items'; n_pendientes sale del MISMO
+  -- query confinado (empresa + sucursal). Se lee el gate igual que la RPC, como postgres (authenticated no ve
+  -- private) y se vuelve a authenticated antes de llamar a la RPC.
+  PERFORM set_config('role','none',true);
+  v_gate := COALESCE((SELECT activo FROM private.reveal_gate_flags WHERE puerta='walkin_qr'), false);
+  PERFORM set_config('role','authenticated',true);
+  v_g := ' [gate walkin_qr='||CASE WHEN v_gate THEN 'on' ELSE 'off' END||']';
+  IF current_setting('probe.qr_ready', true) <> '1' THEN PERFORM set_config('probe.p146','N/A (pendiente migración 085)'||v_g,false);
   ELSE
     v := public.verificar_receta_despacho(current_setting('probe.qr_tok1', true));
-    v_a := EXISTS (SELECT 1 FROM jsonb_array_elements(v->'items') e WHERE (e->>'item_id') = current_setting('probe.qr_iA',true));
-    v_b := EXISTS (SELECT 1 FROM jsonb_array_elements(v->'items') e WHERE (e->>'item_id') = current_setting('probe.qr_iB',true));
-    IF v_a AND NOT v_b THEN PERFORM set_config('probe.p146','OK (ve solo su ítem A, no el de B)',false);
-    ELSE PERFORM set_config('probe.p146','FUGA (a='||v_a||' b='||v_b||')',false); END IF;
+    IF v_gate THEN
+      IF v ? 'items' THEN PERFORM set_config('probe.p146','FUGA (gate on: items presentes)'||v_g,false);
+      ELSIF (v->>'n_pendientes')::int IS DISTINCT FROM 1 THEN PERFORM set_config('probe.p146','FUGA (gate on: n_pendientes='||COALESCE(v->>'n_pendientes','NULL')||')'||v_g,false);
+      ELSE PERFORM set_config('probe.p146','OK (cabecera sin items; n_pendientes=1: solo su ítem A)'||v_g,false); END IF;
+    ELSE
+      v_a := EXISTS (SELECT 1 FROM jsonb_array_elements(v->'items') e WHERE (e->>'item_id') = current_setting('probe.qr_iA',true));
+      v_b := EXISTS (SELECT 1 FROM jsonb_array_elements(v->'items') e WHERE (e->>'item_id') = current_setting('probe.qr_iB',true));
+      IF v_b THEN PERFORM set_config('probe.p146','FUGA (a='||v_a||' b='||v_b||')'||v_g,false);
+      ELSIF v_a THEN PERFORM set_config('probe.p146','OK (ve solo su ítem A, no el de B)'||v_g,false);
+      ELSE PERFORM set_config('probe.p146','FALLO (gate off: no ve su ítem A)'||v_g,false); END IF;
+    END IF;
   END IF;
-EXCEPTION WHEN undefined_function THEN PERFORM set_config('probe.p146','N/A (RPC no existe)',false);
-  WHEN others THEN PERFORM set_config('probe.p146','ERROR ('||SQLSTATE||')',false);
+EXCEPTION WHEN undefined_function THEN PERFORM set_config('probe.p146','N/A (RPC no existe)'||COALESCE(v_g,' [gate walkin_qr=?]'),false);
+  WHEN others THEN PERFORM set_config('probe.p146','ERROR ('||SQLSTATE||')'||COALESCE(v_g,' [gate walkin_qr=?]'),false);
 END $$;
 
 -- P144 — PHI MÍNIMA: el payload NO trae teléfono (ni PII de más)
@@ -33492,7 +33509,7 @@ UNION ALL SELECT 'P7_medico_ve_historial_sin_cita',     current_setting('probe.p
 UNION ALL SELECT 'P8_medico_ve_recetas_adv_sin_cita',   current_setting('probe.p8', true),  'BLOQUEADO'
 UNION ALL SELECT 'P11_medico_ve_expediente_sin_cita',   current_setting('probe.p11', true), 'BLOQUEADO'
 UNION ALL SELECT 'P9_medico_inserta_expediente_propio', current_setting('probe.p9', true),  'OK'
-UNION ALL SELECT 'P10_medico_inserta_signos_propio',    current_setting('probe.p10', true), 'OK'
+UNION ALL SELECT 'P10_medico_inserta_signos_propio',    current_setting('probe.p10', true), 'BLOQUEADO (42501, mig 162: solo capturar_signo_vital)'
 UNION ALL SELECT 'P12_medico_inserta_historial_ajeno',  current_setting('probe.p12', true), 'BLOQUEADO'
 UNION ALL SELECT 'P13_medico_inserta_expediente_ajeno', current_setting('probe.p13', true), 'BLOQUEADO'
 UNION ALL SELECT 'P14_paciente_ve_sus_receta_items',    current_setting('probe.p14', true), '>0 propios / 0 ajenos'
