@@ -82,7 +82,11 @@ BASELINE_DO_SIN_HANDLER = 155     # 156 -> 155 (mig 324, P23 gano handler intern
                                   # que este numero deja de ser deuda y pasa a ser el normal.
                                   # El 319 previo estaba inflado en 108 por tres fallas del detector,
                                   # corregidas en aac4562 y fijadas por b2_guard_test.py.
-BASELINE_CATCHALL_VERDE = 202     # 139 del lote 3 + 63 por el punto 3 de la review (verde = lo que el runner NO
+BASELINE_CATCHALL_VERDE = 205     # 202 + 3 por la review de seguimiento (8-oct-2026), los 3 por el punto 1 (un ELSE no
+                                  # hereda la exencion): las ramas ELSE 'BLOQUEADO (...)' de P13 (L479), P18 (L560) y P485
+                                  # (L10136), verdes para cualquier SQLSTATE distinto del que miran sus IF/ELSIF. Puntos 4
+                                  # (GET STACKED DIAGNOSTICS con :=) y 5 (comentarios /* */): 0 y 0.
+                                  # 202 = 139 del lote 3 + 63 por el punto 3 de la review (verde = lo que el runner NO
                                   # cuenta rojo, PREFIJOS_ROJOS importado): son FLAGS internos de fixture que un
                                   # catch-all pone en un valor no rojo y que el probe siguiente lee como "no
                                   # medible": 39 *_ready='0' (+ p291_called, vj_visitas) y 21 'ERR:'/'err' que el
@@ -106,7 +110,8 @@ BASELINE_CATCHALL_VERDE = 202     # 139 del lote 3 + 63 por el punto 3 de la rev
 # la garantia que sirve.
 # ===============================================================================
 
-DEFAULT = 'tests/rls/probes_escritura.sql'
+# Relativo a este archivo, no al cwd: `cd tests && python rls/b2_guard.py` o `cd tests/rls && python b2_guard.py` funcionan igual.
+DEFAULT = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'probes_escritura.sql')
 TAG = re.compile(r'\$([a-zA-Z_][a-zA-Z0-9_]*)?\$')
 DML = re.compile(
     r'^\s*(UPDATE|INSERT|DELETE|ALTER\s+TABLE|CREATE\s+(?:OR\s+REPLACE\s+)?'
@@ -169,8 +174,22 @@ ERROR_EN_COND = re.compile(
     r'\b(SQLSTATE|SQLERRM|RETURNED_SQLSTATE|MESSAGE_TEXT|PG_EXCEPTION_DETAIL|PG_EXCEPTION_HINT|'
     r'\w+_violation|\w+_privilege|undefined_\w+|raise_exception|no_data_found|too_many_rows|'
     r'invalid_text_representation|division_by_zero|deadlock_detected|lock_not_available)\b', re.I)
-ASIGNA_ERROR = re.compile(r'\b([A-Za-z_]\w*)\s*:=\s*[^;]*?\b(SQLSTATE|SQLERRM)\b', re.I)
+ASIGNA_ERROR = re.compile(r'\b([A-Za-z_]\w*)\s*:=\s*[^;]*?\b(SQLSTATE|SQLERRM|RETURNED_SQLSTATE|MESSAGE_TEXT)\b', re.I)
 DIAG = re.compile(r'\bGET\s+STACKED\s+DIAGNOSTICS\b([^;]*)', re.I)
+# items de GET STACKED DIAGNOSTICS: `v = ITEM` o `v := ITEM` (plpgsql acepta los dos; review de seguimiento, punto 4)
+DIAG_ITEM = re.compile(r'([A-Za-z_]\w*)\s*:?=\s*[A-Za-z_]', re.I)
+# comentarios -- y /* */ fuera de literales (punto 5); se reemplazan por espacios del mismo largo para no mover offsets
+COMENTARIO_O_LITERAL = re.compile(r"'(?:[^']|'')*'|/\*.*?\*/|--[^\n]*", re.S)
+
+
+def _sin_comentarios(texto):
+    """Quita -- y /* */ respetando los literales (un '--' o un '/*' dentro de un texto de veredicto no es comentario).
+    Cada comentario se reemplaza por espacios del mismo largo, conservando los saltos de linea (los offsets y la
+    linea reportada no se mueven)."""
+    def rep(m):
+        s = m.group(0)
+        return s if s.startswith("'") else re.sub(r'[^\n]', ' ', s)
+    return COMENTARIO_O_LITERAL.sub(rep, texto)
 
 
 def _enmascarar(texto):
@@ -188,7 +207,7 @@ def _vars_de_error(texto):
     y v := ... SQLSTATE/SQLERRM ... ;"""
     out = set()
     for m in DIAG.finditer(texto):
-        out.update(x.lower() for x in re.findall(r'([A-Za-z_]\w*)\s*=', m.group(1)))
+        out.update(x.lower() for x in DIAG_ITEM.findall(m.group(1)))
     out.update(m.group(1).lower() for m in ASIGNA_ERROR.finditer(texto))
     return out
 
@@ -204,18 +223,16 @@ def _escanear_handler(masc, ini):
     LOOP) y devuelve (fin, ramas): `fin` = offset del WHEN (proximo handler) o del END que cierra el
     bloque, ambos a NIVEL DEL HANDLER (punto 1: ni el END IF ni el END de un sub-bloque ni el WHEN de
     un CASE interno lo cortan); `ramas` = lista de (desde, hasta, [condiciones del camino]) que dice,
-    para cada tramo del handler, que condiciones lo encierran. Cada frame lleva las condiciones de sus
-    ramas previas: una rama ELSE hereda las de las ramas anteriores (es su negacion)."""
+    para cada tramo del handler, que condiciones lo encierran: de cada frame, solo la condicion PROPIA de
+    la rama en curso (un ELSE no aporta ninguna, asi que no hereda la exencion de las ramas anteriores)."""
     toks = [(m.group(0), m.start(), m.end()) for m in TOKEN.finditer(masc, ini)]
     pila = []          # frames: {'k': IF|CASE|BEGIN|LOOP, 'previas': [...], 'actual': str, 'exc': bool}
     ramas, desde = [], ini
     def camino():
-        out = []
-        for f in pila:
-            out.extend(f['previas'])
-            if f['actual']:
-                out.append(f['actual'])
-        return out
+        # Solo la condicion PROPIA de la rama actual de cada frame (review de seguimiento, punto 1): un ELSIF o un
+        # WHEN de CASE se exime por lo que pregunta el, no por lo que preguntaron las ramas anteriores; un ELSE
+        # (actual vacio) no aporta condicion, asi que nunca hereda la exencion.
+        return [f['actual'] for f in pila if f['actual']]
     def corte(pos):
         nonlocal desde
         ramas.append((desde, pos, camino()))
@@ -301,8 +318,8 @@ def _escanear_handler(masc, ini):
 
 def catchall_verde(cuerpo):
     """Lista de (offset, literal) de los set_config('probe.*', '<verde para el runner>' ...) publicados
-    dentro de un handler WHEN OTHERS cuyo CAMINO (IF/CASE que los encierran, y ramas previas si es un
-    ELSE) no mira el error. Una condicion mira el error si menciona SQLSTATE, SQLERRM, RETURNED_SQLSTATE,
+    dentro de un handler WHEN OTHERS cuyo CAMINO (la condicion propia de cada rama IF/ELSIF/WHEN que los
+    encierra; un ELSE no exime) no mira el error. Una condicion mira el error si menciona SQLSTATE, SQLERRM, RETURNED_SQLSTATE,
     MESSAGE_TEXT, un nombre de condicion de Postgres, o una variable que el handler cargo con el error
     (GET STACKED DIAGNOSTICS o := SQLSTATE/SQLERRM). Un handler anidado dentro de otro se cuenta una sola vez."""
     masc = _enmascarar(cuerpo)
@@ -362,8 +379,7 @@ def catchall_del_archivo(path, blocks):
     lineas = io.open(path, encoding='utf-8').read().split('\n')
     out = []
     for ini, _, fin in blocks:
-        tramo = [re.sub(r'--.*$', '', x) for x in lineas[ini - 1:fin]]
-        cuerpo = '\n'.join(tramo)
+        cuerpo = _sin_comentarios('\n'.join(lineas[ini - 1:fin]))
         for off, lit in catchall_verde(cuerpo):
             out.append((ini + cuerpo.count('\n', 0, off), lit))
     return out

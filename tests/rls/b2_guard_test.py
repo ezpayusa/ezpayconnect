@@ -295,6 +295,67 @@ DO $$ BEGIN
 EXCEPTION WHEN OTHERS THEN PERFORM set_config('probe.x','OK-SENAL (x)',false);
 END $$;
 """, 1),
+
+    # Review de seguimiento (punto 1): una rama solo se exime por SU PROPIA condicion; un ELSE nunca hereda la exencion.
+    ("CAV-H1a ELSIF sobre una variable que no es el error, despues de un IF SQLSTATE: el ELSIF cuenta", """
+DO $$ DECLARE v_flag boolean := true; BEGIN
+  PERFORM 1;
+EXCEPTION WHEN OTHERS THEN
+  IF SQLSTATE = '42501' THEN PERFORM set_config('probe.x','OK (42501)',false);
+  ELSIF v_flag THEN PERFORM set_config('probe.x','OK',false);
+  END IF;
+END $$;
+""", 1),
+
+    ("CAV-H1b ELSE despues de un IF SQLSTATE: el ELSE es verde para cualquier otro error, cuenta", """
+DO $$ BEGIN
+  PERFORM 1;
+EXCEPTION WHEN OTHERS THEN
+  IF SQLSTATE = '42501' THEN PERFORM set_config('probe.x','OK',false);
+  ELSE PERFORM set_config('probe.x','N/A (b)',false);
+  END IF;
+END $$;
+""", 1),
+
+    ("CAV-H1c CASE WHEN SQLSTATE ... ELSE verde END CASE: el ELSE cuenta", """
+DO $$ BEGIN
+  PERFORM 1;
+EXCEPTION WHEN OTHERS THEN
+  CASE WHEN SQLSTATE = '42501' THEN PERFORM set_config('probe.x','FALLO (no deberia)',false);
+  ELSE PERFORM set_config('probe.x','OK',false);
+  END CASE;
+END $$;
+""", 1),
+
+    ("CAV-H1d IF s / ELSIF s (ambas miran el error) / ELSE FALLO: no cuenta", """
+DO $$ DECLARE s TEXT; BEGIN
+  PERFORM 1;
+EXCEPTION WHEN OTHERS THEN GET STACKED DIAGNOSTICS s = RETURNED_SQLSTATE;
+  IF s = '42501' THEN PERFORM set_config('probe.x','BLOQUEADO',false);
+  ELSIF s = '23505' THEN PERFORM set_config('probe.x','OK (409)',false);
+  ELSE PERFORM set_config('probe.x','FALLO ('||s||')',false);
+  END IF;
+END $$;
+""", 0),
+
+    # Punto 4: GET STACKED DIAGNOSTICS acepta ':=' ademas de '='.
+    ("CAV-H4 GET STACKED DIAGNOSTICS s := RETURNED_SQLSTATE; IF s='42501' -> BLOQUEADO / ELSE FALLO: no cuenta", """
+DO $$ DECLARE s TEXT; BEGIN
+  PERFORM 1;
+EXCEPTION WHEN OTHERS THEN GET STACKED DIAGNOSTICS s := RETURNED_SQLSTATE;
+  IF s = '42501' THEN PERFORM set_config('probe.x','BLOQUEADO',false);
+  ELSE PERFORM set_config('probe.x','FALLO ('||s||')',false);
+  END IF;
+END $$;
+""", 0),
+
+    # Punto 5: un comentario /* */ no corta el handler.
+    ("CAV-H5 /* END */ en un comentario de bloque no cierra el handler", """
+DO $$ BEGIN
+  PERFORM 1;
+EXCEPTION WHEN OTHERS THEN /* END */ PERFORM set_config('probe.x','OK (x)',false);
+END $$;
+""", 1),
 ]
 
 
