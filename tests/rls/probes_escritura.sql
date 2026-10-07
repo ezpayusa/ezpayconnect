@@ -1000,11 +1000,27 @@ EXCEPTION
 END $$;
 
 -- P49 — POSITIVO: un rol VÁLIDO del catálogo sí se asigna
+-- fk_target = el primer perfil por id, que hoy es el mismo probe.medico (L304): sin restaurar, el médico quedaba
+-- como 'gerente' el resto de la transacción y desde la 354 (gate de rol en "Médico ve productos activos") P196 veía 0.
+-- Se guarda el rol original, se mide, se restaura y se verifica.
 SELECT set_config('role', 'none', true);
-DO $$ BEGIN
+DO $$ DECLARE v_orig text; v_act text; v_paso text := 'leer'; BEGIN
+  SELECT rol INTO v_orig FROM public.perfiles WHERE id = current_setting('probe.fk_target', true)::uuid;
+  v_paso := 'medir';
   UPDATE public.perfiles SET rol='gerente' WHERE id = current_setting('probe.fk_target', true)::uuid;
   PERFORM set_config('probe.p49','OK (asignó rol válido del catálogo)',false);
-EXCEPTION WHEN others THEN PERFORM set_config('probe.p49','REGRESIÓN ('||SQLSTATE||')',false);
+  v_paso := 'restaurar';
+  UPDATE public.perfiles SET rol = v_orig WHERE id = current_setting('probe.fk_target', true)::uuid;
+  SELECT rol INTO v_act FROM public.perfiles WHERE id = current_setting('probe.fk_target', true)::uuid;
+  IF v_act IS DISTINCT FROM v_orig THEN
+    PERFORM set_config('probe.p49','FALLO (no restauró el rol de fk_target: '||COALESCE(v_orig,'NULL')||' → '||COALESCE(v_act,'NULL')||')',false);
+  END IF;
+EXCEPTION WHEN others THEN
+  IF v_paso = 'restaurar' THEN
+    PERFORM set_config('probe.p49','FALLO (no restauró el rol de fk_target: '||COALESCE(v_orig,'NULL')||' → ERROR '||SQLSTATE||')',false);
+  ELSE
+    PERFORM set_config('probe.p49','REGRESIÓN ('||SQLSTATE||')',false);
+  END IF;
 END $$;
 
 -- ---- Remapeo a super_admin (farmacia_medicamentos / reportes_guardados) ----
@@ -3682,13 +3698,29 @@ SELECT set_config('role','none',true);
 -- ============================================================
 SELECT set_config('role','none',true);
 DO $$ BEGIN
-  IF current_setting('probe.p0_ready',true)<>'1' THEN PERFORM set_config('probe.pe_ready','0',false); RETURN; END IF;
+  IF current_setting('probe.p0_ready',true)<>'1' THEN
+    PERFORM set_config('probe.pe_ready','0',false);
+    PERFORM set_config('probe.fx_pe','N/A (fixture país-0 no listo)',false);
+    RETURN;
+  END IF;
+  -- Desde la mig 202 (2-jul-2026) trigger_gate_capacidad_productos rechaza con PC010 el INSERT/UPDATE de
+  -- productos_empresa si la empresa no tiene la capacidad 'productos'. Los labs del fixture país-0 nacen sin
+  -- ella: sin esta siembra el fixture caía y P195/P196/P197/P203 salían N/A sin medir (recon tmp/fix_pe/).
+  -- La sembramos para los dos (P203 reasigna el producto al lab HN, y el gate corre también en UPDATE).
+  INSERT INTO public.empresa_capacidades (empresa_id, capacidad_codigo, activa, origen)
+    VALUES (NULLIF(current_setting('probe.p0_lgt',true), '')::uuid, 'productos', true, 'suelta'),
+           (NULLIF(current_setting('probe.p0_lhn',true), '')::uuid, 'productos', true, 'suelta')
+    ON CONFLICT (empresa_id, capacidad_codigo) DO NOTHING;
   INSERT INTO public.productos_empresa (nombre_producto,empresa_id,precio_unitario,moneda,stock_disponible,requiere_receta,estado,pais_id)
     VALUES ('PE GT', NULLIF(current_setting('probe.p0_lgt',true), '')::uuid, 10,'GTQ',5,false,'activo', NULLIF(current_setting('probe.p0_gt',true), '')::uuid);
   INSERT INTO public.productos_empresa (nombre_producto,empresa_id,precio_unitario,moneda,stock_disponible,requiere_receta,estado,pais_id)
     VALUES ('PE HN', NULLIF(current_setting('probe.p0_lhn',true), '')::uuid, 10,'HNL',5,false,'activo', NULLIF(current_setting('probe.p0_hn',true), '')::uuid);
   PERFORM set_config('probe.pe_ready','1',false);
-EXCEPTION WHEN others THEN PERFORM set_config('probe.pe_ready','0',false); END $$;
+  PERFORM set_config('probe.fx_pe','OK (capacidad productos sembrada; PE GT y PE HN insertados)',false);
+EXCEPTION WHEN others THEN
+  PERFORM set_config('probe.pe_ready','0',false);
+  PERFORM set_config('probe.fx_pe','ROJO (fixture pe: '||SQLSTATE||' '||SQLERRM||')',false);
+END $$;
 
 -- P195 — NEG (red-first): médico GT NO debe ver producto HN
 SELECT set_config('request.jwt.claims', json_build_object('sub', current_setting('probe.medico',true))::text, true);
@@ -33778,6 +33810,7 @@ UNION ALL SELECT 'P196_prodemp_pos_GT',                  current_setting('probe.
 UNION ALL SELECT 'P197_prodemp_failclosed',              current_setting('probe.p197', true), 'OK post-094 (ROJO pre)'
 UNION ALL SELECT 'P198_prodemp_backfill',                current_setting('probe.p198', true), 'OK post-094 (ROJO pre)'
 UNION ALL SELECT 'P203_prodemp_trigger_reasigna',        current_setting('probe.p203', true), 'OK post-094 (ROJO pre)'
+UNION ALL SELECT 'FX21_pe_fixture',                      current_setting('probe.fx_pe', true), 'OK (capacidad productos sembrada; PE GT y PE HN insertados)'
 UNION ALL SELECT 'P199_G1_helper_opera',                 current_setting('probe.p199', true), 'OK post-095'
 UNION ALL SELECT 'P200_G1_proveedor_bloq',               current_setting('probe.p200', true), 'BLOQUEADO post-095'
 UNION ALL SELECT 'P201_G1_superadmin',                   current_setting('probe.p201', true), 'OK post-095'
@@ -34761,7 +34794,7 @@ UNION ALL SELECT 'P000_CENTINELA_veredictos_no_nulos',
        'probe.p187', 'probe.p188', 'probe.p189', 'probe.p190',
        'probe.p191', 'probe.p192', 'probe.p193', 'probe.p194',
        'probe.p195', 'probe.p196', 'probe.p197', 'probe.p198',
-       'probe.p203', 'probe.p199', 'probe.p200', 'probe.p201',
+       'probe.p203', 'probe.fx_pe', 'probe.p199', 'probe.p200', 'probe.p201',
        'probe.p202', 'probe.p204', 'probe.p205', 'probe.p206',
        'probe.p207', 'probe.p208', 'probe.p209', 'probe.p210',
        'probe.p211', 'probe.p212', 'probe.p213', 'probe.p214',
