@@ -358,13 +358,17 @@ Stack: React + Vite + TypeScript, Supabase / Postgres, deploy en Vercel, repo en
 - **Un actor que alimenta un INSERT con FK se elige por email o con EXISTS en la tabla destino de la FK, nunca por ORDER BY
   id: otros probes dejan vivas en la transacción filas sembradas con uuid aleatorio (P929, 6-oct). Y los actores que NO
   deben ver algo se neutralizan dentro del savepoint (P101 deja a medico.qa con cuenta_proveedor activa; P1009, 6-oct).**
+- **Toda rama de FALLA publica un prefijo de PREFIJOS_ROJOS (harness_run.py); un handler WHEN OTHERS no publica verde sin
+  mirar el SQLSTATE (b2_guard catchall_verde).** Un texto fuera de esos prefijos pasa como verde aunque describa una falla
+  (P14 've N propios / M ajenos', P629 'RECHAZA', Pinvit 'OK? (…)'; censo de veredictos, 7-oct-2026).
 - **Correr el harness SIEMPRE con `npm run harness`, nunca a mano.** El runner
   (`tests/rls/harness_run.py`) verifica exit code, salida no vacía, JSON parseable, piso de 680
   filas y cero veredictos vacíos. **Por qué**: el 2026-09-03 una corrida devolvió *exit 0 con la
   salida vacía* por un corte del cliente — indistinguible de un harness verde para quien lea el
   exit code. `npm run harness:selftest` prueba que esas cinco verificaciones disparan.
   Está enganchado al pre-commit junto al test del detector: los tres gates del hook son offline.
-  **El runner CLASIFICA las rojas** (roja = el `verdict` empieza con `ROJO` o `FALLO`) contra la
+  **El runner CLASIFICA las rojas** (roja = el `verdict` empieza (mayúsculas, sin tildes) con alguno de `PREFIJOS_ROJOS`
+  de `tests/rls/harness_run.py`: `ROJO`, `FALLO`, `REGRESION`, `FUGA`, `LEAK`, `PERMITIDO`, `VISIBLE`, `ERROR`, `BLOQUEADO?`) contra la
   lista `DEUDA` que vive en el código, hoy con **11 entradas**: una roja FUERA de la deuda es exit 1,
   y una entrada de la deuda que sale VERDE también (se arregló y hay que sacarla, o alguien la
   anestesió) — actualizar la lista es un acto deliberado, no un efecto colateral.
@@ -387,7 +391,9 @@ Stack: React + Vite + TypeScript, Supabase / Postgres, deploy en Vercel, repo en
   (fase 2.2 CERRADA: los 55 bloques que escriben están envueltos, 211→193→175→157→156→155; los 155
   restantes sólo leen y publican, así que ya no son deuda; 1006 bloques DO en total al 7-oct-2026, rama
   harness/diag-fixture-fm; la última cuenta de filas medida en esta memoria es 1097 / 11 rojas de deuda, en esa rama; tsc
-  74, vitest 424).
+  74, vitest 424), `catchall_verde=139` (handlers `WHEN OTHERS` que publican OK/N/A/BLOQUEADO/OCULTO sin mirar el
+  SQLSTATE: cualquier error sale verde; techo, solo puede bajar; censo de veredictos, rama harness/censo-veredictos,
+  7-oct-2026).
   **Regla de método: el harness NUNCA corre en paralelo con otra sesión que escriba o impersone contra prod**
   (las dos compiten por las mismas filas: deadlocks 40P01 que salen como rojos falsos). **P782 ajustado en la 346:** el DELETE directo sobre
   `visitas_agendadas` ahora da 42501 de privilegio (authenticated ya no tiene DELETE) y cuenta como OK, más fuerte
@@ -593,6 +599,13 @@ Detalles a recordar:
   'medico' sin fila en medicos; algún fixture deja un admin_pais HN "real" dentro de la transacción (en prod no existe);
   `probe.p1009_det` se setea pero no se publica en el result set; `probe.p1008_det` tampoco; en P1009 el fallback de
   `a_pno` excluye la cuenta de `a_farm` pero no su empresa.
+- (Familia 8, backlog del harness, 7-oct-2026) `catchall_verde = 139`: bajar por lotes; al bajar, actualizar
+  `BASELINE_CATCHALL_VERDE` en `b2_guard.py` y el texto de P516. Fuera del guard: ~52 variables verdes asignadas en un
+  handler y publicadas después, y keys dinámicas.
+- (Familia 8, backlog del harness, 7-oct-2026) P17 apagado: `crear_cita` se llama con médico y clínica NULL, el gate
+  nuevo lo rechaza y el catch-all lo convierte en N/A; el caso agendada → solicitada no se ejercita. Necesita recon del fixture.
+- (Familia 8, backlog del harness, 7-oct-2026) P52 es un positivo débil ('RLS permitió; faltó dato: 23502'): la fila
+  nunca se inserta.
 - (Producto) `administrar_visita('rechazar')` no valida el estado de la visita (definición viva): rechaza visitas
   completadas, canceladas o ya rechazadas. Recon de producto post-11-oct. Detectado en la review de
   harness/diag-fixture-fm (m5 descartado, ver c38862e).
