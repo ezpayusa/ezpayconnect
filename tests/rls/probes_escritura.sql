@@ -2726,9 +2726,21 @@ BEGIN
   SELECT pais_id INTO v_pais FROM public.empresas_proveedoras WHERE tipo='empresa_afin' LIMIT 1;
   SELECT id INTO v_inv FROM public.cuentas_proveedor ORDER BY id LIMIT 1 OFFSET 10;
   SELECT id INTO v_sin FROM public.cuentas_proveedor ORDER BY id LIMIT 1 OFFSET 11;
-  -- actor clínico NO-médico, NO-proveedor (enfermera/asistente → perfil rol no medico/super_admin)
-  SELECT id INTO v_clin FROM public.perfiles WHERE rol NOT IN ('medico','super_admin')
-    AND id NOT IN (SELECT id FROM public.cuentas_proveedor) ORDER BY id LIMIT 1;
+  -- actor clínico NO-médico, NO-proveedor, del país de las farmacias del fixture (v_pais). Antes era el primer
+  -- perfil con rol NOT IN ('medico','super_admin') por posición: salía un asesor_comercial de otro país (P160
+  -- REGRESIÓN por país, no por la policy). Primero enfermeria.qa con la premisa validada; si no, por premisa.
+  -- Sin condición sobre medicos: en prod el staff clínico también tiene fila en medicos.
+  SELECT p.id INTO v_clin FROM public.perfiles p JOIN auth.users u ON u.id = p.id
+   WHERE u.email = 'enfermeria.qa@ezpayconnect.com'
+     AND p.rol IN ('enfermeria','asistente_medico','secretaria') AND p.pais_id = v_pais
+     AND NOT EXISTS (SELECT 1 FROM public.cuentas_proveedor c WHERE c.id = p.id)
+   LIMIT 1;
+  IF v_clin IS NULL THEN
+    SELECT p.id INTO v_clin FROM public.perfiles p
+     WHERE p.rol IN ('enfermeria','asistente_medico','secretaria') AND p.pais_id = v_pais
+       AND NOT EXISTS (SELECT 1 FROM public.cuentas_proveedor c WHERE c.id = p.id)
+     ORDER BY p.id LIMIT 1;
+  END IF;
   IF v_sin IS NULL THEN
     PERFORM set_config('probe.cat_ready','0',false);
     PERFORM set_config('probe.p149','N/A (datos insuficientes)',false);
@@ -2939,10 +2951,10 @@ DO $$ DECLARE n INT; BEGIN
   IF current_setting('probe.cat_ready',true)<>'1' OR NULLIF(current_setting('probe.cat_clinico',true),'') IS NULL THEN PERFORM set_config('probe.p160','N/A (sin clínico no-médico)',false);
   ELSE
     SELECT count(*) INTO n FROM public.farmacia_medicamentos WHERE farmacia_id IN (NULLIF(current_setting('probe.cat_fA',true),'')::int, NULLIF(current_setting('probe.cat_fB',true),'')::int) AND COALESCE(activo,true);
-    IF n>0 THEN PERFORM set_config('probe.p160','OK (clínico no-médico ve '||n||' disponibilidad)',false);
-    ELSE PERFORM set_config('probe.p160','REGRESIÓN (clínico no-médico no ve disponibilidad)',false); END IF;
+    IF n>0 THEN PERFORM set_config('probe.p160','OK (clínico no-médico ve '||n||' disponibilidad)'||' [actor '||left(current_setting('probe.cat_clinico',true),8)||']',false);
+    ELSE PERFORM set_config('probe.p160','REGRESIÓN (clínico no-médico no ve disponibilidad)'||' [actor '||left(current_setting('probe.cat_clinico',true),8)||']',false); END IF;
   END IF;
-EXCEPTION WHEN others THEN PERFORM set_config('probe.p160','REGRESIÓN ('||SQLSTATE||')',false);
+EXCEPTION WHEN others THEN PERFORM set_config('probe.p160','REGRESIÓN ('||SQLSTATE||')'||' [actor '||left(current_setting('probe.cat_clinico',true),8)||']',false);
 END $$;
 
 -- P161 — POS: dup INTRA-ARCHIVO (dos filas → misma clave normalizada) → reporta la
@@ -3776,20 +3788,20 @@ DO $$ DECLARE n int; BEGIN
   IF current_setting('probe.fm_ready',true)<>'1' THEN PERFORM set_config('probe.p206','N/A',false);
   ELSE
     SELECT count(*) INTO n FROM public.farmacia_medicamentos WHERE farmacia_id=NULLIF(current_setting('probe.p0_fhn',true), '')::int;
-    IF n=0 THEN PERFORM set_config('probe.p206','OK (clínico GT no ve stock HN)',false);
-    ELSE PERFORM set_config('probe.p206','ROJO (clínico GT ve stock HN — leak vivo, n='||n||')',false); END IF;
+    IF n=0 THEN PERFORM set_config('probe.p206','OK (clínico GT no ve stock HN)'||' [actor '||left(current_setting('probe.cat_clinico',true),8)||']',false);
+    ELSE PERFORM set_config('probe.p206','ROJO (clínico GT ve stock HN — leak vivo, n='||n||')'||' [actor '||left(current_setting('probe.cat_clinico',true),8)||']',false); END IF;
   END IF;
-EXCEPTION WHEN others THEN PERFORM set_config('probe.p206','FALLO ('||SQLERRM||')',false); END $$;
+EXCEPTION WHEN others THEN PERFORM set_config('probe.p206','FALLO ('||SQLERRM||')'||' [actor '||left(current_setting('probe.cat_clinico',true),8)||']',false); END $$;
 
 -- P207 — POS no-regresión: clínico GT SÍ ve stock de farmacia GT
 DO $$ DECLARE n int; BEGIN
   IF current_setting('probe.fm_ready',true)<>'1' THEN PERFORM set_config('probe.p207','N/A',false);
   ELSE
     SELECT count(*) INTO n FROM public.farmacia_medicamentos WHERE farmacia_id=NULLIF(current_setting('probe.p0_fgt',true), '')::int;
-    IF n>0 THEN PERFORM set_config('probe.p207','OK (clínico GT ve stock GT)',false);
-    ELSE PERFORM set_config('probe.p207','FALLO (clínico GT NO ve stock GT)',false); END IF;
+    IF n>0 THEN PERFORM set_config('probe.p207','OK (clínico GT ve stock GT)'||' [actor '||left(current_setting('probe.cat_clinico',true),8)||']',false);
+    ELSE PERFORM set_config('probe.p207','FALLO (clínico GT NO ve stock GT)'||' [actor '||left(current_setting('probe.cat_clinico',true),8)||']',false); END IF;
   END IF;
-EXCEPTION WHEN others THEN PERFORM set_config('probe.p207','FALLO ('||SQLERRM||')',false); END $$;
+EXCEPTION WHEN others THEN PERFORM set_config('probe.p207','FALLO ('||SQLERRM||')'||' [actor '||left(current_setting('probe.cat_clinico',true),8)||']',false); END $$;
 
 -- P208 — fail-closed (red-first): médico país-NULL → 0 stock de la fixture
 SELECT set_config('request.jwt.claims', json_build_object('sub', current_setting('probe.p0_mednull',true))::text, true);
@@ -3962,10 +3974,10 @@ DO $$ DECLARE n int; BEGIN
   IF current_setting('probe.fm_ready',true)<>'1' THEN PERFORM set_config('probe.p220','N/A',false);
   ELSE
     SELECT count(*) INTO n FROM public.farmacias WHERE id=NULLIF(current_setting('probe.p0_fhn',true), '')::int;
-    IF n=0 THEN PERFORM set_config('probe.p220','OK (clínico GT no ve farmacia HN)',false);
-    ELSE PERFORM set_config('probe.p220','ROJO (clínico GT ve farmacia HN — leak vivo, n='||n||')',false); END IF;
+    IF n=0 THEN PERFORM set_config('probe.p220','OK (clínico GT no ve farmacia HN)'||' [actor '||left(current_setting('probe.cat_clinico',true),8)||']',false);
+    ELSE PERFORM set_config('probe.p220','ROJO (clínico GT ve farmacia HN — leak vivo, n='||n||')'||' [actor '||left(current_setting('probe.cat_clinico',true),8)||']',false); END IF;
   END IF;
-EXCEPTION WHEN others THEN PERFORM set_config('probe.p220','FALLO ('||SQLERRM||')',false); END $$;
+EXCEPTION WHEN others THEN PERFORM set_config('probe.p220','FALLO ('||SQLERRM||')'||' [actor '||left(current_setting('probe.cat_clinico',true),8)||']',false); END $$;
 
 -- P221 — fail-closed (red-first): médico país-NULL → 0 farmacias de la fixture
 SELECT set_config('request.jwt.claims', json_build_object('sub', current_setting('probe.p0_mednull',true))::text, true);
