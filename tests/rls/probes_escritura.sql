@@ -448,7 +448,10 @@ BEGIN
   ELSE BEGIN
     INSERT INTO public.signos_vitales (paciente_id, medico_id) VALUES (v::int, auth.uid());
     PERFORM set_config('probe.p10','PERMITIDO (insertó signos vitales directo: mig 162 rota)',false);
-  EXCEPTION WHEN OTHERS THEN GET STACKED DIAGNOSTICS s=RETURNED_SQLSTATE; PERFORM set_config('probe.p10','BLOQUEADO ('||s||')',false); END; END IF;
+  EXCEPTION WHEN OTHERS THEN GET STACKED DIAGNOSTICS s = RETURNED_SQLSTATE;
+    IF s='42501' THEN PERFORM set_config('probe.p10','BLOQUEADO (RLS rechazó: 42501)',false);
+    ELSE PERFORM set_config('probe.p10','PERMITIDO por RLS (falló otra constraint: '||s||')',false); END IF;
+  END; END IF;
 END $$;
 
 -- P12 — el médico NO debe insertar historial para un paciente AJENO (sin cita)
