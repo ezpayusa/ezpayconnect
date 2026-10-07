@@ -17209,10 +17209,10 @@ SELECT set_config('role','none', true);
 -- Define pg_temp.e370_estado(): 'post' = 0 funciones de public/private con PUBLIC y anon ejecuta SOLO
 -- catalogo_planes_visitador_publico(); 'pre' = el estado previo a la 370 INTACTO Y EXACTO (las 38 con PUBLIC y anon
 -- explicito en las 21 legacy + la del catalogo, ni una mas ni una menos); 'otro: ...' = cualquier otra cosa (con lo que
--- sobra y lo que falta). Los probes de la 370 (P739, P741, P1015, P1016) dan PENDIENTE SOLO con 'pre': una regresion
--- despues del apply (una funcion que recupera PUBLIC o anon) deja el estado en 'otro' y se juzga como ROJO, no PENDIENTE.
--- Las listas literales son el censo de prod del 6-oct-2026 (tmp/recon_execute/censo_funciones.tsv); despues del apply se
--- pueden borrar junto con la rama 'pre'. Si este bloque falla, los 4 probes dan FALLO (pg_temp.e370_estado no existe).
+-- sobra y lo que falta). La 370 esta APLICADA (7-oct-2026): ningun probe de la 370 publica PENDIENTE. 'pre' (el estado
+-- previo de vuelta exacto, p. ej. tras 370_rollback) es REGRESION en P739, P741, P1000, P1015 y P1016; 'otro' es ROJO.
+-- Las listas literales (censo de prod del 6-oct-2026, tmp/recon_execute/censo_funciones.tsv) se conservan solo para
+-- nombrar esa regresion (review #53 punto 1). Si este bloque falla, los probes dan FALLO (pg_temp.e370_estado no existe).
 DO $e370fx$
 BEGIN
   EXECUTE $fn$
@@ -17306,9 +17306,9 @@ END $e370fx$;
 -- salio en la 327). Las 349/350 pasaron esas policies a TO authenticated y anon ya no las evalua, asi que la 370 les saca
 -- anon y PUBLIC: la esperada pasa a ser SOLO catalogo_planes_visitador_publico.
 --   · OK      = anon ejecuta exactamente {catalogo_planes_visitador_publico} entre las SECDEF de public.
---   · PENDIENTE mig 370 = el estado previo esta INTACTO (pg_temp.e370_estado() = 'pre') y el conjunto es exactamente
---     las 11 viejas. Antes de la rama PENDIENTE se juzga lo que no depende de la 370: si sobra alguna que no estaba en
---     las 11, o falta la del catalogo, es ROJO igual.
+--   · REGRESION = el estado previo a la 370 de vuelta (pg_temp.e370_estado() = 'pre') y el conjunto es exactamente
+--     las 11 viejas (con la 370 aplicada no hay PENDIENTE, review #53). Antes se juzga lo que no depende de la 370: si
+--     sobra alguna que no estaba en las 11, o falta la del catalogo, es ROJO igual.
 SELECT set_config('role','none', true);
 DO $$
 DECLARE v_sobran text; v_faltan text; v_n int; v_est text; v_set text; v_sobra11 text;
@@ -17333,7 +17333,7 @@ BEGIN
     WHEN v_sobra11 IS NOT NULL THEN 'ROJO (anon ejecuta SECDEF fuera de las 11 de la 301: '||left(v_sobra11, 200)||')'
     WHEN v_faltan IS NOT NULL THEN 'ROJO (catalogo_planes_visitador_publico perdio anon: la landing /planes-visitador sin sesion se rompe)'
     WHEN v_sobran IS NULL THEN 'OK (370: anon ejecuta solo catalogo_planes_visitador_publico entre las SECDEF de public; las 10 helpers de policies sin anon)'
-    WHEN v_est = 'pre' AND v_n = 11 THEN 'PENDIENTE mig 370 (anon ejecuta las 11 de la 301: '||v_set||')'
+    WHEN v_est = 'pre' AND v_n = 11 THEN 'REGRESION (estado pre-370 de vuelta: anon ejecuta las 11 de la 301: '||v_set||')'
     ELSE 'ROJO ('||v_n||' SECDEF ejecutables por anon; sobran: '||left(v_sobran, 200)||'; estado '||left(v_est, 300)||')'
     END, false);
 EXCEPTION WHEN OTHERS THEN
@@ -17377,8 +17377,8 @@ SELECT set_config('role','none', true);
 --   (independiente de la 370) registrar_proveedor sin anon (mig 327; lo ejercita P833) y anon EJERCITADO sobre 5 tablas
 --   que esas policies protegen: con grant de anon -> 0 filas SIN error (si alguna policy que anon evalua llamara a una
 --   helper sin EXECUTE, lanzaria 42501: el sintoma de la leccion 284); sin grant -> 42501 de privilegio, correcto.
---   (de la 370) las 10 helpers SIN anon. Si las 10 conservan anon y el estado previo esta intacto
---   (pg_temp.e370_estado() = 'pre') -> PENDIENTE mig 370; mezcla -> ROJO.
+--   (de la 370) las 10 helpers SIN anon. Si las 10 tienen anon y el estado previo esta de vuelta
+--   (pg_temp.e370_estado() = 'pre') -> REGRESION (la 370 esta aplicada, review #53); mezcla -> ROJO.
 DO $$
 DECLARE v_mal text := ''; t text; v_n int; v_est text; v_con text := ''; v_sin text := ''; n_con int := 0; d text := '';
 BEGIN
@@ -17418,7 +17418,7 @@ BEGIN
   PERFORM set_config('probe.p741', CASE
     WHEN v_mal <> '' THEN 'ROJO ('||v_mal||')'
     WHEN n_con = 0 THEN 'OK (370: registrar_proveedor sin anon; las 10 helpers sin anon; anon en 5 tablas: '||d||'(0 filas con grant o 42501 sin grant))'
-    WHEN n_con = 10 AND v_est = 'pre' THEN 'PENDIENTE mig 370 (las 10 helpers conservan anon; registrar_proveedor sin anon; 5 tablas: '||d||')'
+    WHEN n_con = 10 AND v_est = 'pre' THEN 'REGRESION (estado pre-370 de vuelta: las 10 helpers con anon; registrar_proveedor sin anon; 5 tablas: '||d||')'
     ELSE 'ROJO (helpers con anon: '||v_con||'| sin anon: '||v_sin||'| estado '||left(v_est, 300)||')' END, false);
 EXCEPTION WHEN OTHERS THEN
   PERFORM set_config('role','none', true);
@@ -32673,8 +32673,8 @@ SELECT set_config('role', 'none', true);
 
 -- P1000 catalogo de la 362: ACL exacta de catalogo_planes_visitador_publico (postgres, authenticated, service_role, anon;
 -- sin PUBLIC) y funciones de public/private ejecutables por anon = 38 (antes de la 362) + 1, y esa 1 es esta.
--- 370 (6-oct-2026): con la 370 anon ejecuta SOLO esta (0 + 1). Las 38 + 1 son el estado previo: PENDIENTE mig 370 solo si
--- pg_temp.e370_estado() = 'pre' (intacto y exacto); la ACL exacta se juzga antes y siempre.
+-- 370 (aplicada el 7-oct-2026): anon ejecuta SOLO esta (0 + 1). Las 38 + 1 con pg_temp.e370_estado() = 'pre' son el
+-- estado previo de vuelta: REGRESION (review #53); la ACL exacta se juzga antes y siempre.
 DO $$
 DECLARE v text; n_total int; n_sin int;
 BEGIN
@@ -32686,8 +32686,8 @@ BEGIN
     WHEN v IS DISTINCT FROM '{postgres=X/postgres,authenticated=X/postgres,service_role=X/postgres,anon=X/postgres}'
       THEN 'ROJO (ACL '||COALESCE(v, 'NO EXISTE')||'; ejecutables por anon '||n_total||', sin esta '||n_sin||')'
     WHEN n_sin = 0 AND n_total = 1 THEN 'OK (ACL exacta '||v||'; ejecutables por anon '||n_total||' = solo esta (370))'
-    WHEN n_sin = 38 AND n_total = 39 AND pg_temp.e370_estado() = 'pre' THEN 'PENDIENTE mig 370 (ACL exacta; ejecutables por anon 39 = 38 + esta)'
-    ELSE 'ROJO (ejecutables por anon '||n_total||', sin esta '||n_sin||'; esperado 1 (370) o 39 con el estado previo intacto; estado '||left(pg_temp.e370_estado(), 300)||')' END, false);
+    WHEN n_sin = 38 AND n_total = 39 AND pg_temp.e370_estado() = 'pre' THEN 'REGRESION (estado pre-370 de vuelta: ACL exacta; ejecutables por anon 39 = 38 + esta)'
+    ELSE 'ROJO (ejecutables por anon '||n_total||', sin esta '||n_sin||'; esperado 1 (370); estado '||left(pg_temp.e370_estado(), 300)||')' END, false);
 EXCEPTION WHEN OTHERS THEN
   PERFORM set_config('probe.p1000', 'FALLO ('||SQLSTATE||' '||SQLERRM||')', false);
 END $$;
@@ -33698,27 +33698,27 @@ END $$;
 SELECT set_config('role', 'none', true);
 
 -- ---------------- P1015-P1018 EXECUTE de funciones sin PUBLIC ni anon (370) ----------------
--- El estado (pre/post/otro) sale de pg_temp.e370_estado() (bloque E370_FX, antes de P739). PENDIENTE solo con 'pre'
--- (el estado previo intacto y exacto); cualquier otro estado distinto de 'post' es ROJO. Lo que no depende de la 370 se
--- juzga ANTES de la rama PENDIENTE (regla del review #46).
+-- El estado (pre/post/otro) sale de pg_temp.e370_estado() (bloque E370_FX, antes de P739). La 370 esta APLICADA
+-- (7-oct-2026): 'pre' (el estado previo de vuelta) es REGRESION y cualquier otro estado distinto de 'post' es ROJO; no
+-- hay rama PENDIENTE (review #53). Lo que no depende de la 370 se juzga ANTES (regla del review #46).
 --   P1015 censo: 0 funciones de public/private con PUBLIC; anon ejecuta solo catalogo_planes_visitador_publico(). Siempre:
 --         authenticated ejecuta las 10 (9 helpers de public + private.safe_uuid), service_role las 9 de public, y toda
 --         funcion de la que depende una policy (pg_depend) la puede ejecutar cada rol de la policy (public -> anon y
---         authenticated): la leccion 284 aplicada a funciones, en el catalogo. Unica excepcion, solo en 'pre':
---         private.entrega_visible para authenticated (lo arregla la 370) cae en PENDIENTE, como en P1017; en 'post' se exige.
+--         authenticated): la leccion 284 aplicada a funciones, en el catalogo. Sin excepciones: private.entrega_visible
+--         para authenticated se exige siempre (la exclusion de 'pre' de fa385a7 se quito con la 370 aplicada, review #53).
 --   P1016 anon EJERCITADO: siempre, catalogo_planes_visitador_publico() devuelve filas y configuracion_pais /
 --         configuracion_sistema devuelven filas sin error; con la 370, las 8 helpers de public dan 42501 'permission denied
 --         for function' y anon no ejecuta private.safe_uuid.
 --   P1017 authenticated por panel: una tabla por helper, SELECT sin 42501 y con filas donde corresponde (las 9 helpers no
 --         dependen de la 370: OK antes y despues). Antes verifica en el catalogo que cada tabla tenga una policy SELECT/ALL
 --         TO authenticated que dependa de esa helper (si una policy cambia, el probe avisa en vez de quedar mudo). Ademas
---         entrega_evidencias (private.entrega_visible, GRANT de la 370): sin el GRANT, PENDIENTE mig 370 por catalogo.
+--         entrega_evidencias (private.entrega_visible, GRANT de la 370): sin el GRANT, REGRESION por catalogo.
 --   P1018 triggers disparados como authenticated (no depende de la 370): los 3 INVOKER que llaman helpers
 --         (set_fecha_limite_cancelacion -> calcular_limite_cancelacion, perfiles_guard_rol_update -> get_auth_user_rol,
 --         private.trg_gate_capacidad_publicidad -> mi_empresa_proveedor; este ultimo ademas es de private con proacl NULL
 --         antes de la 370) y private.trg_guard_tema_columns (proacl NULL antes de la 370). Sin 42501; todo descartado.
 DO $$
-DECLARE v_est text; bad text := ''; r record; v text; n int; v_ent_pend boolean;
+DECLARE v_est text; bad text := ''; r record; v text; n int;
 BEGIN
   IF current_user <> 'postgres' THEN RAISE EXCEPTION 'fixture roto: P1015 corre como %', current_user; END IF;
   v_est := pg_temp.e370_estado();
@@ -33740,21 +33740,15 @@ BEGIN
           FROM pg_policy pl JOIN pg_depend d ON d.classid = 'pg_policy'::regclass AND d.objid = pl.oid AND d.refclassid = 'pg_proc'::regclass
           CROSS JOIN LATERAL (SELECT CASE WHEN x = 0 THEN 'anon' ELSE pg_get_userbyid(x) END AS rl FROM unnest(pl.polroles) x
                               UNION SELECT 'authenticated' WHERE 0 = ANY (pl.polroles)) rr
-         WHERE NOT has_function_privilege(rr.rl, d.refobjid, 'EXECUTE')
-           AND NOT COALESCE(v_est = 'pre' AND rr.rl = 'authenticated'
-                            AND d.refobjid IS NOT DISTINCT FROM to_regprocedure('private.entrega_visible(uuid,integer,uuid)'), false));
+         WHERE NOT has_function_privilege(rr.rl, d.refobjid, 'EXECUTE'));
   IF v IS NOT NULL THEN bad := bad||'policies con funciones que su rol no ejecuta: '||left(v, 400)||'; '; END IF;
-  -- la excepcion de 'pre' (entrega_visible sin authenticated, la arregla la 370): no es ROJO, va al detalle de PENDIENTE
-  v_ent_pend := COALESCE(v_est = 'pre', false) AND to_regprocedure('private.entrega_visible(uuid,integer,uuid)') IS NOT NULL
-                AND NOT has_function_privilege('authenticated', to_regprocedure('private.entrega_visible(uuid,integer,uuid)'), 'EXECUTE');
   n := (SELECT count(*) FROM pg_proc p WHERE p.pronamespace IN ('public'::regnamespace, 'private'::regnamespace)
           AND EXISTS (SELECT 1 FROM aclexplode(COALESCE(p.proacl, acldefault('f', p.proowner))) a WHERE a.grantee = 0 AND a.privilege_type = 'EXECUTE'));
 
   PERFORM set_config('probe.p1015', CASE
     WHEN bad <> '' THEN 'ROJO ('||left(bad, 800)||')'
     WHEN v_est = 'post' THEN 'OK (370: 0 funciones de public/private con PUBLIC; anon solo catalogo_planes_visitador_publico; las 10 con authenticated, 9 con service_role; policies ejecutables por sus roles)'
-    WHEN v_est = 'pre' THEN 'PENDIENTE mig 370 (estado previo intacto: '||n||' con PUBLIC; las 10 con authenticated; policies ejecutables por sus roles'
-                            ||CASE WHEN v_ent_pend THEN ' salvo entrega_evidencias_select -> private.entrega_visible sin EXECUTE de authenticated (lo da la 370)' ELSE '' END||')'
+    WHEN v_est = 'pre' THEN 'REGRESION (estado pre-370 de vuelta: '||n||' con PUBLIC; las 10 con authenticated; policies ejecutables por sus roles)'
     ELSE 'ROJO (estado '||left(v_est, 800)||')' END, false);
 EXCEPTION WHEN OTHERS THEN
   PERFORM set_config('probe.p1015', 'FALLO ('||SQLSTATE||' '||SQLERRM||')', false);
@@ -33805,7 +33799,7 @@ BEGIN
     WHEN bad <> '' THEN 'ROJO ('||left(bad, 600)||' | '||d||')'
     WHEN v_est = 'post' AND n_42501 = 8 AND NOT has_function_privilege('anon', 'private.safe_uuid(text)'::regprocedure, 'EXECUTE')
       THEN 'OK (370: anon '||d||'las 8 helpers 42501; safe_uuid sin anon)'
-    WHEN v_est = 'pre' AND n_resp = 8 THEN 'PENDIENTE mig 370 (anon '||d||'helpers: '||dh||')'
+    WHEN v_est = 'pre' AND n_resp = 8 THEN 'REGRESION (estado pre-370 de vuelta: anon '||d||'helpers: '||dh||')'
     ELSE 'ROJO (estado '||left(v_est, 300)||'; helpers: '||dh||')' END, false);
 EXCEPTION WHEN OTHERS THEN
   PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
@@ -33820,9 +33814,9 @@ SELECT set_config('role', 'none', true);
 -- laboratorio_clinicas, disponibilidad_medico y storage.objects: sin error (el conteo va al detalle).
 -- entrega_evidencias (370, private.entrega_visible): farmacia.qa (admin de la farmacia QA, la de las entregas con evidencias)
 -- por email lee la tabla: sin 42501 y filas >= 0. Su policy entrega_evidencias_select llama a private.entrega_visible, que
--- hasta la 370 no tiene EXECUTE para authenticated (42501 para todo authenticated). Si el GRANT no esta (catalogo) el
--- veredicto es 'PENDIENTE mig 370 (lo medido)', pero SOLO despues de juzgar el resto: una regresion en las otras tablas es
--- ROJO igual. Con el GRANT, un 42501 ahi es ROJO.
+-- antes de la 370 no tenia EXECUTE para authenticated (42501 para todo authenticated). La 370 esta APLICADA: si el GRANT
+-- no esta (catalogo) el veredicto es REGRESION (lo medido), sin mirar e370_estado (review #53 punto 2), despues de juzgar
+-- el resto: una regresion en las otras tablas es ROJO igual. Con el GRANT, un 42501 ahi es ROJO.
 DO $$
 DECLARE a_prov uuid; e_prov uuid; a_ap uuid; p_ap uuid; a_med uuid; a_cli uuid; r record; n bigint; o bigint;
   bad text := ''; d text := ''; snap_pre text; snap_post text;
@@ -33911,7 +33905,7 @@ BEGIN
   IF snap_post IS DISTINCT FROM snap_pre THEN bad := bad||'los actores no quedaron como estaban tras el descarte; '; END IF;
   PERFORM set_config('probe.p1017', CASE
     WHEN bad <> '' THEN 'ROJO ('||left(bad, 700)||' | '||left(d, 300)||')'
-    WHEN NOT v_ent THEN 'PENDIENTE mig 370 (entrega_visible sin EXECUTE de authenticated; lo medido: '||d||'descartado)'
+    WHEN NOT v_ent THEN 'REGRESION (entrega_visible sin EXECUTE de authenticated: la 370 se lo da; lo medido: '||d||'descartado)'
     WHEN st_ent <> '00000' THEN 'ROJO (farmacia.qa/entrega_evidencias '||st_ent||' '||left(msg_ent, 100)||' con el GRANT de entrega_visible | '||left(d, 300)||')'
     ELSE 'OK (sin 42501: '||d||'descartado; estado 370 '||left(pg_temp.e370_estado(), 20)||')' END, false);
 EXCEPTION WHEN OTHERS THEN
@@ -34868,9 +34862,9 @@ UNION ALL SELECT 'P735_fo_planes_paciente',          current_setting('probe.p735
 UNION ALL SELECT 'P736_fo_metrica_anon_no_escribe',  current_setting('probe.p736', true),    'OK (delta 0)'
 UNION ALL SELECT 'P737_fo_slots_anon_y_ctrl_pos',    current_setting('probe.p737', true),    'OK (corta anon, responde auth)'
 UNION ALL SELECT 'P738_fo_sin_execute_y_interna',    current_setting('probe.p738', true),    'OK (revocada, interna viva)'
-UNION ALL SELECT 'P739_rv_censo_anon_secdef',         current_setting('probe.p739', true),    'OK (370: solo catalogo_planes_visitador_publico; antes de la 370: PENDIENTE con las 11 de la 301)'
+UNION ALL SELECT 'P739_rv_censo_anon_secdef',         current_setting('probe.p739', true),    'OK (370: solo catalogo_planes_visitador_publico; las 11 de la 301 de vuelta: REGRESION)'
 UNION ALL SELECT 'P740_rv_anon_ejercitado',           current_setting('probe.p740', true),    'OK (42501 en 8 revocadas)'
-UNION ALL SELECT 'P741_rv_excepciones_intactas',      current_setting('probe.p741', true),    'OK (370: registrar_proveedor sin anon + las 10 helpers sin anon + 5 tablas sin 42501 con grant; antes de la 370: PENDIENTE)'
+UNION ALL SELECT 'P741_rv_excepciones_intactas',      current_setting('probe.p741', true),    'OK (370: registrar_proveedor sin anon + las 10 helpers sin anon + 5 tablas sin 42501 con grant; estado pre-370 de vuelta: REGRESION)'
 UNION ALL SELECT 'P742_rv_cadena_interna_viva',       current_setting('probe.p742', true),    'OK (control positivo)'
 UNION ALL SELECT 'P743_rv_liberar_examen_coalesce',   current_setting('probe.p743', true),    'OK (los 2 actores cortados)'
 UNION ALL SELECT 'P744_rv_fabrica_cerrada',           current_setting('probe.p744', true),    'OK (funcion y secuencia nuevas)'
@@ -35143,7 +35137,7 @@ UNION ALL SELECT 'P996_catalogo_visitador_anon_362',  current_setting('probe.p99
 UNION ALL SELECT 'P997_catalogo_visitador_sin_zz_t9_362',  current_setting('probe.p997', true), 'OK (362: ZZ y T9 no aparecen)'
 UNION ALL SELECT 'P998_catalogo_visitador_inactiva_362',  current_setting('probe.p998', true), 'OK (362: la config inactiva no aparece; su gemela activa si)'
 UNION ALL SELECT 'P999_catalogo_visitador_anon_tablas_362',  current_setting('probe.p999', true), 'OK (362: anon sigue sin SELECT en planes_base/planes_configuracion)'
-UNION ALL SELECT 'P1000_catalogo_visitador_acl_362',  current_setting('probe.p1000', true), 'OK (362: ACL exacta; ejecutables por anon = solo esta desde la 370; antes de la 370: PENDIENTE con 38 + 1)'
+UNION ALL SELECT 'P1000_catalogo_visitador_acl_362',  current_setting('probe.p1000', true), 'OK (362: ACL exacta; ejecutables por anon = solo esta desde la 370; 38 + 1 de vuelta: REGRESION)'
 UNION ALL SELECT 'P1001_proveedores_pais_admin_363',  current_setting('probe.p1001', true), 'OK (363: admin_pais de GT cuenta GT = oraculo)'
 UNION ALL SELECT 'P1002_proveedores_pais_otro_363',  current_setting('probe.p1002', true), 'OK (363: admin_pais de GT sobre otro pais -> PC028)'
 UNION ALL SELECT 'P1003_proveedores_pais_super_363',  current_setting('probe.p1003', true), 'OK (363: super_admin cuenta GT = oraculo)'
@@ -35156,9 +35150,9 @@ UNION ALL SELECT 'P1012_catalogo_lab_sin_permiso_369',  current_setting('probe.p
 UNION ALL SELECT 'P1013_catalogo_lab_sin_escritura_directa_369',  current_setting('probe.p1013', true), 'OK (369: INSERT/UPDATE/DELETE directo 42501; antes de la 369: PENDIENTE)'
 UNION ALL SELECT 'P1014_catalogo_lab_select_369',  current_setting('probe.p1014', true), 'OK (staff del lab ve activos e inactivos; medico solo activos de su pais; farmacia no ve el inactivo ajeno)'
 UNION ALL SELECT 'E370_FX_estado_execute',  current_setting('probe.e370_fx', true), 'OK (pre antes de la 370; post despues) - salud del fixture de P739/P741/P1015/P1016'
-UNION ALL SELECT 'P1015_execute_censo_370',  current_setting('probe.p1015', true), 'OK (370: 0 funciones con PUBLIC; anon solo catalogo_planes_visitador_publico; policies ejecutables por sus roles; antes de la 370: PENDIENTE)'
-UNION ALL SELECT 'P1016_execute_anon_ejercitado_370',  current_setting('probe.p1016', true), 'OK (370: anon lee catalogo y configuracion; las 8 helpers 42501; antes de la 370: PENDIENTE)'
-UNION ALL SELECT 'P1017_execute_authenticated_por_panel_370',  current_setting('probe.p1017', true), 'OK (sin 42501 por panel, entrega_evidencias incluida; antes de la 370: PENDIENTE por entrega_visible)'
+UNION ALL SELECT 'P1015_execute_censo_370',  current_setting('probe.p1015', true), 'OK (370: 0 funciones con PUBLIC; anon solo catalogo_planes_visitador_publico; policies ejecutables por sus roles; estado pre-370 de vuelta: REGRESION)'
+UNION ALL SELECT 'P1016_execute_anon_ejercitado_370',  current_setting('probe.p1016', true), 'OK (370: anon lee catalogo y configuracion; las 8 helpers 42501; estado pre-370 de vuelta: REGRESION)'
+UNION ALL SELECT 'P1017_execute_authenticated_por_panel_370',  current_setting('probe.p1017', true), 'OK (sin 42501 por panel, entrega_evidencias incluida; entrega_visible sin authenticated: REGRESION)'
 UNION ALL SELECT 'P1018_execute_triggers_authenticated_370',  current_setting('probe.p1018', true), 'OK (4 triggers como authenticated sin 42501, antes y despues de la 370)'
 UNION ALL SELECT 'P1010_campana_vistas_sin_update_367',  current_setting('probe.p1010', true), 'OK (367: INSERT 1; ON CONFLICT DO NOTHING 0 sin error; DO UPDATE y UPDATE 42501; otro paciente 0; antes de la 367: PENDIENTE)'
 UNION ALL SELECT 'P1009_datos_bancarios_acotados_366',  current_setting('probe.p1009', true), 'OK (366: cuenta GT solo super_admin/admin_pais GT/proveedores GT; checkout 1 fila; config 21 super_admin y 14 el resto, admin_pais incluido; antes de la 366: PENDIENTE)'
