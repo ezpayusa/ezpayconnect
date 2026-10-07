@@ -14,7 +14,7 @@ SELECT de veredictos nunca llega a ejecutarse. La salida es vacia, y una salida 
   * 2026-09-03 (lote 1 del paquete PA-FAILOPEN): cuatro UPDATE top-level escribieron empresa_id=NULL
     -> 23502 -> muerte de la transaccion, otra vez sin una sola fila de salida.
 
-Este script cuenta tres cosas sobre el propio archivo y falla (exit 1) si alguna CRECE.
+Este script cuenta cuatro cosas sobre el propio archivo y falla (exit 1) si alguna CRECE.
 
 POR QUE ES UN SCRIPT Y NO UN PROBE
 -----------------------------------
@@ -22,8 +22,8 @@ Un probe no puede leer su propio fuente: pg_read_file() lee del SERVIDOR y exige
 pg_read_server_files, y este archivo vive en la maquina del cliente. P516 dentro del harness solo
 PUBLICA el baseline para que quien lea la salida sepa que este gate existe; el que cuenta es este.
 
-LAS TRES METRICAS
-----------------
+LAS CUATRO METRICAS
+-------------------
 1) top_level_dml_ddl — sentencias DML/DDL fuera de todo bloque DO.
    Baseline 0. La fase 1 de B2 envolvio las 14 que quedaban (FX12-FX18).
    EXCLUSION documentada: `CREATE ... pg_temp.*`. Es DDL transaccional sobre un schema temporal, no
@@ -44,6 +44,16 @@ LAS TRES METRICAS
    tanto era PERMISIVO: no habria disparado hasta que alguien agregara 108 bloques sin handler.
    El detector tiene test propio en tests/rls/b2_guard_test.py, con los casos positivos Y el
    negativo (RAISE EXCEPTION), que es el error simetrico e invisible.
+
+4) catchall_verde — handlers `EXCEPTION WHEN OTHERS` que publican un veredicto VERDE de forma
+   INCONDICIONAL: `set_config('probe.<x>', '<literal>'...)` cuyo literal empieza con OK, N/A,
+   BLOQUEADO (sin '?') u OCULTO, sin IF ni CASE en el handler antes del set_config. Cualquier error
+   (una firma que cambio, un 22P02 del fixture, un deadlock) sale VERDE: el probe no distingue el
+   rechazo que mide de una rotura (clase P44, censo de veredictos 2026-10-07, tmp/censo_veredictos).
+   Se cuenta por set_config, no por bloque. No es deuda con fecha: es un techo para que la clase no
+   CREZCA; un probe nuevo tiene que mirar el SQLSTATE (patron GET STACKED DIAGNOSTICS de P1-P6).
+   Ver catchall_verde(). Quedan FUERA a proposito: las variables a las que se les asigna un verde en
+   el handler y se publican despues (no hay forma estatica barata de seguirlas) y las keys dinamicas.
 
 USO
 ---
@@ -69,6 +79,11 @@ BASELINE_DO_SIN_HANDLER = 155     # 156 -> 155 (mig 324, P23 gano handler intern
                                   # que este numero deja de ser deuda y pasa a ser el normal.
                                   # El 319 previo estaba inflado en 108 por tres fallas del detector,
                                   # corregidas en aac4562 y fijadas por b2_guard_test.py.
+BASELINE_CATCHALL_VERDE = 139     # censo de veredictos, lote 3 (2026-10-07, sobre bbbf6d3): 138 del censo
+                                  # (134 del censo original - P44 + 5 OCULTO de P114/P127/P129/P133/P151; P159
+                                  # salio en el lote 1) + 1 que el censo no veia porque no es un setting de
+                                  # veredicto: probe.p141_act (L2717), que P141 copia a su veredicto. Techo, no
+                                  # deuda con fecha: que no CREZCA.
 
 # ===============================================================================
 #
@@ -128,6 +143,38 @@ def tiene_handler(cuerpo):
     return bool(HANDLER.search(LITERAL.sub("''", cuerpo)))
 
 
+# 4a metrica. Las palabras clave se buscan sobre el texto con los literales ENMASCARADOS (mismo largo,
+# contenido reemplazado), para que un 'CASE' o un 'END' dentro de un texto de veredicto no corte ni
+# condicione el handler; el literal publicado se lee del texto original en la misma posicion.
+WHEN_OTHERS = re.compile(r'\bWHEN\s+OTHERS\s+THEN\b', re.I)
+FIN_HANDLER = re.compile(r'\b(WHEN|END)\b', re.I)
+CONDICION = re.compile(r'\b(IF|CASE)\b', re.I)
+SET_PROBE = re.compile(r"set_config\s*\(\s*'probe\.[^']*'\s*,\s*'((?:[^']|'')*)'", re.I)
+VERDE = re.compile(r'^(OK|N/A|BLOQUEADO(?!\?)|OCULTO)(?=$|[\s(:,;.])', re.I)
+
+
+def _enmascarar(texto):
+    return LITERAL.sub(lambda m: "'" + 'x' * (len(m.group(0)) - 2) + "'", texto)
+
+
+def catchall_verde(cuerpo):
+    """Lista de (offset, literal) de los set_config('probe.*', '<verde>' ...) publicados dentro de un
+    handler WHEN OTHERS sin IF ni CASE entre el THEN y el set_config. El handler termina en el
+    siguiente WHEN (otro handler, o el WHEN de un CASE: si hay CASE ya es condicional) o END."""
+    masc = _enmascarar(cuerpo)
+    out = []
+    for h in WHEN_OTHERS.finditer(masc):
+        fin = FIN_HANDLER.search(masc, h.end())
+        tope = fin.start() if fin else len(masc)
+        for s in SET_PROBE.finditer(cuerpo, h.end(), tope):
+            if CONDICION.search(masc, h.end(), s.start()):
+                continue
+            lit = s.group(1).replace("''", "'").strip()
+            if VERDE.match(lit):
+                out.append((s.start(), lit))
+    return out
+
+
 def analizar(path):
     """Recorre el archivo llevando una pila de tags dollar-quoted. Todo lo que quede fuera de un
     bloque abierto es TOP-LEVEL. Un `DO $tag$` abre un bloque DO; el mismo `$tag$` lo cierra."""
@@ -162,10 +209,23 @@ def analizar(path):
     return top, resueltos, cast
 
 
+def catchall_del_archivo(path, blocks):
+    """(linea, literal) de cada catch-all verde, sobre los mismos bloques DO que analizar()."""
+    lineas = io.open(path, encoding='utf-8').read().split('\n')
+    out = []
+    for ini, _, fin in blocks:
+        tramo = [re.sub(r'--.*$', '', x) for x in lineas[ini - 1:fin]]
+        cuerpo = '\n'.join(tramo)
+        for off, lit in catchall_verde(cuerpo):
+            out.append((ini + cuerpo.count('\n', 0, off), lit))
+    return out
+
+
 def main():
     path = sys.argv[1] if len(sys.argv) > 1 else DEFAULT
     top, blocks, cast = analizar(path)
     sin_h = [b for b in blocks if not b[1]]
+    cav = catchall_del_archivo(path, blocks)
 
     print('b2_guard — %s' % path)
     print('  top_level_dml_ddl : %d   (baseline %d)' % (len(top), BASELINE_TOP_LEVEL))
@@ -173,6 +233,11 @@ def main():
           % (len(cast), BASELINE_CAST_DIRECTO))
     print('  do_sin_handler    : %d   (baseline %d)  [%d bloques DO en total]'
           % (len(sin_h), BASELINE_DO_SIN_HANDLER, len(blocks)))
+    print('  catchall_verde    : %d   (baseline %d)  [WHEN OTHERS que publica OK/N/A/BLOQUEADO/OCULTO sin mirar el SQLSTATE]'
+          % (len(cav), BASELINE_CATCHALL_VERDE))
+    if len(sys.argv) > 2 and sys.argv[2] == '--listar':
+        for n, lit in cav:
+            print('     L%-6d %s' % (n, lit[:90]))
 
     fallo = False
     if len(cast) > BASELINE_CAST_DIRECTO:
@@ -201,6 +266,14 @@ def main():
         print('  *** ROJO: %d bloque(s) DO nuevos sin EXCEPTION handler ***'
               % (len(sin_h) - BASELINE_DO_SIN_HANDLER))
         print('  El baseline es deuda con fecha, no una licencia para agregar mas.')
+    if len(cav) > BASELINE_CATCHALL_VERDE:
+        fallo = True
+        print()
+        print('  *** ROJO: %d catch-all(s) verde(s) nuevo(s): WHEN OTHERS que publica verde para CUALQUIER error ***'
+              % (len(cav) - BASELINE_CATCHALL_VERDE))
+        print('  Un probe asi no distingue el rechazo que mide de una rotura (firma cambiada, 22P02 del fixture,')
+        print('  deadlock): todo sale verde. Mira el SQLSTATE y el mensaje (GET STACKED DIAGNOSTICS, patron P1-P6)')
+        print('  y publica FALLO en el resto. Lista completa: python tests/rls/b2_guard.py <archivo> --listar')
 
     if not fallo:
         bajo = []
@@ -210,6 +283,8 @@ def main():
             bajo.append('cast_directo -> %d' % len(cast))
         if len(sin_h) < BASELINE_DO_SIN_HANDLER:
             bajo.append('do_sin_handler -> %d' % len(sin_h))
+        if len(cav) < BASELINE_CATCHALL_VERDE:
+            bajo.append('catchall_verde -> %d' % len(cav))
         if bajo:
             print()
             print('  VERDE, y ademas BAJO: %s' % ', '.join(bajo))
