@@ -15636,7 +15636,7 @@ BEGIN
   SELECT id INTO v_sa FROM public.perfiles WHERE rol='super_admin' ORDER BY id LIMIT 1;
   -- medico SIN cita con ese paciente: mismo idioma que probe.np_ajeno mas arriba
   SELECT m.id INTO v_otro FROM public.perfiles m
-   WHERE m.rol='medico' AND m.id <> v_med
+   WHERE m.rol='medico' AND m.id <> v_med AND COALESCE(m.created_at, '-infinity') < now()
      AND NOT EXISTS (SELECT 1 FROM public.citas c2 WHERE c2.medico_id=m.id AND c2.paciente_id=v_pac)
    ORDER BY m.id LIMIT 1;
 
@@ -15815,11 +15815,11 @@ BEGIN
     WHEN v_j->'nota' IS NULL OR v_j->'nota' = 'null'::jsonb
       THEN 'ROJO (el super_admin no vio la nota, que SI le corresponde)'
     WHEN v_n <> 0 THEN 'ROJO (vio '||v_n||' sugerencia(s) de IA ajenas — la RPC AMPLIO el acceso)'
-    ELSE 'OK (ve la nota, sugerencias_ia vacio: la RPC no amplia auditoria_ia)' END, false);
+    ELSE 'OK (ve la nota, sugerencias_ia vacio: la RPC no amplia auditoria_ia)' END||' [actor '||left(current_setting('probe.nc_otro', true),8)||']', false);
   PERFORM set_config('role','none', true);
 EXCEPTION WHEN OTHERS THEN
   PERFORM set_config('role','none', true);
-  PERFORM set_config('probe.p685','FALLO ('||SQLSTATE||' '||SQLERRM||')',false);
+  PERFORM set_config('probe.p685','FALLO ('||SQLSTATE||' '||SQLERRM||')'||' [actor '||left(current_setting('probe.nc_otro', true),8)||']',false);
 END $$;
 SELECT set_config('role','none', true);
 
@@ -16386,7 +16386,7 @@ BEGIN
   SELECT p.id, p.pais_id INTO v_ap, v_appa FROM public.perfiles p
    WHERE p.rol = 'admin_pais' AND p.pais_id IS NOT NULL ORDER BY p.id LIMIT 1;
   SELECT p.id INTO v_sa  FROM public.perfiles p WHERE p.rol = 'super_admin' ORDER BY p.id LIMIT 1;
-  SELECT p.id INTO v_med FROM public.perfiles p WHERE p.rol = 'medico' ORDER BY p.id LIMIT 1;
+  SELECT p.id INTO v_med FROM public.perfiles p WHERE p.rol = 'medico' AND COALESCE(p.created_at, '-infinity') < now() ORDER BY p.id LIMIT 1;
 
   -- "Otro pais" se elige CONTRA el pais del admin, no se hardcodea.
   SELECT cp.id INTO v_otro FROM public.configuracion_pais cp
@@ -16490,8 +16490,8 @@ BEGIN
     SELECT count(*) INTO n FROM public.invitaciones_medico;
     PERFORM set_config('probe.p715', CASE WHEN n = 0
       THEN 'OK (un medico sigue viendo 0: la policy no abrio a todos)'
-      ELSE 'ROJO (un rol sin autoridad ve '||n||' invitaciones)' END, false);
-  EXCEPTION WHEN OTHERS THEN PERFORM set_config('probe.p715','FALLO ('||SQLSTATE||' '||SQLERRM||')', false);
+      ELSE 'ROJO (un rol sin autoridad ve '||n||' invitaciones)' END||' [actor '||left(current_setting('probe.in_med', true),8)||']', false);
+  EXCEPTION WHEN OTHERS THEN PERFORM set_config('probe.p715','FALLO ('||SQLSTATE||' '||SQLERRM||')'||' [actor '||left(current_setting('probe.in_med', true),8)||']', false);
   END;
   PERFORM set_config('role','none', true);
 EXCEPTION WHEN OTHERS THEN
@@ -31009,7 +31009,7 @@ BEGIN
   c_cat := (SELECT c.id FROM public.cuentas_proveedor c JOIN public.empresas_proveedoras e ON e.id = c.empresa_id
              WHERE c.activo AND e.estado = 'activa' AND c.empresa_id <> v_emp AND c.id <> c_otra AND c.id <> c_sup AND c.id <> c_vm AND EXISTS (SELECT 1 FROM auth.users u WHERE u.id = c.id)
                AND NOT EXISTS (SELECT 1 FROM public.pacientes pa WHERE pa.auth_user_id = c.id) ORDER BY c.id DESC LIMIT 1);
-  m_ajeno := (SELECT p.id FROM public.perfiles p WHERE p.rol = 'medico'
+  m_ajeno := (SELECT p.id FROM public.perfiles p WHERE p.rol = 'medico' AND COALESCE(p.created_at, '-infinity') < now()
                AND NOT EXISTS (SELECT 1 FROM public.visitas_agendadas v WHERE v.medico_id = p.id AND v.empresa_id = v_emp) ORDER BY p.id LIMIT 1);
   todos := ARRAY(SELECT p.id FROM public.perfiles p WHERE p.rol = 'medico');
   IF v_emp IS NULL OR c_adm IS NULL OR c_otra IS NULL OR c_cat IS NULL OR m_ajeno IS NULL THEN
@@ -31084,7 +31084,7 @@ DECLARE
 BEGIN
   IF current_user <> 'postgres' THEN RAISE EXCEPTION 'fixture roto: P947 corre como %', current_user; END IF;
   todos := ARRAY(SELECT e.id FROM public.empresas_proveedoras e);
-  c_med := (SELECT p.id FROM public.perfiles p WHERE p.rol = 'medico' AND p.activo AND EXISTS (SELECT 1 FROM auth.users u WHERE u.id = p.id)
+  c_med := (SELECT p.id FROM public.perfiles p WHERE p.rol = 'medico' AND p.activo AND EXISTS (SELECT 1 FROM auth.users u WHERE u.id = p.id) AND COALESCE(p.created_at, '-infinity') < now()
              ORDER BY (SELECT count(*) FROM public.productos_empresa pe WHERE pe.estado = 'activo' AND NOT COALESCE(private.empresa_es_afin(pe.empresa_id), false) AND pe.pais_id = p.pais_id) DESC, p.id LIMIT 1);
   FOR r IN SELECT * FROM (VALUES (1,'cuenta de proveedor'),(2,'paciente'),(3,'admin_clinica'),(4,'medico'),(5,'super_admin')) t(k, nombre) LOOP
     p := CASE r.k
@@ -31121,10 +31121,10 @@ BEGIN
   PERFORM set_config('probe.p947_det', det, false);
   PERFORM set_config('probe.p947', CASE WHEN bad = ''
     THEN 'OK (proveedor, paciente y admin_clinica 0; medico = empresas con productos visibles de su pais, sin afines; super_admin = las no afines con productos activos)'
-    ELSE 'ROJO ('||left(bad, 900)||')' END, false);
+    ELSE 'ROJO ('||left(bad, 900)||')' END||' [actor '||COALESCE(left(c_med::text,8),'?')||']', false);
 EXCEPTION WHEN OTHERS THEN
   PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
-  PERFORM set_config('probe.p947', CASE WHEN SQLERRM LIKE 'fixture roto%' THEN 'ROJO ('||SQLERRM||')' ELSE 'FALLO ('||SQLSTATE||' '||SQLERRM||')' END, false);
+  PERFORM set_config('probe.p947', CASE WHEN SQLERRM LIKE 'fixture roto%' THEN 'ROJO ('||SQLERRM||')' ELSE 'FALLO ('||SQLSTATE||' '||SQLERRM||')' END||' [actor '||COALESCE(left(c_med::text,8),'?')||']', false);
 END $$;
 SELECT set_config('role', 'none', true);
 
@@ -31238,6 +31238,7 @@ SELECT set_config('role', 'none', true);
 DO $$
 DECLARE
   det text := ''; bad text := ''; st text; aj int; pr int; e_aj int; e_pr int; r record; v_pais uuid; k_prov int := 0; con_propios int := 0;
+  m_act uuid;
 BEGIN
   IF current_user <> 'postgres' THEN RAISE EXCEPTION 'fixture roto: P949 corre como %', current_user; END IF;
   FOR r IN
@@ -31254,9 +31255,10 @@ BEGIN
        ORDER BY p.rol, p.id) y
     UNION ALL
     SELECT z.id, 'medico', NULL::uuid, 'perf' FROM (
-      SELECT p.id FROM public.perfiles p WHERE p.rol = 'medico' AND p.activo AND EXISTS (SELECT 1 FROM auth.users u WHERE u.id = p.id)
+      SELECT p.id FROM public.perfiles p WHERE p.rol = 'medico' AND p.activo AND EXISTS (SELECT 1 FROM auth.users u WHERE u.id = p.id) AND COALESCE(p.created_at, '-infinity') < now()
        ORDER BY (SELECT count(*) FROM public.productos_empresa pe WHERE pe.estado = 'activo' AND NOT COALESCE(private.empresa_es_afin(pe.empresa_id), false) AND pe.pais_id = p.pais_id) DESC, p.id LIMIT 1) z
   LOOP
+    IF r.etiqueta = 'medico' THEN m_act := r.id; END IF;
     v_pais := (SELECT pf.pais_id FROM public.perfiles pf WHERE pf.id = r.id);
     e_aj := CASE WHEN r.etiqueta = 'medico' THEN (SELECT count(*) FROM public.productos_empresa pe WHERE pe.estado = 'activo' AND NOT COALESCE(private.empresa_es_afin(pe.empresa_id), false) AND pe.pais_id = v_pais)
                  WHEN r.etiqueta = 'super_admin' THEN (SELECT count(*) FROM public.productos_empresa)
@@ -31285,10 +31287,10 @@ BEGIN
   PERFORM set_config('probe.p949_det', det, false);
   PERFORM set_config('probe.p949', CASE WHEN bad = ''
     THEN 'OK (cuentas de proveedor, admin_clinica, enfermeria y admin_pais 0 ajenos; propios intactos; medico = activos no afines de su pais; super_admin todos)'
-    ELSE 'ROJO ('||left(bad, 900)||')' END, false);
+    ELSE 'ROJO ('||left(bad, 900)||')' END||' [actor '||COALESCE(left(m_act::text,8),'?')||']', false);
 EXCEPTION WHEN OTHERS THEN
   PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
-  PERFORM set_config('probe.p949', CASE WHEN SQLERRM LIKE 'fixture roto%' THEN 'ROJO ('||SQLERRM||')' ELSE 'FALLO ('||SQLSTATE||' '||SQLERRM||')' END, false);
+  PERFORM set_config('probe.p949', CASE WHEN SQLERRM LIKE 'fixture roto%' THEN 'ROJO ('||SQLERRM||')' ELSE 'FALLO ('||SQLSTATE||' '||SQLERRM||')' END||' [actor '||COALESCE(left(m_act::text,8),'?')||']', false);
 END $$;
 SELECT set_config('role', 'none', true);
 
@@ -31340,6 +31342,7 @@ BEGIN
              WHERE p.rol = 'medico' AND p.activo AND EXISTS (SELECT 1 FROM auth.users u WHERE u.id = p.id)
                AND NOT EXISTS (SELECT 1 FROM public.cuentas_proveedor c WHERE c.id = p.id)
                AND NOT EXISTS (SELECT 1 FROM public.pacientes pa WHERE pa.auth_user_id = p.id)
+               AND COALESCE(p.created_at, '-infinity') < now()
              ORDER BY p.id LIMIT 1);
   IF c_med IS NULL THEN RAISE EXCEPTION 'sin fixture medico (ningun medico activo con identidad unica)'; END IF;
   snap_ini := (SELECT md5(COALESCE(string_agg(d::text, E'\n' ORDER BY d.id), ''))||' '||count(*) FROM public.disponibilidad_medico d WHERE d.medico_id = c_med);
