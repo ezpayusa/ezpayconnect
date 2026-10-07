@@ -33,6 +33,7 @@ import os
 import shutil
 import subprocess
 import sys
+import unicodedata
 
 REPO = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 HARNESS = os.path.join(REPO, 'tests', 'rls', 'probes_escritura.sql')
@@ -92,13 +93,31 @@ DEUDA = {
 }
 
 
+# Prefijos que hacen ROJA una fila. ROJO y FALLO de siempre; REGRESION, FUGA, LEAK y PERMITIDO desde el
+# 6-oct-2026: el harness los publica como fallas (P45 'REGRESIÓN (P0001)', P146 'FUGA (...)', las negativas
+# 'PERMITIDO (...)') y el runner los dejaba pasar en silencio porque solo miraba ROJO/FALLO.
+# VISIBLE, ERROR y BLOQUEADO? desde la review del 6-oct-2026 (M1): P114/P127/P129/P133/P151/P159 publican
+# 'VISIBLE (...!)' como fuga, P144/P146/P148_n 'ERROR (SQLSTATE)' y P33/P35/P44 'BLOQUEADO? (...)' cuando no
+# hay evidencia de que el bloqueo fue el esperado. 'BLOQUEADO?' es un prefijo LITERAL (sin regex): un
+# 'BLOQUEADO (42501)' no lo matchea porque despues de BLOQUEADO viene ' ' y no '?'.
+PREFIJOS_ROJOS = ('ROJO', 'FALLO', 'REGRESION', 'FUGA', 'LEAK', 'PERMITIDO', 'VISIBLE', 'ERROR', 'BLOQUEADO?')
+
+
+def _sin_tildes(s):
+    """'REGRESIÓN' -> 'REGRESION'. Solo quita marcas diacriticas (NFD + categoria Mn)."""
+    return ''.join(c for c in unicodedata.normalize('NFD', s) if unicodedata.category(c) != 'Mn')
+
+
 def _rojas(filas):
-    """ROJA = el verdict, con strip(), empieza con ROJO o FALLO. Nada de subcadenas sueltas:
-    'PERMITIO' aparece dentro de textos que describen lo que la probe NO dejo pasar."""
+    """ROJA = el verdict, con strip() y upper() y sin tildes, EMPIEZA con uno de PREFIJOS_ROJOS
+    (ROJO, FALLO, REGRESION/REGRESIÓN, FUGA, LEAK, PERMITIDO, VISIBLE, ERROR, BLOQUEADO?). Por PREFIJO
+    literal, nunca por subcadena ni regex: 'PERMITIDO', 'VISIBLE' o 'ERROR' aparecen dentro de textos que
+    describen lo que la probe NO dejo pasar (p. ej. 'OK (... no PERMITIDO ...)', 'OK (no VISIBLE para
+    anon)', 'BLOQUEADO (42501)'), y esos no son rojos."""
     out = []
     for f in filas:
         v = str(f.get('verdict') or '').strip()
-        if v.upper().startswith('ROJO') or v.upper().startswith('FALLO'):
+        if _sin_tildes(v.upper()).startswith(PREFIJOS_ROJOS):
             out.append((str(f.get('probe') or '?'), v))
     return out
 
