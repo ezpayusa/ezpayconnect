@@ -92,13 +92,27 @@ DEUDA = {
 }
 
 
+# Prefijos que hacen ROJA una fila. ROJO y FALLO de siempre; REGRESION, FUGA, LEAK y PERMITIDO desde el
+# 6-oct-2026: el harness los publica como fallas (P45 'REGRESIÓN (P0001)', P146 'FUGA (...)', las negativas
+# 'PERMITIDO (...)') y el runner los dejaba pasar en silencio porque solo miraba ROJO/FALLO.
+PREFIJOS_ROJOS = ('ROJO', 'FALLO', 'REGRESION', 'FUGA', 'LEAK', 'PERMITIDO')
+
+
+def _sin_tildes(s):
+    """'REGRESIÓN' -> 'REGRESION'. Solo quita marcas diacriticas (NFD + categoria Mn)."""
+    import unicodedata
+    return ''.join(c for c in unicodedata.normalize('NFD', s) if unicodedata.category(c) != 'Mn')
+
+
 def _rojas(filas):
-    """ROJA = el verdict, con strip(), empieza con ROJO o FALLO. Nada de subcadenas sueltas:
-    'PERMITIO' aparece dentro de textos que describen lo que la probe NO dejo pasar."""
+    """ROJA = el verdict, con strip() y upper() y sin tildes, EMPIEZA con uno de PREFIJOS_ROJOS
+    (ROJO, FALLO, REGRESION/REGRESIÓN, FUGA, LEAK, PERMITIDO). Por PREFIJO, nunca por subcadena:
+    'PERMITIO'/'PERMITIDO' aparece dentro de textos que describen lo que la probe NO dejo pasar
+    (p. ej. 'OK (... no PERMITIDO ...)', 'BLOQUEADO (...)'), y esos no son rojos."""
     out = []
     for f in filas:
         v = str(f.get('verdict') or '').strip()
-        if v.upper().startswith('ROJO') or v.upper().startswith('FALLO'):
+        if _sin_tildes(v.upper()).startswith(PREFIJOS_ROJOS):
             out.append((str(f.get('probe') or '?'), v))
     return out
 
