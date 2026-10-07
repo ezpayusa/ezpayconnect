@@ -1,5 +1,5 @@
 -- ############################################################################################
--- probe_grants_p800.sql — GATE GLOBAL DE GRANTS DEL DATA API en public. Correr AISLADO:
+-- probe_grants_p800.sql — GATE GLOBAL DE GRANTS DEL DATA API en public (relaciones) y public/private (funciones). AISLADO:
 --   npm run harness:grants   (= npx supabase db query --linked -f tests/rls/probe_grants_p800.sql)
 -- Autocontenido: BEGIN ... ROLLBACK. RAISE ante cualquier violacion (junta todas).
 -- ############################################################################################
@@ -13,7 +13,14 @@ BEGIN;
 -- por eso propaga. Baseline anon = 80 relaciones SELECT (23-sep-2026).
 -- 343 (2-oct-2026): (c)/(d) miran tambien MAINTAIN de anon, y la regla nueva (i) exige 0 TRUNCATE/TRIGGER/
 -- REFERENCES/MAINTAIN para authenticated y PUBLIC (antes P800 no veia MAINTAIN). Con 343_rollback sale ROJO.
--- P800 sigue sin mirar funciones (pg_proc): eso es la 348.
+-- 370 (6-oct-2026): P800 mira tambien FUNCIONES (pg_proc de public y private, sin las de extensiones):
+--   (j) ninguna funcion con EXECUTE para PUBLIC (aclexplode de COALESCE(proacl, acldefault): proacl NULL = PUBLIC);
+--   (k) anon con EXECUTE solo en WL_ANON_FN (literal, solo puede achicarse; huerfanas y entradas sin uso = violacion);
+--   (l) toda policy y toda funcion de la que depende (pg_depend): cada rol de la policy (public -> anon y
+--       authenticated) la puede ejecutar (leccion 284 aplicada a funciones);
+--   (m) EJERCICIO como anon: catalogo_planes_visitador_publico() responde y get_auth_user_rol() da 42501.
+--   La 370 esta APLICADA (7-oct-2026): (j)/(k)/(m) se exigen siempre; el estado previo (38 con PUBLIC, 22 con anon) de
+--   vuelta es violacion, sin rama PENDIENTE (review #53 punto 1). relkind alineado con la 343 y P925: incluye 'f'.
 -- ============================================================================
 DO $p800$
 DECLARE
@@ -32,6 +39,10 @@ DECLARE
   anon_leyo boolean := false;
   f_err text := '';
   nom text;
+  -- WL_ANON_FN — BASELINE 1 (mig 370, 6-oct-2026) — solo puede achicarse. Catalogo publico de precios de la landing
+  -- /planes-visitador sin sesion (mig 362; excepcion de producto, P739).
+  wl_anon_fn text[] := ARRAY['public.catalogo_planes_visitador_publico()'];
+  m_st text;
 BEGIN
   -- FIX 3: las listas blancas solo pueden ACHICARSE (nunca crecer sobre el baseline).
   IF array_length(wl_anon,1) > 8 THEN RAISE EXCEPTION 'P800: WL_ANON_LEGACY solo puede achicarse (baseline 8 tras mig 324), tiene %', array_length(wl_anon,1); END IF;
@@ -39,13 +50,13 @@ BEGIN
   -- (g) entradas huerfanas: nombre en la WL que ya no existe como relacion en public (limpiar la lista).
   FOREACH nom IN ARRAY wl_anon LOOP
     IF NOT EXISTS (SELECT 1 FROM pg_class c JOIN pg_namespace ns ON ns.oid=c.relnamespace
-                    WHERE ns.nspname='public' AND c.relname=nom AND c.relkind IN ('r','v','m','p')) THEN
+                    WHERE ns.nspname='public' AND c.relname=nom AND c.relkind IN ('r','v','m','p','f')) THEN
       v_viol := v_viol || E'\n(g) entrada huerfana en WL: '||nom;
     END IF;
   END LOOP;
   FOREACH nom IN ARRAY wl_auth LOOP
     IF NOT EXISTS (SELECT 1 FROM pg_class c JOIN pg_namespace ns ON ns.oid=c.relnamespace
-                    WHERE ns.nspname='public' AND c.relname=nom AND c.relkind IN ('r','v','m','p')) THEN
+                    WHERE ns.nspname='public' AND c.relname=nom AND c.relkind IN ('r','v','m','p','f')) THEN
       v_viol := v_viol || E'\n(g) entrada huerfana en WL: '||nom;
     END IF;
   END LOOP;
@@ -53,7 +64,7 @@ BEGIN
   FOR r IN
     SELECT c.oid, c.relname, c.relkind, c.relrowsecurity
       FROM pg_class c JOIN pg_namespace ns ON ns.oid = c.relnamespace
-     WHERE ns.nspname = 'public' AND c.relkind IN ('r','v','m','p')
+     WHERE ns.nspname = 'public' AND c.relkind IN ('r','v','m','p','f')
      ORDER BY c.relname
   LOOP
     -- (a) service_role: tablas S/I/U/D ; vistas solo S
@@ -139,6 +150,77 @@ BEGIN
   END IF;
   IF f_err <> '' THEN
     v_viol := v_viol || E'\n' || f_err;
+  END IF;
+
+
+  -- =========================== FUNCIONES (pg_proc) — mig 370 ===========================
+  -- Alcance: public y private, sin funciones de extensiones (pg_depend deptype 'e').
+  -- Con la 370 aplicada (7-oct-2026) todo se exige siempre: 0 con PUBLIC, anon solo en WL_ANON_FN, (l) y las dos mitades
+  -- de (m). El estado previo a la 370 de vuelta (las 38 con PUBLIC / las 22 con anon) sale como violaciones (j)/(k)/(m).
+  IF array_length(wl_anon_fn, 1) > 1 THEN RAISE EXCEPTION 'P800: WL_ANON_FN solo puede achicarse (baseline 1 tras mig 370), tiene %', array_length(wl_anon_fn, 1); END IF;
+  FOREACH nom IN ARRAY wl_anon_fn LOOP
+    IF to_regprocedure(nom) IS NULL THEN
+      v_viol := v_viol || E'\n(k) entrada huerfana en WL_ANON_FN: '||nom;
+    ELSIF NOT has_function_privilege('anon', to_regprocedure(nom), 'EXECUTE') THEN
+      v_viol := v_viol || E'\n(k) entrada de WL_ANON_FN sin EXECUTE de anon (sacarla de la lista): '||nom;
+    END IF;
+  END LOOP;
+
+  FOR r IN
+    SELECT p.oid, p.oid::regprocedure::text AS f,
+           EXISTS (SELECT 1 FROM aclexplode(COALESCE(p.proacl, acldefault('f', p.proowner))) a WHERE a.grantee = 0 AND a.privilege_type = 'EXECUTE') AS pub,
+           has_function_privilege('anon', p.oid, 'EXECUTE') AS anon_e
+      FROM pg_proc p
+     WHERE p.pronamespace IN ('public'::regnamespace, 'private'::regnamespace)
+       AND NOT EXISTS (SELECT 1 FROM pg_depend d WHERE d.classid = 'pg_proc'::regclass AND d.objid = p.oid AND d.deptype = 'e')
+     ORDER BY 2
+  LOOP
+    -- (j) ninguna funcion con EXECUTE para PUBLIC (proacl NULL = acldefault = PUBLIC incluido)
+    IF r.pub THEN
+      v_viol := v_viol || E'\n(j) funcion con EXECUTE para PUBLIC: '||r.f;
+    END IF;
+    -- (k) anon solo en WL_ANON_FN
+    IF r.anon_e AND NOT (r.oid = ANY (SELECT to_regprocedure(x)::oid FROM unnest(wl_anon_fn) x)) THEN
+      v_viol := v_viol || E'\n(k) anon con EXECUTE y fuera de WL_ANON_FN: '||r.f;
+    END IF;
+  END LOOP;
+
+  -- (l) toda policy y toda funcion de la que depende (pg_depend): cada rol de la policy la puede ejecutar
+  --     (public -> anon y authenticated). Una policy se evalua con los privilegios del LLAMANTE (leccion 284): sin
+  --     EXECUTE, la tabla le lanza 42501 a ese rol en vez de negarle filas.
+  FOR r IN
+    SELECT DISTINCT pl.polname, pl.polrelid::regclass::text AS tabla, d.refobjid::regprocedure::text AS f, rr.rl
+      FROM pg_policy pl
+      JOIN pg_depend d ON d.classid = 'pg_policy'::regclass AND d.objid = pl.oid AND d.refclassid = 'pg_proc'::regclass
+      CROSS JOIN LATERAL (SELECT CASE WHEN x = 0 THEN 'anon' ELSE pg_get_userbyid(x) END AS rl FROM unnest(pl.polroles) x
+                          UNION SELECT 'authenticated' WHERE 0 = ANY (pl.polroles)) rr
+     WHERE NOT has_function_privilege(rr.rl, d.refobjid, 'EXECUTE')
+     ORDER BY 2, 1
+  LOOP
+    v_viol := v_viol || E'\n(l) la policy '||r.polname||' de '||r.tabla||' usa '||r.f||' y '||r.rl||' no la puede ejecutar';
+  END LOOP;
+
+  -- (m) EJERCICIO como anon: la funcion de la WL responde; una helper de policy da 42501
+  BEGIN
+    PERFORM set_config('role', 'anon', true);
+    PERFORM count(*) FROM public.catalogo_planes_visitador_publico();
+    PERFORM set_config('role', 'none', true);
+  EXCEPTION WHEN OTHERS THEN
+    PERFORM set_config('role', 'none', true);
+    v_viol := v_viol || E'\n(m) anon no pudo ejecutar catalogo_planes_visitador_publico(): '||SQLSTATE||' '||SQLERRM;
+  END;
+  m_st := '00000';
+  BEGIN
+    PERFORM set_config('role', 'anon', true);
+    PERFORM public.get_auth_user_rol();
+    PERFORM set_config('role', 'none', true);
+  EXCEPTION WHEN insufficient_privilege THEN
+    PERFORM set_config('role', 'none', true); m_st := '42501';
+  WHEN OTHERS THEN
+    PERFORM set_config('role', 'none', true); m_st := SQLSTATE;
+  END;
+  IF m_st <> '42501' THEN
+    v_viol := v_viol || E'\n(m) anon ejecuto public.get_auth_user_rol() (SQLSTATE '||m_st||'; se esperaba 42501)';
   END IF;
 
   IF v_viol <> '' THEN
