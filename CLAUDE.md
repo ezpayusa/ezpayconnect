@@ -391,10 +391,11 @@ Stack: React + Vite + TypeScript, Supabase / Postgres, deploy en Vercel, repo en
   (fase 2.2 CERRADA: los 55 bloques que escriben están envueltos, 211→193→175→157→156→155; los 155
   restantes sólo leen y publican, así que ya no son deuda; 1006 bloques DO en total al 7-oct-2026, rama
   harness/diag-fixture-fm; la última cuenta de filas medida en esta memoria es 1097 / 11 rojas de deuda, en esa rama; en
-  harness/censo-veredictos (post13a, 7-oct-2026) sigue 1097 / 11 rojas de deuda; tsc
-  74, vitest 424), `catchall_verde=202` (set_config de un handler `WHEN OTHERS` que publica un valor no rojo — no empieza
+  harness/censo-veredictos (post14a, 7-oct-2026) sigue 1097 / 11 rojas de deuda; tsc
+  74, vitest 424), `catchall_verde=205` (set_config de un handler `WHEN OTHERS` que publica un valor no rojo — no empieza
   con `PREFIJOS_ROJOS`; incluye flags de fixture que terminan en N/A — y solo queda exento si un IF/CASE de su camino mira
-  el error: cualquier error sale verde; techo, solo puede bajar; censo de veredictos, rama harness/censo-veredictos,
+  el error; cada rama se exime solo por su propia condición, un ELSE nunca: cualquier error sale verde; techo, solo puede
+  bajar; censo de veredictos, rama harness/censo-veredictos,
   7-oct-2026).
   **Regla de método: el harness NUNCA corre en paralelo con otra sesión que escriba o impersone contra prod**
   (las dos compiten por las mismas filas: deadlocks 40P01 que salen como rojos falsos). **P782 ajustado en la 346:** el DELETE directo sobre
@@ -601,7 +602,7 @@ Detalles a recordar:
   'medico' sin fila en medicos; algún fixture deja un admin_pais HN "real" dentro de la transacción (en prod no existe);
   `probe.p1009_det` se setea pero no se publica en el result set; `probe.p1008_det` tampoco; en P1009 el fallback de
   `a_pno` excluye la cuenta de `a_farm` pero no su empresa.
-- (Familia 8, backlog del harness, 7-oct-2026) `catchall_verde = 202`: bajar por lotes; al bajar, actualizar
+- (Familia 8, backlog del harness, 7-oct-2026) `catchall_verde = 205`: bajar por lotes; al bajar, actualizar
   `BASELINE_CATCHALL_VERDE` en `b2_guard.py` y el texto de P516. Fuera del guard: ~52 variables verdes asignadas en un
   handler y publicadas después, y keys dinámicas.
 - (Familia 8, backlog del harness, 7-oct-2026) P17 apagado: `crear_cita` se llama con médico y clínica NULL, el gate
@@ -614,9 +615,15 @@ Detalles a recordar:
 - (Familia 8, backlog del harness, 7-oct-2026) `bs_ready` (~L5317): P304/P305/P307 en N/A indeterminado (el error queda en
   `probe.bs_err`, que no se publica).
 - (Familia 8, backlog del harness, 7-oct-2026) `catchall_verde` solo mira el total: un arreglo + un catch-all nuevo en el
-  mismo commit no lo detecta → congelar como allowlist de firmas (salida de `--listar`) en vez de un número.
+  mismo commit no lo detecta → congelar como allowlist de firmas (salida de `--listar`) en vez de un número. Además mezcla
+  flags de fixture (`*_ready='0'`, `'ERR:'||SQLSTATE`) con veredictos: separar las dos cuentas (o resolverlo con la allowlist).
 - (Familia 8, backlog del harness, 7-oct-2026) El detector de `catchall_verde` no analiza `set_config` cuyo valor es una
-  expresión CASE, ni variables verdes asignadas en el handler y publicadas después, ni keys dinámicas.
+  expresión CASE, ni variables verdes asignadas en el handler y publicadas después, ni keys dinámicas. Límites que quedan
+  tras la review de seguimiento: un CASE dentro de la condición de un IF rompe la pila; mencionar el error no es
+  discriminarlo (`IF SQLSTATE IS NOT NULL` exime); `_vars_de_error` no respeta el orden de las asignaciones; un
+  `set_config` con literal `E'…'` no se detecta; el campo `exc` de los frames no se usa.
+- (Familia 8, backlog del harness, 7-oct-2026) P13 (L479), P18 (L560) y P485 (L10136): su ELSE publica BLOQUEADO para
+  cualquier SQLSTATE distinto del esperado → pasar a FALLO (verdes falsos latentes; hoy salen por su rama 42501).
 - (Familia 8, backlog del harness, 7-oct-2026) P44 matchea el mensaje exacto del RAISE de `administrar_visita`: cuando se
   toque esa función, darle ERRCODE propio y matchear por SQLSTATE.
 - (Familia 8, backlog del harness, 7-oct-2026) Nits: P757 con la 366 revertida dice "PENDIENTE mig 368"; el `re.sub` de
