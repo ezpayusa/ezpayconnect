@@ -502,7 +502,10 @@ BEGIN
       WHERE ri.receta_id IN (SELECT r.id FROM public.recetas r JOIN public.pacientes p ON r.paciente_id=p.id WHERE p.auth_user_id=auth.uid());
     SELECT count(*) INTO ajenos FROM public.receta_items ri
       WHERE ri.receta_id NOT IN (SELECT r.id FROM public.recetas r JOIN public.pacientes p ON r.paciente_id=p.id WHERE p.auth_user_id=auth.uid());
-    PERFORM set_config('probe.p14','ve '||propios||' propios / '||ajenos||' ajenos',false);
+    PERFORM set_config('probe.p14', CASE
+      WHEN ajenos > 0 THEN 'FUGA (ve '||propios||' propios / '||ajenos||' ajenos)'
+      WHEN propios = 0 THEN 'FALLO (ve 0 propios / '||ajenos||' ajenos)'
+      ELSE 'OK (ve '||propios||' propios / 0 ajenos)' END, false);
   END IF;
 END $$;
 
@@ -935,7 +938,7 @@ SELECT set_config('role', 'none', true);
 SELECT set_config('request.jwt.claims',
   json_build_object('sub', current_setting('probe.ajeno', true), 'role','authenticated')::text, true);
 SELECT set_config('role', 'authenticated', true);
-DO $$ DECLARE r jsonb; BEGIN
+DO $$ DECLARE r jsonb; s TEXT; m TEXT; BEGIN
   IF NULLIF(current_setting('probe.av_visita', true),'') IS NULL THEN PERFORM set_config('probe.p44','N/A (sin visitas)',false);
   ELSE
     r := public.administrar_visita(NULLIF(current_setting('probe.av_visita', true), '')::uuid,'rechazar',NULL,NULL,NULL,'__probe');
@@ -943,7 +946,12 @@ DO $$ DECLARE r jsonb; BEGIN
     ELSE PERFORM set_config('probe.p44','BLOQUEADO? (devolvió: '||r::text||')',false); END IF;
   END IF;
 EXCEPTION
-  WHEN others THEN PERFORM set_config('probe.p44','BLOQUEADO ('||SQLSTATE||')',false);
+  -- Solo el RAISE del gate cuenta como bloqueo: texto exacto de la definicion viva de administrar_visita
+  -- ('No autorizado para administrar esta visita', P0001 por defecto). Cualquier otro error es FALLO.
+  WHEN others THEN GET STACKED DIAGNOSTICS s = RETURNED_SQLSTATE, m = MESSAGE_TEXT;
+    IF s = 'P0001' AND m = 'No autorizado para administrar esta visita' THEN
+      PERFORM set_config('probe.p44','BLOQUEADO (P0001 no autorizado)',false);
+    ELSE PERFORM set_config('probe.p44','FALLO (SQLSTATE inesperado: '||s||' '||m||')',false); END IF;
 END $$;
 
 -- P45 — administrar_visita POSITIVO: un miembro de la empresa proveedora SÍ la administra
@@ -2745,7 +2753,7 @@ DO $$ DECLARE v jsonb; BEGIN
   ELSE
     v := public.registrar_dispensacion(current_setting('probe.qr_tokY', true),
            ARRAY[NULLIF(current_setting('probe.qr_iY1',true),'')::bigint, NULLIF(current_setting('probe.qr_iB',true),'')::bigint], 'Farm A');
-    PERFORM set_config('probe.p148_n', COALESCE((v->>'despachados'),'?'), false);
+    PERFORM set_config('probe.p148_n', COALESCE((v->>'despachados'),'FALLO (respuesta sin clave despachados: '||COALESCE(v::text,'NULL')||')'), false);
   END IF;
 EXCEPTION WHEN undefined_function THEN PERFORM set_config('probe.p148_n','N/A (RPC no existe)',false);
   WHEN others THEN PERFORM set_config('probe.p148_n','ERROR ('||SQLSTATE||')',false);
@@ -3001,7 +3009,8 @@ DO $$ DECLARE n INT; BEGIN
     IF n>0 THEN PERFORM set_config('probe.p159','VISIBLE (anon lee '||n||'!)',false);
     ELSE PERFORM set_config('probe.p159','OCULTO (0 anon)',false); END IF;
   END IF;
-EXCEPTION WHEN others THEN PERFORM set_config('probe.p159','OCULTO ('||SQLSTATE||')',false);
+EXCEPTION WHEN insufficient_privilege THEN PERFORM set_config('probe.p159','OCULTO (42501: anon sin SELECT)',false);
+  WHEN others THEN PERFORM set_config('probe.p159','FALLO (SQLSTATE inesperado: '||SQLSTATE||' '||SQLERRM||')',false);
 END $$;
 
 -- P160 — POS: lado clínico NO-médico (enfermera/asistente) VE disponibilidad → OK
@@ -7850,7 +7859,7 @@ BEGIN
   PERFORM set_config('role','authenticated', true);
   BEGIN PERFORM public.autorizar_invitacion_staff('cajero');
     PERFORM set_config('probe.pinvit_pregate','PERMITIDO (pre-gate dejó pasar no-admin)',false);
-  EXCEPTION WHEN others THEN PERFORM set_config('probe.pinvit_pregate', CASE WHEN SQLSTATE='42501' THEN 'OK (pre-gate BLOQUEA no-admin 42501, antes de createUser)' ELSE 'OK? ('||SQLSTATE||')' END, false); END;
+  EXCEPTION WHEN others THEN PERFORM set_config('probe.pinvit_pregate', CASE WHEN SQLSTATE='42501' THEN 'OK (pre-gate BLOQUEA no-admin 42501, antes de createUser)' ELSE 'FALLO (SQLSTATE inesperado: '||SQLSTATE||' '||SQLERRM||'; esperado 42501)' END, false); END;
 
   -- restaurar admin
   PERFORM set_config('role','none',true);
@@ -7861,12 +7870,12 @@ BEGIN
   -- NEG rol fuera de catálogo del tipo (visitador_medico no es de farmacia) → 22023
   BEGIN PERFORM public.vincular_membresia_proveedor(v_mail_libre,'visitador_medico',NULL,NULL);
     PERFORM set_config('probe.pinvit_rolcat','PERMITIDO (rol fuera de catálogo)',false);
-  EXCEPTION WHEN others THEN PERFORM set_config('probe.pinvit_rolcat', CASE WHEN SQLSTATE='22023' THEN 'OK (rol fuera de catálogo BLOQUEADO 22023)' ELSE 'OK? ('||SQLSTATE||')' END, false); END;
+  EXCEPTION WHEN others THEN PERFORM set_config('probe.pinvit_rolcat', CASE WHEN SQLSTATE='22023' THEN 'OK (rol fuera de catálogo BLOQUEADO 22023)' ELSE 'FALLO (SQLSTATE inesperado: '||SQLSTATE||' '||SQLERRM||'; esperado 22023)' END, false); END;
 
   -- NEG rama (iii): email de usuario que YA tiene membresía → 23505 (→409)
   BEGIN PERFORM public.vincular_membresia_proveedor(v_mail_ocup,'cajero',NULL,NULL);
     PERFORM set_config('probe.pinvit_409','PERMITIDO (segunda membresía)',false);
-  EXCEPTION WHEN others THEN PERFORM set_config('probe.pinvit_409', CASE WHEN SQLSTATE='23505' THEN 'OK (1:1 guard 23505→409)' ELSE 'OK? ('||SQLSTATE||')' END, false); END;
+  EXCEPTION WHEN others THEN PERFORM set_config('probe.pinvit_409', CASE WHEN SQLSTATE='23505' THEN 'OK (1:1 guard 23505→409)' ELSE 'FALLO (SQLSTATE inesperado: '||SQLSTATE||' '||SQLERRM||'; esperado 23505)' END, false); END;
 
   -- POS rama (ii): usuario existente SIN membresía → crea membresía (empresa=invitador) SIN tocar su credencial.
   -- (auth.users solo lo lee el owner → captura pre/post bajo rol 'none'; el vincular corre como admin.)
@@ -13400,7 +13409,11 @@ DO $$ DECLARE r record; v_ase1 uuid; v_sup uuid; v_jhoy uuid; BEGIN
       ELSE 'OK (estado = cancelada, motivo = "'||r.cancelacion_motivo||'")' END, false);
   END IF;
 EXCEPTION WHEN OTHERS THEN
-  PERFORM set_config('probe.p586','FALLO al leer filas ('||SQLSTATE||' '||SQLERRM||')',false);
+  -- Los CUATRO: si el lector revienta, los que todavia no resolvio quedarian en la marca 'PENDIENTE' (verde para el runner).
+  PERFORM set_config('probe.p586','FALLO (lector: '||SQLSTATE||' '||SQLERRM||')',false);
+  PERFORM set_config('probe.p587','FALLO (lector: '||SQLSTATE||' '||SQLERRM||')',false);
+  PERFORM set_config('probe.p591','FALLO (lector: '||SQLSTATE||' '||SQLERRM||')',false);
+  PERFORM set_config('probe.p595','FALLO (lector: '||SQLSTATE||' '||SQLERRM||')',false);
 END $$;
 
 -- P598 — anon SIN EXECUTE sobre las 3 RPCs (y abrir_jornada, que se recreo)
@@ -13709,7 +13722,7 @@ BEGIN
 
   PERFORM set_config('probe.p607', CASE WHEN v_mueve='OK' AND v_bloquea='OK'
     THEN 'OK (reprograma sobre dia con cancelada; sigue rebotando contra visita viva)'
-    ELSE 'a_dia_cancelado='||v_mueve||' | b_dia_con_visita_viva='||v_bloquea END, false);
+    ELSE 'FALLO (a_dia_cancelado='||v_mueve||' | b_dia_con_visita_viva='||v_bloquea||')' END, false);
 EXCEPTION WHEN OTHERS THEN PERFORM set_config('probe.p607','FALLO ('||SQLSTATE||' '||SQLERRM||')',false); END $$;
 
 SELECT set_config('role','none', true);
@@ -14422,7 +14435,7 @@ DO $$ DECLARE v_n int; v_sa text; v_hn text; BEGIN
   v_hn := coalesce(current_setting('probe.p618_hn',true),'(sin medir)');
   PERFORM set_config('probe.p618', CASE WHEN v_hn='OK' AND v_sa='OK'
     THEN 'OK (admin de HN rechazado con 42501; super_admin SI ve: el corte es por pais, no un rechazo a todos)'
-    ELSE 'admin_HN='||v_hn||' | super_admin='||v_sa END, false);
+    ELSE 'FALLO (admin_HN='||v_hn||' | super_admin='||v_sa||')' END, false);
 EXCEPTION WHEN OTHERS THEN PERFORM set_config('probe.p618','FALLO ('||SQLSTATE||' '||SQLERRM||')',false); END $$;
 SELECT set_config('role','none', true);
 
@@ -14709,9 +14722,9 @@ DO $$ DECLARE r record; v_n int; v_pais_med uuid; BEGIN
     SELECT count(*) INTO v_n FROM public.config_visitas_efectiva();
     SELECT * INTO r FROM public.config_visitas_efectiva() LIMIT 1;
   EXCEPTION WHEN insufficient_privilege THEN
-    PERFORM set_config('probe.p629','RECHAZA (42501 al rol no comercial)',false); RETURN;
+    PERFORM set_config('probe.p629','FALLO (RECHAZA 42501 al rol no comercial)',false); RETURN;
   WHEN others THEN
-    PERFORM set_config('probe.p629','RECHAZA ('||SQLSTATE||': '||SQLERRM||')',false); RETURN;
+    PERFORM set_config('probe.p629','FALLO (RECHAZA '||SQLSTATE||': '||SQLERRM||')',false); RETURN;
   END;
   PERFORM set_config('role','none', true);
   SELECT pais_id INTO v_pais_med FROM public.perfiles WHERE id = NULLIF(current_setting('probe.co_medf',true),'')::uuid;
@@ -33547,7 +33560,7 @@ UNION ALL SELECT 'P9_medico_inserta_expediente_propio', current_setting('probe.p
 UNION ALL SELECT 'P10_medico_inserta_signos_propio',    current_setting('probe.p10', true), 'BLOQUEADO (42501, mig 162: solo capturar_signo_vital)'
 UNION ALL SELECT 'P12_medico_inserta_historial_ajeno',  current_setting('probe.p12', true), 'BLOQUEADO'
 UNION ALL SELECT 'P13_medico_inserta_expediente_ajeno', current_setting('probe.p13', true), 'BLOQUEADO'
-UNION ALL SELECT 'P14_paciente_ve_sus_receta_items',    current_setting('probe.p14', true), '>0 propios / 0 ajenos'
+UNION ALL SELECT 'P14_paciente_ve_sus_receta_items',    current_setting('probe.p14', true), 'OK (>0 propios / 0 ajenos)'
 UNION ALL SELECT 'P15_medico_ve_citas_ajenas',          current_setting('probe.p15', true), 'BLOQUEADO'
 UNION ALL SELECT 'P16_paciente_ve_citas_ajenas',        current_setting('probe.p16', true), 'BLOQUEADO'
 UNION ALL SELECT 'P17_paciente_no_crea_agendada',       current_setting('probe.p17', true), 'BLOQUEADO'
