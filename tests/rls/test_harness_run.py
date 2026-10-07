@@ -57,6 +57,30 @@ def test_permitido_con_espacios():
     assert _es_roja('  PERMITIDO? (alcanzó el cuerpo)  ')
 
 
+def test_visible():
+    assert _es_roja('VISIBLE (farmacia ve 2 ajeno!)')
+
+
+def test_error():
+    assert _es_roja('ERROR (42883)')
+
+
+def test_error_minuscula():
+    assert _es_roja('error (x)')
+
+
+def test_bloqueado_con_signo():
+    assert _es_roja('BLOQUEADO? (sin evidencia)')
+
+
+def test_ok_que_menciona_visible_no_es_roja():
+    assert not _es_roja('OK (no VISIBLE para anon)')
+
+
+def test_ok_que_menciona_error_no_es_roja():
+    assert not _es_roja('OK (sin ERROR)')
+
+
 def test_ok_que_menciona_permitido_no_es_roja():
     assert not _es_roja('OK (BLOQUEADO: lo que antes era PERMITIDO ya no pasa)')
 
