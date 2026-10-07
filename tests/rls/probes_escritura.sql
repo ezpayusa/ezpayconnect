@@ -11501,8 +11501,9 @@ SELECT set_config('role','none', true);
 --                            se PROBARON en rojo a proposito, no se asumieron (ver el commit de la tanda 2).
 --                            Para los bloques que no publican veredicto propio, FX19 es el UNICO delator.
 --
---   catchall_verde = 139     set_config('probe.*') dentro de un `EXCEPTION WHEN OTHERS` que publica OK,
---                            N/A, BLOQUEADO u OCULTO sin IF ni CASE: cualquier error sale VERDE (clase
+--   catchall_verde = 202     set_config('probe.*') dentro de un `EXCEPTION WHEN OTHERS` que publica un
+--                            valor no rojo (no empieza con PREFIJOS_ROJOS; incluye flags de fixture que
+--                            terminan en N/A) sin un IF/CASE que mire el error: cualquier error sale VERDE (clase
 --                            P44, censo de veredictos 2026-10-07). Techo, no deuda con fecha: sube si
 --                            alguien agrega uno; un probe nuevo tiene que mirar el SQLSTATE.
 --
@@ -11513,7 +11514,7 @@ SELECT set_config('role','none', true);
 DO $$
 BEGIN
   PERFORM set_config('probe.p516',
-    'OK-SENAL (baseline declarado: top_level_dml_ddl=0 excluyendo pg_temp, cast_directo=0 CERRADO, do_sin_handler=155, fase 2.2 CERRADA: los restantes solo LEEN, catchall_verde=139 techo). '||
+    'OK-SENAL (baseline declarado: top_level_dml_ddl=0 excluyendo pg_temp, cast_directo=0 CERRADO, do_sin_handler=155, fase 2.2 CERRADA: los restantes solo LEEN, catchall_verde=202 techo). '||
     'El gate real es tests/rls/b2_guard.py — este probe NO mide, senaliza.', false);
 EXCEPTION WHEN OTHERS THEN
   -- handler puesto por coherencia: el propio b2_guard.py conto este bloque como deuda nueva cuando
