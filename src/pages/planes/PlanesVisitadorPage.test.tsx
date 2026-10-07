@@ -85,6 +85,10 @@ describe('PlanesVisitadorPage (landing pública)', () => {
     expect(screen.getByText('20 visitas para todo su equipo')).toBeInTheDocument()
     expect(screen.queryByText(/No disponible/)).not.toBeInTheDocument()
     expect(screen.queryByText('Recomendado')).not.toBeInTheDocument()
+    // GL-40: solo lo que existe. El check-out guarda notas (sin evidencia) y el admin ve el reporte, no la ruta de cada visitador.
+    expect(screen.getAllByText('Check-in con foto y check-out con notas').length).toBeGreaterThan(0)
+    expect(screen.queryByText(/con evidencia/)).not.toBeInTheDocument()
+    expect(screen.queryByText(/Usted ve la ruta del día/)).not.toBeInTheDocument()
 
     // sin sesión de proveedor: sin fila "Usuario" y con el aviso de ingreso
     fireEvent.click(screen.getAllByRole('button', { name: /Elegir plan/ })[0])
@@ -160,5 +164,12 @@ describe('PlanesVisitadorPage (landing pública)', () => {
     pintar()
     expect(await screen.findByText('No pudimos cargar los planes. Intente de nuevo en unos minutos.')).toBeInTheDocument()
     expect(screen.queryByText(/permission denied/)).not.toBeInTheDocument()
+  })
+
+  it('catálogo vacío: aviso sin invitar a escribir a un canal que no existe (GL-40)', async () => {
+    catalogo = { data: [], error: null }
+    pintar()
+    expect(await screen.findByText('Por ahora no hay planes de visitas a la venta en este país.')).toBeInTheDocument()
+    expect(screen.queryByText(/Escriba al equipo/)).not.toBeInTheDocument()
   })
 })

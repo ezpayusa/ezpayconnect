@@ -34,7 +34,7 @@ const ERROR_CARGA = 'No pudimos cargar los planes. Intente de nuevo en unos minu
 const FUNCIONES_REALES = [
   'Agenda de visitas a médicos',
   'Aprobación del supervisor',
-  'Check-in y check-out con evidencia',
+  'Check-in con foto y check-out con notas',
   'Ruta del día',
   'Reporte de visitas',
 ];
@@ -143,8 +143,8 @@ export default function PlanesVisitadorPage() {
           </div>
           <h1 className="text-4xl font-bold mb-4">Planes de visitas médicas para su empresa</h1>
           <p className="text-xl text-amber-100 max-w-2xl mx-auto">
-            Compre una bolsa de visitas para todo su equipo en el país: agenda, aprobación del supervisor, check-in y
-            check-out con evidencia, ruta del día y reporte de visitas.
+            Compre una bolsa de visitas para todo su equipo en el país: agenda, aprobación del supervisor, check-in con
+            foto, ruta del día de cada visitador y reporte de visitas.
           </p>
         </div>
       </div>
@@ -234,7 +234,7 @@ export default function PlanesVisitadorPage() {
 
         {!loading && !errorCarga && planesPais.length === 0 && (
           <div className="text-center py-12 text-gray-500">
-            Por ahora no hay planes de visitas a la venta. Escriba al equipo de EzPayConnect para más información.
+            Por ahora no hay planes de visitas a la venta en este país.
           </div>
         )}
 
@@ -248,12 +248,12 @@ export default function PlanesVisitadorPage() {
           <div className="text-center p-6">
             <ClipboardCheck className="h-12 w-12 text-orange-600 mx-auto mb-4" />
             <h3 className="text-lg font-semibold mb-2">Check-in y check-out</h3>
-            <p className="text-gray-600">Cada visita queda registrada al llegar y al salir, con evidencia.</p>
+            <p className="text-gray-600">Cada visita queda registrada al llegar, con foto, y al salir, con las notas del visitador.</p>
           </div>
           <div className="text-center p-6">
             <BarChart3 className="h-12 w-12 text-orange-600 mx-auto mb-4" />
             <h3 className="text-lg font-semibold mb-2">Ruta y reporte</h3>
-            <p className="text-gray-600">Usted ve la ruta del día de cada visitador y el reporte de las visitas realizadas.</p>
+            <p className="text-gray-600">Cada visitador tiene su ruta del día en el teléfono, y usted ve el reporte de las visitas de su equipo.</p>
           </div>
         </div>
       </div>
