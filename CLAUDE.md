@@ -390,9 +390,11 @@ Stack: React + Vite + TypeScript, Supabase / Postgres, deploy en Vercel, repo en
   Baselines vivos: `top_level_dml_ddl=0` (excluye `pg_temp`), `cast_directo=0`, `do_sin_handler=155`
   (fase 2.2 CERRADA: los 55 bloques que escriben están envueltos, 211→193→175→157→156→155; los 155
   restantes sólo leen y publican, así que ya no son deuda; 1006 bloques DO en total al 7-oct-2026, rama
-  harness/diag-fixture-fm; la última cuenta de filas medida en esta memoria es 1097 / 11 rojas de deuda, en esa rama; tsc
-  74, vitest 424), `catchall_verde=139` (handlers `WHEN OTHERS` que publican OK/N/A/BLOQUEADO/OCULTO sin mirar el
-  SQLSTATE: cualquier error sale verde; techo, solo puede bajar; censo de veredictos, rama harness/censo-veredictos,
+  harness/diag-fixture-fm; la última cuenta de filas medida en esta memoria es 1097 / 11 rojas de deuda, en esa rama; en
+  harness/censo-veredictos (post13a, 7-oct-2026) sigue 1097 / 11 rojas de deuda; tsc
+  74, vitest 424), `catchall_verde=202` (set_config de un handler `WHEN OTHERS` que publica un valor no rojo — no empieza
+  con `PREFIJOS_ROJOS`; incluye flags de fixture que terminan en N/A — y solo queda exento si un IF/CASE de su camino mira
+  el error: cualquier error sale verde; techo, solo puede bajar; censo de veredictos, rama harness/censo-veredictos,
   7-oct-2026).
   **Regla de método: el harness NUNCA corre en paralelo con otra sesión que escriba o impersone contra prod**
   (las dos compiten por las mismas filas: deadlocks 40P01 que salen como rojos falsos). **P782 ajustado en la 346:** el DELETE directo sobre
@@ -599,13 +601,26 @@ Detalles a recordar:
   'medico' sin fila en medicos; algún fixture deja un admin_pais HN "real" dentro de la transacción (en prod no existe);
   `probe.p1009_det` se setea pero no se publica en el result set; `probe.p1008_det` tampoco; en P1009 el fallback de
   `a_pno` excluye la cuenta de `a_farm` pero no su empresa.
-- (Familia 8, backlog del harness, 7-oct-2026) `catchall_verde = 139`: bajar por lotes; al bajar, actualizar
+- (Familia 8, backlog del harness, 7-oct-2026) `catchall_verde = 202`: bajar por lotes; al bajar, actualizar
   `BASELINE_CATCHALL_VERDE` en `b2_guard.py` y el texto de P516. Fuera del guard: ~52 variables verdes asignadas en un
   handler y publicadas después, y keys dinámicas.
 - (Familia 8, backlog del harness, 7-oct-2026) P17 apagado: `crear_cita` se llama con médico y clínica NULL, el gate
   nuevo lo rechaza y el catch-all lo convierte en N/A; el caso agendada → solicitada no se ejercita. Necesita recon del fixture.
 - (Familia 8, backlog del harness, 7-oct-2026) P52 es un positivo débil ('RLS permitió; faltó dato: 23502'): la fila
   nunca se inserta.
+- (Familia 8, backlog del harness, 7-oct-2026) Fixture pe (`probes_escritura.sql` ~L3691): sus INSERT en
+  `productos_empresa` fallan dentro del catch-all → `pe_ready='0'` → P195/P196/P197/P203 publican N/A sin medir. El
+  handler no guarda SQLSTATE. Recon pendiente.
+- (Familia 8, backlog del harness, 7-oct-2026) `bs_ready` (~L5317): P304/P305/P307 en N/A indeterminado (el error queda en
+  `probe.bs_err`, que no se publica).
+- (Familia 8, backlog del harness, 7-oct-2026) `catchall_verde` solo mira el total: un arreglo + un catch-all nuevo en el
+  mismo commit no lo detecta → congelar como allowlist de firmas (salida de `--listar`) en vez de un número.
+- (Familia 8, backlog del harness, 7-oct-2026) El detector de `catchall_verde` no analiza `set_config` cuyo valor es una
+  expresión CASE, ni variables verdes asignadas en el handler y publicadas después, ni keys dinámicas.
+- (Familia 8, backlog del harness, 7-oct-2026) P44 matchea el mensaje exacto del RAISE de `administrar_visita`: cuando se
+  toque esa función, darle ERRCODE propio y matchear por SQLSTATE.
+- (Familia 8, backlog del harness, 7-oct-2026) Nits: P757 con la 366 revertida dice "PENDIENTE mig 368"; el `re.sub` de
+  comentarios `--` en `b2_guard.py` trunca un `--` dentro de un literal (hoy 0 casos).
 - (Producto) `administrar_visita('rechazar')` no valida el estado de la visita (definición viva): rechaza visitas
   completadas, canceladas o ya rechazadas. Recon de producto post-11-oct. Detectado en la review de
   harness/diag-fixture-fm (m5 descartado, ver c38862e).
