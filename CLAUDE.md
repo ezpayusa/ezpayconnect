@@ -424,8 +424,8 @@ Stack: React + Vite + TypeScript, Supabase / Postgres, deploy en Vercel, repo en
   Baselines vivos: `top_level_dml_ddl=0` (excluye `pg_temp`), `cast_directo=0`, `do_sin_handler=155`
   (fase 2.2 CERRADA: los 55 bloques que escriben están envueltos, 211→193→175→157→156→155; los 155
   restantes sólo leen y publican, así que ya no son deuda; 1006 bloques DO en total al 7-oct-2026, rama
-  harness/diag-fixture-fm; la última cuenta de filas medida en esta memoria es 1097 / 11 rojas de deuda, en esa rama; en
-  harness/censo-veredictos (post14a, 7-oct-2026) sigue 1097 / 11 rojas de deuda; tsc
+  harness/diag-fixture-fm, con 1097 / 11 rojas de deuda en esa rama y en harness/censo-veredictos (post14a, 7-oct-2026);
+  la última cuenta de filas medida en esta memoria es **1102 / 11 rojas de deuda (post370, 7-oct-2026, ver abajo)**; tsc
   74, vitest 424), `catchall_verde=205` (set_config de un handler `WHEN OTHERS` que publica un valor no rojo — no empieza
   con `PREFIJOS_ROJOS`; incluye flags de fixture que terminan en N/A — y solo queda exento si un IF/CASE de su camino mira
   el error; cada rama se exime solo por su propia condición, un ELSE nunca: cualquier error sale verde; techo, solo puede
@@ -580,8 +580,8 @@ Detalles a recordar:
   de DEFINER sin search_path, P932 = funcional con search_path hostil) → EXECUTE de PUBLIC/anon en funciones:
   movido a la familia 2 (último paso).
   P800 ya extendido a MAINTAIN (343: reglas (c)/(d) + nueva (i), authenticated/PUBLIC sin TRU/TRI/REF/MAI en
-  ninguna relación de public); falta extenderlo a funciones (último paso de la familia 2).
-  Hallazgos del recon para no perderlos: **P800 NO consulta `pg_proc`**; 21 funciones de public con
+  ninguna relación de public); extendido a funciones en la rama de la 370 (2797e06: reglas (j)-(m) sobre `pg_proc`).
+  Hallazgos del recon para no perderlos: **P800 no consultaba `pg_proc`** (lo hace desde 2797e06, mig 370); 21 funciones de public con
   EXECUTE para anon (10 helpers DEFINER usados por policies `TO public`, 9 de trigger, 2 utilitarias); 7 tablas
   con RLS y 0 policies con todos los privilegios (cache_biblioteca, confirmaciones_receta, medico_correlativos,
   planes_features, planes_limites, resumen_comisiones, transacciones).
@@ -627,7 +627,7 @@ Detalles a recordar:
   `useRecetas.ts:197` UPDATE de `recetas`.
 - (Familia 3/4) FK `examenes_orden_id_fkey` sigue `ON DELETE CASCADE`: tras la 338 sólo la alcanzan
   postgres/service_role (borrar una orden arrastra sus exámenes, completados incluidos).
-- (Familia 4, review #47 M-2, candidato a mig 370) Las RPCs de la 369 normalizan nombre y categoría con `btrim`, que solo
+- (Familia 4, review #47 M-2, candidato a mig 371+; la 370 fue EXECUTE) Las RPCs de la 369 normalizan nombre y categoría con `btrim`, que solo
   recorta espacios: tabs y saltos de línea pasan por API (el front hace `.trim()`, que sí los recorta). La 336 ya normaliza
   espacios/tabs/saltos para EX028: usar el mismo criterio en `crear_examen_catalogo` y `actualizar_examen_catalogo`.
 - (Familia 2/4) `catalogo_read_activos` no filtra por tipo de empresa: `private.lab_en_mi_pais` solo compara el país. Hoy no
@@ -668,6 +668,27 @@ Detalles a recordar:
   toque esa función, darle ERRCODE propio y matchear por SQLSTATE.
 - (Familia 8, backlog del harness, 7-oct-2026) Nits: P757 con la 366 revertida dice "PENDIENTE mig 368"; el `re.sub` de
   comentarios `--` en `b2_guard.py` trunca un `--` dentro de un literal (hoy 0 casos).
+- (Familia 8, backlog del harness, 7-oct-2026, review #53 punto 3) El precheck de la 370, P800 (l) y P1015 solo miran
+  `pg_policy` como dependientes de funciones: un DEFAULT, CHECK, vista security_invoker o WHEN de trigger nuevos que llamen
+  a una helper sin GRANT pasarían en verde y darían 42501 en runtime (hoy 0 casos vivos). Ampliar (l) a `pg_depend` de
+  `pg_attrdef` / `pg_constraint` / `pg_rewrite` / `pg_trigger`.
+- (Familia 8, backlog del harness, 7-oct-2026, review #53 punto 4) Ningún gate verifica que los llamadores de
+  `resolver_medicamento_id` y `es_staff_calendario_clinica` sigan siendo SECURITY DEFINER (hoy 7 de 7); P1018 no dispara
+  `trg_farmed_resolver_medid`. Agregar un probe que lo exija.
+- (Familia 8, backlog del harness, 7-oct-2026, review #53 punto 5) P1017 acepta 0 filas (~L33896/33910): solo comprueba que
+  no haya 42501. Si `entrega_visible` devolviera siempre false, farmacia.qa vería 0 evidencias y el probe diría OK. Sembrar
+  una evidencia propia y exigir n >= 1.
+- (Familia 8, backlog del harness, 7-oct-2026, review #53 punto 6) `pg_temp.e370_estado()` no excluye funciones de
+  extensiones (~L17226) y el de P800 sí: si se instala una extensión en public, harness y P800 discrepan. Latente.
+- (Familia 8, backlog del harness, 7-oct-2026, review #53 punto 7) El snapshot de P1018 no cubre
+  `empresas_proveedoras.estado` ni `empresa_paises_operacion`, que el probe modifica; hoy queda dentro del savepoint P0999,
+  pero no cumple "restaura y verifica la restauración".
+- (Familia 8, backlog del harness, 7-oct-2026, review #53 punto 8) `370_rollback.sql` usa un salto de línea literal dentro de
+  `E'…'` (:31, :123) y la mig usa `E'\n'`: la huella depende del fin de línea en disco (hoy eol=lf, 0 CR). Solo falla con
+  una copia en CRLF.
+- (Familia 8, backlog del harness, 7-oct-2026, review #53 punto 9) Lógica duplicada: listas 38/22 en E370_FX y el rollback
+  (P800 ya no las tiene desde 2b63b72); la regla "cada rol de la policy ejecuta sus funciones" en P1015 y P800 (l); la SQL de
+  huellas 4 veces. La 371 va a tener que tocar 3-4 copias: centralizar en un helper de `pg_temp`.
 - (Producto) `administrar_visita('rechazar')` no valida el estado de la visita (definición viva): rechaza visitas
   completadas, canceladas o ya rechazadas. Recon de producto post-11-oct. Detectado en la review de
   harness/diag-fixture-fm (m5 descartado, ver c38862e).
