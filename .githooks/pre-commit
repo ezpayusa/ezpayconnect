@@ -14,6 +14,12 @@ if git diff --cached --name-only | grep -qE '^tests/rls/(probes_escritura\.sql|b
     exit 1
   }
 
+  python tests/rls/test_harness_run.py || {
+    echo "[pre-commit] BLOQUEADO: el CLASIFICADOR de rojas del runner esta roto. Sin el, un veredicto"
+    echo "[pre-commit] REGRESION/FUGA/LEAK/PERMITIDO vuelve a pasar como verde (ya paso: P45, P146, P160)."
+    exit 1
+  }
+
   python tests/rls/harness_run.py --self-test || {
     echo "[pre-commit] BLOQUEADO: las verificaciones del RUNNER no disparan. Sin ellas, una corrida"
     echo "[pre-commit] vacia con exit 0 vuelve a leerse como un harness verde (ya paso)."
