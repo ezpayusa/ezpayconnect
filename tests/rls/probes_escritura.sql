@@ -1914,15 +1914,22 @@ END $$;
 -- insertan en cuentas_proveedor (aceptar además pasa la invitación a 'usada', que no se crea acá y no se
 -- toca). Entre P87 y este bloque nada referencia esas cuentas por FK. Último consumidor explícito: P102.
 SELECT set_config('role', 'none', true);
-DO $$ DECLARE v_ids uuid[]; v_cp int; BEGIN
+-- esperadas = ids distintos no nulos (cada uno se eligió sin cuenta, así que su RPC creó exactamente una);
+-- restantes = lo que queda después del DELETE. borradas vs un conteo previo sería tautológico.
+DO $$ DECLARE v_ids uuid[]; v_cp int; v_esp int; v_rest int; BEGIN
   v_ids := ARRAY[NULLIF(current_setting('probe.alta_user', true), '')::uuid,
                  NULLIF(current_setting('probe.invitee', true), '')::uuid,
                  NULLIF(current_setting('probe.invitee2', true), '')::uuid];
+  SELECT count(DISTINCT x) INTO v_esp FROM unnest(v_ids) AS x WHERE x IS NOT NULL;
   DELETE FROM public.cuentas_proveedor WHERE id = ANY (v_ids);
   GET DIAGNOSTICS v_cp = ROW_COUNT;
-  PERFORM set_config('probe.trio_cleanup', 'borradas cp='||v_cp, false);
+  SELECT count(*) INTO v_rest FROM public.cuentas_proveedor WHERE id = ANY (v_ids);
+  PERFORM set_config('probe.trio_cleanup', CASE
+    WHEN v_esp = 0 THEN 'N/A (sin actores: esperadas=0)'
+    WHEN v_cp = v_esp AND v_rest = 0 THEN 'OK (borradas='||v_cp||' = esperadas='||v_esp||', restantes=0)'
+    ELSE 'FALLO (borradas='||v_cp||' esperadas='||v_esp||' restantes='||v_rest||')' END, false);
 EXCEPTION WHEN OTHERS THEN
-  PERFORM set_config('probe.trio_cleanup', 'error SQLSTATE='||SQLSTATE||' '||SQLERRM, false);
+  PERFORM set_config('probe.trio_cleanup', 'FALLO ('||SQLSTATE||' '||SQLERRM||')', false);
 END $$;
 
 -- ============================================================
@@ -2471,7 +2478,7 @@ BEGIN
     PERFORM set_config('probe.p148','N/A (pendiente migración 085)',false);
     RETURN;
   END IF;
-  SELECT pais_id INTO v_pais FROM public.empresas_proveedoras WHERE tipo='empresa_afin' LIMIT 1;
+  SELECT pais_id INTO v_pais FROM public.empresas_proveedoras WHERE tipo='empresa_afin' ORDER BY created_at, id LIMIT 1;
   SELECT id INTO v_actorA FROM public.cuentas_proveedor ORDER BY id LIMIT 1 OFFSET 6;
   SELECT id INTO v_actorB FROM public.cuentas_proveedor ORDER BY id LIMIT 1 OFFSET 7;
   SELECT id INTO v_actorC FROM public.cuentas_proveedor ORDER BY id LIMIT 1 OFFSET 8;
@@ -2562,26 +2569,31 @@ END $$;
 SELECT set_config('role','none',true);
 SELECT set_config('request.jwt.claims', json_build_object('sub', current_setting('probe.qr_actorA', true), 'role','authenticated')::text, true);
 SELECT set_config('role','authenticated',true);
-DO $$ DECLARE v jsonb; v_a bool; v_b bool; v_gate boolean; v_g text; BEGIN
+DO $$ DECLARE v jsonb; v_a bool; v_b bool; v_gate boolean; v_g text; v_disp boolean; BEGIN
   -- mig 156 (R2): con el gate walkin_qr activo la RPC devuelve CABECERA, sin 'items'; n_pendientes sale del MISMO
   -- query confinado (empresa + sucursal). Se lee el gate igual que la RPC, como postgres (authenticated no ve
-  -- private) y se vuelve a authenticated antes de llamar a la RPC.
+  -- private) y se vuelve a authenticated antes de llamar a la RPC. En la misma ventana, como postgres, se verifica
+  -- la precondición: A1 sigue pendiente (la RPC cuenta pendiente = receta_items.dispensado = false).
   PERFORM set_config('role','none',true);
   v_gate := COALESCE((SELECT activo FROM private.reveal_gate_flags WHERE puerta='walkin_qr'), false);
+  SELECT ri.dispensado INTO v_disp FROM public.receta_items ri WHERE ri.id = NULLIF(current_setting('probe.qr_iA', true), '')::bigint;
   PERFORM set_config('role','authenticated',true);
   v_g := ' [gate walkin_qr='||CASE WHEN v_gate THEN 'on' ELSE 'off' END||']';
   IF current_setting('probe.qr_ready', true) <> '1' THEN PERFORM set_config('probe.p146','N/A (pendiente migración 085)'||v_g,false);
+  ELSIF v_disp IS DISTINCT FROM false THEN
+    PERFORM set_config('probe.p146','FALLO (precondición: ítem A1 dispensado='||COALESCE(v_disp::text,'NULL')||' antes de la RPC)'||v_g,false);
   ELSE
     v := public.verificar_receta_despacho(current_setting('probe.qr_tok1', true));
     IF v_gate THEN
       IF v ? 'items' THEN PERFORM set_config('probe.p146','FUGA (gate on: items presentes)'||v_g,false);
+      ELSIF (v->>'n_pendientes')::int = 0 THEN PERFORM set_config('probe.p146','FALLO (gate on: n_pendientes=0, no ve su ítem A pendiente)'||v_g,false);
       ELSIF (v->>'n_pendientes')::int IS DISTINCT FROM 1 THEN PERFORM set_config('probe.p146','FUGA (gate on: n_pendientes='||COALESCE(v->>'n_pendientes','NULL')||')'||v_g,false);
-      ELSE PERFORM set_config('probe.p146','OK (cabecera sin items; n_pendientes=1: solo su ítem A)'||v_g,false); END IF;
+      ELSE PERFORM set_config('probe.p146','OK (cabecera sin items; n_pendientes=1: solo su ítem A; a1=pendiente)'||v_g,false); END IF;
     ELSE
       v_a := EXISTS (SELECT 1 FROM jsonb_array_elements(v->'items') e WHERE (e->>'item_id') = current_setting('probe.qr_iA',true));
       v_b := EXISTS (SELECT 1 FROM jsonb_array_elements(v->'items') e WHERE (e->>'item_id') = current_setting('probe.qr_iB',true));
       IF v_b THEN PERFORM set_config('probe.p146','FUGA (a='||v_a||' b='||v_b||')'||v_g,false);
-      ELSIF v_a THEN PERFORM set_config('probe.p146','OK (ve solo su ítem A, no el de B)'||v_g,false);
+      ELSIF v_a THEN PERFORM set_config('probe.p146','OK (ve solo su ítem A, no el de B; a1=pendiente)'||v_g,false);
       ELSE PERFORM set_config('probe.p146','FALLO (gate off: no ve su ítem A)'||v_g,false); END IF;
     END IF;
   END IF;
@@ -2760,7 +2772,7 @@ SELECT set_config('role','none',true);
 DO $$
 DECLARE v_pais uuid; v_eA uuid; v_eB uuid; v_fA int; v_fB int; v_inv uuid; v_sin uuid; v_mA uuid; v_mB uuid; v_clin uuid;
 BEGIN
-  SELECT pais_id INTO v_pais FROM public.empresas_proveedoras WHERE tipo='empresa_afin' LIMIT 1;
+  SELECT pais_id INTO v_pais FROM public.empresas_proveedoras WHERE tipo='empresa_afin' ORDER BY created_at, id LIMIT 1;
   SELECT id INTO v_inv FROM public.cuentas_proveedor ORDER BY id LIMIT 1 OFFSET 10;
   SELECT id INTO v_sin FROM public.cuentas_proveedor ORDER BY id LIMIT 1 OFFSET 11;
   -- actor clínico NO-médico, NO-proveedor, del país de las farmacias del fixture (v_pais). Antes era el primer
@@ -2804,6 +2816,18 @@ BEGIN
   PERFORM set_config('probe.fx_catmeds','OK (fixture CAT completo: empresas, sucursales e inventario sembrados)',false);
 EXCEPTION WHEN OTHERS THEN
   PERFORM set_config('probe.fx_catmeds','ROJO (no se pudo sembrar la precondicion: '||SQLSTATE||' '||SQLERRM||')',false);
+END $$;
+
+-- FX02b — el actor clínico no-médico del fixture CAT se publica SIEMPRE: si sale NULL, P160 y la cadena fm
+-- (P204-P223, y en cascada ex/pb/vg1) caen a N/A en silencio. Esta fila lo vuelve rojo.
+DO $$ DECLARE v_c text := NULLIF(current_setting('probe.cat_clinico', true), ''); BEGIN
+  IF v_c IS NULL THEN
+    PERFORM set_config('probe.fx_cat_clinico','ROJO (cat_clinico NULL: sin enfermeria/asistente_medico/secretaria del país sin cuenta_proveedor — cadena fm P204-P223 cae a N/A)',false);
+  ELSE
+    PERFORM set_config('probe.fx_cat_clinico','OK (actor clínico no-médico '||left(v_c,8)||' resuelto)',false);
+  END IF;
+EXCEPTION WHEN OTHERS THEN
+  PERFORM set_config('probe.fx_cat_clinico','ROJO ('||SQLSTATE||' '||SQLERRM||')',false);
 END $$;
 
 -- P149 — NEG: cuenta SIN inventario_editar (cajero) edita inventario → BLOQUEADO
@@ -7867,13 +7891,18 @@ BEGIN
 
   -- limpieza: la membresía que vincular_membresia_proveedor creó para v_tgt_libre (elegido SIN cuenta, así que
   -- toda fila con su id la creó este bloque). Sin dependientes: la RPC solo inserta en cuentas_proveedor.
-  DECLARE v_borradas int;
+  DECLARE v_borradas int; v_esp int; v_rest int;
   BEGIN
+    v_esp := CASE WHEN v_tgt_libre IS NULL THEN 0 ELSE 1 END;
     DELETE FROM public.cuentas_proveedor WHERE id = v_tgt_libre;
     GET DIAGNOSTICS v_borradas = ROW_COUNT;
-    PERFORM set_config('probe.pinvit_cleanup', 'borradas='||v_borradas, false);
+    SELECT count(*) INTO v_rest FROM public.cuentas_proveedor WHERE id = v_tgt_libre;
+    PERFORM set_config('probe.pinvit_cleanup', CASE
+      WHEN v_esp = 0 THEN 'N/A (sin actores: esperadas=0)'
+      WHEN v_borradas = v_esp AND v_rest = 0 THEN 'OK (borradas='||v_borradas||' = esperadas='||v_esp||', restantes=0)'
+      ELSE 'FALLO (borradas='||v_borradas||' esperadas='||v_esp||' restantes='||v_rest||')' END, false);
   EXCEPTION WHEN OTHERS THEN
-    PERFORM set_config('probe.pinvit_cleanup', 'error SQLSTATE='||SQLSTATE||' '||SQLERRM, false);
+    PERFORM set_config('probe.pinvit_cleanup', 'FALLO ('||SQLSTATE||' '||SQLERRM||')', false);
   END;
 END $$;
 SELECT set_config('role','none', true);
@@ -33600,7 +33629,7 @@ UNION ALL SELECT 'P99_consume_token_expirado',          current_setting('probe.p
 UNION ALL SELECT 'P100_consume_email_distinto',         current_setting('probe.p100', true), 'BLOQUEADO'
 UNION ALL SELECT 'P101_consume_visitador_lab_e2e',      current_setting('probe.p101', true), 'OK'
 UNION ALL SELECT 'P102_camino_viejo_cerrado',           current_setting('probe.p102', true), 'BLOQUEADO'
-UNION ALL SELECT 'DET_trio_cleanup',  'DET ' || COALESCE(NULLIF(current_setting('probe.trio_cleanup', true), ''), '(sin dato)'), 'DET (limpieza del trío P87/P97/P101: borradas cp=N, N >= 1)'
+UNION ALL SELECT 'DET_trio_cleanup',  COALESCE(NULLIF(current_setting('probe.trio_cleanup', true), ''), 'FALLO (sin dato: la limpieza no publicó)'), 'OK (limpieza del trío P87/P97/P101: borradas = esperadas = 3, restantes=0)'
 UNION ALL SELECT 'P110_miembro_ve_su_equipo',           current_setting('probe.p110', true), 'OK'
 UNION ALL SELECT 'P111_ajeno_no_ve_personal',           current_setting('probe.p111', true), 'BLOQUEADO'
 UNION ALL SELECT 'P112_miembroA_no_ve_clinicaB',        current_setting('probe.p112', true), 'BLOQUEADO'
@@ -33935,7 +33964,7 @@ UNION ALL SELECT 'Pinvit_NEG_rol_fuera_catalogo',         current_setting('probe
 UNION ALL SELECT 'Pinvit_NEG_1a1_segunda_membresia',      current_setting('probe.pinvit_409', true),     'OK (1:1 guard → 23505/409)'
 UNION ALL SELECT 'Pinvit_POS_vincular_ii_cred_intacta',   current_setting('probe.pinvit_pos', true),     'OK (vinculado, empresa=invitador, credencial intacta)'
 UNION ALL SELECT 'Pinvit_cross_empresa_estructural',      current_setting('probe.pinvit_xempresa', true),'OK (sin param empresa)'
-UNION ALL SELECT 'DET_pinvit_cleanup',  'DET ' || COALESCE(NULLIF(current_setting('probe.pinvit_cleanup', true), ''), '(sin dato)'), 'DET (limpieza de Pinvit: borradas=N, N >= 1)'
+UNION ALL SELECT 'DET_pinvit_cleanup',  COALESCE(NULLIF(current_setting('probe.pinvit_cleanup', true), ''), 'FALLO (sin dato: la limpieza no publicó)'), 'OK (limpieza de Pinvit: borradas = esperadas = 1, restantes=0)'
 UNION ALL SELECT 'Pgest_gate_4rpcs',                      current_setting('probe.pgest_gate', true),      'OK (sin sucursales_gestionar → denegado)'
 UNION ALL SELECT 'Pgest_xempresa_globales',               current_setting('probe.pgest_xempresa', true),  'OK (editar/desactivar ajena/global → 42501)'
 UNION ALL SELECT 'Pgest_listar_scope',                    current_setting('probe.pgest_scope', true),     'OK (solo mi empresa, excluye globales)'
@@ -34052,6 +34081,7 @@ UNION ALL SELECT 'P515_cambio_ambos_null',        current_setting('probe.p515', 
 UNION ALL SELECT 'FX00_catalogo_global_medicamentos', current_setting('probe.fx_medsglobal', true),'OK (precondicion sembrada)'
 UNION ALL SELECT 'FX01_afinb_capacidad_productos',   current_setting('probe.fx_afinb', true),      'OK (precondicion sembrada)'
 UNION ALL SELECT 'FX02_cat_medicamentos_catalogo',   current_setting('probe.fx_catmeds', true),    'OK (precondicion sembrada)'
+UNION ALL SELECT 'FX02b_cat_clinico_actor',          current_setting('probe.fx_cat_clinico', true), 'OK (actor clínico no-médico resuelto)'
 UNION ALL SELECT 'FX03_pgest_med_catalogo',          current_setting('probe.fx_pgest_med', true),  'OK (precondicion sembrada)'
 UNION ALL SELECT 'FX04_pasign_med_catalogo',         current_setting('probe.fx_pasign_med', true), 'OK (precondicion sembrada)'
 UNION ALL SELECT 'FX05_puba_capacidad_publicidad',   current_setting('probe.fx_publicidad', true), 'OK (precondicion sembrada)'
@@ -34757,7 +34787,7 @@ UNION ALL SELECT 'P000_CENTINELA_veredictos_no_nulos',
        'probe.p482', 'probe.p483', 'probe.p484', 'probe.p485',
        'probe.p486', 'probe.p487', 'probe.p488', 'probe.p489',
        'probe.fx_medsglobal', 'probe.fx_afinb',
-       'probe.fx_catmeds', 'probe.fx_pgest_med', 'probe.fx_pasign_med', 'probe.fx_publicidad',
+       'probe.fx_catmeds', 'probe.fx_cat_clinico', 'probe.fx_pgest_med', 'probe.fx_pasign_med', 'probe.fx_publicidad',
        'probe.fx_afin_emp', 'probe.fx_l2', 'probe.fx_l3', 'probe.fx_l4', 'probe.fx_l5',
        'probe.p490', 'probe.p491', 'probe.p492', 'probe.p493',
        'probe.p494', 'probe.p495', 'probe.p496',
