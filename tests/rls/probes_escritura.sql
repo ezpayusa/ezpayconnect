@@ -17793,7 +17793,9 @@ SELECT set_config('role','none', true);
 DO $$
 DECLARE
   v_tot bigint; o_pub bigint; v_n bigint; v_s bigint; v_l text; v_366 boolean; a_sa uuid; a_ap uuid; a_med uuid; r757 text := '';
-  v_368 boolean; v_ap_sens bigint; v_ap_integ text;
+  v_368 boolean; v_ap_sens bigint; v_ap_integ text; n_banc bigint; n_pub bigint; n_ap_pub bigint;
+  -- las 5 bancarias de la denylist vieja de anon (366 L13): anon NO las veia ni antes de la 366
+  bancarias constant text[] := ARRAY['banco','cuenta_bancaria','tipo_cuenta','titular_cuenta','email_pagos'];
   publicas constant text[] := ARRAY['app_logo_url','app_nombre','color_fondo','color_primario','color_secundario','integ_google_calendar',
                                     'notif_email_activo','notif_recordatorios_activo','notif_sms_activo','notif_whatsapp_activo',
                                     'sistema_formato_fecha','sistema_idioma','sistema_moneda','sistema_zona_horaria'];
@@ -17801,7 +17803,10 @@ DECLARE
 BEGIN
   v_366 := EXISTS (SELECT 1 FROM pg_policy WHERE polrelid = 'public.configuracion_sistema'::regclass AND polname = 'configuracion_sistema_select_anon_publicas');
   -- 6-oct-2026 (mig 368): el qual de configuracion_sistema_select_authenticated_publicas ya no menciona admin_pais
-  v_368 := NOT EXISTS (SELECT 1 FROM pg_policy pl WHERE pl.polrelid = 'public.configuracion_sistema'::regclass AND pl.polname = 'configuracion_sistema_select_authenticated_publicas' AND position('admin_pais' IN pg_get_expr(pl.polqual, pl.polrelid)) > 0);
+  -- La 368 no crea objetos: hace ALTER POLICY de configuracion_sistema_select_authenticated_publicas (368 L49-53), que crea
+  -- la 366. Se detecta por el estado que deja: la policy EXISTE y su USING ya no menciona admin_pais. Sin la 366 la policy
+  -- no existe y la 368 sale ausente (antes, NOT EXISTS de la version vieja daba true sin la 366).
+  v_368 := EXISTS (SELECT 1 FROM pg_policy pl WHERE pl.polrelid = 'public.configuracion_sistema'::regclass AND pl.polname = 'configuracion_sistema_select_authenticated_publicas' AND position('admin_pais' IN pg_get_expr(pl.polqual, pl.polrelid)) = 0);
   SELECT count(*) INTO v_tot FROM public.configuracion_sistema;
   SELECT count(*) INTO o_pub FROM public.configuracion_sistema WHERE clave = ANY (publicas);
   a_sa := (SELECT p.id FROM public.perfiles p WHERE p.rol = 'super_admin' AND p.activo AND EXISTS (SELECT 1 FROM auth.users u WHERE u.id = p.id)
@@ -17817,9 +17822,12 @@ BEGIN
   PERFORM set_config('request.jwt.claims','{"role":"anon"}', true);
   PERFORM set_config('role','anon', true);
   BEGIN
-    SELECT count(*), count(*) FILTER (WHERE clave = ANY (sensibles)), string_agg(clave, ', ' ORDER BY clave) FILTER (WHERE clave = ANY (sensibles))
-      INTO v_n, v_s, v_l FROM public.configuracion_sistema;
+    SELECT count(*), count(*) FILTER (WHERE clave = ANY (sensibles)), string_agg(clave, ', ' ORDER BY clave) FILTER (WHERE clave = ANY (sensibles)),
+           count(*) FILTER (WHERE clave = ANY (bancarias)), count(*) FILTER (WHERE clave = ANY (publicas))
+      INTO v_n, v_s, v_l, n_banc, n_pub FROM public.configuracion_sistema;
     PERFORM set_config('probe.p755', CASE
+      -- no dependen de la 366 (antes anon ya tenia denylist de las 5 bancarias y veia las 14 publicas): van antes del PENDIENTE
+      WHEN n_banc > 0 OR n_pub <> o_pub THEN 'REGRESION (no depende de la 366: anon ve '||n_banc||' de las 5 bancarias y '||n_pub||' de '||o_pub||' publicas)'
       WHEN v_n = o_pub AND v_s = 0 AND v_366 THEN 'OK (anon ve las '||v_n||' publicas, ninguna bancaria ni integ_*)'
       WHEN NOT v_366 THEN 'PENDIENTE mig 366 (anon ve '||v_n||', sensibles '||v_s||': '||COALESCE(v_l, '-')||')'
       ELSE 'ROJO (anon ve '||v_n||' de '||o_pub||' publicas; sensibles '||v_s||': '||COALESCE(v_l, '-')||')' END, false);
@@ -17833,9 +17841,12 @@ BEGIN
   PERFORM set_config('request.jwt.claims', json_build_object('sub', a_med, 'role', 'authenticated')::text, true);
   PERFORM set_config('role','authenticated', true);
   BEGIN
-    SELECT count(*), count(*) FILTER (WHERE clave = ANY (sensibles)), string_agg(clave, ', ' ORDER BY clave) FILTER (WHERE clave = ANY (sensibles))
-      INTO v_n, v_s, v_l FROM public.configuracion_sistema;
+    SELECT count(*), count(*) FILTER (WHERE clave = ANY (sensibles)), string_agg(clave, ', ' ORDER BY clave) FILTER (WHERE clave = ANY (sensibles)),
+           count(*) FILTER (WHERE clave = ANY (publicas))
+      INTO v_n, v_s, v_l, n_pub FROM public.configuracion_sistema;
     PERFORM set_config('probe.p756', CASE
+      -- control positivo, no depende de la 366 (antes veia las 21, que incluyen las 14)
+      WHEN n_pub <> o_pub THEN 'REGRESION (no depende de la 366: medico.qa ve '||n_pub||' de '||o_pub||' publicas)'
       WHEN v_n = o_pub AND v_s = 0 AND v_366 THEN 'OK (medico.qa ve las '||v_n||' publicas, ninguna bancaria ni integ_*)'
       WHEN NOT v_366 THEN 'PENDIENTE mig 366 (medico.qa ve '||v_n||', sensibles '||v_s||': '||COALESCE(v_l, '-')||')'
       ELSE 'ROJO (medico.qa ve '||v_n||' de '||o_pub||' publicas; sensibles '||v_s||': '||COALESCE(v_l, '-')||')' END, false);
@@ -17857,11 +17868,14 @@ BEGIN
     PERFORM set_config('request.jwt.claims', json_build_object('sub', a_ap, 'role', 'authenticated')::text, true);
     PERFORM set_config('role','authenticated', true);
     SELECT count(*), count(*) FILTER (WHERE clave <> ALL (publicas)),
-           string_agg(clave, ',' ORDER BY clave) FILTER (WHERE clave IN ('integ_email_smtp', 'integ_whatsapp_api'))
-      INTO v_s, v_ap_sens, v_ap_integ FROM public.configuracion_sistema;
+           string_agg(clave, ',' ORDER BY clave) FILTER (WHERE clave IN ('integ_email_smtp', 'integ_whatsapp_api')),
+           count(*) FILTER (WHERE clave = ANY (publicas))
+      INTO v_s, v_ap_sens, v_ap_integ, n_ap_pub FROM public.configuracion_sistema;
     r757 := r757||' admin_pais='||v_s||' (sensibles '||v_ap_sens||', integ_* '||COALESCE(v_ap_integ, 'ninguna')||')';
     PERFORM set_config('role','none', true);
     PERFORM set_config('probe.p757', CASE
+      -- no dependen de la 368: el super_admin ve las 21 y el admin_pais las 14 publicas en cualquier estado
+      WHEN v_n <> v_tot OR n_ap_pub <> o_pub THEN 'REGRESION (no depende de la 368: '||r757||' de '||v_tot||'; admin_pais ve '||n_ap_pub||' de '||o_pub||' publicas)'
       WHEN NOT v_368 THEN 'PENDIENTE mig 368 ('||r757||' de '||v_tot||')'
       WHEN v_n = v_tot AND v_s = o_pub AND v_ap_sens = 0 AND v_ap_integ IS NULL
         THEN 'OK (super_admin ve las '||v_tot||'; admin_pais ve las '||o_pub||' publicas, 0 sensibles, sin integ_email_smtp ni integ_whatsapp_api)'
@@ -32154,7 +32168,7 @@ DECLARE
   s_env uuid; s_bor uuid; s_bor2 uuid; s_bor_del uuid; s_otra uuid; s_gt_ap uuid; s_gt_sa uuid;
   pub_ap int; pub_sa_upd int; pub_sa_del int;
   pre text; post text; r_rest text := 'OK'; r record; st text; n int; o int;
-  res text[] := ARRAY['','','','','','']; bad text[] := ARRAY['','','','','','']; v_360 boolean;
+  res text[] := ARRAY['','','','','','']; bad text[] := ARRAY['','','','','','']; bad_ind text[] := ARRAY['','','','','','']; v_360 boolean;
 BEGIN
   IF current_user <> 'postgres' THEN RAISE EXCEPTION 'fixture roto: P983 corre como %', current_user; END IF;
   v_360 := EXISTS (SELECT 1 FROM pg_policy pl WHERE pl.polrelid = 'public.solicitudes_campana'::regclass AND pl.polname = 'Proveedor elimina sus campañas borrador');
@@ -32203,24 +32217,24 @@ BEGIN
     INSERT INTO public.campanas_publicitarias (titulo, fecha_inicio, fecha_fin, activa, pais_id) VALUES ('P988 borrar', CURRENT_DATE, CURRENT_DATE + 30, true, v_gt) RETURNING id INTO pub_sa_del;
 
     FOR r IN SELECT * FROM (VALUES
-      (1, 'INSERT enviada', v_prov, 'dml', '42501', format('INSERT INTO public.solicitudes_campana (empresa_id, cuenta_proveedor_id, titulo, fecha_inicio, fecha_fin, estado, pais_id) VALUES (%L, %L, %L, CURRENT_DATE, CURRENT_DATE + 30, %L, %L)', v_emp, v_prov, 'P983 enviada', 'enviada', v_pais)),
-      (1, 'INSERT borrador', v_prov, 'dml', 'n=1', format('INSERT INTO public.solicitudes_campana (empresa_id, cuenta_proveedor_id, titulo, fecha_inicio, fecha_fin, estado, pais_id) VALUES (%L, %L, %L, CURRENT_DATE, CURRENT_DATE + 30, %L, %L)', v_emp, v_prov, 'P983 borrador', 'borrador', v_pais)),
-      (2, 'UPDATE de su enviada', v_prov, 'dml', 'n=0', format('UPDATE public.solicitudes_campana SET titulo = titulo || %L WHERE id = %L', ' (p984)', s_env)),
-      (2, 'UPDATE de su borrador', v_prov, 'dml', 'n=1', format('UPDATE public.solicitudes_campana SET titulo = titulo || %L WHERE id = %L', ' (p984)', s_bor)),
-      (2, 'UPDATE borrador a enviada', v_prov, 'dml', '42501', format('UPDATE public.solicitudes_campana SET estado = %L WHERE id = %L', 'enviada', s_bor2)),
-      (3, 'DELETE de su borrador', v_prov, 'dml', 'n=1', format('DELETE FROM public.solicitudes_campana WHERE id = %L', s_bor_del)),
-      (3, 'DELETE de su enviada', v_prov, 'dml', 'n=0', format('DELETE FROM public.solicitudes_campana WHERE id = %L', s_env)),
-      (3, 'DELETE de un borrador de otra empresa', v_prov, 'dml', 'n=0', format('DELETE FROM public.solicitudes_campana WHERE id = %L', s_otra)),
-      (4, 'UPDATE de una publicacion de GT', v_ap, 'dml', 'n=0', format('UPDATE public.campanas_publicitarias SET activa = false WHERE id = %s', pub_ap)),
-      (4, 'DELETE de una publicacion de GT', v_ap, 'dml', 'n=0', format('DELETE FROM public.campanas_publicitarias WHERE id = %s', pub_ap)),
-      (4, 'INSERT de publicacion en GT', v_ap, 'dml', '42501', format('INSERT INTO public.campanas_publicitarias (titulo, fecha_inicio, fecha_fin, pais_id) VALUES (%L, CURRENT_DATE, CURRENT_DATE + 1, %L)', 'P986 admin_pais', v_gt)),
-      (4, 'SELECT de publicaciones de GT', v_ap, 'count', '>0', format('SELECT count(*) FROM public.campanas_publicitarias WHERE pais_id = %L', v_gt)),
-      (5, 'UPDATE de una solicitud de GT', v_ap, 'dml', 'n=0', format('UPDATE public.solicitudes_campana SET titulo = titulo || %L WHERE id = %L', ' (p987)', s_gt_ap)),
-      (5, 'SELECT de solicitudes de GT', v_ap, 'count', '>0', format('SELECT count(*) FROM public.solicitudes_campana WHERE pais_id = %L', v_gt)),
-      (6, 'UPDATE de activa en una publicacion', v_sa, 'dml', 'n=1', format('UPDATE public.campanas_publicitarias SET activa = NOT activa WHERE id = %s', pub_sa_upd)),
-      (6, 'DELETE de una publicacion', v_sa, 'dml', 'n=1', format('DELETE FROM public.campanas_publicitarias WHERE id = %s', pub_sa_del)),
-      (6, 'UPDATE a rechazada de una solicitud enviada', v_sa, 'dml', 'n=1', format('UPDATE public.solicitudes_campana SET estado = %L WHERE id = %L', 'rechazada', s_gt_sa))
-    ) t(g, etiqueta, actor, tipo, esperado, sql) LOOP
+      (1, 'INSERT enviada', v_prov, 'dml', '42501', true, format('INSERT INTO public.solicitudes_campana (empresa_id, cuenta_proveedor_id, titulo, fecha_inicio, fecha_fin, estado, pais_id) VALUES (%L, %L, %L, CURRENT_DATE, CURRENT_DATE + 30, %L, %L)', v_emp, v_prov, 'P983 enviada', 'enviada', v_pais)),
+      (1, 'INSERT borrador', v_prov, 'dml', 'n=1', false, format('INSERT INTO public.solicitudes_campana (empresa_id, cuenta_proveedor_id, titulo, fecha_inicio, fecha_fin, estado, pais_id) VALUES (%L, %L, %L, CURRENT_DATE, CURRENT_DATE + 30, %L, %L)', v_emp, v_prov, 'P983 borrador', 'borrador', v_pais)),
+      (2, 'UPDATE de su enviada', v_prov, 'dml', 'n=0', true, format('UPDATE public.solicitudes_campana SET titulo = titulo || %L WHERE id = %L', ' (p984)', s_env)),
+      (2, 'UPDATE de su borrador', v_prov, 'dml', 'n=1', false, format('UPDATE public.solicitudes_campana SET titulo = titulo || %L WHERE id = %L', ' (p984)', s_bor)),
+      (2, 'UPDATE borrador a enviada', v_prov, 'dml', '42501', true, format('UPDATE public.solicitudes_campana SET estado = %L WHERE id = %L', 'enviada', s_bor2)),
+      (3, 'DELETE de su borrador', v_prov, 'dml', 'n=1', true, format('DELETE FROM public.solicitudes_campana WHERE id = %L', s_bor_del)),
+      (3, 'DELETE de su enviada', v_prov, 'dml', 'n=0', false, format('DELETE FROM public.solicitudes_campana WHERE id = %L', s_env)),
+      (3, 'DELETE de un borrador de otra empresa', v_prov, 'dml', 'n=0', false, format('DELETE FROM public.solicitudes_campana WHERE id = %L', s_otra)),
+      (4, 'UPDATE de una publicacion de GT', v_ap, 'dml', 'n=0', true, format('UPDATE public.campanas_publicitarias SET activa = false WHERE id = %s', pub_ap)),
+      (4, 'DELETE de una publicacion de GT', v_ap, 'dml', 'n=0', true, format('DELETE FROM public.campanas_publicitarias WHERE id = %s', pub_ap)),
+      (4, 'INSERT de publicacion en GT', v_ap, 'dml', '42501', true, format('INSERT INTO public.campanas_publicitarias (titulo, fecha_inicio, fecha_fin, pais_id) VALUES (%L, CURRENT_DATE, CURRENT_DATE + 1, %L)', 'P986 admin_pais', v_gt)),
+      (4, 'SELECT de publicaciones de GT', v_ap, 'count', '>0', false, format('SELECT count(*) FROM public.campanas_publicitarias WHERE pais_id = %L', v_gt)),
+      (5, 'UPDATE de una solicitud de GT', v_ap, 'dml', 'n=0', true, format('UPDATE public.solicitudes_campana SET titulo = titulo || %L WHERE id = %L', ' (p987)', s_gt_ap)),
+      (5, 'SELECT de solicitudes de GT', v_ap, 'count', '>0', false, format('SELECT count(*) FROM public.solicitudes_campana WHERE pais_id = %L', v_gt)),
+      (6, 'UPDATE de activa en una publicacion', v_sa, 'dml', 'n=1', false, format('UPDATE public.campanas_publicitarias SET activa = NOT activa WHERE id = %s', pub_sa_upd)),
+      (6, 'DELETE de una publicacion', v_sa, 'dml', 'n=1', false, format('DELETE FROM public.campanas_publicitarias WHERE id = %s', pub_sa_del)),
+      (6, 'UPDATE a rechazada de una solicitud enviada', v_sa, 'dml', 'n=1', false, format('UPDATE public.solicitudes_campana SET estado = %L WHERE id = %L', 'rechazada', s_gt_sa))
+    ) t(g, etiqueta, actor, tipo, esperado, dep, sql) LOOP
       st := NULL; n := NULL;
       IF r.tipo = 'count' THEN
         EXECUTE r.sql INTO o;  -- oraculo: el mismo conteo como postgres (sin RLS)
@@ -32242,7 +32256,10 @@ BEGIN
       END;
       res[r.g] := res[r.g]||CASE WHEN res[r.g] = '' THEN '' ELSE '; ' END||r.etiqueta||': '||st
                   ||CASE WHEN r.tipo = 'count' THEN ' ('||n||' de '||o||')' ELSE '' END||CASE WHEN st = r.esperado THEN '' ELSE ' (esperado '||r.esperado||')' END;
-      IF st IS DISTINCT FROM r.esperado THEN bad[r.g] := bad[r.g]||r.etiqueta||'; '; END IF;
+      IF st IS DISTINCT FROM r.esperado THEN
+        bad[r.g] := bad[r.g]||r.etiqueta||'; ';
+        IF NOT r.dep THEN bad_ind[r.g] := bad_ind[r.g]||r.etiqueta||'; '; END IF;  -- no depende de la 360
+      END IF;
     END LOOP;
     RAISE EXCEPTION 'P983 descarte' USING ERRCODE = 'P0999';
   EXCEPTION WHEN SQLSTATE 'P0999' THEN NULL;
@@ -32252,11 +32269,15 @@ BEGIN
   IF post IS DISTINCT FROM pre THEN r_rest := 'conteos solicitudes/publicaciones '||pre||' -> '||post; END IF;
   FOR n IN 1..6 LOOP
     PERFORM set_config('probe.p'||(982 + n),
-      CASE WHEN n <> 6 AND NOT v_360 THEN 'PENDIENTE mig 360'
-           WHEN bad[n] = '' AND r_rest = 'OK' AND res[n] <> '' THEN 'OK' ELSE 'ROJO' END
+      -- primero lo que no depende de la 360 (casos dep=false, restauracion y que el grupo haya corrido)
+      CASE WHEN bad_ind[n] <> '' THEN 'REGRESION'
+           WHEN r_rest <> 'OK' OR res[n] = '' THEN 'FALLO'
+           WHEN n <> 6 AND NOT v_360 THEN 'PENDIENTE mig 360'
+           WHEN bad[n] = '' THEN 'OK' ELSE 'ROJO' END
       ||' ('||CASE n WHEN 1 THEN 'proveedor gestor '||v_prov WHEN 2 THEN 'proveedor gestor '||v_prov WHEN 3 THEN 'proveedor gestor '||v_prov
                      WHEN 4 THEN 'admin_pais de GT '||v_ap WHEN 5 THEN 'admin_pais de GT '||v_ap ELSE 'super_admin '||v_sa END
-      ||': '||res[n]||CASE WHEN r_rest = 'OK' THEN '' ELSE ' | restauracion: '||r_rest END||')', false);
+      ||': '||res[n]||CASE WHEN r_rest = 'OK' THEN '' ELSE ' | restauracion: '||r_rest END
+      ||CASE WHEN bad_ind[n] = '' THEN '' ELSE ' | no depende de la 360: '||bad_ind[n] END||')', false);
   END LOOP;
 EXCEPTION WHEN OTHERS THEN
   PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
@@ -32679,7 +32700,7 @@ DECLARE
   v_364 boolean; a_med uuid; t_med uuid; a_adm uuid; t_adm uuid; a_vis uuid; t_vis uuid; a_sup uuid; t_sup uuid;
   v_conf uuid; a_conf uuid; v_conf_med uuid; v_hora time; v_pend uuid; a_pend uuid; v_mar uuid; a_staff uuid; v_clin uuid; r record; c record;
   n int; st text; j jsonb; e1 text; e2 text; e3 text;
-  neg text := ''; neg_bad text := ''; rpc text := ''; rpc_bad text := ''; acl text; acl_bad text := '';
+  neg text := ''; neg_bad text := ''; rpc text := ''; rpc_bad text := ''; acl text; acl_bad text := ''; acl_ind text := '';
   snap_pre text; snap_post text; vis uuid[]; act uuid[]; n_pre uuid[]; n_nuevas int;
   c_demo CONSTANT uuid[] := ARRAY['e9151f3e-fc12-473e-87f0-d2b530befa07', '523a1e31-5a6b-4e8f-a2ec-7e4b417b4766']::uuid[];  -- visitas de la demo del 8-oct: nunca se tocan
 BEGIN
@@ -32875,6 +32896,8 @@ BEGIN
        ||' SELECT='||has_table_privilege('authenticated', 'public.visitas_agendadas', 'SELECT')::text
        ||' INSERT='||has_table_privilege('authenticated', 'public.visitas_agendadas', 'INSERT')::text;
   IF acl IS DISTINCT FROM 'UPDATE=false UPDATE_col=false SELECT=true INSERT=true' THEN acl_bad := acl; END IF;
+  -- SELECT e INSERT no dependen de la 364 (solo revoco UPDATE, 364 L93)
+  IF NOT has_table_privilege('authenticated', 'public.visitas_agendadas', 'SELECT') OR NOT has_table_privilege('authenticated', 'public.visitas_agendadas', 'INSERT') THEN acl_ind := acl; END IF;
 
   snap_post := (SELECT md5(string_agg(to_jsonb(v)::text, '|' ORDER BY v.id))||' '||count(*) FROM public.visitas_agendadas v WHERE v.id = ANY (vis));
   n_nuevas := (SELECT count(*) FROM public.notificaciones n WHERE n.usuario_id = ANY (act) AND n.id <> ALL (n_pre));
@@ -32884,6 +32907,7 @@ BEGIN
   PERFORM set_config('probe.p1007_det', '(a) '||neg||' (b) '||rpc||' (c) '||acl, false);
   PERFORM set_config('probe.p1007', CASE
     WHEN rpc_bad <> '' THEN 'FALLO (RPC: '||rpc_bad||' | (b) '||left(rpc, 700)||')'
+    WHEN acl_ind <> '' THEN 'REGRESION (no depende de la 364: authenticated perdio SELECT o INSERT en visitas_agendadas: '||acl_ind||')'
     WHEN NOT v_364 THEN 'PENDIENTE mig 364 ((a) '||neg||'(c) '||acl||'; RPCs OK)'
     WHEN neg_bad = '' AND acl_bad = '' THEN 'OK (UPDATE directo -> 42501 como medico, admin, visitador y supervisor; checkin/checkout, administrar_visita, cancelar_visita y marcar_visitador_presente siguen escribiendo; authenticated SELECT+INSERT sin UPDATE; descartado)'
     ELSE 'ROJO ((a) '||neg||' (c) '||acl||')' END, false);
@@ -33059,7 +33083,7 @@ DO $$
 DECLARE
   v_366 boolean; v_368 boolean; v_gt uuid; v_otro uuid; v_otro_cod text; o_gt int; o_otro int; o_tot int; o_pub int;
   a_sa uuid; a_apgt uuid; a_apotro uuid; a_pact uuid; e_pact uuid; a_pno uuid; a_farm uuid; a_med uuid; a_pac uuid; a_sec uuid; a_sop uuid; a_ase uuid;
-  neg uuid[]; r record; n int; ngt int; not_ int; nk int; ns int; v text; res text := ''; bad text := ''; chk text := '-';
+  neg uuid[]; r record; n int; ngt int; not_ int; nk int; ns int; v text; res text := ''; bad text := ''; bad_ind text := ''; chk text := '-';
   pend_sembrada boolean := false; ap_sembrado boolean := false; fila_sembrada boolean := false;
   n_contam int := 0; firma text := '-'; n_neutr int := 0;
   publicas constant text[] := ARRAY['app_logo_url','app_nombre','color_fondo','color_primario','color_secundario','integ_google_calendar',
@@ -33070,7 +33094,10 @@ BEGIN
   v_366 := EXISTS (SELECT 1 FROM pg_policy WHERE polrelid = 'public.cuentas_bancarias_pais'::regclass AND polname = 'cuentas_banco_read_acotada');
   -- 6-oct-2026 (mig 368): los admin_pais ven solo las 14 publicas de configuracion_sistema; sin la 368, la parte de config
   -- de los admin_pais sale 'PENDIENTE mig 368' (las cuentas se juzgan igual).
-  v_368 := NOT EXISTS (SELECT 1 FROM pg_policy pl WHERE pl.polrelid = 'public.configuracion_sistema'::regclass AND pl.polname = 'configuracion_sistema_select_authenticated_publicas' AND position('admin_pais' IN pg_get_expr(pl.polqual, pl.polrelid)) > 0);
+  -- La 368 no crea objetos: hace ALTER POLICY de configuracion_sistema_select_authenticated_publicas (368 L49-53), que crea
+  -- la 366. Se detecta por el estado que deja: la policy EXISTE y su USING ya no menciona admin_pais. Sin la 366 la policy
+  -- no existe y la 368 sale ausente (antes, NOT EXISTS de la version vieja daba true sin la 366).
+  v_368 := EXISTS (SELECT 1 FROM pg_policy pl WHERE pl.polrelid = 'public.configuracion_sistema'::regclass AND pl.polname = 'configuracion_sistema_select_authenticated_publicas' AND position('admin_pais' IN pg_get_expr(pl.polqual, pl.polrelid)) = 0);
   SELECT id INTO v_gt FROM public.configuracion_pais WHERE codigo = 'GT';
   o_gt := (SELECT count(*) FROM public.cuentas_bancarias_pais WHERE pais_id = v_gt);
   o_tot := (SELECT count(*) FROM public.configuracion_sistema);
@@ -33154,12 +33181,14 @@ BEGIN
 
     -- (a) + (c) por actor: total, GT y otro pais en cuentas_bancarias_pais; claves de configuracion_sistema
     FOR r IN SELECT * FROM (VALUES
-        (1, 'super_admin', a_sa, o_gt + o_otro, o_gt, o_otro, 'admin'), (2, 'admin_pais GT', a_apgt, o_gt, o_gt, 0, 'apais'),
-        (3, 'admin_pais '||v_otro_cod, a_apotro, o_otro, 0, o_otro, 'apais'),
-        (4, 'proveedor GT activa', a_pact, o_gt, o_gt, 0, 'resto'), (5, 'proveedor GT no activa', a_pno, o_gt, o_gt, 0, 'resto'),
-        (6, 'farmacia GT', a_farm, o_gt, o_gt, 0, 'resto'),
-        (7, 'medico.qa', a_med, 0, 0, 0, 'resto'), (8, 'paciente.qa', a_pac, 0, 0, 0, 'resto'), (9, 'secretaria.qa', a_sec, 0, 0, 0, 'resto'),
-        (10, 'soporte', a_sop, 0, 0, 0, 'resto'), (11, 'asesor_comercial', a_ase, 0, 0, 0, 'resto')) x(k, nom, uid, e_tot, e_gt, e_otro, cfg) ORDER BY x.k LOOP
+        -- dep = las cuentas esperadas NO se cumplian antes de la 366 (cuentas_banco_read_pais por mi_pais(), 366 L5-8;
+        -- cuentas_banco_admin para el super_admin, 076 L56-58): el proveedor no activo no veia, los 5 sin acceso veian GT
+        (1, 'super_admin', a_sa, o_gt + o_otro, o_gt, o_otro, 'admin', false), (2, 'admin_pais GT', a_apgt, o_gt, o_gt, 0, 'apais', false),
+        (3, 'admin_pais '||v_otro_cod, a_apotro, o_otro, 0, o_otro, 'apais', false),
+        (4, 'proveedor GT activa', a_pact, o_gt, o_gt, 0, 'resto', false), (5, 'proveedor GT no activa', a_pno, o_gt, o_gt, 0, 'resto', true),
+        (6, 'farmacia GT', a_farm, o_gt, o_gt, 0, 'resto', false),
+        (7, 'medico.qa', a_med, 0, 0, 0, 'resto', true), (8, 'paciente.qa', a_pac, 0, 0, 0, 'resto', true), (9, 'secretaria.qa', a_sec, 0, 0, 0, 'resto', true),
+        (10, 'soporte', a_sop, 0, 0, 0, 'resto', true), (11, 'asesor_comercial', a_ase, 0, 0, 0, 'resto', true)) x(k, nom, uid, e_tot, e_gt, e_otro, cfg, dep) ORDER BY x.k LOOP
       n := NULL; ngt := NULL; not_ := NULL; nk := NULL; ns := NULL; v := '';
       BEGIN
         PERFORM set_config('request.jwt.claims', json_build_object('sub', r.uid, 'role', 'authenticated')::text, true);
@@ -33176,10 +33205,16 @@ BEGIN
       IF v <> '' OR n IS DISTINCT FROM r.e_tot OR ngt IS DISTINCT FROM r.e_gt OR not_ IS DISTINCT FROM r.e_otro THEN
         bad := bad||r.nom||' cuentas='||COALESCE(n::text, '-')||'/GT '||COALESCE(ngt::text, '-')||'/'||v_otro_cod||' '||COALESCE(not_::text, '-')
                ||' (esperado '||r.e_tot||'/'||r.e_gt||'/'||r.e_otro||')'||v||'; ';
+        IF v <> '' OR NOT r.dep THEN
+          bad_ind := bad_ind||r.nom||' cuentas='||COALESCE(n::text, '-')||'/GT '||COALESCE(ngt::text, '-')||'/'||v_otro_cod||' '||COALESCE(not_::text, '-')
+                     ||' (esperado '||r.e_tot||'/'||r.e_gt||'/'||r.e_otro||')'||v||'; ';
+        END IF;
       END IF;
       IF nk IS DISTINCT FROM (CASE WHEN r.cfg = 'admin' OR (r.cfg = 'apais' AND NOT v_368) THEN o_tot ELSE o_pub END)
          OR ((r.cfg = 'resto' OR (r.cfg = 'apais' AND v_368)) AND ns IS DISTINCT FROM 0) THEN
         bad := bad||r.nom||' config='||COALESCE(nk::text, '-')||'/sens='||COALESCE(ns::text, '-')||'; ';
+        -- el super_admin ve las 21 en cualquier estado (antes USING true): no depende de la 366
+        IF r.cfg = 'admin' THEN bad_ind := bad_ind||r.nom||' config='||COALESCE(nk::text, '-')||'; '; END IF;
       END IF;
     END LOOP;
 
@@ -33195,7 +33230,7 @@ BEGIN
       PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
       chk := 'ERROR '||SQLSTATE||' '||left(SQLERRM, 80);
     END;
-    IF chk IS DISTINCT FROM '1' THEN bad := bad||'checkout='||chk||'; '; END IF;
+    IF chk IS DISTINCT FROM '1' THEN bad := bad||'checkout='||chk||'; '; bad_ind := bad_ind||'checkout='||chk||'; '; END IF;  -- antes tambien 1 fila
 
     RAISE EXCEPTION 'P1009 descarte' USING ERRCODE = 'P0999';
   EXCEPTION WHEN SQLSTATE 'P0999' THEN NULL;
@@ -33208,6 +33243,7 @@ BEGIN
        ||CASE WHEN pend_sembrada THEN '; empresa GT no activa sembrada' ELSE '' END;
   PERFORM set_config('probe.p1009_det', res||'checkout(admin proveedor GT)='||chk||'; '||v, false);
   PERFORM set_config('probe.p1009', CASE
+    WHEN bad_ind <> '' THEN 'REGRESION (no depende de la 366: '||left(bad_ind, 700)||' | '||v||')'
     WHEN bad = '' AND v_366 AND NOT v_368 THEN 'PENDIENTE mig 368 (config de los admin_pais todavia '||o_tot||'; cuentas OK: super_admin ve GT+'||v_otro_cod
                                  ||'; admin_pais GT, proveedores GT y farmacia solo GT; admin_pais '||v_otro_cod||' solo '||v_otro_cod||'; resto 0; checkout 1 fila; '||v||')'
     WHEN bad = '' AND v_366 THEN 'OK (cuentas: super_admin ve GT+'||v_otro_cod||'; admin_pais GT, proveedores GT activa/no activa y farmacia solo GT; admin_pais '
@@ -33236,7 +33272,7 @@ SELECT set_config('role', 'none', true);
 DO $$
 DECLARE
   v_367 boolean; a_pu uuid; v_pac integer; a_otro uuid; v_camp integer; n int; st text; msg text;
-  ra text; rb text; rc text; rd text; re text; bad text := '';
+  ra text; rb text; rc text; rd text; re text; bad text := ''; bad_ind text := '';
 BEGIN
   IF current_user <> 'postgres' THEN RAISE EXCEPTION 'fixture roto: P1010 corre como %', current_user; END IF;
   v_367 := NOT has_table_privilege('authenticated', 'public.campana_vistas', 'UPDATE');
@@ -33261,7 +33297,7 @@ BEGIN
       PERFORM set_config('role', 'none', true);
     EXCEPTION WHEN OTHERS THEN PERFORM set_config('role', 'none', true); st := SQLSTATE; msg := SQLERRM; END;
     ra := st||' filas='||COALESCE(n::text, '-');
-    IF ra <> '00000 filas=1' THEN bad := bad||'(a) INSERT='||ra||' '||left(msg, 100)||'; '; END IF;
+    IF ra <> '00000 filas=1' THEN bad := bad||'(a) INSERT='||ra||' '||left(msg, 100)||'; '; bad_ind := bad_ind||'(a) INSERT='||ra||' '||left(msg, 100)||'; '; END IF;
 
     -- (b) ON CONFLICT DO NOTHING del duplicado
     st := '00000'; msg := ''; n := NULL;
@@ -33273,7 +33309,7 @@ BEGIN
       PERFORM set_config('role', 'none', true);
     EXCEPTION WHEN OTHERS THEN PERFORM set_config('role', 'none', true); st := SQLSTATE; msg := SQLERRM; END;
     rb := st||' filas='||COALESCE(n::text, '-');
-    IF rb <> '00000 filas=0' THEN bad := bad||'(b) DO NOTHING='||rb||' '||left(msg, 100)||'; '; END IF;
+    IF rb <> '00000 filas=0' THEN bad := bad||'(b) DO NOTHING='||rb||' '||left(msg, 100)||'; '; bad_ind := bad_ind||'(b) DO NOTHING='||rb||' '||left(msg, 100)||'; '; END IF;
 
     -- (c) ON CONFLICT DO UPDATE
     st := '00000'; msg := ''; n := NULL;
@@ -33306,7 +33342,7 @@ BEGIN
       PERFORM set_config('role', 'none', true);
       re := n::text;
     EXCEPTION WHEN OTHERS THEN PERFORM set_config('role', 'none', true); re := 'ERROR '||SQLSTATE||' '||left(SQLERRM, 80); END;
-    IF re IS DISTINCT FROM '0' THEN bad := bad||'(e) otro paciente ve='||re||'; '; END IF;
+    IF re IS DISTINCT FROM '0' THEN bad := bad||'(e) otro paciente ve='||re||'; '; bad_ind := bad_ind||'(e) otro paciente ve='||re||'; '; END IF;
 
     RAISE EXCEPTION 'P1010 descarte' USING ERRCODE = 'P0999';
   EXCEPTION WHEN SQLSTATE 'P0999' THEN NULL;
@@ -33314,6 +33350,8 @@ BEGIN
   PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
 
   PERFORM set_config('probe.p1010', CASE
+    -- (a), (b) y (e) no dependen de la 367 (solo revoco UPDATE, 367 L51)
+    WHEN bad_ind <> '' THEN 'REGRESION (no depende de la 367: '||left(bad_ind, 800)||')'
     WHEN NOT v_367 THEN 'PENDIENTE mig 367 ((a) '||ra||'; (b) '||rb||'; (c) '||rc||'; (d) '||rd||'; (e) '||re||')'
     WHEN bad = '' THEN 'OK (paciente.qa: INSERT de su vista 1 fila; ON CONFLICT DO NOTHING 0 filas sin error; ON CONFLICT DO UPDATE y UPDATE directo 42501; otro paciente ve 0; descartado)'
     ELSE 'ROJO ('||left(bad, 800)||')' END, false);
