@@ -53,3 +53,9 @@ __pycache__/
 
 # Resguardos locales de esquema (dumps de Supabase): no entran al repo.
 backups/
+
+# GL-30 (7-oct-2026): scratch local y archivos de entorno
+/tmp/
+.env
+.env.*
+!.env.example
