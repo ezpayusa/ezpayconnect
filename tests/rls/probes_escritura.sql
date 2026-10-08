@@ -34170,9 +34170,14 @@ SELECT set_config('role', 'none', true);
 -- exigible = false en los 4 (el estado de la semilla, D-7) los 3 actores ven 0 filas; con exigible = true y version
 -- '999.999': paciente.qa {consentimiento_salud, privacidad, terminos}, medico.qa {condiciones_profesionales, privacidad,
 -- terminos}, superadmin {privacidad, terminos}, todos con la version vigente. Descartado y verificado con g371_snap.
+-- Review #54 (m1): ademas, sin neutralizarlos ni tocar sus filas, farmacia.qa (cuenta_proveedor sin perfil)
+-- {condiciones_profesionales, privacidad, terminos}, adminpais.qa {privacidad, terminos} y el primer usuario de auth.users
+-- sin perfil, sin paciente y sin cuenta_proveedor (ORDER BY created_at, id) {privacidad, terminos}. Su identidad se
+-- verifica antes de las aserciones: si no se cumple, FALLO (fixture: ...), nunca verde. (n3) pacientes no se modifica:
+-- si medico.qa o superadmin tienen fila en pacientes, FALLO (fixture: ...).
 DO $$
-DECLARE v_est text; a_pac uuid; a_med uuid; a_sa uuid; bad text := ''; d text := ''; r record; res text; esp text;
-  snap_pre text; snap_post text; n int; n_neu int := 0;
+DECLARE v_est text; a_pac uuid; a_med uuid; a_sa uuid; a_far uuid; a_ap uuid; a_sin uuid; bad text := ''; fx text := '';
+  d text := ''; r record; res text; esp text; snap_pre text; snap_post text; n int; n_neu int := 0;
 BEGIN
   IF current_user <> 'postgres' THEN RAISE EXCEPTION 'fixture roto: P1020 corre como %', current_user; END IF;
   PERFORM set_config('request.jwt.claims', '', true);
@@ -34195,11 +34200,24 @@ BEGIN
       ||COALESCE(a_med::text, 'NULL')||' y superadmin '||COALESCE(a_sa::text, 'NULL')||' con fila en perfiles)', false);
     RETURN;
   END IF;
-  snap_pre := pg_temp.g371_snap(ARRAY[a_pac, a_med, a_sa]);
+  a_far := (SELECT u.id FROM auth.users u WHERE lower(u.email) = 'farmacia.qa@ezpayconnect.com');
+  a_ap := (SELECT u.id FROM auth.users u WHERE lower(u.email) = 'adminpais.qa@ezpayconnect.com');
+  a_sin := (SELECT u.id FROM auth.users u
+             WHERE NOT EXISTS (SELECT 1 FROM public.perfiles p WHERE p.id = u.id)
+               AND NOT EXISTS (SELECT 1 FROM public.pacientes pa WHERE pa.auth_user_id = u.id)
+               AND NOT EXISTS (SELECT 1 FROM public.cuentas_proveedor c WHERE c.id = u.id)
+             ORDER BY u.created_at, u.id LIMIT 1);
+  IF a_far IS NULL OR a_ap IS NULL OR a_sin IS NULL THEN
+    PERFORM set_config('probe.p1020', 'FALLO (fixture: farmacia.qa '||COALESCE(a_far::text, 'NULL')||', adminpais.qa '
+      ||COALESCE(a_ap::text, 'NULL')||', usuario sin identidad '||COALESCE(a_sin::text, 'NULL')||')', false);
+    RETURN;
+  END IF;
+  snap_pre := pg_temp.g371_snap(ARRAY[a_pac, a_med, a_sa, a_far, a_ap, a_sin]);
   BEGIN
-    -- identidades deterministas (solo dentro del savepoint)
-    UPDATE public.pacientes SET auth_user_id = NULL WHERE auth_user_id IN (a_med, a_sa);
-    GET DIAGNOSTICS n = ROW_COUNT; n_neu := n_neu + n;
+    -- identidades deterministas (solo dentro del savepoint); pacientes no se toca (n3): se exige como precondicion
+    IF EXISTS (SELECT 1 FROM public.pacientes pa WHERE pa.auth_user_id IN (a_med, a_sa)) THEN
+      fx := fx||'medico.qa o superadmin con fila en pacientes; ';
+    END IF;
     DELETE FROM public.cuentas_proveedor WHERE id IN (a_pac, a_med, a_sa);
     GET DIAGNOSTICS n = ROW_COUNT; n_neu := n_neu + n;
     UPDATE public.perfiles SET rol = 'medico', activo = true WHERE id = a_med AND (rol IS DISTINCT FROM 'medico' OR activo IS DISTINCT FROM true);
@@ -34209,9 +34227,23 @@ BEGIN
     UPDATE public.perfiles SET rol = 'cliente' WHERE id = a_pac
        AND rol IN ('medico', 'admin_clinica', 'gerente', 'secretaria', 'enfermeria', 'asistente_medico');
     GET DIAGNOSTICS n = ROW_COUNT; n_neu := n_neu + n;
-    -- fase A: exigible = false en los 4 -> 0 pendientes para los 3
+    -- precondicion de identidad de los actores sin neutralizar (m1): si no se cumple, FALLO (fixture), sin aserciones
+    IF EXISTS (SELECT 1 FROM public.perfiles p WHERE p.id = a_far) THEN fx := fx||'farmacia.qa con perfil; '; END IF;
+    IF NOT EXISTS (SELECT 1 FROM public.cuentas_proveedor c WHERE c.id = a_far) THEN fx := fx||'farmacia.qa sin cuenta_proveedor; '; END IF;
+    IF EXISTS (SELECT 1 FROM public.pacientes pa WHERE pa.auth_user_id = a_far) THEN fx := fx||'farmacia.qa con fila en pacientes; '; END IF;
+    IF NOT EXISTS (SELECT 1 FROM public.perfiles p WHERE p.id = a_ap AND p.rol = 'admin_pais') THEN fx := fx||'adminpais.qa sin perfil admin_pais; '; END IF;
+    IF EXISTS (SELECT 1 FROM public.pacientes pa WHERE pa.auth_user_id = a_ap) THEN fx := fx||'adminpais.qa con fila en pacientes; '; END IF;
+    IF EXISTS (SELECT 1 FROM public.cuentas_proveedor c WHERE c.id = a_ap) THEN fx := fx||'adminpais.qa con cuenta_proveedor; '; END IF;
+    IF EXISTS (SELECT 1 FROM public.perfiles p WHERE p.id = a_sin)
+       OR EXISTS (SELECT 1 FROM public.pacientes pa WHERE pa.auth_user_id = a_sin)
+       OR EXISTS (SELECT 1 FROM public.cuentas_proveedor c WHERE c.id = a_sin) THEN
+      fx := fx||'usuario sin identidad '||a_sin||' con perfil, paciente o cuenta_proveedor; ';
+    END IF;
+    IF fx = '' THEN
+    -- fase A: exigible = false en los 4 -> 0 pendientes para los 6
     UPDATE public.textos_legales SET exigible = false;
-    FOR r IN SELECT * FROM (VALUES (1, 'paciente.qa', a_pac), (2, 'medico.qa', a_med), (3, 'superadmin', a_sa)) x(k, nom, uid) ORDER BY x.k LOOP
+    FOR r IN SELECT * FROM (VALUES (1, 'paciente.qa', a_pac), (2, 'medico.qa', a_med), (3, 'superadmin', a_sa),
+        (4, 'farmacia.qa', a_far), (5, 'adminpais.qa', a_ap), (6, 'sin identidad', a_sin)) x(k, nom, uid) ORDER BY x.k LOOP
       res := pg_temp.g371_como(r.uid, 'authenticated', 'SELECT count(*)::text FROM public.textos_legales_pendientes()');
       d := d||'A '||r.nom||'='||left(res, 60)||'; ';
       IF res IS DISTINCT FROM 'OK:0' THEN bad := bad||'exigible=false: '||r.nom||' '||left(res, 120)||' (esperado 0 filas); '; END IF;
@@ -34221,21 +34253,26 @@ BEGIN
     FOR r IN SELECT * FROM (VALUES
         (1, 'paciente.qa', a_pac, 'consentimiento_salud@999.999,privacidad@999.999,terminos@999.999'),
         (2, 'medico.qa', a_med, 'condiciones_profesionales@999.999,privacidad@999.999,terminos@999.999'),
-        (3, 'superadmin', a_sa, 'privacidad@999.999,terminos@999.999')) x(k, nom, uid, esp) ORDER BY x.k LOOP
+        (3, 'superadmin', a_sa, 'privacidad@999.999,terminos@999.999'),
+        (4, 'farmacia.qa', a_far, 'condiciones_profesionales@999.999,privacidad@999.999,terminos@999.999'),
+        (5, 'adminpais.qa', a_ap, 'privacidad@999.999,terminos@999.999'),
+        (6, 'sin identidad', a_sin, 'privacidad@999.999,terminos@999.999')) x(k, nom, uid, esp) ORDER BY x.k LOOP
       res := pg_temp.g371_como(r.uid, 'authenticated',
         'SELECT string_agg(x.codigo||''@''||x.version, '','' ORDER BY x.codigo COLLATE "C") FROM public.textos_legales_pendientes() x');
       esp := 'OK:'||r.esp;
       d := d||'B '||r.nom||'='||left(res, 120)||'; ';
       IF res IS DISTINCT FROM esp THEN bad := bad||'exigible=true: '||r.nom||' '||left(res, 160)||' (esperado '||r.esp||'); '; END IF;
     END LOOP;
+    END IF;
     RAISE EXCEPTION 'P1020 descarte' USING ERRCODE = 'P0999';
   EXCEPTION WHEN SQLSTATE 'P0999' THEN NULL;
   END;
   PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
-  snap_post := pg_temp.g371_snap(ARRAY[a_pac, a_med, a_sa]);
+  snap_post := pg_temp.g371_snap(ARRAY[a_pac, a_med, a_sa, a_far, a_ap, a_sin]);
   IF snap_post IS DISTINCT FROM snap_pre THEN bad := bad||'no quedo todo como estaba tras el descarte; '; END IF;
-  PERFORM set_config('probe.p1020', CASE WHEN bad = ''
-    THEN 'OK (371: exigible=false 0 filas x3; paciente.qa {consentimiento_salud, privacidad, terminos}; medico.qa {condiciones_profesionales, privacidad, terminos}; superadmin {privacidad, terminos}; neutralizadas='||n_neu||'; descartado)'
+  PERFORM set_config('probe.p1020', CASE WHEN fx <> '' THEN 'FALLO (fixture: '||left(fx, 600)||')'
+    WHEN bad = ''
+    THEN 'OK (371: exigible=false 0 filas x6; paciente.qa {consentimiento_salud, privacidad, terminos}; medico.qa {condiciones_profesionales, privacidad, terminos}; superadmin {privacidad, terminos}; farmacia.qa {condiciones_profesionales, privacidad, terminos}; adminpais.qa {privacidad, terminos}; sin identidad {privacidad, terminos}; neutralizadas='||n_neu||'; descartado)'
     ELSE 'ROJO ('||left(bad, 700)||' | '||left(d, 400)||')' END, false);
 EXCEPTION WHEN OTHERS THEN
   PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
@@ -34311,18 +34348,27 @@ BEGIN
     n := (SELECT count(*) FROM public.aceptaciones_legales a WHERE a.usuario_id = a_pac);
     IF n <> n0 + 2 THEN bad := bad||'tras repetir paciente.qa tiene '||n||' filas (esperado '||(n0 + 2)||'); '; END IF;
 
-    -- (c)-(f) rechazos por SQLSTATE
+    -- (c)-(f) rechazos por SQLSTATE (patron: SQLSTATE y, para el INSERT directo, el mensaje de privilegio: review #54 n1).
+    -- n2: mas de 10 elementos (11 codigos inexistentes distintos: sin el tope de 10 daria LG002), elemento que no es
+    -- objeto, version faltante, version no string y p_via NULL.
     FOR r IN SELECT * FROM (VALUES
-        (1, 'version vieja', 'LG003', 'SELECT public.aceptar_textos_legales(''[{"codigo":"terminos","version":"0.1"}]''::jsonb, ''app'', NULL)::text'),
-        (2, 'codigo inexistente', 'LG002', 'SELECT public.aceptar_textos_legales(''[{"codigo":"no_existe_p1021","version":"999.999"}]''::jsonb, ''app'', NULL)::text'),
-        (3, 'array vacio', 'LG004', 'SELECT public.aceptar_textos_legales(''[]''::jsonb, ''app'', NULL)::text'),
-        (4, 'codigo repetido', 'LG004', 'SELECT public.aceptar_textos_legales(''[{"codigo":"terminos","version":"999.999"},{"codigo":"terminos","version":"999.999"}]''::jsonb, ''app'', NULL)::text'),
-        (5, 'via invalida', 'LG004', 'SELECT public.aceptar_textos_legales(''[{"codigo":"terminos","version":"999.999"}]''::jsonb, ''otra'', NULL)::text'),
-        (6, 'INSERT directo', '42501', 'INSERT INTO public.aceptaciones_legales (usuario_id, codigo, version, via) VALUES ('''||a_pac||''', ''consentimiento_salud'', ''999.999'', ''app'') RETURNING id::text')
+        (1, 'version vieja', 'LG003:%', 'SELECT public.aceptar_textos_legales(''[{"codigo":"terminos","version":"0.1"}]''::jsonb, ''app'', NULL)::text'),
+        (2, 'codigo inexistente', 'LG002:%', 'SELECT public.aceptar_textos_legales(''[{"codigo":"no_existe_p1021","version":"999.999"}]''::jsonb, ''app'', NULL)::text'),
+        (3, 'array vacio', 'LG004:%', 'SELECT public.aceptar_textos_legales(''[]''::jsonb, ''app'', NULL)::text'),
+        (4, 'codigo repetido', 'LG004:%', 'SELECT public.aceptar_textos_legales(''[{"codigo":"terminos","version":"999.999"},{"codigo":"terminos","version":"999.999"}]''::jsonb, ''app'', NULL)::text'),
+        (5, 'via invalida', 'LG004:%', 'SELECT public.aceptar_textos_legales(''[{"codigo":"terminos","version":"999.999"}]''::jsonb, ''otra'', NULL)::text'),
+        (6, 'INSERT directo', '42501:permission denied for table %', 'INSERT INTO public.aceptaciones_legales (usuario_id, codigo, version, via) VALUES ('''||a_pac||''', ''consentimiento_salud'', ''999.999'', ''app'') RETURNING id::text'),
+        (7, 'mas de 10 elementos', 'LG004:%', 'SELECT public.aceptar_textos_legales('''
+            ||(SELECT jsonb_agg(jsonb_build_object('codigo', 'no_existe_p1021_'||g, 'version', '999.999') ORDER BY g) FROM generate_series(1, 11) g)::text
+            ||'''::jsonb, ''app'', NULL)::text'),
+        (8, 'elemento no objeto', 'LG004:%', 'SELECT public.aceptar_textos_legales(''["terminos"]''::jsonb, ''app'', NULL)::text'),
+        (9, 'version faltante', 'LG004:%', 'SELECT public.aceptar_textos_legales(''[{"codigo":"terminos"}]''::jsonb, ''app'', NULL)::text'),
+        (10, 'version no string', 'LG004:%', 'SELECT public.aceptar_textos_legales(''[{"codigo":"terminos","version":999.999}]''::jsonb, ''app'', NULL)::text'),
+        (11, 'p_via NULL', 'LG004:%', 'SELECT public.aceptar_textos_legales(''[{"codigo":"terminos","version":"999.999"}]''::jsonb, NULL, NULL)::text')
       ) x(k, nom, esp, q) ORDER BY x.k LOOP
       res := pg_temp.g371_como(a_pac, 'authenticated', r.q);
       d := d||r.nom||'='||left(res, 40)||'; ';
-      IF res NOT LIKE 'ERR:'||r.esp||':%' THEN bad := bad||r.nom||' '||left(res, 140)||' (esperado '||r.esp||'); '; END IF;
+      IF res NOT LIKE 'ERR:'||r.esp THEN bad := bad||r.nom||' '||left(res, 140)||' (esperado '||r.esp||'); '; END IF;
     END LOOP;
     n := (SELECT count(*) FROM public.aceptaciones_legales a WHERE a.usuario_id = a_pac);
     IF n <> n0 + 2 THEN bad := bad||'tras los rechazos paciente.qa tiene '||n||' filas (esperado '||(n0 + 2)||'); '; END IF;
@@ -34352,6 +34398,15 @@ BEGIN
     END;
     d := d||'DELETE='||st||'; ';
     IF st IS DISTINCT FROM 'LG005' THEN bad := bad||'DELETE como postgres '||COALESCE(st, '-')||' (esperado LG005); '; END IF;
+    -- review #54 m2: TRUNCATE como postgres -> LG005 (trigger de sentencia); si pasara, lo deshace el descarte P0999
+    st := NULL;
+    BEGIN
+      TRUNCATE public.aceptaciones_legales;
+      st := 'sin error';
+    EXCEPTION WHEN OTHERS THEN st := SQLSTATE;
+    END;
+    d := d||'TRUNCATE='||st||'; ';
+    IF st IS DISTINCT FROM 'LG005' THEN bad := bad||'TRUNCATE como postgres '||COALESCE(st, '-')||' (esperado LG005); '; END IF;
 
     RAISE EXCEPTION 'P1021 descarte' USING ERRCODE = 'P0999';
   EXCEPTION WHEN SQLSTATE 'P0999' THEN NULL;
@@ -34360,7 +34415,7 @@ BEGIN
   snap_post := pg_temp.g371_snap(ARRAY[a_pac, a_med]);
   IF snap_post IS DISTINCT FROM snap_pre THEN bad := bad||'no quedo todo como estaba tras el descarte; '; END IF;
   PERFORM set_config('probe.p1021', CASE WHEN bad = ''
-    THEN 'OK (371: aceptar 2 con su uid; repetir idempotente; LG003/LG002/LG004 x3; INSERT directo 42501; medico.qa 0 filas ajenas; UPDATE/DELETE LG005; descartado)'
+    THEN 'OK (371: aceptar 2 con su uid; repetir idempotente; LG003/LG002/LG004 x8; INSERT directo 42501 por privilegio; medico.qa 0 filas ajenas; UPDATE/DELETE/TRUNCATE LG005; descartado)'
     ELSE 'ROJO ('||left(bad, 700)||' | '||left(d, 400)||')' END, false);
 EXCEPTION WHEN OTHERS THEN
   PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
@@ -34428,6 +34483,15 @@ BEGIN
     IF v IS DISTINCT FROM r.acl THEN bad := bad||r.f||' ACL '||COALESCE(v, '-')||' (esperado '||r.acl||'); '; END IF;
   END LOOP;
 
+  -- triggers de inmutabilidad de aceptaciones_legales: lista exacta, como el autochequeo (e) de la 371 (review #54 m2).
+  -- tgtype: 27 = ROW|BEFORE|DELETE|UPDATE; 34 = BEFORE|TRUNCATE (sentencia); tgenabled 'O' = activo
+  v := (SELECT string_agg(t.tgname||':'||t.tgtype::text||':'||t.tgenabled::text||':'||t.tgfoid::regprocedure::text, ',' ORDER BY t.tgname)
+          FROM pg_trigger t WHERE t.tgrelid = to_regclass('public.aceptaciones_legales') AND NOT t.tgisinternal);
+  IF v IS DISTINCT FROM 'trg_aceptaciones_legales_no_truncate:34:O:private.aceptaciones_legales_solo_append(),'
+                      ||'trg_aceptaciones_legales_solo_append:27:O:private.aceptaciones_legales_solo_append()' THEN
+    bad := bad||'triggers de aceptaciones_legales '||COALESCE(v, '-')||'; ';
+  END IF;
+
   -- secuencia IDENTITY
   v_seq := pg_get_serial_sequence('public.aceptaciones_legales', 'id');
   IF v_seq IS NULL THEN
@@ -34441,7 +34505,7 @@ BEGIN
   END IF;
 
   PERFORM set_config('probe.p1022', CASE WHEN bad = ''
-    THEN 'OK (371: 2 tablas con RLS y ACL exacta; 5 funciones DEFINER con search_path vacio y ACL exacta; secuencia sin authenticated/anon; 0 con PUBLIC; anon solo catalogo_planes_visitador_publico)'
+    THEN 'OK (371: 2 tablas con RLS y ACL exacta; 5 funciones DEFINER con search_path vacio y ACL exacta; 2 triggers de inmutabilidad exactos; secuencia sin authenticated/anon; 0 con PUBLIC; anon solo catalogo_planes_visitador_publico)'
     ELSE 'ROJO ('||left(bad, 800)||')' END, false);
 EXCEPTION WHEN OTHERS THEN
   PERFORM set_config('probe.p1022', 'FALLO ('||SQLSTATE||' '||SQLERRM||')', false);
