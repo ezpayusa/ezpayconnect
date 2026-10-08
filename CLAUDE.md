@@ -33,8 +33,15 @@ Stack: React + Vite + TypeScript, Supabase / Postgres, deploy en Vercel, repo en
   entrada inválida, LG005 aceptaciones append-only; LG006 = el texto no corresponde a la identidad de la cuenta, en la 372
   sin aplicar), **errcode `PC029`** (familia PC: PC025 país requerido y PC026 sin autoridad en `contar_medicos_por_pais`, PC027
   no autenticado, PC028 sin autoridad sobre el país en `contar_proveedores_por_pais`)
-  (372 = GL-02 hardening de la 371 (review #54, n2-n9) — **ESCRITA, NO APLICADA** (rama `gl02/mig-372-hardening`, PR en
-  borrador; commits e3db0e4 migración, e9e90cf rollback, 7956f08 probes). `private.identidad_legal(uuid)` (DEFINER,
+  (372 = GL-02 hardening de la 371 (review #54, n2-n9) — **ESCRITA, NO APLICADA** (rama `gl02/mig-372-hardening`, PR #55 en
+  borrador; commits e3db0e4 migración, e9e90cf rollback, 7956f08 probes, f38c225 y d22ac5b cabecera, e88437f probes).
+  **Review #55 pre-apply: APROBADO.** Nits n1/n2/n7 resueltos en la cabecera; n5/n6 en probes (G372_FX publica ROJO si el
+  estado es parcial; mutación m6 con `fija_fecha` no-op deja G372_FX en OK (presente) y P1025 en ROJO por la aserción
+  funcional: la fecha forjada sobrevive). **Riesgo aceptado (n2):** service_role (regla 3, SIUD) puede insertar directo la
+  aceptación de un usuario real, de un texto que no le aplica y con via/user_agent a elección (el INSERT directo no pasa
+  por LG006); la fecha (trigger) y el uid inexistente (FK) sí quedan cerrados; service_role solo existe server-side y
+  ninguna edge escribe en la tabla. **Huecos de IDENTITY por diseño (n7):** probes y dry-runs consumen ids en
+  transacciones abortadas; un hueco no implica una fila borrada (la inmutabilidad la garantizan los triggers LG005). `private.identidad_legal(uuid)` (DEFINER,
   `search_path=''`, una fila siempre, NULL → (false, false)): es_profesional sale de `roles_catalogo.ambito = 'clinica'`
   (JOIN, sin lista literal) o de `cuentas_proveedor`; `pendientes_de` y `aceptar_textos_legales` la usan. `aceptar` recorre
   el array `ORDER BY (e ->> 'codigo')` (locks en orden estable), valida tipo → repetido → LG002 → **LG006** (el texto no
@@ -44,12 +51,13 @@ Stack: React + Vite + TypeScript, Supabase / Postgres, deploy en Vercel, repo en
   funciones de trigger son INVOKER. Precondición: estado post-371 (funciones 4c1f611c…/389, policies 8a8dc5cf…/309,
   relaciones d065decf…/2394, md5(prosrc) de las 5 funciones de la 371) más los 6 roles de `ambito = 'clinica'` = la lista
   vieja. Huellas post-372 calculadas = medidas en el dry-run: funciones 5482f6de564741ad445f30d3ccbd9a79/391; policies y
-  relaciones sin cambio. sha256 de la migración cae62b9153f649634c1478f93aa092b45f25d863d5e9dc73cee47ce6bf0b64a8 y de
+  relaciones sin cambio. sha256 de la migración 7797e4c5fe698a94348e27e5cd78a110c00dc115522098a79cf3cb3428c2d174 (solo cambió la cabecera en f38c225/d22ac5b; md5(prosrc) y huellas iguales, dry-run de control 34/34) y de
   `372_rollback.sql` 1769f78afdb6d3dd282ed6b6bb42e25b7b874396276888f39fd864178817d2bb. Dry-run 34/34 (pendientes_de pre y
   post iguales para los 6 actores de P1020); dry-run combinado 372 → rollback 29/29 con una aceptación cargada (sobrevive
   al rollback). Probes: G372_FX, P1022 por estado (ausente = forma 371, presente = forma 372, parcial = ROJO), P1023
-  estructura, P1024 regla y mensajes, P1025 forja y escritura directa; harness pre-apply 1111 filas / 11 rojas de deuda /
-  P1023-P1025 'PENDIENTE mig 372'; mutaciones m1-m5 (trigger, LG006, lista literal, solo_append DEFINER, FK) en ROJO.
+  estructura, P1024 regla y mensajes, P1025 forja y escritura directa; harness pre-apply v2 1111 filas / 1020 bloques DO /
+  11 rojas de deuda / P1023-P1025 'PENDIENTE mig 372'; mutaciones m1-m6 (trigger, LG006, lista literal, solo_append
+  DEFINER, FK, fija_fecha no-op) en ROJO.
   **Decisión de Oscar (8-oct-2026):** FK a `auth.users` ON DELETE RESTRICT — borrar un usuario con aceptaciones falla; la
   cancelación de cuenta va a necesitar un flujo de anonimización (backlog). **Próximo:** /code-review → apply →
   verificación en sesión nueva → pasar 'ausente' a REGRESION en P1022-P1025 → CLAUDE.md (próximos libres mig 373, P1026,
@@ -759,6 +767,13 @@ Detalles a recordar:
 - (GL-02, decisión de Oscar 8-oct-2026, mig 372) `aceptaciones_legales.usuario_id` → `auth.users` ON DELETE RESTRICT: con
   aceptaciones registradas, `auth.admin.deleteUser` falla. La cancelación de cuenta va a necesitar un flujo de
   anonimización (qué se conserva de la evidencia legal y cómo se desvincula del usuario). Hoy los únicos borrados de usuarios
-  del repo son rollbacks de altas en la misma request (recon de la 372, punto 5).
+  del repo son rollbacks de altas en la misma request (recon de la 372, punto 5). **Alcance (review #55 n3):** a un paciente
+  ya no se lo puede borrar hoy (`pacientes_auth_user_id_fkey` es NO ACTION); el bloqueo nuevo cae sobre las cuentas con
+  perfil o de proveedor que tengan aceptaciones.
+- (GL-02, front, review #55 n4) Alta de proveedor (`src/proveedor/hooks/useProveedorAuth.ts`: `signUp` L96 →
+  `registrar_proveedor` L109): la aceptación de `condiciones_profesionales` va DESPUÉS de `registrar_proveedor`; antes la
+  cuenta todavía no tiene `cuentas_proveedor` y `aceptar_textos_legales` da LG006. En el paciente no pasa:
+  `handle_new_paciente` (mig 230, AFTER INSERT ON auth.users, solo si la metadata trae `tipo = 'paciente'`) crea la fila de
+  `pacientes` en el mismo `signUp`.
 - **(QA-MANUAL, cleanup pre-go-live)** `auditoria_ia` id **181** (2026-10-02 15:38:37 UTC, medico.qa →
   paciente 23): `DELETE FROM public.auditoria_ia WHERE id = 181;`
