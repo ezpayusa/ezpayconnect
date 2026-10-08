@@ -49,7 +49,15 @@
 --   funciones SIN las 2 nuevas siga siendo la post-371.
 -- Probes: P1022 exige hoy 2 triggers exactos y las 5 funciones DEFINER; con la 372 viva sale ROJO hasta ajustarlo en el
 --   mismo PR (proximo probe libre: P1023).
--- Rollback: 372_rollback.sql (pendiente de escribir).
+-- Riesgo aceptado (review #55 n2): service_role conserva SELECT/INSERT/UPDATE/DELETE (regla 3 de CLAUDE.md) y puede
+--   insertar directo una aceptacion de un usuario REAL, de un texto que no le aplica y con via/user_agent a eleccion: el
+--   INSERT directo no pasa por LG006 (que vive en aceptar_textos_legales). Lo que si queda cerrado: la fecha (trigger
+--   trg_aceptaciones_legales_fija_fecha) y el uid inexistente (FK a auth.users). service_role solo existe server-side y
+--   ninguna edge escribe en esta tabla hoy (recon de la 372, punto 4.a).
+-- IDENTITY con huecos (review #55 n7): la secuencia de aceptaciones_legales.id tiene huecos por diseno (los probes y los
+--   dry-runs consumen ids en transacciones abortadas; nextval no es transaccional). Un hueco no implica una fila borrada:
+--   la inmutabilidad la garantizan los triggers LG005 (UPDATE/DELETE/TRUNCATE).
+-- Rollback: 372_rollback.sql (vuelve exacto a post-371; funciona con aceptaciones cargadas, las conserva).
 -- ############################################################################################
 
 BEGIN;
