@@ -34177,7 +34177,9 @@ BEGIN
 END
 $body$
 $fn2$;
-  PERFORM set_config('probe.g372_fx', 'OK ('||pg_temp.g372_estado()||')', false);
+  -- review #55 n5: 'parcial' publica ROJO en el fixture mismo (no solo en P1022-P1025)
+  PERFORM set_config('probe.g372_fx', CASE WHEN pg_temp.g372_estado() IN ('ausente', 'presente') THEN 'OK (' ELSE 'ROJO (' END
+                                      ||pg_temp.g372_estado()||')', false);
 EXCEPTION WHEN OTHERS THEN
   PERFORM set_config('probe.g372_fx', 'FALLO ('||SQLSTATE||' '||SQLERRM||')', false);
 END $g372fx$;
@@ -34575,7 +34577,8 @@ SELECT set_config('role', 'none', true);
 
 -- ============================================================
 -- MIG 372 · GL-02 hardening (P1023-P1025). Estado por pg_temp.g372_estado (G372_FX): 'ausente' -> 'PENDIENTE mig 372
--- (...)'; 'parcial' -> ROJO. Cuando la 372 se aplique, 'ausente' pasa a REGRESION en el mismo PR (como la 370 y la 371).
+-- (...)'; 'parcial' -> ROJO. Cuando la 372 se aplique, 'ausente' pasa a REGRESION en P1022-P1025, en el mismo PR (como la
+-- 370 y la 371).
 -- ============================================================
 -- P1023 estructura 372 (solo catalogo): identidad_legal DEFINER + search_path vacio + ACL solo postgres, y deriva de
 -- roles_catalogo (JOIN, ambito 'clinica') sin lista literal de roles; fija_fecha INVOKER + search_path vacio + ACL solo
