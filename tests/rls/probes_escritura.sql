@@ -34069,9 +34069,9 @@ SELECT set_config('role', 'none', true);
 -- ============================================================
 -- G371_FX (7-oct-2026) — estado de la 371 leido del catalogo + helpers. No toca datos.
 --   pg_temp.g371_estado(): 'presente' = las 2 tablas y las 5 funciones existen; 'ausente' = ninguna; 'parcial (...)' = el
---     resto (ROJO en los probes). Antes del apply, P1019-P1022 publican 'PENDIENTE mig 371 (...)' SOLO por 'ausente'; lo que
---     no depende de la 371 (censo de EXECUTE de P1022) se juzga ANTES de esa rama (regla del review #46). Despues del apply,
---     'ausente' pasa a REGRESION en este mismo PR (como la 370).
+--     resto (ROJO en los probes). La 371 esta aplicada en prod (2026-10-08 15:03 UTC): si falta ('ausente'), P1019-P1022
+--     publican 'REGRESION (371 ausente: ...)'; lo que no depende de la 371 (censo de EXECUTE de P1022) se juzga ANTES de
+--     esa rama (regla del review #46), igual que en la 370.
 --   pg_temp.g371_como(uid, rol, sql): corre sql como ese rol (uid NULL = sin sub) y devuelve 'OK:<valor>' o
 --     'ERR:<SQLSTATE>:<mensaje>'; el llamante juzga el SQLSTATE. Siempre vuelve a role none y claims vacios.
 --   pg_temp.g371_snap(uids): md5 del catalogo, del conteo/max(id) de aceptaciones y de las filas de perfiles, pacientes
@@ -34141,7 +34141,7 @@ BEGIN
   IF current_user <> 'postgres' THEN RAISE EXCEPTION 'fixture roto: P1019 corre como %', current_user; END IF;
   v_est := pg_temp.g371_estado();
   IF v_est = 'ausente' THEN
-    PERFORM set_config('probe.p1019', 'PENDIENTE mig 371 (tablas y RPCs de textos legales ausentes)', false);
+    PERFORM set_config('probe.p1019', 'REGRESION (371 ausente: tablas y RPCs de textos legales ausentes)', false);
     RETURN;
   ELSIF v_est <> 'presente' THEN
     PERFORM set_config('probe.p1019', 'ROJO (371 '||left(v_est, 300)||')', false);
@@ -34178,7 +34178,7 @@ BEGIN
   PERFORM set_config('request.jwt.claims', '', true);
   v_est := pg_temp.g371_estado();
   IF v_est = 'ausente' THEN
-    PERFORM set_config('probe.p1020', 'PENDIENTE mig 371 (tablas y RPCs de textos legales ausentes)', false);
+    PERFORM set_config('probe.p1020', 'REGRESION (371 ausente: tablas y RPCs de textos legales ausentes)', false);
     RETURN;
   ELSIF v_est <> 'presente' THEN
     PERFORM set_config('probe.p1020', 'ROJO (371 '||left(v_est, 300)||')', false);
@@ -34257,7 +34257,7 @@ BEGIN
   PERFORM set_config('request.jwt.claims', '', true);
   v_est := pg_temp.g371_estado();
   IF v_est = 'ausente' THEN
-    PERFORM set_config('probe.p1021', 'PENDIENTE mig 371 (tablas y RPCs de textos legales ausentes)', false);
+    PERFORM set_config('probe.p1021', 'REGRESION (371 ausente: tablas y RPCs de textos legales ausentes)', false);
     RETURN;
   ELSIF v_est <> 'presente' THEN
     PERFORM set_config('probe.p1021', 'ROJO (371 '||left(v_est, 300)||')', false);
@@ -34368,7 +34368,7 @@ EXCEPTION WHEN OTHERS THEN
 END $$;
 SELECT set_config('role', 'none', true);
 
--- P1022 estructura (solo catalogo). Independiente de la 371 y ANTES de la rama PENDIENTE: 0 funciones de public/private
+-- P1022 estructura (solo catalogo). Independiente de la 371 y ANTES de la rama REGRESION (371 ausente): 0 funciones de public/private
 -- con PUBLIC y anon ejecuta solo public.catalogo_planes_visitador_publico(). De la 371: RLS on (sin FORCE) en las 2
 -- tablas; ACL exacta de las 2 tablas (sin el dueno: authenticated SELECT; service_role S/I/U/D) y de las 5 funciones
 -- (RPCs: postgres, authenticated, service_role; private: solo postgres), todas DEFINER con search_path vacio; la
@@ -34388,7 +34388,7 @@ BEGIN
   v_est := pg_temp.g371_estado();
   IF v_est = 'ausente' THEN
     PERFORM set_config('probe.p1022', CASE WHEN bad = ''
-      THEN 'PENDIENTE mig 371 (tablas y RPCs de textos legales ausentes; censo de EXECUTE OK)'
+      THEN 'REGRESION (371 ausente: tablas y RPCs de textos legales ausentes; censo de EXECUTE OK)'
       ELSE 'ROJO ('||left(bad, 700)||')' END, false);
     RETURN;
   ELSIF v_est <> 'presente' THEN
@@ -35543,10 +35543,10 @@ UNION ALL SELECT 'P1016_execute_anon_ejercitado_370',  current_setting('probe.p1
 UNION ALL SELECT 'P1017_execute_authenticated_por_panel_370',  current_setting('probe.p1017', true), 'OK (sin 42501 por panel, entrega_evidencias incluida; entrega_visible sin authenticated: REGRESION)'
 UNION ALL SELECT 'P1018_execute_triggers_authenticated_370',  current_setting('probe.p1018', true), 'OK (4 triggers como authenticated sin 42501, antes y despues de la 370)'
 UNION ALL SELECT 'G371_FX_estado_textos_legales',  current_setting('probe.g371_fx', true), 'OK (presente: 371 aplicada; antes del apply: ausente)'
-UNION ALL SELECT 'P1019_textos_legales_anon_371',  current_setting('probe.p1019', true), 'OK (371: anon 42501 en las 2 RPCs y las 2 tablas; antes de la 371: PENDIENTE)'
-UNION ALL SELECT 'P1020_textos_legales_regla_por_rol_371',  current_setting('probe.p1020', true), 'OK (371: paciente/medico/superadmin con su conjunto; exigible=false 0 filas; antes de la 371: PENDIENTE)'
-UNION ALL SELECT 'P1021_textos_legales_escritura_371',  current_setting('probe.p1021', true), 'OK (371: aceptar idempotente con su uid; LG002/LG003/LG004; INSERT directo 42501; sin filas ajenas; LG005; antes de la 371: PENDIENTE)'
-UNION ALL SELECT 'P1022_textos_legales_estructura_371',  current_setting('probe.p1022', true), 'OK (371: ACL exacta de 2 tablas y 5 funciones; secuencia cerrada; 0 con PUBLIC; anon solo catalogo; antes de la 371: PENDIENTE)'
+UNION ALL SELECT 'P1019_textos_legales_anon_371',  current_setting('probe.p1019', true), 'OK (371: anon 42501 en las 2 RPCs y las 2 tablas; si la 371 falta: REGRESION)'
+UNION ALL SELECT 'P1020_textos_legales_regla_por_rol_371',  current_setting('probe.p1020', true), 'OK (371: paciente/medico/superadmin con su conjunto; exigible=false 0 filas; si la 371 falta: REGRESION)'
+UNION ALL SELECT 'P1021_textos_legales_escritura_371',  current_setting('probe.p1021', true), 'OK (371: aceptar idempotente con su uid; LG002/LG003/LG004; INSERT directo 42501; sin filas ajenas; LG005; si la 371 falta: REGRESION)'
+UNION ALL SELECT 'P1022_textos_legales_estructura_371',  current_setting('probe.p1022', true), 'OK (371: ACL exacta de 2 tablas y 5 funciones; secuencia cerrada; 0 con PUBLIC; anon solo catalogo; si la 371 falta: REGRESION)'
 UNION ALL SELECT 'P1010_campana_vistas_sin_update_367',  current_setting('probe.p1010', true), 'OK (367: INSERT 1; ON CONFLICT DO NOTHING 0 sin error; DO UPDATE y UPDATE 42501; otro paciente 0; antes de la 367: PENDIENTE)'
 UNION ALL SELECT 'P1009_datos_bancarios_acotados_366',  current_setting('probe.p1009', true), 'OK (366: cuenta GT solo super_admin/admin_pais GT/proveedores GT; checkout 1 fila; config 21 super_admin y 14 el resto, admin_pais incluido; antes de la 366: PENDIENTE)'
 UNION ALL SELECT 'DET_p1009',  'DET ' || COALESCE(NULLIF(current_setting('probe.p1009_det', true), ''), '(sin dato)'), 'DET (detalle de P1009, no es probe)'
