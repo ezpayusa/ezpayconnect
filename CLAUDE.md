@@ -24,17 +24,23 @@ Stack: React + Vite + TypeScript, Supabase / Postgres, deploy en Vercel, repo en
   minutos por esto** (P635 es la probe que faltaba, P636 su contraprueba).
 - NUNCA ampliar policies de RLS sobre tablas adyacentes a datos médicos (p. ej. campana_metricas). Para dar acceso, usar RPCs SECURITY DEFINER con search_path='', fail-closed (si el scope es NULL → 0 filas) y gate interno.
 - Probar aislamiento por rol impersonando request.jwt.claims en prod: cada rol ve lo suyo y no lo ajeno.
-- **Próximos números libres: probe `P1026`** (global, no por módulo; P1023-P1025 + G372_FX usados por la mig 372, escrita y SIN aplicar; P1019-P1022 usados por la mig 371; P1015-P1018 usados por la mig 370, P1011-P1014 por la mig 369, P1010 por la mig 367, P1009 por la 366, P1008 por la 365, P1007 por la 364, P1001-P1006 por la mig 363, P996-P1000 por la 362, P990-P995 por la 361, P983-P989 por la 360, P975-P982 por la
+- **Próximos números libres: probe `P1026`** (global, no por módulo; P1023-P1025 + G372_FX usados por la mig 372; P1019-P1022 usados por la mig 371; P1015-P1018 usados por la mig 370, P1011-P1014 por la mig 369, P1010 por la mig 367, P1009 por la 366, P1008 por la 365, P1007 por la 364, P1001-P1006 por la mig 363, P996-P1000 por la 362, P990-P995 por la 361, P983-P989 por la 360, P975-P982 por la
   359, P967-P974 por la 358, P958-P966 por la 357 (obtener_medicos_por_ids acotada a relación); P906-P907 usados por la mig 336, P912-P913
   por la 337, P914-P915 por la 338, P916-P920 por la 339/340, P921-P923 por la 341, P924 por la 342, P925 por
   la 343, P926-P927 por la 344, P928-P929 por la 345, P930 por la 346, P931-P932 por la 347, P933 por la 348,
-  P934-P935 por la 349, P936 por la 350, P937-P939 por la 351, P940-P943 por la 353), **migración `373`** (la 371 es GL-02, aplicada el 8-oct; la 372 es su hardening, escrita y SIN aplicar), **errcode `LG007`** (prefijo LG,
+  P934-P935 por la 349, P936 por la 350, P937-P939 por la 351, P940-P943 por la 353), **migración `373`** (la 371 es GL-02 y la 372 su hardening, las dos aplicadas el 8-oct), **errcode `LG007`** (prefijo LG,
   GL-02: LG001-LG005 en uso por la 371 — LG001 sin sesión, LG002 código inexistente, LG003 versión no vigente, LG004
-  entrada inválida, LG005 aceptaciones append-only; LG006 = el texto no corresponde a la identidad de la cuenta, en la 372
-  sin aplicar), **errcode `PC029`** (familia PC: PC025 país requerido y PC026 sin autoridad en `contar_medicos_por_pais`, PC027
+  entrada inválida, LG005 aceptaciones append-only; LG006 = el texto no corresponde a la identidad de la cuenta, en uso
+  por la 372), **errcode `PC029`** (familia PC: PC025 país requerido y PC026 sin autoridad en `contar_medicos_por_pais`, PC027
   no autenticado, PC028 sin autoridad sobre el país en `contar_proveedores_por_pais`)
-  (372 = GL-02 hardening de la 371 (review #54, n2-n9) — **ESCRITA, NO APLICADA** (rama `gl02/mig-372-hardening`, PR #55 en
-  borrador; commits e3db0e4 migración, e9e90cf rollback, 7956f08 probes, f38c225 y d22ac5b cabecera, e88437f probes).
+  (372 = GL-02 hardening de la 371 (review #54, n2-n9) — **APLICADA en prod el 2026-10-08 a las 17:10 UTC (17:10:20.279 →
+  17:10:22.590, exit 0)**, sha256 7797e4c5fe698a94348e27e5cd78a110c00dc115522098a79cf3cb3428c2d174, y verificada en sesión
+  independiente (harness post-apply 1111 / 11 rojas de deuda; todos los objetos y cuerpos iguales al archivo). **Huellas
+  post-372:** funciones 5482f6de564741ad445f30d3ccbd9a79/391; policies 8a8dc5cf…/309 y relaciones d065decf…/2394 sin
+  cambio. P1022-P1025: la rama 'ausente' publica `REGRESION (372 ausente: …)` (commit e4d0d22; validada con un dry-run de
+  `372_rollback` + probes: G372_FX OK (ausente), P1022-P1025 en REGRESION, txid 275998 abortado). Rama
+  `gl02/mig-372-hardening`, PR #55 en borrador; commits e3db0e4 migración, e9e90cf rollback, 7956f08 probes, f38c225 y
+  d22ac5b cabecera, e88437f probes, e4d0d22 REGRESION.
   **Review #55 pre-apply: APROBADO.** Nits n1/n2/n7 resueltos en la cabecera; n5/n6 en probes (G372_FX publica ROJO si el
   estado es parcial; mutación m6 con `fija_fecha` no-op deja G372_FX en OK (presente) y P1025 en ROJO por la aserción
   funcional: la fecha forjada sobrevive). **Riesgo aceptado (n2):** service_role (regla 3, SIUD) puede insertar directo la
@@ -56,12 +62,11 @@ Stack: React + Vite + TypeScript, Supabase / Postgres, deploy en Vercel, repo en
   post iguales para los 6 actores de P1020); dry-run combinado 372 → rollback 29/29 con una aceptación cargada (sobrevive
   al rollback). Probes: G372_FX, P1022 por estado (ausente = forma 371, presente = forma 372, parcial = ROJO), P1023
   estructura, P1024 regla y mensajes, P1025 forja y escritura directa; harness pre-apply v2 1111 filas / 1020 bloques DO /
-  11 rojas de deuda / P1023-P1025 'PENDIENTE mig 372'; mutaciones m1-m6 (trigger, LG006, lista literal, solo_append
+  11 rojas de deuda (P1023-P1025 en estado previo al apply); mutaciones m1-m6 (trigger, LG006, lista literal, solo_append
   DEFINER, FK, fija_fecha no-op) en ROJO.
   **Decisión de Oscar (8-oct-2026):** FK a `auth.users` ON DELETE RESTRICT — borrar un usuario con aceptaciones falla; la
-  cancelación de cuenta va a necesitar un flujo de anonimización (backlog). **Próximo:** /code-review → apply →
-  verificación en sesión nueva → pasar 'ausente' a REGRESION en P1022-P1025 → CLAUDE.md (próximos libres mig 373, P1026,
-  LG007; rollback 372 → 371).)
+  cancelación de cuenta va a necesitar un flujo de anonimización (backlog). **Próximo:** review ronda 2 → merge →
+  front de GL-02. Próximos libres: mig 373, P1026, LG007; rollback vigente 372 → 371 → 370.)
   (371 = GL-02 textos legales: catálogo `textos_legales`, `aceptaciones_legales` append-only y RPCs
   `textos_legales_pendientes()` / `aceptar_textos_legales(jsonb, text, text)` — **APLICADA en prod el 2026-10-08 a las
   15:03 UTC (15:02:58.051 → 15:03:00.009, exit 0)**, sha256 del archivo
@@ -475,7 +480,7 @@ Stack: React + Vite + TypeScript, Supabase / Postgres, deploy en Vercel, repo en
   (fase 2.2 CERRADA: los 55 bloques que escriben están envueltos, 211→193→175→157→156→155; los 155
   restantes sólo leen y publican, así que ya no son deuda; 1006 bloques DO en total al 7-oct-2026, rama
   harness/diag-fixture-fm, con 1097 / 11 rojas de deuda en esa rama y en harness/censo-veredictos (post14a, 7-oct-2026);
-  la última cuenta de filas medida en esta memoria es **1111 / 1020 bloques DO / 11 rojas de deuda (pre-372, 8-oct-2026)**; tsc
+  la última cuenta de filas medida en esta memoria es **1111 / 1020 bloques DO / 11 rojas de deuda (post-372, 8-oct-2026)**; tsc
   74, vitest 424), `catchall_verde=205` (set_config de un handler `WHEN OTHERS` que publica un valor no rojo — no empieza
   con `PREFIJOS_ROJOS`; incluye flags de fixture que terminan en N/A — y solo queda exento si un IF/CASE de su camino mira
   el error; cada rama se exime solo por su propia condición, un ELSE nunca: cualquier error sale verde; techo, solo puede
@@ -496,14 +501,14 @@ Stack: React + Vite + TypeScript, Supabase / Postgres, deploy en Vercel, repo en
 - **Migraciones: SIEMPRE `npx supabase db query --linked -f <archivo>`, NUNCA `db push`.** `db push`
   desincroniza `schema_migrations` (deuda desde la 047). Los `.sql` viven en `supabase/migrations/`
   (rollback en `supabase/migrations/rollback/`); los de `supabase/fixes/` se agregan con `git add -f`.
-  **Desvío aceptado (familia 8):** los rollbacks de 334-371 viven en `supabase/migrations/`
-  (`3XX_rollback.sql`), no en `supabase/migrations/rollback/`. Al aplicarse la 372, el orden pasa a `372_rollback` →
-  `371_rollback` → `370_rollback` → … (la precondición de `371_rollback` exige la huella de funciones post-371
-  4c1f611c…/389, que la 372 cambia). Orden de rollback global vigente: `371_rollback` → `370_rollback` → `369_rollback` →
+  **Desvío aceptado (familia 8):** los rollbacks de 334-372 viven en `supabase/migrations/`
+  (`3XX_rollback.sql`), no en `supabase/migrations/rollback/`. Orden de rollback global vigente: `372_rollback` →
+  `371_rollback` → `370_rollback` → `369_rollback` →
   `368_rollback` → `366_rollback` → `365_rollback` → … Forzados por huella: 369 antes que 368 Y antes que 367 (la
   precondición de `367_rollback` exige la ACL de public e2bb57f4…/2370, que la 369 cambió) y 368 antes que 366;
   `367_rollback` sigue conmutable con 366 y 368 (siempre después de 369). `369_rollback` exige revertir también el front
-  de `useLaboratorio`. **371 (APLICADA el 8-oct) encabeza la cadena:** la precondición de `370_rollback` exige la ACL de
+  de `useLaboratorio`. **372 (APLICADA el 8-oct) encabeza la cadena:** la precondición de `371_rollback` exige la huella
+  de funciones post-371 4c1f611c…/389, que la 372 cambió (5482f6de…/391) y `372_rollback` devuelve. **371 (APLICADA el 8-oct) va después:** la precondición de `370_rollback` exige la ACL de
   funciones post-370 4878afd5…/384, que la 371 cambió (4c1f611c…/389) y `371_rollback` devuelve. **370 (APLICADA el 7-oct) va antes que 369, 350 y 349:** `369_rollback` espera la ACL de funciones
   e5c9770e…/384, y con la 370 viva devolver las policies de la 349/350 a `TO public` le da a anon 42501 de FUNCIÓN
   (`get_auth_user_pais_id`) en configuracion_sistema (la landing la lee sin sesión) y otras 8 tablas (medido con P935/P936).
