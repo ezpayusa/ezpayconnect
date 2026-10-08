@@ -24,12 +24,31 @@ Stack: React + Vite + TypeScript, Supabase / Postgres, deploy en Vercel, repo en
   minutos por esto** (P635 es la probe que faltaba, P636 su contraprueba).
 - NUNCA ampliar policies de RLS sobre tablas adyacentes a datos médicos (p. ej. campana_metricas). Para dar acceso, usar RPCs SECURITY DEFINER con search_path='', fail-closed (si el scope es NULL → 0 filas) y gate interno.
 - Probar aislamiento por rol impersonando request.jwt.claims en prod: cada rol ve lo suyo y no lo ajeno.
-- **Próximos números libres: probe `P1019`** (global, no por módulo; P1015-P1018 usados por la mig 370, P1011-P1014 por la mig 369, P1010 por la mig 367, P1009 por la 366, P1008 por la 365, P1007 por la 364, P1001-P1006 por la mig 363, P996-P1000 por la 362, P990-P995 por la 361, P983-P989 por la 360, P975-P982 por la
+- **Próximos números libres: probe `P1023`** (global, no por módulo; P1019-P1022 usados por la mig 371; P1015-P1018 usados por la mig 370, P1011-P1014 por la mig 369, P1010 por la mig 367, P1009 por la 366, P1008 por la 365, P1007 por la 364, P1001-P1006 por la mig 363, P996-P1000 por la 362, P990-P995 por la 361, P983-P989 por la 360, P975-P982 por la
   359, P967-P974 por la 358, P958-P966 por la 357 (obtener_medicos_por_ids acotada a relación); P906-P907 usados por la mig 336, P912-P913
   por la 337, P914-P915 por la 338, P916-P920 por la 339/340, P921-P923 por la 341, P924 por la 342, P925 por
   la 343, P926-P927 por la 344, P928-P929 por la 345, P930 por la 346, P931-P932 por la 347, P933 por la 348,
-  P934-P935 por la 349, P936 por la 350, P937-P939 por la 351, P940-P943 por la 353), **migración `371`**, **errcode `LG001`** (prefijo nuevo, GL-02), **errcode `PC029`** (familia PC: PC025 país requerido y PC026 sin autoridad en `contar_medicos_por_pais`, PC027
+  P934-P935 por la 349, P936 por la 350, P937-P939 por la 351, P940-P943 por la 353), **migración `372`** (la 371 es GL-02, aplicada el 8-oct), **errcode `LG006`** (prefijo LG,
+  GL-02: LG001-LG005 en uso por la 371 — LG001 sin sesión, LG002 código inexistente, LG003 versión no vigente, LG004
+  entrada inválida, LG005 aceptaciones append-only), **errcode `PC029`** (familia PC: PC025 país requerido y PC026 sin autoridad en `contar_medicos_por_pais`, PC027
   no autenticado, PC028 sin autoridad sobre el país en `contar_proveedores_por_pais`)
+  (371 = GL-02 textos legales: catálogo `textos_legales`, `aceptaciones_legales` append-only y RPCs
+  `textos_legales_pendientes()` / `aceptar_textos_legales(jsonb, text, text)` — **APLICADA en prod el 2026-10-08 a las
+  15:03 UTC (15:02:58.051 → 15:03:00.009, exit 0)**, sha256 del archivo
+  e81b39d392a9896e16796925b9348e4de3ffc9e6fee4fe952a057058b88f3824, y verificada en sesión independiente (rama
+  `gl02/textos-legales`, PR en borrador). Antes: dry-run PASA 7-oct (txid abortado) y precondición = estado post-370
+  (funciones 4878afd5…/384, policies 9ad61756…/307, relaciones 64ff833d…/2368). **Huellas post-371 (medidas en prod =
+  las del dry-run):** ACL de funciones 4c1f611c29b8b37d8076536d065069e0/389; policies 8a8dc5cfaf8365f95208fb9e8ba79674/309;
+  ACL de relaciones de public d065decfec14c0afae8f5d898032e4bb/2394; 0 funciones con PUBLIC; anon ejecuta solo
+  `catalogo_planes_visitador_publico()`. ACL: las 2 tablas `{postgres, authenticated=r, service_role=arwd}`; las 2 RPCs
+  `{postgres, authenticated, service_role}`; las 3 de private solo postgres. `textos_legales`: 4 filas en v0.1
+  (terminos, privacidad, consentimiento_salud, condiciones_profesionales) con `exigible = false` hasta que Oscar entregue
+  los datos de la sección 5.1; `aceptaciones_legales`: 0 filas. Probes P1019-P1022: la rama 'ausente' publica
+  `REGRESION (371 ausente: …)` (commit 2283d1f; validada con un dry-run de `371_rollback` + probes que terminó en
+  ROLLBACK: las 4 en REGRESION, txid abortado, prod intacta). Harness post-371: **1107 filas / 1016 bloques DO / 11 rojas
+  de deuda**; b2_guard top_level 0, cast 0, do_sin_handler 155, catchall_verde 205. Errcodes LG001-LG005 en uso,
+  próximo LG006. **Rollback vigente: 371 → 370** (`supabase/migrations/371_rollback.sql`, va antes que `370_rollback`).
+  **Sigue en GL-02:** el front (gate global en el primer login y casilla de aceptación en las altas).)
   (370 = familia 2, ÚLTIMO paso: EXECUTE de funciones sin PUBLIC ni anon — **APLICADA en prod el 2026-10-07 a las 19:18 UTC
   (19:18:26.914 → 19:18:28.737)**, sha256 del archivo 529777fd…cddbf7, y verificada VERDE en sesión independiente: harness
   post370 1102 filas / 1011 bloques DO / 11 rojas de deuda, P1015/P1016/P1017/P739/P741/P1000 en OK. **Bug vivo cerrado:**
@@ -426,7 +445,7 @@ Stack: React + Vite + TypeScript, Supabase / Postgres, deploy en Vercel, repo en
   (fase 2.2 CERRADA: los 55 bloques que escriben están envueltos, 211→193→175→157→156→155; los 155
   restantes sólo leen y publican, así que ya no son deuda; 1006 bloques DO en total al 7-oct-2026, rama
   harness/diag-fixture-fm, con 1097 / 11 rojas de deuda en esa rama y en harness/censo-veredictos (post14a, 7-oct-2026);
-  la última cuenta de filas medida en esta memoria es **1102 / 11 rojas de deuda (post370, 7-oct-2026, ver abajo)**; tsc
+  la última cuenta de filas medida en esta memoria es **1107 / 1016 bloques DO / 11 rojas de deuda (post371, 8-oct-2026)**; tsc
   74, vitest 424), `catchall_verde=205` (set_config de un handler `WHEN OTHERS` que publica un valor no rojo — no empieza
   con `PREFIJOS_ROJOS`; incluye flags de fixture que terminan en N/A — y solo queda exento si un IF/CASE de su camino mira
   el error; cada rama se exime solo por su propia condición, un ELSE nunca: cualquier error sale verde; techo, solo puede
@@ -447,12 +466,13 @@ Stack: React + Vite + TypeScript, Supabase / Postgres, deploy en Vercel, repo en
 - **Migraciones: SIEMPRE `npx supabase db query --linked -f <archivo>`, NUNCA `db push`.** `db push`
   desincroniza `schema_migrations` (deuda desde la 047). Los `.sql` viven en `supabase/migrations/`
   (rollback en `supabase/migrations/rollback/`); los de `supabase/fixes/` se agregan con `git add -f`.
-  **Desvío aceptado (familia 8):** los rollbacks de 334-370 viven en `supabase/migrations/`
-  (`3XX_rollback.sql`), no en `supabase/migrations/rollback/`. Orden de rollback global: `370_rollback` → `369_rollback` →
+  **Desvío aceptado (familia 8):** los rollbacks de 334-371 viven en `supabase/migrations/`
+  (`3XX_rollback.sql`), no en `supabase/migrations/rollback/`. Orden de rollback global: `371_rollback` → `370_rollback` → `369_rollback` →
   `368_rollback` → `366_rollback` → `365_rollback` → … Forzados por huella: 369 antes que 368 Y antes que 367 (la
   precondición de `367_rollback` exige la ACL de public e2bb57f4…/2370, que la 369 cambió) y 368 antes que 366;
   `367_rollback` sigue conmutable con 366 y 368 (siempre después de 369). `369_rollback` exige revertir también el front
-  de `useLaboratorio`. **370 (APLICADA el 7-oct) encabeza la cadena y va antes que 369, 350 y 349:** `369_rollback` espera la ACL de funciones
+  de `useLaboratorio`. **371 (APLICADA el 8-oct) encabeza la cadena:** la precondición de `370_rollback` exige la ACL de
+  funciones post-370 4878afd5…/384, que la 371 cambió (4c1f611c…/389) y `371_rollback` devuelve. **370 (APLICADA el 7-oct) va antes que 369, 350 y 349:** `369_rollback` espera la ACL de funciones
   e5c9770e…/384, y con la 370 viva devolver las policies de la 349/350 a `TO public` le da a anon 42501 de FUNCIÓN
   (`get_auth_user_pais_id`) en configuracion_sistema (la landing la lee sin sesión) y otras 8 tablas (medido con P935/P936).
 - **Los tests de edge (deno) NO corren en vitest ni en el pre-commit**: se corren a mano desde
@@ -544,7 +564,7 @@ Detalles a recordar:
   370 arriba). Corrección del recon del 6-oct: las helpers de policies YA tienen authenticated y service_role explícitos,
   así que el REVOKE de PUBLIC/anon no le rompe nada a authenticated; el riesgo de este paso es solo para anon, y anon ya no
   evalúa ninguna policy con funciones desde las 349/350. P800 extendido a `pg_proc` en la misma rama. Lo que queda para
-  la **371**: achicar WL_ANON_LEGACY y sacar las 5 entradas temporales de anon de la allowlist de P930 (350) (ver backlog). Hallazgos a conservar: `transacciones` se lee desde el front (AdminEzPayPage y las
+  la **372+** (el número 371 lo tomó GL-02): achicar WL_ANON_LEGACY y sacar las 5 entradas temporales de anon de la allowlist de P930 (350) (ver backlog). Hallazgos a conservar: `transacciones` se lee desde el front (AdminEzPayPage y las
   ReportesEzPayPage) y siempre devuelve [] porque tiene 0 policies → familia 7; configuracion_pais: el `true` de
   authenticated anula el filtro `activo` para logueados; 123 policies con `auth.uid()` sin `(select …)` (performance).
   F2-d (mig 364, 5-oct): visitas_agendadas sin UPDATE directo; las escrituras van solo por las 7 RPCs DEFINER.
@@ -552,7 +572,7 @@ Detalles a recordar:
   F2-f CERRADA (migs 367, 368 y 369, 6-oct): campana_vistas sin UPDATE; configuracion_sistema con las 21 claves solo para el
   super_admin; examenes_catalogo sin escritura directa (catalogo_lab_all partida; escrituras por 3 RPCs DEFINER con el gate
   `tiene_permiso('catalogo_examenes_editar')` adentro, no por policy con WITH CHECK que llame funciones DEFINER — lección
-  rls-with-check-definer-flaky-postgrest). EXECUTE = mig 370 (**APLICADA** el 7-oct); sigue la 371 (anon en 6 tablas).
+  rls-with-check-definer-flaky-postgrest). EXECUTE = mig 370 (**APLICADA** el 7-oct); sigue la 372+ (anon en 6 tablas; la 371 es GL-02).
   F2-g sigue opcional.
 - **FAMILIA 1 (privilegios) CERRADA: 342-347 aplicadas.** El paso de EXECUTE (antes "348") pasa a ser el ÚLTIMO de
   la familia 2, porque su prerequisito (sacar de `TO public` las policies que anon evalúa) es trabajo de policies.
@@ -628,7 +648,7 @@ Detalles a recordar:
   `useRecetas.ts:197` UPDATE de `recetas`.
 - (Familia 3/4) FK `examenes_orden_id_fkey` sigue `ON DELETE CASCADE`: tras la 338 sólo la alcanzan
   postgres/service_role (borrar una orden arrastra sus exámenes, completados incluidos).
-- (Familia 4, review #47 M-2, candidato a mig 371+; la 370 fue EXECUTE) Las RPCs de la 369 normalizan nombre y categoría con `btrim`, que solo
+- (Familia 4, review #47 M-2, candidato a mig 372+; la 370 fue EXECUTE y la 371 GL-02) Las RPCs de la 369 normalizan nombre y categoría con `btrim`, que solo
   recorta espacios: tabs y saltos de línea pasan por API (el front hace `.trim()`, que sí los recorta). La 336 ya normaliza
   espacios/tabs/saltos para EX028: usar el mismo criterio en `crear_examen_catalogo` y `actualizar_examen_catalogo`.
 - (Familia 2/4) `catalogo_read_activos` no filtra por tipo de empresa: `private.lab_en_mi_pais` solo compara el país. Hoy no
@@ -694,7 +714,7 @@ Detalles a recordar:
   completadas, canceladas o ya rechazadas. Recon de producto post-11-oct. Detectado en la review de
   harness/diag-fixture-fm (m5 descartado, ver c38862e).
 - (Familia 8) ~~P800 salta las foreign tables~~: alineado en la rama de la 370 (relkind incluye 'f').
-- (Familia 2, **mig 371**) REVOKE SELECT de anon en las 6 tablas de la WL_ANON_LEGACY que ya no usa (cuentas_proveedor,
+- (Familia 2, **mig 372+**; el número 371 lo tomó GL-02) REVOKE SELECT de anon en las 6 tablas de la WL_ANON_LEGACY que ya no usa (cuentas_proveedor,
   empresas_proveedoras, liquidaciones_comision, pacientes, perfiles, recetas): anon no evalúa ninguna policy sobre ellas
   desde la 350 (privilegio muerto, 0 filas). WL_ANON_LEGACY 8 → 2 (quedan configuracion_pais y configuracion_sistema, que
   usan la landing y los registros sin sesión); P930 sin esas 6 entradas (las 5 temporales de la 350 + liquidaciones_comision);
