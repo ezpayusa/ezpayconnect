@@ -34133,6 +34133,55 @@ EXCEPTION WHEN OTHERS THEN
   PERFORM set_config('probe.g371_fx', 'FALLO ('||SQLSTATE||' '||SQLERRM||')', false);
 END $g371fx$;
 
+-- G372_FX (8-oct-2026) — estado de la mig 372 (hardening de GL-02) leido del catalogo + helper. No toca datos.
+--   pg_temp.g372_estado(): 'presente' = existen private.identidad_legal, private.aceptaciones_legales_fija_fecha, el
+--     trigger trg_aceptaciones_legales_fija_fecha y la FK aceptaciones_legales_usuario_id_fkey -> auth.users, y
+--     solo_append es INVOKER; 'ausente' = ninguno de los 5 (solo_append DEFINER); 'parcial (...)' = el resto (ROJO).
+--     Mientras la 372 no este aplicada: P1022 acepta 'ausente' (forma 371) y P1023-P1025 publican 'PENDIENTE mig 372'.
+--   pg_temp.g372_como(uid, rol, sql): como g371_como pero devuelve el SQLERRM COMPLETO ('ERR:<SQLSTATE>:<mensaje>'),
+--     para comparar mensajes exactos (P1024). Siempre vuelve a role none y claims vacios.
+DO $g372fx$
+BEGIN
+  EXECUTE $fn$
+CREATE OR REPLACE FUNCTION pg_temp.g372_estado() RETURNS text LANGUAGE sql STABLE AS $body$
+SELECT CASE WHEN count(*) FILTER (WHERE v.ok) = 0 THEN 'ausente' WHEN count(*) FILTER (WHERE v.ok) = 5 THEN 'presente'
+            ELSE 'parcial ('||count(*) FILTER (WHERE v.ok)||' de 5: '||string_agg(v.nom||'='||v.ok::text, ', ' ORDER BY v.nom)||')' END
+  FROM (VALUES
+    ('identidad_legal', to_regprocedure('private.identidad_legal(uuid)') IS NOT NULL),
+    ('fija_fecha', to_regprocedure('private.aceptaciones_legales_fija_fecha()') IS NOT NULL),
+    ('trigger_fija_fecha', EXISTS (SELECT 1 FROM pg_trigger t WHERE t.tgrelid = to_regclass('public.aceptaciones_legales')
+                                     AND t.tgname = 'trg_aceptaciones_legales_fija_fecha')),
+    ('fk_usuario', EXISTS (SELECT 1 FROM pg_constraint c WHERE c.conrelid = to_regclass('public.aceptaciones_legales')
+                             AND c.conname = 'aceptaciones_legales_usuario_id_fkey' AND c.contype = 'f' AND c.confrelid = 'auth.users'::regclass)),
+    ('solo_append_invoker', COALESCE((SELECT NOT p.prosecdef FROM pg_proc p WHERE p.oid = to_regprocedure('private.aceptaciones_legales_solo_append()')), false))
+  ) v(nom, ok)
+$body$
+$fn$;
+  EXECUTE $fn2$
+CREATE OR REPLACE FUNCTION pg_temp.g372_como(p_uid uuid, p_rol text, p_sql text) RETURNS text LANGUAGE plpgsql AS $body$
+DECLARE v text;
+BEGIN
+  BEGIN
+    PERFORM set_config('request.jwt.claims', CASE WHEN p_uid IS NULL THEN json_build_object('role', p_rol)::text
+                                                  ELSE json_build_object('sub', p_uid, 'role', p_rol)::text END, true);
+    PERFORM set_config('role', p_rol, true);
+    EXECUTE p_sql INTO v;
+    PERFORM set_config('role', 'none', true);
+    PERFORM set_config('request.jwt.claims', '', true);
+    RETURN 'OK:'||COALESCE(v, '');
+  EXCEPTION WHEN OTHERS THEN
+    PERFORM set_config('role', 'none', true);
+    PERFORM set_config('request.jwt.claims', '', true);
+    RETURN 'ERR:'||SQLSTATE||':'||SQLERRM;
+  END;
+END
+$body$
+$fn2$;
+  PERFORM set_config('probe.g372_fx', 'OK ('||pg_temp.g372_estado()||')', false);
+EXCEPTION WHEN OTHERS THEN
+  PERFORM set_config('probe.g372_fx', 'FALLO ('||SQLSTATE||' '||SQLERRM||')', false);
+END $g372fx$;
+
 -- P1019 anon: sin EXECUTE en las 2 RPCs y sin SELECT en las 2 tablas. 42501 por SQLSTATE (y el mensaje de privilegio:
 -- un 42501 de otra cosa no cuenta).
 DO $$
@@ -34413,7 +34462,7 @@ BEGIN
   snap_post := pg_temp.g371_snap(ARRAY[a_pac, a_med]);
   IF snap_post IS DISTINCT FROM snap_pre THEN bad := bad||'no quedo todo como estaba tras el descarte; '; END IF;
   PERFORM set_config('probe.p1021', CASE WHEN bad = ''
-    THEN 'OK (371: aceptar 2 con su uid; repetir idempotente; LG003/LG002/LG004 x8; INSERT directo 42501 por privilegio; medico.qa 0 filas ajenas; UPDATE/DELETE/TRUNCATE LG005; descartado)'
+    THEN 'OK (371: aceptar 2 con su uid; repetir idempotente; LG002 x1, LG003 x1, LG004 x8; INSERT directo 42501 por privilegio; medico.qa 0 filas ajenas; UPDATE/DELETE/TRUNCATE LG005; descartado)'
     ELSE 'ROJO ('||left(bad, 700)||' | '||left(d, 400)||')' END, false);
 EXCEPTION WHEN OTHERS THEN
   PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
@@ -34426,8 +34475,11 @@ SELECT set_config('role', 'none', true);
 -- tablas; ACL exacta de las 2 tablas (sin el dueno: authenticated SELECT; service_role S/I/U/D) y de las 5 funciones
 -- (RPCs: postgres, authenticated, service_role; private: solo postgres), todas DEFINER con search_path vacio; la
 -- secuencia IDENTITY de aceptaciones_legales sin nada para authenticated, anon ni PUBLIC (explicito y efectivo).
+-- Mig 372 (pg_temp.g372_estado): 'ausente' -> forma 371 (2 triggers; las 5 funciones DEFINER), estado valido mientras la
+-- 372 no se aplique; 'presente' -> forma 372 (3 triggers exactos; solo_append y fija_fecha INVOKER con search_path vacio
+-- y ACL solo postgres; las otras 4 DEFINER); 'parcial' -> ROJO.
 DO $$
-DECLARE v_est text; bad text := ''; v text; n int; r record; v_seq text;
+DECLARE v_est text; v372 text; bad text := ''; v text; n int; r record; v_seq text; v_sd boolean; v_trg text;
 BEGIN
   IF current_user <> 'postgres' THEN RAISE EXCEPTION 'fixture roto: P1022 corre como %', current_user; END IF;
   -- independiente de la 371
@@ -34448,6 +34500,8 @@ BEGIN
     PERFORM set_config('probe.p1022', 'ROJO (371 '||left(v_est, 300)||CASE WHEN bad <> '' THEN '; ademas: '||left(bad, 400) ELSE '' END||')', false);
     RETURN;
   END IF;
+  v372 := pg_temp.g372_estado();
+  IF v372 NOT IN ('ausente', 'presente') THEN bad := bad||'372 '||left(v372, 300)||'; '; END IF;
 
   -- tablas: RLS y ACL exacta
   FOR r IN SELECT x.t FROM (VALUES ('public.textos_legales'), ('public.aceptaciones_legales')) x(t) LOOP
@@ -34465,15 +34519,19 @@ BEGIN
     IF n <> 0 THEN bad := bad||r.t||' con '||n||' columnas con ACL propia; '; END IF;
   END LOOP;
 
-  -- funciones: DEFINER, search_path vacio, ACL exacta
-  FOR r IN SELECT x.f, x.acl FROM (VALUES
-      ('public.aceptar_textos_legales(jsonb,text,text)', 'authenticated:EXECUTE,postgres:EXECUTE,service_role:EXECUTE'),
-      ('public.textos_legales_pendientes()',             'authenticated:EXECUTE,postgres:EXECUTE,service_role:EXECUTE'),
-      ('private.textos_legales_pendientes_de(uuid)',     'postgres:EXECUTE'),
-      ('private.textos_legales_al_dia(uuid)',            'postgres:EXECUTE'),
-      ('private.aceptaciones_legales_solo_append()',     'postgres:EXECUTE')) x(f, acl) LOOP
-    IF NOT EXISTS (SELECT 1 FROM pg_proc p WHERE p.oid = to_regprocedure(r.f) AND p.prosecdef AND p.proconfig = ARRAY['search_path=""']) THEN
-      bad := bad||r.f||' no es DEFINER con search_path vacio; ';
+  -- funciones: search_path vacio, ACL exacta; DEFINER salvo las de trigger con la 372 presente (INVOKER)
+  FOR r IN SELECT x.f, x.acl, x.trg FROM (VALUES
+      ('public.aceptar_textos_legales(jsonb,text,text)', 'authenticated:EXECUTE,postgres:EXECUTE,service_role:EXECUTE', false),
+      ('public.textos_legales_pendientes()',             'authenticated:EXECUTE,postgres:EXECUTE,service_role:EXECUTE', false),
+      ('private.textos_legales_pendientes_de(uuid)',     'postgres:EXECUTE', false),
+      ('private.textos_legales_al_dia(uuid)',            'postgres:EXECUTE', false),
+      ('private.aceptaciones_legales_solo_append()',     'postgres:EXECUTE', true),
+      ('private.aceptaciones_legales_fija_fecha()',      'postgres:EXECUTE', true)) x(f, acl, trg) LOOP
+    -- fija_fecha solo existe con la 372 (con 'ausente' no se exige)
+    CONTINUE WHEN r.f = 'private.aceptaciones_legales_fija_fecha()' AND v372 IS DISTINCT FROM 'presente';
+    v_sd := NOT (r.trg AND v372 = 'presente');
+    IF NOT EXISTS (SELECT 1 FROM pg_proc p WHERE p.oid = to_regprocedure(r.f) AND p.prosecdef = v_sd AND p.proconfig = ARRAY['search_path=""']) THEN
+      bad := bad||r.f||' no es '||CASE WHEN v_sd THEN 'DEFINER' ELSE 'INVOKER' END||' con search_path vacio; ';
     END IF;
     v := (SELECT string_agg(z.g, ',' ORDER BY z.g COLLATE "C") FROM (
             SELECT CASE WHEN a.grantee = 0 THEN 'PUBLIC' ELSE pg_get_userbyid(a.grantee) END||':'||a.privilege_type AS g
@@ -34481,12 +34539,15 @@ BEGIN
     IF v IS DISTINCT FROM r.acl THEN bad := bad||r.f||' ACL '||COALESCE(v, '-')||' (esperado '||r.acl||'); '; END IF;
   END LOOP;
 
-  -- triggers de inmutabilidad de aceptaciones_legales: lista exacta, como el autochequeo (e) de la 371 (review #54 m2).
-  -- tgtype: 27 = ROW|BEFORE|DELETE|UPDATE; 34 = BEFORE|TRUNCATE (sentencia); tgenabled 'O' = activo
+  -- triggers de inmutabilidad de aceptaciones_legales: lista exacta, como el autochequeo (e) de la 371 (review #54 m2)
+  -- y de la 372. tgtype: 7 = ROW|BEFORE|INSERT; 27 = ROW|BEFORE|DELETE|UPDATE; 34 = BEFORE|TRUNCATE (sentencia);
+  -- tgenabled 'O' = activo
   v := (SELECT string_agg(t.tgname||':'||t.tgtype::text||':'||t.tgenabled::text||':'||t.tgfoid::regprocedure::text, ',' ORDER BY t.tgname)
           FROM pg_trigger t WHERE t.tgrelid = to_regclass('public.aceptaciones_legales') AND NOT t.tgisinternal);
-  IF v IS DISTINCT FROM 'trg_aceptaciones_legales_no_truncate:34:O:private.aceptaciones_legales_solo_append(),'
-                      ||'trg_aceptaciones_legales_solo_append:27:O:private.aceptaciones_legales_solo_append()' THEN
+  v_trg := CASE WHEN v372 = 'presente' THEN 'trg_aceptaciones_legales_fija_fecha:7:O:private.aceptaciones_legales_fija_fecha(),' ELSE '' END
+           ||'trg_aceptaciones_legales_no_truncate:34:O:private.aceptaciones_legales_solo_append(),'
+           ||'trg_aceptaciones_legales_solo_append:27:O:private.aceptaciones_legales_solo_append()';
+  IF v IS DISTINCT FROM v_trg THEN
     bad := bad||'triggers de aceptaciones_legales '||COALESCE(v, '-')||'; ';
   END IF;
 
@@ -34503,10 +34564,306 @@ BEGIN
   END IF;
 
   PERFORM set_config('probe.p1022', CASE WHEN bad = ''
-    THEN 'OK (371: 2 tablas con RLS y ACL exacta; 5 funciones DEFINER con search_path vacio y ACL exacta; 2 triggers de inmutabilidad exactos; secuencia sin authenticated/anon; 0 con PUBLIC; anon solo catalogo_planes_visitador_publico)'
+    THEN CASE WHEN v372 = 'presente'
+      THEN 'OK (371+372: 2 tablas con RLS y ACL exacta; 4 funciones DEFINER y solo_append/fija_fecha INVOKER, search_path vacio y ACL exacta; 3 triggers exactos; secuencia sin authenticated/anon; 0 con PUBLIC; anon solo catalogo_planes_visitador_publico)'
+      ELSE 'OK (371, 372 ausente: 2 tablas con RLS y ACL exacta; 5 funciones DEFINER con search_path vacio y ACL exacta; 2 triggers de inmutabilidad exactos; secuencia sin authenticated/anon; 0 con PUBLIC; anon solo catalogo_planes_visitador_publico)' END
     ELSE 'ROJO ('||left(bad, 800)||')' END, false);
 EXCEPTION WHEN OTHERS THEN
   PERFORM set_config('probe.p1022', 'FALLO ('||SQLSTATE||' '||SQLERRM||')', false);
+END $$;
+SELECT set_config('role', 'none', true);
+
+-- ============================================================
+-- MIG 372 · GL-02 hardening (P1023-P1025). Estado por pg_temp.g372_estado (G372_FX): 'ausente' -> 'PENDIENTE mig 372
+-- (...)'; 'parcial' -> ROJO. Cuando la 372 se aplique, 'ausente' pasa a REGRESION en el mismo PR (como la 370 y la 371).
+-- ============================================================
+-- P1023 estructura 372 (solo catalogo): identidad_legal DEFINER + search_path vacio + ACL solo postgres, y deriva de
+-- roles_catalogo (JOIN, ambito 'clinica') sin lista literal de roles; fija_fecha INVOKER + search_path vacio + ACL solo
+-- postgres; solo_append INVOKER; 3 triggers exactos; FK usuario_id -> auth.users RESTRICT/RESTRICT; LG006 en aceptar;
+-- ni aceptar ni pendientes_de con la lista literal de roles; aceptar recorre el array ORDER BY (e ->> 'codigo'); ACL
+-- exacta de las 2 RPCs.
+DO $$
+DECLARE v372 text; bad text := ''; v text; r record;
+  c_roles constant text := '''(medico|admin_clinica|gerente|secretaria|enfermeria|asistente_medico)''';
+BEGIN
+  IF current_user <> 'postgres' THEN RAISE EXCEPTION 'fixture roto: P1023 corre como %', current_user; END IF;
+  v372 := pg_temp.g372_estado();
+  IF v372 = 'ausente' THEN
+    PERFORM set_config('probe.p1023', 'PENDIENTE mig 372 (identidad_legal, fija_fecha, trigger y FK ausentes; solo_append DEFINER)', false);
+    RETURN;
+  ELSIF v372 <> 'presente' THEN
+    PERFORM set_config('probe.p1023', 'ROJO (372 '||left(v372, 300)||')', false);
+    RETURN;
+  END IF;
+
+  -- funciones nuevas o cambiadas: prosecdef, search_path vacio, ACL exacta
+  FOR r IN SELECT x.f, x.sd, x.acl FROM (VALUES
+      ('private.identidad_legal(uuid)',                  true,  'postgres:EXECUTE'),
+      ('private.aceptaciones_legales_fija_fecha()',      false, 'postgres:EXECUTE'),
+      ('private.aceptaciones_legales_solo_append()',     false, 'postgres:EXECUTE'),
+      ('public.aceptar_textos_legales(jsonb,text,text)', true,  'authenticated:EXECUTE,postgres:EXECUTE,service_role:EXECUTE'),
+      ('public.textos_legales_pendientes()',             true,  'authenticated:EXECUTE,postgres:EXECUTE,service_role:EXECUTE')) x(f, sd, acl) LOOP
+    IF NOT EXISTS (SELECT 1 FROM pg_proc p WHERE p.oid = to_regprocedure(r.f) AND p.prosecdef = r.sd AND p.proconfig = ARRAY['search_path=""']) THEN
+      bad := bad||r.f||' no es '||CASE WHEN r.sd THEN 'DEFINER' ELSE 'INVOKER' END||' con search_path vacio; ';
+    END IF;
+    v := (SELECT string_agg(z.g, ',' ORDER BY z.g COLLATE "C") FROM (
+            SELECT CASE WHEN a.grantee = 0 THEN 'PUBLIC' ELSE pg_get_userbyid(a.grantee) END||':'||a.privilege_type AS g
+              FROM pg_proc p, aclexplode(COALESCE(p.proacl, acldefault('f', p.proowner))) a WHERE p.oid = to_regprocedure(r.f)) z);
+    IF v IS DISTINCT FROM r.acl THEN bad := bad||r.f||' ACL '||COALESCE(v, '-')||' (esperado '||r.acl||'); '; END IF;
+  END LOOP;
+
+  -- 3 triggers exactos (7 = ROW|BEFORE|INSERT; 27 = ROW|BEFORE|DELETE|UPDATE; 34 = BEFORE|TRUNCATE)
+  v := (SELECT string_agg(t.tgname||':'||t.tgtype::text||':'||t.tgenabled::text||':'||t.tgfoid::regprocedure::text, ',' ORDER BY t.tgname)
+          FROM pg_trigger t WHERE t.tgrelid = to_regclass('public.aceptaciones_legales') AND NOT t.tgisinternal);
+  IF v IS DISTINCT FROM 'trg_aceptaciones_legales_fija_fecha:7:O:private.aceptaciones_legales_fija_fecha(),'
+                      ||'trg_aceptaciones_legales_no_truncate:34:O:private.aceptaciones_legales_solo_append(),'
+                      ||'trg_aceptaciones_legales_solo_append:27:O:private.aceptaciones_legales_solo_append()' THEN
+    bad := bad||'triggers '||COALESCE(v, '-')||'; ';
+  END IF;
+
+  -- FK usuario_id -> auth.users(id), RESTRICT / RESTRICT, validada
+  v := (SELECT string_agg(c.conname||':'||c.confrelid::regclass::text||':'||c.confdeltype::text||':'||c.confupdtype::text||':'||c.convalidated::text||':'||
+                          (SELECT string_agg(a.attname, ',' ORDER BY a.attnum) FROM pg_attribute a WHERE a.attrelid = c.conrelid AND a.attnum = ANY (c.conkey)), ',')
+          FROM pg_constraint c WHERE c.conrelid = to_regclass('public.aceptaciones_legales') AND c.contype = 'f' AND c.confrelid = 'auth.users'::regclass);
+  IF v IS DISTINCT FROM 'aceptaciones_legales_usuario_id_fkey:auth.users:r:r:true:usuario_id' THEN bad := bad||'FK a auth.users '||COALESCE(v, '-')||'; '; END IF;
+
+  -- cuerpos: LG006 en aceptar; recorrido ORDER BY codigo; sin lista literal de roles en aceptar, pendientes_de ni
+  -- identidad_legal; identidad_legal deriva de roles_catalogo.ambito
+  v := (SELECT p.prosrc FROM pg_proc p WHERE p.oid = to_regprocedure('public.aceptar_textos_legales(jsonb,text,text)'));
+  IF v NOT LIKE '%''LG006''%' THEN bad := bad||'aceptar sin LG006; '; END IF;
+  IF v NOT LIKE '%jsonb_array_elements(p_textos) e ORDER BY (e ->> ''codigo'')%' THEN bad := bad||'aceptar no recorre ORDER BY (e ->> codigo); '; END IF;
+  v := (SELECT string_agg(p.oid::regprocedure::text, ', ' ORDER BY p.oid::regprocedure::text) FROM pg_proc p
+         WHERE p.oid IN (to_regprocedure('public.aceptar_textos_legales(jsonb,text,text)'), to_regprocedure('private.textos_legales_pendientes_de(uuid)'),
+                         to_regprocedure('private.identidad_legal(uuid)'))
+           AND p.prosrc ~ c_roles);
+  IF v IS NOT NULL THEN bad := bad||'lista literal de roles en: '||v||'; '; END IF;
+  v := (SELECT p.prosrc FROM pg_proc p WHERE p.oid = to_regprocedure('private.identidad_legal(uuid)'));
+  IF v NOT LIKE '%public.roles_catalogo%' OR v NOT LIKE '%ambito = ''clinica''%' THEN bad := bad||'identidad_legal no deriva de roles_catalogo.ambito; '; END IF;
+  v := (SELECT p.prosrc FROM pg_proc p WHERE p.oid = to_regprocedure('private.textos_legales_pendientes_de(uuid)'));
+  IF v NOT LIKE '%private.identidad_legal(p_uid)%' THEN bad := bad||'pendientes_de no usa identidad_legal; '; END IF;
+
+  PERFORM set_config('probe.p1023', CASE WHEN bad = ''
+    THEN 'OK (372: identidad_legal DEFINER desde roles_catalogo; fija_fecha y solo_append INVOKER; ACL solo postgres; 3 triggers exactos; FK RESTRICT/RESTRICT; LG006 y ORDER BY codigo en aceptar; sin lista literal de roles; ACL exacta de las 2 RPCs)'
+    ELSE 'ROJO ('||left(bad, 800)||')' END, false);
+EXCEPTION WHEN OTHERS THEN
+  PERFORM set_config('probe.p1023', 'FALLO ('||SQLSTATE||' '||SQLERRM||')', false);
+END $$;
+SELECT set_config('role', 'none', true);
+
+-- P1024 regla y mensajes de la 372. En savepoint, con los 4 textos exigibles en version '999.999':
+--   LG006: paciente.qa -> condiciones_profesionales; medico.qa -> consentimiento_salud; farmacia.qa -> consentimiento_salud.
+--   farmacia.qa -> condiciones_profesionales: OK (aceptados 1).
+--   derivacion desde roles_catalogo: se inserta el rol 'qa_rol_372' con ambito 'clinica' y adminpais.qa pasa a ese rol;
+--     antes del cambio sus pendientes no incluyen condiciones_profesionales, despues si.
+--   mensajes exactos: LG001 (las 2 RPCs), LG002, LG003, LG004 (via, arreglo, largo, tipo, repetido) y LG006; el de
+--     repetido no contiene el codigo enviado y el de LG003 no contiene la version enviada.
+--   el uid sintetico (no existe en auth.users) solo se usa para pendientes: aceptar con el daria 23503 (FK).
+-- Actores por email, sin neutralizar: si su identidad no es la esperada, FALLO (fixture: ...).
+DO $$
+DECLARE v372 text; bad text := ''; fx text := ''; d text := ''; r record; res text; v text; snap_pre text; snap_post text;
+  a_pac uuid; a_med uuid; a_far uuid; a_ap uuid; a_sin constant uuid := '00000000-0000-4371-8000-00000000102a';
+  c_clin constant text[] := ARRAY['medico','admin_clinica','gerente','secretaria','enfermeria','asistente_medico'];
+BEGIN
+  IF current_user <> 'postgres' THEN RAISE EXCEPTION 'fixture roto: P1024 corre como %', current_user; END IF;
+  PERFORM set_config('request.jwt.claims', '', true);
+  v372 := pg_temp.g372_estado();
+  IF v372 = 'ausente' THEN
+    PERFORM set_config('probe.p1024', 'PENDIENTE mig 372 (sin LG006, sin identidad_legal y con los mensajes de la 371)', false);
+    RETURN;
+  ELSIF v372 <> 'presente' THEN
+    PERFORM set_config('probe.p1024', 'ROJO (372 '||left(v372, 300)||')', false);
+    RETURN;
+  END IF;
+  a_pac := (SELECT u.id FROM auth.users u WHERE lower(u.email) LIKE 'paciente.qa@%' ORDER BY u.email LIMIT 1);
+  a_med := (SELECT u.id FROM auth.users u WHERE lower(u.email) LIKE 'medico.qa@%' ORDER BY u.email LIMIT 1);
+  a_far := (SELECT u.id FROM auth.users u WHERE lower(u.email) = 'farmacia.qa@ezpayconnect.com');
+  a_ap := (SELECT u.id FROM auth.users u WHERE lower(u.email) = 'adminpais.qa@ezpayconnect.com');
+  IF a_pac IS NULL OR a_med IS NULL OR a_far IS NULL OR a_ap IS NULL THEN
+    PERFORM set_config('probe.p1024', 'FALLO (fixture: paciente.qa '||COALESCE(a_pac::text, 'NULL')||', medico.qa '||COALESCE(a_med::text, 'NULL')
+      ||', farmacia.qa '||COALESCE(a_far::text, 'NULL')||', adminpais.qa '||COALESCE(a_ap::text, 'NULL')||')', false);
+    RETURN;
+  END IF;
+  snap_pre := pg_temp.g371_snap(ARRAY[a_pac, a_med, a_far, a_ap, a_sin])
+           ||md5(COALESCE((SELECT string_agg(to_jsonb(rc)::text, '|' ORDER BY rc.codigo) FROM public.roles_catalogo rc), '-'));
+  BEGIN
+    -- precondicion de identidad (sin neutralizar)
+    IF NOT EXISTS (SELECT 1 FROM public.pacientes pa WHERE pa.auth_user_id = a_pac) THEN fx := fx||'paciente.qa sin fila en pacientes; '; END IF;
+    IF EXISTS (SELECT 1 FROM public.cuentas_proveedor c WHERE c.id = a_pac)
+       OR EXISTS (SELECT 1 FROM public.perfiles p WHERE p.id = a_pac AND p.rol = ANY (c_clin)) THEN fx := fx||'paciente.qa con identidad profesional; '; END IF;
+    IF NOT EXISTS (SELECT 1 FROM public.perfiles p WHERE p.id = a_med AND p.rol = 'medico') THEN fx := fx||'medico.qa sin perfil medico; '; END IF;
+    IF EXISTS (SELECT 1 FROM public.pacientes pa WHERE pa.auth_user_id = a_med) THEN fx := fx||'medico.qa con fila en pacientes; '; END IF;
+    IF EXISTS (SELECT 1 FROM public.perfiles p WHERE p.id = a_far) THEN fx := fx||'farmacia.qa con perfil; '; END IF;
+    IF NOT EXISTS (SELECT 1 FROM public.cuentas_proveedor c WHERE c.id = a_far) THEN fx := fx||'farmacia.qa sin cuenta_proveedor; '; END IF;
+    IF EXISTS (SELECT 1 FROM public.pacientes pa WHERE pa.auth_user_id = a_far) THEN fx := fx||'farmacia.qa con fila en pacientes; '; END IF;
+    IF NOT EXISTS (SELECT 1 FROM public.perfiles p WHERE p.id = a_ap AND p.rol = 'admin_pais') THEN fx := fx||'adminpais.qa sin perfil admin_pais; '; END IF;
+    IF EXISTS (SELECT 1 FROM public.pacientes pa WHERE pa.auth_user_id = a_ap) THEN fx := fx||'adminpais.qa con fila en pacientes; '; END IF;
+    IF EXISTS (SELECT 1 FROM public.cuentas_proveedor c WHERE c.id = a_ap) THEN fx := fx||'adminpais.qa con cuenta_proveedor; '; END IF;
+    IF EXISTS (SELECT 1 FROM auth.users u WHERE u.id = a_sin) THEN fx := fx||'uid sintetico existe en auth.users; '; END IF;
+    IF EXISTS (SELECT 1 FROM public.roles_catalogo rc WHERE rc.codigo = 'qa_rol_372') THEN fx := fx||'qa_rol_372 ya existe; '; END IF;
+
+    IF fx = '' THEN
+    UPDATE public.textos_legales SET exigible = true, version = '999.999';
+
+    -- LG006 y el caso permitido, juzgados por SQLSTATE
+    FOR r IN SELECT * FROM (VALUES
+        (1, 'paciente.qa -> condiciones_profesionales', a_pac, 'condiciones_profesionales', 'LG006'),
+        (2, 'medico.qa -> consentimiento_salud',        a_med, 'consentimiento_salud',      'LG006'),
+        (3, 'farmacia.qa -> consentimiento_salud',      a_far, 'consentimiento_salud',      'LG006'),
+        (4, 'farmacia.qa -> condiciones_profesionales', a_far, 'condiciones_profesionales', 'OK')) x(k, nom, uid, cod, esp) ORDER BY x.k LOOP
+      res := pg_temp.g372_como(r.uid, 'authenticated',
+        'SELECT public.aceptar_textos_legales(''[{"codigo":"'||r.cod||'","version":"999.999"}]''::jsonb, ''app'', ''probe-p1024'')::text');
+      d := d||r.nom||'='||left(res, 60)||'; ';
+      IF r.esp = 'OK' THEN
+        IF res NOT LIKE 'OK:%' OR (substr(res, 4)::jsonb ->> 'aceptados') IS DISTINCT FROM '1' THEN
+          bad := bad||r.nom||' '||left(res, 140)||' (esperado OK, aceptados 1); ';
+        END IF;
+      ELSIF split_part(res, ':', 1) <> 'ERR' OR split_part(res, ':', 2) <> r.esp THEN
+        bad := bad||r.nom||' '||left(res, 140)||' (esperado '||r.esp||'); ';
+      END IF;
+    END LOOP;
+
+    -- derivacion desde roles_catalogo: adminpais.qa pasa a un rol nuevo de ambito clinica
+    v := (SELECT string_agg(p.codigo, ',' ORDER BY p.codigo COLLATE "C") FROM private.textos_legales_pendientes_de(a_ap) p);
+    d := d||'ap antes='||COALESCE(v, '-')||'; ';
+    IF v IS DISTINCT FROM 'privacidad,terminos' THEN bad := bad||'adminpais.qa antes del rol nuevo: '||COALESCE(v, '-')||' (esperado privacidad,terminos); '; END IF;
+    INSERT INTO public.roles_catalogo (codigo, descripcion, ambito) VALUES ('qa_rol_372', 'Rol QA del probe P1024 (descartado)', 'clinica');
+    UPDATE public.perfiles SET rol = 'qa_rol_372' WHERE id = a_ap;
+    v := (SELECT string_agg(p.codigo, ',' ORDER BY p.codigo COLLATE "C") FROM private.textos_legales_pendientes_de(a_ap) p);
+    d := d||'ap despues='||COALESCE(v, '-')||'; ';
+    IF v IS DISTINCT FROM 'condiciones_profesionales,privacidad,terminos' THEN
+      bad := bad||'adminpais.qa con qa_rol_372 (ambito clinica): '||COALESCE(v, '-')||' (esperado condiciones_profesionales,privacidad,terminos); ';
+    END IF;
+
+    -- uid sintetico: solo pendientes
+    v := (SELECT string_agg(p.codigo, ',' ORDER BY p.codigo COLLATE "C") FROM private.textos_legales_pendientes_de(a_sin) p);
+    IF v IS DISTINCT FROM 'privacidad,terminos' THEN bad := bad||'uid sintetico pendientes '||COALESCE(v, '-')||' (esperado privacidad,terminos); '; END IF;
+
+    -- mensajes exactos (SQLSTATE y texto completo)
+    FOR r IN SELECT * FROM (VALUES
+        (11, 'LG001 pendientes', NULL::uuid, 'SELECT count(*)::text FROM public.textos_legales_pendientes()',
+             'LG001', 'Necesitas iniciar sesión para consultar los textos legales.', NULL::text),
+        (12, 'LG001 aceptar', NULL::uuid, 'SELECT public.aceptar_textos_legales(''[{"codigo":"terminos","version":"999.999"}]''::jsonb, ''app'', NULL)::text',
+             'LG001', 'Necesitas iniciar sesión para aceptar los textos legales.', NULL),
+        (13, 'LG002', a_pac, 'SELECT public.aceptar_textos_legales(''[{"codigo":"no_existe_p1024","version":"999.999"}]''::jsonb, ''app'', NULL)::text',
+             'LG002', 'Uno de los textos no existe.', NULL),
+        (14, 'LG003', a_pac, 'SELECT public.aceptar_textos_legales(''[{"codigo":"terminos","version":"0.1"}]''::jsonb, ''app'', NULL)::text',
+             'LG003', 'Uno de los textos no está en su versión vigente. Recarga la página e inténtalo de nuevo.', '0.1'),
+        (15, 'LG004 via', a_pac, 'SELECT public.aceptar_textos_legales(''[{"codigo":"terminos","version":"999.999"}]''::jsonb, ''otra'', NULL)::text',
+             'LG004', 'La vía de aceptación no es válida.', NULL),
+        (16, 'LG004 arreglo', a_pac, 'SELECT public.aceptar_textos_legales(''{"codigo":"terminos","version":"999.999"}''::jsonb, ''app'', NULL)::text',
+             'LG004', 'La lista de textos tiene que ser un arreglo.', NULL),
+        (17, 'LG004 largo', a_pac, 'SELECT public.aceptar_textos_legales(''[]''::jsonb, ''app'', NULL)::text',
+             'LG004', 'La lista tiene que tener entre 1 y 10 textos.', NULL),
+        (18, 'LG004 tipo', a_pac, 'SELECT public.aceptar_textos_legales(''["terminos"]''::jsonb, ''app'', NULL)::text',
+             'LG004', 'Cada texto tiene que traer código y versión.', NULL),
+        (19, 'LG004 repetido', a_pac, 'SELECT public.aceptar_textos_legales(''[{"codigo":"terminos","version":"999.999"},{"codigo":"terminos","version":"999.999"}]''::jsonb, ''app'', NULL)::text',
+             'LG004', 'Hay un texto repetido en la lista.', 'terminos'),
+        (20, 'LG006', a_pac, 'SELECT public.aceptar_textos_legales(''[{"codigo":"condiciones_profesionales","version":"999.999"}]''::jsonb, ''app'', NULL)::text',
+             'LG006', 'Uno de los textos no corresponde a tu cuenta.', NULL)
+      ) x(k, nom, uid, q, st, msg, prohibido) ORDER BY x.k LOOP
+      res := pg_temp.g372_como(r.uid, 'authenticated', r.q);
+      d := d||r.nom||'='||left(res, 40)||'; ';
+      IF res IS DISTINCT FROM 'ERR:'||r.st||':'||r.msg THEN
+        bad := bad||r.nom||' '||left(res, 160)||' (esperado '||r.st||' "'||r.msg||'"); ';
+      END IF;
+      IF r.prohibido IS NOT NULL AND position(r.prohibido IN res) > 0 THEN
+        bad := bad||r.nom||' contiene lo enviado ('||r.prohibido||'); ';
+      END IF;
+    END LOOP;
+    END IF;
+
+    RAISE EXCEPTION 'P1024 descarte' USING ERRCODE = 'P0999';
+  EXCEPTION WHEN SQLSTATE 'P0999' THEN NULL;
+  END;
+  PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
+  snap_post := pg_temp.g371_snap(ARRAY[a_pac, a_med, a_far, a_ap, a_sin])
+            ||md5(COALESCE((SELECT string_agg(to_jsonb(rc)::text, '|' ORDER BY rc.codigo) FROM public.roles_catalogo rc), '-'));
+  IF snap_post IS DISTINCT FROM snap_pre THEN bad := bad||'no quedo todo como estaba tras el descarte; '; END IF;
+  PERFORM set_config('probe.p1024', CASE WHEN fx <> '' THEN 'FALLO (fixture: '||left(fx, 600)||')'
+    WHEN bad = ''
+    THEN 'OK (372: LG006 x3 (paciente/medico/farmacia), farmacia.qa acepta condiciones_profesionales; qa_rol_372 ambito clinica da condiciones_profesionales a adminpais.qa; uid sintetico solo pendientes; mensajes LG001 x2, LG002, LG003, LG004 x5 y LG006 exactos, sin eco de lo enviado; descartado)'
+    ELSE 'ROJO ('||left(bad, 700)||' | '||left(d, 400)||')' END, false);
+EXCEPTION WHEN OTHERS THEN
+  PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
+  PERFORM set_config('probe.p1024', 'FALLO ('||SQLSTATE||' '||SQLERRM||')', false);
+END $$;
+SELECT set_config('role', 'none', true);
+
+-- P1025 forja y escritura directa (372). En savepoint:
+--   service_role INSERT directo con aceptado_at '2000-01-01' -> la fila queda con now() (trigger fija_fecha).
+--   service_role INSERT con un uid inexistente -> 23503 (FK a auth.users).
+--   service_role UPDATE y DELETE de esa fila -> LG005 (trigger INVOKER; service_role tiene el privilegio, no es 42501).
+--   authenticated (paciente.qa) UPDATE de una fila propia -> no la puede modificar. Se juzga por SQLSTATE: 42501 con
+--     'permission denied for table %' (authenticated no tiene UPDATE en la tabla; no llega ni a RLS ni al trigger), y
+--     ademas se verifica que la fila no cambio.
+-- La fila usa la version '9.99' (no vigente, valida para el CHECK): no choca con aceptaciones reales.
+DO $$
+DECLARE v372 text; bad text := ''; d text := ''; res text; st text; v text; v_id bigint; snap_pre text; snap_post text; a_pac uuid;
+BEGIN
+  IF current_user <> 'postgres' THEN RAISE EXCEPTION 'fixture roto: P1025 corre como %', current_user; END IF;
+  PERFORM set_config('request.jwt.claims', '', true);
+  v372 := pg_temp.g372_estado();
+  IF v372 = 'ausente' THEN
+    PERFORM set_config('probe.p1025', 'PENDIENTE mig 372 (sin trigger de fecha ni FK a auth.users)', false);
+    RETURN;
+  ELSIF v372 <> 'presente' THEN
+    PERFORM set_config('probe.p1025', 'ROJO (372 '||left(v372, 300)||')', false);
+    RETURN;
+  END IF;
+  a_pac := (SELECT u.id FROM auth.users u WHERE lower(u.email) LIKE 'paciente.qa@%' ORDER BY u.email LIMIT 1);
+  IF a_pac IS NULL OR EXISTS (SELECT 1 FROM public.aceptaciones_legales a WHERE a.usuario_id = a_pac AND a.codigo = 'privacidad' AND a.version = '9.99') THEN
+    PERFORM set_config('probe.p1025', 'FALLO (fixture: paciente.qa '||COALESCE(a_pac::text, 'NULL')||' o ya tiene privacidad 9.99)', false);
+    RETURN;
+  END IF;
+  snap_pre := pg_temp.g371_snap(ARRAY[a_pac]);
+  BEGIN
+    -- (a) forja de fecha por service_role
+    res := pg_temp.g372_como(NULL, 'service_role',
+      'INSERT INTO public.aceptaciones_legales (usuario_id, codigo, version, via, aceptado_at) VALUES ('''||a_pac||''', ''privacidad'', ''9.99'', ''app'', ''2000-01-01'') RETURNING id::text');
+    d := d||'insert sr='||left(res, 60)||'; ';
+    IF res NOT LIKE 'OK:%' THEN
+      bad := bad||'service_role INSERT directo '||left(res, 140)||' (esperado OK); ';
+    ELSE
+      v_id := substr(res, 4)::bigint;
+      v := (SELECT (a.aceptado_at = now())::text FROM public.aceptaciones_legales a WHERE a.id = v_id);
+      IF v IS DISTINCT FROM 'true' THEN
+        bad := bad||'aceptado_at forjado: '||COALESCE((SELECT a.aceptado_at::text FROM public.aceptaciones_legales a WHERE a.id = v_id), '-')||' (esperado now()); ';
+      END IF;
+    END IF;
+
+    -- (b) uid inexistente -> 23503
+    res := pg_temp.g372_como(NULL, 'service_role',
+      'INSERT INTO public.aceptaciones_legales (usuario_id, codigo, version, via) VALUES (''00000000-0000-4372-8000-0000000000ff'', ''terminos'', ''9.99'', ''app'') RETURNING id::text');
+    d := d||'uid inexistente='||left(res, 40)||'; ';
+    IF split_part(res, ':', 1) <> 'ERR' OR split_part(res, ':', 2) <> '23503' THEN bad := bad||'INSERT con uid inexistente '||left(res, 140)||' (esperado 23503); '; END IF;
+
+    -- (c) service_role UPDATE / DELETE -> LG005
+    res := pg_temp.g372_como(NULL, 'service_role', 'UPDATE public.aceptaciones_legales SET via = ''login'' WHERE id = '||COALESCE(v_id, -1)||' RETURNING id::text');
+    d := d||'update sr='||left(res, 40)||'; ';
+    IF split_part(res, ':', 1) <> 'ERR' OR split_part(res, ':', 2) <> 'LG005' THEN bad := bad||'service_role UPDATE '||left(res, 140)||' (esperado LG005); '; END IF;
+    res := pg_temp.g372_como(NULL, 'service_role', 'DELETE FROM public.aceptaciones_legales WHERE id = '||COALESCE(v_id, -1)||' RETURNING id::text');
+    d := d||'delete sr='||left(res, 40)||'; ';
+    IF split_part(res, ':', 1) <> 'ERR' OR split_part(res, ':', 2) <> 'LG005' THEN bad := bad||'service_role DELETE '||left(res, 140)||' (esperado LG005); '; END IF;
+
+    -- (d) authenticated (paciente.qa) UPDATE de su propia fila -> 42501 de privilegio, la fila no cambia
+    res := pg_temp.g372_como(a_pac, 'authenticated', 'UPDATE public.aceptaciones_legales SET via = ''login'' WHERE id = '||COALESCE(v_id, -1)||' RETURNING id::text');
+    d := d||'update pac='||left(res, 60)||'; ';
+    IF res NOT LIKE 'ERR:42501:permission denied for table %' THEN bad := bad||'paciente.qa UPDATE propia '||left(res, 140)||' (esperado 42501 de privilegio); '; END IF;
+    v := (SELECT a.via FROM public.aceptaciones_legales a WHERE a.id = v_id);
+    IF v IS DISTINCT FROM 'app' THEN bad := bad||'la fila cambio: via '||COALESCE(v, '-')||'; '; END IF;
+
+    RAISE EXCEPTION 'P1025 descarte' USING ERRCODE = 'P0999';
+  EXCEPTION WHEN SQLSTATE 'P0999' THEN NULL;
+  END;
+  PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
+  snap_post := pg_temp.g371_snap(ARRAY[a_pac]);
+  IF snap_post IS DISTINCT FROM snap_pre THEN bad := bad||'no quedo todo como estaba tras el descarte; '; END IF;
+  PERFORM set_config('probe.p1025', CASE WHEN bad = ''
+    THEN 'OK (372: service_role INSERT con fecha forjada queda now(); uid inexistente 23503; service_role UPDATE/DELETE LG005; paciente.qa UPDATE propia 42501 de privilegio sin cambios; descartado)'
+    ELSE 'ROJO ('||left(bad, 700)||' | '||left(d, 400)||')' END, false);
+EXCEPTION WHEN OTHERS THEN
+  PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
+  PERFORM set_config('probe.p1025', 'FALLO ('||SQLSTATE||' '||SQLERRM||')', false);
 END $$;
 SELECT set_config('role', 'none', true);
 
@@ -35607,8 +35964,12 @@ UNION ALL SELECT 'P1018_execute_triggers_authenticated_370',  current_setting('p
 UNION ALL SELECT 'G371_FX_estado_textos_legales',  current_setting('probe.g371_fx', true), 'OK (presente: 371 aplicada; antes del apply: ausente)'
 UNION ALL SELECT 'P1019_textos_legales_anon_371',  current_setting('probe.p1019', true), 'OK (371: anon 42501 en las 2 RPCs y las 2 tablas; si la 371 falta: REGRESION)'
 UNION ALL SELECT 'P1020_textos_legales_regla_por_rol_371',  current_setting('probe.p1020', true), 'OK (371: 6 actores con su conjunto: paciente.qa, medico.qa, superadmin, farmacia.qa, adminpais.qa y sin identidad; exigible=false 0 filas x6; si la 371 falta: REGRESION)'
-UNION ALL SELECT 'P1021_textos_legales_escritura_371',  current_setting('probe.p1021', true), 'OK (371: aceptar idempotente con su uid; LG002/LG003/LG004 x8; INSERT directo 42501 por privilegio; sin filas ajenas; UPDATE/DELETE/TRUNCATE LG005; si la 371 falta: REGRESION)'
-UNION ALL SELECT 'P1022_textos_legales_estructura_371',  current_setting('probe.p1022', true), 'OK (371: ACL exacta de 2 tablas y 5 funciones; 2 triggers exactos; secuencia cerrada; 0 con PUBLIC; anon solo catalogo; si la 371 falta: REGRESION)'
+UNION ALL SELECT 'P1021_textos_legales_escritura_371',  current_setting('probe.p1021', true), 'OK (371: aceptar idempotente con su uid; LG002 x1, LG003 x1, LG004 x8; INSERT directo 42501 por privilegio; sin filas ajenas; UPDATE/DELETE/TRUNCATE LG005; si la 371 falta: REGRESION)'
+UNION ALL SELECT 'P1022_textos_legales_estructura_371',  current_setting('probe.p1022', true), 'OK (371: ACL exacta de 2 tablas y 5 funciones; secuencia cerrada; 0 con PUBLIC; anon solo catalogo; 372 ausente: 2 triggers y 5 DEFINER; 372 presente: 3 triggers, solo_append y fija_fecha INVOKER; 372 parcial: ROJO; si la 371 falta: REGRESION)'
+UNION ALL SELECT 'G372_FX_estado_hardening_textos_legales',  current_setting('probe.g372_fx', true), 'OK (ausente: 372 sin aplicar; presente: 372 aplicada)'
+UNION ALL SELECT 'P1023_textos_legales_estructura_372',  current_setting('probe.p1023', true), 'OK (372: identidad_legal DEFINER desde roles_catalogo; fija_fecha y solo_append INVOKER; 3 triggers; FK RESTRICT/RESTRICT; LG006 y ORDER BY codigo en aceptar; sin lista literal de roles; ACL de las 2 RPCs; antes de la 372: PENDIENTE)'
+UNION ALL SELECT 'P1024_textos_legales_regla_mensajes_372',  current_setting('probe.p1024', true), 'OK (372: LG006 x3 y farmacia.qa acepta condiciones_profesionales; rol de ambito clinica derivado de roles_catalogo; mensajes LG001 x2, LG002, LG003, LG004 x5 y LG006 exactos sin eco; antes de la 372: PENDIENTE)'
+UNION ALL SELECT 'P1025_textos_legales_forja_escritura_372',  current_setting('probe.p1025', true), 'OK (372: fecha forjada por service_role queda now(); uid inexistente 23503; service_role UPDATE/DELETE LG005; paciente.qa UPDATE propia 42501; antes de la 372: PENDIENTE)'
 UNION ALL SELECT 'P1010_campana_vistas_sin_update_367',  current_setting('probe.p1010', true), 'OK (367: INSERT 1; ON CONFLICT DO NOTHING 0 sin error; DO UPDATE y UPDATE 42501; otro paciente 0; antes de la 367: PENDIENTE)'
 UNION ALL SELECT 'P1009_datos_bancarios_acotados_366',  current_setting('probe.p1009', true), 'OK (366: cuenta GT solo super_admin/admin_pais GT/proveedores GT; checkout 1 fila; config 21 super_admin y 14 el resto, admin_pais incluido; antes de la 366: PENDIENTE)'
 UNION ALL SELECT 'DET_p1009',  'DET ' || COALESCE(NULLIF(current_setting('probe.p1009_det', true), ''), '(sin dato)'), 'DET (detalle de P1009, no es probe)'
@@ -35861,7 +36222,7 @@ UNION ALL SELECT 'P000_CENTINELA_veredictos_no_nulos',
        'probe.p866', 'probe.p867', 'probe.p868', 'probe.p869', 'probe.p870', 'probe.p871', 'probe.p872', 'probe.p873', 'probe.p874', 'probe.p875', 'probe.p876', 'probe.p877', 'probe.p878',
        'probe.p879', 'probe.p880', 'probe.p881', 'probe.p882', 'probe.p883', 'probe.p884',
        'probe.p885', 'probe.p886', 'probe.p887', 'probe.p888', 'probe.p889', 'probe.p890', 'probe.p891', 'probe.p892', 'probe.p893', 'probe.p894', 'probe.p895', 'probe.p896', 'probe.p908', 'probe.p909', 'probe.p910', 'probe.p911',
-       'probe.p897', 'probe.p898', 'probe.p899', 'probe.p900', 'probe.p901', 'probe.p902', 'probe.p903', 'probe.p904', 'probe.p905', 'probe.p906', 'probe.p907', 'probe.p912', 'probe.p913', 'probe.p914', 'probe.p915', 'probe.p916', 'probe.p917', 'probe.p918', 'probe.p919', 'probe.p920', 'probe.p921', 'probe.p922', 'probe.p923', 'probe.p924', 'probe.p925', 'probe.p926', 'probe.p927', 'probe.p928', 'probe.p929', 'probe.p930', 'probe.p931', 'probe.p932', 'probe.p933', 'probe.p934', 'probe.p935', 'probe.p936', 'probe.p937', 'probe.p938', 'probe.p939', 'probe.p940', 'probe.p941', 'probe.p942', 'probe.p943', 'probe.p944', 'probe.p945', 'probe.p946', 'probe.p947', 'probe.p948', 'probe.p949', 'probe.p950', 'probe.p951', 'probe.p952', 'probe.p953', 'probe.p954', 'probe.p955', 'probe.p956', 'probe.p957', 'probe.p958', 'probe.p959', 'probe.p960', 'probe.p961', 'probe.p962', 'probe.p963', 'probe.p964', 'probe.p965', 'probe.p966', 'probe.p967', 'probe.p968', 'probe.p969', 'probe.p970', 'probe.p971', 'probe.p972', 'probe.p973', 'probe.p974', 'probe.p975', 'probe.p976', 'probe.p977', 'probe.p978', 'probe.p979', 'probe.p980', 'probe.p981', 'probe.p982', 'probe.p983', 'probe.p984', 'probe.p985', 'probe.p986', 'probe.p987', 'probe.p988', 'probe.p989', 'probe.p990', 'probe.p991', 'probe.p992', 'probe.p993', 'probe.p994', 'probe.p995', 'probe.p996', 'probe.p997', 'probe.p998', 'probe.p999', 'probe.p1000', 'probe.p1001', 'probe.p1002', 'probe.p1003', 'probe.p1004', 'probe.p1005', 'probe.p1006', 'probe.p1007', 'probe.p1008', 'probe.p1009', 'probe.p1010', 'probe.p1011', 'probe.p1012', 'probe.p1013', 'probe.p1014', 'probe.e370_fx', 'probe.p1015', 'probe.p1016', 'probe.p1017', 'probe.p1018', 'probe.g371_fx', 'probe.p1019', 'probe.p1020', 'probe.p1021', 'probe.p1022'
+       'probe.p897', 'probe.p898', 'probe.p899', 'probe.p900', 'probe.p901', 'probe.p902', 'probe.p903', 'probe.p904', 'probe.p905', 'probe.p906', 'probe.p907', 'probe.p912', 'probe.p913', 'probe.p914', 'probe.p915', 'probe.p916', 'probe.p917', 'probe.p918', 'probe.p919', 'probe.p920', 'probe.p921', 'probe.p922', 'probe.p923', 'probe.p924', 'probe.p925', 'probe.p926', 'probe.p927', 'probe.p928', 'probe.p929', 'probe.p930', 'probe.p931', 'probe.p932', 'probe.p933', 'probe.p934', 'probe.p935', 'probe.p936', 'probe.p937', 'probe.p938', 'probe.p939', 'probe.p940', 'probe.p941', 'probe.p942', 'probe.p943', 'probe.p944', 'probe.p945', 'probe.p946', 'probe.p947', 'probe.p948', 'probe.p949', 'probe.p950', 'probe.p951', 'probe.p952', 'probe.p953', 'probe.p954', 'probe.p955', 'probe.p956', 'probe.p957', 'probe.p958', 'probe.p959', 'probe.p960', 'probe.p961', 'probe.p962', 'probe.p963', 'probe.p964', 'probe.p965', 'probe.p966', 'probe.p967', 'probe.p968', 'probe.p969', 'probe.p970', 'probe.p971', 'probe.p972', 'probe.p973', 'probe.p974', 'probe.p975', 'probe.p976', 'probe.p977', 'probe.p978', 'probe.p979', 'probe.p980', 'probe.p981', 'probe.p982', 'probe.p983', 'probe.p984', 'probe.p985', 'probe.p986', 'probe.p987', 'probe.p988', 'probe.p989', 'probe.p990', 'probe.p991', 'probe.p992', 'probe.p993', 'probe.p994', 'probe.p995', 'probe.p996', 'probe.p997', 'probe.p998', 'probe.p999', 'probe.p1000', 'probe.p1001', 'probe.p1002', 'probe.p1003', 'probe.p1004', 'probe.p1005', 'probe.p1006', 'probe.p1007', 'probe.p1008', 'probe.p1009', 'probe.p1010', 'probe.p1011', 'probe.p1012', 'probe.p1013', 'probe.p1014', 'probe.e370_fx', 'probe.p1015', 'probe.p1016', 'probe.p1017', 'probe.p1018', 'probe.g371_fx', 'probe.p1019', 'probe.p1020', 'probe.p1021', 'probe.p1022', 'probe.g372_fx', 'probe.p1023', 'probe.p1024', 'probe.p1025'
              ]) AS n) s),
   'OK (todos los veredictos publicados)';
 
