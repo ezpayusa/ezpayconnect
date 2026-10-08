@@ -41,6 +41,9 @@ const BuscarMedicamentosPage = lazy(() => import('@/pages/BuscarMedicamentosPage
 const NotificacionesPage = lazy(() => import('@/pages/NotificacionesPage'))
 const LoginPage = lazy(() => import('@/pages/LoginPage'))
 const SetPasswordPage = lazy(() => import('@/pages/SetPasswordPage'))
+// GL-02: textos legales públicos (react-markdown solo en este chunk lazy)
+const TextoLegalPage = lazy(() => import('@/pages/legal/TextoLegalPage'))
+const AceptarTextosPage = lazy(() => import('@/pages/AceptarTextosPage'))
 const ConfirmarRecetaPage = lazy(() => import('@/pages/ConfirmarRecetaPage'))
 const DashboardPage = lazy(() => import('@/pages/DashboardPage'))
 const PacientesPage = lazy(() => import('@/pages/PacientesPage'))
@@ -287,6 +290,11 @@ function App() {
         <Route path="/registro-clinica" element={<RegistroClinicaPage />} />
         <Route path="/login" element={<LoginPage />} />
         <Route path="/set-password" element={<SetPasswordPage />} />
+        <Route path="/aceptar-textos" element={<AceptarTextosPage />} />
+        <Route path="/terminos" element={<TextoLegalPage codigo="terminos" />} />
+        <Route path="/privacidad" element={<TextoLegalPage codigo="privacidad" />} />
+        <Route path="/consentimiento-salud" element={<TextoLegalPage codigo="consentimiento_salud" />} />
+        <Route path="/condiciones-profesionales" element={<TextoLegalPage codigo="condiciones_profesionales" />} />
         <Route path="/confirmar-receta" element={<ConfirmarRecetaPage />} />
         <Route path="/" element={<RootRedirect />} />
         <Route path="/dashboard" element={<PrivateLayout><DashboardPage /></PrivateLayout>} />

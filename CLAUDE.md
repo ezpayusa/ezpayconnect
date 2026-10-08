@@ -83,7 +83,22 @@ Stack: React + Vite + TypeScript, Supabase / Postgres, deploy en Vercel, repo en
   ROLLBACK: las 4 en REGRESION, txid abortado, prod intacta). Harness post-371: **1107 filas / 1016 bloques DO / 11 rojas
   de deuda**; b2_guard top_level 0, cast 0, do_sin_handler 155, catchall_verde 205. Errcodes LG001-LG005 en uso,
   próximo LG006. **Rollback vigente: 371 → 370** (`supabase/migrations/371_rollback.sql`, va antes que `370_rollback`).
-  **Sigue en GL-02:** el front (gate global en el primer login y casilla de aceptación en las altas).)
+  **Sigue en GL-02:** el front (gate global en el primer login y casilla de aceptación en las altas).
+  **Front de GL-02 EN CURSO, rama `gl02/front` (PR en borrador, no mergear).** Commits: d3065bc deps exactas
+  (react-markdown 10.1.0, remark-gfm 4.0.1), sin chunk manual; 147fee7 `src/legal` (4 .md con md5 = prod, catálogo
+  `TEXTOS_LEGALES` y test de md5; `.gitattributes` eol=lf); 8491800 `src/lib/textosLegales.ts` (pendientes, aceptar,
+  mensajes LG001-LG006; falla cerrado si la base pide un código o versión que el front no conoce); c4a4c44
+  `TextoLegalPage` + 4 rutas públicas (/terminos, /privacidad, /consentimiento-salud, /condiciones-profesionales; sin
+  HTML crudo); 049d2d5 `CasillaTextosLegales`; 8d6156c `/aceptar-textos` (falla cerrada, `nextSeguro`). Tests 47 / 488;
+  `tsc -p tsconfig.app.json` = 74. **Regla de bundle:** el stack de markdown va solo en chunks lazy; nada de `manualChunks`
+  para libs de páginas lazy (la forma objeto arrastra `react/jsx-runtime` a un chunk precargado desde index.html);
+  verificación en `tmp/gl02_front/notas.md` y `chunks_md.py`. **Pendiente:** paso 7 `TextosLegalesGuard` (después de
+  `MustChangePasswordGuard`; falla cerrado; cache en memoria por uid; re-chequeo al salir de rutas exentas); paso 8
+  casilla en las 7 altas, con llamada best-effort via 'registro' solo con sesión (en proveedor, después de
+  `registrar_proveedor`); paso 9 links legales en los logins; review en sesión nueva y plan para probar el gate en preview
+  sin poner `exigible = true` para todos. Nits: título duplicado h1 (página) / h2 (.md); `src/legal` queda en un chunk
+  compartido de 8 KB gzip que también carga `/aceptar-textos`; con LG003 se desmarcan las casillas. Backlog:
+  `handle_new_paciente` traga errores; las edges `crear-staff-clinica` y `crear-empleado` no ponen `must_change_password`.)
   (370 = familia 2, ÚLTIMO paso: EXECUTE de funciones sin PUBLIC ni anon — **APLICADA en prod el 2026-10-07 a las 19:18 UTC
   (19:18:26.914 → 19:18:28.737)**, sha256 del archivo 529777fd…cddbf7, y verificada VERDE en sesión independiente: harness
   post370 1102 filas / 1011 bloques DO / 11 rojas de deuda, P1015/P1016/P1017/P739/P741/P1000 en OK. **Bug vivo cerrado:**
