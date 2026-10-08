@@ -34171,12 +34171,14 @@ SELECT set_config('role', 'none', true);
 -- '999.999': paciente.qa {consentimiento_salud, privacidad, terminos}, medico.qa {condiciones_profesionales, privacidad,
 -- terminos}, superadmin {privacidad, terminos}, todos con la version vigente. Descartado y verificado con g371_snap.
 -- Review #54 (m1): ademas, sin neutralizarlos ni tocar sus filas, farmacia.qa (cuenta_proveedor sin perfil)
--- {condiciones_profesionales, privacidad, terminos}, adminpais.qa {privacidad, terminos} y el primer usuario de auth.users
--- sin perfil, sin paciente y sin cuenta_proveedor (ORDER BY created_at, id) {privacidad, terminos}. Su identidad se
+-- {condiciones_profesionales, privacidad, terminos}, adminpais.qa {privacidad, terminos} y un uid sintetico fijo
+-- (00000000-0000-4371-8000-00000000102a, ronda 2 n1) que no existe en auth.users, perfiles, pacientes ni
+-- cuentas_proveedor {privacidad, terminos}. Su identidad se
 -- verifica antes de las aserciones: si no se cumple, FALLO (fixture: ...), nunca verde. (n3) pacientes no se modifica:
 -- si medico.qa o superadmin tienen fila en pacientes, FALLO (fixture: ...).
 DO $$
-DECLARE v_est text; a_pac uuid; a_med uuid; a_sa uuid; a_far uuid; a_ap uuid; a_sin uuid; bad text := ''; fx text := '';
+DECLARE v_est text; a_pac uuid; a_med uuid; a_sa uuid; a_far uuid; a_ap uuid;
+  a_sin constant uuid := '00000000-0000-4371-8000-00000000102a'; bad text := ''; fx text := '';
   d text := ''; r record; res text; esp text; snap_pre text; snap_post text; n int; n_neu int := 0;
 BEGIN
   IF current_user <> 'postgres' THEN RAISE EXCEPTION 'fixture roto: P1020 corre como %', current_user; END IF;
@@ -34202,14 +34204,9 @@ BEGIN
   END IF;
   a_far := (SELECT u.id FROM auth.users u WHERE lower(u.email) = 'farmacia.qa@ezpayconnect.com');
   a_ap := (SELECT u.id FROM auth.users u WHERE lower(u.email) = 'adminpais.qa@ezpayconnect.com');
-  a_sin := (SELECT u.id FROM auth.users u
-             WHERE NOT EXISTS (SELECT 1 FROM public.perfiles p WHERE p.id = u.id)
-               AND NOT EXISTS (SELECT 1 FROM public.pacientes pa WHERE pa.auth_user_id = u.id)
-               AND NOT EXISTS (SELECT 1 FROM public.cuentas_proveedor c WHERE c.id = u.id)
-             ORDER BY u.created_at, u.id LIMIT 1);
-  IF a_far IS NULL OR a_ap IS NULL OR a_sin IS NULL THEN
+  IF a_far IS NULL OR a_ap IS NULL THEN
     PERFORM set_config('probe.p1020', 'FALLO (fixture: farmacia.qa '||COALESCE(a_far::text, 'NULL')||', adminpais.qa '
-      ||COALESCE(a_ap::text, 'NULL')||', usuario sin identidad '||COALESCE(a_sin::text, 'NULL')||')', false);
+      ||COALESCE(a_ap::text, 'NULL')||')', false);
     RETURN;
   END IF;
   snap_pre := pg_temp.g371_snap(ARRAY[a_pac, a_med, a_sa, a_far, a_ap, a_sin]);
@@ -34234,10 +34231,11 @@ BEGIN
     IF NOT EXISTS (SELECT 1 FROM public.perfiles p WHERE p.id = a_ap AND p.rol = 'admin_pais') THEN fx := fx||'adminpais.qa sin perfil admin_pais; '; END IF;
     IF EXISTS (SELECT 1 FROM public.pacientes pa WHERE pa.auth_user_id = a_ap) THEN fx := fx||'adminpais.qa con fila en pacientes; '; END IF;
     IF EXISTS (SELECT 1 FROM public.cuentas_proveedor c WHERE c.id = a_ap) THEN fx := fx||'adminpais.qa con cuenta_proveedor; '; END IF;
-    IF EXISTS (SELECT 1 FROM public.perfiles p WHERE p.id = a_sin)
+    IF EXISTS (SELECT 1 FROM auth.users u WHERE u.id = a_sin)
+       OR EXISTS (SELECT 1 FROM public.perfiles p WHERE p.id = a_sin)
        OR EXISTS (SELECT 1 FROM public.pacientes pa WHERE pa.auth_user_id = a_sin)
        OR EXISTS (SELECT 1 FROM public.cuentas_proveedor c WHERE c.id = a_sin) THEN
-      fx := fx||'usuario sin identidad '||a_sin||' con perfil, paciente o cuenta_proveedor; ';
+      fx := fx||'uid sintetico sin identidad '||a_sin||' existe en auth.users, perfiles, pacientes o cuentas_proveedor; ';
     END IF;
     IF fx = '' THEN
     -- fase A: exigible = false en los 4 -> 0 pendientes para los 6
@@ -35608,9 +35606,9 @@ UNION ALL SELECT 'P1017_execute_authenticated_por_panel_370',  current_setting('
 UNION ALL SELECT 'P1018_execute_triggers_authenticated_370',  current_setting('probe.p1018', true), 'OK (4 triggers como authenticated sin 42501, antes y despues de la 370)'
 UNION ALL SELECT 'G371_FX_estado_textos_legales',  current_setting('probe.g371_fx', true), 'OK (presente: 371 aplicada; antes del apply: ausente)'
 UNION ALL SELECT 'P1019_textos_legales_anon_371',  current_setting('probe.p1019', true), 'OK (371: anon 42501 en las 2 RPCs y las 2 tablas; si la 371 falta: REGRESION)'
-UNION ALL SELECT 'P1020_textos_legales_regla_por_rol_371',  current_setting('probe.p1020', true), 'OK (371: paciente/medico/superadmin con su conjunto; exigible=false 0 filas; si la 371 falta: REGRESION)'
-UNION ALL SELECT 'P1021_textos_legales_escritura_371',  current_setting('probe.p1021', true), 'OK (371: aceptar idempotente con su uid; LG002/LG003/LG004; INSERT directo 42501; sin filas ajenas; LG005; si la 371 falta: REGRESION)'
-UNION ALL SELECT 'P1022_textos_legales_estructura_371',  current_setting('probe.p1022', true), 'OK (371: ACL exacta de 2 tablas y 5 funciones; secuencia cerrada; 0 con PUBLIC; anon solo catalogo; si la 371 falta: REGRESION)'
+UNION ALL SELECT 'P1020_textos_legales_regla_por_rol_371',  current_setting('probe.p1020', true), 'OK (371: 6 actores con su conjunto: paciente.qa, medico.qa, superadmin, farmacia.qa, adminpais.qa y sin identidad; exigible=false 0 filas x6; si la 371 falta: REGRESION)'
+UNION ALL SELECT 'P1021_textos_legales_escritura_371',  current_setting('probe.p1021', true), 'OK (371: aceptar idempotente con su uid; LG002/LG003/LG004 x8; INSERT directo 42501 por privilegio; sin filas ajenas; UPDATE/DELETE/TRUNCATE LG005; si la 371 falta: REGRESION)'
+UNION ALL SELECT 'P1022_textos_legales_estructura_371',  current_setting('probe.p1022', true), 'OK (371: ACL exacta de 2 tablas y 5 funciones; 2 triggers exactos; secuencia cerrada; 0 con PUBLIC; anon solo catalogo; si la 371 falta: REGRESION)'
 UNION ALL SELECT 'P1010_campana_vistas_sin_update_367',  current_setting('probe.p1010', true), 'OK (367: INSERT 1; ON CONFLICT DO NOTHING 0 sin error; DO UPDATE y UPDATE 42501; otro paciente 0; antes de la 367: PENDIENTE)'
 UNION ALL SELECT 'P1009_datos_bancarios_acotados_366',  current_setting('probe.p1009', true), 'OK (366: cuenta GT solo super_admin/admin_pais GT/proveedores GT; checkout 1 fila; config 21 super_admin y 14 el resto, admin_pais incluido; antes de la 366: PENDIENTE)'
 UNION ALL SELECT 'DET_p1009',  'DET ' || COALESCE(NULLIF(current_setting('probe.p1009_det', true), ''), '(sin dato)'), 'DET (detalle de P1009, no es probe)'
