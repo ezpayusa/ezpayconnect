@@ -47,8 +47,8 @@
 --   consulta de solo lectura: filas vivas + 2 filas sinteticas postgres=X/postgres de las funciones nuevas; la misma
 --   consulta reproduce exacto la post-371; el dry-run la confirma). El autochequeo exige ademas que la huella de
 --   funciones SIN las 2 nuevas siga siendo la post-371.
--- Probes: P1022 exige hoy 2 triggers exactos y las 5 funciones DEFINER; con la 372 viva sale ROJO hasta ajustarlo en el
---   mismo PR (proximo probe libre: P1023).
+-- Probes: G372_FX (estado ausente/presente/parcial), P1022 por estado (ausente = forma 371, presente = forma 372,
+--   parcial = ROJO) y P1023-P1025 (estructura, regla y mensajes, forja). Proximo probe libre: P1026.
 -- Riesgo aceptado (review #55 n2): service_role conserva SELECT/INSERT/UPDATE/DELETE (regla 3 de CLAUDE.md) y puede
 --   insertar directo una aceptacion de un usuario REAL, de un texto que no le aplica y con via/user_agent a eleccion: el
 --   INSERT directo no pasa por LG006 (que vive en aceptar_textos_legales). Lo que si queda cerrado: la fecha (trigger
