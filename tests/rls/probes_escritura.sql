@@ -34137,7 +34137,8 @@ END $g371fx$;
 --   pg_temp.g372_estado(): 'presente' = existen private.identidad_legal, private.aceptaciones_legales_fija_fecha, el
 --     trigger trg_aceptaciones_legales_fija_fecha y la FK aceptaciones_legales_usuario_id_fkey -> auth.users, y
 --     solo_append es INVOKER; 'ausente' = ninguno de los 5 (solo_append DEFINER); 'parcial (...)' = el resto (ROJO).
---     Mientras la 372 no este aplicada: P1022 acepta 'ausente' (forma 371) y P1023-P1025 publican 'PENDIENTE mig 372'.
+--     La 372 esta aplicada en prod (2026-10-08 17:10 UTC): si falta ('ausente'), P1022-P1025 publican
+--     'REGRESION (372 ausente: ...)'. G372_FX sigue publicando el estado ('OK (ausente)' / 'OK (presente)').
 --   pg_temp.g372_como(uid, rol, sql): como g371_como pero devuelve el SQLERRM COMPLETO ('ERR:<SQLSTATE>:<mensaje>'),
 --     para comparar mensajes exactos (P1024). Siempre vuelve a role none y claims vacios.
 DO $g372fx$
@@ -34477,9 +34478,9 @@ SELECT set_config('role', 'none', true);
 -- tablas; ACL exacta de las 2 tablas (sin el dueno: authenticated SELECT; service_role S/I/U/D) y de las 5 funciones
 -- (RPCs: postgres, authenticated, service_role; private: solo postgres), todas DEFINER con search_path vacio; la
 -- secuencia IDENTITY de aceptaciones_legales sin nada para authenticated, anon ni PUBLIC (explicito y efectivo).
--- Mig 372 (pg_temp.g372_estado): 'ausente' -> forma 371 (2 triggers; las 5 funciones DEFINER), estado valido mientras la
--- 372 no se aplique; 'presente' -> forma 372 (3 triggers exactos; solo_append y fija_fecha INVOKER con search_path vacio
--- y ACL solo postgres; las otras 4 DEFINER); 'parcial' -> ROJO.
+-- Mig 372 (pg_temp.g372_estado), aplicada en prod 2026-10-08 17:10 UTC: 'presente' -> forma 372 (3 triggers exactos;
+-- solo_append y fija_fecha INVOKER con search_path vacio y ACL solo postgres; las otras 4 DEFINER); 'ausente' ->
+-- 'REGRESION (372 ausente: ...)' (el censo de EXECUTE, que no depende de la 372, se juzga antes); 'parcial' -> ROJO.
 DO $$
 DECLARE v_est text; v372 text; bad text := ''; v text; n int; r record; v_seq text; v_sd boolean; v_trg text;
 BEGIN
@@ -34503,7 +34504,13 @@ BEGIN
     RETURN;
   END IF;
   v372 := pg_temp.g372_estado();
-  IF v372 NOT IN ('ausente', 'presente') THEN bad := bad||'372 '||left(v372, 300)||'; '; END IF;
+  IF v372 = 'ausente' THEN
+    PERFORM set_config('probe.p1022', CASE WHEN bad = ''
+      THEN 'REGRESION (372 ausente: identidad_legal, fija_fecha, trigger y FK ausentes; solo_append DEFINER; censo de EXECUTE OK)'
+      ELSE 'ROJO ('||left(bad, 700)||')' END, false);
+    RETURN;
+  END IF;
+  IF v372 <> 'presente' THEN bad := bad||'372 '||left(v372, 300)||'; '; END IF;
 
   -- tablas: RLS y ACL exacta
   FOR r IN SELECT x.t FROM (VALUES ('public.textos_legales'), ('public.aceptaciones_legales')) x(t) LOOP
@@ -34576,9 +34583,8 @@ END $$;
 SELECT set_config('role', 'none', true);
 
 -- ============================================================
--- MIG 372 · GL-02 hardening (P1023-P1025). Estado por pg_temp.g372_estado (G372_FX): 'ausente' -> 'PENDIENTE mig 372
--- (...)'; 'parcial' -> ROJO. Cuando la 372 se aplique, 'ausente' pasa a REGRESION en P1022-P1025, en el mismo PR (como la
--- 370 y la 371).
+-- MIG 372 · GL-02 hardening (P1023-P1025). Estado por pg_temp.g372_estado (G372_FX). La 372 esta aplicada en prod
+-- (2026-10-08 17:10 UTC): 'ausente' -> 'REGRESION (372 ausente: ...)' en P1022-P1025; 'parcial' -> ROJO.
 -- ============================================================
 -- P1023 estructura 372 (solo catalogo): identidad_legal DEFINER + search_path vacio + ACL solo postgres, y deriva de
 -- roles_catalogo (JOIN, ambito 'clinica') sin lista literal de roles; fija_fecha INVOKER + search_path vacio + ACL solo
@@ -34592,7 +34598,7 @@ BEGIN
   IF current_user <> 'postgres' THEN RAISE EXCEPTION 'fixture roto: P1023 corre como %', current_user; END IF;
   v372 := pg_temp.g372_estado();
   IF v372 = 'ausente' THEN
-    PERFORM set_config('probe.p1023', 'PENDIENTE mig 372 (identidad_legal, fija_fecha, trigger y FK ausentes; solo_append DEFINER)', false);
+    PERFORM set_config('probe.p1023', 'REGRESION (372 ausente: identidad_legal, fija_fecha, trigger y FK ausentes; solo_append DEFINER)', false);
     RETURN;
   ELSIF v372 <> 'presente' THEN
     PERFORM set_config('probe.p1023', 'ROJO (372 '||left(v372, 300)||')', false);
@@ -34671,7 +34677,7 @@ BEGIN
   PERFORM set_config('request.jwt.claims', '', true);
   v372 := pg_temp.g372_estado();
   IF v372 = 'ausente' THEN
-    PERFORM set_config('probe.p1024', 'PENDIENTE mig 372 (sin LG006, sin identidad_legal y con los mensajes de la 371)', false);
+    PERFORM set_config('probe.p1024', 'REGRESION (372 ausente: sin LG006, sin identidad_legal y con los mensajes de la 371)', false);
     RETURN;
   ELSIF v372 <> 'presente' THEN
     PERFORM set_config('probe.p1024', 'ROJO (372 '||left(v372, 300)||')', false);
@@ -34807,7 +34813,7 @@ BEGIN
   PERFORM set_config('request.jwt.claims', '', true);
   v372 := pg_temp.g372_estado();
   IF v372 = 'ausente' THEN
-    PERFORM set_config('probe.p1025', 'PENDIENTE mig 372 (sin trigger de fecha ni FK a auth.users)', false);
+    PERFORM set_config('probe.p1025', 'REGRESION (372 ausente: sin trigger de fecha ni FK a auth.users)', false);
     RETURN;
   ELSIF v372 <> 'presente' THEN
     PERFORM set_config('probe.p1025', 'ROJO (372 '||left(v372, 300)||')', false);
@@ -35968,11 +35974,11 @@ UNION ALL SELECT 'G371_FX_estado_textos_legales',  current_setting('probe.g371_f
 UNION ALL SELECT 'P1019_textos_legales_anon_371',  current_setting('probe.p1019', true), 'OK (371: anon 42501 en las 2 RPCs y las 2 tablas; si la 371 falta: REGRESION)'
 UNION ALL SELECT 'P1020_textos_legales_regla_por_rol_371',  current_setting('probe.p1020', true), 'OK (371: 6 actores con su conjunto: paciente.qa, medico.qa, superadmin, farmacia.qa, adminpais.qa y sin identidad; exigible=false 0 filas x6; si la 371 falta: REGRESION)'
 UNION ALL SELECT 'P1021_textos_legales_escritura_371',  current_setting('probe.p1021', true), 'OK (371: aceptar idempotente con su uid; LG002 x1, LG003 x1, LG004 x8; INSERT directo 42501 por privilegio; sin filas ajenas; UPDATE/DELETE/TRUNCATE LG005; si la 371 falta: REGRESION)'
-UNION ALL SELECT 'P1022_textos_legales_estructura_371',  current_setting('probe.p1022', true), 'OK (371: ACL exacta de 2 tablas y 5 funciones; secuencia cerrada; 0 con PUBLIC; anon solo catalogo; 372 ausente: 2 triggers y 5 DEFINER; 372 presente: 3 triggers, solo_append y fija_fecha INVOKER; 372 parcial: ROJO; si la 371 falta: REGRESION)'
-UNION ALL SELECT 'G372_FX_estado_hardening_textos_legales',  current_setting('probe.g372_fx', true), 'OK (ausente: 372 sin aplicar; presente: 372 aplicada)'
-UNION ALL SELECT 'P1023_textos_legales_estructura_372',  current_setting('probe.p1023', true), 'OK (372: identidad_legal DEFINER desde roles_catalogo; fija_fecha y solo_append INVOKER; 3 triggers; FK RESTRICT/RESTRICT; LG006 y ORDER BY codigo en aceptar; sin lista literal de roles; ACL de las 2 RPCs; antes de la 372: PENDIENTE)'
-UNION ALL SELECT 'P1024_textos_legales_regla_mensajes_372',  current_setting('probe.p1024', true), 'OK (372: LG006 x3 y farmacia.qa acepta condiciones_profesionales; rol de ambito clinica derivado de roles_catalogo; mensajes LG001 x2, LG002, LG003, LG004 x5 y LG006 exactos sin eco; antes de la 372: PENDIENTE)'
-UNION ALL SELECT 'P1025_textos_legales_forja_escritura_372',  current_setting('probe.p1025', true), 'OK (372: fecha forjada por service_role queda now(); uid inexistente 23503; service_role UPDATE/DELETE LG005; paciente.qa UPDATE propia 42501; antes de la 372: PENDIENTE)'
+UNION ALL SELECT 'P1022_textos_legales_estructura_371',  current_setting('probe.p1022', true), 'OK (371+372: ACL exacta de 2 tablas y 5 funciones; secuencia cerrada; 0 con PUBLIC; anon solo catalogo; 3 triggers, solo_append y fija_fecha INVOKER; 372 aplicada en prod 2026-10-08 17:10 UTC; si falta: REGRESION; 372 parcial: ROJO; si la 371 falta: REGRESION)'
+UNION ALL SELECT 'G372_FX_estado_hardening_textos_legales',  current_setting('probe.g372_fx', true), 'OK (presente: 372 aplicada en prod 2026-10-08 17:10 UTC; si falta: OK (ausente) y REGRESION en P1022-P1025)'
+UNION ALL SELECT 'P1023_textos_legales_estructura_372',  current_setting('probe.p1023', true), 'OK (372: identidad_legal DEFINER desde roles_catalogo; fija_fecha y solo_append INVOKER; 3 triggers; FK RESTRICT/RESTRICT; LG006 y ORDER BY codigo en aceptar; sin lista literal de roles; ACL de las 2 RPCs; aplicada en prod 2026-10-08 17:10 UTC; si falta: REGRESION)'
+UNION ALL SELECT 'P1024_textos_legales_regla_mensajes_372',  current_setting('probe.p1024', true), 'OK (372: LG006 x3 y farmacia.qa acepta condiciones_profesionales; rol de ambito clinica derivado de roles_catalogo; mensajes LG001 x2, LG002, LG003, LG004 x5 y LG006 exactos sin eco; aplicada en prod 2026-10-08 17:10 UTC; si falta: REGRESION)'
+UNION ALL SELECT 'P1025_textos_legales_forja_escritura_372',  current_setting('probe.p1025', true), 'OK (372: fecha forjada por service_role queda now(); uid inexistente 23503; service_role UPDATE/DELETE LG005; paciente.qa UPDATE propia 42501; aplicada en prod 2026-10-08 17:10 UTC; si falta: REGRESION)'
 UNION ALL SELECT 'P1010_campana_vistas_sin_update_367',  current_setting('probe.p1010', true), 'OK (367: INSERT 1; ON CONFLICT DO NOTHING 0 sin error; DO UPDATE y UPDATE 42501; otro paciente 0; antes de la 367: PENDIENTE)'
 UNION ALL SELECT 'P1009_datos_bancarios_acotados_366',  current_setting('probe.p1009', true), 'OK (366: cuenta GT solo super_admin/admin_pais GT/proveedores GT; checkout 1 fila; config 21 super_admin y 14 el resto, admin_pais incluido; antes de la 366: PENDIENTE)'
 UNION ALL SELECT 'DET_p1009',  'DET ' || COALESCE(NULLIF(current_setting('probe.p1009_det', true), ''), '(sin dato)'), 'DET (detalle de P1009, no es probe)'
