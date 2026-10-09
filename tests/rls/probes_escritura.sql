@@ -34878,7 +34878,8 @@ SELECT set_config('role', 'none', true);
 
 -- ================================================================================
 -- MIG 373 — completar_registro_proveedor: alta diferida de empresas con Confirm email ON (P1026-P1034).
--- Antes del apply la funcion no existe: P1026-P1034 publican 'PENDIENTE mig 373 (...)' (no es roja).
+-- La 373 esta aplicada en prod (2026-10-09 16:27 UTC): si la funcion falta, M373_FX y P1026-P1034 publican
+-- 'REGRESION (373 ausente: ...)' (roja).
 -- Cada probe que escribe trabaja en un savepoint que se descarta con RAISE P0999 y verifica despues
 -- que los conteos de empresas_proveedoras / cuentas_proveedor y la fila de auth.users que toco
 -- (raw_user_meta_data, email_confirmed_at) volvieron al snapshot. Los veredictos se juzgan por
@@ -34955,8 +34956,9 @@ BEGIN
 END
 $body$
 $fn$;
-  PERFORM set_config('probe.m373_fx', 'OK (helpers de pg_temp creados; 373 '
-    ||CASE WHEN to_regprocedure('public.completar_registro_proveedor()') IS NULL THEN 'ausente' ELSE 'presente' END||')', false);
+  PERFORM set_config('probe.m373_fx', CASE WHEN to_regprocedure('public.completar_registro_proveedor()') IS NULL
+    THEN 'REGRESION (373 ausente: completar_registro_proveedor ausente; helpers de pg_temp creados)'
+    ELSE 'OK (helpers de pg_temp creados; 373 presente)' END, false);
 EXCEPTION WHEN OTHERS THEN
   PERFORM set_config('probe.m373_fx', 'FALLO ('||SQLSTATE||' '||SQLERRM||')', false);
 END $$;
@@ -34966,7 +34968,7 @@ DO $$
 DECLARE res text;
 BEGIN
   IF to_regprocedure('public.completar_registro_proveedor()') IS NULL THEN
-    PERFORM set_config('probe.p1026', 'PENDIENTE mig 373 (completar_registro_proveedor ausente)', false);
+    PERFORM set_config('probe.p1026', 'REGRESION (373 ausente: completar_registro_proveedor ausente)', false);
     RETURN;
   END IF;
   res := pg_temp.m373_como(NULL, 'authenticated', 'SELECT public.completar_registro_proveedor()::text');
@@ -34984,7 +34986,7 @@ DO $$
 DECLARE l1 uuid; gt uuid; res text; n0 text; n1 text; pre text; post text; bad text := '';
 BEGIN
   IF to_regprocedure('public.completar_registro_proveedor()') IS NULL THEN
-    PERFORM set_config('probe.p1027', 'PENDIENTE mig 373 (completar_registro_proveedor ausente)', false);
+    PERFORM set_config('probe.p1027', 'REGRESION (373 ausente: completar_registro_proveedor ausente)', false);
     RETURN;
   END IF;
   l1 := pg_temp.m373_libre();
@@ -35022,7 +35024,7 @@ DO $$
 DECLARE l1 uuid; res text; n0 text; n1 text; pre text; post text; bad text := ''; r record;
 BEGIN
   IF to_regprocedure('public.completar_registro_proveedor()') IS NULL THEN
-    PERFORM set_config('probe.p1028', 'PENDIENTE mig 373 (completar_registro_proveedor ausente)', false);
+    PERFORM set_config('probe.p1028', 'REGRESION (373 ausente: completar_registro_proveedor ausente)', false);
     RETURN;
   END IF;
   l1 := pg_temp.m373_libre();
@@ -35064,7 +35066,7 @@ DO $$
 DECLARE l1 uuid; gt uuid; res text; n0 text; n1 text; pre text; post text; bad text := ''; r record;
 BEGIN
   IF to_regprocedure('public.completar_registro_proveedor()') IS NULL THEN
-    PERFORM set_config('probe.p1029', 'PENDIENTE mig 373 (completar_registro_proveedor ausente)', false);
+    PERFORM set_config('probe.p1029', 'REGRESION (373 ausente: completar_registro_proveedor ausente)', false);
     RETURN;
   END IF;
   l1 := pg_temp.m373_libre();
@@ -35109,7 +35111,7 @@ DECLARE l1 uuid; gt uuid; mail text; res text; res2 text; e1 uuid; n0 text; n1 t
         fila_e text; fila_c text; esp_e text; esp_c text; bad text := '';
 BEGIN
   IF to_regprocedure('public.completar_registro_proveedor()') IS NULL THEN
-    PERFORM set_config('probe.p1030', 'PENDIENTE mig 373 (completar_registro_proveedor ausente)', false);
+    PERFORM set_config('probe.p1030', 'REGRESION (373 ausente: completar_registro_proveedor ausente)', false);
     RETURN;
   END IF;
   l1 := pg_temp.m373_libre();
@@ -35167,7 +35169,7 @@ DO $$
 DECLARE a_pac uuid; gt uuid; res text; n0 text; n1 text; pre text; post text; bad text := '';
 BEGIN
   IF to_regprocedure('public.completar_registro_proveedor()') IS NULL THEN
-    PERFORM set_config('probe.p1031', 'PENDIENTE mig 373 (completar_registro_proveedor ausente)', false);
+    PERFORM set_config('probe.p1031', 'REGRESION (373 ausente: completar_registro_proveedor ausente)', false);
     RETURN;
   END IF;
   a_pac := (SELECT u.id FROM auth.users u WHERE lower(u.email) LIKE 'paciente.qa@%' ORDER BY u.email LIMIT 1);
@@ -35207,7 +35209,7 @@ DO $$
 DECLARE l1 uuid; zz uuid; res text; n0 text; n1 text; pre text; post text; bad text := '';
 BEGIN
   IF to_regprocedure('public.completar_registro_proveedor()') IS NULL THEN
-    PERFORM set_config('probe.p1032', 'PENDIENTE mig 373 (completar_registro_proveedor ausente)', false);
+    PERFORM set_config('probe.p1032', 'REGRESION (373 ausente: completar_registro_proveedor ausente)', false);
     RETURN;
   END IF;
   l1 := pg_temp.m373_libre();
@@ -35246,7 +35248,7 @@ DECLARE f regprocedure; res text; bad text := '';
 BEGIN
   f := to_regprocedure('public.completar_registro_proveedor()');
   IF f IS NULL THEN
-    PERFORM set_config('probe.p1033', 'PENDIENTE mig 373 (completar_registro_proveedor ausente)', false);
+    PERFORM set_config('probe.p1033', 'REGRESION (373 ausente: completar_registro_proveedor ausente)', false);
     RETURN;
   END IF;
   IF has_function_privilege('anon', f, 'EXECUTE') THEN bad := bad||'anon tiene EXECUTE; '; END IF;
@@ -35271,7 +35273,7 @@ DO $$
 DECLARE a_far uuid; emp uuid; res text; n0 text; n1 text; pre text; post text; bad text := ''; r record;
 BEGIN
   IF to_regprocedure('public.completar_registro_proveedor()') IS NULL THEN
-    PERFORM set_config('probe.p1034', 'PENDIENTE mig 373 (completar_registro_proveedor ausente)', false);
+    PERFORM set_config('probe.p1034', 'REGRESION (373 ausente: completar_registro_proveedor ausente)', false);
     RETURN;
   END IF;
   a_far := (SELECT u.id FROM auth.users u WHERE lower(u.email) LIKE 'farmacia.qa@%' ORDER BY u.email LIMIT 1);
@@ -36411,16 +36413,16 @@ UNION ALL SELECT 'G372_FX_estado_hardening_textos_legales',  current_setting('pr
 UNION ALL SELECT 'P1023_textos_legales_estructura_372',  current_setting('probe.p1023', true), 'OK (372: identidad_legal DEFINER desde roles_catalogo; fija_fecha y solo_append INVOKER; 3 triggers; FK RESTRICT/RESTRICT; LG006 y ORDER BY codigo en aceptar; sin lista literal de roles; ACL de las 2 RPCs; aplicada en prod 2026-10-08 17:10 UTC; si falta: REGRESION)'
 UNION ALL SELECT 'P1024_textos_legales_regla_mensajes_372',  current_setting('probe.p1024', true), 'OK (372: LG006 x3 y farmacia.qa acepta condiciones_profesionales; rol de ambito clinica derivado de roles_catalogo; mensajes LG001 x2, LG002, LG003, LG004 x5 y LG006 exactos sin eco; aplicada en prod 2026-10-08 17:10 UTC; si falta: REGRESION)'
 UNION ALL SELECT 'P1025_textos_legales_forja_escritura_372',  current_setting('probe.p1025', true), 'OK (372: fecha forjada por service_role queda now(); uid inexistente 23503; service_role UPDATE/DELETE LG005; paciente.qa UPDATE propia 42501; aplicada en prod 2026-10-08 17:10 UTC; si falta: REGRESION)'
-UNION ALL SELECT 'M373_FX_helpers_alta_diferida',  current_setting('probe.m373_fx', true), 'OK (helpers de pg_temp creados; 373 ausente antes del apply, presente despues)'
-UNION ALL SELECT 'P1026_completar_registro_sin_sesion_373',  current_setting('probe.p1026', true), 'OK (373: sin sesion -> RP001; antes del apply: PENDIENTE mig 373)'
-UNION ALL SELECT 'P1027_completar_registro_sin_confirmar_373',  current_setting('probe.p1027', true), 'OK (373: correo sin confirmar -> RP002, sin filas; antes del apply: PENDIENTE mig 373)'
-UNION ALL SELECT 'P1028_completar_registro_sin_pendiente_373',  current_setting('probe.p1028', true), 'OK (373: sin registro_empresa o no-objeto -> RP003 x3, sin filas; antes del apply: PENDIENTE mig 373)'
-UNION ALL SELECT 'P1029_completar_registro_invalido_373',  current_setting('probe.p1029', true), 'OK (373: 4 registros invalidos -> RP004 x4, sin filas; antes del apply: PENDIENTE mig 373)'
-UNION ALL SELECT 'P1030_completar_registro_alta_idempotente_373',  current_setting('probe.p1030', true), 'OK (373: alta -> empresa pendiente + cuenta admin con email de auth; segunda llamada mismo uuid; antes del apply: PENDIENTE mig 373)'
-UNION ALL SELECT 'P1031_completar_registro_identidad_previa_373',  current_setting('probe.p1031', true), 'OK (373: paciente.qa -> 42501 de registrar_proveedor, sin filas; antes del apply: PENDIENTE mig 373)'
-UNION ALL SELECT 'P1032_completar_registro_pais_zz_373',  current_setting('probe.p1032', true), 'OK (373: pais ZZ -> 22023 de registrar_proveedor, sin filas; antes del apply: PENDIENTE mig 373)'
-UNION ALL SELECT 'P1033_completar_registro_execute_373',  current_setting('probe.p1033', true), 'OK (373: anon y PUBLIC sin EXECUTE, authenticated con EXECUTE; anon ejercitado 42501; antes del apply: PENDIENTE mig 373)'
-UNION ALL SELECT 'P1034_completar_registro_ya_proveedor_373',  current_setting('probe.p1034', true), 'OK (373: farmacia.qa -> su empresa_id sin registro y con el correo sin confirmar, sin filas; antes del apply: PENDIENTE mig 373)'
+UNION ALL SELECT 'M373_FX_helpers_alta_diferida',  current_setting('probe.m373_fx', true), 'OK (helpers de pg_temp creados; 373 presente: aplicada en prod 2026-10-09 16:27 UTC; si falta: REGRESION)'
+UNION ALL SELECT 'P1026_completar_registro_sin_sesion_373',  current_setting('probe.p1026', true), 'OK (373: sin sesion -> RP001; aplicada en prod 2026-10-09 16:27 UTC; si falta: REGRESION)'
+UNION ALL SELECT 'P1027_completar_registro_sin_confirmar_373',  current_setting('probe.p1027', true), 'OK (373: correo sin confirmar -> RP002, sin filas; aplicada en prod 2026-10-09 16:27 UTC; si falta: REGRESION)'
+UNION ALL SELECT 'P1028_completar_registro_sin_pendiente_373',  current_setting('probe.p1028', true), 'OK (373: sin registro_empresa o no-objeto -> RP003 x3, sin filas; aplicada en prod 2026-10-09 16:27 UTC; si falta: REGRESION)'
+UNION ALL SELECT 'P1029_completar_registro_invalido_373',  current_setting('probe.p1029', true), 'OK (373: 4 registros invalidos -> RP004 x4, sin filas; aplicada en prod 2026-10-09 16:27 UTC; si falta: REGRESION)'
+UNION ALL SELECT 'P1030_completar_registro_alta_idempotente_373',  current_setting('probe.p1030', true), 'OK (373: alta -> empresa pendiente + cuenta admin con email de auth; segunda llamada mismo uuid; aplicada en prod 2026-10-09 16:27 UTC; si falta: REGRESION)'
+UNION ALL SELECT 'P1031_completar_registro_identidad_previa_373',  current_setting('probe.p1031', true), 'OK (373: paciente.qa -> 42501 de registrar_proveedor, sin filas; aplicada en prod 2026-10-09 16:27 UTC; si falta: REGRESION)'
+UNION ALL SELECT 'P1032_completar_registro_pais_zz_373',  current_setting('probe.p1032', true), 'OK (373: pais ZZ -> 22023 de registrar_proveedor, sin filas; aplicada en prod 2026-10-09 16:27 UTC; si falta: REGRESION)'
+UNION ALL SELECT 'P1033_completar_registro_execute_373',  current_setting('probe.p1033', true), 'OK (373: anon y PUBLIC sin EXECUTE, authenticated con EXECUTE; anon ejercitado 42501; aplicada en prod 2026-10-09 16:27 UTC; si falta: REGRESION)'
+UNION ALL SELECT 'P1034_completar_registro_ya_proveedor_373',  current_setting('probe.p1034', true), 'OK (373: farmacia.qa -> su empresa_id sin registro y con el correo sin confirmar, sin filas; aplicada en prod 2026-10-09 16:27 UTC; si falta: REGRESION)'
 UNION ALL SELECT 'P1010_campana_vistas_sin_update_367',  current_setting('probe.p1010', true), 'OK (367: INSERT 1; ON CONFLICT DO NOTHING 0 sin error; DO UPDATE y UPDATE 42501; otro paciente 0; antes de la 367: PENDIENTE)'
 UNION ALL SELECT 'P1009_datos_bancarios_acotados_366',  current_setting('probe.p1009', true), 'OK (366: cuenta GT solo super_admin/admin_pais GT/proveedores GT; checkout 1 fila; config 21 super_admin y 14 el resto, admin_pais incluido; antes de la 366: PENDIENTE)'
 UNION ALL SELECT 'DET_p1009',  'DET ' || COALESCE(NULLIF(current_setting('probe.p1009_det', true), ''), '(sin dato)'), 'DET (detalle de P1009, no es probe)'

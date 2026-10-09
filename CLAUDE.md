@@ -24,15 +24,43 @@ Stack: React + Vite + TypeScript, Supabase / Postgres, deploy en Vercel, repo en
   minutos por esto** (P635 es la probe que faltaba, P636 su contraprueba).
 - NUNCA ampliar policies de RLS sobre tablas adyacentes a datos médicos (p. ej. campana_metricas). Para dar acceso, usar RPCs SECURITY DEFINER con search_path='', fail-closed (si el scope es NULL → 0 filas) y gate interno.
 - Probar aislamiento por rol impersonando request.jwt.claims en prod: cada rol ve lo suyo y no lo ajeno.
-- **Próximos números libres: probe `P1026`** (global, no por módulo; P1023-P1025 + G372_FX usados por la mig 372; P1019-P1022 usados por la mig 371; P1015-P1018 usados por la mig 370, P1011-P1014 por la mig 369, P1010 por la mig 367, P1009 por la 366, P1008 por la 365, P1007 por la 364, P1001-P1006 por la mig 363, P996-P1000 por la 362, P990-P995 por la 361, P983-P989 por la 360, P975-P982 por la
+- **Próximos números libres: probe `P1035`** (global, no por módulo; P1026-P1034 + M373_FX usados por la mig 373; P1023-P1025 + G372_FX usados por la mig 372; P1019-P1022 usados por la mig 371; P1015-P1018 usados por la mig 370, P1011-P1014 por la mig 369, P1010 por la mig 367, P1009 por la 366, P1008 por la 365, P1007 por la 364, P1001-P1006 por la mig 363, P996-P1000 por la 362, P990-P995 por la 361, P983-P989 por la 360, P975-P982 por la
   359, P967-P974 por la 358, P958-P966 por la 357 (obtener_medicos_por_ids acotada a relación); P906-P907 usados por la mig 336, P912-P913
   por la 337, P914-P915 por la 338, P916-P920 por la 339/340, P921-P923 por la 341, P924 por la 342, P925 por
   la 343, P926-P927 por la 344, P928-P929 por la 345, P930 por la 346, P931-P932 por la 347, P933 por la 348,
-  P934-P935 por la 349, P936 por la 350, P937-P939 por la 351, P940-P943 por la 353), **migración `373`** (la 371 es GL-02 y la 372 su hardening, las dos aplicadas el 8-oct), **errcode `LG007`** (prefijo LG,
+  P934-P935 por la 349, P936 por la 350, P937-P939 por la 351, P940-P943 por la 353), **migración `374`** (la 373 es el alta diferida de empresas, aplicada el 9-oct; la 371 es GL-02 y la 372 su hardening, las dos aplicadas el 8-oct), **errcode `LG007`** (prefijo LG,
   GL-02: LG001-LG005 en uso por la 371 — LG001 sin sesión, LG002 código inexistente, LG003 versión no vigente, LG004
   entrada inválida, LG005 aceptaciones append-only; LG006 = el texto no corresponde a la identidad de la cuenta, en uso
   por la 372), **errcode `PC029`** (familia PC: PC025 país requerido y PC026 sin autoridad en `contar_medicos_por_pais`, PC027
-  no autenticado, PC028 sin autoridad sobre el país en `contar_proveedores_por_pais`)
+  no autenticado, PC028 sin autoridad sobre el país en `contar_proveedores_por_pais`), **errcode `RP005`** (prefijo RP,
+  mig 373 `completar_registro_proveedor`: RP001 sin sesión, RP002 correo sin confirmar, RP003 sin registro de empresa
+  pendiente, RP004 datos inválidos; mensajes para el usuario final, en tú, sin datos del usuario; el front tiene que mapear
+  RP*; los 42501/22023 de `registrar_proveedor` se propagan tal cual)
+  (373 = alta diferida de empresas con Confirm email ON — **APLICADA en prod el 2026-10-09 entre 16:27:52 y 16:27:54 UTC**
+  y verificada en sesión independiente (V1-V4: objeto vivo = archivo, huellas, datos y P1026-P1034 + M373_FX en OK con la
+  función presente). Rama `altas/alta-diferida-373`; commits c2b925d, 0423d3b, 42e2033 (review M2/M3/M4). sha256 de la
+  migración 251eaf382530e1928622b6f2d03cb621414c9aa53e17999b27aafbe867708351 y de `373_rollback.sql`
+  4b6857d2770c058bda8e6b2a8dbad922ecb7993450f72d27ff152cbd5364b8b9; md5(prosrc) de `completar_registro_proveedor`
+  bdcaf676b4b14ad0ad14aaab73a4187d; `registrar_proveedor` sin cambio (fae23eeeacb393328f774386ccd88479). **Huellas
+  post-373:** funciones 027e10a7b66101b4f5bb85c475c34045/392 (sin la nueva 5482f6de…/391, la post-372); policies
+  8a8dc5cf…/309 y relaciones d065decf…/2394 sin cambio. **Decisión de Oscar (9-oct-2026):** Confirm email está ON en prod
+  (medido 9-oct) y el autorregistro de farmacia/lab/proveedor fallaba en `registrar_proveedor` (signUp sin sesión);
+  alta diferida: el front guarda los datos en `raw_user_meta_data -> 'registro_empresa'` en el signUp y al primer login
+  llama a `public.completar_registro_proveedor()` (DEFINER, `search_path=''`, EXECUTE solo authenticated/postgres/
+  service_role), que con el correo confirmado valida el registro y llama a `registrar_proveedor` con la sesión del usuario;
+  idempotente (si ya es proveedor devuelve su empresa, antes de mirar correo y registro: P1034) y serializada por uid con
+  `pg_advisory_xact_lock`; solo lee auth.users. Probes P1026-P1034 + M373_FX: con la función ausente publican
+  `REGRESION (373 ausente: …)`. Rollback vigente 373 → 372 → 371 → 370. **Condiciones del PR del front** (rama nueva desde
+  main después del merge de GL-02, lunes 12-oct): signUp de farmacia/lab/proveedor con `options.data.registro_empresa`
+  (incluido `email_contacto` explícito: la RPC da RP004 si falta) y `emailRedirectTo` al login de su portal; llamar a
+  `completar_registro_proveedor` al login de los 3 portales (y justo tras el signUp si hubo sesión); limpiar
+  `registro_empresa` con `updateUser` después del éxito (review M1: si no, una empresa borrada se vuelve a crear en el
+  próximo login); respetar `cuentas_proveedor.activo` (la RPC devuelve la empresa también a una cuenta inactiva, nit #3);
+  mapear RP001-RP004; paciente: `emailRedirectTo` a /paciente y que RootRedirect y LoginPage reconozcan al paciente (fila
+  en pacientes) en vez de mandarlo a /sin-panel. **Nits de la review 373 (backlog):** el autochequeo de grantees no mira
+  `is_grantable`; RP002 es engañoso para un usuario borrado con JWT vivo; la SQL de huellas sigue repetida; 23505 crudo en
+  la carrera `registrar_proveedor` directo vs `completar_registro_proveedor` (sin empresa duplicada: la PK de
+  cuentas_proveedor revierte la segunda).)
   (372 = GL-02 hardening de la 371 (review #54, n2-n9) — **APLICADA en prod el 2026-10-08 a las 17:10 UTC (17:10:20.279 →
   17:10:22.590, exit 0)**, sha256 7797e4c5fe698a94348e27e5cd78a110c00dc115522098a79cf3cb3428c2d174, y verificada en sesión
   independiente (harness post-apply 1111 / 11 rojas de deuda; todos los objetos y cuerpos iguales al archivo). **Huellas
@@ -501,13 +529,14 @@ Stack: React + Vite + TypeScript, Supabase / Postgres, deploy en Vercel, repo en
 - **Migraciones: SIEMPRE `npx supabase db query --linked -f <archivo>`, NUNCA `db push`.** `db push`
   desincroniza `schema_migrations` (deuda desde la 047). Los `.sql` viven en `supabase/migrations/`
   (rollback en `supabase/migrations/rollback/`); los de `supabase/fixes/` se agregan con `git add -f`.
-  **Desvío aceptado (familia 8):** los rollbacks de 334-372 viven en `supabase/migrations/`
-  (`3XX_rollback.sql`), no en `supabase/migrations/rollback/`. Orden de rollback global vigente: `372_rollback` →
+  **Desvío aceptado (familia 8):** los rollbacks de 334-373 viven en `supabase/migrations/`
+  (`3XX_rollback.sql`), no en `supabase/migrations/rollback/`. Orden de rollback global vigente: `373_rollback` → `372_rollback` →
   `371_rollback` → `370_rollback` → `369_rollback` →
   `368_rollback` → `366_rollback` → `365_rollback` → … Forzados por huella: 369 antes que 368 Y antes que 367 (la
   precondición de `367_rollback` exige la ACL de public e2bb57f4…/2370, que la 369 cambió) y 368 antes que 366;
   `367_rollback` sigue conmutable con 366 y 368 (siempre después de 369). `369_rollback` exige revertir también el front
-  de `useLaboratorio`. **372 (APLICADA el 8-oct) encabeza la cadena:** la precondición de `371_rollback` exige la huella
+  de `useLaboratorio`. **373 (APLICADA el 9-oct) encabeza la cadena:** la precondición de `372_rollback` exige la huella
+  de funciones post-372 5482f6de…/391, que la 373 cambió (027e10a7…/392) y `373_rollback` devuelve. **372 (APLICADA el 8-oct) va después:** la precondición de `371_rollback` exige la huella
   de funciones post-371 4c1f611c…/389, que la 372 cambió (5482f6de…/391) y `372_rollback` devuelve. **371 (APLICADA el 8-oct) va después:** la precondición de `370_rollback` exige la ACL de
   funciones post-370 4878afd5…/384, que la 371 cambió (4c1f611c…/389) y `371_rollback` devuelve. **370 (APLICADA el 7-oct) va antes que 369, 350 y 349:** `369_rollback` espera la ACL de funciones
   e5c9770e…/384, y con la 370 viva devolver las policies de la 349/350 a `TO public` le da a anon 42501 de FUNCIÓN
@@ -780,5 +809,7 @@ Detalles a recordar:
   cuenta todavía no tiene `cuentas_proveedor` y `aceptar_textos_legales` da LG006. En el paciente no pasa:
   `handle_new_paciente` (mig 230, AFTER INSERT ON auth.users, solo si la metadata trae `tipo = 'paciente'`) crea la fila de
   `pacientes` en el mismo `signUp`.
+- (Corrección, 9-oct-2026) El "Escribile" visto el 9-oct era un bundle viejo en el celular: main y prod (571d39a) dicen
+  "Escríbele". Backlog: verificar que el service worker de la PWA se actualice en iOS.
 - **(QA-MANUAL, cleanup pre-go-live)** `auditoria_ia` id **181** (2026-10-02 15:38:37 UTC, medico.qa →
   paciente 23): `DELETE FROM public.auditoria_ia WHERE id = 181;`
