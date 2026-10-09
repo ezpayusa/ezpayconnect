@@ -1,5 +1,6 @@
 import { useState, useEffect, useCallback } from 'react'
 import { supabase } from '@/lib/supabase'
+import { APP_URL } from '@/lib/app-url'
 import type { PacientePerfil } from '@/webapp/types/webapp.types'
 
 // País por defecto (Guatemala) — mismo valor que src/hooks/useAuth.ts
@@ -97,6 +98,8 @@ export function useWebAppAuth() {
           genero: datos.genero || null,
           pais_id: datos.pais_id || PAIS_DEFAULT,
         },
+        // Con Confirm email ON, el link del correo vuelve logueado: que caiga en el portal del paciente.
+        emailRedirectTo: `${APP_URL}/paciente`,
       },
     })
     if (error) {

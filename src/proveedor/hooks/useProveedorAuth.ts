@@ -3,6 +3,14 @@ import { supabase } from '@/lib/supabase'
 import type { CuentaProveedor, EmpresaProveedora } from '@/proveedor/types/proveedor.types'
 import { permisosDeRol, puedeRol, type PermisoProveedor } from '@/proveedor/lib/permisos'
 import { toast } from 'sonner'
+import { aceptarInvitacionPendiente } from '@/lib/invitacionProveedor'
+import { APP_URL } from '@/lib/app-url'
+import {
+  completarRegistroPendiente,
+  loginDePortal,
+  mensajeErrorRegistroEmpresa,
+  type RegistroEmpresa,
+} from '@/proveedor/lib/registroDiferido'
 
 export function useProveedorAuth() {
   const [user, setUser] = useState<any>(null)
@@ -60,14 +68,38 @@ export function useProveedorAuth() {
   const login = useCallback(async (email: string, password: string) => {
     const { data, error } = await supabase.auth.signInWithPassword({ email, password })
     if (error) return { data, error }
+    const userId = data.user!.id
+
+    const buscarCuenta = async () => {
+      const { data: c } = await supabase
+        .from('cuentas_proveedor')
+        .select('id, activo')
+        .eq('id', userId)
+        .maybeSingle()
+      return c
+    }
 
     // Verificar que la cuenta sea de proveedor; si no, cerrar sesión y avisar claro
     // (evita el rebote silencioso al usar una cuenta de admin/médico/paciente aquí).
-    const { data: cuentaData } = await supabase
-      .from('cuentas_proveedor')
-      .select('id, activo')
-      .eq('id', data.user!.id)
-      .maybeSingle()
+    let cuentaData = await buscarCuenta()
+
+    // Sin cuenta todavía: antes de rechazar, una invitación pendiente (visitador invitado) o un alta diferida
+    // (mig 373: la empresa quedó en la metadata del signUp porque con Confirm email ON no había sesión).
+    if (!cuentaData && (await aceptarInvitacionPendiente())) {
+      cuentaData = await buscarCuenta()
+    }
+    if (!cuentaData) {
+      const r = await completarRegistroPendiente()
+      if ('error' in r) {
+        await supabase.auth.signOut()
+        const message = r.error.code === 'RP003'
+          ? 'Esta cuenta no es de un proveedor. Usa el portal que corresponde a tu cuenta.'
+          : mensajeErrorRegistroEmpresa(r.error)
+        return { data, error: { message } }
+      }
+      cuentaData = await buscarCuenta()
+      await fetchCuenta(userId)
+    }
 
     if (!cuentaData) {
       await supabase.auth.signOut()
@@ -84,7 +116,7 @@ export function useProveedorAuth() {
       }
     }
     return { data, error: null }
-  }, [])
+  }, [fetchCuenta])
 
   const register = useCallback(async (
     email: string,
@@ -92,8 +124,30 @@ export function useProveedorAuth() {
     nombre_completo: string,
     empresa: Partial<EmpresaProveedora>
   ) => {
+    // Alta diferida (mig 373): con Confirm email ON el signUp no da sesión, así que los datos de la empresa viajan en
+    // la metadata (registro_empresa) y la empresa se crea con completar_registro_proveedor al primer login.
+    const tipo = empresa.tipo || 'farmacia'
+    const registro_empresa: RegistroEmpresa = {
+      nombre_empresa: empresa.nombre_empresa || '',
+      tipo,
+      ruc_nit: empresa.ruc_nit || null,
+      pais_id: empresa.pais_id || null,
+      ciudad: empresa.ciudad || null,
+      direccion: empresa.direccion || null,
+      email_contacto: empresa.email_contacto || email,
+      telefono: empresa.telefono || null,
+      nombre_completo,
+    }
+
     // 1. Crear usuario en auth
-    const { data: authData, error: authError } = await supabase.auth.signUp({ email, password })
+    const { data: authData, error: authError } = await supabase.auth.signUp({
+      email,
+      password,
+      options: {
+        data: { registro_empresa },
+        emailRedirectTo: `${APP_URL}${loginDePortal(tipo)}`,
+      },
+    })
     if (authError) {
       const msg = authError.message || ''
       if (msg.toLowerCase().includes('already registered') || msg.toLowerCase().includes('already exists') || authError.status === 422) {
@@ -104,31 +158,25 @@ export function useProveedorAuth() {
     if (!authData.user) {
       return { data: authData, error: { message: 'No se pudo crear el usuario. Intenta de nuevo.' } }
     }
-
-    // 2. Llamar función RPC con SECURITY DEFINER (evita problemas de RLS)
-    const { data: empresaId, error: rpcError } = await supabase.rpc('registrar_proveedor', {
-      p_nombre_empresa: empresa.nombre_empresa || '',
-      p_tipo: empresa.tipo || 'farmacia',
-      p_ruc_nit: empresa.ruc_nit || null,
-      p_pais_id: empresa.pais_id || null,
-      p_ciudad: empresa.ciudad || null,
-      p_direccion: empresa.direccion || null,
-      p_email_contacto: empresa.email_contacto || email,
-      p_telefono: empresa.telefono || null,
-      p_nombre_completo: nombre_completo,
-      p_email: email,
-    })
-
-    if (rpcError) {
-      console.error('Error RPC registrar_proveedor:', rpcError)
-      // Si la RPC falló, el usuario auth ya existe pero no tiene empresa.
-      // Limpiamos la sesión para no dejarlo en estado inconsistente.
-      await supabase.auth.signOut()
-      return { data: authData, error: { message: `Error al crear la empresa: ${rpcError.message}` } }
+    // Con Confirm email ON, un correo ya registrado no da error: vuelve un usuario sin identidades.
+    if (Array.isArray(authData.user.identities) && authData.user.identities.length === 0) {
+      return { data: authData, error: { message: 'Este correo ya está registrado. Usa otro email o inicia sesión.' } }
     }
 
     // userId: uid del usuario recién creado, para atar a él la aceptación de textos legales del alta (GL-02).
-    return { data: authData, error: null, userId: authData.user.id }
+    // 2a. Sin sesión (correo por confirmar): la empresa se crea en el primer login.
+    if (!authData.session) {
+      return { data: authData, error: null, userId: authData.user.id, pendienteConfirmacion: true }
+    }
+
+    // 2b. Con sesión (Confirm email OFF): se completa ya.
+    const r = await completarRegistroPendiente()
+    if ('error' in r) {
+      // El usuario auth ya existe pero no tiene empresa: cerrar la sesión para no dejarlo a medias.
+      await supabase.auth.signOut()
+      return { data: authData, error: { message: mensajeErrorRegistroEmpresa(r.error) } }
+    }
+    return { data: authData, error: null, userId: authData.user.id, pendienteConfirmacion: false }
   }, [])
 
   const logout = useCallback(async () => {

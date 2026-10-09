@@ -25,6 +25,8 @@ vi.mock('@/proveedor/hooks/usePaisesRegistroProveedor', () => ({
 vi.mock('sonner', () => ({ toast: { success: vi.fn(), error: vi.fn() } }))
 
 const { default: ProveedorRegistro } = await import('../ProveedorRegistro')
+const { toast } = await import('sonner')
+const { MENSAJE_CONFIRMA_CORREO } = await import('@/proveedor/lib/registroDiferido')
 
 // Los valores del selector "Tipo de empresa" (tiposEmpresa en ProveedorRegistro.tsx).
 const TIPOS = ['farmacia', 'laboratorio_farmaceutico', 'laboratorio_clinico', 'empresa_afin']
@@ -148,5 +150,52 @@ describe('ProveedorRegistro: casilla de textos legales', () => {
     await waitFor(() => expect(navigate).toHaveBeenCalledWith('/proveedor/login'))
     expect(register.mock.calls[0][3]).toMatchObject({ tipo })
     expect(aceptarEnRegistro).toHaveBeenCalledWith(textosPara('profesional'), 'uid-nuevo')
+  })
+})
+
+describe('ProveedorRegistro: aviso de confirmar el correo (alta diferida)', () => {
+  beforeEach(() => {
+    vi.mocked(toast.success).mockReset()
+    vi.mocked(toast.error).mockReset()
+  })
+
+  // El click final va en el test, seguido del waitFor: un await entre los dos deja el setState fuera de act.
+  async function preparar() {
+    const { container } = await hastaPaso2()
+    completarPaso2(container)
+    fireEvent.click(casilla())
+  }
+
+  it('pendienteConfirmacion true → toast con MENSAJE_CONFIRMA_CORREO, aceptarEnRegistro con el userId y navega a /proveedor/login', async () => {
+    register.mockResolvedValue({ data: {}, error: null, userId: 'uid-nuevo', pendienteConfirmacion: true })
+    aceptarEnRegistro.mockResolvedValue('omitido')
+    await preparar()
+    fireEvent.click(registrar())
+    await waitFor(() => expect(navigate).toHaveBeenCalledWith('/proveedor/login'))
+    expect(toast.success).toHaveBeenCalledTimes(1)
+    expect(toast.success).toHaveBeenCalledWith(MENSAJE_CONFIRMA_CORREO)
+    expect(aceptarEnRegistro).toHaveBeenCalledWith(textosPara('profesional'), 'uid-nuevo')
+  })
+
+  it('pendienteConfirmacion false → el toast de éxito de siempre, aceptarEnRegistro con el userId y navega a /proveedor/login', async () => {
+    register.mockResolvedValue({ data: {}, error: null, userId: 'uid-nuevo', pendienteConfirmacion: false })
+    aceptarEnRegistro.mockResolvedValue('grabado')
+    await preparar()
+    fireEvent.click(registrar())
+    await waitFor(() => expect(navigate).toHaveBeenCalledWith('/proveedor/login'))
+    expect(toast.success).toHaveBeenCalledTimes(1)
+    expect(toast.success).toHaveBeenCalledWith('Empresa registrada. Tu cuenta está en revisión.')
+    expect(aceptarEnRegistro).toHaveBeenCalledWith(textosPara('profesional'), 'uid-nuevo')
+  })
+
+  it('error → toast.error con el mensaje del hook, sin toast de éxito ni navigate', async () => {
+    register.mockResolvedValue({ data: {}, error: { message: 'Este correo ya está registrado. Usa otro email o inicia sesión.' } })
+    await preparar()
+    fireEvent.click(registrar())
+    await waitFor(() => expect(register).toHaveBeenCalledTimes(1))
+    await waitFor(() => expect(registrar()).toBeEnabled())
+    expect(toast.error).toHaveBeenCalledWith('Error al registrar', { description: 'Este correo ya está registrado. Usa otro email o inicia sesión.' })
+    expect(toast.success).not.toHaveBeenCalled()
+    expect(navigate).not.toHaveBeenCalled()
   })
 })

@@ -150,6 +150,24 @@ Stack: React + Vite + TypeScript, Supabase / Postgres, deploy en Vercel, repo en
   `RootRedirect` reconozca al paciente); esa pantalla dice "Escribile" (voseo que quedó fuera del barrido voseo → tú);
   `/aceptar-textos` ordena por código (condiciones primero), lo natural es términos → privacidad → el resto; la hoja de
   cuentas QA del Project lista admin.qa, que no existe.)
+  **Front de altas con Confirm email ON: HECHO en la rama `altas/front-confirm-email` (PR #58 en borrador, apilado sobre
+  `gl02/front`; depende de la mig 373 `completar_registro_proveedor()`, PR #57, ya aplicada en prod; su entrada de
+  CLAUDE.md va en la rama del #57). Review APROBADO.** Piezas: A 9a5a1ad `src/proveedor/lib/registroDiferido.ts`
+  (`completarRegistroPendiente`, `loginDePortal`, mensajes RP001-RP004 por whitelist; 42501/22023 con texto propio) · B
+  fc9561c `useProveedorAuth`: register guarda la empresa en la metadata `registro_empresa` con `emailRedirectTo` al login
+  del portal, detecta el correo duplicado por `identities: []` y sin sesión devuelve `pendienteConfirmacion: true`; login
+  sin cuenta de proveedor: invitación pendiente → completar el alta diferida → recién ahí rechazo (RP003 → "no es de un
+  proveedor") · C 98834cd aviso de confirmar el correo (`MENSAJE_CONFIRMA_CORREO`) en las 3 altas de empresa · D 8d73dc6
+  paciente: `emailRedirectTo` a /paciente; `RootRedirect` (extraído a `src/components/RootRedirect.tsx`) y `LoginPage`
+  lo reconocen con `esPacienteActual` (solo por `auth_user_id`). **Prueba en preview 9-oct HECHA y verificada en sesión
+  independiente:** farmacia "QA-MANUAL Farmacia GL373" creada al primer login (empresa 6d01902b…, cuenta 842ca51d, metadata
+  limpia); re-login sin duplicar; correo duplicado detectado; paciente "QA-MANUAL GL373" (505f2e39, pacientes.id 2599)
+  confirmado → med.ezpayconnect.com/paciente/dashboard; paciente por /login → /paciente; regresión farmacia.qa y medico.qa
+  OK. Totales tras la prueba: empresas 8, cuentas 30. **Métricas:** vitest 62 archivos / 648 tests; `tsc -p
+  tsconfig.app.json` = 74; chunk de entrada 807.24 kB con **techo 808 kB** (804.06 kB al cierre de GL-02; +2.34 kB las
+  piezas A-C; +0.84 kB la pieza D). Queda a 0.76 kB del techo: el próximo cambio que engorde el entry tiene que mover algo
+  a lazy. **Orden de merge del lunes 12 (con aprobación de Oscar): #57 → #56 → #58** (#56 con rebase sobre main; #58
+  re-apuntando su base a main).
   (370 = familia 2, ÚLTIMO paso: EXECUTE de funciones sin PUBLIC ni anon — **APLICADA en prod el 2026-10-07 a las 19:18 UTC
   (19:18:26.914 → 19:18:28.737)**, sha256 del archivo 529777fd…cddbf7, y verificada VERDE en sesión independiente: harness
   post370 1102 filas / 1011 bloques DO / 11 rojas de deuda, P1015/P1016/P1017/P739/P741/P1000 en OK. **Bug vivo cerrado:**
@@ -856,3 +874,16 @@ Detalles a recordar:
   `pacientes` en el mismo `signUp`.
 - **(QA-MANUAL, cleanup pre-go-live)** `auditoria_ia` id **181** (2026-10-02 15:38:37 UTC, medico.qa →
   paciente 23): `DELETE FROM public.auditoria_ia WHERE id = 181;`
+- **(QA-MANUAL, cleanup pre-go-live, prueba de altas del 9-oct-2026)** empresa "QA-MANUAL Farmacia GL373" 6d01902b… (su
+  cuenta 842ca51d cae por cascada; después borrar su usuario de auth); paciente "QA-MANUAL GL373" (pacientes.id 2599, uid
+  505f2e39); y el paciente "QA-MANUAL GL02" (uid 8b1fff71): tiene aceptaciones legales y la FK es RESTRICT (mig 372), así
+  que solo se puede anonimizar, no borrar.
+- (Altas con Confirm email ON, backlog de la review del PR #58) `useWebAppAuth` hace `setLoading(false)` antes de que
+  termine `fetchPerfil`: un paciente con sesión ve un instante "Acceso restringido" antes del panel; el token de invitación
+  vive en localStorage (si el invitado abre el link en otro dispositivo, el login no lo ve); la rama de invitación de
+  `login()` no llama a `fetchCuenta` (el estado del hook se actualiza recién por `onAuthStateChange`); 22023 siempre se
+  traduce como "país" (`registrar_proveedor` también lo usa para el email); visitar `/` sin perfil hace una consulta extra
+  a `pacientes`; la detección del paciente vive en 2 lugares (`RootRedirect` y `LoginPage`); tests débiles: el (l) de
+  `useProveedorAuth.test.ts`, y faltan `activo = false` después de completar el alta y la invitación actualizando el estado
+  del hook; con Confirm email ON `aceptarEnRegistro` omite la grabación en el alta (sin sesión): lo cubre el guard de
+  GL-02 en el primer login cuando los textos estén `exigible = true` (D-1).

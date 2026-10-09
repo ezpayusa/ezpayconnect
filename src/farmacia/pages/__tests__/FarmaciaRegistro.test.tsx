@@ -33,6 +33,7 @@ vi.mock('@/lib/supabase', () => ({
     auth: {
       signUp: (...a: unknown[]) => signUp(...a),
       signOut: (...a: unknown[]) => signOut(...a),
+      updateUser: async () => ({ error: null }),
       getSession: async () => ({ data: { session: null } }),
       onAuthStateChange: () => ({ data: { subscription: { unsubscribe: () => {} } } }),
     },
@@ -41,6 +42,8 @@ vi.mock('@/lib/supabase', () => ({
 }))
 
 const { default: FarmaciaRegistro } = await import('../FarmaciaRegistro')
+const { toast } = await import('sonner')
+const { MENSAJE_CONFIRMA_CORREO } = await import('@/proveedor/lib/registroDiferido')
 
 function montar() {
   return render(
@@ -156,6 +159,53 @@ describe('FarmaciaRegistro: casilla de textos legales', () => {
   })
 })
 
+describe('FarmaciaRegistro: aviso de confirmar el correo (alta diferida)', () => {
+  beforeEach(() => {
+    vi.mocked(toast.success).mockReset()
+    vi.mocked(toast.error).mockReset()
+  })
+
+  // El click final va en el test, seguido del waitFor: un await entre los dos deja el setState fuera de act.
+  async function preparar() {
+    const { container } = await hastaPaso2()
+    completarPaso2(container)
+    fireEvent.click(casilla())
+  }
+
+  it('pendienteConfirmacion true → toast con MENSAJE_CONFIRMA_CORREO, aceptarEnRegistro con el userId y navega a /farmacia/login', async () => {
+    register.mockResolvedValue({ data: {}, error: null, userId: 'uid-nuevo', pendienteConfirmacion: true })
+    aceptarEnRegistro.mockResolvedValue('omitido')
+    await preparar()
+    fireEvent.click(registrar())
+    await waitFor(() => expect(navigate).toHaveBeenCalledWith('/farmacia/login'))
+    expect(toast.success).toHaveBeenCalledTimes(1)
+    expect(toast.success).toHaveBeenCalledWith(MENSAJE_CONFIRMA_CORREO)
+    expect(aceptarEnRegistro).toHaveBeenCalledWith(textosPara('profesional'), 'uid-nuevo')
+  })
+
+  it('pendienteConfirmacion false → el toast de éxito de siempre, aceptarEnRegistro con el userId y navega a /farmacia/login', async () => {
+    register.mockResolvedValue({ data: {}, error: null, userId: 'uid-nuevo', pendienteConfirmacion: false })
+    aceptarEnRegistro.mockResolvedValue('grabado')
+    await preparar()
+    fireEvent.click(registrar())
+    await waitFor(() => expect(navigate).toHaveBeenCalledWith('/farmacia/login'))
+    expect(toast.success).toHaveBeenCalledTimes(1)
+    expect(toast.success).toHaveBeenCalledWith('Farmacia registrada. Ya puedes iniciar sesión.')
+    expect(aceptarEnRegistro).toHaveBeenCalledWith(textosPara('profesional'), 'uid-nuevo')
+  })
+
+  it('error → toast.error con el mensaje del hook, sin toast de éxito ni navigate', async () => {
+    register.mockResolvedValue({ data: {}, error: { message: 'Este correo ya está registrado. Usa otro email o inicia sesión.' } })
+    await preparar()
+    fireEvent.click(registrar())
+    await waitFor(() => expect(register).toHaveBeenCalledTimes(1))
+    await waitFor(() => expect(registrar()).toBeEnabled())
+    expect(toast.error).toHaveBeenCalledWith('Error al registrar', { description: 'Este correo ya está registrado. Usa otro email o inicia sesión.' })
+    expect(toast.success).not.toHaveBeenCalled()
+    expect(navigate).not.toHaveBeenCalled()
+  })
+})
+
 describe('useProveedorAuth.register (hook real)', () => {
   const empresa = { nombre_empresa: 'Farmacia X', tipo: 'farmacia' as const, pais_id: 'pais-gt', email_contacto: 'c@x.com' }
 
@@ -168,8 +218,8 @@ describe('useProveedorAuth.register (hook real)', () => {
     return r
   }
 
-  it('registrar_proveedor OK → devuelve el userId del signUp; con registrar_proveedor en error hace signOut y no devuelve userId', async () => {
-    signUp.mockResolvedValue({ data: { user: { id: 'uid-signup' }, session: {} }, error: null })
+  it('con sesión: completar_registro_proveedor OK → devuelve el userId del signUp; en error hace signOut y no devuelve userId', async () => {
+    signUp.mockResolvedValue({ data: { user: { id: 'uid-signup', identities: [{}] }, session: {} }, error: null })
     rpc.mockResolvedValue({ data: 'empresa-1', error: null })
     const { result } = await hookReal()
     let ok: Record<string, unknown> = {}
@@ -178,10 +228,11 @@ describe('useProveedorAuth.register (hook real)', () => {
     })
     expect(ok.error).toBeNull()
     expect(ok.userId).toBe('uid-signup')
+    expect(rpc).toHaveBeenCalledWith('completar_registro_proveedor')
     expect(signOut).not.toHaveBeenCalled()
 
-    vi.spyOn(console, 'error').mockImplementation(() => {}) // el hook loguea el error de la RPC
-    rpc.mockResolvedValue({ data: null, error: { message: 'País no válido para el registro' } })
+    vi.spyOn(console, 'error').mockImplementation(() => {}) // el helper loguea el code de la RPC
+    rpc.mockResolvedValue({ data: null, error: { code: '22023', message: 'País no válido para el registro' } })
     let falla: Record<string, unknown> = {}
     await act(async () => {
       falla = await result.current.register('rep@x.com', 'secreta123', 'Rep Uno', empresa)
