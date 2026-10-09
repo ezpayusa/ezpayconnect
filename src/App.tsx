@@ -9,6 +9,7 @@ import { Sidebar } from '@/components/layout/Sidebar'
 import { AdminLayout } from '@/components/admin-ezpay/layout/AdminLayout'
 import WebAppLayout from '@/webapp/layout/WebAppLayout'
 import WebAppPrivateRoute from '@/webapp/layout/WebAppPrivateRoute'
+import RootRedirect from '@/components/RootRedirect'
 import ProveedorLayout from '@/proveedor/layout/ProveedorLayout'
 import ProveedorPrivateRoute from '@/proveedor/components/ProveedorPrivateRoute'
 import LaboratorioLayout from '@/laboratorio/layout/LaboratorioLayout'
@@ -227,13 +228,6 @@ function PrivateLayout({ children }: { children: React.ReactNode }) {
     return <Navigate to="/comercial/prospectos" replace />
   }
   return <div className="flex min-h-screen bg-gray-50"><Sidebar /><main className="flex-1 ml-0 overflow-auto pt-14 md:pt-0">{children}</main></div>
-}
-
-function RootRedirect() {
-  const { user, perfil, loading } = useAuth()
-  if (loading) return <Spinner />
-  if (!user) return <Navigate to="/login" replace />
-  return <Navigate to={rutaHomePorRol(perfil)} replace />
 }
 
 function AdminRoute({ children }: { children: React.ReactNode }) {

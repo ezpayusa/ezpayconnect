@@ -36,6 +36,7 @@ vi.mock('@/lib/supabase', () => ({
 }))
 
 const { default: WebAppRegistroPage } = await import('../WebAppRegistroPage')
+const { APP_URL } = await import('@/lib/app-url')
 
 function montar() {
   return render(
@@ -134,5 +135,9 @@ describe('useWebAppAuth.register (hook real)', () => {
       r = await result.current.register('ana@example.com', 'secreta123', { nombre: 'Ana', apellido: 'Pérez' })
     })
     expect(r).toEqual({ error: null, userId: 'uid-signup' })
+    // Confirm email ON: el link del correo vuelve al portal del paciente; la metadata sigue con tipo 'paciente'.
+    const opciones = signUp.mock.calls[0][0].options
+    expect(opciones.emailRedirectTo).toBe(APP_URL + '/paciente')
+    expect(opciones.data.tipo).toBe('paciente')
   })
 })
