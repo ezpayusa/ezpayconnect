@@ -20,7 +20,12 @@
 --   * serializada por uid con pg_advisory_xact_lock (dos logins simultaneos no crean dos empresas).
 --   * solo lee auth.users: no modifica la metadata ni la cuenta de auth.
 -- EXECUTE: solo authenticated (y service_role por el default de la 344); ni PUBLIC ni anon.
--- Rollback: 373_rollback.sql.
+-- Huellas (mismo calculo que la 372): precondicion = post-372, medidas en prod el 9-oct-2026:
+--   ACL de funciones de public+private 5482f6de564741ad445f30d3ccbd9a79/391, policies de
+--   public/private/storage 8a8dc5cfaf8365f95208fb9e8ba79674/309, ACL de relaciones de public
+--   d065decfec14c0afae8f5d898032e4bb/2394. Despues: funciones 392 (la huella nueva no se fija, solo
+--   el conteo); policies y relaciones sin cambio.
+-- Rollback: 373_rollback.sql (deja las 3 huellas post-372 exactas).
 -- ############################################################################################
 
 BEGIN;
@@ -29,6 +34,7 @@ BEGIN;
 DO $$
 DECLARE
   v text := '';
+  h text;
 BEGIN
   IF to_regprocedure('public.completar_registro_proveedor()') IS NOT NULL THEN
     v := v||E'\n ya existe public.completar_registro_proveedor()';
@@ -41,6 +47,23 @@ BEGIN
   IF EXISTS (SELECT 1 FROM pg_proc p WHERE p.prosrc ~* 'ERRCODE\s*=\s*''RP[0-9]{3}''') THEN
     v := v||E'\n ya hay errcodes RPnnn en pg_proc';
   END IF;
+  -- huellas globales = las post-372 (mismo calculo que la 372)
+  h := (SELECT md5(COALESCE(string_agg(y.s, ',' ORDER BY y.s COLLATE "C"), ''))||' '||count(DISTINCT y.o) FROM (
+      SELECT p.oid AS o, p.oid::regprocedure::text||'|'||CASE a.grantee WHEN 0 THEN 'PUBLIC' ELSE pg_get_userbyid(a.grantee) END||'|'||pg_get_userbyid(a.grantor)||'|'||a.privilege_type||'|'||a.is_grantable::text AS s
+        FROM pg_proc p, aclexplode(COALESCE(p.proacl, acldefault('f', p.proowner))) a
+       WHERE p.pronamespace IN ('public'::regnamespace, 'private'::regnamespace)) y);
+  IF h IS DISTINCT FROM '5482f6de564741ad445f30d3ccbd9a79 391' THEN v := v||E'\n ACL de funciones '||COALESCE(h, '-')||' (esperado 5482f6de.../391)'; END IF;
+  h := (SELECT md5(string_agg(y.s, E'\n' ORDER BY y.s COLLATE "C"))||' '||count(*) FROM (
+      SELECT n.nspname||'.'||c.relname||'|'||pl.polname||'|'||pl.polcmd::text||'|'||pl.polpermissive::text||'|'||
+         ARRAY(SELECT CASE x WHEN 0 THEN 'public' ELSE pg_get_userbyid(x) END FROM unnest(pl.polroles) x ORDER BY 1)::text||'|'||
+         COALESCE(pg_get_expr(pl.polqual, pl.polrelid), '-')||'|'||COALESCE(pg_get_expr(pl.polwithcheck, pl.polrelid), '-') AS s
+        FROM pg_policy pl JOIN pg_class c ON c.oid = pl.polrelid JOIN pg_namespace n ON n.oid = c.relnamespace
+       WHERE n.nspname IN ('public','private','storage')) y);
+  IF h IS DISTINCT FROM '8a8dc5cfaf8365f95208fb9e8ba79674 309' THEN v := v||E'\n huella de policies '||COALESCE(h, '-')||' (esperado 8a8dc5cf.../309)'; END IF;
+  h := (SELECT md5(COALESCE(string_agg(x.s, ',' ORDER BY x.s COLLATE "C"), ''))||' '||count(*) FROM (SELECT c.relname||'|'||CASE a.grantee WHEN 0 THEN 'PUBLIC' ELSE pg_get_userbyid(a.grantee) END||'|'||pg_get_userbyid(a.grantor)||'|'||a.privilege_type||'|'||a.is_grantable::text AS s
+      FROM pg_class c, aclexplode(COALESCE(c.relacl, acldefault('r', c.relowner))) a
+     WHERE c.relnamespace = 'public'::regnamespace AND c.relkind IN ('r','p','v','m','f')) x);
+  IF h IS DISTINCT FROM 'd065decfec14c0afae8f5d898032e4bb 2394' THEN v := v||E'\n ACL de relaciones de public '||COALESCE(h, '-')||' (esperado d065decf.../2394)'; END IF;
   IF v <> '' THEN RAISE EXCEPTION 'MIG373 PRECONDICION:%', v; END IF;
 END
 $$;
@@ -145,6 +168,7 @@ DECLARE
   v text := '';
   f regprocedure := to_regprocedure('public.completar_registro_proveedor()');
   r record;
+  h text;
 BEGIN
   IF f IS NULL THEN
     RAISE EXCEPTION 'MIG373 AUTOCHEQUEO FALLA:%', E'\n completar_registro_proveedor no existe';
@@ -172,6 +196,25 @@ BEGIN
        WHERE p.oid = to_regprocedure('public.registrar_proveedor(text,text,text,uuid,text,text,text,text,text,text)'))
      IS DISTINCT FROM 'fae23eeeacb393328f774386ccd88479' THEN
     v := v||E'\n registrar_proveedor cambio de cuerpo'; END IF;
+  -- el pais se valida con la expresion regular ANTES del cast a uuid
+  IF strpos(r.prosrc, '!~ c_uuid') = 0 OR strpos(r.prosrc, '::uuid') = 0
+     OR strpos(r.prosrc, '!~ c_uuid') >= strpos(r.prosrc, '::uuid') THEN
+    v := v||E'\n el cast a uuid no va despues de la validacion por regex'; END IF;
+  -- huellas globales: funciones = 392 (391 + esta; la huella nueva no se fija); policies y relaciones = post-372
+  h := (SELECT count(DISTINCT p.oid)::text FROM pg_proc p
+         WHERE p.pronamespace IN ('public'::regnamespace, 'private'::regnamespace));
+  IF h IS DISTINCT FROM '392' THEN v := v||E'\n funciones de public+private '||COALESCE(h, '-')||' (esperado 392)'; END IF;
+  h := (SELECT md5(string_agg(y.s, E'\n' ORDER BY y.s COLLATE "C"))||' '||count(*) FROM (
+      SELECT n.nspname||'.'||c.relname||'|'||pl.polname||'|'||pl.polcmd::text||'|'||pl.polpermissive::text||'|'||
+         ARRAY(SELECT CASE x WHEN 0 THEN 'public' ELSE pg_get_userbyid(x) END FROM unnest(pl.polroles) x ORDER BY 1)::text||'|'||
+         COALESCE(pg_get_expr(pl.polqual, pl.polrelid), '-')||'|'||COALESCE(pg_get_expr(pl.polwithcheck, pl.polrelid), '-') AS s
+        FROM pg_policy pl JOIN pg_class c ON c.oid = pl.polrelid JOIN pg_namespace n ON n.oid = c.relnamespace
+       WHERE n.nspname IN ('public','private','storage')) y);
+  IF h IS DISTINCT FROM '8a8dc5cfaf8365f95208fb9e8ba79674 309' THEN v := v||E'\n huella de policies '||COALESCE(h, '-')||' (esperado 8a8dc5cf.../309)'; END IF;
+  h := (SELECT md5(COALESCE(string_agg(x.s, ',' ORDER BY x.s COLLATE "C"), ''))||' '||count(*) FROM (SELECT c.relname||'|'||CASE a.grantee WHEN 0 THEN 'PUBLIC' ELSE pg_get_userbyid(a.grantee) END||'|'||pg_get_userbyid(a.grantor)||'|'||a.privilege_type||'|'||a.is_grantable::text AS s
+      FROM pg_class c, aclexplode(COALESCE(c.relacl, acldefault('r', c.relowner))) a
+     WHERE c.relnamespace = 'public'::regnamespace AND c.relkind IN ('r','p','v','m','f')) x);
+  IF h IS DISTINCT FROM 'd065decfec14c0afae8f5d898032e4bb 2394' THEN v := v||E'\n ACL de relaciones de public '||COALESCE(h, '-')||' (esperado d065decf.../2394)'; END IF;
   IF v <> '' THEN RAISE EXCEPTION 'MIG373 AUTOCHEQUEO FALLA:%', v; END IF;
 END
 $$;
