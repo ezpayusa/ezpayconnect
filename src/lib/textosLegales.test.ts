@@ -9,9 +9,16 @@ type Resp = { data: unknown; error: unknown }
 let respuesta: Resp = { data: [], error: null }
 let lanzar: unknown = null
 const llamadas: { fn: string; args: unknown }[] = []
+let sesion: { user: { id: string } } | null = null
+let lanzarSesion: unknown = null
+const getSession = vi.fn(async () => {
+  if (lanzarSesion) throw lanzarSesion
+  return { data: { session: sesion }, error: null }
+})
 
 vi.mock('@/lib/supabase', () => ({
   supabase: {
+    auth: { getSession: () => getSession() },
     rpc: async (fn: string, args?: unknown) => {
       llamadas.push({ fn, args })
       if (lanzar) throw lanzar
@@ -20,8 +27,14 @@ vi.mock('@/lib/supabase', () => ({
   },
 }))
 
-const { obtenerPendientes, aceptarTextos, mensajeErrorTextosLegales, MENSAJE_SIN_PERMISO, MENSAJE_GENERICO } =
-  await import('./textosLegales')
+const {
+  obtenerPendientes,
+  aceptarTextos,
+  aceptarEnRegistro,
+  mensajeErrorTextosLegales,
+  MENSAJE_SIN_PERMISO,
+  MENSAJE_GENERICO,
+} = await import('./textosLegales')
 
 const terminos = TEXTOS_LEGALES.find((t) => t.codigo === 'terminos')!
 const consentimiento = TEXTOS_LEGALES.find((t) => t.codigo === 'consentimiento_salud')!
@@ -30,6 +43,9 @@ beforeEach(() => {
   respuesta = { data: [], error: null }
   lanzar = null
   llamadas.length = 0
+  sesion = null
+  lanzarSesion = null
+  getSession.mockClear()
   vi.spyOn(console, 'error').mockImplementation(() => {})
 })
 
@@ -101,6 +117,71 @@ describe('aceptarTextos', () => {
   it('si el cliente lanza → ok:false y no lanza', async () => {
     lanzar = new TypeError('Failed to fetch')
     await expect(aceptarTextos([{ codigo: 'terminos', version: '0.1' }], 'app')).resolves.toMatchObject({ ok: false })
+  })
+})
+
+describe('aceptarEnRegistro', () => {
+  const TEXTOS = [
+    { codigo: 'terminos' as const, version: '0.1' },
+    { codigo: 'privacidad' as const, version: '0.1' },
+  ]
+  const llamoRpc = () => llamadas.some((l) => l.fn === 'aceptar_textos_legales')
+
+  it.each([null, undefined, ''])('uidEsperado %j → omitido, sin getSession ni RPC', async (uid) => {
+    sesion = { user: { id: 'u1' } }
+    expect(await aceptarEnRegistro(TEXTOS, uid)).toBe('omitido')
+    expect(getSession).not.toHaveBeenCalled()
+    expect(llamadas).toEqual([])
+  })
+
+  it('textos vacíos → omitido, sin RPC', async () => {
+    sesion = { user: { id: 'u1' } }
+    expect(await aceptarEnRegistro([], 'u1')).toBe('omitido')
+    expect(llamoRpc()).toBe(false)
+  })
+
+  it('sin sesión → omitido, sin RPC', async () => {
+    expect(await aceptarEnRegistro(TEXTOS, 'u1')).toBe('omitido')
+    expect(getSession).toHaveBeenCalledTimes(1)
+    expect(llamoRpc()).toBe(false)
+  })
+
+  it('sesión de OTRO uid → omitido, sin RPC', async () => {
+    sesion = { user: { id: 'otro' } }
+    expect(await aceptarEnRegistro(TEXTOS, 'u1')).toBe('omitido')
+    expect(llamoRpc()).toBe(false)
+  })
+
+  it('sesión del uid esperado + RPC ok → grabado, con vía registro y los textos exactos', async () => {
+    sesion = { user: { id: 'u1' } }
+    respuesta = { data: { aceptados: 2, ya_aceptados: 0, pendientes: [] }, error: null }
+    expect(await aceptarEnRegistro(TEXTOS, 'u1')).toBe('grabado')
+    expect(llamadas).toEqual([
+      {
+        fn: 'aceptar_textos_legales',
+        args: { p_textos: TEXTOS, p_via: 'registro', p_user_agent: navigator.userAgent },
+      },
+    ])
+  })
+
+  it('error de la RPC → fallo; log con mensaje fijo y solo el código', async () => {
+    sesion = { user: { id: 'u1' } }
+    respuesta = { data: null, error: { code: 'LG006', message: 'Este texto no corresponde a tu cuenta.' } }
+    expect(await aceptarEnRegistro(TEXTOS, 'u1')).toBe('fallo')
+    expect(console.error).toHaveBeenCalledWith('GL-02 aceptación en registro falló:', 'LG006')
+  })
+
+  it('getSession lanza → fallo, sin RPC y sin lanzar', async () => {
+    lanzarSesion = new TypeError('Failed to fetch')
+    await expect(aceptarEnRegistro(TEXTOS, 'u1')).resolves.toBe('fallo')
+    expect(llamoRpc()).toBe(false)
+    expect(console.error).toHaveBeenCalledWith('GL-02 aceptación en registro falló:', null)
+  })
+
+  it('la RPC lanza → fallo, sin lanzar', async () => {
+    sesion = { user: { id: 'u1' } }
+    lanzar = new TypeError('Failed to fetch')
+    await expect(aceptarEnRegistro(TEXTOS, 'u1')).resolves.toBe('fallo')
   })
 })
 

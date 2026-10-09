@@ -83,6 +83,29 @@ export async function aceptarTextos(
   }
 }
 
+const LOG_FALLO_REGISTRO = 'GL-02 aceptación en registro falló:'
+
+// Best-effort al terminar un alta: graba la aceptación con vía 'registro' solo si la sesión del navegador es la del
+// usuario recién creado (uidEsperado), para no grabar a nombre de una sesión vieja de otra persona. Nunca lanza ni
+// bloquea el alta; si se omite o falla, TextosLegalesGuard lo pide en el primer login.
+export async function aceptarEnRegistro(
+  textos: { codigo: CodigoTextoLegal; version: string }[],
+  uidEsperado: string | null | undefined,
+): Promise<'grabado' | 'omitido' | 'fallo'> {
+  try {
+    if (!uidEsperado || textos.length === 0) return 'omitido'
+    const { data } = await supabase.auth.getSession()
+    if (!data.session || data.session.user.id !== uidEsperado) return 'omitido'
+    const r = await aceptarTextos(textos, 'registro')
+    if (!('error' in r)) return 'grabado'
+    console.error(LOG_FALLO_REGISTRO, r.error?.code ?? null)
+    return 'fallo'
+  } catch (err) {
+    console.error(LOG_FALLO_REGISTRO, (err as { code?: string } | null)?.code ?? null)
+    return 'fallo'
+  }
+}
+
 export function mensajeErrorTextosLegales(error: ErrorTextosLegales | null | undefined): string {
   if (error?.code && CODIGOS_CON_MENSAJE.has(error.code) && error.message) return error.message
   if (error?.code === '42501') return MENSAJE_SIN_PERMISO
