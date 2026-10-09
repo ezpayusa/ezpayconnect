@@ -23,8 +23,9 @@
 -- Huellas (mismo calculo que la 372): precondicion = post-372, medidas en prod el 9-oct-2026:
 --   ACL de funciones de public+private 5482f6de564741ad445f30d3ccbd9a79/391, policies de
 --   public/private/storage 8a8dc5cfaf8365f95208fb9e8ba79674/309, ACL de relaciones de public
---   d065decfec14c0afae8f5d898032e4bb/2394. Despues: funciones 392 (la huella nueva no se fija, solo
---   el conteo); policies y relaciones sin cambio.
+--   d065decfec14c0afae8f5d898032e4bb/2394. Despues: la huella de funciones SIN la nueva sigue
+--   5482f6de.../391 y el conteo total es 392 (la huella completa nueva no se fija); grantees con EXECUTE
+--   de la nueva = {authenticated, postgres, service_role}; policies y relaciones sin cambio.
 -- Rollback: 373_rollback.sql (deja las 3 huellas post-372 exactas).
 -- ############################################################################################
 
@@ -116,7 +117,7 @@ BEGIN
     RAISE EXCEPTION 'Confirma tu correo antes de completar el registro.' USING ERRCODE = 'RP002';
   END IF;
   IF v_reg IS NULL OR jsonb_typeof(v_reg) <> 'object' THEN
-    RAISE EXCEPTION 'Esta cuenta no tiene un registro de empresa pendiente.' USING ERRCODE = 'RP003';
+    RAISE EXCEPTION 'Esta cuenta no tiene un registro de empresa pendiente. Escríbenos a soporte.' USING ERRCODE = 'RP003';
   END IF;
 
   -- (5) validacion sin errores crudos: tipos de JSON primero, despues valores; el pais se castea
@@ -130,7 +131,7 @@ BEGIN
      OR COALESCE(jsonb_typeof(v_reg -> 'ciudad'), 'null') NOT IN ('null', 'string')
      OR COALESCE(jsonb_typeof(v_reg -> 'direccion'), 'null') NOT IN ('null', 'string')
      OR COALESCE(jsonb_typeof(v_reg -> 'telefono'), 'null') NOT IN ('null', 'string') THEN
-    RAISE EXCEPTION 'Los datos de registro de la empresa no son válidos. Regístrate de nuevo.' USING ERRCODE = 'RP004';
+    RAISE EXCEPTION 'Los datos de registro de tu empresa no son válidos. Escríbenos a soporte para completarlo.' USING ERRCODE = 'RP004';
   END IF;
 
   v_nombre          := NULLIF(regexp_replace(v_reg ->> 'nombre_empresa', c_blanco, '', 'g'), '');
@@ -146,7 +147,7 @@ BEGIN
   IF v_nombre IS NULL OR v_email_contacto IS NULL OR v_nombre_completo IS NULL
      OR v_tipo IS NULL OR NOT (v_tipo = ANY (c_tipos))
      OR v_pais IS NULL OR v_pais !~ c_uuid THEN
-    RAISE EXCEPTION 'Los datos de registro de la empresa no son válidos. Regístrate de nuevo.' USING ERRCODE = 'RP004';
+    RAISE EXCEPTION 'Los datos de registro de tu empresa no son válidos. Escríbenos a soporte para completarlo.' USING ERRCODE = 'RP004';
   END IF;
 
   -- (6) alta con los gates de registrar_proveedor (identidad unica 42501, pais/email 22023), que
@@ -183,6 +184,13 @@ BEGIN
   IF EXISTS (SELECT 1 FROM aclexplode(r.acl) a WHERE a.grantee = 0 AND a.privilege_type = 'EXECUTE') THEN
     v := v||E'\n PUBLIC tiene EXECUTE'; END IF;
   IF NOT has_function_privilege('authenticated', f, 'EXECUTE') THEN v := v||E'\n authenticated sin EXECUTE'; END IF;
+  -- proacl exacto: los grantees con EXECUTE son authenticated, postgres y service_role, ninguno mas
+  h := (SELECT string_agg(z.g, ',' ORDER BY z.g COLLATE "C") FROM (
+          SELECT DISTINCT CASE a.grantee WHEN 0 THEN 'PUBLIC' ELSE pg_get_userbyid(a.grantee) END AS g
+            FROM pg_proc p, aclexplode(COALESCE(p.proacl, acldefault('f', p.proowner))) a
+           WHERE p.oid = f AND a.privilege_type = 'EXECUTE') z);
+  IF h IS DISTINCT FROM 'authenticated,postgres,service_role' THEN
+    v := v||E'\n grantees con EXECUTE '||COALESCE(h, '-')||' (esperado authenticated,postgres,service_role)'; END IF;
   IF r.prosrc NOT LIKE '%RP001%' OR r.prosrc NOT LIKE '%RP002%'
      OR r.prosrc NOT LIKE '%RP003%' OR r.prosrc NOT LIKE '%RP004%' THEN
     v := v||E'\n faltan errcodes RP001-RP004'; END IF;
@@ -200,7 +208,15 @@ BEGIN
   IF strpos(r.prosrc, '!~ c_uuid') = 0 OR strpos(r.prosrc, '::uuid') = 0
      OR strpos(r.prosrc, '!~ c_uuid') >= strpos(r.prosrc, '::uuid') THEN
     v := v||E'\n el cast a uuid no va despues de la validacion por regex'; END IF;
-  -- huellas globales: funciones = 392 (391 + esta; la huella nueva no se fija); policies y relaciones = post-372
+  -- huellas globales: funciones SIN la nueva = la post-372 exacta (nada de lo existente cambio de ACL) y el conteo
+  -- total = 392 (391 + esta); policies y relaciones = post-372
+  h := (SELECT md5(COALESCE(string_agg(y.s, ',' ORDER BY y.s COLLATE "C"), ''))||' '||count(DISTINCT y.o) FROM (
+      SELECT p.oid AS o, p.oid::regprocedure::text||'|'||CASE a.grantee WHEN 0 THEN 'PUBLIC' ELSE pg_get_userbyid(a.grantee) END||'|'||pg_get_userbyid(a.grantor)||'|'||a.privilege_type||'|'||a.is_grantable::text AS s
+        FROM pg_proc p, aclexplode(COALESCE(p.proacl, acldefault('f', p.proowner))) a
+       WHERE p.pronamespace IN ('public'::regnamespace, 'private'::regnamespace)
+         AND p.oid <> f) y);
+  IF h IS DISTINCT FROM '5482f6de564741ad445f30d3ccbd9a79 391' THEN
+    v := v||E'\n ACL de funciones sin la nueva '||COALESCE(h, '-')||' (esperado 5482f6de.../391)'; END IF;
   h := (SELECT count(DISTINCT p.oid)::text FROM pg_proc p
          WHERE p.pronamespace IN ('public'::regnamespace, 'private'::regnamespace));
   IF h IS DISTINCT FROM '392' THEN v := v||E'\n funciones de public+private '||COALESCE(h, '-')||' (esperado 392)'; END IF;

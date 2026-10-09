@@ -34877,8 +34877,8 @@ END $$;
 SELECT set_config('role', 'none', true);
 
 -- ================================================================================
--- MIG 373 — completar_registro_proveedor: alta diferida de empresas con Confirm email ON (P1026-P1033).
--- Antes del apply la funcion no existe: P1026-P1033 publican 'PENDIENTE mig 373 (...)' (no es roja).
+-- MIG 373 — completar_registro_proveedor: alta diferida de empresas con Confirm email ON (P1026-P1034).
+-- Antes del apply la funcion no existe: P1026-P1034 publican 'PENDIENTE mig 373 (...)' (no es roja).
 -- Cada probe que escribe trabaja en un savepoint que se descarta con RAISE P0999 y verifica despues
 -- que los conteos de empresas_proveedoras / cuentas_proveedor y la fila de auth.users que toco
 -- (raw_user_meta_data, email_confirmed_at) volvieron al snapshot. Los veredictos se juzgan por
@@ -35040,7 +35040,7 @@ BEGIN
       n0 := pg_temp.m373_conteos();
       res := pg_temp.m373_como(l1, 'authenticated', 'SELECT public.completar_registro_proveedor()::text');
       n1 := pg_temp.m373_conteos();
-      IF res IS DISTINCT FROM 'ERR:RP003:Esta cuenta no tiene un registro de empresa pendiente.' THEN
+      IF res IS DISTINCT FROM 'ERR:RP003:Esta cuenta no tiene un registro de empresa pendiente. Escríbenos a soporte.' THEN
         bad := bad||r.nom||': '||left(res, 200)||' (esperado RP003); '; END IF;
       IF n1 IS DISTINCT FROM n0 THEN bad := bad||r.nom||': filas nuevas ('||n0||' -> '||n1||'); '; END IF;
     END LOOP;
@@ -35084,7 +35084,7 @@ BEGIN
       n0 := pg_temp.m373_conteos();
       res := pg_temp.m373_como(l1, 'authenticated', 'SELECT public.completar_registro_proveedor()::text');
       n1 := pg_temp.m373_conteos();
-      IF res IS DISTINCT FROM 'ERR:RP004:Los datos de registro de la empresa no son válidos. Regístrate de nuevo.' THEN
+      IF res IS DISTINCT FROM 'ERR:RP004:Los datos de registro de tu empresa no son válidos. Escríbenos a soporte para completarlo.' THEN
         bad := bad||r.nom||': '||left(res, 200)||' (esperado RP004); '; END IF;
       IF n1 IS DISTINCT FROM n0 THEN bad := bad||r.nom||': filas nuevas ('||n0||' -> '||n1||'); '; END IF;
     END LOOP;
@@ -35263,6 +35263,48 @@ BEGIN
 EXCEPTION WHEN OTHERS THEN
   PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
   PERFORM set_config('probe.p1033', 'FALLO ('||SQLSTATE||' '||SQLERRM||')', false);
+END $$;
+SELECT set_config('role', 'none', true);
+
+-- ---------------- P1034 ya es proveedor (farmacia.qa) -> su empresa, antes de mirar correo y registro ----------------
+DO $$
+DECLARE a_far uuid; emp uuid; res text; n0 text; n1 text; pre text; post text; bad text := ''; r record;
+BEGIN
+  IF to_regprocedure('public.completar_registro_proveedor()') IS NULL THEN
+    PERFORM set_config('probe.p1034', 'PENDIENTE mig 373 (completar_registro_proveedor ausente)', false);
+    RETURN;
+  END IF;
+  a_far := (SELECT u.id FROM auth.users u WHERE lower(u.email) LIKE 'farmacia.qa@%' ORDER BY u.email LIMIT 1);
+  SELECT cp.empresa_id INTO emp FROM public.cuentas_proveedor cp WHERE cp.id = a_far;
+  IF a_far IS NULL OR emp IS NULL THEN
+    PERFORM set_config('probe.p1034', 'FALLO (fixture: farmacia.qa con cuenta de proveedor)', false);
+    RETURN;
+  END IF;
+  pre := pg_temp.m373_snap(a_far);
+  BEGIN
+    FOR r IN SELECT * FROM (VALUES
+        (1, 'sin registro_empresa, correo confirmado',     true),
+        (2, 'sin registro_empresa, correo sin confirmar',  false)) x(k, nom, confirmado) ORDER BY x.k LOOP
+      PERFORM pg_temp.m373_set(a_far, NULL, r.confirmado);
+      n0 := pg_temp.m373_conteos();
+      res := pg_temp.m373_como(a_far, 'authenticated', 'SELECT public.completar_registro_proveedor()::text');
+      n1 := pg_temp.m373_conteos();
+      IF res IS DISTINCT FROM 'OK:'||emp::text THEN
+        bad := bad||r.nom||': '||left(res, 200)||' (esperado su empresa_id); '; END IF;
+      IF n1 IS DISTINCT FROM n0 THEN bad := bad||r.nom||': filas nuevas ('||n0||' -> '||n1||'); '; END IF;
+    END LOOP;
+    RAISE EXCEPTION 'P1034 descarte' USING ERRCODE = 'P0999';
+  EXCEPTION WHEN SQLSTATE 'P0999' THEN NULL;
+  END;
+  post := pg_temp.m373_snap(a_far);
+  IF post IS DISTINCT FROM pre THEN bad := bad||'no quedo como estaba tras el descarte; '; END IF;
+  PERFORM set_config('probe.p1034', CASE WHEN bad = ''
+    THEN 'OK (373: farmacia.qa ya es proveedor -> devuelve su empresa_id sin registro_empresa y aun con el correo sin confirmar (el paso idempotente va antes), sin filas; descartado y verificado)'
+    ELSE 'ROJO ('||left(bad, 700)||')' END, false);
+EXCEPTION WHEN OTHERS THEN
+  PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
+  PERFORM set_config('probe.p1034', CASE WHEN SQLERRM LIKE 'fixture roto%' THEN 'ROJO ('||SQLERRM||')'
+    ELSE 'FALLO ('||SQLSTATE||' '||SQLERRM||')' END, false);
 END $$;
 SELECT set_config('role', 'none', true);
 
@@ -36378,6 +36420,7 @@ UNION ALL SELECT 'P1030_completar_registro_alta_idempotente_373',  current_setti
 UNION ALL SELECT 'P1031_completar_registro_identidad_previa_373',  current_setting('probe.p1031', true), 'OK (373: paciente.qa -> 42501 de registrar_proveedor, sin filas; antes del apply: PENDIENTE mig 373)'
 UNION ALL SELECT 'P1032_completar_registro_pais_zz_373',  current_setting('probe.p1032', true), 'OK (373: pais ZZ -> 22023 de registrar_proveedor, sin filas; antes del apply: PENDIENTE mig 373)'
 UNION ALL SELECT 'P1033_completar_registro_execute_373',  current_setting('probe.p1033', true), 'OK (373: anon y PUBLIC sin EXECUTE, authenticated con EXECUTE; anon ejercitado 42501; antes del apply: PENDIENTE mig 373)'
+UNION ALL SELECT 'P1034_completar_registro_ya_proveedor_373',  current_setting('probe.p1034', true), 'OK (373: farmacia.qa -> su empresa_id sin registro y con el correo sin confirmar, sin filas; antes del apply: PENDIENTE mig 373)'
 UNION ALL SELECT 'P1010_campana_vistas_sin_update_367',  current_setting('probe.p1010', true), 'OK (367: INSERT 1; ON CONFLICT DO NOTHING 0 sin error; DO UPDATE y UPDATE 42501; otro paciente 0; antes de la 367: PENDIENTE)'
 UNION ALL SELECT 'P1009_datos_bancarios_acotados_366',  current_setting('probe.p1009', true), 'OK (366: cuenta GT solo super_admin/admin_pais GT/proveedores GT; checkout 1 fila; config 21 super_admin y 14 el resto, admin_pais incluido; antes de la 366: PENDIENTE)'
 UNION ALL SELECT 'DET_p1009',  'DET ' || COALESCE(NULLIF(current_setting('probe.p1009_det', true), ''), '(sin dato)'), 'DET (detalle de P1009, no es probe)'
