@@ -8,6 +8,8 @@ import { supabase } from '@/lib/supabase'
 import { etiquetaRol } from '@/proveedor/lib/permisos'
 import { guardarTokenInvitacion, aceptarInvitacionPendiente } from '@/lib/invitacionProveedor'
 import { toast } from 'sonner'
+import { CasillaTextosLegales, textosPara } from '@/components/legal/CasillaTextosLegales'
+import { aceptarEnRegistro } from '@/lib/textosLegales'
 import { Loader2, UserPlus, AlertCircle, CheckCircle } from 'lucide-react'
 
 export default function ProveedorRegistroVisitador() {
@@ -23,6 +25,7 @@ export default function ProveedorRegistroVisitador() {
   const [confirmPassword, setConfirmPassword] = useState('')
   const [registrando, setRegistrando] = useState(false)
   const [registrado, setRegistrado] = useState(false)
+  const [acepta, setAcepta] = useState(false)
 
   // Validar token al cargar
   useEffect(() => {
@@ -54,6 +57,8 @@ export default function ProveedorRegistroVisitador() {
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
+    // GL-02: sin la casilla no hay alta (el botón ya está deshabilitado; esto cubre el Enter en un input).
+    if (!acepta) return
 
     if (!invitacion) return
 
@@ -106,6 +111,10 @@ export default function ProveedorRegistroVisitador() {
           setRegistrando(false)
           return
         }
+        // GL-02: va DESPUÉS de aceptar la invitación porque la membresía (cuentas_proveedor) nace ahí; antes, la base
+        // rechaza las condiciones profesionales con LG006. Best-effort: solo graba si la sesión es la del usuario
+        // recién creado; sin sesión (Confirm email ON) o si falla, la pide el gate en el primer login.
+        await aceptarEnRegistro(textosPara('profesional'), authData.user?.id ?? null)
       }
 
       setRegistrado(true)
@@ -223,7 +232,8 @@ export default function ProveedorRegistroVisitador() {
                 required
               />
             </div>
-            <Button type="submit" className="w-full bg-[#1E5C8E] hover:bg-[#164a70]" disabled={registrando}>
+            <CasillaTextosLegales para="profesional" checked={acepta} onChange={setAcepta} disabled={registrando} id="acepta-textos" />
+            <Button type="submit" className="w-full bg-[#1E5C8E] hover:bg-[#164a70]" disabled={registrando || !acepta}>
               {registrando ? <Loader2 className="h-4 w-4 animate-spin mr-2" /> : null}
               Crear mi cuenta
             </Button>
