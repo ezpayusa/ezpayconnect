@@ -95,27 +95,43 @@ Stack: React + Vite + TypeScript, Supabase / Postgres, deploy en Vercel, repo en
   `TextoLegalPage`) · 6c4a66c `aceptarEnRegistro` · 163c722 alta de paciente · 34c4b59 farmacia (+ `userId` en el
   `register` de `useProveedorAuth`) · 0841d45 lab clínico · 12f474e proveedor · 54795a3 visitador · 802951b médico por
   invitación (solo UI) · e339dbb clínica por invitación (solo UI) · 5ba47c4 `EnlacesLegales` · f0961de links en los 5
-  logins. **Decisiones:** rutas exentas del guard = exactas (/aceptar-textos, /set-password, /confirmar-receta y las 4
-  públicas), `/planes-*` y por segmento (`login`, `registro`, `registro-*`); error de la RPC → `/aceptar-textos?next=`
-  (falla cerrada: esa página re-verifica y muestra "No pudimos verificar"); el "0 pendientes" se cachea por uid en memoria
-  (Set a nivel módulo, nada en el almacenamiento del navegador) y se vacía en SIGNED_OUT o sesión null; una sola RPC en
+  logins. Review #56 ronda 1: 613905e `esRutaExenta` con lista exacta (H1) · 7994b77 declaración de mayoría de edad y
+  `loginPara` en `/aceptar-textos` (H3/H4). **Decisiones:** rutas exentas del guard = lista EXACTA de 19 (las 7 fijas
+  (/aceptar-textos, /set-password, /confirmar-receta y las 4 públicas) y los 12 logins/registros públicos) + `/planes-*` a
+  nivel raíz; la regla vieja por segmento (`login`, `registro`, `registro-*`) eximía rutas privadas con parámetro, p. ej.
+  /pacientes/login → /pacientes/:id (H1). Una ruta pública nueva de login o registro se agrega a mano; si falta, falla
+  hacia el lado seguro, y el test del guard lee `App.tsx` y lo detecta. D-4 en `/aceptar-textos` (decisión de Oscar):
+  con `consentimiento_salud` pendiente pide además la declaración de mayoría de edad (condición de UI, no viaja a la RPC).
+  Cerrar sesión o sin sesión → `loginPara(destino)` (login del portal del next; si no, `/login`). Error de la RPC →
+  `/aceptar-textos?next=` (falla cerrada: esa página re-verifica y muestra "No pudimos verificar"); el "0 pendientes" se
+  cachea por uid en memoria (Set a nivel módulo, nada en el almacenamiento del navegador) y se vacía en SIGNED_OUT o sesión null; una sola RPC en
   vuelo por uid y ruta; `aceptarEnRegistro(textos, uidEsperado)` graba con vía 'registro' solo si la sesión es la del
   uid recién creado y nunca lanza ('grabado' | 'omitido' | 'fallo'); en visitador va después de
   `aceptarInvitacionPendiente()` (la membresía nace ahí; antes, LG006); médico y clínica por invitación = casilla solo de
   UI (la edge crea el usuario en el servidor; lo graba el guard en el primer login); `/login` usa la variante profesional
-  (los internos ven un link de más; no cambia lo exigido, que decide la base). **Métricas:** vitest 57 archivos / 582
+  (los internos ven un link de más; no cambia lo exigido, que decide la base). **Métricas:** vitest 57 archivos / 598
   tests; `tsc -p tsconfig.app.json` = 74; chunk de entrada 803.89 kB (techo 805 kB; 800.07 kB antes del guard); los .md
   legales solo en el chunk lazy de `TextoLegalPage`. **Regla de bundle:** el stack de markdown y el contenido de los .md
   van solo en chunks lazy; lo que carga el chunk de entrada (guard, `src/lib/textosLegales.ts`) importa
   `@/legal/catalogo`, nunca `@/legal`; nada de `manualChunks` para libs de páginas lazy (la forma objeto arrastra
   `react/jsx-runtime` a un chunk precargado desde index.html); verificación en `tmp/gl02_front/notas.md` y
-  `chunks_md.py`. **Pendiente:** push y preview del PR #56; probar el gate en preview sin poner `exigible = true` para
-  todos; `/code-review` en sesión nueva; orden de deploy: la 371 y la 372 ya están en prod, así que el front puede ir
-  apenas se apruebe. **Nits/backlog del front:** título duplicado h1 (página) / h2 (.md) en `TextoLegalPage`; con LG003
-  `/aceptar-textos` desmarca las casillas; `esRutaExenta` distingue mayúsculas y barra final (más restrictivo, no abre
-  puertas); log doble en `aceptarEnRegistro` cuando la RPC falla (los dos sin PII); `MustChangePasswordGuard` sin test;
-  `handle_new_paciente` traga errores; las edges `crear-staff-clinica` y `crear-empleado` no ponen
-  `must_change_password`.)
+  `chunks_md.py`. **Pendiente:** push de 613905e y 7994b77 (el PR #56 está en d8f5251); re-review ronda 2 (misma
+  sesión revisora); prueba del gate en preview con `exigible = true` por una ventana corta, usando paciente.qa,
+  medico.qa, farmacia.qa y admin.qa más una sola alta QA-MANUAL de paciente (decisión de Oscar: esas cuentas quedan con
+  aceptaciones permanentes, no borrables por la FK RESTRICT de la 372), y volver `exigible=false` al cerrar la prueba;
+  orden de deploy: la 371 y la 372 ya están en prod, así que el front puede ir apenas se apruebe. **Nits/backlog del
+  front:** título duplicado h1 (página) / h2 (.md) en `TextoLegalPage`; con LG003 `/aceptar-textos` desmarca las
+  casillas; `esRutaExenta` compara la ruta exacta (mayúsculas y barra final no eximen; más restrictivo); log doble en
+  `aceptarEnRegistro` cuando la RPC falla (los dos sin PII); `MustChangePasswordGuard` sin test; `handle_new_paciente`
+  traga errores; las edges `crear-staff-clinica` y `crear-empleado` no ponen `must_change_password`. Backlog de la
+  review #56 (sin código): H2 mientras la RPC está en vuelo la ruta privada se monta y dispara sus queries (el gate es de
+  UX, la barrera es la base); H5 `AceptarTextosPage` no carga la cache del guard → una RPC de más en el next tras
+  aceptar; R1 con Confirm email ON la vía 'registro' casi nunca se graba (queda 'login'; así por diseño, §2.4); R2 la
+  cache por uid no ve un cambio de identidad en la misma pestaña (caso estrecho); R4 `nextSeguro` rechaza '://' también
+  en el query (cae a '/', lado seguro); R5 con LG003 el banner de error queda puesto tras recargar; R6 Enter sin la
+  casilla vuelve en silencio, sin toast; R7 el guard se re-suscribe a auth en cada navegación y la RPC sale dos veces
+  por gate; R8 markup del link legal repetido en 3 componentes; R9 el clear de SIGNED_OUT del guard es redundante con
+  `check(null)`; test a de `/aceptar-textos`: el candado interno de `aceptar` no se ejercita aparte del botón.)
   (370 = familia 2, ÚLTIMO paso: EXECUTE de funciones sin PUBLIC ni anon — **APLICADA en prod el 2026-10-07 a las 19:18 UTC
   (19:18:26.914 → 19:18:28.737)**, sha256 del archivo 529777fd…cddbf7, y verificada VERDE en sesión independiente: harness
   post370 1102 filas / 1011 bloques DO / 11 rojas de deuda, P1015/P1016/P1017/P739/P741/P1000 en OK. **Bug vivo cerrado:**
