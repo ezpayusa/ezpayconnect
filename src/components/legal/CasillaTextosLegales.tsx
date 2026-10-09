@@ -1,5 +1,5 @@
 import { Fragment, useId } from 'react'
-import { TEXTOS_LEGALES, type TextoLegal } from '@/legal'
+import { TEXTOS_LEGALES, type TextoLegal } from '@/legal/catalogo'
 
 // GL-02: casilla única de aceptación de los textos legales para las altas. Solo UI: no llama a ninguna RPC; el
 // formulario que la usa bloquea el envío mientras checked = false y registra la aceptación con aceptarTextos().

@@ -2,9 +2,9 @@ import { useState } from 'react'
 import { describe, it, expect, vi } from 'vitest'
 import { render, screen, fireEvent } from '@testing-library/react'
 import { CasillaTextosLegales, textosPara, DECLARACION_MAYORIA_EDAD } from './CasillaTextosLegales'
-import { textoLegalPorCodigo } from '@/legal'
+import { TEXTOS_LEGALES } from '@/legal/catalogo'
 
-const tituloDe = (codigo: string) => textoLegalPorCodigo(codigo)!.titulo
+const tituloDe = (codigo: string) => TEXTOS_LEGALES.find((t) => t.codigo === codigo)!.titulo
 
 describe('textosPara', () => {
   it('paciente → terminos, privacidad, consentimiento_salud', () => {

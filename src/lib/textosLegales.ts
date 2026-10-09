@@ -1,5 +1,5 @@
 import { supabase } from '@/lib/supabase'
-import { TEXTOS_LEGALES, type CodigoTextoLegal, type TextoLegal } from '@/legal'
+import { TEXTOS_LEGALES, type CodigoTextoLegal, type TextoLegal } from '@/legal/catalogo'
 
 // GL-02 (migs 371/372): capa de datos de los textos legales.
 //   textos_legales_pendientes() → filas {codigo, version} que el llamante tiene que aceptar.

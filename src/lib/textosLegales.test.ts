@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { TEXTOS_LEGALES } from '@/legal'
+import { TEXTOS_LEGALES } from '@/legal/catalogo'
 
 // Las respuestas simuladas copian la forma de las RPCs vivas (migs 371/372):
 //   textos_legales_pendientes() → filas {codigo, version}
@@ -49,7 +49,7 @@ describe('obtenerPendientes', () => {
     }
     const r = await obtenerPendientes()
     expect(r).toEqual({ ok: true, pendientes: [consentimiento, terminos] })
-    if (r.ok) expect(r.pendientes[1].contenido).toBe(terminos.contenido)
+    if (r.ok) expect(r.pendientes[1]).toBe(terminos)
   })
 
   it('un código que el front no conoce → ok:false (falla cerrado, sin lista parcial)', async () => {

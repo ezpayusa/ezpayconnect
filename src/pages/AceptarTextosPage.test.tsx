@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { render, screen, fireEvent, waitFor } from '@testing-library/react'
 import { MemoryRouter, Routes, Route, useLocation } from 'react-router-dom'
-import { TEXTOS_LEGALES } from '@/legal'
+import { TEXTOS_LEGALES } from '@/legal/catalogo'
 
 const sesion = { user: { id: 'u1' } } as { user: { id: string } } | null
 let sesionActual: typeof sesion = sesion

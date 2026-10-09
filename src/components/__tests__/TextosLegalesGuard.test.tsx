@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { render, screen, act, waitFor } from '@testing-library/react'
 import { MemoryRouter, Routes, Route, useLocation, useNavigate, type NavigateFunction } from 'react-router-dom'
-import { TEXTOS_LEGALES } from '@/legal'
+import { TEXTOS_LEGALES } from '@/legal/catalogo'
 
 type Usuario = { id: string; user_metadata?: Record<string, unknown> }
 type Sesion = { user: Usuario } | null

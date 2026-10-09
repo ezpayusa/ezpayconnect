@@ -1,13 +1,23 @@
 import { createHash } from 'node:crypto'
+import { readFileSync } from 'node:fs'
+import { resolve } from 'node:path'
 import { describe, expect, it } from 'vitest'
-import { TEXTOS_LEGALES } from './index'
+import { TEXTOS_LEGALES, textoLegalPorCodigo } from './index'
 
 // El md5 declarado de cada texto es el que sembró la mig 371 en public.textos_legales. Si un .md cambia un solo byte
 // (incluido un CRLF de un checkout de Windows), este test falla.
 describe('src/legal: catálogo de textos legales', () => {
-  it.each(TEXTOS_LEGALES.map((t) => [t.codigo, t] as const))('%s: md5 del contenido = md5 declarado', (_codigo, t) => {
-    const md5 = createHash('md5').update(Buffer.from(t.contenido, 'utf8')).digest('hex')
+  it.each(TEXTOS_LEGALES.map((t) => [t.codigo, t] as const))('%s: md5 del contenido = md5 declarado', (codigo, t) => {
+    const contenido = textoLegalPorCodigo(codigo)!.contenido
+    const md5 = createHash('md5').update(Buffer.from(contenido, 'utf8')).digest('hex')
     expect(md5).toBe(t.md5)
+  })
+
+  it('catalogo.ts no importa contenido (?raw): va en el chunk de entrada', () => {
+    // vitest corre con root = raíz del repo (en jsdom, import.meta.url no es file://).
+    const fuente = readFileSync(resolve(process.cwd(), 'src/legal/catalogo.ts'), 'utf8')
+    expect(fuente).not.toContain('?raw')
+    expect(fuente).not.toMatch(/from\s+['"][^'"]*\.md/)
   })
 
   it('declara exactamente los 4 códigos de la base, sin duplicados', () => {

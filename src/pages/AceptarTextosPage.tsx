@@ -3,7 +3,7 @@ import { useNavigate, useSearchParams } from 'react-router-dom'
 import { Loader2, ShieldAlert } from 'lucide-react'
 import { supabase } from '@/lib/supabase'
 import { Button } from '@/components/ui/button'
-import type { TextoLegal } from '@/legal'
+import type { TextoLegal } from '@/legal/catalogo'
 import { aceptarTextos, mensajeErrorTextosLegales, obtenerPendientes } from '@/lib/textosLegales'
 
 // GL-02: pantalla /aceptar-textos. El gate la usa cuando la cuenta tiene textos legales pendientes (versión vigente sin
