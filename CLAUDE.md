@@ -84,21 +84,38 @@ Stack: React + Vite + TypeScript, Supabase / Postgres, deploy en Vercel, repo en
   de deuda**; b2_guard top_level 0, cast 0, do_sin_handler 155, catchall_verde 205. Errcodes LG001-LG005 en uso,
   próximo LG006. **Rollback vigente: 371 → 370** (`supabase/migrations/371_rollback.sql`, va antes que `370_rollback`).
   **Sigue en GL-02:** el front (gate global en el primer login y casilla de aceptación en las altas).
-  **Front de GL-02 EN CURSO, rama `gl02/front` (PR en borrador, no mergear).** Commits: d3065bc deps exactas
-  (react-markdown 10.1.0, remark-gfm 4.0.1), sin chunk manual; 147fee7 `src/legal` (4 .md con md5 = prod, catálogo
-  `TEXTOS_LEGALES` y test de md5; `.gitattributes` eol=lf); 8491800 `src/lib/textosLegales.ts` (pendientes, aceptar,
-  mensajes LG001-LG006; falla cerrado si la base pide un código o versión que el front no conoce); c4a4c44
-  `TextoLegalPage` + 4 rutas públicas (/terminos, /privacidad, /consentimiento-salud, /condiciones-profesionales; sin
-  HTML crudo); 049d2d5 `CasillaTextosLegales`; 8d6156c `/aceptar-textos` (falla cerrada, `nextSeguro`). Tests 47 / 488;
-  `tsc -p tsconfig.app.json` = 74. **Regla de bundle:** el stack de markdown va solo en chunks lazy; nada de `manualChunks`
-  para libs de páginas lazy (la forma objeto arrastra `react/jsx-runtime` a un chunk precargado desde index.html);
-  verificación en `tmp/gl02_front/notas.md` y `chunks_md.py`. **Pendiente:** paso 7 `TextosLegalesGuard` (después de
-  `MustChangePasswordGuard`; falla cerrado; cache en memoria por uid; re-chequeo al salir de rutas exentas); paso 8
-  casilla en las 7 altas, con llamada best-effort via 'registro' solo con sesión (en proveedor, después de
-  `registrar_proveedor`); paso 9 links legales en los logins; review en sesión nueva y plan para probar el gate en preview
-  sin poner `exigible = true` para todos. Nits: título duplicado h1 (página) / h2 (.md); `src/legal` queda en un chunk
-  compartido de 8 KB gzip que también carga `/aceptar-textos`; con LG003 se desmarcan las casillas. Backlog:
-  `handle_new_paciente` traga errores; las edges `crear-staff-clinica` y `crear-empleado` no ponen `must_change_password`.)
+  **Front de GL-02: pasos 1-9 HECHOS en la rama `gl02/front` (PR #56 en borrador; sale de borrador solo con aprobación
+  de Oscar).** Pasos 1-6: d3065bc deps exactas (react-markdown 10.1.0, remark-gfm 4.0.1), sin chunk manual; 147fee7
+  `src/legal` (4 .md con md5 = prod y test de md5; `.gitattributes` eol=lf); 8491800 `src/lib/textosLegales.ts`
+  (pendientes, aceptar, mensajes LG001-LG006; falla cerrado si la base pide un código o versión que el front no conoce);
+  c4a4c44 `TextoLegalPage` + 4 rutas públicas (/terminos, /privacidad, /consentimiento-salud, /condiciones-profesionales;
+  sin HTML crudo); 049d2d5 `CasillaTextosLegales`; 8d6156c `/aceptar-textos` (falla cerrada, `nextSeguro`). Pasos 7-9:
+  6ad2f01 `TextosLegalesGuard` · 164a33c montaje en `App.tsx` (después de `MustChangePasswordGuard`) · cf719da catálogo
+  separado del contenido (`src/legal/catalogo.ts` sin `?raw`; `src/legal/index.ts` le suma los .md y solo lo importa
+  `TextoLegalPage`) · 6c4a66c `aceptarEnRegistro` · 163c722 alta de paciente · 34c4b59 farmacia (+ `userId` en el
+  `register` de `useProveedorAuth`) · 0841d45 lab clínico · 12f474e proveedor · 54795a3 visitador · 802951b médico por
+  invitación (solo UI) · e339dbb clínica por invitación (solo UI) · 5ba47c4 `EnlacesLegales` · f0961de links en los 5
+  logins. **Decisiones:** rutas exentas del guard = exactas (/aceptar-textos, /set-password, /confirmar-receta y las 4
+  públicas), `/planes-*` y por segmento (`login`, `registro`, `registro-*`); error de la RPC → `/aceptar-textos?next=`
+  (falla cerrada: esa página re-verifica y muestra "No pudimos verificar"); el "0 pendientes" se cachea por uid en memoria
+  (Set a nivel módulo, nada en el almacenamiento del navegador) y se vacía en SIGNED_OUT o sesión null; una sola RPC en
+  vuelo por uid y ruta; `aceptarEnRegistro(textos, uidEsperado)` graba con vía 'registro' solo si la sesión es la del
+  uid recién creado y nunca lanza ('grabado' | 'omitido' | 'fallo'); en visitador va después de
+  `aceptarInvitacionPendiente()` (la membresía nace ahí; antes, LG006); médico y clínica por invitación = casilla solo de
+  UI (la edge crea el usuario en el servidor; lo graba el guard en el primer login); `/login` usa la variante profesional
+  (los internos ven un link de más; no cambia lo exigido, que decide la base). **Métricas:** vitest 57 archivos / 582
+  tests; `tsc -p tsconfig.app.json` = 74; chunk de entrada 803.89 kB (techo 805 kB; 800.07 kB antes del guard); los .md
+  legales solo en el chunk lazy de `TextoLegalPage`. **Regla de bundle:** el stack de markdown y el contenido de los .md
+  van solo en chunks lazy; lo que carga el chunk de entrada (guard, `src/lib/textosLegales.ts`) importa
+  `@/legal/catalogo`, nunca `@/legal`; nada de `manualChunks` para libs de páginas lazy (la forma objeto arrastra
+  `react/jsx-runtime` a un chunk precargado desde index.html); verificación en `tmp/gl02_front/notas.md` y
+  `chunks_md.py`. **Pendiente:** push y preview del PR #56; probar el gate en preview sin poner `exigible = true` para
+  todos; `/code-review` en sesión nueva; orden de deploy: la 371 y la 372 ya están en prod, así que el front puede ir
+  apenas se apruebe. **Nits/backlog del front:** título duplicado h1 (página) / h2 (.md) en `TextoLegalPage`; con LG003
+  `/aceptar-textos` desmarca las casillas; `esRutaExenta` distingue mayúsculas y barra final (más restrictivo, no abre
+  puertas); log doble en `aceptarEnRegistro` cuando la RPC falla (los dos sin PII); `MustChangePasswordGuard` sin test;
+  `handle_new_paciente` traga errores; las edges `crear-staff-clinica` y `crear-empleado` no ponen
+  `must_change_password`.)
   (370 = familia 2, ÚLTIMO paso: EXECUTE de funciones sin PUBLIC ni anon — **APLICADA en prod el 2026-10-07 a las 19:18 UTC
   (19:18:26.914 → 19:18:28.737)**, sha256 del archivo 529777fd…cddbf7, y verificada VERDE en sesión independiente: harness
   post370 1102 filas / 1011 bloques DO / 11 rojas de deuda, P1015/P1016/P1017/P739/P741/P1000 en OK. **Bug vivo cerrado:**
@@ -527,6 +544,13 @@ Stack: React + Vite + TypeScript, Supabase / Postgres, deploy en Vercel, repo en
   funciones post-370 4878afd5…/384, que la 371 cambió (4c1f611c…/389) y `371_rollback` devuelve. **370 (APLICADA el 7-oct) va antes que 369, 350 y 349:** `369_rollback` espera la ACL de funciones
   e5c9770e…/384, y con la 370 viva devolver las policies de la 349/350 a `TO public` le da a anon 42501 de FUNCIÓN
   (`get_auth_user_pais_id`) en configuracion_sistema (la landing la lee sin sesión) y otras 8 tablas (medido con P935/P936).
+- **Gates con PowerShell 5.1 (front GL-02, 9-oct-2026):** cuatro trampas que dieron gates falsos.
+  (1) `Select-String` no tiene `-Recurse`: `Get-ChildItem src -Recurse -Include *.ts,*.tsx | Select-String …`.
+  (2) `Select-String -SimpleMatch` da 0 sobre chunks minificados que sí contienen el literal: medir con
+  `grep -o -F … | wc -l` desde la herramienta Bash (el `bash.exe` de Git llamado desde PowerShell no tiene `grep` en el
+  PATH). (3) `Get-Content` sin `-Encoding UTF8` lee UTF-8 sin BOM como ANSI y un patrón con tildes da 0: usar
+  `Get-Content -Encoding UTF8` o `grep -F`. (4) `Select-String` no distingue mayúsculas por defecto: en gates de ausencia,
+  `-CaseSensitive` (o `-SimpleMatch` con la ruta completa del módulo).
 - **Los tests de edge (deno) NO corren en vitest ni en el pre-commit**: se corren a mano desde
   `supabase/functions/<fn>/` con `deno test --allow-net --allow-env --no-check` (asistente-ia: 17).
 - **El CORS de `asistente-ia` sólo acepta `med.ezpayconnect.com`**: las pruebas de edges desde un preview
@@ -790,7 +814,8 @@ Detalles a recordar:
   del repo son rollbacks de altas en la misma request (recon de la 372, punto 5). **Alcance (review #55 n3):** a un paciente
   ya no se lo puede borrar hoy (`pacientes_auth_user_id_fkey` es NO ACTION); el bloqueo nuevo cae sobre las cuentas con
   perfil o de proveedor que tengan aceptaciones.
-- (GL-02, front, review #55 n4) Alta de proveedor (`src/proveedor/hooks/useProveedorAuth.ts`: `signUp` L96 →
+- (GL-02, front, review #55 n4, **resuelto en 34c4b59 / 0841d45 / 12f474e**: `aceptarEnRegistro` corre después de
+  `register()`, que ya incluye `registrar_proveedor`) Alta de proveedor (`src/proveedor/hooks/useProveedorAuth.ts`: `signUp` L96 →
   `registrar_proveedor` L109): la aceptación de `condiciones_profesionales` va DESPUÉS de `registrar_proveedor`; antes la
   cuenta todavía no tiene `cuentas_proveedor` y `aceptar_textos_legales` da LG006. En el paciente no pasa:
   `handle_new_paciente` (mig 230, AFTER INSERT ON auth.users, solo si la metadata trae `tipo = 'paciente'`) crea la fila de
