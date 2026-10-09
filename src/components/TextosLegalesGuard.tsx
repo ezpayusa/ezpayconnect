@@ -10,6 +10,9 @@ import { obtenerPendientes } from '@/lib/textosLegales'
 // el próximo login (nada en el almacenamiento del navegador). MustChangePasswordGuard tiene prioridad.
 // Es un gate de UX: la barrera real es la base (aceptar_textos_legales / textos_legales_pendientes).
 
+// Lista EXACTA a propósito (review PR #56 H1): la regla vieja por segmento ('login', 'registro', 'registro-*') eximía
+// rutas privadas con parámetro, p. ej. /pacientes/login caía en /pacientes/:id. Una ruta pública nueva de login o
+// registro se agrega acá a mano; si falta, el guard falla hacia el lado seguro (la manda a /aceptar-textos).
 const RUTAS_EXENTAS = new Set([
   '/aceptar-textos',
   '/set-password',
@@ -18,13 +21,23 @@ const RUTAS_EXENTAS = new Set([
   '/privacidad',
   '/consentimiento-salud',
   '/condiciones-profesionales',
+  '/login',
+  '/registro-medico',
+  '/registro-clinica',
+  '/paciente/login',
+  '/paciente/registro',
+  '/proveedor/login',
+  '/proveedor/registro',
+  '/proveedor/registro-visitador',
+  '/laboratorio/login',
+  '/laboratorio/registro',
+  '/farmacia/login',
+  '/farmacia/registro',
 ])
 
 /** Rutas donde el guard no actúa: la propia pantalla de aceptación, los textos públicos, logins y registros. */
 export function esRutaExenta(pathname: string): boolean {
-  if (RUTAS_EXENTAS.has(pathname)) return true
-  if (pathname.startsWith('/planes-')) return true
-  return pathname.split('/').some((s) => s === 'login' || s === 'registro' || s.startsWith('registro-'))
+  return RUTAS_EXENTAS.has(pathname) || pathname.startsWith('/planes-')
 }
 
 // uids que ya dieron "0 pendientes" en esta sesión de la pestaña.

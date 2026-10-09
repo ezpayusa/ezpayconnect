@@ -1,3 +1,5 @@
+import { readFileSync } from 'node:fs'
+import { resolve } from 'node:path'
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { render, screen, act, waitFor } from '@testing-library/react'
 import { MemoryRouter, Routes, Route, useLocation, useNavigate, type NavigateFunction } from 'react-router-dom'
@@ -68,16 +70,37 @@ beforeEach(() => {
   obtenerPendientes.mockReset()
 })
 
+// Logins y registros públicos de App.tsx (lista exacta del guard, review PR #56 H1).
+const LOGINS_Y_REGISTROS = [
+  '/login', '/registro-medico', '/registro-clinica', '/paciente/login', '/paciente/registro', '/proveedor/login',
+  '/proveedor/registro', '/proveedor/registro-visitador', '/laboratorio/login', '/laboratorio/registro',
+  '/farmacia/login', '/farmacia/registro',
+]
+
 describe('esRutaExenta', () => {
   it('tabla de verdad: exentas y no exentas', () => {
     const exentas = [
       '/aceptar-textos', '/set-password', '/confirmar-receta', '/terminos', '/privacidad', '/consentimiento-salud',
-      '/condiciones-profesionales', '/planes-visitador', '/planes-clinica', '/login', '/paciente/login',
-      '/proveedor/login', '/paciente/registro', '/proveedor/registro-visitador', '/registro-medico', '/registro-clinica',
+      '/condiciones-profesionales', ...LOGINS_Y_REGISTROS, '/planes-x', '/planes-visitador',
     ]
-    const noExentas = ['/', '/paciente', '/dashboard', '/proveedor', '/admin-ezpay', '/loginx', '/mi-registro-viejo']
+    // Rutas privadas con parámetro que la regla vieja por segmento eximía (p. ej. /pacientes/login → /pacientes/:id).
+    const noExentas = [
+      '/', '/paciente', '/dashboard', '/proveedor', '/pacientes/login', '/consulta/login', '/recetas/registro',
+      '/proveedor/visitadores/login', '/admin-ezpay/pais/registro', '/comercial/prospectos/login', '/loginx',
+      '/mi-registro-viejo', '/admin-ezpay/planes-x',
+    ]
     for (const p of exentas) expect(esRutaExenta(p), p).toBe(true)
     for (const p of noExentas) expect(esRutaExenta(p), p).toBe(false)
+  })
+
+  it('todo login o registro público de App.tsx (path absoluto sin parámetro) está exento', () => {
+    const app = readFileSync(resolve(process.cwd(), 'src/App.tsx'), 'utf8')
+    const publicos = [...app.matchAll(/path="([^"]+)"/g)]
+      .map((m) => m[1])
+      .filter((p) => p.startsWith('/') && !p.includes(':') && /(login|registro)/.test(p))
+    expect(publicos.length).toBeGreaterThan(0)
+    expect([...publicos].sort()).toEqual([...LOGINS_Y_REGISTROS].sort())
+    for (const p of publicos) expect(esRutaExenta(p), p).toBe(true)
   })
 })
 
