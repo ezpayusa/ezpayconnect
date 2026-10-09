@@ -33,6 +33,7 @@ vi.mock('@/lib/supabase', () => ({
     auth: {
       signUp: (...a: unknown[]) => signUp(...a),
       signOut: (...a: unknown[]) => signOut(...a),
+      updateUser: async () => ({ error: null }),
       getSession: async () => ({ data: { session: null } }),
       onAuthStateChange: () => ({ data: { subscription: { unsubscribe: () => {} } } }),
     },
@@ -168,8 +169,8 @@ describe('useProveedorAuth.register (hook real)', () => {
     return r
   }
 
-  it('registrar_proveedor OK → devuelve el userId del signUp; con registrar_proveedor en error hace signOut y no devuelve userId', async () => {
-    signUp.mockResolvedValue({ data: { user: { id: 'uid-signup' }, session: {} }, error: null })
+  it('con sesión: completar_registro_proveedor OK → devuelve el userId del signUp; en error hace signOut y no devuelve userId', async () => {
+    signUp.mockResolvedValue({ data: { user: { id: 'uid-signup', identities: [{}] }, session: {} }, error: null })
     rpc.mockResolvedValue({ data: 'empresa-1', error: null })
     const { result } = await hookReal()
     let ok: Record<string, unknown> = {}
@@ -178,10 +179,11 @@ describe('useProveedorAuth.register (hook real)', () => {
     })
     expect(ok.error).toBeNull()
     expect(ok.userId).toBe('uid-signup')
+    expect(rpc).toHaveBeenCalledWith('completar_registro_proveedor')
     expect(signOut).not.toHaveBeenCalled()
 
-    vi.spyOn(console, 'error').mockImplementation(() => {}) // el hook loguea el error de la RPC
-    rpc.mockResolvedValue({ data: null, error: { message: 'País no válido para el registro' } })
+    vi.spyOn(console, 'error').mockImplementation(() => {}) // el helper loguea el code de la RPC
+    rpc.mockResolvedValue({ data: null, error: { code: '22023', message: 'País no válido para el registro' } })
     let falla: Record<string, unknown> = {}
     await act(async () => {
       falla = await result.current.register('rep@x.com', 'secreta123', 'Rep Uno', empresa)
