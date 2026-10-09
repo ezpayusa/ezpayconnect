@@ -34876,6 +34876,396 @@ EXCEPTION WHEN OTHERS THEN
 END $$;
 SELECT set_config('role', 'none', true);
 
+-- ================================================================================
+-- MIG 373 — completar_registro_proveedor: alta diferida de empresas con Confirm email ON (P1026-P1033).
+-- Antes del apply la funcion no existe: P1026-P1033 publican 'PENDIENTE mig 373 (...)' (no es roja).
+-- Cada probe que escribe trabaja en un savepoint que se descarta con RAISE P0999 y verifica despues
+-- que los conteos de empresas_proveedoras / cuentas_proveedor y la fila de auth.users que toco
+-- (raw_user_meta_data, email_confirmed_at) volvieron al snapshot. Los veredictos se juzgan por
+-- SQLSTATE y mensaje exacto (pg_temp.m373_como devuelve 'OK:<valor>' o 'ERR:<sqlstate>:<mensaje>').
+-- ================================================================================
+-- M373_FX: helpers de pg_temp de este bloque. No toca datos.
+DO $$
+BEGIN
+  EXECUTE $fn$
+CREATE OR REPLACE FUNCTION pg_temp.m373_como(p_uid uuid, p_rol text, p_sql text) RETURNS text LANGUAGE plpgsql AS $body$
+DECLARE v text;
+BEGIN
+  BEGIN
+    PERFORM set_config('request.jwt.claims', CASE WHEN p_uid IS NULL THEN json_build_object('role', p_rol)::text
+                                                  ELSE json_build_object('sub', p_uid, 'role', p_rol)::text END, true);
+    PERFORM set_config('role', p_rol, true);
+    EXECUTE p_sql INTO v;
+    PERFORM set_config('role', 'none', true);
+    PERFORM set_config('request.jwt.claims', '', true);
+    RETURN 'OK:'||COALESCE(v, '');
+  EXCEPTION WHEN OTHERS THEN
+    PERFORM set_config('role', 'none', true);
+    PERFORM set_config('request.jwt.claims', '', true);
+    RETURN 'ERR:'||SQLSTATE||':'||SQLERRM;
+  END;
+END
+$body$
+$fn$;
+  EXECUTE $fn$
+CREATE OR REPLACE FUNCTION pg_temp.m373_conteos() RETURNS text LANGUAGE sql AS $body$
+  SELECT (SELECT count(*) FROM public.empresas_proveedoras)::text||'|'||(SELECT count(*) FROM public.cuentas_proveedor)::text
+$body$
+$fn$;
+  EXECUTE $fn$
+CREATE OR REPLACE FUNCTION pg_temp.m373_snap(p_uid uuid) RETURNS text LANGUAGE sql AS $body$
+  SELECT pg_temp.m373_conteos()||'|'||COALESCE((SELECT md5(COALESCE(u.raw_user_meta_data::text, '')||'|'||COALESCE(u.email_confirmed_at::text, ''))
+                                                  FROM auth.users u WHERE u.id = p_uid), 'sin usuario')
+$body$
+$fn$;
+  -- molde de actor de P829: el usuario mas reciente sin ninguna de las 6 identidades
+  EXECUTE $fn$
+CREATE OR REPLACE FUNCTION pg_temp.m373_libre() RETURNS uuid LANGUAGE sql AS $body$
+  SELECT au.id FROM auth.users au
+   WHERE NULLIF(trim(au.email), '') IS NOT NULL
+     AND NOT EXISTS (SELECT 1 FROM public.perfiles x WHERE x.id = au.id)
+     AND NOT EXISTS (SELECT 1 FROM public.pacientes x WHERE x.auth_user_id = au.id)
+     AND NOT EXISTS (SELECT 1 FROM public.medicos x WHERE x.id = au.id)
+     AND NOT EXISTS (SELECT 1 FROM public.cuentas_proveedor x WHERE x.id = au.id)
+     AND NOT EXISTS (SELECT 1 FROM public.asesores_perfil x WHERE x.id = au.id)
+     AND NOT EXISTS (SELECT 1 FROM public.usuario_roles x WHERE x.usuario_id = au.id)
+   ORDER BY au.created_at DESC, au.id LIMIT 1
+$body$
+$fn$;
+  -- registro_empresa valido (nombre con espacios alrededor: la RPC los recorta)
+  EXECUTE $fn$
+CREATE OR REPLACE FUNCTION pg_temp.m373_meta(p_pais uuid) RETURNS jsonb LANGUAGE sql AS $body$
+  SELECT jsonb_build_object('nombre_empresa', '  P1030 Empresa QA  ', 'tipo', 'laboratorio_clinico', 'ruc_nit', 'P1030-RUC',
+                            'pais_id', p_pais::text, 'ciudad', 'Ciudad P1030', 'direccion', 'Direccion P1030',
+                            'email_contacto', 'p1030@qa.test', 'telefono', '5555-1030', 'nombre_completo', 'P1030 Rep QA')
+$body$
+$fn$;
+  -- pone (o quita, con p_reg NULL) el registro_empresa y confirma o desconfirma el correo. Solo dentro de un savepoint.
+  EXECUTE $fn$
+CREATE OR REPLACE FUNCTION pg_temp.m373_set(p_uid uuid, p_reg jsonb, p_confirmado boolean) RETURNS void LANGUAGE plpgsql AS $body$
+DECLARE n int;
+BEGIN
+  UPDATE auth.users u
+     SET raw_user_meta_data = CASE WHEN p_reg IS NULL THEN COALESCE(u.raw_user_meta_data, '{}'::jsonb) - 'registro_empresa'
+                                   ELSE COALESCE(u.raw_user_meta_data, '{}'::jsonb) || jsonb_build_object('registro_empresa', p_reg) END,
+         email_confirmed_at = CASE WHEN p_confirmado THEN COALESCE(u.email_confirmed_at, now()) ELSE NULL END
+   WHERE u.id = p_uid;
+  GET DIAGNOSTICS n = ROW_COUNT;
+  IF n <> 1 THEN RAISE EXCEPTION 'fixture roto: m373_set rc=%', n; END IF;
+END
+$body$
+$fn$;
+  PERFORM set_config('probe.m373_fx', 'OK (helpers de pg_temp creados; 373 '
+    ||CASE WHEN to_regprocedure('public.completar_registro_proveedor()') IS NULL THEN 'ausente' ELSE 'presente' END||')', false);
+EXCEPTION WHEN OTHERS THEN
+  PERFORM set_config('probe.m373_fx', 'FALLO ('||SQLSTATE||' '||SQLERRM||')', false);
+END $$;
+
+-- ---------------- P1026 sin sesion -> RP001 ----------------
+DO $$
+DECLARE res text;
+BEGIN
+  IF to_regprocedure('public.completar_registro_proveedor()') IS NULL THEN
+    PERFORM set_config('probe.p1026', 'PENDIENTE mig 373 (completar_registro_proveedor ausente)', false);
+    RETURN;
+  END IF;
+  res := pg_temp.m373_como(NULL, 'authenticated', 'SELECT public.completar_registro_proveedor()::text');
+  PERFORM set_config('probe.p1026', CASE WHEN res = 'ERR:RP001:Necesitas iniciar sesión para completar el registro de tu empresa.'
+    THEN 'OK (373: authenticated sin sub -> RP001 con mensaje exacto)'
+    ELSE 'ROJO (sin sesion: '||left(res, 300)||' (esperado RP001))' END, false);
+EXCEPTION WHEN OTHERS THEN
+  PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
+  PERFORM set_config('probe.p1026', 'FALLO ('||SQLSTATE||' '||SQLERRM||')', false);
+END $$;
+SELECT set_config('role', 'none', true);
+
+-- ---------------- P1027 correo sin confirmar -> RP002, sin filas ----------------
+DO $$
+DECLARE l1 uuid; gt uuid; res text; n0 text; n1 text; pre text; post text; bad text := '';
+BEGIN
+  IF to_regprocedure('public.completar_registro_proveedor()') IS NULL THEN
+    PERFORM set_config('probe.p1027', 'PENDIENTE mig 373 (completar_registro_proveedor ausente)', false);
+    RETURN;
+  END IF;
+  l1 := pg_temp.m373_libre();
+  SELECT id INTO gt FROM public.configuracion_pais WHERE codigo = 'GT' AND activo IS TRUE;
+  IF l1 IS NULL OR gt IS NULL THEN
+    PERFORM set_config('probe.p1027', 'FALLO (fixture: usuario libre '||COALESCE(left(l1::text, 8), 'NULL')||', pais GT '||COALESCE(left(gt::text, 8), 'NULL')||')', false);
+    RETURN;
+  END IF;
+  pre := pg_temp.m373_snap(l1);
+  BEGIN
+    PERFORM pg_temp.m373_set(l1, pg_temp.m373_meta(gt), false);
+    n0 := pg_temp.m373_conteos();
+    res := pg_temp.m373_como(l1, 'authenticated', 'SELECT public.completar_registro_proveedor()::text');
+    n1 := pg_temp.m373_conteos();
+    IF res IS DISTINCT FROM 'ERR:RP002:Confirma tu correo antes de completar el registro.' THEN
+      bad := bad||'sin confirmar: '||left(res, 200)||' (esperado RP002); '; END IF;
+    IF n1 IS DISTINCT FROM n0 THEN bad := bad||'filas nuevas ('||n0||' -> '||n1||'); '; END IF;
+    RAISE EXCEPTION 'P1027 descarte' USING ERRCODE = 'P0999';
+  EXCEPTION WHEN SQLSTATE 'P0999' THEN NULL;
+  END;
+  post := pg_temp.m373_snap(l1);
+  IF post IS DISTINCT FROM pre THEN bad := bad||'no quedo como estaba tras el descarte; '; END IF;
+  PERFORM set_config('probe.p1027', CASE WHEN bad = ''
+    THEN 'OK (373: registro valido con el correo sin confirmar -> RP002 con mensaje exacto, sin filas; descartado y verificado)'
+    ELSE 'ROJO ('||left(bad, 700)||')' END, false);
+EXCEPTION WHEN OTHERS THEN
+  PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
+  PERFORM set_config('probe.p1027', CASE WHEN SQLERRM LIKE 'fixture roto%' THEN 'ROJO ('||SQLERRM||')'
+    ELSE 'FALLO ('||SQLSTATE||' '||SQLERRM||')' END, false);
+END $$;
+SELECT set_config('role', 'none', true);
+
+-- ---------------- P1028 sin registro_empresa (o no-objeto) -> RP003, sin filas ----------------
+DO $$
+DECLARE l1 uuid; res text; n0 text; n1 text; pre text; post text; bad text := ''; r record;
+BEGIN
+  IF to_regprocedure('public.completar_registro_proveedor()') IS NULL THEN
+    PERFORM set_config('probe.p1028', 'PENDIENTE mig 373 (completar_registro_proveedor ausente)', false);
+    RETURN;
+  END IF;
+  l1 := pg_temp.m373_libre();
+  IF l1 IS NULL THEN
+    PERFORM set_config('probe.p1028', 'FALLO (fixture: sin usuario libre)', false);
+    RETURN;
+  END IF;
+  pre := pg_temp.m373_snap(l1);
+  BEGIN
+    FOR r IN SELECT * FROM (VALUES
+        (1, 'sin registro_empresa',        NULL::jsonb),
+        (2, 'registro_empresa no-objeto',  '"texto"'::jsonb),
+        (3, 'registro_empresa arreglo',    '[1, 2]'::jsonb)) x(k, nom, reg) ORDER BY x.k LOOP
+      PERFORM pg_temp.m373_set(l1, r.reg, true);
+      n0 := pg_temp.m373_conteos();
+      res := pg_temp.m373_como(l1, 'authenticated', 'SELECT public.completar_registro_proveedor()::text');
+      n1 := pg_temp.m373_conteos();
+      IF res IS DISTINCT FROM 'ERR:RP003:Esta cuenta no tiene un registro de empresa pendiente.' THEN
+        bad := bad||r.nom||': '||left(res, 200)||' (esperado RP003); '; END IF;
+      IF n1 IS DISTINCT FROM n0 THEN bad := bad||r.nom||': filas nuevas ('||n0||' -> '||n1||'); '; END IF;
+    END LOOP;
+    RAISE EXCEPTION 'P1028 descarte' USING ERRCODE = 'P0999';
+  EXCEPTION WHEN SQLSTATE 'P0999' THEN NULL;
+  END;
+  post := pg_temp.m373_snap(l1);
+  IF post IS DISTINCT FROM pre THEN bad := bad||'no quedo como estaba tras el descarte; '; END IF;
+  PERFORM set_config('probe.p1028', CASE WHEN bad = ''
+    THEN 'OK (373: confirmado sin registro_empresa, con un string y con un arreglo -> RP003 x3 con mensaje exacto, sin filas; descartado y verificado)'
+    ELSE 'ROJO ('||left(bad, 700)||')' END, false);
+EXCEPTION WHEN OTHERS THEN
+  PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
+  PERFORM set_config('probe.p1028', CASE WHEN SQLERRM LIKE 'fixture roto%' THEN 'ROJO ('||SQLERRM||')'
+    ELSE 'FALLO ('||SQLSTATE||' '||SQLERRM||')' END, false);
+END $$;
+SELECT set_config('role', 'none', true);
+
+-- ---------------- P1029 registro_empresa invalido -> RP004 x4, sin filas ----------------
+DO $$
+DECLARE l1 uuid; gt uuid; res text; n0 text; n1 text; pre text; post text; bad text := ''; r record;
+BEGIN
+  IF to_regprocedure('public.completar_registro_proveedor()') IS NULL THEN
+    PERFORM set_config('probe.p1029', 'PENDIENTE mig 373 (completar_registro_proveedor ausente)', false);
+    RETURN;
+  END IF;
+  l1 := pg_temp.m373_libre();
+  SELECT id INTO gt FROM public.configuracion_pais WHERE codigo = 'GT' AND activo IS TRUE;
+  IF l1 IS NULL OR gt IS NULL THEN
+    PERFORM set_config('probe.p1029', 'FALLO (fixture: usuario libre '||COALESCE(left(l1::text, 8), 'NULL')||', pais GT '||COALESCE(left(gt::text, 8), 'NULL')||')', false);
+    RETURN;
+  END IF;
+  pre := pg_temp.m373_snap(l1);
+  BEGIN
+    FOR r IN SELECT * FROM (VALUES
+        (1, 'tipo fuera de lista',       '{"tipo": "hospital"}'::jsonb),
+        (2, 'pais_id no uuid',           '{"pais_id": "x"}'::jsonb),
+        (3, 'nombre_empresa en blanco',  '{"nombre_empresa": "  "}'::jsonb),
+        (4, 'nombre_completo no-texto',  '{"nombre_completo": {"x": 1}}'::jsonb)) x(k, nom, cambio) ORDER BY x.k LOOP
+      PERFORM pg_temp.m373_set(l1, pg_temp.m373_meta(gt) || r.cambio, true);
+      n0 := pg_temp.m373_conteos();
+      res := pg_temp.m373_como(l1, 'authenticated', 'SELECT public.completar_registro_proveedor()::text');
+      n1 := pg_temp.m373_conteos();
+      IF res IS DISTINCT FROM 'ERR:RP004:Los datos de registro de la empresa no son válidos. Regístrate de nuevo.' THEN
+        bad := bad||r.nom||': '||left(res, 200)||' (esperado RP004); '; END IF;
+      IF n1 IS DISTINCT FROM n0 THEN bad := bad||r.nom||': filas nuevas ('||n0||' -> '||n1||'); '; END IF;
+    END LOOP;
+    RAISE EXCEPTION 'P1029 descarte' USING ERRCODE = 'P0999';
+  EXCEPTION WHEN SQLSTATE 'P0999' THEN NULL;
+  END;
+  post := pg_temp.m373_snap(l1);
+  IF post IS DISTINCT FROM pre THEN bad := bad||'no quedo como estaba tras el descarte; '; END IF;
+  PERFORM set_config('probe.p1029', CASE WHEN bad = ''
+    THEN 'OK (373: tipo fuera de lista, pais_id no uuid, nombre en blanco y nombre_completo no-texto -> RP004 x4 con mensaje exacto, sin filas; descartado y verificado)'
+    ELSE 'ROJO ('||left(bad, 700)||')' END, false);
+EXCEPTION WHEN OTHERS THEN
+  PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
+  PERFORM set_config('probe.p1029', CASE WHEN SQLERRM LIKE 'fixture roto%' THEN 'ROJO ('||SQLERRM||')'
+    ELSE 'FALLO ('||SQLSTATE||' '||SQLERRM||')' END, false);
+END $$;
+SELECT set_config('role', 'none', true);
+
+-- ---------------- P1030 alta legitima e idempotente ----------------
+DO $$
+DECLARE l1 uuid; gt uuid; mail text; res text; res2 text; e1 uuid; n0 text; n1 text; n2 text; pre text; post text;
+        fila_e text; fila_c text; esp_e text; esp_c text; bad text := '';
+BEGIN
+  IF to_regprocedure('public.completar_registro_proveedor()') IS NULL THEN
+    PERFORM set_config('probe.p1030', 'PENDIENTE mig 373 (completar_registro_proveedor ausente)', false);
+    RETURN;
+  END IF;
+  l1 := pg_temp.m373_libre();
+  SELECT id INTO gt FROM public.configuracion_pais WHERE codigo = 'GT' AND activo IS TRUE;
+  SELECT lower(u.email) INTO mail FROM auth.users u WHERE u.id = l1;
+  IF l1 IS NULL OR gt IS NULL OR mail IS NULL THEN
+    PERFORM set_config('probe.p1030', 'FALLO (fixture: usuario libre '||COALESCE(left(l1::text, 8), 'NULL')||', pais GT '||COALESCE(left(gt::text, 8), 'NULL')||')', false);
+    RETURN;
+  END IF;
+  pre := pg_temp.m373_snap(l1);
+  BEGIN
+    PERFORM pg_temp.m373_set(l1, pg_temp.m373_meta(gt), true);
+    n0 := pg_temp.m373_conteos();
+    res := pg_temp.m373_como(l1, 'authenticated', 'SELECT public.completar_registro_proveedor()::text');
+    n1 := pg_temp.m373_conteos();
+    IF res NOT LIKE 'OK:%' THEN
+      bad := bad||'alta: '||left(res, 200)||' (esperado uuid); ';
+    ELSE
+      e1 := substr(res, 4)::uuid;
+      SELECT concat_ws('|', e.nombre_empresa, e.tipo, e.ruc_nit, e.pais_id::text, e.ciudad, e.direccion, e.email_contacto, e.telefono, e.estado)
+        INTO fila_e FROM public.empresas_proveedoras e WHERE e.id = e1;
+      esp_e := concat_ws('|', 'P1030 Empresa QA', 'laboratorio_clinico', 'P1030-RUC', gt::text, 'Ciudad P1030', 'Direccion P1030',
+                         'p1030@qa.test', '5555-1030', 'pendiente');
+      IF fila_e IS DISTINCT FROM esp_e THEN bad := bad||'empresa '||COALESCE(fila_e, 'sin fila')||' (esperado '||esp_e||'); '; END IF;
+      SELECT concat_ws('|', cp.empresa_id::text, cp.rol_en_empresa, cp.activo::text, lower(cp.email), cp.nombre_completo)
+        INTO fila_c FROM public.cuentas_proveedor cp WHERE cp.id = l1;
+      esp_c := concat_ws('|', e1::text, 'admin', 'true', mail, 'P1030 Rep QA');
+      IF fila_c IS DISTINCT FROM esp_c THEN bad := bad||'cuenta distinta de la esperada (rol/activo/email de auth/nombre); '; END IF;
+      IF split_part(n1, '|', 1)::bigint <> split_part(n0, '|', 1)::bigint + 1
+         OR split_part(n1, '|', 2)::bigint <> split_part(n0, '|', 2)::bigint + 1 THEN
+        bad := bad||'conteos tras el alta '||n0||' -> '||n1||' (esperado +1/+1); '; END IF;
+      -- segunda llamada: misma empresa, sin filas nuevas
+      res2 := pg_temp.m373_como(l1, 'authenticated', 'SELECT public.completar_registro_proveedor()::text');
+      n2 := pg_temp.m373_conteos();
+      IF res2 IS DISTINCT FROM res THEN bad := bad||'segunda llamada: '||left(res2, 200)||' (esperado el mismo uuid); '; END IF;
+      IF n2 IS DISTINCT FROM n1 THEN bad := bad||'segunda llamada agrego filas ('||n1||' -> '||n2||'); '; END IF;
+    END IF;
+    RAISE EXCEPTION 'P1030 descarte' USING ERRCODE = 'P0999';
+  EXCEPTION WHEN SQLSTATE 'P0999' THEN NULL;
+  END;
+  post := pg_temp.m373_snap(l1);
+  IF post IS DISTINCT FROM pre THEN bad := bad||'no quedo como estaba tras el descarte; '; END IF;
+  PERFORM set_config('probe.p1030', CASE WHEN bad = ''
+    THEN 'OK (373: alta con registro valido -> uuid; empresa pendiente GT con los datos recortados; cuenta admin activa con el email de auth; segunda llamada mismo uuid sin filas; descartado y verificado)'
+    ELSE 'ROJO ('||left(bad, 700)||')' END, false);
+EXCEPTION WHEN OTHERS THEN
+  PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
+  PERFORM set_config('probe.p1030', CASE WHEN SQLERRM LIKE 'fixture roto%' THEN 'ROJO ('||SQLERRM||')'
+    ELSE 'FALLO ('||SQLSTATE||' '||SQLERRM||')' END, false);
+END $$;
+SELECT set_config('role', 'none', true);
+
+-- ---------------- P1031 identidad existente (paciente.qa) -> 42501 propagado, sin filas ----------------
+DO $$
+DECLARE a_pac uuid; gt uuid; res text; n0 text; n1 text; pre text; post text; bad text := '';
+BEGIN
+  IF to_regprocedure('public.completar_registro_proveedor()') IS NULL THEN
+    PERFORM set_config('probe.p1031', 'PENDIENTE mig 373 (completar_registro_proveedor ausente)', false);
+    RETURN;
+  END IF;
+  a_pac := (SELECT u.id FROM auth.users u WHERE lower(u.email) LIKE 'paciente.qa@%' ORDER BY u.email LIMIT 1);
+  SELECT id INTO gt FROM public.configuracion_pais WHERE codigo = 'GT' AND activo IS TRUE;
+  IF a_pac IS NULL OR gt IS NULL
+     OR NOT EXISTS (SELECT 1 FROM public.pacientes pa WHERE pa.auth_user_id = a_pac)
+     OR EXISTS (SELECT 1 FROM public.cuentas_proveedor cp WHERE cp.id = a_pac) THEN
+    PERFORM set_config('probe.p1031', 'FALLO (fixture: paciente.qa con fila en pacientes y sin cuenta de proveedor, y pais GT)', false);
+    RETURN;
+  END IF;
+  pre := pg_temp.m373_snap(a_pac);
+  BEGIN
+    PERFORM pg_temp.m373_set(a_pac, pg_temp.m373_meta(gt), true);
+    n0 := pg_temp.m373_conteos();
+    res := pg_temp.m373_como(a_pac, 'authenticated', 'SELECT public.completar_registro_proveedor()::text');
+    n1 := pg_temp.m373_conteos();
+    IF res IS DISTINCT FROM 'ERR:42501:La cuenta ya tiene una identidad en la plataforma' THEN
+      bad := bad||'paciente.qa: '||left(res, 200)||' (esperado 42501 de registrar_proveedor); '; END IF;
+    IF n1 IS DISTINCT FROM n0 THEN bad := bad||'filas nuevas ('||n0||' -> '||n1||'); '; END IF;
+    RAISE EXCEPTION 'P1031 descarte' USING ERRCODE = 'P0999';
+  EXCEPTION WHEN SQLSTATE 'P0999' THEN NULL;
+  END;
+  post := pg_temp.m373_snap(a_pac);
+  IF post IS DISTINCT FROM pre THEN bad := bad||'no quedo como estaba tras el descarte; '; END IF;
+  PERFORM set_config('probe.p1031', CASE WHEN bad = ''
+    THEN 'OK (373: paciente.qa con registro valido -> 42501 de registrar_proveedor propagado, sin filas; descartado y verificado)'
+    ELSE 'ROJO ('||left(bad, 700)||')' END, false);
+EXCEPTION WHEN OTHERS THEN
+  PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
+  PERFORM set_config('probe.p1031', CASE WHEN SQLERRM LIKE 'fixture roto%' THEN 'ROJO ('||SQLERRM||')'
+    ELSE 'FALLO ('||SQLSTATE||' '||SQLERRM||')' END, false);
+END $$;
+SELECT set_config('role', 'none', true);
+
+-- ---------------- P1032 pais DEMO 'ZZ' -> 22023 propagado, sin filas ----------------
+DO $$
+DECLARE l1 uuid; zz uuid; res text; n0 text; n1 text; pre text; post text; bad text := '';
+BEGIN
+  IF to_regprocedure('public.completar_registro_proveedor()') IS NULL THEN
+    PERFORM set_config('probe.p1032', 'PENDIENTE mig 373 (completar_registro_proveedor ausente)', false);
+    RETURN;
+  END IF;
+  l1 := pg_temp.m373_libre();
+  SELECT id INTO zz FROM public.configuracion_pais WHERE codigo = 'ZZ';
+  IF l1 IS NULL OR zz IS NULL THEN
+    PERFORM set_config('probe.p1032', 'FALLO (fixture: usuario libre '||COALESCE(left(l1::text, 8), 'NULL')||', pais ZZ '||COALESCE(left(zz::text, 8), 'NULL')||')', false);
+    RETURN;
+  END IF;
+  pre := pg_temp.m373_snap(l1);
+  BEGIN
+    PERFORM pg_temp.m373_set(l1, pg_temp.m373_meta(zz), true);
+    n0 := pg_temp.m373_conteos();
+    res := pg_temp.m373_como(l1, 'authenticated', 'SELECT public.completar_registro_proveedor()::text');
+    n1 := pg_temp.m373_conteos();
+    IF res IS DISTINCT FROM 'ERR:22023:País no válido para el registro' THEN
+      bad := bad||'pais ZZ: '||left(res, 200)||' (esperado 22023 de registrar_proveedor); '; END IF;
+    IF n1 IS DISTINCT FROM n0 THEN bad := bad||'filas nuevas ('||n0||' -> '||n1||'); '; END IF;
+    RAISE EXCEPTION 'P1032 descarte' USING ERRCODE = 'P0999';
+  EXCEPTION WHEN SQLSTATE 'P0999' THEN NULL;
+  END;
+  post := pg_temp.m373_snap(l1);
+  IF post IS DISTINCT FROM pre THEN bad := bad||'no quedo como estaba tras el descarte; '; END IF;
+  PERFORM set_config('probe.p1032', CASE WHEN bad = ''
+    THEN 'OK (373: registro con el pais DEMO ZZ -> 22023 de registrar_proveedor propagado, sin filas; descartado y verificado)'
+    ELSE 'ROJO ('||left(bad, 700)||')' END, false);
+EXCEPTION WHEN OTHERS THEN
+  PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
+  PERFORM set_config('probe.p1032', CASE WHEN SQLERRM LIKE 'fixture roto%' THEN 'ROJO ('||SQLERRM||')'
+    ELSE 'FALLO ('||SQLSTATE||' '||SQLERRM||')' END, false);
+END $$;
+SELECT set_config('role', 'none', true);
+
+-- ---------------- P1033 EXECUTE: anon y PUBLIC sin, authenticated con (catalogo + anon ejercitado) ----------------
+DO $$
+DECLARE f regprocedure; res text; bad text := '';
+BEGIN
+  f := to_regprocedure('public.completar_registro_proveedor()');
+  IF f IS NULL THEN
+    PERFORM set_config('probe.p1033', 'PENDIENTE mig 373 (completar_registro_proveedor ausente)', false);
+    RETURN;
+  END IF;
+  IF has_function_privilege('anon', f, 'EXECUTE') THEN bad := bad||'anon tiene EXECUTE; '; END IF;
+  IF EXISTS (SELECT 1 FROM pg_proc p, aclexplode(p.proacl) a WHERE p.oid = f AND a.grantee = 0 AND a.privilege_type = 'EXECUTE') THEN
+    bad := bad||'PUBLIC tiene EXECUTE; '; END IF;
+  IF NOT has_function_privilege('authenticated', f, 'EXECUTE') THEN bad := bad||'authenticated sin EXECUTE; '; END IF;
+  res := pg_temp.m373_como(NULL, 'anon', 'SELECT public.completar_registro_proveedor()::text');
+  IF split_part(res, ':', 1) <> 'ERR' OR split_part(res, ':', 2) <> '42501'
+     OR res NOT ILIKE '%permission denied for function completar_registro_proveedor%' THEN
+    bad := bad||'anon ejercitado: '||left(res, 200)||' (esperado 42501 permission denied); '; END IF;
+  PERFORM set_config('probe.p1033', CASE WHEN bad = ''
+    THEN 'OK (373: anon y PUBLIC sin EXECUTE, authenticated con EXECUTE; anon ejercitado -> 42501 permission denied)'
+    ELSE 'ROJO ('||left(bad, 700)||')' END, false);
+EXCEPTION WHEN OTHERS THEN
+  PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
+  PERFORM set_config('probe.p1033', 'FALLO ('||SQLSTATE||' '||SQLERRM||')', false);
+END $$;
+SELECT set_config('role', 'none', true);
+
 -- ===== Veredictos como result set =====
 SELECT 'P1_anon_insert_citas'              AS probe, current_setting('probe.p1', true)  AS verdict, 'BLOQUEADO' AS esperado_post_fix
 UNION ALL SELECT 'P2_medico_cancela_ajena_rpc',         current_setting('probe.p2', true),  'BLOQUEADO'
@@ -35979,6 +36369,15 @@ UNION ALL SELECT 'G372_FX_estado_hardening_textos_legales',  current_setting('pr
 UNION ALL SELECT 'P1023_textos_legales_estructura_372',  current_setting('probe.p1023', true), 'OK (372: identidad_legal DEFINER desde roles_catalogo; fija_fecha y solo_append INVOKER; 3 triggers; FK RESTRICT/RESTRICT; LG006 y ORDER BY codigo en aceptar; sin lista literal de roles; ACL de las 2 RPCs; aplicada en prod 2026-10-08 17:10 UTC; si falta: REGRESION)'
 UNION ALL SELECT 'P1024_textos_legales_regla_mensajes_372',  current_setting('probe.p1024', true), 'OK (372: LG006 x3 y farmacia.qa acepta condiciones_profesionales; rol de ambito clinica derivado de roles_catalogo; mensajes LG001 x2, LG002, LG003, LG004 x5 y LG006 exactos sin eco; aplicada en prod 2026-10-08 17:10 UTC; si falta: REGRESION)'
 UNION ALL SELECT 'P1025_textos_legales_forja_escritura_372',  current_setting('probe.p1025', true), 'OK (372: fecha forjada por service_role queda now(); uid inexistente 23503; service_role UPDATE/DELETE LG005; paciente.qa UPDATE propia 42501; aplicada en prod 2026-10-08 17:10 UTC; si falta: REGRESION)'
+UNION ALL SELECT 'M373_FX_helpers_alta_diferida',  current_setting('probe.m373_fx', true), 'OK (helpers de pg_temp creados; 373 ausente antes del apply, presente despues)'
+UNION ALL SELECT 'P1026_completar_registro_sin_sesion_373',  current_setting('probe.p1026', true), 'OK (373: sin sesion -> RP001; antes del apply: PENDIENTE mig 373)'
+UNION ALL SELECT 'P1027_completar_registro_sin_confirmar_373',  current_setting('probe.p1027', true), 'OK (373: correo sin confirmar -> RP002, sin filas; antes del apply: PENDIENTE mig 373)'
+UNION ALL SELECT 'P1028_completar_registro_sin_pendiente_373',  current_setting('probe.p1028', true), 'OK (373: sin registro_empresa o no-objeto -> RP003 x3, sin filas; antes del apply: PENDIENTE mig 373)'
+UNION ALL SELECT 'P1029_completar_registro_invalido_373',  current_setting('probe.p1029', true), 'OK (373: 4 registros invalidos -> RP004 x4, sin filas; antes del apply: PENDIENTE mig 373)'
+UNION ALL SELECT 'P1030_completar_registro_alta_idempotente_373',  current_setting('probe.p1030', true), 'OK (373: alta -> empresa pendiente + cuenta admin con email de auth; segunda llamada mismo uuid; antes del apply: PENDIENTE mig 373)'
+UNION ALL SELECT 'P1031_completar_registro_identidad_previa_373',  current_setting('probe.p1031', true), 'OK (373: paciente.qa -> 42501 de registrar_proveedor, sin filas; antes del apply: PENDIENTE mig 373)'
+UNION ALL SELECT 'P1032_completar_registro_pais_zz_373',  current_setting('probe.p1032', true), 'OK (373: pais ZZ -> 22023 de registrar_proveedor, sin filas; antes del apply: PENDIENTE mig 373)'
+UNION ALL SELECT 'P1033_completar_registro_execute_373',  current_setting('probe.p1033', true), 'OK (373: anon y PUBLIC sin EXECUTE, authenticated con EXECUTE; anon ejercitado 42501; antes del apply: PENDIENTE mig 373)'
 UNION ALL SELECT 'P1010_campana_vistas_sin_update_367',  current_setting('probe.p1010', true), 'OK (367: INSERT 1; ON CONFLICT DO NOTHING 0 sin error; DO UPDATE y UPDATE 42501; otro paciente 0; antes de la 367: PENDIENTE)'
 UNION ALL SELECT 'P1009_datos_bancarios_acotados_366',  current_setting('probe.p1009', true), 'OK (366: cuenta GT solo super_admin/admin_pais GT/proveedores GT; checkout 1 fila; config 21 super_admin y 14 el resto, admin_pais incluido; antes de la 366: PENDIENTE)'
 UNION ALL SELECT 'DET_p1009',  'DET ' || COALESCE(NULLIF(current_setting('probe.p1009_det', true), ''), '(sin dato)'), 'DET (detalle de P1009, no es probe)'
