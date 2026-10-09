@@ -116,10 +116,17 @@ Stack: React + Vite + TypeScript, Supabase / Postgres, deploy en Vercel, repo en
   van solo en chunks lazy; lo que carga el chunk de entrada (guard, `src/lib/textosLegales.ts`) importa
   `@/legal/catalogo`, nunca `@/legal`; nada de `manualChunks` para libs de páginas lazy (la forma objeto arrastra
   `react/jsx-runtime` a un chunk precargado desde index.html); verificación en `tmp/gl02_front/notas.md` y
-  `chunks_md.py`. **Pendiente:** push de los commits locales (el PR #56 está en d8f5251); prueba del gate en
-  preview con `exigible = true` por una ventana corta, usando paciente.qa, medico.qa, farmacia.qa y admin.qa más una sola alta QA-MANUAL de paciente (decisión de Oscar: esas cuentas quedan con
-  aceptaciones permanentes, no borrables por la FK RESTRICT de la 372), y volver `exigible=false` al cerrar la prueba;
-  orden de deploy: la 371 y la 372 ya están en prod, así que el front puede ir apenas se apruebe. **Nits/backlog del
+  `chunks_md.py`. **Prueba del gate en preview HECHA (9-oct-2026):** ventana con `exigible = true` de 14:38:56 a
+  15:08:47 UTC (`tmp/gl02_prueba/on.sql` sha256 e90bded6… y `off.sql` 442ed6ee…, los dos con precondición, autochequeo
+  y dry-run); verificada en sesión independiente antes y después del off. Resultado: médico, farmacia, paciente e
+  interno vieron el conjunto correcto (3 textos profesional; 3 paciente + la declaración; 2 interno); la URL manual queda
+  bloqueada; cerrar sesión lleva al login del portal; no se vuelve a pedir tras F5 ni tras re-login; el alta QA-MANUAL
+  de paciente exige la casilla. Quedan 14 aceptaciones permanentes, todas por vía 'login': medico.qa, paciente.qa,
+  farmacia.qa, adminpais.qa y el paciente "QA-MANUAL GL02". El interno se probó con adminpais.qa: admin.qa NO existe en
+  auth.users (el super_admin vivo es superadmin@ezpayconnect.com, con 2 pendientes y sin aceptar). **Pendiente:** push
+  de los commits locales; decisión de Oscar de sacar el PR #56 de borrador y mergear (la 371 y la 372 ya están en prod y
+  con `exigible = false` el gate no hace nada hasta que lleguen los datos 5.1); al cargar los datos 5.1, subir la
+  versión y poner `exigible = true` por migración. **Nits/backlog del
   front:** título duplicado h1 (página) / h2 (.md) en `TextoLegalPage`; con LG003 `/aceptar-textos` desmarca las
   casillas; `esRutaExenta` compara la ruta exacta (mayúsculas y barra final no eximen; más restrictivo); log doble en
   `aceptarEnRegistro` cuando la RPC falla (los dos sin PII); `MustChangePasswordGuard` sin test; `handle_new_paciente`
@@ -136,7 +143,13 @@ Stack: React + Vite + TypeScript, Supabase / Postgres, deploy en Vercel, repo en
   especificado; decisión de producto de Oscar); H9 `/planes` (PlanesPage) no está exenta (falla hacia el lado seguro);
   code-review #3 el mapa portal → login de `loginPara` duplica el de los *PrivateRoute; #5 la lista de logins/registros
   vive en 3 lugares (guard, su test y `App.tsx`); #6 el test que lee `App.tsx` solo mira `path="…"` absolutos y depende
-  de `process.cwd()`.)
+  de `process.cwd()`. Prueba en preview (9-oct): Confirm email está ON en prod (el diseño lo daba OFF, medido el
+  24-sep), así que la vía 'registro' del alta de paciente casi nunca se graba (confirma R1); **PROD, previo a GL-02:** el
+  paciente que confirma el correo cae logueado en med.ezpayconnect.com y `RootRedirect` lo manda a "Tu cuenta todavía no
+  tiene un panel asignado (sin rol)" (falta `emailRedirectTo` a /paciente en el signUp del paciente y/o que
+  `RootRedirect` reconozca al paciente); esa pantalla dice "Escribile" (voseo que quedó fuera del barrido voseo → tú);
+  `/aceptar-textos` ordena por código (condiciones primero), lo natural es términos → privacidad → el resto; la hoja de
+  cuentas QA del Project lista admin.qa, que no existe.)
   (370 = familia 2, ÚLTIMO paso: EXECUTE de funciones sin PUBLIC ni anon — **APLICADA en prod el 2026-10-07 a las 19:18 UTC
   (19:18:26.914 → 19:18:28.737)**, sha256 del archivo 529777fd…cddbf7, y verificada VERDE en sesión independiente: harness
   post370 1102 filas / 1011 bloques DO / 11 rojas de deuda, P1015/P1016/P1017/P739/P741/P1000 en OK. **Bug vivo cerrado:**
