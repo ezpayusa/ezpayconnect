@@ -28,10 +28,23 @@ export function nextSeguro(raw: string | null): string {
   return raw
 }
 
-/** Login del portal al que pertenece el destino (review PR #56 H4): al cerrar sesión o sin sesión se vuelve ahí. */
+// Portal → login. Tiene que coincidir con el login al que manda cada *PrivateRoute (code-review #3): el repartidor
+// vuelve a /farmacia/login (RepartidorPrivateRoute) y el visitador a /proveedor/login (VisitadorPrivateRoute).
+const LOGIN_POR_PORTAL: [string, string][] = [
+  ['/paciente', '/paciente/login'],
+  ['/proveedor', '/proveedor/login'],
+  ['/farmacia', '/farmacia/login'],
+  ['/laboratorio', '/laboratorio/login'],
+  ['/repartidor', '/farmacia/login'],
+  ['/visitador', '/proveedor/login'],
+]
+
+/** Login del portal al que pertenece el destino (review PR #56 H4/H6/H7): al cerrar sesión o sin sesión se vuelve ahí. */
 export function loginPara(destino: string): string {
-  for (const portal of ['/paciente', '/proveedor', '/farmacia', '/laboratorio']) {
-    if (destino === portal || destino.startsWith(portal + '/')) return `${portal}/login`
+  // H7: la ruta sin query ni hash ('/paciente?tab=x' es del portal paciente).
+  const ruta = destino.split(/[?#]/, 1)[0]
+  for (const [portal, login] of LOGIN_POR_PORTAL) {
+    if (ruta === portal || ruta.startsWith(portal + '/')) return login
   }
   return '/login'
 }

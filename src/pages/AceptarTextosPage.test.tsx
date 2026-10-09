@@ -236,6 +236,16 @@ describe('loginPara (review PR #56 H4)', () => {
     ['/dashboard', '/login'],
     ['/pacientes', '/login'],
     ['/pacientesx', '/login'],
+    // H6: mismos logins que RepartidorPrivateRoute y VisitadorPrivateRoute.
+    ['/repartidor', '/farmacia/login'],
+    ['/repartidor/entregas/51', '/farmacia/login'],
+    ['/visitador', '/proveedor/login'],
+    ['/visitador/ruta', '/proveedor/login'],
+    // H7: se ignoran query y hash.
+    ['/paciente?tab=x', '/paciente/login'],
+    ['/farmacia#a', '/farmacia/login'],
+    ['/pacientes?x=1', '/login'],
+    ['/repartidorx', '/login'],
   ])('%s → %s', (destino, esperado) => {
     expect(loginPara(destino)).toBe(esperado)
   })
