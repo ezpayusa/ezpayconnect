@@ -10,6 +10,7 @@ import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card'
 import { Stethoscope, Loader2 } from 'lucide-react'
+import { EnlacesLegales } from '@/components/legal/EnlacesLegales'
 
 export default function LoginPage() {
   const navigate = useNavigate()
@@ -119,6 +120,8 @@ export default function LoginPage() {
             <p className="text-center mt-4 text-sm text-muted-foreground">
               El acceso a EzPayConnect es por invitación.
             </p>
+            {/* GL-02: links a los textos legales */}
+            <EnlacesLegales para="profesional" className="mt-6" />
           </CardContent>
         </Card>
       </div>

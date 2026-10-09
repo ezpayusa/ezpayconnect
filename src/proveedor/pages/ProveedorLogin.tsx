@@ -10,6 +10,7 @@ import { aceptarInvitacionPendiente } from '@/lib/invitacionProveedor'
 import { enviarReset } from '@/lib/enviarReset'
 import { MapPin, Loader2 } from 'lucide-react'
 import { toast } from 'sonner'
+import { EnlacesLegales } from '@/components/legal/EnlacesLegales'
 
 export default function ProveedorLogin() {
   const navigate = useNavigate()
@@ -116,6 +117,8 @@ export default function ProveedorLogin() {
           <div className="mt-4 text-center text-xs text-muted-foreground">
             <Link to="/login" className="hover:underline">← Volver al portal médico</Link>
           </div>
+          {/* GL-02: links a los textos legales */}
+          <EnlacesLegales para="profesional" className="mt-6" />
         </CardContent>
       </Card>
     </div>

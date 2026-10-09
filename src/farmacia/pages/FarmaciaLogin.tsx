@@ -10,6 +10,7 @@ import { aceptarInvitacionPendiente } from '@/lib/invitacionProveedor'
 import { enviarReset } from '@/lib/enviarReset'
 import { Pill, Loader2 } from 'lucide-react'
 import { toast } from 'sonner'
+import { EnlacesLegales } from '@/components/legal/EnlacesLegales'
 
 export default function FarmaciaLogin() {
   const navigate = useNavigate()
@@ -97,6 +98,8 @@ export default function FarmaciaLogin() {
           <div className="mt-4 text-center text-xs text-muted-foreground">
             <Link to="/login" className="hover:underline">← Volver al portal médico</Link>
           </div>
+          {/* GL-02: links a los textos legales */}
+          <EnlacesLegales para="profesional" className="mt-6" />
         </CardContent>
       </Card>
     </div>
