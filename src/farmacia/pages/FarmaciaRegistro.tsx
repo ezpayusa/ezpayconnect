@@ -8,6 +8,8 @@ import { useProveedorAuth } from '@/proveedor/hooks/useProveedorAuth'
 import { usePaisesRegistroProveedor } from '@/proveedor/hooks/usePaisesRegistroProveedor'
 import { Pill, Loader2 } from 'lucide-react'
 import { toast } from 'sonner'
+import { CasillaTextosLegales, textosPara } from '@/components/legal/CasillaTextosLegales'
+import { aceptarEnRegistro } from '@/lib/textosLegales'
 
 // Autorregistro de una farmacia como empresa proveedora tipo='farmacia'.
 // El representante queda como 'admin' (vía registrar_proveedor). La promoción de
@@ -17,6 +19,7 @@ export default function FarmaciaRegistro() {
   const { register } = useProveedorAuth()
   const [loading, setLoading] = useState(false)
   const [step, setStep] = useState<1 | 2>(1)
+  const [acepta, setAcepta] = useState(false)
   const paises = usePaisesRegistroProveedor()
 
   const [form, setForm] = useState({
@@ -35,11 +38,13 @@ export default function FarmaciaRegistro() {
       setStep(2)
       return
     }
+    // GL-02: sin la casilla no hay alta (el botón ya está deshabilitado; esto cubre el Enter en un input).
+    if (!acepta) return
     if (form.password !== form.confirmPassword) { toast.error('Las contraseñas no coinciden'); return }
     if (form.password.length < 6) { toast.error('La contraseña debe tener al menos 6 caracteres'); return }
 
     setLoading(true)
-    const { error } = await register(form.email, form.password, form.nombre_completo, {
+    const resultado = await register(form.email, form.password, form.nombre_completo, {
       nombre_empresa: form.nombre_empresa,
       tipo: 'farmacia',
       ruc_nit: form.ruc_nit || null,
@@ -49,6 +54,9 @@ export default function FarmaciaRegistro() {
       email_contacto: form.email_contacto,
       telefono: form.telefono || null,
     })
+    const { error } = resultado
+    // Best-effort: solo graba si la sesión es la del usuario recién creado; si no, la pide el gate en el primer login.
+    if (!error) await aceptarEnRegistro(textosPara('profesional'), 'userId' in resultado ? resultado.userId : null)
     setLoading(false)
     if (error) { toast.error('Error al registrar', { description: error.message }); return }
     toast.success('Farmacia registrada. Ya puedes iniciar sesión.')
@@ -125,9 +133,10 @@ export default function FarmaciaRegistro() {
                     <Input type="password" value={form.confirmPassword} onChange={(e) => update('confirmPassword', e.target.value)} required />
                   </div>
                 </div>
+                <CasillaTextosLegales para="profesional" checked={acepta} onChange={setAcepta} disabled={loading} id="acepta-textos" />
                 <div className="flex gap-3 pt-2">
                   <Button type="button" variant="outline" className="flex-1" onClick={() => setStep(1)}>Atrás</Button>
-                  <Button type="submit" className="flex-1 bg-[#B45309] hover:bg-[#92400e]" disabled={loading}>
+                  <Button type="submit" className="flex-1 bg-[#B45309] hover:bg-[#92400e]" disabled={loading || !acepta}>
                     {loading ? <Loader2 className="h-4 w-4 animate-spin mr-2" /> : null} Registrar farmacia
                   </Button>
                 </div>
