@@ -5,6 +5,7 @@ import { supabase } from '@/lib/supabase'
 import { Button } from '@/components/ui/button'
 import type { TextoLegal } from '@/legal/catalogo'
 import { aceptarTextos, mensajeErrorTextosLegales, obtenerPendientes } from '@/lib/textosLegales'
+import { DECLARACION_MAYORIA_EDAD } from '@/components/legal/CasillaTextosLegales'
 
 // GL-02: pantalla /aceptar-textos. El gate la usa cuando la cuenta tiene textos legales pendientes (versión vigente sin
 // aceptar). Falla cerrado: si no se puede saber qué falta aceptar, no deja pasar (no hay "Más tarde"); la única salida
@@ -27,6 +28,14 @@ export function nextSeguro(raw: string | null): string {
   return raw
 }
 
+/** Login del portal al que pertenece el destino (review PR #56 H4): al cerrar sesión o sin sesión se vuelve ahí. */
+export function loginPara(destino: string): string {
+  for (const portal of ['/paciente', '/proveedor', '/farmacia', '/laboratorio']) {
+    if (destino === portal || destino.startsWith(portal + '/')) return `${portal}/login`
+  }
+  return '/login'
+}
+
 type Estado = 'cargando' | 'falla' | 'lista'
 
 export default function AceptarTextosPage() {
@@ -37,6 +46,9 @@ export default function AceptarTextosPage() {
   const [estado, setEstado] = useState<Estado>('cargando')
   const [pendientes, setPendientes] = useState<TextoLegal[]>([])
   const [marcados, setMarcados] = useState<Set<string>>(new Set())
+  // D-4 (review PR #56 H3): con el consentimiento de salud pendiente, la declaración de mayoría de edad es obligatoria.
+  // Es condición de UI, igual que en el alta: no viaja a la RPC.
+  const [declara, setDeclara] = useState(false)
   const [enviando, setEnviando] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const vivo = useRef(true)
@@ -55,6 +67,7 @@ export default function AceptarTextosPage() {
     }
     setPendientes(r.pendientes)
     setMarcados(new Set())
+    setDeclara(false)
     setEstado('lista')
   }, [navigate, destino])
 
@@ -63,7 +76,7 @@ export default function AceptarTextosPage() {
     supabase.auth.getSession().then(({ data }) => {
       if (!vivo.current) return
       if (!data.session?.user) {
-        navigate('/', { replace: true })
+        navigate(loginPara(destino), { replace: true })
         return
       }
       void cargar()
@@ -71,7 +84,7 @@ export default function AceptarTextosPage() {
     return () => {
       vivo.current = false
     }
-  }, [navigate, cargar])
+  }, [navigate, cargar, destino])
 
   const alternar = (codigo: string, checked: boolean) => {
     setMarcados((prev) => {
@@ -83,9 +96,11 @@ export default function AceptarTextosPage() {
   }
 
   const todasMarcadas = pendientes.length > 0 && pendientes.every((t) => marcados.has(t.codigo))
+  const pideDeclaracion = pendientes.some((t) => t.codigo === 'consentimiento_salud')
+  const puedeAceptar = todasMarcadas && (!pideDeclaracion || declara)
 
   const aceptar = async () => {
-    if (!todasMarcadas || enviando) return
+    if (!puedeAceptar || enviando) return
     setEnviando(true)
     setError(null)
     const r = await aceptarTextos(
@@ -105,7 +120,7 @@ export default function AceptarTextosPage() {
 
   const cerrarSesion = async () => {
     await supabase.auth.signOut()
-    navigate('/', { replace: true })
+    navigate(loginPara(destino), { replace: true })
   }
 
   return (
@@ -161,6 +176,21 @@ export default function AceptarTextosPage() {
                 )
               })}
             </ul>
+            {pideDeclaracion && (
+              <div className="mb-5 flex items-start gap-2 border-t pt-4">
+                <input
+                  type="checkbox"
+                  id="aceptar-declaracion-mayoria"
+                  checked={declara}
+                  disabled={enviando}
+                  onChange={(e) => setDeclara(e.target.checked)}
+                  className="mt-0.5 h-4 w-4 shrink-0 accent-[#1E5C8E] disabled:cursor-not-allowed"
+                />
+                <label htmlFor="aceptar-declaracion-mayoria" className="text-sm leading-snug text-[#1a2a3a]">
+                  {DECLARACION_MAYORIA_EDAD}
+                </label>
+              </div>
+            )}
             {error && (
               <p role="alert" className="mb-4 rounded-md bg-red-50 px-3 py-2 text-sm text-red-700">
                 {error}
@@ -168,7 +198,7 @@ export default function AceptarTextosPage() {
             )}
             <Button
               onClick={() => void aceptar()}
-              disabled={!todasMarcadas || enviando}
+              disabled={!puedeAceptar || enviando}
               className="w-full bg-[#1E5C8E] hover:bg-[#164a70]"
             >
               {enviando && <Loader2 className="h-4 w-4 mr-2 animate-spin" />}

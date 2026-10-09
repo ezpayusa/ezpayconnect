@@ -27,10 +27,12 @@ vi.mock('@/lib/textosLegales', async (importOriginal) => {
   }
 })
 
-const { default: AceptarTextosPage, nextSeguro } = await import('./AceptarTextosPage')
+const { default: AceptarTextosPage, nextSeguro, loginPara } = await import('./AceptarTextosPage')
+const { DECLARACION_MAYORIA_EDAD } = await import('@/components/legal/CasillaTextosLegales')
 
 const terminos = TEXTOS_LEGALES.find((t) => t.codigo === 'terminos')!
 const privacidad = TEXTOS_LEGALES.find((t) => t.codigo === 'privacidad')!
+const consentimiento = TEXTOS_LEGALES.find((t) => t.codigo === 'consentimiento_salud')!
 
 function Ubicacion() {
   const l = useLocation()
@@ -73,10 +75,10 @@ describe('nextSeguro', () => {
 })
 
 describe('AceptarTextosPage', () => {
-  it('sin sesión → navega a / sin consultar pendientes', async () => {
+  it('sin sesión → navega al login del destino (/medico → /login) sin consultar pendientes', async () => {
     sesionActual = null
     montar()
-    expect(await ubicacion()).toBe('/')
+    expect(await ubicacion()).toBe('/login')
     expect(obtenerPendientes).not.toHaveBeenCalled()
   })
 
@@ -149,12 +151,108 @@ describe('AceptarTextosPage', () => {
     await waitFor(() => expect(obtenerPendientes).toHaveBeenCalledTimes(2))
   })
 
-  it('Cerrar sesión → signOut y navega a /', async () => {
+  it('Cerrar sesión → signOut y navega al login del destino (/medico → /login)', async () => {
     obtenerPendientes.mockResolvedValue({ ok: true, pendientes: [terminos] })
     montar()
     await screen.findByRole('checkbox')
     fireEvent.click(screen.getByRole('button', { name: 'Cerrar sesión' }))
-    expect(await ubicacion()).toBe('/')
+    expect(await ubicacion()).toBe('/login')
     expect(signOut).toHaveBeenCalledTimes(1)
+  })
+})
+
+describe('AceptarTextosPage: declaración de mayoría de edad (review PR #56 H3)', () => {
+  const declaracion = () => screen.queryByRole('checkbox', { name: DECLARACION_MAYORIA_EDAD })
+  const boton = () => screen.getByRole('button', { name: 'Aceptar y continuar' })
+
+  it('con consentimiento_salud pendiente aparece la declaración; sin marcarla el botón sigue deshabilitado y no acepta', async () => {
+    obtenerPendientes.mockResolvedValue({ ok: true, pendientes: [terminos, consentimiento] })
+    montar()
+    await screen.findAllByRole('checkbox')
+    expect(declaracion()).not.toBeNull()
+    fireEvent.click(screen.getByRole('checkbox', { name: new RegExp(terminos.titulo) }))
+    fireEvent.click(screen.getByRole('checkbox', { name: new RegExp(consentimiento.titulo) }))
+    expect(declaracion()).not.toBeChecked()
+    expect(boton()).toBeDisabled()
+    fireEvent.click(boton())
+    await new Promise((r) => setTimeout(r, 0))
+    expect(aceptarTextos).not.toHaveBeenCalled()
+  })
+
+  it('marcando también la declaración → acepta exactamente los pendientes (sin campos nuevos) y navega al next', async () => {
+    obtenerPendientes.mockResolvedValue({ ok: true, pendientes: [terminos, consentimiento] })
+    aceptarTextos.mockResolvedValue({ ok: true, data: { aceptados: 2, ya_aceptados: 0, pendientes: [] } })
+    montar()
+    await screen.findAllByRole('checkbox')
+    fireEvent.click(screen.getByRole('checkbox', { name: new RegExp(terminos.titulo) }))
+    fireEvent.click(screen.getByRole('checkbox', { name: new RegExp(consentimiento.titulo) }))
+    fireEvent.click(declaracion()!)
+    expect(boton()).toBeEnabled()
+    fireEvent.click(boton())
+    expect(await ubicacion()).toBe('/medico')
+    expect(aceptarTextos).toHaveBeenCalledWith(
+      [
+        { codigo: 'terminos', version: '0.1' },
+        { codigo: 'consentimiento_salud', version: '0.1' },
+      ],
+      'login',
+    )
+  })
+
+  it('sin consentimiento_salud pendiente no hay declaración; marcar los textos alcanza', async () => {
+    obtenerPendientes.mockResolvedValue({ ok: true, pendientes: [terminos, privacidad] })
+    montar()
+    const casillas = await screen.findAllByRole('checkbox')
+    expect(casillas).toHaveLength(2)
+    expect(declaracion()).toBeNull()
+    fireEvent.click(casillas[0])
+    fireEvent.click(casillas[1])
+    expect(boton()).toBeEnabled()
+  })
+
+  it('LG003 → al recargar los pendientes la declaración vuelve a quedar desmarcada', async () => {
+    obtenerPendientes.mockResolvedValue({ ok: true, pendientes: [consentimiento] })
+    aceptarTextos.mockResolvedValue({ ok: false, error: { code: 'LG003', message: 'La versión ya no está vigente.' } })
+    montar()
+    await screen.findAllByRole('checkbox')
+    fireEvent.click(screen.getByRole('checkbox', { name: new RegExp(consentimiento.titulo) }))
+    fireEvent.click(declaracion()!)
+    expect(declaracion()).toBeChecked()
+    fireEvent.click(boton())
+    await waitFor(() => expect(obtenerPendientes).toHaveBeenCalledTimes(2))
+    await waitFor(() => expect(declaracion()).not.toBeChecked())
+    expect(boton()).toBeDisabled()
+  })
+})
+
+describe('loginPara (review PR #56 H4)', () => {
+  it.each([
+    ['/paciente', '/paciente/login'],
+    ['/paciente/recetas', '/paciente/login'],
+    ['/proveedor/x', '/proveedor/login'],
+    ['/farmacia', '/farmacia/login'],
+    ['/laboratorio/ordenes', '/laboratorio/login'],
+    ['/', '/login'],
+    ['/dashboard', '/login'],
+    ['/pacientes', '/login'],
+    ['/pacientesx', '/login'],
+  ])('%s → %s', (destino, esperado) => {
+    expect(loginPara(destino)).toBe(esperado)
+  })
+
+  it('Cerrar sesión con next=/paciente/recetas → signOut y /paciente/login', async () => {
+    obtenerPendientes.mockResolvedValue({ ok: true, pendientes: [terminos] })
+    montar('/aceptar-textos?next=' + encodeURIComponent('/paciente/recetas'))
+    await screen.findByRole('checkbox')
+    fireEvent.click(screen.getByRole('button', { name: 'Cerrar sesión' }))
+    expect(await ubicacion()).toBe('/paciente/login')
+    expect(signOut).toHaveBeenCalledTimes(1)
+  })
+
+  it('sin sesión con next=/farmacia/inventario → /farmacia/login', async () => {
+    sesionActual = null
+    montar('/aceptar-textos?next=' + encodeURIComponent('/farmacia/inventario'))
+    expect(await ubicacion()).toBe('/farmacia/login')
+    expect(obtenerPendientes).not.toHaveBeenCalled()
   })
 })
