@@ -108,7 +108,8 @@ export function useWebAppAuth() {
       return { error: { message: 'No se pudo crear el usuario. Intenta de nuevo.' } }
     }
 
-    return { error: null }
+    // userId: uid del usuario recién creado, para atar a él la aceptación de textos legales del alta (GL-02).
+    return { error: null, userId: data.user.id }
   }
 
   const logout = async () => {
