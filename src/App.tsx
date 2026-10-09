@@ -29,6 +29,7 @@ import MedicoPrivateRoute from '@/medico/components/MedicoPrivateRoute'
 import { ClinicaLayout } from '@/clinica/layout/ClinicaLayout'
 import { RequiereRolClinica } from '@/clinica/components/RequiereRolClinica'
 import MustChangePasswordGuard from '@/components/MustChangePasswordGuard'
+import TextosLegalesGuard from '@/components/TextosLegalesGuard'
 
 // === UI GLOBAL (eager) ===
 import { Toaster } from '@/components/ui/sonner'
@@ -284,6 +285,7 @@ function App() {
     <BrowserRouter>
       <Suspense fallback={<Spinner />}>
       <MustChangePasswordGuard />
+      <TextosLegalesGuard />
       <Routes>
         <Route path="/notificaciones" element={<PrivateLayout><NotificacionesPage /></PrivateLayout>} />
         <Route path="/registro-medico" element={<RegistroMedicoPage />} />
