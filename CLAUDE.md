@@ -96,8 +96,9 @@ Stack: React + Vite + TypeScript, Supabase / Postgres, deploy en Vercel, repo en
   `register` de `useProveedorAuth`) · 0841d45 lab clínico · 12f474e proveedor · 54795a3 visitador · 802951b médico por
   invitación (solo UI) · e339dbb clínica por invitación (solo UI) · 5ba47c4 `EnlacesLegales` · f0961de links en los 5
   logins. Review #56 ronda 1: 613905e `esRutaExenta` con lista exacta (H1) · 7994b77 declaración de mayoría de edad y
-  `loginPara` en `/aceptar-textos` (H3/H4). **Decisiones:** rutas exentas del guard = lista EXACTA de 19 (las 7 fijas
-  (/aceptar-textos, /set-password, /confirmar-receta y las 4 públicas) y los 12 logins/registros públicos) + `/planes-*` a
+  `loginPara` en `/aceptar-textos` (H3/H4). Review #56 ronda 2: 0cc3584 `loginPara` (H6/H7: /repartidor →
+  /farmacia/login y /visitador → /proveedor/login, igual que sus *PrivateRoute; ignora query y hash). **Decisiones:**
+  rutas exentas del guard = lista EXACTA de 19 (las 7 fijas (/aceptar-textos, /set-password, /confirmar-receta y las 4 públicas) y los 12 logins/registros públicos) + `/planes-*` a
   nivel raíz; la regla vieja por segmento (`login`, `registro`, `registro-*`) eximía rutas privadas con parámetro, p. ej.
   /pacientes/login → /pacientes/:id (H1). Una ruta pública nueva de login o registro se agrega a mano; si falta, falla
   hacia el lado seguro, y el test del guard lee `App.tsx` y lo detecta. D-4 en `/aceptar-textos` (decisión de Oscar):
@@ -109,15 +110,14 @@ Stack: React + Vite + TypeScript, Supabase / Postgres, deploy en Vercel, repo en
   uid recién creado y nunca lanza ('grabado' | 'omitido' | 'fallo'); en visitador va después de
   `aceptarInvitacionPendiente()` (la membresía nace ahí; antes, LG006); médico y clínica por invitación = casilla solo de
   UI (la edge crea el usuario en el servidor; lo graba el guard en el primer login); `/login` usa la variante profesional
-  (los internos ven un link de más; no cambia lo exigido, que decide la base). **Métricas:** vitest 57 archivos / 598
-  tests; `tsc -p tsconfig.app.json` = 74; chunk de entrada 803.89 kB (techo 805 kB; 800.07 kB antes del guard); los .md
+  (los internos ven un link de más; no cambia lo exigido, que decide la base). **Métricas:** vitest 57 archivos / 606
+  tests; `tsc -p tsconfig.app.json` = 74; chunk de entrada 804.06 kB (techo 805 kB; 800.07 kB antes del guard); los .md
   legales solo en el chunk lazy de `TextoLegalPage`. **Regla de bundle:** el stack de markdown y el contenido de los .md
   van solo en chunks lazy; lo que carga el chunk de entrada (guard, `src/lib/textosLegales.ts`) importa
   `@/legal/catalogo`, nunca `@/legal`; nada de `manualChunks` para libs de páginas lazy (la forma objeto arrastra
   `react/jsx-runtime` a un chunk precargado desde index.html); verificación en `tmp/gl02_front/notas.md` y
-  `chunks_md.py`. **Pendiente:** push de 613905e y 7994b77 (el PR #56 está en d8f5251); re-review ronda 2 (misma
-  sesión revisora); prueba del gate en preview con `exigible = true` por una ventana corta, usando paciente.qa,
-  medico.qa, farmacia.qa y admin.qa más una sola alta QA-MANUAL de paciente (decisión de Oscar: esas cuentas quedan con
+  `chunks_md.py`. **Pendiente:** push de los commits locales (el PR #56 está en d8f5251); prueba del gate en
+  preview con `exigible = true` por una ventana corta, usando paciente.qa, medico.qa, farmacia.qa y admin.qa más una sola alta QA-MANUAL de paciente (decisión de Oscar: esas cuentas quedan con
   aceptaciones permanentes, no borrables por la FK RESTRICT de la 372), y volver `exigible=false` al cerrar la prueba;
   orden de deploy: la 371 y la 372 ya están en prod, así que el front puede ir apenas se apruebe. **Nits/backlog del
   front:** título duplicado h1 (página) / h2 (.md) en `TextoLegalPage`; con LG003 `/aceptar-textos` desmarca las
@@ -131,7 +131,12 @@ Stack: React + Vite + TypeScript, Supabase / Postgres, deploy en Vercel, repo en
   en el query (cae a '/', lado seguro); R5 con LG003 el banner de error queda puesto tras recargar; R6 Enter sin la
   casilla vuelve en silencio, sin toast; R7 el guard se re-suscribe a auth en cada navegación y la RPC sale dos veces
   por gate; R8 markup del link legal repetido en 3 componentes; R9 el clear de SIGNED_OUT del guard es redundante con
-  `check(null)`; test a de `/aceptar-textos`: el candado interno de `aceptar` no se ejercita aparte del botón.)
+  `check(null)`; test a de `/aceptar-textos`: el candado interno de `aceptar` no se ejercita aparte del botón. Ronda 2:
+  H8 con solo terminos/privacidad pendientes, el paciente acepta sin ver la declaración de mayoría de edad (cumple lo
+  especificado; decisión de producto de Oscar); H9 `/planes` (PlanesPage) no está exenta (falla hacia el lado seguro);
+  code-review #3 el mapa portal → login de `loginPara` duplica el de los *PrivateRoute; #5 la lista de logins/registros
+  vive en 3 lugares (guard, su test y `App.tsx`); #6 el test que lee `App.tsx` solo mira `path="…"` absolutos y depende
+  de `process.cwd()`.)
   (370 = familia 2, ÚLTIMO paso: EXECUTE de funciones sin PUBLIC ni anon — **APLICADA en prod el 2026-10-07 a las 19:18 UTC
   (19:18:26.914 → 19:18:28.737)**, sha256 del archivo 529777fd…cddbf7, y verificada VERDE en sesión independiente: harness
   post370 1102 filas / 1011 bloques DO / 11 rojas de deuda, P1015/P1016/P1017/P739/P741/P1000 en OK. **Bug vivo cerrado:**
