@@ -10,6 +10,7 @@ import { Pill, Loader2 } from 'lucide-react'
 import { toast } from 'sonner'
 import { CasillaTextosLegales, textosPara } from '@/components/legal/CasillaTextosLegales'
 import { aceptarEnRegistro } from '@/lib/textosLegales'
+import { MENSAJE_CONFIRMA_CORREO } from '@/proveedor/lib/registroDiferido'
 
 // Autorregistro de una farmacia como empresa proveedora tipo='farmacia'.
 // El representante queda como 'admin' (vía registrar_proveedor). La promoción de
@@ -59,7 +60,11 @@ export default function FarmaciaRegistro() {
     if (!error) await aceptarEnRegistro(textosPara('profesional'), 'userId' in resultado ? resultado.userId : null)
     setLoading(false)
     if (error) { toast.error('Error al registrar', { description: error.message }); return }
-    toast.success('Farmacia registrada. Ya puedes iniciar sesión.')
+    if ('pendienteConfirmacion' in resultado && resultado.pendienteConfirmacion === true) {
+      toast.success(MENSAJE_CONFIRMA_CORREO)
+    } else {
+      toast.success('Farmacia registrada. Ya puedes iniciar sesión.')
+    }
     navigate('/farmacia/login')
   }
 

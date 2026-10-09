@@ -10,6 +10,7 @@ import { MapPin, Loader2 } from 'lucide-react'
 import { toast } from 'sonner'
 import { CasillaTextosLegales, textosPara } from '@/components/legal/CasillaTextosLegales'
 import { aceptarEnRegistro } from '@/lib/textosLegales'
+import { MENSAJE_CONFIRMA_CORREO } from '@/proveedor/lib/registroDiferido'
 
 const tiposEmpresa = [
   { value: 'farmacia', label: 'Farmacia' },
@@ -85,6 +86,9 @@ export default function ProveedorRegistro() {
 
     if (error) {
       toast.error('Error al registrar', { description: error.message })
+    } else if ('pendienteConfirmacion' in resultado && resultado.pendienteConfirmacion === true) {
+      toast.success(MENSAJE_CONFIRMA_CORREO)
+      navigate('/proveedor/login')
     } else {
       toast.success('Empresa registrada. Tu cuenta está en revisión.')
       navigate('/proveedor/login')

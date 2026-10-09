@@ -10,6 +10,7 @@ import { FlaskConical, Loader2 } from 'lucide-react'
 import { toast } from 'sonner'
 import { CasillaTextosLegales, textosPara } from '@/components/legal/CasillaTextosLegales'
 import { aceptarEnRegistro } from '@/lib/textosLegales'
+import { MENSAJE_CONFIRMA_CORREO } from '@/proveedor/lib/registroDiferido'
 
 export default function LabRegistro() {
   const navigate = useNavigate()
@@ -56,7 +57,11 @@ export default function LabRegistro() {
     if (!error) await aceptarEnRegistro(textosPara('profesional'), 'userId' in resultado ? resultado.userId : null)
     setLoading(false)
     if (error) { toast.error('Error al registrar', { description: error.message }); return }
-    toast.success('Laboratorio registrado. Ya puedes iniciar sesión.')
+    if ('pendienteConfirmacion' in resultado && resultado.pendienteConfirmacion === true) {
+      toast.success(MENSAJE_CONFIRMA_CORREO)
+    } else {
+      toast.success('Laboratorio registrado. Ya puedes iniciar sesión.')
+    }
     navigate('/laboratorio/login')
   }
 

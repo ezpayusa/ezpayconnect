@@ -66,6 +66,9 @@ export const MENSAJE_IDENTIDAD_PREVIA =
   'Esta cuenta ya tiene otro tipo de acceso en la plataforma. Usa el portal que corresponde a tu cuenta.'
 export const MENSAJE_PAIS_NO_VALIDO = 'El país elegido no está disponible para el registro. Escríbenos a soporte.'
 export const MENSAJE_GENERICO_REGISTRO = 'No pudimos completar el registro de tu empresa. Inténtalo de nuevo.'
+/** Alta sin sesión (Confirm email ON): la empresa se crea en el primer login, después de confirmar el correo. */
+export const MENSAJE_CONFIRMA_CORREO =
+  'Te enviamos un correo para confirmar tu cuenta. Después de confirmarlo, inicia sesión para terminar el registro de tu empresa.'
 
 export function mensajeErrorRegistroEmpresa(error: { code?: string | null; message?: string | null } | null | undefined): string {
   if (error?.code && CODIGOS_CON_MENSAJE.has(error.code) && error.message) return error.message
