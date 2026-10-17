@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { useParams } from 'react-router-dom'
 import { toast } from 'sonner'
 import {
@@ -22,9 +22,11 @@ type Ubicacion = {
   lat: number | null
   lng: number | null
   pinFijado: boolean
+  /** La dirección vigente cuando se fijó el pin. Si después cambia el texto, el pin puede no ser de esa dirección. */
+  direccionPin: string
 }
 
-const UBICACION_VACIA: Ubicacion = { direccion: '', lat: null, lng: null, pinFijado: false }
+const UBICACION_VACIA: Ubicacion = { direccion: '', lat: null, lng: null, pinFijado: false, direccionPin: '' }
 
 const pinValido = (u: Ubicacion) => u.pinFijado && coordenadasValidas(u.lat, u.lng)
 
@@ -39,13 +41,26 @@ function EditorUbicacion({ valor, onChange, mapaInicial = false }: {
   // El center de MapContainer solo se aplica al montar: tras cada búsqueda se re-monta el mapa
   // para que quede centrado en el resultado y no en el punto anterior.
   const [mapaKey, setMapaKey] = useState(0)
+  // El valor VIGENTE, no el de cuando arrancó la búsqueda: mientras la edge responde se puede seguir
+  // escribiendo o marcar el pin, y el resultado no tiene que pisar eso.
+  const valorRef = useRef(valor)
+  valorRef.current = valor
 
   const onBuscar = async () => {
+    const texto = valor.direccion
+    const antes = { pinFijado: valor.pinFijado, lat: valor.lat, lng: valor.lng }
     setBuscando(true)
-    const r = await geocodificarDireccion(valor.direccion)
+    const r = await geocodificarDireccion(texto)
     setBuscando(false)
+    const actual = valorRef.current
     if (r) {
-      onChange({ ...valor, lat: r.lat, lng: r.lng, pinFijado: true })
+      const cambio = actual.direccion !== texto || actual.pinFijado !== antes.pinFijado
+        || actual.lat !== antes.lat || actual.lng !== antes.lng
+      if (cambio) {
+        toast.info('Cambiaste la dirección o el pin mientras buscábamos: busca de nuevo')
+        return
+      }
+      onChange({ ...actual, lat: r.lat, lng: r.lng, pinFijado: true, direccionPin: texto })
       toast.success('Ubicación encontrada: ajusta el pin si hace falta')
     } else {
       toast.warning('No se encontró la dirección: marca el punto en el mapa')
@@ -72,7 +87,7 @@ function EditorUbicacion({ valor, onChange, mapaInicial = false }: {
           key={mapaKey}
           lat={valor.pinFijado ? valor.lat : null}
           lng={valor.pinFijado ? valor.lng : null}
-          onChange={(lat, lng) => onChange({ ...valor, lat, lng, pinFijado: true })}
+          onChange={(lat, lng) => onChange({ ...valor, lat, lng, pinFijado: true, direccionPin: valor.direccion })}
           height="260px"
         />
       )}
@@ -81,6 +96,12 @@ function EditorUbicacion({ valor, onChange, mapaInicial = false }: {
       ) : (
         <p className="text-xs text-amber-700">
           Sin ubicación: el check-in del asesor no se podrá verificar hasta que la cargues
+        </p>
+      )}
+      {/* No bloquea Guardar: puede ser solo una corrección del texto. */}
+      {valor.pinFijado && valor.direccion.trim() !== valor.direccionPin.trim() && (
+        <p className="text-xs text-amber-700">
+          La dirección cambió desde que marcaste el pin: vuelve a buscar o confirma el punto en el mapa.
         </p>
       )}
     </div>
@@ -193,6 +214,7 @@ export default function ProspectosPaisPage() {
     setUbicEdit({
       direccion: p.direccion ?? '',
       lat: tiene ? p.lat : null, lng: tiene ? p.lng : null, pinFijado: tiene,
+      direccionPin: tiene ? p.direccion ?? '' : '',
     })
     setEditando(p)
   }
