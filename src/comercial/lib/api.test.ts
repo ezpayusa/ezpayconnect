@@ -607,4 +607,21 @@ describe('actualizarProspecto — la RPC reescribe los 8 campos: no se puede omi
       'p_nombre', 'p_notas', 'p_prospecto_id', 'p_tipo',
     ])
   })
+
+  it('cada clave lleva SU valor: con 8 valores distintos, un cruce (p. ej. lat <-> lng) se nota', async () => {
+    await api.actualizarProspecto({
+      id: 'pros-9', nombre: 'N', tipo: 'T', direccion: 'D',
+      lat: 14.1, lng: -90.2, notas: 'NO', empresaProveedoraId: 'emp-3',
+    })
+    expect(rpcs[0].nombre).toBe('actualizar_prospecto')
+    const a = rpcs[0].args
+    expect(a.p_prospecto_id).toBe('pros-9')
+    expect(a.p_nombre).toBe('N')
+    expect(a.p_tipo).toBe('T')
+    expect(a.p_direccion).toBe('D')
+    expect(a.p_lat).toBe(14.1)
+    expect(a.p_lng).toBe(-90.2)
+    expect(a.p_notas).toBe('NO')
+    expect(a.p_empresa_proveedora_id).toBe('emp-3')
+  })
 })
