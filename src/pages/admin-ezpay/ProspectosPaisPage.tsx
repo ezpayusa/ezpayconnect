@@ -4,9 +4,88 @@ import { toast } from 'sonner'
 import {
   listarProspectosDePais, listarAsesores, listarTipos, listarEstados,
   crearProspecto, reasignarProspecto, asesoresConNombre, mapaAsesores, nombreAsesor,
+  obtenerProspecto, actualizarProspecto, geocodificarDireccion, coordenadasValidas,
   type Prospecto, type ItemCatalogo, type AsesorConNombre,
 } from '@/comercial/lib/api'
 import { reportarError, type ErrorInline } from '@/comercial/lib/reportarError'
+import MapaInteractivo from '@/components/MapaInteractivo'
+import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog'
+
+// Ubicación del prospecto: es contra esta coordenada que checkin_visita_comercial mide la
+// distancia del asesor. Sin ella el check-in nunca sale verificado.
+//
+// Un pin solo cuenta como FIJADO si vino de la geocodificación o de un click/arrastre en el mapa.
+// MapaInteractivo arranca centrado en Ciudad de Guatemala cuando no recibe coordenada, y ese
+// centro NO es un dato: guardarlo pondría a todos los prospectos sin ubicación en el mismo punto.
+type Ubicacion = {
+  direccion: string
+  lat: number | null
+  lng: number | null
+  pinFijado: boolean
+}
+
+const UBICACION_VACIA: Ubicacion = { direccion: '', lat: null, lng: null, pinFijado: false }
+
+const pinValido = (u: Ubicacion) => u.pinFijado && coordenadasValidas(u.lat, u.lng)
+
+function EditorUbicacion({ valor, onChange, mapaInicial = false }: {
+  valor: Ubicacion
+  onChange: (u: Ubicacion) => void
+  /** Mostrar el mapa desde el inicio (el diálogo de una fila que ya tiene coordenada). */
+  mapaInicial?: boolean
+}) {
+  const [buscando, setBuscando] = useState(false)
+  const [mostrarMapa, setMostrarMapa] = useState(mapaInicial)
+  // El center de MapContainer solo se aplica al montar: tras cada búsqueda se re-monta el mapa
+  // para que quede centrado en el resultado y no en el punto anterior.
+  const [mapaKey, setMapaKey] = useState(0)
+
+  const onBuscar = async () => {
+    setBuscando(true)
+    const r = await geocodificarDireccion(valor.direccion)
+    setBuscando(false)
+    if (r) {
+      onChange({ ...valor, lat: r.lat, lng: r.lng, pinFijado: true })
+      toast.success('Ubicación encontrada: ajusta el pin si hace falta')
+    } else {
+      toast.warning('No se encontró la dirección: marca el punto en el mapa')
+    }
+    setMapaKey(k => k + 1)
+    setMostrarMapa(true)
+  }
+
+  return (
+    <div className="space-y-2">
+      <div>
+        <label className="text-xs text-gray-600">Dirección (opcional)</label>
+        <div className="mt-1 flex gap-2">
+          <input value={valor.direccion} onChange={(e) => onChange({ ...valor, direccion: e.target.value })}
+            className="w-full rounded border px-2 py-1.5 text-sm" placeholder="6a Avenida 12-45, Zona 10" />
+          <button type="button" onClick={() => void onBuscar()} disabled={buscando || !valor.direccion.trim()}
+            className="shrink-0 rounded-md border px-3 py-1.5 text-sm hover:bg-gray-50 disabled:opacity-50">
+            {buscando ? 'Buscando…' : 'Buscar en el mapa'}
+          </button>
+        </div>
+      </div>
+      {mostrarMapa && (
+        <MapaInteractivo
+          key={mapaKey}
+          lat={valor.pinFijado ? valor.lat : null}
+          lng={valor.pinFijado ? valor.lng : null}
+          onChange={(lat, lng) => onChange({ ...valor, lat, lng, pinFijado: true })}
+          height="260px"
+        />
+      )}
+      {pinValido(valor) ? (
+        <p className="text-xs text-green-700">Ubicación marcada.</p>
+      ) : (
+        <p className="text-xs text-amber-700">
+          Sin ubicación: el check-in del asesor no se podrá verificar hasta que la cargues
+        </p>
+      )}
+    </div>
+  )
+}
 
 // Sin embed a perfiles: la ficha da codigo/pais y la RPC de la mig 283 da el nombre.
 type Asesor = {
@@ -37,6 +116,14 @@ export default function ProspectosPaisPage() {
   const [asesorId, setAsesorId] = useState('')
   const [creando, setCreando] = useState(false)
   const [errAlta, setErrAlta] = useState<ErrorInline>(null)
+  const [ubicAlta, setUbicAlta] = useState<Ubicacion>(UBICACION_VACIA)
+  // El editor se re-monta al limpiar el alta, así el mapa también se cierra.
+  const [altaKey, setAltaKey] = useState(0)
+
+  // ubicación de una fila
+  const [editando, setEditando] = useState<Prospecto | null>(null)
+  const [ubicEdit, setUbicEdit] = useState<Ubicacion>(UBICACION_VACIA)
+  const [guardandoUbic, setGuardandoUbic] = useState(false)
 
   const cargar = async () => {
     setCargando(true)
@@ -72,16 +159,70 @@ export default function ProspectosPaisPage() {
 
   const onCrear = async () => {
     setErrAlta(null); setCreando(true)
-    const { error } = await crearProspecto({ nombre, tipo, asesorId })
+    const conPin = pinValido(ubicAlta)
+    let res: Awaited<ReturnType<typeof crearProspecto>>
+    try {
+      res = await crearProspecto({
+        nombre, tipo, asesorId, direccion: ubicAlta.direccion,
+        lat: conPin ? ubicAlta.lat : null, lng: conPin ? ubicAlta.lng : null,
+      })
+    } catch (e) {
+      setCreando(false)
+      if (e instanceof Error && e.message === 'coordenadas_invalidas') {
+        toast.error('La ubicación no es válida: vuelve a marcar el punto')
+      } else {
+        reportarError(e)
+      }
+      return
+    }
     setCreando(false)
-    if (error) {
+    if (res.error) {
       // PA008/PA009 caen inline en el selector de asesor; PA010 en el de tipo; 42501 a toast.
-      reportarError(error, { setInline: setErrAlta, onRecargar: () => void cargar() })
+      reportarError(res.error, { setInline: setErrAlta, onRecargar: () => void cargar() })
       return
     }
     toast.success('Prospecto creado')
     setNombre('')
+    setUbicAlta(UBICACION_VACIA)
+    setAltaKey(k => k + 1)
     void cargar()
+  }
+
+  const abrirUbicacion = (p: Prospecto) => {
+    const tiene = coordenadasValidas(p.lat, p.lng)
+    setUbicEdit({
+      direccion: p.direccion ?? '',
+      lat: tiene ? p.lat : null, lng: tiene ? p.lng : null, pinFijado: tiene,
+    })
+    setEditando(p)
+  }
+
+  const onGuardarUbicacion = async () => {
+    if (!editando || !pinValido(ubicEdit)) return
+    setGuardandoUbic(true)
+    try {
+      // actualizar_prospecto reescribe los 8 campos. La fila de la lista puede estar vieja (el
+      // asesor pudo editar nombre o notas desde que se cargó): se relee FRESCA y solo se cambian
+      // dirección y coordenada. Sin fila fresca no se escribe nada.
+      const fresca = await obtenerProspecto(editando.id)
+      if (fresca.error) { reportarError(fresca.error, { onRecargar: () => void cargar() }); return }
+      const f = fresca.data as unknown as Prospecto | null
+      if (!f) {
+        toast.error('No se pudo leer el prospecto: recarga la página e inténtalo de nuevo')
+        return
+      }
+      const { error } = await actualizarProspecto({
+        id: f.id, nombre: f.nombre, tipo: f.tipo, notas: f.notas,
+        empresaProveedoraId: f.empresa_proveedora_id,
+        direccion: ubicEdit.direccion.trim() || null, lat: ubicEdit.lat, lng: ubicEdit.lng,
+      })
+      if (error) { reportarError(error, { onRecargar: () => void cargar() }); return }
+      setEditando(null)
+      toast.success('Ubicación guardada')
+      void cargar()
+    } finally {
+      setGuardandoUbic(false)
+    }
   }
 
   const onReasignar = async (prospectoId: string, nuevo: string) => {
@@ -129,6 +270,9 @@ export default function ProspectosPaisPage() {
             {err('asesor_id')}
           </div>
         </div>
+        <div className="mt-3">
+          <EditorUbicacion key={altaKey} valor={ubicAlta} onChange={setUbicAlta} />
+        </div>
         <button type="button" onClick={onCrear} disabled={creando || !nombre || !asesorId}
           className="mt-3 rounded-md bg-[#1E5C8E] px-3 py-1.5 text-sm text-white hover:bg-[#17496f] disabled:opacity-50">
           Crear prospecto
@@ -148,7 +292,7 @@ export default function ProspectosPaisPage() {
           <table className="mt-3 w-full text-sm">
             <thead>
               <tr className="border-b text-left text-xs uppercase text-gray-500">
-                <th className="py-2">Nombre</th><th>Tipo</th><th>Estado</th><th>Asesor</th>
+                <th className="py-2">Nombre</th><th>Tipo</th><th>Estado</th><th>Asesor</th><th>Ubicación</th>
               </tr>
             </thead>
             <tbody>
@@ -170,12 +314,48 @@ export default function ProspectosPaisPage() {
                       {asesoresDelPais.map(a => <option key={a.id} value={a.id}>{etiquetaAsesor(a)}</option>)}
                     </select>
                   </td>
+                  <td>
+                    <div className="flex items-center gap-2">
+                      {coordenadasValidas(p.lat, p.lng) ? (
+                        <span className="rounded-full bg-green-50 px-2 py-0.5 text-xs text-green-700">Con ubicación</span>
+                      ) : (
+                        <span className="rounded-full bg-amber-50 px-2 py-0.5 text-xs text-amber-700">Sin ubicación</span>
+                      )}
+                      <button type="button" onClick={() => abrirUbicacion(p)}
+                        className="rounded border px-2 py-0.5 text-xs hover:bg-gray-50">
+                        Ubicación
+                      </button>
+                    </div>
+                  </td>
                 </tr>
               ))}
             </tbody>
           </table>
         )}
       </section>
+
+      <Dialog open={!!editando} onOpenChange={(abierto) => { if (!abierto && !guardandoUbic) setEditando(null) }}>
+        <DialogContent className="max-h-[90vh] max-w-lg overflow-y-auto">
+          <DialogHeader>
+            <DialogTitle>Ubicación de {editando?.nombre}</DialogTitle>
+          </DialogHeader>
+          {editando && (
+            <EditorUbicacion key={editando.id} valor={ubicEdit} onChange={setUbicEdit}
+              mapaInicial={ubicEdit.pinFijado} />
+          )}
+          <div className="mt-2 flex justify-end gap-2">
+            <button type="button" onClick={() => setEditando(null)} disabled={guardandoUbic}
+              className="rounded-md border px-3 py-1.5 text-sm hover:bg-gray-50 disabled:opacity-50">
+              Cancelar
+            </button>
+            <button type="button" onClick={() => void onGuardarUbicacion()}
+              disabled={guardandoUbic || !pinValido(ubicEdit)}
+              className="rounded-md bg-[#1E5C8E] px-3 py-1.5 text-sm text-white hover:bg-[#17496f] disabled:opacity-50">
+              {guardandoUbic ? 'Guardando…' : 'Guardar'}
+            </button>
+          </div>
+        </DialogContent>
+      </Dialog>
     </div>
   )
 }
