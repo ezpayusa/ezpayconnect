@@ -5,7 +5,7 @@ import { ArrowLeft, CheckCircle2, AlertTriangle, MapPinOff } from 'lucide-react'
 import { useAuth } from '@/hooks/useAuth'
 import {
   obtenerProspecto, listarContactos, listarEstados, listarTipos,
-  cambiarEstado, guardarContacto, actualizarProspecto, visitasDelProspecto,
+  cambiarEstado, guardarContacto, actualizarProspecto, visitasDelProspecto, coordenadasValidas,
   type Prospecto, type Contacto, type ItemCatalogo, type VisitaComercial,
 } from '../lib/api'
 import { AgendarVisita, AccionesVisitaPlanificada } from '../components/AgendaVisita'
@@ -38,7 +38,6 @@ export default function ProspectoFichaPage() {
   // datos
   const [nombre, setNombre] = useState('')
   const [tipo, setTipo] = useState('')
-  const [direccion, setDireccion] = useState('')
   const [notas, setNotas] = useState('')
   const [errDatos, setErrDatos] = useState<ErrorInline>(null)
 
@@ -61,7 +60,7 @@ export default function ProspectoFichaPage() {
       setEstadoSel(fila.estado_pipeline)
       setMotivo(fila.motivo_perdida ?? '')
       setNombre(fila.nombre); setTipo(fila.tipo)
-      setDireccion(fila.direccion ?? ''); setNotas(fila.notas ?? '')
+      setNotas(fila.notas ?? '')
     }
     if (co.data) setContactos(co.data as Contacto[])
     if (es.data) setEstados(es.data as ItemCatalogo[])
@@ -96,9 +95,19 @@ export default function ProspectoFichaPage() {
   const onGuardarDatos = async () => {
     if (!p) return
     setErrDatos(null)
+    // actualizar_prospecto reescribe los 8 campos. La ubicación la carga el admin de país y puede
+    // haber cambiado con la ficha abierta: dirección, coordenada y empresa salen de la fila FRESCA,
+    // nunca de `p`, así guardar nombre/tipo/notas no borra el pin. Sin fila fresca no se escribe.
+    const fresca = await obtenerProspecto(p.id)
+    if (fresca.error) { reportarError(fresca.error, { setInline: setErrDatos, onRecargar: () => void cargar() }); return }
+    const f = fresca.data as unknown as Prospecto | null
+    if (!f) {
+      toast.error('No se pudo leer el prospecto: recarga la página e inténtalo de nuevo')
+      return
+    }
     const { error } = await actualizarProspecto({
-      id, nombre, tipo, direccion: direccion || null, lat: p.lat, lng: p.lng,
-      notas: notas || null, empresaProveedoraId: p.empresa_proveedora_id,
+      id, nombre, tipo, direccion: f.direccion, lat: f.lat, lng: f.lng,
+      notas: notas || null, empresaProveedoraId: f.empresa_proveedora_id,
     })
     if (error) { reportarError(error, { setInline: setErrDatos, onRecargar: () => void cargar() }); return }
     toast.success('Datos guardados')
@@ -170,10 +179,18 @@ export default function ProspectoFichaPage() {
           </div>
           <div>
             <label className="text-xs text-gray-600">Dirección</label>
+            {/* Solo lectura para todos: la ubicación la carga el admin de país (con el pin). */}
             <input
-              value={direccion} onChange={(e) => setDireccion(e.target.value)} readOnly={esSupervisor}
+              value={p.direccion ?? ''} readOnly
               className="mt-1 w-full rounded border px-2 py-1.5 text-sm read-only:bg-gray-50 read-only:text-gray-600"
             />
+            {coordenadasValidas(p.lat, p.lng) ? (
+              <p className="mt-1 text-xs text-gray-500">Ubicación cargada por tu administrador de país.</p>
+            ) : (
+              <p className="mt-1 text-xs text-amber-700">
+                Sin ubicación: el check-in no se podrá verificar. Pídele a tu administrador de país que la cargue.
+              </p>
+            )}
           </div>
           <div>
             <label className="text-xs text-gray-600">Notas</label>
