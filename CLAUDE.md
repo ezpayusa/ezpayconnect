@@ -24,6 +24,19 @@ Stack: React + Vite + TypeScript, Supabase / Postgres, deploy en Vercel, repo en
   minutos por esto** (P635 es la probe que faltaba, P636 su contraprueba).
 - NUNCA ampliar policies de RLS sobre tablas adyacentes a datos médicos (p. ej. campana_metricas). Para dar acceso, usar RPCs SECURITY DEFINER con search_path='', fail-closed (si el scope es NULL → 0 filas) y gate interno.
 - Probar aislamiento por rol impersonando request.jwt.claims en prod: cada rol ve lo suyo y no lo ajeno.
+- **Estado al 17-oct-2026 (manda sobre los números de la entrada siguiente):**
+  - **Mig 374** (`prospectos_coord_valida` + PA035 en `actualizar_prospecto`) **APLICADA en prod el 2026-10-17 16:31 UTC** y
+    verificada en sesión nueva (VERDE 4/4). Archivos en la rama `feat/prospecto-ubicacion` (PR #59, draft), todavía NO en main.
+  - **La 373 está VIVA en prod pero NO en main** (solo en `altas/alta-diferida-373`). Huella de funciones viva post-373 =
+    `027e10a7b66101b4f5bb85c475c34045 392`.
+  - **Orden de rollback:** 374 → 373 → 372 → 371 → …
+  - **Próximos libres: mig 375, errcode PA036, probe P1041.** Ojo: P1026-P1034 están en `altas/alta-diferida-373` →
+    conflicto de merge esperado en `probes_escritura.sql`.
+  - **Harness al 17-oct:** 1117 filas, 19 rojas = las 11 de deuda + 8 PREEXISTENTES fuera de deuda (DET_trio_cleanup, P472,
+    P69, P74, P81, P82, P87, P95), idénticas con y sin P1035-P1040. P472 sale por el prospecto real Pharmalat (probe con
+    lista fija). Las de staff de farmacia, sin investigar: posible regresión → recon pendiente junto con el merge de
+    #56/#57/#58.
+  - **PRs #56, #57 y #58 sin mergear al 17-oct** (main = 571d39a).
 - **Próximos números libres: probe `P1026`** (global, no por módulo; P1023-P1025 + G372_FX usados por la mig 372; P1019-P1022 usados por la mig 371; P1015-P1018 usados por la mig 370, P1011-P1014 por la mig 369, P1010 por la mig 367, P1009 por la 366, P1008 por la 365, P1007 por la 364, P1001-P1006 por la mig 363, P996-P1000 por la 362, P990-P995 por la 361, P983-P989 por la 360, P975-P982 por la
   359, P967-P974 por la 358, P958-P966 por la 357 (obtener_medicos_por_ids acotada a relación); P906-P907 usados por la mig 336, P912-P913
   por la 337, P914-P915 por la 338, P916-P920 por la 339/340, P921-P923 por la 341, P924 por la 342, P925 por

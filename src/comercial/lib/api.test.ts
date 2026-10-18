@@ -18,16 +18,24 @@ function query(tabla: string) {
   return q
 }
 
+// functions.invoke: cada test fija la respuesta de la edge en `invokeImpl`.
+const invokes: { nombre: string; opciones: unknown }[] = []
+const invokeDefault = async () => ({ data: null, error: null })
+let invokeImpl: (nombre: string, opciones: unknown) => Promise<{ data: unknown; error: unknown }> = invokeDefault
+
 vi.mock('@/lib/supabase', () => ({
   supabase: {
     rpc: async (nombre: string, args: Record<string, unknown>) => { rpcs.push({ nombre, args }); return { data: null, error: null } },
     from: (tabla: string) => query(tabla),
+    functions: {
+      invoke: (nombre: string, opciones: unknown) => { invokes.push({ nombre, opciones }); return invokeImpl(nombre, opciones) },
+    },
   },
 }))
 
 const api = await import('./api')
 
-beforeEach(() => { rpcs.length = 0; consultas.length = 0 })
+beforeEach(() => { rpcs.length = 0; consultas.length = 0; invokes.length = 0; invokeImpl = invokeDefault })
 
 describe('payload de las 3 RPCs de agenda (mig 280)', () => {
   it('planificarVisita manda p_hora aunque no se pase: null explícito, no ausente', async () => {
@@ -459,5 +467,161 @@ describe('la lista de SOLO LECTURA no es una válvula de escape', () => {
     const { envia, trae } = await conjuntos()
     const conIntrusa = [...trae, 'columna_nueva_sin_declarar'].sort()
     expect(conIntrusa).not.toEqual(envia)
+  })
+})
+
+// --- Ubicación del prospecto (punto 1) -----------------------------------------------------------
+
+describe('coordenadasValidas — solo dos números finitos en rango, y nunca el (0,0)', () => {
+  it.each([
+    [14.6, -90.5],
+    [90, 180],
+    [-90, -180],
+  ])('acepta (%s, %s)', (lat, lng) => {
+    expect(api.coordenadasValidas(lat, lng)).toBe(true)
+  })
+
+  it.each([
+    [0, 0],
+    [91, 0],
+    [0, 181],
+    [NaN, 1],
+    [Infinity, 1],
+    ['14.6', '-90.5'],
+    [null, null],
+    [14.6, null],
+  ])('rechaza (%s, %s)', (lat, lng) => {
+    expect(api.coordenadasValidas(lat, lng)).toBe(false)
+  })
+})
+
+describe('crearProspecto — dirección y coordenada viajan a la RPC, o no viaja nada', () => {
+  const base = { nombre: 'Farmacia X', tipo: 'farmacia', asesorId: 'ase-1' }
+
+  it('con lat y lng válidas manda las mismas y la dirección con trim', async () => {
+    await api.crearProspecto({ ...base, direccion: '  6a Av 12-45  ', lat: 14.6, lng: -90.5 })
+    expect(rpcs[0].nombre).toBe('crear_prospecto')
+    expect(rpcs[0].args.p_lat).toBe(14.6)
+    expect(rpcs[0].args.p_lng).toBe(-90.5)
+    expect(rpcs[0].args.p_direccion).toBe('6a Av 12-45')
+  })
+
+  it('sin coordenadas manda p_lat y p_lng en null explícito', async () => {
+    await api.crearProspecto(base)
+    expect(rpcs[0].args).toHaveProperty('p_lat', null)
+    expect(rpcs[0].args).toHaveProperty('p_lng', null)
+  })
+
+  it('una dirección de solo espacios viaja como null', async () => {
+    await api.crearProspecto({ ...base, direccion: '   ' })
+    expect(rpcs[0].args.p_direccion).toBeNull()
+  })
+
+  it('con una sola coordenada rechaza y NO llama a la RPC', async () => {
+    await expect(api.crearProspecto({ ...base, lat: 14.6 })).rejects.toThrow('coordenadas_invalidas')
+    await expect(api.crearProspecto({ ...base, lng: -90.5 })).rejects.toThrow('coordenadas_invalidas')
+    expect(rpcs).toHaveLength(0)
+  })
+
+  it('con (0, 0) rechaza y NO llama a la RPC', async () => {
+    await expect(api.crearProspecto({ ...base, lat: 0, lng: 0 })).rejects.toThrow('coordenadas_invalidas')
+    expect(rpcs).toHaveLength(0)
+  })
+})
+
+describe('geocodificarDireccion — best-effort y sin la dirección en los logs', () => {
+  const DIRECCION = 'Calle Secreta 42, Zona 10'
+
+  // Ningún argumento de ningún console.error puede contener la dirección.
+  const sinDireccionEnLogs = (spy: ReturnType<typeof vi.spyOn>) => {
+    for (const llamada of spy.mock.calls) {
+      for (const arg of llamada) {
+        const texto = typeof arg === 'string' ? arg : JSON.stringify(arg) ?? String(arg)
+        expect(texto).not.toContain(DIRECCION)
+      }
+    }
+  }
+
+  it('vacía o de solo espacios devuelve null sin llamar a la edge', async () => {
+    expect(await api.geocodificarDireccion('')).toBeNull()
+    expect(await api.geocodificarDireccion('   ')).toBeNull()
+    expect(invokes).toHaveLength(0)
+  })
+
+  it('mapea { lat, lng, display_name } a { lat, lng, displayName }', async () => {
+    invokeImpl = async () => ({ data: { lat: 14.6, lng: -90.5, display_name: 'Zona 10, Guatemala' }, error: null })
+    expect(await api.geocodificarDireccion(`  ${DIRECCION}  `))
+      .toEqual({ lat: 14.6, lng: -90.5, displayName: 'Zona 10, Guatemala' })
+    expect(invokes[0]).toEqual({ nombre: 'geocodificar', opciones: { body: { direccion: DIRECCION } } })
+  })
+
+  it('sin display_name devuelve displayName vacío', async () => {
+    invokeImpl = async () => ({ data: { lat: 14.6, lng: -90.5 }, error: null })
+    expect(await api.geocodificarDireccion(DIRECCION)).toEqual({ lat: 14.6, lng: -90.5, displayName: '' })
+  })
+
+  it('la edge responde 200 con { error } → null', async () => {
+    invokeImpl = async () => ({ data: { error: 'No se encontraron resultados' }, error: null })
+    expect(await api.geocodificarDireccion(DIRECCION)).toBeNull()
+  })
+
+  it('lat como string → null', async () => {
+    invokeImpl = async () => ({ data: { lat: '14.6', lng: -90.5, display_name: 'x' }, error: null })
+    expect(await api.geocodificarDireccion(DIRECCION)).toBeNull()
+  })
+
+  it('el invoke devuelve error → null, y el log no lleva la dirección', async () => {
+    const spy = vi.spyOn(console, 'error').mockImplementation(() => {})
+    try {
+      invokeImpl = async () => ({ data: null, error: { message: 'FunctionsHttpError', code: '401' } })
+      expect(await api.geocodificarDireccion(DIRECCION)).toBeNull()
+      expect(spy).toHaveBeenCalled()
+      sinDireccionEnLogs(spy)
+    } finally {
+      spy.mockRestore()
+    }
+  })
+
+  it('el invoke lanza → null, y el log no lleva la dirección', async () => {
+    const spy = vi.spyOn(console, 'error').mockImplementation(() => {})
+    try {
+      invokeImpl = async () => { throw new Error('network down') }
+      expect(await api.geocodificarDireccion(DIRECCION)).toBeNull()
+      expect(spy).toHaveBeenCalled()
+      sinDireccionEnLogs(spy)
+    } finally {
+      spy.mockRestore()
+    }
+  })
+})
+
+describe('actualizarProspecto — la RPC reescribe los 8 campos: no se puede omitir ninguno', () => {
+  it('manda EXACTAMENTE las 8 claves', async () => {
+    await api.actualizarProspecto({
+      id: 'pros-1', nombre: 'Farmacia X', tipo: 'farmacia', direccion: null,
+      lat: null, lng: null, notas: null, empresaProveedoraId: null,
+    })
+    expect(rpcs[0].nombre).toBe('actualizar_prospecto')
+    expect(Object.keys(rpcs[0].args).sort()).toEqual([
+      'p_direccion', 'p_empresa_proveedora_id', 'p_lat', 'p_lng',
+      'p_nombre', 'p_notas', 'p_prospecto_id', 'p_tipo',
+    ])
+  })
+
+  it('cada clave lleva SU valor: con 8 valores distintos, un cruce (p. ej. lat <-> lng) se nota', async () => {
+    await api.actualizarProspecto({
+      id: 'pros-9', nombre: 'N', tipo: 'T', direccion: 'D',
+      lat: 14.1, lng: -90.2, notas: 'NO', empresaProveedoraId: 'emp-3',
+    })
+    expect(rpcs[0].nombre).toBe('actualizar_prospecto')
+    const a = rpcs[0].args
+    expect(a.p_prospecto_id).toBe('pros-9')
+    expect(a.p_nombre).toBe('N')
+    expect(a.p_tipo).toBe('T')
+    expect(a.p_direccion).toBe('D')
+    expect(a.p_lat).toBe(14.1)
+    expect(a.p_lng).toBe(-90.2)
+    expect(a.p_notas).toBe('NO')
+    expect(a.p_empresa_proveedora_id).toBe('emp-3')
   })
 })

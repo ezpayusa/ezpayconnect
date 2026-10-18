@@ -96,14 +96,61 @@ export async function listarAsesores() {
 
 // --- Escritura: las 7 RPCs de la mig 272. El front no escribe una tabla directamente. ----------
 
+/**
+ * Coordenada utilizable: dos números finitos dentro de rango. El (0,0) se rechaza aunque sea un
+ * punto válido del planeta: es el valor basura típico de un pin sin inicializar, y un prospecto en
+ * el golfo de Guinea haría que todo check-in saliera "a N km del prospecto".
+ */
+export function coordenadasValidas(lat: unknown, lng: unknown): boolean {
+  if (typeof lat !== 'number' || typeof lng !== 'number') return false
+  if (!Number.isFinite(lat) || !Number.isFinite(lng)) return false
+  if (lat < -90 || lat > 90 || lng < -180 || lng > 180) return false
+  return !(lat === 0 && lng === 0)
+}
+
 export async function crearProspecto(p: {
   nombre: string; tipo: string; asesorId: string
-  direccion?: string | null; notas?: string | null
+  direccion?: string | null; lat?: number | null; lng?: number | null
+  notas?: string | null
 }) {
+  // Las dos o ninguna: una coordenada a medias no es una ubicación, y la RPC no la valida.
+  const lat = p.lat ?? null
+  const lng = p.lng ?? null
+  if ((lat !== null || lng !== null) && !coordenadasValidas(lat, lng)) {
+    throw new Error('coordenadas_invalidas')
+  }
   return supabase.rpc('crear_prospecto', {
     p_nombre: p.nombre, p_tipo: p.tipo, p_asesor_id: p.asesorId,
-    p_direccion: p.direccion ?? null, p_notas: p.notas ?? null,
+    p_direccion: p.direccion?.trim() || null, p_lat: lat, p_lng: lng,
+    p_notas: p.notas ?? null,
   })
+}
+
+/**
+ * Texto → coordenada por la edge `geocodificar` (Google y, si falla, Nominatim). Best-effort:
+ * null si no hay resultado o algo falla; la página deja ajustar el pin a mano. El log es fijo y
+ * nunca lleva la dirección: es el domicilio de un negocio que todavía no es cliente.
+ */
+export async function geocodificarDireccion(
+  direccion: string,
+): Promise<{ lat: number; lng: number; displayName: string } | null> {
+  const texto = direccion.trim()
+  if (!texto) return null
+  try {
+    const { data, error } = await supabase.functions.invoke('geocodificar', { body: { direccion: texto } })
+    if (error) {
+      console.error('geocodificarDireccion falló:', error?.message ?? (error as { code?: string })?.code)
+      return null
+    }
+    if (!data || data.error) return null
+    if (typeof data.lat !== 'number' || !Number.isFinite(data.lat)) return null
+    if (typeof data.lng !== 'number' || !Number.isFinite(data.lng)) return null
+    return { lat: data.lat, lng: data.lng, displayName: typeof data.display_name === 'string' ? data.display_name : '' }
+  } catch (err) {
+    const e = err as { message?: string; code?: string } | null
+    console.error('geocodificarDireccion falló:', e?.message ?? e?.code)
+    return null
+  }
 }
 
 export async function actualizarProspecto(p: {
