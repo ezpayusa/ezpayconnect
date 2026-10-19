@@ -1,5 +1,5 @@
-import { Outlet, useNavigate, useLocation } from 'react-router-dom'
-import { Briefcase, WifiOff, Users, CalendarCheck, UsersRound, BookOpen, IdCard, LogOut } from 'lucide-react'
+import { Link, Outlet, useNavigate, useLocation } from 'react-router-dom'
+import { Briefcase, WifiOff, Users, CalendarCheck, UsersRound, BookOpen, IdCard, LogOut, KeyRound } from 'lucide-react'
 import { useEffect, useState } from 'react'
 import { useAuth } from '@/hooks/useAuth'
 
@@ -51,6 +51,14 @@ export default function ComercialLayout() {
                 <WifiOff className="h-4 w-4" /> Offline
               </span>
             )}
+            <Link
+              to="/cambiar-clave"
+              className="flex items-center gap-1 text-sm text-white/90 hover:text-white"
+              aria-label="Cambiar clave"
+              title="Cambiar clave"
+            >
+              <KeyRound className="h-4 w-4" />
+            </Link>
             <button
               type="button"
               onClick={handleLogout}
