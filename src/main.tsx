@@ -1,3 +1,6 @@
+// TIENE QUE IR PRIMERO, no reordenar: reescribe el link de recovery a /set-password antes de que se
+// cree el cliente de Supabase (detectSessionInUrl lee la URL al inicializar). Ver recoveryRedirect.ts.
+import './lib/recoveryRedirect'
 import { StrictMode } from 'react'
 import { createRoot } from 'react-dom/client'
 import './index.css'
