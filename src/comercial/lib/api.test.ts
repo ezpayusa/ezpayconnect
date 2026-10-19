@@ -147,7 +147,7 @@ describe('el embed geo del prospecto viaja SOLO en la ficha de la visita y en Ho
   it('obtenerVisita SI las pide: es la pantalla del check-in', async () => {
     await api.obtenerVisita('vis-1')
     const sel = selectDe()
-    expect(sel).toContain('(nombre,lat,lng)')
+    expect(sel).toContain('(nombre,direccion,lat,lng)')
   })
 
   it('y aun con geo, obtenerVisita sigue sin pedir las coordenadas del CHECK-IN (mig 277)', async () => {
