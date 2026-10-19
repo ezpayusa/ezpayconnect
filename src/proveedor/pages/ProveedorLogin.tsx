@@ -8,6 +8,7 @@ import { useProveedorAuth } from '@/proveedor/hooks/useProveedorAuth'
 import { supabase } from '@/lib/supabase'
 import { aceptarInvitacionPendiente } from '@/lib/invitacionProveedor'
 import { enviarReset } from '@/lib/enviarReset'
+import { rutaHomeEmpresa } from '@/proveedor/lib/rutasEmpresa'
 import { MapPin, Loader2 } from 'lucide-react'
 import { toast } from 'sonner'
 
@@ -39,7 +40,6 @@ export default function ProveedorLogin() {
     }
     // Si venía de una invitación, aceptarla ahora (autenticado) antes de rutear.
     await aceptarInvitacionPendiente()
-    // Un laboratorio clínico tiene su propio portal: lo enviamos allí.
     const { data: { user } } = await supabase.auth.getUser()
     const { data: cuenta } = await supabase
       .from('cuentas_proveedor')
@@ -50,16 +50,8 @@ export default function ProveedorLogin() {
     toast.success('Bienvenido')
     const tipo = (cuenta as any)?.empresa?.tipo
     const rol = (cuenta as any)?.rol_en_empresa
-    // El visitador de campo va a su PWA móvil (/visitador redirige a /visitador/agendar), no al panel desktop.
-    if (rol === 'visitador_medico') {
-      navigate('/visitador')
-    } else if (tipo === 'laboratorio_clinico') {
-      navigate('/laboratorio/dashboard')
-    } else if (tipo === 'farmacia') {
-      navigate('/farmacia/dashboard')
-    } else {
-      navigate('/proveedor/dashboard')
-    }
+    // El destino lo decide rutaHomeEmpresa (src/proveedor/lib/rutasEmpresa.ts), igual en los tres logins.
+    navigate(rutaHomeEmpresa(tipo, rol))
   }
 
   return (
@@ -69,8 +61,8 @@ export default function ProveedorLogin() {
           <div className="mx-auto w-12 h-12 rounded-xl bg-[#1E5C8E] flex items-center justify-center mb-4">
             <MapPin className="h-6 w-6 text-white" />
           </div>
-          <CardTitle className="text-xl">Portal Proveedores</CardTitle>
-          <p className="text-sm text-muted-foreground">Inicia sesión con tu cuenta de empresa</p>
+          <CardTitle className="text-xl">Laboratorios farmacéuticos y empresas</CardTitle>
+          <p className="text-sm text-muted-foreground">Acceso para laboratorios farmacéuticos, empresas afines y su equipo.</p>
         </CardHeader>
         <CardContent>
           <form onSubmit={handleSubmit} className="space-y-4">

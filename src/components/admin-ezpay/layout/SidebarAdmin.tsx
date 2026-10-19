@@ -4,7 +4,7 @@ import { ClipboardCheck } from 'lucide-react';
 import { useNavigate, useLocation } from 'react-router-dom';
 import { useAdminAuth } from '@/hooks/admin/useAdminAuth';
 import { usePaisActivo } from '@/hooks/usePaisActivo';
-import { LayoutDashboard, Globe, Layers, Stethoscope, MapPin, FlaskConical, Car, Pill, Store, Megaphone, Handshake, AlertCircle, DollarSign, BarChart3, Shield, ChevronLeft, LogOut, Activity, BarChart4, ArrowLeftRight, Landmark, Gift, Palette, BookOpen, ShoppingCart, CalendarDays } from 'lucide-react';
+import { LayoutDashboard, Globe, Layers, Stethoscope, MapPin, FlaskConical, Car, Pill, Store, Megaphone, Handshake, AlertCircle, DollarSign, BarChart3, Shield, ChevronLeft, LogOut, Activity, BarChart4, ArrowLeftRight, Landmark, Gift, Palette, BookOpen, ShoppingCart, CalendarDays, KeyRound } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { supabase } from '@/lib/supabase';
 import { rutaHomePorRol } from '@/lib/rutas';
@@ -161,6 +161,15 @@ export function SidebarAdmin() {
         >
           <ChevronLeft className="w-4 h-4 mr-2" />
           Volver al Dashboard
+        </Button>
+        {/* Para super_admin y admin_pais: el pie del sidebar es el mismo para los dos roles. */}
+        <Button
+          variant="ghost"
+          className="w-full justify-start text-white/80 hover:text-white hover:bg-white/10"
+          onClick={() => navigate('/cambiar-clave')}
+        >
+          <KeyRound className="w-4 h-4 mr-2" />
+          Cambiar clave
         </Button>
         <Button
           variant="ghost"

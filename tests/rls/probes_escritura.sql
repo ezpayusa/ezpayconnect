@@ -1270,8 +1270,13 @@ END $$;
 SELECT set_config('role', 'none', true);
 SELECT set_config('probe.farm',
   (SELECT id::text FROM public.farmacias ORDER BY id LIMIT 1), false);
+-- farm_emp: empresa farmacia ACTIVA, con orden DETERMINISTA. Era `WHERE tipo='farmacia' LIMIT 1` sin
+-- ORDER BY: el 9-oct-2026 empezó a elegir la empresa QA-MANUAL que quedó PENDIENTE al probar la mig
+-- 373, el gate de empresa activa la rechazó y salieron 6 rojas falsas de staff de farmacia (P69, P74,
+-- P81, P82, P87, P95) más DET_trio_cleanup en cascada. Las corridas anteriores elegían cc17afe8, que
+-- es la que resuelve este criterio.
 SELECT set_config('probe.farm_emp',
-  (SELECT id::text FROM public.empresas_proveedoras WHERE tipo='farmacia' LIMIT 1), false);
+  (SELECT id::text FROM public.empresas_proveedoras WHERE tipo='farmacia' AND estado='activa' ORDER BY created_at, id LIMIT 1), false);
 SELECT set_config('probe.farm_owner',  -- ADMIN de la empresa promovida (con permiso de edición)
   (SELECT cp.id::text FROM public.cuentas_proveedor cp
      WHERE cp.empresa_id = current_setting('probe.farm_emp', true)::uuid
@@ -9452,6 +9457,7 @@ DECLARE
   r record;
   v_res jsonb := '{}'::jsonb;
   v_pros bigint; v_ases bigint; v_cont bigint; v_cargo bigint; v_nom text;
+  v_pros264 bigint; v_nom264 text;
   v_err text; v_msg text; v_n bigint;
   v_fatal text := NULL;
   v_ok boolean;
@@ -9537,7 +9543,7 @@ BEGIN
         ('admA', v_admA), ('admB', v_admB), ('super', v_sa),   ('medico', v_med)
       ) t(etq, uid)
     LOOP
-      v_pros := -1; v_ases := -1; v_cont := -1; v_cargo := -1; v_nom := NULL;
+      v_pros := -1; v_ases := -1; v_cont := -1; v_cargo := -1; v_nom := NULL; v_pros264 := -1; v_nom264 := NULL;
       BEGIN
         PERFORM set_config('request.jwt.claims',
                  json_build_object('sub', r.uid::text, 'role','authenticated')::text, true);
@@ -9547,6 +9553,8 @@ BEGIN
         SELECT count(*) INTO v_cont  FROM public.prospecto_contactos;
         SELECT count(*), string_agg(replace(nombre,'P264 Prospecto ',''), ',' ORDER BY nombre)
           INTO v_pros, v_nom FROM public.prospectos;
+        SELECT count(*), string_agg(replace(nombre,'P264 Prospecto ',''), ',' ORDER BY nombre)
+          INTO v_pros264, v_nom264 FROM public.prospectos WHERE nombre LIKE 'P264 Prospecto %';
         PERFORM set_config('role','none', true);
       EXCEPTION WHEN OTHERS THEN
         PERFORM set_config('role','none', true);
@@ -9554,7 +9562,8 @@ BEGIN
       END;
       v_res := v_res || jsonb_build_object(r.etq, jsonb_build_object(
         'pros', v_pros, 'ases', v_ases, 'cont', v_cont, 'cargo', v_cargo,
-        'nombres', COALESCE(v_nom,'∅')));
+        'nombres', COALESCE(v_nom,'∅'),
+        'pros264', v_pros264, 'nombres264', COALESCE(v_nom264,'∅')));
     END LOOP;
     PERFORM set_config('role','none', true);
 
@@ -9577,13 +9586,16 @@ BEGIN
 
     -- ---------- P472: admin_pais ve TODOS los de su país y NINGUNO del otro ----------
     -- admA (GT) ve A1,A2,A3,Rogue,SupA = 5 y nada de SV. admB (SV) ve solo B1.
-    v_ok := (v_res#>>'{admA,pros}')::bigint = 5
-        AND (v_res#>>'{admA,nombres}') = 'A1,A2,A3,Rogue,SupA'
-        AND (v_res#>>'{admB,nombres}') NOT LIKE '%A1%'
-        AND (v_res#>>'{admB,nombres}') NOT LIKE '%A3%';
+    -- Cuenta SOLO los prospectos del fixture (prefijo 'P264 Prospecto ', campos pros264/nombres264): ya
+    -- hay prospectos reales en GT y el admin_pais de GT los ve legítimamente. P473 sigue con el conteo
+    -- total (pros/nombres) y queda en la deuda.
+    v_ok := (v_res#>>'{admA,pros264}')::bigint = 5
+        AND (v_res#>>'{admA,nombres264}') = 'A1,A2,A3,Rogue,SupA'
+        AND (v_res#>>'{admB,nombres264}') NOT LIKE '%A1%'
+        AND (v_res#>>'{admB,nombres264}') NOT LIKE '%A3%';
     v_472 := CASE WHEN v_ok
-      THEN 'OK (admin GT ve los 5 de GT; admin SV no ve ninguno de GT — ve ['||(v_res#>>'{admB,nombres}')||'])'
-      ELSE 'ROJO (admA='||(v_res#>>'{admA,pros}')||' ['||(v_res#>>'{admA,nombres}')||'] admB='||(v_res#>>'{admB,pros}')||' ['||(v_res#>>'{admB,nombres}')||'])' END;
+      THEN 'OK (admin GT ve los 5 de GT; admin SV no ve ninguno de GT — ve ['||(v_res#>>'{admB,nombres264}')||'])'
+      ELSE 'ROJO (admA='||(v_res#>>'{admA,pros264}')||' ['||(v_res#>>'{admA,nombres264}')||'] admB='||(v_res#>>'{admB,pros264}')||' ['||(v_res#>>'{admB,nombres264}')||'])' END;
 
     -- ---------- P473: super_admin ve todos (6) ----------
     v_ok := (v_res#>>'{super,pros}')::bigint = 6;
@@ -11643,6 +11655,210 @@ DO $$ BEGIN
          THEN 'OK (fixture comercial: admin HN, asesor HN, ficha de medico, 3 prospectos, 1 contacto)'
          ELSE 'ROJO (fixture comercial NO sembrado y sin error capturado)' END), false);
 EXCEPTION WHEN OTHERS THEN PERFORM set_config('probe.co_fx','ROJO ('||SQLSTATE||')',false); END $$;
+
+-- ############################################################################################
+-- P1035-P1040 — mig 374: integridad de la ubicacion del prospecto (aplicada en prod 2026-10-17 16:31 UTC)
+--   actualizar_prospecto: despues del gate (42501), si quien llama no es admin del pais del prospecto y manda
+--   direccion/lat/lng distintas de las guardadas -> PA035. CHECK prospectos_coord_valida: las dos o ninguna, en rango,
+--   nunca (0,0) -> 23514. Van ANTES de P517 para usar co_p_ase1 tal como lo siembra el fixture (asesor ase1, sin
+--   coordenada). Toda escritura se descarta con RAISE P0999 dentro del bloque; el veredicto queda en una variable y se
+--   publica DESPUES del descarte (si se publicara adentro, el descarte lo revertiria); y se verifica que la fila quedo
+--   igual que su snapshot.
+-- ############################################################################################
+
+-- P1035 — ASESOR dueno cambia lat/lng de su prospecto -> OK (PA035)
+--   por que: la ubicacion es la referencia del check-in; el medido no la puede mover (el gate lo deja pasar: es su fila)
+SELECT set_config('request.jwt.claims', json_build_object('sub', current_setting('probe.co_ase1',true), 'role','authenticated')::text, true);
+SELECT set_config('role','authenticated', true);
+DO $$
+DECLARE v text; st text; snap_pre text; snap_post text; r record; pid uuid;
+BEGIN
+  IF current_setting('probe.co_ready',true)<>'1' THEN PERFORM set_config('probe.p1035','N/A (fixture comercial ausente)',false); RETURN; END IF;
+  IF to_regprocedure('public.actualizar_prospecto(uuid,text,text,text,numeric,numeric,text,uuid)') IS NULL THEN
+    PERFORM set_config('probe.p1035','ROJO — RPC AUSENTE (todavia no existe; esto NO es un rechazo)',false); RETURN; END IF;
+  pid := NULLIF(current_setting('probe.co_p_ase1',true),'')::uuid;
+  SELECT pr.* INTO r FROM public.prospectos pr WHERE pr.id = pid;
+  IF NOT FOUND THEN PERFORM set_config('probe.p1035','FALLO (fixture: co_p_ase1 no visible para su asesor)',false); RETURN; END IF;
+  snap_pre := (SELECT ROW(pr.direccion, pr.lat, pr.lng, pr.notas, pr.nombre, pr.tipo, pr.empresa_proveedora_id)::text FROM public.prospectos pr WHERE pr.id = pid);
+  BEGIN
+    BEGIN
+      PERFORM public.actualizar_prospecto(pid, r.nombre, r.tipo, r.direccion, 14.61, -90.52, r.notas, r.empresa_proveedora_id);
+      st := 'sin error';
+    EXCEPTION WHEN SQLSTATE 'PA035' THEN st := 'PA035';
+    END;
+    RAISE EXCEPTION 'P1035 descarte' USING ERRCODE = 'P0999';
+  EXCEPTION WHEN SQLSTATE 'P0999' THEN NULL;
+  END;
+  snap_post := (SELECT ROW(pr.direccion, pr.lat, pr.lng, pr.notas, pr.nombre, pr.tipo, pr.empresa_proveedora_id)::text FROM public.prospectos pr WHERE pr.id = pid);
+  v := CASE
+         WHEN snap_post IS DISTINCT FROM snap_pre THEN 'FALLO (la fila no volvio a su snapshot: '||COALESCE(snap_post,'NULL')||')'
+         WHEN st = 'PA035' THEN 'OK (PA035: el asesor no mueve la ubicacion)'
+         ELSE 'ROJO (PERMITIDO — tenia que rechazar con PA035)'
+       END;
+  PERFORM set_config('probe.p1035', v, false);
+EXCEPTION WHEN OTHERS THEN PERFORM set_config('probe.p1035','FALLO (esperaba PA035, vino '||SQLSTATE||': '||SQLERRM||')',false); END $$;
+SELECT set_config('role','none', true);
+
+-- P1036 — CONTROL POSITIVO: ASESOR dueno manda la MISMA direccion/lat/lng y otras notas -> OK (permitido)
+--   por que: sin este, P1035 podria dar PA035 por cualquier llamada del asesor y no mediria la regla
+SELECT set_config('request.jwt.claims', json_build_object('sub', current_setting('probe.co_ase1',true), 'role','authenticated')::text, true);
+SELECT set_config('role','authenticated', true);
+DO $$
+DECLARE v text; st text; leida text; snap_pre text; snap_post text; r record; pid uuid;
+BEGIN
+  IF current_setting('probe.co_ready',true)<>'1' THEN PERFORM set_config('probe.p1036','N/A (fixture comercial ausente)',false); RETURN; END IF;
+  IF to_regprocedure('public.actualizar_prospecto(uuid,text,text,text,numeric,numeric,text,uuid)') IS NULL THEN
+    PERFORM set_config('probe.p1036','ROJO — RPC AUSENTE (todavia no existe; esto NO es un rechazo)',false); RETURN; END IF;
+  pid := NULLIF(current_setting('probe.co_p_ase1',true),'')::uuid;
+  SELECT pr.* INTO r FROM public.prospectos pr WHERE pr.id = pid;
+  IF NOT FOUND THEN PERFORM set_config('probe.p1036','FALLO (fixture: co_p_ase1 no visible para su asesor)',false); RETURN; END IF;
+  snap_pre := (SELECT ROW(pr.direccion, pr.lat, pr.lng, pr.notas, pr.nombre, pr.tipo, pr.empresa_proveedora_id)::text FROM public.prospectos pr WHERE pr.id = pid);
+  BEGIN
+    BEGIN
+      PERFORM public.actualizar_prospecto(pid, r.nombre, r.tipo, r.direccion, r.lat, r.lng, 'QA P1036', r.empresa_proveedora_id);
+      st := 'sin error';
+    EXCEPTION WHEN OTHERS THEN st := SQLSTATE||': '||SQLERRM;
+    END;
+    -- relectura en un statement aparte de la llamada
+    leida := (SELECT pr.notas FROM public.prospectos pr WHERE pr.id = pid);
+    RAISE EXCEPTION 'P1036 descarte' USING ERRCODE = 'P0999';
+  EXCEPTION WHEN SQLSTATE 'P0999' THEN NULL;
+  END;
+  snap_post := (SELECT ROW(pr.direccion, pr.lat, pr.lng, pr.notas, pr.nombre, pr.tipo, pr.empresa_proveedora_id)::text FROM public.prospectos pr WHERE pr.id = pid);
+  v := CASE
+         WHEN snap_post IS DISTINCT FROM snap_pre THEN 'FALLO (la fila no volvio a su snapshot: '||COALESCE(snap_post,'NULL')||')'
+         WHEN st IS DISTINCT FROM 'sin error' THEN 'FALLO (RECHAZO cuando debia permitir: '||COALESCE(st,'NULL')||')'
+         WHEN leida IS DISTINCT FROM 'QA P1036' THEN 'FALLO (sin error pero la relectura da notas = '||COALESCE(leida,'NULL')||')'
+         ELSE 'OK (PERMITIDO: misma ubicacion, notas QA P1036 releidas; descartado)'
+       END;
+  PERFORM set_config('probe.p1036', v, false);
+EXCEPTION WHEN OTHERS THEN PERFORM set_config('probe.p1036','FALLO ('||SQLSTATE||' '||SQLERRM||')',false); END $$;
+SELECT set_config('role','none', true);
+
+-- P1037 — ADMIN_PAIS del pais del prospecto mueve lat/lng a (14.61, -90.52) -> OK (permitido y releido)
+--   por que: la 374 no le quita la ubicacion a quien la tiene que cargar
+SELECT set_config('request.jwt.claims', json_build_object('sub', current_setting('probe.co_admgt',true), 'role','authenticated')::text, true);
+SELECT set_config('role','authenticated', true);
+DO $$
+DECLARE v text; st text; leida text; snap_pre text; snap_post text; r record; pid uuid;
+BEGIN
+  IF current_setting('probe.co_ready',true)<>'1' THEN PERFORM set_config('probe.p1037','N/A (fixture comercial ausente)',false); RETURN; END IF;
+  IF to_regprocedure('public.actualizar_prospecto(uuid,text,text,text,numeric,numeric,text,uuid)') IS NULL THEN
+    PERFORM set_config('probe.p1037','ROJO — RPC AUSENTE (todavia no existe; esto NO es un rechazo)',false); RETURN; END IF;
+  pid := NULLIF(current_setting('probe.co_p_ase1',true),'')::uuid;
+  SELECT pr.* INTO r FROM public.prospectos pr WHERE pr.id = pid;
+  IF NOT FOUND THEN PERFORM set_config('probe.p1037','FALLO (fixture: co_p_ase1 no visible para el admin_pais GT)',false); RETURN; END IF;
+  snap_pre := (SELECT ROW(pr.direccion, pr.lat, pr.lng, pr.notas, pr.nombre, pr.tipo, pr.empresa_proveedora_id)::text FROM public.prospectos pr WHERE pr.id = pid);
+  BEGIN
+    BEGIN
+      PERFORM public.actualizar_prospecto(pid, r.nombre, r.tipo, r.direccion, 14.61, -90.52, r.notas, r.empresa_proveedora_id);
+      st := 'sin error';
+    EXCEPTION WHEN OTHERS THEN st := SQLSTATE||': '||SQLERRM;
+    END;
+    -- relectura en un statement aparte de la llamada
+    leida := (SELECT pr.lat::text||'/'||pr.lng::text FROM public.prospectos pr WHERE pr.id = pid AND pr.lat = 14.61 AND pr.lng = -90.52);
+    RAISE EXCEPTION 'P1037 descarte' USING ERRCODE = 'P0999';
+  EXCEPTION WHEN SQLSTATE 'P0999' THEN NULL;
+  END;
+  snap_post := (SELECT ROW(pr.direccion, pr.lat, pr.lng, pr.notas, pr.nombre, pr.tipo, pr.empresa_proveedora_id)::text FROM public.prospectos pr WHERE pr.id = pid);
+  v := CASE
+         WHEN snap_post IS DISTINCT FROM snap_pre THEN 'FALLO (la fila no volvio a su snapshot: '||COALESCE(snap_post,'NULL')||')'
+         WHEN st IS DISTINCT FROM 'sin error' THEN 'FALLO (RECHAZO cuando debia permitir: '||COALESCE(st,'NULL')||')'
+         WHEN leida IS NULL THEN 'FALLO (sin error pero la relectura no muestra (14.61, -90.52))'
+         ELSE 'OK (PERMITIDO: admin_pais GT movio el pin a '||leida||'; descartado)'
+       END;
+  PERFORM set_config('probe.p1037', v, false);
+EXCEPTION WHEN OTHERS THEN PERFORM set_config('probe.p1037','FALLO ('||SQLSTATE||' '||SQLERRM||')',false); END $$;
+SELECT set_config('role','none', true);
+
+-- P1038 — ADMIN_PAIS manda solo lat (lng NULL) -> OK (23514 prospectos_coord_valida)
+--   por que: una coordenada a medias no es una ubicacion; ni la RPC ni un INSERT directo la pueden dejar
+SELECT set_config('request.jwt.claims', json_build_object('sub', current_setting('probe.co_admgt',true), 'role','authenticated')::text, true);
+SELECT set_config('role','authenticated', true);
+DO $$
+DECLARE v text; st text; msg text; snap_pre text; snap_post text; r record; pid uuid;
+BEGIN
+  IF current_setting('probe.co_ready',true)<>'1' THEN PERFORM set_config('probe.p1038','N/A (fixture comercial ausente)',false); RETURN; END IF;
+  IF to_regprocedure('public.actualizar_prospecto(uuid,text,text,text,numeric,numeric,text,uuid)') IS NULL THEN
+    PERFORM set_config('probe.p1038','ROJO — RPC AUSENTE (todavia no existe; esto NO es un rechazo)',false); RETURN; END IF;
+  pid := NULLIF(current_setting('probe.co_p_ase1',true),'')::uuid;
+  SELECT pr.* INTO r FROM public.prospectos pr WHERE pr.id = pid;
+  IF NOT FOUND THEN PERFORM set_config('probe.p1038','FALLO (fixture: co_p_ase1 no visible para el admin_pais GT)',false); RETURN; END IF;
+  snap_pre := (SELECT ROW(pr.direccion, pr.lat, pr.lng, pr.notas, pr.nombre, pr.tipo, pr.empresa_proveedora_id)::text FROM public.prospectos pr WHERE pr.id = pid);
+  BEGIN
+    BEGIN
+      PERFORM public.actualizar_prospecto(pid, r.nombre, r.tipo, r.direccion, 14.61, NULL, r.notas, r.empresa_proveedora_id);
+      st := 'sin error';
+    EXCEPTION WHEN check_violation THEN st := '23514'; msg := SQLERRM;
+    END;
+    RAISE EXCEPTION 'P1038 descarte' USING ERRCODE = 'P0999';
+  EXCEPTION WHEN SQLSTATE 'P0999' THEN NULL;
+  END;
+  snap_post := (SELECT ROW(pr.direccion, pr.lat, pr.lng, pr.notas, pr.nombre, pr.tipo, pr.empresa_proveedora_id)::text FROM public.prospectos pr WHERE pr.id = pid);
+  v := CASE
+         WHEN snap_post IS DISTINCT FROM snap_pre THEN 'FALLO (la fila no volvio a su snapshot: '||COALESCE(snap_post,'NULL')||')'
+         WHEN st = '23514' AND position('prospectos_coord_valida' in msg) > 0 THEN 'OK (23514 prospectos_coord_valida: lat sin lng)'
+         WHEN st = '23514' THEN 'FALLO (23514 de otro CHECK: '||COALESCE(msg,'NULL')||')'
+         ELSE 'ROJO (PERMITIDO — tenia que rechazar con 23514 prospectos_coord_valida)'
+       END;
+  PERFORM set_config('probe.p1038', v, false);
+EXCEPTION WHEN OTHERS THEN PERFORM set_config('probe.p1038','FALLO (esperaba 23514, vino '||SQLSTATE||': '||SQLERRM||')',false); END $$;
+SELECT set_config('role','none', true);
+
+-- P1039 — ADMIN_PAIS manda (0, 0) -> OK (23514 prospectos_coord_valida)
+--   por que: (0,0) es el valor basura de un pin sin inicializar; todo check-in saldria "a N km"
+SELECT set_config('request.jwt.claims', json_build_object('sub', current_setting('probe.co_admgt',true), 'role','authenticated')::text, true);
+SELECT set_config('role','authenticated', true);
+DO $$
+DECLARE v text; st text; msg text; snap_pre text; snap_post text; r record; pid uuid;
+BEGIN
+  IF current_setting('probe.co_ready',true)<>'1' THEN PERFORM set_config('probe.p1039','N/A (fixture comercial ausente)',false); RETURN; END IF;
+  IF to_regprocedure('public.actualizar_prospecto(uuid,text,text,text,numeric,numeric,text,uuid)') IS NULL THEN
+    PERFORM set_config('probe.p1039','ROJO — RPC AUSENTE (todavia no existe; esto NO es un rechazo)',false); RETURN; END IF;
+  pid := NULLIF(current_setting('probe.co_p_ase1',true),'')::uuid;
+  SELECT pr.* INTO r FROM public.prospectos pr WHERE pr.id = pid;
+  IF NOT FOUND THEN PERFORM set_config('probe.p1039','FALLO (fixture: co_p_ase1 no visible para el admin_pais GT)',false); RETURN; END IF;
+  snap_pre := (SELECT ROW(pr.direccion, pr.lat, pr.lng, pr.notas, pr.nombre, pr.tipo, pr.empresa_proveedora_id)::text FROM public.prospectos pr WHERE pr.id = pid);
+  BEGIN
+    BEGIN
+      PERFORM public.actualizar_prospecto(pid, r.nombre, r.tipo, r.direccion, 0, 0, r.notas, r.empresa_proveedora_id);
+      st := 'sin error';
+    EXCEPTION WHEN check_violation THEN st := '23514'; msg := SQLERRM;
+    END;
+    RAISE EXCEPTION 'P1039 descarte' USING ERRCODE = 'P0999';
+  EXCEPTION WHEN SQLSTATE 'P0999' THEN NULL;
+  END;
+  snap_post := (SELECT ROW(pr.direccion, pr.lat, pr.lng, pr.notas, pr.nombre, pr.tipo, pr.empresa_proveedora_id)::text FROM public.prospectos pr WHERE pr.id = pid);
+  v := CASE
+         WHEN snap_post IS DISTINCT FROM snap_pre THEN 'FALLO (la fila no volvio a su snapshot: '||COALESCE(snap_post,'NULL')||')'
+         WHEN st = '23514' AND position('prospectos_coord_valida' in msg) > 0 THEN 'OK (23514 prospectos_coord_valida: (0,0))'
+         WHEN st = '23514' THEN 'FALLO (23514 de otro CHECK: '||COALESCE(msg,'NULL')||')'
+         ELSE 'ROJO (PERMITIDO — tenia que rechazar con 23514 prospectos_coord_valida)'
+       END;
+  PERFORM set_config('probe.p1039', v, false);
+EXCEPTION WHEN OTHERS THEN PERFORM set_config('probe.p1039','FALLO (esperaba 23514, vino '||SQLSTATE||': '||SQLERRM||')',false); END $$;
+SELECT set_config('role','none', true);
+
+-- P1040 — CENSO de la 374: CHECK presente y validado; en actualizar_prospecto el gate va ANTES que PA035
+--   por que: si alguien reordena el cuerpo, PA035 le contestaria a un ajeno y filtraria que la fila existe
+SELECT set_config('role','none', true);
+DO $$
+DECLARE v text; val boolean; src text; i_gate int; i_pa int;
+BEGIN
+  SELECT c.convalidated INTO val FROM pg_constraint c
+   WHERE c.conrelid = 'public.prospectos'::regclass AND c.conname = 'prospectos_coord_valida';
+  src := (SELECT p.prosrc FROM pg_proc p WHERE p.oid = to_regprocedure('public.actualizar_prospecto(uuid,text,text,text,numeric,numeric,text,uuid)'));
+  i_gate := position('puede_editar_datos_prospecto' in COALESCE(src, ''));
+  i_pa   := position('PA035' in COALESCE(src, ''));
+  v := CASE
+         WHEN val IS NULL OR src IS NULL OR i_pa = 0 THEN 'FALLO (objeto ausente: CHECK '||COALESCE(val::text,'no existe')||', RPC '||CASE WHEN src IS NULL THEN 'no existe' ELSE 'existe' END||', PA035 en pos '||i_pa||')'
+         WHEN NOT val THEN 'FALLO (prospectos_coord_valida sin validar)'
+         WHEN i_gate = 0 OR i_gate >= i_pa THEN 'FALLO (el gate no corre antes de PA035: '||i_gate||' / '||i_pa||')'
+         ELSE 'OK (CHECK validado; gate en '||i_gate||' antes de PA035 en '||i_pa||')'
+       END;
+  PERFORM set_config('probe.p1040', v, false);
+EXCEPTION WHEN OTHERS THEN PERFORM set_config('probe.p1040','FALLO ('||SQLSTATE||' '||SQLERRM||')',false); END $$;
+SELECT set_config('role','none', true);
 
 -- P517 — crear_prospecto con asesor de OTRO pais -> OK (42501 no_autorizado)
 --   por que: el pais NO es parametro: sale de la ficha. Admin GT + comercial HN => el gate cae sobre HN
@@ -36423,6 +36639,12 @@ UNION ALL SELECT 'P1031_completar_registro_identidad_previa_373',  current_setti
 UNION ALL SELECT 'P1032_completar_registro_pais_zz_373',  current_setting('probe.p1032', true), 'OK (373: pais ZZ -> 22023 de registrar_proveedor, sin filas; aplicada en prod 2026-10-09 16:27 UTC; si falta: REGRESION)'
 UNION ALL SELECT 'P1033_completar_registro_execute_373',  current_setting('probe.p1033', true), 'OK (373: anon y PUBLIC sin EXECUTE, authenticated con EXECUTE; anon ejercitado 42501; aplicada en prod 2026-10-09 16:27 UTC; si falta: REGRESION)'
 UNION ALL SELECT 'P1034_completar_registro_ya_proveedor_373',  current_setting('probe.p1034', true), 'OK (373: farmacia.qa -> su empresa_id sin registro y con el correo sin confirmar, sin filas; aplicada en prod 2026-10-09 16:27 UTC; si falta: REGRESION)'
+UNION ALL SELECT 'P1035_prospecto_ubicacion_asesor_pa035_374',  current_setting('probe.p1035', true), 'OK (374: el asesor dueno que cambia lat/lng de su prospecto recibe PA035; fila restaurada)'
+UNION ALL SELECT 'P1036_prospecto_ubicacion_asesor_control_374',  current_setting('probe.p1036', true), 'OK (374, control positivo: el asesor manda la misma direccion/lat/lng y notas QA P1036; sin error y releidas; descartado)'
+UNION ALL SELECT 'P1037_prospecto_ubicacion_admin_mueve_pin_374',  current_setting('probe.p1037', true), 'OK (374: admin_pais GT mueve el pin a (14.61, -90.52); sin error y releido; descartado)'
+UNION ALL SELECT 'P1038_prospecto_coord_a_medias_374',  current_setting('probe.p1038', true), 'OK (374: lat sin lng -> 23514 prospectos_coord_valida)'
+UNION ALL SELECT 'P1039_prospecto_coord_cero_cero_374',  current_setting('probe.p1039', true), 'OK (374: (0,0) -> 23514 prospectos_coord_valida)'
+UNION ALL SELECT 'P1040_prospecto_ubicacion_censo_374',  current_setting('probe.p1040', true), 'OK (374: CHECK validado; en actualizar_prospecto el gate corre antes de PA035; si falta: FALLO (objeto ausente))'
 UNION ALL SELECT 'P1010_campana_vistas_sin_update_367',  current_setting('probe.p1010', true), 'OK (367: INSERT 1; ON CONFLICT DO NOTHING 0 sin error; DO UPDATE y UPDATE 42501; otro paciente 0; antes de la 367: PENDIENTE)'
 UNION ALL SELECT 'P1009_datos_bancarios_acotados_366',  current_setting('probe.p1009', true), 'OK (366: cuenta GT solo super_admin/admin_pais GT/proveedores GT; checkout 1 fila; config 21 super_admin y 14 el resto, admin_pais incluido; antes de la 366: PENDIENTE)'
 UNION ALL SELECT 'DET_p1009',  'DET ' || COALESCE(NULLIF(current_setting('probe.p1009_det', true), ''), '(sin dato)'), 'DET (detalle de P1009, no es probe)'
@@ -36675,7 +36897,7 @@ UNION ALL SELECT 'P000_CENTINELA_veredictos_no_nulos',
        'probe.p866', 'probe.p867', 'probe.p868', 'probe.p869', 'probe.p870', 'probe.p871', 'probe.p872', 'probe.p873', 'probe.p874', 'probe.p875', 'probe.p876', 'probe.p877', 'probe.p878',
        'probe.p879', 'probe.p880', 'probe.p881', 'probe.p882', 'probe.p883', 'probe.p884',
        'probe.p885', 'probe.p886', 'probe.p887', 'probe.p888', 'probe.p889', 'probe.p890', 'probe.p891', 'probe.p892', 'probe.p893', 'probe.p894', 'probe.p895', 'probe.p896', 'probe.p908', 'probe.p909', 'probe.p910', 'probe.p911',
-       'probe.p897', 'probe.p898', 'probe.p899', 'probe.p900', 'probe.p901', 'probe.p902', 'probe.p903', 'probe.p904', 'probe.p905', 'probe.p906', 'probe.p907', 'probe.p912', 'probe.p913', 'probe.p914', 'probe.p915', 'probe.p916', 'probe.p917', 'probe.p918', 'probe.p919', 'probe.p920', 'probe.p921', 'probe.p922', 'probe.p923', 'probe.p924', 'probe.p925', 'probe.p926', 'probe.p927', 'probe.p928', 'probe.p929', 'probe.p930', 'probe.p931', 'probe.p932', 'probe.p933', 'probe.p934', 'probe.p935', 'probe.p936', 'probe.p937', 'probe.p938', 'probe.p939', 'probe.p940', 'probe.p941', 'probe.p942', 'probe.p943', 'probe.p944', 'probe.p945', 'probe.p946', 'probe.p947', 'probe.p948', 'probe.p949', 'probe.p950', 'probe.p951', 'probe.p952', 'probe.p953', 'probe.p954', 'probe.p955', 'probe.p956', 'probe.p957', 'probe.p958', 'probe.p959', 'probe.p960', 'probe.p961', 'probe.p962', 'probe.p963', 'probe.p964', 'probe.p965', 'probe.p966', 'probe.p967', 'probe.p968', 'probe.p969', 'probe.p970', 'probe.p971', 'probe.p972', 'probe.p973', 'probe.p974', 'probe.p975', 'probe.p976', 'probe.p977', 'probe.p978', 'probe.p979', 'probe.p980', 'probe.p981', 'probe.p982', 'probe.p983', 'probe.p984', 'probe.p985', 'probe.p986', 'probe.p987', 'probe.p988', 'probe.p989', 'probe.p990', 'probe.p991', 'probe.p992', 'probe.p993', 'probe.p994', 'probe.p995', 'probe.p996', 'probe.p997', 'probe.p998', 'probe.p999', 'probe.p1000', 'probe.p1001', 'probe.p1002', 'probe.p1003', 'probe.p1004', 'probe.p1005', 'probe.p1006', 'probe.p1007', 'probe.p1008', 'probe.p1009', 'probe.p1010', 'probe.p1011', 'probe.p1012', 'probe.p1013', 'probe.p1014', 'probe.e370_fx', 'probe.p1015', 'probe.p1016', 'probe.p1017', 'probe.p1018', 'probe.g371_fx', 'probe.p1019', 'probe.p1020', 'probe.p1021', 'probe.p1022', 'probe.g372_fx', 'probe.p1023', 'probe.p1024', 'probe.p1025'
+       'probe.p897', 'probe.p898', 'probe.p899', 'probe.p900', 'probe.p901', 'probe.p902', 'probe.p903', 'probe.p904', 'probe.p905', 'probe.p906', 'probe.p907', 'probe.p912', 'probe.p913', 'probe.p914', 'probe.p915', 'probe.p916', 'probe.p917', 'probe.p918', 'probe.p919', 'probe.p920', 'probe.p921', 'probe.p922', 'probe.p923', 'probe.p924', 'probe.p925', 'probe.p926', 'probe.p927', 'probe.p928', 'probe.p929', 'probe.p930', 'probe.p931', 'probe.p932', 'probe.p933', 'probe.p934', 'probe.p935', 'probe.p936', 'probe.p937', 'probe.p938', 'probe.p939', 'probe.p940', 'probe.p941', 'probe.p942', 'probe.p943', 'probe.p944', 'probe.p945', 'probe.p946', 'probe.p947', 'probe.p948', 'probe.p949', 'probe.p950', 'probe.p951', 'probe.p952', 'probe.p953', 'probe.p954', 'probe.p955', 'probe.p956', 'probe.p957', 'probe.p958', 'probe.p959', 'probe.p960', 'probe.p961', 'probe.p962', 'probe.p963', 'probe.p964', 'probe.p965', 'probe.p966', 'probe.p967', 'probe.p968', 'probe.p969', 'probe.p970', 'probe.p971', 'probe.p972', 'probe.p973', 'probe.p974', 'probe.p975', 'probe.p976', 'probe.p977', 'probe.p978', 'probe.p979', 'probe.p980', 'probe.p981', 'probe.p982', 'probe.p983', 'probe.p984', 'probe.p985', 'probe.p986', 'probe.p987', 'probe.p988', 'probe.p989', 'probe.p990', 'probe.p991', 'probe.p992', 'probe.p993', 'probe.p994', 'probe.p995', 'probe.p996', 'probe.p997', 'probe.p998', 'probe.p999', 'probe.p1000', 'probe.p1001', 'probe.p1002', 'probe.p1003', 'probe.p1004', 'probe.p1005', 'probe.p1006', 'probe.p1007', 'probe.p1008', 'probe.p1009', 'probe.p1010', 'probe.p1011', 'probe.p1012', 'probe.p1013', 'probe.p1014', 'probe.e370_fx', 'probe.p1015', 'probe.p1016', 'probe.p1017', 'probe.p1018', 'probe.g371_fx', 'probe.p1019', 'probe.p1020', 'probe.p1021', 'probe.p1022', 'probe.g372_fx', 'probe.p1023', 'probe.p1024', 'probe.p1025', 'probe.p1035', 'probe.p1036', 'probe.p1037', 'probe.p1038', 'probe.p1039', 'probe.p1040'
              ]) AS n) s),
   'OK (todos los veredictos publicados)';
 

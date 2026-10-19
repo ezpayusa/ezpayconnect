@@ -189,6 +189,13 @@ const MAPA: Record<string, Entrada> = {
            destino: 'inline', campo: 'fecha_ingreso', reportar: false },
   PA034: { texto: 'El celular tiene que tener entre 7 y 15 dígitos.',
            destino: 'inline', campo: 'celular', reportar: false },
+
+  // --- Mig 374: ubicación del prospecto ------------------------------------------------------
+  // actualizar_prospecto rechaza que alguien que no es admin del país cambie dirección/lat/lng. Con
+  // el front al día la ficha manda la fila releída, así que si aparece es que la ubicación cambió
+  // con la ficha abierta (o la llamada vino por otro camino): se pide recargar, no se reporta.
+  PA035: { texto: 'La dirección y la ubicación del prospecto las carga tu administrador de país. Recarga la ficha para ver los datos actuales.',
+           destino: 'toast', reportar: false },
 }
 
 const ES_PA = /^PA\d{3}$/

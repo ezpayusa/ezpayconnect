@@ -41,6 +41,7 @@ const BuscarMedicamentosPage = lazy(() => import('@/pages/BuscarMedicamentosPage
 const NotificacionesPage = lazy(() => import('@/pages/NotificacionesPage'))
 const LoginPage = lazy(() => import('@/pages/LoginPage'))
 const SetPasswordPage = lazy(() => import('@/pages/SetPasswordPage'))
+const CambiarClavePage = lazy(() => import('@/pages/CambiarClavePage'))
 const ConfirmarRecetaPage = lazy(() => import('@/pages/ConfirmarRecetaPage'))
 const DashboardPage = lazy(() => import('@/pages/DashboardPage'))
 const PacientesPage = lazy(() => import('@/pages/PacientesPage'))
@@ -287,6 +288,8 @@ function App() {
         <Route path="/registro-clinica" element={<RegistroClinicaPage />} />
         <Route path="/login" element={<LoginPage />} />
         <Route path="/set-password" element={<SetPasswordPage />} />
+        {/* Fuera de los guards de rol a propósito: la página verifica la sesión sola (sin user → /login). */}
+        <Route path="/cambiar-clave" element={<CambiarClavePage />} />
         <Route path="/confirmar-receta" element={<ConfirmarRecetaPage />} />
         <Route path="/" element={<RootRedirect />} />
         <Route path="/dashboard" element={<PrivateLayout><DashboardPage /></PrivateLayout>} />

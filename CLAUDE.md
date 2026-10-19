@@ -24,11 +24,23 @@ Stack: React + Vite + TypeScript, Supabase / Postgres, deploy en Vercel, repo en
   minutos por esto** (P635 es la probe que faltaba, P636 su contraprueba).
 - NUNCA ampliar policies de RLS sobre tablas adyacentes a datos médicos (p. ej. campana_metricas). Para dar acceso, usar RPCs SECURITY DEFINER con search_path='', fail-closed (si el scope es NULL → 0 filas) y gate interno.
 - Probar aislamiento por rol impersonando request.jwt.claims en prod: cada rol ve lo suyo y no lo ajeno.
-- **Próximos números libres: probe `P1035`** (global, no por módulo; P1026-P1034 + M373_FX usados por la mig 373; P1023-P1025 + G372_FX usados por la mig 372; P1019-P1022 usados por la mig 371; P1015-P1018 usados por la mig 370, P1011-P1014 por la mig 369, P1010 por la mig 367, P1009 por la 366, P1008 por la 365, P1007 por la 364, P1001-P1006 por la mig 363, P996-P1000 por la 362, P990-P995 por la 361, P983-P989 por la 360, P975-P982 por la
+- **Estado al 19-oct-2026 (manda sobre los números de la entrada siguiente):**
+  - **Mig 374** (`prospectos_coord_valida` + PA035 en `actualizar_prospecto`) **APLICADA en prod el 2026-10-17 16:31 UTC** y
+    verificada en sesión nueva (VERDE 4/4). Archivos en la rama `feat/prospecto-ubicacion` (PR #59, draft), en main desde b68992e (merge PR #59, 18-oct-2026); la 373 entró a main con el merge del PR #57 (19-oct-2026).
+  - La 373 está en prod (aplicada 2026-10-09) y en main desde el merge del PR #57. Huella de funciones viva post-373 = `027e10a7b66101b4f5bb85c475c34045 392`.
+  - **Orden de rollback:** 374 → 373 → 372 → 371 → …
+  - **Próximos libres: mig 375, errcode PA036, probe P1041.**
+  - **Harness al 19-oct:** 1117 filas, 11 rojas = exactamente la deuda. Las 8 'preexistentes' del 17-oct eran fixtures
+    frágiles (farm_emp con LIMIT 1 sin ORDER BY que eligió la empresa QA-MANUAL pendiente de la 373; P472 contando
+    prospectos reales de GT), corregidos en fix/harness-fixture-farmacia.
+  - Rama sin upstream propio al crearse desde origin/main: push SIEMPRE con nombre de rama explícito.
+  - PRs #59-#64 y #57 mergeados al 19-oct; #56 (gate de textos legales) y #58 (front de altas) SIN mergear hasta completar los placeholders legales. Confirm email APAGADO en prod hasta que entre #58.
+  - Punto 2 comercial (18-oct): src/lib/navegacion.ts es el helper ÚNICO de links Google Maps/Waze; VisitadorRutaPage y EntregaDetallePage todavía arman los suyos (migrar después). Hoy usa visitasDeHoyConUbicacion; visitasDelDia sigue sin coordenadas.
+- **Próximos números libres: probe `P1041`** (global, no por módulo; P1035-P1040 usados por la mig 374; P1026-P1034 + M373_FX usados por la mig 373; P1023-P1025 + G372_FX usados por la mig 372; P1019-P1022 usados por la mig 371; P1015-P1018 usados por la mig 370, P1011-P1014 por la mig 369, P1010 por la mig 367, P1009 por la 366, P1008 por la 365, P1007 por la 364, P1001-P1006 por la mig 363, P996-P1000 por la 362, P990-P995 por la 361, P983-P989 por la 360, P975-P982 por la
   359, P967-P974 por la 358, P958-P966 por la 357 (obtener_medicos_por_ids acotada a relación); P906-P907 usados por la mig 336, P912-P913
   por la 337, P914-P915 por la 338, P916-P920 por la 339/340, P921-P923 por la 341, P924 por la 342, P925 por
   la 343, P926-P927 por la 344, P928-P929 por la 345, P930 por la 346, P931-P932 por la 347, P933 por la 348,
-  P934-P935 por la 349, P936 por la 350, P937-P939 por la 351, P940-P943 por la 353), **migración `374`** (la 373 es el alta diferida de empresas, aplicada el 9-oct; la 371 es GL-02 y la 372 su hardening, las dos aplicadas el 8-oct), **errcode `LG007`** (prefijo LG,
+  P934-P935 por la 349, P936 por la 350, P937-P939 por la 351, P940-P943 por la 353), **migración `375`** (la 374 es la integridad de ubicación de prospectos, aplicada el 17-oct; la 373 es el alta diferida de empresas, aplicada el 9-oct; la 371 es GL-02 y la 372 su hardening, las dos aplicadas el 8-oct), **errcode `LG007`** (prefijo LG,
   GL-02: LG001-LG005 en uso por la 371 — LG001 sin sesión, LG002 código inexistente, LG003 versión no vigente, LG004
   entrada inválida, LG005 aceptaciones append-only; LG006 = el texto no corresponde a la identidad de la cuenta, en uso
   por la 372), **errcode `PC029`** (familia PC: PC025 país requerido y PC026 sin autoridad en `contar_medicos_por_pais`, PC027
@@ -385,7 +397,7 @@ Stack: React + Vite + TypeScript, Supabase / Postgres, deploy en Vercel, repo en
   sesión independiente (988 filas / 11 rojas de deuda, guard 155 sobre 946 DO, tsc 78, qual 9f07449d…).
   336 = fix de la 335: liberación/reversión con FOR UPDATE + evento solo si cambió la fila; EX028
   normalizado espacios/tabs/saltos — APLICADA en prod y verificada en sesión independiente el
-  26-sep-2026), **errcode `PA035`** (comercial),
+  26-sep-2026), **errcode `PA036`** (comercial),
   **`CA016`** (familia CAMPAÑAS: mig 358 `aprobar_solicitud_campana` → CA001 no es super_admin, CA002 solicitud
   inexistente, CA003 no está enviada, CA004 sin pago, CA005 más de un pago, CA006 pago rechazado, CA007 sin plan, CA008 la
   empresa no opera en el país; mig 359 `cotizar_campana`/`solicitar_pago_campana` → CA009 no es de tu empresa o rol,

@@ -96,14 +96,61 @@ export async function listarAsesores() {
 
 // --- Escritura: las 7 RPCs de la mig 272. El front no escribe una tabla directamente. ----------
 
+/**
+ * Coordenada utilizable: dos números finitos dentro de rango. El (0,0) se rechaza aunque sea un
+ * punto válido del planeta: es el valor basura típico de un pin sin inicializar, y un prospecto en
+ * el golfo de Guinea haría que todo check-in saliera "a N km del prospecto".
+ */
+export function coordenadasValidas(lat: unknown, lng: unknown): boolean {
+  if (typeof lat !== 'number' || typeof lng !== 'number') return false
+  if (!Number.isFinite(lat) || !Number.isFinite(lng)) return false
+  if (lat < -90 || lat > 90 || lng < -180 || lng > 180) return false
+  return !(lat === 0 && lng === 0)
+}
+
 export async function crearProspecto(p: {
   nombre: string; tipo: string; asesorId: string
-  direccion?: string | null; notas?: string | null
+  direccion?: string | null; lat?: number | null; lng?: number | null
+  notas?: string | null
 }) {
+  // Las dos o ninguna: una coordenada a medias no es una ubicación, y la RPC no la valida.
+  const lat = p.lat ?? null
+  const lng = p.lng ?? null
+  if ((lat !== null || lng !== null) && !coordenadasValidas(lat, lng)) {
+    throw new Error('coordenadas_invalidas')
+  }
   return supabase.rpc('crear_prospecto', {
     p_nombre: p.nombre, p_tipo: p.tipo, p_asesor_id: p.asesorId,
-    p_direccion: p.direccion ?? null, p_notas: p.notas ?? null,
+    p_direccion: p.direccion?.trim() || null, p_lat: lat, p_lng: lng,
+    p_notas: p.notas ?? null,
   })
+}
+
+/**
+ * Texto → coordenada por la edge `geocodificar` (Google y, si falla, Nominatim). Best-effort:
+ * null si no hay resultado o algo falla; la página deja ajustar el pin a mano. El log es fijo y
+ * nunca lleva la dirección: es el domicilio de un negocio que todavía no es cliente.
+ */
+export async function geocodificarDireccion(
+  direccion: string,
+): Promise<{ lat: number; lng: number; displayName: string } | null> {
+  const texto = direccion.trim()
+  if (!texto) return null
+  try {
+    const { data, error } = await supabase.functions.invoke('geocodificar', { body: { direccion: texto } })
+    if (error) {
+      console.error('geocodificarDireccion falló:', error?.message ?? (error as { code?: string })?.code)
+      return null
+    }
+    if (!data || data.error) return null
+    if (typeof data.lat !== 'number' || !Number.isFinite(data.lat)) return null
+    if (typeof data.lng !== 'number' || !Number.isFinite(data.lng)) return null
+    return { lat: data.lat, lng: data.lng, displayName: typeof data.display_name === 'string' ? data.display_name : '' }
+  } catch (err) {
+    const e = err as { message?: string; code?: string } | null
+    console.error('geocodificarDireccion falló:', e?.message ?? e?.code)
+    return null
+  }
 }
 
 export async function actualizarProspecto(p: {
@@ -186,16 +233,19 @@ export type VisitaComercial = {
 }
 
 /**
- * Lo que devuelve `obtenerVisita`, y NADA MAS. La ficha de la visita necesita saber si el prospecto
- * tiene coordenada cargada para poder explicar un check-in sin verificar: sin ese dato, "no
- * verificado" se lee como "el asesor mintio" cuando la causa puede ser que el prospecto nunca tuvo
- * direccion georreferenciada. Es la unica pantalla que lo usa, y lo usa como un booleano
+ * Lo que devuelven `obtenerVisita` (la ficha de la visita) y `visitasDeHoyConUbicacion` (Hoy), y NADA
+ * MAS. La ficha necesita saber si el prospecto tiene coordenada cargada para poder explicar un
+ * check-in sin verificar: sin ese dato, "no verificado" se lee como "el asesor mintio" cuando la causa
+ * puede ser que el prospecto nunca tuvo direccion georreferenciada; ahí lo usa como un booleano
  * (`lat == null`), no para calcular nada — la distancia la calcula la RPC y llega en
- * `checkin_distancia_m`.
+ * `checkin_distancia_m`. La dirección y la coordenada son, además, el destino del botón Navegar.
  */
 export type VisitaComercialGeo = Omit<VisitaComercial, 'prospecto'> & {
-  prospecto?: { nombre: string; lat: number | null; lng: number | null } | null
+  prospecto?: { nombre: string; direccion: string | null; lat: number | null; lng: number | null } | null
 }
+
+/** Lo que devuelve `visitasDeHoyConUbicacion` (solo HoyPage): el mismo embed que la ficha de la visita. */
+export type VisitaComercialHoy = VisitaComercialGeo
 
 export type ResultadoCheckin = {
   verificado: boolean
@@ -220,11 +270,21 @@ const COLS_VISITA =
 // sí son legibles para `authenticated` (son la dirección del negocio, no el rastro de una persona),
 // pero eso no es razón para mandarlas a toda pantalla que liste visitas: Equipo, Próximas y la lista
 // de la ficha del prospecto no las usan, y bajaban las coordenadas de la cartera entera a cada
-// carga. Sólo la ficha de UNA visita las pide, y sólo para saber si son null.
+// carga. Solo DOS consultas piden dirección y coordenada: la ficha de UNA visita (para saber si son
+// null y para el botón Navegar) y Hoy (el botón Navegar sobre el volumen de UN día del asesor).
 const COLS_VISITA_GEO =
   COLS_VISITA.replace(
     'prospecto:prospectos!visitas_comerciales_prospecto_id_fkey(nombre)',
-    'prospecto:prospectos!visitas_comerciales_prospecto_id_fkey(nombre,lat,lng)')
+    'prospecto:prospectos!visitas_comerciales_prospecto_id_fkey(nombre,direccion,lat,lng)')
+// Un .replace que no encuentra el texto devuelve la cadena intacta, sin error: la ficha y Hoy se
+// quedarían sin ubicación en silencio el día que alguien cambie el embed de COLS_VISITA. Se corta al
+// cargar el módulo.
+if (COLS_VISITA_GEO === COLS_VISITA) {
+  throw new Error('COLS_VISITA_GEO: el embed del prospecto no se reemplazó (cambió COLS_VISITA)')
+}
+// Hoy y la ficha de la visita usan el mismo embed; separadas por nombre para que cada uso quede
+// explícito (y el día que diverjan, se separan acá sin tocar las consultas).
+const COLS_VISITA_HOY = COLS_VISITA_GEO
 const COLS_JORNADA =
   'id,asesor_id,pais_id,fecha,inicio_at,inicio_precision_m,inicio_con_ubicacion,' +
   'fin_at,fin_precision_m,fin_con_ubicacion,notas_cierre'
@@ -445,7 +505,20 @@ export async function visitasDelDia(fecha: string) {
     .eq('fecha_planificada', fecha).order('created_at', { ascending: true })
 }
 
-/** La ÚNICA consulta con el embed geo: la ficha de la visita, que es donde se hace el check-in. */
+/**
+ * Visitas de una fecha CON la ubicación del prospecto (nombre, dirección, lat, lng). SOLO la usa
+ * HoyPage: el botón Navegar la necesita, y es el volumen de UN día. visitasDelDia (que usa Equipo)
+ * sigue sin coordenadas. Mismo filtro y orden que visitasDelDia; sin .eq de asesor: lo pone la policy.
+ */
+export async function visitasDeHoyConUbicacion(fecha: string) {
+  return supabase.from('visitas_comerciales').select(COLS_VISITA_HOY)
+    .eq('fecha_planificada', fecha).order('created_at', { ascending: true })
+}
+
+/**
+ * Una de las DOS consultas con el embed geo (la otra es visitasDeHoyConUbicacion): la ficha de la
+ * visita, que es donde se hace el check-in.
+ */
 export async function obtenerVisita(id: string) {
   return supabase.from('visitas_comerciales').select(COLS_VISITA_GEO).eq('id', id).maybeSingle()
 }
