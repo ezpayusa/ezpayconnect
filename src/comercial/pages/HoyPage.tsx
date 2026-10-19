@@ -1,11 +1,12 @@
 import { useEffect, useState, useCallback } from 'react'
 import { Link } from 'react-router-dom'
 import { toast } from 'sonner'
-import { MapPin, MapPinOff, CheckCircle2, AlertTriangle } from 'lucide-react'
+import { MapPin, MapPinOff, CheckCircle2, AlertTriangle, Navigation } from 'lucide-react'
 import {
-  jornadaDeHoy, visitasDelDia, visitasProximas, abrirJornada, cerrarJornada, configVisitasEfectiva,
-  type Jornada, type VisitaComercial,
+  jornadaDeHoy, visitasDeHoyConUbicacion, visitasProximas, abrirJornada, cerrarJornada, configVisitasEfectiva,
+  type Jornada, type VisitaComercial, type VisitaComercialHoy,
 } from '../lib/api'
+import { enlacesNavegacion } from '@/lib/navegacion'
 import { useAuth } from '@/hooks/useAuth'
 import { reportarError } from '../lib/reportarError'
 import { pedirUbicacion, coordsDe, avisoPrevio, type EstadoGeo } from '../lib/geo'
@@ -21,7 +22,7 @@ const HOY = () => new Date().toISOString().slice(0, 10)
 export default function HoyPage() {
   const { perfil } = useAuth()
   const [jornada, setJornada] = useState<Jornada | null>(null)
-  const [visitas, setVisitas] = useState<VisitaComercial[]>([])
+  const [visitas, setVisitas] = useState<VisitaComercialHoy[]>([])
   const [proximas, setProximas] = useState<VisitaComercial[]>([])
   const [geo, setGeo] = useState<EstadoGeo>({ estado: 'inicial' })
   const [precisionMax, setPrecisionMax] = useState<number | null>(null)
@@ -31,9 +32,9 @@ export default function HoyPage() {
 
   const cargar = useCallback(async () => {
     setCargando(true)
-    const [j, v, cfg, px] = await Promise.all([jornadaDeHoy(perfil?.id), visitasDelDia(HOY()), configVisitasEfectiva(), visitasProximas(HOY())])
+    const [j, v, cfg, px] = await Promise.all([jornadaDeHoy(perfil?.id), visitasDeHoyConUbicacion(HOY()), configVisitasEfectiva(), visitasProximas(HOY())])
     if (j.error) reportarError(j.error); else setJornada((j.data ?? null) as unknown as Jornada | null)
-    if (v.error) reportarError(v.error); else setVisitas((v.data ?? []) as unknown as VisitaComercial[])
+    if (v.error) reportarError(v.error); else setVisitas((v.data ?? []) as unknown as VisitaComercialHoy[])
     if (cfg.data && Array.isArray(cfg.data) && cfg.data[0]) setPrecisionMax(Number(cfg.data[0].precision_max_m))
     if (px.error) reportarError(px.error); else setProximas((px.data ?? []) as unknown as VisitaComercial[])
     setCargando(false)
@@ -145,19 +146,43 @@ export default function HoyPage() {
           </p>
         ) : (
           <ul className="mt-2 divide-y">
-            {visitas.map(v => (
-              <li key={v.id}>
-                <Link to={`/comercial/visitas/${v.id}`} className="flex items-center gap-2 py-2 text-sm hover:text-[#1E5C8E]">
-                  <span className="flex-1 truncate">{v.prospecto?.nombre ?? 'prospecto'}</span>
-                  {v.checkin_at && (
-                    v.checkin_verificado
-                      ? <span className="flex items-center gap-1 text-xs text-green-700"><CheckCircle2 className="h-3.5 w-3.5" />verificada</span>
-                      : <span className="flex items-center gap-1 text-xs text-amber-700"><AlertTriangle className="h-3.5 w-3.5" />sin verificar</span>
+            {visitas.map(v => {
+              // Navegar solo hacia visitas que todavía se hacen. Los <a> van FUERA del <Link>: un
+              // enlace dentro de otro es HTML inválido y el toque abriría los dos.
+              const e = (v.estado === 'planificada' || v.estado === 'en_curso')
+                ? enlacesNavegacion({ lat: v.prospecto?.lat, lng: v.prospecto?.lng, direccion: v.prospecto?.direccion })
+                : null
+              return (
+                <li key={v.id}>
+                  <Link to={`/comercial/visitas/${v.id}`} className="flex items-center gap-2 py-2 text-sm hover:text-[#1E5C8E]">
+                    <span className="flex-1 truncate">{v.prospecto?.nombre ?? 'prospecto'}</span>
+                    {v.checkin_at && (
+                      v.checkin_verificado
+                        ? <span className="flex items-center gap-1 text-xs text-green-700"><CheckCircle2 className="h-3.5 w-3.5" />verificada</span>
+                        : <span className="flex items-center gap-1 text-xs text-amber-700"><AlertTriangle className="h-3.5 w-3.5" />sin verificar</span>
+                    )}
+                    <span className="rounded-full bg-gray-100 px-2 py-0.5 text-xs text-gray-700">{v.estado}</span>
+                  </Link>
+                  {e && (
+                    <div className="pb-2">
+                      <div className="flex gap-2">
+                        <a href={e.googleMaps} target="_blank" rel="noopener noreferrer"
+                          className="inline-flex min-h-9 items-center gap-1.5 rounded-md border border-[#1E5C8E] px-3 py-1.5 text-sm text-[#1E5C8E] hover:bg-blue-50">
+                          <Navigation className="h-4 w-4" />Navegar
+                        </a>
+                        <a href={e.waze} target="_blank" rel="noopener noreferrer"
+                          className="inline-flex min-h-9 items-center rounded-md border px-3 py-1.5 text-sm text-gray-700 hover:bg-gray-50">
+                          Waze
+                        </a>
+                      </div>
+                      {e.porDireccion && (
+                        <p className="mt-1 text-xs text-amber-700">Por dirección: este prospecto no tiene ubicación cargada</p>
+                      )}
+                    </div>
                   )}
-                  <span className="rounded-full bg-gray-100 px-2 py-0.5 text-xs text-gray-700">{v.estado}</span>
-                </Link>
-              </li>
-            ))}
+                </li>
+              )
+            })}
           </ul>
         )}
       </section>
