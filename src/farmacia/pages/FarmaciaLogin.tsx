@@ -8,6 +8,7 @@ import { useProveedorAuth } from '@/proveedor/hooks/useProveedorAuth'
 import { supabase } from '@/lib/supabase'
 import { aceptarInvitacionPendiente } from '@/lib/invitacionProveedor'
 import { enviarReset } from '@/lib/enviarReset'
+import { rutaHomeEmpresa } from '@/proveedor/lib/rutasEmpresa'
 import { Pill, Loader2 } from 'lucide-react'
 import { toast } from 'sonner'
 
@@ -48,11 +49,8 @@ export default function FarmaciaLogin() {
     const tipo = (cuenta as any)?.empresa?.tipo
     const rol = (cuenta as any)?.rol_en_empresa
     toast.success('Bienvenido')
-    // El repartidor (rol delivery) va a su PWA móvil, no al panel desktop de farmacia.
-    if (tipo === 'farmacia' && rol === 'delivery') navigate('/repartidor')
-    else if (tipo === 'farmacia') navigate('/farmacia/dashboard')
-    else if (tipo === 'laboratorio_clinico') navigate('/laboratorio/dashboard')
-    else navigate('/proveedor/dashboard')
+    // El destino lo decide rutaHomeEmpresa (src/proveedor/lib/rutasEmpresa.ts), igual en los tres logins.
+    navigate(rutaHomeEmpresa(tipo, rol))
   }
 
   return (
