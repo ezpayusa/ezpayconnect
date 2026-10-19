@@ -12,6 +12,7 @@ import { useAdminAuth } from '@/hooks/admin/useAdminAuth';
 import { useRoles } from '@/hooks/useRoles';
 import { usePaises } from '@/hooks/admin/usePaises';
 import { supabase } from '@/lib/supabase';
+import { rolExigePais } from '@/lib/rolesPais';
 import { 
   ArrowLeft, 
   Plus, 
@@ -118,9 +119,9 @@ export default function AsignacionRolesPage() {
         return;
       }
 
-      // admin_pais requiere país (no depender solo del backend/CHECK; bloquear el submit acá).
-      if (nuevoEmpleado.rol === 'admin_pais' && !nuevoEmpleado.pais_id) {
-        alert('Un admin_pais requiere seleccionar un país.');
+      // Los roles con CHECK de país requieren país (no depender solo del backend/CHECK; bloquear el submit acá).
+      if (rolExigePais(nuevoEmpleado.rol) && !nuevoEmpleado.pais_id) {
+        alert('Este rol requiere seleccionar un país.');
         return;
       }
 
@@ -132,12 +133,24 @@ export default function AsignacionRolesPage() {
           nombre: nuevoEmpleado.nombre || nuevoEmpleado.nombre_completo,
           rol_id: rolSeleccionadoObj.id,
           asignado_por: adminUserId,
-          pais_id: nuevoEmpleado.rol === 'admin_pais' ? nuevoEmpleado.pais_id : null,
+          pais_id: rolExigePais(nuevoEmpleado.rol) ? nuevoEmpleado.pais_id : null,
         },
       });
 
       if (error) {
-        alert('Error: ' + error.message);
+        // Ante un 400/403 supabase-js solo dice "non-2xx": el motivo real viaja en el cuerpo de la
+        // respuesta ({ success: false, error }). Se lee de ahí si se puede; si no, el mensaje de siempre.
+        let motivo = error.message;
+        const ctx = (error as { context?: unknown }).context;
+        if (ctx instanceof Response) {
+          try {
+            const cuerpo = await ctx.json();
+            if (typeof cuerpo?.error === 'string' && cuerpo.error.trim()) motivo = cuerpo.error;
+          } catch {
+            // cuerpo no JSON: queda error.message
+          }
+        }
+        alert('Error: ' + motivo);
         return;
       }
 
@@ -410,8 +423,8 @@ export default function AsignacionRolesPage() {
                 </SelectContent>
               </Select>
             </div>
-            {/* Selector de país: solo para admin_pais (rol acotado a un país). Mismo patrón que CuentasBancariasPage. */}
-            {nuevoEmpleado.rol === 'admin_pais' && (
+            {/* Selector de país: para los roles que exigen país (rolExigePais: admin_pais, asesor y supervisor comercial). Mismo patrón que CuentasBancariasPage. */}
+            {rolExigePais(nuevoEmpleado.rol) && (
               <div>
                 <Label htmlFor="emp_pais">País *</Label>
                 <Select value={nuevoEmpleado.pais_id} onValueChange={(v) => setNuevoEmpleado({...nuevoEmpleado, pais_id: v})}>
@@ -428,7 +441,7 @@ export default function AsignacionRolesPage() {
               <Button variant="outline" onClick={() => setDialogoNuevoEmpleado(false)}>Cancelar</Button>
               <Button
                 onClick={handleCrearEmpleado}
-                disabled={!nuevoEmpleado.email || !nuevoEmpleado.password || !nuevoEmpleado.nombre_completo || (nuevoEmpleado.rol === 'admin_pais' && !nuevoEmpleado.pais_id)}
+                disabled={!nuevoEmpleado.email || !nuevoEmpleado.password || !nuevoEmpleado.nombre_completo || (rolExigePais(nuevoEmpleado.rol) && !nuevoEmpleado.pais_id)}
                 className="bg-green-600 hover:bg-green-700"
               >
                 <UserPlus className="h-4 w-4 mr-2" /> Crear Empleado
