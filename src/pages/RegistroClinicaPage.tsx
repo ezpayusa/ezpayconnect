@@ -6,6 +6,7 @@ import { Label } from '@/components/ui/label'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { supabase } from '@/lib/supabase'
 import { toast } from 'sonner'
+import { CasillaTextosLegales } from '@/components/legal/CasillaTextosLegales'
 import { Loader2, MapPin, AlertCircle, CheckCircle } from 'lucide-react'
 
 export default function RegistroClinicaPage() {
@@ -20,6 +21,10 @@ export default function RegistroClinicaPage() {
   const [confirmPassword, setConfirmPassword] = useState('')
   const [registrando, setRegistrando] = useState(false)
   const [registrado, setRegistrado] = useState(false)
+  // GL-02: casilla solo de UI. El usuario lo crea la edge en el servidor y este navegador no queda con la sesión del
+  // invitado (la que hubiera podría ser de otra persona), así que la aceptación la graba TextosLegalesGuard en el
+  // primer login.
+  const [acepta, setAcepta] = useState(false)
 
   useEffect(() => {
     if (!token) {
@@ -50,6 +55,8 @@ export default function RegistroClinicaPage() {
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
+    // GL-02: sin la casilla no hay alta (el botón ya está deshabilitado; esto cubre el Enter en un input).
+    if (!acepta) return
 
     if (!invitacion) return
 
@@ -170,10 +177,11 @@ export default function RegistroClinicaPage() {
                 required
               />
             </div>
+            <CasillaTextosLegales para="profesional" checked={acepta} onChange={setAcepta} disabled={registrando} id="acepta-textos" />
             <Button
               type="submit"
               className="w-full bg-[#1E5C8E] hover:bg-[#164a70]"
-              disabled={registrando}
+              disabled={registrando || !acepta}
             >
               {registrando ? (
                 <>

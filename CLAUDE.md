@@ -97,7 +97,73 @@ Stack: React + Vite + TypeScript, Supabase / Postgres, deploy en Vercel, repo en
   ROLLBACK: las 4 en REGRESION, txid abortado, prod intacta). Harness post-371: **1107 filas / 1016 bloques DO / 11 rojas
   de deuda**; b2_guard top_level 0, cast 0, do_sin_handler 155, catchall_verde 205. Errcodes LG001-LG005 en uso,
   próximo LG006. **Rollback vigente: 371 → 370** (`supabase/migrations/371_rollback.sql`, va antes que `370_rollback`).
-  **Sigue en GL-02:** el front (gate global en el primer login y casilla de aceptación en las altas).)
+  **Sigue en GL-02:** el front (gate global en el primer login y casilla de aceptación en las altas).
+  **Front de GL-02: pasos 1-9 HECHOS en la rama `gl02/front` (PR #56 en borrador; sale de borrador solo con aprobación
+  de Oscar).** Pasos 1-6: d3065bc deps exactas (react-markdown 10.1.0, remark-gfm 4.0.1), sin chunk manual; 147fee7
+  `src/legal` (4 .md con md5 = prod y test de md5; `.gitattributes` eol=lf); 8491800 `src/lib/textosLegales.ts`
+  (pendientes, aceptar, mensajes LG001-LG006; falla cerrado si la base pide un código o versión que el front no conoce);
+  c4a4c44 `TextoLegalPage` + 4 rutas públicas (/terminos, /privacidad, /consentimiento-salud, /condiciones-profesionales;
+  sin HTML crudo); 049d2d5 `CasillaTextosLegales`; 8d6156c `/aceptar-textos` (falla cerrada, `nextSeguro`). Pasos 7-9:
+  6ad2f01 `TextosLegalesGuard` · 164a33c montaje en `App.tsx` (después de `MustChangePasswordGuard`) · cf719da catálogo
+  separado del contenido (`src/legal/catalogo.ts` sin `?raw`; `src/legal/index.ts` le suma los .md y solo lo importa
+  `TextoLegalPage`) · 6c4a66c `aceptarEnRegistro` · 163c722 alta de paciente · 34c4b59 farmacia (+ `userId` en el
+  `register` de `useProveedorAuth`) · 0841d45 lab clínico · 12f474e proveedor · 54795a3 visitador · 802951b médico por
+  invitación (solo UI) · e339dbb clínica por invitación (solo UI) · 5ba47c4 `EnlacesLegales` · f0961de links en los 5
+  logins. Review #56 ronda 1: 613905e `esRutaExenta` con lista exacta (H1) · 7994b77 declaración de mayoría de edad y
+  `loginPara` en `/aceptar-textos` (H3/H4). Review #56 ronda 2: 0cc3584 `loginPara` (H6/H7: /repartidor →
+  /farmacia/login y /visitador → /proveedor/login, igual que sus *PrivateRoute; ignora query y hash). **Decisiones:**
+  rutas exentas del guard = lista EXACTA de 19 (las 7 fijas (/aceptar-textos, /set-password, /confirmar-receta y las 4 públicas) y los 12 logins/registros públicos) + `/planes-*` a
+  nivel raíz; la regla vieja por segmento (`login`, `registro`, `registro-*`) eximía rutas privadas con parámetro, p. ej.
+  /pacientes/login → /pacientes/:id (H1). Una ruta pública nueva de login o registro se agrega a mano; si falta, falla
+  hacia el lado seguro, y el test del guard lee `App.tsx` y lo detecta. D-4 en `/aceptar-textos` (decisión de Oscar):
+  con `consentimiento_salud` pendiente pide además la declaración de mayoría de edad (condición de UI, no viaja a la RPC).
+  Cerrar sesión o sin sesión → `loginPara(destino)` (login del portal del next; si no, `/login`). Error de la RPC →
+  `/aceptar-textos?next=` (falla cerrada: esa página re-verifica y muestra "No pudimos verificar"); el "0 pendientes" se
+  cachea por uid en memoria (Set a nivel módulo, nada en el almacenamiento del navegador) y se vacía en SIGNED_OUT o sesión null; una sola RPC en
+  vuelo por uid y ruta; `aceptarEnRegistro(textos, uidEsperado)` graba con vía 'registro' solo si la sesión es la del
+  uid recién creado y nunca lanza ('grabado' | 'omitido' | 'fallo'); en visitador va después de
+  `aceptarInvitacionPendiente()` (la membresía nace ahí; antes, LG006); médico y clínica por invitación = casilla solo de
+  UI (la edge crea el usuario en el servidor; lo graba el guard en el primer login); `/login` usa la variante profesional
+  (los internos ven un link de más; no cambia lo exigido, que decide la base). **Métricas:** vitest 57 archivos / 606
+  tests; `tsc -p tsconfig.app.json` = 74; chunk de entrada 804.06 kB (techo 805 kB; 800.07 kB antes del guard); los .md
+  legales solo en el chunk lazy de `TextoLegalPage`. **Regla de bundle:** el stack de markdown y el contenido de los .md
+  van solo en chunks lazy; lo que carga el chunk de entrada (guard, `src/lib/textosLegales.ts`) importa
+  `@/legal/catalogo`, nunca `@/legal`; nada de `manualChunks` para libs de páginas lazy (la forma objeto arrastra
+  `react/jsx-runtime` a un chunk precargado desde index.html); verificación en `tmp/gl02_front/notas.md` y
+  `chunks_md.py`. **Prueba del gate en preview HECHA (9-oct-2026):** ventana con `exigible = true` de 14:38:56 a
+  15:08:47 UTC (`tmp/gl02_prueba/on.sql` sha256 e90bded6… y `off.sql` 442ed6ee…, los dos con precondición, autochequeo
+  y dry-run); verificada en sesión independiente antes y después del off. Resultado: médico, farmacia, paciente e
+  interno vieron el conjunto correcto (3 textos profesional; 3 paciente + la declaración; 2 interno); la URL manual queda
+  bloqueada; cerrar sesión lleva al login del portal; no se vuelve a pedir tras F5 ni tras re-login; el alta QA-MANUAL
+  de paciente exige la casilla. Quedan 14 aceptaciones permanentes, todas por vía 'login': medico.qa, paciente.qa,
+  farmacia.qa, adminpais.qa y el paciente "QA-MANUAL GL02". El interno se probó con adminpais.qa: admin.qa NO existe en
+  auth.users (el super_admin vivo es superadmin@ezpayconnect.com, con 2 pendientes y sin aceptar). **Pendiente:** push
+  de los commits locales; decisión de Oscar de sacar el PR #56 de borrador y mergear (la 371 y la 372 ya están en prod y
+  con `exigible = false` el gate no hace nada hasta que lleguen los datos 5.1); al cargar los datos 5.1, subir la
+  versión y poner `exigible = true` por migración. **Nits/backlog del
+  front:** título duplicado h1 (página) / h2 (.md) en `TextoLegalPage`; con LG003 `/aceptar-textos` desmarca las
+  casillas; `esRutaExenta` compara la ruta exacta (mayúsculas y barra final no eximen; más restrictivo); log doble en
+  `aceptarEnRegistro` cuando la RPC falla (los dos sin PII); `MustChangePasswordGuard` sin test; `handle_new_paciente`
+  traga errores; las edges `crear-staff-clinica` y `crear-empleado` no ponen `must_change_password`. Backlog de la
+  review #56 (sin código): H2 mientras la RPC está en vuelo la ruta privada se monta y dispara sus queries (el gate es de
+  UX, la barrera es la base); H5 `AceptarTextosPage` no carga la cache del guard → una RPC de más en el next tras
+  aceptar; R1 con Confirm email ON la vía 'registro' casi nunca se graba (queda 'login'; así por diseño, §2.4); R2 la
+  cache por uid no ve un cambio de identidad en la misma pestaña (caso estrecho); R4 `nextSeguro` rechaza '://' también
+  en el query (cae a '/', lado seguro); R5 con LG003 el banner de error queda puesto tras recargar; R6 Enter sin la
+  casilla vuelve en silencio, sin toast; R7 el guard se re-suscribe a auth en cada navegación y la RPC sale dos veces
+  por gate; R8 markup del link legal repetido en 3 componentes; R9 el clear de SIGNED_OUT del guard es redundante con
+  `check(null)`; test a de `/aceptar-textos`: el candado interno de `aceptar` no se ejercita aparte del botón. Ronda 2:
+  H8 con solo terminos/privacidad pendientes, el paciente acepta sin ver la declaración de mayoría de edad (cumple lo
+  especificado; decisión de producto de Oscar); H9 `/planes` (PlanesPage) no está exenta (falla hacia el lado seguro);
+  code-review #3 el mapa portal → login de `loginPara` duplica el de los *PrivateRoute; #5 la lista de logins/registros
+  vive en 3 lugares (guard, su test y `App.tsx`); #6 el test que lee `App.tsx` solo mira `path="…"` absolutos y depende
+  de `process.cwd()`. Prueba en preview (9-oct): Confirm email está ON en prod (el diseño lo daba OFF, medido el
+  24-sep), así que la vía 'registro' del alta de paciente casi nunca se graba (confirma R1); **PROD, previo a GL-02:** el
+  paciente que confirma el correo cae logueado en med.ezpayconnect.com y `RootRedirect` lo manda a "Tu cuenta todavía no
+  tiene un panel asignado (sin rol)" (falta `emailRedirectTo` a /paciente en el signUp del paciente y/o que
+  `RootRedirect` reconozca al paciente); esa pantalla dice "Escribile" (voseo que quedó fuera del barrido voseo → tú);
+  `/aceptar-textos` ordena por código (condiciones primero), lo natural es términos → privacidad → el resto; la hoja de
+  cuentas QA del Project lista admin.qa, que no existe.)
   (370 = familia 2, ÚLTIMO paso: EXECUTE de funciones sin PUBLIC ni anon — **APLICADA en prod el 2026-10-07 a las 19:18 UTC
   (19:18:26.914 → 19:18:28.737)**, sha256 del archivo 529777fd…cddbf7, y verificada VERDE en sesión independiente: harness
   post370 1102 filas / 1011 bloques DO / 11 rojas de deuda, P1015/P1016/P1017/P739/P741/P1000 en OK. **Bug vivo cerrado:**
@@ -526,6 +592,13 @@ Stack: React + Vite + TypeScript, Supabase / Postgres, deploy en Vercel, repo en
   funciones post-370 4878afd5…/384, que la 371 cambió (4c1f611c…/389) y `371_rollback` devuelve. **370 (APLICADA el 7-oct) va antes que 369, 350 y 349:** `369_rollback` espera la ACL de funciones
   e5c9770e…/384, y con la 370 viva devolver las policies de la 349/350 a `TO public` le da a anon 42501 de FUNCIÓN
   (`get_auth_user_pais_id`) en configuracion_sistema (la landing la lee sin sesión) y otras 8 tablas (medido con P935/P936).
+- **Gates con PowerShell 5.1 (front GL-02, 9-oct-2026):** cuatro trampas que dieron gates falsos.
+  (1) `Select-String` no tiene `-Recurse`: `Get-ChildItem src -Recurse -Include *.ts,*.tsx | Select-String …`.
+  (2) `Select-String -SimpleMatch` da 0 sobre chunks minificados que sí contienen el literal: medir con
+  `grep -o -F … | wc -l` desde la herramienta Bash (el `bash.exe` de Git llamado desde PowerShell no tiene `grep` en el
+  PATH). (3) `Get-Content` sin `-Encoding UTF8` lee UTF-8 sin BOM como ANSI y un patrón con tildes da 0: usar
+  `Get-Content -Encoding UTF8` o `grep -F`. (4) `Select-String` no distingue mayúsculas por defecto: en gates de ausencia,
+  `-CaseSensitive` (o `-SimpleMatch` con la ruta completa del módulo).
 - **Los tests de edge (deno) NO corren en vitest ni en el pre-commit**: se corren a mano desde
   `supabase/functions/<fn>/` con `deno test --allow-net --allow-env --no-check` (asistente-ia: 17).
 - **El CORS de `asistente-ia` sólo acepta `med.ezpayconnect.com`**: las pruebas de edges desde un preview
@@ -789,7 +862,8 @@ Detalles a recordar:
   del repo son rollbacks de altas en la misma request (recon de la 372, punto 5). **Alcance (review #55 n3):** a un paciente
   ya no se lo puede borrar hoy (`pacientes_auth_user_id_fkey` es NO ACTION); el bloqueo nuevo cae sobre las cuentas con
   perfil o de proveedor que tengan aceptaciones.
-- (GL-02, front, review #55 n4) Alta de proveedor (`src/proveedor/hooks/useProveedorAuth.ts`: `signUp` L96 →
+- (GL-02, front, review #55 n4, **resuelto en 34c4b59 / 0841d45 / 12f474e**: `aceptarEnRegistro` corre después de
+  `register()`, que ya incluye `registrar_proveedor`) Alta de proveedor (`src/proveedor/hooks/useProveedorAuth.ts`: `signUp` L96 →
   `registrar_proveedor` L109): la aceptación de `condiciones_profesionales` va DESPUÉS de `registrar_proveedor`; antes la
   cuenta todavía no tiene `cuentas_proveedor` y `aceptar_textos_legales` da LG006. En el paciente no pasa:
   `handle_new_paciente` (mig 230, AFTER INSERT ON auth.users, solo si la metadata trae `tipo = 'paciente'`) crea la fila de

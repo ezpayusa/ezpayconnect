@@ -127,7 +127,8 @@ export function useProveedorAuth() {
       return { data: authData, error: { message: `Error al crear la empresa: ${rpcError.message}` } }
     }
 
-    return { data: authData, error: null }
+    // userId: uid del usuario recién creado, para atar a él la aceptación de textos legales del alta (GL-02).
+    return { data: authData, error: null, userId: authData.user.id }
   }, [])
 
   const logout = useCallback(async () => {

@@ -8,6 +8,7 @@ import { Mail, Lock, Loader2 } from 'lucide-react'
 import { toast } from 'sonner'
 import { enviarReset } from '@/lib/enviarReset'
 import { useCapturarReferido } from '@/webapp/hooks/useReferidoAmigo'
+import { EnlacesLegales } from '@/components/legal/EnlacesLegales'
 
 export default function WebAppLoginPage() {
   const navigate = useNavigate()
@@ -114,6 +115,8 @@ export default function WebAppLoginPage() {
             Regístrate
           </button>
         </p>
+        {/* GL-02: links a los textos legales */}
+        <EnlacesLegales para="paciente" className="mt-6" />
       </div>
     </div>
   )

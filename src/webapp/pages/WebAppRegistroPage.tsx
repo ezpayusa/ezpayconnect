@@ -8,6 +8,8 @@ import { Label } from '@/components/ui/label'
 import { Mail, Lock, User, Loader2, Globe } from 'lucide-react'
 import { toast } from 'sonner'
 import { useCapturarReferido } from '@/webapp/hooks/useReferidoAmigo'
+import { CasillaTextosLegales, textosPara } from '@/components/legal/CasillaTextosLegales'
+import { aceptarEnRegistro } from '@/lib/textosLegales'
 
 export default function WebAppRegistroPage() {
   const navigate = useNavigate()
@@ -18,23 +20,29 @@ export default function WebAppRegistroPage() {
     nombre: '', apellido: '', email: '', password: '', telefono: '', pais_id: ''
   })
   const [loading, setLoading] = useState(false)
+  const [acepta, setAcepta] = useState(false)
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
+    // GL-02: sin la casilla no hay alta (el botón ya está deshabilitado; esto cubre el Enter en un input).
+    if (!acepta) return
     if (!form.nombre || !form.apellido || !form.email || !form.password) {
       toast.error('Completa todos los campos obligatorios')
       return
     }
     setLoading(true)
-    const { error } = await register(form.email, form.password, {
+    const resultado = await register(form.email, form.password, {
       nombre: form.nombre,
       apellido: form.apellido,
       telefono: form.telefono || null,
       pais_id: form.pais_id || undefined
     })
+    const { error } = resultado
     if (error) {
       toast.error('Error al registrarse: ' + (error as Error).message)
     } else {
+      // Best-effort: solo graba si la sesión es la del usuario recién creado; si no, la pide el gate en el primer login.
+      await aceptarEnRegistro(textosPara('paciente'), 'userId' in resultado ? resultado.userId : null)
       toast.success('Registro exitoso. Revisa tu email para confirmar.')
       navigate('/paciente/login')
     }
@@ -97,7 +105,8 @@ export default function WebAppRegistroPage() {
             <Label>Contraseña</Label>
             <Input type="password" value={form.password} onChange={e => setForm({...form, password: e.target.value})} required />
           </div>
-          <Button type="submit" className="w-full bg-gradient-to-r from-sky-500 to-indigo-500 hover:from-sky-600 hover:to-indigo-600" disabled={loading}>
+          <CasillaTextosLegales para="paciente" checked={acepta} onChange={setAcepta} disabled={loading} id="acepta-textos" />
+          <Button type="submit" className="w-full bg-gradient-to-r from-sky-500 to-indigo-500 hover:from-sky-600 hover:to-indigo-600" disabled={loading || !acepta}>
             {loading ? <Loader2 className="h-4 w-4 animate-spin mr-2" /> : null}
             Registrarme
           </Button>
