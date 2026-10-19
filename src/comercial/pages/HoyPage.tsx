@@ -1,12 +1,12 @@
 import { useEffect, useState, useCallback } from 'react'
 import { Link } from 'react-router-dom'
 import { toast } from 'sonner'
-import { MapPin, MapPinOff, CheckCircle2, AlertTriangle, Navigation } from 'lucide-react'
+import { MapPin, MapPinOff, CheckCircle2, AlertTriangle } from 'lucide-react'
 import {
   jornadaDeHoy, visitasDeHoyConUbicacion, visitasProximas, abrirJornada, cerrarJornada, configVisitasEfectiva,
   type Jornada, type VisitaComercial, type VisitaComercialHoy,
 } from '../lib/api'
-import { enlacesNavegacion } from '@/lib/navegacion'
+import BotonesNavegar from '../components/BotonesNavegar'
 import { useAuth } from '@/hooks/useAuth'
 import { reportarError } from '../lib/reportarError'
 import { pedirUbicacion, coordsDe, avisoPrevio, type EstadoGeo } from '../lib/geo'
@@ -146,43 +146,21 @@ export default function HoyPage() {
           </p>
         ) : (
           <ul className="mt-2 divide-y">
-            {visitas.map(v => {
-              // Navegar solo hacia visitas que todavía se hacen. Los <a> van FUERA del <Link>: un
-              // enlace dentro de otro es HTML inválido y el toque abriría los dos.
-              const e = (v.estado === 'planificada' || v.estado === 'en_curso')
-                ? enlacesNavegacion({ lat: v.prospecto?.lat, lng: v.prospecto?.lng, direccion: v.prospecto?.direccion })
-                : null
-              return (
-                <li key={v.id}>
-                  <Link to={`/comercial/visitas/${v.id}`} className="flex items-center gap-2 py-2 text-sm hover:text-[#1E5C8E]">
-                    <span className="flex-1 truncate">{v.prospecto?.nombre ?? 'prospecto'}</span>
-                    {v.checkin_at && (
-                      v.checkin_verificado
-                        ? <span className="flex items-center gap-1 text-xs text-green-700"><CheckCircle2 className="h-3.5 w-3.5" />verificada</span>
-                        : <span className="flex items-center gap-1 text-xs text-amber-700"><AlertTriangle className="h-3.5 w-3.5" />sin verificar</span>
-                    )}
-                    <span className="rounded-full bg-gray-100 px-2 py-0.5 text-xs text-gray-700">{v.estado}</span>
-                  </Link>
-                  {e && (
-                    <div className="pb-2">
-                      <div className="flex gap-2">
-                        <a href={e.googleMaps} target="_blank" rel="noopener noreferrer"
-                          className="inline-flex min-h-9 items-center gap-1.5 rounded-md border border-[#1E5C8E] px-3 py-1.5 text-sm text-[#1E5C8E] hover:bg-blue-50">
-                          <Navigation className="h-4 w-4" />Navegar
-                        </a>
-                        <a href={e.waze} target="_blank" rel="noopener noreferrer"
-                          className="inline-flex min-h-9 items-center rounded-md border px-3 py-1.5 text-sm text-gray-700 hover:bg-gray-50">
-                          Waze
-                        </a>
-                      </div>
-                      {e.porDireccion && (
-                        <p className="mt-1 text-xs text-amber-700">Por dirección: este prospecto no tiene ubicación cargada</p>
-                      )}
-                    </div>
+            {visitas.map(v => (
+              <li key={v.id}>
+                <Link to={`/comercial/visitas/${v.id}`} className="flex items-center gap-2 py-2 text-sm hover:text-[#1E5C8E]">
+                  <span className="flex-1 truncate">{v.prospecto?.nombre ?? 'prospecto'}</span>
+                  {v.checkin_at && (
+                    v.checkin_verificado
+                      ? <span className="flex items-center gap-1 text-xs text-green-700"><CheckCircle2 className="h-3.5 w-3.5" />verificada</span>
+                      : <span className="flex items-center gap-1 text-xs text-amber-700"><AlertTriangle className="h-3.5 w-3.5" />sin verificar</span>
                   )}
-                </li>
-              )
-            })}
+                  <span className="rounded-full bg-gray-100 px-2 py-0.5 text-xs text-gray-700">{v.estado}</span>
+                </Link>
+                {/* Hermano del Link, nunca adentro: BotonesNavegar pinta <a>. */}
+                <BotonesNavegar estado={v.estado} lat={v.prospecto?.lat} lng={v.prospecto?.lng} direccion={v.prospecto?.direccion} />
+              </li>
+            ))}
           </ul>
         )}
       </section>

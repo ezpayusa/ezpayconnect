@@ -11,6 +11,7 @@ import {
 } from '../lib/api'
 import { reportarError, type ErrorInline } from '../lib/reportarError'
 import { AgendarVisita, AccionesVisitaPlanificada } from '../components/AgendaVisita'
+import BotonesNavegar from '../components/BotonesNavegar'
 import { fmtFecha, fmtHora } from '../lib/agenda'
 import { pedirUbicacion, coordsDe, avisoPrevio, type EstadoGeo } from '../lib/geo'
 
@@ -166,6 +167,10 @@ export default function VisitaFichaPage() {
         {v.estado === 'cancelada' && (
           <p className="mt-1 text-xs text-red-800">Cancelada{v.cancelacion_motivo ? `: ${v.cancelacion_motivo}` : ''}</p>
         )}
+        {/* Fuera de todo Link. `empty:hidden`: si el componente no pinta nada, no deja el margen. */}
+        <div className="mt-3 empty:hidden">
+          <BotonesNavegar estado={v.estado} lat={v.prospecto?.lat} lng={v.prospecto?.lng} direccion={v.prospecto?.direccion} />
+        </div>
       </section>
 
       {/* ---- agenda ---- */}
