@@ -59,6 +59,41 @@ describe('rutaLoginEmpresa', () => {
   })
 })
 
+// Sincronía con la edge invitar-staff-proveedor: Deno no importa src/, así que la edge tiene su propia
+// copia de la tabla de logins (LOGIN_POR_TIPO + LOGIN_DEFAULT). Este test fija que diga lo mismo que
+// rutaLoginEmpresa y que el link del email la use.
+const EDGE_INVITAR = 'supabase/functions/invitar-staff-proveedor/index.ts'
+
+describe('sincronía con la edge invitar-staff-proveedor', () => {
+  const src = fs.readFileSync(EDGE_INVITAR, 'utf8')
+  const mObj = src.match(/const\s+LOGIN_POR_TIPO\s*:\s*Record<string,\s*string>\s*=\s*\{([^}]*)\}/)
+  const mDef = src.match(/const\s+LOGIN_DEFAULT\s*=\s*'([^']*)'/)
+
+  it('la edge declara LOGIN_POR_TIPO y LOGIN_DEFAULT', () => {
+    // Nunca pasar en vacío: si la edge cambió la forma de declararlos, el test lo dice.
+    if (!mObj) throw new Error(`no encontré "const LOGIN_POR_TIPO: Record<string, string> = { … }" en ${EDGE_INVITAR}`)
+    if (!mDef) throw new Error(`no encontré "const LOGIN_DEFAULT = '…'" en ${EDGE_INVITAR}`)
+  })
+
+  it('cada entrada de LOGIN_POR_TIPO coincide con rutaLoginEmpresa, y el default también', () => {
+    if (!mObj || !mDef) throw new Error(`LOGIN_POR_TIPO / LOGIN_DEFAULT no encontrados en ${EDGE_INVITAR}`)
+    const entradas = Array.from(mObj[1].matchAll(/(\w+)\s*:\s*'([^']*)'/g), (x) => [x[1], x[2]] as const)
+    expect(entradas.length, 'LOGIN_POR_TIPO vino vacío').toBeGreaterThan(0)
+    for (const [tipo, login] of entradas) {
+      expect(rutaLoginEmpresa(tipo), `edge: ${tipo} → ${login}`).toBe(login)
+    }
+    const def = mDef[1]
+    expect(rutaLoginEmpresa('laboratorio_farmaceutico')).toBe(def)
+    expect(rutaLoginEmpresa('empresa_afin')).toBe(def)
+    expect(rutaLoginEmpresa(null)).toBe(def)
+  })
+
+  it('el link del email usa LOGIN_POR_TIPO y ya no tiene /proveedor/login fijo', () => {
+    expect(src).toContain('${LOGIN_POR_TIPO[')
+    expect(src.includes('/proveedor/login"'), 'el href sigue con /proveedor/login fijo').toBe(false)
+  })
+})
+
 // Censo: los tres logins de empresa delegan el destino en rutaHomeEmpresa. Un navigate a un panel
 // escrito a mano en un login es exactamente lo que dejaba a una cuenta en el panel equivocado según por
 // dónde entrara.

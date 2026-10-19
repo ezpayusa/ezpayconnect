@@ -26,6 +26,10 @@ const json = (b: unknown, s = 200) => new Response(JSON.stringify(b), { status: 
 // Las edges no pueden importar de src/lib/app-url.ts, así que se define aquí.
 const APP_URL = 'https://med.ezpayconnect.com'
 
+// Espejo de rutaLoginEmpresa (src/proveedor/lib/rutasEmpresa.ts). Deno no importa src/: un test fija que coincidan.
+const LOGIN_POR_TIPO: Record<string, string> = { farmacia: '/farmacia/login', laboratorio_clinico: '/laboratorio/login' }
+const LOGIN_DEFAULT = '/proveedor/login'
+
 Deno.serve(async (req) => {
   if (req.method === 'OPTIONS') return new Response('ok', { headers: cors })
   try {
@@ -127,7 +131,7 @@ Deno.serve(async (req) => {
              <h2 style="color:#1E5C8E;margin-top:0;">Fuiste agregado a una empresa</h2>
              <p>Hola${nombre ? ` <strong>${nombre}</strong>` : ''}, ya tienes acceso como <strong>${rol}</strong>.</p>
              <p>Ingresá con tu <strong>cuenta existente</strong> (tu contraseña no cambió).</p>
-             <p><a href="${APP_URL}/proveedor/login" style="color:#1E5C8E;">Iniciar sesión</a></p>
+             <p><a href="${APP_URL}${LOGIN_POR_TIPO[tipoEmpresa ?? ''] ?? LOGIN_DEFAULT}" style="color:#1E5C8E;">Iniciar sesión</a></p>
            </div>`
       try {
         const r = await fetch('https://api.resend.com/emails', {
