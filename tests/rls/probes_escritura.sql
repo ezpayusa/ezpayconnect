@@ -1270,8 +1270,13 @@ END $$;
 SELECT set_config('role', 'none', true);
 SELECT set_config('probe.farm',
   (SELECT id::text FROM public.farmacias ORDER BY id LIMIT 1), false);
+-- farm_emp: empresa farmacia ACTIVA, con orden DETERMINISTA. Era `WHERE tipo='farmacia' LIMIT 1` sin
+-- ORDER BY: el 9-oct-2026 empezó a elegir la empresa QA-MANUAL que quedó PENDIENTE al probar la mig
+-- 373, el gate de empresa activa la rechazó y salieron 6 rojas falsas de staff de farmacia (P69, P74,
+-- P81, P82, P87, P95) más DET_trio_cleanup en cascada. Las corridas anteriores elegían cc17afe8, que
+-- es la que resuelve este criterio.
 SELECT set_config('probe.farm_emp',
-  (SELECT id::text FROM public.empresas_proveedoras WHERE tipo='farmacia' LIMIT 1), false);
+  (SELECT id::text FROM public.empresas_proveedoras WHERE tipo='farmacia' AND estado='activa' ORDER BY created_at, id LIMIT 1), false);
 SELECT set_config('probe.farm_owner',  -- ADMIN de la empresa promovida (con permiso de edición)
   (SELECT cp.id::text FROM public.cuentas_proveedor cp
      WHERE cp.empresa_id = current_setting('probe.farm_emp', true)::uuid
@@ -9452,6 +9457,7 @@ DECLARE
   r record;
   v_res jsonb := '{}'::jsonb;
   v_pros bigint; v_ases bigint; v_cont bigint; v_cargo bigint; v_nom text;
+  v_pros264 bigint; v_nom264 text;
   v_err text; v_msg text; v_n bigint;
   v_fatal text := NULL;
   v_ok boolean;
@@ -9537,7 +9543,7 @@ BEGIN
         ('admA', v_admA), ('admB', v_admB), ('super', v_sa),   ('medico', v_med)
       ) t(etq, uid)
     LOOP
-      v_pros := -1; v_ases := -1; v_cont := -1; v_cargo := -1; v_nom := NULL;
+      v_pros := -1; v_ases := -1; v_cont := -1; v_cargo := -1; v_nom := NULL; v_pros264 := -1; v_nom264 := NULL;
       BEGIN
         PERFORM set_config('request.jwt.claims',
                  json_build_object('sub', r.uid::text, 'role','authenticated')::text, true);
@@ -9547,6 +9553,8 @@ BEGIN
         SELECT count(*) INTO v_cont  FROM public.prospecto_contactos;
         SELECT count(*), string_agg(replace(nombre,'P264 Prospecto ',''), ',' ORDER BY nombre)
           INTO v_pros, v_nom FROM public.prospectos;
+        SELECT count(*), string_agg(replace(nombre,'P264 Prospecto ',''), ',' ORDER BY nombre)
+          INTO v_pros264, v_nom264 FROM public.prospectos WHERE nombre LIKE 'P264 Prospecto %';
         PERFORM set_config('role','none', true);
       EXCEPTION WHEN OTHERS THEN
         PERFORM set_config('role','none', true);
@@ -9554,7 +9562,8 @@ BEGIN
       END;
       v_res := v_res || jsonb_build_object(r.etq, jsonb_build_object(
         'pros', v_pros, 'ases', v_ases, 'cont', v_cont, 'cargo', v_cargo,
-        'nombres', COALESCE(v_nom,'∅')));
+        'nombres', COALESCE(v_nom,'∅'),
+        'pros264', v_pros264, 'nombres264', COALESCE(v_nom264,'∅')));
     END LOOP;
     PERFORM set_config('role','none', true);
 
@@ -9577,13 +9586,16 @@ BEGIN
 
     -- ---------- P472: admin_pais ve TODOS los de su país y NINGUNO del otro ----------
     -- admA (GT) ve A1,A2,A3,Rogue,SupA = 5 y nada de SV. admB (SV) ve solo B1.
-    v_ok := (v_res#>>'{admA,pros}')::bigint = 5
-        AND (v_res#>>'{admA,nombres}') = 'A1,A2,A3,Rogue,SupA'
-        AND (v_res#>>'{admB,nombres}') NOT LIKE '%A1%'
-        AND (v_res#>>'{admB,nombres}') NOT LIKE '%A3%';
+    -- Cuenta SOLO los prospectos del fixture (prefijo 'P264 Prospecto ', campos pros264/nombres264): ya
+    -- hay prospectos reales en GT y el admin_pais de GT los ve legítimamente. P473 sigue con el conteo
+    -- total (pros/nombres) y queda en la deuda.
+    v_ok := (v_res#>>'{admA,pros264}')::bigint = 5
+        AND (v_res#>>'{admA,nombres264}') = 'A1,A2,A3,Rogue,SupA'
+        AND (v_res#>>'{admB,nombres264}') NOT LIKE '%A1%'
+        AND (v_res#>>'{admB,nombres264}') NOT LIKE '%A3%';
     v_472 := CASE WHEN v_ok
-      THEN 'OK (admin GT ve los 5 de GT; admin SV no ve ninguno de GT — ve ['||(v_res#>>'{admB,nombres}')||'])'
-      ELSE 'ROJO (admA='||(v_res#>>'{admA,pros}')||' ['||(v_res#>>'{admA,nombres}')||'] admB='||(v_res#>>'{admB,pros}')||' ['||(v_res#>>'{admB,nombres}')||'])' END;
+      THEN 'OK (admin GT ve los 5 de GT; admin SV no ve ninguno de GT — ve ['||(v_res#>>'{admB,nombres264}')||'])'
+      ELSE 'ROJO (admA='||(v_res#>>'{admA,pros264}')||' ['||(v_res#>>'{admA,nombres264}')||'] admB='||(v_res#>>'{admB,pros264}')||' ['||(v_res#>>'{admB,nombres264}')||'])' END;
 
     -- ---------- P473: super_admin ve todos (6) ----------
     v_ok := (v_res#>>'{super,pros}')::bigint = 6;
