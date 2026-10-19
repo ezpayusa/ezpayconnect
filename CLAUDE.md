@@ -32,10 +32,10 @@ Stack: React + Vite + TypeScript, Supabase / Postgres, deploy en Vercel, repo en
   - **Orden de rollback:** 374 → 373 → 372 → 371 → …
   - **Próximos libres: mig 375, errcode PA036, probe P1041.** Ojo: P1026-P1034 están en `altas/alta-diferida-373` →
     conflicto de merge esperado en `probes_escritura.sql`.
-  - **Harness al 17-oct:** 1117 filas, 19 rojas = las 11 de deuda + 8 PREEXISTENTES fuera de deuda (DET_trio_cleanup, P472,
-    P69, P74, P81, P82, P87, P95), idénticas con y sin P1035-P1040. P472 sale por el prospecto real Pharmalat (probe con
-    lista fija). Las de staff de farmacia, sin investigar: posible regresión → recon pendiente junto con el merge de
-    #56/#57/#58.
+  - **Harness al 19-oct:** 1117 filas, 11 rojas = exactamente la deuda. Las 8 'preexistentes' del 17-oct eran fixtures
+    frágiles (farm_emp con LIMIT 1 sin ORDER BY que eligió la empresa QA-MANUAL pendiente de la 373; P472 contando
+    prospectos reales de GT), corregidos en fix/harness-fixture-farmacia.
+  - Rama sin upstream propio al crearse desde origin/main: push SIEMPRE con nombre de rama explícito.
   - **PRs #56, #57 y #58 sin mergear al 17-oct** (main = 571d39a).
   - Punto 2 comercial (18-oct): src/lib/navegacion.ts es el helper ÚNICO de links Google Maps/Waze; VisitadorRutaPage y EntregaDetallePage todavía arman los suyos (migrar después). Hoy usa visitasDeHoyConUbicacion; visitasDelDia sigue sin coordenadas.
 - **Próximos números libres: probe `P1026`** (global, no por módulo; P1023-P1025 + G372_FX usados por la mig 372; P1019-P1022 usados por la mig 371; P1015-P1018 usados por la mig 370, P1011-P1014 por la mig 369, P1010 por la mig 367, P1009 por la 366, P1008 por la 365, P1007 por la 364, P1001-P1006 por la mig 363, P996-P1000 por la 362, P990-P995 por la 361, P983-P989 por la 360, P975-P982 por la
