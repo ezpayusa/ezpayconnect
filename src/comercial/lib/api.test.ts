@@ -121,14 +121,16 @@ describe('las columnas de coordenada NO vuelven al select', () => {
 })
 
 // Las coordenadas del PROSPECTO son otra cosa que las del check-in: son la dirección del negocio y
-// `authenticated` sí puede leerlas. Pero sólo la ficha de UNA visita las necesita —y sólo para saber
-// si son null, porque la distancia la calcula la RPC—, así que las listas no las bajan. La asimetría
-// se fija acá porque es exactamente lo que un refactor "unificá los dos selects" rompería.
+// `authenticated` sí puede leerlas. Pero sólo dos pantallas las necesitan: la ficha de UNA visita —y
+// sólo para saber si son null, porque la distancia la calcula la RPC— y Hoy, cuyo botón Navegar
+// necesita a dónde ir (es el volumen de UN día). Las demás listas (Equipo, Próximas, la ficha del
+// prospecto) no las bajan. La asimetría se fija acá porque es exactamente lo que un refactor
+// "unificá los selects" rompería.
 const selectDe = () => consultas[0].ops.find(o => o.startsWith('select(')) ?? ''
 
-describe('el embed geo del prospecto viaja SOLO en la ficha de la visita', () => {
+describe('el embed geo del prospecto viaja SOLO en la ficha de la visita y en Hoy', () => {
   for (const [nombre, correr] of [
-    ['visitasDelDia (Equipo, Equipo del asesor y Hoy)', () => api.visitasDelDia('2026-09-05')],
+    ['visitasDelDia (Equipo y Equipo del asesor)', () => api.visitasDelDia('2026-09-05')],
     ['visitasProximas (Próximas)', () => api.visitasProximas('2026-09-05')],
     ['visitasDelProspecto (lista de la ficha del prospecto)', () => api.visitasDelProspecto('pros-1')],
   ] as [string, () => Promise<unknown>][]) {
@@ -151,6 +153,16 @@ describe('el embed geo del prospecto viaja SOLO en la ficha de la visita', () =>
   it('y aun con geo, obtenerVisita sigue sin pedir las coordenadas del CHECK-IN (mig 277)', async () => {
     await api.obtenerVisita('vis-1')
     const sel = selectDe()
+    for (const c of ['checkin_lat', 'checkin_lng', 'checkout_lat', 'checkout_lng']) {
+      expect(sel, `el select pide ${c}`).not.toContain(c)
+    }
+  })
+
+  it('visitasDeHoyConUbicacion (Hoy) pide dirección y coordenada del prospecto, solo de esa fecha, sin las del CHECK-IN', async () => {
+    await api.visitasDeHoyConUbicacion('2026-10-19')
+    const sel = selectDe()
+    expect(sel).toContain('(nombre,direccion,lat,lng)')
+    expect(consultas[0].ops).toContain('eq("fecha_planificada","2026-10-19")')
     for (const c of ['checkin_lat', 'checkin_lng', 'checkout_lat', 'checkout_lng']) {
       expect(sel, `el select pide ${c}`).not.toContain(c)
     }
@@ -186,6 +198,7 @@ const LECTURAS: [string, () => Promise<unknown>][] = [
   ['visitasProximas', () => api.visitasProximas('2026-09-06')],
   ['visitasDelProspecto', () => api.visitasDelProspecto('pros-1')],
   ['listarFichasDePais', () => api.listarFichasDePais('gt')],
+  ['visitasDeHoyConUbicacion', () => api.visitasDeHoyConUbicacion('2026-10-19')],
 ]
 
 describe('ninguna consulta del modulo comercial nombra `perfiles`', () => {

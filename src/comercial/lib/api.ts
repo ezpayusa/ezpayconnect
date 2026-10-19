@@ -244,6 +244,11 @@ export type VisitaComercialGeo = Omit<VisitaComercial, 'prospecto'> & {
   prospecto?: { nombre: string; lat: number | null; lng: number | null } | null
 }
 
+/** Lo que devuelve `visitasDeHoyConUbicacion` (solo HoyPage): el destino del botón Navegar. */
+export type VisitaComercialHoy = Omit<VisitaComercial, 'prospecto'> & {
+  prospecto?: { nombre: string; direccion: string | null; lat: number | null; lng: number | null } | null
+}
+
 export type ResultadoCheckin = {
   verificado: boolean
   distancia_m: number | null
@@ -272,6 +277,17 @@ const COLS_VISITA_GEO =
   COLS_VISITA.replace(
     'prospecto:prospectos!visitas_comerciales_prospecto_id_fkey(nombre)',
     'prospecto:prospectos!visitas_comerciales_prospecto_id_fkey(nombre,lat,lng)')
+// Hoy: la otra excepción. El botón Navegar necesita a dónde ir (coordenada o, si no hay, la dirección),
+// y es el volumen de UN día del asesor, no la cartera entera.
+const COLS_VISITA_HOY =
+  COLS_VISITA.replace(
+    'prospecto:prospectos!visitas_comerciales_prospecto_id_fkey(nombre)',
+    'prospecto:prospectos!visitas_comerciales_prospecto_id_fkey(nombre,direccion,lat,lng)')
+// Un .replace que no encuentra el texto devuelve la cadena intacta, sin error: Hoy se quedaría sin
+// ubicación en silencio el día que alguien cambie el embed de COLS_VISITA. Se corta al cargar el módulo.
+if (COLS_VISITA_HOY === COLS_VISITA) {
+  throw new Error('COLS_VISITA_HOY: el embed del prospecto no se reemplazó (cambió COLS_VISITA)')
+}
 const COLS_JORNADA =
   'id,asesor_id,pais_id,fecha,inicio_at,inicio_precision_m,inicio_con_ubicacion,' +
   'fin_at,fin_precision_m,fin_con_ubicacion,notas_cierre'
@@ -489,6 +505,16 @@ export function nombreAsesor(
 /** Visitas de una fecha. Sin .eq de asesor: lo pone la policy. */
 export async function visitasDelDia(fecha: string) {
   return supabase.from('visitas_comerciales').select(COLS_VISITA)
+    .eq('fecha_planificada', fecha).order('created_at', { ascending: true })
+}
+
+/**
+ * Visitas de una fecha CON la ubicación del prospecto (nombre, dirección, lat, lng). SOLO la usa
+ * HoyPage: el botón Navegar la necesita, y es el volumen de UN día. visitasDelDia (que usa Equipo)
+ * sigue sin coordenadas. Mismo filtro y orden que visitasDelDia; sin .eq de asesor: lo pone la policy.
+ */
+export async function visitasDeHoyConUbicacion(fecha: string) {
+  return supabase.from('visitas_comerciales').select(COLS_VISITA_HOY)
     .eq('fecha_planificada', fecha).order('created_at', { ascending: true })
 }
 
