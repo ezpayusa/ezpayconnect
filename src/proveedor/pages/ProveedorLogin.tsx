@@ -61,8 +61,8 @@ export default function ProveedorLogin() {
           <div className="mx-auto w-12 h-12 rounded-xl bg-[#1E5C8E] flex items-center justify-center mb-4">
             <MapPin className="h-6 w-6 text-white" />
           </div>
-          <CardTitle className="text-xl">Portal Proveedores</CardTitle>
-          <p className="text-sm text-muted-foreground">Inicia sesión con tu cuenta de empresa</p>
+          <CardTitle className="text-xl">Laboratorios farmacéuticos y empresas</CardTitle>
+          <p className="text-sm text-muted-foreground">Acceso para laboratorios farmacéuticos, empresas afines y su equipo.</p>
         </CardHeader>
         <CardContent>
           <form onSubmit={handleSubmit} className="space-y-4">
