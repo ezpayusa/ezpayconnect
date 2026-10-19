@@ -990,8 +990,13 @@ END $$;
 
 -- P48 — NEGATIVO: no se puede asignar un rol FUERA del catálogo (cierra el fail-open)
 SELECT set_config('role', 'none', true);
-SELECT set_config('probe.fk_target', (SELECT id::text FROM public.perfiles ORDER BY id LIMIT 1), false);
+-- fk_target FIJO: perfil QA de dry-run que ningún otro probe usa (antes: perfiles ORDER BY id LIMIT 1 → cambiaba con cada alta real; 19-oct)
+SELECT set_config('probe.fk_target', COALESCE((SELECT id::text FROM public.perfiles WHERE email = 'asistente2.dry164@ezpayqa.test' AND rol <> 'gerente'), ''), false);
 DO $$ BEGIN
+  IF NULLIF(current_setting('probe.fk_target', true), '') IS NULL THEN
+    PERFORM set_config('probe.p48','FALLO (fixture fk_target ausente)',false);
+    RETURN;
+  END IF;
   UPDATE public.perfiles SET rol='admin' WHERE id = NULLIF(current_setting('probe.fk_target', true), '')::uuid;
   PERFORM set_config('probe.p48','PERMITIDO (asignó rol fuera del catálogo)',false);
 EXCEPTION
@@ -1001,9 +1006,15 @@ END $$;
 
 -- P49 — POSITIVO: un rol VÁLIDO del catálogo sí se asigna
 SELECT set_config('role', 'none', true);
-DO $$ BEGIN
+DO $$ DECLARE n INT; BEGIN
+  IF NULLIF(current_setting('probe.fk_target', true), '') IS NULL THEN
+    PERFORM set_config('probe.p49','FALLO (fixture fk_target ausente)',false);
+    RETURN;
+  END IF;
   UPDATE public.perfiles SET rol='gerente' WHERE id = current_setting('probe.fk_target', true)::uuid;
-  PERFORM set_config('probe.p49','OK (asignó rol válido del catálogo)',false);
+  GET DIAGNOSTICS n = ROW_COUNT;
+  IF n <> 1 THEN PERFORM set_config('probe.p49','FALLO (UPDATE afectó '||n||' filas)',false);
+  ELSE PERFORM set_config('probe.p49','OK (asignó rol válido del catálogo)',false); END IF;
 EXCEPTION WHEN others THEN PERFORM set_config('probe.p49','REGRESIÓN ('||SQLSTATE||')',false);
 END $$;
 
@@ -1953,9 +1964,10 @@ END $$;
 SELECT set_config('role', 'none', true);
 SELECT set_config('probe.clin',
   (SELECT mc.clinica_id::text FROM public.medico_clinicas mc GROUP BY mc.clinica_id ORDER BY count(*) DESC LIMIT 1), false);
-SELECT set_config('probe.clin_member',
-  (SELECT mc.medico_id::text FROM public.medico_clinicas mc
-    WHERE mc.clinica_id = current_setting('probe.clin', true)::uuid ORDER BY mc.medico_id LIMIT 1), false);
+-- clin_member = miembro AUTORIZADO (admin_clinica/gerente) de probe.clin; antes era cualquier miembro por id y P110 pasaba solo por el ascenso de P49 (19-oct)
+SELECT set_config('probe.clin_member', COALESCE((SELECT mc.medico_id::text FROM public.medico_clinicas mc JOIN public.perfiles p ON p.id = mc.medico_id
+    WHERE mc.clinica_id = current_setting('probe.clin', true)::uuid AND p.rol IN ('admin_clinica','gerente')
+    ORDER BY mc.medico_id LIMIT 1), ''), false);
 SELECT set_config('probe.clin_ajeno',
   (SELECT cp.id::text FROM public.cuentas_proveedor cp WHERE cp.activo
     AND cp.id NOT IN (SELECT medico_id FROM public.medico_clinicas WHERE clinica_id = current_setting('probe.clin', true)::uuid)
@@ -1973,6 +1985,10 @@ SELECT set_config('request.jwt.claims',
   json_build_object('sub', current_setting('probe.clin_member', true), 'role','authenticated')::text, true);
 SELECT set_config('role', 'authenticated', true);
 DO $$ DECLARE n INT; BEGIN
+  IF NULLIF(current_setting('probe.clin_member', true), '') IS NULL THEN
+    PERFORM set_config('probe.p110','FALLO (fixture clin_member ausente)',false);
+    RETURN;
+  END IF;
   SELECT count(*) INTO n FROM public.obtener_personal_clinica(current_setting('probe.clin', true)::uuid);
   IF n > 1 THEN PERFORM set_config('probe.p110','OK (ve '||n||' miembros de su clínica)',false);
   ELSIF n = 1 THEN PERFORM set_config('probe.p110','REGRESIÓN (solo se ve a sí mismo: 1)',false);
