@@ -1964,9 +1964,9 @@ END $$;
 SELECT set_config('role', 'none', true);
 SELECT set_config('probe.clin',
   (SELECT mc.clinica_id::text FROM public.medico_clinicas mc GROUP BY mc.clinica_id ORDER BY count(*) DESC LIMIT 1), false);
--- clin_member = miembro AUTORIZADO (admin_clinica/gerente) de probe.clin; antes era cualquier miembro por id y P110 pasaba solo por el ascenso de P49 (19-oct)
+-- clin_member = miembro AUTORIZADO (admin_clinica/gerente) de probe.clin; antes era cualquier miembro por id y P110 pasaba solo por el ascenso de P49 (19-oct); excluye a fk_target (P49 lo asciende a gerente dentro de la transacción)
 SELECT set_config('probe.clin_member', COALESCE((SELECT mc.medico_id::text FROM public.medico_clinicas mc JOIN public.perfiles p ON p.id = mc.medico_id
-    WHERE mc.clinica_id = current_setting('probe.clin', true)::uuid AND p.rol IN ('admin_clinica','gerente')
+    WHERE mc.clinica_id = current_setting('probe.clin', true)::uuid AND p.rol IN ('admin_clinica','gerente') AND mc.medico_id::text <> current_setting('probe.fk_target', true)
     ORDER BY mc.medico_id LIMIT 1), ''), false);
 SELECT set_config('probe.clin_ajeno',
   (SELECT cp.id::text FROM public.cuentas_proveedor cp WHERE cp.activo
