@@ -8,6 +8,7 @@ import { useProveedorAuth } from '@/proveedor/hooks/useProveedorAuth'
 import { supabase } from '@/lib/supabase'
 import { aceptarInvitacionPendiente } from '@/lib/invitacionProveedor'
 import { enviarReset } from '@/lib/enviarReset'
+import { rutaHomeEmpresa } from '@/proveedor/lib/rutasEmpresa'
 import { MapPin, Loader2 } from 'lucide-react'
 import { toast } from 'sonner'
 
@@ -39,7 +40,6 @@ export default function ProveedorLogin() {
     }
     // Si venía de una invitación, aceptarla ahora (autenticado) antes de rutear.
     await aceptarInvitacionPendiente()
-    // Un laboratorio clínico tiene su propio portal: lo enviamos allí.
     const { data: { user } } = await supabase.auth.getUser()
     const { data: cuenta } = await supabase
       .from('cuentas_proveedor')
@@ -50,16 +50,8 @@ export default function ProveedorLogin() {
     toast.success('Bienvenido')
     const tipo = (cuenta as any)?.empresa?.tipo
     const rol = (cuenta as any)?.rol_en_empresa
-    // El visitador de campo va a su PWA móvil (/visitador redirige a /visitador/agendar), no al panel desktop.
-    if (rol === 'visitador_medico') {
-      navigate('/visitador')
-    } else if (tipo === 'laboratorio_clinico') {
-      navigate('/laboratorio/dashboard')
-    } else if (tipo === 'farmacia') {
-      navigate('/farmacia/dashboard')
-    } else {
-      navigate('/proveedor/dashboard')
-    }
+    // El destino lo decide rutaHomeEmpresa (src/proveedor/lib/rutasEmpresa.ts), igual en los tres logins.
+    navigate(rutaHomeEmpresa(tipo, rol))
   }
 
   return (

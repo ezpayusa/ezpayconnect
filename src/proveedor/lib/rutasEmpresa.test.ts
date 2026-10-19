@@ -59,6 +59,39 @@ describe('rutaLoginEmpresa', () => {
   })
 })
 
+// Censo: los tres logins de empresa delegan el destino en rutaHomeEmpresa. Un navigate a un panel
+// escrito a mano en un login es exactamente lo que dejaba a una cuenta en el panel equivocado según por
+// dónde entrara.
+describe('censo: los logins de empresa usan rutaHomeEmpresa', () => {
+  const LOGINS = [
+    'src/proveedor/pages/ProveedorLogin.tsx',
+    'src/farmacia/pages/FarmaciaLogin.tsx',
+    'src/laboratorio/pages/LabLogin.tsx',
+  ]
+  const DESTINOS_A_MANO = [
+    "navigate('/repartidor'",
+    "navigate('/visitador'",
+    "navigate('/farmacia/dashboard'",
+    "navigate('/laboratorio/dashboard'",
+    "navigate('/proveedor/dashboard'",
+  ]
+
+  it.each(LOGINS)('%s delega en rutaHomeEmpresa y no decide destinos a mano', (archivo) => {
+    const src = fs.readFileSync(archivo, 'utf8')
+    expect(src, `${archivo} no llama a rutaHomeEmpresa(`).toContain('rutaHomeEmpresa(')
+    for (const d of DESTINOS_A_MANO) {
+      expect(src.includes(d), `${archivo} decide un destino a mano: ${d}`).toBe(false)
+    }
+  })
+
+  it.each(LOGINS)('%s lee rol_en_empresa en el select de cuentas_proveedor', (archivo) => {
+    const src = fs.readFileSync(archivo, 'utf8')
+    const m = src.match(/\.from\('cuentas_proveedor'\)\s*\.select\('([^']*)'\)/)
+    expect(m, `${archivo}: no encontré .from('cuentas_proveedor').select('…')`).not.toBeNull()
+    expect(m![1], `${archivo}: el select no trae rol_en_empresa`).toContain('rol_en_empresa')
+  })
+})
+
 // Si un guard cambia lo que exige, el destino que da rutaHomeEmpresa puede dejar de ser alcanzable
 // (o el guard rebota a la cuenta a otro panel). Este test avisa para revisar los dos juntos.
 describe('coherencia con los guards de los PWA', () => {
