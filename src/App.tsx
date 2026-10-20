@@ -98,6 +98,7 @@ const ReportesEzPayPageV2 = lazy(() => import('@/pages/admin-ezpay/ReportesEzPay
 const CanjesPendientesPage = lazy(() => import('@/pages/admin-ezpay/CanjesPendientesPage'))
 const EspecialidadesPropuestasPage = lazy(() => import('@/pages/admin-ezpay/EspecialidadesPropuestasPage'))
 const SolicitudesPersonalizacionPage = lazy(() => import('@/pages/admin-ezpay/SolicitudesPersonalizacionPage'))
+const SolicitudesAltaMedicosPage = lazy(() => import('@/pages/admin-ezpay/SolicitudesAltaMedicosPage'))
 const MedicamentosClasificacionPage = lazy(() => import('@/pages/admin-ezpay/MedicamentosClasificacionPage'))
 
 // === PROVEEDORES ===
@@ -105,6 +106,7 @@ const ProveedorLogin = lazy(() => import('@/proveedor/pages/ProveedorLogin'))
 const ProveedorRegistro = lazy(() => import('@/proveedor/pages/ProveedorRegistro'))
 const ProveedorRegistroVisitador = lazy(() => import('@/proveedor/pages/visitador/ProveedorRegistroVisitador'))
 const ProveedorDashboard = lazy(() => import('@/proveedor/pages/ProveedorDashboard'))
+const MisMedicosPage = lazy(() => import('@/proveedor/pages/MisMedicosPage'))
 const ProductosListPage = lazy(() => import('@/proveedor/pages/productos/ProductosListPage'))
 const ProductoFormPage = lazy(() => import('@/proveedor/pages/productos/ProductoFormPage'))
 const EquipoRolesPage = lazy(() => import('@/proveedor/pages/EquipoRolesPage'))
@@ -360,6 +362,8 @@ function App() {
           <Route path="paises" element={<PaisesPage />} />
           <Route path="pais/:paisId" element={<PaisDashboardPage />} />
           <Route path="pais/:paisId/invitaciones-medicos" element={<InvitacionesMedicosPage />} />
+          {/* Dual-mount: en modo país muestra solo las solicitudes de :paisId; la global (super_admin), todas. */}
+          <Route path="pais/:paisId/solicitudes-alta-medicos" element={<SolicitudesAltaMedicosPage />} />
           <Route path="pais/:paisId/invitaciones-clinicas" element={<InvitacionesClinicasPage />} />
           {/* Destino del boton "Ver Clinicas" de PaisDashboardPage, que navegaba aca desde el
               7-jun sin que la ruta existiera (caia en NotFoundPage). Solo lectura. */}
@@ -405,6 +409,7 @@ function App() {
           <Route path="canjes" element={<CanjesPendientesPage />} />
           <Route path="especialidades" element={<EspecialidadesPropuestasPage />} />
           <Route path="solicitudes-personalizacion" element={<SolicitudesPersonalizacionPage />} />
+          <Route path="solicitudes-alta-medicos" element={<SolicitudesAltaMedicosPage />} />
           <Route path="medicamentos" element={<MedicamentosClasificacionPage />} />
         </Route>
 
@@ -466,6 +471,7 @@ function App() {
           <Route path="visitadores/:id" element={<VisitadorDetallePage />} />
           <Route path="equipos" element={<EquiposPage />} />
           <Route path="mensajes" element={<MensajesPage />} />
+          <Route path="mis-medicos" element={<MisMedicosPage />} />
           <Route path="publicidad/planes" element={<PublicidadPlanesPage />} />
           <Route path="publicidad/campanas" element={<PublicidadCampanasPage />} />
           <Route path="publicidad/campanas/nueva" element={<PublicidadCampanaFormPage />} />

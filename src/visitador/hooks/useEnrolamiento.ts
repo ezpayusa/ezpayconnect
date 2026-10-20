@@ -2,17 +2,19 @@ import { useCallback, useMemo } from 'react'
 import { supabase } from '@/lib/supabase'
 import { mapearErrorRpc, type ErrorRpcMapeado } from '@/lib/erroresRpc'
 import {
+  parsearMedicosEnrolados,
   parsearPrioridad,
   parsearRespuestaSolicitud,
   paramsSolicitudAlta,
   type DatosSolicitudAlta,
   type EstadoEnrolamiento,
+  type MedicoEnrolado,
   type PrioridadAgendar,
   type RespuestaSolicitud,
   type SolicitudAlta,
 } from '@/visitador/lib/enrolamiento'
 
-// Las 5 RPCs del enrolamiento que usa la PWA del visitador. Cada una devuelve { ok, data } o { ok:false, error }
+// Las RPCs del enrolamiento que usan la PWA del visitador y "Mis médicos" del portal proveedor. Cada una devuelve { ok, data } o { ok:false, error }
 // con el error ya mapeado por código (mapearErrorRpc: los PV traen su mensaje para el usuario). No hace toasts:
 // la pantalla decide dónde va el mensaje (toast o inline).
 // Las dos ramas declaran las dos propiedades: el proyecto no tiene strictNullChecks y sin eso el union no se estrecha.
@@ -20,7 +22,7 @@ export type Resultado<T> =
   | { ok: true; data: T; error?: undefined }
   | { ok: false; data?: undefined; error: ErrorRpcMapeado }
 
-const falla = (error: unknown): { ok: false; data?: undefined; error: ErrorRpcMapeado } => ({ ok: false, error: mapearErrorRpc(error) })
+export const falla = (error: unknown): { ok: false; data?: undefined; error: ErrorRpcMapeado } => ({ ok: false, error: mapearErrorRpc(error) })
 // Una respuesta con forma inesperada es bug nuestro (o de la base): genérico y reportable.
 const respuestaInvalida = () => falla(null)
 
@@ -71,8 +73,14 @@ export function useEnrolamiento() {
     return { ok: true, data: parsearPrioridad(data) }
   }, [])
 
+  const listarMisMedicos = useCallback(async (): Promise<Resultado<MedicoEnrolado[]>> => {
+    const { data, error } = await supabase.rpc('listar_mis_medicos_enrolados')
+    if (error) return falla(error)
+    return { ok: true, data: parsearMedicosEnrolados(data) }
+  }, [])
+
   return useMemo(
-    () => ({ enrolarMedico, solicitarAlta, cancelarSolicitud, listarSolicitudes, prioridadParaAgendar }),
-    [enrolarMedico, solicitarAlta, cancelarSolicitud, listarSolicitudes, prioridadParaAgendar],
+    () => ({ enrolarMedico, solicitarAlta, cancelarSolicitud, listarSolicitudes, prioridadParaAgendar, listarMisMedicos }),
+    [enrolarMedico, solicitarAlta, cancelarSolicitud, listarSolicitudes, prioridadParaAgendar, listarMisMedicos],
   )
 }

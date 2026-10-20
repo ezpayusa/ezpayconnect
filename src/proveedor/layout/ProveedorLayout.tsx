@@ -6,7 +6,7 @@ import { useTema } from '@/components/theme/TenantThemeContext'
 import { ProveedorNotificacionesProvider, useProveedorNotificaciones } from '@/proveedor/context/ProveedorNotificacionesContext'
 import { usePushNotifications } from '@/webapp/hooks/usePushNotifications'
 import { Button } from '@/components/ui/button'
-import { LayoutDashboard, Package, CalendarCheck, Megaphone, MapPin, CreditCard, LogOut, Menu, X, CheckCircle, Users, BarChart3, Bell, ShieldCheck, MessageSquare } from 'lucide-react'
+import { LayoutDashboard, Package, CalendarCheck, Megaphone, MapPin, CreditCard, LogOut, Menu, X, CheckCircle, Users, BarChart3, Bell, ShieldCheck, MessageSquare, Stethoscope } from 'lucide-react'
 import { useState, useEffect } from 'react'
 import { etiquetaRol, type PermisoProveedor } from '@/proveedor/lib/permisos'
 import { PoweredBy } from '@/components/branding/PoweredBy'
@@ -19,6 +19,7 @@ interface NavItem {
   permiso?: PermisoProveedor // sin permiso => siempre visible
   capacidad?: string // módulo contratado (mis_capacidades); sin capacidad => no gateado por módulo. Solo visibilidad de UI, NO seguridad.
   ocultarSiPermiso?: PermisoProveedor // se oculta si el usuario TIENE este permiso (evita dos ítems a la misma ruta)
+  tipoEmpresa?: string // solo para ese tipo de empresa (p. ej. el enrolamiento es de laboratorio_farmaceutico). Solo UI.
 }
 
 // Secciones específicas del flujo de VISITADOR. Las empresas afines no las usan:
@@ -53,6 +54,8 @@ const NAV_ITEMS: NavItem[] = [
   { label: 'Reporte de Visitas', path: '/proveedor/visitador/reporte', icon: BarChart3, permiso: 'visitadores.gestionar', capacidad: 'visitadores' },
   { label: 'Visitadores', path: '/proveedor/visitadores', icon: Users, permiso: 'visitadores.gestionar', capacidad: 'visitadores' },
   { label: 'Equipos', path: '/proveedor/equipos', icon: Users, permiso: 'visitadores.gestionar', capacidad: 'visitadores' },
+  // Médicos enrolados por el laboratorio (mig 380): admin y supervisor de un lab farmacéutico con el módulo enrolamiento.
+  { label: 'Mis Médicos', path: '/proveedor/mis-medicos', icon: Stethoscope, permiso: 'visitadores.gestionar', capacidad: 'enrolamiento', tipoEmpresa: 'laboratorio_farmaceutico' },
   { label: 'Mensajes', path: '/proveedor/mensajes', icon: MessageSquare },
   { label: 'Ubicaciones Médicos', path: '/proveedor/visitador/ubicaciones-medicos', icon: MapPin, permiso: 'ubicaciones.gestionar', capacidad: 'visitadores' },
   { label: 'Publicidad', path: '/proveedor/publicidad/planes', icon: Megaphone, permiso: 'publicidad.ver', capacidad: 'publicidad' },
@@ -100,6 +103,7 @@ function ProveedorLayoutContent() {
     if (esAfin && item.permiso && PERMISOS_VISITADOR.includes(item.permiso)) return false
     // Módulo contratado: oculta el item si la empresa no tiene esa capacidad vigente (solo visibilidad UI).
     if (item.capacidad && !tieneCapacidad(item.capacidad)) return false
+    if (item.tipoEmpresa && empresa?.tipo !== item.tipoEmpresa) return false
     return true
   })
 
