@@ -478,9 +478,9 @@ BEGIN
   END IF;
 
   -- (g) PV015-PV017 solo donde corresponde
-  v := (SELECT string_agg(f.oid::regprocedure::text, ', ' ORDER BY f.oid::regprocedure::text) FROM pg_proc f WHERE f.prosrc LIKE '%PV015%');
+  v := (SELECT string_agg(f.oid::regprocedure::text, ', ' ORDER BY f.oid::regprocedure::text) FROM pg_proc f WHERE f.prosrc ~ 'ERRCODE = ''PV015''');
   IF v IS DISTINCT FROM 'trg_medicos_lab_enrolador_inmutable()' THEN bad := bad||'PV015 en ['||COALESCE(v, 'ninguna')||']; '; END IF;
-  v := (SELECT string_agg(f.oid::regprocedure::text, ', ' ORDER BY f.oid::regprocedure::text) FROM pg_proc f WHERE f.prosrc ~ 'PV01[67]');
+  v := (SELECT string_agg(f.oid::regprocedure::text, ', ' ORDER BY f.oid::regprocedure::text) FROM pg_proc f WHERE f.prosrc ~ 'ERRCODE = ''PV01[67]''');
   IF v IS DISTINCT FROM 'enrolar_medico(uuid)' THEN bad := bad||'PV016/PV017 en ['||COALESCE(v, 'ninguna')||']; '; END IF;
 
   -- (h) resto de las funciones intacto (huella del paso 0)
