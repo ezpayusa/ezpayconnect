@@ -30,9 +30,9 @@ Stack: React + Vite + TypeScript, Supabase / Postgres, deploy en Vercel, repo en
   - La 373 está en prod (aplicada 2026-10-09) y en main desde el merge del PR #57. Huella de funciones viva post-373 = `027e10a7b66101b4f5bb85c475c34045 392`.
   - **Orden de rollback:** 374 → 373 → 372 → 371 → …
   - **Próximos libres: mig 375, errcode PA036, probe P1041.**
-  - **Harness al 19-oct:** 1117 filas, 11 rojas = exactamente la deuda. Las 8 'preexistentes' del 17-oct eran fixtures
+  - **Harness al 19-oct (con la 373 en main):** 1127 filas, 11 rojas = exactamente la deuda. Las 8 'preexistentes' del 17-oct eran fixtures
     frágiles (farm_emp con LIMIT 1 sin ORDER BY que eligió la empresa QA-MANUAL pendiente de la 373; P472 contando
-    prospectos reales de GT), corregidos en fix/harness-fixture-farmacia.
+    prospectos reales de GT), corregidos en fix/harness-fixture-farmacia. P110 dependía del ascenso posicional de P49 (perfiles ORDER BY id): fixtures fk_target y clin_member fijados en PR #65; quedan ~30 fixtures posicionales en backlog.
   - Rama sin upstream propio al crearse desde origin/main: push SIEMPRE con nombre de rama explícito.
   - PRs #59-#64 y #57 mergeados al 19-oct; #56 (gate de textos legales) y #58 (front de altas) SIN mergear hasta completar los placeholders legales. Confirm email APAGADO en prod hasta que entre #58.
   - Punto 2 comercial (18-oct): src/lib/navegacion.ts es el helper ÚNICO de links Google Maps/Waze; VisitadorRutaPage y EntregaDetallePage todavía arman los suyos (migrar después). Hoy usa visitasDeHoyConUbicacion; visitasDelDia sigue sin coordenadas.
