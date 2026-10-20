@@ -38092,10 +38092,11 @@ END $$;
 SELECT set_config('role', 'none', true);
 
 -- ================================================================================
--- MIG 380 — lecturas del enrolamiento: listar_mis_medicos_enrolados() y prioridad_para_agendar(uuid) (M380_FX + P1091-P1098).
--- pg_temp.m380_estado(): 'post' (las 2 funciones con su md5), 'pre' (ninguna) o 'parcial (...)' (ROJO). Sin la 380 los
--- probes publican 'PENDIENTE mig 380 (...)', pero solo si la llamada da 42883 (la funcion no existe) y DESPUES de medir lo
--- que no depende de la 380 (snapshot, fixtures y, en P1096, el borde del head-start en el trigger).
+-- MIG 380 — lecturas del enrolamiento: listar_mis_medicos_enrolados() y prioridad_para_agendar(uuid) (M380_FX + P1091-P1098). APLICADA en prod el 2026-10-20 19:10 UTC.
+-- pg_temp.m380_estado(): 'post' (las 2 funciones con su md5), 'pre' (ninguna) o 'parcial (...)' (ROJO). Con la 380 aplicada no
+-- hay rama PENDIENTE: en 'pre' (380_rollback) M380_FX y P1091-P1098 publican 'REGRESION (380 ausente; ...)', pero solo si la
+-- llamada da 42883 (la funcion no existe) y DESPUES de medir lo que no depende de la 380 (snapshot, fixtures y, en P1096, el
+-- borde del head-start en el trigger): si eso falla, ROJO. Quien corra 380_rollback tiene que esperar esas rojas.
 -- Actores por EMAIL (farmacia.qa, sup1.qa, visitador.qa, paciente.qa, medico.qa, clinica.qa); usa los helpers de M375_FX
 -- y M377_FX (m375_como, m375_uid, m375_lab2, m375_visita, m377_fijar, m377_snap). QA Laboratorio se fija dentro de cada
 -- savepoint (FX12 la convierte en 'farmacia' para el resto de la transaccion). Toda escritura se descarta con RAISE P0999
@@ -38131,7 +38132,7 @@ CREATE OR REPLACE FUNCTION pg_temp.m380_cuenta(p_uid uuid) RETURNS text LANGUAGE
 $body$
 $fn$;
   est := pg_temp.m380_estado();
-  PERFORM set_config('probe.m380_fx', CASE WHEN est = 'pre' THEN 'PENDIENTE mig 380 (sin listar_mis_medicos_enrolados ni prioridad_para_agendar; helpers de pg_temp creados)'
+  PERFORM set_config('probe.m380_fx', CASE WHEN est = 'pre' THEN 'REGRESION (380 ausente; sin listar_mis_medicos_enrolados ni prioridad_para_agendar; helpers de pg_temp creados)'
     WHEN est = 'post' THEN 'OK (helpers de pg_temp creados; estado de la 380: post)'
     ELSE 'ROJO (380 '||est||'; helpers de pg_temp creados)' END, false);
 EXCEPTION WHEN OTHERS THEN
@@ -38169,7 +38170,7 @@ BEGIN
     WHEN post IS DISTINCT FROM pre THEN 'FALLO (no volvio al snapshot tras el descarte)'
     WHEN est LIKE 'parcial%' THEN 'ROJO (380 '||est||')'
     WHEN est = 'pre' AND r_far LIKE 'ERR:42883:%' AND r_sup LIKE 'ERR:42883:%' AND r_pac LIKE 'ERR:42883:%' AND r_pac2 LIKE 'ERR:42883:%'
-      THEN 'PENDIENTE mig 380 (las funciones no existen: 42883 x4)'
+      THEN 'REGRESION (380 ausente; las funciones no existen: 42883 x4)'
     WHEN est = 'pre' THEN 'ROJO (380 ausente y no dio 42883: '||left(r_far, 80)||' / '||left(r_sup, 80)||' / '||left(r_pac, 80)||' / '||left(r_pac2, 80)||')'
     WHEN r_far LIKE 'ERR:PV016:%' AND r_sup LIKE 'ERR:PV017:%' AND r_pac LIKE 'ERR:PV010:%' AND r_pac2 LIKE 'ERR:PV010:%'
       THEN 'OK (380: listar farmacia.qa PV016, sup1.qa en lectura PV017, paciente.qa PV010; prioridad_para_agendar paciente.qa PV010; descartado)'
@@ -38186,7 +38187,7 @@ DO $$
 DECLARE est text; acl text; cfg text; cols text; r_l text; r_p text; ok boolean;
 BEGIN
   est := pg_temp.m380_estado();
-  IF est = 'pre' THEN PERFORM set_config('probe.p1092', 'PENDIENTE mig 380 (las funciones no existen)', false); RETURN; END IF;
+  IF est = 'pre' THEN PERFORM set_config('probe.p1092', 'REGRESION (380 ausente; las funciones no existen)', false); RETURN; END IF;
   IF est <> 'post' THEN PERFORM set_config('probe.p1092', 'ROJO (380 '||est||')', false); RETURN; END IF;
   acl := (SELECT string_agg(p.proname||'='||COALESCE(p.proacl::text, 'NULL'), ' ' ORDER BY p.proname COLLATE "C") FROM pg_proc p
            WHERE p.proname IN ('listar_mis_medicos_enrolados', 'prioridad_para_agendar'));
@@ -38251,7 +38252,7 @@ BEGIN
     WHEN post IS DISTINCT FROM pre THEN 'FALLO (no volvio al snapshot tras el descarte)'
     WHEN esperado IS NULL THEN 'FALLO (fixture: no se pudo calcular lo esperado para medico.qa)'
     WHEN est LIKE 'parcial%' THEN 'ROJO (380 '||est||')'
-    WHEN est = 'pre' AND r LIKE 'ERR:42883:%' THEN 'PENDIENTE mig 380 (listar_mis_medicos_enrolados no existe; esperado '||n_exp||'|false|'||esperado||')'
+    WHEN est = 'pre' AND r LIKE 'ERR:42883:%' THEN 'REGRESION (380 ausente; listar_mis_medicos_enrolados no existe; esperado '||n_exp||'|false|'||esperado||')'
     WHEN est = 'pre' THEN 'ROJO (380 ausente y no dio 42883: '||left(r, 200)||')'
     WHEN r = 'OK:'||n_exp||'|false|'||esperado THEN 'OK (380: visitador.qa lista '||n_exp||' medico(s) de su empresa; medico.qa '||esperado||' = prioridad_activa(); sin email ni telefono; descartado)'
     ELSE 'ROJO (esperado OK:'||n_exp||'|false|'||esperado||'; vino '||left(r, 200)||')' END, false);
@@ -38284,7 +38285,7 @@ BEGIN
   PERFORM set_config('probe.p1094', CASE
     WHEN post IS DISTINCT FROM pre THEN 'FALLO (no volvio al snapshot tras el descarte)'
     WHEN est LIKE 'parcial%' THEN 'ROJO (380 '||est||')'
-    WHEN est = 'pre' AND r LIKE 'ERR:42883:%' THEN 'PENDIENTE mig 380 (listar_mis_medicos_enrolados no existe)'
+    WHEN est = 'pre' AND r LIKE 'ERR:42883:%' THEN 'REGRESION (380 ausente; listar_mis_medicos_enrolados no existe)'
     WHEN est = 'pre' THEN 'ROJO (380 ausente y no dio 42883: '||left(r, 200)||')'
     WHEN r = 'OK:0' THEN 'OK (380: el segundo laboratorio lista 0 medicos; no ve a medico.qa; descartado)'
     ELSE 'ROJO (esperado OK:0; vino '||left(r, 200)||')' END, false);
@@ -38323,7 +38324,7 @@ BEGIN
   PERFORM set_config('probe.p1095', CASE
     WHEN post IS DISTINCT FROM pre THEN 'FALLO (no volvio al snapshot tras el descarte)'
     WHEN est LIKE 'parcial%' THEN 'ROJO (380 '||est||')'
-    WHEN est = 'pre' AND r LIKE 'ERR:42883:%' THEN 'PENDIENTE mig 380 (prioridad_para_agendar no existe)'
+    WHEN est = 'pre' AND r LIKE 'ERR:42883:%' THEN 'REGRESION (380 ausente; prioridad_para_agendar no existe)'
     WHEN est = 'pre' THEN 'ROJO (380 ausente y no dio 42883: '||left(r, 200)||')'
     WHEN j = jsonb_build_object('estado', 'propia', 'fecha_minima', NULL, 'visitas_completadas', pa.visitas_completadas, 'visitas_limite', pa.visitas_limite)
       THEN 'OK (380: visitador.qa -> '||j::text||' = prioridad_activa(); descartado)'
@@ -38372,7 +38373,7 @@ BEGIN
     WHEN post IS DISTINCT FROM pre THEN 'FALLO (no volvio al snapshot tras el descarte)'
     WHEN r_antes NOT LIKE 'ERR:PV002:%' OR r_dia NOT LIKE 'OK:%' THEN 'ROJO (borde del head-start en '||fmin||': dia anterior '||left(r_antes, 100)||' / ese dia '||left(r_dia, 100)||')'
     WHEN est LIKE 'parcial%' THEN 'ROJO (380 '||est||')'
-    WHEN est = 'pre' AND r LIKE 'ERR:42883:%' THEN 'PENDIENTE mig 380 (prioridad_para_agendar no existe; borde del trigger OK: '||(fmin - 1)||' PV002, '||fmin||' entra)'
+    WHEN est = 'pre' AND r LIKE 'ERR:42883:%' THEN 'REGRESION (380 ausente; prioridad_para_agendar no existe; borde del trigger OK: '||(fmin - 1)||' PV002, '||fmin||' entra)'
     WHEN est = 'pre' THEN 'ROJO (380 ausente y no dio 42883: '||left(r, 200)||')'
     WHEN j = jsonb_build_object('estado', 'otro_laboratorio', 'fecha_minima', fmin, 'visitas_completadas', NULL, 'visitas_limite', NULL)
          AND (CURRENT_DATE + COALESCE((SELECT e.dias_ventaja_reserva FROM public.empresas_proveedoras e WHERE e.id = qalab), 5)) = fmin
@@ -38410,7 +38411,7 @@ BEGIN
   PERFORM set_config('probe.p1097', CASE
     WHEN post IS DISTINCT FROM pre THEN 'FALLO (no volvio al snapshot tras el descarte)'
     WHEN est LIKE 'parcial%' THEN 'ROJO (380 '||est||')'
-    WHEN est = 'pre' AND r LIKE 'ERR:42883:%' THEN 'PENDIENTE mig 380 (prioridad_para_agendar no existe)'
+    WHEN est = 'pre' AND r LIKE 'ERR:42883:%' THEN 'REGRESION (380 ausente; prioridad_para_agendar no existe)'
     WHEN est = 'pre' THEN 'ROJO (380 ausente y no dio 42883: '||left(r, 200)||')'
     WHEN j = jsonb_build_object('estado', 'libre', 'fecha_minima', NULL, 'visitas_completadas', NULL, 'visitas_limite', NULL)
       THEN 'OK (380: clinica.qa sin enrolador -> '||j::text||'; descartado)'
@@ -38450,7 +38451,7 @@ BEGIN
   PERFORM set_config('probe.p1098', CASE
     WHEN post IS DISTINCT FROM pre THEN 'FALLO (no volvio al snapshot tras el descarte)'
     WHEN est LIKE 'parcial%' THEN 'ROJO (380 '||est||')'
-    WHEN est = 'pre' AND r_pais LIKE 'ERR:42883:%' AND r_inex LIKE 'ERR:42883:%' AND r_null LIKE 'ERR:42883:%' THEN 'PENDIENTE mig 380 (prioridad_para_agendar no existe)'
+    WHEN est = 'pre' AND r_pais LIKE 'ERR:42883:%' AND r_inex LIKE 'ERR:42883:%' AND r_null LIKE 'ERR:42883:%' THEN 'REGRESION (380 ausente; prioridad_para_agendar no existe)'
     WHEN est = 'pre' THEN 'ROJO (380 ausente y no dio 42883: '||left(r_pais, 80)||' / '||left(r_inex, 80)||' / '||left(r_null, 80)||')'
     WHEN r_pais = 'ERR:PV026:'||msg AND r_inex = 'ERR:PV026:'||msg AND r_null = 'ERR:PV026:'||msg
       THEN 'OK (380: lab con plan en otro pais, medico inexistente y NULL -> PV026 con el mismo mensaje; descartado)'
@@ -39636,15 +39637,15 @@ UNION ALL SELECT 'P1087_registrar_sin_solicitud_ruta_a_379',  current_setting('p
 UNION ALL SELECT 'P1088_registrar_invitacion_cancelada_379',  current_setting('probe.p1088', true), 'OK (379: token cancelado por reenviar -> P0001 Invitacion no valida o expirada, nada creado; sin la 379: REGRESION)'
 UNION ALL SELECT 'P1089_registrar_solicitud_no_invitada_379',  current_setting('probe.p1089', true), 'OK (379: solicitud cancelada con invitacion_id -> registra sin enrolar, solicitud igual; sin la 379: REGRESION)'
 UNION ALL SELECT 'P1090_registrar_correo_distinto_379',  current_setting('probe.p1090', true), 'OK (379: correo distinto -> P0001 El email no coincide con la invitacion, nada creado; sin la 379: REGRESION)'
-UNION ALL SELECT 'M380_FX_helpers_lecturas_enrolamiento',  current_setting('probe.m380_fx', true), 'OK (helpers de pg_temp creados; estado de la 380: post; sin la 380: PENDIENTE; parcial: ROJO)'
-UNION ALL SELECT 'P1091_listar_gates_380',  current_setting('probe.p1091', true), 'OK (380: listar PV016 farmacia.qa, PV017 sup1.qa en lectura, PV010 paciente.qa; prioridad PV010; sin la 380: PENDIENTE)'
-UNION ALL SELECT 'P1092_estructura_acl_380',  current_setting('probe.p1092', true), 'OK (380: DEFINER, STABLE, search_path vacio, ACL authenticated + service_role, sin columnas de contacto, anon 42501; sin la 380: PENDIENTE)'
-UNION ALL SELECT 'P1093_listar_visitador_380',  current_setting('probe.p1093', true), 'OK (380: visitador.qa lista a medico.qa con la prioridad de prioridad_activa(), sin email ni telefono; sin la 380: PENDIENTE)'
-UNION ALL SELECT 'P1094_listar_segundo_lab_vacio_380',  current_setting('probe.p1094', true), 'OK (380: el segundo laboratorio lista 0 medicos; sin la 380: PENDIENTE)'
-UNION ALL SELECT 'P1095_prioridad_propia_380',  current_setting('probe.p1095', true), 'OK (380: visitador.qa -> propia con las visitas de prioridad_activa(); sin la 380: PENDIENTE)'
-UNION ALL SELECT 'P1096_prioridad_otro_laboratorio_380',  current_setting('probe.p1096', true), 'OK (380: segundo lab -> otro_laboratorio, fecha_minima = borde del PV002, sin rastro del lab; sin la 380: PENDIENTE con el borde medido)'
-UNION ALL SELECT 'P1097_prioridad_libre_380',  current_setting('probe.p1097', true), 'OK (380: medico sin enrolador -> libre sin fecha ni visitas; sin la 380: PENDIENTE)'
-UNION ALL SELECT 'P1098_prioridad_pv026_380',  current_setting('probe.p1098', true), 'OK (380: otro pais, inexistente y NULL -> PV026 con el mismo mensaje; sin la 380: PENDIENTE)'
+UNION ALL SELECT 'M380_FX_helpers_lecturas_enrolamiento',  current_setting('probe.m380_fx', true), 'OK (helpers de pg_temp creados; estado de la 380: post; sin la 380: REGRESION; parcial: ROJO)'
+UNION ALL SELECT 'P1091_listar_gates_380',  current_setting('probe.p1091', true), 'OK (380: listar PV016 farmacia.qa, PV017 sup1.qa en lectura, PV010 paciente.qa; prioridad PV010; sin la 380: REGRESION)'
+UNION ALL SELECT 'P1092_estructura_acl_380',  current_setting('probe.p1092', true), 'OK (380: DEFINER, STABLE, search_path vacio, ACL authenticated + service_role, sin columnas de contacto, anon 42501; sin la 380: REGRESION)'
+UNION ALL SELECT 'P1093_listar_visitador_380',  current_setting('probe.p1093', true), 'OK (380: visitador.qa lista a medico.qa con la prioridad de prioridad_activa(), sin email ni telefono; sin la 380: REGRESION)'
+UNION ALL SELECT 'P1094_listar_segundo_lab_vacio_380',  current_setting('probe.p1094', true), 'OK (380: el segundo laboratorio lista 0 medicos; sin la 380: REGRESION)'
+UNION ALL SELECT 'P1095_prioridad_propia_380',  current_setting('probe.p1095', true), 'OK (380: visitador.qa -> propia con las visitas de prioridad_activa(); sin la 380: REGRESION)'
+UNION ALL SELECT 'P1096_prioridad_otro_laboratorio_380',  current_setting('probe.p1096', true), 'OK (380: segundo lab -> otro_laboratorio, fecha_minima = borde del PV002, sin rastro del lab; sin la 380: REGRESION con el borde medido)'
+UNION ALL SELECT 'P1097_prioridad_libre_380',  current_setting('probe.p1097', true), 'OK (380: medico sin enrolador -> libre sin fecha ni visitas; sin la 380: REGRESION)'
+UNION ALL SELECT 'P1098_prioridad_pv026_380',  current_setting('probe.p1098', true), 'OK (380: otro pais, inexistente y NULL -> PV026 con el mismo mensaje; sin la 380: REGRESION)'
 UNION ALL SELECT 'P1010_campana_vistas_sin_update_367',  current_setting('probe.p1010', true), 'OK (367: INSERT 1; ON CONFLICT DO NOTHING 0 sin error; DO UPDATE y UPDATE 42501; otro paciente 0; antes de la 367: PENDIENTE)'
 UNION ALL SELECT 'P1009_datos_bancarios_acotados_366',  current_setting('probe.p1009', true), 'OK (366: cuenta GT solo super_admin/admin_pais GT/proveedores GT; checkout 1 fila; config 21 super_admin y 14 el resto, admin_pais incluido; antes de la 366: PENDIENTE)'
 UNION ALL SELECT 'DET_p1009',  'DET ' || COALESCE(NULLIF(current_setting('probe.p1009_det', true), ''), '(sin dato)'), 'DET (detalle de P1009, no es probe)'
