@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest'
 import {
   parsearPrioridad, textoPrioridad, fechaBloqueadaPorPrioridad, semanasHasta, formatearFechaIso,
+  validarSolicitudAlta, paramsSolicitudAlta, type DatosSolicitudAlta,
 } from './enrolamiento'
 
 describe('prioridad_para_agendar — parseo y textos', () => {
@@ -53,5 +54,50 @@ describe('prioridad_para_agendar — parseo y textos', () => {
     expect(semanasHasta('2026-11-08', mie21)).toBe(2)
     expect(semanasHasta('2026-10-01', mie21)).toBe(0)
     expect(semanasHasta('2026-11-02', new Date(2026, 9, 25, 23))).toBe(2) // desde un domingo
+  })
+})
+
+const ok: DatosSolicitudAlta = {
+  nombre: 'Dra. Ana Pérez', email: 'ana@clinica.com', telefono: '', especialidad_id: '', numero_colegiado: '',
+  nombre_clinica: '', autorizado: true,
+}
+
+describe('validarSolicitudAlta — los límites de solicitar_alta_medico', () => {
+  it('un formulario mínimo válido no tiene errores', () => {
+    expect(validarSolicitudAlta(ok)).toEqual({})
+  })
+
+  it('la casilla de autorización es obligatoria', () => {
+    expect(validarSolicitudAlta({ ...ok, autorizado: false }).autorizado).toBeTruthy()
+  })
+
+  it('nombre: 3 a 150 caracteres, recortado', () => {
+    expect(validarSolicitudAlta({ ...ok, nombre: '  ab  ' }).nombre).toBeTruthy()
+    expect(validarSolicitudAlta({ ...ok, nombre: 'abc' }).nombre).toBeUndefined()
+    expect(validarSolicitudAlta({ ...ok, nombre: 'a'.repeat(151) }).nombre).toBeTruthy()
+  })
+
+  it('correo: obligatorio, con forma x@y.z y hasta 254', () => {
+    for (const email of ['', 'ana', 'ana@clinica', 'a na@x.co', `${'a'.repeat(250)}@x.co`]) {
+      expect(validarSolicitudAlta({ ...ok, email }).email, email).toBeTruthy()
+    }
+    expect(validarSolicitudAlta({ ...ok, email: ' ANA@Clinica.com ' }).email).toBeUndefined()
+  })
+
+  it('teléfono opcional: si viene, 7 a 15 dígitos y hasta 30 caracteres', () => {
+    expect(validarSolicitudAlta({ ...ok, telefono: '' }).telefono).toBeUndefined()
+    expect(validarSolicitudAlta({ ...ok, telefono: '+502 5555-1234' }).telefono).toBeUndefined()
+    expect(validarSolicitudAlta({ ...ok, telefono: '123456' }).telefono).toBeTruthy()
+    expect(validarSolicitudAlta({ ...ok, telefono: '1234567890123456' }).telefono).toBeTruthy()
+    expect(validarSolicitudAlta({ ...ok, telefono: '1234567 ' + '-'.repeat(25) }).telefono).toBeTruthy()
+  })
+
+  it('colegiado hasta 30 y clínica hasta 150', () => {
+    expect(validarSolicitudAlta({ ...ok, numero_colegiado: 'x'.repeat(31) }).numero_colegiado).toBeTruthy()
+    expect(validarSolicitudAlta({ ...ok, nombre_clinica: 'x'.repeat(151) }).nombre_clinica).toBeTruthy()
+  })
+
+  it('los opcionales vacíos viajan como null', () => {
+    expect(paramsSolicitudAlta(ok)).toMatchObject({ p_telefono: null, p_especialidad_id: null, p_numero_colegiado: null, p_nombre_clinica: null })
   })
 })
