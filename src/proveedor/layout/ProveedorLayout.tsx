@@ -18,6 +18,7 @@ interface NavItem {
   badge?: boolean
   permiso?: PermisoProveedor // sin permiso => siempre visible
   capacidad?: string // módulo contratado (mis_capacidades); sin capacidad => no gateado por módulo. Solo visibilidad de UI, NO seguridad.
+  ocultarSiPermiso?: PermisoProveedor // se oculta si el usuario TIENE este permiso (evita dos ítems a la misma ruta)
 }
 
 // Secciones específicas del flujo de VISITADOR. Las empresas afines no las usan:
@@ -42,12 +43,14 @@ const NAV_ITEMS: NavItem[] = [
   { label: 'Mis Visitas', path: '/visitador/mis-visitas', icon: CalendarCheck, permiso: 'visitas.propias', capacidad: 'visitadores' },
   { label: 'Agendar Visita', path: '/visitador/agendar', icon: CalendarCheck, permiso: 'visitas.propias', capacidad: 'visitadores' },
   { label: 'Mi Ruta', path: '/visitador/ruta', icon: MapPin, permiso: 'visitas.propias', capacidad: 'visitadores' },
-  { label: 'Mi Reporte', path: '/proveedor/visitador/reporte', icon: BarChart3, permiso: 'visitas.propias', capacidad: 'visitadores' },
+  // "Mi Reporte" y "Reporte de Visitas" van a la misma ruta: si un rol tuviera los dos permisos, gana "Reporte de Visitas".
+  { label: 'Mi Reporte', path: '/proveedor/visitador/reporte', icon: BarChart3, permiso: 'visitas.propias', capacidad: 'visitadores', ocultarSiPermiso: 'visitadores.gestionar' },
   // Gestión (según rol)
   { label: 'Productos', path: '/proveedor/productos', icon: Package, permiso: 'productos.ver', capacidad: 'productos' },
   // Puerta de contratación del módulo visitadores → SIEMPRE visible (sin capacidad).
   { label: 'Planes Visitador', path: '/proveedor/visitador/planes', icon: CalendarCheck, permiso: 'planes.contratar' },
   { label: 'Aprobar Visitas', path: '/proveedor/visitador/aprobar', icon: CheckCircle, permiso: 'visitas.aprobar', capacidad: 'visitadores' },
+  { label: 'Reporte de Visitas', path: '/proveedor/visitador/reporte', icon: BarChart3, permiso: 'visitadores.gestionar', capacidad: 'visitadores' },
   { label: 'Visitadores', path: '/proveedor/visitadores', icon: Users, permiso: 'visitadores.gestionar', capacidad: 'visitadores' },
   { label: 'Equipos', path: '/proveedor/equipos', icon: Users, permiso: 'visitadores.gestionar', capacidad: 'visitadores' },
   { label: 'Mensajes', path: '/proveedor/mensajes', icon: MessageSquare },
@@ -89,6 +92,7 @@ function ProveedorLayoutContent() {
   const esAfin = empresa?.tipo === 'empresa_afin'
   const navItems = NAV_ITEMS.filter((item) => {
     if (item.permiso && !puede(item.permiso)) return false
+    if (item.ocultarSiPermiso && puede(item.ocultarSiPermiso)) return false
     // Empresa afín: oculta las secciones de visitador (no aplican a su modelo).
     // NOTA: el gate de capacidad 'visitadores' (abajo) ahora cubre un caso similar (una afín sin ese
     // módulo también queda oculta por esa vía). Se mantienen AMBAS por seguridad; revisar si esta
