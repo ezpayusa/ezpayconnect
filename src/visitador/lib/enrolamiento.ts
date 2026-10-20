@@ -156,3 +156,18 @@ export const puedeCancelarSolicitud = (estado: string) => estado === 'pendiente'
 export function puedeEnrolarEmpresa(tipoEmpresa: string | null | undefined, tieneEnrolamiento: boolean): boolean {
   return tipoEmpresa === 'laboratorio_farmaceutico' && tieneEnrolamiento
 }
+
+/**
+ * Cuántas semanas hay que avanzar la grilla de turnos (semanas de lunes a domingo) para llegar a la que contiene
+ * `fechaIso`, contando desde la semana de `hoy`. Nunca negativo. Sin date-fns para no inflar el chunk de entrada.
+ */
+export function semanasHasta(fechaIso: string, hoy: Date): number {
+  const [y, m, d] = fechaIso.split('-').map(Number)
+  const lunes = (f: Date) => {
+    const r = new Date(f.getFullYear(), f.getMonth(), f.getDate())
+    r.setDate(r.getDate() - ((r.getDay() + 6) % 7))
+    return r
+  }
+  const diff = Math.round((lunes(new Date(y, m - 1, d)).getTime() - lunes(hoy).getTime()) / (7 * 24 * 60 * 60 * 1000))
+  return Math.max(0, diff)
+}
