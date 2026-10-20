@@ -37224,10 +37224,11 @@ END $$;
 SELECT set_config('role', 'none', true);
 
 -- ================================================================================
--- MIG 378 — aprobar solicitud de alta de medico -> invitacion precargada + correo (M378_FX + P1075-P1083).
+-- MIG 378 — aprobar solicitud de alta de medico -> invitacion precargada + correo (M378_FX + P1075-P1083). APLICADA en prod el 2026-10-20 17:50 UTC.
 -- pg_temp.m378_estado(): 'post' (columna email_enviado_at + invitacion_edge_url + las 3 funciones nuevas y
 -- solicitar_alta_medico con su md5), 'pre' (nada de la 378 y solicitar_alta_medico con el md5 de la 377) o
--- 'parcial (...)' (ROJO). Sin la 378 los probes publican 'PENDIENTE mig 378 (...)'.
+-- 'parcial (...)' (ROJO). Con la 378 aplicada no hay rama PENDIENTE: en 'pre' (378_rollback) M378_FX y P1075-P1083
+-- publican 'REGRESION (378 ausente; ...)'. Quien corra 378_rollback tiene que esperar esas rojas (como en la 377).
 -- Actores por EMAIL (adminpais.qa, visitador.qa, paciente.qa); usa los helpers de M375_FX y M377_FX
 -- (m375_como, m375_uid, m377_fijar, m377_crear, m377_sol, m377_snap). Toda escritura se descarta con RAISE P0999 y se
 -- verifica contra pg_temp.m378_snap() (el de la 377 + invitaciones_medico + app_secrets). La cola de pg_net se mira
@@ -37299,7 +37300,7 @@ CREATE OR REPLACE FUNCTION pg_temp.m378_inv(p_pais uuid, p_email text, p_vencida
 $body$
 $fn$;
   est := pg_temp.m378_estado();
-  PERFORM set_config('probe.m378_fx', CASE WHEN est = 'pre' THEN 'PENDIENTE mig 378 (helpers de pg_temp creados; estado: pre)'
+  PERFORM set_config('probe.m378_fx', CASE WHEN est = 'pre' THEN 'REGRESION (378 ausente: sin email_enviado_at, invitacion_edge_url ni las 3 funciones nuevas; helpers de pg_temp creados)'
     WHEN est = 'post' THEN 'OK (helpers de pg_temp creados; estado de la 378: post)'
     ELSE 'ROJO (378 '||est||'; helpers de pg_temp creados)' END, false);
 EXCEPTION WHEN OTHERS THEN
@@ -37311,7 +37312,7 @@ DO $$
 DECLARE est text; gt uuid; a_vis uuid; s uuid; r_vis text; r_inex text; pre text; post text;
 BEGIN
   est := pg_temp.m378_estado();
-  IF est = 'pre' THEN PERFORM set_config('probe.p1075', 'PENDIENTE mig 378 (aprobar_solicitud_alta no existe)', false); RETURN; END IF;
+  IF est = 'pre' THEN PERFORM set_config('probe.p1075', 'REGRESION (378 ausente; aprobar_solicitud_alta no existe)', false); RETURN; END IF;
   IF est <> 'post' THEN PERFORM set_config('probe.p1075', 'ROJO (378 '||est||')', false); RETURN; END IF;
   gt := (SELECT cp.id FROM public.configuracion_pais cp WHERE cp.codigo = 'GT');
   a_vis := pg_temp.m375_uid('visitador.qa@ezpayconnect.com');
@@ -37348,7 +37349,7 @@ DECLARE est text; gt uuid; a_vis uuid; a_adm uuid; esp uuid; esp_nom text; s uui
         ok_ret boolean; pre text; post text;
 BEGIN
   est := pg_temp.m378_estado();
-  IF est = 'pre' THEN PERFORM set_config('probe.p1076', 'PENDIENTE mig 378 (aprobar_solicitud_alta no existe)', false); RETURN; END IF;
+  IF est = 'pre' THEN PERFORM set_config('probe.p1076', 'REGRESION (378 ausente; aprobar_solicitud_alta no existe)', false); RETURN; END IF;
   IF est <> 'post' THEN PERFORM set_config('probe.p1076', 'ROJO (378 '||est||')', false); RETURN; END IF;
   gt := (SELECT cp.id FROM public.configuracion_pais cp WHERE cp.codigo = 'GT');
   a_vis := pg_temp.m375_uid('visitador.qa@ezpayconnect.com');
@@ -37411,7 +37412,7 @@ DECLARE est text; gt uuid; a_vis uuid; a_adm uuid; a_pac uuid; e_pac text; emp u
         pre text; post text;
 BEGIN
   est := pg_temp.m378_estado();
-  IF est = 'pre' THEN PERFORM set_config('probe.p1077', 'PENDIENTE mig 378 (aprobar_solicitud_alta no existe)', false); RETURN; END IF;
+  IF est = 'pre' THEN PERFORM set_config('probe.p1077', 'REGRESION (378 ausente; aprobar_solicitud_alta no existe)', false); RETURN; END IF;
   IF est <> 'post' THEN PERFORM set_config('probe.p1077', 'ROJO (378 '||est||')', false); RETURN; END IF;
   gt := (SELECT cp.id FROM public.configuracion_pais cp WHERE cp.codigo = 'GT');
   a_vis := pg_temp.m375_uid('visitador.qa@ezpayconnect.com');
@@ -37457,7 +37458,7 @@ DECLARE est text; gt uuid; a_vis uuid; a_adm uuid; s uuid; i_x uuid; r_vig text;
         e text := 'p1078.vigente@ezpayqa.test'; pre text; post text;
 BEGIN
   est := pg_temp.m378_estado();
-  IF est = 'pre' THEN PERFORM set_config('probe.p1078', 'PENDIENTE mig 378 (aprobar_solicitud_alta no existe)', false); RETURN; END IF;
+  IF est = 'pre' THEN PERFORM set_config('probe.p1078', 'REGRESION (378 ausente; aprobar_solicitud_alta no existe)', false); RETURN; END IF;
   IF est <> 'post' THEN PERFORM set_config('probe.p1078', 'ROJO (378 '||est||')', false); RETURN; END IF;
   gt := (SELECT cp.id FROM public.configuracion_pais cp WHERE cp.codigo = 'GT');
   a_vis := pg_temp.m375_uid('visitador.qa@ezpayconnect.com');
@@ -37501,7 +37502,7 @@ DECLARE est text; gt uuid; a_vis uuid; a_adm uuid; s uuid; r text; inv1 uuid; in
         c0 bigint; cola text; n0 int; n1 int; e text := 'p1079.reenviar@ezpayqa.test'; pre text; post text;
 BEGIN
   est := pg_temp.m378_estado();
-  IF est = 'pre' THEN PERFORM set_config('probe.p1079', 'PENDIENTE mig 378 (reenviar_solicitud_alta no existe)', false); RETURN; END IF;
+  IF est = 'pre' THEN PERFORM set_config('probe.p1079', 'REGRESION (378 ausente; reenviar_solicitud_alta no existe)', false); RETURN; END IF;
   IF est <> 'post' THEN PERFORM set_config('probe.p1079', 'ROJO (378 '||est||')', false); RETURN; END IF;
   gt := (SELECT cp.id FROM public.configuracion_pais cp WHERE cp.codigo = 'GT');
   a_vis := pg_temp.m375_uid('visitador.qa@ezpayconnect.com');
@@ -37551,7 +37552,7 @@ DECLARE est text; gt uuid; a_vis uuid; a_adm uuid; a_pac uuid; e_pac text; s_a u
         pre text; post text;
 BEGIN
   est := pg_temp.m378_estado();
-  IF est = 'pre' THEN PERFORM set_config('probe.p1080', 'PENDIENTE mig 378 (reenviar_solicitud_alta no existe)', false); RETURN; END IF;
+  IF est = 'pre' THEN PERFORM set_config('probe.p1080', 'REGRESION (378 ausente; reenviar_solicitud_alta no existe)', false); RETURN; END IF;
   IF est <> 'post' THEN PERFORM set_config('probe.p1080', 'ROJO (378 '||est||')', false); RETURN; END IF;
   gt := (SELECT cp.id FROM public.configuracion_pais cp WHERE cp.codigo = 'GT');
   a_vis := pg_temp.m375_uid('visitador.qa@ezpayconnect.com');
@@ -37617,7 +37618,7 @@ DECLARE est text; gt uuid; a_vis uuid; r_vig text; r_ven text; e text := 'p1081.
         pre text; post text;
 BEGIN
   est := pg_temp.m378_estado();
-  IF est = 'pre' THEN PERFORM set_config('probe.p1081', 'PENDIENTE mig 378 (solicitar_alta_medico sin el chequeo de invitaciones)', false); RETURN; END IF;
+  IF est = 'pre' THEN PERFORM set_config('probe.p1081', 'REGRESION (378 ausente; solicitar_alta_medico sin el chequeo de invitaciones)', false); RETURN; END IF;
   IF est <> 'post' THEN PERFORM set_config('probe.p1081', 'ROJO (378 '||est||')', false); RETURN; END IF;
   gt := (SELECT cp.id FROM public.configuracion_pais cp WHERE cp.codigo = 'GT');
   a_vis := pg_temp.m375_uid('visitador.qa@ezpayconnect.com');
@@ -37654,7 +37655,7 @@ DO $$
 DECLARE est text; a_vis uuid; r_auth text; r_anon text; acl text; c0 bigint; cola text;
 BEGIN
   est := pg_temp.m378_estado();
-  IF est = 'pre' THEN PERFORM set_config('probe.p1082', 'PENDIENTE mig 378 (invitacion_email_notificar no existe)', false); RETURN; END IF;
+  IF est = 'pre' THEN PERFORM set_config('probe.p1082', 'REGRESION (378 ausente; invitacion_email_notificar no existe)', false); RETURN; END IF;
   IF est <> 'post' THEN PERFORM set_config('probe.p1082', 'ROJO (378 '||est||')', false); RETURN; END IF;
   a_vis := pg_temp.m375_uid('visitador.qa@ezpayconnect.com');
   IF a_vis IS NULL THEN
@@ -37681,7 +37682,7 @@ DO $$
 DECLARE est text; col text; n_url int; deriv boolean; sufijo text;
 BEGIN
   est := pg_temp.m378_estado();
-  IF est = 'pre' THEN PERFORM set_config('probe.p1083', 'PENDIENTE mig 378 (sin email_enviado_at ni invitacion_edge_url)', false); RETURN; END IF;
+  IF est = 'pre' THEN PERFORM set_config('probe.p1083', 'REGRESION (378 ausente; sin email_enviado_at ni invitacion_edge_url)', false); RETURN; END IF;
   IF est <> 'post' THEN PERFORM set_config('probe.p1083', 'ROJO (378 '||est||')', false); RETURN; END IF;
   col := (SELECT format_type(a.atttypid, a.atttypmod)||'|null='||(NOT a.attnotnull)::text||'|default='||a.atthasdef::text||'|acl_col='||(a.attacl IS NOT NULL)::text
             FROM pg_attribute a WHERE a.attrelid = 'public.invitaciones_medico'::regclass AND a.attname = 'email_enviado_at' AND NOT a.attisdropped);
@@ -38854,16 +38855,16 @@ UNION ALL SELECT 'P1071_solicitudes_escritura_directa_377',  current_setting('pr
 UNION ALL SELECT 'P1072_cancelar_solicitud_377',  current_setting('probe.p1072', true), 'OK (377: cancela la suya; otra vez PV022; ajeno e inexistente PV023 mismo mensaje; sin la 377: REGRESION)'
 UNION ALL SELECT 'P1073_rechazar_solicitud_377',  current_setting('probe.p1073', true), 'OK (377: visitador PV023; motivo corto PV019; rechazada con revisado_por y aviso; otra vez PV022; sin la 377: REGRESION)'
 UNION ALL SELECT 'P1074_solicitudes_guardas_tabla_377',  current_setting('probe.p1074', true), 'OK (377: CHECKs de autorizacion, email y motivo + UNIQUE parcial por correo, capturados por nombre; sin la 377: REGRESION)'
-UNION ALL SELECT 'M378_FX_helpers_aprobar_solicitud',  current_setting('probe.m378_fx', true), 'OK (helpers de pg_temp creados; estado de la 378: post; pre: PENDIENTE; parcial: ROJO)'
-UNION ALL SELECT 'P1075_aprobar_sin_autoridad_378',  current_setting('probe.p1075', true), 'OK (378: visitador.qa e id inexistente -> PV023 mismo mensaje; sin la 378: PENDIENTE)'
-UNION ALL SELECT 'P1076_aprobar_feliz_378',  current_setting('probe.p1076', true), 'OK (378: invitada; invitacion precargada sin clinica; aviso al visitador; cola push + correo; sin token; otra vez PV022; sin la 378: PENDIENTE)'
-UNION ALL SELECT 'P1077_aprobar_correo_con_cuenta_pv024_378',  current_setting('probe.p1077', true), 'OK (378: correo de paciente.qa -> PV024 sin invitacion ni cola; sin la 378: PENDIENTE)'
-UNION ALL SELECT 'P1078_aprobar_invitacion_vigente_pv025_378',  current_setting('probe.p1078', true), 'OK (378: vigente PV025; vencida -> expirada y aprueba; sin la 378: PENDIENTE)'
-UNION ALL SELECT 'P1079_reenviar_feliz_378',  current_setting('probe.p1079', true), 'OK (378: anterior cancelada, nueva pendiente, invitacion_id, cola solo correo, sin aviso; sin la 378: PENDIENTE)'
-UNION ALL SELECT 'P1080_reenviar_rechazos_378',  current_setting('probe.p1080', true), 'OK (378: pendiente PV022, usada PV022, cuenta PV024, otra vigente PV025, vencida -> expirada; sin la 378: PENDIENTE)'
-UNION ALL SELECT 'P1081_solicitar_invitacion_vigente_pv021_378',  current_setting('probe.p1081', true), 'OK (378: invitacion vigente -> PV021; vencida -> creada; sin la 378: PENDIENTE)'
-UNION ALL SELECT 'P1082_invitacion_email_notificar_acl_378',  current_setting('probe.p1082', true), 'OK (378: authenticated y anon 42501; ACL solo postgres; sin la 378: PENDIENTE)'
-UNION ALL SELECT 'P1083_estructura_378',  current_setting('probe.p1083', true), 'OK (378: email_enviado_at; invitacion_edge_url derivada, sufijo /enviar-invitacion-medico; sin la 378: PENDIENTE)'
+UNION ALL SELECT 'M378_FX_helpers_aprobar_solicitud',  current_setting('probe.m378_fx', true), 'OK (helpers de pg_temp creados; estado de la 378: post; pre: REGRESION; parcial: ROJO)'
+UNION ALL SELECT 'P1075_aprobar_sin_autoridad_378',  current_setting('probe.p1075', true), 'OK (378: visitador.qa e id inexistente -> PV023 mismo mensaje; sin la 378: REGRESION)'
+UNION ALL SELECT 'P1076_aprobar_feliz_378',  current_setting('probe.p1076', true), 'OK (378: invitada; invitacion precargada sin clinica; aviso al visitador; cola push + correo; sin token; otra vez PV022; sin la 378: REGRESION)'
+UNION ALL SELECT 'P1077_aprobar_correo_con_cuenta_pv024_378',  current_setting('probe.p1077', true), 'OK (378: correo de paciente.qa -> PV024 sin invitacion ni cola; sin la 378: REGRESION)'
+UNION ALL SELECT 'P1078_aprobar_invitacion_vigente_pv025_378',  current_setting('probe.p1078', true), 'OK (378: vigente PV025; vencida -> expirada y aprueba; sin la 378: REGRESION)'
+UNION ALL SELECT 'P1079_reenviar_feliz_378',  current_setting('probe.p1079', true), 'OK (378: anterior cancelada, nueva pendiente, invitacion_id, cola solo correo, sin aviso; sin la 378: REGRESION)'
+UNION ALL SELECT 'P1080_reenviar_rechazos_378',  current_setting('probe.p1080', true), 'OK (378: pendiente PV022, usada PV022, cuenta PV024, otra vigente PV025, vencida -> expirada; sin la 378: REGRESION)'
+UNION ALL SELECT 'P1081_solicitar_invitacion_vigente_pv021_378',  current_setting('probe.p1081', true), 'OK (378: invitacion vigente -> PV021; vencida -> creada; sin la 378: REGRESION)'
+UNION ALL SELECT 'P1082_invitacion_email_notificar_acl_378',  current_setting('probe.p1082', true), 'OK (378: authenticated y anon 42501; ACL solo postgres; sin la 378: REGRESION)'
+UNION ALL SELECT 'P1083_estructura_378',  current_setting('probe.p1083', true), 'OK (378: email_enviado_at; invitacion_edge_url derivada, sufijo /enviar-invitacion-medico; sin la 378: REGRESION)'
 UNION ALL SELECT 'P1010_campana_vistas_sin_update_367',  current_setting('probe.p1010', true), 'OK (367: INSERT 1; ON CONFLICT DO NOTHING 0 sin error; DO UPDATE y UPDATE 42501; otro paciente 0; antes de la 367: PENDIENTE)'
 UNION ALL SELECT 'P1009_datos_bancarios_acotados_366',  current_setting('probe.p1009', true), 'OK (366: cuenta GT solo super_admin/admin_pais GT/proveedores GT; checkout 1 fila; config 21 super_admin y 14 el resto, admin_pais incluido; antes de la 366: PENDIENTE)'
 UNION ALL SELECT 'DET_p1009',  'DET ' || COALESCE(NULLIF(current_setting('probe.p1009_det', true), ''), '(sin dato)'), 'DET (detalle de P1009, no es probe)'
