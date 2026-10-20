@@ -35542,6 +35542,1112 @@ EXCEPTION WHEN OTHERS THEN
 END $$;
 SELECT set_config('role', 'none', true);
 
+-- ================================================================================
+-- MIG 375 — hardening del enrolamiento de medicos (M375_FX + P1041-P1061). APLICADA en prod el 2026-10-20 14:03 UTC.
+-- pg_temp.m375_estado(): 'post' (las 6 piezas de la 375), 'pre' (ninguna: estado post-374) o 'parcial: n/6 (...)'.
+-- Con la 375 aplicada no hay rama PENDIENTE: en 'pre' (375_rollback) M375_FX y los probes que dependen de la 375
+-- publican 'REGRESION (375 ausente; ...)'; 'parcial' es ROJO. Las no-regresiones (P1043, P1049, P1050, P1053-P1056,
+-- P1061) se miden en los dos estados, y el 42804 de administrar_visita('modificar') (P1057-P1059) se juzga ANTES de
+-- mirar el estado de la 375: lo arregla la 376 (aplicada; en su estado 'pre' es REGRESION, ver el bloque MIG 376).
+-- Quien corra 375_rollback tiene que esperar esas rojas (como en la 370).
+-- 'reprogramar' = administrar_visita(..., 'modificar', ...): es la unica accion que mueve fecha/hora de una visita (la
+-- 375 la llama 'reprogramar' en sus comentarios). P1060/P1061 miden la regla del trigger en UPDATE sin la RPC, como
+-- postgres (administrar_visita es DEFINER: su UPDATE corre como el dueno).
+-- Actores por EMAIL. El segundo laboratorio ('P1054 Lab2 QA', farmaceutico activo en GT, cuenta admin, capacidad
+-- enrolamiento, plan de 20 visitas) lo siembra pg_temp.m375_lab2() SOLO dentro de un savepoint. Toda escritura se
+-- descarta con RAISE P0999 y se verifica contra pg_temp.m375_snap(). Veredictos por SQLSTATE exacto: pg_temp.m375_como
+-- devuelve 'OK:<valor>' o 'ERR:<sqlstate>:<mensaje>'; pg_temp.m375_rc 'RC:<filas>' o 'ERR:...'.
+-- ================================================================================
+-- M375_FX: helpers de pg_temp de este bloque + estado de la 375. No toca datos.
+DO $$
+DECLARE est text;
+BEGIN
+  EXECUTE $fn$
+CREATE OR REPLACE FUNCTION pg_temp.m375_como(p_uid uuid, p_rol text, p_sql text) RETURNS text LANGUAGE plpgsql AS $body$
+DECLARE v text;
+BEGIN
+  BEGIN
+    IF p_rol IS NOT NULL THEN
+      PERFORM set_config('request.jwt.claims', CASE WHEN p_uid IS NULL THEN json_build_object('role', p_rol)::text
+                                                    ELSE json_build_object('sub', p_uid, 'role', p_rol)::text END, true);
+      PERFORM set_config('role', p_rol, true);
+    END IF;
+    EXECUTE p_sql INTO v;
+    PERFORM set_config('role', 'none', true);
+    PERFORM set_config('request.jwt.claims', '', true);
+    RETURN 'OK:'||COALESCE(v, '');
+  EXCEPTION WHEN OTHERS THEN
+    PERFORM set_config('role', 'none', true);
+    PERFORM set_config('request.jwt.claims', '', true);
+    RETURN 'ERR:'||SQLSTATE||':'||SQLERRM;
+  END;
+END
+$body$
+$fn$;
+  EXECUTE $fn$
+CREATE OR REPLACE FUNCTION pg_temp.m375_rc(p_uid uuid, p_rol text, p_sql text) RETURNS text LANGUAGE plpgsql AS $body$
+DECLARE n int;
+BEGIN
+  BEGIN
+    IF p_rol IS NOT NULL THEN
+      PERFORM set_config('request.jwt.claims', CASE WHEN p_uid IS NULL THEN json_build_object('role', p_rol)::text
+                                                    ELSE json_build_object('sub', p_uid, 'role', p_rol)::text END, true);
+      PERFORM set_config('role', p_rol, true);
+    END IF;
+    EXECUTE p_sql;
+    GET DIAGNOSTICS n = ROW_COUNT;
+    PERFORM set_config('role', 'none', true);
+    PERFORM set_config('request.jwt.claims', '', true);
+    RETURN 'RC:'||n;
+  EXCEPTION WHEN OTHERS THEN
+    PERFORM set_config('role', 'none', true);
+    PERFORM set_config('request.jwt.claims', '', true);
+    RETURN 'ERR:'||SQLSTATE||':'||SQLERRM;
+  END;
+END
+$body$
+$fn$;
+  EXECUTE $fn$
+CREATE OR REPLACE FUNCTION pg_temp.m375_uid(p_email text) RETURNS uuid LANGUAGE sql AS $body$
+  SELECT u.id FROM auth.users u WHERE lower(u.email) = lower(p_email)
+$body$
+$fn$;
+  -- 6 piezas de la 375; todas = 'post', ninguna = 'pre', otra cosa = 'parcial'
+  EXECUTE $fn$
+CREATE OR REPLACE FUNCTION pg_temp.m375_estado() RETURNS text LANGUAGE plpgsql AS $body$
+DECLARE c int := 0; d text := '';
+BEGIN
+  IF EXISTS (SELECT 1 FROM pg_constraint x WHERE x.conrelid = 'public.medicos'::regclass AND x.conname = 'medicos_enrolador_coherente') THEN
+    c := c + 1; d := d||'check '; END IF;
+  IF (SELECT t.tgtype FROM pg_trigger t WHERE t.tgrelid = 'public.medicos'::regclass AND t.tgname = 'trigger_medicos_lab_enrolador_inmutable') = 23 THEN
+    c := c + 1; d := d||'guard_insert_update '; END IF;
+  IF (SELECT t.tgtype FROM pg_trigger t WHERE t.tgrelid = 'public.visitas_agendadas'::regclass AND t.tgname = 'trigger_gate_head_start_lab') = 23 THEN
+    c := c + 1; d := d||'head_start_update '; END IF;
+  IF NOT has_function_privilege('authenticated', 'public.prioridad_activa(uuid)', 'EXECUTE') THEN
+    c := c + 1; d := d||'prioridad_sin_authenticated '; END IF;
+  IF NOT has_table_privilege('authenticated', 'public.medicos', 'SELECT') THEN
+    c := c + 1; d := d||'medicos_por_columna '; END IF;
+  IF (SELECT p.prosrc FROM pg_proc p WHERE p.oid = 'public.enrolar_medico(uuid)'::regprocedure) LIKE '%PV017%' THEN
+    c := c + 1; d := d||'pv016_pv017 '; END IF;
+  RETURN CASE c WHEN 6 THEN 'post' WHEN 0 THEN 'pre' ELSE 'parcial: '||c||'/6 ('||btrim(d)||')' END;
+END
+$body$
+$fn$;
+  -- medicos completo + conteos de las tablas que siembran los fixtures + labs farmaceuticos y sus cuentas
+  EXECUTE $fn$
+CREATE OR REPLACE FUNCTION pg_temp.m375_snap() RETURNS text LANGUAGE sql AS $body$
+  SELECT md5(COALESCE((SELECT string_agg(m::text, E'\n' ORDER BY m.id) FROM public.medicos m), ''))
+    ||'|'||(SELECT count(*) FROM public.empresas_proveedoras)::text
+    ||'|'||(SELECT count(*) FROM public.cuentas_proveedor)::text
+    ||'|'||(SELECT count(*) FROM public.empresa_capacidades)::text
+    ||'|'||(SELECT count(*) FROM public.planes_visitador_contratados)::text
+    ||'|'||(SELECT count(*) FROM public.visitas_agendadas)::text
+    ||'|'||(SELECT count(*) FROM auth.users)::text
+    ||'|'||md5(COALESCE((SELECT string_agg(cp::text, E'\n' ORDER BY cp.id) FROM public.cuentas_proveedor cp
+                          JOIN public.empresas_proveedoras e ON e.id = cp.empresa_id
+                         WHERE e.tipo = 'laboratorio_farmaceutico'), ''))
+    ||'|'||md5(COALESCE((SELECT string_agg(e::text, E'\n' ORDER BY e.id) FROM public.empresas_proveedoras e
+                         WHERE e.tipo = 'laboratorio_farmaceutico'), ''))
+$body$
+$fn$;
+  -- segundo laboratorio farmaceutico (P1054 Lab2 QA). SOLO dentro de un savepoint. Devuelve el uid de su cuenta admin.
+  EXECUTE $fn$
+CREATE OR REPLACE FUNCTION pg_temp.m375_lab2(p_pais uuid) RETURNS uuid LANGUAGE plpgsql AS $body$
+DECLARE v_uid uuid := gen_random_uuid(); v_emp uuid := gen_random_uuid(); r text;
+BEGIN
+  IF p_pais IS NULL THEN RAISE EXCEPTION 'fixture roto: m375_lab2 sin pais'; END IF;
+  INSERT INTO auth.users (id, email) VALUES (v_uid, 'p1054.lab2.'||left(v_uid::text, 8)||'@qa.test');
+  INSERT INTO public.empresas_proveedoras (id, nombre_empresa, tipo, email_contacto, estado, pais_id)
+    VALUES (v_emp, 'P1054 Lab2 QA', 'laboratorio_farmaceutico', 'p1054.lab2@qa.test', 'activa', p_pais);
+  INSERT INTO public.cuentas_proveedor (id, empresa_id, nombre_completo, email, rol_en_empresa, activo, pais_id)
+    VALUES (v_uid, v_emp, 'P1054 Admin Lab2 QA', 'p1054.lab2@qa.test', 'admin', true, p_pais);
+  INSERT INTO public.empresa_capacidades (empresa_id, capacidad_codigo, activa, origen)
+    VALUES (v_emp, 'enrolamiento', true, 'suelta');
+  INSERT INTO public.planes_visitador_contratados (empresa_id, plan_visitador_id, pais_id, cantidad_visitas_incluidas,
+                                                   visitas_usadas, precio_pagado, fecha_inicio, fecha_fin, estado, origen)
+    VALUES (v_emp, 1, p_pais, 20, 0, 0, CURRENT_DATE - 1, CURRENT_DATE + 60, 'activo', 'cortesia');
+  r := pg_temp.m375_como(v_uid, 'authenticated', 'SELECT public.mi_empresa_proveedor()::text');
+  IF r IS DISTINCT FROM 'OK:'||v_emp::text THEN RAISE EXCEPTION 'fixture roto: m375_lab2 mi_empresa_proveedor = %', r; END IF;
+  RETURN v_uid;
+END
+$body$
+$fn$;
+  -- QA Laboratorio (la empresa de proveedor.qa, resuelta por su cuenta y no por tipo) fijada como laboratorio_farmaceutico
+  -- activa, con la capacidad 'enrolamiento' y un plan de visitador vigente en p_pais. SOLO dentro de un savepoint: FX12
+  -- convierte esta empresa en 'farmacia' para el resto de la transaccion (P65/P66) y el probe no debe depender de eso.
+  -- Devuelve el id de la empresa; 'fixture roto' si la cuenta o la empresa no existen o la fijacion no queda.
+  EXECUTE $fn$
+CREATE OR REPLACE FUNCTION pg_temp.m375_qalab_fijar(p_pais uuid) RETURNS uuid LANGUAGE plpgsql AS $body$
+DECLARE v_prv uuid; v_emp uuid; n int; r text;
+BEGIN
+  IF p_pais IS NULL THEN RAISE EXCEPTION 'fixture roto: m375_qalab_fijar sin pais'; END IF;
+  v_prv := pg_temp.m375_uid('proveedor.qa@ezpayconnect.com');
+  v_emp := (SELECT cp.empresa_id FROM public.cuentas_proveedor cp WHERE cp.id = v_prv AND cp.activo);
+  IF v_prv IS NULL OR v_emp IS NULL OR NOT EXISTS (SELECT 1 FROM public.empresas_proveedoras e WHERE e.id = v_emp) THEN
+    RAISE EXCEPTION 'fixture roto: m375_qalab_fijar sin cuenta activa de proveedor.qa o sin su empresa';
+  END IF;
+  UPDATE public.empresas_proveedoras SET tipo = 'laboratorio_farmaceutico', estado = 'activa'
+   WHERE id = v_emp AND (tipo::text IS DISTINCT FROM 'laboratorio_farmaceutico' OR estado::text IS DISTINCT FROM 'activa');
+  IF NOT private.empresa_tiene_capacidad(v_emp, 'enrolamiento') THEN
+    UPDATE public.empresa_capacidades SET activa = true, hasta = NULL WHERE empresa_id = v_emp AND capacidad_codigo = 'enrolamiento';
+    GET DIAGNOSTICS n = ROW_COUNT;
+    IF n = 0 THEN
+      INSERT INTO public.empresa_capacidades (empresa_id, capacidad_codigo, activa, origen) VALUES (v_emp, 'enrolamiento', true, 'suelta');
+    END IF;
+  END IF;
+  IF NOT EXISTS (SELECT 1 FROM public.planes_visitador_contratados pvc
+                  WHERE pvc.empresa_id = v_emp AND pvc.estado = 'activo' AND pvc.pais_id = p_pais
+                    AND CURRENT_DATE BETWEEN pvc.fecha_inicio AND pvc.fecha_fin) THEN
+    INSERT INTO public.planes_visitador_contratados (empresa_id, plan_visitador_id, pais_id, cantidad_visitas_incluidas,
+                                                     visitas_usadas, precio_pagado, fecha_inicio, fecha_fin, estado, origen)
+      VALUES (v_emp, 1, p_pais, 20, 0, 0, CURRENT_DATE - 1, CURRENT_DATE + 60, 'activo', 'cortesia');
+  END IF;
+  -- verificacion de lo fijado
+  IF NOT EXISTS (SELECT 1 FROM public.empresas_proveedoras e WHERE e.id = v_emp AND e.tipo::text = 'laboratorio_farmaceutico' AND e.estado::text = 'activa')
+     OR NOT private.empresa_tiene_capacidad(v_emp, 'enrolamiento') THEN
+    RAISE EXCEPTION 'fixture roto: m375_qalab_fijar no dejo a QA Laboratorio farmaceutico activo con enrolamiento';
+  END IF;
+  r := pg_temp.m375_como(v_prv, 'authenticated', 'SELECT public.mi_empresa_proveedor()::text');
+  IF r IS DISTINCT FROM 'OK:'||v_emp::text THEN RAISE EXCEPTION 'fixture roto: m375_qalab_fijar mi_empresa_proveedor = %', r; END IF;
+  RETURN v_emp;
+END
+$body$
+$fn$;
+  -- INSERT de una visita como la cuenta p_uid (authenticated): 'OK:<id>' o 'ERR:...'. Cada probe usa su propia hora
+  -- (06:56-07:02): ux_visita_medico_slot es UNIQUE (medico_id, fecha_visita, hora_inicio).
+  EXECUTE $fn$
+CREATE OR REPLACE FUNCTION pg_temp.m375_visita(p_uid uuid, p_emp uuid, p_med uuid, p_fecha date, p_hora time) RETURNS text LANGUAGE sql AS $body$
+  SELECT pg_temp.m375_como(p_uid, 'authenticated', format(
+    'INSERT INTO public.visitas_agendadas (empresa_id, medico_id, cuenta_proveedor_id, fecha_visita, hora_inicio, hora_fin, tipo_visita) '||
+    'VALUES (%L, %L, %L, %L, %L, %L, ''presentacion_producto'') RETURNING id::text', p_emp, p_med, p_uid, p_fecha, p_hora, p_hora + interval '30 minutes'))
+$body$
+$fn$;
+  est := pg_temp.m375_estado();
+  PERFORM set_config('probe.m375_fx', CASE WHEN est LIKE 'parcial%' THEN 'ROJO (375 '||est||'; helpers de pg_temp creados)'
+    WHEN est = 'pre' THEN 'REGRESION (375 ausente: ninguna de las 6 piezas; helpers de pg_temp creados)'
+    ELSE 'OK (helpers de pg_temp creados; estado de la 375: '||est||')' END, false);
+EXCEPTION WHEN OTHERS THEN
+  PERFORM set_config('probe.m375_fx', 'FALLO ('||SQLSTATE||' '||SQLERRM||')', false);
+END $$;
+
+-- ---------------- P1041 paciente.qa -> prioridad_activa(medico.qa) = 42501 ----------------
+DO $$
+DECLARE est text; a_pac uuid; a_med uuid; res text;
+BEGIN
+  est := pg_temp.m375_estado();
+  a_pac := pg_temp.m375_uid('paciente.qa@ezpayconnect.com');
+  a_med := pg_temp.m375_uid('medico.qa@ezpayconnect.com');
+  IF a_pac IS NULL OR a_med IS NULL THEN
+    PERFORM set_config('probe.p1041', 'FALLO (actor inexistente: paciente.qa '||COALESCE(left(a_pac::text, 8), 'NULL')||
+      ', medico.qa '||COALESCE(left(a_med::text, 8), 'NULL')||')', false);
+    RETURN;
+  END IF;
+  res := pg_temp.m375_como(a_pac, 'authenticated', format('SELECT activa::text FROM public.prioridad_activa(%L)', a_med));
+  PERFORM set_config('probe.p1041', CASE
+    WHEN est LIKE 'parcial%' THEN 'ROJO (375 '||est||')'
+    WHEN est = 'pre' THEN 'REGRESION (375 ausente; hoy: '||left(res, 150)||')'
+    WHEN res LIKE 'ERR:42501:%prioridad_activa%' THEN 'OK (375: paciente.qa -> 42501 de EXECUTE en prioridad_activa)'
+    ELSE 'ROJO (esperado 42501 en prioridad_activa; vino '||left(res, 200)||')' END, false);
+EXCEPTION WHEN OTHERS THEN
+  PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
+  PERFORM set_config('probe.p1041', 'FALLO ('||SQLSTATE||' '||SQLERRM||')', false);
+END $$;
+SELECT set_config('role', 'none', true);
+
+-- ---------------- P1042 paciente.qa -> SELECT lab_enrolador_id FROM medicos = 42501 ----------------
+DO $$
+DECLARE est text; a_pac uuid; res text;
+BEGIN
+  est := pg_temp.m375_estado();
+  a_pac := pg_temp.m375_uid('paciente.qa@ezpayconnect.com');
+  IF a_pac IS NULL THEN
+    PERFORM set_config('probe.p1042', 'FALLO (actor inexistente: paciente.qa)', false);
+    RETURN;
+  END IF;
+  res := pg_temp.m375_como(a_pac, 'authenticated', 'SELECT count(*)::text FROM (SELECT m.lab_enrolador_id FROM public.medicos m) x');
+  PERFORM set_config('probe.p1042', CASE
+    WHEN est LIKE 'parcial%' THEN 'ROJO (375 '||est||')'
+    WHEN est = 'pre' THEN 'REGRESION (375 ausente; hoy: '||left(res, 150)||')'
+    WHEN res LIKE 'ERR:42501:%medicos%' THEN 'OK (375: paciente.qa SELECT lab_enrolador_id -> 42501 de privilegio por columna)'
+    ELSE 'ROJO (esperado 42501 sobre medicos; vino '||left(res, 200)||')' END, false);
+EXCEPTION WHEN OTHERS THEN
+  PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
+  PERFORM set_config('probe.p1042', 'FALLO ('||SQLSTATE||' '||SQLERRM||')', false);
+END $$;
+SELECT set_config('role', 'none', true);
+
+-- ---------------- P1043 no-regresion: paciente.qa SELECT id, nombre_completo FROM medicos > 0 filas ----------------
+DO $$
+DECLARE est text; a_pac uuid; res text;
+BEGIN
+  est := pg_temp.m375_estado();
+  a_pac := pg_temp.m375_uid('paciente.qa@ezpayconnect.com');
+  IF a_pac IS NULL THEN
+    PERFORM set_config('probe.p1043', 'FALLO (actor inexistente: paciente.qa)', false);
+    RETURN;
+  END IF;
+  res := pg_temp.m375_como(a_pac, 'authenticated', 'SELECT count(*)::text FROM (SELECT m.id, m.nombre_completo FROM public.medicos m) x');
+  PERFORM set_config('probe.p1043', CASE
+    WHEN res ~ '^OK:[1-9][0-9]*$' THEN 'OK (paciente.qa lee id y nombre_completo de '||substr(res, 4)||' medicos; estado 375: '||est||')'
+    ELSE 'ROJO (no-regresion: paciente.qa tenia que leer > 0 medicos; vino '||left(res, 200)||')' END, false);
+EXCEPTION WHEN OTHERS THEN
+  PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
+  PERFORM set_config('probe.p1043', 'FALLO ('||SQLSTATE||' '||SQLERRM||')', false);
+END $$;
+SELECT set_config('role', 'none', true);
+
+-- ---------------- P1044 clinica.qa (medico sin enrolador) se pone uno a mano -> PV015 ----------------
+DO $$
+DECLARE est text; a_cli uuid; qalab uuid; res text; pre text; post text;
+BEGIN
+  est := pg_temp.m375_estado();
+  a_cli := pg_temp.m375_uid('clinica.qa@ezpayconnect.com');
+  qalab := (SELECT cp.empresa_id FROM public.cuentas_proveedor cp WHERE cp.id = pg_temp.m375_uid('proveedor.qa@ezpayconnect.com'));
+  IF a_cli IS NULL OR qalab IS NULL OR NOT EXISTS (SELECT 1 FROM public.medicos m WHERE m.id = a_cli AND m.lab_enrolador_id IS NULL) THEN
+    PERFORM set_config('probe.p1044', 'FALLO (actor inexistente: clinica.qa con fila en medicos sin enrolador '||COALESCE(left(a_cli::text, 8), 'NULL')||
+      ', empresa de proveedor.qa '||COALESCE(left(qalab::text, 8), 'NULL')||')', false);
+    RETURN;
+  END IF;
+  pre := pg_temp.m375_snap();
+  BEGIN
+    res := pg_temp.m375_rc(a_cli, 'authenticated', format(
+      'UPDATE public.medicos SET lab_enrolador_id = %L, lab_enrolador_fecha = now() WHERE id = %L', qalab, a_cli));
+    RAISE EXCEPTION 'P1044 descarte' USING ERRCODE = 'P0999';
+  EXCEPTION WHEN SQLSTATE 'P0999' THEN NULL;
+  END;
+  post := pg_temp.m375_snap();
+  PERFORM set_config('probe.p1044', CASE
+    WHEN post IS DISTINCT FROM pre THEN 'FALLO (no volvio al snapshot tras el descarte)'
+    WHEN est LIKE 'parcial%' THEN 'ROJO (375 '||est||')'
+    WHEN est = 'pre' THEN 'REGRESION (375 ausente; hoy: '||left(res, 150)||')'
+    WHEN res LIKE 'ERR:PV015:%' THEN 'OK (375: clinica.qa, medico sin enrolador, llena el suyo -> PV015; descartado)'
+    ELSE 'ROJO (esperado PV015; vino '||left(res, 200)||')' END, false);
+EXCEPTION WHEN OTHERS THEN
+  PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
+  PERFORM set_config('probe.p1044', 'FALLO ('||SQLSTATE||' '||SQLERRM||')', false);
+END $$;
+SELECT set_config('role', 'none', true);
+
+-- ---------------- P1045 medico.qa cambia su lab_enrolador_fecha -> PV015 ----------------
+DO $$
+DECLARE est text; a_med uuid; res text; pre text; post text;
+BEGIN
+  est := pg_temp.m375_estado();
+  a_med := pg_temp.m375_uid('medico.qa@ezpayconnect.com');
+  IF a_med IS NULL OR NOT EXISTS (SELECT 1 FROM public.medicos m WHERE m.id = a_med AND m.lab_enrolador_id IS NOT NULL) THEN
+    PERFORM set_config('probe.p1045', 'FALLO (actor inexistente: medico.qa enrolado '||COALESCE(left(a_med::text, 8), 'NULL')||')', false);
+    RETURN;
+  END IF;
+  pre := pg_temp.m375_snap();
+  BEGIN
+    res := pg_temp.m375_rc(a_med, 'authenticated', format(
+      'UPDATE public.medicos SET lab_enrolador_fecha = now() - interval ''1 day'' WHERE id = %L', a_med));
+    RAISE EXCEPTION 'P1045 descarte' USING ERRCODE = 'P0999';
+  EXCEPTION WHEN SQLSTATE 'P0999' THEN NULL;
+  END;
+  post := pg_temp.m375_snap();
+  PERFORM set_config('probe.p1045', CASE
+    WHEN post IS DISTINCT FROM pre THEN 'FALLO (no volvio al snapshot tras el descarte)'
+    WHEN est LIKE 'parcial%' THEN 'ROJO (375 '||est||')'
+    WHEN est = 'pre' THEN 'REGRESION (375 ausente; hoy: '||left(res, 150)||')'
+    WHEN res LIKE 'ERR:PV015:%' THEN 'OK (375: medico.qa cambia su lab_enrolador_fecha -> PV015; descartado)'
+    ELSE 'ROJO (esperado PV015; vino '||left(res, 200)||')' END, false);
+EXCEPTION WHEN OTHERS THEN
+  PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
+  PERFORM set_config('probe.p1045', 'FALLO ('||SQLSTATE||' '||SQLERRM||')', false);
+END $$;
+SELECT set_config('role', 'none', true);
+
+-- ---------------- P1046 clinica.qa llena el enrolador de un medico de su clinica (secretaria.qa) -> PV015 ----------------
+DO $$
+DECLARE est text; a_cli uuid; a_sec uuid; qalab uuid; vis text; res text; pre text; post text;
+BEGIN
+  est := pg_temp.m375_estado();
+  a_cli := pg_temp.m375_uid('clinica.qa@ezpayconnect.com');
+  a_sec := pg_temp.m375_uid('secretaria.qa@ezpayconnect.com');
+  qalab := (SELECT cp.empresa_id FROM public.cuentas_proveedor cp WHERE cp.id = pg_temp.m375_uid('proveedor.qa@ezpayconnect.com'));
+  IF a_cli IS NULL OR a_sec IS NULL OR qalab IS NULL
+     OR NOT EXISTS (SELECT 1 FROM public.medicos m JOIN public.medicos c ON c.id = a_cli
+                     WHERE m.id = a_sec AND m.lab_enrolador_id IS NULL AND m.clinica_id = c.clinica_id) THEN
+    PERFORM set_config('probe.p1046', 'FALLO (actor inexistente: clinica.qa '||COALESCE(left(a_cli::text, 8), 'NULL')||
+      ', secretaria.qa sin enrolador en la misma clinica '||COALESCE(left(a_sec::text, 8), 'NULL')||', empresa de proveedor.qa '||
+      COALESCE(left(qalab::text, 8), 'NULL')||')', false);
+    RETURN;
+  END IF;
+  pre := pg_temp.m375_snap();
+  BEGIN
+    vis := pg_temp.m375_como(a_cli, 'authenticated', format('SELECT count(*)::text FROM public.medicos m WHERE m.id = %L', a_sec));
+    res := pg_temp.m375_rc(a_cli, 'authenticated', format(
+      'UPDATE public.medicos SET lab_enrolador_id = %L, lab_enrolador_fecha = now() WHERE id = %L', qalab, a_sec));
+    RAISE EXCEPTION 'P1046 descarte' USING ERRCODE = 'P0999';
+  EXCEPTION WHEN SQLSTATE 'P0999' THEN NULL;
+  END;
+  post := pg_temp.m375_snap();
+  PERFORM set_config('probe.p1046', CASE
+    WHEN post IS DISTINCT FROM pre THEN 'FALLO (no volvio al snapshot tras el descarte)'
+    WHEN vis IS DISTINCT FROM 'OK:1' THEN 'FALLO (fixture: clinica.qa no ve la fila de secretaria.qa: '||left(vis, 150)||')'
+    WHEN est LIKE 'parcial%' THEN 'ROJO (375 '||est||')'
+    WHEN est = 'pre' THEN 'REGRESION (375 ausente; hoy: '||left(res, 150)||')'
+    WHEN res LIKE 'ERR:PV015:%' THEN 'OK (375: clinica.qa llena el enrolador de secretaria.qa, de su clinica -> PV015; descartado)'
+    ELSE 'ROJO (esperado PV015; vino '||left(res, 200)||')' END, false);
+EXCEPTION WHEN OTHERS THEN
+  PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
+  PERFORM set_config('probe.p1046', 'FALLO ('||SQLSTATE||' '||SQLERRM||')', false);
+END $$;
+SELECT set_config('role', 'none', true);
+
+-- ---------------- P1047 adminpais.qa cambia la lab_enrolador_fecha de medico.qa -> PV015 ----------------
+DO $$
+DECLARE est text; a_adm uuid; a_med uuid; res text; pre text; post text;
+BEGIN
+  est := pg_temp.m375_estado();
+  a_adm := pg_temp.m375_uid('adminpais.qa@ezpayconnect.com');
+  a_med := pg_temp.m375_uid('medico.qa@ezpayconnect.com');
+  IF a_adm IS NULL OR a_med IS NULL
+     OR NOT EXISTS (SELECT 1 FROM public.medicos m JOIN public.perfiles p ON p.id = a_adm
+                     WHERE m.id = a_med AND m.pais_id = p.pais_id AND p.rol = 'admin_pais') THEN
+    PERFORM set_config('probe.p1047', 'FALLO (actor inexistente: adminpais.qa admin_pais del pais de medico.qa '||COALESCE(left(a_adm::text, 8), 'NULL')||
+      ', medico.qa '||COALESCE(left(a_med::text, 8), 'NULL')||')', false);
+    RETURN;
+  END IF;
+  pre := pg_temp.m375_snap();
+  BEGIN
+    res := pg_temp.m375_rc(a_adm, 'authenticated', format(
+      'UPDATE public.medicos SET lab_enrolador_fecha = now() - interval ''2 days'' WHERE id = %L', a_med));
+    RAISE EXCEPTION 'P1047 descarte' USING ERRCODE = 'P0999';
+  EXCEPTION WHEN SQLSTATE 'P0999' THEN NULL;
+  END;
+  post := pg_temp.m375_snap();
+  PERFORM set_config('probe.p1047', CASE
+    WHEN post IS DISTINCT FROM pre THEN 'FALLO (no volvio al snapshot tras el descarte)'
+    WHEN est LIKE 'parcial%' THEN 'ROJO (375 '||est||')'
+    WHEN est = 'pre' THEN 'REGRESION (375 ausente; hoy: '||left(res, 150)||')'
+    WHEN res LIKE 'ERR:PV015:%' THEN 'OK (375: adminpais.qa cambia la fecha de enrolamiento de medico.qa -> PV015; descartado)'
+    ELSE 'ROJO (esperado PV015; vino '||left(res, 200)||')' END, false);
+EXCEPTION WHEN OTHERS THEN
+  PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
+  PERFORM set_config('probe.p1047', 'FALLO ('||SQLSTATE||' '||SQLERRM||')', false);
+END $$;
+SELECT set_config('role', 'none', true);
+
+-- ---------------- P1048 INSERT de un medico ya enrolado, como postgres y sin el GUC -> PV015 ----------------
+DO $$
+DECLARE est text; qalab uuid; guc text; res text; pre text; post text;
+BEGIN
+  est := pg_temp.m375_estado();
+  qalab := (SELECT cp.empresa_id FROM public.cuentas_proveedor cp WHERE cp.id = pg_temp.m375_uid('proveedor.qa@ezpayconnect.com'));
+  guc := current_setting('app.enrolamiento_rpc', true);
+  IF qalab IS NULL THEN
+    PERFORM set_config('probe.p1048', 'FALLO (actor inexistente: empresa de proveedor.qa)', false);
+    RETURN;
+  END IF;
+  IF guc IS NOT DISTINCT FROM 'on' THEN
+    PERFORM set_config('probe.p1048', 'FALLO (fixture: app.enrolamiento_rpc encendido antes del probe)', false);
+    RETURN;
+  END IF;
+  pre := pg_temp.m375_snap();
+  BEGIN
+    res := pg_temp.m375_rc(NULL, NULL, format(
+      'INSERT INTO public.medicos (id, nombre_completo, lab_enrolador_id, lab_enrolador_fecha) VALUES (gen_random_uuid(), %L, %L, now())',
+      'P1048 Medico QA', qalab));
+    RAISE EXCEPTION 'P1048 descarte' USING ERRCODE = 'P0999';
+  EXCEPTION WHEN SQLSTATE 'P0999' THEN NULL;
+  END;
+  post := pg_temp.m375_snap();
+  PERFORM set_config('probe.p1048', CASE
+    WHEN post IS DISTINCT FROM pre THEN 'FALLO (no volvio al snapshot tras el descarte)'
+    WHEN est LIKE 'parcial%' THEN 'ROJO (375 '||est||')'
+    WHEN est = 'pre' THEN 'REGRESION (375 ausente; hoy: '||left(res, 150)||')'
+    WHEN res LIKE 'ERR:PV015:%' THEN 'OK (375: INSERT de medico con lab_enrolador_id como postgres sin GUC -> PV015; descartado)'
+    ELSE 'ROJO (esperado PV015; vino '||left(res, 200)||')' END, false);
+EXCEPTION WHEN OTHERS THEN
+  PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
+  PERFORM set_config('probe.p1048', 'FALLO ('||SQLSTATE||' '||SQLERRM||')', false);
+END $$;
+SELECT set_config('role', 'none', true);
+
+-- ---------------- P1049 no-regresion: medico.qa cambia su telefono -> ROW_COUNT 1 ----------------
+DO $$
+DECLARE est text; a_med uuid; res text; leida text; pre text; post text;
+BEGIN
+  est := pg_temp.m375_estado();
+  a_med := pg_temp.m375_uid('medico.qa@ezpayconnect.com');
+  IF a_med IS NULL OR NOT EXISTS (SELECT 1 FROM public.medicos m WHERE m.id = a_med) THEN
+    PERFORM set_config('probe.p1049', 'FALLO (actor inexistente: medico.qa con fila en medicos)', false);
+    RETURN;
+  END IF;
+  pre := pg_temp.m375_snap();
+  BEGIN
+    res := pg_temp.m375_rc(a_med, 'authenticated', format('UPDATE public.medicos SET telefono = %L WHERE id = %L', 'P1049-QA', a_med));
+    leida := (SELECT m.telefono FROM public.medicos m WHERE m.id = a_med);
+    RAISE EXCEPTION 'P1049 descarte' USING ERRCODE = 'P0999';
+  EXCEPTION WHEN SQLSTATE 'P0999' THEN NULL;
+  END;
+  post := pg_temp.m375_snap();
+  PERFORM set_config('probe.p1049', CASE
+    WHEN post IS DISTINCT FROM pre THEN 'FALLO (no volvio al snapshot tras el descarte)'
+    WHEN res = 'RC:1' AND leida = 'P1049-QA' THEN 'OK (medico.qa cambia su telefono: 1 fila, releido; estado 375: '||est||'; descartado)'
+    ELSE 'ROJO (no-regresion: esperado RC:1 y telefono P1049-QA; vino '||left(res, 200)||' / '||COALESCE(leida, 'NULL')||')' END, false);
+EXCEPTION WHEN OTHERS THEN
+  PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
+  PERFORM set_config('probe.p1049', 'FALLO ('||SQLSTATE||' '||SQLERRM||')', false);
+END $$;
+SELECT set_config('role', 'none', true);
+
+-- ---------------- P1050 no-regresion: adminpais.qa cambia el telefono de un medico de su pais (clinica.qa) -> ROW_COUNT 1 ----------------
+DO $$
+DECLARE est text; a_adm uuid; a_cli uuid; res text; leida text; pre text; post text;
+BEGIN
+  est := pg_temp.m375_estado();
+  a_adm := pg_temp.m375_uid('adminpais.qa@ezpayconnect.com');
+  a_cli := pg_temp.m375_uid('clinica.qa@ezpayconnect.com');
+  IF a_adm IS NULL OR a_cli IS NULL
+     OR NOT EXISTS (SELECT 1 FROM public.medicos m JOIN public.perfiles p ON p.id = a_adm
+                     WHERE m.id = a_cli AND m.pais_id = p.pais_id AND p.rol = 'admin_pais') THEN
+    PERFORM set_config('probe.p1050', 'FALLO (actor inexistente: adminpais.qa admin_pais del pais del medico de clinica.qa)', false);
+    RETURN;
+  END IF;
+  pre := pg_temp.m375_snap();
+  BEGIN
+    res := pg_temp.m375_rc(a_adm, 'authenticated', format('UPDATE public.medicos SET telefono = %L WHERE id = %L', 'P1050-QA', a_cli));
+    leida := (SELECT m.telefono FROM public.medicos m WHERE m.id = a_cli);
+    RAISE EXCEPTION 'P1050 descarte' USING ERRCODE = 'P0999';
+  EXCEPTION WHEN SQLSTATE 'P0999' THEN NULL;
+  END;
+  post := pg_temp.m375_snap();
+  PERFORM set_config('probe.p1050', CASE
+    WHEN post IS DISTINCT FROM pre THEN 'FALLO (no volvio al snapshot tras el descarte)'
+    WHEN res = 'RC:1' AND leida = 'P1050-QA' THEN 'OK (adminpais.qa cambia el telefono del medico de clinica.qa: 1 fila, releido; estado 375: '||est||'; descartado)'
+    ELSE 'ROJO (no-regresion: esperado RC:1 y telefono P1050-QA; vino '||left(res, 200)||' / '||COALESCE(leida, 'NULL')||')' END, false);
+EXCEPTION WHEN OTHERS THEN
+  PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
+  PERFORM set_config('probe.p1050', 'FALLO ('||SQLSTATE||' '||SQLERRM||')', false);
+END $$;
+SELECT set_config('role', 'none', true);
+
+-- ---------------- P1051 enrolar_medico como farmacia.qa (farmacia con la capacidad) -> PV016 ----------------
+DO $$
+DECLARE est text; a_far uuid; a_cli uuid; res text; pre text; post text;
+BEGIN
+  est := pg_temp.m375_estado();
+  a_far := pg_temp.m375_uid('farmacia.qa@ezpayconnect.com');
+  a_cli := pg_temp.m375_uid('clinica.qa@ezpayconnect.com');
+  IF a_far IS NULL OR a_cli IS NULL
+     OR NOT EXISTS (SELECT 1 FROM public.cuentas_proveedor cp JOIN public.empresas_proveedoras e ON e.id = cp.empresa_id
+                     WHERE cp.id = a_far AND cp.activo AND e.estado = 'activa' AND e.tipo = 'farmacia') THEN
+    PERFORM set_config('probe.p1051', 'FALLO (actor inexistente: farmacia.qa con cuenta activa de farmacia activa, o clinica.qa)', false);
+    RETURN;
+  END IF;
+  pre := pg_temp.m375_snap();
+  BEGIN
+    res := pg_temp.m375_como(a_far, 'authenticated', format('SELECT estado FROM public.enrolar_medico(%L)', a_cli));
+    RAISE EXCEPTION 'P1051 descarte' USING ERRCODE = 'P0999';
+  EXCEPTION WHEN SQLSTATE 'P0999' THEN NULL;
+  END;
+  post := pg_temp.m375_snap();
+  PERFORM set_config('probe.p1051', CASE
+    WHEN post IS DISTINCT FROM pre THEN 'FALLO (no volvio al snapshot tras el descarte)'
+    WHEN est LIKE 'parcial%' THEN 'ROJO (375 '||est||')'
+    WHEN est = 'pre' THEN 'REGRESION (375 ausente; hoy: '||left(res, 150)||')'
+    WHEN res LIKE 'ERR:PV016:%' THEN 'OK (375: farmacia.qa enrola -> PV016 no es laboratorio farmaceutico)'
+    ELSE 'ROJO (esperado PV016; vino '||left(res, 200)||')' END, false);
+EXCEPTION WHEN OTHERS THEN
+  PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
+  PERFORM set_config('probe.p1051', 'FALLO ('||SQLSTATE||' '||SQLERRM||')', false);
+END $$;
+SELECT set_config('role', 'none', true);
+
+-- ---------------- P1052 cuenta de QA Laboratorio con rol fuera de (admin, supervisor, visitador_medico) -> PV017 ----------------
+--   Si no hay una cuenta activa asi, sup1.qa pasa a 'lectura' dentro del savepoint. QA Laboratorio se fija como
+--   farmaceutico activo dentro del savepoint (pg_temp.m375_qalab_fijar): FX12 la deja en 'farmacia' para el resto de la corrida.
+DO $$
+DECLARE est text; qalab uuid; a_cli uuid; pais_cli uuid; a_x uuid; quien text; n int; res text; pre text; post text;
+BEGIN
+  est := pg_temp.m375_estado();
+  qalab := (SELECT cp.empresa_id FROM public.cuentas_proveedor cp WHERE cp.id = pg_temp.m375_uid('proveedor.qa@ezpayconnect.com') AND cp.activo);
+  a_cli := pg_temp.m375_uid('clinica.qa@ezpayconnect.com');
+  pais_cli := (SELECT p.pais_id FROM public.perfiles p WHERE p.id = a_cli);
+  IF qalab IS NULL OR a_cli IS NULL OR pais_cli IS NULL
+     OR NOT EXISTS (SELECT 1 FROM public.empresas_proveedoras e WHERE e.id = qalab) THEN
+    PERFORM set_config('probe.p1052', 'FALLO (actor inexistente: cuenta activa de proveedor.qa con su empresa '||COALESCE(left(qalab::text, 8), 'NULL')||
+      ', o clinica.qa con pais en perfiles '||COALESCE(left(a_cli::text, 8), 'NULL')||')', false);
+    RETURN;
+  END IF;
+  pre := pg_temp.m375_snap();
+  BEGIN
+    IF pg_temp.m375_qalab_fijar(pais_cli) IS DISTINCT FROM qalab THEN RAISE EXCEPTION 'fixture roto: m375_qalab_fijar devolvio otra empresa'; END IF;
+    SELECT cp.id, lower(u.email)||' ('||cp.rol_en_empresa||')' INTO a_x, quien
+      FROM public.cuentas_proveedor cp JOIN auth.users u ON u.id = cp.id
+     WHERE cp.empresa_id = qalab AND cp.activo AND cp.rol_en_empresa NOT IN ('admin', 'supervisor', 'visitador_medico')
+     ORDER BY lower(u.email) LIMIT 1;
+    IF a_x IS NULL THEN
+      a_x := pg_temp.m375_uid('sup1.qa@ezpayconnect.com');
+      UPDATE public.cuentas_proveedor SET rol_en_empresa = 'lectura' WHERE id = a_x AND empresa_id = qalab AND activo;
+      GET DIAGNOSTICS n = ROW_COUNT;
+      IF n <> 1 THEN RAISE EXCEPTION 'fixture roto: sup1.qa no es cuenta activa de QA Laboratorio (rc=%)', n; END IF;
+      quien := 'sup1.qa pasado a lectura en el savepoint';
+    END IF;
+    res := pg_temp.m375_como(a_x, 'authenticated', format('SELECT estado FROM public.enrolar_medico(%L)', a_cli));
+    RAISE EXCEPTION 'P1052 descarte' USING ERRCODE = 'P0999';
+  EXCEPTION WHEN SQLSTATE 'P0999' THEN NULL;
+  END;
+  post := pg_temp.m375_snap();
+  PERFORM set_config('probe.p1052', CASE
+    WHEN post IS DISTINCT FROM pre THEN 'FALLO (no volvio al snapshot tras el descarte)'
+    WHEN est LIKE 'parcial%' THEN 'ROJO (375 '||est||')'
+    WHEN est = 'pre' THEN 'REGRESION (375 ausente; hoy: '||left(res, 150)||')'
+    WHEN res LIKE 'ERR:PV017:%' THEN 'OK (375: '||quien||' enrola -> PV017; descartado)'
+    ELSE 'ROJO (esperado PV017 para '||COALESCE(quien, '-')||'; vino '||left(res, 200)||')' END, false);
+EXCEPTION WHEN OTHERS THEN
+  PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
+  PERFORM set_config('probe.p1052', CASE WHEN SQLERRM LIKE 'fixture roto%' THEN 'FALLO ('||SQLERRM||')'
+    ELSE 'FALLO ('||SQLSTATE||' '||SQLERRM||')' END, false);
+END $$;
+SELECT set_config('role', 'none', true);
+
+-- ---------------- P1053 visitador.qa enrola a un medico no enrolado (clinica.qa) -> 'enrolado' con fecha ----------------
+DO $$
+DECLARE est text; a_vis uuid; a_cli uuid; pais_cli uuid; qalab uuid; res text; leida text; guc text; pre text; post text;
+BEGIN
+  est := pg_temp.m375_estado();
+  a_vis := pg_temp.m375_uid('visitador.qa@ezpayconnect.com');
+  a_cli := pg_temp.m375_uid('clinica.qa@ezpayconnect.com');
+  pais_cli := (SELECT p.pais_id FROM public.perfiles p WHERE p.id = a_cli);
+  -- QA Laboratorio por la cuenta de proveedor.qa; visitador.qa tiene que ser visitador activo de esa misma empresa
+  qalab := (SELECT cp.empresa_id FROM public.cuentas_proveedor cp WHERE cp.id = pg_temp.m375_uid('proveedor.qa@ezpayconnect.com') AND cp.activo);
+  IF a_vis IS NULL OR a_cli IS NULL OR pais_cli IS NULL OR qalab IS NULL
+     OR NOT EXISTS (SELECT 1 FROM public.empresas_proveedoras e WHERE e.id = qalab)
+     OR NOT EXISTS (SELECT 1 FROM public.cuentas_proveedor cp WHERE cp.id = a_vis AND cp.empresa_id = qalab AND cp.activo AND cp.rol_en_empresa = 'visitador_medico')
+     OR NOT EXISTS (SELECT 1 FROM public.medicos m WHERE m.id = a_cli AND m.lab_enrolador_id IS NULL) THEN
+    PERFORM set_config('probe.p1053', 'FALLO (actor inexistente: cuenta activa de proveedor.qa con su empresa, visitador.qa visitador activo de esa empresa, o clinica.qa sin enrolador y con pais)', false);
+    RETURN;
+  END IF;
+  pre := pg_temp.m375_snap();
+  BEGIN
+    IF pg_temp.m375_qalab_fijar(pais_cli) IS DISTINCT FROM qalab THEN RAISE EXCEPTION 'fixture roto: m375_qalab_fijar devolvio otra empresa'; END IF;
+    res := pg_temp.m375_como(a_vis, 'authenticated', format(
+      'SELECT r.estado||''|''||(r.lab_enrolador_fecha IS NOT NULL)::text||''|''||r.lab_enrolador_id::text FROM public.enrolar_medico(%L) r', a_cli));
+    leida := (SELECT m.lab_enrolador_id::text||'|'||(m.lab_enrolador_fecha IS NOT NULL)::text FROM public.medicos m WHERE m.id = a_cli);
+    guc := COALESCE(current_setting('app.enrolamiento_rpc', true), '');
+    RAISE EXCEPTION 'P1053 descarte' USING ERRCODE = 'P0999';
+  EXCEPTION WHEN SQLSTATE 'P0999' THEN NULL;
+  END;
+  post := pg_temp.m375_snap();
+  PERFORM set_config('probe.p1053', CASE
+    WHEN post IS DISTINCT FROM pre THEN 'FALLO (no volvio al snapshot tras el descarte)'
+    WHEN res IS DISTINCT FROM 'OK:enrolado|true|'||qalab::text THEN 'ROJO (esperado enrolado con fecha por QA Laboratorio; vino '||left(res, 200)||')'
+    WHEN leida IS DISTINCT FROM qalab::text||'|true' THEN 'ROJO (la RPC dijo enrolado pero la relectura da '||COALESCE(leida, 'NULL')||')'
+    WHEN guc = 'on' THEN 'ROJO (enrolar_medico dejo encendido app.enrolamiento_rpc)'
+    ELSE 'OK (visitador.qa enrola a clinica.qa: enrolado, fecha NOT NULL, releido; GUC apagado al salir; estado 375: '||est||'; descartado)' END, false);
+EXCEPTION WHEN OTHERS THEN
+  PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
+  PERFORM set_config('probe.p1053', CASE WHEN SQLERRM LIKE 'fixture roto%' THEN 'FALLO ('||SQLERRM||')'
+    ELSE 'FALLO ('||SQLSTATE||' '||SQLERRM||')' END, false);
+END $$;
+SELECT set_config('role', 'none', true);
+
+-- ---------------- P1054 segundo laboratorio farmaceutico (con capacidad y plan) enrola a medico.qa -> PV013 ----------------
+DO $$
+DECLARE est text; a_med uuid; gt uuid; lab2 uuid; res text; leida_pre text; leida text; pre text; post text;
+BEGIN
+  est := pg_temp.m375_estado();
+  a_med := pg_temp.m375_uid('medico.qa@ezpayconnect.com');
+  gt := (SELECT p.pais_id FROM public.perfiles p WHERE p.id = a_med);
+  leida_pre := (SELECT m.lab_enrolador_id::text FROM public.medicos m WHERE m.id = a_med);
+  IF a_med IS NULL OR gt IS NULL OR leida_pre IS NULL THEN
+    PERFORM set_config('probe.p1054', 'FALLO (actor inexistente: medico.qa enrolado y con pais en perfiles)', false);
+    RETURN;
+  END IF;
+  pre := pg_temp.m375_snap();
+  BEGIN
+    lab2 := pg_temp.m375_lab2(gt);
+    res := pg_temp.m375_como(lab2, 'authenticated', format('SELECT estado FROM public.enrolar_medico(%L)', a_med));
+    leida := (SELECT m.lab_enrolador_id::text FROM public.medicos m WHERE m.id = a_med);
+    RAISE EXCEPTION 'P1054 descarte' USING ERRCODE = 'P0999';
+  EXCEPTION WHEN SQLSTATE 'P0999' THEN NULL;
+  END;
+  post := pg_temp.m375_snap();
+  PERFORM set_config('probe.p1054', CASE
+    WHEN post IS DISTINCT FROM pre THEN 'FALLO (no volvio al snapshot tras el descarte)'
+    WHEN leida IS DISTINCT FROM leida_pre THEN 'ROJO (el enrolador de medico.qa cambio a '||COALESCE(leida, 'NULL')||')'
+    WHEN res LIKE 'ERR:PV013:%' THEN 'OK (segundo lab farmaceutico con capacidad y plan enrola a medico.qa -> PV013; enrolador intacto; estado 375: '||est||'; descartado)'
+    ELSE 'ROJO (esperado PV013; vino '||left(res, 200)||')' END, false);
+EXCEPTION WHEN OTHERS THEN
+  PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
+  PERFORM set_config('probe.p1054', CASE WHEN SQLERRM LIKE 'fixture roto%' THEN 'FALLO ('||SQLERRM||')'
+    ELSE 'FALLO ('||SQLSTATE||' '||SQLERRM||')' END, false);
+END $$;
+SELECT set_config('role', 'none', true);
+
+-- ---------------- P1055 anon sin EXECUTE en enrolar_medico (catalogo y ejercitado) ----------------
+DO $$
+DECLARE est text; a_cli uuid; priv_anon boolean; priv_public boolean; res text;
+BEGIN
+  est := pg_temp.m375_estado();
+  a_cli := pg_temp.m375_uid('clinica.qa@ezpayconnect.com');
+  IF a_cli IS NULL THEN
+    PERFORM set_config('probe.p1055', 'FALLO (actor inexistente: clinica.qa)', false);
+    RETURN;
+  END IF;
+  priv_anon := has_function_privilege('anon', 'public.enrolar_medico(uuid)', 'EXECUTE');
+  priv_public := EXISTS (SELECT 1 FROM pg_proc f, aclexplode(COALESCE(f.proacl, acldefault('f', f.proowner))) a
+                          WHERE f.oid = 'public.enrolar_medico(uuid)'::regprocedure AND a.grantee = 0);
+  res := pg_temp.m375_como(NULL, 'anon', format('SELECT estado FROM public.enrolar_medico(%L)', a_cli));
+  PERFORM set_config('probe.p1055', CASE
+    WHEN priv_anon OR priv_public THEN 'ROJO (anon '||priv_anon::text||', PUBLIC '||priv_public::text||' con EXECUTE en enrolar_medico)'
+    WHEN res LIKE 'ERR:42501:%enrolar_medico%' THEN 'OK (anon y PUBLIC sin EXECUTE en enrolar_medico; anon ejercitado -> 42501; estado 375: '||est||')'
+    ELSE 'ROJO (anon ejercitado: esperado 42501; vino '||left(res, 200)||')' END, false);
+EXCEPTION WHEN OTHERS THEN
+  PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
+  PERFORM set_config('probe.p1055', 'FALLO ('||SQLSTATE||' '||SQLERRM||')', false);
+END $$;
+SELECT set_config('role', 'none', true);
+
+-- ---------------- P1056 head-start: el segundo lab agenda a medico.qa dentro de la ventana -> PV002 (y fuera -> OK) ----------------
+DO $$
+DECLARE est text; a_med uuid; gt uuid; lab2 uuid; emp2 uuid; r_in text; r_fuera text; pre text; post text;
+BEGIN
+  est := pg_temp.m375_estado();
+  a_med := pg_temp.m375_uid('medico.qa@ezpayconnect.com');
+  gt := (SELECT p.pais_id FROM public.perfiles p WHERE p.id = a_med);
+  IF a_med IS NULL OR gt IS NULL THEN
+    PERFORM set_config('probe.p1056', 'FALLO (actor inexistente: medico.qa con pais en perfiles)', false);
+    RETURN;
+  END IF;
+  pre := pg_temp.m375_snap();
+  BEGIN
+    lab2 := pg_temp.m375_lab2(gt);
+    emp2 := (SELECT cp.empresa_id FROM public.cuentas_proveedor cp WHERE cp.id = lab2);
+    r_in := pg_temp.m375_visita(lab2, emp2, a_med, CURRENT_DATE + 1, '06:56');
+    r_fuera := pg_temp.m375_visita(lab2, emp2, a_med, CURRENT_DATE + 30, '06:56');
+    RAISE EXCEPTION 'P1056 descarte' USING ERRCODE = 'P0999';
+  EXCEPTION WHEN SQLSTATE 'P0999' THEN NULL;
+  END;
+  post := pg_temp.m375_snap();
+  PERFORM set_config('probe.p1056', CASE
+    WHEN post IS DISTINCT FROM pre THEN 'FALLO (no volvio al snapshot tras el descarte)'
+    WHEN r_fuera NOT LIKE 'OK:%' THEN 'FALLO (control: el segundo lab no pudo agendar fuera de la ventana: '||left(r_fuera, 200)||')'
+    WHEN r_in LIKE 'ERR:PV002:%' THEN 'OK (segundo lab agenda a medico.qa en hoy+1 -> PV002; en hoy+30 entra; estado 375: '||est||'; descartado)'
+    ELSE 'ROJO (esperado PV002 en hoy+1; vino '||left(r_in, 200)||')' END, false);
+EXCEPTION WHEN OTHERS THEN
+  PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
+  PERFORM set_config('probe.p1056', CASE WHEN SQLERRM LIKE 'fixture roto%' THEN 'FALLO ('||SQLERRM||')'
+    ELSE 'FALLO ('||SQLSTATE||' '||SQLERRM||')' END, false);
+END $$;
+SELECT set_config('role', 'none', true);
+
+-- ================================================================================
+-- MIG 376 — administrar_visita('modificar') compila (cast a time de las horas) + PV003 hora invalida. APLICADA en prod el 2026-10-20 14:32 UTC.
+-- pg_temp.m376_estado(): 'pre' (md5 666800e7..., el cuerpo de la 42804), 'post' (PV003 y los dos COALESCE con ::time) o
+-- 'desconocido (...)' (ROJO). P1057-P1059 y P1062-P1064 llaman a 'modificar' como el front (useVisitasAgendadas): args
+-- con nombre, las 6, horas 'HH:MM' como text y NULL para lo que no cambia (pg_temp.m376_modificar). Con la 376 aplicada
+-- no hay rama PENDIENTE: en 'pre' (376_rollback) M376_FX y esos probes publican 'REGRESION (376 ausente; ...)'; un 42804
+-- con la 376 aplicada es ROJO. Lo que no depende de la 376 (snapshot, fixture) se juzga antes. Quien corra 376_rollback
+-- tiene que esperar esas rojas (como en la 370/375).
+-- M376_FX: helpers de pg_temp + estado de la 376. No toca datos.
+DO $$
+DECLARE est text;
+BEGIN
+  EXECUTE $fn$
+CREATE OR REPLACE FUNCTION pg_temp.m376_estado() RETURNS text LANGUAGE sql AS $body$
+  SELECT COALESCE((SELECT CASE
+      WHEN md5(p.prosrc) = '666800e7be6ccee444632f933d5146c0' THEN 'pre'
+      WHEN p.prosrc LIKE '%ERRCODE = ''PV003''%' AND p.prosrc LIKE '%COALESCE(p_nueva_hora_inicio::time, hora_inicio)%'
+           AND p.prosrc LIKE '%COALESCE(p_nueva_hora_fin::time, hora_fin)%' THEN 'post'
+      ELSE 'desconocido (md5 '||md5(p.prosrc)||')' END
+    FROM pg_proc p WHERE p.oid = to_regprocedure('public.administrar_visita(uuid,text,date,text,text,text)')), 'desconocido (administrar_visita no existe)')
+$body$
+$fn$;
+  -- 'modificar' como lo llama el front: 'OK:<jsonb>' o 'ERR:<sqlstate>:<mensaje>'
+  EXECUTE $fn$
+CREATE OR REPLACE FUNCTION pg_temp.m376_modificar(p_uid uuid, p_vid text, p_fecha date, p_ini text, p_fin text) RETURNS text LANGUAGE sql AS $body$
+  SELECT pg_temp.m375_como(p_uid, 'authenticated', format(
+    'SELECT public.administrar_visita(p_visita_id => %L::uuid, p_accion => %L, p_nueva_fecha => %L::date, '||
+    'p_nueva_hora_inicio => %L::text, p_nueva_hora_fin => %L::text, p_comentario => NULL::text)::text',
+    p_vid, 'modificar', p_fecha, p_ini, p_fin))
+$body$
+$fn$;
+  est := pg_temp.m376_estado();
+  PERFORM set_config('probe.m376_fx', CASE WHEN est = 'pre' THEN 'REGRESION (376 ausente: administrar_visita con el cuerpo de la 42804; helpers de pg_temp creados)'
+    WHEN est = 'post' THEN 'OK (helpers de pg_temp creados; estado de la 376: '||est||')'
+    ELSE 'ROJO (376 '||est||'; helpers de pg_temp creados)' END, false);
+EXCEPTION WHEN OTHERS THEN
+  PERFORM set_config('probe.m376_fx', 'FALLO ('||SQLSTATE||' '||SQLERRM||')', false);
+END $$;
+
+-- ---------------- P1057 head-start: el segundo lab reprograma (administrar_visita 'modificar') su visita hacia la ventana -> PV002 ----------------
+DO $$
+DECLARE est text; e376 text; a_med uuid; gt uuid; lab2 uuid; emp2 uuid; vid text; res text; pre text; post text;
+BEGIN
+  est := pg_temp.m375_estado();
+  e376 := pg_temp.m376_estado();
+  a_med := pg_temp.m375_uid('medico.qa@ezpayconnect.com');
+  gt := (SELECT p.pais_id FROM public.perfiles p WHERE p.id = a_med);
+  IF a_med IS NULL OR gt IS NULL THEN
+    PERFORM set_config('probe.p1057', 'FALLO (actor inexistente: medico.qa con pais en perfiles)', false);
+    RETURN;
+  END IF;
+  pre := pg_temp.m375_snap();
+  BEGIN
+    lab2 := pg_temp.m375_lab2(gt);
+    emp2 := (SELECT cp.empresa_id FROM public.cuentas_proveedor cp WHERE cp.id = lab2);
+    vid := pg_temp.m375_visita(lab2, emp2, a_med, CURRENT_DATE + 30, '06:57');
+    IF vid NOT LIKE 'OK:%' THEN RAISE EXCEPTION 'fixture roto: visita del segundo lab en hoy+30: %', vid; END IF;
+    -- como el front: solo la fecha, horas NULL
+    res := pg_temp.m376_modificar(lab2, substr(vid, 4), CURRENT_DATE + 1, NULL, NULL);
+    RAISE EXCEPTION 'P1057 descarte' USING ERRCODE = 'P0999';
+  EXCEPTION WHEN SQLSTATE 'P0999' THEN NULL;
+  END;
+  post := pg_temp.m375_snap();
+  PERFORM set_config('probe.p1057', CASE
+    WHEN post IS DISTINCT FROM pre THEN 'FALLO (no volvio al snapshot tras el descarte)'
+    WHEN e376 NOT IN ('pre', 'post') THEN 'ROJO (376 '||e376||')'
+    WHEN res LIKE 'ERR:42804:%' AND e376 = 'pre' THEN 'REGRESION (376 ausente; hoy: administrar_visita(''modificar'') no compila: '||left(substr(res, 11), 120)||')'
+    WHEN res LIKE 'ERR:42804:%' THEN 'ROJO (376 aplicada y administrar_visita(''modificar'') sigue en 42804: '||left(substr(res, 11), 120)||')'
+    WHEN est LIKE 'parcial%' THEN 'ROJO (375 '||est||')'
+    WHEN est = 'pre' THEN 'REGRESION (375 ausente; hoy: '||left(res, 150)||')'
+    WHEN res LIKE 'ERR:PV002:%' THEN 'OK (375: el segundo lab mueve su visita de hoy+30 a hoy+1 con administrar_visita -> PV002; descartado)'
+    ELSE 'ROJO (esperado PV002; vino '||left(res, 200)||')' END, false);
+EXCEPTION WHEN OTHERS THEN
+  PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
+  PERFORM set_config('probe.p1057', CASE WHEN SQLERRM LIKE 'fixture roto%' THEN 'FALLO ('||SQLERRM||')'
+    ELSE 'FALLO ('||SQLSTATE||' '||SQLERRM||')' END, false);
+END $$;
+SELECT set_config('role', 'none', true);
+
+-- ---------------- P1058 head-start: el segundo lab cambia SOLO la hora de una visita suya dentro de la ventana -> OK ----------------
+--   La visita dentro de la ventana se siembra con la ventana de QA Laboratorio en 0 visitas (sin prioridad) y se repone
+--   el valor anterior antes de medir. Control: mover esa misma visita a hoy+2 -> PV002 (la ventana esta activa).
+DO $$
+DECLARE est text; e376 text; a_med uuid; gt uuid; qalab uuid; vent int; lab2 uuid; emp2 uuid; vid text; n int; r_hora text; leida text; r_ctl text;
+        fix text := ''; pre text; post text;
+BEGIN
+  est := pg_temp.m375_estado();
+  e376 := pg_temp.m376_estado();
+  a_med := pg_temp.m375_uid('medico.qa@ezpayconnect.com');
+  gt := (SELECT p.pais_id FROM public.perfiles p WHERE p.id = a_med);
+  qalab := (SELECT m.lab_enrolador_id FROM public.medicos m WHERE m.id = a_med);
+  IF a_med IS NULL OR gt IS NULL OR qalab IS NULL THEN
+    PERFORM set_config('probe.p1058', 'FALLO (actor inexistente: medico.qa enrolado y con pais en perfiles)', false);
+    RETURN;
+  END IF;
+  vent := (SELECT e.ventana_prioridad_visitas FROM public.empresas_proveedoras e WHERE e.id = qalab);
+  pre := pg_temp.m375_snap();
+  BEGIN
+    lab2 := pg_temp.m375_lab2(gt);
+    emp2 := (SELECT cp.empresa_id FROM public.cuentas_proveedor cp WHERE cp.id = lab2);
+    UPDATE public.empresas_proveedoras SET ventana_prioridad_visitas = 0 WHERE id = qalab;
+    GET DIAGNOSTICS n = ROW_COUNT;
+    IF n <> 1 THEN RAISE EXCEPTION 'fixture roto: ventana de QA Laboratorio (rc=%)', n; END IF;
+    vid := pg_temp.m375_visita(lab2, emp2, a_med, CURRENT_DATE + 1, '06:58');
+    UPDATE public.empresas_proveedoras SET ventana_prioridad_visitas = vent WHERE id = qalab;
+    IF vid NOT LIKE 'OK:%' THEN
+      fix := 'visita del segundo lab en hoy+1 sin prioridad: '||left(vid, 150);
+    ELSE
+      -- como el front: fecha NULL, horas 'HH:MM'
+      r_hora := pg_temp.m376_modificar(lab2, substr(vid, 4), NULL, '05:58', '06:28');
+      leida := (SELECT v.fecha_visita::text||'|'||v.hora_inicio::text FROM public.visitas_agendadas v WHERE v.id = substr(vid, 4)::uuid);
+      r_ctl := pg_temp.m376_modificar(lab2, substr(vid, 4), CURRENT_DATE + 2, NULL, NULL);
+    END IF;
+    RAISE EXCEPTION 'P1058 descarte' USING ERRCODE = 'P0999';
+  EXCEPTION WHEN SQLSTATE 'P0999' THEN NULL;
+  END;
+  post := pg_temp.m375_snap();
+  PERFORM set_config('probe.p1058', CASE
+    WHEN post IS DISTINCT FROM pre THEN 'FALLO (no volvio al snapshot tras el descarte)'
+    WHEN fix <> '' AND est = 'pre' THEN 'REGRESION (375 ausente; no se puede sembrar: '||fix||')'
+    WHEN fix <> '' THEN 'FALLO (fixture: '||fix||')'
+    WHEN e376 NOT IN ('pre', 'post') THEN 'ROJO (376 '||e376||')'
+    WHEN r_hora LIKE 'ERR:42804:%' AND e376 = 'pre' THEN 'REGRESION (376 ausente; hoy: administrar_visita(''modificar'') no compila: '||left(substr(r_hora, 11), 120)||')'
+    WHEN r_hora LIKE 'ERR:42804:%' THEN 'ROJO (376 aplicada y administrar_visita(''modificar'') sigue en 42804: '||left(substr(r_hora, 11), 120)||')'
+    WHEN est LIKE 'parcial%' THEN 'ROJO (375 '||est||')'
+    WHEN est = 'pre' THEN 'REGRESION (375 ausente; hoy: hora '||left(r_hora, 100)||' / control '||left(r_ctl, 100)||')'
+    WHEN r_hora LIKE 'OK:%"success": true%' AND leida = (CURRENT_DATE + 1)::text||'|05:58:00' AND r_ctl LIKE 'ERR:PV002:%'
+      THEN 'OK (375: solo hora dentro de la ventana -> success, fecha intacta y 05:58 releida; control hoy+2 -> PV002; descartado)'
+    ELSE 'ROJO (hora '||left(r_hora, 120)||' / releida '||COALESCE(leida, 'NULL')||' / control '||left(r_ctl, 120)||')' END, false);
+EXCEPTION WHEN OTHERS THEN
+  PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
+  PERFORM set_config('probe.p1058', CASE WHEN SQLERRM LIKE 'fixture roto%' THEN 'FALLO ('||SQLERRM||')'
+    ELSE 'FALLO ('||SQLSTATE||' '||SQLERRM||')' END, false);
+END $$;
+SELECT set_config('role', 'none', true);
+
+-- ---------------- P1059 QA Laboratorio (proveedor.qa) reprograma su propia visita a medico.qa dentro de la ventana -> OK ----------------
+DO $$
+DECLARE est text; e376 text; a_prv uuid; a_med uuid; qalab uuid; vid text; res text; leida text; pre text; post text;
+BEGIN
+  est := pg_temp.m375_estado();
+  e376 := pg_temp.m376_estado();
+  a_prv := pg_temp.m375_uid('proveedor.qa@ezpayconnect.com');
+  a_med := pg_temp.m375_uid('medico.qa@ezpayconnect.com');
+  qalab := (SELECT cp.empresa_id FROM public.cuentas_proveedor cp WHERE cp.id = a_prv AND cp.activo AND cp.rol_en_empresa = 'admin');
+  IF a_prv IS NULL OR a_med IS NULL OR qalab IS NULL
+     OR NOT EXISTS (SELECT 1 FROM public.medicos m WHERE m.id = a_med AND m.lab_enrolador_id = qalab) THEN
+    PERFORM set_config('probe.p1059', 'FALLO (actor inexistente: proveedor.qa admin activo del lab enrolador de medico.qa)', false);
+    RETURN;
+  END IF;
+  pre := pg_temp.m375_snap();
+  BEGIN
+    -- el INSERT como proveedor.qa pasa por mi_empresa_proveedor() (estado 'activa'): no depender de lo que dejen otros bloques
+    IF pg_temp.m375_qalab_fijar((SELECT p.pais_id FROM public.perfiles p WHERE p.id = a_med)) IS DISTINCT FROM qalab THEN
+      RAISE EXCEPTION 'fixture roto: m375_qalab_fijar devolvio otra empresa';
+    END IF;
+    vid := pg_temp.m375_visita(a_prv, qalab, a_med, CURRENT_DATE + 10, '06:59');
+    IF vid NOT LIKE 'OK:%' THEN RAISE EXCEPTION 'fixture roto: visita de QA Laboratorio en hoy+10: %', vid; END IF;
+    -- como el front: solo la fecha, horas NULL
+    res := pg_temp.m376_modificar(a_prv, substr(vid, 4), CURRENT_DATE + 1, NULL, NULL);
+    leida := (SELECT v.fecha_visita::text FROM public.visitas_agendadas v WHERE v.id = substr(vid, 4)::uuid);
+    RAISE EXCEPTION 'P1059 descarte' USING ERRCODE = 'P0999';
+  EXCEPTION WHEN SQLSTATE 'P0999' THEN NULL;
+  END;
+  post := pg_temp.m375_snap();
+  PERFORM set_config('probe.p1059', CASE
+    WHEN post IS DISTINCT FROM pre THEN 'FALLO (no volvio al snapshot tras el descarte)'
+    WHEN e376 NOT IN ('pre', 'post') THEN 'ROJO (376 '||e376||')'
+    WHEN res LIKE 'ERR:42804:%' AND e376 = 'pre' THEN 'REGRESION (376 ausente; hoy: administrar_visita(''modificar'') no compila: '||left(substr(res, 11), 120)||')'
+    WHEN res LIKE 'ERR:42804:%' THEN 'ROJO (376 aplicada y administrar_visita(''modificar'') sigue en 42804: '||left(substr(res, 11), 120)||')'
+    WHEN res LIKE 'OK:%"success": true%' AND leida = (CURRENT_DATE + 1)::text
+      THEN 'OK (QA Laboratorio mueve su visita a medico.qa de hoy+10 a hoy+1: success y releida; estado 375: '||est||'; descartado)'
+    ELSE 'ROJO (esperado success y fecha hoy+1; vino '||left(res, 200)||' / releida '||COALESCE(leida, 'NULL')||')' END, false);
+EXCEPTION WHEN OTHERS THEN
+  PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
+  PERFORM set_config('probe.p1059', CASE WHEN SQLERRM LIKE 'fixture roto%' THEN 'FALLO ('||SQLERRM||')'
+    ELSE 'FALLO ('||SQLSTATE||' '||SQLERRM||')' END, false);
+END $$;
+SELECT set_config('role', 'none', true);
+
+-- ---------------- P1060 trigger del head-start en UPDATE, sin la RPC (como postgres): otro lab -> PV002; solo hora -> OK ----------------
+--   Mide la regla (d) de la 375 aunque administrar_visita('modificar') no compile (P1057-P1059).
+DO $$
+DECLARE est text; a_med uuid; gt uuid; qalab uuid; vent int; lab2 uuid; emp2 uuid; v_a text; v_b text; n int;
+        r_fecha text; r_hora text; r_ctl text; fix text := ''; pre text; post text;
+BEGIN
+  est := pg_temp.m375_estado();
+  a_med := pg_temp.m375_uid('medico.qa@ezpayconnect.com');
+  gt := (SELECT p.pais_id FROM public.perfiles p WHERE p.id = a_med);
+  qalab := (SELECT m.lab_enrolador_id FROM public.medicos m WHERE m.id = a_med);
+  IF a_med IS NULL OR gt IS NULL OR qalab IS NULL THEN
+    PERFORM set_config('probe.p1060', 'FALLO (actor inexistente: medico.qa enrolado y con pais en perfiles)', false);
+    RETURN;
+  END IF;
+  vent := (SELECT e.ventana_prioridad_visitas FROM public.empresas_proveedoras e WHERE e.id = qalab);
+  pre := pg_temp.m375_snap();
+  BEGIN
+    lab2 := pg_temp.m375_lab2(gt);
+    emp2 := (SELECT cp.empresa_id FROM public.cuentas_proveedor cp WHERE cp.id = lab2);
+    -- (a) visita fuera de la ventana movida adentro
+    v_a := pg_temp.m375_visita(lab2, emp2, a_med, CURRENT_DATE + 30, '07:00');
+    IF v_a NOT LIKE 'OK:%' THEN RAISE EXCEPTION 'fixture roto: visita del segundo lab en hoy+30: %', v_a; END IF;
+    r_fecha := pg_temp.m375_rc(NULL, NULL, format('UPDATE public.visitas_agendadas SET fecha_visita = %L WHERE id = %L', CURRENT_DATE + 1, substr(v_a, 4)));
+    -- (b) visita ya dentro de la ventana (sembrada sin prioridad): solo hora, y despues la fecha
+    UPDATE public.empresas_proveedoras SET ventana_prioridad_visitas = 0 WHERE id = qalab;
+    GET DIAGNOSTICS n = ROW_COUNT;
+    IF n <> 1 THEN RAISE EXCEPTION 'fixture roto: ventana de QA Laboratorio (rc=%)', n; END IF;
+    v_b := pg_temp.m375_visita(lab2, emp2, a_med, CURRENT_DATE + 1, '07:01');
+    UPDATE public.empresas_proveedoras SET ventana_prioridad_visitas = vent WHERE id = qalab;
+    IF v_b NOT LIKE 'OK:%' THEN
+      fix := 'visita del segundo lab en hoy+1 sin prioridad: '||left(v_b, 150);
+    ELSE
+      -- igual que 'modificar' con fecha NULL: fecha_visita en el SET con el mismo valor
+      r_hora := pg_temp.m375_rc(NULL, NULL, format(
+        'UPDATE public.visitas_agendadas SET fecha_visita = fecha_visita, hora_inicio = ''05:59'', hora_fin = ''06:29'' WHERE id = %L', substr(v_b, 4)));
+      r_ctl := pg_temp.m375_rc(NULL, NULL, format('UPDATE public.visitas_agendadas SET fecha_visita = %L WHERE id = %L', CURRENT_DATE + 2, substr(v_b, 4)));
+    END IF;
+    RAISE EXCEPTION 'P1060 descarte' USING ERRCODE = 'P0999';
+  EXCEPTION WHEN SQLSTATE 'P0999' THEN NULL;
+  END;
+  post := pg_temp.m375_snap();
+  PERFORM set_config('probe.p1060', CASE
+    WHEN post IS DISTINCT FROM pre THEN 'FALLO (no volvio al snapshot tras el descarte)'
+    WHEN fix <> '' AND est = 'pre' THEN 'REGRESION (375 ausente; hoy: fecha '||left(r_fecha, 100)||'; no se puede sembrar: '||fix||')'
+    WHEN fix <> '' THEN 'FALLO (fixture: '||fix||')'
+    WHEN est LIKE 'parcial%' THEN 'ROJO (375 '||est||')'
+    WHEN est = 'pre' THEN 'REGRESION (375 ausente; hoy: fecha '||left(r_fecha, 100)||' / hora '||left(r_hora, 60)||' / control '||left(r_ctl, 100)||')'
+    WHEN r_fecha LIKE 'ERR:PV002:%' AND r_hora = 'RC:1' AND r_ctl LIKE 'ERR:PV002:%'
+      THEN 'OK (375: UPDATE de fecha hoy+30 -> hoy+1 PV002; solo hora dentro de la ventana 1 fila; esa misma a hoy+2 PV002; descartado)'
+    ELSE 'ROJO (fecha '||left(r_fecha, 120)||' / hora '||left(r_hora, 120)||' / control '||left(r_ctl, 120)||')' END, false);
+EXCEPTION WHEN OTHERS THEN
+  PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
+  PERFORM set_config('probe.p1060', CASE WHEN SQLERRM LIKE 'fixture roto%' THEN 'FALLO ('||SQLERRM||')'
+    ELSE 'FALLO ('||SQLSTATE||' '||SQLERRM||')' END, false);
+END $$;
+SELECT set_config('role', 'none', true);
+
+-- ---------------- P1061 trigger del head-start en UPDATE, sin la RPC: QA Laboratorio mueve su visita dentro de la ventana -> OK ----------------
+DO $$
+DECLARE est text; a_prv uuid; a_med uuid; qalab uuid; vid text; res text; leida text; pre text; post text;
+BEGIN
+  est := pg_temp.m375_estado();
+  a_prv := pg_temp.m375_uid('proveedor.qa@ezpayconnect.com');
+  a_med := pg_temp.m375_uid('medico.qa@ezpayconnect.com');
+  qalab := (SELECT cp.empresa_id FROM public.cuentas_proveedor cp WHERE cp.id = a_prv AND cp.activo AND cp.rol_en_empresa = 'admin');
+  IF a_prv IS NULL OR a_med IS NULL OR qalab IS NULL
+     OR NOT EXISTS (SELECT 1 FROM public.medicos m WHERE m.id = a_med AND m.lab_enrolador_id = qalab) THEN
+    PERFORM set_config('probe.p1061', 'FALLO (actor inexistente: proveedor.qa admin activo del lab enrolador de medico.qa)', false);
+    RETURN;
+  END IF;
+  pre := pg_temp.m375_snap();
+  BEGIN
+    -- el INSERT como proveedor.qa pasa por mi_empresa_proveedor() (estado 'activa'): no depender de lo que dejen otros bloques
+    IF pg_temp.m375_qalab_fijar((SELECT p.pais_id FROM public.perfiles p WHERE p.id = a_med)) IS DISTINCT FROM qalab THEN
+      RAISE EXCEPTION 'fixture roto: m375_qalab_fijar devolvio otra empresa';
+    END IF;
+    vid := pg_temp.m375_visita(a_prv, qalab, a_med, CURRENT_DATE + 10, '07:02');
+    IF vid NOT LIKE 'OK:%' THEN RAISE EXCEPTION 'fixture roto: visita de QA Laboratorio en hoy+10: %', vid; END IF;
+    res := pg_temp.m375_rc(NULL, NULL, format('UPDATE public.visitas_agendadas SET fecha_visita = %L WHERE id = %L', CURRENT_DATE + 1, substr(vid, 4)));
+    leida := (SELECT v.fecha_visita::text FROM public.visitas_agendadas v WHERE v.id = substr(vid, 4)::uuid);
+    RAISE EXCEPTION 'P1061 descarte' USING ERRCODE = 'P0999';
+  EXCEPTION WHEN SQLSTATE 'P0999' THEN NULL;
+  END;
+  post := pg_temp.m375_snap();
+  PERFORM set_config('probe.p1061', CASE
+    WHEN post IS DISTINCT FROM pre THEN 'FALLO (no volvio al snapshot tras el descarte)'
+    WHEN res = 'RC:1' AND leida = (CURRENT_DATE + 1)::text
+      THEN 'OK (UPDATE de la visita de QA Laboratorio de hoy+10 a hoy+1: 1 fila y releida; estado 375: '||est||'; descartado)'
+    ELSE 'ROJO (esperado RC:1 y fecha hoy+1; vino '||left(res, 200)||' / releida '||COALESCE(leida, 'NULL')||')' END, false);
+EXCEPTION WHEN OTHERS THEN
+  PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
+  PERFORM set_config('probe.p1061', CASE WHEN SQLERRM LIKE 'fixture roto%' THEN 'FALLO ('||SQLERRM||')'
+    ELSE 'FALLO ('||SQLSTATE||' '||SQLERRM||')' END, false);
+END $$;
+SELECT set_config('role', 'none', true);
+
+-- ---------------- P1062 376: 'modificar' con una hora que no es HH:MM -> PV003 (y la visita intacta) ----------------
+--   QA Laboratorio (proveedor.qa, admin) sobre una visita suya a clinica.qa (sin enrolador: sin head-start de por medio),
+--   sembrada en el savepoint con QA Laboratorio fijada (pg_temp.m375_qalab_fijar). 4 casos: '25:00' y '9:5' en el inicio,
+--   'abc' en el fin, '' en el inicio. Todos -> PV003 y la fila igual a la sembrada.
+DO $$
+DECLARE e376 text; a_prv uuid; a_cli uuid; pais_cli uuid; qalab uuid; vid text; antes text; despues text;
+        r1 text; r2 text; r3 text; r4 text; pre text; post text;
+BEGIN
+  e376 := pg_temp.m376_estado();
+  a_prv := pg_temp.m375_uid('proveedor.qa@ezpayconnect.com');
+  a_cli := pg_temp.m375_uid('clinica.qa@ezpayconnect.com');
+  pais_cli := (SELECT p.pais_id FROM public.perfiles p WHERE p.id = a_cli);
+  qalab := (SELECT cp.empresa_id FROM public.cuentas_proveedor cp WHERE cp.id = a_prv AND cp.activo AND cp.rol_en_empresa = 'admin');
+  IF a_prv IS NULL OR a_cli IS NULL OR pais_cli IS NULL OR qalab IS NULL
+     OR NOT EXISTS (SELECT 1 FROM public.medicos m WHERE m.id = a_cli AND m.lab_enrolador_id IS NULL) THEN
+    PERFORM set_config('probe.p1062', 'FALLO (actor inexistente: proveedor.qa admin activo con empresa, o clinica.qa sin enrolador y con pais)', false);
+    RETURN;
+  END IF;
+  pre := pg_temp.m375_snap();
+  BEGIN
+    IF pg_temp.m375_qalab_fijar(pais_cli) IS DISTINCT FROM qalab THEN RAISE EXCEPTION 'fixture roto: m375_qalab_fijar devolvio otra empresa'; END IF;
+    vid := pg_temp.m375_visita(a_prv, qalab, a_cli, CURRENT_DATE + 10, '07:03');
+    IF vid NOT LIKE 'OK:%' THEN RAISE EXCEPTION 'fixture roto: visita de QA Laboratorio a clinica.qa en hoy+10: %', vid; END IF;
+    antes := (SELECT v.fecha_visita::text||'|'||v.hora_inicio::text||'|'||v.hora_fin::text||'|'||v.estado FROM public.visitas_agendadas v WHERE v.id = substr(vid, 4)::uuid);
+    r1 := pg_temp.m376_modificar(a_prv, substr(vid, 4), NULL, '25:00', NULL);
+    r2 := pg_temp.m376_modificar(a_prv, substr(vid, 4), NULL, '9:5', NULL);
+    r3 := pg_temp.m376_modificar(a_prv, substr(vid, 4), NULL, NULL, 'abc');
+    r4 := pg_temp.m376_modificar(a_prv, substr(vid, 4), NULL, '', NULL);
+    despues := (SELECT v.fecha_visita::text||'|'||v.hora_inicio::text||'|'||v.hora_fin::text||'|'||v.estado FROM public.visitas_agendadas v WHERE v.id = substr(vid, 4)::uuid);
+    RAISE EXCEPTION 'P1062 descarte' USING ERRCODE = 'P0999';
+  EXCEPTION WHEN SQLSTATE 'P0999' THEN NULL;
+  END;
+  post := pg_temp.m375_snap();
+  PERFORM set_config('probe.p1062', CASE
+    WHEN post IS DISTINCT FROM pre THEN 'FALLO (no volvio al snapshot tras el descarte)'
+    WHEN e376 NOT IN ('pre', 'post') THEN 'ROJO (376 '||e376||')'
+    WHEN e376 = 'pre' AND r1 LIKE 'ERR:42804:%' THEN 'REGRESION (376 ausente; hoy: '||left(r1, 120)||')'
+    WHEN r1 LIKE 'ERR:PV003:%' AND r2 LIKE 'ERR:PV003:%' AND r3 LIKE 'ERR:PV003:%' AND r4 LIKE 'ERR:PV003:%' AND despues = antes
+      THEN 'OK (376: horas ''25:00'', ''9:5'', ''abc'' (fin) y '''' -> PV003; visita intacta; descartado)'
+    ELSE 'ROJO (esperado PV003 x4 y visita intacta; vino '||left(r1, 80)||' / '||left(r2, 80)||' / '||left(r3, 80)||' / '||left(r4, 80)||
+         ' / '||COALESCE(antes, 'NULL')||' -> '||COALESCE(despues, 'NULL')||')' END, false);
+EXCEPTION WHEN OTHERS THEN
+  PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
+  PERFORM set_config('probe.p1062', CASE WHEN SQLERRM LIKE 'fixture roto%' THEN 'FALLO ('||SQLERRM||')'
+    ELSE 'FALLO ('||SQLSTATE||' '||SQLERRM||')' END, false);
+END $$;
+SELECT set_config('role', 'none', true);
+
+-- ---------------- P1063 376 no-regresion: 'modificar' SOLO con fecha (horas NULL, como el front) -> 1 fila, releida ----------------
+--   Visita de QA Laboratorio a clinica.qa (sin head-start) de hoy+10 a hoy+12: success, fecha nueva, horas intactas y
+--   ninguna otra fila de visitas_agendadas cambia.
+DO $$
+DECLARE e376 text; a_prv uuid; a_cli uuid; pais_cli uuid; qalab uuid; vid text; res text; leida text; otras_a text; otras_d text;
+        pre text; post text;
+BEGIN
+  e376 := pg_temp.m376_estado();
+  a_prv := pg_temp.m375_uid('proveedor.qa@ezpayconnect.com');
+  a_cli := pg_temp.m375_uid('clinica.qa@ezpayconnect.com');
+  pais_cli := (SELECT p.pais_id FROM public.perfiles p WHERE p.id = a_cli);
+  qalab := (SELECT cp.empresa_id FROM public.cuentas_proveedor cp WHERE cp.id = a_prv AND cp.activo AND cp.rol_en_empresa = 'admin');
+  IF a_prv IS NULL OR a_cli IS NULL OR pais_cli IS NULL OR qalab IS NULL
+     OR NOT EXISTS (SELECT 1 FROM public.medicos m WHERE m.id = a_cli AND m.lab_enrolador_id IS NULL) THEN
+    PERFORM set_config('probe.p1063', 'FALLO (actor inexistente: proveedor.qa admin activo con empresa, o clinica.qa sin enrolador y con pais)', false);
+    RETURN;
+  END IF;
+  pre := pg_temp.m375_snap();
+  BEGIN
+    IF pg_temp.m375_qalab_fijar(pais_cli) IS DISTINCT FROM qalab THEN RAISE EXCEPTION 'fixture roto: m375_qalab_fijar devolvio otra empresa'; END IF;
+    vid := pg_temp.m375_visita(a_prv, qalab, a_cli, CURRENT_DATE + 10, '07:04');
+    IF vid NOT LIKE 'OK:%' THEN RAISE EXCEPTION 'fixture roto: visita de QA Laboratorio a clinica.qa en hoy+10: %', vid; END IF;
+    otras_a := (SELECT md5(COALESCE(string_agg(v::text, E'\n' ORDER BY v.id), '')) FROM public.visitas_agendadas v WHERE v.id <> substr(vid, 4)::uuid);
+    res := pg_temp.m376_modificar(a_prv, substr(vid, 4), CURRENT_DATE + 12, NULL, NULL);
+    leida := (SELECT v.fecha_visita::text||'|'||v.hora_inicio::text||'|'||v.hora_fin::text||'|'||v.estado FROM public.visitas_agendadas v WHERE v.id = substr(vid, 4)::uuid);
+    otras_d := (SELECT md5(COALESCE(string_agg(v::text, E'\n' ORDER BY v.id), '')) FROM public.visitas_agendadas v WHERE v.id <> substr(vid, 4)::uuid);
+    RAISE EXCEPTION 'P1063 descarte' USING ERRCODE = 'P0999';
+  EXCEPTION WHEN SQLSTATE 'P0999' THEN NULL;
+  END;
+  post := pg_temp.m375_snap();
+  PERFORM set_config('probe.p1063', CASE
+    WHEN post IS DISTINCT FROM pre THEN 'FALLO (no volvio al snapshot tras el descarte)'
+    WHEN e376 NOT IN ('pre', 'post') THEN 'ROJO (376 '||e376||')'
+    WHEN e376 = 'pre' AND res LIKE 'ERR:42804:%' THEN 'REGRESION (376 ausente; hoy: '||left(res, 120)||')'
+    WHEN res LIKE 'OK:%"success": true%' AND leida = (CURRENT_DATE + 12)::text||'|07:04:00|07:34:00|confirmada' AND otras_d = otras_a
+      THEN 'OK (376: modificar solo con fecha -> success; fecha hoy+12, horas intactas, confirmada; otras filas intactas; estado 376: '||e376||'; descartado)'
+    ELSE 'ROJO (esperado success, '||(CURRENT_DATE + 12)::text||'|07:04:00|07:34:00|confirmada y otras filas intactas; vino '||left(res, 150)||
+         ' / '||COALESCE(leida, 'NULL')||' / otras '||(otras_d IS NOT DISTINCT FROM otras_a)::text||')' END, false);
+EXCEPTION WHEN OTHERS THEN
+  PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
+  PERFORM set_config('probe.p1063', CASE WHEN SQLERRM LIKE 'fixture roto%' THEN 'FALLO ('||SQLERRM||')'
+    ELSE 'FALLO ('||SQLSTATE||' '||SQLERRM||')' END, false);
+END $$;
+SELECT set_config('role', 'none', true);
+
+-- ---------------- P1064 376 no-regresion: 'modificar' SOLO con hora (fecha NULL, horas 'HH:MM') -> 1 fila, releida ----------------
+DO $$
+DECLARE e376 text; a_prv uuid; a_cli uuid; pais_cli uuid; qalab uuid; vid text; res text; leida text; otras_a text; otras_d text;
+        pre text; post text;
+BEGIN
+  e376 := pg_temp.m376_estado();
+  a_prv := pg_temp.m375_uid('proveedor.qa@ezpayconnect.com');
+  a_cli := pg_temp.m375_uid('clinica.qa@ezpayconnect.com');
+  pais_cli := (SELECT p.pais_id FROM public.perfiles p WHERE p.id = a_cli);
+  qalab := (SELECT cp.empresa_id FROM public.cuentas_proveedor cp WHERE cp.id = a_prv AND cp.activo AND cp.rol_en_empresa = 'admin');
+  IF a_prv IS NULL OR a_cli IS NULL OR pais_cli IS NULL OR qalab IS NULL
+     OR NOT EXISTS (SELECT 1 FROM public.medicos m WHERE m.id = a_cli AND m.lab_enrolador_id IS NULL) THEN
+    PERFORM set_config('probe.p1064', 'FALLO (actor inexistente: proveedor.qa admin activo con empresa, o clinica.qa sin enrolador y con pais)', false);
+    RETURN;
+  END IF;
+  pre := pg_temp.m375_snap();
+  BEGIN
+    IF pg_temp.m375_qalab_fijar(pais_cli) IS DISTINCT FROM qalab THEN RAISE EXCEPTION 'fixture roto: m375_qalab_fijar devolvio otra empresa'; END IF;
+    vid := pg_temp.m375_visita(a_prv, qalab, a_cli, CURRENT_DATE + 10, '07:05');
+    IF vid NOT LIKE 'OK:%' THEN RAISE EXCEPTION 'fixture roto: visita de QA Laboratorio a clinica.qa en hoy+10: %', vid; END IF;
+    otras_a := (SELECT md5(COALESCE(string_agg(v::text, E'\n' ORDER BY v.id), '')) FROM public.visitas_agendadas v WHERE v.id <> substr(vid, 4)::uuid);
+    res := pg_temp.m376_modificar(a_prv, substr(vid, 4), NULL, '08:10', '08:40');
+    leida := (SELECT v.fecha_visita::text||'|'||v.hora_inicio::text||'|'||v.hora_fin::text||'|'||v.estado FROM public.visitas_agendadas v WHERE v.id = substr(vid, 4)::uuid);
+    otras_d := (SELECT md5(COALESCE(string_agg(v::text, E'\n' ORDER BY v.id), '')) FROM public.visitas_agendadas v WHERE v.id <> substr(vid, 4)::uuid);
+    RAISE EXCEPTION 'P1064 descarte' USING ERRCODE = 'P0999';
+  EXCEPTION WHEN SQLSTATE 'P0999' THEN NULL;
+  END;
+  post := pg_temp.m375_snap();
+  PERFORM set_config('probe.p1064', CASE
+    WHEN post IS DISTINCT FROM pre THEN 'FALLO (no volvio al snapshot tras el descarte)'
+    WHEN e376 NOT IN ('pre', 'post') THEN 'ROJO (376 '||e376||')'
+    WHEN e376 = 'pre' AND res LIKE 'ERR:42804:%' THEN 'REGRESION (376 ausente; hoy: '||left(res, 120)||')'
+    WHEN res LIKE 'OK:%"success": true%' AND leida = (CURRENT_DATE + 10)::text||'|08:10:00|08:40:00|confirmada' AND otras_d = otras_a
+      THEN 'OK (376: modificar solo con hora -> success; fecha intacta, 08:10-08:40 releidas, confirmada; otras filas intactas; estado 376: '||e376||'; descartado)'
+    ELSE 'ROJO (esperado success, '||(CURRENT_DATE + 10)::text||'|08:10:00|08:40:00|confirmada y otras filas intactas; vino '||left(res, 150)||
+         ' / '||COALESCE(leida, 'NULL')||' / otras '||(otras_d IS NOT DISTINCT FROM otras_a)::text||')' END, false);
+EXCEPTION WHEN OTHERS THEN
+  PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
+  PERFORM set_config('probe.p1064', CASE WHEN SQLERRM LIKE 'fixture roto%' THEN 'FALLO ('||SQLERRM||')'
+    ELSE 'FALLO ('||SQLSTATE||' '||SQLERRM||')' END, false);
+END $$;
+SELECT set_config('role', 'none', true);
+
 -- ===== Veredictos como result set =====
 SELECT 'P1_anon_insert_citas'              AS probe, current_setting('probe.p1', true)  AS verdict, 'BLOQUEADO' AS esperado_post_fix
 UNION ALL SELECT 'P2_medico_cancela_ajena_rpc',         current_setting('probe.p2', true),  'BLOQUEADO'
@@ -36661,6 +37767,32 @@ UNION ALL SELECT 'P1037_prospecto_ubicacion_admin_mueve_pin_374',  current_setti
 UNION ALL SELECT 'P1038_prospecto_coord_a_medias_374',  current_setting('probe.p1038', true), 'OK (374: lat sin lng -> 23514 prospectos_coord_valida)'
 UNION ALL SELECT 'P1039_prospecto_coord_cero_cero_374',  current_setting('probe.p1039', true), 'OK (374: (0,0) -> 23514 prospectos_coord_valida)'
 UNION ALL SELECT 'P1040_prospecto_ubicacion_censo_374',  current_setting('probe.p1040', true), 'OK (374: CHECK validado; en actualizar_prospecto el gate corre antes de PA035; si falta: FALLO (objeto ausente))'
+UNION ALL SELECT 'M375_FX_helpers_enrolamiento',  current_setting('probe.m375_fx', true), 'OK (helpers de pg_temp creados; estado de la 375: post; pre: REGRESION; parcial: ROJO)'
+UNION ALL SELECT 'P1041_prioridad_activa_paciente_375',  current_setting('probe.p1041', true), 'OK (375: paciente.qa -> 42501 de EXECUTE en prioridad_activa; sin la 375: REGRESION)'
+UNION ALL SELECT 'P1042_lab_enrolador_no_legible_375',  current_setting('probe.p1042', true), 'OK (375: paciente.qa SELECT lab_enrolador_id -> 42501; sin la 375: REGRESION)'
+UNION ALL SELECT 'P1043_medicos_legibles_paciente_375',  current_setting('probe.p1043', true), 'OK (no-regresion: paciente.qa lee id y nombre_completo de > 0 medicos)'
+UNION ALL SELECT 'P1044_medico_llena_su_enrolador_375',  current_setting('probe.p1044', true), 'OK (375: clinica.qa, medico sin enrolador, llena el suyo -> PV015; sin la 375: REGRESION)'
+UNION ALL SELECT 'P1045_medico_cambia_su_fecha_375',  current_setting('probe.p1045', true), 'OK (375: medico.qa cambia su lab_enrolador_fecha -> PV015; sin la 375: REGRESION)'
+UNION ALL SELECT 'P1046_clinica_llena_enrolador_375',  current_setting('probe.p1046', true), 'OK (375: clinica.qa llena el enrolador de secretaria.qa -> PV015; sin la 375: REGRESION)'
+UNION ALL SELECT 'P1047_adminpais_cambia_fecha_375',  current_setting('probe.p1047', true), 'OK (375: adminpais.qa cambia la fecha de medico.qa -> PV015; sin la 375: REGRESION)'
+UNION ALL SELECT 'P1048_insert_medico_enrolado_375',  current_setting('probe.p1048', true), 'OK (375: INSERT de medico enrolado como postgres sin GUC -> PV015; sin la 375: REGRESION)'
+UNION ALL SELECT 'P1049_medico_cambia_telefono_375',  current_setting('probe.p1049', true), 'OK (no-regresion: medico.qa cambia su telefono, 1 fila)'
+UNION ALL SELECT 'P1050_adminpais_cambia_telefono_375',  current_setting('probe.p1050', true), 'OK (no-regresion: adminpais.qa cambia el telefono de un medico de GT, 1 fila)'
+UNION ALL SELECT 'P1051_enrolar_farmacia_pv016_375',  current_setting('probe.p1051', true), 'OK (375: farmacia.qa enrola -> PV016; sin la 375: REGRESION)'
+UNION ALL SELECT 'P1052_enrolar_rol_fuera_pv017_375',  current_setting('probe.p1052', true), 'OK (375: cuenta de QA Laboratorio con rol lectura enrola -> PV017; sin la 375: REGRESION)'
+UNION ALL SELECT 'P1053_enrolar_visitador_ok_375',  current_setting('probe.p1053', true), 'OK (visitador.qa enrola a clinica.qa: enrolado con fecha; GUC apagado; descartado)'
+UNION ALL SELECT 'P1054_enrolar_otro_lab_pv013_375',  current_setting('probe.p1054', true), 'OK (segundo lab farmaceutico con capacidad y plan -> PV013; descartado)'
+UNION ALL SELECT 'P1055_enrolar_anon_sin_execute_375',  current_setting('probe.p1055', true), 'OK (anon y PUBLIC sin EXECUTE en enrolar_medico; anon ejercitado 42501)'
+UNION ALL SELECT 'P1056_head_start_insert_pv002_375',  current_setting('probe.p1056', true), 'OK (segundo lab agenda a medico.qa en hoy+1 -> PV002; hoy+30 entra)'
+UNION ALL SELECT 'P1057_head_start_reprogramar_pv002_375',  current_setting('probe.p1057', true), 'OK (375: administrar_visita modificar hacia la ventana -> PV002; sin la 376: REGRESION por el 42804 de modificar)'
+UNION ALL SELECT 'P1058_head_start_solo_hora_375',  current_setting('probe.p1058', true), 'OK (375: solo hora dentro de la ventana -> success; control PV002; sin la 376: REGRESION por el 42804 de modificar)'
+UNION ALL SELECT 'P1059_head_start_lab_propio_375',  current_setting('probe.p1059', true), 'OK (QA Laboratorio reprograma su visita a hoy+1 -> success; sin la 376: REGRESION por el 42804 de modificar)'
+UNION ALL SELECT 'P1060_head_start_update_trigger_375',  current_setting('probe.p1060', true), 'OK (375: UPDATE de fecha hacia la ventana PV002 x2; solo hora 1 fila; sin la 375: REGRESION)'
+UNION ALL SELECT 'P1061_head_start_update_lab_propio_375',  current_setting('probe.p1061', true), 'OK (UPDATE de la visita de QA Laboratorio a hoy+1: 1 fila)'
+UNION ALL SELECT 'M376_FX_helpers_modificar',  current_setting('probe.m376_fx', true), 'OK (helpers de pg_temp creados; estado de la 376: post; pre: REGRESION; desconocido: ROJO)'
+UNION ALL SELECT 'P1062_modificar_hora_invalida_pv003_376',  current_setting('probe.p1062', true), 'OK (376: hora que no es HH:MM -> PV003 x4, visita intacta; sin la 376: REGRESION)'
+UNION ALL SELECT 'P1063_modificar_solo_fecha_376',  current_setting('probe.p1063', true), 'OK (376: modificar solo con fecha -> success, 1 fila; sin la 376: REGRESION)'
+UNION ALL SELECT 'P1064_modificar_solo_hora_376',  current_setting('probe.p1064', true), 'OK (376: modificar solo con hora -> success, 1 fila; sin la 376: REGRESION)'
 UNION ALL SELECT 'P1010_campana_vistas_sin_update_367',  current_setting('probe.p1010', true), 'OK (367: INSERT 1; ON CONFLICT DO NOTHING 0 sin error; DO UPDATE y UPDATE 42501; otro paciente 0; antes de la 367: PENDIENTE)'
 UNION ALL SELECT 'P1009_datos_bancarios_acotados_366',  current_setting('probe.p1009', true), 'OK (366: cuenta GT solo super_admin/admin_pais GT/proveedores GT; checkout 1 fila; config 21 super_admin y 14 el resto, admin_pais incluido; antes de la 366: PENDIENTE)'
 UNION ALL SELECT 'DET_p1009',  'DET ' || COALESCE(NULLIF(current_setting('probe.p1009_det', true), ''), '(sin dato)'), 'DET (detalle de P1009, no es probe)'
@@ -36913,7 +38045,7 @@ UNION ALL SELECT 'P000_CENTINELA_veredictos_no_nulos',
        'probe.p866', 'probe.p867', 'probe.p868', 'probe.p869', 'probe.p870', 'probe.p871', 'probe.p872', 'probe.p873', 'probe.p874', 'probe.p875', 'probe.p876', 'probe.p877', 'probe.p878',
        'probe.p879', 'probe.p880', 'probe.p881', 'probe.p882', 'probe.p883', 'probe.p884',
        'probe.p885', 'probe.p886', 'probe.p887', 'probe.p888', 'probe.p889', 'probe.p890', 'probe.p891', 'probe.p892', 'probe.p893', 'probe.p894', 'probe.p895', 'probe.p896', 'probe.p908', 'probe.p909', 'probe.p910', 'probe.p911',
-       'probe.p897', 'probe.p898', 'probe.p899', 'probe.p900', 'probe.p901', 'probe.p902', 'probe.p903', 'probe.p904', 'probe.p905', 'probe.p906', 'probe.p907', 'probe.p912', 'probe.p913', 'probe.p914', 'probe.p915', 'probe.p916', 'probe.p917', 'probe.p918', 'probe.p919', 'probe.p920', 'probe.p921', 'probe.p922', 'probe.p923', 'probe.p924', 'probe.p925', 'probe.p926', 'probe.p927', 'probe.p928', 'probe.p929', 'probe.p930', 'probe.p931', 'probe.p932', 'probe.p933', 'probe.p934', 'probe.p935', 'probe.p936', 'probe.p937', 'probe.p938', 'probe.p939', 'probe.p940', 'probe.p941', 'probe.p942', 'probe.p943', 'probe.p944', 'probe.p945', 'probe.p946', 'probe.p947', 'probe.p948', 'probe.p949', 'probe.p950', 'probe.p951', 'probe.p952', 'probe.p953', 'probe.p954', 'probe.p955', 'probe.p956', 'probe.p957', 'probe.p958', 'probe.p959', 'probe.p960', 'probe.p961', 'probe.p962', 'probe.p963', 'probe.p964', 'probe.p965', 'probe.p966', 'probe.p967', 'probe.p968', 'probe.p969', 'probe.p970', 'probe.p971', 'probe.p972', 'probe.p973', 'probe.p974', 'probe.p975', 'probe.p976', 'probe.p977', 'probe.p978', 'probe.p979', 'probe.p980', 'probe.p981', 'probe.p982', 'probe.p983', 'probe.p984', 'probe.p985', 'probe.p986', 'probe.p987', 'probe.p988', 'probe.p989', 'probe.p990', 'probe.p991', 'probe.p992', 'probe.p993', 'probe.p994', 'probe.p995', 'probe.p996', 'probe.p997', 'probe.p998', 'probe.p999', 'probe.p1000', 'probe.p1001', 'probe.p1002', 'probe.p1003', 'probe.p1004', 'probe.p1005', 'probe.p1006', 'probe.p1007', 'probe.p1008', 'probe.p1009', 'probe.p1010', 'probe.p1011', 'probe.p1012', 'probe.p1013', 'probe.p1014', 'probe.e370_fx', 'probe.p1015', 'probe.p1016', 'probe.p1017', 'probe.p1018', 'probe.g371_fx', 'probe.p1019', 'probe.p1020', 'probe.p1021', 'probe.p1022', 'probe.g372_fx', 'probe.p1023', 'probe.p1024', 'probe.p1025', 'probe.p1035', 'probe.p1036', 'probe.p1037', 'probe.p1038', 'probe.p1039', 'probe.p1040'
+       'probe.p897', 'probe.p898', 'probe.p899', 'probe.p900', 'probe.p901', 'probe.p902', 'probe.p903', 'probe.p904', 'probe.p905', 'probe.p906', 'probe.p907', 'probe.p912', 'probe.p913', 'probe.p914', 'probe.p915', 'probe.p916', 'probe.p917', 'probe.p918', 'probe.p919', 'probe.p920', 'probe.p921', 'probe.p922', 'probe.p923', 'probe.p924', 'probe.p925', 'probe.p926', 'probe.p927', 'probe.p928', 'probe.p929', 'probe.p930', 'probe.p931', 'probe.p932', 'probe.p933', 'probe.p934', 'probe.p935', 'probe.p936', 'probe.p937', 'probe.p938', 'probe.p939', 'probe.p940', 'probe.p941', 'probe.p942', 'probe.p943', 'probe.p944', 'probe.p945', 'probe.p946', 'probe.p947', 'probe.p948', 'probe.p949', 'probe.p950', 'probe.p951', 'probe.p952', 'probe.p953', 'probe.p954', 'probe.p955', 'probe.p956', 'probe.p957', 'probe.p958', 'probe.p959', 'probe.p960', 'probe.p961', 'probe.p962', 'probe.p963', 'probe.p964', 'probe.p965', 'probe.p966', 'probe.p967', 'probe.p968', 'probe.p969', 'probe.p970', 'probe.p971', 'probe.p972', 'probe.p973', 'probe.p974', 'probe.p975', 'probe.p976', 'probe.p977', 'probe.p978', 'probe.p979', 'probe.p980', 'probe.p981', 'probe.p982', 'probe.p983', 'probe.p984', 'probe.p985', 'probe.p986', 'probe.p987', 'probe.p988', 'probe.p989', 'probe.p990', 'probe.p991', 'probe.p992', 'probe.p993', 'probe.p994', 'probe.p995', 'probe.p996', 'probe.p997', 'probe.p998', 'probe.p999', 'probe.p1000', 'probe.p1001', 'probe.p1002', 'probe.p1003', 'probe.p1004', 'probe.p1005', 'probe.p1006', 'probe.p1007', 'probe.p1008', 'probe.p1009', 'probe.p1010', 'probe.p1011', 'probe.p1012', 'probe.p1013', 'probe.p1014', 'probe.e370_fx', 'probe.p1015', 'probe.p1016', 'probe.p1017', 'probe.p1018', 'probe.g371_fx', 'probe.p1019', 'probe.p1020', 'probe.p1021', 'probe.p1022', 'probe.g372_fx', 'probe.p1023', 'probe.p1024', 'probe.p1025', 'probe.p1035', 'probe.p1036', 'probe.p1037', 'probe.p1038', 'probe.p1039', 'probe.p1040', 'probe.m375_fx', 'probe.p1041', 'probe.p1042', 'probe.p1043', 'probe.p1044', 'probe.p1045', 'probe.p1046', 'probe.p1047', 'probe.p1048', 'probe.p1049', 'probe.p1050', 'probe.p1051', 'probe.p1052', 'probe.p1053', 'probe.p1054', 'probe.p1055', 'probe.p1056', 'probe.p1057', 'probe.p1058', 'probe.p1059', 'probe.p1060', 'probe.p1061', 'probe.m376_fx', 'probe.p1062', 'probe.p1063', 'probe.p1064'
              ]) AS n) s),
   'OK (todos los veredictos publicados)';
 

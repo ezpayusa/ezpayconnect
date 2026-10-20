@@ -24,23 +24,42 @@ Stack: React + Vite + TypeScript, Supabase / Postgres, deploy en Vercel, repo en
   minutos por esto** (P635 es la probe que faltaba, P636 su contraprueba).
 - NUNCA ampliar policies de RLS sobre tablas adyacentes a datos médicos (p. ej. campana_metricas). Para dar acceso, usar RPCs SECURITY DEFINER con search_path='', fail-closed (si el scope es NULL → 0 filas) y gate interno.
 - Probar aislamiento por rol impersonando request.jwt.claims en prod: cada rol ve lo suyo y no lo ajeno.
-- **Estado al 19-oct-2026 (manda sobre los números de la entrada siguiente):**
+- **Estado al 20-oct-2026 (manda sobre los números de las entradas siguientes):**
+  - **Mig 375** (hardening del enrolamiento de médicos: `enrolar_medico`, `prioridad_activa`, triggers
+    `trigger_medicos_lab_enrolador_inmutable` y `trigger_gate_head_start_lab`, CHECK `medicos_enrolador_coherente`)
+    **APLICADA en prod el 2026-10-20 14:03:21-14:03:24 UTC** y **mig 376** (`administrar_visita('modificar')` castea las horas a
+    time + PV003 hora inválida) **APLICADA el 2026-10-20 14:32:49-14:32:51 UTC**; las dos verificadas en sesión independiente.
+    Rama `enrolamiento/hardening-375`. md5(prosrc) de las 5 funciones tocadas: `administrar_visita` 5d4a718de9d34fcfcc36e74a0e068bce,
+    `enrolar_medico` 58e441f3a68a5f80645f9b8f0452ffca, `prioridad_activa` 07c6a62ffa594ebd093eeca1efbea0d8,
+    `trg_gate_head_start_lab` ba09b4fca04e22fe4c3ec0607691805e, `trg_medicos_lab_enrolador_inmutable` 2af30509d27efef4ed649c5785883381.
+  - **Huellas vigentes (post-376 = post-375):** ACL de funciones `9c59aecab498bbcb54ebe799b2fb6a3d 392`; ACL de relaciones de public
+    `1889d1d89630994fe0d8faa1c52c4fd8 2393`; policies `8a8dc5cfaf8365f95208fb9e8ba79674 309`.
+  - **Orden de rollback:** 376 → 375 → 374 → 373 → 372 → 371 → …
+  - **Próximos libres: mig 377, errcode PV004, errcode PA036, probe P1065.**
+  - **Harness al 20-oct (con la 375 y la 376 aplicadas):** 1153 filas, 11 rojas = exactamente la deuda; M375_FX, M376_FX y
+    P1041-P1064 en OK. La rama 'pre' de la 375 y de la 376 publica REGRESION (8be9b8f y 0de3a27).
+  - **`medicos` tiene GRANT SELECT POR COLUMNA para authenticated desde la 375** (para esconder `lab_enrolador_id`): toda columna
+    nueva de `medicos` necesita su `GRANT SELECT (col) … TO authenticated` explícito en la misma migración, y un `select('*')` de
+    usuario sobre `medicos` da 42501 (hay que listar las columnas).
+  - **Lección (20-oct):** el clasificador del modo automático de CC bloquea `git push`. El push lo hace Oscar a mano en
+    PowerShell con ruta Windows (`git -C C:\dev\ezpayconnect push origin <rama>`).
+
   - **Mig 374** (`prospectos_coord_valida` + PA035 en `actualizar_prospecto`) **APLICADA en prod el 2026-10-17 16:31 UTC** y
     verificada en sesión nueva (VERDE 4/4). Archivos en la rama `feat/prospecto-ubicacion` (PR #59, draft), en main desde b68992e (merge PR #59, 18-oct-2026); la 373 entró a main con el merge del PR #57 (19-oct-2026).
-  - La 373 está en prod (aplicada 2026-10-09) y en main desde el merge del PR #57. Huella de funciones viva post-373 = `027e10a7b66101b4f5bb85c475c34045 392`.
+  - La 373 está en prod (aplicada 2026-10-09) y en main desde el merge del PR #57. Huella de funciones post-373 = `027e10a7b66101b4f5bb85c475c34045 392` (ya no vigente: la 375 la llevó a `9c59aeca…/392`, ver 20-oct).
   - **Orden de rollback:** 374 → 373 → 372 → 371 → …
-  - **Próximos libres: mig 375, errcode PA036, probe P1041.**
+  - ~~Próximos libres: mig 375, errcode PA036, probe P1041.~~ (superado: ver 20-oct)
   - **Harness al 19-oct (con la 373 en main):** 1127 filas, 11 rojas = exactamente la deuda. Las 8 'preexistentes' del 17-oct eran fixtures
     frágiles (farm_emp con LIMIT 1 sin ORDER BY que eligió la empresa QA-MANUAL pendiente de la 373; P472 contando
     prospectos reales de GT), corregidos en fix/harness-fixture-farmacia. P110 dependía del ascenso posicional de P49 (perfiles ORDER BY id): fixtures fk_target y clin_member fijados en PR #65; quedan ~30 fixtures posicionales en backlog.
   - Rama sin upstream propio al crearse desde origin/main: push SIEMPRE con nombre de rama explícito.
-  - PRs #59-#64 y #57 mergeados al 19-oct; #56 (gate de textos legales) y #58 (front de altas) SIN mergear hasta completar los placeholders legales. Confirm email APAGADO en prod hasta que entre #58.
+  - PRs #57, #59-#64 y #65 (196100b) mergeados al 19-oct; #56 (gate de textos legales) y #58 (front de altas) SIN mergear hasta completar los placeholders legales. Confirm email APAGADO en prod hasta que entre #58.
   - Punto 2 comercial (18-oct): src/lib/navegacion.ts es el helper ÚNICO de links Google Maps/Waze; VisitadorRutaPage y EntregaDetallePage todavía arman los suyos (migrar después). Hoy usa visitasDeHoyConUbicacion; visitasDelDia sigue sin coordenadas.
-- **Próximos números libres: probe `P1041`** (global, no por módulo; P1035-P1040 usados por la mig 374; P1026-P1034 + M373_FX usados por la mig 373; P1023-P1025 + G372_FX usados por la mig 372; P1019-P1022 usados por la mig 371; P1015-P1018 usados por la mig 370, P1011-P1014 por la mig 369, P1010 por la mig 367, P1009 por la 366, P1008 por la 365, P1007 por la 364, P1001-P1006 por la mig 363, P996-P1000 por la 362, P990-P995 por la 361, P983-P989 por la 360, P975-P982 por la
+- **Próximos números libres: probe `P1065`** (global, no por módulo; M376_FX + P1062-P1064 usados por la mig 376; M375_FX + P1041-P1061 usados por la mig 375; P1035-P1040 usados por la mig 374; P1026-P1034 + M373_FX usados por la mig 373; P1023-P1025 + G372_FX usados por la mig 372; P1019-P1022 usados por la mig 371; P1015-P1018 usados por la mig 370, P1011-P1014 por la mig 369, P1010 por la mig 367, P1009 por la 366, P1008 por la 365, P1007 por la 364, P1001-P1006 por la mig 363, P996-P1000 por la 362, P990-P995 por la 361, P983-P989 por la 360, P975-P982 por la
   359, P967-P974 por la 358, P958-P966 por la 357 (obtener_medicos_por_ids acotada a relación); P906-P907 usados por la mig 336, P912-P913
   por la 337, P914-P915 por la 338, P916-P920 por la 339/340, P921-P923 por la 341, P924 por la 342, P925 por
   la 343, P926-P927 por la 344, P928-P929 por la 345, P930 por la 346, P931-P932 por la 347, P933 por la 348,
-  P934-P935 por la 349, P936 por la 350, P937-P939 por la 351, P940-P943 por la 353), **migración `375`** (la 374 es la integridad de ubicación de prospectos, aplicada el 17-oct; la 373 es el alta diferida de empresas, aplicada el 9-oct; la 371 es GL-02 y la 372 su hardening, las dos aplicadas el 8-oct), **errcode `LG007`** (prefijo LG,
+  P934-P935 por la 349, P936 por la 350, P937-P939 por la 351, P940-P943 por la 353), **migración `377`** (la 376 es `administrar_visita('modificar')` + PV003 y la 375 el hardening del enrolamiento, las dos aplicadas el 20-oct; la 374 es la integridad de ubicación de prospectos, aplicada el 17-oct; la 373 es el alta diferida de empresas, aplicada el 9-oct; la 371 es GL-02 y la 372 su hardening, las dos aplicadas el 8-oct), **errcode `LG007`** (prefijo LG,
   GL-02: LG001-LG005 en uso por la 371 — LG001 sin sesión, LG002 código inexistente, LG003 versión no vigente, LG004
   entrada inválida, LG005 aceptaciones append-only; LG006 = el texto no corresponde a la identidad de la cuenta, en uso
   por la 372), **errcode `PC029`** (familia PC: PC025 país requerido y PC026 sin autoridad en `contar_medicos_por_pais`, PC027
@@ -791,6 +810,20 @@ Detalles a recordar:
 - (Producto) `administrar_visita('rechazar')` no valida el estado de la visita (definición viva): rechaza visitas
   completadas, canceladas o ya rechazadas. Recon de producto post-11-oct. Detectado en la review de
   harness/diag-fixture-fm (m5 descartado, ver c38862e).
+- (Familia 8, backlog del harness, 20-oct-2026) FX12 (`probes_escritura.sql` ~L1310) convierte a `farmacia` la empresa del
+  "ajeno" con un UPDATE sin savepoint y el cambio PERSISTE para el resto de la transacción. Hoy el ajeno resuelve
+  (ORDER BY cp.id) a proveedor.qa → QA Laboratorio 411d6f8c, el lab farmacéutico QA del que dependen P828, P1018 y los
+  probes de la 375. P828 la fija y la vuelve a `farmacia`; la 375 la fija en su savepoint con
+  `pg_temp.m375_qalab_fijar`. FX12 no se tocó: acotar su efecto (savepoint propio o empresa sembrada) en un lote aparte.
+- (Visitas, recon de la mig 376, 20-oct-2026) `administrar_visita`:
+  (a) el RAISE 'No autorizado para administrar esta visita' no lleva ERRCODE (sale como P0001; el front lo reconoce por
+  el texto 'No autorizado'); darle uno propio cuando se toque el gate;
+  (b) 'rechazar' no valida el estado: medido en ROLLBACK, rechaza una visita ya `confirmada` de fecha pasada
+  (`c74a03de…`, 2026-10-15);
+  (c) los comentarios de la 375 (`375_enrolamiento_hardening.sql`, el trigger del head-start y el bloque de probes)
+  hablan de administrar_visita('reprogramar'); la acción real es 'modificar'. La 375 está aplicada y no se edita;
+  (d) PV003 (hora inválida, mig 376) no está mapeado en el front: `useVisitasAgendadas` muestra 'Error administrando
+  visita' para todo lo que no sea 'No autorizado'.
 - (Familia 8) ~~P800 salta las foreign tables~~: alineado en la rama de la 370 (relkind incluye 'f').
 - (Familia 2, **mig 373+**; los números 371 y 372 los tomó GL-02) REVOKE SELECT de anon en las 6 tablas de la WL_ANON_LEGACY que ya no usa (cuentas_proveedor,
   empresas_proveedoras, liquidaciones_comision, pacientes, perfiles, recetas): anon no evalúa ninguna policy sobre ellas
