@@ -24,7 +24,7 @@ BEGIN
   v := (SELECT string_agg(f.proname||'='||md5(f.prosrc), ',' ORDER BY f.proname) FROM pg_proc f
          WHERE f.oid IN ('public.enrolar_medico(uuid)'::regprocedure, 'public.prioridad_activa(uuid)'::regprocedure,
                          'public.trg_gate_head_start_lab()'::regprocedure, 'public.trg_medicos_lab_enrolador_inmutable()'::regprocedure));
-  IF v IS DISTINCT FROM 'enrolar_medico=26824150ab1e1cba92ed2a9bbe676306,prioridad_activa=07c6a62ffa594ebd093eeca1efbea0d8,trg_gate_head_start_lab=ba09b4fca04e22fe4c3ec0607691805e,trg_medicos_lab_enrolador_inmutable=2af30509d27efef4ed649c5785883381' THEN
+  IF v IS DISTINCT FROM 'enrolar_medico=58e441f3a68a5f80645f9b8f0452ffca,prioridad_activa=07c6a62ffa594ebd093eeca1efbea0d8,trg_gate_head_start_lab=ba09b4fca04e22fe4c3ec0607691805e,trg_medicos_lab_enrolador_inmutable=2af30509d27efef4ed649c5785883381' THEN
     bad := bad||'cuerpos ['||COALESCE(v, '-')||']; ';
   END IF;
   IF NOT EXISTS (SELECT 1 FROM pg_constraint c WHERE c.conrelid = 'public.medicos'::regclass AND c.conname = 'medicos_enrolador_coherente') THEN

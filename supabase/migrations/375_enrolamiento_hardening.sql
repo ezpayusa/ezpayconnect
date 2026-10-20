@@ -225,7 +225,7 @@ BEGIN
   -- 4) Gate de CAPACIDAD: la empresa debe tener el módulo 'enrolamiento' activo/vigente.
   --    Va antes del plan/país porque es la pregunta más fundamental ("¿tu empresa contrató esto?").
   IF NOT private.empresa_tiene_capacidad(v_empresa, 'enrolamiento') THEN
-    RAISE EXCEPTION 'Tu empresa no tiene activado el módulo de enrolamiento. Contactá a soporte para activarlo.' USING ERRCODE = 'PV014';
+    RAISE EXCEPTION 'Tu empresa no tiene activado el módulo de enrolamiento. Contacta a soporte para activarlo.' USING ERRCODE = 'PV014';
   END IF;
 
   -- 5) Puerta comercial: MISMA que ver disponibilidad/agendar (plan activo que cubre el país del médico).
@@ -401,7 +401,7 @@ BEGIN
     IF p.cfg IS DISTINCT FROM '{"search_path=\"\""}' THEN bad := bad||p.sig||' proconfig '||COALESCE(p.cfg, '-')||'; '; END IF;
     IF p.sig = 'enrolar_medico(uuid)' THEN
       IF NOT p.prosecdef THEN bad := bad||'enrolar_medico no es DEFINER; '; END IF;
-      IF p.m IS DISTINCT FROM '26824150ab1e1cba92ed2a9bbe676306' THEN bad := bad||'enrolar_medico md5 '||p.m||'; '; END IF;
+      IF p.m IS DISTINCT FROM '58e441f3a68a5f80645f9b8f0452ffca' THEN bad := bad||'enrolar_medico md5 '||p.m||'; '; END IF;
       IF p.acl IS DISTINCT FROM '{postgres=X/postgres,authenticated=X/postgres,service_role=X/postgres}' THEN bad := bad||'enrolar_medico proacl '||COALESCE(p.acl, 'NULL')||'; '; END IF;
     ELSIF p.sig = 'prioridad_activa(uuid)' THEN
       IF NOT p.prosecdef THEN bad := bad||'prioridad_activa no es DEFINER; '; END IF;
