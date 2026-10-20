@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useRef } from 'react'
 import type { VisitaTipo } from '@/proveedor/types/proveedor.types'
 import { useNavigate } from 'react-router-dom'
 import { Button } from '@/components/ui/button'
@@ -12,6 +12,10 @@ import { usePlanesVisitador } from '@/proveedor/hooks/usePlanesVisitador'
 import { useProveedorAuth } from '@/proveedor/hooks/useProveedorAuth'
 import { MENSAJE_BOLSA_AGOTADA_VISITADOR, MENSAJE_SIN_BOLSA_VISITADOR, RUTA_COMPRA_PLANES_VISITADOR } from '@/proveedor/lib/compraPlanVisitador'
 import { toast } from 'sonner'
+import { useEnrolamiento } from '@/visitador/hooks/useEnrolamiento'
+import { usePuedeEnrolar } from '@/visitador/hooks/usePuedeEnrolar'
+import IndicadorPrioridad from '@/visitador/components/IndicadorPrioridad'
+import { fechaBloqueadaPorPrioridad, semanasHasta, type PrioridadAgendar } from '@/visitador/lib/enrolamiento'
 import {
   Search,
   CalendarDays,
@@ -55,6 +59,15 @@ export default function VisitadorAgendarPage() {
   // Comprar es de admin/editor (planes.contratar); el visitador solo avisa a su administrador.
   const { puede } = useProveedorAuth()
   const puedeComprar = puede('planes.contratar')
+  // Enrolamiento (migs 375-380): la prioridad se consulta siempre que hay médico elegido; enrolar y solicitar alta
+  // solo se ofrecen a un lab farmacéutico con el módulo (usePuedeEnrolar). La barrera real es la RPC.
+  const { prioridadParaAgendar, enrolarMedico } = useEnrolamiento()
+  const { puedeEnrolar } = usePuedeEnrolar()
+  const [prioridad, setPrioridad] = useState<PrioridadAgendar | null>(null)
+  const [enrolando, setEnrolando] = useState(false)
+  const [buscado, setBuscado] = useState(false)
+  // Médico vigente: descarta respuestas de prioridad de un médico que ya no está elegido.
+  const medicoVigente = useRef<string | null>(null)
 
   const [query, setQuery] = useState('')
   const [medicoSeleccionado, setMedicoSeleccionado] = useState<string | null>(null)
@@ -78,6 +91,7 @@ export default function VisitadorAgendarPage() {
 
   const handleBuscar = (e: React.FormEvent) => {
     e.preventDefault()
+    setBuscado(true)
     buscarMedicos(query)
   }
 
@@ -136,10 +150,46 @@ export default function VisitadorAgendarPage() {
     setCargandoSlots(false)
   }
 
+  // prioridad_para_agendar del médico. Con 'otro_laboratorio' la grilla salta a la semana de fecha_minima.
+  // Si falla (PV026, red) no se muestra indicador: la regla igual la aplica el trigger al guardar (PV002).
+  const cargarPrioridad = async (id: string, saltarSemana: boolean) => {
+    const r = await prioridadParaAgendar(id)
+    if (medicoVigente.current !== id) return
+    const p = r.ok ? r.data : null
+    setPrioridad(p)
+    if (saltarSemana && p?.estado === 'otro_laboratorio' && p.fecha_minima) {
+      setSemanaOffset(semanasHasta(p.fecha_minima, new Date()))
+    }
+  }
+
   const seleccionarMedico = async (id: string) => {
+    medicoVigente.current = id
     setMedicoSeleccionado(id)
     setSlotSeleccionado(null)
+    setPrioridad(null)
+    cargarPrioridad(id, true)
     await fetchDisponibilidadMedico(id)
+  }
+
+  const deseleccionarMedico = () => {
+    medicoVigente.current = null
+    setMedicoSeleccionado(null)
+    setSlotSeleccionado(null)
+    setSlotsGenerados([])
+    setPrioridad(null)
+  }
+
+  const handleEnrolar = async () => {
+    if (!medicoSeleccionado) return
+    setEnrolando(true)
+    const r = await enrolarMedico(medicoSeleccionado)
+    setEnrolando(false)
+    if (!r.ok) {
+      toast.error(r.error.mensaje) // PV013 (enrolado por otro lab), PV011, PV014…: mensaje del servidor
+      return
+    }
+    toast.success(r.data === 'enrolado' ? 'Médico enrolado. Ahora tienes prioridad con él.' : 'Ya habías enrolado a este médico.')
+    cargarPrioridad(medicoSeleccionado, false)
   }
 
   const cambiarSemana = async (direccion: number) => {
@@ -157,6 +207,11 @@ export default function VisitadorAgendarPage() {
       toast.error('Selecciona un horario')
       return
     }
+    if (fechaBloqueadaPorPrioridad(slotSeleccionado.fecha, prioridad)) {
+      toast.error('Este horario está reservado para el laboratorio con prioridad. Elige otra fecha.')
+      setSlotSeleccionado(null)
+      return
+    }
 
     // El visitador propone; el admin confirma. No bloqueamos por visitasDisponibles aquí.
     const ok = await agendarVisita({
@@ -169,7 +224,7 @@ export default function VisitadorAgendarPage() {
     })
 
     if (ok) {
-      toast.success('Visita propuesta. Tu administrador la revisará pronto.')
+      // El toast de éxito lo da agendarVisita (uno solo; su texto depende del rol).
       navigate('/visitador/mis-visitas')
     } else {
       // Pudo haber sido tomado por otro proveedor: limpiar selección y refrescar slots.
@@ -273,15 +328,40 @@ export default function VisitadorAgendarPage() {
         <ListaMedicosAgendar medicos={medicos} onSeleccionar={seleccionarMedico} />
       )}
 
+      {/* Sin resultados: la búsqueda devolvió 0 filas */}
+      {buscado && !loading && medicos.length === 0 && !medicoSeleccionado && (
+        <Card className="bg-gray-50 border-dashed" data-testid="busqueda-sin-resultados">
+          <CardContent className="p-6 text-center text-sm text-muted-foreground space-y-2">
+            <p>No encontramos médicos con ese nombre.</p>
+            {puedeEnrolar && (
+              <button
+                type="button"
+                className="text-[#1E5C8E] font-medium underline"
+                onClick={() => navigate('/visitador/solicitar-alta')}
+              >
+                ¿No encuentras al médico? Solicita su alta
+              </button>
+            )}
+          </CardContent>
+        </Card>
+      )}
+
       {/* Disponibilidad del médico seleccionado */}
       {medicoSeleccionado && (
         <div className="space-y-4">
           <div className="flex items-center justify-between flex-wrap gap-2">
             <h2 className="text-lg font-semibold">Horarios disponibles</h2>
-            <Button variant="ghost" size="sm" onClick={() => { setMedicoSeleccionado(null); setSlotSeleccionado(null); setSlotsGenerados([]) }}>
+            <Button variant="ghost" size="sm" onClick={deseleccionarMedico}>
               Cambiar médico
             </Button>
           </div>
+
+          <IndicadorPrioridad
+            prioridad={prioridad}
+            puedeEnrolar={puedeEnrolar}
+            enrolando={enrolando}
+            onEnrolar={handleEnrolar}
+          />
 
           {/* Navegación de semanas */}
           <div className="flex items-center justify-between bg-white rounded-lg border p-3">
@@ -329,13 +409,18 @@ export default function VisitadorAgendarPage() {
                     </CardTitle>
                   </CardHeader>
                   <CardContent className="space-y-2 pt-0">
-                    {slots.map((slot, idx) => (
+                    {slots.map((slot, idx) => {
+                      // Antes de fecha_minima (prioridad de otro laboratorio) el turno no se puede elegir.
+                      const reservado = !slot.ocupado && fechaBloqueadaPorPrioridad(slot.fecha, prioridad)
+                      return (
                       <button
                         key={idx}
-                        disabled={slot.ocupado}
+                        disabled={slot.ocupado || reservado}
+                        data-reservado={reservado || undefined}
+                        title={reservado ? 'Reservado para el laboratorio con prioridad' : undefined}
                         onClick={() => setSlotSeleccionado(slot)}
                         className={`w-full text-left p-2 rounded-lg text-sm border transition-colors ${
-                          slot.ocupado
+                          slot.ocupado || reservado
                             ? 'bg-gray-100 text-gray-400 border-gray-200 cursor-not-allowed'
                             : slotSeleccionado?.fecha === slot.fecha &&
                                 slotSeleccionado?.inicio === slot.inicio
@@ -345,7 +430,7 @@ export default function VisitadorAgendarPage() {
                       >
                         <div className="flex items-center justify-between">
                           <span className="flex items-center gap-2">
-                            {slot.ocupado && <Lock className="h-3 w-3" />}
+                            {(slot.ocupado || reservado) && <Lock className="h-3 w-3" />}
                             {slot.ocupado ? 'Ocupado' : `${slot.inicio} – ${slot.fin}`}
                           </span>
                           {!slot.ocupado &&
@@ -355,10 +440,11 @@ export default function VisitadorAgendarPage() {
                             )}
                         </div>
                         {!slot.ocupado && (
-                          <div className="text-xs opacity-80">{slot.duracion} min</div>
+                          <div className="text-xs opacity-80">{reservado ? 'Reservado' : `${slot.duracion} min`}</div>
                         )}
                       </button>
-                    ))}
+                      )
+                    })}
                   </CardContent>
                 </Card>
               ))}

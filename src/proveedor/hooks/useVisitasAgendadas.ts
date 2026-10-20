@@ -6,6 +6,13 @@ import { cupoDelPais, cupoPorPais, hayCupo, paisOperativo, type BolsaCupo } from
 import type { UbicacionVisita } from './useRutaVisitador'
 import { toast } from 'sonner'
 import { nombreMedico, resolverNombresMedicos } from '@/proveedor/lib/nombresMedicos'
+import { mensajeErrorVisita } from '@/proveedor/lib/erroresVisitas'
+
+// Errores: por CÓDIGO, con mensajeErrorVisita (src/proveedor/lib/erroresVisitas.ts). PV001 (bolsa agotada), PV002
+// (head-start de otro laboratorio, trae la fecha), PV003 (hora inválida), 23505 y 42501 los decide el mapa.
+// DEUDA: los rechazos 'No autorizado…' de cancelar_visita, administrar_visita, checkin_visita y checkout_visita
+// se levantan SIN ERRCODE (salen como P0001), así que el front no puede distinguirlos: P0001 muestra un texto
+// fijo por acción y el mensaje de la base no se lee. Arreglarlo es darles ERRCODE propio en la base.
 
 export function useVisitasAgendadas() {
   const { empresa, cuenta, puede } = useProveedorAuth()
@@ -194,21 +201,7 @@ export function useVisitasAgendadas() {
     setSaving(false)
 
     if (error) {
-      const msg = (error as any).message || ''
-      // 23505 = el slot ya fue tomado por otro proveedor entre que lo viste y lo guardaste.
-      if ((error as any).code === '23505') {
-        toast.error('Ese horario acaba de ser tomado por otro proveedor. Por favor elige otro.', { duration: 6000 })
-        return false
-      }
-      if (msg.includes('SIN_PLAN')) {
-        toast.error('Tu empresa no tiene un plan de visitas activo. Contrata un plan para poder agendar.', { duration: 7000 })
-        return false
-      }
-      if (msg.includes('LIMITE_MENSUAL')) {
-        toast.error('Alcanzaste el límite de visitas de tu plan este mes. Mejora tu plan para agendar más.', { duration: 7000 })
-        return false
-      }
-      toast.error('Error agendando visita')
+      toast.error(mensajeErrorVisita(error, 'agendar'), { duration: 7000 })
       console.error(error)
       return false
     }
@@ -258,11 +251,8 @@ export function useVisitasAgendadas() {
       fetchPlanesAsignados()                     // refrescar saldo DERIVADO (cancelar libera slot en pvc_usadas)
       return true
     } catch (err: any) {
-      // La RPC lanza RAISE EXCEPTION si no sos el dueño ni super_admin (mig 211).
-      const msg = typeof err?.message === 'string' && err.message.includes('No autorizado')
-        ? 'No tienes permiso para cancelar esta visita.'
-        : 'Error cancelando visita'
-      toast.error(msg)
+      // La RPC lanza RAISE EXCEPTION (P0001, sin ERRCODE) si no eres el dueño ni super_admin (mig 211).
+      toast.error(mensajeErrorVisita(err, 'cancelar'))
       console.error(err)
       return false
     } finally {
@@ -345,10 +335,7 @@ export function useVisitasAgendadas() {
     } catch (err: any) {
       // La RPC lanza RAISE EXCEPTION en el gate de autorización (mig 210): p.ej. un visitador
       // sin permiso de aprobar que intente llegar acá queda bloqueado server-side.
-      const msg = typeof err?.message === 'string' && err.message.includes('No autorizado')
-        ? 'No tienes permiso para administrar esta visita.'
-        : 'Error administrando visita'
-      toast.error(msg)
+      toast.error(mensajeErrorVisita(err, 'administrar'))
       console.error(err)
       return false
     } finally {
@@ -405,10 +392,7 @@ export function useVisitasAgendadas() {
       fetchVisitas()
       return true
     } catch (err: any) {
-      const msg = typeof err?.message === 'string' && err.message.includes('No autorizado')
-        ? 'No tienes permiso para hacer check-in de esta visita.'
-        : 'Error registrando check-in'
-      toast.error(msg)
+      toast.error(mensajeErrorVisita(err, 'checkin'))
       console.error(err)
       return false
     } finally {
@@ -432,10 +416,7 @@ export function useVisitasAgendadas() {
       fetchVisitas()
       return true
     } catch (err: any) {
-      const msg = typeof err?.message === 'string' && err.message.includes('No autorizado')
-        ? 'No tienes permiso para hacer check-out de esta visita.'
-        : 'Error registrando check-out'
-      toast.error(msg)
+      toast.error(mensajeErrorVisita(err, 'checkout'))
       console.error(err)
       return false
     } finally {
