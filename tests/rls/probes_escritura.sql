@@ -35543,12 +35543,12 @@ END $$;
 SELECT set_config('role', 'none', true);
 
 -- ================================================================================
--- MIG 375 — hardening del enrolamiento de medicos (M375_FX + P1041-P1061). SIN APLICAR al 20-oct-2026.
+-- MIG 375 — hardening del enrolamiento de medicos (M375_FX + P1041-P1061). APLICADA en prod el 2026-10-20 14:03 UTC.
 -- pg_temp.m375_estado(): 'post' (las 6 piezas de la 375), 'pre' (ninguna: estado post-374) o 'parcial: n/6 (...)'.
--- En 'pre' los probes que dependen de la 375 publican 'PENDIENTE mig 375 (hoy: ...)'; 'parcial' es ROJO. Las
--- no-regresiones (P1043, P1049, P1050, P1053-P1056, P1061) se miden en los dos estados, y el 42804 de
--- administrar_visita('modificar') (P1057-P1059) se juzga ANTES de mirar el estado: no depende de la 375. Al aplicar la
--- 375, la rama 'pre' pasa a REGRESION (commit aparte, como en la 370).
+-- Con la 375 aplicada no hay rama PENDIENTE: en 'pre' (375_rollback) M375_FX y los probes que dependen de la 375
+-- publican 'REGRESION (375 ausente; ...)'; 'parcial' es ROJO. Las no-regresiones (P1043, P1049, P1050, P1053-P1056,
+-- P1061) se miden en los dos estados, y el 42804 de administrar_visita('modificar') (P1057-P1059) se juzga ANTES de
+-- mirar el estado: no depende de la 375. Quien corra 375_rollback tiene que esperar esas rojas (como en la 370).
 -- 'reprogramar' = administrar_visita(..., 'modificar', ...): es la unica accion que mueve fecha/hora de una visita (la
 -- 375 la llama 'reprogramar' en sus comentarios). P1060/P1061 miden la regla del trigger en UPDATE sin la RPC, como
 -- postgres (administrar_visita es DEFINER: su UPDATE corre como el dueno).
@@ -35723,6 +35723,7 @@ $body$
 $fn$;
   est := pg_temp.m375_estado();
   PERFORM set_config('probe.m375_fx', CASE WHEN est LIKE 'parcial%' THEN 'ROJO (375 '||est||'; helpers de pg_temp creados)'
+    WHEN est = 'pre' THEN 'REGRESION (375 ausente: ninguna de las 6 piezas; helpers de pg_temp creados)'
     ELSE 'OK (helpers de pg_temp creados; estado de la 375: '||est||')' END, false);
 EXCEPTION WHEN OTHERS THEN
   PERFORM set_config('probe.m375_fx', 'FALLO ('||SQLSTATE||' '||SQLERRM||')', false);
@@ -35743,7 +35744,7 @@ BEGIN
   res := pg_temp.m375_como(a_pac, 'authenticated', format('SELECT activa::text FROM public.prioridad_activa(%L)', a_med));
   PERFORM set_config('probe.p1041', CASE
     WHEN est LIKE 'parcial%' THEN 'ROJO (375 '||est||')'
-    WHEN est = 'pre' THEN 'PENDIENTE mig 375 (hoy: '||left(res, 150)||')'
+    WHEN est = 'pre' THEN 'REGRESION (375 ausente; hoy: '||left(res, 150)||')'
     WHEN res LIKE 'ERR:42501:%prioridad_activa%' THEN 'OK (375: paciente.qa -> 42501 de EXECUTE en prioridad_activa)'
     ELSE 'ROJO (esperado 42501 en prioridad_activa; vino '||left(res, 200)||')' END, false);
 EXCEPTION WHEN OTHERS THEN
@@ -35765,7 +35766,7 @@ BEGIN
   res := pg_temp.m375_como(a_pac, 'authenticated', 'SELECT count(*)::text FROM (SELECT m.lab_enrolador_id FROM public.medicos m) x');
   PERFORM set_config('probe.p1042', CASE
     WHEN est LIKE 'parcial%' THEN 'ROJO (375 '||est||')'
-    WHEN est = 'pre' THEN 'PENDIENTE mig 375 (hoy: '||left(res, 150)||')'
+    WHEN est = 'pre' THEN 'REGRESION (375 ausente; hoy: '||left(res, 150)||')'
     WHEN res LIKE 'ERR:42501:%medicos%' THEN 'OK (375: paciente.qa SELECT lab_enrolador_id -> 42501 de privilegio por columna)'
     ELSE 'ROJO (esperado 42501 sobre medicos; vino '||left(res, 200)||')' END, false);
 EXCEPTION WHEN OTHERS THEN
@@ -35817,7 +35818,7 @@ BEGIN
   PERFORM set_config('probe.p1044', CASE
     WHEN post IS DISTINCT FROM pre THEN 'FALLO (no volvio al snapshot tras el descarte)'
     WHEN est LIKE 'parcial%' THEN 'ROJO (375 '||est||')'
-    WHEN est = 'pre' THEN 'PENDIENTE mig 375 (hoy: '||left(res, 150)||')'
+    WHEN est = 'pre' THEN 'REGRESION (375 ausente; hoy: '||left(res, 150)||')'
     WHEN res LIKE 'ERR:PV015:%' THEN 'OK (375: clinica.qa, medico sin enrolador, llena el suyo -> PV015; descartado)'
     ELSE 'ROJO (esperado PV015; vino '||left(res, 200)||')' END, false);
 EXCEPTION WHEN OTHERS THEN
@@ -35847,7 +35848,7 @@ BEGIN
   PERFORM set_config('probe.p1045', CASE
     WHEN post IS DISTINCT FROM pre THEN 'FALLO (no volvio al snapshot tras el descarte)'
     WHEN est LIKE 'parcial%' THEN 'ROJO (375 '||est||')'
-    WHEN est = 'pre' THEN 'PENDIENTE mig 375 (hoy: '||left(res, 150)||')'
+    WHEN est = 'pre' THEN 'REGRESION (375 ausente; hoy: '||left(res, 150)||')'
     WHEN res LIKE 'ERR:PV015:%' THEN 'OK (375: medico.qa cambia su lab_enrolador_fecha -> PV015; descartado)'
     ELSE 'ROJO (esperado PV015; vino '||left(res, 200)||')' END, false);
 EXCEPTION WHEN OTHERS THEN
@@ -35885,7 +35886,7 @@ BEGIN
     WHEN post IS DISTINCT FROM pre THEN 'FALLO (no volvio al snapshot tras el descarte)'
     WHEN vis IS DISTINCT FROM 'OK:1' THEN 'FALLO (fixture: clinica.qa no ve la fila de secretaria.qa: '||left(vis, 150)||')'
     WHEN est LIKE 'parcial%' THEN 'ROJO (375 '||est||')'
-    WHEN est = 'pre' THEN 'PENDIENTE mig 375 (hoy: '||left(res, 150)||')'
+    WHEN est = 'pre' THEN 'REGRESION (375 ausente; hoy: '||left(res, 150)||')'
     WHEN res LIKE 'ERR:PV015:%' THEN 'OK (375: clinica.qa llena el enrolador de secretaria.qa, de su clinica -> PV015; descartado)'
     ELSE 'ROJO (esperado PV015; vino '||left(res, 200)||')' END, false);
 EXCEPTION WHEN OTHERS THEN
@@ -35919,7 +35920,7 @@ BEGIN
   PERFORM set_config('probe.p1047', CASE
     WHEN post IS DISTINCT FROM pre THEN 'FALLO (no volvio al snapshot tras el descarte)'
     WHEN est LIKE 'parcial%' THEN 'ROJO (375 '||est||')'
-    WHEN est = 'pre' THEN 'PENDIENTE mig 375 (hoy: '||left(res, 150)||')'
+    WHEN est = 'pre' THEN 'REGRESION (375 ausente; hoy: '||left(res, 150)||')'
     WHEN res LIKE 'ERR:PV015:%' THEN 'OK (375: adminpais.qa cambia la fecha de enrolamiento de medico.qa -> PV015; descartado)'
     ELSE 'ROJO (esperado PV015; vino '||left(res, 200)||')' END, false);
 EXCEPTION WHEN OTHERS THEN
@@ -35955,7 +35956,7 @@ BEGIN
   PERFORM set_config('probe.p1048', CASE
     WHEN post IS DISTINCT FROM pre THEN 'FALLO (no volvio al snapshot tras el descarte)'
     WHEN est LIKE 'parcial%' THEN 'ROJO (375 '||est||')'
-    WHEN est = 'pre' THEN 'PENDIENTE mig 375 (hoy: '||left(res, 150)||')'
+    WHEN est = 'pre' THEN 'REGRESION (375 ausente; hoy: '||left(res, 150)||')'
     WHEN res LIKE 'ERR:PV015:%' THEN 'OK (375: INSERT de medico con lab_enrolador_id como postgres sin GUC -> PV015; descartado)'
     ELSE 'ROJO (esperado PV015; vino '||left(res, 200)||')' END, false);
 EXCEPTION WHEN OTHERS THEN
@@ -36046,7 +36047,7 @@ BEGIN
   PERFORM set_config('probe.p1051', CASE
     WHEN post IS DISTINCT FROM pre THEN 'FALLO (no volvio al snapshot tras el descarte)'
     WHEN est LIKE 'parcial%' THEN 'ROJO (375 '||est||')'
-    WHEN est = 'pre' THEN 'PENDIENTE mig 375 (hoy: '||left(res, 150)||')'
+    WHEN est = 'pre' THEN 'REGRESION (375 ausente; hoy: '||left(res, 150)||')'
     WHEN res LIKE 'ERR:PV016:%' THEN 'OK (375: farmacia.qa enrola -> PV016 no es laboratorio farmaceutico)'
     ELSE 'ROJO (esperado PV016; vino '||left(res, 200)||')' END, false);
 EXCEPTION WHEN OTHERS THEN
@@ -36093,7 +36094,7 @@ BEGIN
   PERFORM set_config('probe.p1052', CASE
     WHEN post IS DISTINCT FROM pre THEN 'FALLO (no volvio al snapshot tras el descarte)'
     WHEN est LIKE 'parcial%' THEN 'ROJO (375 '||est||')'
-    WHEN est = 'pre' THEN 'PENDIENTE mig 375 (hoy: '||left(res, 150)||')'
+    WHEN est = 'pre' THEN 'REGRESION (375 ausente; hoy: '||left(res, 150)||')'
     WHEN res LIKE 'ERR:PV017:%' THEN 'OK (375: '||quien||' enrola -> PV017; descartado)'
     ELSE 'ROJO (esperado PV017 para '||COALESCE(quien, '-')||'; vino '||left(res, 200)||')' END, false);
 EXCEPTION WHEN OTHERS THEN
@@ -36261,7 +36262,7 @@ BEGIN
     WHEN post IS DISTINCT FROM pre THEN 'FALLO (no volvio al snapshot tras el descarte)'
     WHEN res LIKE 'ERR:42804:%' THEN 'FALLO (bug previo, no de la 375: administrar_visita(''modificar'') no compila: '||left(substr(res, 11), 150)||')'
     WHEN est LIKE 'parcial%' THEN 'ROJO (375 '||est||')'
-    WHEN est = 'pre' THEN 'PENDIENTE mig 375 (hoy: '||left(res, 150)||')'
+    WHEN est = 'pre' THEN 'REGRESION (375 ausente; hoy: '||left(res, 150)||')'
     WHEN res LIKE 'ERR:PV002:%' THEN 'OK (375: el segundo lab mueve su visita de hoy+30 a hoy+1 con administrar_visita -> PV002; descartado)'
     ELSE 'ROJO (esperado PV002; vino '||left(res, 200)||')' END, false);
 EXCEPTION WHEN OTHERS THEN
@@ -36311,11 +36312,11 @@ BEGIN
   post := pg_temp.m375_snap();
   PERFORM set_config('probe.p1058', CASE
     WHEN post IS DISTINCT FROM pre THEN 'FALLO (no volvio al snapshot tras el descarte)'
-    WHEN fix <> '' AND est = 'pre' THEN 'PENDIENTE mig 375 (hoy no se puede sembrar: '||fix||')'
+    WHEN fix <> '' AND est = 'pre' THEN 'REGRESION (375 ausente; no se puede sembrar: '||fix||')'
     WHEN fix <> '' THEN 'FALLO (fixture: '||fix||')'
     WHEN r_hora LIKE 'ERR:42804:%' THEN 'FALLO (bug previo, no de la 375: administrar_visita(''modificar'') no compila: '||left(substr(r_hora, 11), 150)||')'
     WHEN est LIKE 'parcial%' THEN 'ROJO (375 '||est||')'
-    WHEN est = 'pre' THEN 'PENDIENTE mig 375 (hoy: hora '||left(r_hora, 100)||' / control '||left(r_ctl, 100)||')'
+    WHEN est = 'pre' THEN 'REGRESION (375 ausente; hoy: hora '||left(r_hora, 100)||' / control '||left(r_ctl, 100)||')'
     WHEN r_hora LIKE 'OK:%"success": true%' AND leida = (CURRENT_DATE + 1)::text||'|05:58:00' AND r_ctl LIKE 'ERR:PV002:%'
       THEN 'OK (375: solo hora dentro de la ventana -> success, fecha intacta y 05:58 releida; control hoy+2 -> PV002; descartado)'
     ELSE 'ROJO (hora '||left(r_hora, 120)||' / releida '||COALESCE(leida, 'NULL')||' / control '||left(r_ctl, 120)||')' END, false);
@@ -36410,10 +36411,10 @@ BEGIN
   post := pg_temp.m375_snap();
   PERFORM set_config('probe.p1060', CASE
     WHEN post IS DISTINCT FROM pre THEN 'FALLO (no volvio al snapshot tras el descarte)'
-    WHEN fix <> '' AND est = 'pre' THEN 'PENDIENTE mig 375 (hoy: fecha '||left(r_fecha, 100)||'; no se puede sembrar: '||fix||')'
+    WHEN fix <> '' AND est = 'pre' THEN 'REGRESION (375 ausente; hoy: fecha '||left(r_fecha, 100)||'; no se puede sembrar: '||fix||')'
     WHEN fix <> '' THEN 'FALLO (fixture: '||fix||')'
     WHEN est LIKE 'parcial%' THEN 'ROJO (375 '||est||')'
-    WHEN est = 'pre' THEN 'PENDIENTE mig 375 (hoy: fecha '||left(r_fecha, 100)||' / hora '||left(r_hora, 60)||' / control '||left(r_ctl, 100)||')'
+    WHEN est = 'pre' THEN 'REGRESION (375 ausente; hoy: fecha '||left(r_fecha, 100)||' / hora '||left(r_hora, 60)||' / control '||left(r_ctl, 100)||')'
     WHEN r_fecha LIKE 'ERR:PV002:%' AND r_hora = 'RC:1' AND r_ctl LIKE 'ERR:PV002:%'
       THEN 'OK (375: UPDATE de fecha hoy+30 -> hoy+1 PV002; solo hora dentro de la ventana 1 fila; esa misma a hoy+2 PV002; descartado)'
     ELSE 'ROJO (fecha '||left(r_fecha, 120)||' / hora '||left(r_hora, 120)||' / control '||left(r_ctl, 120)||')' END, false);
@@ -37582,19 +37583,19 @@ UNION ALL SELECT 'P1037_prospecto_ubicacion_admin_mueve_pin_374',  current_setti
 UNION ALL SELECT 'P1038_prospecto_coord_a_medias_374',  current_setting('probe.p1038', true), 'OK (374: lat sin lng -> 23514 prospectos_coord_valida)'
 UNION ALL SELECT 'P1039_prospecto_coord_cero_cero_374',  current_setting('probe.p1039', true), 'OK (374: (0,0) -> 23514 prospectos_coord_valida)'
 UNION ALL SELECT 'P1040_prospecto_ubicacion_censo_374',  current_setting('probe.p1040', true), 'OK (374: CHECK validado; en actualizar_prospecto el gate corre antes de PA035; si falta: FALLO (objeto ausente))'
-UNION ALL SELECT 'M375_FX_helpers_enrolamiento',  current_setting('probe.m375_fx', true), 'OK (helpers de pg_temp creados; estado de la 375: post o pre; parcial: ROJO)'
-UNION ALL SELECT 'P1041_prioridad_activa_paciente_375',  current_setting('probe.p1041', true), 'OK (375: paciente.qa -> 42501 de EXECUTE en prioridad_activa; antes de la 375: PENDIENTE)'
-UNION ALL SELECT 'P1042_lab_enrolador_no_legible_375',  current_setting('probe.p1042', true), 'OK (375: paciente.qa SELECT lab_enrolador_id -> 42501; antes de la 375: PENDIENTE)'
+UNION ALL SELECT 'M375_FX_helpers_enrolamiento',  current_setting('probe.m375_fx', true), 'OK (helpers de pg_temp creados; estado de la 375: post; pre: REGRESION; parcial: ROJO)'
+UNION ALL SELECT 'P1041_prioridad_activa_paciente_375',  current_setting('probe.p1041', true), 'OK (375: paciente.qa -> 42501 de EXECUTE en prioridad_activa; sin la 375: REGRESION)'
+UNION ALL SELECT 'P1042_lab_enrolador_no_legible_375',  current_setting('probe.p1042', true), 'OK (375: paciente.qa SELECT lab_enrolador_id -> 42501; sin la 375: REGRESION)'
 UNION ALL SELECT 'P1043_medicos_legibles_paciente_375',  current_setting('probe.p1043', true), 'OK (no-regresion: paciente.qa lee id y nombre_completo de > 0 medicos)'
-UNION ALL SELECT 'P1044_medico_llena_su_enrolador_375',  current_setting('probe.p1044', true), 'OK (375: clinica.qa, medico sin enrolador, llena el suyo -> PV015; antes de la 375: PENDIENTE)'
-UNION ALL SELECT 'P1045_medico_cambia_su_fecha_375',  current_setting('probe.p1045', true), 'OK (375: medico.qa cambia su lab_enrolador_fecha -> PV015; antes de la 375: PENDIENTE)'
-UNION ALL SELECT 'P1046_clinica_llena_enrolador_375',  current_setting('probe.p1046', true), 'OK (375: clinica.qa llena el enrolador de secretaria.qa -> PV015; antes de la 375: PENDIENTE)'
-UNION ALL SELECT 'P1047_adminpais_cambia_fecha_375',  current_setting('probe.p1047', true), 'OK (375: adminpais.qa cambia la fecha de medico.qa -> PV015; antes de la 375: PENDIENTE)'
-UNION ALL SELECT 'P1048_insert_medico_enrolado_375',  current_setting('probe.p1048', true), 'OK (375: INSERT de medico enrolado como postgres sin GUC -> PV015; antes de la 375: PENDIENTE)'
+UNION ALL SELECT 'P1044_medico_llena_su_enrolador_375',  current_setting('probe.p1044', true), 'OK (375: clinica.qa, medico sin enrolador, llena el suyo -> PV015; sin la 375: REGRESION)'
+UNION ALL SELECT 'P1045_medico_cambia_su_fecha_375',  current_setting('probe.p1045', true), 'OK (375: medico.qa cambia su lab_enrolador_fecha -> PV015; sin la 375: REGRESION)'
+UNION ALL SELECT 'P1046_clinica_llena_enrolador_375',  current_setting('probe.p1046', true), 'OK (375: clinica.qa llena el enrolador de secretaria.qa -> PV015; sin la 375: REGRESION)'
+UNION ALL SELECT 'P1047_adminpais_cambia_fecha_375',  current_setting('probe.p1047', true), 'OK (375: adminpais.qa cambia la fecha de medico.qa -> PV015; sin la 375: REGRESION)'
+UNION ALL SELECT 'P1048_insert_medico_enrolado_375',  current_setting('probe.p1048', true), 'OK (375: INSERT de medico enrolado como postgres sin GUC -> PV015; sin la 375: REGRESION)'
 UNION ALL SELECT 'P1049_medico_cambia_telefono_375',  current_setting('probe.p1049', true), 'OK (no-regresion: medico.qa cambia su telefono, 1 fila)'
 UNION ALL SELECT 'P1050_adminpais_cambia_telefono_375',  current_setting('probe.p1050', true), 'OK (no-regresion: adminpais.qa cambia el telefono de un medico de GT, 1 fila)'
-UNION ALL SELECT 'P1051_enrolar_farmacia_pv016_375',  current_setting('probe.p1051', true), 'OK (375: farmacia.qa enrola -> PV016; antes de la 375: PENDIENTE)'
-UNION ALL SELECT 'P1052_enrolar_rol_fuera_pv017_375',  current_setting('probe.p1052', true), 'OK (375: cuenta de QA Laboratorio con rol lectura enrola -> PV017; antes de la 375: PENDIENTE)'
+UNION ALL SELECT 'P1051_enrolar_farmacia_pv016_375',  current_setting('probe.p1051', true), 'OK (375: farmacia.qa enrola -> PV016; sin la 375: REGRESION)'
+UNION ALL SELECT 'P1052_enrolar_rol_fuera_pv017_375',  current_setting('probe.p1052', true), 'OK (375: cuenta de QA Laboratorio con rol lectura enrola -> PV017; sin la 375: REGRESION)'
 UNION ALL SELECT 'P1053_enrolar_visitador_ok_375',  current_setting('probe.p1053', true), 'OK (visitador.qa enrola a clinica.qa: enrolado con fecha; GUC apagado; descartado)'
 UNION ALL SELECT 'P1054_enrolar_otro_lab_pv013_375',  current_setting('probe.p1054', true), 'OK (segundo lab farmaceutico con capacidad y plan -> PV013; descartado)'
 UNION ALL SELECT 'P1055_enrolar_anon_sin_execute_375',  current_setting('probe.p1055', true), 'OK (anon y PUBLIC sin EXECUTE en enrolar_medico; anon ejercitado 42501)'
@@ -37602,7 +37603,7 @@ UNION ALL SELECT 'P1056_head_start_insert_pv002_375',  current_setting('probe.p1
 UNION ALL SELECT 'P1057_head_start_reprogramar_pv002_375',  current_setting('probe.p1057', true), 'OK (375: administrar_visita modificar hacia la ventana -> PV002; hoy: FALLO por el 42804 previo de modificar)'
 UNION ALL SELECT 'P1058_head_start_solo_hora_375',  current_setting('probe.p1058', true), 'OK (375: solo hora dentro de la ventana -> success; control PV002; hoy: FALLO por el 42804 previo de modificar)'
 UNION ALL SELECT 'P1059_head_start_lab_propio_375',  current_setting('probe.p1059', true), 'OK (QA Laboratorio reprograma su visita a hoy+1 -> success; hoy: FALLO por el 42804 previo de modificar)'
-UNION ALL SELECT 'P1060_head_start_update_trigger_375',  current_setting('probe.p1060', true), 'OK (375: UPDATE de fecha hacia la ventana PV002 x2; solo hora 1 fila; antes de la 375: PENDIENTE)'
+UNION ALL SELECT 'P1060_head_start_update_trigger_375',  current_setting('probe.p1060', true), 'OK (375: UPDATE de fecha hacia la ventana PV002 x2; solo hora 1 fila; sin la 375: REGRESION)'
 UNION ALL SELECT 'P1061_head_start_update_lab_propio_375',  current_setting('probe.p1061', true), 'OK (UPDATE de la visita de QA Laboratorio a hoy+1: 1 fila)'
 UNION ALL SELECT 'P1010_campana_vistas_sin_update_367',  current_setting('probe.p1010', true), 'OK (367: INSERT 1; ON CONFLICT DO NOTHING 0 sin error; DO UPDATE y UPDATE 42501; otro paciente 0; antes de la 367: PENDIENTE)'
 UNION ALL SELECT 'P1009_datos_bancarios_acotados_366',  current_setting('probe.p1009', true), 'OK (366: cuenta GT solo super_admin/admin_pais GT/proveedores GT; checkout 1 fila; config 21 super_admin y 14 el resto, admin_pais incluido; antes de la 366: PENDIENTE)'
