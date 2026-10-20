@@ -17,21 +17,33 @@ const json = (b: unknown, s = 200) => new Response(JSON.stringify(b), { status: 
 
 const TIPOS = new Set(['propuesta', 'aprobada', 'rechazada', 'aprobada_clinica', 'cancelada_clinica'])
 
-// --- Plantillas portadas TAL CUAL de src/proveedor/lib/notificaciones.ts (misma interpolación).
-//     Única adaptación: VITE_APP_URL (var de build del front) → APP_URL (env de la function). ---
+// Constante, como en enviar-invitacion-medico: APP_URL no existe en el env de las edges y el link salía relativo.
+const APP_URL = 'https://med.ezpayconnect.com'
+
+// Escape HTML de todo dato de la base que va dentro de las plantillas (& primero).
+function esc(s: unknown): string {
+  if (s === null || s === undefined) return ''
+  return String(s)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;')
+}
+
+// --- Plantillas portadas de src/proveedor/lib/notificaciones.ts; los datos de la base van con esc(). ---
 function buildHtmlVisitaPropuesta(props: { medicoNombre: string; visitadorNombre: string; fecha: string; hora: string; tipo: string; notas?: string | null }): string {
-  const appUrl = Deno.env.get('APP_URL') || ''
   return `
     <div style="font-family:sans-serif;max-width:480px;margin:0 auto;padding:24px;border:1px solid #e5e7eb;border-radius:8px;">
       <h2 style="color:#1E5C8E;margin-top:0;">Nueva visita propuesta</h2>
-      <p><strong>Visitador:</strong> ${props.visitadorNombre}</p>
-      <p><strong>Médico:</strong> ${props.medicoNombre}</p>
-      <p><strong>Fecha:</strong> ${props.fecha}</p>
-      <p><strong>Hora:</strong> ${props.hora}</p>
-      <p><strong>Tipo:</strong> ${props.tipo}</p>
-      ${props.notas ? `<p><strong>Notas:</strong> ${props.notas}</p>` : ''}
+      <p><strong>Visitador:</strong> ${esc(props.visitadorNombre)}</p>
+      <p><strong>Médico:</strong> ${esc(props.medicoNombre)}</p>
+      <p><strong>Fecha:</strong> ${esc(props.fecha)}</p>
+      <p><strong>Hora:</strong> ${esc(props.hora)}</p>
+      <p><strong>Tipo:</strong> ${esc(props.tipo)}</p>
+      ${props.notas ? `<p><strong>Notas:</strong> ${esc(props.notas)}</p>` : ''}
       <div style="margin-top:24px;text-align:center;">
-        <a href="${appUrl}/proveedor/visitador/aprobar"
+        <a href="${APP_URL}/proveedor/visitador/aprobar"
            style="background:#1E5C8E;color:#fff;padding:12px 24px;text-decoration:none;border-radius:6px;display:inline-block;">
           Revisar visitas
         </a>
@@ -44,10 +56,10 @@ function buildHtmlVisitaAprobada(props: { medicoNombre: string; fecha: string; h
   return `
     <div style="font-family:sans-serif;max-width:480px;margin:0 auto;padding:24px;border:1px solid #e5e7eb;border-radius:8px;">
       <h2 style="color:#16a34a;margin-top:0;">Visita aprobada ✅</h2>
-      <p>Tu visita con <strong>${props.medicoNombre}</strong> fue confirmada.</p>
-      <p><strong>Fecha:</strong> ${props.fecha}</p>
-      <p><strong>Hora:</strong> ${props.hora}</p>
-      ${props.comentario ? `<p><strong>Comentario del admin:</strong> ${props.comentario}</p>` : ''}
+      <p>Tu visita con <strong>${esc(props.medicoNombre)}</strong> fue confirmada.</p>
+      <p><strong>Fecha:</strong> ${esc(props.fecha)}</p>
+      <p><strong>Hora:</strong> ${esc(props.hora)}</p>
+      ${props.comentario ? `<p><strong>Comentario del admin:</strong> ${esc(props.comentario)}</p>` : ''}
     </div>
   `
 }
@@ -56,9 +68,9 @@ function buildHtmlVisitaRechazada(props: { medicoNombre: string; fecha: string; 
   return `
     <div style="font-family:sans-serif;max-width:480px;margin:0 auto;padding:24px;border:1px solid #e5e7eb;border-radius:8px;">
       <h2 style="color:#dc2626;margin-top:0;">Visita rechazada ❌</h2>
-      <p>Tu visita con <strong>${props.medicoNombre}</strong> no fue aprobada.</p>
-      <p><strong>Fecha propuesta:</strong> ${props.fecha}</p>
-      ${props.comentario ? `<p><strong>Motivo:</strong> ${props.comentario}</p>` : ''}
+      <p>Tu visita con <strong>${esc(props.medicoNombre)}</strong> no fue aprobada.</p>
+      <p><strong>Fecha propuesta:</strong> ${esc(props.fecha)}</p>
+      ${props.comentario ? `<p><strong>Motivo:</strong> ${esc(props.comentario)}</p>` : ''}
     </div>
   `
 }
@@ -68,9 +80,9 @@ function buildHtmlVisitaClinicaAprobada(props: { medicoNombre: string; empresaNo
   return `
     <div style="font-family:sans-serif;max-width:480px;margin:0 auto;padding:24px;border:1px solid #e5e7eb;border-radius:8px;">
       <h2 style="color:#16a34a;margin-top:0;">Visita de laboratorio aprobada</h2>
-      <p>Se aprobó una visita de <strong>${props.empresaNom}</strong> con <strong>${props.medicoNombre}</strong>.</p>
-      <p><strong>Fecha:</strong> ${props.fecha}</p>
-      <p><strong>Hora:</strong> ${props.hora}</p>
+      <p>Se aprobó una visita de <strong>${esc(props.empresaNom)}</strong> con <strong>${esc(props.medicoNombre)}</strong>.</p>
+      <p><strong>Fecha:</strong> ${esc(props.fecha)}</p>
+      <p><strong>Hora:</strong> ${esc(props.hora)}</p>
     </div>
   `
 }
@@ -79,9 +91,9 @@ function buildHtmlVisitaClinicaCancelada(props: { medicoNombre: string; empresaN
   return `
     <div style="font-family:sans-serif;max-width:480px;margin:0 auto;padding:24px;border:1px solid #e5e7eb;border-radius:8px;">
       <h2 style="color:#dc2626;margin-top:0;">Visita de laboratorio cancelada</h2>
-      <p>Se canceló la visita de <strong>${props.empresaNom}</strong> con <strong>${props.medicoNombre}</strong>.</p>
-      <p><strong>Fecha:</strong> ${props.fecha}</p>
-      <p><strong>Hora:</strong> ${props.hora}</p>
+      <p>Se canceló la visita de <strong>${esc(props.empresaNom)}</strong> con <strong>${esc(props.medicoNombre)}</strong>.</p>
+      <p><strong>Fecha:</strong> ${esc(props.fecha)}</p>
+      <p><strong>Hora:</strong> ${esc(props.hora)}</p>
     </div>
   `
 }
@@ -140,7 +152,8 @@ serve(async (req) => {
           headers: { 'Authorization': `Bearer ${resendKey}`, 'Content-Type': 'application/json' },
           body: JSON.stringify({ from: 'EzPayConnect <no-reply@ezpayconnect.com>', to: r.email, subject, html }),
         })
-        const rdata = await res.json()
+        let rdata: any = {}
+        try { rdata = await res.json() } catch { /* cuerpo no JSON: el estado sale de res.ok */ }
         await supabase.from('notificaciones_email').insert({
           destinatario: r.email, asunto: subject, tipo: `visita_${tipo}`,
           estado: res.ok ? 'enviado' : 'fallido', error: res.ok ? null : (rdata?.message || JSON.stringify(rdata)),
@@ -195,7 +208,8 @@ serve(async (req) => {
       headers: { 'Authorization': `Bearer ${resendApiKey}`, 'Content-Type': 'application/json' },
       body: JSON.stringify({ from: 'EzPayConnect <no-reply@ezpayconnect.com>', to, subject, html }),
     })
-    const data = await res.json()
+    let data: any = {}
+    try { data = await res.json() } catch { /* cuerpo no JSON: el estado sale de res.ok */ }
 
     // (6) Log en notificaciones_email (mismo destino que hoy; identidad/visita derivadas, no del body).
     const { error: logError } = await supabase.from('notificaciones_email').insert({
