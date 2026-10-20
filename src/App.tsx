@@ -106,6 +106,7 @@ const ProveedorLogin = lazy(() => import('@/proveedor/pages/ProveedorLogin'))
 const ProveedorRegistro = lazy(() => import('@/proveedor/pages/ProveedorRegistro'))
 const ProveedorRegistroVisitador = lazy(() => import('@/proveedor/pages/visitador/ProveedorRegistroVisitador'))
 const ProveedorDashboard = lazy(() => import('@/proveedor/pages/ProveedorDashboard'))
+const MisMedicosPage = lazy(() => import('@/proveedor/pages/MisMedicosPage'))
 const ProductosListPage = lazy(() => import('@/proveedor/pages/productos/ProductosListPage'))
 const ProductoFormPage = lazy(() => import('@/proveedor/pages/productos/ProductoFormPage'))
 const EquipoRolesPage = lazy(() => import('@/proveedor/pages/EquipoRolesPage'))
@@ -470,6 +471,7 @@ function App() {
           <Route path="visitadores/:id" element={<VisitadorDetallePage />} />
           <Route path="equipos" element={<EquiposPage />} />
           <Route path="mensajes" element={<MensajesPage />} />
+          <Route path="mis-medicos" element={<MisMedicosPage />} />
           <Route path="publicidad/planes" element={<PublicidadPlanesPage />} />
           <Route path="publicidad/campanas" element={<PublicidadCampanasPage />} />
           <Route path="publicidad/campanas/nueva" element={<PublicidadCampanaFormPage />} />

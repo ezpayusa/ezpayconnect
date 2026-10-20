@@ -168,3 +168,33 @@ export function semanasHasta(fechaIso: string, hoy: Date): number {
   const diff = Math.round((lunes(new Date(y, m - 1, d)).getTime() - lunes(hoy).getTime()) / (7 * 24 * 60 * 60 * 1000))
   return Math.max(0, diff)
 }
+
+// --- listar_mis_medicos_enrolados (mig 380): "Mis médicos" del laboratorio. Sin email ni teléfono (la RPC no los trae).
+export interface MedicoEnrolado {
+  medico_id: string
+  nombre_completo: string
+  especialidad: string | null
+  /** timestamptz ISO de la fecha de enrolamiento. */
+  lab_enrolador_fecha: string | null
+  prioridad_activa: boolean
+  visitas_completadas: number | null
+  visitas_limite: number | null
+  /** 'YYYY-MM-DD' (UTC): techo de 18 meses de la prioridad. */
+  prioridad_vence_el: string | null
+  dias_ventaja: number | null
+}
+
+export function parsearMedicosEnrolados(raw: unknown): MedicoEnrolado[] {
+  const filas = (Array.isArray(raw) ? raw : []) as Record<string, unknown>[]
+  return filas.map((f) => ({
+    medico_id: String(f.medico_id),
+    nombre_completo: String(f.nombre_completo ?? ''),
+    especialidad: typeof f.especialidad === 'string' && f.especialidad.trim() !== '' ? f.especialidad : null,
+    lab_enrolador_fecha: typeof f.lab_enrolador_fecha === 'string' ? f.lab_enrolador_fecha : null,
+    prioridad_activa: f.prioridad_activa === true,
+    visitas_completadas: numOrNull(f.visitas_completadas),
+    visitas_limite: numOrNull(f.visitas_limite),
+    prioridad_vence_el: typeof f.prioridad_vence_el === 'string' && FECHA_ISO.test(f.prioridad_vence_el) ? f.prioridad_vence_el : null,
+    dias_ventaja: numOrNull(f.dias_ventaja),
+  }))
+}
