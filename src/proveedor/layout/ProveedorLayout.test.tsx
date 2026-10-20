@@ -10,11 +10,13 @@ import { puedeRol } from '@/proveedor/lib/permisos'
 let rolActual = 'admin'
 // Para el caso hipotético de un rol con los dos permisos (hoy ninguno de permisos.ts los tiene).
 let ambosPermisos = false
+let tipoEmpresa = 'laboratorio_farmaceutico'
+let capacidades = ['visitadores', 'productos', 'publicidad', 'enrolamiento']
 
 vi.mock('@/proveedor/hooks/useProveedorAuth', () => ({
   useProveedorAuth: () => ({
     loading: false,
-    empresa: { id: 'emp-1', tipo: 'laboratorio_farmaceutico', nombre_empresa: 'Lab QA' },
+    empresa: { id: 'emp-1', tipo: tipoEmpresa, nombre_empresa: 'Lab QA' },
     cuenta: { rol_en_empresa: rolActual },
     logout: vi.fn(),
     puede: (p: Parameters<typeof puedeRol>[1]) =>
@@ -22,7 +24,7 @@ vi.mock('@/proveedor/hooks/useProveedorAuth', () => ({
   }),
 }))
 vi.mock('@/proveedor/hooks/useCapacidades', () => ({
-  useCapacidades: () => ({ tieneCapacidad: () => true, loading: false }),
+  useCapacidades: () => ({ tieneCapacidad: (c: string) => capacidades.includes(c), loading: false }),
 }))
 vi.mock('@/components/theme/TenantThemeProvider', () => ({
   TenantThemeProvider: ({ children }: { children: ReactNode }) => <>{children}</>,
@@ -50,6 +52,8 @@ const menu = () => {
 beforeEach(() => {
   rolActual = 'admin'
   ambosPermisos = false
+  tipoEmpresa = 'laboratorio_farmaceutico'
+  capacidades = ['visitadores', 'productos', 'publicidad', 'enrolamiento']
 })
 
 describe('ProveedorLayout — ítems de reporte', () => {
@@ -80,5 +84,27 @@ describe('ProveedorLayout — ítems de reporte', () => {
     const nav = menu()
     expect(nav.getAllByRole('link', { name: 'Reporte de Visitas' })).toHaveLength(1)
     expect(nav.queryByRole('link', { name: 'Mi Reporte' })).toBeNull()
+  })
+})
+
+describe('ProveedorLayout — "Mis Médicos"', () => {
+  it.each(['admin', 'supervisor'])('rol %s de un lab farmacéutico con el módulo enrolamiento lo ve', (rol) => {
+    rolActual = rol
+    expect(menu().getByRole('link', { name: 'Mis Médicos' })).toHaveAttribute('href', '/proveedor/mis-medicos')
+  })
+
+  it.each(['visitador_medico', 'catalogo', 'marketing', 'finanzas', 'lectura'])('rol %s no lo ve', (rol) => {
+    rolActual = rol
+    expect(menu().queryByRole('link', { name: 'Mis Médicos' })).toBeNull()
+  })
+
+  it.each(['farmacia', 'laboratorio_clinico', 'empresa_afin'])('empresa %s no lo ve (aunque tenga el módulo)', (tipo) => {
+    tipoEmpresa = tipo
+    expect(menu().queryByRole('link', { name: 'Mis Médicos' })).toBeNull()
+  })
+
+  it('sin el módulo enrolamiento no lo ve', () => {
+    capacidades = ['visitadores']
+    expect(menu().queryByRole('link', { name: 'Mis Médicos' })).toBeNull()
   })
 })
