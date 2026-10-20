@@ -30,12 +30,12 @@ export interface ErrorRpcMapeado {
   /** Para `inline`: qué campo del formulario señalar. */
   campo?: string
   /** El cliente quedó desincronizado con la base y conviene recargar esa colección. */
-  recargar?: 'catalogo' | 'contactos' | 'jornada' | 'visita' | 'tarjeta'
+  recargar?: 'catalogo' | 'contactos' | 'jornada' | 'visita' | 'tarjeta' | 'solicitudes'
   /** El control debe volver al valor anterior (el cambio no se aplicó). */
   revertir?: boolean
   /** Mandarlo a Sentry: es un bug nuestro o algo que no previmos, no un error del usuario. */
   reportar: boolean
-  /** true = es un PA0xx que este mapa todavía no conoce. */
+  /** true = es un PA0xx o PV0xx que este mapa todavía no conoce. */
   sinMapear?: boolean
 }
 
@@ -196,13 +196,47 @@ const MAPA: Record<string, Entrada> = {
   // con la ficha abierta (o la llamada vino por otro camino): se pide recargar, no se reporta.
   PA035: { texto: 'La dirección y la ubicación del prospecto las carga tu administrador de país. Recarga la ficha para ver los datos actuales.',
            destino: 'toast', reportar: false },
+
+  // --- Familia PV: visitas y enrolamiento de médicos ------------------------------------------
+  // Todos los PV vienen redactados para el usuario final, en tú, sin datos ajenos: se muestra el mensaje
+  // del servidor tal cual (PV002 trae la fecha desde la que se puede agendar; PV019 dice qué campo está mal).
+  // Están solo los códigos que existen en la base (PV004-PV009 no se usan): uno nuevo cae en `sinMapear`.
+  // Visitas: PV001 bolsa agotada (mig 116), PV002 head-start del laboratorio con prioridad (196/375),
+  // PV003 hora inválida en administrar_visita('modificar') (376).
+  PV001: { destino: 'toast', reportar: false },
+  PV002: { destino: 'toast', reportar: false },
+  PV003: { destino: 'toast', reportar: false },
+  // Enrolamiento (375): gates de enrolar_medico, que reusan solicitar_alta_medico y las lecturas de la 380.
+  PV010: { destino: 'toast', reportar: false },
+  PV011: { destino: 'toast', reportar: false },
+  PV012: { destino: 'toast', reportar: false },
+  PV013: { destino: 'toast', reportar: false },
+  PV014: { destino: 'toast', reportar: false },
+  // El guard de `medicos`: el front nunca escribe lab_enrolador_id directo, así que si aparece es bug nuestro.
+  PV015: { destino: 'toast', reportar: true },
+  PV016: { destino: 'toast', reportar: false },
+  PV017: { destino: 'toast', reportar: false },
+  // Solicitudes de alta (377/378). PV018-PV021 son del formulario: van inline, pegados al campo.
+  PV018: { destino: 'inline', campo: 'autorizado', reportar: false },
+  PV019: { destino: 'inline', campo: 'formulario', reportar: false },
+  PV020: { destino: 'inline', campo: 'email', reportar: false },
+  PV021: { destino: 'inline', campo: 'email', reportar: false },
+  // La solicitud cambió de estado con la lista abierta: la lista local miente.
+  PV022: { destino: 'toast', recargar: 'solicitudes', reportar: false },
+  PV023: { destino: 'toast', recargar: 'solicitudes', reportar: false },
+  // Aprobar/reenviar (378): los ve el admin de país.
+  PV024: { destino: 'toast', reportar: false },
+  PV025: { destino: 'toast', reportar: false },
+  // prioridad_para_agendar (380): médico inexistente o no visible, mismo mensaje.
+  PV026: { destino: 'toast', reportar: false },
 }
 
-const ES_PA = /^PA\d{3}$/
+// Familias cuyo mensaje de la base ya es para el usuario: un código desconocido de estas NO cae en el genérico.
+const ES_FAMILIA_PROPIA = /^P[AV]\d{3}$/
 
 /** Quita el prefijo `PA0xx: ` con que la base numera sus mensajes: es ruido para quien lo lee. */
 function sinPrefijo(mensaje: string): string {
-  return mensaje.replace(/^PA\d{3}:\s*/, '').trim()
+  return mensaje.replace(/^P[AV]\d{3}:\s*/, '').trim()
 }
 
 // Storage NO devuelve SQLSTATE: devuelve un StorageApiError con `statusCode`/`status` HTTP. Para
@@ -243,7 +277,7 @@ export function mapearErrorRpc(error: unknown): ErrorRpcMapeado {
   if (!entrada) {
     // Un PA0xx que este mapa no conoce NO puede desaparecer en el genérico: el código queda a la
     // vista para que se note y se mapee. Es lo único que hace que este archivo envejezca bien.
-    if (ES_PA.test(code)) {
+    if (ES_FAMILIA_PROPIA.test(code)) {
       return {
         code,
         mensaje: mensajeBase ? `[${code} sin mapear] ${sinPrefijo(mensajeBase)}` : `[${code} sin mapear]`,

@@ -270,3 +270,57 @@ describe('los tres negativos — que el mapa envejezca bien y no rompa', () => {
     expect(r.reportar).toBe(true)
   })
 })
+
+// Familia PV (visitas + enrolamiento, migs 116/196/375-380). Los mensajes de la base ya vienen para el usuario
+// final, en tú: se muestran tal cual. PV004-PV009 no existen en la base y quedan fuera del mapa a propósito.
+const PV_EN_USO = ['PV001', 'PV002', 'PV003', 'PV010', 'PV011', 'PV012', 'PV013', 'PV014', 'PV015', 'PV016',
+                   'PV017', 'PV018', 'PV019', 'PV020', 'PV021', 'PV022', 'PV023', 'PV024', 'PV025', 'PV026']
+
+describe('mapearErrorRpc — familia PV', () => {
+  it.each(PV_EN_USO)('%s -> mensaje del servidor, mapeado (no sinMapear)', (code) => {
+    const r = mapearErrorRpc(pg(code, 'Texto del servidor para el usuario.'))
+    expect(r.code).toBe(code)
+    expect(r.mensaje).toBe('Texto del servidor para el usuario.')
+    expect(r.sinMapear).toBeUndefined()
+  })
+
+  it('PV002 conserva la fecha que trae el servidor', () => {
+    const msg = 'Esta fecha está reservada para el laboratorio con prioridad hasta el 2026-10-25. Puedes agendar a partir de esa fecha.'
+    const r = mapearErrorRpc(pg('PV002', msg))
+    expect(r.mensaje).toBe(msg)
+    expect(r.reportar).toBe(false)
+  })
+
+  it('PV003 (hora inválida) muestra el mensaje del servidor', () => {
+    expect(mapearErrorRpc(pg('PV003', 'La hora debe tener formato HH:MM.')).mensaje).toBe('La hora debe tener formato HH:MM.')
+  })
+
+  it('PV015 (guard de medicos) se reporta: el front nunca escribe el enrolamiento directo', () => {
+    expect(mapearErrorRpc(pg('PV015', 'x')).reportar).toBe(true)
+  })
+
+  it('PV018-PV021 van inline (formulario de solicitud de alta)', () => {
+    expect(mapearErrorRpc(pg('PV018', 'x')).campo).toBe('autorizado')
+    expect(mapearErrorRpc(pg('PV019', 'x')).destino).toBe('inline')
+    expect(mapearErrorRpc(pg('PV020', 'x')).campo).toBe('email')
+    expect(mapearErrorRpc(pg('PV021', 'x')).campo).toBe('email')
+  })
+
+  it('PV022/PV023 piden recargar las solicitudes', () => {
+    expect(mapearErrorRpc(pg('PV022', 'x')).recargar).toBe('solicitudes')
+    expect(mapearErrorRpc(pg('PV023', 'x')).recargar).toBe('solicitudes')
+  })
+
+  it.each(['PV027', 'PV004'])('%s (no existe en el mapa) -> sinMapear, código visible y reportar', (code) => {
+    const r = mapearErrorRpc(pg(code, 'una regla nueva'))
+    expect(r.sinMapear).toBe(true)
+    expect(r.mensaje).toBe(`[${code} sin mapear] una regla nueva`)
+    expect(r.reportar).toBe(true)
+  })
+
+  it('un PV del mapa con mensaje vacío nunca rinde un toast en blanco', () => {
+    for (const code of PV_EN_USO) {
+      expect(mapearErrorRpc({ code }).mensaje.trim()).not.toBe('')
+    }
+  })
+})
