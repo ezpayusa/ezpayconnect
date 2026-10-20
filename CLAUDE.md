@@ -71,22 +71,37 @@ Stack: React + Vite + TypeScript, Supabase / Postgres, deploy en Vercel, repo en
 
     **Orden de deploy de esta familia: la edge ANTES que la migración** (sin la edge, la RPC funciona igual y el correo se
     pierde: pg_net recibe un 404 y la invitación queda con `email_enviado_at` NULL).
-  - **Huellas vigentes (post-378):** ACL de funciones `f71eb65210787bd94c899a623d20350b 399`; ACL de relaciones de public
-    `9da6a3c4ca75cd58b3a3053603bf03fe 2406`; policies `cfb5d7632f071052d491e02a6a5e0932 311` (relaciones y policies sin
-    cambio desde la 377). (Post-377, ya no vigente: funciones `8d5290543497cb8984e6d9b289176818 396`, que es la huella de
+  - **Mig 379** (`registrar_medico_desde_invitacion` enrola por la solicitud de alta: si la invitación tiene una solicitud en
+    'invitada', enrola al médico con la empresa de la solicitud, pasa la solicitud a 'registrada' con `medico_id` y avisa al
+    visitador que la pidió (in-app tipo 'solicitud_alta_registrada' + push); `search_path = ''`, misma firma, retorno, DEFINER
+    y ACL, mensajes de error idénticos letra por letra; sin errcodes nuevos) **APLICADA en prod el 2026-10-20
+    18:35:37-18:35:43 UTC** (a mano por Oscar) y verificada en sesión independiente (objeto vivo, sin efectos en datos ni en
+    la cola de pg_net, huellas y harness). Rama `enrolamiento/registro-enrola-379`. md5(prosrc) de
+    `registrar_medico_desde_invitacion` 72889dea4724bc61f4b21ec3a3da158e (antes 8ee9ef3ed53ca1f3195903dd5c1a5564); ACL
+    `{postgres=X/postgres,service_role=X/postgres}`. Sin front (la solicitud 'registrada' ya la pinta `listar_solicitudes_alta`).
+  - **Huellas vigentes (post-379):** ACL de funciones `f71eb65210787bd94c899a623d20350b 399` (sin cambio desde la 378);
+    funciones completas (cuerpo, DEFINER, config, ACL) `a2652baa3738c1b758b0b120eb6d513a 399` (post-378:
+    `426a70e13cf08e09d5705852309e540b 399`; sin la tocada, `f6edd044170da00f5bf23211af4e335f 398`, igual antes y después);
+    ACL de relaciones de public `9da6a3c4ca75cd58b3a3053603bf03fe 2406`; policies `cfb5d7632f071052d491e02a6a5e0932 311`
+    (relaciones y policies sin cambio desde la 377). (Post-377, ya no vigente: funciones `8d5290543497cb8984e6d9b289176818 396`, que es la huella de
     post-378 excluyendo las 3 funciones nuevas. Post-376 = post-375: funciones `9c59aeca…/392`, relaciones
     `1889d1d8…/2393`, policies `8a8dc5cf…/309`; son las mismas huellas excluyendo la tabla y las 4 funciones de la 377.)
-  - **Orden de rollback:** 378 → 377 → 376 → 375 → 374 → 373 → 372 → 371 → … La edge `enviar-invitacion-medico` se retira
-    aparte: `378_rollback` no la borra.
-  - **Próximos libres: mig 379, errcode PV026, errcode PA036, probe P1084.**
-  - **Harness al 20-oct (con la 375, la 376, la 377 y la 378 aplicadas):** 1174 filas, 11 rojas = exactamente la deuda;
-    M375_FX, M376_FX, M377_FX, M378_FX y P1041-P1083 en OK. La rama 'pre' de la 375, la 376, la 377 y la 378 publica
-    REGRESION (8be9b8f, 0de3a27, 90ebbb7 y 0a92cb8).
+  - **Orden de rollback:** 379 → 378 → 377 → 376 → 375 → 374 → 373 → 372 → 371 → … La edge `enviar-invitacion-medico` se
+    retira aparte: `378_rollback` no la borra. `379_rollback` vuelve el cuerpo vivo exacto; las solicitudes 'registrada' y
+    los enrolamientos hechos quedan.
+  - **Próximos libres: mig 380, errcode PV026, errcode PA036, probe P1091.**
+  - **Harness al 20-oct (con la 375, la 376, la 377, la 378 y la 379 aplicadas):** 1182 filas, 11 rojas = exactamente la
+    deuda; M375_FX, M376_FX, M377_FX, M378_FX, M379_FX y P1041-P1090 en OK. La rama 'pre' de la 375, la 376, la 377, la 378
+    y la 379 publica REGRESION (8be9b8f, 0de3a27, 90ebbb7, 0a92cb8 y eb00420).
   - **`medicos` tiene GRANT SELECT POR COLUMNA para authenticated desde la 375** (para esconder `lab_enrolador_id`): toda columna
     nueva de `medicos` necesita su `GRANT SELECT (col) … TO authenticated` explícito en la misma migración, y un `select('*')` de
     usuario sobre `medicos` da 42501 (hay que listar las columnas).
   - **Lección (20-oct):** el clasificador del modo automático de CC bloquea `git push`. El push lo hace Oscar a mano en
     PowerShell con ruta Windows (`git -C C:\dev\ezpayconnect push origin <rama>`).
+  - **Lección (20-oct, mig 379):** el mismo clasificador bloquea también el apply de migraciones a prod ("Production
+    Deploy"). El apply lo corre Oscar en PowerShell (`Set-Location C:\dev\ezpayconnect` + `npx supabase db query --linked -f
+    <archivo>`), anotando la hora UTC antes y después; la verificación sigue siendo de una sesión nueva de CC. **Una salida
+    vacía del apply no prueba nada:** se verifica contra el objeto vivo (md5(prosrc), ACL, huellas, harness).
 
   - **Mig 374** (`prospectos_coord_valida` + PA035 en `actualizar_prospecto`) **APLICADA en prod el 2026-10-17 16:31 UTC** y
     verificada en sesión nueva (VERDE 4/4). Archivos en la rama `feat/prospecto-ubicacion` (PR #59, draft), en main desde b68992e (merge PR #59, 18-oct-2026); la 373 entró a main con el merge del PR #57 (19-oct-2026).
@@ -99,11 +114,11 @@ Stack: React + Vite + TypeScript, Supabase / Postgres, deploy en Vercel, repo en
   - Rama sin upstream propio al crearse desde origin/main: push SIEMPRE con nombre de rama explícito.
   - PRs #57, #59-#64 y #65 (196100b) mergeados al 19-oct; #56 (gate de textos legales) y #58 (front de altas) SIN mergear hasta completar los placeholders legales. Confirm email APAGADO en prod hasta que entre #58.
   - Punto 2 comercial (18-oct): src/lib/navegacion.ts es el helper ÚNICO de links Google Maps/Waze; VisitadorRutaPage y EntregaDetallePage todavía arman los suyos (migrar después). Hoy usa visitasDeHoyConUbicacion; visitasDelDia sigue sin coordenadas.
-- **Próximos números libres: probe `P1084`** (global, no por módulo; M378_FX + P1075-P1083 usados por la mig 378; M377_FX + P1065-P1074 usados por la mig 377; M376_FX + P1062-P1064 usados por la mig 376; M375_FX + P1041-P1061 usados por la mig 375; P1035-P1040 usados por la mig 374; P1026-P1034 + M373_FX usados por la mig 373; P1023-P1025 + G372_FX usados por la mig 372; P1019-P1022 usados por la mig 371; P1015-P1018 usados por la mig 370, P1011-P1014 por la mig 369, P1010 por la mig 367, P1009 por la 366, P1008 por la 365, P1007 por la 364, P1001-P1006 por la mig 363, P996-P1000 por la 362, P990-P995 por la 361, P983-P989 por la 360, P975-P982 por la
+- **Próximos números libres: probe `P1091`** (global, no por módulo; M379_FX + P1084-P1090 usados por la mig 379; M378_FX + P1075-P1083 usados por la mig 378; M377_FX + P1065-P1074 usados por la mig 377; M376_FX + P1062-P1064 usados por la mig 376; M375_FX + P1041-P1061 usados por la mig 375; P1035-P1040 usados por la mig 374; P1026-P1034 + M373_FX usados por la mig 373; P1023-P1025 + G372_FX usados por la mig 372; P1019-P1022 usados por la mig 371; P1015-P1018 usados por la mig 370, P1011-P1014 por la mig 369, P1010 por la mig 367, P1009 por la 366, P1008 por la 365, P1007 por la 364, P1001-P1006 por la mig 363, P996-P1000 por la 362, P990-P995 por la 361, P983-P989 por la 360, P975-P982 por la
   359, P967-P974 por la 358, P958-P966 por la 357 (obtener_medicos_por_ids acotada a relación); P906-P907 usados por la mig 336, P912-P913
   por la 337, P914-P915 por la 338, P916-P920 por la 339/340, P921-P923 por la 341, P924 por la 342, P925 por
   la 343, P926-P927 por la 344, P928-P929 por la 345, P930 por la 346, P931-P932 por la 347, P933 por la 348,
-  P934-P935 por la 349, P936 por la 350, P937-P939 por la 351, P940-P943 por la 353), **migración `379`** (la 378 es aprobar/reenviar la solicitud de alta → invitación precargada + correo, aplicada el 20-oct; la 377 son las solicitudes de alta de médico, aplicada el 20-oct; la 376 es `administrar_visita('modificar')` + PV003 y la 375 el hardening del enrolamiento, las dos aplicadas el 20-oct; la 374 es la integridad de ubicación de prospectos, aplicada el 17-oct; la 373 es el alta diferida de empresas, aplicada el 9-oct; la 371 es GL-02 y la 372 su hardening, las dos aplicadas el 8-oct), **errcode `LG007`** (prefijo LG,
+  P934-P935 por la 349, P936 por la 350, P937-P939 por la 351, P940-P943 por la 353), **migración `380`** (la 379 es `registrar_medico_desde_invitacion` enrolando por la solicitud de alta, aplicada el 20-oct; la 378 es aprobar/reenviar la solicitud de alta → invitación precargada + correo, aplicada el 20-oct; la 377 son las solicitudes de alta de médico, aplicada el 20-oct; la 376 es `administrar_visita('modificar')` + PV003 y la 375 el hardening del enrolamiento, las dos aplicadas el 20-oct; la 374 es la integridad de ubicación de prospectos, aplicada el 17-oct; la 373 es el alta diferida de empresas, aplicada el 9-oct; la 371 es GL-02 y la 372 su hardening, las dos aplicadas el 8-oct), **errcode `LG007`** (prefijo LG,
   GL-02: LG001-LG005 en uso por la 371 — LG001 sin sesión, LG002 código inexistente, LG003 versión no vigente, LG004
   entrada inválida, LG005 aceptaciones append-only; LG006 = el texto no corresponde a la identidad de la cuenta, en uso
   por la 372), **errcode `PC029`** (familia PC: PC025 país requerido y PC026 sin autoridad en `contar_medicos_por_pais`, PC027
@@ -559,6 +574,9 @@ Stack: React + Vite + TypeScript, Supabase / Postgres, deploy en Vercel, repo en
   salida vacía* por un corte del cliente — indistinguible de un harness verde para quien lea el
   exit code. `npm run harness:selftest` prueba que esas cinco verificaciones disparan.
   Está enganchado al pre-commit junto al test del detector: los tres gates del hook son offline.
+  **Tamaño del body (20-oct-2026, 3c3e97c):** la API de `db query` corta en ~3 MiB con 413. El runner quita las líneas de
+  comentario completas antes de enviar (3.095.847 → 2.675.671 bytes) y aborta si el body pasa 2,9 MiB (techo 3.040.870
+  bytes); margen actual ~365 KB.
   **El runner CLASIFICA las rojas** (roja = el `verdict` empieza (mayúsculas, sin tildes) con alguno de `PREFIJOS_ROJOS`
   de `tests/rls/harness_run.py`: `ROJO`, `FALLO`, `REGRESION`, `FUGA`, `LEAK`, `PERMITIDO`, `VISIBLE`, `ERROR`, `BLOQUEADO?`) contra la
   lista `DEUDA` que vive en el código, hoy con **11 entradas**: una roja FUERA de la deuda es exit 1,
@@ -886,6 +904,12 @@ Detalles a recordar:
   `select('*')`;
   (d) `InvitacionesMedicosPage` solo copia el link: no reenvía ni cancela, y no muestra el origen de la invitación;
   (e) `notificar-email` interpola los datos en el HTML sin escaparlos y no tiene idempotencia.
+- (Enrolamiento, mig 379, 20-oct-2026)
+  (a) orden de locks opuesto: `registrar_medico_desde_invitacion` toma la invitación y después la solicitud;
+  `reenviar_solicitud_alta`, la solicitud y después la invitación. Un registro y un reenvío simultáneos sobre el mismo par
+  pueden dar 40P01; si el abortado es el registro, queda el usuario de auth huérfano (ver backlog de la 377, (d));
+  (b) fixtures posicionales nuevos, detectados en la equivalencia del runner (quitar comentarios): P14 (LIMIT 1 sin ORDER
+  BY), P825, FX14, P441 y VA_FX. Se suman a los ~30 del backlog de fixtures posicionales.
 - (Familia 8) ~~P800 salta las foreign tables~~: alineado en la rama de la 370 (relkind incluye 'f').
 - (Familia 2, **mig 373+**; los números 371 y 372 los tomó GL-02) REVOKE SELECT de anon en las 6 tablas de la WL_ANON_LEGACY que ya no usa (cuentas_proveedor,
   empresas_proveedoras, liquidaciones_comision, pacientes, perfiles, recetas): anon no evalúa ninguna policy sobre ellas
