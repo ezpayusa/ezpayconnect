@@ -36649,9 +36649,11 @@ END $$;
 SELECT set_config('role', 'none', true);
 
 -- ================================================================================
--- MIG 377 — solicitudes de alta de medico por el visitador (M377_FX + P1065-P1074). NO aplicada.
+-- MIG 377 — solicitudes de alta de medico por el visitador (M377_FX + P1065-P1074). APLICADA en prod el 2026-10-20 16:58 UTC.
 -- pg_temp.m377_estado(): 'post' (tabla + las 4 RPCs con su md5), 'pre' (nada de la 377) o 'parcial (...)' (ROJO).
--- En 'pre' los probes publican 'PENDIENTE mig 377 (...)'. Actores por EMAIL; usa los helpers de M375_FX
+-- Con la 377 aplicada no hay rama PENDIENTE: en 'pre' (377_rollback) M377_FX y P1065-P1074 publican
+-- 'REGRESION (377 ausente; ...)'. Quien corra 377_rollback tiene que esperar esas rojas (como en la 370/375/376).
+-- Actores por EMAIL; usa los helpers de M375_FX
 -- (m375_como, m375_rc, m375_uid, m375_qalab_fijar, m375_lab2). QA Laboratorio se fija como farmaceutico activo con
 -- enrolamiento y plan en GT dentro de cada savepoint (FX12 la convierte en 'farmacia' para el resto de la transaccion).
 -- Toda escritura se descarta con RAISE P0999 y se verifica contra pg_temp.m377_snap() (incluye notificaciones, la
@@ -36746,7 +36748,7 @@ END
 $body$
 $fn$;
   est := pg_temp.m377_estado();
-  PERFORM set_config('probe.m377_fx', CASE WHEN est = 'pre' THEN 'PENDIENTE mig 377 (helpers de pg_temp creados)'
+  PERFORM set_config('probe.m377_fx', CASE WHEN est = 'pre' THEN 'REGRESION (377 ausente: sin la tabla solicitudes_alta_medico ni sus 4 RPCs; helpers de pg_temp creados)'
     WHEN est = 'post' THEN 'OK (helpers de pg_temp creados; estado de la 377: post)'
     ELSE 'ROJO (377 '||est||'; helpers de pg_temp creados)' END, false);
 EXCEPTION WHEN OTHERS THEN
@@ -36758,7 +36760,7 @@ DO $$
 DECLARE est text; gt uuid; a_far uuid; a_sup uuid; a_vis uuid; emp uuid; r_far text; r_sup text; r_aut text; r_plan text; pre text; post text;
 BEGIN
   est := pg_temp.m377_estado();
-  IF est = 'pre' THEN PERFORM set_config('probe.p1065', 'PENDIENTE mig 377 (solicitar_alta_medico no existe)', false); RETURN; END IF;
+  IF est = 'pre' THEN PERFORM set_config('probe.p1065', 'REGRESION (377 ausente; solicitar_alta_medico no existe)', false); RETURN; END IF;
   IF est <> 'post' THEN PERFORM set_config('probe.p1065', 'ROJO (377 '||est||')', false); RETURN; END IF;
   gt := (SELECT cp.id FROM public.configuracion_pais cp WHERE cp.codigo = 'GT');
   a_far := pg_temp.m375_uid('farmacia.qa@ezpayconnect.com');
@@ -36799,7 +36801,7 @@ DO $$
 DECLARE est text; gt uuid; a_vis uuid; r_nom text; r_mail text; r_tel text; r_esp text; pre text; post text;
 BEGIN
   est := pg_temp.m377_estado();
-  IF est = 'pre' THEN PERFORM set_config('probe.p1066', 'PENDIENTE mig 377 (solicitar_alta_medico no existe)', false); RETURN; END IF;
+  IF est = 'pre' THEN PERFORM set_config('probe.p1066', 'REGRESION (377 ausente; solicitar_alta_medico no existe)', false); RETURN; END IF;
   IF est <> 'post' THEN PERFORM set_config('probe.p1066', 'ROJO (377 '||est||')', false); RETURN; END IF;
   gt := (SELECT cp.id FROM public.configuracion_pais cp WHERE cp.codigo = 'GT');
   a_vis := pg_temp.m375_uid('visitador.qa@ezpayconnect.com');
@@ -36837,7 +36839,7 @@ DECLARE est text; gt uuid; a_vis uuid; a_med uuid; a_pac uuid; e_pac text; e_med
         pre text; post text;
 BEGIN
   est := pg_temp.m377_estado();
-  IF est = 'pre' THEN PERFORM set_config('probe.p1067', 'PENDIENTE mig 377 (solicitar_alta_medico no existe)', false); RETURN; END IF;
+  IF est = 'pre' THEN PERFORM set_config('probe.p1067', 'REGRESION (377 ausente; solicitar_alta_medico no existe)', false); RETURN; END IF;
   IF est <> 'post' THEN PERFORM set_config('probe.p1067', 'ROJO (377 '||est||')', false); RETURN; END IF;
   gt := (SELECT cp.id FROM public.configuracion_pais cp WHERE cp.codigo = 'GT');
   a_vis := pg_temp.m375_uid('visitador.qa@ezpayconnect.com');
@@ -36882,7 +36884,7 @@ DECLARE est text; gt uuid; a_vis uuid; emp uuid; r text; sid uuid; fila text; n_
         dest text; q0 int; q1 int; pre text; post text;
 BEGIN
   est := pg_temp.m377_estado();
-  IF est = 'pre' THEN PERFORM set_config('probe.p1068', 'PENDIENTE mig 377 (solicitar_alta_medico no existe)', false); RETURN; END IF;
+  IF est = 'pre' THEN PERFORM set_config('probe.p1068', 'REGRESION (377 ausente; solicitar_alta_medico no existe)', false); RETURN; END IF;
   IF est <> 'post' THEN PERFORM set_config('probe.p1068', 'ROJO (377 '||est||')', false); RETURN; END IF;
   gt := (SELECT cp.id FROM public.configuracion_pais cp WHERE cp.codigo = 'GT');
   a_vis := pg_temp.m375_uid('visitador.qa@ezpayconnect.com');
@@ -36940,7 +36942,7 @@ DO $$
 DECLARE est text; gt uuid; a_vis uuid; emp uuid; nom_emp text; lab2 uuid; r_mismo text; r_otro text; pre text; post text;
 BEGIN
   est := pg_temp.m377_estado();
-  IF est = 'pre' THEN PERFORM set_config('probe.p1069', 'PENDIENTE mig 377 (solicitar_alta_medico no existe)', false); RETURN; END IF;
+  IF est = 'pre' THEN PERFORM set_config('probe.p1069', 'REGRESION (377 ausente; solicitar_alta_medico no existe)', false); RETURN; END IF;
   IF est <> 'post' THEN PERFORM set_config('probe.p1069', 'ROJO (377 '||est||')', false); RETURN; END IF;
   gt := (SELECT cp.id FROM public.configuracion_pais cp WHERE cp.codigo = 'GT');
   a_vis := pg_temp.m375_uid('visitador.qa@ezpayconnect.com');
@@ -36981,7 +36983,7 @@ DECLARE est text; gt uuid; a_vis uuid; a_prv uuid; a_sup uuid; a_adm uuid; a_pac
         pre text; post text;
 BEGIN
   est := pg_temp.m377_estado();
-  IF est = 'pre' THEN PERFORM set_config('probe.p1070', 'PENDIENTE mig 377 (solicitudes_alta_medico no existe)', false); RETURN; END IF;
+  IF est = 'pre' THEN PERFORM set_config('probe.p1070', 'REGRESION (377 ausente; solicitudes_alta_medico no existe)', false); RETURN; END IF;
   IF est <> 'post' THEN PERFORM set_config('probe.p1070', 'ROJO (377 '||est||')', false); RETURN; END IF;
   gt := (SELECT cp.id FROM public.configuracion_pais cp WHERE cp.codigo = 'GT');
   a_vis := pg_temp.m375_uid('visitador.qa@ezpayconnect.com');
@@ -37037,7 +37039,7 @@ DO $$
 DECLARE est text; gt uuid; a_vis uuid; a_adm uuid; emp uuid; sa uuid; r_ins text; r_upd text; r_del text; r_upd_adm text; pre text; post text;
 BEGIN
   est := pg_temp.m377_estado();
-  IF est = 'pre' THEN PERFORM set_config('probe.p1071', 'PENDIENTE mig 377 (solicitudes_alta_medico no existe)', false); RETURN; END IF;
+  IF est = 'pre' THEN PERFORM set_config('probe.p1071', 'REGRESION (377 ausente; solicitudes_alta_medico no existe)', false); RETURN; END IF;
   IF est <> 'post' THEN PERFORM set_config('probe.p1071', 'ROJO (377 '||est||')', false); RETURN; END IF;
   gt := (SELECT cp.id FROM public.configuracion_pais cp WHERE cp.codigo = 'GT');
   a_vis := pg_temp.m375_uid('visitador.qa@ezpayconnect.com');
@@ -37078,7 +37080,7 @@ DECLARE est text; gt uuid; a_vis uuid; a_prv uuid; lab2 uuid; sa uuid; sb uuid; 
         est_a text; est_b text; pre text; post text;
 BEGIN
   est := pg_temp.m377_estado();
-  IF est = 'pre' THEN PERFORM set_config('probe.p1072', 'PENDIENTE mig 377 (cancelar_solicitud_alta no existe)', false); RETURN; END IF;
+  IF est = 'pre' THEN PERFORM set_config('probe.p1072', 'REGRESION (377 ausente; cancelar_solicitud_alta no existe)', false); RETURN; END IF;
   IF est <> 'post' THEN PERFORM set_config('probe.p1072', 'ROJO (377 '||est||')', false); RETURN; END IF;
   gt := (SELECT cp.id FROM public.configuracion_pais cp WHERE cp.codigo = 'GT');
   a_vis := pg_temp.m375_uid('visitador.qa@ezpayconnect.com');
@@ -37123,7 +37125,7 @@ DECLARE est text; gt uuid; a_vis uuid; a_adm uuid; sc uuid; r_vis text; r_corto 
         pre text; post text;
 BEGIN
   est := pg_temp.m377_estado();
-  IF est = 'pre' THEN PERFORM set_config('probe.p1073', 'PENDIENTE mig 377 (rechazar_solicitud_alta no existe)', false); RETURN; END IF;
+  IF est = 'pre' THEN PERFORM set_config('probe.p1073', 'REGRESION (377 ausente; rechazar_solicitud_alta no existe)', false); RETURN; END IF;
   IF est <> 'post' THEN PERFORM set_config('probe.p1073', 'ROJO (377 '||est||')', false); RETURN; END IF;
   gt := (SELECT cp.id FROM public.configuracion_pais cp WHERE cp.codigo = 'GT');
   a_vis := pg_temp.m375_uid('visitador.qa@ezpayconnect.com');
@@ -37169,7 +37171,7 @@ DECLARE est text; gt uuid; a_vis uuid; emp uuid; c text; r_aut text := 'SIN ERRO
         r_uniq text := 'SIN ERROR'; pre text; post text;
 BEGIN
   est := pg_temp.m377_estado();
-  IF est = 'pre' THEN PERFORM set_config('probe.p1074', 'PENDIENTE mig 377 (solicitudes_alta_medico no existe)', false); RETURN; END IF;
+  IF est = 'pre' THEN PERFORM set_config('probe.p1074', 'REGRESION (377 ausente; solicitudes_alta_medico no existe)', false); RETURN; END IF;
   IF est <> 'post' THEN PERFORM set_config('probe.p1074', 'ROJO (377 '||est||')', false); RETURN; END IF;
   gt := (SELECT cp.id FROM public.configuracion_pais cp WHERE cp.codigo = 'GT');
   a_vis := pg_temp.m375_uid('visitador.qa@ezpayconnect.com');
@@ -38364,17 +38366,17 @@ UNION ALL SELECT 'M376_FX_helpers_modificar',  current_setting('probe.m376_fx', 
 UNION ALL SELECT 'P1062_modificar_hora_invalida_pv003_376',  current_setting('probe.p1062', true), 'OK (376: hora que no es HH:MM -> PV003 x4, visita intacta; sin la 376: REGRESION)'
 UNION ALL SELECT 'P1063_modificar_solo_fecha_376',  current_setting('probe.p1063', true), 'OK (376: modificar solo con fecha -> success, 1 fila; sin la 376: REGRESION)'
 UNION ALL SELECT 'P1064_modificar_solo_hora_376',  current_setting('probe.p1064', true), 'OK (376: modificar solo con hora -> success, 1 fila; sin la 376: REGRESION)'
-UNION ALL SELECT 'M377_FX_helpers_solicitudes_alta',  current_setting('probe.m377_fx', true), 'OK (helpers de pg_temp creados; estado de la 377: post; pre: PENDIENTE; parcial: ROJO)'
-UNION ALL SELECT 'P1065_solicitar_gates_377',  current_setting('probe.p1065', true), 'OK (377: farmacia.qa PV016, sup1.qa en lectura PV017, sin autorizacion PV018, plan vencido PV011; sin la 377: PENDIENTE)'
-UNION ALL SELECT 'P1066_solicitar_datos_pv019_377',  current_setting('probe.p1066', true), 'OK (377: nombre, correo, telefono y especialidad invalidos -> PV019 por campo; sin la 377: PENDIENTE)'
-UNION ALL SELECT 'P1067_solicitar_correo_existente_377',  current_setting('probe.p1067', true), 'OK (377: correo de paciente.qa PV020; correo de medico.qa -> existe sin crear fila; sin la 377: PENDIENTE)'
-UNION ALL SELECT 'P1068_solicitar_feliz_avisos_377',  current_setting('probe.p1068', true), 'OK (377: creada, correo normalizado, GT, avisos a los admin_pais de GT o super_admin; sin la 377: PENDIENTE)'
-UNION ALL SELECT 'P1069_solicitar_duplicado_pv021_377',  current_setting('probe.p1069', true), 'OK (377: mismo correo mismo lab y otro lab -> PV021 sin nombrar la empresa; sin la 377: PENDIENTE)'
-UNION ALL SELECT 'P1070_solicitudes_visibilidad_377',  current_setting('probe.p1070', true), 'OK (377: listar = tabla por actor; visitador, admin, supervisor del equipo, admin de pais; ajenos 0; anon 42501; sin la 377: PENDIENTE)'
-UNION ALL SELECT 'P1071_solicitudes_escritura_directa_377',  current_setting('probe.p1071', true), 'OK (377: INSERT/UPDATE/DELETE directos como authenticated -> 42501; sin la 377: PENDIENTE)'
-UNION ALL SELECT 'P1072_cancelar_solicitud_377',  current_setting('probe.p1072', true), 'OK (377: cancela la suya; otra vez PV022; ajeno e inexistente PV023 mismo mensaje; sin la 377: PENDIENTE)'
-UNION ALL SELECT 'P1073_rechazar_solicitud_377',  current_setting('probe.p1073', true), 'OK (377: visitador PV023; motivo corto PV019; rechazada con revisado_por y aviso; otra vez PV022; sin la 377: PENDIENTE)'
-UNION ALL SELECT 'P1074_solicitudes_guardas_tabla_377',  current_setting('probe.p1074', true), 'OK (377: CHECKs de autorizacion, email y motivo + UNIQUE parcial por correo, capturados por nombre; sin la 377: PENDIENTE)'
+UNION ALL SELECT 'M377_FX_helpers_solicitudes_alta',  current_setting('probe.m377_fx', true), 'OK (helpers de pg_temp creados; estado de la 377: post; pre: REGRESION; parcial: ROJO)'
+UNION ALL SELECT 'P1065_solicitar_gates_377',  current_setting('probe.p1065', true), 'OK (377: farmacia.qa PV016, sup1.qa en lectura PV017, sin autorizacion PV018, plan vencido PV011; sin la 377: REGRESION)'
+UNION ALL SELECT 'P1066_solicitar_datos_pv019_377',  current_setting('probe.p1066', true), 'OK (377: nombre, correo, telefono y especialidad invalidos -> PV019 por campo; sin la 377: REGRESION)'
+UNION ALL SELECT 'P1067_solicitar_correo_existente_377',  current_setting('probe.p1067', true), 'OK (377: correo de paciente.qa PV020; correo de medico.qa -> existe sin crear fila; sin la 377: REGRESION)'
+UNION ALL SELECT 'P1068_solicitar_feliz_avisos_377',  current_setting('probe.p1068', true), 'OK (377: creada, correo normalizado, GT, avisos a los admin_pais de GT o super_admin; sin la 377: REGRESION)'
+UNION ALL SELECT 'P1069_solicitar_duplicado_pv021_377',  current_setting('probe.p1069', true), 'OK (377: mismo correo mismo lab y otro lab -> PV021 sin nombrar la empresa; sin la 377: REGRESION)'
+UNION ALL SELECT 'P1070_solicitudes_visibilidad_377',  current_setting('probe.p1070', true), 'OK (377: listar = tabla por actor; visitador, admin, supervisor del equipo, admin de pais; ajenos 0; anon 42501; sin la 377: REGRESION)'
+UNION ALL SELECT 'P1071_solicitudes_escritura_directa_377',  current_setting('probe.p1071', true), 'OK (377: INSERT/UPDATE/DELETE directos como authenticated -> 42501; sin la 377: REGRESION)'
+UNION ALL SELECT 'P1072_cancelar_solicitud_377',  current_setting('probe.p1072', true), 'OK (377: cancela la suya; otra vez PV022; ajeno e inexistente PV023 mismo mensaje; sin la 377: REGRESION)'
+UNION ALL SELECT 'P1073_rechazar_solicitud_377',  current_setting('probe.p1073', true), 'OK (377: visitador PV023; motivo corto PV019; rechazada con revisado_por y aviso; otra vez PV022; sin la 377: REGRESION)'
+UNION ALL SELECT 'P1074_solicitudes_guardas_tabla_377',  current_setting('probe.p1074', true), 'OK (377: CHECKs de autorizacion, email y motivo + UNIQUE parcial por correo, capturados por nombre; sin la 377: REGRESION)'
 UNION ALL SELECT 'P1010_campana_vistas_sin_update_367',  current_setting('probe.p1010', true), 'OK (367: INSERT 1; ON CONFLICT DO NOTHING 0 sin error; DO UPDATE y UPDATE 42501; otro paciente 0; antes de la 367: PENDIENTE)'
 UNION ALL SELECT 'P1009_datos_bancarios_acotados_366',  current_setting('probe.p1009', true), 'OK (366: cuenta GT solo super_admin/admin_pais GT/proveedores GT; checkout 1 fila; config 21 super_admin y 14 el resto, admin_pais incluido; antes de la 366: PENDIENTE)'
 UNION ALL SELECT 'DET_p1009',  'DET ' || COALESCE(NULLIF(current_setting('probe.p1009_det', true), ''), '(sin dato)'), 'DET (detalle de P1009, no es probe)'
