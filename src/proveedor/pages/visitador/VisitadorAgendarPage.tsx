@@ -169,7 +169,7 @@ export default function VisitadorAgendarPage() {
     })
 
     if (ok) {
-      toast.success('Visita propuesta. Tu administrador la revisará pronto.')
+      // El toast de éxito lo da agendarVisita (uno solo; su texto depende del rol).
       navigate('/visitador/mis-visitas')
     } else {
       // Pudo haber sido tomado por otro proveedor: limpiar selección y refrescar slots.
