@@ -98,6 +98,7 @@ const ReportesEzPayPageV2 = lazy(() => import('@/pages/admin-ezpay/ReportesEzPay
 const CanjesPendientesPage = lazy(() => import('@/pages/admin-ezpay/CanjesPendientesPage'))
 const EspecialidadesPropuestasPage = lazy(() => import('@/pages/admin-ezpay/EspecialidadesPropuestasPage'))
 const SolicitudesPersonalizacionPage = lazy(() => import('@/pages/admin-ezpay/SolicitudesPersonalizacionPage'))
+const SolicitudesAltaMedicosPage = lazy(() => import('@/pages/admin-ezpay/SolicitudesAltaMedicosPage'))
 const MedicamentosClasificacionPage = lazy(() => import('@/pages/admin-ezpay/MedicamentosClasificacionPage'))
 
 // === PROVEEDORES ===
@@ -360,6 +361,8 @@ function App() {
           <Route path="paises" element={<PaisesPage />} />
           <Route path="pais/:paisId" element={<PaisDashboardPage />} />
           <Route path="pais/:paisId/invitaciones-medicos" element={<InvitacionesMedicosPage />} />
+          {/* Dual-mount: en modo país muestra solo las solicitudes de :paisId; la global (super_admin), todas. */}
+          <Route path="pais/:paisId/solicitudes-alta-medicos" element={<SolicitudesAltaMedicosPage />} />
           <Route path="pais/:paisId/invitaciones-clinicas" element={<InvitacionesClinicasPage />} />
           {/* Destino del boton "Ver Clinicas" de PaisDashboardPage, que navegaba aca desde el
               7-jun sin que la ruta existiera (caia en NotFoundPage). Solo lectura. */}
@@ -405,6 +408,7 @@ function App() {
           <Route path="canjes" element={<CanjesPendientesPage />} />
           <Route path="especialidades" element={<EspecialidadesPropuestasPage />} />
           <Route path="solicitudes-personalizacion" element={<SolicitudesPersonalizacionPage />} />
+          <Route path="solicitudes-alta-medicos" element={<SolicitudesAltaMedicosPage />} />
           <Route path="medicamentos" element={<MedicamentosClasificacionPage />} />
         </Route>
 
