@@ -1,10 +1,10 @@
 import { Outlet, useNavigate, useLocation } from 'react-router-dom'
-import { Stethoscope, WifiOff, CalendarPlus, ListChecks, Route as RouteIcon, Wallet, LogOut } from 'lucide-react'
+import { Stethoscope, WifiOff, CalendarPlus, ListChecks, Route as RouteIcon, Wallet, LogOut, UserPlus } from 'lucide-react'
 import { useEffect, useState } from 'react'
 import { useProveedorAuth } from '@/proveedor/hooks/useProveedorAuth'
 
 // Shell móvil del visitador (PWA de campo): header compacto + outlet + nav inferior de 4 tabs
-// (Agendar / Visitas / Ruta / Planes). Molde: RepartidorLayout.
+// (Agendar / Visitas / Ruta / Planes) + Solicitudes (alta de médicos). Molde: RepartidorLayout.
 export default function VisitadorLayout() {
   const navigate = useNavigate()
   const location = useLocation()
@@ -31,6 +31,7 @@ export default function VisitadorLayout() {
   const enVisitas = location.pathname.startsWith('/visitador/mis-visitas')
   const enRuta = location.pathname.startsWith('/visitador/ruta')
   const enPlanes = location.pathname.startsWith('/visitador/planes')
+  const enSolicitudes = location.pathname.startsWith('/visitador/solicitudes') || location.pathname.startsWith('/visitador/solicitar-alta')
 
   const navBtn = (activo: boolean, onClick: () => void, Icon: typeof ListChecks, label: string) => (
     <button
@@ -71,13 +72,14 @@ export default function VisitadorLayout() {
         <Outlet />
       </main>
 
-      {/* Nav inferior fija (4 tabs) */}
+      {/* Nav inferior fija (4 tabs + Solicitudes) */}
       <nav className="fixed bottom-0 inset-x-0 bg-white border-t border-gray-200">
         <div className="mx-auto w-full max-w-md flex">
           {navBtn(enAgendar, () => navigate('/visitador/agendar'), CalendarPlus, 'Agendar')}
           {navBtn(enVisitas, () => navigate('/visitador/mis-visitas'), ListChecks, 'Visitas')}
           {navBtn(enRuta, () => navigate('/visitador/ruta'), RouteIcon, 'Ruta')}
           {navBtn(enPlanes, () => navigate('/visitador/planes'), Wallet, 'Planes')}
+          {navBtn(enSolicitudes, () => navigate('/visitador/solicitudes'), UserPlus, 'Solicitudes')}
         </div>
       </nav>
     </div>

@@ -126,6 +126,7 @@ const VisitadorAgendarPage = lazy(() => import('@/proveedor/pages/visitador/Visi
 const VisitadorMisVisitasPage = lazy(() => import('@/proveedor/pages/visitador/VisitadorMisVisitasPage'))
 const VisitadorRutaPage = lazy(() => import('@/proveedor/pages/visitador/VisitadorRutaPage'))
 const SolicitarAltaPage = lazy(() => import('@/visitador/pages/SolicitarAltaPage'))
+const SolicitudesPage = lazy(() => import('@/visitador/pages/SolicitudesPage'))
 const ProveedorReporteVisitasPage = lazy(() => import('@/proveedor/pages/visitador/ProveedorReporteVisitasPage'))
 const AdminAprobarVisitasPage = lazy(() => import('@/proveedor/pages/visitador/AdminAprobarVisitasPage'))
 const AdminVisitadoresPage = lazy(() => import('@/proveedor/pages/visitador/AdminVisitadoresPage'))
@@ -509,6 +510,7 @@ function App() {
           <Route path="ruta" element={<VisitadorRutaPage />} />
           <Route path="planes" element={<VisitadorPlanesPage soloCupo />} />
           <Route path="solicitar-alta" element={<SolicitarAltaPage />} />
+          <Route path="solicitudes" element={<SolicitudesPage />} />
         </Route>
 
         {/* === PORTAL FARMACIA (tenant; guard por tipo='farmacia') === */}
