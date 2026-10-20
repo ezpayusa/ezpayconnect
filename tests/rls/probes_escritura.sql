@@ -35548,7 +35548,7 @@ SELECT set_config('role', 'none', true);
 -- Con la 375 aplicada no hay rama PENDIENTE: en 'pre' (375_rollback) M375_FX y los probes que dependen de la 375
 -- publican 'REGRESION (375 ausente; ...)'; 'parcial' es ROJO. Las no-regresiones (P1043, P1049, P1050, P1053-P1056,
 -- P1061) se miden en los dos estados, y el 42804 de administrar_visita('modificar') (P1057-P1059) se juzga ANTES de
--- mirar el estado de la 375: lo arregla la 376 (PENDIENTE mig 376 mientras no este aplicada; ver el bloque MIG 376).
+-- mirar el estado de la 375: lo arregla la 376 (aplicada; en su estado 'pre' es REGRESION, ver el bloque MIG 376).
 -- Quien corra 375_rollback tiene que esperar esas rojas (como en la 370).
 -- 'reprogramar' = administrar_visita(..., 'modificar', ...): es la unica accion que mueve fecha/hora de una visita (la
 -- 375 la llama 'reprogramar' en sus comentarios). P1060/P1061 miden la regla del trigger en UPDATE sin la RPC, como
@@ -36237,12 +36237,13 @@ END $$;
 SELECT set_config('role', 'none', true);
 
 -- ================================================================================
--- MIG 376 — administrar_visita('modificar') compila (cast a time de las horas) + PV003 hora invalida. SIN APLICAR al 20-oct-2026.
+-- MIG 376 — administrar_visita('modificar') compila (cast a time de las horas) + PV003 hora invalida. APLICADA en prod el 2026-10-20 14:32 UTC.
 -- pg_temp.m376_estado(): 'pre' (md5 666800e7..., el cuerpo de la 42804), 'post' (PV003 y los dos COALESCE con ::time) o
 -- 'desconocido (...)' (ROJO). P1057-P1059 y P1062-P1064 llaman a 'modificar' como el front (useVisitasAgendadas): args
--- con nombre, las 6, horas 'HH:MM' como text y NULL para lo que no cambia (pg_temp.m376_modificar). En 'pre' publican
--- 'PENDIENTE mig 376 (hoy: 42804 ...)'; un 42804 con la 376 aplicada es ROJO. Lo que no depende de la 376 (snapshot,
--- fixture) se juzga antes. Al aplicar la 376, la rama 'pre' pasa a REGRESION (commit aparte, como en la 370/375).
+-- con nombre, las 6, horas 'HH:MM' como text y NULL para lo que no cambia (pg_temp.m376_modificar). Con la 376 aplicada
+-- no hay rama PENDIENTE: en 'pre' (376_rollback) M376_FX y esos probes publican 'REGRESION (376 ausente; ...)'; un 42804
+-- con la 376 aplicada es ROJO. Lo que no depende de la 376 (snapshot, fixture) se juzga antes. Quien corra 376_rollback
+-- tiene que esperar esas rojas (como en la 370/375).
 -- M376_FX: helpers de pg_temp + estado de la 376. No toca datos.
 DO $$
 DECLARE est text;
@@ -36267,7 +36268,8 @@ CREATE OR REPLACE FUNCTION pg_temp.m376_modificar(p_uid uuid, p_vid text, p_fech
 $body$
 $fn$;
   est := pg_temp.m376_estado();
-  PERFORM set_config('probe.m376_fx', CASE WHEN est IN ('pre', 'post') THEN 'OK (helpers de pg_temp creados; estado de la 376: '||est||')'
+  PERFORM set_config('probe.m376_fx', CASE WHEN est = 'pre' THEN 'REGRESION (376 ausente: administrar_visita con el cuerpo de la 42804; helpers de pg_temp creados)'
+    WHEN est = 'post' THEN 'OK (helpers de pg_temp creados; estado de la 376: '||est||')'
     ELSE 'ROJO (376 '||est||'; helpers de pg_temp creados)' END, false);
 EXCEPTION WHEN OTHERS THEN
   PERFORM set_config('probe.m376_fx', 'FALLO ('||SQLSTATE||' '||SQLERRM||')', false);
@@ -36300,7 +36302,7 @@ BEGIN
   PERFORM set_config('probe.p1057', CASE
     WHEN post IS DISTINCT FROM pre THEN 'FALLO (no volvio al snapshot tras el descarte)'
     WHEN e376 NOT IN ('pre', 'post') THEN 'ROJO (376 '||e376||')'
-    WHEN res LIKE 'ERR:42804:%' AND e376 = 'pre' THEN 'PENDIENTE mig 376 (hoy: administrar_visita(''modificar'') no compila: '||left(substr(res, 11), 120)||')'
+    WHEN res LIKE 'ERR:42804:%' AND e376 = 'pre' THEN 'REGRESION (376 ausente; hoy: administrar_visita(''modificar'') no compila: '||left(substr(res, 11), 120)||')'
     WHEN res LIKE 'ERR:42804:%' THEN 'ROJO (376 aplicada y administrar_visita(''modificar'') sigue en 42804: '||left(substr(res, 11), 120)||')'
     WHEN est LIKE 'parcial%' THEN 'ROJO (375 '||est||')'
     WHEN est = 'pre' THEN 'REGRESION (375 ausente; hoy: '||left(res, 150)||')'
@@ -36356,7 +36358,7 @@ BEGIN
     WHEN fix <> '' AND est = 'pre' THEN 'REGRESION (375 ausente; no se puede sembrar: '||fix||')'
     WHEN fix <> '' THEN 'FALLO (fixture: '||fix||')'
     WHEN e376 NOT IN ('pre', 'post') THEN 'ROJO (376 '||e376||')'
-    WHEN r_hora LIKE 'ERR:42804:%' AND e376 = 'pre' THEN 'PENDIENTE mig 376 (hoy: administrar_visita(''modificar'') no compila: '||left(substr(r_hora, 11), 120)||')'
+    WHEN r_hora LIKE 'ERR:42804:%' AND e376 = 'pre' THEN 'REGRESION (376 ausente; hoy: administrar_visita(''modificar'') no compila: '||left(substr(r_hora, 11), 120)||')'
     WHEN r_hora LIKE 'ERR:42804:%' THEN 'ROJO (376 aplicada y administrar_visita(''modificar'') sigue en 42804: '||left(substr(r_hora, 11), 120)||')'
     WHEN est LIKE 'parcial%' THEN 'ROJO (375 '||est||')'
     WHEN est = 'pre' THEN 'REGRESION (375 ausente; hoy: hora '||left(r_hora, 100)||' / control '||left(r_ctl, 100)||')'
@@ -36402,7 +36404,7 @@ BEGIN
   PERFORM set_config('probe.p1059', CASE
     WHEN post IS DISTINCT FROM pre THEN 'FALLO (no volvio al snapshot tras el descarte)'
     WHEN e376 NOT IN ('pre', 'post') THEN 'ROJO (376 '||e376||')'
-    WHEN res LIKE 'ERR:42804:%' AND e376 = 'pre' THEN 'PENDIENTE mig 376 (hoy: administrar_visita(''modificar'') no compila: '||left(substr(res, 11), 120)||')'
+    WHEN res LIKE 'ERR:42804:%' AND e376 = 'pre' THEN 'REGRESION (376 ausente; hoy: administrar_visita(''modificar'') no compila: '||left(substr(res, 11), 120)||')'
     WHEN res LIKE 'ERR:42804:%' THEN 'ROJO (376 aplicada y administrar_visita(''modificar'') sigue en 42804: '||left(substr(res, 11), 120)||')'
     WHEN res LIKE 'OK:%"success": true%' AND leida = (CURRENT_DATE + 1)::text
       THEN 'OK (QA Laboratorio mueve su visita a medico.qa de hoy+10 a hoy+1: success y releida; estado 375: '||est||'; descartado)'
@@ -36546,7 +36548,7 @@ BEGIN
   PERFORM set_config('probe.p1062', CASE
     WHEN post IS DISTINCT FROM pre THEN 'FALLO (no volvio al snapshot tras el descarte)'
     WHEN e376 NOT IN ('pre', 'post') THEN 'ROJO (376 '||e376||')'
-    WHEN e376 = 'pre' AND r1 LIKE 'ERR:42804:%' THEN 'PENDIENTE mig 376 (hoy: '||left(r1, 120)||')'
+    WHEN e376 = 'pre' AND r1 LIKE 'ERR:42804:%' THEN 'REGRESION (376 ausente; hoy: '||left(r1, 120)||')'
     WHEN r1 LIKE 'ERR:PV003:%' AND r2 LIKE 'ERR:PV003:%' AND r3 LIKE 'ERR:PV003:%' AND r4 LIKE 'ERR:PV003:%' AND despues = antes
       THEN 'OK (376: horas ''25:00'', ''9:5'', ''abc'' (fin) y '''' -> PV003; visita intacta; descartado)'
     ELSE 'ROJO (esperado PV003 x4 y visita intacta; vino '||left(r1, 80)||' / '||left(r2, 80)||' / '||left(r3, 80)||' / '||left(r4, 80)||
@@ -36591,7 +36593,7 @@ BEGIN
   PERFORM set_config('probe.p1063', CASE
     WHEN post IS DISTINCT FROM pre THEN 'FALLO (no volvio al snapshot tras el descarte)'
     WHEN e376 NOT IN ('pre', 'post') THEN 'ROJO (376 '||e376||')'
-    WHEN e376 = 'pre' AND res LIKE 'ERR:42804:%' THEN 'PENDIENTE mig 376 (hoy: '||left(res, 120)||')'
+    WHEN e376 = 'pre' AND res LIKE 'ERR:42804:%' THEN 'REGRESION (376 ausente; hoy: '||left(res, 120)||')'
     WHEN res LIKE 'OK:%"success": true%' AND leida = (CURRENT_DATE + 12)::text||'|07:04:00|07:34:00|confirmada' AND otras_d = otras_a
       THEN 'OK (376: modificar solo con fecha -> success; fecha hoy+12, horas intactas, confirmada; otras filas intactas; estado 376: '||e376||'; descartado)'
     ELSE 'ROJO (esperado success, '||(CURRENT_DATE + 12)::text||'|07:04:00|07:34:00|confirmada y otras filas intactas; vino '||left(res, 150)||
@@ -36634,7 +36636,7 @@ BEGIN
   PERFORM set_config('probe.p1064', CASE
     WHEN post IS DISTINCT FROM pre THEN 'FALLO (no volvio al snapshot tras el descarte)'
     WHEN e376 NOT IN ('pre', 'post') THEN 'ROJO (376 '||e376||')'
-    WHEN e376 = 'pre' AND res LIKE 'ERR:42804:%' THEN 'PENDIENTE mig 376 (hoy: '||left(res, 120)||')'
+    WHEN e376 = 'pre' AND res LIKE 'ERR:42804:%' THEN 'REGRESION (376 ausente; hoy: '||left(res, 120)||')'
     WHEN res LIKE 'OK:%"success": true%' AND leida = (CURRENT_DATE + 10)::text||'|08:10:00|08:40:00|confirmada' AND otras_d = otras_a
       THEN 'OK (376: modificar solo con hora -> success; fecha intacta, 08:10-08:40 releidas, confirmada; otras filas intactas; estado 376: '||e376||'; descartado)'
     ELSE 'ROJO (esperado success, '||(CURRENT_DATE + 10)::text||'|08:10:00|08:40:00|confirmada y otras filas intactas; vino '||left(res, 150)||
@@ -37782,15 +37784,15 @@ UNION ALL SELECT 'P1053_enrolar_visitador_ok_375',  current_setting('probe.p1053
 UNION ALL SELECT 'P1054_enrolar_otro_lab_pv013_375',  current_setting('probe.p1054', true), 'OK (segundo lab farmaceutico con capacidad y plan -> PV013; descartado)'
 UNION ALL SELECT 'P1055_enrolar_anon_sin_execute_375',  current_setting('probe.p1055', true), 'OK (anon y PUBLIC sin EXECUTE en enrolar_medico; anon ejercitado 42501)'
 UNION ALL SELECT 'P1056_head_start_insert_pv002_375',  current_setting('probe.p1056', true), 'OK (segundo lab agenda a medico.qa en hoy+1 -> PV002; hoy+30 entra)'
-UNION ALL SELECT 'P1057_head_start_reprogramar_pv002_375',  current_setting('probe.p1057', true), 'OK (375: administrar_visita modificar hacia la ventana -> PV002; antes de la 376: PENDIENTE por el 42804 de modificar)'
-UNION ALL SELECT 'P1058_head_start_solo_hora_375',  current_setting('probe.p1058', true), 'OK (375: solo hora dentro de la ventana -> success; control PV002; antes de la 376: PENDIENTE por el 42804 de modificar)'
-UNION ALL SELECT 'P1059_head_start_lab_propio_375',  current_setting('probe.p1059', true), 'OK (QA Laboratorio reprograma su visita a hoy+1 -> success; antes de la 376: PENDIENTE por el 42804 de modificar)'
+UNION ALL SELECT 'P1057_head_start_reprogramar_pv002_375',  current_setting('probe.p1057', true), 'OK (375: administrar_visita modificar hacia la ventana -> PV002; sin la 376: REGRESION por el 42804 de modificar)'
+UNION ALL SELECT 'P1058_head_start_solo_hora_375',  current_setting('probe.p1058', true), 'OK (375: solo hora dentro de la ventana -> success; control PV002; sin la 376: REGRESION por el 42804 de modificar)'
+UNION ALL SELECT 'P1059_head_start_lab_propio_375',  current_setting('probe.p1059', true), 'OK (QA Laboratorio reprograma su visita a hoy+1 -> success; sin la 376: REGRESION por el 42804 de modificar)'
 UNION ALL SELECT 'P1060_head_start_update_trigger_375',  current_setting('probe.p1060', true), 'OK (375: UPDATE de fecha hacia la ventana PV002 x2; solo hora 1 fila; sin la 375: REGRESION)'
 UNION ALL SELECT 'P1061_head_start_update_lab_propio_375',  current_setting('probe.p1061', true), 'OK (UPDATE de la visita de QA Laboratorio a hoy+1: 1 fila)'
-UNION ALL SELECT 'M376_FX_helpers_modificar',  current_setting('probe.m376_fx', true), 'OK (helpers de pg_temp creados; estado de la 376: pre o post; desconocido: ROJO)'
-UNION ALL SELECT 'P1062_modificar_hora_invalida_pv003_376',  current_setting('probe.p1062', true), 'OK (376: hora que no es HH:MM -> PV003 x4, visita intacta; antes de la 376: PENDIENTE)'
-UNION ALL SELECT 'P1063_modificar_solo_fecha_376',  current_setting('probe.p1063', true), 'OK (376: modificar solo con fecha -> success, 1 fila; antes de la 376: PENDIENTE)'
-UNION ALL SELECT 'P1064_modificar_solo_hora_376',  current_setting('probe.p1064', true), 'OK (376: modificar solo con hora -> success, 1 fila; antes de la 376: PENDIENTE)'
+UNION ALL SELECT 'M376_FX_helpers_modificar',  current_setting('probe.m376_fx', true), 'OK (helpers de pg_temp creados; estado de la 376: post; pre: REGRESION; desconocido: ROJO)'
+UNION ALL SELECT 'P1062_modificar_hora_invalida_pv003_376',  current_setting('probe.p1062', true), 'OK (376: hora que no es HH:MM -> PV003 x4, visita intacta; sin la 376: REGRESION)'
+UNION ALL SELECT 'P1063_modificar_solo_fecha_376',  current_setting('probe.p1063', true), 'OK (376: modificar solo con fecha -> success, 1 fila; sin la 376: REGRESION)'
+UNION ALL SELECT 'P1064_modificar_solo_hora_376',  current_setting('probe.p1064', true), 'OK (376: modificar solo con hora -> success, 1 fila; sin la 376: REGRESION)'
 UNION ALL SELECT 'P1010_campana_vistas_sin_update_367',  current_setting('probe.p1010', true), 'OK (367: INSERT 1; ON CONFLICT DO NOTHING 0 sin error; DO UPDATE y UPDATE 42501; otro paciente 0; antes de la 367: PENDIENTE)'
 UNION ALL SELECT 'P1009_datos_bancarios_acotados_366',  current_setting('probe.p1009', true), 'OK (366: cuenta GT solo super_admin/admin_pais GT/proveedores GT; checkout 1 fila; config 21 super_admin y 14 el resto, admin_pais incluido; antes de la 366: PENDIENTE)'
 UNION ALL SELECT 'DET_p1009',  'DET ' || COALESCE(NULLIF(current_setting('probe.p1009_det', true), ''), '(sin dato)'), 'DET (detalle de P1009, no es probe)'
