@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback } from 'react'
-import { useNavigate } from 'react-router-dom'
+import { Navigate, useNavigate } from 'react-router-dom'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Badge } from '@/components/ui/badge'
@@ -43,9 +43,26 @@ const TIPOS_VISITA: Record<string, string> = {
   otro: 'Otro',
 }
 
+// Gate de la página (solo UI; la RLS de visitas_agendadas decide qué filas ve cada rol): entra el visitador
+// (visitas.propias) o quien gestiona visitadores (admin, supervisor); el resto vuelve al dashboard, con el mismo
+// <Navigate replace> que VisitadorPrivateRoute. useProveedorAuth carga por su cuenta: se espera a que termine.
 export default function ProveedorReporteVisitasPage() {
+  const { loading, puede } = useProveedorAuth()
+  if (loading) {
+    return <div className="flex justify-center py-12"><Loader2 className="h-8 w-8 animate-spin text-slate-400" /></div>
+  }
+  if (!puede('visitas.propias') && !puede('visitadores.gestionar')) {
+    return <Navigate to="/proveedor/dashboard" replace />
+  }
+  return <ReporteVisitas />
+}
+
+function ReporteVisitas() {
   const navigate = useNavigate()
-  const { empresa } = useProveedorAuth()
+  const { empresa, rol, puede } = useProveedorAuth()
+  const esGestion = puede('visitadores.gestionar')
+  const titulo = esGestion ? 'Reporte de Visitas' : 'Mi Reporte'
+  const rutaVolver = rol === 'visitador_medico' ? '/visitador/mis-visitas' : '/proveedor/dashboard'
   const [visitas, setVisitas] = useState<VisitaReporte[]>([])
   const [loading, setLoading] = useState(false)
   const [filtroMedico, setFiltroMedico] = useState('')
@@ -111,11 +128,11 @@ export default function ProveedorReporteVisitasPage() {
   return (
     <div className="space-y-6 max-w-5xl mx-auto">
       <div className="flex items-center gap-4">
-        <Button variant="ghost" size="icon" onClick={() => navigate('/visitador/mis-visitas')}>
+        <Button variant="ghost" size="icon" aria-label="Volver" onClick={() => navigate(rutaVolver)}>
           <ArrowLeft className="h-5 w-5" />
         </Button>
         <div>
-          <h1 className="text-2xl font-bold text-gray-900">Reporte de Visitas</h1>
+          <h1 className="text-2xl font-bold text-gray-900">{titulo}</h1>
           <p className="text-sm text-muted-foreground">Historial completo de visitas a médicos</p>
         </div>
       </div>
