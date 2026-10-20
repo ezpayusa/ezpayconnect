@@ -796,6 +796,15 @@ Detalles a recordar:
   (ORDER BY cp.id) a proveedor.qa → QA Laboratorio 411d6f8c, el lab farmacéutico QA del que dependen P828, P1018 y los
   probes de la 375. P828 la fija y la vuelve a `farmacia`; la 375 la fija en su savepoint con
   `pg_temp.m375_qalab_fijar`. FX12 no se tocó: acotar su efecto (savepoint propio o empresa sembrada) en un lote aparte.
+- (Visitas, recon de la mig 376, 20-oct-2026) `administrar_visita`:
+  (a) el RAISE 'No autorizado para administrar esta visita' no lleva ERRCODE (sale como P0001; el front lo reconoce por
+  el texto 'No autorizado'); darle uno propio cuando se toque el gate;
+  (b) 'rechazar' no valida el estado: medido en ROLLBACK, rechaza una visita ya `confirmada` de fecha pasada
+  (`c74a03de…`, 2026-10-15);
+  (c) los comentarios de la 375 (`375_enrolamiento_hardening.sql`, el trigger del head-start y el bloque de probes)
+  hablan de administrar_visita('reprogramar'); la acción real es 'modificar'. La 375 está aplicada y no se edita;
+  (d) PV003 (hora inválida, mig 376) no está mapeado en el front: `useVisitasAgendadas` muestra 'Error administrando
+  visita' para todo lo que no sea 'No autorizado'.
 - (Familia 8) ~~P800 salta las foreign tables~~: alineado en la rama de la 370 (relkind incluye 'f').
 - (Familia 2, **mig 373+**; los números 371 y 372 los tomó GL-02) REVOKE SELECT de anon en las 6 tablas de la WL_ANON_LEGACY que ya no usa (cuentas_proveedor,
   empresas_proveedoras, liquidaciones_comision, pacientes, perfiles, recetas): anon no evalúa ninguna policy sobre ellas
