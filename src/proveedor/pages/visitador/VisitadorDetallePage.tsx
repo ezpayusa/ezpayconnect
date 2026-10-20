@@ -7,9 +7,10 @@ import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Badge } from '@/components/ui/badge'
 import { toast } from 'sonner'
 import { nombreMedico, resolverNombresMedicos, SIN_NOMBRE } from '@/proveedor/lib/nombresMedicos'
+import { openSignedUrl } from '@/lib/signedUrl'
 import {
   ArrowLeft, Loader2, AlertTriangle, MapPin, Clock, CheckCircle, CalendarCheck,
-  Stethoscope, TrendingUp, Timer, ClipboardList,
+  Stethoscope, TrendingUp, Timer, ClipboardList, Image as ImageIcon,
 } from 'lucide-react'
 
 interface Visita {
@@ -23,6 +24,7 @@ interface Visita {
   checkin_fecha: string | null
   checkout_fecha: string | null
   notas_empresa: string | null
+  checkin_evidencia_url: string | null
 }
 
 const ESTADO_BADGE: Record<string, string> = {
@@ -56,7 +58,7 @@ export default function VisitadorDetallePage() {
 
     const { data: vis, error } = await supabase
       .from('visitas_agendadas')
-      .select('id, medico_id, fecha_visita, hora_inicio, hora_fin, tipo_visita, estado, checkin_fecha, checkout_fecha, notas_empresa')
+      .select('id, medico_id, fecha_visita, hora_inicio, hora_fin, tipo_visita, estado, checkin_fecha, checkout_fecha, notas_empresa, checkin_evidencia_url')
       .eq('cuenta_proveedor_id', id)
       .order('fecha_visita', { ascending: false })
 
@@ -219,9 +221,23 @@ export default function VisitadorDetallePage() {
                         )}
                       </p>
                     </div>
-                    <Badge className={ESTADO_BADGE[v.estado || ''] || 'bg-slate-100 text-slate-700'}>
-                      {v.estado || '—'}
-                    </Badge>
+                    <div className="flex items-center gap-3 shrink-0">
+                      {v.checkin_evidencia_url && (
+                        // Bucket privado (mig 212): el mismo helper que el reporte de visitas; firma al click (TTL 120 s).
+                        <button
+                          type="button"
+                          onClick={() => openSignedUrl('evidencias-visitas', v.checkin_evidencia_url, {
+                            onError: () => toast.error('No se pudo abrir la foto de la visita.'),
+                          })}
+                          className="inline-flex items-center gap-1 text-sm text-blue-600 hover:underline"
+                        >
+                          <ImageIcon className="h-4 w-4" /> Ver foto
+                        </button>
+                      )}
+                      <Badge className={ESTADO_BADGE[v.estado || ''] || 'bg-slate-100 text-slate-700'}>
+                        {v.estado || '—'}
+                      </Badge>
+                    </div>
                   </div>
                 ))
               )}

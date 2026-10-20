@@ -15,11 +15,12 @@ export function extractPath(bucket: string, stored: string): string {
  * La firma la hace el cliente con `createSignedUrl`, que EXIGE permiso SELECT sobre
  * el objeto vía la RLS de storage.objects → un usuario sin derecho no puede firmar.
  * TTL corto (120 s). Si el usuario no tiene acceso, avisa y no abre nada.
+ * `onError` (opcional) reemplaza el alert y el console.error: el llamador avisa con su propio texto fijo.
  */
 export async function openSignedUrl(
   bucket: string,
   stored: string | null,
-  opts?: { download?: boolean }
+  opts?: { download?: boolean; onError?: () => void }
 ): Promise<void> {
   if (!stored) return
   const path = extractPath(bucket, stored)
@@ -27,6 +28,10 @@ export async function openSignedUrl(
     .from(bucket)
     .createSignedUrl(path, 120, opts?.download ? { download: true } : undefined)
   if (error || !data?.signedUrl) {
+    if (opts?.onError) {
+      opts.onError()
+      return
+    }
     console.error('No se pudo firmar la URL:', error?.message)
     alert('No tienes acceso a este archivo o no se pudo generar el enlace.')
     return
