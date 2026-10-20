@@ -38091,6 +38091,377 @@ EXCEPTION WHEN OTHERS THEN
 END $$;
 SELECT set_config('role', 'none', true);
 
+-- ================================================================================
+-- MIG 380 — lecturas del enrolamiento: listar_mis_medicos_enrolados() y prioridad_para_agendar(uuid) (M380_FX + P1091-P1098).
+-- pg_temp.m380_estado(): 'post' (las 2 funciones con su md5), 'pre' (ninguna) o 'parcial (...)' (ROJO). Sin la 380 los
+-- probes publican 'PENDIENTE mig 380 (...)', pero solo si la llamada da 42883 (la funcion no existe) y DESPUES de medir lo
+-- que no depende de la 380 (snapshot, fixtures y, en P1096, el borde del head-start en el trigger).
+-- Actores por EMAIL (farmacia.qa, sup1.qa, visitador.qa, paciente.qa, medico.qa, clinica.qa); usa los helpers de M375_FX
+-- y M377_FX (m375_como, m375_uid, m375_lab2, m375_visita, m377_fijar, m377_snap). QA Laboratorio se fija dentro de cada
+-- savepoint (FX12 la convierte en 'farmacia' para el resto de la transaccion). Toda escritura se descarta con RAISE P0999
+-- y se verifica contra pg_temp.m377_snap(). Veredictos por SQLSTATE exacto ('ERR:<sqlstate>:<mensaje>').
+-- ================================================================================
+-- M380_FX: helpers de pg_temp de este bloque + estado de la 380. No toca datos.
+DO $$
+DECLARE est text;
+BEGIN
+  EXECUTE $fn$
+CREATE OR REPLACE FUNCTION pg_temp.m380_estado() RETURNS text LANGUAGE plpgsql AS $body$
+DECLARE n int; m text;
+BEGIN
+  n := (SELECT count(*) FROM pg_proc p WHERE p.proname IN ('listar_mis_medicos_enrolados', 'prioridad_para_agendar'));
+  IF n = 0 THEN RETURN 'pre'; END IF;
+  m := (SELECT string_agg(md5(p.prosrc)||':'||p.prosecdef::text, ',' ORDER BY p.proname COLLATE "C") FROM pg_proc p
+         WHERE p.proname IN ('listar_mis_medicos_enrolados', 'prioridad_para_agendar'));
+  IF m = '0cea8b586b46708d2ced087d6290e6a8:true,1b65c48238b7d93d187dcafe275bb08a:true' THEN RETURN 'post'; END IF;
+  RETURN 'parcial (funciones '||n||', md5 '||COALESCE(m, '-')||')';
+END
+$body$
+$fn$;
+  -- prioridad_para_agendar como la cuenta p_uid: 'OK:<jsonb>' o 'ERR:<sqlstate>:<mensaje>'
+  EXECUTE $fn$
+CREATE OR REPLACE FUNCTION pg_temp.m380_prio(p_uid uuid, p_med uuid) RETURNS text LANGUAGE sql AS $body$
+  SELECT pg_temp.m375_como(p_uid, 'authenticated', format('SELECT public.prioridad_para_agendar(%L::uuid)::text', p_med))
+$body$
+$fn$;
+  -- listar_mis_medicos_enrolados como la cuenta p_uid: 'OK:<filas>' o 'ERR:...'
+  EXECUTE $fn$
+CREATE OR REPLACE FUNCTION pg_temp.m380_cuenta(p_uid uuid) RETURNS text LANGUAGE sql AS $body$
+  SELECT pg_temp.m375_como(p_uid, 'authenticated', 'SELECT count(*)::text FROM public.listar_mis_medicos_enrolados()')
+$body$
+$fn$;
+  est := pg_temp.m380_estado();
+  PERFORM set_config('probe.m380_fx', CASE WHEN est = 'pre' THEN 'PENDIENTE mig 380 (sin listar_mis_medicos_enrolados ni prioridad_para_agendar; helpers de pg_temp creados)'
+    WHEN est = 'post' THEN 'OK (helpers de pg_temp creados; estado de la 380: post)'
+    ELSE 'ROJO (380 '||est||'; helpers de pg_temp creados)' END, false);
+EXCEPTION WHEN OTHERS THEN
+  PERFORM set_config('probe.m380_fx', 'FALLO ('||SQLSTATE||' '||SQLERRM||')', false);
+END $$;
+
+-- ---------------- P1091 380: gates de listar_mis_medicos_enrolados (PV016 farmacia.qa, PV017 sup1.qa 'lectura', PV010 paciente.qa) ----------------
+DO $$
+DECLARE est text; a_med uuid; gt uuid; a_far uuid; a_sup uuid; a_pac uuid; emp uuid; r_far text; r_sup text; r_pac text; r_pac2 text; pre text; post text;
+BEGIN
+  est := pg_temp.m380_estado();
+  a_med := pg_temp.m375_uid('medico.qa@ezpayconnect.com');
+  gt := (SELECT p.pais_id FROM public.perfiles p WHERE p.id = a_med);
+  a_far := pg_temp.m375_uid('farmacia.qa@ezpayconnect.com');
+  a_sup := pg_temp.m375_uid('sup1.qa@ezpayconnect.com');
+  a_pac := pg_temp.m375_uid('paciente.qa@ezpayconnect.com');
+  IF gt IS NULL OR a_far IS NULL OR a_sup IS NULL OR a_pac IS NULL THEN
+    PERFORM set_config('probe.p1091', 'FALLO (actor inexistente: medico.qa con pais, farmacia.qa, sup1.qa o paciente.qa)', false);
+    RETURN;
+  END IF;
+  pre := pg_temp.m377_snap();
+  BEGIN
+    emp := pg_temp.m377_fijar(gt);
+    r_far := pg_temp.m380_cuenta(a_far);
+    UPDATE public.cuentas_proveedor SET rol_en_empresa = 'lectura' WHERE id = a_sup AND empresa_id = emp;
+    IF NOT FOUND THEN RAISE EXCEPTION 'fixture roto: sup1.qa no es cuenta de QA Laboratorio'; END IF;
+    r_sup := pg_temp.m380_cuenta(a_sup);
+    r_pac := pg_temp.m380_cuenta(a_pac);
+    r_pac2 := pg_temp.m380_prio(a_pac, a_med);
+    RAISE EXCEPTION 'P1091 descarte' USING ERRCODE = 'P0999';
+  EXCEPTION WHEN SQLSTATE 'P0999' THEN NULL;
+  END;
+  post := pg_temp.m377_snap();
+  PERFORM set_config('probe.p1091', CASE
+    WHEN post IS DISTINCT FROM pre THEN 'FALLO (no volvio al snapshot tras el descarte)'
+    WHEN est LIKE 'parcial%' THEN 'ROJO (380 '||est||')'
+    WHEN est = 'pre' AND r_far LIKE 'ERR:42883:%' AND r_sup LIKE 'ERR:42883:%' AND r_pac LIKE 'ERR:42883:%' AND r_pac2 LIKE 'ERR:42883:%'
+      THEN 'PENDIENTE mig 380 (las funciones no existen: 42883 x4)'
+    WHEN est = 'pre' THEN 'ROJO (380 ausente y no dio 42883: '||left(r_far, 80)||' / '||left(r_sup, 80)||' / '||left(r_pac, 80)||' / '||left(r_pac2, 80)||')'
+    WHEN r_far LIKE 'ERR:PV016:%' AND r_sup LIKE 'ERR:PV017:%' AND r_pac LIKE 'ERR:PV010:%' AND r_pac2 LIKE 'ERR:PV010:%'
+      THEN 'OK (380: listar farmacia.qa PV016, sup1.qa en lectura PV017, paciente.qa PV010; prioridad_para_agendar paciente.qa PV010; descartado)'
+    ELSE 'ROJO (esperado PV016/PV017/PV010/PV010; vino '||left(r_far, 80)||' / '||left(r_sup, 80)||' / '||left(r_pac, 80)||' / '||left(r_pac2, 80)||')' END, false);
+EXCEPTION WHEN OTHERS THEN
+  PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
+  PERFORM set_config('probe.p1091', CASE WHEN SQLERRM LIKE 'fixture roto%' THEN 'FALLO ('||SQLERRM||')'
+    ELSE 'FALLO ('||SQLSTATE||' '||SQLERRM||')' END, false);
+END $$;
+SELECT set_config('role', 'none', true);
+
+-- ---------------- P1092 380: estructura y ACL (DEFINER, search_path '', STABLE, sin columnas de contacto; anon y PUBLIC sin EXECUTE) ----------------
+DO $$
+DECLARE est text; acl text; cfg text; cols text; r_l text; r_p text; ok boolean;
+BEGIN
+  est := pg_temp.m380_estado();
+  IF est = 'pre' THEN PERFORM set_config('probe.p1092', 'PENDIENTE mig 380 (las funciones no existen)', false); RETURN; END IF;
+  IF est <> 'post' THEN PERFORM set_config('probe.p1092', 'ROJO (380 '||est||')', false); RETURN; END IF;
+  acl := (SELECT string_agg(p.proname||'='||COALESCE(p.proacl::text, 'NULL'), ' ' ORDER BY p.proname COLLATE "C") FROM pg_proc p
+           WHERE p.proname IN ('listar_mis_medicos_enrolados', 'prioridad_para_agendar'));
+  cfg := (SELECT string_agg(p.proname||'='||p.prosecdef::text||'/'||p.provolatile::text||'/'||COALESCE(p.proconfig::text, '-'), ' ' ORDER BY p.proname COLLATE "C")
+            FROM pg_proc p WHERE p.proname IN ('listar_mis_medicos_enrolados', 'prioridad_para_agendar'));
+  cols := (SELECT array_to_string(p.proargnames, ',') FROM pg_proc p WHERE p.oid = 'public.listar_mis_medicos_enrolados()'::regprocedure);
+  r_l := pg_temp.m375_como(NULL, 'anon', 'SELECT count(*)::text FROM public.listar_mis_medicos_enrolados()');
+  r_p := pg_temp.m375_como(NULL, 'anon', format('SELECT public.prioridad_para_agendar(%L::uuid)::text', gen_random_uuid()));
+  ok := acl = 'listar_mis_medicos_enrolados={postgres=X/postgres,authenticated=X/postgres,service_role=X/postgres} '||
+              'prioridad_para_agendar={postgres=X/postgres,authenticated=X/postgres,service_role=X/postgres}'
+        AND cfg = 'listar_mis_medicos_enrolados=true/s/{"search_path=\"\""} prioridad_para_agendar=true/s/{"search_path=\"\""}'
+        AND cols = 'medico_id,nombre_completo,especialidad,pais_id,lab_enrolador_fecha,prioridad_activa,visitas_completadas,visitas_limite,prioridad_vence_el,dias_ventaja'
+        AND NOT has_function_privilege('anon', 'public.listar_mis_medicos_enrolados()', 'EXECUTE')
+        AND NOT has_function_privilege('anon', 'public.prioridad_para_agendar(uuid)', 'EXECUTE')
+        AND r_l LIKE 'ERR:42501:%listar_mis_medicos_enrolados%' AND r_p LIKE 'ERR:42501:%prioridad_para_agendar%';
+  PERFORM set_config('probe.p1092', CASE
+    WHEN COALESCE(ok, false) THEN 'OK (380: DEFINER, STABLE, search_path vacio; ACL postgres + authenticated + service_role; columnas sin email ni telefono; anon 42501 en las dos)'
+    ELSE 'ROJO (acl '||COALESCE(acl, '-')||' / cfg '||COALESCE(cfg, '-')||' / cols '||COALESCE(cols, '-')||' / anon '||left(COALESCE(r_l, '-'), 80)||' / '||left(COALESCE(r_p, '-'), 80)||')' END, false);
+EXCEPTION WHEN OTHERS THEN
+  PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
+  PERFORM set_config('probe.p1092', 'FALLO ('||SQLSTATE||' '||SQLERRM||')', false);
+END $$;
+SELECT set_config('role', 'none', true);
+
+-- ---------------- P1093 380: visitador.qa lista a medico.qa con la prioridad de prioridad_activa(), sin columnas de contacto ----------------
+DO $$
+DECLARE est text; a_med uuid; a_vis uuid; gt uuid; emp uuid; n_exp int; esperado text; r text; pre text; post text;
+BEGIN
+  est := pg_temp.m380_estado();
+  a_med := pg_temp.m375_uid('medico.qa@ezpayconnect.com');
+  a_vis := pg_temp.m375_uid('visitador.qa@ezpayconnect.com');
+  gt := (SELECT p.pais_id FROM public.perfiles p WHERE p.id = a_med);
+  IF gt IS NULL OR a_vis IS NULL THEN
+    PERFORM set_config('probe.p1093', 'FALLO (actor inexistente: medico.qa con pais o visitador.qa)', false);
+    RETURN;
+  END IF;
+  pre := pg_temp.m377_snap();
+  BEGIN
+    emp := pg_temp.m377_fijar(gt);
+    IF (SELECT m.lab_enrolador_id FROM public.medicos m WHERE m.id = a_med) IS DISTINCT FROM emp THEN
+      RAISE EXCEPTION 'fixture roto: medico.qa no esta enrolado por QA Laboratorio';
+    END IF;
+    n_exp := (SELECT count(*) FROM public.medicos m WHERE m.lab_enrolador_id = emp);
+    esperado := (SELECT pa.activa::text||'|'||pa.visitas_completadas||'|'||pa.visitas_limite||'|'||
+                        ((m.lab_enrolador_fecha + INTERVAL '18 months') AT TIME ZONE 'UTC')::date||'|'||COALESCE(ep.dias_ventaja_reserva, 5)||'|'||
+                        COALESCE(pf.pais_id::text, '-')||'|true'
+                   FROM public.medicos m CROSS JOIN LATERAL public.prioridad_activa(m.id) pa
+                   JOIN public.empresas_proveedoras ep ON ep.id = emp
+                   LEFT JOIN public.perfiles pf ON pf.id = m.id
+                  WHERE m.id = a_med);
+    r := pg_temp.m375_como(a_vis, 'authenticated', format($q$
+      SELECT count(*)::text||'|'||COALESCE(bool_or(to_jsonb(x) ?| ARRAY['email', 'telefono', 'correo', 'celular'])::text, '-')||'|'||
+             COALESCE((SELECT y.prioridad_activa::text||'|'||y.visitas_completadas||'|'||y.visitas_limite||'|'||y.prioridad_vence_el||'|'||
+                              y.dias_ventaja||'|'||COALESCE(y.pais_id::text, '-')||'|'||(y.nombre_completo IS NOT NULL)::text
+                         FROM public.listar_mis_medicos_enrolados() y WHERE y.medico_id = %L::uuid), 'ausente')
+        FROM public.listar_mis_medicos_enrolados() x$q$, a_med));
+    RAISE EXCEPTION 'P1093 descarte' USING ERRCODE = 'P0999';
+  EXCEPTION WHEN SQLSTATE 'P0999' THEN NULL;
+  END;
+  post := pg_temp.m377_snap();
+  PERFORM set_config('probe.p1093', CASE
+    WHEN post IS DISTINCT FROM pre THEN 'FALLO (no volvio al snapshot tras el descarte)'
+    WHEN esperado IS NULL THEN 'FALLO (fixture: no se pudo calcular lo esperado para medico.qa)'
+    WHEN est LIKE 'parcial%' THEN 'ROJO (380 '||est||')'
+    WHEN est = 'pre' AND r LIKE 'ERR:42883:%' THEN 'PENDIENTE mig 380 (listar_mis_medicos_enrolados no existe; esperado '||n_exp||'|false|'||esperado||')'
+    WHEN est = 'pre' THEN 'ROJO (380 ausente y no dio 42883: '||left(r, 200)||')'
+    WHEN r = 'OK:'||n_exp||'|false|'||esperado THEN 'OK (380: visitador.qa lista '||n_exp||' medico(s) de su empresa; medico.qa '||esperado||' = prioridad_activa(); sin email ni telefono; descartado)'
+    ELSE 'ROJO (esperado OK:'||n_exp||'|false|'||esperado||'; vino '||left(r, 200)||')' END, false);
+EXCEPTION WHEN OTHERS THEN
+  PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
+  PERFORM set_config('probe.p1093', CASE WHEN SQLERRM LIKE 'fixture roto%' THEN 'FALLO ('||SQLERRM||')'
+    ELSE 'FALLO ('||SQLSTATE||' '||SQLERRM||')' END, false);
+END $$;
+SELECT set_config('role', 'none', true);
+
+-- ---------------- P1094 380: el segundo laboratorio (sin medicos enrolados) lista 0 filas ----------------
+DO $$
+DECLARE est text; a_med uuid; gt uuid; lab2 uuid; r text; pre text; post text;
+BEGIN
+  est := pg_temp.m380_estado();
+  a_med := pg_temp.m375_uid('medico.qa@ezpayconnect.com');
+  gt := (SELECT p.pais_id FROM public.perfiles p WHERE p.id = a_med);
+  IF gt IS NULL THEN
+    PERFORM set_config('probe.p1094', 'FALLO (actor inexistente: medico.qa con pais)', false);
+    RETURN;
+  END IF;
+  pre := pg_temp.m377_snap();
+  BEGIN
+    lab2 := pg_temp.m375_lab2(gt);
+    r := pg_temp.m380_cuenta(lab2);
+    RAISE EXCEPTION 'P1094 descarte' USING ERRCODE = 'P0999';
+  EXCEPTION WHEN SQLSTATE 'P0999' THEN NULL;
+  END;
+  post := pg_temp.m377_snap();
+  PERFORM set_config('probe.p1094', CASE
+    WHEN post IS DISTINCT FROM pre THEN 'FALLO (no volvio al snapshot tras el descarte)'
+    WHEN est LIKE 'parcial%' THEN 'ROJO (380 '||est||')'
+    WHEN est = 'pre' AND r LIKE 'ERR:42883:%' THEN 'PENDIENTE mig 380 (listar_mis_medicos_enrolados no existe)'
+    WHEN est = 'pre' THEN 'ROJO (380 ausente y no dio 42883: '||left(r, 200)||')'
+    WHEN r = 'OK:0' THEN 'OK (380: el segundo laboratorio lista 0 medicos; no ve a medico.qa; descartado)'
+    ELSE 'ROJO (esperado OK:0; vino '||left(r, 200)||')' END, false);
+EXCEPTION WHEN OTHERS THEN
+  PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
+  PERFORM set_config('probe.p1094', CASE WHEN SQLERRM LIKE 'fixture roto%' THEN 'FALLO ('||SQLERRM||')'
+    ELSE 'FALLO ('||SQLSTATE||' '||SQLERRM||')' END, false);
+END $$;
+SELECT set_config('role', 'none', true);
+
+-- ---------------- P1095 380: prioridad_para_agendar(medico.qa) como visitador.qa -> 'propia' con las visitas de prioridad_activa() ----------------
+DO $$
+DECLARE est text; a_med uuid; a_vis uuid; gt uuid; emp uuid; pa record; r text; j jsonb; pre text; post text;
+BEGIN
+  est := pg_temp.m380_estado();
+  a_med := pg_temp.m375_uid('medico.qa@ezpayconnect.com');
+  a_vis := pg_temp.m375_uid('visitador.qa@ezpayconnect.com');
+  gt := (SELECT p.pais_id FROM public.perfiles p WHERE p.id = a_med);
+  IF gt IS NULL OR a_vis IS NULL THEN
+    PERFORM set_config('probe.p1095', 'FALLO (actor inexistente: medico.qa con pais o visitador.qa)', false);
+    RETURN;
+  END IF;
+  pre := pg_temp.m377_snap();
+  BEGIN
+    emp := pg_temp.m377_fijar(gt);
+    SELECT * INTO pa FROM public.prioridad_activa(a_med);
+    IF NOT COALESCE(pa.activa, false) OR pa.lab_prioritario_id IS DISTINCT FROM emp THEN
+      RAISE EXCEPTION 'fixture roto: medico.qa sin prioridad activa de QA Laboratorio';
+    END IF;
+    r := pg_temp.m380_prio(a_vis, a_med);
+    RAISE EXCEPTION 'P1095 descarte' USING ERRCODE = 'P0999';
+  EXCEPTION WHEN SQLSTATE 'P0999' THEN NULL;
+  END;
+  post := pg_temp.m377_snap();
+  IF r LIKE 'OK:%' THEN j := substr(r, 4)::jsonb; END IF;
+  PERFORM set_config('probe.p1095', CASE
+    WHEN post IS DISTINCT FROM pre THEN 'FALLO (no volvio al snapshot tras el descarte)'
+    WHEN est LIKE 'parcial%' THEN 'ROJO (380 '||est||')'
+    WHEN est = 'pre' AND r LIKE 'ERR:42883:%' THEN 'PENDIENTE mig 380 (prioridad_para_agendar no existe)'
+    WHEN est = 'pre' THEN 'ROJO (380 ausente y no dio 42883: '||left(r, 200)||')'
+    WHEN j = jsonb_build_object('estado', 'propia', 'fecha_minima', NULL, 'visitas_completadas', pa.visitas_completadas, 'visitas_limite', pa.visitas_limite)
+      THEN 'OK (380: visitador.qa -> '||j::text||' = prioridad_activa(); descartado)'
+    ELSE 'ROJO (esperado propia con '||pa.visitas_completadas||'/'||pa.visitas_limite||'; vino '||left(r, 200)||')' END, false);
+EXCEPTION WHEN OTHERS THEN
+  PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
+  PERFORM set_config('probe.p1095', CASE WHEN SQLERRM LIKE 'fixture roto%' THEN 'FALLO ('||SQLERRM||')'
+    ELSE 'FALLO ('||SQLSTATE||' '||SQLERRM||')' END, false);
+END $$;
+SELECT set_config('role', 'none', true);
+
+-- ---------------- P1096 380: segundo lab -> 'otro_laboratorio'; fecha_minima = primer dia que su INSERT no da PV002; sin rastro de QA Laboratorio ----------------
+-- El borde del trigger (dia anterior PV002, ese dia OK) se mide igual sin la 380, con la fecha que calcula el probe
+-- (CURRENT_DATE + COALESCE(dias_ventaja_reserva de QA Laboratorio, 5)).
+DO $$
+DECLARE est text; a_med uuid; gt uuid; qalab uuid; qnom text; lab2 uuid; emp2 uuid; fmin date; r text; j jsonb;
+        r_antes text; r_dia text; pre text; post text;
+BEGIN
+  est := pg_temp.m380_estado();
+  a_med := pg_temp.m375_uid('medico.qa@ezpayconnect.com');
+  gt := (SELECT p.pais_id FROM public.perfiles p WHERE p.id = a_med);
+  qalab := (SELECT m.lab_enrolador_id FROM public.medicos m WHERE m.id = a_med);
+  qnom := (SELECT e.nombre_empresa FROM public.empresas_proveedoras e WHERE e.id = qalab);
+  IF gt IS NULL OR qalab IS NULL OR qnom IS NULL THEN
+    PERFORM set_config('probe.p1096', 'FALLO (actor inexistente: medico.qa con pais y enrolador)', false);
+    RETURN;
+  END IF;
+  pre := pg_temp.m377_snap();
+  BEGIN
+    IF NOT COALESCE((SELECT pa.activa FROM public.prioridad_activa(a_med) pa), false) THEN
+      RAISE EXCEPTION 'fixture roto: medico.qa sin prioridad activa';
+    END IF;
+    fmin := CURRENT_DATE + COALESCE((SELECT e.dias_ventaja_reserva FROM public.empresas_proveedoras e WHERE e.id = qalab), 5);
+    lab2 := pg_temp.m375_lab2(gt);
+    emp2 := (SELECT cp.empresa_id FROM public.cuentas_proveedor cp WHERE cp.id = lab2);
+    r := pg_temp.m380_prio(lab2, a_med);
+    IF r LIKE 'OK:%' THEN fmin := COALESCE((substr(r, 4)::jsonb ->> 'fecha_minima')::date, fmin); END IF;
+    r_antes := pg_temp.m375_visita(lab2, emp2, a_med, fmin - 1, '07:20');
+    r_dia := pg_temp.m375_visita(lab2, emp2, a_med, fmin, '07:20');
+    RAISE EXCEPTION 'P1096 descarte' USING ERRCODE = 'P0999';
+  EXCEPTION WHEN SQLSTATE 'P0999' THEN NULL;
+  END;
+  post := pg_temp.m377_snap();
+  IF r LIKE 'OK:%' THEN j := substr(r, 4)::jsonb; END IF;
+  PERFORM set_config('probe.p1096', CASE
+    WHEN post IS DISTINCT FROM pre THEN 'FALLO (no volvio al snapshot tras el descarte)'
+    WHEN r_antes NOT LIKE 'ERR:PV002:%' OR r_dia NOT LIKE 'OK:%' THEN 'ROJO (borde del head-start en '||fmin||': dia anterior '||left(r_antes, 100)||' / ese dia '||left(r_dia, 100)||')'
+    WHEN est LIKE 'parcial%' THEN 'ROJO (380 '||est||')'
+    WHEN est = 'pre' AND r LIKE 'ERR:42883:%' THEN 'PENDIENTE mig 380 (prioridad_para_agendar no existe; borde del trigger OK: '||(fmin - 1)||' PV002, '||fmin||' entra)'
+    WHEN est = 'pre' THEN 'ROJO (380 ausente y no dio 42883: '||left(r, 200)||')'
+    WHEN j = jsonb_build_object('estado', 'otro_laboratorio', 'fecha_minima', fmin, 'visitas_completadas', NULL, 'visitas_limite', NULL)
+         AND (CURRENT_DATE + COALESCE((SELECT e.dias_ventaja_reserva FROM public.empresas_proveedoras e WHERE e.id = qalab), 5)) = fmin
+         AND position(qalab::text IN j::text) = 0 AND position(lower(qnom) IN lower(j::text)) = 0
+      THEN 'OK (380: segundo lab -> '||j::text||'; '||(fmin - 1)||' PV002 y '||fmin||' entra; sin id ni nombre de QA Laboratorio; descartado)'
+    ELSE 'ROJO (esperado otro_laboratorio con fecha_minima '||fmin||' y visitas null, sin rastro del lab; vino '||left(r, 200)||')' END, false);
+EXCEPTION WHEN OTHERS THEN
+  PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
+  PERFORM set_config('probe.p1096', CASE WHEN SQLERRM LIKE 'fixture roto%' THEN 'FALLO ('||SQLERRM||')'
+    ELSE 'FALLO ('||SQLSTATE||' '||SQLERRM||')' END, false);
+END $$;
+SELECT set_config('role', 'none', true);
+
+-- ---------------- P1097 380: medico sin enrolador (clinica.qa) -> 'libre' sin fecha ni visitas ----------------
+DO $$
+DECLARE est text; a_cli uuid; a_vis uuid; gt uuid; emp uuid; r text; j jsonb; pre text; post text;
+BEGIN
+  est := pg_temp.m380_estado();
+  a_cli := pg_temp.m375_uid('clinica.qa@ezpayconnect.com');
+  a_vis := pg_temp.m375_uid('visitador.qa@ezpayconnect.com');
+  gt := (SELECT p.pais_id FROM public.perfiles p WHERE p.id = a_cli);
+  IF gt IS NULL OR a_vis IS NULL OR NOT EXISTS (SELECT 1 FROM public.medicos m WHERE m.id = a_cli AND m.lab_enrolador_id IS NULL) THEN
+    PERFORM set_config('probe.p1097', 'FALLO (actor inexistente: clinica.qa medico sin enrolador con pais, o visitador.qa)', false);
+    RETURN;
+  END IF;
+  pre := pg_temp.m377_snap();
+  BEGIN
+    emp := pg_temp.m377_fijar(gt);
+    r := pg_temp.m380_prio(a_vis, a_cli);
+    RAISE EXCEPTION 'P1097 descarte' USING ERRCODE = 'P0999';
+  EXCEPTION WHEN SQLSTATE 'P0999' THEN NULL;
+  END;
+  post := pg_temp.m377_snap();
+  IF r LIKE 'OK:%' THEN j := substr(r, 4)::jsonb; END IF;
+  PERFORM set_config('probe.p1097', CASE
+    WHEN post IS DISTINCT FROM pre THEN 'FALLO (no volvio al snapshot tras el descarte)'
+    WHEN est LIKE 'parcial%' THEN 'ROJO (380 '||est||')'
+    WHEN est = 'pre' AND r LIKE 'ERR:42883:%' THEN 'PENDIENTE mig 380 (prioridad_para_agendar no existe)'
+    WHEN est = 'pre' THEN 'ROJO (380 ausente y no dio 42883: '||left(r, 200)||')'
+    WHEN j = jsonb_build_object('estado', 'libre', 'fecha_minima', NULL, 'visitas_completadas', NULL, 'visitas_limite', NULL)
+      THEN 'OK (380: clinica.qa sin enrolador -> '||j::text||'; descartado)'
+    ELSE 'ROJO (esperado libre sin fecha ni visitas; vino '||left(r, 200)||')' END, false);
+EXCEPTION WHEN OTHERS THEN
+  PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
+  PERFORM set_config('probe.p1097', CASE WHEN SQLERRM LIKE 'fixture roto%' THEN 'FALLO ('||SQLERRM||')'
+    ELSE 'FALLO ('||SQLSTATE||' '||SQLERRM||')' END, false);
+END $$;
+SELECT set_config('role', 'none', true);
+
+-- ---------------- P1098 380: PV026 (lab con plan en otro pais; medico inexistente; NULL), el mismo mensaje ----------------
+DO $$
+DECLARE est text; a_med uuid; a_vis uuid; gt uuid; otro uuid; emp uuid; lab3 uuid; r_pais text; r_inex text; r_null text; pre text; post text;
+        msg text := 'No puedes consultar a este médico.';
+BEGIN
+  est := pg_temp.m380_estado();
+  a_med := pg_temp.m375_uid('medico.qa@ezpayconnect.com');
+  a_vis := pg_temp.m375_uid('visitador.qa@ezpayconnect.com');
+  gt := (SELECT p.pais_id FROM public.perfiles p WHERE p.id = a_med);
+  otro := (SELECT cp.id FROM public.configuracion_pais cp WHERE cp.id IS DISTINCT FROM gt ORDER BY cp.codigo, cp.id LIMIT 1);
+  IF gt IS NULL OR a_vis IS NULL OR otro IS NULL THEN
+    PERFORM set_config('probe.p1098', 'FALLO (actor inexistente: medico.qa con pais, visitador.qa u otro pais)', false);
+    RETURN;
+  END IF;
+  pre := pg_temp.m377_snap();
+  BEGIN
+    lab3 := pg_temp.m375_lab2(otro);
+    r_pais := pg_temp.m380_prio(lab3, a_med);
+    emp := pg_temp.m377_fijar(gt);
+    r_inex := pg_temp.m380_prio(a_vis, gen_random_uuid());
+    r_null := pg_temp.m380_prio(a_vis, NULL);
+    RAISE EXCEPTION 'P1098 descarte' USING ERRCODE = 'P0999';
+  EXCEPTION WHEN SQLSTATE 'P0999' THEN NULL;
+  END;
+  post := pg_temp.m377_snap();
+  PERFORM set_config('probe.p1098', CASE
+    WHEN post IS DISTINCT FROM pre THEN 'FALLO (no volvio al snapshot tras el descarte)'
+    WHEN est LIKE 'parcial%' THEN 'ROJO (380 '||est||')'
+    WHEN est = 'pre' AND r_pais LIKE 'ERR:42883:%' AND r_inex LIKE 'ERR:42883:%' AND r_null LIKE 'ERR:42883:%' THEN 'PENDIENTE mig 380 (prioridad_para_agendar no existe)'
+    WHEN est = 'pre' THEN 'ROJO (380 ausente y no dio 42883: '||left(r_pais, 80)||' / '||left(r_inex, 80)||' / '||left(r_null, 80)||')'
+    WHEN r_pais = 'ERR:PV026:'||msg AND r_inex = 'ERR:PV026:'||msg AND r_null = 'ERR:PV026:'||msg
+      THEN 'OK (380: lab con plan en otro pais, medico inexistente y NULL -> PV026 con el mismo mensaje; descartado)'
+    ELSE 'ROJO (esperado PV026 x3; vino '||left(r_pais, 80)||' / '||left(r_inex, 80)||' / '||left(r_null, 80)||')' END, false);
+EXCEPTION WHEN OTHERS THEN
+  PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
+  PERFORM set_config('probe.p1098', CASE WHEN SQLERRM LIKE 'fixture roto%' THEN 'FALLO ('||SQLERRM||')'
+    ELSE 'FALLO ('||SQLSTATE||' '||SQLERRM||')' END, false);
+END $$;
+SELECT set_config('role', 'none', true);
+
 -- ===== Veredictos como result set =====
 SELECT 'P1_anon_insert_citas'              AS probe, current_setting('probe.p1', true)  AS verdict, 'BLOQUEADO' AS esperado_post_fix
 UNION ALL SELECT 'P2_medico_cancela_ajena_rpc',         current_setting('probe.p2', true),  'BLOQUEADO'
@@ -39265,6 +39636,15 @@ UNION ALL SELECT 'P1087_registrar_sin_solicitud_ruta_a_379',  current_setting('p
 UNION ALL SELECT 'P1088_registrar_invitacion_cancelada_379',  current_setting('probe.p1088', true), 'OK (379: token cancelado por reenviar -> P0001 Invitacion no valida o expirada, nada creado; sin la 379: REGRESION)'
 UNION ALL SELECT 'P1089_registrar_solicitud_no_invitada_379',  current_setting('probe.p1089', true), 'OK (379: solicitud cancelada con invitacion_id -> registra sin enrolar, solicitud igual; sin la 379: REGRESION)'
 UNION ALL SELECT 'P1090_registrar_correo_distinto_379',  current_setting('probe.p1090', true), 'OK (379: correo distinto -> P0001 El email no coincide con la invitacion, nada creado; sin la 379: REGRESION)'
+UNION ALL SELECT 'M380_FX_helpers_lecturas_enrolamiento',  current_setting('probe.m380_fx', true), 'OK (helpers de pg_temp creados; estado de la 380: post; sin la 380: PENDIENTE; parcial: ROJO)'
+UNION ALL SELECT 'P1091_listar_gates_380',  current_setting('probe.p1091', true), 'OK (380: listar PV016 farmacia.qa, PV017 sup1.qa en lectura, PV010 paciente.qa; prioridad PV010; sin la 380: PENDIENTE)'
+UNION ALL SELECT 'P1092_estructura_acl_380',  current_setting('probe.p1092', true), 'OK (380: DEFINER, STABLE, search_path vacio, ACL authenticated + service_role, sin columnas de contacto, anon 42501; sin la 380: PENDIENTE)'
+UNION ALL SELECT 'P1093_listar_visitador_380',  current_setting('probe.p1093', true), 'OK (380: visitador.qa lista a medico.qa con la prioridad de prioridad_activa(), sin email ni telefono; sin la 380: PENDIENTE)'
+UNION ALL SELECT 'P1094_listar_segundo_lab_vacio_380',  current_setting('probe.p1094', true), 'OK (380: el segundo laboratorio lista 0 medicos; sin la 380: PENDIENTE)'
+UNION ALL SELECT 'P1095_prioridad_propia_380',  current_setting('probe.p1095', true), 'OK (380: visitador.qa -> propia con las visitas de prioridad_activa(); sin la 380: PENDIENTE)'
+UNION ALL SELECT 'P1096_prioridad_otro_laboratorio_380',  current_setting('probe.p1096', true), 'OK (380: segundo lab -> otro_laboratorio, fecha_minima = borde del PV002, sin rastro del lab; sin la 380: PENDIENTE con el borde medido)'
+UNION ALL SELECT 'P1097_prioridad_libre_380',  current_setting('probe.p1097', true), 'OK (380: medico sin enrolador -> libre sin fecha ni visitas; sin la 380: PENDIENTE)'
+UNION ALL SELECT 'P1098_prioridad_pv026_380',  current_setting('probe.p1098', true), 'OK (380: otro pais, inexistente y NULL -> PV026 con el mismo mensaje; sin la 380: PENDIENTE)'
 UNION ALL SELECT 'P1010_campana_vistas_sin_update_367',  current_setting('probe.p1010', true), 'OK (367: INSERT 1; ON CONFLICT DO NOTHING 0 sin error; DO UPDATE y UPDATE 42501; otro paciente 0; antes de la 367: PENDIENTE)'
 UNION ALL SELECT 'P1009_datos_bancarios_acotados_366',  current_setting('probe.p1009', true), 'OK (366: cuenta GT solo super_admin/admin_pais GT/proveedores GT; checkout 1 fila; config 21 super_admin y 14 el resto, admin_pais incluido; antes de la 366: PENDIENTE)'
 UNION ALL SELECT 'DET_p1009',  'DET ' || COALESCE(NULLIF(current_setting('probe.p1009_det', true), ''), '(sin dato)'), 'DET (detalle de P1009, no es probe)'
@@ -39517,7 +39897,7 @@ UNION ALL SELECT 'P000_CENTINELA_veredictos_no_nulos',
        'probe.p866', 'probe.p867', 'probe.p868', 'probe.p869', 'probe.p870', 'probe.p871', 'probe.p872', 'probe.p873', 'probe.p874', 'probe.p875', 'probe.p876', 'probe.p877', 'probe.p878',
        'probe.p879', 'probe.p880', 'probe.p881', 'probe.p882', 'probe.p883', 'probe.p884',
        'probe.p885', 'probe.p886', 'probe.p887', 'probe.p888', 'probe.p889', 'probe.p890', 'probe.p891', 'probe.p892', 'probe.p893', 'probe.p894', 'probe.p895', 'probe.p896', 'probe.p908', 'probe.p909', 'probe.p910', 'probe.p911',
-       'probe.p897', 'probe.p898', 'probe.p899', 'probe.p900', 'probe.p901', 'probe.p902', 'probe.p903', 'probe.p904', 'probe.p905', 'probe.p906', 'probe.p907', 'probe.p912', 'probe.p913', 'probe.p914', 'probe.p915', 'probe.p916', 'probe.p917', 'probe.p918', 'probe.p919', 'probe.p920', 'probe.p921', 'probe.p922', 'probe.p923', 'probe.p924', 'probe.p925', 'probe.p926', 'probe.p927', 'probe.p928', 'probe.p929', 'probe.p930', 'probe.p931', 'probe.p932', 'probe.p933', 'probe.p934', 'probe.p935', 'probe.p936', 'probe.p937', 'probe.p938', 'probe.p939', 'probe.p940', 'probe.p941', 'probe.p942', 'probe.p943', 'probe.p944', 'probe.p945', 'probe.p946', 'probe.p947', 'probe.p948', 'probe.p949', 'probe.p950', 'probe.p951', 'probe.p952', 'probe.p953', 'probe.p954', 'probe.p955', 'probe.p956', 'probe.p957', 'probe.p958', 'probe.p959', 'probe.p960', 'probe.p961', 'probe.p962', 'probe.p963', 'probe.p964', 'probe.p965', 'probe.p966', 'probe.p967', 'probe.p968', 'probe.p969', 'probe.p970', 'probe.p971', 'probe.p972', 'probe.p973', 'probe.p974', 'probe.p975', 'probe.p976', 'probe.p977', 'probe.p978', 'probe.p979', 'probe.p980', 'probe.p981', 'probe.p982', 'probe.p983', 'probe.p984', 'probe.p985', 'probe.p986', 'probe.p987', 'probe.p988', 'probe.p989', 'probe.p990', 'probe.p991', 'probe.p992', 'probe.p993', 'probe.p994', 'probe.p995', 'probe.p996', 'probe.p997', 'probe.p998', 'probe.p999', 'probe.p1000', 'probe.p1001', 'probe.p1002', 'probe.p1003', 'probe.p1004', 'probe.p1005', 'probe.p1006', 'probe.p1007', 'probe.p1008', 'probe.p1009', 'probe.p1010', 'probe.p1011', 'probe.p1012', 'probe.p1013', 'probe.p1014', 'probe.e370_fx', 'probe.p1015', 'probe.p1016', 'probe.p1017', 'probe.p1018', 'probe.g371_fx', 'probe.p1019', 'probe.p1020', 'probe.p1021', 'probe.p1022', 'probe.g372_fx', 'probe.p1023', 'probe.p1024', 'probe.p1025', 'probe.p1035', 'probe.p1036', 'probe.p1037', 'probe.p1038', 'probe.p1039', 'probe.p1040', 'probe.m375_fx', 'probe.p1041', 'probe.p1042', 'probe.p1043', 'probe.p1044', 'probe.p1045', 'probe.p1046', 'probe.p1047', 'probe.p1048', 'probe.p1049', 'probe.p1050', 'probe.p1051', 'probe.p1052', 'probe.p1053', 'probe.p1054', 'probe.p1055', 'probe.p1056', 'probe.p1057', 'probe.p1058', 'probe.p1059', 'probe.p1060', 'probe.p1061', 'probe.m376_fx', 'probe.p1062', 'probe.p1063', 'probe.p1064', 'probe.m377_fx', 'probe.p1065', 'probe.p1066', 'probe.p1067', 'probe.p1068', 'probe.p1069', 'probe.p1070', 'probe.p1071', 'probe.p1072', 'probe.p1073', 'probe.p1074', 'probe.m378_fx', 'probe.p1075', 'probe.p1076', 'probe.p1077', 'probe.p1078', 'probe.p1079', 'probe.p1080', 'probe.p1081', 'probe.p1082', 'probe.p1083', 'probe.m379_fx', 'probe.p1084', 'probe.p1085', 'probe.p1086', 'probe.p1087', 'probe.p1088', 'probe.p1089', 'probe.p1090'
+       'probe.p897', 'probe.p898', 'probe.p899', 'probe.p900', 'probe.p901', 'probe.p902', 'probe.p903', 'probe.p904', 'probe.p905', 'probe.p906', 'probe.p907', 'probe.p912', 'probe.p913', 'probe.p914', 'probe.p915', 'probe.p916', 'probe.p917', 'probe.p918', 'probe.p919', 'probe.p920', 'probe.p921', 'probe.p922', 'probe.p923', 'probe.p924', 'probe.p925', 'probe.p926', 'probe.p927', 'probe.p928', 'probe.p929', 'probe.p930', 'probe.p931', 'probe.p932', 'probe.p933', 'probe.p934', 'probe.p935', 'probe.p936', 'probe.p937', 'probe.p938', 'probe.p939', 'probe.p940', 'probe.p941', 'probe.p942', 'probe.p943', 'probe.p944', 'probe.p945', 'probe.p946', 'probe.p947', 'probe.p948', 'probe.p949', 'probe.p950', 'probe.p951', 'probe.p952', 'probe.p953', 'probe.p954', 'probe.p955', 'probe.p956', 'probe.p957', 'probe.p958', 'probe.p959', 'probe.p960', 'probe.p961', 'probe.p962', 'probe.p963', 'probe.p964', 'probe.p965', 'probe.p966', 'probe.p967', 'probe.p968', 'probe.p969', 'probe.p970', 'probe.p971', 'probe.p972', 'probe.p973', 'probe.p974', 'probe.p975', 'probe.p976', 'probe.p977', 'probe.p978', 'probe.p979', 'probe.p980', 'probe.p981', 'probe.p982', 'probe.p983', 'probe.p984', 'probe.p985', 'probe.p986', 'probe.p987', 'probe.p988', 'probe.p989', 'probe.p990', 'probe.p991', 'probe.p992', 'probe.p993', 'probe.p994', 'probe.p995', 'probe.p996', 'probe.p997', 'probe.p998', 'probe.p999', 'probe.p1000', 'probe.p1001', 'probe.p1002', 'probe.p1003', 'probe.p1004', 'probe.p1005', 'probe.p1006', 'probe.p1007', 'probe.p1008', 'probe.p1009', 'probe.p1010', 'probe.p1011', 'probe.p1012', 'probe.p1013', 'probe.p1014', 'probe.e370_fx', 'probe.p1015', 'probe.p1016', 'probe.p1017', 'probe.p1018', 'probe.g371_fx', 'probe.p1019', 'probe.p1020', 'probe.p1021', 'probe.p1022', 'probe.g372_fx', 'probe.p1023', 'probe.p1024', 'probe.p1025', 'probe.p1035', 'probe.p1036', 'probe.p1037', 'probe.p1038', 'probe.p1039', 'probe.p1040', 'probe.m375_fx', 'probe.p1041', 'probe.p1042', 'probe.p1043', 'probe.p1044', 'probe.p1045', 'probe.p1046', 'probe.p1047', 'probe.p1048', 'probe.p1049', 'probe.p1050', 'probe.p1051', 'probe.p1052', 'probe.p1053', 'probe.p1054', 'probe.p1055', 'probe.p1056', 'probe.p1057', 'probe.p1058', 'probe.p1059', 'probe.p1060', 'probe.p1061', 'probe.m376_fx', 'probe.p1062', 'probe.p1063', 'probe.p1064', 'probe.m377_fx', 'probe.p1065', 'probe.p1066', 'probe.p1067', 'probe.p1068', 'probe.p1069', 'probe.p1070', 'probe.p1071', 'probe.p1072', 'probe.p1073', 'probe.p1074', 'probe.m378_fx', 'probe.p1075', 'probe.p1076', 'probe.p1077', 'probe.p1078', 'probe.p1079', 'probe.p1080', 'probe.p1081', 'probe.p1082', 'probe.p1083', 'probe.m379_fx', 'probe.p1084', 'probe.p1085', 'probe.p1086', 'probe.p1087', 'probe.p1088', 'probe.p1089', 'probe.p1090', 'probe.m380_fx', 'probe.p1091', 'probe.p1092', 'probe.p1093', 'probe.p1094', 'probe.p1095', 'probe.p1096', 'probe.p1097', 'probe.p1098'
              ]) AS n) s),
   'OK (todos los veredictos publicados)';
 
