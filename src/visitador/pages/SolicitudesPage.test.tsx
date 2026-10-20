@@ -10,6 +10,8 @@ const toastSuccess = vi.fn()
 
 vi.mock('sonner', () => ({ toast: { error: (...a: unknown[]) => toastError(...a), success: (...a: unknown[]) => toastSuccess(...a) } }))
 vi.mock('@/visitador/hooks/useEnrolamiento', () => ({ useEnrolamiento: () => ({ listarSolicitudes, cancelarSolicitud }) }))
+let puedeEnrolar = true
+vi.mock('@/visitador/hooks/usePuedeEnrolar', () => ({ usePuedeEnrolar: () => ({ puedeEnrolar, loading: false }) }))
 
 const { default: SolicitudesPage } = await import('./SolicitudesPage')
 
@@ -28,6 +30,7 @@ const montar = async () => {
       <Routes>
         <Route path="/visitador/solicitudes" element={<SolicitudesPage />} />
         <Route path="/visitador/solicitar-alta" element={<p>PANTALLA SOLICITAR</p>} />
+        <Route path="/visitador/agendar" element={<p>PANTALLA AGENDAR</p>} />
       </Routes>
     </MemoryRouter>,
   )
@@ -36,6 +39,7 @@ const montar = async () => {
 const tarjeta = (nombre: string) => screen.getByText(nombre).closest('[data-testid="solicitud"]') as HTMLElement
 
 beforeEach(() => {
+  puedeEnrolar = true
   listarSolicitudes.mockReset()
   cancelarSolicitud.mockReset()
   toastError.mockReset()
@@ -104,5 +108,12 @@ describe('SolicitudesPage', () => {
     listarSolicitudes.mockResolvedValue({ ok: true, data: [] })
     await montar()
     expect(await screen.findByText('Todavía no tienes solicitudes de alta.')).toBeInTheDocument()
+  })
+
+  it('sin el gate redirige a agendar y no consulta la RPC', async () => {
+    puedeEnrolar = false
+    await montar()
+    expect(screen.getByText('PANTALLA AGENDAR')).toBeInTheDocument()
+    expect(listarSolicitudes).not.toHaveBeenCalled()
   })
 })

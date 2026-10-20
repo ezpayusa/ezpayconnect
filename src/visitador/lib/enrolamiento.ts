@@ -151,11 +151,8 @@ export function badgeEstadoSolicitud(estado: string): { label: string; clase: st
 /** Solo una solicitud pendiente se puede cancelar (cancelar_solicitud_alta da PV022 en cualquier otro estado). */
 export const puedeCancelarSolicitud = (estado: string) => estado === 'pendiente'
 
-// --- Visibilidad (pieza 6): cosmética, la barrera es la RPC ----------------------------------------
-/** Enrolar y solicitar alta: laboratorio farmacéutico con el módulo 'enrolamiento' vigente. */
-export function puedeEnrolarEmpresa(tipoEmpresa: string | null | undefined, tieneEnrolamiento: boolean): boolean {
-  return tipoEmpresa === 'laboratorio_farmaceutico' && tieneEnrolamiento
-}
+// --- Visibilidad (pieza 6): vive en visibilidadEnrolamiento.ts (chunk de entrada) -------------------
+export { puedeEnrolarEmpresa } from './visibilidadEnrolamiento'
 
 /**
  * Cuántas semanas hay que avanzar la grilla de turnos (semanas de lunes a domingo) para llegar a la que contiene

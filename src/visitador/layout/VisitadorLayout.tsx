@@ -2,6 +2,7 @@ import { Outlet, useNavigate, useLocation } from 'react-router-dom'
 import { Stethoscope, WifiOff, CalendarPlus, ListChecks, Route as RouteIcon, Wallet, LogOut, UserPlus } from 'lucide-react'
 import { useEffect, useState } from 'react'
 import { useProveedorAuth } from '@/proveedor/hooks/useProveedorAuth'
+import { usePuedeEnrolar } from '@/visitador/hooks/usePuedeEnrolar'
 
 // Shell móvil del visitador (PWA de campo): header compacto + outlet + nav inferior de 4 tabs
 // (Agendar / Visitas / Ruta / Planes) + Solicitudes (alta de médicos). Molde: RepartidorLayout.
@@ -9,6 +10,8 @@ export default function VisitadorLayout() {
   const navigate = useNavigate()
   const location = useLocation()
   const { logout } = useProveedorAuth()
+  // Pestaña Solicitudes: solo lab farmacéutico con el módulo 'enrolamiento' (cosmético; la barrera es la RPC).
+  const { puedeEnrolar } = usePuedeEnrolar()
   const [online, setOnline] = useState(typeof navigator !== 'undefined' ? navigator.onLine : true)
 
   const handleLogout = async () => {
@@ -79,7 +82,7 @@ export default function VisitadorLayout() {
           {navBtn(enVisitas, () => navigate('/visitador/mis-visitas'), ListChecks, 'Visitas')}
           {navBtn(enRuta, () => navigate('/visitador/ruta'), RouteIcon, 'Ruta')}
           {navBtn(enPlanes, () => navigate('/visitador/planes'), Wallet, 'Planes')}
-          {navBtn(enSolicitudes, () => navigate('/visitador/solicitudes'), UserPlus, 'Solicitudes')}
+          {puedeEnrolar && navBtn(enSolicitudes, () => navigate('/visitador/solicitudes'), UserPlus, 'Solicitudes')}
         </div>
       </nav>
     </div>

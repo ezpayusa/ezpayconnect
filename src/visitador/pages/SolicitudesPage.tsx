@@ -1,10 +1,11 @@
 import { useCallback, useEffect, useState } from 'react'
-import { useNavigate } from 'react-router-dom'
+import { Navigate, useNavigate } from 'react-router-dom'
 import { Loader2, UserPlus, X } from 'lucide-react'
 import { toast } from 'sonner'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent } from '@/components/ui/card'
 import { useEnrolamiento } from '@/visitador/hooks/useEnrolamiento'
+import { usePuedeEnrolar } from '@/visitador/hooks/usePuedeEnrolar'
 import { badgeEstadoSolicitud, puedeCancelarSolicitud, type SolicitudAlta } from '@/visitador/lib/enrolamiento'
 
 // Mis solicitudes de alta (listar_solicitudes_alta, mig 377): el visitador ve las suyas. Solo una pendiente se
@@ -17,6 +18,7 @@ const fechaCorta = (iso: string) => {
 export default function SolicitudesPage() {
   const navigate = useNavigate()
   const { listarSolicitudes, cancelarSolicitud } = useEnrolamiento()
+  const { puedeEnrolar, loading } = usePuedeEnrolar()
   const [solicitudes, setSolicitudes] = useState<SolicitudAlta[]>([])
   const [cargando, setCargando] = useState(true)
   const [cancelando, setCancelando] = useState<string | null>(null)
@@ -29,7 +31,8 @@ export default function SolicitudesPage() {
     setCargando(false)
   }, [listarSolicitudes])
 
-  useEffect(() => { cargar() }, [cargar])
+  // Solo con el gate: sin él la RPC devolvería 0 filas igual, pero no se consulta ni se muestra la pantalla.
+  useEffect(() => { if (puedeEnrolar) cargar() }, [cargar, puedeEnrolar])
 
   const cancelar = async (s: SolicitudAlta) => {
     if (!window.confirm(`¿Cancelar la solicitud de alta de ${s.nombre_completo}?`)) return
@@ -44,6 +47,12 @@ export default function SolicitudesPage() {
     toast.success('Solicitud cancelada.')
     cargar()
   }
+
+  if (loading) {
+    return <div className="flex justify-center py-12"><Loader2 className="h-8 w-8 animate-spin text-slate-400" /></div>
+  }
+  // Gate visual (pieza 6). La RPC no le devuelve nada a quien no corresponde.
+  if (!puedeEnrolar) return <Navigate to="/visitador/agendar" replace />
 
   return (
     <div className="space-y-4">

@@ -1,6 +1,6 @@
 import { useProveedorAuth } from '@/proveedor/hooks/useProveedorAuth'
 import { useCapacidades } from '@/proveedor/hooks/useCapacidades'
-import { puedeEnrolarEmpresa } from '@/visitador/lib/enrolamiento'
+import { puedeEnrolarEmpresa } from '@/visitador/lib/visibilidadEnrolamiento'
 
 // Visibilidad de enrolar / solicitar alta / pestaña Solicitudes: laboratorio farmacéutico con el módulo
 // 'enrolamiento' vigente (mis_capacidades). Solo UI: la barrera real son las RPCs (PV016/PV014).
