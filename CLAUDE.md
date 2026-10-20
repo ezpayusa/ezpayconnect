@@ -791,6 +791,11 @@ Detalles a recordar:
 - (Producto) `administrar_visita('rechazar')` no valida el estado de la visita (definición viva): rechaza visitas
   completadas, canceladas o ya rechazadas. Recon de producto post-11-oct. Detectado en la review de
   harness/diag-fixture-fm (m5 descartado, ver c38862e).
+- (Familia 8, backlog del harness, 20-oct-2026) FX12 (`probes_escritura.sql` ~L1310) convierte a `farmacia` la empresa del
+  "ajeno" con un UPDATE sin savepoint y el cambio PERSISTE para el resto de la transacción. Hoy el ajeno resuelve
+  (ORDER BY cp.id) a proveedor.qa → QA Laboratorio 411d6f8c, el lab farmacéutico QA del que dependen P828, P1018 y los
+  probes de la 375. P828 la fija y la vuelve a `farmacia`; la 375 la fija en su savepoint con
+  `pg_temp.m375_qalab_fijar`. FX12 no se tocó: acotar su efecto (savepoint propio o empresa sembrada) en un lote aparte.
 - (Familia 8) ~~P800 salta las foreign tables~~: alineado en la rama de la 370 (relkind incluye 'f').
 - (Familia 2, **mig 373+**; los números 371 y 372 los tomó GL-02) REVOKE SELECT de anon en las 6 tablas de la WL_ANON_LEGACY que ya no usa (cuentas_proveedor,
   empresas_proveedoras, liquidaciones_comision, pacientes, perfiles, recetas): anon no evalúa ninguna policy sobre ellas

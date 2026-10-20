@@ -35671,6 +35671,47 @@ BEGIN
 END
 $body$
 $fn$;
+  -- QA Laboratorio (la empresa de proveedor.qa, resuelta por su cuenta y no por tipo) fijada como laboratorio_farmaceutico
+  -- activa, con la capacidad 'enrolamiento' y un plan de visitador vigente en p_pais. SOLO dentro de un savepoint: FX12
+  -- convierte esta empresa en 'farmacia' para el resto de la transaccion (P65/P66) y el probe no debe depender de eso.
+  -- Devuelve el id de la empresa; 'fixture roto' si la cuenta o la empresa no existen o la fijacion no queda.
+  EXECUTE $fn$
+CREATE OR REPLACE FUNCTION pg_temp.m375_qalab_fijar(p_pais uuid) RETURNS uuid LANGUAGE plpgsql AS $body$
+DECLARE v_prv uuid; v_emp uuid; n int; r text;
+BEGIN
+  IF p_pais IS NULL THEN RAISE EXCEPTION 'fixture roto: m375_qalab_fijar sin pais'; END IF;
+  v_prv := pg_temp.m375_uid('proveedor.qa@ezpayconnect.com');
+  v_emp := (SELECT cp.empresa_id FROM public.cuentas_proveedor cp WHERE cp.id = v_prv AND cp.activo);
+  IF v_prv IS NULL OR v_emp IS NULL OR NOT EXISTS (SELECT 1 FROM public.empresas_proveedoras e WHERE e.id = v_emp) THEN
+    RAISE EXCEPTION 'fixture roto: m375_qalab_fijar sin cuenta activa de proveedor.qa o sin su empresa';
+  END IF;
+  UPDATE public.empresas_proveedoras SET tipo = 'laboratorio_farmaceutico', estado = 'activa'
+   WHERE id = v_emp AND (tipo::text IS DISTINCT FROM 'laboratorio_farmaceutico' OR estado::text IS DISTINCT FROM 'activa');
+  IF NOT private.empresa_tiene_capacidad(v_emp, 'enrolamiento') THEN
+    UPDATE public.empresa_capacidades SET activa = true, hasta = NULL WHERE empresa_id = v_emp AND capacidad_codigo = 'enrolamiento';
+    GET DIAGNOSTICS n = ROW_COUNT;
+    IF n = 0 THEN
+      INSERT INTO public.empresa_capacidades (empresa_id, capacidad_codigo, activa, origen) VALUES (v_emp, 'enrolamiento', true, 'suelta');
+    END IF;
+  END IF;
+  IF NOT EXISTS (SELECT 1 FROM public.planes_visitador_contratados pvc
+                  WHERE pvc.empresa_id = v_emp AND pvc.estado = 'activo' AND pvc.pais_id = p_pais
+                    AND CURRENT_DATE BETWEEN pvc.fecha_inicio AND pvc.fecha_fin) THEN
+    INSERT INTO public.planes_visitador_contratados (empresa_id, plan_visitador_id, pais_id, cantidad_visitas_incluidas,
+                                                     visitas_usadas, precio_pagado, fecha_inicio, fecha_fin, estado, origen)
+      VALUES (v_emp, 1, p_pais, 20, 0, 0, CURRENT_DATE - 1, CURRENT_DATE + 60, 'activo', 'cortesia');
+  END IF;
+  -- verificacion de lo fijado
+  IF NOT EXISTS (SELECT 1 FROM public.empresas_proveedoras e WHERE e.id = v_emp AND e.tipo::text = 'laboratorio_farmaceutico' AND e.estado::text = 'activa')
+     OR NOT private.empresa_tiene_capacidad(v_emp, 'enrolamiento') THEN
+    RAISE EXCEPTION 'fixture roto: m375_qalab_fijar no dejo a QA Laboratorio farmaceutico activo con enrolamiento';
+  END IF;
+  r := pg_temp.m375_como(v_prv, 'authenticated', 'SELECT public.mi_empresa_proveedor()::text');
+  IF r IS DISTINCT FROM 'OK:'||v_emp::text THEN RAISE EXCEPTION 'fixture roto: m375_qalab_fijar mi_empresa_proveedor = %', r; END IF;
+  RETURN v_emp;
+END
+$body$
+$fn$;
   -- INSERT de una visita como la cuenta p_uid (authenticated): 'OK:<id>' o 'ERR:...'. Cada probe usa su propia hora
   -- (06:56-07:02): ux_visita_medico_slot es UNIQUE (medico_id, fecha_visita, hora_inicio).
   EXECUTE $fn$
@@ -36015,20 +36056,24 @@ END $$;
 SELECT set_config('role', 'none', true);
 
 -- ---------------- P1052 cuenta de QA Laboratorio con rol fuera de (admin, supervisor, visitador_medico) -> PV017 ----------------
---   Si no hay una cuenta activa asi, sup1.qa pasa a 'lectura' dentro del savepoint.
+--   Si no hay una cuenta activa asi, sup1.qa pasa a 'lectura' dentro del savepoint. QA Laboratorio se fija como
+--   farmaceutico activo dentro del savepoint (pg_temp.m375_qalab_fijar): FX12 la deja en 'farmacia' para el resto de la corrida.
 DO $$
-DECLARE est text; qalab uuid; a_cli uuid; a_x uuid; quien text; n int; res text; pre text; post text;
+DECLARE est text; qalab uuid; a_cli uuid; pais_cli uuid; a_x uuid; quien text; n int; res text; pre text; post text;
 BEGIN
   est := pg_temp.m375_estado();
-  qalab := (SELECT cp.empresa_id FROM public.cuentas_proveedor cp WHERE cp.id = pg_temp.m375_uid('proveedor.qa@ezpayconnect.com'));
+  qalab := (SELECT cp.empresa_id FROM public.cuentas_proveedor cp WHERE cp.id = pg_temp.m375_uid('proveedor.qa@ezpayconnect.com') AND cp.activo);
   a_cli := pg_temp.m375_uid('clinica.qa@ezpayconnect.com');
-  IF qalab IS NULL OR a_cli IS NULL
-     OR NOT EXISTS (SELECT 1 FROM public.empresas_proveedoras e WHERE e.id = qalab AND e.tipo = 'laboratorio_farmaceutico' AND e.estado = 'activa') THEN
-    PERFORM set_config('probe.p1052', 'FALLO (actor inexistente: QA Laboratorio farmaceutico activo (empresa de proveedor.qa) o clinica.qa)', false);
+  pais_cli := (SELECT p.pais_id FROM public.perfiles p WHERE p.id = a_cli);
+  IF qalab IS NULL OR a_cli IS NULL OR pais_cli IS NULL
+     OR NOT EXISTS (SELECT 1 FROM public.empresas_proveedoras e WHERE e.id = qalab) THEN
+    PERFORM set_config('probe.p1052', 'FALLO (actor inexistente: cuenta activa de proveedor.qa con su empresa '||COALESCE(left(qalab::text, 8), 'NULL')||
+      ', o clinica.qa con pais en perfiles '||COALESCE(left(a_cli::text, 8), 'NULL')||')', false);
     RETURN;
   END IF;
   pre := pg_temp.m375_snap();
   BEGIN
+    IF pg_temp.m375_qalab_fijar(pais_cli) IS DISTINCT FROM qalab THEN RAISE EXCEPTION 'fixture roto: m375_qalab_fijar devolvio otra empresa'; END IF;
     SELECT cp.id, lower(u.email)||' ('||cp.rol_en_empresa||')' INTO a_x, quien
       FROM public.cuentas_proveedor cp JOIN auth.users u ON u.id = cp.id
      WHERE cp.empresa_id = qalab AND cp.activo AND cp.rol_en_empresa NOT IN ('admin', 'supervisor', 'visitador_medico')
@@ -36060,19 +36105,24 @@ SELECT set_config('role', 'none', true);
 
 -- ---------------- P1053 visitador.qa enrola a un medico no enrolado (clinica.qa) -> 'enrolado' con fecha ----------------
 DO $$
-DECLARE est text; a_vis uuid; a_cli uuid; qalab uuid; res text; leida text; guc text; pre text; post text;
+DECLARE est text; a_vis uuid; a_cli uuid; pais_cli uuid; qalab uuid; res text; leida text; guc text; pre text; post text;
 BEGIN
   est := pg_temp.m375_estado();
   a_vis := pg_temp.m375_uid('visitador.qa@ezpayconnect.com');
   a_cli := pg_temp.m375_uid('clinica.qa@ezpayconnect.com');
-  qalab := (SELECT cp.empresa_id FROM public.cuentas_proveedor cp WHERE cp.id = a_vis AND cp.activo AND cp.rol_en_empresa = 'visitador_medico');
-  IF a_vis IS NULL OR a_cli IS NULL OR qalab IS NULL
+  pais_cli := (SELECT p.pais_id FROM public.perfiles p WHERE p.id = a_cli);
+  -- QA Laboratorio por la cuenta de proveedor.qa; visitador.qa tiene que ser visitador activo de esa misma empresa
+  qalab := (SELECT cp.empresa_id FROM public.cuentas_proveedor cp WHERE cp.id = pg_temp.m375_uid('proveedor.qa@ezpayconnect.com') AND cp.activo);
+  IF a_vis IS NULL OR a_cli IS NULL OR pais_cli IS NULL OR qalab IS NULL
+     OR NOT EXISTS (SELECT 1 FROM public.empresas_proveedoras e WHERE e.id = qalab)
+     OR NOT EXISTS (SELECT 1 FROM public.cuentas_proveedor cp WHERE cp.id = a_vis AND cp.empresa_id = qalab AND cp.activo AND cp.rol_en_empresa = 'visitador_medico')
      OR NOT EXISTS (SELECT 1 FROM public.medicos m WHERE m.id = a_cli AND m.lab_enrolador_id IS NULL) THEN
-    PERFORM set_config('probe.p1053', 'FALLO (actor inexistente: visitador.qa visitador activo de QA Laboratorio, o clinica.qa sin enrolador)', false);
+    PERFORM set_config('probe.p1053', 'FALLO (actor inexistente: cuenta activa de proveedor.qa con su empresa, visitador.qa visitador activo de esa empresa, o clinica.qa sin enrolador y con pais)', false);
     RETURN;
   END IF;
   pre := pg_temp.m375_snap();
   BEGIN
+    IF pg_temp.m375_qalab_fijar(pais_cli) IS DISTINCT FROM qalab THEN RAISE EXCEPTION 'fixture roto: m375_qalab_fijar devolvio otra empresa'; END IF;
     res := pg_temp.m375_como(a_vis, 'authenticated', format(
       'SELECT r.estado||''|''||(r.lab_enrolador_fecha IS NOT NULL)::text||''|''||r.lab_enrolador_id::text FROM public.enrolar_medico(%L) r', a_cli));
     leida := (SELECT m.lab_enrolador_id::text||'|'||(m.lab_enrolador_fecha IS NOT NULL)::text FROM public.medicos m WHERE m.id = a_cli);
@@ -36089,7 +36139,8 @@ BEGIN
     ELSE 'OK (visitador.qa enrola a clinica.qa: enrolado, fecha NOT NULL, releido; GUC apagado al salir; estado 375: '||est||'; descartado)' END, false);
 EXCEPTION WHEN OTHERS THEN
   PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
-  PERFORM set_config('probe.p1053', 'FALLO ('||SQLSTATE||' '||SQLERRM||')', false);
+  PERFORM set_config('probe.p1053', CASE WHEN SQLERRM LIKE 'fixture roto%' THEN 'FALLO ('||SQLERRM||')'
+    ELSE 'FALLO ('||SQLSTATE||' '||SQLERRM||')' END, false);
 END $$;
 SELECT set_config('role', 'none', true);
 
@@ -36290,6 +36341,10 @@ BEGIN
   END IF;
   pre := pg_temp.m375_snap();
   BEGIN
+    -- el INSERT como proveedor.qa pasa por mi_empresa_proveedor() (estado 'activa'): no depender de lo que dejen otros bloques
+    IF pg_temp.m375_qalab_fijar((SELECT p.pais_id FROM public.perfiles p WHERE p.id = a_med)) IS DISTINCT FROM qalab THEN
+      RAISE EXCEPTION 'fixture roto: m375_qalab_fijar devolvio otra empresa';
+    END IF;
     vid := pg_temp.m375_visita(a_prv, qalab, a_med, CURRENT_DATE + 10, '06:59');
     IF vid NOT LIKE 'OK:%' THEN RAISE EXCEPTION 'fixture roto: visita de QA Laboratorio en hoy+10: %', vid; END IF;
     res := pg_temp.m375_como(a_prv, 'authenticated', format(
@@ -36384,6 +36439,10 @@ BEGIN
   END IF;
   pre := pg_temp.m375_snap();
   BEGIN
+    -- el INSERT como proveedor.qa pasa por mi_empresa_proveedor() (estado 'activa'): no depender de lo que dejen otros bloques
+    IF pg_temp.m375_qalab_fijar((SELECT p.pais_id FROM public.perfiles p WHERE p.id = a_med)) IS DISTINCT FROM qalab THEN
+      RAISE EXCEPTION 'fixture roto: m375_qalab_fijar devolvio otra empresa';
+    END IF;
     vid := pg_temp.m375_visita(a_prv, qalab, a_med, CURRENT_DATE + 10, '07:02');
     IF vid NOT LIKE 'OK:%' THEN RAISE EXCEPTION 'fixture roto: visita de QA Laboratorio en hoy+10: %', vid; END IF;
     res := pg_temp.m375_rc(NULL, NULL, format('UPDATE public.visitas_agendadas SET fecha_visita = %L WHERE id = %L', CURRENT_DATE + 1, substr(vid, 4)));
