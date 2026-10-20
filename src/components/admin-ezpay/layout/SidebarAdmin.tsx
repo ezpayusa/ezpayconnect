@@ -4,7 +4,7 @@ import { ClipboardCheck } from 'lucide-react';
 import { useNavigate, useLocation } from 'react-router-dom';
 import { useAdminAuth } from '@/hooks/admin/useAdminAuth';
 import { usePaisActivo } from '@/hooks/usePaisActivo';
-import { LayoutDashboard, Globe, Layers, Stethoscope, MapPin, FlaskConical, Car, Pill, Store, Megaphone, Handshake, AlertCircle, DollarSign, BarChart3, Shield, ChevronLeft, LogOut, Activity, BarChart4, ArrowLeftRight, Landmark, Gift, Palette, BookOpen, ShoppingCart, CalendarDays, KeyRound, UserPlus } from 'lucide-react';
+import { LayoutDashboard, Globe, Layers, Stethoscope, MapPin, FlaskConical, Car, Pill, Store, Megaphone, Handshake, AlertCircle, DollarSign, BarChart3, Shield, ChevronLeft, LogOut, Activity, BarChart4, ArrowLeftRight, Landmark, Gift, Palette, BookOpen, ShoppingCart, CalendarDays, KeyRound } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { supabase } from '@/lib/supabase';
 import { rutaHomePorRol } from '@/lib/rutas';
@@ -23,10 +23,12 @@ export function SidebarAdmin() {
   // Un admin_pais está confinado a su propio país (AdminRoute lo garantiza): menú acotado a las 3
   // rutas país-scoped, fijas a SU pais_id (no al de la URL), sin el menú maestro ni "Cambiar País".
   const paisIdPropio = adminUser?.pais_id;
+  // Solicitudes de alta de médico: mismo ítem en los 3 menús (página dual-mount).
+  const itemSolicitudesAlta = { icon: ClipboardCheck, label: 'Solicitudes de Alta' };
   const menuItemsAdminPais = paisIdPropio ? [
     { path: `/admin-ezpay/pais/${paisIdPropio}`, icon: LayoutDashboard, label: 'Dashboard País' },
     { path: `/admin-ezpay/pais/${paisIdPropio}/invitaciones-medicos`, icon: Stethoscope, label: 'Invitaciones Médicos' },
-    { path: `/admin-ezpay/pais/${paisIdPropio}/solicitudes-alta-medicos`, icon: UserPlus, label: 'Solicitudes de Alta' },
+    { path: `/admin-ezpay/pais/${paisIdPropio}/solicitudes-alta-medicos`, ...itemSolicitudesAlta },
     { path: `/admin-ezpay/pais/${paisIdPropio}/invitaciones-clinicas`, icon: MapPin, label: 'Invitaciones Clínicas' },
     { path: `/admin-ezpay/pais/${paisIdPropio}/canjes`, icon: Gift, label: 'Canjes' },
     { path: `/admin-ezpay/pais/${paisIdPropio}/especialidades`, icon: Stethoscope, label: 'Especialidades' },
@@ -44,7 +46,7 @@ export function SidebarAdmin() {
     { path: '/admin-ezpay/especialidades', icon: Stethoscope, label: 'Especialidades' },
     { path: '/admin-ezpay/medicamentos', icon: Pill, label: 'Medicamentos' },
     { path: '/admin-ezpay/solicitudes-personalizacion', icon: Palette, label: 'Personalización' },
-    { path: '/admin-ezpay/solicitudes-alta-medicos', icon: UserPlus, label: 'Solicitudes de Alta' },
+    { path: '/admin-ezpay/solicitudes-alta-medicos', ...itemSolicitudesAlta },
     { path: '/admin-ezpay/ventas', icon: ShoppingCart, label: 'Ventas' },
     { path: '/admin-ezpay/visitas-proveedores', icon: CalendarDays, label: 'Visitas Proveedores' },
   ];
@@ -52,7 +54,7 @@ export function SidebarAdmin() {
   const menuItemsPais = paisIdActual ? [
     { path: `/admin-ezpay/pais/${paisIdActual}`, icon: LayoutDashboard, label: 'Dashboard País' },
     { path: `/admin-ezpay/pais/${paisIdActual}/invitaciones-medicos`, icon: Stethoscope, label: 'Invitaciones Médicos' },
-    { path: `/admin-ezpay/pais/${paisIdActual}/solicitudes-alta-medicos`, icon: UserPlus, label: 'Solicitudes de Alta' },
+    { path: `/admin-ezpay/pais/${paisIdActual}/solicitudes-alta-medicos`, ...itemSolicitudesAlta },
     { path: `/admin-ezpay/pais/${paisIdActual}/invitaciones-clinicas`, icon: MapPin, label: 'Invitaciones Clínicas' },
     { path: `/admin-ezpay/pais/${paisIdActual}/prospectos`, icon: Users, label: 'Prospectos' },
     { path: `/admin-ezpay/pais/${paisIdActual}/material`, icon: BookOpen, label: 'Material' },

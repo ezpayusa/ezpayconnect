@@ -22,7 +22,7 @@ export type Resultado<T> =
   | { ok: true; data: T; error?: undefined }
   | { ok: false; data?: undefined; error: ErrorRpcMapeado }
 
-const falla = (error: unknown): { ok: false; data?: undefined; error: ErrorRpcMapeado } => ({ ok: false, error: mapearErrorRpc(error) })
+export const falla = (error: unknown): { ok: false; data?: undefined; error: ErrorRpcMapeado } => ({ ok: false, error: mapearErrorRpc(error) })
 // Una respuesta con forma inesperada es bug nuestro (o de la base): genérico y reportable.
 const respuestaInvalida = () => falla(null)
 

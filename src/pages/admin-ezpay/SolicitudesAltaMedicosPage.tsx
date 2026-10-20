@@ -5,7 +5,7 @@ import { Card, CardContent } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
 import { Textarea } from '@/components/ui/textarea'
-import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog'
+import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import { UserPlus, Loader2, Send, XCircle, RotateCw } from 'lucide-react'
 import { useSolicitudesAlta } from '@/hooks/admin/useSolicitudesAlta'
 import { badgeEstadoSolicitud } from '@/visitador/lib/enrolamiento'
@@ -163,9 +163,9 @@ export default function SolicitudesAltaMedicosPage() {
           </DialogHeader>
           {aRechazar && (
             <div className="space-y-3">
-              <p className="text-sm text-slate-600">
+              <DialogDescription>
                 Vas a rechazar el alta de <span className="font-medium">{aRechazar.nombre_completo}</span>. El visitador verá el motivo.
-              </p>
+              </DialogDescription>
               <label htmlFor="motivo-rechazo" className="text-sm font-medium">Motivo del rechazo <span className="text-red-500">*</span></label>
               <Textarea
                 id="motivo-rechazo"

@@ -30,13 +30,14 @@ function MisMedicos() {
   const { listarMisMedicos } = useEnrolamiento()
   const [medicos, setMedicos] = useState<MedicoEnrolado[]>([])
   const [loading, setLoading] = useState(true)
+  const [error, setError] = useState<string | null>(null)
 
   useEffect(() => {
     let vivo = true
     listarMisMedicos().then((r) => {
       if (!vivo) return
       setLoading(false)
-      if (!r.ok) { toast.error(r.error.mensaje); return }
+      if (!r.ok) { toast.error(r.error.mensaje); setError(r.error.mensaje); return }
       setMedicos(r.data)
     })
     return () => { vivo = false }
@@ -53,6 +54,10 @@ function MisMedicos() {
 
       {loading ? (
         <div className="flex justify-center py-12"><Loader2 className="h-8 w-8 animate-spin text-slate-400" /></div>
+      ) : error ? (
+        <Card>
+          <CardContent className="py-12 text-center text-slate-500" data-testid="error-mis-medicos">{error}</CardContent>
+        </Card>
       ) : medicos.length === 0 ? (
         <Card>
           <CardContent className="py-12 text-center text-slate-500">

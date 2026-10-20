@@ -1,14 +1,12 @@
 import { useCallback, useMemo } from 'react'
 import { supabase } from '@/lib/supabase'
-import { mapearErrorRpc } from '@/lib/erroresRpc'
 import { parsearSolicitudesAdmin, type SolicitudAltaAdmin } from '@/lib/solicitudesAltaAdmin'
-import type { Resultado } from '@/visitador/hooks/useEnrolamiento'
+import { falla, type Resultado } from '@/visitador/hooks/useEnrolamiento'
 
 // Las 4 RPCs de la bandeja de solicitudes de alta (377/378). Mismo contrato que useEnrolamiento: { ok, data } o
 // { ok:false, error } con el error ya mapeado por código (PV022-PV025 traen el mensaje del servidor). Sin toasts.
-const falla = (error: unknown): { ok: false; data?: undefined; error: ReturnType<typeof mapearErrorRpc> } =>
-  ({ ok: false, error: mapearErrorRpc(error) })
-
+// `falla` sale de useEnrolamiento: además de no duplicarlo, deja a la bandeja con las mismas dependencias que el
+// resto del enrolamiento y Rollup no parte enrolamiento.ts en un chunk aparte (el chunk de entrada no crece por eso).
 export function useSolicitudesAlta() {
   const listar = useCallback(async (estado: string | null): Promise<Resultado<SolicitudAltaAdmin[]>> => {
     const { data, error } = await supabase.rpc('listar_solicitudes_alta', { p_estado: estado })
