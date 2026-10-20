@@ -194,7 +194,9 @@ BEGIN
 END;
 $function$;
 
-GRANT EXECUTE ON FUNCTION public.prioridad_activa(uuid) TO authenticated;
+-- orden de la ACL vieja {postgres, authenticated, service_role}: un GRANT agrega al final, asi que service_role sale y vuelve despues
+REVOKE EXECUTE ON FUNCTION public.prioridad_activa(uuid) FROM service_role;
+GRANT EXECUTE ON FUNCTION public.prioridad_activa(uuid) TO authenticated, service_role;
 
 -- ---------------------------------------------------------------------------- 5: head-start (INVOKER, solo INSERT, ACL anterior)
 CREATE OR REPLACE FUNCTION public.trg_gate_head_start_lab()
@@ -236,7 +238,8 @@ BEGIN
 END;
 $function$;
 
-GRANT EXECUTE ON FUNCTION public.trg_gate_head_start_lab() TO authenticated;
+REVOKE EXECUTE ON FUNCTION public.trg_gate_head_start_lab() FROM service_role;
+GRANT EXECUTE ON FUNCTION public.trg_gate_head_start_lab() TO authenticated, service_role;
 
 DROP TRIGGER trigger_gate_head_start_lab ON public.visitas_agendadas;
 CREATE TRIGGER trigger_gate_head_start_lab BEFORE INSERT ON public.visitas_agendadas FOR EACH ROW EXECUTE FUNCTION public.trg_gate_head_start_lab();
