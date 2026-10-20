@@ -38,8 +38,8 @@ Stack: React + Vite + TypeScript, Supabase / Postgres, deploy en Vercel, repo en
     sesión independiente. Rama `enrolamiento/solicitudes-alta-377`. md5(prosrc): `solicitar_alta_medico`
     4979da5532a3ddd08a466929bbfe27c7, `cancelar_solicitud_alta` 34ff13a23b4681dddd44118b7b2dc1e1, `rechazar_solicitud_alta`
     a028473675bea99b8b4bc89108b5ac47, `listar_solicitudes_alta` 90b37826b44f1b7e18813f9916867286. La tabla: RLS ON,
-    authenticated solo SELECT (2 policies SELECT, toda escritura por RPC), service_role SIUD, anon nada. Sin front todavía
-    (PV018-PV023 sin mapear). Errcodes nuevos (reusa PV010/PV011/PV014/PV016/PV017 de `enrolar_medico`):
+    authenticated solo SELECT (2 policies SELECT, toda escritura por RPC), service_role SIUD, anon nada. Front en prod con el
+    PR #72 (PV018-PV023 mapeados por código; ver el cierre de la familia más abajo). Errcodes nuevos (reusa PV010/PV011/PV014/PV016/PV017 de `enrolar_medico`):
 
     | Errcode | Significado |
     |---|---|
@@ -61,7 +61,7 @@ Stack: React + Vite + TypeScript, Supabase / Postgres, deploy en Vercel, repo en
     `/enviar-invitacion-medico`). md5(prosrc): `aprobar_solicitud_alta` e7a2bea305a4f4dfe564f7b14157835b,
     `reenviar_solicitud_alta` d34babc6bffa17257b36d849e1fd7f2c (las dos DEFINER, `search_path=''`, EXECUTE authenticated y
     service_role), `private.invitacion_email_notificar` 10bf2ebc64ea42d9409fe7dd495f429b (DEFINER, EXECUTE solo postgres),
-    `solicitar_alta_medico` f0d28f9cdc70b277c36a5b337cc0daf5 (ACL sin cambio). Sin front todavía (PV024/PV025 sin mapear).
+    `solicitar_alta_medico` f0d28f9cdc70b277c36a5b337cc0daf5 (ACL sin cambio). Front en prod con el PR #73 (bandeja del admin de país; PV024/PV025 mapeados por código).
     Errcodes nuevos (reusa PV021/PV022/PV023 de la 377):
 
     | Errcode | Significado |
@@ -78,7 +78,8 @@ Stack: React + Vite + TypeScript, Supabase / Postgres, deploy en Vercel, repo en
     18:35:37-18:35:43 UTC** (a mano por Oscar) y verificada en sesión independiente (objeto vivo, sin efectos en datos ni en
     la cola de pg_net, huellas y harness). Rama `enrolamiento/registro-enrola-379`. md5(prosrc) de
     `registrar_medico_desde_invitacion` 72889dea4724bc61f4b21ec3a3da158e (antes 8ee9ef3ed53ca1f3195903dd5c1a5564); ACL
-    `{postgres=X/postgres,service_role=X/postgres}`. Sin front (la solicitud 'registrada' ya la pinta `listar_solicitudes_alta`).
+    `{postgres=X/postgres,service_role=X/postgres}`. Sin front propio: la solicitud 'registrada' la pinta `listar_solicitudes_alta`
+    en Mis solicitudes (PR #72) y en la bandeja del admin de país (PR #73).
   - **Mig 380** (lecturas del enrolamiento, SOLO LECTURA: `listar_mis_medicos_enrolados()` = los médicos que enroló mi
     empresa, con su prioridad y sin email ni teléfono; `prioridad_para_agendar(p_medico_id)` = 'propia' / 'otro_laboratorio'
     (con la fecha mínima del head-start) / 'libre'; **`prioridad_para_agendar` nunca devuelve el id ni el nombre del otro
@@ -87,15 +88,29 @@ Stack: React + Vite + TypeScript, Supabase / Postgres, deploy en Vercel, repo en
     `enrolamiento/lecturas-380`. md5(prosrc): `listar_mis_medicos_enrolados` 0cea8b586b46708d2ced087d6290e6a8,
     `prioridad_para_agendar` 1b65c48238b7d93d187dcafe275bb08a (las dos DEFINER, STABLE, `search_path=''`, ACL
     `{postgres=X/postgres,authenticated=X/postgres,service_role=X/postgres}`, sin anon). Reusa PV010/PV016/PV017 de
-    `enrolar_medico`. Sin front (PV026 sin mapear). Errcode nuevo:
+    `enrolar_medico`. Front en prod: Mis Médicos del laboratorio (PR #73) y prioridad al agendar (PR #72, PV026 mapeado por
+    código). Errcode nuevo:
 
     | Errcode | Significado |
     |---|---|
     | PV026 | no puedes consultar a este médico (`prioridad_para_agendar`: el médico no existe, es NULL o mi empresa no lo ve; mismo mensaje para todos los casos) |
 
-    **El BACKEND de la familia enrolamiento (375-380) queda completo.** Falta el front: visitador (enrolar, solicitar alta,
-    mis solicitudes, mapear los errores PV), admin de país (bandeja de solicitudes de alta) y laboratorio (mis médicos +
-    prioridad al agendar).
+    **FAMILIA ENROLAMIENTO (375-380 + front) CERRADA el 20-oct.** Backend 375-380 en prod; front en prod con el **PR #72**
+    (visitador: enrolar, solicitar alta, Mis solicitudes, prioridad al agendar y errores PV001-PV026 mapeados por código en `src/lib/erroresRpc.ts`; PV005-PV008 nunca se
+    usaron) y
+    el **PR #73** (bandeja "Solicitudes de Alta" del admin de país + "Mis Médicos" del laboratorio). main **6cdf99e** (merge
+    del PR #73), Vercel Production success; chunk de entrada en med.ezpayconnect.com `index-sar1w1V2.js`, 803.555 bytes.
+    **Prueba punta a punta OK en prod el 20-oct**, verificada en base: el visitador solicita → el admin_pais aprueba → correo
+    real a un buzón QA → registro → enrolado con prioridad activa (0 de 8 visitas) → visible en Mis Médicos y en Agendar.
+  - **PRs #72 (12e4252) y #73 (6cdf99e) mergeados el 20-oct.** #56 y #58 siguen en borrador (sin cambio).
+  - **Cleanup pre-go-live de la prueba punta a punta (QA-MANUAL):** los ids están en `C:\tmp\e2e_enrol\05.out` (consulta
+    `05.sql`, READ ONLY): 3 solicitudes, 5 invitaciones, el médico creado en la prueba `5c88c564…` (`qa.medico@ezpayconnect.com`,
+    con su clínica propia `17a0b047…` y su `medico_clinicas` 2062), 10 notificaciones in-app, 5 `notificaciones_email`, y el
+    enrolamiento del 20-oct de Dr.Prueba (`55aaa118…`: volver `lab_enrolador_id`/`lab_enrolador_fecha` a NULL). **medico.qa NO
+    entra** (su enrolamiento queda). Orden de borrado por FK (medidas el 20-oct): primero `solicitudes_alta_medico` (sus FK a
+    `medicos` y a `invitaciones_medico` son RESTRICT) → `invitaciones_medico` → notificaciones in-app y email → el médico
+    (`medicos` cae en CASCADE al borrar su `perfiles`, y `medico_clinicas` en CASCADE desde `medicos`) → su clínica propia →
+    `perfiles` → el usuario de auth.
   - **Huellas vigentes (post-380):** funciones completas (cuerpo, DEFINER, config, ACL) `76b4b9cdebf22fcf3316c9135cc699c1 401`;
     ACL de funciones `853697ced74926f9b09abe3e74f68d50 401`; ACL de relaciones de public `9da6a3c4ca75cd58b3a3053603bf03fe 2406`;
     policies `cfb5d7632f071052d491e02a6a5e0932 311`. Sin las 2 funciones de la 380, funciones completas y ACL de funciones
@@ -128,6 +143,10 @@ Stack: React + Vite + TypeScript, Supabase / Postgres, deploy en Vercel, repo en
     completas = cuerpo + DEFINER + config + ACL, vs ACL de funciones = solo los privilegios). En la verificación de la 380
     el prompt pedía "ACL de funciones 76b4b9cd…/401", que es la huella de funciones completas; la ACL era 853697ce…/401.
     Con los dos valores en 401 funciones, un rótulo cruzado da un falso rojo o, peor, un verde de la huella equivocada.
+  - **Lección (20-oct, prueba punta a punta):** un rebote de Resend pone la dirección en su lista de supresión y los envíos
+    siguientes a ese correo no salen. Se quita desde el detalle del correo en Resend ("Remove email address") antes de reenviar.
+  - **Nota de método (20-oct):** `npx supabase db query --linked` puede fallar con "Cannot find project ref" si se corre fuera
+    del repo; pasar `--workdir C:\dev\ezpayconnect` (como hace `harness_run.py`).
 
   - **Mig 374** (`prospectos_coord_valida` + PA035 en `actualizar_prospecto`) **APLICADA en prod el 2026-10-17 16:31 UTC** y
     verificada en sesión nueva (VERDE 4/4). Archivos en la rama `feat/prospecto-ubicacion` (PR #59, draft), en main desde b68992e (merge PR #59, 18-oct-2026); la 373 entró a main con el merge del PR #57 (19-oct-2026).
