@@ -37700,10 +37700,11 @@ EXCEPTION WHEN OTHERS THEN
 END $$;
 
 -- ================================================================================
--- MIG 379 — registrar_medico_desde_invitacion enrola por la solicitud de alta (M379_FX + P1084-P1090). SIN APLICAR.
+-- MIG 379 — registrar_medico_desde_invitacion enrola por la solicitud de alta (M379_FX + P1084-P1090). APLICADA en prod el 2026-10-20 18:35 UTC.
 -- pg_temp.m379_estado(): 'post' (md5(prosrc) 72889dea..., search_path '', DEFINER), 'pre' (md5 8ee9ef3e..., search_path
--- public, DEFINER) o 'parcial (...)' (ROJO). Rama 'pre' = 'PENDIENTE mig 379 (...)', pero SOLO despues de medir lo que no
--- depende de la 379 (ACL, no-regresion de las rutas A y B, errores de hoy): si eso falla, ROJO aunque la 379 no este.
+-- public, DEFINER) o 'parcial (...)' (ROJO). Con la 379 aplicada no hay rama PENDIENTE: en 'pre' (379_rollback) M379_FX y
+-- P1084-P1090 publican 'REGRESION (379 ausente; ...)', pero SOLO despues de medir lo que no depende de la 379 (ACL,
+-- no-regresion de las rutas A y B, errores de hoy): si eso falla, ROJO. Quien corra 379_rollback tiene que esperar esas rojas.
 -- Cada probe replica el orden de la edge registrar-medico-invitacion: usuario de auth con el correo de la invitacion ->
 -- INSERT perfiles como service_role (id, email, nombre_completo, rol 'medico', pais_id, activo) -> la RPC como
 -- service_role. Actores por EMAIL (adminpais.qa, visitador.qa, medico.qa); usa los helpers de M375_FX, M377_FX y
@@ -37768,7 +37769,7 @@ CREATE OR REPLACE FUNCTION pg_temp.m379_efectos(p_uid uuid, p_nombre text) RETUR
 $body$
 $fn$;
   est := pg_temp.m379_estado();
-  PERFORM set_config('probe.m379_fx', CASE WHEN est = 'pre' THEN 'PENDIENTE mig 379 (helpers de pg_temp creados; registrar_medico_desde_invitacion con el cuerpo de antes)'
+  PERFORM set_config('probe.m379_fx', CASE WHEN est = 'pre' THEN 'REGRESION (379 ausente: registrar_medico_desde_invitacion con el cuerpo de antes; helpers de pg_temp creados)'
     WHEN est = 'post' THEN 'OK (helpers de pg_temp creados; estado de la 379: post)'
     ELSE 'ROJO (379 '||est||'; helpers de pg_temp creados)' END, false);
 EXCEPTION WHEN OTHERS THEN
@@ -37795,7 +37796,7 @@ BEGIN
     WHEN NOT COALESCE(ok_acl, false) THEN 'ROJO (acl '||COALESCE(acl, '-')||' definer '||COALESCE(def::text, '-')||' ret '||COALESCE(ret, '-')||
                          ' / authenticated '||left(COALESCE(r_auth, '-'), 60)||' / anon '||left(COALESCE(r_anon, '-'), 60)||')'
     WHEN est = 'pre' AND cfg = '{search_path=public}'
-      THEN 'PENDIENTE mig 379 (no-regresion OK en pre: DEFINER, ACL postgres + service_role, authenticated y anon 42501; search_path public)'
+      THEN 'REGRESION (379 ausente; no-regresion OK en pre: DEFINER, ACL postgres + service_role, authenticated y anon 42501; search_path public)'
     WHEN est = 'post' AND cfg = '{"search_path=\"\""}'
       THEN 'OK (379: DEFINER, search_path vacio, retorno uuid; ACL exacta postgres + service_role; authenticated y anon sin EXECUTE (42501 ejercitado))'
     ELSE 'ROJO (estado '||est||' con search_path '||cfg||')' END, false);
@@ -37846,7 +37847,7 @@ BEGIN
     WHEN post IS DISTINCT FROM pre THEN 'FALLO (no volvio al snapshot tras el descarte)'
     WHEN NOT COALESCE(base_ok, false) THEN 'ROJO (alta rota: '||left(COALESCE(res, '-'), 120)||' / '||COALESCE(ef, '-')||' / invitacion '||COALESCE(inv_est, '-')||')'
     WHEN est = 'pre' AND ef LIKE 'med=1 enr=- fecha=false %' AND rs.estado = 'invitada' AND rs.medico_id IS NULL AND n_av = 0 AND cola = '-'
-      THEN 'PENDIENTE mig 379 (sin la 379 el alta anda pero no enrola: solicitud sigue invitada, sin aviso ni push)'
+      THEN 'REGRESION (379 ausente; sin la 379 el alta anda pero no enrola: solicitud sigue invitada, sin aviso ni push)'
     WHEN est = 'post' AND ef LIKE 'med=1 enr='||emp::text||' fecha=true %' AND rs.estado = 'registrada' AND rs.medico_id = uid
          AND n_av = 1 AND cola ~ '^otro:[^;]+\[notification_id,tabla\]$'
       THEN 'OK (379: alta con solicitud invitada -> medico enrolado por QA Laboratorio con fecha; solicitud registrada con medico_id; invitacion usada; consultorio creado; 1 aviso solicitud_alta_registrada a visitador.qa; cola +1 (push); descartado)'
@@ -37889,7 +37890,7 @@ BEGIN
     WHEN post IS DISTINCT FROM pre THEN 'FALLO (no volvio al snapshot tras el descarte)'
     WHEN NOT COALESCE(ok, false) THEN 'ROJO (estado '||est||': '||left(COALESCE(res, '-'), 120)||' / '||COALESCE(ef, '-')||' / invitacion '||COALESCE(inv_est, '-')||
                      ' / avisos '||COALESCE(n0::text, '-')||'->'||COALESCE(n1::text, '-')||' / cola '||left(COALESCE(cola, '-'), 80)||')'
-    WHEN est = 'pre' THEN 'PENDIENTE mig 379 (no-regresion OK en pre: ruta B sin solicitud -> medico sin enrolador, consultorio, invitacion usada, sin avisos ni cola)'
+    WHEN est = 'pre' THEN 'REGRESION (379 ausente; no-regresion OK en pre: ruta B sin solicitud -> medico sin enrolador, consultorio, invitacion usada, sin avisos ni cola)'
     ELSE 'OK (379: ruta B sin solicitud -> medico sin enrolador, consultorio propio como principal, perfil medico, invitacion usada, sin avisos ni cola; descartado)' END, false);
 EXCEPTION WHEN OTHERS THEN
   PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
@@ -37934,7 +37935,7 @@ BEGIN
     WHEN post IS DISTINCT FROM pre THEN 'FALLO (no volvio al snapshot tras el descarte)'
     WHEN NOT COALESCE(ok, false) THEN 'ROJO (estado '||est||': '||left(COALESCE(res, '-'), 120)||' / '||COALESCE(ef, '-')||' / invitacion '||COALESCE(inv_est, '-')||
                      ' / avisos '||COALESCE(n0::text, '-')||'->'||COALESCE(n1::text, '-')||' / cola '||left(COALESCE(cola, '-'), 80)||')'
-    WHEN est = 'pre' THEN 'PENDIENTE mig 379 (no-regresion OK en pre: ruta A sin solicitud -> medico sin enrolador, membresia principal en la clinica de medico.qa, sin consultorio)'
+    WHEN est = 'pre' THEN 'REGRESION (379 ausente; no-regresion OK en pre: ruta A sin solicitud -> medico sin enrolador, membresia principal en la clinica de medico.qa, sin consultorio)'
     ELSE 'OK (379: ruta A sin solicitud -> medico sin enrolador, medico_clinicas es_principal en la clinica que invito, sin consultorio propio, invitacion usada, sin avisos ni cola; descartado)' END, false);
 EXCEPTION WHEN OTHERS THEN
   PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
@@ -37988,7 +37989,7 @@ BEGIN
     WHEN post IS DISTINCT FROM pre THEN 'FALLO (no volvio al snapshot tras el descarte)'
     WHEN NOT COALESCE(ok, false) THEN 'ROJO (estado '||est||': '||left(COALESCE(res, '-'), 120)||' / '||COALESCE(ef, '-')||' / inv1 '||COALESCE(e1, '-')||' inv2 '||COALESCE(e2, '-')||
                      ' / solicitud '||COALESCE(rs.estado, '-')||' / cola '||left(COALESCE(cola, '-'), 80)||')'
-    WHEN est = 'pre' THEN 'PENDIENTE mig 379 (no-regresion OK en pre: token de la invitacion cancelada por reenviar -> P0001 Invitacion no valida o expirada, nada creado)'
+    WHEN est = 'pre' THEN 'REGRESION (379 ausente; no-regresion OK en pre: token de la invitacion cancelada por reenviar -> P0001 Invitacion no valida o expirada, nada creado)'
     ELSE 'OK (379: token de la invitacion cancelada por reenviar -> P0001 ''Invitacion no valida o expirada''; sin medico, clinica ni membresia; la nueva sigue pendiente y la solicitud invitada sin medico_id; cola sin filas; descartado)' END, false);
 EXCEPTION WHEN OTHERS THEN
   PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
@@ -38041,7 +38042,7 @@ BEGIN
     WHEN post IS DISTINCT FROM pre THEN 'FALLO (no volvio al snapshot tras el descarte)'
     WHEN NOT COALESCE(ok, false) THEN 'ROJO (estado '||est||': '||left(COALESCE(res, '-'), 120)||' / '||COALESCE(ef, '-')||' / invitacion '||COALESCE(inv_est, '-')||
                      ' / solicitud igual '||COALESCE((sol1 = sol0)::text, '-')||' / avisos '||COALESCE(n_av::text, '-')||' / cola '||left(COALESCE(cola, '-'), 80)||')'
-    WHEN est = 'pre' THEN 'PENDIENTE mig 379 (no-regresion OK en pre: solicitud cancelada con invitacion_id -> registra sin enrolar, solicitud igual)'
+    WHEN est = 'pre' THEN 'REGRESION (379 ausente; no-regresion OK en pre: solicitud cancelada con invitacion_id -> registra sin enrolar, solicitud igual)'
     ELSE 'OK (379: solicitud vinculada en cancelada -> el medico se registra sin enrolador (consultorio, invitacion usada); la solicitud queda identica; sin aviso ni cola; descartado)' END, false);
 EXCEPTION WHEN OTHERS THEN
   PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
@@ -38081,7 +38082,7 @@ BEGIN
     WHEN post IS DISTINCT FROM pre THEN 'FALLO (no volvio al snapshot tras el descarte)'
     WHEN NOT COALESCE(ok, false) THEN 'ROJO (estado '||est||': '||left(COALESCE(res, '-'), 120)||' / '||COALESCE(ef, '-')||' / invitacion '||COALESCE(inv_est, '-')||
                      ' / cola '||left(COALESCE(cola, '-'), 80)||')'
-    WHEN est = 'pre' THEN 'PENDIENTE mig 379 (no-regresion OK en pre: correo distinto -> P0001 El email no coincide con la invitacion, nada creado)'
+    WHEN est = 'pre' THEN 'REGRESION (379 ausente; no-regresion OK en pre: correo distinto -> P0001 El email no coincide con la invitacion, nada creado)'
     ELSE 'OK (379: correo distinto -> P0001 ''El email no coincide con la invitacion''; sin medico, clinica ni membresia; invitacion sigue pendiente; cola sin filas; descartado)' END, false);
 EXCEPTION WHEN OTHERS THEN
   PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
@@ -39256,14 +39257,14 @@ UNION ALL SELECT 'P1080_reenviar_rechazos_378',  current_setting('probe.p1080', 
 UNION ALL SELECT 'P1081_solicitar_invitacion_vigente_pv021_378',  current_setting('probe.p1081', true), 'OK (378: invitacion vigente -> PV021; vencida -> creada; sin la 378: REGRESION)'
 UNION ALL SELECT 'P1082_invitacion_email_notificar_acl_378',  current_setting('probe.p1082', true), 'OK (378: authenticated y anon 42501; ACL solo postgres; sin la 378: REGRESION)'
 UNION ALL SELECT 'P1083_estructura_378',  current_setting('probe.p1083', true), 'OK (378: email_enviado_at; invitacion_edge_url derivada, sufijo /enviar-invitacion-medico; sin la 378: REGRESION)'
-UNION ALL SELECT 'M379_FX_helpers_registro_enrola',  current_setting('probe.m379_fx', true), 'OK (helpers de pg_temp creados; estado de la 379: post; pre: PENDIENTE; parcial: ROJO)'
-UNION ALL SELECT 'P1084_registrar_estructura_acl_379',  current_setting('probe.p1084', true), 'OK (379: DEFINER, search_path vacio, ACL postgres + service_role; authenticated y anon 42501; sin la 379: PENDIENTE)'
-UNION ALL SELECT 'P1085_registrar_con_solicitud_enrola_379',  current_setting('probe.p1085', true), 'OK (379: enrolado por la empresa de la solicitud con fecha; solicitud registrada con medico_id; invitacion usada; consultorio; aviso + push al visitador; sin la 379: PENDIENTE)'
-UNION ALL SELECT 'P1086_registrar_sin_solicitud_ruta_b_379',  current_setting('probe.p1086', true), 'OK (379: ruta B sin enrolador, consultorio, invitacion usada, sin avisos ni cola; sin la 379: PENDIENTE)'
-UNION ALL SELECT 'P1087_registrar_sin_solicitud_ruta_a_379',  current_setting('probe.p1087', true), 'OK (379: ruta A sin enrolador, membresia principal, sin consultorio; sin la 379: PENDIENTE)'
-UNION ALL SELECT 'P1088_registrar_invitacion_cancelada_379',  current_setting('probe.p1088', true), 'OK (379: token cancelado por reenviar -> P0001 Invitacion no valida o expirada, nada creado; sin la 379: PENDIENTE)'
-UNION ALL SELECT 'P1089_registrar_solicitud_no_invitada_379',  current_setting('probe.p1089', true), 'OK (379: solicitud cancelada con invitacion_id -> registra sin enrolar, solicitud igual; sin la 379: PENDIENTE)'
-UNION ALL SELECT 'P1090_registrar_correo_distinto_379',  current_setting('probe.p1090', true), 'OK (379: correo distinto -> P0001 El email no coincide con la invitacion, nada creado; sin la 379: PENDIENTE)'
+UNION ALL SELECT 'M379_FX_helpers_registro_enrola',  current_setting('probe.m379_fx', true), 'OK (helpers de pg_temp creados; estado de la 379: post; pre: REGRESION; parcial: ROJO)'
+UNION ALL SELECT 'P1084_registrar_estructura_acl_379',  current_setting('probe.p1084', true), 'OK (379: DEFINER, search_path vacio, ACL postgres + service_role; authenticated y anon 42501; sin la 379: REGRESION)'
+UNION ALL SELECT 'P1085_registrar_con_solicitud_enrola_379',  current_setting('probe.p1085', true), 'OK (379: enrolado por la empresa de la solicitud con fecha; solicitud registrada con medico_id; invitacion usada; consultorio; aviso + push al visitador; sin la 379: REGRESION)'
+UNION ALL SELECT 'P1086_registrar_sin_solicitud_ruta_b_379',  current_setting('probe.p1086', true), 'OK (379: ruta B sin enrolador, consultorio, invitacion usada, sin avisos ni cola; sin la 379: REGRESION)'
+UNION ALL SELECT 'P1087_registrar_sin_solicitud_ruta_a_379',  current_setting('probe.p1087', true), 'OK (379: ruta A sin enrolador, membresia principal, sin consultorio; sin la 379: REGRESION)'
+UNION ALL SELECT 'P1088_registrar_invitacion_cancelada_379',  current_setting('probe.p1088', true), 'OK (379: token cancelado por reenviar -> P0001 Invitacion no valida o expirada, nada creado; sin la 379: REGRESION)'
+UNION ALL SELECT 'P1089_registrar_solicitud_no_invitada_379',  current_setting('probe.p1089', true), 'OK (379: solicitud cancelada con invitacion_id -> registra sin enrolar, solicitud igual; sin la 379: REGRESION)'
+UNION ALL SELECT 'P1090_registrar_correo_distinto_379',  current_setting('probe.p1090', true), 'OK (379: correo distinto -> P0001 El email no coincide con la invitacion, nada creado; sin la 379: REGRESION)'
 UNION ALL SELECT 'P1010_campana_vistas_sin_update_367',  current_setting('probe.p1010', true), 'OK (367: INSERT 1; ON CONFLICT DO NOTHING 0 sin error; DO UPDATE y UPDATE 42501; otro paciente 0; antes de la 367: PENDIENTE)'
 UNION ALL SELECT 'P1009_datos_bancarios_acotados_366',  current_setting('probe.p1009', true), 'OK (366: cuenta GT solo super_admin/admin_pais GT/proveedores GT; checkout 1 fila; config 21 super_admin y 14 el resto, admin_pais incluido; antes de la 366: PENDIENTE)'
 UNION ALL SELECT 'DET_p1009',  'DET ' || COALESCE(NULLIF(current_setting('probe.p1009_det', true), ''), '(sin dato)'), 'DET (detalle de P1009, no es probe)'
