@@ -49,15 +49,39 @@ Stack: React + Vite + TypeScript, Supabase / Postgres, deploy en Vercel, repo en
     | PV021 | el médico ya tiene una solicitud en curso (sin nombrar a la empresa) |
     | PV022 | la solicitud ya no está pendiente |
     | PV023 | la solicitud no existe o no puedes gestionarla (mismo error para los dos casos) |
-  - **Huellas vigentes (post-377):** ACL de funciones `8d5290543497cb8984e6d9b289176818 396`; ACL de relaciones de public
-    `9da6a3c4ca75cd58b3a3053603bf03fe 2406`; policies `cfb5d7632f071052d491e02a6a5e0932 311`. (Post-376 = post-375, ya no
-    vigentes: funciones `9c59aeca…/392`, relaciones `1889d1d8…/2393`, policies `8a8dc5cf…/309`; son las mismas huellas
-    excluyendo la tabla y las 4 funciones de la 377.)
-  - **Orden de rollback:** 377 → 376 → 375 → 374 → 373 → 372 → 371 → …
-  - **Próximos libres: mig 378, errcode PV024, errcode PA036, probe P1075.**
-  - **Harness al 20-oct (con la 375, la 376 y la 377 aplicadas):** 1164 filas, 11 rojas = exactamente la deuda; M375_FX,
-    M376_FX, M377_FX y P1041-P1074 en OK. La rama 'pre' de la 375, la 376 y la 377 publica REGRESION (8be9b8f, 0de3a27 y
-    90ebbb7).
+  - **Edge `enviar-invitacion-medico` v1 DESPLEGADA el 2026-10-20 17:42 UTC** y **mig 378** (aprobar/reenviar solicitud de
+    alta → invitación precargada + correo; `solicitar_alta_medico` bloquea con PV021 si el correo ya tiene una invitación
+    pendiente vigente) **APLICADA en prod el 2026-10-20 17:50:34-17:50:37 UTC**; las dos verificadas en sesión independiente.
+    Rama `enrolamiento/aprobar-solicitud-378`. La edge: `verify_jwt = false`, la llama `private.invitacion_email_notificar`
+    por pg_net (server-to-server) con el secreto compartido `x-email-secret` (el de notificar-email); recibe
+    `{invitacion_id}`, re-deriva destinatario y token de la fila y reclama el envío con `invitaciones_medico.email_enviado_at`
+    (UPDATE … WHERE email_enviado_at IS NULL; si Resend falla, lo libera). Verificada: código desplegado = repo, 401 sin
+    secreto. Objetos nuevos: columna `invitaciones_medico.email_enviado_at` (timestamptz, nullable, sin default, sin
+    privilegios por columna) y `private.app_secrets` 'invitacion_edge_url' (= email_edge_url con el último tramo cambiado por
+    `/enviar-invitacion-medico`). md5(prosrc): `aprobar_solicitud_alta` e7a2bea305a4f4dfe564f7b14157835b,
+    `reenviar_solicitud_alta` d34babc6bffa17257b36d849e1fd7f2c (las dos DEFINER, `search_path=''`, EXECUTE authenticated y
+    service_role), `private.invitacion_email_notificar` 10bf2ebc64ea42d9409fe7dd495f429b (DEFINER, EXECUTE solo postgres),
+    `solicitar_alta_medico` f0d28f9cdc70b277c36a5b337cc0daf5 (ACL sin cambio). Sin front todavía (PV024/PV025 sin mapear).
+    Errcodes nuevos (reusa PV021/PV022/PV023 de la 377):
+
+    | Errcode | Significado |
+    |---|---|
+    | PV024 | el correo ya tiene cuenta en MED (al aprobar o reenviar) |
+    | PV025 | el correo ya tiene una invitación vigente (al aprobar o reenviar) |
+
+    **Orden de deploy de esta familia: la edge ANTES que la migración** (sin la edge, la RPC funciona igual y el correo se
+    pierde: pg_net recibe un 404 y la invitación queda con `email_enviado_at` NULL).
+  - **Huellas vigentes (post-378):** ACL de funciones `f71eb65210787bd94c899a623d20350b 399`; ACL de relaciones de public
+    `9da6a3c4ca75cd58b3a3053603bf03fe 2406`; policies `cfb5d7632f071052d491e02a6a5e0932 311` (relaciones y policies sin
+    cambio desde la 377). (Post-377, ya no vigente: funciones `8d5290543497cb8984e6d9b289176818 396`, que es la huella de
+    post-378 excluyendo las 3 funciones nuevas. Post-376 = post-375: funciones `9c59aeca…/392`, relaciones
+    `1889d1d8…/2393`, policies `8a8dc5cf…/309`; son las mismas huellas excluyendo la tabla y las 4 funciones de la 377.)
+  - **Orden de rollback:** 378 → 377 → 376 → 375 → 374 → 373 → 372 → 371 → … La edge `enviar-invitacion-medico` se retira
+    aparte: `378_rollback` no la borra.
+  - **Próximos libres: mig 379, errcode PV026, errcode PA036, probe P1084.**
+  - **Harness al 20-oct (con la 375, la 376, la 377 y la 378 aplicadas):** 1174 filas, 11 rojas = exactamente la deuda;
+    M375_FX, M376_FX, M377_FX, M378_FX y P1041-P1083 en OK. La rama 'pre' de la 375, la 376, la 377 y la 378 publica
+    REGRESION (8be9b8f, 0de3a27, 90ebbb7 y 0a92cb8).
   - **`medicos` tiene GRANT SELECT POR COLUMNA para authenticated desde la 375** (para esconder `lab_enrolador_id`): toda columna
     nueva de `medicos` necesita su `GRANT SELECT (col) … TO authenticated` explícito en la misma migración, y un `select('*')` de
     usuario sobre `medicos` da 42501 (hay que listar las columnas).
@@ -75,11 +99,11 @@ Stack: React + Vite + TypeScript, Supabase / Postgres, deploy en Vercel, repo en
   - Rama sin upstream propio al crearse desde origin/main: push SIEMPRE con nombre de rama explícito.
   - PRs #57, #59-#64 y #65 (196100b) mergeados al 19-oct; #56 (gate de textos legales) y #58 (front de altas) SIN mergear hasta completar los placeholders legales. Confirm email APAGADO en prod hasta que entre #58.
   - Punto 2 comercial (18-oct): src/lib/navegacion.ts es el helper ÚNICO de links Google Maps/Waze; VisitadorRutaPage y EntregaDetallePage todavía arman los suyos (migrar después). Hoy usa visitasDeHoyConUbicacion; visitasDelDia sigue sin coordenadas.
-- **Próximos números libres: probe `P1075`** (global, no por módulo; M377_FX + P1065-P1074 usados por la mig 377; M376_FX + P1062-P1064 usados por la mig 376; M375_FX + P1041-P1061 usados por la mig 375; P1035-P1040 usados por la mig 374; P1026-P1034 + M373_FX usados por la mig 373; P1023-P1025 + G372_FX usados por la mig 372; P1019-P1022 usados por la mig 371; P1015-P1018 usados por la mig 370, P1011-P1014 por la mig 369, P1010 por la mig 367, P1009 por la 366, P1008 por la 365, P1007 por la 364, P1001-P1006 por la mig 363, P996-P1000 por la 362, P990-P995 por la 361, P983-P989 por la 360, P975-P982 por la
+- **Próximos números libres: probe `P1084`** (global, no por módulo; M378_FX + P1075-P1083 usados por la mig 378; M377_FX + P1065-P1074 usados por la mig 377; M376_FX + P1062-P1064 usados por la mig 376; M375_FX + P1041-P1061 usados por la mig 375; P1035-P1040 usados por la mig 374; P1026-P1034 + M373_FX usados por la mig 373; P1023-P1025 + G372_FX usados por la mig 372; P1019-P1022 usados por la mig 371; P1015-P1018 usados por la mig 370, P1011-P1014 por la mig 369, P1010 por la mig 367, P1009 por la 366, P1008 por la 365, P1007 por la 364, P1001-P1006 por la mig 363, P996-P1000 por la 362, P990-P995 por la 361, P983-P989 por la 360, P975-P982 por la
   359, P967-P974 por la 358, P958-P966 por la 357 (obtener_medicos_por_ids acotada a relación); P906-P907 usados por la mig 336, P912-P913
   por la 337, P914-P915 por la 338, P916-P920 por la 339/340, P921-P923 por la 341, P924 por la 342, P925 por
   la 343, P926-P927 por la 344, P928-P929 por la 345, P930 por la 346, P931-P932 por la 347, P933 por la 348,
-  P934-P935 por la 349, P936 por la 350, P937-P939 por la 351, P940-P943 por la 353), **migración `378`** (la 377 son las solicitudes de alta de médico, aplicada el 20-oct; la 376 es `administrar_visita('modificar')` + PV003 y la 375 el hardening del enrolamiento, las dos aplicadas el 20-oct; la 374 es la integridad de ubicación de prospectos, aplicada el 17-oct; la 373 es el alta diferida de empresas, aplicada el 9-oct; la 371 es GL-02 y la 372 su hardening, las dos aplicadas el 8-oct), **errcode `LG007`** (prefijo LG,
+  P934-P935 por la 349, P936 por la 350, P937-P939 por la 351, P940-P943 por la 353), **migración `379`** (la 378 es aprobar/reenviar la solicitud de alta → invitación precargada + correo, aplicada el 20-oct; la 377 son las solicitudes de alta de médico, aplicada el 20-oct; la 376 es `administrar_visita('modificar')` + PV003 y la 375 el hardening del enrolamiento, las dos aplicadas el 20-oct; la 374 es la integridad de ubicación de prospectos, aplicada el 17-oct; la 373 es el alta diferida de empresas, aplicada el 9-oct; la 371 es GL-02 y la 372 su hardening, las dos aplicadas el 8-oct), **errcode `LG007`** (prefijo LG,
   GL-02: LG001-LG005 en uso por la 371 — LG001 sin sesión, LG002 código inexistente, LG003 versión no vigente, LG004
   entrada inválida, LG005 aceptaciones append-only; LG006 = el texto no corresponde a la identidad de la cuenta, en uso
   por la 372), **errcode `PC029`** (familia PC: PC025 país requerido y PC026 sin autoridad en `contar_medicos_por_pais`, PC027
@@ -845,13 +869,23 @@ Detalles a recordar:
   (d) PV003 (hora inválida, mig 376) no está mapeado en el front: `useVisitasAgendadas` muestra 'Error administrando
   visita' para todo lo que no sea 'No autorizado'.
 - (Enrolamiento, review de la mig 377, 20-oct-2026)
-  (a) `solicitar_alta_medico` no mira las `invitaciones_medico` pendientes del mismo correo: se puede pedir el alta de un
-  médico que ya tiene una invitación en curso. Lo resuelve la 378 (aprobación = invitación precargada);
+  (a) ~~`solicitar_alta_medico` no mira las `invitaciones_medico` pendientes del mismo correo: se puede pedir el alta de un
+  médico que ya tiene una invitación en curso~~ **resuelto por la 378** (PV021 con una invitación pendiente vigente; P1081);
   (b) PV020 deja saber que un correo tiene cuenta en MED (aunque no diga de qué tipo). Riesgo aceptado: solo lo alcanza un
   visitador de un laboratorio farmacéutico activo, con módulo de enrolamiento y plan vigente en el país;
   (c) las `invitaciones_medico` vencidas quedan en 'pendiente' y bloquean re-invitar el mismo correo (409 del edge);
   (d) el edge `registrar-medico-invitacion` deja un usuario de auth huérfano si la RPC falla después del alta, y
   `registrar_medico_desde_invitacion` tiene errores sin ERRCODE propio.
+- (Enrolamiento / correos, recon de la mig 378, 20-oct-2026)
+  (a) **PRIORIDAD:** `notificar-email` arma los links con `Deno.env.get('APP_URL')`, que no existe en el entorno de las
+  edges → los correos de visitas salen con links relativos. Pasarlo a constante, como en `crear-invitacion-medico` y
+  `enviar-invitacion-medico` (`const APP_URL = 'https://med.ezpayconnect.com'`);
+  (b) `crear-invitacion-medico` no revisa la respuesta de Resend, no llena `created_by`, y su chequeo de invitación
+  pendiente usa `.single()` (con 2 o más pendientes del mismo correo devuelve error, que no se mira, y crea otra);
+  (c) admin_pais tiene escritura directa sobre `invitaciones_medico` (incluida `email_enviado_at`) y ve el token por
+  `select('*')`;
+  (d) `InvitacionesMedicosPage` solo copia el link: no reenvía ni cancela, y no muestra el origen de la invitación;
+  (e) `notificar-email` interpola los datos en el HTML sin escaparlos y no tiene idempotencia.
 - (Familia 8) ~~P800 salta las foreign tables~~: alineado en la rama de la 370 (relkind incluye 'f').
 - (Familia 2, **mig 373+**; los números 371 y 372 los tomó GL-02) REVOKE SELECT de anon en las 6 tablas de la WL_ANON_LEGACY que ya no usa (cuentas_proveedor,
   empresas_proveedoras, liquidaciones_comision, pacientes, perfiles, recetas): anon no evalúa ninguna policy sobre ellas
