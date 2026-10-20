@@ -21,6 +21,13 @@ QUE VERIFICA, EN ORDEN
     5. veredictos vacios (redundante con el centinela P000, a proposito: si el que muere es el
        propio P000, el runner igual lo ve)
 
+ANTES DE ENVIAR (desde el 20-oct-2026)
+    La Management API corta el cuerpo de la consulta en ~3 MiB de JSON (413 request entity too
+    large, medido el 20-oct con la 379). El runner manda una COPIA del harness sin las lineas que
+    son solo comentario (primer caracter no blanco = '--'); el archivo en disco no cambia. Imprime
+    los bytes antes y despues y las lineas quitadas, y aborta ANTES de enviar si el cuerpo pasa de
+    LIMITE_BODY (2.9 MiB): el proximo limite tiene que avisar con margen, no dar un 413.
+
 USO
     npm run harness            # corre y verifica
     npm run harness -- -o x.json
@@ -33,6 +40,7 @@ import os
 import shutil
 import subprocess
 import sys
+import tempfile
 import unicodedata
 
 REPO = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -101,6 +109,25 @@ DEUDA = {
 # hay evidencia de que el bloqueo fue el esperado. 'BLOQUEADO?' es un prefijo LITERAL (sin regex): un
 # 'BLOQUEADO (42501)' no lo matchea porque despues de BLOQUEADO viene ' ' y no '?'.
 PREFIJOS_ROJOS = ('ROJO', 'FALLO', 'REGRESION', 'FUGA', 'LEAK', 'PERMITIDO', 'VISIBLE', 'ERROR', 'BLOQUEADO?')
+
+
+# Techo del cuerpo que se envia (bytes UTF-8 del SQL ya sin comentarios). La API corta en ~3 MiB de
+# JSON (el SQL escapado pesa ~1-2 % mas); 2.9 MiB deja ese margen y avisa antes del 413.
+LIMITE_BODY = int(2.9 * 1024 * 1024)
+
+
+def quitar_comentarios_linea(texto):
+    """Quita SOLO las lineas cuyo primer caracter no blanco es '--'. Un comentario al final de una
+    linea con codigo ('SELECT 1; -- x') queda intacto, igual que todo lo demas. Devuelve
+    (texto_nuevo, lineas_quitadas)."""
+    lineas = texto.splitlines(True)
+    quedan = [l for l in lineas if not l.lstrip().startswith('--')]
+    return ''.join(quedan), len(lineas) - len(quedan)
+
+
+def tamano_ok(n_bytes):
+    """True si el cuerpo entra bajo LIMITE_BODY."""
+    return n_bytes <= LIMITE_BODY
 
 
 def _sin_tildes(s):
@@ -205,13 +232,30 @@ def self_test():
             fallos.append('%s: ok=%s, se esperaba %s (%s)' % (nombre, ok, espera, msg.splitlines()[0]))
         else:
             print('  ok   %s -> %s' % (nombre, msg.splitlines()[0][:60]))
+
+    # --- comentarios de linea completa y techo del cuerpo ---
+    entrada = 'BEGIN;\n  -- x\n\t-- tab\n--pegado\nSELECT 1; -- x\nSELECT 2;\n'
+    salida, n = quitar_comentarios_linea(entrada)
+    casos_body = [
+        ('"  -- x" (y con tab, y sin espacio) se quita', '  -- x' not in salida and '\t-- tab' not in salida and '--pegado' not in salida and n == 3),
+        ('"SELECT 1; -- x" queda intacta', 'SELECT 1; -- x\n' in salida),
+        ('el resto queda igual y en orden', salida == 'BEGIN;\nSELECT 1; -- x\nSELECT 2;\n'),
+        ('cuerpo en el techo pasa', tamano_ok(LIMITE_BODY)),
+        ('cuerpo sobre el techo aborta', not tamano_ok(LIMITE_BODY + 1)),
+    ]
+    for nombre, ok in casos_body:
+        if ok:
+            print('  ok   %s' % nombre)
+        else:
+            fallos.append(nombre)
     print()
+    total = len(casos) + len(casos_body)
     if fallos:
         print('*** %d CASO(S) FALLARON ***' % len(fallos))
         for f in fallos:
             print('   - %s' % f)
         return 1
-    print('TODOS LOS CASOS PASAN (%d)' % len(casos))
+    print('TODOS LOS CASOS PASAN (%d)' % total)
     return 0
 
 
@@ -245,9 +289,27 @@ def main():
     # --output json EXPLICITO: sin el flag el CLI 2.100 decide el formato por entorno (detecta si
     # lo corre un agente) y en una shell limpia imprime una TABLA con bordes que este runner
     # rechazaba como "no es JSON valido".
-    p = subprocess.run([exe, '--workdir', REPO, 'db', 'query', '--output', 'json',
-                        '--linked', '-f', a.file],
-                       stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=entorno)
+    # Cuerpo a enviar: el harness sin las lineas que son solo comentario (el archivo no cambia).
+    with io.open(a.file, 'r', encoding='utf-8', newline='') as fh:
+        original = fh.read()
+    cuerpo, quitadas = quitar_comentarios_linea(original)
+    b_antes, b_despues = len(original.encode('utf-8')), len(cuerpo.encode('utf-8'))
+    print('body: %d bytes -> %d bytes (%d lineas de comentario quitadas; techo %d)'
+          % (b_antes, b_despues, quitadas, LIMITE_BODY))
+    if not tamano_ok(b_despues):
+        print('ROJO: el cuerpo sin comentarios pesa %d bytes y pasa el techo de %d (2.9 MiB).\n'
+              '      La API corta en ~3 MiB (413). La corrida NO se envio: achicar el harness o\n'
+              '      partirlo antes de seguir.' % (b_despues, LIMITE_BODY))
+        return 1
+    fd, tmp = tempfile.mkstemp(prefix='harness_body_', suffix='.sql')
+    try:
+        with io.open(fd, 'w', encoding='utf-8', newline='') as fh:
+            fh.write(cuerpo)
+        p = subprocess.run([exe, '--workdir', REPO, 'db', 'query', '--output', 'json',
+                            '--linked', '-f', tmp],
+                           stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=entorno)
+    finally:
+        os.remove(tmp)
     salida = p.stdout.decode('utf-8', 'replace')
     ok, msg, filas = verificar(p.returncode, salida)
     if a.out and salida:
