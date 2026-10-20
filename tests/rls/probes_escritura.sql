@@ -36648,6 +36648,579 @@ EXCEPTION WHEN OTHERS THEN
 END $$;
 SELECT set_config('role', 'none', true);
 
+-- ================================================================================
+-- MIG 377 — solicitudes de alta de medico por el visitador (M377_FX + P1065-P1074). APLICADA en prod el 2026-10-20 16:58 UTC.
+-- pg_temp.m377_estado(): 'post' (tabla + las 4 RPCs con su md5), 'pre' (nada de la 377) o 'parcial (...)' (ROJO).
+-- Con la 377 aplicada no hay rama PENDIENTE: en 'pre' (377_rollback) M377_FX y P1065-P1074 publican
+-- 'REGRESION (377 ausente; ...)'. Quien corra 377_rollback tiene que esperar esas rojas (como en la 370/375/376).
+-- Actores por EMAIL; usa los helpers de M375_FX
+-- (m375_como, m375_rc, m375_uid, m375_qalab_fijar, m375_lab2). QA Laboratorio se fija como farmaceutico activo con
+-- enrolamiento y plan en GT dentro de cada savepoint (FX12 la convierte en 'farmacia' para el resto de la transaccion).
+-- Toda escritura se descarta con RAISE P0999 y se verifica contra pg_temp.m377_snap() (incluye notificaciones, la
+-- tabla de solicitudes y la cola de pg_net). Veredictos por SQLSTATE exacto ('ERR:<sqlstate>:<mensaje>').
+-- ================================================================================
+-- M377_FX: helpers de pg_temp de este bloque + estado de la 377. No toca datos.
+DO $$
+DECLARE est text;
+BEGIN
+  EXECUTE $fn$
+CREATE OR REPLACE FUNCTION pg_temp.m377_estado() RETURNS text LANGUAGE plpgsql AS $body$
+DECLARE t boolean; n int; m text;
+BEGIN
+  t := to_regclass('public.solicitudes_alta_medico') IS NOT NULL;
+  n := (SELECT count(*) FROM pg_proc p WHERE p.proname IN ('solicitar_alta_medico', 'cancelar_solicitud_alta', 'rechazar_solicitud_alta', 'listar_solicitudes_alta'));
+  m := (SELECT string_agg(md5(p.prosrc), ',' ORDER BY p.proname COLLATE "C") FROM pg_proc p
+         WHERE p.proname IN ('solicitar_alta_medico', 'cancelar_solicitud_alta', 'rechazar_solicitud_alta', 'listar_solicitudes_alta'));
+  IF NOT t AND n = 0 THEN RETURN 'pre'; END IF;
+  IF t AND m = '34ff13a23b4681dddd44118b7b2dc1e1,90b37826b44f1b7e18813f9916867286,a028473675bea99b8b4bc89108b5ac47,4979da5532a3ddd08a466929bbfe27c7' THEN
+    RETURN 'post';
+  END IF;
+  RETURN 'parcial (tabla '||t::text||', funciones '||n||', md5 '||COALESCE(m, '-')||')';
+END
+$body$
+$fn$;
+  -- snapshot: el de la 375 + notificaciones + solicitudes (si la tabla existe) + cola de pg_net
+  EXECUTE $fn$
+CREATE OR REPLACE FUNCTION pg_temp.m377_snap() RETURNS text LANGUAGE plpgsql AS $body$
+DECLARE s text := '-'; q text := '-';
+BEGIN
+  IF to_regclass('public.solicitudes_alta_medico') IS NOT NULL THEN
+    EXECUTE 'SELECT md5(COALESCE(string_agg(s::text, E''\n'' ORDER BY s.id), '''')) FROM public.solicitudes_alta_medico s' INTO s;
+  END IF;
+  IF to_regclass('net.http_request_queue') IS NOT NULL THEN
+    EXECUTE 'SELECT count(*)::text FROM net.http_request_queue' INTO q;
+  END IF;
+  RETURN pg_temp.m375_snap()||'|'||(SELECT count(*) FROM public.notificaciones)::text||'|'||s||'|'||q;
+END
+$body$
+$fn$;
+  -- solicitar_alta_medico como la cuenta p_uid (args con nombre, como el front): 'OK:<jsonb>' o 'ERR:<sqlstate>:<mensaje>'
+  EXECUTE $fn$
+CREATE OR REPLACE FUNCTION pg_temp.m377_sol(p_uid uuid, p_nombre text, p_email text, p_tel text, p_esp uuid, p_aut boolean) RETURNS text LANGUAGE sql AS $body$
+  SELECT pg_temp.m375_como(p_uid, 'authenticated', format(
+    'SELECT public.solicitar_alta_medico(p_nombre => %L::text, p_email => %L::text, p_telefono => %L::text, '||
+    'p_especialidad_id => %L::uuid, p_numero_colegiado => NULL::text, p_nombre_clinica => NULL::text, p_autorizado => %L::boolean)::text',
+    p_nombre, p_email, p_tel, p_esp, p_aut))
+$body$
+$fn$;
+  -- id de una solicitud creada por solicitar ('OK:{...solicitud_id...}'); 'fixture roto' si no se creo
+  EXECUTE $fn$
+CREATE OR REPLACE FUNCTION pg_temp.m377_crear(p_uid uuid, p_email text) RETURNS uuid LANGUAGE plpgsql AS $body$
+DECLARE r text;
+BEGIN
+  r := pg_temp.m377_sol(p_uid, 'Dr. Fixture 377', p_email, NULL, NULL, true);
+  IF r NOT LIKE 'OK:%' OR (substr(r, 4))::jsonb ->> 'estado' IS DISTINCT FROM 'creada' THEN
+    RAISE EXCEPTION 'fixture roto: m377_crear % -> %', p_email, left(r, 200);
+  END IF;
+  RETURN ((substr(r, 4))::jsonb ->> 'solicitud_id')::uuid;
+END
+$body$
+$fn$;
+  -- visibilidad de las solicitudes a y b para la cuenta p_uid: 'L=<listar> T=<tabla>' con letras A/B ('-' = ninguna)
+  EXECUTE $fn$
+CREATE OR REPLACE FUNCTION pg_temp.m377_vis(p_uid uuid, p_a uuid, p_b uuid) RETURNS text LANGUAGE plpgsql AS $body$
+DECLARE l text; t text;
+BEGIN
+  l := pg_temp.m375_como(p_uid, 'authenticated', format(
+    'SELECT COALESCE(string_agg(x, '','' ORDER BY x), ''-'') FROM (SELECT CASE s.id WHEN %L::uuid THEN ''A'' WHEN %L::uuid THEN ''B'' END AS x '||
+    'FROM public.listar_solicitudes_alta(NULL) s WHERE s.id IN (%L::uuid, %L::uuid)) y', p_a, p_b, p_a, p_b));
+  t := pg_temp.m375_como(p_uid, 'authenticated', format(
+    'SELECT COALESCE(string_agg(x, '','' ORDER BY x), ''-'') FROM (SELECT CASE s.id WHEN %L::uuid THEN ''A'' WHEN %L::uuid THEN ''B'' END AS x '||
+    'FROM public.solicitudes_alta_medico s WHERE s.id IN (%L::uuid, %L::uuid)) y', p_a, p_b, p_a, p_b));
+  RETURN 'L='||CASE WHEN l LIKE 'OK:%' THEN substr(l, 4) ELSE l END||' T='||CASE WHEN t LIKE 'OK:%' THEN substr(t, 4) ELSE t END;
+END
+$body$
+$fn$;
+  -- QA Laboratorio fijada (m375_qalab_fijar) + visitador.qa resuelve a esa empresa y a p_pais. SOLO dentro de un savepoint.
+  EXECUTE $fn$
+CREATE OR REPLACE FUNCTION pg_temp.m377_fijar(p_pais uuid) RETURNS uuid LANGUAGE plpgsql AS $body$
+DECLARE v_emp uuid; v_vis uuid; r text;
+BEGIN
+  v_emp := pg_temp.m375_qalab_fijar(p_pais);
+  v_vis := pg_temp.m375_uid('visitador.qa@ezpayconnect.com');
+  IF v_vis IS NULL THEN RAISE EXCEPTION 'fixture roto: m377_fijar sin visitador.qa'; END IF;
+  r := pg_temp.m375_como(v_vis, 'authenticated', 'SELECT public.mi_empresa_proveedor()::text||''|''||COALESCE(private.mi_pais()::text, ''-'')||''|''||COALESCE(public.mi_rol_proveedor(), ''-'')');
+  IF r IS DISTINCT FROM 'OK:'||v_emp::text||'|'||p_pais::text||'|visitador_medico' THEN
+    RAISE EXCEPTION 'fixture roto: m377_fijar visitador.qa resuelve %', r;
+  END IF;
+  RETURN v_emp;
+END
+$body$
+$fn$;
+  est := pg_temp.m377_estado();
+  PERFORM set_config('probe.m377_fx', CASE WHEN est = 'pre' THEN 'REGRESION (377 ausente: sin la tabla solicitudes_alta_medico ni sus 4 RPCs; helpers de pg_temp creados)'
+    WHEN est = 'post' THEN 'OK (helpers de pg_temp creados; estado de la 377: post)'
+    ELSE 'ROJO (377 '||est||'; helpers de pg_temp creados)' END, false);
+EXCEPTION WHEN OTHERS THEN
+  PERFORM set_config('probe.m377_fx', 'FALLO ('||SQLSTATE||' '||SQLERRM||')', false);
+END $$;
+
+-- ---------------- P1065 377: gates de solicitar_alta_medico (PV016, PV017, PV018, PV011) ----------------
+DO $$
+DECLARE est text; gt uuid; a_far uuid; a_sup uuid; a_vis uuid; emp uuid; r_far text; r_sup text; r_aut text; r_plan text; pre text; post text;
+BEGIN
+  est := pg_temp.m377_estado();
+  IF est = 'pre' THEN PERFORM set_config('probe.p1065', 'REGRESION (377 ausente; solicitar_alta_medico no existe)', false); RETURN; END IF;
+  IF est <> 'post' THEN PERFORM set_config('probe.p1065', 'ROJO (377 '||est||')', false); RETURN; END IF;
+  gt := (SELECT cp.id FROM public.configuracion_pais cp WHERE cp.codigo = 'GT');
+  a_far := pg_temp.m375_uid('farmacia.qa@ezpayconnect.com');
+  a_sup := pg_temp.m375_uid('sup1.qa@ezpayconnect.com');
+  a_vis := pg_temp.m375_uid('visitador.qa@ezpayconnect.com');
+  IF gt IS NULL OR a_far IS NULL OR a_sup IS NULL OR a_vis IS NULL THEN
+    PERFORM set_config('probe.p1065', 'FALLO (actor inexistente: GT, farmacia.qa, sup1.qa o visitador.qa)', false);
+    RETURN;
+  END IF;
+  pre := pg_temp.m377_snap();
+  BEGIN
+    emp := pg_temp.m377_fijar(gt);
+    r_far := pg_temp.m377_sol(a_far, 'Dr. Gate P1065', 'p1065.gate@ezpayqa.test', NULL, NULL, true);
+    UPDATE public.cuentas_proveedor SET rol_en_empresa = 'lectura' WHERE id = a_sup AND empresa_id = emp;
+    IF NOT FOUND THEN RAISE EXCEPTION 'fixture roto: sup1.qa no es cuenta de QA Laboratorio'; END IF;
+    r_sup := pg_temp.m377_sol(a_sup, 'Dr. Gate P1065', 'p1065.gate@ezpayqa.test', NULL, NULL, true);
+    r_aut := pg_temp.m377_sol(a_vis, 'Dr. Gate P1065', 'p1065.gate@ezpayqa.test', NULL, NULL, false);
+    UPDATE public.planes_visitador_contratados SET fecha_inicio = CURRENT_DATE - 30, fecha_fin = CURRENT_DATE - 1 WHERE empresa_id = emp;
+    r_plan := pg_temp.m377_sol(a_vis, 'Dr. Gate P1065', 'p1065.gate@ezpayqa.test', NULL, NULL, true);
+    RAISE EXCEPTION 'P1065 descarte' USING ERRCODE = 'P0999';
+  EXCEPTION WHEN SQLSTATE 'P0999' THEN NULL;
+  END;
+  post := pg_temp.m377_snap();
+  PERFORM set_config('probe.p1065', CASE
+    WHEN post IS DISTINCT FROM pre THEN 'FALLO (no volvio al snapshot tras el descarte)'
+    WHEN r_far LIKE 'ERR:PV016:%' AND r_sup LIKE 'ERR:PV017:%' AND r_aut LIKE 'ERR:PV018:%' AND r_plan LIKE 'ERR:PV011:%'
+      THEN 'OK (377: farmacia.qa PV016; sup1.qa en lectura PV017; sin autorizacion PV018; plan vencido PV011; descartado)'
+    ELSE 'ROJO (esperado PV016/PV017/PV018/PV011; vino '||left(r_far, 80)||' / '||left(r_sup, 80)||' / '||left(r_aut, 80)||' / '||left(r_plan, 80)||')' END, false);
+EXCEPTION WHEN OTHERS THEN
+  PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
+  PERFORM set_config('probe.p1065', CASE WHEN SQLERRM LIKE 'fixture roto%' THEN 'FALLO ('||SQLERRM||')'
+    ELSE 'FALLO ('||SQLSTATE||' '||SQLERRM||')' END, false);
+END $$;
+SELECT set_config('role', 'none', true);
+
+-- ---------------- P1066 377: datos invalidos -> PV019 con mensaje por campo ----------------
+DO $$
+DECLARE est text; gt uuid; a_vis uuid; r_nom text; r_mail text; r_tel text; r_esp text; pre text; post text;
+BEGIN
+  est := pg_temp.m377_estado();
+  IF est = 'pre' THEN PERFORM set_config('probe.p1066', 'REGRESION (377 ausente; solicitar_alta_medico no existe)', false); RETURN; END IF;
+  IF est <> 'post' THEN PERFORM set_config('probe.p1066', 'ROJO (377 '||est||')', false); RETURN; END IF;
+  gt := (SELECT cp.id FROM public.configuracion_pais cp WHERE cp.codigo = 'GT');
+  a_vis := pg_temp.m375_uid('visitador.qa@ezpayconnect.com');
+  IF gt IS NULL OR a_vis IS NULL THEN
+    PERFORM set_config('probe.p1066', 'FALLO (actor inexistente: GT o visitador.qa)', false);
+    RETURN;
+  END IF;
+  pre := pg_temp.m377_snap();
+  BEGIN
+    PERFORM pg_temp.m377_fijar(gt);
+    r_nom  := pg_temp.m377_sol(a_vis, 'Dr', 'p1066.nombre@ezpayqa.test', NULL, NULL, true);
+    r_mail := pg_temp.m377_sol(a_vis, 'Dr. Valido P1066', 'no-es-un-correo', NULL, NULL, true);
+    r_tel  := pg_temp.m377_sol(a_vis, 'Dr. Valido P1066', 'p1066.tel@ezpayqa.test', '123', NULL, true);
+    r_esp  := pg_temp.m377_sol(a_vis, 'Dr. Valido P1066', 'p1066.esp@ezpayqa.test', NULL, gen_random_uuid(), true);
+    RAISE EXCEPTION 'P1066 descarte' USING ERRCODE = 'P0999';
+  EXCEPTION WHEN SQLSTATE 'P0999' THEN NULL;
+  END;
+  post := pg_temp.m377_snap();
+  PERFORM set_config('probe.p1066', CASE
+    WHEN post IS DISTINCT FROM pre THEN 'FALLO (no volvio al snapshot tras el descarte)'
+    WHEN r_nom LIKE 'ERR:PV019:%nombre%' AND r_mail LIKE 'ERR:PV019:%correo%' AND r_tel LIKE 'ERR:PV019:%teléfono%'
+         AND r_esp LIKE 'ERR:PV019:%especialidad%'
+      THEN 'OK (377: nombre corto, correo invalido, telefono de 3 digitos y especialidad inexistente -> PV019 con mensaje por campo; descartado)'
+    ELSE 'ROJO (esperado PV019 x4 por campo; vino '||left(r_nom, 80)||' / '||left(r_mail, 80)||' / '||left(r_tel, 80)||' / '||left(r_esp, 80)||')' END, false);
+EXCEPTION WHEN OTHERS THEN
+  PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
+  PERFORM set_config('probe.p1066', CASE WHEN SQLERRM LIKE 'fixture roto%' THEN 'FALLO ('||SQLERRM||')'
+    ELSE 'FALLO ('||SQLSTATE||' '||SQLERRM||')' END, false);
+END $$;
+SELECT set_config('role', 'none', true);
+
+-- ---------------- P1067 377: correo ya en MED -> paciente.qa PV020; medico.qa {estado: existe} sin crear fila ----------------
+DO $$
+DECLARE est text; gt uuid; a_vis uuid; a_med uuid; a_pac uuid; e_pac text; e_med text; r_pac text; r_med text; n0 int; n1 int;
+        pre text; post text;
+BEGIN
+  est := pg_temp.m377_estado();
+  IF est = 'pre' THEN PERFORM set_config('probe.p1067', 'REGRESION (377 ausente; solicitar_alta_medico no existe)', false); RETURN; END IF;
+  IF est <> 'post' THEN PERFORM set_config('probe.p1067', 'ROJO (377 '||est||')', false); RETURN; END IF;
+  gt := (SELECT cp.id FROM public.configuracion_pais cp WHERE cp.codigo = 'GT');
+  a_vis := pg_temp.m375_uid('visitador.qa@ezpayconnect.com');
+  a_med := pg_temp.m375_uid('medico.qa@ezpayconnect.com');
+  a_pac := pg_temp.m375_uid('paciente.qa@ezpayconnect.com');
+  e_pac := (SELECT u.email FROM auth.users u WHERE u.id = a_pac);
+  e_med := (SELECT u.email FROM auth.users u WHERE u.id = a_med);
+  IF gt IS NULL OR a_vis IS NULL OR a_med IS NULL OR a_pac IS NULL THEN
+    PERFORM set_config('probe.p1067', 'FALLO (actor inexistente: GT, visitador.qa, medico.qa o paciente.qa)', false);
+    RETURN;
+  END IF;
+  pre := pg_temp.m377_snap();
+  BEGIN
+    PERFORM pg_temp.m377_fijar(gt);
+    EXECUTE 'SELECT count(*) FROM public.solicitudes_alta_medico' INTO n0;
+    r_pac := pg_temp.m377_sol(a_vis, 'Paciente QA', e_pac, NULL, NULL, true);
+    -- el correo de medico.qa en mayusculas y con espacios: tiene que normalizarse antes de buscarlo
+    r_med := pg_temp.m377_sol(a_vis, 'Medico QA', '  '||upper(e_med)||' ', NULL, NULL, true);
+    EXECUTE 'SELECT count(*) FROM public.solicitudes_alta_medico' INTO n1;
+    RAISE EXCEPTION 'P1067 descarte' USING ERRCODE = 'P0999';
+  EXCEPTION WHEN SQLSTATE 'P0999' THEN NULL;
+  END;
+  post := pg_temp.m377_snap();
+  PERFORM set_config('probe.p1067', CASE
+    WHEN post IS DISTINCT FROM pre THEN 'FALLO (no volvio al snapshot tras el descarte)'
+    WHEN r_pac LIKE 'ERR:PV020:No puedes solicitar el alta con este correo.%' AND r_med LIKE 'OK:%'
+         AND (substr(r_med, 4))::jsonb ->> 'estado' = 'existe' AND (substr(r_med, 4))::jsonb ->> 'medico_id' = a_med::text
+         AND n1 = n0
+      THEN 'OK (377: correo de paciente.qa -> PV020 generico; correo de medico.qa -> existe con su medico_id y 0 filas nuevas; descartado)'
+    ELSE 'ROJO (esperado PV020 y existe/'||a_med::text||' sin filas; vino '||left(r_pac, 90)||' / '||left(r_med, 120)||
+         ' / filas '||COALESCE(n0::text, '-')||'->'||COALESCE(n1::text, '-')||')' END, false);
+EXCEPTION WHEN OTHERS THEN
+  PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
+  PERFORM set_config('probe.p1067', CASE WHEN SQLERRM LIKE 'fixture roto%' THEN 'FALLO ('||SQLERRM||')'
+    ELSE 'FALLO ('||SQLSTATE||' '||SQLERRM||')' END, false);
+END $$;
+SELECT set_config('role', 'none', true);
+
+-- ---------------- P1068 377: caso feliz -> creada, correo normalizado, pais GT, avisos a los admin de pais (o super_admin) ----------------
+DO $$
+DECLARE est text; gt uuid; a_vis uuid; emp uuid; r text; sid uuid; fila text; n_dest int; n_notif int; n_ajenas int; n_fuga int; n_url int;
+        dest text; q0 int; q1 int; pre text; post text;
+BEGIN
+  est := pg_temp.m377_estado();
+  IF est = 'pre' THEN PERFORM set_config('probe.p1068', 'REGRESION (377 ausente; solicitar_alta_medico no existe)', false); RETURN; END IF;
+  IF est <> 'post' THEN PERFORM set_config('probe.p1068', 'ROJO (377 '||est||')', false); RETURN; END IF;
+  gt := (SELECT cp.id FROM public.configuracion_pais cp WHERE cp.codigo = 'GT');
+  a_vis := pg_temp.m375_uid('visitador.qa@ezpayconnect.com');
+  IF gt IS NULL OR a_vis IS NULL THEN
+    PERFORM set_config('probe.p1068', 'FALLO (actor inexistente: GT o visitador.qa)', false);
+    RETURN;
+  END IF;
+  pre := pg_temp.m377_snap();
+  BEGIN
+    emp := pg_temp.m377_fijar(gt);
+    -- destinatarios esperados: admin_pais activos de GT; si no hay ninguno, super_admin activos
+    n_dest := (SELECT count(*) FROM public.perfiles p WHERE p.rol = 'admin_pais' AND p.activo IS TRUE AND p.pais_id = gt);
+    dest := 'admin_pais';
+    IF n_dest = 0 THEN
+      n_dest := (SELECT count(*) FROM public.perfiles p WHERE p.rol = 'super_admin' AND p.activo IS TRUE);
+      dest := 'super_admin';
+    END IF;
+    q0 := CASE WHEN to_regclass('net.http_request_queue') IS NULL THEN NULL ELSE (SELECT count(*) FROM net.http_request_queue) END;
+    r := pg_temp.m377_sol(a_vis, 'Dra. P1065 Alta', '  P1065.ALTA@EzPayQA.Test ', '+502 5555-1234', NULL, true);
+    q1 := CASE WHEN to_regclass('net.http_request_queue') IS NULL THEN NULL ELSE (SELECT count(*) FROM net.http_request_queue) END;
+    IF r NOT LIKE 'OK:%' OR (substr(r, 4))::jsonb ->> 'estado' IS DISTINCT FROM 'creada' THEN
+      RAISE EXCEPTION 'P1068 descarte' USING ERRCODE = 'P0999';
+    END IF;
+    sid := ((substr(r, 4))::jsonb ->> 'solicitud_id')::uuid;
+    EXECUTE format('SELECT s.email||''|''||(s.pais_id = %L::uuid)::text||''|''||(s.solicitado_por = %L::uuid)::text||''|''||(s.empresa_id = %L::uuid)::text'||
+                   '||''|''||s.estado||''|''||s.autorizacion_medico::text||''|''||COALESCE(s.telefono, ''-'') FROM public.solicitudes_alta_medico s WHERE s.id = %L::uuid',
+                   gt, a_vis, emp, sid) INTO fila;
+    SELECT count(*), count(*) FILTER (WHERE NOT EXISTS (SELECT 1 FROM public.perfiles p WHERE p.id = n.usuario_id AND p.rol = dest)),
+           count(*) FILTER (WHERE (n.titulo||' '||n.mensaje) ILIKE '%p1065%'),
+           count(*) FILTER (WHERE n.accion_url = '/admin-ezpay/pais/'||gt::text||'/solicitudes-alta-medicos')
+      INTO n_notif, n_ajenas, n_fuga, n_url
+      FROM public.notificaciones n WHERE n.tipo = 'solicitud_alta_medico' AND n.metadata ->> 'solicitud_id' = sid::text;
+    RAISE EXCEPTION 'P1068 descarte' USING ERRCODE = 'P0999';
+  EXCEPTION WHEN SQLSTATE 'P0999' THEN NULL;
+  END;
+  post := pg_temp.m377_snap();
+  PERFORM set_config('probe.p1068', CASE
+    WHEN post IS DISTINCT FROM pre THEN 'FALLO (no volvio al snapshot tras el descarte)'
+    WHEN r LIKE 'OK:%' AND fila = 'p1065.alta@ezpayqa.test|true|true|true|pendiente|true|+502 5555-1234'
+         AND n_dest > 0 AND n_notif = n_dest AND n_ajenas = 0 AND n_fuga = 0 AND n_url = n_dest
+      THEN 'OK (377: visitador.qa crea; correo normalizado, GT, solicitado_por y empresa correctos, pendiente; '||n_notif||' avisos a '||dest||
+           ' de GT con la url de la bandeja y sin datos del medico; cola de pg_net +'||COALESCE((q1 - q0)::text, 'sin net')||'; descartado)'
+    ELSE 'ROJO (esperado creada + fila normalizada + '||COALESCE(n_dest::text, '-')||' avisos; vino '||left(r, 120)||' / '||COALESCE(fila, 'sin fila')||
+         ' / avisos '||COALESCE(n_notif::text, '-')||' ajenos '||COALESCE(n_ajenas::text, '-')||' con datos '||COALESCE(n_fuga::text, '-')||
+         ' url ok '||COALESCE(n_url::text, '-')||')' END, false);
+EXCEPTION WHEN OTHERS THEN
+  PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
+  PERFORM set_config('probe.p1068', CASE WHEN SQLERRM LIKE 'fixture roto%' THEN 'FALLO ('||SQLERRM||')'
+    ELSE 'FALLO ('||SQLSTATE||' '||SQLERRM||')' END, false);
+END $$;
+SELECT set_config('role', 'none', true);
+
+-- ---------------- P1069 377: duplicado -> PV021 (mismo lab y otro lab farmaceutico; sin nombrar a QA Laboratorio) ----------------
+DO $$
+DECLARE est text; gt uuid; a_vis uuid; emp uuid; nom_emp text; lab2 uuid; r_mismo text; r_otro text; pre text; post text;
+BEGIN
+  est := pg_temp.m377_estado();
+  IF est = 'pre' THEN PERFORM set_config('probe.p1069', 'REGRESION (377 ausente; solicitar_alta_medico no existe)', false); RETURN; END IF;
+  IF est <> 'post' THEN PERFORM set_config('probe.p1069', 'ROJO (377 '||est||')', false); RETURN; END IF;
+  gt := (SELECT cp.id FROM public.configuracion_pais cp WHERE cp.codigo = 'GT');
+  a_vis := pg_temp.m375_uid('visitador.qa@ezpayconnect.com');
+  IF gt IS NULL OR a_vis IS NULL THEN
+    PERFORM set_config('probe.p1069', 'FALLO (actor inexistente: GT o visitador.qa)', false);
+    RETURN;
+  END IF;
+  pre := pg_temp.m377_snap();
+  BEGIN
+    emp := pg_temp.m377_fijar(gt);
+    nom_emp := (SELECT e.nombre_empresa FROM public.empresas_proveedoras e WHERE e.id = emp);
+    PERFORM pg_temp.m377_crear(a_vis, 'p1069.dup@ezpayqa.test');
+    r_mismo := pg_temp.m377_sol(a_vis, 'Dr. Duplicado P1069', 'P1069.Dup@EzPayQA.test', NULL, NULL, true);
+    lab2 := pg_temp.m375_lab2(gt);
+    r_otro := pg_temp.m377_sol(lab2, 'Dr. Duplicado P1069', 'p1069.dup@ezpayqa.test', NULL, NULL, true);
+    RAISE EXCEPTION 'P1069 descarte' USING ERRCODE = 'P0999';
+  EXCEPTION WHEN SQLSTATE 'P0999' THEN NULL;
+  END;
+  post := pg_temp.m377_snap();
+  PERFORM set_config('probe.p1069', CASE
+    WHEN post IS DISTINCT FROM pre THEN 'FALLO (no volvio al snapshot tras el descarte)'
+    WHEN r_mismo LIKE 'ERR:PV021:%' AND r_otro LIKE 'ERR:PV021:%' AND nom_emp IS NOT NULL
+         AND position(lower(nom_emp) IN lower(r_otro)) = 0 AND position('qa laboratorio' IN lower(r_otro)) = 0
+      THEN 'OK (377: mismo correo por el mismo lab -> PV021; por un segundo lab farmaceutico -> PV021 sin nombrar a '||nom_emp||'; descartado)'
+    ELSE 'ROJO (esperado PV021 x2 sin el nombre de la empresa; vino '||left(r_mismo, 100)||' / '||left(r_otro, 100)||')' END, false);
+EXCEPTION WHEN OTHERS THEN
+  PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
+  PERFORM set_config('probe.p1069', CASE WHEN SQLERRM LIKE 'fixture roto%' THEN 'FALLO ('||SQLERRM||')'
+    ELSE 'FALLO ('||SQLSTATE||' '||SQLERRM||')' END, false);
+END $$;
+SELECT set_config('role', 'none', true);
+
+-- ---------------- P1070 377: visibilidad (listar_solicitudes_alta = SELECT directo) por actor; anon sin EXECUTE ----------------
+--   A = solicitud de visitador.qa, B = solicitud de proveedor.qa (admin de QA Laboratorio, fuera de equipos).
+DO $$
+DECLARE est text; gt uuid; a_vis uuid; a_prv uuid; a_sup uuid; a_adm uuid; a_pac uuid; lab2 uuid; sa uuid; sb uuid; en_equipo boolean;
+        v_vis text; v_prv text; v_sup text; v_lab2 text; v_adm text; v_pac text; e_sup text; anon_fn int; anon_l text; anon_t text;
+        pre text; post text;
+BEGIN
+  est := pg_temp.m377_estado();
+  IF est = 'pre' THEN PERFORM set_config('probe.p1070', 'REGRESION (377 ausente; solicitudes_alta_medico no existe)', false); RETURN; END IF;
+  IF est <> 'post' THEN PERFORM set_config('probe.p1070', 'ROJO (377 '||est||')', false); RETURN; END IF;
+  gt := (SELECT cp.id FROM public.configuracion_pais cp WHERE cp.codigo = 'GT');
+  a_vis := pg_temp.m375_uid('visitador.qa@ezpayconnect.com');
+  a_prv := pg_temp.m375_uid('proveedor.qa@ezpayconnect.com');
+  a_sup := pg_temp.m375_uid('sup1.qa@ezpayconnect.com');
+  a_adm := pg_temp.m375_uid('adminpais.qa@ezpayconnect.com');
+  a_pac := pg_temp.m375_uid('paciente.qa@ezpayconnect.com');
+  IF gt IS NULL OR a_vis IS NULL OR a_prv IS NULL OR a_sup IS NULL OR a_adm IS NULL OR a_pac IS NULL THEN
+    PERFORM set_config('probe.p1070', 'FALLO (actor inexistente: GT, visitador.qa, proveedor.qa, sup1.qa, adminpais.qa o paciente.qa)', false);
+    RETURN;
+  END IF;
+  pre := pg_temp.m377_snap();
+  BEGIN
+    PERFORM pg_temp.m377_fijar(gt);
+    sa := pg_temp.m377_crear(a_vis, 'p1070.a@ezpayqa.test');
+    sb := pg_temp.m377_crear(a_prv, 'p1070.b@ezpayqa.test');
+    lab2 := pg_temp.m375_lab2(gt);
+    en_equipo := EXISTS (SELECT 1 FROM public.cuentas_proveedor cp JOIN public.equipos_visitadores ev ON ev.id = cp.equipo_id
+                          WHERE cp.id = a_vis AND ev.supervisor_id = a_sup);
+    v_vis  := pg_temp.m377_vis(a_vis, sa, sb);
+    v_prv  := pg_temp.m377_vis(a_prv, sa, sb);
+    v_sup  := pg_temp.m377_vis(a_sup, sa, sb);
+    v_lab2 := pg_temp.m377_vis(lab2, sa, sb);
+    v_adm  := pg_temp.m377_vis(a_adm, sa, sb);
+    v_pac  := pg_temp.m377_vis(a_pac, sa, sb);
+    anon_l := pg_temp.m375_como(NULL, 'anon', 'SELECT count(*)::text FROM public.listar_solicitudes_alta(NULL)');
+    anon_t := pg_temp.m375_como(NULL, 'anon', 'SELECT count(*)::text FROM public.solicitudes_alta_medico');
+    RAISE EXCEPTION 'P1070 descarte' USING ERRCODE = 'P0999';
+  EXCEPTION WHEN SQLSTATE 'P0999' THEN NULL;
+  END;
+  post := pg_temp.m377_snap();
+  e_sup := CASE WHEN en_equipo THEN 'L=A T=A' ELSE 'L=- T=-' END;
+  anon_fn := (SELECT count(*) FROM pg_proc p
+               WHERE p.proname IN ('solicitar_alta_medico', 'cancelar_solicitud_alta', 'rechazar_solicitud_alta', 'listar_solicitudes_alta')
+                 AND has_function_privilege('anon', p.oid, 'EXECUTE'));
+  PERFORM set_config('probe.p1070', CASE
+    WHEN post IS DISTINCT FROM pre THEN 'FALLO (no volvio al snapshot tras el descarte)'
+    WHEN v_vis = 'L=A T=A' AND v_prv = 'L=A,B T=A,B' AND v_sup = e_sup AND v_lab2 = 'L=- T=-' AND v_adm = 'L=A,B T=A,B'
+         AND v_pac = 'L=- T=-' AND anon_fn = 0 AND anon_l LIKE 'ERR:42501:%' AND anon_t LIKE 'ERR:42501:%'
+      THEN 'OK (377: visitador.qa A; proveedor.qa A,B; sup1.qa '||CASE WHEN en_equipo THEN 'A (visitador.qa esta en su equipo)' ELSE 'nada (visitador.qa fuera de su equipo)' END||
+           '; segundo lab nada; adminpais.qa A,B; paciente.qa nada; listar = tabla en todos; anon sin EXECUTE (42501 en RPC y tabla); descartado)'
+    ELSE 'ROJO (vis '||v_vis||' / prv '||v_prv||' / sup1 '||v_sup||' (esperado '||e_sup||') / lab2 '||v_lab2||' / adm '||v_adm||' / pac '||v_pac||
+         ' / anon fn '||COALESCE(anon_fn::text, '-')||' '||left(COALESCE(anon_l, '-'), 40)||' '||left(COALESCE(anon_t, '-'), 40)||')' END, false);
+EXCEPTION WHEN OTHERS THEN
+  PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
+  PERFORM set_config('probe.p1070', CASE WHEN SQLERRM LIKE 'fixture roto%' THEN 'FALLO ('||SQLERRM||')'
+    ELSE 'FALLO ('||SQLSTATE||' '||SQLERRM||')' END, false);
+END $$;
+SELECT set_config('role', 'none', true);
+
+-- ---------------- P1071 377: escritura directa como authenticated (INSERT/UPDATE/DELETE) -> 42501 ----------------
+DO $$
+DECLARE est text; gt uuid; a_vis uuid; a_adm uuid; emp uuid; sa uuid; r_ins text; r_upd text; r_del text; r_upd_adm text; pre text; post text;
+BEGIN
+  est := pg_temp.m377_estado();
+  IF est = 'pre' THEN PERFORM set_config('probe.p1071', 'REGRESION (377 ausente; solicitudes_alta_medico no existe)', false); RETURN; END IF;
+  IF est <> 'post' THEN PERFORM set_config('probe.p1071', 'ROJO (377 '||est||')', false); RETURN; END IF;
+  gt := (SELECT cp.id FROM public.configuracion_pais cp WHERE cp.codigo = 'GT');
+  a_vis := pg_temp.m375_uid('visitador.qa@ezpayconnect.com');
+  a_adm := pg_temp.m375_uid('adminpais.qa@ezpayconnect.com');
+  IF gt IS NULL OR a_vis IS NULL OR a_adm IS NULL THEN
+    PERFORM set_config('probe.p1071', 'FALLO (actor inexistente: GT, visitador.qa o adminpais.qa)', false);
+    RETURN;
+  END IF;
+  pre := pg_temp.m377_snap();
+  BEGIN
+    emp := pg_temp.m377_fijar(gt);
+    sa := pg_temp.m377_crear(a_vis, 'p1071.a@ezpayqa.test');
+    r_ins := pg_temp.m375_rc(a_vis, 'authenticated', format(
+      'INSERT INTO public.solicitudes_alta_medico (empresa_id, solicitado_por, pais_id, nombre_completo, email, autorizacion_medico) '||
+      'VALUES (%L, %L, %L, ''Dr. Directo P1071'', ''p1071.directo@ezpayqa.test'', true)', emp, a_vis, gt));
+    r_upd := pg_temp.m375_rc(a_vis, 'authenticated', format('UPDATE public.solicitudes_alta_medico SET estado = ''cancelada'' WHERE id = %L', sa));
+    r_del := pg_temp.m375_rc(a_vis, 'authenticated', format('DELETE FROM public.solicitudes_alta_medico WHERE id = %L', sa));
+    r_upd_adm := pg_temp.m375_rc(a_adm, 'authenticated', format('UPDATE public.solicitudes_alta_medico SET estado = ''invitada'' WHERE id = %L', sa));
+    RAISE EXCEPTION 'P1071 descarte' USING ERRCODE = 'P0999';
+  EXCEPTION WHEN SQLSTATE 'P0999' THEN NULL;
+  END;
+  post := pg_temp.m377_snap();
+  PERFORM set_config('probe.p1071', CASE
+    WHEN post IS DISTINCT FROM pre THEN 'FALLO (no volvio al snapshot tras el descarte)'
+    WHEN r_ins LIKE 'ERR:42501:%' AND r_upd LIKE 'ERR:42501:%' AND r_del LIKE 'ERR:42501:%' AND r_upd_adm LIKE 'ERR:42501:%'
+      THEN 'OK (377: visitador.qa INSERT/UPDATE/DELETE directos -> 42501; adminpais.qa UPDATE directo -> 42501; descartado)'
+    ELSE 'ROJO (esperado 42501 x4; vino '||left(r_ins, 70)||' / '||left(r_upd, 70)||' / '||left(r_del, 70)||' / '||left(r_upd_adm, 70)||')' END, false);
+EXCEPTION WHEN OTHERS THEN
+  PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
+  PERFORM set_config('probe.p1071', CASE WHEN SQLERRM LIKE 'fixture roto%' THEN 'FALLO ('||SQLERRM||')'
+    ELSE 'FALLO ('||SQLSTATE||' '||SQLERRM||')' END, false);
+END $$;
+SELECT set_config('role', 'none', true);
+
+-- ---------------- P1072 377: cancelar_solicitud_alta (la suya OK; otra vez PV022; ajeno e inexistente PV023 con el mismo mensaje) ----------------
+DO $$
+DECLARE est text; gt uuid; a_vis uuid; a_prv uuid; lab2 uuid; sa uuid; sb uuid; r_ok text; r_otra text; r_ajeno text; r_inex text;
+        est_a text; est_b text; pre text; post text;
+BEGIN
+  est := pg_temp.m377_estado();
+  IF est = 'pre' THEN PERFORM set_config('probe.p1072', 'REGRESION (377 ausente; cancelar_solicitud_alta no existe)', false); RETURN; END IF;
+  IF est <> 'post' THEN PERFORM set_config('probe.p1072', 'ROJO (377 '||est||')', false); RETURN; END IF;
+  gt := (SELECT cp.id FROM public.configuracion_pais cp WHERE cp.codigo = 'GT');
+  a_vis := pg_temp.m375_uid('visitador.qa@ezpayconnect.com');
+  a_prv := pg_temp.m375_uid('proveedor.qa@ezpayconnect.com');
+  IF gt IS NULL OR a_vis IS NULL OR a_prv IS NULL THEN
+    PERFORM set_config('probe.p1072', 'FALLO (actor inexistente: GT, visitador.qa o proveedor.qa)', false);
+    RETURN;
+  END IF;
+  pre := pg_temp.m377_snap();
+  BEGIN
+    PERFORM pg_temp.m377_fijar(gt);
+    sa := pg_temp.m377_crear(a_vis, 'p1072.a@ezpayqa.test');
+    sb := pg_temp.m377_crear(a_prv, 'p1072.b@ezpayqa.test');
+    lab2 := pg_temp.m375_lab2(gt);
+    r_ok    := pg_temp.m375_como(a_vis, 'authenticated', format('SELECT public.cancelar_solicitud_alta(%L::uuid)::text', sa));
+    r_otra  := pg_temp.m375_como(a_vis, 'authenticated', format('SELECT public.cancelar_solicitud_alta(%L::uuid)::text', sa));
+    r_ajeno := pg_temp.m375_como(lab2, 'authenticated', format('SELECT public.cancelar_solicitud_alta(%L::uuid)::text', sb));
+    r_inex  := pg_temp.m375_como(a_vis, 'authenticated', format('SELECT public.cancelar_solicitud_alta(%L::uuid)::text', gen_random_uuid()));
+    EXECUTE format('SELECT s.estado FROM public.solicitudes_alta_medico s WHERE s.id = %L', sa) INTO est_a;
+    EXECUTE format('SELECT s.estado FROM public.solicitudes_alta_medico s WHERE s.id = %L', sb) INTO est_b;
+    RAISE EXCEPTION 'P1072 descarte' USING ERRCODE = 'P0999';
+  EXCEPTION WHEN SQLSTATE 'P0999' THEN NULL;
+  END;
+  post := pg_temp.m377_snap();
+  PERFORM set_config('probe.p1072', CASE
+    WHEN post IS DISTINCT FROM pre THEN 'FALLO (no volvio al snapshot tras el descarte)'
+    WHEN r_ok LIKE 'OK:%"cancelada"%' AND est_a = 'cancelada' AND r_otra LIKE 'ERR:PV022:%' AND r_ajeno LIKE 'ERR:PV023:%'
+         AND r_inex LIKE 'ERR:PV023:%' AND r_ajeno = r_inex AND est_b = 'pendiente'
+      THEN 'OK (377: visitador.qa cancela la suya; otra vez PV022; segundo lab sobre una ajena e id inexistente -> PV023 con el mismo mensaje; la ajena sigue pendiente; descartado)'
+    ELSE 'ROJO (vino '||left(r_ok, 70)||' ['||COALESCE(est_a, '-')||'] / '||left(r_otra, 70)||' / '||left(r_ajeno, 80)||' / '||left(r_inex, 80)||
+         ' / ajena '||COALESCE(est_b, '-')||')' END, false);
+EXCEPTION WHEN OTHERS THEN
+  PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
+  PERFORM set_config('probe.p1072', CASE WHEN SQLERRM LIKE 'fixture roto%' THEN 'FALLO ('||SQLERRM||')'
+    ELSE 'FALLO ('||SQLSTATE||' '||SQLERRM||')' END, false);
+END $$;
+SELECT set_config('role', 'none', true);
+
+-- ---------------- P1073 377: rechazar_solicitud_alta (visitador PV023; motivo corto PV019; OK con revisado_por y aviso; otra vez PV022) ----------------
+DO $$
+DECLARE est text; gt uuid; a_vis uuid; a_adm uuid; sc uuid; r_vis text; r_corto text; r_ok text; r_otra text; fila text; n_av int;
+        pre text; post text;
+BEGIN
+  est := pg_temp.m377_estado();
+  IF est = 'pre' THEN PERFORM set_config('probe.p1073', 'REGRESION (377 ausente; rechazar_solicitud_alta no existe)', false); RETURN; END IF;
+  IF est <> 'post' THEN PERFORM set_config('probe.p1073', 'ROJO (377 '||est||')', false); RETURN; END IF;
+  gt := (SELECT cp.id FROM public.configuracion_pais cp WHERE cp.codigo = 'GT');
+  a_vis := pg_temp.m375_uid('visitador.qa@ezpayconnect.com');
+  a_adm := pg_temp.m375_uid('adminpais.qa@ezpayconnect.com');
+  IF gt IS NULL OR a_vis IS NULL OR a_adm IS NULL THEN
+    PERFORM set_config('probe.p1073', 'FALLO (actor inexistente: GT, visitador.qa o adminpais.qa)', false);
+    RETURN;
+  END IF;
+  pre := pg_temp.m377_snap();
+  BEGIN
+    PERFORM pg_temp.m377_fijar(gt);
+    sc := pg_temp.m377_crear(a_vis, 'p1073.c@ezpayqa.test');
+    r_vis   := pg_temp.m375_como(a_vis, 'authenticated', format('SELECT public.rechazar_solicitud_alta(%L::uuid, %L)::text', sc, 'Motivo valido P1073'));
+    r_corto := pg_temp.m375_como(a_adm, 'authenticated', format('SELECT public.rechazar_solicitud_alta(%L::uuid, %L)::text', sc, 'ok'));
+    r_ok    := pg_temp.m375_como(a_adm, 'authenticated', format('SELECT public.rechazar_solicitud_alta(%L::uuid, %L)::text', sc, '  Faltan datos del médico  '));
+    r_otra  := pg_temp.m375_como(a_adm, 'authenticated', format('SELECT public.rechazar_solicitud_alta(%L::uuid, %L)::text', sc, 'Otra vez P1073'));
+    EXECUTE format('SELECT s.estado||''|''||(s.revisado_por = %L::uuid)::text||''|''||(s.revisado_at IS NOT NULL)::text||''|''||COALESCE(s.motivo_rechazo, ''-'') '||
+                   'FROM public.solicitudes_alta_medico s WHERE s.id = %L', a_adm, sc) INTO fila;
+    n_av := (SELECT count(*) FROM public.notificaciones n
+              WHERE n.usuario_id = a_vis AND n.tipo = 'solicitud_alta_rechazada' AND n.accion_url = '/visitador/solicitudes'
+                AND n.metadata ->> 'solicitud_id' = sc::text);
+    RAISE EXCEPTION 'P1073 descarte' USING ERRCODE = 'P0999';
+  EXCEPTION WHEN SQLSTATE 'P0999' THEN NULL;
+  END;
+  post := pg_temp.m377_snap();
+  PERFORM set_config('probe.p1073', CASE
+    WHEN post IS DISTINCT FROM pre THEN 'FALLO (no volvio al snapshot tras el descarte)'
+    WHEN r_vis LIKE 'ERR:PV023:%' AND r_corto LIKE 'ERR:PV019:%' AND r_ok LIKE 'OK:%"rechazada"%'
+         AND fila = 'rechazada|true|true|Faltan datos del médico' AND n_av = 1 AND r_otra LIKE 'ERR:PV022:%'
+      THEN 'OK (377: visitador.qa rechaza -> PV023; adminpais.qa motivo corto -> PV019; motivo valido -> rechazada con revisado_por, fecha y motivo recortado; 1 aviso a visitador.qa con /visitador/solicitudes; otra vez PV022; descartado)'
+    ELSE 'ROJO (vino '||left(r_vis, 70)||' / '||left(r_corto, 70)||' / '||left(r_ok, 70)||' / '||COALESCE(fila, 'sin fila')||' / avisos '||
+         COALESCE(n_av::text, '-')||' / '||left(r_otra, 70)||')' END, false);
+EXCEPTION WHEN OTHERS THEN
+  PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
+  PERFORM set_config('probe.p1073', CASE WHEN SQLERRM LIKE 'fixture roto%' THEN 'FALLO ('||SQLERRM||')'
+    ELSE 'FALLO ('||SQLSTATE||' '||SQLERRM||')' END, false);
+END $$;
+SELECT set_config('role', 'none', true);
+
+-- ---------------- P1074 377: guardas de la tabla como postgres (CHECKs y UNIQUE parcial, capturados por nombre) ----------------
+DO $$
+DECLARE est text; gt uuid; a_vis uuid; emp uuid; c text; r_aut text := 'SIN ERROR'; r_mail text := 'SIN ERROR'; r_mot text := 'SIN ERROR';
+        r_uniq text := 'SIN ERROR'; pre text; post text;
+BEGIN
+  est := pg_temp.m377_estado();
+  IF est = 'pre' THEN PERFORM set_config('probe.p1074', 'REGRESION (377 ausente; solicitudes_alta_medico no existe)', false); RETURN; END IF;
+  IF est <> 'post' THEN PERFORM set_config('probe.p1074', 'ROJO (377 '||est||')', false); RETURN; END IF;
+  gt := (SELECT cp.id FROM public.configuracion_pais cp WHERE cp.codigo = 'GT');
+  a_vis := pg_temp.m375_uid('visitador.qa@ezpayconnect.com');
+  emp := (SELECT cp.empresa_id FROM public.cuentas_proveedor cp WHERE cp.id = a_vis);
+  IF gt IS NULL OR a_vis IS NULL OR emp IS NULL THEN
+    PERFORM set_config('probe.p1074', 'FALLO (actor inexistente: GT o visitador.qa con empresa)', false);
+    RETURN;
+  END IF;
+  pre := pg_temp.m377_snap();
+  BEGIN
+    BEGIN
+      EXECUTE format('INSERT INTO public.solicitudes_alta_medico (empresa_id, solicitado_por, pais_id, nombre_completo, email, autorizacion_medico) '||
+                     'VALUES (%L, %L, %L, ''Dr. Guarda P1074'', ''p1074.aut@ezpayqa.test'', false)', emp, a_vis, gt);
+    EXCEPTION WHEN check_violation THEN GET STACKED DIAGNOSTICS c = CONSTRAINT_NAME; r_aut := 'check_violation:'||c;
+    END;
+    BEGIN
+      EXECUTE format('INSERT INTO public.solicitudes_alta_medico (empresa_id, solicitado_por, pais_id, nombre_completo, email, autorizacion_medico) '||
+                     'VALUES (%L, %L, %L, ''Dr. Guarda P1074'', ''P1074.Upper@ezpayqa.test'', true)', emp, a_vis, gt);
+    EXCEPTION WHEN check_violation THEN GET STACKED DIAGNOSTICS c = CONSTRAINT_NAME; r_mail := 'check_violation:'||c;
+    END;
+    BEGIN
+      EXECUTE format('INSERT INTO public.solicitudes_alta_medico (empresa_id, solicitado_por, pais_id, nombre_completo, email, autorizacion_medico, estado) '||
+                     'VALUES (%L, %L, %L, ''Dr. Guarda P1074'', ''p1074.mot@ezpayqa.test'', true, ''rechazada'')', emp, a_vis, gt);
+    EXCEPTION WHEN check_violation THEN GET STACKED DIAGNOSTICS c = CONSTRAINT_NAME; r_mot := 'check_violation:'||c;
+    END;
+    EXECUTE format('INSERT INTO public.solicitudes_alta_medico (empresa_id, solicitado_por, pais_id, nombre_completo, email, autorizacion_medico) '||
+                   'VALUES (%L, %L, %L, ''Dr. Guarda P1074'', ''p1074.uniq@ezpayqa.test'', true)', emp, a_vis, gt);
+    BEGIN
+      EXECUTE format('INSERT INTO public.solicitudes_alta_medico (empresa_id, solicitado_por, pais_id, nombre_completo, email, autorizacion_medico) '||
+                     'VALUES (%L, %L, %L, ''Dr. Guarda P1074 bis'', ''p1074.uniq@ezpayqa.test'', true)', emp, a_vis, gt);
+    EXCEPTION WHEN unique_violation THEN GET STACKED DIAGNOSTICS c = CONSTRAINT_NAME; r_uniq := 'unique_violation:'||c;
+    END;
+    RAISE EXCEPTION 'P1074 descarte' USING ERRCODE = 'P0999';
+  EXCEPTION WHEN SQLSTATE 'P0999' THEN NULL;
+  END;
+  post := pg_temp.m377_snap();
+  PERFORM set_config('probe.p1074', CASE
+    WHEN post IS DISTINCT FROM pre THEN 'FALLO (no volvio al snapshot tras el descarte)'
+    WHEN r_aut = 'check_violation:solicitudes_alta_medico_autorizacion_check' AND r_mail = 'check_violation:solicitudes_alta_medico_email_check'
+         AND r_mot = 'check_violation:solicitudes_alta_medico_motivo_check' AND r_uniq = 'unique_violation:solicitudes_alta_medico_email_en_curso_uniq'
+      THEN 'OK (377: autorizacion false, email con mayusculas y rechazada sin motivo -> check_violation de su CHECK; dos pendientes con el mismo correo -> unique_violation del indice parcial; descartado)'
+    ELSE 'ROJO (vino '||r_aut||' / '||r_mail||' / '||r_mot||' / '||r_uniq||')' END, false);
+EXCEPTION WHEN OTHERS THEN
+  PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
+  PERFORM set_config('probe.p1074', CASE WHEN SQLERRM LIKE 'fixture roto%' THEN 'FALLO ('||SQLERRM||')'
+    ELSE 'FALLO ('||SQLSTATE||' '||SQLERRM||')' END, false);
+END $$;
+SELECT set_config('role', 'none', true);
+
 -- ===== Veredictos como result set =====
 SELECT 'P1_anon_insert_citas'              AS probe, current_setting('probe.p1', true)  AS verdict, 'BLOQUEADO' AS esperado_post_fix
 UNION ALL SELECT 'P2_medico_cancela_ajena_rpc',         current_setting('probe.p2', true),  'BLOQUEADO'
@@ -37793,6 +38366,17 @@ UNION ALL SELECT 'M376_FX_helpers_modificar',  current_setting('probe.m376_fx', 
 UNION ALL SELECT 'P1062_modificar_hora_invalida_pv003_376',  current_setting('probe.p1062', true), 'OK (376: hora que no es HH:MM -> PV003 x4, visita intacta; sin la 376: REGRESION)'
 UNION ALL SELECT 'P1063_modificar_solo_fecha_376',  current_setting('probe.p1063', true), 'OK (376: modificar solo con fecha -> success, 1 fila; sin la 376: REGRESION)'
 UNION ALL SELECT 'P1064_modificar_solo_hora_376',  current_setting('probe.p1064', true), 'OK (376: modificar solo con hora -> success, 1 fila; sin la 376: REGRESION)'
+UNION ALL SELECT 'M377_FX_helpers_solicitudes_alta',  current_setting('probe.m377_fx', true), 'OK (helpers de pg_temp creados; estado de la 377: post; pre: REGRESION; parcial: ROJO)'
+UNION ALL SELECT 'P1065_solicitar_gates_377',  current_setting('probe.p1065', true), 'OK (377: farmacia.qa PV016, sup1.qa en lectura PV017, sin autorizacion PV018, plan vencido PV011; sin la 377: REGRESION)'
+UNION ALL SELECT 'P1066_solicitar_datos_pv019_377',  current_setting('probe.p1066', true), 'OK (377: nombre, correo, telefono y especialidad invalidos -> PV019 por campo; sin la 377: REGRESION)'
+UNION ALL SELECT 'P1067_solicitar_correo_existente_377',  current_setting('probe.p1067', true), 'OK (377: correo de paciente.qa PV020; correo de medico.qa -> existe sin crear fila; sin la 377: REGRESION)'
+UNION ALL SELECT 'P1068_solicitar_feliz_avisos_377',  current_setting('probe.p1068', true), 'OK (377: creada, correo normalizado, GT, avisos a los admin_pais de GT o super_admin; sin la 377: REGRESION)'
+UNION ALL SELECT 'P1069_solicitar_duplicado_pv021_377',  current_setting('probe.p1069', true), 'OK (377: mismo correo mismo lab y otro lab -> PV021 sin nombrar la empresa; sin la 377: REGRESION)'
+UNION ALL SELECT 'P1070_solicitudes_visibilidad_377',  current_setting('probe.p1070', true), 'OK (377: listar = tabla por actor; visitador, admin, supervisor del equipo, admin de pais; ajenos 0; anon 42501; sin la 377: REGRESION)'
+UNION ALL SELECT 'P1071_solicitudes_escritura_directa_377',  current_setting('probe.p1071', true), 'OK (377: INSERT/UPDATE/DELETE directos como authenticated -> 42501; sin la 377: REGRESION)'
+UNION ALL SELECT 'P1072_cancelar_solicitud_377',  current_setting('probe.p1072', true), 'OK (377: cancela la suya; otra vez PV022; ajeno e inexistente PV023 mismo mensaje; sin la 377: REGRESION)'
+UNION ALL SELECT 'P1073_rechazar_solicitud_377',  current_setting('probe.p1073', true), 'OK (377: visitador PV023; motivo corto PV019; rechazada con revisado_por y aviso; otra vez PV022; sin la 377: REGRESION)'
+UNION ALL SELECT 'P1074_solicitudes_guardas_tabla_377',  current_setting('probe.p1074', true), 'OK (377: CHECKs de autorizacion, email y motivo + UNIQUE parcial por correo, capturados por nombre; sin la 377: REGRESION)'
 UNION ALL SELECT 'P1010_campana_vistas_sin_update_367',  current_setting('probe.p1010', true), 'OK (367: INSERT 1; ON CONFLICT DO NOTHING 0 sin error; DO UPDATE y UPDATE 42501; otro paciente 0; antes de la 367: PENDIENTE)'
 UNION ALL SELECT 'P1009_datos_bancarios_acotados_366',  current_setting('probe.p1009', true), 'OK (366: cuenta GT solo super_admin/admin_pais GT/proveedores GT; checkout 1 fila; config 21 super_admin y 14 el resto, admin_pais incluido; antes de la 366: PENDIENTE)'
 UNION ALL SELECT 'DET_p1009',  'DET ' || COALESCE(NULLIF(current_setting('probe.p1009_det', true), ''), '(sin dato)'), 'DET (detalle de P1009, no es probe)'
@@ -38045,7 +38629,7 @@ UNION ALL SELECT 'P000_CENTINELA_veredictos_no_nulos',
        'probe.p866', 'probe.p867', 'probe.p868', 'probe.p869', 'probe.p870', 'probe.p871', 'probe.p872', 'probe.p873', 'probe.p874', 'probe.p875', 'probe.p876', 'probe.p877', 'probe.p878',
        'probe.p879', 'probe.p880', 'probe.p881', 'probe.p882', 'probe.p883', 'probe.p884',
        'probe.p885', 'probe.p886', 'probe.p887', 'probe.p888', 'probe.p889', 'probe.p890', 'probe.p891', 'probe.p892', 'probe.p893', 'probe.p894', 'probe.p895', 'probe.p896', 'probe.p908', 'probe.p909', 'probe.p910', 'probe.p911',
-       'probe.p897', 'probe.p898', 'probe.p899', 'probe.p900', 'probe.p901', 'probe.p902', 'probe.p903', 'probe.p904', 'probe.p905', 'probe.p906', 'probe.p907', 'probe.p912', 'probe.p913', 'probe.p914', 'probe.p915', 'probe.p916', 'probe.p917', 'probe.p918', 'probe.p919', 'probe.p920', 'probe.p921', 'probe.p922', 'probe.p923', 'probe.p924', 'probe.p925', 'probe.p926', 'probe.p927', 'probe.p928', 'probe.p929', 'probe.p930', 'probe.p931', 'probe.p932', 'probe.p933', 'probe.p934', 'probe.p935', 'probe.p936', 'probe.p937', 'probe.p938', 'probe.p939', 'probe.p940', 'probe.p941', 'probe.p942', 'probe.p943', 'probe.p944', 'probe.p945', 'probe.p946', 'probe.p947', 'probe.p948', 'probe.p949', 'probe.p950', 'probe.p951', 'probe.p952', 'probe.p953', 'probe.p954', 'probe.p955', 'probe.p956', 'probe.p957', 'probe.p958', 'probe.p959', 'probe.p960', 'probe.p961', 'probe.p962', 'probe.p963', 'probe.p964', 'probe.p965', 'probe.p966', 'probe.p967', 'probe.p968', 'probe.p969', 'probe.p970', 'probe.p971', 'probe.p972', 'probe.p973', 'probe.p974', 'probe.p975', 'probe.p976', 'probe.p977', 'probe.p978', 'probe.p979', 'probe.p980', 'probe.p981', 'probe.p982', 'probe.p983', 'probe.p984', 'probe.p985', 'probe.p986', 'probe.p987', 'probe.p988', 'probe.p989', 'probe.p990', 'probe.p991', 'probe.p992', 'probe.p993', 'probe.p994', 'probe.p995', 'probe.p996', 'probe.p997', 'probe.p998', 'probe.p999', 'probe.p1000', 'probe.p1001', 'probe.p1002', 'probe.p1003', 'probe.p1004', 'probe.p1005', 'probe.p1006', 'probe.p1007', 'probe.p1008', 'probe.p1009', 'probe.p1010', 'probe.p1011', 'probe.p1012', 'probe.p1013', 'probe.p1014', 'probe.e370_fx', 'probe.p1015', 'probe.p1016', 'probe.p1017', 'probe.p1018', 'probe.g371_fx', 'probe.p1019', 'probe.p1020', 'probe.p1021', 'probe.p1022', 'probe.g372_fx', 'probe.p1023', 'probe.p1024', 'probe.p1025', 'probe.p1035', 'probe.p1036', 'probe.p1037', 'probe.p1038', 'probe.p1039', 'probe.p1040', 'probe.m375_fx', 'probe.p1041', 'probe.p1042', 'probe.p1043', 'probe.p1044', 'probe.p1045', 'probe.p1046', 'probe.p1047', 'probe.p1048', 'probe.p1049', 'probe.p1050', 'probe.p1051', 'probe.p1052', 'probe.p1053', 'probe.p1054', 'probe.p1055', 'probe.p1056', 'probe.p1057', 'probe.p1058', 'probe.p1059', 'probe.p1060', 'probe.p1061', 'probe.m376_fx', 'probe.p1062', 'probe.p1063', 'probe.p1064'
+       'probe.p897', 'probe.p898', 'probe.p899', 'probe.p900', 'probe.p901', 'probe.p902', 'probe.p903', 'probe.p904', 'probe.p905', 'probe.p906', 'probe.p907', 'probe.p912', 'probe.p913', 'probe.p914', 'probe.p915', 'probe.p916', 'probe.p917', 'probe.p918', 'probe.p919', 'probe.p920', 'probe.p921', 'probe.p922', 'probe.p923', 'probe.p924', 'probe.p925', 'probe.p926', 'probe.p927', 'probe.p928', 'probe.p929', 'probe.p930', 'probe.p931', 'probe.p932', 'probe.p933', 'probe.p934', 'probe.p935', 'probe.p936', 'probe.p937', 'probe.p938', 'probe.p939', 'probe.p940', 'probe.p941', 'probe.p942', 'probe.p943', 'probe.p944', 'probe.p945', 'probe.p946', 'probe.p947', 'probe.p948', 'probe.p949', 'probe.p950', 'probe.p951', 'probe.p952', 'probe.p953', 'probe.p954', 'probe.p955', 'probe.p956', 'probe.p957', 'probe.p958', 'probe.p959', 'probe.p960', 'probe.p961', 'probe.p962', 'probe.p963', 'probe.p964', 'probe.p965', 'probe.p966', 'probe.p967', 'probe.p968', 'probe.p969', 'probe.p970', 'probe.p971', 'probe.p972', 'probe.p973', 'probe.p974', 'probe.p975', 'probe.p976', 'probe.p977', 'probe.p978', 'probe.p979', 'probe.p980', 'probe.p981', 'probe.p982', 'probe.p983', 'probe.p984', 'probe.p985', 'probe.p986', 'probe.p987', 'probe.p988', 'probe.p989', 'probe.p990', 'probe.p991', 'probe.p992', 'probe.p993', 'probe.p994', 'probe.p995', 'probe.p996', 'probe.p997', 'probe.p998', 'probe.p999', 'probe.p1000', 'probe.p1001', 'probe.p1002', 'probe.p1003', 'probe.p1004', 'probe.p1005', 'probe.p1006', 'probe.p1007', 'probe.p1008', 'probe.p1009', 'probe.p1010', 'probe.p1011', 'probe.p1012', 'probe.p1013', 'probe.p1014', 'probe.e370_fx', 'probe.p1015', 'probe.p1016', 'probe.p1017', 'probe.p1018', 'probe.g371_fx', 'probe.p1019', 'probe.p1020', 'probe.p1021', 'probe.p1022', 'probe.g372_fx', 'probe.p1023', 'probe.p1024', 'probe.p1025', 'probe.p1035', 'probe.p1036', 'probe.p1037', 'probe.p1038', 'probe.p1039', 'probe.p1040', 'probe.m375_fx', 'probe.p1041', 'probe.p1042', 'probe.p1043', 'probe.p1044', 'probe.p1045', 'probe.p1046', 'probe.p1047', 'probe.p1048', 'probe.p1049', 'probe.p1050', 'probe.p1051', 'probe.p1052', 'probe.p1053', 'probe.p1054', 'probe.p1055', 'probe.p1056', 'probe.p1057', 'probe.p1058', 'probe.p1059', 'probe.p1060', 'probe.p1061', 'probe.m376_fx', 'probe.p1062', 'probe.p1063', 'probe.p1064', 'probe.m377_fx', 'probe.p1065', 'probe.p1066', 'probe.p1067', 'probe.p1068', 'probe.p1069', 'probe.p1070', 'probe.p1071', 'probe.p1072', 'probe.p1073', 'probe.p1074'
              ]) AS n) s),
   'OK (todos los veredictos publicados)';
 
