@@ -13,7 +13,7 @@
 --   D) 4 visitas de visitador.qa con medico.qa (empresa 411d6f8c): 2 canceladas (hoy-2, hoy-1) y 2 confirmadas hoy a
 --      las 09:00 y 10:00 (ruta del día, sin check-in). Marcador: notas_empresa LIKE 'QA-MANUAL deck%'.
 --   E) 2 notificaciones in-app 'visita_clinica_cancelada' SOLO para secretaria.qa, con el mensaje que arma
---      cancelar_visita. Marcador: metadata->>'visita_id'. Sin push_notificar ni email_notificar.
+--      cancelar_visita. Marcador: metadata->>'visita_id'. Sin push ni email.
 --
 -- Efectos externos (medidos el 21-oct-2026, solo lectura): ningún trigger de campanas_publicitarias, campana_metricas
 -- ni notificaciones; los de solicitudes_campana (trg_reset_notif_envio: solo UPDATE OF estado; gate de capacidad:
@@ -76,8 +76,8 @@ BEGIN
     JOIN (VALUES (CURRENT_DATE - 2, TIME '09:00', TIME '09:15'),
                  (CURRENT_DATE - 1, TIME '09:00', TIME '09:15'),
                  (CURRENT_DATE,     TIME '09:00', TIME '09:15'),
-                 (CURRENT_DATE,     TIME '10:00', TIME '10:15')) AS s(f, hi, hf)
-      ON v.fecha_visita = s.f AND v.hora_inicio < s.hf AND v.hora_fin > s.hi
+                 (CURRENT_DATE,     TIME '10:00', TIME '10:15')) AS slot_q(fecha_q, hi_q, hf_q)
+      ON v.fecha_visita = slot_q.fecha_q AND v.hora_inicio < slot_q.hf_q AND v.hora_fin > slot_q.hi_q
    WHERE v.estado NOT IN ('cancelada', 'rechazada')
      AND (v.medico_id = '09d243d5-b222-482a-9762-94a582e9e752'
           OR v.cuenta_proveedor_id = 'e00f68c8-bd30-4d62-b73b-9490e4e17efe');
@@ -123,9 +123,9 @@ SELECT 3183,
 --    mi_empresa_proveedor() y set_default_estado_propuesta deja el estado 'confirmada' (como el alta del admin en el
 --    front: estado confirmada, propuesta_por NULL).
 -- ---------------------------------------------------------------------------------------------------------------------
-SELECT set_config('request.jwt.claims', '{"sub":"9ca0b977-3c91-48dc-aa04-2f1fab766963","role":"authenticated"}', true);
-
 CREATE TEMP TABLE deck_vis (id uuid PRIMARY KEY, nota text NOT NULL) ON COMMIT DROP;
+
+SELECT set_config('request.jwt.claims', '{"sub":"9ca0b977-3c91-48dc-aa04-2f1fab766963","role":"authenticated"}', true);
 
 WITH ins AS (
   INSERT INTO public.visitas_agendadas
