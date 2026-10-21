@@ -934,11 +934,14 @@ END $$;
 -- l.49: retirar la fn = retirar sus probes. Su drop lo cubre P432.
 
 -- P44 — administrar_visita: un ajeno (ni médico de la visita ni su empresa) NO la administra
+-- (381) Se casa por SQLSTATE: con la 381 el rechazo es PV027; sin ella (cuerpo de la 376, md5 5d4a718d…), P0001 con el
+-- texto de antes. Estado: 'pre' por el md5 vivo de administrar_visita; 'post' por contenido (PV027 + gate de equipo: el
+-- runner quita las lineas de comentario de lo que envia y el md5 de la 381 dentro del harness no es el del archivo).
 SELECT set_config('role', 'none', true);
 SELECT set_config('request.jwt.claims',
   json_build_object('sub', current_setting('probe.ajeno', true), 'role','authenticated')::text, true);
 SELECT set_config('role', 'authenticated', true);
-DO $$ DECLARE r jsonb; s TEXT; m TEXT; BEGIN
+DO $$ DECLARE r jsonb; s TEXT; m TEXT; e381 TEXT; BEGIN
   IF NULLIF(current_setting('probe.av_visita', true),'') IS NULL THEN PERFORM set_config('probe.p44','N/A (sin visitas)',false);
   ELSE
     r := public.administrar_visita(NULLIF(current_setting('probe.av_visita', true), '')::uuid,'rechazar',NULL,NULL,NULL,'__probe');
@@ -946,28 +949,35 @@ DO $$ DECLARE r jsonb; s TEXT; m TEXT; BEGIN
     ELSE PERFORM set_config('probe.p44','BLOQUEADO? (devolvió: '||r::text||')',false); END IF;
   END IF;
 EXCEPTION
-  -- Solo el RAISE del gate cuenta como bloqueo: texto exacto de la definicion viva de administrar_visita
-  -- ('No autorizado para administrar esta visita', P0001 por defecto). Cualquier otro error es FALLO.
+  -- Solo el RAISE del gate cuenta como bloqueo: PV027 con la 381; sin ella, P0001 con el texto exacto de la 376
+  -- ('No autorizado para administrar esta visita'). Cualquier otro error, o un md5 desconocido, es FALLO.
   WHEN others THEN GET STACKED DIAGNOSTICS s = RETURNED_SQLSTATE, m = MESSAGE_TEXT;
-    IF s = 'P0001' AND m = 'No autorizado para administrar esta visita' THEN
-      PERFORM set_config('probe.p44','BLOQUEADO (P0001 no autorizado)',false);
-    ELSE PERFORM set_config('probe.p44','FALLO (SQLSTATE inesperado: '||s||' '||m||')',false); END IF;
+    e381 := (SELECT CASE WHEN md5(p.prosrc) = '5d4a718de9d34fcfcc36e74a0e068bce' THEN 'pre' WHEN p.prosrc LIKE '%ERRCODE = ''PV027''%' AND p.prosrc LIKE '%supervisa_cuenta_proveedor%' THEN 'post' ELSE 'otro' END FROM pg_proc p WHERE p.oid = to_regprocedure('public.administrar_visita(uuid,text,date,text,text,text)'));
+    IF e381 = 'post' AND s = 'PV027' THEN
+      PERFORM set_config('probe.p44','BLOQUEADO (PV027 no autorizado)',false);
+    ELSIF e381 = 'pre' AND s = 'P0001' AND m = 'No autorizado para administrar esta visita' THEN
+      PERFORM set_config('probe.p44','BLOQUEADO (P0001 no autorizado; 381 ausente)',false);
+    ELSE PERFORM set_config('probe.p44','FALLO (SQLSTATE inesperado: '||s||' '||m||'; administrar_visita '||COALESCE(e381, '-')||')',false); END IF;
 END $$;
 
 -- P45 — administrar_visita POSITIVO: un miembro de la empresa proveedora SÍ la administra
+-- (381) Actor y visita EXPLÍCITOS, no posicionales: el admin 9ca0b977 de QA Laboratorio sobre su visita Sur
+-- ea23023e (antes: la primera cuenta admin/supervisor/editor por ORDER BY id, que podía ser un supervisor sin equipo).
+-- Corre al principio del harness, antes de FX12/P418, con el estado real de esas filas. El UPDATE se descarta (P0999).
 SELECT set_config('role', 'none', true);
 SELECT set_config('request.jwt.claims',
-  json_build_object('sub', current_setting('probe.av_emp_member', true), 'role','authenticated')::text, true);
+  json_build_object('sub', '9ca0b977-3c91-48dc-aa04-2f1fab766963', 'role','authenticated')::text, true);
 SELECT set_config('role', 'authenticated', true);
 DO $$ DECLARE r jsonb; BEGIN
-  IF NULLIF(current_setting('probe.av_emp_member', true),'') IS NULL THEN PERFORM set_config('probe.p45','N/A (empresa sin proveedor activo)',false);
-  ELSE
-    r := public.administrar_visita(NULLIF(current_setting('probe.av_visita', true), '')::uuid,'rechazar',NULL,NULL,NULL,'__probe_ok');
-    IF r ? 'success' THEN PERFORM set_config('probe.p45','OK (proveedor administró su visita)'||' [actor '||left(current_setting('probe.av_emp_member', true),8)||']',false);
-    ELSE PERFORM set_config('probe.p45','REGRESIÓN (devolvió: '||r::text||')'||' [actor '||left(current_setting('probe.av_emp_member', true),8)||']',false); END IF;
-  END IF;
+  BEGIN
+    r := public.administrar_visita('ea23023e-1331-4259-a74b-3fa450fe9f94'::uuid,'rechazar',NULL,NULL,NULL,'__probe_ok');
+    RAISE EXCEPTION 'P45 descarte' USING ERRCODE = 'P0999';
+  EXCEPTION WHEN SQLSTATE 'P0999' THEN NULL;
+  END;
+  IF r ? 'success' THEN PERFORM set_config('probe.p45','OK (proveedor administró su visita; descartado) [actor 9ca0b977]',false);
+  ELSE PERFORM set_config('probe.p45','REGRESIÓN (devolvió: '||COALESCE(r::text, 'NULL')||') [actor 9ca0b977]',false); END IF;
 EXCEPTION
-  WHEN others THEN PERFORM set_config('probe.p45','REGRESIÓN ('||SQLSTATE||')'||' [actor '||left(current_setting('probe.av_emp_member', true),8)||']',false);
+  WHEN others THEN PERFORM set_config('probe.p45','REGRESIÓN ('||SQLSTATE||') [actor 9ca0b977]',false);
 END $$;
 
 -- P46 RETIRADO (CIERRE FINAL mig 136): notificar_paciente con EXECUTE REVOCADO (la rama staff-clínica ahora va por
@@ -7182,11 +7192,23 @@ END $$;
 -- probe.h_ready lo escriben DOS frentes que no se conocen: el de citas/medico-huerfano (L6325) y
 -- este (P414-P418). Si este bloque cae, h_ready vuelve al '1' del otro frente y P414-P418 corren
 -- contra un fixture inexistente en vez de declararse SKIP. Colision de nombre, no de intencion.
+-- (381) Snapshot de las 4 cuentas que este fixture reasigna (admin, sup1 como editor, sup2 como visitador y la cuenta
+-- de la empresa B). Se restauran y se verifican al final de P418 (FXH_restaura_cuentas): sin eso, sup1 y sup2 -los
+-- unicos supervisores con equipo- quedaban con otro rol el resto de la transaccion (P946, P948, P1007, P1070).
+DO $$ BEGIN
+  PERFORM set_config('probe.h_cp_snap', COALESCE((SELECT jsonb_agg(jsonb_build_object('id', cp.id, 'empresa_id', cp.empresa_id, 'rol', cp.rol_en_empresa,
+      'activo', cp.activo, 'equipo_id', cp.equipo_id) ORDER BY cp.id) FROM public.cuentas_proveedor cp WHERE cp.id IN ('9ca0b977-3c91-48dc-aa04-2f1fab766963','d50e7efd-d0c6-4f14-a47b-f6b4845b25e9','b38847e5-e52a-4c11-9aec-487fb558532f','e7935069-fd08-4ac5-a094-9c481313f4d3'))::text, ''), false);
+  PERFORM set_config('probe.h_cp_md5', COALESCE((SELECT md5(string_agg(cp::text, E'
+' ORDER BY cp.id)) FROM public.cuentas_proveedor cp WHERE cp.id IN ('9ca0b977-3c91-48dc-aa04-2f1fab766963','d50e7efd-d0c6-4f14-a47b-f6b4845b25e9','b38847e5-e52a-4c11-9aec-487fb558532f','e7935069-fd08-4ac5-a094-9c481313f4d3')), ''), false);
+EXCEPTION WHEN OTHERS THEN PERFORM set_config('probe.h_cp_snap', 'FALLO:'||SQLSTATE, false);
+END $$;
 SELECT set_config('probe.h_ready','',false);
 DO $$ DECLARE v_A uuid:='411d6f8c-a405-49d6-9ed6-fbeb0db05133'; v_B uuid:='cc17afe8-fcd5-4ab0-84c4-08ba919d8481';
   v_adm uuid:='9ca0b977-3c91-48dc-aa04-2f1fab766963'; v_edi uuid:='d50e7efd-d0c6-4f14-a47b-f6b4845b25e9';
   v_vis uuid:='b38847e5-e52a-4c11-9aec-487fb558532f'; v_ext uuid:='e7935069-fd08-4ac5-a094-9c481313f4d3';
-  v_ez uuid:='e56879c0-4025-4f1f-832d-2753d9ab63e1'; v_med uuid:='5f638655-f21f-4b81-8138-db76a183de67';
+  -- (381) v_ez era e56879c0, hoy perfil 'cliente' inactivo: v_ok daba false y P414-P418 publicaban N/A sin medir.
+  -- Se fija al unico super_admin activo (superadmin@ezpayconnect.com, el de P494/P1020).
+  v_ez uuid:='41904e2c-5ef3-4fee-bd48-9ea58e0c8c37'; v_med uuid:='5f638655-f21f-4b81-8138-db76a183de67';
   v_pais uuid; v_pago uuid; v_solpub uuid; v_solrech uuid; v_solenv uuid; v_vprop uuid; v_vok uuid; v_vcanc uuid; v_vbad uuid; v_ok boolean; BEGIN
   v_ok := EXISTS(SELECT 1 FROM public.cuentas_proveedor WHERE id=v_adm) AND EXISTS(SELECT 1 FROM public.empresas_proveedoras WHERE id=v_A)
        AND EXISTS(SELECT 1 FROM public.perfiles WHERE id=v_ez AND rol IN ('ezpay_admin','super_admin','admin_finanzas'));
@@ -7249,6 +7271,11 @@ DO $$ DECLARE r record; v_bad text:=''; v_def boolean; v_cfg text[]; v_sp boolea
   FOR r IN SELECT unnest(ARRAY['notificar_empresa_estado','notificar_pago_resultado','notificar_campana_resultado','notificar_campana_enviada','notificar_visita_propuesta','notificar_visita_resultado']) AS fn LOOP
     IF to_regprocedure('public.'||r.fn||'(uuid)') IS NULL THEN v_bad:=v_bad||r.fn||':ausente '; CONTINUE; END IF;
     SELECT prosecdef, proconfig, prosrc INTO v_def, v_cfg, v_src FROM pg_proc WHERE oid=('public.'||r.fn||'(uuid)')::regprocedure;
+    -- (381) notificar_visita_resultado queda como compat no-op y el aviso (con su push) lo manda
+    -- private.notificar_resultado_visita_interno, que llama administrar_visita: el "in-app ONLY" se mide sobre la interna.
+    IF r.fn = 'notificar_visita_resultado' AND to_regprocedure('private.notificar_resultado_visita_interno(uuid)') IS NOT NULL THEN
+      v_src := v_src || (SELECT prosrc FROM pg_proc WHERE oid = to_regprocedure('private.notificar_resultado_visita_interno(uuid)'));
+    END IF;
     v_sp := EXISTS(SELECT 1 FROM unnest(coalesce(v_cfg,'{}'::text[])) e WHERE e LIKE 'search_path=%' AND e<>'search_path=public');
     v_anon := has_function_privilege('anon','public.'||r.fn||'(uuid)','EXECUTE');
     v_auth := has_function_privilege('authenticated','public.'||r.fn||'(uuid)','EXECUTE');
@@ -7394,27 +7421,71 @@ DO $$ DECLARE a text; BEGIN
   BEGIN PERFORM public.notificar_visita_resultado(current_setting('probe.h_vok',true)::uuid); a:='PERM'; EXCEPTION WHEN others THEN a:=SQLSTATE; END;
   PERFORM set_config('probe.hd_spoof', a, false);
 END $$;
-SELECT set_config('request.jwt.claims', json_build_object('sub', current_setting('probe.h_adm',true),'role','authenticated')::text, true);  -- admin de A
+-- (381) El aviso al visitador lo manda administrar_visita (private.notificar_resultado_visita_interno) y
+-- notificar_visita_resultado queda como compat no-op con el mismo gate. Las ramas aprobada/rechazada y el gate de
+-- relacion se miden sobre administrar_visita (deltas por destinatario, contados como postgres); despues la compat se
+-- mide como no-op. Sin la 381 (md5 5d4a718d…) administrar_visita no avisa y la compat si: eso publica REGRESION.
+-- Destinos (A11): h_vok es de h_edi (rol editor) -> /proveedor/notificaciones; h_vcanc es de h_vis (visitador) ->
+-- /visitador/mis-visitas.
+SELECT set_config('role','none', true);
 DO $$ BEGIN
-  IF current_setting('probe.h_ready',true)<>'1' OR to_regprocedure('public.notificar_visita_resultado(uuid)') IS NULL THEN PERFORM set_config('probe.hd_call','SKIP',false); RETURN; END IF;
-  BEGIN PERFORM public.notificar_visita_resultado(current_setting('probe.h_vok',true)::uuid);    -- estado=confirmada, cuenta∈A → rama aprobada
-        PERFORM public.notificar_visita_resultado(current_setting('probe.h_vcanc',true)::uuid);  -- estado=cancelada, cuenta∈A → rama rechazada
-        PERFORM public.notificar_visita_resultado(current_setting('probe.h_vbad',true)::uuid);   -- cuenta=ext (∈ B) → SKIP (gate relación)
+  IF current_setting('probe.h_ready',true)<>'1' THEN RETURN; END IF;
+  PERFORM set_config('probe.hd_n0',
+    (SELECT count(*) FROM public.notificaciones WHERE tipo='visita_aprobada' AND usuario_id=NULLIF(current_setting('probe.h_edi',true), '')::uuid AND created_at>now()-interval '3 minutes')::text||','||
+    (SELECT count(*) FROM public.notificaciones WHERE tipo='visita_rechazada' AND usuario_id=NULLIF(current_setting('probe.h_vis',true), '')::uuid AND created_at>now()-interval '3 minutes')::text||','||
+    (SELECT count(*) FROM public.notificaciones WHERE tipo IN ('visita_aprobada','visita_rechazada') AND usuario_id=NULLIF(current_setting('probe.h_ext',true), '')::uuid AND created_at>now()-interval '3 minutes')::text, false);
+EXCEPTION WHEN OTHERS THEN PERFORM set_config('probe.hd_n0', 'FALLO:'||SQLSTATE, false);
+END $$;
+SELECT set_config('request.jwt.claims', json_build_object('sub', current_setting('probe.h_adm',true),'role','authenticated')::text, true);  -- admin de A
+SELECT set_config('role','authenticated', true);
+DO $$ BEGIN
+  IF current_setting('probe.h_ready',true)<>'1' OR to_regprocedure('public.administrar_visita(uuid,text,date,text,text,text)') IS NULL THEN PERFORM set_config('probe.hd_call','SKIP',false); RETURN; END IF;
+  BEGIN PERFORM public.administrar_visita(current_setting('probe.h_vok',true)::uuid, 'aprobar');     -- cuenta∈A (editor) → rama aprobada
+        PERFORM public.administrar_visita(current_setting('probe.h_vcanc',true)::uuid, 'rechazar');  -- cuenta∈A (visitador) → rama rechazada
+        PERFORM public.administrar_visita(current_setting('probe.h_vbad',true)::uuid, 'aprobar');    -- cuenta=ext (∈ B) → SKIP (gate relación)
         PERFORM set_config('probe.hd_call','OK',false);
   EXCEPTION WHEN others THEN PERFORM set_config('probe.hd_call','ERR:'||SQLSTATE,false); END;
 END $$;
 SELECT set_config('role','none', true);
-DO $$ DECLARE v_apr int; v_rech int; v_bad int; BEGIN
+DO $$ BEGIN
+  IF current_setting('probe.hd_call',true) IS DISTINCT FROM 'OK' THEN RETURN; END IF;
+  PERFORM set_config('probe.hd_n1',
+    (SELECT count(*) FROM public.notificaciones WHERE tipo='visita_aprobada' AND usuario_id=NULLIF(current_setting('probe.h_edi',true), '')::uuid AND created_at>now()-interval '3 minutes')::text||','||
+    (SELECT count(*) FROM public.notificaciones WHERE tipo='visita_rechazada' AND usuario_id=NULLIF(current_setting('probe.h_vis',true), '')::uuid AND created_at>now()-interval '3 minutes')::text||','||
+    (SELECT count(*) FROM public.notificaciones WHERE tipo IN ('visita_aprobada','visita_rechazada') AND usuario_id=NULLIF(current_setting('probe.h_ext',true), '')::uuid AND created_at>now()-interval '3 minutes')::text||','||
+    (SELECT count(*) FROM public.notificaciones WHERE tipo='visita_aprobada' AND usuario_id=NULLIF(current_setting('probe.h_edi',true), '')::uuid AND accion_url='/proveedor/notificaciones' AND created_at>now()-interval '3 minutes')::text||','||
+    (SELECT count(*) FROM public.notificaciones WHERE tipo='visita_rechazada' AND usuario_id=NULLIF(current_setting('probe.h_vis',true), '')::uuid AND accion_url='/visitador/mis-visitas' AND created_at>now()-interval '3 minutes')::text, false);
+EXCEPTION WHEN OTHERS THEN PERFORM set_config('probe.hd_n1', 'FALLO:'||SQLSTATE, false);
+END $$;
+SELECT set_config('role','authenticated', true);
+DO $$ BEGIN
+  IF current_setting('probe.hd_call',true) IS DISTINCT FROM 'OK' THEN RETURN; END IF;
+  BEGIN PERFORM public.notificar_visita_resultado(current_setting('probe.h_vok',true)::uuid);   -- compat: con la 381, no-op
+        PERFORM set_config('probe.hd_comp','OK',false);
+  EXCEPTION WHEN others THEN PERFORM set_config('probe.hd_comp','FALLO:'||SQLSTATE,false); END;
+END $$;
+SELECT set_config('role','none', true);
+DO $$ DECLARE e381 text; n0 int[]; n1 int[]; v_apr2 int; d_apr int; d_rech int; d_bad int; BEGIN
   IF current_setting('probe.hd_call',true) IS DISTINCT FROM 'OK' THEN PERFORM set_config('probe.p418', CASE WHEN current_setting('probe.hd_call',true)='SKIP' THEN 'N/A' ELSE 'FALLO (call='||current_setting('probe.hd_call',true)||')' END,false); RETURN; END IF;
-  -- rama aprobada (confirmada→tipo visita_aprobada, recipient=editor∈A)
-  SELECT count(*) INTO v_apr  FROM public.notificaciones WHERE tipo='visita_aprobada'  AND usuario_id=NULLIF(current_setting('probe.h_edi',true), '')::uuid AND titulo='Visita aprobada'  AND created_at>now()-interval '3 minutes';
-  -- rama rechazada (cancelada→tipo visita_rechazada, recipient=visitador∈A)
-  SELECT count(*) INTO v_rech FROM public.notificaciones WHERE tipo='visita_rechazada' AND usuario_id=NULLIF(current_setting('probe.h_vis',true), '')::uuid AND titulo='Visita rechazada' AND created_at>now()-interval '3 minutes';
-  -- gate relación: cuenta REAL ∉ empresa (e7935069 ∈ B) → 0 (no apoyado en la ruta del trigger deshabilitado)
-  SELECT count(*) INTO v_bad  FROM public.notificaciones WHERE tipo IN ('visita_aprobada','visita_rechazada') AND usuario_id=NULLIF(current_setting('probe.h_ext',true), '')::uuid AND created_at>now()-interval '3 minutes';
-  PERFORM set_config('probe.p418', CASE WHEN current_setting('probe.hd_spoof',true)='PT002' AND v_apr=1 AND v_rech=1 AND v_bad=0
-    THEN 'OK (spoof PT002; ramas aprobada+rechazada por estado del ref; relación∉empresa SKIP 0)'
-    ELSE 'FALLO (spoof='||current_setting('probe.hd_spoof',true)||' apr='||v_apr||' rech='||v_rech||' bad='||v_bad||')' END, false);
+  IF current_setting('probe.hd_n0',true) LIKE 'FALLO:%' OR current_setting('probe.hd_n1',true) LIKE 'FALLO:%' OR current_setting('probe.hd_comp',true) IS DISTINCT FROM 'OK' THEN
+    PERFORM set_config('probe.p418', 'FALLO (conteos '||COALESCE(current_setting('probe.hd_n0',true), '-')||' / '||COALESCE(current_setting('probe.hd_n1',true), '-')
+      ||'; compat '||COALESCE(current_setting('probe.hd_comp',true), '-')||')', false); RETURN;
+  END IF;
+  e381 := (SELECT CASE WHEN md5(p.prosrc) = '5d4a718de9d34fcfcc36e74a0e068bce' THEN 'pre' WHEN p.prosrc LIKE '%ERRCODE = ''PV027''%' AND p.prosrc LIKE '%supervisa_cuenta_proveedor%' THEN 'post' ELSE 'otro' END FROM pg_proc p WHERE p.oid = to_regprocedure('public.administrar_visita(uuid,text,date,text,text,text)'));
+  n0 := string_to_array(current_setting('probe.hd_n0',true), ',')::int[];
+  n1 := string_to_array(current_setting('probe.hd_n1',true), ',')::int[];
+  d_apr := n1[1] - n0[1]; d_rech := n1[2] - n0[2]; d_bad := n1[3] - n0[3];
+  v_apr2 := (SELECT count(*) FROM public.notificaciones WHERE tipo='visita_aprobada' AND usuario_id=NULLIF(current_setting('probe.h_edi',true), '')::uuid AND created_at>now()-interval '3 minutes');
+  PERFORM set_config('probe.p418', CASE
+    WHEN current_setting('probe.hd_spoof',true) IS DISTINCT FROM 'PT002' THEN 'FALLO (spoof='||COALESCE(current_setting('probe.hd_spoof',true), '-')||')'
+    WHEN e381 = 'pre' AND d_apr = 0 AND d_rech = 0 AND d_bad = 0 AND v_apr2 - n1[1] = 1
+      THEN 'REGRESION (381 ausente; administrar_visita no avisa y el aviso sale de notificar_visita_resultado)'
+    WHEN e381 = 'post' AND d_apr = 1 AND d_rech = 1 AND d_bad = 0 AND n1[4] - 0 >= 1 AND n1[5] >= 1 AND v_apr2 = n1[1]
+      THEN 'OK (spoof PT002; administrar_visita avisa: rama aprobada a /proveedor/notificaciones y rechazada a /visitador/mis-visitas; relación∉empresa 0; compat no-op)'
+    ELSE 'FALLO (381 '||COALESCE(e381, '-')||' spoof='||current_setting('probe.hd_spoof',true)||' apr='||d_apr||' rech='||d_rech||' bad='||d_bad
+         ||' url_apr='||n1[4]||' url_rech='||n1[5]||' compat='||(v_apr2 - n1[1])||')' END, false);
+EXCEPTION WHEN OTHERS THEN
+  PERFORM set_config('probe.p418', 'FALLO ('||SQLSTATE||' '||SQLERRM||')', false);
 END $$;
 SELECT set_config('request.jwt.claims', json_build_object('sub', current_setting('probe.h_edi',true),'role','authenticated')::text, true);  -- recipient lee su fila
 SELECT set_config('role','authenticated', true);
@@ -7425,6 +7496,28 @@ DO $$ DECLARE v_n int; BEGIN
   ELSIF current_setting('probe.p418',true) LIKE 'OK%' THEN PERFORM set_config('probe.p418', current_setting('probe.p418',true)||' + recipient lee (RLS)', false); END IF;
 END $$;
 SELECT set_config('role','none', true);
+-- (381) FXH: restaura las 4 cuentas al snapshot de antes del fixture h_* y borra las 4 visitas que sembro; verifica.
+DO $$ DECLARE j jsonb; e jsonb; n int; v_md5 text; BEGIN
+  IF current_setting('probe.h_cp_snap', true) LIKE 'FALLO:%' OR COALESCE(current_setting('probe.h_cp_snap', true), '') = '' THEN
+    PERFORM set_config('probe.h_restaura', 'FALLO (sin snapshot de cuentas: '||COALESCE(current_setting('probe.h_cp_snap', true), '-')||')', false); RETURN;
+  END IF;
+  j := current_setting('probe.h_cp_snap', true)::jsonb;
+  FOR e IN SELECT * FROM jsonb_array_elements(j) LOOP
+    UPDATE public.cuentas_proveedor SET empresa_id = (e->>'empresa_id')::uuid, rol_en_empresa = e->>'rol', activo = (e->>'activo')::boolean,
+           equipo_id = NULLIF(e->>'equipo_id', '')::uuid
+     WHERE id = (e->>'id')::uuid;
+  END LOOP;
+  DELETE FROM public.visitas_agendadas WHERE id IN (SELECT NULLIF(current_setting('probe.'||k, true), '')::uuid FROM unnest(ARRAY['h_vprop','h_vok','h_vcanc','h_vbad']) k);
+  GET DIAGNOSTICS n = ROW_COUNT;
+  v_md5 := (SELECT md5(string_agg(cp::text, E'
+' ORDER BY cp.id)) FROM public.cuentas_proveedor cp WHERE cp.id IN ('9ca0b977-3c91-48dc-aa04-2f1fab766963','d50e7efd-d0c6-4f14-a47b-f6b4845b25e9','b38847e5-e52a-4c11-9aec-487fb558532f','e7935069-fd08-4ac5-a094-9c481313f4d3'));
+  PERFORM set_config('probe.h_restaura', CASE
+    WHEN v_md5 IS DISTINCT FROM current_setting('probe.h_cp_md5', true) THEN 'FALLO (las cuentas no volvieron al snapshot)'
+    WHEN current_setting('probe.h_ready', true) = '1' AND n <> 4 THEN 'FALLO (visitas del fixture borradas: '||n||' de 4)'
+    WHEN current_setting('probe.h_ready', true) = '1' THEN 'OK (4 cuentas restauradas al snapshot y 4 visitas del fixture borradas)'
+    ELSE 'OK (fixture h_* no corrio; cuentas iguales al snapshot)' END, false);
+EXCEPTION WHEN OTHERS THEN PERFORM set_config('probe.h_restaura', 'FALLO ('||SQLSTATE||' '||SQLERRM||')', false);
+END $$;
 
 -- ============================================================
 -- Fix push transaccional · EVENTO RECETA (notificar_receta) (P419–P423). Red-first.
@@ -38463,6 +38556,400 @@ EXCEPTION WHEN OTHERS THEN
 END $$;
 SELECT set_config('role', 'none', true);
 
+-- ================================================================================
+-- MIG 381 — visitas: gate de supervisor por equipo (PV027), notificación dentro de administrar_visita, médico y cuenta
+-- activos al agendar (PV028) y accion_url (M381_FX + P1099-P1104). Pendiente de apply.
+-- pg_temp.m381_estado(): 'post' por contenido de las 4 funciones tocadas + la interna nueva (PV027, gate de equipo,
+-- PV028, compat sin efectos, rutas nuevas), 'pre' (los 4 md5 de antes y sin la interna; también el estado que deja
+-- 381_rollback) o 'parcial (...)' (ROJO). En 'pre' los probes publican
+-- 'REGRESION (381 ausente; ...)' solo si lo medido es exactamente el comportamiento de antes; si no, ROJO.
+-- Actores y visitas por id EXPLÍCITO (QA Laboratorio 411d6f8c): sup1 d50e7efd (Equipo Norte), sup2 b38847e5 (Equipo Sur),
+-- admin 9ca0b977, visitador e00f68c8 (Norte), visitador inactivo e14edc82 (Sur), visita Norte 2f268e7c, visita Sur
+-- ea23023e, medico.qa 09d243d5, adminpais.qa 8f391caf (perfil sin fila en medicos), superadmin 41904e2c, admin de otra
+-- empresa e7935069 (cc17afe8). Cada probe fija su estado dentro de su savepoint con pg_temp.m381_fijar() (P418 deja a
+-- sup1 como editor y a sup2 como visitador para el resto de la transaccion; FX12 cambia el tipo de QA Laboratorio).
+-- Toda escritura se descarta con RAISE P0999 y se verifica contra pg_temp.m381_snap(). Veredictos por SQLSTATE exacto.
+-- ================================================================================
+-- M381_FX: helpers de pg_temp de este bloque + estado de la 381. No toca datos.
+DO $$
+DECLARE est text;
+BEGIN
+  EXECUTE $fn$
+CREATE OR REPLACE FUNCTION pg_temp.m381_estado() RETURNS text LANGUAGE plpgsql AS $body$
+DECLARE a text; g text; n text; c text; i text; m text;
+BEGIN
+  -- 'post' por CONTENIDO (como M376_FX): el runner quita las lineas de comentario de todo el cuerpo enviado, asi que la
+  -- 381 aplicada dentro del harness no tiene los md5 del archivo. 'pre' por md5 exacto (el de prod antes del apply y el
+  -- que deja 381_rollback).
+  a := (SELECT p.prosrc FROM pg_proc p WHERE p.oid = to_regprocedure('public.administrar_visita(uuid,text,date,text,text,text)'));
+  g := (SELECT p.prosrc FROM pg_proc p WHERE p.oid = to_regprocedure('private.gate_visita_pais()'));
+  n := (SELECT p.prosrc FROM pg_proc p WHERE p.oid = to_regprocedure('public.notificar_visita_resultado(uuid)'));
+  c := (SELECT p.prosrc FROM pg_proc p WHERE p.oid = to_regprocedure('public.cancelar_visita(uuid)'));
+  i := (SELECT p.prosrc FROM pg_proc p WHERE p.oid = to_regprocedure('private.notificar_resultado_visita_interno(uuid)'));
+  m := COALESCE(md5(a), '-')||','||COALESCE(md5(g), '-')||','||COALESCE(md5(n), '-')||','||COALESCE(md5(c), '-')||','||COALESCE(md5(i), '-');
+  IF m = '5d4a718de9d34fcfcc36e74a0e068bce,272120bc46268518ff8617291085b70f,ebdb579ec423c0dbabce62fadfa424f8,866159b76f6af88291dffea24430e5bf,-' THEN
+    RETURN 'pre';
+  END IF;
+  IF a LIKE '%ERRCODE = ''PV027''%' AND a LIKE '%supervisa_cuenta_proveedor%' AND a LIKE '%private.notificar_resultado_visita_interno(p_visita_id)%'
+     AND a NOT LIKE '%Visita no encontrada%'
+     AND g LIKE '%ERRCODE = ''PV028''%'
+     AND n LIKE '%ERRCODE = ''PT002''%' AND n LIKE '%supervisa_cuenta_proveedor%' AND n NOT LIKE '%INSERT%' AND n NOT LIKE '%email_notificar%'
+     AND c LIKE '%''/clinica/calendario''%'
+     AND i LIKE '%''/visitador/mis-visitas''%' AND i LIKE '%''/clinica/calendario''%' THEN
+    RETURN 'post';
+  END IF;
+  RETURN 'parcial (md5 '||m||')';
+END
+$body$
+$fn$;
+  -- Estado de los actores de QA Laboratorio, fijado por id. SOLO dentro de un savepoint. Devuelve el pais de medico.qa.
+  EXECUTE $fn$
+CREATE OR REPLACE FUNCTION pg_temp.m381_fijar() RETURNS uuid LANGUAGE plpgsql AS $body$
+DECLARE
+  c_emp CONSTANT uuid := '411d6f8c-a405-49d6-9ed6-fbeb0db05133';
+  c_adm CONSTANT uuid := '9ca0b977-3c91-48dc-aa04-2f1fab766963';
+  c_sup1 CONSTANT uuid := 'd50e7efd-d0c6-4f14-a47b-f6b4845b25e9';
+  c_sup2 CONSTANT uuid := 'b38847e5-e52a-4c11-9aec-487fb558532f';
+  c_vis CONSTANT uuid := 'e00f68c8-bd30-4d62-b73b-9490e4e17efe';
+  c_ina CONSTANT uuid := 'e14edc82-fd9d-44dd-aa35-341b43651205';
+  c_eqn CONSTANT uuid := '7f29111c-6b7f-4772-8eb6-0d736048c9e8';
+  c_eqs CONSTANT uuid := '6b828269-ebe6-4002-abf1-01ba7ba725c8';
+  c_nor CONSTANT uuid := '2f268e7c-065f-43e8-8a32-5dc75805b48a';
+  c_sur CONSTANT uuid := 'ea23023e-1331-4259-a74b-3fa450fe9f94';
+  c_med CONSTANT uuid := '09d243d5-b222-482a-9762-94a582e9e752';
+  v_pais uuid; r1 text; r2 text;
+BEGIN
+  IF (SELECT count(*) FROM public.cuentas_proveedor WHERE id IN (c_adm, c_sup1, c_sup2, c_vis, c_ina)) <> 5
+     OR (SELECT count(*) FROM public.equipos_visitadores WHERE id IN (c_eqn, c_eqs)) <> 2
+     OR (SELECT count(*) FROM public.visitas_agendadas WHERE id IN (c_nor, c_sur)) <> 2
+     OR NOT EXISTS (SELECT 1 FROM public.medicos m WHERE m.id = c_med) THEN
+    RAISE EXCEPTION 'fixture roto: m381_fijar sin las cuentas, equipos, visitas o el medico de QA Laboratorio';
+  END IF;
+  v_pais := (SELECT p.pais_id FROM public.perfiles p WHERE p.id = c_med);
+  UPDATE public.cuentas_proveedor SET empresa_id = c_emp, rol_en_empresa = 'admin', activo = true, equipo_id = NULL WHERE id = c_adm;
+  UPDATE public.cuentas_proveedor SET empresa_id = c_emp, rol_en_empresa = 'supervisor', activo = true, equipo_id = NULL WHERE id IN (c_sup1, c_sup2);
+  UPDATE public.equipos_visitadores SET empresa_id = c_emp, supervisor_id = c_sup1, activo = true WHERE id = c_eqn;
+  UPDATE public.equipos_visitadores SET empresa_id = c_emp, supervisor_id = c_sup2, activo = true WHERE id = c_eqs;
+  UPDATE public.cuentas_proveedor SET empresa_id = c_emp, rol_en_empresa = 'visitador_medico', activo = true, equipo_id = c_eqn WHERE id = c_vis;
+  UPDATE public.cuentas_proveedor SET empresa_id = c_emp, rol_en_empresa = 'visitador_medico', activo = false, equipo_id = c_eqs WHERE id = c_ina;
+  UPDATE public.medicos SET activo = true WHERE id = c_med AND activo IS NOT TRUE;
+  UPDATE public.perfiles SET activo = true WHERE id = c_med AND activo IS NOT TRUE;
+  PERFORM pg_temp.m375_qalab_fijar(v_pais);   -- empresa activa + plan de visitador vigente en el pais del medico
+  UPDATE public.visitas_agendadas SET empresa_id = c_emp, cuenta_proveedor_id = c_vis, estado = 'confirmada' WHERE id = c_nor;
+  UPDATE public.visitas_agendadas SET empresa_id = c_emp, cuenta_proveedor_id = c_ina, estado = 'confirmada' WHERE id = c_sur;
+  -- verificacion de lo fijado (el predicado de equipo, medido como sup1)
+  r1 := pg_temp.m375_como(c_sup1, 'authenticated', format('SELECT public.supervisa_cuenta_proveedor(%L::uuid)::text', c_vis));
+  r2 := pg_temp.m375_como(c_sup1, 'authenticated', format('SELECT public.supervisa_cuenta_proveedor(%L::uuid)::text', c_ina));
+  IF r1 IS DISTINCT FROM 'OK:true' OR r2 IS DISTINCT FROM 'OK:false' THEN
+    RAISE EXCEPTION 'fixture roto: m381_fijar supervisa_cuenta_proveedor como sup1 = % / %', r1, r2;
+  END IF;
+  RETURN v_pais;
+END
+$body$
+$fn$;
+  -- filas que tocan los probes de la 381 + lo que crean en esta transaccion (created_at = now() = inicio de la transaccion)
+  EXECUTE $fn$
+CREATE OR REPLACE FUNCTION pg_temp.m381_snap() RETURNS text LANGUAGE sql AS $body$
+  SELECT md5(COALESCE((SELECT string_agg(v::text, E'\n' ORDER BY v.id) FROM public.visitas_agendadas v
+                        WHERE v.id IN ('2f268e7c-065f-43e8-8a32-5dc75805b48a', 'ea23023e-1331-4259-a74b-3fa450fe9f94')), ''))
+    ||'|'||md5(COALESCE((SELECT string_agg(cp::text, E'\n' ORDER BY cp.id) FROM public.cuentas_proveedor cp
+                          WHERE cp.id IN ('9ca0b977-3c91-48dc-aa04-2f1fab766963', 'd50e7efd-d0c6-4f14-a47b-f6b4845b25e9', 'b38847e5-e52a-4c11-9aec-487fb558532f',
+                                          'e00f68c8-bd30-4d62-b73b-9490e4e17efe', 'e14edc82-fd9d-44dd-aa35-341b43651205', 'e7935069-fd08-4ac5-a094-9c481313f4d3')), ''))
+    ||'|'||md5(COALESCE((SELECT string_agg(e::text, E'\n' ORDER BY e.id) FROM public.equipos_visitadores e
+                          WHERE e.id IN ('7f29111c-6b7f-4772-8eb6-0d736048c9e8', '6b828269-ebe6-4002-abf1-01ba7ba725c8')), ''))
+    ||'|'||md5(COALESCE((SELECT string_agg(e::text, E'\n' ORDER BY e.id) FROM public.empresas_proveedoras e
+                          WHERE e.id IN ('411d6f8c-a405-49d6-9ed6-fbeb0db05133', 'cc17afe8-fcd5-4ab0-84c4-08ba919d8481')), ''))
+    ||'|'||md5(COALESCE((SELECT string_agg(m.id::text||':'||m.activo::text, ',' ORDER BY m.id) FROM public.medicos m
+                          WHERE m.id IN ('09d243d5-b222-482a-9762-94a582e9e752', '8f391caf-85bc-4413-af8a-4006452ae09f')), ''))
+    ||'|'||md5(COALESCE((SELECT string_agg(p.id::text||':'||p.activo::text, ',' ORDER BY p.id) FROM public.perfiles p
+                          WHERE p.id IN ('09d243d5-b222-482a-9762-94a582e9e752', '8f391caf-85bc-4413-af8a-4006452ae09f')), ''))
+    ||'|'||(SELECT count(*) FROM public.notificaciones n WHERE n.created_at = now())::text
+    ||'|'||(SELECT count(*) FROM public.visitas_agendadas v WHERE v.empresa_id = '411d6f8c-a405-49d6-9ed6-fbeb0db05133')::text
+    ||'|'||(SELECT count(*) FROM public.planes_visitador_contratados)::text
+$body$
+$fn$;
+  -- administrar_visita como la cuenta p_uid: 'OK:<jsonb>' o 'ERR:<sqlstate>:<mensaje>'
+  EXECUTE $fn$
+CREATE OR REPLACE FUNCTION pg_temp.m381_adm(p_uid uuid, p_vid uuid, p_accion text) RETURNS text LANGUAGE sql AS $body$
+  SELECT pg_temp.m375_como(p_uid, 'authenticated', format(
+    'SELECT public.administrar_visita(p_visita_id => %L::uuid, p_accion => %L)::text', p_vid, p_accion))
+$body$
+$fn$;
+  -- notificar_visita_resultado como la cuenta p_uid: 'OK:1' (no lanzo) o 'ERR:<sqlstate>:<mensaje>'
+  EXECUTE $fn$
+CREATE OR REPLACE FUNCTION pg_temp.m381_notif(p_uid uuid, p_vid uuid) RETURNS text LANGUAGE sql AS $body$
+  SELECT pg_temp.m375_como(p_uid, 'authenticated', format(
+    'SELECT count(*)::text FROM (SELECT public.notificar_visita_resultado(%L::uuid)) s', p_vid))
+$body$
+$fn$;
+  -- INSERT directo de una visita de QA Laboratorio como la cuenta p_uid, hoy+40 a la hora p_hora: 'OK:<id>' o 'ERR:...'
+  EXECUTE $fn$
+CREATE OR REPLACE FUNCTION pg_temp.m381_ins(p_uid uuid, p_med uuid, p_cuenta uuid, p_hora time) RETURNS text LANGUAGE sql AS $body$
+  SELECT pg_temp.m375_como(p_uid, 'authenticated', format(
+    'INSERT INTO public.visitas_agendadas (empresa_id, medico_id, cuenta_proveedor_id, fecha_visita, hora_inicio, hora_fin, tipo_visita) '||
+    'VALUES (%L, %L, %L, CURRENT_DATE + 40, %L, %L, ''presentacion_producto'') RETURNING id::text',
+    '411d6f8c-a405-49d6-9ed6-fbeb0db05133', p_med, p_cuenta, p_hora, p_hora + interval '30 minutes'))
+$body$
+$fn$;
+  est := pg_temp.m381_estado();
+  PERFORM set_config('probe.m381_fx', CASE WHEN est = 'pre' THEN 'REGRESION (381 ausente: las 4 funciones con el cuerpo de antes y sin la interna; helpers de pg_temp creados)'
+    WHEN est = 'post' THEN 'OK (helpers de pg_temp creados; estado de la 381: post)'
+    ELSE 'ROJO (381 '||est||'; helpers de pg_temp creados)' END, false);
+EXCEPTION WHEN OTHERS THEN
+  PERFORM set_config('probe.m381_fx', 'FALLO ('||SQLSTATE||' '||SQLERRM||')', false);
+END $$;
+
+-- ---------------- P1099 381 (A3 neg): sup1 sobre la visita de otro equipo -> PV027 en aprobar, rechazar y modificar ----------------
+DO $$
+DECLARE est text; gt uuid; pre text; post text; v0 text; v1 text; ra text; rr text; rm text;
+  c_sup1 CONSTANT uuid := 'd50e7efd-d0c6-4f14-a47b-f6b4845b25e9'; c_sur CONSTANT uuid := 'ea23023e-1331-4259-a74b-3fa450fe9f94';
+BEGIN
+  est := pg_temp.m381_estado();
+  pre := pg_temp.m381_snap();
+  BEGIN
+    gt := pg_temp.m381_fijar();
+    v0 := (SELECT md5(v::text) FROM public.visitas_agendadas v WHERE v.id = c_sur);
+    ra := pg_temp.m381_adm(c_sup1, c_sur, 'aprobar');
+    rr := pg_temp.m381_adm(c_sup1, c_sur, 'rechazar');
+    rm := pg_temp.m376_modificar(c_sup1, c_sur::text, NULL, '05:17', '05:47');
+    v1 := (SELECT md5(v::text) FROM public.visitas_agendadas v WHERE v.id = c_sur);
+    RAISE EXCEPTION 'P1099 descarte' USING ERRCODE = 'P0999';
+  EXCEPTION WHEN SQLSTATE 'P0999' THEN NULL;
+  END;
+  post := pg_temp.m381_snap();
+  PERFORM set_config('probe.p1099', CASE
+    WHEN post IS DISTINCT FROM pre THEN 'FALLO (no volvio al snapshot tras el descarte)'
+    WHEN est LIKE 'parcial%' THEN 'ROJO (381 '||est||')'
+    WHEN est = 'pre' AND ra LIKE 'OK:%' AND rr LIKE 'OK:%' AND rm LIKE 'OK:%'
+      THEN 'REGRESION (381 ausente; hoy sup1 administra la visita de otro equipo: aprobar, rechazar y modificar = OK)'
+    WHEN est = 'pre' THEN 'ROJO (381 ausente y no se comporta como antes: '||left(ra, 80)||' / '||left(rr, 80)||' / '||left(rm, 80)||')'
+    WHEN ra LIKE 'ERR:PV027:%' AND rr LIKE 'ERR:PV027:%' AND rm LIKE 'ERR:PV027:%' AND v1 IS NOT DISTINCT FROM v0
+      THEN 'OK (381: sup1 sobre la visita de otro equipo -> PV027 en aprobar, rechazar y modificar; visita intacta; descartado)'
+    ELSE 'ROJO (esperado PV027 x3 y visita intacta; vino '||left(ra, 80)||' / '||left(rr, 80)||' / '||left(rm, 80)
+         ||' intacta='||(v1 IS NOT DISTINCT FROM v0)::text||')' END, false);
+EXCEPTION WHEN OTHERS THEN
+  PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
+  PERFORM set_config('probe.p1099', CASE WHEN SQLERRM LIKE 'fixture roto%' THEN 'FALLO ('||SQLERRM||')'
+    ELSE 'FALLO ('||SQLSTATE||' '||SQLERRM||')' END, false);
+END $$;
+SELECT set_config('role', 'none', true);
+
+-- ---------------- P1100 381 (A3 pos): sup1 aprueba la visita de su equipo -> success, aprobada_por, avisos con la ruta nueva ----------------
+DO $$
+DECLARE est text; gt uuid; pre text; post text; r text; j jsonb; apr uuid; n_dest int;
+  v_vis0 int; v_vis1 int; u_vis0 int; u_vis1 int; c_tot0 int; c_tot1 int; c_ok0 int; c_ok1 int;
+  c_sup1 CONSTANT uuid := 'd50e7efd-d0c6-4f14-a47b-f6b4845b25e9'; c_vis CONSTANT uuid := 'e00f68c8-bd30-4d62-b73b-9490e4e17efe';
+  c_nor CONSTANT uuid := '2f268e7c-065f-43e8-8a32-5dc75805b48a';
+BEGIN
+  est := pg_temp.m381_estado();
+  pre := pg_temp.m381_snap();
+  BEGIN
+    gt := pg_temp.m381_fijar();
+    -- visita del equipo de sup1 pendiente de aprobacion, con los claims de aviso libres (asi corre la rama de clinica)
+    UPDATE public.visitas_agendadas SET estado = 'pendiente', email_resultado_enviado = NULL, email_aprobada_clinica_enviado = NULL WHERE id = c_nor;
+    n_dest := (SELECT count(*) FROM public.destinatarios_visita_clinica(c_nor));
+    v_vis0 := (SELECT count(*) FROM public.notificaciones n WHERE n.created_at = now() AND n.usuario_id = c_vis AND n.tipo = 'visita_aprobada');
+    u_vis0 := (SELECT count(*) FROM public.notificaciones n WHERE n.created_at = now() AND n.usuario_id = c_vis AND n.tipo = 'visita_aprobada' AND n.accion_url = '/visitador/mis-visitas');
+    c_tot0 := (SELECT count(*) FROM public.notificaciones n WHERE n.created_at = now() AND n.tipo = 'visita_clinica_aprobada'
+                 AND n.usuario_id IN (SELECT d.usuario_id FROM public.destinatarios_visita_clinica(c_nor) d));
+    c_ok0 := (SELECT count(*) FROM public.notificaciones n JOIN public.destinatarios_visita_clinica(c_nor) d ON d.usuario_id = n.usuario_id
+               WHERE n.created_at = now() AND n.tipo = 'visita_clinica_aprobada'
+                 AND n.accion_url = CASE WHEN d.es_medico THEN '/medico' ELSE '/clinica/calendario' END);
+    r := pg_temp.m381_adm(c_sup1, c_nor, 'aprobar');
+    apr := (SELECT v.aprobada_por FROM public.visitas_agendadas v WHERE v.id = c_nor);
+    v_vis1 := (SELECT count(*) FROM public.notificaciones n WHERE n.created_at = now() AND n.usuario_id = c_vis AND n.tipo = 'visita_aprobada');
+    u_vis1 := (SELECT count(*) FROM public.notificaciones n WHERE n.created_at = now() AND n.usuario_id = c_vis AND n.tipo = 'visita_aprobada' AND n.accion_url = '/visitador/mis-visitas');
+    c_tot1 := (SELECT count(*) FROM public.notificaciones n WHERE n.created_at = now() AND n.tipo = 'visita_clinica_aprobada'
+                 AND n.usuario_id IN (SELECT d.usuario_id FROM public.destinatarios_visita_clinica(c_nor) d));
+    c_ok1 := (SELECT count(*) FROM public.notificaciones n JOIN public.destinatarios_visita_clinica(c_nor) d ON d.usuario_id = n.usuario_id
+               WHERE n.created_at = now() AND n.tipo = 'visita_clinica_aprobada'
+                 AND n.accion_url = CASE WHEN d.es_medico THEN '/medico' ELSE '/clinica/calendario' END);
+    RAISE EXCEPTION 'P1100 descarte' USING ERRCODE = 'P0999';
+  EXCEPTION WHEN SQLSTATE 'P0999' THEN NULL;
+  END;
+  post := pg_temp.m381_snap();
+  IF r LIKE 'OK:%' THEN j := substr(r, 4)::jsonb; END IF;
+  PERFORM set_config('probe.p1100', CASE
+    WHEN post IS DISTINCT FROM pre THEN 'FALLO (no volvio al snapshot tras el descarte)'
+    WHEN est LIKE 'parcial%' THEN 'ROJO (381 '||est||')'
+    WHEN j->>'success' IS DISTINCT FROM 'true' OR apr IS DISTINCT FROM c_sup1
+      THEN 'ROJO (sup1 no pudo aprobar la visita de su equipo: '||left(r, 120)||' aprobada_por='||COALESCE(left(apr::text, 8), 'NULL')||')'
+    WHEN est = 'pre' AND v_vis1 = v_vis0 AND c_tot1 = c_tot0
+      THEN 'REGRESION (381 ausente; administrar_visita aprueba pero no avisa: 0 al visitador, 0 a la clinica; el aviso dependia del front)'
+    WHEN est = 'pre' THEN 'ROJO (381 ausente y administrar_visita avisa: visitador '||(v_vis1 - v_vis0)||', clinica '||(c_tot1 - c_tot0)||')'
+    WHEN v_vis1 - v_vis0 = 1 AND u_vis1 - u_vis0 = 1 AND c_tot1 - c_tot0 = n_dest AND c_ok1 - c_ok0 = n_dest
+      THEN 'OK (381: sup1 aprueba la visita de su equipo; aprobada_por = sup1; 1 aviso al visitador con /visitador/mis-visitas; '
+           ||CASE WHEN n_dest = 0 THEN 'la visita no tiene destinatarios de clinica' ELSE n_dest||' de clinica con /clinica/calendario o /medico' END||'; descartado)'
+    ELSE 'ROJO (avisos: visitador '||(v_vis1 - v_vis0)||' con ruta nueva '||(u_vis1 - u_vis0)||'; clinica '||(c_tot1 - c_tot0)||' de '||n_dest
+         ||' con ruta nueva '||(c_ok1 - c_ok0)||')' END, false);
+EXCEPTION WHEN OTHERS THEN
+  PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
+  PERFORM set_config('probe.p1100', CASE WHEN SQLERRM LIKE 'fixture roto%' THEN 'FALLO ('||SQLERRM||')'
+    ELSE 'FALLO ('||SQLSTATE||' '||SQLERRM||')' END, false);
+END $$;
+SELECT set_config('role', 'none', true);
+
+-- ---------------- P1101 381 (A3 regresion): admin y super_admin siguen; supervisor sin equipo, otra empresa e inexistente -> PV027 ----------------
+DO $$
+DECLARE est text; gt uuid; pre text; post text; c_super uuid;
+  r_as text; r_an text; r_sa text; r_sin text; r_ext text; r_inex text; r_sur text;
+  c_adm CONSTANT uuid := '9ca0b977-3c91-48dc-aa04-2f1fab766963'; c_sup1 CONSTANT uuid := 'd50e7efd-d0c6-4f14-a47b-f6b4845b25e9';
+  c_vis CONSTANT uuid := 'e00f68c8-bd30-4d62-b73b-9490e4e17efe'; c_ext CONSTANT uuid := 'e7935069-fd08-4ac5-a094-9c481313f4d3';
+  c_nor CONSTANT uuid := '2f268e7c-065f-43e8-8a32-5dc75805b48a'; c_sur CONSTANT uuid := 'ea23023e-1331-4259-a74b-3fa450fe9f94';
+BEGIN
+  est := pg_temp.m381_estado();
+  c_super := pg_temp.m375_uid('superadmin@ezpayconnect.com');
+  IF c_super IS NULL OR NOT EXISTS (SELECT 1 FROM public.perfiles p WHERE p.id = c_super AND p.rol = 'super_admin' AND p.activo)
+     OR NOT EXISTS (SELECT 1 FROM public.cuentas_proveedor cp WHERE cp.id = c_ext) THEN
+    PERFORM set_config('probe.p1101', 'FALLO (actor inexistente: superadmin activo o la cuenta de otra empresa)', false);
+    RETURN;
+  END IF;
+  pre := pg_temp.m381_snap();
+  BEGIN
+    gt := pg_temp.m381_fijar();
+    UPDATE public.cuentas_proveedor SET empresa_id = 'cc17afe8-fcd5-4ab0-84c4-08ba919d8481', rol_en_empresa = 'admin', activo = true, equipo_id = NULL WHERE id = c_ext;
+    UPDATE public.empresas_proveedoras SET estado = 'activa' WHERE id = 'cc17afe8-fcd5-4ab0-84c4-08ba919d8481' AND estado::text IS DISTINCT FROM 'activa';
+    r_as := pg_temp.m381_adm(c_adm, c_sur, 'aprobar');
+    r_an := pg_temp.m381_adm(c_adm, c_nor, 'aprobar');
+    r_sa := pg_temp.m381_adm(c_super, c_nor, 'rechazar');
+    r_ext := pg_temp.m381_adm(c_ext, c_sur, 'aprobar');
+    r_inex := pg_temp.m381_adm(c_sup1, gen_random_uuid(), 'aprobar');
+    r_sur := pg_temp.m381_adm(c_sup1, c_sur, 'rechazar');
+    UPDATE public.cuentas_proveedor SET equipo_id = NULL WHERE id = c_vis;   -- el visitador de la visita Norte queda sin equipo
+    r_sin := pg_temp.m381_adm(c_sup1, c_nor, 'rechazar');
+    RAISE EXCEPTION 'P1101 descarte' USING ERRCODE = 'P0999';
+  EXCEPTION WHEN SQLSTATE 'P0999' THEN NULL;
+  END;
+  post := pg_temp.m381_snap();
+  PERFORM set_config('probe.p1101', CASE
+    WHEN post IS DISTINCT FROM pre THEN 'FALLO (no volvio al snapshot tras el descarte)'
+    WHEN est LIKE 'parcial%' THEN 'ROJO (381 '||est||')'
+    WHEN NOT (r_as LIKE 'OK:%"success": true%' AND r_an LIKE 'OK:%"success": true%' AND r_sa LIKE 'OK:%"success": true%')
+      THEN 'ROJO (admin o super_admin dejaron de administrar: '||left(r_as, 70)||' / '||left(r_an, 70)||' / '||left(r_sa, 70)||')'
+    WHEN est = 'pre' AND r_sin LIKE 'OK:%' AND r_ext LIKE 'ERR:P0001:%' AND r_inex LIKE 'OK:%Visita no encontrada%'
+      THEN 'REGRESION (381 ausente; hoy el supervisor administra la visita de un visitador sin equipo e inexistente devuelve {error} en vez de PV027)'
+    WHEN est = 'pre' THEN 'ROJO (381 ausente y no se comporta como antes: '||left(r_sin, 70)||' / '||left(r_ext, 70)||' / '||left(r_inex, 70)||')'
+    WHEN r_sin LIKE 'ERR:PV027:%' AND r_ext LIKE 'ERR:PV027:%' AND r_inex LIKE 'ERR:PV027:%' AND r_inex = r_sur
+      THEN 'OK (381: admin x2 y super_admin administran; supervisor sobre visitador sin equipo, cuenta de otra empresa e id inexistente -> PV027, mismo mensaje que sin autoridad; descartado)'
+    ELSE 'ROJO (esperado PV027 x3 con el mismo mensaje; vino '||left(r_sin, 70)||' / '||left(r_ext, 70)||' / '||left(r_inex, 70)||' / '||left(r_sur, 70)||')' END, false);
+EXCEPTION WHEN OTHERS THEN
+  PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
+  PERFORM set_config('probe.p1101', CASE WHEN SQLERRM LIKE 'fixture roto%' THEN 'FALLO ('||SQLERRM||')'
+    ELSE 'FALLO ('||SQLSTATE||' '||SQLERRM||')' END, false);
+END $$;
+SELECT set_config('role', 'none', true);
+
+-- ---------------- P1102 381: notificar_visita_resultado es compat no-op (mismo gate; PT002 fuera de el) ----------------
+DO $$
+DECLARE est text; gt uuid; pre text; post text; r1 text; r2 text; r3 text; n0 int; n1 int; n3 int;
+  c_adm CONSTANT uuid := '9ca0b977-3c91-48dc-aa04-2f1fab766963'; c_sup1 CONSTANT uuid := 'd50e7efd-d0c6-4f14-a47b-f6b4845b25e9';
+  c_nor CONSTANT uuid := '2f268e7c-065f-43e8-8a32-5dc75805b48a'; c_sur CONSTANT uuid := 'ea23023e-1331-4259-a74b-3fa450fe9f94';
+BEGIN
+  est := pg_temp.m381_estado();
+  pre := pg_temp.m381_snap();
+  BEGIN
+    gt := pg_temp.m381_fijar();
+    n0 := (SELECT count(*) FROM public.notificaciones n WHERE n.created_at = now());
+    r1 := pg_temp.m381_notif(c_sup1, c_nor);
+    n1 := (SELECT count(*) FROM public.notificaciones n WHERE n.created_at = now());
+    r2 := pg_temp.m381_notif(c_sup1, c_sur);
+    r3 := pg_temp.m381_notif(c_adm, c_nor);
+    n3 := (SELECT count(*) FROM public.notificaciones n WHERE n.created_at = now());
+    RAISE EXCEPTION 'P1102 descarte' USING ERRCODE = 'P0999';
+  EXCEPTION WHEN SQLSTATE 'P0999' THEN NULL;
+  END;
+  post := pg_temp.m381_snap();
+  PERFORM set_config('probe.p1102', CASE
+    WHEN post IS DISTINCT FROM pre THEN 'FALLO (no volvio al snapshot tras el descarte)'
+    WHEN est LIKE 'parcial%' THEN 'ROJO (381 '||est||')'
+    WHEN r2 NOT LIKE 'ERR:PT002:%' THEN 'ROJO (sup1 sobre la visita de otro equipo no dio PT002: '||left(r2, 120)||')'
+    WHEN est = 'pre' AND r1 LIKE 'ERR:PT002:%' AND r3 = 'OK:1' AND n3 - n1 >= 1
+      THEN 'REGRESION (381 ausente; hoy el supervisor recibe PT002 en su propia visita y el admin genera avisos con notificar_visita_resultado)'
+    WHEN est = 'pre' THEN 'ROJO (381 ausente y no se comporta como antes: '||left(r1, 80)||' / '||left(r3, 80)||' avisos='||(n3 - n1)||')'
+    WHEN r1 = 'OK:1' AND n1 = n0 AND r3 = 'OK:1' AND n3 = n1
+      THEN 'OK (381: compat no-op; sup1 sobre su visita y admin -> sin error y 0 avisos; sup1 sobre otro equipo -> PT002; descartado)'
+    ELSE 'ROJO (esperado no-op: '||left(r1, 80)||' avisos='||(n1 - n0)||' / '||left(r3, 80)||' avisos='||(n3 - n1)||')' END, false);
+EXCEPTION WHEN OTHERS THEN
+  PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
+  PERFORM set_config('probe.p1102', CASE WHEN SQLERRM LIKE 'fixture roto%' THEN 'FALLO ('||SQLERRM||')'
+    ELSE 'FALLO ('||SQLSTATE||' '||SQLERRM||')' END, false);
+END $$;
+SELECT set_config('role', 'none', true);
+
+-- ---------------- P1103 381 (A4): al agendar, medico y cuenta activos -> PV028; con todo activo, no PV028 ----------------
+DO $$
+DECLARE est text; gt uuid; pre text; post text; ra text; rb text; rc text; rd text; re text;
+  c_adm CONSTANT uuid := '9ca0b977-3c91-48dc-aa04-2f1fab766963'; c_vis CONSTANT uuid := 'e00f68c8-bd30-4d62-b73b-9490e4e17efe';
+  c_ina CONSTANT uuid := 'e14edc82-fd9d-44dd-aa35-341b43651205'; c_med CONSTANT uuid := '09d243d5-b222-482a-9762-94a582e9e752';
+  c_ap CONSTANT uuid := '8f391caf-85bc-4413-af8a-4006452ae09f';
+BEGIN
+  est := pg_temp.m381_estado();
+  IF NOT EXISTS (SELECT 1 FROM public.perfiles p WHERE p.id = c_ap) OR EXISTS (SELECT 1 FROM public.medicos m WHERE m.id = c_ap) THEN
+    PERFORM set_config('probe.p1103', 'FALLO (actor inexistente: adminpais.qa con perfil y sin fila en medicos)', false);
+    RETURN;
+  END IF;
+  pre := pg_temp.m381_snap();
+  BEGIN
+    gt := pg_temp.m381_fijar();
+    UPDATE public.perfiles SET activo = true, pais_id = gt WHERE id = c_ap AND (activo IS NOT TRUE OR pais_id IS DISTINCT FROM gt);
+    ra := pg_temp.m381_ins(c_adm, c_med, c_ina, '05:01');                       -- cuenta del visitador inactiva
+    UPDATE public.medicos SET activo = false WHERE id = c_med;
+    rb := pg_temp.m381_ins(c_adm, c_med, c_vis, '05:03');                       -- medicos.activo = false
+    UPDATE public.medicos SET activo = true WHERE id = c_med;
+    UPDATE public.perfiles SET activo = false WHERE id = c_med;
+    rc := pg_temp.m381_ins(c_adm, c_med, c_vis, '05:05');                       -- perfiles.activo = false
+    UPDATE public.perfiles SET activo = true WHERE id = c_med;
+    rd := pg_temp.m381_ins(c_adm, c_ap, c_vis, '05:07');                        -- perfil sin fila en medicos
+    re := pg_temp.m381_ins(c_adm, c_med, c_vis, '05:09');                       -- medico y cuenta activos
+    RAISE EXCEPTION 'P1103 descarte' USING ERRCODE = 'P0999';
+  EXCEPTION WHEN SQLSTATE 'P0999' THEN NULL;
+  END;
+  post := pg_temp.m381_snap();
+  PERFORM set_config('probe.p1103', CASE
+    WHEN post IS DISTINCT FROM pre THEN 'FALLO (no volvio al snapshot tras el descarte)'
+    WHEN est LIKE 'parcial%' THEN 'ROJO (381 '||est||')'
+    WHEN est = 'pre' AND ra LIKE 'OK:%' AND rb LIKE 'OK:%' AND rc LIKE 'OK:%' AND rd LIKE 'OK:%'
+      THEN 'REGRESION (381 ausente; hoy se agenda con cuenta inactiva, medico inactivo en medicos o en perfiles y con un perfil que no es medico)'
+    WHEN est = 'pre' THEN 'ROJO (381 ausente y no se comporta como antes: '||left(ra, 60)||' / '||left(rb, 60)||' / '||left(rc, 60)||' / '||left(rd, 60)||')'
+    WHEN ra LIKE 'ERR:PV028:%' AND rb LIKE 'ERR:PV028:%' AND rc LIKE 'ERR:PV028:%' AND rd LIKE 'ERR:PV028:%' AND re NOT LIKE 'ERR:PV028:%'
+      THEN 'OK (381: cuenta inactiva, medicos.activo=false, perfiles.activo=false y perfil sin medicos -> PV028; todo activo -> '
+           ||CASE WHEN re LIKE 'OK:%' THEN 'inserta' ELSE 'otra regla: '||left(re, 80) END||'; descartado)'
+    ELSE 'ROJO (esperado PV028 x4 y el activo sin PV028; vino '||left(ra, 50)||' / '||left(rb, 50)||' / '||left(rc, 50)||' / '||left(rd, 50)||' / '||left(re, 50)||')' END, false);
+EXCEPTION WHEN OTHERS THEN
+  PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
+  PERFORM set_config('probe.p1103', CASE WHEN SQLERRM LIKE 'fixture roto%' THEN 'FALLO ('||SQLERRM||')'
+    ELSE 'FALLO ('||SQLSTATE||' '||SQLERRM||')' END, false);
+END $$;
+SELECT set_config('role', 'none', true);
+
+-- ---------------- P1104 381 (A11): catalogo de accion_url de las funciones de visitas ----------------
+DO $$
+DECLARE est text; v_viol text; v_fn_viejo int; v_notif_viejo int;
+BEGIN
+  est := pg_temp.m381_estado();
+  SELECT string_agg(DISTINCT x.fn||':'||x.lit, ', ' ORDER BY x.fn||':'||x.lit) INTO v_viol FROM (
+    SELECT p.oid::regprocedure::text AS fn, m[1] AS lit
+      FROM pg_proc p, regexp_matches(p.prosrc, '''(/[A-Za-z0-9/_-]*)''', 'g') m
+     WHERE p.oid IN (to_regprocedure('public.administrar_visita(uuid,text,date,text,text,text)'), to_regprocedure('public.notificar_visita_resultado(uuid)'),
+                     to_regprocedure('public.notificar_visita_propuesta(uuid)'), to_regprocedure('public.cancelar_visita(uuid)'),
+                     to_regprocedure('private.notificar_resultado_visita_interno(uuid)'))) x
+   WHERE x.lit NOT IN ('/visitador/mis-visitas', '/proveedor/visitador/aprobar', '/proveedor/notificaciones', '/clinica/calendario', '/medico');
+  v_fn_viejo := (SELECT count(*) FROM pg_proc p WHERE p.pronamespace IN ('public'::regnamespace, 'private'::regnamespace)
+                   AND p.prosrc LIKE '%/proveedor/visitador''%');
+  v_notif_viejo := (SELECT count(*) FROM public.notificaciones n WHERE n.accion_url = '/proveedor/visitador');
+  PERFORM set_config('probe.p1104', CASE
+    WHEN est LIKE 'parcial%' THEN 'ROJO (381 '||est||')'
+    WHEN est = 'pre' AND v_fn_viejo = 1 AND v_viol IS NOT NULL
+      THEN 'REGRESION (381 ausente; rutas fuera del catalogo: '||v_viol||'; notificaciones con la ruta vieja: '||v_notif_viejo||')'
+    WHEN est = 'pre' THEN 'ROJO (381 ausente y el catalogo no es el de antes: funciones con la ruta vieja '||v_fn_viejo||', fuera '||COALESCE(v_viol, '-')||')'
+    WHEN v_viol IS NULL AND v_fn_viejo = 0 AND v_notif_viejo = 0
+      THEN 'OK (381: todas las accion_url de las funciones de visitas en el catalogo; 0 funciones y 0 notificaciones con la ruta vieja)'
+    ELSE 'ROJO (fuera del catalogo: '||COALESCE(v_viol, '-')||'; funciones con la ruta vieja '||v_fn_viejo||'; notificaciones '||v_notif_viejo||')' END, false);
+EXCEPTION WHEN OTHERS THEN
+  PERFORM set_config('probe.p1104', 'FALLO ('||SQLSTATE||' '||SQLERRM||')', false);
+END $$;
+SELECT set_config('role', 'none', true);
+
 -- ===== Veredictos como result set =====
 SELECT 'P1_anon_insert_citas'              AS probe, current_setting('probe.p1', true)  AS verdict, 'BLOQUEADO' AS esperado_post_fix
 UNION ALL SELECT 'P2_medico_cancela_ajena_rpc',         current_setting('probe.p2', true),  'BLOQUEADO'
@@ -38870,6 +39357,7 @@ UNION ALL SELECT 'P416_helper_grupoB_campana_enviada',   current_setting('probe.
 UNION ALL SELECT 'P417_helper_grupoC_visita_propuesta',  current_setting('probe.p417', true), 'OK post-131 (spoof; recipients derivados)'
 UNION ALL SELECT 'P417b_helper_resubmission_reset',      current_setting('probe.p417b', true), 'OK post-131 (re-enviada resetea flag)'
 UNION ALL SELECT 'P418_helper_grupoC_visita_resultado',  current_setting('probe.p418', true), 'OK post-131 (spoof; gate relación; visibilidad)'
+UNION ALL SELECT 'FXH_restaura_cuentas',  current_setting('probe.h_restaura', true), 'OK (las 4 cuentas del fixture h_* vuelven a su snapshot y sus 4 visitas se borran)'
 UNION ALL SELECT 'P419_receta_estructural',              current_setting('probe.p419', true), 'OK post-133 (ROJO pre; firma bigint-only + push)'
 UNION ALL SELECT 'P420_receta_spoof_gate_claim',         current_setting('probe.p420', true), 'OK post-133 (PT002 sin quemar flag; med+sa notifican)'
 UNION ALL SELECT 'P421_receta_recipient_derivado',       current_setting('probe.p421', true), 'OK post-133 (recipient del ref, 0 ajenos)'
@@ -39646,6 +40134,13 @@ UNION ALL SELECT 'P1095_prioridad_propia_380',  current_setting('probe.p1095', t
 UNION ALL SELECT 'P1096_prioridad_otro_laboratorio_380',  current_setting('probe.p1096', true), 'OK (380: segundo lab -> otro_laboratorio, fecha_minima = borde del PV002, sin rastro del lab; sin la 380: REGRESION con el borde medido)'
 UNION ALL SELECT 'P1097_prioridad_libre_380',  current_setting('probe.p1097', true), 'OK (380: medico sin enrolador -> libre sin fecha ni visitas; sin la 380: REGRESION)'
 UNION ALL SELECT 'P1098_prioridad_pv026_380',  current_setting('probe.p1098', true), 'OK (380: otro pais, inexistente y NULL -> PV026 con el mismo mensaje; sin la 380: REGRESION)'
+UNION ALL SELECT 'M381_FX_helpers_visitas',  current_setting('probe.m381_fx', true), 'OK (helpers de pg_temp creados; estado de la 381: post; sin la 381: REGRESION; parcial: ROJO)'
+UNION ALL SELECT 'P1099_supervisor_otro_equipo_pv027_381',  current_setting('probe.p1099', true), 'OK (381: sup1 sobre la visita de otro equipo -> PV027 en aprobar, rechazar y modificar; visita intacta; sin la 381: REGRESION)'
+UNION ALL SELECT 'P1100_supervisor_su_equipo_avisos_381',  current_setting('probe.p1100', true), 'OK (381: sup1 aprueba la de su equipo; aprobada_por; avisos al visitador y a la clinica con la ruta nueva; sin la 381: REGRESION)'
+UNION ALL SELECT 'P1101_admin_superadmin_y_pv027_381',  current_setting('probe.p1101', true), 'OK (381: admin y super_admin administran; sin equipo, otra empresa e inexistente -> PV027; sin la 381: REGRESION)'
+UNION ALL SELECT 'P1102_notificar_compat_noop_381',  current_setting('probe.p1102', true), 'OK (381: notificar_visita_resultado no-op con el gate nuevo; PT002 fuera de el; sin la 381: REGRESION)'
+UNION ALL SELECT 'P1103_agendar_medico_cuenta_activos_pv028_381',  current_setting('probe.p1103', true), 'OK (381: cuenta inactiva, medico inactivo y perfil sin medicos -> PV028; todo activo sin PV028; sin la 381: REGRESION)'
+UNION ALL SELECT 'P1104_accion_url_catalogo_381',  current_setting('probe.p1104', true), 'OK (381: accion_url de visitas en el catalogo; 0 con la ruta vieja; sin la 381: REGRESION)'
 UNION ALL SELECT 'P1010_campana_vistas_sin_update_367',  current_setting('probe.p1010', true), 'OK (367: INSERT 1; ON CONFLICT DO NOTHING 0 sin error; DO UPDATE y UPDATE 42501; otro paciente 0; antes de la 367: PENDIENTE)'
 UNION ALL SELECT 'P1009_datos_bancarios_acotados_366',  current_setting('probe.p1009', true), 'OK (366: cuenta GT solo super_admin/admin_pais GT/proveedores GT; checkout 1 fila; config 21 super_admin y 14 el resto, admin_pais incluido; antes de la 366: PENDIENTE)'
 UNION ALL SELECT 'DET_p1009',  'DET ' || COALESCE(NULLIF(current_setting('probe.p1009_det', true), ''), '(sin dato)'), 'DET (detalle de P1009, no es probe)'
@@ -39898,7 +40393,7 @@ UNION ALL SELECT 'P000_CENTINELA_veredictos_no_nulos',
        'probe.p866', 'probe.p867', 'probe.p868', 'probe.p869', 'probe.p870', 'probe.p871', 'probe.p872', 'probe.p873', 'probe.p874', 'probe.p875', 'probe.p876', 'probe.p877', 'probe.p878',
        'probe.p879', 'probe.p880', 'probe.p881', 'probe.p882', 'probe.p883', 'probe.p884',
        'probe.p885', 'probe.p886', 'probe.p887', 'probe.p888', 'probe.p889', 'probe.p890', 'probe.p891', 'probe.p892', 'probe.p893', 'probe.p894', 'probe.p895', 'probe.p896', 'probe.p908', 'probe.p909', 'probe.p910', 'probe.p911',
-       'probe.p897', 'probe.p898', 'probe.p899', 'probe.p900', 'probe.p901', 'probe.p902', 'probe.p903', 'probe.p904', 'probe.p905', 'probe.p906', 'probe.p907', 'probe.p912', 'probe.p913', 'probe.p914', 'probe.p915', 'probe.p916', 'probe.p917', 'probe.p918', 'probe.p919', 'probe.p920', 'probe.p921', 'probe.p922', 'probe.p923', 'probe.p924', 'probe.p925', 'probe.p926', 'probe.p927', 'probe.p928', 'probe.p929', 'probe.p930', 'probe.p931', 'probe.p932', 'probe.p933', 'probe.p934', 'probe.p935', 'probe.p936', 'probe.p937', 'probe.p938', 'probe.p939', 'probe.p940', 'probe.p941', 'probe.p942', 'probe.p943', 'probe.p944', 'probe.p945', 'probe.p946', 'probe.p947', 'probe.p948', 'probe.p949', 'probe.p950', 'probe.p951', 'probe.p952', 'probe.p953', 'probe.p954', 'probe.p955', 'probe.p956', 'probe.p957', 'probe.p958', 'probe.p959', 'probe.p960', 'probe.p961', 'probe.p962', 'probe.p963', 'probe.p964', 'probe.p965', 'probe.p966', 'probe.p967', 'probe.p968', 'probe.p969', 'probe.p970', 'probe.p971', 'probe.p972', 'probe.p973', 'probe.p974', 'probe.p975', 'probe.p976', 'probe.p977', 'probe.p978', 'probe.p979', 'probe.p980', 'probe.p981', 'probe.p982', 'probe.p983', 'probe.p984', 'probe.p985', 'probe.p986', 'probe.p987', 'probe.p988', 'probe.p989', 'probe.p990', 'probe.p991', 'probe.p992', 'probe.p993', 'probe.p994', 'probe.p995', 'probe.p996', 'probe.p997', 'probe.p998', 'probe.p999', 'probe.p1000', 'probe.p1001', 'probe.p1002', 'probe.p1003', 'probe.p1004', 'probe.p1005', 'probe.p1006', 'probe.p1007', 'probe.p1008', 'probe.p1009', 'probe.p1010', 'probe.p1011', 'probe.p1012', 'probe.p1013', 'probe.p1014', 'probe.e370_fx', 'probe.p1015', 'probe.p1016', 'probe.p1017', 'probe.p1018', 'probe.g371_fx', 'probe.p1019', 'probe.p1020', 'probe.p1021', 'probe.p1022', 'probe.g372_fx', 'probe.p1023', 'probe.p1024', 'probe.p1025', 'probe.p1035', 'probe.p1036', 'probe.p1037', 'probe.p1038', 'probe.p1039', 'probe.p1040', 'probe.m375_fx', 'probe.p1041', 'probe.p1042', 'probe.p1043', 'probe.p1044', 'probe.p1045', 'probe.p1046', 'probe.p1047', 'probe.p1048', 'probe.p1049', 'probe.p1050', 'probe.p1051', 'probe.p1052', 'probe.p1053', 'probe.p1054', 'probe.p1055', 'probe.p1056', 'probe.p1057', 'probe.p1058', 'probe.p1059', 'probe.p1060', 'probe.p1061', 'probe.m376_fx', 'probe.p1062', 'probe.p1063', 'probe.p1064', 'probe.m377_fx', 'probe.p1065', 'probe.p1066', 'probe.p1067', 'probe.p1068', 'probe.p1069', 'probe.p1070', 'probe.p1071', 'probe.p1072', 'probe.p1073', 'probe.p1074', 'probe.m378_fx', 'probe.p1075', 'probe.p1076', 'probe.p1077', 'probe.p1078', 'probe.p1079', 'probe.p1080', 'probe.p1081', 'probe.p1082', 'probe.p1083', 'probe.m379_fx', 'probe.p1084', 'probe.p1085', 'probe.p1086', 'probe.p1087', 'probe.p1088', 'probe.p1089', 'probe.p1090', 'probe.m380_fx', 'probe.p1091', 'probe.p1092', 'probe.p1093', 'probe.p1094', 'probe.p1095', 'probe.p1096', 'probe.p1097', 'probe.p1098'
+       'probe.p897', 'probe.p898', 'probe.p899', 'probe.p900', 'probe.p901', 'probe.p902', 'probe.p903', 'probe.p904', 'probe.p905', 'probe.p906', 'probe.p907', 'probe.p912', 'probe.p913', 'probe.p914', 'probe.p915', 'probe.p916', 'probe.p917', 'probe.p918', 'probe.p919', 'probe.p920', 'probe.p921', 'probe.p922', 'probe.p923', 'probe.p924', 'probe.p925', 'probe.p926', 'probe.p927', 'probe.p928', 'probe.p929', 'probe.p930', 'probe.p931', 'probe.p932', 'probe.p933', 'probe.p934', 'probe.p935', 'probe.p936', 'probe.p937', 'probe.p938', 'probe.p939', 'probe.p940', 'probe.p941', 'probe.p942', 'probe.p943', 'probe.p944', 'probe.p945', 'probe.p946', 'probe.p947', 'probe.p948', 'probe.p949', 'probe.p950', 'probe.p951', 'probe.p952', 'probe.p953', 'probe.p954', 'probe.p955', 'probe.p956', 'probe.p957', 'probe.p958', 'probe.p959', 'probe.p960', 'probe.p961', 'probe.p962', 'probe.p963', 'probe.p964', 'probe.p965', 'probe.p966', 'probe.p967', 'probe.p968', 'probe.p969', 'probe.p970', 'probe.p971', 'probe.p972', 'probe.p973', 'probe.p974', 'probe.p975', 'probe.p976', 'probe.p977', 'probe.p978', 'probe.p979', 'probe.p980', 'probe.p981', 'probe.p982', 'probe.p983', 'probe.p984', 'probe.p985', 'probe.p986', 'probe.p987', 'probe.p988', 'probe.p989', 'probe.p990', 'probe.p991', 'probe.p992', 'probe.p993', 'probe.p994', 'probe.p995', 'probe.p996', 'probe.p997', 'probe.p998', 'probe.p999', 'probe.p1000', 'probe.p1001', 'probe.p1002', 'probe.p1003', 'probe.p1004', 'probe.p1005', 'probe.p1006', 'probe.p1007', 'probe.p1008', 'probe.p1009', 'probe.p1010', 'probe.p1011', 'probe.p1012', 'probe.p1013', 'probe.p1014', 'probe.e370_fx', 'probe.p1015', 'probe.p1016', 'probe.p1017', 'probe.p1018', 'probe.g371_fx', 'probe.p1019', 'probe.p1020', 'probe.p1021', 'probe.p1022', 'probe.g372_fx', 'probe.p1023', 'probe.p1024', 'probe.p1025', 'probe.p1035', 'probe.p1036', 'probe.p1037', 'probe.p1038', 'probe.p1039', 'probe.p1040', 'probe.m375_fx', 'probe.p1041', 'probe.p1042', 'probe.p1043', 'probe.p1044', 'probe.p1045', 'probe.p1046', 'probe.p1047', 'probe.p1048', 'probe.p1049', 'probe.p1050', 'probe.p1051', 'probe.p1052', 'probe.p1053', 'probe.p1054', 'probe.p1055', 'probe.p1056', 'probe.p1057', 'probe.p1058', 'probe.p1059', 'probe.p1060', 'probe.p1061', 'probe.m376_fx', 'probe.p1062', 'probe.p1063', 'probe.p1064', 'probe.m377_fx', 'probe.p1065', 'probe.p1066', 'probe.p1067', 'probe.p1068', 'probe.p1069', 'probe.p1070', 'probe.p1071', 'probe.p1072', 'probe.p1073', 'probe.p1074', 'probe.m378_fx', 'probe.p1075', 'probe.p1076', 'probe.p1077', 'probe.p1078', 'probe.p1079', 'probe.p1080', 'probe.p1081', 'probe.p1082', 'probe.p1083', 'probe.m379_fx', 'probe.p1084', 'probe.p1085', 'probe.p1086', 'probe.p1087', 'probe.p1088', 'probe.p1089', 'probe.p1090', 'probe.m380_fx', 'probe.p1091', 'probe.p1092', 'probe.p1093', 'probe.p1094', 'probe.p1095', 'probe.p1096', 'probe.p1097', 'probe.p1098', 'probe.h_restaura', 'probe.m381_fx', 'probe.p1099', 'probe.p1100', 'probe.p1101', 'probe.p1102', 'probe.p1103', 'probe.p1104'
              ]) AS n) s),
   'OK (todos los veredictos publicados)';
 
