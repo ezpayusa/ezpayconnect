@@ -39762,6 +39762,21 @@ CREATE OR REPLACE FUNCTION pg_temp.m383_snap() RETURNS text LANGUAGE sql AS $bod
     ||'|'||md5(COALESCE((SELECT string_agg(s.nombre||'='||md5(COALESCE(s.valor, '')), ',' ORDER BY s.nombre) FROM private.app_secrets s), ''))
 $body$
 $fn$;
+  -- fixture de la 382 + GT con exactamente los 2 admin_pais actores activos (otros fixtures del harness dejan admin_pais
+  -- de GT vivos en la transaccion). SOLO dentro de un savepoint.
+  EXECUTE $fn$
+CREATE OR REPLACE FUNCTION pg_temp.m383_fijar() RETURNS void LANGUAGE plpgsql AS $body$
+BEGIN
+  PERFORM pg_temp.m382_fijar();
+  UPDATE public.perfiles SET activo = false
+   WHERE rol = 'admin_pais' AND activo IS TRUE AND pais_id = 'cbbbbe6d-59fe-4cf2-91ee-3e31ba1d5909'
+     AND id NOT IN ('8f391caf-85bc-4413-af8a-4006452ae09f', '85a3faf8-9986-4c8e-821b-4351473a91f0');
+  IF (SELECT count(*) FROM public.perfiles WHERE rol = 'admin_pais' AND activo IS TRUE AND pais_id = 'cbbbbe6d-59fe-4cf2-91ee-3e31ba1d5909') <> 2 THEN
+    RAISE EXCEPTION 'fixture roto: m383_fijar no dejo 2 admin_pais activos en GT';
+  END IF;
+END
+$body$
+$fn$;
   est := pg_temp.m383_estado();
   PERFORM set_config('probe.m383_fx', CASE WHEN est = 'ausente' THEN 'PENDIENTE mig 383 (ausente; helpers de pg_temp creados)'
     WHEN est = 'post' THEN 'OK (helpers de pg_temp creados; estado de la 383: post)'
@@ -39816,7 +39831,7 @@ BEGIN
   IF est <> 'post' THEN PERFORM set_config('probe.p1121', 'ROJO (383 '||est||')', false); RETURN; END IF;
   pre := pg_temp.m383_snap();
   BEGIN
-    PERFORM pg_temp.m382_fijar();
+    PERFORM pg_temp.m383_fijar();
     hs := pg_temp.m382_val(pg_temp.m382_abrir(c_a1, 'supervision', c_a1));
     m := pg_temp.m382_enviar(c_a1, hs, 'hola supervisor');  d := d || pg_temp.m382_chk('enviar', m, 'OK');
     d := d || pg_temp.m382_eq('sup_recibe', pg_temp.m383_n(c_sup, hs)::text, '1');
@@ -39843,7 +39858,7 @@ BEGIN
   IF est <> 'post' THEN PERFORM set_config('probe.p1122', 'ROJO (383 '||est||')', false); RETURN; END IF;
   pre := pg_temp.m383_snap();
   BEGIN
-    PERFORM pg_temp.m382_fijar();
+    PERFORM pg_temp.m383_fijar();
     hs := pg_temp.m382_val(pg_temp.m382_abrir(c_sup, 'supervision', c_a1));
     d := d || pg_temp.m382_chk('sup_envia', pg_temp.m382_enviar(c_sup, hs, 'respuesta'), 'OK');
     d := d || pg_temp.m382_eq('asesor_recibe', pg_temp.m383_n(c_a1, hs)::text, '1');
@@ -39870,7 +39885,7 @@ BEGIN
   IF est <> 'post' THEN PERFORM set_config('probe.p1123', 'ROJO (383 '||est||')', false); RETURN; END IF;
   pre := pg_temp.m383_snap();
   BEGIN
-    PERFORM pg_temp.m382_fijar();
+    PERFORM pg_temp.m383_fijar();
     v_esp := (SELECT count(*) FROM public.perfiles WHERE rol = 'admin_pais' AND activo IS TRUE AND pais_id = c_gt);
     hp := pg_temp.m382_val(pg_temp.m382_abrir(c_a1, 'pais', c_a1));
     d := d || pg_temp.m382_chk('enviar', pg_temp.m382_enviar(c_a1, hp, 'para el pais'), 'OK');
@@ -39903,7 +39918,7 @@ BEGIN
   IF est <> 'post' THEN PERFORM set_config('probe.p1124', 'ROJO (383 '||est||')', false); RETURN; END IF;
   pre := pg_temp.m383_snap();
   BEGIN
-    PERFORM pg_temp.m382_fijar();
+    PERFORM pg_temp.m383_fijar();
     v_esp := (SELECT count(*) FROM public.perfiles WHERE rol = 'super_admin' AND activo IS TRUE);
     hz := pg_temp.m382_val(pg_temp.m382_abrir(c_cam, 'pais', c_cam));
     d := d || pg_temp.m382_chk('enviar', pg_temp.m382_enviar(c_cam, hz, 'para el pais ZZ'), 'OK');
@@ -39936,7 +39951,7 @@ BEGIN
   IF est <> 'post' THEN PERFORM set_config('probe.p1125', 'ROJO (383 '||est||')', false); RETURN; END IF;
   pre := pg_temp.m383_snap();
   BEGIN
-    PERFORM pg_temp.m382_fijar();
+    PERFORM pg_temp.m383_fijar();
     hs := pg_temp.m382_val(pg_temp.m382_abrir(c_sa, 'supervision', c_a1));
     d := d || pg_temp.m382_chk('sa_envia', pg_temp.m382_enviar(c_sa, hs, 'del super admin'), 'OK');
     d := d || pg_temp.m382_eq('asesor_recibe', pg_temp.m383_n(c_a1, hs)::text, '1');
@@ -39963,7 +39978,7 @@ BEGIN
   IF est <> 'post' THEN PERFORM set_config('probe.p1126', 'ROJO (383 '||est||')', false); RETURN; END IF;
   pre := pg_temp.m383_snap();
   BEGIN
-    PERFORM pg_temp.m382_fijar();
+    PERFORM pg_temp.m383_fijar();
     v_cola := COALESCE((SELECT max(id) FROM net.http_request_queue), 0);
     hs := pg_temp.m382_val(pg_temp.m382_abrir(c_a1, 'supervision', c_a1));
     hp := pg_temp.m382_val(pg_temp.m382_abrir(c_a1, 'pais', c_a1));
@@ -40006,7 +40021,7 @@ BEGIN
   IF est <> 'post' THEN PERFORM set_config('probe.p1127', 'ROJO (383 '||est||')', false); RETURN; END IF;
   pre := pg_temp.m383_snap();
   BEGIN
-    PERFORM pg_temp.m382_fijar();
+    PERFORM pg_temp.m383_fijar();
     hs := pg_temp.m382_val(pg_temp.m382_abrir(c_a1, 'supervision', c_a1));
     hp := pg_temp.m382_val(pg_temp.m382_abrir(c_a1, 'pais', c_a1));
     -- (a) supervisor con el perfil inactivo; escribe el super_admin (el hilo está cerrado para el resto)
@@ -40048,7 +40063,7 @@ BEGIN
   IF est <> 'post' THEN PERFORM set_config('probe.p1128', 'ROJO (383 '||est||')', false); RETURN; END IF;
   pre := pg_temp.m383_snap();
   BEGIN
-    PERFORM pg_temp.m382_fijar();
+    PERFORM pg_temp.m383_fijar();
     hs := pg_temp.m382_val(pg_temp.m382_abrir(c_a1, 'supervision', c_a1));
     hp := pg_temp.m382_val(pg_temp.m382_abrir(c_a1, 'pais', c_a1));
     PERFORM pg_temp.m382_enviar(c_a1, hs, 'secreto '||v_sent||' fin');
@@ -40078,7 +40093,7 @@ BEGIN
   IF est <> 'post' THEN PERFORM set_config('probe.p1129', 'ROJO (383 '||est||')', false); RETURN; END IF;
   pre := pg_temp.m383_snap();
   BEGIN
-    PERFORM pg_temp.m382_fijar();
+    PERFORM pg_temp.m383_fijar();
     h1 := pg_temp.m382_val(pg_temp.m382_abrir(c_a1, 'supervision', c_a1));
     h2 := pg_temp.m382_val(pg_temp.m382_abrir(c_a1, 'pais', c_a1));
     h3 := pg_temp.m382_val(pg_temp.m382_abrir(c_cam, 'pais', c_cam));
@@ -40110,7 +40125,7 @@ BEGIN
   IF est <> 'post' THEN PERFORM set_config('probe.p1130', 'ROJO (383 '||est||')', false); RETURN; END IF;
   pre := pg_temp.m383_snap();
   BEGIN
-    PERFORM pg_temp.m382_fijar();
+    PERFORM pg_temp.m383_fijar();
     v_cola := COALESCE((SELECT max(id) FROM net.http_request_queue), 0);
     hs := pg_temp.m382_val(pg_temp.m382_abrir(c_a1, 'supervision', c_a1));
     hp := pg_temp.m382_val(pg_temp.m382_abrir(c_a1, 'pais', c_a1));
