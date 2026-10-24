@@ -2,6 +2,8 @@ import { Link, Outlet, useNavigate, useLocation } from 'react-router-dom'
 import { Briefcase, WifiOff, Users, CalendarCheck, UsersRound, BookOpen, IdCard, LogOut, KeyRound } from 'lucide-react'
 import { useEffect, useState } from 'react'
 import { useAuth } from '@/hooks/useAuth'
+import NotificacionesBadge from '@/components/NotificacionesBadge'
+import { usePushNotifications } from '@/webapp/hooks/usePushNotifications'
 
 // Shell del módulo comercial: header compacto + outlet + nav inferior.
 // Molde: VisitadorLayout (que a su vez salió de RepartidorLayout) — misma forma, cableado a
@@ -14,6 +16,9 @@ export default function ComercialLayout() {
   const navigate = useNavigate()
   const location = useLocation()
   const { perfil, logout } = useAuth()
+  // Mismo flujo que los layouts de médico, proveedor y repartidor: suscripción automática si el permiso lo permite
+  // (avisos del chat comercial, mig 383).
+  usePushNotifications()
   const [online, setOnline] = useState(typeof navigator !== 'undefined' ? navigator.onLine : true)
 
   const handleLogout = async () => {
@@ -51,6 +56,8 @@ export default function ComercialLayout() {
                 <WifiOff className="h-4 w-4" /> Offline
               </span>
             )}
+            {/* La campana vive en el header para los dos roles: la nav inferior no suma pestañas. */}
+            <NotificacionesBadge tono="oscuro" />
             <Link
               to="/cambiar-clave"
               className="flex items-center gap-1 text-sm text-white/90 hover:text-white"

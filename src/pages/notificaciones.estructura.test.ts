@@ -49,9 +49,6 @@ const sinComentarios = (src: string) =>
 // Pantallas de notificaciones que NO navegan con accion_url, cada una con su motivo. NO es una
 // lista de perdón: el segundo test verifica que la razón siga siendo cierta.
 const SIN_NAVEGACION: Record<string, string> = {
-  'src/components/NotificacionesBadge.tsx':
-    'código muerto: no lo importa nadie. El test verifica que siga sin importarse — el día que se '
-    + 'monte en algún layout, hay que hacerlo navegar o sacarlo de esta lista a conciencia.',
   'src/proveedor/context/ProveedorNotificacionesContext.tsx':
     'es un contexto, no una pantalla: sólo cuenta no leídas. Quien navega es '
     + 'ProveedorNotificacionesPage.tsx, y la regla 1 lo cubre.',
@@ -126,21 +123,16 @@ describe('notificaciones — accion_url se usa donde existe', () => {
     expect(inexistentes, 'Estas del censo ya no existen. Sacalas de la lista.').toEqual([])
   })
 
-  // ---- la razón de NotificacionesBadge, verificada ----
-  it('NotificacionesBadge sigue sin usarse (si se monta, hay que hacerlo navegar)', async () => {
+  // ---- NotificacionesBadge: salió del censo al montarse en el header comercial (PR-1, 24-oct-2026) ----
+  // Navega con accion_url (la regla 1 lo cubre). Acá se verifica que siga montado donde se decidió: el header de
+  // ComercialLayout, para asesor y supervisor, sin sumar pestañas a la nav inferior.
+  it('NotificacionesBadge navega y está montado en el header de ComercialLayout', async () => {
     const fs = await import('node:fs')
-    const importadores: string[] = []
-    for (const archivo of await tsxDelProyecto()) {
-      if (archivo.endsWith('src/components/NotificacionesBadge.tsx')) continue
-      if (/NotificacionesBadge/.test(sinComentarios(fs.readFileSync(archivo, 'utf8')))) {
-        importadores.push(archivo)
-      }
-    }
-    expect(
-      importadores,
-      'NotificacionesBadge.tsx dejó de ser código muerto: alguien lo montó. No usa accion_url, '
-        + 'así que su campana abriría notificaciones que no llevan a ningún lado. Agregale el '
-        + 'navigate y sacalo de SIN_NAVEGACION.',
-    ).toEqual([])
+    const badge = sinComentarios(fs.readFileSync('src/components/NotificacionesBadge.tsx', 'utf8'))
+    expect(NAVEGA.test(badge), 'NotificacionesBadge dejó de navegar con accion_url').toBe(true)
+    const layout = sinComentarios(fs.readFileSync('src/comercial/layout/ComercialLayout.tsx', 'utf8'))
+    expect(layout, 'ComercialLayout ya no monta la campana').toMatch(/<NotificacionesBadge\b/)
+    const header = layout.slice(layout.indexOf('<header'), layout.indexOf('</header>'))
+    expect(header, 'la campana tiene que vivir en el header, no en la nav inferior').toMatch(/<NotificacionesBadge\b/)
   })
 })

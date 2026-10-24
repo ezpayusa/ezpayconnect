@@ -1,5 +1,6 @@
 import { useState, useEffect } from 'react'
-import { useNotificaciones } from '@/hooks/useNotificaciones'
+import { useNavigate } from 'react-router-dom'
+import { useNotificaciones, type Notificacion } from '@/hooks/useNotificaciones'
 import { Bell, Check, Mail, AlertCircle, X } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
@@ -20,24 +21,42 @@ const formatDistanceToNow = (date: Date): string => {
   return date.toLocaleDateString('es-GT')
 }
 
-export default function NotificacionesBadge() {
-  const { notificaciones, noLeidas, marcarLeida, marcarTodasLeidas, loading, listarNotificaciones } = useNotificaciones()
+// Campana genérica sobre `notificaciones` (useNotificaciones). La monta el header del módulo comercial.
+// `tono`: 'oscuro' cuando el header es de color (ícono blanco); 'claro' sobre fondo blanco.
+export default function NotificacionesBadge({ tono = 'claro' }: { tono?: 'claro' | 'oscuro' }) {
+  const { notificaciones, noLeidas, marcarLeida, marcarTodasLeidas, loading, listarNotificaciones } =
+    useNotificaciones({ realtime: true })
   const [abierto, setAbierto] = useState(false)
+  const navigate = useNavigate()
 
   // El hook no auto-cargaba: por eso el badge salía siempre vacío en toda la app.
   useEffect(() => {
     listarNotificaciones()
   }, [listarNotificaciones])
 
+  // Mismo patrón que ClinicaNotificacionesDropdown: marcar leída y navegar a su ruta interna. Una ruta que
+  // todavía no existe en el router cae en el comodín `*` (NotFoundPage), nunca en una pantalla en blanco.
+  const abrir = async (n: Notificacion) => {
+    if (!n.leida) await marcarLeida(n.id)
+    setAbierto(false)
+    if (n.accion_url) navigate(n.accion_url)
+  }
+
   return (
     <div className="relative">
       <button
+        type="button"
         onClick={() => setAbierto(!abierto)}
-        className="relative p-2 rounded-lg hover:bg-[#e8f0f8] transition-colors"
+        className={`relative p-2 rounded-lg transition-colors ${tono === 'oscuro' ? 'hover:bg-white/10' : 'hover:bg-[#e8f0f8]'}`}
+        aria-label="Notificaciones"
+        title="Notificaciones"
       >
-        <Bell className="h-5 w-5 text-[#8a9aaa]" />
+        <Bell className={`h-5 w-5 ${tono === 'oscuro' ? 'text-white/90' : 'text-[#8a9aaa]'}`} />
         {noLeidas > 0 && (
-          <span className="absolute -top-1 -right-1 w-5 h-5 bg-red-500 text-white text-xs rounded-full flex items-center justify-center font-bold">
+          <span
+            data-testid="notificaciones-no-leidas"
+            className="absolute -top-1 -right-1 w-5 h-5 bg-red-500 text-white text-xs rounded-full flex items-center justify-center font-bold"
+          >
             {noLeidas > 9 ? '9+' : noLeidas}
           </span>
         )}
@@ -46,7 +65,7 @@ export default function NotificacionesBadge() {
       {abierto && (
         <>
           <div className="fixed inset-0 z-40" onClick={() => setAbierto(false)} />
-          <Card className="absolute right-0 top-12 w-96 z-50 shadow-xl border border-[#e8f0f8]">
+          <Card className="absolute right-0 top-12 w-96 max-w-[calc(100vw-2rem)] z-50 shadow-xl border border-[#e8f0f8] bg-white text-[#1a2a3a]">
             <CardHeader className="flex flex-row items-center justify-between pb-3">
               <CardTitle className="text-base flex items-center gap-2">
                 <Bell className="h-5 w-5 text-[#1E5C8E]" />
@@ -58,7 +77,7 @@ export default function NotificacionesBadge() {
                     <Check className="h-4 w-4 mr-1" /> Marcar leídas
                   </Button>
                 )}
-                <button onClick={() => setAbierto(false)} className="text-[#8a9aaa] hover:text-[#1a2a3a]">
+                <button type="button" onClick={() => setAbierto(false)} className="text-[#8a9aaa] hover:text-[#1a2a3a]" aria-label="Cerrar">
                   <X className="h-4 w-4" />
                 </button>
               </div>
@@ -76,10 +95,13 @@ export default function NotificacionesBadge() {
                   {notificaciones.map(notif => (
                     <div
                       key={notif.id}
+                      role="button"
+                      tabIndex={0}
                       className={`p-4 border-b border-[#e8f0f8] hover:bg-[#f8fafc] transition-colors cursor-pointer ${
                         !notif.leida ? 'bg-[#e8f0f8]' : ''
                       }`}
-                      onClick={() => marcarLeida(notif.id)}
+                      onClick={() => abrir(notif)}
+                      onKeyDown={(e) => { if (e.key === 'Enter') abrir(notif) }}
                     >
                       <div className="flex items-start gap-3">
                         <div className="mt-0.5">
