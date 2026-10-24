@@ -40148,6 +40148,60 @@ BEGIN
 EXCEPTION WHEN OTHERS THEN
   PERFORM set_config('probe.p1130', 'FALLO ('||SQLSTATE||' '||SQLERRM||')', false);
 END $$;
+-- ---------------- P1131 383: si el aviso falla, el mensaje no se pierde y queda notificado = false ----------------
+-- Un trigger BEFORE INSERT temporal sobre notificaciones (función de pg_temp) hace fallar SOLO las filas 'chat_comercial'.
+-- Se crea y se borra dentro del savepoint del probe; el RAISE P0999 lo descarta igual. Mientras vive toma un lock
+-- SHARE ROW EXCLUSIVE sobre notificaciones (milisegundos; se libera al revertir el savepoint).
+DO $$
+DECLARE est text; pre text; post text; d text := ''; hs text; m1 text; m2 text; v_cola bigint; v_n0 int; v_trg text;
+  c_a1 CONSTANT uuid := '80894d85-eac6-4117-8211-45d3b2be5cdb'; c_sup CONSTANT uuid := '881fbfbb-122d-4c9d-86c6-1dabd3efea1d';
+BEGIN
+  est := pg_temp.m383_estado();
+  IF est = 'ausente' THEN PERFORM set_config('probe.p1131', 'PENDIENTE mig 383 (ausente)', false); RETURN; END IF;
+  IF est <> 'post' THEN PERFORM set_config('probe.p1131', 'ROJO (383 '||est||')', false); RETURN; END IF;
+  pre := pg_temp.m383_snap();
+  BEGIN
+    PERFORM pg_temp.m383_fijar();
+    v_cola := COALESCE((SELECT max(id) FROM net.http_request_queue), 0);
+    hs := pg_temp.m382_val(pg_temp.m382_abrir(c_a1, 'supervision', c_a1));
+    v_n0 := (SELECT count(*) FROM public.notificaciones WHERE tipo = 'chat_comercial');
+    EXECUTE $fn$
+CREATE FUNCTION pg_temp.p1131_falla() RETURNS trigger LANGUAGE plpgsql AS $body$
+BEGIN
+  IF NEW.tipo = 'chat_comercial' THEN RAISE EXCEPTION 'P1131 falla forzada del aviso'; END IF;
+  RETURN NEW;
+END
+$body$
+$fn$;
+    EXECUTE 'CREATE TRIGGER p1131_falla BEFORE INSERT ON public.notificaciones FOR EACH ROW EXECUTE FUNCTION pg_temp.p1131_falla()';
+    -- con la falla forzada
+    m1 := pg_temp.m382_enviar(c_a1, hs, 'con el aviso roto');
+    d := d || pg_temp.m382_chk('a_envia_sin_error', m1, 'OK');
+    d := d || pg_temp.m382_eq('b_mensaje_existe_notificado_false',
+                              (SELECT notificado::text FROM public.chat_comercial_mensajes WHERE id = pg_temp.m382_val(m1)::uuid), 'false');
+    d := d || pg_temp.m382_eq('c_notificaciones_nuevas', ((SELECT count(*) FROM public.notificaciones WHERE tipo = 'chat_comercial') - v_n0)::text, '0');
+    d := d || pg_temp.m382_eq('d_cola_pg_net', pg_temp.m383_cola(v_cola)::text, '0');
+    -- control positivo: sin el trigger, el siguiente envío avisa
+    EXECUTE 'DROP TRIGGER p1131_falla ON public.notificaciones';
+    EXECUTE 'DROP FUNCTION pg_temp.p1131_falla()';
+    v_trg := (SELECT string_agg(tgname, ',') FROM pg_trigger WHERE tgrelid = 'public.notificaciones'::regclass AND NOT tgisinternal);
+    d := d || pg_temp.m382_eq('trigger_borrado', COALESCE(v_trg, '-'), '-');
+    m2 := pg_temp.m382_enviar(c_a1, hs, 'con el aviso sano');
+    d := d || pg_temp.m382_chk('control_envia', m2, 'OK');
+    d := d || pg_temp.m382_eq('control_1_notificacion', pg_temp.m383_n(c_sup, hs)::text, '1');
+    d := d || pg_temp.m382_eq('control_notificado_true',
+                              (SELECT notificado::text FROM public.chat_comercial_mensajes WHERE id = pg_temp.m382_val(m2)::uuid), 'true');
+    d := d || pg_temp.m382_eq('control_1_push', pg_temp.m383_cola(v_cola)::text, '1');
+    d := d || pg_temp.m382_eq('primero_sigue_false',
+                              (SELECT notificado::text FROM public.chat_comercial_mensajes WHERE id = pg_temp.m382_val(m1)::uuid), 'false');
+    RAISE EXCEPTION 'P1131 descarte' USING ERRCODE = 'P0999';
+  EXCEPTION WHEN SQLSTATE 'P0999' THEN NULL;
+  END;
+  post := pg_temp.m383_snap();
+  PERFORM set_config('probe.p1131', pg_temp.m382_veredicto(d, pre, post, 'aviso roto por un trigger temporal: enviar devuelve el uuid, mensaje con notificado=false, 0 avisos, 0 push; sin el trigger: 1 aviso, 1 push, notificado=true'), false);
+EXCEPTION WHEN OTHERS THEN
+  PERFORM set_config('probe.p1131', 'FALLO ('||SQLSTATE||' '||SQLERRM||')', false);
+END $$;
 SELECT set_config('role', 'none', true);
 
 -- ===== Veredictos como result set =====
@@ -41369,6 +41423,7 @@ UNION ALL SELECT 'P1127_destinatario_inactivo_383',  current_setting('probe.p112
 UNION ALL SELECT 'P1128_sin_texto_en_notificacion_383',  current_setting('probe.p1128', true), 'OK (383: el texto del mensaje no aparece en notificaciones; sin la 383: PENDIENTE)'
 UNION ALL SELECT 'P1129_accion_url_check_notificado_383',  current_setting('probe.p1129', true), 'OK (383: toda accion_url pasa el CHECK; todo mensaje notificado; sin la 383: PENDIENTE)'
 UNION ALL SELECT 'P1130_sin_secreto_push_383',  current_setting('probe.p1130', true), 'OK (383: sin push_secret el envio y el aviso in-app funcionan, 0 push; sin la 383: PENDIENTE)'
+UNION ALL SELECT 'P1131_rastro_falla_aviso_383',  current_setting('probe.p1131', true), 'OK (383: con el aviso roto el mensaje entra con notificado=false, 0 avisos y 0 push; sin la falla avisa; sin la 383: PENDIENTE)'
 UNION ALL SELECT 'P1010_campana_vistas_sin_update_367',  current_setting('probe.p1010', true), 'OK (367: INSERT 1; ON CONFLICT DO NOTHING 0 sin error; DO UPDATE y UPDATE 42501; otro paciente 0; antes de la 367: PENDIENTE)'
 UNION ALL SELECT 'P1009_datos_bancarios_acotados_366',  current_setting('probe.p1009', true), 'OK (366: cuenta GT solo super_admin/admin_pais GT/proveedores GT; checkout 1 fila; config 21 super_admin y 14 el resto, admin_pais incluido; antes de la 366: PENDIENTE)'
 UNION ALL SELECT 'DET_p1009',  'DET ' || COALESCE(NULLIF(current_setting('probe.p1009_det', true), ''), '(sin dato)'), 'DET (detalle de P1009, no es probe)'
@@ -41621,7 +41676,7 @@ UNION ALL SELECT 'P000_CENTINELA_veredictos_no_nulos',
        'probe.p866', 'probe.p867', 'probe.p868', 'probe.p869', 'probe.p870', 'probe.p871', 'probe.p872', 'probe.p873', 'probe.p874', 'probe.p875', 'probe.p876', 'probe.p877', 'probe.p878',
        'probe.p879', 'probe.p880', 'probe.p881', 'probe.p882', 'probe.p883', 'probe.p884',
        'probe.p885', 'probe.p886', 'probe.p887', 'probe.p888', 'probe.p889', 'probe.p890', 'probe.p891', 'probe.p892', 'probe.p893', 'probe.p894', 'probe.p895', 'probe.p896', 'probe.p908', 'probe.p909', 'probe.p910', 'probe.p911',
-       'probe.p897', 'probe.p898', 'probe.p899', 'probe.p900', 'probe.p901', 'probe.p902', 'probe.p903', 'probe.p904', 'probe.p905', 'probe.p906', 'probe.p907', 'probe.p912', 'probe.p913', 'probe.p914', 'probe.p915', 'probe.p916', 'probe.p917', 'probe.p918', 'probe.p919', 'probe.p920', 'probe.p921', 'probe.p922', 'probe.p923', 'probe.p924', 'probe.p925', 'probe.p926', 'probe.p927', 'probe.p928', 'probe.p929', 'probe.p930', 'probe.p931', 'probe.p932', 'probe.p933', 'probe.p934', 'probe.p935', 'probe.p936', 'probe.p937', 'probe.p938', 'probe.p939', 'probe.p940', 'probe.p941', 'probe.p942', 'probe.p943', 'probe.p944', 'probe.p945', 'probe.p946', 'probe.p947', 'probe.p948', 'probe.p949', 'probe.p950', 'probe.p951', 'probe.p952', 'probe.p953', 'probe.p954', 'probe.p955', 'probe.p956', 'probe.p957', 'probe.p958', 'probe.p959', 'probe.p960', 'probe.p961', 'probe.p962', 'probe.p963', 'probe.p964', 'probe.p965', 'probe.p966', 'probe.p967', 'probe.p968', 'probe.p969', 'probe.p970', 'probe.p971', 'probe.p972', 'probe.p973', 'probe.p974', 'probe.p975', 'probe.p976', 'probe.p977', 'probe.p978', 'probe.p979', 'probe.p980', 'probe.p981', 'probe.p982', 'probe.p983', 'probe.p984', 'probe.p985', 'probe.p986', 'probe.p987', 'probe.p988', 'probe.p989', 'probe.p990', 'probe.p991', 'probe.p992', 'probe.p993', 'probe.p994', 'probe.p995', 'probe.p996', 'probe.p997', 'probe.p998', 'probe.p999', 'probe.p1000', 'probe.p1001', 'probe.p1002', 'probe.p1003', 'probe.p1004', 'probe.p1005', 'probe.p1006', 'probe.p1007', 'probe.p1008', 'probe.p1009', 'probe.p1010', 'probe.p1011', 'probe.p1012', 'probe.p1013', 'probe.p1014', 'probe.e370_fx', 'probe.p1015', 'probe.p1016', 'probe.p1017', 'probe.p1018', 'probe.g371_fx', 'probe.p1019', 'probe.p1020', 'probe.p1021', 'probe.p1022', 'probe.g372_fx', 'probe.p1023', 'probe.p1024', 'probe.p1025', 'probe.p1035', 'probe.p1036', 'probe.p1037', 'probe.p1038', 'probe.p1039', 'probe.p1040', 'probe.m375_fx', 'probe.p1041', 'probe.p1042', 'probe.p1043', 'probe.p1044', 'probe.p1045', 'probe.p1046', 'probe.p1047', 'probe.p1048', 'probe.p1049', 'probe.p1050', 'probe.p1051', 'probe.p1052', 'probe.p1053', 'probe.p1054', 'probe.p1055', 'probe.p1056', 'probe.p1057', 'probe.p1058', 'probe.p1059', 'probe.p1060', 'probe.p1061', 'probe.m376_fx', 'probe.p1062', 'probe.p1063', 'probe.p1064', 'probe.m377_fx', 'probe.p1065', 'probe.p1066', 'probe.p1067', 'probe.p1068', 'probe.p1069', 'probe.p1070', 'probe.p1071', 'probe.p1072', 'probe.p1073', 'probe.p1074', 'probe.m378_fx', 'probe.p1075', 'probe.p1076', 'probe.p1077', 'probe.p1078', 'probe.p1079', 'probe.p1080', 'probe.p1081', 'probe.p1082', 'probe.p1083', 'probe.m379_fx', 'probe.p1084', 'probe.p1085', 'probe.p1086', 'probe.p1087', 'probe.p1088', 'probe.p1089', 'probe.p1090', 'probe.m380_fx', 'probe.p1091', 'probe.p1092', 'probe.p1093', 'probe.p1094', 'probe.p1095', 'probe.p1096', 'probe.p1097', 'probe.p1098', 'probe.h_restaura', 'probe.m381_fx', 'probe.p1099', 'probe.p1100', 'probe.p1101', 'probe.p1102', 'probe.p1103', 'probe.p1104', 'probe.m382_fx', 'probe.p1105', 'probe.p1106', 'probe.p1107', 'probe.p1108', 'probe.p1109', 'probe.p1110', 'probe.p1111', 'probe.p1112', 'probe.p1113', 'probe.p1114', 'probe.p1115', 'probe.p1116', 'probe.p1117', 'probe.p1118', 'probe.p1119', 'probe.m383_fx', 'probe.p1120', 'probe.p1121', 'probe.p1122', 'probe.p1123', 'probe.p1124', 'probe.p1125', 'probe.p1126', 'probe.p1127', 'probe.p1128', 'probe.p1129', 'probe.p1130'
+       'probe.p897', 'probe.p898', 'probe.p899', 'probe.p900', 'probe.p901', 'probe.p902', 'probe.p903', 'probe.p904', 'probe.p905', 'probe.p906', 'probe.p907', 'probe.p912', 'probe.p913', 'probe.p914', 'probe.p915', 'probe.p916', 'probe.p917', 'probe.p918', 'probe.p919', 'probe.p920', 'probe.p921', 'probe.p922', 'probe.p923', 'probe.p924', 'probe.p925', 'probe.p926', 'probe.p927', 'probe.p928', 'probe.p929', 'probe.p930', 'probe.p931', 'probe.p932', 'probe.p933', 'probe.p934', 'probe.p935', 'probe.p936', 'probe.p937', 'probe.p938', 'probe.p939', 'probe.p940', 'probe.p941', 'probe.p942', 'probe.p943', 'probe.p944', 'probe.p945', 'probe.p946', 'probe.p947', 'probe.p948', 'probe.p949', 'probe.p950', 'probe.p951', 'probe.p952', 'probe.p953', 'probe.p954', 'probe.p955', 'probe.p956', 'probe.p957', 'probe.p958', 'probe.p959', 'probe.p960', 'probe.p961', 'probe.p962', 'probe.p963', 'probe.p964', 'probe.p965', 'probe.p966', 'probe.p967', 'probe.p968', 'probe.p969', 'probe.p970', 'probe.p971', 'probe.p972', 'probe.p973', 'probe.p974', 'probe.p975', 'probe.p976', 'probe.p977', 'probe.p978', 'probe.p979', 'probe.p980', 'probe.p981', 'probe.p982', 'probe.p983', 'probe.p984', 'probe.p985', 'probe.p986', 'probe.p987', 'probe.p988', 'probe.p989', 'probe.p990', 'probe.p991', 'probe.p992', 'probe.p993', 'probe.p994', 'probe.p995', 'probe.p996', 'probe.p997', 'probe.p998', 'probe.p999', 'probe.p1000', 'probe.p1001', 'probe.p1002', 'probe.p1003', 'probe.p1004', 'probe.p1005', 'probe.p1006', 'probe.p1007', 'probe.p1008', 'probe.p1009', 'probe.p1010', 'probe.p1011', 'probe.p1012', 'probe.p1013', 'probe.p1014', 'probe.e370_fx', 'probe.p1015', 'probe.p1016', 'probe.p1017', 'probe.p1018', 'probe.g371_fx', 'probe.p1019', 'probe.p1020', 'probe.p1021', 'probe.p1022', 'probe.g372_fx', 'probe.p1023', 'probe.p1024', 'probe.p1025', 'probe.p1035', 'probe.p1036', 'probe.p1037', 'probe.p1038', 'probe.p1039', 'probe.p1040', 'probe.m375_fx', 'probe.p1041', 'probe.p1042', 'probe.p1043', 'probe.p1044', 'probe.p1045', 'probe.p1046', 'probe.p1047', 'probe.p1048', 'probe.p1049', 'probe.p1050', 'probe.p1051', 'probe.p1052', 'probe.p1053', 'probe.p1054', 'probe.p1055', 'probe.p1056', 'probe.p1057', 'probe.p1058', 'probe.p1059', 'probe.p1060', 'probe.p1061', 'probe.m376_fx', 'probe.p1062', 'probe.p1063', 'probe.p1064', 'probe.m377_fx', 'probe.p1065', 'probe.p1066', 'probe.p1067', 'probe.p1068', 'probe.p1069', 'probe.p1070', 'probe.p1071', 'probe.p1072', 'probe.p1073', 'probe.p1074', 'probe.m378_fx', 'probe.p1075', 'probe.p1076', 'probe.p1077', 'probe.p1078', 'probe.p1079', 'probe.p1080', 'probe.p1081', 'probe.p1082', 'probe.p1083', 'probe.m379_fx', 'probe.p1084', 'probe.p1085', 'probe.p1086', 'probe.p1087', 'probe.p1088', 'probe.p1089', 'probe.p1090', 'probe.m380_fx', 'probe.p1091', 'probe.p1092', 'probe.p1093', 'probe.p1094', 'probe.p1095', 'probe.p1096', 'probe.p1097', 'probe.p1098', 'probe.h_restaura', 'probe.m381_fx', 'probe.p1099', 'probe.p1100', 'probe.p1101', 'probe.p1102', 'probe.p1103', 'probe.p1104', 'probe.m382_fx', 'probe.p1105', 'probe.p1106', 'probe.p1107', 'probe.p1108', 'probe.p1109', 'probe.p1110', 'probe.p1111', 'probe.p1112', 'probe.p1113', 'probe.p1114', 'probe.p1115', 'probe.p1116', 'probe.p1117', 'probe.p1118', 'probe.p1119', 'probe.m383_fx', 'probe.p1120', 'probe.p1121', 'probe.p1122', 'probe.p1123', 'probe.p1124', 'probe.p1125', 'probe.p1126', 'probe.p1127', 'probe.p1128', 'probe.p1129', 'probe.p1130', 'probe.p1131'
              ]) AS n) s),
   'OK (todos los veredictos publicados)';
 
