@@ -39630,7 +39630,7 @@ BEGIN
     d := d || pg_temp.m382_eq('contactos_a1_pais', pg_temp.m382_q(c_a1, 'SELECT contraparte_nombre||''/''||contraparte_rol||''/''||COALESCE(contraparte_id::text, ''null'') FROM public.chat_comercial_contactos() WHERE tipo = ''pais'''),
                               'OK:Administración de país/admin_pais/null');
     d := d || pg_temp.m382_eq('contactos_cam_pais_fallback', pg_temp.m382_q(c_cam, 'SELECT contraparte_nombre||''/''||contraparte_rol FROM public.chat_comercial_contactos() WHERE tipo = ''pais'''),
-                              'OK:Administración EzPay/super_admin');
+                              'OK:Administración EZPay/super_admin');
     d := d || pg_temp.m382_eq('contactos_a1_supervisor', pg_temp.m382_q(c_a1, 'SELECT contraparte_id::text FROM public.chat_comercial_contactos() WHERE tipo = ''supervision'''), 'OK:'||c_sup::text);
     d := d || pg_temp.m382_eq('contactos_sup', pg_temp.m382_q(c_sup, format('SELECT string_agg(tipo||''/''||(comercial_id = %L::uuid)::text, '','' ORDER BY tipo, comercial_id = %L::uuid) FROM public.chat_comercial_contactos()', c_sup, c_sup)),
                               'OK:pais/true,supervision/false');

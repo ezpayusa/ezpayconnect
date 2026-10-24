@@ -270,7 +270,7 @@ CREATE POLICY chat_comercial_lecturas_select ON public.chat_comercial_lecturas
 -- ---------------------------------------------------------------------------------------------------------------------
 -- Los hilos que el llamante PUEDE abrir, existan o no. Solo id, nombre y rol de la contraparte. En el hilo 'pais' visto
 -- por el comercial la contraparte es un grupo: contraparte_id NULL, 'Administración de país' (rol admin_pais) o, sin
--- admin_pais activo en el país, 'Administración EzPay' (rol super_admin).
+-- admin_pais activo en el país, 'Administración EZPay' (rol super_admin).
 CREATE OR REPLACE FUNCTION public.chat_comercial_contactos()
 RETURNS TABLE (tipo text, comercial_id uuid, contraparte_id uuid, contraparte_nombre text, contraparte_rol text, hilo_id uuid)
 LANGUAGE plpgsql
@@ -304,7 +304,7 @@ BEGIN
               WHEN c.tipo = 'supervision' THEN (SELECT s.nombre_completo FROM public.perfiles s WHERE s.id = c.supervisor_id)
               WHEN EXISTS (SELECT 1 FROM public.perfiles a WHERE a.rol = 'admin_pais' AND a.pais_id = c.pais_id AND a.activo IS TRUE)
                 THEN 'Administración de país'
-              ELSE 'Administración EzPay' END,
+              ELSE 'Administración EZPay' END,
          CASE WHEN c.comercial_id <> v_uid THEN c.dueno_rol
               WHEN c.tipo = 'supervision' THEN 'supervisor_comercial'
               WHEN EXISTS (SELECT 1 FROM public.perfiles a WHERE a.rol = 'admin_pais' AND a.pais_id = c.pais_id AND a.activo IS TRUE)
@@ -390,7 +390,7 @@ BEGIN
               WHEN h.tipo = 'supervision' THEN (SELECT s.nombre_completo FROM public.perfiles s WHERE s.id = d.supervisor_id)
               WHEN EXISTS (SELECT 1 FROM public.perfiles a WHERE a.rol = 'admin_pais' AND a.pais_id = h.pais_id AND a.activo IS TRUE)
                 THEN 'Administración de país'
-              ELSE 'Administración EzPay' END,
+              ELSE 'Administración EZPay' END,
          u.created_at,
          left(u.cuerpo, 80),
          (SELECT count(*)::integer FROM public.chat_comercial_mensajes m
