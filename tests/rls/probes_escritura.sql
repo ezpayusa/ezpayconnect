@@ -39696,6 +39696,445 @@ EXCEPTION WHEN OTHERS THEN
 END $$;
 SELECT set_config('role', 'none', true);
 
+-- ================================================================================
+-- MIG 383 — chat comercial: notificación dentro de chat_comercial_enviar + ACL exacta de service_role
+-- (M383_FX + P1120-P1130). Pendiente de apply. Usa los helpers y el fixture de la 382 (pg_temp.m382_*).
+-- pg_temp.m383_estado(): 'ausente' (enviar sin notificación y service_role con arwdDxtm: el estado que deja la 382 y
+-- 383_rollback; también sin la 382), 'post' (enviar con la notificación y ACL exacta) o 'parcial (...)' (ROJO).
+-- Con la 383 ausente los probes publican 'PENDIENTE mig 383 (ausente)'.
+-- Las notificaciones se cuentan como postgres (sin RLS). Toda escritura se descarta con RAISE P0999 y se verifica contra
+-- pg_temp.m383_snap() (snapshot de la 382 + notificaciones 'chat_comercial' + private.app_secrets).
+-- El push se mide en la cola de pg_net (net.http_request_queue): filas propias de la transacción con la url de
+-- push_edge_url y id mayor al máximo previo (el worker no ve filas sin commit; el ROLLBACK las descarta).
+-- ================================================================================
+-- M383_FX: helpers de pg_temp de este bloque + estado de la 383. No toca datos.
+DO $$
+DECLARE est text;
+BEGIN
+  EXECUTE $fn$
+CREATE OR REPLACE FUNCTION pg_temp.m383_estado() RETURNS text LANGUAGE plpgsql AS $body$
+DECLARE e text; acl text;
+BEGIN
+  IF to_regclass('public.chat_comercial_mensajes') IS NULL OR to_regprocedure('public.chat_comercial_enviar(uuid,text)') IS NULL THEN
+    RETURN 'ausente';
+  END IF;
+  e := (SELECT p.prosrc FROM pg_proc p WHERE p.oid = to_regprocedure('public.chat_comercial_enviar(uuid,text)'));
+  acl := (SELECT string_agg(a.privilege_type, ',' ORDER BY a.privilege_type)
+            FROM pg_class c, aclexplode(c.relacl) a
+           WHERE c.oid IN ('public.chat_comercial_hilos'::regclass, 'public.chat_comercial_mensajes'::regclass, 'public.chat_comercial_lecturas'::regclass)
+             AND a.grantee = 'service_role'::regrole);
+  IF e NOT LIKE '%push_notificar%' AND acl LIKE '%TRUNCATE%' THEN RETURN 'ausente'; END IF;
+  IF e LIKE '%private.push_notificar(''notificaciones''%' AND e LIKE '%SET notificado = true%' AND e LIKE '%''chat_comercial''%'
+     AND acl = 'DELETE,DELETE,DELETE,INSERT,INSERT,INSERT,SELECT,SELECT,SELECT,UPDATE,UPDATE,UPDATE' THEN
+    RETURN 'post';
+  END IF;
+  RETURN 'parcial (notificacion '||(e LIKE '%push_notificar%')::text||', acl service_role '||COALESCE(acl, 'NULL')||')';
+END
+$body$
+$fn$;
+  -- notificaciones 'chat_comercial' de p_uid para el hilo p_hilo
+  EXECUTE $fn$
+CREATE OR REPLACE FUNCTION pg_temp.m383_n(p_uid uuid, p_hilo text) RETURNS integer LANGUAGE sql AS $body$
+  SELECT count(*)::integer FROM public.notificaciones n
+   WHERE n.usuario_id = p_uid AND n.tipo = 'chat_comercial' AND n.metadata ->> 'hilo_id' = p_hilo
+$body$
+$fn$;
+  -- la notificación de p_uid para el hilo: tipo|titulo|mensaje|accion_url|pais_id|mensaje_id
+  EXECUTE $fn$
+CREATE OR REPLACE FUNCTION pg_temp.m383_fila(p_uid uuid, p_hilo text) RETURNS text LANGUAGE sql AS $body$
+  SELECT string_agg(n.tipo||'|'||n.titulo||'|'||n.mensaje||'|'||COALESCE(n.accion_url, 'NULL')||'|'||COALESCE(n.pais_id::text, 'NULL')
+                    ||'|'||COALESCE(n.metadata ->> 'mensaje_id', 'NULL'), ' ## ' ORDER BY n.created_at)
+    FROM public.notificaciones n
+   WHERE n.usuario_id = p_uid AND n.tipo = 'chat_comercial' AND n.metadata ->> 'hilo_id' = p_hilo
+$body$
+$fn$;
+  -- filas propias en la cola de pg_net hacia la url de push, con id > p_desde
+  EXECUTE $fn$
+CREATE OR REPLACE FUNCTION pg_temp.m383_cola(p_desde bigint) RETURNS integer LANGUAGE sql AS $body$
+  SELECT count(*)::integer FROM net.http_request_queue q
+   WHERE q.id > p_desde AND q.url = (SELECT s.valor FROM private.app_secrets s WHERE s.nombre = 'push_edge_url')
+$body$
+$fn$;
+  EXECUTE $fn$
+CREATE OR REPLACE FUNCTION pg_temp.m383_snap() RETURNS text LANGUAGE sql AS $body$
+  SELECT pg_temp.m382_snap()
+    ||'|'||(SELECT count(*) FROM public.notificaciones n WHERE n.tipo = 'chat_comercial')::text
+    ||'|'||md5(COALESCE((SELECT string_agg(s.nombre||'='||md5(COALESCE(s.valor, '')), ',' ORDER BY s.nombre) FROM private.app_secrets s), ''))
+$body$
+$fn$;
+  est := pg_temp.m383_estado();
+  PERFORM set_config('probe.m383_fx', CASE WHEN est = 'ausente' THEN 'PENDIENTE mig 383 (ausente; helpers de pg_temp creados)'
+    WHEN est = 'post' THEN 'OK (helpers de pg_temp creados; estado de la 383: post)'
+    ELSE 'ROJO (383 '||est||'; helpers de pg_temp creados)' END, false);
+EXCEPTION WHEN OTHERS THEN
+  PERFORM set_config('probe.m383_fx', 'FALLO ('||SQLSTATE||' '||SQLERRM||')', false);
+END $$;
+
+-- ---------------- P1120 383: ACL exacta de service_role, forma de enviar y las otras 8 funciones intactas ----------------
+DO $$
+DECLARE est text; d text := ''; r record; v_acl text;
+BEGIN
+  est := pg_temp.m383_estado();
+  IF est = 'ausente' THEN PERFORM set_config('probe.p1120', 'PENDIENTE mig 383 (ausente)', false); RETURN; END IF;
+  IF est <> 'post' THEN PERFORM set_config('probe.p1120', 'ROJO (383 '||est||')', false); RETURN; END IF;
+  FOR r IN SELECT t FROM unnest(ARRAY['chat_comercial_hilos', 'chat_comercial_mensajes', 'chat_comercial_lecturas']) t LOOP
+    SELECT string_agg(CASE WHEN a.grantee = 0 THEN 'PUBLIC' ELSE a.grantee::regrole::text END || ':' || a.privilege_type, ','
+                      ORDER BY CASE WHEN a.grantee = 0 THEN 'PUBLIC' ELSE a.grantee::regrole::text END, a.privilege_type)
+      INTO v_acl FROM pg_class c, aclexplode(COALESCE(c.relacl, acldefault('r', c.relowner))) a WHERE c.oid = ('public.'||r.t)::regclass;
+    d := d || pg_temp.m382_eq('acl_'||r.t, v_acl,
+      'authenticated:SELECT,postgres:DELETE,postgres:INSERT,postgres:MAINTAIN,postgres:REFERENCES,postgres:SELECT,postgres:TRIGGER,postgres:TRUNCATE,postgres:UPDATE,service_role:DELETE,service_role:INSERT,service_role:SELECT,service_role:UPDATE');
+  END LOOP;
+  IF NOT EXISTS (SELECT 1 FROM pg_proc p WHERE p.oid = to_regprocedure('public.chat_comercial_enviar(uuid,text)')
+                    AND p.prorettype = 'uuid'::regtype AND p.prosecdef AND p.proconfig @> ARRAY['search_path=""']) THEN
+    d := d || 'X:enviar firma/retorno/DEFINER/search_path; ';
+  END IF;
+  IF has_function_privilege('anon', 'public.chat_comercial_enviar(uuid,text)', 'EXECUTE') THEN d := d || 'FUGA:anon ejecuta enviar; '; END IF;
+  IF EXISTS (SELECT 1 FROM pg_proc p, aclexplode(COALESCE(p.proacl, acldefault('f', p.proowner))) a
+              WHERE p.oid = to_regprocedure('public.chat_comercial_enviar(uuid,text)') AND a.grantee = 0) THEN d := d || 'FUGA:PUBLIC ejecuta enviar; '; END IF;
+  IF NOT has_function_privilege('authenticated', 'public.chat_comercial_enviar(uuid,text)', 'EXECUTE') THEN d := d || 'X:authenticated sin EXECUTE en enviar; '; END IF;
+  -- las otras 8 de la 382: por contenido (el runner del harness quita comentarios del cuerpo enviado, no del objeto vivo)
+  FOR r IN SELECT f, m FROM (VALUES
+      ('public.chat_comercial_contactos()', 'be86285010efb72f9a5ed15ad53f4e61'), ('public.chat_comercial_abrir(text,uuid)', 'ddd5557ffc2981586a473bf28a364529'),
+      ('public.chat_comercial_mis_hilos()', '34b5c2aa9b67ac55cb851947c66dd6cf'), ('public.chat_comercial_mensajes(uuid,timestamptz,integer)', '2cfc395fd0c8caebb5034c27368e2115'),
+      ('public.chat_comercial_marcar_leido(uuid)', '1fa96a651fc13b1313d2a6185400cc8a'), ('private.puede_ver_hilo_comercial(uuid)', 'e9bdbcda865ec37a121b600af8cf3129'),
+      ('private.chat_comercial_relacion(text,uuid,uuid,boolean)', '90b45ee36594b78b6180c8ffda303962'), ('private.trg_chat_comercial_hilos_guard()', '6fd8781d3828cd80efffc03249134851')) v(f, m) LOOP
+    d := d || pg_temp.m382_eq('md5_'||r.f, (SELECT md5(p.prosrc) FROM pg_proc p WHERE p.oid = to_regprocedure(r.f)), r.m);
+  END LOOP;
+  PERFORM set_config('probe.p1120', pg_temp.m382_veredicto(d, '', '', 'ACL exacta en las 3 (service_role arwd, authenticated r, anon nada); enviar DEFINER sin PUBLIC ni anon; las otras 8 funciones de la 382 sin cambio'), false);
+EXCEPTION WHEN OTHERS THEN
+  PERFORM set_config('probe.p1120', 'FALLO ('||SQLSTATE||' '||SQLERRM||')', false);
+END $$;
+
+-- ---------------- P1121 383: el asesor escribe en 'supervision' -> el supervisor recibe 1; el asesor 0 ----------------
+DO $$
+DECLARE est text; pre text; post text; d text := ''; hs text; m text;
+  c_a1 CONSTANT uuid := '80894d85-eac6-4117-8211-45d3b2be5cdb'; c_sup CONSTANT uuid := '881fbfbb-122d-4c9d-86c6-1dabd3efea1d';
+  c_gt CONSTANT uuid := 'cbbbbe6d-59fe-4cf2-91ee-3e31ba1d5909';
+BEGIN
+  est := pg_temp.m383_estado();
+  IF est = 'ausente' THEN PERFORM set_config('probe.p1121', 'PENDIENTE mig 383 (ausente)', false); RETURN; END IF;
+  IF est <> 'post' THEN PERFORM set_config('probe.p1121', 'ROJO (383 '||est||')', false); RETURN; END IF;
+  pre := pg_temp.m383_snap();
+  BEGIN
+    PERFORM pg_temp.m382_fijar();
+    hs := pg_temp.m382_val(pg_temp.m382_abrir(c_a1, 'supervision', c_a1));
+    m := pg_temp.m382_enviar(c_a1, hs, 'hola supervisor');  d := d || pg_temp.m382_chk('enviar', m, 'OK');
+    d := d || pg_temp.m382_eq('sup_recibe', pg_temp.m383_n(c_sup, hs)::text, '1');
+    d := d || pg_temp.m382_eq('asesor_no_recibe', pg_temp.m383_n(c_a1, hs)::text, '0');
+    d := d || pg_temp.m382_eq('fila_sup', pg_temp.m383_fila(c_sup, hs),
+      'chat_comercial|Nuevo mensaje|'||(SELECT nombre_completo FROM public.perfiles WHERE id = c_a1)||' te escribió|/comercial/mensajes/'||hs||'|'||c_gt::text||'|'||pg_temp.m382_val(m));
+    d := d || pg_temp.m382_eq('notificado', (SELECT notificado::text FROM public.chat_comercial_mensajes WHERE id = pg_temp.m382_val(m)::uuid), 'true');
+    RAISE EXCEPTION 'P1121 descarte' USING ERRCODE = 'P0999';
+  EXCEPTION WHEN SQLSTATE 'P0999' THEN NULL;
+  END;
+  post := pg_temp.m383_snap();
+  PERFORM set_config('probe.p1121', pg_temp.m382_veredicto(d, pre, post, 'asesor -> supervision: el supervisor 1 (tipo, titulo, "<autor> te escribió", /comercial/mensajes/<hilo>, pais, mensaje_id); el asesor 0; notificado'), false);
+EXCEPTION WHEN OTHERS THEN
+  PERFORM set_config('probe.p1121', 'FALLO ('||SQLSTATE||' '||SQLERRM||')', false);
+END $$;
+
+-- ---------------- P1122 383: el supervisor responde -> el asesor recibe 1 ----------------
+DO $$
+DECLARE est text; pre text; post text; d text := ''; hs text;
+  c_a1 CONSTANT uuid := '80894d85-eac6-4117-8211-45d3b2be5cdb'; c_sup CONSTANT uuid := '881fbfbb-122d-4c9d-86c6-1dabd3efea1d';
+BEGIN
+  est := pg_temp.m383_estado();
+  IF est = 'ausente' THEN PERFORM set_config('probe.p1122', 'PENDIENTE mig 383 (ausente)', false); RETURN; END IF;
+  IF est <> 'post' THEN PERFORM set_config('probe.p1122', 'ROJO (383 '||est||')', false); RETURN; END IF;
+  pre := pg_temp.m383_snap();
+  BEGIN
+    PERFORM pg_temp.m382_fijar();
+    hs := pg_temp.m382_val(pg_temp.m382_abrir(c_sup, 'supervision', c_a1));
+    d := d || pg_temp.m382_chk('sup_envia', pg_temp.m382_enviar(c_sup, hs, 'respuesta'), 'OK');
+    d := d || pg_temp.m382_eq('asesor_recibe', pg_temp.m383_n(c_a1, hs)::text, '1');
+    d := d || pg_temp.m382_eq('sup_no_recibe', pg_temp.m383_n(c_sup, hs)::text, '0');
+    d := d || pg_temp.m382_eq('url_asesor', (SELECT accion_url FROM public.notificaciones WHERE usuario_id = c_a1 AND tipo = 'chat_comercial' AND metadata ->> 'hilo_id' = hs), '/comercial/mensajes/'||hs);
+    RAISE EXCEPTION 'P1122 descarte' USING ERRCODE = 'P0999';
+  EXCEPTION WHEN SQLSTATE 'P0999' THEN NULL;
+  END;
+  post := pg_temp.m383_snap();
+  PERFORM set_config('probe.p1122', pg_temp.m382_veredicto(d, pre, post, 'supervisor -> supervision: el asesor 1 con /comercial/mensajes/<hilo>; el supervisor 0'), false);
+EXCEPTION WHEN OTHERS THEN
+  PERFORM set_config('probe.p1122', 'FALLO ('||SQLSTATE||' '||SQLERRM||')', false);
+END $$;
+
+-- ---------------- P1123 383: 'pais' en GT -> cada admin_pais activo de GT recibe 1; nadie más ----------------
+DO $$
+DECLARE est text; pre text; post text; d text := ''; hp text; v_esp int;
+  c_a1 CONSTANT uuid := '80894d85-eac6-4117-8211-45d3b2be5cdb'; c_ap CONSTANT uuid := '8f391caf-85bc-4413-af8a-4006452ae09f';
+  c_apf CONSTANT uuid := '85a3faf8-9986-4c8e-821b-4351473a91f0'; c_sa CONSTANT uuid := '41904e2c-5ef3-4fee-bd48-9ea58e0c8c37';
+  c_sup CONSTANT uuid := '881fbfbb-122d-4c9d-86c6-1dabd3efea1d'; c_gt CONSTANT uuid := 'cbbbbe6d-59fe-4cf2-91ee-3e31ba1d5909';
+BEGIN
+  est := pg_temp.m383_estado();
+  IF est = 'ausente' THEN PERFORM set_config('probe.p1123', 'PENDIENTE mig 383 (ausente)', false); RETURN; END IF;
+  IF est <> 'post' THEN PERFORM set_config('probe.p1123', 'ROJO (383 '||est||')', false); RETURN; END IF;
+  pre := pg_temp.m383_snap();
+  BEGIN
+    PERFORM pg_temp.m382_fijar();
+    v_esp := (SELECT count(*) FROM public.perfiles WHERE rol = 'admin_pais' AND activo IS TRUE AND pais_id = c_gt);
+    hp := pg_temp.m382_val(pg_temp.m382_abrir(c_a1, 'pais', c_a1));
+    d := d || pg_temp.m382_chk('enviar', pg_temp.m382_enviar(c_a1, hp, 'para el pais'), 'OK');
+    d := d || pg_temp.m382_eq('admins_gt_activos', v_esp::text, '2');
+    d := d || pg_temp.m382_eq('ap_recibe', pg_temp.m383_n(c_ap, hp)::text, '1');
+    d := d || pg_temp.m382_eq('apf_recibe', pg_temp.m383_n(c_apf, hp)::text, '1');
+    d := d || pg_temp.m382_eq('total', (SELECT count(*)::text FROM public.notificaciones WHERE tipo = 'chat_comercial' AND metadata ->> 'hilo_id' = hp), v_esp::text);
+    d := d || pg_temp.m382_eq('sa_no_recibe', pg_temp.m383_n(c_sa, hp)::text, '0');
+    d := d || pg_temp.m382_eq('sup_no_recibe', pg_temp.m383_n(c_sup, hp)::text, '0');
+    d := d || pg_temp.m382_eq('asesor_no_recibe', pg_temp.m383_n(c_a1, hp)::text, '0');
+    d := d || pg_temp.m382_eq('url_admin', (SELECT accion_url FROM public.notificaciones WHERE usuario_id = c_ap AND tipo = 'chat_comercial' AND metadata ->> 'hilo_id' = hp),
+                              '/admin-ezpay/pais/'||c_gt::text||'/mensajes/'||hp);
+    RAISE EXCEPTION 'P1123 descarte' USING ERRCODE = 'P0999';
+  EXCEPTION WHEN SQLSTATE 'P0999' THEN NULL;
+  END;
+  post := pg_temp.m383_snap();
+  PERFORM set_config('probe.p1123', pg_temp.m382_veredicto(d, pre, post, 'asesor -> pais GT: los 2 admin_pais activos 1 cada uno con /admin-ezpay/pais/<GT>/mensajes/<hilo>; super_admin, supervisor y asesor 0'), false);
+EXCEPTION WHEN OTHERS THEN
+  PERFORM set_config('probe.p1123', 'FALLO ('||SQLSTATE||' '||SQLERRM||')', false);
+END $$;
+
+-- ---------------- P1124 383: 'pais' en ZZ (sin admin_pais activo) -> los super_admin activos reciben 1 ----------------
+DO $$
+DECLARE est text; pre text; post text; d text := ''; hz text; v_esp int;
+  c_cam CONSTANT uuid := '178b2985-beb9-4d20-929d-447507c6ffe1'; c_val CONSTANT uuid := 'fbaf0d63-a3d8-47db-9626-b447f8b81694';
+  c_sa CONSTANT uuid := '41904e2c-5ef3-4fee-bd48-9ea58e0c8c37'; c_zz CONSTANT uuid := 'fb3fc165-5be8-41f2-8d67-c60a6de7ec88';
+BEGIN
+  est := pg_temp.m383_estado();
+  IF est = 'ausente' THEN PERFORM set_config('probe.p1124', 'PENDIENTE mig 383 (ausente)', false); RETURN; END IF;
+  IF est <> 'post' THEN PERFORM set_config('probe.p1124', 'ROJO (383 '||est||')', false); RETURN; END IF;
+  pre := pg_temp.m383_snap();
+  BEGIN
+    PERFORM pg_temp.m382_fijar();
+    v_esp := (SELECT count(*) FROM public.perfiles WHERE rol = 'super_admin' AND activo IS TRUE);
+    hz := pg_temp.m382_val(pg_temp.m382_abrir(c_cam, 'pais', c_cam));
+    d := d || pg_temp.m382_chk('enviar', pg_temp.m382_enviar(c_cam, hz, 'para el pais ZZ'), 'OK');
+    d := d || pg_temp.m382_eq('sin_admin_zz', (SELECT count(*)::text FROM public.perfiles WHERE rol = 'admin_pais' AND activo IS TRUE AND pais_id = c_zz), '0');
+    d := d || pg_temp.m382_eq('sa_recibe', pg_temp.m383_n(c_sa, hz)::text, '1');
+    d := d || pg_temp.m382_eq('total_super_admins', (SELECT count(*)::text FROM public.notificaciones n JOIN public.perfiles p ON p.id = n.usuario_id
+                                                       WHERE n.tipo = 'chat_comercial' AND n.metadata ->> 'hilo_id' = hz AND p.rol = 'super_admin'), v_esp::text);
+    d := d || pg_temp.m382_eq('total', (SELECT count(*)::text FROM public.notificaciones WHERE tipo = 'chat_comercial' AND metadata ->> 'hilo_id' = hz), v_esp::text);
+    d := d || pg_temp.m382_eq('supervisora_no_recibe', pg_temp.m383_n(c_val, hz)::text, '0');
+    d := d || pg_temp.m382_eq('autora_no_recibe', pg_temp.m383_n(c_cam, hz)::text, '0');
+    d := d || pg_temp.m382_eq('url_sa', (SELECT accion_url FROM public.notificaciones WHERE usuario_id = c_sa AND tipo = 'chat_comercial' AND metadata ->> 'hilo_id' = hz),
+                              '/admin-ezpay/pais/'||c_zz::text||'/mensajes/'||hz);
+    RAISE EXCEPTION 'P1124 descarte' USING ERRCODE = 'P0999';
+  EXCEPTION WHEN SQLSTATE 'P0999' THEN NULL;
+  END;
+  post := pg_temp.m383_snap();
+  PERFORM set_config('probe.p1124', pg_temp.m382_veredicto(d, pre, post, 'asesora -> pais ZZ sin admin_pais: cada super_admin activo 1 con /admin-ezpay/pais/<ZZ>/mensajes/<hilo>; supervisora y autora 0'), false);
+EXCEPTION WHEN OTHERS THEN
+  PERFORM set_config('probe.p1124', 'FALLO ('||SQLSTATE||' '||SQLERRM||')', false);
+END $$;
+
+-- ---------------- P1125 383: el super_admin escribe en 'supervision' -> asesor y supervisor 1; él 0 ----------------
+DO $$
+DECLARE est text; pre text; post text; d text := ''; hs text;
+  c_a1 CONSTANT uuid := '80894d85-eac6-4117-8211-45d3b2be5cdb'; c_sup CONSTANT uuid := '881fbfbb-122d-4c9d-86c6-1dabd3efea1d';
+  c_sa CONSTANT uuid := '41904e2c-5ef3-4fee-bd48-9ea58e0c8c37';
+BEGIN
+  est := pg_temp.m383_estado();
+  IF est = 'ausente' THEN PERFORM set_config('probe.p1125', 'PENDIENTE mig 383 (ausente)', false); RETURN; END IF;
+  IF est <> 'post' THEN PERFORM set_config('probe.p1125', 'ROJO (383 '||est||')', false); RETURN; END IF;
+  pre := pg_temp.m383_snap();
+  BEGIN
+    PERFORM pg_temp.m382_fijar();
+    hs := pg_temp.m382_val(pg_temp.m382_abrir(c_sa, 'supervision', c_a1));
+    d := d || pg_temp.m382_chk('sa_envia', pg_temp.m382_enviar(c_sa, hs, 'del super admin'), 'OK');
+    d := d || pg_temp.m382_eq('asesor_recibe', pg_temp.m383_n(c_a1, hs)::text, '1');
+    d := d || pg_temp.m382_eq('sup_recibe', pg_temp.m383_n(c_sup, hs)::text, '1');
+    d := d || pg_temp.m382_eq('sa_no_recibe', pg_temp.m383_n(c_sa, hs)::text, '0');
+    d := d || pg_temp.m382_eq('urls', (SELECT string_agg(DISTINCT accion_url, ',') FROM public.notificaciones WHERE tipo = 'chat_comercial' AND metadata ->> 'hilo_id' = hs),
+                              '/comercial/mensajes/'||hs);
+    RAISE EXCEPTION 'P1125 descarte' USING ERRCODE = 'P0999';
+  EXCEPTION WHEN SQLSTATE 'P0999' THEN NULL;
+  END;
+  post := pg_temp.m383_snap();
+  PERFORM set_config('probe.p1125', pg_temp.m382_veredicto(d, pre, post, 'super_admin -> supervision: asesor 1 y supervisor 1 con /comercial/mensajes/<hilo>; el super_admin 0'), false);
+EXCEPTION WHEN OTHERS THEN
+  PERFORM set_config('probe.p1125', 'FALLO ('||SQLSTATE||' '||SQLERRM||')', false);
+END $$;
+
+-- ---------------- P1126 383: anti-spam: con una no leída del hilo no se crea otra; leída -> 1 nueva ----------------
+DO $$
+DECLARE est text; pre text; post text; d text := ''; hs text; hp text; m2 text; v_cola bigint; v_c1 int; v_c2 int;
+  c_a1 CONSTANT uuid := '80894d85-eac6-4117-8211-45d3b2be5cdb'; c_sup CONSTANT uuid := '881fbfbb-122d-4c9d-86c6-1dabd3efea1d';
+BEGIN
+  est := pg_temp.m383_estado();
+  IF est = 'ausente' THEN PERFORM set_config('probe.p1126', 'PENDIENTE mig 383 (ausente)', false); RETURN; END IF;
+  IF est <> 'post' THEN PERFORM set_config('probe.p1126', 'ROJO (383 '||est||')', false); RETURN; END IF;
+  pre := pg_temp.m383_snap();
+  BEGIN
+    PERFORM pg_temp.m382_fijar();
+    v_cola := COALESCE((SELECT max(id) FROM net.http_request_queue), 0);
+    hs := pg_temp.m382_val(pg_temp.m382_abrir(c_a1, 'supervision', c_a1));
+    hp := pg_temp.m382_val(pg_temp.m382_abrir(c_a1, 'pais', c_a1));
+    PERFORM pg_temp.m382_enviar(c_a1, hs, 'uno');
+    v_c1 := pg_temp.m383_cola(v_cola);
+    m2 := pg_temp.m382_enviar(c_a1, hs, 'dos');
+    v_c2 := pg_temp.m383_cola(v_cola);
+    d := d || pg_temp.m382_eq('segundo_sin_leer_0_nuevas', pg_temp.m383_n(c_sup, hs)::text, '1');
+    d := d || pg_temp.m382_eq('segundo_sin_push', (v_c2 - v_c1)::text, '0');
+    d := d || pg_temp.m382_eq('segundo_notificado', (SELECT notificado::text FROM public.chat_comercial_mensajes WHERE id = pg_temp.m382_val(m2)::uuid), 'true');
+    -- control: otro hilo del mismo destinatario no queda bloqueado (el admin, por el pais)
+    d := d || pg_temp.m382_chk('pais_envia', pg_temp.m382_enviar(c_a1, hp, 'al pais'), 'OK');
+    d := d || pg_temp.m382_eq('otro_hilo_si_notifica', (SELECT count(*)::text FROM public.notificaciones WHERE tipo = 'chat_comercial' AND metadata ->> 'hilo_id' = hp), '2');
+    -- leida -> el siguiente vuelve a notificar
+    UPDATE public.notificaciones SET leida = true WHERE usuario_id = c_sup AND tipo = 'chat_comercial' AND metadata ->> 'hilo_id' = hs;
+    v_c1 := pg_temp.m383_cola(v_cola);
+    PERFORM pg_temp.m382_enviar(c_a1, hs, 'tres');
+    d := d || pg_temp.m382_eq('tras_leer_1_nueva', pg_temp.m383_n(c_sup, hs)::text, '2');
+    d := d || pg_temp.m382_eq('tras_leer_no_leidas', (SELECT count(*)::text FROM public.notificaciones WHERE usuario_id = c_sup AND tipo = 'chat_comercial'
+                                                         AND metadata ->> 'hilo_id' = hs AND leida IS NOT TRUE), '1');
+    d := d || pg_temp.m382_eq('tras_leer_push', (pg_temp.m383_cola(v_cola) - v_c1)::text, '1');
+    RAISE EXCEPTION 'P1126 descarte' USING ERRCODE = 'P0999';
+  EXCEPTION WHEN SQLSTATE 'P0999' THEN NULL;
+  END;
+  post := pg_temp.m383_snap();
+  PERFORM set_config('probe.p1126', pg_temp.m382_veredicto(d, pre, post, 'segundo mensaje con la anterior sin leer: 0 nuevas y 0 push (notificado igual); otro hilo notifica; tras marcarla leida: 1 nueva y 1 push'), false);
+EXCEPTION WHEN OTHERS THEN
+  PERFORM set_config('probe.p1126', 'FALLO ('||SQLSTATE||' '||SQLERRM||')', false);
+END $$;
+
+-- ---------------- P1127 383: un destinatario inactivo no recibe nada ----------------
+DO $$
+DECLARE est text; pre text; post text; d text := ''; hs text; hp text;
+  c_a1 CONSTANT uuid := '80894d85-eac6-4117-8211-45d3b2be5cdb'; c_sup CONSTANT uuid := '881fbfbb-122d-4c9d-86c6-1dabd3efea1d';
+  c_ap CONSTANT uuid := '8f391caf-85bc-4413-af8a-4006452ae09f'; c_apf CONSTANT uuid := '85a3faf8-9986-4c8e-821b-4351473a91f0';
+  c_sa CONSTANT uuid := '41904e2c-5ef3-4fee-bd48-9ea58e0c8c37';
+BEGIN
+  est := pg_temp.m383_estado();
+  IF est = 'ausente' THEN PERFORM set_config('probe.p1127', 'PENDIENTE mig 383 (ausente)', false); RETURN; END IF;
+  IF est <> 'post' THEN PERFORM set_config('probe.p1127', 'ROJO (383 '||est||')', false); RETURN; END IF;
+  pre := pg_temp.m383_snap();
+  BEGIN
+    PERFORM pg_temp.m382_fijar();
+    hs := pg_temp.m382_val(pg_temp.m382_abrir(c_a1, 'supervision', c_a1));
+    hp := pg_temp.m382_val(pg_temp.m382_abrir(c_a1, 'pais', c_a1));
+    -- (a) supervisor con el perfil inactivo; escribe el super_admin (el hilo está cerrado para el resto)
+    UPDATE public.perfiles SET activo = false WHERE id = c_sup;
+    d := d || pg_temp.m382_chk('a_sa_envia', pg_temp.m382_enviar(c_sa, hs, 'a'), 'OK');
+    d := d || pg_temp.m382_eq('a_sup_inactivo_0', pg_temp.m383_n(c_sup, hs)::text, '0');
+    d := d || pg_temp.m382_eq('a_asesor_activo_1', pg_temp.m383_n(c_a1, hs)::text, '1');
+    UPDATE public.perfiles SET activo = true WHERE id = c_sup;
+    -- (b) un admin_pais inactivo
+    UPDATE public.perfiles SET activo = false WHERE id = c_apf;
+    d := d || pg_temp.m382_chk('b_asesor_envia', pg_temp.m382_enviar(c_a1, hp, 'b'), 'OK');
+    d := d || pg_temp.m382_eq('b_apf_inactivo_0', pg_temp.m383_n(c_apf, hp)::text, '0');
+    d := d || pg_temp.m382_eq('b_ap_activo_1', pg_temp.m383_n(c_ap, hp)::text, '1');
+    UPDATE public.perfiles SET activo = true WHERE id = c_apf;
+    -- (c) la ficha del asesor inactiva; escribe el super_admin en 'supervision'
+    UPDATE public.notificaciones SET leida = true WHERE tipo = 'chat_comercial' AND metadata ->> 'hilo_id' IN (hs, hp);
+    UPDATE public.asesores_perfil SET activo = false WHERE id = c_a1;
+    d := d || pg_temp.m382_chk('c_sa_envia', pg_temp.m382_enviar(c_sa, hs, 'c'), 'OK');
+    d := d || pg_temp.m382_eq('c_asesor_ficha_inactiva_0', (SELECT count(*)::text FROM public.notificaciones WHERE usuario_id = c_a1 AND tipo = 'chat_comercial'
+                                                              AND metadata ->> 'hilo_id' = hs AND leida IS NOT TRUE), '0');
+    d := d || pg_temp.m382_eq('c_sup_activo_1', (SELECT count(*)::text FROM public.notificaciones WHERE usuario_id = c_sup AND tipo = 'chat_comercial'
+                                                   AND metadata ->> 'hilo_id' = hs AND leida IS NOT TRUE), '1');
+    RAISE EXCEPTION 'P1127 descarte' USING ERRCODE = 'P0999';
+  EXCEPTION WHEN SQLSTATE 'P0999' THEN NULL;
+  END;
+  post := pg_temp.m383_snap();
+  PERFORM set_config('probe.p1127', pg_temp.m382_veredicto(d, pre, post, 'supervisor inactivo, admin_pais inactivo y ficha del asesor inactiva: 0 para el inactivo; el activo de control recibe 1'), false);
+EXCEPTION WHEN OTHERS THEN
+  PERFORM set_config('probe.p1127', 'FALLO ('||SQLSTATE||' '||SQLERRM||')', false);
+END $$;
+
+-- ---------------- P1128 383: el texto del mensaje no aparece en ninguna columna de notificaciones ----------------
+DO $$
+DECLARE est text; pre text; post text; d text := ''; hs text; hp text; v_sent text := 'SENTINELA383_' || replace(gen_random_uuid()::text, '-', '');
+  c_a1 CONSTANT uuid := '80894d85-eac6-4117-8211-45d3b2be5cdb';
+BEGIN
+  est := pg_temp.m383_estado();
+  IF est = 'ausente' THEN PERFORM set_config('probe.p1128', 'PENDIENTE mig 383 (ausente)', false); RETURN; END IF;
+  IF est <> 'post' THEN PERFORM set_config('probe.p1128', 'ROJO (383 '||est||')', false); RETURN; END IF;
+  pre := pg_temp.m383_snap();
+  BEGIN
+    PERFORM pg_temp.m382_fijar();
+    hs := pg_temp.m382_val(pg_temp.m382_abrir(c_a1, 'supervision', c_a1));
+    hp := pg_temp.m382_val(pg_temp.m382_abrir(c_a1, 'pais', c_a1));
+    PERFORM pg_temp.m382_enviar(c_a1, hs, 'secreto '||v_sent||' fin');
+    PERFORM pg_temp.m382_enviar(c_a1, hp, v_sent);
+    d := d || pg_temp.m382_eq('control_mensajes_con_sentinela', (SELECT count(*)::text FROM public.chat_comercial_mensajes WHERE cuerpo LIKE '%'||v_sent||'%'), '2');
+    d := d || pg_temp.m382_eq('control_notificaciones_creadas', (SELECT count(*)::text FROM public.notificaciones WHERE tipo = 'chat_comercial' AND metadata ->> 'hilo_id' IN (hs, hp)), '3');
+    IF (SELECT count(*) FROM public.notificaciones n WHERE n::text LIKE '%'||v_sent||'%') > 0 THEN
+      d := d || 'FUGA:el texto del mensaje aparece en notificaciones; ';
+    END IF;
+    RAISE EXCEPTION 'P1128 descarte' USING ERRCODE = 'P0999';
+  EXCEPTION WHEN SQLSTATE 'P0999' THEN NULL;
+  END;
+  post := pg_temp.m383_snap();
+  PERFORM set_config('probe.p1128', pg_temp.m382_veredicto(d, pre, post, 'sentinela en 2 mensajes; 3 notificaciones creadas; 0 filas de notificaciones (todas las columnas) con el sentinela'), false);
+EXCEPTION WHEN OTHERS THEN
+  PERFORM set_config('probe.p1128', 'FALLO ('||SQLSTATE||' '||SQLERRM||')', false);
+END $$;
+
+-- ---------------- P1129 383: toda accion_url generada pasa el CHECK y todo mensaje queda notificado ----------------
+DO $$
+DECLARE est text; pre text; post text; d text := ''; h1 text; h2 text; h3 text; h4 text;
+  c_a1 CONSTANT uuid := '80894d85-eac6-4117-8211-45d3b2be5cdb'; c_sup CONSTANT uuid := '881fbfbb-122d-4c9d-86c6-1dabd3efea1d';
+  c_cam CONSTANT uuid := '178b2985-beb9-4d20-929d-447507c6ffe1'; c_sa CONSTANT uuid := '41904e2c-5ef3-4fee-bd48-9ea58e0c8c37';
+BEGIN
+  est := pg_temp.m383_estado();
+  IF est = 'ausente' THEN PERFORM set_config('probe.p1129', 'PENDIENTE mig 383 (ausente)', false); RETURN; END IF;
+  IF est <> 'post' THEN PERFORM set_config('probe.p1129', 'ROJO (383 '||est||')', false); RETURN; END IF;
+  pre := pg_temp.m383_snap();
+  BEGIN
+    PERFORM pg_temp.m382_fijar();
+    h1 := pg_temp.m382_val(pg_temp.m382_abrir(c_a1, 'supervision', c_a1));
+    h2 := pg_temp.m382_val(pg_temp.m382_abrir(c_a1, 'pais', c_a1));
+    h3 := pg_temp.m382_val(pg_temp.m382_abrir(c_cam, 'pais', c_cam));
+    h4 := pg_temp.m382_val(pg_temp.m382_abrir(c_cam, 'supervision', c_cam));
+    PERFORM pg_temp.m382_enviar(c_a1, h1, 'x'); PERFORM pg_temp.m382_enviar(c_sup, h1, 'y');
+    PERFORM pg_temp.m382_enviar(c_a1, h2, 'x'); PERFORM pg_temp.m382_enviar(c_sa, h2, 'y');
+    PERFORM pg_temp.m382_enviar(c_cam, h3, 'x'); PERFORM pg_temp.m382_enviar(c_sa, h4, 'y');
+    d := d || pg_temp.m382_eq('control_hay_notificaciones', ((SELECT count(*) FROM public.notificaciones WHERE tipo = 'chat_comercial') > 6)::text, 'true');
+    d := d || pg_temp.m382_eq('urls_fuera_del_check', (SELECT count(*)::text FROM public.notificaciones WHERE tipo = 'chat_comercial' AND accion_url !~ '^/[A-Za-z0-9/_-]*$'), '0');
+    d := d || pg_temp.m382_eq('urls_fuera_del_formato', (SELECT count(*)::text FROM public.notificaciones WHERE tipo = 'chat_comercial'
+           AND accion_url NOT IN ('/comercial/mensajes/'||(metadata ->> 'hilo_id'), '/admin-ezpay/pais/'||pais_id::text||'/mensajes/'||(metadata ->> 'hilo_id'))), '0');
+    d := d || pg_temp.m382_eq('mensajes_sin_notificar', (SELECT count(*)::text FROM public.chat_comercial_mensajes WHERE NOT notificado), '0');
+    RAISE EXCEPTION 'P1129 descarte' USING ERRCODE = 'P0999';
+  EXCEPTION WHEN SQLSTATE 'P0999' THEN NULL;
+  END;
+  post := pg_temp.m383_snap();
+  PERFORM set_config('probe.p1129', pg_temp.m382_veredicto(d, pre, post, '6 envios en 4 hilos (GT y ZZ, comerciales y super_admin): toda accion_url pasa el CHECK y tiene la forma esperada; 0 mensajes sin notificar'), false);
+EXCEPTION WHEN OTHERS THEN
+  PERFORM set_config('probe.p1129', 'FALLO ('||SQLSTATE||' '||SQLERRM||')', false);
+END $$;
+
+-- ---------------- P1130 383: sin el secreto de push el envío y el aviso in-app funcionan (no-op del push) ----------------
+DO $$
+DECLARE est text; pre text; post text; d text := ''; hs text; hp text; v_cola bigint; v_c0 int; m text;
+  c_a1 CONSTANT uuid := '80894d85-eac6-4117-8211-45d3b2be5cdb'; c_sup CONSTANT uuid := '881fbfbb-122d-4c9d-86c6-1dabd3efea1d';
+BEGIN
+  est := pg_temp.m383_estado();
+  IF est = 'ausente' THEN PERFORM set_config('probe.p1130', 'PENDIENTE mig 383 (ausente)', false); RETURN; END IF;
+  IF est <> 'post' THEN PERFORM set_config('probe.p1130', 'ROJO (383 '||est||')', false); RETURN; END IF;
+  pre := pg_temp.m383_snap();
+  BEGIN
+    PERFORM pg_temp.m382_fijar();
+    v_cola := COALESCE((SELECT max(id) FROM net.http_request_queue), 0);
+    hs := pg_temp.m382_val(pg_temp.m382_abrir(c_a1, 'supervision', c_a1));
+    hp := pg_temp.m382_val(pg_temp.m382_abrir(c_a1, 'pais', c_a1));
+    -- control: con el secreto, 1 aviso al supervisor = 1 push en la cola
+    d := d || pg_temp.m382_chk('con_secreto_envia', pg_temp.m382_enviar(c_a1, hs, 'con secreto'), 'OK');
+    d := d || pg_temp.m382_eq('con_secreto_push', pg_temp.m383_cola(v_cola)::text, '1');
+    v_c0 := pg_temp.m383_cola(v_cola);
+    -- sin el secreto
+    DELETE FROM private.app_secrets WHERE nombre = 'push_secret';
+    m := pg_temp.m382_enviar(c_a1, hp, 'sin secreto');
+    d := d || pg_temp.m382_chk('sin_secreto_envia', m, 'OK');
+    d := d || pg_temp.m382_eq('sin_secreto_inapp', (SELECT count(*)::text FROM public.notificaciones WHERE tipo = 'chat_comercial' AND metadata ->> 'hilo_id' = hp), '2');
+    d := d || pg_temp.m382_eq('sin_secreto_sin_push', (pg_temp.m383_cola(v_cola) - v_c0)::text, '0');
+    d := d || pg_temp.m382_eq('sin_secreto_notificado', (SELECT notificado::text FROM public.chat_comercial_mensajes WHERE id = pg_temp.m382_val(m)::uuid), 'true');
+    RAISE EXCEPTION 'P1130 descarte' USING ERRCODE = 'P0999';
+  EXCEPTION WHEN SQLSTATE 'P0999' THEN NULL;
+  END;
+  post := pg_temp.m383_snap();
+  PERFORM set_config('probe.p1130', pg_temp.m382_veredicto(d, pre, post, 'con el secreto: 1 aviso = 1 push en la cola de pg_net; sin push_secret: el mensaje entra, 2 avisos in-app, 0 push, notificado'), false);
+EXCEPTION WHEN OTHERS THEN
+  PERFORM set_config('probe.p1130', 'FALLO ('||SQLSTATE||' '||SQLERRM||')', false);
+END $$;
+SELECT set_config('role', 'none', true);
+
 -- ===== Veredictos como result set =====
 SELECT 'P1_anon_insert_citas'              AS probe, current_setting('probe.p1', true)  AS verdict, 'BLOQUEADO' AS esperado_post_fix
 UNION ALL SELECT 'P2_medico_cancela_ajena_rpc',         current_setting('probe.p2', true),  'BLOQUEADO'
@@ -40903,6 +41342,18 @@ UNION ALL SELECT 'P1116_inexistente_igual_ajeno_382',  current_setting('probe.p1
 UNION ALL SELECT 'P1117_marcar_leido_382',  current_setting('probe.p1117', true), 'OK (382: marcar_leido pone no_leidos en 0; sin permiso 42501; sin la 382: PENDIENTE)'
 UNION ALL SELECT 'P1118_tipo_pa037_contactos_382',  current_setting('probe.p1118', true), 'OK (382: tipo invalido -> PA037; contactos con fallback al super_admin y sin datos de contacto; sin la 382: PENDIENTE)'
 UNION ALL SELECT 'P1119_guard_hilo_pa040_382',  current_setting('probe.p1119', true), 'OK (382: guard del hilo PA040/PA037, UNIQUE y CHECK; sin la 382: PENDIENTE)'
+UNION ALL SELECT 'M383_FX_helpers_notificacion_chat',  current_setting('probe.m383_fx', true), 'OK (helpers de pg_temp creados; estado de la 383: post; sin la 383: PENDIENTE; parcial: ROJO)'
+UNION ALL SELECT 'P1120_acl_service_role_enviar_383',  current_setting('probe.p1120', true), 'OK (383: ACL exacta en las 3 tablas, enviar DEFINER sin PUBLIC ni anon, las otras 8 de la 382 sin cambio; sin la 383: PENDIENTE)'
+UNION ALL SELECT 'P1121_asesor_notifica_supervisor_383',  current_setting('probe.p1121', true), 'OK (383: asesor en supervision -> el supervisor 1 con la ruta /comercial/mensajes; el asesor 0; sin la 383: PENDIENTE)'
+UNION ALL SELECT 'P1122_supervisor_notifica_asesor_383',  current_setting('probe.p1122', true), 'OK (383: el supervisor responde -> el asesor 1; sin la 383: PENDIENTE)'
+UNION ALL SELECT 'P1123_pais_gt_admins_383',  current_setting('probe.p1123', true), 'OK (383: pais GT -> cada admin_pais activo 1 con /admin-ezpay/pais/<GT>/mensajes; sin la 383: PENDIENTE)'
+UNION ALL SELECT 'P1124_pais_zz_super_admins_383',  current_setting('probe.p1124', true), 'OK (383: pais ZZ sin admin_pais -> los super_admin activos 1; sin la 383: PENDIENTE)'
+UNION ALL SELECT 'P1125_super_admin_notifica_383',  current_setting('probe.p1125', true), 'OK (383: el super_admin escribe -> asesor y supervisor 1, el 0; sin la 383: PENDIENTE)'
+UNION ALL SELECT 'P1126_antispam_383',  current_setting('probe.p1126', true), 'OK (383: con una no leida del hilo no se crea otra ni push; leida -> 1 nueva; sin la 383: PENDIENTE)'
+UNION ALL SELECT 'P1127_destinatario_inactivo_383',  current_setting('probe.p1127', true), 'OK (383: un destinatario inactivo no recibe; sin la 383: PENDIENTE)'
+UNION ALL SELECT 'P1128_sin_texto_en_notificacion_383',  current_setting('probe.p1128', true), 'OK (383: el texto del mensaje no aparece en notificaciones; sin la 383: PENDIENTE)'
+UNION ALL SELECT 'P1129_accion_url_check_notificado_383',  current_setting('probe.p1129', true), 'OK (383: toda accion_url pasa el CHECK; todo mensaje notificado; sin la 383: PENDIENTE)'
+UNION ALL SELECT 'P1130_sin_secreto_push_383',  current_setting('probe.p1130', true), 'OK (383: sin push_secret el envio y el aviso in-app funcionan, 0 push; sin la 383: PENDIENTE)'
 UNION ALL SELECT 'P1010_campana_vistas_sin_update_367',  current_setting('probe.p1010', true), 'OK (367: INSERT 1; ON CONFLICT DO NOTHING 0 sin error; DO UPDATE y UPDATE 42501; otro paciente 0; antes de la 367: PENDIENTE)'
 UNION ALL SELECT 'P1009_datos_bancarios_acotados_366',  current_setting('probe.p1009', true), 'OK (366: cuenta GT solo super_admin/admin_pais GT/proveedores GT; checkout 1 fila; config 21 super_admin y 14 el resto, admin_pais incluido; antes de la 366: PENDIENTE)'
 UNION ALL SELECT 'DET_p1009',  'DET ' || COALESCE(NULLIF(current_setting('probe.p1009_det', true), ''), '(sin dato)'), 'DET (detalle de P1009, no es probe)'
@@ -41155,7 +41606,7 @@ UNION ALL SELECT 'P000_CENTINELA_veredictos_no_nulos',
        'probe.p866', 'probe.p867', 'probe.p868', 'probe.p869', 'probe.p870', 'probe.p871', 'probe.p872', 'probe.p873', 'probe.p874', 'probe.p875', 'probe.p876', 'probe.p877', 'probe.p878',
        'probe.p879', 'probe.p880', 'probe.p881', 'probe.p882', 'probe.p883', 'probe.p884',
        'probe.p885', 'probe.p886', 'probe.p887', 'probe.p888', 'probe.p889', 'probe.p890', 'probe.p891', 'probe.p892', 'probe.p893', 'probe.p894', 'probe.p895', 'probe.p896', 'probe.p908', 'probe.p909', 'probe.p910', 'probe.p911',
-       'probe.p897', 'probe.p898', 'probe.p899', 'probe.p900', 'probe.p901', 'probe.p902', 'probe.p903', 'probe.p904', 'probe.p905', 'probe.p906', 'probe.p907', 'probe.p912', 'probe.p913', 'probe.p914', 'probe.p915', 'probe.p916', 'probe.p917', 'probe.p918', 'probe.p919', 'probe.p920', 'probe.p921', 'probe.p922', 'probe.p923', 'probe.p924', 'probe.p925', 'probe.p926', 'probe.p927', 'probe.p928', 'probe.p929', 'probe.p930', 'probe.p931', 'probe.p932', 'probe.p933', 'probe.p934', 'probe.p935', 'probe.p936', 'probe.p937', 'probe.p938', 'probe.p939', 'probe.p940', 'probe.p941', 'probe.p942', 'probe.p943', 'probe.p944', 'probe.p945', 'probe.p946', 'probe.p947', 'probe.p948', 'probe.p949', 'probe.p950', 'probe.p951', 'probe.p952', 'probe.p953', 'probe.p954', 'probe.p955', 'probe.p956', 'probe.p957', 'probe.p958', 'probe.p959', 'probe.p960', 'probe.p961', 'probe.p962', 'probe.p963', 'probe.p964', 'probe.p965', 'probe.p966', 'probe.p967', 'probe.p968', 'probe.p969', 'probe.p970', 'probe.p971', 'probe.p972', 'probe.p973', 'probe.p974', 'probe.p975', 'probe.p976', 'probe.p977', 'probe.p978', 'probe.p979', 'probe.p980', 'probe.p981', 'probe.p982', 'probe.p983', 'probe.p984', 'probe.p985', 'probe.p986', 'probe.p987', 'probe.p988', 'probe.p989', 'probe.p990', 'probe.p991', 'probe.p992', 'probe.p993', 'probe.p994', 'probe.p995', 'probe.p996', 'probe.p997', 'probe.p998', 'probe.p999', 'probe.p1000', 'probe.p1001', 'probe.p1002', 'probe.p1003', 'probe.p1004', 'probe.p1005', 'probe.p1006', 'probe.p1007', 'probe.p1008', 'probe.p1009', 'probe.p1010', 'probe.p1011', 'probe.p1012', 'probe.p1013', 'probe.p1014', 'probe.e370_fx', 'probe.p1015', 'probe.p1016', 'probe.p1017', 'probe.p1018', 'probe.g371_fx', 'probe.p1019', 'probe.p1020', 'probe.p1021', 'probe.p1022', 'probe.g372_fx', 'probe.p1023', 'probe.p1024', 'probe.p1025', 'probe.p1035', 'probe.p1036', 'probe.p1037', 'probe.p1038', 'probe.p1039', 'probe.p1040', 'probe.m375_fx', 'probe.p1041', 'probe.p1042', 'probe.p1043', 'probe.p1044', 'probe.p1045', 'probe.p1046', 'probe.p1047', 'probe.p1048', 'probe.p1049', 'probe.p1050', 'probe.p1051', 'probe.p1052', 'probe.p1053', 'probe.p1054', 'probe.p1055', 'probe.p1056', 'probe.p1057', 'probe.p1058', 'probe.p1059', 'probe.p1060', 'probe.p1061', 'probe.m376_fx', 'probe.p1062', 'probe.p1063', 'probe.p1064', 'probe.m377_fx', 'probe.p1065', 'probe.p1066', 'probe.p1067', 'probe.p1068', 'probe.p1069', 'probe.p1070', 'probe.p1071', 'probe.p1072', 'probe.p1073', 'probe.p1074', 'probe.m378_fx', 'probe.p1075', 'probe.p1076', 'probe.p1077', 'probe.p1078', 'probe.p1079', 'probe.p1080', 'probe.p1081', 'probe.p1082', 'probe.p1083', 'probe.m379_fx', 'probe.p1084', 'probe.p1085', 'probe.p1086', 'probe.p1087', 'probe.p1088', 'probe.p1089', 'probe.p1090', 'probe.m380_fx', 'probe.p1091', 'probe.p1092', 'probe.p1093', 'probe.p1094', 'probe.p1095', 'probe.p1096', 'probe.p1097', 'probe.p1098', 'probe.h_restaura', 'probe.m381_fx', 'probe.p1099', 'probe.p1100', 'probe.p1101', 'probe.p1102', 'probe.p1103', 'probe.p1104', 'probe.m382_fx', 'probe.p1105', 'probe.p1106', 'probe.p1107', 'probe.p1108', 'probe.p1109', 'probe.p1110', 'probe.p1111', 'probe.p1112', 'probe.p1113', 'probe.p1114', 'probe.p1115', 'probe.p1116', 'probe.p1117', 'probe.p1118', 'probe.p1119'
+       'probe.p897', 'probe.p898', 'probe.p899', 'probe.p900', 'probe.p901', 'probe.p902', 'probe.p903', 'probe.p904', 'probe.p905', 'probe.p906', 'probe.p907', 'probe.p912', 'probe.p913', 'probe.p914', 'probe.p915', 'probe.p916', 'probe.p917', 'probe.p918', 'probe.p919', 'probe.p920', 'probe.p921', 'probe.p922', 'probe.p923', 'probe.p924', 'probe.p925', 'probe.p926', 'probe.p927', 'probe.p928', 'probe.p929', 'probe.p930', 'probe.p931', 'probe.p932', 'probe.p933', 'probe.p934', 'probe.p935', 'probe.p936', 'probe.p937', 'probe.p938', 'probe.p939', 'probe.p940', 'probe.p941', 'probe.p942', 'probe.p943', 'probe.p944', 'probe.p945', 'probe.p946', 'probe.p947', 'probe.p948', 'probe.p949', 'probe.p950', 'probe.p951', 'probe.p952', 'probe.p953', 'probe.p954', 'probe.p955', 'probe.p956', 'probe.p957', 'probe.p958', 'probe.p959', 'probe.p960', 'probe.p961', 'probe.p962', 'probe.p963', 'probe.p964', 'probe.p965', 'probe.p966', 'probe.p967', 'probe.p968', 'probe.p969', 'probe.p970', 'probe.p971', 'probe.p972', 'probe.p973', 'probe.p974', 'probe.p975', 'probe.p976', 'probe.p977', 'probe.p978', 'probe.p979', 'probe.p980', 'probe.p981', 'probe.p982', 'probe.p983', 'probe.p984', 'probe.p985', 'probe.p986', 'probe.p987', 'probe.p988', 'probe.p989', 'probe.p990', 'probe.p991', 'probe.p992', 'probe.p993', 'probe.p994', 'probe.p995', 'probe.p996', 'probe.p997', 'probe.p998', 'probe.p999', 'probe.p1000', 'probe.p1001', 'probe.p1002', 'probe.p1003', 'probe.p1004', 'probe.p1005', 'probe.p1006', 'probe.p1007', 'probe.p1008', 'probe.p1009', 'probe.p1010', 'probe.p1011', 'probe.p1012', 'probe.p1013', 'probe.p1014', 'probe.e370_fx', 'probe.p1015', 'probe.p1016', 'probe.p1017', 'probe.p1018', 'probe.g371_fx', 'probe.p1019', 'probe.p1020', 'probe.p1021', 'probe.p1022', 'probe.g372_fx', 'probe.p1023', 'probe.p1024', 'probe.p1025', 'probe.p1035', 'probe.p1036', 'probe.p1037', 'probe.p1038', 'probe.p1039', 'probe.p1040', 'probe.m375_fx', 'probe.p1041', 'probe.p1042', 'probe.p1043', 'probe.p1044', 'probe.p1045', 'probe.p1046', 'probe.p1047', 'probe.p1048', 'probe.p1049', 'probe.p1050', 'probe.p1051', 'probe.p1052', 'probe.p1053', 'probe.p1054', 'probe.p1055', 'probe.p1056', 'probe.p1057', 'probe.p1058', 'probe.p1059', 'probe.p1060', 'probe.p1061', 'probe.m376_fx', 'probe.p1062', 'probe.p1063', 'probe.p1064', 'probe.m377_fx', 'probe.p1065', 'probe.p1066', 'probe.p1067', 'probe.p1068', 'probe.p1069', 'probe.p1070', 'probe.p1071', 'probe.p1072', 'probe.p1073', 'probe.p1074', 'probe.m378_fx', 'probe.p1075', 'probe.p1076', 'probe.p1077', 'probe.p1078', 'probe.p1079', 'probe.p1080', 'probe.p1081', 'probe.p1082', 'probe.p1083', 'probe.m379_fx', 'probe.p1084', 'probe.p1085', 'probe.p1086', 'probe.p1087', 'probe.p1088', 'probe.p1089', 'probe.p1090', 'probe.m380_fx', 'probe.p1091', 'probe.p1092', 'probe.p1093', 'probe.p1094', 'probe.p1095', 'probe.p1096', 'probe.p1097', 'probe.p1098', 'probe.h_restaura', 'probe.m381_fx', 'probe.p1099', 'probe.p1100', 'probe.p1101', 'probe.p1102', 'probe.p1103', 'probe.p1104', 'probe.m382_fx', 'probe.p1105', 'probe.p1106', 'probe.p1107', 'probe.p1108', 'probe.p1109', 'probe.p1110', 'probe.p1111', 'probe.p1112', 'probe.p1113', 'probe.p1114', 'probe.p1115', 'probe.p1116', 'probe.p1117', 'probe.p1118', 'probe.p1119', 'probe.m383_fx', 'probe.p1120', 'probe.p1121', 'probe.p1122', 'probe.p1123', 'probe.p1124', 'probe.p1125', 'probe.p1126', 'probe.p1127', 'probe.p1128', 'probe.p1129', 'probe.p1130'
              ]) AS n) s),
   'OK (todos los veredictos publicados)';
 
