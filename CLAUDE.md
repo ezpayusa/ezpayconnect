@@ -24,6 +24,24 @@ Stack: React + Vite + TypeScript, Supabase / Postgres, deploy en Vercel, repo en
   minutos por esto** (P635 es la probe que faltaba, P636 su contraprueba).
 - NUNCA ampliar policies de RLS sobre tablas adyacentes a datos médicos (p. ej. campana_metricas). Para dar acceso, usar RPCs SECURITY DEFINER con search_path='', fail-closed (si el scope es NULL → 0 filas) y gate interno.
 - Probar aislamiento por rol impersonando request.jwt.claims en prod: cada rol ve lo suyo y no lo ajeno.
+- **Estado al 24-oct-2026 (manda sobre los números de las entradas siguientes, incluido el bloque del 20-oct):**
+  - 382 — chat comercial (esquema, helper, policies, Realtime, 6 RPCs; PA036-PA040; probes P1105-P1119). Aplicada en prod el 2026-10-24 17:54 UTC, verificada en sesión independiente.
+    Detalle: rama `feat/chat-comercial-382`, PR #78. Apply 17:54:36.944 → 17:54:38.134 UTC, exit 0; md5 del archivo 357949b7fe41e18e29ed9de1ea66c5d0.
+    Tablas `chat_comercial_hilos` / `chat_comercial_mensajes` / `chat_comercial_lecturas` (RLS, authenticated solo SELECT, anon
+    nada, 1 policy SELECT TO authenticated por tabla); `private.chat_comercial_relacion` (EXECUTE solo postgres) +
+    `private.puede_ver_hilo_comercial` (EXECUTE authenticated) + trigger guard `private.trg_chat_comercial_hilos_guard`; 6 RPCs
+    `chat_comercial_*` (contactos, abrir, mis_hilos, mensajes, enviar, marcar_leido); `chat_comercial_mensajes` en
+    supabase_realtime (7 tablas). Errcodes: PA036 mensaje vacío o > 2000; PA037 tipo inválido / 'supervision' de quien no es
+    asesor; PA038 asesor sin supervisor; PA039 hilo cerrado (extremo inactivo); PA040 integridad del hilo (solo escritura
+    directa); MIG82 guarda. Rollback `382_rollback.sql` (va antes que `381_rollback`; aborta si hay mensajes).
+    La 381 (visitas: PV027/PV028, probes M381_FX + P1099-P1104) está viva con el cuerpo de main (md5 medido el 24-oct).
+  - **Próximos libres: mig 383, errcode PA041, errcode PV029, probe P1120.**
+  - **Harness al 24-oct (con la 382 aplicada):** 1215 filas / 11 rojas = la deuda (medido antes del apply con la 382
+    inyectada en el dry-run, y sin ella con los 16 probes nuevos en PENDIENTE). Body 2.789.731 bytes tras quitar
+    comentarios (techo 3.040.870; margen ~251 KB).
+  - **Pendiente para la 383:** notificación (in-app + push) dentro de `chat_comercial_enviar`, en la misma transacción
+    (columna `chat_comercial_mensajes.notificado` ya creada); y fijar la ACL exacta de service_role en las 3 tablas (hoy
+    la 382 solo exige S/I/U/D: lo que traiga de más por los defaults no se revoca ni se verifica).
 - **Estado al 20-oct-2026 (manda sobre los números de las entradas siguientes):**
   - **Mig 375** (hardening del enrolamiento de médicos: `enrolar_medico`, `prioridad_activa`, triggers
     `trigger_medicos_lab_enrolador_inmutable` y `trigger_gate_head_start_lab`, CHECK `medicos_enrolador_coherente`)
@@ -125,7 +143,7 @@ Stack: React + Vite + TypeScript, Supabase / Postgres, deploy en Vercel, repo en
   - **Orden de rollback:** 380 → 379 → 378 → 377 → 376 → 375 → 374 → 373 → 372 → 371 → … La edge `enviar-invitacion-medico` se
     retira aparte: `378_rollback` no la borra. `379_rollback` vuelve el cuerpo vivo exacto; las solicitudes 'registrada' y
     los enrolamientos hechos quedan. `380_rollback` es el DROP de las 2 funciones.
-  - **Próximos libres: mig 381, errcode PV027, errcode PA036, probe P1099.**
+  - ~~Próximos libres: mig 381, errcode PV027, errcode PA036, probe P1099.~~ (superado: ver 24-oct)
   - **Harness al 20-oct (con la 375 a la 380 aplicadas):** 1191 filas, 11 rojas = exactamente la deuda; M375_FX, M376_FX,
     M377_FX, M378_FX, M379_FX, M380_FX y P1041-P1098 en OK. Body 2.699.445 bytes tras quitar comentarios (techo 3.040.870;
     margen ~341 KB). La rama 'pre' de la 375, la 376, la 377, la 378, la 379 y la 380 publica REGRESION (8be9b8f, 0de3a27,
@@ -159,11 +177,11 @@ Stack: React + Vite + TypeScript, Supabase / Postgres, deploy en Vercel, repo en
   - Rama sin upstream propio al crearse desde origin/main: push SIEMPRE con nombre de rama explícito.
   - PRs #57, #59-#64 y #65 (196100b) mergeados al 19-oct; #56 (gate de textos legales) y #58 (front de altas) SIN mergear hasta completar los placeholders legales. Confirm email APAGADO en prod hasta que entre #58.
   - Punto 2 comercial (18-oct): src/lib/navegacion.ts es el helper ÚNICO de links Google Maps/Waze; VisitadorRutaPage y EntregaDetallePage todavía arman los suyos (migrar después). Hoy usa visitasDeHoyConUbicacion; visitasDelDia sigue sin coordenadas.
-- **Próximos números libres: probe `P1099`** (global, no por módulo; M380_FX + P1091-P1098 usados por la mig 380; M379_FX + P1084-P1090 usados por la mig 379; M378_FX + P1075-P1083 usados por la mig 378; M377_FX + P1065-P1074 usados por la mig 377; M376_FX + P1062-P1064 usados por la mig 376; M375_FX + P1041-P1061 usados por la mig 375; P1035-P1040 usados por la mig 374; P1026-P1034 + M373_FX usados por la mig 373; P1023-P1025 + G372_FX usados por la mig 372; P1019-P1022 usados por la mig 371; P1015-P1018 usados por la mig 370, P1011-P1014 por la mig 369, P1010 por la mig 367, P1009 por la 366, P1008 por la 365, P1007 por la 364, P1001-P1006 por la mig 363, P996-P1000 por la 362, P990-P995 por la 361, P983-P989 por la 360, P975-P982 por la
+- **Próximos números libres: probe `P1120`** (global, no por módulo; M382_FX + P1105-P1119 usados por la mig 382; M381_FX + P1099-P1104 usados por la mig 381; M380_FX + P1091-P1098 usados por la mig 380; M379_FX + P1084-P1090 usados por la mig 379; M378_FX + P1075-P1083 usados por la mig 378; M377_FX + P1065-P1074 usados por la mig 377; M376_FX + P1062-P1064 usados por la mig 376; M375_FX + P1041-P1061 usados por la mig 375; P1035-P1040 usados por la mig 374; P1026-P1034 + M373_FX usados por la mig 373; P1023-P1025 + G372_FX usados por la mig 372; P1019-P1022 usados por la mig 371; P1015-P1018 usados por la mig 370, P1011-P1014 por la mig 369, P1010 por la mig 367, P1009 por la 366, P1008 por la 365, P1007 por la 364, P1001-P1006 por la mig 363, P996-P1000 por la 362, P990-P995 por la 361, P983-P989 por la 360, P975-P982 por la
   359, P967-P974 por la 358, P958-P966 por la 357 (obtener_medicos_por_ids acotada a relación); P906-P907 usados por la mig 336, P912-P913
   por la 337, P914-P915 por la 338, P916-P920 por la 339/340, P921-P923 por la 341, P924 por la 342, P925 por
   la 343, P926-P927 por la 344, P928-P929 por la 345, P930 por la 346, P931-P932 por la 347, P933 por la 348,
-  P934-P935 por la 349, P936 por la 350, P937-P939 por la 351, P940-P943 por la 353), **migración `381`** (la 380 son las lecturas del enrolamiento, `listar_mis_medicos_enrolados` y `prioridad_para_agendar`, aplicada el 20-oct; la 379 es `registrar_medico_desde_invitacion` enrolando por la solicitud de alta, aplicada el 20-oct; la 378 es aprobar/reenviar la solicitud de alta → invitación precargada + correo, aplicada el 20-oct; la 377 son las solicitudes de alta de médico, aplicada el 20-oct; la 376 es `administrar_visita('modificar')` + PV003 y la 375 el hardening del enrolamiento, las dos aplicadas el 20-oct; la 374 es la integridad de ubicación de prospectos, aplicada el 17-oct; la 373 es el alta diferida de empresas, aplicada el 9-oct; la 371 es GL-02 y la 372 su hardening, las dos aplicadas el 8-oct), **errcode `LG007`** (prefijo LG,
+  P934-P935 por la 349, P936 por la 350, P937-P939 por la 351, P940-P943 por la 353), **migración `383`** (la 382 es el chat comercial, aplicada el 24-oct; la 381 es el hardening de visitas, PV027/PV028; la 380 son las lecturas del enrolamiento, `listar_mis_medicos_enrolados` y `prioridad_para_agendar`, aplicada el 20-oct; la 379 es `registrar_medico_desde_invitacion` enrolando por la solicitud de alta, aplicada el 20-oct; la 378 es aprobar/reenviar la solicitud de alta → invitación precargada + correo, aplicada el 20-oct; la 377 son las solicitudes de alta de médico, aplicada el 20-oct; la 376 es `administrar_visita('modificar')` + PV003 y la 375 el hardening del enrolamiento, las dos aplicadas el 20-oct; la 374 es la integridad de ubicación de prospectos, aplicada el 17-oct; la 373 es el alta diferida de empresas, aplicada el 9-oct; la 371 es GL-02 y la 372 su hardening, las dos aplicadas el 8-oct), **errcode `LG007`** (prefijo LG,
   GL-02: LG001-LG005 en uso por la 371 — LG001 sin sesión, LG002 código inexistente, LG003 versión no vigente, LG004
   entrada inválida, LG005 aceptaciones append-only; LG006 = el texto no corresponde a la identidad de la cuenta, en uso
   por la 372), **errcode `PC029`** (familia PC: PC025 país requerido y PC026 sin autoridad en `contar_medicos_por_pais`, PC027
@@ -520,7 +538,7 @@ Stack: React + Vite + TypeScript, Supabase / Postgres, deploy en Vercel, repo en
   sesión independiente (988 filas / 11 rojas de deuda, guard 155 sobre 946 DO, tsc 78, qual 9f07449d…).
   336 = fix de la 335: liberación/reversión con FOR UPDATE + evento solo si cambió la fila; EX028
   normalizado espacios/tabs/saltos — APLICADA en prod y verificada en sesión independiente el
-  26-sep-2026), **errcode `PA036`** (comercial),
+  26-sep-2026), **errcode `PA041`** (comercial; PA036-PA040 = chat comercial, mig 382),
   **`CA016`** (familia CAMPAÑAS: mig 358 `aprobar_solicitud_campana` → CA001 no es super_admin, CA002 solicitud
   inexistente, CA003 no está enviada, CA004 sin pago, CA005 más de un pago, CA006 pago rechazado, CA007 sin plan, CA008 la
   empresa no opera en el país; mig 359 `cotizar_campana`/`solicitar_pago_campana` → CA009 no es de tu empresa o rol,
