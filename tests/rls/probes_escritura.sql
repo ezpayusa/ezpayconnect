@@ -40204,6 +40204,351 @@ EXCEPTION WHEN OTHERS THEN
 END $$;
 SELECT set_config('role', 'none', true);
 
+-- ================================================================================
+-- MIG 384 — listar_medicos_por_pais / contar_medicos_por_pais: la fuente `medicos` exige perfiles.rol = 'medico'
+-- (M384_FX + P1132-P1137). Pendiente de apply.
+-- pg_temp.m384_estado(): 'pre' (ninguna de las 2 tiene el predicado de la 299), 'post' (las 2 lo tienen) o
+-- 'parcial (...)' (una sola, o falta una función): ROJO explícito, nunca 'pre'.
+-- Con la 384 en 'pre' los probes publican 'PENDIENTE (estado de la 384: pre)'.
+-- Helpers PROPIOS de este bloque (no usa los de la 382 ni FX12). Cada probe fija a sus actores dentro de su savepoint
+-- con pg_temp.m384_fijar(); toda escritura se descarta con RAISE P0999 y se verifica contra pg_temp.m384_snap().
+-- Actores por id EXPLÍCITO: clinica.qa 7e9ee700 (admin_clinica, miembro de San Rafael c76d862c de GT, con fila en
+-- medicos y pais GT: el no-médico que hoy se colaba), adminpais.qa 8f391caf (admin_pais GT), superadmin 41904e2c,
+-- camila.ferreyra 178b2985 (asesor_comercial ZZ, el "otro país"). admin.qa no existe en auth.
+-- Los esperados se calculan EN el probe como postgres (nada de 4 hardcodeado). Las filas sembradas usan correo
+-- qa-manual.p113x.<uuid>@ezpayqa.test y nombre 'QA-MANUAL P113x ...'.
+-- ================================================================================
+-- M384_FX: helpers de pg_temp de este bloque + estado de la 384. No toca datos.
+DO $$
+DECLARE est text;
+BEGIN
+  EXECUTE $fn$
+CREATE OR REPLACE FUNCTION pg_temp.m384_estado() RETURNS text LANGUAGE plpgsql AS $body$
+DECLARE l text; c text; tl boolean; tc boolean;
+  pred CONSTANT text := $p$%AND EXISTS (SELECT 1 FROM public.perfiles pf_rol WHERE pf_rol.id = m.id AND pf_rol.rol = 'medico')%$p$;
+BEGIN
+  l := (SELECT p.prosrc FROM pg_proc p WHERE p.oid = to_regprocedure('public.listar_medicos_por_pais(uuid)'));
+  c := (SELECT p.prosrc FROM pg_proc p WHERE p.oid = to_regprocedure('public.contar_medicos_por_pais(uuid)'));
+  IF l IS NULL OR c IS NULL THEN
+    RETURN 'parcial (falta '||CASE WHEN l IS NULL THEN 'listar_medicos_por_pais ' ELSE '' END||CASE WHEN c IS NULL THEN 'contar_medicos_por_pais' ELSE '' END||')';
+  END IF;
+  tl := l LIKE pred; tc := c LIKE pred;
+  IF tl AND tc THEN RETURN 'post'; END IF;
+  IF NOT tl AND NOT tc THEN RETURN 'pre'; END IF;
+  RETURN 'parcial (predicado en listar '||tl::text||', en contar '||tc::text||')';
+END
+$body$
+$fn$;
+  -- como p_uid (authenticated): ids de listar_medicos_por_pais(p_pais) y contar_medicos_por_pais(p_pais).
+  -- Sin handler: un error se propaga al probe, que publica FALLO con el SQLSTATE.
+  -- n_nomed = ids devueltos SIN perfil rol 'medico' (calculado como postgres, después de soltar el rol).
+  EXECUTE $fn$
+CREATE OR REPLACE FUNCTION pg_temp.m384_medir(p_uid uuid, p_pais uuid, OUT ids uuid[], OUT n_total integer, OUT n_nomed integer, OUT n_contar integer)
+LANGUAGE plpgsql AS $body$
+BEGIN
+  PERFORM set_config('request.jwt.claims', json_build_object('sub', p_uid, 'role', 'authenticated')::text, true);
+  PERFORM set_config('role', 'authenticated', true);
+  SELECT COALESCE(array_agg(l.id), ARRAY[]::uuid[]) INTO ids FROM public.listar_medicos_por_pais(p_pais) l;
+  n_contar := public.contar_medicos_por_pais(p_pais);
+  PERFORM set_config('role', 'none', true);
+  PERFORM set_config('request.jwt.claims', '', true);
+  n_total := COALESCE(array_length(ids, 1), 0);
+  n_nomed := (SELECT count(*) FROM unnest(ids) x WHERE NOT EXISTS (SELECT 1 FROM public.perfiles p WHERE p.id = x AND p.rol = 'medico'));
+END
+$body$
+$fn$;
+  -- esperados como postgres: e_contar = médicos (rol medico) con fila en medicos y pais_id = p_pais (contar no mira
+  -- activo); e_listar = fuente medicos activos con rol medico UNION perfiles medico activos del país sin fila en medicos.
+  EXECUTE $fn$
+CREATE OR REPLACE FUNCTION pg_temp.m384_esperado(p_pais uuid, OUT e_listar integer, OUT e_contar integer) LANGUAGE sql AS $body$
+  SELECT
+    (SELECT count(*)::integer FROM (
+        SELECT m.id FROM public.medicos m
+         WHERE m.pais_id = p_pais AND m.activo = true AND EXISTS (SELECT 1 FROM public.perfiles p WHERE p.id = m.id AND p.rol = 'medico')
+        UNION
+        SELECT p.id FROM public.perfiles p
+         WHERE p.rol = 'medico' AND p.activo = true AND p.pais_id = p_pais AND NOT EXISTS (SELECT 1 FROM public.medicos m WHERE m.id = p.id)) z),
+    (SELECT count(*)::integer FROM public.medicos m
+      WHERE m.pais_id = p_pais AND EXISTS (SELECT 1 FROM public.perfiles p WHERE p.id = m.id AND p.rol = 'medico'))
+$body$
+$fn$;
+  EXECUTE $fn$
+CREATE OR REPLACE FUNCTION pg_temp.m384_eq(p_lbl text, p_got text, p_want text) RETURNS text LANGUAGE sql IMMUTABLE AS $body$
+  SELECT CASE WHEN p_got IS NOT DISTINCT FROM p_want THEN '' ELSE 'X:'||p_lbl||'='||COALESCE(left(p_got, 140), 'NULL')||' (esperado '||COALESCE(p_want, 'NULL')||'); ' END
+$body$
+$fn$;
+  EXECUTE $fn$
+CREATE OR REPLACE FUNCTION pg_temp.m384_veredicto(p_det text, p_pre text, p_post text, p_ok text) RETURNS text LANGUAGE sql IMMUTABLE AS $body$
+  SELECT CASE
+    WHEN p_pre IS DISTINCT FROM p_post THEN 'FALLO (no restauró el estado: '||COALESCE(p_pre, 'NULL')||' -> '||COALESCE(p_post, 'NULL')||'; '||COALESCE(p_det, '')||')'
+    WHEN p_det LIKE '%FUGA:%' THEN 'FUGA ('||p_det||')'
+    WHEN p_det <> '' THEN 'FALLO ('||p_det||')'
+    ELSE 'OK ('||p_ok||')' END
+$body$
+$fn$;
+  -- snapshot: perfiles de los 4 actores, filas de medicos de GT y de los actores, membresías de los actores,
+  -- San Rafael, auth.users sembrados por este bloque y totales.
+  EXECUTE $fn$
+CREATE OR REPLACE FUNCTION pg_temp.m384_snap() RETURNS text LANGUAGE sql AS $body$
+  SELECT md5(concat_ws('|',
+    (SELECT string_agg(p.id::text||':'||p.rol||':'||COALESCE(p.pais_id::text, '-')||':'||p.activo::text, ',' ORDER BY p.id)
+       FROM public.perfiles p WHERE p.id IN ('7e9ee700-48ac-43e1-812b-777518b971ec', '8f391caf-85bc-4413-af8a-4006452ae09f',
+                                             '41904e2c-5ef3-4fee-bd48-9ea58e0c8c37', '178b2985-beb9-4d20-929d-447507c6ffe1')),
+    (SELECT string_agg(m.id::text||':'||COALESCE(m.pais_id::text, '-')||':'||COALESCE(m.activo::text, '-')||':'||COALESCE(m.clinica_id::text, '-'), ',' ORDER BY m.id)
+       FROM public.medicos m WHERE m.pais_id = 'cbbbbe6d-59fe-4cf2-91ee-3e31ba1d5909'
+          OR m.id IN ('7e9ee700-48ac-43e1-812b-777518b971ec', '178b2985-beb9-4d20-929d-447507c6ffe1')),
+    (SELECT string_agg(mc.medico_id::text||':'||mc.clinica_id::text, ',' ORDER BY mc.medico_id, mc.clinica_id)
+       FROM public.medico_clinicas mc WHERE mc.medico_id IN ('7e9ee700-48ac-43e1-812b-777518b971ec', '178b2985-beb9-4d20-929d-447507c6ffe1')),
+    (SELECT COALESCE(c.pais_id::text, '-')||':'||COALESCE(c.activa::text, '-') FROM public.clinicas c WHERE c.id = 'c76d862c-e82f-4748-bc07-86c8a3343576'),
+    (SELECT count(*) FROM auth.users u WHERE u.email LIKE 'qa-manual.p113%@ezpayqa.test')::text,
+    (SELECT count(*) FROM auth.users)::text, (SELECT count(*) FROM public.perfiles)::text, (SELECT count(*) FROM public.medicos)::text))
+$body$
+$fn$;
+  -- fija a los actores. SOLO dentro de un savepoint.
+  EXECUTE $fn$
+CREATE OR REPLACE FUNCTION pg_temp.m384_fijar() RETURNS void LANGUAGE plpgsql AS $body$
+DECLARE
+  c_gt  CONSTANT uuid := 'cbbbbe6d-59fe-4cf2-91ee-3e31ba1d5909';
+  c_zz  CONSTANT uuid := 'fb3fc165-5be8-41f2-8d67-c60a6de7ec88';
+  c_sr  CONSTANT uuid := 'c76d862c-e82f-4748-bc07-86c8a3343576';
+  c_cqa CONSTANT uuid := '7e9ee700-48ac-43e1-812b-777518b971ec';
+  c_ap  CONSTANT uuid := '8f391caf-85bc-4413-af8a-4006452ae09f';
+  c_sa  CONSTANT uuid := '41904e2c-5ef3-4fee-bd48-9ea58e0c8c37';
+  c_cam CONSTANT uuid := '178b2985-beb9-4d20-929d-447507c6ffe1';
+BEGIN
+  IF (SELECT count(*) FROM public.perfiles WHERE id IN (c_cqa, c_ap, c_sa, c_cam)) <> 4
+     OR NOT EXISTS (SELECT 1 FROM public.medicos WHERE id = c_cqa)
+     OR NOT EXISTS (SELECT 1 FROM public.clinicas WHERE id = c_sr) THEN
+    RAISE EXCEPTION 'fixture roto: m384_fijar sin los 4 perfiles, la fila de medicos de clinica.qa o San Rafael';
+  END IF;
+  UPDATE public.perfiles SET rol = 'admin_clinica', pais_id = c_gt, activo = true WHERE id = c_cqa;
+  UPDATE public.medicos  SET pais_id = c_gt, activo = true WHERE id = c_cqa;   -- el no-médico con fila en medicos de GT
+  UPDATE public.clinicas SET pais_id = c_gt, activa = true WHERE id = c_sr AND (pais_id IS DISTINCT FROM c_gt OR activa IS NOT TRUE);
+  IF NOT EXISTS (SELECT 1 FROM public.medico_clinicas WHERE medico_id = c_cqa AND clinica_id = c_sr) THEN
+    INSERT INTO public.medico_clinicas (medico_id, clinica_id, es_principal) VALUES (c_cqa, c_sr, true);
+  END IF;
+  UPDATE public.perfiles SET rol = 'admin_pais', pais_id = c_gt, activo = true WHERE id = c_ap;
+  UPDATE public.perfiles SET rol = 'super_admin', activo = true WHERE id = c_sa;
+  UPDATE public.perfiles SET rol = 'asesor_comercial', pais_id = c_zz, activo = true WHERE id = c_cam;
+  IF EXISTS (SELECT 1 FROM public.medico_clinicas mc JOIN public.clinicas c ON c.id = mc.clinica_id WHERE mc.medico_id = c_cam AND c.pais_id = c_gt)
+     OR EXISTS (SELECT 1 FROM public.pacientes WHERE auth_user_id = c_cam)
+     OR NOT EXISTS (SELECT 1 FROM public.medicos m JOIN public.perfiles p ON p.id = m.id
+                     WHERE m.pais_id = c_gt AND m.activo AND p.rol IS DISTINCT FROM 'medico') THEN
+    RAISE EXCEPTION 'fixture roto: m384_fijar (camila con vínculo en GT, o GT sin un no-médico en medicos)';
+  END IF;
+END
+$body$
+$fn$;
+  -- siembra auth.users + perfiles + medicos (pais GT, activo) con el rol p_rol. SOLO dentro de un savepoint.
+  EXECUTE $fn$
+CREATE OR REPLACE FUNCTION pg_temp.m384_sembrar(p_probe text, p_rol text) RETURNS uuid LANGUAGE plpgsql AS $body$
+DECLARE v_uid uuid := gen_random_uuid(); v_mail text;
+BEGIN
+  v_mail := 'qa-manual.'||lower(p_probe)||'.'||left(v_uid::text, 8)||'@ezpayqa.test';
+  INSERT INTO auth.users (id, email) VALUES (v_uid, v_mail);
+  INSERT INTO public.perfiles (id, email, nombre_completo, rol, pais_id, activo)
+  VALUES (v_uid, v_mail, 'QA-MANUAL '||p_probe||' '||p_rol, p_rol, 'cbbbbe6d-59fe-4cf2-91ee-3e31ba1d5909', true);
+  INSERT INTO public.medicos (id, nombre_completo, pais_id, activo)
+  VALUES (v_uid, 'QA-MANUAL '||p_probe||' '||p_rol, 'cbbbbe6d-59fe-4cf2-91ee-3e31ba1d5909', true);
+  RETURN v_uid;
+END
+$body$
+$fn$;
+  est := pg_temp.m384_estado();
+  PERFORM set_config('probe.m384_fx', CASE WHEN est = 'pre' THEN 'PENDIENTE (estado de la 384: pre; helpers de pg_temp creados)'
+    WHEN est = 'post' THEN 'OK (helpers de pg_temp creados; estado de la 384: post)'
+    ELSE 'ROJO (384 '||est||'; helpers de pg_temp creados)' END, false);
+EXCEPTION WHEN OTHERS THEN
+  PERFORM set_config('probe.m384_fx', 'FALLO ('||SQLSTATE||' '||SQLERRM||')', false);
+END $$;
+
+-- ---------------- P1132 384: como clinica.qa, listar(GT) sin no-médicos y contar(GT) = médicos de GT ----------------
+DO $$
+DECLARE est text; pre text; post text; d text := ''; r record; e record;
+  c_gt CONSTANT uuid := 'cbbbbe6d-59fe-4cf2-91ee-3e31ba1d5909'; c_cqa CONSTANT uuid := '7e9ee700-48ac-43e1-812b-777518b971ec';
+BEGIN
+  est := pg_temp.m384_estado();
+  IF est = 'pre' THEN PERFORM set_config('probe.p1132', 'PENDIENTE (estado de la 384: pre)', false); RETURN; END IF;
+  IF est <> 'post' THEN PERFORM set_config('probe.p1132', 'ROJO (384 '||est||')', false); RETURN; END IF;
+  pre := pg_temp.m384_snap();
+  BEGIN
+    PERFORM pg_temp.m384_fijar();
+    SELECT * INTO e FROM pg_temp.m384_esperado(c_gt);
+    SELECT * INTO r FROM pg_temp.m384_medir(c_cqa, c_gt);
+    IF r.n_nomed > 0 THEN d := d || 'FUGA:listar devuelve '||r.n_nomed||' no-médico(s); '; END IF;
+    IF c_cqa = ANY (r.ids) THEN d := d || 'FUGA:clinica.qa (admin_clinica) en listar; '; END IF;
+    d := d || pg_temp.m384_eq('listar_total', r.n_total::text, e.e_listar::text);
+    d := d || pg_temp.m384_eq('contar', r.n_contar::text, e.e_contar::text);
+    IF e.e_contar < 1 THEN d := d || 'X:GT sin médicos (probe vacío); '; END IF;
+    RAISE EXCEPTION 'P1132 descarte' USING ERRCODE = 'P0999';
+  EXCEPTION WHEN SQLSTATE 'P0999' THEN NULL;
+  END;
+  post := pg_temp.m384_snap();
+  PERFORM set_config('probe.p1132', pg_temp.m384_veredicto(d, pre, post,
+    'clinica.qa: listar(GT) sin no-médicos y sin clinica.qa, total = esperado; contar(GT) = médicos de GT con rol medico (calculado en el probe)'), false);
+EXCEPTION WHEN OTHERS THEN
+  PERFORM set_config('probe.p1132', 'FALLO ('||SQLSTATE||' '||SQLERRM||')', false);
+END $$;
+SELECT set_config('role', 'none', true);
+
+-- ---------------- P1133 384: lo mismo como admin_pais de GT y como super_admin ----------------
+DO $$
+DECLARE est text; pre text; post text; d text := ''; r record; e record; a record;
+  c_gt CONSTANT uuid := 'cbbbbe6d-59fe-4cf2-91ee-3e31ba1d5909'; c_cqa CONSTANT uuid := '7e9ee700-48ac-43e1-812b-777518b971ec';
+BEGIN
+  est := pg_temp.m384_estado();
+  IF est = 'pre' THEN PERFORM set_config('probe.p1133', 'PENDIENTE (estado de la 384: pre)', false); RETURN; END IF;
+  IF est <> 'post' THEN PERFORM set_config('probe.p1133', 'ROJO (384 '||est||')', false); RETURN; END IF;
+  pre := pg_temp.m384_snap();
+  BEGIN
+    PERFORM pg_temp.m384_fijar();
+    SELECT * INTO e FROM pg_temp.m384_esperado(c_gt);
+    FOR a IN SELECT * FROM (VALUES ('8f391caf-85bc-4413-af8a-4006452ae09f'::uuid, 'adminpais'), ('41904e2c-5ef3-4fee-bd48-9ea58e0c8c37'::uuid, 'superadmin')) v(uid, lbl) LOOP
+      SELECT * INTO r FROM pg_temp.m384_medir(a.uid, c_gt);
+      IF r.n_nomed > 0 THEN d := d || 'FUGA:'||a.lbl||' listar devuelve '||r.n_nomed||' no-médico(s); '; END IF;
+      IF c_cqa = ANY (r.ids) THEN d := d || 'FUGA:'||a.lbl||' ve a clinica.qa en listar; '; END IF;
+      d := d || pg_temp.m384_eq(a.lbl||'_listar_total', r.n_total::text, e.e_listar::text);
+      d := d || pg_temp.m384_eq(a.lbl||'_contar', r.n_contar::text, e.e_contar::text);
+    END LOOP;
+    RAISE EXCEPTION 'P1133 descarte' USING ERRCODE = 'P0999';
+  EXCEPTION WHEN SQLSTATE 'P0999' THEN NULL;
+  END;
+  post := pg_temp.m384_snap();
+  PERFORM set_config('probe.p1133', pg_temp.m384_veredicto(d, pre, post,
+    'adminpais.qa y superadmin: listar(GT) sin no-médicos, total = esperado; contar(GT) = médicos de GT con rol medico'), false);
+EXCEPTION WHEN OTHERS THEN
+  PERFORM set_config('probe.p1133', 'FALLO ('||SQLSTATE||' '||SQLERRM||')', false);
+END $$;
+SELECT set_config('role', 'none', true);
+
+-- ---------------- P1134 384: un no-médico con fila en medicos y pais GT, sembrado en el savepoint, no aparece ni cuenta ----------------
+DO $$
+DECLARE est text; pre text; post text; d text := ''; r0 record; r1 record; v_uid uuid;
+  c_gt CONSTANT uuid := 'cbbbbe6d-59fe-4cf2-91ee-3e31ba1d5909'; c_cqa CONSTANT uuid := '7e9ee700-48ac-43e1-812b-777518b971ec';
+BEGIN
+  est := pg_temp.m384_estado();
+  IF est = 'pre' THEN PERFORM set_config('probe.p1134', 'PENDIENTE (estado de la 384: pre)', false); RETURN; END IF;
+  IF est <> 'post' THEN PERFORM set_config('probe.p1134', 'ROJO (384 '||est||')', false); RETURN; END IF;
+  pre := pg_temp.m384_snap();
+  BEGIN
+    PERFORM pg_temp.m384_fijar();
+    SELECT * INTO r0 FROM pg_temp.m384_medir(c_cqa, c_gt);
+    v_uid := pg_temp.m384_sembrar('P1134', 'secretaria');
+    SELECT * INTO r1 FROM pg_temp.m384_medir(c_cqa, c_gt);
+    IF v_uid = ANY (r1.ids) THEN d := d || 'FUGA:la secretaria sembrada aparece en listar; '; END IF;
+    IF r1.n_contar <> r0.n_contar THEN d := d || 'FUGA:la secretaria sembrada cuenta ('||r0.n_contar||' -> '||r1.n_contar||'); '; END IF;
+    d := d || pg_temp.m384_eq('listar_total_igual', r1.n_total::text, r0.n_total::text);
+    d := d || pg_temp.m384_eq('sembrada_en_medicos_gt',
+      (SELECT count(*)::text FROM public.medicos m WHERE m.id = v_uid AND m.pais_id = c_gt AND m.activo), '1');
+    RAISE EXCEPTION 'P1134 descarte' USING ERRCODE = 'P0999';
+  EXCEPTION WHEN SQLSTATE 'P0999' THEN NULL;
+  END;
+  post := pg_temp.m384_snap();
+  PERFORM set_config('probe.p1134', pg_temp.m384_veredicto(d, pre, post,
+    'secretaria QA-MANUAL sembrada con fila en medicos y pais GT: no aparece en listar(GT) y contar(GT) no cambia'), false);
+EXCEPTION WHEN OTHERS THEN
+  PERFORM set_config('probe.p1134', 'FALLO ('||SQLSTATE||' '||SQLERRM||')', false);
+END $$;
+SELECT set_config('role', 'none', true);
+
+-- ---------------- P1135 384 (no-regresión): un médico real de GT sembrado en el savepoint SÍ aparece y SÍ cuenta (+1) ----------------
+DO $$
+DECLARE est text; pre text; post text; d text := ''; r0 record; r1 record; v_uid uuid;
+  c_gt CONSTANT uuid := 'cbbbbe6d-59fe-4cf2-91ee-3e31ba1d5909'; c_cqa CONSTANT uuid := '7e9ee700-48ac-43e1-812b-777518b971ec';
+BEGIN
+  est := pg_temp.m384_estado();
+  IF est = 'pre' THEN PERFORM set_config('probe.p1135', 'PENDIENTE (estado de la 384: pre)', false); RETURN; END IF;
+  IF est <> 'post' THEN PERFORM set_config('probe.p1135', 'ROJO (384 '||est||')', false); RETURN; END IF;
+  pre := pg_temp.m384_snap();
+  BEGIN
+    PERFORM pg_temp.m384_fijar();
+    SELECT * INTO r0 FROM pg_temp.m384_medir(c_cqa, c_gt);
+    v_uid := pg_temp.m384_sembrar('P1135', 'medico');
+    SELECT * INTO r1 FROM pg_temp.m384_medir(c_cqa, c_gt);
+    d := d || pg_temp.m384_eq('medico_sembrado_en_listar', (v_uid = ANY (r1.ids))::text, 'true');
+    d := d || pg_temp.m384_eq('listar_mas_1', r1.n_total::text, (r0.n_total + 1)::text);
+    d := d || pg_temp.m384_eq('contar_mas_1', r1.n_contar::text, (r0.n_contar + 1)::text);
+    d := d || pg_temp.m384_eq('sin_no_medicos', r1.n_nomed::text, '0');
+    RAISE EXCEPTION 'P1135 descarte' USING ERRCODE = 'P0999';
+  EXCEPTION WHEN SQLSTATE 'P0999' THEN NULL;
+  END;
+  post := pg_temp.m384_snap();
+  PERFORM set_config('probe.p1135', pg_temp.m384_veredicto(d, pre, post,
+    'médico QA-MANUAL sembrado en GT: aparece en listar(GT) (+1) y suma en contar(GT) (+1)'), false);
+EXCEPTION WHEN OTHERS THEN
+  PERFORM set_config('probe.p1135', 'FALLO ('||SQLSTATE||' '||SQLERRM||')', false);
+END $$;
+SELECT set_config('role', 'none', true);
+
+-- ---------------- P1136 384: un actor de otro país pidiendo GT sigue dando PC026 (capturado por código) ----------------
+DO $$
+DECLARE est text; pre text; post text; d text := ''; v_l text; v_c text;
+  c_gt CONSTANT uuid := 'cbbbbe6d-59fe-4cf2-91ee-3e31ba1d5909'; c_cam CONSTANT uuid := '178b2985-beb9-4d20-929d-447507c6ffe1';
+BEGIN
+  est := pg_temp.m384_estado();
+  IF est = 'pre' THEN PERFORM set_config('probe.p1136', 'PENDIENTE (estado de la 384: pre)', false); RETURN; END IF;
+  IF est <> 'post' THEN PERFORM set_config('probe.p1136', 'ROJO (384 '||est||')', false); RETURN; END IF;
+  pre := pg_temp.m384_snap();
+  BEGIN
+    PERFORM pg_temp.m384_fijar();
+    PERFORM set_config('request.jwt.claims', json_build_object('sub', c_cam, 'role', 'authenticated')::text, true);
+    PERFORM set_config('role', 'authenticated', true);
+    BEGIN
+      PERFORM count(*) FROM public.listar_medicos_por_pais(c_gt);
+      v_l := 'SIN_ERROR';
+    EXCEPTION WHEN SQLSTATE 'PC026' THEN
+      v_l := 'PC026';
+    END;
+    BEGIN
+      PERFORM public.contar_medicos_por_pais(c_gt);
+      v_c := 'SIN_ERROR';
+    EXCEPTION WHEN SQLSTATE 'PC026' THEN
+      v_c := 'PC026';
+    END;
+    PERFORM set_config('role', 'none', true);
+    PERFORM set_config('request.jwt.claims', '', true);
+    IF v_l = 'SIN_ERROR' THEN d := d || 'FUGA:camila (ZZ) lista los médicos de GT; '; END IF;
+    IF v_c = 'SIN_ERROR' THEN d := d || 'FUGA:camila (ZZ) cuenta los médicos de GT; '; END IF;
+    d := d || pg_temp.m384_eq('listar', v_l, 'PC026') || pg_temp.m384_eq('contar', v_c, 'PC026');
+    RAISE EXCEPTION 'P1136 descarte' USING ERRCODE = 'P0999';
+  EXCEPTION WHEN SQLSTATE 'P0999' THEN NULL;
+  END;
+  post := pg_temp.m384_snap();
+  PERFORM set_config('probe.p1136', pg_temp.m384_veredicto(d, pre, post,
+    'camila (asesora de ZZ) pidiendo GT: listar y contar dan PC026, igual que antes de la 384'), false);
+EXCEPTION WHEN OTHERS THEN
+  PERFORM set_config('probe.p1136', 'FALLO ('||SQLSTATE||' '||SQLERRM||')', false);
+END $$;
+SELECT set_config('role', 'none', true);
+
+-- ---------------- P1137 384: catálogo — ACL, DEFINER, search_path y retorno de las 2 iguales a los de antes de la 384 ----------------
+DO $$
+DECLARE est text; d text := ''; r record;
+BEGIN
+  est := pg_temp.m384_estado();
+  IF est = 'pre' THEN PERFORM set_config('probe.p1137', 'PENDIENTE (estado de la 384: pre)', false); RETURN; END IF;
+  IF est <> 'post' THEN PERFORM set_config('probe.p1137', 'ROJO (384 '||est||')', false); RETURN; END IF;
+  FOR r IN SELECT * FROM (VALUES
+      ('public.listar_medicos_por_pais(uuid)', 'listar', '838b41eb8b782f7a54d88d60b0c725ff',
+       'TABLE(id uuid, nombre_completo text, especialidad text, foto_url text, activo boolean, pais_id uuid)'),
+      ('public.contar_medicos_por_pais(uuid)', 'contar', '2eb35e1dcc8e864314048570c51e63c2', 'integer')) v(firma, lbl, md5_384, ret) LOOP
+    d := d || pg_temp.m384_eq(r.lbl||'_acl', (SELECT p.proacl::text FROM pg_proc p WHERE p.oid = to_regprocedure(r.firma)),
+                              '{postgres=X/postgres,authenticated=X/postgres,service_role=X/postgres}');
+    d := d || pg_temp.m384_eq(r.lbl||'_secdef', (SELECT p.prosecdef::text FROM pg_proc p WHERE p.oid = to_regprocedure(r.firma)), 'true');
+    d := d || pg_temp.m384_eq(r.lbl||'_search_path', (SELECT (p.proconfig = ARRAY['search_path=""'])::text FROM pg_proc p WHERE p.oid = to_regprocedure(r.firma)), 'true');
+    d := d || pg_temp.m384_eq(r.lbl||'_retorno', (SELECT pg_get_function_result(p.oid) FROM pg_proc p WHERE p.oid = to_regprocedure(r.firma)), r.ret);
+    d := d || pg_temp.m384_eq(r.lbl||'_md5', (SELECT md5(p.prosrc) FROM pg_proc p WHERE p.oid = to_regprocedure(r.firma)), r.md5_384);
+    IF has_function_privilege('anon', r.firma, 'EXECUTE') THEN d := d || 'FUGA:anon ejecuta '||r.lbl||'; '; END IF;
+  END LOOP;
+  d := d || pg_temp.m384_eq('sobrecargas', (SELECT count(*)::text FROM pg_proc p WHERE p.pronamespace = 'public'::regnamespace
+                                             AND p.proname IN ('listar_medicos_por_pais', 'contar_medicos_por_pais')), '2');
+  PERFORM set_config('probe.p1137', pg_temp.m384_veredicto(d, '', '',
+    'las 2: ACL {postgres, authenticated, service_role} sin anon ni PUBLIC, DEFINER, search_path vacío, mismo retorno, md5 de la 384, una sobrecarga'), false);
+EXCEPTION WHEN OTHERS THEN
+  PERFORM set_config('probe.p1137', 'FALLO ('||SQLSTATE||' '||SQLERRM||')', false);
+END $$;
+SELECT set_config('role', 'none', true);
+
 -- ===== Veredictos como result set =====
 SELECT 'P1_anon_insert_citas'              AS probe, current_setting('probe.p1', true)  AS verdict, 'BLOQUEADO' AS esperado_post_fix
 UNION ALL SELECT 'P2_medico_cancela_ajena_rpc',         current_setting('probe.p2', true),  'BLOQUEADO'
@@ -41424,6 +41769,13 @@ UNION ALL SELECT 'P1128_sin_texto_en_notificacion_383',  current_setting('probe.
 UNION ALL SELECT 'P1129_accion_url_check_notificado_383',  current_setting('probe.p1129', true), 'OK (383: toda accion_url pasa el CHECK; todo mensaje notificado; sin la 383: PENDIENTE)'
 UNION ALL SELECT 'P1130_sin_secreto_push_383',  current_setting('probe.p1130', true), 'OK (383: sin push_secret el envio y el aviso in-app funcionan, 0 push; sin la 383: PENDIENTE)'
 UNION ALL SELECT 'P1131_rastro_falla_aviso_383',  current_setting('probe.p1131', true), 'OK (383: con el aviso roto el mensaje entra con notificado=false, 0 avisos y 0 push; sin la falla avisa; sin la 383: PENDIENTE)'
+UNION ALL SELECT 'M384_FX_helpers_medicos_por_pais',  current_setting('probe.m384_fx', true), 'OK (helpers de pg_temp creados; estado de la 384: post; pre: PENDIENTE; parcial: ROJO)'
+UNION ALL SELECT 'P1132_listar_contar_sin_no_medicos_clinica_384',  current_setting('probe.p1132', true), 'OK (384: como clinica.qa listar(GT) sin no-medicos y contar(GT) = medicos de GT con rol medico; pre: PENDIENTE)'
+UNION ALL SELECT 'P1133_listar_contar_admin_pais_super_384',  current_setting('probe.p1133', true), 'OK (384: lo mismo como adminpais.qa y superadmin; pre: PENDIENTE)'
+UNION ALL SELECT 'P1134_no_medico_sembrado_no_aparece_384',  current_setting('probe.p1134', true), 'OK (384: secretaria QA-MANUAL con fila en medicos GT no aparece ni cuenta; pre: PENDIENTE)'
+UNION ALL SELECT 'P1135_medico_sembrado_aparece_384',  current_setting('probe.p1135', true), 'OK (384: medico QA-MANUAL de GT aparece y cuenta +1; pre: PENDIENTE)'
+UNION ALL SELECT 'P1136_otro_pais_pc026_384',  current_setting('probe.p1136', true), 'OK (384: actor de ZZ pidiendo GT -> PC026 en listar y contar; pre: PENDIENTE)'
+UNION ALL SELECT 'P1137_catalogo_acl_definer_384',  current_setting('probe.p1137', true), 'OK (384: ACL, DEFINER, search_path y retorno iguales a los de antes, md5 de la 384; pre: PENDIENTE)'
 UNION ALL SELECT 'P1010_campana_vistas_sin_update_367',  current_setting('probe.p1010', true), 'OK (367: INSERT 1; ON CONFLICT DO NOTHING 0 sin error; DO UPDATE y UPDATE 42501; otro paciente 0; antes de la 367: PENDIENTE)'
 UNION ALL SELECT 'P1009_datos_bancarios_acotados_366',  current_setting('probe.p1009', true), 'OK (366: cuenta GT solo super_admin/admin_pais GT/proveedores GT; checkout 1 fila; config 21 super_admin y 14 el resto, admin_pais incluido; antes de la 366: PENDIENTE)'
 UNION ALL SELECT 'DET_p1009',  'DET ' || COALESCE(NULLIF(current_setting('probe.p1009_det', true), ''), '(sin dato)'), 'DET (detalle de P1009, no es probe)'
@@ -41676,7 +42028,7 @@ UNION ALL SELECT 'P000_CENTINELA_veredictos_no_nulos',
        'probe.p866', 'probe.p867', 'probe.p868', 'probe.p869', 'probe.p870', 'probe.p871', 'probe.p872', 'probe.p873', 'probe.p874', 'probe.p875', 'probe.p876', 'probe.p877', 'probe.p878',
        'probe.p879', 'probe.p880', 'probe.p881', 'probe.p882', 'probe.p883', 'probe.p884',
        'probe.p885', 'probe.p886', 'probe.p887', 'probe.p888', 'probe.p889', 'probe.p890', 'probe.p891', 'probe.p892', 'probe.p893', 'probe.p894', 'probe.p895', 'probe.p896', 'probe.p908', 'probe.p909', 'probe.p910', 'probe.p911',
-       'probe.p897', 'probe.p898', 'probe.p899', 'probe.p900', 'probe.p901', 'probe.p902', 'probe.p903', 'probe.p904', 'probe.p905', 'probe.p906', 'probe.p907', 'probe.p912', 'probe.p913', 'probe.p914', 'probe.p915', 'probe.p916', 'probe.p917', 'probe.p918', 'probe.p919', 'probe.p920', 'probe.p921', 'probe.p922', 'probe.p923', 'probe.p924', 'probe.p925', 'probe.p926', 'probe.p927', 'probe.p928', 'probe.p929', 'probe.p930', 'probe.p931', 'probe.p932', 'probe.p933', 'probe.p934', 'probe.p935', 'probe.p936', 'probe.p937', 'probe.p938', 'probe.p939', 'probe.p940', 'probe.p941', 'probe.p942', 'probe.p943', 'probe.p944', 'probe.p945', 'probe.p946', 'probe.p947', 'probe.p948', 'probe.p949', 'probe.p950', 'probe.p951', 'probe.p952', 'probe.p953', 'probe.p954', 'probe.p955', 'probe.p956', 'probe.p957', 'probe.p958', 'probe.p959', 'probe.p960', 'probe.p961', 'probe.p962', 'probe.p963', 'probe.p964', 'probe.p965', 'probe.p966', 'probe.p967', 'probe.p968', 'probe.p969', 'probe.p970', 'probe.p971', 'probe.p972', 'probe.p973', 'probe.p974', 'probe.p975', 'probe.p976', 'probe.p977', 'probe.p978', 'probe.p979', 'probe.p980', 'probe.p981', 'probe.p982', 'probe.p983', 'probe.p984', 'probe.p985', 'probe.p986', 'probe.p987', 'probe.p988', 'probe.p989', 'probe.p990', 'probe.p991', 'probe.p992', 'probe.p993', 'probe.p994', 'probe.p995', 'probe.p996', 'probe.p997', 'probe.p998', 'probe.p999', 'probe.p1000', 'probe.p1001', 'probe.p1002', 'probe.p1003', 'probe.p1004', 'probe.p1005', 'probe.p1006', 'probe.p1007', 'probe.p1008', 'probe.p1009', 'probe.p1010', 'probe.p1011', 'probe.p1012', 'probe.p1013', 'probe.p1014', 'probe.e370_fx', 'probe.p1015', 'probe.p1016', 'probe.p1017', 'probe.p1018', 'probe.g371_fx', 'probe.p1019', 'probe.p1020', 'probe.p1021', 'probe.p1022', 'probe.g372_fx', 'probe.p1023', 'probe.p1024', 'probe.p1025', 'probe.p1035', 'probe.p1036', 'probe.p1037', 'probe.p1038', 'probe.p1039', 'probe.p1040', 'probe.m375_fx', 'probe.p1041', 'probe.p1042', 'probe.p1043', 'probe.p1044', 'probe.p1045', 'probe.p1046', 'probe.p1047', 'probe.p1048', 'probe.p1049', 'probe.p1050', 'probe.p1051', 'probe.p1052', 'probe.p1053', 'probe.p1054', 'probe.p1055', 'probe.p1056', 'probe.p1057', 'probe.p1058', 'probe.p1059', 'probe.p1060', 'probe.p1061', 'probe.m376_fx', 'probe.p1062', 'probe.p1063', 'probe.p1064', 'probe.m377_fx', 'probe.p1065', 'probe.p1066', 'probe.p1067', 'probe.p1068', 'probe.p1069', 'probe.p1070', 'probe.p1071', 'probe.p1072', 'probe.p1073', 'probe.p1074', 'probe.m378_fx', 'probe.p1075', 'probe.p1076', 'probe.p1077', 'probe.p1078', 'probe.p1079', 'probe.p1080', 'probe.p1081', 'probe.p1082', 'probe.p1083', 'probe.m379_fx', 'probe.p1084', 'probe.p1085', 'probe.p1086', 'probe.p1087', 'probe.p1088', 'probe.p1089', 'probe.p1090', 'probe.m380_fx', 'probe.p1091', 'probe.p1092', 'probe.p1093', 'probe.p1094', 'probe.p1095', 'probe.p1096', 'probe.p1097', 'probe.p1098', 'probe.h_restaura', 'probe.m381_fx', 'probe.p1099', 'probe.p1100', 'probe.p1101', 'probe.p1102', 'probe.p1103', 'probe.p1104', 'probe.m382_fx', 'probe.p1105', 'probe.p1106', 'probe.p1107', 'probe.p1108', 'probe.p1109', 'probe.p1110', 'probe.p1111', 'probe.p1112', 'probe.p1113', 'probe.p1114', 'probe.p1115', 'probe.p1116', 'probe.p1117', 'probe.p1118', 'probe.p1119', 'probe.m383_fx', 'probe.p1120', 'probe.p1121', 'probe.p1122', 'probe.p1123', 'probe.p1124', 'probe.p1125', 'probe.p1126', 'probe.p1127', 'probe.p1128', 'probe.p1129', 'probe.p1130', 'probe.p1131'
+       'probe.p897', 'probe.p898', 'probe.p899', 'probe.p900', 'probe.p901', 'probe.p902', 'probe.p903', 'probe.p904', 'probe.p905', 'probe.p906', 'probe.p907', 'probe.p912', 'probe.p913', 'probe.p914', 'probe.p915', 'probe.p916', 'probe.p917', 'probe.p918', 'probe.p919', 'probe.p920', 'probe.p921', 'probe.p922', 'probe.p923', 'probe.p924', 'probe.p925', 'probe.p926', 'probe.p927', 'probe.p928', 'probe.p929', 'probe.p930', 'probe.p931', 'probe.p932', 'probe.p933', 'probe.p934', 'probe.p935', 'probe.p936', 'probe.p937', 'probe.p938', 'probe.p939', 'probe.p940', 'probe.p941', 'probe.p942', 'probe.p943', 'probe.p944', 'probe.p945', 'probe.p946', 'probe.p947', 'probe.p948', 'probe.p949', 'probe.p950', 'probe.p951', 'probe.p952', 'probe.p953', 'probe.p954', 'probe.p955', 'probe.p956', 'probe.p957', 'probe.p958', 'probe.p959', 'probe.p960', 'probe.p961', 'probe.p962', 'probe.p963', 'probe.p964', 'probe.p965', 'probe.p966', 'probe.p967', 'probe.p968', 'probe.p969', 'probe.p970', 'probe.p971', 'probe.p972', 'probe.p973', 'probe.p974', 'probe.p975', 'probe.p976', 'probe.p977', 'probe.p978', 'probe.p979', 'probe.p980', 'probe.p981', 'probe.p982', 'probe.p983', 'probe.p984', 'probe.p985', 'probe.p986', 'probe.p987', 'probe.p988', 'probe.p989', 'probe.p990', 'probe.p991', 'probe.p992', 'probe.p993', 'probe.p994', 'probe.p995', 'probe.p996', 'probe.p997', 'probe.p998', 'probe.p999', 'probe.p1000', 'probe.p1001', 'probe.p1002', 'probe.p1003', 'probe.p1004', 'probe.p1005', 'probe.p1006', 'probe.p1007', 'probe.p1008', 'probe.p1009', 'probe.p1010', 'probe.p1011', 'probe.p1012', 'probe.p1013', 'probe.p1014', 'probe.e370_fx', 'probe.p1015', 'probe.p1016', 'probe.p1017', 'probe.p1018', 'probe.g371_fx', 'probe.p1019', 'probe.p1020', 'probe.p1021', 'probe.p1022', 'probe.g372_fx', 'probe.p1023', 'probe.p1024', 'probe.p1025', 'probe.p1035', 'probe.p1036', 'probe.p1037', 'probe.p1038', 'probe.p1039', 'probe.p1040', 'probe.m375_fx', 'probe.p1041', 'probe.p1042', 'probe.p1043', 'probe.p1044', 'probe.p1045', 'probe.p1046', 'probe.p1047', 'probe.p1048', 'probe.p1049', 'probe.p1050', 'probe.p1051', 'probe.p1052', 'probe.p1053', 'probe.p1054', 'probe.p1055', 'probe.p1056', 'probe.p1057', 'probe.p1058', 'probe.p1059', 'probe.p1060', 'probe.p1061', 'probe.m376_fx', 'probe.p1062', 'probe.p1063', 'probe.p1064', 'probe.m377_fx', 'probe.p1065', 'probe.p1066', 'probe.p1067', 'probe.p1068', 'probe.p1069', 'probe.p1070', 'probe.p1071', 'probe.p1072', 'probe.p1073', 'probe.p1074', 'probe.m378_fx', 'probe.p1075', 'probe.p1076', 'probe.p1077', 'probe.p1078', 'probe.p1079', 'probe.p1080', 'probe.p1081', 'probe.p1082', 'probe.p1083', 'probe.m379_fx', 'probe.p1084', 'probe.p1085', 'probe.p1086', 'probe.p1087', 'probe.p1088', 'probe.p1089', 'probe.p1090', 'probe.m380_fx', 'probe.p1091', 'probe.p1092', 'probe.p1093', 'probe.p1094', 'probe.p1095', 'probe.p1096', 'probe.p1097', 'probe.p1098', 'probe.h_restaura', 'probe.m381_fx', 'probe.p1099', 'probe.p1100', 'probe.p1101', 'probe.p1102', 'probe.p1103', 'probe.p1104', 'probe.m382_fx', 'probe.p1105', 'probe.p1106', 'probe.p1107', 'probe.p1108', 'probe.p1109', 'probe.p1110', 'probe.p1111', 'probe.p1112', 'probe.p1113', 'probe.p1114', 'probe.p1115', 'probe.p1116', 'probe.p1117', 'probe.p1118', 'probe.p1119', 'probe.m383_fx', 'probe.p1120', 'probe.p1121', 'probe.p1122', 'probe.p1123', 'probe.p1124', 'probe.p1125', 'probe.p1126', 'probe.p1127', 'probe.p1128', 'probe.p1129', 'probe.p1130', 'probe.p1131', 'probe.m384_fx', 'probe.p1132', 'probe.p1133', 'probe.p1134', 'probe.p1135', 'probe.p1136', 'probe.p1137'
              ]) AS n) s),
   'OK (todos los veredictos publicados)';
 
