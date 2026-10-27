@@ -163,11 +163,11 @@ const MAPA: Record<string, Entrada> = {
   // no le creo la ficha. La pantalla ya lo contempla y no muestra controles; si aun asi llega uno
   // de estos codigos es que la pantalla quedo vieja —la ficha se borro mientras la tenia abierta—,
   // asi que pide RECARGAR para que los controles desaparezcan en vez de seguir invitando a fallar.
-  PA030: { texto: 'Todavia no tenes ficha de asesor, asi que no podes publicar una tarjeta. '
-                + 'La crea el administrador de tu pais.',
+  PA030: { texto: 'Todavía no tienes ficha de asesor, así que no puedes publicar una tarjeta. '
+                + 'La crea el administrador de tu país.',
            destino: 'toast', recargar: 'tarjeta', reportar: false },
-  PA031: { texto: 'Todavia no tenes ficha de asesor, asi que no podes guardar una foto. '
-                + 'La crea el administrador de tu pais.',
+  PA031: { texto: 'Todavía no tienes ficha de asesor, así que no puedes guardar una foto. '
+                + 'La crea el administrador de tu país.',
            destino: 'toast', recargar: 'tarjeta', reportar: false },
   // El path de storage lo arma el CLIENTE, igual que en PA023: si la base lo rechaza el bug es
   // nuestro y no del usuario. Por eso es el unico de este lote que se reporta, y lleva el texto
