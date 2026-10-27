@@ -17,6 +17,7 @@ export default function RegistroClinicaPage() {
   const [invitacion, setInvitacion] = useState<any>(null)
   const [error, setError] = useState<string | null>(null)
 
+  const [nombreContacto, setNombreContacto] = useState('')
   const [password, setPassword] = useState('')
   const [confirmPassword, setConfirmPassword] = useState('')
   const [registrando, setRegistrando] = useState(false)
@@ -38,7 +39,12 @@ export default function RegistroClinicaPage() {
         if (error || data?.error) {
           setError(data?.error || 'Invitación no válida o expirada.')
         } else {
-          setInvitacion(data.data)
+          const inv = data.data
+          setInvitacion(inv)
+          // valor inicial del campo: el contacto de la invitación, si viene
+          if (typeof inv?.nombre_contacto === 'string' && inv.nombre_contacto.trim()) {
+            setNombreContacto(inv.nombre_contacto.trim())
+          }
         }
       } catch (err) {
         setError('Error al validar la invitación. Intenta de nuevo más tarde.')
@@ -54,6 +60,11 @@ export default function RegistroClinicaPage() {
 
     if (!invitacion) return
 
+    const contacto = nombreContacto.trim()
+    if (!contacto) {
+      toast.error('Escribe el nombre de la persona de contacto.')
+      return
+    }
     if (password !== confirmPassword) {
       toast.error('Las contraseñas no coinciden')
       return
@@ -77,7 +88,7 @@ export default function RegistroClinicaPage() {
           token,
           email: invitacion.email,
           password,
-          nombre_contacto: invitacion.nombre_contacto,
+          nombre_contacto: contacto,
         },
       })
 
@@ -167,6 +178,18 @@ export default function RegistroClinicaPage() {
         </CardHeader>
         <CardContent>
           <form onSubmit={handleSubmit} className="space-y-4">
+            <div>
+              <Label htmlFor="nombreContacto">Nombre de contacto</Label>
+              <Input
+                id="nombreContacto"
+                type="text"
+                value={nombreContacto}
+                onChange={(e) => setNombreContacto(e.target.value)}
+                placeholder="Nombre de la persona de contacto"
+                maxLength={120}
+                autoComplete="name"
+              />
+            </div>
             <div>
               <Label htmlFor="password">Contraseña</Label>
               <Input
