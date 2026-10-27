@@ -229,6 +229,14 @@ const MAPA: Record<string, Entrada> = {
   PV025: { destino: 'toast', reportar: false },
   // prioridad_para_agendar (380): médico inexistente o no visible, mismo mensaje.
   PV026: { destino: 'toast', reportar: false },
+
+  // --- Familia RC: registro de clínica por invitación (mig 385 + edge registrar-clinica-invitacion v19) ---
+  // La edge devuelve { error: 'RC00x' } sin el mensaje de la base, así que cada uno lleva texto propio.
+  // RC no está en ES_FAMILIA_PROPIA: un RC desconocido (o ERROR_INTERNO) cae en el genérico.
+  RC001: { texto: 'La invitación no es válida, ya venció o ya fue usada. Pide una nueva.', destino: 'toast', reportar: false },
+  RC002: { texto: 'El correo no coincide con el de la invitación.', destino: 'toast', reportar: false },
+  RC003: { texto: 'Ya tienes una cuenta con este correo. Inicia sesión.', destino: 'toast', reportar: false },
+  RC004: { texto: 'Faltan datos o la contraseña es muy corta (mínimo 6 caracteres).', destino: 'toast', reportar: false },
 }
 
 // Familias cuyo mensaje de la base ya es para el usuario: un código desconocido de estas NO cae en el genérico.
