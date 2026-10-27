@@ -5,6 +5,7 @@ import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { supabase } from '@/lib/supabase'
+import { mapearErrorRpc } from '@/lib/erroresRpc'
 import { toast } from 'sonner'
 import { Loader2, MapPin, AlertCircle, CheckCircle } from 'lucide-react'
 
@@ -62,25 +63,43 @@ export default function RegistroClinicaPage() {
       return
     }
 
+    // la edge v19 exige el correo de la invitación; sin él no se llama (sería RC004 igual)
+    if (!invitacion.email) {
+      toast.error(mapearErrorRpc({ code: 'RC004' }).mensaje)
+      return
+    }
+
     setRegistrando(true)
 
     try {
       const { data, error } = await supabase.functions.invoke('registrar-clinica-invitacion', {
         body: {
           token,
+          email: invitacion.email,
           password,
           nombre_contacto: invitacion.nombre_contacto,
         },
       })
 
-      if (error || data?.error) {
-        toast.error(data?.error || 'Error al completar el registro')
-      } else {
+      if (!error && data?.ok === true) {
         setRegistrado(true)
         toast.success('¡Registro completado exitosamente!')
+      } else {
+        // no-2xx: supabase-js deja la Response en error.context; el código ({ error: 'RC00x' }) se lee de ahí.
+        // Se muestra solo el texto mapeado, nunca el string del servidor.
+        let codigo: unknown = data?.error
+        const ctx = (error as { context?: { json?: () => Promise<unknown> } } | null)?.context
+        if (ctx && typeof ctx.json === 'function') {
+          try {
+            codigo = ((await ctx.json()) as { error?: unknown } | null)?.error
+          } catch {
+            codigo = null
+          }
+        }
+        toast.error(mapearErrorRpc({ code: typeof codigo === 'string' ? codigo : null }).mensaje)
       }
-    } catch (err: any) {
-      toast.error('Error: ' + err.message)
+    } catch {
+      toast.error(mapearErrorRpc(null).mensaje)
     } finally {
       setRegistrando(false)
     }

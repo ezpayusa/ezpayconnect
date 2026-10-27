@@ -163,11 +163,11 @@ const MAPA: Record<string, Entrada> = {
   // no le creo la ficha. La pantalla ya lo contempla y no muestra controles; si aun asi llega uno
   // de estos codigos es que la pantalla quedo vieja —la ficha se borro mientras la tenia abierta—,
   // asi que pide RECARGAR para que los controles desaparezcan en vez de seguir invitando a fallar.
-  PA030: { texto: 'Todavia no tenes ficha de asesor, asi que no podes publicar una tarjeta. '
-                + 'La crea el administrador de tu pais.',
+  PA030: { texto: 'Todavía no tienes ficha de asesor, así que no puedes publicar una tarjeta. '
+                + 'La crea el administrador de tu país.',
            destino: 'toast', recargar: 'tarjeta', reportar: false },
-  PA031: { texto: 'Todavia no tenes ficha de asesor, asi que no podes guardar una foto. '
-                + 'La crea el administrador de tu pais.',
+  PA031: { texto: 'Todavía no tienes ficha de asesor, así que no puedes guardar una foto. '
+                + 'La crea el administrador de tu país.',
            destino: 'toast', recargar: 'tarjeta', reportar: false },
   // El path de storage lo arma el CLIENTE, igual que en PA023: si la base lo rechaza el bug es
   // nuestro y no del usuario. Por eso es el unico de este lote que se reporta, y lleva el texto
@@ -229,6 +229,14 @@ const MAPA: Record<string, Entrada> = {
   PV025: { destino: 'toast', reportar: false },
   // prioridad_para_agendar (380): médico inexistente o no visible, mismo mensaje.
   PV026: { destino: 'toast', reportar: false },
+
+  // --- Familia RC: registro de clínica por invitación (mig 385 + edge registrar-clinica-invitacion v19) ---
+  // La edge devuelve { error: 'RC00x' } sin el mensaje de la base, así que cada uno lleva texto propio.
+  // RC no está en ES_FAMILIA_PROPIA: un RC desconocido (o ERROR_INTERNO) cae en el genérico.
+  RC001: { texto: 'La invitación no es válida, ya venció o ya fue usada. Pide una nueva.', destino: 'toast', reportar: false },
+  RC002: { texto: 'El correo no coincide con el de la invitación.', destino: 'toast', reportar: false },
+  RC003: { texto: 'Ya tienes una cuenta con este correo. Inicia sesión.', destino: 'toast', reportar: false },
+  RC004: { texto: 'Faltan datos o la contraseña es muy corta (mínimo 6 caracteres).', destino: 'toast', reportar: false },
 }
 
 // Familias cuyo mensaje de la base ya es para el usuario: un código desconocido de estas NO cae en el genérico.
