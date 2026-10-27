@@ -40206,7 +40206,7 @@ SELECT set_config('role', 'none', true);
 
 -- ================================================================================
 -- MIG 384 — listar_medicos_por_pais / contar_medicos_por_pais: la fuente `medicos` exige perfiles.rol = 'medico'
--- (M384_FX + P1132-P1137). Pendiente de apply.
+-- (M384_FX + P1132-P1137). Aplicada en prod 2026-10-26 17:55 UTC (PR #81).
 -- pg_temp.m384_estado(): 'pre' (ninguna de las 2 tiene el predicado de la 299), 'post' (las 2 lo tienen) o
 -- 'parcial (...)' (una sola, o falta una función): ROJO explícito, nunca 'pre'.
 -- Con la 384 en 'pre' los probes publican 'PENDIENTE (estado de la 384: pre)'.
