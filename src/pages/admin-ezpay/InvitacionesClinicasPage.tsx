@@ -34,6 +34,14 @@ interface InvitacionClinica {
   used_at: string | null
 }
 
+// Estado que se muestra (solo front, no escribe en la base): una 'pendiente' con expires_at <= ahora es 'vencida'.
+// expires_at es timestamptz (ISO con zona) → new Date(iso) es correcto. Una fecha ilegible cuenta como vencida.
+function estadoEfectivo(inv: Pick<InvitacionClinica, 'estado' | 'expires_at'>, ahora: number): string {
+  if (inv.estado !== 'pendiente') return inv.estado
+  const expira = new Date(inv.expires_at).getTime()
+  return Number.isNaN(expira) || expira <= ahora ? 'vencida' : 'pendiente'
+}
+
 export default function InvitacionesClinicasPage() {
   const navigate = useNavigate()
   const { paisId } = useParams<{ paisId: string }>()
@@ -124,13 +132,16 @@ export default function InvitacionesClinicasPage() {
     switch (estado) {
       case 'pendiente': return <Clock className="w-4 h-4 text-amber-500" />
       case 'usada': return <CheckCircle className="w-4 h-4 text-green-500" />
-      case 'expirada': return <XCircle className="w-4 h-4 text-red-500" />
+      case 'expirada':
+      case 'vencida': return <XCircle className="w-4 h-4 text-red-500" />
       default: return <Clock className="w-4 h-4 text-gray-400" />
     }
   }
 
   if (adminLoading) return <div className="flex justify-center p-8">Verificando permisos...</div>
   if (!isAdmin) return null
+
+  const ahora = Date.now()
 
   return (
     <div className="container mx-auto px-4 py-6 max-w-7xl">
@@ -184,29 +195,32 @@ export default function InvitacionesClinicasPage() {
                   </tr>
                 </thead>
                 <tbody>
-                  {invitaciones.map((inv) => (
+                  {invitaciones.map((inv) => {
+                    const estado = estadoEfectivo(inv, ahora)
+                    return (
                     <tr key={inv.id} className="border-b hover:bg-gray-50">
                       <td className="py-3 px-4 font-medium">{inv.nombre_clinica}</td>
                       <td className="py-3 px-4">{inv.nombre_contacto || '-'}</td>
                       <td className="py-3 px-4">{inv.email}</td>
                       <td className="py-3 px-4">
                         <span className="flex items-center gap-1">
-                          {getEstadoIcon(inv.estado)}
-                          <span className="capitalize">{inv.estado}</span>
+                          {getEstadoIcon(estado)}
+                          <span className="capitalize">{estado === 'vencida' ? 'Vencida' : inv.estado}</span>
                         </span>
                       </td>
                       <td className="py-3 px-4 text-muted-foreground">
                         {new Date(inv.expires_at).toLocaleDateString()}
                       </td>
                       <td className="py-3 px-4 text-right">
-                        {inv.estado === 'pendiente' && (
+                        {estado === 'pendiente' && (
                           <Button variant="ghost" size="sm" onClick={() => copiarLink(inv.token)}>
                             <Copy className="w-4 h-4" />
                           </Button>
                         )}
                       </td>
                     </tr>
-                  ))}
+                    )
+                  })}
                 </tbody>
               </table>
             </div>
