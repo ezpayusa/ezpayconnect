@@ -11,15 +11,33 @@ const corsHeaders = {
 // Las edges no pueden importar de src/lib/app-url.ts, así que se define aquí.
 const APP_URL = 'https://med.ezpayconnect.com'
 
+const LOG = '[crear-invitacion-clinica]'
+
+function responder(status: number, payload: Record<string, unknown>): Response {
+  return new Response(JSON.stringify(payload), {
+    status,
+    headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+  })
+}
+
+function interno(): Response {
+  return responder(500, { error: 'Error interno' })
+}
+
 serve(async (req) => {
   if (req.method === 'OPTIONS') {
     return new Response('ok', { headers: corsHeaders })
   }
 
+  const supabaseUrl = Deno.env.get('SB_URL') || Deno.env.get('SUPABASE_URL')
+  const serviceRoleKey = Deno.env.get('SB_SERVICE_ROLE_KEY') || Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')
+  const resendApiKey = Deno.env.get('RESEND_API_KEY')
+  if (!supabaseUrl || !serviceRoleKey) {
+    console.error(`${LOG} configuracion incompleta`)
+    return interno()
+  }
+
   try {
-    const supabaseUrl = Deno.env.get('SB_URL') || Deno.env.get('SUPABASE_URL')!
-    const serviceRoleKey = Deno.env.get('SB_SERVICE_ROLE_KEY') || Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!
-    const resendApiKey = Deno.env.get('RESEND_API_KEY')
     const supabase = createClient(supabaseUrl, serviceRoleKey, {
       auth: { autoRefreshToken: false, persistSession: false },
     })
@@ -28,10 +46,7 @@ serve(async (req) => {
     const { pais_id, email, nombre_clinica, nombre_contacto, direccion, telefono, num_medicos, num_secretarias, num_admin } = body
 
     if (!pais_id || !email || !nombre_clinica) {
-      return new Response(
-        JSON.stringify({ error: 'Faltan campos requeridos: pais_id, email, nombre_clinica' }),
-        { status: 400, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
-      )
+      return responder(400, { error: 'Faltan campos requeridos: pais_id, email, nombre_clinica' })
     }
 
     // Validar al SOLICITANTE antes de generar la invitación. (Mismo patrón que crear-invitacion-medico
@@ -41,14 +56,12 @@ serve(async (req) => {
     //  autorizado = super_admin (global) o admin_pais acotado al pais_id de la invitación (fail-closed).
     const authHeader = req.headers.get('Authorization')
     if (!authHeader) {
-      return new Response(JSON.stringify({ error: 'Falta Authorization' }),
-        { status: 401, headers: { ...corsHeaders, 'Content-Type': 'application/json' } })
+      return responder(401, { error: 'Falta Authorization' })
     }
     const token = authHeader.replace('Bearer ', '')
     const { data: { user: solicitante } } = await supabase.auth.getUser(token)
     if (!solicitante) {
-      return new Response(JSON.stringify({ error: 'No autenticado' }),
-        { status: 401, headers: { ...corsHeaders, 'Content-Type': 'application/json' } })
+      return responder(401, { error: 'No autenticado' })
     }
     const { data: perfilReq } = await supabase.from('perfiles').select('rol, pais_id').eq('id', solicitante.id).maybeSingle()
     let autorizado = perfilReq?.rol === 'super_admin'
@@ -57,31 +70,50 @@ serve(async (req) => {
       autorizado = !!perfilReq?.pais_id && perfilReq.pais_id === pais_id
     }
     if (!autorizado) {
-      return new Response(JSON.stringify({ error: 'No autorizado para invitar clínicas' }),
-        { status: 403, headers: { ...corsHeaders, 'Content-Type': 'application/json' } })
+      return responder(403, { error: 'No autorizado para invitar clínicas' })
     }
 
-    // Verificar que el email no tenga una invitación pendiente
-    const { data: existente } = await supabase
+    // Invitaciones 'pendiente' del mismo email: una VIGENTE bloquea (como siempre); una VENCIDA no bloquea
+    // y pasa a 'expirada' antes de crear la nueva.
+    const emailNorm = email.toLowerCase()
+    const { data: pendientes, error: pendError } = await supabase
       .from('invitaciones_clinica')
-      .select('id')
-      .eq('email', email.toLowerCase())
+      .select('id, expires_at')
+      .eq('email', emailNorm)
       .eq('estado', 'pendiente')
-      .single()
-
-    if (existente) {
-      return new Response(
-        JSON.stringify({ error: 'Ya existe una invitación pendiente para este email' }),
-        { status: 409, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
-      )
+    if (pendError || !Array.isArray(pendientes)) {
+      console.error(`${LOG} lectura de pendientes fallida`, pendError?.code ?? '-')
+      return interno()
     }
 
-    // Crear invitación
+    const ahora = Date.now()
+    const vigentes = pendientes.filter((p) => new Date(p.expires_at).getTime() > ahora)
+    if (vigentes.length > 0) {
+      return responder(409, { error: 'Ya existe una invitación pendiente para este email' })
+    }
+
+    const vencidas = pendientes.map((p) => p.id)
+    if (vencidas.length > 0) {
+      const { data: expiradas, error: expError } = await supabase
+        .from('invitaciones_clinica')
+        .update({ estado: 'expirada' })
+        .in('id', vencidas)
+        .eq('estado', 'pendiente')
+        .lte('expires_at', new Date(ahora).toISOString())
+        .select('id')
+      if (expError || !Array.isArray(expiradas) || expiradas.length !== vencidas.length) {
+        // otra request cambió esas filas entretanto: no se crea nada
+        console.error(`${LOG} expiracion de vencidas no coincide`, expError?.code ?? '-')
+        return interno()
+      }
+    }
+
+    // Crear invitación (created_by = el solicitante resuelto del JWT, nunca del body)
     const { data: invitacion, error: insertError } = await supabase
       .from('invitaciones_clinica')
       .insert({
         pais_id,
-        email: email.toLowerCase(),
+        email: emailNorm,
         nombre_clinica,
         nombre_contacto: nombre_contacto || null,
         direccion: direccion || null,
@@ -91,22 +123,20 @@ serve(async (req) => {
         num_admin: num_admin || 0,
         estado: 'pendiente',
         expires_at: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString(),
+        created_by: solicitante.id,
       })
       .select()
       .single()
 
-    if (insertError) {
-      console.error('[crear-invitacion-clinica] Error:', insertError)
-      return new Response(
-        JSON.stringify({ error: 'Error creando invitación', details: insertError }),
-        { status: 500, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
-      )
+    if (insertError || !invitacion?.token) {
+      console.error(`${LOG} insert de invitacion fallido`, insertError?.code ?? '-')
+      return responder(500, { error: 'Error creando invitación' })
     }
 
     // Enviar email con link de registro
     if (resendApiKey) {
       const registroUrl = `${APP_URL}/registro-clinica?token=${invitacion.token}`
-      
+
       await fetch('https://api.resend.com/emails', {
         method: 'POST',
         headers: {
@@ -130,23 +160,17 @@ serve(async (req) => {
       })
     }
 
-    return new Response(
-      JSON.stringify({
-        success: true,
-        data: {
-          invitacion_id: invitacion.id,
-          token: invitacion.token,
-          email: invitacion.email,
-          expires_at: invitacion.expires_at,
-        },
-      }),
-      { headers: { ...corsHeaders, 'Content-Type': 'application/json' }, status: 200 }
-    )
-  } catch (error: any) {
-    console.error('[crear-invitacion-clinica] Error:', error)
-    return new Response(
-      JSON.stringify({ error: error.message || 'Error interno' }),
-      { status: 500, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
-    )
+    return responder(200, {
+      success: true,
+      data: {
+        invitacion_id: invitacion.id,
+        token: invitacion.token,
+        email: invitacion.email,
+        expires_at: invitacion.expires_at,
+      },
+    })
+  } catch (_e) {
+    console.error(`${LOG} error no controlado`)
+    return interno()
   }
 })
