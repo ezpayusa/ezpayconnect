@@ -54,7 +54,7 @@ Stack: React + Vite + TypeScript, Supabase / Postgres, deploy en Vercel, repo en
     contra el prosrc vivo de public/private: PA040, PV028 y RC004 son los máximos en uso)
   - ~~Próximos libres: mig 384, errcode PA041, errcode PV029, probe P1132.~~ (superado: ver arriba)
   - **Harness al 27-oct (post 384-385):** 1240 filas / 11 rojas = la deuda. Body 2.866.534 bytes tras quitar comentarios
-    (techo propio 2,9 MB → margen ~33 KB: partir antes de agregar probes).
+    (techo 2,9 MiB (3.040.870 bytes, el del runner) → margen ~174 KB; partir el harness queda en backlog, no bloquea la próxima familia).
   - **Harness al 24-oct (con la 382 y la 383 aplicadas):** 1228 filas / 11 rojas = la deuda (medido antes del apply de la
     383 con ella inyectada, y sin ella con sus 13 probes en PENDIENTE). Body ~2.833.408 bytes tras quitar comentarios con
     la 383 inyectada (techo 3.040.870).
