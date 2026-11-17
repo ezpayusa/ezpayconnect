@@ -13,7 +13,7 @@ import { ContratosComisionPais } from '@/pages/admin-ezpay/ContratosComisionPais
 import { EstadoCuentaComisionPais } from '@/pages/admin-ezpay/EstadoCuentaComisionPais';
 import { useAdminAuth } from '@/hooks/admin/useAdminAuth';
 import { usePaisFiltro } from '@/hooks/usePaisFiltro';
-import { useEmpresasPais, type EmpresaPais, type EstadoEmpresa } from '@/hooks/useEmpresasPais';
+import { useEmpresasPais, type EmpresaPais, type EstadoEmpresa } from '@/hooks/admin/useEmpresasPais';
 import { supabase } from '@/lib/supabase';
 import { toast } from 'sonner';
 import { ArrowLeft, Search, RefreshCw, MapPin, CheckCircle2, XCircle, AlertTriangle, Clock, Mail, Phone, Store, FlaskConical, Handshake } from 'lucide-react';
