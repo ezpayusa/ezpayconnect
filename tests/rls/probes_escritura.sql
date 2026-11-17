@@ -41587,6 +41587,406 @@ EXCEPTION WHEN OTHERS THEN
 END $$;
 SELECT set_config('role', 'none', true);
 
+-- ================================================================================
+-- MIG 388 — el super_admin suspende / reactiva / reabre empresas por RPC: cambiar_estado_empresa (P1152-P1156).
+-- M388_FX crea sus propios helpers de pg_temp (no reusa los de M386_FX/M387_FX ni depende de FX12 ni de otro probe).
+-- pg_temp.m388_estado(): 'post' (cambiar_estado_empresa con DEFINER, search_path vacío, VOLATILE, ACL exacta y md5 de la
+-- 388), 'pre' (no existe) o 'parcial (...)': ROJO explícito. Con 'pre' los probes publican 'PENDIENTE (estado de la 388: pre)'.
+-- (La no-regresión de resolver_empresa y del UPDATE directo del super_admin en 'pre' ya la cubren P1144 y P1146.)
+-- Actores por id EXPLÍCITO, fijados en cada savepoint con pg_temp.m388_fijar(): adminpais.qa 8f391caf (admin_pais GT) y
+-- el super_admin real 41904e2c. Las empresas se siembran en GT con 1 cuenta admin activa cada una (correos
+-- qa-manual.p115x.<tag>.<uuid>@ezpayqa.test); la 'rechazada' se siembra como postgres con el GUC y con motivo. Los errores
+-- se capturan SOLO por SQLSTATE (EP001, EP002, EP003, EP005, EP006, 42501); cualquier otro llega al handler del probe y
+-- publica FALLO. Cada probe descarta todo con RAISE P0999 y compara pg_temp.m388_snap() antes/después. El push se cuenta
+-- en net.http_request_queue por el id del aviso dentro del body (sin leer headers).
+-- ================================================================================
+DO $$
+DECLARE est text;
+BEGIN
+  EXECUTE $fn$
+CREATE OR REPLACE FUNCTION pg_temp.m388_estado() RETURNS text LANGUAGE plpgsql AS $body$
+DECLARE n int; v text;
+BEGIN
+  n := (SELECT count(*) FROM pg_proc p WHERE p.proname = 'cambiar_estado_empresa');
+  IF n = 0 THEN RETURN 'pre'; END IF;
+  v := (SELECT p.prosecdef::text||' '||p.provolatile::text||' '||COALESCE(p.proconfig::text, '-')||' '||COALESCE(p.proacl::text, '-')||' '||md5(p.prosrc)
+          FROM pg_proc p WHERE p.oid = to_regprocedure('public.cambiar_estado_empresa(uuid,text)'));
+  IF n = 1 AND v = 'true v {"search_path=\"\""} {postgres=X/postgres,authenticated=X/postgres,service_role=X/postgres} be01192509075ca4acb18cfc8c6502ab' THEN
+    RETURN 'post';
+  END IF;
+  RETURN 'parcial (sobrecargas '||n||', '||COALESCE(v, 'sin la firma (uuid,text)')||')';
+END
+$body$
+$fn$;
+  -- p_sql (devuelve un text) como p_rol (NULL = sin cambiar de rol); p_uid NULL = claims sin sub.
+  -- 'OK:<valor>' o 'ERR:<SQLSTATE> <mensaje>' solo para EP001, EP002, EP003, EP005, EP006 y 42501; el resto se propaga.
+  EXECUTE $fn$
+CREATE OR REPLACE FUNCTION pg_temp.m388_q(p_uid uuid, p_rol text, p_sql text) RETURNS text LANGUAGE plpgsql AS $body$
+DECLARE v text;
+BEGIN
+  BEGIN
+    IF p_rol IS NOT NULL THEN
+      PERFORM set_config('request.jwt.claims', CASE WHEN p_uid IS NULL THEN json_build_object('role', p_rol)::text
+                                                    ELSE json_build_object('sub', p_uid, 'role', p_rol)::text END, true);
+      PERFORM set_config('role', p_rol, true);
+    END IF;
+    EXECUTE p_sql INTO v;
+    IF p_rol IS NOT NULL THEN PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true); END IF;
+    RETURN 'OK:'||COALESCE(v, 'NULL');
+  EXCEPTION
+    WHEN SQLSTATE 'EP001' OR SQLSTATE 'EP002' OR SQLSTATE 'EP003' OR SQLSTATE 'EP005' OR SQLSTATE 'EP006' OR SQLSTATE '42501' THEN
+      RETURN 'ERR:'||SQLSTATE||' '||SQLERRM;
+  END;
+END
+$body$
+$fn$;
+  -- empresa de GT en p_estado + su cuenta admin activa (usuario de auth nuevo). 'rechazada': como postgres con el GUC, con
+  -- motivo y revisada por el super_admin. SOLO dentro de un savepoint. Devuelve 'empresa|cuenta'.
+  EXECUTE $fn$
+CREATE OR REPLACE FUNCTION pg_temp.m388_emp(p_tag text, p_estado text) RETURNS text LANGUAGE plpgsql AS $body$
+DECLARE u uuid := gen_random_uuid(); e uuid := gen_random_uuid(); m text;
+BEGIN
+  m := 'qa-manual.'||p_tag||'.'||u::text||'@ezpayqa.test';
+  INSERT INTO auth.users (id, email) VALUES (u, m);
+  IF p_estado = 'rechazada' THEN
+    PERFORM set_config('app.resolver_empresa_rpc', 'on', true);
+    INSERT INTO public.empresas_proveedoras (id, nombre_empresa, tipo, email_contacto, estado, pais_id, motivo_rechazo, revisado_por, revisado_at)
+      VALUES (e, 'QA-MANUAL Empresa '||p_tag, 'farmacia', m, 'rechazada', 'cbbbbe6d-59fe-4cf2-91ee-3e31ba1d5909',
+              'QA-MANUAL motivo '||p_tag, '41904e2c-5ef3-4fee-bd48-9ea58e0c8c37', now());
+    PERFORM set_config('app.resolver_empresa_rpc', 'off', true);
+  ELSE
+    INSERT INTO public.empresas_proveedoras (id, nombre_empresa, tipo, email_contacto, estado, pais_id)
+      VALUES (e, 'QA-MANUAL Empresa '||p_tag, 'farmacia', m, p_estado, 'cbbbbe6d-59fe-4cf2-91ee-3e31ba1d5909');
+  END IF;
+  INSERT INTO public.cuentas_proveedor (id, empresa_id, nombre_completo, email, rol_en_empresa, activo, pais_id)
+    VALUES (u, e, 'QA-MANUAL Admin '||p_tag, m, 'admin', true, 'cbbbbe6d-59fe-4cf2-91ee-3e31ba1d5909');
+  RETURN e::text||'|'||u::text;
+END
+$body$
+$fn$;
+  -- 'estado|motivo|revisado_por|revisado_at no nulo'
+  EXECUTE $fn$
+CREATE OR REPLACE FUNCTION pg_temp.m388_fila(p_emp uuid) RETURNS text LANGUAGE sql AS $body$
+  SELECT e.estado||'|'||COALESCE(e.motivo_rechazo, 'NULL')||'|'||COALESCE(e.revisado_por::text, 'NULL')||'|'||(e.revisado_at IS NOT NULL)::text
+    FROM public.empresas_proveedoras e WHERE e.id = p_emp
+$body$
+$fn$;
+  -- avisos 'empresa' de las cuentas de la empresa: 'n|último título|último mensaje|accion_url'
+  EXECUTE $fn$
+CREATE OR REPLACE FUNCTION pg_temp.m388_avisos(p_emp uuid) RETURNS text LANGUAGE sql AS $body$
+  SELECT count(*)||'|'||COALESCE((array_agg(n.titulo ORDER BY n.id::text DESC))[1], '-')||'|'||COALESCE((array_agg(n.mensaje ORDER BY n.id::text DESC))[1], '-')
+         ||'|'||COALESCE(min(n.accion_url), '-')
+    FROM public.notificaciones n
+   WHERE n.tipo = 'empresa' AND n.usuario_id IN (SELECT cp.id FROM public.cuentas_proveedor cp WHERE cp.empresa_id = p_emp)
+$body$
+$fn$;
+  -- pushes encolados en pg_net para los avisos de la empresa (por el id del aviso en el body; sin leer headers)
+  EXECUTE $fn$
+CREATE OR REPLACE FUNCTION pg_temp.m388_push(p_emp uuid) RETURNS text LANGUAGE sql AS $body$
+  SELECT count(*)::text FROM net.http_request_queue q
+   WHERE EXISTS (SELECT 1 FROM public.notificaciones n
+                  WHERE n.tipo = 'empresa' AND n.usuario_id IN (SELECT cp.id FROM public.cuentas_proveedor cp WHERE cp.empresa_id = p_emp)
+                    AND convert_from(q.body, 'UTF8') LIKE '%'||n.id::text||'%')
+$body$
+$fn$;
+  -- snapshot: filas de empresas + avisos 'empresa' + auth.users/cuentas/perfiles (n) + los 2 actores fijados
+  EXECUTE $fn$
+CREATE OR REPLACE FUNCTION pg_temp.m388_snap() RETURNS text LANGUAGE sql AS $body$
+  SELECT md5(concat_ws('|',
+    (SELECT md5(COALESCE(string_agg(t::text, E'\n' ORDER BY t::text), '')) FROM public.empresas_proveedoras t),
+    (SELECT count(*) FROM public.notificaciones n WHERE n.tipo = 'empresa')::text,
+    (SELECT count(*) FROM auth.users)::text, (SELECT count(*) FROM public.cuentas_proveedor)::text, (SELECT count(*) FROM public.perfiles)::text,
+    (SELECT string_agg(p.id::text||p.rol||COALESCE(p.pais_id::text, '-')||p.activo::text, ',' ORDER BY p.id) FROM public.perfiles p
+      WHERE p.id IN ('8f391caf-85bc-4413-af8a-4006452ae09f', '41904e2c-5ef3-4fee-bd48-9ea58e0c8c37'))))
+$body$
+$fn$;
+  -- fija a los actores: adminpais.qa 8f391caf = admin_pais GT activo; 41904e2c = super_admin activo. SOLO en un savepoint.
+  EXECUTE $fn$
+CREATE OR REPLACE FUNCTION pg_temp.m388_fijar() RETURNS void LANGUAGE plpgsql AS $body$
+BEGIN
+  UPDATE public.perfiles SET rol = 'admin_pais', pais_id = 'cbbbbe6d-59fe-4cf2-91ee-3e31ba1d5909', activo = true WHERE id = '8f391caf-85bc-4413-af8a-4006452ae09f';
+  UPDATE public.perfiles SET rol = 'super_admin', activo = true WHERE id = '41904e2c-5ef3-4fee-bd48-9ea58e0c8c37';
+  IF (SELECT count(*) FROM public.perfiles WHERE id IN ('8f391caf-85bc-4413-af8a-4006452ae09f', '41904e2c-5ef3-4fee-bd48-9ea58e0c8c37')) <> 2 THEN
+    RAISE EXCEPTION 'fixture roto: m388_fijar sin admin_pais o super_admin';
+  END IF;
+END
+$body$
+$fn$;
+  EXECUTE $fn$
+CREATE OR REPLACE FUNCTION pg_temp.m388_eq(p_lbl text, p_got text, p_want text) RETURNS text LANGUAGE sql IMMUTABLE AS $body$
+  SELECT CASE WHEN p_got IS NOT DISTINCT FROM p_want THEN '' ELSE 'X:'||p_lbl||'='||COALESCE(left(p_got, 140), 'NULL')||' (esperado '||COALESCE(left(p_want, 140), 'NULL')||'); ' END
+$body$
+$fn$;
+  EXECUTE $fn$
+CREATE OR REPLACE FUNCTION pg_temp.m388_veredicto(p_det text, p_pre text, p_post text, p_ok text) RETURNS text LANGUAGE sql IMMUTABLE AS $body$
+  SELECT CASE
+    WHEN p_pre IS DISTINCT FROM p_post THEN 'FALLO (no restauró el estado: '||COALESCE(p_pre, 'NULL')||' -> '||COALESCE(p_post, 'NULL')||'; '||COALESCE(p_det, '')||')'
+    WHEN p_det LIKE '%FUGA:%' THEN 'FUGA ('||p_det||')'
+    WHEN p_det <> '' THEN 'FALLO ('||p_det||')'
+    ELSE 'OK ('||p_ok||')' END
+$body$
+$fn$;
+  est := pg_temp.m388_estado();
+  PERFORM set_config('probe.m388_fx', CASE WHEN est = 'pre' THEN 'PENDIENTE (estado de la 388: pre; helpers de pg_temp creados)'
+    WHEN est = 'post' THEN 'OK (helpers de pg_temp creados; estado de la 388: post)'
+    ELSE 'ROJO (388 '||est||'; helpers de pg_temp creados)' END, false);
+EXCEPTION WHEN OTHERS THEN
+  PERFORM set_config('probe.m388_fx', 'FALLO ('||SQLSTATE||' '||SQLERRM||')', false);
+END $$;
+SELECT set_config('role', 'none', true);
+
+-- ---------------- P1152 388: catálogo (DEFINER, search_path vacío, VOLATILE, ACL exacta, 1 sobrecarga, anon 42501) ----------------
+DO $$
+DECLARE est text; d text := ''; r text;
+BEGIN
+  est := pg_temp.m388_estado();
+  IF est = 'pre' THEN PERFORM set_config('probe.p1152', 'PENDIENTE (estado de la 388: pre)', false); RETURN; END IF;
+  IF est <> 'post' THEN PERFORM set_config('probe.p1152', 'ROJO (388 '||est||')', false); RETURN; END IF;
+  d := d || pg_temp.m388_eq('sobrecargas', (SELECT count(*)::text FROM pg_proc p WHERE p.proname = 'cambiar_estado_empresa'), '1');
+  d := d || pg_temp.m388_eq('catalogo', (SELECT p.prosecdef::text||' '||p.provolatile::text||' '||COALESCE(p.proconfig::text, '-')||' '||COALESCE(p.proacl::text, '-')
+                                           FROM pg_proc p WHERE p.oid = to_regprocedure('public.cambiar_estado_empresa(uuid,text)')),
+                            'true v {"search_path=\"\""} {postgres=X/postgres,authenticated=X/postgres,service_role=X/postgres}');
+  d := d || pg_temp.m388_eq('retorno', (SELECT pg_get_function_result(p.oid) FROM pg_proc p WHERE p.oid = to_regprocedure('public.cambiar_estado_empresa(uuid,text)')), 'jsonb');
+  d := d || pg_temp.m388_eq('execute_authenticated_service_role',
+                            has_function_privilege('authenticated', 'public.cambiar_estado_empresa(uuid,text)', 'EXECUTE')::text||'/'||
+                            has_function_privilege('service_role', 'public.cambiar_estado_empresa(uuid,text)', 'EXECUTE')::text, 'true/true');
+  IF has_function_privilege('anon', 'public.cambiar_estado_empresa(uuid,text)', 'EXECUTE') THEN d := d || 'FUGA:anon con EXECUTE; '; END IF;
+  IF has_function_privilege('public', 'public.cambiar_estado_empresa(uuid,text)', 'EXECUTE') THEN d := d || 'FUGA:PUBLIC con EXECUTE; '; END IF;
+  r := pg_temp.m388_q(NULL, 'anon', 'SELECT public.cambiar_estado_empresa(''411d6f8c-a405-49d6-9ed6-fbeb0db05133''::uuid, ''suspender'')::text');
+  IF r LIKE 'OK:%' THEN d := d || 'FUGA:anon ejecutó ('||left(r, 60)||'); '; END IF;
+  d := d || pg_temp.m388_eq('anon', left(r, 9), 'ERR:42501');
+  PERFORM set_config('probe.p1152', pg_temp.m388_veredicto(d, '', '',
+    'cambiar_estado_empresa: 1 sobrecarga, DEFINER, VOLATILE, search_path vacío, ACL {postgres, authenticated, service_role} sin PUBLIC ni anon, retorna jsonb; anon 42501'), false);
+EXCEPTION WHEN OTHERS THEN
+  PERFORM set_config('probe.p1152', 'FALLO ('||SQLSTATE||' '||SQLERRM||')', false);
+END $$;
+SELECT set_config('role', 'none', true);
+
+-- ---------------- P1153 388: positivo super_admin — suspender, reactivar, reabrir (aviso + push); resolver_empresa después de reabrir ----------------
+DO $$
+DECLARE est text; pre text; post text; d text := ''; a text; ea uuid; er uuid; o1 text; o2 text;
+  c_sa CONSTANT uuid := '41904e2c-5ef3-4fee-bd48-9ea58e0c8c37';
+  c_fn CONSTANT text := 'SELECT public.cambiar_estado_empresa(%L::uuid, %L)::text';
+BEGIN
+  est := pg_temp.m388_estado();
+  IF est = 'pre' THEN PERFORM set_config('probe.p1153', 'PENDIENTE (estado de la 388: pre)', false); RETURN; END IF;
+  IF est <> 'post' THEN PERFORM set_config('probe.p1153', 'ROJO (388 '||est||')', false); RETURN; END IF;
+  pre := pg_temp.m388_snap();
+  BEGIN
+    PERFORM pg_temp.m388_fijar();
+    a := pg_temp.m388_emp('p1153.act', 'activa');     ea := split_part(a, '|', 1)::uuid;
+    a := pg_temp.m388_emp('p1153.rech', 'rechazada'); er := split_part(a, '|', 1)::uuid;
+    d := d || pg_temp.m388_eq('sembrada_rech', pg_temp.m388_fila(er), 'rechazada|QA-MANUAL motivo p1153.rech|'||c_sa||'|true');
+    o1 := (SELECT md5(COALESCE(string_agg(t::text, E'\n' ORDER BY t::text), '')) FROM public.empresas_proveedoras t WHERE t.id NOT IN (ea, er));
+    -- suspender: activa -> suspendida, 1 aviso, 1 push, GUC en off
+    d := d || pg_temp.m388_eq('suspender', pg_temp.m388_q(c_sa, 'authenticated', format(c_fn, ea, 'suspender')),
+                              'OK:'||jsonb_build_object('empresa_id', ea, 'estado', 'suspendida', 'notificado', true)::text);
+    d := d || pg_temp.m388_eq('fila_suspendida', pg_temp.m388_fila(ea), 'suspendida|NULL|NULL|false');
+    d := d || pg_temp.m388_eq('aviso_suspendida', pg_temp.m388_avisos(ea), '1|Estado de tu empresa actualizado|El estado de tu empresa cambió a: suspendida.|/proveedor/dashboard');
+    d := d || pg_temp.m388_eq('push_suspendida', pg_temp.m388_push(ea), '1');
+    d := d || pg_temp.m388_eq('guc_off', COALESCE(current_setting('app.resolver_empresa_rpc', true), ''), 'off');
+    -- reactivar (acción con mayúscula y espacios): suspendida -> activa, 2.º aviso y 2.º push (sin re-encolar el 1.º)
+    d := d || pg_temp.m388_eq('reactivar', pg_temp.m388_q(c_sa, 'authenticated', format(c_fn, ea, ' Reactivar ')),
+                              'OK:'||jsonb_build_object('empresa_id', ea, 'estado', 'activa', 'notificado', true)::text);
+    d := d || pg_temp.m388_eq('fila_reactivada', pg_temp.m388_fila(ea), 'activa|NULL|NULL|false');
+    d := d || pg_temp.m388_eq('aviso_reactivada', split_part(pg_temp.m388_avisos(ea), '|', 1), '2');
+    d := d || pg_temp.m388_eq('push_reactivada', pg_temp.m388_push(ea), '2');
+    -- reabrir: rechazada -> pendiente; motivo y revisado_* en NULL; 1 aviso y 1 push
+    d := d || pg_temp.m388_eq('reabrir', pg_temp.m388_q(c_sa, 'authenticated', format(c_fn, er, 'reabrir')),
+                              'OK:'||jsonb_build_object('empresa_id', er, 'estado', 'pendiente', 'notificado', true)::text);
+    d := d || pg_temp.m388_eq('fila_reabierta', pg_temp.m388_fila(er), 'pendiente|NULL|NULL|false');
+    d := d || pg_temp.m388_eq('aviso_reabierta', pg_temp.m388_avisos(er), '1|Estado de tu empresa actualizado|El estado de tu empresa cambió a: pendiente.|/proveedor/dashboard');
+    d := d || pg_temp.m388_eq('push_reabierta', pg_temp.m388_push(er), '1');
+    -- después de reabrir, resolver_empresa vuelve a funcionar
+    d := d || pg_temp.m388_eq('aprobar_reabierta', pg_temp.m388_q(c_sa, 'authenticated', format('SELECT public.resolver_empresa(%L::uuid, ''aprobar'')::text', er)),
+                              'OK:'||jsonb_build_object('empresa_id', er, 'estado', 'activa', 'notificado', true)::text);
+    d := d || pg_temp.m388_eq('fila_aprobada', pg_temp.m388_fila(er), 'activa|NULL|'||c_sa||'|true');
+    -- solo cambiaron las 2 sembradas
+    o2 := (SELECT md5(COALESCE(string_agg(t::text, E'\n' ORDER BY t::text), '')) FROM public.empresas_proveedoras t WHERE t.id NOT IN (ea, er));
+    d := d || pg_temp.m388_eq('otras_empresas_intactas', o2, o1);
+    RAISE EXCEPTION 'P1153 descarte' USING ERRCODE = 'P0999';
+  EXCEPTION WHEN SQLSTATE 'P0999' THEN NULL;
+  END;
+  post := pg_temp.m388_snap();
+  PERFORM set_config('probe.p1153', pg_temp.m388_veredicto(d, pre, post,
+    'super_admin: suspender (1 aviso + 1 push), reactivar (2.º aviso + 2.º push), reabrir rechazada (pendiente, motivo y revisado_* en NULL, 1 aviso + 1 push); resolver_empresa aprueba la reabierta; GUC en off; otras empresas intactas'), false);
+EXCEPTION WHEN OTHERS THEN
+  PERFORM set_config('probe.p1153', 'FALLO ('||SQLSTATE||' '||SQLERRM||')', false);
+END $$;
+SELECT set_config('role', 'none', true);
+
+-- ---------------- P1154 388: negativos por SQLSTATE — EP006 transiciones, EP005 acción, EP002 mismo mensaje, EP001; 0 escrituras ----------------
+DO $$
+DECLARE est text; pre text; post text; s1 text; s2 text; d text := ''; a text; ea uuid; ca uuid; ep uuid; es uuid; er uuid;
+  r text; m6 text; m2 text; cs record;
+  c_ap CONSTANT uuid := '8f391caf-85bc-4413-af8a-4006452ae09f'; c_sa CONSTANT uuid := '41904e2c-5ef3-4fee-bd48-9ea58e0c8c37';
+  c_nx CONSTANT uuid := '11111111-2222-4333-8444-555555555555';
+  c_fn CONSTANT text := 'SELECT public.cambiar_estado_empresa(%L::uuid, %L)::text';
+BEGIN
+  est := pg_temp.m388_estado();
+  IF est = 'pre' THEN PERFORM set_config('probe.p1154', 'PENDIENTE (estado de la 388: pre)', false); RETURN; END IF;
+  IF est <> 'post' THEN PERFORM set_config('probe.p1154', 'ROJO (388 '||est||')', false); RETURN; END IF;
+  pre := pg_temp.m388_snap();
+  BEGIN
+    PERFORM pg_temp.m388_fijar();
+    a := pg_temp.m388_emp('p1154.act', 'activa');     ea := split_part(a, '|', 1)::uuid; ca := split_part(a, '|', 2)::uuid;
+    a := pg_temp.m388_emp('p1154.pend', 'pendiente'); ep := split_part(a, '|', 1)::uuid;
+    a := pg_temp.m388_emp('p1154.susp', 'suspendida'); es := split_part(a, '|', 1)::uuid;
+    a := pg_temp.m388_emp('p1154.rech', 'rechazada'); er := split_part(a, '|', 1)::uuid;
+    s1 := pg_temp.m388_snap()||'|'||pg_temp.m388_push(ea)||pg_temp.m388_push(ep)||pg_temp.m388_push(es)||pg_temp.m388_push(er);
+    -- EP006: las 9 combinaciones inválidas (incluye repetir: suspender una suspendida, reactivar una activa, reabrir una pendiente)
+    m6 := pg_temp.m388_q(c_sa, 'authenticated', format(c_fn, es, 'suspender'));
+    IF m6 LIKE 'OK:%' THEN d := d || 'FUGA:suspender_suspendida escribió ('||left(m6, 60)||'); '; END IF;
+    d := d || pg_temp.m388_eq('suspender_suspendida', left(m6, 9), 'ERR:EP006');
+    FOR cs IN SELECT * FROM (VALUES
+        ('suspender_pendiente', ep, 'suspender'), ('suspender_rechazada', er, 'suspender'),
+        ('reactivar_activa', ea, 'reactivar'), ('reactivar_pendiente', ep, 'reactivar'), ('reactivar_rechazada', er, 'reactivar'),
+        ('reabrir_activa', ea, 'reabrir'), ('reabrir_pendiente', ep, 'reabrir'), ('reabrir_suspendida', es, 'reabrir')
+      ) v(caso, emp, accion) LOOP
+      r := pg_temp.m388_q(c_sa, 'authenticated', format(c_fn, cs.emp, cs.accion));
+      IF r LIKE 'OK:%' THEN d := d || 'FUGA:'||cs.caso||' escribió ('||left(r, 60)||'); '; END IF;
+      d := d || pg_temp.m388_eq(cs.caso, r, m6);
+    END LOOP;
+    -- EP005: acción inválida, NULL y vacía
+    FOR cs IN SELECT * FROM (VALUES
+        ('accion_borrar', format(c_fn, ea, 'borrar')), ('accion_aprobar', format(c_fn, ea, 'aprobar')),
+        ('accion_null', format('SELECT public.cambiar_estado_empresa(%L::uuid, NULL)::text', ea)), ('accion_vacia', format(c_fn, ea, '  '))
+      ) v(caso, sql) LOOP
+      d := d || pg_temp.m388_eq(cs.caso, pg_temp.m388_q(c_sa, 'authenticated', cs.sql), 'ERR:EP005 La acción no es válida.');
+    END LOOP;
+    -- EP002: el mismo texto completo (referencia: admin_pais GT sobre una empresa de GT)
+    m2 := pg_temp.m388_q(c_ap, 'authenticated', format(c_fn, ea, 'suspender'));
+    IF m2 LIKE 'OK:%' THEN d := d || 'FUGA:admin_pais suspendió ('||left(m2, 60)||'); '; END IF;
+    d := d || pg_temp.m388_eq('admin_pais_gt', left(m2, 9), 'ERR:EP002');
+    FOR cs IN SELECT * FROM (VALUES
+        ('admin_pais_reabrir', c_ap, format(c_fn, er, 'reabrir')),
+        ('admin_pais_reactivar', c_ap, format(c_fn, es, 'reactivar')),
+        ('admin_pais_inexistente', c_ap, format(c_fn, c_nx, 'suspender')),
+        ('proveedor_propia', ca, format(c_fn, ea, 'suspender')),
+        ('super_admin_inexistente', c_sa, format(c_fn, c_nx, 'suspender')),
+        ('super_admin_null', c_sa, 'SELECT public.cambiar_estado_empresa(NULL::uuid, ''suspender'')::text')
+      ) v(caso, uid, sql) LOOP
+      r := pg_temp.m388_q(cs.uid, 'authenticated', cs.sql);
+      IF r LIKE 'OK:%' THEN d := d || 'FUGA:'||cs.caso||' escribió ('||left(r, 60)||'); '; END IF;
+      d := d || pg_temp.m388_eq(cs.caso||'_mismo_error', r, m2);
+    END LOOP;
+    -- EP001: sin sesión
+    r := pg_temp.m388_q(NULL, 'authenticated', format(c_fn, ea, 'suspender'));
+    IF r LIKE 'OK:%' THEN d := d || 'FUGA:sin_sesion escribió ('||left(r, 60)||'); '; END IF;
+    d := d || pg_temp.m388_eq('sin_sesion', left(r, 9), 'ERR:EP001');
+    -- 0 escrituras: empresas, avisos y push de las 4 sembradas iguales
+    s2 := pg_temp.m388_snap()||'|'||pg_temp.m388_push(ea)||pg_temp.m388_push(ep)||pg_temp.m388_push(es)||pg_temp.m388_push(er);
+    d := d || pg_temp.m388_eq('cero_escrituras', s2, s1);
+    d := d || pg_temp.m388_eq('filas_intactas', pg_temp.m388_fila(ea)||' '||pg_temp.m388_fila(ep)||' '||pg_temp.m388_fila(es)||' '||pg_temp.m388_fila(er),
+                              'activa|NULL|NULL|false pendiente|NULL|NULL|false suspendida|NULL|NULL|false rechazada|QA-MANUAL motivo p1154.rech|'||c_sa||'|true');
+    RAISE EXCEPTION 'P1154 descarte' USING ERRCODE = 'P0999';
+  EXCEPTION WHEN SQLSTATE 'P0999' THEN NULL;
+  END;
+  post := pg_temp.m388_snap();
+  PERFORM set_config('probe.p1154', pg_temp.m388_veredicto(d, pre, post,
+    '9 transiciones inválidas o repetidas EP006 con el mismo mensaje; acción inválida/aprobar/NULL/vacía EP005; admin_pais GT (3 acciones), proveedor, inexistente y NULL EP002 con el mismo mensaje; sin sesión EP001; 0 escrituras'), false);
+EXCEPTION WHEN OTHERS THEN
+  PERFORM set_config('probe.p1154', 'FALLO ('||SQLSTATE||' '||SQLERRM||')', false);
+END $$;
+SELECT set_config('role', 'none', true);
+
+-- ---------------- P1155 388: guard — el GUC app.resolver_empresa_rpc a mano no alcanza; la RPC lo deja en off ----------------
+DO $$
+DECLARE est text; pre text; post text; d text := ''; a text; ea uuid; ca uuid; er uuid; cs record;
+  c_sa CONSTANT uuid := '41904e2c-5ef3-4fee-bd48-9ea58e0c8c37';
+  c_upd CONSTANT text := 'WITH u AS (UPDATE public.empresas_proveedoras SET %s WHERE id = %L::uuid RETURNING 1) SELECT count(*)::text FROM u';
+BEGIN
+  est := pg_temp.m388_estado();
+  IF est = 'pre' THEN PERFORM set_config('probe.p1155', 'PENDIENTE (estado de la 388: pre)', false); RETURN; END IF;
+  IF est <> 'post' THEN PERFORM set_config('probe.p1155', 'ROJO (388 '||est||')', false); RETURN; END IF;
+  pre := pg_temp.m388_snap();
+  BEGIN
+    PERFORM pg_temp.m388_fijar();
+    a := pg_temp.m388_emp('p1155.act', 'activa');     ea := split_part(a, '|', 1)::uuid; ca := split_part(a, '|', 2)::uuid;
+    a := pg_temp.m388_emp('p1155.rech', 'rechazada'); er := split_part(a, '|', 1)::uuid;
+    FOR cs IN SELECT * FROM (VALUES
+        -- (caso, actor, SET, empresa): todos con el GUC puesto a mano antes, todos 42501
+        ('super_admin_reabrir_directo', c_sa, 'estado = ''pendiente'', motivo_rechazo = NULL, revisado_por = NULL, revisado_at = NULL', er),
+        ('super_admin_motivo', c_sa, 'motivo_rechazo = NULL', er),
+        ('super_admin_revisado_at', c_sa, 'revisado_at = NULL', er),
+        ('proveedor_estado', ca, 'estado = ''suspendida''', ea),
+        ('proveedor_revisado_at', ca, 'revisado_at = now()', ea)
+      ) v(caso, uid, sets, emp) LOOP
+      PERFORM set_config('app.resolver_empresa_rpc', 'on', true);
+      d := d || pg_temp.m388_eq(cs.caso, left(pg_temp.m388_q(cs.uid, 'authenticated', format(c_upd, cs.sets, cs.emp)), 9), 'ERR:42501');
+      PERFORM set_config('app.resolver_empresa_rpc', 'off', true);
+    END LOOP;
+    -- la RPC deja el GUC en off: un UPDATE directo de columnas de revisión justo después sigue en 42501
+    d := d || pg_temp.m388_eq('rpc_suspender', left(pg_temp.m388_q(c_sa, 'authenticated', format('SELECT public.cambiar_estado_empresa(%L::uuid, ''suspender'')::text', ea)), 3), 'OK:');
+    d := d || pg_temp.m388_eq('guc_off', COALESCE(current_setting('app.resolver_empresa_rpc', true), ''), 'off');
+    d := d || pg_temp.m388_eq('super_admin_motivo_post_rpc', left(pg_temp.m388_q(c_sa, 'authenticated', format(c_upd, 'motivo_rechazo = ''QA-MANUAL x''', ea)), 9), 'ERR:42501');
+    d := d || pg_temp.m388_eq('filas', pg_temp.m388_fila(ea)||' '||pg_temp.m388_fila(er),
+                              'suspendida|NULL|NULL|false rechazada|QA-MANUAL motivo p1155.rech|'||c_sa||'|true');
+    RAISE EXCEPTION 'P1155 descarte' USING ERRCODE = 'P0999';
+  EXCEPTION WHEN SQLSTATE 'P0999' THEN NULL;
+  END;
+  post := pg_temp.m388_snap();
+  PERFORM set_config('probe.p1155', pg_temp.m388_veredicto(d, pre, post,
+    'con el GUC puesto a mano: super_admin (reabrir directo, motivo, revisado_at) y proveedor (estado, revisado_at) 42501; después de la RPC el GUC queda en off y el UPDATE directo de revisión sigue 42501'), false);
+EXCEPTION WHEN OTHERS THEN
+  PERFORM set_config('probe.p1155', 'FALLO ('||SQLSTATE||' '||SQLERRM||')', false);
+END $$;
+SELECT set_config('role', 'none', true);
+
+-- ---------------- P1156 388: no-regresión — resolver_empresa aprobar/rechazar igual; UPDATE directo del super_admin sigue OK; md5 ----------------
+DO $$
+DECLARE est text; pre text; post text; d text := ''; a text; e1 uuid; e2 uuid; e3 uuid; cs record;
+  c_ap CONSTANT uuid := '8f391caf-85bc-4413-af8a-4006452ae09f'; c_sa CONSTANT uuid := '41904e2c-5ef3-4fee-bd48-9ea58e0c8c37';
+  c_res CONSTANT text := 'SELECT public.resolver_empresa(%L::uuid, %L, %L)::text';
+  c_upd CONSTANT text := 'WITH u AS (UPDATE public.empresas_proveedoras SET %s WHERE id = %L::uuid RETURNING 1) SELECT count(*)::text FROM u';
+BEGIN
+  est := pg_temp.m388_estado();
+  IF est = 'pre' THEN PERFORM set_config('probe.p1156', 'PENDIENTE (estado de la 388: pre)', false); RETURN; END IF;
+  IF est <> 'post' THEN PERFORM set_config('probe.p1156', 'ROJO (388 '||est||')', false); RETURN; END IF;
+  -- dependencias y vecinas con su md5 (la 388 no las toca)
+  FOR cs IN SELECT * FROM (VALUES
+      ('public.resolver_empresa(uuid,text,text)', '25c8bd889bba705487e8a81516122b24'),
+      ('public.listar_empresas_pais(uuid,text)', 'f554317d0b1b0976df9cca289b092ca4'),
+      ('public.obtener_empresa_pais(uuid)', 'e2d732d47724d5bcc5fafd794334e4a1'),
+      ('public.notificar_empresa_estado(uuid)', '72cf7417810b164753223c49d88dc8c4'),
+      ('private.puede_admin_pais(uuid,text[])', '8bc2928e369d98e305355440df8b52ac'),
+      ('private.push_notificar(text,text)', '90e6e8ec7eb37240e400a7c5768a8997'),
+      ('private.tiene_rol(text[])', '2032eb10b9e9a90e5be58100607370e3'),
+      ('private.empresas_proveedoras_guard_update()', '2f248d00366785c4c1e569f814a7e27c')) v(firma, md5_vivo) LOOP
+    d := d || pg_temp.m388_eq(cs.firma, (SELECT md5(p.prosrc) FROM pg_proc p WHERE p.oid = to_regprocedure(cs.firma)), cs.md5_vivo);
+  END LOOP;
+  pre := pg_temp.m388_snap();
+  BEGIN
+    PERFORM pg_temp.m388_fijar();
+    a := pg_temp.m388_emp('p1156.apr', 'pendiente'); e1 := split_part(a, '|', 1)::uuid;
+    a := pg_temp.m388_emp('p1156.rec', 'pendiente'); e2 := split_part(a, '|', 1)::uuid;
+    a := pg_temp.m388_emp('p1156.dir', 'activa');    e3 := split_part(a, '|', 1)::uuid;
+    -- resolver_empresa: aprobar (admin_pais GT) y rechazar (super_admin), como en la 386
+    d := d || pg_temp.m388_eq('aprobar', pg_temp.m388_q(c_ap, 'authenticated', format(c_res, e1, 'aprobar', NULL)),
+                              'OK:'||jsonb_build_object('empresa_id', e1, 'estado', 'activa', 'notificado', true)::text);
+    d := d || pg_temp.m388_eq('fila_aprobada', pg_temp.m388_fila(e1), 'activa|NULL|'||c_ap||'|true');
+    d := d || pg_temp.m388_eq('aviso_aprobada', pg_temp.m388_avisos(e1), '1|Empresa aprobada|Tu empresa fue aprobada. Ya puedes operar en EzPayConnect.|/proveedor/dashboard');
+    d := d || pg_temp.m388_eq('push_aprobada', pg_temp.m388_push(e1), '1');
+    d := d || pg_temp.m388_eq('rechazar', pg_temp.m388_q(c_sa, 'authenticated', format(c_res, e2, 'rechazar', 'QA-MANUAL motivo P1156')),
+                              'OK:'||jsonb_build_object('empresa_id', e2, 'estado', 'rechazada', 'notificado', true)::text);
+    d := d || pg_temp.m388_eq('fila_rechazada', pg_temp.m388_fila(e2), 'rechazada|QA-MANUAL motivo P1156|'||c_sa||'|true');
+    d := d || pg_temp.m388_eq('reresolver', left(pg_temp.m388_q(c_ap, 'authenticated', format(c_res, e1, 'rechazar', 'QA-MANUAL x')), 9), 'ERR:EP003');
+    -- UPDATE directo del super_admin (cambiarEstado del front viejo): sigue andando hasta la 389
+    d := d || pg_temp.m388_eq('directo_suspender', pg_temp.m388_q(c_sa, 'authenticated', format(c_upd, 'estado = ''suspendida'', updated_at = now()', e3)), 'OK:1');
+    d := d || pg_temp.m388_eq('fila_directo_suspendida', pg_temp.m388_fila(e3), 'suspendida|NULL|NULL|false');
+    d := d || pg_temp.m388_eq('directo_reactivar', pg_temp.m388_q(c_sa, 'authenticated', format(c_upd, 'estado = ''activa'', updated_at = now()', e3)), 'OK:1');
+    d := d || pg_temp.m388_eq('fila_directo_activa', pg_temp.m388_fila(e3), 'activa|NULL|NULL|false');
+    RAISE EXCEPTION 'P1156 descarte' USING ERRCODE = 'P0999';
+  EXCEPTION WHEN SQLSTATE 'P0999' THEN NULL;
+  END;
+  post := pg_temp.m388_snap();
+  PERFORM set_config('probe.p1156', pg_temp.m388_veredicto(d, pre, post,
+    'resolver_empresa: admin_pais GT aprueba (aviso + push) y super_admin rechaza con motivo, re-resolver EP003; UPDATE directo del super_admin suspende y reactiva (OK:1); 8 dependencias con su md5'), false);
+EXCEPTION WHEN OTHERS THEN
+  PERFORM set_config('probe.p1156', 'FALLO ('||SQLSTATE||' '||SQLERRM||')', false);
+END $$;
+SELECT set_config('role', 'none', true);
+
 -- ===== Veredictos como result set =====
 SELECT 'P1_anon_insert_citas'              AS probe, current_setting('probe.p1', true)  AS verdict, 'BLOQUEADO' AS esperado_post_fix
 UNION ALL SELECT 'P2_medico_cancela_ajena_rpc',         current_setting('probe.p2', true),  'BLOQUEADO'
@@ -42831,6 +43231,12 @@ UNION ALL SELECT 'P1148_catalogo_empresa_detalle_387',  current_setting('probe.p
 UNION ALL SELECT 'P1149_empresa_detalle_positivo_387',  current_setting('probe.p1149', true), 'OK (387: admin_pais GT y super_admin = consulta directa en todas las de GT; super_admin en HN; pre: PENDIENTE)'
 UNION ALL SELECT 'P1150_empresa_detalle_negativos_387',  current_setting('probe.p1150', true), 'OK (387: EP001 sin sesion; EP002 con el mismo mensaje para otro pais, inexistente y NULL; pre: PENDIENTE)'
 UNION ALL SELECT 'P1151_empresa_detalle_solo_lectura_387',  current_setting('probe.p1151', true), 'OK (387: las 5 tablas identicas antes/despues de leer y de rechazar; pre: PENDIENTE)'
+UNION ALL SELECT 'M388_FX_helpers_empresa_estado',  current_setting('probe.m388_fx', true), 'OK (helpers de pg_temp creados; estado de la 388: post; pre: PENDIENTE; parcial: ROJO)'
+UNION ALL SELECT 'P1152_catalogo_cambiar_estado_388',  current_setting('probe.p1152', true), 'OK (388: 1 sobrecarga, DEFINER, VOLATILE, search_path vacio, ACL sin PUBLIC ni anon, jsonb; anon 42501; pre: PENDIENTE)'
+UNION ALL SELECT 'P1153_cambiar_estado_positivo_388',  current_setting('probe.p1153', true), 'OK (388: super_admin suspende, reactiva y reabre con aviso + push; resolver_empresa aprueba la reabierta; pre: PENDIENTE)'
+UNION ALL SELECT 'P1154_cambiar_estado_negativos_388',  current_setting('probe.p1154', true), 'OK (388: EP006 x9, EP005 x4, EP002 con el mismo mensaje x7, EP001; 0 escrituras; pre: PENDIENTE)'
+UNION ALL SELECT 'P1155_cambiar_estado_guard_388',  current_setting('probe.p1155', true), 'OK (388: GUC a mano no alcanza (42501 x6); la RPC deja el GUC en off; pre: PENDIENTE)'
+UNION ALL SELECT 'P1156_cambiar_estado_no_regresion_388',  current_setting('probe.p1156', true), 'OK (388: resolver_empresa aprobar/rechazar igual, UPDATE directo del super_admin OK:1, 8 md5; pre: PENDIENTE)'
 UNION ALL SELECT 'P1010_campana_vistas_sin_update_367',  current_setting('probe.p1010', true), 'OK (367: INSERT 1; ON CONFLICT DO NOTHING 0 sin error; DO UPDATE y UPDATE 42501; otro paciente 0; antes de la 367: PENDIENTE)'
 UNION ALL SELECT 'P1009_datos_bancarios_acotados_366',  current_setting('probe.p1009', true), 'OK (366: cuenta GT solo super_admin/admin_pais GT/proveedores GT; checkout 1 fila; config 21 super_admin y 14 el resto, admin_pais incluido; antes de la 366: PENDIENTE)'
 UNION ALL SELECT 'DET_p1009',  'DET ' || COALESCE(NULLIF(current_setting('probe.p1009_det', true), ''), '(sin dato)'), 'DET (detalle de P1009, no es probe)'
@@ -43083,7 +43489,7 @@ UNION ALL SELECT 'P000_CENTINELA_veredictos_no_nulos',
        'probe.p866', 'probe.p867', 'probe.p868', 'probe.p869', 'probe.p870', 'probe.p871', 'probe.p872', 'probe.p873', 'probe.p874', 'probe.p875', 'probe.p876', 'probe.p877', 'probe.p878',
        'probe.p879', 'probe.p880', 'probe.p881', 'probe.p882', 'probe.p883', 'probe.p884',
        'probe.p885', 'probe.p886', 'probe.p887', 'probe.p888', 'probe.p889', 'probe.p890', 'probe.p891', 'probe.p892', 'probe.p893', 'probe.p894', 'probe.p895', 'probe.p896', 'probe.p908', 'probe.p909', 'probe.p910', 'probe.p911',
-       'probe.p897', 'probe.p898', 'probe.p899', 'probe.p900', 'probe.p901', 'probe.p902', 'probe.p903', 'probe.p904', 'probe.p905', 'probe.p906', 'probe.p907', 'probe.p912', 'probe.p913', 'probe.p914', 'probe.p915', 'probe.p916', 'probe.p917', 'probe.p918', 'probe.p919', 'probe.p920', 'probe.p921', 'probe.p922', 'probe.p923', 'probe.p924', 'probe.p925', 'probe.p926', 'probe.p927', 'probe.p928', 'probe.p929', 'probe.p930', 'probe.p931', 'probe.p932', 'probe.p933', 'probe.p934', 'probe.p935', 'probe.p936', 'probe.p937', 'probe.p938', 'probe.p939', 'probe.p940', 'probe.p941', 'probe.p942', 'probe.p943', 'probe.p944', 'probe.p945', 'probe.p946', 'probe.p947', 'probe.p948', 'probe.p949', 'probe.p950', 'probe.p951', 'probe.p952', 'probe.p953', 'probe.p954', 'probe.p955', 'probe.p956', 'probe.p957', 'probe.p958', 'probe.p959', 'probe.p960', 'probe.p961', 'probe.p962', 'probe.p963', 'probe.p964', 'probe.p965', 'probe.p966', 'probe.p967', 'probe.p968', 'probe.p969', 'probe.p970', 'probe.p971', 'probe.p972', 'probe.p973', 'probe.p974', 'probe.p975', 'probe.p976', 'probe.p977', 'probe.p978', 'probe.p979', 'probe.p980', 'probe.p981', 'probe.p982', 'probe.p983', 'probe.p984', 'probe.p985', 'probe.p986', 'probe.p987', 'probe.p988', 'probe.p989', 'probe.p990', 'probe.p991', 'probe.p992', 'probe.p993', 'probe.p994', 'probe.p995', 'probe.p996', 'probe.p997', 'probe.p998', 'probe.p999', 'probe.p1000', 'probe.p1001', 'probe.p1002', 'probe.p1003', 'probe.p1004', 'probe.p1005', 'probe.p1006', 'probe.p1007', 'probe.p1008', 'probe.p1009', 'probe.p1010', 'probe.p1011', 'probe.p1012', 'probe.p1013', 'probe.p1014', 'probe.e370_fx', 'probe.p1015', 'probe.p1016', 'probe.p1017', 'probe.p1018', 'probe.g371_fx', 'probe.p1019', 'probe.p1020', 'probe.p1021', 'probe.p1022', 'probe.g372_fx', 'probe.p1023', 'probe.p1024', 'probe.p1025', 'probe.p1035', 'probe.p1036', 'probe.p1037', 'probe.p1038', 'probe.p1039', 'probe.p1040', 'probe.m375_fx', 'probe.p1041', 'probe.p1042', 'probe.p1043', 'probe.p1044', 'probe.p1045', 'probe.p1046', 'probe.p1047', 'probe.p1048', 'probe.p1049', 'probe.p1050', 'probe.p1051', 'probe.p1052', 'probe.p1053', 'probe.p1054', 'probe.p1055', 'probe.p1056', 'probe.p1057', 'probe.p1058', 'probe.p1059', 'probe.p1060', 'probe.p1061', 'probe.m376_fx', 'probe.p1062', 'probe.p1063', 'probe.p1064', 'probe.m377_fx', 'probe.p1065', 'probe.p1066', 'probe.p1067', 'probe.p1068', 'probe.p1069', 'probe.p1070', 'probe.p1071', 'probe.p1072', 'probe.p1073', 'probe.p1074', 'probe.m378_fx', 'probe.p1075', 'probe.p1076', 'probe.p1077', 'probe.p1078', 'probe.p1079', 'probe.p1080', 'probe.p1081', 'probe.p1082', 'probe.p1083', 'probe.m379_fx', 'probe.p1084', 'probe.p1085', 'probe.p1086', 'probe.p1087', 'probe.p1088', 'probe.p1089', 'probe.p1090', 'probe.m380_fx', 'probe.p1091', 'probe.p1092', 'probe.p1093', 'probe.p1094', 'probe.p1095', 'probe.p1096', 'probe.p1097', 'probe.p1098', 'probe.h_restaura', 'probe.m381_fx', 'probe.p1099', 'probe.p1100', 'probe.p1101', 'probe.p1102', 'probe.p1103', 'probe.p1104', 'probe.m382_fx', 'probe.p1105', 'probe.p1106', 'probe.p1107', 'probe.p1108', 'probe.p1109', 'probe.p1110', 'probe.p1111', 'probe.p1112', 'probe.p1113', 'probe.p1114', 'probe.p1115', 'probe.p1116', 'probe.p1117', 'probe.p1118', 'probe.p1119', 'probe.m383_fx', 'probe.p1120', 'probe.p1121', 'probe.p1122', 'probe.p1123', 'probe.p1124', 'probe.p1125', 'probe.p1126', 'probe.p1127', 'probe.p1128', 'probe.p1129', 'probe.p1130', 'probe.p1131', 'probe.m384_fx', 'probe.p1132', 'probe.p1133', 'probe.p1134', 'probe.p1135', 'probe.p1136', 'probe.p1137', 'probe.m385_fx', 'probe.p1138', 'probe.p1139', 'probe.p1140', 'probe.p1141', 'probe.m386_fx', 'probe.p1142', 'probe.p1143', 'probe.p1144', 'probe.p1145', 'probe.p1146', 'probe.p1147', 'probe.m387_fx', 'probe.p1148', 'probe.p1149', 'probe.p1150', 'probe.p1151'
+       'probe.p897', 'probe.p898', 'probe.p899', 'probe.p900', 'probe.p901', 'probe.p902', 'probe.p903', 'probe.p904', 'probe.p905', 'probe.p906', 'probe.p907', 'probe.p912', 'probe.p913', 'probe.p914', 'probe.p915', 'probe.p916', 'probe.p917', 'probe.p918', 'probe.p919', 'probe.p920', 'probe.p921', 'probe.p922', 'probe.p923', 'probe.p924', 'probe.p925', 'probe.p926', 'probe.p927', 'probe.p928', 'probe.p929', 'probe.p930', 'probe.p931', 'probe.p932', 'probe.p933', 'probe.p934', 'probe.p935', 'probe.p936', 'probe.p937', 'probe.p938', 'probe.p939', 'probe.p940', 'probe.p941', 'probe.p942', 'probe.p943', 'probe.p944', 'probe.p945', 'probe.p946', 'probe.p947', 'probe.p948', 'probe.p949', 'probe.p950', 'probe.p951', 'probe.p952', 'probe.p953', 'probe.p954', 'probe.p955', 'probe.p956', 'probe.p957', 'probe.p958', 'probe.p959', 'probe.p960', 'probe.p961', 'probe.p962', 'probe.p963', 'probe.p964', 'probe.p965', 'probe.p966', 'probe.p967', 'probe.p968', 'probe.p969', 'probe.p970', 'probe.p971', 'probe.p972', 'probe.p973', 'probe.p974', 'probe.p975', 'probe.p976', 'probe.p977', 'probe.p978', 'probe.p979', 'probe.p980', 'probe.p981', 'probe.p982', 'probe.p983', 'probe.p984', 'probe.p985', 'probe.p986', 'probe.p987', 'probe.p988', 'probe.p989', 'probe.p990', 'probe.p991', 'probe.p992', 'probe.p993', 'probe.p994', 'probe.p995', 'probe.p996', 'probe.p997', 'probe.p998', 'probe.p999', 'probe.p1000', 'probe.p1001', 'probe.p1002', 'probe.p1003', 'probe.p1004', 'probe.p1005', 'probe.p1006', 'probe.p1007', 'probe.p1008', 'probe.p1009', 'probe.p1010', 'probe.p1011', 'probe.p1012', 'probe.p1013', 'probe.p1014', 'probe.e370_fx', 'probe.p1015', 'probe.p1016', 'probe.p1017', 'probe.p1018', 'probe.g371_fx', 'probe.p1019', 'probe.p1020', 'probe.p1021', 'probe.p1022', 'probe.g372_fx', 'probe.p1023', 'probe.p1024', 'probe.p1025', 'probe.p1035', 'probe.p1036', 'probe.p1037', 'probe.p1038', 'probe.p1039', 'probe.p1040', 'probe.m375_fx', 'probe.p1041', 'probe.p1042', 'probe.p1043', 'probe.p1044', 'probe.p1045', 'probe.p1046', 'probe.p1047', 'probe.p1048', 'probe.p1049', 'probe.p1050', 'probe.p1051', 'probe.p1052', 'probe.p1053', 'probe.p1054', 'probe.p1055', 'probe.p1056', 'probe.p1057', 'probe.p1058', 'probe.p1059', 'probe.p1060', 'probe.p1061', 'probe.m376_fx', 'probe.p1062', 'probe.p1063', 'probe.p1064', 'probe.m377_fx', 'probe.p1065', 'probe.p1066', 'probe.p1067', 'probe.p1068', 'probe.p1069', 'probe.p1070', 'probe.p1071', 'probe.p1072', 'probe.p1073', 'probe.p1074', 'probe.m378_fx', 'probe.p1075', 'probe.p1076', 'probe.p1077', 'probe.p1078', 'probe.p1079', 'probe.p1080', 'probe.p1081', 'probe.p1082', 'probe.p1083', 'probe.m379_fx', 'probe.p1084', 'probe.p1085', 'probe.p1086', 'probe.p1087', 'probe.p1088', 'probe.p1089', 'probe.p1090', 'probe.m380_fx', 'probe.p1091', 'probe.p1092', 'probe.p1093', 'probe.p1094', 'probe.p1095', 'probe.p1096', 'probe.p1097', 'probe.p1098', 'probe.h_restaura', 'probe.m381_fx', 'probe.p1099', 'probe.p1100', 'probe.p1101', 'probe.p1102', 'probe.p1103', 'probe.p1104', 'probe.m382_fx', 'probe.p1105', 'probe.p1106', 'probe.p1107', 'probe.p1108', 'probe.p1109', 'probe.p1110', 'probe.p1111', 'probe.p1112', 'probe.p1113', 'probe.p1114', 'probe.p1115', 'probe.p1116', 'probe.p1117', 'probe.p1118', 'probe.p1119', 'probe.m383_fx', 'probe.p1120', 'probe.p1121', 'probe.p1122', 'probe.p1123', 'probe.p1124', 'probe.p1125', 'probe.p1126', 'probe.p1127', 'probe.p1128', 'probe.p1129', 'probe.p1130', 'probe.p1131', 'probe.m384_fx', 'probe.p1132', 'probe.p1133', 'probe.p1134', 'probe.p1135', 'probe.p1136', 'probe.p1137', 'probe.m385_fx', 'probe.p1138', 'probe.p1139', 'probe.p1140', 'probe.p1141', 'probe.m386_fx', 'probe.p1142', 'probe.p1143', 'probe.p1144', 'probe.p1145', 'probe.p1146', 'probe.p1147', 'probe.m387_fx', 'probe.p1148', 'probe.p1149', 'probe.p1150', 'probe.p1151', 'probe.m388_fx', 'probe.p1152', 'probe.p1153', 'probe.p1154', 'probe.p1155', 'probe.p1156'
              ]) AS n) s),
   'OK (todos los veredictos publicados)';
 
