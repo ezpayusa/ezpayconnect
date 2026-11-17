@@ -25,8 +25,21 @@ Stack: React + Vite + TypeScript, Supabase / Postgres, deploy en Vercel, repo en
 - NUNCA ampliar policies de RLS sobre tablas adyacentes a datos médicos (p. ej. campana_metricas). Para dar acceso, usar RPCs SECURITY DEFINER con search_path='', fail-closed (si el scope es NULL → 0 filas) y gate interno.
 - Probar aislamiento por rol impersonando request.jwt.claims en prod: cada rol ve lo suyo y no lo ajeno.
 - **Estado al 17-nov-2026 (manda sobre los números de las entradas siguientes, incluidos los bloques del 27-oct y del 20-oct):**
-  - **FAMILIA B (estado de empresas, bandeja del admin de país) — 386-388 + fronts EN PROD (PRs #85-#89); FALTA LA 389**
-    (retira la escritura directa del super_admin sobre `empresas_proveedoras`). 386 = `listar_empresas_pais` +
+  - **FAMILIA B (estado de empresas) CERRADA el 17-nov — migs 386-389 + fronts (PRs #85-#91) en prod; main 7cf4bc6.** El admin
+    de país lista y resuelve (aprueba/rechaza) las empresas de SU país; el super_admin suspende/reactiva/reabre por RPC
+    (`cambiar_estado_empresa`). Nadie escribe directo el estado ni las columnas de revisión; el proveedor edita solo las 6
+    columnas de su perfil (`CAMPOS_PERFIL`); `notificar_empresa_estado` solo la llaman las RPCs DEFINER.
+  - **389** (cierre de la escritura directa: guard sin la exención del super_admin, DROP de la policy "Admin ezpay actualiza
+    empresas", UPDATE de authenticated solo por columna en las 6 de `CAMPOS_PERFIL`, `notificar_empresa_estado` sin EXECUTE
+    para PUBLIC/anon/authenticated; sin errcodes nuevos, MIG89 = guarda) **APLICADA en prod el 2026-11-17 entre 20:24:37 y
+    20:24:42 UTC** y verificada en sesión independiente. PR #91, merge 7cf4bc6. md5(prosrc) del guard 2f248d00… →
+    8e7102b67317e97ada88884ac7783b1e (el GUC `app.resolver_empresa_rpc` NO se renombró, D-10). Probes M389_FX + P1157-P1160;
+    el helper `pg_temp.m389_estado()` vive en el PRELUDIO del harness (lo usan probes de las 2 partes). Rollback
+    `389_rollback.sql` (va antes que `388_rollback`; restaura el guard textual CON sus comentarios: se aplica con
+    `db query -f`, no se puede inyectar en el harness). Toda columna nueva que el proveedor edite desde el perfil necesita su
+    `GRANT UPDATE (col) … TO authenticated` en la misma migración (D-7, como `medicos` desde la 375).
+  - **FAMILIA B (estado de empresas, bandeja del admin de país) — 386-388 + fronts EN PROD (PRs #85-#89); ~~FALTA LA 389~~
+    (superado: ver el cierre arriba)** (retira la escritura directa del super_admin sobre `empresas_proveedoras`). 386 = `listar_empresas_pais` +
     `resolver_empresa` (EP001-EP005; M386_FX + P1142-P1147); 387 = `obtener_empresa_pais` (M387_FX + P1148-P1151); 388 =
     `cambiar_estado_empresa(uuid, text)` (suspender activa→suspendida, reactivar suspendida→activa, reabrir rechazada→pendiente
     limpiando motivo/revisado_*; solo super_admin; aviso in-app + push con notificado=false si falla; EP006 transición inválida
@@ -36,13 +49,23 @@ Stack: React + Vite + TypeScript, Supabase / Postgres, deploy en Vercel, repo en
     Front de la 388 en prod con el PR #89 (main 32b44cc): Suspender/Reactivar/Reabrir por la RPC, la empresa rechazada ve el
     motivo, EP006 mapeado en `src/lib/erroresRpc.ts`. Tras ese merge el único UPDATE directo de `empresas_proveedoras` en el front
     es el perfil del proveedor (`useProveedorAuth.actualizarEmpresa`), que no manda `estado` (el guard se lo rechaza: P1146).
-  - **Huellas vigentes (post-388, 17-nov):** funciones completas (cuerpo, DEFINER, config, ACL) `f8e2dd272b161f3f0d69f31b32c9c877 415`;
+  - **Huellas vigentes (post-389, 17-nov):** funciones completas (cuerpo, DEFINER, config, ACL) `b7fa10f3493ad056a9ccba88db348511 415`;
+    ACL de funciones `8fef2a52615f811185465e5ea088d16e 415`; ACL de relaciones de public `3cf6dfbb1762182068245ac7c3e816f8 2444`;
+    policies `4b9da3e2955e1156feca9c8585c37fab 313`; guard de empresas (`private.empresas_proveedoras_guard_update`) md5(prosrc)
+    `8e7102b67317e97ada88884ac7783b1e`. Sin el guard ni `notificar_empresa_estado`, funciones completas = `7fa35a97…/413`; sin
+    `notificar_empresa_estado`, ACL de funciones = `705392cc…/414`; sin `empresas_proveedoras`, ACL de relaciones =
+    `485ce08f…/2426` (las tres iguales que en post-388).
+  - **Huellas post-388, 17-nov (superado: ver post-389):** funciones completas (cuerpo, DEFINER, config, ACL) `f8e2dd272b161f3f0d69f31b32c9c877 415`;
     ACL de funciones `51d87b443777a680da5891b25fe41e6f 415`; ACL de relaciones de public `9b8f5af8892d3a5b87db15e15092eb77 2445`;
     policies `938d7e4111a9d332e6c55a645fafed86 314`. Sin `cambiar_estado_empresa`: funciones completas `6ef5bdb3…/414` y ACL de
     funciones `faf529bf…/414` (las de post-387).
-  - **Próximos libres: mig 389, probe P1157, errcode EP007, PA041, PV029, RC005.** (verificados el 17-nov en el repo y contra
-    el prosrc vivo de public/private: EP006, PA040, PV028 y RC004 son los máximos en uso)
-  - **Harness al 17-nov (post-388, POR PARTES):** 1258 filas / 11 rojas = la deuda; P800 PASA. 2 partes + request final:
+  - **Próximos libres: mig 390, probe P1161, errcode EP007, PA041, PV029, RC005.** (verificados el 17-nov 20:33 UTC, después de
+    la 389: en el repo la última migración es la 389 y el último probe P1160; en el prosrc vivo de public/private EP006, PA040,
+    PV028 y RC004 son los máximos en uso)
+  - ~~Próximos libres: mig 389, probe P1157, errcode EP007, PA041, PV029, RC005.~~ (superado: ver arriba)
+  - **Harness al 17-nov (post-389, POR PARTES):** 1263 filas / 11 rojas = la deuda; 0 PENDIENTE; P800 PASA. Parte 1 724.109
+    bytes (margen ~2,3 MB), parte 2 2.099.750 (margen 941.120), final ~311 KB. Los probes nuevos van al final de la parte 2.
+  - **Harness al 17-nov (post-388, POR PARTES; superado en filas y bytes: ver post-389):** 1258 filas / 11 rojas = la deuda; P800 PASA. 2 partes + request final:
     parte 1 720.292 bytes (margen 2.320.578, 76 %), parte 2 2.075.210 (margen 965.660, 32 %), final 309.529. El monolítico
     pesaría 2.946.141 (margen 94.729): por eso se partió, con la verificación ref↔partido en `output/harness-split-*-17nov.txt`.
     Cómo funciona y reglas: ver "Harness por partes" en la sección del runner, más abajo.
@@ -229,11 +252,11 @@ Stack: React + Vite + TypeScript, Supabase / Postgres, deploy en Vercel, repo en
   - Rama sin upstream propio al crearse desde origin/main: push SIEMPRE con nombre de rama explícito.
   - PRs #57, #59-#64 y #65 (196100b) mergeados al 19-oct; #56 (gate de textos legales) y #58 (front de altas) SIN mergear hasta completar los placeholders legales. Confirm email APAGADO en prod hasta que entre #58.
   - Punto 2 comercial (18-oct): src/lib/navegacion.ts es el helper ÚNICO de links Google Maps/Waze; VisitadorRutaPage y EntregaDetallePage todavía arman los suyos (migrar después). Hoy usa visitasDeHoyConUbicacion; visitasDelDia sigue sin coordenadas.
-- **Próximos números libres: probe `P1157`** (global, no por módulo; M388_FX + P1152-P1156 usados por la mig 388; M387_FX + P1148-P1151 usados por la mig 387; M386_FX + P1142-P1147 usados por la mig 386; M385_FX + P1138-P1141 usados por la mig 385; M384_FX + P1132-P1137 usados por la mig 384; M383_FX + P1120-P1131 usados por la mig 383; M382_FX + P1105-P1119 usados por la mig 382; M381_FX + P1099-P1104 usados por la mig 381; M380_FX + P1091-P1098 usados por la mig 380; M379_FX + P1084-P1090 usados por la mig 379; M378_FX + P1075-P1083 usados por la mig 378; M377_FX + P1065-P1074 usados por la mig 377; M376_FX + P1062-P1064 usados por la mig 376; M375_FX + P1041-P1061 usados por la mig 375; P1035-P1040 usados por la mig 374; P1026-P1034 + M373_FX usados por la mig 373; P1023-P1025 + G372_FX usados por la mig 372; P1019-P1022 usados por la mig 371; P1015-P1018 usados por la mig 370, P1011-P1014 por la mig 369, P1010 por la mig 367, P1009 por la 366, P1008 por la 365, P1007 por la 364, P1001-P1006 por la mig 363, P996-P1000 por la 362, P990-P995 por la 361, P983-P989 por la 360, P975-P982 por la
+- **Próximos números libres: probe `P1161`** (global, no por módulo; M389_FX + P1157-P1160 usados por la mig 389; M388_FX + P1152-P1156 usados por la mig 388; M387_FX + P1148-P1151 usados por la mig 387; M386_FX + P1142-P1147 usados por la mig 386; M385_FX + P1138-P1141 usados por la mig 385; M384_FX + P1132-P1137 usados por la mig 384; M383_FX + P1120-P1131 usados por la mig 383; M382_FX + P1105-P1119 usados por la mig 382; M381_FX + P1099-P1104 usados por la mig 381; M380_FX + P1091-P1098 usados por la mig 380; M379_FX + P1084-P1090 usados por la mig 379; M378_FX + P1075-P1083 usados por la mig 378; M377_FX + P1065-P1074 usados por la mig 377; M376_FX + P1062-P1064 usados por la mig 376; M375_FX + P1041-P1061 usados por la mig 375; P1035-P1040 usados por la mig 374; P1026-P1034 + M373_FX usados por la mig 373; P1023-P1025 + G372_FX usados por la mig 372; P1019-P1022 usados por la mig 371; P1015-P1018 usados por la mig 370, P1011-P1014 por la mig 369, P1010 por la mig 367, P1009 por la 366, P1008 por la 365, P1007 por la 364, P1001-P1006 por la mig 363, P996-P1000 por la 362, P990-P995 por la 361, P983-P989 por la 360, P975-P982 por la
   359, P967-P974 por la 358, P958-P966 por la 357 (obtener_medicos_por_ids acotada a relación); P906-P907 usados por la mig 336, P912-P913
   por la 337, P914-P915 por la 338, P916-P920 por la 339/340, P921-P923 por la 341, P924 por la 342, P925 por
   la 343, P926-P927 por la 344, P928-P929 por la 345, P930 por la 346, P931-P932 por la 347, P933 por la 348,
-  P934-P935 por la 349, P936 por la 350, P937-P939 por la 351, P940-P943 por la 353), **migración `389`** (la 388 es `cambiar_estado_empresa`, EP006, aplicada el 17-nov; la 387 `obtener_empresa_pais` y la 386 `listar_empresas_pais` + `resolver_empresa`, EP001-EP005; **próximo errcode EP007**; la 385 es `registrar_clinica_desde_invitacion` v2, registro de clínica por invitación, RC001-RC004, y la 384 los listados de médicos por país solo con rol 'medico'; **próximo errcode RC005**; la 383 es la notificación del chat comercial + ACL exacta de service_role, aplicada el 24-oct; la 382 es el chat comercial, aplicada el 24-oct; la 381 es el hardening de visitas, PV027/PV028; la 380 son las lecturas del enrolamiento, `listar_mis_medicos_enrolados` y `prioridad_para_agendar`, aplicada el 20-oct; la 379 es `registrar_medico_desde_invitacion` enrolando por la solicitud de alta, aplicada el 20-oct; la 378 es aprobar/reenviar la solicitud de alta → invitación precargada + correo, aplicada el 20-oct; la 377 son las solicitudes de alta de médico, aplicada el 20-oct; la 376 es `administrar_visita('modificar')` + PV003 y la 375 el hardening del enrolamiento, las dos aplicadas el 20-oct; la 374 es la integridad de ubicación de prospectos, aplicada el 17-oct; la 373 es el alta diferida de empresas, aplicada el 9-oct; la 371 es GL-02 y la 372 su hardening, las dos aplicadas el 8-oct), **errcode `LG007`** (prefijo LG,
+  P934-P935 por la 349, P936 por la 350, P937-P939 por la 351, P940-P943 por la 353), **migración `390`** (la 389 es el cierre de la escritura directa sobre `empresas_proveedoras`, sin errcodes nuevos, aplicada el 17-nov; la 388 es `cambiar_estado_empresa`, EP006, aplicada el 17-nov; la 387 `obtener_empresa_pais` y la 386 `listar_empresas_pais` + `resolver_empresa`, EP001-EP005; **próximo errcode EP007**; la 385 es `registrar_clinica_desde_invitacion` v2, registro de clínica por invitación, RC001-RC004, y la 384 los listados de médicos por país solo con rol 'medico'; **próximo errcode RC005**; la 383 es la notificación del chat comercial + ACL exacta de service_role, aplicada el 24-oct; la 382 es el chat comercial, aplicada el 24-oct; la 381 es el hardening de visitas, PV027/PV028; la 380 son las lecturas del enrolamiento, `listar_mis_medicos_enrolados` y `prioridad_para_agendar`, aplicada el 20-oct; la 379 es `registrar_medico_desde_invitacion` enrolando por la solicitud de alta, aplicada el 20-oct; la 378 es aprobar/reenviar la solicitud de alta → invitación precargada + correo, aplicada el 20-oct; la 377 son las solicitudes de alta de médico, aplicada el 20-oct; la 376 es `administrar_visita('modificar')` + PV003 y la 375 el hardening del enrolamiento, las dos aplicadas el 20-oct; la 374 es la integridad de ubicación de prospectos, aplicada el 17-oct; la 373 es el alta diferida de empresas, aplicada el 9-oct; la 371 es GL-02 y la 372 su hardening, las dos aplicadas el 8-oct), **errcode `LG007`** (prefijo LG,
   GL-02: LG001-LG005 en uso por la 371 — LG001 sin sesión, LG002 código inexistente, LG003 versión no vigente, LG004
   entrada inválida, LG005 aceptaciones append-only; LG006 = el texto no corresponde a la identidad de la cuenta, en uso
   por la 372), **errcode `PC029`** (familia PC: PC025 país requerido y PC026 sin autoridad en `contar_medicos_por_pais`, PC027
@@ -1086,3 +1109,11 @@ Detalles a recordar:
   "Escríbele". Backlog: verificar que el service worker de la PWA se actualice en iOS.
 - **(QA-MANUAL, cleanup pre-go-live)** `auditoria_ia` id **181** (2026-10-02 15:38:37 UTC, medico.qa →
   paciente 23): `DELETE FROM public.auditoria_ia WHERE id = 181;`
+- (Empresas, 17-nov-2026) El supervisor de proveedor ve los `visitador_medico` SIN equipo de su empresa (policy viva "Supervisor ve cuentas de su equipo"; P825 lo fija tal cual): decidir si es deseable.
+- (Empresas, 17-nov-2026) `resolver_empresa` reencola el push si se llama 2 veces en la misma transacción (`cambiar_estado_empresa` ya lo evita excluyendo los avisos previos con `created_at = now()`).
+- (Empresas, 17-nov-2026) Historial append-only de las acciones sobre una empresa (aprobar/rechazar/suspender/reactivar/reabrir) y motivo de suspensión (D-3/D-4 del diseño 388/389).
+- (Empresas, 17-nov-2026) Correo a la empresa al aprobarla o rechazarla (D10; el bug de `APP_URL` de `notificar-email` ya está cerrado).
+- (Empresas, 17-nov-2026) Tipar `motivo_rechazo` y `revisado_at` en `EmpresaProveedora` (`src/proveedor/types/proveedor.types.ts`); hoy están tipados solo en `EmpresaEstadoPage`.
+- (Clínicas, 17-nov-2026) `crear-invitacion-clinica` no revisa la respuesta de Resend, y `user_already_exists` no está mapeado en `registrar-clinica-invitacion`.
+- (Familia 2, 17-nov-2026) REVOKE de anon por columna en `empresas_proveedoras`: anon conserva SELECT de tabla (`anon=r`, WL_ANON_LEGACY) y la 389 no lo tocó.
+- **(QA-MANUAL, cleanup pre-go-live, 17-nov-2026)** la empresa `MedicosPrueba` (quedó activa por una prueba manual) y la "QA-MANUAL Clínica 385" con su admin y su invitación "dup".
