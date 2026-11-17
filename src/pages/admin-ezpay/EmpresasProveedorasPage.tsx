@@ -15,18 +15,41 @@ import { useAdminAuth } from '@/hooks/admin/useAdminAuth';
 import { usePaisFiltro } from '@/hooks/usePaisFiltro';
 import {
   useEmpresasPais,
+  type AccionEstadoEmpresa,
   type EmpresaDetalle,
   type EmpresaPais,
   type EstadoEmpresa,
 } from '@/hooks/admin/useEmpresasPais';
-import { supabase } from '@/lib/supabase';
 import { toast } from 'sonner';
-import { ArrowLeft, Search, RefreshCw, MapPin, CheckCircle2, XCircle, AlertTriangle, Clock, Eye, Mail, Phone, Store, FlaskConical, Handshake, Users, Package, Megaphone, DollarSign } from 'lucide-react';
+import { ArrowLeft, Search, RefreshCw, MapPin, CheckCircle2, XCircle, AlertTriangle, Clock, Eye, Mail, Phone, Store, FlaskConical, Handshake, Users, Package, Megaphone, DollarSign, RotateCcw } from 'lucide-react';
 
-// Bandeja de empresas (migs 386-387). La lista sale de UNA llamada a listar_empresas_pais (todas las del país) para
+// Bandeja de empresas (migs 386-388). La lista sale de UNA llamada a listar_empresas_pais (todas las del país) para
 // los dos roles (super_admin y admin_pais de ESE país); el filtro por estado y las tarjetas se calculan en el cliente.
 // El modal "Ver detalle" pide obtener_empresa_pais al abrirse. Aprobar/rechazar van por resolver_empresa.
-// Suspender/Reactivar siguen por UPDATE directo, solo para el super_admin (D2).
+// Suspender/Reactivar/Reabrir van por cambiar_estado_empresa (mig 388), solo para el super_admin (D2): la RPC cambia
+// el estado y avisa a la empresa en la misma llamada.
+
+// Textos del modal de confirmación de cambiar_estado_empresa.
+const ACCION_ESTADO: Record<AccionEstadoEmpresa, { titulo: string; verbo: string; aviso: string; exito: string }> = {
+  suspender: {
+    titulo: 'Suspender Empresa',
+    verbo: 'suspender',
+    aviso: 'Hasta que la reactives, la empresa solo podrá ver su perfil y sus pagos.',
+    exito: 'Empresa suspendida.',
+  },
+  reactivar: {
+    titulo: 'Reactivar Empresa',
+    verbo: 'reactivar',
+    aviso: 'La empresa vuelve a tener acceso completo al portal.',
+    exito: 'Empresa reactivada.',
+  },
+  reabrir: {
+    titulo: 'Reabrir Empresa',
+    verbo: 'reabrir',
+    aviso: 'La empresa vuelve a pendiente y se borra el motivo del rechazo.',
+    exito: 'Empresa reabierta: quedó pendiente de revisión.',
+  },
+};
 
 type FiltroEstado = EstadoEmpresa | 'todas';
 
@@ -70,16 +93,16 @@ const fecha = (iso: string | null) => (iso ? new Date(iso).toLocaleDateString('e
 export default function EmpresasProveedorasPage() {
   const navigate = useNavigate();
   const { isAdmin, isSuperAdmin, loading: adminLoading } = useAdminAuth();
-  const { listar, obtenerEmpresaPais, aprobar, rechazar } = useEmpresasPais();
+  const { listar, obtenerEmpresaPais, aprobar, rechazar, cambiarEstadoEmpresa } = useEmpresasPais();
   // Todas las empresas del país (una sola llamada); los chips y la búsqueda filtran sobre esta lista.
   const [empresas, setEmpresas] = useState<EmpresaPais[]>([]);
   const [loading, setLoading] = useState(false);
   const [search, setSearch] = useState('');
   const [filtroEstado, setFiltroEstado] = useState<FiltroEstado>('pendiente');
-  // Suspender / Reactivar (solo super_admin, UPDATE directo como antes de la 386).
+  // Suspender / Reactivar / Reabrir (solo super_admin, cambiar_estado_empresa).
   const [dialogoAccion, setDialogoAccion] = useState<{
     empresa: EmpresaPais;
-    nuevoEstado: 'activa' | 'suspendida';
+    accion: AccionEstadoEmpresa;
   } | null>(null);
   // Aprobar / Rechazar (resolver_empresa).
   const [aAprobar, setAAprobar] = useState<EmpresaPais | null>(null);
@@ -142,30 +165,30 @@ export default function EmpresasProveedorasPage() {
     }
   }, [adminLoading, isAdmin, cargarEmpresas]);
 
-  // Suspender / Reactivar: SIN CAMBIOS respecto de antes de la 386 (UPDATE directo, solo super_admin; D2).
-  const cambiarEstado = async (empresaId: string, nuevoEstado: EstadoEmpresa) => {
+  // Suspender / Reactivar / Reabrir (mig 388, solo super_admin; D2). La RPC cambia el estado y avisa a la empresa en la
+  // misma llamada. EP006 (la empresa ya no está en el estado que permite la acción) y EP002 recargan la lista.
+  const confirmarCambioEstado = async () => {
+    if (!dialogoAccion) return;
+    const { empresa, accion } = dialogoAccion;
     setProcesando(true);
-    const { error } = await supabase
-      .from('empresas_proveedoras')
-      .update({ estado: nuevoEstado, updated_at: new Date().toISOString() })
-      .eq('id', empresaId);
-
-    if (error) {
-      toast.error('Error al actualizar estado: ' + error.message);
-    } else {
-      toast.success(`Empresa ${nuevoEstado === 'activa' ? 'aprobada' : nuevoEstado === 'suspendida' ? 'suspendida' : 'actualizada'} correctamente`);
-
-      // Notificar a los usuarios de la empresa (RPC gateado: deriva destinatarios + contenido del ref; estado leído de la BD)
-      try {
-        await supabase.rpc('notificar_empresa_estado', { p_empresa_id: empresaId });
-      } catch (e) {
-        console.error('Error notificando a la empresa:', e);
-      }
-
-      setDialogoAccion(null);
-      cargarEmpresas();
-    }
+    const r = await cambiarEstadoEmpresa(empresa.id, accion);
     setProcesando(false);
+    if (!r.ok) {
+      toast.error(r.error.mensaje);
+      if (r.error.recargar === 'empresas') {
+        setDialogoAccion(null);
+        cargarEmpresas();
+      }
+      return;
+    }
+    const exito = ACCION_ESTADO[accion].exito;
+    toast.success(
+      r.data.notificado
+        ? `${exito} Le avisamos a la empresa.`
+        : `${exito} No se pudo enviar el aviso a la empresa.`
+    );
+    setDialogoAccion(null);
+    cargarEmpresas();
   };
 
   const confirmarAprobar = async () => {
@@ -478,13 +501,14 @@ export default function EmpresasProveedorasPage() {
                               </Button>
                             </>
                           )}
-                          {/* D2: Suspender/Reactivar solo para el super_admin y solo en activa/suspendida. */}
+                          {/* D2: Suspender/Reactivar/Reabrir solo para el super_admin: suspender en activa,
+                              reactivar en suspendida, reabrir en rechazada (mig 388). */}
                           {isSuperAdmin && empresa.estado === 'activa' && (
                             <Button
                               variant="ghost"
                               size="sm"
                               className="text-red-600 hover:text-red-700 hover:bg-red-50"
-                              onClick={() => setDialogoAccion({ empresa, nuevoEstado: 'suspendida' })}
+                              onClick={() => setDialogoAccion({ empresa, accion: 'suspender' })}
                             >
                               <AlertTriangle className="h-4 w-4 mr-1" /> Suspender
                             </Button>
@@ -494,9 +518,19 @@ export default function EmpresasProveedorasPage() {
                               variant="ghost"
                               size="sm"
                               className="text-green-600 hover:text-green-700 hover:bg-green-50"
-                              onClick={() => setDialogoAccion({ empresa, nuevoEstado: 'activa' })}
+                              onClick={() => setDialogoAccion({ empresa, accion: 'reactivar' })}
                             >
                               <CheckCircle2 className="h-4 w-4 mr-1" /> Reactivar
+                            </Button>
+                          )}
+                          {isSuperAdmin && empresa.estado === 'rechazada' && (
+                            <Button
+                              variant="ghost"
+                              size="sm"
+                              className="text-[#1E5C8E] hover:text-[#17496f] hover:bg-blue-50"
+                              onClick={() => setDialogoAccion({ empresa, accion: 'reabrir' })}
+                            >
+                              <RotateCcw className="h-4 w-4 mr-1" /> Reabrir
                             </Button>
                           )}
                         </div>
@@ -650,8 +684,8 @@ export default function EmpresasProveedorasPage() {
                 )}
               </div>
 
-              {/* Mismas reglas que la fila: Aprobar/Rechazar solo en pendiente (los dos roles); Suspender/Reactivar
-                  solo el super_admin y solo en activa/suspendida (D2). */}
+              {/* Mismas reglas que la fila: Aprobar/Rechazar solo en pendiente (los dos roles); Suspender/Reactivar/
+                  Reabrir solo el super_admin y solo en activa/suspendida/rechazada (D2, mig 388). */}
               <div className="flex gap-2 pt-2">
                 {detalle.estado === 'pendiente' && (
                   <>
@@ -685,7 +719,7 @@ export default function EmpresasProveedorasPage() {
                     onClick={() => {
                       const empresa = filaDetalle;
                       cerrarDetalle();
-                      setDialogoAccion({ empresa, nuevoEstado: 'suspendida' });
+                      setDialogoAccion({ empresa, accion: 'suspender' });
                     }}
                   >
                     <AlertTriangle className="h-4 w-4 mr-2" /> Suspender Empresa
@@ -697,10 +731,22 @@ export default function EmpresasProveedorasPage() {
                     onClick={() => {
                       const empresa = filaDetalle;
                       cerrarDetalle();
-                      setDialogoAccion({ empresa, nuevoEstado: 'activa' });
+                      setDialogoAccion({ empresa, accion: 'reactivar' });
                     }}
                   >
                     <CheckCircle2 className="h-4 w-4 mr-2" /> Reactivar Empresa
+                  </Button>
+                )}
+                {isSuperAdmin && detalle.estado === 'rechazada' && (
+                  <Button
+                    className="flex-1 bg-[#1E5C8E] hover:bg-[#17496f]"
+                    onClick={() => {
+                      const empresa = filaDetalle;
+                      cerrarDetalle();
+                      setDialogoAccion({ empresa, accion: 'reabrir' });
+                    }}
+                  >
+                    <RotateCcw className="h-4 w-4 mr-2" /> Reabrir Empresa
                   </Button>
                 )}
               </div>
@@ -774,36 +820,44 @@ export default function EmpresasProveedorasPage() {
         </DialogContent>
       </Dialog>
 
-      {/* Modal Confirmar Suspender / Reactivar (solo super_admin) */}
-      <Dialog open={!!dialogoAccion} onOpenChange={() => setDialogoAccion(null)}>
+      {/* Modal Confirmar Suspender / Reactivar / Reabrir (solo super_admin, cambiar_estado_empresa) */}
+      <Dialog open={!!dialogoAccion} onOpenChange={(open) => { if (!open && !procesando) setDialogoAccion(null); }}>
         <DialogContent className="max-w-sm">
           <DialogHeader>
             <DialogTitle className="text-center">
-              {dialogoAccion?.nuevoEstado === 'activa' ? 'Reactivar Empresa' : 'Suspender Empresa'}
+              {dialogoAccion ? ACCION_ESTADO[dialogoAccion.accion].titulo : ''}
             </DialogTitle>
+            <DialogDescription className="text-center">
+              {dialogoAccion ? ACCION_ESTADO[dialogoAccion.accion].aviso : ''}
+            </DialogDescription>
           </DialogHeader>
           <div className="text-center py-2">
             <p className="text-muted-foreground mb-4">
-              ¿Estás seguro de que deseas{' '}
-              <strong>{dialogoAccion?.nuevoEstado === 'activa' ? 'reactivar' : 'suspender'}</strong>{' '}
-              a <strong>{dialogoAccion?.empresa.nombre_empresa}</strong>?
+              ¿Quieres <strong>{dialogoAccion ? ACCION_ESTADO[dialogoAccion.accion].verbo : ''}</strong> a{' '}
+              <strong>{dialogoAccion?.empresa.nombre_empresa}</strong>? La empresa recibirá un aviso.
             </p>
             <div className="flex justify-center gap-2">
-              <Button variant="outline" onClick={() => setDialogoAccion(null)}>
+              <Button variant="outline" disabled={procesando} onClick={() => setDialogoAccion(null)}>
                 Cancelar
               </Button>
               <Button
-                variant={dialogoAccion?.nuevoEstado === 'activa' ? 'default' : 'destructive'}
+                variant={dialogoAccion?.accion === 'suspender' ? 'destructive' : 'default'}
                 disabled={procesando}
-                className={dialogoAccion?.nuevoEstado === 'activa' ? 'bg-green-600 hover:bg-green-700' : ''}
-                onClick={() =>
-                  dialogoAccion && cambiarEstado(dialogoAccion.empresa.id, dialogoAccion.nuevoEstado)
+                className={
+                  dialogoAccion?.accion === 'reactivar'
+                    ? 'bg-green-600 hover:bg-green-700'
+                    : dialogoAccion?.accion === 'reabrir'
+                      ? 'bg-[#1E5C8E] hover:bg-[#17496f]'
+                      : ''
                 }
+                onClick={confirmarCambioEstado}
               >
                 {procesando ? (
                   <RefreshCw className="h-4 w-4 animate-spin mr-2" />
-                ) : dialogoAccion?.nuevoEstado === 'activa' ? (
+                ) : dialogoAccion?.accion === 'reactivar' ? (
                   <CheckCircle2 className="h-4 w-4 mr-2" />
+                ) : dialogoAccion?.accion === 'reabrir' ? (
+                  <RotateCcw className="h-4 w-4 mr-2" />
                 ) : (
                   <AlertTriangle className="h-4 w-4 mr-2" />
                 )}
