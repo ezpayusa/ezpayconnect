@@ -28,15 +28,43 @@ ANTES DE ENVIAR (desde el 20-oct-2026)
     los bytes antes y despues y las lineas quitadas, y aborta ANTES de enviar si el cuerpo pasa de
     LIMITE_BODY (2.9 MiB): el proximo limite tiene que avisar con margen, no dar un 413.
 
+MODO PARTIDO (desde el 17-nov-2026, output/diseno-split-harness-17nov.md, opcion B)
+    El cuerpo crece ~30 KB por migracion y el techo es por REQUEST. El archivo puede partirse con tres marcadores, cada
+    uno en una linea EXACTA, sola y en la columna 0:
+        -- @@HARNESS_PRELUDIO_FIN@@   fin del preludio (cabecera, BEGIN y precondicion global): se repite en cada parte
+        -- @@HARNESS_PARTE@@          corte entre partes; K cortes = K+1 partes (puede no haber ninguno: 1 parte)
+        -- @@HARNESS_RESULTADOS@@     desde aca hasta el final: el SELECT de veredictos, P000 y el ROLLBACK
+    Se detectan sobre el texto ORIGINAL, ANTES de quitar los comentarios (son lineas de comentario a proposito: el .sql
+    sigue siendo valido y quitar_comentarios_linea los borraria si se buscaran despues). Si el archivo no tiene NINGUN
+    marcador, el runner hace exactamente lo de siempre: el mismo cuerpo, byte a byte, en un solo request.
+    Con marcadores, cada parte es un request y una transaccion propios, en SERIE (nunca en paralelo):
+        preludio + cuerpo de la parte + colector + ROLLBACK
+    El colector devuelve el valor no vacio de cada clave 'probe.x' que lee el bloque de resultados (extraidas de su
+    texto: hoy son todas literales). No se puede usar pg_settings: en PG 17 los placeholders de set_config no aparecen
+    ahi (medido el 17-nov: 0 filas). Despues, UN request final repone esas claves con set_config y corre el bloque de
+    resultados tal cual: mismas filas, mismo P000, mismos nombres que la corrida monolitica.
+    Si una parte falla (exit del cliente, 413, SQL, techo, salida sin el centinela del colector) se registra una fila
+    'PARTE_<n>_ERROR' con 'ROJO (...)' y se sigue con las demas; una clave con valores distintos en dos partes da la fila
+    'PARTES_CONFLICTO'. Las dos estan fuera de la DEUDA: la corrida sale con exit 1. Piso, vacios y deuda se evaluan
+    sobre el total (verificar() de siempre).
+
+INYECCION DE UNA MIGRACION (dry-run)
+    Hoy: se copia el harness, se pega el cuerpo de la migracion (sin su BEGIN/COMMIT) justo despues de la linea
+    `BEGIN;` y se corre la copia con `-f`. Con marcadores es lo mismo: esa linea esta dentro del preludio, asi que la
+    migracion queda al inicio de CADA parte. El request final no la necesita (solo lee settings).
+
 USO
     npm run harness            # corre y verifica
     npm run harness -- -o x.json
+    npm run harness -- -f copia.sql   # otro archivo (copia con migracion inyectada o con marcadores de prueba)
     npm run harness:selftest   # prueba que las verificaciones DISPARAN (no toca la base)
 """
 import argparse
+import hashlib
 import io
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -128,6 +156,119 @@ def quitar_comentarios_linea(texto):
 def tamano_ok(n_bytes):
     """True si el cuerpo entra bajo LIMITE_BODY."""
     return n_bytes <= LIMITE_BODY
+
+
+# ---------------------------------------------- modo partido ----------------------------------------------
+MARCA_PRELUDIO = '-- @@HARNESS_PRELUDIO_FIN@@'
+MARCA_PARTE = '-- @@HARNESS_PARTE@@'
+MARCA_RESULTADOS = '-- @@HARNESS_RESULTADOS@@'
+MARCAS = (MARCA_PRELUDIO, MARCA_PARTE, MARCA_RESULTADOS)
+# Fila centinela del colector: si no vuelve, la parte no llego a su final (o la API devolvio otro result set).
+CENTINELA_COLECTOR = '__harness_parte__'
+CLAVE_PROBE = re.compile(r"'(probe\.[A-Za-z0-9_]+)'")
+
+
+def _es_marca(linea):
+    """La linea, sin el fin de linea ni blancos FINALES, es exactamente un marcador. Con sangria NO cuenta: un
+    marcador va en la columna 0, fuera de todo bloque."""
+    return linea.rstrip('\r\n').rstrip(' \t') in MARCAS
+
+
+def partir(texto):
+    """None si el texto no tiene ningun marcador (modo de siempre). Si tiene, devuelve
+    {'preludio': str, 'partes': [str, ...], 'resultados': str} con el texto ORIGINAL (comentarios incluidos; cada
+    trozo se limpia despues). Lanza ValueError si los marcadores estan mal puestos."""
+    lineas = texto.splitlines(True)
+    pos = [(i, l.rstrip('\r\n').rstrip(' \t')) for i, l in enumerate(lineas) if _es_marca(l)]
+    # Un marcador con sangria (o pegado a otra cosa) no se toma como marcador; se avisa para que no pase inadvertido.
+    casi = [i + 1 for i, l in enumerate(lineas) if '@@HARNESS_' in l and not _es_marca(l)]
+    if casi:
+        raise ValueError('linea(s) %s mencionan @@HARNESS_ pero no son un marcador exacto en la columna 0' % casi)
+    if not pos:
+        return None
+    pre = [i for i, m in pos if m == MARCA_PRELUDIO]
+    res = [i for i, m in pos if m == MARCA_RESULTADOS]
+    cortes = [i for i, m in pos if m == MARCA_PARTE]
+    if len(pre) != 1 or len(res) != 1:
+        raise ValueError('hace falta exactamente un %s y un %s (hay %d y %d)'
+                         % (MARCA_PRELUDIO, MARCA_RESULTADOS, len(pre), len(res)))
+    if not all(pre[0] < c < res[0] for c in cortes):
+        raise ValueError('los %s tienen que estar entre %s y %s' % (MARCA_PARTE, MARCA_PRELUDIO, MARCA_RESULTADOS))
+    # Cada marcador tiene que caer ENTRE sentencias: la ultima linea con codigo antes de el termina en ';'. Atrapa el
+    # error tipico (un marcador pegado dentro de un DO) sin parsear dollar-quotes; el que se escape, lo ataja la base.
+    for i, m in pos:
+        previa = next((l for l in reversed(lineas[:i]) if l.strip() and not l.lstrip().startswith('--')), '')
+        if not previa.split('--')[0].rstrip().endswith(';'):
+            raise ValueError('el marcador %s de la linea %d no esta entre dos sentencias (la anterior no termina en ;)'
+                             % (m, i + 1))
+    limites = [pre[0]] + cortes + [res[0]]
+    return {
+        'preludio': ''.join(lineas[:pre[0]]),
+        'partes': [''.join(lineas[limites[k] + 1:limites[k + 1]]) for k in range(len(limites) - 1)],
+        'resultados': ''.join(lineas[res[0] + 1:]),
+    }
+
+
+def _literal(s):
+    return "'" + s.replace("'", "''") + "'"
+
+
+def claves_de_resultados(resultados):
+    """Las claves 'probe.x' que lee el bloque de resultados, en orden de aparicion y sin repetir."""
+    vistas, out = set(), []
+    for k in CLAVE_PROBE.findall(resultados):
+        if k not in vistas:
+            vistas.add(k)
+            out.append(k)
+    return out
+
+
+def colector(claves, n):
+    """SQL que va al final de la parte n (antes del ROLLBACK): el centinela y cada clave con valor no vacio."""
+    arr = ',\n'.join(_literal(k) for k in claves)
+    return ("SELECT %s AS k, %s AS v\nUNION ALL\nSELECT c.k, current_setting(c.k, true)\n"
+            "  FROM unnest(ARRAY[\n%s\n]::text[]) AS c(k)\n WHERE COALESCE(current_setting(c.k, true), '') <> '';\n"
+            "ROLLBACK;\n" % (_literal(CENTINELA_COLECTOR), _literal(str(n)), arr))
+
+
+def leer_colector(salida, n):
+    """(dict clave->valor, error o None) a partir de la salida JSON de la parte n."""
+    try:
+        datos = json.loads(salida)
+    except ValueError as e:
+        return None, 'la salida no es JSON (%s)' % e
+    filas = datos.get('rows') if isinstance(datos, dict) else datos
+    if not isinstance(filas, list):
+        return None, 'el JSON no trae filas'
+    if not any(f.get('k') == CENTINELA_COLECTOR and str(f.get('v')) == str(n) for f in filas if isinstance(f, dict)):
+        return None, 'sin el centinela del colector (la parte no llego a su final)'
+    return {f['k']: f['v'] for f in filas if f.get('k') != CENTINELA_COLECTOR and f.get('v') not in (None, '')}, None
+
+
+def fusionar(valores_por_parte):
+    """Une los dict de cada parte. Una clave con el MISMO valor en varias partes (las del preludio) es normal; con
+    valores distintos es un conflicto. Devuelve (valores, conflictos) con conflictos = [clave, ...]."""
+    out, conflictos = {}, []
+    for vals in valores_por_parte:
+        for k, v in vals.items():
+            if k in out and out[k] != v and k not in conflictos:
+                conflictos.append(k)
+            out[k] = v
+    return out, conflictos
+
+
+def cuerpo_final(valores, resultados_limpio):
+    """Request final: repone las claves y corre el bloque de resultados tal cual (trae su ROLLBACK)."""
+    if valores:
+        filas = ',\n'.join('(%s, %s)' % (_literal(k), _literal(v)) for k, v in sorted(valores.items()))
+        reponer = 'SELECT count(set_config(t.k, t.v, false)) FROM (VALUES\n%s\n) AS t(k, v);\n' % filas
+    else:
+        reponer = ''
+    return 'BEGIN;\n' + reponer + resultados_limpio
+
+
+def _md5(s):
+    return hashlib.md5(s.encode('utf-8')).hexdigest()
 
 
 def _sin_tildes(s):
@@ -243,6 +384,50 @@ def self_test():
         ('cuerpo en el techo pasa', tamano_ok(LIMITE_BODY)),
         ('cuerpo sobre el techo aborta', not tamano_ok(LIMITE_BODY + 1)),
     ]
+
+    # --- modo partido: marcadores, colector, fusion y request final ---
+    def _lanza(texto):
+        try:
+            partir(texto)
+        except ValueError:
+            return True
+        return False
+    base = ('BEGIN;\nDO $$ BEGIN PERFORM 1; END $$;\n' + MARCA_PRELUDIO + '\n'
+            "SELECT set_config('probe.a','x',false);\n" + MARCA_PARTE + '\n'
+            "SELECT set_config('probe.b','y',false);\n" + MARCA_RESULTADOS + '\n'
+            "SELECT 'A', current_setting('probe.a', true) UNION ALL SELECT 'B', current_setting('probe.b', true);\nROLLBACK;\n")
+    t = partir(base)
+    sin_marcas = 'BEGIN;\n-- @@ algo que no es marcador\nSELECT 1;\nROLLBACK;\n'
+    vals, err = leer_colector(json.dumps({'rows': [{'k': CENTINELA_COLECTOR, 'v': '2'}, {'k': 'probe.a', 'v': "it's"},
+                                                   {'k': 'probe.z', 'v': ''}]}), 2)
+    _, err_sin_centinela = leer_colector(json.dumps({'rows': [{'set_config': ''}]}), 1)
+    _, err_otra_parte = leer_colector(json.dumps({'rows': [{'k': CENTINELA_COLECTOR, 'v': '1'}]}), 2)
+    fus, conf = fusionar([{'probe.pre': 'OK', 'probe.a': '1'}, {'probe.pre': 'OK', 'probe.b': '2'}])
+    _, conf2 = fusionar([{'probe.a': '1'}, {'probe.a': '2'}])
+    fin = cuerpo_final({'probe.a': "o'k"}, 'SELECT 1;\nROLLBACK;\n')
+    casos_partes = [
+        ('sin marcadores -> None (modo de siempre)', partir(sin_marcas) is None),
+        ('preludio + 1 corte + resultados -> 2 partes', t is not None and len(t['partes']) == 2),
+        ('el preludio llega hasta el marcador y trae el BEGIN', t['preludio'].startswith('BEGIN;') and MARCA_PRELUDIO not in t['preludio']),
+        ('cada parte tiene solo su cuerpo', "probe.a" in t['partes'][0] and "probe.b" not in t['partes'][0] and "probe.b" in t['partes'][1]),
+        ('resultados = desde el marcador hasta el final', t['resultados'].startswith("SELECT 'A'") and t['resultados'].endswith('ROLLBACK;\n')),
+        ('sin cortes (solo preludio y resultados) -> 1 parte', len(partir(base.replace(MARCA_PARTE + '\n', ''))['partes']) == 1),
+        ('marcador con sangria -> error', _lanza(base.replace('\n' + MARCA_PARTE, '\n  ' + MARCA_PARTE))),
+        ('corte sin preludio -> error', _lanza(base.replace(MARCA_PRELUDIO + '\n', ''))),
+        ('dos marcadores de resultados -> error', _lanza(base + MARCA_RESULTADOS + '\n')),
+        ('corte despues de resultados -> error', _lanza(base + MARCA_PARTE + '\n')),
+        ('corte dentro de una sentencia -> error', _lanza(base.replace("'y',false);\n" + MARCA_RESULTADOS, "'y',false)\n" + MARCA_RESULTADOS))),
+        ('claves del bloque de resultados, sin repetir', claves_de_resultados(t['resultados']) == ['probe.a', 'probe.b']),
+        ('colector: centinela, comillas escapadas y ROLLBACK', "'__harness_parte__'" in colector(["probe.o'x"], 3) and "'probe.o''x'" in colector(["probe.o'x"], 3) and colector([], 1).endswith('ROLLBACK;\n')),
+        ('colector leido: sin el centinela ni los vacios', err is None and vals == {'probe.a': "it's"}),
+        ('colector sin centinela -> error de la parte', err_sin_centinela is not None),
+        ('colector con el centinela de OTRA parte -> error', err_otra_parte is not None),
+        ('fusion: mismo valor en dos partes no es conflicto', conf == [] and fus == {'probe.pre': 'OK', 'probe.a': '1', 'probe.b': '2'}),
+        ('fusion: valores distintos -> conflicto', conf2 == ['probe.a']),
+        ('request final: BEGIN, set_config escapado y el bloque tal cual', fin.startswith('BEGIN;\n') and "('probe.a', 'o''k')" in fin and fin.endswith('SELECT 1;\nROLLBACK;\n')),
+        ('una fila PARTE_n_ERROR hace la corrida ROJA', not verificar(0, json.dumps({'rows': _sana() + [{'probe': 'PARTE_2_ERROR', 'verdict': 'ROJO (exit 1)'}]}))[0]),
+    ]
+    casos_body += casos_partes
     for nombre, ok in casos_body:
         if ok:
             print('  ok   %s' % nombre)
@@ -289,29 +474,94 @@ def main():
     # --output json EXPLICITO: sin el flag el CLI 2.100 decide el formato por entorno (detecta si
     # lo corre un agente) y en una shell limpia imprime una TABLA con bordes que este runner
     # rechazaba como "no es JSON valido".
+    def enviar(cuerpo):
+        """Un request: escribe el cuerpo en un temporal y corre el cliente. Devuelve (rc, stdout, stderr)."""
+        fd, tmp = tempfile.mkstemp(prefix='harness_body_', suffix='.sql')
+        try:
+            with io.open(fd, 'w', encoding='utf-8', newline='') as fh:
+                fh.write(cuerpo)
+            p = subprocess.run([exe, '--workdir', REPO, 'db', 'query', '--output', 'json',
+                                '--linked', '-f', tmp],
+                               stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=entorno)
+        finally:
+            os.remove(tmp)
+        return p.returncode, p.stdout.decode('utf-8', 'replace'), p.stderr.decode('utf-8', 'replace')
+
     # Cuerpo a enviar: el harness sin las lineas que son solo comentario (el archivo no cambia).
     with io.open(a.file, 'r', encoding='utf-8', newline='') as fh:
         original = fh.read()
-    cuerpo, quitadas = quitar_comentarios_linea(original)
-    b_antes, b_despues = len(original.encode('utf-8')), len(cuerpo.encode('utf-8'))
-    print('body: %d bytes -> %d bytes (%d lineas de comentario quitadas; techo %d)'
-          % (b_antes, b_despues, quitadas, LIMITE_BODY))
-    if not tamano_ok(b_despues):
-        print('ROJO: el cuerpo sin comentarios pesa %d bytes y pasa el techo de %d (2.9 MiB).\n'
-              '      La API corta en ~3 MiB (413). La corrida NO se envio: achicar el harness o\n'
-              '      partirlo antes de seguir.' % (b_despues, LIMITE_BODY))
-        return 1
-    fd, tmp = tempfile.mkstemp(prefix='harness_body_', suffix='.sql')
     try:
-        with io.open(fd, 'w', encoding='utf-8', newline='') as fh:
-            fh.write(cuerpo)
-        p = subprocess.run([exe, '--workdir', REPO, 'db', 'query', '--output', 'json',
-                            '--linked', '-f', tmp],
-                           stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=entorno)
-    finally:
-        os.remove(tmp)
-    salida = p.stdout.decode('utf-8', 'replace')
-    ok, msg, filas = verificar(p.returncode, salida)
+        trozos = partir(original)
+    except ValueError as e:
+        print('ROJO: marcadores de parte mal puestos: %s. La corrida NO se envio.' % e)
+        return 1
+
+    if trozos is None:
+        # ---- modo de siempre: un request con el archivo entero, byte a byte igual que antes del split ----
+        cuerpo, quitadas = quitar_comentarios_linea(original)
+        b_antes, b_despues = len(original.encode('utf-8')), len(cuerpo.encode('utf-8'))
+        print('body: %d bytes -> %d bytes (%d lineas de comentario quitadas; techo %d)'
+              % (b_antes, b_despues, quitadas, LIMITE_BODY))
+        print('body md5 %s (un solo request, sin marcadores de parte)' % _md5(cuerpo))
+        if not tamano_ok(b_despues):
+            print('ROJO: el cuerpo sin comentarios pesa %d bytes y pasa el techo de %d (2.9 MiB).\n'
+                  '      La API corta en ~3 MiB (413). La corrida NO se envio: achicar el harness o\n'
+                  '      partirlo antes de seguir.' % (b_despues, LIMITE_BODY))
+            return 1
+        rc, salida, stderr = enviar(cuerpo)
+    else:
+        # ---- modo partido: una transaccion por parte, en serie, y un request final con los veredictos ----
+        preludio, _ = quitar_comentarios_linea(trozos['preludio'])
+        resultados, _ = quitar_comentarios_linea(trozos['resultados'])
+        claves = claves_de_resultados(resultados)
+        print('modo partido: %d parte(s); %d claves de veredicto en el bloque de resultados; techo %d por request'
+              % (len(trozos['partes']), len(claves), LIMITE_BODY))
+        errores, valores_por_parte = [], []
+        for n, texto in enumerate(trozos['partes'], 1):
+            cuerpo_n = preludio + quitar_comentarios_linea(texto)[0] + colector(claves, n)
+            b = len(cuerpo_n.encode('utf-8'))
+            print('  parte %d: %d bytes, margen %d (%.0f%%), md5 %s'
+                  % (n, b, LIMITE_BODY - b, 100.0 * (LIMITE_BODY - b) / LIMITE_BODY, _md5(cuerpo_n)))
+            if not tamano_ok(b):
+                errores.append(('PARTE_%d_ERROR' % n, 'ROJO (pasa el techo: %d > %d; no se envio)' % (b, LIMITE_BODY)))
+                continue
+            rc_n, out_n, err_n = enviar(cuerpo_n)
+            if rc_n != 0:
+                errores.append(('PARTE_%d_ERROR' % n, 'ROJO (el cliente salio con exit %d: %s)'
+                                % (rc_n, ' '.join(err_n.split())[-300:])))
+                continue
+            vals, err = leer_colector(out_n, n)
+            if err:
+                errores.append(('PARTE_%d_ERROR' % n, 'ROJO (%s)' % err))
+                continue
+            print('           %d clave(s) con valor' % len(vals))
+            valores_por_parte.append(vals)
+        valores, conflictos = fusionar(valores_por_parte)
+        if conflictos:
+            errores.append(('PARTES_CONFLICTO', 'ROJO (%d clave(s) con valores distintos en dos partes: %s)'
+                            % (len(conflictos), ', '.join(conflictos[:20]))))
+        final = cuerpo_final(valores, resultados)
+        b = len(final.encode('utf-8'))
+        print('  final  : %d bytes, margen %d, md5 %s (%d claves repuestas)' % (b, LIMITE_BODY - b, _md5(final), len(valores)))
+        if not tamano_ok(b):
+            print('ROJO: el request final pasa el techo (%d > %d). La corrida NO se completo.' % (b, LIMITE_BODY))
+            return 1
+        rc, salida, stderr = enviar(final)
+        # Las filas de error de las partes se suman a las del request final: verificar() las ve como rojas fuera de la
+        # deuda (exit 1), y el piso y la deuda se evaluan sobre el total.
+        if rc == 0 and errores:
+            try:
+                datos = json.loads(salida)
+                filas_f = datos.get('rows') if isinstance(datos, dict) else datos
+                filas_f = list(filas_f) + [{'probe': p, 'verdict': v, 'esperado_post_fix': 'parte sin errores'}
+                                           for p, v in errores]
+                salida = json.dumps({'rows': filas_f}, ensure_ascii=False)
+            except (ValueError, TypeError, AttributeError):
+                pass  # salida invalida: verificar() la rechaza igual
+        for p_, v_ in errores:
+            print('  %s %s' % (p_, v_))
+
+    ok, msg, filas = verificar(rc, salida)
     if a.out and salida:
         io.open(a.out, 'w', encoding='utf-8').write(salida)
 
@@ -334,7 +584,7 @@ def main():
                 print('  %s %-38s %s' % (marca, nombre, v[:100]))
     print(msg)
     if not ok:
-        err = p.stderr.decode('utf-8', 'replace').strip()
+        err = stderr.strip()
         if err:
             print('--- stderr del cliente ---')
             print(err[:1200])

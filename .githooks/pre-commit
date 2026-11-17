@@ -5,7 +5,7 @@
 # Los tres son OFFLINE y deterministas — ninguno toca la base. La corrida real del harness
 # (`npm run harness`) NO va aca a proposito: necesita red, y un hook que depende de la red
 # falla por motivos ajenos al commit y termina desactivado por todos.
-if git diff --cached --name-only | grep -qE '^tests/rls/(probes_escritura\.sql|b2_guard\.py|b2_guard_test\.py|harness_run\.py|test_harness_run\.py)$'; then
+if git diff --cached --name-only | grep -qE '^tests/rls/(probes_escritura\.sql|b2_guard\.py|b2_guard_test\.py|harness_run\.py|test_harness_run\.py|comparar_corridas\.py)$'; then
   echo "[pre-commit] harness tocado -> probando los detectores y corriendo el guard"
 
   python tests/rls/b2_guard_test.py || {
@@ -23,6 +23,14 @@ if git diff --cached --name-only | grep -qE '^tests/rls/(probes_escritura\.sql|b
   python tests/rls/harness_run.py --self-test || {
     echo "[pre-commit] BLOQUEADO: las verificaciones del RUNNER no disparan. Sin ellas, una corrida"
     echo "[pre-commit] vacia con exit 0 vuelve a leerse como un harness verde (ya paso)."
+    exit 1
+  }
+
+  # El comparador importa PREFIJOS_ROJOS de harness_run.py: un cambio en cualquiera de los dos puede romper la
+  # comparacion de corridas que valida el split del harness. Mismo chequeo que el runner: su propio --self-test.
+  python tests/rls/comparar_corridas.py --self-test || {
+    echo "[pre-commit] BLOQUEADO: el COMPARADOR de corridas no detecta lo que tiene que detectar. Sin el,"
+    echo "[pre-commit] una corrida partida que cambio veredictos se leeria como equivalente a la monolitica."
     exit 1
   }
 

@@ -46,6 +46,7 @@ DO $$ BEGIN
 EXCEPTION WHEN OTHERS THEN
   PERFORM set_config('probe.fx_medsglobal','ROJO (no se pudo sembrar la precondicion: '||SQLSTATE||' '||SQLERRM||')',false);
 END $$;
+-- @@HARNESS_PRELUDIO_FIN@@
 
 -- ============================================================
 -- Ola 3 · RBAC override per-empresa (P330–P342). Red-first. Maquinaria inerte día-0.
@@ -11611,7 +11612,7 @@ SELECT set_config('role','none', true);
 --                            de set_config) y ''::uuid es 22P02: mata la transaccion igual que un
 --                            NOT NULL. Fase 2.1 CERRADA: 155 -> 0 en tres tandas.
 --
---   do_sin_handler = 155     Bloques DO sin `EXCEPTION WHEN`. YA NO ES DEUDA: la fase 2.2 cerro los
+--   do_sin_handler = 154     Bloques DO sin `EXCEPTION WHEN`. YA NO ES DEUDA: la fase 2.2 cerro los
 --                            55 bloques que ESCRIBEN (211 -> 193 -> 175 -> 157 -> 156, P481 incluido)
 --                            y los 156 que quedan solo LEEN y publican — si uno cae no arrastra estado
 --                            ajeno. Este numero es el normal del archivo; sube si alguien agrega un
@@ -11636,7 +11637,7 @@ SELECT set_config('role','none', true);
 DO $$
 BEGIN
   PERFORM set_config('probe.p516',
-    'OK-SENAL (baseline declarado: top_level_dml_ddl=0 excluyendo pg_temp, cast_directo=0 CERRADO, do_sin_handler=155, fase 2.2 CERRADA: los restantes solo LEEN, catchall_verde=205 techo). '||
+    'OK-SENAL (baseline declarado: top_level_dml_ddl=0 excluyendo pg_temp, cast_directo=0 CERRADO, do_sin_handler=154, fase 2.2 CERRADA: los restantes solo LEEN, catchall_verde=205 techo). '||
     'El gate real es tests/rls/b2_guard.py — este probe NO mide, senaliza.', false);
 EXCEPTION WHEN OTHERS THEN
   -- handler puesto por coherencia: el propio b2_guard.py conto este bloque como deuda nueva cuando
@@ -11668,6 +11669,7 @@ EXCEPTION WHEN OTHERS THEN
 END $$;
 
 
+-- @@HARNESS_PARTE@@
 -- ############################################################################################
 -- MODULO COMERCIAL · RPCs de escritura (P517-P534). RED-FIRST: las 7 RPCs no existen todavia.
 -- --------------------------------------------------------------------------------------------
@@ -20482,25 +20484,63 @@ EXCEPTION WHEN OTHERS THEN PERFORM set_config('probe.p824','FALLO ('||SQLSTATE||
 SELECT set_config('role','none', true);
 
 
--- ---------------- P825 — INVARIANTE: cuentas_proveedor por rol (admin ve equipo; no-admin solo su fila) ----------------
--- Contraprueba: policy 2 SIN el filtro de rol (mutacion en savepoint) -> no-admin ve el equipo -> ROJO.
+-- ---------------- P825 — INVARIANTE: cuentas_proveedor por rol (admin ve la empresa; cajero/visitador solo su fila;
+-- supervisor su fila + su equipo + los visitadores sin equipo de su empresa) ----------------
+-- Actores por ROL y con ORDER BY id (antes: el no-admin salia de un LIMIT 1 sin orden y, segun lo que dejaran los
+-- fixtures anteriores, era un cajero, un visitador o un supervisor; el supervisor ve su equipo por diseño y el probe
+-- lo daba ROJO. Lo destapo la corrida partida del 17-nov, output/diseno-split-harness-17nov.md).
+-- Lo esperado se calcula como postgres (no hay umbrales fijos): el admin ve TODAS las cuentas de su empresa; el
+-- cajero/visitador_medico, 1; el supervisor ve EXACTAMENTE {su cuenta} ∪ {las de un equipo que supervisa, criterio de
+-- public.supervisa_cuenta_proveedor (mig 323)} ∪ {visitador_medico de su empresa con equipo_id NULL} (la otra rama de la
+-- policy "Supervisor ve cuentas de su equipo"), sobre la tabla ENTERA, y ninguna otra (se exige que exista al menos una
+-- cuenta de su empresa fuera de ese conjunto y al menos un miembro de su equipo).
+-- Contraprueba: policy 2 SIN el filtro de rol (mutacion en savepoint) -> el cajero/visitador ve la empresa -> ROJO.
 DO $$
-DECLARE emp uuid; adm uuid; nonadm uuid; nonrol text; claims text; n_adm int; n_non int; n_bad int := -1;
+DECLARE emp uuid; adm uuid; nonadm uuid; nonrol text; claims text; n_tot int; n_adm int; n_non int; n_bad int := -1;
+        sup uuid; sup_emp uuid; exp_ids uuid[]; vis_ids uuid[]; n_team int; n_libres int; n_out int; n_out_vis int;
 BEGIN
   SELECT cp.empresa_id INTO emp FROM public.cuentas_proveedor cp JOIN public.empresas_proveedoras e ON e.id=cp.empresa_id
    WHERE cp.activo AND e.estado='activa' AND cp.rol_en_empresa='admin'
-     AND EXISTS (SELECT 1 FROM public.cuentas_proveedor c2 WHERE c2.empresa_id=cp.empresa_id AND c2.activo AND c2.rol_en_empresa<>'admin')
+     AND EXISTS (SELECT 1 FROM public.cuentas_proveedor c2 WHERE c2.empresa_id=cp.empresa_id AND c2.activo
+                   AND c2.rol_en_empresa IN ('cajero','visitador_medico'))
    ORDER BY cp.empresa_id LIMIT 1;
-  IF emp IS NULL THEN PERFORM set_config('probe.p825','N/A (sin empresa activa con admin y no-admin)',false); RETURN; END IF;
-  SELECT id INTO adm FROM public.cuentas_proveedor WHERE empresa_id=emp AND activo AND rol_en_empresa='admin' LIMIT 1;
-  SELECT id, rol_en_empresa INTO nonadm, nonrol FROM public.cuentas_proveedor WHERE empresa_id=emp AND activo AND rol_en_empresa<>'admin' LIMIT 1;
+  IF emp IS NULL THEN PERFORM set_config('probe.p825','ROJO (fixture roto: sin empresa activa con admin y cajero/visitador_medico)',false); RETURN; END IF;
+  SELECT id INTO adm FROM public.cuentas_proveedor WHERE empresa_id=emp AND activo AND rol_en_empresa='admin' ORDER BY id LIMIT 1;
+  SELECT id, rol_en_empresa INTO nonadm, nonrol FROM public.cuentas_proveedor
+   WHERE empresa_id=emp AND activo AND rol_en_empresa IN ('cajero','visitador_medico') ORDER BY rol_en_empresa, id LIMIT 1;
+  SELECT count(*) INTO n_tot FROM public.cuentas_proveedor WHERE empresa_id=emp;
 
-  -- admin ve el equipo
+  -- supervisor activo de una empresa activa con admin, que supervisa al menos una cuenta (ORDER BY id)
+  SELECT cp.id, cp.empresa_id INTO sup, sup_emp FROM public.cuentas_proveedor cp JOIN public.empresas_proveedoras e ON e.id=cp.empresa_id
+   WHERE cp.activo AND e.estado='activa' AND cp.rol_en_empresa='supervisor'
+     AND EXISTS (SELECT 1 FROM public.cuentas_proveedor m JOIN public.equipos_visitadores ev ON ev.id=m.equipo_id
+                  WHERE ev.supervisor_id=cp.id AND m.id<>cp.id)
+     AND EXISTS (SELECT 1 FROM public.cuentas_proveedor a WHERE a.empresa_id=cp.empresa_id AND a.activo AND a.rol_en_empresa='admin')
+   ORDER BY cp.id LIMIT 1;
+  IF sup IS NULL THEN PERFORM set_config('probe.p825','ROJO (fixture roto: sin supervisor activo con equipo en una empresa activa con admin)',false); RETURN; END IF;
+  exp_ids := ARRAY(SELECT cp.id FROM public.cuentas_proveedor cp
+                    WHERE cp.id = sup
+                       OR cp.equipo_id IN (SELECT ev.id FROM public.equipos_visitadores ev WHERE ev.supervisor_id = sup)
+                       OR (cp.empresa_id = sup_emp AND cp.rol_en_empresa = 'visitador_medico' AND cp.equipo_id IS NULL)
+                    ORDER BY cp.id);
+  SELECT count(*) INTO n_team FROM public.cuentas_proveedor cp
+   WHERE cp.id <> sup AND cp.equipo_id IN (SELECT ev.id FROM public.equipos_visitadores ev WHERE ev.supervisor_id = sup);
+  SELECT count(*) INTO n_libres FROM public.cuentas_proveedor cp
+   WHERE cp.id <> sup AND cp.empresa_id = sup_emp AND cp.rol_en_empresa = 'visitador_medico' AND cp.equipo_id IS NULL;
+  SELECT count(*) INTO n_out FROM public.cuentas_proveedor cp WHERE cp.empresa_id = sup_emp AND NOT (cp.id = ANY (exp_ids));
+
+  -- admin ve la empresa
   claims:=json_build_object('sub',adm::text,'role','authenticated')::text;
   PERFORM set_config('request.jwt.claims',claims,true); PERFORM set_config('role','authenticated',true);
   SELECT count(*) INTO n_adm FROM public.cuentas_proveedor WHERE empresa_id=emp; PERFORM set_config('role','none',true);
 
-  -- no-admin ve SOLO su fila
+  -- supervisor: exactamente su conjunto, en la tabla entera
+  claims:=json_build_object('sub',sup::text,'role','authenticated')::text;
+  PERFORM set_config('request.jwt.claims',claims,true); PERFORM set_config('role','authenticated',true);
+  vis_ids := ARRAY(SELECT cp.id FROM public.cuentas_proveedor cp ORDER BY cp.id); PERFORM set_config('role','none',true);
+  SELECT count(*) INTO n_out_vis FROM unnest(vis_ids) v(id) WHERE NOT (v.id = ANY (exp_ids));
+
+  -- cajero/visitador ve SOLO su fila
   claims:=json_build_object('sub',nonadm::text,'role','authenticated')::text;
   PERFORM set_config('request.jwt.claims',claims,true); PERFORM set_config('role','authenticated',true);
   SELECT count(*) INTO n_non FROM public.cuentas_proveedor WHERE empresa_id=emp; PERFORM set_config('role','none',true);
@@ -20519,9 +20559,14 @@ BEGIN
 
   PERFORM set_config('request.jwt.claims','',true);
   PERFORM set_config('probe.p825',
-    CASE WHEN n_adm > 1 AND n_non = 1 AND n_bad > 1
-      THEN 'OK (admin ve '||n_adm||', '||nonrol||' ve 1; contraprueba sin filtro ve '||n_bad||')'
-      ELSE 'ROJO (admin='||n_adm||' '||nonrol||'='||n_non||' contraprueba='||n_bad||')' END, false);
+    CASE WHEN n_tot > 1 AND n_adm = n_tot AND n_non = 1 AND n_bad = n_tot
+              AND vis_ids = exp_ids AND n_out_vis = 0 AND n_team >= 1 AND n_out >= 1
+      THEN 'OK (admin ve '||n_adm||' de '||n_tot||'; '||nonrol||' ve 1; supervisor ve '||cardinality(vis_ids)||' = la suya + '
+           ||n_team||' de su equipo + '||n_libres||' visitador(es) sin equipo, 0 de fuera ('||n_out||' de su empresa fuera); '
+           ||'contraprueba sin filtro ve '||n_bad||')'
+      ELSE 'ROJO (admin='||n_adm||'/'||n_tot||' '||nonrol||'='||n_non||' supervisor ve='||cardinality(vis_ids)
+           ||' esperado='||cardinality(exp_ids)||' de_fuera='||n_out_vis||' equipo='||n_team||' fuera_empresa='||n_out
+           ||' contraprueba='||n_bad||')' END, false);
 EXCEPTION WHEN OTHERS THEN
   PERFORM set_config('role','none',true); PERFORM set_config('request.jwt.claims','',true);
   PERFORM set_config('probe.p825','FALLO ('||SQLSTATE||' '||SQLERRM||')',false);
@@ -41987,6 +42032,7 @@ EXCEPTION WHEN OTHERS THEN
 END $$;
 SELECT set_config('role', 'none', true);
 
+-- @@HARNESS_RESULTADOS@@
 -- ===== Veredictos como result set =====
 SELECT 'P1_anon_insert_citas'              AS probe, current_setting('probe.p1', true)  AS verdict, 'BLOQUEADO' AS esperado_post_fix
 UNION ALL SELECT 'P2_medico_cancela_ajena_rpc',         current_setting('probe.p2', true),  'BLOQUEADO'
