@@ -11612,7 +11612,7 @@ SELECT set_config('role','none', true);
 --                            de set_config) y ''::uuid es 22P02: mata la transaccion igual que un
 --                            NOT NULL. Fase 2.1 CERRADA: 155 -> 0 en tres tandas.
 --
---   do_sin_handler = 155     Bloques DO sin `EXCEPTION WHEN`. YA NO ES DEUDA: la fase 2.2 cerro los
+--   do_sin_handler = 154     Bloques DO sin `EXCEPTION WHEN`. YA NO ES DEUDA: la fase 2.2 cerro los
 --                            55 bloques que ESCRIBEN (211 -> 193 -> 175 -> 157 -> 156, P481 incluido)
 --                            y los 156 que quedan solo LEEN y publican — si uno cae no arrastra estado
 --                            ajeno. Este numero es el normal del archivo; sube si alguien agrega un
@@ -11637,7 +11637,7 @@ SELECT set_config('role','none', true);
 DO $$
 BEGIN
   PERFORM set_config('probe.p516',
-    'OK-SENAL (baseline declarado: top_level_dml_ddl=0 excluyendo pg_temp, cast_directo=0 CERRADO, do_sin_handler=155, fase 2.2 CERRADA: los restantes solo LEEN, catchall_verde=205 techo). '||
+    'OK-SENAL (baseline declarado: top_level_dml_ddl=0 excluyendo pg_temp, cast_directo=0 CERRADO, do_sin_handler=154, fase 2.2 CERRADA: los restantes solo LEEN, catchall_verde=205 techo). '||
     'El gate real es tests/rls/b2_guard.py — este probe NO mide, senaliza.', false);
 EXCEPTION WHEN OTHERS THEN
   -- handler puesto por coherencia: el propio b2_guard.py conto este bloque como deuda nueva cuando
