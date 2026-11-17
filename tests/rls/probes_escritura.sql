@@ -46,6 +46,7 @@ DO $$ BEGIN
 EXCEPTION WHEN OTHERS THEN
   PERFORM set_config('probe.fx_medsglobal','ROJO (no se pudo sembrar la precondicion: '||SQLSTATE||' '||SQLERRM||')',false);
 END $$;
+-- @@HARNESS_PRELUDIO_FIN@@
 
 -- ============================================================
 -- Ola 3 · RBAC override per-empresa (P330–P342). Red-first. Maquinaria inerte día-0.
@@ -11668,6 +11669,7 @@ EXCEPTION WHEN OTHERS THEN
 END $$;
 
 
+-- @@HARNESS_PARTE@@
 -- ############################################################################################
 -- MODULO COMERCIAL · RPCs de escritura (P517-P534). RED-FIRST: las 7 RPCs no existen todavia.
 -- --------------------------------------------------------------------------------------------
@@ -42030,6 +42032,7 @@ EXCEPTION WHEN OTHERS THEN
 END $$;
 SELECT set_config('role', 'none', true);
 
+-- @@HARNESS_RESULTADOS@@
 -- ===== Veredictos como result set =====
 SELECT 'P1_anon_insert_citas'              AS probe, current_setting('probe.p1', true)  AS verdict, 'BLOQUEADO' AS esperado_post_fix
 UNION ALL SELECT 'P2_medico_cancela_ajena_rpc',         current_setting('probe.p2', true),  'BLOQUEADO'
