@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -13,14 +13,20 @@ import { ContratosComisionPais } from '@/pages/admin-ezpay/ContratosComisionPais
 import { EstadoCuentaComisionPais } from '@/pages/admin-ezpay/EstadoCuentaComisionPais';
 import { useAdminAuth } from '@/hooks/admin/useAdminAuth';
 import { usePaisFiltro } from '@/hooks/usePaisFiltro';
-import { useEmpresasPais, type EmpresaPais, type EstadoEmpresa } from '@/hooks/admin/useEmpresasPais';
+import {
+  useEmpresasPais,
+  type EmpresaDetalle,
+  type EmpresaPais,
+  type EstadoEmpresa,
+} from '@/hooks/admin/useEmpresasPais';
 import { supabase } from '@/lib/supabase';
 import { toast } from 'sonner';
-import { ArrowLeft, Search, RefreshCw, MapPin, CheckCircle2, XCircle, AlertTriangle, Clock, Mail, Phone, Store, FlaskConical, Handshake } from 'lucide-react';
+import { ArrowLeft, Search, RefreshCw, MapPin, CheckCircle2, XCircle, AlertTriangle, Clock, Eye, Mail, Phone, Store, FlaskConical, Handshake, Users, Package, Megaphone, DollarSign } from 'lucide-react';
 
-// Bandeja de empresas (mig 386). La lista sale de listar_empresas_pais para los dos roles (super_admin y admin_pais
-// de ESE país); aprobar/rechazar van por resolver_empresa. Suspender/Reactivar siguen por UPDATE directo, solo para
-// el super_admin (D2; los retira la 387).
+// Bandeja de empresas (migs 386-387). La lista sale de UNA llamada a listar_empresas_pais (todas las del país) para
+// los dos roles (super_admin y admin_pais de ESE país); el filtro por estado y las tarjetas se calculan en el cliente.
+// El modal "Ver detalle" pide obtener_empresa_pais al abrirse. Aprobar/rechazar van por resolver_empresa.
+// Suspender/Reactivar siguen por UPDATE directo, solo para el super_admin (D2).
 
 type FiltroEstado = EstadoEmpresa | 'todas';
 
@@ -64,7 +70,8 @@ const fecha = (iso: string | null) => (iso ? new Date(iso).toLocaleDateString('e
 export default function EmpresasProveedorasPage() {
   const navigate = useNavigate();
   const { isAdmin, isSuperAdmin, loading: adminLoading } = useAdminAuth();
-  const { listar, aprobar, rechazar } = useEmpresasPais();
+  const { listar, obtenerEmpresaPais, aprobar, rechazar } = useEmpresasPais();
+  // Todas las empresas del país (una sola llamada); los chips y la búsqueda filtran sobre esta lista.
   const [empresas, setEmpresas] = useState<EmpresaPais[]>([]);
   const [loading, setLoading] = useState(false);
   const [search, setSearch] = useState('');
@@ -79,6 +86,13 @@ export default function EmpresasProveedorasPage() {
   const [aRechazar, setARechazar] = useState<EmpresaPais | null>(null);
   const [motivo, setMotivo] = useState('');
   const [procesando, setProcesando] = useState(false);
+  // Ver detalle (obtener_empresa_pais): la fila de la lista abre el modal; el detalle llega de la RPC.
+  const [filaDetalle, setFilaDetalle] = useState<EmpresaPais | null>(null);
+  const [detalle, setDetalle] = useState<EmpresaDetalle | null>(null);
+  const [detalleCargando, setDetalleCargando] = useState(false);
+  const [detalleError, setDetalleError] = useState<string | null>(null);
+  // Descarta la respuesta de un detalle que ya no está abierto (se cerró o se abrió otro antes de que llegara).
+  const detallePedido = useRef(0);
   const { paisId } = usePaisFiltro();
 
   const cargarEmpresas = useCallback(async () => {
@@ -87,7 +101,7 @@ export default function EmpresasProveedorasPage() {
       return;
     }
     setLoading(true);
-    const r = await listar(paisId, filtroEstado === 'todas' ? null : filtroEstado);
+    const r = await listar(paisId, null);
     if (r.ok) {
       setEmpresas(r.data);
     } else {
@@ -95,7 +109,32 @@ export default function EmpresasProveedorasPage() {
       toast.error(r.error.mensaje);
     }
     setLoading(false);
-  }, [paisId, filtroEstado, listar]);
+  }, [paisId, listar]);
+
+  const abrirDetalle = async (empresa: EmpresaPais) => {
+    const pedido = ++detallePedido.current;
+    setFilaDetalle(empresa);
+    setDetalle(null);
+    setDetalleError(null);
+    setDetalleCargando(true);
+    const r = await obtenerEmpresaPais(empresa.id);
+    if (pedido !== detallePedido.current) return;
+    setDetalleCargando(false);
+    if (r.ok) {
+      setDetalle(r.data);
+      return;
+    }
+    setDetalleError(r.error.mensaje);
+    if (r.error.recargar === 'empresas') cargarEmpresas();
+  };
+
+  const cerrarDetalle = () => {
+    detallePedido.current++;
+    setFilaDetalle(null);
+    setDetalle(null);
+    setDetalleError(null);
+    setDetalleCargando(false);
+  };
 
   useEffect(() => {
     if (!adminLoading && isAdmin) {
@@ -103,7 +142,7 @@ export default function EmpresasProveedorasPage() {
     }
   }, [adminLoading, isAdmin, cargarEmpresas]);
 
-  // Suspender / Reactivar: SIN CAMBIOS respecto de antes de la 386 (los retira la 387).
+  // Suspender / Reactivar: SIN CAMBIOS respecto de antes de la 386 (UPDATE directo, solo super_admin; D2).
   const cambiarEstado = async (empresaId: string, nuevoEstado: EstadoEmpresa) => {
     setProcesando(true);
     const { error } = await supabase
@@ -181,14 +220,23 @@ export default function EmpresasProveedorasPage() {
     cargarEmpresas();
   };
 
+  // Búsqueda por nombre, email y teléfono: listar_empresas_pais no devuelve RUC/NIT ni ciudad (y no se pide el
+  // detalle por fila para buscar).
   const q = search.toLowerCase();
   const empresasFiltradas = empresas.filter(
     (e) =>
-      !q ||
-      e.nombre_empresa?.toLowerCase().includes(q) ||
-      e.email_contacto?.toLowerCase().includes(q) ||
-      e.telefono?.toLowerCase().includes(q)
+      (filtroEstado === 'todas' || e.estado === filtroEstado) &&
+      (!q ||
+        e.nombre_empresa?.toLowerCase().includes(q) ||
+        e.email_contacto?.toLowerCase().includes(q) ||
+        e.telefono?.toLowerCase().includes(q))
   );
+
+  // Tarjetas: sobre TODAS las empresas del país, no sobre el filtro.
+  const total = empresas.length;
+  const activas = empresas.filter((e) => e.estado === 'activa').length;
+  const pendientes = empresas.filter((e) => e.estado === 'pendiente').length;
+  const suspendidas = empresas.filter((e) => e.estado === 'suspendida' || e.estado === 'rechazada').length;
 
   const motivoLimpio = motivo.trim();
 
@@ -251,7 +299,47 @@ export default function EmpresasProveedorasPage() {
         </Card>
       ) : (
         <>
-      {/* Filtros: chips de estado (van a la RPC) + búsqueda local */}
+      {/* Tarjetas: totales del país (lista completa, sin filtro) */}
+      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4 mb-6">
+        <Card>
+          <CardContent className="pt-4">
+            <div className="flex items-center gap-2 mb-2">
+              <MapPin className="h-5 w-5 text-[#1E5C8E]" />
+              <p className="text-sm text-muted-foreground">Total Empresas</p>
+            </div>
+            <p className="text-2xl font-bold">{total}</p>
+          </CardContent>
+        </Card>
+        <Card>
+          <CardContent className="pt-4">
+            <div className="flex items-center gap-2 mb-2">
+              <CheckCircle2 className="h-5 w-5 text-green-600" />
+              <p className="text-sm text-muted-foreground">Activas</p>
+            </div>
+            <p className="text-2xl font-bold">{activas}</p>
+          </CardContent>
+        </Card>
+        <Card>
+          <CardContent className="pt-4">
+            <div className="flex items-center gap-2 mb-2">
+              <Clock className="h-5 w-5 text-yellow-600" />
+              <p className="text-sm text-muted-foreground">Pendientes</p>
+            </div>
+            <p className="text-2xl font-bold">{pendientes}</p>
+          </CardContent>
+        </Card>
+        <Card>
+          <CardContent className="pt-4">
+            <div className="flex items-center gap-2 mb-2">
+              <AlertTriangle className="h-5 w-5 text-red-500" />
+              <p className="text-sm text-muted-foreground">Suspendidas / Rechazadas</p>
+            </div>
+            <p className="text-2xl font-bold">{suspendidas}</p>
+          </CardContent>
+        </Card>
+      </div>
+
+      {/* Filtros: chips de estado + búsqueda, los dos en el cliente sobre la lista completa */}
       <div className="flex flex-col gap-4 mb-6">
         <div className="flex flex-wrap gap-2" role="group" aria-label="Filtrar por estado">
           {FILTROS.map((f) => (
@@ -361,6 +449,15 @@ export default function EmpresasProveedorasPage() {
                       </TableCell>
                       <TableCell className="text-right">
                         <div className="flex items-center justify-end gap-1">
+                          <Button
+                            variant="ghost"
+                            size="icon"
+                            onClick={() => abrirDetalle(empresa)}
+                            title="Ver detalle"
+                            aria-label={`Ver detalle de ${empresa.nombre_empresa}`}
+                          >
+                            <Eye className="h-4 w-4" />
+                          </Button>
                           {empresa.estado === 'pendiente' && (
                             <>
                               <Button
@@ -381,7 +478,7 @@ export default function EmpresasProveedorasPage() {
                               </Button>
                             </>
                           )}
-                          {/* D2: Suspender/Reactivar solo para el super_admin y solo en activa/suspendida (los retira la 387). */}
+                          {/* D2: Suspender/Reactivar solo para el super_admin y solo en activa/suspendida. */}
                           {isSuperAdmin && empresa.estado === 'activa' && (
                             <Button
                               variant="ghost"
@@ -421,6 +518,196 @@ export default function EmpresasProveedorasPage() {
       </Card>
         </>
       )}
+
+      {/* Ver detalle (obtener_empresa_pais al abrir). Mismo layout que antes de la 386. */}
+      <Dialog open={!!filaDetalle} onOpenChange={(open) => { if (!open) cerrarDetalle(); }}>
+        <DialogContent className="max-w-lg">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2">
+              <MapPin className="h-5 w-5 text-[#1E5C8E]" />
+              Detalle de Empresa
+            </DialogTitle>
+            <DialogDescription className="sr-only">
+              Datos, conteos y acciones de {filaDetalle?.nombre_empresa}
+            </DialogDescription>
+          </DialogHeader>
+          {detalleCargando && (
+            <div className="flex items-center justify-center gap-2 py-8 text-muted-foreground">
+              <RefreshCw className="h-4 w-4 animate-spin" /> Cargando detalle...
+            </div>
+          )}
+          {!detalleCargando && detalleError && (
+            <div className="space-y-4 py-2">
+              <p role="alert" className="text-sm text-red-700 bg-red-50 border border-red-200 rounded-lg p-3">
+                {detalleError}
+              </p>
+              <div className="flex justify-end gap-2">
+                <Button variant="outline" onClick={cerrarDetalle}>
+                  Cerrar
+                </Button>
+                {filaDetalle && (
+                  <Button variant="outline" onClick={() => abrirDetalle(filaDetalle)}>
+                    <RefreshCw className="h-4 w-4 mr-2" /> Reintentar
+                  </Button>
+                )}
+              </div>
+            </div>
+          )}
+          {!detalleCargando && detalle && filaDetalle && (
+            <div className="space-y-4">
+              <div className="flex items-center gap-4">
+                <div className="w-16 h-16 rounded-xl bg-[#1E5C8E]/10 flex items-center justify-center">
+                  {detalle.logo_url ? (
+                    <img src={detalle.logo_url} alt="" className="w-14 h-14 rounded-lg object-cover" />
+                  ) : (
+                    <MapPin className="h-7 w-7 text-[#1E5C8E]" />
+                  )}
+                </div>
+                <div>
+                  <h3 className="text-lg font-bold">{detalle.nombre_empresa}</h3>
+                  <div className="flex items-center gap-2 mt-1">
+                    <Badge variant="outline" className={getEstadoBadge(detalle.estado).class}>
+                      {detalle.estado.charAt(0).toUpperCase() + detalle.estado.slice(1)}
+                    </Badge>
+                    <span className="text-sm text-muted-foreground flex items-center gap-1">
+                      {TIPO_ICONOS[detalle.tipo]}
+                      {TIPO_LABELS[detalle.tipo] || detalle.tipo}
+                    </span>
+                  </div>
+                </div>
+              </div>
+
+              <div className="grid grid-cols-2 gap-3">
+                <div className="bg-slate-50 p-3 rounded-lg text-center">
+                  <Users className="h-4 w-4 mx-auto mb-1 text-[#1E5C8E]" />
+                  <p className="text-lg font-bold">{detalle.cuentas_count}</p>
+                  <p className="text-xs text-muted-foreground">Usuarios</p>
+                </div>
+                <div className="bg-slate-50 p-3 rounded-lg text-center">
+                  <Package className="h-4 w-4 mx-auto mb-1 text-emerald-600" />
+                  <p className="text-lg font-bold">{detalle.productos_count}</p>
+                  <p className="text-xs text-muted-foreground">Productos</p>
+                </div>
+                <div className="bg-slate-50 p-3 rounded-lg text-center">
+                  <Megaphone className="h-4 w-4 mx-auto mb-1 text-amber-600" />
+                  <p className="text-lg font-bold">{detalle.campanas_count}</p>
+                  <p className="text-xs text-muted-foreground">Campañas</p>
+                </div>
+                <div className="bg-slate-50 p-3 rounded-lg text-center">
+                  <DollarSign className="h-4 w-4 mx-auto mb-1 text-purple-600" />
+                  <p className="text-lg font-bold">{detalle.pagos_count}</p>
+                  <p className="text-xs text-muted-foreground">Pagos</p>
+                </div>
+              </div>
+
+              <div className="space-y-2 text-sm">
+                {detalle.ruc_nit && (
+                  <div className="flex justify-between gap-4">
+                    <span className="text-muted-foreground">RUC/NIT</span>
+                    <span className="font-medium text-right">{detalle.ruc_nit}</span>
+                  </div>
+                )}
+                <div className="flex justify-between gap-4">
+                  <span className="text-muted-foreground">Email</span>
+                  <span className="font-medium text-right break-all">{detalle.email_contacto || '—'}</span>
+                </div>
+                {detalle.telefono && (
+                  <div className="flex justify-between gap-4">
+                    <span className="text-muted-foreground">Teléfono</span>
+                    <span className="font-medium text-right">{detalle.telefono}</span>
+                  </div>
+                )}
+                {detalle.ciudad && (
+                  <div className="flex justify-between gap-4">
+                    <span className="text-muted-foreground">Ciudad</span>
+                    <span className="font-medium text-right">{detalle.ciudad}</span>
+                  </div>
+                )}
+                {detalle.direccion && (
+                  <div className="flex justify-between gap-4">
+                    <span className="text-muted-foreground">Dirección</span>
+                    <span className="font-medium text-right">{detalle.direccion}</span>
+                  </div>
+                )}
+                <div className="flex justify-between gap-4">
+                  <span className="text-muted-foreground">Creada</span>
+                  <span className="font-medium text-right">{fecha(detalle.created_at)}</span>
+                </div>
+                {/* Rechazada: motivo y fecha de revisión vienen de listar_empresas_pais (obtener no los trae). */}
+                {detalle.estado === 'rechazada' && (
+                  <>
+                    <div className="flex justify-between gap-4">
+                      <span className="text-muted-foreground">Motivo del rechazo</span>
+                      <span className="font-medium text-right text-red-700 whitespace-pre-wrap break-words">
+                        {filaDetalle.motivo_rechazo || '—'}
+                      </span>
+                    </div>
+                    <div className="flex justify-between gap-4">
+                      <span className="text-muted-foreground">Revisada</span>
+                      <span className="font-medium text-right">{fecha(filaDetalle.revisado_at)}</span>
+                    </div>
+                  </>
+                )}
+              </div>
+
+              {/* Mismas reglas que la fila: Aprobar/Rechazar solo en pendiente (los dos roles); Suspender/Reactivar
+                  solo el super_admin y solo en activa/suspendida (D2). */}
+              <div className="flex gap-2 pt-2">
+                {detalle.estado === 'pendiente' && (
+                  <>
+                    <Button
+                      className="flex-1 bg-green-600 hover:bg-green-700"
+                      onClick={() => {
+                        const empresa = filaDetalle;
+                        cerrarDetalle();
+                        setAAprobar(empresa);
+                      }}
+                    >
+                      <CheckCircle2 className="h-4 w-4 mr-2" /> Aprobar Empresa
+                    </Button>
+                    <Button
+                      variant="destructive"
+                      className="flex-1"
+                      onClick={() => {
+                        const empresa = filaDetalle;
+                        cerrarDetalle();
+                        abrirRechazo(empresa);
+                      }}
+                    >
+                      <XCircle className="h-4 w-4 mr-2" /> Rechazar Empresa
+                    </Button>
+                  </>
+                )}
+                {isSuperAdmin && detalle.estado === 'activa' && (
+                  <Button
+                    variant="destructive"
+                    className="flex-1"
+                    onClick={() => {
+                      const empresa = filaDetalle;
+                      cerrarDetalle();
+                      setDialogoAccion({ empresa, nuevoEstado: 'suspendida' });
+                    }}
+                  >
+                    <AlertTriangle className="h-4 w-4 mr-2" /> Suspender Empresa
+                  </Button>
+                )}
+                {isSuperAdmin && detalle.estado === 'suspendida' && (
+                  <Button
+                    className="flex-1 bg-green-600 hover:bg-green-700"
+                    onClick={() => {
+                      const empresa = filaDetalle;
+                      cerrarDetalle();
+                      setDialogoAccion({ empresa, nuevoEstado: 'activa' });
+                    }}
+                  >
+                    <CheckCircle2 className="h-4 w-4 mr-2" /> Reactivar Empresa
+                  </Button>
+                )}
+              </div>
+            </div>
+          )}
+        </DialogContent>
+      </Dialog>
 
       {/* Aprobar (resolver_empresa): confirmación simple */}
       <Dialog open={!!aAprobar} onOpenChange={(open) => { if (!open && !procesando) setAAprobar(null); }}>
