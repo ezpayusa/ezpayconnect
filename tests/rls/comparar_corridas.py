@@ -31,9 +31,13 @@ los campos `probe` y `verdict`.
 USO
 ---
     python tests/rls/comparar_corridas.py A.txt B.txt
+    python tests/rls/comparar_corridas.py A.txt B.txt --aceptar-texto P948,P1009,DET_p1009
+--aceptar-texto suma prefijos a ACEPTADOS_TEXTO SOLO para esa ejecucion (la lista del archivo no cambia). Es para
+diferencias de texto revisadas una por una en una verificacion puntual; un cambio de CLASE sigue siendo exit 1.
 Sale 0 solo si no hay faltantes/sobrantes (salvo P000), ni duplicados, ni cambios de clase, ni diferencias de texto
 fuera de ACEPTADOS_TEXTO. Solo stdlib.
 """
+import argparse
 import io
 import json
 import os
@@ -92,8 +96,8 @@ def normalizar(verdict):
     return NUM.sub('<n>', v)
 
 
-def aceptado(probe):
-    return probe.startswith(ACEPTADOS_TEXTO)
+def aceptado(probe, aceptados=ACEPTADOS_TEXTO):
+    return probe.startswith(tuple(aceptados))
 
 
 def n_veredictos(verdict):
@@ -101,8 +105,9 @@ def n_veredictos(verdict):
     return int(m.group(1)) if m else None
 
 
-def comparar(a, b):
-    """Devuelve (lineas_de_reporte, errores). Pura: no lee archivos, para poder probarla."""
+def comparar(a, b, aceptados=ACEPTADOS_TEXTO):
+    """Devuelve (lineas_de_reporte, errores). Pura: no lee archivos, para poder probarla. `aceptados` = prefijos de
+    probes cuyo TEXTO puede cambiar (nunca su clase)."""
     out, errores = [], 0
 
     def mapa(filas, lado):
@@ -165,7 +170,7 @@ def comparar(a, b):
         if ca != cb:
             cambio_clase.append((k, ca, cb))
         elif normalizar(ma[k]) != normalizar(mb[k]):
-            (texto_ok if aceptado(k) else texto_mal).append(k)
+            (texto_ok if aceptado(k, aceptados) else texto_mal).append(k)
     out.append('comunes: %d' % len(comunes))
     out.append('%s  cambios de CLASE: %d' % ('ERROR' if cambio_clase else 'ok   ', len(cambio_clase)))
     for k, ca, cb in cambio_clase:
@@ -177,7 +182,7 @@ def comparar(a, b):
         out.append('         %s' % k)
         out.append('             A: %s' % ma[k][:180])
         out.append('             B: %s' % mb[k][:180])
-    out.append('aviso  texto distinto ACEPTADO (ruido conocido %s): %d' % ('/'.join(ACEPTADOS_TEXTO), len(texto_ok)))
+    out.append('aviso  texto distinto ACEPTADO (%s): %d' % ('/'.join(aceptados), len(texto_ok)))
     for k in texto_ok:
         out.append('         %s' % k)
         out.append('             A: %s' % ma[k][:180])
@@ -191,13 +196,19 @@ def main():
         sys.stdout.reconfigure(errors='replace')
     except (AttributeError, ValueError):
         pass
-    if len(sys.argv) != 3:
-        print('uso: python tests/rls/comparar_corridas.py A.txt B.txt')
-        return 2
-    a_path, b_path = sys.argv[1], sys.argv[2]
-    print('A = %s' % a_path)
-    print('B = %s' % b_path)
-    lineas, errores = comparar(leer(a_path), leer(b_path))
+    ap = argparse.ArgumentParser(description='Compara dos corridas del harness por veredicto.')
+    ap.add_argument('a')
+    ap.add_argument('b')
+    ap.add_argument('--aceptar-texto', default='', metavar='PREFIJO[,PREFIJO...]',
+                    help='prefijos que se suman a ACEPTADOS_TEXTO solo para esta ejecucion (solo texto, nunca clase)')
+    args = ap.parse_args()
+    extra = tuple(p.strip() for p in args.aceptar_texto.split(',') if p.strip())
+    aceptados = ACEPTADOS_TEXTO + extra
+    print('A = %s' % args.a)
+    print('B = %s' % args.b)
+    if extra:
+        print('aceptados SOLO en esta ejecucion (--aceptar-texto): %s' % ', '.join(extra))
+    lineas, errores = comparar(leer(args.a), leer(args.b), aceptados)
     for l in lineas:
         print(l)
     print()
