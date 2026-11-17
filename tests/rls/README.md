@@ -24,6 +24,14 @@ igual que las migraciones). El script:
    y cuenta cuántas filas ve en las tablas sensibles.
 3. Imprime la visibilidad para compararla contra `EXPECTATIVAS.md`.
 
+## Harness de escritura por partes (desde el 17-nov-2026)
+`probes_escritura.sql` se corre SIEMPRE con `npm run harness` (`tests/rls/harness_run.py`). El archivo está partido con
+tres marcadores (`-- @@HARNESS_PRELUDIO_FIN@@`, `-- @@HARNESS_PARTE@@`, `-- @@HARNESS_RESULTADOS@@`): cada parte va en su
+propio request y su propia transacción, y un request final arma el result set completo (un solo P000). El detalle
+(colector, request final, filas `PARTE_<n>_ERROR`, dónde van los probes nuevos, inyección de una migración) está en el
+docstring de `harness_run.py` ("MODO PARTIDO") y en CLAUDE.md. Para comparar dos corridas por veredicto:
+`python tests/rls/comparar_corridas.py A.txt B.txt [--aceptar-texto PREFIJO,...]`.
+
 ## Cómo se simula un rol (sin tocar datos)
 ```sql
 select set_config('request.jwt.claims', '{"sub":"<uid>","role":"authenticated"}', true);

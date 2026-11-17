@@ -24,6 +24,33 @@ Stack: React + Vite + TypeScript, Supabase / Postgres, deploy en Vercel, repo en
   minutos por esto** (P635 es la probe que faltaba, P636 su contraprueba).
 - NUNCA ampliar policies de RLS sobre tablas adyacentes a datos médicos (p. ej. campana_metricas). Para dar acceso, usar RPCs SECURITY DEFINER con search_path='', fail-closed (si el scope es NULL → 0 filas) y gate interno.
 - Probar aislamiento por rol impersonando request.jwt.claims en prod: cada rol ve lo suyo y no lo ajeno.
+- **Estado al 17-nov-2026 (manda sobre los números de las entradas siguientes, incluidos los bloques del 27-oct y del 20-oct):**
+  - **FAMILIA B (estado de empresas, bandeja del admin de país) — 386-388 + fronts EN PROD (PRs #85-#89); FALTA LA 389**
+    (retira la escritura directa del super_admin sobre `empresas_proveedoras`). 386 = `listar_empresas_pais` +
+    `resolver_empresa` (EP001-EP005; M386_FX + P1142-P1147); 387 = `obtener_empresa_pais` (M387_FX + P1148-P1151); 388 =
+    `cambiar_estado_empresa(uuid, text)` (suspender activa→suspendida, reactivar suspendida→activa, reabrir rechazada→pendiente
+    limpiando motivo/revisado_*; solo super_admin; aviso in-app + push con notificado=false si falla; EP006 transición inválida
+    o repetida; M388_FX + P1152-P1156). **388 APLICADA en prod el 2026-11-17 entre 18:37:24 y 18:37:32 UTC** y verificada en
+    sesión independiente: md5(prosrc) be01192509075ca4acb18cfc8c6502ab, DEFINER, VOLATILE, `search_path=''`, ACL
+    `{postgres, authenticated, service_role}` sin PUBLIC ni anon, 1 sobrecarga; datos sin cambio (7 activas / 1 pendiente).
+    Front de la 388 en prod con el PR #89 (main 32b44cc): Suspender/Reactivar/Reabrir por la RPC, la empresa rechazada ve el
+    motivo, EP006 mapeado en `src/lib/erroresRpc.ts`. Tras ese merge el único UPDATE directo de `empresas_proveedoras` en el front
+    es el perfil del proveedor (`useProveedorAuth.actualizarEmpresa`), que no manda `estado` (el guard se lo rechaza: P1146).
+  - **Huellas vigentes (post-388, 17-nov):** funciones completas (cuerpo, DEFINER, config, ACL) `f8e2dd272b161f3f0d69f31b32c9c877 415`;
+    ACL de funciones `51d87b443777a680da5891b25fe41e6f 415`; ACL de relaciones de public `9b8f5af8892d3a5b87db15e15092eb77 2445`;
+    policies `938d7e4111a9d332e6c55a645fafed86 314`. Sin `cambiar_estado_empresa`: funciones completas `6ef5bdb3…/414` y ACL de
+    funciones `faf529bf…/414` (las de post-387).
+  - **Próximos libres: mig 389, probe P1157, errcode EP007, PA041, PV029, RC005.** (verificados el 17-nov en el repo y contra
+    el prosrc vivo de public/private: EP006, PA040, PV028 y RC004 son los máximos en uso)
+  - **Harness al 17-nov (post-388, POR PARTES):** 1258 filas / 11 rojas = la deuda; P800 PASA. 2 partes + request final:
+    parte 1 720.292 bytes (margen 2.320.578, 76 %), parte 2 2.075.210 (margen 965.660, 32 %), final 309.529. El monolítico
+    pesaría 2.946.141 (margen 94.729): por eso se partió, con la verificación ref↔partido en `output/harness-split-*-17nov.txt`.
+    Cómo funciona y reglas: ver "Harness por partes" en la sección del runner, más abajo.
+  - **Lección (17-nov, split del harness):** partir el harness destapó un probe que solo pasaba por el estado que le dejaban
+    fixtures anteriores: P825 elegía su "no-admin" con `LIMIT 1` sin orden y, sin la herencia de la parte 1, le tocaba un
+    supervisor, que ve su equipo por diseño (policy "Supervisor ve cuentas de su equipo": `supervisa_cuenta_proveedor` + los
+    visitador_medico de su empresa sin equipo). Arreglado en 3e6da53 (actores por rol con ORDER BY y caso supervisor propio).
+    P948 y P1009 cambian de TEXTO (no de clase) entre la corrida monolítica y la partida por la misma causa.
 - **Estado al 27-oct-2026 (manda sobre los números de las entradas siguientes, incluido el bloque del 20-oct):**
   - **FAMILIA REGISTRO DE CLÍNICA POR INVITACIÓN (384-385 + edges + front) CERRADA el 27-oct.** 384 = `listar_medicos_por_pais` /
     `contar_medicos_por_pais` solo con perfiles.rol = 'medico' (prerequisito de la 385; M384_FX + P1132-P1137); 385 =
@@ -50,8 +77,7 @@ Stack: React + Vite + TypeScript, Supabase / Postgres, deploy en Vercel, repo en
     el mensaje queda guardado con notificado=false. Sin errcodes nuevos (MIG83 = guarda). Probes M383_FX + P1120-P1131
     (`pg_temp.m383_fijar()` neutraliza en el savepoint los admin_pais de GT que dejan vivos otros fixtures). Rollback
     `383_rollback.sql` (cuerpo exacto de la 382 + arwdDxtm; va antes que `382_rollback`).
-  - **Próximos libres: mig 386, errcode PA041, errcode PV029, errcode RC005, probe P1142.** (medidos el 27-oct en el repo y
-    contra el prosrc vivo de public/private: PA040, PV028 y RC004 son los máximos en uso)
+  - ~~Próximos libres: mig 386, errcode PA041, errcode PV029, errcode RC005, probe P1142.~~ (superado: ver 17-nov)
   - ~~Próximos libres: mig 384, errcode PA041, errcode PV029, probe P1132.~~ (superado: ver arriba)
   - **Harness al 27-oct (post 384-385):** 1240 filas / 11 rojas = la deuda. Body 2.866.534 bytes tras quitar comentarios
     (techo 2,9 MiB (3.040.870 bytes, el del runner) → margen ~174 KB; partir el harness queda en backlog, no bloquea la próxima familia).
@@ -63,7 +89,8 @@ Stack: React + Vite + TypeScript, Supabase / Postgres, deploy en Vercel, repo en
     (b) PR-4: `/comercial/mensajes` y `/comercial/mensajes/:hiloId`;
     (c) PR-5: `/admin-ezpay/pais/:paisId/mensajes/:hiloId` + registro de push en el layout del admin;
     (d) cabo menor: monitorear `chat_comercial_mensajes` con notificado=false cuando haya scheduler;
-    (e) el harness está a ~250 KB del techo de tamaño del body (413 de `db query` en ~3 MiB): hay que partirlo.
+    (e) ~~el harness está a ~250 KB del techo de tamaño del body (413 de `db query` en ~3 MiB): hay que partirlo.~~ Resuelto el
+    17-nov: harness por partes (ver 17-nov).
 - **Estado al 20-oct-2026 (manda sobre los números de las entradas siguientes):**
   - **Mig 375** (hardening del enrolamiento de médicos: `enrolar_medico`, `prioridad_activa`, triggers
     `trigger_medicos_lab_enrolador_inmutable` y `trigger_gate_head_start_lab`, CHECK `medicos_enrolador_coherente`)
@@ -151,7 +178,7 @@ Stack: React + Vite + TypeScript, Supabase / Postgres, deploy en Vercel, repo en
     `medicos` y a `invitaciones_medico` son RESTRICT) → `invitaciones_medico` → notificaciones in-app y email → el médico
     (`medicos` cae en CASCADE al borrar su `perfiles`, y `medico_clinicas` en CASCADE desde `medicos`) → su clínica propia →
     `perfiles` → el usuario de auth.
-  - **Huellas vigentes (post-385, 27-oct):** funciones completas (cuerpo, DEFINER, config, ACL) `cb4ab540ceea52520740a6e03133522e 411`;
+  - **Huellas post-385, 27-oct (ya no vigentes, ver post-388 en el bloque del 17-nov):** funciones completas (cuerpo, DEFINER, config, ACL) `cb4ab540ceea52520740a6e03133522e 411`;
     ACL de funciones `af6b7bf22f370f6ee5ff89ff59eb0ea5 411`; ACL de relaciones de public `9b8f5af8892d3a5b87db15e15092eb77 2445`;
     policies `938d7e4111a9d332e6c55a645fafed86 314`.
   - **Huellas post-380 (ya no vigentes, ver post-385):** funciones completas (cuerpo, DEFINER, config, ACL) `76b4b9cdebf22fcf3316c9135cc699c1 401`;
@@ -202,11 +229,11 @@ Stack: React + Vite + TypeScript, Supabase / Postgres, deploy en Vercel, repo en
   - Rama sin upstream propio al crearse desde origin/main: push SIEMPRE con nombre de rama explícito.
   - PRs #57, #59-#64 y #65 (196100b) mergeados al 19-oct; #56 (gate de textos legales) y #58 (front de altas) SIN mergear hasta completar los placeholders legales. Confirm email APAGADO en prod hasta que entre #58.
   - Punto 2 comercial (18-oct): src/lib/navegacion.ts es el helper ÚNICO de links Google Maps/Waze; VisitadorRutaPage y EntregaDetallePage todavía arman los suyos (migrar después). Hoy usa visitasDeHoyConUbicacion; visitasDelDia sigue sin coordenadas.
-- **Próximos números libres: probe `P1142`** (global, no por módulo; M385_FX + P1138-P1141 usados por la mig 385; M384_FX + P1132-P1137 usados por la mig 384; M383_FX + P1120-P1131 usados por la mig 383; M382_FX + P1105-P1119 usados por la mig 382; M381_FX + P1099-P1104 usados por la mig 381; M380_FX + P1091-P1098 usados por la mig 380; M379_FX + P1084-P1090 usados por la mig 379; M378_FX + P1075-P1083 usados por la mig 378; M377_FX + P1065-P1074 usados por la mig 377; M376_FX + P1062-P1064 usados por la mig 376; M375_FX + P1041-P1061 usados por la mig 375; P1035-P1040 usados por la mig 374; P1026-P1034 + M373_FX usados por la mig 373; P1023-P1025 + G372_FX usados por la mig 372; P1019-P1022 usados por la mig 371; P1015-P1018 usados por la mig 370, P1011-P1014 por la mig 369, P1010 por la mig 367, P1009 por la 366, P1008 por la 365, P1007 por la 364, P1001-P1006 por la mig 363, P996-P1000 por la 362, P990-P995 por la 361, P983-P989 por la 360, P975-P982 por la
+- **Próximos números libres: probe `P1157`** (global, no por módulo; M388_FX + P1152-P1156 usados por la mig 388; M387_FX + P1148-P1151 usados por la mig 387; M386_FX + P1142-P1147 usados por la mig 386; M385_FX + P1138-P1141 usados por la mig 385; M384_FX + P1132-P1137 usados por la mig 384; M383_FX + P1120-P1131 usados por la mig 383; M382_FX + P1105-P1119 usados por la mig 382; M381_FX + P1099-P1104 usados por la mig 381; M380_FX + P1091-P1098 usados por la mig 380; M379_FX + P1084-P1090 usados por la mig 379; M378_FX + P1075-P1083 usados por la mig 378; M377_FX + P1065-P1074 usados por la mig 377; M376_FX + P1062-P1064 usados por la mig 376; M375_FX + P1041-P1061 usados por la mig 375; P1035-P1040 usados por la mig 374; P1026-P1034 + M373_FX usados por la mig 373; P1023-P1025 + G372_FX usados por la mig 372; P1019-P1022 usados por la mig 371; P1015-P1018 usados por la mig 370, P1011-P1014 por la mig 369, P1010 por la mig 367, P1009 por la 366, P1008 por la 365, P1007 por la 364, P1001-P1006 por la mig 363, P996-P1000 por la 362, P990-P995 por la 361, P983-P989 por la 360, P975-P982 por la
   359, P967-P974 por la 358, P958-P966 por la 357 (obtener_medicos_por_ids acotada a relación); P906-P907 usados por la mig 336, P912-P913
   por la 337, P914-P915 por la 338, P916-P920 por la 339/340, P921-P923 por la 341, P924 por la 342, P925 por
   la 343, P926-P927 por la 344, P928-P929 por la 345, P930 por la 346, P931-P932 por la 347, P933 por la 348,
-  P934-P935 por la 349, P936 por la 350, P937-P939 por la 351, P940-P943 por la 353), **migración `386`** (la 385 es `registrar_clinica_desde_invitacion` v2, registro de clínica por invitación, RC001-RC004, y la 384 los listados de médicos por país solo con rol 'medico'; **próximo errcode RC005**; la 383 es la notificación del chat comercial + ACL exacta de service_role, aplicada el 24-oct; la 382 es el chat comercial, aplicada el 24-oct; la 381 es el hardening de visitas, PV027/PV028; la 380 son las lecturas del enrolamiento, `listar_mis_medicos_enrolados` y `prioridad_para_agendar`, aplicada el 20-oct; la 379 es `registrar_medico_desde_invitacion` enrolando por la solicitud de alta, aplicada el 20-oct; la 378 es aprobar/reenviar la solicitud de alta → invitación precargada + correo, aplicada el 20-oct; la 377 son las solicitudes de alta de médico, aplicada el 20-oct; la 376 es `administrar_visita('modificar')` + PV003 y la 375 el hardening del enrolamiento, las dos aplicadas el 20-oct; la 374 es la integridad de ubicación de prospectos, aplicada el 17-oct; la 373 es el alta diferida de empresas, aplicada el 9-oct; la 371 es GL-02 y la 372 su hardening, las dos aplicadas el 8-oct), **errcode `LG007`** (prefijo LG,
+  P934-P935 por la 349, P936 por la 350, P937-P939 por la 351, P940-P943 por la 353), **migración `389`** (la 388 es `cambiar_estado_empresa`, EP006, aplicada el 17-nov; la 387 `obtener_empresa_pais` y la 386 `listar_empresas_pais` + `resolver_empresa`, EP001-EP005; **próximo errcode EP007**; la 385 es `registrar_clinica_desde_invitacion` v2, registro de clínica por invitación, RC001-RC004, y la 384 los listados de médicos por país solo con rol 'medico'; **próximo errcode RC005**; la 383 es la notificación del chat comercial + ACL exacta de service_role, aplicada el 24-oct; la 382 es el chat comercial, aplicada el 24-oct; la 381 es el hardening de visitas, PV027/PV028; la 380 son las lecturas del enrolamiento, `listar_mis_medicos_enrolados` y `prioridad_para_agendar`, aplicada el 20-oct; la 379 es `registrar_medico_desde_invitacion` enrolando por la solicitud de alta, aplicada el 20-oct; la 378 es aprobar/reenviar la solicitud de alta → invitación precargada + correo, aplicada el 20-oct; la 377 son las solicitudes de alta de médico, aplicada el 20-oct; la 376 es `administrar_visita('modificar')` + PV003 y la 375 el hardening del enrolamiento, las dos aplicadas el 20-oct; la 374 es la integridad de ubicación de prospectos, aplicada el 17-oct; la 373 es el alta diferida de empresas, aplicada el 9-oct; la 371 es GL-02 y la 372 su hardening, las dos aplicadas el 8-oct), **errcode `LG007`** (prefijo LG,
   GL-02: LG001-LG005 en uso por la 371 — LG001 sin sesión, LG002 código inexistente, LG003 versión no vigente, LG004
   entrada inválida, LG005 aceptaciones append-only; LG006 = el texto no corresponde a la identidad de la cuenta, en uso
   por la 372), **errcode `PC029`** (familia PC: PC025 país requerido y PC026 sin autoridad en `contar_medicos_por_pais`, PC027
@@ -663,8 +690,34 @@ Stack: React + Vite + TypeScript, Supabase / Postgres, deploy en Vercel, repo en
   exit code. `npm run harness:selftest` prueba que esas cinco verificaciones disparan.
   Está enganchado al pre-commit junto al test del detector: los tres gates del hook son offline.
   **Tamaño del body (20-oct-2026, 3c3e97c):** la API de `db query` corta en ~3 MiB con 413. El runner quita las líneas de
-  comentario completas antes de enviar (3.095.847 → 2.675.671 bytes) y aborta si el body pasa 2,9 MiB (techo 3.040.870
-  bytes); margen actual ~365 KB.
+  comentario completas antes de enviar y aborta si un request pasa 2,9 MiB (techo 3.040.870 bytes). **Desde el 17-nov el
+  techo es POR REQUEST** (harness por partes, abajo); los bytes y el margen de cada parte los imprime el runner.
+  **Harness por partes (17-nov-2026, rama chore/harness-split; diseño en output/diseno-split-harness-17nov.md):**
+  `probes_escritura.sql` lleva 3 marcadores, cada uno una línea EXACTA en la columna 0, entre dos sentencias:
+  `-- @@HARNESS_PRELUDIO_FIN@@` (fin de cabecera + `BEGIN` + precondición global de medicamentos; se repite en cada parte),
+  `-- @@HARNESS_PARTE@@` (corte; K cortes = K+1 partes; hoy 1, antes del MÓDULO COMERCIAL) y `-- @@HARNESS_RESULTADOS@@`
+  (el SELECT de veredictos + P000 + ROLLBACK). El runner los detecta ANTES de quitar comentarios y valida orden y posición.
+  Cada parte = preludio + su cuerpo + un COLECTOR (el valor de cada clave `probe.x` que lee el bloque de resultados) +
+  ROLLBACK, en su propio request y su propia transacción, en SERIE. Después, UN request final repone esas claves con
+  `set_config` y corre el bloque de resultados TAL CUAL: mismas 1258 filas y **un solo P000**, igual que la monolítica (en
+  PG 17 los placeholders de `set_config` no aparecen en `pg_settings`, por eso el colector pregunta clave por clave). Una
+  parte que falla da la fila `PARTE_<n>_ERROR` (ROJO, fuera de la deuda) y las demás siguen; dos partes con valores
+  distintos para la misma clave dan `PARTES_CONFLICTO`. Piso, vacíos y deuda se evalúan sobre el total. Sin marcadores, el
+  runner manda el archivo entero en un request, byte a byte como antes.
+  - **Dónde va un probe nuevo:** al final de la ÚLTIMA parte (antes de `@@HARNESS_RESULTADOS@@`), con su fila en el bloque
+    de resultados y su clave en P000, como siempre. Cuando a la última parte le queden < 300 KB de margen, se abre una parte
+    nueva poniendo un `-- @@HARNESS_PARTE@@` antes de los probes nuevos (sin mover nada). Un probe nuevo no debe depender de
+    estado que deje otra parte: cada parte es su propia transacción.
+  - **Dry-run con una migración inyectada:** igual que antes, en una COPIA: el cuerpo de la migración (sin BEGIN/COMMIT)
+    justo después de `BEGIN;`, que está dentro del preludio, así que se repite al inicio de cada parte; el request final no
+    la necesita (solo lee settings). Se corre con `npm run harness -- -f <copia>`.
+  - **Verificar un cambio de partición (o cualquier par de corridas):** `python tests/rls/comparar_corridas.py A.txt B.txt`
+    compara por nombre de probe: faltantes/sobrantes, cambio de CLASE (prefijo rojo o primer token: OK, N/A, BLOQUEADO,
+    PENDIENTE…; un OK→N/A es "perdí un fixture") y texto normalizado; P000 se mapea y sus conteos se suman. Ruido aceptado
+    fijo: VA_FX y P825 (fixtures posicionales). `--aceptar-texto P948,P1009,DET_p1009` suma prefijos SOLO para esa
+    ejecución, para diferencias de texto revisadas una por una; un cambio de clase sigue siendo exit 1. Protocolo:
+    monolítica → partida → monolítica en la misma sesión, sin otra sesión escribiendo contra prod. El comparador tiene
+    `--self-test` y el hook lo corre (5 gates).
   **El runner CLASIFICA las rojas** (roja = el `verdict` empieza (mayúsculas, sin tildes) con alguno de `PREFIJOS_ROJOS`
   de `tests/rls/harness_run.py`: `ROJO`, `FALLO`, `REGRESION`, `FUGA`, `LEAK`, `PERMITIDO`, `VISIBLE`, `ERROR`, `BLOQUEADO?`) contra la
   lista `DEUDA` que vive en el código, hoy con **11 entradas**: una roja FUERA de la deuda es exit 1,
@@ -685,7 +738,8 @@ Stack: React + Vite + TypeScript, Supabase / Postgres, deploy en Vercel, repo en
   **Por qué**: el harness corre en UNA transacción — una sentencia que revienta fuera de un handler
   no da rojo, MATA la transacción y la salida queda vacía, que se lee como "todavía no lo corrí".
   Pasó dos veces (18cf819 y el lote 1 de PA-FAILOPEN) y una de ellas tardó dos meses en detectarse.
-  Baselines vivos: `top_level_dml_ddl=0` (excluye `pg_temp`), `cast_directo=0`, `do_sin_handler=155`
+  Baselines vivos: `top_level_dml_ddl=0` (excluye `pg_temp`), `cast_directo=0`, `do_sin_handler=154` (155 → 154 el 17-nov:
+  medido así ya en 32b44cc, el guard avisaba "BAJO"; 1171 bloques DO)
   (fase 2.2 CERRADA: los 55 bloques que escriben están envueltos, 211→193→175→157→156→155; los 155
   restantes sólo leen y publican, así que ya no son deuda; 1006 bloques DO en total al 7-oct-2026, rama
   harness/diag-fixture-fm, con 1097 / 11 rojas de deuda en esa rama y en harness/censo-veredictos (post14a, 7-oct-2026);
