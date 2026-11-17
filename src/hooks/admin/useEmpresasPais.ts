@@ -2,8 +2,9 @@ import { useCallback, useMemo } from 'react'
 import { supabase } from '@/lib/supabase'
 import { falla, type Resultado } from '@/visitador/hooks/useEnrolamiento'
 
-// Bandeja de empresas por país (migs 386-387): listar_empresas_pais, resolver_empresa y obtener_empresa_pais. Mismo contrato que
-// useSolicitudesAlta: { ok, data } o { ok:false, error } con el error ya mapeado por código (EP001-EP005). Sin toasts.
+// Bandeja de empresas por país (migs 386-388): listar_empresas_pais, resolver_empresa, obtener_empresa_pais y
+// cambiar_estado_empresa. Mismo contrato que useSolicitudesAlta: { ok, data } o { ok:false, error } con el error ya
+// mapeado por código (EP001-EP006). Sin toasts.
 // La barrera es la RPC (super_admin, o admin_pais de ESE país); el front no decide quién ve qué.
 
 export type EstadoEmpresa = 'pendiente' | 'activa' | 'suspendida' | 'rechazada'
@@ -42,6 +43,9 @@ export interface EmpresaDetalle {
   campanas_count: number
   pagos_count: number
 }
+
+/** Acciones de cambiar_estado_empresa (mig 388). */
+export type AccionEstadoEmpresa = 'suspender' | 'reactivar' | 'reabrir'
 
 export interface ResolucionEmpresa {
   empresa_id: string
@@ -92,8 +96,20 @@ export function useEmpresasPais() {
     return { ok: true, data: data as ResolucionEmpresa }
   }, [])
 
+  // Mig 388: suspender (activa -> suspendida), reactivar (suspendida -> activa) y reabrir (rechazada -> pendiente).
+  // Solo super_admin (la RPC da EP002 a cualquier otro); una transición inválida o repetida da EP006. Mismo shape que
+  // resolver_empresa: notificado = false si el cambio quedó hecho pero el aviso falló.
+  const cambiarEstadoEmpresa = useCallback(
+    async (empresaId: string, accion: AccionEstadoEmpresa): Promise<Resultado<ResolucionEmpresa>> => {
+      const { data, error } = await supabase.rpc('cambiar_estado_empresa', { p_empresa_id: empresaId, p_accion: accion })
+      if (error) return falla(error)
+      return { ok: true, data: data as ResolucionEmpresa }
+    },
+    [],
+  )
+
   return useMemo(
-    () => ({ listar, obtenerEmpresaPais, aprobar, rechazar }),
-    [listar, obtenerEmpresaPais, aprobar, rechazar],
+    () => ({ listar, obtenerEmpresaPais, aprobar, rechazar, cambiarEstadoEmpresa }),
+    [listar, obtenerEmpresaPais, aprobar, rechazar, cambiarEstadoEmpresa],
   )
 }
