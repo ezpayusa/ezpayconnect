@@ -30,7 +30,7 @@ export interface ErrorRpcMapeado {
   /** Para `inline`: qué campo del formulario señalar. */
   campo?: string
   /** El cliente quedó desincronizado con la base y conviene recargar esa colección. */
-  recargar?: 'catalogo' | 'contactos' | 'jornada' | 'visita' | 'tarjeta' | 'solicitudes'
+  recargar?: 'catalogo' | 'contactos' | 'jornada' | 'visita' | 'tarjeta' | 'solicitudes' | 'empresas'
   /** El control debe volver al valor anterior (el cambio no se aplicó). */
   revertir?: boolean
   /** Mandarlo a Sentry: es un bug nuestro o algo que no previmos, no un error del usuario. */
@@ -237,6 +237,22 @@ const MAPA: Record<string, Entrada> = {
   RC002: { texto: 'El correo no coincide con el de la invitación.', destino: 'toast', reportar: false },
   RC003: { texto: 'Ya tienes una cuenta con este correo. Inicia sesión.', destino: 'toast', reportar: false },
   RC004: { texto: 'Faltan datos o la contraseña es muy corta (mínimo 6 caracteres).', destino: 'toast', reportar: false },
+
+  // --- Familia EP: bandeja de empresas por país (mig 386: listar_empresas_pais + resolver_empresa) ---------------
+  // Cabecera de 386_empresas_pais_resolver.sql, "Errores (mensajes para el usuario final, en tú, sin eco de datos)".
+  // EP no está en ES_FAMILIA_PROPIA: un EP desconocido cae en el genérico.
+  // EP001 "no hay sesión" (la base: 'Tu sesión no está activa. Vuelve a iniciar sesión.').
+  EP001: { texto: 'Tu sesión no está activa. Vuelve a iniciar sesión.', destino: 'toast', reportar: false },
+  // EP002 "la empresa no existe o no puedes gestionarla / no puedes ver las empresas de ese país (mismo error)".
+  // Texto propio que vale para las dos RPCs: no distingue "no existe" de "no es tu país", igual que la base.
+  EP002: { texto: 'No puedes gestionar esta empresa ni ver las empresas de este país.', destino: 'toast', recargar: 'empresas', reportar: false },
+  // EP003 "la empresa ya no está pendiente (ya fue resuelta)": otro admin la resolvió con la lista abierta.
+  EP003: { texto: 'Esta empresa ya fue revisada. Recarga la lista para ver su estado actual.', destino: 'toast', recargar: 'empresas', reportar: false },
+  // EP004 "motivo de rechazo inválido: vacío o de más de 500 caracteres" (el modal ya lo impide: doble candado).
+  EP004: { texto: 'Escribe el motivo del rechazo (hasta 500 caracteres).', destino: 'inline', campo: 'motivo', reportar: false },
+  // EP005 "dato inválido: acción desconocida, estado de filtro desconocido o país sin indicar". La pantalla no llama
+  // sin país y solo manda acciones y estados válidos: si llega, es bug nuestro.
+  EP005: { texto: 'Elige un país y un filtro válidos para ver sus empresas.', destino: 'toast', reportar: true },
 }
 
 // Familias cuyo mensaje de la base ya es para el usuario: un código desconocido de estas NO cae en el genérico.
