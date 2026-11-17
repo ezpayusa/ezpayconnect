@@ -191,16 +191,59 @@ def comparar(a, b, aceptados=ACEPTADOS_TEXTO):
     return out, errores
 
 
+def self_test():
+    """Prueba que la comparacion DISPARA (sin archivos ni red), igual que `harness_run.py --self-test`. Lo corre el hook
+    de pre-commit: si alguien rompe la clase, el mapeo de P000 o la lista de aceptados, el commit no pasa."""
+    p000 = lambda nombre, n: (nombre, 'OK (%d veredictos, ninguno vacío)' % n)
+    base = [('P1_x', 'OK (ve 3 de 3)'), ('P2_y', 'BLOQUEADO (42501)'), ('P3_z', 'ROJO (deuda)'),
+            ('VA_FX_fixture', 'OK (ficha QA-TJ-A)'), p000('P000_CENTINELA_veredictos_no_nulos', 4)]
+    def con(**cambios):
+        return [(k, cambios.get(k, v)) for k, v in base]
+    casos = [
+        ('identicas -> 0', base, base, (), 0),
+        ('uuid y numeros distintos -> 0', base, con(P1_x='OK (ve 7 de 7)'), (), 0),
+        ('OK -> N/A (fixture perdido) -> error', base, con(P1_x='N/A (fixture)'), (), 1),
+        ('verde -> rojo -> error', base, con(P2_y='PERMITIDO (paso)'), (), 1),
+        ('texto distinto fuera de la lista -> error', base, con(P2_y='BLOQUEADO (42501; otro detalle)'), (), 1),
+        ('texto distinto de un aceptado fijo (VA_FX) -> 0', base, con(VA_FX_fixture='OK (ficha GT-ASE-04)'), (), 0),
+        ('texto distinto aceptado por parametro -> 0', base, con(P2_y='BLOQUEADO (42501; otro detalle)'), ('P2',), 0),
+        ('cambio de CLASE aceptado por parametro sigue siendo error', base, con(P2_y='FALLO (x)'), ('P2',), 1),
+        ('falta un probe -> error', base, [f for f in base if f[0] != 'P1_x'], (), 1),
+        ('sobra un probe -> error', base, base + [('P9_nuevo', 'OK')], (), 1),
+        ('nombre duplicado -> error', base, base + [('P1_x', 'OK (ve 3 de 3)')], (), 1),
+        ('P000 partido que suma igual -> 0', base,
+         [f for f in base if not f[0].startswith(P000)] + [p000('P000_CENTINELA_parte1', 1), p000('P000_CENTINELA_parte2', 3)], (), 0),
+        ('P000 partido que no suma -> error', base,
+         [f for f in base if not f[0].startswith(P000)] + [p000('P000_CENTINELA_parte1', 1), p000('P000_CENTINELA_parte2', 2)], (), 1),
+        ('P000 en ROJO de un lado -> error', base, con(P000_CENTINELA_veredictos_no_nulos='ROJO (1 veredictos vacíos: probe.p1)'), (), 1),
+    ]
+    fallos = 0
+    for nombre, a, b, extra, espera in casos:
+        _, errores = comparar(a, b, ACEPTADOS_TEXTO + tuple(extra))
+        ok = (errores > 0) == bool(espera)
+        fallos += not ok
+        print('  %s   %s (errores=%d)' % ('ok' if ok else 'MAL', nombre, errores))
+    print()
+    if fallos:
+        print('*** %d CASO(S) FALLARON ***' % fallos)
+        return 1
+    print('TODOS LOS CASOS PASAN (%d)' % len(casos))
+    return 0
+
+
 def main():
     try:
         sys.stdout.reconfigure(errors='replace')
     except (AttributeError, ValueError):
         pass
+    if '--self-test' in sys.argv[1:]:
+        return self_test()
     ap = argparse.ArgumentParser(description='Compara dos corridas del harness por veredicto.')
     ap.add_argument('a')
     ap.add_argument('b')
     ap.add_argument('--aceptar-texto', default='', metavar='PREFIJO[,PREFIJO...]',
                     help='prefijos que se suman a ACEPTADOS_TEXTO solo para esta ejecucion (solo texto, nunca clase)')
+    ap.add_argument('--self-test', action='store_true', help='prueba la comparacion con casos sinteticos (sin archivos)')
     args = ap.parse_args()
     extra = tuple(p.strip() for p in args.aceptar_texto.split(',') if p.strip())
     aceptados = ACEPTADOS_TEXTO + extra
