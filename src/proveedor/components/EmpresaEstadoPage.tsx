@@ -12,9 +12,21 @@ import {
 // portal (onboarding o bloqueada). Se renderiza dentro de OnboardingShell (que aporta el logout).
 // CORTESÍA: no consulta ninguna tabla operativa — lo que no puede leer, no lo pide. El mensaje se
 // elige por el estado CRUDO; los botones de acción, por accesoEmpresa().
+// Rechazada: muestra el motivo y la fecha de revisión (migs 386/388). Vienen en el mismo empresa:empresa_id(*) de
+// useProveedorAuth: la policy "Proveedor ve su propia empresa" deja leer la fila propia en cualquier estado.
+
+// El tipo compartido no declara las columnas de revisión; el embed (*) sí las trae.
+type EmpresaConRevision = { motivo_rechazo?: string | null; revisado_at?: string | null }
+
+const fechaRevision = (iso: string | null | undefined) =>
+  iso ? new Date(iso).toLocaleDateString('es-ES', { day: 'numeric', month: 'long', year: 'numeric' }) : null
+
 export default function EmpresaEstadoPage() {
   const { empresa } = useProveedorAuth()
   const location = useLocation()
+  const revision = (empresa ?? {}) as EmpresaConRevision
+  const motivoRechazo = revision.motivo_rechazo?.trim() || null
+  const revisadaEl = fechaRevision(revision.revisado_at)
 
   const base = portalBase(location.pathname)
   const estado = empresa?.estado
@@ -79,6 +91,18 @@ export default function EmpresaEstadoPage() {
           )}
           <p className="text-sm text-slate-500">{vista.detalle}</p>
         </div>
+
+        {estado === 'rechazada' && (motivoRechazo || revisadaEl) && (
+          <div className="text-left bg-red-50 border border-red-200 rounded-lg p-4 space-y-1">
+            {motivoRechazo && (
+              <>
+                <p className="text-sm font-medium text-red-800">Motivo del rechazo</p>
+                <p className="text-sm text-red-700 whitespace-pre-wrap break-words">{motivoRechazo}</p>
+              </>
+            )}
+            {revisadaEl && <p className="text-xs text-red-600">Revisamos tu solicitud el {revisadaEl}.</p>}
+          </div>
+        )}
 
         {acceso === 'onboarding' && (
           <div className="flex flex-col gap-2 pt-2">

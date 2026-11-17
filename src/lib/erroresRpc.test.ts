@@ -325,15 +325,16 @@ describe('mapearErrorRpc — familia PV', () => {
   })
 })
 
-// Familia EP (bandeja de empresas por país, migs 386-387: listar_empresas_pais, resolver_empresa y
-// obtener_empresa_pais). A diferencia de PV, cada EP tiene texto propio en tú: el mensaje de la base no se muestra.
-// EP no está en ES_FAMILIA_PROPIA: un EP desconocido cae en el genérico (sin sinMapear).
+// Familia EP (bandeja de empresas por país, migs 386-388: listar_empresas_pais, resolver_empresa,
+// obtener_empresa_pais y cambiar_estado_empresa). A diferencia de PV, cada EP tiene texto propio en tú: el mensaje
+// de la base no se muestra. EP no está en ES_FAMILIA_PROPIA: un EP desconocido cae en el genérico (sin sinMapear).
 const EP_TEXTOS: Record<string, string> = {
   EP001: 'Tu sesión no está activa. Vuelve a iniciar sesión.',
   EP002: 'No puedes gestionar esta empresa ni ver las empresas de este país.',
   EP003: 'Esta empresa ya fue revisada. Recarga la lista para ver su estado actual.',
   EP004: 'Escribe el motivo del rechazo (hasta 500 caracteres).',
   EP005: 'Elige un país y un filtro válidos para ver sus empresas.',
+  EP006: 'Esta empresa ya no está en un estado que permita esta acción. Recarga la lista para ver su estado actual.',
 }
 const EP_EN_USO = Object.keys(EP_TEXTOS)
 
@@ -357,23 +358,30 @@ describe('mapearErrorRpc — familia EP', () => {
     }
   })
 
-  it('EP002/EP003 piden recargar las empresas; EP001, EP004 y EP005 no', () => {
+  it('EP002/EP003/EP006 piden recargar las empresas; EP001, EP004 y EP005 no', () => {
     expect(mapearErrorRpc(pg('EP002', 'x')).recargar).toBe('empresas')
     expect(mapearErrorRpc(pg('EP003', 'x')).recargar).toBe('empresas')
+    expect(mapearErrorRpc(pg('EP006', 'x')).recargar).toBe('empresas')
     for (const code of ['EP001', 'EP004', 'EP005']) {
       expect(mapearErrorRpc(pg(code, 'x')).recargar).toBeUndefined()
     }
   })
 
-  it('EP005 (dato inválido) se reporta a Sentry: la pantalla nunca lo provoca; EP001-EP004 no', () => {
+  it('EP005 (dato inválido) se reporta a Sentry: la pantalla nunca lo provoca; EP001-EP004 y EP006 no', () => {
     expect(mapearErrorRpc(pg('EP005', 'x')).reportar).toBe(true)
-    for (const code of ['EP001', 'EP002', 'EP003', 'EP004']) {
+    for (const code of ['EP001', 'EP002', 'EP003', 'EP004', 'EP006']) {
       expect(mapearErrorRpc(pg(code, 'x')).reportar).toBe(false)
     }
   })
 
-  it('EP006 (no existe en el mapa) -> genérico y reportar, sin sinMapear (EP fuera de ES_FAMILIA_PROPIA)', () => {
-    const r = mapearErrorRpc(pg('EP006', 'una regla nueva'))
+  it('EP006 se comporta igual que EP003: toast, recargar empresas, sin reportar', () => {
+    const ep3 = mapearErrorRpc(pg('EP003', 'x'))
+    const ep6 = mapearErrorRpc(pg('EP006', 'La empresa no está en un estado que permita esta acción.'))
+    expect([ep6.destino, ep6.recargar, ep6.reportar]).toEqual([ep3.destino, ep3.recargar, ep3.reportar])
+  })
+
+  it('EP007 (no existe en el mapa) -> genérico y reportar, sin sinMapear (EP fuera de ES_FAMILIA_PROPIA)', () => {
+    const r = mapearErrorRpc(pg('EP007', 'una regla nueva'))
     expect(r.mensaje).toBe('No se pudo completar la operación. Intenta de nuevo.')
     expect(r.reportar).toBe(true)
     expect(r.sinMapear).toBeUndefined()

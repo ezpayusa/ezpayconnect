@@ -238,7 +238,7 @@ const MAPA: Record<string, Entrada> = {
   RC003: { texto: 'Ya tienes una cuenta con este correo. Inicia sesión.', destino: 'toast', reportar: false },
   RC004: { texto: 'Faltan datos o la contraseña es muy corta (mínimo 6 caracteres).', destino: 'toast', reportar: false },
 
-  // --- Familia EP: bandeja de empresas por país (mig 386: listar_empresas_pais + resolver_empresa) ---------------
+  // --- Familia EP: bandeja de empresas por país (mig 386: listar_empresas_pais + resolver_empresa; mig 388: EP006) ---
   // Cabecera de 386_empresas_pais_resolver.sql, "Errores (mensajes para el usuario final, en tú, sin eco de datos)".
   // EP no está en ES_FAMILIA_PROPIA: un EP desconocido cae en el genérico.
   // EP001 "no hay sesión" (la base: 'Tu sesión no está activa. Vuelve a iniciar sesión.').
@@ -253,6 +253,10 @@ const MAPA: Record<string, Entrada> = {
   // EP005 "dato inválido: acción desconocida, estado de filtro desconocido o país sin indicar". La pantalla no llama
   // sin país y solo manda acciones y estados válidos: si llega, es bug nuestro.
   EP005: { texto: 'Elige un país y un filtro válidos para ver sus empresas.', destino: 'toast', reportar: true },
+  // EP006 (mig 388, cambiar_estado_empresa) "la empresa no está en un estado que permita esta acción (transición
+  // inválida o repetida)". La base (388_cambiar_estado_empresa.sql:171): 'La empresa no está en un estado que permita
+  // esta acción.'. Igual que EP003: otro admin la cambió con la lista abierta -> toast + recargar, no se reporta.
+  EP006: { texto: 'Esta empresa ya no está en un estado que permita esta acción. Recarga la lista para ver su estado actual.', destino: 'toast', recargar: 'empresas', reportar: false },
 }
 
 // Familias cuyo mensaje de la base ya es para el usuario: un código desconocido de estas NO cae en el genérico.
