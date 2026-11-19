@@ -95,6 +95,8 @@ export interface RecetaItem {
   precio_unitario: number | null
   stock_actual: number | null
   acuse_iniciales?: string | null
+  /** H20 (mig 395): motivo con que el médico confirma un ítem que coincide con una alergia (5-500). */
+  alergia_confirmacion_motivo?: string | null
 }
 export interface ExpedienteNota {
   id: number

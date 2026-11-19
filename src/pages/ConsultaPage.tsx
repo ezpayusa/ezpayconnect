@@ -995,6 +995,12 @@ function ConsultaDeCita() {
         open={modalReceta}
         onOpenChange={setModalReceta}
         pacienteIdPreseleccionado={paciente ? String(paciente.id) : undefined}
+        paciente={paciente ? {
+          id: paciente.id,
+          nombre: `${paciente.nombre} ${paciente.apellido}`,
+          alergias: paciente.alergias ?? null,
+          medicamentos_en_uso: paciente.medicamentos_en_uso ?? null,
+        } : undefined}
         citaId={cita?.id}
         onSuccess={() => {
           toast.success('Receta creada desde la consulta')

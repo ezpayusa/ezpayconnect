@@ -11,6 +11,14 @@ interface EmitirRecetaRespuesta {
   folio: string
 }
 
+/** Resultado de useRecetas().createReceta. `code` solo viene en los errores de negocio (PRxxx). */
+export interface ResultadoCrearReceta {
+  data?: Receta | null
+  error: string | null
+  folio?: string | null
+  code?: string
+}
+
 export function useRecetas(opts?: { autoFetch?: boolean }) {
   const autoFetch = opts?.autoFetch ?? true
   const [recetas, setRecetas] = useState<Receta[]>([])
@@ -47,7 +55,7 @@ export function useRecetas(opts?: { autoFetch?: boolean }) {
 
   useEffect(() => { if (autoFetch) fetchRecetas() }, [fetchRecetas, autoFetch])
 
-    const createReceta = async (receta: Partial<Receta>, items: Partial<RecetaItem>[]) => {
+    const createReceta = async (receta: Partial<Receta>, items: Partial<RecetaItem>[]): Promise<ResultadoCrearReceta> => {
     const { data: { user } } = await supabase.auth.getUser()
     if (!user) return { error: 'Debes iniciar sesion para crear recetas' }
     if (!receta.paciente_id) return { error: 'Debes seleccionar un paciente' }
@@ -77,6 +85,8 @@ export function useRecetas(opts?: { autoFetch?: boolean }) {
         precio_unitario: i.precio_unitario ?? null,
         stock_actual: i.stock_actual ?? null,
         acuse_iniciales: i.acuse_iniciales ?? null,
+        // H20 (mig 395): obligatorio (5-500) si el ítem coincide con una alergia; si falta, PR011.
+        alergia_confirmacion_motivo: i.alergia_confirmacion_motivo?.trim() || null,
       })),
       // H2 (mig 395): la receta emitida desde la consulta queda vinculada a su cita. El servidor valida
       // que la cita sea del paciente y del médico (PR012); fuera de una consulta va NULL.
@@ -86,7 +96,8 @@ export function useRecetas(opts?: { autoFetch?: boolean }) {
     if (rpcError) {
       const esErrorDeNegocio = typeof rpcError.code === 'string' && rpcError.code.startsWith('PR')
       if (esErrorDeNegocio) {
-        return { data: null, error: rpcError.message }
+        // El código viaja para que el caller distinga casos (p. ej. PR011 marca el ítem en RecetaModal).
+        return { data: null, error: rpcError.message, code: rpcError.code }
       }
       console.error('emitir_receta:', rpcError.code, rpcError.message)
       return { data: null, error: 'No se pudo emitir la receta. Intenta de nuevo.' }
