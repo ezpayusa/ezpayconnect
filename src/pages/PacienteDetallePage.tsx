@@ -30,7 +30,6 @@ import {
   Stethoscope,
   AlertCircle,
   Loader2,
-  QrCode,
   Download,
   FlaskConical,
   CheckCircle2,
@@ -82,7 +81,7 @@ interface HistorialEvento {
 
 interface RecetaAvanzada {
   id: string
-  codigo_qr: string
+  receta_base_id: number
   firma_digital: string
   estado_dispensacion: string
   created_at: string
@@ -118,7 +117,8 @@ export default function PacienteDetallePage() {
 
   const [showRecetaModal, setShowRecetaModal] = useState(false)
   const [recetaData, setRecetaData] = useState<any>(null)
-  const [generandoReceta, setGenerandoReceta] = useState(false)
+  // id de la receta base que se está preparando para descargar (null = ninguna)
+  const [generandoReceta, setGenerandoReceta] = useState<number | null>(null)
 
   const cargarExamenes = useCallback(async () => {
     const { data } = await supabase
@@ -201,7 +201,7 @@ export default function PacienteDetallePage() {
     // del QR del paciente; no se muestra ni se usa aquí). Lista explícita en vez de '*'.
     const { data } = await supabase
       .from('recetas_avanzadas')
-      .select('id, receta_base_id, paciente_id, medico_id, codigo_qr, firma_digital, estado_dispensacion, farmacia_id, fecha_dispensacion, pdf_url, created_at, updated_at')
+      .select('id, receta_base_id, paciente_id, medico_id, firma_digital, estado_dispensacion, farmacia_id, fecha_dispensacion, pdf_url, created_at, updated_at')
       .eq('paciente_id', id)
       .order('created_at', { ascending: false })
     setRecetas(data || [])
@@ -265,29 +265,17 @@ export default function PacienteDetallePage() {
     cargarConsultas(); cargarSignosVitales(); cargarExamenes()
   }, [id, cargarPaciente, cargarHistorial, cargarRecetas, cargarCitas, cargarConsultas, cargarSignosVitales, cargarExamenes])
 
-  const generarRecetaAvanzada = async () => {
+  // H11: descarga la receta ELEGIDA (la de la tarjeta), no "la más reciente del paciente".
+  // El documento no lleva el código de despacho (H10): ese QR es del paciente, en su app.
+  const generarRecetaAvanzada = async (recetaBaseId: number) => {
     if (!paciente || !user) return
-    setGenerandoReceta(true)
+    setGenerandoReceta(recetaBaseId)
 
     try {
-      // Obtener receta base
-      const { data: recetaBase } = await supabase
-        .from('recetas')
-        .select('*')
-        .eq('paciente_id', id)
-        .order('created_at', { ascending: false })
-        .limit(1)
-        .single()
-
-      if (!recetaBase?.id) {
-        alert('Este paciente no tiene recetas. Emiti una receta primero.')
-        return
-      }
-
       // Usar supabase.functions.invoke en lugar de fetch (evita CORS)
       const { data: result, error: fnError } = await supabase.functions.invoke('generar-pdf-receta', {
         body: {
-          receta_id: recetaBase?.id
+          receta_id: recetaBaseId
         }
       })
 
@@ -297,7 +285,6 @@ export default function PacienteDetallePage() {
         setRecetaData(result.data)
         setShowRecetaModal(true)
         cargarRecetas()
-        alert('Receta avanzada generada con QR')
       } else {
         alert('Error: ' + (result?.error || 'Error desconocido'))
       }
@@ -305,7 +292,7 @@ export default function PacienteDetallePage() {
       console.error('Error generando receta:', err?.message ?? err?.code)
       alert('Error: ' + (err.message || 'Error de conexion'))
     } finally {
-      setGenerandoReceta(false)
+      setGenerandoReceta(null)
     }
   }
 
@@ -747,14 +734,6 @@ export default function PacienteDetallePage() {
               <FileText size={22} className="text-[#1E5C8E]" />
               Recetas Avanzadas
             </h2>
-            <button
-              onClick={generarRecetaAvanzada}
-              disabled={generandoReceta}
-              className="px-4 py-2 bg-[#1E5C8E] hover:bg-[#3A8ABF] text-white rounded-lg font-semibold flex items-center gap-2 transition-colors disabled:opacity-50"
-            >
-              <QrCode size={18} />
-              {generandoReceta ? 'Generando...' : 'Generar Receta con QR'}
-            </button>
           </div>
 
           {recetas.length === 0 ? (
@@ -766,7 +745,7 @@ export default function PacienteDetallePage() {
               {recetas.map(receta => (
                 <div key={receta.id} className="bg-white rounded-xl shadow-sm p-6">
                   <div className="flex items-center justify-between mb-4">
-                    <QrCode size={28} className="text-[#1E5C8E]" />
+                    <FileText size={28} className="text-[#1E5C8E]" />
                     <span className={`px-2 py-1 rounded text-xs font-medium ${
                       receta.estado_dispensacion === 'dispensada' ? 'bg-green-100 text-green-700' :
                       receta.estado_dispensacion === 'pendiente' ? 'bg-yellow-100 text-yellow-700' :
@@ -778,6 +757,15 @@ export default function PacienteDetallePage() {
                   <p className="text-xs text-gray-500 mb-1">Firma Digital</p>
                   <p className="text-sm text-gray-600 truncate">{receta.firma_digital}</p>
                   <p className="text-xs text-gray-400 mt-4">{new Date(receta.created_at).toLocaleDateString('es-ES')}</p>
+                  <button
+                    type="button"
+                    onClick={() => generarRecetaAvanzada(receta.receta_base_id)}
+                    disabled={generandoReceta !== null}
+                    className="mt-4 w-full px-3 py-2 bg-[#1E5C8E] hover:bg-[#3A8ABF] text-white rounded-lg text-sm font-semibold flex items-center justify-center gap-2 transition-colors disabled:opacity-50"
+                  >
+                    <Download size={16} />
+                    {generandoReceta === receta.receta_base_id ? 'Preparando...' : 'Descargar receta'}
+                  </button>
                 </div>
               ))}
             </div>
@@ -958,14 +946,14 @@ export default function PacienteDetallePage() {
         </div>
       )}
 
-      {/* === MODAL: RECETA CON QR === */}
+      {/* === MODAL: RECETA LISTA PARA DESCARGAR (sin código de despacho, H10) === */}
       {showRecetaModal && recetaData && (
         <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
           <div className="bg-white rounded-xl max-w-2xl w-full max-h-[90vh] overflow-y-auto shadow-xl">
             <div className="p-6 border-b border-gray-100 flex items-center justify-between">
               <h2 className="text-xl font-semibold text-[#1a2a3a] flex items-center gap-2">
-                <QrCode size={22} className="text-[#1E5C8E]" />
-                Receta Generada
+                <FileText size={22} className="text-[#1E5C8E]" />
+                Receta lista para descargar
               </h2>
               <button onClick={() => setShowRecetaModal(false)} className="p-2 hover:bg-gray-100 rounded-lg transition-colors">
                 <X size={20} className="text-gray-400" />
@@ -973,12 +961,8 @@ export default function PacienteDetallePage() {
             </div>
 
             <div className="p-6 space-y-6">
-              <div className="bg-gray-50 p-4 rounded-lg text-center">
-                <p className="text-sm text-gray-500 mb-2">Codigo QR de Verificacion</p>
-                <div className="inline-block bg-white p-4 rounded-lg shadow-sm">
-                  <QrCode size={120} className="text-[#1E5C8E]" />
-                </div>
-                <p className="text-xs text-gray-500 mt-2">El QR escaneable está en el PDF descargable de la receta.</p>
+              <div className="bg-blue-50 border border-blue-200 p-4 rounded-lg text-sm text-[#1a2a3a]" role="note">
+                El código QR para despachar esta receta lo tiene el paciente en su app EzPay (Mis recetas). Este documento no lo incluye.
               </div>
 
               <div className="bg-gray-50 p-4 rounded-lg">
@@ -992,7 +976,7 @@ export default function PacienteDetallePage() {
                   className="flex-1 px-4 py-3 bg-[#1E5C8E] hover:bg-[#3A8ABF] text-white rounded-lg font-semibold flex items-center justify-center gap-2 transition-colors"
                 >
                   <Download size={18} />
-                  Descargar Receta (HTML)
+                  Descargar receta
                 </button>
                 <button
                   onClick={() => setShowRecetaModal(false)}
