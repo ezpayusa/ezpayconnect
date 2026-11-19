@@ -1,4 +1,5 @@
 import { useNavigate, useLocation } from 'react-router-dom'
+import { useNavegarConGuardia } from '@/lib/guardiaNavegacion'
 import { useState, useEffect, useCallback } from 'react'
 import { useAuth } from '@/hooks/useAuth'
 import { useMedicoStats } from '@/medico/hooks/useMedicoStats'
@@ -23,6 +24,8 @@ import { Sheet, SheetContent, SheetTrigger } from '@/components/ui/sheet'
 
 export function MedicoSidebar() {
   const navigate = useNavigate()
+  // H3: si la consulta tiene cambios sin guardar, la guardia decide (diálogo); si no, navega normal.
+  const navegarConGuardia = useNavegarConGuardia()
   const location = useLocation()
   const { logout, perfil } = useAuth()
   const { stats } = useMedicoStats()
@@ -100,7 +103,7 @@ export function MedicoSidebar() {
   }
 
   // Navega y cierra el drawer móvil (inocuo en desktop).
-  const go = (path: string) => { navigate(path); setOpen(false) }
+  const go = (path: string) => { navegarConGuardia(path); setOpen(false) }
 
   // Contenido compartido por el aside desktop y el drawer móvil.
   const body = (
