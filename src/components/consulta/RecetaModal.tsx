@@ -266,7 +266,8 @@ export default function RecetaModal({ open, onOpenChange, pacienteIdPreseleccion
       {
         paciente_id: parseInt(form.paciente_id),
         instrucciones_generales: form.instrucciones_generales || null,
-        cita_id: citaId || null,
+        // H2: ConsultaPage pasa la cita; Mis Recetas no pasa citaId → NULL.
+        cita_id: citaId ?? null,
       },
       items.map((it: any) => ({
         ...it,

@@ -3,6 +3,8 @@ import { useParams, useNavigate } from 'react-router-dom'
 import { useAuth } from '@/hooks/useAuth'
 import { useRecetas } from '@/hooks/useRecetas'
 import { generarPDFReceta, imprimirPDFReceta } from '@/lib/pdfReceta'
+import { supabase } from '@/lib/supabase'
+import { parseFechaLocal } from '@/lib/fecha'
 import EnviarRecetaEmail from '@/components/recetas/EnviarRecetaEmail'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
@@ -35,6 +37,7 @@ export default function RecetaDetallePage() {
   const [loading, setLoading] = useState(true)
   const [showEmailModal, setShowEmailModal] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const [fechaCita, setFechaCita] = useState<string | null>(null)
 
   const recetaId = parseInt(id || '0', 10)
   const recetaCargadaRef = useRef<number | null>(null)
@@ -79,6 +82,31 @@ export default function RecetaDetallePage() {
 
     cargarReceta()
   }, [recetaId, getRecetaCompleta])
+
+  // H2: fecha de la cita de la que salió la receta. Se lee con la RLS vigente; si el usuario no puede
+  // leer la cita (o falla la lectura), simplemente no se muestra la línea.
+  const citaIdReceta: number | null = receta?.cita_id ?? null
+  useEffect(() => {
+    if (!citaIdReceta) {
+      setFechaCita(null)
+      return
+    }
+    let cancelado = false
+    supabase
+      .from('citas')
+      .select('fecha')
+      .eq('id', citaIdReceta)
+      .maybeSingle()
+      .then(({ data, error: citaError }) => {
+        if (cancelado) return
+        if (citaError || !data?.fecha) {
+          setFechaCita(null)
+          return
+        }
+        setFechaCita(data.fecha as string)
+      })
+    return () => { cancelado = true }
+  }, [citaIdReceta])
 
   // === HANDLERS ===
   const handleDescargarPDF = () => {
@@ -248,6 +276,14 @@ export default function RecetaDetallePage() {
                   <Calendar className="h-3.5 w-3.5" />
                   {fecha}
                 </p>
+                {fechaCita && (
+                  <p className="flex items-center gap-2" data-testid="receta-consulta-cita">
+                    <Stethoscope className="h-3.5 w-3.5" />
+                    Consulta del {parseFechaLocal(fechaCita).toLocaleDateString('es-GT', {
+                      year: 'numeric', month: 'long', day: 'numeric'
+                    })}
+                  </p>
+                )}
               </div>
             </CardContent>
           </Card>

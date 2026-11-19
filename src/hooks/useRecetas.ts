@@ -3,6 +3,14 @@ import { supabase } from '@/lib/supabase'
 import { usePaisFiltro } from './usePaisFiltro'
 import type { Receta, RecetaItem, Medicamento } from '@/types'
 
+/** Respuesta de public.emitir_receta (mig 395). */
+interface EmitirRecetaRespuesta {
+  receta_id: number
+  numero_correlativo: number
+  numero_formateado: string
+  folio: string
+}
+
 export function useRecetas(opts?: { autoFetch?: boolean }) {
   const autoFetch = opts?.autoFetch ?? true
   const [recetas, setRecetas] = useState<Receta[]>([])
@@ -70,6 +78,9 @@ export function useRecetas(opts?: { autoFetch?: boolean }) {
         stock_actual: i.stock_actual ?? null,
         acuse_iniciales: i.acuse_iniciales ?? null,
       })),
+      // H2 (mig 395): la receta emitida desde la consulta queda vinculada a su cita. El servidor valida
+      // que la cita sea del paciente y del médico (PR012); fuera de una consulta va NULL.
+      p_cita_id: receta.cita_id ?? null,
     })
 
     if (rpcError) {
@@ -81,14 +92,17 @@ export function useRecetas(opts?: { autoFetch?: boolean }) {
       return { data: null, error: 'No se pudo emitir la receta. Intenta de nuevo.' }
     }
 
-    const recetaId = (res as { receta_id?: number } | null)?.receta_id
+    // Desde la mig 395 la RPC devuelve {receta_id, numero_correlativo, numero_formateado, folio}
+    // (numero_formateado = folio, se conserva por compatibilidad) y guarda el folio en recetas.folio.
+    const respuesta = res as EmitirRecetaRespuesta | null
+    const recetaId = respuesta?.receta_id
     if (!recetaId) {
       console.error('emitir_receta: respuesta sin receta_id', res)
       return { data: null, error: 'No se pudo emitir la receta. Intenta de nuevo.' }
     }
+    const folio = respuesta?.folio ?? respuesta?.numero_formateado ?? null
 
-    // La RPC devuelve {receta_id, numero_correlativo, numero_formateado}.
-    // Los callers esperan la FILA (RecetaModal:294 usa result.data.id).
+    // Los callers esperan la FILA (RecetaModal usa result.data.id).
     const { data: recetaData, error: selError } = await supabase
       .from('recetas').select('*').eq('id', recetaId).single()
     if (selError || !recetaData) {
@@ -108,7 +122,7 @@ export function useRecetas(opts?: { autoFetch?: boolean }) {
       paciente_nombre: pacienteData ? `${pacienteData.nombre} ${pacienteData.apellido}` : `Paciente #${receta.paciente_id}`
     }
     setRecetas(prev => [recetaConNombre, ...prev])
-    return { data: recetaConNombre, error: null }
+    return { data: recetaConNombre, folio, error: null }
   }
 
   // ✅ Obtener receta completa con items y paciente
