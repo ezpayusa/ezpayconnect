@@ -20,6 +20,7 @@ import { Badge } from '@/components/ui/badge'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import DictadoVoz from '@/components/consulta/DictadoVoz'
+import { agregarDictado } from '@/lib/dictado'
 import BibliotecaMedica from '@/components/consulta/BibliotecaMedica'
 import AsistenteIA from '@/components/consulta/AsistenteIA'
 import ResumenUltimaVisitaMedico from '@/components/consulta/ResumenUltimaVisitaMedico'
@@ -723,7 +724,7 @@ function ConsultaDeCita() {
                   {!soloLectura && (
                     <DictadoVoz
                       pacienteId={paciente.id}
-                      onTranscript={text => editarSoap(p => ({ ...p, motivo_consulta: text }))}
+                      onTranscript={text => editarSoap(p => ({ ...p, motivo_consulta: agregarDictado(p.motivo_consulta, text) }))}
                       placeholder="Dicta el motivo de consulta..."
                     />
                   )}
@@ -741,7 +742,7 @@ function ConsultaDeCita() {
                   {!soloLectura && (
                     <DictadoVoz
                       pacienteId={paciente.id}
-                      onTranscript={text => editarSoap(p => ({ ...p, subjetivo: text }))}
+                      onTranscript={text => editarSoap(p => ({ ...p, subjetivo: agregarDictado(p.subjetivo, text) }))}
                       placeholder="Dicta lo que el paciente cuenta..."
                     />
                   )}
@@ -759,7 +760,7 @@ function ConsultaDeCita() {
                   {!soloLectura && (
                     <DictadoVoz
                       pacienteId={paciente.id}
-                      onTranscript={text => editarSoap(p => ({ ...p, objetivo: text }))}
+                      onTranscript={text => editarSoap(p => ({ ...p, objetivo: agregarDictado(p.objetivo, text) }))}
                       placeholder="Dicta los hallazgos de la exploración..."
                     />
                   )}
@@ -777,7 +778,7 @@ function ConsultaDeCita() {
                   {!soloLectura && (
                     <DictadoVoz
                       pacienteId={paciente.id}
-                      onTranscript={text => editarSoap(p => ({ ...p, analisis: text }))}
+                      onTranscript={text => editarSoap(p => ({ ...p, analisis: agregarDictado(p.analisis, text) }))}
                       placeholder="Dicta tu análisis diagnóstico..."
                     />
                   )}
@@ -795,7 +796,7 @@ function ConsultaDeCita() {
                   {!soloLectura && (
                     <DictadoVoz
                       pacienteId={paciente.id}
-                      onTranscript={text => editarSoap(p => ({ ...p, plan: text }))}
+                      onTranscript={text => editarSoap(p => ({ ...p, plan: agregarDictado(p.plan, text) }))}
                       placeholder="Dicta el plan de tratamiento..."
                     />
                   )}
