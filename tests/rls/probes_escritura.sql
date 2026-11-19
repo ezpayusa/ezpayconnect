@@ -187,6 +187,40 @@ $fn$;
 EXCEPTION WHEN OTHERS THEN
   PERFORM set_config('probe.m392_helper', 'FALLO (no se pudo crear pg_temp.m392_estado: '||SQLSTATE||' '||SQLERRM||')', false);
 END $$;
+-- ============================================================================
+-- MIG 395 — helper de ESTADO, en el PRELUDIO: pg_temp.m395_estado() lo usan P839 (parte 2) y M395_FX + P1173-P1181
+-- (final de la parte 2). Solo lee catálogo.
+--   'post' = emitir_receta solo con la firma de 4 argumentos (bigint,text,jsonb,bigint) + receta_alertas_alergia +
+--            recetas.cita_id y recetas.folio + las 3 funciones de alergias;
+--   'pre'  = emitir_receta solo con la firma de 3 argumentos y el cuerpo de la 316 (md5 74d7013a…) y nada de lo demás;
+--   cualquier mezcla = 'parcial (...)', que cada probe publica como ROJO.
+-- ============================================================================
+DO $$
+BEGIN
+  EXECUTE $fn$
+CREATE OR REPLACE FUNCTION pg_temp.m395_estado() RETURNS text LANGUAGE plpgsql STABLE AS $body$
+DECLARE f3 boolean; f4 boolean; md3 text; tbl boolean; cita boolean; folio boolean; nf int; nsob int;
+BEGIN
+  f3 := to_regprocedure('public.emitir_receta(bigint,text,jsonb)') IS NOT NULL;
+  f4 := to_regprocedure('public.emitir_receta(bigint,text,jsonb,bigint)') IS NOT NULL;
+  nsob := (SELECT count(*) FROM pg_proc p WHERE p.pronamespace = 'public'::regnamespace AND p.proname = 'emitir_receta');
+  md3 := (SELECT md5(p.prosrc) FROM pg_proc p WHERE p.oid = to_regprocedure('public.emitir_receta(bigint,text,jsonb)'));
+  tbl := to_regclass('public.receta_alertas_alergia') IS NOT NULL;
+  cita := EXISTS (SELECT 1 FROM pg_attribute a WHERE a.attrelid = 'public.recetas'::regclass AND a.attname = 'cita_id' AND NOT a.attisdropped);
+  folio := EXISTS (SELECT 1 FROM pg_attribute a WHERE a.attrelid = 'public.recetas'::regclass AND a.attname = 'folio' AND NOT a.attisdropped);
+  nf := (CASE WHEN to_regprocedure('public.alergias_en_receta(bigint,bigint[])') IS NOT NULL THEN 1 ELSE 0 END)
+      + (CASE WHEN to_regprocedure('private.terminos_alergia(text)') IS NOT NULL THEN 1 ELSE 0 END)
+      + (CASE WHEN to_regprocedure('private.coincidencia_alergia(bigint,bigint)') IS NOT NULL THEN 1 ELSE 0 END);
+  IF NOT f3 AND f4 AND nsob = 1 AND tbl AND cita AND folio AND nf = 3 THEN RETURN 'post'; END IF;
+  IF f3 AND NOT f4 AND nsob = 1 AND md3 = '74d7013aeea17659bbafb84d780d644b' AND NOT tbl AND NOT cita AND NOT folio AND nf = 0 THEN RETURN 'pre'; END IF;
+  RETURN 'parcial (3 args '||f3::text||', 4 args '||f4::text||', sobrecargas '||nsob||', md5 3 args '||COALESCE(left(md3, 8), '-')
+         ||', tabla '||tbl::text||', cita_id '||cita::text||', folio '||folio::text||', funciones de alergias '||nf||')';
+END
+$body$
+$fn$;
+EXCEPTION WHEN OTHERS THEN
+  PERFORM set_config('probe.m395_helper', 'FALLO (no se pudo crear pg_temp.m395_estado: '||SQLSTATE||' '||SQLERRM||')', false);
+END $$;
 -- @@HARNESS_PRELUDIO_FIN@@
 
 -- ============================================================
@@ -21769,7 +21803,7 @@ SELECT set_config('role','none', true);
 
 -- ---------------- P839 catalogo: sin INSERT para authenticated/anon/PUBLIC, sin policy INSERT/ALL, emitir_receta intacta ----------------
 DO $$
-DECLARE det text := ''; bad text := ''; t text; x text; pol text;
+DECLARE det text := ''; bad text := ''; t text; x text; pol text; est text; firma text; esp_md5 text;
 BEGIN
   FOREACH t IN ARRAY ARRAY['recetas','receta_items'] LOOP
     x := 'authenticated='||has_any_column_privilege('authenticated', ('public.'||t)::regclass, 'INSERT')
@@ -21793,15 +21827,29 @@ BEGIN
   IF pol IS DISTINCT FROM 'receta_items_medico_select=r,receta_items_superadmin_delete=d,receta_items_superadmin_select=r,receta_items_superadmin_update=w' THEN
     bad := bad||'set receta_items_*: '||COALESCE(pol,'ninguna')||'; '; END IF;
 
-  SELECT md5(p.prosrc)||' '||pg_get_userbyid(p.proowner)||' '||ARRAY(SELECT a::text FROM unnest(p.proacl) a ORDER BY 1)::text INTO x
-    FROM pg_proc p WHERE p.oid = 'public.emitir_receta(bigint,text,jsonb)'::regprocedure;
-  det := det||' ;; emitir_receta md5 owner acl|74d7013aeea17659bbafb84d780d644b postgres {authenticated=X/postgres,postgres=X/postgres,service_role=X/postgres}|'||COALESCE(x,'NULL')||'|-|';
-  IF x IS DISTINCT FROM '74d7013aeea17659bbafb84d780d644b postgres {authenticated=X/postgres,postgres=X/postgres,service_role=X/postgres}' THEN
-    bad := bad||'emitir_receta: '||COALESCE(x,'NULL')||'; '; END IF;
+  -- (395) rama por estado: 'pre' = la de 3 argumentos de la 316 (md5 74d7013a…); 'post' = la de 4 argumentos de la 395
+  -- (md5 9b65b54d…), sin la de 3; un estado a medias es ROJO. Owner y ACL iguales en los dos.
+  est := pg_temp.m395_estado();
+  IF est = 'pre' THEN
+    firma := 'public.emitir_receta(bigint,text,jsonb)'; esp_md5 := '74d7013aeea17659bbafb84d780d644b';
+  ELSIF est = 'post' THEN
+    firma := 'public.emitir_receta(bigint,text,jsonb,bigint)'; esp_md5 := '9b65b54d314c61d1db6f4f8998234f6b';
+  ELSE
+    firma := NULL; bad := bad||'estado de la 395 '||COALESCE(est, 'NULL')||'; ';
+  END IF;
+  IF firma IS NOT NULL THEN
+    SELECT md5(p.prosrc)||' '||pg_get_userbyid(p.proowner)||' '||ARRAY(SELECT a::text FROM unnest(p.proacl) a ORDER BY 1)::text INTO x
+      FROM pg_proc p WHERE p.oid = to_regprocedure(firma);
+    det := det||' ;; emitir_receta (395 '||est||') md5 owner acl|'||esp_md5||' postgres {authenticated=X/postgres,postgres=X/postgres,service_role=X/postgres}|'||COALESCE(x,'NULL')||'|-|';
+    IF x IS DISTINCT FROM esp_md5||' postgres {authenticated=X/postgres,postgres=X/postgres,service_role=X/postgres}' THEN
+      bad := bad||'emitir_receta: '||COALESCE(x,'NULL')||'; '; END IF;
+    IF (SELECT count(*) FROM pg_proc p WHERE p.pronamespace = 'public'::regnamespace AND p.proname = 'emitir_receta') <> 1 THEN
+      bad := bad||'emitir_receta con más de una sobrecarga; '; END IF;
+  END IF;
 
   PERFORM set_config('probe.p839_det', det, false);
   PERFORM set_config('probe.p839', CASE WHEN bad = ''
-    THEN 'OK (recetas y receta_items sin INSERT para authenticated/anon/PUBLIC, sin policy INSERT/ALL; service_role intacto; emitir_receta intacta)'
+    THEN 'OK (recetas y receta_items sin INSERT para authenticated/anon/PUBLIC, sin policy INSERT/ALL; service_role intacto; emitir_receta intacta (395 '||est||'))'
     ELSE 'ROJO ('||left(bad,800)||')' END, false);
 EXCEPTION WHEN OTHERS THEN
   PERFORM set_config('probe.p839','FALLO ('||SQLSTATE||' '||SQLERRM||')', false);
@@ -43518,6 +43566,542 @@ EXCEPTION WHEN OTHERS THEN
 END $$;
 SELECT set_config('role', 'none', true);
 
+-- ================================================================================
+-- MIG 395 — recetas: cita, folio persistido y control de alergias (M395_FX + P1173-P1181).
+-- El ESTADO sale de pg_temp.m395_estado(), que vive en el PRELUDIO (lo usa también P839). Con 'pre' los probes publican
+-- 'PENDIENTE (estado de la 395: pre)'; un estado parcial es ROJO. M395_FX crea sus propios helpers de pg_temp.
+-- Actores por id EXPLÍCITO, fijados en cada savepoint con pg_temp.m395_fijar(): medico.qa 09d243d5 (atiende al
+-- paciente 23 por cita y es su medico_id), df452940 (otro médico, sin relación con el 23), el super_admin real 41904e2c
+-- y el usuario de auth del paciente 23. m395_fijar() pone en el 23 la alergia 'Ibuprofenos; Ninguna' (coincide con el
+-- medicamento 22 Ibuprofeno por el singular; no con el 21 Paracetamol). Las citas de medico.qa se eligen por estado con
+-- ORDER BY id; la cita "ajena" (df452940 con el 23) se siembra dentro del savepoint. pg_temp.m395_q captura SOLO los
+-- SQLSTATE esperados (42501, PR001-PR013); cualquier otro llega al handler del probe y publica FALLO. Cada probe descarta
+-- todo con RAISE P0999 y compara pg_temp.m395_snap() antes/después (incluye el correlativo de medico.qa).
+-- ================================================================================
+DO $$
+DECLARE est text;
+BEGIN
+  EXECUTE $fn$
+CREATE OR REPLACE FUNCTION pg_temp.m395_q(p_uid uuid, p_sql text, p_rol text DEFAULT 'authenticated') RETURNS text LANGUAGE plpgsql AS $body$
+DECLARE v text;
+BEGIN
+  BEGIN
+    PERFORM set_config('request.jwt.claims', CASE WHEN p_uid IS NULL THEN json_build_object('role', p_rol)::text
+                                                  ELSE json_build_object('sub', p_uid, 'role', p_rol)::text END, true);
+    PERFORM set_config('role', p_rol, true);
+    EXECUTE p_sql INTO v;
+    PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
+    RETURN 'OK:'||COALESCE(v, 'NULL');
+  EXCEPTION
+    WHEN SQLSTATE '42501' OR SQLSTATE 'PR001' OR SQLSTATE 'PR002' OR SQLSTATE 'PR003' OR SQLSTATE 'PR004' OR SQLSTATE 'PR005'
+      OR SQLSTATE 'PR006' OR SQLSTATE 'PR007' OR SQLSTATE 'PR008' OR SQLSTATE 'PR009' OR SQLSTATE 'PR010' OR SQLSTATE 'PR011'
+      OR SQLSTATE 'PR012' OR SQLSTATE 'PR013' THEN
+      PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
+      RETURN 'ERR:'||SQLSTATE||' '||SQLERRM;
+  END;
+END
+$body$
+$fn$;
+  EXECUTE $fn$
+CREATE OR REPLACE FUNCTION pg_temp.m395_eq(p_lbl text, p_got text, p_want text) RETURNS text LANGUAGE sql IMMUTABLE AS $body$
+  SELECT CASE WHEN p_got IS NOT DISTINCT FROM p_want THEN '' ELSE 'X:'||p_lbl||'='||COALESCE(left(p_got, 160), 'NULL')||' (esperado '||COALESCE(left(p_want, 160), 'NULL')||'); ' END
+$body$
+$fn$;
+  EXECUTE $fn$
+CREATE OR REPLACE FUNCTION pg_temp.m395_veredicto(p_det text, p_pre text, p_post text, p_ok text) RETURNS text LANGUAGE sql IMMUTABLE AS $body$
+  SELECT CASE
+    WHEN p_pre IS DISTINCT FROM p_post THEN 'FALLO (no restauró el estado: '||COALESCE(p_pre, 'NULL')||' -> '||COALESCE(p_post, 'NULL')||'; '||COALESCE(p_det, '')||')'
+    WHEN p_det LIKE '%FUGA:%' THEN 'FUGA ('||p_det||')'
+    WHEN p_det <> '' THEN 'FALLO ('||p_det||')'
+    ELSE 'OK ('||p_ok||')' END
+$body$
+$fn$;
+  -- correlativo de medico.qa ('-' si no tiene fila)
+  EXECUTE $fn$
+CREATE OR REPLACE FUNCTION pg_temp.m395_corr() RETURNS text LANGUAGE sql AS $body$
+  SELECT COALESCE((SELECT mc.ultimo_numero::text FROM public.medico_correlativos mc WHERE mc.medico_id = '09d243d5-b222-482a-9762-94a582e9e752'), '-')
+$body$
+$fn$;
+  EXECUTE $fn$
+CREATE OR REPLACE FUNCTION pg_temp.m395_alertas() RETURNS bigint LANGUAGE plpgsql AS $body$
+DECLARE n bigint;
+BEGIN
+  IF to_regclass('public.receta_alertas_alergia') IS NULL THEN RETURN -1; END IF;
+  EXECUTE 'SELECT count(*) FROM public.receta_alertas_alergia' INTO n;
+  RETURN n;
+END
+$body$
+$fn$;
+  EXECUTE $fn$
+CREATE OR REPLACE FUNCTION pg_temp.m395_snap() RETURNS text LANGUAGE sql AS $body$
+  SELECT md5(concat_ws('|',
+    (SELECT count(*) FROM public.recetas)::text, (SELECT count(*) FROM public.receta_items)::text,
+    (SELECT count(*) FROM public.recetas_avanzadas)::text, (SELECT count(*) FROM public.historial_medico)::text,
+    (SELECT count(*) FROM public.citas)::text, (SELECT count(*) FROM public.notificaciones)::text,
+    pg_temp.m395_alertas()::text,
+    (SELECT md5(COALESCE(string_agg(mc::text, E'\n' ORDER BY mc.medico_id), '')) FROM public.medico_correlativos mc),
+    (SELECT md5(pa::text) FROM public.pacientes pa WHERE pa.id = 23),
+    (SELECT string_agg(p.id::text||p.rol||COALESCE(p.pais_id::text, '-')||p.activo::text, ',' ORDER BY p.id) FROM public.perfiles p
+      WHERE p.id IN ('09d243d5-b222-482a-9762-94a582e9e752', 'df452940-cc30-48b7-80e5-09e637bf97de', '41904e2c-5ef3-4fee-bd48-9ea58e0c8c37'))))
+$body$
+$fn$;
+  -- fija actores y la alergia del paciente 23. SOLO dentro de un savepoint.
+  EXECUTE $fn$
+CREATE OR REPLACE FUNCTION pg_temp.m395_fijar() RETURNS void LANGUAGE plpgsql AS $body$
+BEGIN
+  UPDATE public.perfiles SET rol = 'medico', activo = true WHERE id IN ('09d243d5-b222-482a-9762-94a582e9e752', 'df452940-cc30-48b7-80e5-09e637bf97de');
+  UPDATE public.perfiles SET rol = 'super_admin', activo = true WHERE id = '41904e2c-5ef3-4fee-bd48-9ea58e0c8c37';
+  UPDATE public.pacientes SET alergias = 'Ibuprofenos; Ninguna' WHERE id = 23;
+  IF (SELECT count(*) FROM public.perfiles WHERE id IN ('09d243d5-b222-482a-9762-94a582e9e752', 'df452940-cc30-48b7-80e5-09e637bf97de',
+        '41904e2c-5ef3-4fee-bd48-9ea58e0c8c37')) <> 3
+     OR NOT EXISTS (SELECT 1 FROM public.pacientes pa JOIN auth.users u ON u.id = pa.auth_user_id WHERE pa.id = 23)
+     OR NOT EXISTS (SELECT 1 FROM public.citas ci WHERE ci.medico_id = '09d243d5-b222-482a-9762-94a582e9e752' AND ci.paciente_id = 23
+                     AND ci.estado NOT IN ('solicitada', 'cancelada', 'no_show'))
+     OR NOT EXISTS (SELECT 1 FROM public.citas ci WHERE ci.medico_id = '09d243d5-b222-482a-9762-94a582e9e752' AND ci.paciente_id = 23 AND ci.estado = 'cancelada')
+     OR NOT EXISTS (SELECT 1 FROM public.citas ci WHERE ci.medico_id = '09d243d5-b222-482a-9762-94a582e9e752' AND ci.paciente_id <> 23
+                     AND ci.estado NOT IN ('solicitada', 'cancelada', 'no_show'))
+     OR EXISTS (SELECT 1 FROM public.citas ci WHERE ci.medico_id = 'df452940-cc30-48b7-80e5-09e637bf97de' AND ci.paciente_id = 23)
+     OR (SELECT count(*) FROM public.medicamentos m LEFT JOIN public.medicamentos_categorias c ON c.codigo = m.categoria_regulatoria
+          WHERE m.id IN (21, 22) AND m.activo IS TRUE AND NOT COALESCE(c.requiere_acuse, false)) <> 2
+     OR (SELECT m.nombre_generico FROM public.medicamentos m WHERE m.id = 22) IS DISTINCT FROM 'Ibuprofeno'
+     OR (SELECT m.nombre_generico FROM public.medicamentos m WHERE m.id = 21) IS DISTINCT FROM 'Paracetamol' THEN
+    RAISE EXCEPTION 'fixture roto: m395_fijar sin los 3 perfiles, sin el paciente 23 con cuenta, sin las citas de medico.qa (válida y cancelada con el 23, válida con otro), con cita de df452940 con el 23, o sin los medicamentos 21/22 activos y sin acuse';
+  END IF;
+END
+$body$
+$fn$;
+  EXECUTE $fn$
+CREATE OR REPLACE FUNCTION pg_temp.m395_pac_uid() RETURNS uuid LANGUAGE sql STABLE AS $body$
+  SELECT pa.auth_user_id FROM public.pacientes pa WHERE pa.id = 23
+$body$
+$fn$;
+  -- ítems: 'para' = Paracetamol (no coincide); 'ibu' = Ibuprofeno con el motivo dado (NULL = sin la clave)
+  EXECUTE $fn$
+CREATE OR REPLACE FUNCTION pg_temp.m395_item(p_med bigint, p_motivo text DEFAULT NULL) RETURNS jsonb LANGUAGE sql IMMUTABLE AS $body$
+  SELECT jsonb_build_object('medicamento_id', p_med, 'nombre_medicamento', CASE p_med WHEN 21 THEN 'Paracetamol' WHEN 22 THEN 'Ibuprofeno' ELSE 'QA' END,
+                            'dosis', '1 tableta', 'frecuencia', 'c/8h', 'cantidad', 1)
+      || CASE WHEN p_motivo IS NULL THEN '{}'::jsonb ELSE jsonb_build_object('alergia_confirmacion_motivo', p_motivo) END
+$body$
+$fn$;
+  est := pg_temp.m395_estado();
+  PERFORM set_config('probe.m395_fx', CASE WHEN est = 'pre' THEN 'PENDIENTE (estado de la 395: pre; helpers de pg_temp creados)'
+    WHEN est = 'post' THEN 'OK (helpers de pg_temp creados; estado de la 395: post)'
+    ELSE 'ROJO (395 '||est||'; helpers de pg_temp creados)' END, false);
+EXCEPTION WHEN OTHERS THEN
+  PERFORM set_config('probe.m395_fx', 'FALLO ('||SQLSTATE||' '||SQLERRM||')', false);
+END $$;
+SELECT set_config('role', 'none', true);
+
+-- ---------------- P1173 395: catálogo — emitir_receta de 4 argumentos, funciones de alergias, auditoría append-only, columnas ----------------
+DO $$
+DECLARE est text; d text := ''; r record; v text;
+BEGIN
+  est := pg_temp.m395_estado();
+  IF est = 'pre' THEN PERFORM set_config('probe.p1173', 'PENDIENTE (estado de la 395: pre)', false); RETURN; END IF;
+  IF est <> 'post' THEN PERFORM set_config('probe.p1173', 'ROJO (395 '||est||')', false); RETURN; END IF;
+
+  d := d || pg_temp.m395_eq('sobrecargas', (SELECT string_agg(pg_get_function_arguments(p.oid), ' || ') FROM pg_proc p
+          WHERE p.pronamespace = 'public'::regnamespace AND p.proname = 'emitir_receta'),
+        'p_paciente_id bigint, p_instrucciones_generales text, p_items jsonb, p_cita_id bigint DEFAULT NULL::bigint');
+  d := d || pg_temp.m395_eq('emitir_receta.md5', (SELECT md5(p.prosrc) FROM pg_proc p WHERE p.oid = to_regprocedure('public.emitir_receta(bigint,text,jsonb,bigint)')),
+        '9b65b54d314c61d1db6f4f8998234f6b');
+  FOR r IN SELECT * FROM (VALUES
+      ('public.emitir_receta(bigint,text,jsonb,bigint)', 'true v {"search_path=\"\""} {postgres=X/postgres,authenticated=X/postgres,service_role=X/postgres}'),
+      ('public.alergias_en_receta(bigint,bigint[])',      'true s {"search_path=\"\""} {postgres=X/postgres,authenticated=X/postgres,service_role=X/postgres}'),
+      ('private.terminos_alergia(text)',                  'false i {"search_path=\"\""} {postgres=X/postgres}'),
+      ('private.coincidencia_alergia(bigint,bigint)',     'false s {"search_path=\"\""} {postgres=X/postgres}'),
+      ('private.receta_alertas_alergia_inmutable()',      'false v {"search_path=\"\""} {postgres=X/postgres}')) AS t(firma, esperado)
+  LOOP
+    d := d || pg_temp.m395_eq(r.firma, (SELECT p.prosecdef::text||' '||p.provolatile::text||' '||COALESCE(p.proconfig::text, '-')||' '||COALESCE(p.proacl::text, '-')
+                                          FROM pg_proc p WHERE p.oid = to_regprocedure(r.firma)), r.esperado);
+  END LOOP;
+  -- recetas: columnas, FK, índice, privilegios
+  d := d || pg_temp.m395_eq('recetas.columnas', (SELECT string_agg(a.attname||':'||format_type(a.atttypid, a.atttypmod)||':'||(NOT a.attnotnull)::text, ',' ORDER BY a.attname)
+          FROM pg_attribute a WHERE a.attrelid = 'public.recetas'::regclass AND a.attname IN ('cita_id', 'folio') AND NOT a.attisdropped), 'cita_id:bigint:true,folio:text:true');
+  d := d || pg_temp.m395_eq('recetas_cita_id_fkey', (SELECT pg_get_constraintdef(c.oid) FROM pg_constraint c WHERE c.conrelid = 'public.recetas'::regclass AND c.conname = 'recetas_cita_id_fkey'),
+        'FOREIGN KEY (cita_id) REFERENCES citas(id) ON DELETE RESTRICT');
+  d := d || pg_temp.m395_eq('recetas_cita_id_idx', (SELECT indexdef FROM pg_indexes WHERE schemaname = 'public' AND indexname = 'recetas_cita_id_idx'),
+        'CREATE INDEX recetas_cita_id_idx ON public.recetas USING btree (cita_id)');
+  d := d || pg_temp.m395_eq('recetas.folio sin UNIQUE', (SELECT count(*)::text FROM pg_index i JOIN pg_attribute a ON a.attrelid = i.indrelid AND a.attnum = ANY (i.indkey)
+          WHERE i.indrelid = 'public.recetas'::regclass AND i.indisunique AND a.attname = 'folio'), '0');
+  d := d || pg_temp.m395_eq('authenticated I/U/S en cita_id,folio',
+        has_column_privilege('authenticated', 'public.recetas', 'cita_id', 'INSERT')::text||has_column_privilege('authenticated', 'public.recetas', 'cita_id', 'UPDATE')::text
+        ||has_column_privilege('authenticated', 'public.recetas', 'folio', 'INSERT')::text||has_column_privilege('authenticated', 'public.recetas', 'folio', 'UPDATE')::text
+        ||has_column_privilege('authenticated', 'public.recetas', 'cita_id', 'SELECT')::text||has_column_privilege('authenticated', 'public.recetas', 'folio', 'SELECT')::text,
+        'falsefalsefalsefalsetruetrue');
+  d := d || pg_temp.m395_eq('recetas.relacl', (SELECT c.relacl::text FROM pg_class c WHERE c.oid = 'public.recetas'::regclass),
+        '{postgres=arwdDxtm/postgres,anon=r/postgres,authenticated=r/postgres,service_role=arwdDxtm/postgres}');
+  -- receta_alertas_alergia
+  d := d || pg_temp.m395_eq('alertas.rls+relacl', (SELECT c.relrowsecurity::text||' '||c.relacl::text FROM pg_class c WHERE c.oid = 'public.receta_alertas_alergia'::regclass),
+        'true {postgres=arwdDxtm/postgres,authenticated=r/postgres,service_role=arwd/postgres}');
+  d := d || pg_temp.m395_eq('alertas.attacl', (SELECT count(*)::text FROM pg_attribute a WHERE a.attrelid = 'public.receta_alertas_alergia'::regclass AND a.attnum > 0 AND a.attacl IS NOT NULL), '0');
+  d := d || pg_temp.m395_eq('alertas.policies', (SELECT string_agg(pl.polname||'|'||pl.polcmd::text||'|'||pl.polpermissive::text||'|'||
+            ARRAY(SELECT CASE x WHEN 0 THEN 'public' ELSE pg_get_userbyid(x) END FROM unnest(pl.polroles) x ORDER BY 1)::text||'|'||
+            COALESCE(pg_get_expr(pl.polqual, pl.polrelid), '-')||'|'||COALESCE(pg_get_expr(pl.polwithcheck, pl.polrelid), '-'), E'\n')
+          FROM pg_policy pl WHERE pl.polrelid = 'public.receta_alertas_alergia'::regclass),
+        'receta_alertas_alergia_select|r|true|{authenticated}|((medico_id = auth.uid()) OR COALESCE(private.tiene_rol(ARRAY[''super_admin''::text]), false))|-');
+  d := d || pg_temp.m395_eq('alertas.trigger', (SELECT string_agg(t.tgname||' '||t.tgenabled::text||' '||t.tgfoid::regprocedure::text||' '||t.tgtype::text, ',')
+          FROM pg_trigger t WHERE t.tgrelid = 'public.receta_alertas_alergia'::regclass AND NOT t.tgisinternal),
+        'trg_receta_alertas_alergia_inmutable O private.receta_alertas_alergia_inmutable() 27');
+  d := d || pg_temp.m395_eq('alertas.fks', (SELECT string_agg(c.confrelid::regclass::text||':'||c.confdeltype::text, ',' ORDER BY c.confrelid::regclass::text)
+          FROM pg_constraint c WHERE c.conrelid = 'public.receta_alertas_alergia'::regclass AND c.contype = 'f'),
+        'medicamentos:r,pacientes:r,perfiles:r,receta_items:r,recetas:r');
+  d := d || pg_temp.m395_eq('alertas.motivo_check', (SELECT pg_get_constraintdef(c.oid) FROM pg_constraint c WHERE c.conname = 'receta_alertas_alergia_motivo_check'),
+        'CHECK (((char_length(motivo) >= 5) AND (char_length(motivo) <= 500)))');
+  d := d || pg_temp.m395_eq('alertas.secuencia', (SELECT c.relacl::text FROM pg_class c WHERE c.oid = pg_get_serial_sequence('public.receta_alertas_alergia', 'id')::regclass),
+        '{postgres=rwU/postgres,service_role=rwU/postgres}');
+  d := d || pg_temp.m395_eq('anon EXECUTE emitir/alergias', has_function_privilege('anon', 'public.emitir_receta(bigint,text,jsonb,bigint)', 'EXECUTE')::text
+        ||has_function_privilege('anon', 'public.alergias_en_receta(bigint,bigint[])', 'EXECUTE')::text, 'falsefalse');
+  PERFORM set_config('probe.p1173', CASE WHEN d = '' THEN
+    'OK (395: emitir_receta única con p_cita_id DEFAULT NULL, md5 9b65b54d; 5 funciones DEFINER/INVOKER con search_path vacío y ACL exacta; recetas.cita_id FK RESTRICT + índice y folio sin UNIQUE, sin escritura de authenticated; receta_alertas_alergia RLS, solo SELECT, 1 policy, trigger PR013, 5 FKs RESTRICT, secuencia sin authenticated)'
+    ELSE 'FALLO ('||d||')' END, false);
+EXCEPTION WHEN OTHERS THEN
+  PERFORM set_config('probe.p1173', 'FALLO ('||SQLSTATE||' '||SQLERRM||')', false);
+END $$;
+SELECT set_config('role', 'none', true);
+
+-- ---------------- P1174 395: alergia sin motivo -> PR011, sin consumir el correlativo ni dejar filas ----------------
+DO $$
+DECLARE est text; d text := ''; pre text; post text; a text; c0 text; n0 bigint; i0 bigint;
+BEGIN
+  est := pg_temp.m395_estado();
+  IF est = 'pre' THEN PERFORM set_config('probe.p1174', 'PENDIENTE (estado de la 395: pre)', false); RETURN; END IF;
+  IF est <> 'post' THEN PERFORM set_config('probe.p1174', 'ROJO (395 '||est||')', false); RETURN; END IF;
+  pre := pg_temp.m395_snap();
+  BEGIN
+    PERFORM pg_temp.m395_fijar();
+    c0 := pg_temp.m395_corr(); n0 := (SELECT count(*) FROM public.recetas); i0 := (SELECT count(*) FROM public.receta_items);
+    -- sin la clave del motivo
+    a := pg_temp.m395_q('09d243d5-b222-482a-9762-94a582e9e752', format('SELECT public.emitir_receta(23, %L, %L::jsonb)::text', 'P1174 QA',
+           jsonb_build_array(pg_temp.m395_item(22))));
+    d := d || pg_temp.m395_eq('sin motivo', left(a, 9), 'ERR:PR011');
+    d := d || pg_temp.m395_eq('mensaje', a, 'ERR:PR011 El medicamento "Ibuprofeno" coincide con la alergia registrada "ibuprofenos". Confirma la prescripción con un motivo.');
+    -- motivo de 3 caracteres tras el trim
+    a := pg_temp.m395_q('09d243d5-b222-482a-9762-94a582e9e752', format('SELECT public.emitir_receta(23, %L, %L::jsonb)::text', 'P1174 QA',
+           jsonb_build_array(pg_temp.m395_item(22, E'   abc \n '))));
+    d := d || pg_temp.m395_eq('motivo corto', left(a, 9), 'ERR:PR011');
+    -- motivo de 501 caracteres
+    a := pg_temp.m395_q('09d243d5-b222-482a-9762-94a582e9e752', format('SELECT public.emitir_receta(23, %L, %L::jsonb)::text', 'P1174 QA',
+           jsonb_build_array(pg_temp.m395_item(22, repeat('x', 501)))));
+    d := d || pg_temp.m395_eq('motivo de 501', left(a, 9), 'ERR:PR011');
+    -- un ítem bueno antes del que falla: nada se emite
+    a := pg_temp.m395_q('09d243d5-b222-482a-9762-94a582e9e752', format('SELECT public.emitir_receta(23, %L, %L::jsonb)::text', 'P1174 QA',
+           jsonb_build_array(pg_temp.m395_item(21), pg_temp.m395_item(22))));
+    d := d || pg_temp.m395_eq('item bueno + item sin motivo', left(a, 9), 'ERR:PR011');
+    d := d || pg_temp.m395_eq('correlativo', pg_temp.m395_corr(), c0);
+    d := d || pg_temp.m395_eq('recetas', (SELECT count(*) FROM public.recetas)::text, n0::text);
+    d := d || pg_temp.m395_eq('receta_items', (SELECT count(*) FROM public.receta_items)::text, i0::text);
+    d := d || pg_temp.m395_eq('alertas', pg_temp.m395_alertas()::text, '0');
+    RAISE EXCEPTION 'P1174 descarte' USING ERRCODE = 'P0999';
+  EXCEPTION WHEN SQLSTATE 'P0999' THEN NULL;
+  END;
+  post := pg_temp.m395_snap();
+  PERFORM set_config('probe.p1174', pg_temp.m395_veredicto(d, pre, post,
+    '395: Ibuprofeno con alergia "Ibuprofenos" sin motivo, con motivo de 3 o de 501 caracteres y detrás de un ítem bueno: PR011 con el texto exacto; correlativo, recetas, ítems y auditoría sin cambio'), false);
+EXCEPTION WHEN OTHERS THEN
+  PERFORM set_config('probe.p1174', 'FALLO ('||SQLSTATE||' '||SQLERRM||')', false);
+END $$;
+SELECT set_config('role', 'none', true);
+
+-- ---------------- P1175 395: con motivo -> emitida, con folio guardado y una fila de auditoría por coincidencia ----------------
+DO $$
+DECLARE est text; d text := ''; pre text; post text; a text; c0 text; j jsonb; rid bigint; v text; esperado_num text;
+BEGIN
+  est := pg_temp.m395_estado();
+  IF est = 'pre' THEN PERFORM set_config('probe.p1175', 'PENDIENTE (estado de la 395: pre)', false); RETURN; END IF;
+  IF est <> 'post' THEN PERFORM set_config('probe.p1175', 'ROJO (395 '||est||')', false); RETURN; END IF;
+  pre := pg_temp.m395_snap();
+  BEGIN
+    PERFORM pg_temp.m395_fijar();
+    c0 := pg_temp.m395_corr();
+    esperado_num := CASE WHEN c0 = '-' THEN '1' ELSE (c0::bigint + 1)::text END;
+    a := pg_temp.m395_q('09d243d5-b222-482a-9762-94a582e9e752', format('SELECT public.emitir_receta(23, %L, %L::jsonb)::text', 'P1175 QA',
+           jsonb_build_array(pg_temp.m395_item(21), pg_temp.m395_item(22, E'  Tolera ibuprofeno sin reacción (consultado)\n '))));
+    d := d || pg_temp.m395_eq('emitir', left(a, 3), 'OK:');
+    IF a LIKE 'OK:%' THEN
+      j := substr(a, 4)::jsonb; rid := (j->>'receta_id')::bigint;
+      d := d || pg_temp.m395_eq('claves', (SELECT string_agg(k, ',' ORDER BY k) FROM jsonb_object_keys(j) k), 'folio,numero_correlativo,numero_formateado,receta_id');
+      d := d || pg_temp.m395_eq('folio = numero_formateado', (j->>'folio' = j->>'numero_formateado')::text, 'true');
+      d := d || pg_temp.m395_eq('numero_correlativo', j->>'numero_correlativo', esperado_num);
+      d := d || pg_temp.m395_eq('correlativo', pg_temp.m395_corr(), esperado_num);
+      v := (SELECT r.folio||'|'||COALESCE(r.cita_id::text, 'NULL')||'|'||r.numero_correlativo FROM public.recetas r WHERE r.id = rid);
+      d := d || pg_temp.m395_eq('recetas.folio|cita_id|numero', v, (j->>'folio')||'|NULL|'||esperado_num);
+      d := d || pg_temp.m395_eq('formato del folio', ((j->>'folio') ~ ('^[^-]+-'||lpad(esperado_num, 6, '0')||'-[0-9]{8}$'))::text, 'true');
+      d := d || pg_temp.m395_eq('items', (SELECT count(*)::text FROM public.receta_items ri WHERE ri.receta_id = rid), '2');
+      v := (SELECT string_agg(concat_ws('|', (al.receta_item_id = ri.id)::text, al.paciente_id, al.medico_id, al.medicamento_id, al.termino_alergia,
+                                            al.alergias_snapshot, al.motivo, (al.confirmada_at = now())::text), E'\n')
+              FROM public.receta_alertas_alergia al JOIN public.receta_items ri ON ri.receta_id = al.receta_id AND ri.medicamento_id = 22
+             WHERE al.receta_id = rid);
+      d := d || pg_temp.m395_eq('auditoria', v,
+        'true|23|09d243d5-b222-482a-9762-94a582e9e752|22|ibuprofenos|Ibuprofenos; Ninguna|Tolera ibuprofeno sin reacción (consultado)|true');
+      -- quién ve la fila de auditoría
+      v := concat_ws('/',
+        pg_temp.m395_q('09d243d5-b222-482a-9762-94a582e9e752', format('SELECT count(*)::text FROM public.receta_alertas_alergia WHERE receta_id = %s', rid)),
+        pg_temp.m395_q('df452940-cc30-48b7-80e5-09e637bf97de', format('SELECT count(*)::text FROM public.receta_alertas_alergia WHERE receta_id = %s', rid)),
+        pg_temp.m395_q('41904e2c-5ef3-4fee-bd48-9ea58e0c8c37', format('SELECT count(*)::text FROM public.receta_alertas_alergia WHERE receta_id = %s', rid)),
+        pg_temp.m395_q(pg_temp.m395_pac_uid(), format('SELECT count(*)::text FROM public.receta_alertas_alergia WHERE receta_id = %s', rid)),
+        pg_temp.m395_q('09d243d5-b222-482a-9762-94a582e9e752', format('SELECT folio FROM public.recetas WHERE id = %s', rid)));
+      d := d || pg_temp.m395_eq('visibilidad autor/otro médico/super_admin/paciente + folio legible', v, 'OK:1/OK:0/OK:1/OK:0/OK:'||(j->>'folio'));
+    END IF;
+    RAISE EXCEPTION 'P1175 descarte' USING ERRCODE = 'P0999';
+  EXCEPTION WHEN SQLSTATE 'P0999' THEN NULL;
+  END;
+  post := pg_temp.m395_snap();
+  PERFORM set_config('probe.p1175', pg_temp.m395_veredicto(d, pre, post,
+    '395: Paracetamol + Ibuprofeno con motivo: emitida, respuesta con folio = numero_formateado, recetas.folio guardado, correlativo +1, 2 ítems y 1 fila de auditoría (ítem, término, snapshot, motivo con trim); la ven el autor y el super_admin, no otro médico ni el paciente'), false);
+EXCEPTION WHEN OTHERS THEN
+  PERFORM set_config('probe.p1175', 'FALLO ('||SQLSTATE||' '||SQLERRM||')', false);
+END $$;
+SELECT set_config('role', 'none', true);
+
+-- ---------------- P1176 395: PR012 con cita ajena, de otro paciente, cancelada o inexistente; sin consumir el correlativo ----------------
+DO $$
+DECLARE est text; d text := ''; pre text; post text; a text; c0 text; n0 bigint; c_aj bigint; c_otro bigint; c_canc bigint; r record;
+BEGIN
+  est := pg_temp.m395_estado();
+  IF est = 'pre' THEN PERFORM set_config('probe.p1176', 'PENDIENTE (estado de la 395: pre)', false); RETURN; END IF;
+  IF est <> 'post' THEN PERFORM set_config('probe.p1176', 'ROJO (395 '||est||')', false); RETURN; END IF;
+  pre := pg_temp.m395_snap();
+  BEGIN
+    PERFORM pg_temp.m395_fijar();
+    INSERT INTO public.citas (medico_id, paciente_id, fecha, hora_inicio, hora_fin, motivo, estado, pais_id)
+      VALUES ('df452940-cc30-48b7-80e5-09e637bf97de', 23, current_date, '10:00', '10:30', 'QA-MANUAL P1176', 'confirmada', 'cbbbbe6d-59fe-4cf2-91ee-3e31ba1d5909')
+      RETURNING id INTO c_aj;
+    c_otro := (SELECT ci.id FROM public.citas ci WHERE ci.medico_id = '09d243d5-b222-482a-9762-94a582e9e752' AND ci.paciente_id <> 23
+                AND ci.estado NOT IN ('solicitada', 'cancelada', 'no_show') ORDER BY ci.id LIMIT 1);
+    c_canc := (SELECT ci.id FROM public.citas ci WHERE ci.medico_id = '09d243d5-b222-482a-9762-94a582e9e752' AND ci.paciente_id = 23
+                AND ci.estado = 'cancelada' ORDER BY ci.id LIMIT 1);
+    c0 := pg_temp.m395_corr(); n0 := (SELECT count(*) FROM public.recetas);
+    FOR r IN SELECT * FROM (VALUES ('ajena (de otro médico con el mismo paciente)', c_aj), ('de otro paciente', c_otro),
+                                   ('cancelada', c_canc), ('inexistente', -1::bigint)) AS t(caso, cita) LOOP
+      a := pg_temp.m395_q('09d243d5-b222-482a-9762-94a582e9e752', format('SELECT public.emitir_receta(23, %L, %L::jsonb, %s)::text', 'P1176 QA',
+             jsonb_build_array(pg_temp.m395_item(21)), r.cita));
+      d := d || pg_temp.m395_eq(r.caso, a, 'ERR:PR012 La cita indicada no es válida para esta receta');
+    END LOOP;
+    d := d || pg_temp.m395_eq('correlativo', pg_temp.m395_corr(), c0);
+    d := d || pg_temp.m395_eq('recetas', (SELECT count(*) FROM public.recetas)::text, n0::text);
+    RAISE EXCEPTION 'P1176 descarte' USING ERRCODE = 'P0999';
+  EXCEPTION WHEN SQLSTATE 'P0999' THEN NULL;
+  END;
+  post := pg_temp.m395_snap();
+  PERFORM set_config('probe.p1176', pg_temp.m395_veredicto(d, pre, post,
+    '395: cita de otro médico con el mismo paciente (sembrada), de otro paciente, cancelada e inexistente: PR012 con el texto exacto; correlativo y recetas sin cambio'), false);
+EXCEPTION WHEN OTHERS THEN
+  PERFORM set_config('probe.p1176', 'FALLO ('||SQLSTATE||' '||SQLERRM||')', false);
+END $$;
+SELECT set_config('role', 'none', true);
+
+-- ---------------- P1177 395: cita propia válida -> recetas.cita_id ----------------
+DO $$
+DECLARE est text; d text := ''; pre text; post text; a text; c_ok bigint; j jsonb;
+BEGIN
+  est := pg_temp.m395_estado();
+  IF est = 'pre' THEN PERFORM set_config('probe.p1177', 'PENDIENTE (estado de la 395: pre)', false); RETURN; END IF;
+  IF est <> 'post' THEN PERFORM set_config('probe.p1177', 'ROJO (395 '||est||')', false); RETURN; END IF;
+  pre := pg_temp.m395_snap();
+  BEGIN
+    PERFORM pg_temp.m395_fijar();
+    c_ok := (SELECT ci.id FROM public.citas ci WHERE ci.medico_id = '09d243d5-b222-482a-9762-94a582e9e752' AND ci.paciente_id = 23
+              AND ci.estado NOT IN ('solicitada', 'cancelada', 'no_show') ORDER BY ci.id LIMIT 1);
+    -- por nombre, como lo llama PostgREST
+    a := pg_temp.m395_q('09d243d5-b222-482a-9762-94a582e9e752',
+           format('SELECT public.emitir_receta(p_paciente_id => 23, p_instrucciones_generales => %L, p_items => %L::jsonb, p_cita_id => %s)::text',
+                  'P1177 QA', jsonb_build_array(pg_temp.m395_item(21)), c_ok));
+    d := d || pg_temp.m395_eq('emitir con cita propia', left(a, 3), 'OK:');
+    IF a LIKE 'OK:%' THEN
+      j := substr(a, 4)::jsonb;
+      d := d || pg_temp.m395_eq('recetas.cita_id|folio', (SELECT r.cita_id::text||'|'||r.folio FROM public.recetas r WHERE r.id = (j->>'receta_id')::bigint),
+                                c_ok::text||'|'||(j->>'folio'));
+      d := d || pg_temp.m395_eq('sin auditoría (Paracetamol)', (SELECT count(*)::text FROM public.receta_alertas_alergia al WHERE al.receta_id = (j->>'receta_id')::bigint), '0');
+    END IF;
+    RAISE EXCEPTION 'P1177 descarte' USING ERRCODE = 'P0999';
+  EXCEPTION WHEN SQLSTATE 'P0999' THEN NULL;
+  END;
+  post := pg_temp.m395_snap();
+  PERFORM set_config('probe.p1177', pg_temp.m395_veredicto(d, pre, post,
+    '395: medico.qa con su cita válida del paciente 23 (llamada por nombre): emitida con recetas.cita_id = la cita y folio guardado; sin auditoría'), false);
+EXCEPTION WHEN OTHERS THEN
+  PERFORM set_config('probe.p1177', 'FALLO ('||SQLSTATE||' '||SQLERRM||')', false);
+END $$;
+SELECT set_config('role', 'none', true);
+
+-- ---------------- P1178 395: gate de alergias_en_receta (PR001, PR002, PR003, PR009, PR004; anon 42501) y resultado ----------------
+DO $$
+DECLARE est text; d text := ''; pre text; post text; a text; q text;
+BEGIN
+  est := pg_temp.m395_estado();
+  IF est = 'pre' THEN PERFORM set_config('probe.p1178', 'PENDIENTE (estado de la 395: pre)', false); RETURN; END IF;
+  IF est <> 'post' THEN PERFORM set_config('probe.p1178', 'ROJO (395 '||est||')', false); RETURN; END IF;
+  pre := pg_temp.m395_snap();
+  BEGIN
+    PERFORM pg_temp.m395_fijar();
+    q := 'SELECT COALESCE(string_agg(medicamento_id||''=''||alergia, '','' ORDER BY medicamento_id), ''-'') FROM public.alergias_en_receta(%s, %s)';
+    a := pg_temp.m395_q(NULL, format(q, '23', 'ARRAY[22]::bigint[]'), 'anon');
+    d := d || pg_temp.m395_eq('anon', left(a, 9), 'ERR:42501');
+    a := pg_temp.m395_q(NULL, format(q, '23', 'ARRAY[22]::bigint[]'), 'authenticated');
+    d := d || pg_temp.m395_eq('sin sesión', a, 'ERR:PR001 No autorizado: inicia sesión');
+    a := pg_temp.m395_q(pg_temp.m395_pac_uid(), format(q, '23', 'ARRAY[22]::bigint[]'));
+    d := d || pg_temp.m395_eq('paciente', a, 'ERR:PR002 Solo un médico puede emitir recetas');
+    a := pg_temp.m395_q('09d243d5-b222-482a-9762-94a582e9e752', format(q, 'NULL::bigint', 'ARRAY[22]::bigint[]'));
+    d := d || pg_temp.m395_eq('paciente NULL', left(a, 9), 'ERR:PR003');
+    a := pg_temp.m395_q('df452940-cc30-48b7-80e5-09e637bf97de', format(q, '23', 'ARRAY[22]::bigint[]'));
+    d := d || pg_temp.m395_eq('médico sin relación', a, 'ERR:PR009 No atiendes a este paciente');
+    a := pg_temp.m395_q('09d243d5-b222-482a-9762-94a582e9e752', format(q, '23', 'ARRAY(SELECT generate_series(1, 51))::bigint[]'));
+    d := d || pg_temp.m395_eq('51 ids', a, 'ERR:PR004 El formato de los medicamentos no es válido');
+    a := pg_temp.m395_q('09d243d5-b222-482a-9762-94a582e9e752', format(q, '23', 'ARRAY(SELECT generate_series(1, 50))::bigint[]'));
+    d := d || pg_temp.m395_eq('50 ids', a, 'OK:22=ibuprofenos');
+    a := pg_temp.m395_q('09d243d5-b222-482a-9762-94a582e9e752', format(q, '23', 'ARRAY[21, 22, 22, NULL]::bigint[]'));
+    d := d || pg_temp.m395_eq('médico que atiende', a, 'OK:22=ibuprofenos');
+    a := pg_temp.m395_q('09d243d5-b222-482a-9762-94a582e9e752', format(q, '23', 'NULL::bigint[]'));
+    d := d || pg_temp.m395_eq('array NULL', a, 'OK:-');
+    RAISE EXCEPTION 'P1178 descarte' USING ERRCODE = 'P0999';
+  EXCEPTION WHEN SQLSTATE 'P0999' THEN NULL;
+  END;
+  post := pg_temp.m395_snap();
+  PERFORM set_config('probe.p1178', pg_temp.m395_veredicto(d, pre, post,
+    '395: alergias_en_receta: anon 42501, sin sesión PR001, paciente PR002, paciente NULL PR003, médico sin relación PR009, 51 ids PR004; con 50 ids y con [21,22,22,NULL] devuelve solo 22=ibuprofenos; NULL -> 0 filas'), false);
+EXCEPTION WHEN OTHERS THEN
+  PERFORM set_config('probe.p1178', 'FALLO ('||SQLSTATE||' '||SQLERRM||')', false);
+END $$;
+SELECT set_config('role', 'none', true);
+
+-- ---------------- P1179 395: las negaciones y los valores basura reales de prod no dan coincidencia ----------------
+-- Valores de pacientes.alergias medidos en prod el 19-nov-2026: 'n' (x2), 'Ninguna ', 'u', 'v' y 'Penicilina'.
+DO $$
+DECLARE est text; d text := ''; pre text; post text; s text; v text; n int; r record;
+BEGIN
+  est := pg_temp.m395_estado();
+  IF est = 'pre' THEN PERFORM set_config('probe.p1179', 'PENDIENTE (estado de la 395: pre)', false); RETURN; END IF;
+  IF est <> 'post' THEN PERFORM set_config('probe.p1179', 'ROJO (395 '||est||')', false); RETURN; END IF;
+  pre := pg_temp.m395_snap();
+  FOREACH s IN ARRAY ARRAY['Ninguna ', 'niega', 'n', 'u', 'v', 'NINGUNO', ' No refiere ', 'N/A', 'Desconocida', 'Sin alergias', '', ' ; , / '] LOOP
+    EXECUTE 'SELECT private.terminos_alergia($1)::text' INTO v USING s;
+    d := d || pg_temp.m395_eq('términos de '||quote_literal(s), v, '{}');
+  END LOOP;
+  EXECUTE 'SELECT private.terminos_alergia($1)::text' INTO v USING E'Penicilina; AINES / Sulfas\n«Ácido acetilsalicílico», ab';
+  d := d || pg_temp.m395_eq('términos (control positivo)', v, '{"acido acetilsalicilico",aines,penicilina,sulfas}');
+  -- pacientes reales con esos valores: ninguna coincidencia contra todo el catálogo
+  FOR r IN SELECT pa.id, pa.alergias FROM public.pacientes pa WHERE pa.alergias IN ('n', 'u', 'v', 'Ninguna ', 'Penicilina') ORDER BY pa.id LOOP
+    EXECUTE 'SELECT count(*)::int FROM public.medicamentos m WHERE private.coincidencia_alergia($1, m.id) IS NOT NULL' INTO n USING r.id;
+    d := d || pg_temp.m395_eq('paciente '||r.id||' ('||quote_literal(r.alergias)||')', n::text, '0');
+  END LOOP;
+  IF (SELECT count(*) FROM public.pacientes pa WHERE pa.alergias IN ('n', 'u', 'v', 'Ninguna ')) = 0 THEN
+    d := d || 'X:ningún paciente real con los valores basura medidos (fixture cambió); ';
+  END IF;
+  -- subcadena que no empieza palabra: no coincide; prefijo de palabra: sí
+  BEGIN
+    UPDATE public.pacientes SET alergias = 'cilina' WHERE id = 23;
+    EXECUTE 'SELECT COALESCE(private.coincidencia_alergia(23, 23), ''NULL'')' INTO v;
+    d := d || pg_temp.m395_eq('''cilina'' contra Amoxicilina', v, 'NULL');
+    UPDATE public.pacientes SET alergias = 'Amox' WHERE id = 23;
+    EXECUTE 'SELECT COALESCE(private.coincidencia_alergia(23, 23), ''NULL'')' INTO v;
+    d := d || pg_temp.m395_eq('''Amox'' contra Amoxicilina', v, 'amox');
+    UPDATE public.pacientes SET alergias = 'aspirinas' WHERE id = 23;
+    EXECUTE 'SELECT COALESCE(private.coincidencia_alergia(23, 38), ''NULL'')' INTO v;
+    d := d || pg_temp.m395_eq('''aspirinas'' contra Acido Acetilsalicilico/Aspirina', v, 'aspirinas');
+    RAISE EXCEPTION 'P1179 descarte' USING ERRCODE = 'P0999';
+  EXCEPTION WHEN SQLSTATE 'P0999' THEN NULL;
+  END;
+  post := pg_temp.m395_snap();
+  PERFORM set_config('probe.p1179', pg_temp.m395_veredicto(d, pre, post,
+    '395: «Ninguna », «niega», «n», «u», «v» y las demás negaciones dan 0 términos; los pacientes reales con esos valores y con «Penicilina» no coinciden con ningún medicamento; «cilina» no coincide con Amoxicilina, «Amox» sí, y «aspirinas» coincide por el singular'), false);
+EXCEPTION WHEN OTHERS THEN
+  PERFORM set_config('probe.p1179', 'FALLO ('||SQLSTATE||' '||SQLERRM||')', false);
+END $$;
+SELECT set_config('role', 'none', true);
+
+-- ---------------- P1180 395: la llamada con 3 argumentos sigue funcionando (posicional y por nombre) ----------------
+DO $$
+DECLARE est text; d text := ''; pre text; post text; a text; j jsonb;
+BEGIN
+  est := pg_temp.m395_estado();
+  IF est = 'pre' THEN PERFORM set_config('probe.p1180', 'PENDIENTE (estado de la 395: pre)', false); RETURN; END IF;
+  IF est <> 'post' THEN PERFORM set_config('probe.p1180', 'ROJO (395 '||est||')', false); RETURN; END IF;
+  pre := pg_temp.m395_snap();
+  BEGIN
+    PERFORM pg_temp.m395_fijar();
+    a := pg_temp.m395_q('09d243d5-b222-482a-9762-94a582e9e752', format('SELECT public.emitir_receta(23, %L, %L::jsonb)::text', 'P1180 QA',
+           jsonb_build_array(pg_temp.m395_item(21))));
+    d := d || pg_temp.m395_eq('posicional', left(a, 3), 'OK:');
+    IF a LIKE 'OK:%' THEN
+      j := substr(a, 4)::jsonb;
+      d := d || pg_temp.m395_eq('posicional: cita_id|folio', (SELECT COALESCE(r.cita_id::text, 'NULL')||'|'||r.folio FROM public.recetas r WHERE r.id = (j->>'receta_id')::bigint),
+                                'NULL|'||(j->>'folio'));
+    END IF;
+    a := pg_temp.m395_q('09d243d5-b222-482a-9762-94a582e9e752',
+           format('SELECT public.emitir_receta(p_paciente_id => 23, p_instrucciones_generales => %L, p_items => %L::jsonb)::text',
+                  'P1180 QA', jsonb_build_array(pg_temp.m395_item(21))));
+    d := d || pg_temp.m395_eq('por nombre (como el front)', left(a, 3), 'OK:');
+    IF a LIKE 'OK:%' THEN
+      j := substr(a, 4)::jsonb;
+      d := d || pg_temp.m395_eq('por nombre: claves', (SELECT string_agg(k, ',' ORDER BY k) FROM jsonb_object_keys(j) k), 'folio,numero_correlativo,numero_formateado,receta_id');
+    END IF;
+    RAISE EXCEPTION 'P1180 descarte' USING ERRCODE = 'P0999';
+  EXCEPTION WHEN SQLSTATE 'P0999' THEN NULL;
+  END;
+  post := pg_temp.m395_snap();
+  PERFORM set_config('probe.p1180', pg_temp.m395_veredicto(d, pre, post,
+    '395: emitir_receta con 3 argumentos (posicional y por nombre, sin p_cita_id) emite con cita_id NULL y folio guardado, y devuelve las 4 claves'), false);
+EXCEPTION WHEN OTHERS THEN
+  PERFORM set_config('probe.p1180', 'FALLO ('||SQLSTATE||' '||SQLERRM||')', false);
+END $$;
+SELECT set_config('role', 'none', true);
+
+-- ---------------- P1181 395: receta_alertas_alergia es append-only (PR013 para service_role y postgres; 42501 para authenticated) ----------------
+DO $$
+DECLARE est text; d text := ''; pre text; post text; a text; aid bigint; f0 text; j jsonb; st text;
+BEGIN
+  est := pg_temp.m395_estado();
+  IF est = 'pre' THEN PERFORM set_config('probe.p1181', 'PENDIENTE (estado de la 395: pre)', false); RETURN; END IF;
+  IF est <> 'post' THEN PERFORM set_config('probe.p1181', 'ROJO (395 '||est||')', false); RETURN; END IF;
+  pre := pg_temp.m395_snap();
+  BEGIN
+    PERFORM pg_temp.m395_fijar();
+    a := pg_temp.m395_q('09d243d5-b222-482a-9762-94a582e9e752', format('SELECT public.emitir_receta(23, %L, %L::jsonb)::text', 'P1181 QA',
+           jsonb_build_array(pg_temp.m395_item(22, 'Tolera ibuprofeno (P1181)'))));
+    IF a NOT LIKE 'OK:%' THEN RAISE EXCEPTION 'fixture roto: P1181 no pudo emitir la receta con alerta (%)', a; END IF;
+    j := substr(a, 4)::jsonb;
+    aid := (SELECT al.id FROM public.receta_alertas_alergia al WHERE al.receta_id = (j->>'receta_id')::bigint);
+    IF aid IS NULL THEN RAISE EXCEPTION 'fixture roto: P1181 sin fila de auditoría'; END IF;
+    f0 := (SELECT md5(al::text) FROM public.receta_alertas_alergia al WHERE al.id = aid);
+    a := pg_temp.m395_q(NULL, format('WITH u AS (UPDATE public.receta_alertas_alergia SET motivo = %L WHERE id = %s RETURNING 1) SELECT count(*)::text FROM u', 'cambiado por P1181', aid), 'service_role');
+    d := d || pg_temp.m395_eq('service_role UPDATE', left(a, 9), 'ERR:PR013');
+    a := pg_temp.m395_q(NULL, format('WITH u AS (DELETE FROM public.receta_alertas_alergia WHERE id = %s RETURNING 1) SELECT count(*)::text FROM u', aid), 'service_role');
+    d := d || pg_temp.m395_eq('service_role DELETE', left(a, 9), 'ERR:PR013');
+    BEGIN
+      UPDATE public.receta_alertas_alergia SET motivo = 'cambiado por P1181' WHERE id = aid;
+      st := 'PASO';
+    EXCEPTION WHEN SQLSTATE 'PR013' THEN st := 'PR013';
+    END;
+    d := d || pg_temp.m395_eq('postgres UPDATE', st, 'PR013');
+    BEGIN
+      DELETE FROM public.receta_alertas_alergia WHERE id = aid;
+      st := 'PASO';
+    EXCEPTION WHEN SQLSTATE 'PR013' THEN st := 'PR013';
+    END;
+    d := d || pg_temp.m395_eq('postgres DELETE', st, 'PR013');
+    a := pg_temp.m395_q('09d243d5-b222-482a-9762-94a582e9e752', format('WITH u AS (UPDATE public.receta_alertas_alergia SET motivo = %L WHERE id = %s RETURNING 1) SELECT count(*)::text FROM u', 'cambiado por P1181', aid));
+    d := d || pg_temp.m395_eq('autor UPDATE', left(a, 9), 'ERR:42501');
+    a := pg_temp.m395_q('09d243d5-b222-482a-9762-94a582e9e752', format('WITH u AS (DELETE FROM public.receta_alertas_alergia WHERE id = %s RETURNING 1) SELECT count(*)::text FROM u', aid));
+    d := d || pg_temp.m395_eq('autor DELETE', left(a, 9), 'ERR:42501');
+    a := pg_temp.m395_q('09d243d5-b222-482a-9762-94a582e9e752', format(
+           'WITH u AS (INSERT INTO public.receta_alertas_alergia (receta_id, receta_item_id, paciente_id, medico_id, medicamento_id, termino_alergia, alergias_snapshot, motivo) '
+           ||'SELECT receta_id, receta_item_id, paciente_id, medico_id, medicamento_id, termino_alergia, alergias_snapshot, %L FROM public.receta_alertas_alergia WHERE id = %s RETURNING 1) SELECT count(*)::text FROM u',
+           'insertado por P1181', aid));
+    d := d || pg_temp.m395_eq('autor INSERT', left(a, 9), 'ERR:42501');
+    d := d || pg_temp.m395_eq('fila intacta', (SELECT md5(al::text) FROM public.receta_alertas_alergia al WHERE al.id = aid), f0);
+    d := d || pg_temp.m395_eq('filas de la receta', (SELECT count(*)::text FROM public.receta_alertas_alergia al WHERE al.receta_id = (j->>'receta_id')::bigint), '1');
+    RAISE EXCEPTION 'P1181 descarte' USING ERRCODE = 'P0999';
+  EXCEPTION WHEN SQLSTATE 'P0999' THEN NULL;
+  END;
+  post := pg_temp.m395_snap();
+  PERFORM set_config('probe.p1181', pg_temp.m395_veredicto(d, pre, post,
+    '395: receta_alertas_alergia: UPDATE y DELETE dan PR013 como service_role y como postgres; el médico autor recibe 42501 en UPDATE, DELETE e INSERT; la fila queda intacta'), false);
+EXCEPTION WHEN OTHERS THEN
+  PERFORM set_config('probe.p1181', CASE WHEN SQLERRM LIKE 'fixture roto%' THEN 'ROJO ('||SQLERRM||')' ELSE 'FALLO ('||SQLSTATE||' '||SQLERRM||')' END, false);
+END $$;
+SELECT set_config('role', 'none', true);
+
 -- @@HARNESS_RESULTADOS@@
 -- ===== Veredictos como result set =====
 SELECT 'P1_anon_insert_citas'              AS probe, current_setting('probe.p1', true)  AS verdict, 'BLOQUEADO' AS esperado_post_fix
@@ -44436,7 +45020,7 @@ UNION ALL SELECT 'P835_items_insert_directo_medico',    current_setting('probe.p
 UNION ALL SELECT 'P836_emitir_receta_positivo',         current_setting('probe.p836', true), 'OK (RPC + notificar + modalidad)'
 UNION ALL SELECT 'P837_items_medico_sin_update_delete', current_setting('probe.p837', true), 'OK (0 filas)'
 UNION ALL SELECT 'P838_items_superadmin_sin_insert',    current_setting('probe.p838', true), 'OK (INSERT 42501, S/U/D 1 fila)'
-UNION ALL SELECT 'P839_recetas_catalogo_sin_insert',    current_setting('probe.p839', true), 'OK (sin INSERT ni policy INSERT/ALL)'
+UNION ALL SELECT 'P839_recetas_catalogo_sin_insert',    current_setting('probe.p839', true), 'OK (sin INSERT ni policy INSERT/ALL; emitir_receta de la 316 en pre-395 o de la 395 en post; parcial: ROJO)'
 UNION ALL SELECT 'P840_verificar_despacho_cancelada',    current_setting('probe.p840', true), 'OK (cancelada PR010, activa OK)'
 UNION ALL SELECT 'P841_dispensacion_token_cancelada',    current_setting('probe.p841', true), 'OK (cancelada PR010 sin cambios)'
 UNION ALL SELECT 'P842_dispensacion_dirigida_cancelada', current_setting('probe.p842', true), 'OK (cancelada PR010 sin cambios)'
@@ -44789,6 +45373,16 @@ UNION ALL SELECT 'M392_FX_cierre_escritura_clinicas',  current_setting('probe.m3
 UNION ALL SELECT 'P1170_clinicas_catalogo_392',  current_setting('probe.p1170', true), 'OK (392: relacl authenticated=r; sin privilegios por columna; 4 policies SELECT; trigger PT001 intacto; RPCs sin cambio; pre: PENDIENTE)'
 UNION ALL SELECT 'P1171_clinicas_nadie_escribe_392',  current_setting('probe.p1171', true), 'OK (392: dueño activo e inactivo, staff, admins, médico, paciente y proveedor: INSERT/UPDATE/DELETE 42501; sin cascada; pre: PENDIENTE)'
 UNION ALL SELECT 'P1172_clinicas_rpcs_vivas_392',  current_setting('probe.p1172', true), 'OK (392: actualizar_clinica, aprobar_personalizacion, crear_clinica_con_dueno y registrar_clinica_desde_invitacion siguen; pre: PENDIENTE)'
+UNION ALL SELECT 'M395_FX_recetas_cita_folio_alergias',  current_setting('probe.m395_fx', true), 'OK (helpers de pg_temp creados; estado de la 395: post; pre: PENDIENTE; parcial: ROJO)'
+UNION ALL SELECT 'P1173_recetas_catalogo_395',  current_setting('probe.p1173', true), 'OK (395: emitir_receta única de 4 argumentos; funciones de alergias; auditoría append-only; cita_id y folio; pre: PENDIENTE)'
+UNION ALL SELECT 'P1174_alergia_sin_motivo_pr011_395',  current_setting('probe.p1174', true), 'OK (395: PR011 sin motivo, sin consumir correlativo; pre: PENDIENTE)'
+UNION ALL SELECT 'P1175_alergia_con_motivo_auditada_395',  current_setting('probe.p1175', true), 'OK (395: emitida con motivo, folio guardado y fila de auditoría; pre: PENDIENTE)'
+UNION ALL SELECT 'P1176_cita_invalida_pr012_395',  current_setting('probe.p1176', true), 'OK (395: PR012 con cita ajena, de otro paciente, cancelada o inexistente; pre: PENDIENTE)'
+UNION ALL SELECT 'P1177_cita_propia_cita_id_395',  current_setting('probe.p1177', true), 'OK (395: cita propia -> recetas.cita_id; pre: PENDIENTE)'
+UNION ALL SELECT 'P1178_alergias_en_receta_gate_395',  current_setting('probe.p1178', true), 'OK (395: gate PR001/PR002/PR003/PR009/PR004, anon 42501; pre: PENDIENTE)'
+UNION ALL SELECT 'P1179_alergias_sin_falsos_positivos_395',  current_setting('probe.p1179', true), 'OK (395: negaciones y valores reales sin coincidencia; pre: PENDIENTE)'
+UNION ALL SELECT 'P1180_emitir_receta_3_argumentos_395',  current_setting('probe.p1180', true), 'OK (395: la llamada con 3 argumentos sigue; pre: PENDIENTE)'
+UNION ALL SELECT 'P1181_alertas_alergia_append_only_395',  current_setting('probe.p1181', true), 'OK (395: UPDATE/DELETE PR013; authenticated 42501; pre: PENDIENTE)'
 UNION ALL SELECT 'P1010_campana_vistas_sin_update_367',  current_setting('probe.p1010', true), 'OK (367: INSERT 1; ON CONFLICT DO NOTHING 0 sin error; DO UPDATE y UPDATE 42501; otro paciente 0; antes de la 367: PENDIENTE)'
 UNION ALL SELECT 'P1009_datos_bancarios_acotados_366',  current_setting('probe.p1009', true), 'OK (366: cuenta GT solo super_admin/admin_pais GT/proveedores GT; checkout 1 fila; config 21 super_admin y 14 el resto, admin_pais incluido; antes de la 366: PENDIENTE)'
 UNION ALL SELECT 'DET_p1009',  'DET ' || COALESCE(NULLIF(current_setting('probe.p1009_det', true), ''), '(sin dato)'), 'DET (detalle de P1009, no es probe)'
@@ -45041,7 +45635,7 @@ UNION ALL SELECT 'P000_CENTINELA_veredictos_no_nulos',
        'probe.p866', 'probe.p867', 'probe.p868', 'probe.p869', 'probe.p870', 'probe.p871', 'probe.p872', 'probe.p873', 'probe.p874', 'probe.p875', 'probe.p876', 'probe.p877', 'probe.p878',
        'probe.p879', 'probe.p880', 'probe.p881', 'probe.p882', 'probe.p883', 'probe.p884',
        'probe.p885', 'probe.p886', 'probe.p887', 'probe.p888', 'probe.p889', 'probe.p890', 'probe.p891', 'probe.p892', 'probe.p893', 'probe.p894', 'probe.p895', 'probe.p896', 'probe.p908', 'probe.p909', 'probe.p910', 'probe.p911',
-       'probe.p897', 'probe.p898', 'probe.p899', 'probe.p900', 'probe.p901', 'probe.p902', 'probe.p903', 'probe.p904', 'probe.p905', 'probe.p906', 'probe.p907', 'probe.p912', 'probe.p913', 'probe.p914', 'probe.p915', 'probe.p916', 'probe.p917', 'probe.p918', 'probe.p919', 'probe.p920', 'probe.p921', 'probe.p922', 'probe.p923', 'probe.p924', 'probe.p925', 'probe.p926', 'probe.p927', 'probe.p928', 'probe.p929', 'probe.p930', 'probe.p931', 'probe.p932', 'probe.p933', 'probe.p934', 'probe.p935', 'probe.p936', 'probe.p937', 'probe.p938', 'probe.p939', 'probe.p940', 'probe.p941', 'probe.p942', 'probe.p943', 'probe.p944', 'probe.p945', 'probe.p946', 'probe.p947', 'probe.p948', 'probe.p949', 'probe.p950', 'probe.p951', 'probe.p952', 'probe.p953', 'probe.p954', 'probe.p955', 'probe.p956', 'probe.p957', 'probe.p958', 'probe.p959', 'probe.p960', 'probe.p961', 'probe.p962', 'probe.p963', 'probe.p964', 'probe.p965', 'probe.p966', 'probe.p967', 'probe.p968', 'probe.p969', 'probe.p970', 'probe.p971', 'probe.p972', 'probe.p973', 'probe.p974', 'probe.p975', 'probe.p976', 'probe.p977', 'probe.p978', 'probe.p979', 'probe.p980', 'probe.p981', 'probe.p982', 'probe.p983', 'probe.p984', 'probe.p985', 'probe.p986', 'probe.p987', 'probe.p988', 'probe.p989', 'probe.p990', 'probe.p991', 'probe.p992', 'probe.p993', 'probe.p994', 'probe.p995', 'probe.p996', 'probe.p997', 'probe.p998', 'probe.p999', 'probe.p1000', 'probe.p1001', 'probe.p1002', 'probe.p1003', 'probe.p1004', 'probe.p1005', 'probe.p1006', 'probe.p1007', 'probe.p1008', 'probe.p1009', 'probe.p1010', 'probe.p1011', 'probe.p1012', 'probe.p1013', 'probe.p1014', 'probe.e370_fx', 'probe.p1015', 'probe.p1016', 'probe.p1017', 'probe.p1018', 'probe.g371_fx', 'probe.p1019', 'probe.p1020', 'probe.p1021', 'probe.p1022', 'probe.g372_fx', 'probe.p1023', 'probe.p1024', 'probe.p1025', 'probe.p1035', 'probe.p1036', 'probe.p1037', 'probe.p1038', 'probe.p1039', 'probe.p1040', 'probe.m375_fx', 'probe.p1041', 'probe.p1042', 'probe.p1043', 'probe.p1044', 'probe.p1045', 'probe.p1046', 'probe.p1047', 'probe.p1048', 'probe.p1049', 'probe.p1050', 'probe.p1051', 'probe.p1052', 'probe.p1053', 'probe.p1054', 'probe.p1055', 'probe.p1056', 'probe.p1057', 'probe.p1058', 'probe.p1059', 'probe.p1060', 'probe.p1061', 'probe.m376_fx', 'probe.p1062', 'probe.p1063', 'probe.p1064', 'probe.m377_fx', 'probe.p1065', 'probe.p1066', 'probe.p1067', 'probe.p1068', 'probe.p1069', 'probe.p1070', 'probe.p1071', 'probe.p1072', 'probe.p1073', 'probe.p1074', 'probe.m378_fx', 'probe.p1075', 'probe.p1076', 'probe.p1077', 'probe.p1078', 'probe.p1079', 'probe.p1080', 'probe.p1081', 'probe.p1082', 'probe.p1083', 'probe.m379_fx', 'probe.p1084', 'probe.p1085', 'probe.p1086', 'probe.p1087', 'probe.p1088', 'probe.p1089', 'probe.p1090', 'probe.m380_fx', 'probe.p1091', 'probe.p1092', 'probe.p1093', 'probe.p1094', 'probe.p1095', 'probe.p1096', 'probe.p1097', 'probe.p1098', 'probe.h_restaura', 'probe.m381_fx', 'probe.p1099', 'probe.p1100', 'probe.p1101', 'probe.p1102', 'probe.p1103', 'probe.p1104', 'probe.m382_fx', 'probe.p1105', 'probe.p1106', 'probe.p1107', 'probe.p1108', 'probe.p1109', 'probe.p1110', 'probe.p1111', 'probe.p1112', 'probe.p1113', 'probe.p1114', 'probe.p1115', 'probe.p1116', 'probe.p1117', 'probe.p1118', 'probe.p1119', 'probe.m383_fx', 'probe.p1120', 'probe.p1121', 'probe.p1122', 'probe.p1123', 'probe.p1124', 'probe.p1125', 'probe.p1126', 'probe.p1127', 'probe.p1128', 'probe.p1129', 'probe.p1130', 'probe.p1131', 'probe.m384_fx', 'probe.p1132', 'probe.p1133', 'probe.p1134', 'probe.p1135', 'probe.p1136', 'probe.p1137', 'probe.m385_fx', 'probe.p1138', 'probe.p1139', 'probe.p1140', 'probe.p1141', 'probe.m386_fx', 'probe.p1142', 'probe.p1143', 'probe.p1144', 'probe.p1145', 'probe.p1146', 'probe.p1147', 'probe.m387_fx', 'probe.p1148', 'probe.p1149', 'probe.p1150', 'probe.p1151', 'probe.m388_fx', 'probe.p1152', 'probe.p1153', 'probe.p1154', 'probe.p1155', 'probe.p1156', 'probe.m389_fx', 'probe.p1157', 'probe.p1158', 'probe.p1159', 'probe.p1160', 'probe.m390_fx', 'probe.p1161', 'probe.p1162', 'probe.p1163', 'probe.p1164', 'probe.m391_fx', 'probe.p1165', 'probe.p1166', 'probe.p1167', 'probe.p1168', 'probe.p1169', 'probe.m392_fx', 'probe.p1170', 'probe.p1171', 'probe.p1172'
+       'probe.p897', 'probe.p898', 'probe.p899', 'probe.p900', 'probe.p901', 'probe.p902', 'probe.p903', 'probe.p904', 'probe.p905', 'probe.p906', 'probe.p907', 'probe.p912', 'probe.p913', 'probe.p914', 'probe.p915', 'probe.p916', 'probe.p917', 'probe.p918', 'probe.p919', 'probe.p920', 'probe.p921', 'probe.p922', 'probe.p923', 'probe.p924', 'probe.p925', 'probe.p926', 'probe.p927', 'probe.p928', 'probe.p929', 'probe.p930', 'probe.p931', 'probe.p932', 'probe.p933', 'probe.p934', 'probe.p935', 'probe.p936', 'probe.p937', 'probe.p938', 'probe.p939', 'probe.p940', 'probe.p941', 'probe.p942', 'probe.p943', 'probe.p944', 'probe.p945', 'probe.p946', 'probe.p947', 'probe.p948', 'probe.p949', 'probe.p950', 'probe.p951', 'probe.p952', 'probe.p953', 'probe.p954', 'probe.p955', 'probe.p956', 'probe.p957', 'probe.p958', 'probe.p959', 'probe.p960', 'probe.p961', 'probe.p962', 'probe.p963', 'probe.p964', 'probe.p965', 'probe.p966', 'probe.p967', 'probe.p968', 'probe.p969', 'probe.p970', 'probe.p971', 'probe.p972', 'probe.p973', 'probe.p974', 'probe.p975', 'probe.p976', 'probe.p977', 'probe.p978', 'probe.p979', 'probe.p980', 'probe.p981', 'probe.p982', 'probe.p983', 'probe.p984', 'probe.p985', 'probe.p986', 'probe.p987', 'probe.p988', 'probe.p989', 'probe.p990', 'probe.p991', 'probe.p992', 'probe.p993', 'probe.p994', 'probe.p995', 'probe.p996', 'probe.p997', 'probe.p998', 'probe.p999', 'probe.p1000', 'probe.p1001', 'probe.p1002', 'probe.p1003', 'probe.p1004', 'probe.p1005', 'probe.p1006', 'probe.p1007', 'probe.p1008', 'probe.p1009', 'probe.p1010', 'probe.p1011', 'probe.p1012', 'probe.p1013', 'probe.p1014', 'probe.e370_fx', 'probe.p1015', 'probe.p1016', 'probe.p1017', 'probe.p1018', 'probe.g371_fx', 'probe.p1019', 'probe.p1020', 'probe.p1021', 'probe.p1022', 'probe.g372_fx', 'probe.p1023', 'probe.p1024', 'probe.p1025', 'probe.p1035', 'probe.p1036', 'probe.p1037', 'probe.p1038', 'probe.p1039', 'probe.p1040', 'probe.m375_fx', 'probe.p1041', 'probe.p1042', 'probe.p1043', 'probe.p1044', 'probe.p1045', 'probe.p1046', 'probe.p1047', 'probe.p1048', 'probe.p1049', 'probe.p1050', 'probe.p1051', 'probe.p1052', 'probe.p1053', 'probe.p1054', 'probe.p1055', 'probe.p1056', 'probe.p1057', 'probe.p1058', 'probe.p1059', 'probe.p1060', 'probe.p1061', 'probe.m376_fx', 'probe.p1062', 'probe.p1063', 'probe.p1064', 'probe.m377_fx', 'probe.p1065', 'probe.p1066', 'probe.p1067', 'probe.p1068', 'probe.p1069', 'probe.p1070', 'probe.p1071', 'probe.p1072', 'probe.p1073', 'probe.p1074', 'probe.m378_fx', 'probe.p1075', 'probe.p1076', 'probe.p1077', 'probe.p1078', 'probe.p1079', 'probe.p1080', 'probe.p1081', 'probe.p1082', 'probe.p1083', 'probe.m379_fx', 'probe.p1084', 'probe.p1085', 'probe.p1086', 'probe.p1087', 'probe.p1088', 'probe.p1089', 'probe.p1090', 'probe.m380_fx', 'probe.p1091', 'probe.p1092', 'probe.p1093', 'probe.p1094', 'probe.p1095', 'probe.p1096', 'probe.p1097', 'probe.p1098', 'probe.h_restaura', 'probe.m381_fx', 'probe.p1099', 'probe.p1100', 'probe.p1101', 'probe.p1102', 'probe.p1103', 'probe.p1104', 'probe.m382_fx', 'probe.p1105', 'probe.p1106', 'probe.p1107', 'probe.p1108', 'probe.p1109', 'probe.p1110', 'probe.p1111', 'probe.p1112', 'probe.p1113', 'probe.p1114', 'probe.p1115', 'probe.p1116', 'probe.p1117', 'probe.p1118', 'probe.p1119', 'probe.m383_fx', 'probe.p1120', 'probe.p1121', 'probe.p1122', 'probe.p1123', 'probe.p1124', 'probe.p1125', 'probe.p1126', 'probe.p1127', 'probe.p1128', 'probe.p1129', 'probe.p1130', 'probe.p1131', 'probe.m384_fx', 'probe.p1132', 'probe.p1133', 'probe.p1134', 'probe.p1135', 'probe.p1136', 'probe.p1137', 'probe.m385_fx', 'probe.p1138', 'probe.p1139', 'probe.p1140', 'probe.p1141', 'probe.m386_fx', 'probe.p1142', 'probe.p1143', 'probe.p1144', 'probe.p1145', 'probe.p1146', 'probe.p1147', 'probe.m387_fx', 'probe.p1148', 'probe.p1149', 'probe.p1150', 'probe.p1151', 'probe.m388_fx', 'probe.p1152', 'probe.p1153', 'probe.p1154', 'probe.p1155', 'probe.p1156', 'probe.m389_fx', 'probe.p1157', 'probe.p1158', 'probe.p1159', 'probe.p1160', 'probe.m390_fx', 'probe.p1161', 'probe.p1162', 'probe.p1163', 'probe.p1164', 'probe.m391_fx', 'probe.p1165', 'probe.p1166', 'probe.p1167', 'probe.p1168', 'probe.p1169', 'probe.m392_fx', 'probe.p1170', 'probe.p1171', 'probe.p1172', 'probe.m395_fx', 'probe.p1173', 'probe.p1174', 'probe.p1175', 'probe.p1176', 'probe.p1177', 'probe.p1178', 'probe.p1179', 'probe.p1180', 'probe.p1181'
              ]) AS n) s),
   'OK (todos los veredictos publicados)';
 
