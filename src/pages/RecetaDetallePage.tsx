@@ -5,6 +5,7 @@ import { useRecetas } from '@/hooks/useRecetas'
 import { generarPDFReceta, imprimirPDFReceta } from '@/lib/pdfReceta'
 import { supabase } from '@/lib/supabase'
 import { parseFechaLocal } from '@/lib/fecha'
+import { folioReceta } from '@/lib/folioReceta'
 import EnviarRecetaEmail from '@/components/recetas/EnviarRecetaEmail'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
@@ -65,7 +66,8 @@ export default function RecetaDetallePage() {
           setReceta({
             ...data.receta,
             items: data.items || [],
-            paciente: data.paciente
+            paciente: data.paciente,
+            cedula_medico: data.cedula_medico,
           })
         } else {
           setError(`No se encontró la receta con ID ${recetaId}. Es posible que no exista o que no tenga permisos para verla.`)
@@ -115,7 +117,7 @@ export default function RecetaDetallePage() {
       toast.error('Faltan datos para generar el PDF')
       return
     }
-    generarPDFReceta(receta, receta.items, receta.paciente, medico)
+    generarPDFReceta(receta, receta.items, receta.paciente, medico, receta.cedula_medico)
     toast.success('PDF descargado')
   }
 
@@ -125,7 +127,7 @@ export default function RecetaDetallePage() {
       toast.error('Faltan datos para imprimir')
       return
     }
-    imprimirPDFReceta(receta, receta.items, receta.paciente, medico)
+    imprimirPDFReceta(receta, receta.items, receta.paciente, medico, receta.cedula_medico)
     toast.success('Abriendo ventana de impresión')
   }
 
@@ -193,7 +195,7 @@ export default function RecetaDetallePage() {
             </Button>
             <div>
               <h1 className="text-2xl font-bold text-[#1a2a3a]">Receta Médica</h1>
-              <p className="text-sm text-gray-500">Folio: REC-{String(receta.id).padStart(6, '0')}</p>
+              <p className="text-sm text-gray-500" data-testid="receta-folio">Folio: {folioReceta(receta, receta.cedula_medico)}</p>
             </div>
           </div>
 

@@ -146,7 +146,7 @@ export function useRecetas(opts?: { autoFetch?: boolean }) {
 
     if (recetaError || !receta) {
       console.error('Error fetching receta:', recetaError?.message ?? recetaError?.code)
-      return { receta: null, items: [], paciente: null }
+      return { receta: null, items: [], paciente: null, cedula_medico: null }
     }
 
    const { data: items, error: itemsError } = await supabase
@@ -212,10 +212,21 @@ if (itemsConFarmacia.length > 0) {
     })
   }
 
+// H12: cédula del médico de la receta, para reconstruir el folio de las recetas sin folio guardado.
+// medicos tiene GRANT SELECT por columna (mig 375): hay que listar la columna. Si no se puede
+// leer, queda null y el folio usa 'SINCED'.
+let cedula_medico: string | null = null
+if (receta.medico_id) {
+  const { data: medicoRow } = await supabase
+    .from('medicos').select('cedula_profesional').eq('id', receta.medico_id).maybeSingle()
+  cedula_medico = (medicoRow?.cedula_profesional as string | null | undefined) ?? null
+}
+
 return { 
   receta, 
   items: itemsConFarmacia,
-  paciente: receta.pacientes || null
+  paciente: receta.pacientes || null,
+  cedula_medico,
 }
  } // ✅ Cambiar estado de receta
   const updateReceta = async (id: number, updates: Partial<Receta>) => {

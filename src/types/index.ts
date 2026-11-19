@@ -74,6 +74,8 @@ export interface Receta {
   cita_id: number | null
   /** Folio cédula-correlativo-fecha (mig 395); NULL en las recetas emitidas antes. */
   folio?: string | null
+  /** Correlativo por médico (emitir_receta); NULL en las recetas anteriores a la numeración. */
+  numero_correlativo?: number | null
   estado: 'activa' | 'completada' | 'vencida' | 'cancelada'
   instrucciones_generales: string | null
   pdf_url: string | null

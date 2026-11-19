@@ -7,6 +7,27 @@
 import { serve } from 'https://deno.land/std@0.168.0/http/server.ts'
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2'
 
+// H12: folio oficial. RÉPLICA de src/lib/folioReceta.ts (la edge no puede importar desde src/):
+// si se cambia uno, hay que cambiar el otro. 1) recetas.folio (mig 395); 2) con numero_correlativo,
+// la fórmula de emitir_receta con la fecha de created_at en UTC; 3) si no, REC-<id> marcado.
+function fechaUTC(iso: string): string {
+  const d = new Date(iso)
+  if (Number.isNaN(d.getTime())) return iso.slice(0, 10).replace(/-/g, '')
+  const mm = String(d.getUTCMonth() + 1).padStart(2, '0')
+  const dd = String(d.getUTCDate()).padStart(2, '0')
+  return `${d.getUTCFullYear()}${mm}${dd}`
+}
+function folioReceta(
+  r: { id: number; folio?: string | null; numero_correlativo?: number | null; created_at: string },
+  cedula?: string | null,
+): string {
+  if (r.folio) return r.folio
+  if (r.numero_correlativo != null) {
+    return `${cedula || 'SINCED'}-${String(r.numero_correlativo).padStart(6, '0')}-${fechaUTC(r.created_at)}`
+  }
+  return `REC-${String(r.id).padStart(6, '0')} (anterior a la numeración)`
+}
+
 const corsHeaders = {
   'Access-Control-Allow-Origin': '*',
   'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
@@ -55,7 +76,7 @@ serve(async (req) => {
     // A1: se traen tambien los campos clinicos REALES de la fila.
     const { data: receta } = await supabase
       .from('recetas')
-      .select('id, medico_id, paciente_id, diagnostico, instrucciones_generales, estado, created_at')
+      .select('id, medico_id, paciente_id, diagnostico, instrucciones_generales, estado, created_at, folio, numero_correlativo')
       .eq('id', recetaIdNum)
       .maybeSingle()
     if (!receta) {
@@ -157,6 +178,8 @@ serve(async (req) => {
       ? new Date(recetaAvanzada.dispatch_token_expira_at).toLocaleDateString('es-GT', { day: 'numeric', month: 'long', year: 'numeric' })
       : null
 
+    const folio = folioReceta(receta, medicoRec?.cedula_profesional)
+
     const pacienteNombre = [paciente?.nombre, paciente?.apellido].filter(Boolean).join(' ') || 'No registrado'
 
     // A1 FIX: sin invenciones. Si no hay diagnostico, se dice que no hay.
@@ -193,7 +216,7 @@ table.meds td { border-bottom: 1px solid #e5e5e5; padding: 8px; }
 .firma-line { border-top: 1px solid #333; width: 240px; display: inline-block; margin-top: 50px; }
 </style></head>
 <body>
-<div class="header"><h1>EzPayConnect</h1><p>Receta médica electrónica</p><p>Fecha de emisión: ${esc(fechaEmision)}</p></div>
+<div class="header"><h1>EzPayConnect</h1><p>Receta médica electrónica</p><p>Fecha de emisión: ${esc(fechaEmision)}</p><p><strong>Folio:</strong> ${esc(folio)}</p></div>
 
 <div class="section"><h3>Paciente</h3><div class="info-grid">
 <div class="info-item"><strong>Nombre:</strong> ${esc(pacienteNombre)}</div>
