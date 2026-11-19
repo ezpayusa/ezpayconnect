@@ -154,6 +154,39 @@ $fn$;
 EXCEPTION WHEN OTHERS THEN
   PERFORM set_config('probe.m391_helper', 'FALLO (no se pudo crear pg_temp.m391_estado: '||SQLSTATE||' '||SQLERRM||')', false);
 END $$;
+
+-- ============================================================================
+-- MIG 392 — helper de ESTADO, en el PRELUDIO: pg_temp.m392_estado() lo usan P1018 (d) (parte 2) y M392_FX + P1170-P1172
+-- (final de la parte 2). Solo lee catálogo.
+--   'post' = authenticated sin INSERT/UPDATE/DELETE de tabla en clinicas + sin las 3 policies "Doctores pueden
+--            crear/actualizar/eliminar ..." + "Admin ve clinicas de su pais" en SELECT + 4 policies, todas SELECT;
+--   'pre'  = lo contrario en las 5 marcas (estado post-391: 7 policies, 4 que no son SELECT);
+--   cualquier mezcla = 'parcial (...)', que cada probe publica como ROJO.
+-- ============================================================================
+DO $$
+BEGIN
+  EXECUTE $fn$
+CREATE OR REPLACE FUNCTION pg_temp.m392_estado() RETURNS text LANGUAGE plpgsql STABLE AS $body$
+DECLARE i boolean; u boolean; d boolean; dueno int; adm text; n int; n_no_select int;
+BEGIN
+  i := has_table_privilege('authenticated', 'public.clinicas', 'INSERT');
+  u := has_table_privilege('authenticated', 'public.clinicas', 'UPDATE');
+  d := has_table_privilege('authenticated', 'public.clinicas', 'DELETE');
+  dueno := (SELECT count(*) FROM pg_policy pl WHERE pl.polrelid = 'public.clinicas'::regclass
+             AND pl.polname IN ('Doctores pueden crear clinicas', 'Doctores pueden actualizar sus clinicas', 'Doctores pueden eliminar sus clinicas'));
+  adm := (SELECT pl.polcmd::text FROM pg_policy pl WHERE pl.polrelid = 'public.clinicas'::regclass AND pl.polname = 'Admin ve clinicas de su pais');
+  n := (SELECT count(*) FROM pg_policy pl WHERE pl.polrelid = 'public.clinicas'::regclass);
+  n_no_select := (SELECT count(*) FROM pg_policy pl WHERE pl.polrelid = 'public.clinicas'::regclass AND pl.polcmd <> 'r');
+  IF NOT i AND NOT u AND NOT d AND dueno = 0 AND adm = 'r' AND n = 4 AND n_no_select = 0 THEN RETURN 'post'; END IF;
+  IF i AND u AND d AND dueno = 3 AND adm = '*' AND n = 7 AND n_no_select = 4 THEN RETURN 'pre'; END IF;
+  RETURN 'parcial (insert '||i::text||', update '||u::text||', delete '||d::text||', policies del dueño '||dueno
+         ||', admin '||COALESCE(adm, '-')||', policies '||n||', no SELECT '||n_no_select||')';
+END
+$body$
+$fn$;
+EXCEPTION WHEN OTHERS THEN
+  PERFORM set_config('probe.m392_helper', 'FALLO (no se pudo crear pg_temp.m392_estado: '||SQLSTATE||' '||SQLERRM||')', false);
+END $$;
 -- @@HARNESS_PRELUDIO_FIN@@
 
 -- ============================================================
@@ -34595,7 +34628,8 @@ SELECT set_config('role', 'none', true);
 --       como postgres), PC014 si no: en los dos casos private.trg_gate_capacidad_publicidad (INVOKER, de private) ya llamo
 --       a mi_empresa_proveedor;
 --   (d) adminpais.qa hace un UPDATE sin cambios de las clinicas de su pais -> filas = las de su pais (> 0)
---       (private.trg_guard_tema_columns, de private).
+--       (private.trg_guard_tema_columns, de private). Desde la 392 authenticated no tiene UPDATE sobre clinicas: con la
+--       392 aplicada (pg_temp.m392_estado() = 'post') el caso exige 42501 de privilegio.
 -- Ninguno puede dar 42501. Todo se descarta (RAISE P0999) y se verifican los conteos y las filas tocadas.
 DO $$
 DECLARE
@@ -34703,9 +34737,20 @@ BEGIN
       GET DIAGNOSTICS n = ROW_COUNT;
       PERFORM set_config('role', 'none', true);
     EXCEPTION WHEN OTHERS THEN PERFORM set_config('role', 'none', true); st := SQLSTATE; msg := SQLERRM; END;
-    d := d||'(d) clinicas='||st||' filas='||COALESCE(n::text, '-')||'/'||o||'; ';
-    IF st <> '00000' OR n IS DISTINCT FROM o OR o = 0 THEN
-      bad := bad||'(d) '||st||' '||left(msg, 100)||' filas='||COALESCE(n::text, '-')||'/'||o||'; ';
+    d := d||'(d) clinicas='||st||' filas='||COALESCE(n::text, '-')||'/'||o||' estado 392 '||left(pg_temp.m392_estado(), 20)||'; ';
+    -- (392) Con la 392 authenticated ya no tiene UPDATE sobre clinicas: el UPDATE da 42501 de PRIVILEGIO (antes de RLS y
+    -- del trigger) y el trigger de tema solo lo disparan las RPC DEFINER (aprobar_personalizacion, actualizar_clinica).
+    -- Sin la 392 (estado 'pre'), el caso original: filas = las de su pais (> 0), sin 42501. Un estado parcial es ROJO.
+    IF pg_temp.m392_estado() = 'post' THEN
+      IF st <> '42501' OR has_table_privilege('authenticated', 'public.clinicas', 'UPDATE') THEN
+        bad := bad||'(d) con la 392 se esperaba 42501 de privilegio: '||st||' '||left(msg, 100)||' filas='||COALESCE(n::text, '-')||'/'||o||'; ';
+      END IF;
+    ELSIF pg_temp.m392_estado() = 'pre' THEN
+      IF st <> '00000' OR n IS DISTINCT FROM o OR o = 0 THEN
+        bad := bad||'(d) '||st||' '||left(msg, 100)||' filas='||COALESCE(n::text, '-')||'/'||o||'; ';
+      END IF;
+    ELSE
+      bad := bad||'(d) 392 '||pg_temp.m392_estado()||'; ';
     END IF;
 
     PERFORM set_config('request.jwt.claims', '', true);
@@ -43183,6 +43228,296 @@ EXCEPTION WHEN OTHERS THEN
 END $$;
 SELECT set_config('role', 'none', true);
 
+-- ================================================================================
+-- MIG 392 — cierre de la escritura directa de authenticated sobre public.clinicas (M392_FX + P1170-P1172).
+-- El ESTADO sale de pg_temp.m392_estado(), que vive en el PRELUDIO (lo usa también P1018 (d)). Con 'pre' los probes
+-- publican 'PENDIENTE (estado de la 392: pre)'; un estado parcial es ROJO. M392_FX crea sus propios helpers de pg_temp.
+-- Actores por id EXPLÍCITO, fijados en cada savepoint con pg_temp.m392_fijar(): el dueño inactivo de San Rafael
+-- e56879c0 (rol cliente, activo=false; no se toca), medico.qa 09d243d5 (dueño ACTIVO de una clínica sembrada por postgres
+-- con su membresía), admin_clinica 7e9ee700, gerente 1e2376a4 y secretaria 5ab93b59 (miembros de San Rafael c76d862c),
+-- adminpais.qa 8f391caf (admin_pais GT), el super_admin real 41904e2c, df452940 (otro médico) y proveedor.qa 9ca0b977.
+-- El paciente con cuenta se elige con ORDER BY id. pg_temp.m392_q captura SOLO los SQLSTATE esperados (42501, P0001,
+-- PT001); cualquier otro llega al handler del probe y publica FALLO. Cada probe descarta todo con RAISE P0999 y compara
+-- pg_temp.m392_snap() antes/después.
+-- ================================================================================
+DO $$
+DECLARE est text;
+BEGIN
+  EXECUTE $fn$
+CREATE OR REPLACE FUNCTION pg_temp.m392_q(p_uid uuid, p_sql text, p_rol text DEFAULT 'authenticated') RETURNS text LANGUAGE plpgsql AS $body$
+DECLARE v text;
+BEGIN
+  BEGIN
+    PERFORM set_config('request.jwt.claims', CASE WHEN p_uid IS NULL THEN json_build_object('role', p_rol)::text
+                                                  ELSE json_build_object('sub', p_uid, 'role', p_rol)::text END, true);
+    PERFORM set_config('role', p_rol, true);
+    EXECUTE p_sql INTO v;
+    PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
+    RETURN 'OK:'||COALESCE(v, 'NULL');
+  EXCEPTION
+    WHEN SQLSTATE '42501' OR SQLSTATE 'P0001' OR SQLSTATE 'PT001' THEN
+      PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
+      RETURN 'ERR:'||SQLSTATE||' '||SQLERRM;
+  END;
+END
+$body$
+$fn$;
+  EXECUTE $fn$
+CREATE OR REPLACE FUNCTION pg_temp.m392_eq(p_lbl text, p_got text, p_want text) RETURNS text LANGUAGE sql IMMUTABLE AS $body$
+  SELECT CASE WHEN p_got IS NOT DISTINCT FROM p_want THEN '' ELSE 'X:'||p_lbl||'='||COALESCE(left(p_got, 140), 'NULL')||' (esperado '||COALESCE(left(p_want, 140), 'NULL')||'); ' END
+$body$
+$fn$;
+  EXECUTE $fn$
+CREATE OR REPLACE FUNCTION pg_temp.m392_veredicto(p_det text, p_pre text, p_post text, p_ok text) RETURNS text LANGUAGE sql IMMUTABLE AS $body$
+  SELECT CASE
+    WHEN p_pre IS DISTINCT FROM p_post THEN 'FALLO (no restauró el estado: '||COALESCE(p_pre, 'NULL')||' -> '||COALESCE(p_post, 'NULL')||'; '||COALESCE(p_det, '')||')'
+    WHEN p_det LIKE '%FUGA:%' THEN 'FUGA ('||p_det||')'
+    WHEN p_det <> '' THEN 'FALLO ('||p_det||')'
+    ELSE 'OK ('||p_ok||')' END
+$body$
+$fn$;
+  -- conteos de lo que arrastraría un borrado en cascada + lo que crean las RPC
+  EXECUTE $fn$
+CREATE OR REPLACE FUNCTION pg_temp.m392_conteos() RETURNS text LANGUAGE sql AS $body$
+  SELECT (SELECT count(*) FROM public.clinicas)||'/'||(SELECT count(*) FROM public.medicos)||'/'||(SELECT count(*) FROM public.medico_clinicas)
+       ||'/'||(SELECT count(*) FROM public.laboratorio_clinicas)||'/'||(SELECT count(*) FROM public.invitaciones_laboratorio)
+$body$
+$fn$;
+  EXECUTE $fn$
+CREATE OR REPLACE FUNCTION pg_temp.m392_snap() RETURNS text LANGUAGE sql AS $body$
+  SELECT md5(concat_ws('|', pg_temp.m392_conteos(),
+    (SELECT md5(COALESCE(string_agg(c::text, E'\n' ORDER BY c.id), '')) FROM public.clinicas c),
+    (SELECT md5(COALESCE(string_agg(s::text, E'\n' ORDER BY s.id), '')) FROM public.solicitudes_personalizacion s),
+    (SELECT md5(COALESCE(string_agg(i::text, E'\n' ORDER BY i.id), '')) FROM public.invitaciones_clinica i),
+    (SELECT count(*) FROM auth.users)::text, (SELECT count(*) FROM public.perfiles)::text, (SELECT count(*) FROM public.notificaciones)::text,
+    (SELECT string_agg(p.id::text||p.rol||COALESCE(p.pais_id::text, '-')||p.activo::text, ',' ORDER BY p.id) FROM public.perfiles p
+      WHERE p.id IN ('e56879c0-4025-4f1f-832d-2753d9ab63e1', '09d243d5-b222-482a-9762-94a582e9e752', '7e9ee700-48ac-43e1-812b-777518b971ec',
+                     '1e2376a4-7a41-481d-bb77-a4d32982254f', '5ab93b59-874f-405b-8b62-797a0972c081', '8f391caf-85bc-4413-af8a-4006452ae09f',
+                     '41904e2c-5ef3-4fee-bd48-9ea58e0c8c37', 'df452940-cc30-48b7-80e5-09e637bf97de'))))
+$body$
+$fn$;
+  -- fija a los actores. SOLO dentro de un savepoint.
+  EXECUTE $fn$
+CREATE OR REPLACE FUNCTION pg_temp.m392_fijar() RETURNS void LANGUAGE plpgsql AS $body$
+BEGIN
+  UPDATE public.perfiles SET rol = 'admin_pais', pais_id = 'cbbbbe6d-59fe-4cf2-91ee-3e31ba1d5909', activo = true WHERE id = '8f391caf-85bc-4413-af8a-4006452ae09f';
+  UPDATE public.perfiles SET rol = 'super_admin', activo = true WHERE id = '41904e2c-5ef3-4fee-bd48-9ea58e0c8c37';
+  UPDATE public.perfiles SET rol = 'medico', pais_id = 'cbbbbe6d-59fe-4cf2-91ee-3e31ba1d5909', activo = true WHERE id IN ('09d243d5-b222-482a-9762-94a582e9e752', 'df452940-cc30-48b7-80e5-09e637bf97de');
+  UPDATE public.perfiles SET rol = 'secretaria', activo = true WHERE id = '5ab93b59-874f-405b-8b62-797a0972c081';
+  UPDATE public.perfiles SET rol = 'admin_clinica', activo = true WHERE id = '7e9ee700-48ac-43e1-812b-777518b971ec';
+  UPDATE public.perfiles SET rol = 'gerente', activo = true WHERE id = '1e2376a4-7a41-481d-bb77-a4d32982254f';
+  UPDATE public.clinicas SET pais_id = 'cbbbbe6d-59fe-4cf2-91ee-3e31ba1d5909', activa = true
+   WHERE id = 'c76d862c-e82f-4748-bc07-86c8a3343576' AND (pais_id IS DISTINCT FROM 'cbbbbe6d-59fe-4cf2-91ee-3e31ba1d5909' OR activa IS NOT TRUE);
+  IF (SELECT count(*) FROM public.perfiles WHERE id IN ('09d243d5-b222-482a-9762-94a582e9e752', '5ab93b59-874f-405b-8b62-797a0972c081',
+        '7e9ee700-48ac-43e1-812b-777518b971ec', '1e2376a4-7a41-481d-bb77-a4d32982254f', 'df452940-cc30-48b7-80e5-09e637bf97de',
+        '8f391caf-85bc-4413-af8a-4006452ae09f', '41904e2c-5ef3-4fee-bd48-9ea58e0c8c37')) <> 7
+     OR (SELECT count(DISTINCT mc.medico_id) FROM public.medico_clinicas mc WHERE mc.clinica_id = 'c76d862c-e82f-4748-bc07-86c8a3343576'
+          AND mc.medico_id IN ('5ab93b59-874f-405b-8b62-797a0972c081', '7e9ee700-48ac-43e1-812b-777518b971ec', '1e2376a4-7a41-481d-bb77-a4d32982254f')) <> 3
+     OR NOT EXISTS (SELECT 1 FROM public.clinicas WHERE id = 'c76d862c-e82f-4748-bc07-86c8a3343576' AND doctor_id = 'e56879c0-4025-4f1f-832d-2753d9ab63e1')
+     OR NOT EXISTS (SELECT 1 FROM public.medicos WHERE id = '09d243d5-b222-482a-9762-94a582e9e752')
+     OR NOT EXISTS (SELECT 1 FROM public.medicos WHERE id = 'df452940-cc30-48b7-80e5-09e637bf97de')
+     OR NOT EXISTS (SELECT 1 FROM auth.users WHERE id = '9ca0b977-3c91-48dc-aa04-2f1fab766963') THEN
+    RAISE EXCEPTION 'fixture roto: m392_fijar sin los 7 perfiles, sin las 3 membresías de c76d862c, sin San Rafael de e56879c0, sin las filas de medicos o sin proveedor.qa';
+  END IF;
+END
+$body$
+$fn$;
+  EXECUTE $fn$
+CREATE OR REPLACE FUNCTION pg_temp.m392_pac() RETURNS uuid LANGUAGE sql STABLE AS $body$
+  SELECT pa.auth_user_id FROM public.pacientes pa JOIN auth.users u ON u.id = pa.auth_user_id
+   WHERE pa.pais_id = 'cbbbbe6d-59fe-4cf2-91ee-3e31ba1d5909' ORDER BY pa.id LIMIT 1
+$body$
+$fn$;
+  EXECUTE $fn$
+CREATE OR REPLACE FUNCTION pg_temp.m392_fila(p_id uuid) RETURNS text LANGUAGE sql AS $body$
+  SELECT md5(c::text) FROM public.clinicas c WHERE c.id = p_id
+$body$
+$fn$;
+  est := pg_temp.m392_estado();
+  PERFORM set_config('probe.m392_fx', CASE WHEN est = 'pre' THEN 'PENDIENTE (estado de la 392: pre; helpers de pg_temp creados)'
+    WHEN est = 'post' THEN 'OK (helpers de pg_temp creados; estado de la 392: post)'
+    ELSE 'ROJO (392 '||est||'; helpers de pg_temp creados)' END, false);
+EXCEPTION WHEN OTHERS THEN
+  PERFORM set_config('probe.m392_fx', 'FALLO ('||SQLSTATE||' '||SQLERRM||')', false);
+END $$;
+SELECT set_config('role', 'none', true);
+
+-- ---------------- P1170 392: catálogo — clinicas sin escritura de authenticated, 4 policies SELECT, trigger PT001 intacto, RPCs sin cambio ----------------
+DO $$
+DECLARE est text; d text := ''; r record; v text;
+BEGIN
+  est := pg_temp.m392_estado();
+  IF est = 'pre' THEN PERFORM set_config('probe.p1170', 'PENDIENTE (estado de la 392: pre)', false); RETURN; END IF;
+  IF est <> 'post' THEN PERFORM set_config('probe.p1170', 'ROJO (392 '||est||')', false); RETURN; END IF;
+  d := d || pg_temp.m392_eq('relacl', (SELECT c.relacl::text FROM pg_class c WHERE c.oid = 'public.clinicas'::regclass),
+                            '{postgres=arwdDxtm/postgres,authenticated=r/postgres,service_role=arwdDxtm/postgres}');
+  d := d || pg_temp.m392_eq('attacl', (SELECT string_agg(a.attname||'='||COALESCE(a.attacl::text, '-'), '; ' ORDER BY a.attnum) FROM pg_attribute a
+                                         WHERE a.attrelid = 'public.clinicas'::regclass AND a.attnum > 0 AND NOT a.attisdropped),
+    'id=-; doctor_id=-; nombre=-; direccion=-; telefono=-; email=-; horarios=-; activa=-; created_at=-; updated_at=-; pais_id=-; logo_url=-; color_primario=-; color_secundario=-; color_fondo=-');
+  IF has_table_privilege('authenticated', 'public.clinicas', 'INSERT') OR has_table_privilege('authenticated', 'public.clinicas', 'UPDATE')
+     OR has_table_privilege('authenticated', 'public.clinicas', 'DELETE') THEN
+    d := d || 'FUGA:authenticated todavía escribe clinicas a nivel tabla; ';
+  END IF;
+  v := (SELECT string_agg(a.attname::text, ',' ORDER BY a.attnum) FROM pg_attribute a WHERE a.attrelid = 'public.clinicas'::regclass AND a.attnum > 0 AND NOT a.attisdropped
+          AND (has_column_privilege('authenticated', 'public.clinicas', a.attname::text, 'UPDATE') OR has_column_privilege('authenticated', 'public.clinicas', a.attname::text, 'INSERT')));
+  IF v IS NOT NULL THEN d := d || 'FUGA:authenticated escribe columnas de clinicas ('||v||'); '; END IF;
+  IF NOT has_table_privilege('authenticated', 'public.clinicas', 'SELECT') THEN d := d || 'X:authenticated perdió el SELECT de clinicas; '; END IF;
+  IF has_table_privilege('anon', 'public.clinicas', 'SELECT') OR has_table_privilege('anon', 'public.clinicas', 'INSERT')
+     OR has_table_privilege('anon', 'public.clinicas', 'UPDATE') OR has_table_privilege('anon', 'public.clinicas', 'DELETE') THEN
+    d := d || 'FUGA:anon con privilegios sobre clinicas; ';
+  END IF;
+  d := d || pg_temp.m392_eq('policies', (SELECT string_agg(pl.polname||'['||pl.polcmd::text||']', ', ' ORDER BY pl.polname) FROM pg_policy pl
+                                           WHERE pl.polrelid = 'public.clinicas'::regclass),
+    'Admin ve clinicas de su pais[r], Doctores pueden ver sus clinicas[r], Paciente ve clinicas de su pais[r], clinicas_select_miembro[r]');
+  d := d || pg_temp.m392_eq('policies_md5', (SELECT md5(string_agg(pl.polname||'|'||pl.polcmd::text||'|'||pl.polpermissive::text||'|'||
+                   ARRAY(SELECT CASE x WHEN 0 THEN 'public' ELSE pg_get_userbyid(x) END FROM unnest(pl.polroles) x ORDER BY 1)::text||'|'||
+                   COALESCE(pg_get_expr(pl.polqual, pl.polrelid), '-')||'|'||COALESCE(pg_get_expr(pl.polwithcheck, pl.polrelid), '-'), E'\n' ORDER BY pl.polname))||' '||count(*)
+                   FROM pg_policy pl WHERE pl.polrelid = 'public.clinicas'::regclass), 'c5c8342eb321cebc7b49c1930b934ec9 4');
+  d := d || pg_temp.m392_eq('trigger', (SELECT md5(string_agg(t.tgname||' '||md5(p.prosrc)||' '||pg_get_triggerdef(t.oid), E'\n' ORDER BY t.tgname))
+                                          FROM pg_trigger t JOIN pg_proc p ON p.oid = t.tgfoid WHERE t.tgrelid = 'public.clinicas'::regclass AND NOT t.tgisinternal),
+                            'ed128ecc9061fa2e4d0b9a4cad707e4d');
+  d := d || pg_temp.m392_eq('trg_guard_tema_columns', (SELECT p.prosecdef::text||' '||md5(p.prosrc) FROM pg_proc p WHERE p.oid = 'private.trg_guard_tema_columns()'::regprocedure),
+                            'false c28b30d803b7edec11a8e21e02baa399');
+  FOR r IN SELECT * FROM (VALUES
+      ('public.actualizar_clinica(uuid,text,text,text,text)', '2c339791c4fe1b0142157725146ab208 true'),
+      ('public.aprobar_personalizacion(uuid)', '1be49d9abf92a4da3a5c43f4e1f1aa3d true'),
+      ('public.crear_clinica_con_dueno(uuid,text,uuid,text,text,text)', '1815db2eba25796cf4cb363fa6bdfa1b true'),
+      ('private.crear_clinica_con_dueno_interno(uuid,text,uuid,text,text,text)', 'bdd97d7989bdddf4ddfe4dce49da7fae true'),
+      ('public.registrar_clinica_desde_invitacion(uuid,uuid,text,text,text)', 'ed19aae358ba091ef9e82ed18451615b true')) AS t(firma, m) LOOP
+    d := d || pg_temp.m392_eq(r.firma, (SELECT md5(p.prosrc)||' '||p.prosecdef::text FROM pg_proc p WHERE p.oid = to_regprocedure(r.firma)), r.m);
+  END LOOP;
+  PERFORM set_config('probe.p1170', pg_temp.m392_veredicto(d, '', '',
+    'clinicas: relacl authenticated=r; sin privilegios por columna; anon nada; 4 policies SELECT (sin las 3 del dueño; admins en SELECT); trigger PT001 intacto (INVOKER); las 5 RPCs DEFINER que escriben clinicas sin cambio'), false);
+EXCEPTION WHEN OTHERS THEN
+  PERFORM set_config('probe.p1170', 'FALLO ('||SQLSTATE||' '||SQLERRM||')', false);
+END $$;
+SELECT set_config('role', 'none', true);
+
+-- ---------------- P1171 392: nadie de authenticated inserta, actualiza ni borra clinicas (dueño activo e inactivo, admin_clinica, gerente, admin_pais, super_admin, médico, paciente, proveedor) ----------------
+DO $$
+DECLARE est text; pre text; post text; d text := ''; s uuid; cs record; r record; a text; f_sr text; f_s text; cnt0 text; u_pac uuid;
+  c_sr CONSTANT uuid := 'c76d862c-e82f-4748-bc07-86c8a3343576'; c_gt CONSTANT uuid := 'cbbbbe6d-59fe-4cf2-91ee-3e31ba1d5909';
+  c_hn CONSTANT uuid := '704aecfa-65c2-47f9-9a98-7a9bdfeba583'; u_med CONSTANT uuid := '09d243d5-b222-482a-9762-94a582e9e752';
+BEGIN
+  est := pg_temp.m392_estado();
+  IF est = 'pre' THEN PERFORM set_config('probe.p1171', 'PENDIENTE (estado de la 392: pre)', false); RETURN; END IF;
+  IF est <> 'post' THEN PERFORM set_config('probe.p1171', 'ROJO (392 '||est||')', false); RETURN; END IF;
+  pre := pg_temp.m392_snap();
+  BEGIN
+    PERFORM pg_temp.m392_fijar();
+    u_pac := pg_temp.m392_pac();
+    IF u_pac IS NULL THEN RAISE EXCEPTION 'fixture roto: sin paciente con cuenta en GT'; END IF;
+    -- dueño ACTIVO: clínica sembrada por postgres a nombre de medico.qa, con su membresía (lo que arrastraría un borrado)
+    INSERT INTO public.clinicas (doctor_id, nombre, pais_id, activa) VALUES (u_med, 'QA-MANUAL P392 dueño', c_gt, true) RETURNING id INTO s;
+    INSERT INTO public.medico_clinicas (medico_id, clinica_id, es_principal) VALUES (u_med, s, false);
+    f_sr := pg_temp.m392_fila(c_sr); f_s := pg_temp.m392_fila(s); cnt0 := pg_temp.m392_conteos();
+    FOR cs IN SELECT * FROM (VALUES
+        ('dueño_inactivo', 'e56879c0-4025-4f1f-832d-2753d9ab63e1'::uuid, c_sr),
+        ('dueño_activo', u_med, s),
+        ('admin_clinica', '7e9ee700-48ac-43e1-812b-777518b971ec'::uuid, c_sr),
+        ('gerente', '1e2376a4-7a41-481d-bb77-a4d32982254f'::uuid, c_sr),
+        ('admin_pais', '8f391caf-85bc-4413-af8a-4006452ae09f'::uuid, c_sr),
+        ('super_admin', '41904e2c-5ef3-4fee-bd48-9ea58e0c8c37'::uuid, c_sr),
+        ('medico', 'df452940-cc30-48b7-80e5-09e637bf97de'::uuid, c_sr),
+        ('paciente', u_pac, c_sr),
+        ('proveedor', '9ca0b977-3c91-48dc-aa04-2f1fab766963'::uuid, c_sr)) x(caso, uid, cl) LOOP
+      a := pg_temp.m392_q(cs.uid, format('WITH u AS (INSERT INTO public.clinicas (doctor_id, nombre, pais_id) VALUES (%L, ''QA-MANUAL P392 fabricada'', %L) RETURNING 1) SELECT count(*)::text FROM u', cs.uid, c_hn));
+      IF a LIKE 'OK:%' THEN d := d || 'FUGA:'||cs.caso||' fabricó una clínica; '; END IF;
+      d := d || pg_temp.m392_eq(cs.caso||'.insert', left(a, 9), 'ERR:42501');
+      FOR r IN SELECT * FROM (VALUES ('pais_id', format('pais_id = %L', c_hn)), ('activa', 'activa = false'),
+                                     ('doctor_id', format('doctor_id = %L', cs.uid)), ('telefono', 'telefono = ''QA-MANUAL P392''')) y(col, asig) LOOP
+        a := pg_temp.m392_q(cs.uid, format('WITH u AS (UPDATE public.clinicas SET %s WHERE id = %L RETURNING 1) SELECT count(*)::text FROM u', r.asig, cs.cl));
+        IF a LIKE 'OK:%' AND a <> 'OK:0' THEN d := d || 'FUGA:'||cs.caso||' cambió '||r.col||'; '; END IF;
+        d := d || pg_temp.m392_eq(cs.caso||'.'||r.col, left(a, 9), 'ERR:42501');
+      END LOOP;
+      a := pg_temp.m392_q(cs.uid, format('WITH u AS (DELETE FROM public.clinicas WHERE id = %L RETURNING 1) SELECT count(*)::text FROM u', cs.cl));
+      IF a LIKE 'OK:%' AND a <> 'OK:0' THEN d := d || 'FUGA:'||cs.caso||' borró una clínica (cascada); '; END IF;
+      d := d || pg_temp.m392_eq(cs.caso||'.delete', left(a, 9), 'ERR:42501');
+    END LOOP;
+    d := d || pg_temp.m392_eq('san_rafael_intacta', pg_temp.m392_fila(c_sr), f_sr);
+    d := d || pg_temp.m392_eq('sembrada_intacta', pg_temp.m392_fila(s), f_s);
+    d := d || pg_temp.m392_eq('conteos (clinicas/medicos/medico_clinicas/laboratorio_clinicas/invitaciones_laboratorio)', pg_temp.m392_conteos(), cnt0);
+    RAISE EXCEPTION 'P1171 descarte' USING ERRCODE = 'P0999';
+  EXCEPTION WHEN SQLSTATE 'P0999' THEN NULL;
+  END;
+  post := pg_temp.m392_snap();
+  PERFORM set_config('probe.p1171', pg_temp.m392_veredicto(d, pre, post,
+    '392: dueño inactivo (San Rafael) y activo (sembrada), admin_clinica, gerente, admin_pais, super_admin, médico, paciente y proveedor: INSERT, UPDATE de pais_id/activa/doctor_id/telefono y DELETE 42501; 0 clínicas nuevas; filas y conteos de medicos/medico_clinicas/laboratorio_clinicas/invitaciones_laboratorio sin cambio'), false);
+EXCEPTION WHEN OTHERS THEN
+  PERFORM set_config('probe.p1171', 'FALLO ('||SQLSTATE||' '||SQLERRM||')', false);
+END $$;
+SELECT set_config('role', 'none', true);
+
+-- ---------------- P1172 392: las RPC DEFINER que crean o editan clínicas siguen (actualizar_clinica, aprobar_personalizacion, crear_clinica_con_dueno, registrar_clinica_desde_invitacion) ----------------
+DO $$
+DECLARE est text; pre text; post text; d text := ''; a text; sp uuid; u_nuevo uuid; tok uuid; c_new text; st text;
+  c_sr CONSTANT uuid := 'c76d862c-e82f-4748-bc07-86c8a3343576'; c_gt CONSTANT uuid := 'cbbbbe6d-59fe-4cf2-91ee-3e31ba1d5909';
+  u_med CONSTANT uuid := '09d243d5-b222-482a-9762-94a582e9e752'; u_med2 CONSTANT uuid := 'df452940-cc30-48b7-80e5-09e637bf97de';
+  u_adm CONSTANT uuid := '7e9ee700-48ac-43e1-812b-777518b971ec'; u_sec CONSTANT uuid := '5ab93b59-874f-405b-8b62-797a0972c081';
+  u_ap CONSTANT uuid := '8f391caf-85bc-4413-af8a-4006452ae09f';
+BEGIN
+  est := pg_temp.m392_estado();
+  IF est = 'pre' THEN PERFORM set_config('probe.p1172', 'PENDIENTE (estado de la 392: pre)', false); RETURN; END IF;
+  IF est <> 'post' THEN PERFORM set_config('probe.p1172', 'ROJO (392 '||est||')', false); RETURN; END IF;
+  pre := pg_temp.m392_snap();
+  BEGIN
+    PERFORM pg_temp.m392_fijar();
+    -- actualizar_clinica: admin_clinica miembro edita el contacto; la secretaria no (P0001 'No autorizado ...')
+    a := pg_temp.m392_q(u_adm, format('SELECT public.actualizar_clinica(%L, nombre, direccion, ''QA-MANUAL P392 tel'', email)::text FROM public.clinicas WHERE id = %L', c_sr, c_sr));
+    d := d || pg_temp.m392_eq('actualizar_clinica.admin_clinica', a, 'OK:');
+    d := d || pg_temp.m392_eq('actualizar_clinica.telefono', (SELECT telefono FROM public.clinicas WHERE id = c_sr), 'QA-MANUAL P392 tel');
+    d := d || pg_temp.m392_eq('actualizar_clinica.secretaria', left(pg_temp.m392_q(u_sec, format('SELECT public.actualizar_clinica(%L, ''x'')::text', c_sr)), 9), 'ERR:P0001');
+    -- el guard de tema sigue: postgres sin el GUC no cambia el color (PT001)
+    st := '00000';
+    BEGIN
+      UPDATE public.clinicas SET color_primario = '#0a0b0c' WHERE id = c_sr;
+    EXCEPTION WHEN SQLSTATE 'PT001' THEN st := 'PT001';
+    END;
+    d := d || pg_temp.m392_eq('guard_tema_sin_rpc', st, 'PT001');
+    -- aprobar_personalizacion: el admin_pais de GT aprueba una solicitud de tema de San Rafael
+    INSERT INTO public.solicitudes_personalizacion (tenant_tipo, tenant_id, logo_url, color_primario, color_secundario, color_fondo, solicitado_por)
+      VALUES ('clinica', c_sr, NULL, '#123456', '#654321', '#fafafa', u_adm) RETURNING id INTO sp;
+    a := pg_temp.m392_q(u_ap, format('SELECT (public.aprobar_personalizacion(%L) ->> ''estado'')', sp));
+    d := d || pg_temp.m392_eq('aprobar_personalizacion.admin_pais', a, 'OK:aprobada');
+    d := d || pg_temp.m392_eq('aprobar_personalizacion.tema', (SELECT color_primario||'/'||color_secundario||'/'||color_fondo FROM public.clinicas WHERE id = c_sr), '#123456/#654321/#fafafa');
+    -- crear_clinica_con_dueno: el médico a su nombre; el admin_pais a nombre de otro médico de su país
+    a := pg_temp.m392_q(u_med, format('SELECT public.crear_clinica_con_dueno(%L, ''QA-MANUAL P392 medico'', %L)::text', u_med, c_gt));
+    c_new := substr(a, 4);
+    d := d || pg_temp.m392_eq('crear_clinica_con_dueno.medico', CASE WHEN a LIKE 'OK:%' THEN 'OK' ELSE a END, 'OK');
+    d := d || pg_temp.m392_eq('crear_clinica_con_dueno.medico.fila',
+      (SELECT c.doctor_id::text||'/'||c.pais_id::text||'/'||c.activa::text||'/'||(SELECT count(*) FROM public.medico_clinicas mc WHERE mc.clinica_id = c.id AND mc.medico_id = u_med)
+         FROM public.clinicas c WHERE c.id::text = c_new AND c.nombre = 'QA-MANUAL P392 medico'),
+      u_med::text||'/'||c_gt::text||'/true/1');
+    a := pg_temp.m392_q(u_ap, format('SELECT public.crear_clinica_con_dueno(%L, ''QA-MANUAL P392 admin_pais'', %L)::text', u_med2, c_gt));
+    c_new := substr(a, 4);
+    d := d || pg_temp.m392_eq('crear_clinica_con_dueno.admin_pais', CASE WHEN a LIKE 'OK:%' THEN 'OK' ELSE a END, 'OK');
+    d := d || pg_temp.m392_eq('crear_clinica_con_dueno.admin_pais.fila',
+      (SELECT c.doctor_id::text||'/'||(SELECT count(*) FROM public.medico_clinicas mc WHERE mc.clinica_id = c.id AND mc.medico_id = u_med2)
+         FROM public.clinicas c WHERE c.id::text = c_new AND c.nombre = 'QA-MANUAL P392 admin_pais'),
+      u_med2::text||'/1');
+    -- registrar_clinica_desde_invitacion: como la edge (service_role), con un usuario de auth nuevo y su invitación
+    u_nuevo := gen_random_uuid();
+    INSERT INTO auth.users (id, email) VALUES (u_nuevo, 'qa-manual.p1172.'||left(u_nuevo::text, 8)||'@ezpayqa.test');
+    INSERT INTO public.invitaciones_clinica (pais_id, email, nombre_clinica, nombre_contacto, estado, expires_at)
+      VALUES (c_gt, 'qa-manual.p1172.'||left(u_nuevo::text, 8)||'@ezpayqa.test', 'QA-MANUAL Clinica 392', 'QA-MANUAL Admin 392', 'pendiente', now() + interval '7 days')
+      RETURNING token INTO tok;
+    a := pg_temp.m392_q(NULL, format('SELECT public.registrar_clinica_desde_invitacion(p_token => %L, p_user_id => %L, p_email => %L, p_nombre_contacto => ''QA-MANUAL Admin 392'', p_telefono => NULL::text)::text',
+                                     tok, u_nuevo, 'qa-manual.p1172.'||left(u_nuevo::text, 8)||'@ezpayqa.test'), 'service_role');
+    c_new := substr(a, 4);
+    d := d || pg_temp.m392_eq('registrar_clinica_desde_invitacion', CASE WHEN a LIKE 'OK:%' THEN 'OK' ELSE a END, 'OK');
+    d := d || pg_temp.m392_eq('registrar_clinica_desde_invitacion.fila',
+      (SELECT c.nombre||'/'||c.pais_id::text FROM public.clinicas c WHERE c.id::text = c_new), 'QA-MANUAL Clinica 392/'||c_gt::text);
+    RAISE EXCEPTION 'P1172 descarte' USING ERRCODE = 'P0999';
+  EXCEPTION WHEN SQLSTATE 'P0999' THEN NULL;
+  END;
+  post := pg_temp.m392_snap();
+  PERFORM set_config('probe.p1172', pg_temp.m392_veredicto(d, pre, post,
+    '392: actualizar_clinica (admin_clinica miembro; secretaria P0001), guard de tema PT001 sin la RPC, aprobar_personalizacion (admin_pais GT aplica el tema), crear_clinica_con_dueno (médico a su nombre; admin_pais a nombre de otro médico, con membresía) y registrar_clinica_desde_invitacion (service_role) siguen'), false);
+EXCEPTION WHEN OTHERS THEN
+  PERFORM set_config('probe.p1172', 'FALLO ('||SQLSTATE||' '||SQLERRM||')', false);
+END $$;
+SELECT set_config('role', 'none', true);
+
 -- @@HARNESS_RESULTADOS@@
 -- ===== Veredictos como result set =====
 SELECT 'P1_anon_insert_citas'              AS probe, current_setting('probe.p1', true)  AS verdict, 'BLOQUEADO' AS esperado_post_fix
@@ -44450,6 +44785,10 @@ UNION ALL SELECT 'P1166_citas_medico_solo_estado_391',  current_setting('probe.p
 UNION ALL SELECT 'P1167_citas_robo_phi_cerrado_391',  current_setting('probe.p1167', true), 'OK (391: reasignar paciente_id/medico_id 42501; medico_atiende_paciente sobre la victima sigue false; pre: PENDIENTE)'
 UNION ALL SELECT 'P1168_citas_staff_paciente_no_escriben_391',  current_setting('probe.p1168', true), 'OK (391: staff/admins: estado 0 filas, resto 42501; paciente: UPDATE 0 filas y actualizar_estado_cita CI001; pre: PENDIENTE)'
 UNION ALL SELECT 'P1169_citas_rpcs_vivas_391',  current_setting('probe.p1169', true), 'OK (391: crear_cita, marcar_llegada_cita, actualizar_estado_cita, asignar_medico_cita y cancelar_cita_paciente siguen; pre: PENDIENTE)'
+UNION ALL SELECT 'M392_FX_cierre_escritura_clinicas',  current_setting('probe.m392_fx', true), 'OK (helpers de pg_temp creados; estado de la 392: post; pre: PENDIENTE; parcial: ROJO)'
+UNION ALL SELECT 'P1170_clinicas_catalogo_392',  current_setting('probe.p1170', true), 'OK (392: relacl authenticated=r; sin privilegios por columna; 4 policies SELECT; trigger PT001 intacto; RPCs sin cambio; pre: PENDIENTE)'
+UNION ALL SELECT 'P1171_clinicas_nadie_escribe_392',  current_setting('probe.p1171', true), 'OK (392: dueño activo e inactivo, staff, admins, médico, paciente y proveedor: INSERT/UPDATE/DELETE 42501; sin cascada; pre: PENDIENTE)'
+UNION ALL SELECT 'P1172_clinicas_rpcs_vivas_392',  current_setting('probe.p1172', true), 'OK (392: actualizar_clinica, aprobar_personalizacion, crear_clinica_con_dueno y registrar_clinica_desde_invitacion siguen; pre: PENDIENTE)'
 UNION ALL SELECT 'P1010_campana_vistas_sin_update_367',  current_setting('probe.p1010', true), 'OK (367: INSERT 1; ON CONFLICT DO NOTHING 0 sin error; DO UPDATE y UPDATE 42501; otro paciente 0; antes de la 367: PENDIENTE)'
 UNION ALL SELECT 'P1009_datos_bancarios_acotados_366',  current_setting('probe.p1009', true), 'OK (366: cuenta GT solo super_admin/admin_pais GT/proveedores GT; checkout 1 fila; config 21 super_admin y 14 el resto, admin_pais incluido; antes de la 366: PENDIENTE)'
 UNION ALL SELECT 'DET_p1009',  'DET ' || COALESCE(NULLIF(current_setting('probe.p1009_det', true), ''), '(sin dato)'), 'DET (detalle de P1009, no es probe)'
@@ -44702,7 +45041,7 @@ UNION ALL SELECT 'P000_CENTINELA_veredictos_no_nulos',
        'probe.p866', 'probe.p867', 'probe.p868', 'probe.p869', 'probe.p870', 'probe.p871', 'probe.p872', 'probe.p873', 'probe.p874', 'probe.p875', 'probe.p876', 'probe.p877', 'probe.p878',
        'probe.p879', 'probe.p880', 'probe.p881', 'probe.p882', 'probe.p883', 'probe.p884',
        'probe.p885', 'probe.p886', 'probe.p887', 'probe.p888', 'probe.p889', 'probe.p890', 'probe.p891', 'probe.p892', 'probe.p893', 'probe.p894', 'probe.p895', 'probe.p896', 'probe.p908', 'probe.p909', 'probe.p910', 'probe.p911',
-       'probe.p897', 'probe.p898', 'probe.p899', 'probe.p900', 'probe.p901', 'probe.p902', 'probe.p903', 'probe.p904', 'probe.p905', 'probe.p906', 'probe.p907', 'probe.p912', 'probe.p913', 'probe.p914', 'probe.p915', 'probe.p916', 'probe.p917', 'probe.p918', 'probe.p919', 'probe.p920', 'probe.p921', 'probe.p922', 'probe.p923', 'probe.p924', 'probe.p925', 'probe.p926', 'probe.p927', 'probe.p928', 'probe.p929', 'probe.p930', 'probe.p931', 'probe.p932', 'probe.p933', 'probe.p934', 'probe.p935', 'probe.p936', 'probe.p937', 'probe.p938', 'probe.p939', 'probe.p940', 'probe.p941', 'probe.p942', 'probe.p943', 'probe.p944', 'probe.p945', 'probe.p946', 'probe.p947', 'probe.p948', 'probe.p949', 'probe.p950', 'probe.p951', 'probe.p952', 'probe.p953', 'probe.p954', 'probe.p955', 'probe.p956', 'probe.p957', 'probe.p958', 'probe.p959', 'probe.p960', 'probe.p961', 'probe.p962', 'probe.p963', 'probe.p964', 'probe.p965', 'probe.p966', 'probe.p967', 'probe.p968', 'probe.p969', 'probe.p970', 'probe.p971', 'probe.p972', 'probe.p973', 'probe.p974', 'probe.p975', 'probe.p976', 'probe.p977', 'probe.p978', 'probe.p979', 'probe.p980', 'probe.p981', 'probe.p982', 'probe.p983', 'probe.p984', 'probe.p985', 'probe.p986', 'probe.p987', 'probe.p988', 'probe.p989', 'probe.p990', 'probe.p991', 'probe.p992', 'probe.p993', 'probe.p994', 'probe.p995', 'probe.p996', 'probe.p997', 'probe.p998', 'probe.p999', 'probe.p1000', 'probe.p1001', 'probe.p1002', 'probe.p1003', 'probe.p1004', 'probe.p1005', 'probe.p1006', 'probe.p1007', 'probe.p1008', 'probe.p1009', 'probe.p1010', 'probe.p1011', 'probe.p1012', 'probe.p1013', 'probe.p1014', 'probe.e370_fx', 'probe.p1015', 'probe.p1016', 'probe.p1017', 'probe.p1018', 'probe.g371_fx', 'probe.p1019', 'probe.p1020', 'probe.p1021', 'probe.p1022', 'probe.g372_fx', 'probe.p1023', 'probe.p1024', 'probe.p1025', 'probe.p1035', 'probe.p1036', 'probe.p1037', 'probe.p1038', 'probe.p1039', 'probe.p1040', 'probe.m375_fx', 'probe.p1041', 'probe.p1042', 'probe.p1043', 'probe.p1044', 'probe.p1045', 'probe.p1046', 'probe.p1047', 'probe.p1048', 'probe.p1049', 'probe.p1050', 'probe.p1051', 'probe.p1052', 'probe.p1053', 'probe.p1054', 'probe.p1055', 'probe.p1056', 'probe.p1057', 'probe.p1058', 'probe.p1059', 'probe.p1060', 'probe.p1061', 'probe.m376_fx', 'probe.p1062', 'probe.p1063', 'probe.p1064', 'probe.m377_fx', 'probe.p1065', 'probe.p1066', 'probe.p1067', 'probe.p1068', 'probe.p1069', 'probe.p1070', 'probe.p1071', 'probe.p1072', 'probe.p1073', 'probe.p1074', 'probe.m378_fx', 'probe.p1075', 'probe.p1076', 'probe.p1077', 'probe.p1078', 'probe.p1079', 'probe.p1080', 'probe.p1081', 'probe.p1082', 'probe.p1083', 'probe.m379_fx', 'probe.p1084', 'probe.p1085', 'probe.p1086', 'probe.p1087', 'probe.p1088', 'probe.p1089', 'probe.p1090', 'probe.m380_fx', 'probe.p1091', 'probe.p1092', 'probe.p1093', 'probe.p1094', 'probe.p1095', 'probe.p1096', 'probe.p1097', 'probe.p1098', 'probe.h_restaura', 'probe.m381_fx', 'probe.p1099', 'probe.p1100', 'probe.p1101', 'probe.p1102', 'probe.p1103', 'probe.p1104', 'probe.m382_fx', 'probe.p1105', 'probe.p1106', 'probe.p1107', 'probe.p1108', 'probe.p1109', 'probe.p1110', 'probe.p1111', 'probe.p1112', 'probe.p1113', 'probe.p1114', 'probe.p1115', 'probe.p1116', 'probe.p1117', 'probe.p1118', 'probe.p1119', 'probe.m383_fx', 'probe.p1120', 'probe.p1121', 'probe.p1122', 'probe.p1123', 'probe.p1124', 'probe.p1125', 'probe.p1126', 'probe.p1127', 'probe.p1128', 'probe.p1129', 'probe.p1130', 'probe.p1131', 'probe.m384_fx', 'probe.p1132', 'probe.p1133', 'probe.p1134', 'probe.p1135', 'probe.p1136', 'probe.p1137', 'probe.m385_fx', 'probe.p1138', 'probe.p1139', 'probe.p1140', 'probe.p1141', 'probe.m386_fx', 'probe.p1142', 'probe.p1143', 'probe.p1144', 'probe.p1145', 'probe.p1146', 'probe.p1147', 'probe.m387_fx', 'probe.p1148', 'probe.p1149', 'probe.p1150', 'probe.p1151', 'probe.m388_fx', 'probe.p1152', 'probe.p1153', 'probe.p1154', 'probe.p1155', 'probe.p1156', 'probe.m389_fx', 'probe.p1157', 'probe.p1158', 'probe.p1159', 'probe.p1160', 'probe.m390_fx', 'probe.p1161', 'probe.p1162', 'probe.p1163', 'probe.p1164', 'probe.m391_fx', 'probe.p1165', 'probe.p1166', 'probe.p1167', 'probe.p1168', 'probe.p1169'
+       'probe.p897', 'probe.p898', 'probe.p899', 'probe.p900', 'probe.p901', 'probe.p902', 'probe.p903', 'probe.p904', 'probe.p905', 'probe.p906', 'probe.p907', 'probe.p912', 'probe.p913', 'probe.p914', 'probe.p915', 'probe.p916', 'probe.p917', 'probe.p918', 'probe.p919', 'probe.p920', 'probe.p921', 'probe.p922', 'probe.p923', 'probe.p924', 'probe.p925', 'probe.p926', 'probe.p927', 'probe.p928', 'probe.p929', 'probe.p930', 'probe.p931', 'probe.p932', 'probe.p933', 'probe.p934', 'probe.p935', 'probe.p936', 'probe.p937', 'probe.p938', 'probe.p939', 'probe.p940', 'probe.p941', 'probe.p942', 'probe.p943', 'probe.p944', 'probe.p945', 'probe.p946', 'probe.p947', 'probe.p948', 'probe.p949', 'probe.p950', 'probe.p951', 'probe.p952', 'probe.p953', 'probe.p954', 'probe.p955', 'probe.p956', 'probe.p957', 'probe.p958', 'probe.p959', 'probe.p960', 'probe.p961', 'probe.p962', 'probe.p963', 'probe.p964', 'probe.p965', 'probe.p966', 'probe.p967', 'probe.p968', 'probe.p969', 'probe.p970', 'probe.p971', 'probe.p972', 'probe.p973', 'probe.p974', 'probe.p975', 'probe.p976', 'probe.p977', 'probe.p978', 'probe.p979', 'probe.p980', 'probe.p981', 'probe.p982', 'probe.p983', 'probe.p984', 'probe.p985', 'probe.p986', 'probe.p987', 'probe.p988', 'probe.p989', 'probe.p990', 'probe.p991', 'probe.p992', 'probe.p993', 'probe.p994', 'probe.p995', 'probe.p996', 'probe.p997', 'probe.p998', 'probe.p999', 'probe.p1000', 'probe.p1001', 'probe.p1002', 'probe.p1003', 'probe.p1004', 'probe.p1005', 'probe.p1006', 'probe.p1007', 'probe.p1008', 'probe.p1009', 'probe.p1010', 'probe.p1011', 'probe.p1012', 'probe.p1013', 'probe.p1014', 'probe.e370_fx', 'probe.p1015', 'probe.p1016', 'probe.p1017', 'probe.p1018', 'probe.g371_fx', 'probe.p1019', 'probe.p1020', 'probe.p1021', 'probe.p1022', 'probe.g372_fx', 'probe.p1023', 'probe.p1024', 'probe.p1025', 'probe.p1035', 'probe.p1036', 'probe.p1037', 'probe.p1038', 'probe.p1039', 'probe.p1040', 'probe.m375_fx', 'probe.p1041', 'probe.p1042', 'probe.p1043', 'probe.p1044', 'probe.p1045', 'probe.p1046', 'probe.p1047', 'probe.p1048', 'probe.p1049', 'probe.p1050', 'probe.p1051', 'probe.p1052', 'probe.p1053', 'probe.p1054', 'probe.p1055', 'probe.p1056', 'probe.p1057', 'probe.p1058', 'probe.p1059', 'probe.p1060', 'probe.p1061', 'probe.m376_fx', 'probe.p1062', 'probe.p1063', 'probe.p1064', 'probe.m377_fx', 'probe.p1065', 'probe.p1066', 'probe.p1067', 'probe.p1068', 'probe.p1069', 'probe.p1070', 'probe.p1071', 'probe.p1072', 'probe.p1073', 'probe.p1074', 'probe.m378_fx', 'probe.p1075', 'probe.p1076', 'probe.p1077', 'probe.p1078', 'probe.p1079', 'probe.p1080', 'probe.p1081', 'probe.p1082', 'probe.p1083', 'probe.m379_fx', 'probe.p1084', 'probe.p1085', 'probe.p1086', 'probe.p1087', 'probe.p1088', 'probe.p1089', 'probe.p1090', 'probe.m380_fx', 'probe.p1091', 'probe.p1092', 'probe.p1093', 'probe.p1094', 'probe.p1095', 'probe.p1096', 'probe.p1097', 'probe.p1098', 'probe.h_restaura', 'probe.m381_fx', 'probe.p1099', 'probe.p1100', 'probe.p1101', 'probe.p1102', 'probe.p1103', 'probe.p1104', 'probe.m382_fx', 'probe.p1105', 'probe.p1106', 'probe.p1107', 'probe.p1108', 'probe.p1109', 'probe.p1110', 'probe.p1111', 'probe.p1112', 'probe.p1113', 'probe.p1114', 'probe.p1115', 'probe.p1116', 'probe.p1117', 'probe.p1118', 'probe.p1119', 'probe.m383_fx', 'probe.p1120', 'probe.p1121', 'probe.p1122', 'probe.p1123', 'probe.p1124', 'probe.p1125', 'probe.p1126', 'probe.p1127', 'probe.p1128', 'probe.p1129', 'probe.p1130', 'probe.p1131', 'probe.m384_fx', 'probe.p1132', 'probe.p1133', 'probe.p1134', 'probe.p1135', 'probe.p1136', 'probe.p1137', 'probe.m385_fx', 'probe.p1138', 'probe.p1139', 'probe.p1140', 'probe.p1141', 'probe.m386_fx', 'probe.p1142', 'probe.p1143', 'probe.p1144', 'probe.p1145', 'probe.p1146', 'probe.p1147', 'probe.m387_fx', 'probe.p1148', 'probe.p1149', 'probe.p1150', 'probe.p1151', 'probe.m388_fx', 'probe.p1152', 'probe.p1153', 'probe.p1154', 'probe.p1155', 'probe.p1156', 'probe.m389_fx', 'probe.p1157', 'probe.p1158', 'probe.p1159', 'probe.p1160', 'probe.m390_fx', 'probe.p1161', 'probe.p1162', 'probe.p1163', 'probe.p1164', 'probe.m391_fx', 'probe.p1165', 'probe.p1166', 'probe.p1167', 'probe.p1168', 'probe.p1169', 'probe.m392_fx', 'probe.p1170', 'probe.p1171', 'probe.p1172'
              ]) AS n) s),
   'OK (todos los veredictos publicados)';
 
