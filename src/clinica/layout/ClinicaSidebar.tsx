@@ -49,7 +49,8 @@ export function ClinicaSidebar() {
     { label: 'Citas', icon: CalendarDays, path: '/clinica/citas', roles: ROLES_ADMIN },
     { label: 'Calendario', icon: CalendarDays, path: '/clinica/calendario', roles: [...ROLES_ADMIN, 'asistente_medico', 'enfermeria', 'secretaria'] },
     { label: 'Personal', icon: Users, path: '/clinica/personal', roles: ROLES_ADMIN },
-    { label: 'Horarios Médicos', icon: Clock, path: '/clinica/horarios-medicos', roles: ROLES_ADMIN },
+    // Sin 'gerente': la RLS de disponibilidad_medico no le deja guardar horarios (mig 399, D-8). Igual que la ruta en App.tsx.
+    { label: 'Horarios Médicos', icon: Clock, path: '/clinica/horarios-medicos', roles: ROLES_ADMIN.filter((r) => r !== 'gerente') },
     { label: 'Invitar Médico', icon: Stethoscope, path: '/clinica/invitar-medico', roles: ROLES_ADMIN },
     { label: 'Invitar Laboratorio', icon: FlaskConical, path: '/clinica/invitar-laboratorio', roles: ROLES_ADMIN },
     { label: 'Invitar Staff', icon: UserPlus, path: '/clinica/invitar-staff', roles: ROLES_ADMIN },
