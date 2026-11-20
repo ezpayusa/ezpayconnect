@@ -47,7 +47,8 @@ export interface RecetaPaciente {
 }
 
 export interface DespachoReceta {
-  token: string
+  // Mig 396: viene de la RPC mis_despachos_receta; null si no está vigente o si la RPC falló.
+  token: string | null
   expira_at: string | null
   estado_dispensacion: 'pendiente' | 'dispensada' | 'parcial' | 'rechazada'
 }
