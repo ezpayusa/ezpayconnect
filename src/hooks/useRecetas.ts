@@ -251,9 +251,9 @@ export function useMedicamentos() {
     try {
       const searchTerm = query?.trim() || ''
       let q = supabase.from('medicamentos').select('*').eq('activo', true)
-      if (searchTerm.length > 0) {
-        q = q.ilike('nombre_generico', `%${searchTerm}%`)
-      }
+      // H22: genérico O comercial (el placeholder del modal ya lo prometía); misma tabla, sin RPC.
+      const filtro = filtroBusquedaMedicamento(searchTerm)
+      if (filtro) q = q.or(filtro)
       const { data, error: err } = await q.order('nombre_generico').limit(20)
       if (err) {
         setError(`Error: ${err.message}`)
@@ -269,4 +269,17 @@ export function useMedicamentos() {
   }, [])
 
   return { medicamentos, loading, error, fetchMedicamentos }
+}
+
+/**
+ * H22: filtro PostgREST `or` para buscar un medicamento por nombre genérico o comercial.
+ * Se quitan los caracteres que la sintaxis de `or` usa como separadores o agrupadores (`,` `(` `)`)
+ * y las comillas/barras invertidas, para que el texto del médico no rompa ni amplíe el filtro.
+ * Devuelve null si no queda nada que buscar.
+ */
+export function filtroBusquedaMedicamento(texto: string): string | null {
+  const limpio = texto.replace(/[,()"\\]/g, ' ').replace(/\s+/g, ' ').trim()
+  if (!limpio) return null
+  const patron = `%${limpio}%`
+  return `nombre_generico.ilike.${patron},nombre_comercial.ilike.${patron}`
 }
