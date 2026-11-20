@@ -1,3 +1,4 @@
+import { nombreMedicamentoConComercial } from '@/lib/nombreMedicamento'
 import { useState, useEffect } from 'react'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -190,7 +191,7 @@ export default function RecetaModal({ open, onOpenChange, pacienteIdPreseleccion
       categoria_regulatoria: med.categoria_regulatoria ?? null,
       acuse_iniciales: '',
       alergia_confirmacion_motivo: '',
-      nombre_medicamento: med.nombre_generico + (med.nombre_comercial ? ` (${med.nombre_comercial})` : ''),
+      nombre_medicamento: nombreMedicamentoConComercial(med),
       dosis: '', frecuencia: '', duracion: '', instrucciones: '', cantidad: 1,
       farmacia_id: null
     }
@@ -480,7 +481,7 @@ export default function RecetaModal({ open, onOpenChange, pacienteIdPreseleccion
                     {medicamentos.map(med => (
                       <div key={med.id} className="flex items-center justify-between p-3 hover:bg-gray-50">
                         <div>
-                          <p className="font-medium text-sm">{med.nombre_generico}</p>
+                          <p className="font-medium text-sm">{nombreMedicamentoConComercial(med)}</p>
                           <p className="text-xs text-[#8a9aaa]">{med.presentacion} {med.concentracion}</p>
                         </div>
                         <Button type="button" size="sm" variant="outline" onClick={() => handleAddMedicamento(med)}>
