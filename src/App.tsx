@@ -444,7 +444,8 @@ function App() {
           <Route path="citas" element={<RequiereRolClinica roles={['admin_clinica', 'admin', 'super_admin', 'gerente']}><ClinicaCitasPage /></RequiereRolClinica>} />
           <Route path="calendario" element={<RequiereRolClinica roles={['admin_clinica', 'admin', 'super_admin', 'gerente', 'asistente_medico', 'enfermeria', 'secretaria']}><ClinicaCalendarioPage /></RequiereRolClinica>} />
           <Route path="personal" element={<RequiereRolClinica roles={['admin_clinica', 'admin', 'super_admin', 'gerente']}><ClinicaPersonalPage /></RequiereRolClinica>} />
-          <Route path="horarios-medicos" element={<RequiereRolClinica roles={['admin_clinica', 'admin', 'super_admin', 'gerente']}><ClinicaHorariosMedicosPage /></RequiereRolClinica>} />
+          {/* Sin 'gerente': la RLS de disponibilidad_medico no le deja guardar horarios (mig 399, D-8). */}
+          <Route path="horarios-medicos" element={<RequiereRolClinica roles={['admin_clinica', 'admin', 'super_admin']}><ClinicaHorariosMedicosPage /></RequiereRolClinica>} />
           <Route path="invitar-medico" element={<RequiereRolClinica roles={['admin_clinica', 'admin', 'super_admin', 'gerente']}><ClinicaInvitarMedicoPage /></RequiereRolClinica>} />
           <Route path="invitar-laboratorio" element={<RequiereRolClinica roles={['admin_clinica', 'admin', 'super_admin', 'gerente']}><ClinicaInvitarLaboratorioPage /></RequiereRolClinica>} />
           <Route path="invitar-staff" element={<RequiereRolClinica roles={['admin_clinica', 'admin', 'super_admin', 'gerente']}><ClinicaInvitarStaffPage /></RequiereRolClinica>} />
