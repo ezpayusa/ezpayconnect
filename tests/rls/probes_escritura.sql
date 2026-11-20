@@ -29403,7 +29403,8 @@ SELECT set_config('role', 'none', true);
 -- MIG 340 — el gate se alinea con la RLS de expediente_notas (P918 y P919 ajustados, P920 nuevo)
 -- OK = comportamiento de la 340; con 340_rollback (vuelve la 339) P918, P919 y P920 dan ROJO a proposito;
 -- con 339_rollback encima dan FALLO (la funcion no existe).
--- P916 solo lee (paciente 23, cita 970, nota 2214). P917 y P918 siembran dentro de una subtransaccion
+-- P916 lee el paciente 23 (cita 970, nota 2214) dentro de un savepoint donde las citas completadas posteriores a la 970
+-- se mueven al 2000-01-01 (20-nov: la 12680 de la demo la desplazaba); P920 hace lo mismo. P917 y P918 siembran dentro de una subtransaccion
 -- descartable (RAISE P0999): pacientes, citas, notas, vitales y consentimientos FIXTURE, nunca el 23 ni
 -- 1369/1373/1374 ni filas con historia; afuera se verifica el snapshot.
 -- Para sembrar una cita completada SIN nota se inserta directo en estado 'completada': el PE001
@@ -29415,7 +29416,7 @@ DO $$
 DECLARE
   c_med uuid := '09d243d5-b222-482a-9762-94a582e9e752';
   st text := '00000'; msg text := ''; ok boolean; det text := ''; bad text := ''; x text;
-  j jsonb; v_n jsonb; v_prev_plan text; v_nvit bigint; v_max timestamptz; v_medn text; f text;
+  j jsonb; v_n jsonb; v_prev_plan text; v_nvit bigint; v_max timestamptz; v_medn text; f text; s_cit text; n_mov int := 0;
 BEGIN
   -- fixture: nota 2214 de la cita 970 (paciente 23) con una revision cuyo plan difiere del vigente, y la
   -- cita 969 del MISMO dia, mas temprano, tambien completada con nota (el desempate tiene que importar)
@@ -29429,12 +29430,27 @@ BEGIN
   END IF;
   SELECT count(*), max(sv.fecha_toma) INTO v_nvit, v_max FROM public.signos_vitales sv WHERE sv.cita_id = 970 AND sv.paciente_id = 23;
   SELECT nombre_completo INTO v_medn FROM public.medicos WHERE id = c_med;
+  -- 20-nov: el caso se fija en un savepoint. Las citas COMPLETADAS del paciente 23 posteriores a la 970 (p. ej. la 12680 de
+  -- la demo) se mueven al 2000-01-01, así la 970 vuelve a ser la última sin depender de datos QA vivos. Solo cambia la
+  -- fecha (los triggers de citas son UPDATE OF estado); el savepoint se descarta y afuera se verifica la restauración.
+  SELECT md5(COALESCE(string_agg(to_jsonb(t)::text, '|' ORDER BY t.id), '')) INTO s_cit FROM public.citas t WHERE t.paciente_id = 23;
   BEGIN
-    PERFORM set_config('request.jwt.claims', json_build_object('sub', c_med::text, 'role', 'authenticated')::text, true); PERFORM set_config('role', 'authenticated', true);
-    j := public.contexto_ia_ultima_visita(23);
-    PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
-  EXCEPTION WHEN OTHERS THEN PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
-    st := SQLSTATE; msg := SQLERRM; END;
+    UPDATE public.citas c SET fecha = DATE '2000-01-01'
+     WHERE c.paciente_id = 23 AND c.estado = 'completada'
+       AND (c.fecha, c.hora_inicio, c.id) > (SELECT c9.fecha, c9.hora_inicio, c9.id FROM public.citas c9 WHERE c9.id = 970);
+    GET DIAGNOSTICS n_mov = ROW_COUNT;
+    BEGIN
+      PERFORM set_config('request.jwt.claims', json_build_object('sub', c_med::text, 'role', 'authenticated')::text, true); PERFORM set_config('role', 'authenticated', true);
+      j := public.contexto_ia_ultima_visita(23);
+      PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
+    EXCEPTION WHEN OTHERS THEN PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
+      st := SQLSTATE; msg := SQLERRM; END;
+    RAISE EXCEPTION 'P916 descarte' USING ERRCODE = 'P0999';
+  EXCEPTION WHEN SQLSTATE 'P0999' THEN NULL;
+  END;
+  IF (SELECT md5(COALESCE(string_agg(to_jsonb(t)::text, '|' ORDER BY t.id), '')) FROM public.citas t WHERE t.paciente_id = 23) IS DISTINCT FROM s_cit THEN
+    bad := bad||'restauracion: citas del paciente 23 cambiaron; ';
+  END IF;
   -- eleccion: 970 y no 969 (mismo dia; desempata hora_inicio)
   ok := COALESCE((st = '00000' AND j->>'sin_visita' = 'false' AND (j->>'cita_id')::bigint = 970 AND (j->>'nota_id')::int = 2214
                   AND j->>'fecha' = (SELECT fecha::text FROM public.citas WHERE id = 970) AND j->>'medico_nombre' = v_medn), false);
@@ -29465,9 +29481,10 @@ BEGIN
         = 'frecuencia_cardiaca,frecuencia_respiratoria,glucosa,imc,peso_kg,presion_arterial,saturacion_o2,talla_cm,temperatura', false);
   det := det||' ;; claves permitidas|conjuntos exactos (raiz, vitales, paciente, unidades)|'||CASE WHEN ok THEN 'OK' ELSE 'ROJO' END||'|-|'||COALESCE(x, '-');
   IF NOT ok THEN bad := bad||'claves: '||COALESCE(x, '-')||'; '; END IF;
+  det := det||' ;; fijado|citas completadas posteriores a la 970 movidas en el savepoint|'||n_mov||'|-|';
   PERFORM set_config('probe.p916_det', det, false);
   PERFORM set_config('probe.p916', CASE WHEN bad = ''
-    THEN 'OK (paciente 23: cita 970 sobre 969 del mismo dia, nota 2214 vigente (no la revision), 4 vitales de la cita, solo claves permitidas)'
+    THEN 'OK (paciente 23: cita 970 sobre 969 del mismo dia, nota 2214 vigente (no la revision), 4 vitales de la cita, solo claves permitidas; fijado en savepoint, restaurado)'
     ELSE 'ROJO ('||left(bad, 700)||')' END, false);
 EXCEPTION WHEN OTHERS THEN
   PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
@@ -29787,7 +29804,7 @@ DECLARE
   c_sup uuid := '41904e2c-5ef3-4fee-bd48-9ea58e0c8c37'; c_mfx uuid := '00000000-0000-4920-8920-000000000920'; c_pac uuid;
   st text; msg text; j jsonb; v_rpc boolean; v_rls bigint; v_rls_err text; ok boolean;
   det text := ''; bad text := ''; r_rest text := 'OK'; r record; v_pais uuid; v_medrpc boolean := false;
-  s_perf text; s_meds text; s_mc text; n_users bigint;
+  s_perf text; s_meds text; s_mc text; n_users bigint; s_cit text;
 BEGIN
   SELECT pa.auth_user_id INTO c_pac FROM public.pacientes pa WHERE pa.id = 23;
   IF c_pac IS NULL
@@ -29802,7 +29819,12 @@ BEGIN
   SELECT md5(COALESCE(string_agg(to_jsonb(t)::text, '|' ORDER BY t.id), '')) INTO s_meds FROM public.medicos t;
   SELECT md5(COALESCE(string_agg(to_jsonb(t)::text, '|' ORDER BY t.medico_id, t.clinica_id), '')) INTO s_mc FROM public.medico_clinicas t;
   SELECT count(*) INTO n_users FROM auth.users;
+  SELECT md5(COALESCE(string_agg(to_jsonb(t)::text, '|' ORDER BY t.id), '')) INTO s_cit FROM public.citas t WHERE t.paciente_id = 23;
   BEGIN
+    -- 20-nov: la 970 (nota 2214) como última visita del 23, sin depender de datos QA vivos (ver P916)
+    UPDATE public.citas c SET fecha = DATE '2000-01-01'
+     WHERE c.paciente_id = 23 AND c.estado = 'completada'
+       AND (c.fecha, c.hora_inicio, c.id) > (SELECT c9.fecha, c9.hora_inicio, c9.id FROM public.citas c9 WHERE c9.id = 970);
     SELECT pais_id INTO v_pais FROM public.perfiles WHERE id = c_med;
     INSERT INTO auth.users (id) VALUES (c_mfx);
     INSERT INTO public.perfiles (id, email, nombre_completo, rol, pais_id, activo)
@@ -29848,6 +29870,7 @@ BEGIN
   IF (SELECT md5(COALESCE(string_agg(to_jsonb(t)::text, '|' ORDER BY t.id), '')) FROM public.medicos t) IS DISTINCT FROM s_meds THEN r_rest := r_rest||' / medicos'; END IF;
   IF (SELECT md5(COALESCE(string_agg(to_jsonb(t)::text, '|' ORDER BY t.medico_id, t.clinica_id), '')) FROM public.medico_clinicas t) IS DISTINCT FROM s_mc THEN r_rest := r_rest||' / medico_clinicas'; END IF;
   IF (SELECT count(*) FROM auth.users) <> n_users OR EXISTS (SELECT 1 FROM auth.users WHERE id = c_mfx) THEN r_rest := r_rest||' / auth.users'; END IF;
+  IF (SELECT md5(COALESCE(string_agg(to_jsonb(t)::text, '|' ORDER BY t.id), '')) FROM public.citas t WHERE t.paciente_id = 23) IS DISTINCT FROM s_cit THEN r_rest := r_rest||' / citas'; END IF;
   det := det||' ;; restauracion|subtransaccion descartada; snapshot igual|'||r_rest||'|-|';
   PERFORM set_config('probe.p920_det', det, false);
   PERFORM set_config('probe.p920', CASE WHEN bad = '' AND r_rest = 'OK'
