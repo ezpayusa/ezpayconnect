@@ -34,3 +34,22 @@ describe('generarPDF (H13)', () => {
     expect(tabla.head[0].cells[5].text).toEqual(['Cant.'])
   })
 })
+
+describe('generarPDF (H23: alerta de alergia y cédula)', () => {
+  const alertas = [{ medicamento: 'Penicilina G benzatinica', termino: 'penicilina', motivo: 'Sin alternativa, se vigila 30 min' }]
+
+  it('con alertas imprime «Prescrito pese a alergia» con término y motivo', () => {
+    const out = generarPDF(receta, items, paciente, medico, 'QA-12345', alertas).output()
+    expect(out).toContain('Prescrito pese a alergia')
+    expect(out).toContain('Sin alternativa, se vigila 30 min')
+  })
+
+  it('sin alertas (paciente u otro rol: 0 filas) no imprime la sección', () => {
+    expect(generarPDF(receta, items, paciente, medico, 'QA-12345', []).output()).not.toContain('Prescrito pese a alergia')
+  })
+
+  it('imprime la cédula profesional; si es NULL omite la línea', () => {
+    expect(generarPDF(receta, items, paciente, medico, 'QA-12345').output()).toContain('profesional: QA-12345')
+    expect(generarPDF(receta, items, paciente, medico, null).output()).not.toContain('profesional:')
+  })
+})

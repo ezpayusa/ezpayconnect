@@ -3,6 +3,7 @@ import autoTable from 'jspdf-autotable'
 import type { Receta, RecetaItem, Paciente, Perfil } from '@/types'
 import { folioReceta } from '@/lib/folioReceta'
 import { parseFechaLocal } from '@/lib/fecha'
+import { textoAlertaAlergia, type AlertaAlergiaReceta } from '@/lib/alertasAlergiaReceta'
 
 // Exportada para el test de H13 (sin «N/A», tabla dentro del margen).
 export function generarPDF(
@@ -10,7 +11,8 @@ export function generarPDF(
   items: RecetaItem[],
   paciente: Paciente,
   medico: Perfil,
-  cedula?: string | null
+  cedula?: string | null,
+  alertas: AlertaAlergiaReceta[] = []
 ) {
   const doc = new jsPDF()
   const pageWidth = doc.internal.pageSize.getWidth()
@@ -171,7 +173,26 @@ export function generarPDF(
   })
 
   // === INSTRUCCIONES GENERALES ===
-  const finalY = (doc as any).lastAutoTable?.finalY || yPos + 60
+  let finalY = (doc as any).lastAutoTable?.finalY || yPos + 60
+
+  // === H23: PRESCRITO PESE A ALERGIA (solo llega con datos si quien genera es el médico autor) ===
+  if (alertas.length > 0) {
+    let y = finalY + 12
+    doc.setFontSize(11)
+    doc.setFont('helvetica', 'bold')
+    doc.setTextColor(185, 28, 28)
+    doc.text('Prescrito pese a alergia', 20, y)
+    doc.setFontSize(9)
+    doc.setFont('helvetica', 'normal')
+    doc.setTextColor(colorTexto)
+    for (const a of alertas) {
+      const lineas = doc.splitTextToSize(`• ${textoAlertaAlergia(a)}`, pageWidth - 40)
+      y += 6
+      doc.text(lineas, 20, y)
+      y += (lineas.length - 1) * 4.5
+    }
+    finalY = y
+  }
 
   if (receta.instrucciones_generales) {
     yPos = finalY + 15
@@ -202,9 +223,16 @@ export function generarPDF(
 
   doc.setFont('helvetica', 'normal')
   doc.setFontSize(9)
+  // H23: cédula profesional del médico bajo la firma; si no tiene, la línea se omite.
+  let lineaFirma = firmaY + 16
+  if (cedula) {
+    doc.setTextColor(colorTexto)
+    doc.text(`Cédula profesional: ${cedula}`, pageWidth / 2, lineaFirma, { align: 'center' })
+    lineaFirma += 6
+  }
   doc.setTextColor(colorGris)
-  doc.text('Firma y Sello Médico', pageWidth / 2, firmaY + 16, { align: 'center' })
-  doc.text('Documento generado digitalmente por EzPayConnect', pageWidth / 2, firmaY + 22, { align: 'center' })
+  doc.text('Firma y Sello Médico', pageWidth / 2, lineaFirma, { align: 'center' })
+  doc.text('Documento generado digitalmente por EzPayConnect', pageWidth / 2, lineaFirma + 6, { align: 'center' })
 
   // === FOOTER ===
   doc.setFillColor(26, 42, 58)
@@ -225,9 +253,10 @@ export function generarPDFReceta(
   items: RecetaItem[],
   paciente: Paciente,
   medico: Perfil,
-  cedula?: string | null
+  cedula?: string | null,
+  alertas: AlertaAlergiaReceta[] = []
 ) {
-  const doc = generarPDF(receta, items, paciente, medico, cedula)
+  const doc = generarPDF(receta, items, paciente, medico, cedula, alertas)
 
   const nombreArchivo = `Receta_${paciente.nombre}_${paciente.apellido}_${new Date().toISOString().split('T')[0]}.pdf`
     .replace(/\s+/g, '_')
@@ -244,9 +273,10 @@ export function imprimirPDFReceta(
   items: RecetaItem[],
   paciente: Paciente,
   medico: Perfil,
-  cedula?: string | null
+  cedula?: string | null,
+  alertas: AlertaAlergiaReceta[] = []
 ) {
-  const doc = generarPDF(receta, items, paciente, medico, cedula)
+  const doc = generarPDF(receta, items, paciente, medico, cedula, alertas)
 
   // Crear iframe invisible y disparar print() automáticamente
   const pdfBlob = doc.output('blob')

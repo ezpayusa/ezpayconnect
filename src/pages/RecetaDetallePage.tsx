@@ -3,6 +3,7 @@ import { useParams, useNavigate } from 'react-router-dom'
 import { useAuth } from '@/hooks/useAuth'
 import { useRecetas } from '@/hooks/useRecetas'
 import { generarPDFReceta, imprimirPDFReceta } from '@/lib/pdfReceta'
+import { textoAlertaAlergia, type AlertaAlergiaReceta } from '@/lib/alertasAlergiaReceta'
 import { supabase } from '@/lib/supabase'
 import { parseFechaLocal } from '@/lib/fecha'
 import { folioReceta } from '@/lib/folioReceta'
@@ -68,6 +69,7 @@ export default function RecetaDetallePage() {
             items: data.items || [],
             paciente: data.paciente,
             cedula_medico: data.cedula_medico,
+            alertas_alergia: data.alertas_alergia || [],
           })
         } else {
           setError(`No se encontró la receta con ID ${recetaId}. Es posible que no exista o que no tenga permisos para verla.`)
@@ -117,7 +119,7 @@ export default function RecetaDetallePage() {
       toast.error('Faltan datos para generar el PDF')
       return
     }
-    generarPDFReceta(receta, receta.items, receta.paciente, medico, receta.cedula_medico)
+    generarPDFReceta(receta, receta.items, receta.paciente, medico, receta.cedula_medico, receta.alertas_alergia)
     toast.success('PDF descargado')
   }
 
@@ -127,7 +129,7 @@ export default function RecetaDetallePage() {
       toast.error('Faltan datos para imprimir')
       return
     }
-    imprimirPDFReceta(receta, receta.items, receta.paciente, medico, receta.cedula_medico)
+    imprimirPDFReceta(receta, receta.items, receta.paciente, medico, receta.cedula_medico, receta.alertas_alergia)
     toast.success('Abriendo ventana de impresión')
   }
 
@@ -290,6 +292,25 @@ export default function RecetaDetallePage() {
             </CardContent>
           </Card>
         </div>
+
+        {/* === H23: PRESCRITO PESE A ALERGIA (solo el médico autor lee estas alertas; si no hay, no se muestra) === */}
+        {receta.alertas_alergia?.length > 0 && (
+          <Card className="border-red-200 bg-red-50" data-testid="receta-alertas-alergia">
+            <CardHeader className="pb-2">
+              <CardTitle className="text-sm font-semibold text-red-700 flex items-center gap-2">
+                <AlertTriangle className="h-4 w-4" />
+                Prescrito pese a alergia
+              </CardTitle>
+            </CardHeader>
+            <CardContent>
+              <ul className="space-y-1 text-sm text-red-800">
+                {receta.alertas_alergia.map((a: AlertaAlergiaReceta, i: number) => (
+                  <li key={i}>{textoAlertaAlergia(a)}</li>
+                ))}
+              </ul>
+            </CardContent>
+          </Card>
+        )}
 
         {/* === MEDICAMENTOS === */}
         <Card>

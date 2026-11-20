@@ -2,6 +2,7 @@ import { useState, useEffect, useCallback } from 'react'
 import { supabase } from '@/lib/supabase'
 import { usePaisFiltro } from './usePaisFiltro'
 import type { Receta, RecetaItem, Medicamento } from '@/types'
+import { cargarAlertasAlergia } from '@/lib/alertasAlergiaReceta'
 
 /** Respuesta de public.emitir_receta (mig 395). */
 interface EmitirRecetaRespuesta {
@@ -146,7 +147,7 @@ export function useRecetas(opts?: { autoFetch?: boolean }) {
 
     if (recetaError || !receta) {
       console.error('Error fetching receta:', recetaError?.message ?? recetaError?.code)
-      return { receta: null, items: [], paciente: null, cedula_medico: null }
+      return { receta: null, items: [], paciente: null, cedula_medico: null, alertas_alergia: [] }
     }
 
    const { data: items, error: itemsError } = await supabase
@@ -222,11 +223,16 @@ if (receta.medico_id) {
   cedula_medico = (medicoRow?.cedula_profesional as string | null | undefined) ?? null
 }
 
+// H23: alertas de alergia confirmadas al emitir. Solo las lee el médico autor (policy); para
+// cualquier otro queda [] y no se muestra nada.
+const alertas_alergia = await cargarAlertasAlergia(id, itemsConFarmacia)
+
 return { 
   receta, 
   items: itemsConFarmacia,
   paciente: receta.pacientes || null,
   cedula_medico,
+  alertas_alergia,
 }
  } // ✅ Cambiar estado de receta
   const updateReceta = async (id: number, updates: Partial<Receta>) => {

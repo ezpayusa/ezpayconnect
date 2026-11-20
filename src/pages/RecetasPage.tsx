@@ -5,6 +5,7 @@ import { useRecetas, useMedicamentos } from '@/hooks/useRecetas'
 import { useBusquedaMedicamentos } from '@/hooks/useBusquedaMedicamentos'
 import { useAuth } from '@/hooks/useAuth'
 import { generarPDFReceta, imprimirPDFReceta } from '@/lib/pdfReceta'
+import type { AlertaAlergiaReceta } from '@/lib/alertasAlergiaReceta'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
@@ -33,6 +34,7 @@ export default function RecetasPage() {
   const [showDetail, setShowDetail] = useState(false)
   const [selectedReceta, setSelectedReceta] = useState<{
     receta: any, items: any[], paciente: any, cedula_medico?: string | null
+    alertas_alergia?: AlertaAlergiaReceta[]
   } | null>(null)
   const [saving, setSaving] = useState(false)
   const [searchMed, setSearchMed] = useState('')
@@ -239,7 +241,7 @@ export default function RecetasPage() {
   const handleDownload = async (recetaId: number) => {
     setPrintingId(recetaId)
     try {
-      const { receta, items, paciente, cedula_medico } = await getRecetaCompleta(recetaId)
+      const { receta, items, paciente, cedula_medico, alertas_alergia } = await getRecetaCompleta(recetaId)
       const medicoPerfil = perfil || {
         nombre_completo: 'Médico',
         email: '',
@@ -247,7 +249,7 @@ export default function RecetasPage() {
       }
 
       if (receta && paciente) {
-        generarPDFReceta(receta, items, paciente, medicoPerfil, cedula_medico)
+        generarPDFReceta(receta, items, paciente, medicoPerfil, cedula_medico, alertas_alergia)
       } else {
         alert('Error: No se pudieron obtener los datos de la receta')
       }
@@ -262,7 +264,7 @@ export default function RecetasPage() {
   const handlePrint = async (recetaId: number) => {
     setPrintingId(recetaId)
     try {
-      const { receta, items, paciente, cedula_medico } = await getRecetaCompleta(recetaId)
+      const { receta, items, paciente, cedula_medico, alertas_alergia } = await getRecetaCompleta(recetaId)
       const medicoPerfil = perfil || {
         nombre_completo: 'Médico',
         email: '',
@@ -270,7 +272,7 @@ export default function RecetasPage() {
       }
 
       if (receta && paciente) {
-        imprimirPDFReceta(receta, items, paciente, medicoPerfil, cedula_medico)
+        imprimirPDFReceta(receta, items, paciente, medicoPerfil, cedula_medico, alertas_alergia)
       } else {
         alert('Error: No se pudieron obtener los datos de la receta')
       }
@@ -714,7 +716,7 @@ export default function RecetasPage() {
                         telefono: ''
                       }
                       if (selectedReceta.receta && selectedReceta.paciente) {
-                       generarPDFReceta(selectedReceta.receta, selectedReceta.items, selectedReceta.paciente, medicoPerfil, selectedReceta.cedula_medico)
+                       generarPDFReceta(selectedReceta.receta, selectedReceta.items, selectedReceta.paciente, medicoPerfil, selectedReceta.cedula_medico, selectedReceta.alertas_alergia)
                       } else {
                         alert('Faltan datos para generar el PDF')
                       }
@@ -736,7 +738,7 @@ export default function RecetasPage() {
                         telefono: ''
                       }
                       if (selectedReceta.receta && selectedReceta.paciente) {
-                        imprimirPDFReceta(selectedReceta.receta, selectedReceta.items, selectedReceta.paciente, medicoPerfil, selectedReceta.cedula_medico)
+                        imprimirPDFReceta(selectedReceta.receta, selectedReceta.items, selectedReceta.paciente, medicoPerfil, selectedReceta.cedula_medico, selectedReceta.alertas_alergia)
                       } else {
                         alert('Faltan datos para imprimir')
                       }

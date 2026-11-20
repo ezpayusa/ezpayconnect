@@ -18,6 +18,7 @@ import {
   ArrowLeft,
 } from 'lucide-react'
 import { imprimirPDFReceta } from '@/lib/pdfReceta'
+import { cargarAlertasAlergia } from '@/lib/alertasAlergiaReceta'
 import { folioReceta } from '@/lib/folioReceta'
 import RecetaModal from '@/components/consulta/RecetaModal'
 
@@ -111,7 +112,9 @@ export default function MedicoRecetasPage() {
         return
       }
 
-      imprimirPDFReceta(receta as any, items || [], pacienteCompleto as any, perfil, cedula)
+      // H23: las alertas de alergia de esta receta (el médico autor las lee; si no, [] y no se imprimen)
+      const alertas = await cargarAlertasAlergia(receta.id, items || [])
+      imprimirPDFReceta(receta as any, items || [], pacienteCompleto as any, perfil, cedula, alertas)
     } catch (e: any) {
       console.error('Error imprimiendo:', e?.message ?? e?.code)
     } finally {
