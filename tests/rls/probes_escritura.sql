@@ -371,6 +371,31 @@ $fn$;
 EXCEPTION WHEN OTHERS THEN
   PERFORM set_config('probe.m400_helper', 'FALLO (no se pudo crear pg_temp.m400_estado: '||SQLSTATE||' '||SQLERRM||')', false);
 END $$;
+-- ============================================================================
+-- MIG 401 — helper de ESTADO, en el PRELUDIO: pg_temp.m401_estado() lo usan M401_FX + P1199-P1201 (final de la parte 2).
+-- Solo lee catálogo (los DEFAULT de citas.estado, citas.motivo y citas.notas).
+--   'post' = estado DEFAULT 'agendada'::text, motivo y notas sin DEFAULT;
+--   'pre'  = estado DEFAULT '''agendada'''::text (la cadena con comillas), motivo y notas DEFAULT 'NULL'::text;
+--   cualquier otra cosa = 'parcial (...)', que cada probe publica como ROJO.
+-- ============================================================================
+DO $$
+BEGIN
+  EXECUTE $fn$
+CREATE OR REPLACE FUNCTION pg_temp.m401_estado() RETURNS text LANGUAGE plpgsql STABLE AS $body$
+DECLARE v text;
+BEGIN
+  v := (SELECT string_agg(a.attname||'='||COALESCE(pg_get_expr(d.adbin, d.adrelid), '(sin default)'), ' ; ' ORDER BY a.attname)
+          FROM pg_attribute a LEFT JOIN pg_attrdef d ON d.adrelid = a.attrelid AND d.adnum = a.attnum
+         WHERE a.attrelid = 'public.citas'::regclass AND a.attname IN ('estado', 'motivo', 'notas') AND NOT a.attisdropped);
+  IF v = 'estado=''agendada''::text ; motivo=(sin default) ; notas=(sin default)' THEN RETURN 'post'; END IF;
+  IF v = 'estado=''''''agendada''''''::text ; motivo=''NULL''::text ; notas=''NULL''::text' THEN RETURN 'pre'; END IF;
+  RETURN 'parcial ('||COALESCE(v, '-')||')';
+END
+$body$
+$fn$;
+EXCEPTION WHEN OTHERS THEN
+  PERFORM set_config('probe.m401_helper', 'FALLO (no se pudo crear pg_temp.m401_estado: '||SQLSTATE||' '||SQLERRM||')', false);
+END $$;
 -- @@HARNESS_PRELUDIO_FIN@@
 
 -- ============================================================
@@ -45648,6 +45673,138 @@ EXCEPTION WHEN OTHERS THEN
 END $$;
 SELECT set_config('role', 'none', true);
 
+-- ============================================================================
+-- MIG 401 — citas: DEFAULT de estado ('agendada'), motivo y notas (sin DEFAULT) y limpieza del texto 'NULL' literal
+-- (M401_FX + P1199-P1201). El ESTADO sale de pg_temp.m401_estado(), que vive en el PRELUDIO. Con 'pre' los probes publican
+-- PENDIENTE; con 'parcial', ROJO. Los probes que escriben lo hacen dentro de un bloque que se descarta con P0999 y comparan
+-- una huella de citas (y de los pacientes QA-MANUAL 401) antes y después.
+-- ============================================================================
+DO $$
+DECLARE est text;
+BEGIN
+  est := pg_temp.m401_estado();
+  PERFORM set_config('probe.m401_fx', CASE WHEN est = 'pre' THEN 'PENDIENTE (estado de la 401: pre)'
+                                           WHEN est = 'post' THEN 'OK (helper de pg_temp creado; estado de la 401: post)'
+                                           ELSE 'ROJO (401 '||est||')' END, false);
+EXCEPTION WHEN OTHERS THEN
+  PERFORM set_config('probe.m401_fx', 'FALLO ('||SQLSTATE||' '||SQLERRM||')', false);
+END $$;
+
+-- ---------------- P1199 401: catálogo y datos — DEFAULT nuevos, el de estado pasa el CHECK, 0 filas con el texto 'NULL' ----------------
+DO $$
+DECLARE est text; d text := ''; v text; n bigint;
+BEGIN
+  est := pg_temp.m401_estado();
+  IF est = 'pre' THEN PERFORM set_config('probe.p1199', 'PENDIENTE (estado de la 401: pre)', false); RETURN; END IF;
+  IF est <> 'post' THEN PERFORM set_config('probe.p1199', 'ROJO (401 '||est||')', false); RETURN; END IF;
+  -- el DEFAULT de estado, evaluado, está en la lista del CHECK
+  EXECUTE 'SELECT ('||(SELECT pg_get_expr(df.adbin, df.adrelid) FROM pg_attrdef df JOIN pg_attribute a ON a.attrelid = df.adrelid AND a.attnum = df.adnum
+                        WHERE df.adrelid = 'public.citas'::regclass AND a.attname = 'estado')||')::text' INTO v;
+  IF v IS DISTINCT FROM 'agendada' THEN d := d||'el DEFAULT de estado evalúa a '||COALESCE(v, 'NULL')||'; '; END IF;
+  IF strpos((SELECT pg_get_constraintdef(c.oid) FROM pg_constraint c WHERE c.conrelid = 'public.citas'::regclass AND c.conname = 'citas_estado_valido'), '''agendada''') = 0 THEN
+    d := d||'citas_estado_valido no admite agendada; ';
+  END IF;
+  IF (SELECT a.attnotnull FROM pg_attribute a WHERE a.attrelid = 'public.citas'::regclass AND a.attname = 'estado') IS NOT TRUE THEN
+    d := d||'citas.estado dejó de ser NOT NULL; ';
+  END IF;
+  n := (SELECT count(*) FROM public.citas WHERE motivo = 'NULL' OR notas = 'NULL');
+  IF n <> 0 THEN d := d||n||' citas con el texto NULL literal en motivo/notas; '; END IF;
+  -- ningún otro DEFAULT roto en public/private (texto con comillas incrustadas o el texto 'NULL')
+  v := (SELECT string_agg(c.relname||'.'||a.attname, ',' ORDER BY 1)
+          FROM pg_attrdef df JOIN pg_attribute a ON a.attrelid = df.adrelid AND a.attnum = df.adnum
+          JOIN pg_class c ON c.oid = df.adrelid
+         WHERE c.relnamespace IN ('public'::regnamespace, 'private'::regnamespace) AND NOT a.attisdropped
+           AND (pg_get_expr(df.adbin, df.adrelid) ~ '^''''''' OR pg_get_expr(df.adbin, df.adrelid) ~* '^''null''(::|$)'));
+  IF v IS NOT NULL THEN d := d||'DEFAULT rotos: '||v||'; '; END IF;
+  PERFORM set_config('probe.p1199', CASE WHEN d <> '' THEN 'FALLO ('||d||')'
+    ELSE 'OK (401: estado DEFAULT agendada (pasa citas_estado_valido), motivo y notas sin DEFAULT; 0 citas con el texto NULL; 0 DEFAULT rotos en public/private)' END, false);
+EXCEPTION WHEN OTHERS THEN
+  PERFORM set_config('probe.p1199', 'FALLO ('||SQLSTATE||' '||SQLERRM||')', false);
+END $$;
+
+-- ---------------- P1200 401: INSERT como postgres que omite estado, motivo y notas → 'agendada', NULL, NULL; descartado ----------------
+DO $$
+DECLARE est text; d text := ''; pre text; post text; v_estado text; v_motivo text; v_notas text; c1 bigint;
+  c_med CONSTANT uuid := '09d243d5-b222-482a-9762-94a582e9e752';
+  c_clin CONSTANT uuid := 'c76d862c-e82f-4748-bc07-86c8a3343576';
+BEGIN
+  est := pg_temp.m401_estado();
+  IF est = 'pre' THEN PERFORM set_config('probe.p1200', 'PENDIENTE (estado de la 401: pre)', false); RETURN; END IF;
+  IF est <> 'post' THEN PERFORM set_config('probe.p1200', 'ROJO (401 '||est||')', false); RETURN; END IF;
+  IF current_user <> 'postgres' THEN RAISE EXCEPTION 'fixture roto: P1200 corre como %', current_user; END IF;
+  IF NOT EXISTS (SELECT 1 FROM public.medicos m WHERE m.id = c_med) OR NOT EXISTS (SELECT 1 FROM public.pacientes p WHERE p.id = 23) THEN
+    RAISE EXCEPTION 'fixture roto: P1200 sin medico.qa en medicos o sin paciente 23';
+  END IF;
+  pre := (SELECT count(*)||' '||COALESCE(md5(string_agg(to_jsonb(c)::text, '|' ORDER BY c.id)), '-') FROM public.citas c);
+  BEGIN
+    INSERT INTO public.citas (paciente_id, medico_id, clinica_id, fecha, hora_inicio, hora_fin)
+    VALUES (23, c_med, c_clin, CURRENT_DATE + 401, '07:00', '07:30')
+    RETURNING id, estado, motivo, notas INTO c1, v_estado, v_motivo, v_notas;
+    IF v_estado IS DISTINCT FROM 'agendada' THEN d := d||'estado = '||COALESCE(v_estado, 'NULL')||' (esperado agendada); '; END IF;
+    IF v_motivo IS NOT NULL THEN d := d||'motivo = '||quote_literal(v_motivo)||' (esperado NULL); '; END IF;
+    IF v_notas IS NOT NULL THEN d := d||'notas = '||quote_literal(v_notas)||' (esperado NULL); '; END IF;
+    RAISE EXCEPTION 'P1200 descarte' USING ERRCODE = 'P0999';
+  EXCEPTION WHEN SQLSTATE 'P0999' THEN NULL;
+    WHEN SQLSTATE '23514' THEN d := d||'el INSERT sin estado viola un CHECK (23514 '||left(SQLERRM, 90)||'); ';
+  END;
+  post := (SELECT count(*)||' '||COALESCE(md5(string_agg(to_jsonb(c)::text, '|' ORDER BY c.id)), '-') FROM public.citas c);
+  PERFORM set_config('probe.p1200', CASE WHEN pre IS DISTINCT FROM post THEN 'FALLO (no restauró citas; '||d||')'
+    WHEN d <> '' THEN 'FALLO ('||d||')'
+    ELSE 'OK (401: INSERT de postgres sin estado/motivo/notas queda agendada, NULL, NULL; descartado)' END, false);
+EXCEPTION WHEN OTHERS THEN
+  PERFORM set_config('probe.p1200', CASE WHEN SQLERRM LIKE 'fixture roto%' THEN 'ROJO ('||SQLERRM||')' ELSE 'FALLO ('||SQLSTATE||' '||SQLERRM||')' END, false);
+END $$;
+
+-- ---------------- P1201 401: crear_cita sin motivo ni notas (paciente y secretaria) → NULL, no el texto 'NULL'; descartado ----------------
+DO $$
+DECLARE est text; d text := ''; pre text; post text; v_pacu uuid; v_sec uuid; v_pac bigint; c1 bigint; r text;
+  c_med CONSTANT uuid := '09d243d5-b222-482a-9762-94a582e9e752';
+  c_clin CONSTANT uuid := 'c76d862c-e82f-4748-bc07-86c8a3343576';
+BEGIN
+  est := pg_temp.m401_estado();
+  IF est = 'pre' THEN PERFORM set_config('probe.p1201', 'PENDIENTE (estado de la 401: pre)', false); RETURN; END IF;
+  IF est <> 'post' THEN PERFORM set_config('probe.p1201', 'ROJO (401 '||est||')', false); RETURN; END IF;
+  v_pacu := (SELECT p.auth_user_id FROM public.pacientes p WHERE p.id = 23);
+  v_sec := (SELECT p.id FROM public.perfiles p WHERE p.email = 'secretaria.qa@ezpayconnect.com' AND p.rol = 'secretaria');
+  IF v_pacu IS NULL OR v_sec IS NULL
+     OR NOT EXISTS (SELECT 1 FROM public.medico_clinicas mc WHERE mc.medico_id = v_sec AND mc.clinica_id = c_clin)
+     OR NOT EXISTS (SELECT 1 FROM public.medico_clinicas mc WHERE mc.medico_id = c_med AND mc.clinica_id = c_clin) THEN
+    RAISE EXCEPTION 'fixture roto: P1201 sin paciente 23 con cuenta, secretaria.qa de c76d862c o medico.qa en c76d862c';
+  END IF;
+  pre := (SELECT count(*)||' '||COALESCE(md5(string_agg(to_jsonb(c)::text, '|' ORDER BY c.id)), '-') FROM public.citas c)
+         ||' / '||(SELECT count(*) FROM public.pacientes p WHERE p.nombre = 'QA-MANUAL 401');
+  BEGIN
+    -- paciente 23 (sin motivo ni notas)
+    PERFORM set_config('request.jwt.claims', json_build_object('sub', v_pacu, 'role', 'authenticated')::text, true);
+    PERFORM set_config('role', 'authenticated', true);
+    c1 := public.crear_cita(23, c_med, c_clin, CURRENT_DATE + 402, '08:00', '08:30');
+    PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
+    r := (SELECT c.estado||'|'||COALESCE(c.motivo, '<null>')||'|'||COALESCE(c.notas, '<null>') FROM public.citas c WHERE c.id = c1);
+    IF r IS DISTINCT FROM 'solicitada|<null>|<null>' THEN d := d||'paciente: '||COALESCE(r, 'sin fila')||' (esperado solicitada|<null>|<null>); '; END IF;
+    -- secretaria, para un paciente QA-MANUAL sembrado acá (con motivo, sin notas)
+    INSERT INTO public.pacientes (nombre, apellido, pais_id, email, activo)
+    VALUES ('QA-MANUAL 401', 'P1201', (SELECT p.pais_id FROM public.pacientes p WHERE p.id = 23), 'qa-manual-401-p1201@invalid.test', true)
+    RETURNING id INTO v_pac;
+    PERFORM set_config('request.jwt.claims', json_build_object('sub', v_sec, 'role', 'authenticated')::text, true);
+    PERFORM set_config('role', 'authenticated', true);
+    c1 := public.crear_cita(v_pac, c_med, c_clin, CURRENT_DATE + 403, '09:00', '09:30', 'QA-MANUAL 401 motivo');
+    PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
+    r := (SELECT c.estado||'|'||COALESCE(c.motivo, '<null>')||'|'||COALESCE(c.notas, '<null>') FROM public.citas c WHERE c.id = c1);
+    IF r IS DISTINCT FROM 'agendada|QA-MANUAL 401 motivo|<null>' THEN d := d||'secretaria: '||COALESCE(r, 'sin fila')||' (esperado agendada|QA-MANUAL 401 motivo|<null>); '; END IF;
+    RAISE EXCEPTION 'P1201 descarte' USING ERRCODE = 'P0999';
+  EXCEPTION WHEN SQLSTATE 'P0999' THEN NULL;
+  END;
+  post := (SELECT count(*)||' '||COALESCE(md5(string_agg(to_jsonb(c)::text, '|' ORDER BY c.id)), '-') FROM public.citas c)
+          ||' / '||(SELECT count(*) FROM public.pacientes p WHERE p.nombre = 'QA-MANUAL 401');
+  PERFORM set_config('probe.p1201', CASE WHEN pre IS DISTINCT FROM post THEN 'FALLO (no restauró citas o pacientes; '||d||')'
+    WHEN d <> '' THEN 'FALLO ('||d||')'
+    ELSE 'OK (401: crear_cita sin motivo ni notas, como paciente y como secretaria, deja NULL y no el texto NULL; descartado)' END, false);
+EXCEPTION WHEN OTHERS THEN
+  PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
+  PERFORM set_config('probe.p1201', CASE WHEN SQLERRM LIKE 'fixture roto%' THEN 'ROJO ('||SQLERRM||')' ELSE 'FALLO ('||SQLSTATE||' '||SQLERRM||')' END, false);
+END $$;
+SELECT set_config('role', 'none', true);
+
 -- @@HARNESS_RESULTADOS@@
 -- ===== Veredictos como result set =====
 SELECT 'P1_anon_insert_citas'              AS probe, current_setting('probe.p1', true)  AS verdict, 'BLOQUEADO' AS esperado_post_fix
@@ -46951,6 +47108,10 @@ UNION ALL SELECT 'P1195_notas_catalogo_400',  current_setting('probe.p1195', tru
 UNION ALL SELECT 'P1196_notas_pais_del_paciente_400',  current_setting('probe.p1196', true), 'OK (400: el país de la nota sale del paciente para médico, service_role y postgres; paciente sin país -> NULL; pre: PENDIENTE)'
 UNION ALL SELECT 'P1197_notas_update_por_columna_400',  current_setting('probe.p1197', true), 'OK (400: UPDATE del front pasa; el resto 42501; NT007/NT006, cierre y corrección como antes; pre: PENDIENTE)'
 UNION ALL SELECT 'P1198_notas_lecturas_y_cierre_400',  current_setting('probe.p1198', true), 'OK (400: lecturas como antes; nota sin país se cierra sin NT009 ni revisión; pre: PENDIENTE)'
+UNION ALL SELECT 'M401_FX_citas_defaults',  current_setting('probe.m401_fx', true), 'OK (helper de pg_temp creado; estado de la 401: post; pre: PENDIENTE; parcial: ROJO)'
+UNION ALL SELECT 'P1199_citas_defaults_catalogo_401',  current_setting('probe.p1199', true), 'OK (401: estado DEFAULT agendada, motivo y notas sin DEFAULT, 0 textos NULL, 0 DEFAULT rotos; pre: PENDIENTE)'
+UNION ALL SELECT 'P1200_citas_insert_sin_estado_401',  current_setting('probe.p1200', true), 'OK (401: INSERT sin estado/motivo/notas queda agendada, NULL, NULL; pre: PENDIENTE)'
+UNION ALL SELECT 'P1201_citas_crear_cita_sin_notas_401',  current_setting('probe.p1201', true), 'OK (401: crear_cita sin motivo ni notas deja NULL; pre: PENDIENTE)'
 UNION ALL SELECT 'P1010_campana_vistas_sin_update_367',  current_setting('probe.p1010', true), 'OK (367: INSERT 1; ON CONFLICT DO NOTHING 0 sin error; DO UPDATE y UPDATE 42501; otro paciente 0; antes de la 367: PENDIENTE)'
 UNION ALL SELECT 'P1009_datos_bancarios_acotados_366',  current_setting('probe.p1009', true), 'OK (366: cuenta GT solo super_admin/admin_pais GT/proveedores GT; checkout 1 fila; config 21 super_admin y 14 el resto, admin_pais incluido; antes de la 366: PENDIENTE)'
 UNION ALL SELECT 'DET_p1009',  'DET ' || COALESCE(NULLIF(current_setting('probe.p1009_det', true), ''), '(sin dato)'), 'DET (detalle de P1009, no es probe)'
@@ -47203,7 +47364,7 @@ UNION ALL SELECT 'P000_CENTINELA_veredictos_no_nulos',
        'probe.p866', 'probe.p867', 'probe.p868', 'probe.p869', 'probe.p870', 'probe.p871', 'probe.p872', 'probe.p873', 'probe.p874', 'probe.p875', 'probe.p876', 'probe.p877', 'probe.p878',
        'probe.p879', 'probe.p880', 'probe.p881', 'probe.p882', 'probe.p883', 'probe.p884',
        'probe.p885', 'probe.p886', 'probe.p887', 'probe.p888', 'probe.p889', 'probe.p890', 'probe.p891', 'probe.p892', 'probe.p893', 'probe.p894', 'probe.p895', 'probe.p896', 'probe.p908', 'probe.p909', 'probe.p910', 'probe.p911',
-       'probe.p897', 'probe.p898', 'probe.p899', 'probe.p900', 'probe.p901', 'probe.p902', 'probe.p903', 'probe.p904', 'probe.p905', 'probe.p906', 'probe.p907', 'probe.p912', 'probe.p913', 'probe.p914', 'probe.p915', 'probe.p916', 'probe.p917', 'probe.p918', 'probe.p919', 'probe.p920', 'probe.p921', 'probe.p922', 'probe.p923', 'probe.p924', 'probe.p925', 'probe.p926', 'probe.p927', 'probe.p928', 'probe.p929', 'probe.p930', 'probe.p931', 'probe.p932', 'probe.p933', 'probe.p934', 'probe.p935', 'probe.p936', 'probe.p937', 'probe.p938', 'probe.p939', 'probe.p940', 'probe.p941', 'probe.p942', 'probe.p943', 'probe.p944', 'probe.p945', 'probe.p946', 'probe.p947', 'probe.p948', 'probe.p949', 'probe.p950', 'probe.p951', 'probe.p952', 'probe.p953', 'probe.p954', 'probe.p955', 'probe.p956', 'probe.p957', 'probe.p958', 'probe.p959', 'probe.p960', 'probe.p961', 'probe.p962', 'probe.p963', 'probe.p964', 'probe.p965', 'probe.p966', 'probe.p967', 'probe.p968', 'probe.p969', 'probe.p970', 'probe.p971', 'probe.p972', 'probe.p973', 'probe.p974', 'probe.p975', 'probe.p976', 'probe.p977', 'probe.p978', 'probe.p979', 'probe.p980', 'probe.p981', 'probe.p982', 'probe.p983', 'probe.p984', 'probe.p985', 'probe.p986', 'probe.p987', 'probe.p988', 'probe.p989', 'probe.p990', 'probe.p991', 'probe.p992', 'probe.p993', 'probe.p994', 'probe.p995', 'probe.p996', 'probe.p997', 'probe.p998', 'probe.p999', 'probe.p1000', 'probe.p1001', 'probe.p1002', 'probe.p1003', 'probe.p1004', 'probe.p1005', 'probe.p1006', 'probe.p1007', 'probe.p1008', 'probe.p1009', 'probe.p1010', 'probe.p1011', 'probe.p1012', 'probe.p1013', 'probe.p1014', 'probe.e370_fx', 'probe.p1015', 'probe.p1016', 'probe.p1017', 'probe.p1018', 'probe.g371_fx', 'probe.p1019', 'probe.p1020', 'probe.p1021', 'probe.p1022', 'probe.g372_fx', 'probe.p1023', 'probe.p1024', 'probe.p1025', 'probe.p1035', 'probe.p1036', 'probe.p1037', 'probe.p1038', 'probe.p1039', 'probe.p1040', 'probe.m375_fx', 'probe.p1041', 'probe.p1042', 'probe.p1043', 'probe.p1044', 'probe.p1045', 'probe.p1046', 'probe.p1047', 'probe.p1048', 'probe.p1049', 'probe.p1050', 'probe.p1051', 'probe.p1052', 'probe.p1053', 'probe.p1054', 'probe.p1055', 'probe.p1056', 'probe.p1057', 'probe.p1058', 'probe.p1059', 'probe.p1060', 'probe.p1061', 'probe.m376_fx', 'probe.p1062', 'probe.p1063', 'probe.p1064', 'probe.m377_fx', 'probe.p1065', 'probe.p1066', 'probe.p1067', 'probe.p1068', 'probe.p1069', 'probe.p1070', 'probe.p1071', 'probe.p1072', 'probe.p1073', 'probe.p1074', 'probe.m378_fx', 'probe.p1075', 'probe.p1076', 'probe.p1077', 'probe.p1078', 'probe.p1079', 'probe.p1080', 'probe.p1081', 'probe.p1082', 'probe.p1083', 'probe.m379_fx', 'probe.p1084', 'probe.p1085', 'probe.p1086', 'probe.p1087', 'probe.p1088', 'probe.p1089', 'probe.p1090', 'probe.m380_fx', 'probe.p1091', 'probe.p1092', 'probe.p1093', 'probe.p1094', 'probe.p1095', 'probe.p1096', 'probe.p1097', 'probe.p1098', 'probe.h_restaura', 'probe.m381_fx', 'probe.p1099', 'probe.p1100', 'probe.p1101', 'probe.p1102', 'probe.p1103', 'probe.p1104', 'probe.m382_fx', 'probe.p1105', 'probe.p1106', 'probe.p1107', 'probe.p1108', 'probe.p1109', 'probe.p1110', 'probe.p1111', 'probe.p1112', 'probe.p1113', 'probe.p1114', 'probe.p1115', 'probe.p1116', 'probe.p1117', 'probe.p1118', 'probe.p1119', 'probe.m383_fx', 'probe.p1120', 'probe.p1121', 'probe.p1122', 'probe.p1123', 'probe.p1124', 'probe.p1125', 'probe.p1126', 'probe.p1127', 'probe.p1128', 'probe.p1129', 'probe.p1130', 'probe.p1131', 'probe.m384_fx', 'probe.p1132', 'probe.p1133', 'probe.p1134', 'probe.p1135', 'probe.p1136', 'probe.p1137', 'probe.m385_fx', 'probe.p1138', 'probe.p1139', 'probe.p1140', 'probe.p1141', 'probe.m386_fx', 'probe.p1142', 'probe.p1143', 'probe.p1144', 'probe.p1145', 'probe.p1146', 'probe.p1147', 'probe.m387_fx', 'probe.p1148', 'probe.p1149', 'probe.p1150', 'probe.p1151', 'probe.m388_fx', 'probe.p1152', 'probe.p1153', 'probe.p1154', 'probe.p1155', 'probe.p1156', 'probe.m389_fx', 'probe.p1157', 'probe.p1158', 'probe.p1159', 'probe.p1160', 'probe.m390_fx', 'probe.p1161', 'probe.p1162', 'probe.p1163', 'probe.p1164', 'probe.m391_fx', 'probe.p1165', 'probe.p1166', 'probe.p1167', 'probe.p1168', 'probe.p1169', 'probe.m392_fx', 'probe.p1170', 'probe.p1171', 'probe.p1172', 'probe.m395_fx', 'probe.p1173', 'probe.p1174', 'probe.p1175', 'probe.p1176', 'probe.p1177', 'probe.p1178', 'probe.p1179', 'probe.p1180', 'probe.p1181', 'probe.m396_fx', 'probe.p1182', 'probe.p1183', 'probe.p1184', 'probe.m397_fx', 'probe.p1185', 'probe.p1186', 'probe.p1187', 'probe.p1188', 'probe.m398_fx', 'probe.p1189', 'probe.p1190', 'probe.p1191', 'probe.m399_fx', 'probe.p1192', 'probe.p1193', 'probe.p1194', 'probe.m400_fx', 'probe.p1195', 'probe.p1196', 'probe.p1197', 'probe.p1198'
+       'probe.p897', 'probe.p898', 'probe.p899', 'probe.p900', 'probe.p901', 'probe.p902', 'probe.p903', 'probe.p904', 'probe.p905', 'probe.p906', 'probe.p907', 'probe.p912', 'probe.p913', 'probe.p914', 'probe.p915', 'probe.p916', 'probe.p917', 'probe.p918', 'probe.p919', 'probe.p920', 'probe.p921', 'probe.p922', 'probe.p923', 'probe.p924', 'probe.p925', 'probe.p926', 'probe.p927', 'probe.p928', 'probe.p929', 'probe.p930', 'probe.p931', 'probe.p932', 'probe.p933', 'probe.p934', 'probe.p935', 'probe.p936', 'probe.p937', 'probe.p938', 'probe.p939', 'probe.p940', 'probe.p941', 'probe.p942', 'probe.p943', 'probe.p944', 'probe.p945', 'probe.p946', 'probe.p947', 'probe.p948', 'probe.p949', 'probe.p950', 'probe.p951', 'probe.p952', 'probe.p953', 'probe.p954', 'probe.p955', 'probe.p956', 'probe.p957', 'probe.p958', 'probe.p959', 'probe.p960', 'probe.p961', 'probe.p962', 'probe.p963', 'probe.p964', 'probe.p965', 'probe.p966', 'probe.p967', 'probe.p968', 'probe.p969', 'probe.p970', 'probe.p971', 'probe.p972', 'probe.p973', 'probe.p974', 'probe.p975', 'probe.p976', 'probe.p977', 'probe.p978', 'probe.p979', 'probe.p980', 'probe.p981', 'probe.p982', 'probe.p983', 'probe.p984', 'probe.p985', 'probe.p986', 'probe.p987', 'probe.p988', 'probe.p989', 'probe.p990', 'probe.p991', 'probe.p992', 'probe.p993', 'probe.p994', 'probe.p995', 'probe.p996', 'probe.p997', 'probe.p998', 'probe.p999', 'probe.p1000', 'probe.p1001', 'probe.p1002', 'probe.p1003', 'probe.p1004', 'probe.p1005', 'probe.p1006', 'probe.p1007', 'probe.p1008', 'probe.p1009', 'probe.p1010', 'probe.p1011', 'probe.p1012', 'probe.p1013', 'probe.p1014', 'probe.e370_fx', 'probe.p1015', 'probe.p1016', 'probe.p1017', 'probe.p1018', 'probe.g371_fx', 'probe.p1019', 'probe.p1020', 'probe.p1021', 'probe.p1022', 'probe.g372_fx', 'probe.p1023', 'probe.p1024', 'probe.p1025', 'probe.p1035', 'probe.p1036', 'probe.p1037', 'probe.p1038', 'probe.p1039', 'probe.p1040', 'probe.m375_fx', 'probe.p1041', 'probe.p1042', 'probe.p1043', 'probe.p1044', 'probe.p1045', 'probe.p1046', 'probe.p1047', 'probe.p1048', 'probe.p1049', 'probe.p1050', 'probe.p1051', 'probe.p1052', 'probe.p1053', 'probe.p1054', 'probe.p1055', 'probe.p1056', 'probe.p1057', 'probe.p1058', 'probe.p1059', 'probe.p1060', 'probe.p1061', 'probe.m376_fx', 'probe.p1062', 'probe.p1063', 'probe.p1064', 'probe.m377_fx', 'probe.p1065', 'probe.p1066', 'probe.p1067', 'probe.p1068', 'probe.p1069', 'probe.p1070', 'probe.p1071', 'probe.p1072', 'probe.p1073', 'probe.p1074', 'probe.m378_fx', 'probe.p1075', 'probe.p1076', 'probe.p1077', 'probe.p1078', 'probe.p1079', 'probe.p1080', 'probe.p1081', 'probe.p1082', 'probe.p1083', 'probe.m379_fx', 'probe.p1084', 'probe.p1085', 'probe.p1086', 'probe.p1087', 'probe.p1088', 'probe.p1089', 'probe.p1090', 'probe.m380_fx', 'probe.p1091', 'probe.p1092', 'probe.p1093', 'probe.p1094', 'probe.p1095', 'probe.p1096', 'probe.p1097', 'probe.p1098', 'probe.h_restaura', 'probe.m381_fx', 'probe.p1099', 'probe.p1100', 'probe.p1101', 'probe.p1102', 'probe.p1103', 'probe.p1104', 'probe.m382_fx', 'probe.p1105', 'probe.p1106', 'probe.p1107', 'probe.p1108', 'probe.p1109', 'probe.p1110', 'probe.p1111', 'probe.p1112', 'probe.p1113', 'probe.p1114', 'probe.p1115', 'probe.p1116', 'probe.p1117', 'probe.p1118', 'probe.p1119', 'probe.m383_fx', 'probe.p1120', 'probe.p1121', 'probe.p1122', 'probe.p1123', 'probe.p1124', 'probe.p1125', 'probe.p1126', 'probe.p1127', 'probe.p1128', 'probe.p1129', 'probe.p1130', 'probe.p1131', 'probe.m384_fx', 'probe.p1132', 'probe.p1133', 'probe.p1134', 'probe.p1135', 'probe.p1136', 'probe.p1137', 'probe.m385_fx', 'probe.p1138', 'probe.p1139', 'probe.p1140', 'probe.p1141', 'probe.m386_fx', 'probe.p1142', 'probe.p1143', 'probe.p1144', 'probe.p1145', 'probe.p1146', 'probe.p1147', 'probe.m387_fx', 'probe.p1148', 'probe.p1149', 'probe.p1150', 'probe.p1151', 'probe.m388_fx', 'probe.p1152', 'probe.p1153', 'probe.p1154', 'probe.p1155', 'probe.p1156', 'probe.m389_fx', 'probe.p1157', 'probe.p1158', 'probe.p1159', 'probe.p1160', 'probe.m390_fx', 'probe.p1161', 'probe.p1162', 'probe.p1163', 'probe.p1164', 'probe.m391_fx', 'probe.p1165', 'probe.p1166', 'probe.p1167', 'probe.p1168', 'probe.p1169', 'probe.m392_fx', 'probe.p1170', 'probe.p1171', 'probe.p1172', 'probe.m395_fx', 'probe.p1173', 'probe.p1174', 'probe.p1175', 'probe.p1176', 'probe.p1177', 'probe.p1178', 'probe.p1179', 'probe.p1180', 'probe.p1181', 'probe.m396_fx', 'probe.p1182', 'probe.p1183', 'probe.p1184', 'probe.m397_fx', 'probe.p1185', 'probe.p1186', 'probe.p1187', 'probe.p1188', 'probe.m398_fx', 'probe.p1189', 'probe.p1190', 'probe.p1191', 'probe.m399_fx', 'probe.p1192', 'probe.p1193', 'probe.p1194', 'probe.m400_fx', 'probe.p1195', 'probe.p1196', 'probe.p1197', 'probe.p1198', 'probe.m401_fx', 'probe.p1199', 'probe.p1200', 'probe.p1201'
              ]) AS n) s),
   'OK (todos los veredictos publicados)';
 
