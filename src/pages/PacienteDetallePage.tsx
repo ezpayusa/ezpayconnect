@@ -314,7 +314,7 @@ export default function PacienteDetallePage() {
       }
     } catch (err: any) {
       console.error('Error generando receta:', err?.message ?? err?.code)
-      alert('Error: ' + (err.message || 'Error de conexion'))
+      alert('Error: ' + (err.message || 'Error de conexión'))
     } finally {
       setGenerandoReceta(null)
     }
@@ -338,7 +338,7 @@ export default function PacienteDetallePage() {
       }
     } catch (err: any) {
       console.error('Error enviando recordatorio:', err?.message ?? err?.code)
-      alert('Error: ' + (err.message || 'Error de conexion'))
+      alert('Error: ' + (err.message || 'Error de conexión'))
     }
   }
 
@@ -418,8 +418,8 @@ export default function PacienteDetallePage() {
       {/* Tabs */}
       <div className="flex gap-2 mb-6 overflow-x-auto bg-white p-2 rounded-lg shadow-sm">
         {[
-          { key: 'info', label: 'Informacion', icon: User },
-          { key: 'historial', label: 'Historial Medico', icon: History },
+          { key: 'info', label: 'Información', icon: User },
+          { key: 'historial', label: 'Historial médico', icon: History },
           { key: 'consultas', label: 'Consultas', icon: ClipboardList },
           { key: 'signos_vitales', label: 'Signos Vitales', icon: Activity },
           { key: 'recetas', label: 'Recetas Avanzadas', icon: FileText },
@@ -452,7 +452,7 @@ export default function PacienteDetallePage() {
               <p className="text-lg font-medium text-[#1a2a3a]">{paciente.nombre} {paciente.apellido}</p>
             </div>
             <div className="bg-gray-50 p-4 rounded-lg">
-              <label className="text-sm text-gray-500">Telefono</label>
+              <label className="text-sm text-gray-500">Teléfono</label>
               <p className="text-lg font-medium text-[#1a2a3a]">{paciente.telefono}</p>
             </div>
             {paciente.email && (
@@ -479,7 +479,7 @@ export default function PacienteDetallePage() {
               <div className="md:col-span-2 bg-amber-50 p-4 rounded-lg border border-amber-200">
                 <h3 className="text-sm font-semibold text-amber-800 mb-2 flex items-center gap-2">
                   <AlertCircle size={16} />
-                  Informacion Clinica Relevante
+                  Información clínica relevante
                 </h3>
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-3 text-sm">
                   {paciente.alergias && (
@@ -502,7 +502,7 @@ export default function PacienteDetallePage() {
                   )}
                   {paciente.medicamentos_en_uso && (
                     <div>
-                      <span className="font-medium text-amber-700">Medicacion habitual:</span>
+                      <span className="font-medium text-amber-700">Medicación habitual:</span>
                       <p className="text-amber-600">{paciente.medicamentos_en_uso}</p>
                     </div>
                   )}
@@ -540,7 +540,7 @@ export default function PacienteDetallePage() {
           <div className="p-6 border-b border-gray-100">
             <h2 className="text-xl font-semibold text-[#1a2a3a] flex items-center gap-2">
               <History size={22} className="text-[#1E5C8E]" />
-              Historial Medico
+              Historial médico
             </h2>
           </div>
           <div className="p-6">
@@ -602,14 +602,14 @@ export default function PacienteDetallePage() {
                         )}
                       </span>
                       <span className="text-xs text-gray-400">
-                        Dr. {consulta.perfiles?.nombre_completo || 'Medico'}
+                        Dr. {consulta.perfiles?.nombre_completo || 'Médico'}
                       </span>
                     </div>
                     {consulta.motivo_consulta && (
                       <p className="text-sm text-gray-600 mb-1"><span className="font-medium">Motivo:</span> {consulta.motivo_consulta}</p>
                     )}
                     {consulta.diagnostico && (
-                      <p className="text-sm text-gray-600 mb-1"><span className="font-medium">Diagnostico:</span> {consulta.diagnostico}</p>
+                      <p className="text-sm text-gray-600 mb-1"><span className="font-medium">Diagnóstico:</span> {consulta.diagnostico}</p>
                     )}
                     <div className="grid grid-cols-2 md:grid-cols-4 gap-2 mt-3">
                       {consulta.presion_arterial && (
@@ -707,7 +707,7 @@ export default function PacienteDetallePage() {
           <div className="p-6 border-b border-gray-100">
             <h2 className="text-xl font-semibold text-[#1a2a3a] flex items-center gap-2">
               <Activity size={22} className="text-[#1E5C8E]" />
-              Evolucion de Signos Vitales
+              Evolución de signos vitales
             </h2>
           </div>
           <div className="p-6">
@@ -921,7 +921,7 @@ export default function PacienteDetallePage() {
                   <th className="px-6 py-4 text-left">Hora</th>
                   <th className="px-6 py-4 text-center">Estado</th>
                   <th className="px-6 py-4 text-left">Motivo</th>
-                  <th className="px-6 py-4 text-center">Accion</th>
+                  <th className="px-6 py-4 text-center">Acción</th>
                 </tr>
               </thead>
               <tbody>

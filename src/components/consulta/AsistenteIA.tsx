@@ -82,13 +82,13 @@ export default function AsistenteIA({ pacienteId, motivoConsulta, subjetivo, obj
   const copiarTodo = () => {
     if (!sugerencias) return
     const texto = `
-DIAGNOSTICOS DIFERENCIALES:
+DIAGNÓSTICOS DIFERENCIALES:
 ${sugerencias.diagnosticos_diferenciales.map(d => `- ${d.nombre} (${d.probabilidad}): ${d.justificacion}`).join('\n')}
 
-EXAMENES RECOMENDADOS:
+EXÁMENES RECOMENDADOS:
 ${sugerencias.examenes_recomendados.map(e => `- ${e}`).join('\n')}
 
-OPCIONES FARMACOLOGICAS:
+OPCIONES FARMACOLÓGICAS:
 ${sugerencias.opciones_farmacologicas.map(o => `- ${o.nombre}: ${o.nota}`).join('\n')}
 
 CONTRAINDICACIONES:
@@ -107,8 +107,8 @@ ${sugerencias.referencias_guias.map(r => `- ${r}`).join('\n')}
       <div className="bg-purple-50 border border-purple-200 rounded-lg p-3 text-xs text-purple-700 flex items-start gap-2">
         <AlertTriangle className="h-4 w-4 shrink-0 mt-0.5" />
         <div>
-          <p className="font-medium">Sugerencia de IA generada automaticamente</p>
-          <p>NO es un diagnostico medico. El medico tratante debe verificar toda la informacion antes de prescribir.</p>
+          <p className="font-medium">Sugerencia de IA generada automáticamente</p>
+          <p>NO es un diagnóstico médico. El médico tratante debe verificar toda la información antes de prescribir.</p>
         </div>
       </div>
 
@@ -141,8 +141,8 @@ ${sugerencias.referencias_guias.map(r => `- ${r}`).join('\n')}
 
       {needsConfig && (
         <div className="bg-amber-50 border border-amber-200 rounded-lg p-3 text-sm text-amber-700">
-          <p className="font-medium">Asistente IA no configurado</p>
-          <p className="text-xs mt-1">El administrador debe configurar OPENAI_API_KEY en los secrets de Supabase.</p>
+          <p className="font-medium">Asistente de IA no disponible</p>
+          <p className="text-xs mt-1">El asistente no está disponible en este momento. Avisa al administrador.</p>
         </div>
       )}
 
@@ -154,12 +154,12 @@ ${sugerencias.referencias_guias.map(r => `- ${r}`).join('\n')}
 
       {sugerencias && (
         <div className="space-y-3">
-          {/* Diagnosticos */}
+          {/* Diagnósticos */}
           <Card>
             <CardContent className="p-3">
               <h4 className="text-sm font-semibold flex items-center gap-2 mb-2">
                 <Stethoscope className="h-4 w-4 text-purple-600" />
-                Diagnosticos Diferenciales
+                Diagnósticos diferenciales
               </h4>
               <div className="space-y-2">
                 {sugerencias.diagnosticos_diferenciales.map((d, i) => (
@@ -175,13 +175,13 @@ ${sugerencias.referencias_guias.map(r => `- ${r}`).join('\n')}
             </CardContent>
           </Card>
 
-          {/* Examenes */}
+          {/* Exámenes */}
           {sugerencias.examenes_recomendados.length > 0 && (
             <Card>
               <CardContent className="p-3">
                 <h4 className="text-sm font-semibold flex items-center gap-2 mb-2">
                   <FlaskConical className="h-4 w-4 text-blue-600" />
-                  Examenes Recomendados
+                  Exámenes recomendados
                 </h4>
                 <ul className="space-y-1">
                   {sugerencias.examenes_recomendados.map((e, i) => (
@@ -195,13 +195,13 @@ ${sugerencias.referencias_guias.map(r => `- ${r}`).join('\n')}
             </Card>
           )}
 
-          {/* Farmacologicas */}
+          {/* Farmacológicas */}
           {sugerencias.opciones_farmacologicas.length > 0 && (
             <Card>
               <CardContent className="p-3">
                 <h4 className="text-sm font-semibold flex items-center gap-2 mb-2">
                   <Pill className="h-4 w-4 text-emerald-600" />
-                  Opciones Farmacologicas
+                  Opciones farmacológicas
                 </h4>
                 <div className="space-y-2">
                   {sugerencias.opciones_farmacologicas.map((o, i) => (
@@ -241,7 +241,7 @@ ${sugerencias.referencias_guias.map(r => `- ${r}`).join('\n')}
               <CardContent className="p-3">
                 <h4 className="text-sm font-semibold flex items-center gap-2 mb-2">
                   <BookOpen className="h-4 w-4 text-amber-600" />
-                  Referencias a Guias Clinicas
+                  Referencias a guías clínicas
                 </h4>
                 <ul className="space-y-1">
                   {sugerencias.referencias_guias.map((r, i) => (
