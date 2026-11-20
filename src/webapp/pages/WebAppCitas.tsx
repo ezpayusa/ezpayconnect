@@ -1,3 +1,4 @@
+import { nombreMedicoConPrefijo } from '@/lib/nombreMedico'
 import { useState } from 'react'
 import { toast } from 'sonner'
 import { useWebAppAuth } from '@/webapp/hooks/useWebAppAuth'
@@ -163,7 +164,7 @@ export default function WebAppCitas() {
                     <p className="text-sm text-slate-500">
                       {cita.medico_nombre?.startsWith('Médico por')
                         ? cita.medico_nombre
-                        : (() => { const n = cita.medico_nombre || ''; return /^Dr\.?\s|^Dra\.?\s/i.test(n) ? n : `Dr. ${n}` })()}
+                        : nombreMedicoConPrefijo(cita.medico_nombre)}
                     </p>
                     {cita.clinica_nombre && (
                       <p className="text-sm text-slate-500 flex items-center gap-1">

@@ -1,3 +1,4 @@
+import { nombreMedicoConPrefijo } from '@/lib/nombreMedico'
 import { useState, useEffect, useRef } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
 import { useAuth } from '@/hooks/useAuth'
@@ -265,7 +266,7 @@ export default function RecetaDetallePage() {
             </CardHeader>
             <CardContent className="space-y-2">
               <p className="text-lg font-semibold text-[#1a2a3a]">
-                Dr. {receta.medico?.nombre_completo || perfil?.nombre_completo || 'Médico'}
+                {nombreMedicoConPrefijo(receta.medico?.nombre_completo || perfil?.nombre_completo)}
               </p>
               <div className="text-sm text-gray-600 space-y-1">
                 <p className="flex items-center gap-2">
@@ -407,7 +408,7 @@ export default function RecetaDetallePage() {
         {/* === FIRMA === */}
         <div className="text-center py-8 space-y-2">
           <div className="w-48 h-px bg-[#1E5C8E] mx-auto" />
-          <p className="font-semibold text-[#1a2a3a]">Dr. {receta.medico?.nombre_completo || perfil?.nombre_completo || 'Médico'}</p>
+          <p className="font-semibold text-[#1a2a3a]">{nombreMedicoConPrefijo(receta.medico?.nombre_completo || perfil?.nombre_completo)}</p>
           <p className="text-sm text-gray-500">Firma y Sello Médico</p>
           <p className="text-xs text-gray-400 mt-4">
             Documento generado digitalmente por EzPayConnect — {fecha}

@@ -1,3 +1,4 @@
+import { nombreMedicoConPrefijo } from '@/lib/nombreMedico'
 import { useState } from 'react'
 import { useWebAppAuth } from '@/webapp/hooks/useWebAppAuth'
 import { useWebAppRecetas } from '@/webapp/hooks/useWebAppRecetas'
@@ -81,7 +82,7 @@ export default function WebAppRecetas() {
                         </Badge>
                       </div>
                       <p className="text-sm text-slate-500">
-                        {(() => { const n = r.medico_nombre || ''; return /^Dr\.?\s|^Dra\.?\s/i.test(n) ? n : `Dr. ${n}` })()}
+                        {nombreMedicoConPrefijo(r.medico_nombre)}
                       </p>
                       <p className="text-xs text-slate-400">
                         {new Date(r.created_at).toLocaleDateString('es-GT', {

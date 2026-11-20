@@ -2,6 +2,7 @@
 // Dia 17: Paciente Detalle Avanzado - Usa supabase.functions.invoke (evita CORS)
 // EzPayConnect
 
+import { nombreMedicoConPrefijo } from '@/lib/nombreMedico'
 import { useState, useEffect, useCallback } from 'react'
 import { useParams, useNavigate, useLocation } from 'react-router-dom'
 import { toast } from 'sonner'
@@ -602,7 +603,7 @@ export default function PacienteDetallePage() {
                         )}
                       </span>
                       <span className="text-xs text-gray-400">
-                        Dr. {consulta.perfiles?.nombre_completo || 'Médico'}
+                        {nombreMedicoConPrefijo(consulta.perfiles?.nombre_completo)}
                       </span>
                     </div>
                     {consulta.motivo_consulta && (

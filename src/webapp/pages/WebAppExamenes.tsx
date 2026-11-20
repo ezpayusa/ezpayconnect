@@ -1,3 +1,4 @@
+import { nombreMedicoConPrefijo } from '@/lib/nombreMedico'
 import { useWebAppAuth } from '@/webapp/hooks/useWebAppAuth'
 import { useVisor, archivoDeResultado } from '@/components/visor/useVisor'
 import { parseFechaLocal } from '@/lib/fecha'
@@ -79,7 +80,7 @@ export default function WebAppExamenes() {
                       </div>
                     </div>
                     <p className="text-sm text-slate-500">
-                      {(() => { const n = ex.medico_nombre || ''; return /^Dr\.?\s|^Dra\.?\s/i.test(n) ? n : `Dr. ${n}` })()}
+                      {nombreMedicoConPrefijo(ex.medico_nombre)}
                     </p>
                   </div>
                 </div>

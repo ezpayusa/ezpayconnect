@@ -1,3 +1,4 @@
+import { nombreMedicoConPrefijo } from '@/lib/nombreMedico'
 import { jsPDF } from 'jspdf'
 import autoTable from 'jspdf-autotable'
 import type { Receta, RecetaItem, Paciente, Perfil } from '@/types'
@@ -40,7 +41,7 @@ export function generarPDF(
   // Info médico (derecha)
   doc.setFontSize(11)
   doc.setFont('helvetica', 'bold')
-  doc.text(`Dr. ${medico.nombre_completo || 'Médico'}`, pageWidth - 20, 22, { align: 'right' })
+  doc.text(nombreMedicoConPrefijo(medico.nombre_completo), pageWidth - 20, 22, { align: 'right' })
   doc.setFont('helvetica', 'normal')
   doc.setFontSize(9)
   doc.text(medico.email || '', pageWidth - 20, 28, { align: 'right' })
@@ -219,7 +220,7 @@ export function generarPDF(
   doc.setFontSize(11)
   doc.setFont('helvetica', 'bold')
   doc.setTextColor(colorSecundario)
-  doc.text(`Dr. ${medico.nombre_completo || 'Médico'}`, pageWidth / 2, firmaY + 10, { align: 'center' })
+  doc.text(nombreMedicoConPrefijo(medico.nombre_completo), pageWidth / 2, firmaY + 10, { align: 'center' })
 
   doc.setFont('helvetica', 'normal')
   doc.setFontSize(9)
