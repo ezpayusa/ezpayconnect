@@ -8,7 +8,7 @@
 --
 -- Precondición (MIG96R): la función existe tal como la dejó la 396 (firma, retorno, cuerpo, DEFINER, STABLE,
 -- search_path vacío, ACL) y las huellas son las post-396 medidas en el dry-run del 20-nov-2026:
---   funciones completas (cuerpo + DEFINER + config + ACL), public/private ..... d41ceabd86d84eff94205708b8f7df31 420
+--   funciones completas (cuerpo + DEFINER + config + ACL), public/private ..... 77ae9f738b13c5b920383d0cf0bda746 420
 --   ACL de funciones (solo privilegios), public/private .......................... 6eca74c670156e3a2d290b96651fc30e 420
 --   ACL de relaciones de public ................................................... 88e7fd697ef0703f8f1deb153e9c68d0 2448
 --   ACL de secuencias de public ................................................... f889b7db4c222d80c7b507251f88ae7c 238
@@ -28,7 +28,7 @@ BEGIN
   v := (SELECT pg_get_function_identity_arguments(p.oid)||' -> '||pg_get_function_result(p.oid)||' '||md5(p.prosrc)||' '||p.prosecdef::text||' '||
                p.provolatile::text||' '||COALESCE(p.proconfig::text, '-')||' '||COALESCE(p.proacl::text, '-')
           FROM pg_proc p WHERE p.oid = to_regprocedure('public.mis_despachos_receta()'));
-  IF v IS DISTINCT FROM ' -> TABLE(receta_id bigint, dispatch_token text, dispatch_token_expira_at timestamp with time zone, estado_dispensacion text) 5334c0aebb8f699fb6bce2eff7e1e9ac true s {"search_path=\"\""} {postgres=X/postgres,authenticated=X/postgres,service_role=X/postgres}' THEN
+  IF v IS DISTINCT FROM ' -> TABLE(receta_id bigint, dispatch_token text, dispatch_token_expira_at timestamp with time zone, estado_dispensacion text) 3e0fe1250d0c85b7ac7daeab3344ff35 true s {"search_path=\"\""} {postgres=X/postgres,authenticated=X/postgres,service_role=X/postgres}' THEN
     bad := bad||'mis_despachos_receta distinta de la de la 396 ('||COALESCE(v, 'no existe')||'); ';
   END IF;
 
@@ -36,7 +36,7 @@ BEGIN
                               COALESCE(f.proconfig::text, '-')||'|'||COALESCE(f.proacl::text, '-'), E'\n'
                               ORDER BY f.oid::regprocedure::text COLLATE "C"))||' '||count(*)
           FROM pg_proc f WHERE f.pronamespace IN ('public'::regnamespace, 'private'::regnamespace));
-  IF v IS DISTINCT FROM 'd41ceabd86d84eff94205708b8f7df31 420' THEN bad := bad||'huella de funciones completas '||COALESCE(v, '-')||'; '; END IF;
+  IF v IS DISTINCT FROM '77ae9f738b13c5b920383d0cf0bda746 420' THEN bad := bad||'huella de funciones completas '||COALESCE(v, '-')||'; '; END IF;
   v := (SELECT md5(COALESCE(string_agg(y.s, ',' ORDER BY y.s COLLATE "C"), ''))||' '||count(DISTINCT y.o) FROM (
       SELECT f.oid AS o, f.oid::regprocedure::text||'|'||CASE a.grantee WHEN 0 THEN 'PUBLIC' ELSE pg_get_userbyid(a.grantee) END||'|'||pg_get_userbyid(a.grantor)||'|'||a.privilege_type||'|'||a.is_grantable::text AS s
         FROM pg_proc f, aclexplode(COALESCE(f.proacl, acldefault('f', f.proowner))) a
