@@ -326,7 +326,9 @@ function App() {
         <Route path="/dispensar-receta" element={<PrivateLayout><DispensarRecetaPage /></PrivateLayout>} />
         <Route path="/configuracion" element={<PrivateLayout><ConfiguracionPage /></PrivateLayout>} />
         <Route path="/disponibilidad-visitas" element={<PrivateLayout><DisponibilidadVisitasPage /></PrivateLayout>} />
-        <Route path="/consulta/:citaId" element={<PrivateLayout><ConsultaPage /></PrivateLayout>} />
+        {/* H18: la consulta es del médico. Con la 391 solo el médico cambia el estado de SUS citas: un
+            no-médico que llegara por PrivateLayout veía la pantalla y fallaba al tocar «En Sala»/«Finalizar». */}
+        <Route path="/consulta/:citaId" element={<MedicoPrivateRoute><PrivateLayout><ConsultaPage /></PrivateLayout></MedicoPrivateRoute>} />
 
         {/* === RUTAS PORTAL DEL PACIENTE === */}
         <Route path="/paciente/login" element={<WebAppLoginPage />} />

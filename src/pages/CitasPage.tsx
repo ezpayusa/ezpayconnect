@@ -63,7 +63,9 @@ interface Recordatorio {
 
 export default function CitasPage() {
   const navigate = useNavigate()
-  const { user } = useAuth()
+  const { user, perfil } = useAuth()
+  // H18: los botones de consulta solo para el médico (la ruta /consulta/:citaId va por MedicoPrivateRoute).
+  const esMedico = perfil?.rol === 'medico'
   const { paisId } = usePaisFiltro()
   const [citas, setCitas] = useState<Cita[]>([])
   const [recordatorios, setRecordatorios] = useState<Recordatorio[]>([])
@@ -433,7 +435,7 @@ export default function CitasPage() {
                     </div>
 
                     <div className="flex flex-col gap-2">
-                      {(cita.estado === 'solicitada' || cita.estado === 'agendada' || cita.estado === 'confirmada') && (
+                      {esMedico && (cita.estado === 'solicitada' || cita.estado === 'agendada' || cita.estado === 'confirmada') && (
                         <button
                           onClick={() => navigate(`/consulta/${cita.id}`)}
                           className="px-4 py-2 bg-[#1E5C8E] hover:bg-[#3A8ABF] text-white rounded-lg text-sm font-medium flex items-center gap-2 transition-colors"
@@ -443,7 +445,7 @@ export default function CitasPage() {
                         </button>
                       )}
 
-                      {cita.estado === 'en_curso' && (
+                      {esMedico && cita.estado === 'en_curso' && (
                         <button
                           onClick={() => navigate(`/consulta/${cita.id}`)}
                           className="px-4 py-2 bg-amber-600 hover:bg-amber-700 text-white rounded-lg text-sm font-medium flex items-center gap-2 transition-colors"
