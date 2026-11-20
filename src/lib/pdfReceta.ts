@@ -4,7 +4,8 @@ import type { Receta, RecetaItem, Paciente, Perfil } from '@/types'
 import { folioReceta } from '@/lib/folioReceta'
 import { parseFechaLocal } from '@/lib/fecha'
 
-function generarPDF(
+// Exportada para el test de H13 (sin «N/A», tabla dentro del margen).
+export function generarPDF(
   receta: Receta,
   items: RecetaItem[],
   paciente: Paciente,
@@ -69,12 +70,13 @@ function generarPDF(
 
   const pacienteInfo = [
     [`Nombre completo:`, `${paciente.nombre} ${paciente.apellido}`],
-    [`Teléfono:`, paciente.telefono || 'N/A'],
-    [`Email:`, paciente.email || 'N/A'],
-    [`Fecha de Nacimiento:`, paciente.fecha_nacimiento ? parseFechaLocal(paciente.fecha_nacimiento).toLocaleDateString('es-GT') : 'N/A'],
-    [`Género:`, paciente.genero ? paciente.genero.charAt(0).toUpperCase() + paciente.genero.slice(1) : 'N/A'],
+    // H13: un dato que falta va como «-», no «N/A».
+    [`Teléfono:`, paciente.telefono || '-'],
+    [`Email:`, paciente.email || '-'],
+    [`Fecha de Nacimiento:`, paciente.fecha_nacimiento ? parseFechaLocal(paciente.fecha_nacimiento).toLocaleDateString('es-GT') : '-'],
+    [`Género:`, paciente.genero ? paciente.genero.charAt(0).toUpperCase() + paciente.genero.slice(1) : '-'],
     [`Alergias conocidas:`, paciente.alergias || 'Ninguna registrada'],
-    [`Contacto de emergencia:`, paciente.emergencia_nombre ? `${paciente.emergencia_nombre} (${paciente.emergencia_telefono || 'Sin teléfono'})` : 'N/A']
+    [`Contacto de emergencia:`, paciente.emergencia_nombre ? `${paciente.emergencia_nombre} (${paciente.emergencia_telefono || 'Sin teléfono'})` : '-']
   ]
 
   let yPos = 82
@@ -148,22 +150,24 @@ function generarPDF(
     alternateRowStyles: {
       fillColor: [232, 240, 248]
     },
+    // H13: anchos fijos que suman exactamente el ancho útil (210 - 15 - 15 = 180 mm). Antes
+    // `cellWidth: 'wrap'` + `tableWidth: 'auto'` dejaban que la tabla creciera con el contenido y se
+    // saliera del margen, y «Cant.» tenía 10 mm (el texto mide ~7 mm + 4 mm de padding): se cortaba.
     columnStyles: {
       0: { cellWidth: 8, halign: 'center' },
-      1: { cellWidth: 32, fontStyle: 'bold' },
-      2: { cellWidth: 18, halign: 'center' },
-      3: { cellWidth: 18, halign: 'center' },
+      1: { cellWidth: 34, fontStyle: 'bold' },
+      2: { cellWidth: 20, halign: 'center' },
+      3: { cellWidth: 20, halign: 'center' },
       4: { cellWidth: 20, halign: 'center' },
-      5: { cellWidth: 10, halign: 'center' },
-      6: { cellWidth: 32 },
+      5: { cellWidth: 14, halign: 'center' },
+      6: { cellWidth: 36 },
       7: { cellWidth: 28, fontStyle: 'bold' }
     },
     margin: { left: 15, right: 15 },
     styles: {
-      overflow: 'linebreak',
-      cellWidth: 'wrap'
+      overflow: 'linebreak'
     },
-    tableWidth: 'auto'
+    tableWidth: pageWidth - 30
   })
 
   // === INSTRUCCIONES GENERALES ===
