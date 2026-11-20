@@ -16,6 +16,7 @@ import { useUnidadPeso } from '@/hooks/useUnidadPeso'
 import { formatPeso } from '@/lib/unidades'
 import { formatVital, formatPA } from '@/lib/vitalesRangos'
 import { puedeAtender } from '@/lib/estadoCita'
+import { resumenRecetaAvanzada, type ResumenRecetaAvanzada } from '@/lib/recetaAvanzadaResumen'
 import { FotoPacienteAvatar } from '@/components/FotoPacienteAvatar'
 import { DocumentosPaciente } from '@/components/DocumentosPaciente'
 import { ConsentimientoPresencial } from '@/components/ConsentimientoPresencial'
@@ -108,6 +109,8 @@ export default function PacienteDetallePage() {
   const [paciente, setPaciente] = useState<Paciente | null>(null)
   const [historial, setHistorial] = useState<HistorialEvento[]>([])
   const [recetas, setRecetas] = useState<RecetaAvanzada[]>([])
+  // H24: folio y medicamentos de la receta base de cada receta avanzada (por receta_base_id)
+  const [resumenRecetas, setResumenRecetas] = useState<Record<number, ResumenRecetaAvanzada>>({})
   const [citas, setCitas] = useState<Cita[]>([])
   const [consultas, setConsultas] = useState<any[]>([])
   const [signosVitales, setSignosVitales] = useState<any[]>([])
@@ -206,6 +209,26 @@ export default function PacienteDetallePage() {
       .eq('paciente_id', id)
       .order('created_at', { ascending: false })
     setRecetas(data || [])
+
+    // H24: la tarjeta muestra el folio oficial y los medicamentos de la receta base, no la firma.
+    // Lecturas con la RLS vigente; si alguna no devuelve filas, la tarjeta cae a «Receta #<id>».
+    const baseIds = [...new Set((data || []).map(r => Number(r.receta_base_id)).filter(Boolean))]
+    if (baseIds.length === 0) { setResumenRecetas({}); return }
+    const [{ data: bases }, { data: items }] = await Promise.all([
+      supabase.from('recetas').select('id, folio, numero_correlativo, created_at, medico_id').in('id', baseIds),
+      supabase.from('receta_items').select('receta_id, nombre_medicamento, dosis').in('receta_id', baseIds),
+    ])
+    const medicoIds = [...new Set((bases || []).map((b: any) => b.medico_id).filter(Boolean))]
+    const { data: meds } = medicoIds.length
+      ? await supabase.from('medicos').select('id, cedula_profesional').in('id', medicoIds)
+      : { data: [] as { id: string; cedula_profesional: string | null }[] }
+    const cedulaDe = new Map((meds || []).map((m: any) => [m.id, m.cedula_profesional as string | null]))
+    const resumen: Record<number, ResumenRecetaAvanzada> = {}
+    for (const bid of baseIds) {
+      const base = (bases || []).find((b: any) => b.id === bid) as any
+      resumen[bid] = resumenRecetaAvanzada(bid, base, (items || []) as any[], base ? cedulaDe.get(base.medico_id) : null)
+    }
+    setResumenRecetas(resumen)
   }, [id])
 
   const cargarCitas = useCallback(async () => {
@@ -756,8 +779,23 @@ export default function PacienteDetallePage() {
                       {receta.estado_dispensacion}
                     </span>
                   </div>
-                  <p className="text-xs text-gray-500 mb-1">Firma Digital</p>
-                  <p className="text-sm text-gray-600 truncate">{receta.firma_digital}</p>
+                  {(() => {
+                    const res = resumenRecetas[receta.receta_base_id]
+                    return (
+                      <>
+                        <p className="text-xs text-gray-500 mb-1">Folio</p>
+                        <p className="text-sm font-mono text-gray-700 break-all">{res?.folio ?? `Receta #${receta.receta_base_id}`}</p>
+                        {res && res.medicamentos.length > 0 && (
+                          <ul className="mt-3 space-y-1 text-sm text-gray-700">
+                            {res.medicamentos.slice(0, 3).map((m, i) => <li key={i} className="truncate">• {m}</li>)}
+                            {res.medicamentos.length > 3 && (
+                              <li className="text-xs text-gray-500">y {res.medicamentos.length - 3} más</li>
+                            )}
+                          </ul>
+                        )}
+                      </>
+                    )
+                  })()}
                   <p className="text-xs text-gray-400 mt-4">{new Date(receta.created_at).toLocaleDateString('es-ES')}</p>
                   <button
                     type="button"
