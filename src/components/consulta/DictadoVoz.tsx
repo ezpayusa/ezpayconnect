@@ -2,6 +2,7 @@ import { useState, useRef, useCallback, useEffect } from 'react'
 import { AlertTriangle, Loader2, ShieldOff } from 'lucide-react'
 import { supabase } from '@/lib/supabase'
 import { toast } from 'sonner'
+import { mensajeErrorDictado } from '@/lib/errorDictado'
 import { Button } from '@/components/ui/button'
 import { useConsentimientoGate } from '@/hooks/useConsentimientoGate'
 
@@ -61,8 +62,14 @@ export default function DictadoVoz({ onTranscript, pacienteId, placeholder = 'Di
         body: formData,
       })
 
-      if (error) throw error
-      if (data?.error) throw new Error(data.error)
+      // H14: el error del edge se traduce a un mensaje claro (src/lib/errorDictado.ts); nunca el texto crudo.
+      if (error || data?.error) {
+        const msg = await mensajeErrorDictado(error, data)
+        console.error('Error transcribiendo:', (error as any)?.name ?? 'data.error')
+        setErrorMsg(msg)
+        toast.error(msg)
+        return
+      }
 
       const texto = data?.texto || ''
       if (texto) {
@@ -72,8 +79,8 @@ export default function DictadoVoz({ onTranscript, pacienteId, placeholder = 'Di
         toast.warning('No se detectó texto en el audio')
       }
     } catch (e: any) {
-      console.error('Error transcribiendo:', e)
-      const msg = e.message || 'Error al transcribir el audio'
+      console.error('Error transcribiendo:', e?.name ?? 'sin nombre')
+      const msg = await mensajeErrorDictado(e)
       setErrorMsg(msg)
       toast.error(msg)
     } finally {
