@@ -5,7 +5,7 @@ import { useVisor, archivoDeResultado, descargarResultado } from '@/components/v
 import { parseFechaLocal } from '@/lib/fecha'
 import { useAuth } from '@/hooks/useAuth'
 import { useConsultas, mensajeErrorNota, type SoapNota } from '@/hooks/useConsultas'
-import { useCitas } from '@/hooks/useCitas'
+import { cambiarEstadoCita as cambiarEstadoCitaEnBase, etiquetaEstadoCita } from '@/lib/estadoCita'
 import { useSignosVitalesCita } from '@/hooks/useSignosVitalesCita'
 import { FormularioVitales, VITALES_VACIO } from '@/clinica/components/FormularioVitales'
 import type { VitalesValues } from '@/clinica/components/FormularioVitales'
@@ -114,7 +114,6 @@ function ConsultaDeCita() {
   // toda la navegación interna se queda dentro de /medico (no saca al médico de su panel).
   const base = location.pathname.startsWith('/medico') ? '/medico' : ''
   const { perfil } = useAuth()
-  const { updateCita } = useCitas({ autoFetch: false })
   const {
     loading: loadingConsulta,
     saving,
@@ -466,12 +465,13 @@ function ConsultaDeCita() {
 
   const cambiarEstadoCita = async (nuevoEstado: Cita['estado']) => {
     if (!cita) return
-    const { error } = await updateCita(cita.id, { estado: nuevoEstado })
-    if (error) {
-      toast.error('Error: ' + error.message)
+    // H5: mismo camino que la agenda (avisa al paciente); 0 filas (mig 391) es un error, no un éxito.
+    const r = await cambiarEstadoCitaEnBase(cita.id, nuevoEstado)
+    if (!r.ok) {
+      toast.error(r.mensaje)
     } else {
       setCita({ ...cita, estado: nuevoEstado })
-      toast.success(`Cita marcada como ${nuevoEstado.replace('_', ' ')}`)
+      toast.success(`Cita marcada como ${etiquetaEstadoCita(nuevoEstado).toLowerCase()}`)
       // Mig 334: completar la cita cierra la nota (trigger). Se recarga para mostrarla cerrada. Si ya
       // estaba cerrada no hace falta, y recargar pisaría un borrador de corrección en curso.
       if (nuevoEstado === 'completada' && !notaCerrada) await recargarNota()
@@ -595,7 +595,7 @@ function ConsultaDeCita() {
         </div>
         <div className="flex items-center gap-2">
           <Badge className={getEstadoColor(cita.estado)}>
-            {cita.estado.replace('_', ' ').toUpperCase()}
+            {etiquetaEstadoCita(cita.estado)}
           </Badge>
           {cita.estado === 'confirmada' && (
             <Button size="sm" variant="outline" onClick={() => cambiarEstadoCita('en_curso')}>

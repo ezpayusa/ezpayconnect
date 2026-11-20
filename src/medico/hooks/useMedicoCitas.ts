@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback } from 'react'
 import { supabase } from '@/lib/supabase'
 import { toast } from 'sonner'
+import { cambiarEstadoCita } from '@/lib/estadoCita'
 import type { CitaConPaciente, FiltroCitaEstado } from '@/medico/types/medico.types'
 
 export function useMedicoCitas() {
@@ -88,47 +89,18 @@ export function useMedicoCitas() {
     fetchCitas()
   }, [fetchCitas])
 
-  const enviarNotificacionPaciente = async (
-    cita: CitaConPaciente,
-    tipo: 'confirmada' | 'cancelada' | 'en_curso' | 'completada' | 'recordatorio'
-  ) => {
-    // Camino ÚNICO server-side gateado: notificar_cita_paciente verifica la relación médico/clínica→cita,
-    // compone el contenido server-side, crea AMBAS notificaciones in-app (campanita + general) y dispara
-    // el web-push (pg_net→edge). Reemplaza notificar_paciente + enviar-notificacion + enviar-push
-    // (cierra los dos huecos de confused-deputy para el evento cita). Contenido/target ya NO los pasa el cliente.
-    try {
-      await supabase.rpc('notificar_cita_paciente', { p_cita_id: cita.id, p_evento: tipo })
-    } catch (e) {
-      console.error('Error notificar_cita_paciente:', e?.message ?? e?.code)
-    }
-  }
-
+  // H5/H6: el UPDATE y el aviso al paciente van por cambiarEstadoCita (src/lib/estadoCita.ts), el mismo
+  // camino que usa la consulta; 0 filas (mig 391) es un error, no un éxito.
   const updateCitaEstado = async (cita: CitaConPaciente, nuevoEstado: CitaConPaciente['estado'], mensaje?: string) => {
-    const { error } = await supabase
-      .from('citas')
-      .update({ estado: nuevoEstado })
-      .eq('id', cita.id)
-
-    if (error) {
-      toast.error('Error: ' + error.message)
+    const r = await cambiarEstadoCita(cita.id, nuevoEstado)
+    if (!r.ok) {
+      toast.error(r.mensaje)
       return false
     }
 
     setCitas(prev => prev.map(c => c.id === cita.id ? { ...c, estado: nuevoEstado } : c))
 
     if (mensaje) toast.success(mensaje)
-
-    // Enviar notificación al paciente según el nuevo estado
-    if (nuevoEstado === 'confirmada') {
-      await enviarNotificacionPaciente(cita, 'confirmada')
-    } else if (nuevoEstado === 'cancelada') {
-      await enviarNotificacionPaciente(cita, 'cancelada')
-    } else if (nuevoEstado === 'en_curso') {
-      await enviarNotificacionPaciente(cita, 'en_curso')
-    } else if (nuevoEstado === 'completada') {
-      await enviarNotificacionPaciente(cita, 'completada')
-    }
-
     return true
   }
 
