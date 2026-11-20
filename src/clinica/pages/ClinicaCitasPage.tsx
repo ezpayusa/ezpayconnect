@@ -20,6 +20,7 @@ export default function ClinicaCitasPage() {
   const navigate = useNavigate()
   const {
     citas,
+    conteos,
     loading,
     filtroEstado,
     setFiltroEstado,
@@ -59,13 +60,8 @@ export default function ClinicaCitasPage() {
     setAccionEnProgreso(null)
   }
 
-  const counts = (() => {
-    const c: Record<string, number> = { todos: citas.length }
-    citas.forEach((cita) => {
-      c[cita.estado] = (c[cita.estado] || 0) + 1
-    })
-    return c
-  })()
+  // Contadores sobre la lista completa de la clínica (no sobre la filtrada): ver src/clinica/lib/conteoCitas.ts
+  const counts = conteos
 
   if (loading) {
     return (

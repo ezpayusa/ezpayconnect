@@ -1,7 +1,8 @@
-import { useState, useEffect, useCallback } from 'react'
+import { useState, useEffect, useCallback, useMemo } from 'react'
 import { supabase } from '@/lib/supabase'
 import { toast } from 'sonner'
 import type { CitaConPaciente, FiltroCitaEstado } from '@/medico/types/medico.types'
+import { contarPorEstado, filtrarPorEstado } from '@/clinica/lib/conteoCitas'
 
 export interface ClinicaOption {
   id: string
@@ -9,7 +10,9 @@ export interface ClinicaOption {
 }
 
 export function useClinicaCitas() {
-  const [citas, setCitas] = useState<CitaConPaciente[]>([])
+  // Lista COMPLETA de la clínica (una sola llamada a obtener_citas_clinica). El filtro de estado se
+  // aplica abajo, solo a lo que se muestra; los contadores de los chips salen de esta lista.
+  const [citasTodas, setCitasTodas] = useState<CitaConPaciente[]>([])
   const [loading, setLoading] = useState(true)
   const [filtroEstado, setFiltroEstado] = useState<FiltroCitaEstado>('todos')
   const [medicosClinica, setMedicosClinica] = useState<{ id: string; nombre_completo: string; especialidad: string | null }[]>([])
@@ -22,7 +25,7 @@ export function useClinicaCitas() {
     try {
       const { data: { user } } = await supabase.auth.getUser()
       if (!user) {
-        setCitas([])
+        setCitasTodas([])
         setLoading(false)
         return
       }
@@ -47,7 +50,7 @@ export function useClinicaCitas() {
 
       if (clinicasList.length === 0) {
         console.warn('[useClinicaCitas] Usuario sin clínica asociada')
-        setCitas([])
+        setCitasTodas([])
         setLoading(false)
         return
       }
@@ -100,16 +103,12 @@ export function useClinicaCitas() {
       if (citasError) {
         console.error('Error cargando citas:', citasError?.message ?? citasError?.code)
         toast.error('Error cargando citas')
-        setCitas([])
+        setCitasTodas([])
         setLoading(false)
         return
       }
 
-      let citasList = (citasData || []) as any[]
-
-      if (filtroEstado !== 'todos') {
-        citasList = citasList.filter((c: any) => c.estado === filtroEstado)
-      }
+      const citasList = (citasData || []) as any[]
 
       // 4. Mapear al formato del frontend
       const citasConPaciente: CitaConPaciente[] = citasList.map((cita: any) => ({
@@ -134,18 +133,21 @@ export function useClinicaCitas() {
         } : undefined,
       }))
 
-      setCitas(citasConPaciente)
+      setCitasTodas(citasConPaciente)
     } catch (err) {
       console.error('Error:', err?.message ?? err?.code)
-      setCitas([])
+      setCitasTodas([])
     } finally {
       setLoading(false)
     }
-  }, [filtroEstado, clinicaId])
+  }, [clinicaId])
 
   useEffect(() => {
     fetchClinicaYCitas()
   }, [fetchClinicaYCitas])
+
+  const citas = useMemo(() => filtrarPorEstado(citasTodas, filtroEstado), [citasTodas, filtroEstado])
+  const conteos = useMemo(() => contarPorEstado(citasTodas), [citasTodas])
 
   const cambiarClinica = useCallback((nuevaClinicaId: string) => {
     setClinicaId(nuevaClinicaId)
@@ -165,7 +167,7 @@ export function useClinicaCitas() {
       return false
     }
 
-    setCitas(prev => prev.map(c => c.id === cita.id ? { ...c, estado: nuevoEstado } : c))
+    setCitasTodas(prev => prev.map(c => c.id === cita.id ? { ...c, estado: nuevoEstado } : c))
     if (mensaje) toast.success(mensaje)
     return true
   }
@@ -186,7 +188,7 @@ export function useClinicaCitas() {
     const medico = medicosClinica.find(m => m.id === medicoId)
     const medicoNombre = medico?.nombre_completo || 'asignado'
 
-    setCitas(prev => prev.map(c => c.id === cita.id ? { ...c, medico_id: medicoId, estado: 'agendada' } : c))
+    setCitasTodas(prev => prev.map(c => c.id === cita.id ? { ...c, medico_id: medicoId, estado: 'agendada' } : c))
     toast.success('Médico asignado correctamente')
 
     // Notificar al paciente
@@ -256,6 +258,7 @@ export function useClinicaCitas() {
 
   return {
     citas,
+    conteos,
     loading,
     filtroEstado,
     setFiltroEstado,
