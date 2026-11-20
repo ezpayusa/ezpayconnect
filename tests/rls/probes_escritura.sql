@@ -342,6 +342,35 @@ $fn$;
 EXCEPTION WHEN OTHERS THEN
   PERFORM set_config('probe.m399_helper', 'FALLO (no se pudo crear pg_temp.m399_estado: '||SQLSTATE||' '||SQLERRM||')', false);
 END $$;
+-- ============================================================================
+-- MIG 400 — helper de ESTADO, en el PRELUDIO: pg_temp.m400_estado() lo usan P886, P891 y P896 (parte 2) y M400_FX +
+-- P1195-P1198 (final de la parte 2). Solo lee catálogo.
+--   'post' = trigger trg_expediente_notas_pais y private.expediente_notas_fija_pais() presentes, authenticated SIN UPDATE de
+--            tabla y CON UPDATE (subjetivo), 9 columnas con attacl;
+--   'pre'  = sin trigger ni función, UPDATE de tabla para authenticated, sin attacl;
+--   cualquier otra cosa = 'parcial (...)', que cada probe publica como ROJO.
+-- ============================================================================
+DO $$
+BEGIN
+  EXECUTE $fn$
+CREATE OR REPLACE FUNCTION pg_temp.m400_estado() RETURNS text LANGUAGE plpgsql STABLE AS $body$
+DECLARE t_upd boolean; c_upd boolean; n_acl int; n_trg int; f_ok boolean;
+BEGIN
+  t_upd := has_table_privilege('authenticated', 'public.expediente_notas', 'UPDATE');
+  c_upd := has_column_privilege('authenticated', 'public.expediente_notas', 'subjetivo', 'UPDATE');
+  n_acl := (SELECT count(*) FROM pg_attribute a WHERE a.attrelid = 'public.expediente_notas'::regclass AND a.attnum > 0 AND NOT a.attisdropped AND a.attacl IS NOT NULL);
+  n_trg := (SELECT count(*) FROM pg_trigger t WHERE t.tgrelid = 'public.expediente_notas'::regclass AND NOT t.tgisinternal AND t.tgname = 'trg_expediente_notas_pais');
+  f_ok := to_regprocedure('private.expediente_notas_fija_pais()') IS NOT NULL;
+  IF NOT t_upd AND c_upd AND n_acl = 9 AND n_trg = 1 AND f_ok THEN RETURN 'post'; END IF;
+  IF t_upd AND n_acl = 0 AND n_trg = 0 AND NOT f_ok THEN RETURN 'pre'; END IF;
+  RETURN 'parcial (UPDATE de tabla '||t_upd::text||', UPDATE (subjetivo) '||c_upd::text||', columnas con attacl '||n_acl
+         ||', trigger '||n_trg||', función '||f_ok::text||')';
+END
+$body$
+$fn$;
+EXCEPTION WHEN OTHERS THEN
+  PERFORM set_config('probe.m400_helper', 'FALLO (no se pudo crear pg_temp.m400_estado: '||SQLSTATE||' '||SQLERRM||')', false);
+END $$;
 -- @@HARNESS_PRELUDIO_FIN@@
 
 -- ============================================================
@@ -26837,7 +26866,13 @@ DECLARE
   st text := '00000'; msg text := ''; ok boolean; det text := ''; bad text := ''; r_rest text := 'OK';
   s_notas text; s_rev text; s_citas text; n_hist bigint;
   v_cita bigint; v_cita2 bigint; v_nota integer; v_nota2 integer; nn bigint; v_f0 text; r record;
+  -- 20-nov-2026 (mig 400): con la 400 viva el medico no tiene UPDATE de created_at (UPDATE por columna) y el caso
+  -- 'medico cambia created_at' da 42501 de privilegio, mas fuerte que NT007; sin la 400, NT007 como siempre. Los otros 7
+  -- casos siguen en NT007 (paciente_id, cita_id y medico_id estan en el grant: los manda el front sin cambiar).
+  v400 text; v_code text; v_texto text;
 BEGIN
+  v400 := pg_temp.m400_estado();
+  IF v400 NOT IN ('pre', 'post') THEN RAISE EXCEPTION 'fixture roto: estado de la 400 %', v400; END IF;
   SELECT p.id INTO c_medb FROM public.perfiles p JOIN public.medicos m ON m.id = p.id WHERE p.rol = 'medico' AND p.activo AND p.id <> c_med ORDER BY p.id LIMIT 1;
   IF c_medb IS NULL THEN RAISE EXCEPTION 'fixture roto: no hay un segundo medico activo'; END IF;
   SELECT md5(COALESCE(string_agg(to_jsonb(t)::text, '|' ORDER BY t.id), '')) INTO s_notas FROM public.expediente_notas t;
@@ -26867,11 +26902,16 @@ BEGIN
         PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
       EXCEPTION WHEN OTHERS THEN PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
         st := SQLSTATE; msg := SQLERRM; END;
-      ok := COALESCE((st = 'NT007' AND msg = 'La nota no permite cambiar paciente, cita, médico ni fecha de creación'
+      IF v400 = 'post' AND r.actor = 'medico' AND r.col = 'created_at' THEN
+        v_code := '42501'; v_texto := 'permission denied for table expediente_notas';
+      ELSE
+        v_code := 'NT007'; v_texto := 'La nota no permite cambiar paciente, cita, médico ni fecha de creación';
+      END IF;
+      ok := COALESCE((st = v_code AND msg = v_texto
         AND (SELECT md5(to_jsonb(t)::text) FROM public.expediente_notas t WHERE t.id = v_nota) = v_f0
         AND (SELECT count(*) FROM public.expediente_notas_revisiones rv WHERE rv.nota_id = v_nota) = 0), false);
-      det := det||' ;; NT007 '||r.actor||' cambia '||r.col||'|NT007 sin cambios|'||CASE WHEN ok THEN 'OK' ELSE 'ROJO' END||'|'||st||'|'||left(msg, 160);
-      IF NOT ok THEN bad := bad||'NT007 '||r.actor||' '||r.col||': '||st||' '||left(msg, 120)||'; '; END IF;
+      det := det||' ;; '||v_code||' '||r.actor||' cambia '||r.col||'|'||v_code||' sin cambios|'||CASE WHEN ok THEN 'OK' ELSE 'ROJO' END||'|'||st||'|'||left(msg, 160);
+      IF NOT ok THEN bad := bad||v_code||' '||r.actor||' '||r.col||': '||st||' '||left(msg, 120)||'; '; END IF;
     END LOOP;
     st := '00000'; msg := ''; nn := NULL;
     BEGIN
@@ -26897,7 +26937,9 @@ BEGIN
   det := det||' ;; restauracion|subtransaccion descartada; snapshot igual|'||r_rest||'|-|';
   PERFORM set_config('probe.p886_det', det, false);
   PERFORM set_config('probe.p886', CASE WHEN bad = '' AND r_rest = 'OK'
-    THEN 'OK (NT007 x8: paciente/cita/medico/created_at, medico y postgres; INSERT fechado queda en now(); restaurado)'
+    THEN CASE WHEN v400 = 'post'
+      THEN 'OK (NT007 x7: paciente/cita/medico, medico y postgres, y created_at de postgres; created_at del medico 42501 (400, UPDATE por columna); INSERT fechado queda en now(); restaurado)'
+      ELSE 'OK (NT007 x8: paciente/cita/medico/created_at, medico y postgres; INSERT fechado queda en now(); restaurado)' END
     ELSE 'ROJO ('||left(bad, 700)||' | restauracion='||r_rest||')' END, false);
 EXCEPTION WHEN OTHERS THEN
   PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
@@ -27225,7 +27267,13 @@ DECLARE
   st text := '00000'; msg text := ''; ok boolean; det text := ''; bad text := ''; r_rest text := 'OK';
   s_notas text; s_rev text; s_citas text; n_hist bigint;
   v_cita bigint; v_nota integer; nn bigint; v_f0 text; v_r0 text; r record;
+  -- 20-nov-2026 (mig 400): con la 400 viva el medico no tiene UPDATE de cerrada_at ni de corregida_at (UPDATE por columna):
+  -- esos 2 casos dan 42501 de privilegio, mas fuerte que NT009; NT009 lo siguen ejercitando postgres con la llave de cierre
+  -- (este probe) y la regla del guard. Sin la 400, NT009 como siempre.
+  v400 text; v_code text; v_texto text;
 BEGIN
+  v400 := pg_temp.m400_estado();
+  IF v400 NOT IN ('pre', 'post') THEN RAISE EXCEPTION 'fixture roto: estado de la 400 %', v400; END IF;
   SELECT md5(COALESCE(string_agg(to_jsonb(t)::text, '|' ORDER BY t.id), '')) INTO s_notas FROM public.expediente_notas t;
   SELECT md5(COALESCE(string_agg(to_jsonb(t)::text, '|' ORDER BY t.id), '')) INTO s_rev FROM public.expediente_notas_revisiones t;
   SELECT md5(COALESCE(string_agg(to_jsonb(t)::text, '|' ORDER BY t.id), '')) INTO s_citas FROM public.citas t;
@@ -27267,10 +27315,15 @@ BEGIN
         PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
       EXCEPTION WHEN OTHERS THEN PERFORM set_config('ezpay.nota_llave', '', true); PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
         st := SQLSTATE; msg := SQLERRM; END;
-      ok := COALESCE((st = r.code AND msg = r.texto
+      IF v400 = 'post' AND r.actor = 'medico' AND r.accion IN ('cerrada', 'corregida') THEN
+        v_code := '42501'; v_texto := 'permission denied for table expediente_notas';
+      ELSE
+        v_code := r.code; v_texto := r.texto;
+      END IF;
+      ok := COALESCE((st = v_code AND msg = v_texto
         AND (SELECT md5(COALESCE(string_agg(to_jsonb(t)::text, '|' ORDER BY t.id), '')) FROM public.expediente_notas_revisiones t WHERE t.nota_id = v_nota) = v_r0
         AND (SELECT md5(to_jsonb(t)::text) FROM public.expediente_notas t WHERE t.id = v_nota) = v_f0), false);
-      det := det||' ;; '||r.caso||'|'||r.code||' sin cambios|'||CASE WHEN ok THEN 'OK' ELSE 'ROJO' END||'|'||st||'|'||left(msg, 160);
+      det := det||' ;; '||r.caso||'|'||v_code||' sin cambios|'||CASE WHEN ok THEN 'OK' ELSE 'ROJO' END||'|'||st||'|'||left(msg, 160);
       IF NOT ok THEN bad := bad||r.caso||': '||st||' '||left(msg, 120)||'; '; END IF;
     END LOOP;
     RAISE EXCEPTION 'P891 descarte' USING ERRCODE = 'P0999';
@@ -27284,7 +27337,9 @@ BEGIN
   det := det||' ;; restauracion|subtransaccion descartada; snapshot igual|'||r_rest||'|-|';
   PERFORM set_config('probe.p891_det', det, false);
   PERFORM set_config('probe.p891', CASE WHEN bad = '' AND r_rest = 'OK'
-    THEN 'OK (revisiones: 42501 x3 authenticated, NT008 x2 postgres; NT009 x3 campos de control y llave cerrar; restaurado)'
+    THEN CASE WHEN v400 = 'post'
+      THEN 'OK (revisiones: 42501 x3 authenticated, NT008 x2 postgres; campos de control del medico 42501 x2 (400, UPDATE por columna); NT009 llave cerrar; restaurado)'
+      ELSE 'OK (revisiones: 42501 x3 authenticated, NT008 x2 postgres; NT009 x3 campos de control y llave cerrar; restaurado)' END
     ELSE 'ROJO ('||left(bad, 700)||' | restauracion='||r_rest||')' END, false);
 EXCEPTION WHEN OTHERS THEN
   PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
@@ -27556,7 +27611,7 @@ SELECT set_config('role', 'none', true);
 
 -- ---------------- P896 catalogo de objetos post-334 ----------------
 DO $$
-DECLARE ok boolean; det text := ''; bad text := ''; x text; n bigint; r record; st text := '00000'; msg text := ''; pend365 boolean := false;
+DECLARE ok boolean; det text := ''; bad text := ''; x text; n bigint; r record; st text := '00000'; msg text := ''; pend365 boolean := false; e400 text;
 BEGIN
   SELECT string_agg(a.attname||':'||format_type(a.atttypid, a.atttypmod)||':'||CASE WHEN a.attnotnull THEN 'NN' ELSE 'N' END, ',' ORDER BY a.attname)
     INTO x FROM pg_attribute a WHERE a.attrelid = 'public.expediente_notas'::regclass AND NOT a.attisdropped
@@ -27607,12 +27662,26 @@ BEGIN
   ok := COALESCE(x = 'Admin clinica ve expediente de su clinica:SELECT,exp_insert_medico:INSERT,exp_select_medico:SELECT,exp_select_paciente:SELECT,exp_superadmin_select:SELECT,exp_update_medico:UPDATE', false) OR pend365;
   det := det||' ;; policies de notas|sin ALL ni DELETE; sin INSERT/UPDATE del super_admin (365)|'||CASE WHEN pend365 THEN 'PENDIENTE mig 365' WHEN ok THEN 'OK' ELSE 'ROJO' END||'|-|'||COALESCE(x, '-');
   IF NOT ok THEN bad := bad||'policies notas='||COALESCE(x, '-')||'; '; END IF;
+  -- 20-nov-2026 (mig 400): con la 400 viva authenticated tiene INSERT y SELECT de tabla y UPDATE solo de las 9 columnas del
+  -- front (attacl exacto); sin la 400, INSERT, SELECT y UPDATE de tabla sin attacl. Un estado parcial de la 400 es ROJO.
+  e400 := pg_temp.m400_estado();
   SELECT string_agg(p, ',' ORDER BY p) INTO x FROM unnest(ARRAY['SELECT','INSERT','UPDATE','DELETE','TRUNCATE','REFERENCES','TRIGGER','MAINTAIN']) p
    WHERE has_table_privilege('authenticated', 'public.expediente_notas', p);
-  ok := COALESCE(x = 'INSERT,SELECT,UPDATE', false)
+  ok := COALESCE(CASE e400
+          WHEN 'pre' THEN x = 'INSERT,SELECT,UPDATE'
+            AND NOT EXISTS (SELECT 1 FROM pg_attribute a WHERE a.attrelid = 'public.expediente_notas'::regclass AND a.attnum > 0 AND NOT a.attisdropped AND a.attacl IS NOT NULL)
+          WHEN 'post' THEN x = 'INSERT,SELECT'
+            AND (SELECT string_agg(a.attname||'='||a.attacl::text, ',' ORDER BY a.attnum) FROM pg_attribute a
+                  WHERE a.attrelid = 'public.expediente_notas'::regclass AND a.attnum > 0 AND NOT a.attisdropped AND a.attacl IS NOT NULL)
+                = 'cita_id={authenticated=w/postgres},paciente_id={authenticated=w/postgres},medico_id={authenticated=w/postgres},'
+                  ||'diagnostico={authenticated=w/postgres},motivo_consulta={authenticated=w/postgres},subjetivo={authenticated=w/postgres},'
+                  ||'objetivo={authenticated=w/postgres},analisis={authenticated=w/postgres},plan={authenticated=w/postgres}'
+          ELSE false END, false)
     AND NOT EXISTS (SELECT 1 FROM unnest(ARRAY['SELECT','INSERT','UPDATE','DELETE','TRUNCATE','REFERENCES','TRIGGER','MAINTAIN']) p WHERE has_table_privilege('anon', 'public.expediente_notas', p))
+    AND NOT has_any_column_privilege('anon', 'public.expediente_notas', 'SELECT,INSERT,UPDATE,REFERENCES')
     AND NOT EXISTS (SELECT 1 FROM pg_class c, aclexplode(c.relacl) a WHERE c.oid = 'public.expediente_notas'::regclass AND a.grantee = 0);
-  det := det||' ;; grants de notas|authenticated INSERT,SELECT,UPDATE; anon y PUBLIC nada|'||CASE WHEN ok THEN 'OK' ELSE 'ROJO' END||'|-|'||COALESCE(x, '-');
+  det := det||' ;; grants de notas|authenticated INSERT,SELECT,UPDATE (sin la 400) o INSERT,SELECT + UPDATE de las 9 columnas del front (400); anon y PUBLIC nada|'
+             ||CASE WHEN ok THEN 'OK' ELSE 'ROJO' END||'|400 '||e400||'|'||COALESCE(x, '-');
   IF NOT ok THEN bad := bad||'grants notas='||COALESCE(x, '-')||'; '; END IF;
   ok := EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'signos_vitales_consulta_id_fkey' AND conrelid = 'public.signos_vitales'::regclass AND confdeltype = 'r');
   det := det||' ;; FK signos_vitales.consulta_id|RESTRICT|'||CASE WHEN ok THEN 'OK' ELSE 'ROJO' END||'|-|';
@@ -45246,6 +45315,339 @@ EXCEPTION WHEN OTHERS THEN
 END $$;
 SELECT set_config('role', 'none', true);
 
+-- ================================================================================
+-- MIG 400 — expediente_notas: pais_id desde el paciente (trigger DEFINER) y UPDATE de authenticated solo de las 9 columnas
+-- del front (M400_FX + P1195-P1198). El guard de la nota no se toca.
+-- El ESTADO sale de pg_temp.m400_estado(), que vive en el PRELUDIO. Con 'pre' los probes publican
+-- 'PENDIENTE (estado de la 400: pre)'; un estado parcial es ROJO.
+-- Actores por id EXPLÍCITO o por rol con ORDER BY: medico.qa 09d243d5 (atiende al paciente 23 en c76d862c), clinica.qa
+-- 7e9ee700 (admin_clinica de c76d862c), el usuario de auth del paciente 23, el primer médico activo con fila en medicos
+-- distinto de medico.qa (por id); el otro país = el primer configuracion_pais (por id) distinto del país del paciente 23.
+-- Las citas y notas se siembran dentro de un savepoint que se descarta con RAISE P0999 (las revisiones son inmutables) y
+-- se compara pg_temp.m400_snap() (notas, revisiones, citas y el país del paciente 23) antes y después.
+-- pg_temp.m400_q impersona, ejecuta un SQL y devuelve 'OK:<valor>' o 'ERR:<SQLSTATE> …' SOLO para 42501, NT006, NT007 y
+-- NT009 (cualquier otro SQLSTATE llega al handler del probe y publica FALLO).
+-- ================================================================================
+DO $$
+DECLARE est text;
+BEGIN
+  EXECUTE $fn$
+CREATE OR REPLACE FUNCTION pg_temp.m400_q(p_uid uuid, p_sql text, p_rol text DEFAULT 'authenticated') RETURNS text LANGUAGE plpgsql AS $body$
+DECLARE v text;
+BEGIN
+  BEGIN
+    PERFORM set_config('request.jwt.claims', CASE WHEN p_uid IS NULL THEN json_build_object('role', p_rol)::text
+                                                  ELSE json_build_object('sub', p_uid, 'role', p_rol)::text END, true);
+    PERFORM set_config('role', p_rol, true);
+    EXECUTE p_sql INTO v;
+    PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
+    RETURN 'OK:'||COALESCE(v, 'NULL');
+  EXCEPTION WHEN SQLSTATE '42501' OR SQLSTATE 'NT006' OR SQLSTATE 'NT007' OR SQLSTATE 'NT009' THEN
+    PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
+    RETURN 'ERR:'||SQLSTATE||' '||left(SQLERRM, 100);
+  END;
+END
+$body$
+$fn$;
+  EXECUTE $fn$
+CREATE OR REPLACE FUNCTION pg_temp.m400_snap() RETURNS text LANGUAGE sql AS $body$
+  SELECT (SELECT count(*)||' '||COALESCE(md5(string_agg(to_jsonb(t)::text, '|' ORDER BY t.id)), '-') FROM public.expediente_notas t)
+       ||' / '||(SELECT count(*)||' '||COALESCE(md5(string_agg(to_jsonb(t)::text, '|' ORDER BY t.id)), '-') FROM public.expediente_notas_revisiones t)
+       ||' / '||(SELECT count(*)||' '||COALESCE(md5(string_agg(to_jsonb(t)::text, '|' ORDER BY t.id)), '-') FROM public.citas t)
+       ||' / '||COALESCE((SELECT pa.pais_id::text FROM public.pacientes pa WHERE pa.id = 23), 'NULL')
+$body$
+$fn$;
+  EXECUTE $fn$
+CREATE OR REPLACE FUNCTION pg_temp.m400_veredicto(p_det text, p_pre text, p_post text, p_ok text) RETURNS text LANGUAGE sql IMMUTABLE AS $body$
+  SELECT CASE
+    WHEN p_pre IS DISTINCT FROM p_post THEN 'FALLO (no restauró notas, revisiones, citas o el paciente 23; '||COALESCE(p_det, '')||')'
+    WHEN p_det LIKE '%FUGA:%' THEN 'FUGA ('||p_det||')'
+    WHEN p_det <> '' THEN 'FALLO ('||p_det||')'
+    ELSE 'OK ('||p_ok||')' END
+$body$
+$fn$;
+  EXECUTE $fn$
+CREATE OR REPLACE FUNCTION pg_temp.m400_cita(p_med uuid, p_clin uuid, p_hora time) RETURNS bigint LANGUAGE sql AS $body$
+  INSERT INTO public.citas (paciente_id, medico_id, clinica_id, fecha, hora_inicio, hora_fin, estado)
+  VALUES (23, p_med, p_clin, CURRENT_DATE + 400, p_hora, p_hora + interval '30 minutes', 'en_curso') RETURNING id
+$body$
+$fn$;
+  EXECUTE $fn$
+CREATE OR REPLACE FUNCTION pg_temp.m400_ins_front(p_cita bigint, p_med uuid, p_pais uuid DEFAULT NULL) RETURNS text LANGUAGE sql IMMUTABLE AS $body$
+  SELECT format('WITH i AS (INSERT INTO public.expediente_notas (cita_id, paciente_id, medico_id, motivo_consulta, subjetivo, objetivo, analisis, plan, diagnostico%s) '
+             || 'VALUES (%s, 23, %L, ''M400 m'', ''M400 s'', ''M400 o'', ''M400 a'', ''M400 p'', ''M400 d''%s) RETURNING id) SELECT id::text FROM i',
+                CASE WHEN p_pais IS NOT NULL THEN ', pais_id' ELSE '' END, p_cita, p_med,
+                CASE WHEN p_pais IS NOT NULL THEN ', '||quote_literal(p_pais) ELSE '' END)
+$body$
+$fn$;
+  est := pg_temp.m400_estado();
+  PERFORM set_config('probe.m400_fx', CASE WHEN est = 'pre' THEN 'PENDIENTE (estado de la 400: pre; helpers de pg_temp creados)'
+    WHEN est = 'post' THEN 'OK (helpers de pg_temp creados; estado de la 400: post)'
+    ELSE 'ROJO (400 '||est||'; helpers de pg_temp creados)' END, false);
+EXCEPTION WHEN OTHERS THEN
+  PERFORM set_config('probe.m400_fx', 'FALLO ('||SQLSTATE||' '||SQLERRM||')', false);
+END $$;
+SELECT set_config('role', 'none', true);
+
+-- ---------------- P1195 400: catálogo — UPDATE por columna, trigger de país DEFINER después del guard, guard intacto ----------------
+DO $$
+DECLARE est text; d text := '';
+BEGIN
+  est := pg_temp.m400_estado();
+  IF est = 'pre' THEN PERFORM set_config('probe.p1195', 'PENDIENTE (estado de la 400: pre)', false); RETURN; END IF;
+  IF est <> 'post' THEN PERFORM set_config('probe.p1195', 'ROJO (400 '||est||')', false); RETURN; END IF;
+  IF (SELECT string_agg(x::text, ',' ORDER BY x::text) FROM pg_class c, unnest(c.relacl) x WHERE c.oid = 'public.expediente_notas'::regclass)
+     IS DISTINCT FROM 'authenticated=ar/postgres,postgres=arwdDxtm/postgres,service_role=arwdDxtm/postgres' THEN
+    d := d||'relacl de expediente_notas = '||COALESCE((SELECT relacl::text FROM pg_class WHERE oid = 'public.expediente_notas'::regclass), '-')||'; ';
+  END IF;
+  IF (SELECT string_agg(a.attname||'='||a.attacl::text, ',' ORDER BY a.attnum) FROM pg_attribute a
+       WHERE a.attrelid = 'public.expediente_notas'::regclass AND a.attnum > 0 AND NOT a.attisdropped AND a.attacl IS NOT NULL)
+     IS DISTINCT FROM 'cita_id={authenticated=w/postgres},paciente_id={authenticated=w/postgres},medico_id={authenticated=w/postgres},'
+                    ||'diagnostico={authenticated=w/postgres},motivo_consulta={authenticated=w/postgres},subjetivo={authenticated=w/postgres},'
+                    ||'objetivo={authenticated=w/postgres},analisis={authenticated=w/postgres},plan={authenticated=w/postgres}' THEN
+    d := d||'privilegios por columna distintos de UPDATE de las 9 columnas del front; ';
+  END IF;
+  IF EXISTS (SELECT 1 FROM pg_attribute a WHERE a.attrelid = 'public.expediente_notas'::regclass AND a.attnum > 0 AND NOT a.attisdropped
+               AND a.attname NOT IN ('cita_id', 'paciente_id', 'medico_id', 'motivo_consulta', 'subjetivo', 'objetivo', 'analisis', 'plan', 'diagnostico')
+               AND has_column_privilege('authenticated', 'public.expediente_notas', a.attname, 'UPDATE'))
+     OR has_table_privilege('authenticated', 'public.expediente_notas', 'UPDATE,DELETE')
+     OR has_any_column_privilege('anon', 'public.expediente_notas', 'SELECT,INSERT,UPDATE,REFERENCES') THEN
+    d := d||'FUGA: UPDATE de una columna fuera del front (pais_id, vitales, campos de control), UPDATE/DELETE de tabla o privilegio de anon; ';
+  END IF;
+  IF NOT has_table_privilege('authenticated', 'public.expediente_notas', 'SELECT')
+     OR NOT has_table_privilege('authenticated', 'public.expediente_notas', 'INSERT')
+     OR NOT has_sequence_privilege('authenticated', 'public.expediente_notas_id_seq', 'USAGE') THEN
+    d := d||'authenticated perdió SELECT o INSERT de tabla o USAGE de la secuencia; ';
+  END IF;
+  IF (SELECT md5(p.prosrc)||' '||p.prosecdef::text||' '||COALESCE(p.proconfig::text, '-')||' '||COALESCE(p.proacl::text, '-')
+        FROM pg_proc p WHERE p.oid = to_regprocedure('private.expediente_notas_fija_pais()'))
+     IS DISTINCT FROM '95e689efe029bb47b6c9718f4e3c8d7b true {"search_path=\"\""} {postgres=X/postgres}' THEN
+    d := d||'private.expediente_notas_fija_pais no es la de la 400 (md5, DEFINER, search_path vacío, EXECUTE solo postgres); ';
+  END IF;
+  IF (SELECT string_agg(t.tgname||' '||t.tgenabled::text||' '||t.tgtype::text, ',' ORDER BY t.tgname COLLATE "C")
+        FROM pg_trigger t WHERE t.tgrelid = 'public.expediente_notas'::regclass AND NOT t.tgisinternal)
+     IS DISTINCT FROM 'trg_calcular_imc_expediente O 23,trg_expediente_notas_guardia O 23,trg_expediente_notas_pais O 23'
+     OR NOT EXISTS (SELECT 1 FROM pg_trigger t WHERE t.tgrelid = 'public.expediente_notas'::regclass AND t.tgname = 'trg_expediente_notas_pais'
+                      AND t.tgfoid = 'private.expediente_notas_fija_pais()'::regprocedure) THEN
+    d := d||'triggers de expediente_notas distintos de IMC + guard + país (BEFORE INSERT OR UPDATE, el de país último por nombre); ';
+  END IF;
+  IF (SELECT md5(p.prosrc)||' '||p.prosecdef::text||' '||COALESCE(p.proconfig::text, '-')||' '||COALESCE(p.proacl::text, '-')
+        FROM pg_proc p WHERE p.oid = to_regprocedure('private.expediente_notas_guardia()'))
+     IS DISTINCT FROM '950c36d4959f5568e3a6fbf351713541 true {"search_path=\"\""} {postgres=X/postgres}' THEN
+    d := d||'el guard de la nota cambió (la 400 no lo toca); ';
+  END IF;
+  IF (SELECT md5(string_agg(pl.polname||'|'||pl.polcmd::text||'|'||ARRAY(SELECT pg_get_userbyid(x) FROM unnest(pl.polroles) x ORDER BY 1)::text||'|'||
+                            COALESCE(pg_get_expr(pl.polqual, pl.polrelid), '-')||'|'||COALESCE(pg_get_expr(pl.polwithcheck, pl.polrelid), '-'), E'\n' ORDER BY pl.polname COLLATE "C"))
+        FROM pg_policy pl WHERE pl.polrelid = 'public.expediente_notas'::regclass)
+     IS DISTINCT FROM '291215175f82a9111ec8d9d4a7cafb3f' THEN
+    d := d||'las 6 policies de expediente_notas cambiaron (la 400 no las toca); ';
+  END IF;
+  PERFORM set_config('probe.p1195', CASE WHEN d LIKE '%FUGA:%' THEN 'FUGA ('||d||')' WHEN d <> '' THEN 'FALLO ('||d||')'
+    ELSE 'OK (400: authenticated INSERT y SELECT de tabla y UPDATE solo de las 9 columnas del front; trigger de país DEFINER con search_path vacío, después del guard; guard y 6 policies intactos)' END, false);
+EXCEPTION WHEN OTHERS THEN
+  PERFORM set_config('probe.p1195', 'FALLO ('||SQLSTATE||' '||SQLERRM||')', false);
+END $$;
+SELECT set_config('role', 'none', true);
+
+-- ---------------- P1196 400: el país de la nota sale del paciente, lo mande quien lo mande ----------------
+DO $$
+DECLARE
+  est text; d text := ''; pre text; post text; a text; v_pais uuid; v_otro uuid; c1 bigint; c2 bigint; c3 bigint; c4 bigint; n1 int; v uuid;
+  c_med CONSTANT uuid := '09d243d5-b222-482a-9762-94a582e9e752';
+  c_clin CONSTANT uuid := 'c76d862c-e82f-4748-bc07-86c8a3343576';
+BEGIN
+  est := pg_temp.m400_estado();
+  IF est = 'pre' THEN PERFORM set_config('probe.p1196', 'PENDIENTE (estado de la 400: pre)', false); RETURN; END IF;
+  IF est <> 'post' THEN PERFORM set_config('probe.p1196', 'ROJO (400 '||est||')', false); RETURN; END IF;
+  pre := pg_temp.m400_snap();
+  BEGIN
+    v_pais := (SELECT pa.pais_id FROM public.pacientes pa WHERE pa.id = 23);
+    v_otro := (SELECT cp.id FROM public.configuracion_pais cp WHERE cp.id IS DISTINCT FROM v_pais ORDER BY cp.id LIMIT 1);
+    IF v_pais IS NULL OR v_otro IS NULL OR NOT EXISTS (SELECT 1 FROM public.medico_clinicas mc WHERE mc.medico_id = c_med AND mc.clinica_id = c_clin) THEN
+      RAISE EXCEPTION 'fixture roto: P1196 sin paciente 23 con país, otro país o medico.qa en c76d862c';
+    END IF;
+    c1 := pg_temp.m400_cita(c_med, c_clin, '08:00'); c2 := pg_temp.m400_cita(c_med, c_clin, '09:00');
+    c3 := pg_temp.m400_cita(c_med, c_clin, '10:00'); c4 := pg_temp.m400_cita(c_med, c_clin, '11:00');
+    -- 1) el médico crea la nota como el front (9 columnas): país del paciente
+    a := pg_temp.m400_q(c_med, pg_temp.m400_ins_front(c1, c_med));
+    IF a NOT LIKE 'OK:%' THEN d := d||'médico INSERT como el front = '||left(a, 90)||' (esperado OK); ';
+    ELSE
+      n1 := substr(a, 4)::int;
+      IF (SELECT t.pais_id FROM public.expediente_notas t WHERE t.id = n1) IS DISTINCT FROM v_pais THEN d := d||'FUGA: la nota del front no quedó con el país del paciente; '; END IF;
+    END IF;
+    -- 2) el médico manda otro país: se ignora
+    a := pg_temp.m400_q(c_med, pg_temp.m400_ins_front(c2, c_med, v_otro));
+    IF a NOT LIKE 'OK:%' THEN d := d||'médico INSERT con pais_id = '||left(a, 90)||' (esperado OK con el país del paciente); ';
+    ELSIF (SELECT t.pais_id FROM public.expediente_notas t WHERE t.id = substr(a, 4)::int) IS DISTINCT FROM v_pais THEN
+      d := d||'FUGA: el médico eligió el país de la nota; ';
+    END IF;
+    -- 3) service_role manda otro país: también se le fija el del paciente (dato derivado, sin exención)
+    a := pg_temp.m400_q(NULL, pg_temp.m400_ins_front(c3, c_med, v_otro), 'service_role');
+    IF a NOT LIKE 'OK:%' THEN d := d||'service_role INSERT = '||left(a, 90)||'; ';
+    ELSIF (SELECT t.pais_id FROM public.expediente_notas t WHERE t.id = substr(a, 4)::int) IS DISTINCT FROM v_pais THEN
+      d := d||'service_role eligió el país de la nota; ';
+    END IF;
+    -- 4) postgres cambia el país de una nota abierta: vuelve el del paciente
+    IF n1 IS NOT NULL THEN
+      UPDATE public.expediente_notas SET pais_id = v_otro WHERE id = n1 RETURNING pais_id INTO v;
+      IF v IS DISTINCT FROM v_pais THEN d := d||'UPDATE de pais_id como postgres no volvió al país del paciente; '; END IF;
+    END IF;
+    -- 5) anon no inserta
+    a := pg_temp.m400_q(NULL, pg_temp.m400_ins_front(c4, c_med), 'anon');
+    IF a NOT LIKE 'ERR:42501%' THEN d := d||CASE WHEN a LIKE 'OK:%' THEN 'FUGA: ' ELSE '' END||'anon INSERT = '||left(a, 90)||'; '; END IF;
+    -- 6) paciente sin país: la nota se crea igual, con pais_id NULL
+    UPDATE public.pacientes SET pais_id = NULL WHERE id = 23;
+    a := pg_temp.m400_q(c_med, pg_temp.m400_ins_front(c4, c_med, v_otro));
+    IF a NOT LIKE 'OK:%' THEN d := d||'nota de un paciente sin país = '||left(a, 90)||' (esperado OK con pais_id NULL); ';
+    ELSIF (SELECT t.pais_id FROM public.expediente_notas t WHERE t.id = substr(a, 4)::int) IS NOT NULL THEN
+      d := d||'FUGA: la nota de un paciente sin país quedó con el país que mandó el cliente; ';
+    END IF;
+    RAISE EXCEPTION 'P1196 descarte' USING ERRCODE = 'P0999';
+  EXCEPTION WHEN SQLSTATE 'P0999' THEN NULL;
+  END;
+  post := pg_temp.m400_snap();
+  PERFORM set_config('probe.p1196', pg_temp.m400_veredicto(d, pre, post,
+    '400: la nota del front, la del médico que manda otro país y la de service_role quedan con el país del paciente; UPDATE de pais_id como postgres vuelve al del paciente; '
+    ||'anon 42501; paciente sin país -> pais_id NULL; descartado'), false);
+EXCEPTION WHEN OTHERS THEN
+  PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
+  PERFORM set_config('probe.p1196', CASE WHEN SQLERRM LIKE 'fixture roto%' THEN 'ROJO ('||SQLERRM||')' ELSE 'FALLO ('||SQLSTATE||' '||SQLERRM||')' END, false);
+END $$;
+SELECT set_config('role', 'none', true);
+
+-- ---------------- P1197 400: UPDATE solo de las 9 columnas del front; cierre y corrección como antes ----------------
+DO $$
+DECLARE
+  est text; d text := ''; pre text; post text; a text; v_pais uuid; v_otro uuid; v_medb uuid; c1 bigint; c2 bigint; n1 int; r record;
+  c_med CONSTANT uuid := '09d243d5-b222-482a-9762-94a582e9e752';
+  c_clin CONSTANT uuid := 'c76d862c-e82f-4748-bc07-86c8a3343576';
+BEGIN
+  est := pg_temp.m400_estado();
+  IF est = 'pre' THEN PERFORM set_config('probe.p1197', 'PENDIENTE (estado de la 400: pre)', false); RETURN; END IF;
+  IF est <> 'post' THEN PERFORM set_config('probe.p1197', 'ROJO (400 '||est||')', false); RETURN; END IF;
+  pre := pg_temp.m400_snap();
+  BEGIN
+    v_pais := (SELECT pa.pais_id FROM public.pacientes pa WHERE pa.id = 23);
+    v_otro := (SELECT cp.id FROM public.configuracion_pais cp WHERE cp.id IS DISTINCT FROM v_pais ORDER BY cp.id LIMIT 1);
+    v_medb := (SELECT p.id FROM public.perfiles p JOIN public.medicos m ON m.id = p.id WHERE p.rol = 'medico' AND p.activo AND p.id <> c_med ORDER BY p.id LIMIT 1);
+    IF v_pais IS NULL OR v_otro IS NULL OR v_medb IS NULL OR NOT EXISTS (SELECT 1 FROM public.pacientes pa WHERE pa.id = 546) THEN
+      RAISE EXCEPTION 'fixture roto: P1197 sin paciente 23 con país, otro país, otro médico o paciente 546';
+    END IF;
+    c1 := pg_temp.m400_cita(c_med, c_clin, '08:00'); c2 := pg_temp.m400_cita(c_med, c_clin, '09:00');
+    a := pg_temp.m400_q(c_med, pg_temp.m400_ins_front(c1, c_med));
+    IF a NOT LIKE 'OK:%' THEN RAISE EXCEPTION 'fixture roto: P1197 el médico no pudo crear la nota (%)', a; END IF;
+    n1 := substr(a, 4)::int;
+    -- 1) el UPDATE del front: las 9 columnas, con cita/paciente/médico sin cambiar
+    a := pg_temp.m400_q(c_med, format('WITH u AS (UPDATE public.expediente_notas SET cita_id = %s, paciente_id = 23, medico_id = %L, motivo_consulta = ''M400 m2'', '
+           ||'subjetivo = ''M400 s2'', objetivo = ''M400 o2'', analisis = ''M400 a2'', plan = ''M400 p2'', diagnostico = ''M400 d2'' WHERE id = %s RETURNING 1) '
+           ||'SELECT count(*)::text FROM u', c1, c_med, n1));
+    IF a IS DISTINCT FROM 'OK:1' THEN d := d||'UPDATE del front (9 columnas) = '||left(a, 90)||' (esperado OK:1); ';
+    ELSIF (SELECT count(*)||' '||string_agg(rv.tipo, ',') FROM public.expediente_notas_revisiones rv WHERE rv.nota_id = n1) IS DISTINCT FROM '1 edicion'
+       OR (SELECT t.pais_id FROM public.expediente_notas t WHERE t.id = n1) IS DISTINCT FROM v_pais THEN
+      d := d||'el UPDATE del front no dejó 1 revisión edicion o perdió el país del paciente; ';
+    END IF;
+    -- 2) columnas fuera del grant: 42501 de privilegio
+    FOR r IN SELECT * FROM (VALUES ('pais_id', quote_literal(v_otro)), ('nota', '''x'''), ('signos_vitales', '''{}''::jsonb'), ('peso_kg', '70'),
+                                   ('presion_arterial', '''120/80'''), ('imc', '22'), ('cerrada_at', 'now()'), ('corregida_at', 'now()'),
+                                   ('created_at', 'now()'), ('updated_at', 'now()'), ('updated_by', quote_literal(c_med))) x(col, val) LOOP
+      a := pg_temp.m400_q(c_med, format('WITH u AS (UPDATE public.expediente_notas SET %I = %s WHERE id = %s RETURNING 1) SELECT count(*)::text FROM u', r.col, r.val, n1));
+      IF a NOT LIKE 'ERR:42501%' THEN d := d||CASE WHEN a LIKE 'OK:%' AND a <> 'OK:0' THEN 'FUGA: ' ELSE '' END||'UPDATE '||r.col||' = '||left(a, 90)||' (esperado 42501); '; END IF;
+    END LOOP;
+    -- 3) columnas del grant que el guard sigue congelando
+    FOR r IN SELECT * FROM (VALUES ('paciente_id', '546'), ('cita_id', c2::text), ('medico_id', quote_literal(v_medb))) x(col, val) LOOP
+      a := pg_temp.m400_q(c_med, format('WITH u AS (UPDATE public.expediente_notas SET %I = %s WHERE id = %s RETURNING 1) SELECT count(*)::text FROM u', r.col, r.val, n1));
+      IF a NOT LIKE 'ERR:NT007%' THEN d := d||CASE WHEN a LIKE 'OK:%' AND a <> 'OK:0' THEN 'FUGA: ' ELSE '' END||'UPDATE '||r.col||' = '||left(a, 90)||' (esperado NT007); '; END IF;
+    END LOOP;
+    -- 4) otro médico no edita la nota (RLS: 0 filas)
+    a := pg_temp.m400_q(v_medb, format('WITH u AS (UPDATE public.expediente_notas SET subjetivo = ''ajeno'' WHERE id = %s RETURNING 1) SELECT count(*)::text FROM u', n1));
+    IF a IS DISTINCT FROM 'OK:0' THEN d := d||CASE WHEN a = 'OK:1' THEN 'FUGA: ' ELSE '' END||'otro médico UPDATE = '||left(a, 90)||' (esperado OK:0); '; END IF;
+    -- 5) el médico completa la cita: la nota se cierra sin revisión nueva
+    a := pg_temp.m400_q(c_med, format('SELECT public.actualizar_estado_cita(%s, ''completada'')::text', c1));
+    IF a NOT LIKE 'OK:%' OR (SELECT t.cerrada_at FROM public.expediente_notas t WHERE t.id = n1) IS NULL
+       OR (SELECT count(*) FROM public.expediente_notas_revisiones rv WHERE rv.nota_id = n1) <> 1 THEN
+      d := d||'completar la cita no cerró la nota sin revisión nueva ('||left(a, 90)||'); ';
+    END IF;
+    -- 6) nota cerrada: UPDATE directo NT006; corrección por la RPC
+    a := pg_temp.m400_q(c_med, format('UPDATE public.expediente_notas SET subjetivo = ''tarde'' WHERE id = %s', n1));
+    IF a NOT LIKE 'ERR:NT006%' THEN d := d||CASE WHEN a LIKE 'OK:%' THEN 'FUGA: ' ELSE '' END||'UPDATE de la nota cerrada = '||left(a, 90)||' (esperado NT006); '; END IF;
+    a := pg_temp.m400_q(c_med, format('SELECT public.corregir_nota_consulta(%s, ''P1197'', ''M400 m3'', ''M400 s3'', ''M400 o3'', ''M400 a3'', ''M400 p3'', ''M400 d3'')::text', n1));
+    IF a NOT LIKE 'OK:%'
+       OR (SELECT t.subjetivo = 'M400 s3' AND t.corregida_at IS NOT NULL AND t.pais_id IS NOT DISTINCT FROM v_pais FROM public.expediente_notas t WHERE t.id = n1) IS NOT TRUE
+       OR (SELECT rv.tipo FROM public.expediente_notas_revisiones rv WHERE rv.nota_id = n1 ORDER BY rv.revision DESC LIMIT 1) IS DISTINCT FROM 'correccion' THEN
+      d := d||'corregir_nota_consulta = '||left(a, 90)||' (esperado OK, corregida, revisión correccion y el país del paciente); ';
+    END IF;
+    RAISE EXCEPTION 'P1197 descarte' USING ERRCODE = 'P0999';
+  EXCEPTION WHEN SQLSTATE 'P0999' THEN NULL;
+  END;
+  post := pg_temp.m400_snap();
+  PERFORM set_config('probe.p1197', pg_temp.m400_veredicto(d, pre, post,
+    '400: el UPDATE del front (9 columnas) pasa con revisión edicion; pais_id, nota, signos_vitales, vitales viejos, imc y campos de control 42501; '
+    ||'paciente/cita/médico NT007; otro médico 0 filas; completar la cita cierra sin revisión; nota cerrada NT006; corregir_nota_consulta OK; descartado'), false);
+EXCEPTION WHEN OTHERS THEN
+  PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
+  PERFORM set_config('probe.p1197', CASE WHEN SQLERRM LIKE 'fixture roto%' THEN 'ROJO ('||SQLERRM||')' ELSE 'FALLO ('||SQLSTATE||' '||SQLERRM||')' END, false);
+END $$;
+SELECT set_config('role', 'none', true);
+
+-- ---------------- P1198 400: lecturas como antes; una nota sin país toma el del paciente al cerrarse, sin NT009 ni revisión ----------------
+-- Lo segundo fija el ORDEN de disparo: si el trigger de país corriera antes que el guard, el chequeo del cierre (C3) vería
+-- cambiar pais_id y daría NT009, y completar la cita de una nota vieja (pais_id NULL) fallaría.
+DO $$
+DECLARE
+  est text; d text := ''; pre text; post text; a text; v_pais uuid; v_pacu uuid; c1 bigint; n1 int; n_or int;
+  c_med CONSTANT uuid := '09d243d5-b222-482a-9762-94a582e9e752';
+  c_adc CONSTANT uuid := '7e9ee700-48ac-43e1-812b-777518b971ec';
+  c_clin CONSTANT uuid := 'c76d862c-e82f-4748-bc07-86c8a3343576';
+BEGIN
+  est := pg_temp.m400_estado();
+  IF est = 'pre' THEN PERFORM set_config('probe.p1198', 'PENDIENTE (estado de la 400: pre)', false); RETURN; END IF;
+  IF est <> 'post' THEN PERFORM set_config('probe.p1198', 'ROJO (400 '||est||')', false); RETURN; END IF;
+  pre := pg_temp.m400_snap();
+  BEGIN
+    v_pais := (SELECT pa.pais_id FROM public.pacientes pa WHERE pa.id = 23);
+    v_pacu := (SELECT pa.auth_user_id FROM public.pacientes pa WHERE pa.id = 23);
+    IF v_pais IS NULL OR v_pacu IS NULL
+       OR NOT EXISTS (SELECT 1 FROM public.medico_clinicas mc WHERE mc.medico_id = c_adc AND mc.clinica_id = c_clin)
+       OR (SELECT p.rol FROM public.perfiles p WHERE p.id = c_adc) IS DISTINCT FROM 'admin_clinica'
+       OR NOT EXISTS (SELECT 1 FROM public.expediente_notas t WHERE t.medico_id = c_med AND t.paciente_id = 23) THEN
+      RAISE EXCEPTION 'fixture roto: P1198 sin paciente 23 con país y cuenta, clinica.qa admin_clinica de c76d862c o notas de medico.qa del paciente 23';
+    END IF;
+    -- 1) lecturas (select('*') del front): el médico ve sus notas, el paciente las suyas, clinica.qa las de medico.qa
+    n_or := (SELECT count(*) FROM public.expediente_notas t WHERE t.medico_id = c_med);
+    a := pg_temp.m400_q(c_med, format('SELECT count(*)::text FROM (SELECT t.* FROM public.expediente_notas t WHERE t.medico_id = %L) x', c_med));
+    IF a IS DISTINCT FROM 'OK:'||n_or THEN d := d||'medico.qa ve '||left(a, 60)||' notas propias (esperado '||n_or||'); '; END IF;
+    a := pg_temp.m400_q(c_adc, format('SELECT count(*)::text FROM (SELECT t.* FROM public.expediente_notas t WHERE t.medico_id = %L) x', c_med));
+    IF a IS DISTINCT FROM 'OK:'||n_or THEN d := d||'clinica.qa ve '||left(a, 60)||' notas de medico.qa (esperado '||n_or||'); '; END IF;
+    n_or := (SELECT count(*) FROM public.expediente_notas t WHERE t.paciente_id = 23);
+    a := pg_temp.m400_q(v_pacu, 'SELECT count(*)::text FROM (SELECT t.* FROM public.expediente_notas t WHERE t.paciente_id = 23) x');
+    IF a IS DISTINCT FROM 'OK:'||n_or THEN d := d||'paciente 23 ve '||left(a, 60)||' notas propias (esperado '||n_or||'); '; END IF;
+    -- 2) nota sin país (paciente sin país al crearla), después el paciente recupera el país y el médico completa la cita
+    c1 := pg_temp.m400_cita(c_med, c_clin, '08:00');
+    UPDATE public.pacientes SET pais_id = NULL WHERE id = 23;
+    a := pg_temp.m400_q(c_med, pg_temp.m400_ins_front(c1, c_med));
+    IF a NOT LIKE 'OK:%' THEN RAISE EXCEPTION 'fixture roto: P1198 no se pudo crear la nota sin país (%)', a; END IF;
+    n1 := substr(a, 4)::int;
+    UPDATE public.pacientes SET pais_id = v_pais WHERE id = 23;
+    IF (SELECT t.pais_id FROM public.expediente_notas t WHERE t.id = n1) IS NOT NULL THEN RAISE EXCEPTION 'fixture roto: P1198 la nota sin país nació con país'; END IF;
+    a := pg_temp.m400_q(c_med, format('SELECT public.actualizar_estado_cita(%s, ''completada'')::text', c1));
+    IF a NOT LIKE 'OK:%' THEN
+      d := d||'completar la cita de una nota sin país = '||left(a, 90)||' (esperado OK: el trigger de país corre después del guard); ';
+    ELSIF (SELECT t.cerrada_at IS NOT NULL AND t.pais_id IS NOT DISTINCT FROM v_pais FROM public.expediente_notas t WHERE t.id = n1) IS NOT TRUE
+       OR (SELECT count(*) FROM public.expediente_notas_revisiones rv WHERE rv.nota_id = n1) <> 0 THEN
+      d := d||'la nota sin país no quedó cerrada con el país del paciente y sin revisiones; ';
+    END IF;
+    RAISE EXCEPTION 'P1198 descarte' USING ERRCODE = 'P0999';
+  EXCEPTION WHEN SQLSTATE 'P0999' THEN NULL;
+  END;
+  post := pg_temp.m400_snap();
+  PERFORM set_config('probe.p1198', pg_temp.m400_veredicto(d, pre, post,
+    '400: medico.qa, clinica.qa y el paciente 23 leen sus notas con select(*) como antes; una nota sin país se cierra al completar la cita sin NT009 ni revisión y toma el país del paciente; descartado'), false);
+EXCEPTION WHEN OTHERS THEN
+  PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
+  PERFORM set_config('probe.p1198', CASE WHEN SQLERRM LIKE 'fixture roto%' THEN 'ROJO ('||SQLERRM||')' ELSE 'FALLO ('||SQLSTATE||' '||SQLERRM||')' END, false);
+END $$;
+SELECT set_config('role', 'none', true);
+
 -- @@HARNESS_RESULTADOS@@
 -- ===== Veredictos como result set =====
 SELECT 'P1_anon_insert_citas'              AS probe, current_setting('probe.p1', true)  AS verdict, 'BLOQUEADO' AS esperado_post_fix
@@ -46544,6 +46946,11 @@ UNION ALL SELECT 'M399_FX_disponibilidad_cierre',  current_setting('probe.m399_f
 UNION ALL SELECT 'P1192_disponibilidad_catalogo_399',  current_setting('probe.p1192', true), 'OK (399: INSERT solo de 8 columnas sin pais_id, sin UPDATE; validación DEFINER; guard INVOKER; trigger; 9 policies; pre: PENDIENTE)'
 UNION ALL SELECT 'P1193_disponibilidad_insert_por_actor_399',  current_setting('probe.p1193', true), 'OK (399: solo un médico activo tiene agenda, en una clínica suya; DM001/DM002; país del perfil; pre: PENDIENTE)'
 UNION ALL SELECT 'P1194_disponibilidad_sin_update_399',  current_setting('probe.p1194', true), 'OK (399: UPDATE 42501 para todos; DELETE y lecturas como antes; pre: PENDIENTE)'
+UNION ALL SELECT 'M400_FX_notas_pais',  current_setting('probe.m400_fx', true), 'OK (helpers de pg_temp creados; estado de la 400: post; pre: PENDIENTE; parcial: ROJO)'
+UNION ALL SELECT 'P1195_notas_catalogo_400',  current_setting('probe.p1195', true), 'OK (400: UPDATE solo de las 9 columnas del front; trigger de país DEFINER después del guard; guard y policies intactos; pre: PENDIENTE)'
+UNION ALL SELECT 'P1196_notas_pais_del_paciente_400',  current_setting('probe.p1196', true), 'OK (400: el país de la nota sale del paciente para médico, service_role y postgres; paciente sin país -> NULL; pre: PENDIENTE)'
+UNION ALL SELECT 'P1197_notas_update_por_columna_400',  current_setting('probe.p1197', true), 'OK (400: UPDATE del front pasa; el resto 42501; NT007/NT006, cierre y corrección como antes; pre: PENDIENTE)'
+UNION ALL SELECT 'P1198_notas_lecturas_y_cierre_400',  current_setting('probe.p1198', true), 'OK (400: lecturas como antes; nota sin país se cierra sin NT009 ni revisión; pre: PENDIENTE)'
 UNION ALL SELECT 'P1010_campana_vistas_sin_update_367',  current_setting('probe.p1010', true), 'OK (367: INSERT 1; ON CONFLICT DO NOTHING 0 sin error; DO UPDATE y UPDATE 42501; otro paciente 0; antes de la 367: PENDIENTE)'
 UNION ALL SELECT 'P1009_datos_bancarios_acotados_366',  current_setting('probe.p1009', true), 'OK (366: cuenta GT solo super_admin/admin_pais GT/proveedores GT; checkout 1 fila; config 21 super_admin y 14 el resto, admin_pais incluido; antes de la 366: PENDIENTE)'
 UNION ALL SELECT 'DET_p1009',  'DET ' || COALESCE(NULLIF(current_setting('probe.p1009_det', true), ''), '(sin dato)'), 'DET (detalle de P1009, no es probe)'
@@ -46796,7 +47203,7 @@ UNION ALL SELECT 'P000_CENTINELA_veredictos_no_nulos',
        'probe.p866', 'probe.p867', 'probe.p868', 'probe.p869', 'probe.p870', 'probe.p871', 'probe.p872', 'probe.p873', 'probe.p874', 'probe.p875', 'probe.p876', 'probe.p877', 'probe.p878',
        'probe.p879', 'probe.p880', 'probe.p881', 'probe.p882', 'probe.p883', 'probe.p884',
        'probe.p885', 'probe.p886', 'probe.p887', 'probe.p888', 'probe.p889', 'probe.p890', 'probe.p891', 'probe.p892', 'probe.p893', 'probe.p894', 'probe.p895', 'probe.p896', 'probe.p908', 'probe.p909', 'probe.p910', 'probe.p911',
-       'probe.p897', 'probe.p898', 'probe.p899', 'probe.p900', 'probe.p901', 'probe.p902', 'probe.p903', 'probe.p904', 'probe.p905', 'probe.p906', 'probe.p907', 'probe.p912', 'probe.p913', 'probe.p914', 'probe.p915', 'probe.p916', 'probe.p917', 'probe.p918', 'probe.p919', 'probe.p920', 'probe.p921', 'probe.p922', 'probe.p923', 'probe.p924', 'probe.p925', 'probe.p926', 'probe.p927', 'probe.p928', 'probe.p929', 'probe.p930', 'probe.p931', 'probe.p932', 'probe.p933', 'probe.p934', 'probe.p935', 'probe.p936', 'probe.p937', 'probe.p938', 'probe.p939', 'probe.p940', 'probe.p941', 'probe.p942', 'probe.p943', 'probe.p944', 'probe.p945', 'probe.p946', 'probe.p947', 'probe.p948', 'probe.p949', 'probe.p950', 'probe.p951', 'probe.p952', 'probe.p953', 'probe.p954', 'probe.p955', 'probe.p956', 'probe.p957', 'probe.p958', 'probe.p959', 'probe.p960', 'probe.p961', 'probe.p962', 'probe.p963', 'probe.p964', 'probe.p965', 'probe.p966', 'probe.p967', 'probe.p968', 'probe.p969', 'probe.p970', 'probe.p971', 'probe.p972', 'probe.p973', 'probe.p974', 'probe.p975', 'probe.p976', 'probe.p977', 'probe.p978', 'probe.p979', 'probe.p980', 'probe.p981', 'probe.p982', 'probe.p983', 'probe.p984', 'probe.p985', 'probe.p986', 'probe.p987', 'probe.p988', 'probe.p989', 'probe.p990', 'probe.p991', 'probe.p992', 'probe.p993', 'probe.p994', 'probe.p995', 'probe.p996', 'probe.p997', 'probe.p998', 'probe.p999', 'probe.p1000', 'probe.p1001', 'probe.p1002', 'probe.p1003', 'probe.p1004', 'probe.p1005', 'probe.p1006', 'probe.p1007', 'probe.p1008', 'probe.p1009', 'probe.p1010', 'probe.p1011', 'probe.p1012', 'probe.p1013', 'probe.p1014', 'probe.e370_fx', 'probe.p1015', 'probe.p1016', 'probe.p1017', 'probe.p1018', 'probe.g371_fx', 'probe.p1019', 'probe.p1020', 'probe.p1021', 'probe.p1022', 'probe.g372_fx', 'probe.p1023', 'probe.p1024', 'probe.p1025', 'probe.p1035', 'probe.p1036', 'probe.p1037', 'probe.p1038', 'probe.p1039', 'probe.p1040', 'probe.m375_fx', 'probe.p1041', 'probe.p1042', 'probe.p1043', 'probe.p1044', 'probe.p1045', 'probe.p1046', 'probe.p1047', 'probe.p1048', 'probe.p1049', 'probe.p1050', 'probe.p1051', 'probe.p1052', 'probe.p1053', 'probe.p1054', 'probe.p1055', 'probe.p1056', 'probe.p1057', 'probe.p1058', 'probe.p1059', 'probe.p1060', 'probe.p1061', 'probe.m376_fx', 'probe.p1062', 'probe.p1063', 'probe.p1064', 'probe.m377_fx', 'probe.p1065', 'probe.p1066', 'probe.p1067', 'probe.p1068', 'probe.p1069', 'probe.p1070', 'probe.p1071', 'probe.p1072', 'probe.p1073', 'probe.p1074', 'probe.m378_fx', 'probe.p1075', 'probe.p1076', 'probe.p1077', 'probe.p1078', 'probe.p1079', 'probe.p1080', 'probe.p1081', 'probe.p1082', 'probe.p1083', 'probe.m379_fx', 'probe.p1084', 'probe.p1085', 'probe.p1086', 'probe.p1087', 'probe.p1088', 'probe.p1089', 'probe.p1090', 'probe.m380_fx', 'probe.p1091', 'probe.p1092', 'probe.p1093', 'probe.p1094', 'probe.p1095', 'probe.p1096', 'probe.p1097', 'probe.p1098', 'probe.h_restaura', 'probe.m381_fx', 'probe.p1099', 'probe.p1100', 'probe.p1101', 'probe.p1102', 'probe.p1103', 'probe.p1104', 'probe.m382_fx', 'probe.p1105', 'probe.p1106', 'probe.p1107', 'probe.p1108', 'probe.p1109', 'probe.p1110', 'probe.p1111', 'probe.p1112', 'probe.p1113', 'probe.p1114', 'probe.p1115', 'probe.p1116', 'probe.p1117', 'probe.p1118', 'probe.p1119', 'probe.m383_fx', 'probe.p1120', 'probe.p1121', 'probe.p1122', 'probe.p1123', 'probe.p1124', 'probe.p1125', 'probe.p1126', 'probe.p1127', 'probe.p1128', 'probe.p1129', 'probe.p1130', 'probe.p1131', 'probe.m384_fx', 'probe.p1132', 'probe.p1133', 'probe.p1134', 'probe.p1135', 'probe.p1136', 'probe.p1137', 'probe.m385_fx', 'probe.p1138', 'probe.p1139', 'probe.p1140', 'probe.p1141', 'probe.m386_fx', 'probe.p1142', 'probe.p1143', 'probe.p1144', 'probe.p1145', 'probe.p1146', 'probe.p1147', 'probe.m387_fx', 'probe.p1148', 'probe.p1149', 'probe.p1150', 'probe.p1151', 'probe.m388_fx', 'probe.p1152', 'probe.p1153', 'probe.p1154', 'probe.p1155', 'probe.p1156', 'probe.m389_fx', 'probe.p1157', 'probe.p1158', 'probe.p1159', 'probe.p1160', 'probe.m390_fx', 'probe.p1161', 'probe.p1162', 'probe.p1163', 'probe.p1164', 'probe.m391_fx', 'probe.p1165', 'probe.p1166', 'probe.p1167', 'probe.p1168', 'probe.p1169', 'probe.m392_fx', 'probe.p1170', 'probe.p1171', 'probe.p1172', 'probe.m395_fx', 'probe.p1173', 'probe.p1174', 'probe.p1175', 'probe.p1176', 'probe.p1177', 'probe.p1178', 'probe.p1179', 'probe.p1180', 'probe.p1181', 'probe.m396_fx', 'probe.p1182', 'probe.p1183', 'probe.p1184', 'probe.m397_fx', 'probe.p1185', 'probe.p1186', 'probe.p1187', 'probe.p1188', 'probe.m398_fx', 'probe.p1189', 'probe.p1190', 'probe.p1191', 'probe.m399_fx', 'probe.p1192', 'probe.p1193', 'probe.p1194'
+       'probe.p897', 'probe.p898', 'probe.p899', 'probe.p900', 'probe.p901', 'probe.p902', 'probe.p903', 'probe.p904', 'probe.p905', 'probe.p906', 'probe.p907', 'probe.p912', 'probe.p913', 'probe.p914', 'probe.p915', 'probe.p916', 'probe.p917', 'probe.p918', 'probe.p919', 'probe.p920', 'probe.p921', 'probe.p922', 'probe.p923', 'probe.p924', 'probe.p925', 'probe.p926', 'probe.p927', 'probe.p928', 'probe.p929', 'probe.p930', 'probe.p931', 'probe.p932', 'probe.p933', 'probe.p934', 'probe.p935', 'probe.p936', 'probe.p937', 'probe.p938', 'probe.p939', 'probe.p940', 'probe.p941', 'probe.p942', 'probe.p943', 'probe.p944', 'probe.p945', 'probe.p946', 'probe.p947', 'probe.p948', 'probe.p949', 'probe.p950', 'probe.p951', 'probe.p952', 'probe.p953', 'probe.p954', 'probe.p955', 'probe.p956', 'probe.p957', 'probe.p958', 'probe.p959', 'probe.p960', 'probe.p961', 'probe.p962', 'probe.p963', 'probe.p964', 'probe.p965', 'probe.p966', 'probe.p967', 'probe.p968', 'probe.p969', 'probe.p970', 'probe.p971', 'probe.p972', 'probe.p973', 'probe.p974', 'probe.p975', 'probe.p976', 'probe.p977', 'probe.p978', 'probe.p979', 'probe.p980', 'probe.p981', 'probe.p982', 'probe.p983', 'probe.p984', 'probe.p985', 'probe.p986', 'probe.p987', 'probe.p988', 'probe.p989', 'probe.p990', 'probe.p991', 'probe.p992', 'probe.p993', 'probe.p994', 'probe.p995', 'probe.p996', 'probe.p997', 'probe.p998', 'probe.p999', 'probe.p1000', 'probe.p1001', 'probe.p1002', 'probe.p1003', 'probe.p1004', 'probe.p1005', 'probe.p1006', 'probe.p1007', 'probe.p1008', 'probe.p1009', 'probe.p1010', 'probe.p1011', 'probe.p1012', 'probe.p1013', 'probe.p1014', 'probe.e370_fx', 'probe.p1015', 'probe.p1016', 'probe.p1017', 'probe.p1018', 'probe.g371_fx', 'probe.p1019', 'probe.p1020', 'probe.p1021', 'probe.p1022', 'probe.g372_fx', 'probe.p1023', 'probe.p1024', 'probe.p1025', 'probe.p1035', 'probe.p1036', 'probe.p1037', 'probe.p1038', 'probe.p1039', 'probe.p1040', 'probe.m375_fx', 'probe.p1041', 'probe.p1042', 'probe.p1043', 'probe.p1044', 'probe.p1045', 'probe.p1046', 'probe.p1047', 'probe.p1048', 'probe.p1049', 'probe.p1050', 'probe.p1051', 'probe.p1052', 'probe.p1053', 'probe.p1054', 'probe.p1055', 'probe.p1056', 'probe.p1057', 'probe.p1058', 'probe.p1059', 'probe.p1060', 'probe.p1061', 'probe.m376_fx', 'probe.p1062', 'probe.p1063', 'probe.p1064', 'probe.m377_fx', 'probe.p1065', 'probe.p1066', 'probe.p1067', 'probe.p1068', 'probe.p1069', 'probe.p1070', 'probe.p1071', 'probe.p1072', 'probe.p1073', 'probe.p1074', 'probe.m378_fx', 'probe.p1075', 'probe.p1076', 'probe.p1077', 'probe.p1078', 'probe.p1079', 'probe.p1080', 'probe.p1081', 'probe.p1082', 'probe.p1083', 'probe.m379_fx', 'probe.p1084', 'probe.p1085', 'probe.p1086', 'probe.p1087', 'probe.p1088', 'probe.p1089', 'probe.p1090', 'probe.m380_fx', 'probe.p1091', 'probe.p1092', 'probe.p1093', 'probe.p1094', 'probe.p1095', 'probe.p1096', 'probe.p1097', 'probe.p1098', 'probe.h_restaura', 'probe.m381_fx', 'probe.p1099', 'probe.p1100', 'probe.p1101', 'probe.p1102', 'probe.p1103', 'probe.p1104', 'probe.m382_fx', 'probe.p1105', 'probe.p1106', 'probe.p1107', 'probe.p1108', 'probe.p1109', 'probe.p1110', 'probe.p1111', 'probe.p1112', 'probe.p1113', 'probe.p1114', 'probe.p1115', 'probe.p1116', 'probe.p1117', 'probe.p1118', 'probe.p1119', 'probe.m383_fx', 'probe.p1120', 'probe.p1121', 'probe.p1122', 'probe.p1123', 'probe.p1124', 'probe.p1125', 'probe.p1126', 'probe.p1127', 'probe.p1128', 'probe.p1129', 'probe.p1130', 'probe.p1131', 'probe.m384_fx', 'probe.p1132', 'probe.p1133', 'probe.p1134', 'probe.p1135', 'probe.p1136', 'probe.p1137', 'probe.m385_fx', 'probe.p1138', 'probe.p1139', 'probe.p1140', 'probe.p1141', 'probe.m386_fx', 'probe.p1142', 'probe.p1143', 'probe.p1144', 'probe.p1145', 'probe.p1146', 'probe.p1147', 'probe.m387_fx', 'probe.p1148', 'probe.p1149', 'probe.p1150', 'probe.p1151', 'probe.m388_fx', 'probe.p1152', 'probe.p1153', 'probe.p1154', 'probe.p1155', 'probe.p1156', 'probe.m389_fx', 'probe.p1157', 'probe.p1158', 'probe.p1159', 'probe.p1160', 'probe.m390_fx', 'probe.p1161', 'probe.p1162', 'probe.p1163', 'probe.p1164', 'probe.m391_fx', 'probe.p1165', 'probe.p1166', 'probe.p1167', 'probe.p1168', 'probe.p1169', 'probe.m392_fx', 'probe.p1170', 'probe.p1171', 'probe.p1172', 'probe.m395_fx', 'probe.p1173', 'probe.p1174', 'probe.p1175', 'probe.p1176', 'probe.p1177', 'probe.p1178', 'probe.p1179', 'probe.p1180', 'probe.p1181', 'probe.m396_fx', 'probe.p1182', 'probe.p1183', 'probe.p1184', 'probe.m397_fx', 'probe.p1185', 'probe.p1186', 'probe.p1187', 'probe.p1188', 'probe.m398_fx', 'probe.p1189', 'probe.p1190', 'probe.p1191', 'probe.m399_fx', 'probe.p1192', 'probe.p1193', 'probe.p1194', 'probe.m400_fx', 'probe.p1195', 'probe.p1196', 'probe.p1197', 'probe.p1198'
              ]) AS n) s),
   'OK (todos los veredictos publicados)';
 
