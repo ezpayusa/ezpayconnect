@@ -1,4 +1,4 @@
-import { nombreMedicoConPrefijo } from '@/lib/nombreMedico'
+import { formatMedicoNombre } from '@/webapp/lib/formatMedico'
 import { useState } from 'react'
 import { useWebAppAuth } from '@/webapp/hooks/useWebAppAuth'
 import { useWebAppRecetas } from '@/webapp/hooks/useWebAppRecetas'
@@ -82,7 +82,7 @@ export default function WebAppRecetas() {
                         </Badge>
                       </div>
                       <p className="text-sm text-slate-500">
-                        {nombreMedicoConPrefijo(r.medico_nombre)}
+                        {formatMedicoNombre(r.medico_nombre)}
                       </p>
                       <p className="text-xs text-slate-400">
                         {new Date(r.created_at).toLocaleDateString('es-GT', {

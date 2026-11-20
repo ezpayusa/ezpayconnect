@@ -1,4 +1,4 @@
-import { nombreMedicoConPrefijo } from '@/lib/nombreMedico'
+import { formatMedicoNombre } from '@/webapp/lib/formatMedico'
 import { parseFechaFlexible } from '@/lib/fecha'
 import { useState } from 'react'
 import { useVisor, archivoDeResultado } from '@/components/visor/useVisor'
@@ -157,7 +157,7 @@ export default function WebAppHistorial() {
                             <div className="flex items-center gap-2 mt-2 flex-wrap">
                               {item.medico_nombre && (
                                 <span className="text-xs text-slate-400">
-                                  {nombreMedicoConPrefijo(item.medico_nombre)}
+                                  {formatMedicoNombre(item.medico_nombre)}
                                 </span>
                               )}
                               {item.detalles?.estado && getEstadoBadge(item.detalles.estado)}

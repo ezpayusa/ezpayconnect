@@ -2,7 +2,8 @@ import { useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useAuth } from '@/hooks/useAuth'
 import { supabase } from '@/lib/supabase'
-import { rutaHomePorRol } from '@/lib/rutas'
+import { resolverRutaHome } from '@/lib/rutas'
+import { esPacienteDeUsuario } from '@/lib/esPaciente'
 import { enviarReset } from '@/lib/enviarReset'
 import { toast } from 'sonner'
 import { Button } from '@/components/ui/button'
@@ -36,9 +37,10 @@ export default function LoginPage() {
           .from('perfiles')
           .select('rol, pais_id')
           .eq('id', user.id)
-          .single()
-        // Ruteo por rol centralizado en rutaHomePorRol (misma tabla de destinos que antes).
-        navigate(rutaHomePorRol(profile))
+          .maybeSingle()
+        // Con perfil: la tabla de rutaHomePorRol. Sin perfil: si es paciente va a su portal; si no,
+        // a /sin-panel. `loading` sigue en true hasta navegar, así que no se ve un destino a medias.
+        navigate(await resolverRutaHome(profile, () => esPacienteDeUsuario(user.id)))
       } else {
         navigate('/dashboard')
       }

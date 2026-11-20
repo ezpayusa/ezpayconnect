@@ -2,6 +2,7 @@ import { useState, useEffect, useCallback } from 'react'
 import { supabase } from '@/lib/supabase'
 import type { RecetaPaciente, RecetaItemPaciente } from '@/webapp/types/webapp.types'
 import { armarDespacho, cargarTokensDespacho, type FilaAvanzadaPublica } from '@/webapp/lib/despachoReceta'
+import { nombresMedicosParaPaciente } from '@/webapp/lib/medicosPaciente'
 
 export function useWebAppRecetas(pacienteId: number | undefined) {
   const [recetas, setRecetas] = useState<RecetaPaciente[]>([])
@@ -33,21 +34,8 @@ export function useWebAppRecetas(pacienteId: number | undefined) {
 
       if (recetasErr) throw recetasErr
 
-      // 2. Obtener nombres de médicos por separado
-      const medicoIds = [...new Set((recetasData || []).map((r: any) => r.medico_id).filter(Boolean))]
-      let medicosMap: Record<string, string> = {}
-
-      if (medicoIds.length > 0) {
-        const { data: perfilesData } = await supabase
-          .from('perfiles')
-          .select('id, nombre_completo')
-          .in('id', medicoIds)
-
-        medicosMap = (perfilesData || []).reduce((acc: Record<string, string>, p: any) => {
-          acc[p.id] = p.nombre_completo
-          return acc
-        }, {})
-      }
+      // 2. Nombres de los médicos, por fuentes que el paciente puede leer (no `perfiles`: ver medicosPaciente.ts)
+      const medicosMap = await nombresMedicosParaPaciente((recetasData || []).map((r: any) => r.medico_id))
 
       const recetasConItems: RecetaPaciente[] = []
 

@@ -1,4 +1,4 @@
-import { nombreMedicoConPrefijo } from '@/lib/nombreMedico'
+import { formatMedicoNombre } from '@/webapp/lib/formatMedico'
 import { useState } from 'react'
 import { useWebAppAuth } from '@/webapp/hooks/useWebAppAuth'
 import { parseFechaLocal } from '@/lib/fecha'
@@ -129,9 +129,7 @@ export default function WebAppDashboard() {
                 <div className="flex items-center gap-2 text-slate-500 text-sm">
                   <Pill className="h-4 w-4" />
                   <span>
-                    {proximaCita.medico_nombre?.startsWith('Médico por')
-                      ? proximaCita.medico_nombre
-                      : nombreMedicoConPrefijo(proximaCita.medico_nombre)}
+                    {formatMedicoNombre(proximaCita.medico_nombre)}
                   </span>
                 </div>
                 {proximaCita.clinica_nombre && (
