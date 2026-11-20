@@ -43843,7 +43843,7 @@ SELECT set_config('role', 'none', true);
 
 -- ---------------- P1174 395: alergia sin motivo -> PR011, sin consumir el correlativo ni dejar filas ----------------
 DO $$
-DECLARE est text; d text := ''; pre text; post text; a text; c0 text; n0 bigint; i0 bigint;
+DECLARE est text; d text := ''; pre text; post text; a text; c0 text; n0 bigint; i0 bigint; al0 bigint;
 BEGIN
   est := pg_temp.m395_estado();
   IF est = 'pre' THEN PERFORM set_config('probe.p1174', 'PENDIENTE (estado de la 395: pre)', false); RETURN; END IF;
@@ -43852,6 +43852,8 @@ BEGIN
   BEGIN
     PERFORM pg_temp.m395_fijar();
     c0 := pg_temp.m395_corr(); n0 := (SELECT count(*) FROM public.recetas); i0 := (SELECT count(*) FROM public.receta_items);
+    -- 20-nov: las alertas se comparan contra las que había al empezar (prod ya tiene alertas reales, p. ej. la de la demo)
+    al0 := pg_temp.m395_alertas();
     -- sin la clave del motivo
     a := pg_temp.m395_q('09d243d5-b222-482a-9762-94a582e9e752', format('SELECT public.emitir_receta(23, %L, %L::jsonb)::text', 'P1174 QA',
            jsonb_build_array(pg_temp.m395_item(22))));
@@ -43872,7 +43874,7 @@ BEGIN
     d := d || pg_temp.m395_eq('correlativo', pg_temp.m395_corr(), c0);
     d := d || pg_temp.m395_eq('recetas', (SELECT count(*) FROM public.recetas)::text, n0::text);
     d := d || pg_temp.m395_eq('receta_items', (SELECT count(*) FROM public.receta_items)::text, i0::text);
-    d := d || pg_temp.m395_eq('alertas', pg_temp.m395_alertas()::text, '0');
+    d := d || pg_temp.m395_eq('alertas nuevas', (pg_temp.m395_alertas() - al0)::text, '0');
     RAISE EXCEPTION 'P1174 descarte' USING ERRCODE = 'P0999';
   EXCEPTION WHEN SQLSTATE 'P0999' THEN NULL;
   END;
