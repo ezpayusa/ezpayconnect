@@ -52,6 +52,12 @@ export default function QRDespacho({ receta }: { receta: RecetaPaciente }) {
         : 'El código de despacho no tiene una vigencia válida. Pide a tu médico una nueva receta.'} />
   }
 
+  // Mig 396: el token llega por mis_despachos_receta. Vigente pero sin token = la RPC no respondió.
+  if (!d.token) {
+    return <Aviso icono={<QrCode className="h-4 w-4 mt-0.5 shrink-0" />} tono="bg-slate-50 text-slate-600"
+      texto="No se pudo cargar el código de despacho. Vuelve a abrir tus recetas para intentarlo de nuevo." />
+  }
+
   return (
     <div className="flex flex-col items-center gap-2 rounded-lg bg-white border border-slate-200 p-4">
       <QRCodeSVG value={d.token} size={200} level="M" marginSize={2} aria-hidden="true" />

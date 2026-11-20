@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback } from 'react'
 import { supabase } from '@/lib/supabase'
-import type { RecetaPaciente, RecetaItemPaciente, DespachoReceta } from '@/webapp/types/webapp.types'
+import type { RecetaPaciente, RecetaItemPaciente } from '@/webapp/types/webapp.types'
+import { armarDespacho, cargarTokensDespacho, type FilaAvanzadaPublica } from '@/webapp/lib/despachoReceta'
 
 export function useWebAppRecetas(pacienteId: number | undefined) {
   const [recetas, setRecetas] = useState<RecetaPaciente[]>([])
@@ -18,13 +19,17 @@ export function useWebAppRecetas(pacienteId: number | undefined) {
       setLoading(true)
       setError(null)
 
-      // 1. Obtener recetas del paciente + su fila avanzada (1:1 por receta_base_id; RLS recadv_select_paciente).
-      //    El token de despacho viaja solo en memoria: nunca a console, storage ni URL.
-      const { data: recetasData, error: recetasErr } = await supabase
-        .from('recetas')
-        .select('id, estado, instrucciones_generales, created_at, medico_id, receta_items(*), recetas_avanzadas(dispatch_token, dispatch_token_expira_at, estado_dispensacion)')
-        .eq('paciente_id', pacienteId)
-        .order('created_at', { ascending: false })
+      // 1. Obtener recetas del paciente + su fila avanzada (1:1 por receta_base_id; RLS recadv_select_paciente), SIN el
+      //    token: desde la mig 396 el token de despacho sale de la RPC mis_despachos_receta (solo el dueño, solo
+      //    vigentes; src/webapp/lib/despachoReceta.ts). Viaja solo en memoria: nunca a console, storage ni URL.
+      const [{ data: recetasData, error: recetasErr }, { tokens }] = await Promise.all([
+        supabase
+          .from('recetas')
+          .select('id, estado, instrucciones_generales, created_at, medico_id, receta_items(*), recetas_avanzadas(dispatch_token_expira_at, estado_dispensacion)')
+          .eq('paciente_id', pacienteId)
+          .order('created_at', { ascending: false }),
+        cargarTokensDespacho(),
+      ])
 
       if (recetasErr) throw recetasErr
 
@@ -63,17 +68,10 @@ export function useWebAppRecetas(pacienteId: number | undefined) {
           dispensado: i.dispensado ?? null,
         }))
 
-        // PostgREST devuelve la relación 1:1 como objeto; se acepta también arreglo por robustez.
-        type FilaAvanzada = { dispatch_token: string | null; dispatch_token_expira_at: string | null; estado_dispensacion: DespachoReceta['estado_dispensacion'] }
-        const avRaw = (r as { recetas_avanzadas?: FilaAvanzada | FilaAvanzada[] | null }).recetas_avanzadas
-        const av = Array.isArray(avRaw) ? avRaw[0] : avRaw
-        const despacho: DespachoReceta | null = av?.dispatch_token
-          ? {
-              token: av.dispatch_token,
-              expira_at: av.dispatch_token_expira_at ?? null,
-              estado_dispensacion: av.estado_dispensacion,
-            }
-          : null
+        // PostgREST devuelve la relación 1:1 como objeto; se acepta también arreglo por robustez. El token (si está
+        // vigente) se toma del resultado de la RPC por receta_id.
+        const avRaw = (r as { recetas_avanzadas?: FilaAvanzadaPublica | FilaAvanzadaPublica[] | null }).recetas_avanzadas
+        const despacho = armarDespacho(r.id, avRaw, tokens)
 
         recetasConItems.push({
           id: r.id,
