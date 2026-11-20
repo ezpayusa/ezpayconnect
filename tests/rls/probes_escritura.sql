@@ -43909,7 +43909,11 @@ BEGIN
       d := d || pg_temp.m395_eq('correlativo', pg_temp.m395_corr(), esperado_num);
       v := (SELECT r.folio||'|'||COALESCE(r.cita_id::text, 'NULL')||'|'||r.numero_correlativo FROM public.recetas r WHERE r.id = rid);
       d := d || pg_temp.m395_eq('recetas.folio|cita_id|numero', v, (j->>'folio')||'|NULL|'||esperado_num);
-      d := d || pg_temp.m395_eq('formato del folio', ((j->>'folio') ~ ('^[^-]+-'||lpad(esperado_num, 6, '0')||'-[0-9]{8}$'))::text, 'true');
+      -- 20-nov: el folio exacto, con la regla de emitir_receta: COALESCE(cedula, 'SINCED') || '-' || lpad(correlativo, 6, '0')
+      -- || '-' || to_char(now(), 'YYYYMMDD'). Antes un regex [^-]+ suponía una cédula sin guiones (la QA es 'QA-12345').
+      d := d || pg_temp.m395_eq('folio exacto', j->>'folio',
+        COALESCE((SELECT m.cedula_profesional FROM public.medicos m WHERE m.id = '09d243d5-b222-482a-9762-94a582e9e752'), 'SINCED')
+        ||'-'||lpad(esperado_num, 6, '0')||'-'||to_char(now(), 'YYYYMMDD'));
       d := d || pg_temp.m395_eq('items', (SELECT count(*)::text FROM public.receta_items ri WHERE ri.receta_id = rid), '2');
       v := (SELECT string_agg(concat_ws('|', (al.receta_item_id = ri.id)::text, al.paciente_id, al.medico_id, al.medicamento_id, al.termino_alergia,
                                             al.alergias_snapshot, al.motivo, (al.confirmada_at = now())::text), E'\n')
