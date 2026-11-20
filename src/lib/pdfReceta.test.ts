@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { generarPDF } from './pdfReceta'
+import { generarPDF, MARGEN_X_PDF } from './pdfReceta'
 
 // H13: el PDF de la receta sin «N/A», con la tabla dentro del margen y «Cant.» entero.
 const receta = { id: 8927, folio: 'QA-12345-000013-20261119', created_at: '2026-11-19T20:36:47Z', instrucciones_generales: null } as any
@@ -19,10 +19,17 @@ describe('generarPDF (H13)', () => {
     expect(doc.output()).not.toContain('N/A')
   })
 
-  it('la tabla queda dentro del margen (180 mm de ancho útil desde x = 15)', () => {
+  it('la tabla usa el mismo margen que el texto: arranca en MARGEN_X_PDF y termina en ancho - MARGEN_X_PDF', () => {
+    const pageWidth = doc.internal.pageSize.getWidth()
+    const fila = tabla.body[0].cells
+    const primera = fila[0]
+    const ultima = fila[7]
+    expect(tabla.settings.margin.left).toBe(MARGEN_X_PDF)
+    expect(tabla.settings.margin.right).toBe(MARGEN_X_PDF)
+    expect(primera.x).toBeCloseTo(MARGEN_X_PDF, 2)
+    expect(ultima.x + ultima.width).toBeCloseTo(pageWidth - MARGEN_X_PDF, 2)
     const ancho = tabla.columns.reduce((s: number, c: any) => s + c.width, 0)
-    expect(ancho).toBeLessThanOrEqual(180.01)
-    expect(tabla.settings.margin.left).toBe(15)
+    expect(ancho).toBeCloseTo(pageWidth - 2 * MARGEN_X_PDF, 2)
   })
 
   it('la columna «Cant.» alcanza para el encabezado en una línea', () => {

@@ -6,6 +6,9 @@ import { folioReceta } from '@/lib/folioReceta'
 import { parseFechaLocal } from '@/lib/fecha'
 import { textoAlertaAlergia, type AlertaAlergiaReceta } from '@/lib/alertasAlergiaReceta'
 
+// Margen izquierdo y derecho del contenido (texto, líneas de título y tabla), en mm.
+export const MARGEN_X_PDF = 20
+
 // Exportada para el test de H13 (sin «N/A», tabla dentro del margen).
 export function generarPDF(
   receta: Receta,
@@ -61,11 +64,11 @@ export function generarPDF(
   doc.setTextColor(colorSecundario)
   doc.setFontSize(14)
   doc.setFont('helvetica', 'bold')
-  doc.text('Datos del Paciente', 20, 70)
+  doc.text('Datos del Paciente', MARGEN_X_PDF, 70)
 
   doc.setDrawColor(30, 92, 142)
   doc.setLineWidth(0.5)
-  doc.line(20, 73, pageWidth - 20, 73)
+  doc.line(MARGEN_X_PDF, 73, pageWidth - MARGEN_X_PDF, 73)
 
   doc.setFontSize(10)
   doc.setFont('helvetica', 'normal')
@@ -85,10 +88,10 @@ export function generarPDF(
   let yPos = 82
   pacienteInfo.forEach(([label, value]) => {
     doc.setFont('helvetica', 'bold')
-    doc.text(label, 20, yPos)
+    doc.text(label, MARGEN_X_PDF, yPos)
     const labelWidth = doc.getTextWidth(label)
     doc.setFont('helvetica', 'normal')
-    doc.text(` ${value}`, 20 + labelWidth, yPos)
+    doc.text(` ${value}`, MARGEN_X_PDF + labelWidth, yPos)
     yPos += 7
   })
 
@@ -97,8 +100,8 @@ export function generarPDF(
   doc.setFontSize(14)
   doc.setFont('helvetica', 'bold')
   doc.setTextColor(colorSecundario)
-  doc.text('Medicamentos Prescritos', 20, yPos)
-  doc.line(20, yPos + 3, pageWidth - 20, yPos + 3)
+  doc.text('Medicamentos Prescritos', MARGEN_X_PDF, yPos)
+  doc.line(MARGEN_X_PDF, yPos + 3, pageWidth - MARGEN_X_PDF, yPos + 3)
 
   const tableData = items.map((item, idx) => {
     const farmacia = item.farmacia
@@ -153,24 +156,24 @@ export function generarPDF(
     alternateRowStyles: {
       fillColor: [232, 240, 248]
     },
-    // H13: anchos fijos que suman exactamente el ancho útil (210 - 15 - 15 = 180 mm). Antes
-    // `cellWidth: 'wrap'` + `tableWidth: 'auto'` dejaban que la tabla creciera con el contenido y se
-    // saliera del margen, y «Cant.» tenía 10 mm (el texto mide ~7 mm + 4 mm de padding): se cortaba.
+    // H13: anchos fijos que suman exactamente el ancho útil, para que la tabla no se salga y
+    // «Cant.» (texto de ~7 mm + 4 mm de padding) no se corte. Desde H13b la tabla usa el MISMO margen
+    // que el texto y las líneas de título (MARGEN_X_PDF a cada lado): 210 - 20 - 20 = 170 mm.
     columnStyles: {
       0: { cellWidth: 8, halign: 'center' },
-      1: { cellWidth: 34, fontStyle: 'bold' },
+      1: { cellWidth: 30, fontStyle: 'bold' },
       2: { cellWidth: 20, halign: 'center' },
       3: { cellWidth: 20, halign: 'center' },
       4: { cellWidth: 20, halign: 'center' },
       5: { cellWidth: 14, halign: 'center' },
-      6: { cellWidth: 36 },
-      7: { cellWidth: 28, fontStyle: 'bold' }
+      6: { cellWidth: 32 },
+      7: { cellWidth: 26, fontStyle: 'bold' }
     },
-    margin: { left: 15, right: 15 },
+    margin: { left: MARGEN_X_PDF, right: MARGEN_X_PDF },
     styles: {
       overflow: 'linebreak'
     },
-    tableWidth: pageWidth - 30
+    tableWidth: pageWidth - 2 * MARGEN_X_PDF
   })
 
   // === INSTRUCCIONES GENERALES ===
@@ -200,8 +203,8 @@ export function generarPDF(
     doc.setFontSize(12)
     doc.setFont('helvetica', 'bold')
     doc.setTextColor(colorSecundario)
-    doc.text('Instrucciones Generales', 20, yPos)
-    doc.line(20, yPos + 3, pageWidth - 20, yPos + 3)
+    doc.text('Instrucciones Generales', MARGEN_X_PDF, yPos)
+    doc.line(MARGEN_X_PDF, yPos + 3, pageWidth - MARGEN_X_PDF, yPos + 3)
 
     doc.setFontSize(10)
     doc.setFont('helvetica', 'normal')
