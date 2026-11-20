@@ -1,5 +1,5 @@
-import { describe, it, expect } from 'vitest'
-import { rutaHomePorRol } from './rutas'
+import { describe, it, expect, vi } from 'vitest'
+import { rutaHomePorRol, resolverRutaHome, RUTA_HOME_PACIENTE } from './rutas'
 
 // Los 13 códigos de roles_catalogo, medidos contra la base 2026-09-04. La función es pura, así que
 // esto cubre TODOS los roles — incluidos los que no tienen cuenta con contraseña conocida y por lo
@@ -33,5 +33,32 @@ describe('rutaHomePorRol — destino de cada rol del catálogo', () => {
     for (const p of [{ rol: 'rol_del_futuro' }, { rol: '' }, { rol: null }, {}, null, undefined]) {
       expect(rutaHomePorRol(p as never)).toBe('/sin-panel')
     }
+  })
+})
+
+describe('resolverRutaHome — destino tras /login o /', () => {
+  it('con perfil va a su panel y no consulta pacientes', async () => {
+    const esPaciente = vi.fn(async () => true)
+    await expect(resolverRutaHome({ rol: 'medico' }, esPaciente)).resolves.toBe('/medico')
+    await expect(resolverRutaHome({ rol: 'admin_pais', pais_id: PAIS }, esPaciente)).resolves.toBe(`/admin-ezpay/pais/${PAIS}`)
+    expect(esPaciente).not.toHaveBeenCalled()
+  })
+
+  it('con perfil de rol desconocido sigue en /sin-panel aunque tenga ficha de paciente', async () => {
+    await expect(resolverRutaHome({ rol: 'vendedor' }, async () => true)).resolves.toBe('/sin-panel')
+  })
+
+  it('sin perfil y con ficha de paciente va al portal del paciente', async () => {
+    await expect(resolverRutaHome(null, async () => true)).resolves.toBe(RUTA_HOME_PACIENTE)
+    expect(RUTA_HOME_PACIENTE).toBe('/paciente/dashboard')
+  })
+
+  it('sin perfil ni paciente va a /sin-panel', async () => {
+    await expect(resolverRutaHome(null, async () => false)).resolves.toBe('/sin-panel')
+    await expect(resolverRutaHome(undefined, async () => false)).resolves.toBe('/sin-panel')
+  })
+
+  it('si la consulta de paciente falla, va a /sin-panel', async () => {
+    await expect(resolverRutaHome(null, async () => { throw new Error('red') })).resolves.toBe('/sin-panel')
   })
 })

@@ -43,3 +43,26 @@ export function rutaHomePorRol(
   // qué tiene derecho a ver.
   return '/sin-panel'
 }
+
+// Home del portal del paciente (App.tsx: el index de /paciente redirige acá).
+export const RUTA_HOME_PACIENTE = '/paciente/dashboard'
+
+// Destino de una sesión que entra por /login o por /. El paciente no tiene fila en `perfiles`
+// (su identidad vive en `pacientes.auth_user_id`), así que sin perfil se pregunta si es paciente
+// antes de mandarlo a /sin-panel. Con perfil manda la tabla de rutaHomePorRol y NO se consulta
+// pacientes: una cuenta con perfil va a su panel aunque también tenga una ficha de paciente.
+// `esPaciente` se inyecta (la consulta a la base vive en el llamador) para que esto siga siendo
+// testeable sin mocks de supabase. Si la consulta falla, se trata como "no es paciente".
+export async function resolverRutaHome(
+  perfil: { rol?: string | null; pais_id?: string | null } | null | undefined,
+  esPaciente: () => Promise<boolean>
+): Promise<string> {
+  if (perfil) return rutaHomePorRol(perfil)
+  let paciente = false
+  try {
+    paciente = await esPaciente()
+  } catch {
+    paciente = false
+  }
+  return paciente ? RUTA_HOME_PACIENTE : '/sin-panel'
+}

@@ -1,7 +1,8 @@
-import { lazy, Suspense, useEffect } from 'react'
+import { lazy, Suspense, useEffect, useState } from 'react'
 import { BrowserRouter, Routes, Route, Navigate, useNavigate, useLocation } from 'react-router-dom'
 import { useAuth } from '@/hooks/useAuth'
-import { rutaHomePorRol } from '@/lib/rutas'
+import { rutaHomePorRol, resolverRutaHome } from '@/lib/rutas'
+import { esPacienteDeUsuario } from '@/lib/esPaciente'
 import { useAdminAuth } from '@/hooks/admin/useAdminAuth'
 
 // === LAYOUTS / GUARDS (eager: shells compartidos y lógica de routing) ===
@@ -232,9 +233,26 @@ function PrivateLayout({ children }: { children: React.ReactNode }) {
 
 function RootRedirect() {
   const { user, perfil, loading } = useAuth()
+  // Destino resuelto para ESTE usuario. Sin perfil hay que preguntar si es paciente (consulta
+  // async): mientras tanto se muestra el spinner, nunca /sin-panel. Se guarda con el id del usuario
+  // para que una respuesta de otra sesión no se use.
+  const [destino, setDestino] = useState<{ uid: string; ruta: string } | null>(null)
+  const uid = user?.id ?? null
+
+  useEffect(() => {
+    if (loading || !uid || perfil) return
+    let vigente = true
+    resolverRutaHome(null, () => esPacienteDeUsuario(uid)).then((ruta) => {
+      if (vigente) setDestino({ uid, ruta })
+    })
+    return () => { vigente = false }
+  }, [loading, uid, perfil])
+
   if (loading) return <Spinner />
   if (!user) return <Navigate to="/login" replace />
-  return <Navigate to={rutaHomePorRol(perfil)} replace />
+  if (perfil) return <Navigate to={rutaHomePorRol(perfil)} replace />
+  if (destino?.uid !== user.id) return <Spinner />
+  return <Navigate to={destino.ruta} replace />
 }
 
 function AdminRoute({ children }: { children: React.ReactNode }) {
