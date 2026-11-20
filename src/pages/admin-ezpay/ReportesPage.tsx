@@ -2,6 +2,7 @@
 // Dia 16: Pagina de Reportes Avanzados — Version robusta
 // EzPayConnect — Admin Dashboard
 
+import { parseFechaFlexible } from '@/lib/fecha'
 import { useState, useEffect } from 'react'
 import { supabase } from '@/lib/supabase'
 import { useAdminAuth } from '@/hooks/admin/useAdminAuth'
@@ -198,7 +199,7 @@ export default function ReportesPage() {
 
   const formatearMes = (mes: string) => {
     try {
-      const fecha = new Date(mes)
+      const fecha = parseFechaFlexible(mes) // v_resumen_mensual.mes es DATE (H25)
       return fecha.toLocaleDateString('es-ES', { month: 'long', year: 'numeric' })
     } catch {
       return mes

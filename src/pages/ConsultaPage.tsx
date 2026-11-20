@@ -89,7 +89,7 @@ function soapDeNota(n: ExpedienteNota): typeof SOAP_VACIO {
 function calcularEdad(fechaNacimiento: string | null): number | null {
   if (!fechaNacimiento) return null
   const hoy = new Date()
-  const nac = new Date(fechaNacimiento)
+  const nac = parseFechaLocal(fechaNacimiento) // DATE: sin corrimiento de día (H25)
   let edad = hoy.getFullYear() - nac.getFullYear()
   const m = hoy.getMonth() - nac.getMonth()
   if (m < 0 || (m === 0 && hoy.getDate() < nac.getDate())) edad--

@@ -1,3 +1,4 @@
+import { parseFechaLocal } from '@/lib/fecha'
 import { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { Button } from '@/components/ui/button';
@@ -183,8 +184,8 @@ export default function PlanesExcepcionesPage() {
                     </TableCell>
                     <TableCell>
                       <div className="text-sm">
-                        <p>{new Date(exc.fecha_inicio).toLocaleDateString('es-GT')}</p>
-                        {exc.fecha_fin && <p className="text-muted-foreground">hasta {new Date(exc.fecha_fin).toLocaleDateString('es-GT')}</p>}
+                        <p>{parseFechaLocal(exc.fecha_inicio).toLocaleDateString('es-GT')}</p>
+                        {exc.fecha_fin && <p className="text-muted-foreground">hasta {parseFechaLocal(exc.fecha_fin).toLocaleDateString('es-GT')}</p>}
                       </div>
                     </TableCell>
                     <TableCell>

@@ -1,3 +1,4 @@
+import { parseFechaLocal } from '@/lib/fecha'
 import { usePagosProveedor } from '@/proveedor/hooks/usePagosProveedor'
 import { openSignedUrl } from '@/lib/signedUrl'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
@@ -15,7 +16,7 @@ function formatMoneda(monto: number, moneda: string) {
 
 function formatFecha(fecha: string | null) {
   if (!fecha) return '-'
-  return new Date(fecha).toLocaleDateString('es-GT', {
+  return parseFechaLocal(fecha).toLocaleDateString('es-GT', { // pagos_proveedor.fecha_pago es DATE (H25)
     year: 'numeric',
     month: 'short',
     day: 'numeric',

@@ -241,7 +241,7 @@ export default function RecetaDetallePage() {
                 {receta.paciente?.fecha_nacimiento && (
                   <p className="flex items-center gap-2">
                     <Calendar className="h-3.5 w-3.5" />
-                    {new Date(receta.paciente.fecha_nacimiento).toLocaleDateString('es-GT')}
+                    {parseFechaLocal(receta.paciente.fecha_nacimiento).toLocaleDateString('es-GT')}
                   </p>
                 )}
                 {receta.paciente?.alergias && (

@@ -1,3 +1,4 @@
+import { parseFechaFlexible } from '@/lib/fecha'
 import { useState } from 'react'
 import { useVisor, archivoDeResultado } from '@/components/visor/useVisor'
 import { useWebAppAuth } from '@/webapp/hooks/useWebAppAuth'
@@ -51,7 +52,7 @@ export default function WebAppHistorial() {
   }
 
   const formatearFecha = (fecha: string) => {
-    return new Date(fecha).toLocaleDateString('es-GT', {
+    return parseFechaFlexible(fecha).toLocaleDateString('es-GT', { // DATE o timestamp (H25)
       weekday: 'long',
       year: 'numeric',
       month: 'long',
