@@ -1,15 +1,22 @@
+import { nombreMedicoConPrefijo } from '@/lib/nombreMedico'
 import { jsPDF } from 'jspdf'
 import autoTable from 'jspdf-autotable'
 import type { Receta, RecetaItem, Paciente, Perfil } from '@/types'
 import { folioReceta } from '@/lib/folioReceta'
 import { parseFechaLocal } from '@/lib/fecha'
+import { textoAlertaAlergia, type AlertaAlergiaReceta } from '@/lib/alertasAlergiaReceta'
 
-function generarPDF(
+// Margen izquierdo y derecho del contenido (texto, líneas de título y tabla), en mm.
+export const MARGEN_X_PDF = 20
+
+// Exportada para el test de H13 (sin «N/A», tabla dentro del margen).
+export function generarPDF(
   receta: Receta,
   items: RecetaItem[],
   paciente: Paciente,
   medico: Perfil,
-  cedula?: string | null
+  cedula?: string | null,
+  alertas: AlertaAlergiaReceta[] = []
 ) {
   const doc = new jsPDF()
   const pageWidth = doc.internal.pageSize.getWidth()
@@ -37,7 +44,7 @@ function generarPDF(
   // Info médico (derecha)
   doc.setFontSize(11)
   doc.setFont('helvetica', 'bold')
-  doc.text(`Dr. ${medico.nombre_completo || 'Médico'}`, pageWidth - 20, 22, { align: 'right' })
+  doc.text(nombreMedicoConPrefijo(medico.nombre_completo), pageWidth - 20, 22, { align: 'right' })
   doc.setFont('helvetica', 'normal')
   doc.setFontSize(9)
   doc.text(medico.email || '', pageWidth - 20, 28, { align: 'right' })
@@ -57,11 +64,11 @@ function generarPDF(
   doc.setTextColor(colorSecundario)
   doc.setFontSize(14)
   doc.setFont('helvetica', 'bold')
-  doc.text('Datos del Paciente', 20, 70)
+  doc.text('Datos del Paciente', MARGEN_X_PDF, 70)
 
   doc.setDrawColor(30, 92, 142)
   doc.setLineWidth(0.5)
-  doc.line(20, 73, pageWidth - 20, 73)
+  doc.line(MARGEN_X_PDF, 73, pageWidth - MARGEN_X_PDF, 73)
 
   doc.setFontSize(10)
   doc.setFont('helvetica', 'normal')
@@ -69,21 +76,22 @@ function generarPDF(
 
   const pacienteInfo = [
     [`Nombre completo:`, `${paciente.nombre} ${paciente.apellido}`],
-    [`Teléfono:`, paciente.telefono || 'N/A'],
-    [`Email:`, paciente.email || 'N/A'],
-    [`Fecha de Nacimiento:`, paciente.fecha_nacimiento ? parseFechaLocal(paciente.fecha_nacimiento).toLocaleDateString('es-GT') : 'N/A'],
-    [`Género:`, paciente.genero ? paciente.genero.charAt(0).toUpperCase() + paciente.genero.slice(1) : 'N/A'],
+    // H13: un dato que falta va como «-», no «N/A».
+    [`Teléfono:`, paciente.telefono || '-'],
+    [`Email:`, paciente.email || '-'],
+    [`Fecha de Nacimiento:`, paciente.fecha_nacimiento ? parseFechaLocal(paciente.fecha_nacimiento).toLocaleDateString('es-GT') : '-'],
+    [`Género:`, paciente.genero ? paciente.genero.charAt(0).toUpperCase() + paciente.genero.slice(1) : '-'],
     [`Alergias conocidas:`, paciente.alergias || 'Ninguna registrada'],
-    [`Contacto de emergencia:`, paciente.emergencia_nombre ? `${paciente.emergencia_nombre} (${paciente.emergencia_telefono || 'Sin teléfono'})` : 'N/A']
+    [`Contacto de emergencia:`, paciente.emergencia_nombre ? `${paciente.emergencia_nombre} (${paciente.emergencia_telefono || 'Sin teléfono'})` : '-']
   ]
 
   let yPos = 82
   pacienteInfo.forEach(([label, value]) => {
     doc.setFont('helvetica', 'bold')
-    doc.text(label, 20, yPos)
+    doc.text(label, MARGEN_X_PDF, yPos)
     const labelWidth = doc.getTextWidth(label)
     doc.setFont('helvetica', 'normal')
-    doc.text(` ${value}`, 20 + labelWidth, yPos)
+    doc.text(` ${value}`, MARGEN_X_PDF + labelWidth, yPos)
     yPos += 7
   })
 
@@ -92,8 +100,8 @@ function generarPDF(
   doc.setFontSize(14)
   doc.setFont('helvetica', 'bold')
   doc.setTextColor(colorSecundario)
-  doc.text('Medicamentos Prescritos', 20, yPos)
-  doc.line(20, yPos + 3, pageWidth - 20, yPos + 3)
+  doc.text('Medicamentos Prescritos', MARGEN_X_PDF, yPos)
+  doc.line(MARGEN_X_PDF, yPos + 3, pageWidth - MARGEN_X_PDF, yPos + 3)
 
   const tableData = items.map((item, idx) => {
     const farmacia = item.farmacia
@@ -148,34 +156,55 @@ function generarPDF(
     alternateRowStyles: {
       fillColor: [232, 240, 248]
     },
+    // H13: anchos fijos que suman exactamente el ancho útil, para que la tabla no se salga y
+    // «Cant.» (texto de ~7 mm + 4 mm de padding) no se corte. Desde H13b la tabla usa el MISMO margen
+    // que el texto y las líneas de título (MARGEN_X_PDF a cada lado): 210 - 20 - 20 = 170 mm.
     columnStyles: {
       0: { cellWidth: 8, halign: 'center' },
-      1: { cellWidth: 32, fontStyle: 'bold' },
-      2: { cellWidth: 18, halign: 'center' },
-      3: { cellWidth: 18, halign: 'center' },
+      1: { cellWidth: 30, fontStyle: 'bold' },
+      2: { cellWidth: 20, halign: 'center' },
+      3: { cellWidth: 20, halign: 'center' },
       4: { cellWidth: 20, halign: 'center' },
-      5: { cellWidth: 10, halign: 'center' },
+      5: { cellWidth: 14, halign: 'center' },
       6: { cellWidth: 32 },
-      7: { cellWidth: 28, fontStyle: 'bold' }
+      7: { cellWidth: 26, fontStyle: 'bold' }
     },
-    margin: { left: 15, right: 15 },
+    margin: { left: MARGEN_X_PDF, right: MARGEN_X_PDF },
     styles: {
-      overflow: 'linebreak',
-      cellWidth: 'wrap'
+      overflow: 'linebreak'
     },
-    tableWidth: 'auto'
+    tableWidth: pageWidth - 2 * MARGEN_X_PDF
   })
 
   // === INSTRUCCIONES GENERALES ===
-  const finalY = (doc as any).lastAutoTable?.finalY || yPos + 60
+  let finalY = (doc as any).lastAutoTable?.finalY || yPos + 60
+
+  // === H23: PRESCRITO PESE A ALERGIA (solo llega con datos si quien genera es el médico autor) ===
+  if (alertas.length > 0) {
+    let y = finalY + 12
+    doc.setFontSize(11)
+    doc.setFont('helvetica', 'bold')
+    doc.setTextColor(185, 28, 28)
+    doc.text('Prescrito pese a alergia', 20, y)
+    doc.setFontSize(9)
+    doc.setFont('helvetica', 'normal')
+    doc.setTextColor(colorTexto)
+    for (const a of alertas) {
+      const lineas = doc.splitTextToSize(`• ${textoAlertaAlergia(a)}`, pageWidth - 40)
+      y += 6
+      doc.text(lineas, 20, y)
+      y += (lineas.length - 1) * 4.5
+    }
+    finalY = y
+  }
 
   if (receta.instrucciones_generales) {
     yPos = finalY + 15
     doc.setFontSize(12)
     doc.setFont('helvetica', 'bold')
     doc.setTextColor(colorSecundario)
-    doc.text('Instrucciones Generales', 20, yPos)
-    doc.line(20, yPos + 3, pageWidth - 20, yPos + 3)
+    doc.text('Instrucciones Generales', MARGEN_X_PDF, yPos)
+    doc.line(MARGEN_X_PDF, yPos + 3, pageWidth - MARGEN_X_PDF, yPos + 3)
 
     doc.setFontSize(10)
     doc.setFont('helvetica', 'normal')
@@ -194,13 +223,20 @@ function generarPDF(
   doc.setFontSize(11)
   doc.setFont('helvetica', 'bold')
   doc.setTextColor(colorSecundario)
-  doc.text(`Dr. ${medico.nombre_completo || 'Médico'}`, pageWidth / 2, firmaY + 10, { align: 'center' })
+  doc.text(nombreMedicoConPrefijo(medico.nombre_completo), pageWidth / 2, firmaY + 10, { align: 'center' })
 
   doc.setFont('helvetica', 'normal')
   doc.setFontSize(9)
+  // H23: cédula profesional del médico bajo la firma; si no tiene, la línea se omite.
+  let lineaFirma = firmaY + 16
+  if (cedula) {
+    doc.setTextColor(colorTexto)
+    doc.text(`Cédula profesional: ${cedula}`, pageWidth / 2, lineaFirma, { align: 'center' })
+    lineaFirma += 6
+  }
   doc.setTextColor(colorGris)
-  doc.text('Firma y Sello Médico', pageWidth / 2, firmaY + 16, { align: 'center' })
-  doc.text('Documento generado digitalmente por EzPayConnect', pageWidth / 2, firmaY + 22, { align: 'center' })
+  doc.text('Firma y Sello Médico', pageWidth / 2, lineaFirma, { align: 'center' })
+  doc.text('Documento generado digitalmente por EzPayConnect', pageWidth / 2, lineaFirma + 6, { align: 'center' })
 
   // === FOOTER ===
   doc.setFillColor(26, 42, 58)
@@ -221,9 +257,10 @@ export function generarPDFReceta(
   items: RecetaItem[],
   paciente: Paciente,
   medico: Perfil,
-  cedula?: string | null
+  cedula?: string | null,
+  alertas: AlertaAlergiaReceta[] = []
 ) {
-  const doc = generarPDF(receta, items, paciente, medico, cedula)
+  const doc = generarPDF(receta, items, paciente, medico, cedula, alertas)
 
   const nombreArchivo = `Receta_${paciente.nombre}_${paciente.apellido}_${new Date().toISOString().split('T')[0]}.pdf`
     .replace(/\s+/g, '_')
@@ -240,9 +277,10 @@ export function imprimirPDFReceta(
   items: RecetaItem[],
   paciente: Paciente,
   medico: Perfil,
-  cedula?: string | null
+  cedula?: string | null,
+  alertas: AlertaAlergiaReceta[] = []
 ) {
-  const doc = generarPDF(receta, items, paciente, medico, cedula)
+  const doc = generarPDF(receta, items, paciente, medico, cedula, alertas)
 
   // Crear iframe invisible y disparar print() automáticamente
   const pdfBlob = doc.output('blob')

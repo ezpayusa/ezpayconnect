@@ -2,6 +2,7 @@ import { useState, useEffect, useCallback } from 'react'
 import { supabase } from '@/lib/supabase'
 import { usePaisFiltro } from './usePaisFiltro'
 import type { Receta, RecetaItem, Medicamento } from '@/types'
+import { cargarAlertasAlergia } from '@/lib/alertasAlergiaReceta'
 
 /** Respuesta de public.emitir_receta (mig 395). */
 interface EmitirRecetaRespuesta {
@@ -146,7 +147,7 @@ export function useRecetas(opts?: { autoFetch?: boolean }) {
 
     if (recetaError || !receta) {
       console.error('Error fetching receta:', recetaError?.message ?? recetaError?.code)
-      return { receta: null, items: [], paciente: null, cedula_medico: null }
+      return { receta: null, items: [], paciente: null, cedula_medico: null, alertas_alergia: [] }
     }
 
    const { data: items, error: itemsError } = await supabase
@@ -222,11 +223,16 @@ if (receta.medico_id) {
   cedula_medico = (medicoRow?.cedula_profesional as string | null | undefined) ?? null
 }
 
+// H23: alertas de alergia confirmadas al emitir. Solo las lee el médico autor (policy); para
+// cualquier otro queda [] y no se muestra nada.
+const alertas_alergia = await cargarAlertasAlergia(id, itemsConFarmacia)
+
 return { 
   receta, 
   items: itemsConFarmacia,
   paciente: receta.pacientes || null,
   cedula_medico,
+  alertas_alergia,
 }
  } // ✅ Cambiar estado de receta
   const updateReceta = async (id: number, updates: Partial<Receta>) => {
@@ -251,9 +257,9 @@ export function useMedicamentos() {
     try {
       const searchTerm = query?.trim() || ''
       let q = supabase.from('medicamentos').select('*').eq('activo', true)
-      if (searchTerm.length > 0) {
-        q = q.ilike('nombre_generico', `%${searchTerm}%`)
-      }
+      // H22: genérico O comercial (el placeholder del modal ya lo prometía); misma tabla, sin RPC.
+      const filtro = filtroBusquedaMedicamento(searchTerm)
+      if (filtro) q = q.or(filtro)
       const { data, error: err } = await q.order('nombre_generico').limit(20)
       if (err) {
         setError(`Error: ${err.message}`)
@@ -269,4 +275,17 @@ export function useMedicamentos() {
   }, [])
 
   return { medicamentos, loading, error, fetchMedicamentos }
+}
+
+/**
+ * H22: filtro PostgREST `or` para buscar un medicamento por nombre genérico o comercial.
+ * Se quitan los caracteres que la sintaxis de `or` usa como separadores o agrupadores (`,` `(` `)`)
+ * y las comillas/barras invertidas, para que el texto del médico no rompa ni amplíe el filtro.
+ * Devuelve null si no queda nada que buscar.
+ */
+export function filtroBusquedaMedicamento(texto: string): string | null {
+  const limpio = texto.replace(/[,()"\\]/g, ' ').replace(/\s+/g, ' ').trim()
+  if (!limpio) return null
+  const patron = `%${limpio}%`
+  return `nombre_generico.ilike.${patron},nombre_comercial.ilike.${patron}`
 }

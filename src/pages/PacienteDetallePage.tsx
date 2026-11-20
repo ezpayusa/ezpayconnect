@@ -2,6 +2,7 @@
 // Dia 17: Paciente Detalle Avanzado - Usa supabase.functions.invoke (evita CORS)
 // EzPayConnect
 
+import { nombreMedicoConPrefijo } from '@/lib/nombreMedico'
 import { useState, useEffect, useCallback } from 'react'
 import { useParams, useNavigate, useLocation } from 'react-router-dom'
 import { toast } from 'sonner'
@@ -16,6 +17,7 @@ import { useUnidadPeso } from '@/hooks/useUnidadPeso'
 import { formatPeso } from '@/lib/unidades'
 import { formatVital, formatPA } from '@/lib/vitalesRangos'
 import { puedeAtender } from '@/lib/estadoCita'
+import { resumenRecetaAvanzada, type ResumenRecetaAvanzada } from '@/lib/recetaAvanzadaResumen'
 import { FotoPacienteAvatar } from '@/components/FotoPacienteAvatar'
 import { DocumentosPaciente } from '@/components/DocumentosPaciente'
 import { ConsentimientoPresencial } from '@/components/ConsentimientoPresencial'
@@ -108,6 +110,8 @@ export default function PacienteDetallePage() {
   const [paciente, setPaciente] = useState<Paciente | null>(null)
   const [historial, setHistorial] = useState<HistorialEvento[]>([])
   const [recetas, setRecetas] = useState<RecetaAvanzada[]>([])
+  // H24: folio y medicamentos de la receta base de cada receta avanzada (por receta_base_id)
+  const [resumenRecetas, setResumenRecetas] = useState<Record<number, ResumenRecetaAvanzada>>({})
   const [citas, setCitas] = useState<Cita[]>([])
   const [consultas, setConsultas] = useState<any[]>([])
   const [signosVitales, setSignosVitales] = useState<any[]>([])
@@ -206,6 +210,26 @@ export default function PacienteDetallePage() {
       .eq('paciente_id', id)
       .order('created_at', { ascending: false })
     setRecetas(data || [])
+
+    // H24: la tarjeta muestra el folio oficial y los medicamentos de la receta base, no la firma.
+    // Lecturas con la RLS vigente; si alguna no devuelve filas, la tarjeta cae a «Receta #<id>».
+    const baseIds = [...new Set((data || []).map(r => Number(r.receta_base_id)).filter(Boolean))]
+    if (baseIds.length === 0) { setResumenRecetas({}); return }
+    const [{ data: bases }, { data: items }] = await Promise.all([
+      supabase.from('recetas').select('id, folio, numero_correlativo, created_at, medico_id').in('id', baseIds),
+      supabase.from('receta_items').select('receta_id, nombre_medicamento, dosis').in('receta_id', baseIds),
+    ])
+    const medicoIds = [...new Set((bases || []).map((b: any) => b.medico_id).filter(Boolean))]
+    const { data: meds } = medicoIds.length
+      ? await supabase.from('medicos').select('id, cedula_profesional').in('id', medicoIds)
+      : { data: [] as { id: string; cedula_profesional: string | null }[] }
+    const cedulaDe = new Map((meds || []).map((m: any) => [m.id, m.cedula_profesional as string | null]))
+    const resumen: Record<number, ResumenRecetaAvanzada> = {}
+    for (const bid of baseIds) {
+      const base = (bases || []).find((b: any) => b.id === bid) as any
+      resumen[bid] = resumenRecetaAvanzada(bid, base, (items || []) as any[], base ? cedulaDe.get(base.medico_id) : null)
+    }
+    setResumenRecetas(resumen)
   }, [id])
 
   const cargarCitas = useCallback(async () => {
@@ -291,7 +315,7 @@ export default function PacienteDetallePage() {
       }
     } catch (err: any) {
       console.error('Error generando receta:', err?.message ?? err?.code)
-      alert('Error: ' + (err.message || 'Error de conexion'))
+      alert('Error: ' + (err.message || 'Error de conexión'))
     } finally {
       setGenerandoReceta(null)
     }
@@ -315,7 +339,7 @@ export default function PacienteDetallePage() {
       }
     } catch (err: any) {
       console.error('Error enviando recordatorio:', err?.message ?? err?.code)
-      alert('Error: ' + (err.message || 'Error de conexion'))
+      alert('Error: ' + (err.message || 'Error de conexión'))
     }
   }
 
@@ -395,8 +419,8 @@ export default function PacienteDetallePage() {
       {/* Tabs */}
       <div className="flex gap-2 mb-6 overflow-x-auto bg-white p-2 rounded-lg shadow-sm">
         {[
-          { key: 'info', label: 'Informacion', icon: User },
-          { key: 'historial', label: 'Historial Medico', icon: History },
+          { key: 'info', label: 'Información', icon: User },
+          { key: 'historial', label: 'Historial médico', icon: History },
           { key: 'consultas', label: 'Consultas', icon: ClipboardList },
           { key: 'signos_vitales', label: 'Signos Vitales', icon: Activity },
           { key: 'recetas', label: 'Recetas Avanzadas', icon: FileText },
@@ -429,7 +453,7 @@ export default function PacienteDetallePage() {
               <p className="text-lg font-medium text-[#1a2a3a]">{paciente.nombre} {paciente.apellido}</p>
             </div>
             <div className="bg-gray-50 p-4 rounded-lg">
-              <label className="text-sm text-gray-500">Telefono</label>
+              <label className="text-sm text-gray-500">Teléfono</label>
               <p className="text-lg font-medium text-[#1a2a3a]">{paciente.telefono}</p>
             </div>
             {paciente.email && (
@@ -456,7 +480,7 @@ export default function PacienteDetallePage() {
               <div className="md:col-span-2 bg-amber-50 p-4 rounded-lg border border-amber-200">
                 <h3 className="text-sm font-semibold text-amber-800 mb-2 flex items-center gap-2">
                   <AlertCircle size={16} />
-                  Informacion Clinica Relevante
+                  Información clínica relevante
                 </h3>
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-3 text-sm">
                   {paciente.alergias && (
@@ -479,7 +503,7 @@ export default function PacienteDetallePage() {
                   )}
                   {paciente.medicamentos_en_uso && (
                     <div>
-                      <span className="font-medium text-amber-700">Medicacion habitual:</span>
+                      <span className="font-medium text-amber-700">Medicación habitual:</span>
                       <p className="text-amber-600">{paciente.medicamentos_en_uso}</p>
                     </div>
                   )}
@@ -517,7 +541,7 @@ export default function PacienteDetallePage() {
           <div className="p-6 border-b border-gray-100">
             <h2 className="text-xl font-semibold text-[#1a2a3a] flex items-center gap-2">
               <History size={22} className="text-[#1E5C8E]" />
-              Historial Medico
+              Historial médico
             </h2>
           </div>
           <div className="p-6">
@@ -579,14 +603,14 @@ export default function PacienteDetallePage() {
                         )}
                       </span>
                       <span className="text-xs text-gray-400">
-                        Dr. {consulta.perfiles?.nombre_completo || 'Medico'}
+                        {nombreMedicoConPrefijo(consulta.perfiles?.nombre_completo)}
                       </span>
                     </div>
                     {consulta.motivo_consulta && (
                       <p className="text-sm text-gray-600 mb-1"><span className="font-medium">Motivo:</span> {consulta.motivo_consulta}</p>
                     )}
                     {consulta.diagnostico && (
-                      <p className="text-sm text-gray-600 mb-1"><span className="font-medium">Diagnostico:</span> {consulta.diagnostico}</p>
+                      <p className="text-sm text-gray-600 mb-1"><span className="font-medium">Diagnóstico:</span> {consulta.diagnostico}</p>
                     )}
                     <div className="grid grid-cols-2 md:grid-cols-4 gap-2 mt-3">
                       {consulta.presion_arterial && (
@@ -684,7 +708,7 @@ export default function PacienteDetallePage() {
           <div className="p-6 border-b border-gray-100">
             <h2 className="text-xl font-semibold text-[#1a2a3a] flex items-center gap-2">
               <Activity size={22} className="text-[#1E5C8E]" />
-              Evolucion de Signos Vitales
+              Evolución de signos vitales
             </h2>
           </div>
           <div className="p-6">
@@ -756,8 +780,23 @@ export default function PacienteDetallePage() {
                       {receta.estado_dispensacion}
                     </span>
                   </div>
-                  <p className="text-xs text-gray-500 mb-1">Firma Digital</p>
-                  <p className="text-sm text-gray-600 truncate">{receta.firma_digital}</p>
+                  {(() => {
+                    const res = resumenRecetas[receta.receta_base_id]
+                    return (
+                      <>
+                        <p className="text-xs text-gray-500 mb-1">Folio</p>
+                        <p className="text-sm font-mono text-gray-700 break-all">{res?.folio ?? `Receta #${receta.receta_base_id}`}</p>
+                        {res && res.medicamentos.length > 0 && (
+                          <ul className="mt-3 space-y-1 text-sm text-gray-700">
+                            {res.medicamentos.slice(0, 3).map((m, i) => <li key={i} className="truncate">• {m}</li>)}
+                            {res.medicamentos.length > 3 && (
+                              <li className="text-xs text-gray-500">y {res.medicamentos.length - 3} más</li>
+                            )}
+                          </ul>
+                        )}
+                      </>
+                    )
+                  })()}
                   <p className="text-xs text-gray-400 mt-4">{new Date(receta.created_at).toLocaleDateString('es-ES')}</p>
                   <button
                     type="button"
@@ -883,7 +922,7 @@ export default function PacienteDetallePage() {
                   <th className="px-6 py-4 text-left">Hora</th>
                   <th className="px-6 py-4 text-center">Estado</th>
                   <th className="px-6 py-4 text-left">Motivo</th>
-                  <th className="px-6 py-4 text-center">Accion</th>
+                  <th className="px-6 py-4 text-center">Acción</th>
                 </tr>
               </thead>
               <tbody>

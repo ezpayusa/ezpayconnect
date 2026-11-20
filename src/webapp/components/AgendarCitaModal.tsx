@@ -1,3 +1,4 @@
+import { nombreMedicoConPrefijo } from '@/lib/nombreMedico'
 import { useState, useEffect, useMemo, useCallback } from 'react'
 import { supabase } from '@/lib/supabase'
 import { useWebAppAuth } from '@/webapp/hooks/useWebAppAuth'
@@ -587,7 +588,7 @@ export default function AgendarCitaModal({ pacienteId, pacienteNombre, paisIdPro
                         </div>
                         <div className="flex-1 min-w-0">
                           <p className="text-sm font-medium text-slate-800">
-                            {med.nombre_completo?.match(/^Dr\.?\s|^Dra\.?\s/i) ? '' : 'Dr. '}{med.nombre_completo}
+                            {nombreMedicoConPrefijo(med.nombre_completo)}
                             {med.id === medicoPrimarioId && (
                               <Star className="h-3 w-3 inline ml-1 fill-amber-400 text-amber-400" />
                             )}
@@ -768,8 +769,7 @@ export default function AgendarCitaModal({ pacienteId, pacienteNombre, paisIdPro
                   <p className="font-medium">Médico seleccionado:</p>
                   <p className="text-sky-600">
                     {(() => {
-                      const nombre = medicos.find(m => m.id === medicoId)?.nombre_completo || '—'
-                      return nombre.match(/^Dr\.?\s|^Dra\.?\s/i) ? nombre : `Dr. ${nombre}`
+                      return nombreMedicoConPrefijo(medicos.find(m => m.id === medicoId)?.nombre_completo, '—')
                     })()}
                   </p>
                 </div>
