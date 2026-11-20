@@ -1,10 +1,32 @@
-// supabase/functions/generar-receta-pdf/index.ts
-// Dia 17: Edge Function - Generar PDF de receta con QR
+// supabase/functions/generar-pdf-receta/index.ts
+// Edge Function - Documento descargable de una receta (para el médico / la clínica).
+// H11+H10 (19-nov-2026): el documento NO lleva el código de despacho. El dispatch_token es
+// secreto del paciente (lo ve en su app, Mis recetas): esta edge ya no lo lee ni lo devuelve.
 // EzPayConnect - VERSION CORS CORREGIDA
 
 import { serve } from 'https://deno.land/std@0.168.0/http/server.ts'
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2'
-import QRCode from 'https://esm.sh/qrcode@1.5.3'
+
+// H12: folio oficial. RÉPLICA de src/lib/folioReceta.ts (la edge no puede importar desde src/):
+// si se cambia uno, hay que cambiar el otro. 1) recetas.folio (mig 395); 2) con numero_correlativo,
+// la fórmula de emitir_receta con la fecha de created_at en UTC; 3) si no, REC-<id> marcado.
+function fechaUTC(iso: string): string {
+  const d = new Date(iso)
+  if (Number.isNaN(d.getTime())) return iso.slice(0, 10).replace(/-/g, '')
+  const mm = String(d.getUTCMonth() + 1).padStart(2, '0')
+  const dd = String(d.getUTCDate()).padStart(2, '0')
+  return `${d.getUTCFullYear()}${mm}${dd}`
+}
+function folioReceta(
+  r: { id: number; folio?: string | null; numero_correlativo?: number | null; created_at: string },
+  cedula?: string | null,
+): string {
+  if (r.folio) return r.folio
+  if (r.numero_correlativo != null) {
+    return `${cedula || 'SINCED'}-${String(r.numero_correlativo).padStart(6, '0')}-${fechaUTC(r.created_at)}`
+  }
+  return `REC-${String(r.id).padStart(6, '0')} (anterior a la numeración)`
+}
 
 const corsHeaders = {
   'Access-Control-Allow-Origin': '*',
@@ -54,7 +76,7 @@ serve(async (req) => {
     // A1: se traen tambien los campos clinicos REALES de la fila.
     const { data: receta } = await supabase
       .from('recetas')
-      .select('id, medico_id, paciente_id, diagnostico, instrucciones_generales, estado, created_at')
+      .select('id, medico_id, paciente_id, diagnostico, instrucciones_generales, estado, created_at, folio, numero_correlativo')
       .eq('id', recetaIdNum)
       .maybeSingle()
     if (!receta) {
@@ -107,7 +129,7 @@ serve(async (req) => {
       .eq('id', medico_id)
       .maybeSingle()
 
-    const medicoNombre = medico?.nombre_completo || medico?.nombre || 'Medico'
+    const medicoNombre = medico?.nombre_completo || medico?.nombre || 'Médico'
 
     // A1 FIX: LOS MEDICAMENTOS VIVEN EN receta_items. La edge NUNCA los leia.
     // recetas.medicamentos es jsonb DEFAULT '[]' -> truthy en JS -> el fallback
@@ -123,7 +145,8 @@ serve(async (req) => {
     // Token de despacho FUERTE: lo genera la BD (DEFAULT gen_random_bytes, 256 bits).
     // upsert con ON CONFLICT(receta_base_id) DO NOTHING: 1 receta_avanzada por receta.
     // Post-cutover emitir_receta ya creo la fila (con firma y emitida_at) -> esto es no-op.
-    // Se conserva (decision A) para no romper las recetas emitidas por el camino viejo.
+    // Se conserva (decision A) para no romper las recetas emitidas por el camino viejo: la fila
+    // (y su dispatch_token) se crea igual, pero el token NO se lee ni se entrega aca (H11+H10).
     const { error: insertError } = await supabase
       .from('recetas_avanzadas')
       .upsert({
@@ -138,26 +161,26 @@ serve(async (req) => {
 
     const { data: recetaAvanzada, error: selError } = await supabase
       .from('recetas_avanzadas')
-      .select('id, dispatch_token, firma_digital, dispatch_token_expira_at')
+      .select('id, firma_digital, dispatch_token_expira_at')
       .eq('receta_base_id', recetaIdNum)
       .single()
 
-    if (selError || !recetaAvanzada) throw (selError || new Error('No se pudo obtener el token de despacho'))
-    const codigoQR = recetaAvanzada.dispatch_token
-    const qrSvg = await QRCode.toString(codigoQR, { type: 'svg', margin: 1, width: 200 })
+    if (selError || !recetaAvanzada) throw (selError || new Error('No se pudo obtener la receta'))
 
     const esc = (s: unknown) =>
       String(s ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;')
 
     const fechaEmision = receta.created_at
       ? new Date(receta.created_at).toLocaleDateString('es-GT', { day: 'numeric', month: 'long', year: 'numeric' })
-      : 'N/A'
+      : 'No registrado'
 
     const vence = recetaAvanzada.dispatch_token_expira_at
       ? new Date(recetaAvanzada.dispatch_token_expira_at).toLocaleDateString('es-GT', { day: 'numeric', month: 'long', year: 'numeric' })
-      : 'N/A'
+      : null
 
-    const pacienteNombre = [paciente?.nombre, paciente?.apellido].filter(Boolean).join(' ') || 'N/A'
+    const folio = folioReceta(receta, medicoRec?.cedula_profesional)
+
+    const pacienteNombre = [paciente?.nombre, paciente?.apellido].filter(Boolean).join(' ') || 'No registrado'
 
     // A1 FIX: sin invenciones. Si no hay diagnostico, se dice que no hay.
     // 'indicaciones' NO EXISTE como columna en recetas: la instruccion general
@@ -174,7 +197,7 @@ serve(async (req) => {
       : `<tr><td colspan="6" style="text-align:center;color:#b00">Esta receta no tiene medicamentos registrados</td></tr>`
 
     const htmlContent = `<!DOCTYPE html>
-<html><head><meta charset="UTF-8"><title>Receta Medica - EzPayConnect</title>
+<html><head><meta charset="UTF-8"><title>Receta médica - EzPayConnect</title>
 <style>
 body { font-family: Arial, sans-serif; margin: 40px; color: #333; }
 .header { text-align: center; border-bottom: 3px solid #00f2ff; padding-bottom: 20px; margin-bottom: 30px; }
@@ -187,56 +210,52 @@ table.meds { width: 100%; border-collapse: collapse; font-size: 14px; }
 table.meds th { background: #1a1f2e; color: #fff; padding: 8px; text-align: left; }
 table.meds td { border-bottom: 1px solid #e5e5e5; padding: 8px; }
 .nota { background: #f0f9ff; padding: 15px; border-radius: 8px; border-left: 4px solid #00f2ff; }
-.qr-section { text-align: center; margin-top: 30px; padding: 20px; border: 2px dashed #00f2ff; border-radius: 10px; }
-.qr-img { display: inline-block; background: #fff; padding: 10px; border-radius: 5px; }
-.qr-img svg { width: 200px; height: 200px; display: block; }
+.aviso-qr { margin-top: 30px; padding: 12px 16px; border: 1px solid #cfe3f3; background: #f5faff; border-radius: 8px; font-size: 13px; color: #1a1f2e; }
 .footer { margin-top: 40px; text-align: center; font-size: 12px; color: #999; border-top: 1px solid #eee; padding-top: 20px; }
 .firma { margin-top: 30px; text-align: right; }
 .firma-line { border-top: 1px solid #333; width: 240px; display: inline-block; margin-top: 50px; }
 </style></head>
 <body>
-<div class="header"><h1>EzPayConnect</h1><p>Receta Medica Electronica</p><p>Fecha de emision: ${esc(fechaEmision)}</p></div>
+<div class="header"><h1>EzPayConnect</h1><p>Receta médica electrónica</p><p>Fecha de emisión: ${esc(fechaEmision)}</p><p><strong>Folio:</strong> ${esc(folio)}</p></div>
 
 <div class="section"><h3>Paciente</h3><div class="info-grid">
 <div class="info-item"><strong>Nombre:</strong> ${esc(pacienteNombre)}</div>
-<div class="info-item"><strong>Telefono:</strong> ${esc(paciente?.telefono || 'N/A')}</div>
+<div class="info-item"><strong>Teléfono:</strong> ${esc(paciente?.telefono || 'No registrado')}</div>
 </div></div>
 
-<div class="section"><h3>Medico</h3><div class="info-grid">
+<div class="section"><h3>Médico</h3><div class="info-grid">
 <div class="info-item"><strong>Nombre:</strong> ${esc(medicoNombre)}</div>
-<div class="info-item"><strong>Especialidad:</strong> ${esc(medicoRec?.especialidad || 'N/A')}</div>
+<div class="info-item"><strong>Especialidad:</strong> ${esc(medicoRec?.especialidad || 'No registrado')}</div>
 <div class="info-item"><strong>Colegiado:</strong> ${esc(medicoRec?.cedula_profesional || 'No registrado')}</div>
 </div></div>
 
-<div class="section"><h3>Diagnostico</h3><div class="nota">
+<div class="section"><h3>Diagnóstico</h3><div class="nota">
 <p>${receta.diagnostico ? esc(receta.diagnostico) : '<em>No especificado</em>'}</p>
 </div></div>
 
-<div class="section"><h3>Medicamentos Prescritos</h3>
+<div class="section"><h3>Medicamentos prescritos</h3>
 <table class="meds">
-<thead><tr><th>Medicamento</th><th>Dosis</th><th>Frecuencia</th><th>Duracion</th><th>Cant.</th><th>Instrucciones</th></tr></thead>
+<thead><tr><th>Medicamento</th><th>Dosis</th><th>Frecuencia</th><th>Duración</th><th>Cantidad</th><th>Instrucciones</th></tr></thead>
 <tbody>${filasMed}</tbody>
 </table></div>
 
-${receta.instrucciones_generales ? `<div class="section"><h3>Instrucciones Generales</h3><div class="nota"><p>${esc(receta.instrucciones_generales)}</p></div></div>` : ''}
+${receta.instrucciones_generales ? `<div class="section"><h3>Instrucciones generales</h3><div class="nota"><p>${esc(receta.instrucciones_generales)}</p></div></div>` : ''}
 
-<div class="qr-section"><h3>Codigo QR de Verificacion</h3><div class="qr-img">${qrSvg}</div>
-<p style="font-size: 12px; color: #666; margin-top: 10px;">Escanea este codigo en farmacia para despachar la receta</p></div>
+<div class="aviso-qr">El código QR de despacho lo tiene el paciente en su app EzPay (Mis recetas).</div>
 
 <div class="firma"><div class="firma-line"></div>
 <p><strong>${esc(medicoNombre)}</strong></p>
-<p style="font-size: 12px; color: #666;">${esc(medicoRec?.cedula_profesional ? 'Colegiado ' + medicoRec.cedula_profesional : 'Firma y Sello Medico')}</p>
+<p style="font-size: 12px; color: #666;">${esc(medicoRec?.cedula_profesional ? 'Colegiado ' + medicoRec.cedula_profesional : 'Firma y sello médico')}</p>
 </div>
 
-<div class="footer"><p>EzPayConnect - Documento generado electronicamente</p>
-<p>Valida para despacho hasta el ${esc(vence)}</p></div>
+<div class="footer"><p>EzPayConnect - Documento generado electrónicamente</p>
+${vence ? `<p>Válida para despacho hasta el ${esc(vence)}</p>` : ''}</div>
 </body></html>`
 
     return new Response(
       JSON.stringify({
         success: true,
         data: {
-          codigo_qr: codigoQR,
           html: htmlContent,
           receta_avanzada_id: recetaAvanzada?.id,
           firma_digital: recetaAvanzada?.firma_digital
@@ -247,7 +266,7 @@ ${receta.instrucciones_generales ? `<div class="section"><h3>Instrucciones Gener
 
   } catch (error) {
     return new Response(
-      JSON.stringify({ success: false, error: error.message }),
+      JSON.stringify({ success: false, error: (error as Error)?.message ?? String(error) }),
       { headers: { ...corsHeaders, 'Content-Type': 'application/json' }, status: 400 }
     )
   }

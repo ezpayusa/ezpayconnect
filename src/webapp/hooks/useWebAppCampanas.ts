@@ -1,3 +1,4 @@
+import { parseFechaLocal } from '@/lib/fecha'
 import { useState, useEffect, useCallback } from 'react'
 import { supabase } from '@/lib/supabase'
 import type { CampanaPublicitaria } from '@/webapp/types/webapp.types'
@@ -70,7 +71,7 @@ export function useWebAppCampanas(pacienteId: number | undefined, perfil: any) {
 
 function calcularEdad(fechaNacimiento: string): number {
   const hoy = new Date()
-  const nacimiento = new Date(fechaNacimiento)
+  const nacimiento = parseFechaLocal(fechaNacimiento) // DATE: sin corrimiento de día (H25)
   let edad = hoy.getFullYear() - nacimiento.getFullYear()
   const mes = hoy.getMonth() - nacimiento.getMonth()
   if (mes < 0 || (mes === 0 && hoy.getDate() < nacimiento.getDate())) {

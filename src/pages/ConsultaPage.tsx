@@ -1,11 +1,11 @@
-import { useState, useEffect, useCallback } from 'react'
+import { useState, useEffect, useCallback, useRef } from 'react'
 import { useParams, useNavigate, useLocation } from 'react-router-dom'
 import { supabase } from '@/lib/supabase'
 import { useVisor, archivoDeResultado, descargarResultado } from '@/components/visor/useVisor'
 import { parseFechaLocal } from '@/lib/fecha'
 import { useAuth } from '@/hooks/useAuth'
 import { useConsultas, mensajeErrorNota, type SoapNota } from '@/hooks/useConsultas'
-import { useCitas } from '@/hooks/useCitas'
+import { cambiarEstadoCita as cambiarEstadoCitaEnBase, etiquetaEstadoCita, puedeAtender } from '@/lib/estadoCita'
 import { useSignosVitalesCita } from '@/hooks/useSignosVitalesCita'
 import { FormularioVitales, VITALES_VACIO } from '@/clinica/components/FormularioVitales'
 import type { VitalesValues } from '@/clinica/components/FormularioVitales'
@@ -20,6 +20,18 @@ import { Badge } from '@/components/ui/badge'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import DictadoVoz from '@/components/consulta/DictadoVoz'
+import { agregarDictado } from '@/lib/dictado'
+import { hayCambiosNota } from '@/lib/notaCambios'
+import { useGuardiaNavegacion, type AccionPrevia } from '@/lib/guardiaNavegacion'
+import {
+  AlertDialog,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from '@/components/ui/alert-dialog'
 import BibliotecaMedica from '@/components/consulta/BibliotecaMedica'
 import AsistenteIA from '@/components/consulta/AsistenteIA'
 import ResumenUltimaVisitaMedico from '@/components/consulta/ResumenUltimaVisitaMedico'
@@ -77,7 +89,7 @@ function soapDeNota(n: ExpedienteNota): typeof SOAP_VACIO {
 function calcularEdad(fechaNacimiento: string | null): number | null {
   if (!fechaNacimiento) return null
   const hoy = new Date()
-  const nac = new Date(fechaNacimiento)
+  const nac = parseFechaLocal(fechaNacimiento) // DATE: sin corrimiento de día (H25)
   let edad = hoy.getFullYear() - nac.getFullYear()
   const m = hoy.getMonth() - nac.getMonth()
   if (m < 0 || (m === 0 && hoy.getDate() < nac.getDate())) edad--
@@ -102,7 +114,6 @@ function ConsultaDeCita() {
   // toda la navegación interna se queda dentro de /medico (no saca al médico de su panel).
   const base = location.pathname.startsWith('/medico') ? '/medico' : ''
   const { perfil } = useAuth()
-  const { updateCita } = useCitas({ autoFetch: false })
   const {
     loading: loadingConsulta,
     saving,
@@ -454,12 +465,13 @@ function ConsultaDeCita() {
 
   const cambiarEstadoCita = async (nuevoEstado: Cita['estado']) => {
     if (!cita) return
-    const { error } = await updateCita(cita.id, { estado: nuevoEstado })
-    if (error) {
-      toast.error('Error: ' + error.message)
+    // H5: mismo camino que la agenda (avisa al paciente); 0 filas (mig 391) es un error, no un éxito.
+    const r = await cambiarEstadoCitaEnBase(cita.id, nuevoEstado)
+    if (!r.ok) {
+      toast.error(r.mensaje)
     } else {
       setCita({ ...cita, estado: nuevoEstado })
-      toast.success(`Cita marcada como ${nuevoEstado.replace('_', ' ')}`)
+      toast.success(`Cita marcada como ${etiquetaEstadoCita(nuevoEstado).toLowerCase()}`)
       // Mig 334: completar la cita cierra la nota (trigger). Se recarga para mostrarla cerrada. Si ya
       // estaba cerrada no hace falta, y recargar pisaría un borrador de corrección en curso.
       if (nuevoEstado === 'completada' && !notaCerrada) await recargarNota()
@@ -476,6 +488,74 @@ function ConsultaDeCita() {
     setGuardandoToma(false)
     if (ok) setFormMedico(VITALES_VACIO)
     else setErrorVitalToma(errorVital)
+  }
+
+  // === H3: aviso de cambios sin guardar al salir de la consulta ===
+  // La base contra la que se compara es lo guardado (notaGuardada, que desde H3 se actualiza con la
+  // fila completa en CADA guardado) o, si no hay nota, el estado inicial: vacío con el motivo de la cita.
+  // Límites (ver src/lib/guardiaNavegacion.tsx): con <BrowserRouter> no hay useBlocker, así que el
+  // «Atrás» del navegador no se intercepta; al cerrar o recargar la pestaña se ve el aviso nativo.
+  const baseNota = cargando || !cita
+    ? null
+    : (notaGuardada ? soapDeNota(notaGuardada) : { ...SOAP_VACIO, motivo_consulta: cita.motivo || '' })
+  const hayCambios = hayCambiosNota({ soap, base: baseNota, soloLectura, corrigiendo, motivoCorreccion })
+  const [destinoPendiente, setDestinoPendiente] = useState<string | null>(null)
+  const [guardandoYSaliendo, setGuardandoYSaliendo] = useState(false)
+
+  // H3b: la salida puede traer una acción previa (el logout de «Cerrar Sesión»); se ejecuta solo cuando
+  // la salida se confirma, justo antes de navegar.
+  const accionPreviaRef = useRef<AccionPrevia | undefined>(undefined)
+  const salir = (destino: string, accionPrevia?: AccionPrevia) => {
+    if (hayCambios) {
+      accionPreviaRef.current = accionPrevia
+      setDestinoPendiente(destino)
+    } else {
+      void (async () => {
+        if (accionPrevia) await accionPrevia()
+        navigate(destino)
+      })()
+    }
+  }
+
+  // La barra lateral del médico pasa por esta guardia mientras haya cambios. La función registrada es
+  // estable y lee siempre el último `salir`.
+  const salirRef = useRef(salir)
+  salirRef.current = salir
+  const guardiaSalir = useCallback((destino: string, accionPrevia?: AccionPrevia) => salirRef.current(destino, accionPrevia), [])
+  useGuardiaNavegacion(hayCambios ? guardiaSalir : null)
+
+  useEffect(() => {
+    if (!hayCambios) return
+    const avisar = (e: BeforeUnloadEvent) => {
+      e.preventDefault()
+      e.returnValue = ''
+    }
+    window.addEventListener('beforeunload', avisar)
+    return () => window.removeEventListener('beforeunload', avisar)
+  }, [hayCambios])
+
+  const salirSinGuardar = async () => {
+    const destino = destinoPendiente
+    const accionPrevia = accionPreviaRef.current
+    accionPreviaRef.current = undefined
+    setDestinoPendiente(null)
+    if (!destino) return
+    if (accionPrevia) await accionPrevia()
+    navigate(destino)
+  }
+
+  const guardarYSalir = async () => {
+    const destino = destinoPendiente
+    if (!destino) return
+    setGuardandoYSaliendo(true)
+    const ok = await guardarNotaSOAP()
+    setGuardandoYSaliendo(false)
+    if (!ok) return // el error ya se mostró; el diálogo queda abierto
+    const accionPrevia = accionPreviaRef.current
+    accionPreviaRef.current = undefined
+    setDestinoPendiente(null)
+    if (accionPrevia) await accionPrevia()
+    navigate(destino)
   }
 
   if (cargando || loadingConsulta) {
@@ -503,6 +583,7 @@ function ConsultaDeCita() {
     const map: Record<string, string> = {
       agendada: 'bg-gray-100 text-gray-700',
       confirmada: 'bg-blue-100 text-blue-700',
+      en_espera: 'bg-orange-100 text-orange-700',
       en_curso: 'bg-amber-100 text-amber-700',
       completada: 'bg-green-100 text-green-700',
       cancelada: 'bg-red-100 text-red-700',
@@ -517,7 +598,7 @@ function ConsultaDeCita() {
       {/* Header */}
       <div className="bg-white border-b px-4 py-3 flex items-center justify-between sticky top-0 z-30">
         <div className="flex items-center gap-3">
-          <Button variant="ghost" size="icon" onClick={() => navigate(`${base}/citas`)}>
+          <Button variant="ghost" size="icon" onClick={() => salir(`${base}/citas`)}>
             <ArrowLeft className="h-5 w-5" />
           </Button>
           <div>
@@ -532,9 +613,9 @@ function ConsultaDeCita() {
         </div>
         <div className="flex items-center gap-2">
           <Badge className={getEstadoColor(cita.estado)}>
-            {cita.estado.replace('_', ' ').toUpperCase()}
+            {etiquetaEstadoCita(cita.estado)}
           </Badge>
-          {cita.estado === 'confirmada' && (
+          {puedeAtender(cita.estado) && (
             <Button size="sm" variant="outline" onClick={() => cambiarEstadoCita('en_curso')}>
               <Clock className="h-4 w-4 sm:mr-1" /> <span className="hidden sm:inline">En Sala</span>
             </Button>
@@ -723,7 +804,7 @@ function ConsultaDeCita() {
                   {!soloLectura && (
                     <DictadoVoz
                       pacienteId={paciente.id}
-                      onTranscript={text => editarSoap(p => ({ ...p, motivo_consulta: text }))}
+                      onTranscript={text => editarSoap(p => ({ ...p, motivo_consulta: agregarDictado(p.motivo_consulta, text) }))}
                       placeholder="Dicta el motivo de consulta..."
                     />
                   )}
@@ -741,7 +822,7 @@ function ConsultaDeCita() {
                   {!soloLectura && (
                     <DictadoVoz
                       pacienteId={paciente.id}
-                      onTranscript={text => editarSoap(p => ({ ...p, subjetivo: text }))}
+                      onTranscript={text => editarSoap(p => ({ ...p, subjetivo: agregarDictado(p.subjetivo, text) }))}
                       placeholder="Dicta lo que el paciente cuenta..."
                     />
                   )}
@@ -759,7 +840,7 @@ function ConsultaDeCita() {
                   {!soloLectura && (
                     <DictadoVoz
                       pacienteId={paciente.id}
-                      onTranscript={text => editarSoap(p => ({ ...p, objetivo: text }))}
+                      onTranscript={text => editarSoap(p => ({ ...p, objetivo: agregarDictado(p.objetivo, text) }))}
                       placeholder="Dicta los hallazgos de la exploración..."
                     />
                   )}
@@ -777,7 +858,7 @@ function ConsultaDeCita() {
                   {!soloLectura && (
                     <DictadoVoz
                       pacienteId={paciente.id}
-                      onTranscript={text => editarSoap(p => ({ ...p, analisis: text }))}
+                      onTranscript={text => editarSoap(p => ({ ...p, analisis: agregarDictado(p.analisis, text) }))}
                       placeholder="Dicta tu análisis diagnóstico..."
                     />
                   )}
@@ -795,7 +876,7 @@ function ConsultaDeCita() {
                   {!soloLectura && (
                     <DictadoVoz
                       pacienteId={paciente.id}
-                      onTranscript={text => editarSoap(p => ({ ...p, plan: text }))}
+                      onTranscript={text => editarSoap(p => ({ ...p, plan: agregarDictado(p.plan, text) }))}
                       placeholder="Dicta el plan de tratamiento..."
                     />
                   )}
@@ -879,7 +960,7 @@ function ConsultaDeCita() {
               <Button
                 variant="outline"
                 className="w-full justify-start"
-                onClick={() => navigate(`${base}/buscar-medicamentos`)}
+                onClick={() => salir(`${base}/buscar-medicamentos`)}
               >
                 <Pill className="h-4 w-4 mr-2" /> Buscar Medicamentos
               </Button>
@@ -893,7 +974,7 @@ function ConsultaDeCita() {
               <Button
                 variant="outline"
                 className="w-full justify-start"
-                onClick={() => navigate(`${base}/pacientes/${paciente.id}/detalle`)}
+                onClick={() => salir(`${base}/pacientes/${paciente.id}/detalle`)}
               >
                 <User className="h-4 w-4 mr-2" /> Ver Expediente
               </Button>
@@ -991,10 +1072,43 @@ function ConsultaDeCita() {
         </div>
       </div>
 
+      {/* H3: salir con cambios sin guardar */}
+      <AlertDialog open={destinoPendiente !== null} onOpenChange={abierto => { if (!abierto && !guardandoYSaliendo) { accionPreviaRef.current = undefined; setDestinoPendiente(null) } }}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Tienes cambios sin guardar en la nota</AlertDialogTitle>
+            <AlertDialogDescription>
+              {corrigiendo
+                ? 'La corrección que estás escribiendo no se envió. Si sales, se pierde.'
+                : 'Si sales sin guardar, se pierde lo que escribiste desde el último guardado.'}
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel disabled={guardandoYSaliendo}>Seguir editando</AlertDialogCancel>
+            <Button variant="outline" className="border-red-300 text-red-700 hover:bg-red-50"
+              onClick={() => void salirSinGuardar()} disabled={guardandoYSaliendo}>
+              Salir sin guardar
+            </Button>
+            {!corrigiendo && (
+              <Button className="bg-[#1E5C8E] hover:bg-[#3A8ABF]" onClick={guardarYSalir} disabled={guardandoYSaliendo}>
+                {guardandoYSaliendo && <Loader2 className="h-4 w-4 mr-2 animate-spin" />}
+                Guardar y salir
+              </Button>
+            )}
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+
       <RecetaModal
         open={modalReceta}
         onOpenChange={setModalReceta}
         pacienteIdPreseleccionado={paciente ? String(paciente.id) : undefined}
+        paciente={paciente ? {
+          id: paciente.id,
+          nombre: `${paciente.nombre} ${paciente.apellido}`,
+          alergias: paciente.alergias ?? null,
+          medicamentos_en_uso: paciente.medicamentos_en_uso ?? null,
+        } : undefined}
         citaId={cita?.id}
         onSuccess={() => {
           toast.success('Receta creada desde la consulta')

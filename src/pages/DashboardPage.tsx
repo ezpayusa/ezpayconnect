@@ -56,6 +56,8 @@ export default function DashboardPage() {
     cargarStats()
   }, [pacientes, citas, recetas])
 
+  // H18: abrir la consulta es solo del médico (la ruta /consulta/:citaId va por MedicoPrivateRoute).
+  const esMedico = perfil?.rol === 'medico'
   const quickActions = [
     { label: 'Nuevo Paciente', icon: Users, action: () => navigate('/pacientes?nuevo=true'), color: 'bg-[#1E5C8E]' },
     { label: 'Nueva Cita', icon: CalendarDays, action: () => navigate('/citas?nuevo=true'), color: 'bg-[#3A8ABF]' },
@@ -67,8 +69,8 @@ export default function DashboardPage() {
       } else {
         navigate('/citas')
       }
-    }, color: 'bg-[#5BA8D1]' },
-  ]
+    }, color: 'bg-[#5BA8D1]', soloMedico: true },
+  ].filter(a => !a.soloMedico || esMedico)
 
   // Próximas: estado activo y que todavía no terminaron (fin = fecha + hora_fin, o hora_inicio), ascendente por inicio.
   const ahoraMs = Date.now()

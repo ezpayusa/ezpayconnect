@@ -3,6 +3,9 @@ import { useParams, useNavigate } from 'react-router-dom'
 import { useAuth } from '@/hooks/useAuth'
 import { useRecetas } from '@/hooks/useRecetas'
 import { generarPDFReceta, imprimirPDFReceta } from '@/lib/pdfReceta'
+import { supabase } from '@/lib/supabase'
+import { parseFechaLocal } from '@/lib/fecha'
+import { folioReceta } from '@/lib/folioReceta'
 import EnviarRecetaEmail from '@/components/recetas/EnviarRecetaEmail'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
@@ -35,6 +38,7 @@ export default function RecetaDetallePage() {
   const [loading, setLoading] = useState(true)
   const [showEmailModal, setShowEmailModal] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const [fechaCita, setFechaCita] = useState<string | null>(null)
 
   const recetaId = parseInt(id || '0', 10)
   const recetaCargadaRef = useRef<number | null>(null)
@@ -62,7 +66,8 @@ export default function RecetaDetallePage() {
           setReceta({
             ...data.receta,
             items: data.items || [],
-            paciente: data.paciente
+            paciente: data.paciente,
+            cedula_medico: data.cedula_medico,
           })
         } else {
           setError(`No se encontró la receta con ID ${recetaId}. Es posible que no exista o que no tenga permisos para verla.`)
@@ -80,6 +85,31 @@ export default function RecetaDetallePage() {
     cargarReceta()
   }, [recetaId, getRecetaCompleta])
 
+  // H2: fecha de la cita de la que salió la receta. Se lee con la RLS vigente; si el usuario no puede
+  // leer la cita (o falla la lectura), simplemente no se muestra la línea.
+  const citaIdReceta: number | null = receta?.cita_id ?? null
+  useEffect(() => {
+    if (!citaIdReceta) {
+      setFechaCita(null)
+      return
+    }
+    let cancelado = false
+    supabase
+      .from('citas')
+      .select('fecha')
+      .eq('id', citaIdReceta)
+      .maybeSingle()
+      .then(({ data, error: citaError }) => {
+        if (cancelado) return
+        if (citaError || !data?.fecha) {
+          setFechaCita(null)
+          return
+        }
+        setFechaCita(data.fecha as string)
+      })
+    return () => { cancelado = true }
+  }, [citaIdReceta])
+
   // === HANDLERS ===
   const handleDescargarPDF = () => {
     const medico = receta.medico || perfil
@@ -87,7 +117,7 @@ export default function RecetaDetallePage() {
       toast.error('Faltan datos para generar el PDF')
       return
     }
-    generarPDFReceta(receta, receta.items, receta.paciente, medico)
+    generarPDFReceta(receta, receta.items, receta.paciente, medico, receta.cedula_medico)
     toast.success('PDF descargado')
   }
 
@@ -97,7 +127,7 @@ export default function RecetaDetallePage() {
       toast.error('Faltan datos para imprimir')
       return
     }
-    imprimirPDFReceta(receta, receta.items, receta.paciente, medico)
+    imprimirPDFReceta(receta, receta.items, receta.paciente, medico, receta.cedula_medico)
     toast.success('Abriendo ventana de impresión')
   }
 
@@ -165,7 +195,7 @@ export default function RecetaDetallePage() {
             </Button>
             <div>
               <h1 className="text-2xl font-bold text-[#1a2a3a]">Receta Médica</h1>
-              <p className="text-sm text-gray-500">Folio: REC-{String(receta.id).padStart(6, '0')}</p>
+              <p className="text-sm text-gray-500" data-testid="receta-folio">Folio: {folioReceta(receta, receta.cedula_medico)}</p>
             </div>
           </div>
 
@@ -211,7 +241,7 @@ export default function RecetaDetallePage() {
                 {receta.paciente?.fecha_nacimiento && (
                   <p className="flex items-center gap-2">
                     <Calendar className="h-3.5 w-3.5" />
-                    {new Date(receta.paciente.fecha_nacimiento).toLocaleDateString('es-GT')}
+                    {parseFechaLocal(receta.paciente.fecha_nacimiento).toLocaleDateString('es-GT')}
                   </p>
                 )}
                 {receta.paciente?.alergias && (
@@ -248,6 +278,14 @@ export default function RecetaDetallePage() {
                   <Calendar className="h-3.5 w-3.5" />
                   {fecha}
                 </p>
+                {fechaCita && (
+                  <p className="flex items-center gap-2" data-testid="receta-consulta-cita">
+                    <Stethoscope className="h-3.5 w-3.5" />
+                    Consulta del {parseFechaLocal(fechaCita).toLocaleDateString('es-GT', {
+                      year: 'numeric', month: 'long', day: 'numeric'
+                    })}
+                  </p>
+                )}
               </div>
             </CardContent>
           </Card>

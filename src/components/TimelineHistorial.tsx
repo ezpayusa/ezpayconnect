@@ -1,3 +1,4 @@
+import { parseFechaFlexible } from '@/lib/fecha'
 import { useState } from 'react'
 import { useHistorialCompleto } from '@/hooks/useHistorialCompleto'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
@@ -43,7 +44,7 @@ export default function TimelineHistorial({ pacienteId }: Props) {
   const [expandedId, setExpandedId] = useState<string | null>(null)
 
   const formatFecha = (fecha: string) => {
-    const date = new Date(fecha)
+    const date = parseFechaFlexible(fecha) // mezcla DATE (citas) y fechas cortadas de timestamps (H25)
     return {
       dia: date.getDate(),
       mes: date.toLocaleDateString('es-GT', { month: 'short' }).toUpperCase(),

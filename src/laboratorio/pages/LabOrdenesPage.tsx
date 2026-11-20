@@ -1,3 +1,4 @@
+import { parseFechaFlexible } from '@/lib/fecha'
 import { useState, useMemo } from 'react'
 import { useVisor, archivoDeResultado } from '@/components/visor/useVisor'
 import { useLaboratorio, type OrdenExamen, type OrdenAgrupada } from '@/laboratorio/hooks/useLaboratorio'
@@ -118,7 +119,7 @@ export default function LabOrdenesPage() {
                       {o.prioridad === 'urgente' && <Badge className="bg-red-100 text-red-700">Urgente</Badge>}
                       {o.origen === 'walk_in' && <Badge variant="outline">Walk-in</Badge>}
                       <span className="text-xs text-muted-foreground flex items-center gap-1">
-                        <Clock className="h-3 w-3" /> {new Date(o.fecha).toLocaleDateString('es-GT')}
+                        <Clock className="h-3 w-3" /> {parseFechaFlexible(o.fecha).toLocaleDateString('es-GT')}
                       </span>
                     </div>
                     <div className="flex items-center gap-3 text-sm text-muted-foreground flex-wrap">

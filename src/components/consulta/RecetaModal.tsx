@@ -29,22 +29,44 @@ import {
 
 type Modalidad = 'pickup' | 'delivery'
 
+/** Paciente fijo (consulta): el modal no lista pacientes ni depende de usePacientes(). */
+export interface PacienteRecetaModal {
+  id: number
+  nombre?: string
+  alergias: string | null
+  medicamentos_en_uso: string | null
+}
+
 interface RecetaModalProps {
   open: boolean
   onOpenChange: (open: boolean) => void
   pacienteIdPreseleccionado?: string
+  /** Si viene, el paciente queda fijo (ConsultaPage). Si no, el médico lo elige en el modal (Mis Recetas). */
+  paciente?: PacienteRecetaModal
   citaId?: number | null
   onSuccess?: () => void
 }
 
-export default function RecetaModal({ open, onOpenChange, pacienteIdPreseleccionado, citaId, onSuccess }: RecetaModalProps) {
+// H20 (mig 395): textos del control de alergias.
+export const MSG_ERROR_ALERGIAS = 'No se pudieron verificar las alergias. Reintenta.'
+const MOTIVO_MIN = 5
+const MOTIVO_MAX = 500
+export const motivoAlergiaValido = (motivo: string | null | undefined) => {
+  const largo = (motivo ?? '').trim().length
+  return largo >= MOTIVO_MIN && largo <= MOTIVO_MAX
+}
+// Mensaje de PR011 de emitir_receta: El medicamento "<genérico>" coincide con la alergia registrada "<término>". …
+const RE_PR011 = /^El medicamento "(.+?)" coincide con la alergia registrada "(.+?)"\./
+
+export default function RecetaModal({ open, onOpenChange, pacienteIdPreseleccionado, paciente, citaId, onSuccess }: RecetaModalProps) {
   const { perfil } = useAuth()
-  const { pacientes } = usePacientes()
+  const { pacientes } = usePacientes({ autoFetch: !paciente })
   const { createReceta } = useRecetas({ autoFetch: false })
+  const pacienteInicial = paciente ? String(paciente.id) : (pacienteIdPreseleccionado || '')
   const { medicamentos, loading: loadingMeds, error: errorMeds, fetchMedicamentos } = useMedicamentos()
   const { resultados: resultadosBusqueda, loading: loadingBusqueda, buscarPorMedicamento } = useBusquedaMedicamentos()
 
-  const [form, setForm] = useState({ paciente_id: pacienteIdPreseleccionado || '', instrucciones_generales: '' })
+  const [form, setForm] = useState({ paciente_id: pacienteInicial, instrucciones_generales: '' })
   const [items, setItems] = useState<ItemRecetaUI[]>([])
   // F2: pre-marca de modalidad por GRUPO (farmacia). OPCIONAL, default pickup. Se aplica POST-create
   // (el receta_id no existe antes) llamando fijar_modalidad_grupo SOLO para los grupos marcados delivery.
@@ -53,7 +75,17 @@ export default function RecetaModal({ open, onOpenChange, pacienteIdPreseleccion
   const [saving, setSaving] = useState(false)
   const [formError, setFormError] = useState('')
   const [searchMed, setSearchMed] = useState('')
-  const [alertasMedicamentos, setAlertasMedicamentos] = useState<{idx: number; mensaje: string; tipo: 'alergia' | 'interaccion'}[]>([])
+  const [alertasMedicamentos, setAlertasMedicamentos] = useState<{idx: number; mensaje: string; tipo: 'interaccion'}[]>([])
+
+  // H20: control de alergias por catálogo (alergias_en_receta). medicamento_id → término que coincide.
+  const [coincidencias, setCoincidencias] = useState<Record<number, string>>({})
+  // Clave (paciente|ids) que quedó verificada; el submit solo procede si coincide con la actual.
+  const [claveVerificada, setClaveVerificada] = useState<string | null>(null)
+  const [verificandoAlergias, setVerificandoAlergias] = useState(false)
+  const [errorAlergias, setErrorAlergias] = useState<string | null>(null)
+  const [reintentoAlergias, setReintentoAlergias] = useState(0)
+  // Ítems que el servidor rechazó con PR011 (medicamento_id → término), por si el front no los vio.
+  const [rechazoPR011, setRechazoPR011] = useState<Record<number, string>>({})
 
   // Modales farmacia/laboratorio
   const [showFarmaciaModal, setShowFarmaciaModal] = useState(false)
@@ -63,44 +95,92 @@ export default function RecetaModal({ open, onOpenChange, pacienteIdPreseleccion
 
   // Preseleccionar paciente
   useEffect(() => {
-    if (pacienteIdPreseleccionado) {
-      setForm(prev => ({ ...prev, paciente_id: pacienteIdPreseleccionado }))
+    if (pacienteInicial) {
+      setForm(prev => ({ ...prev, paciente_id: pacienteInicial }))
     }
-  }, [pacienteIdPreseleccionado])
+  }, [pacienteInicial])
 
   // Limpiar al cerrar
   useEffect(() => {
     if (!open) {
-      setForm({ paciente_id: pacienteIdPreseleccionado || '', instrucciones_generales: '' })
+      setForm({ paciente_id: pacienteInicial, instrucciones_generales: '' })
       setItems([])
       setModalidades({})
       setFarmaciaNombres({})
       setFormError('')
       setSearchMed('')
+      setAlertasMedicamentos([])
+      setCoincidencias({})
+      setClaveVerificada(null)
+      setErrorAlergias(null)
+      setRechazoPR011({})
     }
-  }, [open, pacienteIdPreseleccionado])
+  }, [open, pacienteInicial])
 
-  const verificarAlertas = (nombreMed: string, idx: number) => {
-    const nuevasAlertas: {idx: number; mensaje: string; tipo: 'alergia' | 'interaccion'}[] = []
-    const nombreLower = nombreMed.toLowerCase()
+  const pacienteSeleccionado: { alergias: string | null; medicamentos_en_uso: string | null } | undefined =
+    paciente ?? pacientes.find(p => String(p.id) === form.paciente_id)
 
-    // Verificar alergias
-    if (pacienteSeleccionado?.alergias) {
-      const alergias = pacienteSeleccionado.alergias.toLowerCase().split(/[,;]/).map(a => a.trim()).filter(Boolean)
-      for (const alergia of alergias) {
-        if (alergia.length > 2 && nombreLower.includes(alergia)) {
-          nuevasAlertas.push({ idx, mensaje: `⚠️ El medicamento contiene "${alergia}". El paciente tiene alergia registrada a: ${pacienteSeleccionado.alergias}`, tipo: 'alergia' })
+  // Un rechazo PR011 es del paciente con el que se intentó emitir: si cambia el paciente, se descarta.
+  useEffect(() => { setRechazoPR011({}) }, [form.paciente_id])
+
+  // H20: cada vez que cambian el paciente o los medicamentos (agregar/quitar), se pregunta al servidor
+  // qué medicamentos coinciden con una alergia registrada. Mientras no haya respuesta para la clave
+  // actual, no se puede emitir.
+  const medicamentoIds = [...new Set(
+    items.map(it => it.medicamento_id).filter((m): m is number => m != null),
+  )].sort((a, b) => a - b)
+  const claveAlergias = `${form.paciente_id}|${medicamentoIds.join(',')}`
+
+  useEffect(() => {
+    if (!open) return
+    const [pacienteStr, idsStr] = claveAlergias.split('|')
+    const pacienteId = pacienteStr ? parseInt(pacienteStr, 10) : NaN
+    const ids = idsStr ? idsStr.split(',').map(Number) : []
+    if (!pacienteId || ids.length === 0) {
+      setCoincidencias({})
+      setErrorAlergias(null)
+      setVerificandoAlergias(false)
+      setClaveVerificada(claveAlergias)
+      return
+    }
+    let cancelado = false
+    setVerificandoAlergias(true)
+    setErrorAlergias(null)
+    const fallar = (detalle: string) => {
+      if (cancelado) return
+      setVerificandoAlergias(false)
+      setClaveVerificada(null)
+      setErrorAlergias(detalle)
+    }
+    supabase
+      .rpc('alergias_en_receta', { p_paciente_id: pacienteId, p_medicamento_ids: ids })
+      .then(({ data, error }) => {
+        if (cancelado) return
+        if (error) {
+          console.error('alergias_en_receta:', error.code)
+          // Los PRxxx traen un mensaje redactado para el médico; el resto, solo el texto fijo.
+          fallar(typeof error.code === 'string' && error.code.startsWith('PR') ? error.message : '')
+          return
         }
-      }
-    }
+        const mapa: Record<number, string> = {}
+        for (const fila of (data ?? []) as { medicamento_id: number; alergia: string }[]) {
+          mapa[Number(fila.medicamento_id)] = fila.alergia
+        }
+        setCoincidencias(mapa)
+        setVerificandoAlergias(false)
+        setClaveVerificada(claveAlergias)
+      }, () => fallar(''))
+    return () => { cancelado = true }
+  }, [open, claveAlergias, reintentoAlergias])
 
-    // Verificar medicamentos en uso (recordatorio, no alerta estricta)
+  const alergiasVerificadas = !verificandoAlergias && errorAlergias === null && claveVerificada === claveAlergias
+  const terminoAlergia = (medicamentoId: number | null | undefined) =>
+    medicamentoId == null ? undefined : (coincidencias[medicamentoId] ?? rechazoPR011[medicamentoId])
+
+  // Recordatorio informativo de medicamentos en uso (no es un control: el de alergias es H20).
+  const agregarRecordatorio = (idx: number) => {
     if (pacienteSeleccionado?.medicamentos_en_uso) {
-      nuevasAlertas.push({ idx, mensaje: `💊 Paciente toma: ${pacienteSeleccionado.medicamentos_en_uso}. Verificar interacciones.`, tipo: 'interaccion' })
-    }
-
-    if (nuevasAlertas.length > 0) {
-      setAlertasMedicamentos(prev => [...prev, ...nuevasAlertas])
+      setAlertasMedicamentos(prev => [...prev, { idx, mensaje: `💊 Paciente toma: ${pacienteSeleccionado.medicamentos_en_uso}. Verificar interacciones.`, tipo: 'interaccion' }])
     }
   }
 
@@ -109,13 +189,14 @@ export default function RecetaModal({ open, onOpenChange, pacienteIdPreseleccion
       medicamento_id: med.id,
       categoria_regulatoria: med.categoria_regulatoria ?? null,
       acuse_iniciales: '',
+      alergia_confirmacion_motivo: '',
       nombre_medicamento: med.nombre_generico + (med.nombre_comercial ? ` (${med.nombre_comercial})` : ''),
       dosis: '', frecuencia: '', duracion: '', instrucciones: '', cantidad: 1,
       farmacia_id: null
     }
     const newIdx = items.length
     setItems([...items, nuevoItem])
-    verificarAlertas(nuevoItem.nombre_medicamento, newIdx)
+    agregarRecordatorio(newIdx)
   }
 
   const updateItem = (idx: number, field: string, value: string | number) => {
@@ -251,6 +332,19 @@ export default function RecetaModal({ open, onOpenChange, pacienteIdPreseleccion
       }
     }
 
+    // H20: nunca se emite sin haber verificado las alergias para el paciente y los medicamentos actuales.
+    if (!alergiasVerificadas) {
+      setFormError(errorAlergias !== null ? MSG_ERROR_ALERGIAS : 'Verificando las alergias del paciente. Espera un momento.')
+      return
+    }
+    const sinMotivo = items.find(
+      (it) => terminoAlergia(it.medicamento_id) && !motivoAlergiaValido(it.alergia_confirmacion_motivo)
+    )
+    if (sinMotivo) {
+      setFormError(`Confirma con un motivo la prescripción de "${sinMotivo.nombre_medicamento}".`)
+      return
+    }
+
     const sinAcuse = items.find(
       (it) => esRegulado(it.categoria_regulatoria) && !it.acuse_iniciales?.trim()
     )
@@ -266,17 +360,36 @@ export default function RecetaModal({ open, onOpenChange, pacienteIdPreseleccion
       {
         paciente_id: parseInt(form.paciente_id),
         instrucciones_generales: form.instrucciones_generales || null,
-        cita_id: citaId || null,
+        // H2: ConsultaPage pasa la cita; Mis Recetas no pasa citaId → NULL.
+        cita_id: citaId ?? null,
       },
       items.map((it: any) => ({
         ...it,
         acuse_iniciales: it.acuse_iniciales?.trim() || null,
+        alergia_confirmacion_motivo: it.alergia_confirmacion_motivo?.trim() || null,
       })) as RecetaItem[]
     )
 
     if (result.error) {
-      setFormError(result.error)
-      toast.error(result.error)
+      if (result.code === 'PR011') {
+        // El servidor vio una alergia que el modal no tenía marcada (o el motivo no le alcanzó):
+        // se muestra su mensaje en el modal, se marca el ítem y se vuelve a verificar.
+        const m = RE_PR011.exec(result.error)
+        if (m) {
+          const [, nombre, termino] = m
+          const item = items.find(it =>
+            it.nombre_medicamento === nombre || it.nombre_medicamento?.startsWith(`${nombre} (`))
+          if (item?.medicamento_id != null) {
+            const medId = item.medicamento_id
+            setRechazoPR011(prev => ({ ...prev, [medId]: termino }))
+          }
+        }
+        setFormError(result.error)
+        setReintentoAlergias(n => n + 1)
+      } else {
+        setFormError(result.error)
+        toast.error(result.error)
+      }
     } else {
       toast.success('Receta creada exitosamente')
       // F2: aplicar la pre-marca de modalidad POST-create, SOLO para grupos marcados delivery (pickup es el default
@@ -297,7 +410,7 @@ export default function RecetaModal({ open, onOpenChange, pacienteIdPreseleccion
           toast.warning(`No se pudo fijar entrega a domicilio en: ${fallidas.join(', ')}. Queda retiro en farmacia; el paciente puede cambiarlo.`)
         }
       }
-      setForm({ paciente_id: pacienteIdPreseleccionado || '', instrucciones_generales: '' })
+      setForm({ paciente_id: pacienteInicial, instrucciones_generales: '' })
       setItems([])
       onOpenChange(false)
       if (onSuccess) onSuccess()
@@ -305,8 +418,6 @@ export default function RecetaModal({ open, onOpenChange, pacienteIdPreseleccion
 
     setSaving(false)
   }
-
-  const pacienteSeleccionado = pacientes.find(p => String(p.id) === form.paciente_id)
 
   const alertasPorItem = (idx: number) => alertasMedicamentos.filter(a => a.idx === idx)
 
@@ -321,12 +432,18 @@ export default function RecetaModal({ open, onOpenChange, pacienteIdPreseleccion
             {/* Paciente */}
             <div className="space-y-2">
               <Label>Paciente *</Label>
-              <Select value={form.paciente_id} onValueChange={(v) => setForm({...form, paciente_id: v})}>
-                <SelectTrigger><SelectValue placeholder="Seleccionar paciente" /></SelectTrigger>
-                <SelectContent>
-                  {pacientes.map(p => <SelectItem key={p.id} value={String(p.id)}>{p.nombre} {p.apellido}</SelectItem>)}
-                </SelectContent>
-              </Select>
+              {paciente ? (
+                <p className="text-sm font-medium text-[#1a2a3a] border rounded-md px-3 py-2 bg-gray-50">
+                  {paciente.nombre || 'Paciente de la consulta'}
+                </p>
+              ) : (
+                <Select value={form.paciente_id} onValueChange={(v) => setForm({...form, paciente_id: v})}>
+                  <SelectTrigger><SelectValue placeholder="Seleccionar paciente" /></SelectTrigger>
+                  <SelectContent>
+                    {pacientes.map(p => <SelectItem key={p.id} value={String(p.id)}>{p.nombre} {p.apellido}</SelectItem>)}
+                  </SelectContent>
+                </Select>
+              )}
               {pacienteSeleccionado?.alergias && (
                 <div className="bg-red-50 border border-red-200 rounded-lg p-3 flex items-start gap-2">
                   <AlertCircle className="h-4 w-4 text-red-600 shrink-0 mt-0.5" />
@@ -380,14 +497,38 @@ export default function RecetaModal({ open, onOpenChange, pacienteIdPreseleccion
             {items.length > 0 && (
               <div className="space-y-4">
                 <h3 className="font-medium">Medicamentos Prescritos ({items.length})</h3>
-                {items.map((item, idx) => (
-                  <Card key={idx} className="bg-[#e8f0f8]">
+                {items.map((item, idx) => {
+                  const termino = terminoAlergia(item.medicamento_id)
+                  const rechazado = item.medicamento_id != null && rechazoPR011[item.medicamento_id] !== undefined
+                  const motivo = item.alergia_confirmacion_motivo ?? ''
+                  return (
+                  <Card key={idx} className={`bg-[#e8f0f8] ${rechazado ? 'ring-2 ring-red-500' : ''}`}>
                     <CardContent className="p-4 space-y-3">
-                      {/* Alertas del medicamento */}
+                      {/* H20: coincidencia con una alergia registrada → motivo obligatorio */}
+                      {termino && (
+                        <div className="p-3 rounded-lg bg-red-50 border-2 border-red-500 space-y-2" data-testid="alergia-coincidencia">
+                          <p className="text-sm font-semibold text-red-700 flex items-start gap-2">
+                            <AlertCircle className="h-4 w-4 shrink-0 mt-0.5" />
+                            <span>Coincide con la alergia registrada «{termino}».</span>
+                          </p>
+                          <Label htmlFor={`motivo-alergia-${idx}`} className="text-xs text-red-800">Motivo para prescribirlo igual *</Label>
+                          <textarea
+                            id={`motivo-alergia-${idx}`}
+                            className="w-full border border-red-300 rounded-md p-2 text-sm focus:ring-2 focus:ring-red-400"
+                            rows={2}
+                            maxLength={MOTIVO_MAX}
+                            value={motivo}
+                            onChange={e => updateItem(idx, 'alergia_confirmacion_motivo', e.target.value)}
+                            placeholder="Ej.: alergia descartada por prueba cutánea"
+                          />
+                          <p className="text-xs text-red-600">
+                            {motivo.trim().length}/{MOTIVO_MAX} · entre {MOTIVO_MIN} y {MOTIVO_MAX} caracteres. Queda registrado con la receta.
+                          </p>
+                        </div>
+                      )}
+                      {/* Recordatorio informativo (medicamentos en uso) */}
                       {alertasPorItem(idx).map((alerta, i) => (
-                        <div key={i} className={`p-2 rounded text-xs flex items-start gap-2 ${
-                          alerta.tipo === 'alergia' ? 'bg-red-100 text-red-700 border border-red-200' : 'bg-amber-50 text-amber-700 border border-amber-200'
-                        }`}>
+                        <div key={i} className="p-2 rounded text-xs flex items-start gap-2 bg-amber-50 text-amber-700 border border-amber-200">
                           <AlertCircle className="h-3 w-3 shrink-0 mt-0.5" />
                           <span>{alerta.mensaje}</span>
                         </div>
@@ -434,7 +575,8 @@ export default function RecetaModal({ open, onOpenChange, pacienteIdPreseleccion
                       </div>
                     </CardContent>
                   </Card>
-                ))}
+                  )
+                })}
               </div>
             )}
 
@@ -497,11 +639,30 @@ export default function RecetaModal({ open, onOpenChange, pacienteIdPreseleccion
               />
             </div>
 
+            {/* H20: estado de la verificación de alergias (bloquea el submit hasta tener respuesta) */}
+            {items.length > 0 && verificandoAlergias && (
+              <p className="text-xs text-[#8a9aaa] flex items-center gap-1">
+                <Loader2 className="h-3 w-3 animate-spin" /> Verificando alergias del paciente...
+              </p>
+            )}
+            {errorAlergias !== null && (
+              <div className="bg-red-50 border border-red-300 rounded-lg p-3 flex items-start justify-between gap-3" role="alert">
+                <div className="text-sm text-red-700">
+                  <p className="font-medium">{MSG_ERROR_ALERGIAS}</p>
+                  {errorAlergias && <p className="text-xs mt-0.5">{errorAlergias}</p>}
+                </div>
+                <Button type="button" size="sm" variant="outline" className="border-red-400 text-red-700 shrink-0"
+                  onClick={() => setReintentoAlergias(n => n + 1)}>
+                  Reintentar
+                </Button>
+              </div>
+            )}
+
             {formError && <p className="text-sm text-red-500 bg-red-50 p-2 rounded">{formError}</p>}
 
             <div className="flex justify-end gap-3">
               <Button type="button" variant="outline" onClick={() => onOpenChange(false)}>Cancelar</Button>
-              <Button type="submit" className="bg-[#1E5C8E] hover:bg-[#3A8ABF]" disabled={saving || items.length === 0}>
+              <Button type="submit" className="bg-[#1E5C8E] hover:bg-[#3A8ABF]" disabled={saving || items.length === 0 || !alergiasVerificadas}>
                 {saving && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
                 Generar Receta
               </Button>

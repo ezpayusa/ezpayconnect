@@ -87,19 +87,21 @@ export function useConsultas() {
     }
 
     // errorCode: la pantalla necesita distinguir NT006 (la nota se cerró mientras estaba abierta).
+    // H3: el UPDATE devuelve la fila COMPLETA (igual que el INSERT). Con .select('id') la pantalla se
+    // quedaba con la versión del primer guardado y comparaba contra ella: "sin guardar" para siempre.
     if (consultaId) {
       const { data: filas, error } = await supabase
         .from('expediente_notas')
         .update(payload)
         .eq('id', consultaId)
-        .select('id')
+        .select()
       setSaving(false)
       if (error) return { error: error.message || null, errorCode: error.code ?? null }
       if (!filas || filas.length === 0) {
         console.error('Guardar nota: el UPDATE no afectó filas:', CODIGO_NOTA_SIN_FILAS)
         return { error: MENSAJE_NOTA_SIN_FILAS, errorCode: CODIGO_NOTA_SIN_FILAS }
       }
-      return { error: null, errorCode: null }
+      return { data: filas[0] as ExpedienteNota, error: null, errorCode: null }
     } else {
       const { data: result, error } = await supabase
         .from('expediente_notas')

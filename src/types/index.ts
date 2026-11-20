@@ -72,6 +72,10 @@ export interface Receta {
   paciente_id: number
   paciente_nombre?: string
   cita_id: number | null
+  /** Folio cédula-correlativo-fecha (mig 395); NULL en las recetas emitidas antes. */
+  folio?: string | null
+  /** Correlativo por médico (emitir_receta); NULL en las recetas anteriores a la numeración. */
+  numero_correlativo?: number | null
   estado: 'activa' | 'completada' | 'vencida' | 'cancelada'
   instrucciones_generales: string | null
   pdf_url: string | null
@@ -93,6 +97,8 @@ export interface RecetaItem {
   precio_unitario: number | null
   stock_actual: number | null
   acuse_iniciales?: string | null
+  /** H20 (mig 395): motivo con que el médico confirma un ítem que coincide con una alergia (5-500). */
+  alergia_confirmacion_motivo?: string | null
 }
 export interface ExpedienteNota {
   id: number

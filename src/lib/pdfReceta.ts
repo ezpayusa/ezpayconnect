@@ -1,12 +1,15 @@
 import { jsPDF } from 'jspdf'
 import autoTable from 'jspdf-autotable'
 import type { Receta, RecetaItem, Paciente, Perfil } from '@/types'
+import { folioReceta } from '@/lib/folioReceta'
+import { parseFechaLocal } from '@/lib/fecha'
 
 function generarPDF(
   receta: Receta,
   items: RecetaItem[],
   paciente: Paciente,
-  medico: Perfil
+  medico: Perfil,
+  cedula?: string | null
 ) {
   const doc = new jsPDF()
   const pageWidth = doc.internal.pageSize.getWidth()
@@ -47,7 +50,8 @@ function generarPDF(
     weekday: 'long', year: 'numeric', month: 'long', day: 'numeric'
   })
   doc.text(`Fecha de emisión: ${fecha}`, 20, 55)
-  doc.text(`Folio: REC-${String(receta.id).padStart(6, '0')}`, pageWidth - 20, 55, { align: 'right' })
+  // H12: el folio oficial (el mismo del detalle y del aviso), no el id de la fila.
+  doc.text(`Folio: ${folioReceta(receta, cedula)}`, pageWidth - 20, 55, { align: 'right' })
 
   // === DATOS DEL PACIENTE ===
   doc.setTextColor(colorSecundario)
@@ -67,7 +71,7 @@ function generarPDF(
     [`Nombre completo:`, `${paciente.nombre} ${paciente.apellido}`],
     [`Teléfono:`, paciente.telefono || 'N/A'],
     [`Email:`, paciente.email || 'N/A'],
-    [`Fecha de Nacimiento:`, paciente.fecha_nacimiento ? new Date(paciente.fecha_nacimiento).toLocaleDateString('es-GT') : 'N/A'],
+    [`Fecha de Nacimiento:`, paciente.fecha_nacimiento ? parseFechaLocal(paciente.fecha_nacimiento).toLocaleDateString('es-GT') : 'N/A'],
     [`Género:`, paciente.genero ? paciente.genero.charAt(0).toUpperCase() + paciente.genero.slice(1) : 'N/A'],
     [`Alergias conocidas:`, paciente.alergias || 'Ninguna registrada'],
     [`Contacto de emergencia:`, paciente.emergencia_nombre ? `${paciente.emergencia_nombre} (${paciente.emergencia_telefono || 'Sin teléfono'})` : 'N/A']
@@ -216,9 +220,10 @@ export function generarPDFReceta(
   receta: Receta,
   items: RecetaItem[],
   paciente: Paciente,
-  medico: Perfil
+  medico: Perfil,
+  cedula?: string | null
 ) {
-  const doc = generarPDF(receta, items, paciente, medico)
+  const doc = generarPDF(receta, items, paciente, medico, cedula)
 
   const nombreArchivo = `Receta_${paciente.nombre}_${paciente.apellido}_${new Date().toISOString().split('T')[0]}.pdf`
     .replace(/\s+/g, '_')
@@ -234,9 +239,10 @@ export function imprimirPDFReceta(
   receta: Receta,
   items: RecetaItem[],
   paciente: Paciente,
-  medico: Perfil
+  medico: Perfil,
+  cedula?: string | null
 ) {
-  const doc = generarPDF(receta, items, paciente, medico)
+  const doc = generarPDF(receta, items, paciente, medico, cedula)
 
   // Crear iframe invisible y disparar print() automáticamente
   const pdfBlob = doc.output('blob')

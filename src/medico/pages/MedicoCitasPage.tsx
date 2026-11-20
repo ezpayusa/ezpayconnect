@@ -44,9 +44,10 @@ export default function MedicoCitasPage() {
 
   const handleEnSala = async (cita: any) => {
     setAccionEnProgreso(`ensala-${cita.id}`)
-    await marcarEnSala(cita)
+    const ok = await marcarEnSala(cita)
     setAccionEnProgreso(null)
-    navigate(`/medico/consulta/${cita.id}`)
+    // H6: si el cambio de estado falló (incluido 0 filas), el error ya se mostró y no se abre la consulta.
+    if (ok) navigate(`/medico/consulta/${cita.id}`)
   }
 
   const counts = useMemo(() => {

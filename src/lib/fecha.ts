@@ -17,6 +17,13 @@ export function parseFechaLocal(iso: string): Date {
   return new Date(y, m - 1, d)
 }
 
+// Para valores que pueden venir de una columna DATE o de un timestamptz (listas que mezclan
+// fuentes: historial, órdenes de laboratorio, reportes de una edge). 'YYYY-MM-DD' exacto va por
+// parseFechaLocal (sin corrimiento de día); cualquier otra cosa es un instante y va por new Date.
+export function parseFechaFlexible(valor: string): Date {
+  return /^\d{4}-\d{2}-\d{2}$/.test(valor) ? parseFechaLocal(valor) : new Date(valor)
+}
+
 // yyyy-mm-dd en hora LOCAL (no UTC → evita corrimiento de día en TZ negativas).
 export function fechaLocalISO(d: Date): string {
   const y = d.getFullYear()

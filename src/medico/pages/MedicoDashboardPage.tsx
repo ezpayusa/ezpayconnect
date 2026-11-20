@@ -156,7 +156,7 @@ export default function MedicoDashboardPage() {
                   <Button
                     size="sm"
                     className="bg-[#1E5C8E] hover:bg-[#164a70]"
-                    onClick={() => navigate(`/consulta/${stats.proximaCita!.id}`)}
+                    onClick={() => navigate(`/medico/consulta/${stats.proximaCita!.id}`)}
                   >
                     <Stethoscope className="h-4 w-4 mr-1" />
                     Atender

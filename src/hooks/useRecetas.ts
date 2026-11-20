@@ -3,6 +3,22 @@ import { supabase } from '@/lib/supabase'
 import { usePaisFiltro } from './usePaisFiltro'
 import type { Receta, RecetaItem, Medicamento } from '@/types'
 
+/** Respuesta de public.emitir_receta (mig 395). */
+interface EmitirRecetaRespuesta {
+  receta_id: number
+  numero_correlativo: number
+  numero_formateado: string
+  folio: string
+}
+
+/** Resultado de useRecetas().createReceta. `code` solo viene en los errores de negocio (PRxxx). */
+export interface ResultadoCrearReceta {
+  data?: Receta | null
+  error: string | null
+  folio?: string | null
+  code?: string
+}
+
 export function useRecetas(opts?: { autoFetch?: boolean }) {
   const autoFetch = opts?.autoFetch ?? true
   const [recetas, setRecetas] = useState<Receta[]>([])
@@ -39,7 +55,7 @@ export function useRecetas(opts?: { autoFetch?: boolean }) {
 
   useEffect(() => { if (autoFetch) fetchRecetas() }, [fetchRecetas, autoFetch])
 
-    const createReceta = async (receta: Partial<Receta>, items: Partial<RecetaItem>[]) => {
+    const createReceta = async (receta: Partial<Receta>, items: Partial<RecetaItem>[]): Promise<ResultadoCrearReceta> => {
     const { data: { user } } = await supabase.auth.getUser()
     if (!user) return { error: 'Debes iniciar sesion para crear recetas' }
     if (!receta.paciente_id) return { error: 'Debes seleccionar un paciente' }
@@ -69,26 +85,35 @@ export function useRecetas(opts?: { autoFetch?: boolean }) {
         precio_unitario: i.precio_unitario ?? null,
         stock_actual: i.stock_actual ?? null,
         acuse_iniciales: i.acuse_iniciales ?? null,
+        // H20 (mig 395): obligatorio (5-500) si el ítem coincide con una alergia; si falta, PR011.
+        alergia_confirmacion_motivo: i.alergia_confirmacion_motivo?.trim() || null,
       })),
+      // H2 (mig 395): la receta emitida desde la consulta queda vinculada a su cita. El servidor valida
+      // que la cita sea del paciente y del médico (PR012); fuera de una consulta va NULL.
+      p_cita_id: receta.cita_id ?? null,
     })
 
     if (rpcError) {
       const esErrorDeNegocio = typeof rpcError.code === 'string' && rpcError.code.startsWith('PR')
       if (esErrorDeNegocio) {
-        return { data: null, error: rpcError.message }
+        // El código viaja para que el caller distinga casos (p. ej. PR011 marca el ítem en RecetaModal).
+        return { data: null, error: rpcError.message, code: rpcError.code }
       }
       console.error('emitir_receta:', rpcError.code, rpcError.message)
       return { data: null, error: 'No se pudo emitir la receta. Intenta de nuevo.' }
     }
 
-    const recetaId = (res as { receta_id?: number } | null)?.receta_id
+    // Desde la mig 395 la RPC devuelve {receta_id, numero_correlativo, numero_formateado, folio}
+    // (numero_formateado = folio, se conserva por compatibilidad) y guarda el folio en recetas.folio.
+    const respuesta = res as EmitirRecetaRespuesta | null
+    const recetaId = respuesta?.receta_id
     if (!recetaId) {
       console.error('emitir_receta: respuesta sin receta_id', res)
       return { data: null, error: 'No se pudo emitir la receta. Intenta de nuevo.' }
     }
+    const folio = respuesta?.folio ?? respuesta?.numero_formateado ?? null
 
-    // La RPC devuelve {receta_id, numero_correlativo, numero_formateado}.
-    // Los callers esperan la FILA (RecetaModal:294 usa result.data.id).
+    // Los callers esperan la FILA (RecetaModal usa result.data.id).
     const { data: recetaData, error: selError } = await supabase
       .from('recetas').select('*').eq('id', recetaId).single()
     if (selError || !recetaData) {
@@ -108,7 +133,7 @@ export function useRecetas(opts?: { autoFetch?: boolean }) {
       paciente_nombre: pacienteData ? `${pacienteData.nombre} ${pacienteData.apellido}` : `Paciente #${receta.paciente_id}`
     }
     setRecetas(prev => [recetaConNombre, ...prev])
-    return { data: recetaConNombre, error: null }
+    return { data: recetaConNombre, folio, error: null }
   }
 
   // ✅ Obtener receta completa con items y paciente
@@ -121,7 +146,7 @@ export function useRecetas(opts?: { autoFetch?: boolean }) {
 
     if (recetaError || !receta) {
       console.error('Error fetching receta:', recetaError?.message ?? recetaError?.code)
-      return { receta: null, items: [], paciente: null }
+      return { receta: null, items: [], paciente: null, cedula_medico: null }
     }
 
    const { data: items, error: itemsError } = await supabase
@@ -187,10 +212,21 @@ if (itemsConFarmacia.length > 0) {
     })
   }
 
+// H12: cédula del médico de la receta, para reconstruir el folio de las recetas sin folio guardado.
+// medicos tiene GRANT SELECT por columna (mig 375): hay que listar la columna. Si no se puede
+// leer, queda null y el folio usa 'SINCED'.
+let cedula_medico: string | null = null
+if (receta.medico_id) {
+  const { data: medicoRow } = await supabase
+    .from('medicos').select('cedula_profesional').eq('id', receta.medico_id).maybeSingle()
+  cedula_medico = (medicoRow?.cedula_profesional as string | null | undefined) ?? null
+}
+
 return { 
   receta, 
   items: itemsConFarmacia,
-  paciente: receta.pacientes || null
+  paciente: receta.pacientes || null,
+  cedula_medico,
 }
  } // ✅ Cambiar estado de receta
   const updateReceta = async (id: number, updates: Partial<Receta>) => {

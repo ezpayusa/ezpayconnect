@@ -1,8 +1,9 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { renderHook, act } from '@testing-library/react'
 
-// Mig 365: el UPDATE de una nota que la RLS filtra afecta 0 filas sin error. El hook pide las filas con .select('id')
+// Mig 365: el UPDATE de una nota que la RLS filtra afecta 0 filas sin error. El hook pide las filas con .select()
 // y, si vuelven 0, devuelve un error con mensaje fijo: la pantalla no marca "guardado" porque result.error viene lleno.
+// H3: con 1 fila devuelve la fila completa en data (ConsultaPage la usa como versión guardada).
 let respuestaUpdate: { data: unknown; error: unknown } = { data: [], error: null }
 const llamadas: string[] = []
 
@@ -12,7 +13,7 @@ vi.mock('@/lib/supabase', () => ({
     from: (tabla: string) => ({
       update: () => ({
         eq: () => ({
-          select: async (cols: string) => { llamadas.push(`${tabla}.update.eq.select(${cols})`); return respuestaUpdate },
+          select: async (cols?: string) => { llamadas.push(`${tabla}.update.eq.select(${cols ?? ''})`); return respuestaUpdate },
         }),
       }),
     }),
@@ -36,7 +37,7 @@ describe('useConsultas.crearOActualizarConsulta (UPDATE de la nota)', () => {
   it('0 filas afectadas: devuelve el error fijo, no un guardado', async () => {
     respuestaUpdate = { data: [], error: null }
     const r = await guardar()
-    expect(llamadas).toEqual(["expediente_notas.update.eq.select(id)"])
+    expect(llamadas).toEqual(["expediente_notas.update.eq.select()"])
     expect(r.error).toBe(MENSAJE_NOTA_SIN_FILAS)
     expect(r.errorCode).toBe(CODIGO_NOTA_SIN_FILAS)
     expect(r.data).toBeUndefined()
@@ -52,11 +53,14 @@ describe('useConsultas.crearOActualizarConsulta (UPDATE de la nota)', () => {
     expect(r.errorCode).toBe(CODIGO_NOTA_SIN_FILAS)
   })
 
-  it('1 fila afectada: sin error', async () => {
-    respuestaUpdate = { data: [{ id: 2213 }], error: null }
+  it('1 fila afectada: sin error y con la fila completa en data (H3)', async () => {
+    const fila = { id: 2213, cita_id: 501, paciente_id: 23, subjetivo: 'x', plan: 'Reposo', cerrada_at: null }
+    respuestaUpdate = { data: [fila], error: null }
     const r = await guardar()
+    expect(llamadas).toEqual(["expediente_notas.update.eq.select()"])
     expect(r.error).toBeNull()
     expect(r.errorCode).toBeNull()
+    expect(r.data).toEqual(fila)
   })
 
   it('error de PostgREST: el mismo manejo de siempre (mensaje y codigo del error)', async () => {

@@ -1,3 +1,4 @@
+import { parseFechaLocal } from '@/lib/fecha'
 import { useState } from 'react'
 import { useSearchParams } from 'react-router'
 import { usePacientes } from '@/hooks/usePacientes'
@@ -248,7 +249,7 @@ export default function FacturasPage() {
                     </div>
                     <p className="text-sm text-[#8a9aaa]">{f.concepto}</p>
                     <p className="text-xs text-[#8a9aaa]">
-                      {new Date(f.fecha_emision).toLocaleDateString('es-GT')} - 
+                      {parseFechaLocal(f.fecha_emision).toLocaleDateString('es-GT')} - 
                       {f.metodo_pago ? ` ${f.metodo_pago}` : ' Sin método de pago'}
                     </p>
                   </div>
@@ -438,7 +439,7 @@ export default function FacturasPage() {
                   </div>
                   <div className="bg-gray-50 p-4 rounded">
                     <h4 className="text-xs font-bold text-[#1E5C8E] uppercase mb-2">Detalles</h4>
-                    <p className="text-sm">Fecha: {new Date(selectedFactura.fecha_emision).toLocaleDateString('es-GT')}</p>
+                    <p className="text-sm">Fecha: {parseFechaLocal(selectedFactura.fecha_emision).toLocaleDateString('es-GT')}</p>
                     <p className="text-sm">Estado: <span className={getEstadoColor(selectedFactura.estado)}>{selectedFactura.estado}</span></p>
                     <p className="text-sm">Método: {selectedFactura.metodo_pago || 'N/A'}</p>
                   </div>

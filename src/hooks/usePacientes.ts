@@ -3,9 +3,10 @@ import { supabase } from '@/lib/supabase'
 import { usePaisFiltro } from './usePaisFiltro'
 import type { Paciente } from '@/types'
 
-export function usePacientes() {
+export function usePacientes(opts?: { autoFetch?: boolean }) {
+  const autoFetch = opts?.autoFetch ?? true
   const [pacientes, setPacientes] = useState<Paciente[]>([])
-  const [loading, setLoading] = useState(true)
+  const [loading, setLoading] = useState(autoFetch)
   const [error, setError] = useState<string | null>(null)
   const { paisId } = usePaisFiltro()
 
@@ -23,7 +24,7 @@ export function usePacientes() {
     setLoading(false)
   }, [paisId])
 
-  useEffect(() => { fetchPacientes() }, [fetchPacientes])
+  useEffect(() => { if (autoFetch) fetchPacientes() }, [fetchPacientes, autoFetch])
 
   const createPaciente = async (paciente: Partial<Paciente>) => {
     const { data: { user } } = await supabase.auth.getUser()

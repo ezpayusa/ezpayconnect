@@ -18,6 +18,7 @@ import {
   ArrowLeft,
 } from 'lucide-react'
 import { imprimirPDFReceta } from '@/lib/pdfReceta'
+import { folioReceta } from '@/lib/folioReceta'
 import RecetaModal from '@/components/consulta/RecetaModal'
 
 interface RecetaConPaciente {
@@ -26,6 +27,8 @@ interface RecetaConPaciente {
   estado: string
   instrucciones_generales: string | null
   created_at: string
+  folio: string | null
+  numero_correlativo: number | null
   paciente: {
     nombre: string
     apellido: string
@@ -40,6 +43,19 @@ export default function MedicoRecetasPage() {
   const [busqueda, setBusqueda] = useState('')
   const [imprimiendo, setImprimiendo] = useState<number | null>(null)
   const [showNueva, setShowNueva] = useState(false)
+  // H12: cédula del médico (todas las recetas de esta lista son suyas), para el folio de las
+  // recetas sin folio guardado. medicos tiene GRANT por columna: se lista la columna.
+  const [cedula, setCedula] = useState<string | null>(null)
+
+  useEffect(() => {
+    if (!perfil?.id) return
+    let cancelado = false
+    supabase.from('medicos').select('cedula_profesional').eq('id', perfil.id).maybeSingle()
+      .then(({ data }) => {
+        if (!cancelado) setCedula((data?.cedula_profesional as string | null | undefined) ?? null)
+      })
+    return () => { cancelado = true }
+  }, [perfil?.id])
 
   const cargarRecetas = useCallback(async () => {
     if (!perfil?.id) return
@@ -53,6 +69,8 @@ export default function MedicoRecetasPage() {
           estado,
           instrucciones_generales,
           created_at,
+          folio,
+          numero_correlativo,
           paciente:pacientes(nombre, apellido)
         `)
         .eq('medico_id', perfil.id)
@@ -93,7 +111,7 @@ export default function MedicoRecetasPage() {
         return
       }
 
-      imprimirPDFReceta(receta as any, items || [], pacienteCompleto as any, perfil)
+      imprimirPDFReceta(receta as any, items || [], pacienteCompleto as any, perfil, cedula)
     } catch (e: any) {
       console.error('Error imprimiendo:', e?.message ?? e?.code)
     } finally {
@@ -106,7 +124,7 @@ export default function MedicoRecetasPage() {
     const nombrePaciente = r.paciente
       ? `${r.paciente.nombre} ${r.paciente.apellido}`.toLowerCase()
       : ''
-    return nombrePaciente.includes(q) || String(r.id).includes(q)
+    return nombrePaciente.includes(q) || folioReceta(r, cedula).toLowerCase().includes(q)
   })
 
   const getEstadoBadge = (estado: string) => {
@@ -159,7 +177,7 @@ export default function MedicoRecetasPage() {
       <div className="relative">
         <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
         <Input
-          placeholder="Buscar por paciente o número de receta..."
+          placeholder="Buscar por paciente o folio..."
           value={busqueda}
           onChange={(e) => setBusqueda(e.target.value)}
           className="pl-9"
@@ -187,6 +205,9 @@ export default function MedicoRecetasPage() {
                         <CalendarDays className="h-3 w-3 mr-1" />
                         {new Date(r.created_at).toLocaleDateString('es-GT')}
                       </Badge>
+                      <span className="text-xs font-mono text-muted-foreground" data-testid="receta-folio">
+                        Folio: {folioReceta(r, cedula)}
+                      </span>
                     </div>
                     <div className="flex items-center gap-2">
                       <User className="h-4 w-4 text-muted-foreground" />
