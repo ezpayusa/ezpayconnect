@@ -1,4 +1,4 @@
-import { nombreMedicoConPrefijo } from '@/lib/nombreMedico'
+import { formatMedicoNombre } from '@/webapp/lib/formatMedico'
 import { useState } from 'react'
 import { toast } from 'sonner'
 import { useWebAppAuth } from '@/webapp/hooks/useWebAppAuth'
@@ -162,9 +162,7 @@ export default function WebAppCitas() {
                       </div>
                     </div>
                     <p className="text-sm text-slate-500">
-                      {cita.medico_nombre?.startsWith('Médico por')
-                        ? cita.medico_nombre
-                        : nombreMedicoConPrefijo(cita.medico_nombre)}
+                      {formatMedicoNombre(cita.medico_nombre)}
                     </p>
                     {cita.clinica_nombre && (
                       <p className="text-sm text-slate-500 flex items-center gap-1">
