@@ -246,6 +246,39 @@ $fn$;
 EXCEPTION WHEN OTHERS THEN
   PERFORM set_config('probe.m396_helper', 'FALLO (no se pudo crear pg_temp.m396_estado: '||SQLSTATE||' '||SQLERRM||')', false);
 END $$;
+-- ============================================================================
+-- MIG 397 — helper de ESTADO, en el PRELUDIO: pg_temp.m397_estado() lo usan M397_FX + P1185-P1188 (final de la parte 2).
+-- Solo lee catálogo.
+--   'post' = authenticated SIN SELECT de tabla en recetas_avanzadas y dispensaciones, sin SELECT en dispatch_token,
+--            confirmacion_token ni codigo_qr, y CON SELECT en id de las dos;
+--   'pre'  = authenticated con SELECT de tabla en las dos y sin privilegios por columna (attacl vacío);
+--   cualquier otra cosa = 'parcial (...)', que cada probe publica como ROJO.
+-- ============================================================================
+DO $$
+BEGIN
+  EXECUTE $fn$
+CREATE OR REPLACE FUNCTION pg_temp.m397_estado() RETURNS text LANGUAGE plpgsql STABLE AS $body$
+DECLARE t_ra boolean; t_di boolean; c_tok int; c_id int; n_acl int;
+BEGIN
+  t_ra := has_table_privilege('authenticated', 'public.recetas_avanzadas', 'SELECT');
+  t_di := has_table_privilege('authenticated', 'public.dispensaciones', 'SELECT');
+  c_tok := (CASE WHEN has_column_privilege('authenticated', 'public.recetas_avanzadas', 'dispatch_token', 'SELECT') THEN 1 ELSE 0 END)
+         + (CASE WHEN has_column_privilege('authenticated', 'public.recetas_avanzadas', 'confirmacion_token', 'SELECT') THEN 1 ELSE 0 END)
+         + (CASE WHEN has_column_privilege('authenticated', 'public.dispensaciones', 'codigo_qr', 'SELECT') THEN 1 ELSE 0 END);
+  c_id := (CASE WHEN has_column_privilege('authenticated', 'public.recetas_avanzadas', 'id', 'SELECT') THEN 1 ELSE 0 END)
+        + (CASE WHEN has_column_privilege('authenticated', 'public.dispensaciones', 'id', 'SELECT') THEN 1 ELSE 0 END);
+  n_acl := (SELECT count(*) FROM pg_attribute a WHERE a.attrelid IN ('public.recetas_avanzadas'::regclass, 'public.dispensaciones'::regclass)
+              AND a.attnum > 0 AND NOT a.attisdropped AND a.attacl IS NOT NULL);
+  IF NOT t_ra AND NOT t_di AND c_tok = 0 AND c_id = 2 AND n_acl > 0 THEN RETURN 'post'; END IF;
+  IF t_ra AND t_di AND n_acl = 0 THEN RETURN 'pre'; END IF;
+  RETURN 'parcial (SELECT de tabla recetas_avanzadas '||t_ra::text||', dispensaciones '||t_di::text||', tokens legibles '||c_tok
+         ||', id legibles '||c_id||', columnas con attacl '||n_acl||')';
+END
+$body$
+$fn$;
+EXCEPTION WHEN OTHERS THEN
+  PERFORM set_config('probe.m397_helper', 'FALLO (no se pudo crear pg_temp.m397_estado: '||SQLSTATE||' '||SQLERRM||')', false);
+END $$;
 -- @@HARNESS_PRELUDIO_FIN@@
 
 -- ============================================================
@@ -44309,6 +44342,219 @@ EXCEPTION WHEN OTHERS THEN
 END $$;
 SELECT set_config('role', 'none', true);
 
+-- ================================================================================
+-- MIG 397 — tokens fuera del SELECT de authenticated + rotación (M397_FX + P1185-P1188).
+-- El ESTADO sale de pg_temp.m397_estado(), que vive en el PRELUDIO. Con 'pre' los probes publican
+-- 'PENDIENTE (estado de la 397: pre)'; un estado parcial es ROJO.
+-- Actores por id EXPLÍCITO: el usuario de auth del paciente 23, clinica.qa 7e9ee700 (admin_clinica), medico.qa 09d243d5,
+-- secretaria.qa 63591ecb y farmacia.qa cb2fd5c6 (empresa 548741e4). pg_temp.m397_q impersona, ejecuta un SQL y devuelve
+-- 'OK:<valor>' o 'ERR:<SQLSTATE> …' SOLO para 42501 y P0001 (cualquier otro SQLSTATE llega al handler del probe y publica
+-- FALLO). Los probes que tocan filas lo hacen en un savepoint que descartan con RAISE P0999 y comparan pg_temp.m397_snap()
+-- (recetas_avanzadas, receta_items y dispensaciones) antes y después.
+-- La ROTACIÓN la prueba el dry-run de la migración (token nuevo despacha, viejo no): el harness no puede verla después
+-- del apply porque los tokens viejos no se guardan. P1188 fija lo que sí se puede ver siempre: tokens bien formados y
+-- el despacho por el token vigente.
+-- ================================================================================
+DO $$
+DECLARE est text;
+BEGIN
+  EXECUTE $fn$
+CREATE OR REPLACE FUNCTION pg_temp.m397_q(p_uid uuid, p_sql text, p_rol text DEFAULT 'authenticated') RETURNS text LANGUAGE plpgsql AS $body$
+DECLARE v text;
+BEGIN
+  BEGIN
+    PERFORM set_config('request.jwt.claims', CASE WHEN p_uid IS NULL THEN json_build_object('role', p_rol)::text
+                                                  ELSE json_build_object('sub', p_uid, 'role', p_rol)::text END, true);
+    PERFORM set_config('role', p_rol, true);
+    EXECUTE p_sql INTO v;
+    PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
+    RETURN 'OK:'||COALESCE(v, 'NULL');
+  EXCEPTION WHEN SQLSTATE '42501' OR SQLSTATE 'P0001' THEN
+    PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
+    RETURN 'ERR:'||SQLSTATE||' '||left(SQLERRM, 100);
+  END;
+END
+$body$
+$fn$;
+  EXECUTE $fn$
+CREATE OR REPLACE FUNCTION pg_temp.m397_snap() RETURNS text LANGUAGE sql AS $body$
+  SELECT md5(concat_ws('|',
+    (SELECT count(*)||' '||COALESCE(md5(string_agg(t::text, E'\n' ORDER BY t.id)), '-') FROM public.recetas_avanzadas t),
+    (SELECT count(*)||' '||COALESCE(md5(string_agg(t::text, E'\n' ORDER BY t.id)), '-') FROM public.receta_items t),
+    (SELECT count(*)||' '||COALESCE(md5(string_agg(t::text, E'\n' ORDER BY t.id)), '-') FROM public.dispensaciones t)))
+$body$
+$fn$;
+  EXECUTE $fn$
+CREATE OR REPLACE FUNCTION pg_temp.m397_veredicto(p_det text, p_pre text, p_post text, p_ok text) RETURNS text LANGUAGE sql IMMUTABLE AS $body$
+  SELECT CASE
+    WHEN p_pre IS DISTINCT FROM p_post THEN 'FALLO (no restauró recetas_avanzadas/receta_items/dispensaciones; '||COALESCE(p_det, '')||')'
+    WHEN p_det LIKE '%FUGA:%' THEN 'FUGA ('||p_det||')'
+    WHEN p_det <> '' THEN 'FALLO ('||p_det||')'
+    ELSE 'OK ('||p_ok||')' END
+$body$
+$fn$;
+  est := pg_temp.m397_estado();
+  PERFORM set_config('probe.m397_fx', CASE WHEN est = 'pre' THEN 'PENDIENTE (estado de la 397: pre; helpers de pg_temp creados)'
+    WHEN est = 'post' THEN 'OK (helpers de pg_temp creados; estado de la 397: post)'
+    ELSE 'ROJO (397 '||est||'; helpers de pg_temp creados)' END, false);
+EXCEPTION WHEN OTHERS THEN
+  PERFORM set_config('probe.m397_fx', 'FALLO ('||SQLSTATE||' '||SQLERRM||')', false);
+END $$;
+SELECT set_config('role', 'none', true);
+
+-- ---------------- P1185 397: columnas — sin SELECT de tabla para authenticated; SELECT por columna en todas MENOS los 3 tokens ----------------
+DO $$
+DECLARE est text; d text := ''; r record; v text;
+BEGIN
+  est := pg_temp.m397_estado();
+  IF est = 'pre' THEN PERFORM set_config('probe.p1185', 'PENDIENTE (estado de la 397: pre)', false); RETURN; END IF;
+  IF est <> 'post' THEN PERFORM set_config('probe.p1185', 'ROJO (397 '||est||')', false); RETURN; END IF;
+  FOR r IN SELECT * FROM (VALUES ('public.recetas_avanzadas', '{dispatch_token,confirmacion_token}'::text[]),
+                                 ('public.dispensaciones', '{codigo_qr}'::text[])) AS t(tabla, tokens) LOOP
+    IF (SELECT string_agg(x::text, ',' ORDER BY x::text) FROM pg_class c, unnest(c.relacl) x WHERE c.oid = r.tabla::regclass)
+       IS DISTINCT FROM 'postgres=arwdDxtm/postgres,service_role=arwdDxtm/postgres' THEN
+      d := d||'relacl de '||r.tabla||' = '||COALESCE((SELECT c.relacl::text FROM pg_class c WHERE c.oid = r.tabla::regclass), '-')||'; ';
+    END IF;
+    v := (SELECT string_agg(a.attname, ',' ORDER BY a.attnum) FROM pg_attribute a
+           WHERE a.attrelid = r.tabla::regclass AND a.attnum > 0 AND NOT a.attisdropped AND a.attname = ANY (r.tokens)
+             AND has_column_privilege('authenticated', a.attrelid, a.attname, 'SELECT'));
+    IF v IS NOT NULL THEN d := d||'FUGA: authenticated lee '||r.tabla||'.'||v||'; '; END IF;
+    v := (SELECT string_agg(a.attname, ',' ORDER BY a.attnum) FROM pg_attribute a
+           WHERE a.attrelid = r.tabla::regclass AND a.attnum > 0 AND NOT a.attisdropped AND NOT (a.attname = ANY (r.tokens))
+             AND a.attacl::text IS DISTINCT FROM '{authenticated=r/postgres}');
+    IF v IS NOT NULL THEN d := d||'columnas de '||r.tabla||' sin el GRANT SELECT exacto de authenticated: '||v||'; '; END IF;
+    v := (SELECT string_agg(a.attname, ',' ORDER BY a.attnum) FROM pg_attribute a
+           WHERE a.attrelid = r.tabla::regclass AND a.attnum > 0 AND NOT a.attisdropped AND a.attname = ANY (r.tokens) AND a.attacl IS NOT NULL);
+    IF v IS NOT NULL THEN d := d||'tokens de '||r.tabla||' con attacl: '||v||'; '; END IF;
+    IF has_any_column_privilege('authenticated', r.tabla::regclass, 'INSERT,UPDATE,REFERENCES')
+       OR has_table_privilege('authenticated', r.tabla::regclass, 'DELETE,TRUNCATE,TRIGGER,MAINTAIN') THEN
+      d := d||'FUGA: authenticated escribe en '||r.tabla||'; ';
+    END IF;
+    IF has_any_column_privilege('anon', r.tabla::regclass, 'SELECT,INSERT,UPDATE,REFERENCES') THEN d := d||'FUGA: anon tiene privilegios en '||r.tabla||'; '; END IF;
+  END LOOP;
+  PERFORM set_config('probe.p1185', CASE WHEN d LIKE '%FUGA:%' THEN 'FUGA ('||d||')' WHEN d <> '' THEN 'FALLO ('||d||')'
+    ELSE 'OK (397: recetas_avanzadas y dispensaciones sin SELECT de tabla para authenticated; SELECT por columna en todas menos dispatch_token, confirmacion_token y codigo_qr; sin escritura; anon nada)' END, false);
+EXCEPTION WHEN OTHERS THEN
+  PERFORM set_config('probe.p1185', 'FALLO ('||SQLSTATE||' '||SQLERRM||')', false);
+END $$;
+SELECT set_config('role', 'none', true);
+
+-- ---------------- P1186 397: el paciente sigue con su lista y su QR (mis_despachos_receta), y no lee el token por SELECT ----------------
+DO $$
+DECLARE est text; d text := ''; pre text; post text; pac uuid; a text; want text;
+BEGIN
+  est := pg_temp.m397_estado();
+  IF est = 'pre' THEN PERFORM set_config('probe.p1186', 'PENDIENTE (estado de la 397: pre)', false); RETURN; END IF;
+  IF est <> 'post' THEN PERFORM set_config('probe.p1186', 'ROJO (397 '||est||')', false); RETURN; END IF;
+  pre := pg_temp.m397_snap();
+  BEGIN
+    pac := (SELECT pa.auth_user_id FROM public.pacientes pa WHERE pa.id = 23);
+    IF pac IS NULL OR NOT EXISTS (SELECT 1 FROM public.recetas_avanzadas ra WHERE ra.paciente_id = '23') THEN
+      RAISE EXCEPTION 'fixture roto: P1186 sin el paciente 23 con cuenta o sin recetas avanzadas suyas';
+    END IF;
+    UPDATE public.recetas_avanzadas SET dispatch_token_expira_at = now() + interval '1 day'
+     WHERE id = (SELECT ra.id FROM public.recetas_avanzadas ra WHERE ra.paciente_id = '23' ORDER BY ra.id LIMIT 1);
+    a := pg_temp.m397_q(pac, 'SELECT count(*)||''/''||count(ra.id) FROM public.recetas r LEFT JOIN public.recetas_avanzadas ra ON ra.receta_base_id = r.id WHERE r.paciente_id = 23 AND (ra.id IS NULL OR ra.dispatch_token_expira_at IS NOT NULL OR ra.estado_dispensacion IS NULL OR true)');
+    want := 'OK:'||(SELECT count(*)||'/'||count(ra.id) FROM public.recetas r LEFT JOIN public.recetas_avanzadas ra ON ra.receta_base_id = r.id WHERE r.paciente_id = 23);
+    IF a IS DISTINCT FROM want THEN d := d||'lista del front del paciente = '||left(COALESCE(a, 'NULL'), 90)||' (esperado '||want||'); '; END IF;
+    a := pg_temp.m397_q(pac, 'SELECT count(*)||''|''||COALESCE(string_agg(x.receta_id||'':''||md5(x.dispatch_token), '','' ORDER BY x.receta_id), '''') FROM public.mis_despachos_receta() x');
+    want := 'OK:'||(SELECT count(*)||'|'||COALESCE(string_agg(ra.receta_base_id||':'||md5(ra.dispatch_token), ',' ORDER BY ra.receta_base_id), '')
+                     FROM public.recetas_avanzadas ra WHERE ra.paciente_id = '23' AND ra.dispatch_token_expira_at > now());
+    IF a IS DISTINCT FROM want THEN d := d||'mis_despachos_receta del paciente no es su lista de vigentes ('||left(COALESCE(a, 'NULL'), 90)||'); '; END IF;
+    IF a = 'OK:0|' THEN d := d||'el paciente no recibe ningún token (había uno vigente sembrado); '; END IF;
+    a := pg_temp.m397_q(pac, 'SELECT count(dispatch_token)::text FROM public.recetas_avanzadas');
+    IF a NOT LIKE 'ERR:42501%' THEN d := d||CASE WHEN a LIKE 'OK:%' THEN 'FUGA: ' ELSE '' END||'el paciente lee dispatch_token por SELECT ('||left(COALESCE(a, 'NULL'), 60)||'); '; END IF;
+    RAISE EXCEPTION 'P1186 descarte' USING ERRCODE = 'P0999';
+  EXCEPTION WHEN SQLSTATE 'P0999' THEN NULL;
+  END;
+  post := pg_temp.m397_snap();
+  PERFORM set_config('probe.p1186', pg_temp.m397_veredicto(d, pre, post,
+    '397: el paciente 23 sigue leyendo su lista (recetas + fila avanzada sin token) y recibe sus tokens vigentes por mis_despachos_receta; SELECT de dispatch_token = 42501'), false);
+EXCEPTION WHEN OTHERS THEN
+  PERFORM set_config('probe.p1186', CASE WHEN SQLERRM LIKE 'fixture roto%' THEN 'ROJO ('||SQLERRM||')' ELSE 'FALLO ('||SQLSTATE||' '||SQLERRM||')' END, false);
+END $$;
+SELECT set_config('role', 'none', true);
+
+-- ---------------- P1187 397: admin_clinica, médico, secretaria y farmacia sin tokens por SELECT; las consultas del front siguen ----------------
+DO $$
+DECLARE est text; d text := ''; r record; a text;
+BEGIN
+  est := pg_temp.m397_estado();
+  IF est = 'pre' THEN PERFORM set_config('probe.p1187', 'PENDIENTE (estado de la 397: pre)', false); RETURN; END IF;
+  IF est <> 'post' THEN PERFORM set_config('probe.p1187', 'ROJO (397 '||est||')', false); RETURN; END IF;
+  IF (SELECT count(*) FROM auth.users u WHERE u.id IN ('7e9ee700-48ac-43e1-812b-777518b971ec', '09d243d5-b222-482a-9762-94a582e9e752',
+        '63591ecb-26d7-49ef-96c8-265c6bdaa916', 'cb2fd5c6-e154-4ce5-b960-fb13c039d1d8')) <> 4 THEN
+    RAISE EXCEPTION 'fixture roto: P1187 falta algún actor en auth.users';
+  END IF;
+  FOR r IN SELECT * FROM (VALUES
+      ('admin_clinica', '7e9ee700-48ac-43e1-812b-777518b971ec'::uuid),
+      ('medico',        '09d243d5-b222-482a-9762-94a582e9e752'::uuid),
+      ('secretaria',    '63591ecb-26d7-49ef-96c8-265c6bdaa916'::uuid),
+      ('farmacia',      'cb2fd5c6-e154-4ce5-b960-fb13c039d1d8'::uuid)) AS t(lbl, uid)
+  LOOP
+    a := pg_temp.m397_q(r.uid, 'SELECT count(dispatch_token)::text FROM public.recetas_avanzadas');
+    IF a NOT LIKE 'ERR:42501%' THEN d := d||CASE WHEN a LIKE 'OK:%' THEN 'FUGA: ' ELSE '' END||r.lbl||' dispatch_token = '||left(a, 60)||'; '; END IF;
+    a := pg_temp.m397_q(r.uid, 'SELECT count(confirmacion_token)::text FROM public.recetas_avanzadas');
+    IF a NOT LIKE 'ERR:42501%' THEN d := d||CASE WHEN a LIKE 'OK:%' THEN 'FUGA: ' ELSE '' END||r.lbl||' confirmacion_token = '||left(a, 60)||'; '; END IF;
+    a := pg_temp.m397_q(r.uid, 'SELECT count(codigo_qr)::text FROM public.dispensaciones');
+    IF a NOT LIKE 'ERR:42501%' THEN d := d||CASE WHEN a LIKE 'OK:%' THEN 'FUGA: ' ELSE '' END||r.lbl||' dispensaciones.codigo_qr = '||left(a, 60)||'; '; END IF;
+    a := pg_temp.m397_q(r.uid, 'SELECT count(*)::text FROM (SELECT * FROM public.recetas_avanzadas) x');
+    IF a NOT LIKE 'ERR:42501%' THEN d := d||CASE WHEN a LIKE 'OK:%' THEN 'FUGA: ' ELSE '' END||r.lbl||' SELECT * = '||left(a, 60)||'; '; END IF;
+    a := pg_temp.m397_q(r.uid, 'SELECT count(*)::text FROM (SELECT id, receta_base_id, paciente_id, medico_id, firma_digital, estado_dispensacion, farmacia_id, fecha_dispensacion, pdf_url, created_at, updated_at FROM public.recetas_avanzadas) x');
+    IF a NOT LIKE 'OK:%' THEN d := d||r.lbl||': la consulta del expediente (PacienteDetallePage) falla: '||left(a, 80)||'; '; END IF;
+    IF r.lbl = 'admin_clinica' AND a IN ('OK:0', 'OK:NULL') THEN d := d||'admin_clinica ya no ve ninguna receta avanzada; '; END IF;
+    a := pg_temp.m397_q(r.uid, 'SELECT count(*)::text FROM (SELECT id, receta_avanzada_id, estado_dispensacion, fecha_dispensacion FROM public.dispensaciones) x');
+    IF a NOT LIKE 'OK:%' THEN d := d||r.lbl||': dispensaciones sin codigo_qr falla: '||left(a, 80)||'; '; END IF;
+  END LOOP;
+  PERFORM set_config('probe.p1187', CASE WHEN d LIKE '%FUGA:%' THEN 'FUGA ('||d||')' WHEN d <> '' THEN 'FALLO ('||d||')'
+    ELSE 'OK (397: admin_clinica, médico, secretaria y farmacia: dispatch_token, confirmacion_token, codigo_qr y SELECT * = 42501; la consulta del expediente y dispensaciones sin codigo_qr siguen; admin_clinica sigue viendo filas)' END, false);
+EXCEPTION WHEN OTHERS THEN
+  PERFORM set_config('probe.p1187', CASE WHEN SQLERRM LIKE 'fixture roto%' THEN 'ROJO ('||SQLERRM||')' ELSE 'FALLO ('||SQLSTATE||' '||SQLERRM||')' END, false);
+END $$;
+SELECT set_config('role', 'none', true);
+
+-- ---------------- P1188 397: tokens bien formados y el despacho por el token VIGENTE sigue (un token inexistente, no) ----------------
+DO $$
+DECLARE est text; d text := ''; pre text; post text; v text; ra_id uuid; rec bigint; item bigint; farm int; tok text; a text;
+BEGIN
+  est := pg_temp.m397_estado();
+  IF est = 'pre' THEN PERFORM set_config('probe.p1188', 'PENDIENTE (estado de la 397: pre)', false); RETURN; END IF;
+  IF est <> 'post' THEN PERFORM set_config('probe.p1188', 'ROJO (397 '||est||')', false); RETURN; END IF;
+  v := (SELECT string_agg(ra.id::text, ',') FROM public.recetas_avanzadas ra
+         WHERE ra.dispatch_token !~ '^[0-9a-f]{64}$' OR ra.confirmacion_token !~ '^[0-9a-f]{64}$' OR ra.dispatch_token = ra.confirmacion_token);
+  IF v IS NOT NULL THEN d := d||'tokens mal formados en '||v||'; '; END IF;
+  IF (SELECT count(*) <> count(DISTINCT dispatch_token) FROM public.recetas_avanzadas) THEN d := d||'dispatch_token repetido; '; END IF;
+  pre := pg_temp.m397_snap();
+  BEGIN
+    SELECT ra.id, ra.receta_base_id INTO ra_id, rec FROM public.recetas_avanzadas ra
+     WHERE ra.paciente_id = '23' AND EXISTS (SELECT 1 FROM public.receta_items ri WHERE ri.receta_id = ra.receta_base_id AND ri.dispensado = false)
+       AND COALESCE((SELECT r.estado FROM public.recetas r WHERE r.id = ra.receta_base_id), 'cancelada') <> 'cancelada'
+     ORDER BY ra.receta_base_id LIMIT 1;
+    item := (SELECT ri.id FROM public.receta_items ri WHERE ri.receta_id = rec AND ri.dispensado = false ORDER BY ri.id LIMIT 1);
+    farm := (SELECT f.id FROM public.farmacias f WHERE f.empresa_id = '548741e4-dc6d-4b8b-81db-c30f5ef5b142' ORDER BY f.id LIMIT 1);
+    IF ra_id IS NULL OR item IS NULL OR farm IS NULL OR NOT EXISTS (SELECT 1 FROM auth.users u WHERE u.id = 'cb2fd5c6-e154-4ce5-b960-fb13c039d1d8') THEN
+      RAISE EXCEPTION 'fixture roto: P1188 sin receta avanzada del paciente 23 con ítem sin despachar, sin farmacia de farmacia.qa o sin su cuenta';
+    END IF;
+    UPDATE public.recetas_avanzadas SET dispatch_token_expira_at = now() + interval '1 day' WHERE id = ra_id;
+    UPDATE public.receta_items SET farmacia_id = farm WHERE id = item;
+    tok := (SELECT ra.dispatch_token FROM public.recetas_avanzadas ra WHERE ra.id = ra_id);
+    a := pg_temp.m397_q('cb2fd5c6-e154-4ce5-b960-fb13c039d1d8', format('SELECT public.verificar_receta_despacho(%L)->>''receta_id''', tok));
+    IF a IS DISTINCT FROM 'OK:'||rec THEN d := d||'verificar_receta_despacho(token vigente) = '||left(COALESCE(a, 'NULL'), 90)||'; '; END IF;
+    a := pg_temp.m397_q('cb2fd5c6-e154-4ce5-b960-fb13c039d1d8', format('SELECT public.verificar_receta_despacho(%L)->>''receta_id''', md5(tok)||md5(tok)));
+    IF a NOT LIKE 'ERR:P0001%' THEN d := d||CASE WHEN a LIKE 'OK:%' THEN 'FUGA: ' ELSE '' END||'verificar_receta_despacho(token inexistente) = '||left(COALESCE(a, 'NULL'), 90)||'; '; END IF;
+    a := pg_temp.m397_q('cb2fd5c6-e154-4ce5-b960-fb13c039d1d8', format('SELECT public.registrar_dispensacion(%L, ARRAY[%s]::bigint[], %L)->>''despachados''', tok, item, 'P1188 QA'));
+    IF a IS DISTINCT FROM 'OK:1' THEN d := d||'registrar_dispensacion(token vigente) = '||left(COALESCE(a, 'NULL'), 90)||'; '; END IF;
+    RAISE EXCEPTION 'P1188 descarte' USING ERRCODE = 'P0999';
+  EXCEPTION WHEN SQLSTATE 'P0999' THEN NULL;
+  END;
+  post := pg_temp.m397_snap();
+  PERFORM set_config('probe.p1188', pg_temp.m397_veredicto(d, pre, post,
+    '397: dispatch_token y confirmacion_token de 64 hex, distintos entre sí, dispatch único; farmacia.qa verifica y despacha con el token vigente y un token inexistente da P0001'), false);
+EXCEPTION WHEN OTHERS THEN
+  PERFORM set_config('probe.p1188', CASE WHEN SQLERRM LIKE 'fixture roto%' THEN 'ROJO ('||SQLERRM||')' ELSE 'FALLO ('||SQLSTATE||' '||SQLERRM||')' END, false);
+END $$;
+SELECT set_config('role', 'none', true);
+
 -- @@HARNESS_RESULTADOS@@
 -- ===== Veredictos como result set =====
 SELECT 'P1_anon_insert_citas'              AS probe, current_setting('probe.p1', true)  AS verdict, 'BLOQUEADO' AS esperado_post_fix
@@ -45594,6 +45840,11 @@ UNION ALL SELECT 'M396_FX_mis_despachos_receta',  current_setting('probe.m396_fx
 UNION ALL SELECT 'P1182_mis_despachos_receta_catalogo_396',  current_setting('probe.p1182', true), 'OK (396: DEFINER, STABLE, search_path vacío, sin confirmacion_token, EXECUTE solo authenticated/service_role; pre: PENDIENTE)'
 UNION ALL SELECT 'P1183_mis_despachos_receta_dueno_396',  current_setting('probe.p1183', true), 'OK (396: el dueño recibe solo sus tokens vigentes; pre: PENDIENTE)'
 UNION ALL SELECT 'P1184_mis_despachos_receta_otros_396',  current_setting('probe.p1184', true), 'OK (396: otros actores 0 filas, anon 42501; pre: PENDIENTE)'
+UNION ALL SELECT 'M397_FX_tokens_cierre',  current_setting('probe.m397_fx', true), 'OK (helpers de pg_temp creados; estado de la 397: post; pre: PENDIENTE; parcial: ROJO)'
+UNION ALL SELECT 'P1185_tokens_sin_select_columnas_397',  current_setting('probe.p1185', true), 'OK (397: SELECT por columna sin los 3 tokens; pre: PENDIENTE)'
+UNION ALL SELECT 'P1186_paciente_lista_y_qr_397',  current_setting('probe.p1186', true), 'OK (397: lista y QR por la RPC; SELECT del token 42501; pre: PENDIENTE)'
+UNION ALL SELECT 'P1187_roles_sin_tokens_397',  current_setting('probe.p1187', true), 'OK (397: tokens y SELECT * 42501; consultas del front siguen; pre: PENDIENTE)'
+UNION ALL SELECT 'P1188_tokens_formados_y_despacho_397',  current_setting('probe.p1188', true), 'OK (397: tokens de 64 hex; despacho por el token vigente; pre: PENDIENTE)'
 UNION ALL SELECT 'P1010_campana_vistas_sin_update_367',  current_setting('probe.p1010', true), 'OK (367: INSERT 1; ON CONFLICT DO NOTHING 0 sin error; DO UPDATE y UPDATE 42501; otro paciente 0; antes de la 367: PENDIENTE)'
 UNION ALL SELECT 'P1009_datos_bancarios_acotados_366',  current_setting('probe.p1009', true), 'OK (366: cuenta GT solo super_admin/admin_pais GT/proveedores GT; checkout 1 fila; config 21 super_admin y 14 el resto, admin_pais incluido; antes de la 366: PENDIENTE)'
 UNION ALL SELECT 'DET_p1009',  'DET ' || COALESCE(NULLIF(current_setting('probe.p1009_det', true), ''), '(sin dato)'), 'DET (detalle de P1009, no es probe)'
@@ -45846,7 +46097,7 @@ UNION ALL SELECT 'P000_CENTINELA_veredictos_no_nulos',
        'probe.p866', 'probe.p867', 'probe.p868', 'probe.p869', 'probe.p870', 'probe.p871', 'probe.p872', 'probe.p873', 'probe.p874', 'probe.p875', 'probe.p876', 'probe.p877', 'probe.p878',
        'probe.p879', 'probe.p880', 'probe.p881', 'probe.p882', 'probe.p883', 'probe.p884',
        'probe.p885', 'probe.p886', 'probe.p887', 'probe.p888', 'probe.p889', 'probe.p890', 'probe.p891', 'probe.p892', 'probe.p893', 'probe.p894', 'probe.p895', 'probe.p896', 'probe.p908', 'probe.p909', 'probe.p910', 'probe.p911',
-       'probe.p897', 'probe.p898', 'probe.p899', 'probe.p900', 'probe.p901', 'probe.p902', 'probe.p903', 'probe.p904', 'probe.p905', 'probe.p906', 'probe.p907', 'probe.p912', 'probe.p913', 'probe.p914', 'probe.p915', 'probe.p916', 'probe.p917', 'probe.p918', 'probe.p919', 'probe.p920', 'probe.p921', 'probe.p922', 'probe.p923', 'probe.p924', 'probe.p925', 'probe.p926', 'probe.p927', 'probe.p928', 'probe.p929', 'probe.p930', 'probe.p931', 'probe.p932', 'probe.p933', 'probe.p934', 'probe.p935', 'probe.p936', 'probe.p937', 'probe.p938', 'probe.p939', 'probe.p940', 'probe.p941', 'probe.p942', 'probe.p943', 'probe.p944', 'probe.p945', 'probe.p946', 'probe.p947', 'probe.p948', 'probe.p949', 'probe.p950', 'probe.p951', 'probe.p952', 'probe.p953', 'probe.p954', 'probe.p955', 'probe.p956', 'probe.p957', 'probe.p958', 'probe.p959', 'probe.p960', 'probe.p961', 'probe.p962', 'probe.p963', 'probe.p964', 'probe.p965', 'probe.p966', 'probe.p967', 'probe.p968', 'probe.p969', 'probe.p970', 'probe.p971', 'probe.p972', 'probe.p973', 'probe.p974', 'probe.p975', 'probe.p976', 'probe.p977', 'probe.p978', 'probe.p979', 'probe.p980', 'probe.p981', 'probe.p982', 'probe.p983', 'probe.p984', 'probe.p985', 'probe.p986', 'probe.p987', 'probe.p988', 'probe.p989', 'probe.p990', 'probe.p991', 'probe.p992', 'probe.p993', 'probe.p994', 'probe.p995', 'probe.p996', 'probe.p997', 'probe.p998', 'probe.p999', 'probe.p1000', 'probe.p1001', 'probe.p1002', 'probe.p1003', 'probe.p1004', 'probe.p1005', 'probe.p1006', 'probe.p1007', 'probe.p1008', 'probe.p1009', 'probe.p1010', 'probe.p1011', 'probe.p1012', 'probe.p1013', 'probe.p1014', 'probe.e370_fx', 'probe.p1015', 'probe.p1016', 'probe.p1017', 'probe.p1018', 'probe.g371_fx', 'probe.p1019', 'probe.p1020', 'probe.p1021', 'probe.p1022', 'probe.g372_fx', 'probe.p1023', 'probe.p1024', 'probe.p1025', 'probe.p1035', 'probe.p1036', 'probe.p1037', 'probe.p1038', 'probe.p1039', 'probe.p1040', 'probe.m375_fx', 'probe.p1041', 'probe.p1042', 'probe.p1043', 'probe.p1044', 'probe.p1045', 'probe.p1046', 'probe.p1047', 'probe.p1048', 'probe.p1049', 'probe.p1050', 'probe.p1051', 'probe.p1052', 'probe.p1053', 'probe.p1054', 'probe.p1055', 'probe.p1056', 'probe.p1057', 'probe.p1058', 'probe.p1059', 'probe.p1060', 'probe.p1061', 'probe.m376_fx', 'probe.p1062', 'probe.p1063', 'probe.p1064', 'probe.m377_fx', 'probe.p1065', 'probe.p1066', 'probe.p1067', 'probe.p1068', 'probe.p1069', 'probe.p1070', 'probe.p1071', 'probe.p1072', 'probe.p1073', 'probe.p1074', 'probe.m378_fx', 'probe.p1075', 'probe.p1076', 'probe.p1077', 'probe.p1078', 'probe.p1079', 'probe.p1080', 'probe.p1081', 'probe.p1082', 'probe.p1083', 'probe.m379_fx', 'probe.p1084', 'probe.p1085', 'probe.p1086', 'probe.p1087', 'probe.p1088', 'probe.p1089', 'probe.p1090', 'probe.m380_fx', 'probe.p1091', 'probe.p1092', 'probe.p1093', 'probe.p1094', 'probe.p1095', 'probe.p1096', 'probe.p1097', 'probe.p1098', 'probe.h_restaura', 'probe.m381_fx', 'probe.p1099', 'probe.p1100', 'probe.p1101', 'probe.p1102', 'probe.p1103', 'probe.p1104', 'probe.m382_fx', 'probe.p1105', 'probe.p1106', 'probe.p1107', 'probe.p1108', 'probe.p1109', 'probe.p1110', 'probe.p1111', 'probe.p1112', 'probe.p1113', 'probe.p1114', 'probe.p1115', 'probe.p1116', 'probe.p1117', 'probe.p1118', 'probe.p1119', 'probe.m383_fx', 'probe.p1120', 'probe.p1121', 'probe.p1122', 'probe.p1123', 'probe.p1124', 'probe.p1125', 'probe.p1126', 'probe.p1127', 'probe.p1128', 'probe.p1129', 'probe.p1130', 'probe.p1131', 'probe.m384_fx', 'probe.p1132', 'probe.p1133', 'probe.p1134', 'probe.p1135', 'probe.p1136', 'probe.p1137', 'probe.m385_fx', 'probe.p1138', 'probe.p1139', 'probe.p1140', 'probe.p1141', 'probe.m386_fx', 'probe.p1142', 'probe.p1143', 'probe.p1144', 'probe.p1145', 'probe.p1146', 'probe.p1147', 'probe.m387_fx', 'probe.p1148', 'probe.p1149', 'probe.p1150', 'probe.p1151', 'probe.m388_fx', 'probe.p1152', 'probe.p1153', 'probe.p1154', 'probe.p1155', 'probe.p1156', 'probe.m389_fx', 'probe.p1157', 'probe.p1158', 'probe.p1159', 'probe.p1160', 'probe.m390_fx', 'probe.p1161', 'probe.p1162', 'probe.p1163', 'probe.p1164', 'probe.m391_fx', 'probe.p1165', 'probe.p1166', 'probe.p1167', 'probe.p1168', 'probe.p1169', 'probe.m392_fx', 'probe.p1170', 'probe.p1171', 'probe.p1172', 'probe.m395_fx', 'probe.p1173', 'probe.p1174', 'probe.p1175', 'probe.p1176', 'probe.p1177', 'probe.p1178', 'probe.p1179', 'probe.p1180', 'probe.p1181', 'probe.m396_fx', 'probe.p1182', 'probe.p1183', 'probe.p1184'
+       'probe.p897', 'probe.p898', 'probe.p899', 'probe.p900', 'probe.p901', 'probe.p902', 'probe.p903', 'probe.p904', 'probe.p905', 'probe.p906', 'probe.p907', 'probe.p912', 'probe.p913', 'probe.p914', 'probe.p915', 'probe.p916', 'probe.p917', 'probe.p918', 'probe.p919', 'probe.p920', 'probe.p921', 'probe.p922', 'probe.p923', 'probe.p924', 'probe.p925', 'probe.p926', 'probe.p927', 'probe.p928', 'probe.p929', 'probe.p930', 'probe.p931', 'probe.p932', 'probe.p933', 'probe.p934', 'probe.p935', 'probe.p936', 'probe.p937', 'probe.p938', 'probe.p939', 'probe.p940', 'probe.p941', 'probe.p942', 'probe.p943', 'probe.p944', 'probe.p945', 'probe.p946', 'probe.p947', 'probe.p948', 'probe.p949', 'probe.p950', 'probe.p951', 'probe.p952', 'probe.p953', 'probe.p954', 'probe.p955', 'probe.p956', 'probe.p957', 'probe.p958', 'probe.p959', 'probe.p960', 'probe.p961', 'probe.p962', 'probe.p963', 'probe.p964', 'probe.p965', 'probe.p966', 'probe.p967', 'probe.p968', 'probe.p969', 'probe.p970', 'probe.p971', 'probe.p972', 'probe.p973', 'probe.p974', 'probe.p975', 'probe.p976', 'probe.p977', 'probe.p978', 'probe.p979', 'probe.p980', 'probe.p981', 'probe.p982', 'probe.p983', 'probe.p984', 'probe.p985', 'probe.p986', 'probe.p987', 'probe.p988', 'probe.p989', 'probe.p990', 'probe.p991', 'probe.p992', 'probe.p993', 'probe.p994', 'probe.p995', 'probe.p996', 'probe.p997', 'probe.p998', 'probe.p999', 'probe.p1000', 'probe.p1001', 'probe.p1002', 'probe.p1003', 'probe.p1004', 'probe.p1005', 'probe.p1006', 'probe.p1007', 'probe.p1008', 'probe.p1009', 'probe.p1010', 'probe.p1011', 'probe.p1012', 'probe.p1013', 'probe.p1014', 'probe.e370_fx', 'probe.p1015', 'probe.p1016', 'probe.p1017', 'probe.p1018', 'probe.g371_fx', 'probe.p1019', 'probe.p1020', 'probe.p1021', 'probe.p1022', 'probe.g372_fx', 'probe.p1023', 'probe.p1024', 'probe.p1025', 'probe.p1035', 'probe.p1036', 'probe.p1037', 'probe.p1038', 'probe.p1039', 'probe.p1040', 'probe.m375_fx', 'probe.p1041', 'probe.p1042', 'probe.p1043', 'probe.p1044', 'probe.p1045', 'probe.p1046', 'probe.p1047', 'probe.p1048', 'probe.p1049', 'probe.p1050', 'probe.p1051', 'probe.p1052', 'probe.p1053', 'probe.p1054', 'probe.p1055', 'probe.p1056', 'probe.p1057', 'probe.p1058', 'probe.p1059', 'probe.p1060', 'probe.p1061', 'probe.m376_fx', 'probe.p1062', 'probe.p1063', 'probe.p1064', 'probe.m377_fx', 'probe.p1065', 'probe.p1066', 'probe.p1067', 'probe.p1068', 'probe.p1069', 'probe.p1070', 'probe.p1071', 'probe.p1072', 'probe.p1073', 'probe.p1074', 'probe.m378_fx', 'probe.p1075', 'probe.p1076', 'probe.p1077', 'probe.p1078', 'probe.p1079', 'probe.p1080', 'probe.p1081', 'probe.p1082', 'probe.p1083', 'probe.m379_fx', 'probe.p1084', 'probe.p1085', 'probe.p1086', 'probe.p1087', 'probe.p1088', 'probe.p1089', 'probe.p1090', 'probe.m380_fx', 'probe.p1091', 'probe.p1092', 'probe.p1093', 'probe.p1094', 'probe.p1095', 'probe.p1096', 'probe.p1097', 'probe.p1098', 'probe.h_restaura', 'probe.m381_fx', 'probe.p1099', 'probe.p1100', 'probe.p1101', 'probe.p1102', 'probe.p1103', 'probe.p1104', 'probe.m382_fx', 'probe.p1105', 'probe.p1106', 'probe.p1107', 'probe.p1108', 'probe.p1109', 'probe.p1110', 'probe.p1111', 'probe.p1112', 'probe.p1113', 'probe.p1114', 'probe.p1115', 'probe.p1116', 'probe.p1117', 'probe.p1118', 'probe.p1119', 'probe.m383_fx', 'probe.p1120', 'probe.p1121', 'probe.p1122', 'probe.p1123', 'probe.p1124', 'probe.p1125', 'probe.p1126', 'probe.p1127', 'probe.p1128', 'probe.p1129', 'probe.p1130', 'probe.p1131', 'probe.m384_fx', 'probe.p1132', 'probe.p1133', 'probe.p1134', 'probe.p1135', 'probe.p1136', 'probe.p1137', 'probe.m385_fx', 'probe.p1138', 'probe.p1139', 'probe.p1140', 'probe.p1141', 'probe.m386_fx', 'probe.p1142', 'probe.p1143', 'probe.p1144', 'probe.p1145', 'probe.p1146', 'probe.p1147', 'probe.m387_fx', 'probe.p1148', 'probe.p1149', 'probe.p1150', 'probe.p1151', 'probe.m388_fx', 'probe.p1152', 'probe.p1153', 'probe.p1154', 'probe.p1155', 'probe.p1156', 'probe.m389_fx', 'probe.p1157', 'probe.p1158', 'probe.p1159', 'probe.p1160', 'probe.m390_fx', 'probe.p1161', 'probe.p1162', 'probe.p1163', 'probe.p1164', 'probe.m391_fx', 'probe.p1165', 'probe.p1166', 'probe.p1167', 'probe.p1168', 'probe.p1169', 'probe.m392_fx', 'probe.p1170', 'probe.p1171', 'probe.p1172', 'probe.m395_fx', 'probe.p1173', 'probe.p1174', 'probe.p1175', 'probe.p1176', 'probe.p1177', 'probe.p1178', 'probe.p1179', 'probe.p1180', 'probe.p1181', 'probe.m396_fx', 'probe.p1182', 'probe.p1183', 'probe.p1184', 'probe.m397_fx', 'probe.p1185', 'probe.p1186', 'probe.p1187', 'probe.p1188'
              ]) AS n) s),
   'OK (todos los veredictos publicados)';
 
