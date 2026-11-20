@@ -91,7 +91,7 @@ interface RecetaAvanzada {
 interface Cita {
   id: string
   fecha: string
-  hora: string
+  hora_inicio: string | null
   estado: string
   motivo?: string
 }
@@ -895,7 +895,7 @@ export default function PacienteDetallePage() {
                   citas.map(cita => (
                     <tr key={cita.id} className="border-t border-gray-100 hover:bg-gray-50 transition-colors">
                       <td className="px-6 py-4">{cita.fecha}</td>
-                      <td className="px-6 py-4">{cita.hora}</td>
+                      <td className="px-6 py-4">{cita.hora_inicio ? cita.hora_inicio.slice(0, 5) : '-'}</td>
                       <td className="px-6 py-4 text-center">
                         <span className={`px-2 py-1 rounded text-xs font-medium ${
                           cita.estado === 'completada' ? 'bg-green-100 text-green-700' :
