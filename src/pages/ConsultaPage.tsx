@@ -5,7 +5,7 @@ import { useVisor, archivoDeResultado, descargarResultado } from '@/components/v
 import { parseFechaLocal } from '@/lib/fecha'
 import { useAuth } from '@/hooks/useAuth'
 import { useConsultas, mensajeErrorNota, type SoapNota } from '@/hooks/useConsultas'
-import { cambiarEstadoCita as cambiarEstadoCitaEnBase, etiquetaEstadoCita } from '@/lib/estadoCita'
+import { cambiarEstadoCita as cambiarEstadoCitaEnBase, etiquetaEstadoCita, puedeAtender } from '@/lib/estadoCita'
 import { useSignosVitalesCita } from '@/hooks/useSignosVitalesCita'
 import { FormularioVitales, VITALES_VACIO } from '@/clinica/components/FormularioVitales'
 import type { VitalesValues } from '@/clinica/components/FormularioVitales'
@@ -566,6 +566,7 @@ function ConsultaDeCita() {
     const map: Record<string, string> = {
       agendada: 'bg-gray-100 text-gray-700',
       confirmada: 'bg-blue-100 text-blue-700',
+      en_espera: 'bg-orange-100 text-orange-700',
       en_curso: 'bg-amber-100 text-amber-700',
       completada: 'bg-green-100 text-green-700',
       cancelada: 'bg-red-100 text-red-700',
@@ -597,7 +598,7 @@ function ConsultaDeCita() {
           <Badge className={getEstadoColor(cita.estado)}>
             {etiquetaEstadoCita(cita.estado)}
           </Badge>
-          {cita.estado === 'confirmada' && (
+          {puedeAtender(cita.estado) && (
             <Button size="sm" variant="outline" onClick={() => cambiarEstadoCita('en_curso')}>
               <Clock className="h-4 w-4 sm:mr-1" /> <span className="hidden sm:inline">En Sala</span>
             </Button>

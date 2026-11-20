@@ -15,6 +15,7 @@ import { useAuth } from '@/hooks/useAuth'
 import { useUnidadPeso } from '@/hooks/useUnidadPeso'
 import { formatPeso } from '@/lib/unidades'
 import { formatVital, formatPA } from '@/lib/vitalesRangos'
+import { puedeAtender } from '@/lib/estadoCita'
 import { FotoPacienteAvatar } from '@/components/FotoPacienteAvatar'
 import { DocumentosPaciente } from '@/components/DocumentosPaciente'
 import { ConsentimientoPresencial } from '@/components/ConsentimientoPresencial'
@@ -353,9 +354,10 @@ export default function PacienteDetallePage() {
   )
 
   // Cita "activa" del paciente para entrar directo a la consulta (dictado/IA/biblioteca).
-  // Prioriza una en curso; si no, una confirmada.
+  // Prioriza una en curso; si no, una en espera (el paciente ya llegó, H1); si no, una confirmada.
   const citaActiva =
     citas.find((c: any) => c.estado === 'en_curso') ||
+    citas.find((c: any) => c.estado === 'en_espera') ||
     citas.find((c: any) => c.estado === 'confirmada')
 
   return (
@@ -908,7 +910,7 @@ export default function PacienteDetallePage() {
                       <td className="px-6 py-4 text-gray-500">{cita.motivo || '-'}</td>
                       <td className="px-6 py-4">
                         <div className="flex items-center justify-center gap-2">
-                          {(cita.estado === 'confirmada' || cita.estado === 'en_curso') && (
+                          {(puedeAtender(cita.estado) || cita.estado === 'en_curso') && (
                             <button
                               onClick={() => navigate(`${base}/consulta/${cita.id}`)}
                               className="flex items-center gap-1 px-3 py-2 bg-[#1E5C8E] hover:bg-[#164a70] text-white rounded-lg text-sm font-medium transition-colors"

@@ -69,3 +69,14 @@ describe('etiquetaEstadoCita', () => {
     expect(etiquetaEstadoCita('en_espera')).toBe('En espera')
   })
 })
+
+describe('puedeAtender (H1)', () => {
+  it('confirmada y en_espera abren la consulta; el resto no', async () => {
+    const { puedeAtender } = await import('./estadoCita')
+    expect(puedeAtender('confirmada')).toBe(true)
+    expect(puedeAtender('en_espera')).toBe(true)
+    for (const e of ['solicitada', 'agendada', 'en_curso', 'completada', 'cancelada', 'no_show']) {
+      expect(puedeAtender(e)).toBe(false)
+    }
+  })
+})

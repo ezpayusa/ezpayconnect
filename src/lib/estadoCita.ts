@@ -35,6 +35,17 @@ export function etiquetaEstadoCita(estado: string): string {
   return ETIQUETA_ESTADO_CITA[estado as EstadoCita] ?? estado
 }
 
+// H1: estados desde los que el médico ABRE la consulta y la pasa a en_curso («En sala» / «Atender»).
+// Flujo del servidor (mig 260): confirmada|agendada → en_espera (recepción marca la llegada) → en_curso
+// → completada. Una cita en_espera es una confirmada cuyo paciente ya llegó: se atiende igual. La mig
+// 391 deja al médico escribir solo `estado` de SUS citas, sin guard de transición, así que en_espera →
+// en_curso pasa igual que confirmada → en_curso. en_curso no está acá: ya está abierta («Continuar»).
+export const ESTADOS_PARA_ATENDER: readonly EstadoCita[] = ['confirmada', 'en_espera']
+
+export function puedeAtender(estado: string): boolean {
+  return (ESTADOS_PARA_ATENDER as readonly string[]).includes(estado)
+}
+
 // Estados que avisan al paciente (notificar_cita_paciente, RPC gateada server-side: verifica la
 // relación médico/clínica→cita y compone el contenido; el cliente solo pasa la cita y el evento).
 const EVENTOS_AVISO = ['confirmada', 'cancelada', 'en_curso', 'completada'] as const

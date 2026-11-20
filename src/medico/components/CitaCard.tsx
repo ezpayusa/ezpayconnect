@@ -4,6 +4,7 @@ import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
 import type { CitaConPaciente } from '@/medico/types/medico.types'
 import { parseFechaLocal, hoyISO } from '@/lib/fecha'
+import { puedeAtender } from '@/lib/estadoCita'
 import {
   User,
   Clock,
@@ -163,8 +164,8 @@ export default function CitaCard({
               </>
             )}
 
-            {/* Confirmada → En sala */}
-            {!vencida && cita.estado === 'confirmada' && (
+            {/* Confirmada o En espera (H1: recepción ya marcó la llegada) → En sala */}
+            {!vencida && puedeAtender(cita.estado) && (
               <>
                 <Button
                   size="sm"
