@@ -2,6 +2,7 @@ import { useState, useEffect, useCallback } from 'react'
 import { supabase } from '@/lib/supabase'
 import { hoyISO, fechaLocalISO, combinar } from '@/lib/fecha'
 import type { MedicoStats, CitaConPaciente } from '@/medico/types/medico.types'
+import { contarPacientesDistintos, ESTADOS_CITA_ATENDIDA } from '@/medico/lib/pacientesMes'
 
 export function useMedicoStats() {
   const [stats, setStats] = useState<MedicoStats>({
@@ -55,16 +56,26 @@ export function useMedicoStats() {
       if (errPendientes) throw errPendientes
       const pendientesCount = (pendientesData || []).filter((c) => finDe(c) >= ahora.getTime()).length
 
-      // Pacientes únicos atendidos este mes (completadas)
-      const { data: pacientesMesData, error: errPacientesMes } = await supabase
+      // Pacientes del mes: distintos con una cita atendida (en_curso o completada) O una receta emitida
+      // por el médico. Antes contaba solo completadas: una consulta sin finalizar con recetas daba 0.
+      // Mismo inicio de mes que el resto del dashboard: inicioMes (DATE, día 1 local) para citas.fecha e
+      // inicioMesInstante (medianoche local del día 1) para recetas.created_at.
+      const { data: citasAtendidasMes, error: errPacientesMes } = await supabase
         .from('citas')
         .select('paciente_id')
         .eq('medico_id', user.id)
-        .eq('estado', 'completada')
+        .in('estado', [...ESTADOS_CITA_ATENDIDA])
         .gte('fecha', inicioMes)
       if (errPacientesMes) throw errPacientesMes
 
-      const pacientesUnicos = new Set(pacientesMesData?.map(c => c.paciente_id) || []).size
+      const { data: recetasMesPacientes, error: errRecetasPacientes } = await supabase
+        .from('recetas')
+        .select('paciente_id')
+        .eq('medico_id', user.id)
+        .gte('created_at', inicioMesInstante)
+      if (errRecetasPacientes) throw errRecetasPacientes
+
+      const pacientesUnicos = contarPacientesDistintos(citasAtendidasMes || [], recetasMesPacientes || [])
 
       // Recetas emitidas este mes
       const { count: recetasCount, error: errRecetas } = await supabase
