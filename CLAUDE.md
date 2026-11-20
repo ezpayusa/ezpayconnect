@@ -24,7 +24,45 @@ Stack: React + Vite + TypeScript, Supabase / Postgres, deploy en Vercel, repo en
   minutos por esto** (P635 es la probe que faltaba, P636 su contraprueba).
 - NUNCA ampliar policies de RLS sobre tablas adyacentes a datos médicos (p. ej. campana_metricas). Para dar acceso, usar RPCs SECURITY DEFINER con search_path='', fail-closed (si el scope es NULL → 0 filas) y gate interno.
 - Probar aislamiento por rol impersonando request.jwt.claims en prod: cada rol ve lo suyo y no lo ajeno.
-- **Estado al 17-nov-2026 (manda sobre los números de las entradas siguientes, incluidos los bloques del 27-oct y del 20-oct):**
+- **Estado al 20-nov-2026 (manda sobre los números de las entradas siguientes, incluido el bloque del 17-nov):**
+  - **Migraciones aplicadas desde el 17-nov** (las 6 vivas en prod: huellas = post-397, medidas el 20-nov 18:50:14 UTC; la
+    verificación independiente consta en el PR de la 391, la 392 y la 395, y la de la 396 el 20-nov 18:08 UTC):
+
+    | Mig | Qué | PR | Apply (UTC) |
+    |---|---|---|---|
+    | 390 | cierre de la escritura de authenticated sobre `medicos` | #93 (merge 17-nov 21:33) | 2026-11-17 21:26:43-21:26:47 |
+    | 391 | cierre de la escritura directa sobre `citas` (solo `estado` del médico; CI001-CI003) | #94 | 2026-11-19 16:45:35-16:45:37 |
+    | 392 | cierre de la escritura directa sobre `clinicas` | #95 | 2026-11-19 17:41:42-17:41:44 |
+    | 395 | recetas: `cita_id`, folio persistido, control de alergias (PR011-PR013, `receta_alertas_alergia`) | #96 | 2026-11-19 18:43:34-18:43:36 |
+    | 396 | `mis_despachos_receta()` (token de despacho del paciente dueño, solo vigentes) | #99 | 2026-11-20 18:05:39-18:05:44 |
+    | 397 | tokens fuera del SELECT de authenticated (`recetas_avanzadas` sin `dispatch_token`/`confirmacion_token`, `dispensaciones` sin `codigo_qr`) + rotación de 4 dispatch y 8 confirmación | #100 | 2026-11-20 18:35:57-18:36:00 |
+
+    **393 y 394 RESERVADAS** (matriz de estados de cita por RPC, paso 2 de la 391; no existen en el repo).
+    `mis_despachos_receta()` md5(prosrc) `3e0fe1250d0c85b7ac7daeab3344ff35` (cuerpo en LF; el `5334c0ae…` del dry-run original
+    era el del cuerpo en CRLF, corregido en `396_rollback` con c6fd8c2).
+  - **Huellas vigentes (post-397, 20-nov):** funciones completas (cuerpo, DEFINER, config, ACL)
+    `77ae9f738b13c5b920383d0cf0bda746 420`; ACL de funciones `6eca74c670156e3a2d290b96651fc30e 420`; ACL de relaciones de public
+    `cf5c7c56aaf30e6dd11b8407134b70d3 2446` (sin `recetas_avanzadas` ni `dispensaciones`: `2fcc56f14173658062bfae3c43214b81 2414`);
+    ACL de secuencias de public `f889b7db4c222d80c7b507251f88ae7c 238`; policies `eba82b3fc822926313534f04caa4f853 309`.
+  - **Harness al 20-nov (post-397, POR PARTES, rama chore/harness-fixtures-cr):** 1297 filas / **11 rojas = la deuda exacta**;
+    0 PENDIENTE; P800 PASA. Parte 1 734.211 bytes (margen 2.306.659, 76 %), parte 2 2.252.010 (margen 788.860, 26 %), final
+    326.774 (margen 2.714.096). P916, P920, P1174 y P1175 dejaron de ser rojas: dependían de los datos QA de la demo IGSS (la cita
+    12680, la alerta de la receta 8927 y la cédula `QA-12345`) y ahora fijan su caso en su propio savepoint.
+  - **Próximos libres (verificados el 20-nov 18:50 UTC en el prosrc vivo de public/private, el repo y las ramas remotas):
+    mig 398, probe P1189, errcodes CA016, CI004, CP018, DE010, EP007, EX040, LG007, NT012, PA041, PC029, PE005, PP014, PR014,
+    PT045, PV029, PW003, RC005, RP005, SV004.**
+  - **Reglas nuevas (20-nov):**
+    - (a) **Toda copia que se envía a la base** (dry-run, copia inyectada del harness, P800 inyectado) se escribe en bytes o con
+      `newline=''`, y **se cuentan los CR antes de enviarla: 0 obligatorio.** El md5 que se anota para un rollback sale de un
+      cuerpo con 0 CR. Por qué: en Windows `open(..., 'w')` convierte `\n` en `\r\n`; el dry-run de la 396 anotó el md5 de un
+      cuerpo en CRLF y el rollback no habría aceptado la función real. Desde 8e7db08 el runner (`motivo_cr` en
+      `tests/rls/harness_run.py`) aborta sin enviar nada si el cuerpo trae CR.
+    - (b) **En `recetas_avanzadas` y `dispensaciones` toda columna nueva necesita su `GRANT SELECT (col) … TO authenticated` en
+      la misma migración** (desde la 397 el SELECT es por columna, como `medicos` desde la 375); un `select('*')` o un embed `(*)`
+      de usuario sobre ellas da 42501 y deja la pantalla vacía. P1185 sale ROJO si una columna no-token queda sin grant.
+    - (c) **Las guardas comparan el `relacl` ORDENADO** (`string_agg(x::text, ',' ORDER BY x::text) FROM unnest(relacl) x`), no
+      como texto: un REVOKE + GRANT deja las mismas entradas en otro orden (medido en el dry-run de `397_rollback`).
+- **Estado al 17-nov-2026 (superado en huellas, harness y próximos libres: ver 20-nov; manda sobre los bloques del 27-oct y del 20-oct):**
   - **FAMILIA B (estado de empresas) CERRADA el 17-nov — migs 386-389 + fronts (PRs #85-#91) en prod; main 7cf4bc6.** El admin
     de país lista y resuelve (aprueba/rechaza) las empresas de SU país; el super_admin suspende/reactiva/reabre por RPC
     (`cambiar_estado_empresa`). Nadie escribe directo el estado ni las columnas de revisión; el proveedor edita solo las 6
@@ -49,7 +87,7 @@ Stack: React + Vite + TypeScript, Supabase / Postgres, deploy en Vercel, repo en
     Front de la 388 en prod con el PR #89 (main 32b44cc): Suspender/Reactivar/Reabrir por la RPC, la empresa rechazada ve el
     motivo, EP006 mapeado en `src/lib/erroresRpc.ts`. Tras ese merge el único UPDATE directo de `empresas_proveedoras` en el front
     es el perfil del proveedor (`useProveedorAuth.actualizarEmpresa`), que no manda `estado` (el guard se lo rechaza: P1146).
-  - **Huellas vigentes (post-389, 17-nov):** funciones completas (cuerpo, DEFINER, config, ACL) `b7fa10f3493ad056a9ccba88db348511 415`;
+  - **Huellas post-389, 17-nov (superado: ver post-397, 20-nov):** funciones completas (cuerpo, DEFINER, config, ACL) `b7fa10f3493ad056a9ccba88db348511 415`;
     ACL de funciones `8fef2a52615f811185465e5ea088d16e 415`; ACL de relaciones de public `3cf6dfbb1762182068245ac7c3e816f8 2444`;
     policies `4b9da3e2955e1156feca9c8585c37fab 313`; guard de empresas (`private.empresas_proveedoras_guard_update`) md5(prosrc)
     `8e7102b67317e97ada88884ac7783b1e`. Sin el guard ni `notificar_empresa_estado`, funciones completas = `7fa35a97…/413`; sin
@@ -59,11 +97,9 @@ Stack: React + Vite + TypeScript, Supabase / Postgres, deploy en Vercel, repo en
     ACL de funciones `51d87b443777a680da5891b25fe41e6f 415`; ACL de relaciones de public `9b8f5af8892d3a5b87db15e15092eb77 2445`;
     policies `938d7e4111a9d332e6c55a645fafed86 314`. Sin `cambiar_estado_empresa`: funciones completas `6ef5bdb3…/414` y ACL de
     funciones `faf529bf…/414` (las de post-387).
-  - **Próximos libres: mig 390, probe P1161, errcode EP007, PA041, PV029, RC005.** (verificados el 17-nov 20:33 UTC, después de
-    la 389: en el repo la última migración es la 389 y el último probe P1160; en el prosrc vivo de public/private EP006, PA040,
-    PV028 y RC004 son los máximos en uso)
+  - ~~Próximos libres: mig 390, probe P1161, errcode EP007, PA041, PV029, RC005.~~ (superado: ver 20-nov)
   - ~~Próximos libres: mig 389, probe P1157, errcode EP007, PA041, PV029, RC005.~~ (superado: ver arriba)
-  - **Harness al 17-nov (post-389, POR PARTES):** 1263 filas / 11 rojas = la deuda; 0 PENDIENTE; P800 PASA. Parte 1 724.109
+  - **Harness al 17-nov (post-389, POR PARTES; superado: ver 20-nov):** 1263 filas / 11 rojas = la deuda; 0 PENDIENTE; P800 PASA. Parte 1 724.109
     bytes (margen ~2,3 MB), parte 2 2.099.750 (margen 941.120), final ~311 KB. Los probes nuevos van al final de la parte 2.
   - **Harness al 17-nov (post-388, POR PARTES; superado en filas y bytes: ver post-389):** 1258 filas / 11 rojas = la deuda; P800 PASA. 2 partes + request final:
     parte 1 720.292 bytes (margen 2.320.578, 76 %), parte 2 2.075.210 (margen 965.660, 32 %), final 309.529. El monolítico
@@ -252,11 +288,11 @@ Stack: React + Vite + TypeScript, Supabase / Postgres, deploy en Vercel, repo en
   - Rama sin upstream propio al crearse desde origin/main: push SIEMPRE con nombre de rama explícito.
   - PRs #57, #59-#64 y #65 (196100b) mergeados al 19-oct; #56 (gate de textos legales) y #58 (front de altas) SIN mergear hasta completar los placeholders legales. Confirm email APAGADO en prod hasta que entre #58.
   - Punto 2 comercial (18-oct): src/lib/navegacion.ts es el helper ÚNICO de links Google Maps/Waze; VisitadorRutaPage y EntregaDetallePage todavía arman los suyos (migrar después). Hoy usa visitasDeHoyConUbicacion; visitasDelDia sigue sin coordenadas.
-- **Próximos números libres: probe `P1161`** (global, no por módulo; M389_FX + P1157-P1160 usados por la mig 389; M388_FX + P1152-P1156 usados por la mig 388; M387_FX + P1148-P1151 usados por la mig 387; M386_FX + P1142-P1147 usados por la mig 386; M385_FX + P1138-P1141 usados por la mig 385; M384_FX + P1132-P1137 usados por la mig 384; M383_FX + P1120-P1131 usados por la mig 383; M382_FX + P1105-P1119 usados por la mig 382; M381_FX + P1099-P1104 usados por la mig 381; M380_FX + P1091-P1098 usados por la mig 380; M379_FX + P1084-P1090 usados por la mig 379; M378_FX + P1075-P1083 usados por la mig 378; M377_FX + P1065-P1074 usados por la mig 377; M376_FX + P1062-P1064 usados por la mig 376; M375_FX + P1041-P1061 usados por la mig 375; P1035-P1040 usados por la mig 374; P1026-P1034 + M373_FX usados por la mig 373; P1023-P1025 + G372_FX usados por la mig 372; P1019-P1022 usados por la mig 371; P1015-P1018 usados por la mig 370, P1011-P1014 por la mig 369, P1010 por la mig 367, P1009 por la 366, P1008 por la 365, P1007 por la 364, P1001-P1006 por la mig 363, P996-P1000 por la 362, P990-P995 por la 361, P983-P989 por la 360, P975-P982 por la
+- **Próximos números libres: probe `P1189`** (global, no por módulo; M397_FX + P1185-P1188 usados por la mig 397; M396_FX + P1182-P1184 por la 396; M395_FX + P1173-P1181 por la 395; P1161-P1172 por la 390, la 391 y la 392; M389_FX + P1157-P1160 usados por la mig 389; M388_FX + P1152-P1156 usados por la mig 388; M387_FX + P1148-P1151 usados por la mig 387; M386_FX + P1142-P1147 usados por la mig 386; M385_FX + P1138-P1141 usados por la mig 385; M384_FX + P1132-P1137 usados por la mig 384; M383_FX + P1120-P1131 usados por la mig 383; M382_FX + P1105-P1119 usados por la mig 382; M381_FX + P1099-P1104 usados por la mig 381; M380_FX + P1091-P1098 usados por la mig 380; M379_FX + P1084-P1090 usados por la mig 379; M378_FX + P1075-P1083 usados por la mig 378; M377_FX + P1065-P1074 usados por la mig 377; M376_FX + P1062-P1064 usados por la mig 376; M375_FX + P1041-P1061 usados por la mig 375; P1035-P1040 usados por la mig 374; P1026-P1034 + M373_FX usados por la mig 373; P1023-P1025 + G372_FX usados por la mig 372; P1019-P1022 usados por la mig 371; P1015-P1018 usados por la mig 370, P1011-P1014 por la mig 369, P1010 por la mig 367, P1009 por la 366, P1008 por la 365, P1007 por la 364, P1001-P1006 por la mig 363, P996-P1000 por la 362, P990-P995 por la 361, P983-P989 por la 360, P975-P982 por la
   359, P967-P974 por la 358, P958-P966 por la 357 (obtener_medicos_por_ids acotada a relación); P906-P907 usados por la mig 336, P912-P913
   por la 337, P914-P915 por la 338, P916-P920 por la 339/340, P921-P923 por la 341, P924 por la 342, P925 por
   la 343, P926-P927 por la 344, P928-P929 por la 345, P930 por la 346, P931-P932 por la 347, P933 por la 348,
-  P934-P935 por la 349, P936 por la 350, P937-P939 por la 351, P940-P943 por la 353), **migración `390`** (la 389 es el cierre de la escritura directa sobre `empresas_proveedoras`, sin errcodes nuevos, aplicada el 17-nov; la 388 es `cambiar_estado_empresa`, EP006, aplicada el 17-nov; la 387 `obtener_empresa_pais` y la 386 `listar_empresas_pais` + `resolver_empresa`, EP001-EP005; **próximo errcode EP007**; la 385 es `registrar_clinica_desde_invitacion` v2, registro de clínica por invitación, RC001-RC004, y la 384 los listados de médicos por país solo con rol 'medico'; **próximo errcode RC005**; la 383 es la notificación del chat comercial + ACL exacta de service_role, aplicada el 24-oct; la 382 es el chat comercial, aplicada el 24-oct; la 381 es el hardening de visitas, PV027/PV028; la 380 son las lecturas del enrolamiento, `listar_mis_medicos_enrolados` y `prioridad_para_agendar`, aplicada el 20-oct; la 379 es `registrar_medico_desde_invitacion` enrolando por la solicitud de alta, aplicada el 20-oct; la 378 es aprobar/reenviar la solicitud de alta → invitación precargada + correo, aplicada el 20-oct; la 377 son las solicitudes de alta de médico, aplicada el 20-oct; la 376 es `administrar_visita('modificar')` + PV003 y la 375 el hardening del enrolamiento, las dos aplicadas el 20-oct; la 374 es la integridad de ubicación de prospectos, aplicada el 17-oct; la 373 es el alta diferida de empresas, aplicada el 9-oct; la 371 es GL-02 y la 372 su hardening, las dos aplicadas el 8-oct), **errcode `LG007`** (prefijo LG,
+  P934-P935 por la 349, P936 por la 350, P937-P939 por la 351, P940-P943 por la 353), **migración `398`** (393 y 394 RESERVADAS para la matriz de estados de cita; la 397 saca los tokens de recetas del SELECT de authenticated y rota los expuestos, la 396 es `mis_despachos_receta`, la 395 recetas/alergias, la 392 y la 391 cierran la escritura sobre `clinicas` y `citas`, la 390 sobre `medicos`; la 389 es el cierre de la escritura directa sobre `empresas_proveedoras`, sin errcodes nuevos, aplicada el 17-nov; la 388 es `cambiar_estado_empresa`, EP006, aplicada el 17-nov; la 387 `obtener_empresa_pais` y la 386 `listar_empresas_pais` + `resolver_empresa`, EP001-EP005; **próximo errcode EP007**; la 385 es `registrar_clinica_desde_invitacion` v2, registro de clínica por invitación, RC001-RC004, y la 384 los listados de médicos por país solo con rol 'medico'; **próximo errcode RC005**; la 383 es la notificación del chat comercial + ACL exacta de service_role, aplicada el 24-oct; la 382 es el chat comercial, aplicada el 24-oct; la 381 es el hardening de visitas, PV027/PV028; la 380 son las lecturas del enrolamiento, `listar_mis_medicos_enrolados` y `prioridad_para_agendar`, aplicada el 20-oct; la 379 es `registrar_medico_desde_invitacion` enrolando por la solicitud de alta, aplicada el 20-oct; la 378 es aprobar/reenviar la solicitud de alta → invitación precargada + correo, aplicada el 20-oct; la 377 son las solicitudes de alta de médico, aplicada el 20-oct; la 376 es `administrar_visita('modificar')` + PV003 y la 375 el hardening del enrolamiento, las dos aplicadas el 20-oct; la 374 es la integridad de ubicación de prospectos, aplicada el 17-oct; la 373 es el alta diferida de empresas, aplicada el 9-oct; la 371 es GL-02 y la 372 su hardening, las dos aplicadas el 8-oct), **errcode `LG007`** (prefijo LG,
   GL-02: LG001-LG005 en uso por la 371 — LG001 sin sesión, LG002 código inexistente, LG003 versión no vigente, LG004
   entrada inválida, LG005 aceptaciones append-only; LG006 = el texto no corresponde a la identidad de la cuenta, en uso
   por la 372), **errcode `PC029`** (familia PC: PC025 país requerido y PC026 sin autoridad en `contar_medicos_por_pais`, PC027
@@ -645,7 +681,7 @@ Stack: React + Vite + TypeScript, Supabase / Postgres, deploy en Vercel, repo en
   — APLICADA en prod y verificada en sesión independiente el 25-sep-2026, probes P879-P884; P3 CERRADO
   (332 + front + 333); EX023-EX034 = mig 335 (corrección de resultados, historial inmutable) — APLICADA
   en prod y verificada en sesión independiente el 26-sep-2026, probes P897-P905),
-  **`PR011`** (recetas: PR001-PR009 = emitir_receta; PR010 = receta cancelada no se despacha, mig 329
+  **`PR014`** (recetas: PR011-PR013 = mig 395 (alergia sin motivo, cita inválida, auditoría append-only); PR001-PR009 = emitir_receta; PR010 = receta cancelada no se despacha, mig 329
   — APLICADA en prod y verificada en sesión independiente el 25-sep-2026, probes P840-P847),
   **`SV004`** (signos vitales: SV001 = fuera de rango, SV002 = formato de PA, mig 330
   — APLICADA en prod y verificada en sesión independiente el 25-sep-2026, probes P848-P860;
@@ -850,6 +886,9 @@ Desde esa fecha, una tabla/vista nueva **sin GRANT explícito nace inaccesible**
 14. **Toda policy nueva se crea `TO authenticated`** (o con el rol explícito que corresponda), **nunca `TO public`**,
    salvo una lectura pública deliberada en una tabla de la WL_ANON_LEGACY. Una policy `{public}` en public fuera de
    esas tablas hace salir **P934 ROJO** (desde la 349). Las `{public}` de storage (lectura pública de buckets) no cuentan.
+15. **Tablas con SELECT por columna para authenticated** (`medicos` desde la 375; `recetas_avanzadas` y `dispensaciones` desde
+   la 397): toda columna nueva lleva su `GRANT SELECT (col) … TO authenticated` en la misma migración, y las columnas secretas
+   (`dispatch_token`, `confirmacion_token`, `dispensaciones.codigo_qr`, `medicos.lab_enrolador_id`) NO se otorgan.
 
 ## Modelo de identidad / helpers
 - mi_empresa_proveedor() → empresa_id del proveedor logueado desde cuentas_proveedor (tipo-agnóstica; cubre los 4 tipos: farmacia, laboratorio_clinico, laboratorio_farmaceutico, empresa_afin).
@@ -1116,4 +1155,18 @@ Detalles a recordar:
 - (Empresas, 17-nov-2026) Tipar `motivo_rechazo` y `revisado_at` en `EmpresaProveedora` (`src/proveedor/types/proveedor.types.ts`); hoy están tipados solo en `EmpresaEstadoPage`.
 - (Clínicas, 17-nov-2026) `crear-invitacion-clinica` no revisa la respuesta de Resend, y `user_already_exists` no está mapeado en `registrar-clinica-invitacion`.
 - (Familia 2, 17-nov-2026) REVOKE de anon por columna en `empresas_proveedoras`: anon conserva SELECT de tabla (`anon=r`, WL_ANON_LEGACY) y la 389 no lo tocó.
+- (Paciente, 20-nov-2026) Un paciente que entra por `/login` (login general) cae en `/sin-panel` («sin rol»): `LoginPage` y
+  `RootRedirect` enrutan solo por `perfiles` y el paciente no tiene fila ahí. Su entrada es `/paciente/login`. Ya estaba en el
+  backlog de la 373; sigue abierto.
+- (Paciente, 20-nov-2026) El portal del paciente muestra «Dr. Médico asignado» (el texto de respaldo de `useWebAppRecetas` pasa
+  por el helper del prefijo).
+- (Recetas, 20-nov-2026) La alerta de alergia («prescrito pese a alergia») no la ve el paciente: la policy de
+  `receta_alertas_alergia` es solo del médico autor y super_admin. Si se decide mostrarla, va por una RPC SECURITY DEFINER (no
+  ampliar la policy).
+- (Citas, 20-nov-2026) DEFAULT rotos de `citas`: `estado` = `'''agendada'''` (con las comillas adentro, viola
+  `citas_estado_valido`) y `motivo`/`notas` = el texto `'NULL'`. Ningún escritor vivo los omite.
+- (Familia 2, 20-nov-2026) Falta cerrar la escritura directa en `disponibilidad_medico`, `facturas` y `expediente_notas.pais_id`.
+- (Front, 20-nov-2026) 21 errores de tsc viejos en archivos tocados por la demo IGSS (PacienteDetallePage 13,
+  PlanesExcepcionesPage 3, CitasPage 2, pdfReceta 1, pdfReceta-print 1, ReportesPage 1): arreglarlos baja el baseline de 74.
+- (Front, 20-nov-2026) `MedicoPrivateRoute` deja pasar `admin` y `super_admin` (excepción de testing) a todo `/medico`.
 - **(QA-MANUAL, cleanup pre-go-live, 17-nov-2026)** la empresa `MedicosPrueba` (quedó activa por una prueba manual) y la "QA-MANUAL Clínica 385" con su admin y su invitación "dup".

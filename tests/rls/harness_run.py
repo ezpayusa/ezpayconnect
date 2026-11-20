@@ -144,6 +144,18 @@ PREFIJOS_ROJOS = ('ROJO', 'FALLO', 'REGRESION', 'FUGA', 'LEAK', 'PERMITIDO', 'VI
 LIMITE_BODY = int(2.9 * 1024 * 1024)
 
 
+def motivo_cr(texto):
+    """Gate de fin de línea (20-nov-2026): None si el cuerpo no trae CR; si trae, el mensaje de por qué NO se envía.
+
+    Un cuerpo en CRLF cambia el md5(prosrc) de las funciones que crea un dry-run inyectado (el de la 396 anotó un md5
+    que no era el de prod por eso). Todo lo que se manda a la base va con 0 CR.
+    """
+    n = texto.count('\r')
+    if n == 0:
+        return None
+    return 'el cuerpo trae %d CR (fin de linea CRLF); no se envia nada a la base: convertir el archivo a LF' % n
+
+
 def quitar_comentarios_linea(texto):
     """Quita SOLO las lineas cuyo primer caracter no blanco es '--'. Un comentario al final de una
     linea con codigo ('SELECT 1; -- x') queda intacto, igual que todo lo demas. Devuelve
@@ -383,6 +395,9 @@ def self_test():
         ('el resto queda igual y en orden', salida == 'BEGIN;\nSELECT 1; -- x\nSELECT 2;\n'),
         ('cuerpo en el techo pasa', tamano_ok(LIMITE_BODY)),
         ('cuerpo sobre el techo aborta', not tamano_ok(LIMITE_BODY + 1)),
+        ('gate de CR: cuerpo en LF pasa', motivo_cr('BEGIN;\nSELECT 1;\nROLLBACK;\n') is None),
+        ('gate de CR: cuerpo en CRLF no se envia y cuenta los CR', (motivo_cr('BEGIN;\r\nSELECT 1;\r\n') or '').startswith('el cuerpo trae 2 CR')),
+        ('gate de CR: un solo CR suelto tambien frena', motivo_cr('SELECT 1;\r') is not None),
     ]
 
     # --- modo partido: marcadores, colector, fusion y request final ---
@@ -476,6 +491,10 @@ def main():
     # rechazaba como "no es JSON valido".
     def enviar(cuerpo):
         """Un request: escribe el cuerpo en un temporal y corre el cliente. Devuelve (rc, stdout, stderr)."""
+        # Defensa por request (cada parte y el final): con CR no se corre el cliente.
+        m = motivo_cr(cuerpo)
+        if m:
+            return 97, '', m
         fd, tmp = tempfile.mkstemp(prefix='harness_body_', suffix='.sql')
         try:
             with io.open(fd, 'w', encoding='utf-8', newline='') as fh:
@@ -490,6 +509,11 @@ def main():
     # Cuerpo a enviar: el harness sin las lineas que son solo comentario (el archivo no cambia).
     with io.open(a.file, 'r', encoding='utf-8', newline='') as fh:
         original = fh.read()
+    # Gate de CR sobre el archivo entero, ANTES de partir o enviar nada (newline='' conserva los CR tal cual).
+    m = motivo_cr(original)
+    if m:
+        print('ROJO: %s. La corrida NO se envio.' % m)
+        return 1
     try:
         trozos = partir(original)
     except ValueError as e:
