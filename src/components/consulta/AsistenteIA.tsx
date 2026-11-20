@@ -5,6 +5,7 @@ import { Badge } from '@/components/ui/badge'
 import { toast } from 'sonner'
 import { supabase } from '@/lib/supabase'
 import { useConsentimientoGate } from '@/hooks/useConsentimientoGate'
+import { codigoErrorAsistenteIA, mensajeErrorAsistenteIA, motivoErrorAsistenteIA } from '@/lib/errorAsistenteIA'
 import {
   Brain,
   Loader2,
@@ -65,15 +66,25 @@ export default function AsistenteIA({ pacienteId, motivoConsulta, subjetivo, obj
         }
       })
 
-      if (error) throw error
-      if (data?.needsConfig) {
-        setNeedsConfig(true)
+      // H14: mismo traductor que el Resumen (src/lib/errorAsistenteIA.ts). supabase-js entrega un
+      // non-2xx como FunctionsHttpError con el body en error.context: el código se lee de ahí, nunca
+      // se muestra «Edge Function returned a non-2xx status code».
+      if (error || data?.error || data?.needsConfig) {
+        const codigo = await codigoErrorAsistenteIA(error, data)
+        if (codigo === 'needs_config') {
+          setNeedsConfig(true)
+          return
+        }
+        const msg = mensajeErrorAsistenteIA(codigo)
+        setError(msg)
+        toast.error(msg)
         return
       }
       setSugerencias(data?.sugerencias || null)
     } catch (e: any) {
-      setError(e.message || 'Error al consultar IA')
-      toast.error('Error: ' + e.message)
+      const msg = await motivoErrorAsistenteIA(e)
+      setError(msg)
+      toast.error(msg)
     } finally {
       setLoading(false)
     }
