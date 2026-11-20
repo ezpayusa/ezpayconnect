@@ -279,6 +279,38 @@ $fn$;
 EXCEPTION WHEN OTHERS THEN
   PERFORM set_config('probe.m397_helper', 'FALLO (no se pudo crear pg_temp.m397_estado: '||SQLSTATE||' '||SQLERRM||')', false);
 END $$;
+-- ============================================================================
+-- MIG 398 — helper de ESTADO, en el PRELUDIO: pg_temp.m398_estado() lo usan M398_FX + P1189-P1191 (final de la parte 2).
+-- Solo lee catálogo.
+--   'post' = trigger trg_facturas_guard presente, authenticated SIN UPDATE de tabla y CON UPDATE (estado), los 4 CHECKs
+--            facturas_* y sin las 3 policies duplicadas (medicos_*_facturas);
+--   'pre'  = sin trigger, UPDATE de tabla para authenticated, sin privilegios por columna, sin CHECKs y con las 3 duplicadas;
+--   cualquier otra cosa = 'parcial (...)', que cada probe publica como ROJO.
+-- ============================================================================
+DO $$
+BEGIN
+  EXECUTE $fn$
+CREATE OR REPLACE FUNCTION pg_temp.m398_estado() RETURNS text LANGUAGE plpgsql STABLE AS $body$
+DECLARE t_upd boolean; c_upd boolean; n_acl int; n_trg int; n_chk int; n_dup int;
+BEGIN
+  t_upd := has_table_privilege('authenticated', 'public.facturas', 'UPDATE');
+  c_upd := has_column_privilege('authenticated', 'public.facturas', 'estado', 'UPDATE');
+  n_acl := (SELECT count(*) FROM pg_attribute a WHERE a.attrelid = 'public.facturas'::regclass AND a.attnum > 0 AND NOT a.attisdropped AND a.attacl IS NOT NULL);
+  n_trg := (SELECT count(*) FROM pg_trigger t WHERE t.tgrelid = 'public.facturas'::regclass AND NOT t.tgisinternal AND t.tgname = 'trg_facturas_guard');
+  n_chk := (SELECT count(*) FROM pg_constraint c WHERE c.conrelid = 'public.facturas'::regclass AND c.contype = 'c'
+              AND c.conname IN ('facturas_estado_valido', 'facturas_cantidad_positiva', 'facturas_precio_no_negativo', 'facturas_descuento_valido'));
+  n_dup := (SELECT count(*) FROM pg_policy pl WHERE pl.polrelid = 'public.facturas'::regclass
+              AND pl.polname IN ('medicos_crear_facturas', 'medicos_ver_facturas', 'medicos_actualizar_facturas'));
+  IF NOT t_upd AND c_upd AND n_acl = 1 AND n_trg = 1 AND n_chk = 4 AND n_dup = 0 THEN RETURN 'post'; END IF;
+  IF t_upd AND n_acl = 0 AND n_trg = 0 AND n_chk = 0 AND n_dup = 3 THEN RETURN 'pre'; END IF;
+  RETURN 'parcial (UPDATE de tabla '||t_upd::text||', UPDATE (estado) '||c_upd::text||', columnas con attacl '||n_acl
+         ||', trigger '||n_trg||', CHECKs '||n_chk||', policies duplicadas '||n_dup||')';
+END
+$body$
+$fn$;
+EXCEPTION WHEN OTHERS THEN
+  PERFORM set_config('probe.m398_helper', 'FALLO (no se pudo crear pg_temp.m398_estado: '||SQLSTATE||' '||SQLERRM||')', false);
+END $$;
 -- @@HARNESS_PRELUDIO_FIN@@
 
 -- ============================================================
@@ -30514,7 +30546,9 @@ BEGIN
           WHEN 'expediente_notas' THEN
             INSERT INTO public.expediente_notas (paciente_id, medico_id, subjetivo) VALUES (c_pac, v_med, 'P929 nota');
           WHEN 'facturas' THEN
-            INSERT INTO public.facturas (medico_id, concepto, precio_unitario) VALUES (v_med, 'P929 factura', 1);
+            -- 20-nov-2026, mig 398: el guard exige un paciente que el médico atiende (FA002 sin paciente); el 23 lo atiende
+            -- v_med por la cita sembrada arriba. Con paciente explícito la receta vale en pre y en post.
+            INSERT INTO public.facturas (paciente_id, medico_id, concepto, precio_unitario) VALUES (c_pac, v_med, 'P929 factura', 1);
           WHEN 'farmacias' THEN
             INSERT INTO public.farmacias (nombre, tipo, pais_id) VALUES ('P929 farmacia', 'farmacia', v_pais);
           WHEN 'pacientes' THEN
@@ -44584,6 +44618,298 @@ EXCEPTION WHEN OTHERS THEN
 END $$;
 SELECT set_config('role', 'none', true);
 
+-- ================================================================================
+-- MIG 398 — facturas: solo el médico activo factura a sus pacientes y la factura es inmutable salvo el estado
+-- (M398_FX + P1189-P1191).
+-- El ESTADO sale de pg_temp.m398_estado(), que vive en el PRELUDIO. Con 'pre' los probes publican
+-- 'PENDIENTE (estado de la 398: pre)'; un estado parcial es ROJO.
+-- Actores por id EXPLÍCITO o por rol con ORDER BY: medico.qa 09d243d5 (atiende al paciente 23), el usuario de auth del
+-- paciente 23, secretaria.qa 63591ecb, clinica.qa 7e9ee700 (admin_clinica), farmacia.qa cb2fd5c6, el primer super_admin y
+-- el primer admin_pais activos, el primer médico activo que no es medico.qa (no dueño) y el primer dueño
+-- que NO es médico activo con una factura pendiente (hoy e56879c0, perfil 'cliente' inactivo, dueño de las 3 facturas
+-- vivas). medico.qa se desactiva dentro del savepoint de P1190 para medir al médico inactivo. pg_temp.m398_q impersona, ejecuta un SQL y devuelve 'OK:<valor>' o 'ERR:<SQLSTATE> …' SOLO para
+-- 42501, 23514 y FA001-FA004 (cualquier otro SQLSTATE llega al handler del probe y publica FALLO). Los probes que tocan
+-- filas lo hacen en un savepoint que descartan con RAISE P0999 y comparan pg_temp.m398_snap() (facturas) antes y después.
+-- ================================================================================
+DO $$
+DECLARE est text;
+BEGIN
+  EXECUTE $fn$
+CREATE OR REPLACE FUNCTION pg_temp.m398_q(p_uid uuid, p_sql text, p_rol text DEFAULT 'authenticated') RETURNS text LANGUAGE plpgsql AS $body$
+DECLARE v text;
+BEGIN
+  BEGIN
+    PERFORM set_config('request.jwt.claims', CASE WHEN p_uid IS NULL THEN json_build_object('role', p_rol)::text
+                                                  ELSE json_build_object('sub', p_uid, 'role', p_rol)::text END, true);
+    PERFORM set_config('role', p_rol, true);
+    EXECUTE p_sql INTO v;
+    PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
+    RETURN 'OK:'||COALESCE(v, 'NULL');
+  EXCEPTION WHEN SQLSTATE '42501' OR SQLSTATE '23514' OR SQLSTATE 'FA001' OR SQLSTATE 'FA002' OR SQLSTATE 'FA003' OR SQLSTATE 'FA004' THEN
+    PERFORM set_config('role', 'none', true); PERFORM set_config('request.jwt.claims', '', true);
+    RETURN 'ERR:'||SQLSTATE||' '||left(SQLERRM, 100);
+  END;
+END
+$body$
+$fn$;
+  EXECUTE $fn$
+CREATE OR REPLACE FUNCTION pg_temp.m398_snap() RETURNS text LANGUAGE sql AS $body$
+  SELECT count(*)||' '||COALESCE(md5(string_agg(t::text, E'\n' ORDER BY t.id)), '-') FROM public.facturas t
+$body$
+$fn$;
+  EXECUTE $fn$
+CREATE OR REPLACE FUNCTION pg_temp.m398_veredicto(p_det text, p_pre text, p_post text, p_ok text) RETURNS text LANGUAGE sql IMMUTABLE AS $body$
+  SELECT CASE
+    WHEN p_pre IS DISTINCT FROM p_post THEN 'FALLO (no restauró facturas; '||COALESCE(p_det, '')||')'
+    WHEN p_det LIKE '%FUGA:%' THEN 'FUGA ('||p_det||')'
+    WHEN p_det <> '' THEN 'FALLO ('||p_det||')'
+    ELSE 'OK ('||p_ok||')' END
+$body$
+$fn$;
+  EXECUTE $fn$
+CREATE OR REPLACE FUNCTION pg_temp.m398_ins(p_pac text, p_med uuid, p_cant numeric, p_precio numeric, p_desc numeric, p_estado text, p_pais uuid) RETURNS text LANGUAGE sql STABLE AS $body$
+  SELECT format('WITH i AS (INSERT INTO public.facturas (paciente_id, medico_id, concepto, cantidad, precio_unitario, descuento, metodo_pago, estado, notas, pais_id) '
+             || 'VALUES (%s, %L, %L, %s, %s, %s, NULL, %L, NULL, %L) RETURNING id) SELECT id::text FROM i',
+                p_pac, p_med, 'P398 QA', p_cant, p_precio, p_desc, p_estado, p_pais)
+$body$
+$fn$;
+  EXECUTE $fn$
+CREATE OR REPLACE FUNCTION pg_temp.m398_upd(p_id text, p_set text) RETURNS text LANGUAGE sql STABLE AS $body$
+  SELECT format('WITH u AS (UPDATE public.facturas SET %s WHERE id = %s RETURNING estado) SELECT count(*)||'':''||COALESCE(string_agg(estado, '',''), ''-'') FROM u', p_set, p_id)
+$body$
+$fn$;
+  est := pg_temp.m398_estado();
+  PERFORM set_config('probe.m398_fx', CASE WHEN est = 'pre' THEN 'PENDIENTE (estado de la 398: pre; helpers de pg_temp creados)'
+    WHEN est = 'post' THEN 'OK (helpers de pg_temp creados; estado de la 398: post)'
+    ELSE 'ROJO (398 '||est||'; helpers de pg_temp creados)' END, false);
+EXCEPTION WHEN OTHERS THEN
+  PERFORM set_config('probe.m398_fx', 'FALLO ('||SQLSTATE||' '||SQLERRM||')', false);
+END $$;
+SELECT set_config('role', 'none', true);
+
+-- ---------------- P1189 398: catálogo — privilegios, guard INVOKER, trigger, CHECKs y las 4 policies ----------------
+DO $$
+DECLARE est text; d text := '';
+BEGIN
+  est := pg_temp.m398_estado();
+  IF est = 'pre' THEN PERFORM set_config('probe.p1189', 'PENDIENTE (estado de la 398: pre)', false); RETURN; END IF;
+  IF est <> 'post' THEN PERFORM set_config('probe.p1189', 'ROJO (398 '||est||')', false); RETURN; END IF;
+  IF (SELECT string_agg(x::text, ',' ORDER BY x::text) FROM pg_class c, unnest(c.relacl) x WHERE c.oid = 'public.facturas'::regclass)
+     IS DISTINCT FROM 'authenticated=ar/postgres,postgres=arwdDxtm/postgres,service_role=arwdDxtm/postgres' THEN
+    d := d||'relacl de facturas = '||COALESCE((SELECT relacl::text FROM pg_class WHERE oid = 'public.facturas'::regclass), '-')||'; ';
+  END IF;
+  IF (SELECT string_agg(a.attname||'='||a.attacl::text, ',' ORDER BY a.attnum) FROM pg_attribute a
+       WHERE a.attrelid = 'public.facturas'::regclass AND a.attnum > 0 AND NOT a.attisdropped AND a.attacl IS NOT NULL)
+     IS DISTINCT FROM 'estado={authenticated=w/postgres}' THEN
+    d := d||'privilegios por columna distintos de UPDATE (estado); ';
+  END IF;
+  IF has_table_privilege('authenticated', 'public.facturas', 'DELETE') OR has_any_column_privilege('anon', 'public.facturas', 'SELECT,INSERT,UPDATE,REFERENCES') THEN
+    d := d||'FUGA: DELETE de authenticated o privilegio de anon; ';
+  END IF;
+  IF (SELECT p.prosecdef::text||' '||COALESCE(p.proconfig::text, '-')||' '||COALESCE(p.proacl::text, '-')
+        FROM pg_proc p WHERE p.oid = to_regprocedure('private.facturas_guard()'))
+     IS DISTINCT FROM 'false {"search_path=\"\""} {postgres=X/postgres}' THEN
+    d := d||'private.facturas_guard no es INVOKER con search_path vacío y EXECUTE solo postgres; ';
+  END IF;
+  IF (SELECT string_agg(t.tgname||' '||t.tgenabled::text||' '||t.tgfoid::regprocedure::text||' '||t.tgtype::text, ',')
+        FROM pg_trigger t WHERE t.tgrelid = 'public.facturas'::regclass AND NOT t.tgisinternal)
+     IS DISTINCT FROM 'trg_facturas_guard O private.facturas_guard() 23' THEN
+    d := d||'trigger de facturas distinto de trg_facturas_guard BEFORE INSERT OR UPDATE; ';
+  END IF;
+  IF (SELECT string_agg(c.conname||':'||c.convalidated::text||':'||pg_get_constraintdef(c.oid), E'\n' ORDER BY c.conname)
+        FROM pg_constraint c WHERE c.conrelid = 'public.facturas'::regclass AND c.contype = 'c')
+     IS DISTINCT FROM E'facturas_cantidad_positiva:true:CHECK (((cantidad IS NOT NULL) AND (cantidad > 0)))\n'
+                    ||E'facturas_descuento_valido:true:CHECK (((descuento IS NOT NULL) AND (descuento >= (0)::numeric) AND (descuento <= ((cantidad)::numeric * precio_unitario))))\n'
+                    ||E'facturas_estado_valido:true:CHECK (((estado IS NOT NULL) AND ((estado)::text = ANY ((ARRAY[''pendiente''::character varying, ''pagada''::character varying, ''cancelada''::character varying])::text[]))))\n'
+                    ||'facturas_precio_no_negativo:true:CHECK ((precio_unitario >= (0)::numeric))' THEN
+    d := d||'CHECKs de facturas distintos de los 4 de la 398; ';
+  END IF;
+  IF (SELECT string_agg(pl.polname||'|'||pl.polcmd::text||'|'||ARRAY(SELECT pg_get_userbyid(x) FROM unnest(pl.polroles) x ORDER BY 1)::text||'|'||
+                        COALESCE(pg_get_expr(pl.polqual, pl.polrelid), '-')||'|'||COALESCE(pg_get_expr(pl.polwithcheck, pl.polrelid), '-'), E'\n' ORDER BY pl.polname COLLATE "C")
+        FROM pg_policy pl WHERE pl.polrelid = 'public.facturas'::regclass)
+     IS DISTINCT FROM E'Admin ve facturas de su pais|r|{authenticated}|((get_auth_user_rol() = ''super_admin''::text) OR ((get_auth_user_rol() = ''admin_pais''::text) AND (pais_id = get_auth_user_pais_id())))|-\n'
+                    ||E'Medico actualiza sus facturas|w|{authenticated}|(medico_id = auth.uid())|(medico_id = auth.uid())\n'
+                    ||E'Medico crea sus facturas|a|{authenticated}|-|(medico_id = auth.uid())\n'
+                    ||'Medico ve sus facturas|r|{authenticated}|(medico_id = auth.uid())|-' THEN
+    d := d||'policies de facturas distintas de las 4 de la 398; ';
+  END IF;
+  PERFORM set_config('probe.p1189', CASE WHEN d LIKE '%FUGA:%' THEN 'FUGA ('||d||')' WHEN d <> '' THEN 'FALLO ('||d||')'
+    ELSE 'OK (398: authenticated SELECT/INSERT y UPDATE solo de estado, sin DELETE; guard INVOKER con search_path vacío; trigger BEFORE INSERT OR UPDATE; 4 CHECKs validados; 4 policies)' END, false);
+EXCEPTION WHEN OTHERS THEN
+  PERFORM set_config('probe.p1189', 'FALLO ('||SQLSTATE||' '||SQLERRM||')', false);
+END $$;
+SELECT set_config('role', 'none', true);
+
+-- ---------------- P1190 398: por actor — solo el médico activo factura a sus pacientes; después, solo el estado pendiente -> pagada|cancelada ----------------
+DO $$
+DECLARE
+  est text; d text := ''; pre text; post text; a text; f1 text; f2 text; f3 text; f4 text;
+  c_med CONSTANT uuid := '09d243d5-b222-482a-9762-94a582e9e752';
+  c_sec CONSTANT uuid := '63591ecb-26d7-49ef-96c8-265c6bdaa916';
+  c_adc CONSTANT uuid := '7e9ee700-48ac-43e1-812b-777518b971ec';
+  c_farm CONSTANT uuid := 'cb2fd5c6-e154-4ce5-b960-fb13c039d1d8';
+  v_pais uuid; v_otro_pais uuid; v_pacu uuid; v_sa uuid; v_adp uuid; v_otro_med uuid; v_inact uuid; v_f_inact bigint; v_pac_ajeno bigint;
+  r record;
+BEGIN
+  est := pg_temp.m398_estado();
+  IF est = 'pre' THEN PERFORM set_config('probe.p1190', 'PENDIENTE (estado de la 398: pre)', false); RETURN; END IF;
+  IF est <> 'post' THEN PERFORM set_config('probe.p1190', 'ROJO (398 '||est||')', false); RETURN; END IF;
+  pre := pg_temp.m398_snap();
+  BEGIN
+    v_pais := (SELECT p.pais_id FROM public.perfiles p WHERE p.id = c_med AND p.rol = 'medico' AND p.activo);
+    v_otro_pais := (SELECT cp.id FROM public.configuracion_pais cp WHERE cp.id IS DISTINCT FROM v_pais ORDER BY cp.id LIMIT 1);
+    v_pacu := (SELECT pa.auth_user_id FROM public.pacientes pa WHERE pa.id = 23);
+    v_sa := (SELECT p.id FROM public.perfiles p WHERE p.rol = 'super_admin' AND p.activo ORDER BY p.id LIMIT 1);
+    v_adp := (SELECT p.id FROM public.perfiles p WHERE p.rol = 'admin_pais' AND p.activo ORDER BY p.id LIMIT 1);
+    v_otro_med := (SELECT p.id FROM public.perfiles p WHERE p.rol = 'medico' AND p.activo AND p.id <> c_med ORDER BY p.id LIMIT 1);
+    SELECT p.id, f.id INTO v_inact, v_f_inact FROM public.perfiles p JOIN public.facturas f ON f.medico_id = p.id
+     WHERE (p.rol IS DISTINCT FROM 'medico' OR p.activo IS NOT TRUE) AND f.estado = 'pendiente' ORDER BY p.id, f.id LIMIT 1;
+    v_pac_ajeno := (SELECT pa.id FROM public.pacientes pa WHERE pa.medico_id IS DISTINCT FROM c_med
+                      AND NOT EXISTS (SELECT 1 FROM public.citas c WHERE c.medico_id = c_med AND c.paciente_id = pa.id) ORDER BY pa.id LIMIT 1);
+    IF v_pais IS NULL OR v_otro_pais IS NULL OR v_pacu IS NULL OR v_sa IS NULL OR v_adp IS NULL OR v_otro_med IS NULL OR v_pac_ajeno IS NULL
+       OR NOT EXISTS (SELECT 1 FROM public.perfiles p WHERE p.id = c_sec) OR NOT EXISTS (SELECT 1 FROM public.perfiles p WHERE p.id = c_adc)
+       OR NOT EXISTS (SELECT 1 FROM auth.users u WHERE u.id = c_farm) THEN
+      RAISE EXCEPTION 'fixture roto: P1190 sin medico.qa activo con país (%), otro país, paciente 23 con cuenta, super_admin, admin_pais, otro médico activo, paciente ajeno (%), secretaria, admin_clinica o farmacia.qa', v_pais, v_pac_ajeno;
+    END IF;
+    -- 1) el médico activo factura al paciente que atiende, mandando OTRO país: OK y el país queda el de su perfil, fecha de hoy
+    f1 := pg_temp.m398_q(c_med, pg_temp.m398_ins('23', c_med, 1, 100, 10, 'pendiente', v_otro_pais));
+    IF f1 NOT LIKE 'OK:%' THEN RAISE EXCEPTION 'fixture roto: P1190 medico.qa no pudo facturar al paciente 23: %', f1; END IF;
+    f1 := substr(f1, 4);
+    IF (SELECT f.pais_id = v_pais AND f.fecha_emision = CURRENT_DATE AND f.estado = 'pendiente' AND f.total = 90 FROM public.facturas f WHERE f.id = f1::bigint) IS NOT TRUE THEN
+      d := d||'FUGA: la factura nueva no quedó con el país del médico, fecha de hoy, pendiente y total 90; ';
+    END IF;
+    f2 := pg_temp.m398_q(c_med, pg_temp.m398_ins('23', c_med, 2, 50, 0, 'pagada', v_pais));
+    IF f2 NOT LIKE 'OK:%' THEN d := d||'factura nueva pagada = '||left(f2, 90)||'; '; END IF;
+    f2 := substr(f2, 4);
+    f3 := pg_temp.m398_q(c_med, pg_temp.m398_ins('23', c_med, 1, 30, 0, 'pendiente', v_pais));
+    IF f3 NOT LIKE 'OK:%' THEN d := d||'tercera factura = '||left(f3, 90)||'; '; END IF;
+    f3 := substr(f3, 4);
+    -- 2) INSERT rechazados: [actor, sql, prefijo esperado]
+    FOR r IN SELECT * FROM (VALUES
+        ('paciente ajeno',            c_med,      pg_temp.m398_ins(v_pac_ajeno::text, c_med, 1, 100, 0, 'pendiente', v_pais), 'ERR:FA002'),
+        ('sin paciente',              c_med,      pg_temp.m398_ins('NULL', c_med, 1, 100, 0, 'pendiente', v_pais), 'ERR:FA002'),
+        ('estado inicial cancelada',  c_med,      pg_temp.m398_ins('23', c_med, 1, 100, 0, 'cancelada', v_pais), 'ERR:FA003'),
+        ('medico_id de otro',         c_med,      pg_temp.m398_ins('23', v_otro_med, 1, 100, 0, 'pendiente', v_pais), 'ERR:42501'),
+        ('paciente 23',               v_pacu,     pg_temp.m398_ins('23', v_pacu, 1, 100, 0, 'pendiente', v_pais), 'ERR:FA001'),
+        ('farmacia.qa',               c_farm,     pg_temp.m398_ins('23', c_farm, 1, 100, 0, 'pendiente', v_pais), 'ERR:FA001'),
+        ('secretaria',                c_sec,      pg_temp.m398_ins('23', c_sec, 1, 100, 0, 'pendiente', v_pais), 'ERR:FA001'),
+        ('admin_clinica',             c_adc,      pg_temp.m398_ins('23', c_adc, 1, 100, 0, 'pendiente', v_pais), 'ERR:FA001'),
+        ('admin_pais',                v_adp,      pg_temp.m398_ins('23', v_adp, 1, 100, 0, 'pendiente', v_pais), 'ERR:FA001'),
+        ('super_admin',               v_sa,       pg_temp.m398_ins('23', v_sa, 1, 100, 0, 'pendiente', v_pais), 'ERR:FA001')
+      ) x(caso, uid, q, esperado)
+    LOOP
+      a := pg_temp.m398_q(r.uid, r.q);
+      IF a NOT LIKE r.esperado||'%' THEN d := d||CASE WHEN a LIKE 'OK:%' THEN 'FUGA: ' ELSE '' END||'INSERT '||r.caso||' = '||left(a, 90)||' (esperado '||r.esperado||'); '; END IF;
+    END LOOP;
+    a := pg_temp.m398_q(NULL, pg_temp.m398_ins('23', c_med, 1, 100, 0, 'pendiente', v_pais), 'anon');
+    IF a NOT LIKE 'ERR:42501%' THEN d := d||CASE WHEN a LIKE 'OK:%' THEN 'FUGA: ' ELSE '' END||'INSERT anon = '||left(a, 90)||'; '; END IF;
+    -- 3) el dueño cambia otras columnas: 42501 de privilegio; DELETE: 42501
+    FOR r IN SELECT * FROM (VALUES ('paciente_id = 9'), ('pais_id = '||quote_literal(v_otro_pais)), ('precio_unitario = 0'),
+                                   ('descuento = 0'), ('concepto = concepto'), ('medico_id = medico_id')) x(s) LOOP
+      a := pg_temp.m398_q(c_med, pg_temp.m398_upd(f1, r.s));
+      IF a NOT LIKE 'ERR:42501%' THEN d := d||CASE WHEN a LIKE 'OK:%' THEN 'FUGA: ' ELSE '' END||'UPDATE '||r.s||' = '||left(a, 90)||'; '; END IF;
+    END LOOP;
+    a := pg_temp.m398_q(c_med, format('WITH x AS (DELETE FROM public.facturas WHERE id = %s RETURNING 1) SELECT count(*)::text FROM x', f1));
+    IF a NOT LIKE 'ERR:42501%' THEN d := d||CASE WHEN a LIKE 'OK:%' THEN 'FUGA: ' ELSE '' END||'DELETE del dueño = '||left(a, 90)||'; '; END IF;
+    -- 4) estados: pendiente -> pagada (lo que hace el front) y pendiente -> cancelada OK; lo demás FA004
+    FOR r IN SELECT * FROM (VALUES
+        ('f1 pendiente -> pagada',    c_med,      f1, 'estado = ''pagada''',    'OK:1:pagada'),
+        ('f1 pagada -> pendiente',    c_med,      f1, 'estado = ''pendiente''', 'ERR:FA004'),
+        ('f1 pagada -> pagada',       c_med,      f1, 'estado = ''pagada''',    'ERR:FA004'),
+        ('f2 pagada -> cancelada',    c_med,      f2, 'estado = ''cancelada''', 'ERR:FA004'),
+        ('f3 pendiente -> vencida',   c_med,      f3, 'estado = ''vencida''',   'ERR:FA004'),
+        ('f3 pendiente -> cancelada', c_med,      f3, 'estado = ''cancelada''', 'OK:1:cancelada'),
+        ('f3 cancelada -> pagada',    c_med,      f3, 'estado = ''pagada''',    'ERR:FA004'),
+        ('f2 otro médico (no dueño)', v_otro_med, f2, 'estado = ''cancelada''', 'OK:0:-'),
+        ('f2 admin_pais',             v_adp,      f2, 'estado = ''cancelada''', 'OK:0:-'),
+        ('f2 super_admin',            v_sa,       f2, 'estado = ''cancelada''', 'OK:0:-')
+      ) x(caso, uid, fid, s, esperado)
+    LOOP
+      a := pg_temp.m398_q(r.uid, pg_temp.m398_upd(r.fid, r.s));
+      IF a IS DISTINCT FROM r.esperado AND NOT (r.esperado LIKE 'ERR:%' AND a LIKE r.esperado||'%') THEN
+        d := d||CASE WHEN r.esperado LIKE 'ERR:%' OR r.esperado LIKE 'OK:0%' THEN 'FUGA: ' ELSE '' END||r.caso||' = '||left(COALESCE(a, 'NULL'), 90)||' (esperado '||r.esperado||'); ';
+      END IF;
+    END LOOP;
+    -- 5) un dueño que no es médico activo no marca pagada su factura (si hay uno con factura pendiente en la base)
+    IF v_inact IS NOT NULL THEN
+      a := pg_temp.m398_q(v_inact, pg_temp.m398_upd(v_f_inact::text, 'estado = ''pagada'''));
+      IF a NOT LIKE 'ERR:FA001%' THEN d := d||CASE WHEN a LIKE 'OK:1%' THEN 'FUGA: ' ELSE '' END||'dueño no médico activo marca pagada = '||left(a, 90)||'; '; END IF;
+    END IF;
+    -- 6) la pantalla: la consulta de useFacturas (facturas del país + embed de pacientes) como medico.qa y el conteo del admin_pais
+    a := pg_temp.m398_q(c_med, format('SELECT count(*)||'':''||count(p.id) FROM (SELECT f.* FROM public.facturas f WHERE f.pais_id = %L ORDER BY f.fecha_emision DESC) x '
+                                   ||'LEFT JOIN public.pacientes p ON p.id = x.paciente_id', v_pais));
+    IF a !~ '^OK:[0-9]+:[0-9]+$' THEN
+      d := d||'consulta de FacturasPage como medico.qa = '||left(a, 90)||'; ';
+    ELSIF split_part(substr(a, 4), ':', 1)::int < 3 OR split_part(substr(a, 4), ':', 1) <> split_part(substr(a, 4), ':', 2) THEN
+      d := d||'consulta de FacturasPage como medico.qa = '||a||' (esperado >= 3 facturas, todas con paciente); ';
+    END IF;
+    a := pg_temp.m398_q(v_adp, format('SELECT count(*)::text FROM public.facturas WHERE pais_id = %L', v_pais));
+    IF a NOT LIKE 'OK:%' THEN d := d||'conteo del admin_pais = '||left(a, 90)||'; '; END IF;
+    -- 7) service_role queda exento del guard
+    a := pg_temp.m398_q(NULL, pg_temp.m398_upd(f1, 'concepto = concepto'), 'service_role');
+    IF a IS DISTINCT FROM 'OK:1:pagada' THEN d := d||'service_role exento = '||left(COALESCE(a, 'NULL'), 90)||'; '; END IF;
+    -- 8) medico.qa desactivado (como postgres, dentro de este savepoint): ya no emite ni marca pagada su factura pendiente
+    f4 := pg_temp.m398_q(c_med, pg_temp.m398_ins('23', c_med, 1, 40, 0, 'pendiente', v_pais));
+    IF f4 NOT LIKE 'OK:%' THEN RAISE EXCEPTION 'fixture roto: P1190 medico.qa no pudo emitir la cuarta factura: %', f4; END IF;
+    f4 := substr(f4, 4);
+    UPDATE public.perfiles SET activo = false WHERE id = c_med;
+    IF (SELECT p.activo FROM public.perfiles p WHERE p.id = c_med) IS NOT FALSE THEN RAISE EXCEPTION 'fixture roto: P1190 no pudo desactivar a medico.qa'; END IF;
+    a := pg_temp.m398_q(c_med, pg_temp.m398_upd(f4, 'estado = ''pagada'''));
+    IF a NOT LIKE 'ERR:FA001%' THEN d := d||CASE WHEN a LIKE 'OK:1%' THEN 'FUGA: ' ELSE '' END||'médico inactivo marca pagada = '||left(a, 90)||'; '; END IF;
+    a := pg_temp.m398_q(c_med, pg_temp.m398_ins('23', c_med, 1, 40, 0, 'pendiente', v_pais));
+    IF a NOT LIKE 'ERR:FA001%' THEN d := d||CASE WHEN a LIKE 'OK:%' THEN 'FUGA: ' ELSE '' END||'médico inactivo emite = '||left(a, 90)||'; '; END IF;
+    RAISE EXCEPTION 'P1190 descarte' USING ERRCODE = 'P0999';
+  EXCEPTION WHEN SQLSTATE 'P0999' THEN NULL;
+  END;
+  post := pg_temp.m398_snap();
+  PERFORM set_config('probe.p1190', pg_temp.m398_veredicto(d, pre, post,
+    '398: medico.qa factura al paciente 23 con su país y fecha de hoy; paciente ajeno o NULL FA002, estado inicial cancelada FA003, medico_id ajeno y anon 42501; '
+    ||'paciente, farmacia, secretaria, admin_clinica, admin_pais y super_admin FA001; otras columnas y DELETE 42501; pendiente -> pagada|cancelada OK, el resto FA004; '
+    ||'no dueños 0 filas; medico.qa desactivado no emite ni marca pagada (FA001)'
+    ||CASE WHEN v_inact IS NULL THEN ' (sin dueño no-médico con factura pendiente: caso no medido)' ELSE '; dueño no-médico inactivo FA001' END
+    ||'; FacturasPage y conteo del admin_pais andan; service_role exento; descartado'), false);
+EXCEPTION WHEN OTHERS THEN
+  PERFORM set_config('probe.p1190', CASE WHEN SQLERRM LIKE 'fixture roto%' THEN 'ROJO ('||SQLERRM||')' ELSE 'FALLO ('||SQLSTATE||' '||SQLERRM||')' END, false);
+END $$;
+SELECT set_config('role', 'none', true);
+
+-- ---------------- P1191 398: CHECKs — montos inválidos dan 23514 aunque el guard deje pasar (médico y service_role) ----------------
+DO $$
+DECLARE
+  est text; d text := ''; pre text; post text; a text; v_pais uuid; r record;
+  c_med CONSTANT uuid := '09d243d5-b222-482a-9762-94a582e9e752';
+BEGIN
+  est := pg_temp.m398_estado();
+  IF est = 'pre' THEN PERFORM set_config('probe.p1191', 'PENDIENTE (estado de la 398: pre)', false); RETURN; END IF;
+  IF est <> 'post' THEN PERFORM set_config('probe.p1191', 'ROJO (398 '||est||')', false); RETURN; END IF;
+  pre := pg_temp.m398_snap();
+  BEGIN
+    v_pais := (SELECT p.pais_id FROM public.perfiles p WHERE p.id = c_med AND p.rol = 'medico' AND p.activo);
+    IF v_pais IS NULL THEN RAISE EXCEPTION 'fixture roto: P1191 sin medico.qa activo con país'; END IF;
+    FOR r IN SELECT * FROM (VALUES
+        ('descuento > subtotal', 1::numeric, 100::numeric, 150::numeric), ('descuento negativo', 1, 100, -1),
+        ('precio negativo', 1, -5, 0), ('cantidad 0', 0, 100, 0)) x(caso, cant, precio, descu)
+    LOOP
+      a := pg_temp.m398_q(c_med, pg_temp.m398_ins('23', c_med, r.cant, r.precio, r.descu, 'pendiente', v_pais));
+      IF a NOT LIKE 'ERR:23514%' THEN d := d||CASE WHEN a LIKE 'OK:%' THEN 'FUGA: ' ELSE '' END||'médico, '||r.caso||' = '||left(a, 90)||'; '; END IF;
+      a := pg_temp.m398_q(NULL, pg_temp.m398_ins('23', c_med, r.cant, r.precio, r.descu, 'pendiente', v_pais), 'service_role');
+      IF a NOT LIKE 'ERR:23514%' THEN d := d||CASE WHEN a LIKE 'OK:%' THEN 'FUGA: ' ELSE '' END||'service_role, '||r.caso||' = '||left(a, 90)||'; '; END IF;
+    END LOOP;
+    a := pg_temp.m398_q(NULL, pg_temp.m398_ins('23', c_med, 1, 100, 0, 'vencida', v_pais), 'service_role');
+    IF a NOT LIKE 'ERR:23514%' THEN d := d||CASE WHEN a LIKE 'OK:%' THEN 'FUGA: ' ELSE '' END||'service_role, estado vencida = '||left(a, 90)||'; '; END IF;
+    a := pg_temp.m398_q(c_med, pg_temp.m398_ins('23', c_med, 1, 100, 100, 'pendiente', v_pais));
+    IF a NOT LIKE 'OK:%' THEN d := d||'descuento = subtotal (borde válido) = '||left(a, 90)||'; '; END IF;
+    RAISE EXCEPTION 'P1191 descarte' USING ERRCODE = 'P0999';
+  EXCEPTION WHEN SQLSTATE 'P0999' THEN NULL;
+  END;
+  post := pg_temp.m398_snap();
+  PERFORM set_config('probe.p1191', pg_temp.m398_veredicto(d, pre, post,
+    '398: descuento > subtotal, descuento negativo, precio negativo y cantidad 0 dan 23514 al médico y a service_role; estado vencida 23514; descuento = subtotal pasa; descartado'), false);
+EXCEPTION WHEN OTHERS THEN
+  PERFORM set_config('probe.p1191', CASE WHEN SQLERRM LIKE 'fixture roto%' THEN 'ROJO ('||SQLERRM||')' ELSE 'FALLO ('||SQLSTATE||' '||SQLERRM||')' END, false);
+END $$;
+SELECT set_config('role', 'none', true);
+
 -- @@HARNESS_RESULTADOS@@
 -- ===== Veredictos como result set =====
 SELECT 'P1_anon_insert_citas'              AS probe, current_setting('probe.p1', true)  AS verdict, 'BLOQUEADO' AS esperado_post_fix
@@ -45874,6 +46200,10 @@ UNION ALL SELECT 'P1185_tokens_sin_select_columnas_397',  current_setting('probe
 UNION ALL SELECT 'P1186_paciente_lista_y_qr_397',  current_setting('probe.p1186', true), 'OK (397: lista y QR por la RPC; SELECT del token 42501; pre: PENDIENTE)'
 UNION ALL SELECT 'P1187_roles_sin_tokens_397',  current_setting('probe.p1187', true), 'OK (397: tokens y SELECT * 42501; consultas del front siguen; pre: PENDIENTE)'
 UNION ALL SELECT 'P1188_tokens_formados_y_despacho_397',  current_setting('probe.p1188', true), 'OK (397: tokens de 64 hex; despacho por el token vigente; pre: PENDIENTE)'
+UNION ALL SELECT 'M398_FX_facturas_cierre',  current_setting('probe.m398_fx', true), 'OK (helpers de pg_temp creados; estado de la 398: post; pre: PENDIENTE; parcial: ROJO)'
+UNION ALL SELECT 'P1189_facturas_catalogo_398',  current_setting('probe.p1189', true), 'OK (398: UPDATE solo de estado, sin DELETE; guard INVOKER; trigger; 4 CHECKs; 4 policies; pre: PENDIENTE)'
+UNION ALL SELECT 'P1190_facturas_por_actor_398',  current_setting('probe.p1190', true), 'OK (398: solo el médico activo factura a sus pacientes; FA001-FA004; inmutable salvo estado; pre: PENDIENTE)'
+UNION ALL SELECT 'P1191_facturas_checks_398',  current_setting('probe.p1191', true), 'OK (398: montos y estado inválidos 23514 también para service_role; pre: PENDIENTE)'
 UNION ALL SELECT 'P1010_campana_vistas_sin_update_367',  current_setting('probe.p1010', true), 'OK (367: INSERT 1; ON CONFLICT DO NOTHING 0 sin error; DO UPDATE y UPDATE 42501; otro paciente 0; antes de la 367: PENDIENTE)'
 UNION ALL SELECT 'P1009_datos_bancarios_acotados_366',  current_setting('probe.p1009', true), 'OK (366: cuenta GT solo super_admin/admin_pais GT/proveedores GT; checkout 1 fila; config 21 super_admin y 14 el resto, admin_pais incluido; antes de la 366: PENDIENTE)'
 UNION ALL SELECT 'DET_p1009',  'DET ' || COALESCE(NULLIF(current_setting('probe.p1009_det', true), ''), '(sin dato)'), 'DET (detalle de P1009, no es probe)'
@@ -46126,7 +46456,7 @@ UNION ALL SELECT 'P000_CENTINELA_veredictos_no_nulos',
        'probe.p866', 'probe.p867', 'probe.p868', 'probe.p869', 'probe.p870', 'probe.p871', 'probe.p872', 'probe.p873', 'probe.p874', 'probe.p875', 'probe.p876', 'probe.p877', 'probe.p878',
        'probe.p879', 'probe.p880', 'probe.p881', 'probe.p882', 'probe.p883', 'probe.p884',
        'probe.p885', 'probe.p886', 'probe.p887', 'probe.p888', 'probe.p889', 'probe.p890', 'probe.p891', 'probe.p892', 'probe.p893', 'probe.p894', 'probe.p895', 'probe.p896', 'probe.p908', 'probe.p909', 'probe.p910', 'probe.p911',
-       'probe.p897', 'probe.p898', 'probe.p899', 'probe.p900', 'probe.p901', 'probe.p902', 'probe.p903', 'probe.p904', 'probe.p905', 'probe.p906', 'probe.p907', 'probe.p912', 'probe.p913', 'probe.p914', 'probe.p915', 'probe.p916', 'probe.p917', 'probe.p918', 'probe.p919', 'probe.p920', 'probe.p921', 'probe.p922', 'probe.p923', 'probe.p924', 'probe.p925', 'probe.p926', 'probe.p927', 'probe.p928', 'probe.p929', 'probe.p930', 'probe.p931', 'probe.p932', 'probe.p933', 'probe.p934', 'probe.p935', 'probe.p936', 'probe.p937', 'probe.p938', 'probe.p939', 'probe.p940', 'probe.p941', 'probe.p942', 'probe.p943', 'probe.p944', 'probe.p945', 'probe.p946', 'probe.p947', 'probe.p948', 'probe.p949', 'probe.p950', 'probe.p951', 'probe.p952', 'probe.p953', 'probe.p954', 'probe.p955', 'probe.p956', 'probe.p957', 'probe.p958', 'probe.p959', 'probe.p960', 'probe.p961', 'probe.p962', 'probe.p963', 'probe.p964', 'probe.p965', 'probe.p966', 'probe.p967', 'probe.p968', 'probe.p969', 'probe.p970', 'probe.p971', 'probe.p972', 'probe.p973', 'probe.p974', 'probe.p975', 'probe.p976', 'probe.p977', 'probe.p978', 'probe.p979', 'probe.p980', 'probe.p981', 'probe.p982', 'probe.p983', 'probe.p984', 'probe.p985', 'probe.p986', 'probe.p987', 'probe.p988', 'probe.p989', 'probe.p990', 'probe.p991', 'probe.p992', 'probe.p993', 'probe.p994', 'probe.p995', 'probe.p996', 'probe.p997', 'probe.p998', 'probe.p999', 'probe.p1000', 'probe.p1001', 'probe.p1002', 'probe.p1003', 'probe.p1004', 'probe.p1005', 'probe.p1006', 'probe.p1007', 'probe.p1008', 'probe.p1009', 'probe.p1010', 'probe.p1011', 'probe.p1012', 'probe.p1013', 'probe.p1014', 'probe.e370_fx', 'probe.p1015', 'probe.p1016', 'probe.p1017', 'probe.p1018', 'probe.g371_fx', 'probe.p1019', 'probe.p1020', 'probe.p1021', 'probe.p1022', 'probe.g372_fx', 'probe.p1023', 'probe.p1024', 'probe.p1025', 'probe.p1035', 'probe.p1036', 'probe.p1037', 'probe.p1038', 'probe.p1039', 'probe.p1040', 'probe.m375_fx', 'probe.p1041', 'probe.p1042', 'probe.p1043', 'probe.p1044', 'probe.p1045', 'probe.p1046', 'probe.p1047', 'probe.p1048', 'probe.p1049', 'probe.p1050', 'probe.p1051', 'probe.p1052', 'probe.p1053', 'probe.p1054', 'probe.p1055', 'probe.p1056', 'probe.p1057', 'probe.p1058', 'probe.p1059', 'probe.p1060', 'probe.p1061', 'probe.m376_fx', 'probe.p1062', 'probe.p1063', 'probe.p1064', 'probe.m377_fx', 'probe.p1065', 'probe.p1066', 'probe.p1067', 'probe.p1068', 'probe.p1069', 'probe.p1070', 'probe.p1071', 'probe.p1072', 'probe.p1073', 'probe.p1074', 'probe.m378_fx', 'probe.p1075', 'probe.p1076', 'probe.p1077', 'probe.p1078', 'probe.p1079', 'probe.p1080', 'probe.p1081', 'probe.p1082', 'probe.p1083', 'probe.m379_fx', 'probe.p1084', 'probe.p1085', 'probe.p1086', 'probe.p1087', 'probe.p1088', 'probe.p1089', 'probe.p1090', 'probe.m380_fx', 'probe.p1091', 'probe.p1092', 'probe.p1093', 'probe.p1094', 'probe.p1095', 'probe.p1096', 'probe.p1097', 'probe.p1098', 'probe.h_restaura', 'probe.m381_fx', 'probe.p1099', 'probe.p1100', 'probe.p1101', 'probe.p1102', 'probe.p1103', 'probe.p1104', 'probe.m382_fx', 'probe.p1105', 'probe.p1106', 'probe.p1107', 'probe.p1108', 'probe.p1109', 'probe.p1110', 'probe.p1111', 'probe.p1112', 'probe.p1113', 'probe.p1114', 'probe.p1115', 'probe.p1116', 'probe.p1117', 'probe.p1118', 'probe.p1119', 'probe.m383_fx', 'probe.p1120', 'probe.p1121', 'probe.p1122', 'probe.p1123', 'probe.p1124', 'probe.p1125', 'probe.p1126', 'probe.p1127', 'probe.p1128', 'probe.p1129', 'probe.p1130', 'probe.p1131', 'probe.m384_fx', 'probe.p1132', 'probe.p1133', 'probe.p1134', 'probe.p1135', 'probe.p1136', 'probe.p1137', 'probe.m385_fx', 'probe.p1138', 'probe.p1139', 'probe.p1140', 'probe.p1141', 'probe.m386_fx', 'probe.p1142', 'probe.p1143', 'probe.p1144', 'probe.p1145', 'probe.p1146', 'probe.p1147', 'probe.m387_fx', 'probe.p1148', 'probe.p1149', 'probe.p1150', 'probe.p1151', 'probe.m388_fx', 'probe.p1152', 'probe.p1153', 'probe.p1154', 'probe.p1155', 'probe.p1156', 'probe.m389_fx', 'probe.p1157', 'probe.p1158', 'probe.p1159', 'probe.p1160', 'probe.m390_fx', 'probe.p1161', 'probe.p1162', 'probe.p1163', 'probe.p1164', 'probe.m391_fx', 'probe.p1165', 'probe.p1166', 'probe.p1167', 'probe.p1168', 'probe.p1169', 'probe.m392_fx', 'probe.p1170', 'probe.p1171', 'probe.p1172', 'probe.m395_fx', 'probe.p1173', 'probe.p1174', 'probe.p1175', 'probe.p1176', 'probe.p1177', 'probe.p1178', 'probe.p1179', 'probe.p1180', 'probe.p1181', 'probe.m396_fx', 'probe.p1182', 'probe.p1183', 'probe.p1184', 'probe.m397_fx', 'probe.p1185', 'probe.p1186', 'probe.p1187', 'probe.p1188'
+       'probe.p897', 'probe.p898', 'probe.p899', 'probe.p900', 'probe.p901', 'probe.p902', 'probe.p903', 'probe.p904', 'probe.p905', 'probe.p906', 'probe.p907', 'probe.p912', 'probe.p913', 'probe.p914', 'probe.p915', 'probe.p916', 'probe.p917', 'probe.p918', 'probe.p919', 'probe.p920', 'probe.p921', 'probe.p922', 'probe.p923', 'probe.p924', 'probe.p925', 'probe.p926', 'probe.p927', 'probe.p928', 'probe.p929', 'probe.p930', 'probe.p931', 'probe.p932', 'probe.p933', 'probe.p934', 'probe.p935', 'probe.p936', 'probe.p937', 'probe.p938', 'probe.p939', 'probe.p940', 'probe.p941', 'probe.p942', 'probe.p943', 'probe.p944', 'probe.p945', 'probe.p946', 'probe.p947', 'probe.p948', 'probe.p949', 'probe.p950', 'probe.p951', 'probe.p952', 'probe.p953', 'probe.p954', 'probe.p955', 'probe.p956', 'probe.p957', 'probe.p958', 'probe.p959', 'probe.p960', 'probe.p961', 'probe.p962', 'probe.p963', 'probe.p964', 'probe.p965', 'probe.p966', 'probe.p967', 'probe.p968', 'probe.p969', 'probe.p970', 'probe.p971', 'probe.p972', 'probe.p973', 'probe.p974', 'probe.p975', 'probe.p976', 'probe.p977', 'probe.p978', 'probe.p979', 'probe.p980', 'probe.p981', 'probe.p982', 'probe.p983', 'probe.p984', 'probe.p985', 'probe.p986', 'probe.p987', 'probe.p988', 'probe.p989', 'probe.p990', 'probe.p991', 'probe.p992', 'probe.p993', 'probe.p994', 'probe.p995', 'probe.p996', 'probe.p997', 'probe.p998', 'probe.p999', 'probe.p1000', 'probe.p1001', 'probe.p1002', 'probe.p1003', 'probe.p1004', 'probe.p1005', 'probe.p1006', 'probe.p1007', 'probe.p1008', 'probe.p1009', 'probe.p1010', 'probe.p1011', 'probe.p1012', 'probe.p1013', 'probe.p1014', 'probe.e370_fx', 'probe.p1015', 'probe.p1016', 'probe.p1017', 'probe.p1018', 'probe.g371_fx', 'probe.p1019', 'probe.p1020', 'probe.p1021', 'probe.p1022', 'probe.g372_fx', 'probe.p1023', 'probe.p1024', 'probe.p1025', 'probe.p1035', 'probe.p1036', 'probe.p1037', 'probe.p1038', 'probe.p1039', 'probe.p1040', 'probe.m375_fx', 'probe.p1041', 'probe.p1042', 'probe.p1043', 'probe.p1044', 'probe.p1045', 'probe.p1046', 'probe.p1047', 'probe.p1048', 'probe.p1049', 'probe.p1050', 'probe.p1051', 'probe.p1052', 'probe.p1053', 'probe.p1054', 'probe.p1055', 'probe.p1056', 'probe.p1057', 'probe.p1058', 'probe.p1059', 'probe.p1060', 'probe.p1061', 'probe.m376_fx', 'probe.p1062', 'probe.p1063', 'probe.p1064', 'probe.m377_fx', 'probe.p1065', 'probe.p1066', 'probe.p1067', 'probe.p1068', 'probe.p1069', 'probe.p1070', 'probe.p1071', 'probe.p1072', 'probe.p1073', 'probe.p1074', 'probe.m378_fx', 'probe.p1075', 'probe.p1076', 'probe.p1077', 'probe.p1078', 'probe.p1079', 'probe.p1080', 'probe.p1081', 'probe.p1082', 'probe.p1083', 'probe.m379_fx', 'probe.p1084', 'probe.p1085', 'probe.p1086', 'probe.p1087', 'probe.p1088', 'probe.p1089', 'probe.p1090', 'probe.m380_fx', 'probe.p1091', 'probe.p1092', 'probe.p1093', 'probe.p1094', 'probe.p1095', 'probe.p1096', 'probe.p1097', 'probe.p1098', 'probe.h_restaura', 'probe.m381_fx', 'probe.p1099', 'probe.p1100', 'probe.p1101', 'probe.p1102', 'probe.p1103', 'probe.p1104', 'probe.m382_fx', 'probe.p1105', 'probe.p1106', 'probe.p1107', 'probe.p1108', 'probe.p1109', 'probe.p1110', 'probe.p1111', 'probe.p1112', 'probe.p1113', 'probe.p1114', 'probe.p1115', 'probe.p1116', 'probe.p1117', 'probe.p1118', 'probe.p1119', 'probe.m383_fx', 'probe.p1120', 'probe.p1121', 'probe.p1122', 'probe.p1123', 'probe.p1124', 'probe.p1125', 'probe.p1126', 'probe.p1127', 'probe.p1128', 'probe.p1129', 'probe.p1130', 'probe.p1131', 'probe.m384_fx', 'probe.p1132', 'probe.p1133', 'probe.p1134', 'probe.p1135', 'probe.p1136', 'probe.p1137', 'probe.m385_fx', 'probe.p1138', 'probe.p1139', 'probe.p1140', 'probe.p1141', 'probe.m386_fx', 'probe.p1142', 'probe.p1143', 'probe.p1144', 'probe.p1145', 'probe.p1146', 'probe.p1147', 'probe.m387_fx', 'probe.p1148', 'probe.p1149', 'probe.p1150', 'probe.p1151', 'probe.m388_fx', 'probe.p1152', 'probe.p1153', 'probe.p1154', 'probe.p1155', 'probe.p1156', 'probe.m389_fx', 'probe.p1157', 'probe.p1158', 'probe.p1159', 'probe.p1160', 'probe.m390_fx', 'probe.p1161', 'probe.p1162', 'probe.p1163', 'probe.p1164', 'probe.m391_fx', 'probe.p1165', 'probe.p1166', 'probe.p1167', 'probe.p1168', 'probe.p1169', 'probe.m392_fx', 'probe.p1170', 'probe.p1171', 'probe.p1172', 'probe.m395_fx', 'probe.p1173', 'probe.p1174', 'probe.p1175', 'probe.p1176', 'probe.p1177', 'probe.p1178', 'probe.p1179', 'probe.p1180', 'probe.p1181', 'probe.m396_fx', 'probe.p1182', 'probe.p1183', 'probe.p1184', 'probe.m397_fx', 'probe.p1185', 'probe.p1186', 'probe.p1187', 'probe.p1188', 'probe.m398_fx', 'probe.p1189', 'probe.p1190', 'probe.p1191'
              ]) AS n) s),
   'OK (todos los veredictos publicados)';
 
