@@ -23,6 +23,26 @@ describe('navegarConGuardia (puro)', () => {
     navegarConGuardia(null, navigate, '/medico/recetas')
     expect(navigate).toHaveBeenCalledWith('/medico/recetas')
   })
+
+  // H3b: «Cerrar Sesión» pasa el logout como acción previa.
+  it('con guardia y acción previa: la guardia recibe las dos y la acción NO corre todavía', async () => {
+    const guardia = vi.fn()
+    const navigate = vi.fn()
+    const logout = vi.fn()
+    await navegarConGuardia(guardia, navigate, '/login', logout)
+    expect(guardia).toHaveBeenCalledWith('/login', logout)
+    expect(logout).not.toHaveBeenCalled()
+    expect(navigate).not.toHaveBeenCalled()
+  })
+
+  it('sin guardia y con acción previa: primero la acción, después navega', async () => {
+    const orden: string[] = []
+    const navigate = vi.fn(() => { orden.push('navigate') })
+    const logout = vi.fn(async () => { orden.push('logout') })
+    await navegarConGuardia(null, navigate, '/login', logout)
+    expect(orden).toEqual(['logout', 'navigate'])
+    expect(navigate).toHaveBeenCalledWith('/login')
+  })
 })
 
 function Pantalla({ guardia }: { guardia: GuardiaNavegacion | null }) {

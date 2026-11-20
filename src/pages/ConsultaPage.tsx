@@ -22,7 +22,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import DictadoVoz from '@/components/consulta/DictadoVoz'
 import { agregarDictado } from '@/lib/dictado'
 import { hayCambiosNota } from '@/lib/notaCambios'
-import { useGuardiaNavegacion } from '@/lib/guardiaNavegacion'
+import { useGuardiaNavegacion, type AccionPrevia } from '@/lib/guardiaNavegacion'
 import {
   AlertDialog,
   AlertDialogCancel,
@@ -502,16 +502,26 @@ function ConsultaDeCita() {
   const [destinoPendiente, setDestinoPendiente] = useState<string | null>(null)
   const [guardandoYSaliendo, setGuardandoYSaliendo] = useState(false)
 
-  const salir = (destino: string) => {
-    if (hayCambios) setDestinoPendiente(destino)
-    else navigate(destino)
+  // H3b: la salida puede traer una acción previa (el logout de «Cerrar Sesión»); se ejecuta solo cuando
+  // la salida se confirma, justo antes de navegar.
+  const accionPreviaRef = useRef<AccionPrevia | undefined>(undefined)
+  const salir = (destino: string, accionPrevia?: AccionPrevia) => {
+    if (hayCambios) {
+      accionPreviaRef.current = accionPrevia
+      setDestinoPendiente(destino)
+    } else {
+      void (async () => {
+        if (accionPrevia) await accionPrevia()
+        navigate(destino)
+      })()
+    }
   }
 
   // La barra lateral del médico pasa por esta guardia mientras haya cambios. La función registrada es
   // estable y lee siempre el último `salir`.
   const salirRef = useRef(salir)
   salirRef.current = salir
-  const guardiaSalir = useCallback((destino: string) => salirRef.current(destino), [])
+  const guardiaSalir = useCallback((destino: string, accionPrevia?: AccionPrevia) => salirRef.current(destino, accionPrevia), [])
   useGuardiaNavegacion(hayCambios ? guardiaSalir : null)
 
   useEffect(() => {
@@ -524,10 +534,14 @@ function ConsultaDeCita() {
     return () => window.removeEventListener('beforeunload', avisar)
   }, [hayCambios])
 
-  const salirSinGuardar = () => {
+  const salirSinGuardar = async () => {
     const destino = destinoPendiente
+    const accionPrevia = accionPreviaRef.current
+    accionPreviaRef.current = undefined
     setDestinoPendiente(null)
-    if (destino) navigate(destino)
+    if (!destino) return
+    if (accionPrevia) await accionPrevia()
+    navigate(destino)
   }
 
   const guardarYSalir = async () => {
@@ -537,7 +551,10 @@ function ConsultaDeCita() {
     const ok = await guardarNotaSOAP()
     setGuardandoYSaliendo(false)
     if (!ok) return // el error ya se mostró; el diálogo queda abierto
+    const accionPrevia = accionPreviaRef.current
+    accionPreviaRef.current = undefined
     setDestinoPendiente(null)
+    if (accionPrevia) await accionPrevia()
     navigate(destino)
   }
 
@@ -1056,7 +1073,7 @@ function ConsultaDeCita() {
       </div>
 
       {/* H3: salir con cambios sin guardar */}
-      <AlertDialog open={destinoPendiente !== null} onOpenChange={abierto => { if (!abierto && !guardandoYSaliendo) setDestinoPendiente(null) }}>
+      <AlertDialog open={destinoPendiente !== null} onOpenChange={abierto => { if (!abierto && !guardandoYSaliendo) { accionPreviaRef.current = undefined; setDestinoPendiente(null) } }}>
         <AlertDialogContent>
           <AlertDialogHeader>
             <AlertDialogTitle>Tienes cambios sin guardar en la nota</AlertDialogTitle>
@@ -1069,7 +1086,7 @@ function ConsultaDeCita() {
           <AlertDialogFooter>
             <AlertDialogCancel disabled={guardandoYSaliendo}>Seguir editando</AlertDialogCancel>
             <Button variant="outline" className="border-red-300 text-red-700 hover:bg-red-50"
-              onClick={salirSinGuardar} disabled={guardandoYSaliendo}>
+              onClick={() => void salirSinGuardar()} disabled={guardandoYSaliendo}>
               Salir sin guardar
             </Button>
             {!corrigiendo && (

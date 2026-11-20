@@ -1,4 +1,4 @@
-import { useNavigate, useLocation } from 'react-router-dom'
+import { useLocation } from 'react-router-dom'
 import { useNavegarConGuardia } from '@/lib/guardiaNavegacion'
 import { useState, useEffect, useCallback } from 'react'
 import { useAuth } from '@/hooks/useAuth'
@@ -23,7 +23,6 @@ import { Button } from '@/components/ui/button'
 import { Sheet, SheetContent, SheetTrigger } from '@/components/ui/sheet'
 
 export function MedicoSidebar() {
-  const navigate = useNavigate()
   // H3: si la consulta tiene cambios sin guardar, la guardia decide (diálogo); si no, navega normal.
   const navegarConGuardia = useNavegarConGuardia()
   const location = useLocation()
@@ -197,10 +196,11 @@ export function MedicoSidebar() {
         <Button
           variant="ghost"
           className="w-full justify-start text-white/80 hover:text-white hover:bg-white/10"
-          onClick={async () => {
+          onClick={() => {
             setOpen(false)
-            await logout()
-            navigate('/login')
+            // H3b: con una consulta con cambios sin guardar, la misma guardia de H3 pregunta antes de
+            // cerrar la sesión; el logout corre solo si el médico confirma la salida.
+            void navegarConGuardia('/login', logout)
           }}
         >
           <LogOut className="w-4 h-4 mr-2" />
