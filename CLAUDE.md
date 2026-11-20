@@ -30,12 +30,12 @@ Stack: React + Vite + TypeScript, Supabase / Postgres, deploy en Vercel, repo en
 
     | Mig | Qué | PR | Apply (UTC) |
     |---|---|---|---|
-    | 390 | cierre de la escritura de authenticated sobre `medicos` | #93 (merge 17-nov 21:33) | hora de apply no registrada (completar) |
+    | 390 | cierre de la escritura de authenticated sobre `medicos` | #93 (merge 17-nov 21:33) | 2026-11-17 21:26:43-21:26:47 |
     | 391 | cierre de la escritura directa sobre `citas` (solo `estado` del médico; CI001-CI003) | #94 | 2026-11-19 16:45:35-16:45:37 |
     | 392 | cierre de la escritura directa sobre `clinicas` | #95 | 2026-11-19 17:41:42-17:41:44 |
     | 395 | recetas: `cita_id`, folio persistido, control de alergias (PR011-PR013, `receta_alertas_alergia`) | #96 | 2026-11-19 18:43:34-18:43:36 |
-    | 396 | `mis_despachos_receta()` (token de despacho del paciente dueño, solo vigentes) | #99 | 20-nov, antes de la verificación de las 18:08; hora exacta no registrada (completar) |
-    | 397 | tokens fuera del SELECT de authenticated (`recetas_avanzadas` sin `dispatch_token`/`confirmacion_token`, `dispensaciones` sin `codigo_qr`) + rotación de 4 dispatch y 8 confirmación | #100 | 20-nov; hora exacta no registrada (completar) |
+    | 396 | `mis_despachos_receta()` (token de despacho del paciente dueño, solo vigentes) | #99 | 2026-11-20 18:05:39-18:05:44 |
+    | 397 | tokens fuera del SELECT de authenticated (`recetas_avanzadas` sin `dispatch_token`/`confirmacion_token`, `dispensaciones` sin `codigo_qr`) + rotación de 4 dispatch y 8 confirmación | #100 | 2026-11-20 18:35:57-18:36:00 |
 
     **393 y 394 RESERVADAS** (matriz de estados de cita por RPC, paso 2 de la 391; no existen en el repo).
     `mis_despachos_receta()` md5(prosrc) `3e0fe1250d0c85b7ac7daeab3344ff35` (cuerpo en LF; el `5334c0ae…` del dry-run original
